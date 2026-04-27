@@ -1,0 +1,244 @@
+import { expect, test } from 'bun:test';
+import {
+  Actor,
+  ActorSystem,
+  Cluster,
+  ClusterSharding,
+  InMemoryTransport,
+  LogLevel,
+  MemberDown,
+  MemberUp,
+  NoopLogger,
+  Props,
+  NodeAddress,
+  hashShardId,
+  moduloAllocator,
+  rendezvousAllocator,
+} from '../src/index.js';
+
+const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+
+async function waitFor(pred: () => boolean, timeoutMs: number, stepMs = 25): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (pred()) return;
+    await sleep(stepMs);
+  }
+  if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
+}
+
+interface NodeHandle {
+  system: ActorSystem;
+  cluster: Cluster;
+  counts: Map<string, number>;
+  region: import('../src/index.js').ActorRef<Command>;
+}
+
+type Command = { id: string; op: 'inc' };
+
+/** Spins up a cluster node backed by the shared InMemoryTransport registry. */
+async function startNode(
+  systemName: string,
+  host: string,
+  port: number,
+  seeds: string[] = [],
+): Promise<NodeHandle> {
+  const system = ActorSystem.create(systemName, {
+    logger: new NoopLogger(),
+    logLevel: LogLevel.Off,
+  });
+  const cluster = await Cluster.join(system, {
+    host,
+    port,
+    seeds,
+    transport: new InMemoryTransport(new NodeAddress(systemName, host, port)),
+    failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
+    gossipIntervalMs: 80,
+  });
+
+  const counts = new Map<string, number>();
+
+  class CountEntity extends Actor<Command> {
+    override onReceive(cmd: Command): void {
+      counts.set(cmd.id, (counts.get(cmd.id) ?? 0) + 1);
+    }
+  }
+
+  const sharding = ClusterSharding.get(system, cluster);
+  const region = sharding.start<Command>({
+    typeName: 'counter',
+    entityProps: Props.create(() => new CountEntity()),
+    extractEntityId: msg => msg.id,
+    numShards: 8,
+  });
+
+  return { system, cluster, counts, region };
+}
+
+async function stopNode(node: NodeHandle): Promise<void> {
+  await node.cluster.leave();
+  await node.system.terminate();
+}
+
+test('three nodes discover each other and transition to Up', async () => {
+  const n1 = await startNode('cluster-a', '10.0.0.1', 5001);
+  const n2 = await startNode('cluster-a', '10.0.0.2', 5002, ['10.0.0.1:5001']);
+  const n3 = await startNode('cluster-a', '10.0.0.3', 5003, ['10.0.0.1:5001']);
+
+  await sleep(600);
+
+  for (const n of [n1, n2, n3]) {
+    const ups = n.cluster.upMembers().map(m => m.address.toString()).sort();
+    expect(ups).toEqual([
+      'cluster-a@10.0.0.1:5001',
+      'cluster-a@10.0.0.2:5002',
+      'cluster-a@10.0.0.3:5003',
+    ]);
+  }
+
+  await stopNode(n1); await stopNode(n2); await stopNode(n3);
+});
+
+test('sharded entities route to exactly one node', async () => {
+  const n1 = await startNode('cluster-b', '10.0.1.1', 6001);
+  const n2 = await startNode('cluster-b', '10.0.1.2', 6002, ['10.0.1.1:6001']);
+  const n3 = await startNode('cluster-b', '10.0.1.3', 6003, ['10.0.1.1:6001']);
+  // Wait until every node agrees on the Up set — same cardinality AND set.
+  await waitFor(() => {
+    const sets = [n1, n2, n3].map(n =>
+      n.cluster.upMembers().map(m => m.address.toString()).sort().join('|'),
+    );
+    return sets[0] === sets[1] && sets[1] === sets[2] && sets[0].split('|').length === 3;
+  }, 2_000);
+  // Tiny extra cushion so each region processes the last MemberUp event.
+  await sleep(150);
+
+  const entityIds = ['alpha', 'beta', 'gamma', 'delta', 'epsilon'];
+  // Send every entity id from every node; the entities should all land on
+  // the SAME node each time (their deterministic owner).
+  for (const id of entityIds) {
+    n1.region.tell({ id, op: 'inc' });
+    n2.region.tell({ id, op: 'inc' });
+    n3.region.tell({ id, op: 'inc' });
+  }
+  await sleep(500);
+
+  for (const id of entityIds) {
+    const hits = [n1.counts.get(id) ?? 0, n2.counts.get(id) ?? 0, n3.counts.get(id) ?? 0];
+    const total = hits.reduce((a, b) => a + b, 0);
+    const nonZero = hits.filter(h => h > 0).length;
+    expect(total).toBe(3);
+    expect(nonZero).toBe(1); // exactly one node hosts each entity
+  }
+
+  await stopNode(n1); await stopNode(n2); await stopNode(n3);
+});
+
+test('shards rebalance when a node leaves', async () => {
+  const n1 = await startNode('cluster-c', '10.0.2.1', 7001);
+  const n2 = await startNode('cluster-c', '10.0.2.2', 7002, ['10.0.2.1:7001']);
+  const n3 = await startNode('cluster-c', '10.0.2.3', 7003, ['10.0.2.1:7001']);
+  await sleep(500);
+
+  // Find an entity whose owner is node 2.
+  const members = n1.cluster.upMembers().map(m => m.address);
+  const entityIds = ['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight'];
+  const victim = entityIds.find(id => {
+    const shardId = hashShardId(id, 8);
+    const owner = moduloAllocator(shardId, members);
+    return owner.toString() === 'cluster-c@10.0.2.2:7002';
+  });
+  expect(victim).toBeDefined();
+
+  // Before: the entity lives on node 2.
+  n1.region.tell({ id: victim!, op: 'inc' });
+  await sleep(150);
+  expect(n2.counts.get(victim!) ?? 0).toBe(1);
+  expect((n1.counts.get(victim!) ?? 0) + (n3.counts.get(victim!) ?? 0)).toBe(0);
+
+  // Kill node 2 and wait for failure detection + rebalance.
+  await stopNode(n2);
+  await sleep(1_200);
+
+  // After: survivors should detect the down member and re-own its shards.
+  expect(n1.cluster.upMembers().length).toBe(2);
+  expect(n3.cluster.upMembers().length).toBe(2);
+
+  // Send to the same entity from node 1; it should now live somewhere still alive.
+  n1.region.tell({ id: victim!, op: 'inc' });
+  n1.region.tell({ id: victim!, op: 'inc' });
+  await sleep(300);
+
+  const afterHits = (n1.counts.get(victim!) ?? 0) + (n3.counts.get(victim!) ?? 0);
+  expect(afterHits).toBe(2);
+
+  await stopNode(n1); await stopNode(n3);
+});
+
+test('rendezvousAllocator keeps most shards stable when one node leaves', async () => {
+  const n1 = new NodeAddress('s', 'h', 1);
+  const n2 = new NodeAddress('s', 'h', 2);
+  const n3 = new NodeAddress('s', 'h', 3);
+
+  const before = [];
+  for (let shardId = 0; shardId < 128; shardId++) {
+    before.push(rendezvousAllocator(shardId, [n1, n2, n3]));
+  }
+  const after = [];
+  for (let shardId = 0; shardId < 128; shardId++) {
+    after.push(rendezvousAllocator(shardId, [n1, n3])); // n2 removed
+  }
+
+  // Every shard previously on n1 or n3 must still point to the same node;
+  // shards previously on n2 pick one of the survivors.
+  for (let i = 0; i < before.length; i++) {
+    if (before[i]!.equals(n1) || before[i]!.equals(n3)) {
+      expect(after[i]!.equals(before[i]!)).toBe(true);
+    } else {
+      expect(after[i]!.equals(n1) || after[i]!.equals(n3)).toBe(true);
+    }
+  }
+});
+
+test('leader is the address-sorted first up-member', async () => {
+  const n1 = await startNode('cluster-d', '10.0.3.1', 8001);
+  const n2 = await startNode('cluster-d', '10.0.3.2', 8002, ['10.0.3.1:8001']);
+  await sleep(400);
+
+  // Sorted by address string — "10.0.3.1:8001" < "10.0.3.2:8002".
+  expect(n1.cluster.isLeader()).toBe(true);
+  expect(n2.cluster.isLeader()).toBe(false);
+
+  await stopNode(n1);
+  await sleep(800);
+  expect(n2.cluster.isLeader()).toBe(true);
+
+  await stopNode(n2);
+});
+
+test('MemberUp and departure events fire on the cluster subscription', async () => {
+  const n1 = await startNode('cluster-e', '10.0.4.1', 9001);
+  const seenUp: string[] = [];
+  const seenLeft: string[] = [];
+  const seenDown: string[] = [];
+
+  n1.cluster.subscribe(evt => {
+    if (evt instanceof MemberUp) seenUp.push(evt.member.address.toString());
+    if (evt instanceof MemberDown) seenDown.push(evt.member.address.toString());
+    // MemberLeft/Removed cover the graceful-leave path; MemberDown covers a crash.
+    if ((evt as { constructor: { name: string } }).constructor.name === 'MemberLeft') {
+      seenLeft.push((evt as { member: { address: { toString(): string } } }).member.address.toString());
+    }
+  });
+
+  const n2 = await startNode('cluster-e', '10.0.4.2', 9002, ['10.0.4.1:9001']);
+  await sleep(400);
+  expect(seenUp).toContain('cluster-e@10.0.4.2:9002');
+
+  await stopNode(n2);
+  await sleep(600);
+  // Graceful leave emits MemberLeft; ungraceful crash would emit MemberDown.
+  expect(seenLeft.concat(seenDown)).toContain('cluster-e@10.0.4.2:9002');
+
+  await stopNode(n1);
+});

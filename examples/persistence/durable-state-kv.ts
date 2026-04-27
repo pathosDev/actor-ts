@@ -1,0 +1,68 @@
+/**
+ * Durable State KV: simpler than Event Sourcing — persist the full state
+ * (not a log of changes) on each mutation.  Survives restart via the
+ * InMemoryDurableStateStore (swap for a SQLite/Cassandra-backed one in
+ * production).
+ *
+ *   bun run examples/persistence/durable-state-kv.ts
+ */
+import { match } from 'ts-pattern';
+import {
+  Actor,
+  ActorSystem,
+  DurableStateActor,
+  InMemoryDurableStateStore,
+  Props,
+} from '../../src/index.js';
+
+interface KV { readonly map: Record<string, string>; }
+type Cmd =
+  | { kind: 'set'; key: string; value: string }
+  | { kind: 'get'; key: string }
+  | { kind: 'dump' };
+
+class KVStore extends DurableStateActor<Cmd, KV> {
+  override async onCommand(cmd: Cmd): Promise<void> {
+    await match(cmd)
+      .with({ kind: 'set' }, async (c) => {
+        const next: KV = { map: { ...this.state.map, [c.key]: c.value } };
+        await this.persist(next);
+        console.log(`set ${c.key}=${c.value} (rev=${this.revision})`);
+      })
+      .with({ kind: 'get' }, async (c) => {
+        console.log(`get ${c.key}: ${this.state.map[c.key] ?? '<missing>'}`);
+      })
+      .with({ kind: 'dump' }, async () => {
+        console.log('dump:', this.state.map);
+      })
+      .exhaustive();
+  }
+}
+
+async function main(): Promise<void> {
+  const system = ActorSystem.create('durable-kv');
+  const store = new InMemoryDurableStateStore();
+
+  let ref = system.actorOf(Props.create(() => new KVStore({
+    persistenceId: 'app-config', store, emptyState: () => ({ map: {} }),
+  }) as unknown as Actor<Cmd>));
+
+  ref.tell({ kind: 'set', key: 'env', value: 'production' });
+  ref.tell({ kind: 'set', key: 'version', value: '1.2.3' });
+  ref.tell({ kind: 'get', key: 'env' });
+  await Bun.sleep(50);
+
+  // "Crash" — stop the actor, respawn it with the same store.
+  ref.stop();
+  await Bun.sleep(20);
+  console.log('--- actor restarted ---');
+  ref = system.actorOf(Props.create(() => new KVStore({
+    persistenceId: 'app-config', store, emptyState: () => ({ map: {} }),
+  }) as unknown as Actor<Cmd>));
+
+  ref.tell({ kind: 'dump' });
+  await Bun.sleep(50);
+  await system.terminate();
+}
+
+void main();
