@@ -78,10 +78,22 @@ jobs:
           PASS="${{ steps.stats.outputs.pass }}"
           TOTAL="${{ steps.stats.outputs.total }}"
           LINES="${{ steps.stats.outputs.lines }}"
-          # 1. Static badge URLs (img.shields.io).
-          #    Format: tests-PASS%20of%20TOTAL — green when pass=total.
-          sed -i -E "s|tests-[0-9]+%20of%20[0-9]+|tests-${PASS}%20of%20${TOTAL}|g" README.md
-          sed -i -E "s|coverage-~[0-9]+%25|coverage-~${LINES}%25|g" README.md
+          # Pick badge color from pass/total ratio:
+          #   pass == total → green   (22c55e)  — all green
+          #   pass <  total → red     (ef4444)  — at least one fail
+          # Coverage badge follows the same green by default; thresholds
+          # could be added later (e.g. <70% → red, <85% → yellow).
+          if [[ "$PASS" -eq "$TOTAL" ]]; then
+            TEST_COLOR="22c55e"
+          else
+            TEST_COLOR="ef4444"
+          fi
+          COV_COLOR="22c55e"
+          # 1. Static badge URLs (img.shields.io) — pattern matches the
+          #    full 'tests-X%20of%20Y-COLOR' segment so the colour gets
+          #    rewritten when the ratio shifts.
+          sed -i -E "s|tests-[0-9]+%20of%20[0-9]+-[0-9a-fA-F]{6}|tests-${PASS}%20of%20${TOTAL}-${TEST_COLOR}|g" README.md
+          sed -i -E "s|coverage-~[0-9]+%25-[0-9a-fA-F]{6}|coverage-~${LINES}%25-${COV_COLOR}|g" README.md
           # 2. Inline prose references.  Test-count regex demands 3+ digits
           #    so '~9 tests' (env-gated subset elsewhere) is not matched.
           sed -i -E "s|~[0-9]{3,}( tests)|~${PASS}\1|g" README.md
