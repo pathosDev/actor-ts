@@ -1,0 +1,147 @@
+import type { ActorRef } from './ActorRef.js';
+import type { ActorPath } from './ActorPath.js';
+import type { ActorSystem } from './ActorSystem.js';
+import type { Props } from './Props.js';
+import type { Logger } from './Logger.js';
+import type { Option } from './util/Option.js';
+
+/** Behaviour is just a message handler. Used for become/unbecome. */
+export type Receive<T> = (message: T) => void | Promise<void>;
+
+/**
+ * Runtime API given to every Actor.  Access through `this.context` inside
+ * an Actor subclass.
+ */
+export interface ActorContext<TMsg = unknown> {
+  /** A reference to this actor. */
+  readonly self: ActorRef<TMsg>;
+
+  /** The ActorPath of this actor. */
+  readonly path: ActorPath;
+
+  /** The sender of the message currently being processed, or `None`. */
+  readonly sender: Option<ActorRef>;
+
+  /** The enclosing ActorSystem. */
+  readonly system: ActorSystem;
+
+  /** Parent actor, or `None` for the root guardian. */
+  readonly parent: Option<ActorRef>;
+
+  /** Snapshot of direct children. */
+  readonly children: ReadonlyArray<ActorRef>;
+
+  /** Logger bound to this actor's path. */
+  readonly log: Logger;
+
+  /** Spawn a child actor under this one.  `name` must be unique among siblings. */
+  actorOf<T>(props: Props<T>, name?: string): ActorRef<T>;
+
+  /** Look up a direct child by name.  `None` if no such child exists. */
+  child(name: string): Option<ActorRef>;
+
+  /**
+   * Build an ActorSelection that resolves a full-path lookup.  Delegates to
+   * the enclosing ActorSystem — same semantics as `system.actorSelection`.
+   */
+  actorSelection(path: string): import('./ActorSelection.js').ActorSelection;
+
+  /** Ask the runtime to stop the given actor.  Equivalent to ref.stop(). */
+  stop(ref: ActorRef): void;
+
+  /** Stop this actor itself. */
+  stopSelf(): void;
+
+  /** Start death-watching an actor.  A Terminated message is sent when it stops. */
+  watch(ref: ActorRef): ActorRef;
+
+  /** Stop watching. */
+  unwatch(ref: ActorRef): ActorRef;
+
+  /**
+   * Replace the current behaviour.  When `discardOld` is false, the previous
+   * behaviour is pushed onto a stack and can be restored via unbecome().
+   */
+  become(behavior: Receive<TMsg>, discardOld?: boolean): void;
+
+  /** Pop the behaviour stack, restoring the previous behaviour. */
+  unbecome(): void;
+
+  /**
+   * Fire a ReceiveTimeout message when no user message has been received in
+   * `ms`.  Pass 0 to disable.
+   */
+  setReceiveTimeout(ms: number): void;
+
+  /** Disable the receive timeout. */
+  cancelReceiveTimeout(): void;
+
+  /* ----------------------------- Stash ---------------------------------- */
+
+  /**
+   * Buffer the message currently being handled.  It is reinserted into the
+   * mailbox when `unstashAll()` is called.  Throws if called outside a
+   * user-message handler or if the stash is full.
+   */
+  stash(): void;
+
+  /**
+   * Prepend every stashed message back onto the user mailbox in the order
+   * they were stashed.  The buffer is empty afterwards.
+   */
+  unstashAll(): void;
+
+  /** Number of currently-stashed messages. */
+  readonly stashSize: number;
+
+  /* ----------------------------- Timers --------------------------------- */
+
+  /**
+   * Per-actor scheduling facade.  Timers are identified by user-supplied
+   * string keys and are automatically cancelled when the actor stops.
+   */
+  readonly timers: TimerScheduler<TMsg>;
+}
+
+/**
+ * Actor-scoped scheduler.  A fresh `startSingleTimer`/`startTimerWithFixedDelay`
+ * call with the same key replaces any existing timer under that key.
+ */
+export interface TimerScheduler<TMsg = unknown> {
+  /** Fire `message` once after `delayMs`. */
+  startSingleTimer(key: string, message: TMsg, delayMs: number): void;
+
+  /** Fire `message` every `intervalMs`, optionally preceded by `initialDelayMs`. */
+  startTimerWithFixedDelay(
+    key: string,
+    message: TMsg,
+    intervalMs: number,
+    initialDelayMs?: number,
+  ): void;
+
+  /** Cancel a specific timer.  Returns true if a timer was actually running. */
+  cancel(key: string): boolean;
+
+  /** Cancel every timer this actor has started. */
+  cancelAll(): void;
+
+  /** True if the timer under `key` is still scheduled to fire. */
+  isTimerActive(key: string): boolean;
+
+  /** Names of active timers (diagnostics). */
+  activeKeys(): string[];
+}
+
+export class StashOverflowError extends Error {
+  constructor(capacity: number) {
+    super(`Stash overflow: buffer is full (capacity=${capacity})`);
+    this.name = 'StashOverflowError';
+  }
+}
+
+export class StashOutsideHandlerError extends Error {
+  constructor() {
+    super('context.stash() must be called while handling a user message');
+    this.name = 'StashOutsideHandlerError';
+  }
+}
