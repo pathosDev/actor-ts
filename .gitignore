@@ -17,3 +17,7 @@ bun.lockb
 
 # Internal staging area used while building the initial commit history
 .staging/
+.claude/ >>.gitignore
+
+# Claude Code per-user settings
+.claude/
