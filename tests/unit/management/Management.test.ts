@@ -1,0 +1,132 @@
+import { describe, expect, test } from 'bun:test';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { Cluster } from '../../../src/cluster/Cluster.js';
+import { InMemoryTransport } from '../../../src/cluster/Transport.js';
+import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
+import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
+import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import {
+  HealthCheckRegistry,
+  isHealthy,
+  managementRoutes,
+} from '../../../src/management/index.js';
+
+describe('HealthCheckRegistry', () => {
+  test('aggregates liveness + readiness separately', async () => {
+    const reg = new HealthCheckRegistry();
+    reg.addLiveness(async () => ({ name: 'core', status: true }));
+    reg.addReadiness(async () => ({ name: 'db', status: false, detail: 'down' }));
+    reg.addReadiness(() => ({ name: 'cache', status: true }));
+
+    const liveness = await reg.checkLiveness();
+    const readiness = await reg.checkReadiness();
+    expect(liveness).toHaveLength(1);
+    expect(isHealthy(liveness)).toBe(true);
+    expect(readiness).toHaveLength(2);
+    expect(isHealthy(readiness)).toBe(false);
+  });
+
+  test('exceptions from a check are reported as unhealthy', async () => {
+    const reg = new HealthCheckRegistry();
+    reg.addLiveness(() => { throw new Error('bad'); });
+    const results = await reg.checkLiveness();
+    expect(results[0]!.status).toBe(false);
+    expect(results[0]!.detail).toContain('bad');
+  });
+});
+
+describe('managementRoutes — cluster queries', () => {
+  async function startNode(): Promise<{ sys: ActorSystem; cluster: Cluster; port: number }> {
+    const port = 55200 + Math.floor(Math.random() * 300);
+    const sys = ActorSystem.create('mgmt', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const cluster = await Cluster.join(sys, {
+      host: 'h', port,
+      transport: new InMemoryTransport(new NodeAddress('mgmt', 'h', port)),
+      gossipIntervalMs: 80,
+    });
+    return { sys, cluster, port };
+  }
+
+  test('/cluster/members returns the current membership as JSON', async () => {
+    const { sys, cluster } = await startNode();
+    const { routes } = managementRoutes(sys, cluster);
+    const http = sys.extension(HttpExtensionId);
+    const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
+
+    const res = await fetch(`http://127.0.0.1:${binding.port}/cluster/members`);
+    const body = await res.json() as { members: Array<{ address: string }>; self: string };
+    expect(res.status).toBe(200);
+    expect(body.members.length).toBe(1);
+    expect(body.self).toContain('mgmt@h:');
+
+    await binding.unbind();
+    await cluster.leave(); await sys.terminate();
+  });
+
+  test('/health is 200 when all liveness checks pass', async () => {
+    const { sys, cluster } = await startNode();
+    const { routes, health } = managementRoutes(sys, cluster);
+    health.addLiveness(() => ({ name: 'ok', status: true }));
+    const http = sys.extension(HttpExtensionId);
+    const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
+
+    const res = await fetch(`http://127.0.0.1:${binding.port}/health`);
+    const body = await res.json() as { status: string };
+    expect(res.status).toBe(200);
+    expect(body.status).toBe('UP');
+
+    await binding.unbind();
+    await cluster.leave(); await sys.terminate();
+  });
+
+  test('/health is 503 when a liveness check fails', async () => {
+    const { sys, cluster } = await startNode();
+    const { routes, health } = managementRoutes(sys, cluster);
+    health.addLiveness(() => ({ name: 'db', status: false, detail: 'conn refused' }));
+    const http = sys.extension(HttpExtensionId);
+    const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
+
+    const res = await fetch(`http://127.0.0.1:${binding.port}/health`);
+    expect(res.status).toBe(503);
+
+    await binding.unbind();
+    await cluster.leave(); await sys.terminate();
+  });
+
+  test('/ready reflects cluster Up state', async () => {
+    const { sys, cluster } = await startNode();
+    const { routes } = managementRoutes(sys, cluster);
+    const http = sys.extension(HttpExtensionId);
+    const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
+
+    // Wait until self member is Up.
+    await Bun.sleep(150);
+
+    const res = await fetch(`http://127.0.0.1:${binding.port}/ready`);
+    const body = await res.json() as { status: string; clusterReady: boolean };
+    expect(body.clusterReady).toBe(true);
+    expect(body.status).toBe('UP');
+
+    await binding.unbind();
+    await cluster.leave(); await sys.terminate();
+  });
+
+  test('/cluster/leave triggers cluster.leave when enabled', async () => {
+    const { sys, cluster, port } = await startNode();
+    void port;
+    const { routes } = managementRoutes(sys, cluster, { enableLeaveEndpoint: true });
+    const http = sys.extension(HttpExtensionId);
+    const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
+
+    const res = await fetch(`http://127.0.0.1:${binding.port}/cluster/leave`, { method: 'POST' });
+    expect(res.status).toBe(202);
+    await Bun.sleep(100);
+    // After leave, the cluster's started flag is cleared — getMembers() may still show self in 'leaving'.
+    const members = cluster.getMembers();
+    const self = members.find(m => m.address.equals(cluster.selfAddress));
+    expect(self == null || self.status === 'leaving' || self.status === 'removed').toBe(true);
+
+    await binding.unbind();
+    await sys.terminate();
+  });
+});
