@@ -683,13 +683,13 @@ tests/smoke/    — cross-runtime smoke scripts (bun / node / deno)
 ## Status
 
 Feature-complete for a single-process / small-cluster app.  The big
-roadmap items still open:
+roadmap items still open are tracked as issues, in recommended order:
 
-- CRDTs / Replicated Event Sourcing
-- Projections / Persistence Query
-- Multi-Node-Spec test harness
-- Real K8s Lease (currently a stub)
-- Production hardening of the sharding rebalance path (daemon failover)
+- [#33 — Real KubernetesLease implementation (replace current stub)](https://github.com/pathosDev/actor-ts/issues/33)
+- [#34 — Multi-Node-Spec test harness](https://github.com/pathosDev/actor-ts/issues/34) *(foundation for #35 + #37)*
+- [#35 — Sharding rebalance hardening + sharded-daemon failover](https://github.com/pathosDev/actor-ts/issues/35) *(depends on #34)*
+- [#36 — Projections / Persistence Query](https://github.com/pathosDev/actor-ts/issues/36)
+- [#37 — CRDTs + Replicated Event Sourcing](https://github.com/pathosDev/actor-ts/issues/37) *(depends on #34)*
 
 See [CHANGELOG.md](./CHANGELOG.md) for what landed in the latest release.
 
