@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Dev-only types — makes Bun globals (`Bun`, `bun:test`, …) and Node
+    // globals (`process`, `Buffer`, `node:*`) visible to the IDE / local
+    // typecheck.  NOT inherited into the build output: see `tsconfig.json`
+    // which emits `.d.ts` without any of these baked in.
+    "types": ["bun", "node"],
+    "lib": ["ES2022", "DOM"],
+    "rootDir": "."
+  },
+  "include": [
+    "src/**/*.ts",
+    "tests/**/*.ts",
+    "benchmarks/**/*.ts",
+    "examples/**/*.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
+}
