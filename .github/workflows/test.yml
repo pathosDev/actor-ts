@@ -51,8 +51,14 @@ jobs:
         id: stats
         run: |
           OUTPUT=$(bun test --coverage 2>&1 || true)
-          # Pass count from the "  N pass" summary line.
+          # Pass + fail counts from the summary lines.  Skips are excluded
+          # from 'total' on purpose: total = pass + fail represents
+          # actually-executed tests, so '1079 of 1079' means 'all 1079
+          # active tests passed' (skipped tests show separately).
           PASS=$(echo "$OUTPUT" | grep -E "^[[:space:]]+[0-9]+ pass" | grep -oE "[0-9]+" | head -1)
+          FAIL=$(echo "$OUTPUT" | grep -E "^[[:space:]]+[0-9]+ fail" | grep -oE "[0-9]+" | head -1)
+          [[ -z "$FAIL" ]] && FAIL=0
+          TOTAL=$((PASS + FAIL))
           # Line coverage from the "All files" aggregate row, second column.
           LINES=$(echo "$OUTPUT" | grep "^All files" | awk -F'|' '{print $2}' | tr -d ' ')
           LINES_INT=${LINES%.*}
@@ -62,20 +68,22 @@ jobs:
             exit 0
           fi
           echo "pass=$PASS" >> "$GITHUB_OUTPUT"
+          echo "total=$TOTAL" >> "$GITHUB_OUTPUT"
           echo "lines=$LINES_INT" >> "$GITHUB_OUTPUT"
-          echo "Parsed: $PASS tests passing, $LINES_INT% line coverage"
+          echo "Parsed: $PASS of $TOTAL tests passing, $LINES_INT% line coverage"
 
       - name: Update README badges + inline references
         if: steps.stats.outputs.pass != '' && steps.stats.outputs.lines != ''
         run: |
           PASS="${{ steps.stats.outputs.pass }}"
+          TOTAL="${{ steps.stats.outputs.total }}"
           LINES="${{ steps.stats.outputs.lines }}"
-          # 1. Static badge URLs (img.shields.io)
-          sed -i -E "s|tests-[0-9]+%20passing|tests-${PASS}%20passing|g" README.md
+          # 1. Static badge URLs (img.shields.io).
+          #    Format: tests-PASS%20of%20TOTAL — green when pass=total.
+          sed -i -E "s|tests-[0-9]+%20of%20[0-9]+|tests-${PASS}%20of%20${TOTAL}|g" README.md
           sed -i -E "s|coverage-~[0-9]+%25|coverage-~${LINES}%25|g" README.md
-          # 2. Inline references in prose.  Test-count regex demands at
-          #    least 3 digits so '~9 tests' (a small env-gated subset
-          #    elsewhere in the README) is not accidentally matched.
+          # 2. Inline prose references.  Test-count regex demands 3+ digits
+          #    so '~9 tests' (env-gated subset elsewhere) is not matched.
           sed -i -E "s|~[0-9]{3,}( tests)|~${PASS}\1|g" README.md
           sed -i -E "s|~[0-9]+( % line)|~${LINES}\1|g" README.md
 
