@@ -1,0 +1,305 @@
+import type { Server } from 'node:http';
+import { match } from 'ts-pattern';
+import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../types.js';
+import type {
+  HttpServerBackend,
+  RouteRegistration,
+  ServerBinding,
+} from './HttpServerBackend.js';
+
+/*
+ * We deliberately keep Express imports narrow + structural — the peer dep
+ * is optional, so the type aliases below describe only what we touch.
+ * Callers can still hand us a real Express app via `new ExpressBackend(app)`.
+ */
+
+/** Minimal shape of the Express Request we rely on. */
+interface ExpressRequestLike {
+  method: string;
+  url: string;
+  path?: string;
+  headers: Record<string, string | string[] | undefined>;
+  params: Record<string, string>;
+  query: Record<string, unknown>;
+  /** Populated by our raw-body middleware. */
+  rawBody?: Uint8Array | null;
+  body?: unknown;
+}
+
+/** Minimal shape of the Express Response we rely on. */
+interface ExpressResponseLike {
+  status(code: number): ExpressResponseLike;
+  setHeader(name: string, value: string): void;
+  end(body?: string | Uint8Array): void;
+}
+
+type ExpressNext = (err?: unknown) => void;
+type ExpressHandler = (req: ExpressRequestLike, res: ExpressResponseLike, next: ExpressNext) => void | Promise<void>;
+type ExpressErrorHandler = (err: unknown, req: ExpressRequestLike, res: ExpressResponseLike, next: ExpressNext) => void | Promise<void>;
+
+/** Subset of the Express app API we touch.  Covers v4 and v5. */
+interface ExpressAppLike {
+  get(path: string, handler: ExpressHandler): void;
+  post(path: string, handler: ExpressHandler): void;
+  put(path: string, handler: ExpressHandler): void;
+  delete(path: string, handler: ExpressHandler): void;
+  patch(path: string, handler: ExpressHandler): void;
+  head(path: string, handler: ExpressHandler): void;
+  options(path: string, handler: ExpressHandler): void;
+  use(mw: ExpressHandler | ExpressErrorHandler): void;
+  listen(port: number, hostname: string, cb: (err?: Error) => void): Server;
+}
+
+export interface ExpressBackendOptions {
+  /**
+   * Bring-your-own app — useful when you already attach custom middleware
+   * (CORS, sessions, metrics, …) outside the DSL.  When omitted, a fresh
+   * Express app is created via the installed `express` package.
+   */
+  readonly app?: ExpressAppLike;
+  /** Maximum allowed body size in bytes (default: 10 MiB).  Exceeding it returns 413. */
+  readonly maxBodyBytes?: number;
+}
+
+/**
+ * Express-backed HTTP backend — drop-in alternative to the Fastify
+ * default.  Intended for teams that already have an Express-based plugin
+ * ecosystem (session stores, auth, observability) they want to reuse.
+ *
+ * `express` is an optional peer dependency: install it only if you use
+ * this backend.  When no app is injected, the backend imports `express`
+ * dynamically and builds a fresh one.
+ */
+export class ExpressBackend implements HttpServerBackend {
+  readonly name = 'express';
+
+  private app: ExpressAppLike | null;
+  private server: Server | null = null;
+  private readonly ownsApp: boolean;
+  private readonly maxBodyBytes: number;
+  private readonly registered: RouteRegistration[] = [];
+  private notFoundHandler: ((req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
+  private errorHandler: ((err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
+
+  constructor(options: ExpressBackendOptions = {}) {
+    this.app = options.app ?? null;
+    this.ownsApp = options.app == null;
+    this.maxBodyBytes = options.maxBodyBytes ?? 10 * 1024 * 1024;
+  }
+
+  /** Inject / access the underlying Express app — useful for native middleware. */
+  getApp(): ExpressAppLike {
+    if (!this.app) throw new Error('ExpressBackend: app not constructed yet — call listen() first or pass `{ app }` to the constructor.');
+    return this.app;
+  }
+
+  registerRoute(route: RouteRegistration): void {
+    this.registered.push(route);
+  }
+
+  setNotFound(handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
+    this.notFoundHandler = handler;
+  }
+
+  setErrorHandler(handler: (err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
+    this.errorHandler = handler;
+  }
+
+  async listen(host: string, port: number): Promise<ServerBinding> {
+    if (!this.app) this.app = await this.createExpressApp();
+    // Register our raw-body middleware first so routes see req.rawBody.
+    this.app.use(this.rawBodyMiddleware());
+    // Apply routes.  Express treats patterns like "/users/:id" natively.
+    for (const r of this.registered) this.attachRoute(r);
+    // 404 + error middlewares MUST come last.
+    if (this.notFoundHandler) {
+      const handler = this.notFoundHandler;
+      const notFound: ExpressHandler = async (req, res, next) => {
+        try {
+          const adapted = this.adaptRequest(req);
+          const out = await handler(adapted);
+          this.writeResponse(res, out);
+        } catch (err) { next(err); }
+      };
+      this.app.use(notFound);
+    }
+    this.app.use(this.makeErrorMiddleware());
+
+    const actualPort = await new Promise<number>((resolve, reject) => {
+      const server = this.app!.listen(port, host, (err?: Error) => {
+        if (err) { reject(err); return; }
+        const addr = server.address();
+        if (addr && typeof addr === 'object') resolve(addr.port);
+        else resolve(port);
+      });
+      server.once('error', reject);
+      this.server = server;
+    });
+
+    return {
+      host,
+      port: actualPort,
+      unbind: async (gracePeriodMs?: number) => {
+        const srv = this.server;
+        if (!srv) return;
+        this.server = null;
+        await new Promise<void>((resolve) => {
+          const timer = gracePeriodMs && gracePeriodMs > 0
+            ? setTimeout(() => { srv.closeAllConnections?.(); resolve(); }, gracePeriodMs)
+            : null;
+          srv.close(() => { if (timer) clearTimeout(timer); resolve(); });
+        });
+      },
+    };
+  }
+
+  /* ============================ internals ============================ */
+
+  private attachRoute(route: RouteRegistration): void {
+    const method = route.method.toLowerCase() as Lowercase<HttpMethod>;
+    const handler: ExpressHandler = async (req, res, next) => {
+      try {
+        const adapted = this.adaptRequest(req);
+        const out = await route.handler(adapted);
+        this.writeResponse(res, out);
+      } catch (err) { next(err); }
+    };
+    const app = this.app!;
+    match(method)
+      .with('get',     () => app.get(route.pattern, handler))
+      .with('post',    () => app.post(route.pattern, handler))
+      .with('put',     () => app.put(route.pattern, handler))
+      .with('delete',  () => app.delete(route.pattern, handler))
+      .with('patch',   () => app.patch(route.pattern, handler))
+      .with('head',    () => app.head(route.pattern, handler))
+      .with('options', () => app.options(route.pattern, handler))
+      .exhaustive();
+  }
+
+  /**
+   * Read the whole request body into a single Uint8Array on `req.rawBody`.
+   * We intentionally avoid express.json/urlencoded so the DSL's own
+   * content-negotiation (JSON vs. CBOR vs. text) stays in charge.
+   */
+  private rawBodyMiddleware(): ExpressHandler {
+    const cap = this.maxBodyBytes;
+    return async (req, res, next) => {
+      const method = req.method.toUpperCase();
+      if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
+        req.rawBody = null; next(); return;
+      }
+      try {
+        const chunks: Buffer[] = [];
+        let total = 0;
+        const r = req as unknown as NodeJS.ReadableStream;
+        for await (const chunk of r) {
+          const buf = chunk as Buffer;
+          total += buf.length;
+          if (total > cap) {
+            res.status(413).setHeader('content-type', 'text/plain; charset=utf-8');
+            res.end('Payload Too Large');
+            return;
+          }
+          chunks.push(buf);
+        }
+        const merged = Buffer.concat(chunks, total);
+        req.rawBody = new Uint8Array(merged.buffer, merged.byteOffset, merged.byteLength);
+        next();
+      } catch (e) {
+        next(e);
+      }
+    };
+  }
+
+  private makeErrorMiddleware(): ExpressErrorHandler {
+    return async (err, req, res, _next) => {
+      const adapted = this.adaptRequest(req);
+      if (this.errorHandler) {
+        try {
+          const out = await this.errorHandler(err, adapted);
+          this.writeResponse(res, out);
+          return;
+        } catch (inner) {
+          err = inner;
+        }
+      }
+      if (err instanceof HttpError) {
+        res.status(err.status).setHeader('content-type', 'application/json; charset=utf-8');
+        res.end(JSON.stringify({ error: err.message, ...err.extra }));
+        return;
+      }
+      res.status(500).setHeader('content-type', 'application/json; charset=utf-8');
+      res.end(JSON.stringify({ error: 'Internal Server Error', message: (err as Error)?.message ?? String(err) }));
+    };
+  }
+
+  private adaptRequest(req: ExpressRequestLike): HttpRequest {
+    const headers: Record<string, string> = {};
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (typeof v === 'string') headers[k] = v;
+      else if (Array.isArray(v)) headers[k] = v.join(',');
+    }
+    const body = req.rawBody ?? null;
+    return {
+      method: req.method.toUpperCase() as HttpRequest['method'],
+      path: req.path ?? req.url,
+      headers,
+      query: this.normaliseQuery(req.query),
+      params: { ...req.params },
+      body,
+    };
+  }
+
+  private normaliseQuery(raw: Record<string, unknown>): Record<string, string | string[] | undefined> {
+    const out: Record<string, string | string[] | undefined> = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (v === undefined || v === null) continue;
+      if (typeof v === 'string') out[k] = v;
+      else if (Array.isArray(v)) out[k] = v.map((x) => String(x));
+      else out[k] = String(v);
+    }
+    return out;
+  }
+
+  private writeResponse(res: ExpressResponseLike, response: HttpResponse): void {
+    res.status(response.status);
+    if (response.headers) for (const [k, v] of Object.entries(response.headers)) res.setHeader(k, v);
+    if (response.contentType) res.setHeader('content-type', response.contentType);
+
+    const body = response.body;
+    if (body === undefined || body === null) { res.end(); return; }
+    if (typeof body === 'string') {
+      if (!response.contentType && !response.headers?.['content-type']) {
+        res.setHeader('content-type', 'text/plain; charset=utf-8');
+      }
+      res.end(body);
+      return;
+    }
+    if (body instanceof Uint8Array) {
+      if (!response.contentType) res.setHeader('content-type', 'application/octet-stream');
+      res.end(body);
+      return;
+    }
+    // Plain object → JSON.
+    if (!response.contentType) res.setHeader('content-type', 'application/json; charset=utf-8');
+    res.end(JSON.stringify(body));
+  }
+
+  private async createExpressApp(): Promise<ExpressAppLike> {
+    if (!this.ownsApp) throw new Error('ExpressBackend: app was not injected but ownsApp=false');
+    try {
+      const moduleName = 'express';
+      const mod = (await import(moduleName)) as { default?: () => ExpressAppLike } | (() => ExpressAppLike);
+      // Express v4 ships `module.exports = fn`; v5 exports `{ default: fn }`.
+      const factory: () => ExpressAppLike =
+        typeof mod === 'function' ? mod as () => ExpressAppLike
+        : (mod as { default: () => ExpressAppLike }).default;
+      return factory();
+    } catch (e) {
+      throw new Error(
+        'ExpressBackend requires the "express" package.  Install it with: '
+        + 'bun add express\nOriginal error: ' + (e instanceof Error ? e.message : String(e)),
+      );
+    }
+  }
+}

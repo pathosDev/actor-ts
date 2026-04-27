@@ -1,0 +1,226 @@
+import { afterEach, describe, expect, test } from 'bun:test';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ExpressBackend } from '../../../src/http/backend/ExpressBackend.js';
+import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
+import {
+  complete,
+  completeJson,
+  concat,
+  del,
+  get,
+  path,
+  post,
+  put,
+} from '../../../src/http/Route.js';
+import { entity } from '../../../src/http/Marshalling.js';
+import type { ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
+import { HttpError, Status } from '../../../src/http/types.js';
+import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import type { Route } from '../../../src/http/Route.js';
+
+const bindings: Array<{ binding: ServerBinding; system: ActorSystem }> = [];
+
+afterEach(async () => {
+  while (bindings.length) {
+    const { binding, system } = bindings.shift()!;
+    await binding.unbind();
+    await system.terminate();
+  }
+});
+
+async function startServer(routes: Route): Promise<{ url: string; system: ActorSystem; binding: ServerBinding }> {
+  const system = ActorSystem.create('http-express-test', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const ext = system.extension(HttpExtensionId);
+  const backend = new ExpressBackend();
+  const binding = await ext.newServerAt('127.0.0.1', 0).useBackend(backend).bind(routes);
+  bindings.push({ binding, system });
+  return { url: `http://${binding.host}:${binding.port}`, system, binding };
+}
+
+describe('ExpressBackend — plain routes', () => {
+  test('GET returns the body and status', async () => {
+    const { url } = await startServer(get(() => complete(Status.OK, 'hello')));
+    const res = await fetch(`${url}/`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('hello');
+  });
+
+  test('404 on unknown path', async () => {
+    const { url } = await startServer(path('known', get(() => complete(Status.OK, ''))));
+    const res = await fetch(`${url}/missing`);
+    expect(res.status).toBe(404);
+  });
+
+  test('JSON body encodes correctly', async () => {
+    const { url } = await startServer(get(() => completeJson(Status.OK, { a: 1, b: 'two' })));
+    const res = await fetch(`${url}/`);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    expect(await res.json()).toEqual({ a: 1, b: 'two' });
+  });
+
+  test('entity() decodes a JSON POST body', async () => {
+    const { url } = await startServer(path('echo', post(async (req) => {
+      const body = entity<{ who: string }>(req);
+      return completeJson(Status.OK, { hi: body.who });
+    })));
+    const res = await fetch(`${url}/echo`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ who: 'world' }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ hi: 'world' });
+  });
+
+  test('path parameters are exposed on req.params', async () => {
+    const { url } = await startServer(path('users/:id', get(req => completeJson(Status.OK, { id: req.params.id }))));
+    const res = await fetch(`${url}/users/42`);
+    expect(await res.json()).toEqual({ id: '42' });
+  });
+
+  test('HttpError is turned into the right status', async () => {
+    const { url } = await startServer(path('fail', get(() => {
+      throw new HttpError(Status.BadRequest, 'bad-request', { detail: 'x' });
+    })));
+    const res = await fetch(`${url}/fail`);
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string; detail?: string };
+    expect(body.error).toBe('bad-request');
+    expect(body.detail).toBe('x');
+  });
+
+  test('generic thrown errors become 500', async () => {
+    const { url } = await startServer(path('boom', get(() => { throw new Error('kaboom'); })));
+    const res = await fetch(`${url}/boom`);
+    expect(res.status).toBe(500);
+  });
+
+  test('query parameters are exposed on req.query', async () => {
+    const { url } = await startServer(path('search', get(req =>
+      completeJson(Status.OK, { q: req.query.q ?? null }),
+    )));
+    const res = await fetch(`${url}/search?q=hello`);
+    expect(await res.json()).toEqual({ q: 'hello' });
+  });
+
+  test('PUT round-trips raw bytes', async () => {
+    const { url } = await startServer(path('raw', put(async (req) => {
+      const len = req.body?.byteLength ?? 0;
+      return completeJson(Status.OK, { len });
+    })));
+    const payload = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+    const res = await fetch(`${url}/raw`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: payload,
+    });
+    expect(await res.json()).toEqual({ len: 8 });
+  });
+
+  test('combined CRUD shape serves four routes under one prefix', async () => {
+    const state: Record<string, string> = {};
+    const routes = path('users', concat(
+      get(() => completeJson(Status.OK, state)),
+      post(async (req) => {
+        const body = entity<{ id: string; name: string }>(req);
+        state[body.id] = body.name;
+        return completeJson(Status.Created, state);
+      }),
+      path(':id', concat(
+        get(req => {
+          const n = state[req.params.id];
+          return n ? completeJson(Status.OK, { id: req.params.id, name: n })
+                   : complete(Status.NotFound, 'not-found');
+        }),
+        del(req => { delete state[req.params.id]; return complete(Status.NoContent); }),
+      )),
+    ));
+    const { url } = await startServer(routes);
+
+    const created = await fetch(`${url}/users`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: '1', name: 'alice' }),
+    });
+    expect(created.status).toBe(201);
+
+    const list = await fetch(`${url}/users`);
+    expect(await list.json()).toEqual({ '1': 'alice' });
+
+    const one = await fetch(`${url}/users/1`);
+    expect(await one.json()).toEqual({ id: '1', name: 'alice' });
+
+    const dropped = await fetch(`${url}/users/1`, { method: 'DELETE' });
+    expect(dropped.status).toBe(204);
+
+    const afterDelete = await fetch(`${url}/users/1`);
+    expect(afterDelete.status).toBe(404);
+  });
+});
+
+describe('ExpressBackend — custom handlers', () => {
+  test('setNotFound delivers a custom 404 body', async () => {
+    const system = ActorSystem.create('http-express-custom', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const ext = system.extension(HttpExtensionId);
+    const backend = new ExpressBackend();
+    backend.setNotFound(() => completeJson(Status.NotFound, { oops: true }));
+    const binding = await ext.newServerAt('127.0.0.1', 0)
+      .useBackend(backend)
+      .bind(path('hi', get(() => complete(Status.OK, 'hi'))));
+    bindings.push({ binding, system });
+
+    const res = await fetch(`http://127.0.0.1:${binding.port}/missing`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ oops: true });
+  });
+
+  test('setErrorHandler overrides the default 500 shape', async () => {
+    const system = ActorSystem.create('http-express-err', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const ext = system.extension(HttpExtensionId);
+    const backend = new ExpressBackend();
+    backend.setErrorHandler((err) =>
+      completeJson(Status.InternalServerError, { custom: true, name: (err as Error).name }),
+    );
+    const binding = await ext.newServerAt('127.0.0.1', 0)
+      .useBackend(backend)
+      .bind(path('boom', get(() => { throw new Error('x'); })));
+    bindings.push({ binding, system });
+
+    const res = await fetch(`http://127.0.0.1:${binding.port}/boom`);
+    const body = await res.json() as { custom: boolean; name: string };
+    expect(body.custom).toBe(true);
+    expect(body.name).toBe('Error');
+  });
+});
+
+describe('ExpressBackend — body size limit', () => {
+  test('413 when payload exceeds maxBodyBytes', async () => {
+    const system = ActorSystem.create('http-express-413', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const ext = system.extension(HttpExtensionId);
+    const backend = new ExpressBackend({ maxBodyBytes: 16 });
+    const binding = await ext.newServerAt('127.0.0.1', 0)
+      .useBackend(backend)
+      .bind(path('up', post(() => complete(Status.OK, 'ok'))));
+    bindings.push({ binding, system });
+
+    const big = new Uint8Array(64);
+    const res = await fetch(`http://127.0.0.1:${binding.port}/up`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: big,
+    });
+    expect(res.status).toBe(413);
+  });
+});
+
+describe('HttpExtension + ExpressBackend — client round-trip', () => {
+  test('HttpClient.post round-trips JSON through an Express server', async () => {
+    const { url, system } = await startServer(path('echo', post(async (req) =>
+      completeJson(Status.OK, entity(req) as object),
+    )));
+    const client = system.extension(HttpExtensionId).client;
+    const res = await client.post(`${url}/echo`, { body: { hello: 'world' } });
+    expect(res.status).toBe(200);
+    expect(res.json()).toEqual({ hello: 'world' });
+  });
+});
