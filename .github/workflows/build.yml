@@ -1,0 +1,30 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Build (tsc → dist/)
+        run: bun run build
+
+      - name: Verify dist/ produced
+        run: |
+          test -f dist/index.js
+          test -f dist/index.d.ts
+          echo "dist/ artifacts present"
