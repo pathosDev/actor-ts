@@ -514,21 +514,6 @@ Required fields missing from every layer raise a clear
 `BrokerSettingsError` at startup, naming both the field and the HOCON
 path that could supply it.
 
-### Catalogue
-
-| Phase | Actor | Use-case | Peer-dep |
-| --- | --- | --- | --- |
-| 1 | `TcpSocketActor` | raw TCP, line/length-prefixed/byte framing | — |
-| 1 | `UdpSocketActor` | raw UDP datagrams | — |
-| 1 | `MqttActor` | IoT, light pub/sub | `mqtt` |
-| 1 | `WebSocketActor` | real-time browser clients, market feeds | `ws` (Node) / native (Bun/Deno) |
-| 2 | `KafkaActor` | event streaming, log compaction | `kafkajs` |
-| 2 | `AmqpActor` | RabbitMQ enterprise messaging | `amqplib` |
-| 2 | `GrpcClientActor` / `GrpcServerActor` | RPC + bidi-stream | `@grpc/grpc-js` + `@grpc/proto-loader` |
-| 3 | `NatsActor` | cloud-native NATS-Core pub/sub | `nats` |
-| 3 | `RedisStreamsActor` | lightweight event streams (XADD/XREADGROUP) | `ioredis` |
-| 3 | `SseActor` | Server-Sent Events client (push-only) | — |
-
 Runnable examples:
 [`examples/io/mqtt-temperature.ts`](examples/io/mqtt-temperature.ts) (MQTT pub/sub),
 [`examples/io/websocket-feed.ts`](examples/io/websocket-feed.ts) (WS server + client in one process),
