@@ -1,0 +1,84 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Tests
+        run: bun test
+
+  update-readme:
+    # Re-runs the suite with --coverage on main, parses the pass-count
+    # and line-coverage out of the test output, and updates the static
+    # README badges if either number moved.  Skipped on PRs (forks have
+    # no push rights anyway).
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Run tests with coverage and capture stats
+        id: stats
+        run: |
+          OUTPUT=$(bun test --coverage 2>&1 || true)
+          # Pass count from the "  N pass" summary line.
+          PASS=$(echo "$OUTPUT" | grep -E "^[[:space:]]+[0-9]+ pass" | grep -oE "[0-9]+" | head -1)
+          # Line coverage from the "All files" aggregate row, second column.
+          LINES=$(echo "$OUTPUT" | grep "^All files" | awk -F'|' '{print $2}' | tr -d ' ')
+          LINES_INT=${LINES%.*}
+          if [[ -z "$PASS" || -z "$LINES_INT" ]]; then
+            echo "::warning::could not parse stats — pass='$PASS' lines='$LINES_INT'"
+            echo "$OUTPUT" | tail -40
+            exit 0
+          fi
+          echo "pass=$PASS" >> "$GITHUB_OUTPUT"
+          echo "lines=$LINES_INT" >> "$GITHUB_OUTPUT"
+          echo "Parsed: $PASS tests passing, $LINES_INT% line coverage"
+
+      - name: Update README badges
+        if: steps.stats.outputs.pass != '' && steps.stats.outputs.lines != ''
+        run: |
+          sed -i -E "s|tests-[0-9]+%20passing|tests-${{ steps.stats.outputs.pass }}%20passing|g" README.md
+          sed -i -E "s|coverage-~[0-9]+%25|coverage-~${{ steps.stats.outputs.lines }}%25|g" README.md
+
+      - name: Commit + push if changed
+        run: |
+          if [[ -n "$(git status --porcelain README.md)" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add README.md
+            git commit -m "chore(readme): update test count + coverage badges [skip ci]"
+            git push
+          else
+            echo "no badge changes"
+          fi
