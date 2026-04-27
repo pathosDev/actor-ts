@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bun run *)",
+      "Bash(git add *)",
+      "Bash(git commit -m 'ci: add Dependabot + tests workflow + build workflow + status badges *)",
+      "Bash(git push *)",
+      "Bash(gh workflow *)",
+      "Bash(gh run *)",
+      "Bash(git commit -m 'ci: drop --frozen-lockfile from bun install *)",
+      "Bash(git pull *)",
+      "Bash(git commit -m 'ci: auto-update extends to inline tests-count + coverage references *)",
+      "Bash(git commit -m 'docs\\(readme\\): split badges into 3 rows + tests count format X of Y *)",
+      "Bash(gh pr *)",
+      "Bash(git fetch *)",
+      "Bash(git checkout *)",
+      "Bash(git merge *)",
+      "Bash(bun install *)",
+      "Bash(bun test *)",
+      "Bash(git branch *)",
+      "Bash(git commit -m 'docs\\(readme\\): drop Catalogue table from message-broker section *)",
+      "Bash(git commit -m 'ci: tests badge colour now follows pass/total ratio *)",
+      "Bash(gh issue *)",
+      "Bash(git commit -m 'feat\\(coordination\\): real KubernetesLease implementation \\(closes #33\\) *)"
+    ]
+  }
+}
