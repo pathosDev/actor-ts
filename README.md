@@ -22,7 +22,7 @@
 > the actor-model stack (actors, supervision, cluster, sharding, persistence,
 > HTTP) to TypeScript, running on Bun, Node.js, and Deno.  Large parts were
 > written with AI pair-programming and **have not been battle-tested in
-> production**.  Test coverage is good (~1079 tests, ~86 % line) but the
+> production**.  Test coverage is good (~1079 tests, ~81 % line) but the
 > surface area is enormous.  **Do not deploy this to anything that matters
 > yet.**  Use it to learn, to prototype, to benchmark ideas — not to handle
 > real money, users, or data.
@@ -138,7 +138,7 @@ middleware, or in-house clients.
 
 ### What's actually battle-ready
 
-- Nothing.  This is an experimental hobby project (~1079 tests, ~86 % line coverage).
+- Nothing.  This is an experimental hobby project (~1079 tests, ~81 % line coverage).
 
 ### What's solid in tests, but not production-tested
 
