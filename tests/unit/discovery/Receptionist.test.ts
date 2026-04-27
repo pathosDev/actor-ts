@@ -1,0 +1,185 @@
+import { describe, expect, test } from 'bun:test';
+import { Actor } from '../../../src/Actor.js';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { Cluster } from '../../../src/cluster/Cluster.js';
+import { InMemoryTransport } from '../../../src/cluster/Transport.js';
+import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
+import {
+  Find,
+  Listing,
+  Receptionist,
+  ReceptionistId,
+  Register,
+  ServiceKey,
+  Subscribe,
+  Unsubscribe,
+} from '../../../src/discovery/index.js';
+import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { Props } from '../../../src/Props.js';
+import { TestKit } from '../../../src/testkit/TestKit.js';
+import type { ActorRef } from '../../../src/ActorRef.js';
+
+const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+async function waitFor(pred: () => boolean, timeoutMs = 2_000, stepMs = 25): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (pred()) return;
+    await sleep(stepMs);
+  }
+  if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
+}
+
+class Service extends Actor<string> {
+  override onReceive(): void {}
+}
+
+describe('Receptionist — local', () => {
+  test('Register → Find returns the registered ref', async () => {
+    const kit = TestKit.create('recp-local', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const probe = kit.createTestProbe<Listing<string>>();
+    const receptionist = kit.system.extension(ReceptionistId).start(null);
+
+    const svc = kit.system.actorOf(Props.create(() => new Service()), 'svc');
+    const key = ServiceKey.of<string>('echo');
+    receptionist.tell(new Register(key, svc));
+
+    receptionist.tell(new Find(key, probe));
+    const listing = await probe.expectMsgType(Listing, 500) as Listing<string>;
+    expect(listing.key.id).toBe('echo');
+    expect(listing.refs.map(r => r.path.toString())).toEqual([svc.path.toString()]);
+    await kit.system.terminate();
+  });
+
+  test('Subscribe receives initial listing and future updates', async () => {
+    const kit = TestKit.create('recp-sub', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const probe = kit.createTestProbe<Listing<string>>();
+    const receptionist = kit.system.extension(ReceptionistId).start(null);
+
+    const key = ServiceKey.of<string>('workers');
+    receptionist.tell(new Subscribe(key, probe));
+    const l0 = await probe.expectMsgType(Listing, 500) as Listing<string>;
+    expect(l0.refs.length).toBe(0);
+
+    const a = kit.system.actorOf(Props.create(() => new Service()), 'a');
+    receptionist.tell(new Register(key, a));
+    const l1 = await probe.expectMsgType(Listing, 500) as Listing<string>;
+    expect(l1.refs.length).toBe(1);
+
+    const b = kit.system.actorOf(Props.create(() => new Service()), 'b');
+    receptionist.tell(new Register(key, b));
+    const l2 = await probe.expectMsgType(Listing, 500) as Listing<string>;
+    expect(l2.refs.length).toBe(2);
+
+    receptionist.tell(new Unsubscribe(key, probe));
+    await kit.system.terminate();
+  });
+
+  test('Registered reply arrives when Register supplies replyTo', async () => {
+    const kit = TestKit.create('recp-ack', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const probe = kit.createTestProbe();
+    const receptionist = kit.system.extension(ReceptionistId).start(null);
+
+    const svc = kit.system.actorOf(Props.create(() => new Service()), 'svc');
+    const key = ServiceKey.of<string>('ack-key');
+    receptionist.tell(new Register(key, svc, probe));
+
+    const { Registered } = await import('../../../src/discovery/index.js');
+    const ack = await probe.expectMsgType(Registered, 500);
+    expect(ack.key.id).toBe('ack-key');
+    await kit.system.terminate();
+  });
+
+  test('Deregister removes the ref and notifies subscribers', async () => {
+    const kit = TestKit.create('recp-dereg', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const probe = kit.createTestProbe<Listing<string>>();
+    const receptionist = kit.system.extension(ReceptionistId).start(null);
+
+    const svc = kit.system.actorOf(Props.create(() => new Service()), 'svc');
+    const key = ServiceKey.of<string>('temp');
+
+    receptionist.tell(new Subscribe(key, probe));
+    await probe.expectMsgType(Listing, 500); // initial empty
+    receptionist.tell(new Register(key, svc));
+    await probe.expectMsgType(Listing, 500); // with svc
+
+    const { Deregister } = await import('../../../src/discovery/index.js');
+    receptionist.tell(new Deregister(key, svc));
+    const empty = await probe.expectMsgType(Listing, 500) as Listing<string>;
+    expect(empty.refs.length).toBe(0);
+    await kit.system.terminate();
+  });
+});
+
+describe('Receptionist — cluster-wide', () => {
+  interface NodeCtx { system: ActorSystem; cluster: Cluster; kit: TestKit; receptionist: ActorRef<unknown>; }
+
+  async function startNode(sys: string, host: string, port: number, seeds: string[] = []): Promise<NodeCtx> {
+    const kit = TestKit.create(sys, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const cluster = await Cluster.join(kit.system, {
+      host, port, seeds,
+      transport: new InMemoryTransport(new NodeAddress(sys, host, port)),
+      failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
+      gossipIntervalMs: 80,
+    });
+    const receptionist = kit.system.extension(ReceptionistId).start(cluster, { gossipIntervalMs: 80 });
+    return { system: kit.system, cluster, kit, receptionist };
+  }
+
+  test('refs registered on node A are visible on node B via gossip', async () => {
+    const a = await startNode('recp-cluster', 'h', 54001);
+    const b = await startNode('recp-cluster', 'h', 54002, ['recp-cluster@h:54001']);
+    await waitFor(() =>
+      a.cluster.upMembers().length === 2 && b.cluster.upMembers().length === 2,
+    );
+
+    const aSvc = a.system.actorOf(Props.create(() => new Service()), 'svc-on-a');
+    const key = ServiceKey.of<string>('shared');
+    a.receptionist.tell(new Register(key, aSvc) as never);
+
+    // Wait for gossip to propagate.
+    await sleep(300);
+
+    const probe = b.kit.createTestProbe<Listing<string>>();
+    b.receptionist.tell(new Find(key, probe) as never);
+    const listing = await probe.expectMsgType(Listing, 1_500) as Listing<string>;
+    expect(listing.refs.length).toBe(1);
+    // Remote refs return the full path via toString (node + path).
+    expect(listing.refs[0]!.toString()).toContain('svc-on-a');
+
+    await a.cluster.leave(); await a.system.terminate();
+    await b.cluster.leave(); await b.system.terminate();
+  });
+
+  test('node leaving removes its refs from peer listings', async () => {
+    const a = await startNode('recp-leave', 'h', 54101);
+    const b = await startNode('recp-leave', 'h', 54102, ['recp-leave@h:54101']);
+    await waitFor(() =>
+      a.cluster.upMembers().length === 2 && b.cluster.upMembers().length === 2,
+    );
+
+    const aSvc = a.system.actorOf(Props.create(() => new Service()), 'svc-leave');
+    const key = ServiceKey.of<string>('leaving');
+    a.receptionist.tell(new Register(key, aSvc) as never);
+
+    await sleep(300);
+
+    const probe = b.kit.createTestProbe<Listing<string>>();
+    b.receptionist.tell(new Subscribe(key, probe) as never);
+    let last = await probe.expectMsgType(Listing, 1_500) as Listing<string>;
+    expect(last.refs.length).toBe(1);
+
+    await a.cluster.leave(); await a.system.terminate();
+
+    // Consume listings until we observe an empty one (bounded).
+    const deadline = Date.now() + 3_000;
+    while (Date.now() < deadline) {
+      try {
+        last = await probe.expectMsgType(Listing, 300) as Listing<string>;
+        if (last.refs.length === 0) break;
+      } catch { break; }
+    }
+    expect(last.refs.length).toBe(0);
+
+    await b.cluster.leave(); await b.system.terminate();
+  });
+});
