@@ -1,0 +1,50 @@
+/**
+ * become / unbecome overhead — how fast can we swap behaviors?
+ *
+ *   bun run benchmarks/single-node/become-unbecome.ts
+ */
+import { Actor, ActorSystem, LogLevel, NoopLogger, Props, ask } from '../../src/index.js';
+import { runGroup } from '../lib/harness.js';
+
+type Msg = 'swap' | { kind: 'ping' };
+
+class Swapper extends Actor<Msg> {
+  override onReceive(m: Msg): void {
+    if (m === 'swap') {
+      this.context.become((inner) => {
+        if (inner === 'swap') this.context.unbecome();
+        else if ((inner as { kind: string }).kind === 'ping') {
+          this.sender.forEach((s) => s.tell('pong'));
+        }
+      });
+      return;
+    }
+    if ((m as { kind: string }).kind === 'ping') {
+      this.sender.forEach((s) => s.tell('pong'));
+    }
+  }
+}
+
+async function main(): Promise<void> {
+  const system = ActorSystem.create('bench-become', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const ref = system.actorOf(Props.create(() => new Swapper()));
+
+  await runGroup('single-node · become/unbecome', [
+    {
+      name: 'swap→ping→swap-back→ping',
+      unit: 'swap',
+      iterations: 2_000,
+      opsPerIteration: 2,
+      run: async () => {
+        ref.tell('swap');
+        await ask<Msg, 'pong'>(ref, { kind: 'ping' }, 10_000);
+        ref.tell('swap');
+        await ask<Msg, 'pong'>(ref, { kind: 'ping' }, 10_000);
+      },
+    },
+  ]);
+
+  await system.terminate();
+}
+
+void main();
