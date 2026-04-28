@@ -1,7 +1,9 @@
 import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
+import type { Lease } from '../../coordination/Lease.js';
 import type { Props } from '../../Props.js';
+import type { Cancellable } from '../../Scheduler.js';
 import type { Cluster } from '../Cluster.js';
 import { LeaderChanged, MemberRemoved, SelfUp } from '../ClusterEvents.js';
 
@@ -20,6 +22,21 @@ export interface SingletonDeliver {
   readonly body: unknown;
 }
 
+/* --------------------- internal mailbox events --------------------- */
+/**
+ * The lease-aware path uses internal events instead of inline awaits so
+ * cluster-event triggers can't interleave their `reconcile` calls with
+ * an in-flight `lease.acquire()`.  Every state transition arrives as a
+ * single message in this manager's own mailbox.
+ */
+type ManagerEvent =
+  | { t: 'reconcile' }
+  | { t: 'lease-acquire-result'; got: boolean; error?: Error }
+  | { t: 'lease-lost'; reason: string }
+  | { t: 'acquire-retry' };
+
+type Inbox = SingletonDeliver | ManagerEvent;
+
 export interface ClusterSingletonManagerSettings<T> {
   readonly cluster: Cluster;
   /** Logical name for this singleton; also used as the child-actor name. */
@@ -28,6 +45,10 @@ export interface ClusterSingletonManagerSettings<T> {
   readonly singletonProps: Props<T>;
   /** Optional role — only nodes with this role will host the singleton. */
   readonly role?: string;
+  /** Optional split-brain protection — see {@link StartSingletonSettings.lease}. */
+  readonly lease?: Lease;
+  /** Retry interval for `lease.acquire()` after a failed attempt.  Default: 5 s. */
+  readonly acquireRetryIntervalMs?: number;
 }
 
 /**
@@ -36,10 +57,27 @@ export interface ClusterSingletonManagerSettings<T> {
  * Remote Envelopes addressed to the singleton land here and are forwarded to
  * the child — if the manager is not on the leader node, the envelope is
  * dropped with a warning (the proxy shouldn't have forwarded there).
+ *
+ * **Two paths:**
+ *
+ * - **No lease (default).**  Synchronous reconcile — spawn the moment
+ *   cluster gossip says we're leader.  Same behaviour the manager has
+ *   shipped since v1.
+ * - **With lease.**  Async reconcile that gates child-spawn on
+ *   `lease.acquire()`, watches `lease.onLost(...)` for revocation, and
+ *   `release()`s on graceful handover.  All state transitions go through
+ *   the manager's own mailbox so concurrent cluster events can't race
+ *   with an in-flight acquire.
  */
-export class ClusterSingletonManager<T> extends Actor<SingletonDeliver> {
+export class ClusterSingletonManager<T> extends Actor<Inbox> {
   private child: ActorRef<T> | null = null;
   private unsubCluster: (() => void) | null = null;
+  private unsubLeaseLost: (() => void) | null = null;
+  private retryTimer: Cancellable | null = null;
+
+  /** Lease lifecycle — only used when `settings.lease` is set. */
+  private leaseState: 'none' | 'acquiring' | 'held' = 'none';
+
   /** Callback the extension hands us so we can release the envelope path on stop. */
   _envelopeUnsub: (() => void) | null = null;
 
@@ -47,6 +85,14 @@ export class ClusterSingletonManager<T> extends Actor<SingletonDeliver> {
 
   override preStart(): void {
     const cluster = this.settings.cluster;
+    // No-lease path stays sync: cluster events drive `reconcileSync()`
+    // directly, so a leader-change result is visible the moment the
+    // event fires.  This preserves the v1 timing guarantee (proxies
+    // can ask the cluster for the leader and immediately route).
+    //
+    // With a lease, every state transition has to flow through the
+    // manager's own mailbox so concurrent cluster events can't race
+    // with an in-flight `acquire()` — see `handleReconcile`.
     this.unsubCluster = cluster.subscribe((evt) =>
       match(evt)
         .with(
@@ -55,20 +101,55 @@ export class ClusterSingletonManager<T> extends Actor<SingletonDeliver> {
             P.instanceOf(SelfUp),
             P.instanceOf(MemberRemoved),
           ),
-          () => this.reconcile(),
+          () => {
+            if (this.settings.lease) {
+              this.self.tell({ t: 'reconcile' } satisfies ManagerEvent);
+            } else {
+              this.reconcileSync();
+            }
+          },
         )
         .otherwise(() => { /* other events ignored */ }),
     );
-    this.reconcile();
+
+    if (this.settings.lease) {
+      this.unsubLeaseLost = this.settings.lease.onLost((reason) => {
+        this.self.tell({ t: 'lease-lost', reason } satisfies ManagerEvent);
+      });
+      // Lease path: kick the initial reconcile via the mailbox.
+      this.self.tell({ t: 'reconcile' } satisfies ManagerEvent);
+    } else {
+      this.reconcileSync();
+    }
   }
 
-  override postStop(): void {
+  override async postStop(): Promise<void> {
     this.unsubCluster?.();
+    this.unsubLeaseLost?.();
     this._envelopeUnsub?.();
+    this.retryTimer?.cancel();
     if (this.child) { this.child.stop(); this.child = null; }
+    // Release the lease if held — the holder leaving cleanly lets a
+    // follower acquire faster than waiting for the TTL to expire.
+    if (this.settings.lease && this.leaseState === 'held') {
+      try { await this.settings.lease.release(); } catch { /* best-effort */ }
+      this.leaseState = 'none';
+    }
   }
 
-  override onReceive(msg: SingletonDeliver): void {
+  override onReceive(msg: Inbox): void | Promise<void> {
+    return match(msg)
+      .with({ t: 'singleton-deliver' }, (m) => this.handleDeliver(m))
+      .with({ t: 'reconcile' }, () => this.handleReconcile())
+      .with({ t: 'lease-acquire-result' }, (m) => this.handleAcquireResult(m))
+      .with({ t: 'lease-lost' }, (m) => this.handleLeaseLost(m))
+      .with({ t: 'acquire-retry' }, () => this.handleReconcile())
+      .exhaustive();
+  }
+
+  /* -------------------------- handlers -------------------------- */
+
+  private handleDeliver(msg: SingletonDeliver): void {
     if (msg.t !== 'singleton-deliver') return;
     if (!this.child) {
       this.log.warn(
@@ -79,18 +160,123 @@ export class ClusterSingletonManager<T> extends Actor<SingletonDeliver> {
     this.child.tell(msg.body as never);
   }
 
-  private reconcile(): void {
+  /** Sync reconcile — no lease.  Spawn / stop the child to match cluster state. */
+  private reconcileSync(): void {
+    const want = this.wantHosted();
+    if (want && !this.child) {
+      this.spawn();
+    } else if (!want && this.child) {
+      this.stopChild('leader moved away or role lost');
+    }
+  }
+
+  private async handleReconcile(): Promise<void> {
+    // Lease-gated path only — the no-lease path goes through
+    // `reconcileSync` directly from the cluster-event subscriber.
+    if (!this.settings.lease) { this.reconcileSync(); return; }
+    const want = this.wantHosted();
+    if (want) {
+      if (this.leaseState === 'held') return;          // already running
+      if (this.leaseState === 'acquiring') return;     // already in flight
+      // Cancel a retry if one is pending — we're starting a fresh attempt now.
+      this.retryTimer?.cancel();
+      this.retryTimer = null;
+      this.leaseState = 'acquiring';
+      void this.runAcquire();
+    } else {
+      if (this.leaseState === 'held') {
+        this.stopChild('leader moved away or role lost');
+        try { await this.settings.lease.release(); }
+        catch (e) { this.log.warn(`lease release failed`, e); }
+        this.leaseState = 'none';
+      } else if (this.leaseState === 'acquiring') {
+        // Let the in-flight acquire finish — `handleAcquireResult` will
+        // re-check `wantHosted` and immediately release if it succeeded
+        // while we were no longer interested.
+      } else {
+        this.retryTimer?.cancel();
+        this.retryTimer = null;
+      }
+    }
+  }
+
+  private async runAcquire(): Promise<void> {
+    try {
+      const got = await this.settings.lease!.acquire();
+      this.self.tell({ t: 'lease-acquire-result', got } satisfies ManagerEvent);
+    } catch (error) {
+      this.self.tell({
+        t: 'lease-acquire-result', got: false, error: error as Error,
+      } satisfies ManagerEvent);
+    }
+  }
+
+  private handleAcquireResult(msg: { got: boolean; error?: Error }): void {
+    if (this.leaseState !== 'acquiring') {
+      // Spurious result — manager was reset or stopped while we were
+      // awaiting.  If we somehow got the lease, release it best-effort
+      // so we don't hold onto a slot we don't want.
+      if (msg.got) void this.settings.lease!.release().catch(() => {});
+      return;
+    }
+    if (!msg.got) {
+      // Acquire failed (another holder, or backend error).  Retry on
+      // the configured interval.  We log the error if there was one.
+      if (msg.error) this.log.warn(`lease acquire failed`, msg.error);
+      this.leaseState = 'none';
+      this.scheduleAcquireRetry();
+      return;
+    }
+    // Got the lease.  Re-check whether we still want to be hosted —
+    // membership may have flipped while we were awaiting.
+    if (!this.wantHosted()) {
+      void this.settings.lease!.release().catch((e) =>
+        this.log.warn(`lease release after stale acquire failed`, e));
+      this.leaseState = 'none';
+      return;
+    }
+    this.leaseState = 'held';
+    this.spawn();
+  }
+
+  private handleLeaseLost(msg: { reason: string }): void {
+    if (this.leaseState !== 'held') return;     // stale callback
+    this.log.warn(`singleton '${this.settings.typeName}': lease lost — ${msg.reason}; stopping child`);
+    this.stopChild(`lease lost: ${msg.reason}`);
+    this.leaseState = 'none';
+    // If we're still the elected leader, kick a fresh reconcile so we
+    // try to re-acquire.  Cluster events would eventually do this on
+    // their own, but a missed re-acquire here is annoying.
+    this.self.tell({ t: 'reconcile' } satisfies ManagerEvent);
+  }
+
+  /* -------------------------- helpers -------------------------- */
+
+  private wantHosted(): boolean {
     const cluster = this.settings.cluster;
     const iAmLeader = cluster.leader().exists((l) => l.address.equals(cluster.selfAddress));
     const roleOk = !this.settings.role || cluster.selfRoles.has(this.settings.role);
+    return iAmLeader && roleOk;
+  }
 
-    if (iAmLeader && roleOk && !this.child) {
-      this.child = this.context.actorOf(this.settings.singletonProps, this.settings.typeName);
-      this.log.info(`singleton '${this.settings.typeName}' started on this node (now leader)`);
-    } else if ((!iAmLeader || !roleOk) && this.child) {
-      this.log.info(`singleton '${this.settings.typeName}' stopping (leader moved away or role lost)`);
-      this.child.stop();
-      this.child = null;
-    }
+  private spawn(): void {
+    if (this.child) return;
+    this.child = this.context.actorOf(this.settings.singletonProps, this.settings.typeName);
+    this.log.info(`singleton '${this.settings.typeName}' started on this node (now leader)`);
+  }
+
+  private stopChild(reason: string): void {
+    if (!this.child) return;
+    this.log.info(`singleton '${this.settings.typeName}' stopping (${reason})`);
+    this.child.stop();
+    this.child = null;
+  }
+
+  private scheduleAcquireRetry(): void {
+    const interval = this.settings.acquireRetryIntervalMs ?? 5_000;
+    this.retryTimer?.cancel();
+    this.retryTimer = this.system.scheduler.scheduleOnceFn(interval, () => {
+      this.self.tell({ t: 'acquire-retry' } satisfies ManagerEvent);
+    });
   }
 }

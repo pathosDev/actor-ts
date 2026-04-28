@@ -1,16 +1,16 @@
 /**
- * KubernetesLease — split-brain-safe singleton election by leaning on
- * the K8s API server as the arbitrator.  At most one process across
- * your cluster can hold the lease, therefore at most one process runs
- * the guarded workload — even under network partitions where two
- * cluster-gossip protocols *think* they should both run.
+ * KubernetesLease + ClusterSingleton — split-brain-safe singleton
+ * election by leaning on the K8s API server as the arbitrator.  At
+ * most one process across your cluster can hold the lease, therefore
+ * at most one process runs the guarded workload — even under network
+ * partitions where two cluster-gossip protocols *think* they should
+ * both run.
  *
- * Pattern shown here: **manual acquire-and-guard.**  The process
- * blocks on `lease.acquire()`, starts a "cron" actor only on success,
- * stops the cron actor on `onLost(reason)`, retries acquire on a
- * loop.  This is the same pattern Akka's `ClusterSingleton` uses
- * internally with a `LeaseUsage` config — we just spell it out here
- * so the integration is visible.
+ * **Pattern: pass the lease to ClusterSingleton.start().**  The
+ * singleton manager handles the acquire-loop, the onLost-stop, and
+ * the release-on-shutdown internally — user code reduces to the
+ * actor itself plus a one-line lease config.  Akka's
+ * `ClusterSingleton.props(...).withLease(...)` is the prior art.
  *
  * **In-cluster usage (default — no env vars):**
  *
@@ -28,10 +28,18 @@
  *   K8S_CA_CERT="$(kubectl config view --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' | base64 -d)" \
  *   K8S_NAMESPACE=default \
  *   bun run examples/coordination/k8s-lease-singleton.ts
+ *
+ * **Cluster join is required** — ClusterSingleton needs a Cluster
+ * extension to drive its leader election.  In a real K8s deploy
+ * each pod's seed list is configured via env vars or a discovery
+ * mechanism (DNS SRV / K8s API); this example uses InMemoryTransport
+ * because it's standalone.
  */
-import { Actor, ActorSystem, Props } from '../../src/index.js';
+import {
+  Actor, ActorSystem, Cluster, ClusterSingletonId, InMemoryTransport,
+  NodeAddress, Props,
+} from '../../src/index.js';
 import { KubernetesLease } from '../../src/coordination/leases/KubernetesLease.js';
-import type { ActorRef } from '../../src/index.js';
 
 const NAMESPACE = process.env.K8S_NAMESPACE ?? 'default';
 const POD_NAME = process.env.HOSTNAME ?? `local-${process.pid}`;
@@ -58,51 +66,43 @@ class CronActor extends Actor<{ kind: 'tick' }> {
 async function main(): Promise<void> {
   const system = ActorSystem.create('app');
 
+  // The cluster is what drives leader election; the lease arbitrates
+  // ties under split-brain.  In a real deploy you'd point seeds at
+  // the other pods' addresses (resolved via K8s API or DNS SRV).
+  const selfAddr = new NodeAddress('app', '127.0.0.1', 30_000);
+  const cluster = await Cluster.join(system, {
+    host: selfAddr.host, port: selfAddr.port,
+    transport: new InMemoryTransport(selfAddr),
+  });
+
   const lease = new KubernetesLease({
     name: 'app-cron-singleton',
     namespace: NAMESPACE,
     owner: POD_NAME,
     ttlMs: 30_000,
     renewalIntervalMs: 10_000,
-    acquireRetries: 1,                  // we drive retries ourselves below
     apiServerUrl: process.env.K8S_API_URL,
     authToken: process.env.K8S_TOKEN,
     caCert: process.env.K8S_CA_CERT,
   });
 
-  let cronRef: ActorRef<{ kind: 'tick' }> | null = null;
-
-  // Bind onLost first so a renewal failure during start gets caught.
-  lease.onLost((reason) => {
-    console.log(`[${POD_NAME}] LOST lease: ${reason}`);
-    if (cronRef) {
-      cronRef.stop();
-      cronRef = null;
-    }
-    // Re-enter the acquire loop so the process can pick up again
-    // after the previous holder finally releases (or its renew expires).
-    void runAcquireLoop();
+  // That's it.  The singleton manager handles every lifecycle
+  // concern: acquire on becoming leader, retry on contention, stop
+  // child on lease loss, release on graceful shutdown.
+  const handle = system.extension(ClusterSingletonId).start(cluster, {
+    typeName: 'cron',
+    props: Props.create(() => new CronActor()),
+    lease,
+    acquireRetryIntervalMs: 5_000,
   });
-
-  async function runAcquireLoop(): Promise<void> {
-    while (true) {
-      const got = await lease.acquire();
-      if (got) {
-        cronRef = system.actorOf(Props.create(() => new CronActor()), 'cron');
-        return;
-      }
-      console.log(`[${POD_NAME}] another holder owns the lease — backing off 5 s`);
-      await new Promise((r) => setTimeout(r, 5_000));
-    }
-  }
-
-  await runAcquireLoop();
+  void handle;   // we never tell the proxy in this example — the actor
+                 // self-ticks via setInterval.
   console.log(`[${POD_NAME}] running guarded workload — stop with Ctrl-C`);
 
   const shutdown = async (): Promise<void> => {
-    console.log(`\n[${POD_NAME}] shutting down — releasing lease`);
-    if (cronRef) cronRef.stop();
-    await lease.release();
+    console.log(`\n[${POD_NAME}] shutting down`);
+    handle.stop();           // releases the lease + stops the manager
+    await cluster.leave();
     await system.terminate();
     process.exit(0);
   };

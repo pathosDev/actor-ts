@@ -1,5 +1,6 @@
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
+import type { Lease } from '../../coordination/Lease.js';
 import { extensionId, type ExtensionId } from '../../Extension.js';
 import { Props } from '../../Props.js';
 import type { Cluster } from '../Cluster.js';
@@ -18,6 +19,25 @@ export interface StartSingletonSettings<T> {
   readonly props: Props<T>;
   /** If set, only nodes carrying this role tag will host the singleton. */
   readonly role?: string;
+  /**
+   * Optional split-brain protection.  When provided, the elected
+   * leader's manager calls `lease.acquire()` before spawning the
+   * singleton — so a partition that produces two oldest views still
+   * only ever spawns the singleton on the side that holds the lease.
+   * The manager subscribes to `lease.onLost(reason)` and stops the
+   * child if ownership is revoked mid-flight.
+   *
+   * Without a lease the manager keeps its current sync behaviour:
+   * spawn the moment cluster gossip says we're leader, no external
+   * arbitration.
+   */
+  readonly lease?: Lease;
+  /**
+   * How often to retry `lease.acquire()` after a failed attempt
+   * (another holder owns it, transient backend error, etc.).
+   * Default: `5_000` ms.  Ignored if no lease is provided.
+   */
+  readonly acquireRetryIntervalMs?: number;
 }
 
 export interface SingletonHandle<T> {
@@ -63,6 +83,8 @@ export class ClusterSingleton {
         typeName: settings.typeName,
         singletonProps: settings.props,
         role: settings.role,
+        lease: settings.lease,
+        acquireRetryIntervalMs: settings.acquireRetryIntervalMs,
       });
       mgr._envelopeUnsub = envelopeUnsub;
       return mgr;
