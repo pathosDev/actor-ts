@@ -100,6 +100,20 @@ export { InMemoryQuery } from './query/InMemoryQuery.js';
 export { SqliteQuery } from './query/SqliteQuery.js';
 export { CassandraQuery } from './query/CassandraQuery.js';
 
+// Replicated Event Sourcing — multi-master event-sourced actors.
+export { ReplicatedEventSourcedActor } from './ReplicatedEventSourcedActor.js';
+export type { ReplicatedEventEnvelope } from './ReplicatedEventSourcedActor.js';
+export { VectorClock } from './replicated/VectorClock.js';
+export type { VectorClockData, VectorClockOrder } from './replicated/VectorClock.js';
+export {
+  LastWriterWinsResolver,
+  CustomMergeResolver,
+} from './replicated/ConflictResolver.js';
+export type {
+  ConflictResolver,
+  ConflictCandidate,
+} from './replicated/ConflictResolver.js';
+
 // Projections — actor wrapper with at-least-once delivery + offset persistence.
 export { ProjectionActor } from './projection/ProjectionActor.js';
 export type {
