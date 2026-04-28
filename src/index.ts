@@ -281,6 +281,29 @@ export type {
   OffsetStore,
 } from './persistence/index.js';
 
+// CRDTs + DistributedData (gossip-replicated key-value store of CRDTs).
+export {
+  GCounter,
+  PNCounter,
+  GSet,
+  ORSet,
+  LWWRegister,
+  DistributedData,
+  DistributedDataId,
+} from './crdt/index.js';
+export type {
+  Crdt,
+  ReplicaId,
+  GCounterJson,
+  PNCounterJson,
+  GSetJson,
+  ORSetJson,
+  LWWRegisterJson,
+  DistributedDataSettings,
+  CrdtFactory,
+  CrdtJson,
+} from './crdt/index.js';
+
 // HTTP (directives DSL, Fastify default backend, caching middleware).
 export * from './http/index.js';
 
