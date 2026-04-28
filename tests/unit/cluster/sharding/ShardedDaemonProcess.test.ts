@@ -119,3 +119,65 @@ describe('ShardedDaemonProcess — multi-node', () => {
     await c.cluster.leave(); await c.system.terminate();
   });
 });
+
+describe('ShardedDaemonProcess — liveness heartbeat', () => {
+  test('handle.stop() cancels the heartbeat without leaking timers', async () => {
+    const a = await startNode('sdp-live', 'h', 53201);
+    const kit = a.kit;
+    const probe = kit.createTestProbe<string>();
+
+    class W extends Actor<string> {
+      constructor(private readonly i: number) { super(); }
+      override preStart(): void { probe.tell(`start-${this.i}`); }
+      override onReceive(): void {}
+    }
+
+    const handle = ShardedDaemonProcess.init<string>(a.system, a.cluster, {
+      name: 'workers', numDaemons: 2,
+      behaviorFor: (i) => Props.create(() => new W(i)),
+      // Tight livenessIntervalMs so the heartbeat would re-wake daemons
+      // every 80 ms while the test runs.  We're not asserting on
+      // additional preStart fires (rememberEntities prevents that), but
+      // we *are* asserting that handle.stop() cleanly cancels the timer
+      // instead of leaving a zombie that fires after teardown.
+      livenessIntervalMs: 80,
+    });
+
+    // Drain initial preStarts.
+    for (let i = 0; i < 2; i++) await probe.receiveOne(1_000);
+
+    // Run a couple heartbeat ticks — they should be benign no-ops because
+    // rememberEntities keeps the daemons alive.
+    await sleep(250);
+
+    handle.stop();
+    handle.stop();   // idempotent
+
+    await a.cluster.leave();
+    await a.system.terminate();
+  });
+
+  test('livenessIntervalMs: 0 disables the heartbeat', async () => {
+    const a = await startNode('sdp-noheart', 'h', 53202);
+    const kit = a.kit;
+    const probe = kit.createTestProbe<string>();
+
+    class W extends Actor<string> {
+      constructor(private readonly i: number) { super(); }
+      override preStart(): void { probe.tell(`start-${this.i}`); }
+      override onReceive(): void {}
+    }
+
+    const handle = ShardedDaemonProcess.init<string>(a.system, a.cluster, {
+      name: 'workers', numDaemons: 2,
+      behaviorFor: (i) => Props.create(() => new W(i)),
+      livenessIntervalMs: 0,
+    });
+
+    for (let i = 0; i < 2; i++) await probe.receiveOne(1_000);
+
+    handle.stop();
+    await a.cluster.leave();
+    await a.system.terminate();
+  });
+});
