@@ -3,6 +3,7 @@ import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
 import { Props } from '../../Props.js';
+import type { Cancellable } from '../../Scheduler.js';
 import type { Cluster } from '../Cluster.js';
 import { LeaderChanged, MemberRemoved } from '../ClusterEvents.js';
 import { LeastShardAllocationStrategy } from './AllocationStrategy.js';
@@ -24,6 +25,16 @@ export interface ShardedDaemonProcessSettings<T> {
   readonly behaviorFor: (daemonIndex: number) => Props<T>;
   /** Optional role — only members carrying the role host daemons. */
   readonly role?: string;
+  /**
+   * Period (ms) at which a "liveness ping" wakes every daemon index even
+   * when no cluster topology event has fired.  Acts as a safety net for
+   * the event-driven path (`LeaderChanged` / `MemberRemoved`) — if a wake
+   * was missed (e.g. brief partition right at the failover moment), the
+   * heartbeat ensures the daemons still get re-materialized.
+   *
+   * Default: `30_000` (30 s).  Set to `0` to disable.
+   */
+  readonly livenessIntervalMs?: number;
 }
 
 export interface ShardedDaemonProcessHandle<T> {
@@ -35,6 +46,13 @@ export interface ShardedDaemonProcessHandle<T> {
 
   /** Send a user message to daemon #i. */
   tell(index: number, message: T): void;
+
+  /**
+   * Stop the liveness heartbeat + cluster subscription.  Idempotent.
+   * Does NOT stop the running daemon entities — that happens when the
+   * cluster shuts down or the region itself is stopped.
+   */
+  stop(): void;
 }
 
 /**
@@ -82,7 +100,7 @@ export class ShardedDaemonProcess {
     // respawn of entities that lived on a departed node is a function of
     // ShardCoordinator's rebalance + rememberEntities path; this hook just
     // makes sure the SDP-owned messages keep flowing.
-    cluster.subscribe((evt) =>
+    const unsubscribe = cluster.subscribe((evt) =>
       match(evt)
         .with(
           P.union(P.instanceOf(LeaderChanged), P.instanceOf(MemberRemoved)),
@@ -91,10 +109,28 @@ export class ShardedDaemonProcess {
         .otherwise(() => { /* other events don't warrant a re-wake */ }),
     );
 
+    // Periodic liveness backstop — fires even when no cluster events do,
+    // so any wake-up that got lost in transit (rare, but possible during
+    // brief partition + heal cycles) gets retried.
+    const livenessIntervalMs = settings.livenessIntervalMs ?? 30_000;
+    let livenessTimer: Cancellable | null = null;
+    if (livenessIntervalMs > 0) {
+      livenessTimer = system.scheduler.scheduleAtFixedRateFn(
+        livenessIntervalMs, livenessIntervalMs, wakeAll,
+      );
+    }
+
+    let stopped = false;
     return {
       region,
       tell(index: number, message: T): void {
         region.tell({ index, body: message });
+      },
+      stop(): void {
+        if (stopped) return;
+        stopped = true;
+        livenessTimer?.cancel();
+        unsubscribe();
       },
     };
   }
