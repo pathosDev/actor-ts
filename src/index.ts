@@ -230,6 +230,10 @@ export {
   ProjectionActor,
   InMemoryOffsetStore,
   DurableStateOffsetStore,
+  ReplicatedEventSourcedActor,
+  VectorClock,
+  LastWriterWinsResolver,
+  CustomMergeResolver,
 } from './persistence/index.js';
 export type {
   Journal,
@@ -279,6 +283,11 @@ export type {
   ByPidSettings,
   ByTagSettings,
   OffsetStore,
+  ReplicatedEventEnvelope,
+  VectorClockData,
+  VectorClockOrder,
+  ConflictResolver,
+  ConflictCandidate,
 } from './persistence/index.js';
 
 // CRDTs + DistributedData (gossip-replicated key-value store of CRDTs).
