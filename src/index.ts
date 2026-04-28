@@ -219,6 +219,17 @@ export {
   MigrationError,
   defaultsAdapter,
   defaultsSnapshotAdapter,
+  InMemoryQuery,
+  SqliteQuery,
+  CassandraQuery,
+  offsetStart,
+  offsetCompare,
+  offsetGreater,
+  offsetGreaterOrEqual,
+  offsetOfEvent,
+  ProjectionActor,
+  InMemoryOffsetStore,
+  DurableStateOffsetStore,
 } from './persistence/index.js';
 export type {
   Journal,
@@ -260,6 +271,14 @@ export type {
   JournalEnvelope,
   MigrationStep,
   DefaultsAdapterSpec,
+  PersistenceQuery,
+  LiveQueryOptions,
+  Offset,
+  TaggedEvent,
+  ProjectionSettings,
+  ByPidSettings,
+  ByTagSettings,
+  OffsetStore,
 } from './persistence/index.js';
 
 // HTTP (directives DSL, Fastify default backend, caching middleware).
