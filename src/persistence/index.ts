@@ -82,6 +82,37 @@ export {
   decodeState,
 } from './migration/index.js';
 
+// Persistence Query — read-side query layer for projections.
+export type {
+  PersistenceQuery,
+  LiveQueryOptions,
+  Offset,
+  TaggedEvent,
+} from './query/PersistenceQuery.js';
+export {
+  offsetStart,
+  offsetCompare,
+  offsetGreater,
+  offsetGreaterOrEqual,
+  offsetOfEvent,
+} from './query/PersistenceQuery.js';
+export { InMemoryQuery } from './query/InMemoryQuery.js';
+export { SqliteQuery } from './query/SqliteQuery.js';
+export { CassandraQuery } from './query/CassandraQuery.js';
+
+// Projections — actor wrapper with at-least-once delivery + offset persistence.
+export { ProjectionActor } from './projection/ProjectionActor.js';
+export type {
+  ProjectionSettings,
+  ByPidSettings,
+  ByTagSettings,
+} from './projection/ProjectionActor.js';
+export type { OffsetStore } from './projection/OffsetStore.js';
+export {
+  InMemoryOffsetStore,
+  DurableStateOffsetStore,
+} from './projection/OffsetStore.js';
+
 // Object-storage plug-in (S3 / filesystem) for snapshots + durable state.
 export {
   ObjectStorageBackendError,
