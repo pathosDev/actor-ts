@@ -1,6 +1,7 @@
 import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
+import type { Lease } from '../../coordination/Lease.js';
 import type { Cancellable } from '../../Scheduler.js';
 import type { Cluster } from '../Cluster.js';
 import { LeaderChanged, MemberRemoved } from '../ClusterEvents.js';
@@ -18,6 +19,28 @@ import type {
   RegisterRegion,
   ShardingMessage,
 } from './ShardingProtocol.js';
+
+/* ----------------------- internal mailbox events ----------------------- */
+/**
+ * The lease-aware path uses internal events instead of inline awaits so
+ * cluster-event triggers can't interleave their `reconcile` calls with
+ * an in-flight `lease.acquire()`.  Mirrors the same pattern used in
+ * `ClusterSingletonManager` (#38).
+ */
+type CoordinatorEvent =
+  | { t: 'reconcile' }
+  | { t: 'lease-acquire-result'; got: boolean; error?: Error }
+  | { t: 'lease-lost'; reason: string }
+  | { t: 'acquire-retry' };
+
+type CoordinatorInbox = ShardingMessage | CoordinatorEvent;
+
+function isCoordinatorEvent(msg: CoordinatorInbox): msg is CoordinatorEvent {
+  if (!msg || typeof msg !== 'object') return false;
+  const t = (msg as { t?: unknown; $t?: unknown }).t;
+  return t === 'reconcile' || t === 'lease-acquire-result'
+    || t === 'lease-lost' || t === 'acquire-retry';
+}
 
 interface RegionInfo {
   readonly node: NodeAddress;
@@ -40,6 +63,21 @@ export interface ShardCoordinatorSettings {
   readonly rememberEntities?: boolean;
   /** Resolver for local actor paths — used when coordinator lives on the same node as a region. */
   readonly localResolver: (path: string) => ActorRef | null;
+  /**
+   * Optional split-brain protection.  When set, the elected leader's
+   * coordinator must hold the lease before it processes shard
+   * messages.  Under a network partition where two nodes converge to
+   * "I am the leader" gossip views, only the side that successfully
+   * acquires the lease ever issues `AllocateShard` / `HandOff`
+   * directives — the other side stays passive and drops messages
+   * (regions retry naturally on their next cache miss).
+   *
+   * Without a lease the coordinator gates only on `isLeader()` —
+   * v1 behaviour, no extra coordination.
+   */
+  readonly lease?: Lease;
+  /** Retry interval for `lease.acquire()` after a failed attempt.  Default: 5 s. */
+  readonly acquireRetryIntervalMs?: number;
 }
 
 /**
@@ -54,7 +92,7 @@ export interface ShardCoordinatorSettings {
  * upgrade would snapshot state to a journal so the coordinator can recover
  * across restarts without re-allocating every shard from scratch.
  */
-export class ShardCoordinator extends Actor<ShardingMessage> {
+export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private readonly regions = new Map<string, RegionInfo>();
   private readonly shardHome = new Map<number, string>(); // shardId → regionPath
   private readonly pending = new Map<number, Array<GetShardHome>>(); // waiting queries
@@ -63,6 +101,30 @@ export class ShardCoordinator extends Actor<ShardingMessage> {
 
   private rebalanceTimer: Cancellable | null = null;
   private unsubscribeCluster: (() => void) | null = null;
+  private unsubscribeLeaseLost: (() => void) | null = null;
+  private acquireRetryTimer: Cancellable | null = null;
+
+  /**
+   * Lease lifecycle (only used when `settings.lease` is set).
+   * Drives the `isActive()` predicate — coordinator only processes
+   * shard messages while `isLeader() && leaseState === 'held'`.
+   */
+  private leaseState: 'none' | 'acquiring' | 'held' = 'none';
+
+  /**
+   * Sharding messages received while we're the leader but waiting
+   * for the lease.  Drained on the `acquiring → held` transition so
+   * regions that asked early get an answer instead of having to
+   * wait for the next cluster event to retrigger their ask.
+   *
+   * Non-leader messages are NOT buffered — they're dropped because
+   * the regions on this node will retry against whichever node is
+   * the actual leader on their next attempt.
+   *
+   * Capped to avoid unbounded growth if the lease never resolves.
+   */
+  private acquireBuffer: ShardingMessage[] = [];
+  private static readonly ACQUIRE_BUFFER_CAP = 1_000;
 
   constructor(public readonly settings: ShardCoordinatorSettings) { super(); }
 
@@ -78,21 +140,54 @@ export class ShardCoordinator extends Actor<ShardingMessage> {
         .with(P.instanceOf(LeaderChanged), () => this.onLeaderChanged())
         .otherwise(() => { /* other events are not observed here */ }),
     );
+    if (this.settings.lease) {
+      this.unsubscribeLeaseLost = this.settings.lease.onLost((reason) => {
+        this.self.tell({ t: 'lease-lost', reason } satisfies CoordinatorEvent);
+      });
+      // Kick the initial reconcile through the mailbox so the lease
+      // path serialises with subsequent cluster events.
+      this.self.tell({ t: 'reconcile' } satisfies CoordinatorEvent);
+    }
     this.rebalanceTimer = this.system.scheduler.scheduleAtFixedRateFn(
       this.settings.rebalanceIntervalMs ?? 2_000,
       this.settings.rebalanceIntervalMs ?? 2_000,
-      () => { if (this.isLeader()) this.rebalanceTick(); },
+      () => { if (this.isActive()) this.rebalanceTick(); },
     );
   }
 
-  override postStop(): void {
+  override async postStop(): Promise<void> {
     this.unsubscribeCluster?.();
+    this.unsubscribeLeaseLost?.();
     this.rebalanceTimer?.cancel();
+    this.acquireRetryTimer?.cancel();
     for (const r of this.rebalanceInProgress.values()) r.timer.cancel();
+    if (this.settings.lease && this.leaseState === 'held') {
+      try { await this.settings.lease.release(); } catch { /* best-effort */ }
+      this.leaseState = 'none';
+    }
   }
 
-  override onReceive(msg: ShardingMessage): void {
-    if (!this.isLeader()) return; // only the leader coordinator acts
+  override onReceive(msg: CoordinatorInbox): void {
+    // Internal coordinator events drive the lease state machine — they
+    // run regardless of `isActive()` because they're how we transition
+    // INTO `isActive()` in the first place.
+    if (isCoordinatorEvent(msg)) {
+      this.handleCoordinatorEvent(msg);
+      return;
+    }
+    if (!this.isLeader()) return;
+    if (this.settings.lease && this.leaseState !== 'held') {
+      // Leader, but lease not yet held — buffer instead of drop so
+      // regions don't need to retry on the next cluster event.
+      if (this.acquireBuffer.length < ShardCoordinator.ACQUIRE_BUFFER_CAP) {
+        this.acquireBuffer.push(msg);
+      }
+      return;
+    }
+    this.dispatchShardingMessage(msg);
+  }
+
+  private dispatchShardingMessage(msg: ShardingMessage): void {
     match(msg)
       .with({ $t: 'sharding.Register' }, (m) => this.handleRegister(m))
       .with({ $t: 'sharding.GetShardHome' }, (m) => this.handleGetShardHome(m))
@@ -105,6 +200,137 @@ export class ShardCoordinator extends Actor<ShardingMessage> {
   }
 
   private isLeader(): boolean { return this.settings.cluster.isLeader(); }
+
+  /**
+   * True iff this coordinator is the authoritative one — i.e. should
+   * be processing shard messages.  Without a lease this is just
+   * `isLeader()`; with a lease it additionally requires that the
+   * lease be currently held by this replica.
+   */
+  private isActive(): boolean {
+    if (!this.settings.lease) return this.isLeader();
+    return this.isLeader() && this.leaseState === 'held';
+  }
+
+  /* --------------------------- Lease state machine ------------------------ */
+
+  private handleCoordinatorEvent(evt: CoordinatorEvent): void {
+    match(evt)
+      .with({ t: 'reconcile' }, () => this.reconcileLease())
+      .with({ t: 'lease-acquire-result' }, (m) => this.handleAcquireResult(m))
+      .with({ t: 'lease-lost' }, (m) => this.handleLeaseLost(m))
+      .with({ t: 'acquire-retry' }, () => this.reconcileLease())
+      .exhaustive();
+  }
+
+  private reconcileLease(): void {
+    if (!this.settings.lease) return;
+    const wantActive = this.isLeader();
+    if (wantActive) {
+      if (this.leaseState === 'held') return;        // already active
+      if (this.leaseState === 'acquiring') return;   // already trying
+      this.acquireRetryTimer?.cancel();
+      this.acquireRetryTimer = null;
+      this.leaseState = 'acquiring';
+      void this.runAcquire();
+    } else {
+      if (this.leaseState === 'held') {
+        // Stepped down — release so a follower can pick up faster
+        // than waiting for the TTL to expire.
+        void this.settings.lease.release().catch((e) =>
+          this.system.log.warn(`[sharding] lease release failed`, e));
+        this.leaseState = 'none';
+        // Falling out of `held` already triggers our standard
+        // "not-leader" cleanup via onLeaderChanged below — no extra
+        // state reset needed here.
+      } else if (this.leaseState === 'acquiring') {
+        // Let the in-flight acquire finish; handleAcquireResult will
+        // notice we no longer want it and release immediately.
+      } else {
+        this.acquireRetryTimer?.cancel();
+        this.acquireRetryTimer = null;
+      }
+    }
+  }
+
+  private async runAcquire(): Promise<void> {
+    try {
+      const got = await this.settings.lease!.acquire();
+      this.self.tell({ t: 'lease-acquire-result', got } satisfies CoordinatorEvent);
+    } catch (error) {
+      this.self.tell({
+        t: 'lease-acquire-result', got: false, error: error as Error,
+      } satisfies CoordinatorEvent);
+    }
+  }
+
+  private handleAcquireResult(msg: { got: boolean; error?: Error }): void {
+    if (this.leaseState !== 'acquiring') {
+      // Spurious result — release if we somehow got it.
+      if (msg.got) void this.settings.lease!.release().catch(() => { /* ignore */ });
+      return;
+    }
+    if (!msg.got) {
+      if (msg.error) this.system.log.warn(`[sharding] lease acquire failed`, msg.error);
+      this.leaseState = 'none';
+      this.scheduleAcquireRetry();
+      return;
+    }
+    if (!this.isLeader()) {
+      // Lost leadership during the acquire — release and let the
+      // new leader (if any) take over.
+      void this.settings.lease!.release().catch(() => { /* ignore */ });
+      this.leaseState = 'none';
+      return;
+    }
+    this.leaseState = 'held';
+    this.system.log.info(
+      `[sharding] coordinator '${this.settings.typeName}' became active (lease acquired)`,
+    );
+    // Drain any messages that arrived while we were acquiring.
+    // Regions don't retry on a timer — they only re-ask on cluster
+    // events — so without this drain a region that asked during
+    // `acquiring` would sit forever on a buffered user message.
+    if (this.acquireBuffer.length > 0) {
+      const buffered = this.acquireBuffer;
+      this.acquireBuffer = [];
+      for (const m of buffered) this.dispatchShardingMessage(m);
+    }
+  }
+
+  private handleLeaseLost(msg: { reason: string }): void {
+    if (this.leaseState !== 'held') return;
+    this.system.log.warn(
+      `[sharding] coordinator '${this.settings.typeName}' lost lease — ${msg.reason}; stepping down`,
+    );
+    this.leaseState = 'none';
+    // Cancel any in-flight rebalance handoff timers — those would
+    // fire force-reallocations that we shouldn't be doing while
+    // passive.  Pending queries get dropped (regions retry once we
+    // become active again, or once cluster events flush their
+    // register loop).
+    for (const r of this.rebalanceInProgress.values()) r.timer.cancel();
+    this.rebalanceInProgress.clear();
+    this.pending.clear();
+    this.acquireBuffer = [];
+    // Deliberately do NOT clear `regions` or `shardHome` here.  We
+    // stay leader and likely re-acquire — keeping the cached view
+    // means subsequent re-acquires resume serving without waiting
+    // for every region to re-register.  If another node took the
+    // lease during our window and reallocated, our stale homes
+    // self-correct via the standard "remote send fails →
+    // MemberRemoved → invalidateHomesOnNode" flow on the regions.
+    // Re-enter the acquire loop in case we're still the leader.
+    this.self.tell({ t: 'reconcile' } satisfies CoordinatorEvent);
+  }
+
+  private scheduleAcquireRetry(): void {
+    const interval = this.settings.acquireRetryIntervalMs ?? 5_000;
+    this.acquireRetryTimer?.cancel();
+    this.acquireRetryTimer = this.system.scheduler.scheduleOnceFn(interval, () => {
+      this.self.tell({ t: 'acquire-retry' } satisfies CoordinatorEvent);
+    });
+  }
 
   private candidates(): NodeAddress[] {
     const role = this.settings.role;
@@ -263,8 +489,16 @@ export class ShardCoordinator extends Actor<ShardingMessage> {
       this.regions.clear();
       this.shardHome.clear();
       this.pending.clear();
+      this.acquireBuffer = [];
       for (const r of this.rebalanceInProgress.values()) r.timer.cancel();
       this.rebalanceInProgress.clear();
+    }
+    // Lease-aware coordinators re-evaluate the acquire/release cycle
+    // any time the leader role flips — see `reconcileLease()`.  We
+    // route through the mailbox so the state machine serialises with
+    // any in-flight acquire result.
+    if (this.settings.lease) {
+      this.self.tell({ t: 'reconcile' } satisfies CoordinatorEvent);
     }
   }
 
