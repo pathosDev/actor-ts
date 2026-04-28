@@ -1,5 +1,6 @@
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
+import type { Lease } from '../../coordination/Lease.js';
 import { Props } from '../../Props.js';
 import type { Cluster } from '../Cluster.js';
 import type { EnvelopeMsg } from '../Protocol.js';
@@ -19,6 +20,17 @@ export interface StartSettings<TMsg> extends ShardingSettings<TMsg> {
   readonly rebalanceIntervalMs?: number;
   /** Time to wait for HandOffComplete before force-reallocating. */
   readonly handOffTimeoutMs?: number;
+  /**
+   * Optional split-brain protection for the coordinator.  When set,
+   * the elected leader's coordinator must hold the lease before it
+   * processes shard messages — under a network partition that
+   * produces two leader views, only the side that successfully
+   * acquires the lease ever issues `AllocateShard` / `HandOff`
+   * directives.  See `ShardCoordinatorSettings.lease`.
+   */
+  readonly lease?: Lease;
+  /** Retry interval for `lease.acquire()` after a failed attempt.  Default: 5 s. */
+  readonly acquireRetryIntervalMs?: number;
 }
 
 /**
@@ -86,6 +98,8 @@ export class ClusterSharding {
       rebalanceIntervalMs: settings.rebalanceIntervalMs,
       handOffTimeoutMs: settings.handOffTimeoutMs,
       rememberEntities: settings.rememberEntities,
+      lease: settings.lease,
+      acquireRetryIntervalMs: settings.acquireRetryIntervalMs,
       localResolver: (path) => this.regionsByPath.get(path) ?? this.coordinators.get(this.typeNameFromCoordinatorPath(path) ?? '') ?? null,
     };
     const ref = this.system.actorOf(
