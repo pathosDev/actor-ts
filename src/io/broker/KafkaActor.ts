@@ -24,6 +24,21 @@ export interface KafkaPublish {
   readonly headers?: Readonly<Record<string, string | Uint8Array>>;
 }
 
+/**
+ * Offset-commit policy (#2):
+ *
+ *   - `'auto'` — kafkajs commits after the message handler returns
+ *     successfully (the default).  At-least-once delivery: the actor
+ *     might re-deliver a message if it crashes between handler and
+ *     commit, so handlers must be idempotent.
+ *   - `'manual'` — the consumer pump pauses on each message and
+ *     waits for an explicit `{ kind: 'commit', topic, partition,
+ *     offset }` command before resolving the kafkajs promise and
+ *     advancing the partition.  Combined with idempotent producing,
+ *     this gives "exactly-once-with-processing" semantics.
+ */
+export type KafkaCommitMode = 'auto' | 'manual';
+
 export interface KafkaActorSettings extends BrokerCommonSettings {
   /** Bootstrap servers (`'kafka-1:9092,kafka-2:9092'` or array). */
   readonly brokers?: ReadonlyArray<string> | string;
@@ -46,6 +61,20 @@ export interface KafkaActorSettings extends BrokerCommonSettings {
   readonly consumer?: {
     readonly groupId?: string;
     readonly fromBeginning?: boolean;
+    /**
+     * Offset-commit policy.  Default `'auto'` — kafkajs auto-commits
+     * after the handler returns (at-least-once).  See
+     * {@link KafkaCommitMode} for the `'manual'` (exactly-once-with-
+     * processing) shape.
+     */
+    readonly commitMode?: KafkaCommitMode;
+    /**
+     * Max time in ms the manual-commit pump waits for an external
+     * `commit` / `nack` before giving up on a message and letting
+     * kafkajs reject it (which triggers a rebalance and re-delivery).
+     * Only used when `commitMode === 'manual'`.  Default 30s.
+     */
+    readonly commitTimeoutMs?: number;
   };
   /** Subscriber that receives every consumed record. */
   readonly target?: ActorRef<KafkaRecord>;
@@ -56,7 +85,22 @@ export interface KafkaActorSettings extends BrokerCommonSettings {
 export type KafkaCmd =
   | { readonly kind: 'publish'; readonly publish: KafkaPublish }
   | { readonly kind: 'subscribe'; readonly topic: string }
-  | { readonly kind: 'commit'; readonly topic: string; readonly partition: number; readonly offset: string };
+  /**
+   * Commit the offset for a message that was delivered in
+   * `commitMode: 'manual'` mode.  The pump's `eachMessage` promise
+   * resolves; kafkajs commits `offset + 1` and reads the next message
+   * on this partition.  Sending `commit` outside manual-commit mode
+   * is silently ignored.
+   */
+  | { readonly kind: 'commit'; readonly topic: string; readonly partition: number; readonly offset: string }
+  /**
+   * Negative-acknowledge a manual-commit message — the offset is
+   * **not** committed and the eachMessage promise rejects, so
+   * kafkajs treats the partition as having failed: on rebalance /
+   * restart the same offset will be re-delivered.  The optional
+   * `reason` shows up in the actor's warn log.
+   */
+  | { readonly kind: 'nack'; readonly topic: string; readonly partition: number; readonly offset: string; readonly reason?: string };
 
 /**
  * Kafka producer + consumer in one actor, backed by `kafkajs`.  When
@@ -64,15 +108,53 @@ export type KafkaCmd =
  * and consumed records are delivered to `target`.  When a producer is
  * the only goal, leave `consumer` and `topics` empty.
  *
- * Offset commit semantics: kafkajs auto-commits after the message
- * handler returns successfully, which gives at-least-once delivery.
- * Apps that need exactly-once should use `commit`-command + disable
- * auto-commit (out of scope for v1; document upgrade path).
+ * **Offset-commit semantics.**
+ *
+ *   - `commitMode: 'auto'` (default) — kafkajs commits after each
+ *     handler returns successfully → **at-least-once**.  Cheap; OK
+ *     for idempotent handlers.
+ *   - `commitMode: 'manual'` — pump pauses on each message and waits
+ *     for an explicit `commit` command from the handler (#2).  The
+ *     handler is responsible for sending exactly one `commit` (or
+ *     `nack`) per delivered record.  If neither arrives within
+ *     `commitTimeoutMs` the pump rejects internally, kafkajs treats
+ *     the partition as failed, and re-delivery happens on rebalance.
+ *     Produces **exactly-once-with-processing**: a message that
+ *     successfully passed through `commit` is committed; a crash or
+ *     `nack` re-delivers.
+ *
+ *   const kafka = system.actorOf(Props.create(() => new KafkaActor({
+ *     brokers: ['kafka:9092'],
+ *     consumer: { groupId: 'orders', commitMode: 'manual' },
+ *     topics: ['orders'],
+ *     target: orderProcessor,
+ *   })));
+ *
+ *   class OrderProcessor extends Actor<KafkaRecord> {
+ *     constructor(private readonly kafka: ActorRef<KafkaCmd>) { super(); }
+ *     async onReceive(rec: KafkaRecord) {
+ *       try {
+ *         await db.insertOrder(JSON.parse(rec.value!.toString()));
+ *         this.kafka.tell({ kind: 'commit', topic: rec.topic,
+ *                            partition: rec.partition, offset: rec.offset });
+ *       } catch (e) {
+ *         this.kafka.tell({ kind: 'nack',   topic: rec.topic,
+ *                            partition: rec.partition, offset: rec.offset });
+ *       }
+ *     }
+ *   }
  */
 export class KafkaActor extends BrokerActor<KafkaActorSettings, KafkaCmd, KafkaPublish> {
   private kafka: KafkaInstanceLike | null = null;
   private producer: KafkaProducerLike | null = null;
   private consumer: KafkaConsumerLike | null = null;
+  /**
+   * Map of `<topic>|<partition>|<offset>` → in-flight commit promise
+   * resolver.  Only populated in `commitMode: 'manual'`; entries are
+   * inserted by the eachMessage pump and removed by `commit` /
+   * `nack` / the timeout.
+   */
+  private readonly pendingCommits = new Map<string, PendingCommit>();
 
   constructor(settings: Partial<KafkaActorSettings> = {}) { super(settings); }
 
@@ -98,6 +180,10 @@ export class KafkaActor extends BrokerActor<KafkaActorSettings, KafkaCmd, KafkaP
       out.consumer = {
         groupId: cc.hasPath('groupId') ? cc.getString('groupId') : undefined,
         fromBeginning: cc.hasPath('fromBeginning') ? cc.getBoolean('fromBeginning') : undefined,
+        commitMode: cc.hasPath('commitMode')
+          ? (cc.getString('commitMode') as KafkaCommitMode)
+          : undefined,
+        commitTimeoutMs: cc.hasPath('commitTimeoutMs') ? cc.getNumber('commitTimeoutMs') : undefined,
       };
     }
     if (c.hasPath('topics')) out.topics = c.getStringList('topics');
@@ -109,7 +195,13 @@ export class KafkaActor extends BrokerActor<KafkaActorSettings, KafkaCmd, KafkaP
     return Array.isArray(brokers) ? `kafka://${brokers.join(',')}` : `kafka://${brokers ?? ''}`;
   }
 
-  protected async connectImpl(): Promise<void> {
+  /**
+   * Build a `KafkaInstanceLike` from the configured settings.  Override
+   * in a subclass for tests that want to inject mock producers /
+   * consumers without going through the kafkajs peer dep — that's the
+   * test seam used by `tests/unit/io/broker/KafkaActor.test.ts`.
+   */
+  protected async createKafkaInstance(): Promise<KafkaInstanceLike> {
     const kafkajs = await kafkaLazy.get();
     const Ctor = kafkajs.Kafka ?? (kafkajs as unknown as { default: { Kafka: KafkaCtor } }).default.Kafka;
     const brokersRaw = this.settings.brokers;
@@ -117,12 +209,16 @@ export class KafkaActor extends BrokerActor<KafkaActorSettings, KafkaCmd, KafkaP
       ? brokersRaw
       : (typeof brokersRaw === 'string' ? brokersRaw : '')
           .split(',').map((s: string) => s.trim()).filter(Boolean);
-    this.kafka = new Ctor({
+    return new Ctor({
       clientId: this.settings.clientId,
       brokers: [...brokers],
       ssl: this.settings.ssl,
       sasl: this.settings.sasl,
     });
+  }
+
+  protected async connectImpl(): Promise<void> {
+    this.kafka = await this.createKafkaInstance();
     this.producer = this.kafka.producer({
       idempotent: this.settings.producer?.idempotent,
       allowAutoTopicCreation: this.settings.producer?.allowAutoTopicCreation,
@@ -138,9 +234,16 @@ export class KafkaActor extends BrokerActor<KafkaActorSettings, KafkaCmd, KafkaP
         });
       }
       const target = this.settings.target;
+      const manualCommit = this.settings.consumer.commitMode === 'manual';
+      const commitTimeoutMs = this.settings.consumer.commitTimeoutMs ?? 30_000;
+
       // We deliberately don't await `run` — it's a long-running pump.
       void this.consumer.run({
-        eachMessage: async ({ topic, partition, message }: KafkaConsumedMessage): Promise<void> => {
+        // kafkajs v2: `autoCommit: false` disables the auto-commit
+        // path so eachMessage's resolution doesn't trigger a commit.
+        // We drive commits from the actor via `commitOffsets` instead.
+        autoCommit: !manualCommit,
+        eachMessage: async ({ topic, partition, message, heartbeat }: KafkaConsumedMessage): Promise<void> => {
           if (!target) return;
           target.tell({
             topic, partition,
@@ -150,12 +253,43 @@ export class KafkaActor extends BrokerActor<KafkaActorSettings, KafkaCmd, KafkaP
             timestamp: message.timestamp,
             headers: message.headers ?? {},
           });
+
+          if (!manualCommit) return;
+
+          // Wait for an external `commit` / `nack` before resolving.
+          // The promise rejects on `nack`, the timeout, or disconnect
+          // cleanup — kafkajs treats a rejected eachMessage as a
+          // partition failure → rebalance → re-delivery (#2).
+          const key = pendingKey(topic, partition, message.offset);
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => {
+              this.pendingCommits.delete(key);
+              reject(new Error(
+                `KafkaActor: no commit/nack received for ${key} within ${commitTimeoutMs}ms`,
+              ));
+            }, commitTimeoutMs);
+            this.pendingCommits.set(key, {
+              done: () => { clearTimeout(timer); resolve(); },
+              fail: (err) => { clearTimeout(timer); reject(err); },
+              heartbeat,
+              topic, partition, offset: message.offset,
+            });
+          });
         },
       });
     }
   }
 
   protected async disconnectImpl(): Promise<void> {
+    // Reject every still-pending commit so the kafkajs eachMessage
+    // pump unwinds cleanly — otherwise consumer.disconnect would
+    // hang waiting for the in-flight handler to resolve.
+    if (this.pendingCommits.size > 0) {
+      for (const p of this.pendingCommits.values()) {
+        p.fail(new Error('KafkaActor: disconnecting before commit/nack arrived'));
+      }
+      this.pendingCommits.clear();
+    }
     const errors: Error[] = [];
     if (this.consumer) {
       try { await this.consumer.disconnect(); } catch (e) { errors.push(e as Error); }
@@ -191,11 +325,77 @@ export class KafkaActor extends BrokerActor<KafkaActorSettings, KafkaCmd, KafkaP
         void this.consumer.subscribe({ topic: cmd.topic, fromBeginning: false });
       }
     }
-    // 'commit' would only be relevant in manual-commit mode (out of scope).
+    else if (cmd.kind === 'commit') void this.handleCommit(cmd);
+    else if (cmd.kind === 'nack') this.handleNack(cmd);
+  }
+
+  /* ----------------------------- internals ------------------------------ */
+
+  private async handleCommit(cmd: {
+    readonly topic: string; readonly partition: number; readonly offset: string;
+  }): Promise<void> {
+    const key = pendingKey(cmd.topic, cmd.partition, cmd.offset);
+    const pending = this.pendingCommits.get(key);
+    if (!pending) {
+      // Already committed, expired, or — most commonly — auto-mode
+      // (where no pending entry was ever inserted).  Silent no-op
+      // either way: handlers can be written to send `commit`
+      // unconditionally without checking the configured mode.
+      this.log.debug(`KafkaActor: commit for unknown ${key} — ignored (already committed, expired, or auto-mode)`);
+      return;
+    }
+    if (!this.consumer || !this.consumer.commitOffsets) {
+      pending.fail(new Error('KafkaActor: commit arrived but consumer is not connected or kafkajs lacks commitOffsets'));
+      this.pendingCommits.delete(key);
+      return;
+    }
+    try {
+      // kafkajs `commitOffsets` takes the **next** offset to consume,
+      // i.e., one past the message we just processed.  Offsets are
+      // decimal strings; we use BigInt so very large values stay
+      // exact (Kafka offsets are 64-bit).
+      const next = String(BigInt(cmd.offset) + 1n);
+      await this.consumer.commitOffsets([
+        { topic: cmd.topic, partition: cmd.partition, offset: next },
+      ]);
+      pending.done();
+    } catch (err) {
+      pending.fail(err instanceof Error ? err : new Error(String(err)));
+    } finally {
+      this.pendingCommits.delete(key);
+    }
+  }
+
+  private handleNack(cmd: {
+    readonly topic: string; readonly partition: number; readonly offset: string;
+    readonly reason?: string;
+  }): void {
+    const key = pendingKey(cmd.topic, cmd.partition, cmd.offset);
+    const pending = this.pendingCommits.get(key);
+    if (!pending) return;
+    this.log.warn(
+      `KafkaActor: nack for ${key}${cmd.reason ? ` (${cmd.reason})` : ''} — `
+      + `re-delivery will happen on next rebalance`,
+    );
+    pending.fail(new Error(cmd.reason ?? 'KafkaActor: nack from handler'));
+    this.pendingCommits.delete(key);
   }
 }
 
 /* ----------------------------- internals -------------------------------- */
+
+interface PendingCommit {
+  readonly topic: string;
+  readonly partition: number;
+  readonly offset: string;
+  readonly done: () => void;
+  readonly fail: (err: Error) => void;
+  readonly heartbeat?: () => Promise<void>;
+}
+
+function pendingKey(topic: string, partition: number, offset: string): string {
+  return `${topic}|${partition}|${offset}`;
+}
 
 interface KafkaCtor {
   new (config: {
@@ -206,12 +406,17 @@ interface KafkaCtor {
   }): KafkaInstanceLike;
 }
 
-interface KafkaInstanceLike {
+/**
+ * Minimal Kafka surface the actor depends on.  Exported so test seams
+ * (subclasses overriding `createKafkaInstance`) can satisfy the same
+ * shape without pulling kafkajs.
+ */
+export interface KafkaInstanceLike {
   producer(config?: { idempotent?: boolean; allowAutoTopicCreation?: boolean }): KafkaProducerLike;
   consumer(config: { groupId: string }): KafkaConsumerLike;
 }
 
-interface KafkaProducerLike {
+export interface KafkaProducerLike {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   send(args: {
@@ -233,13 +438,27 @@ interface KafkaConsumedMessage {
     timestamp: string;
     headers?: Record<string, Uint8Array | string | null>;
   };
+  /** kafkajs callback for explicit heartbeats during long handler runs. */
+  heartbeat?: () => Promise<void>;
 }
 
-interface KafkaConsumerLike {
+export interface KafkaConsumerLike {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   subscribe(args: { topic: string; fromBeginning?: boolean }): Promise<void>;
-  run(args: { eachMessage: (m: KafkaConsumedMessage) => Promise<void> }): Promise<void>;
+  run(args: {
+    autoCommit?: boolean;
+    eachMessage: (m: KafkaConsumedMessage) => Promise<void>;
+  }): Promise<void>;
+  /**
+   * Manual offset commit (#2).  Each entry's `offset` is the **next**
+   * message to consume — i.e., one past the message we just finished
+   * processing.  Required for `commitMode: 'manual'`; older kafkajs
+   * releases that lack it surface a clear error at commit time.
+   */
+  commitOffsets?(args: ReadonlyArray<{
+    topic: string; partition: number; offset: string;
+  }>): Promise<void>;
 }
 
 interface KafkajsModule {
