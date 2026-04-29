@@ -103,29 +103,42 @@ export class DistributedPubSubMediator extends Actor<
   private handleSubscribe(msg: Subscribe): void {
     const set = this.getOrCreateSet(msg.topic);
     const key = msg.ref.path.toString();
+    let changed = false;
     if (!set.local.has(key)) {
       set.local.set(key, msg.ref);
       this.version++;
+      changed = true;
     }
     this.sender.forEach((s) => s.tell(new SubscribeAck(msg)));
+    // Eager broadcast: peers learn about the new subscription within
+    // one hop, deterministically.  Without this the random-peer-per-
+    // tick gossip leaves a probabilistic gap (~1/2^N for N ticks)
+    // where a publish-immediately-after-subscribe misses the new
+    // subscriber.  Periodic gossip continues to handle anti-entropy.
+    if (changed) this.eagerGossip();
   }
 
   private handleUnsubscribe(msg: Unsubscribe): void {
     const set = this.topics.get(msg.topic);
     const key = msg.ref.path.toString();
+    let changed = false;
     if (set?.local.delete(key)) {
       this.version++;
+      changed = true;
       if (set.local.size === 0 && set.remoteNodes.size === 0) this.topics.delete(msg.topic);
     }
     this.sender.forEach((s) => s.tell(new UnsubscribeAck(msg)));
+    if (changed) this.eagerGossip();
   }
 
   private handleUnsubscribeAll(msg: UnsubscribeAll): void {
     const key = msg.ref.path.toString();
+    let changed = false;
     for (const [topic, set] of this.topics) {
-      if (set.local.delete(key)) this.version++;
+      if (set.local.delete(key)) { this.version++; changed = true; }
       if (set.local.size === 0 && set.remoteNodes.size === 0) this.topics.delete(topic);
     }
+    if (changed) this.eagerGossip();
   }
 
   private handleGetTopics(msg: GetTopics): void {
@@ -160,20 +173,42 @@ export class DistributedPubSubMediator extends Actor<
     const peers = this.settings.cluster.upMembers()
       .filter(m => !m.address.equals(this.settings.cluster.selfAddress));
     if (peers.length === 0) return;
+    const gossip = this.buildGossip();
+    // Push to one random peer — epidemic dissemination.
+    const target = peers[Math.floor(Math.random() * peers.length)]!;
+    this.sendWire(target.address, gossip);
+  }
+
+  /**
+   * Send the current subscription state to **every** peer
+   * immediately.  Used after local subscribe / unsubscribe so a
+   * follow-up publish doesn't have to wait several gossip ticks
+   * for the random-peer-per-tick scheme to reach every node.
+   * Periodic `gossipTick` continues to run as steady-state
+   * anti-entropy.
+   */
+  private eagerGossip(): void {
+    const peers = this.settings.cluster.upMembers()
+      .filter(m => !m.address.equals(this.settings.cluster.selfAddress));
+    if (peers.length === 0) return;
+    const gossip = this.buildGossip();
+    for (const peer of peers) {
+      this.sendWire(peer.address, gossip);
+    }
+  }
+
+  private buildGossip(): PubSubGossipMsg {
     const entries: Record<string, string[]> = {};
     for (const [topic, set] of this.topics) {
       if (set.local.size === 0) continue;
       entries[topic] = Array.from(set.local.keys());
     }
-    const gossip: PubSubGossipMsg = {
+    return {
       t: 'pubsub-gossip',
       from: this.settings.cluster.selfAddress.toJSON(),
       entries,
       version: this.version,
     };
-    // Push to one random peer — epidemic dissemination.
-    const target = peers[Math.floor(Math.random() * peers.length)]!;
-    this.sendWire(target.address, gossip);
   }
 
   private handleGossip(msg: PubSubGossipMsg): void {
