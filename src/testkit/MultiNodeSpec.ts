@@ -1,5 +1,6 @@
 import { ActorSystem } from '../ActorSystem.js';
 import { Cluster, type ClusterSettings } from '../cluster/Cluster.js';
+import type { DowningProvider } from '../cluster/downing/index.js';
 import { type Member } from '../cluster/Member.js';
 import { NodeAddress } from '../cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../Logger.js';
@@ -68,6 +69,15 @@ export interface MultiNodeSpecSettings {
   readonly awaitTimeoutMs?: number;
   /** Logger — defaults to NoopLogger so tests stay quiet. */
   readonly logLevel?: LogLevel;
+  /**
+   * Per-role split-brain resolver factory.  Called once per role at
+   * `start()` time; the returned provider is wired into that role's
+   * cluster via `ClusterSettings.downing`.  Each role typically gets
+   * its OWN provider instance (some strategies are stateful — e.g.
+   * `LeaseMajority` holds a per-replica acquire result).  Pass
+   * `undefined` for a role that should run without downing.
+   */
+  readonly downing?: (role: string) => DowningProvider | undefined;
 }
 
 interface NodeRecord {
@@ -83,8 +93,8 @@ interface NodeRecord {
 let nextPortBase = 30_000;
 
 export class MultiNodeSpec {
-  private readonly settings: Required<Omit<MultiNodeSpecSettings, 'addresses' | 'failureDetector'>>
-    & Pick<MultiNodeSpecSettings, 'addresses' | 'failureDetector'>;
+  private readonly settings: Required<Omit<MultiNodeSpecSettings, 'addresses' | 'failureDetector' | 'downing'>>
+    & Pick<MultiNodeSpecSettings, 'addresses' | 'failureDetector' | 'downing'>;
   private readonly nodes = new Map<string, NodeRecord>();
   private started = false;
 
@@ -103,6 +113,7 @@ export class MultiNodeSpec {
       logLevel: settings.logLevel ?? LogLevel.Off,
       addresses: settings.addresses,
       failureDetector: settings.failureDetector,
+      downing: settings.downing,
     };
   }
 
@@ -149,6 +160,7 @@ export class MultiNodeSpec {
         gossipIntervalMs: this.settings.gossipIntervalMs,
         seedRetryIntervalMs: 100,
         failureDetector: this.settings.failureDetector,
+        downing: this.settings.downing?.(role),
       });
       this.nodes.set(role, {
         role,
