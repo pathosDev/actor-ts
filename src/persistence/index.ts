@@ -68,18 +68,41 @@ export type {
   StoredFrame,
   OutboundFrame,
   MigrationStep,
+  DowncastStep,
   DefaultsAdapterSpec,
+  MigrationResult,
+  // #6 — codec + schema registry types.
+  Codec,
+  ParserLike,
+  ValidatedAdapterOptions,
+  SchemaRegistry,
+  SchemaRegistration,
+  SchemaDescriptor,
 } from './migration/index.js';
 export {
   MigrationError,
   MigrationChain,
   defaultsAdapter,
   defaultsSnapshotAdapter,
+  migratingAdapter,
+  migratingSnapshotAdapter,
   isEnvelope,
   encodeEvent,
   decodeEvent,
   encodeState,
   decodeState,
+  wrapEventAsEnvelope,
+  wrapStateAsEnvelope,
+  migrateInMemoryJournal,
+  migrateSnapshotStore,
+  formatMigrationResult,
+  // #6 — codec + schema registry runtime.
+  jsonCodec,
+  zodCodec,
+  composeCodecs,
+  validatedEventAdapter,
+  validatedSnapshotAdapter,
+  InMemorySchemaRegistry,
 } from './migration/index.js';
 
 // Persistence Query — read-side query layer for projections.
