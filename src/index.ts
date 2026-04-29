@@ -433,13 +433,17 @@ export type {
 } from './delivery/index.js';
 
 // FSM DSL (named-state FSM on top of the OO Actor).
-export { FSM } from './fsm/index.js';
+export { FSM, PersistentFSM } from './fsm/index.js';
 export type {
   Transition as FsmTransition,
   StayTransition as FsmStay,
   FsmResult,
   StateHandler as FsmStateHandler,
   TransitionCallback as FsmTransitionCallback,
+  // #52 — persistent FSM (state-machine + event sourcing).
+  FsmStateData,
+  FsmTransition as PersistentFsmTransition,
+  FsmTransitionMap,
 } from './fsm/index.js';
 
 // Mailbox variants (BoundedMailbox, PriorityMailbox).
