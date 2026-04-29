@@ -2,6 +2,7 @@ import { match, P } from 'ts-pattern';
 import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
+import type { DurableStateStore } from '../persistence/DurableStateStore.js';
 import type { Cancellable } from '../Scheduler.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import { Props } from '../Props.js';
@@ -10,6 +11,7 @@ import { MemberRemoved, MemberUp } from '../cluster/ClusterEvents.js';
 import { NodeAddress } from '../cluster/NodeAddress.js';
 import type { WireMessage } from '../cluster/Protocol.js';
 import type { Crdt } from './Crdt.js';
+import { DurableDistributedDataStore } from './DurableDistributedDataStore.js';
 import { GCounter, type GCounterJson } from './GCounter.js';
 import { PNCounter, type PNCounterJson } from './PNCounter.js';
 import { GSet, type GSetJson } from './GSet.js';
@@ -81,6 +83,22 @@ interface DDataGossipMsg {
 export interface DistributedDataSettings {
   /** Period between gossip pushes.  Default: 1 s. */
   readonly gossipIntervalMs?: number;
+  /**
+   * Optional durable backend.  When provided, the local CRDT view
+   * is loaded from the store on `preStart` and re-saved after every
+   * mutation (local update, gossip merge, delete).  Without this,
+   * `DistributedData` is purely in-memory — a full cluster restart
+   * (deploy / outage) starts every replica empty.
+   *
+   * The store is keyed by replica id, so each cluster member owns
+   * its own durable record.  CRDT semantics handle convergence
+   * across replicas via gossip — durability is per-replica.
+   *
+   * Plug in any of the existing `DurableStateStore` implementations:
+   * `InMemoryDurableStateStore` for tests, the SQLite / Cassandra /
+   * S3 / filesystem backends for production.
+   */
+  readonly durableStore?: DurableStateStore;
 }
 
 /* ============================== extension ============================== */
@@ -254,9 +272,15 @@ class DistributedDataActor extends Actor<ActorMsg> {
   private readonly cluster: Cluster;
   private readonly view: SharedView;
   private readonly gossipIntervalMs: number;
+  private readonly durable: DurableDistributedDataStore | null;
   private gossipTimer: Cancellable | null = null;
   private unsubscribeWire: (() => void) | null = null;
   private unsubscribeCluster: (() => void) | null = null;
+  /** Set while a durable save is in flight; subsequent changes set
+   *  `_durableDirty = true` so the in-flight save is followed by a
+   *  catch-up save instead of multiple overlapping saves. */
+  private durableSaveInFlight = false;
+  private durableDirty = false;
 
   constructor(public readonly settings: {
     cluster: Cluster;
@@ -267,9 +291,15 @@ class DistributedDataActor extends Actor<ActorMsg> {
     this.cluster = settings.cluster;
     this.view = settings.view;
     this.gossipIntervalMs = settings.settings.gossipIntervalMs ?? 1_000;
+    this.durable = settings.settings.durableStore
+      ? new DurableDistributedDataStore(
+          settings.settings.durableStore,
+          this.cluster.selfAddress.toString(),
+        )
+      : null;
   }
 
-  override preStart(): void {
+  override async preStart(): Promise<void> {
     this.unsubscribeWire = this.cluster._onWire('ddata-gossip', (msg) => {
       this.self.tell(msg as unknown as DDataGossipMsg);
     });
@@ -284,6 +314,21 @@ class DistributedDataActor extends Actor<ActorMsg> {
     this.gossipTimer = this.system.scheduler.scheduleAtFixedRateFn(
       this.gossipIntervalMs, this.gossipIntervalMs, () => this.gossipTick(),
     );
+
+    if (this.durable) {
+      // Load + populate the in-memory view BEFORE accepting any
+      // user-issued updates.  Subscribers registered after preStart
+      // will see the recovered values via the handle's replay
+      // mechanism (subscribe() fires once with the current value).
+      try {
+        const loaded = await this.durable.load();
+        for (const [key, crdt] of loaded) {
+          this.applyMerged(key, null, crdt);
+        }
+      } catch (err) {
+        this.log.warn(`DistributedData: durable load failed`, err);
+      }
+    }
   }
 
   override postStop(): void {
@@ -313,6 +358,7 @@ class DistributedDataActor extends Actor<ActorMsg> {
       // don't track factories per key, listeners just get nothing
       // for now; they'll see the next merge bring the key back if
       // a peer gossips it.
+      this.scheduleDurableSave();
     }
   }
 
@@ -334,6 +380,10 @@ class DistributedDataActor extends Actor<ActorMsg> {
     const nextJson = JSON.stringify(next.toJSON());
     this.view.state.set(key, next);
     if (prevJson === nextJson) return;
+    // Persist the change.  If we're recovering from durable load
+    // (preStart loop), this re-saves the same state we just loaded
+    // — harmless and keeps the code path uniform.
+    this.scheduleDurableSave();
     const listeners = this.view.listeners.get(key);
     if (!listeners) return;
     for (const l of listeners) {
@@ -341,6 +391,33 @@ class DistributedDataActor extends Actor<ActorMsg> {
         this.log.warn(`DistributedData: subscriber for "${key}" threw`, e);
       }
     }
+  }
+
+  /**
+   * Fire a durable save off the actor mailbox.  Coalesces overlapping
+   * requests: if a save is already in flight, we mark `durableDirty`
+   * and the in-flight save's `.finally` handler kicks off a follow-up.
+   * Net effect: a burst of mutations produces 1-2 disk writes, not N.
+   */
+  private scheduleDurableSave(): void {
+    if (!this.durable) return;
+    if (this.durableSaveInFlight) {
+      this.durableDirty = true;
+      return;
+    }
+    this.durableSaveInFlight = true;
+    const snapshot = new Map(this.view.state);
+    void this.durable.save(snapshot)
+      .catch((err) => {
+        this.log.warn(`DistributedData: durable save failed`, err);
+      })
+      .finally(() => {
+        this.durableSaveInFlight = false;
+        if (this.durableDirty) {
+          this.durableDirty = false;
+          this.scheduleDurableSave();
+        }
+      });
   }
 
   private gossipTick(): void {
