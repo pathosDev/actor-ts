@@ -1,0 +1,576 @@
+import type { Config } from '../../config/Config.js';
+import type { ActorRef } from '../../ActorRef.js';
+import { Lazy } from '../../util/Lazy.js';
+import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
+import type { BrokerCommonSettings } from './BrokerSettings.js';
+
+/**
+ * JetStream durable-streaming actor (#3).  Sister to {@link NatsActor}
+ * — same `nats` peer-dep, same broker scaffold, but the consumer
+ * binds a **push consumer** to a durable JetStream subscription so
+ * recovery, replay, and explicit acks all work.  Where NatsActor is
+ * fire-and-forget pub/sub, JetStreamActor is durable streaming with
+ * Kafka-style "exactly-once-with-processing" semantics via the
+ * `ack` / `nak` / `term` command handshake.
+ *
+ * **What this actor does (v1).**
+ *
+ *   - Connects to NATS, opens a JetStream context.
+ *   - Optionally **creates or updates** a stream (`stream.name`,
+ *     `subjects`, retention, etc.) at connect time.
+ *   - Optionally **creates or updates** a durable consumer
+ *     (`consumer.durable`) and binds a push subscription delivering
+ *     to `target`.
+ *   - Forwards every consumed message to `target` and waits for an
+ *     explicit `ack` / `nak` / `term` command before the consumer's
+ *     ack-window expires (`ackWaitMs`).  Same shape as KafkaActor's
+ *     `commitMode: 'manual'` (#2).
+ *   - Publishing supports JetStream idempotent publish via the
+ *     `messageId` field (sent as the `Nats-Msg-Id` header — server
+ *     dedupes a message-id within the stream's deduplication window).
+ *
+ * **Out of scope for v1.**
+ *
+ *   - **Pull consumers**.  Push is the natural fit for actor-style
+ *     fan-out; pull consumers introduce a separate async loop and a
+ *     batch-fetch API.  File a follow-up if needed.
+ *   - **KV / Object Store**.  Different JetStream sub-APIs; warrant
+ *     their own actors.
+ *   - **Stream / consumer deletion**.  Actor only ever creates or
+ *     updates — destroying a stream is an operator concern, not a
+ *     runtime one.
+ *
+ * **Example.**
+ *
+ *   const js = system.actorOf(Props.create(() => new JetStreamActor({
+ *     servers: ['nats://localhost:4222'],
+ *     stream:  { name: 'ORDERS', subjects: ['orders.*'] },
+ *     consumer: { durable: 'order-processor', ackWaitMs: 30_000 },
+ *     target:  orderProcessor,
+ *   })));
+ *
+ *   class OrderProcessor extends Actor<JetStreamMessage> {
+ *     constructor(private readonly js: ActorRef<JetStreamCmd>) { super(); }
+ *     async onReceive(m: JetStreamMessage) {
+ *       try {
+ *         await db.insertOrder(JSON.parse(new TextDecoder().decode(m.payload)));
+ *         this.js.tell({ kind: 'ack', streamSeq: m.streamSeq });
+ *       } catch (e) {
+ *         this.js.tell({ kind: 'nak', streamSeq: m.streamSeq, delayMs: 5_000 });
+ *       }
+ *     }
+ *   }
+ */
+
+/** Inbound JetStream message handed to subscribers. */
+export interface JetStreamMessage {
+  readonly subject: string;
+  readonly payload: Uint8Array;
+  /** Reply subject (for request/reply patterns); empty when not set. */
+  readonly replyTo: string;
+  /** Stream sequence — unique within the stream, monotonic per stream. */
+  readonly streamSeq: number;
+  /** Consumer delivery sequence — bumps on every (re-)delivery. */
+  readonly consumerSeq: number;
+  /** Number of times this message has been delivered (1 = first try). */
+  readonly deliveries: number;
+  /** Server-assigned timestamp in ms since epoch. */
+  readonly timestamp: number;
+  /** Optional per-message headers (e.g. `Nats-Msg-Id`). */
+  readonly headers: Readonly<Record<string, string>>;
+}
+
+/** Outbound JetStream publish — payload + optional dedupe headers. */
+export interface JetStreamPublish {
+  readonly subject: string;
+  readonly payload: Uint8Array | string;
+  /**
+   * Optional dedupe id — sent as `Nats-Msg-Id` header so a re-publish
+   * within the stream's deduplication window is idempotent.
+   */
+  readonly messageId?: string;
+  /**
+   * Optional expected last sequence — server rejects the publish if
+   * the stream's last seq doesn't match (optimistic concurrency).
+   */
+  readonly expectedLastSeq?: number;
+  /** Extra headers (free-form). */
+  readonly headers?: Readonly<Record<string, string>>;
+}
+
+/** Stream lifecycle policy at connect time. */
+export interface JetStreamStreamConfig {
+  readonly name: string;
+  readonly subjects: ReadonlyArray<string>;
+  readonly retention?: 'limits' | 'interest' | 'workqueue';
+  readonly storage?: 'memory' | 'file';
+  readonly maxMsgs?: number;
+  readonly maxBytes?: number;
+  readonly maxAge?: number;     // ns; pass through verbatim
+  /** Auto-create or update at connect time.  Default true. */
+  readonly create?: boolean;
+}
+
+/** Push-consumer config. */
+export interface JetStreamConsumerConfig {
+  /** Durable name — required so the consumer survives restarts. */
+  readonly durable: string;
+  /** Where in the stream to start the new consumer.  Default `'all'`. */
+  readonly deliverPolicy?:
+    | 'all' | 'last' | 'new'
+    | { readonly kind: 'byStartSeq'; readonly startSeq: number }
+    | { readonly kind: 'byStartTime'; readonly startTimeMs: number };
+  /** `'explicit'` (default — ack/nak/term required), `'none'`, or `'all'`. */
+  readonly ackPolicy?: 'explicit' | 'none' | 'all';
+  /** Max time before the consumer redelivers without an ack.  Default 30s. */
+  readonly ackWaitMs?: number;
+  /** Subject filter — defaults to all subjects in the stream. */
+  readonly filterSubject?: string;
+  /** Max in-flight unacked messages.  Default 1024 (server default). */
+  readonly maxAckPending?: number;
+  /** Auto-create or update at connect time.  Default true. */
+  readonly create?: boolean;
+}
+
+export interface JetStreamActorSettings extends BrokerCommonSettings {
+  /** NATS server URLs. */
+  readonly servers?: ReadonlyArray<string> | string;
+  /** Optional credentials. */
+  readonly token?: string;
+  readonly user?: string;
+  readonly password?: string;
+  /** Optional client name. */
+  readonly name?: string;
+  /** Stream lifecycle config — set when this actor owns the stream. */
+  readonly stream?: JetStreamStreamConfig;
+  /** Consumer config — required to start a subscription. */
+  readonly consumer?: JetStreamConsumerConfig;
+  /** Actor receiving every consumed message. */
+  readonly target?: ActorRef<JetStreamMessage>;
+  /**
+   * Max time the manual-ack pump waits for a `ack`/`nak`/`term`
+   * before giving up on a message and rejecting internally
+   * (kafkajs-style failure).  Default = `consumer.ackWaitMs ?? 30s`.
+   */
+  readonly ackTimeoutMs?: number;
+}
+
+export type JetStreamCmd =
+  | { readonly kind: 'publish'; readonly publish: JetStreamPublish }
+  /** Acknowledge a delivered message — server marks consumed. */
+  | { readonly kind: 'ack'; readonly streamSeq: number }
+  /** Negative-ack — server redelivers (after optional `delayMs`). */
+  | { readonly kind: 'nak'; readonly streamSeq: number; readonly delayMs?: number }
+  /** Terminal failure — server drops the message permanently. */
+  | { readonly kind: 'term'; readonly streamSeq: number; readonly reason?: string }
+  /** Heartbeat — extend the ack-wait window for a long-running handler. */
+  | { readonly kind: 'inProgress'; readonly streamSeq: number };
+
+export class JetStreamActor extends BrokerActor<
+  JetStreamActorSettings, JetStreamCmd, JetStreamPublish
+> {
+  private nc: NatsConnectionLike | null = null;
+  private js: JetStreamClientLike | null = null;
+  private subscription: JetStreamSubscriptionLike | null = null;
+  /** Map of streamSeq → in-flight ack handle for the manual-ack pump. */
+  private readonly pending = new Map<number, PendingAck>();
+
+  constructor(settings: Partial<JetStreamActorSettings> = {}) { super(settings); }
+
+  protected configKey(): string { return 'actor-ts.io.broker.jetstream'; }
+  protected builtInDefaults(): Partial<JetStreamActorSettings> { return {}; }
+  protected readSettingsFromConfig(c: Config): Partial<JetStreamActorSettings> {
+    const out: { -readonly [K in keyof JetStreamActorSettings]?: JetStreamActorSettings[K] } = {};
+    if (c.hasPath('servers')) out.servers = c.getStringList('servers');
+    if (c.hasPath('token')) out.token = c.getString('token');
+    if (c.hasPath('user')) out.user = c.getString('user');
+    if (c.hasPath('password')) out.password = c.getString('password');
+    if (c.hasPath('name')) out.name = c.getString('name');
+    return out;
+  }
+  protected requiredSettings(): ReadonlyArray<keyof JetStreamActorSettings> { return ['servers']; }
+  protected endpointLabel(): string {
+    const s = this.settings.servers;
+    if (Array.isArray(s)) return `nats://${s.join(',')}`;
+    return `nats://${typeof s === 'string' ? s : ''}`;
+  }
+
+  /**
+   * Build a `NatsConnectionLike`.  Override in a test subclass to
+   * inject a mock connection (the `nats` peer-dep is heavy and not
+   * necessary for unit tests).
+   */
+  protected async createNatsConnection(): Promise<NatsConnectionLike> {
+    const nats = await natsLazy.get();
+    const servers = Array.isArray(this.settings.servers)
+      ? [...this.settings.servers]
+      : [this.settings.servers as string];
+    return nats.connect({
+      servers,
+      token: this.settings.token,
+      user: this.settings.user,
+      pass: this.settings.password,
+      name: this.settings.name,
+    });
+  }
+
+  protected async connectImpl(): Promise<void> {
+    this.nc = await this.createNatsConnection();
+    this.js = this.nc.jetstream();
+
+    // Stream lifecycle: create-or-update if asked.
+    if (this.settings.stream && (this.settings.stream.create ?? true)) {
+      const jsm = await this.nc.jetstreamManager();
+      await upsertStream(jsm, this.settings.stream);
+    }
+
+    // Consumer + subscription.
+    if (this.settings.consumer) {
+      if (this.settings.consumer.create ?? true) {
+        if (!this.settings.stream?.name) {
+          throw new Error('JetStreamActor: consumer.create requires stream.name');
+        }
+        const jsm = await this.nc.jetstreamManager();
+        await upsertConsumer(jsm, this.settings.stream.name, this.settings.consumer);
+      }
+      if (!this.settings.stream?.name) {
+        throw new Error('JetStreamActor: consumer requires stream.name');
+      }
+      this.subscription = await this.js.subscribe(
+        this.settings.consumer.filterSubject ?? `${this.settings.stream.name}.>`,
+        {
+          stream: this.settings.stream.name,
+          consumer: this.settings.consumer.durable,
+        },
+      );
+      void this.runPump();
+    }
+
+    void this.nc.closed().then((err) => {
+      this.handleConnectionLost(err ?? new Error('nats connection closed'));
+    });
+  }
+
+  protected async disconnectImpl(): Promise<void> {
+    // Reject every still-pending ack so the consumer pump unwinds.
+    if (this.pending.size > 0) {
+      for (const p of this.pending.values()) {
+        try { p.handle.nak(); } catch { /* best-effort */ }
+      }
+      this.pending.clear();
+    }
+    if (this.subscription) {
+      try { await this.subscription.destroy(); } catch { /* */ }
+      this.subscription = null;
+    }
+    if (this.nc) {
+      try { await this.nc.drain(); } catch { /* */ }
+      this.nc = null;
+    }
+    this.js = null;
+  }
+
+  protected async dispatchOutgoing(env: OutboundEnvelope<JetStreamPublish>): Promise<void> {
+    if (!this.js) throw new Error('JetStreamActor: not connected');
+    const p = env.payload;
+    const bytes = typeof p.payload === 'string'
+      ? new TextEncoder().encode(p.payload)
+      : p.payload;
+    await this.js.publish(p.subject, bytes, {
+      msgID: p.messageId,
+      expect: p.expectedLastSeq !== undefined
+        ? { lastSequence: p.expectedLastSeq }
+        : undefined,
+      headers: p.headers,
+    });
+  }
+
+  override onReceive(cmd: JetStreamCmd): void {
+    if (cmd.kind === 'publish') this.enqueueOutbound(cmd.publish);
+    else if (cmd.kind === 'ack') this.handleAck(cmd.streamSeq);
+    else if (cmd.kind === 'nak') this.handleNak(cmd.streamSeq, cmd.delayMs);
+    else if (cmd.kind === 'term') this.handleTerm(cmd.streamSeq, cmd.reason);
+    else if (cmd.kind === 'inProgress') this.handleInProgress(cmd.streamSeq);
+  }
+
+  /* ----------------------------- internals ----------------------------- */
+
+  private async runPump(): Promise<void> {
+    if (!this.subscription) return;
+    const target = this.settings.target;
+    const ackTimeoutMs = this.settings.ackTimeoutMs
+      ?? this.settings.consumer?.ackWaitMs
+      ?? 30_000;
+
+    for await (const m of this.subscription) {
+      const handle: JetStreamMsgHandleLike = m;
+      const info = handle.info;
+      if (target) {
+        target.tell({
+          subject: handle.subject,
+          payload: handle.data,
+          replyTo: handle.reply ?? '',
+          streamSeq: info.streamSequence,
+          consumerSeq: info.deliverySequence,
+          deliveries: info.deliveryCount,
+          timestamp: info.timestampNanos !== undefined
+            ? Math.floor(info.timestampNanos / 1_000_000)
+            : Date.now(),
+          headers: extractHeaders(handle.headers),
+        });
+      }
+
+      if (this.settings.consumer?.ackPolicy === 'none') {
+        // No ack required — server marks as delivered immediately.
+        continue;
+      }
+
+      // Wait for an external ack/nak/term before pulling the next.
+      const seq = info.streamSequence;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            this.pending.delete(seq);
+            reject(new Error(`JetStreamActor: no ack/nak/term for streamSeq=${seq} within ${ackTimeoutMs}ms`));
+          }, ackTimeoutMs);
+          this.pending.set(seq, {
+            streamSeq: seq,
+            handle,
+            done: () => { clearTimeout(timer); resolve(); },
+            fail: (err) => { clearTimeout(timer); reject(err); },
+          });
+        });
+      } catch (err) {
+        this.log.warn(`JetStreamActor: pump ${(err as Error).message} — letting consumer redeliver`);
+        try { handle.nak(); } catch { /* best-effort */ }
+      }
+    }
+  }
+
+  private handleAck(streamSeq: number): void {
+    const p = this.pending.get(streamSeq);
+    if (!p) {
+      this.log.debug(`JetStreamActor: ack for unknown streamSeq=${streamSeq} — ignored`);
+      return;
+    }
+    try { p.handle.ack(); }
+    catch (err) {
+      p.fail(err instanceof Error ? err : new Error(String(err)));
+      this.pending.delete(streamSeq);
+      return;
+    }
+    p.done();
+    this.pending.delete(streamSeq);
+  }
+
+  private handleNak(streamSeq: number, delayMs?: number): void {
+    const p = this.pending.get(streamSeq);
+    if (!p) return;
+    try {
+      if (typeof delayMs === 'number' && delayMs > 0) {
+        p.handle.nak(delayMs);
+      } else {
+        p.handle.nak();
+      }
+    } catch { /* best-effort — nakWithDelay may be missing on older clients */ }
+    p.done();
+    this.pending.delete(streamSeq);
+  }
+
+  private handleTerm(streamSeq: number, reason?: string): void {
+    const p = this.pending.get(streamSeq);
+    if (!p) return;
+    this.log.warn(
+      `JetStreamActor: term for streamSeq=${streamSeq}${reason ? ` (${reason})` : ''} — `
+      + `message dropped permanently`,
+    );
+    try { p.handle.term(); } catch { /* */ }
+    p.done();
+    this.pending.delete(streamSeq);
+  }
+
+  private handleInProgress(streamSeq: number): void {
+    const p = this.pending.get(streamSeq);
+    if (!p) return;
+    try { p.handle.working(); } catch { /* */ }
+  }
+}
+
+/* ----------------------------- internals -------------------------------- */
+
+interface PendingAck {
+  readonly streamSeq: number;
+  readonly handle: JetStreamMsgHandleLike;
+  readonly done: () => void;
+  readonly fail: (err: Error) => void;
+}
+
+async function upsertStream(
+  jsm: JetStreamManagerLike, cfg: JetStreamStreamConfig,
+): Promise<void> {
+  try {
+    await jsm.streams.add({
+      name: cfg.name,
+      subjects: [...cfg.subjects],
+      retention: cfg.retention,
+      storage: cfg.storage,
+      max_msgs: cfg.maxMsgs,
+      max_bytes: cfg.maxBytes,
+      max_age: cfg.maxAge,
+    });
+  } catch (e) {
+    // If the stream exists, update it; the nats client raises a
+    // 10058 ("stream name in use") error code we treat as benign.
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!/in use|already exists|10058/i.test(msg)) throw e;
+    await jsm.streams.update(cfg.name, {
+      subjects: [...cfg.subjects],
+      retention: cfg.retention,
+      storage: cfg.storage,
+      max_msgs: cfg.maxMsgs,
+      max_bytes: cfg.maxBytes,
+      max_age: cfg.maxAge,
+    });
+  }
+}
+
+async function upsertConsumer(
+  jsm: JetStreamManagerLike, streamName: string, cfg: JetStreamConsumerConfig,
+): Promise<void> {
+  const ackWaitNs = (cfg.ackWaitMs ?? 30_000) * 1_000_000;
+  const consumerCfg: ConsumerAddConfig = {
+    durable_name: cfg.durable,
+    ack_policy: cfg.ackPolicy ?? 'explicit',
+    ack_wait: ackWaitNs,
+    filter_subject: cfg.filterSubject,
+    max_ack_pending: cfg.maxAckPending,
+    deliver_policy: 'all',
+  };
+  if (cfg.deliverPolicy === 'last') consumerCfg.deliver_policy = 'last';
+  else if (cfg.deliverPolicy === 'new') consumerCfg.deliver_policy = 'new';
+  else if (typeof cfg.deliverPolicy === 'object' && 'kind' in cfg.deliverPolicy) {
+    if (cfg.deliverPolicy.kind === 'byStartSeq') {
+      consumerCfg.deliver_policy = 'by_start_sequence';
+      consumerCfg.opt_start_seq = cfg.deliverPolicy.startSeq;
+    } else if (cfg.deliverPolicy.kind === 'byStartTime') {
+      consumerCfg.deliver_policy = 'by_start_time';
+      consumerCfg.opt_start_time = new Date(cfg.deliverPolicy.startTimeMs).toISOString();
+    }
+  }
+
+  try {
+    await jsm.consumers.add(streamName, consumerCfg);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!/already exists|in use|10148/i.test(msg)) throw e;
+    await jsm.consumers.update(streamName, cfg.durable, consumerCfg);
+  }
+}
+
+function extractHeaders(h: HeadersLike | undefined): Record<string, string> {
+  if (!h) return {};
+  const out: Record<string, string> = {};
+  for (const k of h.keys()) out[k] = h.get(k) ?? '';
+  return out;
+}
+
+/* -------------------- nats peer-dep type stubs --------------------- */
+
+/**
+ * Minimal `NatsConnection` surface the actor depends on.  Exported so
+ * test seams (subclasses of `JetStreamActor` overriding
+ * `createNatsConnection`) can satisfy the same shape without pulling
+ * the real `nats` peer-dep.
+ */
+export interface NatsConnectionLike {
+  jetstream(): JetStreamClientLike;
+  jetstreamManager(): Promise<JetStreamManagerLike>;
+  drain(): Promise<void>;
+  closed(): Promise<Error | undefined>;
+}
+
+export interface JetStreamClientLike {
+  publish(subject: string, payload: Uint8Array, opts?: {
+    msgID?: string;
+    expect?: { lastSequence?: number };
+    headers?: Readonly<Record<string, string>>;
+  }): Promise<unknown>;
+  subscribe(subject: string, opts: {
+    stream: string;
+    consumer: string;
+  }): Promise<JetStreamSubscriptionLike>;
+}
+
+export interface JetStreamSubscriptionLike extends AsyncIterable<JetStreamMsgHandleLike> {
+  destroy(): Promise<void>;
+}
+
+interface HeadersLike {
+  keys(): Iterable<string>;
+  get(key: string): string | null;
+}
+
+export interface JetStreamMsgInfoLike {
+  readonly streamSequence: number;
+  readonly deliverySequence: number;
+  readonly deliveryCount: number;
+  readonly timestampNanos?: number;
+}
+
+export interface JetStreamMsgHandleLike {
+  readonly subject: string;
+  readonly data: Uint8Array;
+  readonly reply?: string;
+  readonly headers?: HeadersLike;
+  readonly info: JetStreamMsgInfoLike;
+  ack(): void;
+  nak(delayMs?: number): void;
+  term(): void;
+  working(): void;
+}
+
+interface ConsumerAddConfig {
+  durable_name: string;
+  ack_policy?: 'explicit' | 'none' | 'all';
+  ack_wait?: number;
+  filter_subject?: string;
+  max_ack_pending?: number;
+  deliver_policy?: 'all' | 'last' | 'new' | 'by_start_sequence' | 'by_start_time';
+  opt_start_seq?: number;
+  opt_start_time?: string;
+}
+
+export interface JetStreamManagerLike {
+  readonly streams: {
+    add(cfg: {
+      name: string; subjects: string[]; retention?: string;
+      storage?: string; max_msgs?: number; max_bytes?: number; max_age?: number;
+    }): Promise<unknown>;
+    update(name: string, cfg: {
+      subjects: string[]; retention?: string; storage?: string;
+      max_msgs?: number; max_bytes?: number; max_age?: number;
+    }): Promise<unknown>;
+  };
+  readonly consumers: {
+    add(stream: string, cfg: ConsumerAddConfig): Promise<unknown>;
+    update(stream: string, durable: string, cfg: ConsumerAddConfig): Promise<unknown>;
+  };
+}
+
+interface NatsModuleLike {
+  connect(opts: {
+    servers: string[]; token?: string; user?: string; pass?: string; name?: string;
+  }): Promise<NatsConnectionLike>;
+}
+
+const natsLazy: Lazy<Promise<NatsModuleLike>> = Lazy.of(async () => {
+  try {
+    const name = 'nats';
+    return (await import(name)) as unknown as NatsModuleLike;
+  } catch (e) {
+    throw new Error(
+      'JetStreamActor requires the "nats" package.  Install it with: npm install nats\n'
+      + 'Original error: ' + (e instanceof Error ? e.message : String(e)),
+    );
+  }
+});
