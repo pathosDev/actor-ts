@@ -125,12 +125,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   family (Fastify, Hono); `bunWebSocketHandlers` for `Bun.serve`'s
   callback-style API (#1).
 
-### Added — README architecture diagrams
-
-- Three architecture diagrams in the README — actor lifecycle
-  state machine, cluster gossip flow, sharding allocation +
-  hand-off (#25).
-
 ### Fixed
 
 - `DistributedPubSubMediator` — eager broadcast on subscribe /
