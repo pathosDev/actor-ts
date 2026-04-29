@@ -12,19 +12,21 @@ import {
 /**
  * SQLite-backed query.  Inherits the per-pid read path from
  * {@link InMemoryQuery} (which delegates straight to `Journal.read`)
- * and overrides the tag path with a real SQL filter so the entire
- * tag scan happens in the database, not in JS.
+ * and overrides the tag path with an indexed JOIN against the
+ * `${eventsTable}_tags` join table that `SqliteJournal` maintains.
  *
- * **Tag column shape.**  `SqliteJournal` stores tags as a
- * comma-separated `TEXT`.  To match a single tag without false
- * positives (`'foo'` vs `'foobar'`) the filter pads both sides:
+ * **Index shape.**  The journal's tags table has primary key
+ * `(tag, timestamp, persistence_id, sequence_nr)`, so a
+ * `WHERE tag = ? AND timestamp >= ?` filter walks a contiguous
+ * range of the index — bounded cost per query no matter how big
+ * the events table grows.  We then JOIN to `events` to pull the
+ * payload + the original CSV tags column.
  *
- *   `',' || tags || ',' LIKE '%,foo,%'`
- *
- * Yes, this is a sequential scan when the tag count is high — for
- * that workload swap to a tags join table.  For the v1 projection
- * use-case (small set of tags, modest event volumes) this is fine
- * and it doesn't require a schema migration.
+ * **Backwards-compat.**  `SqliteJournal` upgrades existing v0
+ * databases (CSV-only, no join table) by backfilling the join
+ * table on `init()` — see `SqliteJournal.backfillTagsTableIfNeeded`.
+ * From the query layer's POV the table is always present once the
+ * journal is open.
  */
 export class SqliteQuery extends InMemoryQuery {
   /**
@@ -42,10 +44,9 @@ export class SqliteQuery extends InMemoryQuery {
     tag: string, fromOffset: Offset,
   ): Promise<TaggedEvent<E>[]> {
     const stmts = await this.ensureTagStmts();
-    const padded = `%,${tag},%`;
     let rows: TagRow[];
     try {
-      rows = stmts.fetchByTag.all(padded, fromOffset.timestamp) as TagRow[];
+      rows = stmts.fetchByTag.all(tag, fromOffset.timestamp) as TagRow[];
     } catch (e) {
       throw new JournalError(`SqliteQuery.currentEventsByTag failed: ${(e as Error).message}`, e);
     }
@@ -59,10 +60,10 @@ export class SqliteQuery extends InMemoryQuery {
         timestamp: r.timestamp,
         tags: r.tags ? r.tags.split(',') : undefined,
       };
-      // Defensive: the LIKE filter is over `,foo,` so we shouldn't
-      // see false positives, but verify anyway in case a downstream
-      // store-loader returns a row whose tags column was hand-edited.
-      if (!event.tags?.includes(tag)) continue;
+      // The full offset comparison still happens here — the SQL
+      // `timestamp >= ?` filter is a coarse cut, but the
+      // (persistence_id, sequence_nr) tiebreakers in `Offset` mean
+      // we still need a precise compare per row.
       const offset = offsetOfEvent(event);
       if (offsetCompare(offset, fromOffset) < 0) continue;
       out.push({ event, offset });
@@ -73,7 +74,7 @@ export class SqliteQuery extends InMemoryQuery {
 
   private async ensureTagStmts(): Promise<TagStmts> {
     if (this.cachedStmts) return this.cachedStmts;
-    // Force the journal to open + create its table so we can prepare.
+    // Force the journal to open + create its tables so we can prepare.
     await this.sqlite.persistenceIds();
     const internal = this.sqlite as unknown as {
       db: { prepare(sql: string): { all(...args: unknown[]): unknown[] } } | null;
@@ -82,20 +83,19 @@ export class SqliteQuery extends InMemoryQuery {
     if (!internal.db) {
       throw new JournalError('SqliteQuery: underlying SqliteJournal is not open');
     }
-    const table = internal.table;
+    const eventsTable = internal.table;
+    const tagsTable = `${eventsTable}_tags`;
     this.cachedStmts = {
       fetchByTag: internal.db.prepare(
-        // The `>= ?` filter on timestamp is a coarse cut — it lets us
-        // skip rows that we've definitely already seen on the next
-        // poll without having to walk the whole table.  The exact
-        // offset comparison still happens in JS via offsetCompare,
-        // because sequence_nr / persistence_id tiebreakers don't
-        // cleanly translate to a single SQL WHERE clause.
-        `SELECT persistence_id, sequence_nr, payload, tags, timestamp
-           FROM ${table}
-          WHERE ',' || COALESCE(tags, '') || ',' LIKE ?
-            AND timestamp >= ?
-          ORDER BY timestamp ASC, persistence_id ASC, sequence_nr ASC`,
+        // Walk the tags-table PK range for the given tag, JOIN to
+        // events to fetch payload + CSV tags column.  ORDER matches
+        // the index PK so SQLite doesn't have to sort separately.
+        `SELECT e.persistence_id, e.sequence_nr, e.payload, e.tags, e.timestamp
+           FROM ${tagsTable} t
+           JOIN ${eventsTable} e
+             ON e.persistence_id = t.persistence_id AND e.sequence_nr = t.sequence_nr
+          WHERE t.tag = ? AND t.timestamp >= ?
+          ORDER BY t.timestamp ASC, t.persistence_id ASC, t.sequence_nr ASC`,
       ) as TagStmts['fetchByTag'],
     };
     return this.cachedStmts;
@@ -103,7 +103,7 @@ export class SqliteQuery extends InMemoryQuery {
 }
 
 interface TagStmts {
-  fetchByTag: { all(pattern: string, fromTimestamp: number): TagRow[] };
+  fetchByTag: { all(tag: string, fromTimestamp: number): TagRow[] };
 }
 
 interface TagRow {

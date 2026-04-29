@@ -24,11 +24,17 @@ export interface SqliteJournalOptions {
 
 interface Stmts {
   insert: SqliteStatement;
+  insertTag: SqliteStatement;
   readAll: SqliteStatement;
   readRange: SqliteStatement;
   highestSeq: SqliteStatement;
   deleteUpTo: SqliteStatement;
+  deleteTagsUpTo: SqliteStatement;
   pids: SqliteStatement;
+  /** Used by the tags-table backfill at startup. */
+  countTags: SqliteStatement;
+  /** Iterates events that still have CSV tags but no row in the tag table. */
+  rowsWithCsvTags: SqliteStatement;
 }
 
 /**
@@ -91,6 +97,16 @@ export class SqliteJournal implements Journal {
         const payload = JSON.stringify(ev);
         const tagString = tags && tags.length ? tags.join(',') : null;
         stmts.insert.run(pid, seq, payload, tagString, now);
+        // Also populate the tags join table so SqliteQuery's
+        // tag-search can do an indexed lookup instead of a CSV scan.
+        // Both inserts run inside the same transaction — partial
+        // writes are impossible.
+        if (tags) {
+          for (const tag of tags) {
+            if (tag.length === 0) continue;
+            stmts.insertTag.run(pid, seq, tag, now);
+          }
+        }
         out.push({
           persistenceId: pid,
           sequenceNr: seq,
@@ -153,6 +169,13 @@ export class SqliteJournal implements Journal {
 
   async delete(pid: string, toSeq: number): Promise<void> {
     await this.ensureOpen();
+    // Order matters: delete from the tags-table FIRST so that a
+    // crash mid-delete leaves an inconsistent state where tags exist
+    // for events that don't — recoverable via a manual cleanup or a
+    // future backfill.  Doing it the other way around would produce
+    // events with missing tags, which the JOIN-based query path
+    // would silently miss.
+    this.stmts!.deleteTagsUpTo.run(pid, toSeq);
     this.stmts!.deleteUpTo.run(pid, toSeq);
   }
 
@@ -180,6 +203,7 @@ export class SqliteJournal implements Journal {
   private async init(): Promise<void> {
     const driver = this.options.driver ?? await getSqliteDriver();
     const db = driver.open(this.options.path ?? ':memory:');
+    const tagsTable = `${this.table}_tags`;
     db.exec(`
       CREATE TABLE IF NOT EXISTS ${this.table} (
         persistence_id TEXT NOT NULL,
@@ -190,12 +214,23 @@ export class SqliteJournal implements Journal {
         PRIMARY KEY (persistence_id, sequence_nr)
       );
       CREATE INDEX IF NOT EXISTS idx_${this.table}_pid ON ${this.table}(persistence_id);
+      CREATE TABLE IF NOT EXISTS ${tagsTable} (
+        persistence_id TEXT NOT NULL,
+        sequence_nr    INTEGER NOT NULL,
+        tag            TEXT NOT NULL,
+        timestamp      INTEGER NOT NULL,
+        PRIMARY KEY (tag, timestamp, persistence_id, sequence_nr)
+      );
+      CREATE INDEX IF NOT EXISTS idx_${tagsTable}_pid_seq ON ${tagsTable}(persistence_id, sequence_nr);
     `);
     if (this.options.wal) db.exec('PRAGMA journal_mode = WAL;');
 
     this.stmts = {
       insert: db.prepare(
         `INSERT INTO ${this.table}(persistence_id, sequence_nr, payload, tags, timestamp) VALUES (?, ?, ?, ?, ?)`,
+      ),
+      insertTag: db.prepare(
+        `INSERT OR IGNORE INTO ${tagsTable}(persistence_id, sequence_nr, tag, timestamp) VALUES (?, ?, ?, ?)`,
       ),
       readAll: db.prepare(
         `SELECT persistence_id, sequence_nr, payload, tags, timestamp FROM ${this.table} WHERE persistence_id = ? AND sequence_nr >= ? ORDER BY sequence_nr ASC`,
@@ -209,10 +244,60 @@ export class SqliteJournal implements Journal {
       deleteUpTo: db.prepare(
         `DELETE FROM ${this.table} WHERE persistence_id = ? AND sequence_nr <= ?`,
       ),
+      deleteTagsUpTo: db.prepare(
+        `DELETE FROM ${tagsTable} WHERE persistence_id = ? AND sequence_nr <= ?`,
+      ),
       pids: db.prepare(
         `SELECT DISTINCT persistence_id FROM ${this.table}`,
       ),
+      countTags: db.prepare(
+        `SELECT COUNT(*) AS n FROM ${tagsTable}`,
+      ),
+      rowsWithCsvTags: db.prepare(
+        `SELECT persistence_id, sequence_nr, tags, timestamp FROM ${this.table} WHERE tags IS NOT NULL AND tags <> ''`,
+      ),
     };
     this.db = db;
+
+    // Backfill — for databases written by SqliteJournal v0 (before
+    // this commit) the tags table doesn't exist yet, OR exists empty
+    // because the user upgraded the dependency.  Populate it from
+    // the CSV column once.  Idempotent: if the tags table already
+    // has rows, this skips entirely.
+    this.backfillTagsTableIfNeeded(db);
+  }
+
+  /**
+   * One-shot backfill of the tags join table from the legacy CSV
+   * `tags` column.  Runs at most once per init — when `event_tags`
+   * is empty AND the `events` table still has tagged rows we'd
+   * otherwise leave un-indexed.  Re-running is a no-op (the count
+   * check skips it) and the underlying inserts use `INSERT OR
+   * IGNORE` as a defence-in-depth so a partial backfill that gets
+   * interrupted can be resumed without duplicate-key errors.
+   */
+  private backfillTagsTableIfNeeded(db: SqliteDb): void {
+    const stmts = this.stmts!;
+    const tagsCount = (stmts.countTags.get() as { n: number } | undefined)?.n ?? 0;
+    if (tagsCount > 0) return;
+
+    type CsvRow = {
+      persistence_id: string;
+      sequence_nr: number;
+      tags: string;
+      timestamp: number;
+    };
+    const rows = stmts.rowsWithCsvTags.all() as CsvRow[];
+    if (rows.length === 0) return;
+
+    const fill = db.transaction((items: CsvRow[]) => {
+      for (const r of items) {
+        const tagList = r.tags.split(',').filter((t) => t.length > 0);
+        for (const tag of tagList) {
+          stmts.insertTag.run(r.persistence_id, r.sequence_nr, tag, r.timestamp);
+        }
+      }
+    });
+    fill(rows);
   }
 }
