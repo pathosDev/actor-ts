@@ -33,3 +33,18 @@ export {
   formatMigrationResult,
 } from './wrapLegacy.js';
 export type { MigrationResult } from './wrapLegacy.js';
+
+// #6 — pluggable codec + in-process schema registry.
+export { jsonCodec, zodCodec, composeCodecs } from './Codec.js';
+export type { Codec, ParserLike } from './Codec.js';
+export {
+  validatedEventAdapter,
+  validatedSnapshotAdapter,
+} from './validatedAdapter.js';
+export type { ValidatedAdapterOptions } from './validatedAdapter.js';
+export { InMemorySchemaRegistry } from './SchemaRegistry.js';
+export type {
+  SchemaRegistry,
+  SchemaRegistration,
+  SchemaDescriptor,
+} from './SchemaRegistry.js';
