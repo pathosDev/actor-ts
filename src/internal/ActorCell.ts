@@ -12,6 +12,8 @@ import type { ActorSystem } from '../ActorSystem.js';
 import { LogContext } from '../LogContext.js';
 import type { Logger } from '../Logger.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
+import { tracerOf } from '../tracing/TracingExtension.js';
+import type { Span } from '../tracing/Tracer.js';
 import type { Props } from '../Props.js';
 import {
   ActorInitializationError,
@@ -447,6 +449,13 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
       { help: 'Cumulative count of user messages delivered to actor onReceive.' },
     ).inc();
 
+    const tracer = tracerOf(this.system);
+    // Open a server-kind `actor.receive` span when tracing is enabled
+    // and either we have a parent in the envelope or we're starting a
+    // root.  Span is the "active" one for the duration of `behavior(msg)`
+    // so child tells from inside the handler get this span as parent.
+    let span: Span | null = null;
+
     // Establish the MDC scope for the duration of `behavior(msg)`.  Any
     // `tell`s issued from inside the handler snapshot this same context
     // (LocalActorRef + RemoteActorRef both read `LogContext.get()`),
@@ -469,12 +478,22 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
           this._watching.delete(key);
         }
         const behavior = this.behaviorStack[this.behaviorStack.length - 1];
-        await behavior(msg);
+        if (span) {
+          await tracer.withActiveSpan(span, () => behavior(msg));
+        } else {
+          await behavior(msg);
+        }
         this._resetReceiveTimer();
+        if (span) span.setStatus('ok');
       } catch (e) {
         const err = e instanceof Error ? e : new Error(String(e));
+        if (span) {
+          span.recordException(err);
+          span.setStatus('error', err.message);
+        }
         this.failToParent(err, msg);
       } finally {
+        if (span) span.end();
         // Record handler duration in seconds — Prom convention.  Using
         // the per-call `metrics` ref keeps a single dispatch through
         // the extension chain.
@@ -486,6 +505,23 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
         this._currentEnvelope = null;
       }
     };
+
+    // Lazily start the span once we know tracing is enabled and the
+    // envelope is an "interesting" message (skip Terminated etc?  Spans
+    // for system-message-shaped envelopes are still useful — the path
+    // is what matters).  `null` parent → root span; envelope-supplied
+    // SpanContext → child of the originating tell.
+    if (env.trace || tracerOf(this.system).activeSpan()) {
+      span = tracer.startSpan('actor.receive', {
+        parent: env.trace ?? undefined,
+        kind: 'consumer',
+        attributes: {
+          'actor.path': this.path.toString(),
+          'actor.message.type': (msg as { constructor?: { name?: string } })?.constructor?.name ?? typeof msg,
+        },
+      });
+    }
+
     if (env.context) {
       await LogContext.run(env.context, dispatch);
     } else {

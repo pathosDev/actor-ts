@@ -90,6 +90,13 @@ export interface EnvelopeMsg {
    * (#53 — cross-node MDC).
    */
   context?: Readonly<Record<string, string | number | boolean>>;
+  /**
+   * Optional W3C trace context — the `traceparent` value carrying
+   * the originating node's active span.  The receiving cluster
+   * decodes it and links the new actor.receive span to that parent
+   * (#10 — cross-node distributed tracing).
+   */
+  trace?: { readonly traceparent: string; readonly tracestate?: string };
 }
 
 export interface ShardMapMsg {

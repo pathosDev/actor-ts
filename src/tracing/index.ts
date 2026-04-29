@@ -1,0 +1,27 @@
+export type {
+  Tracer,
+  Span,
+  SpanContext,
+  SpanOptions,
+  SpanKind,
+  SpanStatus,
+  AttributeValue,
+  TraceCarrier,
+} from './Tracer.js';
+export {
+  encodeTraceparent,
+  decodeTraceparent,
+  newTraceId,
+  newSpanId,
+} from './Tracer.js';
+export { NoopTracer, NOOP_TRACER } from './NoopTracer.js';
+export { RecordingTracer } from './RecordingTracer.js';
+export type {
+  RecordedSpan,
+  RecordingTracerOptions,
+} from './RecordingTracer.js';
+export {
+  TracingExtension,
+  TracingExtensionId,
+  tracerOf,
+} from './TracingExtension.js';

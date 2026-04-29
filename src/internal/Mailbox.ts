@@ -1,5 +1,6 @@
 import type { ActorRef } from '../ActorRef.js';
 import type { LogContextData } from '../LogContext.js';
+import type { SpanContext } from '../tracing/Tracer.js';
 
 export interface Envelope<T = unknown> {
   readonly message: T;
@@ -11,6 +12,14 @@ export interface Envelope<T = unknown> {
    * carry the originating context.  See {@link LogContext}.
    */
   readonly context?: LogContextData;
+  /**
+   * Optional active-span context captured at `tell` time.  If the
+   * tracing extension is enabled and the receiver also has it
+   * enabled, the receiver's `actor.receive` span links back to this
+   * one as its parent — producing one coherent trace across actor
+   * hops and cluster nodes.  See {@link Tracer}.
+   */
+  readonly trace?: SpanContext;
 }
 
 /**

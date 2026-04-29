@@ -117,6 +117,32 @@ export type {
   HistogramOptions,
 } from './metrics/index.js';
 
+// Distributed tracing — minimal Tracer + NoopTracer + RecordingTracer (#10).
+export {
+  NoopTracer,
+  NOOP_TRACER,
+  RecordingTracer,
+  TracingExtension,
+  TracingExtensionId,
+  tracerOf,
+  encodeTraceparent,
+  decodeTraceparent,
+  newTraceId,
+  newSpanId,
+} from './tracing/index.js';
+export type {
+  Tracer,
+  Span,
+  SpanContext,
+  SpanOptions,
+  SpanKind,
+  SpanStatus,
+  AttributeValue,
+  TraceCarrier,
+  RecordedSpan,
+  RecordingTracerOptions,
+} from './tracing/index.js';
+
 // System messages
 export {
   PoisonPill,

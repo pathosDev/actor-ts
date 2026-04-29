@@ -4,6 +4,7 @@ import type { ActorSystem } from '../ActorSystem.js';
 import { LogContext } from '../LogContext.js';
 import type { Logger } from '../Logger.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
+import { tracerOf } from '../tracing/TracingExtension.js';
 import type { Cancellable } from '../Scheduler.js';
 import { none, some, type Option } from '../util/Option.js';
 import {
@@ -392,12 +393,40 @@ export class Cluster {
   }
 
   private handleEnvelope(from: NodeAddress, msg: EnvelopeMsg): void {
-    // Re-install the originating MDC for the duration of dispatch
-    // (#53).  Local refs the dispatcher subsequently `tell`s capture
-    // this same context onto the next envelope, so the trail keeps
-    // flowing across hops.  Empty / missing contexts skip the wrapper
-    // — nothing to install, nothing to clean up.
-    const dispatch = (): void => this.dispatchEnvelope(from, msg);
+    // Re-install the originating MDC + active trace context for the
+    // duration of dispatch (#53, #10).  Local refs that the
+    // dispatcher subsequently `tell`s capture this same context onto
+    // the next envelope, so both trails keep flowing across hops.
+    // Empty / missing contexts skip the corresponding wrapper.
+    let dispatch: () => void = (): void => this.dispatchEnvelope(from, msg);
+
+    // Tracing: if the envelope carries a parent context, open a
+    // `cluster.envelope.received` span so the trace explicitly
+    // shows the network hop and downstream local-tells see this
+    // span as their active parent.
+    if (msg.trace) {
+      const tracer = tracerOf(this.system);
+      const parentCtx = tracer.extractContext(msg.trace);
+      if (parentCtx) {
+        const inner = dispatch;
+        dispatch = (): void => {
+          const span = tracer.startSpan('cluster.envelope.received', {
+            parent: parentCtx,
+            kind: 'consumer',
+            attributes: {
+              'cluster.from': from.toString(),
+              'cluster.to.path': msg.to,
+            },
+          });
+          try {
+            tracer.withActiveSpan(span, inner);
+          } finally {
+            span.end();
+          }
+        };
+      }
+    }
+
     if (msg.context && Object.keys(msg.context).length > 0) {
       LogContext.run(msg.context, dispatch);
     } else {
