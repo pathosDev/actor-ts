@@ -10,10 +10,13 @@ import type { ReplicaId } from '../crdt/Crdt.js';
 import type { Journal } from './Journal.js';
 import type { PersistentEvent } from './JournalTypes.js';
 import { PersistenceExtensionId } from './PersistenceExtension.js';
+import type { SnapshotPolicy } from './PersistentActor.js';
 import {
   type ConflictResolver,
   LastWriterWinsResolver,
 } from './replicated/ConflictResolver.js';
+import type { ReplicatedSnapshot } from './replicated/ReplicatedSnapshot.js';
+import type { SnapshotStore } from './SnapshotStore.js';
 import { VectorClock, type VectorClockData } from './replicated/VectorClock.js';
 
 /**
@@ -112,6 +115,20 @@ export abstract class ReplicatedEventSourcedActor<Cmd, Event, State>
    */
   protected pubsubGossipIntervalMs(): number { return 250; }
 
+  /**
+   * Snapshot policy — return true after applying an event to take a
+   * snapshot of current state.  Default: never snapshot, full journal
+   * is replayed on every restart.
+   *
+   * The `seqNr` argument is the running TOTAL count of events the
+   * actor has observed (own + remote), not just locally-issued ones —
+   * "snapshot every 100 events from any source" is the natural unit.
+   * Re-uses the shared `SnapshotPolicy` helper from `PersistentActor`,
+   * so `everyNEvents(N)` works the same way it does for classic
+   * event-sourced actors.
+   */
+  protected snapshotPolicy(): SnapshotPolicy<State, Event> { return () => false; }
+
   /** Recovery hook — called after the local journal has been replayed. */
   onRecoveryComplete(_state: State): void | Promise<void> {}
 
@@ -120,12 +137,21 @@ export abstract class ReplicatedEventSourcedActor<Cmd, Event, State>
   private _state!: State;
   private _vc = VectorClock.empty();
   /** Strict order: every observed event, deduped, sorted via resolver. */
-  private readonly _events: Array<ReplicatedEventEnvelope<Event>> = [];
-  private readonly _seenIds = new Set<string>();
+  private _events: Array<ReplicatedEventEnvelope<Event>> = [];
+  private _seenIds = new Set<string>();
 
   private _journal!: Journal;
+  private _snapshotStore!: SnapshotStore;
   private _mediator: ActorRef<Subscribe | Publish | unknown> | null = null;
   private _localSeq = 0;
+  /** Journal seq up to which we've absorbed events.  Updated on each
+   *  successful `_appendOne`; persisted as part of the snapshot so
+   *  recovery only re-reads the post-snapshot delta. */
+  private _journalSeq = 0;
+  /** Total observed events count — snapshot policy operates on this. */
+  private _observedCount = 0;
+  /** Guard so concurrent absorbs don't issue overlapping snapshot saves. */
+  private _snapshotInFlight = false;
 
   constructor(public readonly cluster: Cluster) { super(); }
 
@@ -134,23 +160,51 @@ export abstract class ReplicatedEventSourcedActor<Cmd, Event, State>
 
   override async preStart(): Promise<void> {
     this._state = this.initialState();
-    this._journal = this.system.extension(PersistenceExtensionId).journal;
+    const ext = this.system.extension(PersistenceExtensionId);
+    this._journal = ext.journal;
+    this._snapshotStore = ext.snapshotStore;
 
-    // Replay local journal — every event we've ever observed is here.
-    const stored = await this._journal.read<ReplicatedEventEnvelope<Event>>(this.persistenceId, 1);
-    for (const ev of stored) {
-      this._absorb(ev.event, /* persistLocally= */ false, /* broadcast= */ false);
+    // 1. Try to load a snapshot.  If present, seed every in-memory
+    //    field from it so we don't have to re-fold the journal
+    //    history that produced it.
+    let journalReplayFrom = 1;
+    const snapshotOpt = await this._snapshotStore
+      .loadLatest<ReplicatedSnapshot<Event, State>>(this.persistenceId);
+    if (snapshotOpt.isSome()) {
+      const snap = snapshotOpt.value.state;
+      this._state = snap.state;
+      this._vc = VectorClock.fromData(snap.vc);
+      this._seenIds = new Set(snap.seenIds);
+      this._events = [...snap.events];
+      this._localSeq = snap.localSeq;
+      this._journalSeq = snap.journalSeqAtSnapshot;
+      this._observedCount = snap.events.length;
+      journalReplayFrom = snap.journalSeqAtSnapshot + 1;
     }
 
-    // Subscribe to the cross-replica topic.  The Subscribe message
-    // is delivered to the mediator via tell(); the actor mailbox is
-    // ours, so when remote events arrive they land in onReceive.
+    // 2. Read post-snapshot journal delta and absorb anything not
+    //    already accounted for by `_seenIds`.  Without a snapshot
+    //    `journalReplayFrom = 1` and this is the same full-replay
+    //    path as before.
+    const delta = await this._journal.read<ReplicatedEventEnvelope<Event>>(
+      this.persistenceId, journalReplayFrom,
+    );
+    for (const pe of delta) {
+      // Track the journal seq cursor so a snapshot taken later
+      // records the right `journalSeqAtSnapshot`.
+      if (pe.sequenceNr > this._journalSeq) this._journalSeq = pe.sequenceNr;
+      this._absorb(pe.event, /* persistLocally= */ false, /* broadcast= */ false);
+    }
+
+    // 3. Subscribe to the cross-replica topic.  The Subscribe message
+    //    is delivered to the mediator via tell(); the actor mailbox is
+    //    ours, so when remote events arrive they land in onReceive.
     //
-    // We pass `gossipIntervalMs: this.pubsubGossipIntervalMs()` —
-    // default 250 ms — so subscription state propagates fast enough
-    // that the first user-issued persist a few hundred ms after
-    // construction reaches peer replicas.  Tests can dial this
-    // tighter; production should leave the default.
+    //    We pass `gossipIntervalMs: this.pubsubGossipIntervalMs()` —
+    //    default 250 ms — so subscription state propagates fast enough
+    //    that the first user-issued persist a few hundred ms after
+    //    construction reaches peer replicas.  Tests can dial this
+    //    tighter; production should leave the default.
     const pubsub = this.system.extension(DistributedPubSubId).start(
       this.cluster, { gossipIntervalMs: this.pubsubGossipIntervalMs() },
     );
@@ -199,10 +253,17 @@ export abstract class ReplicatedEventSourcedActor<Cmd, Event, State>
    * `expectedSeq` argument is always accurate — the actor is the
    * single writer to its own persistenceId, so no other coroutine
    * can interleave between the read and the append.
+   *
+   * Updates `_journalSeq` so the next snapshot records the
+   * just-appended journal position.
    */
   private async _appendOne(envelope: ReplicatedEventEnvelope<Event>): Promise<void> {
     const head = await this._journal.highestSeq(this.persistenceId);
-    await this._journal.append(this.persistenceId, [envelope], head, [REPLICATED_TAG]);
+    const written = await this._journal.append(
+      this.persistenceId, [envelope], head, [REPLICATED_TAG],
+    );
+    const lastWrittenSeq = written[written.length - 1]?.sequenceNr ?? head + 1;
+    if (lastWrittenSeq > this._journalSeq) this._journalSeq = lastWrittenSeq;
   }
 
   /* ----------------------------- absorb event --------------------------- */
@@ -252,6 +313,7 @@ export abstract class ReplicatedEventSourcedActor<Cmd, Event, State>
     }
 
     this._vc = this._vc.merge(VectorClock.fromData(envelope.vc));
+    this._observedCount += 1;
 
     if (persistLocally) {
       // Append remote events to OUR local journal so a recovery from
@@ -267,6 +329,59 @@ export abstract class ReplicatedEventSourcedActor<Cmd, Event, State>
       this._mediator.tell(new Publish<ReplicatedEventEnvelope<Event>>(
         topicFor(this.persistenceId), envelope,
       ) as unknown as never);
+    }
+
+    // Snapshot policy check — fire AFTER state has been updated and
+    // VC merged so the snapshot we save is fully consistent.
+    const policy = this.snapshotPolicy();
+    if (policy(this._observedCount, this._state, envelope.event)) {
+      this._maybeSaveSnapshot();
+    }
+  }
+
+  /* ----------------------------- snapshotting --------------------------- */
+
+  /**
+   * Force a snapshot of the current state.  Useful for tests + manual
+   * compaction.  Returns the saved snapshot or `null` if a save was
+   * already in flight.
+   */
+  protected async saveSnapshot(): Promise<void> {
+    return this._saveSnapshotNow();
+  }
+
+  /**
+   * Triggered by the policy check in `_absorb`.  Fire-and-forget so
+   * the actor's mailbox doesn't block on disk I/O; the in-flight
+   * guard prevents overlapping saves.  Recovery is correct even if a
+   * mid-save crash drops the snapshot — we just fall back to the
+   * previous snapshot or full replay.
+   */
+  private _maybeSaveSnapshot(): void {
+    if (this._snapshotInFlight) return;
+    this._snapshotInFlight = true;
+    void this._saveSnapshotNow().finally(() => {
+      this._snapshotInFlight = false;
+    });
+  }
+
+  private async _saveSnapshotNow(): Promise<void> {
+    const snapshot: ReplicatedSnapshot<Event, State> = {
+      state: this._state,
+      vc: this._vc.toJSON(),
+      seenIds: Array.from(this._seenIds),
+      events: [...this._events],
+      localSeq: this._localSeq,
+      journalSeqAtSnapshot: this._journalSeq,
+      takenBy: this.replicaId,
+      takenAt: Date.now(),
+    };
+    try {
+      await this._snapshotStore.save<ReplicatedSnapshot<Event, State>>(
+        this.persistenceId, this._journalSeq, snapshot,
+      );
+    } catch (err) {
+      this.log.warn(`replicated-es: snapshot save failed`, err);
     }
   }
 
