@@ -6,6 +6,7 @@ import { Props } from '../../Props.js';
 import type { Cluster } from '../Cluster.js';
 import type { EnvelopeMsg } from '../Protocol.js';
 import { AllocationStrategy, HashAllocationStrategy } from './AllocationStrategy.js';
+import type { CoordinatorStateStore } from './CoordinatorState.js';
 import {
   JournalRememberEntitiesStore,
   type RememberEntitiesStore,
@@ -49,6 +50,20 @@ export interface StartSettings<TMsg> extends ShardingSettings<TMsg> {
    * in-memory only — the v1 behaviour).
    */
   readonly rememberEntitiesStore?: RememberEntitiesStore | null;
+  /**
+   * Optional persistence backend for the coordinator's allocation
+   * state (`regions` + `shardHome`).  When set, a new leader
+   * elected after the previous leader's failure can seed its
+   * coordinator from the snapshot instead of running
+   * `tryAllocate` from scratch — saves a brief reallocation storm
+   * at thousands-of-shards scale.
+   *
+   * Unlike `rememberEntitiesStore`, ClusterSharding does NOT
+   * auto-instantiate this — the user must explicitly pass a store
+   * (typically `new DistributedDataCoordinatorStateStore(dd, ...)`).
+   * Without it, the v1 rebuild-from-Register behaviour is preserved.
+   */
+  readonly coordinatorStateStore?: CoordinatorStateStore;
 }
 
 /**
@@ -117,6 +132,7 @@ export class ClusterSharding {
       handOffTimeoutMs: settings.handOffTimeoutMs,
       rememberEntities: settings.rememberEntities,
       rememberEntitiesStore: this.resolveRememberEntitiesStore(settings),
+      coordinatorStateStore: settings.coordinatorStateStore,
       lease: settings.lease,
       acquireRetryIntervalMs: settings.acquireRetryIntervalMs,
       localResolver: (path) => this.regionsByPath.get(path) ?? this.coordinators.get(this.typeNameFromCoordinatorPath(path) ?? '') ?? null,

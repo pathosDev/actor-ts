@@ -8,6 +8,11 @@ import { LeaderChanged, MemberRemoved } from '../ClusterEvents.js';
 import { NodeAddress, type NodeAddressData } from '../NodeAddress.js';
 import { RemoteActorRef } from '../RemoteActorRef.js';
 import { type AllocationStrategy, HashAllocationStrategy } from './AllocationStrategy.js';
+import type {
+  CoordinatorStateData,
+  CoordinatorStateStore,
+  RegionInfoData,
+} from './CoordinatorState.js';
 import type { RememberEntitiesStore } from './RememberEntitiesStore.js';
 import type {
   BeginHandOffAck,
@@ -93,6 +98,21 @@ export interface ShardCoordinatorSettings {
    * so most users don't need to touch this field.
    */
   readonly rememberEntitiesStore?: RememberEntitiesStore;
+  /**
+   * Optional persistence backend for the allocation state itself
+   * (`regions` + `shardHome`).  Without it, `LeaderChanged` triggers
+   * a full rebuild from `Register` gossip — fine for a few hundred
+   * shards, painful at thousands.  With it, the new leader loads
+   * the last-known snapshot from the store (e.g. `DistributedData`)
+   * and skips the reallocation storm.
+   *
+   * `ClusterSharding` does NOT auto-instantiate this — the user
+   * must explicitly start a DistributedData extension first and
+   * pass `new DistributedDataCoordinatorStateStore(...)`.  Without
+   * that opt-in, `ShardCoordinator` keeps the v1 rebuild-from-
+   * Register behaviour (backwards-compat).
+   */
+  readonly coordinatorStateStore?: CoordinatorStateStore;
 }
 
 /**
@@ -150,6 +170,17 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * failed write from breaking the chain for subsequent writes.
    */
   private rememberWriteChain: Promise<void> = Promise.resolve();
+
+  /**
+   * Coalesced save state for `coordinatorStateStore`.  State
+   * mutations are bursty during rebalance; rather than fire one
+   * disk write per mutation we mark the state dirty and the
+   * in-flight save's `.finally` kicks off a follow-up if more
+   * changes accumulated meanwhile.  Same pattern as
+   * `DistributedData.scheduleDurableSave` from #40.
+   */
+  private coordinatorStateInFlight = false;
+  private coordinatorStateDirty = false;
 
   constructor(public readonly settings: ShardCoordinatorSettings) { super(); }
 
@@ -444,6 +475,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (this.settings.rememberEntities) {
       for (const shardId of msg.hostedShards) this.shipRememberedEntities(shardId);
     }
+    this.scheduleCoordinatorStateSave();
   }
 
   private handleGetShardHome(msg: GetShardHome): void {
@@ -488,6 +520,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     });
     this.flushPending(shardId);
     if (this.settings.rememberEntities) this.shipRememberedEntities(shardId);
+    this.scheduleCoordinatorStateSave();
   }
 
   private handleHandOffComplete(msg: HandOffComplete): void {
@@ -504,6 +537,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.shardHome.delete(shardId);
 
     // Reallocate (the pending queries will get the new home).
+    // tryAllocate already calls scheduleCoordinatorStateSave, so a
+    // second save here would be redundant.
     this.tryAllocate(shardId);
   }
 
@@ -562,6 +597,11 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       if (inProg) { inProg.timer.cancel(); this.rebalanceInProgress.delete(shardId); }
       this.tryAllocate(shardId);
     }
+    // tryAllocate already schedules saves for each re-allocation;
+    // an extra one here would be redundant.  But if `info.shards`
+    // was empty (region had no shards) we still removed it from the
+    // regions map and need to record that.
+    if (info.shards.size === 0) this.scheduleCoordinatorStateSave();
   }
 
   private onMemberRemoved(addr: NodeAddress): void {
@@ -577,14 +617,26 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   }
 
   private onLeaderChanged(): void {
-    // New leader starts with fresh state; regions will re-register.
     if (!this.isLeader()) {
+      // No longer leader — drop the in-memory view; the new leader
+      // owns the canonical state now.
       this.regions.clear();
       this.shardHome.clear();
       this.pending.clear();
       this.acquireBuffer = [];
       for (const r of this.rebalanceInProgress.values()) r.timer.cancel();
       this.rebalanceInProgress.clear();
+    } else {
+      // Just became leader (or re-elected).  If a state store is
+      // configured, try to seed `regions` + `shardHome` from the
+      // last known snapshot — saves the from-scratch reallocation
+      // storm of every shard re-registering through a fresh
+      // tryAllocate call.  Failure is tolerated: we fall back to
+      // the v1 rebuild-from-Register path when the load fails or
+      // returns nothing.
+      if (this.settings.coordinatorStateStore) {
+        void this.loadCoordinatorState();
+      }
     }
     // Lease-aware coordinators re-evaluate the acquire/release cycle
     // any time the leader role flips — see `reconcileLease()`.  We
@@ -593,6 +645,115 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (this.settings.lease) {
       this.self.tell({ t: 'reconcile' } satisfies CoordinatorEvent);
     }
+  }
+
+  /* ------------------- Coordinator-state persistence ------------------ */
+
+  /**
+   * Read the most recent snapshot from `coordinatorStateStore` and
+   * seed `regions` + `shardHome` from it.  Drops any region whose
+   * node has left the cluster between the snapshot and now —
+   * otherwise we'd happily route shards to dead pods.  Existing
+   * pending queries get a fresh allocation pass via the regular
+   * onMessage flow.
+   */
+  private async loadCoordinatorState(): Promise<void> {
+    const store = this.settings.coordinatorStateStore;
+    if (!store) return;
+    let data: CoordinatorStateData | null;
+    try {
+      data = await store.load(this.settings.typeName);
+    } catch (err) {
+      this.system.log.warn(
+        `[sharding] coordinator-state load failed for '${this.settings.typeName}'`,
+        err,
+      );
+      return;
+    }
+    if (!data) return;
+
+    // If we already have local state (e.g. preStart already absorbed
+    // some Register messages), merge — keep what we know AND what
+    // the snapshot says.  The snapshot's `regions` may be stale (a
+    // node may have died), so we filter by current cluster membership.
+    const livingNodes = new Set(
+      this.settings.cluster.upMembers().map((m) => m.address.toString()),
+    );
+
+    for (const r of data.regions) {
+      if (!livingNodes.has(r.node.systemName + '@' + r.node.host + ':' + r.node.port)) {
+        // Node dropped out of the cluster between snapshot and now
+        // — skip the entry; the dead region won't be re-resurrected.
+        continue;
+      }
+      const node = NodeAddress.fromJSON(r.node);
+      if (this.regions.has(r.key)) continue; // already known via Register
+      this.regions.set(r.key, {
+        node, path: r.path, proxy: r.proxy, shards: new Set(r.shards),
+      });
+    }
+    for (const [shardId, regionKey] of data.shardHome) {
+      // Only adopt the home if the region survived the filter above.
+      if (this.regions.has(regionKey) && !this.shardHome.has(shardId)) {
+        this.shardHome.set(shardId, regionKey);
+      }
+    }
+  }
+
+  /**
+   * Mark coordinator state dirty + schedule a save.  Called after
+   * every meaningful mutation — handleRegister, tryAllocate,
+   * handleHandOffComplete, onRegionTerminated.  Coalesces
+   * overlapping bursts into 1-2 store writes via the
+   * `inFlight + dirty` flag pair.
+   */
+  private scheduleCoordinatorStateSave(): void {
+    const store = this.settings.coordinatorStateStore;
+    if (!store) return;
+    if (!this.isLeader()) return;
+    if (this.coordinatorStateInFlight) {
+      this.coordinatorStateDirty = true;
+      return;
+    }
+    this.coordinatorStateInFlight = true;
+    const snapshot = this.snapshotCoordinatorState();
+    void store.save(this.settings.typeName, snapshot)
+      .catch((err) => {
+        this.system.log.warn(
+          `[sharding] coordinator-state save failed for '${this.settings.typeName}'`,
+          err,
+        );
+      })
+      .finally(() => {
+        this.coordinatorStateInFlight = false;
+        if (this.coordinatorStateDirty) {
+          this.coordinatorStateDirty = false;
+          this.scheduleCoordinatorStateSave();
+        }
+      });
+  }
+
+  private snapshotCoordinatorState(): CoordinatorStateData {
+    const regions: RegionInfoData[] = [];
+    for (const [key, info] of this.regions) {
+      regions.push({
+        key,
+        node: info.node.toJSON(),
+        path: info.path,
+        proxy: info.proxy,
+        shards: Array.from(info.shards),
+      });
+    }
+    const shardHome: Array<readonly [number, string]> = [];
+    for (const [shardId, regionKey] of this.shardHome) {
+      shardHome.push([shardId, regionKey]);
+    }
+    return {
+      leader: this.settings.cluster.selfAddress.toString(),
+      takenAt: Date.now(),
+      regions,
+      shardHome,
+    };
   }
 
   /* ------------------------------- Rebalance ------------------------------- */
