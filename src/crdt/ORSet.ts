@@ -23,41 +23,69 @@ import type { Crdt, ReplicaId } from './Crdt.js';
  * with a per-replica monotonic counter so tags are unique even
  * across calls in the same millisecond.  The counter is part of the
  * CRDT state; we keep one counter per replica and bump it on every add.
+ *
+ * **Element identity**.  By default elements are deduplicated by
+ * `JSON.stringify(element)` — same caveats as `GSet`: BigInt throws,
+ * Map/Set silently over-deduplicate, Date round-trips lossily.  Pass
+ * an `identity: (e) => string` option to override:
+ *
+ *   const cart = ORSet.empty<Item>({ identity: (i) => i.sku });
  */
+
+export interface ORSetOptions<E> {
+  /** Custom identity function — see class doc. */
+  readonly identity?: (e: E) => string;
+}
+
+const defaultIdentity = (e: unknown): string => JSON.stringify(e);
+
+interface ElementEntry<E> {
+  readonly element: E;
+  readonly tags: ReadonlySet<string>;
+}
+
 export class ORSet<E> implements Crdt<ORSet<E>> {
   /**
-   * `elements`   — element-key (JSON of E) → set of tag strings.
-   * `tombstones` — tags removed for an element-key.  Used as a
-   *                veto on merge so a re-replicated state from a
-   *                slow peer can't resurrect an already-removed tag.
-   *                NOT identical to "elements with no current tags";
-   *                we use it specifically for the merge-side check.
+   * `elements`   — element-key (identity-fn output) → entry holding
+   *                the original element instance plus its current
+   *                tag set.  Storing the element (not just its
+   *                identity-string) lets `value()` return the
+   *                original instances even when a custom identity
+   *                callback is configured.
+   * `tombstones` — tags removed for an element-key.  Veto on merge
+   *                so a stale state from a slow peer can't resurrect
+   *                an already-removed tag.
    * `counters`   — per-replica monotonic seq used to mint fresh tags.
    */
   private constructor(
-    private readonly elements: ReadonlyMap<string, ReadonlySet<string>>,
+    private readonly elements: ReadonlyMap<string, ElementEntry<E>>,
     private readonly tombstones: ReadonlyMap<string, ReadonlySet<string>>,
     private readonly counters: ReadonlyMap<ReplicaId, number>,
+    private readonly identity: (e: E) => string,
   ) {}
 
-  static empty<E>(): ORSet<E> {
-    return new ORSet<E>(new Map(), new Map(), new Map());
+  static empty<E>(opts: ORSetOptions<E> = {}): ORSet<E> {
+    return new ORSet<E>(
+      new Map(), new Map(), new Map(),
+      opts.identity ?? (defaultIdentity as (e: E) => string),
+    );
   }
 
   add(replica: ReplicaId, element: E): ORSet<E> {
-    const key = JSON.stringify(element);
+    const key = this.identity(element);
     const seq = (this.counters.get(replica) ?? 0) + 1;
     const tag = `${replica}#${seq}`;
 
     const nextElements = new Map(this.elements);
-    const tagsForKey = new Set(nextElements.get(key) ?? []);
+    const existing = nextElements.get(key);
+    const tagsForKey = new Set(existing?.tags ?? []);
     tagsForKey.add(tag);
-    nextElements.set(key, tagsForKey);
+    nextElements.set(key, { element, tags: tagsForKey });
 
     const nextCounters = new Map(this.counters);
     nextCounters.set(replica, seq);
 
-    return new ORSet<E>(nextElements, this.tombstones, nextCounters);
+    return new ORSet<E>(nextElements, this.tombstones, nextCounters, this.identity);
   }
 
   /**
@@ -66,36 +94,36 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
    * merge — that's the OR-Set "add wins" property.
    */
   remove(element: E): ORSet<E> {
-    const key = JSON.stringify(element);
-    const tagsForKey = this.elements.get(key);
-    if (!tagsForKey || tagsForKey.size === 0) return this;
+    const key = this.identity(element);
+    const existing = this.elements.get(key);
+    if (!existing || existing.tags.size === 0) return this;
 
     const nextElements = new Map(this.elements);
     nextElements.delete(key);
 
     const nextTombstones = new Map(this.tombstones);
     const t = new Set(nextTombstones.get(key) ?? []);
-    for (const tag of tagsForKey) t.add(tag);
+    for (const tag of existing.tags) t.add(tag);
     nextTombstones.set(key, t);
 
-    return new ORSet<E>(nextElements, nextTombstones, this.counters);
+    return new ORSet<E>(nextElements, nextTombstones, this.counters, this.identity);
   }
 
   has(element: E): boolean {
-    return (this.elements.get(JSON.stringify(element))?.size ?? 0) > 0;
+    return (this.elements.get(this.identity(element))?.tags.size ?? 0) > 0;
   }
 
   value(): ReadonlyArray<E> {
     const out: E[] = [];
-    for (const [key, tags] of this.elements) {
-      if (tags.size > 0) out.push(JSON.parse(key) as E);
+    for (const entry of this.elements.values()) {
+      if (entry.tags.size > 0) out.push(entry.element);
     }
     return out;
   }
 
   get size(): number {
     let count = 0;
-    for (const tags of this.elements.values()) if (tags.size > 0) count++;
+    for (const entry of this.elements.values()) if (entry.tags.size > 0) count++;
     return count;
   }
 
@@ -103,19 +131,23 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
     // 1. Tombstones are unioned — once removed, always removed.
     const mergedTombstones = unionMapOfSets(this.tombstones, other.tombstones);
 
-    // 2. Elements are unioned per-key, then any tag also in the
-    //    merged tombstones is filtered out.  Empty entries are
-    //    dropped so `has` / `value` reflect cleanly.
+    // 2. Elements are merged per-key: union the tag sets, drop any
+    //    tag that appears in the merged tombstones, then drop empty
+    //    entries so `has` / `value` reflect cleanly.
     const allKeys = new Set<string>([...this.elements.keys(), ...other.elements.keys()]);
-    const mergedElements = new Map<string, ReadonlySet<string>>();
+    const mergedElements = new Map<string, ElementEntry<E>>();
     for (const key of allKeys) {
-      const a = this.elements.get(key) ?? EMPTY_SET;
-      const b = other.elements.get(key) ?? EMPTY_SET;
+      const a = this.elements.get(key);
+      const b = other.elements.get(key);
       const tomb = mergedTombstones.get(key) ?? EMPTY_SET;
       const merged = new Set<string>();
-      for (const t of a) if (!tomb.has(t)) merged.add(t);
-      for (const t of b) if (!tomb.has(t)) merged.add(t);
-      if (merged.size > 0) mergedElements.set(key, merged);
+      if (a) for (const t of a.tags) if (!tomb.has(t)) merged.add(t);
+      if (b) for (const t of b.tags) if (!tomb.has(t)) merged.add(t);
+      if (merged.size > 0) {
+        // Prefer the locally-known element; fall back to the peer's.
+        const element = a?.element ?? b?.element as E;
+        mergedElements.set(key, { element, tags: merged });
+      }
     }
 
     // 3. Counters: per-replica max so the next-issued tag is fresh
@@ -126,30 +158,61 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
       if (seq > ours) mergedCounters.set(replica, seq);
     }
 
-    return new ORSet<E>(mergedElements, mergedTombstones, mergedCounters);
+    return new ORSet<E>(mergedElements, mergedTombstones, mergedCounters, this.identity);
   }
 
   toJSON(): ORSetJson {
+    // Wire shape — each element is JSON-stringified verbatim so
+    // the default round-trip works.  Custom identity does NOT
+    // change the wire shape: callers must pass the same `identity`
+    // option to `fromJSON` to reconstruct a set with the same
+    // dedup rule.
+    const elements: Record<string, string[]> = {};
+    const elementValues: Record<string, string> = {};
+    for (const [key, entry] of this.elements) {
+      elements[key] = Array.from(entry.tags);
+      elementValues[key] = JSON.stringify(entry.element);
+    }
     return {
       kind: 'ORSet',
-      elements: mapOfSetsToObject(this.elements),
+      elements,
+      elementValues,
       tombstones: mapOfSetsToObject(this.tombstones),
       counters: Object.fromEntries(this.counters),
     };
   }
 
-  static fromJSON<E>(json: ORSetJson): ORSet<E> {
+  static fromJSON<E>(json: ORSetJson, opts: ORSetOptions<E> = {}): ORSet<E> {
     if (json.kind !== 'ORSet') throw new Error(`ORSet.fromJSON: unexpected kind ${json.kind}`);
+    const identity = opts.identity ?? (defaultIdentity as (e: E) => string);
+    const elements = new Map<string, ElementEntry<E>>();
+    for (const [key, tags] of Object.entries(json.elements)) {
+      // Backwards-compat: old wire shape didn't carry
+      // `elementValues` — fall back to JSON.parse(key) which is
+      // exactly the default-identity round-trip.
+      const raw = json.elementValues?.[key];
+      const element: E = raw !== undefined
+        ? (JSON.parse(raw) as E)
+        : (JSON.parse(key) as E);
+      elements.set(key, { element, tags: new Set(tags) });
+    }
     return new ORSet<E>(
-      objectToMapOfSets(json.elements),
+      elements,
       objectToMapOfSets(json.tombstones),
       new Map(Object.entries(json.counters)),
+      identity,
     );
   }
 
   equals(other: ORSet<E>): boolean {
-    return mapOfSetsEqual(this.elements, other.elements)
-      && mapOfSetsEqual(this.tombstones, other.tombstones);
+    if (this.elements.size !== other.elements.size) return false;
+    for (const [k, v] of this.elements) {
+      const o = other.elements.get(k);
+      if (!o) return false;
+      if (v.tags.size !== o.tags.size) return false;
+      for (const t of v.tags) if (!o.tags.has(t)) return false;
+    }
+    return mapOfSetsEqual(this.tombstones, other.tombstones);
   }
 }
 
@@ -200,7 +263,11 @@ function objectToMapOfSets(
 
 export interface ORSetJson {
   readonly kind: 'ORSet';
+  /** Per-element-key tag list. */
   readonly elements: Record<string, string[]>;
+  /** Per-element-key JSON-stringified element value.  Optional for
+   *  backwards-compat with v0 wire shape (default identity only). */
+  readonly elementValues?: Record<string, string>;
   readonly tombstones: Record<string, string[]>;
   readonly counters: Record<ReplicaId, number>;
 }

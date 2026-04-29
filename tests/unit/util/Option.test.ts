@@ -73,12 +73,17 @@ describe('Option — map/flatMap/filter/forEach', () => {
   });
 
   test('forEach runs side-effect on Some, skipped on None', () => {
-    let seen: number | null = null;
-    some(42).forEach((n) => { seen = n; });
-    expect(seen).toBe(42);
+    // Wrap in an object so TS doesn't narrow `seen` to its
+    // initialiser-shape — `let seen: number | null = null` then
+    // assigning via a callback isn't visible to TS's narrower,
+    // and `expect(seen).toBe(42)` fails to typecheck under
+    // `tsconfig.dev.json` (#17).
+    const box: { seen: number | null } = { seen: null };
+    some(42).forEach((n) => { box.seen = n; });
+    expect(box.seen).toBe(42);
 
-    (none as Option<number>).forEach((n) => { seen = n; });
-    expect(seen).toBe(42); // unchanged
+    (none as Option<number>).forEach((n) => { box.seen = n; });
+    expect(box.seen).toBe(42); // unchanged
   });
 });
 

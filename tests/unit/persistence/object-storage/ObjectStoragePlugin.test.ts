@@ -34,7 +34,7 @@ describe('registerObjectStoragePlugins — filesystem backend', () => {
       },
     });
     const ext = sys.extension(PersistenceExtensionId);
-    const handles = registerObjectStoragePlugins(ext, {
+    const handles = await registerObjectStoragePlugins(ext, {
       backend: { kind: 'filesystem', dir },
       keepN: 2,
     });
@@ -57,7 +57,7 @@ describe('registerObjectStoragePlugins — filesystem backend', () => {
       logger: new NoopLogger(), logLevel: LogLevel.Off,
     });
     const ext = sys.extension(PersistenceExtensionId);
-    const { durableStateStore, backend } = registerObjectStoragePlugins(ext, {
+    const { durableStateStore, backend } = await registerObjectStoragePlugins(ext, {
       backend: { kind: 'filesystem', dir },
       prefix: 'shared/',
     });
@@ -75,7 +75,7 @@ describe('registerObjectStoragePlugins — filesystem backend', () => {
     });
     const ext = sys.extension(PersistenceExtensionId);
     const fs = new FilesystemObjectStorageBackend({ dir });
-    const { backend } = registerObjectStoragePlugins(ext, {
+    const { backend } = await registerObjectStoragePlugins(ext, {
       backend: { kind: 'custom', backend: fs },
     });
     expect(backend).toBe(fs);
