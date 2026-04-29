@@ -25,3 +25,11 @@ export {
   migratingAdapter,
   migratingSnapshotAdapter,
 } from './migratingAdapter.js';
+export {
+  wrapEventAsEnvelope,
+  wrapStateAsEnvelope,
+  migrateInMemoryJournal,
+  migrateSnapshotStore,
+  formatMigrationResult,
+} from './wrapLegacy.js';
+export type { MigrationResult } from './wrapLegacy.js';
