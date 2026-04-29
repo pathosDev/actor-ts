@@ -13,10 +13,14 @@ import type { WireMessage } from '../cluster/Protocol.js';
 import type { Crdt } from './Crdt.js';
 import { DurableDistributedDataStore } from './DurableDistributedDataStore.js';
 import { GCounter, type GCounterJson } from './GCounter.js';
+import { GCounterMap, type GCounterMapJson } from './GCounterMap.js';
 import { PNCounter, type PNCounterJson } from './PNCounter.js';
 import { GSet, type GSetJson } from './GSet.js';
 import { ORSet, type ORSetJson } from './ORSet.js';
+import { ORMap, type ORMapJson } from './ORMap.js';
 import { LWWRegister, type LWWRegisterJson } from './LWWRegister.js';
+import { LWWMap, type LWWMapJson } from './LWWMap.js';
+import { MVRegister, type MVRegisterJson } from './MVRegister.js';
 
 /* =========================== JSON discriminator ======================== */
 
@@ -26,7 +30,11 @@ export type CrdtJson =
   | PNCounterJson
   | GSetJson
   | ORSetJson
-  | LWWRegisterJson<unknown>;
+  | LWWRegisterJson<unknown>
+  | GCounterMapJson
+  | LWWMapJson<unknown>
+  | MVRegisterJson<unknown>
+  | ORMapJson;
 
 /**
  * Reconstruct a CRDT from its `toJSON()` payload.  Dispatches on the
@@ -34,14 +42,26 @@ export type CrdtJson =
  * one more case here.  Returned as `Crdt<unknown>` because the
  * concrete type is only known at the call site that asked for the
  * key in the first place.
+ *
+ * Exported so containers like `ORMap` (whose values are themselves
+ * CRDTs of arbitrary kind) can wire it as their inner-value decoder.
  */
-function decodeCrdt(json: CrdtJson): Crdt<any> {
+export function decodeCrdt(json: CrdtJson): Crdt<any> {
   switch (json.kind) {
     case 'GCounter':    return GCounter.fromJSON(json);
     case 'PNCounter':   return PNCounter.fromJSON(json);
     case 'GSet':        return GSet.fromJSON<unknown>(json);
     case 'ORSet':       return ORSet.fromJSON<unknown>(json);
     case 'LWWRegister': return LWWRegister.fromJSON<unknown>(json);
+    case 'GCounterMap': return GCounterMap.fromJSON<unknown>(json);
+    case 'LWWMap':      return LWWMap.fromJSON<unknown, unknown>(json);
+    case 'MVRegister':  return MVRegister.fromJSON<unknown>(json);
+    case 'ORMap':       return ORMap.fromJSON<unknown, Crdt<any>>(
+      json,
+      // Inner CRDTs decode through the same dispatcher — a value can
+      // be any of the registered CRDT kinds.
+      (inner) => decodeCrdt(inner as CrdtJson) as Crdt<any>,
+    );
     default: {
       const _exhaustive: never = json;
       void _exhaustive;

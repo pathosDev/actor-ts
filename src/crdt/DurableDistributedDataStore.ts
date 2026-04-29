@@ -1,11 +1,6 @@
 import type { DurableStateStore } from '../persistence/DurableStateStore.js';
 import type { Crdt, ReplicaId } from './Crdt.js';
-import type { CrdtJson } from './DistributedData.js';
-import { GCounter, type GCounterJson } from './GCounter.js';
-import { GSet, type GSetJson } from './GSet.js';
-import { LWWRegister, type LWWRegisterJson } from './LWWRegister.js';
-import { ORSet, type ORSetJson } from './ORSet.js';
-import { PNCounter, type PNCounterJson } from './PNCounter.js';
+import { decodeCrdt, type CrdtJson } from './DistributedData.js';
 
 /**
  * Thin wrapper around `DurableStateStore` that persists ONE replica's
@@ -87,25 +82,6 @@ interface DurableDDataPayload {
   readonly entries: Record<string, CrdtJson>;
 }
 
-/**
- * Reconstruct a CRDT from its `toJSON` payload.  Mirrors the dispatch
- * in `DistributedData.decodeCrdt` (kept private there because the
- * function is only used internally; we duplicate it here so a user
- * can construct a `DurableDistributedDataStore` without importing
- * implementation details).  Adding a CRDT requires one more case
- * here AND in `DistributedData.decodeCrdt` — keep them in sync.
- */
-function decodeCrdt(json: CrdtJson): Crdt<any> {
-  switch (json.kind) {
-    case 'GCounter':    return GCounter.fromJSON(json as GCounterJson);
-    case 'PNCounter':   return PNCounter.fromJSON(json as PNCounterJson);
-    case 'GSet':        return GSet.fromJSON<unknown>(json as GSetJson);
-    case 'ORSet':       return ORSet.fromJSON<unknown>(json as ORSetJson);
-    case 'LWWRegister': return LWWRegister.fromJSON<unknown>(json as LWWRegisterJson<unknown>);
-    default: {
-      const _exhaustive: never = json;
-      void _exhaustive;
-      throw new Error(`DurableDistributedDataStore: unknown CRDT kind`);
-    }
-  }
-}
+// (decodeCrdt is now imported from DistributedData.ts — single source
+// of truth for the CRDT-kind dispatcher.  Adding a new CRDT type means
+// updating that one switch and nowhere else.)
