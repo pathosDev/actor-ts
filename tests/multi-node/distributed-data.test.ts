@@ -18,6 +18,8 @@ import { describe, expect, test } from 'bun:test';
 import {
   DistributedDataId,
   GCounter,
+  LWWMap,
+  ORMap,
   ORSet,
   PNCounter,
 } from '../../src/crdt/index.js';
@@ -143,6 +145,77 @@ describe('DistributedData — convergence', () => {
           return dd.get<ORSet<string>>('cart')?.has('apple') ?? false;
         });
         return all.every((v) => v === true);
+      });
+    });
+  }, 15_000);
+
+  test('LWWMap — newer-timestamp put wins, replicas converge to same map', async () => {
+    await withSpec(async (spec) => {
+      const ddA = spec.systemFor('a').extension(DistributedDataId)
+        .start(spec.clusterFor('a'), { gossipIntervalMs: 80 });
+      const ddB = spec.systemFor('b').extension(DistributedDataId)
+        .start(spec.clusterFor('b'), { gossipIntervalMs: 80 });
+      const ddC = spec.systemFor('c').extension(DistributedDataId)
+        .start(spec.clusterFor('c'), { gossipIntervalMs: 80 });
+
+      // Three replicas, three different keys + one shared key with
+      // different timestamps.  After convergence each node has the
+      // full set, with the shared key resolved to the newest write.
+      ddA.update<LWWMap<string, string>>('settings', () => LWWMap.empty<string, string>(),
+        (m) => m.put(ddA.selfReplicaId(), 'theme', 'dark', 100));
+      ddB.update<LWWMap<string, string>>('settings', () => LWWMap.empty<string, string>(),
+        (m) => m.put(ddB.selfReplicaId(), 'lang',  'de',   100));
+      ddC.update<LWWMap<string, string>>('settings', () => LWWMap.empty<string, string>(),
+        (m) => m.put(ddC.selfReplicaId(), 'theme', 'light', 200));   // newer
+
+      await awaitConvergence(() => {
+        for (const dd of [ddA, ddB, ddC]) {
+          const m = dd.get<LWWMap<string, string>>('settings');
+          if (!m) return false;
+          if (m.get('theme') !== 'light') return false;   // newer ts wins
+          if (m.get('lang')  !== 'de')    return false;
+          if (m.size !== 2) return false;
+        }
+        return true;
+      });
+    });
+  }, 15_000);
+
+  test('ORMap with nested ORSet — per-key inner-CRDT merge across replicas', async () => {
+    await withSpec(async (spec) => {
+      const ddA = spec.systemFor('a').extension(DistributedDataId)
+        .start(spec.clusterFor('a'), { gossipIntervalMs: 80 });
+      const ddB = spec.systemFor('b').extension(DistributedDataId)
+        .start(spec.clusterFor('b'), { gossipIntervalMs: 80 });
+      const ddC = spec.systemFor('c').extension(DistributedDataId)
+        .start(spec.clusterFor('c'), { gossipIntervalMs: 80 });
+
+      // Each replica adds an item to a shared cart-key in an ORMap of
+      // ORSets.  After gossip, every replica sees the full set.
+      ddA.update<ORMap<string, ORSet<string>>>('carts', () => ORMap.empty<string, ORSet<string>>(),
+        (m) => m.update(ddA.selfReplicaId(), 'alice', () => ORSet.empty<string>(),
+          (s) => s.add(ddA.selfReplicaId(), 'apple')));
+      ddB.update<ORMap<string, ORSet<string>>>('carts', () => ORMap.empty<string, ORSet<string>>(),
+        (m) => m.update(ddB.selfReplicaId(), 'alice', () => ORSet.empty<string>(),
+          (s) => s.add(ddB.selfReplicaId(), 'banana')));
+      ddC.update<ORMap<string, ORSet<string>>>('carts', () => ORMap.empty<string, ORSet<string>>(),
+        (m) => m.update(ddC.selfReplicaId(), 'bob', () => ORSet.empty<string>(),
+          (s) => s.add(ddC.selfReplicaId(), 'cherry')));
+
+      await awaitConvergence(() => {
+        for (const dd of [ddA, ddB, ddC]) {
+          const m = dd.get<ORMap<string, ORSet<string>>>('carts');
+          if (!m) return false;
+          const alice = m.get('alice');
+          const bob = m.get('bob');
+          if (!alice || !bob) return false;
+          const aliceItems = new Set(alice.value());
+          const bobItems = new Set(bob.value());
+          if (aliceItems.size !== 2) return false;
+          if (!aliceItems.has('apple') || !aliceItems.has('banana')) return false;
+          if (bobItems.size !== 1 || !bobItems.has('cherry')) return false;
+        }
+        return true;
       });
     });
   }, 15_000);

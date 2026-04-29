@@ -9,9 +9,18 @@ export { ORSet } from './ORSet.js';
 export type { ORSetJson } from './ORSet.js';
 export { LWWRegister } from './LWWRegister.js';
 export type { LWWRegisterJson } from './LWWRegister.js';
+export { GCounterMap } from './GCounterMap.js';
+export type { GCounterMapJson, GCounterMapOptions } from './GCounterMap.js';
+export { LWWMap } from './LWWMap.js';
+export type { LWWMapJson, LWWMapOptions } from './LWWMap.js';
+export { MVRegister } from './MVRegister.js';
+export type { MVRegisterJson } from './MVRegister.js';
+export { ORMap } from './ORMap.js';
+export type { ORMapJson, ORMapOptions } from './ORMap.js';
 export {
   DistributedData,
   DistributedDataId,
+  decodeCrdt,
 } from './DistributedData.js';
 export type {
   DistributedDataSettings,
