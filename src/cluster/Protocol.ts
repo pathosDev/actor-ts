@@ -83,6 +83,13 @@ export interface EnvelopeMsg {
   body: unknown;
   /** Optional: name of a class/type for richer routing. */
   tag?: string;
+  /**
+   * Optional MDC snapshot captured at tell-time on the originating
+   * node.  Re-installed by `Cluster.handleEnvelope` so the receiving
+   * actor's log lines carry the same context as the sender's
+   * (#53 — cross-node MDC).
+   */
+  context?: Readonly<Record<string, string | number | boolean>>;
 }
 
 export interface ShardMapMsg {

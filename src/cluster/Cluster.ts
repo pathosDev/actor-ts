@@ -1,6 +1,7 @@
 import { match, P } from 'ts-pattern';
 import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
+import { LogContext } from '../LogContext.js';
 import type { Logger } from '../Logger.js';
 import type { Cancellable } from '../Scheduler.js';
 import { none, some, type Option } from '../util/Option.js';
@@ -390,6 +391,20 @@ export class Cluster {
   }
 
   private handleEnvelope(from: NodeAddress, msg: EnvelopeMsg): void {
+    // Re-install the originating MDC for the duration of dispatch
+    // (#53).  Local refs the dispatcher subsequently `tell`s capture
+    // this same context onto the next envelope, so the trail keeps
+    // flowing across hops.  Empty / missing contexts skip the wrapper
+    // — nothing to install, nothing to clean up.
+    const dispatch = (): void => this.dispatchEnvelope(from, msg);
+    if (msg.context && Object.keys(msg.context).length > 0) {
+      LogContext.run(msg.context, dispatch);
+    } else {
+      dispatch();
+    }
+  }
+
+  private dispatchEnvelope(from: NodeAddress, msg: EnvelopeMsg): void {
     // Rehydrate any ActorRef markers embedded in the user payload before
     // handing it off — downstream handlers (sharding, pubsub, …) just
     // forward `env.body` and shouldn't each duplicate the decode step.

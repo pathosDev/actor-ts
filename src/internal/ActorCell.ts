@@ -9,6 +9,7 @@ import {
 import { ActorPath } from '../ActorPath.js';
 import { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
+import { LogContext } from '../LogContext.js';
 import type { Logger } from '../Logger.js';
 import type { Props } from '../Props.js';
 import {
@@ -223,6 +224,21 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
     this.schedule();
   }
 
+  /**
+   * @internal — like `postUserMessage` but takes a pre-built envelope
+   * so callers can attach extras like `context` (the MDC snapshot) or
+   * trace state without a wider signature.  `LocalActorRef.tell` uses
+   * this so the MDC captured at tell-time travels with the message.
+   */
+  postUserEnvelope(env: Envelope<TMsg>): void {
+    if (this.state === 'terminated') {
+      this.system.deadLetters.tell(new DeadLetter(env.message, env.sender, this.self));
+      return;
+    }
+    this.mailbox.enqueue(env);
+    this.schedule();
+  }
+
   /** @internal */
   enqueueSystem(cmd: SystemCommand, sender: ActorRef | null = null): void {
     this.mailbox.enqueueSystem({ message: cmd, sender });
@@ -407,28 +423,41 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
       return;
     }
 
-    this._currentSender = env.sender;
-    this._currentEnvelope = env;
-    try {
-      if (msg instanceof Terminated) {
-        // Only deliver when we are actually watching.
-        const key = msg.actor.path.toString();
-        if (!this._watching.has(key)) {
-          this._currentSender = null;
-          this._currentEnvelope = null;
-          return;
+    // Establish the MDC scope for the duration of `behavior(msg)`.  Any
+    // `tell`s issued from inside the handler snapshot this same context
+    // (LocalActorRef + RemoteActorRef both read `LogContext.get()`),
+    // so the trail propagates downstream without manual plumbing.
+    // Empty context skips the wrapper entirely — keeps the no-MDC
+    // hot path unchanged.
+    const dispatch = async (): Promise<void> => {
+      this._currentSender = env.sender;
+      this._currentEnvelope = env;
+      try {
+        if (msg instanceof Terminated) {
+          // Only deliver when we are actually watching.
+          const key = msg.actor.path.toString();
+          if (!this._watching.has(key)) {
+            this._currentSender = null;
+            this._currentEnvelope = null;
+            return;
+          }
+          this._watching.delete(key);
         }
-        this._watching.delete(key);
+        const behavior = this.behaviorStack[this.behaviorStack.length - 1];
+        await behavior(msg);
+        this._resetReceiveTimer();
+      } catch (e) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        this.failToParent(err, msg);
+      } finally {
+        this._currentSender = null;
+        this._currentEnvelope = null;
       }
-      const behavior = this.behaviorStack[this.behaviorStack.length - 1];
-      await behavior(msg);
-      this._resetReceiveTimer();
-    } catch (e) {
-      const err = e instanceof Error ? e : new Error(String(e));
-      this.failToParent(err, msg);
-    } finally {
-      this._currentSender = null;
-      this._currentEnvelope = null;
+    };
+    if (env.context) {
+      await LogContext.run(env.context, dispatch);
+    } else {
+      await dispatch();
     }
   }
 
