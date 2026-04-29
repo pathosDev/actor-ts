@@ -1,5 +1,5 @@
 import { MigrationError } from './Envelope.js';
-import type { StoredFrame } from './Adapter.js';
+import type { OutboundFrame, StoredFrame } from './Adapter.js';
 
 /**
  * One step in an upcaster pipeline — a pure function that maps a payload
@@ -11,6 +11,19 @@ export interface MigrationStep<From = unknown, To = unknown> {
   readonly fromVersion: number;
   readonly toVersion: number;
   upcast(from: From): To;
+}
+
+/**
+ * Inverse of {@link MigrationStep} — maps a current-shape payload back
+ * to an older shape on the **write** path (#7).  Used during rolling
+ * deployments where v2 nodes need to keep emitting v1 events for as
+ * long as v1 readers are still in the cluster.  Steps move backward:
+ * `fromVersion > toVersion`, typically `toVersion = fromVersion - 1`.
+ */
+export interface DowncastStep<From = unknown, To = unknown> {
+  readonly fromVersion: number;
+  readonly toVersion: number;
+  downcast(from: From): To;
 }
 
 /**
@@ -38,6 +51,7 @@ export interface MigrationStep<From = unknown, To = unknown> {
  */
 export class MigrationChain<Current> {
   private readonly steps = new Map<number, MigrationStep>();
+  private readonly downsteps = new Map<number, DowncastStep>();
 
   private constructor(
     private readonly _manifest: string,
@@ -70,6 +84,43 @@ export class MigrationChain<Current> {
       );
     }
     this.steps.set(step.fromVersion, step as MigrationStep);
+    return this;
+  }
+
+  /**
+   * Append a downcaster — the inverse of {@link MigrationStep}.
+   * Required when the actor is going to be configured with a
+   * `writeVersion` lower than `currentVersion` (#7).  Steps move
+   * **backward**: `fromVersion > toVersion`.
+   *
+   *   chain.addDown({
+   *     fromVersion: 2, toVersion: 1,
+   *     downcast: (e: DepositedV2): DepositedV1 => {
+   *       const { currency, ...rest } = e; void currency; return rest;
+   *     },
+   *   });
+   */
+  addDown<F, T>(step: DowncastStep<F, T>): MigrationChain<Current> {
+    if (step.fromVersion <= step.toVersion) {
+      throw new Error(
+        `DowncastStep must move backward: fromVersion ${step.fromVersion} <= toVersion ${step.toVersion}`,
+      );
+    }
+    if (step.fromVersion > this._currentVersion) {
+      throw new Error(
+        `DowncastStep starts at v${step.fromVersion} but chain currentVersion is ${this._currentVersion}`,
+      );
+    }
+    if (step.toVersion < 1) {
+      throw new Error(`DowncastStep targets v${step.toVersion} which is below the v1 floor`);
+    }
+    const existing = this.downsteps.get(step.fromVersion);
+    if (existing) {
+      throw new Error(
+        `MigrationChain already has a downcaster starting at v${step.fromVersion} (→ v${existing.toVersion}); cannot add another`,
+      );
+    }
+    this.downsteps.set(step.fromVersion, step as DowncastStep);
     return this;
   }
 
@@ -108,5 +159,63 @@ export class MigrationChain<Current> {
       cursor = step.toVersion;
     }
     return payload as Current;
+  }
+
+  /**
+   * Convert a current-shape value down to `targetVersion` for a
+   * write-with-old-shape rolling deploy (#7).  Walks the registered
+   * downcasters from `currentVersion` toward `targetVersion`.
+   *
+   * Errors:
+   *   - `targetVersion > currentVersion` → `MigrationError` (we're
+   *     already at or above the target; user should call `toJournalAt`
+   *     with `version: currentVersion`).
+   *   - `targetVersion < 1` → `MigrationError`.
+   *   - chain gap (no downcaster for the current cursor) →
+   *     `MigrationError` with the missing step printed.
+   */
+  downcast(current: Current, targetVersion: number): unknown {
+    if (!Number.isInteger(targetVersion) || targetVersion < 1) {
+      throw new MigrationError(
+        `targetVersion must be a positive integer, got ${targetVersion}`,
+        this._manifest, this._currentVersion,
+      );
+    }
+    if (targetVersion > this._currentVersion) {
+      throw new MigrationError(
+        `cannot downcast '${this._manifest}' from current v${this._currentVersion} to v${targetVersion}: target is newer`,
+        this._manifest, this._currentVersion,
+      );
+    }
+    let cursor = this._currentVersion;
+    let payload: unknown = current;
+    while (cursor > targetVersion) {
+      const step = this.downsteps.get(cursor);
+      if (!step) {
+        throw new MigrationError(
+          `no downcaster registered for '${this._manifest}' starting at v${cursor} `
+          + `(target v${targetVersion}); add a DowncastStep with fromVersion=${cursor}`,
+          this._manifest, this._currentVersion,
+        );
+      }
+      payload = step.downcast(payload);
+      cursor = step.toVersion;
+    }
+    return payload;
+  }
+
+  /**
+   * Build an `OutboundFrame` for the write path at `writeVersion`
+   * (defaults to `currentVersion`).  Convenience that combines the
+   * downcast + frame-shape — exactly what `migratingAdapter` calls
+   * from its `toJournal`.
+   */
+  toJournalAt(current: Current, writeVersion?: number): OutboundFrame {
+    const v = writeVersion ?? this._currentVersion;
+    return {
+      manifest: this._manifest,
+      version: v,
+      payload: v === this._currentVersion ? current : this.downcast(current, v),
+    };
   }
 }

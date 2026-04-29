@@ -15,9 +15,13 @@ export {
   decodeState,
 } from './Envelope.js';
 export { MigrationChain } from './MigrationChain.js';
-export type { MigrationStep } from './MigrationChain.js';
+export type { MigrationStep, DowncastStep } from './MigrationChain.js';
 export {
   defaultsAdapter,
   defaultsSnapshotAdapter,
 } from './defaultsAdapter.js';
 export type { DefaultsAdapterSpec } from './defaultsAdapter.js';
+export {
+  migratingAdapter,
+  migratingSnapshotAdapter,
+} from './migratingAdapter.js';

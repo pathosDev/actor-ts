@@ -112,3 +112,100 @@ describe('defaultsSnapshotAdapter — snapshot variant', () => {
     expect(out).toEqual({ balance: 42, currency: 'USD' });
   });
 });
+
+/* =================== #7 — rolling-deploy writeVersion =================== */
+
+describe('defaultsAdapter — writeVersion (#7)', () => {
+  test('writeVersion = currentVersion (default) emits the current shape unchanged', () => {
+    const adapter = defaultsAdapter<DepositedV2>({
+      manifest: 'BankAccount.Deposited',
+      currentVersion: 2,
+      defaults: { 1: { currency: 'USD' } },
+    });
+    const out = adapter.toJournal({ kind: 'deposited', amount: 100, currency: 'USD' });
+    expect(out).toEqual({
+      manifest: 'BankAccount.Deposited',
+      version: 2,
+      payload: { kind: 'deposited', amount: 100, currency: 'USD' },
+    });
+  });
+
+  test('writeVersion < currentVersion strips fields added at later versions', () => {
+    const adapter = defaultsAdapter<DepositedV2>({
+      manifest: 'BankAccount.Deposited',
+      currentVersion: 2,
+      writeVersion: 1,
+      defaults: { 1: { currency: 'USD' } },
+    });
+    const out = adapter.toJournal({ kind: 'deposited', amount: 100, currency: 'USD' });
+    expect(out).toEqual({
+      manifest: 'BankAccount.Deposited',
+      version: 1,
+      payload: { kind: 'deposited', amount: 100 }, // currency stripped
+    });
+  });
+
+  test('multi-step writeVersion strips every field added on the way', () => {
+    const adapter = defaultsAdapter<DepositedV3>({
+      manifest: 'BankAccount.Deposited',
+      currentVersion: 3,
+      writeVersion: 1,
+      defaults: {
+        1: { currency: 'USD' },
+        2: { channel: 'web' },
+      },
+    });
+    const out = adapter.toJournal({
+      kind: 'deposited', amount: 75, currency: 'EUR', channel: 'mobile',
+    });
+    expect(out.version).toBe(1);
+    expect(out.payload).toEqual({ kind: 'deposited', amount: 75 });
+  });
+
+  test('rolling-deploy round-trip: writer A emits v1, reader B upcasts back to v3', () => {
+    // Producer is on writeVersion=1 (during rollout); consumer is on
+    // currentVersion=3.  After a round-trip the consumer sees the
+    // current shape with defaults applied for both gaps.
+    const writer = defaultsAdapter<DepositedV3>({
+      manifest: 'BankAccount.Deposited',
+      currentVersion: 3,
+      writeVersion: 1,
+      defaults: { 1: { currency: 'USD' }, 2: { channel: 'web' } },
+    });
+    const reader = defaultsAdapter<DepositedV3>({
+      manifest: 'BankAccount.Deposited',
+      currentVersion: 3,
+      defaults: { 1: { currency: 'USD' }, 2: { channel: 'web' } },
+    });
+    const wire = writer.toJournal({
+      kind: 'deposited', amount: 33, currency: 'EUR', channel: 'mobile',
+    });
+    const rebuilt = reader.fromJournal(wire);
+    // Wire was v1 — non-default fields gone.  Reader fills v1→v2→v3
+    // defaults: currency=USD, channel=web.
+    expect(rebuilt).toEqual({
+      kind: 'deposited', amount: 33, currency: 'USD', channel: 'web',
+    });
+  });
+
+  test('rejects writeVersion > currentVersion', () => {
+    expect(() => defaultsAdapter<DepositedV2>({
+      manifest: 'X', currentVersion: 2, writeVersion: 3, defaults: { 1: { currency: 'USD' } },
+    })).toThrow(/writeVersion/);
+  });
+
+  test('rejects writeVersion = 0 or negative', () => {
+    expect(() => defaultsAdapter<DepositedV2>({
+      manifest: 'X', currentVersion: 2, writeVersion: 0, defaults: { 1: { currency: 'USD' } },
+    })).toThrow(/writeVersion/);
+  });
+
+  test('rejects writeVersion below currentVersion when intermediate defaults are missing', () => {
+    expect(() => defaultsAdapter<DepositedV3>({
+      manifest: 'X',
+      currentVersion: 3,
+      writeVersion: 1,
+      defaults: { 1: { currency: 'USD' } },   // missing defaults[2]
+    })).toThrow(/missing defaults\[2\]/);
+  });
+});
