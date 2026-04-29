@@ -50,6 +50,20 @@ export type {
   WebSocketCmd,
   WebSocketFrame,
 } from './WebSocketActor.js';
+export { ServerWebSocketActor } from './ServerWebSocketActor.js';
+export type {
+  ServerWebSocketActorOptions,
+  ServerWebSocketLike,
+} from './ServerWebSocketActor.js';
+export {
+  serverWebSocketActorOf,
+  bunWebSocketHandlers,
+} from './WebSocketServerAdapters.js';
+export type {
+  BunServerWebSocketLike,
+  BunWebSocketHandlerOptions,
+  BunWebSocketSlot,
+} from './WebSocketServerAdapters.js';
 
 // Phase 2 actors — enterprise / RPC.
 export { KafkaActor } from './KafkaActor.js';
