@@ -26,17 +26,58 @@ export interface CompressionConfig {
 }
 
 /**
+ * One entry in a versioned master-key ring used by client-side
+ * AES-256-GCM (#8 — master-key rotation).  Versions are 0..255 — a
+ * single byte of version travels in the body's manifest so decrypt
+ * can pick the matching master at read time.
+ *
+ * **Why versions?**  Rotation is a fact of life — the operator wants
+ * to retire an old key without re-encrypting every blob in the bucket
+ * at once.  The keyring lets a deployment carry the new key
+ * (`active`) **plus** every old key (`retired`) it might still need
+ * to decrypt; new writes use `active`, reads dispatch on the
+ * version byte the manifest carries.  Once every blob has been
+ * re-encrypted at the new version (e.g. via a re-encryption sweep),
+ * the corresponding `retired` entry can be dropped.
+ */
+export interface MasterKeyRingEntry {
+  /** 0..255 — embedded in the body manifest by `BodyCodec`. */
+  readonly version: number;
+  /** 32 bytes (AES-256). */
+  readonly key: Uint8Array;
+}
+
+export interface MasterKeyRing {
+  /** Currently-active key — every new write encrypts under this one. */
+  readonly active: MasterKeyRingEntry;
+  /**
+   * Older keys still used for decryption of historical blobs.  Every
+   * version a manifest may reference must appear here OR as `active`.
+   */
+  readonly retired?: ReadonlyArray<MasterKeyRingEntry>;
+}
+
+/**
  * Encryption directive — supports server-side modes (handed to the
  * backend as a header / param) and client-side AES-256-GCM with a
  * 32-byte master key from which a per-pid subkey is derived via HKDF.
+ *
+ * The client-side variant accepts either a single `masterKey` (legacy,
+ * implicitly version 0 — backwards compatible with bodies written
+ * before rotation support landed) or a `masterKeys` ring with one
+ * `active` entry plus optional `retired` entries (#8).
  */
 export type EncryptionConfig =
   | { readonly mode: 'none' }
   | { readonly mode: 'sse-s3' }
   | { readonly mode: 'sse-kms'; readonly kmsKeyId: string }
   | { readonly mode: 'client-aes256-gcm';
-      readonly masterKey: Uint8Array;       // 32 bytes
+      readonly masterKey: Uint8Array;       // 32 bytes — single-key shorthand (version 0)
       readonly info?: string;               // HKDF "info" string
+    }
+  | { readonly mode: 'client-aes256-gcm';
+      readonly masterKeys: MasterKeyRing;   // multi-version (rotation)
+      readonly info?: string;
     };
 
 /**

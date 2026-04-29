@@ -1,6 +1,10 @@
 import { JournalError } from '../JournalTypes.js';
 import { encodeBody, decodeBody } from '../object-storage/BodyCodec.js';
-import { deriveSubkey } from '../object-storage/Encryption.js';
+import {
+  activeEncryptKey,
+  isVersionedKeyShape,
+  resolveDecryptSubkey,
+} from '../object-storage/Encryption.js';
 import {
   ObjectStorageConcurrencyError,
   type ObjectStorageBackend,
@@ -74,10 +78,11 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     // Per-call encryption (from the actor) wins over the plugin default.
     const encryption = options?.encryption
       ?? resolveEncryption(this.encryption, pid, { mode: 'none' });
-    const subKey = encryption.mode === 'client-aes256-gcm'
-      ? await deriveSubkey(encryption.masterKey, pid, encryption.info)
-      : undefined;
-    const decoded = await decodeBody(fetched.value.body, subKey ? { encryption: { subKey } } : undefined);
+    const subKeyFor = resolveDecryptSubkey(encryption, pid);
+    const decoded = await decodeBody(
+      fetched.value.body,
+      subKeyFor ? { encryption: { subKeyFor } } : undefined,
+    );
     let parsed: { revision: number; state: S; timestamp: number };
     try { parsed = JSON.parse(utf8Decoder.decode(decoded.payload)); }
     catch (e) {
@@ -111,12 +116,16 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     const now = Date.now();
     const newRevision = expectedRevision + 1;
     const json = JSON.stringify({ revision: newRevision, state, timestamp: now });
-    const subKey = encryption.mode === 'client-aes256-gcm'
-      ? await deriveSubkey(encryption.masterKey, pid, encryption.info)
-      : undefined;
+    const active = await activeEncryptKey(encryption, pid);
+    const stampVersion = active && isVersionedKeyShape(encryption);
     const body = await encodeBody(utf8.encode(json), {
       compression: compression.algorithm,
-      encryption: subKey ? { subKey } : undefined,
+      encryption: active
+        ? {
+            subKey: active.subKey,
+            ...(stampVersion ? { keyVersion: active.keyVersion } : {}),
+          }
+        : undefined,
     });
 
     const cached = this.etagCache.get(pid);

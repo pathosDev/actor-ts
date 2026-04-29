@@ -104,3 +104,84 @@ describe('BodyCodec — encryption round-trip', () => {
     await expect(decodeBody(fake, { encryption: { subKey } })).rejects.toThrow(/IV/);
   });
 });
+
+/* ===================== #8 — master-key rotation ====================== */
+
+describe('BodyCodec — versioned encryption (#8)', () => {
+  const subKeyV0 = new Uint8Array(32).fill(0xa0);
+  const subKeyV1 = new Uint8Array(32).fill(0xa1);
+  const subKeyV2 = new Uint8Array(32).fill(0xa2);
+
+  test('encoder embeds the key-version byte when keyVersion is supplied', async () => {
+    const framed = await encodeBody(utf8('payload'), {
+      encryption: { subKey: subKeyV1, keyVersion: 1 },
+    });
+    expect(framed[4]! & 0b1100).toBe(0b1100);   // FLAG_ENCRYPTED + FLAG_KEY_VERSIONED
+    expect(framed[5]).toBe(1);                  // version byte right after flags
+  });
+
+  test('legacy single-key bodies round-trip through the resolver path (treated as version 0)', async () => {
+    // Legacy = no keyVersion stamped at encode time.
+    const framed = await encodeBody(utf8('legacy'), { encryption: { subKey: subKeyV0 } });
+    expect(framed[4]! & 0b1000).toBe(0);        // FLAG_KEY_VERSIONED unset
+
+    // Decode via a resolver that maps v0 → subKeyV0 — succeeds.
+    const decoded = await decodeBody(framed, {
+      encryption: {
+        subKeyFor: async (v) => v === 0 ? subKeyV0 : null,
+      },
+    });
+    expect(decoded.keyVersion).toBeUndefined();
+    expect(fromUtf8(decoded.payload)).toBe('legacy');
+  });
+
+  test('round-trip with a keyring resolver: version-1 body is decrypted by the v1 key', async () => {
+    const framed = await encodeBody(utf8('rotated'), {
+      encryption: { subKey: subKeyV1, keyVersion: 1 },
+    });
+    const decoded = await decodeBody(framed, {
+      encryption: {
+        subKeyFor: async (v) => v === 0 ? subKeyV0 : v === 1 ? subKeyV1 : null,
+      },
+    });
+    expect(decoded.keyVersion).toBe(1);
+    expect(fromUtf8(decoded.payload)).toBe('rotated');
+  });
+
+  test('reading a v0 body after rotation uses the retired v0 key', async () => {
+    // Simulate: written under v0, then we rotated.  Resolver still has v0 in retired.
+    const framed = await encodeBody(utf8('historical'), {
+      encryption: { subKey: subKeyV0, keyVersion: 0 },
+    });
+    const decoded = await decodeBody(framed, {
+      encryption: {
+        subKeyFor: async (v) => v === 0 ? subKeyV0 : v === 1 ? subKeyV1 : null,
+      },
+    });
+    expect(decoded.keyVersion).toBe(0);
+    expect(fromUtf8(decoded.payload)).toBe('historical');
+  });
+
+  test('resolver returning null for the requested version surfaces a clear error', async () => {
+    const framed = await encodeBody(utf8('orphaned'), {
+      encryption: { subKey: subKeyV2, keyVersion: 2 },
+    });
+    await expect(decodeBody(framed, {
+      encryption: {
+        subKeyFor: async (_v) => null,
+      },
+    })).rejects.toThrow(/no master key registered for version 2/);
+  });
+
+  test('encoder rejects out-of-range key versions', async () => {
+    await expect(encodeBody(utf8('x'), {
+      encryption: { subKey: subKeyV1, keyVersion: -1 },
+    })).rejects.toThrow(/keyVersion/);
+    await expect(encodeBody(utf8('x'), {
+      encryption: { subKey: subKeyV1, keyVersion: 256 },
+    })).rejects.toThrow(/keyVersion/);
+    await expect(encodeBody(utf8('x'), {
+      encryption: { subKey: subKeyV1, keyVersion: 1.5 },
+    })).rejects.toThrow(/keyVersion/);
+  });
+});
