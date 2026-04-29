@@ -175,9 +175,15 @@ export class Cluster {
 
   private _listeners: Array<(event: ClusterEvent) => void> = [];
 
-  /** Current snapshot of known members. */
+  /**
+   * Current snapshot of known members.  `removed` entries are kept
+   * internally as tombstones (so stale gossip can't resurrect them
+   * via the merge path) but are filtered out here — the public
+   * contract is "members the cluster currently considers part of
+   * the topology".
+   */
   getMembers(): ReadonlyArray<Member> {
-    return Array.from(this.members.values());
+    return Array.from(this.members.values()).filter((m) => m.status !== 'removed');
   }
 
   /** Members in the `up` state, ordered by address — the "active set". */
@@ -473,7 +479,12 @@ export class Cluster {
     if (!existing) return;
     const leaving = existing.withStatus('leaving');
     const removed = leaving.withStatus('removed');
-    this.members.delete(peer.toString());
+    // Tombstone (don't delete) so a stale `up` gossip from a peer that
+    // hasn't seen the leave yet can't resurrect this address —
+    // `mergeMember`'s version check filters it out.  Public APIs
+    // (`getMembers`, `upMembers`, `reachableMembers`) all skip
+    // `removed` entries.
+    this.members.set(peer.toString(), removed);
     this.failureDetector.forget(peer);
     this.emit(new MemberLeft(leaving));
     this.emit(new MemberRemoved(removed));
@@ -523,7 +534,13 @@ export class Cluster {
         const downed = m.withStatus('down');
         this.updateMember(downed);
         this.emit(new MemberDown(downed));
-        // After declaring down, remove it so it no longer appears in sets.
+        // Note: FD-driven downing is the *advisory* fallback when no
+        // `DowningProvider` is configured.  We delete here (rather
+        // than tombstone) so a partition followed by a heal can
+        // recover the peer — `partition+heal` semantics rely on
+        // this.  Definitive downing paths (`handleLeave`,
+        // `evaluateDowning` force-down) tombstone instead, which
+        // prevents stale gossip from resurrecting the address.
         this.members.delete(m.address.toString());
         this.failureDetector.forget(m.address);
         const removed = downed.withStatus('removed');
@@ -593,9 +610,12 @@ export class Cluster {
       const downed = m.withStatus('down');
       this.updateMember(downed);
       this.emit(new MemberDown(downed));
-      this.members.delete(key);
+      // Tombstone (don't delete) so later gossip from peers that
+      // haven't seen the force-down can't resurrect this address.
+      const removed = downed.withStatus('removed');
+      this.members.set(key, removed);
       this.failureDetector.forget(m.address);
-      this.emit(new MemberRemoved(downed.withStatus('removed')));
+      this.emit(new MemberRemoved(removed));
     }
     if (downsSelf) {
       void this.leave().catch((e) =>
