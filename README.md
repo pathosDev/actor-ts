@@ -174,7 +174,8 @@ middleware, or in-house clients.
 - Backwards-compatibility guarantees of any kind — pre-1.0
 
 See [`ROADMAP.md`](./ROADMAP.md) for what's coming next and what's
-explicitly out of scope.
+explicitly out of scope, and [`CHANGELOG.md`](./CHANGELOG.md) for what
+landed in the most recent release.
 
 ---
 
@@ -694,27 +695,6 @@ benchmarks/     — 20+ micro-benchmarks (single-node, cluster, worker, http, me
 tests/unit/     — most of the ~1487 tests live here
 tests/smoke/    — cross-runtime smoke scripts (bun / node / deno)
 ```
-
-## Status
-
-Feature-complete for a single-process / small-cluster app.  Recent work
-filled in production-grade observability (Prometheus + OpenTelemetry-
-style tracing + MDC), the schema-evolution polish (rolling-deploy
-write-version, in-process schema registry, master-key rotation), broker
-upgrades (Kafka manual-commit, NATS JetStream, server-side WebSocket),
-and the persistent-FSM combination of state machine + event sourcing.
-
-The remaining roadmap items, all tracked as issues:
-
-- [#26 — Documentation site (TypeDoc + custom layout)](https://github.com/pathosDev/actor-ts/issues/26)
-- [#27 — Performance benchmarks vs Akka.NET / Akka (JVM)](https://github.com/pathosDev/actor-ts/issues/27)
-- [#4 — gRPC reflection + health-service auto-registration](https://github.com/pathosDev/actor-ts/issues/4)
-- [#5 — gRPC client-stream as a first-class call mode](https://github.com/pathosDev/actor-ts/issues/5)
-- [#54 — Akka-Streams-style reactive streaming DSL](https://github.com/pathosDev/actor-ts/issues/54) *(big lift)*
-
-See [`ROADMAP.md`](./ROADMAP.md) for the full list (incl. demand-driven
-items like ZeroMQ / STOMP brokers and live-integration tests) and
-[`CHANGELOG.md`](./CHANGELOG.md) for what landed in the latest release.
 
 ## License
 
