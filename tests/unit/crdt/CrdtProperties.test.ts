@@ -226,3 +226,64 @@ describe('LWWRegister — laws', () => {
     expect(back.timestamp()).toBe(42);
   });
 });
+
+/* ============================== #57 — custom identity =============== */
+
+describe('GSet — custom identity', () => {
+  test('default identity uses JSON.stringify, dedupes structurally-equal values', () => {
+    const s = GSet.empty<{ x: number }>().add({ x: 1 }).add({ x: 1 }).add({ x: 2 });
+    expect(s.size).toBe(2);
+  });
+
+  test('custom identity dedupes by user-defined key', () => {
+    interface Item { sku: string; name: string }
+    const s = GSet.empty<Item>({ identity: (i) => i.sku })
+      .add({ sku: 'BOOK', name: 'A' })
+      .add({ sku: 'BOOK', name: 'A different name' }) // same sku → dropped
+      .add({ sku: 'COFFEE', name: 'C' });
+    expect(s.size).toBe(2);
+    // The first-added item's `name` wins because subsequent adds
+    // with the same key are dropped.
+    expect(s.value().find((i) => i.sku === 'BOOK')?.name).toBe('A');
+  });
+
+  test('default identity throws on BigInt (the failure mode #57 documents)', () => {
+    const s = GSet.empty<bigint>();
+    expect(() => s.add(42n)).toThrow();
+  });
+
+  test('custom identity makes BigInt usable', () => {
+    const s = GSet.empty<bigint>({ identity: (b) => b.toString() })
+      .add(42n).add(42n).add(43n);
+    expect(s.size).toBe(2);
+  });
+});
+
+describe('ORSet — custom identity', () => {
+  test('custom identity dedupes by user-defined key', () => {
+    interface Item { sku: string; price: number }
+    const s = ORSet.empty<Item>({ identity: (i) => i.sku })
+      .add('replica-a', { sku: 'BOOK', price: 10 })
+      .add('replica-a', { sku: 'BOOK', price: 99 })   // same sku
+      .add('replica-a', { sku: 'COFFEE', price: 5 });
+    expect(s.size).toBe(2);
+  });
+
+  test('add-wins still works with custom identity', () => {
+    interface Item { sku: string }
+    const make = (): ORSet<Item> => ORSet.empty<Item>({ identity: (i) => i.sku });
+    const a0 = make().add('A', { sku: 'apple' });
+    const a1 = a0.remove({ sku: 'apple' });
+    const b1 = a0.add('B', { sku: 'apple' });
+    expect(a1.merge(b1).has({ sku: 'apple' })).toBe(true);
+  });
+
+  test('JSON round-trip with custom identity recovers element values', () => {
+    interface Item { sku: string; name: string }
+    const s = ORSet.empty<Item>({ identity: (i) => i.sku })
+      .add('A', { sku: 'BOOK', name: 'Designing Data-Intensive Applications' });
+    const back = ORSet.fromJSON<Item>(s.toJSON(), { identity: (i) => i.sku });
+    expect(back.has({ sku: 'BOOK', name: 'whatever' })).toBe(true);
+    expect(back.value()[0]!.name).toBe('Designing Data-Intensive Applications');
+  });
+});

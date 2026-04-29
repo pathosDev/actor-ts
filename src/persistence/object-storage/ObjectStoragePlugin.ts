@@ -2,17 +2,20 @@ import type { ActorSystem } from '../../ActorSystem.js';
 import type { PersistenceExtension } from '../PersistenceExtension.js';
 import { ObjectStorageDurableStateStore } from '../durable-state-stores/ObjectStorageDurableStateStore.js';
 import { ObjectStorageSnapshotStore } from '../snapshot-stores/ObjectStorageSnapshotStore.js';
+import { probeCompressionAvailability } from './Compression.js';
+import { probeEncryptionAvailability } from './Encryption.js';
 import { FilesystemObjectStorageBackend } from './FilesystemObjectStorageBackend.js';
 import {
   S3ObjectStorageBackend,
   type S3Credentials,
 } from './S3ObjectStorageBackend.js';
 import type { ObjectStorageBackend } from './ObjectStorageBackend.js';
-import type {
-  CompressionConfig,
-  CompressionResolver,
-  EncryptionConfig,
-  EncryptionResolver,
+import {
+  knownConfigsOf,
+  type CompressionConfig,
+  type CompressionResolver,
+  type EncryptionConfig,
+  type EncryptionResolver,
 } from './PluginConfig.js';
 
 /** Canonical plugin IDs registered by `registerObjectStoragePlugins`. */
@@ -74,10 +77,21 @@ export interface ObjectStoragePluginHandles {
  * `handles.durableStateStore` from the return value and pass it into
  * their `DurableStateActor` settings.
  *
+ * **Eager peer-dep validation (#18, #59).**  Before returning, this
+ * function probes any optional peer-dependency the configured codecs
+ * need — `fzstd` for `compression: 'zstd'` (when neither Bun nor
+ * Node 22.15+ provides a native impl), `SubtleCrypto` when any
+ * encryption config is supplied.  A failing probe surfaces the
+ * "install X" message **here**, at registration time, instead of
+ * silently surviving until the first persist call.  For resolvers
+ * built via `compressionByPrefix` / `encryptionByPrefix` every config
+ * the resolver could return is probed; opaque user-written resolvers
+ * fall back to first-use checks.
+ *
  * Example:
  *
  *   const ext = system.extension(PersistenceExtensionId);
- *   const { durableStateStore } = registerObjectStoragePlugins(ext, {
+ *   const { durableStateStore } = await registerObjectStoragePlugins(ext, {
  *     backend: { kind: 's3', bucket: 'my-app', region: 'eu-central-1' },
  *     compression: { algorithm: 'zstd' },
  *     encryption:  encryptionByPrefix({ default: { mode: 'sse-s3' } }),
@@ -85,10 +99,12 @@ export interface ObjectStoragePluginHandles {
  *   // ... and to make the snapshot plugin active:
  *   //   actor-ts.persistence.snapshot-store.plugin = "actor-ts.persistence.snapshot-store.object-storage"
  */
-export function registerObjectStoragePlugins(
+export async function registerObjectStoragePlugins(
   ext: PersistenceExtension,
   options: ObjectStoragePluginOptions,
-): ObjectStoragePluginHandles {
+): Promise<ObjectStoragePluginHandles> {
+  await validateObjectStoragePeerDeps(options);
+
   const backend = buildBackend(options.backend);
   const snapshotId = options.snapshotPluginId ?? OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID;
 
@@ -110,6 +126,53 @@ export function registerObjectStoragePlugins(
   });
 
   return { backend, durableStateStore };
+}
+
+/**
+ * Probe every codec peer-dep the configured options may need.  Public
+ * so callers can pre-validate (e.g. at app bootstrap) independently of
+ * actually registering the plugin.
+ */
+export async function validateObjectStoragePeerDeps(
+  options: ObjectStoragePluginOptions,
+): Promise<void> {
+  // Compression: probe each algorithm at most once.
+  const algos = new Set<CompressionConfig['algorithm']>();
+  for (const cfg of collectCompressionConfigs(options.compression)) {
+    algos.add(cfg.algorithm);
+  }
+  for (const algo of algos) {
+    await probeCompressionAvailability(algo);
+  }
+
+  // Encryption: WebCrypto is needed for the client-aes256-gcm mode
+  // (HKDF + AES-GCM go through SubtleCrypto).  The server-side modes
+  // — sse-s3, sse-kms — are header pass-throughs and need nothing.
+  const encConfigs = collectEncryptionConfigs(options.encryption);
+  if (encConfigs.some((c) => c.mode === 'client-aes256-gcm')) {
+    await probeEncryptionAvailability();
+  }
+}
+
+function collectCompressionConfigs(
+  c: CompressionConfig | CompressionResolver | undefined,
+): ReadonlyArray<CompressionConfig> {
+  if (c === undefined) return [];
+  if (typeof c === 'function') {
+    // Resolver: check for the introspection metadata that
+    // `compressionByPrefix` attaches.  Opaque user resolvers return
+    // `undefined` here — we skip them rather than guess.
+    return knownConfigsOf<CompressionConfig>(c) ?? [];
+  }
+  return [c];
+}
+
+function collectEncryptionConfigs(
+  e: EncryptionConfig | EncryptionResolver | undefined,
+): ReadonlyArray<EncryptionConfig> {
+  if (e === undefined) return [];
+  if (typeof e === 'function') return knownConfigsOf<EncryptionConfig>(e) ?? [];
+  return [e];
 }
 
 function buildBackend(spec: ObjectStorageBackendSpec): ObjectStorageBackend {

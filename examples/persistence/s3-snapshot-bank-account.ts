@@ -144,7 +144,7 @@ async function main(): Promise<void> {
     },
   });
   sys1.extension(PersistenceExtensionId).setJournal(journal);
-  registerObjectStoragePlugins(sys1.extension(PersistenceExtensionId), {
+  await registerObjectStoragePlugins(sys1.extension(PersistenceExtensionId), {
     backend: spec,
     prefix: 'env-prod/snapshots/',
     keepN: 2,
@@ -175,7 +175,7 @@ async function main(): Promise<void> {
     },
   });
   sys2.extension(PersistenceExtensionId).setJournal(journal);
-  registerObjectStoragePlugins(sys2.extension(PersistenceExtensionId), {
+  await registerObjectStoragePlugins(sys2.extension(PersistenceExtensionId), {
     backend: spec,
     prefix: 'env-prod/snapshots/',
   });

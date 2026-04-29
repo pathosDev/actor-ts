@@ -12,7 +12,36 @@
  * subkey only compromises one pid's snapshots, not the entire bucket.
  */
 
-const subtle = globalThis.crypto.subtle;
+/**
+ * Lazily resolve `SubtleCrypto`.  Capturing it at module load (the old
+ * approach) crashed the import itself on runtimes without WebCrypto;
+ * deferring the lookup lets `probeEncryptionAvailability` surface a
+ * clear "WebCrypto not available" error at registration time instead
+ * (#18, #59).
+ */
+function getSubtle(): SubtleCrypto {
+  const s = (globalThis.crypto as Crypto | undefined)?.subtle;
+  if (!s) {
+    throw new Error(
+      'SubtleCrypto is not available in this runtime.  Client-side '
+      + 'encryption requires WebCrypto support — Node 20+, Bun, or '
+      + 'Deno.  In bundled/edge environments, ensure the bundler '
+      + 'includes a WebCrypto polyfill.',
+    );
+  }
+  return s;
+}
+
+/**
+ * Probe whether WebCrypto is available.  Resolves on success, throws
+ * the same clear error `getSubtle` would throw on failure.  Called
+ * eagerly by `registerObjectStoragePlugins` when an encryption config
+ * is supplied so the failure surfaces at plugin-init rather than the
+ * first save call.
+ */
+export async function probeEncryptionAvailability(): Promise<void> {
+  getSubtle();
+}
 
 /** Length of the AES-GCM IV we use, in bytes. */
 export const IV_LENGTH = 12;
@@ -34,6 +63,7 @@ export async function deriveSubkey(
   if (masterKey.byteLength !== KEY_LENGTH) {
     throw new Error(`encryption masterKey must be ${KEY_LENGTH} bytes, got ${masterKey.byteLength}`);
   }
+  const subtle = getSubtle();
   const baseKey = await subtle.importKey('raw', masterKey as unknown as BufferSource, 'HKDF', false, ['deriveBits']);
   const derived = await subtle.deriveBits(
     {
@@ -66,6 +96,7 @@ export async function aesGcmEncrypt(
   }
   // The casts work around TypeScript 5.7+'s overly-strict DOM typings, where
   // `Uint8Array<ArrayBufferLike>` doesn't subtype `BufferSource` cleanly.
+  const subtle = getSubtle();
   const key = await subtle.importKey('raw', subkey as unknown as BufferSource, { name: 'AES-GCM' }, false, ['encrypt']);
   const ciphertext = await subtle.encrypt(
     { name: 'AES-GCM', iv: iv as unknown as BufferSource },
@@ -87,6 +118,7 @@ export async function aesGcmDecrypt(
   if (iv.byteLength !== IV_LENGTH) {
     throw new Error(`iv must be ${IV_LENGTH} bytes`);
   }
+  const subtle = getSubtle();
   const key = await subtle.importKey('raw', subkey as unknown as BufferSource, { name: 'AES-GCM' }, false, ['decrypt']);
   const plaintext = await subtle.decrypt(
     { name: 'AES-GCM', iv: iv as unknown as BufferSource },

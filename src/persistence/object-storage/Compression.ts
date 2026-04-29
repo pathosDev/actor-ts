@@ -126,6 +126,23 @@ export function compressorFor(algo: CompressionAlgo): Compressor {
   }
 }
 
+/**
+ * Probe whether the runtime / peer-dep needed by `algo` is loadable.
+ * Resolves on success, throws with a clear "install X" message on
+ * failure.  Idempotent — under the hood this just kicks the same lazy
+ * `compressorFor()` would use, so the result is cached.
+ *
+ * Used by `registerObjectStoragePlugins` to surface peer-dep failures
+ * at plugin-init time rather than on the first persist call (#18, #59).
+ */
+export async function probeCompressionAvailability(algo: CompressionAlgo): Promise<void> {
+  switch (algo) {
+    case 'none': return;
+    case 'gzip': await gzipLazy.get(); return;
+    case 'zstd': await zstdLazy.get(); return;
+  }
+}
+
 /** Test hook — clear cached lazy implementations. */
 export function resetCompressionCache(): void {
   gzipLazy.reset();

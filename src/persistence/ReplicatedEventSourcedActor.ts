@@ -1,6 +1,7 @@
 import { match, P } from 'ts-pattern';
 import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
+import type { ActorSystem } from '../ActorSystem.js';
 import type { Cluster } from '../cluster/Cluster.js';
 import { DistributedPubSubId } from '../cluster/pubsub/index.js';
 import {
@@ -93,6 +94,28 @@ function topicFor(persistenceId: string): string {
   return `replicated-es:${persistenceId}`;
 }
 
+/**
+ * Per-system live-pid registry (#58).  `ReplicatedEventSourcedActor`
+ * relies on being the **single writer** for its `persistenceId` on
+ * the local node — `_appendOne` reads `highestSeq` and `append` in
+ * one mailbox tick under that assumption.  Two actors with the same
+ * pid on the same node violate it: their journal appends race, the
+ * second silently drops with `JournalConcurrencyError`, in-memory
+ * state diverges between the two instances.
+ *
+ * The registry catches this at preStart: the second actor sees the
+ * pid already taken and throws.  `WeakMap`-keyed by `ActorSystem`
+ * so tests with disposable systems don't leak registrations.  The
+ * inner `Set` is mutated as actors register / unregister.
+ */
+const livePidsBySystem = new WeakMap<ActorSystem, Set<string>>();
+
+function getLivePidsForSystem(system: ActorSystem): Set<string> {
+  let set = livePidsBySystem.get(system);
+  if (!set) { set = new Set(); livePidsBySystem.set(system, set); }
+  return set;
+}
+
 export abstract class ReplicatedEventSourcedActor<Cmd, Event, State>
   extends Actor<Cmd | ReplicatedEventEnvelope<Event>> {
   abstract readonly persistenceId: string;
@@ -159,6 +182,21 @@ export abstract class ReplicatedEventSourcedActor<Cmd, Event, State>
   protected get state(): State { return this._state; }
 
   override async preStart(): Promise<void> {
+    // Single-writer-per-pid invariant (#58).  Two ReplicatedEventSourcedActors
+    // with the same persistenceId on the same node race their
+    // `_appendOne` calls; the second silently drops via
+    // JournalConcurrencyError and in-memory state diverges.  Catch
+    // it loudly at preStart.
+    const livePids = getLivePidsForSystem(this.system);
+    if (livePids.has(this.persistenceId)) {
+      throw new Error(
+        `ReplicatedEventSourcedActor: another live actor on this node already holds persistenceId '${this.persistenceId}'. ` +
+        `Each replicated actor must own a unique persistenceId per node — cross-replica multi-writer is the entire ` +
+        `point of replication, but on a single node the journal append path assumes single-writer.`,
+      );
+    }
+    livePids.add(this.persistenceId);
+
     this._state = this.initialState();
     const ext = this.system.extension(PersistenceExtensionId);
     this._journal = ext.journal;
@@ -212,6 +250,16 @@ export abstract class ReplicatedEventSourcedActor<Cmd, Event, State>
     pubsub.tell(new Subscribe(topicFor(this.persistenceId), this.self));
 
     await this.onRecoveryComplete(this._state);
+  }
+
+  override postStop(): void {
+    // Release the live-pid registration so a fresh actor with the
+    // same persistenceId can take over (e.g. after a graceful stop
+    // + re-spawn).  Must run on every termination path, including
+    // restart-after-failure where preRestart calls postStop before
+    // a new instance gets preStart.
+    const livePids = livePidsBySystem.get(this.system);
+    livePids?.delete(this.persistenceId);
   }
 
   override async onReceive(msg: Cmd | ReplicatedEventEnvelope<Event> | SubscribeAck): Promise<void> {
