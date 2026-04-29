@@ -91,6 +91,22 @@ export type {
   NatsMessage,
   NatsPublish,
 } from './NatsActor.js';
+export { JetStreamActor } from './JetStreamActor.js';
+export type {
+  JetStreamActorSettings,
+  JetStreamCmd,
+  JetStreamMessage,
+  JetStreamPublish,
+  JetStreamStreamConfig,
+  JetStreamConsumerConfig,
+  // Test seams (re-exported so subclasses can satisfy the mock shape).
+  NatsConnectionLike,
+  JetStreamClientLike,
+  JetStreamSubscriptionLike,
+  JetStreamMsgHandleLike,
+  JetStreamMsgInfoLike,
+  JetStreamManagerLike,
+} from './JetStreamActor.js';
 export { RedisStreamsActor } from './RedisStreamsActor.js';
 export type {
   RedisStreamsActorSettings,
