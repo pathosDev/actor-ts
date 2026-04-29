@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml"><img alt="build workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml/badge.svg?branch=main"/></a>
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml"><img alt="tests workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml/badge.svg?branch=main"/></a>
-  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-1486%20of%201487-ef4444?style=flat-square&logo=bun"/></a>
+  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-1487%20passing-22c55e?style=flat-square&logo=bun"/></a>
   <a href="#"><img alt="coverage" src="https://img.shields.io/badge/coverage-~83%25-22c55e?style=flat-square"/></a>
 </p>
 
@@ -28,7 +28,7 @@
 > the actor-model stack (actors, supervision, cluster, sharding, persistence,
 > HTTP) to TypeScript, running on Bun, Node.js, and Deno.  Large parts were
 > written with AI pair-programming and **have not been battle-tested in
-> production**.  Test coverage is good (~1486 tests, ~83 % line) but the
+> production**.  Test coverage is good (~1487 tests, ~83 % line) but the
 > surface area is enormous.  **Do not deploy this to anything that matters
 > yet.**  Use it to learn, to prototype, to benchmark ideas — not to handle
 > real money, users, or data.
@@ -144,7 +144,7 @@ middleware, or in-house clients.
 
 ### What's actually battle-ready
 
-- Nothing.  This is an experimental hobby project (~1486 tests, ~83 % line coverage).
+- Nothing.  This is an experimental hobby project (~1487 tests, ~83 % line coverage).
 
 ### What's solid in tests, but not production-tested
 
