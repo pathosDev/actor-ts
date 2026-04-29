@@ -36,6 +36,10 @@ import type {
 } from './Protocol.js';
 import { decodeRefs, encodeRefs, parsePathSegments } from './RefCodec.js';
 import { InMemoryTransport, TcpTransport, type Transport } from './Transport.js';
+import type {
+  ClusterPartitionView,
+  DowningProvider,
+} from './downing/DowningProvider.js';
 
 export interface ClusterSettings {
   readonly host: string;
@@ -58,6 +62,19 @@ export interface ClusterSettings {
    * to disable.  Default: 0 (disabled — opt-in only).
    */
   readonly weaklyUpAfterMs?: number;
+  /**
+   * Optional split-brain resolver.  When provided, the cluster invokes
+   * `provider.decide(view)` whenever a member transitions to / from
+   * `unreachable`, and force-downs every address in the returned set
+   * (regardless of failure-detector state).  Without a provider, the
+   * cluster relies solely on the failure detector's elapsed-time
+   * `unreachable → down → removed` cascade — fine for unilateral
+   * crashes, weak under network partitions.
+   *
+   * See `src/cluster/downing/` for the bundled strategies (KeepMajority,
+   * KeepOldest, KeepReferee, StaticQuorum, LeaseMajority).
+   */
+  readonly downing?: DowningProvider;
 }
 
 type EnvelopeHandler = (env: EnvelopeMsg, from: NodeAddress) => void;
@@ -94,6 +111,15 @@ export class Cluster {
   private readonly wireHandlers = new Map<string, (msg: WireMessage, from: NodeAddress) => void>();
   private started = false;
 
+  private readonly downing: DowningProvider | null;
+  /**
+   * Set of unreachable address keys observed at the last downing
+   * evaluation.  We only re-invoke the provider when the set
+   * actually changes — without this debounce a steady "always one
+   * unreachable peer" state would call `decide()` on every tick.
+   */
+  private lastDownedView: string | null = null;
+
   private constructor(system: ActorSystem, settings: ClusterSettings) {
     this.system = system;
     this.selfAddress = new NodeAddress(system.name, settings.host, settings.port);
@@ -108,6 +134,7 @@ export class Cluster {
     this.gossipIntervalMs = settings.gossipIntervalMs ?? 1_000;
     this.seedRetryIntervalMs = settings.seedRetryIntervalMs ?? 3_000;
     this.weaklyUpAfterMs = settings.weaklyUpAfterMs ?? 0;
+    this.downing = settings.downing ?? null;
   }
 
   /** Entry point: start the cluster and attempt to contact seed nodes. */
@@ -452,6 +479,70 @@ export class Cluster {
         const removed = downed.withStatus('removed');
         this.emit(new MemberRemoved(removed));
       }
+    }
+    // Optional split-brain resolver — runs after the failure-detector
+    // pass so it sees the latest unreachable set.
+    if (this.downing) this.evaluateDowning();
+  }
+
+  /**
+   * Build a `ClusterPartitionView` from the current member set and
+   * ask the configured `DowningProvider` to decide which addresses
+   * (if any) need to be force-downed.  Debounces by the JSON shape of
+   * the unreachable set + member view so a steady-state cluster
+   * doesn't re-invoke the provider on every tick.
+   */
+  private evaluateDowning(): void {
+    if (!this.downing) return;
+    const allMembers = Array.from(this.members.values());
+    const unreachable = new Set<string>(
+      allMembers
+        .filter((m) => m.status === 'unreachable')
+        .map((m) => m.address.toString()),
+    );
+    // Cheap fingerprint — re-evaluate only when membership or
+    // reachability shifts.  The fingerprint includes statuses so a
+    // change like "leaving → unreachable" also triggers a re-check.
+    const fingerprint = allMembers
+      .map((m) => `${m.address.toString()}:${m.status}`)
+      .sort()
+      .join('|');
+    if (fingerprint === this.lastDownedView) return;
+    this.lastDownedView = fingerprint;
+    const view: ClusterPartitionView = {
+      allMembers,
+      unreachable,
+      self: this.selfAddress,
+    };
+    let toDown: ReadonlySet<string>;
+    try {
+      toDown = this.downing.decide(view);
+    } catch (err) {
+      this.log.warn(`downing provider threw — treating as no decision`, err);
+      return;
+    }
+    if (toDown.size === 0) return;
+    const selfKey = this.selfAddress.toString();
+    const downsSelf = toDown.has(selfKey);
+    for (const key of toDown) {
+      // Self gets handled via `leave()` below — it gossips a Leaving
+      // notice to peers + drains the transport cleanly, which is
+      // strictly better than just deleting ourselves out of our own
+      // member map.
+      if (key === selfKey) continue;
+      const m = this.members.get(key);
+      if (!m) continue;
+      if (m.status === 'down' || m.status === 'removed') continue;
+      const downed = m.withStatus('down');
+      this.updateMember(downed);
+      this.emit(new MemberDown(downed));
+      this.members.delete(key);
+      this.failureDetector.forget(m.address);
+      this.emit(new MemberRemoved(downed.withStatus('removed')));
+    }
+    if (downsSelf) {
+      void this.leave().catch((e) =>
+        this.log.warn(`self-leave after downing decision failed`, e));
     }
   }
 
