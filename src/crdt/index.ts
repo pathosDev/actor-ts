@@ -18,3 +18,4 @@ export type {
   CrdtFactory,
   CrdtJson,
 } from './DistributedData.js';
+export { DurableDistributedDataStore } from './DurableDistributedDataStore.js';
