@@ -9,6 +9,15 @@ import { MigrationError } from './Envelope.js';
  *   defaults[fromV] — fields to merge in when reading a payload at
  *                     version fromV that is then carried forward to
  *                     version fromV+1 by simple object spread
+ *   writeVersion    — version to emit on `toJournal` (#7).  Defaults to
+ *                     `currentVersion`.  When set lower than current,
+ *                     fields added at versions in `[writeVersion+1,
+ *                     currentVersion]` are stripped on write — the
+ *                     mechanical inverse of the additive `defaults`
+ *                     merge.  Used during rolling deploys: v2 nodes
+ *                     keep emitting v1 events while v1 readers still
+ *                     exist; flip `writeVersion` to v2 once every
+ *                     reader has been upgraded.
  *
  * The merge is `{ ...defaults[fromV], ...payload }` — the stored payload
  * always wins, so existing fields are never overwritten by defaults.
@@ -18,6 +27,7 @@ export interface DefaultsAdapterSpec<E> {
   readonly manifest: string;
   readonly currentVersion: number;
   readonly defaults: { readonly [fromVersion: number]: Partial<E> };
+  readonly writeVersion?: number;
 }
 
 /**
@@ -39,12 +49,15 @@ export interface DefaultsAdapterSpec<E> {
  */
 export function defaultsAdapter<E extends object>(spec: DefaultsAdapterSpec<E>): EventAdapter<E, E> {
   validateSpec(spec);
+  const writeVersion = spec.writeVersion ?? spec.currentVersion;
   return {
     manifest: () => spec.manifest,
     toJournal: (event: E): OutboundFrame<E> => ({
       manifest: spec.manifest,
-      version: spec.currentVersion,
-      payload: event,
+      version: writeVersion,
+      payload: writeVersion === spec.currentVersion
+        ? event
+        : downcastByDefaults(event, spec, writeVersion) as E,
     }),
     fromJournal: (stored: StoredFrame): E => upcastByDefaults(stored, spec) as E,
   };
@@ -57,12 +70,15 @@ export function defaultsAdapter<E extends object>(spec: DefaultsAdapterSpec<E>):
  */
 export function defaultsSnapshotAdapter<S extends object>(spec: DefaultsAdapterSpec<S>): SnapshotAdapter<S, S> {
   validateSpec(spec);
+  const writeVersion = spec.writeVersion ?? spec.currentVersion;
   return {
     manifest: () => spec.manifest,
     toJournal: (state: S): OutboundFrame<S> => ({
       manifest: spec.manifest,
-      version: spec.currentVersion,
-      payload: state,
+      version: writeVersion,
+      payload: writeVersion === spec.currentVersion
+        ? state
+        : downcastByDefaults(state, spec, writeVersion) as S,
     }),
     fromJournal: (stored: StoredFrame): S => upcastByDefaults(stored, spec) as S,
   };
@@ -86,6 +102,26 @@ function validateSpec<E>(spec: DefaultsAdapterSpec<E>): void {
       );
     }
   }
+  if (spec.writeVersion !== undefined) {
+    if (!Number.isInteger(spec.writeVersion) || spec.writeVersion < 1) {
+      throw new Error(`defaultsAdapter writeVersion must be a positive integer, got ${spec.writeVersion}`);
+    }
+    if (spec.writeVersion > spec.currentVersion) {
+      throw new Error(
+        `defaultsAdapter writeVersion ${spec.writeVersion} cannot exceed currentVersion ${spec.currentVersion}`,
+      );
+    }
+    // Every step in (writeVersion, currentVersion] must have a defaults
+    // entry — that's where we know which fields to strip on write.
+    for (let v = spec.writeVersion; v < spec.currentVersion; v++) {
+      if (!spec.defaults[v]) {
+        throw new Error(
+          `defaultsAdapter writeVersion=${spec.writeVersion} requires defaults entries for every `
+          + `step on the path to currentVersion=${spec.currentVersion}; missing defaults[${v}]`,
+        );
+      }
+    }
+  }
 }
 
 function upcastByDefaults<E>(stored: StoredFrame, spec: DefaultsAdapterSpec<E>): unknown {
@@ -105,6 +141,26 @@ function upcastByDefaults<E>(stored: StoredFrame, spec: DefaultsAdapterSpec<E>):
   for (let v = stored.version; v < spec.currentVersion; v++) {
     const fill = spec.defaults[v] as Record<string, unknown> | undefined;
     if (fill) payload = { ...fill, ...payload };
+  }
+  return payload;
+}
+
+/**
+ * Inverse of {@link upcastByDefaults} — strip the fields added at
+ * each step in `(targetVersion, currentVersion]`.  Used on the write
+ * path when `writeVersion < currentVersion` (#7) so the emitted
+ * payload has exactly the shape an older reader expects.
+ */
+function downcastByDefaults<E>(
+  current: E, spec: DefaultsAdapterSpec<E>, targetVersion: number,
+): unknown {
+  let payload = { ...(current as Record<string, unknown>) };
+  for (let v = spec.currentVersion - 1; v >= targetVersion; v--) {
+    const fields = spec.defaults[v] as Record<string, unknown> | undefined;
+    if (!fields) continue;
+    for (const key of Object.keys(fields)) {
+      delete payload[key];
+    }
   }
   return payload;
 }

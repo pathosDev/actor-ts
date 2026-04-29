@@ -94,3 +94,75 @@ describe('MigrationChain — construction guards', () => {
 function catchThrows(fn: () => unknown): unknown {
   try { fn(); return null; } catch (e) { return e; }
 }
+
+/* =================== #7 — rolling-deploy downcasters =================== */
+
+describe('MigrationChain — downcasters (#7)', () => {
+  const buildChain = (): MigrationChain<DepositedV2> =>
+    MigrationChain.for<DepositedV2>('BankAccount.Deposited', 2)
+      .add({ fromVersion: 1, toVersion: 2,
+             upcast: (v: DepositedV1): DepositedV2 => ({ ...v, currency: 'USD' }) })
+      .addDown({ fromVersion: 2, toVersion: 1,
+                 downcast: (v: DepositedV2): DepositedV1 => {
+                   const { currency: _c, ...rest } = v;
+                   void _c;
+                   return rest as DepositedV1;
+                 } });
+
+  test('downcast: v2 → v1 strips fields the older version did not have', () => {
+    const chain = buildChain();
+    const out = chain.downcast({ kind: 'deposited', amount: 100, currency: 'USD' }, 1);
+    expect(out).toEqual({ kind: 'deposited', amount: 100 });
+  });
+
+  test('downcast to currentVersion is a zero-step no-op', () => {
+    const chain = buildChain();
+    const v: DepositedV2 = { kind: 'deposited', amount: 1, currency: 'EUR' };
+    expect(chain.downcast(v, 2)).toBe(v);
+  });
+
+  test('downcast targeting a newer version throws MigrationError', () => {
+    const chain = buildChain();
+    const v: DepositedV2 = { kind: 'deposited', amount: 1, currency: 'EUR' };
+    expect(() => chain.downcast(v, 3)).toThrow(MigrationError);
+  });
+
+  test('downcast with chain gap throws with the missing step printed', () => {
+    const chain = MigrationChain.for<DepositedV3>('BankAccount.Deposited', 3)
+      .add({ fromVersion: 2, toVersion: 3,
+             upcast: (v: DepositedV2): DepositedV3 => ({ kind: v.kind, cents: v.amount * 100, currency: v.currency }) })
+      // Only v3 → v2 registered; missing v2 → v1.
+      .addDown({ fromVersion: 3, toVersion: 2,
+                 downcast: (v: DepositedV3): DepositedV2 => ({ kind: v.kind, amount: v.cents / 100, currency: v.currency }) });
+    const v: DepositedV3 = { kind: 'deposited', cents: 500, currency: 'USD' };
+    expect(() => chain.downcast(v, 1)).toThrow(/starting at v2/);
+  });
+
+  test('toJournalAt with writeVersion < currentVersion produces an old-shape frame', () => {
+    const chain = buildChain();
+    const frame = chain.toJournalAt({ kind: 'deposited', amount: 50, currency: 'EUR' }, 1);
+    expect(frame).toEqual({
+      manifest: 'BankAccount.Deposited',
+      version: 1,
+      payload: { kind: 'deposited', amount: 50 },
+    });
+  });
+
+  test('toJournalAt without writeVersion emits the current shape', () => {
+    const chain = buildChain();
+    const frame = chain.toJournalAt({ kind: 'deposited', amount: 50, currency: 'EUR' });
+    expect(frame.version).toBe(2);
+    expect(frame.payload).toEqual({ kind: 'deposited', amount: 50, currency: 'EUR' });
+  });
+
+  test('addDown rejects backward steps that don\'t move backward', () => {
+    const chain = MigrationChain.for<DepositedV2>('X', 2);
+    expect(() => chain.addDown({ fromVersion: 1, toVersion: 1, downcast: (x) => x })).toThrow();
+    expect(() => chain.addDown({ fromVersion: 1, toVersion: 2, downcast: (x) => x })).toThrow();
+  });
+
+  test('addDown rejects fromVersion > currentVersion', () => {
+    const chain = MigrationChain.for<DepositedV2>('X', 2);
+    expect(() => chain.addDown({ fromVersion: 3, toVersion: 2, downcast: (x) => x })).toThrow();
+  });
+});
