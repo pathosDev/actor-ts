@@ -7,6 +7,148 @@ This is a pre-1.0 hobby project — every minor version is potentially
 breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 "What's in here / What isn't" for current scope honesty.
 
+## [0.6.0] — 2026-04-30
+
+### Added — multi-node test harness + cluster sharding hardening
+
+- `MultiNodeSpec` test harness — in-process N-role cluster with
+  failure-detector tightening, partition / heal helpers,
+  `awaitMembers` / `awaitMemberStatus` / `awaitLeader` synchronisation,
+  per-role downing-provider injection (#34).
+- `ParallelMultiNodeSpec` — worker-thread variant for tests that need
+  true parallelism across OS threads (#46).
+- Sharding rebalance hardening + sharded-daemon failover; `Passivate`
+  semantics across shard hand-off; coordinator state machine
+  reviewed against partition / leader-change scenarios (#35).
+- Persistent `ShardCoordinator` allocation state via `DistributedData`
+  — survives leader hand-off without re-emitting allocations (#39).
+- Persistent Remember-Entities — entity list rides through cluster
+  restart instead of being re-discovered lazily (#49).
+- `KubernetesLease` real implementation against the K8s coordination
+  API (replaces the stub from 0.2) (#33).
+- `ClusterSingleton` accepts an optional Lease for split-brain-safe
+  handover (#38, #61).
+- `ShardCoordinator` accepts an optional Lease for split-brain-safe
+  coordinator handover (#60).
+- `LeaseMajority` split-brain resolver — external Lease as tiebreaker
+  in the partition-resolution race (#51).
+
+### Added — persistence performance + projections + replicated ES
+
+- Persistence Query / projections read-side query layer:
+  `PersistenceQuery` with `eventsByPersistenceId` / `eventsByTag`, plus
+  `ProjectionActor` with at-least-once delivery + offset persistence
+  (`InMemoryOffsetStore`, `DurableStateOffsetStore`) (#36).
+- Push-based `PersistenceQuery` — events delivered on append via
+  `JournalEventBus` instead of polling (#42).
+- SQLite tags join table — indexed `events_by_tag` query path (#43).
+- Snapshotting for `ReplicatedEventSourcedActor` — vector-clock-aware
+  snapshots survive multi-master replay (#41).
+- Durable `DistributedData` — CRDT state survives full cluster
+  restart via per-replica `DurableStateStore` records (#40).
+- CRDTs + Replicated Event Sourcing core: `GCounter`, `PNCounter`,
+  `GSet`, `ORSet`, `LWWRegister`, `DistributedData` extension with
+  gossip replication; `ReplicatedEventSourcedActor` for multi-master
+  event sourcing with conflict-resolver pluggability (#37).
+
+### Added — additional CRDTs + persistent FSM + DX patterns
+
+- `LWWMap`, `ORMap`, `MVRegister`, `GCounterMap` — round out the CRDT
+  family.  All four implement the same `Crdt<Self>` interface,
+  expose `equals` / `toJSON` / `fromJSON`, and are wired into
+  `DistributedData`'s discriminator (#45).
+- `PersistentFSM` — finite-state machine combined with event sourcing.
+  Declare a transitions table, an `applyEvent` function, and the
+  base class handles invalid-transition rejection, guard checks,
+  and replay-driven state rebuild (#52).
+- `BackoffSupervisor` — restart-with-exponential-backoff supervisor
+  for transient failures, with optional message stash during the
+  backoff window and a configurable counter-reset rule (#48).
+- `ClusterRouter` — cluster-aware router with role filter + four
+  routing strategies (round-robin, random, consistent-hashing,
+  broadcast).  Routees auto-rebuild on `MemberUp` / `MemberRemoved`
+  (#50).
+
+### Added — observability stack
+
+- `LogContext` — Mapped Diagnostic Context (MDC) backed by
+  `AsyncLocalStorage`.  Propagates through `tell` / `ask` calls and
+  across cluster nodes; `Logger.withFields` for static fields,
+  `LogContext.run` / `with` for dynamic scoping (#53).
+- Prometheus / OpenMetrics export — `MetricsRegistry` with
+  Counter / Gauge / Histogram primitives, label support,
+  `exportPrometheus` text-format renderer, `prometheusHandler`
+  for `Bun.serve`.  Stock instrumentation: actor lifecycle counters,
+  message-handler-duration histogram, cluster gossip + member-up
+  metrics.  Opt-in via `MetricsExtensionId.enable()` so the no-
+  metrics path is zero-cost (#11).
+- OpenTelemetry-style distributed tracing — `Tracer` interface +
+  `RecordingTracer` reference impl + W3C `traceparent` codec.
+  `actor.receive` and `cluster.envelope.received` spans wired
+  automatically; trace context rides cross-wire envelopes
+  alongside MDC.  `@opentelemetry/api` is NOT a dependency — users
+  bring their own SDK and wrap it in the framework's `Tracer` (#10).
+
+### Added — schema migration & encryption polish
+
+- Master-key rotation for client-side AES-256-GCM snapshots — new
+  `MasterKeyRing` shape (`active` + `retired`), key-version byte
+  in the body manifest (`FLAG_KEY_VERSIONED`), legacy single-key
+  bodies remain readable (#8).
+- Rolling-deployment-friendly schema migration — `MigrationChain`
+  gains downcasters; `migratingAdapter` / `defaultsAdapter` accept
+  a `writeVersion` so v2 nodes can keep emitting v1 events while
+  v1 readers still exist (#7).
+- One-shot migration helpers — `wrapEventAsEnvelope` /
+  `wrapStateAsEnvelope` primitives plus `migrateInMemoryJournal` /
+  `migrateSnapshotStore` bulk-rewriters for repos adopting
+  schema-evolution after-the-fact (#9).
+- Pluggable codec + in-process schema registry — `Codec<T>`
+  interface with `jsonCodec` / `zodCodec` / `composeCodecs`,
+  `validatedEventAdapter` / `validatedSnapshotAdapter` wrappers,
+  `InMemorySchemaRegistry` with on-register compatibility checks
+  (`'none'` / `'backward'` / `'sample'`) (#6).
+
+### Added — production-grade brokers & WebSocket server-side
+
+- Kafka exactly-once via manual offset-commit mode — opt-in
+  `commitMode: 'manual'` pumps each message into a pending-promise
+  map until the handler sends `commit` / `nack` / timeout fires;
+  `commitOffsets` uses BigInt arithmetic so 2^53+ offsets stay
+  exact (#2).
+- NATS JetStream actor — durable streams + push consumer with
+  `ack` / `nak` / `term` / `inProgress` handshake; auto-create-or-
+  update streams + consumers; idempotent publish via `messageId`
+  (`Nats-Msg-Id`) (#3).
+- Server-side WebSocket — `ServerWebSocketActor` wraps a pre-
+  upgraded socket; `serverWebSocketActorOf` for the `ws`-package
+  family (Fastify, Hono); `bunWebSocketHandlers` for `Bun.serve`'s
+  callback-style API (#1).
+
+### Added — README architecture diagrams
+
+- Three architecture diagrams in the README — actor lifecycle
+  state machine, cluster gossip flow, sharding allocation +
+  hand-off (#25).
+
+### Fixed
+
+- `DistributedPubSubMediator` — eager broadcast on subscribe /
+  unsubscribe.  The previous "one random peer per gossip tick"
+  scheme had a probabilistic gap (~3 % per 5-tick window) where
+  a publish-immediately-after-subscribe could miss the new
+  subscriber.  Eager-broadcast on state mutation closes the gap
+  deterministically; periodic gossip stays as steady-state
+  anti-entropy.  Eliminated CI flake on
+  `tests/multi-node/pubsub-cross-node.test.ts` and
+  `tests/multi-node/parallel-pubsub.test.ts`.
+- Five small correctness items batched together: `tests/unit/util/
+  Option.test.ts` typecheck:dev failure (#17), eager peer-dep
+  validation at object-storage plugin-init for every codec
+  (#18, #59), `ORSet` / `GSet` element-identity callbacks for
+  non-JSON-serialisable values (#57), single-actor-per-pid
+  enforcement for `ReplicatedEventSourcedActor` (#58).
+
 ## [0.5.0] — 2026-04-27
 
 ### Added — I/O & message-broker actors
