@@ -1,4 +1,5 @@
 import { getSqliteDriver, type SqliteDb, type SqliteDriver, type SqliteStatement } from '../../runtime/sqlite/index.js';
+import { InProcessJournalEventBus, type JournalEventBus } from '../JournalEventBus.js';
 import type { Journal } from '../Journal.js';
 import {
   JournalConcurrencyError,
@@ -48,6 +49,14 @@ export class SqliteJournal implements Journal {
   private readonly options: SqliteJournalOptions;
   private readonly table: string;
   private readonly closed = { value: false };
+  /**
+   * In-process event bus — published-to inside `append` so the query
+   * layer can do sub-poll-interval push delivery in the same process.
+   * Cross-process subscribers (separate Bun/Node instance reading
+   * the same SQLite file) still need to poll; that's the inherent
+   * limit of in-process notifications.
+   */
+  readonly events: JournalEventBus = new InProcessJournalEventBus();
 
   private db: SqliteDb | null = null;
   private stmts: Stmts | null = null;
@@ -92,12 +101,17 @@ export class SqliteJournal implements Journal {
       }
       return out;
     });
+    let written: PersistentEvent<E>[];
     try {
-      return txn([...events] as never[]);
+      written = txn([...events] as never[]);
     } catch (e) {
       if (e instanceof JournalConcurrencyError) throw e;
       throw new JournalError(`SqliteJournal.append failed: ${(e as Error).message}`, e);
     }
+    // Publish AFTER the transaction commits so subscribers that
+    // re-read see the events they were notified about.
+    for (const pe of written) this.events.publish(pe as PersistentEvent<unknown>);
+    return written;
   }
 
   async read<E>(pid: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {

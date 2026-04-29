@@ -1,3 +1,4 @@
+import { InProcessJournalEventBus, type JournalEventBus } from '../JournalEventBus.js';
 import type { Journal } from '../Journal.js';
 import {
   JournalConcurrencyError,
@@ -9,9 +10,13 @@ import {
  * tests and dev-mode; data lives only as long as the process and is NOT
  * shared across ActorSystem instances.  Serves as reference semantics for
  * all other Journal implementations.
+ *
+ * Exposes an in-process `JournalEventBus` so the query layer can do
+ * sub-poll-interval push delivery (see #42).
  */
 export class InMemoryJournal implements Journal {
   private readonly streams = new Map<string, PersistentEvent<unknown>[]>();
+  readonly events: JournalEventBus = new InProcessJournalEventBus();
 
   async append<E>(
     pid: string,
@@ -40,6 +45,10 @@ export class InMemoryJournal implements Journal {
       stream.push(pe as PersistentEvent<unknown>);
     }
     this.streams.set(pid, stream);
+    // Publish AFTER the in-memory state is updated so subscribers
+    // that immediately re-read see the events they were notified
+    // about.
+    for (const pe of appended) this.events.publish(pe as PersistentEvent<unknown>);
     return appended;
   }
 

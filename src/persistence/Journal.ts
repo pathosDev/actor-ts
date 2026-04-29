@@ -1,3 +1,4 @@
+import type { JournalEventBus } from './JournalEventBus.js';
 import type { PersistentEvent } from './JournalTypes.js';
 
 /**
@@ -39,6 +40,15 @@ export interface Journal {
 
   /** Persistence IDs currently known to the journal (useful for projections). */
   persistenceIds(): Promise<string[]>;
+
+  /**
+   * Optional in-process notification bus.  When present, the read-side
+   * query layer subscribes here for sub-poll-interval push delivery
+   * (see `JournalEventBus`).  Journals that span processes (Cassandra,
+   * Postgres) leave it `undefined` — the query layer falls back to
+   * the polling loop.
+   */
+  readonly events?: JournalEventBus;
 
   /** Best-effort teardown; idempotent. */
   close?(): Promise<void>;
