@@ -115,3 +115,10 @@ export {
   hashShardId,
 } from './sharding/ShardAllocator.js';
 export type { ShardAllocator } from './sharding/ShardAllocator.js';
+
+// Cluster-aware routing.
+export { ClusterRouter, pickRendezvous } from './router/index.js';
+export type {
+  ClusterRouterOptions,
+  ClusterRouterType,
+} from './router/index.js';

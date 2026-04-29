@@ -1,0 +1,293 @@
+/**
+ * Multi-node tests for `ClusterRouter` (#50).  Three nodes form a
+ * cluster; a router on one node routes messages to a worker actor
+ * on `/user/worker` on every node carrying the right role.
+ *
+ *   - Round-robin distributes 30 messages roughly 10/node ± 1.
+ *   - Consistent-hashing pins the same key to the same node, even
+ *     across many calls and re-routes.
+ *   - Role filter excludes nodes that don't carry the role.
+ *   - When a node leaves, the router rebuilds its routee set and
+ *     subsequent traffic only lands on the remaining nodes.
+ */
+import { describe, expect, test } from 'bun:test';
+import { Actor } from '../../src/Actor.js';
+import { ActorSystem } from '../../src/ActorSystem.js';
+import type { ActorRef } from '../../src/ActorRef.js';
+import { Cluster } from '../../src/cluster/Cluster.js';
+import { NodeAddress } from '../../src/cluster/NodeAddress.js';
+import { InMemoryTransport } from '../../src/cluster/Transport.js';
+import { ClusterRouter } from '../../src/cluster/router/index.js';
+import { LogLevel, NoopLogger } from '../../src/Logger.js';
+import { Props } from '../../src/Props.js';
+import { Broadcast } from '../../src/Router.js';
+
+const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+
+async function waitFor(pred: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (pred()) return;
+    await sleep(25);
+  }
+  if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
+}
+
+interface Node {
+  readonly role: string;
+  readonly sys: ActorSystem;
+  readonly cluster: Cluster;
+  readonly received: string[];
+}
+
+async function startNode(
+  systemName: string, port: number, seeds: string[], roles: string[],
+): Promise<Node> {
+  const sys = ActorSystem.create(systemName, {
+    logger: new NoopLogger(), logLevel: LogLevel.Off,
+  });
+  const cluster = await Cluster.join(sys, {
+    host: 'h', port, seeds, roles,
+    transport: new InMemoryTransport(new NodeAddress(systemName, 'h', port)),
+    gossipIntervalMs: 30,
+  });
+  const received: string[] = [];
+
+  class Worker extends Actor<{ kind: 'work'; id: string }> {
+    override onReceive(m: { kind: 'work'; id: string }): void {
+      received.push(m.id);
+    }
+  }
+  sys.actorOf(Props.create(() => new Worker()), 'worker');
+
+  return { role: roles[0] ?? 'no-role', sys, cluster, received };
+}
+
+async function stop(n: Node): Promise<void> {
+  try { await n.cluster.leave(); } catch { /* ignore */ }
+  await n.sys.terminate();
+}
+
+describe('ClusterRouter — multi-node', () => {
+  test('round-robin distributes 30 messages roughly evenly across 3 role-matching nodes', async () => {
+    const sysName = 'cr-rr';
+    const a = await startNode(sysName, 70_001, [], ['compute']);
+    const b = await startNode(sysName, 70_002, [`${sysName}@h:70001`], ['compute']);
+    const c = await startNode(sysName, 70_003, [`${sysName}@h:70001`], ['compute']);
+    try {
+      await waitFor(() => a.cluster.upMembers().length === 3);
+
+      // Router lives on node A; routees include all three nodes.
+      const router = a.sys.actorOf(
+        ClusterRouter.props<{ kind: 'work'; id: string }>({
+          cluster: a.cluster,
+          role: 'compute',
+          routerType: 'round-robin',
+          routeePath: '/user/worker',
+        }),
+        'rr-router',
+      );
+      // Wait one tick for the router's preStart to subscribe + rebuild.
+      await sleep(50);
+
+      const N = 30;
+      for (let i = 0; i < N; i++) {
+        router.tell({ kind: 'work', id: `m-${i}` });
+      }
+
+      await waitFor(() =>
+        a.received.length + b.received.length + c.received.length === N,
+        5_000,
+      );
+
+      // Each node should receive 10 ± a small slack — round-robin is
+      // strict but the routee-rebuild order of the `upMembers` set
+      // could put any node at index 0.  We assert "no node is starved".
+      expect(a.received.length).toBeGreaterThanOrEqual(8);
+      expect(a.received.length).toBeLessThanOrEqual(12);
+      expect(b.received.length).toBeGreaterThanOrEqual(8);
+      expect(b.received.length).toBeLessThanOrEqual(12);
+      expect(c.received.length).toBeGreaterThanOrEqual(8);
+      expect(c.received.length).toBeLessThanOrEqual(12);
+    } finally {
+      await stop(a);
+      await stop(b);
+      await stop(c);
+    }
+  }, 15_000);
+
+  test('consistent-hashing: same key always lands on same node', async () => {
+    const sysName = 'cr-ch';
+    const a = await startNode(sysName, 70_011, [], []);
+    const b = await startNode(sysName, 70_012, [`${sysName}@h:70011`], []);
+    const c = await startNode(sysName, 70_013, [`${sysName}@h:70011`], []);
+    try {
+      await waitFor(() => a.cluster.upMembers().length === 3);
+
+      const router = a.sys.actorOf(
+        ClusterRouter.props<{ kind: 'work'; id: string }>({
+          cluster: a.cluster,
+          routerType: 'consistent-hashing',
+          routeePath: '/user/worker',
+          extractKey: (m) => m.id,
+        }),
+        'ch-router',
+      );
+      await sleep(50);
+
+      // Send the SAME key 5 times.  All 5 must land on exactly one node.
+      for (let i = 0; i < 5; i++) {
+        router.tell({ kind: 'work', id: 'always-same' });
+      }
+      // Send a DIFFERENT key 5 times — also pinned, but to whichever node.
+      for (let i = 0; i < 5; i++) {
+        router.tell({ kind: 'work', id: 'other-key' });
+      }
+
+      await waitFor(() =>
+        a.received.length + b.received.length + c.received.length === 10,
+        5_000,
+      );
+
+      // All occurrences of each id should pile up on the same node.
+      const groupsForKey = (key: string): number[] =>
+        [a, b, c].map((n) => n.received.filter((id) => id === key).length);
+      const same = groupsForKey('always-same');
+      const other = groupsForKey('other-key');
+      expect(same.filter((n) => n > 0).length).toBe(1);  // exactly one bucket
+      expect(same.find((n) => n > 0)).toBe(5);
+      expect(other.filter((n) => n > 0).length).toBe(1);
+      expect(other.find((n) => n > 0)).toBe(5);
+    } finally {
+      await stop(a);
+      await stop(b);
+      await stop(c);
+    }
+  }, 15_000);
+
+  test('role filter excludes nodes without the role', async () => {
+    const sysName = 'cr-role';
+    const a = await startNode(sysName, 70_021, [],                          ['compute']);
+    const b = await startNode(sysName, 70_022, [`${sysName}@h:70021`], ['compute']);
+    const c = await startNode(sysName, 70_023, [`${sysName}@h:70021`], ['frontend']); // wrong role
+    try {
+      await waitFor(() => a.cluster.upMembers().length === 3);
+
+      const router = a.sys.actorOf(
+        ClusterRouter.props<{ kind: 'work'; id: string }>({
+          cluster: a.cluster,
+          role: 'compute',
+          routerType: 'round-robin',
+          routeePath: '/user/worker',
+        }),
+        'role-router',
+      );
+      await sleep(50);
+
+      const N = 20;
+      for (let i = 0; i < N; i++) {
+        router.tell({ kind: 'work', id: `m-${i}` });
+      }
+      await waitFor(() => a.received.length + b.received.length === N, 5_000);
+
+      // Node C carries 'frontend', so it should never be addressed.
+      expect(c.received).toEqual([]);
+      // The other two split the load.
+      expect(a.received.length + b.received.length).toBe(N);
+    } finally {
+      await stop(a);
+      await stop(b);
+      await stop(c);
+    }
+  }, 15_000);
+
+  test('member-removed: node leaves → routees rebuild → subsequent traffic skips the dead node', async () => {
+    const sysName = 'cr-leave';
+    const a = await startNode(sysName, 70_031, [],                          ['compute']);
+    const b = await startNode(sysName, 70_032, [`${sysName}@h:70031`], ['compute']);
+    const c = await startNode(sysName, 70_033, [`${sysName}@h:70031`], ['compute']);
+    try {
+      await waitFor(() => a.cluster.upMembers().length === 3);
+
+      const router = a.sys.actorOf(
+        ClusterRouter.props<{ kind: 'work'; id: string }>({
+          cluster: a.cluster,
+          role: 'compute',
+          routerType: 'round-robin',
+          routeePath: '/user/worker',
+        }),
+        'leave-router',
+      );
+      await sleep(50);
+
+      // First batch — all three nodes participate.
+      for (let i = 0; i < 9; i++) router.tell({ kind: 'work', id: `pre-${i}` });
+      await waitFor(() =>
+        a.received.length + b.received.length + c.received.length === 9,
+      5_000);
+
+      // Node C leaves.  Wait for the cluster + router to register the
+      // removal — `upMembers()` drops to 2.
+      await c.cluster.leave();
+      await waitFor(() => a.cluster.upMembers().length === 2, 5_000);
+      // Give the router one extra tick to rebuild routees off the
+      // MemberRemoved event we just observed at the cluster level.
+      await sleep(50);
+
+      const cBefore = c.received.length;
+
+      // Second batch — should not reach C anymore.
+      for (let i = 0; i < 12; i++) router.tell({ kind: 'work', id: `post-${i}` });
+      await waitFor(() =>
+        a.received.length + b.received.length + c.received.length === 9 + 12,
+      5_000);
+
+      expect(c.received.length).toBe(cBefore);  // nothing new arrived at C
+      // The remaining two nodes split the 12 — round-robin, so 6/6.
+      const aPost = a.received.filter((id) => id.startsWith('post-')).length;
+      const bPost = b.received.filter((id) => id.startsWith('post-')).length;
+      expect(aPost + bPost).toBe(12);
+      expect(aPost).toBeGreaterThanOrEqual(5);
+      expect(bPost).toBeGreaterThanOrEqual(5);
+    } finally {
+      await stop(a);
+      await stop(b);
+      await stop(c);
+    }
+  }, 15_000);
+
+  test('Broadcast<T> reaches every routee', async () => {
+    const sysName = 'cr-bc';
+    const a = await startNode(sysName, 70_041, [], []);
+    const b = await startNode(sysName, 70_042, [`${sysName}@h:70041`], []);
+    const c = await startNode(sysName, 70_043, [`${sysName}@h:70041`], []);
+    try {
+      await waitFor(() => a.cluster.upMembers().length === 3);
+
+      const router = a.sys.actorOf(
+        ClusterRouter.props<{ kind: 'work'; id: string }>({
+          cluster: a.cluster,
+          routerType: 'round-robin',
+          routeePath: '/user/worker',
+        }),
+        'bc-router',
+      );
+      await sleep(50);
+
+      router.tell(new Broadcast({ kind: 'work', id: 'announce' }));
+      await waitFor(() =>
+        a.received.includes('announce')
+        && b.received.includes('announce')
+        && c.received.includes('announce'),
+        5_000,
+      );
+      expect(a.received.filter((id) => id === 'announce')).toHaveLength(1);
+      expect(b.received.filter((id) => id === 'announce')).toHaveLength(1);
+      expect(c.received.filter((id) => id === 'announce')).toHaveLength(1);
+    } finally {
+      await stop(a);
+      await stop(b);
+      await stop(c);
+    }
+  }, 15_000);
+});
