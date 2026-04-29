@@ -134,3 +134,77 @@ export function randomIv(): Uint8Array {
   globalThis.crypto.getRandomValues(iv);
   return iv;
 }
+
+/* ============================ Key-ring helpers (#8) =========================== */
+
+import type { EncryptionConfig } from '../PersistenceOptions.js';
+import type { SubKeyResolver } from './BodyCodec.js';
+
+/**
+ * Resolve the encrypt-side parameters for a `client-aes256-gcm`
+ * config: the per-pid subkey derived from the ACTIVE master key plus
+ * the version byte to embed in the body manifest (#8 — master-key
+ * rotation).  Returns `undefined` for non-encrypting modes so callers
+ * can pass-through to the no-encryption path.
+ */
+export async function activeEncryptKey(
+  encryption: EncryptionConfig, pid: string,
+): Promise<{ subKey: Uint8Array; keyVersion: number } | undefined> {
+  if (encryption.mode !== 'client-aes256-gcm') return undefined;
+  if ('masterKeys' in encryption) {
+    const active = encryption.masterKeys.active;
+    return {
+      subKey: await deriveSubkey(active.key, pid, encryption.info),
+      keyVersion: active.version,
+    };
+  }
+  // Legacy single-key shape — implicit version 0.  We deliberately do
+  // NOT set FLAG_KEY_VERSIONED at the codec layer for this path so old
+  // readers (pre-#8) keep working unchanged.
+  return {
+    subKey: await deriveSubkey(encryption.masterKey, pid, encryption.info),
+    keyVersion: 0,
+  };
+}
+
+/**
+ * Build a {@link SubKeyResolver} for decryption that dispatches on the
+ * key version byte from the manifest.  For the legacy single-key
+ * shape, the resolver always returns the single subkey regardless of
+ * version (which means the legacy `masterKey` is treated as
+ * "version 0" — backwards-compatible with bodies written before
+ * versioning landed).  For the keyring shape, walks `active +
+ * retired` looking for a matching version.
+ */
+export function resolveDecryptSubkey(
+  encryption: EncryptionConfig, pid: string,
+): SubKeyResolver | undefined {
+  if (encryption.mode !== 'client-aes256-gcm') return undefined;
+  if ('masterKeys' in encryption) {
+    const ring = encryption.masterKeys;
+    return async (version: number): Promise<Uint8Array | null> => {
+      if (ring.active.version === version) {
+        return deriveSubkey(ring.active.key, pid, encryption.info);
+      }
+      const retired = ring.retired?.find((r) => r.version === version);
+      if (retired) return deriveSubkey(retired.key, pid, encryption.info);
+      return null;
+    };
+  }
+  // Legacy single-key — the version byte is informational only.
+  // Derive once and return the same subkey for any version request.
+  const masterKey = encryption.masterKey;
+  return async (_version: number): Promise<Uint8Array> =>
+    deriveSubkey(masterKey, pid, encryption.info);
+}
+
+/**
+ * Decide whether the encode path should use the new versioned-key
+ * wire format.  Bodies written under the legacy single-key shape
+ * stay unversioned (FLAG_KEY_VERSIONED unset) so they can still be
+ * read by code from before #8 landed.  The keyring shape always
+ * writes versioned bodies.
+ */
+export function isVersionedKeyShape(encryption: EncryptionConfig): boolean {
+  return encryption.mode === 'client-aes256-gcm' && 'masterKeys' in encryption;
+}

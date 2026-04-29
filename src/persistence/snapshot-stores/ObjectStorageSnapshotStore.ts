@@ -1,6 +1,10 @@
 import { JournalError, type Snapshot } from '../JournalTypes.js';
 import { encodeBody, decodeBody } from '../object-storage/BodyCodec.js';
-import { deriveSubkey } from '../object-storage/Encryption.js';
+import {
+  activeEncryptKey,
+  isVersionedKeyShape,
+  resolveDecryptSubkey,
+} from '../object-storage/Encryption.js';
 import type {
   CompressionConfig,
   CompressionResolver,
@@ -79,12 +83,19 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
     const json = JSON.stringify({ persistenceId: pid, sequenceNr: seq, state, timestamp: now });
     let body: Uint8Array;
     try {
-      const subKey = encryption.mode === 'client-aes256-gcm'
-        ? await deriveSubkey(encryption.masterKey, pid, encryption.info)
-        : undefined;
+      const active = await activeEncryptKey(encryption, pid);
+      // Only stamp a key version on the wire when the user opted into
+      // the keyring shape; the legacy single-key path stays backwards-
+      // compatible with bodies written before #8 landed.
+      const stampVersion = active && isVersionedKeyShape(encryption);
       body = await encodeBody(utf8.encode(json), {
         compression: compression.algorithm,
-        encryption: subKey ? { subKey } : undefined,
+        encryption: active
+          ? {
+              subKey: active.subKey,
+              ...(stampVersion ? { keyVersion: active.keyVersion } : {}),
+            }
+          : undefined,
       });
     } catch (e) {
       throw new JournalError(`ObjectStorageSnapshotStore.save: encode failed for ${pid}@${seq}: ${(e as Error).message}`, e);
@@ -165,10 +176,11 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
     // precedence order as the write path.
     const encryption = options?.encryption
       ?? resolveEncryption(this.encryption, pid, { mode: 'none' });
-    const subKey = encryption.mode === 'client-aes256-gcm'
-      ? await deriveSubkey(encryption.masterKey, pid, encryption.info)
-      : undefined;
-    const decoded = await decodeBody(fetched.value.body, subKey ? { encryption: { subKey } } : undefined);
+    const subKeyFor = resolveDecryptSubkey(encryption, pid);
+    const decoded = await decodeBody(
+      fetched.value.body,
+      subKeyFor ? { encryption: { subKeyFor } } : undefined,
+    );
     const json = utf8Decoder.decode(decoded.payload);
     let parsed: { persistenceId: string; sequenceNr: number; state: S; timestamp: number };
     try { parsed = JSON.parse(json); }

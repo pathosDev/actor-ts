@@ -27,6 +27,8 @@ export type {
   CompressionAlgo,
   CompressionConfig,
   EncryptionConfig,
+  MasterKeyRing,
+  MasterKeyRingEntry,
 } from '../PersistenceOptions.js';
 
 export type CompressionResolver = (persistenceId: string) => CompressionConfig | undefined;
