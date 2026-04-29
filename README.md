@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml"><img alt="build workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml/badge.svg?branch=main"/></a>
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml"><img alt="tests workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml/badge.svg?branch=main"/></a>
-  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-1487%20passing-22c55e?style=flat-square&logo=bun"/></a>
+  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-1487%20of%201487-22c55e?style=flat-square&logo=bun"/></a>
   <a href="#"><img alt="coverage" src="https://img.shields.io/badge/coverage-~83%25-22c55e?style=flat-square"/></a>
 </p>
 
@@ -150,11 +150,16 @@ middleware, or in-house clients.
 
 - Actor core, supervision, mailboxes, typed Behaviors, TestKit
 - Cluster gossip + membership + sharding (single + multi-node test scenarios)
+- Cluster-aware router (role filter + consistent hashing)
 - Persistence (in-memory + SQLite); CassandraSnapshotStore tested against a fake CQL client only
 - HTTP DSL + Fastify backend
 - Caching (InMemoryCache); RedisCache tested against a mock client
-- Schema-migration round-trips
+- Schema-migration round-trips, in-process schema registry, master-key rotation
 - Object-storage with FilesystemBackend; S3Backend tested against a fake SDK + optional MinIO
+- Observability: structured logging / MDC propagation, Prometheus exposition, OpenTelemetry-style tracing across actor + cluster hops
+- Persistent FSM, BackoffSupervisor, CRDT family (G/PN counters, G/OR sets, LWW/MV registers, OR/LWW maps, GCounterMap)
+- Server-side WebSocket via Bun.serve / Fastify-websocket adapters
+- Kafka manual-commit (exactly-once-with-processing) + NATS JetStream durable streams
 
 ### What's there but skipped in CI
 
@@ -163,8 +168,6 @@ middleware, or in-house clients.
 
 ### What's NOT here
 
-- Production-grade observability (no OpenTelemetry / Prometheus exporters yet)
-- A schema registry (only manual migration via `MigrationChain` / `defaultsAdapter`)
 - Multi-process `FilesystemObjectStorageBackend`
 - gRPC reflection / health-service auto-registration
 - A documentation site (README is the source of truth)
