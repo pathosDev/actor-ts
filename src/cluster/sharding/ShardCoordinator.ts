@@ -8,6 +8,7 @@ import { LeaderChanged, MemberRemoved } from '../ClusterEvents.js';
 import { NodeAddress, type NodeAddressData } from '../NodeAddress.js';
 import { RemoteActorRef } from '../RemoteActorRef.js';
 import { type AllocationStrategy, HashAllocationStrategy } from './AllocationStrategy.js';
+import type { RememberEntitiesStore } from './RememberEntitiesStore.js';
 import type {
   BeginHandOffAck,
   EntityStarted,
@@ -78,6 +79,20 @@ export interface ShardCoordinatorSettings {
   readonly lease?: Lease;
   /** Retry interval for `lease.acquire()` after a failed attempt.  Default: 5 s. */
   readonly acquireRetryIntervalMs?: number;
+  /**
+   * Optional persistence backend for the entity registry.  Only used
+   * when `rememberEntities: true`.  Without it, `entitiesPerShard`
+   * stays in-memory only and a full cluster restart loses the
+   * registry — until messages re-arrive and trigger fresh
+   * EntityStarted notifications.  Set to a `JournalRememberEntitiesStore`
+   * (or any custom impl) to make the registry survive cold-starts.
+   *
+   * The `ClusterSharding` extension auto-instantiates the default
+   * `JournalRememberEntitiesStore` (using the active Journal) when
+   * `rememberEntities: true` and no explicit store is provided —
+   * so most users don't need to touch this field.
+   */
+  readonly rememberEntitiesStore?: RememberEntitiesStore;
 }
 
 /**
@@ -126,6 +141,16 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private acquireBuffer: ShardingMessage[] = [];
   private static readonly ACQUIRE_BUFFER_CAP = 1_000;
 
+  /**
+   * Promise chain over remembered-entity persistence.  Each new
+   * `EntityStarted` / `EntityStopped` chains its append onto the tail
+   * of this promise so writes serialise — `Journal.append`'s
+   * optimistic `expectedSeq` would otherwise race when two events
+   * fire in fast succession.  `.catch` on each link prevents a
+   * failed write from breaking the chain for subsequent writes.
+   */
+  private rememberWriteChain: Promise<void> = Promise.resolve();
+
   constructor(public readonly settings: ShardCoordinatorSettings) { super(); }
 
   /** Path used by ClusterSharding to locate the coordinator on any node. */
@@ -133,7 +158,25 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     return `actor-ts://SYSTEM/user/sharding-coordinator-${typeName}`;
   }
 
-  override preStart(): void {
+  override async preStart(): Promise<void> {
+    // 1. Replay the persisted remembered-entities log so the
+    //    in-memory map is populated BEFORE we accept any messages.
+    //    Without this, a fresh-cluster start would treat every
+    //    rememberEntities=true sharded type as empty and only
+    //    re-register entities lazily as messages arrive.
+    if (this.settings.rememberEntities && this.settings.rememberEntitiesStore) {
+      try {
+        const events = await this.settings.rememberEntitiesStore
+          .load(this.settings.typeName);
+        for (const ev of events) this.applyRememberEvent(ev);
+      } catch (err) {
+        this.system.log.warn(
+          `[sharding] failed to load remembered entities for '${this.settings.typeName}'`,
+          err,
+        );
+      }
+    }
+
     this.unsubscribeCluster = this.settings.cluster.subscribe(evt =>
       match(evt)
         .with(P.instanceOf(MemberRemoved), (e) => this.onMemberRemoved(e.member.address))
@@ -153,6 +196,25 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       this.settings.rebalanceIntervalMs ?? 2_000,
       () => { if (this.isActive()) this.rebalanceTick(); },
     );
+  }
+
+  /** Apply a single `RememberEvent` to the in-memory `entitiesPerShard`
+   *  map.  Used by both the preStart replay AND
+   *  `handleEntityStarted` / `handleEntityStopped` so the in-memory
+   *  derivation rule lives in exactly one place. */
+  private applyRememberEvent(
+    ev: { kind: 'started' | 'stopped'; shardId: number; entityId: string },
+  ): void {
+    if (ev.kind === 'started') {
+      const set = this.entitiesPerShard.get(ev.shardId) ?? new Set();
+      set.add(ev.entityId);
+      this.entitiesPerShard.set(ev.shardId, set);
+    } else {
+      const set = this.entitiesPerShard.get(ev.shardId);
+      if (!set) return;
+      set.delete(ev.entityId);
+      if (set.size === 0) this.entitiesPerShard.delete(ev.shardId);
+    }
   }
 
   override async postStop(): Promise<void> {
@@ -447,14 +509,45 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
 
   private handleEntityStarted(msg: EntityStarted): void {
     if (!this.settings.rememberEntities) return;
-    const set = this.entitiesPerShard.get(msg.shardId) ?? new Set();
-    set.add(msg.entityId);
-    this.entitiesPerShard.set(msg.shardId, set);
+    this.applyRememberEvent({ kind: 'started', shardId: msg.shardId, entityId: msg.entityId });
+    this.persistRememberEvent({ kind: 'started', shardId: msg.shardId, entityId: msg.entityId });
   }
 
   private handleEntityStopped(msg: EntityStopped): void {
-    const set = this.entitiesPerShard.get(msg.shardId);
-    if (set) { set.delete(msg.entityId); if (set.size === 0) this.entitiesPerShard.delete(msg.shardId); }
+    if (!this.settings.rememberEntities) {
+      // Existing behaviour: tidy the in-memory map even when we're
+      // not remembering entities, so an unwise external trigger
+      // doesn't leave stale data in the map.
+      const set = this.entitiesPerShard.get(msg.shardId);
+      if (set) { set.delete(msg.entityId); if (set.size === 0) this.entitiesPerShard.delete(msg.shardId); }
+      return;
+    }
+    this.applyRememberEvent({ kind: 'stopped', shardId: msg.shardId, entityId: msg.entityId });
+    this.persistRememberEvent({ kind: 'stopped', shardId: msg.shardId, entityId: msg.entityId });
+  }
+
+  /**
+   * Append a remembered-entity event to the persistent store.  Chains
+   * onto `rememberWriteChain` so two events fired in fast succession
+   * don't race the journal's optimistic-`expectedSeq` check — each
+   * append awaits the previous one.  Errors are caught + logged so a
+   * transient store failure doesn't break the chain for subsequent
+   * writes.
+   */
+  private persistRememberEvent(
+    event: { kind: 'started' | 'stopped'; shardId: number; entityId: string },
+  ): void {
+    const store = this.settings.rememberEntitiesStore;
+    if (!store) return;
+    this.rememberWriteChain = this.rememberWriteChain
+      .catch(() => { /* prior failure already logged */ })
+      .then(() => store.append(this.settings.typeName, event))
+      .catch((err) => {
+        this.system.log.warn(
+          `[sharding] failed to persist remembered-entity event ${event.kind}/${event.shardId}/${event.entityId}`,
+          err,
+        );
+      });
   }
 
   private onRegionTerminated(msg: RegionTerminated): void {

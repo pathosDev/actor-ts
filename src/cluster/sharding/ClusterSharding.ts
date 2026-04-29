@@ -1,10 +1,15 @@
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
 import type { Lease } from '../../coordination/Lease.js';
+import { PersistenceExtensionId } from '../../persistence/PersistenceExtension.js';
 import { Props } from '../../Props.js';
 import type { Cluster } from '../Cluster.js';
 import type { EnvelopeMsg } from '../Protocol.js';
 import { AllocationStrategy, HashAllocationStrategy } from './AllocationStrategy.js';
+import {
+  JournalRememberEntitiesStore,
+  type RememberEntitiesStore,
+} from './RememberEntitiesStore.js';
 import {
   ShardRegion,
   coordinatorPath,
@@ -31,6 +36,19 @@ export interface StartSettings<TMsg> extends ShardingSettings<TMsg> {
   readonly lease?: Lease;
   /** Retry interval for `lease.acquire()` after a failed attempt.  Default: 5 s. */
   readonly acquireRetryIntervalMs?: number;
+  /**
+   * Optional persistence backend for the entity registry — relevant
+   * only when `rememberEntities: true`.  When omitted (and
+   * `rememberEntities: true`), the default
+   * `JournalRememberEntitiesStore` is auto-instantiated using the
+   * Journal from the system's `PersistenceExtension`, so a full
+   * cluster cold-start no longer loses the registry.  Set to a
+   * custom impl to plug in a separate store.
+   *
+   * Pass `null` to opt out of persistence entirely (registry stays
+   * in-memory only — the v1 behaviour).
+   */
+  readonly rememberEntitiesStore?: RememberEntitiesStore | null;
 }
 
 /**
@@ -98,6 +116,7 @@ export class ClusterSharding {
       rebalanceIntervalMs: settings.rebalanceIntervalMs,
       handOffTimeoutMs: settings.handOffTimeoutMs,
       rememberEntities: settings.rememberEntities,
+      rememberEntitiesStore: this.resolveRememberEntitiesStore(settings),
       lease: settings.lease,
       acquireRetryIntervalMs: settings.acquireRetryIntervalMs,
       localResolver: (path) => this.regionsByPath.get(path) ?? this.coordinators.get(this.typeNameFromCoordinatorPath(path) ?? '') ?? null,
@@ -111,6 +130,27 @@ export class ClusterSharding {
       coordinatorPath(this.system.name, settings.typeName),
       ref as ActorRef<unknown>,
     );
+  }
+
+  /**
+   * Resolve the `rememberEntitiesStore` for a sharded type:
+   *
+   *   - User passed `null`           → keep registry in-memory only.
+   *   - User passed an instance      → use it as-is.
+   *   - rememberEntities=false       → no persistence regardless.
+   *   - rememberEntities=true (default path) → auto-instantiate
+   *     `JournalRememberEntitiesStore` from the system's persistence
+   *     extension so the registry survives cluster cold-starts
+   *     without the user wiring anything up.
+   */
+  private resolveRememberEntitiesStore(
+    settings: StartSettings<unknown>,
+  ): RememberEntitiesStore | undefined {
+    if (!settings.rememberEntities) return undefined;
+    if (settings.rememberEntitiesStore === null) return undefined;
+    if (settings.rememberEntitiesStore) return settings.rememberEntitiesStore;
+    const journal = this.system.extension(PersistenceExtensionId).journal;
+    return new JournalRememberEntitiesStore(journal);
   }
 
   private typeNameFromCoordinatorPath(path: string): string | null {
