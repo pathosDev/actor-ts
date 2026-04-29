@@ -539,15 +539,27 @@ Dozens of runnable examples live in [`examples/`](./examples/):
 | `examples/persistence/s3-snapshot-bank-account.ts` | snapshots in S3 / MinIO / filesystem    |
 | `examples/persistence/event-migration.ts`          | additive schema evolution (defaults)    |
 | `examples/persistence/event-migration-chain.ts`    | non-additive schema evolution (chain)   |
+| `examples/persistence/migrate-legacy-events.ts`    | one-shot migration of pre-envelope events |
+| `examples/persistence/schema-registry.ts`          | in-process Zod-style registry + upcasters |
+| `examples/persistence/replicated-counter.ts`       | multi-master event-sourced actor (CRDT) |
+| `examples/persistence/projection-bank-statement.ts`| read-side projection over the journal   |
 | `examples/cache/redis-rest-service.ts`             | response cache + rate-limit + idempotency |
 | `examples/io/mqtt-temperature.ts`                  | MQTT broker actor with topic fan-out    |
 | `examples/io/websocket-feed.ts`                    | WebSocket actor + Bun.serve server      |
+| `examples/io/websocket-server.ts`                  | server-side WS upgrade (Bun + Fastify)  |
 | `examples/io/grpc-sensor.ts`                       | gRPC client + server actors             |
+| `examples/io/kafka-exactly-once.ts`                | Kafka manual offset-commit              |
+| `examples/io/jetstream-orders.ts`                  | NATS JetStream durable consumer         |
+| `examples/management/prometheus-endpoint.ts`       | Prometheus `/metrics` over `Bun.serve`  |
+| `examples/management/opentelemetry-tracing.ts`     | OTel-style spans across actor hops      |
 | `examples/pubsub/chat-mediator.ts`                 | topic-based pub-sub                     |
 | `examples/http/rest-service.ts`                    | REST CRUD on a sharded entity (Fastify) |
 | `examples/http/express-backend.ts`                 | same, swapping in the Express backend   |
 | `examples/patterns/circuit-breaker-ask.ts`         | circuit-breaker protecting `ask`        |
+| `examples/patterns/backoff-supervisor.ts`          | restart-with-exponential-backoff supervisor |
 | `examples/fsm/traffic-light.ts`                    | named-state FSM                         |
+| `examples/fsm/order-workflow.ts`                   | persistent FSM (state-machine + event sourcing) |
+| `examples/crdt/shopping-cart-orset.ts`             | OR-Set as a shopping cart               |
 
 Run any of them with `bun run examples/<path>`.
 
@@ -577,7 +589,7 @@ bun run build         # emit dist/ with declarations
 ## Testing
 
 The framework's production code is runtime-neutral, but the **test suite
-itself** (~1486 tests under `tests/`) uses `bun:test` and therefore runs
+itself** (~1487 tests under `tests/`) uses `bun:test` and therefore runs
 directly only on Bun.  Cross-runtime validation goes through two
 separate channels:
 
@@ -677,24 +689,32 @@ src/
   typed/                                       Behaviors DSL
   util/                                        Option<T>
   worker/                                      WorkerCluster (multi-core)
-examples/       — 60+ runnable examples
+examples/       — 75+ runnable examples
 benchmarks/     — 20+ micro-benchmarks (single-node, cluster, worker, http, memory, persistence)
-tests/unit/     — most of the ~1486 tests live here
+tests/unit/     — most of the ~1487 tests live here
 tests/smoke/    — cross-runtime smoke scripts (bun / node / deno)
 ```
 
 ## Status
 
-Feature-complete for a single-process / small-cluster app.  The big
-roadmap items still open are tracked as issues, in recommended order:
+Feature-complete for a single-process / small-cluster app.  Recent work
+filled in production-grade observability (Prometheus + OpenTelemetry-
+style tracing + MDC), the schema-evolution polish (rolling-deploy
+write-version, in-process schema registry, master-key rotation), broker
+upgrades (Kafka manual-commit, NATS JetStream, server-side WebSocket),
+and the persistent-FSM combination of state machine + event sourcing.
 
-- [#33 — Real KubernetesLease implementation (replace current stub)](https://github.com/pathosDev/actor-ts/issues/33)
-- [#34 — Multi-Node-Spec test harness](https://github.com/pathosDev/actor-ts/issues/34) *(foundation for #35 + #37)*
-- [#35 — Sharding rebalance hardening + sharded-daemon failover](https://github.com/pathosDev/actor-ts/issues/35) *(depends on #34)*
-- [#36 — Projections / Persistence Query](https://github.com/pathosDev/actor-ts/issues/36)
-- [#37 — CRDTs + Replicated Event Sourcing](https://github.com/pathosDev/actor-ts/issues/37) *(depends on #34)*
+The remaining roadmap items, all tracked as issues:
 
-See [CHANGELOG.md](./CHANGELOG.md) for what landed in the latest release.
+- [#26 — Documentation site (TypeDoc + custom layout)](https://github.com/pathosDev/actor-ts/issues/26)
+- [#27 — Performance benchmarks vs Akka.NET / Akka (JVM)](https://github.com/pathosDev/actor-ts/issues/27)
+- [#4 — gRPC reflection + health-service auto-registration](https://github.com/pathosDev/actor-ts/issues/4)
+- [#5 — gRPC client-stream as a first-class call mode](https://github.com/pathosDev/actor-ts/issues/5)
+- [#54 — Akka-Streams-style reactive streaming DSL](https://github.com/pathosDev/actor-ts/issues/54) *(big lift)*
+
+See [`ROADMAP.md`](./ROADMAP.md) for the full list (incl. demand-driven
+items like ZeroMQ / STOMP brokers and live-integration tests) and
+[`CHANGELOG.md`](./CHANGELOG.md) for what landed in the latest release.
 
 ## License
 
