@@ -111,6 +111,9 @@ export {
   CircuitBreaker,
   CircuitBreakerOpenError,
   CircuitBreakerTimeoutError,
+  exponentialBackoff,
+  linearBackoff,
+  BackoffSupervisor,
 } from './pattern/index.js';
 export type {
   PipeToOptions,
@@ -118,6 +121,12 @@ export type {
   RetryOptions,
   CircuitBreakerSettings,
   CircuitState,
+  BackoffPolicy,
+  ExponentialBackoffOptions,
+  LinearBackoffOptions,
+  BackoffOptions,
+  ResetCounter,
+  ForwardStrategy,
 } from './pattern/index.js';
 export {
   Router,
