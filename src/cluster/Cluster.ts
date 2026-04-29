@@ -507,8 +507,14 @@ export class Cluster {
       .map((m) => `${m.address.toString()}:${m.status}`)
       .sort()
       .join('|');
-    if (fingerprint === this.lastDownedView) return;
-    this.lastDownedView = fingerprint;
+    // Debounce only when the LAST evaluation produced an applied
+    // decision.  Strategies that need multiple ticks to converge
+    // (e.g. `LeaseMajority` with an in-flight `acquire()`) will
+    // return an empty set on the first call and a real decision on
+    // a later call WITH THE SAME FINGERPRINT — we must keep
+    // re-asking them.  `lastDownedView === null` means "nothing
+    // committed yet", so we evaluate.
+    if (this.lastDownedView !== null && fingerprint === this.lastDownedView) return;
     const view: ClusterPartitionView = {
       allMembers,
       unreachable,
@@ -522,6 +528,7 @@ export class Cluster {
       return;
     }
     if (toDown.size === 0) return;
+    this.lastDownedView = fingerprint;
     const selfKey = this.selfAddress.toString();
     const downsSelf = toDown.has(selfKey);
     for (const key of toDown) {

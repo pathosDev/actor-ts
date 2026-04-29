@@ -2,11 +2,13 @@ import { describe, expect, test } from 'bun:test';
 import {
   KeepMajority,
   KeepOldest,
+  LeaseMajority,
   StaticQuorum,
   KeepReferee,
   addrKey,
   type ClusterPartitionView,
 } from '../../../../src/cluster/downing/index.js';
+import type { Lease } from '../../../../src/coordination/Lease.js';
 import { Member } from '../../../../src/cluster/Member.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 
@@ -128,5 +130,162 @@ describe('addrKey helper', () => {
   test('serialises member address consistently with NodeAddress.toString', () => {
     const m = new Member(addr(9000), 'up', 1);
     expect(addrKey(m)).toBe(addr(9000).toString());
+  });
+});
+
+/* ============================== LeaseMajority ============================== */
+
+/**
+ * Hand-rolled controllable Lease so the tests can pin acquire-result
+ * timing.  Promises are deferred — the test resolves them explicitly.
+ */
+class FakeLease implements Lease {
+  private nextAcquire: { resolve: (b: boolean) => void; reject: (e: Error) => void } | null = null;
+  acquireCalls = 0;
+  released = false;
+
+  acquire(): Promise<boolean> {
+    this.acquireCalls++;
+    return new Promise<boolean>((resolve, reject) => {
+      this.nextAcquire = { resolve, reject };
+    });
+  }
+  resolveAcquire(got: boolean): void {
+    const pending = this.nextAcquire;
+    if (!pending) throw new Error('FakeLease.resolveAcquire: no acquire in flight');
+    this.nextAcquire = null;
+    pending.resolve(got);
+  }
+  rejectAcquire(reason: string): void {
+    const pending = this.nextAcquire;
+    if (!pending) throw new Error('FakeLease.rejectAcquire: no acquire in flight');
+    this.nextAcquire = null;
+    pending.reject(new Error(reason));
+  }
+  async release(): Promise<void> { this.released = true; }
+  checkAlive(): boolean { return false; }
+  onLost(): () => void { return () => {}; }
+}
+
+const flushMicrotasks = (): Promise<void> =>
+  new Promise((r) => setTimeout(r, 0));
+
+describe('LeaseMajority', () => {
+  test('strict majority: returns the unreachable side without touching the lease', () => {
+    const lease = new FakeLease();
+    const strat = new LeaseMajority({ lease });
+    // 5 members, 3 reachable (1,2,3) vs 2 unreachable (4,5).
+    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }, { port: 5 }], [4, 5]);
+    const decision = strat.decide(v);
+    expect(decision.size).toBe(2);
+    expect(decision.has(addr(4).toString())).toBe(true);
+    expect(decision.has(addr(5).toString())).toBe(true);
+    expect(lease.acquireCalls).toBe(0);
+  });
+
+  test('strict minority: downs our own side without touching the lease', () => {
+    const lease = new FakeLease();
+    const strat = new LeaseMajority({ lease });
+    // 5 members, but from this perspective unreachable=[1,2,3], reachable=[4,5].
+    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }, { port: 5 }], [1, 2, 3], 4);
+    const decision = strat.decide(v);
+    expect(decision.size).toBe(2);
+    expect(decision.has(addr(4).toString())).toBe(true);
+    expect(decision.has(addr(5).toString())).toBe(true);
+    expect(lease.acquireCalls).toBe(0);
+  });
+
+  test('equal-size split: starts acquire, returns no decision until it resolves', async () => {
+    const lease = new FakeLease();
+    const strat = new LeaseMajority({ lease });
+    // 4 members, 2/2 split.
+    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+    const decision = strat.decide(v);
+    expect(decision.size).toBe(0);                  // pending
+    expect(lease.acquireCalls).toBe(1);
+
+    // Calling decide() again with the same view: still pending, no
+    // duplicate acquire.
+    expect(strat.decide(v).size).toBe(0);
+    expect(lease.acquireCalls).toBe(1);
+
+    // Resolve the acquire as winner — next decide() returns the
+    // unreachable set.
+    lease.resolveAcquire(true);
+    await flushMicrotasks();
+    const after = strat.decide(v);
+    expect(after.size).toBe(2);
+    expect(after.has(addr(3).toString())).toBe(true);
+    expect(after.has(addr(4).toString())).toBe(true);
+  });
+
+  test('equal-size split + acquire returns false: down our own side', async () => {
+    const lease = new FakeLease();
+    const strat = new LeaseMajority({ lease });
+    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+    expect(strat.decide(v).size).toBe(0);
+    lease.resolveAcquire(false);
+    await flushMicrotasks();
+    const after = strat.decide(v);
+    expect(after.size).toBe(2);
+    // We are 1; reachable side is 1+2 — both should be downed.
+    expect(after.has(addr(1).toString())).toBe(true);
+    expect(after.has(addr(2).toString())).toBe(true);
+  });
+
+  test('lease unreachable (acquire rejects): pending stays pending; next tick retries', async () => {
+    const lease = new FakeLease();
+    const strat = new LeaseMajority({ lease });
+    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+    expect(strat.decide(v).size).toBe(0);
+    lease.rejectAcquire('K8s API unreachable');
+    await flushMicrotasks();
+    // Still pending — strategy never risks both surviving.
+    expect(strat.decide(v).size).toBe(0);
+    // Next decide() with same view triggers a fresh acquire.
+    expect(lease.acquireCalls).toBe(2);
+  });
+
+  test('partition view changes between ticks: state resets, fresh acquire kicks off', async () => {
+    const lease = new FakeLease();
+    const strat = new LeaseMajority({ lease });
+    // First view: 2/2 split.  Acquire kicks off.
+    const v1 = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+    expect(strat.decide(v1).size).toBe(0);
+    expect(lease.acquireCalls).toBe(1);
+    // Resolve as winner so we cache a decision.
+    lease.resolveAcquire(true);
+    await flushMicrotasks();
+    expect(strat.decide(v1).size).toBe(2);
+
+    // New partition (different unreachable set) → strategy resets.
+    const v2 = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [2, 4], 1);
+    expect(strat.decide(v2).size).toBe(0);
+    expect(lease.acquireCalls).toBe(2);
+  });
+
+  test('role filter: only role-tagged members count toward majority calculation', () => {
+    const lease = new FakeLease();
+    const strat = new LeaseMajority({ lease, role: 'worker' });
+    // 3 workers (1,2,3) + 1 idle (9).  Unreachable=[3].  Workers
+    // alone: 2 reachable vs 1 unreachable → strict majority → no Lease.
+    const v = view([
+      { port: 1, roles: ['worker'] },
+      { port: 2, roles: ['worker'] },
+      { port: 3, roles: ['worker'] },
+      { port: 9, roles: ['idle'] },
+    ], [3]);
+    const decision = strat.decide(v);
+    expect(decision.has(addr(3).toString())).toBe(true);
+    expect(decision.has(addr(9).toString())).toBe(false);
+    expect(lease.acquireCalls).toBe(0);
+  });
+
+  test('no partition (everyone reachable): empty decision, no lease activity', () => {
+    const lease = new FakeLease();
+    const strat = new LeaseMajority({ lease });
+    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }], []);
+    expect(strat.decide(v).size).toBe(0);
+    expect(lease.acquireCalls).toBe(0);
   });
 });
