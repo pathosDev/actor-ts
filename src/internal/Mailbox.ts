@@ -1,8 +1,16 @@
 import type { ActorRef } from '../ActorRef.js';
+import type { LogContextData } from '../LogContext.js';
 
 export interface Envelope<T = unknown> {
   readonly message: T;
   readonly sender: ActorRef | null;
+  /**
+   * Optional MDC snapshot captured at `tell` time.  Propagated
+   * through the actor's `onReceive` so log lines emitted while
+   * handling this message (and any tells issued from inside it)
+   * carry the originating context.  See {@link LogContext}.
+   */
+  readonly context?: LogContextData;
 }
 
 /**

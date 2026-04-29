@@ -90,6 +90,8 @@ export type { Dispatcher } from './Dispatcher.js';
 export { EventStream } from './EventStream.js';
 export { ConsoleLogger, NoopLogger, LogLevel } from './Logger.js';
 export type { Logger } from './Logger.js';
+export { LogContext } from './LogContext.js';
+export type { LogContextData } from './LogContext.js';
 
 // System messages
 export {

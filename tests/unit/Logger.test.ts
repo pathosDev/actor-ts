@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { ConsoleLogger, LogLevel, NoopLogger } from '../../src/Logger.js';
+import { LogContext } from '../../src/LogContext.js';
 
 describe('LogLevel', () => {
   test('orders numerically Debug < Info < Warn < Error < Off', () => {
@@ -101,6 +102,65 @@ describe('ConsoleLogger', () => {
   });
 });
 
+describe('ConsoleLogger — MDC integration (#53)', () => {
+  const originals = { log: console.log };
+  let infoCalls: unknown[][];
+  beforeEach(() => {
+    infoCalls = [];
+    console.log = (...args: unknown[]) => { infoCalls.push(args); };
+  });
+  afterEach(() => { console.log = originals.log; });
+
+  test('outside any LogContext.run, no fields suffix is appended', () => {
+    new ConsoleLogger().info('plain');
+    expect(String(infoCalls[0]![0])).not.toContain('{');
+  });
+
+  test('inside LogContext.run, every field is rendered as a {k=v, ...} suffix', () => {
+    LogContext.run({ correlationId: 'abc-123', userId: 'u-42' }, () => {
+      new ConsoleLogger().info('processing');
+    });
+    const rendered = String(infoCalls[0]![0]);
+    expect(rendered).toContain('correlationId=abc-123');
+    expect(rendered).toContain('userId=u-42');
+    expect(rendered).toContain('processing');
+  });
+
+  test('withFields stamps static fields on every record', () => {
+    const log = new ConsoleLogger().withFields({ component: 'shard-coordinator' });
+    log.info('hello');
+    log.info('world');
+    expect(String(infoCalls[0]![0])).toContain('component=shard-coordinator');
+    expect(String(infoCalls[1]![0])).toContain('component=shard-coordinator');
+  });
+
+  test('dynamic LogContext fields override static withFields fields on key collision', () => {
+    const log = new ConsoleLogger().withFields({ scope: 'static' });
+    LogContext.run({ scope: 'dynamic' }, () => log.info('hello'));
+    const rendered = String(infoCalls[0]![0]);
+    expect(rendered).toContain('scope=dynamic');
+    expect(rendered).not.toContain('scope=static');
+  });
+
+  test('numeric and boolean values render as bare strings (not JSON)', () => {
+    LogContext.run({ count: 42, enabled: true }, () => new ConsoleLogger().info('x'));
+    const rendered = String(infoCalls[0]![0]);
+    expect(rendered).toContain('count=42');
+    expect(rendered).toContain('enabled=true');
+  });
+
+  test('chained withSource + withFields composes correctly', () => {
+    const log = new ConsoleLogger()
+      .withSource('actor://foo')
+      .withFields({ region: 'eu' });
+    log.info('hello');
+    const rendered = String(infoCalls[0]![0]);
+    expect(rendered).toContain('actor://foo');
+    expect(rendered).toContain('region=eu');
+    expect(rendered).toContain('hello');
+  });
+});
+
 describe('NoopLogger', () => {
   test('all methods are no-ops', () => {
     const log = new NoopLogger();
@@ -116,5 +176,10 @@ describe('NoopLogger', () => {
   test('withSource returns the same instance (cheap, immutable)', () => {
     const log = new NoopLogger();
     expect(log.withSource('anything')).toBe(log);
+  });
+
+  test('withFields returns the same instance — Noop is opaque', () => {
+    const log = new NoopLogger();
+    expect(log.withFields({ x: 1 })).toBe(log);
   });
 });
