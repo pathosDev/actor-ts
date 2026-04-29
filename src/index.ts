@@ -93,6 +93,30 @@ export type { Logger } from './Logger.js';
 export { LogContext } from './LogContext.js';
 export type { LogContextData } from './LogContext.js';
 
+// Metrics — Counter / Gauge / Histogram + Prometheus exposition (#11).
+export {
+  DefaultMetricsRegistry,
+  NoopMetricsRegistry,
+  DEFAULT_HISTOGRAM_BUCKETS,
+  MetricsExtension,
+  MetricsExtensionId,
+  metricsOf,
+  exportPrometheus,
+  prometheusHandler,
+} from './metrics/index.js';
+export type {
+  MetricsRegistry,
+  Counter,
+  Gauge,
+  Histogram,
+  MetricSample,
+  Labels,
+  LabelValue,
+  CounterOptions,
+  GaugeOptions,
+  HistogramOptions,
+} from './metrics/index.js';
+
 // System messages
 export {
   PoisonPill,

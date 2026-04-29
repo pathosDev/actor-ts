@@ -3,6 +3,7 @@ import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import { LogContext } from '../LogContext.js';
 import type { Logger } from '../Logger.js';
+import { metricsOf } from '../metrics/MetricsExtension.js';
 import type { Cancellable } from '../Scheduler.js';
 import { none, some, type Option } from '../util/Option.js';
 import {
@@ -461,6 +462,11 @@ export class Cluster {
       members: Array.from(this.members.values()).map(m => m.toData()),
     };
     this.transport.send(target.address, gossip);
+    // Stock metric: gossip rounds count.
+    metricsOf(this.system).counter(
+      'cluster_gossip_rounds_total', {},
+      { help: 'Cumulative count of gossip-push rounds initiated by this node.' },
+    ).inc();
   }
 
   private heartbeatTick(): void {
@@ -594,6 +600,14 @@ export class Cluster {
     this.members.set(key, next);
     if (prev) this.emitStatusTransition(prev, next);
     else this.emit(new MemberJoined(next));
+    // Stock metric: members-up gauge.  Updated on every member-set
+    // mutation so all transitions (join, up, down, removed) keep it
+    // current.  Single value per node — labels are deliberately empty
+    // because the gauge is always the local view's snapshot.
+    metricsOf(this.system).gauge(
+      'cluster_members_up', {},
+      { help: 'Number of cluster members currently in `up` state.' },
+    ).set(this.upMembers().length);
   }
 
   private emitStatusTransition(prev: Member, next: Member): void {

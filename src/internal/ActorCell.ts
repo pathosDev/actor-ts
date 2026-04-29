@@ -11,6 +11,7 @@ import { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import { LogContext } from '../LogContext.js';
 import type { Logger } from '../Logger.js';
+import { metricsOf } from '../metrics/MetricsExtension.js';
 import type { Props } from '../Props.js';
 import {
   ActorInitializationError,
@@ -324,6 +325,12 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
       this.behaviorStack = [(m: TMsg) => actor.onReceive(m)];
       this.state = 'running';
       await actor.preStart();
+      // Stock metric: count actor creations.  Cheap when metrics are
+      // disabled — `metricsOf(...)` returns the noop registry.
+      metricsOf(this.system).counter(
+        'actor_created_total', {},
+        { help: 'Cumulative count of actors successfully started.' },
+      ).inc();
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
       this.log.error('Actor initialization failed', err);
@@ -362,6 +369,12 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
     }
 
     this.state = 'terminated';
+
+    // Stock metric: count terminations (clean stop OR post-failure path).
+    metricsOf(this.system).counter(
+      'actor_terminated_total', {},
+      { help: 'Cumulative count of actors that have been stopped.' },
+    ).inc();
 
     // Notify watchers
     const term = new Terminated(this.self);
@@ -405,6 +418,11 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
       await next.postRestart(cause);
       this.mailbox.resume();
       this.state = 'running';
+      // Stock metric: count restarts.
+      metricsOf(this.system).counter(
+        'actor_restarted_total', {},
+        { help: 'Cumulative count of supervisor-driven actor restarts.' },
+      ).inc();
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
       this.failToParent(new ActorInitializationError(`Actor ${this.path} failed to restart`, err));
@@ -423,6 +441,12 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
       return;
     }
 
+    const metrics = metricsOf(this.system);
+    metrics.counter(
+      'actor_messages_delivered_total', {},
+      { help: 'Cumulative count of user messages delivered to actor onReceive.' },
+    ).inc();
+
     // Establish the MDC scope for the duration of `behavior(msg)`.  Any
     // `tell`s issued from inside the handler snapshot this same context
     // (LocalActorRef + RemoteActorRef both read `LogContext.get()`),
@@ -432,6 +456,7 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
     const dispatch = async (): Promise<void> => {
       this._currentSender = env.sender;
       this._currentEnvelope = env;
+      const startNs = performance.now();
       try {
         if (msg instanceof Terminated) {
           // Only deliver when we are actually watching.
@@ -450,6 +475,13 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
         const err = e instanceof Error ? e : new Error(String(e));
         this.failToParent(err, msg);
       } finally {
+        // Record handler duration in seconds — Prom convention.  Using
+        // the per-call `metrics` ref keeps a single dispatch through
+        // the extension chain.
+        metrics.histogram(
+          'actor_message_handler_seconds', {},
+          { help: 'Time spent inside actor onReceive handlers, seconds.' },
+        ).observe((performance.now() - startNs) / 1000);
         this._currentSender = null;
         this._currentEnvelope = null;
       }
