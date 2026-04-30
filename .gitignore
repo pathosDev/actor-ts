@@ -15,6 +15,15 @@ bun.lockb
 *.sqlite-wal
 *.sqlite-shm
 
+# Chat-sample runtime data (SQLite journal — produced by `bun examples/chat/backend/main.ts`).
+examples/chat/data/
+examples/chat/data/*.db*
+# node_modules / build artifacts created by individual frontends (Angular, React, Next.js, SvelteKit).
+examples/chat/frontend-*/node_modules/
+examples/chat/frontend-*/dist/
+examples/chat/frontend-*/.next/
+examples/chat/frontend-*/build/
+
 # Internal staging area used while building the initial commit history
 .staging/
 

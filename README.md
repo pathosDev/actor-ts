@@ -548,6 +548,7 @@ Dozens of runnable examples live in [`examples/`](./examples/):
 | `examples/io/mqtt-temperature.ts`                  | MQTT broker actor with topic fan-out    |
 | `examples/io/websocket-feed.ts`                    | WebSocket actor + Bun.serve server      |
 | `examples/io/websocket-server.ts`                  | server-side WS upgrade (Bun + Fastify)  |
+| `examples/chat/`                                   | clustered chat app (3 nodes, sharded persistent rooms, multi-frontend) |
 | `examples/io/grpc-sensor.ts`                       | gRPC client + server actors             |
 | `examples/io/kafka-exactly-once.ts`                | Kafka manual offset-commit              |
 | `examples/io/jetstream-orders.ts`                  | NATS JetStream durable consumer         |
