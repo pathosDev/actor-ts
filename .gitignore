@@ -23,6 +23,8 @@ examples/chat/frontend-*/node_modules/
 examples/chat/frontend-*/dist/
 examples/chat/frontend-*/.next/
 examples/chat/frontend-*/build/
+examples/chat/frontend-*/.angular/
+examples/chat/frontend-*/.svelte-kit/
 
 # Internal staging area used while building the initial commit history
 .staging/
