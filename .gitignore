@@ -22,6 +22,7 @@ examples/chat/data/*.db*
 examples/chat/frontend-*/node_modules/
 examples/chat/frontend-*/dist/
 examples/chat/frontend-*/.next/
+examples/chat/frontend-*/out/
 examples/chat/frontend-*/build/
 examples/chat/frontend-*/.angular/
 examples/chat/frontend-*/.svelte-kit/

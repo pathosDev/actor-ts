@@ -1,29 +1,63 @@
-# Next.js frontend (TODO — followup issue)
+# Next.js frontend
 
-Stub directory.  The Next.js variant of the chat sample is tracked
-as a followup issue and not yet implemented.
+Next.js 16 + React 19 + App Router, built as a fully static export
+so the actor-ts chat backend's `@fastify/static` plugin can serve
+it without a Node runtime.
 
-## Scaffolding plan
+The contrast with the React + Vite variant (`../frontend-react/`)
+is the project structure: file-based routing under `app/`, layout
+component, RSC-ready conventions — but the chat itself runs
+entirely client-side because the backend is the actor system, not
+a Next API route.
+
+## Build
 
 ```bash
-npx create-next-app@latest frontend-next --typescript --app
-cd frontend-next
 npm install
-# Configure for static export
-# next.config.js: { output: 'export' }
 npm run build
-cp -r out/* ../static/next/
 ```
 
-Pages to write:
-- `app/login/page.tsx` — Server Component shell + Client form.
-- `app/chat/page.tsx` — `'use client'`, three-column layout.
-- `app/chat/_components/{rooms-panel,chat-window,users-panel}.tsx`.
-- `app/chat/_lib/websocket.ts` — Client-side WS hook.
+The build produces `out/` (Next's static export), then the
+`scripts/copy-out.mjs` post-build step mirrors it into
+`../static/next/` where the chat backend serves it under
+`/static/next/`.
 
-State: `useReducer` + Context for cross-component WS access.
-Next.js >= 15, App Router, RSC for the static parts.
+```bash
+# Open after the cluster is up:
+http://localhost:8081/static/next/
+```
 
-Shared protocol via relative import; Next.js + Vite resolve
-`../shared/protocol` without extra config when the `tsconfig.json`
-includes `"baseUrl": ".."`.
+## Source layout
+
+```
+app/
+├── layout.tsx        ← root layout (RSC)
+├── page.tsx          ← 'use client', login + chat split
+└── globals.css       ← global theme
+lib/
+├── protocol.ts       ← local copy of shared/protocol.ts
+└── useChat.ts        ← WebSocket + state via useReducer
+next.config.mjs       ← output: 'export', basePath, assetPrefix
+scripts/copy-out.mjs  ← out/ → ../static/next/
+```
+
+## What this demonstrates
+
+- **App Router** with `app/layout.tsx` + `app/page.tsx`.
+- **Static export** via `output: 'export'` — no Node runtime needed
+  to serve the bundle; pairs cleanly with `@fastify/static`.
+- **`'use client'`** on `page.tsx` so the WS hook actually runs in
+  the browser; `layout.tsx` stays as a server component.
+- **`basePath` + `assetPrefix`** so internal URLs target
+  `/static/next/...` instead of `/`.
+
+## Why a local protocol mirror?
+
+Same reason as the other frontends — Next's strict project root
+plus its TypeScript plugin make reaching outside the project's tree
+awkward.  Duplicating ~50 lines is the better trade-off.
+
+## Versions
+
+- Next.js 16, React 19, React-DOM 19
+- TypeScript ~5.9
