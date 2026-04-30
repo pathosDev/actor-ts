@@ -1,0 +1,109 @@
+/**
+ * HTTP routes via the framework's directive DSL.
+ *
+ * The chat sample is "all WebSocket" — there are no REST endpoints.
+ * The only HTTP route handled by the directive DSL is the landing
+ * page at `/` that lists every frontend variant.  Static-file
+ * delivery (`/static/*`) and the WebSocket upgrade (`/ws`) are
+ * mounted as Fastify plugins via `backend.withPlugin(...)`; they
+ * don't go through the DSL because the DSL doesn't have directives
+ * for either today.  See `plugins/staticFilesPlugin.ts` and
+ * `plugins/webSocketPlugin.ts`.
+ *
+ * The selector HTML is inlined as a tagged template — small enough
+ * (~3 KB) that splitting it into its own file would just add another
+ * read.  Kept dependency-free + framework-free so it works the
+ * moment a single node is up.
+ */
+import { complete, get, Status, type Route } from '../../../src/http/index.js';
+
+const SELECTOR_HTML = /* html */ `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>actor-ts chat sample — pick a frontend</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        max-width: 640px;
+        margin: 3rem auto;
+        padding: 0 1rem;
+        line-height: 1.6;
+      }
+      h1 { margin-bottom: 0.25rem; }
+      .lead { color: #888; margin-top: 0; }
+      ul.frontends { list-style: none; padding: 0; }
+      ul.frontends li {
+        margin: 0.5rem 0;
+        padding: 0.75rem 1rem;
+        border: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+        border-radius: 6px;
+      }
+      ul.frontends li a {
+        font-weight: 600;
+        text-decoration: none;
+        color: inherit;
+      }
+      ul.frontends li a:hover { text-decoration: underline; }
+      ul.frontends li small { color: #888; display: block; margin-top: 0.25rem; }
+      .creds {
+        margin-top: 2rem;
+        font-size: 0.9rem;
+        background: color-mix(in srgb, currentColor 5%, transparent);
+        border-radius: 6px;
+        padding: 0.75rem 1rem;
+      }
+      code {
+        background: color-mix(in srgb, currentColor 10%, transparent);
+        padding: 0 0.25rem;
+        border-radius: 3px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>actor-ts chat sample</h1>
+    <p class="lead">
+      Pick a frontend.  All six talk the same WebSocket protocol to
+      the same clustered backend — open them in different windows,
+      log in as different users, and watch messages converge.
+    </p>
+    <ul class="frontends">
+      <li><a href="/static/plain/">Plain HTML</a><small>vanilla — no build, no framework</small></li>
+      <li><a href="/static/angular/">Angular</a><small>standalone components, signals</small></li>
+      <li><a href="/static/react/">React + Vite</a><small>pure React SPA, no meta-framework</small></li>
+      <li><a href="/static/next/">Next.js</a><small>App Router, RSC</small></li>
+      <li><a href="/static/svelte/">SvelteKit</a><small>Svelte 5 runes, adapter-static</small></li>
+      <li><a href="/static/lit/">Lit</a><small>Web Components, standards-based</small></li>
+    </ul>
+    <div class="creds">
+      <strong>Test credentials</strong> (this is a demo — passwords visible by design):
+      <ul style="margin: 0.5rem 0 0 0; padding-left: 1.25rem;">
+        <li><code>alice</code> / <code>wonderland</code></li>
+        <li><code>bob</code> / <code>builder</code></li>
+        <li><code>charlie</code> / <code>chaplin</code></li>
+        <li><code>diana</code> / <code>prince</code></li>
+      </ul>
+    </div>
+    <p style="margin-top: 2rem; color: #888; font-size: 0.85rem;">
+      Backend: 3-node TCP cluster · ChatRoom = sharded PersistentActor
+      · history persisted to SQLite · cross-node fan-out via
+      DistributedPubSub · presence via DistributedData ORSet.
+    </p>
+  </body>
+</html>
+`;
+
+/**
+ * Single root route: `GET /` returns the selector HTML.
+ *
+ * No `path(...)` wrapping — the DSL's `compile()` produces the
+ * pattern `/` for an unwrapped terminal, which is exactly what the
+ * landing page wants.
+ */
+export function buildRoutes(): Route {
+  return get(() =>
+    complete(Status.OK, SELECTOR_HTML, { 'content-type': 'text/html; charset=utf-8' }),
+  );
+}
