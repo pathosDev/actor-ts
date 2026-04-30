@@ -1,0 +1,21 @@
+{
+  "name": "actor-ts-chat-next",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build": "next build && node scripts/copy-out.mjs",
+    "dev": "next dev",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "^16.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "~5.9.0"
+  }
+}
