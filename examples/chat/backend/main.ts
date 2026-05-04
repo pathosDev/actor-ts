@@ -26,7 +26,6 @@ import {
   Cluster,
   ClusterSharding,
   ClusterSingletonId,
-  LogLevel,
   MemberDown,
   MemberRemoved,
   MemberUnreachable,
@@ -85,16 +84,19 @@ async function main(): Promise<void> {
         .map((a) => a.toString());
 
   // -------- 2. ActorSystem --------
-  // Override the default `Info` level via `CHAT_LOG_LEVEL=debug` (or
-  // `info`/`warn`/`error`/`off`).  Useful when you want to see what
-  // the cluster, sharding, pubsub, persistence, HTTP and WS layers
-  // are doing under the hood — every framework component now emits
-  // structured `debug` lines for membership transitions, gossip,
-  // failure-detector decisions, leader changes, shard allocations,
-  // singleton reconciles, pubsub fan-out, persist/recovery, HTTP
-  // requests and WS frames.
-  const logLevel = parseLogLevel(process.env['CHAT_LOG_LEVEL']) ?? LogLevel.Info;
-  const system = ActorSystem.create(SYSTEM_NAME, { logLevel });
+  // Hand the framework's HOCON loader a path to this sample's
+  // `application.conf` so config knobs (log level, gossip cadence,
+  // failure-detector thresholds, journal plugin) actually drive the
+  // system.  Without `configFile`, the loader looks in the CWD —
+  // which is the repo root when this is invoked as
+  // `bun examples/chat/backend/main.ts`, where there is no
+  // `application.conf`.  Log level lives in `actor-ts.logger.level`;
+  // the file uses HOCON's `${?CHAT_LOG_LEVEL}` substitution so
+  // `CHAT_LOG_LEVEL=debug bun ...` flips it without an edit.
+  const configFile = path.resolve(
+    import.meta.dirname ?? __dirname, '..', 'application.conf',
+  );
+  const system = ActorSystem.create(SYSTEM_NAME, { configFile });
   const seedSummary = seeds.length > 0
     ? ` · seeds=[${seeds.join(',')}]`
     : ' · bootstrap (no seeds)';
@@ -198,24 +200,6 @@ async function main(): Promise<void> {
   };
   process.on('SIGINT', () => void shutdown('SIGINT'));
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
-}
-
-/**
- * Map a free-form `CHAT_LOG_LEVEL` env value (`debug` | `info` |
- * `warn` | `error` | `off`, case-insensitive) onto the framework's
- * `LogLevel` enum.  Returns `null` for unset/unknown values so the
- * caller can fall back to the default.
- */
-function parseLogLevel(raw: string | undefined): LogLevel | null {
-  if (!raw) return null;
-  switch (raw.trim().toLowerCase()) {
-    case 'debug': return LogLevel.Debug;
-    case 'info':  return LogLevel.Info;
-    case 'warn':  return LogLevel.Warn;
-    case 'error': return LogLevel.Error;
-    case 'off':   return LogLevel.Off;
-    default:      return null;
-  }
 }
 
 main().catch((err) => {
