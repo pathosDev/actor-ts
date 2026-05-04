@@ -48,6 +48,13 @@
       <code>diana</code>/<code>prince</code>
     </div>
   </div>
+{:else if chat.phase === 'resuming'}
+  <!--
+    Render nothing while the stored token is being resumed against
+    the server.  Either the next frame is 'chat' (logged-in) or
+    'login' (login-failed / retry-exhausted).  Avoids the brief
+    login-form-flash on page reload.
+  -->
 {:else}
   <div class="chat">
     <header class="bar">

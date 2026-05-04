@@ -14,8 +14,18 @@ import {
  * variant.  Same reducer shape, same dispatch model — the
  * comparison point is the file-based routing + RSC layout in
  * `app/`, not the state plumbing.
+ *
+ * 'login' shows the login form; 'chat' shows the chat view;
+ * 'resuming' is a transient phase used right after page reload
+ * when we have a stored token but haven't yet heard back from the
+ * server.  Page renders nothing in 'resuming' to avoid the
+ * login-form-flash before resume completes.  We can't initialize
+ * 'resuming' from `sessionStorage` synchronously (would cause a
+ * hydration mismatch under static export), so we transition into
+ * it from `useEffect` post-hydration via the `start-resuming`
+ * action.
  */
-export type Phase = 'login' | 'chat';
+export type Phase = 'login' | 'resuming' | 'chat';
 
 interface State {
   readonly phase: Phase;
@@ -42,6 +52,7 @@ const INITIAL: State = {
 type Action =
   | { type: 'login-error'; reason: string }
   | { type: 'logged-in'; username: string }
+  | { type: 'start-resuming' }
   | { type: 'reset' }
   | { type: 'rooms'; rooms: ReadonlyArray<RoomName> }
   | { type: 'history'; room: RoomName; messages: ReadonlyArray<ChatMessage> }
@@ -58,6 +69,8 @@ function reducer(state: State, action: Action): State {
       return { ...state, loginError: action.reason };
     case 'logged-in':
       return { ...state, phase: 'chat', username: action.username, loginError: '' };
+    case 'start-resuming':
+      return { ...state, phase: 'resuming' };
     case 'reset':
       return INITIAL;
     case 'rooms': {
@@ -141,10 +154,14 @@ export function useChat(): {
       case 'login-failed':
         cancelReconnect();
         sessionStorage.removeItem(TOKEN_KEY);
-        dispatch({ type: 'login-error', reason: m.reason || 'Login failed.' });
         wsRef.current?.close();
         wsRef.current = null;
+        // Reset before setting the error: 'reset' returns INITIAL
+        // (which has empty loginError), so we'd lose the message
+        // if we dispatched it first.  Order matters with React's
+        // batched dispatches.
         dispatch({ type: 'reset' });
+        dispatch({ type: 'login-error', reason: m.reason || 'Login failed.' });
         break;
       case 'rooms':
         dispatch({ type: 'rooms', rooms: m.rooms });
@@ -235,14 +252,20 @@ export function useChat(): {
 
   // Auto-resume on first render: if a token survived the page
   // reload (or the singleton-failover) jump straight to a `resume`
-  // handshake.  The page.tsx renders LoginView until `logged-in`
-  // arrives; if the token was stale, `login-failed` fires and we
-  // clear it via the handler above.
+  // handshake.  We dispatch `start-resuming` first so page.tsx
+  // renders nothing instead of the login form while the WS
+  // handshake is in flight — under static export the initial
+  // render is `phase: 'login'` (sessionStorage isn't available
+  // server-side), so we can't seed 'resuming' synchronously
+  // without a hydration mismatch.
   useEffect(() => {
     const stored = typeof sessionStorage !== 'undefined'
       ? sessionStorage.getItem(TOKEN_KEY)
       : null;
-    if (stored) connectImpl({ type: 'resume', token: stored });
+    if (stored) {
+      dispatch({ type: 'start-resuming' });
+      connectImpl({ type: 'resume', token: stored });
+    }
     return () => {
       try { wsRef.current?.close(); } catch { /* ignore */ }
     };

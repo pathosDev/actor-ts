@@ -22,8 +22,18 @@ const MAX_RECONNECT_ATTEMPTS = 8;
 
 @Injectable({ providedIn: 'root' })
 export class ChatService {
-  /** 'login' before login succeeds, 'chat' afterwards. */
-  readonly phase = signal<'login' | 'chat'>('login');
+  /**
+   * 'login' shows the login form; 'chat' shows the chat view;
+   * 'resuming' is a transient phase used right after page reload
+   * when we have a stored token but haven't yet heard back from the
+   * server.  Templates render nothing in 'resuming' so the login
+   * form doesn't flash before the resume completes.
+   */
+  readonly phase = signal<'login' | 'resuming' | 'chat'>(
+    typeof sessionStorage !== 'undefined' && sessionStorage.getItem(TOKEN_KEY)
+      ? 'resuming'
+      : 'login',
+  );
   readonly username = signal<string | null>(null);
   readonly loginError = signal<string>('');
 
@@ -85,10 +95,12 @@ export class ChatService {
     ws.addEventListener('close', () => {
       this.ws = null;
       // Don't drop to the login screen immediately — try to resume
-      // with the stored token first.  Covers singleton-failover:
-      // the chat view stays mounted (frozen for a few seconds)
-      // while the cluster re-binds :8080 on a survivor.
-      if (!this.scheduleResumeReconnect() && this.phase() === 'chat') {
+      // with the stored token first.  Covers singleton-failover
+      // (phase 'chat': the chat view stays mounted, frozen for a
+      // few seconds, while the cluster re-binds :8080 on a
+      // survivor) and reload-resume failure (phase 'resuming':
+      // retry until the cluster is reachable again).
+      if (!this.scheduleResumeReconnect() && this.phase() !== 'login') {
         this.reset();
       }
     });
@@ -177,7 +189,10 @@ export class ChatService {
         if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(TOKEN_KEY);
         this.ws?.close();
         this.ws = null;
-        if (this.phase() === 'chat') this.reset();
+        // Drop chat-state if we were already in chat (rare) or
+        // in 'resuming' (token rejected after reload).  Either
+        // way, fall back to the login screen.
+        if (this.phase() !== 'login') this.reset();
         this.loginError.set(m.reason || 'Login failed.');
         break;
       case 'rooms': {
