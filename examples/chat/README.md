@@ -17,6 +17,10 @@ compare their feel side-by-side.
   via `ClusterSharding` and **persistent** via `SqliteJournal`.  Every
   posted message is appended to the journal; messages survive a full
   cluster restart.
+- **HTTP front door = `ClusterSingleton`** — exactly one node binds
+  the public port (`8080`) at any time.  When that node dies a
+  surviving node takes over the bind automatically.  Same URL for
+  the user, no per-node ports to remember.
 - **`DistributedPubSub`** with one topic per room
   (`chat.room.<roomName>`) for cross-node fan-out — a message posted
   by Alice on node 1 reaches Bob on node 3 with no routing code in
@@ -38,16 +42,20 @@ compare their feel side-by-side.
 ┌────────────────────────────────────────────────────────────┐
 │  Browser (any of 6 frontends, all same WS protocol)        │
 └──────────────────┬─────────────────────────────────────────┘
-                   │ HTTP + WS (Fastify)
-        ┌──────────┴──────────┬──────────────┐
-        ▼                     ▼              ▼
-   ┌─────────┐           ┌─────────┐    ┌─────────┐
-   │ Node 1  │ ◀─Gossip▶ │ Node 2  │ ◀▶ │ Node 3  │
-   │ :2551   │           │ :2552   │    │ :2553   │
-   │ http    │           │ http    │    │ http    │
-   │ :8081   │           │ :8082   │    │ :8083   │
-   └─────────┘           └─────────┘    └─────────┘
-        │                     │              │
+                   │ HTTP + WS  (always :8080)
+                   ▼
+          ┌──────────────────┐
+          │ http-ingress     │  ← ClusterSingleton; binds :8080
+          │   (singleton)    │     on whichever node holds it
+          └─────────┬────────┘
+                    │ runs on one of:
+        ┌───────────┼──────────┐
+        ▼           ▼          ▼
+   ┌─────────┐ ┌─────────┐ ┌─────────┐
+   │ Node 1  │ │ Node 2  │ │ Node 3  │
+   │ :2551   │ │ :2552   │ │ :2553   │   ← cluster ports, internal
+   └─────────┘ └─────────┘ └─────────┘
+        │           │           │
         └── ClusterSharding[ChatRoomActor] ──┘
               entityId = roomName
                        │
@@ -77,37 +85,55 @@ both already in the project's `devDependencies`.
 
 ### Three-node cluster
 
-Open **three terminals**:
+Open **three terminals** — every node runs the same binary, but
+the cluster picks one to host the HTTP front door:
 
 ```bash
 # Terminal 1 — bootstrap node, no seeds
-bun examples/chat/backend/main.ts \
-  --port 2551 --http-port 8081
+bun examples/chat/backend/main.ts --port 2551
 
 # Terminal 2 — joins the bootstrap
-bun examples/chat/backend/main.ts \
-  --port 2552 --http-port 8082 --seeds localhost:2551
+bun examples/chat/backend/main.ts --port 2552 --seeds localhost:2551
 
 # Terminal 3 — joins the bootstrap
-bun examples/chat/backend/main.ts \
-  --port 2553 --http-port 8083 --seeds localhost:2551
+bun examples/chat/backend/main.ts --port 2553 --seeds localhost:2551
 ```
 
 Each node logs `[+] chat-cluster@... is UP` events as the cluster
-forms.
+forms.  Exactly one of them logs
+
+```
+[ingress] this node won the singleton — binding 127.0.0.1:8080
+```
+
+— that node currently owns the public port.  The other two stay
+warm: they still run the persistence layer, the sharded chat
+rooms, the pubsub mediator and presence tracking, but they don't
+serve HTTP until the singleton fails over.
 
 ### Open the chat
 
-Pick any node's HTTP port and visit:
+Visit a single URL no matter which node holds the singleton:
 
-- <http://localhost:8081/> — the bootstrap node's frontend selector
-- <http://localhost:8082/> — node 2's selector
-- <http://localhost:8083/> — node 3's selector
+<http://localhost:8080/>
 
 The selector lists all six frontends.  Pick one, log in with any
-of the test credentials below, and start chatting.  Open another
-window pointing at a different node + different frontend and watch
-messages converge.
+of the test credentials below, and start chatting.  Open multiple
+browser windows + frontends and watch messages converge.
+
+### Failover
+
+Find the node logging `[ingress] this node won the singleton` and
+`Ctrl+C` it.  Within a few seconds (failure-detector timeout
++ singleton election) one of the survivors logs the same line and
+re-binds `:8080`.  Browser sessions reconnect automatically and
+the persisted history is still there — you just lose the in-flight
+WebSocket frames during the brief outage.
+
+For real zero-downtime active/active deployments you'd put a
+proper load balancer in front of the cluster (nginx, HAProxy, K8s
+Service); the singleton model is a self-contained fallback that
+doesn't need any external infrastructure.
 
 ### Test credentials
 
@@ -163,27 +189,51 @@ subdirectory's `README.md` for details.
 
 ## Verifying it works
 
-There's an end-to-end smoke test under `smoke-test.ts`:
+Two scripts ship for verification — pick the one that matches what
+you want to check.
+
+### `smoke-test.ts` — single-node messaging round-trip
 
 ```bash
-# Start at least one node first (any port), then:
-bun examples/chat/smoke-test.ts ws://127.0.0.1:8081/ws
+# Start a single bootstrap node first:
+bun examples/chat/backend/main.ts --port 2551
+# In another terminal:
+bun examples/chat/smoke-test.ts
 ```
 
-It logs Alice in, sends three messages, verifies the broadcast
+Logs Alice in, sends three messages, waits for the broadcast
 echoes, then logs Bob in on a fresh connection and verifies Bob
-sees the persisted history.
+sees Alice's history.  Single-node by design — the smoke test
+isolates the protocol round-trip from the cluster's lazy shard-
+allocation timing, so it stays deterministic.
 
-To verify cross-node behaviour manually:
+### `failover-test.ts` — HTTP-singleton fail-over
 
-1. Open <http://localhost:8081/static/plain/> in window 1, log in
+```bash
+# Spawns + tears down a 3-node cluster on its own:
+bun examples/chat/failover-test.ts
+```
+
+Spawns three nodes, identifies which one currently owns `:8080`
+via the OS-level port table, kills it, then verifies that a
+different PID picks up `:8080` within a few seconds and that the
+new owner serves HTTP.  This is the test that exercises the
+ClusterSingleton + HttpIngressActor fail-over end to end.
+
+### Manual cross-node demo
+
+1. Run the three-terminal cluster from the *Run it* section above.
+2. Open <http://localhost:8080/static/plain/> in window 1, log in
    as alice.
-2. Open <http://localhost:8082/static/plain/> in window 2, log in
-   as bob.
-3. Type a message in alice's window — it appears in bob's instantly.
-4. Stop node 1 (Ctrl+C in terminal 1).  Sharding rebalances.
-5. Bob can keep chatting; alice's history is still in the SQLite
-   journal so when alice logs in to node 2 or 3 she sees it again.
+3. Open <http://localhost:8080/static/plain/> in window 2 (same
+   URL — the singleton answers), log in as bob.
+4. Type a message in alice's window — it appears in bob's instantly,
+   even though the chat-room entity is sharded onto a node that
+   isn't necessarily the same as the singleton-holder.
+5. Find the terminal that logged `[ingress] this node won the
+   singleton` and `Ctrl+C` it.  Watch a survivor pick up the bind
+   within a few seconds.  Reconnect from the browser — alice's
+   messages are still there because the SQLite journal survived.
 
 ## Out of scope (followup issues opened)
 
@@ -214,7 +264,8 @@ examples/chat/
 │   └── actors/
 │       ├── ChatRoomActor.ts         ← sharded PersistentActor (per room)
 │       ├── UserSessionActor.ts      ← per-WS-connection session
-│       └── OnlineUsersActor.ts      ← DistributedData ORSet wrapper
+│       ├── OnlineUsersActor.ts      ← DistributedData ORSet wrapper
+│       └── HttpIngressActor.ts      ← ClusterSingleton: owns the :8080 bind
 ├── shared/
 │   ├── protocol.ts        ← shared TS types for WS messages
 │   ├── users.ts           ← test credentials (TEST_USERS)

@@ -69,6 +69,12 @@ const SELECTOR_HTML = /* html */ `<!doctype html>
       the same clustered backend — open them in different windows,
       log in as different users, and watch messages converge.
     </p>
+    <p style="font-size: 0.85rem; color: #666; margin-top: -0.5rem;">
+      You're talking to whichever cluster node currently owns the
+      <code>http-ingress</code> singleton on port 8080.  Kill that
+      node and a survivor takes over — same URL, same sessions
+      after reconnect.
+    </p>
     <ul class="frontends">
       <li><a href="/static/plain/">Plain HTML</a><small>vanilla — no build, no framework</small></li>
       <li><a href="/static/angular/">Angular</a><small>standalone components, signals</small></li>
@@ -87,9 +93,10 @@ const SELECTOR_HTML = /* html */ `<!doctype html>
       </ul>
     </div>
     <p style="margin-top: 2rem; color: #888; font-size: 0.85rem;">
-      Backend: 3-node TCP cluster · ChatRoom = sharded PersistentActor
-      · history persisted to SQLite · cross-node fan-out via
-      DistributedPubSub · presence via DistributedData ORSet.
+      Backend: 3-node TCP cluster · HTTP front door = ClusterSingleton
+      (one bind cluster-wide, automatic failover) · ChatRoom = sharded
+      PersistentActor · history persisted to SQLite · cross-node
+      fan-out via DistributedPubSub · presence via DistributedData ORSet.
     </p>
   </body>
 </html>

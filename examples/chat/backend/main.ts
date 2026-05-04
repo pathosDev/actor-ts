@@ -1,14 +1,17 @@
 /**
  * Chat backend entry point.
  *
- * Run a 3-node TCP cluster locally:
+ * Run a 3-node TCP cluster locally — every node runs the same
+ * binary; the cluster picks one to host the HTTP front door:
  *
- *   bun examples/chat/backend/main.ts --port 2551 --http-port 8081 --seeds localhost:2551
- *   bun examples/chat/backend/main.ts --port 2552 --http-port 8082 --seeds localhost:2551
- *   bun examples/chat/backend/main.ts --port 2553 --http-port 8083 --seeds localhost:2551
+ *   bun examples/chat/backend/main.ts --port 2551
+ *   bun examples/chat/backend/main.ts --port 2552 --seeds localhost:2551
+ *   bun examples/chat/backend/main.ts --port 2553 --seeds localhost:2551
  *
- * Open `http://localhost:8081/`, pick a frontend, log in.  See
- * `README.md` for the complete walkthrough.
+ * Open `http://localhost:8080/`, pick a frontend, log in.  See
+ * `README.md` for the complete walkthrough — including how
+ * failover works when you kill the node currently holding the
+ * HTTP singleton.
  *
  * `main.ts` is purely wiring — every actor lives in its own file
  * under `actors/`, every Fastify-specific bit lives in `plugins/`,
@@ -22,6 +25,7 @@ import {
   ActorSystem,
   Cluster,
   ClusterSharding,
+  ClusterSingletonId,
   LogLevel,
   MemberDown,
   MemberRemoved,
@@ -31,22 +35,15 @@ import {
   Props,
   SqliteJournal,
 } from '../../../src/index.js';
-import { HttpExtensionId } from '../../../src/http/index.js';
-import { FastifyBackend } from '../../../src/http/backend/FastifyBackend.js';
 import { DistributedDataId } from '../../../src/crdt/index.js';
 import { DistributedPubSubId } from '../../../src/cluster/pubsub/index.js';
 import { parseArgs } from './config.js';
-import { buildRoutes } from './routes.js';
-import { registerStaticFiles } from './plugins/staticFilesPlugin.js';
-import {
-  registerWebSocketSupport,
-  webSocketRoutePlugin,
-} from './plugins/webSocketPlugin.js';
 import {
   ChatRoomActor,
   type ChatRoomCmd,
 } from './actors/ChatRoomActor.js';
 import { OnlineUsersActor } from './actors/OnlineUsersActor.js';
+import { httpIngressProps } from './actors/HttpIngressActor.js';
 
 async function main(): Promise<void> {
   const cfg = parseArgs(process.argv.slice(2));
@@ -56,7 +53,7 @@ async function main(): Promise<void> {
     logLevel: LogLevel.Info,
   });
   system.log.info(
-    `chat node starting · cluster=${cfg.host}:${cfg.port} · http=${cfg.host}:${cfg.httpPort}`,
+    `chat node starting · cluster=${cfg.host}:${cfg.port} · http=${cfg.host}:${cfg.httpPort} (singleton)`,
   );
 
   // -------- 2. Persistence: SQLite journal under data-dir --------
@@ -104,33 +101,32 @@ async function main(): Promise<void> {
     numShards: 16,
   });
 
-  // -------- 6. OnlineUsersActor (top-level) --------
+  // -------- 6. OnlineUsersActor (top-level, runs on every node) --------
   const onlineUsers = system.actorOf(
     Props.create(() => new OnlineUsersActor()),
     'online-users',
   );
 
-  // -------- 7. HTTP backend with static + ws plugins --------
+  // -------- 7. HTTP front door — ClusterSingleton --------
+  // Every node registers the same singleton spec; the cluster
+  // elects ONE node to actually run the actor.  When that node
+  // dies a surviving node spawns a fresh one which re-binds the
+  // same port.  The downside is a brief outage during failover
+  // (~5–10 s with these failure-detector settings) — fine for a
+  // demo; production would still front this with a real LB.
   const staticDir = path.join(import.meta.dirname ?? __dirname, '..', 'static');
-  const backend = new FastifyBackend();
-  await registerStaticFiles(backend, { root: staticDir, prefix: '/static/' });
-  // Two-stage WS registration — see `webSocketPlugin.ts` for why.
-  await registerWebSocketSupport(backend);
-  await backend.withPlugin(webSocketRoutePlugin, {
-    system,
-    chatRoomRegion,
-    onlineUsers,
-    mediator,
+  system.extension(ClusterSingletonId).start(cluster, {
+    typeName: 'http-ingress',
+    props: httpIngressProps({
+      host: cfg.host,
+      httpPort: cfg.httpPort,
+      staticDir,
+      system,
+      chatRoomRegion,
+      onlineUsers,
+      mediator,
+    }),
   });
-
-  const http = system.extension(HttpExtensionId);
-  const binding = await http
-    .newServerAt(cfg.host, cfg.httpPort)
-    .useBackend(backend)
-    .bind(buildRoutes());
-  system.log.info(
-    `chat HTTP server listening on http://${binding.host}:${binding.port}/`,
-  );
 
   // -------- 8. Graceful shutdown --------
   let shuttingDown = false;
@@ -139,7 +135,9 @@ async function main(): Promise<void> {
     shuttingDown = true;
     system.log.info(`received ${signal} — shutting down`);
     try {
-      await binding.unbind();
+      // `cluster.leave()` triggers the singleton manager's hand-off;
+      // if this node was the holder, postStop runs (port released)
+      // before terminate.
       await cluster.leave();
       await journal.close();
       await system.terminate();
