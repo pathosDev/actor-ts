@@ -46,13 +46,19 @@ describe('InMemoryLease', () => {
     const a = new InMemoryLease({ name: 'e', owner: 'A', ttlMs: 200 });
     await a.acquire();
 
+    // Retry delay is bumped to 50 ms (was 10) so the elapsed-time
+    // assertion has real headroom — `bun test --coverage` on the
+    // GitHub-hosted runners regularly fires setTimeout 1–2 ms early,
+    // which made the previous `>= 20` bound flake on the 20 ms-exact
+    // budget.  100 ms minimum + ≥ 80 ms assertion gives ~20 ms of
+    // tolerance without slowing the suite meaningfully.
     const b = new InMemoryLease({
       name: 'e', owner: 'B', ttlMs: 200,
-      acquireRetries: 3, acquireRetryDelayMs: 10,
+      acquireRetries: 3, acquireRetryDelayMs: 50,
     });
     const start = Date.now();
     expect(await b.acquire()).toBe(false);
-    expect(Date.now() - start).toBeGreaterThanOrEqual(20); // at least 2 delays
+    expect(Date.now() - start).toBeGreaterThanOrEqual(80); // 2 × 50 ms with timer-skew slack
 
     await a.release();
     expect(await b.acquire()).toBe(true);
