@@ -135,6 +135,61 @@ describe('FastifyBackend — plain routes', () => {
   });
 });
 
+describe('FastifyBackend — shutdown semantics', () => {
+  test('unbind returns promptly even when WebSocket clients are connected', async () => {
+    // Regression: `app.close()` waits for every long-lived
+    // connection to drain.  Upgraded WebSocket sockets never drain
+    // on their own, so the chat sample's SIGINT path used to hang
+    // at "[ingress] giving up HTTP port 8080" until the OS killed
+    // the process.  `unbind()` must force-terminate WS clients
+    // (via `app.websocketServer.clients`) so the close resolves
+    // instead of waiting forever.
+    const system = ActorSystem.create('http-ws-shutdown', {
+      logger: new NoopLogger(),
+      logLevel: LogLevel.Off,
+    });
+    const backend = new FastifyBackend({ logger: false });
+    const wsMod = (await import('@fastify/websocket')) as {
+      default?: unknown;
+      fastifyWebsocket?: unknown;
+    };
+    const wsPlugin = wsMod.default ?? wsMod.fastifyWebsocket ?? wsMod;
+    await backend.withPlugin(wsPlugin);
+    await backend.withPlugin(async (fastify: { get: (path: string, opts: object, handler: (socket: unknown) => void) => void }) => {
+      fastify.get('/ws', { websocket: true }, () => { /* keep open */ });
+    });
+    const ext = system.extension(HttpExtensionId);
+    const binding = await ext.newServerAt('127.0.0.1', 0).useBackend(backend).bind(
+      get(() => complete(Status.OK, 'ok')),
+    );
+
+    // Open a real WebSocket client and wait for the upgrade.
+    const ws = new WebSocket(`ws://${binding.host}:${binding.port}/ws`);
+    await new Promise<void>((resolve, reject) => {
+      ws.addEventListener('open', () => resolve(), { once: true });
+      ws.addEventListener('error', () => reject(new Error('ws connect failed')), { once: true });
+    });
+
+    // Without the fix `unbind()` would hang until the test runner
+    // timed out.  Cap the assertion at 2 s — well above what a
+    // healthy force-close needs (typically <100 ms) but short
+    // enough that a regression is obvious.
+    const start = Date.now();
+    await Promise.race([
+      binding.unbind(),
+      new Promise<void>((_, reject) =>
+        setTimeout(() => reject(new Error('unbind timed out — close hung on WS client')), 2_000),
+      ),
+    ]);
+    expect(Date.now() - start).toBeLessThan(2_000);
+
+    // Cleanup: socket is already terminated server-side; the client
+    // notices on the next IO tick.
+    try { ws.close(); } catch { /* ignore */ }
+    await system.terminate();
+  });
+});
+
 describe('HttpExtension — client round-trip', () => {
   test('HttpClient.get fetches a server-rendered body', async () => {
     const { url, system } = await startServer(get(() => completeJson(Status.OK, { pong: true })));
