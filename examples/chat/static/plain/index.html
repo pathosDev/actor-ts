@@ -289,7 +289,7 @@
         if (state.ws && state.ws.readyState === WebSocket.OPEN) {
           try { state.ws.send(JSON.stringify({ type: 'logout' })); } catch {}
         }
-        localStorage.removeItem(TOKEN_KEY);
+        sessionStorage.removeItem(TOKEN_KEY);
         if (state.ws) { try { state.ws.close(1000, 'logout'); } catch {} }
         resetToLogin();
       });
@@ -336,7 +336,7 @@
           }
         });
         ws.addEventListener('error', () => {
-          if (!state.username && !localStorage.getItem(TOKEN_KEY)) {
+          if (!state.username && !sessionStorage.getItem(TOKEN_KEY)) {
             $loginErr.textContent = 'Connection failed.';
           }
         });
@@ -350,7 +350,7 @@
        * `MAX_RECONNECT_ATTEMPTS` per failover.
        */
       function scheduleResumeReconnect() {
-        const token = localStorage.getItem(TOKEN_KEY);
+        const token = sessionStorage.getItem(TOKEN_KEY);
         if (!token) return false;
         if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return false;
         const delay = Math.min(500 * Math.pow(2, reconnectAttempts), 4000);
@@ -387,7 +387,7 @@
         // fresh.
         cancelReconnect();
         state.username = username;
-        if (token) localStorage.setItem(TOKEN_KEY, token);
+        if (token) sessionStorage.setItem(TOKEN_KEY, token);
         $me.textContent = username;
         $loginErr.textContent = '';
         $login.style.display = 'none';
@@ -399,7 +399,7 @@
         // keep retrying with the same dead credentials, and bail
         // back to the login screen so the user can re-auth.
         cancelReconnect();
-        localStorage.removeItem(TOKEN_KEY);
+        sessionStorage.removeItem(TOKEN_KEY);
         if (state.ws) { try { state.ws.close(); } catch {} }
         state.ws = null;
         if (state.username) resetToLogin();
@@ -554,13 +554,13 @@
       }
 
       /* ============== auto-resume on load ============== */
-      // If the previous session left us a token in localStorage (page
+      // If the previous session left us a token in sessionStorage (page
       // reload, browser restart, or singleton-failover) skip straight
       // to a `resume` handshake.  Server replies with `logged-in`
       // → onLoggedIn flips us into chat view.  If the token is stale,
       // server replies with `login-failed` → onLoginFailed clears it
       // and the user falls back to the credentials form.
-      const storedToken = localStorage.getItem(TOKEN_KEY);
+      const storedToken = sessionStorage.getItem(TOKEN_KEY);
       if (storedToken) connectWithResume(storedToken);
     </script>
   </body>

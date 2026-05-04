@@ -133,14 +133,14 @@
             }
           });
           ws.addEventListener('error', () => {
-            if (this.phase === 'login' && !localStorage.getItem(TOKEN_KEY)) {
+            if (this.phase === 'login' && !sessionStorage.getItem(TOKEN_KEY)) {
               this.loginError = 'Connection failed.';
             }
           });
         }
 
         scheduleResumeReconnect() {
-          const token = localStorage.getItem(TOKEN_KEY);
+          const token = sessionStorage.getItem(TOKEN_KEY);
           if (!token) return false;
           if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return false;
           const delay = Math.min(500 * Math.pow(2, this.reconnectAttempts), 4000);
@@ -165,13 +165,13 @@
             case 'logged-in':
               this.cancelReconnect();
               this.username = m.username;
-              if (m.token) localStorage.setItem(TOKEN_KEY, m.token);
+              if (m.token) sessionStorage.setItem(TOKEN_KEY, m.token);
               this.loginError = '';
               this.phase = 'chat';
               break;
             case 'login-failed':
               this.cancelReconnect();
-              localStorage.removeItem(TOKEN_KEY);
+              sessionStorage.removeItem(TOKEN_KEY);
               try { this.ws?.close(); } catch { }
               this.ws = null;
               if (this.phase === 'chat') this.resetToLogin();
@@ -241,7 +241,7 @@
           if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             try { this.ws.send(JSON.stringify({ type: 'logout' })); } catch { }
           }
-          localStorage.removeItem(TOKEN_KEY);
+          sessionStorage.removeItem(TOKEN_KEY);
           if (this.ws) { try { this.ws.close(1000, 'logout'); } catch { } }
           this.resetToLogin();
         }
@@ -252,7 +252,7 @@
         // the user even sees the login form.
         connectedCallback() {
           super.connectedCallback();
-          const stored = localStorage.getItem(TOKEN_KEY);
+          const stored = sessionStorage.getItem(TOKEN_KEY);
           if (stored) this.connectWithResume(stored);
         }
 

@@ -52,8 +52,8 @@ export class ChatService {
     // handshake.  Server replies with `logged-in` → handleServer
     // flips us into chat phase.  If the token is stale, server
     // replies `login-failed` → token cleared, login form shown.
-    const stored = typeof localStorage !== 'undefined'
-      ? localStorage.getItem(TOKEN_KEY)
+    const stored = typeof sessionStorage !== 'undefined'
+      ? sessionStorage.getItem(TOKEN_KEY)
       : null;
     if (stored) this.connectWithResume(stored);
   }
@@ -93,7 +93,7 @@ export class ChatService {
       }
     });
     ws.addEventListener('error', () => {
-      const hasStored = typeof localStorage !== 'undefined' && localStorage.getItem(TOKEN_KEY);
+      const hasStored = typeof sessionStorage !== 'undefined' && sessionStorage.getItem(TOKEN_KEY);
       if (this.phase() === 'login' && !hasStored) {
         this.loginError.set('Connection failed.');
       }
@@ -101,8 +101,8 @@ export class ChatService {
   }
 
   private scheduleResumeReconnect(): boolean {
-    const token = typeof localStorage !== 'undefined'
-      ? localStorage.getItem(TOKEN_KEY)
+    const token = typeof sessionStorage !== 'undefined'
+      ? sessionStorage.getItem(TOKEN_KEY)
       : null;
     if (!token) return false;
     if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return false;
@@ -142,7 +142,7 @@ export class ChatService {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       try { this.ws.send(JSON.stringify({ type: 'logout' } satisfies ClientMessage)); } catch { /* ignore */ }
     }
-    if (typeof localStorage !== 'undefined') localStorage.removeItem(TOKEN_KEY);
+    if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(TOKEN_KEY);
     if (this.ws) {
       try { this.ws.close(1000, 'logout'); } catch { /* ignore */ }
     }
@@ -166,15 +166,15 @@ export class ChatService {
       case 'logged-in':
         this.cancelReconnect();
         this.username.set(m.username);
-        if (m.token && typeof localStorage !== 'undefined') {
-          localStorage.setItem(TOKEN_KEY, m.token);
+        if (m.token && typeof sessionStorage !== 'undefined') {
+          sessionStorage.setItem(TOKEN_KEY, m.token);
         }
         this.loginError.set('');
         this.phase.set('chat');
         break;
       case 'login-failed':
         this.cancelReconnect();
-        if (typeof localStorage !== 'undefined') localStorage.removeItem(TOKEN_KEY);
+        if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(TOKEN_KEY);
         this.ws?.close();
         this.ws = null;
         if (this.phase() === 'chat') this.reset();
