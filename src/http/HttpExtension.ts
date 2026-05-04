@@ -4,6 +4,7 @@ import type { HttpServerBackend, ServerBinding } from './backend/HttpServerBacke
 import { FastifyBackend } from './backend/FastifyBackend.js';
 import { HttpClient } from './HttpClient.js';
 import { compile, type Route } from './Route.js';
+import type { HttpRequest, HttpResponse } from './types.js';
 
 export interface ServerBuilder {
   /** Override the default Fastify backend (or use BunServe / Express). */
@@ -35,9 +36,36 @@ export class HttpExtension implements Extension {
       },
       async bind(routes: Route): Promise<ServerBinding> {
         const active = backend ?? new FastifyBackend();
-        for (const r of compile(routes)) active.registerRoute(r);
+        const compiled = compile(routes);
+        // Wrap each route's handler with a request log + timing.
+        // Done at the DSL level so backends don't need a Logger
+        // reference — every backend gets the same per-request debug
+        // line uniformly.
+        for (const r of compiled) {
+          const wrapped = {
+            ...r,
+            handler: async (req: HttpRequest): Promise<HttpResponse> => {
+              const start = Date.now();
+              system.log.debug(`[http] ${req.method} ${req.path}`);
+              try {
+                const out = await r.handler(req);
+                system.log.debug(
+                  `[http] ${req.method} ${req.path} → ${out.status} (${Date.now() - start} ms)`,
+                );
+                return out;
+              } catch (err) {
+                system.log.debug(
+                  `[http] ${req.method} ${req.path} → error after ${Date.now() - start} ms: ${(err as Error).message}`,
+                );
+                throw err;
+              }
+            },
+          };
+          active.registerRoute(wrapped);
+        }
         const binding = await active.listen(host, port);
         system.log.info(`HTTP server bound on ${binding.host}:${binding.port} (${active.name})`);
+        system.log.debug(`[http] ${compiled.length} route(s) registered`);
         return binding;
       },
     };

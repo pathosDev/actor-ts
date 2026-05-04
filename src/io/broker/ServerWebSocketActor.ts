@@ -114,6 +114,7 @@ export class ServerWebSocketActor extends Actor<WebSocketCmd> {
   }
 
   override preStart(): void {
+    this.log.debug('ServerWebSocketActor: attached to socket');
     this.socket.addEventListener('message', this.onMessage);
     this.socket.addEventListener('close', this.onClose);
     this.socket.addEventListener('error', this.onErrorEvent);
@@ -140,10 +141,15 @@ export class ServerWebSocketActor extends Actor<WebSocketCmd> {
     }
     try {
       if (cmd.kind === 'send') {
+        this.log.debug(
+          `ServerWebSocketActor: send ${cmd.frame.kind} frame (${cmd.frame.kind === 'text' ? `${cmd.frame.data.length} chars` : `${cmd.frame.data.byteLength} bytes`})`,
+        );
         this.send(cmd.frame);
       } else if (cmd.kind === 'sendText') {
+        this.log.debug(`ServerWebSocketActor: send text (${cmd.data.length} chars)`);
         this.socket.send(cmd.data);
       } else {
+        this.log.debug(`ServerWebSocketActor: send binary (${cmd.data.byteLength} bytes)`);
         this.socket.send(cmd.data);
       }
     } catch (err) {
@@ -162,14 +168,17 @@ export class ServerWebSocketActor extends Actor<WebSocketCmd> {
     const target = this.opts.target;
     if (!target) return;
     if (typeof data === 'string') {
+      this.log.debug(`ServerWebSocketActor: recv text (${data.length} chars)`);
       target.tell({ kind: 'text', data });
       return;
     }
     if (data instanceof ArrayBuffer) {
+      this.log.debug(`ServerWebSocketActor: recv binary (${data.byteLength} bytes)`);
       target.tell({ kind: 'binary', data: new Uint8Array(data) });
       return;
     }
     if (data instanceof Uint8Array) {
+      this.log.debug(`ServerWebSocketActor: recv binary (${data.byteLength} bytes)`);
       target.tell({ kind: 'binary', data });
       return;
     }
@@ -196,6 +205,7 @@ export class ServerWebSocketActor extends Actor<WebSocketCmd> {
 
   private handleClose(): void {
     if (this.closed) return;
+    this.log.debug('ServerWebSocketActor: socket closed');
     this.closed = true;
     if (this.opts.stopOnSocketClose ?? true) {
       this.context.stopSelf();
