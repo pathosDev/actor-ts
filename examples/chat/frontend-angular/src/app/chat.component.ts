@@ -129,7 +129,12 @@ import type { RoomName } from './protocol';
             </div>
           }
         </div>
-        <form class="compose" (ngSubmit)="onSend()">
+        <!-- Plain (submit) + manual preventDefault. ngSubmit would only -->
+        <!-- do that for us if the component imported FormsModule, and we -->
+        <!-- don't need the rest of FormsModule here (we use viewChild   -->
+        <!-- instead of ngModel).  Without preventDefault the native     -->
+        <!-- form-submit reloads the whole page.                         -->
+        <form class="compose" (submit)="onSend($event)">
           <input
             #composeInput
             placeholder="Type a message..."
@@ -157,7 +162,8 @@ export class ChatComponent {
     return new Date(ts).toLocaleTimeString();
   }
 
-  protected onSend(): void {
+  protected onSend(event: Event): void {
+    event.preventDefault();
     const room = this.chat.currentRoom() as RoomName | null;
     if (!room) return;
     const input = this.composeInput().nativeElement;
