@@ -37,12 +37,14 @@ import {
 } from '../actors/UserSessionActor.js';
 import type { ChatRoomCmd } from '../actors/ChatRoomActor.js';
 import type { OnlineUsersCmd } from '../actors/OnlineUsersActor.js';
+import type { SessionStore } from '../auth/sessionStore.js';
 
 export interface WebSocketPluginOptions {
   readonly system: ActorSystem;
   readonly chatRoomRegion: ActorRef<ChatRoomCmd>;
   readonly onlineUsers: ActorRef<OnlineUsersCmd>;
   readonly mediator: ActorRef<Subscribe | Unsubscribe>;
+  readonly sessions: SessionStore;
   readonly path?: string;
 }
 
@@ -110,6 +112,7 @@ export const webSocketRoutePlugin: FastifyPluginAsync<WebSocketPluginOptions> = 
           chatRoomRegion: opts.chatRoomRegion,
           onlineUsers: opts.onlineUsers,
           mediator: opts.mediator,
+          sessions: opts.sessions,
         }),
       ),
       `chat-session-${id}`,

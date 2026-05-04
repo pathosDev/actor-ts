@@ -17,6 +17,8 @@ import {
  * service handles login (the first frame after open) and
  * post-login multi-room state.
  */
+const TOKEN_KEY = 'chat-token';
+
 @Injectable({ providedIn: 'root' })
 export class ChatService {
   /** 'login' before login succeeds, 'chat' afterwards. */
@@ -41,14 +43,38 @@ export class ChatService {
 
   private ws: WebSocket | null = null;
 
+  constructor() {
+    // Auto-resume on bootstrap: if a token survived the page reload
+    // (or the singleton-failover) jump straight to a `resume`
+    // handshake.  Server replies with `logged-in` → handleServer
+    // flips us into chat phase.  If the token is stale, server
+    // replies `login-failed` → token cleared, login form shown.
+    const stored = typeof localStorage !== 'undefined'
+      ? localStorage.getItem(TOKEN_KEY)
+      : null;
+    if (stored) this.connectWithResume(stored);
+  }
+
+  /** Open a WS and authenticate with credentials. */
   connect(username: string, password: string): void {
+    this.connectImpl((ws) =>
+      ws.send(JSON.stringify({ type: 'login', username, password } satisfies ClientMessage)),
+    );
+  }
+
+  /** Open a WS and authenticate with a stored session token. */
+  private connectWithResume(token: string): void {
+    this.connectImpl((ws) =>
+      ws.send(JSON.stringify({ type: 'resume', token } satisfies ClientMessage)),
+    );
+  }
+
+  private connectImpl(onOpen: (ws: WebSocket) => void): void {
     this.loginError.set('');
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${proto}//${location.host}${WS_PATH}`);
     this.ws = ws;
-    ws.addEventListener('open', () =>
-      ws.send(JSON.stringify({ type: 'login', username, password } satisfies ClientMessage)),
-    );
+    ws.addEventListener('open', () => onOpen(ws));
     ws.addEventListener('message', (ev) => {
       const m = JSON.parse(ev.data as string) as ServerMessage;
       this.handleServer(m);
@@ -76,6 +102,10 @@ export class ChatService {
   }
 
   logout(): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      try { this.ws.send(JSON.stringify({ type: 'logout' } satisfies ClientMessage)); } catch { /* ignore */ }
+    }
+    if (typeof localStorage !== 'undefined') localStorage.removeItem(TOKEN_KEY);
     if (this.ws) {
       try { this.ws.close(1000, 'logout'); } catch { /* ignore */ }
     }
@@ -97,10 +127,14 @@ export class ChatService {
     switch (m.type) {
       case 'logged-in':
         this.username.set(m.username);
+        if (m.token && typeof localStorage !== 'undefined') {
+          localStorage.setItem(TOKEN_KEY, m.token);
+        }
         this.phase.set('chat');
         break;
       case 'login-failed':
         this.loginError.set(m.reason || 'Login failed.');
+        if (typeof localStorage !== 'undefined') localStorage.removeItem(TOKEN_KEY);
         this.ws?.close();
         this.ws = null;
         break;

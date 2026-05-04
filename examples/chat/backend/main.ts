@@ -38,6 +38,7 @@ import {
 import { DistributedDataId } from '../../../src/crdt/index.js';
 import { DistributedPubSubId } from '../../../src/cluster/pubsub/index.js';
 import { parseArgs } from './config.js';
+import { SessionStore } from './auth/sessionStore.js';
 import {
   ChatRoomActor,
   type ChatRoomCmd,
@@ -86,11 +87,14 @@ async function main(): Promise<void> {
       system.log.warn(`[-] ${evt.member.address} removed`);
   });
 
-  // -------- 4. DistributedData (presence) + DistributedPubSub (broadcast) --------
-  system.extension(DistributedDataId).start(cluster, { gossipIntervalMs: 500 });
+  // -------- 4. DistributedData (presence + session tokens) + DistributedPubSub (broadcast) --------
+  const ddHandle = system.extension(DistributedDataId).start(cluster, {
+    gossipIntervalMs: 500,
+  });
   const mediator = system.extension(DistributedPubSubId).start(cluster, {
     gossipIntervalMs: 500,
   });
+  const sessions = new SessionStore(ddHandle);
 
   // -------- 5. ClusterSharding: one ChatRoomActor per room --------
   const sharding = ClusterSharding.get(system, cluster);
@@ -125,6 +129,7 @@ async function main(): Promise<void> {
       chatRoomRegion,
       onlineUsers,
       mediator,
+      sessions,
     }),
   });
 
