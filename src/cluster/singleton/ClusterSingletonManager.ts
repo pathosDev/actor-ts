@@ -4,6 +4,7 @@ import type { ActorRef } from '../../ActorRef.js';
 import type { Lease } from '../../coordination/Lease.js';
 import type { Props } from '../../Props.js';
 import type { Cancellable } from '../../Scheduler.js';
+import { Terminated } from '../../SystemMessages.js';
 import type { Cluster } from '../Cluster.js';
 import { LeaderChanged, MemberRemoved, SelfUp } from '../ClusterEvents.js';
 
@@ -35,7 +36,7 @@ type ManagerEvent =
   | { t: 'lease-lost'; reason: string }
   | { t: 'acquire-retry' };
 
-type Inbox = SingletonDeliver | ManagerEvent;
+type Inbox = SingletonDeliver | ManagerEvent | Terminated;
 
 export interface ClusterSingletonManagerSettings<T> {
   readonly cluster: Cluster;
@@ -71,6 +72,20 @@ export interface ClusterSingletonManagerSettings<T> {
  */
 export class ClusterSingletonManager<T> extends Actor<Inbox> {
   private child: ActorRef<T> | null = null;
+  /**
+   * The previous child while it is mid-stop.  We watch every child we
+   * spawn (see `spawn()`), and when leadership flips we move
+   * `this.child` here, send `PoisonPill`, and wait for the
+   * `Terminated` system message before allowing another `spawn()`.
+   * Without this, a fast leader-flap (or two cluster events back-to-
+   * back from `handleLeave`) reaches `actorOf` while the previous
+   * child cell is still in the parent's `_children` map — the new
+   * spawn fails with "Child name 'X' is not unique".  It also avoids
+   * spawning a second user actor (e.g. a fresh `HttpIngressActor`
+   * trying to bind port 8080) before the previous one has finished
+   * `postStop` and released its resources.
+   */
+  private pendingStop: ActorRef<T> | null = null;
   private unsubCluster: (() => void) | null = null;
   private unsubLeaseLost: (() => void) | null = null;
   private retryTimer: Cancellable | null = null;
@@ -129,6 +144,10 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     this._envelopeUnsub?.();
     this.retryTimer?.cancel();
     if (this.child) { this.child.stop(); this.child = null; }
+    // Drop any in-flight stop — the parent termination cascade will
+    // tear it down regardless, and we no longer need to react to its
+    // Terminated message.
+    this.pendingStop = null;
     // Release the lease if held — the holder leaving cleanly lets a
     // follower acquire faster than waiting for the TTL to expire.
     if (this.settings.lease && this.leaseState === 'held') {
@@ -138,6 +157,10 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   }
 
   override onReceive(msg: Inbox): void | Promise<void> {
+    if (msg instanceof Terminated) {
+      this.handleTerminated(msg);
+      return;
+    }
     return match(msg)
       .with({ t: 'singleton-deliver' }, (m) => this.handleDeliver(m))
       .with({ t: 'reconcile' }, () => this.handleReconcile())
@@ -145,6 +168,26 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       .with({ t: 'lease-lost' }, (m) => this.handleLeaseLost(m))
       .with({ t: 'acquire-retry' }, () => this.handleReconcile())
       .exhaustive();
+  }
+
+  /**
+   * Death-watch callback for the previous singleton child.  Fires once
+   * `pendingStop` has fully terminated (postStop run, cell removed
+   * from the parent's children map).  At that point it's safe to
+   * spawn a fresh child, so we re-run the reconcile logic — if we're
+   * still the leader, a new child will be created here.
+   */
+  private handleTerminated(t: Terminated): void {
+    if (this.pendingStop && t.actor.equals(this.pendingStop)) {
+      this.pendingStop = null;
+      // Re-trigger the appropriate reconcile path; either branch is
+      // safe to call when the singleton state is "no child running".
+      if (this.settings.lease) {
+        this.self.tell({ t: 'reconcile' } satisfies ManagerEvent);
+      } else {
+        this.reconcileSync();
+      }
+    }
   }
 
   /* -------------------------- handlers -------------------------- */
@@ -261,13 +304,25 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
 
   private spawn(): void {
     if (this.child) return;
+    // The previous child is still terminating.  Don't try to actorOf
+    // with the same name — its cell is still in the parent's children
+    // map — and don't bring up the user actor (e.g. an HTTP server
+    // re-binding the same port) until postStop has released its
+    // resources.  `handleTerminated` will retrigger the reconcile
+    // once `pendingStop` clears.
+    if (this.pendingStop) return;
     this.child = this.context.actorOf(this.settings.singletonProps, this.settings.typeName);
+    this.context.watch(this.child);
     this.log.info(`singleton '${this.settings.typeName}' started on this node (now leader)`);
   }
 
   private stopChild(reason: string): void {
     if (!this.child) return;
     this.log.info(`singleton '${this.settings.typeName}' stopping (${reason})`);
+    // Move into pendingStop instead of nulling immediately — the cell
+    // remains in the parent's children map until `Terminated` arrives,
+    // and any reconcile that fires in the meantime must wait.
+    this.pendingStop = this.child;
     this.child.stop();
     this.child = null;
   }

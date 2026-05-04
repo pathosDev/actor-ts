@@ -180,6 +180,88 @@ describe('ClusterSingleton — two nodes', () => {
 
     await stop(surviving);
   });
+
+  test('leader-flap re-spawn waits for the previous child to terminate', async () => {
+    // Regression: when a node briefly hosts the singleton, then loses
+    // leadership (child stopping), then reclaims leadership before the
+    // child's cell has been GC'd from the parent's children map,
+    // `actorOf` used to throw "Child name 'X' is not unique".  The
+    // fix watches the child and defers the next `spawn()` until the
+    // `Terminated` system message arrives.  This test forces that
+    // flap by starting the higher-addressed node first (so it
+    // self-elects as sole-leader and spawns), then introducing a
+    // lower-addressed node (which takes leadership), then stopping
+    // the lower-addressed node so leadership returns to the original.
+    //
+    // The Marker's `postStop` deliberately takes 200 ms so the test
+    // reliably hits the bug pre-fix: the second `reconcileSync` on
+    // B fires from `handleLeave`'s synchronous emit chain *before*
+    // B's previous child cell has finished terminating, so the
+    // pre-fix `actorOf` would throw "name not unique".
+    const SYS = 'sng-flap';
+    // Start B first (higher address, will be sole leader briefly).
+    const b = await startNode(SYS, 'h', 52402);
+    const hosts: string[] = [];
+    const errors: Error[] = [];
+    class Marker extends Actor<string> {
+      constructor(private readonly where: string) { super(); }
+      override preStart(): void { hosts.push(this.where); }
+      override async postStop(): Promise<void> {
+        // Slow shutdown — keeps the cell in the parent's _children
+        // map well past the reconcile that fires when the other node
+        // leaves, so the spawn-vs-stop race is deterministic.
+        await Bun.sleep(200);
+      }
+      override onReceive(): void {}
+    }
+    // Capture any "name not unique" exception thrown inside the
+    // singleton manager's listener — `cluster.emit` swallows
+    // listener throws via `try/catch` + `log.warn`, so we route it
+    // through the system's logger to detect.
+    const origWarn = b.system.log.warn.bind(b.system.log);
+    b.system.log.warn = ((msg: string, err?: unknown): void => {
+      if (typeof msg === 'string' && msg.includes('listener threw')) {
+        errors.push(err as Error);
+      }
+      origWarn(msg, err);
+    }) as typeof b.system.log.warn;
+
+    b.system.extension(ClusterSingletonId).start(b.cluster, {
+      typeName: 'marker',
+      props: Props.create(() => new Marker('b')),
+    });
+    await waitFor(() => hosts.includes('b'), 1_500);
+    expect(hosts).toEqual(['b']);
+
+    // Bring up A (lower address) — leadership flips to A, B's
+    // singleton manager calls stopChild (Marker's postStop sleeps
+    // 200 ms before the cell finishes terminating).
+    const a = await startNode(SYS, 'h', 52401, [`${SYS}@h:52402`]);
+    a.system.extension(ClusterSingletonId).start(a.cluster, {
+      typeName: 'marker',
+      props: Props.create(() => new Marker('a')),
+    });
+    await waitFor(() =>
+      a.cluster.upMembers().length === 2 && b.cluster.upMembers().length === 2,
+      2_000,
+    );
+    await waitFor(() => hosts.includes('a'), 2_000);
+
+    // Stop A immediately — its leave message reaches B while B's
+    // previous Marker cell is still mid-`postStop`.  B's reconcile
+    // fires from `handleLeave`'s synchronous emit chain.  Pre-fix,
+    // this is where `actorOf` threw "name not unique"; with the fix,
+    // the spawn waits for the `Terminated` message and then runs.
+    await stop(a);
+    await waitFor(
+      () => hosts.filter(h => h === 'b').length >= 2,
+      3_000,
+    );
+    expect(errors).toEqual([]);
+    expect(hosts.filter(h => h === 'b').length).toBeGreaterThanOrEqual(2);
+
+    await stop(b);
+  });
 });
 
 describe('ClusterSingleton — role filter', () => {
