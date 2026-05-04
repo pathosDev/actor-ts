@@ -49,6 +49,8 @@ type Action =
   | { type: 'users'; room: RoomName; users: ReadonlyArray<string> }
   | { type: 'select-room'; room: RoomName };
 
+const TOKEN_KEY = 'chat-token';
+
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'login-error':
@@ -120,9 +122,13 @@ export function useChat(): {
   const handleServer = useCallback((m: ServerMessage) => {
     switch (m.type) {
       case 'logged-in':
+        if (m.token) localStorage.setItem(TOKEN_KEY, m.token);
         dispatch({ type: 'logged-in', username: m.username });
         break;
       case 'login-failed':
+        // Stale or rejected token → wipe so the next reload doesn't
+        // keep retrying with the same dead session.
+        localStorage.removeItem(TOKEN_KEY);
         dispatch({ type: 'login-error', reason: m.reason || 'Login failed.' });
         wsRef.current?.close();
         wsRef.current = null;
@@ -144,16 +150,13 @@ export function useChat(): {
     }
   }, []);
 
-  const connect = useCallback(
-    (username: string, password: string) => {
+  const connectImpl = useCallback(
+    (firstFrame: ClientMessage) => {
       dispatch({ type: 'login-error', reason: '' });
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       const ws = new WebSocket(`${proto}//${location.host}${WS_PATH}`);
       wsRef.current = ws;
-      ws.addEventListener('open', () => {
-        const cmd: ClientMessage = { type: 'login', username, password };
-        ws.send(JSON.stringify(cmd));
-      });
+      ws.addEventListener('open', () => ws.send(JSON.stringify(firstFrame)));
       ws.addEventListener('message', (ev) => {
         handleServer(JSON.parse(ev.data as string) as ServerMessage);
       });
@@ -170,7 +173,18 @@ export function useChat(): {
     [handleServer],
   );
 
+  const connect = useCallback(
+    (username: string, password: string) => {
+      connectImpl({ type: 'login', username, password });
+    },
+    [connectImpl],
+  );
+
   const logout = useCallback(() => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      try { wsRef.current.send(JSON.stringify({ type: 'logout' } satisfies ClientMessage)); } catch { /* ignore */ }
+    }
+    localStorage.removeItem(TOKEN_KEY);
     if (wsRef.current) {
       try { wsRef.current.close(1000, 'logout'); } catch { /* ignore */ }
       wsRef.current = null;
@@ -192,10 +206,21 @@ export function useChat(): {
     }
   }, []);
 
+  // Auto-resume on first render: if a token survived the page
+  // reload (or the singleton-failover) jump straight to a `resume`
+  // handshake.  The page.tsx renders LoginView until `logged-in`
+  // arrives; if the token was stale, `login-failed` fires and we
+  // clear it via the handler above.
   useEffect(() => {
+    const stored = typeof localStorage !== 'undefined'
+      ? localStorage.getItem(TOKEN_KEY)
+      : null;
+    if (stored) connectImpl({ type: 'resume', token: stored });
     return () => {
       try { wsRef.current?.close(); } catch { /* ignore */ }
     };
+    // We only want this to fire on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return { state, connect, logout, send, selectRoom };

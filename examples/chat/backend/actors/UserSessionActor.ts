@@ -44,6 +44,7 @@ import {
 } from '../../shared/protocol.js';
 import { DEFAULT_ROOMS, isRoomName, type RoomName } from '../../shared/rooms.js';
 import { validateCredentials } from '../auth/credentials.js';
+import type { SessionStore } from '../auth/sessionStore.js';
 import {
   chatRoomTopic,
   type ChatRoomCmd,
@@ -79,6 +80,7 @@ export interface UserSessionDeps {
   readonly chatRoomRegion: ActorRef<ChatRoomCmd>;
   readonly onlineUsers: ActorRef<OnlineUsersCmd>;
   readonly mediator: ActorRef<Subscribe | Unsubscribe>;
+  readonly sessions: SessionStore;
 }
 
 /* ------------------------------ actor ------------------------------- */
@@ -88,6 +90,8 @@ type Phase = 'Unauthenticated' | 'Authenticated';
 export class UserSessionActor extends Actor<SessionMsg> {
   private phase: Phase = 'Unauthenticated';
   private username: string | null = null;
+  /** Token issued for this session — set on login or accepted resume. */
+  private token: string | null = null;
   private readonly joinedRooms = new Set<RoomName>();
   private readonly historyAskedRooms = new Set<RoomName>();
   private currentRoom: RoomName | null = null;
@@ -147,23 +151,51 @@ export class UserSessionActor extends Actor<SessionMsg> {
   }
 
   private handleUnauthenticated(cmd: ClientMessage): void {
-    if (cmd.type !== 'login') {
-      this.sendServer({
-        type: 'login-failed',
-        reason: 'Login required as first frame',
-      });
-      this.context.stopSelf();
+    if (cmd.type === 'login') {
+      const user = validateCredentials(cmd.username, cmd.password);
+      if (!user) {
+        this.sendServer({ type: 'login-failed', reason: 'Invalid username or password' });
+        this.context.stopSelf();
+        return;
+      }
+      const token = this.deps.sessions.mintToken(user.username);
+      this.activate(user.username, token);
       return;
     }
-    const user = validateCredentials(cmd.username, cmd.password);
-    if (!user) {
-      this.sendServer({ type: 'login-failed', reason: 'Invalid username or password' });
-      this.context.stopSelf();
+
+    if (cmd.type === 'resume') {
+      const username = this.deps.sessions.lookupToken(cmd.token);
+      if (!username) {
+        // Unknown / expired / revoked token — tell the client so it
+        // can clear its stored token and fall back to the credentials
+        // form.  Don't stop the connection: the client may re-attempt
+        // with `login` on the same socket.
+        this.sendServer({ type: 'login-failed', reason: 'Session expired' });
+        return;
+      }
+      // Reuse the same token — keep the client's storage stable.
+      this.activate(username, cmd.token);
       return;
     }
+
+    this.sendServer({
+      type: 'login-failed',
+      reason: 'Login required as first frame',
+    });
+    this.context.stopSelf();
+  }
+
+  /**
+   * Move from `Unauthenticated` to `Authenticated`.  Sends
+   * `logged-in` (with the session token the client should persist),
+   * the room list, and the auto-join burst — same flow whether we
+   * arrived here via fresh `login` or via `resume`.
+   */
+  private activate(username: string, token: string): void {
     this.phase = 'Authenticated';
-    this.username = user.username;
-    this.sendServer({ type: 'logged-in', username: user.username });
+    this.username = username;
+    this.token = token;
+    this.sendServer({ type: 'logged-in', username, token });
     this.sendServer({ type: 'rooms', rooms: [...DEFAULT_ROOMS] });
     // Auto-join every default room for presence + live messages, but
     // only fetch history for the room we're switching into first
@@ -181,6 +213,17 @@ export class UserSessionActor extends Actor<SessionMsg> {
     match(cmd)
       .with({ type: 'login' }, () => {
         // Re-login on an already-authenticated socket — silently ignore.
+      })
+      .with({ type: 'resume' }, () => {
+        // Resume on an already-authenticated socket — silently ignore.
+      })
+      .with({ type: 'logout' }, () => {
+        // Explicit log-out: revoke the session token so the cluster
+        // forgets it (gossip propagates), then drop the connection.
+        // The client's storage cleanup happens locally on its side.
+        if (this.token) this.deps.sessions.revokeToken(this.token);
+        this.token = null;
+        this.context.stopSelf();
       })
       .with({ type: 'send' }, (m) => {
         if (!isRoomName(m.room)) return;

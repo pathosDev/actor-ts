@@ -47,6 +47,7 @@ import {
 import { buildRoutes } from '../routes.js';
 import type { ChatRoomCmd } from './ChatRoomActor.js';
 import type { OnlineUsersCmd } from './OnlineUsersActor.js';
+import type { SessionStore } from '../auth/sessionStore.js';
 
 export interface HttpIngressDeps {
   /** Bind interface — typically `127.0.0.1` for the local demo. */
@@ -63,6 +64,8 @@ export interface HttpIngressDeps {
   readonly onlineUsers: ActorRef<OnlineUsersCmd>;
   /** Local DistributedPubSub mediator on this node. */
   readonly mediator: ActorRef<Subscribe | Unsubscribe>;
+  /** Cluster-wide session-token store (DD-LWWMap-backed). */
+  readonly sessions: SessionStore;
 }
 
 /**
@@ -93,6 +96,7 @@ export class HttpIngressActor extends Actor<never> {
       chatRoomRegion: this.deps.chatRoomRegion,
       onlineUsers: this.deps.onlineUsers,
       mediator: this.deps.mediator,
+      sessions: this.deps.sessions,
     });
 
     const http = system.extension(HttpExtensionId);

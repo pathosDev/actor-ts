@@ -7,7 +7,9 @@
  * send, and presence updates all flow through this channel.
  *
  *   Client → Server (`ClientMessage`):
- *     { type: 'login',  username, password }   // MUST be the first frame
+ *     { type: 'login',  username, password }
+ *     { type: 'resume', token }                // alt. to login on reconnect
+ *     { type: 'logout' }                       // explicit log-out + revoke
  *     { type: 'send',   room, text }
  *     { type: 'join',   room }
  *     { type: 'leave',  room }
@@ -15,7 +17,7 @@
  *     { type: 'ping' }
  *
  *   Server → Client (`ServerMessage`):
- *     { type: 'logged-in',    username }
+ *     { type: 'logged-in',    username, token }
  *     { type: 'login-failed', reason }
  *     { type: 'rooms',   rooms }
  *     { type: 'history', room, messages }
@@ -23,10 +25,18 @@
  *     { type: 'users',   room, users }
  *     { type: 'system',  text }
  *
- * Auth model: until the first `login` frame arrives, the connection
- * is in `Unauthenticated` state and ignores everything else.  Once
- * `login` succeeds the server pushes `logged-in` + `rooms` + history
- * for every default room and the chat protocol becomes available.
+ * Auth model: the first frame on any new socket is either `login`
+ * (with credentials) or `resume` (with a token previously issued via
+ * `logged-in`).  Until that frame succeeds the connection sits in
+ * `Unauthenticated` state and ignores everything else.  Successful
+ * auth pushes `logged-in` (carrying the session token the client
+ * should persist), then `rooms`, then per-room history/users frames.
+ *
+ * Tokens are issued on login, persisted cluster-wide via
+ * DistributedData (so they survive a singleton failover), and
+ * revoked on `logout`.  TTL is bounded server-side; a stale token
+ * simply yields `login-failed`.  Clients clear their stored token
+ * on `login-failed` and fall back to the credentials form.
  */
 
 import type { RoomName } from './rooms.js';
@@ -45,6 +55,8 @@ export interface ChatMessage {
 
 export type ClientMessage =
   | { readonly type: 'login';                readonly username: string; readonly password: string }
+  | { readonly type: 'resume';               readonly token: string }
+  | { readonly type: 'logout' }
   | { readonly type: 'send';                 readonly room: RoomName;   readonly text: string }
   | { readonly type: 'join';                 readonly room: RoomName }
   | { readonly type: 'leave';                readonly room: RoomName }
@@ -54,7 +66,7 @@ export type ClientMessage =
 /* --------------------------- Server → Client --------------------------- */
 
 export type ServerMessage =
-  | { readonly type: 'logged-in';     readonly username: string }
+  | { readonly type: 'logged-in';     readonly username: string; readonly token: string }
   | { readonly type: 'login-failed';  readonly reason: string }
   | { readonly type: 'rooms';         readonly rooms: ReadonlyArray<RoomName> }
   | { readonly type: 'history';       readonly room: RoomName; readonly messages: ReadonlyArray<ChatMessage> }

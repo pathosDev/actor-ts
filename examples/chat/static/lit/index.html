@@ -28,6 +28,7 @@
       import { LitElement, html, css } from 'https://esm.sh/lit@3';
 
       const WS_PATH = '/ws';
+      const TOKEN_KEY = 'chat-token';
 
       class ChatApp extends LitElement {
         static properties = {
@@ -104,12 +105,18 @@
           return `${proto}//${location.host}${WS_PATH}`;
         }
 
-        connect(username, password) {
+        connectWithLogin(username, password) {
+          this.connect((ws) => ws.send(JSON.stringify({ type: 'login', username, password })));
+        }
+
+        connectWithResume(token) {
+          this.connect((ws) => ws.send(JSON.stringify({ type: 'resume', token })));
+        }
+
+        connect(onOpen) {
           const ws = new WebSocket(this.wsUrl());
           this.ws = ws;
-          ws.addEventListener('open', () => {
-            ws.send(JSON.stringify({ type: 'login', username, password }));
-          });
+          ws.addEventListener('open', () => onOpen(ws));
           ws.addEventListener('message', (ev) => {
             const m = JSON.parse(ev.data);
             this.handleServer(m);
@@ -126,10 +133,12 @@
           switch (m.type) {
             case 'logged-in':
               this.username = m.username;
+              if (m.token) localStorage.setItem(TOKEN_KEY, m.token);
               this.phase = 'chat';
               break;
             case 'login-failed':
               this.loginError = m.reason || 'Login failed';
+              localStorage.removeItem(TOKEN_KEY);
               try { this.ws.close(); } catch { }
               this.ws = null;
               break;
@@ -188,12 +197,26 @@
           const u = fd.get('username')?.trim();
           const p = fd.get('password');
           if (!u || !p) return;
-          this.connect(u, p);
+          this.connectWithLogin(u, p);
         }
 
         onLogout() {
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            try { this.ws.send(JSON.stringify({ type: 'logout' })); } catch { }
+          }
+          localStorage.removeItem(TOKEN_KEY);
           if (this.ws) { try { this.ws.close(1000, 'logout'); } catch { } }
           this.resetToLogin();
+        }
+
+        // Auto-resume on element-attach (page load).  Lit's
+        // `connectedCallback` runs once the host element joins the
+        // DOM — we use it to attempt a token-based resume before
+        // the user even sees the login form.
+        connectedCallback() {
+          super.connectedCallback();
+          const stored = localStorage.getItem(TOKEN_KEY);
+          if (stored) this.connectWithResume(stored);
         }
 
         selectRoom(room) {

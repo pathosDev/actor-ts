@@ -241,6 +241,7 @@
       'use strict';
 
       /* ============== state ============== */
+      const TOKEN_KEY = 'chat-token';
       const state = {
         username: null,
         ws: null,
@@ -274,9 +275,16 @@
         const username = $username.value.trim();
         const password = $password.value;
         if (!username || !password) return;
-        connect(username, password);
+        connectWithLogin(username, password);
       });
       $logout.addEventListener('click', () => {
+        // Tell the server to revoke our token before the WS closes,
+        // then wipe local state.  Server will stop our session actor
+        // which closes the socket — `close` handler resets the UI.
+        if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+          try { state.ws.send(JSON.stringify({ type: 'logout' })); } catch {}
+        }
+        localStorage.removeItem(TOKEN_KEY);
         if (state.ws) { try { state.ws.close(1000, 'logout'); } catch {} }
         resetToLogin();
       });
@@ -287,12 +295,23 @@
         return `${proto}//${location.host}/ws`;
       }
 
-      function connect(username, password) {
+      // Two entry points — login (with credentials) and resume (with
+      // a stored token).  Both end up doing the same thing once the
+      // server replies with `logged-in`; only the first frame they
+      // send differs.
+
+      function connectWithLogin(username, password) {
+        connect((ws) => ws.send(JSON.stringify({ type: 'login', username, password })));
+      }
+
+      function connectWithResume(token) {
+        connect((ws) => ws.send(JSON.stringify({ type: 'resume', token })));
+      }
+
+      function connect(onOpen) {
         const ws = new WebSocket(wsUrl());
         state.ws = ws;
-        ws.addEventListener('open', () => {
-          ws.send(JSON.stringify({ type: 'login', username, password }));
-        });
+        ws.addEventListener('open', () => onOpen(ws));
         ws.addEventListener('message', (ev) => {
           let msg;
           try { msg = JSON.parse(ev.data); } catch { return; }
@@ -315,7 +334,7 @@
       /* ============== inbound dispatch ============== */
       function handleServer(msg) {
         switch (msg.type) {
-          case 'logged-in':    return onLoggedIn(msg.username);
+          case 'logged-in':    return onLoggedIn(msg.username, msg.token);
           case 'login-failed': return onLoginFailed(msg.reason);
           case 'rooms':        return onRooms(msg.rooms);
           case 'history':      return onHistory(msg.room, msg.messages);
@@ -326,8 +345,9 @@
         }
       }
 
-      function onLoggedIn(username) {
+      function onLoggedIn(username, token) {
         state.username = username;
+        if (token) localStorage.setItem(TOKEN_KEY, token);
         $me.textContent = username;
         $login.style.display = 'none';
         $chat.classList.add('active');
@@ -335,6 +355,9 @@
 
       function onLoginFailed(reason) {
         $loginErr.textContent = reason || 'Login failed.';
+        // Stale / expired token → wipe it so the next page-load
+        // doesn't keep retrying with the same dead credentials.
+        localStorage.removeItem(TOKEN_KEY);
         if (state.ws) { try { state.ws.close(); } catch {} }
         state.ws = null;
       }
@@ -484,6 +507,16 @@
         const d = new Date(ts);
         return d.toLocaleTimeString();
       }
+
+      /* ============== auto-resume on load ============== */
+      // If the previous session left us a token in localStorage (page
+      // reload, browser restart, or singleton-failover) skip straight
+      // to a `resume` handshake.  Server replies with `logged-in`
+      // → onLoggedIn flips us into chat view.  If the token is stale,
+      // server replies with `login-failed` → onLoginFailed clears it
+      // and the user falls back to the credentials form.
+      const storedToken = localStorage.getItem(TOKEN_KEY);
+      if (storedToken) connectWithResume(storedToken);
     </script>
   </body>
 </html>

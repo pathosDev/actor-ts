@@ -22,6 +22,8 @@ export interface ChatMessage {
 
 export type ClientMessage =
   | { readonly type: 'login';                readonly username: string; readonly password: string }
+  | { readonly type: 'resume';               readonly token: string }
+  | { readonly type: 'logout' }
   | { readonly type: 'send';                 readonly room: RoomName;   readonly text: string }
   | { readonly type: 'join';                 readonly room: RoomName }
   | { readonly type: 'leave';                readonly room: RoomName }
@@ -29,7 +31,7 @@ export type ClientMessage =
   | { readonly type: 'ping' };
 
 export type ServerMessage =
-  | { readonly type: 'logged-in';     readonly username: string }
+  | { readonly type: 'logged-in';     readonly username: string; readonly token: string }
   | { readonly type: 'login-failed';  readonly reason: string }
   | { readonly type: 'rooms';         readonly rooms: ReadonlyArray<RoomName> }
   | { readonly type: 'history';       readonly room: RoomName; readonly messages: ReadonlyArray<ChatMessage> }
