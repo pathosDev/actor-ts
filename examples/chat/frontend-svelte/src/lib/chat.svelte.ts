@@ -40,11 +40,11 @@ class ChatStore {
   constructor() {
     // Auto-resume on bootstrap.  Class-instances run on module
     // eval, which in Svelte's adapter-static client-only build
-    // happens after the document is parsed — `localStorage` is
+    // happens after the document is parsed — `sessionStorage` is
     // available at this point.  Guarded for SSR safety even though
     // we ship this app SSR-disabled.
-    if (typeof localStorage !== 'undefined') {
-      const stored = localStorage.getItem(TOKEN_KEY);
+    if (typeof sessionStorage !== 'undefined') {
+      const stored = sessionStorage.getItem(TOKEN_KEY);
       if (stored) this.#connect((ws) =>
         ws.send(JSON.stringify({ type: 'resume', token: stored } satisfies ClientMessage)),
       );
@@ -78,15 +78,15 @@ class ChatStore {
       }
     });
     ws.addEventListener('error', () => {
-      if (this.phase === 'login' && typeof localStorage !== 'undefined' && !localStorage.getItem(TOKEN_KEY)) {
+      if (this.phase === 'login' && typeof sessionStorage !== 'undefined' && !sessionStorage.getItem(TOKEN_KEY)) {
         this.loginError = 'Connection failed.';
       }
     });
   }
 
   #scheduleResumeReconnect(): boolean {
-    const token = typeof localStorage !== 'undefined'
-      ? localStorage.getItem(TOKEN_KEY)
+    const token = typeof sessionStorage !== 'undefined'
+      ? sessionStorage.getItem(TOKEN_KEY)
       : null;
     if (!token) return false;
     if (this.#reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return false;
@@ -130,7 +130,7 @@ class ChatStore {
     if (this.#ws && this.#ws.readyState === WebSocket.OPEN) {
       try { this.#ws.send(JSON.stringify({ type: 'logout' } satisfies ClientMessage)); } catch { /* ignore */ }
     }
-    if (typeof localStorage !== 'undefined') localStorage.removeItem(TOKEN_KEY);
+    if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(TOKEN_KEY);
     if (this.#ws) {
       try { this.#ws.close(1000, 'logout'); } catch { /* ignore */ }
       this.#ws = null;
@@ -154,15 +154,15 @@ class ChatStore {
       case 'logged-in':
         this.#cancelReconnect();
         this.username = m.username;
-        if (m.token && typeof localStorage !== 'undefined') {
-          localStorage.setItem(TOKEN_KEY, m.token);
+        if (m.token && typeof sessionStorage !== 'undefined') {
+          sessionStorage.setItem(TOKEN_KEY, m.token);
         }
         this.loginError = '';
         this.phase = 'chat';
         break;
       case 'login-failed':
         this.#cancelReconnect();
-        if (typeof localStorage !== 'undefined') localStorage.removeItem(TOKEN_KEY);
+        if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(TOKEN_KEY);
         this.#ws?.close();
         this.#ws = null;
         if (this.phase === 'chat') this.#reset();

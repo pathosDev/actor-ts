@@ -135,12 +135,12 @@ export function useChat(): {
     switch (m.type) {
       case 'logged-in':
         cancelReconnect();
-        if (m.token) localStorage.setItem(TOKEN_KEY, m.token);
+        if (m.token) sessionStorage.setItem(TOKEN_KEY, m.token);
         dispatch({ type: 'logged-in', username: m.username });
         break;
       case 'login-failed':
         cancelReconnect();
-        localStorage.removeItem(TOKEN_KEY);
+        sessionStorage.removeItem(TOKEN_KEY);
         dispatch({ type: 'login-error', reason: m.reason || 'Login failed.' });
         wsRef.current?.close();
         wsRef.current = null;
@@ -178,7 +178,7 @@ export function useChat(): {
         wsRef.current = null;
         // Try to resume with the stored token — covers singleton-
         // failover.  Backoff is exponential, capped at 4 s.
-        const token = localStorage.getItem(TOKEN_KEY);
+        const token = sessionStorage.getItem(TOKEN_KEY);
         if (token && reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
           const delay = Math.min(500 * Math.pow(2, reconnectAttemptsRef.current), 4000);
           reconnectAttemptsRef.current++;
@@ -191,7 +191,7 @@ export function useChat(): {
         }
       });
       ws.addEventListener('error', () => {
-        if (!localStorage.getItem(TOKEN_KEY)) {
+        if (!sessionStorage.getItem(TOKEN_KEY)) {
           dispatch({ type: 'login-error', reason: 'Connection failed.' });
         }
       });
@@ -211,7 +211,7 @@ export function useChat(): {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       try { wsRef.current.send(JSON.stringify({ type: 'logout' } satisfies ClientMessage)); } catch { /* ignore */ }
     }
-    localStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(TOKEN_KEY);
     if (wsRef.current) {
       try { wsRef.current.close(1000, 'logout'); } catch { /* ignore */ }
       wsRef.current = null;
@@ -239,8 +239,8 @@ export function useChat(): {
   // arrives; if the token was stale, `login-failed` fires and we
   // clear it via the handler above.
   useEffect(() => {
-    const stored = typeof localStorage !== 'undefined'
-      ? localStorage.getItem(TOKEN_KEY)
+    const stored = typeof sessionStorage !== 'undefined'
+      ? sessionStorage.getItem(TOKEN_KEY)
       : null;
     if (stored) connectImpl({ type: 'resume', token: stored });
     return () => {
