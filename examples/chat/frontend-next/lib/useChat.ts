@@ -50,6 +50,7 @@ type Action =
   | { type: 'select-room'; room: RoomName };
 
 const TOKEN_KEY = 'chat-token';
+const MAX_RECONNECT_ATTEMPTS = 8;
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
@@ -118,20 +119,32 @@ export function useChat(): {
 } {
   const [state, dispatch] = useReducer(reducer, INITIAL);
   const wsRef = useRef<WebSocket | null>(null);
+  // Reconnect bookkeeping — refs so closures stay stable.
+  const reconnectAttemptsRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const cancelReconnect = useCallback(() => {
+    if (reconnectTimerRef.current !== null) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    reconnectAttemptsRef.current = 0;
+  }, []);
 
   const handleServer = useCallback((m: ServerMessage) => {
     switch (m.type) {
       case 'logged-in':
+        cancelReconnect();
         if (m.token) localStorage.setItem(TOKEN_KEY, m.token);
         dispatch({ type: 'logged-in', username: m.username });
         break;
       case 'login-failed':
-        // Stale or rejected token → wipe so the next reload doesn't
-        // keep retrying with the same dead session.
+        cancelReconnect();
         localStorage.removeItem(TOKEN_KEY);
         dispatch({ type: 'login-error', reason: m.reason || 'Login failed.' });
         wsRef.current?.close();
         wsRef.current = null;
+        dispatch({ type: 'reset' });
         break;
       case 'rooms':
         dispatch({ type: 'rooms', rooms: m.rooms });
@@ -148,7 +161,7 @@ export function useChat(): {
       case 'system':
         break;
     }
-  }, []);
+  }, [cancelReconnect]);
 
   const connectImpl = useCallback(
     (firstFrame: ClientMessage) => {
@@ -161,13 +174,26 @@ export function useChat(): {
         handleServer(JSON.parse(ev.data as string) as ServerMessage);
       });
       ws.addEventListener('close', () => {
-        if (wsRef.current === ws) {
-          wsRef.current = null;
+        if (wsRef.current !== ws) return;
+        wsRef.current = null;
+        // Try to resume with the stored token — covers singleton-
+        // failover.  Backoff is exponential, capped at 4 s.
+        const token = localStorage.getItem(TOKEN_KEY);
+        if (token && reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
+          const delay = Math.min(500 * Math.pow(2, reconnectAttemptsRef.current), 4000);
+          reconnectAttemptsRef.current++;
+          reconnectTimerRef.current = setTimeout(() => {
+            reconnectTimerRef.current = null;
+            connectImpl({ type: 'resume', token });
+          }, delay);
+        } else {
           dispatch({ type: 'reset' });
         }
       });
       ws.addEventListener('error', () => {
-        dispatch({ type: 'login-error', reason: 'Connection failed.' });
+        if (!localStorage.getItem(TOKEN_KEY)) {
+          dispatch({ type: 'login-error', reason: 'Connection failed.' });
+        }
       });
     },
     [handleServer],
@@ -181,6 +207,7 @@ export function useChat(): {
   );
 
   const logout = useCallback(() => {
+    cancelReconnect();
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       try { wsRef.current.send(JSON.stringify({ type: 'logout' } satisfies ClientMessage)); } catch { /* ignore */ }
     }
@@ -190,7 +217,7 @@ export function useChat(): {
       wsRef.current = null;
     }
     dispatch({ type: 'reset' });
-  }, []);
+  }, [cancelReconnect]);
 
   const send = useCallback((room: RoomName, text: string) => {
     if (!text.trim() || !wsRef.current) return;

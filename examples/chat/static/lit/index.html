@@ -29,6 +29,7 @@
 
       const WS_PATH = '/ws';
       const TOKEN_KEY = 'chat-token';
+      const MAX_RECONNECT_ATTEMPTS = 8;
 
       class ChatApp extends LitElement {
         static properties = {
@@ -53,6 +54,8 @@
           this.unreadByRoom = {};
           this.loginError = '';
           this.ws = null;
+          this.reconnectAttempts = 0;
+          this.reconnectTimer = null;
         }
 
         static styles = css`
@@ -122,25 +125,57 @@
             this.handleServer(m);
           });
           ws.addEventListener('close', () => {
-            if (this.phase === 'chat') this.resetToLogin();
+            this.ws = null;
+            // Try to resume with the stored token before falling
+            // back to the login screen.  Covers singleton-failover.
+            if (!this.scheduleResumeReconnect() && this.phase === 'chat') {
+              this.resetToLogin();
+            }
           });
           ws.addEventListener('error', () => {
-            if (this.phase === 'login') this.loginError = 'Connection failed.';
+            if (this.phase === 'login' && !localStorage.getItem(TOKEN_KEY)) {
+              this.loginError = 'Connection failed.';
+            }
           });
+        }
+
+        scheduleResumeReconnect() {
+          const token = localStorage.getItem(TOKEN_KEY);
+          if (!token) return false;
+          if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return false;
+          const delay = Math.min(500 * Math.pow(2, this.reconnectAttempts), 4000);
+          this.reconnectAttempts++;
+          this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            this.connectWithResume(token);
+          }, delay);
+          return true;
+        }
+
+        cancelReconnect() {
+          if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+          }
+          this.reconnectAttempts = 0;
         }
 
         handleServer(m) {
           switch (m.type) {
             case 'logged-in':
+              this.cancelReconnect();
               this.username = m.username;
               if (m.token) localStorage.setItem(TOKEN_KEY, m.token);
+              this.loginError = '';
               this.phase = 'chat';
               break;
             case 'login-failed':
-              this.loginError = m.reason || 'Login failed';
+              this.cancelReconnect();
               localStorage.removeItem(TOKEN_KEY);
-              try { this.ws.close(); } catch { }
+              try { this.ws?.close(); } catch { }
               this.ws = null;
+              if (this.phase === 'chat') this.resetToLogin();
+              this.loginError = m.reason || 'Login failed';
               break;
             case 'rooms': {
               this.rooms = m.rooms.slice();
@@ -180,6 +215,7 @@
         }
 
         resetToLogin() {
+          this.cancelReconnect();
           this.phase = 'login';
           this.username = null;
           this.rooms = [];
@@ -201,6 +237,7 @@
         }
 
         onLogout() {
+          this.cancelReconnect();
           if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             try { this.ws.send(JSON.stringify({ type: 'logout' })); } catch { }
           }

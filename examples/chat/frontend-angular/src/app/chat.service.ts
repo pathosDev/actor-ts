@@ -18,6 +18,7 @@ import {
  * post-login multi-room state.
  */
 const TOKEN_KEY = 'chat-token';
+const MAX_RECONNECT_ATTEMPTS = 8;
 
 @Injectable({ providedIn: 'root' })
 export class ChatService {
@@ -42,6 +43,8 @@ export class ChatService {
   });
 
   private ws: WebSocket | null = null;
+  private reconnectAttempts = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
     // Auto-resume on bootstrap: if a token survived the page reload
@@ -80,11 +83,44 @@ export class ChatService {
       this.handleServer(m);
     });
     ws.addEventListener('close', () => {
-      if (this.phase() === 'chat') this.reset();
+      this.ws = null;
+      // Don't drop to the login screen immediately — try to resume
+      // with the stored token first.  Covers singleton-failover:
+      // the chat view stays mounted (frozen for a few seconds)
+      // while the cluster re-binds :8080 on a survivor.
+      if (!this.scheduleResumeReconnect() && this.phase() === 'chat') {
+        this.reset();
+      }
     });
     ws.addEventListener('error', () => {
-      if (this.phase() === 'login') this.loginError.set('Connection failed.');
+      const hasStored = typeof localStorage !== 'undefined' && localStorage.getItem(TOKEN_KEY);
+      if (this.phase() === 'login' && !hasStored) {
+        this.loginError.set('Connection failed.');
+      }
     });
+  }
+
+  private scheduleResumeReconnect(): boolean {
+    const token = typeof localStorage !== 'undefined'
+      ? localStorage.getItem(TOKEN_KEY)
+      : null;
+    if (!token) return false;
+    if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return false;
+    const delay = Math.min(500 * Math.pow(2, this.reconnectAttempts), 4000);
+    this.reconnectAttempts++;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connectWithResume(token);
+    }, delay);
+    return true;
+  }
+
+  private cancelReconnect(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.reconnectAttempts = 0;
   }
 
   send(room: RoomName, text: string): void {
@@ -102,6 +138,7 @@ export class ChatService {
   }
 
   logout(): void {
+    this.cancelReconnect();
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       try { this.ws.send(JSON.stringify({ type: 'logout' } satisfies ClientMessage)); } catch { /* ignore */ }
     }
@@ -113,6 +150,7 @@ export class ChatService {
   }
 
   private reset(): void {
+    this.cancelReconnect();
     this.phase.set('login');
     this.username.set(null);
     this.rooms.set([]);
@@ -126,17 +164,21 @@ export class ChatService {
   private handleServer(m: ServerMessage): void {
     switch (m.type) {
       case 'logged-in':
+        this.cancelReconnect();
         this.username.set(m.username);
         if (m.token && typeof localStorage !== 'undefined') {
           localStorage.setItem(TOKEN_KEY, m.token);
         }
+        this.loginError.set('');
         this.phase.set('chat');
         break;
       case 'login-failed':
-        this.loginError.set(m.reason || 'Login failed.');
+        this.cancelReconnect();
         if (typeof localStorage !== 'undefined') localStorage.removeItem(TOKEN_KEY);
         this.ws?.close();
         this.ws = null;
+        if (this.phase() === 'chat') this.reset();
+        this.loginError.set(m.reason || 'Login failed.');
         break;
       case 'rooms': {
         const rooms = m.rooms.slice();
