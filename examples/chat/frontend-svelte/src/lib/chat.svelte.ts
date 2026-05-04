@@ -23,7 +23,15 @@ const TOKEN_KEY = 'chat-token';
 const MAX_RECONNECT_ATTEMPTS = 8;
 
 class ChatStore {
-  phase = $state<'login' | 'chat'>('login');
+  // 'resuming' is a transient phase used right after page reload
+  // when we have a stored token but haven't yet heard back from the
+  // server.  Components render nothing in that phase to avoid the
+  // login-form-flash before resume completes.
+  phase = $state<'login' | 'resuming' | 'chat'>(
+    typeof sessionStorage !== 'undefined' && sessionStorage.getItem(TOKEN_KEY)
+      ? 'resuming'
+      : 'login',
+  );
   username = $state<string | null>(null);
   loginError = $state('');
 
@@ -71,9 +79,10 @@ class ChatStore {
     ws.addEventListener('close', () => {
       if (this.#ws !== ws) return;
       this.#ws = null;
-      // Try to resume with the stored token before falling back to
-      // the login screen.  Covers singleton-failover.
-      if (!this.#scheduleResumeReconnect() && this.phase === 'chat') {
+      // Try to resume with the stored token before falling back
+      // to the login screen.  Covers singleton-failover (phase
+      // 'chat') and reload-resume failure (phase 'resuming') alike.
+      if (!this.#scheduleResumeReconnect() && this.phase !== 'login') {
         this.#reset();
       }
     });
@@ -165,7 +174,10 @@ class ChatStore {
         if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(TOKEN_KEY);
         this.#ws?.close();
         this.#ws = null;
-        if (this.phase === 'chat') this.#reset();
+        // Drop chat-state if we were already in chat (rare) or
+        // in 'resuming' (token rejected after reload).  Either
+        // way, fall back to the login screen.
+        if (this.phase !== 'login') this.#reset();
         this.loginError = m.reason || 'Login failed.';
         break;
       case 'rooms': {

@@ -3,12 +3,20 @@ import type { RoomName } from './protocol';
 import { useChat } from './useChat';
 
 /**
- * Root component — splits between login and chat phases.  Uses
- * `useChat` for all state + WS handling.
+ * Root component — splits between login and chat phases.  In the
+ * 'resuming' phase we render nothing: that's the brief window
+ * after a page reload when the stored token is being re-validated
+ * by the server.  Rendering the login form there would cause a
+ * visible flash before the server replies with `logged-in`.
+ * Uses `useChat` for all state + WS handling.
  */
-export function App(): React.JSX.Element {
+export function App(): React.JSX.Element | null {
   const chat = useChat();
-  return chat.state.phase === 'login' ? <LoginView chat={chat} /> : <ChatView chat={chat} />;
+  switch (chat.state.phase) {
+    case 'login':    return <LoginView chat={chat} />;
+    case 'chat':     return <ChatView chat={chat} />;
+    case 'resuming': return null;
+  }
 }
 
 type ChatHandle = ReturnType<typeof useChat>;

@@ -5,8 +5,12 @@ import { ChatComponent } from './chat.component';
 
 /**
  * Root component — switches between the login and chat views based
- * on `ChatService.phase()`.  All real work lives in the child
- * components and the service.
+ * on `ChatService.phase()`.  In the 'resuming' phase we render
+ * nothing: that's the brief window after a page reload when the
+ * stored token is being re-validated by the server.  Rendering
+ * the login form there would cause a visible flash before the
+ * server replies with `logged-in`.  All real work lives in the
+ * child components and the service.
  */
 @Component({
   selector: 'chat-root',
@@ -15,7 +19,7 @@ import { ChatComponent } from './chat.component';
   template: `
     @if (chat.phase() === 'login') {
       <chat-login />
-    } @else {
+    } @else if (chat.phase() === 'chat') {
       <chat-room />
     }
   `,

@@ -45,7 +45,13 @@
 
         constructor() {
           super();
-          this.phase = 'login';
+          // Synchronous initial-phase decision: if there's a token to
+          // resume, start in 'resuming' (renders nothing).  Otherwise
+          // 'login'.  Avoids the brief flash of the login form on
+          // reload of an authenticated tab.
+          const stored = typeof sessionStorage !== 'undefined'
+            && sessionStorage.getItem(TOKEN_KEY);
+          this.phase = stored ? 'resuming' : 'login';
           this.username = null;
           this.rooms = [];
           this.currentRoom = null;
@@ -127,8 +133,10 @@
           ws.addEventListener('close', () => {
             this.ws = null;
             // Try to resume with the stored token before falling
-            // back to the login screen.  Covers singleton-failover.
-            if (!this.scheduleResumeReconnect() && this.phase === 'chat') {
+            // back to the login screen.  Covers singleton-failover
+            // (phase 'chat') and reload-resume failure (phase
+            // 'resuming') alike.
+            if (!this.scheduleResumeReconnect() && this.phase !== 'login') {
               this.resetToLogin();
             }
           });
@@ -174,7 +182,10 @@
               sessionStorage.removeItem(TOKEN_KEY);
               try { this.ws?.close(); } catch { }
               this.ws = null;
-              if (this.phase === 'chat') this.resetToLogin();
+              // Drop back to the login form whether we were in
+              // 'chat' (token revoked mid-session) or 'resuming'
+              // (token rejected during reload-resume).
+              if (this.phase !== 'login') this.resetToLogin();
               this.loginError = m.reason || 'Login failed';
               break;
             case 'rooms': {
@@ -276,7 +287,11 @@
 
         render() {
           if (this.phase === 'login') return this.renderLogin();
-          return this.renderChat();
+          if (this.phase === 'chat') return this.renderChat();
+          // 'resuming' — render nothing until the WS handshake
+          // resolves into 'chat' (logged-in arrived) or 'login'
+          // (resume rejected, all retries exhausted).
+          return html``;
         }
 
         renderLogin() {

@@ -194,7 +194,11 @@
   </head>
   <body>
     <!-- ============== LOGIN ============== -->
-    <section id="login">
+    <!-- Hidden by default.  The <script> at the bottom reveals it
+         only when there's no stored token to resume — avoids the
+         "login form flashes for ~100 ms before resume completes"
+         that we'd otherwise get on every reload. -->
+    <section id="login" hidden>
       <h1>actor-ts chat</h1>
       <p class="lead">Plain HTML frontend</p>
       <form id="login-form" autocomplete="off">
@@ -537,6 +541,7 @@
         state.usersByRoom.clear();
         state.unreadByRoom.clear();
         $chat.classList.remove('active');
+        $login.hidden = false;
         $login.style.display = '';
         $username.value = '';
         $password.value = '';
@@ -554,14 +559,21 @@
       }
 
       /* ============== auto-resume on load ============== */
-      // If the previous session left us a token in sessionStorage (page
-      // reload, browser restart, or singleton-failover) skip straight
-      // to a `resume` handshake.  Server replies with `logged-in`
-      // → onLoggedIn flips us into chat view.  If the token is stale,
-      // server replies with `login-failed` → onLoginFailed clears it
-      // and the user falls back to the credentials form.
+      // Synchronous decision before paint: if there's a token in
+      // sessionStorage (reload of a logged-in tab, or transient
+      // failover-reconnect) skip the login form entirely and go
+      // straight to a `resume` handshake.  The login section is
+      // already hidden via its `hidden` attribute, and the chat
+      // section is hidden until `chat.active` lands — so the user
+      // sees an empty page for the ~100 ms it takes for the WS
+      // round trip, then drops into the chat view.  Without a
+      // token: reveal the login form.
       const storedToken = sessionStorage.getItem(TOKEN_KEY);
-      if (storedToken) connectWithResume(storedToken);
+      if (storedToken) {
+        connectWithResume(storedToken);
+      } else {
+        $login.hidden = false;
+      }
     </script>
   </body>
 </html>

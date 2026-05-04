@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useChat } from '../lib/useChat';
 import type { RoomName } from '../lib/protocol';
 
@@ -9,10 +9,26 @@ import type { RoomName } from '../lib/protocol';
  * ChatView.  We keep the whole thing on one route to mirror the
  * Vite + Angular variants — the `app/` folder structure is the
  * point of comparison, not the routing graph.
+ *
+ * Under static export the page is pre-rendered at build time with
+ * `phase: 'login'` (sessionStorage doesn't exist on the build
+ * machine).  To avoid both a hydration mismatch and the brief
+ * login-form flash on a reload, we render `null` until the
+ * `useEffect` in `useChat` has had a chance to flip phase to
+ * 'resuming'.  The `hydrated` flag also defers the first paint
+ * past hydration, so the login form never appears for tokens that
+ * are about to resume successfully.
  */
-export default function Page(): React.JSX.Element {
+export default function Page(): React.JSX.Element | null {
   const chat = useChat();
-  return chat.state.phase === 'login' ? <LoginView chat={chat} /> : <ChatView chat={chat} />;
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => setHydrated(true), []);
+  if (!hydrated) return null;
+  switch (chat.state.phase) {
+    case 'login':    return <LoginView chat={chat} />;
+    case 'chat':     return <ChatView chat={chat} />;
+    case 'resuming': return null;
+  }
 }
 
 type ChatHandle = ReturnType<typeof useChat>;

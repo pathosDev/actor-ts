@@ -20,7 +20,14 @@ import {
  *     components never see the raw socket.
  */
 
-export type Phase = 'login' | 'chat';
+/**
+ * 'login' shows the login form; 'chat' shows the chat view;
+ * 'resuming' is a transient phase used right after page reload
+ * when we have a stored token but haven't yet heard back from the
+ * server.  Components render nothing in 'resuming' to avoid the
+ * login-form-flash before resume completes.
+ */
+export type Phase = 'login' | 'resuming' | 'chat';
 
 interface State {
   readonly phase: Phase;
@@ -43,6 +50,22 @@ const INITIAL: State = {
   usersByRoom: {},
   unreadByRoom: {},
 };
+
+const TOKEN_KEY = 'chat-token';
+const MAX_RECONNECT_ATTEMPTS = 8;
+
+/**
+ * Lazy initializer for `useReducer` — runs once at mount.  If a
+ * token survived the reload we want to render nothing (phase
+ * 'resuming') instead of flashing the login form before the
+ * server replies to our `resume` frame.
+ */
+function init(): State {
+  const stored = typeof sessionStorage !== 'undefined'
+    ? sessionStorage.getItem(TOKEN_KEY)
+    : null;
+  return stored ? { ...INITIAL, phase: 'resuming' } : INITIAL;
+}
 
 type Action =
   | { type: 'login-error'; reason: string }
@@ -118,9 +141,6 @@ function reducer(state: State, action: Action): State {
   }
 }
 
-const TOKEN_KEY = 'chat-token';
-const MAX_RECONNECT_ATTEMPTS = 8;
-
 export function useChat(): {
   state: State;
   connect(username: string, password: string): void;
@@ -128,7 +148,7 @@ export function useChat(): {
   send(room: RoomName, text: string): void;
   selectRoom(room: RoomName): void;
 } {
-  const [state, dispatch] = useReducer(reducer, INITIAL);
+  const [state, dispatch] = useReducer(reducer, undefined, init);
   const wsRef = useRef<WebSocket | null>(null);
   // Reconnect bookkeeping — refs (not state) so each render
   // uses the current value without re-binding callbacks.
@@ -155,10 +175,14 @@ export function useChat(): {
         // keep retrying with the same dead session.
         cancelReconnect();
         sessionStorage.removeItem(TOKEN_KEY);
-        dispatch({ type: 'login-error', reason: m.reason || 'Login failed.' });
         wsRef.current?.close();
         wsRef.current = null;
+        // Reset before setting the error: 'reset' returns INITIAL
+        // (which has empty loginError), so we'd lose the message
+        // if we dispatched it first.  Order matters with React's
+        // batched dispatches.
         dispatch({ type: 'reset' });
+        dispatch({ type: 'login-error', reason: m.reason || 'Login failed.' });
         break;
       case 'rooms':
         dispatch({ type: 'rooms', rooms: m.rooms });
