@@ -31,9 +31,17 @@ jobs:
     # and line-coverage out of the test output, and updates the static
     # README badges if either number moved.  Skipped on PRs (forks have
     # no push rights anyway).
+    #
+    # Runs even if `test` failed — a failing suite is exactly when the
+    # badge needs to flip to red, so we'd lose the signal if we gated
+    # on `test` succeeding.  `!cancelled()` keeps a cancelled workflow
+    # from triggering an off-cycle README update.
     runs-on: ubuntu-latest
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: |
+      !cancelled() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main'
     permissions:
       contents: write
     steps:
