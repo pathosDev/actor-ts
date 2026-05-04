@@ -8,7 +8,18 @@ on:
 
 jobs:
   test:
+    # Single job — typecheck, run the suite once with `--coverage`,
+    # parse the resulting stats, and (on `main` push only) flip the
+    # README badge.  Previously the suite ran twice (a `test` job
+    # without coverage, then `update-readme` with coverage), which
+    # gave the parser a different bun output to read than the one the
+    # actual build status came from — a flaky timing-sensitive test
+    # under coverage instrumentation could push the badge to "1489
+    # of 1490" while the build itself stayed green.  One run, one
+    # source of truth.
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v6
 
@@ -23,65 +34,72 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
-      - name: Tests
-        run: bun test
-
-  update-readme:
-    # Re-runs the suite with --coverage on main, parses the pass-count
-    # and line-coverage out of the test output, and updates the static
-    # README badges if either number moved.  Skipped on PRs (forks have
-    # no push rights anyway).
-    #
-    # Runs even if `test` failed — a failing suite is exactly when the
-    # badge needs to flip to red, so we'd lose the signal if we gated
-    # on `test` succeeding.  `!cancelled()` keeps a cancelled workflow
-    # from triggering an off-cycle README update.
-    runs-on: ubuntu-latest
-    needs: test
-    if: |
-      !cancelled() &&
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/main'
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install
-        run: bun install
-
-      - name: Run tests with coverage and capture stats
+      - name: Tests with coverage
         id: stats
         run: |
-          OUTPUT=$(bun test --coverage 2>&1 || true)
-          # Pass + fail counts from the summary lines.  Skips are excluded
-          # from 'total' on purpose: total = pass + fail represents
-          # actually-executed tests, so '1079 of 1079' means 'all 1079
-          # active tests passed' (skipped tests show separately).
-          PASS=$(echo "$OUTPUT" | grep -E "^[[:space:]]+[0-9]+ pass" | grep -oE "[0-9]+" | head -1)
-          FAIL=$(echo "$OUTPUT" | grep -E "^[[:space:]]+[0-9]+ fail" | grep -oE "[0-9]+" | head -1)
+          # Capture full output without letting a non-zero exit kill
+          # the step — we always want the parsed numbers in
+          # `steps.stats.outputs` so the README still updates with a
+          # red badge when the suite breaks.  The original exit
+          # status is replayed at the end so the job's final result
+          # is still red on failure.
+          set +e
+          OUTPUT=$(bun test --coverage 2>&1)
+          STATUS=$?
+          set -e
+
+          # Replay bun's output so the GitHub Actions UI still shows
+          # per-test results just like a regular `bun test` step.
+          echo "$OUTPUT"
+          echo
+          echo "----- bun output tail (parser input) -----"
+          echo "$OUTPUT" | tail -20
+          echo "------------------------------------------"
+
+          # Parse the FINAL summary block.  bun emits exactly one such
+          # block at the very end:
+          #    N pass
+          #    M skip
+          #    K fail
+          #    Q expect() calls
+          #  Ran X tests across Y files. [Zs]
+          # `$` end-anchor rejects per-test lines like "(pass) name [Xms]"
+          # and other noise; `tail -1` guards against any intermediate
+          # match if bun's format ever grows per-file summaries.
+          # Skips stay separate — `total = pass + fail` represents
+          # actually-executed tests, so "1490 of 1490" means "all 1490
+          # active tests passed" (skipped tests counted separately).
+          PASS=$(echo "$OUTPUT" | grep -E "^[[:space:]]+[0-9]+ pass$" | grep -oE "[0-9]+" | tail -1)
+          FAIL=$(echo "$OUTPUT" | grep -E "^[[:space:]]+[0-9]+ fail$" | grep -oE "[0-9]+" | tail -1)
           [[ -z "$FAIL" ]] && FAIL=0
+          [[ -z "$PASS" ]] && PASS=0
           TOTAL=$((PASS + FAIL))
           # Line coverage from the "All files" aggregate row, second column.
           LINES=$(echo "$OUTPUT" | grep "^All files" | awk -F'|' '{print $2}' | tr -d ' ')
           LINES_INT=${LINES%.*}
-          if [[ -z "$PASS" || -z "$LINES_INT" ]]; then
-            echo "::warning::could not parse stats — pass='$PASS' lines='$LINES_INT'"
-            echo "$OUTPUT" | tail -40
-            exit 0
-          fi
-          echo "pass=$PASS" >> "$GITHUB_OUTPUT"
-          echo "total=$TOTAL" >> "$GITHUB_OUTPUT"
+          [[ -z "$LINES_INT" ]] && LINES_INT=0
+
+          echo "pass=$PASS"     >> "$GITHUB_OUTPUT"
+          echo "total=$TOTAL"   >> "$GITHUB_OUTPUT"
           echo "lines=$LINES_INT" >> "$GITHUB_OUTPUT"
           echo "Parsed: $PASS of $TOTAL tests passing, $LINES_INT% line coverage"
 
+          # Propagate the original bun exit status — non-zero turns
+          # the job red, but the step outputs above are already
+          # written so the README job downstream still has data.
+          exit $STATUS
+
       - name: Update README badges + inline references
-        if: steps.stats.outputs.pass != '' && steps.stats.outputs.lines != ''
+        # Always run, including after a failing test step — that's
+        # exactly when the badge needs to flip to red.  PRs and
+        # non-main branches skip via the event/ref check (forks have
+        # no push rights anyway).
+        if: |
+          !cancelled() &&
+          steps.stats.outputs.pass != '' &&
+          steps.stats.outputs.lines != '' &&
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main'
         run: |
           PASS="${{ steps.stats.outputs.pass }}"
           TOTAL="${{ steps.stats.outputs.total }}"
@@ -107,7 +125,12 @@ jobs:
           sed -i -E "s|~[0-9]{3,}( tests)|~${PASS}\1|g" README.md
           sed -i -E "s|~[0-9]+( % line)|~${LINES}\1|g" README.md
 
-      - name: Commit + push if changed
+      - name: Commit + push README if changed
+        if: |
+          !cancelled() &&
+          steps.stats.outputs.pass != '' &&
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main'
         run: |
           if [[ -n "$(git status --porcelain README.md)" ]]; then
             git config user.name "github-actions[bot]"
