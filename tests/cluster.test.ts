@@ -216,6 +216,52 @@ test('leader is the address-sorted first up-member', async () => {
   await stopNode(n2);
 });
 
+test('a node that gracefully left can rejoin on the same address', async () => {
+  // Regression: `cluster.leave()` tombstones the leaver via
+  // `mergeMember`'s strict version monotonicity (incoming v1 from a
+  // fresh start ≤ tombstoned vN), which used to pin the address
+  // permanently in the `removed` state.  After fixing mergeMember to
+  // override `removed`-vs-`joining` for the same address, a restart
+  // on that address must converge back to Up across the cluster.
+  const SYS = 'cluster-rejoin';
+  const ADDR1 = '10.0.5.1:5101';
+  const n1 = await startNode(SYS, '10.0.5.1', 5101);
+  const n2 = await startNode(SYS, '10.0.5.2', 5102, [ADDR1]);
+  const n3 = await startNode(SYS, '10.0.5.3', 5103, [ADDR1]);
+
+  await waitFor(() => [n1, n2, n3].every(n => n.cluster.upMembers().length === 3), 2_000);
+
+  // Graceful leave for n1 — survivors tombstone its address.
+  await stopNode(n1);
+  await waitFor(
+    () => [n2, n3].every(n =>
+      !n.cluster.upMembers().some(m => m.address.toString() === `${SYS}@${ADDR1}`),
+    ),
+    2_000,
+  );
+  expect(n2.cluster.upMembers().length).toBe(2);
+  expect(n3.cluster.upMembers().length).toBe(2);
+
+  // Restart n1 on the same host:port.  Survivors carry the
+  // tombstone; without the mergeMember fix the rejoin gossip would
+  // be rejected and n1 would never reach Up in their views.
+  const n1b = await startNode(SYS, '10.0.5.1', 5101, [`10.0.5.2:5102`]);
+  await waitFor(
+    () => [n1b, n2, n3].every(n => n.cluster.upMembers().length === 3),
+    3_000,
+  );
+  for (const n of [n1b, n2, n3]) {
+    const ups = n.cluster.upMembers().map(m => m.address.toString()).sort();
+    expect(ups).toEqual([
+      `${SYS}@10.0.5.1:5101`,
+      `${SYS}@10.0.5.2:5102`,
+      `${SYS}@10.0.5.3:5103`,
+    ]);
+  }
+
+  await stopNode(n1b); await stopNode(n2); await stopNode(n3);
+});
+
 test('MemberUp and departure events fire on the cluster subscription', async () => {
   const n1 = await startNode('cluster-e', '10.0.4.1', 9001);
   const seenUp: string[] = [];

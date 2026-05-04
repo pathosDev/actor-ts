@@ -276,9 +276,19 @@ export class Cluster {
     await this.transport.start();
     this.started = true;
 
-    // Self is "joining" initially; transitions to "up" once at least one
-    // peer has acknowledged us (or we are the seed).
-    const me = new Member(this.selfAddress, 'joining', 1, this.selfRoles);
+    // Self is "joining" initially; transitions to "up" once at least
+    // one peer has acknowledged us (or we are the seed).  We seed
+    // the version with a wall-clock epoch (`Date.now()`) instead of
+    // a constant `1` so that, when this address is restarted after
+    // a graceful leave, the new incarnation's gossip out-versions
+    // the `removed` tombstone surviving on peers — that's what
+    // makes rejoin-after-leave converge cleanly (see the
+    // `existing.removed && incoming.version > existing.version`
+    // branch in `mergeMember`).  Within a single incarnation
+    // version is still a monotonically-increasing logical clock;
+    // the epoch only ensures a fresh process starts above any
+    // version that previous incarnation could have reached.
+    const me = new Member(this.selfAddress, 'joining', Date.now(), this.selfRoles);
     this.members.set(me.address.toString(), me);
     this.emit(new MemberJoined(me));
 
@@ -638,6 +648,31 @@ export class Cluster {
       }
       return;
     }
+
+    // Re-incarnation: a previously-removed (tombstoned) address can
+    // be revived by a fresh start on the same `host:port`.  We
+    // detect the new incarnation by its strictly higher base
+    // version: each `Cluster.join` seeds its self-member with a
+    // wall-clock-based epoch (see `_start`), so any state the new
+    // node reports — directly via its initial gossip OR indirectly
+    // via a peer that has already seen the rejoin — out-versions
+    // the tombstone left over from its previous run.  Drop the
+    // tombstone, treat the address as a fresh member, and emit the
+    // matching status event so subscribers (ShardRegion, etc.)
+    // re-allocate.  Without this branch, `mergeMember`'s strict
+    // version monotonicity below would pin the address to
+    // `removed` forever even though the higher version is the
+    // newer truth.
+    if (existing.status === 'removed' && incoming.version > existing.version) {
+      this.members.set(incoming.address.toString(), incoming);
+      this.failureDetector.register(incoming.address);
+      this.emit(new MemberJoined(incoming));
+      if (incoming.status !== 'joining') {
+        this.emitStatusTransition(new Member(incoming.address, 'joining', 0), incoming);
+      }
+      return;
+    }
+
     if (incoming.version <= existing.version) return; // older or equal, ignore
     this.members.set(incoming.address.toString(), incoming);
     this.emitStatusTransition(existing, incoming);
