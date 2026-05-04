@@ -47,14 +47,17 @@ import { OnlineUsersActor } from './actors/OnlineUsersActor.js';
 import { httpIngressProps } from './actors/HttpIngressActor.js';
 
 async function main(): Promise<void> {
-  const cfg = parseArgs(process.argv.slice(2));
+  const cfg = await parseArgs(process.argv.slice(2));
 
   // -------- 1. ActorSystem --------
   const system = ActorSystem.create('chat-cluster', {
     logLevel: LogLevel.Info,
   });
+  const seedSummary = cfg.seeds.length > 0
+    ? ` · seeds=[${cfg.seeds.join(',')}]`
+    : ' · bootstrap (no seeds)';
   system.log.info(
-    `chat node starting · cluster=${cfg.host}:${cfg.port} · http=${cfg.host}:${cfg.httpPort} (singleton)`,
+    `chat node starting · cluster=${cfg.host}:${cfg.port} · http=${cfg.host}:${cfg.httpPort} (singleton)${seedSummary}`,
   );
 
   // -------- 2. Persistence: SQLite journal under data-dir --------

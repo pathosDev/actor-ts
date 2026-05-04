@@ -85,18 +85,24 @@ both already in the project's `devDependencies`.
 
 ### Three-node cluster
 
-Open **three terminals** — every node runs the same binary, but
-the cluster picks one to host the HTTP front door:
+Open **three terminals**, run the same command in each — no
+ports, no seeds, no flags:
 
 ```bash
-# Terminal 1 — bootstrap node, no seeds
-bun examples/chat/backend/main.ts --port 2551
+bun examples/chat/backend/main.ts
+bun examples/chat/backend/main.ts
+bun examples/chat/backend/main.ts
+```
 
-# Terminal 2 — joins the bootstrap
-bun examples/chat/backend/main.ts --port 2552 --seeds localhost:2551
+Each node walks the cluster-port range starting at `2551`, claims
+the first free one, and treats every occupied port below it as a
+seed.  So the three terminals end up at `2551 / 2552 / 2553`
+without anyone telling them so:
 
-# Terminal 3 — joins the bootstrap
-bun examples/chat/backend/main.ts --port 2553 --seeds localhost:2551
+```
+node 1: cluster=127.0.0.1:2551 · bootstrap (no seeds)
+node 2: cluster=127.0.0.1:2552 · seeds=[127.0.0.1:2551]
+node 3: cluster=127.0.0.1:2553 · seeds=[127.0.0.1:2551,127.0.0.1:2552]
 ```
 
 Each node logs `[+] chat-cluster@... is UP` events as the cluster
@@ -110,6 +116,15 @@ forms.  Exactly one of them logs
 warm: they still run the persistence layer, the sharded chat
 rooms, the pubsub mediator and presence tracking, but they don't
 serve HTTP until the singleton fails over.
+
+For cross-machine deployments (where same-host port-scan doesn't
+work) you can pin things explicitly:
+
+```bash
+bun examples/chat/backend/main.ts --port 2551
+bun examples/chat/backend/main.ts --port 2552 --seeds host-a:2551
+bun examples/chat/backend/main.ts --port 2553 --seeds host-a:2551,host-b:2552
+```
 
 ### Open the chat
 
