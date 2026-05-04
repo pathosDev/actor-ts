@@ -90,9 +90,7 @@ async function main(): Promise<void> {
   // system.  Without `configFile`, the loader looks in the CWD —
   // which is the repo root when this is invoked as
   // `bun examples/chat/backend/main.ts`, where there is no
-  // `application.conf`.  Log level lives in `actor-ts.logger.level`;
-  // the file uses HOCON's `${?CHAT_LOG_LEVEL}` substitution so
-  // `CHAT_LOG_LEVEL=debug bun ...` flips it without an edit.
+  // `application.conf`.
   const configFile = path.resolve(
     import.meta.dirname ?? __dirname, '..', 'application.conf',
   );
