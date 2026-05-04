@@ -81,8 +81,51 @@ export class FastifyBackend implements HttpServerBackend {
     return {
       host,
       port: actualPort,
-      unbind: async (_gracePeriodMs?: number) => {
-        await this.app.close();
+      unbind: async (gracePeriodMs?: number) => {
+        // `app.close()` waits for every in-flight request — and every
+        // long-lived WebSocket connection — to drain.  Long-lived
+        // sockets never drain on their own, so a server with even one
+        // active WS client would hang `close()` forever (process
+        // refuses to exit on Ctrl+C).  We give in-flight work a
+        // bounded grace window, then force-close anything still
+        // hanging on:
+        //
+        //   1. `server.closeAllConnections()` kills regular HTTP
+        //      sockets (Node 18.2+ / Bun).  It does NOT touch
+        //      sockets already upgraded to WebSocket — Node
+        //      releases ownership of those at upgrade time.
+        //   2. For WebSockets we walk `fastify.websocketServer.clients`
+        //      (populated by `@fastify/websocket`) and `terminate()`
+        //      each one.  `terminate()` destroys the underlying TCP
+        //      socket without sending a close frame — appropriate
+        //      for shutdown where we're going down anyway.
+        //
+        // Both probes are best-effort: if no WS plugin is registered
+        // `websocketServer` is undefined, and on Bun
+        // `closeAllConnections` may also be unavailable.  After
+        // forcing, `app.close()` resolves quickly and we return.
+        const grace = gracePeriodMs && gracePeriodMs > 0 ? gracePeriodMs : 0;
+        const server = (this.app as { server?: { closeAllConnections?: () => void } }).server;
+        const wss = (this.app as { websocketServer?: { clients?: Iterable<{ terminate?: () => void }> } }).websocketServer;
+        const closing = this.app.close();
+        if (grace > 0) {
+          let timer: ReturnType<typeof setTimeout> | null = null;
+          await Promise.race([
+            closing,
+            new Promise<void>((resolve) => {
+              timer = setTimeout(resolve, grace);
+              (timer as { unref?: () => void }).unref?.();
+            }),
+          ]);
+          if (timer) clearTimeout(timer);
+        }
+        try { server?.closeAllConnections?.(); } catch { /* best-effort */ }
+        if (wss?.clients) {
+          for (const client of wss.clients) {
+            try { client.terminate?.(); } catch { /* best-effort */ }
+          }
+        }
+        await closing;
       },
     };
   }
