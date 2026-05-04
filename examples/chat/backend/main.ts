@@ -172,27 +172,16 @@ async function main(): Promise<void> {
   });
 
   // -------- 9. Graceful shutdown --------
-  // We deliberately do NOT call `cluster.leave()` here.  A graceful
-  // leave tombstones this node's address in the membership state,
-  // which the framework then refuses to merge a fresh registration
-  // for on restart (mergeMember rejects same-or-lower-version
-  // updates).  That makes the cluster effectively reject the
-  // returning node — which contradicts the whole point of an
-  // actor system in a local demo.
-  //
-  // Instead we rely on the failure detector: when the survivors
-  // stop receiving heartbeats they mark this address Unreachable,
-  // then DOWN, then delete it from the membership map.  At that
-  // point a restart with the same host:port can join cleanly.
-  // The trade-off is ~5 s of slower failover (FD timeout vs
-  // immediate hand-off via `leave()`) — acceptable for a sample;
-  // real production deployments would set this differently.
   let shuttingDown = false;
   const shutdown = async (signal: string): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
     system.log.info(`received ${signal} — shutting down`);
     try {
+      // `cluster.leave()` triggers the singleton manager's hand-off;
+      // if this node was the holder, postStop runs (port released)
+      // before terminate.
+      await cluster.leave();
       await journal.close();
       await system.terminate();
     } catch (e) {
