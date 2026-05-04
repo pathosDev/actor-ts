@@ -1,56 +1,53 @@
 /**
- * CLI argument parsing + auto-discovery for the chat backend.
+ * CLI argument parsing for the chat backend.  Just argv → struct;
+ * the cluster-discovery logic (port scan + seed list) lives in
+ * `backend/discovery/sameHostScan.ts` so it can be reused by other
+ * tooling and so this file stays a thin parsing layer.
  *
  * The intended UX for the local 3-node demo is "no flags, just
  * three terminals":
  *
- *   bun examples/chat/backend/main.ts          # node 1 (bootstrap)
- *   bun examples/chat/backend/main.ts          # node 2 — auto-detects seed
- *   bun examples/chat/backend/main.ts          # node 3 — auto-detects two seeds
+ *   bun examples/chat/backend/main.ts          # node 1
+ *   bun examples/chat/backend/main.ts          # node 2
+ *   bun examples/chat/backend/main.ts          # node 3
  *
- * Auto-discovery walks the cluster-port range starting at 2551 and
- * tests each port: occupied → already-running peer (treat as
- * seed); free → claim it as our own.  First free port is the
- * cluster port, every occupied port below it goes into the seed
- * list.  Works on a single host where every node is reachable on
- * `127.0.0.1` — exactly the local-demo case.
+ * `main.ts` instantiates `SameHostScanSeedProvider` (the same-host
+ * sibling of the framework's `Config/Dns/Kubernetes` providers)
+ * for cluster discovery whenever `--port` / `--seeds` are absent.
  *
- * Power users can still override:
+ * Power users can still pin everything explicitly:
  *
- *   --host <ip>          interface to bind on        (default 127.0.0.1)
- *   --port <n>           cluster TCP port            (default: auto-detect from BASE)
- *   --http-port <n>      HTTP listener port          (default 8080;
- *                                                     only the cluster
- *                                                     singleton actually
- *                                                     binds it)
- *   --seeds <a,b,c>      comma-separated seeds       (default: auto-detect)
- *   --data-dir <path>    SQLite journal directory    (default ./examples/chat/data)
- *
- * Cross-machine deployments need explicit `--port` + `--seeds`
- * because the auto-detect only sees same-host listeners.
+ *   --host <ip>          interface to bind on
+ *   --port <n>           skip auto-detect, bind this exact port
+ *   --http-port <n>      HTTP listener port (default 8080)
+ *   --seeds <a,b,c>      static seed list (skips the scan)
+ *   --data-dir <path>    SQLite journal directory
  */
 
-import { createServer, type AddressInfo } from 'node:net';
 import * as path from 'node:path';
 
 export interface ChatNodeConfig {
   readonly host: string;
-  readonly port: number;
+  /** null = caller resolves via the SeedProvider. */
+  readonly port: number | null;
   readonly httpPort: number;
-  readonly seeds: ReadonlyArray<string>;
+  /** null = caller resolves via the SeedProvider. */
+  readonly seeds: ReadonlyArray<string> | null;
   readonly dataDir: string;
 }
 
-const DEFAULT_DATA_DIR = path.join(process.cwd(), 'examples', 'chat', 'data');
-const BASE_CLUSTER_PORT = 2551;
-/** Soft cap on auto-discovered cluster nodes per host. */
-const MAX_NODE_SLOTS = 16;
+/** First port in the cluster's auto-discovery range. */
+export const BASE_CLUSTER_PORT = 2551;
+/** How many sequential ports the auto-scan considers. */
+export const MAX_NODE_SLOTS = 16;
 
-export async function parseArgs(argv: ReadonlyArray<string>): Promise<ChatNodeConfig> {
+const DEFAULT_DATA_DIR = path.join(process.cwd(), 'examples', 'chat', 'data');
+
+export function parseArgs(argv: ReadonlyArray<string>): ChatNodeConfig {
   let host = '127.0.0.1';
-  let port: number | null = null; // null = auto-detect
+  let port: number | null = null;
   let httpPort = 8080;
-  let seeds: string[] | null = null; // null = auto-detect
+  let seeds: string[] | null = null;
   let dataDir = DEFAULT_DATA_DIR;
 
   for (let i = 0; i < argv.length; i++) {
@@ -85,67 +82,7 @@ export async function parseArgs(argv: ReadonlyArray<string>): Promise<ChatNodeCo
     }
   }
 
-  // Resolve auto-detected fields.
-  if (port === null) {
-    const detected = await discover(host, BASE_CLUSTER_PORT);
-    port = detected.port;
-    if (seeds === null) seeds = detected.seeds;
-  } else if (seeds === null) {
-    // User pinned the port but didn't specify seeds — assume
-    // bootstrap mode (this node is the first or the user is
-    // taking over a known-vacant slot).  Empty seeds is fine.
-    seeds = [];
-  }
-
   return { host, port, httpPort, seeds, dataDir };
-}
-
-/* ------------------------------ helpers ------------------------------ */
-
-/**
- * Walk the cluster-port range starting at `basePort` and return:
- *   - the first free port we find (= our cluster port)
- *   - every occupied port below it (= our seeds)
- *
- * Works only for same-host peers — sufficient for the local demo.
- */
-async function discover(host: string, basePort: number): Promise<{ port: number; seeds: string[] }> {
-  const seeds: string[] = [];
-  for (let i = 0; i < MAX_NODE_SLOTS; i++) {
-    const candidate = basePort + i;
-    if (await isPortFree(host, candidate)) {
-      return { port: candidate, seeds };
-    }
-    seeds.push(`${host}:${candidate}`);
-  }
-  process.stderr.write(
-    `error: all ${MAX_NODE_SLOTS} cluster-port slots starting at ${basePort} are in use; ` +
-      `pass --port / --seeds explicitly\n`,
-  );
-  process.exit(3);
-}
-
-/**
- * Check whether we can bind a fresh listener on `host:port`.
- * `EADDRINUSE` → occupied; anything that lets us listen → free
- * (we close immediately).
- */
-function isPortFree(host: string, port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const probe = createServer();
-    probe.once('error', (err: NodeJS.ErrnoException) => {
-      // EADDRINUSE is the canonical "occupied" signal; treat any
-      // other error as occupied too — we'd rather skip a port we
-      // can't actually use than try to bind it for real and crash.
-      void err;
-      resolve(false);
-    });
-    probe.once('listening', () => {
-      const actual = (probe.address() as AddressInfo).port;
-      probe.close(() => resolve(actual === port));
-    });
-    probe.listen(port, host);
-  });
 }
 
 function expect(argv: ReadonlyArray<string>, idx: number, flag: string): string {
@@ -163,8 +100,7 @@ function printUsage(): void {
       'Usage: bun examples/chat/backend/main.ts [options]',
       '',
       'With no options the node auto-discovers a cluster port and',
-      'seeds by walking the range starting at 2551.  Three terminals,',
-      'no flags, no port juggling:',
+      'seeds via SameHostScanSeedProvider — three terminals, no flags:',
       '',
       '  bun examples/chat/backend/main.ts',
       '  bun examples/chat/backend/main.ts',

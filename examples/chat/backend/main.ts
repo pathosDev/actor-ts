@@ -37,7 +37,15 @@ import {
 } from '../../../src/index.js';
 import { DistributedDataId } from '../../../src/crdt/index.js';
 import { DistributedPubSubId } from '../../../src/cluster/pubsub/index.js';
-import { parseArgs } from './config.js';
+import {
+  parseArgs,
+  BASE_CLUSTER_PORT,
+  MAX_NODE_SLOTS,
+} from './config.js';
+import {
+  SameHostScanSeedProvider,
+  pickFirstFreePort,
+} from './discovery/sameHostScan.js';
 import { SessionStore } from './auth/sessionStore.js';
 import {
   ChatRoomActor,
@@ -47,31 +55,58 @@ import { OnlineUsersActor } from './actors/OnlineUsersActor.js';
 import { httpIngressProps } from './actors/HttpIngressActor.js';
 
 async function main(): Promise<void> {
-  const cfg = await parseArgs(process.argv.slice(2));
+  const cfg = parseArgs(process.argv.slice(2));
+  const SYSTEM_NAME = 'chat-cluster';
 
-  // -------- 1. ActorSystem --------
-  const system = ActorSystem.create('chat-cluster', {
+  // -------- 1. Cluster discovery --------
+  // For local 3-terminal demos with no `--port` / `--seeds` flags,
+  // use SameHostScanSeedProvider — same shape as the framework's
+  // ConfigSeedProvider / DnsSeedProvider / KubernetesApiSeedProvider,
+  // but with a port-scan backend that fits the no-config use case.
+  // Anything the user passed explicitly wins.
+  const seedProvider = new SameHostScanSeedProvider({
+    systemName: SYSTEM_NAME,
+    host: cfg.host,
+    basePort: BASE_CLUSTER_PORT,
+    maxSlots: MAX_NODE_SLOTS,
+  });
+  const port = cfg.port ?? await pickFirstFreePort({
+    host: cfg.host,
+    basePort: BASE_CLUSTER_PORT,
+    maxSlots: MAX_NODE_SLOTS,
+  });
+  const seeds = cfg.seeds !== null
+    ? [...cfg.seeds]
+    : (await seedProvider.lookup())
+        // Don't seed ourselves: the scan ran before we bound `port`,
+        // but the user-passed port (or the picked port) might still
+        // be a no-op address.  Filter for cleanliness.
+        .filter((a) => a.port !== port)
+        .map((a) => a.toString());
+
+  // -------- 2. ActorSystem --------
+  const system = ActorSystem.create(SYSTEM_NAME, {
     logLevel: LogLevel.Info,
   });
-  const seedSummary = cfg.seeds.length > 0
-    ? ` · seeds=[${cfg.seeds.join(',')}]`
+  const seedSummary = seeds.length > 0
+    ? ` · seeds=[${seeds.join(',')}]`
     : ' · bootstrap (no seeds)';
   system.log.info(
-    `chat node starting · cluster=${cfg.host}:${cfg.port} · http=${cfg.host}:${cfg.httpPort} (singleton)${seedSummary}`,
+    `chat node starting · cluster=${cfg.host}:${port} · http=${cfg.host}:${cfg.httpPort} (singleton)${seedSummary}`,
   );
 
-  // -------- 2. Persistence: SQLite journal under data-dir --------
+  // -------- 3. Persistence: SQLite journal under data-dir --------
   fs.mkdirSync(cfg.dataDir, { recursive: true });
   const journalPath = path.join(cfg.dataDir, 'chat.db');
   const journal = new SqliteJournal({ path: journalPath, wal: true });
   system.extension(PersistenceExtensionId).setJournal(journal);
   system.log.info(`SQLite journal · ${journalPath}`);
 
-  // -------- 3. Cluster --------
+  // -------- 4. Cluster.join --------
   const cluster = await Cluster.join(system, {
     host: cfg.host,
-    port: cfg.port,
-    seeds: [...cfg.seeds],
+    port,
+    seeds,
     failureDetector: {
       heartbeatIntervalMs: 300,
       unreachableAfterMs: 1500,
@@ -90,7 +125,7 @@ async function main(): Promise<void> {
       system.log.warn(`[-] ${evt.member.address} removed`);
   });
 
-  // -------- 4. DistributedData (presence + session tokens) + DistributedPubSub (broadcast) --------
+  // -------- 5. DistributedData (presence + session tokens) + DistributedPubSub (broadcast) --------
   const ddHandle = system.extension(DistributedDataId).start(cluster, {
     gossipIntervalMs: 500,
   });
@@ -99,7 +134,7 @@ async function main(): Promise<void> {
   });
   const sessions = new SessionStore(ddHandle);
 
-  // -------- 5. ClusterSharding: one ChatRoomActor per room --------
+  // -------- 6. ClusterSharding: one ChatRoomActor per room --------
   const sharding = ClusterSharding.get(system, cluster);
   const chatRoomRegion = sharding.start<ChatRoomCmd>({
     typeName: 'ChatRoom',
@@ -108,13 +143,13 @@ async function main(): Promise<void> {
     numShards: 16,
   });
 
-  // -------- 6. OnlineUsersActor (top-level, runs on every node) --------
+  // -------- 7. OnlineUsersActor (top-level, runs on every node) --------
   const onlineUsers = system.actorOf(
     Props.create(() => new OnlineUsersActor()),
     'online-users',
   );
 
-  // -------- 7. HTTP front door — ClusterSingleton --------
+  // -------- 8. HTTP front door — ClusterSingleton --------
   // Every node registers the same singleton spec; the cluster
   // elects ONE node to actually run the actor.  When that node
   // dies a surviving node spawns a fresh one which re-binds the
@@ -136,7 +171,7 @@ async function main(): Promise<void> {
     }),
   });
 
-  // -------- 8. Graceful shutdown --------
+  // -------- 9. Graceful shutdown --------
   let shuttingDown = false;
   const shutdown = async (signal: string): Promise<void> => {
     if (shuttingDown) return;
