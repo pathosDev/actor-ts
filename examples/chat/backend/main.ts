@@ -85,9 +85,16 @@ async function main(): Promise<void> {
         .map((a) => a.toString());
 
   // -------- 2. ActorSystem --------
-  const system = ActorSystem.create(SYSTEM_NAME, {
-    logLevel: LogLevel.Info,
-  });
+  // Override the default `Info` level via `CHAT_LOG_LEVEL=debug` (or
+  // `info`/`warn`/`error`/`off`).  Useful when you want to see what
+  // the cluster, sharding, pubsub, persistence, HTTP and WS layers
+  // are doing under the hood — every framework component now emits
+  // structured `debug` lines for membership transitions, gossip,
+  // failure-detector decisions, leader changes, shard allocations,
+  // singleton reconciles, pubsub fan-out, persist/recovery, HTTP
+  // requests and WS frames.
+  const logLevel = parseLogLevel(process.env['CHAT_LOG_LEVEL']) ?? LogLevel.Info;
+  const system = ActorSystem.create(SYSTEM_NAME, { logLevel });
   const seedSummary = seeds.length > 0
     ? ` · seeds=[${seeds.join(',')}]`
     : ' · bootstrap (no seeds)';
@@ -191,6 +198,24 @@ async function main(): Promise<void> {
   };
   process.on('SIGINT', () => void shutdown('SIGINT'));
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
+}
+
+/**
+ * Map a free-form `CHAT_LOG_LEVEL` env value (`debug` | `info` |
+ * `warn` | `error` | `off`, case-insensitive) onto the framework's
+ * `LogLevel` enum.  Returns `null` for unset/unknown values so the
+ * caller can fall back to the default.
+ */
+function parseLogLevel(raw: string | undefined): LogLevel | null {
+  if (!raw) return null;
+  switch (raw.trim().toLowerCase()) {
+    case 'debug': return LogLevel.Debug;
+    case 'info':  return LogLevel.Info;
+    case 'warn':  return LogLevel.Warn;
+    case 'error': return LogLevel.Error;
+    case 'off':   return LogLevel.Off;
+    default:      return null;
+  }
 }
 
 main().catch((err) => {

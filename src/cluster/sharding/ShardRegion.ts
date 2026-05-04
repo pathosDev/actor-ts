@@ -276,6 +276,7 @@ export class ShardRegion<TMsg = unknown> extends Actor<TMsg | ShardingMessage | 
   }
 
   private createEntity(shardId: number, entityId: string): EntityState {
+    this.log.debug(`[sharding] spawning entity '${entityId}' in shard ${shardId} of '${this.cfg.typeName}'`);
     const ref = this.context.actorOf(this.cfg.entityProps, `entity-${sanitizeName(entityId)}`);
     this.context.watch(ref);
     const state: EntityState = { ref: ref as ActorRef<unknown>, lastActivity: Date.now(), passivating: null };
@@ -379,6 +380,7 @@ export class ShardRegion<TMsg = unknown> extends Actor<TMsg | ShardingMessage | 
   }
 
   private onRegisterAck(_msg: RegisterAck): void {
+    this.log.debug(`[sharding] region '${this.cfg.typeName}' registered with coordinator`);
     this.registered = true;
     this.registerTimer?.cancel();
     this.registerTimer = null;
@@ -386,9 +388,13 @@ export class ShardRegion<TMsg = unknown> extends Actor<TMsg | ShardingMessage | 
 
   private onShardHome(msg: ShardHome): void {
     const node = NodeAddress.fromJSON(msg.node);
+    const local = node.equals(this.cfg.cluster.selfAddress) && msg.region === this.self.path.toString();
+    this.log.debug(
+      `[sharding] shard ${msg.shardId} of '${this.cfg.typeName}' home=${node} (${local ? 'LOCAL' : 'remote'})`,
+    );
     this.shardHomes.set(msg.shardId, msg.region);
     this.shardHomeNodes.set(msg.shardId, node);
-    if (node.equals(this.cfg.cluster.selfAddress) && msg.region === this.self.path.toString()) {
+    if (local) {
       this.localShards.add(msg.shardId);
       this.shardState.set(msg.shardId, 'owned');
     } else {
@@ -399,6 +405,9 @@ export class ShardRegion<TMsg = unknown> extends Actor<TMsg | ShardingMessage | 
   }
 
   private onHandOff(msg: HandOff): void {
+    this.log.debug(
+      `[sharding] handing off shard ${msg.shardId} of '${this.cfg.typeName}' (stopping ${this.shardEntities.get(msg.shardId)?.size ?? 0} entit(ies))`,
+    );
     this.shardState.set(msg.shardId, 'handing-off');
     const ack: BeginHandOffAck = { $t: 'sharding.BeginHandOffAck', shardId: msg.shardId };
     this.tellCoordinator(ack);

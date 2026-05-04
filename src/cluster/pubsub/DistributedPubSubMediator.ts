@@ -109,6 +109,9 @@ export class DistributedPubSubMediator extends Actor<
       this.version++;
       changed = true;
     }
+    this.log.debug(
+      `[pubsub] subscribe '${msg.topic}' by ${key} (local subs now: ${set.local.size}; ${changed ? 'new' : 'duplicate'})`,
+    );
     this.sender.forEach((s) => s.tell(new SubscribeAck(msg)));
     // Eager broadcast: peers learn about the new subscription within
     // one hop, deterministically.  Without this the random-peer-per-
@@ -127,6 +130,9 @@ export class DistributedPubSubMediator extends Actor<
       changed = true;
       if (set.local.size === 0 && set.remoteNodes.size === 0) this.topics.delete(msg.topic);
     }
+    this.log.debug(
+      `[pubsub] unsubscribe '${msg.topic}' by ${key} (${changed ? 'removed' : 'not subscribed'})`,
+    );
     this.sender.forEach((s) => s.tell(new UnsubscribeAck(msg)));
     if (changed) this.eagerGossip();
   }
@@ -146,8 +152,13 @@ export class DistributedPubSubMediator extends Actor<
   }
 
   private handlePublish<T>(msg: Publish<T>): void {
-    this.deliverLocal(msg.topic, msg.message);
     const set = this.topics.get(msg.topic);
+    const localCount = set?.local.size ?? 0;
+    const remoteCount = set?.remoteNodes.size ?? 0;
+    this.log.debug(
+      `[pubsub] publish '${msg.topic}' → ${localCount} local + ${remoteCount} remote node(s)`,
+    );
+    this.deliverLocal(msg.topic, msg.message);
     if (!set) return;
     const payload: PubSubPublishMsg = { t: 'pubsub-publish', topic: msg.topic, body: msg.message };
     for (const nodeStr of set.remoteNodes) {

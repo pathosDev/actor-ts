@@ -152,10 +152,12 @@ export abstract class PersistentActor<Cmd, Event, State> extends Actor<Cmd> {
     const snapAdapter = this.snapshotAdapter();
     const evAdapter = this.eventAdapter();
     const persistOpts = this.persistenceOptions();
+    this.log.debug(`[persistence] '${this.persistenceId}' recovery starting`);
     const snapshot = await this._snapshotStore.loadLatest<unknown>(this.persistenceId, persistOpts);
     if (snapshot.isSome()) {
       this._state = decodeState<State>(snapshot.value.state, snapAdapter);
       this._seq = snapshot.value.sequenceNr;
+      this.log.debug(`[persistence] '${this.persistenceId}' loaded snapshot @seq=${this._seq}`);
     }
     const events = await this._journal.read<unknown>(this.persistenceId, this._seq + 1);
     for (const ev of events) {
@@ -163,6 +165,9 @@ export abstract class PersistentActor<Cmd, Event, State> extends Actor<Cmd> {
       this._state = this.onEvent(this._state, decoded);
       this._seq = ev.sequenceNr;
     }
+    this.log.debug(
+      `[persistence] '${this.persistenceId}' recovery complete: replayed ${events.length} event(s), seq=${this._seq}`,
+    );
     this._recovering = false;
     await this.onRecoveryComplete(this._state);
     // Any commands that arrived during recovery are already stashed by the
@@ -211,6 +216,9 @@ export abstract class PersistentActor<Cmd, Event, State> extends Actor<Cmd> {
         : events;
       const written = await this._journal.append<unknown>(
         this.persistenceId, wireEvents, this._seq, tags,
+      );
+      this.log.debug(
+        `[persistence] '${this.persistenceId}' persisted ${written.length} event(s) → seq=${written[written.length - 1]?.sequenceNr ?? this._seq}`,
       );
       const policy = this.snapshotPolicy();
       let shouldSnapshot = false;

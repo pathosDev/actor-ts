@@ -179,6 +179,9 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
    */
   private handleTerminated(t: Terminated): void {
     if (this.pendingStop && t.actor.equals(this.pendingStop)) {
+      this.log.debug(
+        `previous child '${this.settings.typeName}' fully terminated — re-running reconcile`,
+      );
       this.pendingStop = null;
       // Re-trigger the appropriate reconcile path; either branch is
       // safe to call when the singleton state is "no child running".
@@ -206,6 +209,9 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   /** Sync reconcile — no lease.  Spawn / stop the child to match cluster state. */
   private reconcileSync(): void {
     const want = this.wantHosted();
+    this.log.debug(
+      `reconcile '${this.settings.typeName}': want=${want} child=${this.child !== null} pendingStop=${this.pendingStop !== null}`,
+    );
     if (want && !this.child) {
       this.spawn();
     } else if (!want && this.child) {

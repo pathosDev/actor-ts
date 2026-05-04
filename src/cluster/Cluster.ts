@@ -258,9 +258,9 @@ export class Cluster {
       this.updateMember(me.withStatus('leaving'));
     }
     const leaveMsg: LeaveMsg = { t: 'leave', node: this.selfAddress.toJSON() };
-    for (const m of this.reachableMembers()) {
-      if (!m.address.equals(this.selfAddress)) this.transport.send(m.address, leaveMsg);
-    }
+    const peers = this.reachableMembers().filter((m) => !m.address.equals(this.selfAddress));
+    this.log.debug(`leaving — sending leave to ${peers.length} reachable peer(s)`);
+    for (const m of peers) this.transport.send(m.address, leaveMsg);
     this.gossipTimer?.cancel();
     this.heartbeatTimer?.cancel();
     this.fdTimer?.cancel();
@@ -291,6 +291,9 @@ export class Cluster {
     const me = new Member(this.selfAddress, 'joining', Date.now(), this.selfRoles);
     this.members.set(me.address.toString(), me);
     this.emit(new MemberJoined(me));
+    this.log.debug(
+      `self joining: epoch=v${me.version} roles=[${[...this.selfRoles].join(',')}]`,
+    );
 
     for (const s of seeds) {
       const a = NodeAddress.parse(s.includes('@') ? s : `${this.system.name}@${s}`);
@@ -299,8 +302,12 @@ export class Cluster {
 
     if (this.seedAddrs.length === 0) {
       // No seeds — we are the first node. Become Up immediately.
+      this.log.debug('no seeds configured — self-electing as first cluster member');
       this.updateMember(me.withStatus('up'));
     } else {
+      this.log.debug(
+        `contacting ${this.seedAddrs.length} seed(s): [${this.seedAddrs.map((a) => a.toString()).join(',')}]`,
+      );
       this.contactSeeds();
       // Keep retrying seed contact until self has transitioned to up,
       // covering the case where a seed hasn't started yet.
@@ -386,6 +393,7 @@ export class Cluster {
   private handleGossip(msg: GossipMsg): void {
     const sender = NodeAddress.fromJSON(msg.from);
     this.failureDetector.heartbeat(sender);
+    this.log.debug(`gossip from ${sender}: ${msg.members.length} member(s)`);
 
     for (const data of msg.members) {
       this.mergeMember(data);
@@ -402,6 +410,7 @@ export class Cluster {
     if (this.isLeader()) {
       for (const m of this.members.values()) {
         if (m.status === 'joining' || m.status === 'weakly-up') {
+          this.log.debug(`leader-promote: ${m.address} ${m.status}→up`);
           this.updateMember(m.withStatus('up'));
         }
       }
@@ -487,6 +496,7 @@ export class Cluster {
     const peer = NodeAddress.fromJSON(msg.node);
     const existing = this.members.get(peer.toString());
     if (!existing) return;
+    this.log.debug(`peer ${peer} sent leave — tombstoning (was ${existing.status} v${existing.version})`);
     const leaving = existing.withStatus('leaving');
     const removed = leaving.withStatus('removed');
     // Tombstone (don't delete) so a stale `up` gossip from a peer that
@@ -538,9 +548,11 @@ export class Cluster {
       if (m.address.equals(this.selfAddress)) continue;
       const decision = this.failureDetector.decide(m.address);
       if (decision === 'unreachable' && m.status === 'up') {
+        this.log.debug(`FD: ${m.address} → unreachable (heartbeat timeout)`);
         this.updateMember(m.withStatus('unreachable'));
         this.emit(new MemberUnreachable(this.members.get(m.address.toString())!));
       } else if (decision === 'down' && m.status !== 'down' && m.status !== 'removed') {
+        this.log.debug(`FD: ${m.address} → down (was ${m.status}); deleting from membership`);
         const downed = m.withStatus('down');
         this.updateMember(downed);
         this.emit(new MemberDown(downed));
@@ -664,6 +676,9 @@ export class Cluster {
     // `removed` forever even though the higher version is the
     // newer truth.
     if (existing.status === 'removed' && incoming.version > existing.version) {
+      this.log.debug(
+        `merge: ${incoming.address} re-incarnation (was removed v${existing.version}, now ${incoming.status} v${incoming.version})`,
+      );
       this.members.set(incoming.address.toString(), incoming);
       this.failureDetector.register(incoming.address);
       this.emit(new MemberJoined(incoming));
@@ -674,6 +689,11 @@ export class Cluster {
     }
 
     if (incoming.version <= existing.version) return; // older or equal, ignore
+    if (existing.status !== incoming.status) {
+      this.log.debug(
+        `merge: ${incoming.address} ${existing.status}→${incoming.status} (v${existing.version}→v${incoming.version})`,
+      );
+    }
     this.members.set(incoming.address.toString(), incoming);
     this.emitStatusTransition(existing, incoming);
   }
@@ -721,6 +741,9 @@ export class Cluster {
       || (prev.isSome() && newLeader.isSome() && !prev.value.address.equals(newLeader.value.address));
     if (changed) {
       this.currentLeader = newLeader;
+      const prevStr = prev.fold(() => 'none', (m) => m.address.toString());
+      const nextStr = newLeader.fold(() => 'none', (m) => m.address.toString());
+      this.log.debug(`leader changed: ${prevStr} → ${nextStr}`);
       this.emit(new LeaderChanged(newLeader));
     }
   }
