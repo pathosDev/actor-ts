@@ -5,8 +5,15 @@
  *
  * Flags:
  *   --host <ip>          interface to bind on  (default 127.0.0.1)
- *   --port <n>           cluster TCP port      (default 2551)
- *   --http-port <n>      HTTP listener port    (default 8081)
+ *   --port <n>           cluster TCP port      (default 2551, must
+ *                                                differ per process)
+ *   --http-port <n>      HTTP listener port    (default 8080,
+ *                                                shared across nodes:
+ *                                                only the cluster
+ *                                                singleton actually
+ *                                                binds it; failover
+ *                                                re-binds on a new
+ *                                                node)
  *   --seeds <a,b,c>      comma-separated seeds (default empty — bootstrap node)
  *   --data-dir <path>    where the SQLite journal lives (default ./examples/chat/data)
  *
@@ -30,7 +37,7 @@ const DEFAULT_DATA_DIR = path.join(process.cwd(), 'examples', 'chat', 'data');
 export function parseArgs(argv: ReadonlyArray<string>): ChatNodeConfig {
   let host = '127.0.0.1';
   let port = 2551;
-  let httpPort = 8081;
+  let httpPort = 8080;
   let seeds: string[] = [];
   let dataDir = DEFAULT_DATA_DIR;
 
@@ -84,16 +91,21 @@ function printUsage(): void {
       'Usage: bun examples/chat/backend/main.ts [options]',
       '',
       'Options:',
-      '  --host <ip>         bind interface           (default 127.0.0.1)',
-      '  --port <n>          cluster TCP port         (default 2551)',
-      '  --http-port <n>     HTTP listener port       (default 8081)',
-      '  --seeds <a,b,c>     comma-separated seeds    (default none)',
-      '  --data-dir <path>   SQLite journal directory (default ./examples/chat/data)',
+      '  --host <ip>         bind interface             (default 127.0.0.1)',
+      '  --port <n>          cluster TCP port           (default 2551, unique per process)',
+      '  --http-port <n>     HTTP listener port         (default 8080, shared cluster-wide)',
+      '  --seeds <a,b,c>     comma-separated seeds      (default none)',
+      '  --data-dir <path>   SQLite journal directory   (default ./examples/chat/data)',
+      '',
+      'The HTTP port is bound by exactly ONE node at a time — the',
+      'ClusterSingleton holder.  When that node dies a survivor re-',
+      'binds the same port automatically.  Open http://localhost:8080/',
+      'regardless of which node currently owns the singleton.',
       '',
       'Quick start (3 nodes on localhost):',
-      '  bun examples/chat/backend/main.ts --port 2551 --http-port 8081 --seeds localhost:2551',
-      '  bun examples/chat/backend/main.ts --port 2552 --http-port 8082 --seeds localhost:2551',
-      '  bun examples/chat/backend/main.ts --port 2553 --http-port 8083 --seeds localhost:2551',
+      '  bun examples/chat/backend/main.ts --port 2551',
+      '  bun examples/chat/backend/main.ts --port 2552 --seeds localhost:2551',
+      '  bun examples/chat/backend/main.ts --port 2553 --seeds localhost:2551',
       '',
     ].join('\n'),
   );

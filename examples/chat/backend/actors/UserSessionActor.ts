@@ -89,6 +89,7 @@ export class UserSessionActor extends Actor<SessionMsg> {
   private phase: Phase = 'Unauthenticated';
   private username: string | null = null;
   private readonly joinedRooms = new Set<RoomName>();
+  private readonly historyAskedRooms = new Set<RoomName>();
   private currentRoom: RoomName | null = null;
 
   constructor(private readonly deps: UserSessionDeps) {
@@ -164,9 +165,14 @@ export class UserSessionActor extends Actor<SessionMsg> {
     this.username = user.username;
     this.sendServer({ type: 'logged-in', username: user.username });
     this.sendServer({ type: 'rooms', rooms: [...DEFAULT_ROOMS] });
-    // Auto-join everything; clients can `leave` later if they want.
+    // Auto-join every default room for presence + live messages, but
+    // only fetch history for the room we're switching into first
+    // (`general`).  Avoids a rapid burst of cross-shard ask-style
+    // round trips at login time that races with the cluster's
+    // initial shard-allocation phase.  History for the other rooms
+    // loads on first room-switch instead.
     for (const room of DEFAULT_ROOMS) {
-      this.joinRoom(room);
+      this.joinRoom(room, room === DEFAULT_ROOMS[0]);
     }
     this.currentRoom = DEFAULT_ROOMS[0]!;
   }
@@ -189,14 +195,30 @@ export class UserSessionActor extends Actor<SessionMsg> {
         });
       })
       .with({ type: 'join' }, (m) => {
-        if (isRoomName(m.room)) this.joinRoom(m.room);
+        if (isRoomName(m.room)) this.joinRoom(m.room, true);
       })
       .with({ type: 'leave' }, (m) => {
         if (isRoomName(m.room)) this.leaveRoom(m.room);
       })
       .with({ type: 'switch-active-room' }, (m) => {
         if (isRoomName(m.room) && this.joinedRooms.has(m.room)) {
+          const wasCurrent = this.currentRoom;
           this.currentRoom = m.room;
+          // Lazy history fetch: if we never asked for this room's
+          // history at login (because it wasn't the default room),
+          // ask now.  Tracking this with `historyAskedRooms` keeps
+          // the request idempotent — a follow-up switch back to the
+          // same room doesn't re-ask.
+          if (!this.historyAskedRooms.has(m.room)) {
+            this.historyAskedRooms.add(m.room);
+            this.deps.chatRoomRegion.tell({
+              kind: 'GetHistory',
+              room: m.room,
+              limit: 50,
+              replyTo: this.self as ActorRef<HistoryReply>,
+            });
+          }
+          void wasCurrent; // not used; reserved for future telemetry.
         }
       })
       .with({ type: 'ping' }, () => { /* keepalive — no-op server-side */ })
@@ -243,7 +265,19 @@ export class UserSessionActor extends Actor<SessionMsg> {
 
   /* ---------------------------- room mgmt ---------------------------- */
 
-  private joinRoom(room: RoomName): void {
+  /**
+   * Join a room.
+   *
+   * @param fetchHistory  If true, ask the sharded entity for the
+   *                      last 50 messages and forward them to the
+   *                      client as a `history` frame.  Defaulted to
+   *                      true for explicit `join` commands, but
+   *                      defaulted to false for the auto-join burst
+   *                      at login time except for the room the user
+   *                      starts in — see the rationale in
+   *                      `handleUnauthenticated`.
+   */
+  private joinRoom(room: RoomName, fetchHistory: boolean): void {
     if (this.joinedRooms.has(room)) return;
     this.joinedRooms.add(room);
 
@@ -264,13 +298,15 @@ export class UserSessionActor extends Actor<SessionMsg> {
       ref: this.self as ActorRef<UsersChanged>,
     });
 
-    // Pull the recent history from the sharded entity.
-    this.deps.chatRoomRegion.tell({
-      kind: 'GetHistory',
-      room,
-      limit: 50,
-      replyTo: this.self as ActorRef<HistoryReply>,
-    });
+    if (fetchHistory) {
+      this.historyAskedRooms.add(room);
+      this.deps.chatRoomRegion.tell({
+        kind: 'GetHistory',
+        room,
+        limit: 50,
+        replyTo: this.self as ActorRef<HistoryReply>,
+      });
+    }
   }
 
   private leaveRoom(room: RoomName): void {

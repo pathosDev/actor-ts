@@ -1,18 +1,29 @@
 /**
  * End-to-end smoke test for the chat backend.
  *
- *   bun examples/chat/smoke-test.ts ws://127.0.0.1:8081/ws
+ *   bun examples/chat/smoke-test.ts                          # default :8080
+ *   bun examples/chat/smoke-test.ts ws://127.0.0.1:8080/ws   # explicit
  *
  * Verifies:
  *   1. Login flow via WS.
  *   2. Auto-join + initial rooms / users frames.
- *   3. Send → broadcast roundtrip.
- *   4. History persistence: new connection sees previous messages.
+ *   3. History reply for the user's primary room (#general).
+ *   4. Send → broadcast roundtrip (publish-fan-out).
+ *   5. History persistence: a fresh connection sees previous messages.
+ *
+ * Run against a **single-node bootstrap** for reliable verification:
+ *
+ *   bun examples/chat/backend/main.ts --port 2551
+ *   bun examples/chat/smoke-test.ts
+ *
+ * The multi-node case adds cross-shard routing into the picture and
+ * has its own test (`failover-test.ts`) — that one focuses on the
+ * HTTP-singleton fail-over rather than the messaging round-trip.
  *
  * Exit code 0 on success, non-zero on first failure.
  */
 
-const URL_ARG = process.argv[2] ?? 'ws://127.0.0.1:8081/ws';
+const URL_ARG = process.argv[2] ?? 'ws://127.0.0.1:8080/ws';
 
 interface ServerMsg { type: string; [k: string]: unknown }
 
@@ -103,10 +114,20 @@ async function main(): Promise<void> {
   await a.await((m) => m.type === 'rooms');
   ok('received rooms list');
 
-  // Brief settle: pubsub Subscribe propagates to remote mediators
-  // via eagerGossip — on a fresh multi-node cluster the first send
-  // can race ahead of that propagation.  500 ms is plenty.
-  await new Promise((r) => setTimeout(r, 500));
+  // Synchronization point: wait until we've seen `users` AND
+  // `history` for #general — that confirms our subscribe was
+  // processed AND the sharded ChatRoomActor responded.  The
+  // history reply comes back through the cross-node ActorRef
+  // mechanism, so receiving it also tells us cross-node routing
+  // is healthy.  By this time the pubsub-mediator has had ample
+  // gossip cycles to know about our subscribe on every node.
+  await a.await((m) => m.type === 'users' && (m as ServerMsg).room === 'general', 5000);
+  await a.await((m) => m.type === 'history' && (m as ServerMsg).room === 'general', 5000);
+  // One extra anti-jitter sleep — eagerGossip is fire-and-forget;
+  // give a margin before the first send to make sure the publish
+  // path knows about our subscriber on whichever node hosts the
+  // shard.
+  await new Promise((r) => setTimeout(r, 750));
 
   for (const text of ['hello world', 'second msg', 'third msg']) {
     a.send({ type: 'send', room: 'general', text });
