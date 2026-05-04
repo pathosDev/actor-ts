@@ -111,10 +111,16 @@ jobs:
           # could be added later (e.g. <70% → red, <85% → yellow).
           if [[ "$PASS" -eq "$TOTAL" ]]; then
             TEST_COLOR="22c55e"
+            STATUS_LABEL="green"
           else
             TEST_COLOR="ef4444"
+            STATUS_LABEL="red"
           fi
           COV_COLOR="22c55e"
+          echo "Computed badge state:"
+          echo "  tests-${PASS}/${TOTAL} (${STATUS_LABEL})"
+          echo "  coverage-~${LINES}%"
+
           # 1. Static badge URLs (img.shields.io) — pattern matches the
           #    full 'tests-X%20of%20Y-COLOR' segment so the colour gets
           #    rewritten when the ratio shifts.
@@ -124,6 +130,19 @@ jobs:
           #    so '~9 tests' (env-gated subset elsewhere) is not matched.
           sed -i -E "s|~[0-9]{3,}( tests)|~${PASS}\1|g" README.md
           sed -i -E "s|~[0-9]+( % line)|~${LINES}\1|g" README.md
+
+          # Make the result of the substitutions explicit in the log.
+          # Previously the only signal that this step had done anything
+          # was a downstream "no badge changes" line — opaque when the
+          # README already happened to match the freshly-computed
+          # numbers (e.g. an unchanged-flake commit re-running on the
+          # same red badge state).  Now the diff is visible inline.
+          if git diff --quiet README.md; then
+            echo "README already reflects ${PASS}/${TOTAL} ${STATUS_LABEL} — no edits needed"
+          else
+            echo "README diff after substitution:"
+            git --no-pager diff -U0 README.md
+          fi
 
       - name: Commit + push README if changed
         if: |
@@ -138,6 +157,7 @@ jobs:
             git add README.md
             git commit -m "chore(readme): update test count + coverage stats [skip ci]"
             git push
+            echo "pushed README update"
           else
-            echo "no badge changes"
+            echo "README unchanged — nothing to commit (the previous run already pushed these numbers)"
           fi
