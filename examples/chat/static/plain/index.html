@@ -242,6 +242,7 @@
 
       /* ============== state ============== */
       const TOKEN_KEY = 'chat-token';
+      const MAX_RECONNECT_ATTEMPTS = 8;
       const state = {
         username: null,
         ws: null,
@@ -251,6 +252,9 @@
         usersByRoom:    new Map(),    // RoomName → string[]
         unreadByRoom:   new Map(),    // RoomName → number
       };
+      /** Reconnect bookkeeping — see scheduleResumeReconnect. */
+      let reconnectAttempts = 0;
+      let reconnectTimer = null;
 
       /* ============== elements ============== */
       const $login    = document.getElementById('login');
@@ -278,9 +282,10 @@
         connectWithLogin(username, password);
       });
       $logout.addEventListener('click', () => {
-        // Tell the server to revoke our token before the WS closes,
-        // then wipe local state.  Server will stop our session actor
-        // which closes the socket — `close` handler resets the UI.
+        // Cancel any in-flight reconnect attempts first — wiping
+        // the token below would have made them no-ops anyway, but
+        // doing it here makes the intent explicit.
+        cancelReconnect();
         if (state.ws && state.ws.readyState === WebSocket.OPEN) {
           try { state.ws.send(JSON.stringify({ type: 'logout' })); } catch {}
         }
@@ -318,17 +323,48 @@
           handleServer(msg);
         });
         ws.addEventListener('close', () => {
-          if (state.username) {
-            // disconnect after login → drop back to login screen
+          state.ws = null;
+          // Don't go straight back to the login screen on socket
+          // close — try to resume with the stored token first.
+          // Covers the singleton-failover case where the ingress
+          // node dies and the survivor takes a few seconds to
+          // rebind :8080.  The chat view stays mounted (frozen
+          // briefly) and reconnects under the hood.
+          if (!scheduleResumeReconnect() && state.username) {
             resetToLogin();
             $loginErr.textContent = 'Connection closed.';
           }
         });
         ws.addEventListener('error', () => {
-          if (!state.username) {
+          if (!state.username && !localStorage.getItem(TOKEN_KEY)) {
             $loginErr.textContent = 'Connection failed.';
           }
         });
+      }
+
+      /**
+       * Try to schedule a `resume`-based reconnect.  Returns true if
+       * one was actually scheduled — caller falls back to the login
+       * screen when this returns false (no token, or all attempts
+       * exhausted).  Backoff is exponential, capped at 4 s, max
+       * `MAX_RECONNECT_ATTEMPTS` per failover.
+       */
+      function scheduleResumeReconnect() {
+        const token = localStorage.getItem(TOKEN_KEY);
+        if (!token) return false;
+        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return false;
+        const delay = Math.min(500 * Math.pow(2, reconnectAttempts), 4000);
+        reconnectAttempts++;
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          connectWithResume(token);
+        }, delay);
+        return true;
+      }
+
+      function cancelReconnect() {
+        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+        reconnectAttempts = 0;
       }
 
       /* ============== inbound dispatch ============== */
@@ -346,20 +382,28 @@
       }
 
       function onLoggedIn(username, token) {
+        // Successful auth — stop any pending reconnect attempts and
+        // reset the backoff counter so the next failover starts
+        // fresh.
+        cancelReconnect();
         state.username = username;
         if (token) localStorage.setItem(TOKEN_KEY, token);
         $me.textContent = username;
+        $loginErr.textContent = '';
         $login.style.display = 'none';
         $chat.classList.add('active');
       }
 
       function onLoginFailed(reason) {
-        $loginErr.textContent = reason || 'Login failed.';
-        // Stale / expired token → wipe it so the next page-load
-        // doesn't keep retrying with the same dead credentials.
+        // Stale / expired / revoked token — wipe it so we don't
+        // keep retrying with the same dead credentials, and bail
+        // back to the login screen so the user can re-auth.
+        cancelReconnect();
         localStorage.removeItem(TOKEN_KEY);
         if (state.ws) { try { state.ws.close(); } catch {} }
         state.ws = null;
+        if (state.username) resetToLogin();
+        $loginErr.textContent = reason || 'Login failed.';
       }
 
       function onRooms(rooms) {
@@ -484,6 +528,7 @@
       }
 
       function resetToLogin() {
+        cancelReconnect();
         state.username = null;
         state.ws = null;
         state.rooms = [];
