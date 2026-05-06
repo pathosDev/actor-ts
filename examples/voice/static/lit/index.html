@@ -1,0 +1,639 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>actor-ts voice — Lit</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --border: color-mix(in srgb, currentColor 18%, transparent);
+        --soft:   color-mix(in srgb, currentColor 6%, transparent);
+        --accent: #4f46e5;
+        --good:   #16a34a;
+        --danger: #dc2626;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; line-height: 1.4; }
+    </style>
+  </head>
+  <body>
+    <voice-app></voice-app>
+
+    <!-- No build.  Lit loaded from CDN; same approach as chat-lit. -->
+    <script type="module">
+      import { LitElement, html, css } from 'https://esm.sh/lit@3';
+
+      const WS_PATH = '/ws';
+      const TOKEN_KEY = 'voice-token';
+      const MAX_RECONNECT_ATTEMPTS = 8;
+      const TIMESLICE_MS = 100;
+      const MIME_OPUS = 'audio/webm; codecs=opus';
+
+      // Shared frame codec — keep in sync with shared/frameCodec.ts.
+      function decodeIncoming(buf) {
+        if (buf.byteLength < 1) return null;
+        const nameLen = buf[0];
+        if (buf.byteLength < 1 + nameLen) return null;
+        const sender = new TextDecoder().decode(buf.subarray(1, 1 + nameLen));
+        const opus = buf.subarray(1 + nameLen);
+        return { sender, opus };
+      }
+
+      /**
+       * The voice app as a single Lit Element.  Reactive properties
+       * mirror the plain HTML reference's state shape — see
+       * static/plain/index.html for the audio-plumbing canon.  This
+       * file's job is to thread the same plumbing through Lit's
+       * reactivity so the rendering follows state changes
+       * automatically.
+       */
+      class VoiceApp extends LitElement {
+        static properties = {
+          phase: { state: true },                 // 'gate-mic' | 'gate-login' | 'app'
+          username: { state: true },
+          loginError: { state: true },
+          directory: { state: true },
+          onlineUsers: { state: true },           // Set
+          roomParticipants: { state: true },      // Map<room, string[]>
+          joinedRooms: { state: true },           // Set
+          roomTalking: { state: true },           // Set (rooms in open-mic)
+          activeKey: { state: true },             // string | null — which PTT/talk button is hot
+          incomingNames: { state: true },         // string[]
+          micPct: { state: true },
+        };
+
+        static styles = css`
+          .gate {
+            height: 100vh;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            text-align: center; gap: 1rem; padding: 1rem;
+          }
+          .gate h1 { margin: 0; }
+          .gate .hint { color: #888; max-width: 480px; }
+          .gate form { display: flex; flex-direction: column; gap: .5rem; min-width: 280px; }
+          .gate input, .gate button {
+            padding: .5rem .75rem; border-radius: 6px;
+            border: 1px solid var(--border); font: inherit;
+          }
+          .gate button.primary {
+            background: var(--accent); color: white; border-color: var(--accent); cursor: pointer;
+          }
+          .gate .err { color: var(--danger); min-height: 1.4em; font-size: .9rem; }
+          .creds {
+            margin-top: 1.5rem; max-width: 380px; font-size: .85rem;
+            padding: .5rem .75rem; background: var(--soft); border-radius: 6px;
+          }
+          code {
+            background: var(--soft); padding: 0 .25em; border-radius: 3px;
+          }
+
+          .app {
+            display: grid; grid-template-rows: auto 1fr; height: 100vh;
+          }
+          .topbar {
+            display: flex; gap: 1rem; align-items: center;
+            padding: .5rem 1rem; border-bottom: 1px solid var(--border);
+          }
+          .me { font-weight: 600; }
+          .meter {
+            flex: 1; max-width: 300px; height: 8px;
+            background: var(--soft); border-radius: 4px; overflow: hidden;
+          }
+          .meter > span {
+            display: block; height: 100%; width: 0%;
+            background: linear-gradient(90deg, var(--good), gold, var(--danger));
+            transition: width 80ms linear;
+          }
+          .talking { font-size: .85rem; color: #888; flex: 1; text-align: right; }
+          .topbar button {
+            padding: .25rem .75rem; border-radius: 4px;
+            border: 1px solid var(--border); background: transparent; font: inherit; cursor: pointer;
+          }
+          .panes {
+            display: grid; grid-template-columns: 280px 1fr 280px; min-height: 0;
+          }
+          .panes > section { overflow-y: auto; padding: .75rem 1rem; }
+          .panes > section + section { border-left: 1px solid var(--border); }
+          h2.section {
+            font-size: .75rem; text-transform: uppercase; letter-spacing: .05em;
+            color: #888; margin: .25rem 0 .75rem 0;
+          }
+
+          ul.users { list-style: none; padding: 0; margin: 0; }
+          ul.users li { display: flex; align-items: center; gap: .5rem; padding: .35rem 0; }
+          .dot { width: .55rem; height: .55rem; border-radius: 50%;
+                 background: #aaa; flex-shrink: 0; }
+          .dot.online { background: var(--good); }
+          .username { flex: 1; }
+          .username.self { color: #888; font-style: italic; }
+
+          button.ptt {
+            font-size: .8rem; padding: .25rem .6rem; border-radius: 4px;
+            border: 1px solid var(--border); background: transparent;
+            user-select: none; touch-action: none; min-width: 50px; cursor: pointer; font: inherit;
+          }
+          button.ptt[disabled] { opacity: .35; cursor: not-allowed; }
+          button.ptt.active { background: var(--accent); color: white; border-color: var(--accent); }
+
+          .groups { display: grid; gap: .75rem; }
+          .group-card {
+            border: 1px solid var(--border); border-radius: 8px; padding: .75rem 1rem;
+            display: flex; flex-direction: column; gap: .4rem;
+          }
+          .group-card .head { display: flex; justify-content: space-between; align-items: center; }
+          .group-card .name { font-weight: 600; text-transform: capitalize; }
+          .group-card .members { font-size: .8rem; color: #888; }
+          .group-card button.ptt-big {
+            font-size: 1rem; padding: .75rem 1.25rem; border-radius: 6px;
+            border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent);
+            font-weight: 600; user-select: none; touch-action: none; cursor: pointer; font: inherit;
+          }
+          .group-card button.ptt-big.active { background: var(--accent); color: white; }
+          .group-card button.ptt-big[disabled] { opacity: .4; cursor: not-allowed; }
+
+          .rooms { display: flex; flex-direction: column; gap: .5rem; }
+          .room { border: 1px solid var(--border); border-radius: 6px; padding: .5rem .75rem; }
+          .room.entered { border-color: var(--accent); }
+          .room .head { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
+          .room .name { font-weight: 600; text-transform: capitalize; }
+          .room button {
+            font-size: .8rem; padding: .2rem .55rem; border-radius: 4px;
+            border: 1px solid var(--border); background: transparent; cursor: pointer; font: inherit;
+          }
+          .room button.talk.active {
+            background: var(--accent); color: white; border-color: var(--accent);
+          }
+          .participants { font-size: .8rem; color: #888; margin-top: .25rem; }
+        `;
+
+        constructor() {
+          super();
+          this.phase = 'gate-mic';
+          this.username = null;
+          this.loginError = '';
+          this.directory = { users: [], groups: [], rooms: [] };
+          this.onlineUsers = new Set();
+          this.roomParticipants = new Map();
+          this.joinedRooms = new Set();
+          this.roomTalking = new Set();
+          this.activeKey = null;
+          this.incomingNames = [];
+          this.micPct = 0;
+
+          // non-reactive fields
+          this._ws = null;
+          this._reconnectAttempts = 0;
+          this._reconnectTimer = null;
+          this._micStream = null;
+          this._micRecorder = null;
+          this._micCtx = null;
+          this._micAnalyser = null;
+          this._incoming = new Map();      // sender → playback entry
+          this._incomingMeta = new Map();  // sender → source descriptor
+        }
+
+        /* ------------------------------ render ------------------------------ */
+
+        render() {
+          if (this.phase === 'app') return this._renderApp();
+          return this._renderGate();
+        }
+
+        _renderGate() {
+          const showLogin = this.phase === 'gate-login';
+          return html`
+            <div class="gate">
+              <h1>actor-ts voice</h1>
+              <p class="hint">${showLogin
+                ? 'Pick a user.  Passwords visible below.'
+                : 'Click "Enable mic" once.  Grants the mic permission AND unlocks the AudioContext for inbound playback.'}
+              </p>
+              ${showLogin ? this._renderLoginForm() : html`
+                <button class="primary" @click=${this._enableMic}>Enable mic</button>
+              `}
+              ${showLogin ? html`
+                <div class="creds">
+                  <strong>Test users</strong> (visible by design):
+                  <code>alice</code>/<code>wonderland</code>,
+                  <code>bob</code>/<code>builder</code>,
+                  <code>charlie</code>/<code>chaplin</code>,
+                  <code>diana</code>/<code>prince</code>.
+                </div>
+              ` : ''}
+            </div>
+          `;
+        }
+
+        _renderLoginForm() {
+          return html`
+            <form @submit=${this._onSubmitLogin} autocomplete="off">
+              <input id="u" name="username" placeholder="username" required />
+              <input id="p" name="password" type="password" placeholder="password" required />
+              <button class="primary" type="submit">Log in</button>
+              <div class="err">${this.loginError}</div>
+            </form>
+          `;
+        }
+
+        _renderApp() {
+          return html`
+            <div class="app">
+              <header class="topbar">
+                <div class="me">${this.username}</div>
+                <div class="meter"><span style=${`width:${this.micPct.toFixed(0)}%`}></span></div>
+                <div class="talking">${this.incomingNames.length === 0
+                  ? 'no incoming audio'
+                  : '🔊 ' + this.incomingNames.join(' · ')}
+                </div>
+                <button @click=${this._logout}>Logout</button>
+              </header>
+              <div class="panes">
+                <section>
+                  <h2 class="section">Users</h2>
+                  ${this._renderUsers()}
+                </section>
+                <section>
+                  <h2 class="section">Groups</h2>
+                  ${this._renderGroups()}
+                </section>
+                <section>
+                  <h2 class="section">Rooms</h2>
+                  ${this._renderRooms()}
+                </section>
+              </div>
+            </div>
+          `;
+        }
+
+        _renderUsers() {
+          return html`
+            <ul class="users">
+              ${this.directory.users.map((u) => html`
+                <li>
+                  <span class="dot ${this.onlineUsers.has(u) ? 'online' : ''}"></span>
+                  <span class="username ${u === this.username ? 'self' : ''}">${u}</span>
+                  ${u === this.username ? '' : html`
+                    <button class="ptt ${this.activeKey === `peer:${u}` ? 'active' : ''}"
+                            ?disabled=${!this.onlineUsers.has(u)}
+                            @pointerdown=${(e) => this._beginPress(e, { mode: 'peer', target: u }, `peer:${u}`)}
+                            @pointerup=${(e) => this._endPress(e, `peer:${u}`)}
+                            @pointercancel=${(e) => this._endPress(e, `peer:${u}`)}
+                            @pointerleave=${(e) => this._endPress(e, `peer:${u}`)}>PTT</button>
+                  `}
+                </li>
+              `)}
+            </ul>
+          `;
+        }
+
+        _renderGroups() {
+          return html`
+            <div class="groups">
+              ${this.directory.groups.map((g) => {
+                const isMember = g.members.includes(this.username);
+                const key = `group:${g.name}`;
+                return html`
+                  <div class="group-card">
+                    <div class="head"><span class="name">${g.name}</span></div>
+                    <div class="members">${g.members.join(', ')}</div>
+                    <button class="ptt-big ${this.activeKey === key ? 'active' : ''}"
+                            ?disabled=${!isMember}
+                            title=${isMember ? '' : 'You are not a member of this group.'}
+                            @pointerdown=${(e) => this._beginPress(e, { mode: 'group', group: g.name }, key)}
+                            @pointerup=${(e) => this._endPress(e, key)}
+                            @pointercancel=${(e) => this._endPress(e, key)}
+                            @pointerleave=${(e) => this._endPress(e, key)}>Hold to talk</button>
+                  </div>
+                `;
+              })}
+            </div>
+          `;
+        }
+
+        _renderRooms() {
+          return html`
+            <div class="rooms">
+              ${this.directory.rooms.map((r) => {
+                const entered = this.joinedRooms.has(r);
+                const talking = this.roomTalking.has(r);
+                const parts = this.roomParticipants.get(r) ?? [];
+                return html`
+                  <div class="room ${entered ? 'entered' : ''}">
+                    <div class="head">
+                      <span class="name">${r}</span>
+                      ${entered
+                        ? html`
+                          <button class="talk ${talking ? 'active' : ''}"
+                                  @click=${() => this._toggleRoomTalk(r)}>${talking ? 'Stop' : 'Talk'}</button>
+                          <button class="leave"
+                                  @click=${() => this._leaveRoom(r)}>Leave</button>
+                        `
+                        : html`<button class="enter" @click=${() => this._enterRoom(r)}>Enter</button>`}
+                    </div>
+                    <div class="participants">${parts.length === 0 ? '— empty —' : parts.join(', ')}</div>
+                  </div>
+                `;
+              })}
+            </div>
+          `;
+        }
+
+        /* ------------------------------ actions ----------------------------- */
+
+        async _enableMic() {
+          try {
+            this._micStream = await navigator.mediaDevices.getUserMedia({
+              audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+            });
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            if (ctx.state === 'suspended') await ctx.resume();
+            this._micCtx = ctx;
+            const src = ctx.createMediaStreamSource(this._micStream);
+            const analyser = ctx.createAnalyser(); analyser.fftSize = 512;
+            src.connect(analyser);
+            this._micAnalyser = analyser;
+            this._tickMeter();
+
+            this.phase = 'gate-login';
+            const stored = sessionStorage.getItem(TOKEN_KEY);
+            if (stored) this._connectAndSend({ type: 'resume', token: stored });
+          } catch (e) {
+            this.loginError = `Microphone access denied (${e?.message ?? e}).  Check site settings + reload.`;
+            this.requestUpdate();
+          }
+        }
+
+        _tickMeter() {
+          const data = new Uint8Array(this._micAnalyser.frequencyBinCount);
+          const tick = () => {
+            if (!this._micAnalyser) return;
+            this._micAnalyser.getByteTimeDomainData(data);
+            let peak = 0;
+            for (const b of data) { const dev = Math.abs(b - 128); if (dev > peak) peak = dev; }
+            this.micPct = Math.min(100, (peak / 64) * 100);
+            requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        }
+
+        _onSubmitLogin(e) {
+          e.preventDefault();
+          const u = this.renderRoot.querySelector('#u').value.trim();
+          const p = this.renderRoot.querySelector('#p').value;
+          if (!u || !p) return;
+          this.loginError = '';
+          this._connectAndSend({ type: 'login', username: u, password: p });
+        }
+
+        _logout() {
+          try { this._ws?.send(JSON.stringify({ type: 'logout' })); } catch {}
+          sessionStorage.removeItem(TOKEN_KEY);
+          location.reload();
+        }
+
+        _connectAndSend(firstFrame) {
+          const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+          const ws = new WebSocket(`${proto}//${location.host}${WS_PATH}`);
+          ws.binaryType = 'arraybuffer';
+          this._ws = ws;
+          ws.addEventListener('open', () => ws.send(JSON.stringify(firstFrame)));
+          ws.addEventListener('message', (ev) => {
+            if (typeof ev.data === 'string') this._handleText(ev.data);
+            else this._handleBinary(new Uint8Array(ev.data));
+          });
+          ws.addEventListener('close', () => {
+            if (this._ws !== ws) return;
+            this._ws = null;
+            if (!this._scheduleResume() && this.phase === 'app') this._resetToGate();
+          });
+          ws.addEventListener('error', () => {
+            if (this.phase === 'gate-login' && !sessionStorage.getItem(TOKEN_KEY)) {
+              this.loginError = 'Connection failed.';
+            }
+          });
+        }
+
+        _scheduleResume() {
+          const token = sessionStorage.getItem(TOKEN_KEY);
+          if (!token || this._reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return false;
+          const delay = Math.min(500 * Math.pow(2, this._reconnectAttempts), 4000);
+          this._reconnectAttempts++;
+          this._reconnectTimer = setTimeout(() => {
+            this._reconnectTimer = null;
+            this._connectAndSend({ type: 'resume', token });
+          }, delay);
+          return true;
+        }
+
+        _cancelReconnect() {
+          if (this._reconnectTimer) clearTimeout(this._reconnectTimer);
+          this._reconnectTimer = null;
+          this._reconnectAttempts = 0;
+        }
+
+        _resetToGate() {
+          sessionStorage.removeItem(TOKEN_KEY);
+          location.reload();
+        }
+
+        _handleText(raw) {
+          let m; try { m = JSON.parse(raw); } catch { return; }
+          switch (m.type) {
+            case 'logged-in':
+              this._cancelReconnect();
+              this.username = m.username;
+              sessionStorage.setItem(TOKEN_KEY, m.token);
+              this.phase = 'app';
+              break;
+            case 'login-failed':
+              this._cancelReconnect();
+              sessionStorage.removeItem(TOKEN_KEY);
+              try { this._ws?.close(); } catch {}
+              this._ws = null;
+              if (this.phase === 'app') this._resetToGate();
+              else { this.loginError = m.reason || 'Login failed'; this.requestUpdate(); }
+              break;
+            case 'directory':
+              this.directory = { users: [...m.users], groups: m.groups.map((g) => ({ ...g, members: [...g.members] })), rooms: [...m.rooms] };
+              break;
+            case 'online-users':
+              this.onlineUsers = new Set(m.users);
+              break;
+            case 'room-participants': {
+              const next = new Map(this.roomParticipants);
+              next.set(m.room, [...m.users]);
+              this.roomParticipants = next;
+              break;
+            }
+            case 'voice-target-ok': /* ack */ break;
+            case 'voice-target-failed':
+              console.warn('voice-target-failed', m);
+              this.activeKey = null;
+              break;
+            case 'voice-incoming-start':
+              this._startIncoming(m.from, m.source);
+              break;
+            case 'voice-incoming-end':
+              this._endIncoming(m.from);
+              break;
+            default: break;
+          }
+        }
+
+        _handleBinary(buf) {
+          const decoded = decodeIncoming(buf);
+          if (!decoded) return;
+          this._feedIncoming(decoded.sender, decoded.opus);
+        }
+
+        /* ------------------------ press / talk handling -------------------- */
+
+        _beginPress(e, target, key) {
+          e.preventDefault();
+          if (e.currentTarget?.disabled) return;
+          if (this.activeKey) this._endPressActiveOnly();
+          this.activeKey = key;
+          this._ws?.send(JSON.stringify({ type: 'voice-target', ...target }));
+          this._startMicRecording();
+          if (e.pointerId !== undefined && e.currentTarget?.setPointerCapture) {
+            e.currentTarget.setPointerCapture(e.pointerId);
+          }
+        }
+
+        _endPress(e, key) {
+          if (this.activeKey !== key) return;
+          e.preventDefault?.();
+          this._stopMicRecording();
+          this._ws?.send(JSON.stringify({ type: 'voice-stop' }));
+          this.activeKey = null;
+        }
+
+        _endPressActiveOnly() {
+          this._stopMicRecording();
+          this._ws?.send(JSON.stringify({ type: 'voice-stop' }));
+          this.activeKey = null;
+        }
+
+        _toggleRoomTalk(room) {
+          const next = new Set(this.roomTalking);
+          if (next.has(room)) {
+            next.delete(room);
+            this._stopMicRecording();
+            this._ws?.send(JSON.stringify({ type: 'voice-stop' }));
+            this.activeKey = null;
+          } else {
+            next.add(room);
+            this.activeKey = `room:${room}`;
+            this._ws?.send(JSON.stringify({ type: 'voice-target', mode: 'room', room }));
+            this._startMicRecording();
+          }
+          this.roomTalking = next;
+        }
+
+        _enterRoom(room) {
+          const next = new Set(this.joinedRooms);
+          next.add(room); this.joinedRooms = next;
+          this._ws?.send(JSON.stringify({ type: 'room-enter', room }));
+        }
+
+        _leaveRoom(room) {
+          if (this.roomTalking.has(room)) this._toggleRoomTalk(room);
+          const next = new Set(this.joinedRooms);
+          next.delete(room); this.joinedRooms = next;
+          this._ws?.send(JSON.stringify({ type: 'room-leave', room }));
+        }
+
+        /* ------------------------ mic record / playback -------------------- */
+
+        _startMicRecording() {
+          this._stopMicRecording();
+          if (!this._micStream) return;
+          const rec = new MediaRecorder(this._micStream, { mimeType: MIME_OPUS });
+          rec.addEventListener('dataavailable', async (e) => {
+            if (!e.data || e.data.size === 0) return;
+            if (this._ws?.readyState !== WebSocket.OPEN) return;
+            try { this._ws.send(await e.data.arrayBuffer()); } catch (err) { console.warn(err); }
+          });
+          rec.start(TIMESLICE_MS);
+          this._micRecorder = rec;
+        }
+
+        _stopMicRecording() {
+          if (!this._micRecorder) return;
+          try { this._micRecorder.stop(); } catch {}
+          this._micRecorder = null;
+        }
+
+        _startIncoming(from, source) {
+          if (this._incoming.has(from)) this._endIncoming(from);
+          const audioEl = document.createElement('audio');
+          audioEl.autoplay = true;
+          const ms = new MediaSource();
+          audioEl.src = URL.createObjectURL(ms);
+          document.body.appendChild(audioEl);  // hidden in flow but live in DOM
+          audioEl.style.display = 'none';
+          const entry = {
+            mediaSource: ms, sourceBuffer: null, audioEl, queue: [], mimeReady: false,
+            objectUrl: audioEl.src,
+          };
+          this._incoming.set(from, entry);
+          this._incomingMeta.set(from, source);
+          ms.addEventListener('sourceopen', () => {
+            try {
+              const sb = ms.addSourceBuffer(MIME_OPUS);
+              sb.mode = 'sequence';
+              sb.addEventListener('updateend', () => this._drainQueue(entry));
+              entry.sourceBuffer = sb; entry.mimeReady = true;
+              this._drainQueue(entry);
+            } catch (e) { console.warn('addSourceBuffer', e); }
+          });
+          this._refreshIncomingNames();
+        }
+
+        _feedIncoming(from, opus) {
+          const entry = this._incoming.get(from);
+          if (!entry) return;
+          const copy = new Uint8Array(opus.byteLength); copy.set(opus);
+          entry.queue.push(copy);
+          this._drainQueue(entry);
+        }
+
+        _drainQueue(entry) {
+          if (!entry.mimeReady || !entry.sourceBuffer || entry.sourceBuffer.updating) return;
+          const next = entry.queue.shift();
+          if (!next) return;
+          try { entry.sourceBuffer.appendBuffer(next); } catch (e) { console.warn(e); }
+        }
+
+        _endIncoming(from) {
+          const entry = this._incoming.get(from);
+          if (!entry) return;
+          this._incoming.delete(from);
+          this._incomingMeta.delete(from);
+          this._refreshIncomingNames();
+          try {
+            if (entry.sourceBuffer && !entry.sourceBuffer.updating) entry.mediaSource.endOfStream();
+          } catch {}
+          setTimeout(() => {
+            try { URL.revokeObjectURL(entry.objectUrl); } catch {}
+            try { entry.audioEl.remove(); } catch {}
+          }, 1500);
+        }
+
+        _refreshIncomingNames() {
+          const names = [];
+          for (const [name, src] of this._incomingMeta) {
+            if (src?.kind === 'group') names.push(`${name} (group: ${src.group})`);
+            else if (src?.kind === 'room') names.push(`${name} (room: ${src.room})`);
+            else names.push(name);
+          }
+          this.incomingNames = names;
+        }
+      }
+      customElements.define('voice-app', VoiceApp);
+    </script>
+  </body>
+</html>
