@@ -1,0 +1,834 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>actor-ts voice — plain</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --accent: #4f46e5;
+        --accent-dim: color-mix(in srgb, var(--accent) 18%, transparent);
+        --border: color-mix(in srgb, currentColor 18%, transparent);
+        --soft: color-mix(in srgb, currentColor 6%, transparent);
+        --danger: #dc2626;
+        --good: #16a34a;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; height: 100%; }
+      body {
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        line-height: 1.5;
+      }
+      button { font: inherit; cursor: pointer; }
+      input { font: inherit; }
+      code { background: var(--soft); padding: 0 .25em; border-radius: 3px; }
+
+      /* ----- gate: pre-mic + login ----- */
+      .gate {
+        height: 100vh;
+        display: flex; flex-direction: column;
+        align-items: center; justify-content: center;
+        text-align: center; gap: 1rem;
+        padding: 1rem;
+      }
+      .gate h1 { margin: 0; }
+      .gate .hint { color: #888; max-width: 480px; }
+      .gate form { display: flex; flex-direction: column; gap: .5rem; min-width: 280px; }
+      .gate input, .gate button {
+        padding: .5rem .75rem; border-radius: 6px;
+        border: 1px solid var(--border);
+      }
+      .gate button.primary {
+        background: var(--accent); color: white; border-color: var(--accent);
+      }
+      .gate .err { color: var(--danger); min-height: 1.4em; font-size: .9rem; }
+      .creds {
+        margin-top: 1.5rem; max-width: 380px;
+        font-size: .85rem; padding: .5rem .75rem;
+        background: var(--soft); border-radius: 6px;
+      }
+
+      /* ----- chat-style 3-pane ----- */
+      .app {
+        display: grid;
+        grid-template-rows: auto 1fr;
+        height: 100vh;
+      }
+      .topbar {
+        display: flex; gap: 1rem; align-items: center;
+        padding: .5rem 1rem; border-bottom: 1px solid var(--border);
+      }
+      .topbar .me { font-weight: 600; }
+      .topbar .meter {
+        flex: 1; max-width: 300px; height: 8px;
+        background: var(--soft); border-radius: 4px; overflow: hidden;
+      }
+      .topbar .meter > span {
+        display: block; height: 100%;
+        background: linear-gradient(90deg, var(--good), gold, var(--danger));
+        width: 0%;
+        transition: width 80ms linear;
+      }
+      .topbar .talking {
+        font-size: .85rem; color: #888;
+        flex: 1; text-align: right;
+      }
+      .topbar button { padding: .25rem .75rem; border-radius: 4px;
+        border: 1px solid var(--border); background: transparent; }
+
+      .panes {
+        display: grid;
+        grid-template-columns: 280px 1fr 280px;
+        min-height: 0;
+      }
+      .panes > section { overflow-y: auto; padding: .75rem 1rem; }
+      .panes > section + section { border-left: 1px solid var(--border); }
+      h2.section {
+        font-size: .75rem; text-transform: uppercase;
+        letter-spacing: .05em; color: #888;
+        margin: .25rem 0 .75rem 0;
+      }
+
+      /* ----- user list (left) ----- */
+      ul.users { list-style: none; padding: 0; margin: 0; }
+      ul.users li {
+        display: flex; align-items: center; gap: .5rem;
+        padding: .35rem 0;
+      }
+      .dot { width: .55rem; height: .55rem; border-radius: 50%;
+             background: #aaa; flex-shrink: 0; }
+      .dot.online { background: var(--good); }
+      .username { flex: 1; }
+      .username.self { color: #888; font-style: italic; }
+      button.ptt {
+        font-size: .8rem; padding: .25rem .6rem; border-radius: 4px;
+        border: 1px solid var(--border); background: transparent;
+        user-select: none; touch-action: none;
+        min-width: 50px;
+      }
+      button.ptt:disabled { opacity: .35; cursor: not-allowed; }
+      button.ptt.active {
+        background: var(--accent); color: white; border-color: var(--accent);
+      }
+
+      /* ----- group cards (center) ----- */
+      .groups {
+        display: grid;
+        gap: .75rem;
+      }
+      .group-card {
+        border: 1px solid var(--border); border-radius: 8px;
+        padding: .75rem 1rem;
+        display: flex; flex-direction: column; gap: .4rem;
+      }
+      .group-card .head {
+        display: flex; justify-content: space-between; align-items: center;
+      }
+      .group-card .name { font-weight: 600; text-transform: capitalize; }
+      .group-card .members {
+        font-size: .8rem; color: #888;
+      }
+      .group-card button.ptt-big {
+        font-size: 1rem; padding: .75rem 1.25rem; border-radius: 6px;
+        border: 1px solid var(--accent); background: var(--accent-dim);
+        font-weight: 600; user-select: none; touch-action: none;
+      }
+      .group-card button.ptt-big.active {
+        background: var(--accent); color: white;
+      }
+
+      /* ----- rooms (right) ----- */
+      .rooms { display: flex; flex-direction: column; gap: .5rem; }
+      .room {
+        border: 1px solid var(--border); border-radius: 6px;
+        padding: .5rem .75rem;
+      }
+      .room .head {
+        display: flex; justify-content: space-between; align-items: center;
+        gap: .5rem;
+      }
+      .room .name { font-weight: 600; text-transform: capitalize; }
+      .room .participants {
+        font-size: .8rem; color: #888;
+        margin-top: .25rem;
+      }
+      .room button.enter, .room button.leave, .room button.talk {
+        font-size: .8rem; padding: .2rem .55rem; border-radius: 4px;
+        border: 1px solid var(--border); background: transparent;
+      }
+      .room.entered { border-color: var(--accent); }
+      .room button.talk.active {
+        background: var(--accent); color: white; border-color: var(--accent);
+      }
+    </style>
+  </head>
+  <body>
+    <!-- ============================================================ -->
+    <!-- gate: stage 1 = enable mic, stage 2 = login.  Hidden once   -->
+    <!-- the user reaches the chat phase.                            -->
+    <!-- ============================================================ -->
+    <div class="gate" id="gate">
+      <h1 id="gateTitle">actor-ts voice</h1>
+      <p class="hint" id="gateHint">
+        Click "Enable mic" once.  This grants the mic permission
+        and unlocks the AudioContext so inbound audio actually
+        plays — both modern browsers gate playback behind a user
+        gesture.
+      </p>
+      <button class="primary" id="enableMicBtn" type="button">Enable mic</button>
+
+      <form id="loginForm" autocomplete="off" hidden>
+        <input id="username" name="username" placeholder="username" required />
+        <input id="password" name="password" type="password" placeholder="password" required />
+        <button class="primary" type="submit">Log in</button>
+        <div class="err" id="loginErr"></div>
+      </form>
+
+      <div class="creds" id="creds" hidden>
+        <strong>Test users</strong> (visible by design):
+        <code>alice</code>/<code>wonderland</code>,
+        <code>bob</code>/<code>builder</code>,
+        <code>charlie</code>/<code>chaplin</code>,
+        <code>diana</code>/<code>prince</code>.
+      </div>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- main 3-pane app, populated dynamically                       -->
+    <!-- ============================================================ -->
+    <div class="app" id="app" hidden>
+      <header class="topbar">
+        <div class="me" id="meName">—</div>
+        <div class="meter"><span id="micMeter"></span></div>
+        <div class="talking" id="talking">no incoming audio</div>
+        <button id="logoutBtn" type="button">Logout</button>
+      </header>
+      <div class="panes">
+        <section>
+          <h2 class="section">Users</h2>
+          <ul class="users" id="userList"></ul>
+        </section>
+        <section>
+          <h2 class="section">Groups</h2>
+          <div class="groups" id="groupList"></div>
+        </section>
+        <section>
+          <h2 class="section">Rooms</h2>
+          <div class="rooms" id="roomList"></div>
+        </section>
+      </div>
+    </div>
+
+    <!-- containers for incoming audio elements (hidden visually but live) -->
+    <div id="audioBus" style="display:none"></div>
+
+    <!-- ============================================================ -->
+    <!-- everything below is one inlined module — no imports          -->
+    <!-- ============================================================ -->
+    <script type="module">
+      'use strict';
+
+      // ---------- constants kept in sync with shared/protocol.ts ----------
+      const WS_PATH = '/ws';
+      const TOKEN_KEY = 'voice-token';
+      const MAX_RECONNECT_ATTEMPTS = 8;
+      const TIMESLICE_MS = 100;          // MediaRecorder slice
+      const MIME_OPUS = 'audio/webm; codecs=opus';
+
+      // ---------- shared frame codec (keep in sync with shared/frameCodec.ts) ----------
+      function decodeIncoming(buf) {
+        if (buf.byteLength < 1) return null;
+        const nameLen = buf[0];
+        if (buf.byteLength < 1 + nameLen) return null;
+        const sender = new TextDecoder().decode(buf.subarray(1, 1 + nameLen));
+        const opus = buf.subarray(1 + nameLen);
+        return { sender, opus };
+      }
+
+      // ====================================================================
+      // App-level state.  Plain JS, no reactive framework — we re-render
+      // by hand on every change.  For a multi-frontend comparison the
+      // important bit is the WebSocket + audio plumbing, not the UI.
+      // ====================================================================
+      const state = {
+        phase: 'gate-mic',  // 'gate-mic' | 'gate-login' | 'app'
+        username: null,
+        token: null,
+        directory: { users: [], groups: [], rooms: [] },
+        onlineUsers: new Set(),
+        roomParticipants: new Map(),     // roomName → string[]
+        currentTarget: null,             // { mode, key } during press
+        joinedRooms: new Set(),
+        roomTalking: new Set(),          // rooms in open-mic mode
+        // playback
+        incoming: new Map(),             // senderUsername → { mediaSource, sourceBuffer, audioEl, queue, mimeReady, source }
+        talkingByMe: new Set(),          // sender names currently being heard
+        // audio
+        micStream: null,
+        micRecorder: null,
+        micCtx: null,
+        micAnalyser: null,
+        // ws
+        ws: null,
+        reconnectAttempts: 0,
+        reconnectTimer: null,
+      };
+
+      // ====================================================================
+      // ELEMENTS
+      // ====================================================================
+      const $gate = document.getElementById('gate');
+      const $gateTitle = document.getElementById('gateTitle');
+      const $gateHint = document.getElementById('gateHint');
+      const $enableBtn = document.getElementById('enableMicBtn');
+      const $loginForm = document.getElementById('loginForm');
+      const $loginErr = document.getElementById('loginErr');
+      const $creds = document.getElementById('creds');
+      const $username = document.getElementById('username');
+      const $password = document.getElementById('password');
+
+      const $app = document.getElementById('app');
+      const $meName = document.getElementById('meName');
+      const $micMeter = document.getElementById('micMeter');
+      const $talking = document.getElementById('talking');
+      const $logoutBtn = document.getElementById('logoutBtn');
+      const $userList = document.getElementById('userList');
+      const $groupList = document.getElementById('groupList');
+      const $roomList = document.getElementById('roomList');
+      const $audioBus = document.getElementById('audioBus');
+
+      // ====================================================================
+      // PHASE 1: enable mic + audio context.  This is the one-time gesture
+      // that gives us mic permission AND unlocks AudioContext for playback.
+      // ====================================================================
+      $enableBtn.addEventListener('click', async () => {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          });
+          state.micStream = stream;
+
+          // AudioContext for the level meter (and to unlock playback).
+          const ctx = new (window.AudioContext || window.webkitAudioContext)();
+          if (ctx.state === 'suspended') await ctx.resume();
+          state.micCtx = ctx;
+          const src = ctx.createMediaStreamSource(stream);
+          const analyser = ctx.createAnalyser();
+          analyser.fftSize = 512;
+          src.connect(analyser);
+          state.micAnalyser = analyser;
+          startMicMeterLoop();
+
+          // Move to login phase.  Try resume from sessionStorage first.
+          state.phase = 'gate-login';
+          const stored = sessionStorage.getItem(TOKEN_KEY);
+          if (stored) {
+            $gateTitle.textContent = 'Resuming session…';
+            $gateHint.textContent = '';
+            connectAndSend({ type: 'resume', token: stored });
+          } else {
+            renderGateLogin();
+          }
+        } catch (e) {
+          $gateHint.innerHTML =
+            'Microphone access denied.  Voice chat needs mic access — ' +
+            'enable it in the site settings and reload.<br><br>' +
+            '(error: <code>' + (e?.message || e) + '</code>)';
+        }
+      });
+
+      function renderGateLogin() {
+        $enableBtn.hidden = true;
+        $gateTitle.textContent = 'actor-ts voice';
+        $gateHint.textContent = 'Pick a user.  Passwords visible below.';
+        $loginForm.hidden = false;
+        $creds.hidden = false;
+        $username.focus();
+      }
+
+      $loginForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const u = $username.value.trim();
+        const p = $password.value;
+        if (!u || !p) return;
+        $loginErr.textContent = '';
+        connectAndSend({ type: 'login', username: u, password: p });
+      });
+
+      $logoutBtn.addEventListener('click', () => {
+        try { state.ws?.send(JSON.stringify({ type: 'logout' })); } catch {}
+        sessionStorage.removeItem(TOKEN_KEY);
+        location.reload();    // simplest hard reset for the demo
+      });
+
+      // ====================================================================
+      // MIC LEVEL METER
+      // ====================================================================
+      function startMicMeterLoop() {
+        const data = new Uint8Array(state.micAnalyser.frequencyBinCount);
+        const tick = () => {
+          if (!state.micAnalyser) return;
+          state.micAnalyser.getByteTimeDomainData(data);
+          // Compute peak deviation from 128 (zero point in 8-bit PCM).
+          let peak = 0;
+          for (const b of data) {
+            const dev = Math.abs(b - 128);
+            if (dev > peak) peak = dev;
+          }
+          const pct = Math.min(100, (peak / 64) * 100);
+          $micMeter.style.width = pct.toFixed(0) + '%';
+          requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      }
+
+      // ====================================================================
+      // WEBSOCKET — connect, reconnect, message demux
+      // ====================================================================
+      function connectAndSend(firstFrame) {
+        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(proto + '//' + location.host + WS_PATH);
+        ws.binaryType = 'arraybuffer';
+        state.ws = ws;
+        ws.addEventListener('open', () => ws.send(JSON.stringify(firstFrame)));
+        ws.addEventListener('message', (ev) => {
+          if (typeof ev.data === 'string') handleServerText(ev.data);
+          else handleServerBinary(new Uint8Array(ev.data));
+        });
+        ws.addEventListener('close', () => {
+          if (state.ws !== ws) return;
+          state.ws = null;
+          if (!scheduleResume() && state.phase === 'app') resetToGate();
+        });
+        ws.addEventListener('error', () => {
+          if (state.phase === 'gate-login' && !sessionStorage.getItem(TOKEN_KEY)) {
+            $loginErr.textContent = 'Connection failed.';
+          }
+        });
+      }
+
+      function scheduleResume() {
+        const token = sessionStorage.getItem(TOKEN_KEY);
+        if (!token) return false;
+        if (state.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return false;
+        const delay = Math.min(500 * Math.pow(2, state.reconnectAttempts), 4000);
+        state.reconnectAttempts++;
+        state.reconnectTimer = setTimeout(() => {
+          state.reconnectTimer = null;
+          connectAndSend({ type: 'resume', token });
+        }, delay);
+        return true;
+      }
+
+      function cancelReconnect() {
+        if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
+        state.reconnectTimer = null;
+        state.reconnectAttempts = 0;
+      }
+
+      function resetToGate() {
+        // Hard reload — simplest correct cleanup for a demo.
+        sessionStorage.removeItem(TOKEN_KEY);
+        location.reload();
+      }
+
+      function handleServerText(raw) {
+        let m;
+        try { m = JSON.parse(raw); } catch { return; }
+        switch (m.type) {
+          case 'logged-in':
+            cancelReconnect();
+            state.username = m.username;
+            state.token = m.token;
+            sessionStorage.setItem(TOKEN_KEY, m.token);
+            enterApp();
+            break;
+          case 'login-failed':
+            cancelReconnect();
+            sessionStorage.removeItem(TOKEN_KEY);
+            try { state.ws?.close(); } catch {}
+            state.ws = null;
+            if (state.phase !== 'app') {
+              $loginErr.textContent = m.reason || 'Login failed';
+              renderGateLogin();
+            } else {
+              resetToGate();
+            }
+            break;
+          case 'directory':
+            state.directory = {
+              users: m.users,
+              groups: m.groups,
+              rooms: m.rooms,
+            };
+            renderUsers(); renderGroups(); renderRooms();
+            break;
+          case 'online-users':
+            state.onlineUsers = new Set(m.users);
+            renderUsers();
+            break;
+          case 'room-participants':
+            state.roomParticipants.set(m.room, m.users);
+            renderRooms();
+            break;
+          case 'voice-target-ok':
+            // Nothing to do — UI already optimistically updated on press-down.
+            break;
+          case 'voice-target-failed':
+            // Press-down failed: clear active state.
+            console.warn('voice-target-failed', m);
+            clearActiveButton();
+            break;
+          case 'voice-incoming-start':
+            startIncoming(m.from, m.source);
+            break;
+          case 'voice-incoming-end':
+            endIncoming(m.from);
+            break;
+          case 'system': /* informational */ break;
+          default:
+            console.debug('unhandled server msg', m);
+        }
+      }
+
+      function handleServerBinary(buf) {
+        const decoded = decodeIncoming(buf);
+        if (!decoded) return;
+        feedIncoming(decoded.sender, decoded.opus);
+      }
+
+      // ====================================================================
+      // APP ENTRY (post-login)
+      // ====================================================================
+      function enterApp() {
+        state.phase = 'app';
+        $gate.hidden = true;
+        $app.hidden = false;
+        $meName.textContent = state.username;
+        renderUsers(); renderGroups(); renderRooms();
+      }
+
+      // ====================================================================
+      // RENDER — Users (left pane)
+      // ====================================================================
+      function renderUsers() {
+        $userList.replaceChildren(...state.directory.users.map((u) => {
+          const li = document.createElement('li');
+          const dot = document.createElement('span'); dot.className = 'dot';
+          if (state.onlineUsers.has(u)) dot.classList.add('online');
+          li.appendChild(dot);
+          const span = document.createElement('span');
+          span.className = 'username';
+          if (u === state.username) span.classList.add('self');
+          span.textContent = u;
+          li.appendChild(span);
+          if (u !== state.username) {
+            const btn = document.createElement('button');
+            btn.className = 'ptt';
+            btn.textContent = 'PTT';
+            btn.disabled = !state.onlineUsers.has(u);
+            wirePttButton(btn, { mode: 'peer', target: u });
+            li.appendChild(btn);
+          }
+          return li;
+        }));
+      }
+
+      // ====================================================================
+      // RENDER — Groups (center)
+      // ====================================================================
+      function renderGroups() {
+        $groupList.replaceChildren(...state.directory.groups.map((g) => {
+          const card = document.createElement('div');
+          card.className = 'group-card';
+          const head = document.createElement('div');
+          head.className = 'head';
+          const name = document.createElement('span'); name.className = 'name';
+          name.textContent = g.name;
+          head.appendChild(name);
+          card.appendChild(head);
+          const mem = document.createElement('div');
+          mem.className = 'members';
+          mem.textContent = g.members.join(', ');
+          card.appendChild(mem);
+          const btn = document.createElement('button');
+          btn.className = 'ptt-big';
+          btn.textContent = 'Hold to talk';
+          // Only enable if the user is in this group (server would reject otherwise).
+          const isMember = g.members.includes(state.username);
+          btn.disabled = !isMember;
+          if (!isMember) {
+            btn.title = 'You are not a member of this group.';
+          }
+          wirePttButton(btn, { mode: 'group', group: g.name });
+          card.appendChild(btn);
+          return card;
+        }));
+      }
+
+      // ====================================================================
+      // RENDER — Rooms (right)
+      // ====================================================================
+      function renderRooms() {
+        $roomList.replaceChildren(...state.directory.rooms.map((r) => {
+          const wrap = document.createElement('div');
+          wrap.className = 'room';
+          if (state.joinedRooms.has(r)) wrap.classList.add('entered');
+          const head = document.createElement('div'); head.className = 'head';
+          const name = document.createElement('span'); name.className = 'name';
+          name.textContent = r;
+          head.appendChild(name);
+
+          if (state.joinedRooms.has(r)) {
+            const talkBtn = document.createElement('button');
+            talkBtn.className = 'talk';
+            talkBtn.textContent = state.roomTalking.has(r) ? 'Stop' : 'Talk';
+            if (state.roomTalking.has(r)) talkBtn.classList.add('active');
+            talkBtn.addEventListener('click', () => toggleRoomTalk(r));
+            head.appendChild(talkBtn);
+
+            const leaveBtn = document.createElement('button');
+            leaveBtn.className = 'leave';
+            leaveBtn.textContent = 'Leave';
+            leaveBtn.addEventListener('click', () => {
+              if (state.roomTalking.has(r)) toggleRoomTalk(r); // stop first
+              state.joinedRooms.delete(r);
+              state.ws?.send(JSON.stringify({ type: 'room-leave', room: r }));
+              renderRooms();
+            });
+            head.appendChild(leaveBtn);
+          } else {
+            const enterBtn = document.createElement('button');
+            enterBtn.className = 'enter';
+            enterBtn.textContent = 'Enter';
+            enterBtn.addEventListener('click', () => {
+              state.joinedRooms.add(r);
+              state.ws?.send(JSON.stringify({ type: 'room-enter', room: r }));
+              renderRooms();
+            });
+            head.appendChild(enterBtn);
+          }
+          wrap.appendChild(head);
+
+          const parts = state.roomParticipants.get(r) ?? [];
+          const partsEl = document.createElement('div');
+          partsEl.className = 'participants';
+          partsEl.textContent = parts.length === 0
+            ? '— empty —'
+            : parts.join(', ');
+          wrap.appendChild(partsEl);
+          return wrap;
+        }));
+      }
+
+      // ====================================================================
+      // PTT button wiring (peer + group).  Press-and-hold semantics.
+      // Pointer events handle mouse + touch + pen uniformly.
+      // ====================================================================
+      function wirePttButton(btn, target) {
+        const begin = (e) => {
+          e.preventDefault();
+          if (btn.disabled) return;
+          beginPress(target, btn);
+          // Capture pointer so up-events outside the button still fire.
+          if (e.pointerId !== undefined) btn.setPointerCapture(e.pointerId);
+        };
+        const end = (e) => {
+          e.preventDefault();
+          endPress(btn);
+        };
+        btn.addEventListener('pointerdown', begin);
+        btn.addEventListener('pointerup', end);
+        btn.addEventListener('pointercancel', end);
+        btn.addEventListener('pointerleave', (e) => {
+          // Only end if the press wasn't pointer-captured.
+          if (btn.classList.contains('active') && !btn.hasPointerCapture?.(e.pointerId)) end(e);
+        });
+      }
+
+      let activeBtn = null;
+
+      function clearActiveButton() {
+        if (activeBtn) {
+          activeBtn.classList.remove('active');
+          activeBtn = null;
+        }
+      }
+
+      function beginPress(target, btn) {
+        if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+        if (state.currentTarget) endPress(activeBtn); // stop any prior press
+        state.currentTarget = target;
+        activeBtn = btn;
+        btn.classList.add('active');
+        // Send target selection before the first audio chunk.
+        state.ws.send(JSON.stringify({ type: 'voice-target', ...target }));
+        startMicRecording();
+      }
+
+      function endPress(btn) {
+        stopMicRecording();
+        if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+          state.ws.send(JSON.stringify({ type: 'voice-stop' }));
+        }
+        state.currentTarget = null;
+        if (btn) btn.classList.remove('active');
+        if (activeBtn === btn) activeBtn = null;
+      }
+
+      // ====================================================================
+      // ROOM TALK toggle (open-mic).  Different from PTT — stays on until
+      // user toggles off or leaves the room.
+      // ====================================================================
+      function toggleRoomTalk(room) {
+        if (state.roomTalking.has(room)) {
+          state.roomTalking.delete(room);
+          stopMicRecording();
+          state.ws?.send(JSON.stringify({ type: 'voice-stop' }));
+          state.currentTarget = null;
+        } else {
+          // Open a new mic stream targeted at the room.
+          state.roomTalking.add(room);
+          state.currentTarget = { mode: 'room', room };
+          state.ws?.send(JSON.stringify({ type: 'voice-target', mode: 'room', room }));
+          startMicRecording();
+        }
+        renderRooms();
+      }
+
+      // ====================================================================
+      // MIC CAPTURE — fresh MediaRecorder per press / per room-talk session.
+      // The first chunk of each MediaRecorder run carries the WebM init
+      // segment; subsequent chunks are media segments.  Receivers count
+      // on this — a fresh `voice-incoming-start` per stream begins a
+      // fresh `MediaSource` whose first append is the init.
+      // ====================================================================
+      function startMicRecording() {
+        if (state.micRecorder) {
+          try { state.micRecorder.stop(); } catch {}
+          state.micRecorder = null;
+        }
+        if (!state.micStream) return;
+
+        const rec = new MediaRecorder(state.micStream, { mimeType: MIME_OPUS });
+        rec.addEventListener('dataavailable', async (e) => {
+          if (!e.data || e.data.size === 0) return;
+          if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+          try {
+            const buf = await e.data.arrayBuffer();
+            state.ws.send(buf);
+          } catch (err) {
+            console.warn('mic send failed', err);
+          }
+        });
+        rec.addEventListener('error', (err) => console.warn('MediaRecorder error', err));
+        rec.start(TIMESLICE_MS);
+        state.micRecorder = rec;
+      }
+
+      function stopMicRecording() {
+        if (state.micRecorder) {
+          try { state.micRecorder.stop(); } catch {}
+          state.micRecorder = null;
+        }
+      }
+
+      // ====================================================================
+      // PLAYBACK — per-sender MediaSource + SourceBuffer.  Each
+      // `voice-incoming-start` creates a fresh pipeline; each
+      // `voice-incoming-end` closes it.  Binary frames in between are
+      // decoded by `frameCodec.decodeIncoming` and routed by sender.
+      // ====================================================================
+      function startIncoming(from, source) {
+        // Defensive: if there's already an entry, tear it down first.
+        if (state.incoming.has(from)) endIncoming(from);
+
+        const audioEl = document.createElement('audio');
+        audioEl.autoplay = true;
+        const ms = new MediaSource();
+        audioEl.src = URL.createObjectURL(ms);
+        $audioBus.appendChild(audioEl);
+
+        const entry = {
+          mediaSource: ms, sourceBuffer: null, audioEl,
+          queue: [], mimeReady: false, source,
+          objectUrl: audioEl.src,
+        };
+        state.incoming.set(from, entry);
+        ms.addEventListener('sourceopen', () => {
+          try {
+            const sb = ms.addSourceBuffer(MIME_OPUS);
+            sb.mode = 'sequence';
+            sb.addEventListener('updateend', () => drainQueue(entry));
+            sb.addEventListener('error', (e) => console.warn('SourceBuffer error', e));
+            entry.sourceBuffer = sb;
+            entry.mimeReady = true;
+            drainQueue(entry);
+          } catch (e) {
+            console.warn('addSourceBuffer failed', e);
+          }
+        });
+        state.talkingByMe.add(from);
+        renderTalking();
+      }
+
+      function feedIncoming(from, opus) {
+        const entry = state.incoming.get(from);
+        if (!entry) return;
+        // Copy: opus is a subarray view onto a larger buffer that may be
+        // reclaimed; SourceBuffer wants its own buffer.
+        const copy = new Uint8Array(opus.byteLength);
+        copy.set(opus);
+        entry.queue.push(copy);
+        drainQueue(entry);
+      }
+
+      function drainQueue(entry) {
+        if (!entry.mimeReady || !entry.sourceBuffer) return;
+        if (entry.sourceBuffer.updating) return;
+        const next = entry.queue.shift();
+        if (!next) return;
+        try {
+          entry.sourceBuffer.appendBuffer(next);
+        } catch (e) {
+          // Out-of-quota etc.: drop the chunk; next updateend will retry.
+          console.warn('appendBuffer threw', e);
+        }
+      }
+
+      function endIncoming(from) {
+        const entry = state.incoming.get(from);
+        if (!entry) return;
+        state.incoming.delete(from);
+        state.talkingByMe.delete(from);
+        renderTalking();
+        try {
+          if (entry.sourceBuffer && !entry.sourceBuffer.updating) {
+            entry.mediaSource.endOfStream();
+          }
+        } catch {}
+        // Tear down after a small grace so the buffer flushes audibly.
+        setTimeout(() => {
+          try { URL.revokeObjectURL(entry.objectUrl); } catch {}
+          try { entry.audioEl.remove(); } catch {}
+        }, 1500);
+      }
+
+      function renderTalking() {
+        if (state.talkingByMe.size === 0) {
+          $talking.textContent = 'no incoming audio';
+        } else {
+          const names = [...state.talkingByMe].map((n) => {
+            const entry = state.incoming.get(n);
+            const src = entry?.source;
+            if (src?.kind === 'group') return `${n} (group: ${src.group})`;
+            if (src?.kind === 'room')  return `${n} (room: ${src.room})`;
+            return n;
+          });
+          $talking.textContent = '🔊 ' + names.join(' · ');
+        }
+      }
+    </script>
+  </body>
+</html>
