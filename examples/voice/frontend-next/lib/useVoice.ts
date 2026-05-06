@@ -90,7 +90,12 @@ interface IncomingEntry {
   mediaSource: MediaSource;
   sourceBuffer: SourceBuffer | null;
   audioEl: HTMLAudioElement;
-  queue: Uint8Array[];
+  // The queue holds copies created via `new Uint8Array(byteLength)` — those are
+  // always backed by a plain `ArrayBuffer`, never `SharedArrayBuffer`.  Without
+  // pinning the generic, Next.js's strict tsc rejects `appendBuffer(item)`
+  // because the wider `Uint8Array<ArrayBufferLike>` could (in principle) be a
+  // SAB view.
+  queue: Uint8Array<ArrayBuffer>[];
   mimeReady: boolean;
   source: IncomingSource;
   objectUrl: string;
