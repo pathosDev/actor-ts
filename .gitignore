@@ -30,6 +30,11 @@ examples/voice/data/
 examples/voice/frontend-*/node_modules/
 examples/voice/frontend-*/dist/
 examples/voice/frontend-*/.next/
+examples/voice/frontend-*/out/
+examples/voice/frontend-*/build/
+examples/voice/frontend-*/.angular/
+examples/voice/frontend-*/.svelte-kit/
+
 examples/chat/frontend-*/out/
 examples/chat/frontend-*/build/
 examples/chat/frontend-*/.angular/
