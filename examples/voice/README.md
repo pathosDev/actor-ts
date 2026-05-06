@@ -93,17 +93,22 @@ Inbound from client: raw Opus, no header (the server knows the sender from sessi
 
 ## Frontends
 
-| Frontend               | Status   | Notes                                          |
-|------------------------|----------|------------------------------------------------|
-| [`frontend-plain/`](frontend-plain/) | ✅ ready | Single `index.html` under `static/plain/`. The reference implementation — all three modes, mic level meter, per-sender playback. |
-| `frontend-svelte/`     | TODO     | Will mirror the chat sample's SvelteKit setup with `MediaRecorder`+`MediaSource` instead of plain text. |
-| `frontend-react/`      | TODO     | React + Vite, custom `useVoice()` hook. |
-| `frontend-next/`       | TODO     | Next.js App Router, static-export. |
-| `frontend-angular/`    | TODO     | Standalone components, signal-driven state. |
-| `frontend-lit/`        | TODO     | Lit Web Components. |
+All six talk the same WebSocket protocol against the same backend:
 
-The wire protocol + frame codec are stable; adding more frontends
-is mechanical translation of the plain-HTML reference.
+| Frontend                                    | Build step                          | Notes                                                                                                  |
+|---------------------------------------------|-------------------------------------|--------------------------------------------------------------------------------------------------------|
+| [`frontend-plain/`](frontend-plain/)        | none — `static/plain/index.html`    | Reference implementation — all three modes, mic level meter, per-sender playback in vanilla JS.        |
+| [`frontend-lit/`](frontend-lit/)            | none — `static/lit/index.html`      | Lit 3 from the `esm.sh` CDN.  Same UI shape, threaded through `LitElement` reactive properties.        |
+| [`frontend-svelte/`](frontend-svelte/)      | `npm run build` (vite + adapter)    | Svelte 5 runes (`$state`).  Voice store at `src/lib/voice.svelte.ts`.                                  |
+| [`frontend-react/`](frontend-react/)        | `npm run build` (vite)              | React 19 SPA, `useVoice()` hook.                                                                       |
+| [`frontend-next/`](frontend-next/)          | `npm run build` (`output: 'export'`)| Next.js App Router, hydration-safe `hydrated` flag, identical hook to the React sibling.               |
+| [`frontend-angular/`](frontend-angular/)    | `npm run build` (`@angular/build`)  | Angular 21 standalone components, signal-driven state via `VoiceService`.                              |
+
+The shipped artefacts under `static/` are committed for `plain` and
+`lit` (no build) and otherwise produced by each frontend's own build
+script (output paths are matched in `static/svelte/`, `static/react/`,
+`static/next/`, `static/angular/`).  The wire protocol + frame codec
+are the source of truth shared between all six.
 
 ## Audio under the hood
 
