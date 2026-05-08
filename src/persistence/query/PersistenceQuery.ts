@@ -50,24 +50,28 @@ export interface PersistenceQuery {
   ): Promise<PersistentEvent<E>[]>;
 
   /**
-   * Live stream of every event tagged with `tag` whose offset is
+   * Live stream of every event matching `filter` whose offset is
    * `>= fromOffset`.  Yields events ordered by `(timestamp,
    * persistenceId, sequenceNr)`.  See {@link Offset} for offset
    * semantics — the stream emits the offset alongside the event so
    * the consumer can persist progress.
+   *
+   * `filter` accepts either a single tag string (back-compat shortcut
+   * for `{ all: [tag] }`) or a {@link TagFilter} object that combines
+   * `all` (intersect), `any` (union), and `not` (exclusion) operators.
    */
   eventsByTag<E>(
-    tag: string,
+    filter: TagFilter,
     fromOffset: Offset,
     options?: LiveQueryOptions,
   ): AsyncIterable<TaggedEvent<E>>;
 
   /**
-   * One-shot read of every event tagged with `tag` whose offset is
-   * `>= fromOffset`.
+   * One-shot read of every event matching `filter` whose offset is
+   * `>= fromOffset`.  See {@link TagFilter} for the operator semantics.
    */
   currentEventsByTag<E>(
-    tag: string,
+    filter: TagFilter,
     fromOffset: Offset,
   ): Promise<TaggedEvent<E>[]>;
 
@@ -157,4 +161,84 @@ export function offsetOfEvent<E>(ev: PersistentEvent<E>): Offset {
 export interface TaggedEvent<E = unknown> {
   readonly event: PersistentEvent<E>;
   readonly offset: Offset;
+}
+
+/**
+ * Tag-filter spec for `eventsByTag` / `currentEventsByTag`.  A bare
+ * string is shorthand for `{ all: [tag] }`; the object form combines
+ * three operators that all apply to the same query:
+ *
+ *   - `all`  — intersection: every listed tag must appear on the event.
+ *   - `any`  — union:        at least one listed tag must appear.
+ *   - `not`  — exclusion:    no listed tag may appear on the event.
+ *
+ * **Empty-list semantics (∀ / ∃ / ∄ over the given list):**
+ *
+ *   - `all: []` and `not: []` impose no constraint (vacuously true).
+ *   - `any: []` matches **nothing** (no event has a tag in the empty
+ *     set) — the only "footgun" worth calling out.
+ *
+ * Operators compose by AND: `{ all: ['type:Order'], not: ['archived'] }`
+ * matches order events that are not archived.  Backends that ship a
+ * tag index (SQLite, Cassandra) push as much of the filter as they
+ * can into the storage layer and JS-refine the rest; the InMemory
+ * reference does the whole match in JS.
+ */
+export type TagFilter = string | TagFilterSpec;
+
+/**
+ * Object form of {@link TagFilter}.  Each operator is optional; an
+ * empty `{}` matches every event.  See `TagFilter` for the empty-list
+ * semantics.
+ */
+export interface TagFilterSpec {
+  readonly all?: ReadonlyArray<string>;
+  readonly any?: ReadonlyArray<string>;
+  readonly not?: ReadonlyArray<string>;
+}
+
+/**
+ * Normalise a {@link TagFilter} into the canonical {@link TagFilterSpec}
+ * form.  A bare string `t` becomes `{ all: [t] }`; an object is
+ * shallow-copied so callers can't mutate it after the fact.
+ */
+export function normalizeTagFilter(filter: TagFilter): TagFilterSpec {
+  if (typeof filter === 'string') return { all: [filter] };
+  return {
+    all: filter.all,
+    any: filter.any,
+    not: filter.not,
+  };
+}
+
+/**
+ * Test whether `eventTags` satisfies `filter`.  Used by every
+ * `PersistenceQuery` implementation as the in-memory refinement step
+ * after the storage layer's coarse pre-filter.  Empty `all` / `not`
+ * are no-ops; empty `any` matches nothing (see {@link TagFilter}).
+ */
+export function eventMatchesTagFilter(
+  eventTags: ReadonlyArray<string> | undefined,
+  filter: TagFilterSpec,
+): boolean {
+  const tags = eventTags ?? [];
+  if (filter.all && filter.all.length > 0) {
+    for (const t of filter.all) {
+      if (!tags.includes(t)) return false;
+    }
+  }
+  if (filter.any !== undefined) {
+    if (filter.any.length === 0) return false; // ∃ over ∅ ≡ false
+    let anyMatch = false;
+    for (const t of filter.any) {
+      if (tags.includes(t)) { anyMatch = true; break; }
+    }
+    if (!anyMatch) return false;
+  }
+  if (filter.not && filter.not.length > 0) {
+    for (const t of filter.not) {
+      if (tags.includes(t)) return false;
+    }
+  }
+  return true;
 }

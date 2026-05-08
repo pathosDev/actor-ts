@@ -2,12 +2,16 @@ import type { Journal } from '../Journal.js';
 import type { JournalEventBus } from '../JournalEventBus.js';
 import type { PersistentEvent } from '../JournalTypes.js';
 import {
+  eventMatchesTagFilter,
+  normalizeTagFilter,
   offsetCompare,
   offsetGreater,
   offsetOfEvent,
   type LiveQueryOptions,
   type Offset,
   type PersistenceQuery,
+  type TagFilter,
+  type TagFilterSpec,
   type TaggedEvent,
 } from './PersistenceQuery.js';
 
@@ -59,14 +63,15 @@ export class InMemoryQuery implements PersistenceQuery {
   /* ------------------------------ by tag -------------------------------- */
 
   async currentEventsByTag<E>(
-    tag: string, fromOffset: Offset,
+    filter: TagFilter, fromOffset: Offset,
   ): Promise<TaggedEvent<E>[]> {
+    const spec = normalizeTagFilter(filter);
     const out: TaggedEvent<E>[] = [];
     const pids = await this.journal.persistenceIds();
     for (const pid of pids) {
       const events = await this.journal.read<E>(pid, 1);
       for (const ev of events) {
-        if (!ev.tags?.includes(tag)) continue;
+        if (!eventMatchesTagFilter(ev.tags, spec)) continue;
         const offset = offsetOfEvent(ev);
         if (offsetCompare(offset, fromOffset) < 0) continue;
         out.push({ event: ev, offset });
@@ -77,11 +82,12 @@ export class InMemoryQuery implements PersistenceQuery {
   }
 
   eventsByTag<E>(
-    tag: string, fromOffset: Offset, options: LiveQueryOptions = {},
+    filter: TagFilter, fromOffset: Offset, options: LiveQueryOptions = {},
   ): AsyncIterable<TaggedEvent<E>> {
+    const spec = normalizeTagFilter(filter);
     const bus = this.journal.events;
     if (bus) {
-      return pushStreamByTag<E>(this, tag, fromOffset, bus);
+      return pushStreamByTag<E>(this, spec, fromOffset, bus);
     }
     const pollIntervalMs = options.pollIntervalMs ?? 1_000;
     const self = this;
@@ -89,7 +95,7 @@ export class InMemoryQuery implements PersistenceQuery {
       const cursor = lastEmitted ? lastEmitted.offset : fromOffset;
       // Strict ">" here so we don't redeliver the last emitted event;
       // currentEventsByTag uses ">=" because it's the first call.
-      const all = await self.currentEventsByTag<E>(tag, cursor);
+      const all = await self.currentEventsByTag<E>(spec, cursor);
       return lastEmitted
         ? all.filter((te) => offsetGreater(te.offset, cursor))
         : all;
@@ -179,13 +185,13 @@ function pushStreamByPid<E>(
 }
 
 /**
- * Push-driven stream by tag.  Same shape as `pushStreamByPid` but
- * dedup is on the composite `Offset` instead of a single sequence
- * number, and the catch-up scans every persistenceId for matching
- * tags.
+ * Push-driven stream by tag-filter.  Same shape as `pushStreamByPid`
+ * but dedup is on the composite `Offset` instead of a single sequence
+ * number, and the catch-up scans every persistenceId for events
+ * satisfying the filter.
  */
 function pushStreamByTag<E>(
-  query: InMemoryQuery, tag: string, fromOffset: Offset, bus: JournalEventBus,
+  query: InMemoryQuery, spec: TagFilterSpec, fromOffset: Offset, bus: JournalEventBus,
 ): AsyncIterable<TaggedEvent<E>> {
   return {
     [Symbol.asyncIterator](): AsyncIterator<TaggedEvent<E>> {
@@ -210,12 +216,12 @@ function pushStreamByTag<E>(
       };
 
       const onPublish = (ev: PersistentEvent<unknown>): void => {
-        if (!ev.tags?.includes(tag)) return;
+        if (!eventMatchesTagFilter(ev.tags, spec)) return;
         emit({ event: ev as PersistentEvent<E>, offset: offsetOfEvent(ev) });
       };
       const unsubscribe = bus.subscribe(onPublish);
 
-      void query.currentEventsByTag<E>(tag, fromOffset).then((all) => {
+      void query.currentEventsByTag<E>(spec, fromOffset).then((all) => {
         for (const te of all) emit(te);
       }).catch((err) => {
         // eslint-disable-next-line no-console

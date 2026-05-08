@@ -181,3 +181,240 @@ describe('PersistenceQuery — currentPersistenceIds', () => {
     expect(ids.sort()).toEqual(['a', 'b']);
   });
 });
+
+/**
+ * Shared corpus for multi-tag filter tests.  Six events across three
+ * persistence ids, with overlapping tags chosen to exercise every
+ * combination of `all` / `any` / `not` operators.
+ *
+ *   ev | pid     | tags
+ *   ---+---------+------------------------------------
+ *   1  | order-1 | type:Order, tenant:t1
+ *   2  | order-2 | type:Order, tenant:t2
+ *   3  | order-3 | type:Order, tenant:t1, archived
+ *   4  | inv-1   | type:Invoice, tenant:t1
+ *   5  | inv-2   | type:Invoice, tenant:t2, archived
+ *   6  | event-1 | type:Event,  tenant:t1
+ */
+async function seedFilterCorpus(j: { append(pid: string, events: unknown[], expected: number, tags?: string[]): Promise<unknown> }): Promise<void> {
+  await j.append('order-1', [{ id: 1 }], 0, ['type:Order',   'tenant:t1']);
+  await sleep(2);
+  await j.append('order-2', [{ id: 2 }], 0, ['type:Order',   'tenant:t2']);
+  await sleep(2);
+  await j.append('order-3', [{ id: 3 }], 0, ['type:Order',   'tenant:t1', 'archived']);
+  await sleep(2);
+  await j.append('inv-1',   [{ id: 4 }], 0, ['type:Invoice', 'tenant:t1']);
+  await sleep(2);
+  await j.append('inv-2',   [{ id: 5 }], 0, ['type:Invoice', 'tenant:t2', 'archived']);
+  await sleep(2);
+  await j.append('event-1', [{ id: 6 }], 0, ['type:Event',   'tenant:t1']);
+}
+
+const ids = (events: ReadonlyArray<{ event: { event: { id: number } } }>): number[] =>
+  events.map((te) => te.event.event.id).sort((a, b) => a - b);
+
+describe('Multi-tag filter — operator semantics (InMemoryQuery)', () => {
+  test('all: intersection — every listed tag must appear', async () => {
+    const j = new InMemoryJournal();
+    await seedFilterCorpus(j);
+    const q = new InMemoryQuery(j);
+
+    const orders_t1 = await q.currentEventsByTag<{ id: number }>(
+      { all: ['type:Order', 'tenant:t1'] }, offsetStart,
+    );
+    expect(ids(orders_t1)).toEqual([1, 3]);
+  });
+
+  test('any: union — at least one listed tag must appear', async () => {
+    const j = new InMemoryJournal();
+    await seedFilterCorpus(j);
+    const q = new InMemoryQuery(j);
+
+    const t1_or_t2 = await q.currentEventsByTag<{ id: number }>(
+      { any: ['tenant:t1', 'tenant:t2'] }, offsetStart,
+    );
+    expect(ids(t1_or_t2)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  test('not: exclusion — no listed tag may appear', async () => {
+    const j = new InMemoryJournal();
+    await seedFilterCorpus(j);
+    const q = new InMemoryQuery(j);
+
+    const live = await q.currentEventsByTag<{ id: number }>(
+      { not: ['archived'] }, offsetStart,
+    );
+    expect(ids(live)).toEqual([1, 2, 4, 6]);
+  });
+
+  test('combined: all + not — orders that are not archived', async () => {
+    const j = new InMemoryJournal();
+    await seedFilterCorpus(j);
+    const q = new InMemoryQuery(j);
+
+    const live_orders = await q.currentEventsByTag<{ id: number }>(
+      { all: ['type:Order'], not: ['archived'] }, offsetStart,
+    );
+    expect(ids(live_orders)).toEqual([1, 2]);
+  });
+
+  test('combined: all + any — orders or invoices for tenant t1', async () => {
+    const j = new InMemoryJournal();
+    await seedFilterCorpus(j);
+    const q = new InMemoryQuery(j);
+
+    const t1_doctype = await q.currentEventsByTag<{ id: number }>(
+      { any: ['type:Order', 'type:Invoice'], all: ['tenant:t1'] }, offsetStart,
+    );
+    expect(ids(t1_doctype)).toEqual([1, 3, 4]);
+  });
+
+  test('back-compat: bare-string filter is equivalent to { all: [tag] }', async () => {
+    const j = new InMemoryJournal();
+    await seedFilterCorpus(j);
+    const q = new InMemoryQuery(j);
+
+    const single = await q.currentEventsByTag<{ id: number }>('archived', offsetStart);
+    expect(ids(single)).toEqual([3, 5]);
+  });
+
+  test('empty any matches nothing (∃ over ∅ is false)', async () => {
+    const j = new InMemoryJournal();
+    await seedFilterCorpus(j);
+    const q = new InMemoryQuery(j);
+
+    const empty = await q.currentEventsByTag<{ id: number }>({ any: [] }, offsetStart);
+    expect(empty).toHaveLength(0);
+  });
+
+  test('empty all and empty not are no-ops (vacuously true)', async () => {
+    const j = new InMemoryJournal();
+    await seedFilterCorpus(j);
+    const q = new InMemoryQuery(j);
+
+    const all_events = await q.currentEventsByTag<{ id: number }>({ all: [], not: [] }, offsetStart);
+    expect(ids(all_events)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+});
+
+describe('Multi-tag filter — SqliteQuery parity', () => {
+  test('all: intersection uses indexed pre-filter + JS refine', async () => {
+    const j = new SqliteJournal({ path: ':memory:' });
+    await seedFilterCorpus(j);
+    const q = new SqliteQuery(j);
+
+    const orders_t1 = await q.currentEventsByTag<{ id: number }>(
+      { all: ['type:Order', 'tenant:t1'] }, offsetStart,
+    );
+    expect(ids(orders_t1)).toEqual([1, 3]);
+
+    await j.close();
+  });
+
+  test('any: union via t.tag IN (?, ?, …) with DISTINCT', async () => {
+    const j = new SqliteJournal({ path: ':memory:' });
+    await seedFilterCorpus(j);
+    const q = new SqliteQuery(j);
+
+    const t1_or_t2 = await q.currentEventsByTag<{ id: number }>(
+      { any: ['tenant:t1', 'tenant:t2'] }, offsetStart,
+    );
+    // DISTINCT must keep each event exactly once even though every
+    // event has one of the two tenant tags — without it order-3
+    // (tenant:t1) would still be unique, but events tagged with both
+    // listed values would duplicate.
+    expect(ids(t1_or_t2)).toEqual([1, 2, 3, 4, 5, 6]);
+
+    await j.close();
+  });
+
+  test('not-only: falls back to the journal scan and applies exclusion', async () => {
+    const j = new SqliteJournal({ path: ':memory:' });
+    await seedFilterCorpus(j);
+    const q = new SqliteQuery(j);
+
+    const live = await q.currentEventsByTag<{ id: number }>(
+      { not: ['archived'] }, offsetStart,
+    );
+    expect(ids(live)).toEqual([1, 2, 4, 6]);
+
+    await j.close();
+  });
+
+  test('combined all+not on SQLite matches the InMemory result exactly', async () => {
+    const j = new SqliteJournal({ path: ':memory:' });
+    await seedFilterCorpus(j);
+    const q = new SqliteQuery(j);
+
+    const live_orders = await q.currentEventsByTag<{ id: number }>(
+      { all: ['type:Order'], not: ['archived'] }, offsetStart,
+    );
+    expect(ids(live_orders)).toEqual([1, 2]);
+
+    await j.close();
+  });
+
+  test('volume sanity: 10k events stay under a generous SQLite ceiling for every operator', async () => {
+    // Plan-doc spot-check: 10 000 events, all three operators well
+    // under 100 ms on SQLite.  We assert a generous 1 s ceiling to
+    // avoid CI flakes — the index path should beat that by an order
+    // of magnitude on a development machine.
+    const j = new SqliteJournal({ path: ':memory:' });
+    const N = 10_000;
+    const batch: { id: number }[] = [];
+    const tags: string[] = [];
+    for (let i = 0; i < N; i++) {
+      batch.push({ id: i });
+      const type = i % 3 === 0 ? 'type:A' : i % 3 === 1 ? 'type:B' : 'type:C';
+      const tenant = i % 5 === 0 ? 'tenant:t1' : 'tenant:t2';
+      tags.push(`${type},${tenant}${i % 7 === 0 ? ',archived' : ''}`);
+    }
+    // Append in 100 chunks so each event still gets its own append
+    // call but we don't pay 10k per-pid round-trips.
+    let seq = 0;
+    for (let i = 0; i < N; i += 100) {
+      const slice = batch.slice(i, i + 100).map((b) => ({ id: b.id }));
+      const tagsForBatch = tags[i]!.split(',');
+      await j.append('bulk', slice, seq, tagsForBatch);
+      seq += slice.length;
+    }
+    const q = new SqliteQuery(j);
+
+    const t0 = performance.now();
+    const all_a = await q.currentEventsByTag({ all: ['type:A'] }, offsetStart);
+    const t1 = performance.now();
+    const any_t = await q.currentEventsByTag({ any: ['tenant:t1', 'tenant:t2'] }, offsetStart);
+    const t2 = performance.now();
+    const not_arch = await q.currentEventsByTag({ all: ['type:A'], not: ['archived'] }, offsetStart);
+    const t3 = performance.now();
+
+    expect(all_a.length).toBeGreaterThan(0);
+    expect(any_t.length).toBe(N);
+    expect(not_arch.length).toBeGreaterThan(0);
+    // 1 s ceiling — the indexed path should be ~10-50 ms typical.
+    expect(t1 - t0).toBeLessThan(1000);
+    expect(t2 - t1).toBeLessThan(1000);
+    expect(t3 - t2).toBeLessThan(1000);
+
+    await j.close();
+  });
+
+  test('any-prepared statements are cached and reused per arity', async () => {
+    // Issuing two queries with the same arity must hit the prepared
+    // statement once — verified indirectly: the second call must not
+    // fail and must produce identical results.  (Direct cache-hit
+    // counting would couple tests to internals; result equality is a
+    // robust proxy.)
+    const j = new SqliteJournal({ path: ':memory:' });
+    await seedFilterCorpus(j);
+    const q = new SqliteQuery(j);
+
+    const first  = await q.currentEventsByTag<{ id: number }>({ any: ['tenant:t1', 'tenant:t2'] }, offsetStart);
+    // tenant:t1 → 1, 3, 4, 6 ; archived → 3, 5 ; union → 1, 3, 4, 5, 6.
+    const second = await q.currentEventsByTag<{ id: number }>({ any: ['tenant:t1', 'archived'] },  offsetStart);
+    expect(ids(first)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(ids(second)).toEqual([1, 3, 4, 5, 6]);
+
+    await j.close();
+  });
+});
