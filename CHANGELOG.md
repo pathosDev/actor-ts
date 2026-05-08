@@ -7,7 +7,134 @@ This is a pre-1.0 hobby project — every minor version is potentially
 breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 "What's in here / What isn't" for current scope honesty.
 
-## [0.6.0] — 2026-04-30
+## [0.6.0] — 2026-05-08
+
+### Added — sample apps (chat, voice, six frontends each)
+
+- `examples/chat/` — clustered chat app on a 3-node TCP cluster:
+  sharded persistent rooms (`ChatRoomActor` + SQLite journal),
+  `OnlineUsersActor` via DistributedData + DistributedPubSub,
+  cluster-singleton HTTP front door (auto-failover ~5–10 s), six
+  frontends (Plain, Lit, Svelte, React, Next.js, Angular) sharing
+  one `protocol.ts` over the wire.
+- `examples/voice/` — distributed voice server: 1:1 PTT, group, and
+  Teams-style rooms; `MediaRecorder` + `MediaSource` per-sender
+  audio relay over WebSocket binary frames; same six-frontend
+  matrix.  Plain HTML frontend gates `getUserMedia` on
+  `isSecureContext` so Safari quirks surface upfront.
+- Chat sample now uses snapshots — `ChatRoomActor.snapshotPolicy`
+  via `everyNEvents(100)` + `SqliteSnapshotStore` (#102), and
+  optional TLS / WSS via `--tls-cert` / `--tls-key`
+  (Fastify `https` option threaded through `FastifyBackend`),
+  with frontends auto-switching to `wss:` based on
+  `location.protocol` (#101).
+
+### Added — observability bridges to industry-standard SDKs
+
+- `promClientRegistry({ client, registry, namePrefix? })` in
+  `src/metrics/PromClientAdapter.ts` — bridges the framework's
+  `MetricsRegistry` to a user-owned `prom-client` registry so app
+  + framework metrics share one `/metrics` endpoint.  Structural
+  typing on `PromClientLike` keeps `prom-client` an optional peer
+  dep with no hard `import` (#64).
+- `otelTracer({ api, tracer?, tracerName?, tracerVersion? })` in
+  `src/tracing/OtelAdapter.ts` — bridges the framework's `Tracer`
+  to `@opentelemetry/api`.  W3C `traceparent` cross-actor /
+  cross-cluster propagation; `SpanKind` / `SpanStatusCode` mapping
+  via lookup tables; same structural-typing approach so the OTel
+  SDK stays optional (#63).
+- README documents both adapters with end-to-end snippets in a new
+  "Observability — Prometheus + OpenTelemetry" section.  See also
+  `examples/management/prom-client-shared.ts` and
+  `otel-jaeger.ts`.
+
+### Added — persistence query: multi-tag filter
+
+- `eventsByTag` accepts a `TagFilter` object combining three
+  operators (#90):
+    - `all: [...]` — intersect (every listed tag must appear).
+    - `any: [...]` — union (at least one listed tag must appear).
+    - `not: [...]` — exclusion (no listed tag may appear).
+  A bare string stays a back-compat shorthand for `{ all: [tag] }`.
+- `InMemoryQuery` does the whole match in JS.  `SqliteQuery` pushes
+  the filter into SQL — `JOIN events_tags` for `all`, `IN (?,?,…)`
+  with `DISTINCT` for `any`, JS-refines `not`.  Prepared statements
+  cached per arity.
+- `CassandraQuery` follows the same three strategies once the new
+  optional `events_by_tag` side table is populated (`useTagIndex:
+  true` on `CassandraJournal`).  DDL + dual-write per `(event, tag)`
+  pair, exposed via `tagIndexDdl` (#44).
+
+### Added — cluster lifecycle: TTL tombstones + LRU sharding
+
+- Cluster-member tombstone pruning (#75) — `Member.removedAt`
+  travels in gossip; new `tombstoneTtlMs` (24 h),
+  `tombstonePruneIntervalMs` (5 min), `tombstoneMinRetentionMs`
+  (`6 × downAfterMs`) settings; `mergeMember` rejects expired
+  tombstones from gossip so a slow peer can't resurrect addresses
+  already pruned cluster-wide.
+- ClusterSharding `maxEntities` cap with LRU passivation (#82) —
+  when the local region is at capacity, the entity with the oldest
+  `lastActivity` is passivated to make room.  Default `0` (no
+  cap, current behaviour); already-passivating entities don't
+  count toward the cap.
+- Cassandra-backed `RememberEntitiesStore` (#84) — state-based
+  schema (`(type_name, shard_id, entity_id) → started_at`),
+  partition-by-type for atomic whole-partition `clear`.  Both
+  `JournalRememberEntitiesStore` and `CassandraRememberEntitiesStore`
+  now exported from `cluster/index.ts`.
+
+### Added — framework primitives: FSM, supervision, throttle
+
+- `PersistentFSM.stateTimeout` (#65) — declare a per-state
+  `_timeout: { afterMs, event, next, guard? }` to auto-fire a
+  transition when no command moves the FSM out within the window.
+  Routes the timeout fire through the actor mailbox via a magic
+  self-tell so it serialises cleanly with concurrent commands;
+  recovery re-arms the timer relative to wall-clock at recovery
+  completion.
+- `PersistentFSM` multi-event transitions (#66) — `event` in the
+  transitions table accepts `Event[]` (or a function returning one)
+  alongside the single-Event form.  Multiple events persist
+  atomically via `persistAll`; final-state vs `next` check fires
+  against the post-replay state.
+- `BackoffSupervisor.triggerOn: 'failure' | 'stop' | 'any'` (#68)
+  — split crash-only vs clean-stop respawn (mirrors Akka's
+  `Backoff.onFailure` / `Backoff.onStop`).  Default `'any'` keeps
+  the v1 behaviour.
+- `BackoffSupervisor.forwardDuringGrace: false` (#67) — opt-in
+  strict gate: messages arriving in the post-respawn grace window
+  stash until the child confirms it survived `drainGraceMs`.  Fixes
+  the dead-letter cascade described in the issue at the cost of
+  `drainGraceMs` of latency on the first message after each
+  respawn.
+- `context.throttle({ qps, burst, onExcess: 'pause' | 'drop' })`
+  per-actor token-bucket rate limiter (#83).  New `TokenBucket`
+  utility class (`src/util/TokenBucket.ts`) — pure, clock-injected,
+  refill-on-read.  System messages bypass the gate so lifecycle
+  stays responsive under tight throttles.
+- `EventStream.subscribe(actor, channel, predicate)` overload
+  (#85) — predicate-filtered subscriptions, evaluated before
+  delivery; throwing predicates are treated as no-match and the
+  bus stays alive for other subscribers.
+
+### Added — broker actors: long-running handler heartbeat
+
+- `KafkaActor` `heartbeat` command + `withAutoHeartbeat` helper
+  (#78) — long manual-commit handlers can periodically tell
+  `{ kind: 'heartbeat', topic, partition, offset }` to bump
+  kafkajs's session-deadline mid-processing.  The convenience
+  helper wraps a body in a `setInterval` that fires the cmd at
+  ~1/3 of session-timeout.
+
+### Added — DX: CONTRIBUTING.md
+
+- New `CONTRIBUTING.md` covers the workflow this project actually
+  uses: setup, test layout (unit / multi-node / smoke /
+  cross-runtime), commit conventions, the multi-issue close-syntax
+  gotcha (`Closes #N. Closes #M.` — separate keywords required),
+  Co-Authored-By trailer convention, pre-1.0 release stance, code
+  style (#92, #77).
 
 ### Added — multi-node test harness + cluster sharding hardening
 
@@ -127,6 +254,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- `DistributedPubSubMediator` — gossip frame trimmed to topic
+  names only (#80).  The `entries` field used to be `Record<string,
+  string[]>` carrying every local subscriber's actor path per
+  topic, but `handleGossip` discarded the path lists; bytes are
+  now proportional to topic count, not subscriber count.  Audit
+  tests pin the boundedness contract: 100 sub/unsub cycles on
+  the same topic leave both `topics` and the gossip frame at
+  zero entries.
+- `FilesystemObjectStorageBackend` is multi-process safe (#19) —
+  drops the in-memory etag map (disk is canonical via
+  deterministic FNV-1a content hash) and serialises CAS via
+  per-key `<key>.lock` files created with `fs.writeFile(...,
+  { flag: 'wx' })`.  Body writes are atomic via temp + rename;
+  Windows quirks (`EPERM` / `EBUSY` during NTFS deletion-pending
+  states) recognised as benign retry signals; stale locks
+  (>30 s default) reclaimed automatically.  Includes a Bun-spawn-
+  based multi-process test as the integration check.
 - `DistributedPubSubMediator` — eager broadcast on subscribe /
   unsubscribe.  The previous "one random peer per gossip tick"
   scheme had a probabilistic gap (~3 % per 5-tick window) where
@@ -136,6 +280,10 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   anti-entropy.  Eliminated CI flake on
   `tests/multi-node/pubsub-cross-node.test.ts` and
   `tests/multi-node/parallel-pubsub.test.ts`.
+- `tests/multi-node/cluster-router.test.ts` — replaced the tight
+  5 s `waitFor(() => total === 21)` predicate with a "3 readings
+  stable" stability check + 15 s timeout, covering CI variance
+  when other multi-node test files run in parallel (#76).
 - Five small correctness items batched together: `tests/unit/util/
   Option.test.ts` typecheck:dev failure (#17), eager peer-dep
   validation at object-storage plugin-init for every codec
