@@ -47,6 +47,23 @@ export interface ShardingSettings<TMsg> {
   readonly rememberEntities?: boolean;
   /** Notify the region after an entity has been idle this many ms.  */
   readonly passivationIdleMs?: number;
+  /**
+   * Cap the number of locally-hosted entities (#82).  When the region
+   * is about to spawn a new entity and the existing count is already
+   * `maxEntities`, the entity with the oldest `lastActivity` is
+   * passivated — same code path users invoke manually via
+   * {@link Passivate}.  Useful for unbounded entity sets (per-user
+   * sessions, IoT devices, …) where a memory cap per node matters
+   * more than keeping every cold entity resident.
+   *
+   * Default: `0` (no cap).  Eviction runs only when `> 0`.
+   *
+   * Note: passivation is asynchronous, so during the brief window
+   * between "stop the LRU" and "Terminated arrives" the region may
+   * hold `maxEntities + 1` entities; the cap is a steady-state
+   * upper bound rather than a strict instantaneous one.
+   */
+  readonly maxEntities?: number;
 }
 
 export interface ShardRegionConfig<TMsg> {
@@ -59,6 +76,7 @@ export interface ShardRegionConfig<TMsg> {
   readonly proxy: boolean;
   readonly rememberEntities: boolean;
   readonly passivationIdleMs: number;
+  readonly maxEntities: number;
   readonly cluster: Cluster;
   readonly localResolver: (path: string) => ActorRef | null;
 }
@@ -124,6 +142,7 @@ export class ShardRegion<TMsg = unknown> extends Actor<TMsg | ShardingMessage | 
       proxy: s.proxy ?? false,
       rememberEntities: s.rememberEntities ?? false,
       passivationIdleMs: s.passivationIdleMs ?? 0,
+      maxEntities: s.maxEntities ?? 0,
       cluster,
       localResolver,
     };
@@ -220,12 +239,51 @@ export class ShardRegion<TMsg = unknown> extends Actor<TMsg | ShardingMessage | 
         state.passivating.push(message);
         return;
       }
+      this.evictLruIfAtCapacity();
       state = this.createEntity(shardId, entityId);
     }
     state.lastActivity = Date.now();
     // Forward the original sender so that ask-pattern replies bypass the
     // region and reach the caller directly.
     state.ref.tell(message as never, sender);
+  }
+
+  /**
+   * If `maxEntities` is set and the region is at capacity, passivate
+   * the entity with the oldest `lastActivity` to make room for a new
+   * one (#82).  Already-passivating entities don't count toward
+   * capacity (they'll be removed once Terminated arrives), and the
+   * eviction itself uses the same `passivating: []` + `ref.stop()`
+   * dance as `passivationSweep` so the journal-aware shutdown path is
+   * identical for idle-timeout and capacity-driven evictions.
+   *
+   * The cap is a steady-state upper bound: between stopping the LRU
+   * and the Terminated message landing, the region briefly holds
+   * `maxEntities + 1` entities.  Acceptable trade-off vs blocking the
+   * incoming message until passivation actually completes.
+   */
+  private evictLruIfAtCapacity(): void {
+    if (this.cfg.maxEntities <= 0) return;
+    let liveCount = 0;
+    let oldestId: string | null = null;
+    let oldestActivity = Number.POSITIVE_INFINITY;
+    for (const [id, s] of this.entities) {
+      if (s.passivating) continue;
+      liveCount++;
+      if (s.lastActivity < oldestActivity) {
+        oldestActivity = s.lastActivity;
+        oldestId = id;
+      }
+    }
+    if (liveCount < this.cfg.maxEntities) return;
+    if (oldestId === null) return;
+    const victim = this.entities.get(oldestId)!;
+    this.log.debug(
+      `[sharding] LRU passivation: evicting '${oldestId}' (idle for ${Date.now() - oldestActivity}ms, `
+      + `cap ${this.cfg.maxEntities} reached)`,
+    );
+    victim.passivating = [];
+    victim.ref.stop();
   }
 
   private deliverRemote(node: NodeAddress, path: string, message: TMsg, sender: ActorRef | null): void {
