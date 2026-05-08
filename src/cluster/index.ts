@@ -105,6 +105,20 @@ export { ShardCoordinator } from './sharding/ShardCoordinator.js';
 export type { ShardCoordinatorSettings } from './sharding/ShardCoordinator.js';
 export { Passivate } from './sharding/Passivate.js';
 export {
+  JournalRememberEntitiesStore,
+} from './sharding/RememberEntitiesStore.js';
+export type {
+  RememberEntitiesStore,
+  RememberEvent,
+} from './sharding/RememberEntitiesStore.js';
+export {
+  CassandraRememberEntitiesStore,
+  rememberEntitiesDdl,
+} from './sharding/CassandraRememberEntitiesStore.js';
+export type {
+  CassandraRememberEntitiesStoreOptions,
+} from './sharding/CassandraRememberEntitiesStore.js';
+export {
   HashAllocationStrategy,
   LeastShardAllocationStrategy,
 } from './sharding/AllocationStrategy.js';

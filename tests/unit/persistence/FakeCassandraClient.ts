@@ -247,6 +247,10 @@ function primaryKeys(row: Row): string[] {
   if ('tag' in row && 'timestamp' in row && 'persistence_id' in row && 'sequence_nr' in row) {
     return ['tag', 'timestamp', 'persistence_id', 'sequence_nr'];
   }
+  if ('type_name' in row && 'shard_id' in row && 'entity_id' in row) {
+    // remember_entities (#84) — composite (type_name, shard_id, entity_id).
+    return ['type_name', 'shard_id', 'entity_id'];
+  }
   if ('partition_nr' in row && 'sequence_nr' in row && 'persistence_id' in row) {
     return ['persistence_id', 'partition_nr', 'sequence_nr'];
   }
