@@ -1,6 +1,6 @@
 {
   "name": "actor-ts",
-  "version": "0.2.0",
+  "version": "0.6.0",
   "description": "An actor-model framework for TypeScript — runs on Bun, Node.js and Deno",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
