@@ -555,6 +555,7 @@ Dozens of runnable examples live in [`examples/`](./examples/):
 | `examples/io/jetstream-orders.ts`                  | NATS JetStream durable consumer         |
 | `examples/management/prometheus-endpoint.ts`       | Prometheus `/metrics` over `Bun.serve`  |
 | `examples/management/prom-client-shared.ts`        | bridge framework metrics into a `prom-client` registry the app already owns |
+| `examples/management/otel-jaeger.ts`               | bridge framework tracing into the real `@opentelemetry/api` SDK + OTLP exporter |
 | `examples/management/opentelemetry-tracing.ts`     | OTel-style spans across actor hops      |
 | `examples/pubsub/chat-mediator.ts`                 | topic-based pub-sub                     |
 | `examples/http/rest-service.ts`                    | REST CRUD on a sharded entity (Fastify) |

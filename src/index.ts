@@ -137,6 +137,7 @@ export {
   decodeTraceparent,
   newTraceId,
   newSpanId,
+  otelTracer,
 } from './tracing/index.js';
 export type {
   Tracer,
@@ -149,6 +150,15 @@ export type {
   TraceCarrier,
   RecordedSpan,
   RecordingTracerOptions,
+  OtelAdapterOptions,
+  OtelApiLike,
+  OtelContextApi,
+  OtelContextLike,
+  OtelPropagationApi,
+  OtelSpanContextLike,
+  OtelSpanLike,
+  OtelTraceApi,
+  OtelTracerLike,
 } from './tracing/index.js';
 
 // System messages
