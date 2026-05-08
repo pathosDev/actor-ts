@@ -25,3 +25,15 @@ export {
   TracingExtensionId,
   tracerOf,
 } from './TracingExtension.js';
+export { otelTracer } from './OtelAdapter.js';
+export type {
+  OtelAdapterOptions,
+  OtelApiLike,
+  OtelContextApi,
+  OtelContextLike,
+  OtelPropagationApi,
+  OtelSpanContextLike,
+  OtelSpanLike,
+  OtelTraceApi,
+  OtelTracerLike,
+} from './OtelAdapter.js';
