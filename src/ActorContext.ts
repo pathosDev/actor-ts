@@ -101,6 +101,57 @@ export interface ActorContext<TMsg = unknown> {
    * string keys and are automatically cancelled when the actor stops.
    */
   readonly timers: TimerScheduler<TMsg>;
+
+  /* --------------------------- Rate limiting ---------------------------- */
+
+  /**
+   * Throttle this actor's user-message processing to a token-bucket
+   * rate (#83).  Every dequeue from the user mailbox consumes one
+   * token; when the bucket is empty the cell behaves per
+   * {@link ThrottleOnExcess}.  System messages (Terminated,
+   * supervision, watchNotify) are NOT throttled — they always run
+   * immediately, so timer fires and lifecycle events stay
+   * responsive.
+   *
+   * Calling `throttle` again replaces the existing limiter; pass
+   * `{ qps: Infinity }` or call {@link cancelThrottle} to remove one.
+   *
+   * Cluster-aware variants (split a budget across cluster-router
+   * routees, etc.) are out of scope here — this is per-actor only.
+   */
+  throttle(opts: ThrottleOptions): void;
+
+  /** Remove any active throttle, restoring unlimited dequeue rate. */
+  cancelThrottle(): void;
+}
+
+/**
+ * What to do with a user message dequeued while the actor's
+ * {@link ActorContext.throttle | throttle} bucket is empty.
+ */
+export type ThrottleOnExcess =
+  /**
+   * *(default)* Don't dequeue — pause the message-pump until tokens
+   * replenish, then resume normally.  Natural backpressure: the
+   * mailbox queues up, every message eventually processes, latency
+   * grows under load.
+   */
+  | 'pause'
+  /**
+   * Dequeue the message and discard it (with a debug log).  Useful
+   * for telemetry-style traffic where staleness is worse than loss.
+   */
+  | 'drop';
+
+export interface ThrottleOptions {
+  /** Token-refill rate, tokens per second.  Required; must be > 0. */
+  readonly qps: number;
+  /** Bucket capacity.  Default: `qps` (one second of refill). */
+  readonly burst?: number;
+  /** What to do when the bucket is empty.  Default: `'pause'`. */
+  readonly onExcess?: ThrottleOnExcess;
+  /** Time source — pass a deterministic clock for tests.  Default: `Date.now`. */
+  readonly now?: () => number;
 }
 
 /**

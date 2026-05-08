@@ -2,6 +2,8 @@ import type { Actor } from '../Actor.js';
 import {
   type ActorContext,
   type Receive,
+  type ThrottleOnExcess,
+  type ThrottleOptions,
   type TimerScheduler,
   StashOutsideHandlerError,
   StashOverflowError,
@@ -35,6 +37,7 @@ import type { SystemCommand } from './SystemCommand.js';
 import type { Cancellable } from '../Scheduler.js';
 import { match } from 'ts-pattern';
 import { fromNullable, type Option } from '../util/Option.js';
+import { TokenBucket } from '../util/TokenBucket.js';
 
 const DEFAULT_STASH_CAPACITY = 1024;
 
@@ -78,6 +81,12 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
   private _currentEnvelope: Envelope<TMsg> | null = null;
   private _stashBuffer: Array<Envelope<TMsg>> = [];
   private readonly _stashCapacity: number = DEFAULT_STASH_CAPACITY;
+
+  /** Active throttle, if any.  See `throttle()` / `cancelThrottle()`. */
+  private _throttleBucket: TokenBucket | null = null;
+  private _throttleOnExcess: ThrottleOnExcess = 'pause';
+  /** Pending pause-mode resume, so we don't double-schedule. */
+  private _throttleResumeTimer: Cancellable | null = null;
 
   /** Per-actor timer scheduler. */
   readonly timers: TimerScheduler<TMsg> = new CellTimerScheduler<TMsg>(this);
@@ -212,6 +221,70 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
 
   get stashSize(): number { return this._stashBuffer.length; }
 
+  /* ------------------------- Rate limiting (#83) ------------------------ */
+
+  throttle(opts: ThrottleOptions): void {
+    this._throttleBucket = new TokenBucket({
+      qps: opts.qps,
+      burst: opts.burst,
+      now: opts.now,
+    });
+    this._throttleOnExcess = opts.onExcess ?? 'pause';
+    // Switching configs invalidates any pending pause-resume timer
+    // (the new bucket may already have tokens) — let the next run()
+    // make a fresh decision.
+    this._throttleResumeTimer?.cancel();
+    this._throttleResumeTimer = null;
+    // If the actor was paused before, kick the pump so it re-evaluates
+    // against the new (potentially looser) limit.
+    if (this.state === 'running' && this.mailbox.hasMessages()) {
+      this.schedule();
+    }
+  }
+
+  cancelThrottle(): void {
+    this._throttleBucket = null;
+    this._throttleResumeTimer?.cancel();
+    this._throttleResumeTimer = null;
+    if (this.state === 'running' && this.mailbox.hasMessages()) {
+      this.schedule();
+    }
+  }
+
+  /**
+   * Decide what to do with a user message dequeued while the throttle
+   * bucket is empty.  Returns `true` if the message was disposed of
+   * (drop / re-queued for pause), `false` only as a defensive fallback
+   * if state is already terminal.
+   */
+  private handleThrottleExcess(env: Envelope<TMsg>): boolean {
+    if (!this._throttleBucket) return false; // can't happen in practice
+    if (this._throttleOnExcess === 'drop') {
+      this.log.debug(
+        `actor throttle: bucket empty in 'drop' mode — discarding message`,
+        { message: env.message },
+      );
+      return true;
+    }
+    // 'pause' mode — put the message back at the head of the mailbox
+    // and schedule a resume tick when tokens are due.  No new run()
+    // is dispatched until the timer fires (or someone else schedules
+    // us, which is fine: tryConsume will fail again, message goes
+    // back, timer re-arms idempotently).
+    this.mailbox.prependUser([env]);
+    if (this._throttleResumeTimer) return true; // already armed
+    const waitMs = Math.max(1, this._throttleBucket.timeUntilNext(1));
+    this._throttleResumeTimer = this.system.scheduler.scheduleOnceFn(
+      waitMs, () => {
+        this._throttleResumeTimer = null;
+        if (this.state === 'running' && this.mailbox.hasMessages()) {
+          this.schedule();
+        }
+      },
+    );
+    return true;
+  }
+
   /* ============================== Internal API ============================== */
 
   /** @internal */ isTerminated(): boolean { return this.state === 'terminated'; }
@@ -283,7 +356,24 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
 
       if (this.state === 'running') {
         const env = this.mailbox.dequeueUser();
-        if (env) await this.handleUserMessage(env);
+        if (env) {
+          // Throttle gate (#83) — applies only to user messages, never
+          // to system commands (those ran above and must stay
+          // responsive for lifecycle / supervision / Terminated).
+          if (this._throttleBucket && !this._throttleBucket.tryConsume(1)) {
+            const handled = this.handleThrottleExcess(env);
+            // 'pause' returns the message to the head of the mailbox
+            // and reschedules; 'drop' silently consumes it.  Either
+            // way we don't run the user handler this turn.
+            if (!handled) {
+              // Defensive: 'drop' returned but we still want to
+              // re-schedule if there's more queued.
+              return;
+            }
+          } else {
+            await this.handleUserMessage(env);
+          }
+        }
       }
     } finally {
       this.processing = false;
@@ -359,6 +449,10 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
     // actor cannot schedule new messages into a mailbox that's about to
     // drain to dead letters.
     this.timers.cancelAll();
+    // Cancel any pending throttle-resume tick — same reasoning as the
+    // user timers above.
+    this._throttleResumeTimer?.cancel();
+    this._throttleResumeTimer = null;
     try {
       await this.actor?.postStop();
     } catch (e) {
