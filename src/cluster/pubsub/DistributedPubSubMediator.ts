@@ -209,10 +209,15 @@ export class DistributedPubSubMediator extends Actor<
   }
 
   private buildGossip(): PubSubGossipMsg {
-    const entries: Record<string, string[]> = {};
+    // Only topic names — the receiver doesn't use the per-topic
+    // subscriber lists (it only tracks "node N has at least one
+    // subscriber for topic T"), so omitting them keeps the wire
+    // payload proportional to the topic count, not the subscriber
+    // count.  See `handleGossip` for the consuming side.
+    const entries: string[] = [];
     for (const [topic, set] of this.topics) {
       if (set.local.size === 0) continue;
-      entries[topic] = Array.from(set.local.keys());
+      entries.push(topic);
     }
     return {
       t: 'pubsub-gossip',
@@ -230,10 +235,9 @@ export class DistributedPubSubMediator extends Actor<
       set.remoteNodes.delete(senderAddr);
       if (set.local.size === 0 && set.remoteNodes.size === 0) this.topics.delete(topic);
     }
-    for (const [topic, _subs] of Object.entries(msg.entries)) {
+    for (const topic of msg.entries) {
       const set = this.getOrCreateSet(topic);
       set.remoteNodes.add(senderAddr);
-      void _subs;
     }
   }
 
