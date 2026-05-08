@@ -14,9 +14,11 @@ compare their feel side-by-side.
 
 - **TCP cluster** of three Bun processes joined via gossip.
 - **`ChatRoomActor`** — one per room, **sharded** across the cluster
-  via `ClusterSharding` and **persistent** via `SqliteJournal`.  Every
-  posted message is appended to the journal; messages survive a full
-  cluster restart.
+  via `ClusterSharding` and **persistent** via `SqliteJournal` +
+  `SqliteSnapshotStore`.  Every posted message is appended to the
+  journal; recovery replays from the latest snapshot (taken every
+  100 events) plus the tail, so a room with 10k messages cold-starts
+  in O(100 events read) regardless of total history length.
 - **HTTP front door = `ClusterSingleton`** — exactly one node binds
   the public port (`8080`) at any time.  When that node dies a
   surviving node takes over the bind automatically.  Same URL for
@@ -258,7 +260,6 @@ ClusterSingleton + HttpIngressActor fail-over end to end.
 - TLS / WSS (plain HTTP for local demo).
 - Production-grade auth (no bcrypt, no session expiry, no CSRF).
 - Reconnect-resume after network blip.
-- Snapshot-based recovery — pure event replay today.
 - Read-receipts.
 
 ## Files

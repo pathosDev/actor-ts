@@ -33,6 +33,7 @@ import {
   PersistenceExtensionId,
   Props,
   SqliteJournal,
+  SqliteSnapshotStore,
 } from '../../../src/index.js';
 import { DistributedDataId } from '../../../src/crdt/index.js';
 import { DistributedPubSubId } from '../../../src/cluster/pubsub/index.js';
@@ -102,12 +103,22 @@ async function main(): Promise<void> {
     `chat node starting · cluster=${cfg.host}:${port} · http=${cfg.host}:${cfg.httpPort} (singleton)${seedSummary}`,
   );
 
-  // -------- 3. Persistence: SQLite journal under data-dir --------
+  // -------- 3. Persistence: SQLite journal + snapshot store -----------
+  // Snapshot store keeps `ChatRoomActor` recovery bounded: without it,
+  // a long-running room replays the entire journal slice on every cold
+  // start (the room's snapshot policy fires every 100 events — see the
+  // actor for the rationale).  Both stores share a `data-dir` and the
+  // same DB-file family.
   fs.mkdirSync(cfg.dataDir, { recursive: true });
   const journalPath = path.join(cfg.dataDir, 'chat.db');
+  const snapshotPath = path.join(cfg.dataDir, 'chat-snapshots.db');
   const journal = new SqliteJournal({ path: journalPath, wal: true });
-  system.extension(PersistenceExtensionId).setJournal(journal);
+  const snapshotStore = new SqliteSnapshotStore({ path: snapshotPath, keepN: 3 });
+  const persistence = system.extension(PersistenceExtensionId);
+  persistence.setJournal(journal);
+  persistence.setSnapshotStore(snapshotStore);
   system.log.info(`SQLite journal · ${journalPath}`);
+  system.log.info(`SQLite snapshot store · ${snapshotPath} (keepN=3)`);
 
   // -------- 4. Cluster.join --------
   const cluster = await Cluster.join(system, {
@@ -190,6 +201,7 @@ async function main(): Promise<void> {
       // before terminate.
       await cluster.leave();
       await journal.close();
+      await snapshotStore.close();
       await system.terminate();
     } catch (e) {
       system.log.warn(`shutdown error: ${(e as Error).message}`);

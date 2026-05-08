@@ -23,7 +23,9 @@
 import { match } from 'ts-pattern';
 import {
   PersistentActor,
+  everyNEvents,
   type ActorRef,
+  type SnapshotPolicy,
 } from '../../../../src/index.js';
 import { DistributedPubSubId } from '../../../../src/cluster/pubsub/index.js';
 import { Publish } from '../../../../src/cluster/pubsub/Messages.js';
@@ -32,6 +34,16 @@ import type { RoomName } from '../../shared/rooms.js';
 
 /** In-memory history cap.  Older events stay in the journal. */
 export const HISTORY_LIMIT = 200;
+
+/**
+ * Snapshot cadence — one persisted snapshot per N events posted.
+ * Bounded by `HISTORY_LIMIT` so each snapshot is at most that many
+ * messages (~ a few dozen KB JSON).  100 is a balance between
+ * snapshot churn and recovery time: at 1 message/sec a room takes
+ * 100s to accumulate enough events for a snapshot to be worth it,
+ * and recovery scans at most 100 events even after a long uptime.
+ */
+export const SNAPSHOT_EVERY_N_EVENTS = 100;
 
 /* --------------------------- public messages --------------------------- */
 
@@ -115,6 +127,21 @@ export class ChatRoomActor extends PersistentActor<ChatRoomCmd, ChatEvent, ChatS
 
   initialState(): ChatState {
     return { history: [] };
+  }
+
+  /**
+   * Take a snapshot every {@link SNAPSHOT_EVERY_N_EVENTS} events.
+   * Without this, recovery rescans the whole journal slice for the
+   * room's `persistenceId` on every cold start — fine for a few
+   * dozen messages, painful for an active room with thousands.
+   *
+   * The state is small (`HISTORY_LIMIT` capped to 200 messages) so
+   * each snapshot is well under a kilobyte; storing one every 100
+   * events bounds replay work to ≤ 100 events + 1 snapshot read
+   * regardless of total room age.
+   */
+  override snapshotPolicy(): SnapshotPolicy<ChatState, ChatEvent> {
+    return everyNEvents(SNAPSHOT_EVERY_N_EVENTS);
   }
 
   onEvent(state: ChatState, e: ChatEvent): ChatState {
