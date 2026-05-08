@@ -240,6 +240,13 @@ function samePrimaryKey(a: Row, b: Row): boolean {
 }
 
 function primaryKeys(row: Row): string[] {
+  // Match more-specific shapes FIRST — `events_by_tag`'s composite key
+  // is a strict superset of the `all_persistence_ids` `(tag, pid)`
+  // pair, so the latter would otherwise mis-collapse two distinct
+  // events under the same tag into one row.
+  if ('tag' in row && 'timestamp' in row && 'persistence_id' in row && 'sequence_nr' in row) {
+    return ['tag', 'timestamp', 'persistence_id', 'sequence_nr'];
+  }
   if ('partition_nr' in row && 'sequence_nr' in row && 'persistence_id' in row) {
     return ['persistence_id', 'partition_nr', 'sequence_nr'];
   }
