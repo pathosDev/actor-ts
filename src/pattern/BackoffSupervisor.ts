@@ -1,7 +1,11 @@
 import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
 import { Props } from '../Props.js';
-import { stoppingStrategy, type SupervisorStrategy } from '../Supervision.js';
+import {
+  Directive,
+  OneForOneStrategy,
+  type SupervisorStrategy,
+} from '../Supervision.js';
 import { Terminated } from '../SystemMessages.js';
 import {
   type BackoffPolicy,
@@ -80,6 +84,28 @@ export type ForwardStrategy =
   /** Drop them silently (the supervisor logs at debug level). */
   | 'drop';
 
+/**
+ * Which terminations should trigger a respawn (#68).  Mirrors Akka's
+ * split between `Backoff.onFailure` and `Backoff.onStop`:
+ *
+ *   - `'any'` *(default)* — respawn on every termination, whether the
+ *     child crashed (uncaught throw) or stopped itself cleanly
+ *     (`context.stop(self)`, `PoisonPill`, parent-driven stop).  This
+ *     is the original v1 (#48) behaviour.
+ *   - `'failure'` — respawn only when the child crashed.  A clean
+ *     self-stop is taken as "this child is done"; the supervisor
+ *     itself stops afterwards instead of spawning a replacement.
+ *   - `'stop'` — the inverse: respawn only on clean stops (e.g. a
+ *     transient connection actor that periodically tears itself
+ *     down).  Crashes propagate "up" by stopping the supervisor.
+ *
+ * Matching is on the **last termination only** — the supervisor
+ * re-arms its tracking on every respawn, so a string of crashes
+ * followed by a clean stop in `'failure'` mode would respawn through
+ * each crash and then stop on the clean stop.
+ */
+export type TerminationTrigger = 'any' | 'failure' | 'stop';
+
 export interface BackoffOptions<T> {
   /** How to construct the child. */
   readonly childProps: Props<T>;
@@ -99,6 +125,12 @@ export interface BackoffOptions<T> {
   readonly resetCounter?: ResetCounter;
   /** What to do with messages while the child is dead.  Default `'stash'`. */
   readonly forward?: ForwardStrategy;
+  /**
+   * Which terminations should trigger a respawn.  Default `'any'`
+   * (current v1 behaviour: respawn on crash AND on clean stop).
+   * See {@link TerminationTrigger} for the three modes.
+   */
+  readonly triggerOn?: TerminationTrigger;
   /** Stash buffer size (only when `forward === 'stash'`).  Default 1000. */
   readonly maxStashSize?: number;
   /**
@@ -146,6 +178,15 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
   private readonly resetThresholdMs: number | null;
   private readonly drainGraceMs: number;
   private readonly clock: () => number;
+  private readonly triggerOn: TerminationTrigger;
+  /**
+   * Set by the supervisor's decider (#68) on the way to `Stop` so
+   * `handleTerminated` can distinguish a crash-driven termination from
+   * a clean self-stop.  Reset after every Terminated handling so a
+   * stale "true" can't be carried over into the next incarnation's
+   * lifecycle.
+   */
+  private lastTerminationWasFailure = false;
 
   /** The currently-live child, or `null` while we're in a backoff window. */
   private currentChild: ActorRef<T> | null = null;
@@ -187,16 +228,27 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
       this.drainGraceMs = Math.min(50, opts.minBackoff);
     }
     this.clock = opts.clock ?? Date.now;
+    this.triggerOn = opts.triggerOn ?? 'any';
   }
 
   /**
-   * The supervisor's own strategy applied to **its child**.  Forced to
-   * `stoppingStrategy` so a child crash becomes a clean Stop and our
-   * `Terminated` handler — not the cell's restart loop — drives the
-   * respawn cadence.  Users should not override this; configure the
-   * supervisor's parent instead.
+   * The supervisor's own strategy applied to **its child**.  The
+   * decider always returns `Directive.Stop` (so the cell's restart
+   * loop doesn't fight ours), but BEFORE returning it sets
+   * {@link lastTerminationWasFailure} — that's the only place we can
+   * tell "the child crashed" apart from "the child stopped itself
+   * cleanly".  `handleTerminated` reads the flag, applies the
+   * `triggerOn` policy (#68), then resets it.
+   *
+   * Users should not override this; configure the supervisor's parent
+   * instead if you want a different policy for the supervisor itself.
    */
-  override supervisorStrategy(): SupervisorStrategy { return stoppingStrategy; }
+  override supervisorStrategy(): SupervisorStrategy {
+    return new OneForOneStrategy((_err) => {
+      this.lastTerminationWasFailure = true;
+      return Directive.Stop;
+    });
+  }
 
   override preStart(): void {
     this.spawnChild();
@@ -279,6 +331,26 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
     if (!this.currentChild || !t.actor.equals(this.currentChild)) {
       return;
     }
+    // Snapshot + clear the failure flag set by the decider.  Doing it
+    // here (not later) keeps the supervisor's state clean even if the
+    // triggerOn check causes us to stop ourselves and skip the rest.
+    const wasFailure = this.lastTerminationWasFailure;
+    this.lastTerminationWasFailure = false;
+
+    if (!this.shouldRespawn(wasFailure)) {
+      this.log.info('BackoffSupervisor: child terminated, triggerOn rejected — supervisor stops', {
+        child: t.actor.toString(),
+        cause: wasFailure ? 'failure' : 'stop',
+        triggerOn: this.triggerOn,
+      });
+      // Stop ourselves — the parent (or whoever spawned us) gets a
+      // Terminated for the supervisor and decides what to do next.
+      this.currentChild = null;
+      this.context.timers.cancel(DRAIN_TIMER_KEY);
+      this.context.stop(this.self);
+      return;
+    }
+
     const aliveFor = this.clock() - this.spawnTs;
     if (this.resetThresholdMs !== null && aliveFor >= this.resetThresholdMs) {
       this.restartCount = 0;
@@ -296,10 +368,24 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
     );
     this.log.info('BackoffSupervisor: child terminated, respawn scheduled', {
       child: t.actor.toString(),
+      cause: wasFailure ? 'failure' : 'stop',
       delayMs: delay,
       restartCount: this.restartCount,
       aliveMs: aliveFor,
     });
+  }
+
+  /**
+   * Translate the `(triggerOn, wasFailure)` pair into a respawn / stop
+   * decision (#68).  Pure function — easy to unit-test in isolation
+   * if we ever want to.
+   */
+  private shouldRespawn(wasFailure: boolean): boolean {
+    switch (this.triggerOn) {
+      case 'any':     return true;
+      case 'failure': return wasFailure;
+      case 'stop':    return !wasFailure;
+    }
   }
 
   private respawn(): void {

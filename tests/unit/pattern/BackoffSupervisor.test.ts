@@ -298,3 +298,124 @@ describe('BackoffSupervisor — lifecycle', () => {
     })).toThrow(/resetCounter/);
   });
 });
+
+/* ============================================================== */
+/* triggerOn modes (#68)                                          */
+/* ============================================================== */
+
+/** Child that stops itself cleanly the first time it gets a `stop` cmd. */
+type SelfStopMsg = { kind: 'stop' } | { kind: 'crash' } | { kind: 'echo'; value: number };
+
+let lifecycleStops = 0;
+let lifecycleSpawns = 0;
+
+class SelfStopChild extends Actor<SelfStopMsg> {
+  constructor() { super(); lifecycleSpawns += 1; }
+  override onReceive(m: SelfStopMsg): void {
+    if (m.kind === 'stop') {
+      lifecycleStops += 1;
+      // Clean self-stop — parent (the BackoffSupervisor) sees this as
+      // a non-failure termination.  triggerOn='failure' should NOT
+      // respawn; triggerOn='stop' or 'any' SHOULD.
+      this.context.stop(this.self);
+      return;
+    }
+    if (m.kind === 'crash') {
+      throw new Error('intentional crash');
+    }
+    this.sender.toNullable()?.tell(m.value);
+  }
+}
+
+describe('BackoffSupervisor — triggerOn modes (#68)', () => {
+  test('triggerOn=failure: child crash respawns; clean self-stop does NOT', async () => {
+    lifecycleSpawns = 0; lifecycleStops = 0;
+    const sys = newSystem('backoff-trigger-failure');
+    const supervisor = sys.actorOf(
+      BackoffSupervisor.props({
+        childProps: Props.create(() => new SelfStopChild()),
+        minBackoff: 30,
+        maxBackoff: 200,
+        randomFactor: 0,
+        triggerOn: 'failure',
+      }),
+      'sup-failure',
+    );
+    try {
+      // 1) Crash the child — supervisor must respawn (failure matches).
+      supervisor.tell({ kind: 'crash' });
+      await sleep(120);
+      expect(lifecycleSpawns).toBeGreaterThanOrEqual(2); // initial + at least 1 respawn
+
+      // 2) Clean self-stop — supervisor must stop itself, no respawn.
+      const spawnsBeforeStop = lifecycleSpawns;
+      supervisor.tell({ kind: 'stop' });
+      await sleep(120);
+      expect(lifecycleStops).toBe(1);
+      // No respawn happened: spawn count stays put.
+      expect(lifecycleSpawns).toBe(spawnsBeforeStop);
+    } finally {
+      supervisor.stop();
+      await sys.terminate();
+    }
+  }, 5_000);
+
+  test('triggerOn=stop: clean self-stop respawns; child crash does NOT', async () => {
+    lifecycleSpawns = 0; lifecycleStops = 0;
+    const sys = newSystem('backoff-trigger-stop');
+    const supervisor = sys.actorOf(
+      BackoffSupervisor.props({
+        childProps: Props.create(() => new SelfStopChild()),
+        minBackoff: 30,
+        maxBackoff: 200,
+        randomFactor: 0,
+        triggerOn: 'stop',
+      }),
+      'sup-stop',
+    );
+    try {
+      // 1) Clean self-stop — must respawn.
+      supervisor.tell({ kind: 'stop' });
+      await sleep(120);
+      expect(lifecycleStops).toBe(1);
+      expect(lifecycleSpawns).toBeGreaterThanOrEqual(2);
+
+      // 2) Crash — supervisor must stop itself, no respawn.
+      const spawnsBeforeCrash = lifecycleSpawns;
+      supervisor.tell({ kind: 'crash' });
+      await sleep(120);
+      expect(lifecycleSpawns).toBe(spawnsBeforeCrash);
+    } finally {
+      supervisor.stop();
+      await sys.terminate();
+    }
+  }, 5_000);
+
+  test('triggerOn=any (default): both crash AND clean self-stop respawn', async () => {
+    lifecycleSpawns = 0; lifecycleStops = 0;
+    const sys = newSystem('backoff-trigger-any');
+    const supervisor = sys.actorOf(
+      BackoffSupervisor.props({
+        childProps: Props.create(() => new SelfStopChild()),
+        minBackoff: 30,
+        maxBackoff: 200,
+        randomFactor: 0,
+        // triggerOn omitted — default 'any'.
+      }),
+      'sup-any',
+    );
+    try {
+      supervisor.tell({ kind: 'crash' });
+      await sleep(120);
+      const afterCrash = lifecycleSpawns;
+      supervisor.tell({ kind: 'stop' });
+      await sleep(120);
+      // Both terminations triggered respawns: spawn count grew twice.
+      expect(afterCrash).toBeGreaterThanOrEqual(2);
+      expect(lifecycleSpawns).toBeGreaterThan(afterCrash);
+    } finally {
+      supervisor.stop();
+      await sys.terminate();
+    }
+  }, 5_000);
+});
