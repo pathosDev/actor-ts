@@ -111,6 +111,8 @@ export type {
   LiveQueryOptions,
   Offset,
   TaggedEvent,
+  TagFilter,
+  TagFilterSpec,
 } from './query/PersistenceQuery.js';
 export {
   offsetStart,
@@ -118,6 +120,8 @@ export {
   offsetGreater,
   offsetGreaterOrEqual,
   offsetOfEvent,
+  normalizeTagFilter,
+  eventMatchesTagFilter,
 } from './query/PersistenceQuery.js';
 export { InMemoryQuery } from './query/InMemoryQuery.js';
 export { SqliteQuery } from './query/SqliteQuery.js';

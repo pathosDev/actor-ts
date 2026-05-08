@@ -170,6 +170,9 @@ middleware, or in-house clients.
 
 - gRPC reflection / health-service auto-registration
 - A documentation site (README is the source of truth)
+- Indexed `eventsByTag` for `CassandraJournal` — InMemory + SQLite use
+  a tag side-table; Cassandra currently falls back to a client-side
+  journal scan.  Side-table is tracked under #44.
 - Backwards-compatibility guarantees of any kind — pre-1.0
 
 See [`ROADMAP.md`](./ROADMAP.md) for what's coming next and what's
@@ -300,6 +303,37 @@ class Account extends PersistentActor<Cmd, Event, State> {
 
 Swap `SqliteJournal` for `CassandraJournal` (ScyllaDB works too — same CQL
 protocol) for multi-node deployments.
+
+The read-side `PersistenceQuery` walks the journal for projections.
+`eventsByTag` accepts either a bare tag string or a `TagFilter` object
+that combines `all` (intersect), `any` (union), and `not` (exclusion):
+
+```ts
+import { SqliteQuery, offsetStart } from 'actor-ts';
+
+const query = new SqliteQuery(journal);
+
+// Single tag — back-compat shorthand for { all: ['type:Order'] }.
+for await (const te of query.eventsByTag('type:Order', offsetStart)) { /* … */ }
+
+// Intersect: orders for tenant t1 that aren't archived.
+const liveOrders = await query.currentEventsByTag(
+  { all: ['type:Order', 'tenant:t1'], not: ['archived'] },
+  offsetStart,
+);
+
+// Union: any tenant in a set.
+const t1OrT2 = await query.currentEventsByTag(
+  { any: ['tenant:t1', 'tenant:t2'] },
+  offsetStart,
+);
+```
+
+`InMemoryQuery` and `SqliteQuery` push the filter into the storage
+layer (the SQLite path JOINs the indexed tags side-table, with `IN (…)`
+for `any` and JS-refines the rest); `CassandraQuery` currently falls
+back to a client-side journal scan for any tag query — an indexed
+`events_by_tag` side-table for Cassandra is in flight (#44).
 
 ## Object-storage persistence (S3 / MinIO / R2 / filesystem)
 
@@ -470,6 +504,49 @@ sys.extension(PersistenceExtensionId).setSnapshotStore(cached);
 End-to-end example:
 [`examples/cache/redis-rest-service.ts`](examples/cache/redis-rest-service.ts)
 runs offline by default and against Redis with `ACTOR_TS_CACHE=redis`.
+
+## Observability — Prometheus + OpenTelemetry
+
+Framework metrics and traces flow through tiny abstractions
+(`MetricsRegistry`, `Tracer`) so any stack-specific client can plug
+in.  Two thin adapters bridge to the de-facto standard Node libraries
+without forcing them as hard dependencies:
+
+```ts
+import {
+  ActorSystem,
+  MetricsExtensionId,
+  TracingExtensionId,
+  promClientRegistry,
+  otelTracer,
+} from 'actor-ts';
+import * as promClient from 'prom-client';
+import * as otelApi from '@opentelemetry/api';
+
+const sys = ActorSystem.create('app');
+
+// 1. Metrics — share one prom-client Registry between framework and
+//    app code, expose it at a single /metrics endpoint.
+const promReg = new promClient.Registry();
+sys.extension(MetricsExtensionId).setRegistry(
+  promClientRegistry({ client: promClient, registry: promReg }),
+);
+
+// 2. Tracing — funnel framework spans into the real OpenTelemetry SDK
+//    (Jaeger / Tempo / Honeycomb / Datadog via OTLP).  Cross-actor
+//    propagation rides W3C `traceparent` automatically.
+sys.extension(TracingExtensionId).setTracer(
+  otelTracer({ api: otelApi, tracerName: 'my-app' }),
+);
+```
+
+Both adapters are structurally typed against their peer dep — `import
+* as promClient` / `import * as otelApi` is the only place the user
+mentions the library, no `import 'prom-client'` inside `actor-ts`.
+End-to-end recipes (including OTLP-HTTP exporter wiring):
+[`examples/management/prom-client-shared.ts`](examples/management/prom-client-shared.ts)
+and
+[`examples/management/otel-jaeger.ts`](examples/management/otel-jaeger.ts).
 
 ## Message-broker actors (TCP / UDP / MQTT / WebSocket / Kafka / AMQP / gRPC / NATS / Redis-Streams / SSE)
 
