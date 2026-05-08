@@ -28,6 +28,15 @@ export interface MemberData {
   readonly version: number;
   /** Arbitrary role tags used to filter placement (e.g. "backend"). */
   readonly roles?: string[];
+  /**
+   * Wall-clock instant at which the tombstone was created, set only
+   * when `status === 'removed'` (#75).  Travels in gossip so every
+   * peer prunes the tombstone at roughly the same wall-clock time;
+   * absent on non-tombstone members and on tombstones created by
+   * older nodes that pre-date this field — see `mergeMember` for
+   * the back-compat handling.
+   */
+  readonly removedAt?: number;
 }
 
 /**
