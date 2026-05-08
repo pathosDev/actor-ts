@@ -137,14 +137,33 @@ export interface BackoffOptions<T> {
    * Grace period after a respawn before stashed messages are forwarded
    * to the new child.  This protects buffered messages against children
    * that crash in `preStart` — if the child dies during the grace
-   * window, the stash is preserved for the **next** incarnation.  New
-   * messages arriving during the grace window are still forwarded
-   * immediately (no extra latency for the happy path).
+   * window, the stash is preserved for the **next** incarnation.
    *
    * Default: `min(50ms, minBackoff)`.  Set `0` to disable (drain
    * immediately on spawn — the v0 behaviour).
    */
   readonly drainGraceMs?: number;
+  /**
+   * What to do with messages that arrive during the grace window
+   * (after a respawn, before the child has proven it survives
+   * `drainGraceMs`).  Two modes (#67):
+   *
+   *   - `true` *(default)* — v1 behaviour.  New messages forward
+   *     immediately to the about-to-be-confirmed child; if that
+   *     child dies in `preStart`, those forwarded messages
+   *     dead-letter.  Lowest latency on the happy path, accepts
+   *     dead-letters during a preStart-crash cascade.
+   *   - `false` — strict mode.  New messages stash until the grace
+   *     expires, then drain alongside the carry-over stash from the
+   *     previous incarnation.  Costs up to `drainGraceMs` of latency
+   *     on the first messages after a respawn but guarantees nothing
+   *     dead-letters when the child keeps crashing in `preStart`.
+   *     Opt-in to fix the dead-letter cascade described in #67.
+   *
+   * Has no effect when `drainGraceMs === 0` — without a grace there
+   * is no "uncertain" window for the gate to apply to.
+   */
+  readonly forwardDuringGrace?: boolean;
   /** Override `Date.now`/`Math.random` for deterministic tests. */
   readonly clock?: () => number;
 }
@@ -179,6 +198,7 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
   private readonly drainGraceMs: number;
   private readonly clock: () => number;
   private readonly triggerOn: TerminationTrigger;
+  private readonly forwardDuringGrace: boolean;
   /**
    * Set by the supervisor's decider (#68) on the way to `Stop` so
    * `handleTerminated` can distinguish a crash-driven termination from
@@ -187,6 +207,15 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
    * lifecycle.
    */
   private lastTerminationWasFailure = false;
+  /**
+   * `true` once the current child has survived the `drainGraceMs`
+   * window (#67).  Cleared on every spawn + Terminated.  Gates
+   * direct-forwarding of new messages while the child is still in
+   * its uncertain grace period — without the gate, messages arriving
+   * between two failed respawn attempts forward straight into a
+   * crashing child and dead-letter.
+   */
+  private childConfirmedAlive = false;
 
   /** The currently-live child, or `null` while we're in a backoff window. */
   private currentChild: ActorRef<T> | null = null;
@@ -229,6 +258,10 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
     }
     this.clock = opts.clock ?? Date.now;
     this.triggerOn = opts.triggerOn ?? 'any';
+    // Default `true` keeps the v1 fast-forward path; the dead-letter
+    // protection is opt-in (#67) because every respawn would
+    // otherwise pay `drainGraceMs` of latency on the happy path.
+    this.forwardDuringGrace = opts.forwardDuringGrace ?? true;
   }
 
   /**
@@ -266,15 +299,21 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
       return;
     }
     // Internal drain tick — fired drainGraceMs after a respawn.  If
-    // the child is still alive, drain the stash.  If it died in the
-    // meantime, currentChild is null and we leave the stash for the
-    // next incarnation.
+    // the child is still alive, mark it confirmed and drain the
+    // stash.  If it died in the meantime, currentChild is null and
+    // we leave the stash for the next incarnation.
     if (message === DRAIN_TICK) {
-      if (this.currentChild) this.drainStash(this.currentChild);
+      if (this.currentChild) {
+        this.childConfirmedAlive = true;
+        this.drainStash(this.currentChild);
+      }
       return;
     }
-    // User message — forward or stash.
-    if (this.currentChild) {
+    // User message — forward (when confirmed alive) or stash.  The
+    // `forwardDuringGrace` opt-out preserves the v1 behaviour for
+    // users who prefer zero-latency forwarding over the
+    // dead-letter-during-preStart-crash protection (#67).
+    if (this.currentChild && (this.childConfirmedAlive || this.forwardDuringGrace)) {
       this.currentChild.tell(message as T, this.sender.toNullable());
       return;
     }
@@ -310,18 +349,27 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
     this.context.watch(child);
     this.currentChild = child;
     this.spawnTs = this.clock();
-    if (this.stash.length === 0) return;
+    // Reset the alive-confirmation flag.  In the default
+    // `forwardDuringGrace: true` mode this only matters for the
+    // explicit-stash carry-over (the gate doesn't apply); in the
+    // opt-in strict mode it gates new forwards until DRAIN_TICK
+    // flips it back to true.  `drainGraceMs === 0` skips the grace
+    // entirely.
+    this.childConfirmedAlive = this.drainGraceMs === 0;
     if (this.drainGraceMs === 0) {
       this.drainStash(child);
-    } else {
-      // Wait one grace period before draining so a child that crashes
-      // in preStart doesn't take the stash with it to dead-letter.
-      this.context.timers.startSingleTimer(
-        DRAIN_TIMER_KEY,
-        DRAIN_TICK as unknown as never,
-        this.drainGraceMs,
-      );
+      return;
     }
+    // Wait one grace period before flipping confirmedAlive AND
+    // draining the stash — a child that crashes in `preStart`
+    // doesn't take the stash with it to dead-letter, and (with
+    // `forwardDuringGrace: false`, the default) new messages
+    // arriving in the post-respawn window are stashed too.
+    this.context.timers.startSingleTimer(
+      DRAIN_TIMER_KEY,
+      DRAIN_TICK as unknown as never,
+      this.drainGraceMs,
+    );
   }
 
   private handleTerminated(t: Terminated): void {
@@ -346,6 +394,7 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
       // Stop ourselves — the parent (or whoever spawned us) gets a
       // Terminated for the supervisor and decides what to do next.
       this.currentChild = null;
+      this.childConfirmedAlive = false;
       this.context.timers.cancel(DRAIN_TIMER_KEY);
       this.context.stop(this.self);
       return;
@@ -358,6 +407,10 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
     const delay = this.policy.delayFor(this.restartCount);
     this.restartCount += 1;
     this.currentChild = null;
+    // Reset the alive-confirmation flag (#67) — the next spawn starts
+    // its grace window from scratch, and any messages arriving
+    // between now and that spawn must stash, not forward.
+    this.childConfirmedAlive = false;
     // Cancel any pending drain — the child it was waiting on is gone.
     // The stash itself is preserved for the next incarnation.
     this.context.timers.cancel(DRAIN_TIMER_KEY);

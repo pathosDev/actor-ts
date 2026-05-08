@@ -391,6 +391,77 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
     }
   }, 5_000);
 
+  test('forwardDuringGrace=false: messages during a failed-respawn grace survive (#67)', async () => {
+    // Strict mode (opt-in).  preStartCrashCounter=3 → initial spawn
+    // and two more respawns fail in preStart; the fourth succeeds.
+    // Messages sent during those windows must end up at child #4.
+    preStartCrashCounter = { left: 3 };
+    const sys = newSystem('backoff-stash-survives');
+    const replies: number[] = [];
+    const supervisor = sys.actorOf(
+      BackoffSupervisor.props<{ kind: 'echo'; value: number }>({
+        childProps: Props.create(() => new FailingPreStart()),
+        minBackoff: 40,
+        maxBackoff: 400,
+        randomFactor: 0,
+        drainGraceMs: 40,
+        forwardDuringGrace: false, // strict mode — the #67 gate
+      }),
+      'sup-stash-survives',
+    );
+    try {
+      // Stagger asks across the cascade.  With forwardDuringGrace=false,
+      // anything that lands while currentChild is set but unconfirmed
+      // gets stashed — and stays there across subsequent crashes —
+      // until the eventually-successful child drains the queue.
+      const firstAsk = ask<{ kind: 'echo'; value: number }, number>(
+        supervisor, { kind: 'echo', value: 1 }, 4_000,
+      ).then((r) => replies.push(r));
+      await sleep(50);
+      const secondAsk = ask<{ kind: 'echo'; value: number }, number>(
+        supervisor, { kind: 'echo', value: 2 }, 4_000,
+      ).then((r) => replies.push(r));
+      await sleep(50);
+      const thirdAsk = ask<{ kind: 'echo'; value: number }, number>(
+        supervisor, { kind: 'echo', value: 3 }, 4_000,
+      ).then((r) => replies.push(r));
+
+      await Promise.all([firstAsk, secondAsk, thirdAsk]);
+      expect(replies.sort((a, b) => a - b)).toEqual([1, 2, 3]);
+    } finally {
+      supervisor.stop();
+      await sys.terminate();
+    }
+  }, 8_000);
+
+  test('forwardDuringGrace default (true) preserves v1 fast-forward', async () => {
+    // Default mode — confirms the opt-in nature of the strict gate.
+    // A single ask in the happy path round-trips immediately; we
+    // don't pay drainGraceMs of latency for the absence of any
+    // crash.
+    const sys = newSystem('backoff-grace-default');
+    const supervisor = sys.actorOf(
+      BackoffSupervisor.props<{ kind: 'echo'; value: number }>({
+        childProps: Props.create(() => new Flaky()) as unknown as Props<{ kind: 'echo'; value: number }>,
+        minBackoff: 80,
+        maxBackoff: 400,
+        randomFactor: 0,
+        drainGraceMs: 80,
+        // forwardDuringGrace omitted — defaults to true.
+      }),
+      'sup-grace-default',
+    );
+    try {
+      const reply = await ask<{ kind: 'echo'; value: number }, number>(
+        supervisor, { kind: 'echo', value: 7 }, 1_000,
+      );
+      expect(reply).toBe(7);
+    } finally {
+      supervisor.stop();
+      await sys.terminate();
+    }
+  }, 5_000);
+
   test('triggerOn=any (default): both crash AND clean self-stop respawn', async () => {
     lifecycleSpawns = 0; lifecycleStops = 0;
     const sys = newSystem('backoff-trigger-any');
