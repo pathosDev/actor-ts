@@ -72,6 +72,9 @@ export class ActorSystem {
     this.eventStream = new EventStream();
     this.log = settings.logger
       ?? new ConsoleLogger(settings.logLevel ?? logLevelFromConfig(this.config));
+    // Wire the system logger into the bus so a throwing subscriber
+    // predicate (#85) gets surfaced rather than silently dropped.
+    this.eventStream.log = this.log;
     this.deadLetters = new DeadLetterRef(name, this.eventStream);
     this.extensions = new Extensions(this);
 
