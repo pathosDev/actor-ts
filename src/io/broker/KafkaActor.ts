@@ -100,7 +100,23 @@ export type KafkaCmd =
    * restart the same offset will be re-delivered.  The optional
    * `reason` shows up in the actor's warn log.
    */
-  | { readonly kind: 'nack'; readonly topic: string; readonly partition: number; readonly offset: string; readonly reason?: string };
+  | { readonly kind: 'nack'; readonly topic: string; readonly partition: number; readonly offset: string; readonly reason?: string }
+  /**
+   * Bump the consumer's session-deadline mid-processing (#78).
+   * `commitMode: 'manual'` pauses the eachMessage pump until the
+   * handler ack's; if the handler runs longer than the consumer's
+   * `sessionTimeoutMs` (kafkajs default 30 s) the broker evicts the
+   * member, the partition rebalances, and the message is
+   * re-delivered after the rebalance settles.
+   *
+   * `heartbeat` invokes the captured kafkajs `heartbeat()` callback
+   * for the still-pending record, which restarts the session clock
+   * without touching the offset.  Send it periodically from any
+   * handler that's likely to exceed `sessionTimeoutMs / 3`; the
+   * `withAutoHeartbeat()` helper schedules it for you.  Heartbeats
+   * for an unknown / already-committed record are a silent no-op.
+   */
+  | { readonly kind: 'heartbeat'; readonly topic: string; readonly partition: number; readonly offset: string };
 
 /**
  * Kafka producer + consumer in one actor, backed by `kafkajs`.  When
@@ -327,6 +343,7 @@ export class KafkaActor extends BrokerActor<KafkaActorSettings, KafkaCmd, KafkaP
     }
     else if (cmd.kind === 'commit') void this.handleCommit(cmd);
     else if (cmd.kind === 'nack') this.handleNack(cmd);
+    else if (cmd.kind === 'heartbeat') void this.handleHeartbeat(cmd);
   }
 
   /* ----------------------------- internals ------------------------------ */
@@ -363,6 +380,35 @@ export class KafkaActor extends BrokerActor<KafkaActorSettings, KafkaCmd, KafkaP
       pending.fail(err instanceof Error ? err : new Error(String(err)));
     } finally {
       this.pendingCommits.delete(key);
+    }
+  }
+
+  /**
+   * Forward a `heartbeat` command to the captured kafkajs callback —
+   * keeps the record's session-deadline alive without affecting the
+   * offset.  Unknown record (auto-mode, already-committed, expired)
+   * is a silent no-op so handlers can call this unconditionally
+   * without checking `commitMode` or whether the record's commit has
+   * already landed elsewhere.
+   */
+  private async handleHeartbeat(cmd: {
+    readonly topic: string; readonly partition: number; readonly offset: string;
+  }): Promise<void> {
+    const key = pendingKey(cmd.topic, cmd.partition, cmd.offset);
+    const pending = this.pendingCommits.get(key);
+    if (!pending || !pending.heartbeat) {
+      this.log.debug(`KafkaActor: heartbeat for unknown ${key} — ignored`);
+      return;
+    }
+    try {
+      await pending.heartbeat();
+    } catch (err) {
+      // A failing heartbeat shouldn't reject the in-flight commit —
+      // the handler still has a chance to commit/nack normally.  We
+      // just log and let the existing timeout / handler path run.
+      this.log.warn(
+        `KafkaActor: heartbeat call failed for ${key}: ${(err as Error).message}`,
+      );
     }
   }
 
@@ -476,3 +522,61 @@ const kafkaLazy: Lazy<Promise<KafkajsModule>> = Lazy.of(async () => {
     );
   }
 });
+
+/* ========================== heartbeat helper =========================== */
+
+/**
+ * Reference to a Kafka record for use with {@link withAutoHeartbeat} —
+ * exactly the (topic, partition, offset) triple a `KafkaCmd.heartbeat`
+ * command needs.  `KafkaRecord` itself satisfies this shape, so the
+ * `eachMessage` payload from the consumer pump can be passed directly.
+ */
+export interface KafkaRecordRef {
+  readonly topic: string;
+  readonly partition: number;
+  readonly offset: string;
+}
+
+/**
+ * Run `body` while periodically telling `kafka` to heartbeat the
+ * record.  Cancels the timer on success or failure; the body's
+ * resolution / rejection is propagated.  Use this when a manual-commit
+ * handler is likely to exceed the consumer's `sessionTimeoutMs / 3` —
+ * the rule of thumb being three heartbeats per session window so a
+ * single dropped tick doesn't trigger eviction.
+ *
+ * Default `everyMs` is 10 s, suitable for kafkajs's default 30 s
+ * `sessionTimeout`.  If you tuned the consumer's session timeout up,
+ * scale `everyMs` to match.
+ *
+ * @example
+ * ```ts
+ * await withAutoHeartbeat({ kafka, record: rec, everyMs: 5_000 }, async () => {
+ *   await reallySlowDatabaseWork(rec.value);
+ * });
+ * kafka.tell({ kind: 'commit', ...rec });
+ * ```
+ */
+export async function withAutoHeartbeat<T>(
+  args: {
+    readonly kafka: ActorRef<KafkaCmd>;
+    readonly record: KafkaRecordRef;
+    readonly everyMs?: number;
+  },
+  body: () => Promise<T>,
+): Promise<T> {
+  const intervalMs = args.everyMs ?? 10_000;
+  const timer = setInterval(() => {
+    args.kafka.tell({
+      kind: 'heartbeat',
+      topic: args.record.topic,
+      partition: args.record.partition,
+      offset: args.record.offset,
+    });
+  }, intervalMs);
+  try {
+    return await body();
+  } finally {
+    clearInterval(timer);
+  }
+}
