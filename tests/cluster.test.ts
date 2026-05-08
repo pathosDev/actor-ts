@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { describe, expect, test } from 'bun:test';
 import {
   Actor,
   ActorSystem,
@@ -6,6 +6,7 @@ import {
   ClusterSharding,
   InMemoryTransport,
   LogLevel,
+  Member,
   MemberDown,
   MemberUp,
   NoopLogger,
@@ -287,4 +288,136 @@ test('MemberUp and departure events fire on the cluster subscription', async () 
   expect(seenLeft.concat(seenDown)).toContain('cluster-e@10.0.4.2:9002');
 
   await stopNode(n1);
+});
+
+/* ----------------------- tombstone pruning (#75) ----------------------- */
+
+/** Read-only access to the private members map for tombstone-count assertions. */
+type ClusterInternals = { readonly members: ReadonlyMap<string, Member> };
+const peek = (cluster: Cluster): ClusterInternals =>
+  cluster as unknown as ClusterInternals;
+
+/**
+ * Variant of `startNode` that exposes the tombstone knobs.  All other
+ * timing parameters mirror the default test setup.
+ */
+async function startNodeWithTombstoneCfg(
+  systemName: string, host: string, port: number, seeds: string[],
+  cfg: { tombstoneTtlMs: number; tombstonePruneIntervalMs: number; tombstoneMinRetentionMs: number },
+): Promise<{ system: ActorSystem; cluster: Cluster }> {
+  const system = ActorSystem.create(systemName, {
+    logger: new NoopLogger(),
+    logLevel: LogLevel.Off,
+  });
+  const cluster = await Cluster.join(system, {
+    host, port, seeds,
+    transport: new InMemoryTransport(new NodeAddress(systemName, host, port)),
+    failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
+    gossipIntervalMs: 80,
+    ...cfg,
+  });
+  return { system, cluster };
+}
+
+describe('Cluster tombstone pruning (#75)', () => {
+  test('tombstone created on graceful leave is dropped from the members map after TTL', async () => {
+    // Tight test values: TTL 200ms + min-retention 80ms keep the test
+    // fast while staying well above the 80ms gossip cadence so peers
+    // converge before pruning kicks in.
+    const SYS = 'cluster-tombstone-prune';
+    const a = await startNodeWithTombstoneCfg(
+      SYS, '10.0.6.1', 6001, [],
+      { tombstoneTtlMs: 200, tombstonePruneIntervalMs: 60, tombstoneMinRetentionMs: 80 },
+    );
+    const b = await startNodeWithTombstoneCfg(
+      SYS, '10.0.6.2', 6002, ['10.0.6.1:6001'],
+      { tombstoneTtlMs: 200, tombstonePruneIntervalMs: 60, tombstoneMinRetentionMs: 80 },
+    );
+    await waitFor(() => a.cluster.upMembers().length === 2 && b.cluster.upMembers().length === 2, 2000);
+
+    // B leaves gracefully → A holds a tombstone for B.
+    await b.cluster.leave();
+    await b.system.terminate();
+    await waitFor(() => peek(a.cluster).members.has(`${SYS}@10.0.6.2:6002`)
+      && peek(a.cluster).members.get(`${SYS}@10.0.6.2:6002`)!.status === 'removed', 2000);
+    expect(peek(a.cluster).members.size).toBe(2); // 1 live + 1 tombstone
+
+    // Wait for TTL + one prune interval — the tombstone must be gone.
+    await waitFor(() => peek(a.cluster).members.size === 1, 1500);
+    expect(peek(a.cluster).members.size).toBe(1);
+    expect(a.cluster.upMembers().length).toBe(1);
+
+    await a.cluster.leave();
+    await a.system.terminate();
+  });
+
+  test('mergeMember rejects an incoming tombstone whose removedAt is older than the TTL', async () => {
+    // Synthesize a stale tombstone gossip from a "ghost" peer — the
+    // sort of frame a slow peer might emit after sleeping past the
+    // TTL.  Without the guard this address would land in the local
+    // `members` map and never get cleaned up by the prune pass
+    // (because addresses we *only* learned about as already-expired
+    // shouldn't be added in the first place).
+    const SYS = 'cluster-tombstone-stale-merge';
+    const a = await startNodeWithTombstoneCfg(
+      SYS, '10.0.6.10', 6010, [],
+      { tombstoneTtlMs: 200, tombstonePruneIntervalMs: 60, tombstoneMinRetentionMs: 80 },
+    );
+    await waitFor(() => a.cluster.upMembers().length === 1, 1000);
+
+    // Drive the private mergeMember via a synthesized gossip frame.
+    const stalePeer = new NodeAddress(SYS, '10.0.6.99', 6099);
+    const staleData = {
+      address: stalePeer.toJSON(),
+      status: 'removed' as const,
+      version: 999,
+      roles: [] as string[],
+      removedAt: Date.now() - 10_000, // way past the 200ms TTL
+    };
+    (a.cluster as unknown as { mergeMember(d: unknown): void })
+      .mergeMember(staleData);
+
+    expect(peek(a.cluster).members.has(stalePeer.toString())).toBe(false);
+
+    await a.cluster.leave();
+    await a.system.terminate();
+  });
+
+  test('tombstone with no removedAt (mixed-version peer) is preserved across prune passes', async () => {
+    // Tombstones gossiped by a node pre-dating the `removedAt` field
+    // arrive without the timestamp.  We have no age info, so we keep
+    // them — they drop out naturally when the old peer is upgraded
+    // or restarts.  Verifies prune-tick doesn't accidentally evict
+    // them on the strength of "no removedAt = ancient" (which would
+    // re-introduce the resurrection bug for mixed-version clusters).
+    const SYS = 'cluster-tombstone-mixed-version';
+    const a = await startNodeWithTombstoneCfg(
+      SYS, '10.0.6.20', 6020, [],
+      { tombstoneTtlMs: 100, tombstonePruneIntervalMs: 50, tombstoneMinRetentionMs: 50 },
+    );
+    await waitFor(() => a.cluster.upMembers().length === 1, 1000);
+
+    const oldPeer = new NodeAddress(SYS, '10.0.6.21', 6021);
+    const noAgeTombstone = {
+      address: oldPeer.toJSON(),
+      status: 'removed' as const,
+      version: 5,
+      roles: [] as string[],
+      // removedAt deliberately omitted.
+    };
+    (a.cluster as unknown as { mergeMember(d: unknown): void })
+      .mergeMember(noAgeTombstone);
+
+    // Tombstone is in the map — `mergeMember`'s expired-tombstone
+    // guard only triggers when `removedAt` IS set.
+    expect(peek(a.cluster).members.has(oldPeer.toString())).toBe(true);
+
+    // Wait several prune intervals — tombstone must persist.
+    await sleep(300);
+    expect(peek(a.cluster).members.has(oldPeer.toString())).toBe(true);
+    expect(peek(a.cluster).members.get(oldPeer.toString())!.status).toBe('removed');
+
+    await a.cluster.leave();
+    await a.system.terminate();
+  });
 });

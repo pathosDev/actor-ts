@@ -60,6 +60,29 @@ export interface ClusterSettings {
   /** How often to resend the initial join gossip to seeds until self is Up. */
   readonly seedRetryIntervalMs?: number;
   /**
+   * How long to keep a `removed` tombstone in the local members map
+   * before pruning it.  Tombstones exist so stale gossip from a slow
+   * peer can't resurrect a definitively-removed address; the TTL
+   * caps their accumulation in long-running clusters with frequent
+   * node churn (#75).  Default 24 h — comfortably above any
+   * realistic gossip-propagation lag.
+   */
+  readonly tombstoneTtlMs?: number;
+  /**
+   * How often the tombstone-prune pass runs.  Default 5 min — small
+   * enough that a freshly-expired tombstone disappears within one
+   * pruning window, large enough to be negligible CPU.
+   */
+  readonly tombstonePruneIntervalMs?: number;
+  /**
+   * Minimum age before a tombstone is eligible for pruning, regardless
+   * of {@link tombstoneTtlMs}.  Defaults to `6 × downAfterMs`, which
+   * gives a few failure-detector rounds of breathing room so peers
+   * that haven't fully converged still see the tombstone before it
+   * vanishes.  Mostly relevant for tests that set a very low TTL.
+   */
+  readonly tombstoneMinRetentionMs?: number;
+  /**
    * Auto-promote a `joining` member to `weakly-up` after this many ms if
    * convergence (leader + `up` transition) hasn't happened yet.  Set to 0
    * to disable.  Default: 0 (disabled — opt-in only).
@@ -99,6 +122,9 @@ export class Cluster {
   private readonly gossipIntervalMs: number;
   private readonly seedRetryIntervalMs: number;
   private readonly seedAddrs: NodeAddress[] = [];
+  private readonly tombstoneTtlMs: number;
+  private readonly tombstonePruneIntervalMs: number;
+  private readonly tombstoneMinRetentionMs: number;
 
   private heartbeatSeq = 0;
   private gossipTimer: Cancellable | null = null;
@@ -106,6 +132,7 @@ export class Cluster {
   private fdTimer: Cancellable | null = null;
   private seedTimer: Cancellable | null = null;
   private weaklyUpTimer: Cancellable | null = null;
+  private tombstonePruneTimer: Cancellable | null = null;
   private currentLeader: Option<Member> = none;
   private readonly weaklyUpAfterMs: number;
 
@@ -138,6 +165,10 @@ export class Cluster {
     this.seedRetryIntervalMs = settings.seedRetryIntervalMs ?? 3_000;
     this.weaklyUpAfterMs = settings.weaklyUpAfterMs ?? 0;
     this.downing = settings.downing ?? null;
+    this.tombstoneTtlMs = settings.tombstoneTtlMs ?? 24 * 60 * 60 * 1_000; // 24 h
+    this.tombstonePruneIntervalMs = settings.tombstonePruneIntervalMs ?? 5 * 60 * 1_000; // 5 min
+    this.tombstoneMinRetentionMs =
+      settings.tombstoneMinRetentionMs ?? 6 * fdSettings.downAfterMs;
   }
 
   /** Entry point: start the cluster and attempt to contact seed nodes. */
@@ -266,6 +297,7 @@ export class Cluster {
     this.fdTimer?.cancel();
     this.seedTimer?.cancel();
     this.weaklyUpTimer?.cancel();
+    this.tombstonePruneTimer?.cancel();
     await this.transport.shutdown();
   }
 
@@ -341,6 +373,10 @@ export class Cluster {
     );
     this.fdTimer = this.system.scheduler.scheduleAtFixedRateFn(
       this.failureDetector.interval, this.failureDetector.interval, () => this.failureDetectionTick(),
+    );
+    this.tombstonePruneTimer = this.system.scheduler.scheduleAtFixedRateFn(
+      this.tombstonePruneIntervalMs, this.tombstonePruneIntervalMs,
+      () => this.tombstonePruneTick(),
     );
   }
 
@@ -498,12 +534,14 @@ export class Cluster {
     if (!existing) return;
     this.log.debug(`peer ${peer} sent leave — tombstoning (was ${existing.status} v${existing.version})`);
     const leaving = existing.withStatus('leaving');
-    const removed = leaving.withStatus('removed');
+    const removed = leaving.withRemoved(Date.now());
     // Tombstone (don't delete) so a stale `up` gossip from a peer that
     // hasn't seen the leave yet can't resurrect this address —
     // `mergeMember`'s version check filters it out.  Public APIs
     // (`getMembers`, `upMembers`, `reachableMembers`) all skip
-    // `removed` entries.
+    // `removed` entries.  The `removedAt` stamp is what
+    // `tombstonePruneTick` uses to drop the entry once `tombstoneTtlMs`
+    // has elapsed (#75).
     this.members.set(peer.toString(), removed);
     this.failureDetector.forget(peer);
     this.emit(new MemberLeft(leaving));
@@ -565,6 +603,8 @@ export class Cluster {
         // prevents stale gossip from resurrecting the address.
         this.members.delete(m.address.toString());
         this.failureDetector.forget(m.address);
+        // Transient `removed` Member only used for the event emit —
+        // not stored, so the missing `removedAt` here is intentional.
         const removed = downed.withStatus('removed');
         this.emit(new MemberRemoved(removed));
       }
@@ -634,7 +674,9 @@ export class Cluster {
       this.emit(new MemberDown(downed));
       // Tombstone (don't delete) so later gossip from peers that
       // haven't seen the force-down can't resurrect this address.
-      const removed = downed.withStatus('removed');
+      // `removedAt` lets `tombstonePruneTick` reclaim the entry
+      // after `tombstoneTtlMs` (#75).
+      const removed = downed.withRemoved(Date.now());
       this.members.set(key, removed);
       this.failureDetector.forget(m.address);
       this.emit(new MemberRemoved(removed));
@@ -647,6 +689,21 @@ export class Cluster {
 
   private mergeMember(data: MemberData): void {
     const incoming = Member.fromData(data);
+    // Reject expired tombstones from gossip — peers that haven't yet
+    // pruned a long-dead address would otherwise resurrect it on
+    // nodes that already pruned (#75).  Old nodes that pre-date the
+    // `removedAt` field gossip without it; we treat such tombstones
+    // as fresh (no age info ⇒ assume they need normal TTL) so a
+    // mixed-version cluster still converges.
+    if (incoming.status === 'removed'
+        && incoming.removedAt !== undefined
+        && Date.now() - incoming.removedAt >= this.tombstoneTtlMs) {
+      this.log.debug(
+        `merge: dropping expired tombstone for ${incoming.address} ` +
+        `(age ${Date.now() - incoming.removedAt}ms ≥ ttl ${this.tombstoneTtlMs}ms)`,
+      );
+      return;
+    }
     const existing = this.members.get(incoming.address.toString());
     if (!existing) {
       this.members.set(incoming.address.toString(), incoming);
@@ -752,6 +809,37 @@ export class Cluster {
     this.system.eventStream.publish(event as object);
     for (const l of this._listeners) {
       try { l(event); } catch (e) { this.log.warn('listener threw', e); }
+    }
+  }
+
+  /**
+   * Drop tombstones whose `removedAt` exceeds `tombstoneTtlMs` (and
+   * the `tombstoneMinRetentionMs` floor).  Each peer makes the same
+   * decision on its local clock — with TTL ≫ gossip propagation lag,
+   * peers prune within seconds of each other and stale-gossip
+   * resurrection is filtered out by `mergeMember`'s "expired
+   * tombstone" guard.  See #75 for the full rationale.
+   *
+   * Tombstones lacking `removedAt` (older nodes pre-dating the field)
+   * are kept — we have no age info to compare against.  They drop
+   * out naturally when those nodes are upgraded or restart.
+   */
+  private tombstonePruneTick(): void {
+    const now = Date.now();
+    const cutoff = Math.max(this.tombstoneTtlMs, this.tombstoneMinRetentionMs);
+    let pruned = 0;
+    for (const [key, m] of this.members) {
+      if (m.status !== 'removed') continue;
+      if (m.removedAt === undefined) continue;
+      if (now - m.removedAt < cutoff) continue;
+      this.members.delete(key);
+      pruned++;
+    }
+    if (pruned > 0) {
+      this.log.debug(
+        `tombstone prune: dropped ${pruned} expired entr${pruned === 1 ? 'y' : 'ies'} ` +
+        `(ttl=${this.tombstoneTtlMs}ms, minRetention=${this.tombstoneMinRetentionMs}ms)`,
+      );
     }
   }
 }
