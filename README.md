@@ -168,7 +168,6 @@ middleware, or in-house clients.
 
 ### What's NOT here
 
-- Multi-process `FilesystemObjectStorageBackend`
 - gRPC reflection / health-service auto-registration
 - A documentation site (README is the source of truth)
 - Backwards-compatibility guarantees of any kind — pre-1.0

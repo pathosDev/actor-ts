@@ -33,14 +33,6 @@ here is committed work — it's a sketch, not a contract.  See
 
 ## Explicitly out of scope
 
-- Multi-process safety for `FilesystemObjectStorageBackend` — the
-  in-memory ETag map is per-process by design (#19).  Use the S3
-  backend in any multi-process deployment.
 - "Auto-magic" cache invalidation by tag / pattern — known bug-source.
   Invalidation is an explicit `cache.delete(...)` for now.
 - Backwards-compatibility guarantees of any kind pre-1.0.
-
-## Known issues
-
-- `FilesystemObjectStorageBackend` ETag map is per-process — see "out
-  of scope" above; the doc-string warns about it (#19).
