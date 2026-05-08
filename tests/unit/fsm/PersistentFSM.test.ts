@@ -503,3 +503,193 @@ describe('PersistentFSM — stateTimeout (#65)', () => {
     }
   });
 });
+
+/* ============================================================== */
+/* Multi-event transitions (#66)                                  */
+/* ============================================================== */
+
+/**
+ * Mini-domain that emits TWO events per `pay` (a `paid` plus an
+ * `audit-logged`), using `event: [...]`.  The data carries a
+ * separate `audited` flag so we can verify the second event landed
+ * on top of the first.  Mirrors the realistic "transactional decision
+ * fans out into multiple journal records" use case.
+ */
+type AuditState = 'pending' | 'paid' | 'cancelled';
+type AuditCmd =
+  | { kind: 'pay'; amount: number }
+  | { kind: 'cancel'; reason?: string }
+  | { kind: 'getState' };
+type AuditEvent =
+  | { kind: 'paid'; amount: number }
+  | { kind: 'audit-logged' }
+  | { kind: 'cancelled'; reason?: string };
+interface AuditData { amountPaid: number; audited: boolean; cancelReason: string | null }
+
+class AuditingFsm extends PersistentFSM<AuditCmd, AuditEvent, AuditState, AuditData> {
+  readonly persistenceId: string;
+  /** Toggle so a single test class covers literal-array, function-array, and empty-array. */
+  private readonly mode: 'array' | 'fnArray' | 'emptyArray';
+
+  constructor(pid: string, mode: 'array' | 'fnArray' | 'emptyArray' = 'array') {
+    super();
+    this.persistenceId = pid;
+    this.mode = mode;
+  }
+
+  initialFsmState(): AuditState { return 'pending'; }
+  initialData(): AuditData { return { amountPaid: 0, audited: false, cancelReason: null }; }
+
+  get transitions(): FsmTransitionMap<AuditState, AuditCmd, AuditEvent, AuditData> {
+    return {
+      pending: {
+        pay: this.mode === 'array' ? {
+          // Literal-array form — 'paid' first, 'audit-logged' second.
+          // Final state must match `next` (the post-audit-logged state).
+          event: [
+            { kind: 'paid', amount: 0 } as AuditEvent, // amount baked in
+            { kind: 'audit-logged' } as AuditEvent,
+          ],
+          next: 'paid',
+        } : this.mode === 'fnArray' ? {
+          event: (cmd, _data): AuditEvent[] => [
+            { kind: 'paid', amount: cmd.amount },
+            { kind: 'audit-logged' },
+          ],
+          next: 'paid',
+        } : {
+          // Empty-array form — verifies the no-op path.  An empty
+          // array MUST drop without persisting or transitioning.
+          event: (): AuditEvent[] => [],
+          next: 'paid',
+        },
+        cancel: {
+          event: (cmd): AuditEvent => ({ kind: 'cancelled', reason: cmd.reason }),
+          next: 'cancelled',
+        },
+      },
+    };
+  }
+  set transitions(_v: FsmTransitionMap<AuditState, AuditCmd, AuditEvent, AuditData>) { /* noop */ }
+
+  applyEvent(state: AuditState, data: AuditData, ev: AuditEvent): FsmStateData<AuditState, AuditData> {
+    if (ev.kind === 'paid')          return { state: 'paid', data: { ...data, amountPaid: ev.amount } };
+    if (ev.kind === 'audit-logged')  return { state, data: { ...data, audited: true } };
+    return { state: 'cancelled', data: { ...data, cancelReason: ev.reason ?? null } };
+  }
+
+  override async onCommand(curr: FsmStateData<AuditState, AuditData>, cmd: AuditCmd): Promise<void> {
+    if (cmd.kind === 'getState') {
+      this.sender.toNullable()?.tell(curr);
+      return;
+    }
+    return super.onCommand(curr, cmd);
+  }
+}
+
+describe('PersistentFSM — multiple events per command (#66)', () => {
+  test('function-array: both events persist atomically and applyEvent runs for each', async () => {
+    const { sys, journal } = buildSystem('fsm-multi-fn');
+    try {
+      const ref = sys.actorOf(
+        Props.create(() => new AuditingFsm('audit-1', 'fnArray')),
+        'audit',
+      );
+      ref.tell({ kind: 'pay', amount: 250 });
+      await sleep(50);
+
+      const final = await ask<AuditCmd, FsmStateData<AuditState, AuditData>>(
+        ref, { kind: 'getState' }, 1_000,
+      );
+      expect(final.state).toBe('paid');
+      expect(final.data.amountPaid).toBe(250);
+      expect(final.data.audited).toBe(true);
+
+      // Both events in the journal in the declared order.
+      const events = await journal.read('audit-1', 0);
+      expect(events.map((e) => (e.event as { kind: string }).kind))
+        .toEqual(['paid', 'audit-logged']);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('literal-array: events apply in order, final-state check matches next', async () => {
+    const { sys, journal } = buildSystem('fsm-multi-literal');
+    try {
+      const ref = sys.actorOf(
+        Props.create(() => new AuditingFsm('audit-2', 'array')),
+        'audit',
+      );
+      ref.tell({ kind: 'pay', amount: 0 });
+      await sleep(50);
+
+      const final = await ask<AuditCmd, FsmStateData<AuditState, AuditData>>(
+        ref, { kind: 'getState' }, 1_000,
+      );
+      expect(final.state).toBe('paid');
+      expect(final.data.audited).toBe(true);
+      const events = await journal.read('audit-2', 0);
+      expect(events).toHaveLength(2);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('empty-array event: drops cleanly with no events persisted, no state change', async () => {
+    const { sys, journal } = buildSystem('fsm-multi-empty');
+    try {
+      const ref = sys.actorOf(
+        Props.create(() => new AuditingFsm('audit-3', 'emptyArray')),
+        'audit',
+      );
+      ref.tell({ kind: 'pay', amount: 99 }); // resolves to []
+      await sleep(50);
+
+      const final = await ask<AuditCmd, FsmStateData<AuditState, AuditData>>(
+        ref, { kind: 'getState' }, 1_000,
+      );
+      // Stayed in 'pending' — no events persisted.
+      expect(final.state).toBe('pending');
+      const events = await journal.read('audit-3', 0);
+      expect(events).toHaveLength(0);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('recovery: array events replay deterministically', async () => {
+    // Persist the 2-event transition in one ActorSystem, restart,
+    // and verify both events come back in order with the correct
+    // final state + data.
+    const { sys: sys1, journal, snaps } = buildSystem('fsm-multi-recover');
+    try {
+      const ref1 = sys1.actorOf(
+        Props.create(() => new AuditingFsm('audit-4', 'fnArray')),
+        'audit',
+      );
+      ref1.tell({ kind: 'pay', amount: 500 });
+      await sleep(50);
+    } finally {
+      await sys1.terminate();
+    }
+
+    const sys2 = ActorSystem.create('fsm-multi-recover-2', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    sys2.extension(PersistenceExtensionId).setJournal(journal);
+    sys2.extension(PersistenceExtensionId).setSnapshotStore(snaps);
+    try {
+      const ref2 = sys2.actorOf(
+        Props.create(() => new AuditingFsm('audit-4', 'fnArray')),
+        'audit',
+      );
+      const recovered = await ask<AuditCmd, FsmStateData<AuditState, AuditData>>(
+        ref2, { kind: 'getState' }, 1_000,
+      );
+      expect(recovered.state).toBe('paid');
+      expect(recovered.data.amountPaid).toBe(500);
+      expect(recovered.data.audited).toBe(true);
+    } finally {
+      await sys2.terminate();
+    }
+  });
+});

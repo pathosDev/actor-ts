@@ -97,16 +97,31 @@ export interface FsmTransition<
   Data,
 > {
   /**
-   * Event to persist when this transition fires.  Either a literal
-   * (`{ kind: 'paid' }`) or a function `(cmd, data) => event` for
-   * cases where the event payload depends on the command's data.
+   * Event(s) to persist when this transition fires.  Three shapes:
+   *
+   *   - **Literal** — `{ kind: 'paid' }`: a single event persisted
+   *     atomically as one journal entry.
+   *   - **Array** — `[evtA, evtB]`: multiple events persisted in
+   *     one `persistAll` call (#66) so they share a logical
+   *     transaction; `applyEvent` runs once per event and the
+   *     post-apply final state is checked against `next`.  An
+   *     empty array is treated as a no-op transition (no events
+   *     persisted, no state change) — use a `guard` instead if
+   *     "skip on this condition" is the actual intent.
+   *   - **Function** — `(cmd, data) => Event | Event[]`: lazily
+   *     evaluated when the transition fires; otherwise behaves
+   *     exactly like the literal / array forms above.
    */
-  readonly event: Event | ((cmd: Cmd, data: Data) => Event);
+  readonly event:
+    | Event
+    | Event[]
+    | ((cmd: Cmd, data: Data) => Event | Event[]);
   /**
-   * State name the FSM moves to after the event applies.  Mainly
-   * informational — `applyEvent` is what actually drives the
-   * transition; the base class verifies the post-apply state
-   * matches `next` and logs a warning on mismatch.
+   * State name the FSM moves to after every event applies.  When
+   * `event` is an array, only the **final** post-replay state is
+   * compared against `next` — intermediate transitions inside the
+   * array don't have to match.  Mainly informational; `applyEvent`
+   * is what actually drives the transition.
    */
   readonly next: SName;
   /**
@@ -132,8 +147,13 @@ export interface FsmTransition<
 export interface FsmStateTimeout<SName extends string, Event, Data> {
   /** How long to wait before auto-firing the event.  Required. */
   readonly afterMs: number;
-  /** Event to persist when the timer fires.  Same shape as a regular transition. */
-  readonly event: Event | ((data: Data) => Event);
+  /**
+   * Event(s) to persist when the timer fires.  Same shape as a
+   * regular transition (#66) — single literal, array, or function
+   * returning either.  An empty array is a no-op fire (timer
+   * cancelled, no transition, no events persisted).
+   */
+  readonly event: Event | Event[] | ((data: Data) => Event | Event[]);
   /** Target state.  Verified against `applyEvent`'s output, like {@link FsmTransition}. */
   readonly next: SName;
   /** Optional pre-fire guard — `false` cancels the timeout silently. */
@@ -289,15 +309,26 @@ export abstract class PersistentFSM<
       await this.onGuardRejected(curr.state, cmd);
       return;
     }
-    const event = typeof transition.event === 'function'
-      ? (transition.event as (c: Cmd, d: Data) => Event)(cmd, curr.data)
+    const evaluated = typeof transition.event === 'function'
+      ? (transition.event as (c: Cmd, d: Data) => Event | Event[])(cmd, curr.data)
       : transition.event;
+    const events: Event[] = Array.isArray(evaluated) ? evaluated : [evaluated];
+    if (events.length === 0) {
+      // Empty array → no events to persist, no state change.  Treat
+      // as a "guard returned false" outcome from the user's POV.
+      this.log.debug(
+        `PersistentFSM: cmd '${cmd.kind}' in state '${curr.state}' produced an empty event array — dropped`,
+      );
+      return;
+    }
 
-    await this.persist(event, (next: FsmStateData<SName, Data>) => {
+    await this.persistAll(events, (next: FsmStateData<SName, Data>) => {
       // Sanity check: the user's `applyEvent` and the table's `next`
-      // should agree on the target state.  A mismatch is almost
-      // always a bug — surface it loud rather than silently letting
-      // the FSM drift away from its declared graph.
+      // should agree on the target state after the FINAL event.  A
+      // mismatch is almost always a bug — surface it loud rather
+      // than silently letting the FSM drift away from its declared
+      // graph.  Intermediate states (events[0]..[N-2] applied) are
+      // not checked.
       if (next.state !== transition.next) {
         this.log.warn(
           `PersistentFSM: applyEvent for cmd '${cmd.kind}' in state '${curr.state}' `
@@ -371,10 +402,18 @@ export abstract class PersistentFSM<
       this.armTimerForCurrentState();
       return;
     }
-    const event = typeof timeout.event === 'function'
-      ? (timeout.event as (d: Data) => Event)(curr.data)
+    const evaluated = typeof timeout.event === 'function'
+      ? (timeout.event as (d: Data) => Event | Event[])(curr.data)
       : timeout.event;
-    await this.persist(event, (next: FsmStateData<SName, Data>) => {
+    const events: Event[] = Array.isArray(evaluated) ? evaluated : [evaluated];
+    if (events.length === 0) {
+      this.log.debug(
+        `PersistentFSM: state-timeout in state '${curr.state}' produced an empty event array — dropped`,
+      );
+      this.armTimerForCurrentState();
+      return;
+    }
+    await this.persistAll(events, (next: FsmStateData<SName, Data>) => {
       if (next.state !== timeout.next) {
         this.log.warn(
           `PersistentFSM: applyEvent for state-timeout in state '${curr.state}' `
