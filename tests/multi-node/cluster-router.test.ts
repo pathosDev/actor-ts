@@ -24,13 +24,56 @@ import { Broadcast } from '../../src/Router.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
-async function waitFor(pred: () => boolean, timeoutMs = 5_000): Promise<void> {
+// Default timeout bumped from 5 s to 15 s so the multi-node `waitFor`
+// has headroom under CI load (issue #76 — the previous 5-s ceiling
+// fired flakily on GitHub-hosted runners when other test files were
+// sharing scheduler time, even though the predicates eventually held
+// in well under a second locally).
+async function waitFor(pred: () => boolean, timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (pred()) return;
     await sleep(25);
   }
   if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
+}
+
+/**
+ * Wait until `read()` returns the same value for `settleTicks` polls
+ * in a row.  Replaces the flake-prone `waitFor(() => count === N)`
+ * pattern when "no more messages will arrive" is the real predicate
+ * and we just want to read the final tally.  Returns the settled
+ * value so the caller can `expect()` it directly.
+ *
+ * Why this matters here (#76): the previous "exactly 21 received"
+ * wait had no flush-fence behind it.  Under CI load a couple of the
+ * cross-node tells could be in-flight when the loop fired the
+ * cleanup; bumping `waitFor`'s timeout helped but didn't address the
+ * underlying signal — "stop when traffic settles" is what the test
+ * really wants.
+ */
+async function waitStable<T>(
+  read: () => T,
+  opts: { settleTicks?: number; tickMs?: number; timeoutMs?: number } = {},
+): Promise<T> {
+  const settleTicks = opts.settleTicks ?? 3;
+  const tickMs = opts.tickMs ?? 50;
+  const timeoutMs = opts.timeoutMs ?? 15_000;
+  const deadline = Date.now() + timeoutMs;
+  let prev = read();
+  let stableFor = 0;
+  while (Date.now() < deadline) {
+    await sleep(tickMs);
+    const cur = read();
+    if (Object.is(cur, prev)) {
+      stableFor++;
+      if (stableFor >= settleTicks) return cur;
+    } else {
+      prev = cur;
+      stableFor = 0;
+    }
+  }
+  throw new Error(`waitStable: did not settle within ${timeoutMs} ms (last value: ${JSON.stringify(prev)})`);
 }
 
 interface Node {
@@ -220,27 +263,36 @@ describe('ClusterRouter — multi-node', () => {
       );
       await sleep(50);
 
-      // First batch — all three nodes participate.
+      // First batch — all three nodes participate.  Wait for traffic
+      // to *settle* (3 reads unchanged) rather than for an exact-9
+      // equality; under CI load the cross-node tells can take a
+      // couple of scheduler ticks to land and the equality predicate
+      // would race the `===` window.  Settling is what the assertion
+      // actually wants — the explicit `toBe(9)` lives outside the
+      // wait.  See #76 for the failure mode this fixes.
       for (let i = 0; i < 9; i++) router.tell({ kind: 'work', id: `pre-${i}` });
-      await waitFor(() =>
-        a.received.length + b.received.length + c.received.length === 9,
-      5_000);
+      const after1st = await waitStable(
+        () => a.received.length + b.received.length + c.received.length,
+      );
+      expect(after1st).toBe(9);
 
       // Node C leaves.  Wait for the cluster + router to register the
       // removal — `upMembers()` drops to 2.
       await c.cluster.leave();
-      await waitFor(() => a.cluster.upMembers().length === 2, 5_000);
+      await waitFor(() => a.cluster.upMembers().length === 2);
       // Give the router one extra tick to rebuild routees off the
       // MemberRemoved event we just observed at the cluster level.
       await sleep(50);
 
       const cBefore = c.received.length;
 
-      // Second batch — should not reach C anymore.
+      // Second batch — should not reach C anymore.  Same settle-vs-
+      // equality logic as the first batch.
       for (let i = 0; i < 12; i++) router.tell({ kind: 'work', id: `post-${i}` });
-      await waitFor(() =>
-        a.received.length + b.received.length + c.received.length === 9 + 12,
-      5_000);
+      const after2nd = await waitStable(
+        () => a.received.length + b.received.length + c.received.length,
+      );
+      expect(after2nd).toBe(9 + 12);
 
       expect(c.received.length).toBe(cBefore);  // nothing new arrived at C
       // The remaining two nodes split the 12 — round-robin, so 6/6.
