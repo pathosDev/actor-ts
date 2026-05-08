@@ -167,7 +167,25 @@ async function main(): Promise<void> {
     'online-users',
   );
 
-  // -------- 8. HTTP front door — ClusterSingleton --------
+  // -------- 8. TLS material (optional) --------
+  // When `--tls-cert` / `--tls-key` are present we read the PEMs once
+  // here and pass the buffers to the singleton's HttpIngressActor; the
+  // singleton manager spawns one of those on whichever node currently
+  // holds the http-ingress, and Fastify's HTTPS option turns the
+  // listener into a TLS-terminating server.  Frontends already pick
+  // `wss:` based on `location.protocol`, so no client change is
+  // required to flip the whole sample to TLS.
+  const tls = (cfg.tlsCert && cfg.tlsKey)
+    ? {
+        cert: fs.readFileSync(cfg.tlsCert),
+        key:  fs.readFileSync(cfg.tlsKey),
+      }
+    : undefined;
+  if (tls) {
+    system.log.info(`TLS enabled · cert=${cfg.tlsCert} · key=${cfg.tlsKey}`);
+  }
+
+  // -------- 9. HTTP front door — ClusterSingleton --------
   // Every node registers the same singleton spec; the cluster
   // elects ONE node to actually run the actor.  When that node
   // dies a surviving node spawns a fresh one which re-binds the
@@ -186,10 +204,11 @@ async function main(): Promise<void> {
       onlineUsers,
       mediator,
       sessions,
+      ...(tls ? { tls } : {}),
     }),
   });
 
-  // -------- 9. Graceful shutdown --------
+  // -------- 10. Graceful shutdown --------
   let shuttingDown = false;
   const shutdown = async (signal: string): Promise<void> => {
     if (shuttingDown) return;
