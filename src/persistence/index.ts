@@ -33,6 +33,7 @@ export type { CassandraSnapshotStoreOptions } from './snapshot-stores/CassandraS
 export {
   createCassandraClient,
   keyspaceDdl,
+  tagIndexDdl,
 } from './journals/CassandraClient.js';
 export type {
   CassandraClientLike,

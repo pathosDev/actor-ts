@@ -1,30 +1,154 @@
 import type { CassandraJournal } from '../journals/CassandraJournal.js';
+import type { CassandraClientLike } from '../journals/CassandraClient.js';
+import { JournalError, type PersistentEvent } from '../JournalTypes.js';
 import { InMemoryQuery } from './InMemoryQuery.js';
+import {
+  eventMatchesTagFilter,
+  normalizeTagFilter,
+  offsetCompare,
+  offsetOfEvent,
+  type Offset,
+  type TagFilter,
+  type TagFilterSpec,
+  type TaggedEvent,
+} from './PersistenceQuery.js';
 
 /**
- * Cassandra/Scylla query.  The default `events` schema stores tags as
- * a native `LIST<TEXT>`, which CQL can filter via `tags CONTAINS ?`
- * — but only when there's a secondary index on the column, which the
- * default schema does NOT create (secondary indexes have non-trivial
- * costs and the choice is deliberately left to the operator).
+ * Cassandra/Scylla query.  By default, inherits the journal-walking
+ * `currentEventsByTag` from {@link InMemoryQuery} — correct for any
+ * volume but only fast for small-to-medium event corpora because the
+ * default Cassandra schema has no secondary index on the `tags`
+ * column.
  *
- * For v1 this query class therefore inherits the journal-walking
- * behaviour from {@link InMemoryQuery}: `currentEventsByTag` calls
- * `persistenceIds()` and scans every stream client-side, filtering
- * by tag in JS.  Correct for any volume but only fast for
- * small-to-medium event corpora.
+ * When the journal was constructed with `useTagIndex: true`, `append`
+ * dual-writes every `(event, tag)` pair into an `events_by_tag` side
+ * table partitioned by `(tag)` and ordered by `(timestamp,
+ * persistence_id, sequence_nr)`.  This class overrides
+ * `currentEventsByTag` to walk that side table — a single
+ * tag-partition scan instead of a full client-side journal sweep
+ * (#44).
  *
- * **Recommendation for high-volume deployments:** add an explicit
- * `events_by_tag` table (`PRIMARY KEY ((tag), timestamp,
- * persistence_id, sequence_nr)`) populated alongside `events` writes,
- * and override `currentEventsByTag` to scan that table.  The hook is
- * deliberately a subclass override rather than a config flag —
- * once you maintain a side table, you also have to migrate it on
- * tag changes, and that's coupling we don't want to bake into the
- * default plug-in.
+ * **Multi-tag filters.**  The `TagFilter` operators (`all` / `any` /
+ * `not`, see {@link TagFilter}) translate into the side-table query
+ * the same way `SqliteQuery` does:
+ *
+ *   - `all` non-empty → walk the side-table partition for `all[0]`,
+ *     JS-refine the rest of the filter against the per-row `tags`
+ *     set carried in the side table.  Bounded scan even when the
+ *     final result is the intersection of several tags.
+ *   - `any` non-empty (no `all`) → walk one partition per `any` tag
+ *     and merge by `(persistence_id, sequence_nr)`.  N partition
+ *     scans, sequential, JS-refines `not`.
+ *   - Only `not` (or fully empty) → fall back to the inherited
+ *     journal scan; only-`not` queries don't have a selective tag
+ *     to seed the index walk anyway.
  */
 export class CassandraQuery extends InMemoryQuery {
-  constructor(cassandra: CassandraJournal) {
+  /** Cached SqliteQuery-style escape hatch into the journal's privates. */
+  private readonly access: CassandraInternalAccess;
+
+  constructor(private readonly cassandra: CassandraJournal) {
     super(cassandra);
+    this.access = cassandra as unknown as CassandraInternalAccess;
   }
+
+  override async currentEventsByTag<E>(
+    filter: TagFilter, fromOffset: Offset,
+  ): Promise<TaggedEvent<E>[]> {
+    if (!this.cassandra.useTagIndex) {
+      // No side table → fall back to the journal-walking scan.
+      return super.currentEventsByTag<E>(filter, fromOffset);
+    }
+    const spec = normalizeTagFilter(filter);
+    const allTags = spec.all ?? [];
+    const anyTags = spec.any ?? [];
+
+    // Strategy 1: at least one `all` tag — walk that partition only.
+    if (allTags.length > 0) {
+      const rows = await this.fetchTagPartition(allTags[0]!, fromOffset.timestamp);
+      return refineAndSort<E>(rows, spec, fromOffset);
+    }
+
+    // Strategy 2: any-only — scan one partition per listed tag and
+    // merge.  The candidate set may contain duplicates (an event tagged
+    // with multiple `any` values surfaces from each partition) — the
+    // dedupe-by-(pid, seq) below collapses them before refining.
+    if (anyTags.length > 0) {
+      const seen = new Set<string>();
+      const merged: TagIndexRow[] = [];
+      for (const tag of anyTags) {
+        const rows = await this.fetchTagPartition(tag, fromOffset.timestamp);
+        for (const r of rows) {
+          const k = `${r.persistence_id}|${r.sequence_nr}`;
+          if (seen.has(k)) continue;
+          seen.add(k);
+          merged.push(r);
+        }
+      }
+      return refineAndSort<E>(merged, spec, fromOffset);
+    }
+
+    // Strategy 3: only `not` (or empty) — fall back to the inherited scan.
+    return super.currentEventsByTag<E>(spec, fromOffset);
+  }
+
+  private async fetchTagPartition(tag: string, fromTimestamp: number): Promise<TagIndexRow[]> {
+    const qualified = `${this.access.options.keyspace}.${this.cassandra.tagIndexTable}`;
+    let res;
+    try {
+      res = await this.access.client.execute(
+        `SELECT persistence_id, sequence_nr, timestamp, payload, tags FROM ${qualified} `
+        + `WHERE tag = ? AND timestamp >= ?`,
+        [tag, fromTimestamp],
+        { prepare: true },
+      );
+    } catch (e) {
+      throw new JournalError(`CassandraQuery.currentEventsByTag failed: ${(e as Error).message}`, e);
+    }
+    return res.rows as unknown as TagIndexRow[];
+  }
+}
+
+/**
+ * Translate driver rows into `TaggedEvent`s, JS-refine against the
+ * full filter, and sort.  The side-table SQL only saw the pre-filter
+ * tag, so multi-tag operators (`all` past index-0, `any` cross-tag,
+ * `not`) get applied in JS against the per-row `tags` set.
+ */
+function refineAndSort<E>(
+  rows: ReadonlyArray<TagIndexRow>,
+  spec: TagFilterSpec,
+  fromOffset: Offset,
+): TaggedEvent<E>[] {
+  const out: TaggedEvent<E>[] = [];
+  for (const r of rows) {
+    const tags = Array.isArray(r.tags) && r.tags.length > 0 ? r.tags : undefined;
+    if (!eventMatchesTagFilter(tags, spec)) continue;
+    const event: PersistentEvent<E> = {
+      persistenceId: r.persistence_id,
+      sequenceNr: Number(r.sequence_nr),
+      event: JSON.parse(r.payload) as E,
+      timestamp: Number(r.timestamp),
+      tags,
+    };
+    const offset = offsetOfEvent(event);
+    if (offsetCompare(offset, fromOffset) < 0) continue;
+    out.push({ event, offset });
+  }
+  out.sort((a, b) => offsetCompare(a.offset, b.offset));
+  return out;
+}
+
+interface TagIndexRow {
+  persistence_id: string;
+  sequence_nr: string | number;
+  timestamp: string | number;
+  payload: string;
+  tags: string[] | null;
+}
+
+/** Type-only escape hatch matching the layout of `CassandraJournal`'s privates. */
+interface CassandraInternalAccess {
+  readonly client: CassandraClientLike;
+  readonly options: { readonly keyspace: string };
 }

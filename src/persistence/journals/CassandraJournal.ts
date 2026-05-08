@@ -18,6 +18,8 @@ export interface CassandraJournalOptions extends CassandraConnection {
   readonly metadataTable?: string;
   /** Lookup table for `persistenceIds()`.  Default: `all_persistence_ids`. */
   readonly allIdsTable?: string;
+  /** Tag-index side table populated when `useTagIndex` is set.  Default: `events_by_tag`. */
+  readonly tagIndexTable?: string;
   /**
    * Rows per partition before rolling over to a new one.  Keeps Cassandra
    * partitions bounded.  Default: 500_000 — a good balance between write
@@ -26,6 +28,29 @@ export interface CassandraJournalOptions extends CassandraConnection {
   readonly partitionSize?: number;
   /** Auto-create the events/metadata/all-ids tables on first connect. */
   readonly autoCreateTables?: boolean;
+  /**
+   * Opt in to maintaining an `events_by_tag` side table for indexed
+   * `eventsByTag` queries (#44).  When set, every `append` writes one
+   * extra row per `(event, tag)` pair to the side table inside the same
+   * batch as the primary `events` insert; `CassandraQuery.currentEventsBy
+   * Tag` then walks a single tag-partition instead of scanning the
+   * whole journal client-side.
+   *
+   * Off by default to keep existing schemas compatible — operators
+   * opting in must run the side-table DDL on their cluster (the journal
+   * issues `CREATE TABLE IF NOT EXISTS` when `autoCreateTables` is also
+   * true; otherwise the DDL in {@link CassandraClient.tagIndexDdl} can
+   * be applied manually).
+   *
+   * **Caveat:** `delete(toSeq)` does NOT propagate to the side table —
+   * deleting from `events_by_tag` would require either a secondary
+   * index on `persistence_id` or pre-reading the event's tags (extra
+   * round-trips on the hot path).  Operators with delete-heavy
+   * workloads should rely on Cassandra TTLs or accept stale tag
+   * entries (queries dedupe via the primary key, so they're harmless
+   * — just storage overhead).
+   */
+  readonly useTagIndex?: boolean;
   /**
    * Inject a pre-built client instead of letting the journal instantiate
    * `cassandra-driver` itself — useful for tests and when the host already
@@ -137,6 +162,19 @@ export class CassandraJournal implements Journal {
           `INSERT INTO ${this.qualified(this.eventsTable)} (persistence_id, partition_nr, sequence_nr, timestamp, payload, tags) VALUES (?, ?, ?, ?, ?, ?)`,
         params: [pid, partition, seq, now, payload, tagList],
       });
+      // Tag-index side-table dual-write (#44).  One row per (event, tag)
+      // pair so a tag-query walks a single (tag) partition.  Each row
+      // also carries the full tag set, letting `CassandraQuery` JS-
+      // refine multi-tag filters without a follow-up read.
+      if (this.options.useTagIndex && tagList && tagList.length > 0) {
+        for (const tag of tagList) {
+          batchOps.push({
+            query:
+              `INSERT INTO ${this.qualified(this.tagIndexTable)} (tag, timestamp, persistence_id, sequence_nr, payload, tags) VALUES (?, ?, ?, ?, ?, ?)`,
+            params: [tag, now, pid, seq, payload, tagList],
+          });
+        }
+      }
       written.push({
         persistenceId: pid,
         sequenceNr: seq,
@@ -250,6 +288,11 @@ export class CassandraJournal implements Journal {
   private get eventsTable(): string { return this.options.eventsTable ?? 'events'; }
   private get metadataTable(): string { return this.options.metadataTable ?? 'metadata'; }
   private get allIdsTable(): string { return this.options.allIdsTable ?? 'all_persistence_ids'; }
+  /** Side-table name used when `useTagIndex` is set — visible so
+   *  `CassandraQuery` can target it directly. */
+  get tagIndexTable(): string { return this.options.tagIndexTable ?? 'events_by_tag'; }
+  /** Whether dual-writes to the tag-index side table are enabled. */
+  get useTagIndex(): boolean { return this.options.useTagIndex === true; }
 
   private qualified(table: string): string {
     return `${this.options.keyspace}.${table}`;
@@ -296,5 +339,24 @@ export class CassandraJournal implements Journal {
       + ` PRIMARY KEY (tag, persistence_id)`
       + ` )`,
     );
+    if (this.useTagIndex) {
+      // Side table for indexed `eventsByTag` queries (#44).  Each row
+      // is one (event, tag) pair; a tag-query walks a single (tag)
+      // partition ordered by `(timestamp, persistence_id, sequence_nr)`
+      // — bounded scan cost regardless of total journal size.  Carrying
+      // the full `tags` set on every row lets the query layer JS-refine
+      // multi-tag filters without an extra read of `events`.
+      await this.client.execute(
+        `CREATE TABLE IF NOT EXISTS ${this.qualified(this.tagIndexTable)} (`
+        + ` tag text,`
+        + ` timestamp bigint,`
+        + ` persistence_id text,`
+        + ` sequence_nr bigint,`
+        + ` payload text,`
+        + ` tags set<text>,`
+        + ` PRIMARY KEY ((tag), timestamp, persistence_id, sequence_nr)`
+        + ` ) WITH CLUSTERING ORDER BY (timestamp ASC, persistence_id ASC, sequence_nr ASC)`,
+      );
+    }
   }
 }

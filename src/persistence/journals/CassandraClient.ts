@@ -56,6 +56,31 @@ export interface CassandraConnection {
 }
 
 /**
+ * DDL for the `events_by_tag` side table populated by `CassandraJournal`
+ * when `useTagIndex` is set (#44).  Returned as a runnable CQL string
+ * so operators applying the schema by hand (or running migrations on
+ * pre-existing keyspaces) can reuse the journal's exact shape.
+ *
+ * `keyspace` and `tagIndexTable` default to the journal's own defaults
+ * — pass them explicitly if you've customised either.
+ */
+export function tagIndexDdl(args: {
+  readonly keyspace: string;
+  readonly tagIndexTable?: string;
+}): string {
+  const table = args.tagIndexTable ?? 'events_by_tag';
+  return `CREATE TABLE IF NOT EXISTS ${args.keyspace}.${table} (`
+    + ` tag text,`
+    + ` timestamp bigint,`
+    + ` persistence_id text,`
+    + ` sequence_nr bigint,`
+    + ` payload text,`
+    + ` tags set<text>,`
+    + ` PRIMARY KEY ((tag), timestamp, persistence_id, sequence_nr)`
+    + ` ) WITH CLUSTERING ORDER BY (timestamp ASC, persistence_id ASC, sequence_nr ASC)`;
+}
+
+/**
  * Build the default keyspace-bootstrap statement — used by autoCreateKeyspace.
  */
 export function keyspaceDdl(conn: CassandraConnection): string {
