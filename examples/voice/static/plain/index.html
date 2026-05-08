@@ -24,6 +24,16 @@
       input { font: inherit; }
       code { background: var(--soft); padding: 0 .25em; border-radius: 3px; }
 
+      /*
+       * The HTML5 `hidden` attribute is a property the browser maps to
+       * `display: none` via a UA stylesheet — but a class-level rule
+       * like `.app { display: grid }` is higher specificity and wins,
+       * which would leave both panes visible at once.  Pin the
+       * attribute explicitly on the elements that have a class-level
+       * `display:` so `hidden` does what its name says.
+       */
+      [hidden] { display: none !important; }
+
       /* ----- gate: pre-mic + login ----- */
       .gate {
         height: 100vh;
