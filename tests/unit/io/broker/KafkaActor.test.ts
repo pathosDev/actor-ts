@@ -15,6 +15,7 @@ import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import { Props } from '../../../../src/Props.js';
 import {
   KafkaActor,
+  withAutoHeartbeat,
   type KafkaActorSettings,
   type KafkaCmd,
   type KafkaConsumerLike,
@@ -46,10 +47,13 @@ class MockConsumer implements KafkaConsumerLike {
   readonly inflight: Array<{
     msg: MockMessage; promise: Promise<void>;
     resolved: boolean; rejected: boolean; rejectError?: Error;
+    /** Number of times the captured heartbeat() callback has fired. */
+    heartbeats: number;
   }> = [];
   private autoCommit = true;
   private eachMessage: ((m: {
     topic: string; partition: number; message: { offset: string; key: Uint8Array | null; value: Uint8Array | null; timestamp: string; headers?: Record<string, never> };
+    heartbeat?: () => Promise<void>;
   }) => Promise<void>) | null = null;
 
   async connect(): Promise<void> {}
@@ -60,6 +64,7 @@ class MockConsumer implements KafkaConsumerLike {
     autoCommit?: boolean;
     eachMessage: (m: {
       topic: string; partition: number; message: { offset: string; key: Uint8Array | null; value: Uint8Array | null; timestamp: string; headers?: Record<string, never> };
+      heartbeat?: () => Promise<void>;
     }) => Promise<void>;
   }): Promise<void> {
     this.autoCommit = args.autoCommit ?? true;
@@ -81,7 +86,12 @@ class MockConsumer implements KafkaConsumerLike {
       resolved: false,
       rejected: false,
       rejectError: undefined as Error | undefined,
+      heartbeats: 0,
     };
+    // Record every kafkajs heartbeat() invocation so tests can assert
+    // the actor really called through to the broker, not just bumped
+    // an internal counter.
+    const heartbeat = async (): Promise<void> => { tracker.heartbeats += 1; };
     tracker.promise = this.eachMessage({
       topic, partition,
       message: {
@@ -89,6 +99,7 @@ class MockConsumer implements KafkaConsumerLike {
         timestamp: String(Date.now()),
         headers: {},
       },
+      heartbeat,
     }).then(
       () => { tracker.resolved = true; },
       (err: Error) => { tracker.rejected = true; tracker.rejectError = err; },
@@ -336,6 +347,123 @@ describe('KafkaActor — settings parsing', () => {
       });
       // run() must have been called with autoCommit: false.
       expect(mock.consumer_.manualCommitConfigured).toBe(true);
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+describe('KafkaActor — heartbeat (#78)', () => {
+  test('heartbeat command forwards to the captured kafkajs callback', async () => {
+    const sys = ActorSystem.create('kafka-hb-1', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    try {
+      const { actor, mock } = await bootActor(sys, {
+        brokers: ['fake:9092'],
+        consumer: { groupId: 'g1', commitMode: 'manual', commitTimeoutMs: 1_000 },
+        topics: ['orders'],
+      });
+      const tracker = mock.consumer_.push('orders', 0, '7');
+      await sleep(20);
+
+      // Three heartbeats while the handler is "busy".
+      actor.tell({ kind: 'heartbeat', topic: 'orders', partition: 0, offset: '7' });
+      actor.tell({ kind: 'heartbeat', topic: 'orders', partition: 0, offset: '7' });
+      actor.tell({ kind: 'heartbeat', topic: 'orders', partition: 0, offset: '7' });
+      await sleep(30);
+      expect(tracker.heartbeats).toBe(3);
+
+      // Commit completes the in-flight cleanly — heartbeat must not have
+      // affected offset state.
+      actor.tell({ kind: 'commit', topic: 'orders', partition: 0, offset: '7' });
+      await tracker.promise;
+      expect(tracker.resolved).toBe(true);
+      expect(mock.consumer_.committed).toEqual([{ topic: 'orders', partition: 0, offset: '8' }]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('heartbeat for an unknown / already-committed offset is a silent no-op', async () => {
+    const sys = ActorSystem.create('kafka-hb-2', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    try {
+      const { actor, mock } = await bootActor(sys, {
+        brokers: ['fake:9092'],
+        consumer: { groupId: 'g1', commitMode: 'manual' },
+        topics: ['orders'],
+      });
+      // No push — pendingCommits is empty.  Stray heartbeats from a
+      // racing handler must not crash the actor.
+      actor.tell({ kind: 'heartbeat', topic: 'orders', partition: 0, offset: '999' });
+      actor.tell({ kind: 'heartbeat', topic: 'unknown', partition: 5, offset: '0' });
+      await sleep(20);
+      expect(mock.consumer_.committed).toEqual([]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('withAutoHeartbeat schedules periodic heartbeats and clears on completion', async () => {
+    const sys = ActorSystem.create('kafka-hb-3', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    try {
+      const { actor, mock } = await bootActor(sys, {
+        brokers: ['fake:9092'],
+        consumer: { groupId: 'g1', commitMode: 'manual', commitTimeoutMs: 1_000 },
+        topics: ['orders'],
+      });
+      const tracker = mock.consumer_.push('orders', 0, '11');
+      await sleep(20);
+
+      // Tight 25ms cadence so a 120ms body fires ~4-5 heartbeats.
+      const result = await withAutoHeartbeat(
+        { kafka: actor, record: { topic: 'orders', partition: 0, offset: '11' }, everyMs: 25 },
+        async () => { await sleep(120); return 'done'; },
+      );
+      expect(result).toBe('done');
+      // Heartbeats fire on a setInterval — count is approximate but
+      // must be >= 3 (otherwise the helper's not actually firing).
+      expect(tracker.heartbeats).toBeGreaterThanOrEqual(3);
+
+      actor.tell({ kind: 'commit', topic: 'orders', partition: 0, offset: '11' });
+      await tracker.promise;
+      // After commit the timer is gone — wait a full cadence and
+      // verify no more heartbeats fired.
+      const finalCount = tracker.heartbeats;
+      await sleep(60);
+      expect(tracker.heartbeats).toBe(finalCount);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('withAutoHeartbeat clears the timer when the body throws', async () => {
+    const sys = ActorSystem.create('kafka-hb-4', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    try {
+      const { actor, mock } = await bootActor(sys, {
+        brokers: ['fake:9092'],
+        consumer: { groupId: 'g1', commitMode: 'manual' },
+        topics: ['orders'],
+      });
+      const tracker = mock.consumer_.push('orders', 0, '13');
+      await sleep(20);
+
+      await expect(withAutoHeartbeat(
+        { kafka: actor, record: { topic: 'orders', partition: 0, offset: '13' }, everyMs: 20 },
+        async () => { await sleep(50); throw new Error('boom'); },
+      )).rejects.toThrow('boom');
+
+      // Brief drain so any heartbeat `tell()`s already on the actor's
+      // mailbox at throw-time finish processing before we sample.
+      await sleep(30);
+      const countAfterDrain = tracker.heartbeats;
+      // Timer must be cleared even on throw — otherwise a lingering
+      // setInterval would keep telling heartbeats forever.  After
+      // another full cadence, the counter must stay flat.
+      await sleep(60);
+      expect(tracker.heartbeats).toBe(countAfterDrain);
+
+      actor.tell({ kind: 'nack', topic: 'orders', partition: 0, offset: '13' });
+      await tracker.promise;
+      expect(tracker.rejected).toBe(true);
     } finally {
       await sys.terminate();
     }
