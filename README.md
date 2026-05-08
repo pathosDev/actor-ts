@@ -176,8 +176,10 @@ middleware, or in-house clients.
 - Backwards-compatibility guarantees of any kind — pre-1.0
 
 See [`ROADMAP.md`](./ROADMAP.md) for what's coming next and what's
-explicitly out of scope, and [`CHANGELOG.md`](./CHANGELOG.md) for what
-landed in the most recent release.
+explicitly out of scope, [`CHANGELOG.md`](./CHANGELOG.md) for what
+landed in the most recent release, and [`CONTRIBUTING.md`](./CONTRIBUTING.md)
+for commit conventions, the test layout, and the issue-to-commit
+workflow the project uses.
 
 ---
 
