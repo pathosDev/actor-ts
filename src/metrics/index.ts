@@ -24,3 +24,13 @@ export {
   exportPrometheus,
   prometheusHandler,
 } from './PrometheusExporter.js';
+export { promClientRegistry } from './PromClientAdapter.js';
+export type {
+  PromClientLike,
+  PromClientRegistryLike,
+  PromClientCounter,
+  PromClientGauge,
+  PromClientHistogram,
+  PromClientLabelValues,
+  PromClientAdapterOptions,
+} from './PromClientAdapter.js';

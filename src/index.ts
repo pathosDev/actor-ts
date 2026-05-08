@@ -103,6 +103,7 @@ export {
   metricsOf,
   exportPrometheus,
   prometheusHandler,
+  promClientRegistry,
 } from './metrics/index.js';
 export type {
   MetricsRegistry,
@@ -115,6 +116,13 @@ export type {
   CounterOptions,
   GaugeOptions,
   HistogramOptions,
+  PromClientLike,
+  PromClientRegistryLike,
+  PromClientCounter,
+  PromClientGauge,
+  PromClientHistogram,
+  PromClientLabelValues,
+  PromClientAdapterOptions,
 } from './metrics/index.js';
 
 // Distributed tracing — minimal Tracer + NoopTracer + RecordingTracer (#10).
