@@ -252,12 +252,54 @@ ClusterSingleton + HttpIngressActor fail-over end to end.
    within a few seconds.  Reconnect from the browser — alice's
    messages are still there because the SQLite journal survived.
 
+## TLS / WSS
+
+Plain HTTP is the default for the local demo, but the same backend
+runs over HTTPS once you point it at a cert + key pair.  Frontends
+auto-promote `ws:` → `wss:` based on `location.protocol`, so a
+single pair flips the entire stack to TLS without any client-side
+change.
+
+**Local development with `mkcert`** — generates a locally-trusted
+cert that browsers accept without warnings:
+
+```bash
+# one-time setup (Linux: install via package manager; macOS: `brew install mkcert`;
+# Windows: `scoop install mkcert` or `choco install mkcert`).
+mkcert -install                           # add mkcert's root CA to your trust store
+mkcert localhost 127.0.0.1 ::1            # produces localhost+2.pem + localhost+2-key.pem
+
+bun examples/chat/backend/main.ts \
+  --tls-cert ./localhost+2.pem \
+  --tls-key  ./localhost+2-key.pem
+```
+
+Open `https://localhost:8080/` — the lock icon is solid green.
+Reload an existing session over the new origin and the token
+keeps working (sessionStorage is per-origin, so you'll re-login
+once when you switch protocols).
+
+**Production: terminate TLS at a reverse proxy.** Same pattern as
+the voice sample — Caddy auto-issues a Let's Encrypt cert and
+proxies through:
+
+```caddy
+chat.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+Or nginx with manual cert paths plus the `Upgrade: websocket`
+header set so `/ws` proxies through (full snippet in
+`examples/voice/README.md` → "Hosting on a server").  The
+`--tls-cert` / `--tls-key` flags exist for setups where the
+Bun process owns the public listener directly.
+
 ## Out of scope (followup issues opened)
 
 - Private DMs (multi-room global chat only).
 - User-created rooms at runtime (default list is hardcoded).
 - File uploads, emojis, typing indicators.
-- TLS / WSS (plain HTTP for local demo).
 - Production-grade auth (no bcrypt, no session expiry, no CSRF).
 - Reconnect-resume after network blip.
 - Read-receipts.

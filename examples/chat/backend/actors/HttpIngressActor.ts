@@ -49,6 +49,21 @@ import type { ChatRoomCmd } from './ChatRoomActor.js';
 import type { OnlineUsersCmd } from './OnlineUsersActor.js';
 import type { SessionStore } from '../auth/sessionStore.js';
 
+/**
+ * Optional TLS material — when both `cert` and `key` are present
+ * the ingress binds via Fastify's HTTPS mode.  Frontends already
+ * pick `wss:` over `ws:` based on `location.protocol`, so a single
+ * cert + key flips the whole sample to TLS without any client-side
+ * change.  See `backend/config.ts` for the CLI / env wiring and
+ * the chat sample README for cert-generation recipes
+ * (`mkcert localhost` for local dev, Caddy or nginx in front for
+ * production).
+ */
+export interface TlsMaterial {
+  readonly cert: Buffer | string;
+  readonly key: Buffer | string;
+}
+
 export interface HttpIngressDeps {
   /** Bind interface — typically `127.0.0.1` for the local demo. */
   readonly host: string;
@@ -66,6 +81,8 @@ export interface HttpIngressDeps {
   readonly mediator: ActorRef<Subscribe | Unsubscribe>;
   /** Cluster-wide session-token store (DD-LWWMap-backed). */
   readonly sessions: SessionStore;
+  /** Optional TLS — when set, the listener becomes HTTPS + WSS. */
+  readonly tls?: TlsMaterial;
 }
 
 /**
@@ -79,12 +96,22 @@ export class HttpIngressActor extends Actor<never> {
   constructor(private readonly deps: HttpIngressDeps) { super(); }
 
   override async preStart(): Promise<void> {
-    const { host, httpPort, staticDir, system } = this.deps;
+    const { host, httpPort, staticDir, system, tls } = this.deps;
+    const scheme = tls ? 'https' : 'http';
     this.log.info(
-      `[ingress] this node won the singleton — binding ${host}:${httpPort}`,
+      `[ingress] this node won the singleton — binding ${scheme}://${host}:${httpPort}`,
     );
 
-    const backend = new FastifyBackend();
+    // Fastify's constructor accepts a `https` option — when set it
+    // wraps a Node `https.Server` instead of a plain `http.Server`,
+    // and `@fastify/websocket` automatically negotiates `wss:` on
+    // the same socket.  The framework's `FastifyBackend` already
+    // forwards arbitrary opts to Fastify, so a single `https`
+    // option is all we need to flip the entire sample to TLS.
+    const backend = new FastifyBackend({
+      logger: false,
+      ...(tls ? { https: { cert: tls.cert, key: tls.key } } : {}),
+    });
     await registerStaticFiles(backend, {
       root: staticDir,
       prefix: '/static/',
@@ -105,7 +132,7 @@ export class HttpIngressActor extends Actor<never> {
       .useBackend(backend)
       .bind(buildRoutes());
     this.log.info(
-      `[ingress] HTTP server listening on http://${this.binding.host}:${this.binding.port}/`,
+      `[ingress] HTTP server listening on ${scheme}://${this.binding.host}:${this.binding.port}/`,
     );
   }
 

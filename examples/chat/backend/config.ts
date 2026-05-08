@@ -34,6 +34,15 @@ export interface ChatNodeConfig {
   /** null = caller resolves via the SeedProvider. */
   readonly seeds: ReadonlyArray<string> | null;
   readonly dataDir: string;
+  /**
+   * Optional TLS material — when both paths are present, the HTTP
+   * front door binds via Fastify's HTTPS mode and the WebSocket
+   * route auto-promotes to `wss:`.  See the chat sample README for
+   * cert-generation recipes (`mkcert localhost` for local dev,
+   * Let's Encrypt + reverse proxy for production).
+   */
+  readonly tlsCert: string | null;
+  readonly tlsKey: string | null;
 }
 
 /** First port in the cluster's auto-discovery range. */
@@ -49,6 +58,8 @@ export function parseArgs(argv: ReadonlyArray<string>): ChatNodeConfig {
   let httpPort = 8080;
   let seeds: string[] | null = null;
   let dataDir = DEFAULT_DATA_DIR;
+  let tlsCert: string | null = null;
+  let tlsKey: string | null = null;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -71,6 +82,12 @@ export function parseArgs(argv: ReadonlyArray<string>): ChatNodeConfig {
       case '--data-dir':
         dataDir = expect(argv, ++i, '--data-dir');
         break;
+      case '--tls-cert':
+        tlsCert = expect(argv, ++i, '--tls-cert');
+        break;
+      case '--tls-key':
+        tlsKey = expect(argv, ++i, '--tls-key');
+        break;
       case '--help':
       case '-h':
         printUsage();
@@ -82,7 +99,17 @@ export function parseArgs(argv: ReadonlyArray<string>): ChatNodeConfig {
     }
   }
 
-  return { host, port, httpPort, seeds, dataDir };
+  // Both flags or neither — half-set TLS would silently bind plain HTTP
+  // and surprise the operator after a `mkcert` step that didn't fully
+  // land.  Fail fast with the same exit code as a missing arg value.
+  if ((tlsCert !== null) !== (tlsKey !== null)) {
+    process.stderr.write(
+      'error: --tls-cert and --tls-key must be provided together\n',
+    );
+    process.exit(2);
+  }
+
+  return { host, port, httpPort, seeds, dataDir, tlsCert, tlsKey };
 }
 
 function expect(argv: ReadonlyArray<string>, idx: number, flag: string): string {
@@ -116,6 +143,8 @@ function printUsage(): void {
       '  --http-port <n>     HTTP listener port         (default 8080, shared)',
       '  --seeds <a,b,c>     comma-separated seeds      (default: auto-detect)',
       '  --data-dir <path>   SQLite journal directory   (default ./examples/chat/data)',
+      '  --tls-cert <path>   PEM cert (enables HTTPS+WSS; pair with --tls-key)',
+      '  --tls-key  <path>   PEM private key            (pair with --tls-cert)',
       '',
     ].join('\n'),
   );
