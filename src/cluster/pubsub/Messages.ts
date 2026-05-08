@@ -41,12 +41,18 @@ export class CurrentTopics { constructor(public readonly topics: ReadonlyArray<s
 /**
  * Incremental gossip: one node announces the set of topics it currently
  * hosts subscribers for.  Merged into the cluster-wide registry.
+ *
+ * `entries` is a flat list of topic names — the receiver only ever
+ * needs to know **which** topics the sender has subscribers for, so
+ * the per-topic subscriber paths from earlier wire shapes were
+ * removed (#80) to keep gossip bytes proportional to the topic count
+ * rather than to total subscriber count.
  */
 export interface PubSubGossipMsg {
   readonly t: 'pubsub-gossip';
   readonly from: NodeAddressData;
-  /** Topic → subscriber path[] hosted locally on the sender. */
-  readonly entries: Record<string, string[]>;
+  /** Topic names hosted locally on the sender. */
+  readonly entries: ReadonlyArray<string>;
   readonly version: number;
 }
 
