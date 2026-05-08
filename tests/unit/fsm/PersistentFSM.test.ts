@@ -292,3 +292,214 @@ describe('PersistentFSM — alternate paths', () => {
     }
   });
 });
+
+/* ============================================================== */
+/* State timeout (#65)                                            */
+/* ============================================================== */
+
+/**
+ * Payment-flow domain: `pending → authorized → captured` happy path,
+ * `authorized → expired` after a state-timeout.  The `_timeout` lives
+ * on `authorized` only — that's the realistic "auto-cancel after N
+ * minutes if the merchant doesn't capture" scenario.
+ */
+type PayState = 'pending' | 'authorized' | 'captured' | 'expired';
+type PayCmd =
+  | { kind: 'authorize'; amount: number }
+  | { kind: 'capture' }
+  | { kind: 'getState' };
+type PayEvent =
+  | { kind: 'authorized'; amount: number }
+  | { kind: 'captured' }
+  | { kind: 'expired' };
+interface PayData { amount: number }
+
+class PaymentFsm extends PersistentFSM<PayCmd, PayEvent, PayState, PayData> {
+  readonly persistenceId: string;
+  /** Tunable so individual tests pick their own timeout window. */
+  private readonly afterMs: number;
+  /** When set, only fires the timeout if data.amount > 0. */
+  private readonly guarded: boolean;
+
+  constructor(pid: string, afterMs: number, opts: { guarded?: boolean } = {}) {
+    super();
+    this.persistenceId = pid;
+    this.afterMs = afterMs;
+    this.guarded = opts.guarded ?? false;
+  }
+
+  initialFsmState(): PayState { return 'pending'; }
+  initialData(): PayData { return { amount: 0 }; }
+
+  // The `transitions` field is captured at construction time (typical
+  // FSM idiom in this codebase) — we evaluate `this.afterMs` lazily by
+  // declaring it as a getter so subclasses can vary the window.
+  get transitions(): FsmTransitionMap<PayState, PayCmd, PayEvent, PayData> {
+    return {
+      pending: {
+        authorize: {
+          event: (cmd): PayEvent => ({ kind: 'authorized', amount: cmd.amount }),
+          next: 'authorized',
+        },
+      },
+      authorized: {
+        capture: {
+          event: { kind: 'captured' } as const,
+          next: 'captured',
+        },
+        _timeout: {
+          afterMs: this.afterMs,
+          event: { kind: 'expired' } as const,
+          next: 'expired',
+          ...(this.guarded ? { guard: (data: PayData): boolean => data.amount > 0 } : {}),
+        },
+      },
+    };
+  }
+  set transitions(_v: FsmTransitionMap<PayState, PayCmd, PayEvent, PayData>) { /* noop — getter is canonical */ }
+
+  applyEvent(state: PayState, data: PayData, ev: PayEvent): FsmStateData<PayState, PayData> {
+    if (ev.kind === 'authorized') return { state: 'authorized', data: { amount: ev.amount } };
+    if (ev.kind === 'captured')   return { state: 'captured',   data };
+    return { state: 'expired', data };
+  }
+
+  override async onCommand(curr: FsmStateData<PayState, PayData>, cmd: PayCmd): Promise<void> {
+    if (cmd.kind === 'getState') {
+      this.sender.toNullable()?.tell(curr);
+      return;
+    }
+    return super.onCommand(curr, cmd);
+  }
+}
+
+describe('PersistentFSM — stateTimeout (#65)', () => {
+  test('timer fires when no command transitions out within afterMs', async () => {
+    const { sys, journal } = buildSystem('fsm-timeout-fires');
+    try {
+      const ref = sys.actorOf(Props.create(() => new PaymentFsm('pay-1', 80)), 'pay');
+      ref.tell({ kind: 'authorize', amount: 100 });
+      // Wait > afterMs so the armed timer fires.
+      await sleep(200);
+
+      const final = await ask<PayCmd, FsmStateData<PayState, PayData>>(
+        ref, { kind: 'getState' }, 1_000,
+      );
+      expect(final.state).toBe('expired');
+
+      // Exactly two events in the journal: 'authorized' + 'expired'.
+      const events = await journal.read('pay-1', 0);
+      expect(events.map((e) => (e.event as { kind: string }).kind))
+        .toEqual(['authorized', 'expired']);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('command transitions cancel the timer — no expired event persists', async () => {
+    const { sys, journal } = buildSystem('fsm-timeout-cancelled');
+    try {
+      const ref = sys.actorOf(Props.create(() => new PaymentFsm('pay-2', 80)), 'pay');
+      ref.tell({ kind: 'authorize', amount: 50 });
+      // Capture before the timer fires — the FSM must transition to
+      // 'captured' and the armed timer must be cancelled.
+      await sleep(20);
+      ref.tell({ kind: 'capture' });
+      // Wait long enough that the original 80ms timer would have
+      // fired if it weren't cancelled.
+      await sleep(150);
+
+      const final = await ask<PayCmd, FsmStateData<PayState, PayData>>(
+        ref, { kind: 'getState' }, 1_000,
+      );
+      expect(final.state).toBe('captured');
+      const events = await journal.read('pay-2', 0);
+      expect(events.map((e) => (e.event as { kind: string }).kind))
+        .toEqual(['authorized', 'captured']);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('terminal state with no _timeout entry leaves no armed timer', async () => {
+    // After the FSM lands in `captured` (no `_timeout`), the timer
+    // must not refire — verifies arm/cancel pairing on the
+    // post-transition path.
+    const { sys, journal } = buildSystem('fsm-timeout-terminal');
+    try {
+      const ref = sys.actorOf(Props.create(() => new PaymentFsm('pay-3', 60)), 'pay');
+      ref.tell({ kind: 'authorize', amount: 10 });
+      ref.tell({ kind: 'capture' });
+      await sleep(200);
+
+      const events = await journal.read('pay-3', 0);
+      expect(events).toHaveLength(2);
+      expect(events.map((e) => (e.event as { kind: string }).kind))
+        .toEqual(['authorized', 'captured']);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('guard rejection skips the timeout fire silently', async () => {
+    // The guarded variant only fires when amount > 0.  We authorize
+    // with amount=0 so the guard rejects; the timer fires but the
+    // FSM stays in `authorized`.
+    const { sys, journal } = buildSystem('fsm-timeout-guarded');
+    try {
+      const ref = sys.actorOf(
+        Props.create(() => new PaymentFsm('pay-4', 60, { guarded: true })),
+        'pay',
+      );
+      ref.tell({ kind: 'authorize', amount: 0 });
+      await sleep(200);
+
+      const final = await ask<PayCmd, FsmStateData<PayState, PayData>>(
+        ref, { kind: 'getState' }, 1_000,
+      );
+      expect(final.state).toBe('authorized');
+      const events = await journal.read('pay-4', 0);
+      expect(events.map((e) => (e.event as { kind: string }).kind))
+        .toEqual(['authorized']);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('recovery re-arms the timer relative to wall-clock at recovery completion', async () => {
+    // Persist `authorized` in one ActorSystem, restart, give the new
+    // FSM enough time post-recovery for its fresh timer to fire.
+    // Verifies the recovery-side arm path AND that the timer does
+    // NOT fire during replay (no double-expired event).
+    const { sys: sys1, journal, snaps } = buildSystem('fsm-timeout-recovery');
+    try {
+      const ref1 = sys1.actorOf(Props.create(() => new PaymentFsm('pay-5', 80)), 'pay');
+      ref1.tell({ kind: 'authorize', amount: 200 });
+      await sleep(20);
+      // Stop before the timer fires — the persisted state is 'authorized'.
+    } finally {
+      await sys1.terminate();
+    }
+
+    const sys2 = ActorSystem.create('fsm-recovery-2', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    sys2.extension(PersistenceExtensionId).setJournal(journal);
+    sys2.extension(PersistenceExtensionId).setSnapshotStore(snaps);
+    try {
+      const ref2 = sys2.actorOf(Props.create(() => new PaymentFsm('pay-5', 80)), 'pay');
+      // After recovery, the timer arms fresh.  Wait > afterMs.
+      await sleep(200);
+      const final = await ask<PayCmd, FsmStateData<PayState, PayData>>(
+        ref2, { kind: 'getState' }, 1_000,
+      );
+      expect(final.state).toBe('expired');
+
+      // Exactly two events in the journal across both lives:
+      // 'authorized' (persisted by sys1) + 'expired' (persisted by sys2).
+      const events = await journal.read('pay-5', 0);
+      expect(events.map((e) => (e.event as { kind: string }).kind))
+        .toEqual(['authorized', 'expired']);
+    } finally {
+      await sys2.terminate();
+    }
+  });
+});
