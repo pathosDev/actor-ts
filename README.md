@@ -471,6 +471,13 @@ Runnable examples:
 [`examples/persistence/event-migration-chain.ts`](examples/persistence/event-migration-chain.ts)
 (rename / type change via `MigrationChain`).
 
+**Operating across a fleet?**  The walkthrough at
+[`docs/operations/rolling-migration.md`](docs/operations/rolling-migration.md)
+covers the canonical four-phase rolling deploy: code-first with
+both schemas registered, reader rollout, writer flip via
+`writeVersion`, optional historical backfill — plus the parallel
+story for master-key rotation.
+
 ## Caching (Redis / Memcached / in-memory)
 
 A single `Cache` abstraction backs everything: HTTP middleware (response
