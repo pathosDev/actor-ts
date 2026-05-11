@@ -20,6 +20,20 @@ export interface WebSocketActorSettings extends BrokerCommonSettings {
   readonly target?: ActorRef<WebSocketFrame>;
   /** Send a ping every `pingIntervalMs` to keep the connection alive.  Default: disabled. */
   readonly pingIntervalMs?: number;
+  /**
+   * Maximum allowed size of a single inbound frame, in bytes.
+   * Frames larger than this are dropped (logged at warn level)
+   * without being forwarded to `target`.  Default: 1 MiB.
+   *
+   * **Why this exists (security):** a malicious (or compromised) WS
+   * peer can send arbitrarily-large frames.  Without a cap, the
+   * actor's mailbox grows unbounded if `target` consumes slowly —
+   * one 100-MiB frame plus a stalled consumer exhausts the process.
+   * Set to `Infinity` to disable (not recommended for public-facing
+   * endpoints); raise the cap if you legitimately need bigger
+   * frames (audio/video streams).
+   */
+  readonly maxInboundFrameBytes?: number;
 }
 
 export type WebSocketCmd =
@@ -125,26 +139,80 @@ export class WebSocketActor extends BrokerActor<WebSocketActorSettings, WebSocke
   private handleMessage(data: unknown): void {
     const target = this.settings.target;
     if (!target) return;
+    const cap = this.settings.maxInboundFrameBytes ?? DEFAULT_WS_MAX_INBOUND_FRAME_BYTES;
     if (typeof data === 'string') {
+      // For text, use byte length (UTF-8 worst case is 4× char count
+      // but most messages are ASCII-heavy; checking utf8 byte length
+      // is the precise measure for "memory consumed").
+      const size = utf8ByteLength(data);
+      if (size > cap) {
+        this.log.warn(
+          `WebSocketActor: dropped oversize inbound text frame (${size} > maxInboundFrameBytes ${cap}) ` +
+          `from ${this.settings.url}`,
+        );
+        return;
+      }
       target.tell({ kind: 'text', data });
       return;
     }
     if (data instanceof ArrayBuffer) {
+      if (data.byteLength > cap) {
+        this.log.warn(
+          `WebSocketActor: dropped oversize inbound binary frame (${data.byteLength} > maxInboundFrameBytes ${cap}) ` +
+          `from ${this.settings.url}`,
+        );
+        return;
+      }
       target.tell({ kind: 'binary', data: new Uint8Array(data) });
       return;
     }
     if (data instanceof Uint8Array) {
+      if (data.byteLength > cap) {
+        this.log.warn(
+          `WebSocketActor: dropped oversize inbound binary frame (${data.byteLength} > maxInboundFrameBytes ${cap}) ` +
+          `from ${this.settings.url}`,
+        );
+        return;
+      }
       target.tell({ kind: 'binary', data });
       return;
     }
     // ws-lib delivers Buffer; coerce.
     if (data && typeof (data as { byteLength?: number }).byteLength === 'number') {
+      const bl = (data as { byteLength: number }).byteLength;
+      if (bl > cap) {
+        this.log.warn(
+          `WebSocketActor: dropped oversize inbound binary frame (${bl} > maxInboundFrameBytes ${cap}) ` +
+          `from ${this.settings.url}`,
+        );
+        return;
+      }
       const u8 = new Uint8Array(data as ArrayBufferLike);
       target.tell({ kind: 'binary', data: u8 });
       return;
     }
     this.log.warn(`WebSocketActor: unrecognised inbound frame type (${typeof data})`);
   }
+}
+
+/** Default cap on a single inbound WebSocket frame — 1 MiB. */
+export const DEFAULT_WS_MAX_INBOUND_FRAME_BYTES = 1 * 1024 * 1024;
+
+function utf8ByteLength(s: string): number {
+  // TextEncoder's encode allocates a Uint8Array, which we'd discard;
+  // for the size check alone, hand-roll the UTF-8 byte count.  Saves
+  // an allocation in the common case (small messages well under cap).
+  let bytes = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x80) bytes += 1;
+    else if (c < 0x800) bytes += 2;
+    else if (c >= 0xD800 && c <= 0xDBFF) {
+      // Surrogate pair → 4-byte sequence; skip the low surrogate.
+      bytes += 4; i += 1;
+    } else bytes += 3;
+  }
+  return bytes;
 }
 
 /* ----------------------------- internals -------------------------------- */
