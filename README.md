@@ -150,17 +150,19 @@ middleware, or in-house clients.
 ### What's solid in tests, but not production-tested
 
 - Actor core, supervision, mailboxes, typed Behaviors, TestKit
-- Cluster gossip + membership + sharding (single + multi-node test scenarios)
+- Cluster gossip + membership + sharding (single + multi-node test scenarios) + ClusterClient (outside-in connectivity)
 - Cluster-aware router (role filter + consistent hashing)
 - Persistence (in-memory + SQLite); CassandraSnapshotStore tested against a fake CQL client only
-- HTTP DSL + Fastify backend
-- Caching (InMemoryCache); RedisCache tested against a mock client
-- Schema-migration round-trips, in-process schema registry, master-key rotation
-- Object-storage with FilesystemBackend; S3Backend tested against a fake SDK + optional MinIO
+- HTTP DSL + Fastify backend; idempotency-middleware with request-body fingerprint binding
+- Caching (InMemoryCache); RedisCache + MemcachedCache (with protocol-injection-safe key validation) tested against mock clients; all with `mget` / `mset` bulk ops
+- Schema-migration round-trips, in-process schema registry, master-key rotation, re-encryption sweep, journal-to-journal copy
+- Object-storage with FilesystemBackend (path-traversal hardened); S3Backend tested against a fake SDK + optional MinIO
 - Observability: structured logging / MDC propagation, Prometheus exposition, OpenTelemetry-style tracing across actor + cluster hops
 - Persistent FSM, BackoffSupervisor, CRDT family (G/PN counters, G/OR sets, LWW/MV registers, OR/LWW maps, GCounterMap)
-- Server-side WebSocket via Bun.serve / Fastify-websocket adapters
+- DistributedData with `WriteConsistency` / `ReadConsistency` quorum API (`'local'` / `'majority'` / `'all'` / `{ from: K }`)
+- Server-side WebSocket via Bun.serve / Fastify-websocket adapters (with inbound frame-size cap)
 - Kafka manual-commit (exactly-once-with-processing) + NATS JetStream durable streams (push + pull consumer)
+- Extended cluster-management HTTP endpoints (`/cluster/shards`, opt-in `/cluster/down`, `/metrics`)
 
 ### What's there but skipped in CI
 
@@ -174,11 +176,39 @@ middleware, or in-house clients.
 - Indexed `eventsByTag` for `CassandraJournal` — InMemory + SQLite use
   a tag side-table; Cassandra currently falls back to a client-side
   journal scan.  Side-table is tracked under #44.
+- Saga / process-manager primitive (Lagom / Eventuate-style with compensations)
+- Orleans-style persistent reminders (durable timers that survive deactivation)
+- Akka-Streams DSL (#54) — a quick-slice subset (`SourceQueue` / `MergeHub` / `BroadcastHub`) is on the roadmap; the full library is out of scope
 - Backwards-compatibility guarantees of any kind — pre-1.0
 
-See [`ROADMAP.md`](./ROADMAP.md) for what's coming next and what's
-explicitly out of scope, and [`CHANGELOG.md`](./CHANGELOG.md) for
-what landed in the most recent release.
+A full feature backlog (~184 audit-catalog items: security findings,
+framework gaps vs Akka / OTP / Orleans, code-quality refactors) is
+tracked as Github issues with title-prefix `[Security] ` / `[Feature] `
+and labels `security` + `severity: <tier>` / `priority: …`.  See
+[`ROADMAP.md`](./ROADMAP.md) for the priorities and [`CHANGELOG.md`](./CHANGELOG.md)
+for what landed in the most recent release.
+
+### Known security caveats (closed-group threat model)
+
+actor-ts assumes a **closed-group cluster** — peers are mutually
+trusted (firewalled VPC, mTLS-secured network, or similar).  An
+attacker with TCP-level access to a cluster port can still trigger
+the following without mitigation (each is tracked as an issue):
+
+- **DurableState revision tampering** (CRITICAL) — backend-write access can corrupt revision counters of unencrypted bodies.
+- **askId predictability via `Date.now()`** (HIGH) — in-flight asks hijackable by a MitM that can inject frames into the cluster transport.
+- **Lease-coordination split-brain at network-latency** (HIGH) — `LeaseMajority` may double-act in rare partition scenarios.
+- **Gossip replay attack** (MEDIUM) — captured gossip frames are re-injectable within their version window.
+- **MDC cross-tenant leak in shared async contexts** (MEDIUM).
+
+Full audit + planned fixes: GitHub issues filtered by label
+`security` + `severity: <level>`.
+
+Eight earlier security fixes have already landed (commits `d454079`
+→ `4cac92a`): frame-size DoS cap, FS path-traversal guard, Memcached
+CRLF block, gossip version cap, snapshot seq integrity, WebSocket
+inbound frame cap, hello-handshake hijack defense, idempotency
+body-fingerprint binding.
 
 Spotted a bug or want to suggest a feature?  Open an issue via the
 [issue tracker](https://github.com/pathosDev/actor-ts/issues/new/choose)
