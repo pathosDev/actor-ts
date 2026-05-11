@@ -100,3 +100,16 @@ body:
       label: Logs / stack trace
       description: Anything notable from stderr / the actor system's debug log.
       render: shell
+
+  - type: checkboxes
+    id: security-flag
+    attributes:
+      label: Is this a security issue?
+      description: |
+        If yes, **please consider using the `[Security] ` template instead**
+        (it asks for the right fields: exploit walkthrough, affected files,
+        disclosure status).  Either way, a maintainer will add the `security`
+        and `severity: …` labels — Github Forms can't add them
+        conditionally.
+      options:
+        - label: This is a security-relevant bug.

@@ -1,0 +1,107 @@
+name: Security finding
+description: A security-relevant defect — exploit walkthrough preferred.
+title: "[Security] "
+labels: ["bug", "security", "severity: medium", "priority: high"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a security finding.
+
+        > ⚠️ **For pre-disclosure handling**, please first check
+        > the project's security policy in `SECURITY.md` (or, if
+        > absent, contact the maintainer privately).  Use this
+        > public template for findings you're OK discussing in the
+        > open — e.g., audit follow-ups, defense-in-depth items
+        > that don't fit the responsible-disclosure window.
+
+        The defaults set this issue to `severity: medium` +
+        `priority: high`.  A maintainer will adjust the severity
+        label after triage; please fill the **Severity** field
+        below with your assessment.
+
+  - type: input
+    id: component
+    attributes:
+      label: Component
+      description: Which subsystem is affected? (cluster transport, persistence, HTTP routing, cache, …)
+      placeholder: "src/cluster/Transport.ts"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity (your assessment)
+      description: |
+        CRITICAL = system-wide compromise possible with low-skill
+        attacker.  HIGH = significant impact, exploitable in the
+        documented closed-group threat model.  MEDIUM = requires
+        specific conditions or only partial impact.  LOW = minor
+        / informational / mitigated by design.
+      options:
+        - "CRITICAL"
+        - "HIGH"
+        - "MEDIUM"
+        - "LOW"
+    validations:
+      required: true
+
+  - type: textarea
+    id: exploit
+    attributes:
+      label: Exploit walkthrough
+      description: |
+        Concrete attacker capability → input → outcome.  Be
+        specific: what code path runs, what state ends up
+        corrupted/leaked, what's the realistic worst case?
+      placeholder: |
+        1. Attacker has TCP access to a cluster port.
+        2. Sends a `hello` frame with `self: <victim-address>` …
+        3. Cluster overwrites `byPeer[<victim>] = attacker-conn` …
+        4. Every outbound message to victim now flows over the
+           attacker's socket.
+    validations:
+      required: true
+
+  - type: textarea
+    id: files
+    attributes:
+      label: Affected files
+      description: Paths + line ranges, ideally.
+      placeholder: |
+        - `src/cluster/Transport.ts:200-220`
+        - `src/cluster/Protocol.ts:50-65`
+    validations:
+      required: true
+
+  - type: textarea
+    id: fix
+    attributes:
+      label: Fix sketch / approach
+      description: |
+        Optional — your best guess at how to fix it.  Not a
+        binding design; helps verify the issue is well-scoped.
+      render: typescript
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: |
+        How would you verify the fix works?  A defense-test
+        outline ("malicious input X should now throw / be
+        dropped") is gold.
+
+  - type: dropdown
+    id: disclosure
+    attributes:
+      label: Disclosure status
+      description: Has this been disclosed elsewhere, or is it fresh?
+      options:
+        - "Fresh — first public mention"
+        - "Followed up from a private disclosure"
+        - "From an audit / scan — affected scope already known"
+        - "Already discussed in another issue / commit"
+    validations:
+      required: true
