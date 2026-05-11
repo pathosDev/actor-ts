@@ -13,12 +13,34 @@ export interface MqttSubscription {
   readonly target: ActorRef<MqttMessage>;
 }
 
+/**
+ * Multi-valued user-property bag carried alongside an MQTT 5.0
+ * message.  Same shape as the underlying mqtt-packet's
+ * `properties.userProperties` field — a single key may map to one
+ * value or an array of values (the protocol allows duplicates).
+ * Absent when the broker / client is on MQTT 3.1.1.
+ */
+export type MqttUserProperties = Record<string, string | string[]>;
+
 /** Inbound MQTT message handed to subscribers. */
 export interface MqttMessage {
   readonly topic: string;
   readonly payload: Uint8Array;
   readonly qos: MqttQos;
   readonly retain: boolean;
+  /**
+   * MQTT 5.0 user properties on the inbound packet, if any.  Always
+   * `undefined` for MQTT 3.1.1 traffic — the protocol doesn't carry
+   * them.  See {@link MqttActorSettings.protocolVersion}.
+   */
+  readonly userProperties?: MqttUserProperties;
+  /**
+   * MQTT 5.0 PUBACK / PUBREC reason code attached to the message,
+   * if the broker emitted one.  `undefined` for MQTT 3.1.1 or for
+   * unprompted publishes.  See the MQTT 5.0 spec § 2.4 "Reason Code"
+   * for the value space.
+   */
+  readonly reasonCode?: number;
 }
 
 /** Outbound publish envelope. */
@@ -27,6 +49,12 @@ export interface MqttPublish {
   readonly payload: Uint8Array | string;
   readonly qos?: MqttQos;
   readonly retain?: boolean;
+  /**
+   * MQTT 5.0 user properties to attach to the PUBLISH packet.
+   * Silently dropped when the actor's `protocolVersion` is 4 — the
+   * 3.1.1 wire format has no way to carry them.
+   */
+  readonly userProperties?: MqttUserProperties;
 }
 
 export interface MqttCredentials {
@@ -50,6 +78,15 @@ export interface MqttActorSettings extends BrokerCommonSettings {
   readonly cleanSession?: boolean;
   /** Keep-alive interval in seconds.  Default 60. */
   readonly keepAliveSec?: number;
+  /**
+   * MQTT protocol version negotiated with the broker.  Default `4`
+   * (MQTT 3.1.1) for back-compat with every existing config; set to
+   * `5` to opt in to MQTT 5.0 features (user properties + reason
+   * codes — see {@link MqttPublish.userProperties} +
+   * {@link MqttMessage.reasonCode}).  The peer-dep `mqtt` handles
+   * the wire negotiation; we only flip the flag.
+   */
+  readonly protocolVersion?: 4 | 5;
 }
 
 export type MqttCmd =
@@ -96,6 +133,13 @@ export class MqttActor extends BrokerActor<MqttActorSettings, MqttCmd, MqttPubli
     if (c.hasPath('defaultQos')) out.defaultQos = c.getInt('defaultQos') as MqttQos;
     if (c.hasPath('cleanSession')) out.cleanSession = c.getBoolean('cleanSession');
     if (c.hasPath('keepAliveSec')) out.keepAliveSec = c.getInt('keepAliveSec');
+    if (c.hasPath('protocolVersion')) {
+      const v = c.getInt('protocolVersion');
+      if (v !== 4 && v !== 5) {
+        throw new Error(`MqttActor: protocolVersion must be 4 or 5, got ${v}`);
+      }
+      out.protocolVersion = v;
+    }
     return out;
   }
   protected requiredSettings(): ReadonlyArray<keyof MqttActorSettings> { return ['brokerUrl']; }
@@ -109,6 +153,7 @@ export class MqttActor extends BrokerActor<MqttActorSettings, MqttCmd, MqttPubli
       password: this.settings.credentials?.password,
       clean: this.settings.cleanSession,
       keepalive: this.settings.keepAliveSec,
+      protocolVersion: this.settings.protocolVersion ?? 4,
     };
     if (this.settings.will) {
       opts.will = {
@@ -127,10 +172,17 @@ export class MqttActor extends BrokerActor<MqttActorSettings, MqttCmd, MqttPubli
         client.removeAllListeners('error');
         this.client = client;
         client.on('message', (topic, payload, packet) => {
+          // MQTT 5.0 v5 properties live under `packet.properties` per
+          // mqtt-packet's shape; absent on 3.1.1.  We pass them
+          // through verbatim so subscribers that care can read user-
+          // properties / reasonCode straight off the inbound
+          // message, and those that don't are unaffected.
           this.dispatchInbound({
             topic, payload,
             qos: (packet?.qos ?? 0) as MqttQos,
             retain: packet?.retain ?? false,
+            userProperties: packet?.properties?.userProperties,
+            reasonCode: packet?.properties?.reasonCode,
           });
         });
         client.on('error', (e) => this.handleConnectionLost(e));
@@ -169,8 +221,16 @@ export class MqttActor extends BrokerActor<MqttActorSettings, MqttCmd, MqttPubli
     const p = env.payload;
     const qos = p.qos ?? this.settings.defaultQos ?? 0;
     const retain = p.retain ?? false;
+    const protocolVersion = this.settings.protocolVersion ?? 4;
+    const opts: MqttPubOpts = { qos, retain };
+    // User properties only carry on MQTT 5.0 — silently drop them
+    // on 3.1.1 (the wire format has no slot for them).  Same
+    // pattern mqtt.js follows when the option mismatches the
+    // negotiated protocol version.
+    const properties = buildPublishProperties(p, protocolVersion);
+    if (properties) opts.properties = properties;
     return new Promise<void>((resolve, reject) => {
-      this.client!.publish(p.topic, p.payload as string | Uint8Array, { qos, retain }, (err) => {
+      this.client!.publish(p.topic, p.payload as string | Uint8Array, opts, (err) => {
         err ? reject(err) : resolve();
       });
     });
@@ -227,6 +287,30 @@ export class MqttActor extends BrokerActor<MqttActorSettings, MqttCmd, MqttPubli
   }
 }
 
+/* --------------------------- MQTT 5.0 helpers -------------------------- */
+
+/**
+ * Build the mqtt-packet `properties` object for an outbound publish,
+ * or `undefined` if there's nothing v5-specific to attach.  Pure
+ * function — testable without a real broker or mqtt.js install
+ * (see `tests/unit/io/broker/MqttActor.test.ts`).
+ *
+ * `protocolVersion < 5` always returns undefined: the 3.1.1 wire
+ * format has no slot for user properties, so we drop them rather
+ * than letting them leak into the publish callsite and confuse
+ * downstream tooling.
+ */
+export function buildPublishProperties(
+  p: MqttPublish,
+  protocolVersion: 4 | 5,
+): { userProperties?: MqttUserProperties } | undefined {
+  if (protocolVersion < 5) return undefined;
+  if (!p.userProperties) return undefined;
+  const keys = Object.keys(p.userProperties);
+  if (keys.length === 0) return undefined;
+  return { userProperties: p.userProperties };
+}
+
 /* --------------------------- MQTT topic match -------------------------- */
 
 /** Standard MQTT pattern match: `+` matches one segment, `#` matches the rest. */
@@ -251,13 +335,35 @@ interface MqttConnectOptions {
   password?: string;
   clean?: boolean;
   keepalive?: number;
+  /** mqtt.js: 3 (MQTT 3.1), 4 (3.1.1), 5 (5.0).  We allow 4 and 5. */
+  protocolVersion?: 4 | 5;
   will?: { topic: string; payload: Uint8Array | string; qos: MqttQos; retain: boolean };
 }
 
-interface MqttPubOpts { qos: MqttQos; retain: boolean; }
+interface MqttPubOpts {
+  qos: MqttQos;
+  retain: boolean;
+  /** mqtt-packet v5 properties — attached only when protocolVersion=5. */
+  properties?: { userProperties?: MqttUserProperties };
+}
+
+/**
+ * Inbound packet shape we read off mqtt.js.  v5 nests user
+ * properties + reason codes under `properties`; on 3.1.1 it's
+ * absent.  Typed permissively so the same callback signature works
+ * for both versions.
+ */
+interface MqttInboundPacket {
+  qos?: number;
+  retain?: boolean;
+  properties?: {
+    userProperties?: MqttUserProperties;
+    reasonCode?: number;
+  };
+}
 
 interface MqttClientLike {
-  on(event: 'message', cb: (topic: string, payload: Uint8Array, packet?: { qos?: number; retain?: boolean }) => void): void;
+  on(event: 'message', cb: (topic: string, payload: Uint8Array, packet?: MqttInboundPacket) => void): void;
   on(event: 'error', cb: (err: Error) => void): void;
   on(event: 'close', cb: () => void): void;
   once(event: 'connect', cb: () => void): void;

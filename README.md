@@ -620,6 +620,13 @@ Required fields missing from every layer raise a clear
 `BrokerSettingsError` at startup, naming both the field and the HOCON
 path that could supply it.
 
+`MqttActor` defaults to MQTT 3.1.1 for back-compat.  Set
+`protocolVersion: 5` to opt in to MQTT 5.0 — inbound `MqttMessage`s
+then carry optional `userProperties` and `reasonCode`, and outbound
+`MqttPublish`es accept a `userProperties` map that the actor
+attaches to the PUBLISH packet's v5 properties block.  On v3.1.1
+those fields are silently dropped (the wire format has no slot).
+
 Runnable examples:
 [`examples/io/mqtt-temperature.ts`](examples/io/mqtt-temperature.ts) (MQTT pub/sub),
 [`examples/io/websocket-feed.ts`](examples/io/websocket-feed.ts) (WS server + client in one process),

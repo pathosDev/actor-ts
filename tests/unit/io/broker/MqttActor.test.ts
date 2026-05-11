@@ -1,8 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import {
   MqttActor,
+  buildPublishProperties,
   matchesMqttPattern,
   type MqttMessage,
+  type MqttPublish,
 } from '../../../../src/io/broker/MqttActor.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
 
@@ -63,5 +65,58 @@ describe('MqttActor (no peer-dep tests)', () => {
     void ({} as MqttMessage);
     void ({} as ActorRef);
     expect(true).toBe(true);
+  });
+});
+
+/* --------------- MQTT 5.0 publish-properties helper (#13) ---------------- */
+
+describe('buildPublishProperties (MQTT 5.0)', () => {
+  test('returns undefined on protocolVersion=4 even with userProperties set', () => {
+    // The 3.1.1 wire format has no slot for user properties — we
+    // silently drop them rather than letting them leak into the
+    // publish callsite with no effect.
+    const p: MqttPublish = {
+      topic: 'sensor/1',
+      payload: 'x',
+      userProperties: { tenant: 't1' },
+    };
+    expect(buildPublishProperties(p, 4)).toBeUndefined();
+  });
+
+  test('returns undefined when no v5 fields are set, regardless of version', () => {
+    const p: MqttPublish = { topic: 'sensor/1', payload: 'x' };
+    expect(buildPublishProperties(p, 4)).toBeUndefined();
+    expect(buildPublishProperties(p, 5)).toBeUndefined();
+  });
+
+  test('returns undefined when userProperties is an empty object on v5', () => {
+    // An empty user-properties object is semantically "no properties"
+    // — collapse to undefined so mqtt.js doesn't emit an empty
+    // properties block on the wire.
+    const p: MqttPublish = {
+      topic: 'sensor/1',
+      payload: 'x',
+      userProperties: {},
+    };
+    expect(buildPublishProperties(p, 5)).toBeUndefined();
+  });
+
+  test('returns a properties block on v5 with populated userProperties', () => {
+    const userProperties = { tenant: 't1', priority: ['high', 'audit'] };
+    const p: MqttPublish = { topic: 'sensor/1', payload: 'x', userProperties };
+    expect(buildPublishProperties(p, 5)).toEqual({ userProperties });
+  });
+
+  test('preserves multi-valued properties (string[]) verbatim', () => {
+    // MQTT 5.0 allows multiple values per key — the wire format
+    // emits the key + value pair for each entry in the array.  The
+    // helper passes the array through unchanged.
+    const p: MqttPublish = {
+      topic: 'sensor/1',
+      payload: 'x',
+      userProperties: { tag: ['alpha', 'beta', 'gamma'] },
+    };
+    const props = buildPublishProperties(p, 5);
+    expect(props?.userProperties?.tag).toEqual(['alpha', 'beta', 'gamma']);
   });
 });
