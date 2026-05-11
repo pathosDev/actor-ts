@@ -66,6 +66,10 @@ export class MemcachedCache implements Cache {
 
   async get<V>(key: string): Promise<Option<V>> {
     if (this.closed) return none;
+    // Validate BEFORE the try/catch so protocol-injection attempts
+    // surface to the caller as a CacheError, rather than being
+    // silently swallowed as a "cache miss".
+    assertSafeMemcachedKey(key);
     try {
       const client = await this.clientLazy.get();
       const { value } = await client.get(this.k(key));
@@ -81,6 +85,7 @@ export class MemcachedCache implements Cache {
     if (ttlMs !== undefined && (!Number.isFinite(ttlMs) || ttlMs <= 0)) {
       throw new CacheError(`MemcachedCache.set: ttlMs must be a positive finite number, got ${ttlMs}`);
     }
+    assertSafeMemcachedKey(key);
     const expires = msToSeconds(ttlMs);
     try {
       const client = await this.clientLazy.get();
@@ -133,6 +138,8 @@ export class MemcachedCache implements Cache {
 
   async delete(...keys: string[]): Promise<void> {
     if (this.closed || keys.length === 0) return;
+    // Validate every key up-front; one bad key fails the whole call.
+    for (const k of keys) assertSafeMemcachedKey(k);
     try {
       const client = await this.clientLazy.get();
       // memjs has no multi-delete — issue them in parallel.
@@ -145,6 +152,7 @@ export class MemcachedCache implements Cache {
   async mget<V>(keys: ReadonlyArray<string>): Promise<Map<string, V>> {
     const out = new Map<string, V>();
     if (this.closed || keys.length === 0) return out;
+    for (const k of keys) assertSafeMemcachedKey(k);
     try {
       const client = await this.clientLazy.get();
       // memjs has no native MGET — issue in parallel and rebuild the
@@ -175,6 +183,7 @@ export class MemcachedCache implements Cache {
     if (ttlMs !== undefined && (!Number.isFinite(ttlMs) || ttlMs <= 0)) {
       throw new CacheError(`MemcachedCache.mset: ttlMs must be a positive finite number, got ${ttlMs}`);
     }
+    for (const k of entries.keys()) assertSafeMemcachedKey(k);
     const expires = msToSeconds(ttlMs);
     try {
       const client = await this.clientLazy.get();
@@ -203,7 +212,52 @@ export class MemcachedCache implements Cache {
   }
 
   private k(key: string): string {
+    assertSafeMemcachedKey(key);
     return this.keyPrefix ? `${this.keyPrefix}${key}` : key;
+  }
+}
+
+/**
+ * Reject memcached keys that contain whitespace, control characters,
+ * NUL bytes, or are over the protocol's 250-byte limit.
+ *
+ * **Exploit walkthrough (pre-fix).**  Memcached's text protocol uses
+ * whitespace (space, `\r`, `\n`, `\t`) as command delimiters.  Some
+ * memcached clients pass user-supplied keys straight onto the wire;
+ * a key like `'a\r\nFLUSHALL\r\n'` becomes two protocol lines once
+ * concatenated with the rest of the SET frame:
+ *
+ *   set <keyPrefix>a
+ *   FLUSHALL
+ *   ...
+ *
+ * The server interprets the second line as a real `FLUSHALL`,
+ * wiping the cache.  Even a server that ignores unknown commands
+ * leaks information: the response to the injected line lands in the
+ * pipeline reader, desynchronising every subsequent request.
+ *
+ * The framework's `Cache` interface accepts user-supplied keys
+ * (often derived from request paths or actor pids), so the
+ * sanitisation lives here.
+ */
+export function assertSafeMemcachedKey(key: string): void {
+  if (typeof key !== 'string' || key.length === 0) {
+    throw new CacheError(`memcached key must be a non-empty string`);
+  }
+  if (key.length > 250) {
+    throw new CacheError(`memcached key exceeds 250-byte limit (got ${key.length})`);
+  }
+  // Reject all ASCII control chars (0x00–0x1F, 0x7F) plus space (0x20).
+  // The memcached text protocol uses whitespace as command delimiter;
+  // any of these in a key would let an attacker inject protocol commands.
+  for (let i = 0; i < key.length; i++) {
+    const c = key.charCodeAt(i);
+    if (c <= 0x20 || c === 0x7F) {
+      throw new CacheError(
+        `memcached key contains control character or whitespace at index ${i} ` +
+        `(charCode=${c}) — would allow protocol injection`,
+      );
+    }
   }
 }
 

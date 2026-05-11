@@ -223,3 +223,112 @@ describe('MemcachedCache — mget / mset (#14)', () => {
     await expect(c.mset(new Map([['a', 1]]), -5)).rejects.toThrow(/ttlMs/);
   });
 });
+
+/* ------------------------- security: protocol-injection -------------------------- */
+
+describe('MemcachedCache — protocol-injection hardening', () => {
+  /**
+   * **Exploit walkthrough (pre-fix).**  The memcached text protocol
+   * uses whitespace (space, `\r`, `\n`, `\t`) as command delimiters.
+   * The `k()` helper concatenated `keyPrefix + key` without
+   * validation.  A user-controlled key like
+   *
+   *   `'user-42\r\nFLUSHALL\r\n'`
+   *
+   * after concat became:
+   *
+   *   `set <prefix>user-42\r\nFLUSHALL\r\n <flags> <exp> <bytes>\r\n<body>\r\n`
+   *
+   * Many memcached client libraries pass bytes through directly.
+   * The server then parses two commands: the original `set` (with a
+   * mangled key) followed by `FLUSHALL`, which wipes the cache.
+   * Even when the server rejects unknown commands, the reply lines
+   * desynchronise the pipeline reader, breaking every subsequent
+   * request on the connection.
+   *
+   * Fix: reject keys that contain any whitespace / control character,
+   * NUL byte, or exceed the protocol's 250-byte limit — at the
+   * wrapper level, before the client ever sees them.
+   */
+  test('exploit: CRLF in key is rejected on get/set/delete', async () => {
+    const fake = new FakeMemcached();
+    const c = new MemcachedCache({ client: fake });
+    const malicious = 'user-42\r\nFLUSHALL\r\n';
+    await expect(c.get(malicious)).rejects.toThrow(/protocol injection|control character/);
+    await expect(c.set(malicious, 'evil')).rejects.toThrow(/protocol injection|control character/);
+    await expect(c.delete(malicious)).rejects.toThrow(/protocol injection|control character/);
+    // Confirm: the fake client never saw the malicious key.
+    const sawMalicious = fake.log.some((e) => (e.args[0] as string).includes('FLUSHALL'));
+    expect(sawMalicious).toBe(false);
+  });
+
+  test('exploit: bare LF (\\n) in key is rejected', async () => {
+    const c = new MemcachedCache({ client: new FakeMemcached() });
+    await expect(c.set('a\nb', 'x')).rejects.toThrow(/protocol injection|control character/);
+  });
+
+  test('exploit: bare CR (\\r) in key is rejected', async () => {
+    const c = new MemcachedCache({ client: new FakeMemcached() });
+    await expect(c.set('a\rb', 'x')).rejects.toThrow(/protocol injection|control character/);
+  });
+
+  test('exploit: space in key is rejected (memcached treats space as delimiter)', async () => {
+    const c = new MemcachedCache({ client: new FakeMemcached() });
+    await expect(c.set('a b', 'x')).rejects.toThrow(/protocol injection|control character/);
+  });
+
+  test('exploit: tab in key is rejected', async () => {
+    const c = new MemcachedCache({ client: new FakeMemcached() });
+    await expect(c.set('a\tb', 'x')).rejects.toThrow(/protocol injection|control character/);
+  });
+
+  test('exploit: NUL byte in key is rejected', async () => {
+    const c = new MemcachedCache({ client: new FakeMemcached() });
+    await expect(c.set('a\0b', 'x')).rejects.toThrow(/protocol injection|control character/);
+  });
+
+  test('exploit: 251-byte key rejected (memcached protocol limit is 250)', async () => {
+    const c = new MemcachedCache({ client: new FakeMemcached() });
+    const tooLong = 'a'.repeat(251);
+    await expect(c.set(tooLong, 'x')).rejects.toThrow(/250-byte limit/);
+  });
+
+  test('exploit: mget rejects malicious keys', async () => {
+    const c = new MemcachedCache({ client: new FakeMemcached() });
+    await expect(c.mget(['a', 'b\r\nFLUSHALL\r\n', 'c']))
+      .rejects.toThrow(/protocol injection|control character/);
+  });
+
+  test('exploit: mset rejects malicious keys', async () => {
+    const c = new MemcachedCache({ client: new FakeMemcached() });
+    await expect(c.mset(new Map([['a\r\nDELETE\r\n', 1]])))
+      .rejects.toThrow(/protocol injection|control character/);
+  });
+
+  test('regression: normal alphanumeric keys still work', async () => {
+    const fake = new FakeMemcached();
+    const c = new MemcachedCache({ client: fake });
+    await c.set('user-42', 'safe');
+    const v = await c.get<string>('user-42');
+    expect(v.toNullable()).toBe('safe');
+  });
+
+  test('regression: 250-byte key is accepted (boundary)', async () => {
+    const c = new MemcachedCache({ client: new FakeMemcached() });
+    const justRight = 'a'.repeat(250);
+    await c.set(justRight, 'x');
+    // No throw — pass.
+  });
+
+  test('regression: typical pid-like keys with dashes and colons work', async () => {
+    const fake = new FakeMemcached();
+    const c = new MemcachedCache({ client: fake });
+    await c.set('actor:user:42:profile', 'safe');
+    expect((await c.get<string>('actor:user:42:profile')).toNullable()).toBe('safe');
+  });
+
+  test('rejects empty-string key', async () => {
+    const c = new MemcachedCache({ client: new FakeMemcached() });
+    await expect(c.set('', 'x')).rejects.toThrow(/non-empty string/);
+  });
+});
