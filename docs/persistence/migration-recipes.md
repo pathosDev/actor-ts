@@ -308,8 +308,10 @@ Don't.  The manifest string is the identity of the event type
 across the lifetime of the journal — renaming it breaks every
 historical entry.  If you really need to rename a manifest, write
 a new manifest with version 1 and emit a one-shot bulk migrator
-that wraps old-manifest events as new-manifest envelopes.  Plan
-this exactly like a journal-to-journal migration (#87).
+that wraps old-manifest events as new-manifest envelopes.  Use
+`migrateBetweenJournals(source, target, { eventTransform })` for
+this — read from the old, write the transformed copy to a fresh
+target.
 
 ---
 
@@ -322,6 +324,7 @@ this exactly like a journal-to-journal migration (#87).
 | `InMemorySchemaRegistry`   | `src/persistence/migration/SchemaRegistry.ts`  | Multi-service / multi-version coexistence |
 | `validatedEventAdapter`    | `src/persistence/migration/validatedAdapter.ts` | On-write validation     |
 | `wrapEventAsEnvelope` + `migrateInMemoryJournal` / `migrateSnapshotStore` | `src/persistence/migration/wrapLegacy.ts` | Retrofit pre-envelope journal |
+| `migrateBetweenJournals` / `migrateBetweenSnapshotStores` | `src/persistence/migration/journalMigration.ts` | Copy + transform between two backends |
 
 All of them are exported from the top-level `actor-ts` barrel.
 
