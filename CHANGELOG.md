@@ -7,6 +7,124 @@ This is a pre-1.0 hobby project — every minor version is potentially
 breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 "What's in here / What isn't" for current scope honesty.
 
+## [0.7.0] — 2026-05-11
+
+### Added — operator-facing documentation under `docs/`
+
+- `docs/operations/rolling-migration.md` (#91) — the canonical
+  four-phase rolling-deploy walkthrough on top of `writeVersion` +
+  `MasterKeyRing` + `wrapLegacy` + `SchemaRegistry`.  Code-first →
+  observation → writer flip → optional cleanup, with the parallel
+  master-key-rotation story.  ASCII diagram up top for the elevator
+  pitch; symbol-reference table at the bottom mapping every
+  mentioned API to its export path.
+- `docs/persistence/migration-recipes.md` (#93) — decision-tree
+  guide for picking among the five overlapping migration tools
+  (`defaultsAdapter` / `migratingAdapter` / `SchemaRegistry` /
+  `validatedEventAdapter` / `wrapEventAsEnvelope` + bulk
+  migrators).  ASCII flowchart routes "what's the change?" to
+  exactly one recipe; each recipe has a worked example and a
+  "when NOT to use this" note.  Pitfalls section covers the four
+  common questions (mixing adapters, downgrades, snapshots,
+  manifest renames).
+- `ClusterEvents.MemberRemoved` JSDoc + README clarification (#79)
+  spelling out the two paths a removal can take — definitive
+  (tombstoned with `removedAt`, pruneable after `tombstoneTtlMs`)
+  vs FD-driven (deleted outright so a healed partition recovers).
+  Public APIs already filter; only direct iteration of the raw
+  membership view needs the explicit status check.
+  `MemberStatus`'s `'removed'` enum entry gains a paragraph-length
+  docstring with cross-refs to #75 and the event JSDoc.
+
+### Added — broker-actor extensions
+
+- MQTT 5.0 user properties + reason codes (#13) — opt in via
+  `protocolVersion: 5` on `MqttActorSettings` (default 4 keeps
+  every existing config unchanged).  Inbound `MqttMessage`
+  carries optional `userProperties: Record<string, string |
+  string[]>` (multi-valued per the MQTT 5.0 spec) and
+  `reasonCode?: number`; outbound `MqttPublish` accepts a
+  `userProperties` map that the actor attaches to the PUBLISH
+  packet's v5 properties block.  On v3.1.1 those fields are
+  silently dropped — the wire format has no slot for them.  New
+  pure helper `buildPublishProperties(p, protocolVersion)` is
+  exported for users testing the v5 path without a broker.
+- JetStream pull-consumer mode (#62) — opt in via `consumer.mode:
+  'pull'`.  Push remains the default.  In pull mode the actor
+  doesn't run an auto-iterating subscription; instead the
+  application sends `{ kind: 'fetch'; batch; expiresMs? }` cmds
+  to drive batch deliveries.  Per-message ack/nak/term handshake
+  is unchanged.  Batch semantics fan out all messages to `target`
+  up front, then `Promise.all`-await the per-message acks —
+  matches the natural pull-consumer pattern (target processes
+  the batch as it likes, acks come back independently).
+  `JetStreamClientLike` gains `consumers.get(stream, durable):
+  Promise<PullConsumerLike>` for the structural-typing contract.
+
+### Added — cache: bulk operations across all three backends
+
+- `Cache.mget<V>(keys: ReadonlyArray<string>): Promise<Map<string,
+  V>>` and `Cache.mset<V>(entries: ReadonlyMap<string, V>,
+  ttlMs?: number): Promise<void>` (#14).  Hits land in the result
+  Map keyed by request keys; misses (no entry / expired /
+  malformed payload / transient backend failure) are simply
+  absent — `Map.get(k)` returns `V | undefined` with the same
+  "missing key" semantics as the single-key `get`.  Backend
+  specifics:
+    - **InMemoryCache** — iterates the underlying Map; lazy
+      expiry applies to `mget` just like `get`.
+    - **RedisCache** — `mget` emits a single `MGET`; `mset`
+      without TTL emits a single `MSET`, with TTL falls back to
+      pipelined `SET ... PX` (Redis MSET has no per-key TTL).
+      `RedisClientLike` gains `mget` and `mset` to satisfy the
+      structural-typing contract.
+    - **MemcachedCache** — no native bulk ops on the wire;
+      falls back to `Promise.all` of single-key calls.
+
+### Added — replicated event sourcing: optional Lease
+
+- `ReplicatedEventSourcedActor.lease()` protected hook (#89).
+  Default returns `null` (multi-master, unchanged).  When it
+  returns a `Lease`, the actor enforces single-writer mode for
+  its `persistenceId`: only the lease holder may `persist`,
+  non-holders are observers that throw on `persist` (use the
+  `isLeaseHolder` getter to gate side-effect logic before
+  calling).  Companion `onLeaseLost(reason)` hook fires when a
+  TTL expiry / fence / backend failure flips the actor to
+  observer mode.  Same Lease-based pattern v0.6.0's
+  ClusterSingleton (#38) and ShardCoordinator (#60) ship —
+  different scope (per-pid among replicas instead of
+  cluster-wide), same machinery.  Use cases: non-replayable
+  side effects (card charges, webhooks) and heartbeat actors
+  where N replicas would multiply the rate.
+
+### Changed — `Cache` interface (additive)
+
+- The `Cache` interface gains two REQUIRED methods (`mget` and
+  `mset`).  Existing user-side implementations of `Cache` must
+  add them — the three shipped backends (`InMemoryCache`,
+  `RedisCache`, `MemcachedCache`) are updated.  Pre-1.0
+  framework, so this counts as additive evolution rather than
+  a tracked breaking change — but worth flagging.
+
+### Removed — `CONTRIBUTING.md`
+
+- `CONTRIBUTING.md` (v0.6.0's #92) is removed.  The doc was
+  written under the assumption external contributors would land
+  PRs; the actual project posture is single-maintainer and PRs
+  aren't accepted.  Internal conventions stay in `CLAUDE.md` /
+  the plan-doc / commit-message style.
+- Replaced with four issue templates under `.github/ISSUE_TEMPLATE/`:
+  `bug_report.yml` (pre-labelled `bug` + `priority: medium`,
+  prompts for repro / version / runtime / peer-deps / logs),
+  `feature_request.yml` (pre-labelled `enhancement` +
+  `priority: low`, use-case + API sketch + acceptance criteria),
+  `documentation.yml` (pre-labelled `documentation` +
+  `priority: low`, location + kind), and `config.yml`
+  (disables blank issues, links to README / ROADMAP / CHANGELOG).
+  Closes the original #77 (multi-issue close-syntax — the
+  convention itself stays in commit-message style, not docs).
+
 ## [0.6.0] — 2026-05-08
 
 ### Added — sample apps (chat, voice, six frontends each)
