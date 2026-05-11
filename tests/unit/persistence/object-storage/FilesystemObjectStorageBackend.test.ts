@@ -183,3 +183,108 @@ describe('FilesystemObjectStorageBackend — concurrency', () => {
     expect(list).toHaveLength(N);
   });
 });
+
+/* ------------------------- security: path-traversal -------------------------- */
+
+describe('FilesystemObjectStorageBackend — path-traversal hardening', () => {
+  /**
+   * **Exploit walkthrough (pre-fix).**  The backend joined the
+   * configured root with the user-supplied `key` via `path.join`.
+   * Node's `path.join` normalises `..` components, so a key of
+   * `'../../etc/passwd'` resolved OUTSIDE the configured root.  An
+   * attacker controlling the `key` (e.g., a malicious `persistenceId`
+   * flowing into a snapshot-store layer with this backend) could:
+   *
+   *   - **Read arbitrary files** on the host via `get(key)`.
+   *   - **Write/overwrite arbitrary files** via `put(key, body)`.
+   *   - **Delete arbitrary files** via `delete(key)`.
+   *
+   * The cluster's normal threat model trusts the caller of these
+   * methods (which is usually the framework itself), but defense-in-
+   * depth on persistence-layer entry points is cheap.  Fix:
+   * front-line syntactic rejection of `..` / absolute paths / NUL
+   * bytes, plus a defense-in-depth post-resolve check that the
+   * resolved path stays under the configured root.
+   */
+  test('exploit: relative `..` traversal in key is rejected (put)', async () => {
+    await expect(backend.put('../escape.txt', bytes('evil')))
+      .rejects.toThrow(/path-traversal/);
+  });
+
+  test('exploit: deeply-nested `..` traversal is rejected (put)', async () => {
+    await expect(backend.put('a/b/../../../../escape.txt', bytes('evil')))
+      .rejects.toThrow(/path-traversal/);
+  });
+
+  test('exploit: absolute POSIX path is rejected (put)', async () => {
+    await expect(backend.put('/etc/passwd', bytes('evil')))
+      .rejects.toThrow(/absolute paths/);
+  });
+
+  test('exploit: absolute Windows path is rejected (put)', async () => {
+    await expect(backend.put('C:\\Windows\\System32\\evil.txt', bytes('evil')))
+      .rejects.toThrow(/absolute paths/);
+  });
+
+  test('exploit: NUL byte in key is rejected (put)', async () => {
+    await expect(backend.put('safe\0../escape', bytes('evil')))
+      .rejects.toThrow(/NUL byte/);
+  });
+
+  test('exploit: traversal blocked on read paths too (get)', async () => {
+    await expect(backend.get('../escape.txt')).rejects.toThrow(/path-traversal/);
+  });
+
+  test('exploit: traversal blocked on delete', async () => {
+    await expect(backend.delete('../escape.txt')).rejects.toThrow(/path-traversal/);
+  });
+
+  test('exploit: traversal blocked on list prefix', async () => {
+    await expect(backend.list({ prefix: '../etc' })).rejects.toThrow(/path-traversal/);
+  });
+
+  test('defense: file outside root is NOT touched even on traversal attempt', async () => {
+    // Put a "victim" file outside the configured root, in the parent
+    // directory of `tmpRoot`.  After a traversal-attempt put, the
+    // victim file must be unchanged.
+    const { mkdtempSync, writeFileSync, readFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join, dirname } = await import('node:path');
+    const sibling = mkdtempSync(join(dirname(tmpRoot), 'victim-'));
+    const victimPath = join(sibling, 'sacred.txt');
+    writeFileSync(victimPath, 'untouched');
+    try {
+      // Relative key that would resolve to the victim path.
+      // The check rejects before the write happens.
+      const relativeToVictim = `../${sibling.split(/[/\\]/).pop()}/sacred.txt`;
+      await expect(backend.put(relativeToVictim, bytes('overwritten')))
+        .rejects.toThrow(/path-traversal|absolute/);
+      // Victim file is unchanged.
+      expect(readFileSync(victimPath, 'utf8')).toBe('untouched');
+    } finally {
+      rmSync(sibling, { recursive: true, force: true });
+    }
+  });
+
+  test('regression: legitimate nested keys with safe path segments still work', async () => {
+    // Make sure the hardening didn't break normal usage.
+    await backend.put('users/42/snapshot.json', bytes('safe'));
+    const fetched = await backend.get('users/42/snapshot.json');
+    expect(fetched.isSome()).toBe(true);
+    if (fetched.isSome()) {
+      expect(new TextDecoder().decode(fetched.value.body)).toBe('safe');
+    }
+  });
+
+  test('regression: empty list prefix is unchanged (lists everything)', async () => {
+    await backend.put('a', bytes('1'));
+    await backend.put('b', bytes('2'));
+    const items = await backend.list({ prefix: '' });
+    expect(items.map(i => i.key).sort()).toEqual(['a', 'b']);
+  });
+
+  test('invalid keys: empty string, non-string, NUL byte all rejected', async () => {
+    await expect(backend.put('', bytes('x'))).rejects.toThrow(/non-empty string/);
+    await expect(backend.put('\0', bytes('x'))).rejects.toThrow(/NUL byte/);
+  });
+});

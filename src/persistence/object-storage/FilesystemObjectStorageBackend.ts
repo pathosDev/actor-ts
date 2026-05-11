@@ -74,6 +74,64 @@ export interface FilesystemObjectStorageOptions {
 const DEFAULT_LOCK_TIMEOUT_MS = 5_000;
 const DEFAULT_STALE_LOCK_MS = 30_000;
 
+/**
+ * Reject keys that would escape the root directory via path-traversal
+ * (`../`, `\..\`, etc.), absolute-path injection, or NUL-byte tricks.
+ *
+ * **Exploit walkthrough (pre-fix):** the previous code did
+ * `path.join(root, key)` directly.  An attacker controlling `key`
+ * (e.g., a poorly-sanitised `persistenceId` flowing through the
+ * snapshot-store layer) could pass `'../../etc/passwd'` and read
+ * arbitrary files on the host, or `'/etc/passwd'` (absolute-path,
+ * Node's `path.join` interprets it as a full path and effectively
+ * ignores the root prefix on POSIX).
+ *
+ * This helper is the front-line syntactic check; {@link assertWithin
+ * Root} below is the defense-in-depth post-resolve check.
+ */
+function assertSafeKey(key: string): void {
+  if (typeof key !== 'string' || key.length === 0) {
+    throw new ObjectStorageBackendError(`invalid key: must be a non-empty string`);
+  }
+  if (key.includes('\0')) {
+    throw new ObjectStorageBackendError(`invalid key: NUL byte not allowed`);
+  }
+  // Reject absolute paths on both POSIX (`/foo`) and Windows
+  // (`C:\foo`, `\\?\foo`).  Node's `path.join` interprets absolute
+  // path components as "discard everything before me", so without
+  // this check `path.join('/safe', '/etc/passwd')` returns
+  // `'/etc/passwd'`.
+  if (key.startsWith('/') || key.startsWith('\\') || /^[a-zA-Z]:[\\/]/.test(key)) {
+    throw new ObjectStorageBackendError(`invalid key: absolute paths not allowed (got ${key})`);
+  }
+  const segs = key.split(/[/\\]/);
+  if (segs.some((s) => s === '..')) {
+    throw new ObjectStorageBackendError(
+      `invalid key: path-traversal segments ("..") not allowed (got ${key})`,
+    );
+  }
+}
+
+/**
+ * Defense-in-depth post-`path.resolve` check that the computed
+ * absolute path stays under the configured root.  Catches edge cases
+ * the syntactic {@link assertSafeKey} might miss (e.g., URL-encoded
+ * traversal, symlinks resolved at OS level).
+ */
+function assertWithinRoot(
+  pathMod: { resolve: (...p: string[]) => string; readonly sep: string },
+  root: string,
+  fullPath: string,
+): void {
+  const normRoot = pathMod.resolve(root);
+  const normFull = pathMod.resolve(fullPath);
+  if (normFull !== normRoot && !normFull.startsWith(normRoot + pathMod.sep)) {
+    throw new ObjectStorageBackendError(
+      `path-traversal blocked: resolved path "${normFull}" escapes root "${normRoot}"`,
+    );
+  }
+}
+
 export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
   private readonly lockTimeoutMs: number;
   private readonly staleLockMs: number;
@@ -84,8 +142,10 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
   }
 
   async put(key: string, body: Uint8Array, opts: PutOptions = {}): Promise<{ etag: string }> {
+    assertSafeKey(key);
     const { fs, path } = await fsLazy.get();
     const fullPath = path.join(this.options.dir, key);
+    assertWithinRoot(path, this.options.dir, fullPath);
     const lockPath = fullPath + '.lock';
 
     // Parent directory must exist before lock acquisition (the lock file
@@ -155,8 +215,10 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
   }
 
   async get(key: string): Promise<Option<ObjectFetched>> {
+    assertSafeKey(key);
     const { fs, path } = await fsLazy.get();
     const fullPath = path.join(this.options.dir, key);
+    assertWithinRoot(path, this.options.dir, fullPath);
     let body: Uint8Array;
     let stat;
     try {
@@ -184,8 +246,10 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
   }
 
   async delete(key: string): Promise<void> {
+    assertSafeKey(key);
     const { fs, path } = await fsLazy.get();
     const fullPath = path.join(this.options.dir, key);
+    assertWithinRoot(path, this.options.dir, fullPath);
     const lockPath = fullPath + '.lock';
 
     // Lock so a concurrent put doesn't see a half-deleted state mid-CAS.
@@ -206,6 +270,11 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
   }
 
   async list(opts: { prefix: string; limit?: number }): Promise<ObjectInfo[]> {
+    // Empty prefix means "everything" — that's the standard list-all
+    // semantic and is safe.  Non-empty prefix has to obey the same
+    // key-shape rules as put/get/delete (no `..`, no absolute paths,
+    // no NUL bytes) — list otherwise could enumerate outside the root.
+    if (opts.prefix !== '') assertSafeKey(opts.prefix);
     const { fs, path } = await fsLazy.get();
     const root = this.options.dir;
     // Prefix may include a directory portion.  We walk from root and filter.
@@ -263,6 +332,8 @@ interface FsModule {
   path: {
     join(...parts: string[]): string;
     dirname(p: string): string;
+    resolve(...parts: string[]): string;
+    readonly sep: string;
   };
 }
 
