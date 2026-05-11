@@ -106,6 +106,17 @@ export interface ClusterSettings {
 type EnvelopeHandler = (env: EnvelopeMsg, from: NodeAddress) => void;
 
 /**
+ * Maximum allowed deviation between an incoming gossip version and the
+ * local wall-clock — 1 day.  Anything above is rejected as an exploit
+ * attempt (see {@link Cluster.mergeMember} for the full walkthrough).
+ *
+ * Tuned generous-but-finite: a legitimate node with a 23-hour clock
+ * skew still merges; a node claiming `version: Number.MAX_SAFE_INTEGER`
+ * (≈ 285 000 years above now) is rejected on the spot.
+ */
+const MAX_VERSION_SKEW_MS = 24 * 60 * 60 * 1_000;
+
+/**
  * The Cluster is a single-instance "extension" attached to an ActorSystem.
  * It owns a Transport, a gossip-based membership view, a failure detector
  * and the plumbing that dispatches inbound envelope messages to local actors.
@@ -724,6 +735,34 @@ export class Cluster {
 
   private mergeMember(data: MemberData): void {
     const incoming = Member.fromData(data);
+
+    // Security: reject versions that are absurdly far in the future.
+    //
+    // **Exploit walkthrough (pre-fix).**  Versions are seeded from
+    // `Date.now()` and bumped by 1 on status transitions — in normal
+    // operation they stay within ~`Date.now() + small N`.  Nothing
+    // capped them before, so a malicious peer could gossip with
+    // `version: Number.MAX_SAFE_INTEGER` for any target.  The merge
+    // accepted it (higher than the existing version → win), and
+    // every legitimate update from that target was rejected
+    // afterward (`<= MAX_SAFE_INTEGER` always true).  Effect:
+    // permanent DoS — the target was pinned to whatever status the
+    // attacker chose, with no way to recover.  In JS,
+    // `MAX_SAFE_INTEGER + 1` rounds back to itself, so even fresh
+    // start-from-zero re-incarnation couldn't escape.
+    //
+    // Cap at `now + MAX_VERSION_SKEW_MS` (1 day) — generous enough
+    // for any real clock skew, tight enough that MAX_SAFE_INTEGER
+    // (≈ 285 000 years above now) is rejected immediately.
+    const maxAcceptableVersion = Date.now() + MAX_VERSION_SKEW_MS;
+    if (!Number.isFinite(incoming.version) || incoming.version > maxAcceptableVersion) {
+      this.log.warn(
+        `merge: rejecting gossip from ${incoming.address} with implausible version ` +
+        `${incoming.version} (max acceptable ${maxAcceptableVersion}) — possible exploit`,
+      );
+      return;
+    }
+
     // Reject expired tombstones from gossip — peers that haven't yet
     // pruned a long-dead address would otherwise resurrect it on
     // nodes that already pruned (#75).  Old nodes that pre-date the
