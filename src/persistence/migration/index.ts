@@ -48,3 +48,18 @@ export type {
   SchemaRegistration,
   SchemaDescriptor,
 } from './SchemaRegistry.js';
+
+// #87 — journal-to-journal + snapshot-store-to-snapshot-store copy.
+export {
+  migrateBetweenJournals,
+  migrateBetweenSnapshotStores,
+  InMemoryMigrationProgressStore,
+} from './journalMigration.js';
+export type {
+  MigrateJournalsOptions,
+  MigrateJournalsResult,
+  MigrateSnapshotStoresOptions,
+  MigrateSnapshotStoresResult,
+  MigrationProgress,
+  MigrationProgressStore,
+} from './journalMigration.js';

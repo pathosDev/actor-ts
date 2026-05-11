@@ -79,6 +79,13 @@ export type {
   SchemaRegistry,
   SchemaRegistration,
   SchemaDescriptor,
+  // #87 — journal-to-journal + snapshot-store-to-snapshot-store copy.
+  MigrateJournalsOptions,
+  MigrateJournalsResult,
+  MigrateSnapshotStoresOptions,
+  MigrateSnapshotStoresResult,
+  MigrationProgress,
+  MigrationProgressStore,
 } from './migration/index.js';
 export {
   MigrationError,
@@ -104,6 +111,10 @@ export {
   validatedEventAdapter,
   validatedSnapshotAdapter,
   InMemorySchemaRegistry,
+  // #87 — journal-to-journal + snapshot-store-to-snapshot-store copy.
+  migrateBetweenJournals,
+  migrateBetweenSnapshotStores,
+  InMemoryMigrationProgressStore,
 } from './migration/index.js';
 
 // Persistence Query — read-side query layer for projections.

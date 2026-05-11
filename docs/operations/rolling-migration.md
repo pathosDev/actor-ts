@@ -168,11 +168,21 @@ be read on the hot path, you can:
     await migrateSnapshotStore(snapshots, pids, (state) => chain.manifestFor(state, 2));
     ```
 
-    Equivalent helpers for the SQL/Cassandra journals are tracked
-    under #71 (bulk wrap-legacy migration); for now those backends
-    require a journal-to-journal rewrite (#87) or a custom batch
-    job that walks `persistenceIds()` + `read` + `append` to a
-    fresh table.
+    For SQL / Cassandra journals where there's no in-place rewrite
+    yet (tracked under #71 for bulk wrap-legacy), use `migrateBetween
+    Journals(source, target, { eventTransform })` (v0.8.0) to read
+    from the old backend and write a fresh, enveloped copy to the
+    new one — same pattern as a backend swap, with the transform
+    hook doing the wrap inline:
+
+    ```ts
+    await migrateBetweenJournals(oldJournal, newJournal, {
+      eventTransform: (pe) => ({
+        ...pe,
+        event: wrapEventAsEnvelope(pe.event, chain.manifestFor),
+      }),
+    });
+    ```
 
 2. **Drop the v1 step** from the `MigrationChain` once the
    backfill is complete:
