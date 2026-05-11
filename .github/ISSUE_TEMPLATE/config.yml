@@ -1,0 +1,16 @@
+# Disable "open a blank issue" — every issue must come through a template
+# so the right labels and reproduction context land automatically.
+blank_issues_enabled: false
+
+contact_links:
+  - name: Read the README first
+    url: https://github.com/pathosDev/actor-ts#readme
+    about: Architecture overview, runtime compatibility matrix, feature scope.
+
+  - name: Check the ROADMAP
+    url: https://github.com/pathosDev/actor-ts/blob/main/ROADMAP.md
+    about: What's planned, what's explicitly out of scope.
+
+  - name: Look at recent releases
+    url: https://github.com/pathosDev/actor-ts/blob/main/CHANGELOG.md
+    about: Your issue may already be fixed in the latest version.

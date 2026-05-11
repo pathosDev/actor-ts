@@ -1,0 +1,42 @@
+name: Documentation issue
+description: Something in the docs is unclear, wrong, missing, or outdated.
+title: "[Docs] "
+labels: ["documentation", "priority: low"]
+body:
+  - type: textarea
+    id: location
+    attributes:
+      label: Where
+      description: |
+        README section header, `docs/` file path, or fully-qualified
+        JSDoc symbol — whatever points the maintainer at the right
+        place fastest.
+      placeholder: |
+        - README → "Object-storage persistence"
+        - docs/operations/rolling-migration.md → "Phase 3"
+        - src/cluster/Cluster.ts → `tombstonePruneTick`
+    validations:
+      required: true
+
+  - type: textarea
+    id: issue
+    attributes:
+      label: What's unclear, wrong, or missing
+      description: |
+        Quote the line or describe the gap.  Bonus points for the
+        sentence you'd write in its place.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options:
+        - "Unclear / ambiguous"
+        - "Factually wrong"
+        - "Outdated — refers to a removed feature"
+        - "Missing entirely (no doc for the feature)"
+        - "Broken link / dead code-block"
+    validations:
+      required: true

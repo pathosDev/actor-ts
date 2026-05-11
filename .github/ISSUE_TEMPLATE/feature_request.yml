@@ -1,0 +1,68 @@
+name: Feature request
+description: Suggest a new feature, API surface, or integration.
+title: "[Feature] "
+labels: ["enhancement", "priority: low"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion!  Two things up front:
+
+        1. This is a personal hobby project — features land when a
+           concrete need surfaces, not on a fixed cadence.  See
+           [`ROADMAP.md`](../blob/main/ROADMAP.md) for what's planned
+           and what's explicitly out of scope.
+        2. **Pull requests are not accepted.**  Well-shaped issues
+           are how features get prioritised.  The clearer the
+           acceptance criteria, the more likely it lands.
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: |
+        What real-world problem does this solve?  A concrete scenario
+        makes the difference between "nice idea" and "I'll plan
+        this".
+      placeholder: "I have a sharded entity that ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed API or behaviour
+      description: |
+        Optional — rough sketch of what the API would look like.
+        TypeScript signature, config-knob shape, or just prose.  Not
+        a binding design; helps verify the request is well-scoped.
+      render: typescript
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: |
+        Workarounds you tried or rejected.  Helps distinguish
+        "missing feature" from "missing documentation".
+
+  - type: dropdown
+    id: rough-priority
+    attributes:
+      label: How blocking is this for you?
+      options:
+        - "Nice to have — would clean up my code"
+        - "Real friction — I have a workaround but it's awkward"
+        - "Blocker — I can't proceed without it"
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: |
+        How would you verify this feature works?  One-line scenarios
+        are great ("subscribing to the same topic twice doesn't
+        deliver duplicates").  Vague acceptance pushes the issue
+        further down the queue.
