@@ -26,5 +26,7 @@ export type {
   DistributedDataSettings,
   CrdtFactory,
   CrdtJson,
+  WriteConsistency,
+  ReadConsistency,
 } from './DistributedData.js';
 export { DurableDistributedDataStore } from './DurableDistributedDataStore.js';
