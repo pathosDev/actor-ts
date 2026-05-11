@@ -233,3 +233,145 @@ describe('Cluster — gossip exploit defenses', () => {
     expect(allUp).toBe(true);
   }, 10_000);
 });
+
+/* ---------------- hello-handshake identity hijacking ---------------- */
+
+/**
+ * **Exploit walkthrough (pre-fix).**  The transport stored peer
+ * connections in `byPeer[peerKey] = conn` whenever a `hello` arrived.
+ * The set was UNCONDITIONAL — a second hello claiming the same
+ * identity on a different socket simply overwrote the existing entry.
+ * From that moment on, every outbound message intended for the
+ * legitimate peer was routed through the attacker's socket.
+ *
+ * Attack sequence (over real TCP):
+ *
+ *   1. Legitimate peer A connects, sends `hello { self: A }`.
+ *      Cluster stores `byPeer[A] = conn1`.
+ *   2. Attacker opens a fresh TCP socket to the same cluster node,
+ *      sends `hello { self: A }` — same address as the legitimate
+ *      peer.  No proof of identity required.
+ *   3. Cluster overwrites `byPeer[A] = conn2`.  Future outbound
+ *      messages to A all flow over conn2 (attacker's socket).
+ *   4. Cluster believes it's still talking to A; attacker reads
+ *      whatever the cluster sends to A, including reply-to-ask
+ *      bodies that may carry secrets.
+ *
+ * Fix: when a hello (or hello-ack) arrives on a NEW connection but
+ * `byPeer[peer]` already holds a DIFFERENT conn, reject the new
+ * one — close its socket, don't overwrite.  Legitimate reconnects
+ * still work because `onClose` removes the old conn from byPeer
+ * before the new hello arrives in the common case.
+ *
+ * The test below uses InMemoryTransport (which mirrors the TCP
+ * transport's hello logic) plus a synthetic second transport on the
+ * same address to simulate the attack.
+ */
+import { TcpTransport } from '../../src/cluster/Transport.js';
+
+describe('Transport — hello-handshake hijack defense', () => {
+  test('exploit: second hello with same claimed identity is rejected', () => {
+    // Use the TCP transport directly with mock sockets so we can drive
+    // both sides of the handshake deterministically.  The InMemory
+    // transport doesn't actually go through `onMessage`'s hello logic
+    // — it skips the handshake entirely — so it's not the right
+    // probe.  Mock TcpSocketLike objects let us call the transport's
+    // private machinery via type cast.
+    const self = new NodeAddress('hijack', '127.0.0.1', 1);
+    const log = new NoopLogger();
+    const transport = new TcpTransport(self, log);
+
+    // Mock TcpSocketLike shape.
+    interface MockSock {
+      ended: boolean;
+      writes: Uint8Array[];
+      write(d: Uint8Array): void;
+      end(): void;
+    }
+    const mkSock = (): MockSock => ({
+      ended: false, writes: [],
+      write(d) { this.writes.push(d); },
+      end() { this.ended = true; },
+    });
+    const sock1 = mkSock();
+    const sock2 = mkSock();
+
+    // Access the private state for assertion + injection.
+    const t = transport as unknown as {
+      attachInbound(s: unknown): void;
+      onData(s: unknown, chunk: Uint8Array): void;
+      byPeer: Map<string, { socket: unknown }>;
+    };
+    t.attachInbound(sock1);
+    t.attachInbound(sock2);
+
+    const claimedPeer = new NodeAddress('hijack', '10.0.0.42', 5000);
+
+    // First hello on conn1 — legitimate, accepted.
+    const helloFrame = (): Uint8Array => {
+      const msg = JSON.stringify({ t: 'hello', self: claimedPeer.toJSON() });
+      const payload = new TextEncoder().encode(msg);
+      const frame = new Uint8Array(4 + payload.byteLength);
+      new DataView(frame.buffer).setUint32(0, payload.byteLength, false);
+      frame.set(payload, 4);
+      return frame;
+    };
+    t.onData(sock1, helloFrame());
+    expect(t.byPeer.get(claimedPeer.toString())?.socket).toBe(sock1);
+
+    // Second hello on conn2 — claims same identity.  Pre-fix would
+    // overwrite byPeer to point at sock2 (the attacker).  Post-fix
+    // rejects: sock2 is ended, byPeer still points at sock1.
+    t.onData(sock2, helloFrame());
+    expect(sock2.ended).toBe(true);    // attacker's socket closed
+    expect(sock1.ended).toBe(false);   // legitimate socket untouched
+    expect(t.byPeer.get(claimedPeer.toString())?.socket).toBe(sock1);
+  });
+
+  test('defense: legitimate reconnect after clean close still works', () => {
+    // After conn1 closes (onClose removes it from byPeer), a fresh
+    // hello on conn2 with the same identity succeeds.  This is the
+    // normal reconnect path; the hijack defense must not break it.
+    const self = new NodeAddress('hijack', '127.0.0.1', 1);
+    const transport = new TcpTransport(self, new NoopLogger());
+
+    interface MockSock { writes: Uint8Array[]; write(d: Uint8Array): void; end(): void; ended: boolean }
+    const mkSock = (): MockSock => ({
+      writes: [], ended: false,
+      write(d) { this.writes.push(d); },
+      end() { this.ended = true; },
+    });
+    const sock1 = mkSock();
+    const t = transport as unknown as {
+      attachInbound(s: unknown): void;
+      onData(s: unknown, chunk: Uint8Array): void;
+      onClose(s: unknown): void;
+      byPeer: Map<string, unknown>;
+    };
+    t.attachInbound(sock1);
+
+    const peer = new NodeAddress('hijack', '10.0.0.99', 5001);
+    const helloFrame = (): Uint8Array => {
+      const msg = JSON.stringify({ t: 'hello', self: peer.toJSON() });
+      const payload = new TextEncoder().encode(msg);
+      const frame = new Uint8Array(4 + payload.byteLength);
+      new DataView(frame.buffer).setUint32(0, payload.byteLength, false);
+      frame.set(payload, 4);
+      return frame;
+    };
+    t.onData(sock1, helloFrame());
+    expect(t.byPeer.has(peer.toString())).toBe(true);
+
+    // Sock1 closes (drop / reconnect scenario).
+    t.onClose(sock1);
+    expect(t.byPeer.has(peer.toString())).toBe(false);
+
+    // Fresh conn2 sends the same hello — should succeed (no
+    // existing entry to defend).
+    const sock2 = mkSock();
+    t.attachInbound(sock2);
+    t.onData(sock2, helloFrame());
+    expect(t.byPeer.has(peer.toString())).toBe(true);
+    expect(sock2.ended).toBe(false);
+  });
+});

@@ -222,16 +222,50 @@ export class TcpTransport implements Transport {
   private onMessage(conn: Conn, msg: WireMessage): void {
     if (msg.t === 'hello') {
       const peer = NodeAddress.fromJSON(msg.self);
+      const peerKey = peer.toString();
+      // Security: reject a duplicate-identity hello on a different
+      // socket.  Without this, a second connection claiming the
+      // same address as an existing peer would *overwrite* the
+      // byPeer map — every outbound message intended for the
+      // legitimate peer would then be routed to the attacker's
+      // socket.  First-conn-wins is also the right semantic for
+      // legitimate reconnects: the dropped conn's `onClose` runs
+      // before any new hello arrives in the common case; only a
+      // tight race causes one retry.  See {@link Transport.test}
+      // for the exploit walkthrough.
+      const existing = this.byPeer.get(peerKey);
+      if (existing && existing !== conn) {
+        this.log.warn(
+          `hello hijack rejected: peer ${peerKey} already has an active connection; ` +
+          `closing the new socket`,
+        );
+        try { conn.socket?.end(); } catch { /* ignore */ }
+        this.bySocket.delete(conn.socket as TcpSocketLike);
+        return;
+      }
       conn.peer = peer;
-      this.byPeer.set(peer.toString(), conn);
+      this.byPeer.set(peerKey, conn);
       const ack: HelloAckMsg = { t: 'hello-ack', self: this.self.toJSON() };
       conn.socket?.write(encodeFrame(ack));
       return;
     }
     if (msg.t === 'hello-ack') {
       const peer = NodeAddress.fromJSON(msg.self);
+      const peerKey = peer.toString();
+      const existing = this.byPeer.get(peerKey);
+      if (existing && existing !== conn) {
+        // Same defense on the outbound-handshake side: someone
+        // already owns this peer-key, we don't take it over from
+        // them.
+        this.log.warn(
+          `hello-ack hijack rejected: peer ${peerKey} already mapped to a different conn`,
+        );
+        try { conn.socket?.end(); } catch { /* ignore */ }
+        this.bySocket.delete(conn.socket as TcpSocketLike);
+        return;
+      }
       conn.peer = peer;
-      this.byPeer.set(peer.toString(), conn);
+      this.byPeer.set(peerKey, conn);
       const buffered = conn.pending.splice(0, conn.pending.length);
       for (const m of buffered) conn.socket?.write(encodeFrame(m));
       return;
