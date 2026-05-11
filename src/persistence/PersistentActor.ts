@@ -155,8 +155,39 @@ export abstract class PersistentActor<Cmd, Event, State> extends Actor<Cmd> {
     this.log.debug(`[persistence] '${this.persistenceId}' recovery starting`);
     const snapshot = await this._snapshotStore.loadLatest<unknown>(this.persistenceId, persistOpts);
     if (snapshot.isSome()) {
+      const snapSeq = snapshot.value.sequenceNr;
+      // Security: validate the snapshot's claimed seq number BEFORE
+      // trusting it for replay.  An attacker with write access to
+      // the snapshot store (shared bucket, co-tenant, insider) could
+      // craft a snapshot with `sequenceNr = MAX_SAFE_INTEGER` (or
+      // NaN, Infinity, -1, etc.); the old code accepted it and
+      // skipped event replay entirely, recovering with the
+      // attacker's chosen state.  Two-layer check:
+      //   1. seq must be a finite non-negative integer
+      //   2. seq must not exceed what the journal can corroborate
+      if (!Number.isInteger(snapSeq) || snapSeq < 0) {
+        throw new Error(
+          `[persistence] '${this.persistenceId}' snapshot has malformed sequenceNr=${snapSeq} ` +
+          `— refusing to recover from a corrupted or tampered snapshot`,
+        );
+      }
+      // Cross-check against the journal's highest seq: a snapshot that
+      // claims to be AHEAD of the journal but the journal *has*
+      // events for this pid is the classic attack vector — the
+      // attacker pumps the seq sky-high so all real events get
+      // skipped during replay.  An empty journal is fine (legitimate
+      // when state-only snapshots survive a journal compaction or
+      // migration).
+      const journalHigh = await this._journal.highestSeq(this.persistenceId);
+      if (journalHigh > 0 && snapSeq > journalHigh) {
+        throw new Error(
+          `[persistence] '${this.persistenceId}' snapshot claims sequenceNr=${snapSeq} ` +
+          `but journal's highest seq is ${journalHigh} — refusing to recover from a ` +
+          `corrupted or tampered snapshot (would silently skip event replay)`,
+        );
+      }
       this._state = decodeState<State>(snapshot.value.state, snapAdapter);
-      this._seq = snapshot.value.sequenceNr;
+      this._seq = snapSeq;
       this.log.debug(`[persistence] '${this.persistenceId}' loaded snapshot @seq=${this._seq}`);
     }
     const events = await this._journal.read<unknown>(this.persistenceId, this._seq + 1);

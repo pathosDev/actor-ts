@@ -205,3 +205,122 @@ describe('PersistentActor — tagsFor', () => {
     await system.terminate();
   });
 });
+
+/* ------------------------- security: snapshot integrity -------------------------- */
+
+describe('PersistentActor — snapshot integrity hardening', () => {
+  /**
+   * **Exploit walkthrough (pre-fix).**  `recover()` accepted
+   * `snapshot.value.sequenceNr` as authoritative and started event
+   * replay from `seq + 1`.  An attacker with write access to the
+   * snapshot store (shared bucket, co-tenant, insider) could craft a
+   * snapshot with `sequenceNr = Number.MAX_SAFE_INTEGER`.  The actor
+   * would:
+   *   1. Set `_seq = MAX_SAFE_INTEGER`.
+   *   2. Read events from `MAX_SAFE_INTEGER + 1` → journal returns []
+   *      (no events at that seq).
+   *   3. Skip all legitimate event replay.
+   *   4. Recover with the attacker's state.
+   *
+   * Same trick with `sequenceNr = NaN` / `Infinity` / `-1` produced
+   * similar invalid-state recovery.
+   *
+   * Fix: validate `sequenceNr` is a finite non-negative integer AND
+   * not above `journal.highestSeq(pid)` before trusting it for
+   * replay.  A mismatch throws — recovery fails loudly rather than
+   * silently using a tampered state.
+   */
+  test('exploit: tampered snapshot with MAX_SAFE_INTEGER seq is refused', async () => {
+    const { system, journal, snapshots } = makeSystem();
+    // Genuine state: two events, seq=1+2.
+    await journal.append('tampered-1',
+      [{ kind: 'deposited', amount: 100 }, { kind: 'deposited', amount: 50 }], 0);
+    // Attacker writes a malicious snapshot — seq way above what the
+    // journal can corroborate.
+    await snapshots.save('tampered-1', Number.MAX_SAFE_INTEGER, { balance: 99_999 });
+
+    // Recovery should throw a clear error rather than silently
+    // recover with the attacker's state.
+    const events: unknown[] = [];
+    const ref = system.actorOf(Props.create(() => new Account('tampered-1', (m) => events.push(m))), 't1');
+    // Wait briefly — recovery error should bubble up; the actor will
+    // be terminated by the supervisor.  We assert by checking the
+    // actor never reached recovery-complete (which would emit `ready`).
+    await sleep(150);
+    const ready = events.find((e) => (e as { ready?: number }).ready !== undefined);
+    expect(ready).toBeUndefined();
+    void ref;
+    await system.terminate();
+  });
+
+  test('exploit: tampered snapshot with negative seq is refused', async () => {
+    const { system, journal, snapshots } = makeSystem();
+    await journal.append('tampered-2', [{ kind: 'deposited', amount: 1 }], 0);
+    await snapshots.save('tampered-2', -1, { balance: 99_999 });
+
+    const events: unknown[] = [];
+    system.actorOf(Props.create(() => new Account('tampered-2', (m) => events.push(m))), 't2');
+    await sleep(150);
+    expect(events.find((e) => (e as { ready?: number }).ready !== undefined)).toBeUndefined();
+    await system.terminate();
+  });
+
+  test('exploit: tampered snapshot with NaN seq is refused', async () => {
+    const { system, journal, snapshots } = makeSystem();
+    await journal.append('tampered-3', [{ kind: 'deposited', amount: 1 }], 0);
+    await snapshots.save('tampered-3', Number.NaN, { balance: 99_999 });
+
+    const events: unknown[] = [];
+    system.actorOf(Props.create(() => new Account('tampered-3', (m) => events.push(m))), 't3');
+    await sleep(150);
+    expect(events.find((e) => (e as { ready?: number }).ready !== undefined)).toBeUndefined();
+    await system.terminate();
+  });
+
+  test('exploit: snapshot seq even ONE above journal-highest is refused', async () => {
+    // Tighter boundary test: journal has 3 events (seq 1, 2, 3), but
+    // a tampered snapshot claims seq=4.  Refused even though seq=4
+    // is "only" one above.
+    const { system, journal, snapshots } = makeSystem();
+    await journal.append('tampered-4',
+      [{ kind: 'deposited', amount: 10 }, { kind: 'deposited', amount: 20 }, { kind: 'deposited', amount: 30 }], 0);
+    await snapshots.save('tampered-4', 4, { balance: 99_999 });
+
+    const events: unknown[] = [];
+    system.actorOf(Props.create(() => new Account('tampered-4', (m) => events.push(m))), 't4');
+    await sleep(150);
+    expect(events.find((e) => (e as { ready?: number }).ready !== undefined)).toBeUndefined();
+    await system.terminate();
+  });
+
+  test('regression: legitimate snapshot at seq=journal-highest recovers normally', async () => {
+    const { system, journal, snapshots } = makeSystem();
+    await journal.append('legit-1',
+      [{ kind: 'deposited', amount: 100 }, { kind: 'deposited', amount: 50 }], 0);
+    // Snapshot at seq=2 (the journal's highest) is the standard case.
+    await snapshots.save('legit-1', 2, { balance: 150 });
+
+    const events: unknown[] = [];
+    const ref = system.actorOf(Props.create(() => new Account('legit-1', (m) => events.push(m))), 'l1');
+    await sleep(150);
+    expect(events).toContainEqual({ ready: 150 });
+    void ref;
+    await system.terminate();
+  });
+
+  test('regression: legitimate snapshot below journal-highest replays remaining events', async () => {
+    const { system, journal, snapshots } = makeSystem();
+    await journal.append('legit-2',
+      [{ kind: 'deposited', amount: 100 },
+       { kind: 'deposited', amount: 50 },
+       { kind: 'deposited', amount: 25 }], 0);
+    // Snapshot at seq=1; events 2+3 still need replay.
+    await snapshots.save('legit-2', 1, { balance: 100 });
+
+    const events: unknown[] = [];
+    system.actorOf(Props.create(() => new Account('legit-2', (m) => events.push(m))), 'l2');
+    await sleep(150);
+    expect(events).toContainEqual({ ready: 175 });   // 100 + 50 + 25
+    await system.terminate();
+  });
+});
