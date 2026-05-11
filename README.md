@@ -478,6 +478,12 @@ both schemas registered, reader rollout, writer flip via
 `writeVersion`, optional historical backfill — plus the parallel
 story for master-key rotation.
 
+**Not sure which adapter to reach for?**  The decision flowchart
+at [`docs/persistence/migration-recipes.md`](docs/persistence/migration-recipes.md)
+maps each change shape (additive / restructuring / multi-service /
+on-write-validation / pre-envelope retrofit) to the one tool that
+fits, with a worked example for each.
+
 ## Caching (Redis / Memcached / in-memory)
 
 A single `Cache` abstraction backs everything: HTTP middleware (response
