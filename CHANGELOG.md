@@ -7,6 +7,96 @@ This is a pre-1.0 hobby project — every minor version is potentially
 breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 "What's in here / What isn't" for current scope honesty.
 
+## [0.8.0] — 2026-05-11
+
+The "production-vertical big" release — one priority:high cornerstone
+plus four mid-sized operator-facing items.  Wire-format additive: new
+optional message types and HTTP routes; no existing callers break.
+
+### Added — DistributedData quorum writes / reads (#81)
+
+- `DistributedDataHandle.updateAsync(key, factory, fn, { consistency })`
+  and `.getAsync(key, { consistency })` — promise-returning variants
+  with a `WriteConsistency` / `ReadConsistency` target.
+- Consistency levels: `'local'` (legacy fire-and-forget), `'majority'`
+  (⌊N/2⌋+1), `'all'` (every up-member), `{ from: K }` (clamped to
+  `[1, N]`).  Self always counts as the first ack; single-node
+  clusters resolve instantly.
+- Reads merge incoming responses into the local replica before
+  resolving, so a `ReadMajority` effectively pulls the freshest
+  state without waiting for gossip.
+- Timeouts reject writes (the local apply still stands, gossip
+  continues) and resolve reads with the best-available merge —
+  reads stay best-effort even on partial failure.
+- New wire messages `ddata-write-request|ack` /
+  `ddata-read-request|response`.  Registered via the extension's
+  synchronous `start()` so the inbound side routes before the user
+  can issue the first quorum write.
+
+### Added — operations tooling
+
+- `reEncryptObjectStorage(backend, opts)` (#70) — re-encrypt every
+  body under a prefix to the active master key from a `MasterKeyRing`.
+  Idempotent fast-path on bodies already at the active version;
+  `If-Match` CAS internally so a concurrent writer isn't overwritten
+  silently.  Closes the missing step in v0.7's
+  `docs/operations/rolling-migration.md` Phase-3 — the doc now shows
+  the real call instead of a TBD marker.
+- `migrateBetweenJournals(source, target, opts?)` /
+  `migrateBetweenSnapshotStores(source, target, { pids })` (#87) —
+  copy-with-optional-transform helpers for backend swaps and
+  schema-piggyback migrations.  Per-pid resume from `target.highest
+  Seq + 1`; optional `MigrationProgressStore` for cross-process
+  resumability.  `skipExistingPids` for fan-out across worker pools.
+
+### Added — outside-in cluster connectivity (#86)
+
+- `ClusterClient({ contactPoints })` — lightweight handle for
+  processes that aren't cluster members (REST frontends, batch jobs,
+  operator scripts).  Opens one persistent TCP connection to a
+  contact-point, performs the standard hello handshake with a
+  synthetic client address, and exchanges `cluster-client-envelope`
+  / `cluster-client-reply` frames.
+- `send(targetPath, message)` for fire-and-forget,
+  `ask(targetPath, message, timeoutMs?)` for request/reply,
+  `close()` for teardown.
+- Contact-point failover: tries them in round-robin; the first
+  successful dial wins.  Ask rejections come back as deterministic
+  Error rejections (path-not-found, timeout, cluster-side ask
+  failure).
+- `ClusterClientReceptionist` extension — cluster-side endpoint.
+  Resolves the target path through the local ActorSystem and
+  forwards as tell (no askId) or `ask` (with askId) plus a reply
+  frame.  Start once per cluster node that should accept client
+  traffic.
+- Out of scope for v1: ActorRef payloads (no `encodeRefs` round-trip
+  on this path), push-style subscriptions, cluster-aware routing on
+  the receptionist side.
+
+### Added — extended cluster-management HTTP endpoints (#56)
+
+- `GET /cluster/shards?type=<typeName>` — shard-to-region map for one
+  sharded type, read from the coordinator state stored in
+  DistributedData.  Returns 404 if DD isn't started or the type
+  hasn't recorded state yet.
+- `POST /cluster/down` body `{ address }` — operator-initiated
+  force-down of a remote peer.  Backed by a new public
+  `cluster.down(addr)` method that emits MemberDown + MemberRemoved
+  and tombstones the address.  Opt-in via `enableDownEndpoint`;
+  production deployments should still gate this behind an auth
+  proxy.
+- `GET /metrics` — Prometheus text format from the system's
+  MetricsRegistry.  Opt-in via `enableMetricsEndpoint` because most
+  deployments scrape metrics from a separate port.
+
+### Added — public Cluster API
+
+- `Cluster.down(addr: NodeAddress | string): boolean` — operator
+  force-down of a remote peer.  Symmetric to `Cluster.leave()` but
+  for someone else's address.  Returns `true` if the member was
+  found and downed, `false` if the address was unknown or already
+  terminal.  Refuses to down `selfAddress` — that's `leave()`'s job.
+
 ## [0.7.0] — 2026-05-11
 
 ### Added — operator-facing documentation under `docs/`
