@@ -98,7 +98,8 @@ Plus the things an actual web-service needs:
 - **HOCON configuration** with ENV substitution and code overrides
 - **coordinated shutdown** (12-phase, SIGTERM-aware, K8s-PreStop-friendly)
 - **Kubernetes** leases + management HTTP endpoints (`/health`, `/ready`,
-  `/cluster/*`)
+  `/cluster/members`, `/cluster/leader`, `/cluster/shards`, opt-in
+  `/cluster/leave`, `/cluster/down`, `/metrics`)
 - **serialization** — pluggable, JSON + CBOR built-in
 
 And the language-level niceties you expect in 2026:

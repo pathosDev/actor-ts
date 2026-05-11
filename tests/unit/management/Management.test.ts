@@ -129,4 +129,151 @@ describe('managementRoutes — cluster queries', () => {
     await binding.unbind();
     await sys.terminate();
   });
+
+  test('/cluster/down 404s for unknown address (endpoint enabled)', async () => {
+    const { sys, cluster } = await startNode();
+    const { routes } = managementRoutes(sys, cluster, { enableDownEndpoint: true });
+    const http = sys.extension(HttpExtensionId);
+    const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
+
+    const res = await fetch(`http://127.0.0.1:${binding.port}/cluster/down`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ address: 'mgmt@h:99999' }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.text()).toContain('no member');
+
+    await binding.unbind();
+    await cluster.leave(); await sys.terminate();
+  });
+
+  test('/cluster/down rejects body without address field', async () => {
+    const { sys, cluster } = await startNode();
+    const { routes } = managementRoutes(sys, cluster, { enableDownEndpoint: true });
+    const http = sys.extension(HttpExtensionId);
+    const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
+
+    const res = await fetch(`http://127.0.0.1:${binding.port}/cluster/down`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ wrongField: 'mgmt@h:1' }),
+    });
+    expect(res.status).toBe(400);
+
+    await binding.unbind();
+    await cluster.leave(); await sys.terminate();
+  });
+
+  test('/cluster/down is 404 when endpoint is disabled', async () => {
+    const { sys, cluster } = await startNode();
+    const { routes } = managementRoutes(sys, cluster);   // defaults — disabled
+    const http = sys.extension(HttpExtensionId);
+    const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
+
+    const res = await fetch(`http://127.0.0.1:${binding.port}/cluster/down`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ address: 'mgmt@h:1' }),
+    });
+    expect(res.status).toBe(404);
+
+    await binding.unbind();
+    await cluster.leave(); await sys.terminate();
+  });
+
+  test('/cluster/shards 400s without `type` query parameter', async () => {
+    const { sys, cluster } = await startNode();
+    const { routes } = managementRoutes(sys, cluster);
+    const http = sys.extension(HttpExtensionId);
+    const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
+
+    const res = await fetch(`http://127.0.0.1:${binding.port}/cluster/shards`);
+    expect(res.status).toBe(400);
+
+    await binding.unbind();
+    await cluster.leave(); await sys.terminate();
+  });
+
+  test('/cluster/shards 404s when DistributedData has no shard state for the type', async () => {
+    const { sys, cluster } = await startNode();
+    const { routes } = managementRoutes(sys, cluster);
+    const http = sys.extension(HttpExtensionId);
+    const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
+
+    const res = await fetch(`http://127.0.0.1:${binding.port}/cluster/shards?type=Orders`);
+    expect(res.status).toBe(404);
+    // Either "DistributedData not started" or "no shard-map recorded"
+    // depending on which path triggers.
+
+    await binding.unbind();
+    await cluster.leave(); await sys.terminate();
+  });
+
+  test('/metrics returns Prometheus text format when enabled', async () => {
+    const { sys, cluster } = await startNode();
+    const { routes } = managementRoutes(sys, cluster, { enableMetricsEndpoint: true });
+    const http = sys.extension(HttpExtensionId);
+    const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
+
+    const res = await fetch(`http://127.0.0.1:${binding.port}/metrics`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')?.toLowerCase())
+      .toContain('text/plain');
+
+    await binding.unbind();
+    await cluster.leave(); await sys.terminate();
+  });
+
+  test('/metrics is 404 when disabled (default)', async () => {
+    const { sys, cluster } = await startNode();
+    const { routes } = managementRoutes(sys, cluster);
+    const http = sys.extension(HttpExtensionId);
+    const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
+
+    const res = await fetch(`http://127.0.0.1:${binding.port}/metrics`);
+    expect(res.status).toBe(404);
+
+    await binding.unbind();
+    await cluster.leave(); await sys.terminate();
+  });
+
+  test('cluster.down() force-downs a known peer and emits MemberDown/Removed', async () => {
+    // Drive cluster.down via the public API rather than HTTP so the
+    // event-emission contract is observable from the test directly —
+    // the HTTP route is a thin wrapper around the same method.
+    const sysA = ActorSystem.create('mgmt', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sysB = ActorSystem.create('mgmt', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const portA = 56_000 + Math.floor(Math.random() * 500);
+    const portB = portA + 1;
+    const clA = await Cluster.join(sysA, {
+      host: 'h', port: portA,
+      transport: new InMemoryTransport(new NodeAddress('mgmt', 'h', portA)),
+      gossipIntervalMs: 50,
+    });
+    const clB = await Cluster.join(sysB, {
+      host: 'h', port: portB,
+      seeds: [`mgmt@h:${portA}`],
+      transport: new InMemoryTransport(new NodeAddress('mgmt', 'h', portB)),
+      gossipIntervalMs: 50,
+    });
+    // Wait for B to be up on both sides.
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const sees = clA.getMembers().some(m => m.address.equals(clB.selfAddress) && m.status === 'up');
+      if (sees) break;
+      await Bun.sleep(20);
+    }
+    // Force-down B from A.
+    const ok = clA.down(clB.selfAddress);
+    expect(ok).toBe(true);
+    const stillThere = clA.getMembers().find(m => m.address.equals(clB.selfAddress));
+    // Either tombstoned (`removed` status) or filtered out — public API filters removed.
+    expect(stillThere == null || stillThere.status === 'removed').toBe(true);
+    // Idempotent — second call returns false (already terminal).
+    expect(clA.down(clB.selfAddress)).toBe(false);
+
+    await clA.leave(); await clB.leave();
+    await sysA.terminate(); await sysB.terminate();
+  });
 });

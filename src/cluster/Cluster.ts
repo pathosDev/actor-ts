@@ -280,6 +280,41 @@ export class Cluster {
     return () => this.wireHandlers.delete(kind);
   }
 
+  /**
+   * Operator-initiated force-down of a remote peer (#56).  Mirrors the
+   * private `evaluateDowning` path: marks the peer `down`, emits the
+   * lifecycle events, tombstones with `removedAt` so stale gossip
+   * can't resurrect it, and tells the failure detector to forget it.
+   *
+   * Returns `true` if a member was found and downed, `false` if the
+   * address was unknown or already terminal (`down`/`removed`).
+   *
+   * Intended for operator tooling — the management HTTP endpoint
+   * `POST /cluster/down` calls this directly.  Don't use it as a
+   * replacement for the failure detector / downing provider in normal
+   * flow; it's a manual override.
+   */
+  down(addr: NodeAddress | string): boolean {
+    if (!this.started) return false;
+    const key = typeof addr === 'string' ? addr : addr.toString();
+    const m = this.members.get(key);
+    if (!m) return false;
+    if (m.status === 'down' || m.status === 'removed') return false;
+    if (m.address.equals(this.selfAddress)) {
+      // Don't try to tombstone ourselves — that's `leave()`'s job.
+      return false;
+    }
+    const downed = m.withStatus('down');
+    this.updateMember(downed);
+    this.emit(new MemberDown(downed));
+    const removed = downed.withRemoved(Date.now());
+    this.members.set(key, removed);
+    this.failureDetector.forget(m.address);
+    this.emit(new MemberRemoved(removed));
+    this.log.info(`operator force-down: ${m.address}`);
+    return true;
+  }
+
   /** Gracefully leave the cluster (broadcast `leave`, stop transport). */
   async leave(): Promise<void> {
     if (!this.started) return;
