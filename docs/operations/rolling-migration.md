@@ -229,12 +229,31 @@ Verify every instance has the new key ring.  A reader missing the
 ### Phase 3 — Re-encryption sweep (optional)
 
 Once you want to *physically remove* the old key from the system,
-re-encrypt every historical body under the new key.  The sweep
-helper is tracked under #70; until it lands, the operator's
-recipe is a journal-to-journal copy with `encryption.keys.active
-= NEW` on the read side and the same `keys.active` on the write
-side — every body is decrypted via `retired[1]` and re-encrypted
-under `active[2]`.
+re-encrypt every historical body under the new key with the
+`reEncryptObjectStorage` helper (v0.8.0):
+
+```ts
+import { reEncryptObjectStorage } from 'actor-ts';
+
+const result = await reEncryptObjectStorage(backend, {
+  keyPrefix: 'snapshots/',
+  keyring: {
+    active:  { version: 2, key: NEW },
+    retired: [{ version: 1, key: OLD }],
+  },
+  onProgress: (e) => process.stderr.write(
+    `${e.idx}/${e.total} ${e.action} ${e.key}\n`),
+});
+console.log(`rewrote ${result.rewrote} of ${result.scanned} objects`);
+```
+
+The sweep walks every object under `keyPrefix`, decrypts using
+whichever retired/active version the body manifest references,
+and re-encrypts under the active key.  Bodies already at the
+active version are skipped on the fast path — the sweep is
+idempotent and safe to re-run after a partial failure.
+`If-Match` is used internally so a concurrent writer can't be
+overwritten silently.
 
 ### Phase 4 — Drop the old key
 
@@ -260,6 +279,7 @@ unrecoverable.
 | `migrateInMemoryJournal(journal, fn)`     | Bulk-rewrite every event under a journal  |
 | `migrateSnapshotStore(store, pids, fn)`   | Same for snapshots                        |
 | `MasterKeyRing` `{ active, retired? }`    | Multi-version encryption key ring         |
+| `reEncryptObjectStorage(backend, opts)`   | Sweep: re-encrypt every body under a prefix to the active key |
 
 All of them are exported from the top-level `actor-ts` barrel.
 
@@ -271,7 +291,5 @@ All of them are exported from the top-level `actor-ts` barrel.
   — decision tree for which adapter to pick.
 - [`CHANGELOG.md`](../../CHANGELOG.md) `[0.6.0]` → "schema migration
   & encryption polish" for the underlying feature set.
-- Open issues: [#70](https://github.com/pathosDev/actor-ts/issues/70)
-  re-encryption sweep, [#71](https://github.com/pathosDev/actor-ts/issues/71)
-  bulk wrap-legacy migration for SQL/Cassandra, [#87](https://github.com/pathosDev/actor-ts/issues/87)
-  journal-to-journal migration tool.
+- Open issues: [#71](https://github.com/pathosDev/actor-ts/issues/71)
+  bulk wrap-legacy migration for SQL/Cassandra.
