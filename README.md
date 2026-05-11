@@ -159,7 +159,7 @@ middleware, or in-house clients.
 - Observability: structured logging / MDC propagation, Prometheus exposition, OpenTelemetry-style tracing across actor + cluster hops
 - Persistent FSM, BackoffSupervisor, CRDT family (G/PN counters, G/OR sets, LWW/MV registers, OR/LWW maps, GCounterMap)
 - Server-side WebSocket via Bun.serve / Fastify-websocket adapters
-- Kafka manual-commit (exactly-once-with-processing) + NATS JetStream durable streams
+- Kafka manual-commit (exactly-once-with-processing) + NATS JetStream durable streams (push + pull consumer)
 
 ### What's there but skipped in CI
 

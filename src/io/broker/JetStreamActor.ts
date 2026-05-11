@@ -111,10 +111,20 @@ export interface JetStreamStreamConfig {
   readonly create?: boolean;
 }
 
-/** Push-consumer config. */
+/** Push or pull consumer config (#62). */
 export interface JetStreamConsumerConfig {
   /** Durable name — required so the consumer survives restarts. */
   readonly durable: string;
+  /**
+   * Consumer mode (#62).  `'push'` *(default)* — server pushes
+   * messages; the actor's internal pump iterates the subscription
+   * and waits per-message for ack/nak/term.  `'pull'` — caller
+   * drives fetches with `{ kind: 'fetch', batch, expiresMs }`
+   * commands; messages within a fetch still go through the same
+   * ack handshake.  Pull mode lets the application self-pace,
+   * which fits slow/bursty consumers better than push fan-out.
+   */
+  readonly mode?: 'push' | 'pull';
   /** Where in the stream to start the new consumer.  Default `'all'`. */
   readonly deliverPolicy?:
     | 'all' | 'last' | 'new'
@@ -164,7 +174,15 @@ export type JetStreamCmd =
   /** Terminal failure — server drops the message permanently. */
   | { readonly kind: 'term'; readonly streamSeq: number; readonly reason?: string }
   /** Heartbeat — extend the ack-wait window for a long-running handler. */
-  | { readonly kind: 'inProgress'; readonly streamSeq: number };
+  | { readonly kind: 'inProgress'; readonly streamSeq: number }
+  /**
+   * Pull-mode (#62) — fetch up to `batch` messages, returning early
+   * after `expiresMs` (default 5 s) if fewer are available.  Each
+   * fetched message still goes through the same ack/nak/term
+   * handshake as push-mode.  Sending `fetch` to a push-mode
+   * consumer is a silent no-op with a warn log.
+   */
+  | { readonly kind: 'fetch'; readonly batch: number; readonly expiresMs?: number };
 
 export class JetStreamActor extends BrokerActor<
   JetStreamActorSettings, JetStreamCmd, JetStreamPublish
@@ -172,6 +190,8 @@ export class JetStreamActor extends BrokerActor<
   private nc: NatsConnectionLike | null = null;
   private js: JetStreamClientLike | null = null;
   private subscription: JetStreamSubscriptionLike | null = null;
+  /** Pull-consumer handle (#62).  Non-null when consumer.mode === 'pull'. */
+  private pullConsumer: PullConsumerLike | null = null;
   /** Map of streamSeq → in-flight ack handle for the manual-ack pump. */
   private readonly pending = new Map<number, PendingAck>();
 
@@ -224,7 +244,7 @@ export class JetStreamActor extends BrokerActor<
       await upsertStream(jsm, this.settings.stream);
     }
 
-    // Consumer + subscription.
+    // Consumer + subscription (push) or pull handle.
     if (this.settings.consumer) {
       if (this.settings.consumer.create ?? true) {
         if (!this.settings.stream?.name) {
@@ -236,14 +256,24 @@ export class JetStreamActor extends BrokerActor<
       if (!this.settings.stream?.name) {
         throw new Error('JetStreamActor: consumer requires stream.name');
       }
-      this.subscription = await this.js.subscribe(
-        this.settings.consumer.filterSubject ?? `${this.settings.stream.name}.>`,
-        {
-          stream: this.settings.stream.name,
-          consumer: this.settings.consumer.durable,
-        },
-      );
-      void this.runPump();
+      const mode = this.settings.consumer.mode ?? 'push';
+      if (mode === 'push') {
+        this.subscription = await this.js.subscribe(
+          this.settings.consumer.filterSubject ?? `${this.settings.stream.name}.>`,
+          {
+            stream: this.settings.stream.name,
+            consumer: this.settings.consumer.durable,
+          },
+        );
+        void this.runPump();
+      } else {
+        // Pull mode (#62) — grab the consumer handle but DON'T start
+        // a pump.  Messages flow only when the caller sends `fetch`.
+        this.pullConsumer = await this.js.consumers.get(
+          this.settings.stream.name,
+          this.settings.consumer.durable,
+        );
+      }
     }
 
     void this.nc.closed().then((err) => {
@@ -263,6 +293,9 @@ export class JetStreamActor extends BrokerActor<
       try { await this.subscription.destroy(); } catch { /* */ }
       this.subscription = null;
     }
+    // Pull consumer doesn't own a long-lived subscription — drop the
+    // reference and the underlying nats client cleans up on drain.
+    this.pullConsumer = null;
     if (this.nc) {
       try { await this.nc.drain(); } catch { /* */ }
       this.nc = null;
@@ -291,59 +324,104 @@ export class JetStreamActor extends BrokerActor<
     else if (cmd.kind === 'nak') this.handleNak(cmd.streamSeq, cmd.delayMs);
     else if (cmd.kind === 'term') this.handleTerm(cmd.streamSeq, cmd.reason);
     else if (cmd.kind === 'inProgress') this.handleInProgress(cmd.streamSeq);
+    else if (cmd.kind === 'fetch') void this.handleFetch(cmd.batch, cmd.expiresMs);
   }
 
   /* ----------------------------- internals ----------------------------- */
 
   private async runPump(): Promise<void> {
     if (!this.subscription) return;
+    for await (const m of this.subscription) {
+      await this.deliverAndAwaitAck(m);
+    }
+  }
+
+  /**
+   * Pull-mode fetch (#62) — request up to `batch` messages, fan them
+   * to `target`, and wait per-message for ack/nak/term using the same
+   * `deliverAndAwaitAck` helper as the push pump.  Returns once every
+   * message in the batch has been acked or its ack-timeout has
+   * fired; subsequent `fetch` cmds are processed serially by the
+   * mailbox.
+   */
+  private async handleFetch(batch: number, expiresMs?: number): Promise<void> {
+    if (!this.pullConsumer) {
+      this.log.warn('JetStreamActor: fetch on push-mode (or disconnected) consumer — ignored');
+      return;
+    }
+    if (!Number.isInteger(batch) || batch <= 0) {
+      this.log.warn(`JetStreamActor: fetch batch must be a positive integer, got ${batch} — ignored`);
+      return;
+    }
+    let messages: AsyncIterable<JetStreamMsgHandleLike>;
+    try {
+      messages = await this.pullConsumer.fetch({
+        max_messages: batch,
+        expires: expiresMs ?? 5_000,
+      });
+    } catch (err) {
+      this.log.warn(`JetStreamActor: fetch failed: ${(err as Error).message}`);
+      return;
+    }
+    // Drain the fetch result.  The iterator completes either when the
+    // batch is full or when `expires` ms elapses — empty-batch is
+    // therefore a normal end condition, NOT an error.
+    const handles: JetStreamMsgHandleLike[] = [];
+    for await (const m of messages) handles.push(m);
+    // Deliver everything to target first (typical pull-consumer
+    // semantics: the application sees the whole batch at once), then
+    // wait in parallel for the per-message acks.  Serial-await within
+    // a batch would deadlock if the target processes them out of
+    // order, which is the natural actor pattern.
+    await Promise.all(handles.map((h) => this.deliverAndAwaitAck(h)));
+  }
+
+  /**
+   * Shared per-message delivery path used by both the push pump and
+   * `handleFetch`.  Tells the message to `target`, then awaits an
+   * external ack / nak / term (unless `ackPolicy === 'none'`).
+   */
+  private async deliverAndAwaitAck(m: JetStreamMsgHandleLike): Promise<void> {
     const target = this.settings.target;
     const ackTimeoutMs = this.settings.ackTimeoutMs
       ?? this.settings.consumer?.ackWaitMs
       ?? 30_000;
+    const handle: JetStreamMsgHandleLike = m;
+    const info = handle.info;
+    if (target) {
+      target.tell({
+        subject: handle.subject,
+        payload: handle.data,
+        replyTo: handle.reply ?? '',
+        streamSeq: info.streamSequence,
+        consumerSeq: info.deliverySequence,
+        deliveries: info.deliveryCount,
+        timestamp: info.timestampNanos !== undefined
+          ? Math.floor(info.timestampNanos / 1_000_000)
+          : Date.now(),
+        headers: extractHeaders(handle.headers),
+      });
+    }
 
-    for await (const m of this.subscription) {
-      const handle: JetStreamMsgHandleLike = m;
-      const info = handle.info;
-      if (target) {
-        target.tell({
-          subject: handle.subject,
-          payload: handle.data,
-          replyTo: handle.reply ?? '',
-          streamSeq: info.streamSequence,
-          consumerSeq: info.deliverySequence,
-          deliveries: info.deliveryCount,
-          timestamp: info.timestampNanos !== undefined
-            ? Math.floor(info.timestampNanos / 1_000_000)
-            : Date.now(),
-          headers: extractHeaders(handle.headers),
+    if (this.settings.consumer?.ackPolicy === 'none') return;
+
+    const seq = info.streamSequence;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          this.pending.delete(seq);
+          reject(new Error(`JetStreamActor: no ack/nak/term for streamSeq=${seq} within ${ackTimeoutMs}ms`));
+        }, ackTimeoutMs);
+        this.pending.set(seq, {
+          streamSeq: seq,
+          handle,
+          done: () => { clearTimeout(timer); resolve(); },
+          fail: (err) => { clearTimeout(timer); reject(err); },
         });
-      }
-
-      if (this.settings.consumer?.ackPolicy === 'none') {
-        // No ack required — server marks as delivered immediately.
-        continue;
-      }
-
-      // Wait for an external ack/nak/term before pulling the next.
-      const seq = info.streamSequence;
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(() => {
-            this.pending.delete(seq);
-            reject(new Error(`JetStreamActor: no ack/nak/term for streamSeq=${seq} within ${ackTimeoutMs}ms`));
-          }, ackTimeoutMs);
-          this.pending.set(seq, {
-            streamSeq: seq,
-            handle,
-            done: () => { clearTimeout(timer); resolve(); },
-            fail: (err) => { clearTimeout(timer); reject(err); },
-          });
-        });
-      } catch (err) {
-        this.log.warn(`JetStreamActor: pump ${(err as Error).message} — letting consumer redeliver`);
-        try { handle.nak(); } catch { /* best-effort */ }
-      }
+      });
+    } catch (err) {
+      this.log.warn(`JetStreamActor: pump ${(err as Error).message} — letting consumer redeliver`);
+      try { handle.nak(); } catch { /* best-effort */ }
     }
   }
 
@@ -499,10 +577,32 @@ export interface JetStreamClientLike {
     stream: string;
     consumer: string;
   }): Promise<JetStreamSubscriptionLike>;
+  /**
+   * Pull-consumer accessor (#62).  Returns a handle that exposes
+   * `fetch` for batched on-demand delivery — see the nats.js
+   * `consumers.get(stream, durable)` API.
+   */
+  readonly consumers: {
+    get(stream: string, durable: string): Promise<PullConsumerLike>;
+  };
 }
 
 export interface JetStreamSubscriptionLike extends AsyncIterable<JetStreamMsgHandleLike> {
   destroy(): Promise<void>;
+}
+
+/**
+ * Pull-consumer handle returned by `JetStreamClient.consumers.get`.
+ * `fetch` returns an async iterable that yields up to `max_messages`
+ * messages before resolving (the iterator completes after `expires`
+ * ms even if the batch isn't full).  Per-message ack semantics are
+ * identical to push-mode.
+ */
+export interface PullConsumerLike {
+  fetch(opts: {
+    max_messages: number;
+    expires: number;
+  }): Promise<AsyncIterable<JetStreamMsgHandleLike>>;
 }
 
 interface HeadersLike {

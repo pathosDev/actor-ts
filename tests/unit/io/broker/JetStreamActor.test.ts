@@ -90,6 +90,25 @@ class MockSubscription implements JetStreamSubscriptionLike {
   }
 }
 
+class MockPullConsumer {
+  /** Queue of message batches to hand out on `fetch()`.  Test pushes via `enqueueBatch`. */
+  readonly batches: JetStreamMsgHandleLike[][] = [];
+  readonly fetchCalls: Array<{ max_messages: number; expires: number }> = [];
+
+  enqueueBatch(handles: JetStreamMsgHandleLike[]): void {
+    this.batches.push(handles);
+  }
+
+  async fetch(opts: { max_messages: number; expires: number }): Promise<AsyncIterable<JetStreamMsgHandleLike>> {
+    this.fetchCalls.push({ max_messages: opts.max_messages, expires: opts.expires });
+    const batch = this.batches.shift() ?? [];
+    // Slice the batch to `max_messages` so the test can model "fewer
+    // available than asked".
+    const delivered = batch.slice(0, opts.max_messages);
+    return (async function* () { for (const h of delivered) yield h; })();
+  }
+}
+
 class MockJetStream implements JetStreamClientLike {
   readonly published: Array<{
     subject: string; payload: Uint8Array;
@@ -97,6 +116,7 @@ class MockJetStream implements JetStreamClientLike {
   }> = [];
   readonly subscription = new MockSubscription();
   readonly subscribeCalls: Array<{ subject: string; stream: string; consumer: string }> = [];
+  readonly pullConsumers = new Map<string, MockPullConsumer>();
 
   async publish(subject: string, payload: Uint8Array, opts?: {
     msgID?: string; expect?: { lastSequence?: number };
@@ -115,6 +135,15 @@ class MockJetStream implements JetStreamClientLike {
     this.subscribeCalls.push({ subject, stream: opts.stream, consumer: opts.consumer });
     return this.subscription;
   }
+
+  readonly consumers = {
+    get: async (stream: string, durable: string): Promise<MockPullConsumer> => {
+      const key = `${stream}::${durable}`;
+      let pc = this.pullConsumers.get(key);
+      if (!pc) { pc = new MockPullConsumer(); this.pullConsumers.set(key, pc); }
+      return pc;
+    },
+  };
 }
 
 class MockJsm implements JetStreamManagerLike {
@@ -457,6 +486,147 @@ describe('JetStreamActor — settings parsing', () => {
       expect(sub?.consumer).toBe('billing-proc');
       // Filter subject is forwarded as the subscribe subject.
       expect(sub?.subject).toBe('billing.charges');
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+/* ====================== Pull-consumer mode (#62) ======================== */
+
+describe('JetStreamActor — pull-consumer mode (#62)', () => {
+  test('mode=pull skips the subscription and grabs a pull-consumer handle', async () => {
+    const sys = ActorSystem.create('js-pull-setup', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    try {
+      const { mock } = await bootActor(sys, {
+        servers: ['nats://fake:4222'],
+        stream: { name: 'ORDERS', subjects: ['orders.>'] },
+        consumer: { durable: 'puller', mode: 'pull' },
+      });
+      // No subscribe — pull mode is on-demand.
+      expect(mock.mockConn.js.subscribeCalls).toHaveLength(0);
+      // Pull-consumer handle materialised for ORDERS::puller.
+      expect(mock.mockConn.js.pullConsumers.size).toBe(1);
+      expect(mock.mockConn.js.pullConsumers.has('ORDERS::puller')).toBe(true);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('fetch delivers messages and waits for ack before returning', async () => {
+    const sys = ActorSystem.create('js-pull-fetch', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    try {
+      const { actor, mock, target } = await bootActor(sys, {
+        servers: ['nats://fake:4222'],
+        stream: { name: 'ORDERS', subjects: ['orders.>'] },
+        consumer: { durable: 'puller', mode: 'pull', ackWaitMs: 1_000 },
+      });
+      const pc = mock.mockConn.js.pullConsumers.get('ORDERS::puller')!;
+      pc.enqueueBatch([makeHandle(1), makeHandle(2), makeHandle(3)]);
+
+      actor.tell({ kind: 'fetch', batch: 3, expiresMs: 1_000 });
+      await sleep(50);
+
+      // All three messages delivered to target before any ack.
+      expect(target.received.map((m) => m.streamSeq).sort()).toEqual([1, 2, 3]);
+      // Fetch was called with the requested parameters.
+      expect(pc.fetchCalls).toEqual([{ max_messages: 3, expires: 1_000 }]);
+
+      // Ack them all so the pending-map drains.
+      actor.tell({ kind: 'ack', streamSeq: 1 });
+      actor.tell({ kind: 'ack', streamSeq: 2 });
+      actor.tell({ kind: 'ack', streamSeq: 3 });
+      await sleep(30);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('expires-without-messages returns cleanly (empty batch is not an error)', async () => {
+    const sys = ActorSystem.create('js-pull-empty', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    try {
+      const { actor, mock, target } = await bootActor(sys, {
+        servers: ['nats://fake:4222'],
+        stream: { name: 'ORDERS', subjects: ['orders.>'] },
+        consumer: { durable: 'puller', mode: 'pull' },
+      });
+      const pc = mock.mockConn.js.pullConsumers.get('ORDERS::puller')!;
+      // No batch enqueued — fetch yields an empty iterator immediately.
+
+      actor.tell({ kind: 'fetch', batch: 10, expiresMs: 100 });
+      await sleep(40);
+
+      expect(target.received).toHaveLength(0);
+      expect(pc.fetchCalls).toEqual([{ max_messages: 10, expires: 100 }]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('subsequent fetch resumes from a fresh batch (durable offset is server-side)', async () => {
+    const sys = ActorSystem.create('js-pull-resume', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    try {
+      const { actor, mock, target } = await bootActor(sys, {
+        servers: ['nats://fake:4222'],
+        stream: { name: 'ORDERS', subjects: ['orders.>'] },
+        consumer: { durable: 'puller', mode: 'pull' },
+      });
+      const pc = mock.mockConn.js.pullConsumers.get('ORDERS::puller')!;
+      pc.enqueueBatch([makeHandle(10), makeHandle(11)]);
+      pc.enqueueBatch([makeHandle(12), makeHandle(13), makeHandle(14)]);
+
+      actor.tell({ kind: 'fetch', batch: 2, expiresMs: 100 });
+      await sleep(30);
+      actor.tell({ kind: 'ack', streamSeq: 10 });
+      actor.tell({ kind: 'ack', streamSeq: 11 });
+      await sleep(20);
+
+      actor.tell({ kind: 'fetch', batch: 3, expiresMs: 100 });
+      await sleep(30);
+      expect(target.received.map((m) => m.streamSeq)).toEqual([10, 11, 12, 13, 14]);
+      expect(pc.fetchCalls).toHaveLength(2);
+
+      actor.tell({ kind: 'ack', streamSeq: 12 });
+      actor.tell({ kind: 'ack', streamSeq: 13 });
+      actor.tell({ kind: 'ack', streamSeq: 14 });
+      await sleep(20);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('fetch with batch <= 0 is silently dropped (no consumer call)', async () => {
+    const sys = ActorSystem.create('js-pull-bad-batch', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    try {
+      const { actor, mock } = await bootActor(sys, {
+        servers: ['nats://fake:4222'],
+        stream: { name: 'ORDERS', subjects: ['orders.>'] },
+        consumer: { durable: 'puller', mode: 'pull' },
+      });
+      const pc = mock.mockConn.js.pullConsumers.get('ORDERS::puller')!;
+      actor.tell({ kind: 'fetch', batch: 0, expiresMs: 100 });
+      actor.tell({ kind: 'fetch', batch: -5, expiresMs: 100 });
+      await sleep(20);
+      expect(pc.fetchCalls).toEqual([]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('fetch on a push-mode actor is a silent no-op', async () => {
+    const sys = ActorSystem.create('js-pull-wrong-mode', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    try {
+      const { actor, mock } = await bootActor(sys, {
+        servers: ['nats://fake:4222'],
+        stream: { name: 'ORDERS', subjects: ['orders.>'] },
+        consumer: { durable: 'pusher' }, // mode omitted → push (default)
+      });
+      // No pull consumer was ever fetched.
+      expect(mock.mockConn.js.pullConsumers.size).toBe(0);
+      actor.tell({ kind: 'fetch', batch: 5, expiresMs: 100 });
+      await sleep(20);
+      // Still no pull consumer.
+      expect(mock.mockConn.js.pullConsumers.size).toBe(0);
     } finally {
       await sys.terminate();
     }
