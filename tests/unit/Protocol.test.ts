@@ -90,6 +90,75 @@ describe('FrameDecoder', () => {
     expect(d.push(new Uint8Array(0))).toEqual([]);
   });
 
+  /* ------------------------- security: oversized-frame DoS ------------------------- */
+
+  describe('security — oversized frame rejection', () => {
+    /**
+     * **Exploit walkthrough** (pre-fix, would have caused OOM/DoS):
+     *
+     * A malicious peer sends a frame whose 4-byte big-endian length-
+     * prefix claims `0xFFFFFFFF` (≈ 4 GiB).  The old decoder would
+     * buffer subsequent bytes up to that claimed length — either
+     * exhausting RAM if the attacker actually streams 4 GiB, or
+     * stalling forever waiting for the rest (effective per-connection
+     * DoS).  Cap added in {@link FrameDecoder} (default 16 MiB) so
+     * the decoder throws before allocating anything.
+     */
+    test('exploit: oversized length-prefix claim is rejected immediately', () => {
+      const d = new FrameDecoder();
+      const evil = new Uint8Array(4);
+      // Claim a 4-GiB frame — far above the default 16-MiB cap.
+      new DataView(evil.buffer).setUint32(0, 0xFFFFFFFF, false);
+      expect(() => d.push(evil)).toThrow(/maxFrameBytes/);
+    });
+
+    test('exploit: 1-GiB-claim header alone (no payload sent) is still rejected', () => {
+      // The crucial property: rejection happens before any payload
+      // arrives, so the attacker can't slowly leak memory by sending
+      // the header then nothing.
+      const d = new FrameDecoder();
+      const evil = new Uint8Array(4);
+      new DataView(evil.buffer).setUint32(0, 1024 * 1024 * 1024, false);
+      expect(() => d.push(evil)).toThrow(/maxFrameBytes/);
+    });
+
+    test('cap is configurable — smaller caps reject smaller frames', () => {
+      const d = new FrameDecoder(1024); // 1 KiB cap
+      const headerOnly = new Uint8Array(4);
+      new DataView(headerOnly.buffer).setUint32(0, 2048, false); // 2 KiB claim
+      expect(() => d.push(headerOnly)).toThrow(/maxFrameBytes 1024/);
+    });
+
+    test('cap is configurable — larger caps allow larger frames', () => {
+      const big = 'x'.repeat(200_000); // ~200 KB JSON
+      const payload = JSON.stringify({ t: 'envelope', to: 'foo', from: null, body: big });
+      const bytes = new TextEncoder().encode(payload);
+      const frame = new Uint8Array(4 + bytes.byteLength);
+      new DataView(frame.buffer).setUint32(0, bytes.byteLength, false);
+      frame.set(bytes, 4);
+
+      // Default 16-MiB cap is enough.
+      const d = new FrameDecoder();
+      const out = d.push(frame);
+      expect(out).toHaveLength(1);
+    });
+
+    test('legitimate small frames still decode after the cap is in place', () => {
+      // Regression guard: the cap must not break normal traffic.
+      const d = new FrameDecoder();
+      const frames = d.push(encodeFrame(sampleHello));
+      expect(frames).toHaveLength(1);
+      expect(frames[0]).toEqual(sampleHello);
+    });
+
+    test('invalid cap configuration is rejected', () => {
+      expect(() => new FrameDecoder(0)).toThrow(/positive integer/);
+      expect(() => new FrameDecoder(-1)).toThrow(/positive integer/);
+      expect(() => new FrameDecoder(Number.NaN)).toThrow(/positive integer/);
+      expect(() => new FrameDecoder(Number.POSITIVE_INFINITY)).toThrow(/positive integer/);
+    });
+  });
+
   test('round-trips each wire message variant', () => {
     const variants: WireMessage[] = [
       { t: 'hello', self: new NodeAddress('s', 'h', 1).toJSON() },

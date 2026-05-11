@@ -10,6 +10,7 @@ import { NodeAddress } from './NodeAddress.js';
 import {
   encodeFrame,
   FrameDecoder,
+  DEFAULT_MAX_FRAME_BYTES,
   type HelloMsg,
   type HelloAckMsg,
   type WireMessage,
@@ -70,6 +71,15 @@ export class TcpTransport implements Transport {
     private readonly log: Logger,
     /** Optional TLS configuration — when set, both listener and dialer use TLS. */
     private readonly tls: TlsTransportSettings | null = null,
+    /**
+     * Per-frame size cap (security).  Frames whose length-prefix
+     * exceeds this are rejected before any payload bytes are
+     * buffered — closes the 4-GiB-claim DoS vector documented on
+     * {@link FrameDecoder}.  Default: {@link DEFAULT_MAX_FRAME_BYTES}
+     * (16 MiB).  Raise it only if you genuinely send larger
+     * envelopes; the cap is per-frame, not aggregate.
+     */
+    private readonly maxFrameBytes: number = DEFAULT_MAX_FRAME_BYTES,
   ) {}
 
   setHandler(handler: WireHandler): void { this.handler = handler; }
@@ -131,7 +141,7 @@ export class TcpTransport implements Transport {
     const conn: Conn = {
       socket: sock,
       peer: null,
-      decoder: new FrameDecoder(),
+      decoder: new FrameDecoder(this.maxFrameBytes),
       pending: [],
       outbound: false,
     };
@@ -142,7 +152,7 @@ export class TcpTransport implements Transport {
     const conn: Conn = {
       socket: null,
       peer: null,
-      decoder: new FrameDecoder(),
+      decoder: new FrameDecoder(this.maxFrameBytes),
       pending: [],
       outbound: true,
     };
@@ -188,12 +198,24 @@ export class TcpTransport implements Transport {
       // Bun delivers `data` before `open` completes its microtask in some
       // edge cases — attach a fresh inbound Conn lazily.
       conn = {
-        socket: sock, peer: null, decoder: new FrameDecoder(),
+        socket: sock, peer: null, decoder: new FrameDecoder(this.maxFrameBytes),
         pending: [], outbound: false,
       };
       this.bySocket.set(sock, conn);
     }
-    const frames = conn.decoder.push(chunk);
+    let frames: WireMessage[];
+    try {
+      frames = conn.decoder.push(chunk);
+    } catch (err) {
+      // Frame-decoder rejected the input (oversized length-prefix,
+      // malformed JSON).  Drop the connection rather than letting the
+      // error propagate up the runtime's socket-data callback.
+      this.log.warn(`frame-decoder error from ${conn.peer ?? '<unknown peer>'}; closing`, err as Error);
+      try { sock.end(); } catch { /* ignore */ }
+      this.bySocket.delete(sock);
+      if (conn.peer) this.byPeer.delete(conn.peer.toString());
+      return;
+    }
     for (const msg of frames) this.onMessage(conn, msg);
   }
 

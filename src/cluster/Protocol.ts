@@ -147,12 +147,42 @@ export function encodeFrame(msg: WireMessage): Uint8Array {
 }
 
 /**
+ * Default cap on a single frame's payload size — 16 MiB.  Anything
+ * larger is rejected by {@link FrameDecoder} before the buffer grows.
+ *
+ * **Why this exists (security):** the wire format prefixes each
+ * payload with a 4-byte big-endian uint32, so a malicious or
+ * malformed peer can claim a 4 GiB length and force the decoder to
+ * either buffer up to that size (OOM) or wait indefinitely for the
+ * rest of the bytes (DoS).  Capping at a sensible default closes
+ * that vector; callers that genuinely send larger frames can raise
+ * the cap via the `FrameDecoder` constructor or
+ * `TcpTransport`'s settings.
+ */
+export const DEFAULT_MAX_FRAME_BYTES = 16 * 1024 * 1024;
+
+/**
  * Incremental decoder that buffers bytes across multiple chunks and yields
  * whole frames.  TCP gives no message boundaries — the caller feeds bytes as
  * they arrive and collects whatever frames completed.
+ *
+ * **Frame-size cap (security):** the optional `maxFrameBytes`
+ * constructor arg (default {@link DEFAULT_MAX_FRAME_BYTES}) rejects
+ * frames whose claimed length-prefix exceeds the cap — before any
+ * payload bytes are buffered.  An attacker claiming a 4 GiB frame
+ * hits the cap immediately and the decoder throws, so neither OOM
+ * nor an indefinite stall is possible.
  */
 export class FrameDecoder {
   private buffer: Uint8Array = new Uint8Array(0);
+  private readonly maxFrameBytes: number;
+
+  constructor(maxFrameBytes: number = DEFAULT_MAX_FRAME_BYTES) {
+    if (!Number.isFinite(maxFrameBytes) || maxFrameBytes < 1) {
+      throw new Error(`FrameDecoder: maxFrameBytes must be a positive integer, got ${maxFrameBytes}`);
+    }
+    this.maxFrameBytes = Math.trunc(maxFrameBytes);
+  }
 
   push(chunk: Uint8Array): WireMessage[] {
     this.buffer = concat(this.buffer, chunk);
@@ -162,6 +192,15 @@ export class FrameDecoder {
       const len = new DataView(
         this.buffer.buffer, this.buffer.byteOffset, this.buffer.byteLength,
       ).getUint32(0, false);
+      if (len > this.maxFrameBytes) {
+        // Reject BEFORE buffering — the attacker can't force an OOM
+        // by claiming a 4 GiB frame.  Throwing here triggers
+        // connection-shutdown in the transport layer.
+        throw new Error(
+          `wire frame claims length ${len} > maxFrameBytes ${this.maxFrameBytes} — `
+          + `connection terminated to prevent OOM/DoS`,
+        );
+      }
       if (this.buffer.byteLength < HEADER_SIZE + len) break;
       const payload = this.buffer.subarray(HEADER_SIZE, HEADER_SIZE + len);
       const json = decoder.decode(payload);
