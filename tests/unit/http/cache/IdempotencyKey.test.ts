@@ -132,3 +132,130 @@ describe('idempotent — TTL / config guards', () => {
     expect(() => idempotent({ cache, ttlMs: -1 })).toThrow();
   });
 });
+
+/* ------------------------- security: request-body binding -------------------------- */
+
+function reqWithBody(headers: Record<string, string>, bodyStr: string): HttpRequest {
+  return {
+    method: 'POST',
+    path: '/payments',
+    headers,
+    query: {},
+    params: {},
+    body: new TextEncoder().encode(bodyStr),
+  };
+}
+
+describe('idempotent — request-body fingerprint binding', () => {
+  /**
+   * **Exploit walkthrough (pre-fix).**  The middleware cached the
+   * response keyed solely by the `Idempotency-Key` header — the
+   * request body wasn't part of the cache lookup.  An attacker
+   * (or a buggy client) could send:
+   *
+   *   POST /payments  Idempotency-Key: abc  body: {to: alice, amount: 100}
+   *
+   * see the response (200 + `{txId: 1}`), then immediately resend:
+   *
+   *   POST /payments  Idempotency-Key: abc  body: {to: bob,   amount: 9999}
+   *
+   * The middleware would find the cached response (keyed on `abc`)
+   * and replay it verbatim — the second request silently received
+   * the first's response, and the second request's body was DROPPED
+   * without the handler ever seeing it.  Effect:
+   *   - If the attacker can guess/observe a victim's idempotency
+   *     key, they can poison the cache and steal the victim's
+   *     response on their next legitimate attempt.
+   *   - If a buggy client reuses a key for two different requests,
+   *     the second is silently dropped — operationally invisible
+   *     until a customer complains.
+   *
+   * Stripe's spec explicitly calls this out: same key + different
+   * body → reject with 422 Unprocessable Entity.  Fix: compute
+   * SHA-256 fingerprint of `method + path + body` on every request;
+   * store it with the cached response; on replay verify the
+   * fingerprints match.
+   */
+  test('exploit: same key + different body → 422 (not the cached response)', async () => {
+    const cache = new InMemoryCache();
+    let invocations = 0;
+    const handler = idempotent({ cache })(() => {
+      invocations++;
+      return complete(Status.OK, { txId: invocations });
+    });
+
+    // First request: handler runs, body fingerprint stored.
+    const r1 = await handler(reqWithBody({ 'idempotency-key': 'abc' },
+      '{"to":"alice","amount":100}'));
+    expect(r1.status).toBe(200);
+    expect(invocations).toBe(1);
+
+    // Second request: same key, DIFFERENT body.  Defense: 422.
+    const r2 = await handler(reqWithBody({ 'idempotency-key': 'abc' },
+      '{"to":"bob","amount":9999}'));
+    expect(r2.status).toBe(422);
+    expect(invocations).toBe(1);   // handler NOT invoked
+    // Critically: r2's body does NOT include r1's response — no
+    // information leak between requests.
+    expect(JSON.stringify(r2.body)).not.toContain('txId');
+  });
+
+  test('exploit: same key + path-only difference → 422 (method+path is in the fingerprint)', async () => {
+    const cache = new InMemoryCache();
+    const handler = idempotent({ cache })(() => complete(Status.OK, { ok: true }));
+
+    const r1Req: HttpRequest = {
+      method: 'POST', path: '/payments', headers: { 'idempotency-key': 'k1' },
+      query: {}, params: {}, body: new TextEncoder().encode('{"x":1}'),
+    };
+    await handler(r1Req);
+
+    const r2Req: HttpRequest = {
+      method: 'POST', path: '/refunds', headers: { 'idempotency-key': 'k1' },
+      query: {}, params: {}, body: new TextEncoder().encode('{"x":1}'),  // same body
+    };
+    const r2 = await handler(r2Req);
+    expect(r2.status).toBe(422);  // different path → fingerprint mismatch
+  });
+
+  test('regression: same key + same body → replays cached response (no 422)', async () => {
+    const cache = new InMemoryCache();
+    let invocations = 0;
+    const handler = idempotent({ cache })(() => {
+      invocations++;
+      return complete(Status.OK, { id: invocations });
+    });
+
+    const body = '{"amount":42}';
+    const r1 = await handler(reqWithBody({ 'idempotency-key': 'same' }, body));
+    const r2 = await handler(reqWithBody({ 'idempotency-key': 'same' }, body));
+    expect(r1.status).toBe(200);
+    expect(r2.status).toBe(200);
+    expect(r1.body).toEqual(r2.body);   // SAME response replayed
+    expect(invocations).toBe(1);         // handler called once
+  });
+
+  test('regression: empty-body request still gets fingerprinted (no crash, no false 422)', async () => {
+    const cache = new InMemoryCache();
+    const handler = idempotent({ cache })(() => complete(Status.OK, { ok: true }));
+
+    const r1 = await handler(makeReq({ 'idempotency-key': 'no-body' }, null));
+    const r2 = await handler(makeReq({ 'idempotency-key': 'no-body' }, null));
+    expect(r1.status).toBe(200);
+    expect(r2.status).toBe(200);   // both succeed; no 422 for null===null
+  });
+
+  test('different keys + different bodies → all independent (no interference)', async () => {
+    const cache = new InMemoryCache();
+    let invocations = 0;
+    const handler = idempotent({ cache })(() => {
+      invocations++;
+      return complete(Status.OK, { n: invocations });
+    });
+
+    await handler(reqWithBody({ 'idempotency-key': 'k1' }, '{"a":1}'));
+    await handler(reqWithBody({ 'idempotency-key': 'k2' }, '{"a":2}'));
+    await handler(reqWithBody({ 'idempotency-key': 'k3' }, '{"a":3}'));
+    expect(invocations).toBe(3);
+  });
+});

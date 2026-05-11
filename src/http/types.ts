@@ -42,6 +42,8 @@ export const Status = {
   MethodNotAllowed: 405,
   Conflict: 409,
   UnsupportedMediaType: 415,
+  /** Used by the idempotency-key middleware when the same key is reused with a different body. */
+  UnprocessableEntity: 422,
   TooManyRequests: 429,
   InternalServerError: 500,
   BadGateway: 502,

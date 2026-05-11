@@ -54,6 +54,17 @@ interface CachedResponse {
   /** JSON-serialisable shape — Uint8Array bodies are base64-encoded as `{__bin: '...'}`. */
   readonly body: unknown;
   readonly contentType?: string;
+  /**
+   * SHA-256 hash (base64) of the ORIGINAL request body that produced
+   * this cached response.  Re-checked on every replay: if the new
+   * request's body hash doesn't match, the client tried to reuse the
+   * same idempotency key for a SEMANTICALLY DIFFERENT request — we
+   * reject with 422 rather than returning the wrong response.
+   * Stripe's spec calls this out explicitly; without it, a malicious
+   * (or buggy) client that reuses an idempotency key can poison the
+   * cache to receive someone else's response.
+   */
+  readonly requestFingerprint: string;
 }
 
 const IN_FLIGHT_MARKER: { readonly inFlight: true } = { inFlight: true } as const;
@@ -77,6 +88,7 @@ export function idempotent(opts: IdempotencyOptions) {
         });
       }
       const cacheKey = `${prefix}${userKey}`;
+      const fingerprint = await computeRequestFingerprint(req);
 
       // Probe — if the key already holds a completed response, replay.
       const existing = await opts.cache.get<CachedResponse | typeof IN_FLIGHT_MARKER>(cacheKey);
@@ -85,6 +97,17 @@ export function idempotent(opts: IdempotencyOptions) {
         if (isInFlight(value)) {
           return complete(Status.Conflict, {
             error: 'idempotency-key in-flight; retry shortly',
+          });
+        }
+        // Security: same idempotency key + DIFFERENT body = client
+        // tried to reuse a key for a semantically-different request.
+        // Stripe's spec says reject with 422.  Returning the cached
+        // (unrelated) response would let an attacker poison the
+        // cache with a key they guessed/observed and steal another
+        // client's response.
+        if (value.requestFingerprint !== fingerprint) {
+          return complete(Status.UnprocessableEntity, {
+            error: 'idempotency-key already used with a different request body',
           });
         }
         return decodeResponse(value);
@@ -108,8 +131,10 @@ export function idempotent(opts: IdempotencyOptions) {
         await opts.cache.delete(cacheKey);
         throw e;
       }
-      // Replace the in-flight marker with the actual response.
-      await opts.cache.set<CachedResponse>(cacheKey, encodeResponse(response), ttlMs);
+      // Replace the in-flight marker with the actual response,
+      // remembering the request fingerprint so subsequent replays
+      // can verify the request body matches.
+      await opts.cache.set<CachedResponse>(cacheKey, encodeResponse(response, fingerprint), ttlMs);
       return response;
     };
   };
@@ -121,7 +146,7 @@ function isInFlight(value: unknown): value is typeof IN_FLIGHT_MARKER {
   return typeof value === 'object' && value !== null && (value as { inFlight?: boolean }).inFlight === true;
 }
 
-function encodeResponse(r: HttpResponse): CachedResponse {
+function encodeResponse(r: HttpResponse, requestFingerprint: string): CachedResponse {
   let body: unknown = r.body;
   if (body instanceof Uint8Array) {
     body = { __bin: bytesToBase64(body) };
@@ -131,7 +156,45 @@ function encodeResponse(r: HttpResponse): CachedResponse {
     headers: r.headers as Record<string, string> | undefined,
     body,
     contentType: r.contentType,
+    requestFingerprint,
   };
+}
+
+/**
+ * Compute a stable fingerprint of the request body + method + path
+ * for the idempotency-key duplicate-body check.  SHA-256 base64
+ * — fast (sub-ms for typical payloads), collision-resistant, and
+ * the base64 form is JSON-safe for storage in the cache.
+ *
+ * We include `method + path` so even a body-less GET can be
+ * fingerprinted, and a same-body POST/PUT mix doesn't collide.
+ */
+async function computeRequestFingerprint(req: HttpRequest): Promise<string> {
+  const subtle = (globalThis.crypto as Crypto | undefined)?.subtle;
+  const prelude = new TextEncoder().encode(`${req.method} ${req.path}\n`);
+  const body = req.body ?? new Uint8Array(0);
+  const combined = new Uint8Array(prelude.byteLength + body.byteLength);
+  combined.set(prelude, 0);
+  combined.set(body, prelude.byteLength);
+
+  if (subtle) {
+    // Cast through BufferSource — TS 5.7+'s DOM types tighten the
+    // `BufferSource` constraint in a way that doesn't match
+    // `Uint8Array<ArrayBufferLike>` cleanly.
+    const digest = await subtle.digest('SHA-256', combined as unknown as BufferSource);
+    return bytesToBase64(new Uint8Array(digest));
+  }
+  // Fallback: FNV-1a 64-bit hex.  Slower convergence than SHA-256
+  // but still ~ 2^32 collision resistance for the fingerprint.  Only
+  // reached on exotic runtimes without WebCrypto, which we already
+  // refuse to run encryption on.
+  let h1 = 0x811c9dc5 >>> 0;
+  let h2 = 0xcbf29ce4 >>> 0;
+  for (let i = 0; i < combined.length; i++) {
+    h1 = Math.imul(h1 ^ combined[i]!, 16777619);
+    h2 = Math.imul(h2 ^ combined[i]!, 2246822519);
+  }
+  return `fnv:${(h1 >>> 0).toString(16)}${(h2 >>> 0).toString(16)}`;
 }
 
 function decodeResponse(c: CachedResponse): HttpResponse {
