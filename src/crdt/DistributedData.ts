@@ -98,6 +98,77 @@ interface DDataGossipMsg {
   readonly entries: Record<string, CrdtJson>;
 }
 
+/* ====================== quorum write / read wire ======================= */
+
+/**
+ * Quorum-write request — sent by the originator of a
+ * `updateAsync(..., { consistency: 'majority' | 'all' | { from } })`
+ * call to every other up-member.  Each receiver merges `value` into
+ * its local replica (same merge as gossip) and replies with a
+ * `DDataWriteAckMsg` carrying the same `pendingId` so the originator
+ * can match it to the pending write.
+ */
+interface DDataWriteRequestMsg {
+  readonly t: 'ddata-write-request';
+  readonly from: ReturnType<NodeAddress['toJSON']>;
+  readonly pendingId: string;
+  readonly key: string;
+  readonly value: CrdtJson;
+}
+
+interface DDataWriteAckMsg {
+  readonly t: 'ddata-write-ack';
+  readonly from: ReturnType<NodeAddress['toJSON']>;
+  readonly pendingId: string;
+  readonly key: string;
+}
+
+/**
+ * Quorum-read request — sent by the originator of a
+ * `getAsync(..., { consistency: ... })` call to every other
+ * up-member.  Each receiver replies with its current local value
+ * (or `null` if it has no entry) so the originator can merge the
+ * responses and return the result.
+ */
+interface DDataReadRequestMsg {
+  readonly t: 'ddata-read-request';
+  readonly from: ReturnType<NodeAddress['toJSON']>;
+  readonly pendingId: string;
+  readonly key: string;
+}
+
+interface DDataReadResponseMsg {
+  readonly t: 'ddata-read-response';
+  readonly from: ReturnType<NodeAddress['toJSON']>;
+  readonly pendingId: string;
+  readonly key: string;
+  readonly value: CrdtJson | null;
+}
+
+/* ============================== consistency =========================== */
+
+/**
+ * Quorum target for `updateAsync` / `getAsync`.
+ *
+ *   - `'local'` — return immediately after applying locally.  Equivalent
+ *     to the sync `update` / `get` API, kept for API symmetry.
+ *   - `'majority'` — wait for `floor(N/2)+1` replicas (incl. self).
+ *   - `'all'` — wait for every up-member.
+ *   - `{ from: K }` — wait for `K` replicas (clamped to `[1, N]`).
+ *
+ * `N` is `cluster.upMembers().length` at the moment the call starts.
+ * Self always counts as the first ack (the local apply is synchronous),
+ * so a single-node cluster resolves immediately regardless of the
+ * chosen consistency level.
+ */
+export type WriteConsistency =
+  | 'local'
+  | 'majority'
+  | 'all'
+  | { readonly from: number };
+
+export type ReadConsistency = WriteConsistency;
+
 /* ============================== settings ============================== */
 
 export interface DistributedDataSettings {
@@ -171,8 +242,33 @@ export class DistributedData implements Extension {
       Props.create(() => new DistributedDataActor({ cluster, settings, view })),
       'distributed-data',
     );
-    this._handle = new DistributedDataHandle(ref, view, cluster);
+    // Register wire handlers SYNCHRONOUSLY here — `actorOf` returns
+    // before the actor's async `preStart` has run, but quorum
+    // writes/reads need every peer to already be routing inbound
+    // requests by the time the originator sends them.  Forwarding via
+    // `ref.tell(...)` instead of `self.tell(...)` is safe: messages
+    // queued before preStart completes wait in the mailbox.
+    const unsubs: Array<() => void> = [];
+    for (const kind of [
+      'ddata-gossip',
+      'ddata-write-request',
+      'ddata-write-ack',
+      'ddata-read-request',
+      'ddata-read-response',
+    ] as const) {
+      unsubs.push(cluster._onWire(kind, (msg) => {
+        ref.tell(msg as unknown as ActorMsg);
+      }));
+    }
+    this._handle = new DistributedDataHandle(ref, view, cluster, unsubs);
     return this._handle;
+  }
+
+  /** Tear down the wire-handler subscriptions (test/shutdown only). */
+  stop(): void {
+    if (this._handle) {
+      this._handle._stopWireHandlers();
+    }
   }
 
   get(): DistributedDataHandle {
@@ -203,9 +299,41 @@ interface UpdateMsg {
   readonly key: string;
   readonly factory: CrdtFactory<Crdt<any>>;
   readonly fn: (c: Crdt<any>) => Crdt<any>;
+  /**
+   * Optional quorum settings.  When present, the update runs as a
+   * quorum write — the actor broadcasts the merged value to peers,
+   * collects acks, and only then resolves the user's promise.  When
+   * absent, behaves like the legacy sync path (apply locally + let
+   * gossip carry the value eventually).
+   */
+  readonly quorum?: {
+    readonly pendingId: string;
+    readonly consistency: WriteConsistency;
+    readonly timeoutMs: number;
+    readonly resolve: () => void;
+    readonly reject: (err: Error) => void;
+  };
 }
 interface DeleteMsg { readonly t: 'ddata-delete'; readonly key: string }
-type ActorMsg = UpdateMsg | DeleteMsg | DDataGossipMsg;
+/** Out-of-mailbox: a quorum-read user call.  See {@link DistributedDataHandle.getAsync}. */
+interface ReadMsg {
+  readonly t: 'ddata-read';
+  readonly key: string;
+  readonly pendingId: string;
+  readonly consistency: ReadConsistency;
+  readonly timeoutMs: number;
+  readonly resolve: (value: Crdt<any> | undefined) => void;
+  readonly reject: (err: Error) => void;
+}
+type ActorMsg =
+  | UpdateMsg
+  | DeleteMsg
+  | ReadMsg
+  | DDataGossipMsg
+  | DDataWriteRequestMsg
+  | DDataWriteAckMsg
+  | DDataReadRequestMsg
+  | DDataReadResponseMsg;
 
 /**
  * Public handle returned from `extension.start(cluster)`.  Holds a
@@ -217,7 +345,14 @@ export class DistributedDataHandle {
     private readonly ref: ActorRef<ActorMsg>,
     private readonly view: SharedView,
     private readonly cluster: Cluster,
+    private wireUnsubs: ReadonlyArray<() => void> = [],
   ) {}
+
+  /** @internal — called by the extension's `stop()`. */
+  _stopWireHandlers(): void {
+    for (const u of this.wireUnsubs) u();
+    this.wireUnsubs = [];
+  }
 
   /** Synchronously read the local replica's view of `key`. */
   get<C extends Crdt<C>>(key: string): C | undefined {
@@ -236,6 +371,77 @@ export class DistributedDataHandle {
       t: 'ddata-update', key,
       factory: factory as unknown as CrdtFactory<Crdt<any>>,
       fn: fn as unknown as (c: Crdt<any>) => Crdt<any>,
+    });
+  }
+
+  /**
+   * Quorum-write variant of {@link update}.  Returns a promise that
+   * resolves only after the requested number of replicas have
+   * acknowledged the merge.  Self always counts as the first ack, so
+   * single-node clusters and `consistency: 'local'` resolve as soon as
+   * the local apply is done.
+   *
+   * Rejects with a timeout error if not enough acks arrive within
+   * `timeoutMs` (default `gossipIntervalMs × 5`).  A timeout does NOT
+   * roll the local write back — the value is already applied locally
+   * and will continue to gossip; the rejection only signals "I'm not
+   * sure enough replicas saw it".
+   *
+   *   await dd.updateAsync<GCounter>('hits', GCounter.empty,
+   *     (c) => c.increment(dd.selfReplicaId(), 1),
+   *     { consistency: 'majority' });
+   */
+  updateAsync<C extends Crdt<C>>(
+    key: string,
+    factory: CrdtFactory<C>,
+    fn: (current: C) => C,
+    opts: { readonly consistency: WriteConsistency; readonly timeoutMs?: number } = {
+      consistency: 'local',
+    },
+  ): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const pendingId = nextPendingId();
+      const timeoutMs = opts.timeoutMs ?? 5_000;
+      this.ref.tell({
+        t: 'ddata-update', key,
+        factory: factory as unknown as CrdtFactory<Crdt<any>>,
+        fn: fn as unknown as (c: Crdt<any>) => Crdt<any>,
+        quorum: {
+          pendingId, consistency: opts.consistency, timeoutMs,
+          resolve, reject,
+        },
+      });
+    });
+  }
+
+  /**
+   * Quorum-read variant of {@link get}.  Sends a read request to peers
+   * matching the consistency target, merges all incoming responses
+   * (plus the local replica), and resolves with the merged value.
+   * `undefined` if no replica knows the key.
+   *
+   * Self always counts as the first response — `'local'` returns
+   * immediately with whatever's in the local view.  Timeout default is
+   * the same as {@link updateAsync}.
+   *
+   *   const cart = await dd.getAsync<ORSet<string>>('cart-42',
+   *     { consistency: 'majority' });
+   */
+  getAsync<C extends Crdt<C>>(
+    key: string,
+    opts: { readonly consistency: ReadConsistency; readonly timeoutMs?: number } = {
+      consistency: 'local',
+    },
+  ): Promise<C | undefined> {
+    return new Promise<C | undefined>((resolve, reject) => {
+      const pendingId = nextPendingId();
+      const timeoutMs = opts.timeoutMs ?? 5_000;
+      this.ref.tell({
+        t: 'ddata-read', key, pendingId,
+        consistency: opts.consistency, timeoutMs,
+        resolve: resolve as (v: Crdt<any> | undefined) => void,
+        reject,
+      });
     });
   }
 
@@ -288,19 +494,56 @@ export class DistributedDataHandle {
 
 /* ============================== internal actor ======================== */
 
+/**
+ * Pending quorum-write — produced by `updateAsync` and tracked until
+ * either enough peer acks arrive or the timeout fires.  `acks` is a
+ * set of `address.toString()` so duplicates from a flaky peer count
+ * once; self always counts as the first ack.
+ */
+interface PendingWrite {
+  readonly kind: 'write';
+  readonly key: string;
+  readonly required: number;
+  readonly acks: Set<string>;
+  readonly timer: Cancellable;
+  readonly resolve: () => void;
+  readonly reject: (err: Error) => void;
+}
+
+/**
+ * Pending quorum-read — produced by `getAsync`.  Collects local +
+ * peer values and merges them when either the quorum count is met or
+ * the timeout fires.  `merged` accumulates as responses arrive so the
+ * timeout path can still resolve with a partial answer (best-effort)
+ * — we treat reads as "best-available" rather than strict.
+ */
+interface PendingRead {
+  readonly kind: 'read';
+  readonly key: string;
+  readonly required: number;
+  readonly responses: Set<string>;
+  readonly timer: Cancellable;
+  merged: Crdt<any> | undefined;
+  readonly resolve: (value: Crdt<any> | undefined) => void;
+  readonly reject: (err: Error) => void;
+}
+
 class DistributedDataActor extends Actor<ActorMsg> {
   private readonly cluster: Cluster;
   private readonly view: SharedView;
   private readonly gossipIntervalMs: number;
   private readonly durable: DurableDistributedDataStore | null;
   private gossipTimer: Cancellable | null = null;
-  private unsubscribeWire: (() => void) | null = null;
   private unsubscribeCluster: (() => void) | null = null;
   /** Set while a durable save is in flight; subsequent changes set
    *  `_durableDirty = true` so the in-flight save is followed by a
    *  catch-up save instead of multiple overlapping saves. */
   private durableSaveInFlight = false;
   private durableDirty = false;
+  /** Outstanding quorum-write requests, keyed by pendingId. */
+  private readonly pendingWrites = new Map<string, PendingWrite>();
+  /** Outstanding quorum-read requests, keyed by pendingId. */
+  private readonly pendingReads = new Map<string, PendingRead>();
 
   constructor(public readonly settings: {
     cluster: Cluster;
@@ -320,9 +563,10 @@ class DistributedDataActor extends Actor<ActorMsg> {
   }
 
   override async preStart(): Promise<void> {
-    this.unsubscribeWire = this.cluster._onWire('ddata-gossip', (msg) => {
-      this.self.tell(msg as unknown as DDataGossipMsg);
-    });
+    // Wire handlers are registered in the extension's `start()` so they're
+    // ready BEFORE the user can issue the first quorum write — registering
+    // them here would race with `updateAsync` called immediately after
+    // `extension.start()` returns.
     this.unsubscribeCluster = this.cluster.subscribe((evt) =>
       match(evt)
         .with(P.instanceOf(MemberUp), () => { /* trigger an early gossip */
@@ -352,16 +596,31 @@ class DistributedDataActor extends Actor<ActorMsg> {
   }
 
   override postStop(): void {
-    this.unsubscribeWire?.();
     this.unsubscribeCluster?.();
     this.gossipTimer?.cancel();
+    // Reject any still-pending quorum requests so callers don't hang.
+    for (const w of this.pendingWrites.values()) {
+      w.timer.cancel();
+      w.reject(new Error(`DistributedData stopped before quorum write on "${w.key}" completed`));
+    }
+    this.pendingWrites.clear();
+    for (const r of this.pendingReads.values()) {
+      r.timer.cancel();
+      r.reject(new Error(`DistributedData stopped before quorum read on "${r.key}" completed`));
+    }
+    this.pendingReads.clear();
   }
 
   override onReceive(msg: ActorMsg): void {
     match(msg)
       .with({ t: 'ddata-update' }, (m) => this.handleUpdate(m))
       .with({ t: 'ddata-delete' }, (m) => this.handleDelete(m))
+      .with({ t: 'ddata-read' }, (m) => this.handleRead(m))
       .with({ t: 'ddata-gossip' }, (m) => this.handleGossip(m))
+      .with({ t: 'ddata-write-request' }, (m) => this.handleWriteRequest(m))
+      .with({ t: 'ddata-write-ack' }, (m) => this.handleWriteAck(m))
+      .with({ t: 'ddata-read-request' }, (m) => this.handleReadRequest(m))
+      .with({ t: 'ddata-read-response' }, (m) => this.handleReadResponse(m))
       .exhaustive();
   }
 
@@ -369,6 +628,148 @@ class DistributedDataActor extends Actor<ActorMsg> {
     const current = this.view.state.get(msg.key) ?? msg.factory();
     const next = msg.fn(current);
     this.applyMerged(msg.key, current, next);
+    if (!msg.quorum) return;
+
+    // Quorum write: self-vote counts as the first ack.  If only self
+    // is needed (single-node, or 'local'), resolve immediately;
+    // otherwise broadcast a write-request to peers and arm a timer.
+    const peers = this.cluster.upMembers()
+      .filter((m) => !m.address.equals(this.cluster.selfAddress));
+    const totalN = 1 + peers.length;
+    const required = clampQuorum(msg.quorum.consistency, totalN);
+    const acks = new Set<string>([this.cluster.selfAddress.toString()]);
+    if (acks.size >= required) {
+      msg.quorum.resolve();
+      return;
+    }
+    const timer = this.system.scheduler.scheduleOnceFn(msg.quorum.timeoutMs, () => {
+      const pending = this.pendingWrites.get(msg.quorum!.pendingId);
+      if (!pending) return;
+      this.pendingWrites.delete(msg.quorum!.pendingId);
+      pending.reject(new Error(
+        `DistributedData quorum write on "${msg.key}" timed out after ${msg.quorum!.timeoutMs}ms ` +
+        `(${pending.acks.size}/${pending.required} acks)`,
+      ));
+    });
+    this.pendingWrites.set(msg.quorum.pendingId, {
+      kind: 'write', key: msg.key, required, acks, timer,
+      resolve: msg.quorum.resolve, reject: msg.quorum.reject,
+    });
+    const wire: DDataWriteRequestMsg = {
+      t: 'ddata-write-request',
+      from: this.cluster.selfAddress.toJSON(),
+      pendingId: msg.quorum.pendingId,
+      key: msg.key,
+      value: next.toJSON() as CrdtJson,
+    };
+    for (const peer of peers) {
+      this.cluster.transport.send(peer.address, wire as unknown as WireMessage);
+    }
+  }
+
+  private handleRead(msg: ReadMsg): void {
+    const peers = this.cluster.upMembers()
+      .filter((m) => !m.address.equals(this.cluster.selfAddress));
+    const totalN = 1 + peers.length;
+    const required = clampQuorum(msg.consistency, totalN);
+    const localValue = this.view.state.get(msg.key);
+    const responses = new Set<string>([this.cluster.selfAddress.toString()]);
+    if (responses.size >= required) {
+      msg.resolve(localValue);
+      return;
+    }
+    const timer = this.system.scheduler.scheduleOnceFn(msg.timeoutMs, () => {
+      const pending = this.pendingReads.get(msg.pendingId);
+      if (!pending) return;
+      this.pendingReads.delete(msg.pendingId);
+      // Best-effort: resolve with whatever we've merged so far rather
+      // than rejecting outright.  Reads are forgiving — a partial
+      // answer is more useful than no answer for most workloads.  If
+      // *nothing* came back (not even local), keep undefined.
+      pending.resolve(pending.merged);
+    });
+    this.pendingReads.set(msg.pendingId, {
+      kind: 'read', key: msg.key, required, responses, timer,
+      merged: localValue,
+      resolve: msg.resolve, reject: msg.reject,
+    });
+    const wire: DDataReadRequestMsg = {
+      t: 'ddata-read-request',
+      from: this.cluster.selfAddress.toJSON(),
+      pendingId: msg.pendingId,
+      key: msg.key,
+    };
+    for (const peer of peers) {
+      this.cluster.transport.send(peer.address, wire as unknown as WireMessage);
+    }
+  }
+
+  private handleWriteRequest(msg: DDataWriteRequestMsg): void {
+    // Merge the incoming value into our local replica (same merge
+    // semantics as gossip) and ack back.
+    const incoming = decodeCrdt(msg.value);
+    const current = this.view.state.get(msg.key);
+    const merged = current ? current.merge(incoming) : incoming;
+    this.applyMerged(msg.key, current ?? null, merged);
+    const sender = NodeAddress.fromJSON(msg.from);
+    const ack: DDataWriteAckMsg = {
+      t: 'ddata-write-ack',
+      from: this.cluster.selfAddress.toJSON(),
+      pendingId: msg.pendingId,
+      key: msg.key,
+    };
+    this.cluster.transport.send(sender, ack as unknown as WireMessage);
+  }
+
+  private handleWriteAck(msg: DDataWriteAckMsg): void {
+    const pending = this.pendingWrites.get(msg.pendingId);
+    if (!pending) return; // late ack after timeout / already resolved
+    const senderAddr = NodeAddress.fromJSON(msg.from).toString();
+    if (pending.acks.has(senderAddr)) return; // dedupe
+    pending.acks.add(senderAddr);
+    if (pending.acks.size >= pending.required) {
+      pending.timer.cancel();
+      this.pendingWrites.delete(msg.pendingId);
+      pending.resolve();
+    }
+  }
+
+  private handleReadRequest(msg: DDataReadRequestMsg): void {
+    const local = this.view.state.get(msg.key);
+    const sender = NodeAddress.fromJSON(msg.from);
+    const response: DDataReadResponseMsg = {
+      t: 'ddata-read-response',
+      from: this.cluster.selfAddress.toJSON(),
+      pendingId: msg.pendingId,
+      key: msg.key,
+      value: local ? (local.toJSON() as CrdtJson) : null,
+    };
+    this.cluster.transport.send(sender, response as unknown as WireMessage);
+  }
+
+  private handleReadResponse(msg: DDataReadResponseMsg): void {
+    const pending = this.pendingReads.get(msg.pendingId);
+    if (!pending) return;
+    const senderAddr = NodeAddress.fromJSON(msg.from).toString();
+    if (pending.responses.has(senderAddr)) return; // dedupe
+    pending.responses.add(senderAddr);
+    if (msg.value !== null) {
+      const incoming = decodeCrdt(msg.value);
+      pending.merged = pending.merged ? pending.merged.merge(incoming) : incoming;
+    }
+    if (pending.responses.size >= pending.required) {
+      pending.timer.cancel();
+      this.pendingReads.delete(msg.pendingId);
+      // Also apply the merged value locally so the next sync `get`
+      // sees the freshest view — a quorum read effectively pulls the
+      // latest state to this replica without waiting for gossip.
+      if (pending.merged) {
+        const current = this.view.state.get(pending.key);
+        this.applyMerged(pending.key, current ?? null,
+          current ? current.merge(pending.merged) : pending.merged);
+      }
+      pending.resolve(pending.merged);
+    }
   }
 
   private handleDelete(msg: DeleteMsg): void {
@@ -460,3 +861,32 @@ class DistributedDataActor extends Actor<ActorMsg> {
 }
 
 void dataActorPath; // currently unused — reserved for envelope-routing variants
+
+/* ============================== helpers ============================== */
+
+let _pendingCounter = 0;
+function nextPendingId(): string {
+  _pendingCounter = (_pendingCounter + 1) >>> 0;
+  return `p${Date.now()}-${_pendingCounter}`;
+}
+
+/**
+ * Translate a {@link WriteConsistency} / {@link ReadConsistency} value
+ * into the integer ack count required, given the current up-member
+ * cluster size `N` (incl. self).
+ *
+ *   - `'local'`     → 1            (just self)
+ *   - `'majority'`  → floor(N/2)+1
+ *   - `'all'`       → N
+ *   - `{ from: K }` → clamp(K, 1, N)
+ */
+function clampQuorum(c: WriteConsistency | ReadConsistency, totalN: number): number {
+  if (c === 'local') return 1;
+  if (c === 'majority') return Math.floor(totalN / 2) + 1;
+  if (c === 'all') return totalN;
+  // { from: K }
+  const k = Math.trunc(c.from);
+  if (!Number.isFinite(k) || k < 1) return 1;
+  if (k > totalN) return totalN;
+  return k;
+}

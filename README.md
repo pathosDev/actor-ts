@@ -299,6 +299,34 @@ partition can re-discover the peer.  Public APIs (`getMembers`,
 so most code stays unaffected — only direct iteration of the raw
 membership view needs to skip them explicitly.
 
+### Distributed data — quorum writes / reads
+
+`DistributedData` gossips a key-value store of CRDTs across the
+cluster.  The classic `update(key, factory, fn)` and `get(key)` are
+fire-and-forget — eventually consistent.  When you need a stronger
+guarantee, switch to the async variants with a `WriteConsistency` /
+`ReadConsistency` target:
+
+```ts
+const dd = sys.extension(DistributedDataId).start(cluster);
+
+// Wait for ⌊N/2⌋+1 replicas (incl. self) to apply before returning.
+await dd.updateAsync<GCounter>('hits', GCounter.empty,
+  (c) => c.increment(dd.selfReplicaId(), 1),
+  { consistency: 'majority' });
+
+// Pull the freshest view by polling a majority of replicas; the
+// merged value is also applied locally so the next sync `get` sees it.
+const total = await dd.getAsync<GCounter>('hits',
+  { consistency: 'majority', timeoutMs: 2_000 });
+```
+
+`'local'` is the legacy fire-and-forget behaviour; `'all'` waits
+for every up-member; `{ from: K }` clamps to `[1, N]`.  Self always
+counts as the first ack, so single-node clusters resolve instantly.
+A timeout rejects writes (the local apply still stands — gossip
+continues) and resolves reads with the best-available merge.
+
 ## Event sourcing
 
 ```ts
