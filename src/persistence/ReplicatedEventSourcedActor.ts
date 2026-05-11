@@ -4,6 +4,7 @@ import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import type { Cluster } from '../cluster/Cluster.js';
 import { DistributedPubSubId } from '../cluster/pubsub/index.js';
+import type { Lease } from '../coordination/Lease.js';
 import {
   Publish, Subscribe, type SubscribeAck,
 } from '../cluster/pubsub/Messages.js';
@@ -155,6 +156,40 @@ export abstract class ReplicatedEventSourcedActor<Cmd, Event, State>
   /** Recovery hook — called after the local journal has been replayed. */
   onRecoveryComplete(_state: State): void | Promise<void> {}
 
+  /**
+   * Optional lease (#89) — when this returns a non-null `Lease`, the
+   * actor goes into single-writer mode: only the lease holder may
+   * `persist`, observers passively apply replicated events from
+   * peers.  Default `null` = multi-master semantics (every replica
+   * can persist; vector clocks reconcile concurrent writes).
+   *
+   * Use cases the multi-master default doesn't fit:
+   *
+   *   - **Non-replayable side effects** — charging a credit card,
+   *     emitting an external webhook, sending an email.  The
+   *     framework can't dedupe these for you; restricting writes to
+   *     a single replica ensures the side effect fires once.
+   *   - **Heartbeat / external-rate actors** — N replicas pushing
+   *     beats to a downstream multiplies the rate; the lease binds
+   *     the active emitter to one replica at a time.
+   *
+   * Mechanics: `preStart` calls `lease.acquire()`.  On success the
+   * actor is a holder and persist works normally; on failure it's an
+   * observer (every `persist` call throws).  Lease loss flips the
+   * actor to observer mode and invokes {@link onLeaseLost}; recovery
+   * is restart-driven for this v1.
+   */
+  protected lease(): Lease | null { return null; }
+
+  /**
+   * Hook invoked when this replica unexpectedly loses its lease
+   * (TTL expired, another holder took over, backend failure).  The
+   * actor is already in observer mode by the time this fires — use
+   * the hook to stop downstream side-effect processing, page an
+   * operator, etc.  Default is a no-op.
+   */
+  protected onLeaseLost(_reason: string): void | Promise<void> {}
+
   /* ------------------------------ internals ----------------------------- */
 
   private _state!: State;
@@ -175,11 +210,29 @@ export abstract class ReplicatedEventSourcedActor<Cmd, Event, State>
   private _observedCount = 0;
   /** Guard so concurrent absorbs don't issue overlapping snapshot saves. */
   private _snapshotInFlight = false;
+  /** Optional lease this actor holds (or attempted to hold).  See `lease()`. */
+  private _lease: Lease | null = null;
+  /**
+   * `true` when this replica may issue new `persist` calls.  Without a
+   * lease configured the default is `true` (multi-master); with a
+   * lease, this flips based on `acquire` outcome and `onLost` events.
+   */
+  private _isLeaseHolder = true;
+  private _leaseUnsubLost: (() => void) | null = null;
 
   constructor(public readonly cluster: Cluster) { super(); }
 
   /** Current state — updated after every event apply. */
   protected get state(): State { return this._state; }
+
+  /**
+   * Whether this replica currently holds the configured lease (#89).
+   * Always `true` when no lease is configured (multi-master mode);
+   * dynamic when a lease IS configured — flips to `false` on
+   * `acquire` failure or `onLost` notification.  Use to gate
+   * side-effect logic in `onCommand`.
+   */
+  protected get isLeaseHolder(): boolean { return this._isLeaseHolder; }
 
   override async preStart(): Promise<void> {
     // Single-writer-per-pid invariant (#58).  Two ReplicatedEventSourcedActors
@@ -196,6 +249,39 @@ export abstract class ReplicatedEventSourcedActor<Cmd, Event, State>
       );
     }
     livePids.add(this.persistenceId);
+
+    // Optional lease acquisition (#89).  We try once at preStart; on
+    // success we register an `onLost` handler so a TTL expiry / fence
+    // flips us to observer mode.  On failure we silently enter
+    // observer mode — the user's `onCommand` either skips side-
+    // effecting work via `isLeaseHolder` or hits the explicit throw
+    // inside `persist`.
+    this._lease = this.lease();
+    if (this._lease) {
+      const acquired = await this._lease.acquire();
+      this._isLeaseHolder = acquired;
+      if (acquired) {
+        this._leaseUnsubLost = this._lease.onLost((reason) => {
+          this._isLeaseHolder = false;
+          this.log.warn(
+            `ReplicatedEventSourcedActor '${this.persistenceId}': lease lost — entering observer mode`,
+            { reason },
+          );
+          try {
+            const result = this.onLeaseLost(reason);
+            if (result instanceof Promise) {
+              result.catch((e) => this.log.warn('onLeaseLost threw', e));
+            }
+          } catch (e) {
+            this.log.warn('onLeaseLost threw', e);
+          }
+        });
+      } else {
+        this.log.info(
+          `ReplicatedEventSourcedActor '${this.persistenceId}': could not acquire lease — entering observer mode`,
+        );
+      }
+    }
 
     this._state = this.initialState();
     const ext = this.system.extension(PersistenceExtensionId);
@@ -260,6 +346,17 @@ export abstract class ReplicatedEventSourcedActor<Cmd, Event, State>
     // a new instance gets preStart.
     const livePids = livePidsBySystem.get(this.system);
     livePids?.delete(this.persistenceId);
+
+    // Release the lease if held (#89) — a clean exit lets a follower
+    // acquire faster than waiting for the TTL to expire.  Fire-and-
+    // forget; lease backends typically tolerate "owner gone" via TTL
+    // anyway so a failure to release is not fatal.
+    this._leaseUnsubLost?.();
+    this._leaseUnsubLost = null;
+    if (this._lease && this._isLeaseHolder) {
+      void this._lease.release().catch(() => { /* best-effort */ });
+    }
+    this._lease = null;
   }
 
   override async onReceive(msg: Cmd | ReplicatedEventEnvelope<Event> | SubscribeAck): Promise<void> {
@@ -278,8 +375,20 @@ export abstract class ReplicatedEventSourcedActor<Cmd, Event, State>
    * Persist a fresh local event.  Increments this replica's VC
    * component, appends to the journal tagged `replicated-es`, applies
    * to local state, and broadcasts to peer replicas.
+   *
+   * When a lease is configured (#89) and this replica is NOT the
+   * holder, throws — the actor is in observer mode and writes must
+   * route to the holder.  Users that don't want the throw can gate
+   * on `isLeaseHolder` before calling `persist`.
    */
   protected async persist(event: Event, cb?: (state: State) => void): Promise<void> {
+    if (this._lease && !this._isLeaseHolder) {
+      throw new Error(
+        `ReplicatedEventSourcedActor '${this.persistenceId}': cannot persist — ` +
+        `this replica is in observer mode (lease held by another replica or lost). ` +
+        `Gate calls on \`this.isLeaseHolder\` to avoid this.`,
+      );
+    }
     this._localSeq += 1;
     this._vc = this._vc.tick(this.replicaId);
     const envelope: ReplicatedEventEnvelope<Event> = {
