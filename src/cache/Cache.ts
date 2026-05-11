@@ -9,10 +9,11 @@ import type { Option } from '../util/Option.js';
  *   - `RedisCache`     — wraps `ioredis` (optional peer dependency).
  *   - `MemcachedCache` — wraps `memjs` (optional peer dependency).
  *
- * The surface is intentionally small.  Five operations cover ~95% of the
+ * The surface is intentionally small.  Seven operations cover ~95% of the
  * real cases in this codebase; we deliberately exclude pattern-scans
- * (anti-pattern at scale), pub/sub (already provided by the cluster
- * layer), and bulk get/set (can be added when an actual workload needs it).
+ * (anti-pattern at scale) and pub/sub (already provided by the cluster
+ * layer).  Bulk `mget` / `mset` (#14) cut round-trips for the hot
+ * sharded-entity-hydration path after a rebalance.
  *
  * **Failure model:** a cache is opportunistic by definition.  Backends
  * are encouraged to *return* a sensible default rather than throw on
@@ -44,6 +45,32 @@ export interface Cache {
 
   /** Delete one or many keys.  Idempotent — missing keys are a no-op. */
   delete(...keys: string[]): Promise<void>;
+
+  /**
+   * Bulk get (#14) — fetch multiple keys in a single round-trip when
+   * the backend supports it.  Returns a `Map` keyed by the input
+   * keys; misses (no entry, expired, malformed payload, transient
+   * backend failure) are simply absent from the result rather than
+   * mapped to `undefined`.  `Map.get(k)` therefore returns `V |
+   * undefined` with the same "missing key" semantics as the
+   * single-key `get`.
+   *
+   * Order of the returned Map matches the order of the input keys
+   * for backends that support it (Redis MGET); backends that fall
+   * back to parallel single-key reads (Memcached) may surface a
+   * different iteration order — don't rely on it.
+   */
+  mget<V = unknown>(keys: ReadonlyArray<string>): Promise<Map<string, V>>;
+
+  /**
+   * Bulk set (#14) — write multiple key/value pairs with a shared
+   * TTL.  The atomicity guarantee is per backend: Redis emits a
+   * single `MSET` (no-TTL) or pipelined `SET ... PX` (with-TTL);
+   * Memcached has no native bulk write so the calls go out in
+   * parallel.  Single-process backends (InMemory) trivially see
+   * the whole bag at once.  `ttlMs` applies to every entry.
+   */
+  mset<V = unknown>(entries: ReadonlyMap<string, V>, ttlMs?: number): Promise<void>;
 
   /** Best-effort teardown.  Idempotent. */
   close?(): Promise<void>;

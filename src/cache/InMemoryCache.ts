@@ -74,6 +74,31 @@ export class InMemoryCache implements Cache {
     for (const k of keys) this.store.delete(k);
   }
 
+  async mget<V>(keys: ReadonlyArray<string>): Promise<Map<string, V>> {
+    const out = new Map<string, V>();
+    const now = Date.now();
+    for (const k of keys) {
+      const entry = this.store.get(k);
+      if (!entry) continue;
+      if (entry.expiresAt <= now) {
+        this.store.delete(k);    // lazy-expire matches `get` semantics
+        continue;
+      }
+      out.set(k, entry.value as V);
+    }
+    return out;
+  }
+
+  async mset<V>(entries: ReadonlyMap<string, V>, ttlMs?: number): Promise<void> {
+    if (ttlMs !== undefined && (!Number.isFinite(ttlMs) || ttlMs <= 0)) {
+      throw new Error(`InMemoryCache.mset: ttlMs must be a positive finite number, got ${ttlMs}`);
+    }
+    const expiresAt = ttlMs === undefined ? Infinity : Date.now() + ttlMs;
+    for (const [k, v] of entries) {
+      this.store.set(k, { value: v, expiresAt });
+    }
+  }
+
   async close(): Promise<void> {
     this.store.clear();
   }

@@ -142,6 +142,56 @@ export class MemcachedCache implements Cache {
     }
   }
 
+  async mget<V>(keys: ReadonlyArray<string>): Promise<Map<string, V>> {
+    const out = new Map<string, V>();
+    if (this.closed || keys.length === 0) return out;
+    try {
+      const client = await this.clientLazy.get();
+      // memjs has no native MGET — issue in parallel and rebuild the
+      // result Map.  We lose Redis's "preserves request order"
+      // guarantee, but the contract documents the order as backend-
+      // dependent for that reason.
+      const results = await Promise.all(
+        keys.map(async (k): Promise<V | null> => {
+          try {
+            const { value } = await client.get(this.k(k));
+            if (!value) return null;
+            try { return JSON.parse(value.toString('utf8')) as V; } catch { return null; }
+          } catch { return null; }
+        }),
+      );
+      for (let i = 0; i < keys.length; i++) {
+        const v = results[i];
+        if (v !== null && v !== undefined) out.set(keys[i]!, v);
+      }
+    } catch {
+      // ignore
+    }
+    return out;
+  }
+
+  async mset<V>(entries: ReadonlyMap<string, V>, ttlMs?: number): Promise<void> {
+    if (this.closed || entries.size === 0) return;
+    if (ttlMs !== undefined && (!Number.isFinite(ttlMs) || ttlMs <= 0)) {
+      throw new CacheError(`MemcachedCache.mset: ttlMs must be a positive finite number, got ${ttlMs}`);
+    }
+    const expires = msToSeconds(ttlMs);
+    try {
+      const client = await this.clientLazy.get();
+      await Promise.all(
+        Array.from(entries).map(([k, v]) =>
+          client.set(
+            this.k(k),
+            JSON.stringify(v),
+            expires === undefined ? undefined : { expires },
+          ).catch(() => false),
+        ),
+      );
+    } catch {
+      // ignore
+    }
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;

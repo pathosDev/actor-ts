@@ -60,6 +60,10 @@ export interface RedisClientLike {
   incr(key: string): Promise<number>;
   pexpire(key: string, ttlMs: number): Promise<number>;
   del(...keys: string[]): Promise<number>;
+  /** Bulk get — returns one entry per key in order, `null` for misses. */
+  mget(...keys: string[]): Promise<Array<string | null>>;
+  /** Bulk set — variadic `key1, value1, key2, value2, …`.  No per-key TTL. */
+  mset(...keyValuePairs: string[]): Promise<unknown>;
   quit(): Promise<unknown>;
 }
 
@@ -156,6 +160,59 @@ export class RedisCache implements Cache {
       await client.del(...keys.map((k) => this.k(k)));
     } catch {
       // Lost delete is acceptable.
+    }
+  }
+
+  async mget<V>(keys: ReadonlyArray<string>): Promise<Map<string, V>> {
+    const out = new Map<string, V>();
+    if (this.closed || keys.length === 0) return out;
+    try {
+      const client = await this.clientLazy.get();
+      const raw = await client.mget(...keys.map((k) => this.k(k)));
+      for (let i = 0; i < keys.length; i++) {
+        const v = raw[i];
+        if (v === null || v === undefined) continue;
+        try {
+          out.set(keys[i]!, JSON.parse(v) as V);
+        } catch {
+          // Bad payload — treat as a miss.  Same semantics as `get`
+          // returning None on a transient failure.
+        }
+      }
+    } catch {
+      // Transient backend failure — return whatever we managed.
+    }
+    return out;
+  }
+
+  async mset<V>(entries: ReadonlyMap<string, V>, ttlMs?: number): Promise<void> {
+    if (this.closed || entries.size === 0) return;
+    if (ttlMs !== undefined && (!Number.isFinite(ttlMs) || ttlMs <= 0)) {
+      throw new CacheError(`RedisCache.mset: ttlMs must be a positive finite number, got ${ttlMs}`);
+    }
+    try {
+      const client = await this.clientLazy.get();
+      if (ttlMs === undefined) {
+        // Single MSET command — atomic on the server side.
+        const args: string[] = [];
+        for (const [k, v] of entries) {
+          args.push(this.k(k));
+          args.push(JSON.stringify(v));
+        }
+        await client.mset(...args);
+      } else {
+        // MSET doesn't accept per-key TTL — fall back to parallel
+        // `SET k v PX ttl` calls.  Not atomic across keys, but a
+        // cache write losing atomicity is tolerable (same standing as
+        // the per-key `set` failure mode).
+        await Promise.all(
+          Array.from(entries).map(([k, v]) =>
+            client.set(this.k(k), JSON.stringify(v), 'PX', ttlMs),
+          ),
+        );
+      }
+    } catch {
+      // Lost write is acceptable for a cache.
     }
   }
 

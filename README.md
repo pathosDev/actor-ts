@@ -491,7 +491,11 @@ cache, rate-limit, idempotency-keys), an optional `CachedSnapshotStore`
 decorator for hot sharded-actor recall, and arbitrary user code.  Three
 implementations ship — `InMemoryCache` (default, single-process),
 `RedisCache` (via `ioredis`, optional peer-dep), `MemcachedCache` (via
-`memjs`, optional peer-dep).
+`memjs`, optional peer-dep).  The seven primitives are `get` / `set` /
+`incr` / `setIfAbsent` / `delete` plus bulk `mget` / `mset` for
+batched round-trips on hot paths (Redis emits a single `MGET` / `MSET`;
+Memcached falls back to parallel single-key calls; the in-memory
+backend iterates the map).
 
 ```ts
 import {

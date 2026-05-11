@@ -104,3 +104,62 @@ describe('InMemoryCache — close', () => {
     expect(c.sizeForTest()).toBe(0);
   });
 });
+
+describe('InMemoryCache — mget / mset (#14)', () => {
+  test('mget returns a Map of hits; misses are absent', async () => {
+    const c = new InMemoryCache();
+    await c.set('a', 1);
+    await c.set('b', 'two');
+    const got = await c.mget<unknown>(['a', 'b', 'missing']);
+    expect(got.size).toBe(2);
+    expect(got.get('a')).toBe(1);
+    expect(got.get('b')).toBe('two');
+    expect(got.has('missing')).toBe(false);
+  });
+
+  test('mget on an empty input array returns an empty Map', async () => {
+    const c = new InMemoryCache();
+    const got = await c.mget([]);
+    expect(got.size).toBe(0);
+  });
+
+  test('mget lazily expires entries — same semantics as single-key `get`', async () => {
+    const c = new InMemoryCache();
+    await c.set('a', 1, 10);  // 10 ms TTL
+    await c.set('b', 2);      // no TTL
+    await new Promise((r) => setTimeout(r, 20));
+    const got = await c.mget(['a', 'b']);
+    expect(got.has('a')).toBe(false);
+    expect(got.get('b')).toBe(2);
+  });
+
+  test('mset writes every entry with the shared TTL', async () => {
+    const c = new InMemoryCache();
+    await c.mset(new Map([['a', 1], ['b', 2], ['c', 3]] as const), 50);
+    expect((await c.get('a')).getOrElse(0)).toBe(1);
+    expect((await c.get('b')).getOrElse(0)).toBe(2);
+    expect((await c.get('c')).getOrElse(0)).toBe(3);
+    // After the TTL all three expire together.
+    await new Promise((r) => setTimeout(r, 70));
+    expect((await c.mget(['a', 'b', 'c'])).size).toBe(0);
+  });
+
+  test('mset with no TTL persists indefinitely', async () => {
+    const c = new InMemoryCache();
+    await c.mset(new Map([['a', 1], ['b', 2]] as const));
+    await new Promise((r) => setTimeout(r, 20));
+    expect((await c.mget(['a', 'b'])).size).toBe(2);
+  });
+
+  test('mset rejects bogus ttlMs', async () => {
+    const c = new InMemoryCache();
+    await expect(c.mset(new Map([['a', 1]]), 0)).rejects.toThrow(/ttlMs/);
+    await expect(c.mset(new Map([['a', 1]]), -1)).rejects.toThrow(/ttlMs/);
+  });
+
+  test('mset on an empty Map is a no-op', async () => {
+    const c = new InMemoryCache();
+    await c.mset(new Map());
+    expect(c.sizeForTest()).toBe(0);
+  });
+});

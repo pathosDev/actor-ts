@@ -50,6 +50,17 @@ class FakeRedis implements RedisClientLike {
     for (const k of keys) if (this.store.delete(k)) n++;
     return n;
   }
+  async mget(...keys: string[]): Promise<Array<string | null>> {
+    this.log.push({ op: 'mget', args: keys });
+    return keys.map((k) => this.store.get(k) ?? null);
+  }
+  async mset(...kv: string[]): Promise<unknown> {
+    this.log.push({ op: 'mset', args: kv });
+    for (let i = 0; i < kv.length; i += 2) {
+      this.store.set(kv[i]!, kv[i + 1]!);
+    }
+    return 'OK';
+  }
   async quit(): Promise<unknown> {
     this.log.push({ op: 'quit', args: [] });
     return 'OK';
@@ -149,6 +160,8 @@ describe('RedisCache — failure tolerance', () => {
       async incr() { return 0; },
       async pexpire() { return 0; },
       async del() { return 0; },
+      async mget() { return []; },
+      async mset() { return 'OK'; },
       async quit() { return 'OK'; },
     };
     const c = new RedisCache({ client: broken });
@@ -162,9 +175,96 @@ describe('RedisCache — failure tolerance', () => {
       async incr() { throw new Error('connection refused'); },
       async pexpire() { return 0; },
       async del() { return 0; },
+      async mget() { return []; },
+      async mset() { return 'OK'; },
       async quit() { return 'OK'; },
     };
     const c = new RedisCache({ client: broken });
     await expect(c.incr('k')).rejects.toThrow();
+  });
+});
+
+describe('RedisCache — mget / mset (#14)', () => {
+  test('mget issues a single MGET command and returns a Map of hits', async () => {
+    const fake = new FakeRedis();
+    const c = new RedisCache({ client: fake });
+    await c.set('a', 1);
+    await c.set('b', 'two');
+    const got = await c.mget<unknown>(['a', 'b', 'missing']);
+    expect(got.get('a')).toBe(1);
+    expect(got.get('b')).toBe('two');
+    expect(got.has('missing')).toBe(false);
+    // Verify the wire shape — one MGET with all three keys.
+    const mget = fake.log.filter(l => l.op === 'mget');
+    expect(mget).toHaveLength(1);
+    expect(mget[0]!.args).toEqual(['a', 'b', 'missing']);
+  });
+
+  test('mset without TTL emits a single MSET', async () => {
+    const fake = new FakeRedis();
+    const c = new RedisCache({ client: fake });
+    await c.mset(new Map([['a', 1], ['b', 2]] as const));
+    const mset = fake.log.filter(l => l.op === 'mset');
+    expect(mset).toHaveLength(1);
+    // Flat [k1, v1, k2, v2, ...] — values JSON-stringified.
+    expect(mset[0]!.args).toEqual(['a', '1', 'b', '2']);
+  });
+
+  test('mset with TTL falls back to parallel SET ... PX (MSET has no per-key TTL)', async () => {
+    const fake = new FakeRedis();
+    const c = new RedisCache({ client: fake });
+    await c.mset(new Map([['a', 1], ['b', 2]] as const), 5_000);
+    // No MSET emitted; instead two SETs with PX flag.
+    expect(fake.log.some(l => l.op === 'mset')).toBe(false);
+    const sets = fake.log.filter(l => l.op === 'set');
+    expect(sets).toHaveLength(2);
+    for (const s of sets) {
+      expect(s.args).toContain('PX');
+      expect(s.args).toContain(5_000);
+    }
+  });
+
+  test('mset on empty Map is a no-op (no MSET / SET issued)', async () => {
+    const fake = new FakeRedis();
+    const c = new RedisCache({ client: fake });
+    await c.mset(new Map());
+    expect(fake.log.filter(l => l.op === 'mset' || l.op === 'set')).toHaveLength(0);
+  });
+
+  test('mget honours the keyPrefix', async () => {
+    const fake = new FakeRedis();
+    const c = new RedisCache({ client: fake, keyPrefix: 'app:' });
+    await c.set('a', 1);
+    await c.mget(['a', 'b']);
+    const mget = fake.log.find(l => l.op === 'mget');
+    expect(mget?.args).toEqual(['app:a', 'app:b']);
+  });
+
+  test('mget swallows transient errors and returns the empty Map', async () => {
+    const broken: RedisClientLike = {
+      async get() { return null; },
+      async set() { return 'OK'; },
+      async incr() { return 0; },
+      async pexpire() { return 0; },
+      async del() { return 0; },
+      async mget() { throw new Error('connection refused'); },
+      async mset() { return 'OK'; },
+      async quit() { return 'OK'; },
+    };
+    const c = new RedisCache({ client: broken });
+    const got = await c.mget(['a', 'b']);
+    expect(got.size).toBe(0);
+  });
+
+  test('mget treats a malformed payload as a miss for that key only', async () => {
+    // Manually inject a non-JSON value so the JSON.parse in mget
+    // throws; the surrounding catch must keep the other hits.
+    const fake = new FakeRedis();
+    fake.store.set('a', '{not json');
+    fake.store.set('b', '"hello"');
+    const c = new RedisCache({ client: fake });
+    const got = await c.mget<unknown>(['a', 'b']);
+    expect(got.has('a')).toBe(false);
+    expect(got.get('b')).toBe('hello');
   });
 });

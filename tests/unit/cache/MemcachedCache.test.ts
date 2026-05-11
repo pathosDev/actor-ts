@@ -168,3 +168,58 @@ describe('MemcachedCache — close', () => {
     expect(fake.log.some((l) => l.op === 'quit')).toBe(true);
   });
 });
+
+describe('MemcachedCache — mget / mset (#14)', () => {
+  test('mget falls back to parallel GETs (memjs has no native MGET)', async () => {
+    const fake = new FakeMemcached();
+    const c = new MemcachedCache({ client: fake });
+    await c.set('a', 1);
+    await c.set('b', 'two');
+    const got = await c.mget<unknown>(['a', 'b', 'missing']);
+    expect(got.get('a')).toBe(1);
+    expect(got.get('b')).toBe('two');
+    expect(got.has('missing')).toBe(false);
+    // Three GET calls — one per input key — even though only two had values.
+    const gets = fake.log.filter((l) => l.op === 'get');
+    expect(gets).toHaveLength(3);
+  });
+
+  test('mset falls back to parallel SETs with the shared TTL', async () => {
+    const fake = new FakeMemcached();
+    const c = new MemcachedCache({ client: fake });
+    await c.mset(new Map([['a', 1], ['b', 2]] as const), 3_000);
+    const sets = fake.log.filter((l) => l.op === 'set');
+    expect(sets).toHaveLength(2);
+    // ttlMs=3000 → expires=3 seconds (ceil + 1s floor).
+    for (const s of sets) {
+      const opts = s.args[2] as { expires?: number } | undefined;
+      expect(opts?.expires).toBe(3);
+    }
+  });
+
+  test('mget honours the keyPrefix', async () => {
+    const fake = new FakeMemcached();
+    const c = new MemcachedCache({ client: fake, keyPrefix: 'app:' });
+    await c.set('a', 1);
+    await c.mget(['a', 'b']);
+    // Of the three gets (one from set's verification path? no — just
+    // two from mget itself), each must carry the prefixed key.
+    const mgetCalls = fake.log
+      .filter((l) => l.op === 'get')
+      .slice(-2);                       // skip the set's audit-noise
+    expect(mgetCalls.map((l) => l.args[0])).toEqual(['app:a', 'app:b']);
+  });
+
+  test('mset on empty Map is a no-op', async () => {
+    const fake = new FakeMemcached();
+    const c = new MemcachedCache({ client: fake });
+    await c.mset(new Map());
+    expect(fake.log.filter((l) => l.op === 'set')).toHaveLength(0);
+  });
+
+  test('mset rejects bogus ttlMs', async () => {
+    const c = new MemcachedCache({ client: new FakeMemcached() });
+    await expect(c.mset(new Map([['a', 1]]), 0)).rejects.toThrow(/ttlMs/);
+    await expect(c.mset(new Map([['a', 1]]), -5)).rejects.toThrow(/ttlMs/);
+  });
+});
