@@ -299,6 +299,36 @@ partition can re-discover the peer.  Public APIs (`getMembers`,
 so most code stays unaffected — only direct iteration of the raw
 membership view needs to skip them explicitly.
 
+### Outside-in: `ClusterClient`
+
+A small handle for processes that are NOT cluster members but need
+to talk to actors on one — REST frontends, batch jobs, operator
+scripts.  Opens a single persistent TCP connection to one of the
+listed contact-points and exchanges framed wire-messages with the
+`ClusterClientReceptionist` extension running on the cluster side.
+
+```ts
+// On every cluster node that should accept client traffic:
+sys.extension(ClusterClientReceptionistId).start(cluster);
+
+// From an external process (or a separate ActorSystem):
+const client = new ClusterClient({
+  contactPoints: ['chat@node-a:2552', 'chat@node-b:2552'],
+});
+
+await client.send('user/notifications', { kind: 'flush' });
+const reply = await client.ask<{ status: 'ok' }>('user/orders/123',
+  { kind: 'getStatus' }, 2_000);
+await client.close();
+```
+
+Failover: the client tries the contact-points in order; on dial
+failure it falls through to the next.  Ask rejects with a clear
+error if every contact-point is unreachable, the target path
+doesn't exist on the receiving node, or the cluster-side ask
+times out.  ActorRef payloads aren't yet rewritten — keep messages
+data-only (plain objects + primitives).
+
 ### Distributed data — quorum writes / reads
 
 `DistributedData` gossips a key-value store of CRDTs across the

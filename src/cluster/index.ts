@@ -136,3 +136,16 @@ export type {
   ClusterRouterOptions,
   ClusterRouterType,
 } from './router/index.js';
+
+// Outside-in client (#86).
+export { ClusterClient } from './ClusterClient.js';
+export type { ClusterClientSettings } from './ClusterClient.js';
+export {
+  ClusterClientReceptionist,
+  ClusterClientReceptionistId,
+} from './ClusterClientReceptionist.js';
+export type {
+  ClusterClientReceptionistSettings,
+  ClusterClientEnvelopeMsg,
+  ClusterClientReplyMsg,
+} from './ClusterClientReceptionist.js';
