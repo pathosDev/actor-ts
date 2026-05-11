@@ -283,6 +283,17 @@ cluster.subscribe(evt => console.log('cluster →', evt));
 console.log('leader is', cluster.leader().fold(() => '<none>', m => m.address.toString()));
 ```
 
+`MemberRemoved` fires on two paths.  A **definitive removal**
+(graceful `leave`, downing-provider force-down) keeps the address
+in the local map as a **tombstone** with a `removedAt` timestamp so
+late-arriving gossip can't resurrect it; the tombstone is reclaimed
+after `tombstoneTtlMs` (default 24 h).  An **FD-driven removal**
+(failure-detector cascade) deletes the entry outright so a healed
+partition can re-discover the peer.  Public APIs (`getMembers`,
+`upMembers`, `reachableMembers`) already filter `removed` entries,
+so most code stays unaffected — only direct iteration of the raw
+membership view needs to skip them explicitly.
+
 ## Event sourcing
 
 ```ts
