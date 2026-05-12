@@ -1,0 +1,116 @@
+---
+title: What is actor-ts?
+description: An Akka-style actor-model runtime for TypeScript on Bun, Node, and Deno — with cluster sharding, event sourcing, distributed data, persistence, and observability built in.
+---
+
+`actor-ts` is a **batteries-included actor-model runtime** for TypeScript.
+Messages, mailboxes, supervisors, location-transparent refs — the same
+mental model you'd get in Erlang or Akka — on the modern TypeScript type
+system, running natively on **Bun**, **Node.js 22+**, and **Deno 2+**.
+
+You write your application code once.  The framework picks the right
+runtime backend (TCP sockets, worker threads, SQLite, HTTP serve) at
+startup based on which globals exist.  The same file moves between
+runtimes unchanged.
+
+## What's in the box
+
+import { Aside } from '@astrojs/starlight/components';
+
+The framework is structured as a series of layers — each opt-in, each
+usable on its own:
+
+**Single-process actors.**  The `Actor` base class with per-mailbox
+sequential processing, lifecycle hooks, stash, timers, `become`/`unbecome`,
+supervision (restart / resume / stop / escalate), routers (round-robin,
+random, broadcast, smallest-mailbox, consistent-hashing), bounded +
+priority mailboxes, finite-state-machine DSL, `TestProbe` + `ManualScheduler`
+for deterministic tests.
+
+**Cluster.**  Gossip-based membership with leader election, weakly-up
+transitions, φ-accrual failure detection, split-brain resolvers
+(keep-majority / keep-oldest / keep-referee / static-quorum), TCP +
+in-memory + worker-thread transports.
+
+**Cluster patterns.**  Sharding (coordinator, hand-off, passivation,
+remember-entities), singleton (one-actor-per-cluster with failover),
+distributed pub-sub, reliable delivery (at-least-once), receptionist
+(service-key discovery), sharded daemon process (cluster-wide background
+workers), cluster client (outside-in connectivity).
+
+**Distributed Data.**  Eight CRDTs (GCounter, PNCounter, LWWRegister,
+MVRegister, GSet, ORSet, LWWMap, ORMap, GCounterMap) with durable-storage
+backend, quorum reads/writes, automatic gossip-based replication.
+
+**Persistence.**  `PersistentActor` (event sourcing), `DurableState`
+(state-as-row), snapshots with configurable policies, projection actors
+for read-side views, persistence-query for streaming event reads, replicated
+event sourcing with vector clocks + conflict resolvers, full schema-evolution
+toolchain (defaults / migrating / wrapping adapters, schema registry,
+envelope versioning).  Journals for in-memory, SQLite (Bun-SQLite +
+better-sqlite3 behind one driver), Cassandra / ScyllaDB.
+
+**Object storage.**  S3 / MinIO / R2 / filesystem backends with optional
+gzip or zstd compression and client-side AES-256-GCM encryption
+(per-tenant subkeys via HKDF, key rotation via re-encryption sweep).
+
+**HTTP.**  Directive-style routing DSL.  Fastify (default) + Express +
+Hono backends, all plug into the same `HttpServerBackend` interface.
+Hono auto-picks the right serve primitive per runtime (`Bun.serve`,
+`@hono/node-server`, `Deno.serve`).  Response caching, rate-limiting,
+idempotency-key dedup built in as middleware.
+
+**Message brokers.**  Single `BrokerActor` base + nine concrete adapters:
+TCP, UDP, MQTT, WebSocket (client + server), Kafka, AMQP, gRPC (client +
+server), NATS, Redis Streams, SSE.  Reconnect-with-backoff, outbound
+buffer, subscriber fan-out are baked into the base — the concrete
+actors only deal with their own wire protocol.
+
+**Caching.**  Pluggable `Cache` abstraction with in-memory (LRU), Redis,
+and Memcached backends.  Wires HTTP response caching, rate-limiting, and
+idempotency-key dedup; an optional `CachedSnapshotStore` decorator speeds
+up sharded-actor cold starts.
+
+**Coordination.**  Distributed leases via the framework's `Lease` interface,
+with in-memory (test) and Kubernetes-Lease-CRD (production) providers.
+Used by cluster singleton + sharding when you need stricter exclusivity
+than gossip-based ownership gives you.
+
+**Observability.**  Prometheus metrics + OpenTelemetry tracing.
+Management HTTP endpoints: `/health`, `/ready`, `/cluster/members`,
+`/cluster/leader`, `/cluster/shards`, opt-in `/cluster/leave`,
+`/cluster/down`, `/metrics`.  Stock-metrics (mailbox depth, restart
+counts, gossip-tick latency) ship out of the box.
+
+**Configuration.**  HOCON config files with ENV substitution + code
+overrides + per-extension defaults.
+
+**Coordinated shutdown.**  Twelve-phase graceful shutdown, SIGTERM-aware,
+K8s-PreStop-friendly.  Custom phases pluggable.
+
+## The disclaimer
+
+<Aside type="caution" title="This is an AI-assisted hobby project">
+  Large parts of actor-ts were written with AI pair-programming and
+  **have not been battle-tested in production**.  Test coverage is
+  good (~1740 tests, ~85 % line) but the surface area is enormous.
+  Use it to learn, to prototype, to benchmark ideas — not to handle
+  real money, users, or data.
+
+  Where there are known limitations or thin-spots, they're called
+  out in the relevant docs page rather than glossed over.  Pre-1.0
+  versioning means minor bumps are potentially breaking — see the
+  [Version policy](/actor-ts/reference/version-policy/) for the
+  full caveats.
+</Aside>
+
+## Where to next
+
+- **Want to try it?**  [Quickstart](/actor-ts/intro/quickstart/) — five
+  minutes to a running actor.
+- **Why actor model at all?**  [Why actors?](/actor-ts/intro/why-actors/) —
+  the philosophy and the trade-offs.
+- **Installing?**  [Installation](/actor-ts/intro/installation/) — full
+  walkthrough including optional peer deps.
+- **Lost in the surface area?**  [Learning path](/actor-ts/intro/learning-path/) —
+  suggested reading order based on what you want to build.
