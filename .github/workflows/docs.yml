@@ -64,6 +64,16 @@ jobs:
           # it work; shallow checkout makes every page report "now".
           fetch-depth: 0
 
+      # Astro 6 requires Node >= 22.12.  `bun install` is fast and reads
+      # `docs/bun.lock`, but `bun run build` ultimately invokes
+      # `astro build` whose shebang spawns Node — so the system Node has
+      # to satisfy Astro's minimum.  GitHub-hosted runners default to
+      # Node 20.x; we override here.
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
