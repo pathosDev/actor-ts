@@ -35,8 +35,21 @@ export default defineConfig({
         'Akka-style actor model for TypeScript. Runs on Bun, Node, and Deno. ' +
         'Cluster sharding, event sourcing, distributed data, persistence, and ' +
         'observability — all in idiomatic TS.',
-      // Logo is wired in Commit 1.2 once `docs/public/logo.svg` exists.
-      // logo: { src: './public/logo.svg', replacesTitle: true },
+      // Logo replaces the textual title in the top-nav.  Source file lives
+      // under `public/` so the build serves it at `/<base>/logo.svg`.
+      logo: { src: './public/logo.svg', replacesTitle: true },
+      // Favicon is auto-detected from `public/favicon.svg`; explicit
+      // `head` entry below pins the SVG MIME-type for older browsers.
+      head: [
+        {
+          tag: 'link',
+          attrs: {
+            rel: 'icon',
+            type: 'image/svg+xml',
+            href: '/actor-ts/favicon.svg',
+          },
+        },
+      ],
       customCss: ['./src/styles/custom.css'],
       // Pagefind search is built in — no extra config needed.
       defaultLocale: 'root',
