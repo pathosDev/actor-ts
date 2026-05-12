@@ -1,6 +1,7 @@
 import { makeKeyValidator } from '../persistence/storage/KeyValidator.js';
 import { Lazy } from '../util/Lazy.js';
 import { none, some, type Option } from '../util/Option.js';
+import { wrapError } from '../util/WrapError.js';
 import { CacheError, type Cache } from './Cache.js';
 
 /**
@@ -117,7 +118,7 @@ export class MemcachedCache implements Cache {
       return value;
     } catch (e) {
       if (e instanceof CacheError) throw e;
-      throw new CacheError(`MemcachedCache.incr failed for key '${key}'`, e);
+      throw wrapError(e, CacheError, `MemcachedCache.incr failed for key '${key}'`);
     }
   }
 
@@ -133,7 +134,7 @@ export class MemcachedCache implements Cache {
       return await client.add(this.k(key), JSON.stringify(value),
         expires === undefined ? undefined : { expires });
     } catch (e) {
-      throw new CacheError(`MemcachedCache.setIfAbsent failed for key '${key}'`, e);
+      throw wrapError(e, CacheError, `MemcachedCache.setIfAbsent failed for key '${key}'`);
     }
   }
 

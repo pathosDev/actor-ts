@@ -1,5 +1,6 @@
 import { Lazy } from '../../util/Lazy.js';
 import { none, some, type Option } from '../../util/Option.js';
+import { wrapError } from '../../util/WrapError.js';
 import {
   ObjectStorageBackendError,
   ObjectStorageConcurrencyError,
@@ -116,7 +117,7 @@ export class S3ObjectStorageBackend implements ObjectStorageBackend {
           key, `S3 PUT rejected for ${key}: ${(e as { name?: string }).name ?? 'PreconditionFailed'}`,
         );
       }
-      throw new ObjectStorageBackendError(`S3 PUT failed for ${key}`, e);
+      throw wrapError(e, ObjectStorageBackendError, `S3 PUT failed for ${key}`);
     }
     const etag = stripQuotes(result.ETag);
     if (!etag) throw new ObjectStorageBackendError(`S3 PUT returned no ETag for ${key}`);
@@ -131,7 +132,7 @@ export class S3ObjectStorageBackend implements ObjectStorageBackend {
     try { result = await client.send(cmd); }
     catch (e) {
       if (isS3NotFound(e)) return none;
-      throw new ObjectStorageBackendError(`S3 GET failed for ${key}`, e);
+      throw wrapError(e, ObjectStorageBackendError, `S3 GET failed for ${key}`);
     }
     if (!result.Body) {
       throw new ObjectStorageBackendError(`S3 GET for ${key} returned empty Body`);
@@ -156,7 +157,7 @@ export class S3ObjectStorageBackend implements ObjectStorageBackend {
     catch (e) {
       // S3 DELETE is already idempotent — 200/204 even when the key was absent.
       // We only reach this branch on a real error (auth, network, …).
-      throw new ObjectStorageBackendError(`S3 DELETE failed for ${key}`, e);
+      throw wrapError(e, ObjectStorageBackendError, `S3 DELETE failed for ${key}`);
     }
   }
 
@@ -179,7 +180,7 @@ export class S3ObjectStorageBackend implements ObjectStorageBackend {
       let result;
       try { result = await client.send(cmd); }
       catch (e) {
-        throw new ObjectStorageBackendError(`S3 LIST failed for prefix=${opts.prefix}`, e);
+        throw wrapError(e, ObjectStorageBackendError, `S3 LIST failed for prefix=${opts.prefix}`);
       }
       for (const obj of result.Contents ?? []) {
         if (!obj.Key) continue;

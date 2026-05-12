@@ -1,5 +1,6 @@
 import { Lazy } from '../util/Lazy.js';
 import { none, some, type Option } from '../util/Option.js';
+import { wrapError } from '../util/WrapError.js';
 import { CacheError, type Cache } from './Cache.js';
 
 /**
@@ -126,7 +127,7 @@ export class RedisCache implements Cache {
     const k = this.k(key);
     let next: number;
     try { next = await client.incr(k); }
-    catch (e) { throw new CacheError(`RedisCache.incr failed for key '${key}'`, e); }
+    catch (e) { throw wrapError(e, CacheError, `RedisCache.incr failed for key '${key}'`); }
     if (next === 1 && ttlMs !== undefined) {
       // First increment → set the TTL.  If pexpire fails, we accept the
       // inconsistency rather than rolling the counter back.
@@ -149,7 +150,7 @@ export class RedisCache implements Cache {
       // ioredis returns 'OK' on success and null on collision.
       return result === 'OK';
     } catch (e) {
-      throw new CacheError(`RedisCache.setIfAbsent failed for key '${key}'`, e);
+      throw wrapError(e, CacheError, `RedisCache.setIfAbsent failed for key '${key}'`);
     }
   }
 

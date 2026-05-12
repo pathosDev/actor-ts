@@ -1,5 +1,6 @@
 import { Lazy } from '../../util/Lazy.js';
 import { none, some, type Option } from '../../util/Option.js';
+import { wrapError } from '../../util/WrapError.js';
 import { makeKeyValidator } from '../storage/KeyValidator.js';
 import {
   ObjectStorageBackendError,
@@ -186,7 +187,7 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
         await fs.rename(tmpPath, fullPath);
       } catch (e) {
         try { await fs.unlink(tmpPath); } catch { /* may not exist */ }
-        throw new ObjectStorageBackendError(`filesystem put-write failed for ${key}`, e);
+        throw wrapError(e, ObjectStorageBackendError, `filesystem put-write failed for ${key}`);
       }
 
       // Metadata sidecar.  Best-effort — a crash between rename(body) and
@@ -199,7 +200,7 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
         });
         try { await fs.writeFile(fullPath + '.meta.json', meta); }
         catch (e) {
-          throw new ObjectStorageBackendError(`filesystem put-meta failed for ${key}`, e);
+          throw wrapError(e, ObjectStorageBackendError, `filesystem put-meta failed for ${key}`);
         }
       }
 
@@ -221,7 +222,7 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
       stat = await fs.stat(fullPath);
     } catch (e) {
       if ((e as { code?: string })?.code === 'ENOENT') return none;
-      throw new ObjectStorageBackendError(`filesystem get failed for ${key}`, e);
+      throw wrapError(e, ObjectStorageBackendError, `filesystem get failed for ${key}`);
     }
     let contentEncoding: string | undefined;
     let contentType: string | undefined;
@@ -256,7 +257,7 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
       try { await fs.unlink(fullPath); }
       catch (e) {
         if ((e as { code?: string })?.code === 'ENOENT') { /* idempotent */ }
-        else throw new ObjectStorageBackendError(`filesystem delete failed for ${key}`, e);
+        else throw wrapError(e, ObjectStorageBackendError, `filesystem delete failed for ${key}`);
       }
       try { await fs.unlink(fullPath + '.meta.json'); } catch { /* sidecar may not exist */ }
     } finally {
