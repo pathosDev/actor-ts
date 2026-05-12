@@ -44,6 +44,30 @@
   function fmtTs(ts: number): string {
     return new Date(ts).toLocaleTimeString();
   }
+
+  // ---- derived view-model bits -------------------------------------
+  // Svelte's `{@const}` may only appear as the immediate child of a
+  // narrow set of block tags ({#each}, {#if}, …) — not as a top-level
+  // statement inside a regular element.  Computing them once here as
+  // `$derived` runes sidesteps the placement constraint and keeps
+  // the template readable.
+  const typingPeers = $derived(
+    chat.currentRoom ? chat.typingByRoom[chat.currentRoom] ?? [] : [],
+  );
+  const typingText = $derived(
+    typingPeers.length === 0 ? ''
+    : typingPeers.length === 1 ? `${typingPeers[0]} is typing…`
+    : typingPeers.length === 2 ? `${typingPeers[0]} and ${typingPeers[1]} are typing…`
+    : `${typingPeers.length} people are typing…`,
+  );
+  const baseUsers = $derived(
+    chat.currentRoom ? chat.usersByRoom[chat.currentRoom] ?? [] : [],
+  );
+  const displayedUsers = $derived(
+    (chat.currentRoom && isDmRoom(chat.currentRoom) && baseUsers.length === 0
+      ? [chat.currentRoom.slice(1), chat.username ?? '']
+      : baseUsers).filter((u) => !!u),
+  );
 </script>
 
 {#if chat.phase === 'login'}
@@ -116,9 +140,9 @@
         </form>
       </aside>
       <main class="center">
-        {@const currentReceipts = chat.currentRoom ? chat.receiptsByRoom[chat.currentRoom] ?? {} : {}}
         <div class="messages">
           {#each (chat.currentRoom ? chat.messagesByRoom[chat.currentRoom] ?? [] : []) as m}
+            {@const currentReceipts = chat.currentRoom ? chat.receiptsByRoom[chat.currentRoom] ?? {} : {}}
             {@const isOwn = m.from === chat.username}
             {@const readers = isOwn
               ? Object.entries(currentReceipts)
@@ -138,12 +162,6 @@
             </div>
           {/each}
         </div>
-        {@const typingPeers = chat.currentRoom ? chat.typingByRoom[chat.currentRoom] ?? [] : []}
-        {@const typingText =
-          typingPeers.length === 0 ? ''
-          : typingPeers.length === 1 ? `${typingPeers[0]} is typing…`
-          : typingPeers.length === 2 ? `${typingPeers[0]} and ${typingPeers[1]} are typing…`
-          : `${typingPeers.length} people are typing…`}
         <div class="typing">{typingText}</div>
         <form class="compose" onsubmit={onSend}>
           <input
@@ -155,10 +173,6 @@
           <button type="submit">Send</button>
         </form>
       </main>
-      {@const baseUsers = chat.currentRoom ? chat.usersByRoom[chat.currentRoom] ?? [] : []}
-      {@const displayedUsers = (chat.currentRoom && isDmRoom(chat.currentRoom) && baseUsers.length === 0
-        ? [chat.currentRoom.slice(1), chat.username ?? '']
-        : baseUsers).filter((u) => !!u)}
       <aside>
         <h2>Online ({displayedUsers.length})</h2>
         <ul class="users">
