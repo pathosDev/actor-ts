@@ -47,6 +47,7 @@ import {
 import { buildRoutes } from '../routes.js';
 import type { ChatRoomCmd } from './ChatRoomActor.js';
 import type { ChatRoomDirectoryCmd } from './ChatRoomDirectoryActor.js';
+import type { DmChannelCmd } from './DmChannelActor.js';
 import type { OnlineUsersCmd } from './OnlineUsersActor.js';
 import type { SessionStore } from '../auth/sessionStore.js';
 
@@ -76,6 +77,8 @@ export interface HttpIngressDeps {
   readonly system: ActorSystem;
   /** Sharded ChatRoom region — local ref on any node. */
   readonly chatRoomRegion: ActorRef<ChatRoomCmd>;
+  /** Sharded DmChannel region (one per canonical participant pair). */
+  readonly dmChannelRegion: ActorRef<DmChannelCmd>;
   /** Local OnlineUsersActor on this node. */
   readonly onlineUsers: ActorRef<OnlineUsersCmd>;
   /** Local DistributedPubSub mediator on this node. */
@@ -124,6 +127,7 @@ export class HttpIngressActor extends Actor<never> {
     await backend.withPlugin(webSocketRoutePlugin, {
       system,
       chatRoomRegion: this.deps.chatRoomRegion,
+      dmChannelRegion: this.deps.dmChannelRegion,
       onlineUsers: this.deps.onlineUsers,
       mediator: this.deps.mediator,
       sessions: this.deps.sessions,

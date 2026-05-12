@@ -32,6 +32,8 @@
       const MAX_RECONNECT_ATTEMPTS = 8;
       /** Mirrors `isRoomName` in shared/rooms.ts on the server. */
       const ROOM_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
+      const isDmRoom = (r) => typeof r === 'string' && r.startsWith('@');
+      const dmRoomFor = (u) => `@${u}`;
 
       class ChatApp extends LitElement {
         static properties = {
@@ -100,9 +102,11 @@
             padding: 0.4rem 1rem; cursor: pointer; border-left: 3px solid transparent;
           }
           ul.rooms li.active { background: var(--soft); border-left-color: var(--accent); font-weight: 600; }
+          ul.rooms li.dm span:first-child { font-style: italic; }
           ul.rooms li .badge { background: var(--accent); color: white; font-size: 0.7rem;
             padding: 0.05rem 0.4rem; border-radius: 999px; }
-          ul.users li { padding: 0.4rem 1rem; }
+          ul.users li { padding: 0.4rem 1rem; cursor: pointer; }
+          ul.users li.self { cursor: default; color: #888; }
           main { display: flex; flex-direction: column; min-height: 0; }
           .messages { flex: 1; overflow-y: auto; padding: 0.75rem 1rem; }
           .msg { margin-bottom: 0.4rem; }
@@ -198,11 +202,14 @@
               this.loginError = m.reason || 'Login failed';
               break;
             case 'rooms': {
-              this.rooms = m.rooms.slice();
+              // Preserve open DMs across `rooms` broadcasts — they're
+              // session-local, never published in the directory.
+              const dms = this.rooms.filter(isDmRoom);
+              this.rooms = [...m.rooms, ...dms];
               const mb = { ...this.messagesByRoom };
               const ub = { ...this.usersByRoom };
               const ur = { ...this.unreadByRoom };
-              for (const r of m.rooms) {
+              for (const r of this.rooms) {
                 mb[r] ??= [];
                 ub[r] ??= [];
                 ur[r] ??= 0;
@@ -325,6 +332,18 @@
           input.value = '';
         }
 
+        openDm(otherUser) {
+          if (!otherUser || otherUser === this.username) return;
+          const room = dmRoomFor(otherUser);
+          if (!this.rooms.includes(room)) {
+            this.rooms = [...this.rooms, room];
+            this.messagesByRoom = { ...this.messagesByRoom, [room]: [] };
+            this.usersByRoom    = { ...this.usersByRoom,    [room]: [] };
+            this.unreadByRoom   = { ...this.unreadByRoom,   [room]: 0  };
+          }
+          this.selectRoom(room);
+        }
+
         onCreateRoom(e) {
           e.preventDefault();
           const input = e.target.querySelector('input');
@@ -382,7 +401,13 @@
 
         renderChat() {
           const messages = this.currentRoom ? (this.messagesByRoom[this.currentRoom] ?? []) : [];
-          const users = this.currentRoom ? (this.usersByRoom[this.currentRoom] ?? []) : [];
+          let users = this.currentRoom ? (this.usersByRoom[this.currentRoom] ?? []) : [];
+          // DM rooms don't get `users` frames — synthesize a two-person
+          // list from the room name (`@<other>`) so the panel stays
+          // useful in DM views.
+          if (this.currentRoom && isDmRoom(this.currentRoom) && users.length === 0) {
+            users = [this.currentRoom.slice(1), this.username];
+          }
           return html`
             <div class="chat">
               <header class="bar">
@@ -394,8 +419,9 @@
                   <h2>Rooms</h2>
                   <ul class="rooms">
                     ${this.rooms.map((r) => html`
-                      <li class=${r === this.currentRoom ? 'active' : ''} @click=${() => this.selectRoom(r)}>
-                        <span># ${r}</span>
+                      <li class=${(r === this.currentRoom ? 'active ' : '') + (isDmRoom(r) ? 'dm' : '')}
+                          @click=${() => this.selectRoom(r)}>
+                        <span>${isDmRoom(r) ? r : `# ${r}`}</span>
                         ${(this.unreadByRoom[r] ?? 0) > 0
                           ? html`<span class="badge">${this.unreadByRoom[r]}</span>`
                           : ''}
@@ -427,9 +453,16 @@
                 <aside>
                   <h2>Online (${users.length})</h2>
                   <ul class="users">
-                    ${users.map((u) => html`
-                      <li>${u}${u === this.username ? ' (you)' : ''}</li>
-                    `)}
+                    ${users.map((u) => {
+                      const isSelf = u === this.username;
+                      return html`
+                        <li class=${isSelf ? 'self' : ''}
+                            title=${isSelf ? '' : `Click to message @${u}`}
+                            @click=${isSelf ? null : () => this.openDm(u)}>
+                          ${u}${isSelf ? ' (you)' : ''}
+                        </li>
+                      `;
+                    })}
                   </ul>
                 </aside>
               </div>

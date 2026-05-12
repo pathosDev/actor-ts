@@ -1,6 +1,6 @@
 import { Component, ElementRef, inject, signal, viewChild } from '@angular/core';
 import { ChatService } from './chat.service';
-import type { RoomName } from './protocol';
+import { isDmRoom, type RoomName } from './protocol';
 
 /**
  * Three-column layout: rooms-panel (left), chat-window (center),
@@ -62,6 +62,7 @@ import type { RoomName } from './protocol';
       border-left-color: var(--accent);
       font-weight: 600;
     }
+    ul.rooms li.dm span:first-child { font-style: italic; }
     ul.rooms li .badge {
       background: var(--accent);
       color: white;
@@ -69,7 +70,8 @@ import type { RoomName } from './protocol';
       padding: 0.05rem 0.4rem;
       border-radius: 999px;
     }
-    ul.users li { padding: 0.4rem 1rem; }
+    ul.users li { padding: 0.4rem 1rem; cursor: pointer; }
+    ul.users li.self { cursor: default; color: #888; }
     main { display: flex; flex-direction: column; min-height: 0; }
     .messages { flex: 1; overflow-y: auto; padding: 0.75rem 1rem; }
     .msg { margin-bottom: 0.4rem; }
@@ -134,9 +136,10 @@ import type { RoomName } from './protocol';
           @for (room of chat.rooms(); track room) {
             <li
               [class.active]="room === chat.currentRoom()"
+              [class.dm]="isDmRoom(room)"
               (click)="chat.selectRoom(room)"
             >
-              <span># {{ room }}</span>
+              <span>{{ isDmRoom(room) ? room : '# ' + room }}</span>
               @if (chat.unreadByRoom()[room] > 0) {
                 <span class="badge">{{ chat.unreadByRoom()[room] }}</span>
               }
@@ -179,10 +182,16 @@ import type { RoomName } from './protocol';
         </form>
       </main>
       <aside>
-        <h2>Online ({{ chat.currentUsers().length }})</h2>
+        <h2>Online ({{ displayedUsers().length }})</h2>
         <ul class="users">
-          @for (u of chat.currentUsers(); track u) {
-            <li>{{ u }}{{ u === chat.username() ? ' (you)' : '' }}</li>
+          @for (u of displayedUsers(); track u) {
+            <li
+              [class.self]="u === chat.username()"
+              [title]="u === chat.username() ? '' : 'Click to message @' + u"
+              (click)="u === chat.username() ? null : chat.openDm(u)"
+            >
+              {{ u }}{{ u === chat.username() ? ' (you)' : '' }}
+            </li>
           }
         </ul>
       </aside>
@@ -196,6 +205,24 @@ export class ChatComponent {
   /** Bound to the new-room input's `.invalid` class — flipped on
    *  failed validation, cleared on the next keystroke. */
   protected readonly createRoomInvalid = signal(false);
+
+  /** Re-exported as a template-callable so the template can flag DM
+   *  list items without importing the helper itself. */
+  protected readonly isDmRoom = isDmRoom;
+
+  /** Users to display in the Online panel.  In a default room this is
+   *  the cluster-known presence list; in a DM "room" there's no
+   *  `users` frame from the server, so we synthesize a two-person
+   *  list from the room name. */
+  protected readonly displayedUsers = (): ReadonlyArray<string> => {
+    const room = this.chat.currentRoom();
+    const list = this.chat.currentUsers();
+    if (room && isDmRoom(room) && list.length === 0) {
+      const me = this.chat.username();
+      return me ? [room.slice(1), me] : [room.slice(1)];
+    }
+    return list;
+  };
 
   protected formatTs(ts: number): string {
     return new Date(ts).toLocaleTimeString();

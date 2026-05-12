@@ -23,10 +23,17 @@ export const DEFAULT_ROOMS = [
  */
 export type RoomName = string;
 
-const ROOM_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
+const ROOM_BODY = /[A-Za-z0-9][A-Za-z0-9_-]{0,31}/;
+const ROOM_NAME_PATTERN = new RegExp(`^@?${ROOM_BODY.source}$`);
 export function isRoomName(s: unknown): s is RoomName {
   return typeof s === 'string' && ROOM_NAME_PATTERN.test(s);
 }
+/** Since #100, `@<username>` is a DM "room" — a virtual room name
+ *  used for client-side display and routing of direct messages. */
+export function isDmRoom(r: unknown): r is RoomName {
+  return typeof r === 'string' && r.startsWith('@') && r.length > 1;
+}
+export const dmRoomFor = (otherUser: string): RoomName => `@${otherUser}`;
 
 export const WS_PATH = '/ws';
 

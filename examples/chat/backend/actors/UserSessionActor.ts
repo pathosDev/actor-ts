@@ -31,6 +31,12 @@
  *   - `RoomsChanged` / `RoomAdded` / `RoomRemoved` from the cluster-
  *     wide `ChatRoomDirectoryActor` — added in #98 so the client can
  *     react to runtime room creation by any user on any node.
+ *   - `DmBroadcast` from the user's DM inbox topic
+ *     (`chat.dm.user.<self>`) — added in #100.  Translated to
+ *     `message` frames with `room = '@<other>'` so the client renders
+ *     them as a virtual room without needing a new protocol frame.
+ *   - `DmHistoryReply` from a sharded `DmChannelActor`, returned in
+ *     response to the user opening a DM "room" for the first time.
  */
 import { match } from 'ts-pattern';
 import {
@@ -45,7 +51,15 @@ import {
   type ClientMessage,
   type ServerMessage,
 } from '../../shared/protocol.js';
-import { DEFAULT_ROOMS, isRoomName, type RoomName } from '../../shared/rooms.js';
+import {
+  DEFAULT_ROOMS,
+  dmCounterparty,
+  dmRoomFor,
+  isDmRoomName,
+  isRoomName,
+  type RoomName,
+} from '../../shared/rooms.js';
+import { canonicalPairId, dmInboxTopic } from '../../shared/dm.js';
 import { validateCredentials } from '../auth/credentials.js';
 import type { SessionStore } from '../auth/sessionStore.js';
 import {
@@ -60,6 +74,11 @@ import type {
   RoomRemoved,
   RoomsChanged,
 } from './ChatRoomDirectoryActor.js';
+import type {
+  DmBroadcast,
+  DmChannelCmd,
+  DmHistoryReply,
+} from './DmChannelActor.js';
 import type {
   OnlineUsersCmd,
   UsersChanged,
@@ -83,13 +102,16 @@ type SessionMsg =
   | UsersChanged
   | RoomsChanged
   | RoomAdded
-  | RoomRemoved;
+  | RoomRemoved
+  | DmBroadcast
+  | DmHistoryReply;
 
 /* --------------------------- public deps ---------------------------- */
 
 export interface UserSessionDeps {
   readonly socket: ServerWebSocketLike;
   readonly chatRoomRegion: ActorRef<ChatRoomCmd>;
+  readonly dmChannelRegion: ActorRef<DmChannelCmd>;
   readonly onlineUsers: ActorRef<OnlineUsersCmd>;
   readonly mediator: ActorRef<Subscribe | Unsubscribe>;
   readonly sessions: SessionStore;
@@ -107,6 +129,11 @@ export class UserSessionActor extends Actor<SessionMsg> {
   private token: string | null = null;
   private readonly joinedRooms = new Set<RoomName>();
   private readonly historyAskedRooms = new Set<RoomName>();
+  /** DM "rooms" the client has opened (asked history for) at least
+   *  once during this session.  Tracked separately because DMs share
+   *  a single inbox subscription rather than per-channel pubsub —
+   *  the set serves only to deduplicate history requests. */
+  private readonly dmHistoryAskedRooms = new Set<RoomName>();
   private currentRoom: RoomName | null = null;
   /** Cache of the current cluster-wide room list; populated on activation. */
   private knownRooms: ReadonlyArray<RoomName> = [];
@@ -138,8 +165,15 @@ export class UserSessionActor extends Actor<SessionMsg> {
         kind: 'Unsubscribe',
         ref: this.self as ActorRef<RoomsChanged | RoomAdded | RoomRemoved>,
       });
+      // And leave our DM inbox topic.  PubSub gossip eventually drops
+      // the subscription when the actor dies, but doing it explicitly
+      // shortens the window where DMs are queued for a dead inbox.
+      this.deps.mediator.tell(
+        new Unsubscribe(dmInboxTopic(this.username), this.self as ActorRef),
+      );
     }
     this.joinedRooms.clear();
+    this.dmHistoryAskedRooms.clear();
     // Idempotent close — the route handler may have already done it.
     try { this.deps.socket.close(); } catch { /* already closed */ }
   }
@@ -155,6 +189,8 @@ export class UserSessionActor extends Actor<SessionMsg> {
       .with({ kind: 'RoomsChanged' }, (m) => this.onRoomsChanged(m))
       .with({ kind: 'RoomAdded' },    (m) => this.onRoomAdded(m))
       .with({ kind: 'RoomRemoved' },  (m) => this.onRoomRemoved(m))
+      .with({ kind: 'DmBroadcast' },     (m) => this.onDmBroadcast(m))
+      .with({ kind: 'DmHistoryReply' },  (m) => this.onDmHistoryReply(m))
       .exhaustive();
   }
 
@@ -231,6 +267,13 @@ export class UserSessionActor extends Actor<SessionMsg> {
       kind: 'Subscribe',
       ref: this.self as ActorRef<RoomsChanged | RoomAdded | RoomRemoved>,
     });
+    // Subscribe to our DM inbox topic.  Every DM addressed to this
+    // user — incoming OR outgoing — arrives on this topic, so a
+    // single subscription covers every DM conversation we ever take
+    // part in.  No per-channel subscription bookkeeping needed.
+    this.deps.mediator.tell(
+      new Subscribe(dmInboxTopic(username), this.self as ActorRef),
+    );
     this.sendServer({ type: 'rooms', rooms: [...DEFAULT_ROOMS] });
     // Auto-join every default room for presence + live messages, but
     // only fetch history for the room we're switching into first
@@ -263,9 +306,17 @@ export class UserSessionActor extends Actor<SessionMsg> {
       })
       .with({ type: 'send' }, (m) => {
         if (!isRoomName(m.room)) return;
-        if (!this.joinedRooms.has(m.room)) return;
         const text = m.text.slice(0, 4096);
         if (text.length === 0) return;
+        // DMs ride on the same `send` frame but get routed to the
+        // DM region instead of the chat-room region.  No `join`
+        // gate — DMs have no presence concept, the inbox topic is
+        // always subscribed.
+        if (isDmRoomName(m.room)) {
+          this.sendDm(m.room, text);
+          return;
+        }
+        if (!this.joinedRooms.has(m.room)) return;
         this.deps.chatRoomRegion.tell({
           kind: 'SendMsg',
           room: m.room,
@@ -274,14 +325,33 @@ export class UserSessionActor extends Actor<SessionMsg> {
         });
       })
       .with({ type: 'join' }, (m) => {
-        if (isRoomName(m.room)) this.joinRoom(m.room, true);
+        if (!isRoomName(m.room)) return;
+        if (isDmRoomName(m.room)) {
+          // "Joining" a DM means: fetch its history so the client
+          // can render past messages.  No subscription, no presence.
+          this.fetchDmHistory(m.room);
+          return;
+        }
+        this.joinRoom(m.room, true);
       })
       .with({ type: 'leave' }, (m) => {
-        if (isRoomName(m.room)) this.leaveRoom(m.room);
+        // No-op for DM rooms — there's nothing to leave, the inbox
+        // stays subscribed cluster-wide for this session.
+        if (isRoomName(m.room) && !isDmRoomName(m.room)) this.leaveRoom(m.room);
       })
       .with({ type: 'switch-active-room' }, (m) => {
-        if (isRoomName(m.room) && this.joinedRooms.has(m.room)) {
-          const wasCurrent = this.currentRoom;
+        if (!isRoomName(m.room)) return;
+        if (isDmRoomName(m.room)) {
+          this.currentRoom = m.room;
+          // Lazy history fetch the first time the user switches into
+          // this DM.  Idempotent — subsequent switches don't re-ask.
+          if (!this.dmHistoryAskedRooms.has(m.room)) {
+            this.dmHistoryAskedRooms.add(m.room);
+            this.fetchDmHistory(m.room);
+          }
+          return;
+        }
+        if (this.joinedRooms.has(m.room)) {
           this.currentRoom = m.room;
           // Lazy history fetch: if we never asked for this room's
           // history at login (because it wasn't the default room),
@@ -297,7 +367,6 @@ export class UserSessionActor extends Actor<SessionMsg> {
               replyTo: this.self as ActorRef<HistoryReply>,
             });
           }
-          void wasCurrent; // not used; reserved for future telemetry.
         }
       })
       .with({ type: 'create-room' }, (m) => {
@@ -340,6 +409,80 @@ export class UserSessionActor extends Actor<SessionMsg> {
       type: 'users',
       room: msg.room,
       users: msg.users,
+    });
+  }
+
+  /* ------------------------------- DM -------------------------------- */
+
+  /** Route an outbound DM to the right `DmChannelActor` shard.  The
+   *  pair-id is canonical so both sides hit the same entity. */
+  private sendDm(dmRoom: RoomName, text: string): void {
+    const other = dmCounterparty(dmRoom);
+    if (!other || other === this.username) return;
+    try {
+      const pairId = canonicalPairId(this.username!, other);
+      this.deps.dmChannelRegion.tell({
+        kind: 'SendDm',
+        pairId,
+        from: this.username!,
+        text,
+      });
+    } catch (e) {
+      this.log.warn(`DM: rejected for ${other}: ${(e as Error).message}`);
+    }
+  }
+
+  /** Ask the DM channel for its recent history.  The reply arrives
+   *  as `DmHistoryReply` which we forward to the client. */
+  private fetchDmHistory(dmRoom: RoomName): void {
+    const other = dmCounterparty(dmRoom);
+    if (!other || other === this.username) return;
+    try {
+      const pairId = canonicalPairId(this.username!, other);
+      this.deps.dmChannelRegion.tell({
+        kind: 'GetDmHistory',
+        pairId,
+        limit: 50,
+        replyTo: this.self as ActorRef<DmHistoryReply>,
+      });
+    } catch (e) {
+      this.log.warn(`DM: history rejected for ${other}: ${(e as Error).message}`);
+    }
+  }
+
+  private onDmBroadcast(msg: DmBroadcast): void {
+    // The "room" from this client's perspective is the OTHER party.
+    // Both sides receive the same broadcast — each maps to its own
+    // virtual `@<other>` room.
+    const me = this.username;
+    if (!me) return;
+    const other = msg.from === me ? msg.to : msg.from;
+    this.sendServer({
+      type: 'message',
+      room: dmRoomFor(other),
+      from: msg.from,
+      text: msg.text,
+      ts: msg.ts,
+    });
+  }
+
+  private onDmHistoryReply(msg: DmHistoryReply): void {
+    // Map the pair-id back to "the other party" so the client can
+    // file the history under the right `@<other>` room.
+    const me = this.username;
+    if (!me) return;
+    // Pair-id is `min|max` of two usernames; remove ours to find the
+    // other.  No regex parse needed — string split on `|`.
+    const idx = msg.pairId.indexOf('|');
+    if (idx <= 0) return;
+    const a = msg.pairId.slice(0, idx);
+    const b = msg.pairId.slice(idx + 1);
+    const other = me === a ? b : me === b ? a : null;
+    if (!other) return;
+    this.sendServer({
+      type: 'history',
+      room: dmRoomFor(other),
+      messages: msg.messages,
     });
   }
 

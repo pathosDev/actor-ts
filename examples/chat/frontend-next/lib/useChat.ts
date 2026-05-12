@@ -4,6 +4,8 @@ import { useCallback, useEffect, useReducer, useRef } from 'react';
 import {
   type ChatMessage,
   type ClientMessage,
+  dmRoomFor,
+  isDmRoom,
   isRoomName,
   type RoomName,
   type ServerMessage,
@@ -61,7 +63,8 @@ type Action =
   | { type: 'history'; room: RoomName; messages: ReadonlyArray<ChatMessage> }
   | { type: 'message'; room: RoomName; from: string; text: string; ts: number }
   | { type: 'users'; room: RoomName; users: ReadonlyArray<string> }
-  | { type: 'select-room'; room: RoomName };
+  | { type: 'select-room'; room: RoomName }
+  | { type: 'open-dm'; otherUser: string };
 
 const TOKEN_KEY = 'chat-token';
 const MAX_RECONNECT_ATTEMPTS = 8;
@@ -77,7 +80,10 @@ function reducer(state: State, action: Action): State {
     case 'reset':
       return INITIAL;
     case 'rooms': {
-      const rooms = action.rooms.slice();
+      // Preserve open DMs across `rooms` broadcasts — they live only
+      // in the client, not in the cluster-wide directory.
+      const dms = state.rooms.filter(isDmRoom);
+      const rooms = [...action.rooms, ...dms];
       const messagesByRoom = { ...state.messagesByRoom };
       const usersByRoom = { ...state.usersByRoom };
       const unreadByRoom = { ...state.unreadByRoom };
@@ -92,7 +98,7 @@ function reducer(state: State, action: Action): State {
         messagesByRoom,
         usersByRoom,
         unreadByRoom,
-        currentRoom: state.currentRoom ?? rooms[0] ?? null,
+        currentRoom: state.currentRoom ?? action.rooms[0] ?? null,
       };
     }
     case 'room-added': {
@@ -150,6 +156,17 @@ function reducer(state: State, action: Action): State {
         currentRoom: action.room,
         unreadByRoom: { ...state.unreadByRoom, [action.room]: 0 },
       };
+    case 'open-dm': {
+      const room = dmRoomFor(action.otherUser);
+      if (state.rooms.includes(room)) return state;
+      return {
+        ...state,
+        rooms: [...state.rooms, room],
+        messagesByRoom: { ...state.messagesByRoom, [room]: [] },
+        usersByRoom:    { ...state.usersByRoom,    [room]: [] },
+        unreadByRoom:   { ...state.unreadByRoom,   [room]: 0  },
+      };
+    }
   }
 }
 
@@ -160,6 +177,7 @@ export function useChat(): {
   send(room: RoomName, text: string): void;
   selectRoom(room: RoomName): void;
   createRoom(name: string): boolean;
+  openDm(otherUser: string): void;
 } {
   const [state, dispatch] = useReducer(reducer, INITIAL);
   const wsRef = useRef<WebSocket | null>(null);
@@ -325,5 +343,15 @@ export function useChat(): {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return { state, connect, logout, send, selectRoom, createRoom };
+  /**
+   * Open a DM "room" with another online user.  Pure client-side
+   * state; subsequent `select-room` carries the protocol-level
+   * `join` + `switch-active-room` for the resulting `@<other>` name.
+   */
+  const openDm = useCallback((otherUser: string): void => {
+    dispatch({ type: 'open-dm', otherUser });
+    selectRoom(dmRoomFor(otherUser));
+  }, [selectRoom]);
+
+  return { state, connect, logout, send, selectRoom, createRoom, openDm };
 }

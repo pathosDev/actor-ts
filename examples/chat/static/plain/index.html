@@ -142,9 +142,16 @@
         border-radius: 999px;
       }
       ul.list.users li {
-        cursor: default;
+        cursor: pointer;
         border-left: none;
       }
+      ul.list.users li.self {
+        cursor: default;
+        color: #888;
+      }
+      /* DM rooms render the same as channels but with italics so the
+         `@`-prefix is reinforced visually. */
+      ul.list li.dm span:first-child { font-style: italic; }
       /* room-create row at the bottom of the Rooms aside. */
       form.room-create {
         display: flex;
@@ -282,6 +289,8 @@
       const MAX_RECONNECT_ATTEMPTS = 8;
       /** Mirrors `isRoomName` in shared/rooms.ts on the server. */
       const ROOM_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
+      const isDmRoom = (r) => typeof r === 'string' && r.startsWith('@');
+      const dmRoomFor = (u) => `@${u}`;
       const state = {
         username: null,
         ws: null,
@@ -450,8 +459,12 @@
       }
 
       function onRooms(rooms) {
-        state.rooms = rooms.slice();
-        for (const r of rooms) {
+        // Preserve DM "rooms" — they're per-session client state, not
+        // part of the cluster-wide directory.  Without this, every
+        // `RoomsChanged` broadcast would wipe open DMs.
+        const dms = state.rooms.filter(isDmRoom);
+        state.rooms = [...rooms, ...dms];
+        for (const r of state.rooms) {
           if (!state.messagesByRoom.has(r)) state.messagesByRoom.set(r, []);
           if (!state.usersByRoom.has(r))    state.usersByRoom.set(r, []);
           if (!state.unreadByRoom.has(r))   state.unreadByRoom.set(r, 0);
@@ -460,6 +473,21 @@
         renderRoomList();
         renderMessages();
         renderUsers();
+      }
+
+      /** Open a DM with another user — client-side only.  No protocol
+       *  frame yet; `join` fires when the user actually selects it,
+       *  which mirrors the lazy-history flow for default rooms. */
+      function openDm(otherUser) {
+        if (!otherUser || otherUser === state.username) return;
+        const room = dmRoomFor(otherUser);
+        if (!state.rooms.includes(room)) {
+          state.rooms = [...state.rooms, room];
+          state.messagesByRoom.set(room, []);
+          state.usersByRoom.set(room, []);
+          state.unreadByRoom.set(room, 0);
+        }
+        selectRoom(room);
       }
 
       function onRoomAdded(name) {
@@ -569,9 +597,13 @@
         $rooms.innerHTML = '';
         for (const room of state.rooms) {
           const li = document.createElement('li');
-          li.className = room === state.currentRoom ? 'active' : '';
+          const isDm = isDmRoom(room);
+          li.className =
+            (room === state.currentRoom ? 'active ' : '') + (isDm ? 'dm' : '');
           const unread = state.unreadByRoom.get(room) ?? 0;
-          li.innerHTML = `<span># ${escapeHtml(room)}</span>`;
+          // DM rooms render as `@user`; channels as `#name`.
+          const label = isDm ? room : `# ${room}`;
+          li.innerHTML = `<span>${escapeHtml(label)}</span>`;
           if (unread > 0) {
             const span = document.createElement('span');
             span.className = 'badge';
@@ -611,13 +643,24 @@
 
       function renderUsers() {
         $users.innerHTML = '';
-        const users = state.currentRoom
+        // DM "rooms" never get a `users` frame from the server, so
+        // we fall back to the inferred pair (self + other).  Looks
+        // the same as a 2-user channel — keeps the panel useful in
+        // DM views too.
+        let users = state.currentRoom
           ? (state.usersByRoom.get(state.currentRoom) ?? [])
           : [];
+        if (state.currentRoom && isDmRoom(state.currentRoom) && users.length === 0) {
+          users = [state.currentRoom.slice(1), state.username];
+        }
         $usersCnt.textContent = String(users.length);
         for (const u of users) {
           const li = document.createElement('li');
-          li.textContent = u + (u === state.username ? ' (you)' : '');
+          const isSelf = u === state.username;
+          li.className = isSelf ? 'self' : '';
+          li.title = isSelf ? '' : `Click to message @${u}`;
+          li.textContent = u + (isSelf ? ' (you)' : '');
+          if (!isSelf) li.addEventListener('click', () => openDm(u));
           $users.appendChild(li);
         }
       }

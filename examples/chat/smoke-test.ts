@@ -12,6 +12,8 @@
  *   5. History persistence: a fresh connection sees previous messages.
  *   6. (#98) User-created rooms: alice creates a room, bob sees the
  *      `room-added` broadcast, both join it, and a message round-trips.
+ *   7. (#100) Direct messages: alice DMs bob via `@bob`, both sides
+ *      observe the `message` frame routed through the DM channel.
  *
  * Run against a **single-node bootstrap** for reliable verification:
  *
@@ -213,6 +215,68 @@ async function main(): Promise<void> {
   ok(`bob received alice's message in #${roomName}`);
 
   a2.close(); b2.close();
+  await new Promise((r) => setTimeout(r, 200));
+
+  // ---------- pass 4: direct messages (#100) ----------
+  console.log('— pass 4: direct messages —');
+  const a3 = new ChatClient(URL_ARG);
+  const b3 = new ChatClient(URL_ARG);
+  await Promise.all([a3.open(), b3.open()]);
+  a3.send({ type: 'login', username: 'alice', password: 'wonderland' });
+  b3.send({ type: 'login', username: 'bob',   password: 'builder' });
+  await a3.await((m) => m.type === 'logged-in');
+  await b3.await((m) => m.type === 'logged-in');
+  // Anti-jitter: give both sides a moment to subscribe to their DM
+  // inbox topics before the first DM is sent.  Inbox subscriptions
+  // happen during `activate()` after `logged-in` — usually instant,
+  // but the gossip-driven mediator may take a tick to propagate.
+  await new Promise((r) => setTimeout(r, 750));
+
+  // alice DMs bob.
+  a3.send({ type: 'send', room: '@bob', text: 'private hi from alice' });
+  // alice should see her own outgoing DM via her inbox subscription —
+  // the channel actor publishes to both participants.
+  await a3.await(
+    (m) => m.type === 'message'
+        && (m as ServerMsg).room === '@bob'
+        && (m as ServerMsg).from === 'alice'
+        && (m as ServerMsg).text === 'private hi from alice',
+    5000,
+  );
+  // bob receives it as `@alice` (his side renders the other party).
+  await b3.await(
+    (m) => m.type === 'message'
+        && (m as ServerMsg).room === '@alice'
+        && (m as ServerMsg).from === 'alice'
+        && (m as ServerMsg).text === 'private hi from alice',
+    5000,
+  );
+  ok('alice→bob DM delivered to both sides');
+
+  // bob replies; same round-trip in the other direction.
+  b3.send({ type: 'send', room: '@alice', text: 'private hi from bob' });
+  await a3.await(
+    (m) => m.type === 'message'
+        && (m as ServerMsg).room === '@bob'
+        && (m as ServerMsg).from === 'bob'
+        && (m as ServerMsg).text === 'private hi from bob',
+    5000,
+  );
+  ok('bob→alice DM delivered');
+
+  // History request: bob "joins" `@alice` and expects to see the
+  // two messages he just took part in.
+  b3.send({ type: 'join', room: '@alice' });
+  const dmHist = (await b3.await(
+    (m) => m.type === 'history' && (m as ServerMsg).room === '@alice',
+    5000,
+  )) as ServerMsg & { messages: Array<{ from: string; text: string }> };
+  if (!Array.isArray(dmHist.messages) || dmHist.messages.length < 2) {
+    fail(`DM history too short: ${JSON.stringify(dmHist.messages)}`);
+  }
+  ok(`DM history has ${dmHist.messages.length} messages`);
+
+  a3.close(); b3.close();
   await new Promise((r) => setTimeout(r, 100));
   process.exit(0);
 }

@@ -35,12 +35,36 @@ export const DEFAULT_ROOMS = [
  * not enforced.  Rejects whitespace, dots, slashes, and control
  * chars — the same shape Memcached / FS-backend keys enforce
  * (see `src/persistence/storage/KeyValidator.ts`).
+ *
+ * **Direct messages** (#100): a leading `@` signals a DM "room"
+ * (e.g. `@bob`).  The character after `@` must still match the
+ * username/room body charset, length 1–32 — so `isRoomName` accepts
+ * `@username` forms but `isDmRoomName` is the precise predicate.
+ * The directory-actor ignores any name with a leading `@`: DMs
+ * never appear in the cluster-wide rooms list.
  */
 export type RoomName = string;
 
-const ROOM_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
+const ROOM_BODY = /[A-Za-z0-9][A-Za-z0-9_-]{0,31}/;
+const ROOM_NAME_PATTERN = new RegExp(`^@?${ROOM_BODY.source}$`);
+const DM_ROOM_PATTERN   = new RegExp(`^@${ROOM_BODY.source}$`);
 
 /** Type-guard for narrowing untrusted strings (e.g. WS frames). */
 export function isRoomName(s: unknown): s is RoomName {
   return typeof s === 'string' && ROOM_NAME_PATTERN.test(s);
+}
+
+/** True when `s` is a DM room name (leading `@`). */
+export function isDmRoomName(s: unknown): boolean {
+  return typeof s === 'string' && DM_ROOM_PATTERN.test(s);
+}
+
+/** Strip the leading `@` to recover the other party's username. */
+export function dmCounterparty(room: string): string | null {
+  return isDmRoomName(room) ? room.slice(1) : null;
+}
+
+/** Build a DM room name for the given counterparty username. */
+export function dmRoomFor(otherUsername: string): RoomName {
+  return `@${otherUsername}`;
 }

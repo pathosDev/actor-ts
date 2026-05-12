@@ -52,6 +52,10 @@ import {
   type ChatRoomCmd,
 } from './actors/ChatRoomActor.js';
 import { ChatRoomDirectoryActor } from './actors/ChatRoomDirectoryActor.js';
+import {
+  DmChannelActor,
+  type DmChannelCmd,
+} from './actors/DmChannelActor.js';
 import { OnlineUsersActor } from './actors/OnlineUsersActor.js';
 import { httpIngressProps } from './actors/HttpIngressActor.js';
 
@@ -162,6 +166,19 @@ async function main(): Promise<void> {
     numShards: 16,
   });
 
+  // -------- 6b. ClusterSharding: one DmChannelActor per pair --------
+  // Same sharding shape, separate typeName so the two entity sets
+  // live in disjoint shard regions.  `entityId = pairId` — see
+  // `shared/dm.ts` for the canonicalization.  Sixteen shards matches
+  // the chat-room region; the DM workload is similar (write-heavy,
+  // small per-entity state) so a single tuning value covers both.
+  const dmChannelRegion = sharding.start<DmChannelCmd>({
+    typeName: 'DmChannel',
+    entityProps: Props.create(() => new DmChannelActor()),
+    extractEntityId: (msg) => msg.pairId,
+    numShards: 16,
+  });
+
   // -------- 7. OnlineUsersActor (top-level, runs on every node) --------
   const onlineUsers = system.actorOf(
     Props.create(() => new OnlineUsersActor()),
@@ -215,6 +232,7 @@ async function main(): Promise<void> {
       staticDir,
       system,
       chatRoomRegion,
+      dmChannelRegion,
       onlineUsers,
       mediator,
       sessions,

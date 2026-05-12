@@ -5,7 +5,7 @@
 -->
 <script lang="ts">
   import { chat } from '$lib/chat.svelte';
-  import type { RoomName } from '$lib/protocol';
+  import { isDmRoom, type RoomName } from '$lib/protocol';
 
   let username = $state('');
   let password = $state('');
@@ -79,14 +79,16 @@
         <ul class="rooms">
           {#each chat.rooms as room (room)}
             {@const unread = chat.unreadByRoom[room] ?? 0}
+            {@const dm = isDmRoom(room)}
             <li
               class:active={room === chat.currentRoom}
+              class:dm
               onclick={() => chat.selectRoom(room)}
               role="button"
               tabindex="0"
               onkeydown={(e) => e.key === 'Enter' && chat.selectRoom(room)}
             >
-              <span># {room}</span>
+              <span>{dm ? room : `# ${room}`}</span>
               {#if unread > 0}
                 <span class="badge">{unread}</span>
               {/if}
@@ -123,11 +125,25 @@
           <button type="submit">Send</button>
         </form>
       </main>
+      {@const baseUsers = chat.currentRoom ? chat.usersByRoom[chat.currentRoom] ?? [] : []}
+      {@const displayedUsers = (chat.currentRoom && isDmRoom(chat.currentRoom) && baseUsers.length === 0
+        ? [chat.currentRoom.slice(1), chat.username ?? '']
+        : baseUsers).filter((u) => !!u)}
       <aside>
-        <h2>Online ({chat.currentRoom ? (chat.usersByRoom[chat.currentRoom] ?? []).length : 0})</h2>
+        <h2>Online ({displayedUsers.length})</h2>
         <ul class="users">
-          {#each (chat.currentRoom ? chat.usersByRoom[chat.currentRoom] ?? [] : []) as u (u)}
-            <li>{u}{u === chat.username ? ' (you)' : ''}</li>
+          {#each displayedUsers as u (u)}
+            {@const isSelf = u === chat.username}
+            <li
+              class:self={isSelf}
+              title={isSelf ? '' : `Click to message @${u}`}
+              onclick={() => !isSelf && chat.openDm(u)}
+              role="button"
+              tabindex="0"
+              onkeydown={(e) => !isSelf && e.key === 'Enter' && chat.openDm(u)}
+            >
+              {u}{isSelf ? ' (you)' : ''}
+            </li>
           {/each}
         </ul>
       </aside>
@@ -232,6 +248,7 @@
     border-left-color: var(--accent);
     font-weight: 600;
   }
+  .rooms li.dm span:first-child { font-style: italic; }
   .badge {
     background: var(--accent);
     color: white;
@@ -239,7 +256,8 @@
     padding: 0.05rem 0.4rem;
     border-radius: 999px;
   }
-  .users li { padding: 0.4rem 1rem; }
+  .users li { padding: 0.4rem 1rem; cursor: pointer; }
+  .users li.self { cursor: default; color: #888; }
   main.center { display: flex; flex-direction: column; min-height: 0; }
   .messages { flex: 1; overflow-y: auto; padding: 0.75rem 1rem; }
   .msg { margin-bottom: 0.4rem; }

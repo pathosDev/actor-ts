@@ -297,7 +297,6 @@ Bun process owns the public listener directly.
 
 ## Out of scope (followup issues opened)
 
-- Private DMs (multi-room global chat only).
 - File uploads, emojis, typing indicators.
 - Production-grade auth (no bcrypt, no session expiry, no CSRF).
 - Read-receipts.
@@ -313,6 +312,16 @@ Implemented since v1:
   Room names follow the same shape as Memcached / FS-backend keys:
   `[A-Za-z0-9][A-Za-z0-9_-]{0,31}`, validated both client- and
   server-side.
+- **Private direct messages** (#100).  DMs are modelled as virtual
+  `@<username>` "rooms" — no new protocol frames, the existing
+  `send`/`join`/`message`/`history` carry them.  Server distinguishes
+  by the leading `@` and routes through a sharded `DmChannelActor`
+  keyed on the canonical pair-id (`canonicalPairId('alice', 'bob') ===
+  canonicalPairId('bob', 'alice') === 'alice|bob'`).  Each user
+  subscribes once at login to `chat.dm.user.<self>` — every DM lands
+  in that inbox topic regardless of which conversation it belongs to,
+  so the client needs no per-channel subscription bookkeeping.  Click
+  any user in the Online panel to open a DM.
 
 ## Files
 
@@ -330,10 +339,12 @@ examples/chat/
 │   │   ├── staticFilesPlugin.ts     ← @fastify/static wrapper
 │   │   └── webSocketPlugin.ts       ← @fastify/websocket + /ws route
 │   └── actors/
-│       ├── ChatRoomActor.ts         ← sharded PersistentActor (per room)
-│       ├── UserSessionActor.ts      ← per-WS-connection session
-│       ├── OnlineUsersActor.ts      ← DistributedData ORSet wrapper
-│       └── HttpIngressActor.ts      ← ClusterSingleton: owns the :8080 bind
+│       ├── ChatRoomActor.ts            ← sharded PersistentActor (per room)
+│       ├── ChatRoomDirectoryActor.ts   ← #98: DD-ORSet wrapper for runtime rooms
+│       ├── DmChannelActor.ts           ← #100: sharded PersistentActor (per DM pair)
+│       ├── UserSessionActor.ts         ← per-WS-connection session
+│       ├── OnlineUsersActor.ts         ← DistributedData ORSet wrapper
+│       └── HttpIngressActor.ts         ← ClusterSingleton: owns the :8080 bind
 ├── shared/
 │   ├── protocol.ts        ← shared TS types for WS messages
 │   ├── users.ts           ← test credentials (TEST_USERS)

@@ -1,6 +1,8 @@
 import {
   type ChatMessage,
   type ClientMessage,
+  dmRoomFor,
+  isDmRoom,
   isRoomName,
   type RoomName,
   type ServerMessage,
@@ -139,6 +141,23 @@ class ChatStore {
   }
 
   /**
+   * Open a DM "room" with another online user.  Pure client-side
+   * state; subsequent `selectRoom` carries the `join` +
+   * `switch-active-room` protocol frames for the `@<otherUser>` name.
+   */
+  openDm(otherUser: string): void {
+    if (!otherUser || otherUser === this.username) return;
+    const room = dmRoomFor(otherUser);
+    if (!this.rooms.includes(room)) {
+      this.rooms = [...this.rooms, room];
+      this.messagesByRoom[room] ??= [];
+      this.usersByRoom[room] ??= [];
+      this.unreadByRoom[room] ??= 0;
+    }
+    this.selectRoom(room);
+  }
+
+  /**
    * Ask the cluster's `ChatRoomDirectoryActor` to create a room.
    * Returns `false` if the local shape guard rejects the name;
    * server validates again and silently drops invalid names.
@@ -198,8 +217,11 @@ class ChatStore {
         this.loginError = m.reason || 'Login failed.';
         break;
       case 'rooms': {
-        this.rooms = m.rooms.slice();
-        for (const r of m.rooms) {
+        // Preserve open DMs across `rooms` broadcasts — they live
+        // only in the client, not in the cluster-wide directory.
+        const dms = this.rooms.filter(isDmRoom);
+        this.rooms = [...m.rooms, ...dms];
+        for (const r of this.rooms) {
           this.messagesByRoom[r] ??= [];
           this.usersByRoom[r] ??= [];
           this.unreadByRoom[r] ??= 0;

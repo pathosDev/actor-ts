@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from 'react';
 import { useChat } from '../lib/useChat';
-import type { RoomName } from '../lib/protocol';
+import { isDmRoom, type RoomName } from '../lib/protocol';
 
 /**
  * Single client-rendered page that swaps between LoginView and
@@ -114,7 +114,12 @@ function RoomCreateForm({ chat }: { chat: ChatHandle }): React.JSX.Element {
 function ChatView({ chat }: { chat: ChatHandle }): React.JSX.Element {
   const { state } = chat;
   const messages = state.currentRoom ? (state.messagesByRoom[state.currentRoom] ?? []) : [];
-  const users = state.currentRoom ? (state.usersByRoom[state.currentRoom] ?? []) : [];
+  let users = state.currentRoom ? (state.usersByRoom[state.currentRoom] ?? []) : [];
+  // DM rooms never get `users` frames; synthesize a two-person list
+  // from the room name.
+  if (state.currentRoom && isDmRoom(state.currentRoom) && users.length === 0) {
+    users = [state.currentRoom.slice(1), ...(state.username ? [state.username] : [])];
+  }
 
   const onSend = (e: FormEvent<HTMLFormElement>): void => {
     e.preventDefault();
@@ -139,13 +144,16 @@ function ChatView({ chat }: { chat: ChatHandle }): React.JSX.Element {
           <ul className="rooms">
             {state.rooms.map((room) => {
               const unread = state.unreadByRoom[room] ?? 0;
+              const active = room === state.currentRoom;
+              const dm = isDmRoom(room);
+              const cls = [active ? 'active' : '', dm ? 'dm' : ''].join(' ').trim();
               return (
                 <li
                   key={room}
-                  className={room === state.currentRoom ? 'active' : ''}
+                  className={cls}
                   onClick={() => chat.selectRoom(room)}
                 >
-                  <span># {room}</span>
+                  <span>{dm ? room : `# ${room}`}</span>
                   {unread > 0 && <span className="badge">{unread}</span>}
                 </li>
               );
@@ -171,12 +179,20 @@ function ChatView({ chat }: { chat: ChatHandle }): React.JSX.Element {
         <aside>
           <h2>Online ({users.length})</h2>
           <ul className="users">
-            {users.map((u) => (
-              <li key={u}>
-                {u}
-                {u === state.username ? ' (you)' : ''}
-              </li>
-            ))}
+            {users.map((u) => {
+              const isSelf = u === state.username;
+              return (
+                <li
+                  key={u}
+                  className={isSelf ? 'self' : ''}
+                  title={isSelf ? '' : `Click to message @${u}`}
+                  onClick={isSelf ? undefined : () => chat.openDm(u)}
+                >
+                  {u}
+                  {isSelf ? ' (you)' : ''}
+                </li>
+              );
+            })}
           </ul>
         </aside>
       </div>

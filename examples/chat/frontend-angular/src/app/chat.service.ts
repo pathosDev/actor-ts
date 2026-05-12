@@ -3,6 +3,8 @@ import {
   type ChatMessage,
   type ClientMessage,
   DEFAULT_ROOMS,
+  dmRoomFor,
+  isDmRoom,
   isRoomName,
   type RoomName,
   type ServerMessage,
@@ -156,6 +158,26 @@ export class ChatService {
   }
 
   /**
+   * Open a direct-message "room" with another online user.  Pure
+   * client-side: adds `@<otherUser>` to `rooms` if missing, then
+   * switches the active room to it.  The server only sees a `join` +
+   * `switch-active-room` for the `@<other>` name, which it routes
+   * through the DM shard region (#100).
+   */
+  openDm(otherUser: string): void {
+    const me = this.username();
+    if (!otherUser || otherUser === me) return;
+    const room = dmRoomFor(otherUser);
+    if (!this.rooms().includes(room)) {
+      this.rooms.update((rs) => [...rs, room]);
+      this.messagesByRoom.update((cur) => ({ ...cur, [room]: [] }));
+      this.usersByRoom.update((cur) => ({ ...cur, [room]: [] }));
+      this.unreadByRoom.update((cur) => ({ ...cur, [room]: 0 }));
+    }
+    this.selectRoom(room);
+  }
+
+  /**
    * Ask the cluster's `ChatRoomDirectoryActor` to create a room.
    * Returns `false` if the name fails the local shape guard (so the
    * caller can render an inline error without round-tripping); the
@@ -216,24 +238,28 @@ export class ChatService {
         this.loginError.set(m.reason || 'Login failed.');
         break;
       case 'rooms': {
-        const rooms = m.rooms.slice();
-        this.rooms.set(rooms);
+        // Preserve open DMs — they live only on the client, never in
+        // the directory.  Without this, every `RoomsChanged` would
+        // wipe open conversations.
+        const dms = this.rooms().filter(isDmRoom);
+        const merged = [...m.rooms, ...dms];
+        this.rooms.set(merged);
         this.messagesByRoom.update((cur) => {
           const next = { ...cur };
-          for (const r of rooms) next[r] ??= [];
+          for (const r of merged) next[r] ??= [];
           return next;
         });
         this.usersByRoom.update((cur) => {
           const next = { ...cur };
-          for (const r of rooms) next[r] ??= [];
+          for (const r of merged) next[r] ??= [];
           return next;
         });
         this.unreadByRoom.update((cur) => {
           const next = { ...cur };
-          for (const r of rooms) next[r] ??= 0;
+          for (const r of merged) next[r] ??= 0;
           return next;
         });
-        if (!this.currentRoom()) this.currentRoom.set(rooms[0] ?? DEFAULT_ROOMS[0]);
+        if (!this.currentRoom()) this.currentRoom.set(m.rooms[0] ?? DEFAULT_ROOMS[0]);
         break;
       }
       case 'room-added':
