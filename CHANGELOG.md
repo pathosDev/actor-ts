@@ -7,6 +7,93 @@ This is a pre-1.0 hobby project — every minor version is potentially
 breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 "What's in here / What isn't" for current scope honesty.
 
+## [Unreleased]
+
+### Code-quality hygiene sprint
+
+A focused refactor pass — no behavioural changes, no public-API
+breaks, no new features.  Goal: more compile-time safety, fewer
+duplicated literals, easier-to-write tests.  17 issues closed
+(15 implemented + 2 auto-corrections from the audit catalog).
+
+**Pattern-match exhaustiveness pass** — 9 discriminator-union
+dispatch sites converted from if/else-or-switch to
+`match(...).exhaustive()` so the TypeScript compiler refuses to
+compile when a new variant is added to one of the unions without
+a matching arm at the dispatch site.  Touches:
+`BrokerActor.enqueueOutbound` state (#230),
+`JetStreamActor` / `MqttActor` / `KafkaActor` cmd dispatch (#232,
+#233, #234), `BackoffSupervisor` reset-policy + termination-trigger
+(#240), `HoconParser` value-shape walk (#241), `Compression` codec
+selection (#243), `BodyCodec` encode-compression (#244),
+`PersistentActor` (#239 — see below).
+
+**Foundational DRY helpers** (`src/util/`):
+- `Constants.ts` — centralised duplicated defaults (gossip
+  interval, ask timeout, tombstone TTL, seed-retry, etc.).  6
+  named exports replace ~10 inline-literal sites across
+  `Cluster`, `Receptionist`, `DistributedPubSubMediator`,
+  `ClusterClient`, `ClusterClientReceptionist`, `DistributedData`
+  (#257).
+- `LazyImport.ts` — uniform peer-dep import + helpful "missing
+  package" error.  Replaces ~7 lines × 6 broker actors of
+  hand-rolled try/catch + bespoke install messages (#252).
+- `WrapError.ts` — typed-error wrap helper with double-wrap
+  prevention.  Migrated 8 sites across cache + object-storage
+  (#254).
+
+**Foundational typed names**:
+- `src/config/ConfigKeys.ts` — typed const-tree for every
+  `actor-ts.*` HOCON path.  Migrated 16 call sites across all
+  brokers + ActorSystem + CacheExtension (#265).
+- `src/persistence/storage/KeyValidator.ts` — declarative
+  rule-based factory replacing the hand-rolled `assertSafeKey`
+  (filesystem) and `assertSafeMemcachedKey`.  Adding a new
+  storage backend with similar key rules becomes a 6-line
+  `as const` rule set (#251).
+
+### Added — Persistence
+
+- `eventDispatcher<S, E>()` (#239) — typed builder for
+  `PersistentActor.onEvent` that the compiler refuses to finish
+  until every variant of the event union has a handler.  Missing
+  variants surface as a clear "EventDispatcherIncomplete<missing>"
+  type error at the build site.  Documented as the preferred shape
+  for new persistent actors; existing handwritten `onEvent`
+  impls continue to work unchanged.
+
+### Added — Testing infrastructure
+
+- `tests/util/AsyncAssertions.ts` — `assertCompletesWithin(promise,
+  ms, label)` + `assertDoesNotCompleteWithin` for diagnostic-quality
+  timeout failures (the label appears in the error message;
+  default Bun timeouts give no clue which step was slow) (#288).
+- `tests/util/TestActorSystem.ts` — `createTestActorSystem(options?)`
+  consolidates the per-file `makeSystem` boilerplate.  Demo
+  migration in `BrokerActor.test.ts`; other test files can opt-in
+  over time (#283, scope-adjusted).
+- `tests/unit/cache/_Contract.ts` — `runCacheContractTests(spec)`,
+  a backend-agnostic suite covering set/get/delete/incr/setIfAbsent/
+  TTL semantics.  InMemoryCache wired as first consumer; Redis +
+  Memcached can opt-in once their mock-client factories are
+  available (#287, scope-adjusted).
+
+### Docs
+
+- `decodeCrdt` (`src/crdt/DistributedData.ts`) annotated as the
+  codebase's reference shape for discriminator-union dispatch,
+  with explicit notes on what makes the existing
+  `const _exhaustive: never = json` pattern safe and when to prefer
+  it vs `match().exhaustive()` (#231).
+
+### Issue hygiene
+
+- Closed as duplicate: #267 → #253, #266 → #255, #167 → #164.
+- Closed as not-applicable: #245 — `BrokerEvents.ts` has no
+  in-file dispatch; events flow through `EventStream`'s
+  per-subscriber `instanceof` machinery, which by design isn't a
+  closed-union dispatch.
+
 ## [0.8.0] — 2026-05-11
 
 The "production-vertical big" release — one priority:high cornerstone
