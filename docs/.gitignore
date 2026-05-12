@@ -1,0 +1,13 @@
+# Build output — Pages consumes the CI artifact directly, never committed.
+dist/
+
+# Astro cache + generated types.
+.astro/
+
+# Local dependencies — installed fresh in CI via `cd docs && bun install`.
+node_modules/
+
+# Local environment overrides.
+.env
+.env.local
+.env.*.local

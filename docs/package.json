@@ -1,0 +1,24 @@
+{
+  "name": "actor-ts-docs",
+  "private": true,
+  "type": "module",
+  "version": "0.0.1",
+  "description": "Astro Starlight documentation site for actor-ts. Built and deployed to GitHub Pages.",
+  "scripts": {
+    "dev": "astro dev",
+    "start": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.34.0",
+    "@fontsource-variable/inter": "^5.1.0",
+    "@fontsource/jetbrains-mono": "^5.1.0",
+    "astro": "^5.0.0",
+    "sharp": "^0.33.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0"
+  }
+}

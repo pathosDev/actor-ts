@@ -8,6 +8,11 @@ coverage/
 *.tsbuildinfo
 bun.lockb
 
+# Astro / Starlight build cache (docs site under docs/).  `dist/` +
+# `node_modules/` are already covered by the top-level patterns; the
+# `.astro/`-cache is a separate folder Astro recreates on each build.
+.astro/
+
 # Bun + benchmark artefacts
 .bun-cache/
 .bench-*.sqlite
