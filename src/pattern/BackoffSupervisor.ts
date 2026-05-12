@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
 import { Props } from '../Props.js';
@@ -434,11 +435,13 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
    * if we ever want to.
    */
   private shouldRespawn(wasFailure: boolean): boolean {
-    switch (this.triggerOn) {
-      case 'any':     return true;
-      case 'failure': return wasFailure;
-      case 'stop':    return !wasFailure;
-    }
+    // Exhaustive match — adding a new TerminationTrigger variant
+    // forces this site to be updated (TS error otherwise).
+    return match(this.triggerOn)
+      .with('any',     () => true)
+      .with('failure', () => wasFailure)
+      .with('stop',    () => !wasFailure)
+      .exhaustive();
   }
 
   private respawn(): void {
@@ -470,14 +473,17 @@ const DRAIN_TIMER_KEY = 'actor-ts.pattern.BackoffSupervisor.drain';
 function resolveResetThreshold(
   rule: ResetCounter | undefined, minBackoff: number,
 ): number | null {
-  if (rule === undefined || rule === 'after-min-stable') return minBackoff;
-  if (rule === 'never') return null;
-  if (rule.kind === 'after-time') {
-    if (!Number.isFinite(rule.ms) || rule.ms < 0) {
-      throw new Error(`BackoffSupervisor: resetCounter.ms must be a non-negative number, got ${rule.ms}`);
-    }
-    return rule.ms;
-  }
-  // Exhaustive — TS narrows above; this is just defensive at the type-erasure boundary.
-  throw new Error(`BackoffSupervisor: unknown resetCounter rule: ${JSON.stringify(rule)}`);
+  // Exhaustive over `ResetCounter | undefined`.  `undefined` maps to
+  // the same default behaviour as 'after-min-stable'.  Adding a new
+  // ResetCounter variant forces this site to be updated.
+  return match(rule)
+    .with(undefined, 'after-min-stable', () => minBackoff)
+    .with('never', () => null)
+    .with({ kind: 'after-time' }, (r) => {
+      if (!Number.isFinite(r.ms) || r.ms < 0) {
+        throw new Error(`BackoffSupervisor: resetCounter.ms must be a non-negative number, got ${r.ms}`);
+      }
+      return r.ms;
+    })
+    .exhaustive();
 }
