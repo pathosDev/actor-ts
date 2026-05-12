@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import { compressorFor, type CompressionAlgo } from './Compression.js';
 import { aesGcmDecrypt, aesGcmEncrypt, IV_LENGTH, randomIv } from './Encryption.js';
 
@@ -205,14 +206,20 @@ function magicMatches(buf: Uint8Array): boolean {
 }
 
 function encodeCompression(algo: CompressionAlgo): number {
-  switch (algo) {
-    case 'none': return COMPRESSION_NONE;
-    case 'gzip': return COMPRESSION_GZIP;
-    case 'zstd': return COMPRESSION_ZSTD;
-  }
+  // Exhaustive — adding a new CompressionAlgo variant forces this site.
+  return match(algo)
+    .with('none', () => COMPRESSION_NONE)
+    .with('gzip', () => COMPRESSION_GZIP)
+    .with('zstd', () => COMPRESSION_ZSTD)
+    .exhaustive();
 }
 
 function decodeCompression(flags: number): CompressionAlgo {
+  // Decoding the bit-pattern back to the typed union — input is a
+  // number (constrained 0..3 by the caller's bitmask), so the default
+  // throw stays as runtime guard for bad/legacy bytes.  Cannot use
+  // `match().exhaustive()` here because the input type is `number`,
+  // not a closed union.
   switch (flags & 0b11) {
     case COMPRESSION_NONE: return 'none';
     case COMPRESSION_GZIP: return 'gzip';

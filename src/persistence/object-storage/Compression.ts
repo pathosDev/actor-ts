@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import { Lazy } from '../../util/Lazy.js';
 
 /**
@@ -119,11 +120,12 @@ const noneCompressor: Compressor = {
 
 /** Get a `Compressor` for the requested algorithm.  Cached per-algorithm. */
 export function compressorFor(algo: CompressionAlgo): Compressor {
-  switch (algo) {
-    case 'none': return noneCompressor;
-    case 'gzip': return gzipCompressor;
-    case 'zstd': return zstdCompressor;
-  }
+  // Exhaustive — adding a new CompressionAlgo variant forces this site.
+  return match(algo)
+    .with('none', () => noneCompressor)
+    .with('gzip', () => gzipCompressor)
+    .with('zstd', () => zstdCompressor)
+    .exhaustive();
 }
 
 /**
@@ -136,11 +138,11 @@ export function compressorFor(algo: CompressionAlgo): Compressor {
  * at plugin-init time rather than on the first persist call (#18, #59).
  */
 export async function probeCompressionAvailability(algo: CompressionAlgo): Promise<void> {
-  switch (algo) {
-    case 'none': return;
-    case 'gzip': await gzipLazy.get(); return;
-    case 'zstd': await zstdLazy.get(); return;
-  }
+  await match(algo)
+    .with('none', async () => undefined)
+    .with('gzip', async () => { await gzipLazy.get(); })
+    .with('zstd', async () => { await zstdLazy.get(); })
+    .exhaustive();
 }
 
 /** Test hook — clear cached lazy implementations. */
