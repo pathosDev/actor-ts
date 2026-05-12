@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml"><img alt="build workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml/badge.svg?branch=main"/></a>
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml"><img alt="tests workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml/badge.svg?branch=main"/></a>
-  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-1739%20of%201740-ef4444?style=flat-square&logo=bun"/></a>
+  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-1740%20of%201740-22c55e?style=flat-square&logo=bun"/></a>
   <a href="#"><img alt="coverage" src="https://img.shields.io/badge/coverage-~85%25-22c55e?style=flat-square"/></a>
 </p>
 
@@ -28,7 +28,7 @@
 > the actor-model stack (actors, supervision, cluster, sharding, persistence,
 > HTTP) to TypeScript, running on Bun, Node.js, and Deno.  Large parts were
 > written with AI pair-programming and **have not been battle-tested in
-> production**.  Test coverage is good (~1739 tests, ~85 % line) but the
+> production**.  Test coverage is good (~1740 tests, ~85 % line) but the
 > surface area is enormous.  **Do not deploy this to anything that matters
 > yet.**  Use it to learn, to prototype, to benchmark ideas — not to handle
 > real money, users, or data.
@@ -145,7 +145,7 @@ middleware, or in-house clients.
 
 ### What's actually battle-ready
 
-- Nothing.  This is an experimental hobby project (~1739 tests, ~85 % line coverage).
+- Nothing.  This is an experimental hobby project (~1740 tests, ~85 % line coverage).
 
 ### What's solid in tests, but not production-tested
 
@@ -801,7 +801,7 @@ bun run build         # emit dist/ with declarations
 ## Testing
 
 The framework's production code is runtime-neutral, but the **test suite
-itself** (~1739 tests under `tests/`) uses `bun:test` and therefore runs
+itself** (~1740 tests under `tests/`) uses `bun:test` and therefore runs
 directly only on Bun.  Cross-runtime validation goes through two
 separate channels:
 
@@ -903,7 +903,7 @@ src/
   worker/                                      WorkerCluster (multi-core)
 examples/       — 75+ runnable examples
 benchmarks/     — 20+ micro-benchmarks (single-node, cluster, worker, http, memory, persistence)
-tests/unit/     — most of the ~1739 tests live here
+tests/unit/     — most of the ~1740 tests live here
 tests/smoke/    — cross-runtime smoke scripts (bun / node / deno)
 ```
 
