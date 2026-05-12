@@ -54,12 +54,9 @@ docs/
 
 ## Writing docs
 
-See the internal writing-style guide at
-`src/content/docs/_meta/writing-style.md` (hidden from the public
-sidebar, but accessible at `/_meta/writing-style/` when running locally).
-
-The three-tier page template — *Was du damit machen kannst → Minimales
-Beispiel → Wie es funktioniert → Wann (nicht) anwenden → Häufige
-Fallstricke → Verwandte Konzepte → API-Referenz* — keeps pages
-readable for newcomers while still carrying enough technical depth
-for experienced users.
+Pages follow a three-tier reading model: *Was du damit machen kannst →
+Minimales Beispiel → Wie es funktioniert → Wann (nicht) anwenden →
+Häufige Fallstricke → Verwandte Konzepte → API-Referenz*.  Reader can
+stop after any tier and have learned something useful — keeps
+newcomers oriented while still carrying technical depth for
+experienced users.
