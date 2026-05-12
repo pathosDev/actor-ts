@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
@@ -319,12 +320,16 @@ export class JetStreamActor extends BrokerActor<
   }
 
   override onReceive(cmd: JetStreamCmd): void {
-    if (cmd.kind === 'publish') this.enqueueOutbound(cmd.publish);
-    else if (cmd.kind === 'ack') this.handleAck(cmd.streamSeq);
-    else if (cmd.kind === 'nak') this.handleNak(cmd.streamSeq, cmd.delayMs);
-    else if (cmd.kind === 'term') this.handleTerm(cmd.streamSeq, cmd.reason);
-    else if (cmd.kind === 'inProgress') this.handleInProgress(cmd.streamSeq);
-    else if (cmd.kind === 'fetch') void this.handleFetch(cmd.batch, cmd.expiresMs);
+    // Compile-time exhaustiveness: adding a new JetStreamCmd variant
+    // forces this site to handle it explicitly (TS error otherwise).
+    match(cmd)
+      .with({ kind: 'publish' },    (c) => { this.enqueueOutbound(c.publish); })
+      .with({ kind: 'ack' },        (c) => this.handleAck(c.streamSeq))
+      .with({ kind: 'nak' },        (c) => this.handleNak(c.streamSeq, c.delayMs))
+      .with({ kind: 'term' },       (c) => this.handleTerm(c.streamSeq, c.reason))
+      .with({ kind: 'inProgress' }, (c) => this.handleInProgress(c.streamSeq))
+      .with({ kind: 'fetch' },      (c) => { void this.handleFetch(c.batch, c.expiresMs); })
+      .exhaustive();
   }
 
   /* ----------------------------- internals ----------------------------- */
