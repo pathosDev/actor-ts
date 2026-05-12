@@ -114,3 +114,18 @@ pre,
 kbd {
   font-feature-settings: 'liga' 1, 'calt' 1, 'tnum' 1;
 }
+
+/* ----- Narrower right-side "On this page" TOC -------------------------- */
+
+/* Starlight's default formula reserves `sidebar-width + half-of-leftover-
+ * space` for the right TOC, which ends up at 320-400 px on wide screens
+ * — far more than our short heading entries need.  Cap it at 14 rem
+ * (~224 px) so the layout doesn't waste a quarter of the viewport on
+ * what is effectively a 6-link navigation.  The leftover space becomes
+ * right-side whitespace, which keeps the main content readable without
+ * forcing a wider content column. */
+@media (min-width: 72rem) {
+  .right-sidebar-container {
+    width: 14rem;
+  }
+}
