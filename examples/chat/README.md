@@ -298,7 +298,10 @@ Bun process owns the public listener directly.
 ## Out of scope (followup issues opened)
 
 - File uploads (deferred — needs object-storage subsystem).
-- Production-grade auth (no bcrypt, no session expiry, no CSRF).
+- CSRF / Origin checks and per-IP login rate-limiting.  Both are
+  config-driven via Fastify (`fastify-helmet`, `@fastify/rate-limit`)
+  and the framework's middleware story — see "Production hardening"
+  below for the wiring shape, not duplicated in code here.
 
 Implemented since v1:
 
@@ -347,6 +350,47 @@ Implemented since v1:
   view.  UI: ✓ next to own messages (sent), ✓✓ when at least one
   other participant has read up to that message (hover for the
   reader list).
+- **Production-realistic auth** (#99, Option A).
+  - Passwords stored as scrypt hashes (`<salt>:<hash>`) in
+    `shared/users.ts`; verified via `crypto.scryptSync` +
+    `crypto.timingSafeEqual` in `backend/auth/password.ts`.  Plain
+    test passwords still listed as comments so the demo's login form
+    keeps working out of the box.  Credential validation in
+    `credentials.ts` scans every user (verifying against a real hash
+    even on a username miss) so timing doesn't leak enumeration info.
+  - Session tokens are HMAC-SHA256-signed JWT-style strings
+    (`<base64url(payload)>.<base64url(sig)>`) — payload binds
+    `{ username, issuedAt, exp }`, signed with a server secret read
+    from `CHAT_TOKEN_SECRET` env (warned-and-fallback if unset).
+    `lookupToken` self-validates without a DD lookup; the DD-LWWMap
+    keyed `chat.session-revocations` only stores tokens that have
+    been explicitly revoked.  TTL: 24 hours.
+  - Reconnect-resume: on socket close the frontend retries with the
+    stored token via the `resume` frame; a singleton-failover
+    reauthenticates the client without a fresh login.  Smoke-test
+    pass 7 verifies wrong-password rejection, valid resume, revoked-
+    token rejection, and tampered-token rejection.
+
+## Production hardening (not in the demo, but pointed at)
+
+The demo ships with the auth-hardening above but stops short of the
+last 20 % that real deployments need.  These are config-driven via
+existing middleware, not deeper code changes:
+
+- **CSRF / origin check**: add `fastify-helmet` and configure
+  `@fastify/websocket` with `verifyClient` to reject upgrades from
+  unexpected origins.  Both plug into `HttpIngressActor`'s Fastify
+  setup without touching the actor model.
+- **Login rate-limit**: `@fastify/rate-limit` keyed on remote IP, e.g.
+  10 login attempts per minute.  Same plugin slot.
+- **Token secret**: set `CHAT_TOKEN_SECRET` to a strong random value
+  shared across every cluster node.  Without it, the server logs a
+  loud warning and falls back to a demo-only secret hardcoded in
+  `sessionStore.ts`.
+- **User store**: replace `TEST_USERS` in `shared/users.ts` with a
+  query against a real DB; `validateCredentials` already calls
+  `verifyPassword` against an opaque `<salt>:<hash>` string, so
+  swapping the source is a one-function change.
 
 ## Files
 
@@ -359,7 +403,9 @@ examples/chat/
 │   ├── main.ts                      ← entry point (wiring only)
 │   ├── config.ts                    ← CLI args
 │   ├── routes.ts                    ← HTTP-DSL route (selector)
-│   ├── auth/credentials.ts          ← validateCredentials()
+│   ├── auth/credentials.ts          ← validateCredentials() — scrypt-verify, timing-flat
+│   ├── auth/password.ts             ← #99: scrypt hash/verify (Node crypto built-ins)
+│   ├── auth/sessionStore.ts         ← #99: HMAC-signed JWT-style tokens + DD revocation
 │   ├── plugins/
 │   │   ├── staticFilesPlugin.ts     ← @fastify/static wrapper
 │   │   └── webSocketPlugin.ts       ← @fastify/websocket + /ws route

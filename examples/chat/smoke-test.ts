@@ -18,6 +18,9 @@
  *      bob receives `user-typing`; alice does not echo to herself.
  *   9. (#103) Read receipts: alice sends a message, bob acks
  *      `read-up-to`, alice observes the `read-receipts` broadcast.
+ *  10. (#99) Auth hardening: wrong password is rejected, a valid
+ *      token resumes a session, a revoked token resume is rejected,
+ *      a tampered token resume is rejected.
  *
  * Run against a **single-node bootstrap** for reliable verification:
  *
@@ -391,6 +394,80 @@ async function main(): Promise<void> {
   ok('monotonic guard prevents stale read-up-to from rolling back');
 
   a5.close(); b5.close();
+  await new Promise((r) => setTimeout(r, 200));
+
+  // ---------- pass 7: auth hardening (#99) ----------
+  console.log('— pass 7: auth hardening —');
+
+  // 7a. wrong password must be rejected.
+  const a6 = new ChatClient(URL_ARG);
+  await a6.open();
+  a6.send({ type: 'login', username: 'alice', password: 'wrong-password' });
+  const badLogin = await a6.await((m) => m.type === 'logged-in' || m.type === 'login-failed');
+  if (badLogin.type !== 'login-failed') {
+    fail(`bcrypt verify accepted a wrong password`);
+  }
+  ok('wrong password rejected');
+  a6.close();
+  await new Promise((r) => setTimeout(r, 200));
+
+  // 7b. valid token resume.
+  const a7 = new ChatClient(URL_ARG);
+  await a7.open();
+  a7.send({ type: 'login', username: 'alice', password: 'wonderland' });
+  const li7 = await a7.await((m) => m.type === 'logged-in' || m.type === 'login-failed') as
+    ServerMsg & { token?: string };
+  if (li7.type !== 'logged-in' || typeof li7.token !== 'string') {
+    fail(`alice login failed`);
+  }
+  const goodToken = li7.token;
+  a7.close();
+  await new Promise((r) => setTimeout(r, 200));
+
+  const a8 = new ChatClient(URL_ARG);
+  await a8.open();
+  a8.send({ type: 'resume', token: goodToken });
+  const resumed = await a8.await((m) => m.type === 'logged-in' || m.type === 'login-failed');
+  if (resumed.type !== 'logged-in') {
+    fail(`valid token resume rejected: ${(resumed as ServerMsg).reason}`);
+  }
+  ok('valid token resume accepted');
+
+  // 7c. revoked token is rejected.  Logout on a8 revokes the token
+  // server-side; we reconnect with the same token and expect refusal.
+  a8.send({ type: 'logout' });
+  // Brief settle window for the revocation to propagate via DD.  For
+  // a single-node demo this is essentially immediate, but a real
+  // cluster needs a gossip tick.
+  await new Promise((r) => setTimeout(r, 750));
+  a8.close();
+
+  const a9 = new ChatClient(URL_ARG);
+  await a9.open();
+  a9.send({ type: 'resume', token: goodToken });
+  const revoked = await a9.await((m) => m.type === 'logged-in' || m.type === 'login-failed', 5000);
+  if (revoked.type !== 'login-failed') {
+    fail(`revoked token still resumes (revocation set not consulted?)`);
+  }
+  ok('revoked token rejected');
+  a9.close();
+  await new Promise((r) => setTimeout(r, 200));
+
+  // 7d. tampered token (HMAC mismatch) is rejected.  Flip the last
+  // base64 char of the signature half — invalidates the MAC.
+  const dot = goodToken.indexOf('.');
+  const tampered = goodToken.slice(0, -1) + (goodToken.endsWith('A') ? 'B' : 'A');
+  if (dot < 0 || tampered === goodToken) fail(`couldn't construct tampered token`);
+  const a10 = new ChatClient(URL_ARG);
+  await a10.open();
+  a10.send({ type: 'resume', token: tampered });
+  const forged = await a10.await((m) => m.type === 'logged-in' || m.type === 'login-failed', 3000);
+  if (forged.type !== 'login-failed') {
+    fail(`tampered token accepted (HMAC verify not running?)`);
+  }
+  ok('tampered token rejected');
+  a10.close();
+
   await new Promise((r) => setTimeout(r, 100));
   process.exit(0);
 }

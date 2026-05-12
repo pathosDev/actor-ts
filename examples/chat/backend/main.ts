@@ -157,6 +157,11 @@ async function main(): Promise<void> {
     gossipIntervalMs: 500,
   });
   const sessions = new SessionStore(ddHandle);
+  if (sessions.usingDemoSecret) {
+    system.log.warn(
+      'session tokens signed with the demo fallback secret — set CHAT_TOKEN_SECRET to a strong random string for production',
+    );
+  }
 
   // -------- 6. ClusterSharding: one ChatRoomActor per room --------
   const sharding = ClusterSharding.get(system, cluster);
