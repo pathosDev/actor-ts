@@ -1,5 +1,6 @@
 import { Lazy } from '../../util/Lazy.js';
 import { none, some, type Option } from '../../util/Option.js';
+import { makeKeyValidator } from '../storage/KeyValidator.js';
 import {
   ObjectStorageBackendError,
   ObjectStorageConcurrencyError,
@@ -89,28 +90,22 @@ const DEFAULT_STALE_LOCK_MS = 30_000;
  * This helper is the front-line syntactic check; {@link assertWithin
  * Root} below is the defense-in-depth post-resolve check.
  */
-function assertSafeKey(key: string): void {
-  if (typeof key !== 'string' || key.length === 0) {
-    throw new ObjectStorageBackendError(`invalid key: must be a non-empty string`);
-  }
-  if (key.includes('\0')) {
-    throw new ObjectStorageBackendError(`invalid key: NUL byte not allowed`);
-  }
-  // Reject absolute paths on both POSIX (`/foo`) and Windows
-  // (`C:\foo`, `\\?\foo`).  Node's `path.join` interprets absolute
-  // path components as "discard everything before me", so without
-  // this check `path.join('/safe', '/etc/passwd')` returns
-  // `'/etc/passwd'`.
-  if (key.startsWith('/') || key.startsWith('\\') || /^[a-zA-Z]:[\\/]/.test(key)) {
-    throw new ObjectStorageBackendError(`invalid key: absolute paths not allowed (got ${key})`);
-  }
-  const segs = key.split(/[/\\]/);
-  if (segs.some((s) => s === '..')) {
-    throw new ObjectStorageBackendError(
-      `invalid key: path-traversal segments ("..") not allowed (got ${key})`,
-    );
-  }
-}
+/**
+ * Filesystem key-validation rules.  Same checks the pre-refactor
+ * `assertSafeKey` enforced — exported so other FS-style backends
+ * (S3, GCS) can reuse or extend.
+ *
+ * See `src/persistence/storage/KeyValidator.ts` for the factory.
+ */
+const FilesystemKeyRules = {
+  errorClass: ObjectStorageBackendError,
+  errorPrefix: 'invalid key',
+  rejectNul: true,
+  rejectAbsolutePaths: true,
+  rejectRelativeTraversal: true,
+} as const;
+
+const assertSafeKey = makeKeyValidator(FilesystemKeyRules);
 
 /**
  * Defense-in-depth post-`path.resolve` check that the computed
