@@ -70,7 +70,7 @@ jobs:
       # to satisfy Astro's minimum.  GitHub-hosted runners default to
       # Node 20.x; we override here.
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '22'
 
@@ -78,6 +78,16 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+
+      # TypeDoc compiles `../src/` to extract JSDoc — but `src/` imports
+      # framework peer-deps (`ts-pattern`, `@types/node`, etc.) that live
+      # under the **repo root** `node_modules/`, not under `docs/`.  We
+      # therefore install root deps first, then the docs-specific deps.
+      # Without this, TypeDoc errors out with TS2307 ("cannot find
+      # module 'ts-pattern'") + TS2503 ("cannot find namespace
+      # 'NodeJS'") on every source file.
+      - name: Install root dependencies (for TypeDoc to resolve src/ imports)
+        run: bun install
 
       - name: Install docs dependencies
         working-directory: docs
@@ -92,7 +102,7 @@ jobs:
         # is valid but skip the artifact upload (Pages can't preview
         # multiple artifacts anyway).
         if: github.event_name != 'pull_request'
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: docs/dist
 
@@ -110,4 +120,4 @@ jobs:
     steps:
       - name: Deploy
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
