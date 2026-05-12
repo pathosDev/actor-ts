@@ -1,0 +1,206 @@
+---
+title: Quickstart
+description: Hello-actor in five minutes — spawn an actor, send it a message, shut down cleanly. Runs identically on Bun, Node 22+, and Deno 2+.
+---
+
+Five minutes from "what's an actor" to "I have one running, sending and
+receiving messages." This guide assumes no prior actor-model experience.
+
+## What you'll have at the end
+
+A small program that creates an `ActorSystem`, spawns a single `Greeter`
+actor inside it, sends the actor a message, and shuts down. The same file
+runs unchanged under Bun, Node, and Deno — picking the right runtime
+backend automatically.
+
+After this guide you'll know:
+
+- How to define an actor by extending `Actor<T>`.
+- How to spawn it via `system.actorOf(Props.create(...))`.
+- The difference between `tell` (fire-and-forget) and the actor's
+  `onReceive` handler.
+- How to shut the system down without leaking timers or sockets.
+
+## Install
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+<Tabs>
+  <TabItem label="Bun">
+    ```bash
+    bun add actor-ts
+    ```
+  </TabItem>
+  <TabItem label="Node 22+">
+    ```bash
+    npm install actor-ts
+    ```
+  </TabItem>
+  <TabItem label="Deno 2+">
+    No install step. Import directly from npm:
+
+    ```ts
+    import { Actor, ActorSystem, Props } from 'npm:actor-ts';
+    ```
+
+    Run with `--allow-net` (for the TCP cluster transport) and
+    `--allow-read` (for reading config files) when you need them.
+  </TabItem>
+</Tabs>
+
+For a full installation walkthrough — including optional peer dependencies
+(`better-sqlite3`, `@hono/node-server`, broker clients) — see the
+[Installation](/actor-ts/intro/installation/) page.
+
+## Hello, actor
+
+Create `hello.ts` and paste:
+
+```ts
+import { Actor, ActorSystem, Props } from 'actor-ts';
+
+// 1. Define an actor.  The type parameter `<string>` constrains what
+//    messages this actor accepts — the type system catches bad sends
+//    at compile time.
+class Greeter extends Actor<string> {
+  override onReceive(name: string): void {
+    console.log(`hello, ${name}!`);
+  }
+}
+
+// 2. Create the system.  One `ActorSystem` per process is the norm;
+//    everything else lives inside it.
+const system = ActorSystem.create('hello');
+
+// 3. Spawn the actor.  `Props.create(() => new Greeter())` is the
+//    factory; `'greeter'` is the actor's name in the hierarchy.
+const ref = system.actorOf(Props.create(() => new Greeter()), 'greeter');
+
+// 4. Send a message.  `tell` is fire-and-forget — it returns
+//    immediately, the actor processes the message asynchronously on
+//    its own mailbox.
+ref.tell('world');
+
+// 5. Give the mailbox a tick to drain, then shut down.  In a real
+//    app you'd terminate on SIGTERM via `CoordinatedShutdown`; for
+//    this script a short sleep is enough.
+await new Promise((resolve) => setTimeout(resolve, 20));
+await system.terminate();
+```
+
+Run it:
+
+<Tabs>
+  <TabItem label="Bun">
+    ```bash
+    bun run hello.ts
+    ```
+  </TabItem>
+  <TabItem label="Node 22+">
+    ```bash
+    npx tsx hello.ts
+    # or compile first: tsc hello.ts && node hello.js
+    ```
+  </TabItem>
+  <TabItem label="Deno 2+">
+    ```bash
+    deno run hello.ts
+    ```
+  </TabItem>
+</Tabs>
+
+You'll see:
+
+```
+hello, world!
+```
+
+That's the whole loop: define → spawn → tell → terminate.
+
+## What just happened
+
+The five lines map to the actor model's five core ideas:
+
+1. **`class Greeter extends Actor<string>`** — an actor is a class with a
+   private mailbox and a single `onReceive` handler. The type parameter
+   says "this actor accepts `string` messages" — sending it a number
+   would be a TypeScript error at compile time.
+
+2. **`ActorSystem.create('hello')`** — the `ActorSystem` is the runtime
+   container. It owns the dispatcher (which schedules message
+   processing), the supervisor hierarchy (which catches actor failures),
+   the scheduler, the event stream. There's typically one per process.
+
+3. **`system.actorOf(Props.create(() => new Greeter()))`** — `Props` is
+   actor-ts's way to defer construction. The system needs to control
+   *when* the actor instance is created (on its mailbox thread, not on
+   yours), so you hand it a factory rather than a pre-built instance.
+   The returned `ActorRef` is a handle, not the actor itself — you can
+   pass it across the cluster, store it, hand it to other actors.
+
+4. **`ref.tell('world')`** — `tell` is the primary actor verb. It
+   enqueues the message into the actor's mailbox and returns
+   immediately. The actor processes its mailbox one message at a time
+   on a single logical thread, so you never have to think about locks
+   or races inside `onReceive`.
+
+5. **`system.terminate()`** — graceful shutdown. Stops the dispatcher,
+   stops all actors (via the supervisor tree), closes the
+   transports. Returns a promise that resolves when teardown is
+   complete. For real apps, hook this into a SIGTERM handler — see
+   [Coordinated shutdown](/actor-ts/fundamentals/coordinated-shutdown/).
+
+## Where to next
+
+You have a running actor. From here the docs branch out depending on
+what you want to do:
+
+- **Send more interesting messages**: see [Messages](/actor-ts/fundamentals/messages/)
+  for the conventions (discriminated unions, immutability, the `kind`
+  field) and [Pattern matching](/actor-ts/fundamentals/pattern-matching/)
+  for the `match().exhaustive()` dispatch idiom this codebase uses
+  everywhere.
+- **Get a reply back from the actor**: see [Ask pattern](/actor-ts/fundamentals/ask-pattern/)
+  — the request/response equivalent of `tell`.
+- **Handle failures**: see [Supervision](/actor-ts/fundamentals/supervision/)
+  for how parent actors recover from child crashes.
+- **Distribute across machines**: see the [Cluster overview](/actor-ts/cluster/overview/)
+  and [Sharding overview](/actor-ts/cluster/sharding/overview/) — the
+  same code you wrote above can run across N nodes with a few extra
+  lines of configuration.
+- **Persist state across restarts**: see [PersistentActor](/actor-ts/persistence/persistent-actor/)
+  for event sourcing and [Snapshots](/actor-ts/persistence/snapshots/)
+  for bounded recovery time.
+
+If you want to see the framework's whole surface area at once, the
+[chat sample](https://github.com/pathosDev/actor-ts/tree/main/examples/chat)
+is the most-comprehensive end-to-end demonstration — it uses sharding,
+persistence, distributed pubsub, distributed data, cluster singleton,
+HTTP routing, six interchangeable frontends, the lot.
+
+## Troubleshooting
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`bun run hello.ts` exits without printing">
+  You probably skipped the `await new Promise(r => setTimeout(r, 20))`
+  line — `tell` enqueues asynchronously, and `system.terminate()`
+  cancels in-flight processing if the mailbox hasn't drained yet.
+  The 20 ms sleep gives the dispatcher one tick to run the
+  `onReceive`.  Real applications terminate on SIGTERM after all
+  business logic has settled.
+</Aside>
+
+<Aside type="caution" title="TypeScript complains about `override`">
+  Set `"noImplicitOverride": true` in your `tsconfig.json` (or remove
+  the `override` keyword if you'd rather not enable it).  actor-ts's
+  own code uses `override` everywhere because the framework's strict
+  config relies on it to catch lifecycle-method-typo bugs.
+</Aside>
+
+<Aside type="caution" title="Deno: `Cannot find module 'actor-ts'`">
+  Deno's module resolution requires the `npm:` specifier when
+  importing from npm.  Use `import { ... } from 'npm:actor-ts'`,
+  not the bare specifier.  Deno will fetch the package on first
+  run and cache it.
+</Aside>

@@ -688,7 +688,12 @@ let skipped = 0;
 
 for (const [relPath, title, description] of PAGES) {
   const full = path.join(DOCS_DIR, relPath);
-  if (fs.existsSync(full)) {
+  // Also skip if the .mdx variant exists — once a stub gets promoted
+  // to a real page that uses Starlight components (Tabs, Asides,
+  // etc.) it gets renamed `.md` -> `.mdx`.  We shouldn't recreate
+  // a plain-Markdown stub alongside it on the next scaffold run.
+  const mdxVariant = full.replace(/\.md$/, '.mdx');
+  if (fs.existsSync(full) || fs.existsSync(mdxVariant)) {
     skipped++;
     continue;
   }
