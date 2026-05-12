@@ -1,0 +1,216 @@
+---
+title: Why actors?
+description: What the actor model gives you that Promise-soup, worker threads, and shared-state code don't — and where it's the wrong tool.
+---
+
+The actor model is a way to structure concurrent and distributed systems
+that's been around since the 1970s.  Erlang made it famous in the 90s,
+Akka brought it to the JVM in the 2010s, and actor-ts brings the same
+ideas to TypeScript.
+
+If you've written non-trivial Promise-based code, you've already met the
+problems actors solve — they just call themselves something else.
+
+## The problem actors solve
+
+Three pain points in concurrent code, in increasing order of nastiness:
+
+### 1.  Shared mutable state under concurrency
+
+```ts
+let balance = 0;
+
+async function deposit(amount: number) {
+  const current = await readFromDB();
+  balance = current + amount;       // ← race here
+  await writeToDB(balance);
+}
+```
+
+Two deposits run concurrently → both read `0`, both write `+amount` —
+one deposit lost.  The Promise/`async-await` model gives you parallelism
+but doesn't give you a synchronization primitive.  In the small you reach
+for mutexes (`p-mutex`, `async-mutex`); in the medium you reach for a
+queue; in the large you start hand-rolling actor-ish patterns.
+
+### 2.  Stateful long-lived components
+
+```ts
+class CounterService {
+  private count = 0;
+  increment() { this.count++; }
+  get() { return this.count; }
+}
+```
+
+Fine in a request-scoped service.  Fine in a single-user CLI.  Wrong as
+soon as multiple concurrent callers can touch it — `increment` isn't
+atomic, the integer read in `get` can happen mid-write.
+
+The conventional answer is "make the class stateless and put state in
+Redis / Postgres."  That works, but you've now traded *one* concurrency
+problem (in-process race) for *two* operational problems (network round
+trips on every read, and the same race in your data store unless you use
+transactions or compare-and-swap).
+
+### 3.  Failure recovery and supervision
+
+What happens to your stateful component when an error escapes a handler?
+
+```ts
+try {
+  await someUnreliableOp();
+} catch (e) {
+  // ???
+}
+```
+
+You can log it.  You can retry.  But what about the partial state your
+component built up before the throw?  Is the object still safe to use?
+Should the component be restarted, or torn down entirely?  Should
+callers know it crashed?  Vanilla JS gives you no answers — you build
+them per-service, usually inconsistently.
+
+## What the actor model gives you
+
+Three core ideas; each one addresses one of the pain points above.
+
+### Actors encapsulate state
+
+An actor is a class with a private mailbox and a single `onReceive`
+method.  Messages enter the mailbox; the actor processes them **one at a
+time**, on its own logical thread.  Inside `onReceive` you can read and
+mutate the actor's fields freely — you're guaranteed to be the only one
+reading or writing.
+
+```ts
+class Counter extends Actor<{ kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> }> {
+  private count = 0;
+  override onReceive(msg: typeof this.cmd): void {
+    if (msg.kind === 'inc')  this.count++;
+    else if (msg.kind === 'get') msg.replyTo.tell(this.count);
+  }
+}
+```
+
+No mutex, no lock, no atomic — the actor *is* the serialization
+boundary.  `count++` is safe because actor messages run sequentially.
+
+### Messages are the only contract
+
+You never call an actor's methods directly.  You hold an `ActorRef`,
+which has exactly one verb: `tell(message)`.  The message goes into the
+mailbox; the actor pulls it out when it's ready.
+
+That looks unnecessarily restrictive — until you realize it makes three
+things free:
+
+- **Asynchrony**: every `tell` is fire-and-forget by default.  No
+  `await` cluttering your call sites; no accidentally-synchronous
+  bottlenecks.
+- **Backpressure**: the mailbox has a length.  When it fills, you can
+  pick a policy (drop new / drop old / throw) without changing the
+  actor's code.
+- **Location transparency**: a local `tell` and a cross-process `tell`
+  look identical at the call site.  If you want to move the actor to a
+  different node, you don't touch the callers — just configure the
+  cluster.
+
+### Supervisors handle failure as a first-class concern
+
+Every actor has a parent.  When an actor's `onReceive` throws, the
+exception goes to the parent's *supervisor strategy*, which decides
+between four outcomes:
+
+- **Restart**: tear down the broken actor, build a fresh one (clean
+  state), replay any messages buffered during downtime.
+- **Resume**: keep the actor's state, skip the bad message, continue.
+- **Stop**: kill the actor permanently; further messages go to dead
+  letters.
+- **Escalate**: throw to the *parent's* parent.
+
+You configure this per-actor-class once, and every failure is handled
+the same way.  No more "did I remember to wrap that in `try`?"
+
+## How this maps to actor-ts
+
+The framework gives you:
+
+- **Single-process actors**: everything in this guide works in one
+  process, on one core.  See [Actor](/actor-ts/fundamentals/actor/),
+  [Messages](/actor-ts/fundamentals/messages/),
+  [Supervision](/actor-ts/fundamentals/supervision/).
+- **Multi-core via worker threads**: the `MessageChannel` transport
+  runs actors on worker threads with the same API.  See
+  [Cluster transports](/actor-ts/cluster/transports/) and
+  [Worker mesh](/actor-ts/cluster/worker-mesh/).
+- **Multi-process / multi-machine**: TCP-based clustering with
+  gossip membership, sharding, and failover.  See
+  [Cluster overview](/actor-ts/cluster/overview/) and
+  [Sharding](/actor-ts/cluster/sharding/overview/).
+- **Persistence**: actors that recover their state from an event log
+  after a crash.  See [PersistentActor](/actor-ts/persistence/persistent-actor/).
+
+You can adopt these progressively.  A first iteration runs entirely
+in-process; a second moves hot-path actors to a worker pool; a third
+introduces sharding across machines.  The actor's own code doesn't
+change.
+
+## When NOT to use actors
+
+Actors are powerful, but they're not free.  Three categories where they
+fit poorly:
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Stateless request/response services">
+  If your service reads a request, queries a DB, returns a response,
+  and forgets everything in between, you don't need actors.  Use a
+  plain HTTP handler with whatever DB-pool gives you the right
+  concurrency knobs.  Actor overhead (mailbox bookkeeping, supervisor
+  tree) is wasted on workloads that have nothing to encapsulate.
+</Aside>
+
+<Aside type="caution" title="Pure data transformations">
+  ETL pipelines, batch transforms, "given a list, give me another
+  list" — none of these need a long-lived stateful component.
+  `Promise.all` and async iterables solve them better.  Actors are
+  about state + lifecycle + failure semantics, not pure data flow.
+</Aside>
+
+<Aside type="caution" title="Code where every operation must be synchronous-blocking">
+  Some embedded / real-time domains require deterministic blocking
+  semantics.  Actor-based code is async-by-default and you can't
+  promote it to blocking without losing the model's guarantees.
+  In TS/JS that's rare, but worth flagging.
+</Aside>
+
+## When actors are the right call
+
+You probably want actors when:
+
+- You have **per-entity state** that needs to live longer than one
+  request — sessions, user inventories, chat-rooms, in-flight
+  conversations, sagas.
+- You need **failure isolation**: one user's session crashing shouldn't
+  break the other users.
+- You're heading toward **distribution** — sharded state across nodes,
+  or scaling beyond a single Node/Bun process.
+- You're modeling something that's **conceptually a state machine** —
+  workflows, orders, devices, games.
+
+Or, more pithily: when your design notes have boxes-and-arrows on a
+whiteboard, the boxes are usually actors.
+
+## Where to next
+
+- Convinced?  Start with [Quickstart](/actor-ts/intro/quickstart/) —
+  five minutes to a running actor.
+- Coming from another actor framework?  See the
+  [Migration guides](/actor-ts/migration/overview/) for Akka-JVM,
+  Pekko, Orleans, Akka.NET.
+- Want a deeper concept tour?  See
+  [Actor](/actor-ts/fundamentals/actor/),
+  [Messages](/actor-ts/fundamentals/messages/), and
+  [Supervision](/actor-ts/fundamentals/supervision/) in that order —
+  about 20 minutes of reading covers the single-process surface.
