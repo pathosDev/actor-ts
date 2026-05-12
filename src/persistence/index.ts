@@ -5,6 +5,9 @@ export {
 export { PersistentActor, everyNEvents } from './PersistentActor.js';
 export type { SnapshotPolicy } from './PersistentActor.js';
 
+export { eventDispatcher } from './EventDispatcher.js';
+export type { EventDispatcherBuilder, EventDispatcherIncomplete } from './EventDispatcher.js';
+
 export type { Journal } from './Journal.js';
 export type { SnapshotStore } from './SnapshotStore.js';
 export type { PersistentEvent, Snapshot } from './JournalTypes.js';
