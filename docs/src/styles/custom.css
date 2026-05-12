@@ -6,18 +6,26 @@
  *     and the start of the connection-line gradient in the logo's mesh.
  *   - Cyan (`#06b6d4`) — secondary, paired with Indigo on CTA-buttons to
  *     echo the logo's connection-line gradient.
- *   - Slate-900 / Slate-50 — text + background basis.  Matches the
- *     wordmark's "actor" base color.
- *   - Red (`#ef4444`) — reserved for caution / danger asides.  Matches
- *     the "-" between "actor" and "ts" in the wordmark and the end of
- *     the actor-node gradient.
- *   - Amber (`#fcd34d`) — reserved for featured-highlight asides.
- *     Matches the start of the actor-node gradient.
+ *   - Slate ladder — text + background.  Matches the wordmark's "actor"
+ *     base color (slate-900) for the dark-mode page background.
+ *
+ * **Starlight color-variable convention** (important — got this wrong on
+ * the first try):
+ *   - The `:root` block defines DARK MODE.  `--sl-color-white` is the
+ *     anchor for the lightest color in the palette (= text on dark bg),
+ *     `--sl-color-black` is the darkest (= page bg).  The gray ladder
+ *     runs `gray-1` (lightest, emphasized text) → `gray-6` (darkest,
+ *     elevated-bg).
+ *   - The `:root[data-theme='light']` block INVERTS the assignments:
+ *     `--sl-color-white` becomes dark (= text on light bg), `gray-1`
+ *     becomes near-black, etc.  The variable NAMES stay stable, only
+ *     the COLORS swap, so semantic vars like `--sl-color-text` work in
+ *     both modes via the same `var(--sl-color-gray-2)` reference.
  *
  * Fonts:
  *   - Body: Inter Variable (one variable-font file covers all weights).
- *   - Code: JetBrains Mono (matches the `font-family` already specified
- *     in `logo.svg`'s wordmark — visual continuity logo ↔ code-blocks).
+ *   - Code: JetBrains Mono — matches the `font-family` already specified
+ *     in `logo.svg`'s wordmark.
  *
  * Both fonts are pulled via `@fontsource(-variable)` packages so they're
  * bundled locally — no CDN roundtrip, works offline, no privacy concerns.
@@ -30,65 +38,73 @@
 @import '@fontsource/jetbrains-mono/500.css';
 @import '@fontsource/jetbrains-mono/700.css';
 
-/* ----- Light mode ------------------------------------------------------ */
+/* ----- Dark mode (default `:root`) ------------------------------------- */
 
 :root {
-  /* Primary accent — Indigo, matches "ts" in wordmark + connection-lines */
-  --sl-color-accent-low:  #e0e7ff;  /* indigo-100  — hover bg, sidebar highlight */
-  --sl-color-accent:      #6366f1;  /* indigo-500  — links, active state, buttons */
-  --sl-color-accent-high: #312e81;  /* indigo-900  — strong emphasis, focus ring */
+  /* Indigo accent ramp — brighter for legibility on dark bg.
+   * accent-low: subtle hover bg / sidebar highlight (slightly tinted).
+   * accent:     primary action color (links, current-page indicator).
+   * accent-high: strong emphasis (focus rings, badges). */
+  --sl-color-accent-low: #1e1b4b;   /* indigo-950 */
+  --sl-color-accent:     #818cf8;   /* indigo-400 — bright for dark bg */
+  --sl-color-accent-high: #c7d2fe;  /* indigo-200 */
 
-  /* Text + backgrounds — Slate ladder, identical to logo wordmark base */
-  --sl-color-white:  #0f172a;       /* slate-900  — body text on light bg */
-  --sl-color-gray-1: #e2e8f0;       /* slate-200  — borders, light */
-  --sl-color-gray-2: #cbd5e1;       /* slate-300  — borders, medium */
-  --sl-color-gray-3: #94a3b8;       /* slate-400  — tagline text */
-  --sl-color-gray-4: #64748b;       /* slate-500  — muted text */
-  --sl-color-gray-5: #334155;       /* slate-700  — strong-muted */
-  --sl-color-gray-6: #1e293b;       /* slate-800  — code-block bg */
-  --sl-color-black:  #f8fafc;       /* slate-50   — page background */
+  /* Text + bg anchor — white is lightest (text), black is darkest (bg).
+   * Slate ladder fills the middle so the page bg is slate-tinted, not
+   * pure neutral gray. */
+  --sl-color-white:  #f8fafc;       /* slate-50  — text-emphasized */
+  --sl-color-gray-1: #f1f5f9;       /* slate-100 — text-strong */
+  --sl-color-gray-2: #cbd5e1;       /* slate-300 — text-default */
+  --sl-color-gray-3: #94a3b8;       /* slate-400 — text-muted */
+  --sl-color-gray-4: #475569;       /* slate-600 — border-strong */
+  --sl-color-gray-5: #334155;       /* slate-700 — border-default */
+  --sl-color-gray-6: #1e293b;       /* slate-800 — bg-elevated (cards, code) */
+  --sl-color-black:  #0f172a;       /* slate-900 — page bg, matches wordmark base */
+}
 
-  /* Custom typography stack */
+/* ----- Light mode ------------------------------------------------------ */
+
+:root[data-theme='light'] {
+  /* Indigo darkened for legibility on white bg. */
+  --sl-color-accent-low: #e0e7ff;   /* indigo-100 */
+  --sl-color-accent:     #4f46e5;   /* indigo-600 — dark enough on white */
+  --sl-color-accent-high: #312e81;  /* indigo-900 */
+
+  /* Inverted ladder — `--sl-color-white` is now NEAR-BLACK (text on
+   * white bg), `--sl-color-black` is white (page bg). */
+  --sl-color-white:  #0f172a;       /* slate-900 — text-emphasized */
+  --sl-color-gray-1: #1e293b;       /* slate-800 — text-strong */
+  --sl-color-gray-2: #334155;       /* slate-700 — text-default */
+  --sl-color-gray-3: #64748b;       /* slate-500 — text-muted */
+  --sl-color-gray-4: #94a3b8;       /* slate-400 — border-strong */
+  --sl-color-gray-5: #cbd5e1;       /* slate-300 — border-default */
+  --sl-color-gray-6: #e2e8f0;       /* slate-200 — bg-elevated */
+  --sl-color-black:  #ffffff;       /* white — page bg */
+}
+
+/* ----- Typography (mode-agnostic) -------------------------------------- */
+
+:root {
   --sl-font: 'Inter Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --sl-font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', Menlo, monospace;
 }
 
-/* ----- Dark mode ------------------------------------------------------- */
+/* ----- CTA button gradient — echo of the logo's connection lines ------- */
 
-:root[data-theme='dark'] {
-  /* Indigo brightened for dark backgrounds (the dim indigo-500 reads
-   * weakly against slate-900; indigo-400 keeps contrast strong). */
-  --sl-color-accent-low:  #312e81;  /* indigo-900 */
-  --sl-color-accent:      #818cf8;  /* indigo-400 */
-  --sl-color-accent-high: #c7d2fe;  /* indigo-200 */
-
-  --sl-color-white:  #f8fafc;       /* slate-50 — body text on dark bg */
-  --sl-color-gray-1: #1e293b;
-  --sl-color-gray-2: #334155;
-  --sl-color-gray-3: #475569;
-  --sl-color-gray-4: #64748b;
-  --sl-color-gray-5: #cbd5e1;
-  --sl-color-gray-6: #f1f5f9;
-  --sl-color-black:  #0f172a;       /* slate-900 — page background, matches wordmark base */
-}
-
-/* ----- CTA button gradient — echo of the logo's connection-lines ------- */
-
-/* Starlight's `<LinkButton variant="primary">` (used on landing pages /
- * call-to-action blocks) gets the Indigo→Cyan gradient that mirrors the
- * actor-mesh in the logo. */
+/* Starlight's `<LinkButton variant="primary">` on landing pages.  Uses
+ * the same Indigo→Cyan gradient as the logo's actor-mesh. */
 .sl-link-button.primary,
 .action.primary {
   background: linear-gradient(135deg, #6366f1 0%, #06b6d4 100%) !important;
   border: none !important;
-  color: white !important;
+  color: #ffffff !important;
 }
 .sl-link-button.primary:hover,
 .action.primary:hover {
-  background: linear-gradient(135deg, #4f46e5 0%, #0891b2 100%) !important;
+  background: linear-gradient(135deg, #4f46e5 0%, #0891b2 100%) !important;  /* indigo-600 → cyan-600 */
 }
 
-/* ----- Code-block typography polish ------------------------------------ */
+/* ----- Code-block polish ----------------------------------------------- */
 
 /* Enable common JetBrains-Mono ligatures + tabular numerals in code.
  * Tabular numerals keep digits in fixed-width columns — helpful in
