@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
@@ -237,30 +238,33 @@ export class MqttActor extends BrokerActor<MqttActorSettings, MqttCmd, MqttPubli
   }
 
   override onReceive(cmd: MqttCmd): void {
-    if (cmd.kind === 'publish') {
-      this.enqueueOutbound(cmd.publish);
-      return;
-    }
-    if (cmd.kind === 'subscribe') {
-      this.patternSubscribe(cmd.topic, cmd.target);
-      // If already connected, register on the broker too.  Reconnect
-      // re-runs the initial subscriptions; runtime additions persist
-      // only via the local pattern map — we don't try to "remember"
-      // them across reconnect (caller can re-tell after `BrokerConnected`).
-      if (this.connectionState === 'connected' && this.client) {
-        this.client.subscribe(cmd.topic, { qos: cmd.qos ?? this.settings.defaultQos ?? 0 },
-          (err) => { if (err) this.log.warn(`MqttActor: subscribe '${cmd.topic}' failed: ${err.message}`); });
-      }
-      return;
-    }
-    // unsubscribe
-    if (cmd.target) this.patternUnsubscribe(cmd.topic, cmd.target);
-    else this.patternSubs.delete(cmd.topic);
-    if (this.connectionState === 'connected' && this.client) {
-      this.client.unsubscribe(cmd.topic, undefined, (err) => {
-        if (err) this.log.warn(`MqttActor: unsubscribe '${cmd.topic}' failed: ${err.message}`);
-      });
-    }
+    // Compile-time exhaustiveness: adding a new MqttCmd variant
+    // forces this site to handle it explicitly.
+    match(cmd)
+      .with({ kind: 'publish' }, (c) => {
+        this.enqueueOutbound(c.publish);
+      })
+      .with({ kind: 'subscribe' }, (c) => {
+        this.patternSubscribe(c.topic, c.target);
+        // If already connected, register on the broker too.  Reconnect
+        // re-runs the initial subscriptions; runtime additions persist
+        // only via the local pattern map — we don't try to "remember"
+        // them across reconnect (caller can re-tell after `BrokerConnected`).
+        if (this.connectionState === 'connected' && this.client) {
+          this.client.subscribe(c.topic, { qos: c.qos ?? this.settings.defaultQos ?? 0 },
+            (err) => { if (err) this.log.warn(`MqttActor: subscribe '${c.topic}' failed: ${err.message}`); });
+        }
+      })
+      .with({ kind: 'unsubscribe' }, (c) => {
+        if (c.target) this.patternUnsubscribe(c.topic, c.target);
+        else this.patternSubs.delete(c.topic);
+        if (this.connectionState === 'connected' && this.client) {
+          this.client.unsubscribe(c.topic, undefined, (err) => {
+            if (err) this.log.warn(`MqttActor: unsubscribe '${c.topic}' failed: ${err.message}`);
+          });
+        }
+      })
+      .exhaustive();
   }
 
   /* ----------------------------- internals ------------------------------ */
