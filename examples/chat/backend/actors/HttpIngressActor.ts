@@ -46,6 +46,7 @@ import {
 } from '../plugins/webSocketPlugin.js';
 import { buildRoutes } from '../routes.js';
 import type { ChatRoomCmd } from './ChatRoomActor.js';
+import type { ChatRoomDirectoryCmd } from './ChatRoomDirectoryActor.js';
 import type { OnlineUsersCmd } from './OnlineUsersActor.js';
 import type { SessionStore } from '../auth/sessionStore.js';
 
@@ -81,6 +82,8 @@ export interface HttpIngressDeps {
   readonly mediator: ActorRef<Subscribe | Unsubscribe>;
   /** Cluster-wide session-token store (DD-LWWMap-backed). */
   readonly sessions: SessionStore;
+  /** Local ChatRoomDirectoryActor — fan-out for room create/list. */
+  readonly roomDirectory: ActorRef<ChatRoomDirectoryCmd>;
   /** Optional TLS — when set, the listener becomes HTTPS + WSS. */
   readonly tls?: TlsMaterial;
 }
@@ -124,6 +127,7 @@ export class HttpIngressActor extends Actor<never> {
       onlineUsers: this.deps.onlineUsers,
       mediator: this.deps.mediator,
       sessions: this.deps.sessions,
+      roomDirectory: this.deps.roomDirectory,
     });
 
     const http = system.extension(HttpExtensionId);

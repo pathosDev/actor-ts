@@ -10,6 +10,8 @@
   let username = $state('');
   let password = $state('');
   let composeText = $state('');
+  let newRoomName = $state('');
+  let newRoomInvalid = $state(false);
 
   function onLogin(e: SubmitEvent): void {
     e.preventDefault();
@@ -23,6 +25,16 @@
     if (!room || !composeText.trim()) return;
     chat.send(room, composeText);
     composeText = '';
+  }
+
+  function onCreateRoom(e: SubmitEvent): void {
+    e.preventDefault();
+    if (!chat.createRoom(newRoomName.trim())) {
+      newRoomInvalid = true;
+      return;
+    }
+    newRoomInvalid = false;
+    newRoomName = '';
   }
 
   function fmtTs(ts: number): string {
@@ -81,6 +93,21 @@
             </li>
           {/each}
         </ul>
+        <form
+          class="room-create"
+          onsubmit={onCreateRoom}
+          autocomplete="off"
+          title="Create a new room (a–z, 0–9, _-, 1–32 chars)"
+        >
+          <input
+            bind:value={newRoomName}
+            placeholder="+ new room"
+            maxlength="32"
+            class:invalid={newRoomInvalid}
+            oninput={() => (newRoomInvalid = false)}
+          />
+          <button type="submit">Add</button>
+        </form>
       </aside>
       <main class="center">
         <div class="messages">
@@ -234,6 +261,30 @@
   form.compose button {
     font: inherit;
     padding: 0.5rem 1rem;
+    border-radius: 4px;
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: white;
+    cursor: pointer;
+  }
+  form.room-create {
+    display: flex;
+    gap: 0.25rem;
+    padding: 0.5rem 1rem;
+    border-top: 1px solid var(--border);
+  }
+  form.room-create input {
+    flex: 1;
+    min-width: 0;
+    font: inherit;
+    padding: 0.25rem 0.4rem;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+  }
+  form.room-create input.invalid { border-color: crimson; }
+  form.room-create button {
+    font: inherit;
+    padding: 0.25rem 0.5rem;
     border-radius: 4px;
     border: 1px solid var(--accent);
     background: var(--accent);

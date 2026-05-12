@@ -28,6 +28,9 @@
  *   - `RoomBroadcast` from DistributedPubSub.
  *   - `HistoryReply` from a sharded `ChatRoomActor`.
  *   - `UsersChanged` from the local `OnlineUsersActor`.
+ *   - `RoomsChanged` / `RoomAdded` / `RoomRemoved` from the cluster-
+ *     wide `ChatRoomDirectoryActor` — added in #98 so the client can
+ *     react to runtime room creation by any user on any node.
  */
 import { match } from 'ts-pattern';
 import {
@@ -52,6 +55,12 @@ import {
   type RoomBroadcast,
 } from './ChatRoomActor.js';
 import type {
+  ChatRoomDirectoryCmd,
+  RoomAdded,
+  RoomRemoved,
+  RoomsChanged,
+} from './ChatRoomDirectoryActor.js';
+import type {
   OnlineUsersCmd,
   UsersChanged,
 } from './OnlineUsersActor.js';
@@ -71,7 +80,10 @@ type SessionMsg =
   | SocketClosed
   | RoomBroadcast
   | HistoryReply
-  | UsersChanged;
+  | UsersChanged
+  | RoomsChanged
+  | RoomAdded
+  | RoomRemoved;
 
 /* --------------------------- public deps ---------------------------- */
 
@@ -81,6 +93,7 @@ export interface UserSessionDeps {
   readonly onlineUsers: ActorRef<OnlineUsersCmd>;
   readonly mediator: ActorRef<Subscribe | Unsubscribe>;
   readonly sessions: SessionStore;
+  readonly roomDirectory: ActorRef<ChatRoomDirectoryCmd>;
 }
 
 /* ------------------------------ actor ------------------------------- */
@@ -95,6 +108,8 @@ export class UserSessionActor extends Actor<SessionMsg> {
   private readonly joinedRooms = new Set<RoomName>();
   private readonly historyAskedRooms = new Set<RoomName>();
   private currentRoom: RoomName | null = null;
+  /** Cache of the current cluster-wide room list; populated on activation. */
+  private knownRooms: ReadonlyArray<RoomName> = [];
 
   constructor(private readonly deps: UserSessionDeps) {
     super();
@@ -118,6 +133,11 @@ export class UserSessionActor extends Actor<SessionMsg> {
           username: this.username,
         });
       }
+      // Also detach from the directory's per-session subscription.
+      this.deps.roomDirectory.tell({
+        kind: 'Unsubscribe',
+        ref: this.self as ActorRef<RoomsChanged | RoomAdded | RoomRemoved>,
+      });
     }
     this.joinedRooms.clear();
     // Idempotent close — the route handler may have already done it.
@@ -132,6 +152,9 @@ export class UserSessionActor extends Actor<SessionMsg> {
       .with({ kind: 'RoomBroadcast' }, (m) => this.onBroadcast(m))
       .with({ kind: 'HistoryReply' }, (m) => this.onHistory(m))
       .with({ kind: 'UsersChanged' }, (m) => this.onUsersChanged(m))
+      .with({ kind: 'RoomsChanged' }, (m) => this.onRoomsChanged(m))
+      .with({ kind: 'RoomAdded' },    (m) => this.onRoomAdded(m))
+      .with({ kind: 'RoomRemoved' },  (m) => this.onRoomRemoved(m))
       .exhaustive();
   }
 
@@ -196,13 +219,26 @@ export class UserSessionActor extends Actor<SessionMsg> {
     this.username = username;
     this.token = token;
     this.sendServer({ type: 'logged-in', username, token });
+    // Subscribe to the cluster-wide room directory.  The directory
+    // immediately replays its current set as a `RoomsChanged`
+    // message — `onRoomsChanged` forwards that to the client as a
+    // `rooms` ServerMessage.  We additionally send a synchronous
+    // `rooms` frame with `DEFAULT_ROOMS` so clients that expect
+    // ordering `logged-in` → `rooms` see something stable; the
+    // directory's replay then refines that view if user-created
+    // rooms exist.
+    this.deps.roomDirectory.tell({
+      kind: 'Subscribe',
+      ref: this.self as ActorRef<RoomsChanged | RoomAdded | RoomRemoved>,
+    });
     this.sendServer({ type: 'rooms', rooms: [...DEFAULT_ROOMS] });
     // Auto-join every default room for presence + live messages, but
     // only fetch history for the room we're switching into first
     // (`general`).  Avoids a rapid burst of cross-shard ask-style
     // round trips at login time that races with the cluster's
     // initial shard-allocation phase.  History for the other rooms
-    // loads on first room-switch instead.
+    // loads on first room-switch instead.  User-created rooms are
+    // not auto-joined — they're opt-in via an explicit `join` frame.
     for (const room of DEFAULT_ROOMS) {
       this.joinRoom(room, room === DEFAULT_ROOMS[0]);
     }
@@ -264,6 +300,17 @@ export class UserSessionActor extends Actor<SessionMsg> {
           void wasCurrent; // not used; reserved for future telemetry.
         }
       })
+      .with({ type: 'create-room' }, (m) => {
+        // Fire-and-forget: the directory broadcasts `RoomAdded` (or
+        // a refreshed `RoomsChanged`) to every subscriber once the
+        // ORSet update is gossiped, so this client sees the new
+        // room via the same channel that notifies everyone else.
+        // We don't surface accept/reject in this minimal demo —
+        // invalid names are a typo (no progress visible client-side
+        // = clear feedback) and the duplicate case still results in
+        // the name appearing in the list.
+        this.deps.roomDirectory.tell({ kind: 'Create', name: m.name });
+      })
       .with({ type: 'ping' }, () => { /* keepalive — no-op server-side */ })
       .exhaustive();
   }
@@ -294,6 +341,35 @@ export class UserSessionActor extends Actor<SessionMsg> {
       room: msg.room,
       users: msg.users,
     });
+  }
+
+  /* ---------------------------- directory ---------------------------- */
+
+  private onRoomsChanged(msg: RoomsChanged): void {
+    this.knownRooms = msg.rooms;
+    // Always forward the full set so the client can deterministically
+    // replace its local list — handles both the initial replay on
+    // subscribe and concurrent updates from other clients.
+    this.sendServer({ type: 'rooms', rooms: msg.rooms });
+  }
+
+  private onRoomAdded(msg: RoomAdded): void {
+    // RoomsChanged carries the full set; RoomAdded is the per-name
+    // notification frontends use to render toast-style "new room"
+    // notices without diffing two lists themselves.
+    this.sendServer({ type: 'room-added', name: msg.name });
+  }
+
+  private onRoomRemoved(msg: RoomRemoved): void {
+    this.sendServer({ type: 'room-removed', name: msg.name });
+    // If we were subscribed to this room, leave it — otherwise we'd
+    // keep broadcasting `send` frames into a room the client can no
+    // longer see in its UI.  Best-effort: the directory's `Create`
+    // is the only mutator today, so this path only fires once we
+    // ship deletion (currently out of scope, but wired).
+    if (this.joinedRooms.has(msg.name)) {
+      this.leaveRoom(msg.name);
+    }
   }
 
   /* ---------------------------- outgoing ----------------------------- */

@@ -298,11 +298,21 @@ Bun process owns the public listener directly.
 ## Out of scope (followup issues opened)
 
 - Private DMs (multi-room global chat only).
-- User-created rooms at runtime (default list is hardcoded).
 - File uploads, emojis, typing indicators.
 - Production-grade auth (no bcrypt, no session expiry, no CSRF).
-- Reconnect-resume after network blip.
 - Read-receipts.
+
+Implemented since v1:
+
+- **User-created rooms at runtime** (#98).  Rooms live in a
+  `ChatRoomDirectoryActor` that wraps a `DistributedData` ORSet —
+  every node spawns its own instance, the ORSet converges, and the
+  `DEFAULT_ROOMS` seed is idempotent.  The protocol carries
+  `create-room`, `room-added`, and `room-removed` frames; every
+  frontend renders a "+ new room" input below the rooms list.
+  Room names follow the same shape as Memcached / FS-backend keys:
+  `[A-Za-z0-9][A-Za-z0-9_-]{0,31}`, validated both client- and
+  server-side.
 
 ## Files
 

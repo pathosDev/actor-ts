@@ -30,6 +30,8 @@
       const WS_PATH = '/ws';
       const TOKEN_KEY = 'chat-token';
       const MAX_RECONNECT_ATTEMPTS = 8;
+      /** Mirrors `isRoomName` in shared/rooms.ts on the server. */
+      const ROOM_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
 
       class ChatApp extends LitElement {
         static properties = {
@@ -41,6 +43,7 @@
           usersByRoom: { state: true },
           unreadByRoom: { state: true },
           loginError: { state: true },
+          createRoomInvalid: { state: true },
         };
 
         constructor() {
@@ -59,6 +62,7 @@
           this.usersByRoom = {};
           this.unreadByRoom = {};
           this.loginError = '';
+          this.createRoomInvalid = false;
           this.ws = null;
           this.reconnectAttempts = 0;
           this.reconnectTimer = null;
@@ -107,6 +111,11 @@
           form.compose { display: flex; gap: 0.5rem; padding: 0.5rem 1rem; border-top: 1px solid var(--border); }
           form.compose input { flex: 1; }
           form.compose button { background: var(--accent); color: white; border-color: var(--accent); }
+          form.room-create { display: flex; gap: 0.25rem; padding: 0.5rem 1rem; border-top: 1px solid var(--border); }
+          form.room-create input { flex: 1; min-width: 0; padding: 0.25rem 0.4rem; }
+          form.room-create input.invalid { border-color: crimson; }
+          form.room-create button { padding: 0.25rem 0.5rem;
+            background: var(--accent); color: white; border-color: var(--accent); cursor: pointer; }
         `;
 
         wsUrl() {
@@ -204,6 +213,33 @@
               if (!this.currentRoom) this.currentRoom = m.rooms[0] ?? null;
               break;
             }
+            case 'room-added': {
+              // `rooms` already carries the full set; this is the
+              // per-name notice used for the toast-style system line.
+              if (!this.rooms.includes(m.name)) {
+                this.rooms = [...this.rooms, m.name];
+                this.messagesByRoom = { ...this.messagesByRoom, [m.name]: [] };
+                this.usersByRoom    = { ...this.usersByRoom,    [m.name]: [] };
+                this.unreadByRoom   = { ...this.unreadByRoom,   [m.name]: 0  };
+              }
+              this.appendSystem(`New room "#${m.name}" available — click to join.`);
+              break;
+            }
+            case 'room-removed': {
+              this.rooms = this.rooms.filter((r) => r !== m.name);
+              const wasCurrent = this.currentRoom === m.name;
+              const { [m.name]: _msgs, ...mb } = this.messagesByRoom;
+              const { [m.name]: _users, ...ub } = this.usersByRoom;
+              const { [m.name]: _unread, ...ur } = this.unreadByRoom;
+              this.messagesByRoom = mb;
+              this.usersByRoom = ub;
+              this.unreadByRoom = ur;
+              if (wasCurrent) {
+                this.currentRoom = this.rooms[0] ?? null;
+                this.appendSystem(`Room "#${m.name}" was removed.`);
+              }
+              break;
+            }
             case 'history':
               this.messagesByRoom = { ...this.messagesByRoom, [m.room]: m.messages.slice() };
               break;
@@ -269,11 +305,15 @@
 
         selectRoom(room) {
           if (this.currentRoom === room) return;
-          this.currentRoom = room;
-          this.unreadByRoom = { ...this.unreadByRoom, [room]: 0 };
+          // User-created rooms are not auto-joined at login.  An
+          // explicit `join` is idempotent server-side, so doing it
+          // here unconditionally is harmless for default rooms too.
           if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ type: 'join', room }));
             this.ws.send(JSON.stringify({ type: 'switch-active-room', room }));
           }
+          this.currentRoom = room;
+          this.unreadByRoom = { ...this.unreadByRoom, [room]: 0 };
         }
 
         onCompose(e) {
@@ -283,6 +323,30 @@
           if (!text || !this.currentRoom || !this.ws) return;
           this.ws.send(JSON.stringify({ type: 'send', room: this.currentRoom, text }));
           input.value = '';
+        }
+
+        onCreateRoom(e) {
+          e.preventDefault();
+          const input = e.target.querySelector('input');
+          const name = input.value.trim();
+          if (!ROOM_NAME_PATTERN.test(name)) {
+            this.createRoomInvalid = true;
+            return;
+          }
+          this.createRoomInvalid = false;
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ type: 'create-room', name }));
+          }
+          input.value = '';
+        }
+
+        /** Append a synthetic system line to the current room — used
+         *  for room-added/room-removed UX toasts. */
+        appendSystem(text) {
+          if (!this.currentRoom) return;
+          const list = (this.messagesByRoom[this.currentRoom] ?? []).slice();
+          list.push({ from: '*', text, ts: Date.now(), system: true });
+          this.messagesByRoom = { ...this.messagesByRoom, [this.currentRoom]: list };
         }
 
         render() {
@@ -338,6 +402,13 @@
                       </li>
                     `)}
                   </ul>
+                  <form class="room-create" @submit=${this.onCreateRoom} autocomplete="off"
+                        title="Create a new room (a–z, 0–9, _-, 1–32 chars)">
+                    <input placeholder="+ new room" maxlength="32"
+                           class=${this.createRoomInvalid ? 'invalid' : ''}
+                           @input=${() => { this.createRoomInvalid = false; }} />
+                    <button type="submit">Add</button>
+                  </form>
                 </aside>
                 <main>
                   <div class="messages">

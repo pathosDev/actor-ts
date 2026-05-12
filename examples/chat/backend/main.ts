@@ -51,6 +51,7 @@ import {
   ChatRoomActor,
   type ChatRoomCmd,
 } from './actors/ChatRoomActor.js';
+import { ChatRoomDirectoryActor } from './actors/ChatRoomDirectoryActor.js';
 import { OnlineUsersActor } from './actors/OnlineUsersActor.js';
 import { httpIngressProps } from './actors/HttpIngressActor.js';
 
@@ -167,6 +168,19 @@ async function main(): Promise<void> {
     'online-users',
   );
 
+  // -------- 7b. ChatRoomDirectoryActor (top-level, every node) --------
+  // The directory wraps a DistributedData ORSet that is the actual
+  // cluster-wide source of truth — every node spawns its own actor
+  // instance so the WS plugin on this node has a local ref to talk
+  // to.  Multiple instances are safe: the ORSet converges, the seed
+  // step is idempotent (ORSet.add of an existing element is a no-op),
+  // and each instance fans out only to its own local subscribers.
+  // No singleton needed.
+  const roomDirectory = system.actorOf(
+    Props.create(() => new ChatRoomDirectoryActor()),
+    'chat-room-directory',
+  );
+
   // -------- 8. TLS material (optional) --------
   // When `--tls-cert` / `--tls-key` are present we read the PEMs once
   // here and pass the buffers to the singleton's HttpIngressActor; the
@@ -204,6 +218,7 @@ async function main(): Promise<void> {
       onlineUsers,
       mediator,
       sessions,
+      roomDirectory,
       ...(tls ? { tls } : {}),
     }),
   });

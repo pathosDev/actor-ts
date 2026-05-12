@@ -36,6 +36,7 @@ import {
   type SocketClosed,
 } from '../actors/UserSessionActor.js';
 import type { ChatRoomCmd } from '../actors/ChatRoomActor.js';
+import type { ChatRoomDirectoryCmd } from '../actors/ChatRoomDirectoryActor.js';
 import type { OnlineUsersCmd } from '../actors/OnlineUsersActor.js';
 import type { SessionStore } from '../auth/sessionStore.js';
 
@@ -45,6 +46,7 @@ export interface WebSocketPluginOptions {
   readonly onlineUsers: ActorRef<OnlineUsersCmd>;
   readonly mediator: ActorRef<Subscribe | Unsubscribe>;
   readonly sessions: SessionStore;
+  readonly roomDirectory: ActorRef<ChatRoomDirectoryCmd>;
   readonly path?: string;
 }
 
@@ -113,6 +115,7 @@ export const webSocketRoutePlugin: FastifyPluginAsync<WebSocketPluginOptions> = 
           onlineUsers: opts.onlineUsers,
           mediator: opts.mediator,
           sessions: opts.sessions,
+          roomDirectory: opts.roomDirectory,
         }),
       ),
       `chat-session-${id}`,

@@ -1,6 +1,7 @@
 import {
   type ChatMessage,
   type ClientMessage,
+  isRoomName,
   type RoomName,
   type ServerMessage,
   WS_PATH,
@@ -126,12 +127,28 @@ class ChatStore {
 
   selectRoom(room: RoomName): void {
     if (this.currentRoom === room) return;
+    if (this.#ws && this.#ws.readyState === WebSocket.OPEN) {
+      // User-created rooms aren't auto-joined at login.  `join` is
+      // idempotent server-side, so sending it for every selection
+      // is harmless.
+      this.#ws.send(JSON.stringify({ type: 'join', room } satisfies ClientMessage));
+      this.#ws.send(JSON.stringify({ type: 'switch-active-room', room } satisfies ClientMessage));
+    }
     this.currentRoom = room;
     this.unreadByRoom[room] = 0;
+  }
+
+  /**
+   * Ask the cluster's `ChatRoomDirectoryActor` to create a room.
+   * Returns `false` if the local shape guard rejects the name;
+   * server validates again and silently drops invalid names.
+   */
+  createRoom(name: string): boolean {
+    if (!isRoomName(name)) return false;
     if (this.#ws && this.#ws.readyState === WebSocket.OPEN) {
-      const cmd: ClientMessage = { type: 'switch-active-room', room };
-      this.#ws.send(JSON.stringify(cmd));
+      this.#ws.send(JSON.stringify({ type: 'create-room', name } satisfies ClientMessage));
     }
+    return true;
   }
 
   logout(): void {
@@ -188,6 +205,25 @@ class ChatStore {
           this.unreadByRoom[r] ??= 0;
         }
         if (!this.currentRoom) this.currentRoom = m.rooms[0] ?? null;
+        break;
+      }
+      case 'room-added':
+        // `rooms` carries the full set; this is the per-name notice
+        // for toast UX.  Idempotent.
+        if (!this.rooms.includes(m.name)) {
+          this.rooms = [...this.rooms, m.name];
+          this.messagesByRoom[m.name] ??= [];
+          this.usersByRoom[m.name] ??= [];
+          this.unreadByRoom[m.name] ??= 0;
+        }
+        break;
+      case 'room-removed': {
+        this.rooms = this.rooms.filter((r) => r !== m.name);
+        const wasCurrent = this.currentRoom === m.name;
+        delete this.messagesByRoom[m.name];
+        delete this.usersByRoom[m.name];
+        delete this.unreadByRoom[m.name];
+        if (wasCurrent) this.currentRoom = this.rooms[0] ?? null;
         break;
       }
       case 'history':

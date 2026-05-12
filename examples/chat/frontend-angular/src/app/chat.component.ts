@@ -1,4 +1,4 @@
-import { Component, ElementRef, inject, viewChild } from '@angular/core';
+import { Component, ElementRef, inject, signal, viewChild } from '@angular/core';
 import { ChatService } from './chat.service';
 import type { RoomName } from './protocol';
 
@@ -97,6 +97,30 @@ import type { RoomName } from './protocol';
       color: white;
       cursor: pointer;
     }
+    form.room-create {
+      display: flex;
+      gap: 0.25rem;
+      padding: 0.5rem 1rem;
+      border-top: 1px solid var(--border);
+    }
+    form.room-create input {
+      flex: 1;
+      min-width: 0;
+      font: inherit;
+      padding: 0.25rem 0.4rem;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+    }
+    form.room-create input.invalid { border-color: crimson; }
+    form.room-create button {
+      font: inherit;
+      padding: 0.25rem 0.5rem;
+      border-radius: 4px;
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: white;
+      cursor: pointer;
+    }
   `],
   template: `
     <header class="bar">
@@ -119,6 +143,17 @@ import type { RoomName } from './protocol';
             </li>
           }
         </ul>
+        <form class="room-create" (submit)="onCreateRoom($event)" autocomplete="off"
+              title="Create a new room (a–z, 0–9, _-, 1–32 chars)">
+          <input
+            #roomCreateInput
+            placeholder="+ new room"
+            maxlength="32"
+            [class.invalid]="createRoomInvalid()"
+            (input)="createRoomInvalid.set(false)"
+          />
+          <button type="submit">Add</button>
+        </form>
       </aside>
       <main>
         <div class="messages" #scroll>
@@ -157,6 +192,10 @@ import type { RoomName } from './protocol';
 export class ChatComponent {
   protected readonly chat = inject(ChatService);
   private readonly composeInput = viewChild.required<ElementRef<HTMLInputElement>>('composeInput');
+  private readonly roomCreateInput = viewChild.required<ElementRef<HTMLInputElement>>('roomCreateInput');
+  /** Bound to the new-room input's `.invalid` class — flipped on
+   *  failed validation, cleared on the next keystroke. */
+  protected readonly createRoomInvalid = signal(false);
 
   protected formatTs(ts: number): string {
     return new Date(ts).toLocaleTimeString();
@@ -170,6 +209,18 @@ export class ChatComponent {
     const text = input.value.trim();
     if (!text) return;
     this.chat.send(room, text);
+    input.value = '';
+  }
+
+  protected onCreateRoom(event: Event): void {
+    event.preventDefault();
+    const input = this.roomCreateInput().nativeElement;
+    const name = input.value.trim();
+    if (!this.chat.createRoom(name)) {
+      this.createRoomInvalid.set(true);
+      return;
+    }
+    this.createRoomInvalid.set(false);
     input.value = '';
   }
 }

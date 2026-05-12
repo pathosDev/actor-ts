@@ -63,6 +63,42 @@ function LoginView({ chat }: { chat: ChatHandle }): React.JSX.Element {
   );
 }
 
+/**
+ * "+ new room" form in the Rooms aside.  Local invalid-state lives
+ * here (not in `useChat`) — it's per-input UI state, not part of the
+ * chat session.
+ */
+function RoomCreateForm({ chat }: { chat: ChatHandle }): React.JSX.Element {
+  const [value, setValue] = useState('');
+  const [invalid, setInvalid] = useState(false);
+  const onSubmit = (e: FormEvent<HTMLFormElement>): void => {
+    e.preventDefault();
+    if (!chat.createRoom(value.trim())) {
+      setInvalid(true);
+      return;
+    }
+    setInvalid(false);
+    setValue('');
+  };
+  return (
+    <form
+      className="room-create"
+      onSubmit={onSubmit}
+      autoComplete="off"
+      title="Create a new room (a–z, 0–9, _-, 1–32 chars)"
+    >
+      <input
+        value={value}
+        onChange={(e) => { setValue(e.target.value); setInvalid(false); }}
+        placeholder="+ new room"
+        maxLength={32}
+        className={invalid ? 'invalid' : ''}
+      />
+      <button type="submit">Add</button>
+    </form>
+  );
+}
+
 function ChatView({ chat }: { chat: ChatHandle }): React.JSX.Element {
   const { state } = chat;
   const messages = state.currentRoom ? (state.messagesByRoom[state.currentRoom] ?? []) : [];
@@ -104,6 +140,7 @@ function ChatView({ chat }: { chat: ChatHandle }): React.JSX.Element {
               );
             })}
           </ul>
+          <RoomCreateForm chat={chat} />
         </aside>
         <main className="center">
           <div className="messages">

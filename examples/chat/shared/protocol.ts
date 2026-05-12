@@ -14,16 +14,19 @@
  *     { type: 'join',   room }
  *     { type: 'leave',  room }
  *     { type: 'switch-active-room', room }
+ *     { type: 'create-room', name }            // #98 — runtime room creation
  *     { type: 'ping' }
  *
  *   Server → Client (`ServerMessage`):
  *     { type: 'logged-in',    username, token }
  *     { type: 'login-failed', reason }
- *     { type: 'rooms',   rooms }
- *     { type: 'history', room, messages }
- *     { type: 'message', room, from, text, ts }
- *     { type: 'users',   room, users }
- *     { type: 'system',  text }
+ *     { type: 'rooms',        rooms }
+ *     { type: 'room-added',   name }           // #98 — broadcast on room creation
+ *     { type: 'room-removed', name }           // #98 — reserved (delete is out-of-scope today)
+ *     { type: 'history',      room, messages }
+ *     { type: 'message',      room, from, text, ts }
+ *     { type: 'users',        room, users }
+ *     { type: 'system',       text }
  *
  * Auth model: the first frame on any new socket is either `login`
  * (with credentials) or `resume` (with a token previously issued via
@@ -61,6 +64,7 @@ export type ClientMessage =
   | { readonly type: 'join';                 readonly room: RoomName }
   | { readonly type: 'leave';                readonly room: RoomName }
   | { readonly type: 'switch-active-room';   readonly room: RoomName }
+  | { readonly type: 'create-room';          readonly name: string }
   | { readonly type: 'ping' };
 
 /* --------------------------- Server → Client --------------------------- */
@@ -69,6 +73,8 @@ export type ServerMessage =
   | { readonly type: 'logged-in';     readonly username: string; readonly token: string }
   | { readonly type: 'login-failed';  readonly reason: string }
   | { readonly type: 'rooms';         readonly rooms: ReadonlyArray<RoomName> }
+  | { readonly type: 'room-added';    readonly name: RoomName }
+  | { readonly type: 'room-removed';  readonly name: RoomName }
   | { readonly type: 'history';       readonly room: RoomName; readonly messages: ReadonlyArray<ChatMessage> }
   | { readonly type: 'message';       readonly room: RoomName; readonly from: string; readonly text: string; readonly ts: number }
   | { readonly type: 'users';         readonly room: RoomName; readonly users: ReadonlyArray<string> }

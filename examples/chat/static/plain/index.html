@@ -145,6 +145,33 @@
         cursor: default;
         border-left: none;
       }
+      /* room-create row at the bottom of the Rooms aside. */
+      form.room-create {
+        display: flex;
+        gap: 0.25rem;
+        padding: 0.5rem 1rem;
+        border-top: 1px solid var(--border);
+      }
+      form.room-create input {
+        flex: 1;
+        min-width: 0;
+        font: inherit;
+        padding: 0.25rem 0.4rem;
+        border-radius: 4px;
+        border: 1px solid var(--border);
+      }
+      form.room-create button {
+        font: inherit;
+        padding: 0.25rem 0.5rem;
+        border-radius: 4px;
+        border: 1px solid var(--accent);
+        background: var(--accent);
+        color: white;
+        cursor: pointer;
+      }
+      form.room-create input.invalid {
+        border-color: crimson;
+      }
 
       main {
         position: relative;
@@ -226,6 +253,12 @@
         <aside>
           <h2>Rooms</h2>
           <ul id="rooms" class="list"></ul>
+          <form id="room-create" class="room-create" autocomplete="off"
+                title="Create a new room (a–z, 0–9, _-, 1–32 chars)">
+            <input id="room-create-input" placeholder="+ new room"
+                   maxlength="32" />
+            <button type="submit">Add</button>
+          </form>
         </aside>
         <main>
           <div id="messages" class="messages"></div>
@@ -247,6 +280,8 @@
       /* ============== state ============== */
       const TOKEN_KEY = 'chat-token';
       const MAX_RECONNECT_ATTEMPTS = 8;
+      /** Mirrors `isRoomName` in shared/rooms.ts on the server. */
+      const ROOM_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
       const state = {
         username: null,
         ws: null,
@@ -270,6 +305,8 @@
       const $loginErr = document.getElementById('login-error');
       const $logout   = document.getElementById('logout');
       const $rooms    = document.getElementById('rooms');
+      const $rcForm   = document.getElementById('room-create');
+      const $rcInput  = document.getElementById('room-create-input');
       const $users    = document.getElementById('users');
       const $usersCnt = document.getElementById('users-count');
       const $msgs     = document.getElementById('messages');
@@ -377,6 +414,8 @@
           case 'logged-in':    return onLoggedIn(msg.username, msg.token);
           case 'login-failed': return onLoginFailed(msg.reason);
           case 'rooms':        return onRooms(msg.rooms);
+          case 'room-added':   return onRoomAdded(msg.name);
+          case 'room-removed': return onRoomRemoved(msg.name);
           case 'history':      return onHistory(msg.room, msg.messages);
           case 'message':      return onMessage(msg.room, { from: msg.from, text: msg.text, ts: msg.ts });
           case 'users':        return onUsers(msg.room, msg.users);
@@ -423,6 +462,35 @@
         renderUsers();
       }
 
+      function onRoomAdded(name) {
+        // Idempotent: `rooms` already carries the full set, so this
+        // event is purely for "a new room appeared" toasts/UX.  We
+        // still show a system line so the user notices.
+        if (!state.rooms.includes(name)) {
+          state.rooms.push(name);
+          if (!state.messagesByRoom.has(name)) state.messagesByRoom.set(name, []);
+          if (!state.usersByRoom.has(name))    state.usersByRoom.set(name, []);
+          if (!state.unreadByRoom.has(name))   state.unreadByRoom.set(name, 0);
+          renderRoomList();
+        }
+        onSystem(`New room "#${name}" available — click to join.`);
+      }
+
+      function onRoomRemoved(name) {
+        state.rooms = state.rooms.filter((r) => r !== name);
+        const wasCurrent = state.currentRoom === name;
+        state.messagesByRoom.delete(name);
+        state.usersByRoom.delete(name);
+        state.unreadByRoom.delete(name);
+        if (wasCurrent) state.currentRoom = state.rooms[0] ?? null;
+        renderRoomList();
+        if (wasCurrent) {
+          renderMessages();
+          renderUsers();
+          onSystem(`Room "#${name}" was removed.`);
+        }
+      }
+
       function onHistory(room, messages) {
         state.messagesByRoom.set(room, messages.slice());
         if (room === state.currentRoom) renderMessages();
@@ -461,8 +529,31 @@
         $cText.value = '';
       });
 
+      $rcForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const name = $rcInput.value.trim();
+        if (!ROOM_NAME_PATTERN.test(name)) {
+          $rcInput.classList.add('invalid');
+          return;
+        }
+        $rcInput.classList.remove('invalid');
+        if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+          state.ws.send(JSON.stringify({ type: 'create-room', name }));
+        }
+        $rcInput.value = '';
+      });
+      $rcInput.addEventListener('input', () => {
+        $rcInput.classList.remove('invalid');
+      });
+
       function selectRoom(room) {
         if (state.currentRoom === room) return;
+        // User-created rooms aren't auto-joined at login — explicitly
+        // `join` first so we get presence + history.  Idempotent
+        // server-side, so doing it for default rooms too is harmless.
+        if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+          state.ws.send(JSON.stringify({ type: 'join', room }));
+        }
         state.currentRoom = room;
         state.unreadByRoom.set(room, 0);
         if (state.ws && state.ws.readyState === WebSocket.OPEN) {

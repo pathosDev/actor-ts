@@ -3,6 +3,7 @@ import {
   type ChatMessage,
   type ClientMessage,
   DEFAULT_ROOMS,
+  isRoomName,
   type RoomName,
   type ServerMessage,
   WS_PATH,
@@ -142,11 +143,30 @@ export class ChatService {
 
   selectRoom(room: RoomName): void {
     if (this.currentRoom() === room) return;
-    this.currentRoom.set(room);
-    this.unreadByRoom.update((u) => ({ ...u, [room]: 0 }));
+    // User-created rooms aren't auto-joined at login.  `join` is
+    // idempotent server-side, so we send it unconditionally — the
+    // server only registers presence + history-replay once per room
+    // per session anyway.
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'join', room } satisfies ClientMessage));
       this.ws.send(JSON.stringify({ type: 'switch-active-room', room } satisfies ClientMessage));
     }
+    this.currentRoom.set(room);
+    this.unreadByRoom.update((u) => ({ ...u, [room]: 0 }));
+  }
+
+  /**
+   * Ask the cluster's `ChatRoomDirectoryActor` to create a room.
+   * Returns `false` if the name fails the local shape guard (so the
+   * caller can render an inline error without round-tripping); the
+   * server validates again and silently rejects bad shapes.
+   */
+  createRoom(name: string): boolean {
+    if (!isRoomName(name)) return false;
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'create-room', name } satisfies ClientMessage));
+    }
+    return true;
   }
 
   logout(): void {
@@ -214,6 +234,30 @@ export class ChatService {
           return next;
         });
         if (!this.currentRoom()) this.currentRoom.set(rooms[0] ?? DEFAULT_ROOMS[0]);
+        break;
+      }
+      case 'room-added':
+        // `rooms` carries the full set; this is the per-name notice
+        // used for toast-style UX.  Idempotent — if the name is
+        // already known, only the toast fires.
+        if (!this.rooms().includes(m.name)) {
+          this.rooms.update((rs) => [...rs, m.name]);
+          this.messagesByRoom.update((cur) => ({ ...cur, [m.name]: [] }));
+          this.usersByRoom.update((cur) => ({ ...cur, [m.name]: [] }));
+          this.unreadByRoom.update((cur) => ({ ...cur, [m.name]: 0 }));
+        }
+        break;
+      case 'room-removed': {
+        this.rooms.update((rs) => rs.filter((r) => r !== m.name));
+        const wasCurrent = this.currentRoom() === m.name;
+        const dropKey = (cur: Record<string, unknown>): Record<string, unknown> => {
+          const { [m.name]: _drop, ...rest } = cur;
+          return rest;
+        };
+        this.messagesByRoom.update((cur) => dropKey(cur) as typeof cur);
+        this.usersByRoom.update((cur) => dropKey(cur) as typeof cur);
+        this.unreadByRoom.update((cur) => dropKey(cur) as typeof cur);
+        if (wasCurrent) this.currentRoom.set(this.rooms()[0] ?? null);
         break;
       }
       case 'history':

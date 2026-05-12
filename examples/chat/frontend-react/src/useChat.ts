@@ -2,6 +2,7 @@ import { useCallback, useEffect, useReducer, useRef } from 'react';
 import {
   type ChatMessage,
   type ClientMessage,
+  isRoomName,
   type RoomName,
   type ServerMessage,
   WS_PATH,
@@ -72,6 +73,8 @@ type Action =
   | { type: 'logged-in'; username: string }
   | { type: 'reset' }
   | { type: 'rooms'; rooms: ReadonlyArray<RoomName> }
+  | { type: 'room-added'; name: RoomName }
+  | { type: 'room-removed'; name: RoomName }
   | { type: 'history'; room: RoomName; messages: ReadonlyArray<ChatMessage> }
   | { type: 'message'; room: RoomName; from: string; text: string; ts: number }
   | { type: 'users'; room: RoomName; users: ReadonlyArray<string> }
@@ -102,6 +105,34 @@ function reducer(state: State, action: Action): State {
         usersByRoom,
         unreadByRoom,
         currentRoom: state.currentRoom ?? rooms[0] ?? null,
+      };
+    }
+    case 'room-added': {
+      // `rooms` carries the full set; this action exists for the
+      // per-name toast in the UI.  Idempotent — re-adding an existing
+      // name is a no-op for the reducer.
+      if (state.rooms.includes(action.name)) return state;
+      return {
+        ...state,
+        rooms: [...state.rooms, action.name],
+        messagesByRoom: { ...state.messagesByRoom, [action.name]: [] },
+        usersByRoom:    { ...state.usersByRoom,    [action.name]: [] },
+        unreadByRoom:   { ...state.unreadByRoom,   [action.name]: 0  },
+      };
+    }
+    case 'room-removed': {
+      const { [action.name]: _m, ...messagesByRoom } = state.messagesByRoom;
+      const { [action.name]: _u, ...usersByRoom } = state.usersByRoom;
+      const { [action.name]: _r, ...unreadByRoom } = state.unreadByRoom;
+      return {
+        ...state,
+        rooms: state.rooms.filter((r) => r !== action.name),
+        currentRoom: state.currentRoom === action.name
+          ? (state.rooms.find((r) => r !== action.name) ?? null)
+          : state.currentRoom,
+        messagesByRoom,
+        usersByRoom,
+        unreadByRoom,
       };
     }
     case 'history':
@@ -147,6 +178,7 @@ export function useChat(): {
   logout(): void;
   send(room: RoomName, text: string): void;
   selectRoom(room: RoomName): void;
+  createRoom(name: string): boolean;
 } {
   const [state, dispatch] = useReducer(reducer, undefined, init);
   const wsRef = useRef<WebSocket | null>(null);
@@ -186,6 +218,12 @@ export function useChat(): {
         break;
       case 'rooms':
         dispatch({ type: 'rooms', rooms: m.rooms });
+        break;
+      case 'room-added':
+        dispatch({ type: 'room-added', name: m.name });
+        break;
+      case 'room-removed':
+        dispatch({ type: 'room-removed', name: m.name });
         break;
       case 'history':
         dispatch({ type: 'history', room: m.room, messages: m.messages });
@@ -281,9 +319,25 @@ export function useChat(): {
   const selectRoom = useCallback((room: RoomName) => {
     dispatch({ type: 'select-room', room });
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      const cmd: ClientMessage = { type: 'switch-active-room', room };
-      wsRef.current.send(JSON.stringify(cmd));
+      // User-created rooms aren't auto-joined at login.  `join` is
+      // idempotent server-side, so sending it for every selection
+      // is harmless.
+      wsRef.current.send(JSON.stringify({ type: 'join', room } satisfies ClientMessage));
+      wsRef.current.send(JSON.stringify({ type: 'switch-active-room', room } satisfies ClientMessage));
     }
+  }, []);
+
+  /**
+   * Ask the cluster's `ChatRoomDirectoryActor` to create a room.
+   * Returns `false` if the local shape guard rejects the name; the
+   * server validates again and silently drops invalid names too.
+   */
+  const createRoom = useCallback((name: string): boolean => {
+    if (!isRoomName(name)) return false;
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'create-room', name } satisfies ClientMessage));
+    }
+    return true;
   }, []);
 
   // Cleanup on unmount.
@@ -293,5 +347,5 @@ export function useChat(): {
     };
   }, []);
 
-  return { state, connect, logout, send, selectRoom };
+  return { state, connect, logout, send, selectRoom, createRoom };
 }

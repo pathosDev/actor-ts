@@ -10,6 +10,8 @@
  *   3. History reply for the user's primary room (#general).
  *   4. Send → broadcast roundtrip (publish-fan-out).
  *   5. History persistence: a fresh connection sees previous messages.
+ *   6. (#98) User-created rooms: alice creates a room, bob sees the
+ *      `room-added` broadcast, both join it, and a message round-trips.
  *
  * Run against a **single-node bootstrap** for reliable verification:
  *
@@ -166,7 +168,51 @@ async function main(): Promise<void> {
   if (last3[0]!.text !== 'hello world') fail(`history wrong text: ${last3[0]!.text}`);
   ok(`history has ${hist.messages.length} messages, last 3 are alice's`);
 
-  b.close();
+  // ---------- pass 3: user-created room (#98) ----------
+  console.log('— pass 3: user-created room —');
+  // Unique name per run so the test stays idempotent across restarts
+  // — the directory ORSet keeps state in DD memory but the seed of
+  // DEFAULT_ROOMS is always present.  A fresh name avoids "already
+  // exists" if the test is run twice against the same backend.
+  const roomName = `smoke-${Date.now().toString(36)}`;
+
+  const a2 = new ChatClient(URL_ARG);
+  const b2 = new ChatClient(URL_ARG);
+  await Promise.all([a2.open(), b2.open()]);
+  a2.send({ type: 'login', username: 'alice', password: 'wonderland' });
+  b2.send({ type: 'login', username: 'bob',   password: 'builder' });
+  await a2.await((m) => m.type === 'logged-in');
+  await b2.await((m) => m.type === 'logged-in');
+
+  // Wait for both clients to receive the initial `rooms` frame so
+  // we know each has subscribed to the directory before alice asks
+  // for the create — otherwise bob might miss the broadcast.
+  await a2.await((m) => m.type === 'rooms');
+  await b2.await((m) => m.type === 'rooms');
+
+  a2.send({ type: 'create-room', name: roomName });
+
+  // Both clients should see `room-added` with the new name.
+  await a2.await((m) => m.type === 'room-added' && (m as ServerMsg).name === roomName, 5000);
+  await b2.await((m) => m.type === 'room-added' && (m as ServerMsg).name === roomName, 5000);
+  ok(`both clients saw room-added(${roomName})`);
+
+  // Both join the new room and round-trip a message.
+  a2.send({ type: 'join', room: roomName });
+  b2.send({ type: 'join', room: roomName });
+  // Give the subscriptions a gossip tick — same anti-jitter margin
+  // we use in pass 1 before the first send.
+  await new Promise((r) => setTimeout(r, 750));
+  a2.send({ type: 'send', room: roomName, text: 'hi from alice in new room' });
+  await b2.await(
+    (m) => m.type === 'message'
+        && (m as ServerMsg).room === roomName
+        && (m as ServerMsg).from === 'alice',
+    5000,
+  );
+  ok(`bob received alice's message in #${roomName}`);
+
+  a2.close(); b2.close();
   await new Promise((r) => setTimeout(r, 100));
   process.exit(0);
 }
