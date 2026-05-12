@@ -19,6 +19,7 @@
  *   - Triple-quoted multi-line strings.
  *   - `include` directives.
  */
+import { match } from 'ts-pattern';
 
 export type ConfigPrimitive = string | number | boolean | null;
 export type ConfigValue = ConfigPrimitive | ConfigValue[] | ConfigObject | Substitution;
@@ -343,16 +344,19 @@ function walk(
   root: ConfigObject,
   env: Record<string, string | undefined>,
 ): ConfigValue {
-  if (isSubstitution(node)) return resolveOne(node, root, env);
-  if (Array.isArray(node)) return node.map(v => walk(v, root, env));
-  if (isPlainObject(node)) {
-    const out: ConfigObject = {};
-    for (const [k, v] of Object.entries(node as ConfigObject)) {
-      out[k] = walk(v, root, env);
-    }
-    return out;
-  }
-  return node;
+  // Exhaustive over the ConfigValue shape.  Type-guard arms via
+  // `.when()` because Substitution and plain-ConfigObject share the
+  // `typeof === 'object'` family — the helpers know how to tell them
+  // apart and we lean on them rather than reimplement the discriminator.
+  return match(node)
+    .when(isSubstitution, (sub) => resolveOne(sub, root, env))
+    .when((v): v is ConfigValue[] => Array.isArray(v), (arr) => arr.map(v => walk(v, root, env)))
+    .when(isPlainObject, (obj) => {
+      const out: ConfigObject = {};
+      for (const [k, v] of Object.entries(obj)) out[k] = walk(v, root, env);
+      return out;
+    })
+    .otherwise((primitive) => primitive);
 }
 
 function resolveOne(
