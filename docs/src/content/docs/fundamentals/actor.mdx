@@ -1,0 +1,311 @@
+---
+title: Actor
+description: The foundational Actor base class — mailbox, onReceive, lifecycle hooks, context references. Everything else in the framework builds on these primitives.
+---
+
+The `Actor` class is the foundational primitive in actor-ts.  Every
+component you build by extending `Actor` gets a private mailbox, a
+single-threaded `onReceive` loop, lifecycle hooks, and a handful of
+context references (`self`, `sender`, `system`, `log`, `context`) for
+talking to the rest of the runtime.
+
+Everything else in the framework — supervision, sharding, persistence,
+HTTP, brokers — builds on the primitives this page covers.
+
+## What an actor is
+
+Three properties define an actor in actor-ts:
+
+1. **A private mailbox.**  Messages sent to the actor enter this mailbox.
+   No one — not even the actor itself — can reach into another actor's
+   mailbox directly.
+2. **A single-threaded message loop.**  The framework processes messages
+   from the mailbox one at a time.  Two messages never run concurrently
+   for the same actor; inside `onReceive` you read and mutate the
+   actor's fields without locks or atomics.
+3. **A handle, not a reference to the instance.**  When you "send a
+   message to an actor," what you actually have is an `ActorRef<T>` —
+   a thin location-transparent handle.  The framework holds the real
+   `Actor` instance.  You can pass refs across the cluster, store them,
+   hand them to other actors; you can never see the underlying class.
+
+## Defining one
+
+```ts
+import { Actor, ActorSystem, Props } from 'actor-ts';
+
+type Cmd =
+  | { kind: 'inc' }
+  | { kind: 'reset' };
+
+class Counter extends Actor<Cmd> {
+  private count = 0;
+
+  override onReceive(cmd: Cmd): void {
+    if (cmd.kind === 'inc')   this.count++;
+    else if (cmd.kind === 'reset') this.count = 0;
+    this.log.info(`count is now ${this.count}`);
+  }
+}
+```
+
+Three things to notice:
+
+- **The type parameter `<Cmd>`** constrains what messages this actor
+  accepts.  `ref.tell({ kind: 'bogus' })` is a TypeScript error at the
+  call site.  See [Messages](/actor-ts/fundamentals/messages/) for the
+  discriminated-union convention this codebase uses everywhere.
+- **`override onReceive(cmd: Cmd): void`** is the only required
+  override.  The base class declares it `abstract`, so the compiler
+  refuses to compile if you forget it.
+- **`this.log`, `this.count`** — you have full access to instance
+  fields.  Single-threaded processing means concurrent reads/writes
+  aren't a concern; you reason about state like you would in a
+  single-threaded program.
+
+## Spawning one
+
+You don't `new Counter()` directly.  The framework needs to control
+**when** the instance is created (on its own mailbox-processing thread,
+not on the caller's) and it needs to inject context (the `self` ref,
+the supervisor strategy, the parent reference).  So instead of an
+instance, you hand over a factory:
+
+```ts
+const system = ActorSystem.create('demo');
+
+// Anonymous actor — system picks a name.
+const counter = system.actorOf(Props.create(() => new Counter()));
+
+// Named actor — useful for log lines + path-based lookup.
+const counter2 = system.actorOf(Props.create(() => new Counter()), 'counter');
+```
+
+`Props.create(...)` wraps the factory + supervisor strategy + dispatcher
+choice into one value.  See [Props](/actor-ts/fundamentals/props/) for
+the full surface.
+
+## Sending messages
+
+The returned `ActorRef` has one verb that matters: `tell(message)`.
+
+```ts
+counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'reset' });
+```
+
+`tell` is **fire-and-forget**.  It enqueues the message into the
+mailbox and returns immediately — the actor processes it on its own
+schedule.  For request/response, see [Ask pattern](/actor-ts/fundamentals/ask-pattern/).
+
+## The context references
+
+Inside `onReceive` (and the lifecycle hooks), four references give you
+access to the runtime:
+
+```ts
+class Echo extends Actor<{ text: string }> {
+  override onReceive(msg: { text: string }): void {
+    // 1. `this.self` — a ref to me.  Pass this around when other
+    //    actors should be able to talk to me.
+    this.log.info(`I am ${this.self.path}`);
+
+    // 2. `this.sender` — Option<ActorRef> for who sent this message.
+    //    `None` when no sender was attached (e.g. `tell` from outside
+    //    the actor system).  Use `.forEach(...)` to reply only when
+    //    there is one.
+    this.sender.forEach((replyTo) => replyTo.tell({ echo: msg.text }));
+
+    // 3. `this.system` — the ActorSystem.  Spawn top-level actors,
+    //    schedule timers, register extensions.
+    void this.system;
+
+    // 4. `this.log` — a Logger pre-wired with the actor's path as
+    //    structured-log context.
+    this.log.debug('echo done');
+
+    // (5. `this.context` — the full ActorContext for deeper APIs:
+    //     `context.spawn(...)` for children, `context.watch(...)` for
+    //     death-watch, `context.become(...)` for behavior switching.)
+    void this.context;
+  }
+}
+```
+
+`sender` is `Option<ActorRef>` because not every message has a sender:
+a `tell` from outside the actor world (e.g. from an HTTP handler)
+attaches `None`.  Use `.forEach` to reply only if one is present, or
+`.getOrElse(system.deadLetters)` if you want a fallback.
+
+## Lifecycle hooks
+
+The base class defines four lifecycle hooks; all default to no-op.
+Override the ones you need.
+
+```ts
+class FileWriter extends Actor<{ line: string }> {
+  private handle!: FileHandle;
+
+  override async preStart(): Promise<void> {
+    this.handle = await fs.open(this.config.path, 'a');
+    this.log.info('opened ' + this.config.path);
+  }
+
+  override onReceive(msg: { line: string }): void {
+    this.handle.write(msg.line + '\n').catch((e) => this.log.warn(e));
+  }
+
+  override async postStop(): Promise<void> {
+    await this.handle.close();
+    this.log.info('closed ' + this.config.path);
+  }
+}
+```
+
+The four hooks:
+
+| Hook | When it runs | Default |
+| --- | --- | --- |
+| `preStart()` | After construction, before the first message.  Open files, connect to brokers, register subscribers here. | no-op |
+| `postStop()` | After the actor has stopped (children already stopped).  Close resources, deregister.  Runs once. | no-op |
+| `preRestart(reason, message?)` | Before a restart, on the **about-to-be-thrown-away** instance.  Default calls `postStop()`. | calls `postStop()` |
+| `postRestart(reason)` | On the **fresh** instance after a restart.  Default calls `preStart()`. | calls `preStart()` |
+
+All four can return `Promise<void>` — the framework awaits before the
+next phase.  A throw in `preStart` is escalated to the supervisor.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="tip" title="Restart semantics">
+  When the supervisor decides to **restart** a crashed actor, the
+  framework throws away the broken instance entirely (so any internal
+  state is gone) and builds a new one from the same `Props.create`
+  factory.  Messages that arrived during the restart window stay in
+  the mailbox; the new instance picks them up.  See
+  [Supervision](/actor-ts/fundamentals/supervision/) for the full
+  decision tree.
+</Aside>
+
+## Children
+
+Actors can have children.  Use `context.spawn` from inside the parent's
+`onReceive`:
+
+```ts
+class Parent extends Actor<{ kind: 'add-child'; name: string }> {
+  override onReceive(msg: { kind: 'add-child'; name: string }): void {
+    const child = this.context.spawn(
+      Props.create(() => new Worker()),
+      msg.name,
+    );
+    this.log.info(`spawned child ${child.path}`);
+  }
+}
+```
+
+The child's full path becomes `/<parent>/<child-name>`.  Children are
+tied to the parent's lifecycle — when the parent stops, all children
+stop first (postStop runs bottom-up).  Supervision decisions for a
+child go to the parent's supervisor strategy.
+
+See [Actor paths](/actor-ts/fundamentals/actor-paths/) for the path
+hierarchy and [Supervision](/actor-ts/fundamentals/supervision/) for
+how parent-child failure propagation works.
+
+## Async `onReceive`
+
+`onReceive` can be `async` (returns `Promise<void>`):
+
+```ts
+class DbWriter extends Actor<{ row: Row }> {
+  override async onReceive(msg: { row: Row }): Promise<void> {
+    await this.db.insert(msg.row);
+    this.log.debug('wrote row ' + msg.row.id);
+  }
+}
+```
+
+**The framework awaits the returned promise before pulling the next
+message** from the mailbox.  So `db.insert` running serially per-actor
+is guaranteed — no need for a transaction-per-message guard.
+
+The trade-off is throughput: a slow `await` blocks **this** actor's
+message processing.  Other actors aren't affected (they have their
+own mailboxes), but if you've created one actor per HTTP request and
+each one waits 500 ms on a DB call, your throughput is capped at one
+request per 500 ms per actor.
+
+The usual fix is to spawn a child per long-running task, let it run
+the slow op, and have it tell the parent the result:
+
+```ts
+class DbWriterFanout extends Actor<{ row: Row }> {
+  override onReceive(msg: { row: Row }): void {
+    // Spawn-and-forget: child does the slow DB write, parent stays
+    // available for the next message in the mailbox.
+    this.context.spawn(Props.create(() =>
+      new SingleShotWriter(this.db, msg.row)
+    ));
+  }
+}
+```
+
+## Common pitfalls
+
+<Aside type="caution" title="Don't store mailbox state inside onReceive's closure">
+  ```ts
+  // BAD: `seen` is a local in `onReceive` — every call gets a fresh
+  // empty Map.  No deduplication across messages.
+  override onReceive(msg: M) {
+    const seen = new Map();
+    if (seen.has(msg.id)) return;
+    seen.set(msg.id, true);
+  }
+
+  // GOOD: `seen` is an instance field — persists across calls.
+  private seen = new Map();
+  override onReceive(msg: M) {
+    if (this.seen.has(msg.id)) return;
+    this.seen.set(msg.id, true);
+  }
+  ```
+  Actor state lives on `this`, never inside the message handler.
+</Aside>
+
+<Aside type="caution" title="Don't capture refs from outside the actor in closures that survive the actor">
+  An `ActorRef` captured in a global `setTimeout` callback survives the
+  actor's lifetime — when the actor stops, the timer still fires and
+  the `tell` goes to dead letters.  Use `context.scheduler` (which
+  cancels timers automatically on `postStop`) instead of raw
+  `setTimeout` for actor-bound scheduling.  See
+  [Timers and scheduling](/actor-ts/fundamentals/timers-and-scheduling/).
+</Aside>
+
+<Aside type="caution" title="`this.sender` returns Option, not ActorRef">
+  ```ts
+  // Wrong — `sender` is `Option<ActorRef>`, not `ActorRef`.
+  this.sender.tell({ result });
+
+  // Right — `.forEach` runs the function only when there is a sender.
+  this.sender.forEach((replyTo) => replyTo.tell({ result }));
+  ```
+  `tell` from outside the actor system carries no sender, so
+  unconditional `sender.tell(...)` would throw on those messages.
+</Aside>
+
+## Where to next
+
+- **[Messages](/actor-ts/fundamentals/messages/)** — the discriminated-
+  union convention every actor uses for its incoming type.
+- **[Actor paths](/actor-ts/fundamentals/actor-paths/)** — how
+  parent/child hierarchies form addresses.
+- **[Supervision](/actor-ts/fundamentals/supervision/)** — what
+  happens when `onReceive` throws.
+- **[Become and stash](/actor-ts/fundamentals/become-and-stash/)** —
+  switching behavior at runtime and buffering messages.
+- **[Ask pattern](/actor-ts/fundamentals/ask-pattern/)** —
+  request/response when fire-and-forget isn't enough.
+
+The [`Actor` class API reference](/actor-ts/api/classes/actor/) has the
+full signature for every method discussed here.
