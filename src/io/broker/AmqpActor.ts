@@ -1,4 +1,5 @@
 import type { Config } from '../../config/Config.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
@@ -67,7 +68,7 @@ export class AmqpActor extends BrokerActor<AmqpActorSettings, AmqpCmd, AmqpPubli
 
   constructor(settings: Partial<AmqpActorSettings> = {}) { super(settings); }
 
-  protected configKey(): string { return 'actor-ts.io.broker.amqp'; }
+  protected configKey(): string { return ConfigKeys.io.broker.amqp; }
   protected builtInDefaults(): Partial<AmqpActorSettings> {
     return { prefetch: 1, autoAck: true };
   }

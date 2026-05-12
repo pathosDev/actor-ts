@@ -1,4 +1,5 @@
 import type { Config } from '../../config/Config.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
@@ -58,7 +59,7 @@ export class WebSocketActor extends BrokerActor<WebSocketActorSettings, WebSocke
 
   constructor(settings: Partial<WebSocketActorSettings> = {}) { super(settings); }
 
-  protected configKey(): string { return 'actor-ts.io.broker.websocket'; }
+  protected configKey(): string { return ConfigKeys.io.broker.websocket; }
   protected builtInDefaults(): Partial<WebSocketActorSettings> { return {}; }
   protected readSettingsFromConfig(c: Config): Partial<WebSocketActorSettings> {
     const out: { -readonly [K in keyof WebSocketActorSettings]?: WebSocketActorSettings[K] } = {};

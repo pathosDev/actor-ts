@@ -1,5 +1,6 @@
 import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
@@ -175,7 +176,7 @@ export class KafkaActor extends BrokerActor<KafkaActorSettings, KafkaCmd, KafkaP
 
   constructor(settings: Partial<KafkaActorSettings> = {}) { super(settings); }
 
-  protected configKey(): string { return 'actor-ts.io.broker.kafka'; }
+  protected configKey(): string { return ConfigKeys.io.broker.kafka; }
   protected builtInDefaults(): Partial<KafkaActorSettings> {
     return { ssl: false, producer: { idempotent: false, allowAutoTopicCreation: false } };
   }

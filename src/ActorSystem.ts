@@ -2,6 +2,7 @@ import { match } from 'ts-pattern';
 import { ActorRef } from './ActorRef.js';
 import { ActorSelection, parseSelectionPath } from './ActorSelection.js';
 import { Config } from './config/Config.js';
+import { ConfigKeys } from './config/ConfigKeys.js';
 import { none, some, type Option } from './util/Option.js';
 import type { ConfigObject } from './config/HoconParser.js';
 import { Extensions, type Extension, type ExtensionId } from './Extension.js';
@@ -199,8 +200,8 @@ function buildConfig(settings: ActorSystemSettings): Config {
 }
 
 function logLevelFromConfig(config: Config): LogLevel {
-  if (!config.hasPath('actor-ts.logger.level')) return LogLevel.Info;
-  const raw = config.getString('actor-ts.logger.level').toLowerCase();
+  if (!config.hasPath(ConfigKeys.logger.level)) return LogLevel.Info;
+  const raw = config.getString(ConfigKeys.logger.level).toLowerCase();
   return match(raw)
     .with('debug', () => LogLevel.Debug)
     .with('info',  () => LogLevel.Info)
@@ -211,14 +212,14 @@ function logLevelFromConfig(config: Config): LogLevel {
 }
 
 function dispatcherFromConfig(config: Config): Dispatcher {
-  const kind = config.hasPath('actor-ts.dispatcher.default')
-    ? config.getString('actor-ts.dispatcher.default').toLowerCase()
+  const kind = config.hasPath(ConfigKeys.dispatcher.default)
+    ? config.getString(ConfigKeys.dispatcher.default).toLowerCase()
     : 'immediate';
   return match(kind)
     .with('microtask',  () => new MicrotaskDispatcher() as Dispatcher)
     .with('throughput', () => {
-      const n = config.hasPath('actor-ts.dispatcher.throughput')
-        ? config.getInt('actor-ts.dispatcher.throughput')
+      const n = config.hasPath(ConfigKeys.dispatcher.throughput)
+        ? config.getInt(ConfigKeys.dispatcher.throughput)
         : 16;
       return new ThroughputDispatcher(n) as Dispatcher;
     })

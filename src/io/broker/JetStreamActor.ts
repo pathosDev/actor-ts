@@ -1,5 +1,6 @@
 import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
@@ -198,7 +199,7 @@ export class JetStreamActor extends BrokerActor<
 
   constructor(settings: Partial<JetStreamActorSettings> = {}) { super(settings); }
 
-  protected configKey(): string { return 'actor-ts.io.broker.jetstream'; }
+  protected configKey(): string { return ConfigKeys.io.broker.jetstream; }
   protected builtInDefaults(): Partial<JetStreamActorSettings> { return {}; }
   protected readSettingsFromConfig(c: Config): Partial<JetStreamActorSettings> {
     const out: { -readonly [K in keyof JetStreamActorSettings]?: JetStreamActorSettings[K] } = {};

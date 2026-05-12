@@ -10,3 +10,4 @@ export {
 export { parseDuration } from './Duration.js';
 export { parseSize } from './Size.js';
 export { REFERENCE_CONF } from './reference.js';
+export { ConfigKeys } from './ConfigKeys.js';

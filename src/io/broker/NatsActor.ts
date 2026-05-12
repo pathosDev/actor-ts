@@ -1,4 +1,5 @@
 import type { Config } from '../../config/Config.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
@@ -49,7 +50,7 @@ export class NatsActor extends BrokerActor<NatsActorSettings, NatsCmd, NatsPubli
 
   constructor(settings: Partial<NatsActorSettings> = {}) { super(settings); }
 
-  protected configKey(): string { return 'actor-ts.io.broker.nats'; }
+  protected configKey(): string { return ConfigKeys.io.broker.nats; }
   protected builtInDefaults(): Partial<NatsActorSettings> { return {}; }
   protected readSettingsFromConfig(c: Config): Partial<NatsActorSettings> {
     const out: { -readonly [K in keyof NatsActorSettings]?: NatsActorSettings[K] } = {};

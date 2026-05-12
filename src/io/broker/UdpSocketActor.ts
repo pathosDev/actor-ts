@@ -1,4 +1,5 @@
 import type { Config } from '../../config/Config.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
@@ -45,7 +46,7 @@ export class UdpSocketActor
 
   constructor(settings: Partial<UdpSocketActorSettings> = {}) { super(settings); }
 
-  protected configKey(): string { return 'actor-ts.io.broker.udp'; }
+  protected configKey(): string { return ConfigKeys.io.broker.udp; }
   protected builtInDefaults(): Partial<UdpSocketActorSettings> {
     return { bindHost: '0.0.0.0', bindPort: 0, type: 'udp4' };
   }

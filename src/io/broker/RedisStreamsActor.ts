@@ -1,4 +1,5 @@
 import type { Config } from '../../config/Config.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
@@ -59,7 +60,7 @@ export class RedisStreamsActor
 
   constructor(settings: Partial<RedisStreamsActorSettings> = {}) { super(settings); }
 
-  protected configKey(): string { return 'actor-ts.io.broker.redis-streams'; }
+  protected configKey(): string { return ConfigKeys.io.broker.redisStreams; }
   protected builtInDefaults(): Partial<RedisStreamsActorSettings> {
     return { blockMs: 5_000 };
   }

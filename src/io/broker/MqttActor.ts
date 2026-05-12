@@ -1,5 +1,6 @@
 import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
@@ -116,7 +117,7 @@ export class MqttActor extends BrokerActor<MqttActorSettings, MqttCmd, MqttPubli
 
   constructor(settings: Partial<MqttActorSettings> = {}) { super(settings); }
 
-  protected configKey(): string { return 'actor-ts.io.broker.mqtt'; }
+  protected configKey(): string { return ConfigKeys.io.broker.mqtt; }
   protected builtInDefaults(): Partial<MqttActorSettings> {
     return { defaultQos: 0, cleanSession: true, keepAliveSec: 60 };
   }

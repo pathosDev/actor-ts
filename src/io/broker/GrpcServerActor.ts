@@ -1,4 +1,5 @@
 import type { Config } from '../../config/Config.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { Actor } from '../../Actor.js';
@@ -120,7 +121,7 @@ export class GrpcServerActor extends Actor<unknown> {
     const defaults: Partial<GrpcServerSettings> = {
       credentials: { kind: 'insecure' },
     };
-    const cfgPath = 'actor-ts.io.broker.grpc.server';
+    const cfgPath = ConfigKeys.io.broker.grpc.server;
     const cfg = this.system.config.hasPath(cfgPath)
       ? this.system.config.getConfig(cfgPath)
       : null;
@@ -145,7 +146,7 @@ export class GrpcServerActor extends Actor<unknown> {
     if (missing.length > 0) {
       throw new BrokerSettingsError(
         `GrpcServerActor missing required settings: ${missing.join(', ')}`,
-        'actor-ts.io.broker.grpc.server',
+        ConfigKeys.io.broker.grpc.server,
       );
     }
   }

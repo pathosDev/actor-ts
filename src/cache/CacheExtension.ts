@@ -1,4 +1,5 @@
 import type { ActorSystem } from '../ActorSystem.js';
+import { ConfigKeys } from '../config/ConfigKeys.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import { InMemoryCache } from './InMemoryCache.js';
 import type { Cache } from './Cache.js';
@@ -19,7 +20,7 @@ export class CacheExtension implements Extension {
   private readonly instances = new Map<string, Cache>();
 
   constructor(private readonly system: ActorSystem) {
-    this.factories.set('actor-ts.cache.in-memory', () => new InMemoryCache());
+    this.factories.set(ConfigKeys.cache.inMemory, () => new InMemoryCache());
   }
 
   /**
@@ -47,7 +48,7 @@ export class CacheExtension implements Extension {
     if (existing) return existing;
     const pluginId = this.pluginIdFor(name);
     const factory = this.factories.get(pluginId)
-      ?? this.factories.get('actor-ts.cache.in-memory')!;
+      ?? this.factories.get(ConfigKeys.cache.inMemory)!;
     const inst = factory(this.system);
     this.instances.set(name, inst);
     return inst;
@@ -69,7 +70,7 @@ export class CacheExtension implements Extension {
     const path = `actor-ts.cache.${name}.plugin`;
     return this.system.config.hasPath(path)
       ? this.system.config.getString(path)
-      : 'actor-ts.cache.in-memory';
+      : ConfigKeys.cache.inMemory;
   }
 }
 
@@ -78,6 +79,8 @@ export const CacheExtensionId: ExtensionId<CacheExtension> = extensionId(
   (system) => new CacheExtension(system),
 );
 
-export const REDIS_CACHE_PLUGIN_ID = 'actor-ts.cache.redis';
-export const MEMCACHED_CACHE_PLUGIN_ID = 'actor-ts.cache.memcached';
-export const IN_MEMORY_CACHE_PLUGIN_ID = 'actor-ts.cache.in-memory';
+// Public plugin-id exports — kept for back-compat with downstream code.
+// Source-of-truth is `ConfigKeys.cache.*`; these are aliases.
+export const REDIS_CACHE_PLUGIN_ID = ConfigKeys.cache.redis;
+export const MEMCACHED_CACHE_PLUGIN_ID = ConfigKeys.cache.memcached;
+export const IN_MEMORY_CACHE_PLUGIN_ID = ConfigKeys.cache.inMemory;
