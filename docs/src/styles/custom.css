@@ -115,17 +115,23 @@ kbd {
   font-feature-settings: 'liga' 1, 'calt' 1, 'tnum' 1;
 }
 
-/* ----- Narrower right-side "On this page" TOC -------------------------- */
+/* ----- Wider main content + narrower right TOC ------------------------- */
 
-/* Starlight's default formula reserves `sidebar-width + half-of-leftover-
- * space` for the right TOC, which ends up at 320-400 px on wide screens
- * — far more than our short heading entries need.  Cap it at 14 rem
- * (~224 px) so the layout doesn't waste a quarter of the viewport on
- * what is effectively a 6-link navigation.  The leftover space becomes
- * right-side whitespace, which keeps the main content readable without
- * forcing a wider content column. */
-@media (min-width: 72rem) {
-  .right-sidebar-container {
-    width: 14rem;
-  }
+/* Default `--sl-content-width` is 45rem (720px).  Combined with the
+ * right-sidebar-container's `sidebar-width + half-leftover/2` formula,
+ * this leaves the main content centered in a column with substantial
+ * empty space on both sides at viewports >= 1280px.
+ *
+ * Bump the content width to 56rem (896px) so the main column fills
+ * more of the available viewport.  Code blocks still wrap reasonably
+ * (~100 chars at our font size) and the right-TOC column shrinks
+ * automatically via Starlight's calc formula — less leftover space
+ * to split.
+ *
+ * 56rem is a moderate increase — typical TS code lines that wrap at
+ * ~80 chars stay comfortably below that.  Long type signatures or
+ * generics with many arguments get more horizontal room without
+ * needing scrollbars. */
+:root {
+  --sl-content-width: 56rem;
 }
