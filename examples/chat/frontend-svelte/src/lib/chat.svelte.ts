@@ -46,6 +46,8 @@ class ChatStore {
   /** Per-room list of usernames currently typing.  Entries
    *  auto-clear 3 s after the last `user-typing` frame. */
   typingByRoom = $state<Record<string, string[]>>({});
+  /** RoomName → { [username]: read-up-to-ts }. */
+  receiptsByRoom = $state<Record<string, Readonly<Record<string, number>>>>({});
 
   #ws: WebSocket | null = null;
   #reconnectAttempts = 0;
@@ -54,6 +56,8 @@ class ChatStore {
   readonly #typingTimers = new Map<string, Map<string, ReturnType<typeof setTimeout>>>();
   /** Debounce: max one outbound `typing` frame per 2 s. */
   #lastTypingSentAt = 0;
+  /** Per-room last `read-up-to.ts` sent — debounces redundant frames. */
+  readonly #lastReadSentByRoom = new Map<string, number>();
 
   constructor() {
     // Auto-resume on bootstrap.  Class-instances run on module
@@ -143,6 +147,15 @@ class ChatStore {
     this.#ws.send(JSON.stringify({ type: 'typing', room } satisfies ClientMessage));
   }
 
+  /** Send `read-up-to` if it advances the last we sent for this room. */
+  markReadUpTo(room: RoomName, ts: number): void {
+    if (!this.#ws || this.#ws.readyState !== WebSocket.OPEN) return;
+    const last = this.#lastReadSentByRoom.get(room) ?? 0;
+    if (ts <= last) return;
+    this.#lastReadSentByRoom.set(room, ts);
+    this.#ws.send(JSON.stringify({ type: 'read-up-to', room, ts } satisfies ClientMessage));
+  }
+
   selectRoom(room: RoomName): void {
     if (this.currentRoom === room) return;
     if (this.#ws && this.#ws.readyState === WebSocket.OPEN) {
@@ -154,6 +167,11 @@ class ChatStore {
     }
     this.currentRoom = room;
     this.unreadByRoom[room] = 0;
+    // Switching INTO a room means the user is reading whatever's
+    // already there — mark the highest known ts as read.
+    const msgs = this.messagesByRoom[room] ?? [];
+    const maxTs = msgs.reduce((a, m) => Math.max(a, m.ts ?? 0), 0);
+    if (maxTs > 0) this.markReadUpTo(room, maxTs);
   }
 
   /**
@@ -273,6 +291,9 @@ class ChatStore {
         this.messagesByRoom[m.room] = list;
         if (m.room !== this.currentRoom) {
           this.unreadByRoom[m.room] = (this.unreadByRoom[m.room] ?? 0) + 1;
+        } else {
+          // Active view — mark read so the sender's ✓✓ updates.
+          this.markReadUpTo(m.room, m.ts);
         }
         break;
       }
@@ -281,6 +302,9 @@ class ChatStore {
         break;
       case 'user-typing':
         this.#onUserTyping(m.room, m.username);
+        break;
+      case 'read-receipts':
+        this.receiptsByRoom = { ...this.receiptsByRoom, [m.room]: m.receipts };
         break;
       case 'system':
         break;

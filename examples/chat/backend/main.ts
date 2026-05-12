@@ -57,6 +57,7 @@ import {
   type DmChannelCmd,
 } from './actors/DmChannelActor.js';
 import { OnlineUsersActor } from './actors/OnlineUsersActor.js';
+import { ReadReceiptsActor } from './actors/ReadReceiptsActor.js';
 import { httpIngressProps } from './actors/HttpIngressActor.js';
 
 async function main(): Promise<void> {
@@ -185,6 +186,17 @@ async function main(): Promise<void> {
     'online-users',
   );
 
+  // -------- 7a. ReadReceiptsActor (top-level, every node) --------
+  // Per-room read-up-to pointers, persisted via a DistributedData
+  // LWWMap (`read-up-to.<room>` → `LWWMap<username, ts>`).  Same
+  // fan-out pattern as `OnlineUsersActor`: each interested local
+  // session subscribes here once per room, the actor maintains a
+  // single DD-level subscription on its behalf.
+  const readReceipts = system.actorOf(
+    Props.create(() => new ReadReceiptsActor()),
+    'read-receipts',
+  );
+
   // -------- 7b. ChatRoomDirectoryActor (top-level, every node) --------
   // The directory wraps a DistributedData ORSet that is the actual
   // cluster-wide source of truth — every node spawns its own actor
@@ -237,6 +249,7 @@ async function main(): Promise<void> {
       mediator,
       sessions,
       roomDirectory,
+      readReceipts,
       ...(tls ? { tls } : {}),
     }),
   });

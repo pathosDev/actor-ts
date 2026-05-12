@@ -48,10 +48,17 @@ export class ChatService {
   /** RoomName → ReadonlyArray<username> currently typing.  Entries
    *  auto-clear 3 s after the last `user-typing` frame. */
   readonly typingByRoom = signal<Record<string, ReadonlyArray<string>>>({});
+  /** RoomName → { [username]: read-up-to-ts }.  Synced from
+   *  server's `read-receipts` broadcasts (DD-LWWMap-backed). */
+  readonly receiptsByRoom = signal<Record<string, Readonly<Record<string, number>>>>({});
 
   readonly currentTyping = computed(() => {
     const r = this.currentRoom();
     return r ? (this.typingByRoom()[r] ?? []) : [];
+  });
+  readonly currentReceipts = computed(() => {
+    const r = this.currentRoom();
+    return r ? (this.receiptsByRoom()[r] ?? {}) : {};
   });
 
   readonly currentMessages = computed(() => {
@@ -70,6 +77,9 @@ export class ChatService {
   private readonly typingTimers = new Map<string, Map<string, ReturnType<typeof setTimeout>>>();
   /** Debounce: max one outbound `typing` frame per 2 s. */
   private lastTypingSentAt = 0;
+  /** Per-room: last `read-up-to.ts` we sent — debounces redundant
+   *  outbound frames (server enforces monotonic guard too). */
+  private readonly lastReadSentByRoom = new Map<string, number>();
 
   constructor() {
     // Auto-resume on bootstrap: if a token survived the page reload
@@ -177,6 +187,20 @@ export class ChatService {
     }
     this.currentRoom.set(room);
     this.unreadByRoom.update((u) => ({ ...u, [room]: 0 }));
+    // Switching INTO a room means the user is reading it — mark
+    // the highest known ts as read for the sender's ✓✓.
+    const msgs = this.messagesByRoom()[room] ?? [];
+    const maxTs = msgs.reduce((a, m) => Math.max(a, m.ts), 0);
+    if (maxTs > 0) this.markReadUpTo(room, maxTs);
+  }
+
+  /** Send `read-up-to` if it advances the last we sent for this room. */
+  markReadUpTo(room: RoomName, ts: number): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    const last = this.lastReadSentByRoom.get(room) ?? 0;
+    if (ts <= last) return;
+    this.lastReadSentByRoom.set(room, ts);
+    this.ws.send(JSON.stringify({ type: 'read-up-to', room, ts } satisfies ClientMessage));
   }
 
   /**
@@ -322,6 +346,9 @@ export class ChatService {
             ...cur,
             [m.room]: (cur[m.room] ?? 0) + 1,
           }));
+        } else {
+          // Active view — mark read so the sender's ✓✓ updates.
+          this.markReadUpTo(m.room, m.ts);
         }
         break;
       }
@@ -332,6 +359,9 @@ export class ChatService {
       }
       case 'user-typing':
         this.onUserTyping(m.room, m.username);
+        break;
+      case 'read-receipts':
+        this.receiptsByRoom.update((cur) => ({ ...cur, [m.room]: m.receipts }));
         break;
       case 'system':
         // Ignored in this minimal frontend; could be displayed inline.

@@ -116,11 +116,25 @@
         </form>
       </aside>
       <main class="center">
+        {@const currentReceipts = chat.currentRoom ? chat.receiptsByRoom[chat.currentRoom] ?? {} : {}}
         <div class="messages">
           {#each (chat.currentRoom ? chat.messagesByRoom[chat.currentRoom] ?? [] : []) as m}
+            {@const isOwn = m.from === chat.username}
+            {@const readers = isOwn
+              ? Object.entries(currentReceipts)
+                  .filter(([u, t]) => u !== chat.username && typeof t === 'number' && t >= m.ts)
+                  .map(([u]) => u)
+              : []}
             <div class="msg">
               <span class="from">{m.from}:</span>{m.text}
               <span class="ts">{fmtTs(m.ts)}</span>
+              {#if isOwn}
+                <span
+                  class="receipt"
+                  class:read={readers.length > 0}
+                  title={readers.length > 0 ? `read by ${readers.join(', ')}` : 'sent'}
+                >{readers.length > 0 ? '✓✓' : '✓'}</span>
+              {/if}
             </div>
           {/each}
         </div>
@@ -279,6 +293,8 @@
   .msg { margin-bottom: 0.4rem; }
   .from { font-weight: 600; margin-right: 0.4rem; }
   .ts { color: #888; font-size: 0.75rem; margin-left: 0.5rem; }
+  .receipt { color: #888; font-size: 0.85rem; margin-left: 0.35rem; }
+  .receipt.read { color: var(--accent); }
   .typing {
     font-size: 0.8rem;
     font-style: italic;

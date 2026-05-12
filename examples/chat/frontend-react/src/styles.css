@@ -129,6 +129,8 @@ code { background: var(--border); padding: 0 0.25rem; border-radius: 3px; }
 .msg { margin-bottom: 0.4rem; }
 .from { font-weight: 600; margin-right: 0.4rem; }
 .ts { color: #888; font-size: 0.75rem; margin-left: 0.5rem; }
+.receipt { color: #888; font-size: 0.85rem; margin-left: 0.35rem; }
+.receipt.read { color: var(--accent); }
 .typing {
   font-size: 0.8rem;
   font-style: italic;

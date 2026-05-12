@@ -202,6 +202,14 @@
         color: #888;
         font-style: italic;
       }
+      .messages .msg .receipt {
+        color: #888;
+        font-size: 0.85rem;
+        margin-left: 0.35rem;
+      }
+      .messages .msg .receipt.read {
+        color: var(--accent);
+      }
       .typing {
         font-size: 0.8rem;
         font-style: italic;
@@ -313,6 +321,12 @@
         typingByRoom:   new Map(),
         /** When did we last send a `typing` frame?  Debounce to 1/2s. */
         lastTypingSentAt: 0,
+        /** RoomName → { [username]: read-up-to-ts }.  Synced from
+         *  server's `read-receipts` broadcasts (DD-LWWMap-backed). */
+        receiptsByRoom: new Map(),
+        /** Last `read-up-to.ts` we sent per room — debounces both
+         *  the "new message arrived" and "I switched in" triggers. */
+        lastReadSentByRoom: new Map(),
       };
       /** Reconnect bookkeeping — see scheduleResumeReconnect. */
       let reconnectAttempts = 0;
@@ -444,6 +458,7 @@
           case 'message':      return onMessage(msg.room, { from: msg.from, text: msg.text, ts: msg.ts });
           case 'users':        return onUsers(msg.room, msg.users);
           case 'user-typing':  return onUserTyping(msg.room, msg.username);
+          case 'read-receipts': return onReadReceipts(msg.room, msg.receipts);
           case 'system':       return onSystem(msg.text);
           default: console.warn('unknown server msg', msg);
         }
@@ -546,10 +561,33 @@
         state.messagesByRoom.set(room, list);
         if (room === state.currentRoom) {
           renderMessages();
+          // If this room is in focus, the user has just "seen" the
+          // message — mark it read so the sender's ✓✓ updates.
+          markReadUpTo(room, m.ts);
         } else {
           state.unreadByRoom.set(room, (state.unreadByRoom.get(room) ?? 0) + 1);
           renderRoomList();
         }
+      }
+
+      /** Send a `read-up-to` frame for `room` if `ts` exceeds the
+       *  last value we sent.  Debounces both new-message + room-switch
+       *  triggers; the server enforces a monotonic guard regardless. */
+      function markReadUpTo(room, ts) {
+        if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+        const last = state.lastReadSentByRoom.get(room) ?? 0;
+        if (ts <= last) return;
+        state.lastReadSentByRoom.set(room, ts);
+        state.ws.send(JSON.stringify({ type: 'read-up-to', room, ts }));
+      }
+
+      /** Return the highest message ts in a room — used to compute
+       *  what we should mark read on switch / new-message arrivals. */
+      function highestMsgTs(room) {
+        const list = state.messagesByRoom.get(room) ?? [];
+        let max = 0;
+        for (const m of list) if (typeof m.ts === 'number' && m.ts > max) max = m.ts;
+        return max;
       }
 
       function onUsers(room, users) {
@@ -577,6 +615,11 @@
         }, 3000);
         perRoom.set(username, t);
         if (room === state.currentRoom) renderTyping();
+      }
+
+      function onReadReceipts(room, receipts) {
+        state.receiptsByRoom.set(room, receipts);
+        if (room === state.currentRoom) renderMessages();
       }
 
       function onSystem(text) {
@@ -640,6 +683,10 @@
         renderMessages();
         renderUsers();
         renderTyping();
+        // Switching INTO a room means the user is reading whatever's
+        // already there — mark the highest known ts as read.
+        const max = highestMsgTs(room);
+        if (max > 0) markReadUpTo(room, max);
       }
 
       /* ============== render ============== */
@@ -670,6 +717,9 @@
         const list = state.currentRoom
           ? (state.messagesByRoom.get(state.currentRoom) ?? [])
           : [];
+        const receipts = state.currentRoom
+          ? (state.receiptsByRoom.get(state.currentRoom) ?? {})
+          : {};
         for (const m of list) {
           const div = document.createElement('div');
           div.className = 'msg' + (m.system ? ' system' : '');
@@ -685,6 +735,24 @@
             tsEl.className = 'ts';
             tsEl.textContent = formatTime(m.ts);
             div.appendChild(tsEl);
+            // Receipt marker on OWN messages only.  Single ✓ = sent
+            // (server echoed it back), ✓✓ = at least one other
+            // participant has read up to (or past) this message.
+            if (m.from === state.username) {
+              const others = Object.entries(receipts)
+                .filter(([u, _t]) => u !== state.username);
+              const readByAny = others.some(([_u, t]) => typeof t === 'number' && t >= m.ts);
+              const r = document.createElement('span');
+              r.className = readByAny ? 'receipt read' : 'receipt';
+              r.textContent = readByAny ? '✓✓' : '✓';
+              const readers = others
+                .filter(([_u, t]) => typeof t === 'number' && t >= m.ts)
+                .map(([u]) => u);
+              r.title = readers.length === 0
+                ? 'sent'
+                : `read by ${readers.join(', ')}`;
+              div.appendChild(r);
+            }
           }
           $msgs.appendChild(div);
         }

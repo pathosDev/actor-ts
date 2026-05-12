@@ -85,6 +85,10 @@ import type {
   OnlineUsersCmd,
   UsersChanged,
 } from './OnlineUsersActor.js';
+import type {
+  ReadReceiptsCmd,
+  ReceiptsChanged,
+} from './ReadReceiptsActor.js';
 
 /* --------------------------- mailbox shape --------------------------- */
 
@@ -107,7 +111,8 @@ type SessionMsg =
   | RoomRemoved
   | DmBroadcast
   | DmHistoryReply
-  | TypingBroadcast;
+  | TypingBroadcast
+  | ReceiptsChanged;
 
 /* --------------------------- public deps ---------------------------- */
 
@@ -119,6 +124,7 @@ export interface UserSessionDeps {
   readonly mediator: ActorRef<Subscribe | Unsubscribe>;
   readonly sessions: SessionStore;
   readonly roomDirectory: ActorRef<ChatRoomDirectoryCmd>;
+  readonly readReceipts: ActorRef<ReadReceiptsCmd>;
 }
 
 /* ------------------------------ actor ------------------------------- */
@@ -195,6 +201,7 @@ export class UserSessionActor extends Actor<SessionMsg> {
       .with({ kind: 'DmBroadcast' },     (m) => this.onDmBroadcast(m))
       .with({ kind: 'DmHistoryReply' },  (m) => this.onDmHistoryReply(m))
       .with({ kind: 'TypingBroadcast' }, (m) => this.onTypingBroadcast(m))
+      .with({ kind: 'ReceiptsChanged' }, (m) => this.onReceiptsChanged(m))
       .exhaustive();
   }
 
@@ -388,6 +395,24 @@ export class UserSessionActor extends Actor<SessionMsg> {
         if (!isRoomName(m.room)) return;
         this.broadcastTyping(m.room);
       })
+      .with({ type: 'read-up-to' }, (m) => {
+        if (!isRoomName(m.room)) return;
+        if (typeof m.ts !== 'number' || !Number.isFinite(m.ts) || m.ts <= 0) return;
+        // For DMs we register the read pointer under the canonical
+        // pair-id key, not the per-user virtual `@<other>` room.
+        // Both participants then see the same DD entry and can
+        // render receipts symmetrically.
+        const key = isDmRoomName(m.room)
+          ? this.dmReceiptsKey(m.room)
+          : m.room;
+        if (key === null) return;
+        this.deps.readReceipts.tell({
+          kind: 'Update',
+          room: key,
+          username: this.username!,
+          ts: m.ts,
+        });
+      })
       .with({ type: 'ping' }, () => { /* keepalive — no-op server-side */ })
       .exhaustive();
   }
@@ -477,6 +502,70 @@ export class UserSessionActor extends Actor<SessionMsg> {
     });
   }
 
+  /* ---------------------------- receipts ----------------------------- */
+
+  /**
+   * Translate a room-or-DM-room name into the DD key the receipts
+   * actor uses.  Chat rooms map 1:1 (`general` → `general`); DM
+   * rooms (`@<other>`) become the canonical pair-id (`alice|bob`)
+   * so both participants see the same entry from each side's view.
+   * Returns `null` for malformed DM names.
+   */
+  private dmReceiptsKey(dmRoom: RoomName): string | null {
+    const other = dmCounterparty(dmRoom);
+    if (!other || other === this.username) return null;
+    try {
+      return canonicalPairId(this.username!, other);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Subscribe to the read-receipts feed for a (chat or DM) room. */
+  private subscribeReceipts(room: RoomName): void {
+    const key = isDmRoomName(room) ? this.dmReceiptsKey(room) : room;
+    if (key === null) return;
+    this.deps.readReceipts.tell({
+      kind: 'Subscribe',
+      room: key,
+      ref: this.self as ActorRef<ReceiptsChanged>,
+    });
+  }
+
+  private unsubscribeReceipts(room: RoomName): void {
+    const key = isDmRoomName(room) ? this.dmReceiptsKey(room) : room;
+    if (key === null) return;
+    this.deps.readReceipts.tell({
+      kind: 'Unsubscribe',
+      room: key,
+      ref: this.self as ActorRef<ReceiptsChanged>,
+    });
+  }
+
+  /** Forward a `ReceiptsChanged` snapshot to the client.  For DM
+   *  rooms we translate the pair-id-keyed DD entry back into the
+   *  client's view (`@<other>`) so the frontend doesn't need to
+   *  know about pair-ids. */
+  private onReceiptsChanged(msg: ReceiptsChanged): void {
+    const me = this.username;
+    if (!me) return;
+    let displayRoom: RoomName | null = msg.room;
+    if (msg.room.includes('|')) {
+      // Pair-id form — map to the recipient's `@<other>` virtual room.
+      const idx = msg.room.indexOf('|');
+      const a = msg.room.slice(0, idx);
+      const b = msg.room.slice(idx + 1);
+      const other = me === a ? b : me === b ? a : null;
+      if (!other) return;
+      displayRoom = dmRoomFor(other);
+    }
+    this.sendServer({
+      type: 'read-receipts',
+      room: displayRoom,
+      receipts: msg.receipts,
+    });
+  }
+
   /* ------------------------------- DM -------------------------------- */
 
   /** Route an outbound DM to the right `DmChannelActor` shard.  The
@@ -498,7 +587,9 @@ export class UserSessionActor extends Actor<SessionMsg> {
   }
 
   /** Ask the DM channel for its recent history.  The reply arrives
-   *  as `DmHistoryReply` which we forward to the client. */
+   *  as `DmHistoryReply` which we forward to the client.  Also
+   *  subscribes us to the DM pair's read-receipts feed so the client
+   *  can render ✓✓ for this conversation (#103 slice 2). */
   private fetchDmHistory(dmRoom: RoomName): void {
     const other = dmCounterparty(dmRoom);
     if (!other || other === this.username) return;
@@ -510,6 +601,7 @@ export class UserSessionActor extends Actor<SessionMsg> {
         limit: 50,
         replyTo: this.self as ActorRef<DmHistoryReply>,
       });
+      this.subscribeReceipts(dmRoom);
     } catch (e) {
       this.log.warn(`DM: history rejected for ${other}: ${(e as Error).message}`);
     }
@@ -625,6 +717,9 @@ export class UserSessionActor extends Actor<SessionMsg> {
       ref: this.self as ActorRef<UsersChanged>,
     });
 
+    // Subscribe to the room's read-receipts feed (#103 slice 2).
+    this.subscribeReceipts(room);
+
     if (fetchHistory) {
       this.historyAskedRooms.add(room);
       this.deps.chatRoomRegion.tell({
@@ -651,6 +746,7 @@ export class UserSessionActor extends Actor<SessionMsg> {
       room,
       username: this.username!,
     });
+    this.unsubscribeReceipts(room);
     if (this.currentRoom === room) {
       this.currentRoom = this.joinedRooms.values().next().value ?? null;
     }

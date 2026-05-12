@@ -16,6 +16,7 @@
  *     { type: 'switch-active-room', room }
  *     { type: 'create-room', name }            // #98 — runtime room creation
  *     { type: 'typing',  room }                // #103 — ephemeral typing indicator
+ *     { type: 'read-up-to', room, ts }         // #103 — mark messages up to `ts` read
  *     { type: 'ping' }
  *
  *   Server → Client (`ServerMessage`):
@@ -28,6 +29,7 @@
  *     { type: 'message',      room, from, text, ts }
  *     { type: 'users',        room, users }
  *     { type: 'user-typing',  room, username } // #103 — broadcast on `typing` frame
+ *     { type: 'read-receipts',room, receipts } // #103 — read pointers per username
  *     { type: 'system',       text }
  *
  * Auth model: the first frame on any new socket is either `login`
@@ -68,6 +70,7 @@ export type ClientMessage =
   | { readonly type: 'switch-active-room';   readonly room: RoomName }
   | { readonly type: 'create-room';          readonly name: string }
   | { readonly type: 'typing';               readonly room: RoomName }
+  | { readonly type: 'read-up-to';           readonly room: RoomName; readonly ts: number }
   | { readonly type: 'ping' };
 
 /* --------------------------- Server → Client --------------------------- */
@@ -82,6 +85,7 @@ export type ServerMessage =
   | { readonly type: 'message';       readonly room: RoomName; readonly from: string; readonly text: string; readonly ts: number }
   | { readonly type: 'users';         readonly room: RoomName; readonly users: ReadonlyArray<string> }
   | { readonly type: 'user-typing';   readonly room: RoomName; readonly username: string }
+  | { readonly type: 'read-receipts'; readonly room: RoomName; readonly receipts: Readonly<Record<string, number>> }
   | { readonly type: 'system';        readonly text: string };
 
 /* -------------------------- Encoding helpers -------------------------- */

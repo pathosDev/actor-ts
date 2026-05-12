@@ -16,6 +16,8 @@
  *      observe the `message` frame routed through the DM channel.
  *   8. (#103) Typing indicators: alice sends `typing` for #general,
  *      bob receives `user-typing`; alice does not echo to herself.
+ *   9. (#103) Read receipts: alice sends a message, bob acks
+ *      `read-up-to`, alice observes the `read-receipts` broadcast.
  *
  * Run against a **single-node bootstrap** for reliable verification:
  *
@@ -319,6 +321,76 @@ async function main(): Promise<void> {
   ok('alice did not receive a self-echo');
 
   a4.close(); b4.close();
+  await new Promise((r) => setTimeout(r, 200));
+
+  // ---------- pass 6: read receipts (#103 slice 2) ----------
+  console.log('— pass 6: read receipts —');
+  const a5 = new ChatClient(URL_ARG);
+  const b5 = new ChatClient(URL_ARG);
+  await Promise.all([a5.open(), b5.open()]);
+  a5.send({ type: 'login', username: 'alice', password: 'wonderland' });
+  b5.send({ type: 'login', username: 'bob',   password: 'builder' });
+  await a5.await((m) => m.type === 'logged-in');
+  await b5.await((m) => m.type === 'logged-in');
+  await a5.await((m) => m.type === 'users' && (m as ServerMsg).room === 'general', 5000);
+  await b5.await((m) => m.type === 'users' && (m as ServerMsg).room === 'general', 5000);
+  await new Promise((r) => setTimeout(r, 500));
+
+  // alice sends a message; alice should see her own echo via the
+  // room broadcast.
+  a5.send({ type: 'send', room: 'general', text: 'mark-me-read-please' });
+  const echo = await a5.await(
+    (m) => m.type === 'message'
+        && (m as ServerMsg).room === 'general'
+        && (m as ServerMsg).from === 'alice'
+        && (m as ServerMsg).text === 'mark-me-read-please',
+    5000,
+  ) as ServerMsg & { ts: number };
+  const sentTs = echo.ts;
+  // bob receives the same broadcast.
+  await b5.await(
+    (m) => m.type === 'message'
+        && (m as ServerMsg).room === 'general'
+        && (m as ServerMsg).text === 'mark-me-read-please',
+    5000,
+  );
+
+  // bob marks it read.  Server broadcasts read-receipts to all
+  // subscribers, including alice.
+  b5.send({ type: 'read-up-to', room: 'general', ts: sentTs });
+
+  // alice should observe a read-receipts frame for #general with
+  // bob's name at >= sentTs.  The receipts feed replays from the DD
+  // snapshot on every change, so the second-or-later frame should
+  // carry the new pointer.
+  await a5.await(
+    (m) => m.type === 'read-receipts'
+        && (m as ServerMsg).room === 'general'
+        && typeof (m as ServerMsg).receipts === 'object'
+        && ((m as ServerMsg).receipts as Record<string, number>)['bob'] !== undefined
+        && ((m as ServerMsg).receipts as Record<string, number>)['bob']! >= sentTs,
+    5000,
+  );
+  ok(`alice observed read-receipts(bob >= ${sentTs}) for #general`);
+
+  // Monotonic guard: bob sends a stale `read-up-to` with a smaller
+  // ts.  The server must not roll bob's pointer backwards.  After
+  // a brief settle window, any read-receipts frame for bob must
+  // still show ts ≥ sentTs.
+  b5.send({ type: 'read-up-to', room: 'general', ts: 1 });
+  await new Promise((r) => setTimeout(r, 500));
+  // Inspect the most recent read-receipts frame alice saw — it
+  // should still report bob at >= sentTs.
+  const allReceipts = a5.received.filter((m) =>
+    m.type === 'read-receipts' && (m as ServerMsg).room === 'general',
+  ) as Array<ServerMsg & { receipts: Record<string, number> }>;
+  const latest = allReceipts[allReceipts.length - 1];
+  if (!latest || (latest.receipts.bob ?? 0) < sentTs) {
+    fail(`monotonic guard broke: bob's read-up-to went backwards`);
+  }
+  ok('monotonic guard prevents stale read-up-to from rolling back');
+
+  a5.close(); b5.close();
   await new Promise((r) => setTimeout(r, 100));
   process.exit(0);
 }

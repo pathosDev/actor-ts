@@ -126,6 +126,13 @@ function ChatView({ chat }: { chat: ChatHandle }): React.JSX.Element {
     : typingPeers.length === 1 ? `${typingPeers[0]} is typing…`
     : typingPeers.length === 2 ? `${typingPeers[0]} and ${typingPeers[1]} are typing…`
     : `${typingPeers.length} people are typing…`;
+  const receipts = state.currentRoom ? (state.receiptsByRoom[state.currentRoom] ?? {}) : {};
+
+  useEffect(() => {
+    if (!state.currentRoom || messages.length === 0) return;
+    const maxTs = messages.reduce((a, m) => Math.max(a, m.ts), 0);
+    if (maxTs > 0) chat.markReadUpTo(state.currentRoom as RoomName, maxTs);
+  }, [state.currentRoom, messages, chat]);
 
   const onSend = (e: FormEvent<HTMLFormElement>): void => {
     e.preventDefault();
@@ -172,13 +179,29 @@ function ChatView({ chat }: { chat: ChatHandle }): React.JSX.Element {
         </aside>
         <main className="center">
           <div className="messages">
-            {messages.map((m, i) => (
-              <div className="msg" key={i}>
-                <span className="from">{m.from}:</span>
-                {m.text}
-                <span className="ts">{new Date(m.ts).toLocaleTimeString()}</span>
-              </div>
-            ))}
+            {messages.map((m, i) => {
+              const isOwn = m.from === state.username;
+              const readers = isOwn
+                ? Object.entries(receipts)
+                    .filter(([u, t]) => u !== state.username && typeof t === 'number' && t >= m.ts)
+                    .map(([u]) => u)
+                : [];
+              return (
+                <div className="msg" key={i}>
+                  <span className="from">{m.from}:</span>
+                  {m.text}
+                  <span className="ts">{new Date(m.ts).toLocaleTimeString()}</span>
+                  {isOwn && (
+                    <span
+                      className={readers.length > 0 ? 'receipt read' : 'receipt'}
+                      title={readers.length > 0 ? `read by ${readers.join(', ')}` : 'sent'}
+                    >
+                      {readers.length > 0 ? '✓✓' : '✓'}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
           </div>
           <div className="typing">{typingText}</div>
           <form className="compose" onSubmit={onSend}>

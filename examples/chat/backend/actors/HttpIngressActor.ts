@@ -49,6 +49,7 @@ import type { ChatRoomCmd } from './ChatRoomActor.js';
 import type { ChatRoomDirectoryCmd } from './ChatRoomDirectoryActor.js';
 import type { DmChannelCmd } from './DmChannelActor.js';
 import type { OnlineUsersCmd } from './OnlineUsersActor.js';
+import type { ReadReceiptsCmd } from './ReadReceiptsActor.js';
 import type { SessionStore } from '../auth/sessionStore.js';
 
 /**
@@ -87,6 +88,8 @@ export interface HttpIngressDeps {
   readonly sessions: SessionStore;
   /** Local ChatRoomDirectoryActor — fan-out for room create/list. */
   readonly roomDirectory: ActorRef<ChatRoomDirectoryCmd>;
+  /** Local ReadReceiptsActor — per-room read-up-to pointers. */
+  readonly readReceipts: ActorRef<ReadReceiptsCmd>;
   /** Optional TLS — when set, the listener becomes HTTPS + WSS. */
   readonly tls?: TlsMaterial;
 }
@@ -132,6 +135,7 @@ export class HttpIngressActor extends Actor<never> {
       mediator: this.deps.mediator,
       sessions: this.deps.sessions,
       roomDirectory: this.deps.roomDirectory,
+      readReceipts: this.deps.readReceipts,
     });
 
     const http = system.extension(HttpExtensionId);

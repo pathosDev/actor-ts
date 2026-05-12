@@ -45,6 +45,9 @@ interface State {
    *  3 s after the last `user-typing` frame — managed via reducer
    *  actions `typing-add` and `typing-clear`. */
   readonly typingByRoom: Record<string, ReadonlyArray<string>>;
+  /** RoomName → { [username]: read-up-to-ts }.  Synced from server's
+   *  `read-receipts` broadcasts (DD-LWWMap-backed). */
+  readonly receiptsByRoom: Record<string, Readonly<Record<string, number>>>;
 }
 
 const INITIAL: State = {
@@ -57,6 +60,7 @@ const INITIAL: State = {
   usersByRoom: {},
   unreadByRoom: {},
   typingByRoom: {},
+  receiptsByRoom: {},
 };
 
 const TOKEN_KEY = 'chat-token';
@@ -88,7 +92,8 @@ type Action =
   | { type: 'select-room'; room: RoomName }
   | { type: 'open-dm'; otherUser: string }
   | { type: 'typing-add'; room: RoomName; username: string }
-  | { type: 'typing-clear'; room: RoomName; username: string };
+  | { type: 'typing-clear'; room: RoomName; username: string }
+  | { type: 'receipts'; room: RoomName; receipts: Readonly<Record<string, number>> };
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
@@ -213,6 +218,11 @@ function reducer(state: State, action: Action): State {
       else typingByRoom[action.room] = next;
       return { ...state, typingByRoom };
     }
+    case 'receipts':
+      return {
+        ...state,
+        receiptsByRoom: { ...state.receiptsByRoom, [action.room]: action.receipts },
+      };
   }
 }
 
@@ -222,6 +232,7 @@ export function useChat(): {
   logout(): void;
   send(room: RoomName, text: string): void;
   notifyTyping(room: RoomName): void;
+  markReadUpTo(room: RoomName, ts: number): void;
   selectRoom(room: RoomName): void;
   createRoom(name: string): boolean;
   openDm(otherUser: string): void;
@@ -236,6 +247,8 @@ export function useChat(): {
   // the closures in `handleServer` always see the current map.
   const typingTimersRef = useRef<Map<string, Map<string, ReturnType<typeof setTimeout>>>>(new Map());
   const lastTypingSentAtRef = useRef(0);
+  /** Per-room last `read-up-to.ts` sent — debounces redundant frames. */
+  const lastReadSentByRoomRef = useRef<Map<string, number>>(new Map());
 
   const cancelReconnect = useCallback(() => {
     if (reconnectTimerRef.current !== null) {
@@ -283,6 +296,9 @@ export function useChat(): {
         break;
       case 'users':
         dispatch({ type: 'users', room: m.room, users: m.users });
+        break;
+      case 'read-receipts':
+        dispatch({ type: 'receipts', room: m.room, receipts: m.receipts });
         break;
       case 'user-typing': {
         // Schedule a 3 s auto-clear, replacing any pending one for
@@ -397,6 +413,15 @@ export function useChat(): {
     wsRef.current.send(JSON.stringify({ type: 'typing', room } satisfies ClientMessage));
   }, []);
 
+  /** Send `read-up-to` if it advances the last we sent for this room. */
+  const markReadUpTo = useCallback((room: RoomName, ts: number): void => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    const last = lastReadSentByRoomRef.current.get(room) ?? 0;
+    if (ts <= last) return;
+    lastReadSentByRoomRef.current.set(room, ts);
+    wsRef.current.send(JSON.stringify({ type: 'read-up-to', room, ts } satisfies ClientMessage));
+  }, []);
+
   const selectRoom = useCallback((room: RoomName) => {
     dispatch({ type: 'select-room', room });
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -439,5 +464,5 @@ export function useChat(): {
     selectRoom(dmRoomFor(otherUser));
   }, [selectRoom]);
 
-  return { state, connect, logout, send, notifyTyping, selectRoom, createRoom, openDm };
+  return { state, connect, logout, send, notifyTyping, markReadUpTo, selectRoom, createRoom, openDm };
 }

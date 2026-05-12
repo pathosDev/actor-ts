@@ -77,6 +77,8 @@ import { isDmRoom, type RoomName } from './protocol';
     .msg { margin-bottom: 0.4rem; }
     .from { font-weight: 600; margin-right: 0.4rem; }
     .ts { color: #888; font-size: 0.75rem; margin-left: 0.5rem; }
+    .receipt { color: #888; font-size: 0.85rem; margin-left: 0.35rem; }
+    .receipt.read { color: var(--accent); }
     .typing {
       font-size: 0.8rem;
       font-style: italic;
@@ -172,6 +174,11 @@ import { isDmRoom, type RoomName } from './protocol';
             <div class="msg">
               <span class="from">{{ m.from }}:</span>{{ m.text }}
               <span class="ts">{{ formatTs(m.ts) }}</span>
+              @if (m.from === chat.username()) {
+                @let info = receiptFor(m.ts);
+                <span class="receipt" [class.read]="info.readers.length > 0"
+                      [title]="info.title">{{ info.symbol }}</span>
+              }
             </div>
           }
         </div>
@@ -245,6 +252,20 @@ export class ChatComponent {
 
   protected formatTs(ts: number): string {
     return new Date(ts).toLocaleTimeString();
+  }
+
+  /** Render-side receipt info for an own message at `msgTs`.  Returns
+   *  the symbol (✓ / ✓✓), tooltip text, and the list of readers used
+   *  for the `.read` class binding. */
+  protected receiptFor(msgTs: number): { symbol: string; title: string; readers: string[] } {
+    const me = this.chat.username();
+    const all = this.chat.currentReceipts();
+    const readers = Object.entries(all)
+      .filter(([u, t]) => u !== me && typeof t === 'number' && t >= msgTs)
+      .map(([u]) => u);
+    return readers.length === 0
+      ? { symbol: '✓', title: 'sent', readers }
+      : { symbol: '✓✓', title: `read by ${readers.join(', ')}`, readers };
   }
 
   protected onComposeInput(): void {

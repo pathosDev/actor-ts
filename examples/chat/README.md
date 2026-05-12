@@ -299,7 +299,6 @@ Bun process owns the public listener directly.
 
 - File uploads (deferred — needs object-storage subsystem).
 - Production-grade auth (no bcrypt, no session expiry, no CSRF).
-- Read-receipts.
 
 Implemented since v1:
 
@@ -336,6 +335,18 @@ Implemented since v1:
   text.  Each frontend can wire any picker (`emoji-mart` for
   React/Next, `<emoji-picker-element>` for Plain/Lit, etc.) on top
   without server changes.
+- **Read receipts** (#103, slice 2).  Demonstrates DistributedData
+  LWWMap: each room has a `read-up-to.<room>` DD entry mapping
+  username → highest message timestamp the user has acknowledged.
+  Clients send `{ type: 'read-up-to', room, ts }` on focus + new
+  arrivals; the server's `ReadReceiptsActor` writes via LWWMap with
+  a monotonic guard (a stale write can't roll a user's pointer
+  backwards), then fans out `{ type: 'read-receipts', room,
+  receipts }` to every local subscriber.  For DMs the DD entry is
+  keyed on the canonical pair-id so both participants share the same
+  view.  UI: ✓ next to own messages (sent), ✓✓ when at least one
+  other participant has read up to that message (hover for the
+  reader list).
 
 ## Files
 
@@ -358,6 +369,7 @@ examples/chat/
 │       ├── DmChannelActor.ts           ← #100: sharded PersistentActor (per DM pair)
 │       ├── UserSessionActor.ts         ← per-WS-connection session
 │       ├── OnlineUsersActor.ts         ← DistributedData ORSet wrapper
+│       ├── ReadReceiptsActor.ts        ← #103: DD-LWWMap wrapper for read pointers
 │       └── HttpIngressActor.ts         ← ClusterSingleton: owns the :8080 bind
 ├── shared/
 │   ├── protocol.ts        ← shared TS types for WS messages
