@@ -2,6 +2,7 @@ import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
+import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../util/Constants.js';
 import type { Cluster } from '../Cluster.js';
 import { MemberRemoved, MemberUp } from '../ClusterEvents.js';
 import { NodeAddress } from '../NodeAddress.js';
@@ -74,7 +75,7 @@ export class DistributedPubSubMediator extends Actor<
         .with(P.instanceOf(MemberUp), () => { this.version++; })
         .otherwise(() => { /* other events ignored */ }),
     );
-    const interval = this.settings.gossipIntervalMs ?? 1_000;
+    const interval = this.settings.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
     this.gossipTimer = this.system.scheduler.scheduleAtFixedRateFn(
       interval, interval, () => this.gossipTick(),
     );

@@ -6,6 +6,12 @@ import type { Logger } from '../Logger.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
 import { tracerOf } from '../tracing/TracingExtension.js';
 import type { Cancellable } from '../Scheduler.js';
+import {
+  DEFAULT_GOSSIP_INTERVAL_MS,
+  DEFAULT_SEED_RETRY_INTERVAL_MS,
+  DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
+  DEFAULT_TOMBSTONE_TTL_MS,
+} from '../util/Constants.js';
 import { none, some, type Option } from '../util/Option.js';
 import {
   LeaderChanged,
@@ -172,12 +178,12 @@ export class Cluster {
       ...(settings.failureDetector ?? {}),
     };
     this.failureDetector = new FailureDetector(fdSettings);
-    this.gossipIntervalMs = settings.gossipIntervalMs ?? 1_000;
-    this.seedRetryIntervalMs = settings.seedRetryIntervalMs ?? 3_000;
+    this.gossipIntervalMs = settings.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
+    this.seedRetryIntervalMs = settings.seedRetryIntervalMs ?? DEFAULT_SEED_RETRY_INTERVAL_MS;
     this.weaklyUpAfterMs = settings.weaklyUpAfterMs ?? 0;
     this.downing = settings.downing ?? null;
-    this.tombstoneTtlMs = settings.tombstoneTtlMs ?? 24 * 60 * 60 * 1_000; // 24 h
-    this.tombstonePruneIntervalMs = settings.tombstonePruneIntervalMs ?? 5 * 60 * 1_000; // 5 min
+    this.tombstoneTtlMs = settings.tombstoneTtlMs ?? DEFAULT_TOMBSTONE_TTL_MS;
+    this.tombstonePruneIntervalMs = settings.tombstonePruneIntervalMs ?? DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS;
     this.tombstoneMinRetentionMs =
       settings.tombstoneMinRetentionMs ?? 6 * fdSettings.downAfterMs;
   }

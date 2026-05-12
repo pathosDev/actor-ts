@@ -5,6 +5,7 @@ import type { ActorSystem } from '../ActorSystem.js';
 import type { DurableStateStore } from '../persistence/DurableStateStore.js';
 import type { Cancellable } from '../Scheduler.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
+import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
 import { Props } from '../Props.js';
 import type { Cluster } from '../cluster/Cluster.js';
 import { MemberRemoved, MemberUp } from '../cluster/ClusterEvents.js';
@@ -429,7 +430,7 @@ export class DistributedDataHandle {
   ): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const pendingId = nextPendingId();
-      const timeoutMs = opts.timeoutMs ?? 5_000;
+      const timeoutMs = opts.timeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
       this.ref.tell({
         t: 'ddata-update', key,
         factory: factory as unknown as CrdtFactory<Crdt<any>>,
@@ -463,7 +464,7 @@ export class DistributedDataHandle {
   ): Promise<C | undefined> {
     return new Promise<C | undefined>((resolve, reject) => {
       const pendingId = nextPendingId();
-      const timeoutMs = opts.timeoutMs ?? 5_000;
+      const timeoutMs = opts.timeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
       this.ref.tell({
         t: 'ddata-read', key, pendingId,
         consistency: opts.consistency, timeoutMs,

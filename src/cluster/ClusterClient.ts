@@ -39,6 +39,7 @@
 
 import { getTcpBackend, type TcpSocketLike, type TlsTransportSettings } from '../runtime/tcp/index.js';
 import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
+import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
 import { encodeFrame, FrameDecoder, type WireMessage, type HelloMsg, type HelloAckMsg } from './Protocol.js';
 import type {
@@ -122,7 +123,7 @@ export class ClusterClient {
     };
     this.identity = new NodeAddress(sysName, id.host, id.port);
     this.tls = settings.tls ?? null;
-    this.askTimeoutMs = settings.askTimeoutMs ?? 5_000;
+    this.askTimeoutMs = settings.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
     this.log = settings.log ?? new ConsoleLogger(LogLevel.Warn, 'cluster-client');
   }
 

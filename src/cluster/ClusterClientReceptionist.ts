@@ -42,6 +42,7 @@
 import { ask } from '../Ask.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
+import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
 import type { WireMessage } from './Protocol.js';
 import type { Cluster } from './Cluster.js';
@@ -94,7 +95,7 @@ export class ClusterClientReceptionist implements Extension {
       throw new Error('ClusterClientReceptionist is already bound to a different cluster');
     }
     this._cluster = cluster;
-    const askTimeoutMs = settings.askTimeoutMs ?? 5_000;
+    const askTimeoutMs = settings.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
     const log = this.system.log.withSource(`cluster-client-receptionist@${cluster.selfAddress}`);
 
     this._unsubscribe = cluster._onWire('cluster-client-envelope', (msg) => {

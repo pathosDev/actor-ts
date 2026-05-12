@@ -1,5 +1,6 @@
 import { match, P } from 'ts-pattern';
 import { Actor } from '../Actor.js';
+import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
 import { fromNullable, type Option } from '../util/Option.js';
 import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
@@ -64,7 +65,7 @@ export class Receptionist extends Actor<Msg> {
   constructor(settings: ReceptionistSettings) {
     super();
     this.clusterRef = settings.cluster ?? null;
-    this.gossipIntervalMs = settings.gossipIntervalMs ?? 1_000;
+    this.gossipIntervalMs = settings.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
   }
 
   override preStart(): void {
