@@ -4,6 +4,11 @@ dist/
 # Astro cache + generated types.
 .astro/
 
+# TypeDoc-generated API reference — regenerated on every build by the
+# `starlight-typedoc` plugin from `../src/`.  Source-of-truth is the
+# JSDoc in `src/`, so committing the generated output adds noise.
+src/content/docs/api/
+
 # Local dependencies — installed fresh in CI via `cd docs && bun install`.
 node_modules/
 

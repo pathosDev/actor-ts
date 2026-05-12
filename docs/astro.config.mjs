@@ -24,6 +24,14 @@
  */
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import { createStarlightTypeDocPlugin } from 'starlight-typedoc';
+
+// TypeDoc → Starlight bridge.  Generates the API reference from
+// JSDoc comments in `../src/`, writes Markdown pages under
+// `src/content/docs/api/`, and exposes a `typeDocSidebarGroup` we
+// can drop into the sidebar config (once the sidebar is wired up in
+// Commit 2.3 — for now the group sits at the top-level until then).
+const [starlightTypeDoc, typeDocSidebarGroup] = createStarlightTypeDocPlugin();
 
 export default defineConfig({
   site: 'https://pathosDev.github.io',
@@ -51,16 +59,45 @@ export default defineConfig({
         },
       ],
       customCss: ['./src/styles/custom.css'],
+      plugins: [
+        starlightTypeDoc({
+          // Public API surface lives in `src/index.ts` — that barrel
+          // re-exports everything users are supposed to import.
+          // Sub-paths like `src/cluster/index.ts` could be added as
+          // additional entry points if we want them as separate API
+          // sections; today the single barrel is enough.
+          entryPoints: ['../src/index.ts'],
+          tsconfig: '../tsconfig.json',
+          // Output lives under `src/content/docs/api/` so Starlight's
+          // content-collection picks it up.  Pages are auto-generated
+          // on every build — output is gitignored (`docs/.gitignore`).
+          output: 'api',
+          sidebar: {
+            label: 'API Reference',
+            collapsed: true,
+          },
+          typeDoc: {
+            // Reasonable defaults for a library — show every export,
+            // resolve external links to GitHub for non-actor-ts types.
+            excludePrivate: true,
+            excludeInternal: true,
+            // Skip the rotating-circle "this signature was generated"
+            // footer that TypeDoc adds — Starlight has its own footer.
+            hideGenerator: true,
+          },
+        }),
+      ],
       // Pagefind search is built in — no extra config needed.
       defaultLocale: 'root',
       locales: {
         root: { label: 'English', lang: 'en' },
         de: { label: 'Deutsch', lang: 'de' },
       },
-      // Sidebar will be populated by Commit 2.3 (after the ~150 stub pages
-      // are scaffolded in Commit 2.2).  Empty array here keeps the build
-      // green and the chrome visible.
-      sidebar: [],
+      // Sidebar will be expanded by Commit 2.3 (after the ~150 stub
+      // pages are scaffolded in Commit 2.2).  The TypeDoc-generated
+      // API group already wires itself in via `typeDocSidebarGroup`
+      // — that's the only non-empty sidebar entry at this commit.
+      sidebar: [typeDocSidebarGroup],
       social: [
         {
           icon: 'github',

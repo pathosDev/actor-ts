@@ -12,11 +12,14 @@
     "astro": "astro"
   },
   "dependencies": {
-    "@astrojs/starlight": "^0.34.0",
+    "@astrojs/starlight": "^0.39.0",
     "@fontsource-variable/inter": "^5.1.0",
     "@fontsource/jetbrains-mono": "^5.1.0",
-    "astro": "^5.0.0",
-    "sharp": "^0.33.5"
+    "astro": "^6.0.0",
+    "sharp": "^0.33.5",
+    "starlight-typedoc": "^0.22.0",
+    "typedoc": "^0.28.0",
+    "typedoc-plugin-markdown": "^4.4.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0"
