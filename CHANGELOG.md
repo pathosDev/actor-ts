@@ -52,6 +52,66 @@ selection (#243), `BodyCodec` encode-compression (#244),
   storage backend with similar key rules becomes a 6-line
   `as const` rule set (#251).
 
+### Chat sample feature sweep
+
+Five "Chat sample: …" follow-up issues resolved across five
+commits.  Four shipped as features, one closed-not-implement, one
+sub-feature spun off as its own focused issue.
+
+- **User-created rooms at runtime** (#98) — new
+  `ChatRoomDirectoryActor` wraps a cluster-wide `DistributedData`
+  ORSet of room names.  `DEFAULT_ROOMS` becomes the idempotent seed
+  list; the actor fans out `RoomsChanged` / `RoomAdded` /
+  `RoomRemoved` events to per-session subscribers.  Protocol gains
+  `create-room` (client → server) plus `room-added` / `room-removed`
+  (server → client).  Six frontends grow a "+ new room" input.
+- **Private direct messages** (#100) — DMs ride on existing
+  protocol frames as virtual `@<username>` "rooms".  Server
+  distinguishes by the leading `@` and routes through a sharded
+  `DmChannelActor` keyed on the canonical pair-id
+  (`canonicalPairId('alice', 'bob') === 'alice|bob'` regardless of
+  ordering).  Each user subscribes once at login to their inbox
+  topic `chat.dm.user.<self>` — single subscription covers every
+  DM conversation.  Six frontends: click any user in the Online
+  panel to open a DM.
+- **Typing indicators** (#103 slice 1) — `{ type: 'typing', room }`
+  fan-outs via the room's existing PubSub topic as an ephemeral
+  `TypingBroadcast`; server filters self-echoes; clients debounce
+  outbound at 1/2 s and auto-clear stale indicators after 3 s.
+- **Read receipts** (#103 slice 2) — per-room
+  `read-up-to.<room>` `DistributedData` LWWMap mapping username →
+  highest acked message timestamp.  New `ReadReceiptsActor` enforces
+  a monotonic guard at the boundary (LWW's wall-clock tiebreak
+  doesn't know read pointers can't go backwards).  Frontends render
+  ✓ / ✓✓ on own messages.
+- **Emoji passthrough** (#103 slice 1, doc-only) — server is
+  text-agnostic; any frontend can wire an `emoji-mart` /
+  `<emoji-picker-element>` / native picker on top without server
+  changes.  Documented in the chat README; no code shipped.
+- **Production-realistic auth** (#99, Option A) — passwords stored
+  as `<salt>:<hash>` scrypt records (`crypto.scryptSync`,
+  N=16384/r=8/p=1, constant-time verify via
+  `crypto.timingSafeEqual`).  Session tokens become HMAC-SHA256-
+  signed JWT-style strings; `lookupToken` self-validates without a
+  DD read.  DD-LWWMap shrinks to a revocation-only set
+  (`chat.session-revocations`).  Server secret comes from
+  `CHAT_TOKEN_SECRET` env (warned-and-fallback otherwise).
+- **#104 (mobile frontends)** — closed-not-implement.  Six web
+  frontends already cover the "protocol works anywhere" story;
+  adding React Native + Flutter is two more app-frameworks to
+  maintain for marginal sample-value gain.  Rationale in the issue
+  closing comment.
+- **#292 (file uploads)** — spun off as its own focused issue
+  because object-storage wiring is qualitatively different from
+  the other UI-polish items.  Not blocking the rest of the sweep.
+
+Chat-sample smoke-test grows from passes 1–2 to **passes 1–7**,
+covering: login + send + history (1–2), user-created rooms (3),
+direct messages (4), typing indicators (5), read receipts including
+a monotonic-guard probe (6), and auth hardening — wrong password,
+valid resume, revoked-token resume rejection, tampered-token resume
+rejection (7).
+
 ### Added — Persistence
 
 - `eventDispatcher<S, E>()` (#239) — typed builder for
