@@ -297,7 +297,7 @@ Bun process owns the public listener directly.
 
 ## Out of scope (followup issues opened)
 
-- File uploads, emojis, typing indicators.
+- File uploads (deferred — needs object-storage subsystem).
 - Production-grade auth (no bcrypt, no session expiry, no CSRF).
 - Read-receipts.
 
@@ -322,6 +322,20 @@ Implemented since v1:
   in that inbox topic regardless of which conversation it belongs to,
   so the client needs no per-channel subscription bookkeeping.  Click
   any user in the Online panel to open a DM.
+- **Typing indicators** (#103, slice 1).  Demonstrates ephemeral
+  PubSub: `{ type: 'typing', room }` is fan-out via the room's
+  existing topic (no persistence, no actor in between) as a
+  `TypingBroadcast { from }`; subscribers translate to
+  `{ type: 'user-typing', room, username }` for the client.  Server
+  filters self-echoes; client side debounces outbound to 1/2 s and
+  auto-clears stale indicators 3 s after the last frame.  For DM
+  rooms the broadcast targets the recipient's inbox topic, pre-keyed
+  to the `@<sender>` virtual room.
+- **Emojis** (#103, slice 1).  Pure-text — the server is agnostic.
+  Paste any Unicode emoji into compose and it flows like normal
+  text.  Each frontend can wire any picker (`emoji-mart` for
+  React/Next, `<emoji-picker-element>` for Plain/Lit, etc.) on top
+  without server changes.
 
 ## Files
 

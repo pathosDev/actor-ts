@@ -80,6 +80,26 @@ export interface RoomBroadcast {
   readonly ts: number;
 }
 
+/**
+ * Ephemeral "user is typing" broadcast — published on the same
+ * `chatRoomTopic(room)` topic as `RoomBroadcast`, but never persisted.
+ *
+ * **Why ride the chat-room topic instead of a separate topic?**  Every
+ * `UserSessionActor` already subscribes to a room's topic on `join`;
+ * carrying typing notifications on the same topic adds zero
+ * subscription bookkeeping.  Subscribers discriminate by `kind` in
+ * their mailbox handler.  Trade-off: a typing burst is gossiped to
+ * every room subscriber even if they're not actively viewing the
+ * room — fine for sample-scale traffic (~10 users); a production
+ * design might split into a separate topic if typing fan-out
+ * dominates message fan-out.  Added in #103.
+ */
+export interface TypingBroadcast {
+  readonly kind: 'TypingBroadcast';
+  readonly room: RoomName;
+  readonly from: string;
+}
+
 /** Topic name a room broadcasts on. */
 export function chatRoomTopic(room: RoomName): string {
   return `chat.room.${room}`;

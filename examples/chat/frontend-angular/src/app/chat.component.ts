@@ -1,4 +1,4 @@
-import { Component, ElementRef, inject, signal, viewChild } from '@angular/core';
+import { Component, ElementRef, computed, inject, signal, viewChild } from '@angular/core';
 import { ChatService } from './chat.service';
 import { isDmRoom, type RoomName } from './protocol';
 
@@ -77,6 +77,14 @@ import { isDmRoom, type RoomName } from './protocol';
     .msg { margin-bottom: 0.4rem; }
     .from { font-weight: 600; margin-right: 0.4rem; }
     .ts { color: #888; font-size: 0.75rem; margin-left: 0.5rem; }
+    .typing {
+      font-size: 0.8rem;
+      font-style: italic;
+      color: #888;
+      padding: 0.25rem 1rem;
+      min-height: 1.2em;
+      border-top: 1px solid var(--border);
+    }
     form.compose {
       display: flex;
       gap: 0.5rem;
@@ -167,6 +175,7 @@ import { isDmRoom, type RoomName } from './protocol';
             </div>
           }
         </div>
+        <div class="typing">{{ typingText() }}</div>
         <!-- Plain (submit) + manual preventDefault. ngSubmit would only -->
         <!-- do that for us if the component imported FormsModule, and we -->
         <!-- don't need the rest of FormsModule here (we use viewChild   -->
@@ -177,6 +186,7 @@ import { isDmRoom, type RoomName } from './protocol';
             #composeInput
             placeholder="Type a message..."
             autocomplete="off"
+            (input)="onComposeInput()"
           />
           <button type="submit">Send</button>
         </form>
@@ -224,8 +234,23 @@ export class ChatComponent {
     return list;
   };
 
+  /** Rendered "X is typing…" line below the compose input. */
+  protected readonly typingText = computed(() => {
+    const peers = this.chat.currentTyping();
+    if (peers.length === 0) return '';
+    if (peers.length === 1) return `${peers[0]} is typing…`;
+    if (peers.length === 2) return `${peers[0]} and ${peers[1]} are typing…`;
+    return `${peers.length} people are typing…`;
+  });
+
   protected formatTs(ts: number): string {
     return new Date(ts).toLocaleTimeString();
+  }
+
+  protected onComposeInput(): void {
+    const room = this.chat.currentRoom() as RoomName | null;
+    if (!room) return;
+    this.chat.notifyTyping(room);
   }
 
   protected onSend(event: Event): void {

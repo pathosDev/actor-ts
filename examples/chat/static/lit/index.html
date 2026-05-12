@@ -46,6 +46,7 @@
           unreadByRoom: { state: true },
           loginError: { state: true },
           createRoomInvalid: { state: true },
+          typingByRoom: { state: true },
         };
 
         constructor() {
@@ -65,6 +66,10 @@
           this.unreadByRoom = {};
           this.loginError = '';
           this.createRoomInvalid = false;
+          /** RoomName → { [username]: timeoutHandle }.  Indicators
+           *  auto-clear 3 s after the last `user-typing` frame. */
+          this.typingByRoom = {};
+          this.lastTypingSentAt = 0;
           this.ws = null;
           this.reconnectAttempts = 0;
           this.reconnectTimer = null;
@@ -112,6 +117,8 @@
           .msg { margin-bottom: 0.4rem; }
           .from { font-weight: 600; margin-right: 0.4rem; }
           .ts { color: #888; font-size: 0.75rem; margin-left: 0.5rem; }
+          .typing { font-size: 0.8rem; font-style: italic; color: #888; padding: 0.25rem 1rem;
+            min-height: 1.2em; border-top: 1px solid var(--border); }
           form.compose { display: flex; gap: 0.5rem; padding: 0.5rem 1rem; border-top: 1px solid var(--border); }
           form.compose input { flex: 1; }
           form.compose button { background: var(--accent); color: white; border-color: var(--accent); }
@@ -265,7 +272,25 @@
             case 'users':
               this.usersByRoom = { ...this.usersByRoom, [m.room]: m.users.slice().sort() };
               break;
+            case 'user-typing':
+              this.onUserTyping(m.room, m.username);
+              break;
           }
+        }
+
+        onUserTyping(room, username) {
+          if (!username || username === this.username) return;
+          const perRoom = { ...(this.typingByRoom[room] ?? {}) };
+          if (perRoom[username]) clearTimeout(perRoom[username]);
+          perRoom[username] = setTimeout(() => {
+            const next = { ...this.typingByRoom };
+            const inner = { ...(next[room] ?? {}) };
+            delete inner[username];
+            if (Object.keys(inner).length === 0) delete next[room];
+            else next[room] = inner;
+            this.typingByRoom = next;
+          }, 3000);
+          this.typingByRoom = { ...this.typingByRoom, [room]: perRoom };
         }
 
         resetToLogin() {
@@ -330,6 +355,16 @@
           if (!text || !this.currentRoom || !this.ws) return;
           this.ws.send(JSON.stringify({ type: 'send', room: this.currentRoom, text }));
           input.value = '';
+        }
+
+        onComposeInput() {
+          if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+          if (!this.currentRoom) return;
+          const now = Date.now();
+          // Debounce: max 1 typing frame per 2 s while typing.
+          if (now - this.lastTypingSentAt < 2000) return;
+          this.lastTypingSentAt = now;
+          this.ws.send(JSON.stringify({ type: 'typing', room: this.currentRoom }));
         }
 
         openDm(otherUser) {
@@ -408,6 +443,14 @@
           if (this.currentRoom && isDmRoom(this.currentRoom) && users.length === 0) {
             users = [this.currentRoom.slice(1), this.username];
           }
+          const typingPeers = this.currentRoom
+            ? Object.keys(this.typingByRoom[this.currentRoom] ?? {})
+            : [];
+          const typingText =
+            typingPeers.length === 0 ? ''
+              : typingPeers.length === 1 ? `${typingPeers[0]} is typing…`
+              : typingPeers.length === 2 ? `${typingPeers[0]} and ${typingPeers[1]} are typing…`
+              : `${typingPeers.length} people are typing…`;
           return html`
             <div class="chat">
               <header class="bar">
@@ -445,8 +488,11 @@
                       </div>
                     `)}
                   </div>
+                  <div class="typing">${typingText}</div>
                   <form class="compose" @submit=${this.onCompose}>
-                    <input placeholder="Type a message..." autocomplete="off" />
+                    <input placeholder="Type a message..."
+                           autocomplete="off"
+                           @input=${this.onComposeInput} />
                     <button type="submit">Send</button>
                   </form>
                 </main>

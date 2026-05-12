@@ -43,10 +43,17 @@ class ChatStore {
   messagesByRoom = $state<Record<string, ChatMessage[]>>({});
   usersByRoom = $state<Record<string, string[]>>({});
   unreadByRoom = $state<Record<string, number>>({});
+  /** Per-room list of usernames currently typing.  Entries
+   *  auto-clear 3 s after the last `user-typing` frame. */
+  typingByRoom = $state<Record<string, string[]>>({});
 
   #ws: WebSocket | null = null;
   #reconnectAttempts = 0;
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Per-room, per-user clear timers for the typing indicator. */
+  readonly #typingTimers = new Map<string, Map<string, ReturnType<typeof setTimeout>>>();
+  /** Debounce: max one outbound `typing` frame per 2 s. */
+  #lastTypingSentAt = 0;
 
   constructor() {
     // Auto-resume on bootstrap.  Class-instances run on module
@@ -125,6 +132,15 @@ class ChatStore {
     if (!text.trim() || !this.#ws) return;
     const cmd: ClientMessage = { type: 'send', room, text };
     this.#ws.send(JSON.stringify(cmd));
+  }
+
+  /** Send a `typing` frame at most once per 2 s. */
+  notifyTyping(room: RoomName): void {
+    if (!this.#ws || this.#ws.readyState !== WebSocket.OPEN) return;
+    const now = Date.now();
+    if (now - this.#lastTypingSentAt < 2000) return;
+    this.#lastTypingSentAt = now;
+    this.#ws.send(JSON.stringify({ type: 'typing', room } satisfies ClientMessage));
   }
 
   selectRoom(room: RoomName): void {
@@ -263,8 +279,40 @@ class ChatStore {
       case 'users':
         this.usersByRoom[m.room] = m.users.slice().sort();
         break;
+      case 'user-typing':
+        this.#onUserTyping(m.room, m.username);
+        break;
       case 'system':
         break;
+    }
+  }
+
+  #onUserTyping(room: RoomName, username: string): void {
+    if (!username || username === this.username) return;
+    let perRoom = this.#typingTimers.get(room);
+    if (!perRoom) {
+      perRoom = new Map();
+      this.#typingTimers.set(room, perRoom);
+    }
+    const existing = perRoom.get(username);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      perRoom!.delete(username);
+      if (perRoom!.size === 0) this.#typingTimers.delete(room);
+      this.#refreshTypingByRoom(room);
+    }, 3000);
+    perRoom.set(username, timer);
+    this.#refreshTypingByRoom(room);
+  }
+
+  #refreshTypingByRoom(room: RoomName): void {
+    const perRoom = this.#typingTimers.get(room);
+    const list = perRoom ? [...perRoom.keys()] : [];
+    if (list.length === 0) {
+      const { [room]: _drop, ...rest } = this.typingByRoom;
+      this.typingByRoom = rest;
+    } else {
+      this.typingByRoom = { ...this.typingByRoom, [room]: list };
     }
   }
 }

@@ -120,6 +120,12 @@ function ChatView({ chat }: { chat: ChatHandle }): React.JSX.Element {
   if (state.currentRoom && isDmRoom(state.currentRoom) && users.length === 0) {
     users = [state.currentRoom.slice(1), ...(state.username ? [state.username] : [])];
   }
+  const typingPeers = state.currentRoom ? (state.typingByRoom[state.currentRoom] ?? []) : [];
+  const typingText =
+    typingPeers.length === 0 ? ''
+    : typingPeers.length === 1 ? `${typingPeers[0]} is typing…`
+    : typingPeers.length === 2 ? `${typingPeers[0]} and ${typingPeers[1]} are typing…`
+    : `${typingPeers.length} people are typing…`;
 
   const onSend = (e: FormEvent<HTMLFormElement>): void => {
     e.preventDefault();
@@ -128,6 +134,9 @@ function ChatView({ chat }: { chat: ChatHandle }): React.JSX.Element {
     if (!text || !state.currentRoom) return;
     chat.send(state.currentRoom as RoomName, text);
     if (input) input.value = '';
+  };
+  const onComposeInput = (): void => {
+    if (state.currentRoom) chat.notifyTyping(state.currentRoom as RoomName);
   };
 
   return (
@@ -171,8 +180,13 @@ function ChatView({ chat }: { chat: ChatHandle }): React.JSX.Element {
               </div>
             ))}
           </div>
+          <div className="typing">{typingText}</div>
           <form className="compose" onSubmit={onSend}>
-            <input placeholder="Type a message..." autoComplete="off" />
+            <input
+              placeholder="Type a message..."
+              autoComplete="off"
+              onInput={onComposeInput}
+            />
             <button type="submit">Send</button>
           </form>
         </main>

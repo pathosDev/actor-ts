@@ -27,6 +27,10 @@
     composeText = '';
   }
 
+  function onComposeInput(): void {
+    if (chat.currentRoom) chat.notifyTyping(chat.currentRoom as RoomName);
+  }
+
   function onCreateRoom(e: SubmitEvent): void {
     e.preventDefault();
     if (!chat.createRoom(newRoomName.trim())) {
@@ -120,8 +124,20 @@
             </div>
           {/each}
         </div>
+        {@const typingPeers = chat.currentRoom ? chat.typingByRoom[chat.currentRoom] ?? [] : []}
+        {@const typingText =
+          typingPeers.length === 0 ? ''
+          : typingPeers.length === 1 ? `${typingPeers[0]} is typing…`
+          : typingPeers.length === 2 ? `${typingPeers[0]} and ${typingPeers[1]} are typing…`
+          : `${typingPeers.length} people are typing…`}
+        <div class="typing">{typingText}</div>
         <form class="compose" onsubmit={onSend}>
-          <input bind:value={composeText} placeholder="Type a message..." autocomplete="off" />
+          <input
+            bind:value={composeText}
+            placeholder="Type a message..."
+            autocomplete="off"
+            oninput={onComposeInput}
+          />
           <button type="submit">Send</button>
         </form>
       </main>
@@ -263,6 +279,14 @@
   .msg { margin-bottom: 0.4rem; }
   .from { font-weight: 600; margin-right: 0.4rem; }
   .ts { color: #888; font-size: 0.75rem; margin-left: 0.5rem; }
+  .typing {
+    font-size: 0.8rem;
+    font-style: italic;
+    color: #888;
+    padding: 0.25rem 1rem;
+    min-height: 1.2em;
+    border-top: 1px solid var(--border);
+  }
   form.compose {
     display: flex;
     gap: 0.5rem;

@@ -44,7 +44,8 @@ import {
   type ActorRef,
 } from '../../../../src/index.js';
 import type { ServerWebSocketLike } from '../../../../src/io/broker/ServerWebSocketActor.js';
-import { Subscribe, Unsubscribe } from '../../../../src/cluster/pubsub/Messages.js';
+import { DistributedPubSubId } from '../../../../src/cluster/pubsub/index.js';
+import { Publish, Subscribe, Unsubscribe } from '../../../../src/cluster/pubsub/Messages.js';
 import {
   decodeClient,
   encodeServer,
@@ -67,6 +68,7 @@ import {
   type ChatRoomCmd,
   type HistoryReply,
   type RoomBroadcast,
+  type TypingBroadcast,
 } from './ChatRoomActor.js';
 import type {
   ChatRoomDirectoryCmd,
@@ -104,7 +106,8 @@ type SessionMsg =
   | RoomAdded
   | RoomRemoved
   | DmBroadcast
-  | DmHistoryReply;
+  | DmHistoryReply
+  | TypingBroadcast;
 
 /* --------------------------- public deps ---------------------------- */
 
@@ -191,6 +194,7 @@ export class UserSessionActor extends Actor<SessionMsg> {
       .with({ kind: 'RoomRemoved' },  (m) => this.onRoomRemoved(m))
       .with({ kind: 'DmBroadcast' },     (m) => this.onDmBroadcast(m))
       .with({ kind: 'DmHistoryReply' },  (m) => this.onDmHistoryReply(m))
+      .with({ kind: 'TypingBroadcast' }, (m) => this.onTypingBroadcast(m))
       .exhaustive();
   }
 
@@ -380,6 +384,10 @@ export class UserSessionActor extends Actor<SessionMsg> {
         // the name appearing in the list.
         this.deps.roomDirectory.tell({ kind: 'Create', name: m.name });
       })
+      .with({ type: 'typing' }, (m) => {
+        if (!isRoomName(m.room)) return;
+        this.broadcastTyping(m.room);
+      })
       .with({ type: 'ping' }, () => { /* keepalive — no-op server-side */ })
       .exhaustive();
   }
@@ -409,6 +417,63 @@ export class UserSessionActor extends Actor<SessionMsg> {
       type: 'users',
       room: msg.room,
       users: msg.users,
+    });
+  }
+
+  /* ----------------------------- typing ------------------------------ */
+
+  /**
+   * Relay a `typing` frame as a `TypingBroadcast` to the appropriate
+   * topic.  For real rooms this rides on the same `chatRoomTopic` as
+   * regular messages (#103 design note in `ChatRoomActor`).  For DM
+   * "rooms" (`@<other>`), publish only to the OTHER party's inbox
+   * topic — typing is direction-aware, the recipient sees "alice is
+   * typing in @alice" while alice doesn't echo herself.
+   *
+   * **Trust model**: we don't validate that the user is *actually*
+   * a participant in the room/DM at the protocol-frame level — the
+   * worst a misbehaving client can do is generate a noise indicator
+   * for a room it's not subscribed to.  No persistence, no security
+   * implication.
+   */
+  private broadcastTyping(room: RoomName): void {
+    const me = this.username;
+    if (!me) return;
+    const mediator = this.system.extension(DistributedPubSubId).mediator;
+    if (isDmRoomName(room)) {
+      const other = dmCounterparty(room);
+      if (!other || other === me) return;
+      const broadcast: TypingBroadcast = {
+        kind: 'TypingBroadcast',
+        // From the recipient's perspective the room is `@<me>`.  The
+        // server pre-resolves this so the recipient renders the
+        // indicator under the right virtual room without further
+        // mapping.
+        room: dmRoomFor(me),
+        from: me,
+      };
+      mediator.tell(new Publish(dmInboxTopic(other), broadcast));
+      return;
+    }
+    if (!this.joinedRooms.has(room)) return;
+    const broadcast: TypingBroadcast = {
+      kind: 'TypingBroadcast',
+      room,
+      from: me,
+    };
+    mediator.tell(new Publish(chatRoomTopic(room), broadcast));
+  }
+
+  private onTypingBroadcast(msg: TypingBroadcast): void {
+    // Filter self-echoes — for real rooms, this actor subscribes to
+    // the same topic it publishes on, so it sees its own typing
+    // broadcasts.  Drop them so the client doesn't render "you are
+    // typing".
+    if (msg.from === this.username) return;
+    this.sendServer({
+      type: 'user-typing',
+      room: msg.room,
+      username: msg.from,
     });
   }
 

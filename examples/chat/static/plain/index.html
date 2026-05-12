@@ -202,6 +202,14 @@
         color: #888;
         font-style: italic;
       }
+      .typing {
+        font-size: 0.8rem;
+        font-style: italic;
+        color: #888;
+        padding: 0.25rem 1rem;
+        min-height: 1.2em;
+        border-top: 1px solid var(--border);
+      }
       form.compose {
         display: flex;
         gap: 0.5rem;
@@ -269,6 +277,7 @@
         </aside>
         <main>
           <div id="messages" class="messages"></div>
+          <div id="typing" class="typing"></div>
           <form id="compose" class="compose">
             <input id="compose-text" placeholder="Type a message…" autocomplete="off" />
             <button type="submit">Send</button>
@@ -299,6 +308,11 @@
         messagesByRoom: new Map(),    // RoomName → ChatMessage[]
         usersByRoom:    new Map(),    // RoomName → string[]
         unreadByRoom:   new Map(),    // RoomName → number
+        // RoomName → Map<username, timeoutHandle>.  Each entry's
+        // timeout clears the indicator 3s after the last `user-typing`.
+        typingByRoom:   new Map(),
+        /** When did we last send a `typing` frame?  Debounce to 1/2s. */
+        lastTypingSentAt: 0,
       };
       /** Reconnect bookkeeping — see scheduleResumeReconnect. */
       let reconnectAttempts = 0;
@@ -319,6 +333,7 @@
       const $users    = document.getElementById('users');
       const $usersCnt = document.getElementById('users-count');
       const $msgs     = document.getElementById('messages');
+      const $typing   = document.getElementById('typing');
       const $compose  = document.getElementById('compose');
       const $cText    = document.getElementById('compose-text');
 
@@ -428,6 +443,7 @@
           case 'history':      return onHistory(msg.room, msg.messages);
           case 'message':      return onMessage(msg.room, { from: msg.from, text: msg.text, ts: msg.ts });
           case 'users':        return onUsers(msg.room, msg.users);
+          case 'user-typing':  return onUserTyping(msg.room, msg.username);
           case 'system':       return onSystem(msg.text);
           default: console.warn('unknown server msg', msg);
         }
@@ -541,6 +557,28 @@
         if (room === state.currentRoom) renderUsers();
       }
 
+      /** Add or refresh a typing indicator for {username} in {room}.
+       *  Auto-clears 3 s after the last `user-typing` frame. */
+      function onUserTyping(room, username) {
+        if (!username || username === state.username) return;
+        let perRoom = state.typingByRoom.get(room);
+        if (!perRoom) {
+          perRoom = new Map();
+          state.typingByRoom.set(room, perRoom);
+        }
+        const existing = perRoom.get(username);
+        if (existing) clearTimeout(existing);
+        const t = setTimeout(() => {
+          const map = state.typingByRoom.get(room);
+          if (!map) return;
+          map.delete(username);
+          if (map.size === 0) state.typingByRoom.delete(room);
+          if (room === state.currentRoom) renderTyping();
+        }, 3000);
+        perRoom.set(username, t);
+        if (room === state.currentRoom) renderTyping();
+      }
+
       function onSystem(text) {
         const list = state.messagesByRoom.get(state.currentRoom) ?? [];
         list.push({ from: '*', text, ts: Date.now(), system: true });
@@ -555,6 +593,17 @@
         if (!text || !state.currentRoom || !state.ws) return;
         state.ws.send(JSON.stringify({ type: 'send', room: state.currentRoom, text }));
         $cText.value = '';
+      });
+      // Send a `typing` frame at most once per 2 s while the user is
+      // typing — the server fans it out as `user-typing` to peers,
+      // who auto-clear the indicator 3 s after the last frame.
+      $cText.addEventListener('input', () => {
+        if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+        if (!state.currentRoom) return;
+        const now = Date.now();
+        if (now - state.lastTypingSentAt < 2000) return;
+        state.lastTypingSentAt = now;
+        state.ws.send(JSON.stringify({ type: 'typing', room: state.currentRoom }));
       });
 
       $rcForm.addEventListener('submit', (e) => {
@@ -590,6 +639,7 @@
         renderRoomList();
         renderMessages();
         renderUsers();
+        renderTyping();
       }
 
       /* ============== render ============== */
@@ -639,6 +689,21 @@
           $msgs.appendChild(div);
         }
         $msgs.scrollTop = $msgs.scrollHeight;
+      }
+
+      function renderTyping() {
+        const peers = state.currentRoom ? state.typingByRoom.get(state.currentRoom) : null;
+        if (!peers || peers.size === 0) {
+          $typing.textContent = '';
+          return;
+        }
+        const names = [...peers.keys()];
+        const list = names.length === 1
+          ? `${names[0]} is typing…`
+          : names.length === 2
+            ? `${names[0]} and ${names[1]} are typing…`
+            : `${names.length} people are typing…`;
+        $typing.textContent = list;
       }
 
       function renderUsers() {

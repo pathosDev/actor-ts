@@ -45,6 +45,14 @@ export class ChatService {
   readonly messagesByRoom = signal<Record<string, ReadonlyArray<ChatMessage>>>({});
   readonly usersByRoom = signal<Record<string, ReadonlyArray<string>>>({});
   readonly unreadByRoom = signal<Record<string, number>>({});
+  /** RoomName → ReadonlyArray<username> currently typing.  Entries
+   *  auto-clear 3 s after the last `user-typing` frame. */
+  readonly typingByRoom = signal<Record<string, ReadonlyArray<string>>>({});
+
+  readonly currentTyping = computed(() => {
+    const r = this.currentRoom();
+    return r ? (this.typingByRoom()[r] ?? []) : [];
+  });
 
   readonly currentMessages = computed(() => {
     const r = this.currentRoom();
@@ -58,6 +66,10 @@ export class ChatService {
   private ws: WebSocket | null = null;
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Per-room, per-user clear timer for the typing indicator. */
+  private readonly typingTimers = new Map<string, Map<string, ReturnType<typeof setTimeout>>>();
+  /** Debounce: max one outbound `typing` frame per 2 s. */
+  private lastTypingSentAt = 0;
 
   constructor() {
     // Auto-resume on bootstrap: if a token survived the page reload
@@ -141,6 +153,16 @@ export class ChatService {
   send(room: RoomName, text: string): void {
     if (!text.trim() || !this.ws) return;
     this.ws.send(JSON.stringify({ type: 'send', room, text } satisfies ClientMessage));
+  }
+
+  /** Send a `typing` frame at most once per 2 s.  Called from the
+   *  compose input's `input` event in the component. */
+  notifyTyping(room: RoomName): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    const now = Date.now();
+    if (now - this.lastTypingSentAt < 2000) return;
+    this.lastTypingSentAt = now;
+    this.ws.send(JSON.stringify({ type: 'typing', room } satisfies ClientMessage));
   }
 
   selectRoom(room: RoomName): void {
@@ -308,9 +330,42 @@ export class ChatService {
         this.usersByRoom.update((cur) => ({ ...cur, [m.room]: sorted }));
         break;
       }
+      case 'user-typing':
+        this.onUserTyping(m.room, m.username);
+        break;
       case 'system':
         // Ignored in this minimal frontend; could be displayed inline.
         break;
     }
+  }
+
+  /** Add or refresh a typing indicator with a 3 s auto-clear. */
+  private onUserTyping(room: RoomName, username: string): void {
+    if (!username || username === this.username()) return;
+    let perRoom = this.typingTimers.get(room);
+    if (!perRoom) {
+      perRoom = new Map();
+      this.typingTimers.set(room, perRoom);
+    }
+    const existing = perRoom.get(username);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      perRoom!.delete(username);
+      if (perRoom!.size === 0) this.typingTimers.delete(room);
+      this.refreshTypingByRoom(room);
+    }, 3000);
+    perRoom.set(username, timer);
+    this.refreshTypingByRoom(room);
+  }
+
+  private refreshTypingByRoom(room: RoomName): void {
+    const perRoom = this.typingTimers.get(room);
+    const list = perRoom ? [...perRoom.keys()] : [];
+    this.typingByRoom.update((cur) => {
+      const next = { ...cur };
+      if (list.length === 0) delete next[room];
+      else next[room] = list;
+      return next;
+    });
   }
 }

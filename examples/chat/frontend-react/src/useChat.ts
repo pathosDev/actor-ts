@@ -41,6 +41,10 @@ interface State {
   readonly messagesByRoom: Record<string, ReadonlyArray<ChatMessage>>;
   readonly usersByRoom: Record<string, ReadonlyArray<string>>;
   readonly unreadByRoom: Record<string, number>;
+  /** Per-room list of usernames currently typing.  Entries auto-clear
+   *  3 s after the last `user-typing` frame — managed via reducer
+   *  actions `typing-add` and `typing-clear`. */
+  readonly typingByRoom: Record<string, ReadonlyArray<string>>;
 }
 
 const INITIAL: State = {
@@ -52,6 +56,7 @@ const INITIAL: State = {
   messagesByRoom: {},
   usersByRoom: {},
   unreadByRoom: {},
+  typingByRoom: {},
 };
 
 const TOKEN_KEY = 'chat-token';
@@ -81,7 +86,9 @@ type Action =
   | { type: 'message'; room: RoomName; from: string; text: string; ts: number }
   | { type: 'users'; room: RoomName; users: ReadonlyArray<string> }
   | { type: 'select-room'; room: RoomName }
-  | { type: 'open-dm'; otherUser: string };
+  | { type: 'open-dm'; otherUser: string }
+  | { type: 'typing-add'; room: RoomName; username: string }
+  | { type: 'typing-clear'; room: RoomName; username: string };
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
@@ -190,6 +197,22 @@ function reducer(state: State, action: Action): State {
         unreadByRoom:   { ...state.unreadByRoom,   [room]: 0  },
       };
     }
+    case 'typing-add': {
+      const list = state.typingByRoom[action.room] ?? [];
+      if (list.includes(action.username)) return state;
+      return {
+        ...state,
+        typingByRoom: { ...state.typingByRoom, [action.room]: [...list, action.username] },
+      };
+    }
+    case 'typing-clear': {
+      const list = state.typingByRoom[action.room] ?? [];
+      const next = list.filter((u) => u !== action.username);
+      const typingByRoom = { ...state.typingByRoom };
+      if (next.length === 0) delete typingByRoom[action.room];
+      else typingByRoom[action.room] = next;
+      return { ...state, typingByRoom };
+    }
   }
 }
 
@@ -198,6 +221,7 @@ export function useChat(): {
   connect(username: string, password: string): void;
   logout(): void;
   send(room: RoomName, text: string): void;
+  notifyTyping(room: RoomName): void;
   selectRoom(room: RoomName): void;
   createRoom(name: string): boolean;
   openDm(otherUser: string): void;
@@ -208,6 +232,10 @@ export function useChat(): {
   // uses the current value without re-binding callbacks.
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Typing bookkeeping — per-room, per-user clear timers.  Refs so
+  // the closures in `handleServer` always see the current map.
+  const typingTimersRef = useRef<Map<string, Map<string, ReturnType<typeof setTimeout>>>>(new Map());
+  const lastTypingSentAtRef = useRef(0);
 
   const cancelReconnect = useCallback(() => {
     if (reconnectTimerRef.current !== null) {
@@ -256,6 +284,28 @@ export function useChat(): {
       case 'users':
         dispatch({ type: 'users', room: m.room, users: m.users });
         break;
+      case 'user-typing': {
+        // Schedule a 3 s auto-clear, replacing any pending one for
+        // the same (room, user) pair.  Refs hold the timer map so
+        // the closure stays stable across renders.
+        const { room, username } = m;
+        if (!username) break;
+        let perRoom = typingTimersRef.current.get(room);
+        if (!perRoom) {
+          perRoom = new Map();
+          typingTimersRef.current.set(room, perRoom);
+        }
+        const existing = perRoom.get(username);
+        if (existing) clearTimeout(existing);
+        const timer = setTimeout(() => {
+          perRoom!.delete(username);
+          if (perRoom!.size === 0) typingTimersRef.current.delete(room);
+          dispatch({ type: 'typing-clear', room, username });
+        }, 3000);
+        perRoom.set(username, timer);
+        dispatch({ type: 'typing-add', room, username });
+        break;
+      }
       case 'system':
         // Ignored in this minimal frontend.
         break;
@@ -338,6 +388,15 @@ export function useChat(): {
     wsRef.current.send(JSON.stringify(cmd));
   }, []);
 
+  /** Send a `typing` frame at most once per 2 s. */
+  const notifyTyping = useCallback((room: RoomName): void => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    const now = Date.now();
+    if (now - lastTypingSentAtRef.current < 2000) return;
+    lastTypingSentAtRef.current = now;
+    wsRef.current.send(JSON.stringify({ type: 'typing', room } satisfies ClientMessage));
+  }, []);
+
   const selectRoom = useCallback((room: RoomName) => {
     dispatch({ type: 'select-room', room });
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -380,5 +439,5 @@ export function useChat(): {
     selectRoom(dmRoomFor(otherUser));
   }, [selectRoom]);
 
-  return { state, connect, logout, send, selectRoom, createRoom, openDm };
+  return { state, connect, logout, send, notifyTyping, selectRoom, createRoom, openDm };
 }

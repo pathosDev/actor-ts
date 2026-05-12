@@ -14,6 +14,8 @@
  *      `room-added` broadcast, both join it, and a message round-trips.
  *   7. (#100) Direct messages: alice DMs bob via `@bob`, both sides
  *      observe the `message` frame routed through the DM channel.
+ *   8. (#103) Typing indicators: alice sends `typing` for #general,
+ *      bob receives `user-typing`; alice does not echo to herself.
  *
  * Run against a **single-node bootstrap** for reliable verification:
  *
@@ -277,6 +279,46 @@ async function main(): Promise<void> {
   ok(`DM history has ${dmHist.messages.length} messages`);
 
   a3.close(); b3.close();
+  await new Promise((r) => setTimeout(r, 200));
+
+  // ---------- pass 5: typing indicators (#103) ----------
+  console.log('— pass 5: typing indicators —');
+  const a4 = new ChatClient(URL_ARG);
+  const b4 = new ChatClient(URL_ARG);
+  await Promise.all([a4.open(), b4.open()]);
+  a4.send({ type: 'login', username: 'alice', password: 'wonderland' });
+  b4.send({ type: 'login', username: 'bob',   password: 'builder' });
+  await a4.await((m) => m.type === 'logged-in');
+  await b4.await((m) => m.type === 'logged-in');
+  // Both are auto-joined to #general; wait until both have the
+  // subscription registered so the typing broadcast isn't lost.
+  await a4.await((m) => m.type === 'users' && (m as ServerMsg).room === 'general', 5000);
+  await b4.await((m) => m.type === 'users' && (m as ServerMsg).room === 'general', 5000);
+  await new Promise((r) => setTimeout(r, 500));
+
+  a4.send({ type: 'typing', room: 'general' });
+  // bob receives the indicator.
+  await b4.await(
+    (m) => m.type === 'user-typing'
+        && (m as ServerMsg).room === 'general'
+        && (m as ServerMsg).username === 'alice',
+    3000,
+  );
+  ok('bob observed user-typing(alice, general)');
+
+  // Server filters self-echoes: alice must NOT see her own typing
+  // broadcast.  Brief wait — if it were going to arrive it would
+  // arrive within the same gossip-tick window as bob's reception.
+  await new Promise((r) => setTimeout(r, 300));
+  const selfEcho = a4.received.find((m) =>
+    m.type === 'user-typing'
+    && (m as ServerMsg).room === 'general'
+    && (m as ServerMsg).username === 'alice',
+  );
+  if (selfEcho) fail(`alice saw her own typing echo (server should filter)`);
+  ok('alice did not receive a self-echo');
+
+  a4.close(); b4.close();
   await new Promise((r) => setTimeout(r, 100));
   process.exit(0);
 }
