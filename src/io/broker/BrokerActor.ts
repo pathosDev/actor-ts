@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { Config } from '../../config/Config.js';
@@ -194,27 +195,33 @@ export abstract class BrokerActor<S extends BrokerCommonSettings, Cmd = unknown,
     const env: OutboundEnvelope<P> = { payload, enqueuedAt: Date.now() };
     const limit = this.settings.outboundBuffer ?? DEFAULT_OUTBOUND_BUFFER;
 
-    if (this._state === 'connected') {
-      // Dispatch directly.  If an earlier flush is still draining the
-      // buffer, append at the tail to preserve order.
-      if (this._outboundBuffer.length > 0) {
+    // Dispatch on connection state with compile-time exhaustiveness:
+    // adding a new state to `ConnectionState` forces every site that
+    // matches on it (including this one) to handle the new variant.
+    return match(this._state)
+      .with('connected', () => {
+        // Dispatch directly.  If an earlier flush is still draining the
+        // buffer, append at the tail to preserve order.
+        if (this._outboundBuffer.length > 0) {
+          this._outboundBuffer.push(env);
+          return true;
+        }
+        void this._dispatchOne(env);
+        return true;
+      })
+      .with('connecting', 'disconnected', 'disconnecting', () => {
+        if (limit === 0) {
+          this.system.eventStream.publish(new BrokerNotConnected(this.self.path.toString()));
+          return false;
+        }
+        if (this._outboundBuffer.length >= limit) {
+          this._outboundBuffer.shift();  // drop oldest (FIFO eviction)
+          this.system.eventStream.publish(new BrokerBufferOverflow(this.self.path.toString(), limit));
+        }
         this._outboundBuffer.push(env);
         return true;
-      }
-      void this._dispatchOne(env);
-      return true;
-    }
-
-    if (limit === 0) {
-      this.system.eventStream.publish(new BrokerNotConnected(this.self.path.toString()));
-      return false;
-    }
-    if (this._outboundBuffer.length >= limit) {
-      this._outboundBuffer.shift();  // drop oldest (FIFO eviction)
-      this.system.eventStream.publish(new BrokerBufferOverflow(this.self.path.toString(), limit));
-    }
-    this._outboundBuffer.push(env);
-    return true;
+      })
+      .exhaustive();
   }
 
   /** Current connection state — exposed for tests / health probes. */
