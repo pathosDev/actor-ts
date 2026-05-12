@@ -1,5 +1,16 @@
 import { describe, expect, test } from 'bun:test';
 import { InMemoryCache } from '../../../src/cache/InMemoryCache.js';
+import { runCacheContractTests } from './_Contract.js';
+
+// Backend-agnostic contract — every Cache impl must pass these.
+// The InMemoryCache-specific tests below cover additional behaviour
+// not in the contract (sizeForTest, multi-tenant prefixing, etc.).
+describe('InMemoryCache — contract', () => {
+  runCacheContractTests({
+    name: 'InMemoryCache',
+    factory: async () => new InMemoryCache(),
+  });
+});
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
