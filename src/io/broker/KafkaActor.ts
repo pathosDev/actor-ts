@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
@@ -334,16 +335,22 @@ export class KafkaActor extends BrokerActor<KafkaActorSettings, KafkaCmd, KafkaP
   }
 
   override onReceive(cmd: KafkaCmd): void {
-    if (cmd.kind === 'publish') this.enqueueOutbound(cmd.publish);
-    else if (cmd.kind === 'subscribe') {
-      // Runtime topic-add — kafkajs requires the consumer already be running.
-      if (this.consumer && this.connectionState === 'connected') {
-        void this.consumer.subscribe({ topic: cmd.topic, fromBeginning: false });
-      }
-    }
-    else if (cmd.kind === 'commit') void this.handleCommit(cmd);
-    else if (cmd.kind === 'nack') this.handleNack(cmd);
-    else if (cmd.kind === 'heartbeat') void this.handleHeartbeat(cmd);
+    // Compile-time exhaustiveness: adding a new KafkaCmd variant
+    // forces this site to handle it explicitly.
+    match(cmd)
+      .with({ kind: 'publish' }, (c) => {
+        this.enqueueOutbound(c.publish);
+      })
+      .with({ kind: 'subscribe' }, (c) => {
+        // Runtime topic-add — kafkajs requires the consumer already be running.
+        if (this.consumer && this.connectionState === 'connected') {
+          void this.consumer.subscribe({ topic: c.topic, fromBeginning: false });
+        }
+      })
+      .with({ kind: 'commit' },    (c) => { void this.handleCommit(c); })
+      .with({ kind: 'nack' },      (c) => this.handleNack(c))
+      .with({ kind: 'heartbeat' }, (c) => { void this.handleHeartbeat(c); })
+      .exhaustive();
   }
 
   /* ----------------------------- internals ------------------------------ */
