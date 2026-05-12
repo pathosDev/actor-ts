@@ -45,6 +45,34 @@ export type CrdtJson =
  *
  * Exported so containers like `ORMap` (whose values are themselves
  * CRDTs of arbitrary kind) can wire it as their inner-value decoder.
+ *
+ * ## Reference example: discriminated-union dispatch
+ *
+ * This function is the **codebase's reference shape** for
+ * dispatching on a closed string-literal-discriminator union.  Two
+ * properties matter:
+ *
+ *   1. **No `default` arm** — the switch lists every kind explicitly.
+ *      The `default` branch's `const _exhaustive: never = json`
+ *      assertion gives compile-time exhaustiveness: TypeScript
+ *      narrows `json` to `never` after all real arms; adding a new
+ *      variant to `CrdtJson` without a matching `case` makes
+ *      `json` *not* assignable to `never` and the file fails to
+ *      compile.
+ *
+ *   2. **`throw` inside the default** — defensive belt-and-braces
+ *      for the type-erasure boundary (legacy wire data, force-casts).
+ *      Unreachable from well-typed callers.
+ *
+ * Equivalent shape: `match(json).with({ kind: 'X' }, ...).exhaustive()`
+ * from `ts-pattern`.  Used elsewhere in the codebase when the
+ * discriminator is more complex than a string literal (e.g. nominal
+ * type via `instanceof`).  Both forms achieve compile-time
+ * exhaustiveness; pick the more readable one per site.
+ *
+ * **Do not** add a permissive `default` case that returns a stub —
+ * it defeats the exhaustiveness check and turns missing variants
+ * into silent runtime bugs.
  */
 export function decodeCrdt(json: CrdtJson): Crdt<any> {
   switch (json.kind) {
