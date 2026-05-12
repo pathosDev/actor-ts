@@ -2,6 +2,7 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
+import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import type { BrokerCommonSettings } from './BrokerSettings.js';
 
@@ -201,14 +202,6 @@ interface AmqpLibModule {
   connect(url: string): Promise<AmqpConnectionLike>;
 }
 
-const amqpLazy: Lazy<Promise<AmqpLibModule>> = Lazy.of(async () => {
-  try {
-    const name = 'amqplib';
-    return (await import(name)) as unknown as AmqpLibModule;
-  } catch (e) {
-    throw new Error(
-      'AmqpActor requires the "amqplib" package.  Install it with: npm install amqplib\n'
-      + 'Original error: ' + (e instanceof Error ? e.message : String(e)),
-    );
-  }
-});
+const amqpLazy: Lazy<Promise<AmqpLibModule>> = Lazy.of(
+  () => lazyImportModule<AmqpLibModule>('amqplib', { context: 'AmqpActor' }),
+);

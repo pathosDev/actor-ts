@@ -3,6 +3,7 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
+import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import type { BrokerCommonSettings } from './BrokerSettings.js';
 
@@ -519,17 +520,9 @@ interface KafkajsModule {
   Kafka?: KafkaCtor;
 }
 
-const kafkaLazy: Lazy<Promise<KafkajsModule>> = Lazy.of(async () => {
-  try {
-    const name = 'kafkajs';
-    return (await import(name)) as unknown as KafkajsModule;
-  } catch (e) {
-    throw new Error(
-      'KafkaActor requires the "kafkajs" package.  Install it with: npm install kafkajs\n'
-      + 'Original error: ' + (e instanceof Error ? e.message : String(e)),
-    );
-  }
-});
+const kafkaLazy: Lazy<Promise<KafkajsModule>> = Lazy.of(
+  () => lazyImportModule<KafkajsModule>('kafkajs', { context: 'KafkaActor' }),
+);
 
 /* ========================== heartbeat helper =========================== */
 

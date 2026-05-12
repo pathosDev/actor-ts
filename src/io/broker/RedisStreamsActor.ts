@@ -2,6 +2,7 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
+import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import type { BrokerCommonSettings } from './BrokerSettings.js';
 
@@ -186,14 +187,6 @@ interface IoredisCtor {
 
 interface IoredisModule { default?: IoredisCtor; }
 
-const ioredisLazy: Lazy<Promise<IoredisModule>> = Lazy.of(async () => {
-  try {
-    const name = 'ioredis';
-    return (await import(name)) as unknown as IoredisModule;
-  } catch (e) {
-    throw new Error(
-      'RedisStreamsActor requires "ioredis".  Install it with: npm install ioredis\n'
-      + 'Original error: ' + (e instanceof Error ? e.message : String(e)),
-    );
-  }
-});
+const ioredisLazy: Lazy<Promise<IoredisModule>> = Lazy.of(
+  () => lazyImportModule<IoredisModule>('ioredis', { context: 'RedisStreamsActor' }),
+);

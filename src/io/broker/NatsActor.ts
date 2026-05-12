@@ -2,6 +2,7 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
+import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import type { BrokerCommonSettings } from './BrokerSettings.js';
 
@@ -178,14 +179,6 @@ interface NatsModule {
   }): Promise<NatsConnectionLike>;
 }
 
-const natsLazy: Lazy<Promise<NatsModule>> = Lazy.of(async () => {
-  try {
-    const name = 'nats';
-    return (await import(name)) as unknown as NatsModule;
-  } catch (e) {
-    throw new Error(
-      'NatsActor requires the "nats" package.  Install it with: npm install nats\n'
-      + 'Original error: ' + (e instanceof Error ? e.message : String(e)),
-    );
-  }
-});
+const natsLazy: Lazy<Promise<NatsModule>> = Lazy.of(
+  () => lazyImportModule<NatsModule>('nats', { context: 'NatsActor' }),
+);
