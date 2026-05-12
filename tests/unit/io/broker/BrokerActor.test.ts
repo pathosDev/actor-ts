@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
-import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import { Props } from '../../../../src/Props.js';
+import { createTestActorSystem } from '../../../util/TestActorSystem.js';
 import { BrokerActor, type OutboundEnvelope } from '../../../../src/io/broker/BrokerActor.js';
 import {
   BrokerConnected,
@@ -93,10 +93,11 @@ class ProbeActor extends Actor<unknown> {
 }
 
 function makeSystem(name = 'broker-test', config?: Record<string, unknown>): ActorSystem {
-  return ActorSystem.create(name, {
-    logger: new NoopLogger(), logLevel: LogLevel.Off,
-    config,
-  });
+  // Thin wrapper around the shared `createTestActorSystem` helper.
+  // Kept named `makeSystem` to match the per-file convention used by
+  // existing tests; the test body's `makeSystem('foo')` calls don't
+  // need to change as a result of the helper consolidation.
+  return createTestActorSystem({ name, config });
 }
 
 /** Bypass `Props` to keep direct access to a captured FakeBroker. */
