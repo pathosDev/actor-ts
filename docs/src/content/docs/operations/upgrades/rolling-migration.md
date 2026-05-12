@@ -1,4 +1,7 @@
-# Operator's guide — rolling deployment migration
+---
+title: Rolling deployment migration
+description: Deploy schema-breaking or master-key-rotating changes across a running actor-ts cluster without downtime or coordinated stops.
+---
 
 This guide describes how to deploy a schema-breaking or
 master-key-rotating change across a running cluster **without

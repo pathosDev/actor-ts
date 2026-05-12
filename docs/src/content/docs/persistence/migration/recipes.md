@@ -1,4 +1,7 @@
-# Migration recipes — which adapter for which change
+---
+title: Migration recipes
+description: Decision tree for picking the right migration adapter — defaultsAdapter, migratingAdapter, InMemorySchemaRegistry, validatedEventAdapter, or wrapEventAsEnvelope.
+---
 
 The framework ships five migration tools that look superficially
 similar:
