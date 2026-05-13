@@ -71,10 +71,19 @@ export default defineConfig({
               lineColor:          '#94a3b8',  // slate-400   — connection lines
               secondaryColor:     '#312e81',  // indigo-900  — alt node bg
               tertiaryColor:      '#0f172a',  // slate-900   — bg
-              fontFamily:         "'JetBrains Mono', ui-monospace, monospace",
+              // Trebuchet MS is Mermaid's own default — both Playwright
+              // (during SSR) and the user's browser at runtime have it,
+              // so the text-width Mermaid pre-computes for each node box
+              // matches what eventually renders.  Don't override with
+              // JetBrains Mono: that font isn't installed inside
+              // Playwright's headless Chromium, so SSR measures with a
+              // narrow fallback font, runtime renders with the much
+              // wider real JetBrains Mono, and labels like "routee-1"
+              // get clipped to "routee-:".
+              fontFamily:         '"trebuchet ms", verdana, arial, sans-serif',
               fontSize:           '14px',
             },
-            flowchart:  { htmlLabels: true, curve: 'basis' },
+            flowchart:  { htmlLabels: true, curve: 'basis', padding: 12 },
             sequence:   { actorMargin: 50 },
           },
         },
