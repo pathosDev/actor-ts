@@ -35,14 +35,28 @@ await Cluster.join(system, { host, port, seeds });
 
 ## How it chains
 
-```
-lookup() →
-  try provider[0].lookup()
-    ├── non-empty result + no error → return that
-    └── empty / error               → try provider[1].lookup()
-                                        ├── non-empty → return that
-                                        └── empty / error → try provider[2]...
-                                                              └── ... eventually return [] if all fail
+```mermaid
+flowchart TB
+  CALL(["lookup"])
+  P0["try provider[0].lookup"]
+  R0{"result?"}
+  P1["try provider[1].lookup"]
+  R1{"result?"}
+  PN["try provider[2]..."]
+  RN["...eventually return []<br/>if all fail"]
+  OUT0[/"return result"/]
+  OUT1[/"return result"/]
+  CALL --> P0 --> R0
+  R0 -- "non-empty + no error" --> OUT0
+  R0 -- "empty / error" --> P1 --> R1
+  R1 -- "non-empty" --> OUT1
+  R1 -- "empty / error" --> PN --> RN
+  classDef ok   fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef try  fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
+  classDef warn fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
+  class P0,P1,PN try
+  class OUT0,OUT1 ok
+  class RN warn
 ```
 
 The provider stops at the **first non-empty result**.  An empty

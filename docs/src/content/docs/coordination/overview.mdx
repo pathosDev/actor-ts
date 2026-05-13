@@ -68,14 +68,21 @@ double-charging a customer, double-publishing a stream event.
 
 ## Lease lifecycle
 
-```
-   not held ──────────► acquired ──────► renewing periodically
-       ▲                    │
-       │                    │
-       │              (renew fails OR explicit release)
-       │                    │
-       └────────────────────┘
-        lease lost — onLost(cb) fires
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> not_held
+  not_held --> acquired: acquire succeeds
+  acquired --> renewing: ticks elapse
+  renewing --> renewing: renew succeeds
+  renewing --> not_held: renew fails or explicit release<br/>onLost callback fires
+  acquired --> not_held: explicit release
+  classDef bad  fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
+  classDef ok   fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef live fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
+  class not_held bad
+  class acquired ok
+  class renewing live
 ```
 
 The flow:

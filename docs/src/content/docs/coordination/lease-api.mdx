@@ -121,27 +121,39 @@ you no longer need it.
 
 For a singleton with a lease:
 
-```
-ClusterSingletonManager flow:
-  ├── LeaderChanged event fires
-  ├── If this node is now leader:
-  │     ├── lease.acquire()
-  │     │     ├── true → spawn singleton, register onLost
-  │     │     └── false → retry after acquireRetryDelay
-  ├── If this node is no longer leader:
-  │     ├── stop the singleton
-  │     └── lease.release()
-  └── onLost fires → stop singleton, await next LeaderChanged
+```mermaid
+flowchart TB
+  EVT[/"LeaderChanged event fires"/]
+  LEADER{"is this node<br/>now leader?"}
+  ACQ["lease.acquire"]
+  GOT{"acquired?"}
+  SPAWN["spawn singleton<br/>register onLost"]
+  RETRY["retry after<br/>acquireRetryDelay"]
+  STOP["stop the singleton<br/>lease.release"]
+  LOST[/"onLost fires"/]
+  REACT["stop singleton<br/>await next LeaderChanged"]
+  EVT --> LEADER
+  LEADER -- "yes" --> ACQ --> GOT
+  GOT -- "true" --> SPAWN
+  GOT -- "false" --> RETRY
+  RETRY --> ACQ
+  LEADER -- "no, lost it" --> STOP
+  LOST --> REACT
+  classDef evt   fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
+  classDef ok    fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef warn  fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
+  classDef step  fill:#1e293b,stroke:#475569,color:#cbd5e1;
+  class EVT,LOST evt
+  class SPAWN,ACQ ok
+  class RETRY,STOP,REACT warn
+  class LEADER,GOT step
 ```
 
 Same pattern for sharding coordinator:
 
-```
-ShardCoordinator flow:
-  ├── lease.acquire() before processing allocation requests
-  ├── lease.checkAlive() before issuing each allocation
-  ├── onLost → reject pending allocations, stop coordinator
-```
+1. **`lease.acquire`** before processing allocation requests.
+2. **`lease.checkAlive`** before issuing each allocation.
+3. **`onLost`** → reject pending allocations, stop coordinator.
 
 ## Writing a custom backend
 

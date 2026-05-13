@@ -119,17 +119,26 @@ the discovery selector.
 
 ## What happens at startup
 
-```
-Pod starts → Cluster.join called
-   │
-   ├── KubernetesApiSeedProvider.lookup()
-   │     └── GET /api/v1/namespaces/<ns>/pods?labelSelector=<sel>
-   │     └── filter for Running + non-empty podIP
-   │     └── return [...podIp:port]
-   │
-   ├── Cluster.join tries each seed
-   │     ├── Existing cluster → join successfully
-   │     └── No cluster yet → self-bootstrap
+```mermaid
+flowchart TB
+  START(["Pod starts → Cluster.join called"])
+  LOOKUP["KubernetesApiSeedProvider.lookup"]
+  API["GET /api/v1/namespaces/&lt;ns&gt;/pods<br/>?labelSelector=&lt;sel&gt;"]
+  FILTER["filter for Running<br/>+ non-empty podIP"]
+  RETURN["return [...podIp:port]"]
+  JOIN["Cluster.join tries each seed"]
+  CHECK{"existing cluster?"}
+  OK["join successfully"]
+  BOOT["self-bootstrap"]
+  START --> LOOKUP --> API --> FILTER --> RETURN --> JOIN --> CHECK
+  CHECK -- "yes" --> OK
+  CHECK -- "no, first pod" --> BOOT
+  classDef step fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
+  classDef ok   fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef warn fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
+  class LOOKUP,API,FILTER,RETURN,JOIN step
+  class OK ok
+  class BOOT warn
 ```
 
 If you're the first pod up, the K8s API returns this pod only.

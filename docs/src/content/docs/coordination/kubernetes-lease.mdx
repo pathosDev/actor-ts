@@ -117,14 +117,31 @@ to decide whether the current holder is stale.
 
 ## Acquire flow
 
-```
-acquire():
-  ├── GET the lease object (does it exist?)
-  │     ├── no   → CREATE with this owner; if 409 conflict, retry
-  │     └── yes  → check holder + renewTime
-  │                ├── this owner already holds → return true (idempotent)
-  │                ├── another holder, still fresh → return false (contention)
-  │                └── another holder, stale → CAS: replace owner if renewTime matches
+```mermaid
+flowchart TB
+  START(["acquire"])
+  GET["GET the lease object"]
+  EXISTS{"exists?"}
+  CREATE["CREATE with this owner<br/>if 409 conflict — retry"]
+  CHECK["check holder + renewTime"]
+  WHO{"who holds it?"}
+  SELF["return true — idempotent"]
+  FRESH["return false — contention"]
+  STALE["CAS — replace owner if<br/>renewTime matches"]
+  START --> GET --> EXISTS
+  EXISTS -- "no" --> CREATE
+  EXISTS -- "yes" --> CHECK --> WHO
+  WHO -- "this owner already holds" --> SELF
+  WHO -- "another holder, still fresh" --> FRESH
+  WHO -- "another holder, stale" --> STALE
+  classDef ok    fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef warn  fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
+  classDef step  fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
+  classDef branch fill:#1e293b,stroke:#475569,color:#cbd5e1;
+  class START,GET,CHECK step
+  class SELF,STALE,CREATE ok
+  class FRESH warn
+  class EXISTS,WHO branch
 ```
 
 The atomicity comes from K8s's optimistic-concurrency CAS via
