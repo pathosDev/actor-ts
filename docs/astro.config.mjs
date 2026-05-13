@@ -145,7 +145,7 @@ export default defineConfig({
           // on every build — output is gitignored (`docs/.gitignore`).
           output: 'api',
           sidebar: {
-            label: 'API Reference',
+            label: '🧰 API Reference',
             collapsed: true,
           },
           typeDoc: {
