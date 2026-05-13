@@ -273,10 +273,29 @@ pre:not([class*='language-']) {
   .right-sidebar-container {
     width: 9rem !important;
     max-width: 9rem !important;
+    /* Push the TOC's flex-flow slot to the END of its row (the right
+     * edge of `.main-frame`'s content area).  Without this the TOC
+     * sits flush against the main-pane and any leftover flex-row
+     * space accumulates at the viewport's right edge — making it
+     * look like the TOC is "too wide" because it isn't where you'd
+     * expect it (right-edge of viewport). */
+    margin-inline-start: auto !important;
   }
   .right-sidebar {
     width: 9rem !important;
     max-width: 9rem !important;
+    /* The `position: fixed` TOC must be explicitly pinned to the right
+     * edge of the viewport, otherwise it inherits its static-position
+     * x-coordinate from the container's pre-margin location. */
+    right: 0 !important;
+    left: auto !important;
+    inset-inline-start: auto !important;
+    inset-inline-end: 0 !important;
+  }
+  /* Tighten the TOC panel's internal padding so more of its 9rem goes
+   * to the text rather than indentation. */
+  .right-sidebar-panel {
+    padding-inline: 0.5rem 0.75rem !important;
   }
 
   /* Article positioning inside main-pane.
