@@ -110,6 +110,7 @@ export default defineConfig({
           mermaidConfig: {
             theme: 'dark',
             themeVariables: {
+              // ---- Flowchart + state-diagram palette ----
               // Indigo accents, slate base — same palette as the logo.
               primaryColor:       '#1e293b',  // slate-800   — node bg
               primaryTextColor:   '#f1f5f9',  // slate-100   — node text
@@ -117,6 +118,30 @@ export default defineConfig({
               lineColor:          '#94a3b8',  // slate-400   — connection lines
               secondaryColor:     '#312e81',  // indigo-900  — alt node bg
               tertiaryColor:      '#0f172a',  // slate-900   — bg
+
+              // ---- Sequence-diagram palette ----
+              // Mermaid uses an entirely separate set of variables for
+              // sequence diagrams — the flowchart `primaryColor` etc.
+              // are NOT picked up there.  Mirror the indigo/slate look
+              // explicitly so sequence diagrams don't render as plain
+              // grey while the rest of the docs use the brand palette.
+              actorBkg:              '#1e293b',  // slate-800  — actor box bg
+              actorBorder:           '#6366f1',  // indigo-500 — actor box border
+              actorTextColor:        '#f1f5f9',  // slate-100  — actor name
+              actorLineColor:        '#475569',  // slate-600  — vertical lifelines
+              signalColor:           '#94a3b8',  // slate-400  — arrows
+              signalTextColor:       '#cbd5e1',  // slate-300  — arrow labels
+              noteBkgColor:          '#312e81',  // indigo-900 — note bg
+              noteBorderColor:       '#818cf8',  // indigo-400 — note border
+              noteTextColor:         '#f1f5f9',  // slate-100  — note text
+              labelBoxBkgColor:      '#0f172a',  // slate-900  — sequence-numbered loop labels
+              labelBoxBorderColor:   '#6366f1',  // indigo-500
+              labelTextColor:        '#f1f5f9',
+              loopTextColor:         '#cbd5e1',  // slate-300
+              activationBkgColor:    '#312e81',  // indigo-900 — activation bar bg
+              activationBorderColor: '#818cf8',  // indigo-400
+              sequenceNumberColor:   '#0f172a',  // slate-900  — sequence-step circles
+
               // JetBrains Mono matches the rest of the site's code-block
               // font + the logo wordmark — keeps diagrams visually
               // unified with the surrounding docs.  Loaded into
