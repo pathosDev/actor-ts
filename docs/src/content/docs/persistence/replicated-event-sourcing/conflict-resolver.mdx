@@ -1,0 +1,258 @@
+---
+title: Conflict resolver
+description: The user-supplied function that decides how to merge concurrent events into a single state. Pure, deterministic, replica-agnostic. The most app-specific piece of replicated event sourcing.
+---
+
+When two replicas of the same entity write events concurrently
+(detected via
+[vector clocks](/actor-ts/persistence/replicated-event-sourcing/vector-clocks/)),
+the framework needs to know **how to merge** them.  That's the
+**conflict resolver** — a function you supply.
+
+```ts
+import type { ConflictResolver } from 'actor-ts';
+
+type State = { value: number };
+type Event = { kind: 'set'; value: number };
+
+const resolver: ConflictResolver<State, Event> = {
+  resolve(state, conflicts) {
+    // conflicts is an array of events that are concurrent with state
+    // each carries its own vector clock + replica id
+    const values = conflicts.map(c => (c.event as Event).value);
+    return { value: Math.max(...values) };
+  },
+};
+```
+
+## The interface
+
+```ts
+interface ConflictResolver<State, Event> {
+  resolve(
+    state:     State,                                   // current local state
+    conflicts: Array<{
+      event:     Event;
+      replicaId: ReplicaId;
+      vectorClock: VectorClock;
+    }>,
+  ): State;
+}
+```
+
+`resolve` receives:
+
+- **`state`** — the local replica's view before reconciling.
+- **`conflicts`** — array of concurrent events with their
+  metadata (which replica wrote them, vector clock at write
+  time).
+
+Returns the **merged state**.  Must be **pure +
+deterministic** — same input always produces the same output;
+no side effects.
+
+## Why determinism matters
+
+Every replica runs the same resolver on the same conflicting
+events, possibly in different orders + at different times.
+**For convergence, the resolver must produce the same state on
+every replica.**
+
+Non-determinism breaks convergence:
+
+```ts
+// ✗ NOT deterministic — Date.now() differs per call
+{ value: state.value + Date.now() }
+
+// ✗ NOT deterministic — depends on which replica runs
+{ winner: thisReplicaId }   // (different on each replica)
+
+// ✓ Deterministic — same answer everywhere
+{ value: Math.max(...values) }
+
+// ✓ Deterministic if event.ts is consistent
+{ value: conflicts.sort((a, b) => a.event.ts - b.event.ts).pop().event.value }
+```
+
+## Common strategies
+
+### Last-Writer-Wins (timestamp)
+
+```ts
+const resolver: ConflictResolver<State, Event> = {
+  resolve(state, conflicts) {
+    const winner = conflicts.reduce((acc, c) =>
+      c.event.ts > acc.event.ts ? c : acc
+    );
+    return applyEvent(state, winner.event);
+  },
+};
+```
+
+Each event carries a `ts` (wall-clock millis); latest timestamp
+wins.  Simple, often "good enough."  Caveat: depends on
+synchronized clocks — wide clock skew breaks intuition.
+
+### Max / Min
+
+```ts
+const resolver = {
+  resolve(state, conflicts) {
+    return { value: Math.max(state.value, ...conflicts.map(c => c.event.value)) };
+  },
+};
+```
+
+Take the largest (or smallest) value.  Right for counters
+that should not regress: stock levels, score boards, completion
+counts.
+
+### Per-field merge
+
+```ts
+const resolver: ConflictResolver<UserProfile, ProfileEvent> = {
+  resolve(state, conflicts) {
+    // Each field uses LWW independently
+    const fieldsWithLatest = new Map<keyof UserProfile, { value: any; ts: number }>();
+    for (const c of conflicts) {
+      const ev = c.event;
+      if (ev.kind === 'set-name'  && (!fieldsWithLatest.has('name')  || ev.ts > fieldsWithLatest.get('name')!.ts))
+        fieldsWithLatest.set('name', { value: ev.name, ts: ev.ts });
+      if (ev.kind === 'set-email' && (!fieldsWithLatest.has('email') || ev.ts > fieldsWithLatest.get('email')!.ts))
+        fieldsWithLatest.set('email', { value: ev.email, ts: ev.ts });
+    }
+    let merged = state;
+    for (const [field, { value }] of fieldsWithLatest) {
+      merged = { ...merged, [field]: value };
+    }
+    return merged;
+  },
+};
+```
+
+Mimics CRDT-style per-field LWW.  Each field's last writer
+wins independently.  Good for documents with mostly-independent
+fields.
+
+### Domain-specific merge
+
+```ts
+const resolver = {
+  resolve(state, conflicts) {
+    // Shopping cart: union of items, max of quantities
+    const items = new Map<string, number>(state.items.entries());
+    for (const c of conflicts) {
+      if (c.event.kind === 'add-item') {
+        const current = items.get(c.event.sku) ?? 0;
+        items.set(c.event.sku, Math.max(current, c.event.quantity));
+      }
+    }
+    return { items };
+  },
+};
+```
+
+Custom business logic.  When the data has natural merge
+semantics (sets, max counters), encode them here.
+
+## Pure-state vs event-replay
+
+Two ways to apply conflicts:
+
+### State-merge (above)
+
+`resolve` returns the **merged state directly**.  Conflicts are
+combined; the result is one state.  Subsequent events apply
+normally via `onEvent`.
+
+### Event-replay
+
+```ts
+const resolver: ConflictResolver<State, Event> = {
+  resolve(state, conflicts) {
+    // Apply events in a deterministic order, then return result
+    const sorted = [...conflicts].sort((a, b) =>
+      a.event.ts - b.event.ts || a.replicaId.localeCompare(b.replicaId)
+    );
+    let s = state;
+    for (const c of sorted) s = applyEvent(s, c.event);
+    return s;
+  },
+};
+```
+
+Sort events deterministically; replay through `onEvent`.  Often
+the cleanest pattern — your existing `onEvent` does the work;
+the resolver just imposes an order.
+
+## When state-merge is the wrong abstraction
+
+Sometimes concurrent events **shouldn't merge** — they conflict
+semantically:
+
+```ts
+// Concurrent: "close account" + "deposit"
+// → resolver has to choose which "wins"
+```
+
+For these, the right answer is often **single-writer with a
+lease** — see
+[Single-writer lease](/actor-ts/persistence/replicated-event-sourcing/single-writer-lease/).
+Forces sequential writes; no conflicts to resolve.
+
+Use replicated ES when conflicts are **expected to merge
+naturally**; use single-writer lease when they shouldn't happen.
+
+## Performance
+
+`resolve` runs **on every concurrent-write detection** — bounded
+by the rate of cross-replica events arriving.  For typical
+replicated-ES workloads, this is **rare** (one or two events per
+key per day).
+
+Heavy resolvers are fine.  Sort 50 conflicting events, run a
+quadratic algorithm — still cheap compared to the journal I/O.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Non-deterministic resolvers don't converge">
+  ```ts
+  return { value: Math.random() };   // ✗
+  ```
+  Every replica picks different values; the cluster never agrees
+  on a state.  Always pure + deterministic.
+</Aside>
+
+<Aside type="caution" title="Resolver throwing">
+  ```ts
+  resolve(state, conflicts) {
+    throw new Error('this shouldn't happen');   // ✗ breaks recovery
+  }
+  ```
+  The framework can't proceed without a state.  If you can't
+  merge, return the **local state** unchanged (effectively
+  ignoring the conflict's events).  Or fail the actor entirely
+  (let supervisor decide).
+</Aside>
+
+<Aside type="caution" title="Reading external state in the resolver">
+  ```ts
+  resolve(state, conflicts) {
+    const config = readSomeExternalConfig();   // ✗
+    return ...;
+  }
+  ```
+  External state changes break determinism across replicas (and
+  across time).  Bake any context into the events themselves.
+</Aside>
+
+## Where to next
+
+- **[Replicated event sourcing overview](/actor-ts/persistence/replicated-event-sourcing/overview/)** —
+  the bigger picture.
+- **[Vector clocks](/actor-ts/persistence/replicated-event-sourcing/vector-clocks/)** —
+  how conflicts are detected.
+- **[Single-writer lease](/actor-ts/persistence/replicated-event-sourcing/single-writer-lease/)** —
+  preventing conflicts vs resolving them.
+- **[Snapshotting](/actor-ts/persistence/replicated-event-sourcing/snapshotting/)** —
+  snapshots that include the resolver's converged state.

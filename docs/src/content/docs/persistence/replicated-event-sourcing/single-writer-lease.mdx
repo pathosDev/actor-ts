@@ -1,0 +1,219 @@
+---
+title: Single-writer lease
+description: Optional consistency upgrade for replicated event sourcing — gate writes through a coordination lease so only one replica writes at a time. Combines the failover of replication with the strict consistency of single-writer.
+---
+
+Replicated event sourcing trades single-writer consistency for
+availability — multiple replicas can write concurrently, and the
+conflict resolver merges.
+
+For some workloads, **conflicts shouldn't happen at all** — they
+represent bugs or domain violations.  But losing the multi-region
+availability would be a step back.
+
+The **single-writer lease** is the middle ground:
+
+```
+   At any moment, exactly ONE replica holds the lease.
+   The lease-holder writes events normally.
+   Other replicas read but don't write (until they acquire the lease).
+   If the lease-holder fails, another replica acquires it.
+```
+
+Effectively turns replicated ES into a **failover-capable
+single-writer system** with replicated-ES's recovery semantics
+underneath.
+
+```ts
+import { ReplicatedEventSourcedActor, KubernetesLease } from 'actor-ts';
+
+class Account extends ReplicatedEventSourcedActor<Cmd, Event, State> {
+  readonly persistenceId = `account-${this.userId}`;
+  readonly replicaId     = process.env.REPLICA_ID!;
+  readonly conflictResolver = ...;
+
+  // Opt in to lease:
+  readonly lease: Lease = new KubernetesLease({
+    name:  `account-${this.userId}-writer`,
+    owner: process.env.REPLICA_ID!,
+    ttlMs: 30_000,
+    namespace: 'default',
+  });
+}
+```
+
+The actor:
+
+1. On `preStart`, attempts to acquire the lease.
+2. On success → becomes the **writer**.
+3. On failure → starts in **read-only mode**.
+4. On `onLost` → drops back to read-only; another replica
+   eventually acquires.
+
+## When to use
+
+When you want **active-active failover** but **single-writer
+consistency**:
+
+- **Financial transactions** — balance changes must serialize.
+- **Stock / inventory** — concurrent decrement could overshoot.
+- **Workflow state machines** — transitions can't be concurrent.
+
+Without the lease, you'd need a resolver that handles
+concurrent withdrawals — possible but error-prone.  With the
+lease, conflicts simply don't arise.
+
+## How read-only replicas behave
+
+```ts
+override async onCommand(state: State, cmd: Cmd): Promise<void> {
+  if (!this.lease.checkAlive()) {
+    // I'm not the writer — reject or forward
+    cmd.replyTo.tell({ kind: 'not-writer', currentWriter: ... });
+    return;
+  }
+  // I am the writer — proceed normally
+  this.persist(event, () => {});
+}
+```
+
+The replica still:
+
+- Replays the journal (sees the writer's events).
+- Maintains state (read-side queries work).
+- Reports `state` to readers.
+
+But **rejects writes** — callers see "this replica isn't the
+writer; ask elsewhere."
+
+For a client transparently routing writes, this is harsh.  The
+common pattern is a **proxy actor** that watches lease
+ownership + routes writes to the current writer.
+
+## Failover sequence
+
+```
+   Writer A holds lease.
+       │
+       │ A crashes (or its lease TTL expires)
+       ▼
+   Lease becomes available.
+       │
+       │ Replicas B, C, D race to acquire.
+       │ Only one wins (atomic lease acquire).
+       ▼
+   New writer (say B) starts writing.
+       │
+       │ A recovers; sees lease is held; runs as read-only.
+       ▼
+   Stable.
+```
+
+Failover window: TTL of the lease (typically 15-30 s).  Shorter
+TTL = faster failover but more renewal traffic.
+
+## Conflict-resolver still needed
+
+```ts
+class Account extends ReplicatedEventSourcedActor<...> {
+  readonly lease = ...;
+  readonly conflictResolver = ...;   // ← still required
+}
+```
+
+The resolver is still mandatory.  Why?
+
+- **During failover window**, both the old + new writer might
+  briefly write — the old one before it notices its lease is
+  gone, the new one after acquiring.  Resolver handles those
+  rare concurrent events.
+- **Network partition** between the lease backend and a
+  replica — the replica thinks it has the lease + writes,
+  while another replica has actually acquired it.  Resolver
+  reconciles when partition heals.
+
+The lease **reduces conflict frequency to near-zero** but
+doesn't eliminate.  Always have a resolver.
+
+## Lease backends
+
+Same as cluster-singleton leases — see
+[Coordination](/actor-ts/coordination/overview/).
+
+- **`InMemoryLease`** — tests.
+- **`KubernetesLease`** — production on K8s.
+- **Custom** — implement `Lease` against your coordination
+  backend (etcd, Consul).
+
+## Performance
+
+Adding the lease:
+
+- **Lease acquire** — one network call to the lease backend
+  (K8s Lease patch, etc.).  Sub-second.
+- **Renewal** — every `ttl / 3` (~10 s typically).  Cheap.
+- **Conflict frequency drops to near-zero** — resolver runs
+  rarely.
+
+The lease itself doesn't slow normal writes — they proceed
+locally without lease consultation per call.  The check is
+`lease.checkAlive()` (local, sub-microsecond).
+
+## Without the lease
+
+Plain replicated ES:
+
+- Multiple writers per replica.
+- Conflict-resolver runs on every concurrent write.
+- No coordination required; tolerates partitions.
+- "Eventually consistent."
+
+With the lease:
+
+- One writer at a time (cluster-wide).
+- Conflicts are rare (only during failover / partition).
+- Coordination via the lease backend.
+- "Strongly consistent except during failover."
+
+Pick by your consistency vs availability requirements.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Lease backend availability">
+  ```ts
+  // Lease backend down → no replica can acquire → no writes
+  ```
+  The lease backend (K8s API server, etcd) is now in the write
+  path.  Its availability becomes a SPOF.  For multi-region
+  active-active, use a region-replicated lease backend.
+</Aside>
+
+<Aside type="caution" title="Read-only replicas still need supervision">
+  ```ts
+  // Replica that's read-only crashes
+  ```
+  Treat read-only replicas the same as the writer for
+  supervision; they're still active actors maintaining state.
+</Aside>
+
+<Aside type="caution" title="Lease + conflict resolver mismatch">
+  ```ts
+  readonly conflictResolver = ...;   // assumes lots of conflicts
+  readonly lease            = ...;   // makes conflicts rare
+  ```
+  Some "expensive merge" resolvers are unnecessary when the
+  lease keeps conflicts near-zero.  Keep the resolver simple
+  + safe; lease-guarded systems rarely exercise the
+  complex paths.
+</Aside>
+
+## Where to next
+
+- **[Replicated event sourcing overview](/actor-ts/persistence/replicated-event-sourcing/overview/)** —
+  the bigger picture.
+- **[Conflict resolver](/actor-ts/persistence/replicated-event-sourcing/conflict-resolver/)** —
+  the resolver this complements.
+- **[Coordination overview](/actor-ts/coordination/overview/)** —
+  the lease abstraction.
+- **[KubernetesLease](/actor-ts/coordination/kubernetes-lease/)** —
+  the K8s-native lease backend.

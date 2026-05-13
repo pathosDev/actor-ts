@@ -1,0 +1,209 @@
+---
+title: Replicated snapshots
+description: Snapshots for replicated event sourcing — they carry the vector clock alongside the state, so a recovered replica knows what events it's already seen + where to resume. Critical for bounded recovery time in long-lived replicated entities.
+---
+
+In single-writer event sourcing,
+[snapshots](/actor-ts/persistence/snapshots/) save the state at
+a particular seqNr — recovery loads the snapshot, replays events
+after that seqNr.
+
+In **replicated event sourcing**, the picture is more complex —
+there's no single linear seqNr; instead, events are partially
+ordered across replicas via vector clocks.  Snapshots must
+carry the **vector clock** alongside the state.
+
+```
+Snapshot contents:
+  - state         (after applying all events causally seen at the time)
+  - vector clock  ({ A: 100, B: 95, C: 60 })
+```
+
+On recovery:
+
+```
+1. Load snapshot.
+2. Read events from journal AFTER the snapshot's vc.
+3. Apply each (re-running conflict resolution if any are concurrent).
+4. Ready.
+```
+
+The vc lets the recovering replica skip events that **causally
+precede** the snapshot (already incorporated).
+
+## When to snapshot
+
+Same picking heuristics as single-writer ES, but bias toward
+**more frequent**:
+
+- Replicated workloads accumulate events from **multiple
+  replicas** at once.
+- The journal grows faster (N replicas × per-replica rate).
+- Recovery has to **re-run conflict resolution** for each
+  not-snapshotted concurrent event.
+
+```ts
+class Account extends ReplicatedEventSourcedActor<...> {
+  override snapshotPolicy() {
+    return everyNEvents(100);   // every 100 events
+  }
+}
+```
+
+For replicated entities accumulating 1000 events/day across all
+replicas, snapshot every 100 means at most 100 events to
+re-process on recovery — sub-second.
+
+## What gets serialized
+
+```
+{
+  state:        State,
+  vectorClock:  { A: 100, B: 95, C: 60 },
+  seqNr:        205,   // local-replica seq for compatibility
+  ts:           1716297600000
+}
+```
+
+The snapshot is **a normal snapshot blob** with the vector clock
+as an extra metadata field.  Existing snapshot stores
+(in-memory, SQLite, object-storage) handle it without changes —
+the framework adds the vc transparently.
+
+## Recovery flow
+
+```
+preStart():
+  ↓ load latest snapshot
+  ↓     state = snapshot.state
+  ↓     vc    = snapshot.vectorClock
+  ↓ read events from journal
+  ↓     for each event in journal:
+  ↓       if event.vc <= snapshot.vc: skip (already incorporated)
+  ↓       else if event.vc concurrent with vc: invoke resolver
+  ↓       else: apply via onEvent
+  ↓ ready
+```
+
+The "skip" case is what makes snapshots **bound recovery time**
+— events written before the snapshot are skipped.
+
+## Snapshot stores
+
+All standard snapshot stores work:
+
+- **InMemorySnapshotStore** — tests.
+- **SqliteSnapshotStore** — single-node (rare for replicated
+  ES).
+- **ObjectStorageSnapshotStore** — shared across replicas.
+
+For replicated ES with multiple replicas across regions, **a
+shared snapshot store** is critical — each replica recovers
+faster if it can load the latest snapshot **from any
+replica**, not just its own.
+
+```ts
+{
+  journal:       sharedJournal,
+  snapshotStore: new ObjectStorageSnapshotStore({
+    backend: new S3ObjectStorageBackend({ /* shared bucket */ }),
+  }),
+}
+```
+
+## Pruning vector clocks at snapshot time
+
+Long-lived deployments accumulate **retired replicas** in vector
+clocks:
+
+```
+vc { A: 1000, B: 500, C: 200, RETIRED-D: 50, RETIRED-E: 30 }
+```
+
+The retired replicas' components are inert but take space + slow
+comparisons.
+
+The framework's snapshot machinery can **prune** retired replicas
+from the vector clock at snapshot time:
+
+```ts
+class Account extends ReplicatedEventSourcedActor<...> {
+  override pruneVectorClockOnSnapshot(): ReplicaId[] {
+    // Return replica IDs we know are retired
+    return ['retired-d', 'retired-e'];
+  }
+}
+```
+
+Snapshots then store smaller vector clocks; recovery skips
+considering retired replicas.
+
+Use carefully — pruning a replica that's still alive (but
+quiet) effectively forgets its history.  Only prune **after
+confirmed retirement** (decommissioned, removed from rotation
+for ≫ replication lag).
+
+## Concurrent writes during snapshot
+
+```
+Replica A writes event_A at t1.
+Replica A snapshots at t2 (sees state with event_A).
+   snapshot.vc = { A: 1 }
+
+   Meanwhile, replica B was concurrently writing event_B at t1.5.
+   event_B has vc { B: 1 }; not in snapshot.
+
+   Replica A reads event_B at t3:
+       snapshot.vc { A: 1 } vs event_B.vc { B: 1 } → concurrent
+       invoke resolver, apply.
+```
+
+Concurrent events that arrive **after** the snapshot are
+handled at read-time by the resolver — same as without
+snapshots.
+
+## Performance
+
+Snapshot writes for replicated ES are slightly heavier than
+single-writer:
+
+- **Vector clock serialization** — typically 50-200 bytes extra
+  per snapshot.
+- **Resolver state merging** — if the snapshot is taken
+  during concurrent-write reconciliation, the merge runs first.
+
+Negligible in most cases.  Bigger snapshots come from the
+state itself.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Vector clock divergence">
+  ```ts
+  // Replica A's snapshot at vc { A: 100, B: 50 }
+  // Replica B's snapshot at vc { A: 80, B: 70 }
+  ```
+  Different replicas snapshot at different points in their
+  causal history.  This is **fine** — recovery from any
+  snapshot eventually catches up via journal replay + resolver.
+</Aside>
+
+<Aside type="caution" title="Don't share snapshots across replicas with different resolvers">
+  ```ts
+  // Replica A uses resolver-v1; replica B has been upgraded to resolver-v2
+  // → recovery sees inconsistent state
+  ```
+  Resolver upgrades are schema changes — roll out via standard
+  migration patterns.  See
+  [Migration overview](/actor-ts/persistence/migration/overview/).
+</Aside>
+
+## Where to next
+
+- **[Replicated event sourcing overview](/actor-ts/persistence/replicated-event-sourcing/overview/)** —
+  the bigger picture.
+- **[Vector clocks](/actor-ts/persistence/replicated-event-sourcing/vector-clocks/)** —
+  what's stored alongside the state.
+- **[Conflict resolver](/actor-ts/persistence/replicated-event-sourcing/conflict-resolver/)** —
+  invoked during recovery for concurrent events.
+- **[Snapshots](/actor-ts/persistence/snapshots/)** — the
+  single-writer counterpart.

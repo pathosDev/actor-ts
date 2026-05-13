@@ -1,0 +1,248 @@
+---
+title: Object storage overview
+description: A persistence backend that talks S3-style PUT / GET / DELETE / LIST — works with filesystem (dev), S3, MinIO, Cloudflare R2, Backblaze B2, etc. Optional compression + encryption + per-actor policies. The right choice for cloud-native deployments.
+---
+
+The framework's **object-storage** backend is an S3-compatible
+persistence layer.  Two implementations ship:
+
+| Backend | Use |
+| --- | --- |
+| **`FilesystemObjectStorageBackend`** | Local files; dev + tests. |
+| **`S3ObjectStorageBackend`** | Anything S3-compatible (AWS S3, MinIO, R2, B2). |
+
+Used by:
+
+- **`ObjectStorageDurableStateStore`** — durable state in
+  cloud storage.
+- **`ObjectStorageSnapshotStore`** — snapshots in cloud
+  storage.
+
+Built on a small interface (PUT / GET / DELETE / LIST + CAS
+support); both backends speak the same surface.
+
+## When to use it
+
+| You should use object storage when... |
+| --- |
+| You're cloud-native and S3 (or similar) is your storage platform. |
+| You want **shared persistence across cluster nodes** without running Cassandra. |
+| You want **server-side encryption** via cloud KMS. |
+| You want **infinite scaling** without managing storage capacity. |
+
+For **single-node** deployments, SQLite is simpler.  For
+**high-throughput** multi-node persistence, Cassandra is faster.
+Object storage sits in between — cloud-friendly, decent
+performance, lots of features.
+
+## A minimal example
+
+```ts
+import {
+  ObjectStorageDurableStateStore,
+  S3ObjectStorageBackend,
+} from 'actor-ts';
+
+const backend = new S3ObjectStorageBackend({
+  region: 'eu-west-1',
+  bucket: 'my-app-state',
+});
+
+const stateStore = new ObjectStorageDurableStateStore({ backend });
+
+const cart = system.actorOf(Props.create(() => new Cart({
+  persistenceId: `cart-${userId}`,
+  store:         stateStore,
+  emptyState:    () => ({ items: [] }),
+})));
+```
+
+`Cart`'s state lives in S3 under `cart-<userId>` as the object
+key.  Reads and writes go through the S3 API.
+
+## What gets stored
+
+Object keys follow a predictable layout:
+
+```
+state/
+  cart-user-42                        # one object per persistenceId
+  cart-user-43
+
+snapshots/
+  account-42/
+    seq-100                           # snapshots indexed by seqNr
+    seq-200
+    seq-300
+```
+
+The framework manages this layout; you don't construct keys
+manually.
+
+## The interface
+
+```ts
+interface ObjectStorageBackend {
+  put(key: string, body: Uint8Array, opts?: PutOptions): Promise<PutResult>;
+  get(key: string): Promise<Option<{ body: Uint8Array; info: ObjectInfo }>>;
+  delete(key: string): Promise<void>;
+  list(prefix: string): AsyncIterable<ObjectInfo>;
+}
+```
+
+Small surface — fits AWS S3, MinIO, Cloudflare R2, Backblaze B2,
+Wasabi, etc.  Most S3-compatible APIs match exactly.
+
+## CAS for optimistic concurrency
+
+```ts
+await backend.put('state/cart-42', body, {
+  ifMatch: 'previous-etag',
+});
+```
+
+`ifMatch` lets callers do **compare-and-set writes** — if the
+current ETag differs, the put fails with
+`ObjectStorageConcurrencyError`.  Used by
+`ObjectStorageDurableStateStore` to detect concurrent writers
+without separate coordination.
+
+`ifNoneMatch: '*'` is **create-only** — succeed only if the key
+doesn't exist yet.
+
+Some older S3-compatible stores don't honor these headers
+properly.  The framework's backend implementations **throw
+clearly** in that case rather than silently ignoring; check
+your provider's CAS support before relying on it.
+
+## Backends
+
+### Filesystem
+
+```ts
+import { FilesystemObjectStorageBackend } from 'actor-ts';
+
+const backend = new FilesystemObjectStorageBackend({
+  rootDir: '/var/lib/actor-ts',
+});
+```
+
+Stores objects as files under `rootDir`.  No network, no
+S3 cost.  Right for:
+
+- **Tests** — same code path as production, with local files.
+- **Local dev** — no Minio container required.
+- **Small single-node deployments** — if you specifically want
+  the object-storage interface without S3.
+
+### S3
+
+```ts
+import { S3ObjectStorageBackend } from 'actor-ts';
+
+const backend = new S3ObjectStorageBackend({
+  region:      'eu-west-1',
+  bucket:      'my-app-state',
+  endpoint:    'https://s3.eu-west-1.amazonaws.com',   // optional override
+  credentials: {
+    accessKeyId:     process.env.AWS_ACCESS_KEY_ID!,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
+  },
+});
+```
+
+Works with any S3-compatible service.  For non-AWS:
+
+```ts
+// MinIO:
+new S3ObjectStorageBackend({
+  region:   'us-east-1',
+  bucket:   'my-bucket',
+  endpoint: 'http://minio:9000',
+  forcePathStyle: true,
+});
+
+// Cloudflare R2:
+new S3ObjectStorageBackend({
+  region:   'auto',
+  bucket:   'my-bucket',
+  endpoint: 'https://<account-id>.r2.cloudflarestorage.com',
+});
+
+// Backblaze B2:
+new S3ObjectStorageBackend({
+  region:   'us-west-002',
+  bucket:   'my-bucket',
+  endpoint: 'https://s3.us-west-002.backblazeb2.com',
+});
+```
+
+## Optional features
+
+| Feature | Page |
+| --- | --- |
+| Compression (gzip / brotli) | [Compression](/actor-ts/persistence/object-storage/compression/) |
+| Encryption at rest (AES-GCM) | [Encryption](/actor-ts/persistence/object-storage/encryption/) |
+| Master-key rotation | [Key rotation](/actor-ts/persistence/object-storage/key-rotation/) |
+| Per-actor compression / encryption policies | [Per-actor policies](/actor-ts/persistence/object-storage/per-actor-policies/) |
+| Snapshot store backend | [Snapshot store backend](/actor-ts/persistence/object-storage/snapshot-store-backend/) |
+
+All optional — start without; layer on as needed.
+
+## Performance
+
+Rough numbers for S3:
+
+- **Put** (small object): 20-50 ms.
+- **Get**: 10-30 ms.
+- **Delete**: 30-50 ms.
+
+Filesystem backend: sub-millisecond.
+
+Object-storage is slower than SQLite / Cassandra for single
+operations.  Compensate with:
+
+- **Snapshot policies** that bound recovery.
+- **CachedSnapshotStore** decorator for read-through caching.
+- **Batching** wherever the framework allows.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="S3 throughput limits">
+  ```ts
+  // 5500 puts/sec per partition in AWS S3
+  ```
+  AWS S3 has per-prefix request limits.  For very-high-write
+  workloads, distribute keys across prefixes (the framework's
+  default key layout helps).
+</Aside>
+
+<Aside type="caution" title="Cross-region latency">
+  ```ts
+  // App in eu-west-1, bucket in us-east-1 → 100ms+ per op
+  ```
+  Same-region puts/gets minimize latency.  For multi-region
+  apps, either replicate the bucket or use a region-local
+  store.
+</Aside>
+
+<Aside type="caution" title="CAS support varies">
+  ```ts
+  // Some S3-compatible stores ignore If-Match / If-None-Match
+  ```
+  Test CAS explicitly against your provider before relying on
+  optimistic-concurrency-control patterns.
+</Aside>
+
+## Where to next
+
+- **[Compression](/actor-ts/persistence/object-storage/compression/)** —
+  gzip / brotli at-rest compression.
+- **[Encryption](/actor-ts/persistence/object-storage/encryption/)** —
+  AES-GCM encryption at rest.
+- **[Snapshot store backend](/actor-ts/persistence/object-storage/snapshot-store-backend/)** —
+  snapshots in object storage.
+- **[Durable state](/actor-ts/persistence/durable-state/)** —
+  the main consumer.
+- **[Persistence overview](/actor-ts/persistence/overview/)** —
+  the bigger picture.

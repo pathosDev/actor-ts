@@ -1,0 +1,174 @@
+---
+title: Replicated event sourcing overview
+description: Multi-writer event sourcing — multiple replicas of the same entity persist concurrently to a shared journal, vector clocks detect conflicts, conflict resolvers merge them. The right shape for active-active / multi-region setups.
+---
+
+Standard
+[event sourcing](/actor-ts/persistence/persistent-actor/) has
+**one writer per `persistenceId`** — a single actor instance
+appends events; another instance (after failover) replays them.
+This is fine for sharded entities where the framework
+guarantees one-actor-per-key.
+
+**Replicated event sourcing** removes that constraint.
+Multiple replicas of the **same entity** can be active at
+once — on different nodes, in different regions — and each
+persists independently.  The framework uses **vector clocks** to
+detect concurrent edits + **conflict resolvers** to merge them.
+
+```
+   Replica A (eu-west)        Replica B (us-east)
+        │                            │
+        │ persist event_A1           │ persist event_B1
+        ▼                            ▼
+   Shared journal  ←  gossip / async replication  →  Shared journal
+        │                            │
+        │ both reads from journal    │
+        ▼                            ▼
+   converge (via vector clock + resolver)
+```
+
+## When to use it
+
+This is the **niche** persistence pattern.  Most apps shouldn't
+need it.  Use cases:
+
+- **Multi-region active-active** — same entity writable in
+  EU + US.  Network partition between regions doesn't stop
+  either side.
+- **Edge-style replication** — entities replicate close to users,
+  reconcile centrally.
+- **Cluster-spanning concurrent writers** — same entity edited
+  on multiple cluster nodes without singleton coordination.
+
+For typical sharded-entity setups,
+[ClusterSharding](/actor-ts/cluster/sharding/overview/) +
+[PersistentActor](/actor-ts/persistence/persistent-actor/) gives
+exactly-one-writer per key automatically — simpler than this.
+
+## What you give up
+
+Replicated event sourcing trades **simplicity** for
+**availability**:
+
+| Single-writer ES | Replicated ES |
+| --- | --- |
+| Total event order per pid | Partial order — concurrent events can be unordered |
+| State is a deterministic fold | State is a fold + conflict resolution |
+| Commands are validated against latest state | Commands are validated against local replica's view |
+| Restart replays the log | Restart replays the log + reconciles concurrent branches |
+
+The mental model is **CRDT-like for events** — multi-writer
+convergence by design.
+
+## A minimal example
+
+```ts
+import {
+  ReplicatedEventSourcedActor,
+  vectorClock,
+  type ConflictResolver,
+} from 'actor-ts';
+
+type State = { value: number };
+type Event = { kind: 'set'; value: number };
+
+const resolver: ConflictResolver<State, Event> = {
+  resolve(state, conflicts) {
+    // When two replicas concurrently set different values, max wins:
+    const values = conflicts.map(c => (c.event as Event).value);
+    return { value: Math.max(...values) };
+  },
+};
+
+class Counter extends ReplicatedEventSourcedActor<Cmd, Event, State> {
+  readonly persistenceId = 'counter-42';
+  readonly replicaId     = process.env.REPLICA_ID!;
+  readonly conflictResolver = resolver;
+
+  initialState() { return { value: 0 }; }
+  onEvent(state: State, event: Event) {
+    return { value: event.value };
+  }
+  // ... onCommand etc.
+}
+```
+
+The actor extends `ReplicatedEventSourcedActor` instead of
+`PersistentActor`.  Three additional things to specify:
+
+- **`replicaId`** — this replica's stable identifier (different
+  from `persistenceId`).
+- **`conflictResolver`** — how to merge concurrent events.
+- The journal must be **shared across replicas** (Cassandra,
+  shared object-storage, etc.).
+
+## The pieces
+
+| Component | Purpose |
+| --- | --- |
+| **[VectorClock](/actor-ts/persistence/replicated-event-sourcing/vector-clocks/)** | Tracks causality across replicas — detects concurrent writes. |
+| **[ConflictResolver](/actor-ts/persistence/replicated-event-sourcing/conflict-resolver/)** | Decides how to merge concurrent events into a single state. |
+| **[Single-writer lease](/actor-ts/persistence/replicated-event-sourcing/single-writer-lease/)** | Optional — gates writes via a lease for stronger consistency. |
+| **[Replicated snapshots](/actor-ts/persistence/replicated-event-sourcing/snapshotting/)** | Snapshots that include the vector clock for full recovery. |
+
+Each gets its own deep-dive page.
+
+## When NOT to use it
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Sharded entities are simpler">
+  ```ts
+  // ClusterSharding gives exactly-one-actor-per-key automatically
+  ```
+  If your only need is "spread entities across nodes,"
+  sharding + plain PersistentActor is much simpler.
+  Replicated ES is for **concurrent writers to the SAME
+  entity**.
+</Aside>
+
+<Aside type="caution" title="No natural conflict resolution">
+  ```ts
+  // "User changes name in EU and US concurrently — which wins?"
+  ```
+  Replicated ES requires you to define a resolver.  If "what
+  wins" doesn't have a sensible answer, replicated ES is the
+  wrong shape — use a single-writer pattern (singleton /
+  sharding).
+</Aside>
+
+<Aside type="caution" title="Strong consistency required">
+  ```ts
+  // Financial: balance must never reflect divergent state
+  ```
+  Replicated ES is **eventually consistent**.  For absolute
+  consistency (no divergent reads, no merged-after-the-fact
+  states), use a singleton or sharding (one writer at a time).
+</Aside>
+
+## Comparison
+
+```
+                              Sharding + PersistentActor    Replicated ES
+Multiple writers per entity?  No (exactly one)             Yes
+Conflict resolution needed?    No                           Yes
+Cross-region active-active?    Sharding favors one region   Yes
+Operational complexity?        Low                          High
+Use when                       Default                      You really need it
+```
+
+## Where to next
+
+- **[Vector clocks](/actor-ts/persistence/replicated-event-sourcing/vector-clocks/)** —
+  how concurrency is detected.
+- **[Conflict resolver](/actor-ts/persistence/replicated-event-sourcing/conflict-resolver/)** —
+  how concurrent events merge.
+- **[Single-writer lease](/actor-ts/persistence/replicated-event-sourcing/single-writer-lease/)** —
+  optional stronger-consistency gate.
+- **[Replicated snapshots](/actor-ts/persistence/replicated-event-sourcing/snapshotting/)** —
+  vector-clock-aware snapshots.
+- **[PersistentActor](/actor-ts/persistence/persistent-actor/)** —
+  the simpler single-writer alternative.
+- **[Sharding overview](/actor-ts/cluster/sharding/overview/)** —
+  the usual scale-out pattern.

@@ -1,0 +1,180 @@
+---
+title: Compression
+description: Compress objects at write time with gzip / brotli / deflate — trades CPU for storage and bandwidth. Configured at the store level (default for all keys) or per-actor (selective). Decompression is transparent on read.
+---
+
+Object storage supports **at-rest compression** — bodies are
+compressed before put, decompressed on get.  Four algorithms
+supported; trade CPU for storage / bandwidth.
+
+```ts
+import {
+  ObjectStorageDurableStateStore,
+  S3ObjectStorageBackend,
+} from 'actor-ts';
+
+const store = new ObjectStorageDurableStateStore({
+  backend: new S3ObjectStorageBackend({ /* ... */ }),
+  compression: {
+    algorithm: 'gzip',
+    level:     6,        // 1 (fast) – 9 (best); default 6
+  },
+});
+```
+
+Now every persisted state is gzip-compressed before upload.
+Reads transparently decompress.
+
+## Algorithms
+
+| Algorithm | Compression ratio | CPU cost | When |
+| --- | --- | --- | --- |
+| **`gzip`** | Good (typical 50-70 %) | Moderate | Safe default — universal support, well-tuned. |
+| **`brotli`** | Better (typical 60-80 %) | Higher | When storage / bandwidth costs > CPU. |
+| **`deflate`** | Similar to gzip | Slightly less | Niche; `gzip` is the same algo + header. |
+| **`none`** | None | Zero | Default. |
+
+For **text-heavy state** (JSON), gzip gives 70 % reduction
+easily.  For **already-compressed data** (encrypted bytes,
+image data), compression is nearly free of value and wastes
+CPU.
+
+## Configuration
+
+```ts
+interface CompressionConfig {
+  algorithm: 'gzip' | 'brotli' | 'deflate' | 'none';
+  level?:    number;       // algorithm-specific
+}
+```
+
+**Levels** are algorithm-specific:
+
+- **gzip**: 1 (fastest, less compression) to 9 (slowest, best).
+  Default 6.
+- **brotli**: 0-11.  Default 4 (sweet spot for runtime).
+- **deflate**: 1-9.  Default 6.
+
+For most workloads, **defaults are fine**.  Crank up only when
+storage cost dominates.
+
+## How it works
+
+```
+On put:
+  serialize value → bytes → gzip(bytes) → S3.put(compressed, contentEncoding: 'gzip')
+
+On get:
+  S3.get → bytes + contentEncoding header → decompress → bytes → deserialize
+```
+
+The framework writes `Content-Encoding: gzip` (or `br`, etc.)
+on the put, reads it back on the get, decompresses
+accordingly.  If a stored object has no Content-Encoding (was
+written by an old version without compression), it's read
+as-is.
+
+This means **mixing compressed + uncompressed objects in the
+same bucket** works — the framework handles each per the
+header.
+
+## Compression + serialization
+
+```
+serialize → JSON bytes → gzip → S3
+```
+
+Compression runs **after serialization**.  For maximum
+size reduction, combine **CBOR serialization + gzip
+compression** — CBOR shrinks the structure; gzip eliminates
+remaining redundancy.
+
+```ts
+new ObjectStorageDurableStateStore({
+  backend,
+  serializer:  new CborSerializer(),
+  compression: { algorithm: 'gzip', level: 6 },
+});
+```
+
+## When to use each
+
+| Scenario | Algorithm |
+| --- | --- |
+| Text-heavy state (large JSON, long descriptions) | `gzip` or `brotli` |
+| Mixed text + numbers | `gzip` |
+| Already-encrypted bytes | `none` (no benefit) |
+| Storage-cost-bounded | `brotli` (level 6-8) |
+| CPU-bounded write path | `none` or `gzip` level 1 |
+
+## CPU cost
+
+Per 100 KB blob, single thread:
+
+- **gzip level 6** — ~1-3 ms encode, ~0.5 ms decode.
+- **gzip level 1** — ~0.5 ms encode, ~0.3 ms decode.
+- **brotli level 4** — ~2-5 ms encode, ~1 ms decode.
+- **brotli level 11** — ~50-100 ms encode (!), ~1 ms decode.
+
+Brotli level 11 is very slow on encode — useful for write-once
+read-many bulk archives, not for runtime persistence.
+
+For typical state-store workloads (small objects, modest
+write rate), the CPU cost is invisible.
+
+## Per-actor override
+
+```ts
+class SmallStateActor extends DurableStateActor<...> {
+  protected compression() { return { algorithm: 'none' as const }; }
+}
+
+class LogStateActor extends DurableStateActor<...> {
+  protected compression() { return { algorithm: 'brotli' as const, level: 8 }; }
+}
+```
+
+Override the store-level default per actor.  Useful when:
+
+- Most actors have small state (no compression needed).
+- A few have large text-heavy state (high compression).
+
+See [Per-actor policies](/actor-ts/persistence/object-storage/per-actor-policies/).
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Compression on tiny objects">
+  ```ts
+  // Compressing a 50-byte state → output is 80 bytes (gzip overhead)
+  ```
+  Below ~100 bytes, gzip headers exceed savings.  For
+  consistently-small states, skip compression.
+</Aside>
+
+<Aside type="caution" title="Brotli level 11 in hot paths">
+  ```ts
+  { algorithm: 'brotli', level: 11 }   // 50-100ms per encode
+  ```
+  Halves your write throughput on small objects.  Use level
+  4-6 for runtime; reserve 11 for batch operations.
+</Aside>
+
+<Aside type="caution" title="Already-encrypted blobs">
+  ```ts
+  // Encrypt → gzip
+  // → gzip can't compress encrypted bytes (effectively random)
+  ```
+  Encryption-then-compression yields ~0 % reduction at high
+  CPU cost.  Either compress first (if order doesn't matter
+  for your threat model) or skip compression entirely for
+  encrypted objects.
+</Aside>
+
+## Where to next
+
+- **[Object storage overview](/actor-ts/persistence/object-storage/overview/)** —
+  the bigger picture.
+- **[Encryption](/actor-ts/persistence/object-storage/encryption/)** —
+  the complementary at-rest feature.
+- **[Per-actor policies](/actor-ts/persistence/object-storage/per-actor-policies/)** —
+  configuring compression per-actor.

@@ -1,0 +1,205 @@
+---
+title: Vector clocks
+description: Per-replica logical timestamps used to detect concurrent edits. A vector clock is a `Record<ReplicaId, number>`; comparing two clocks tells you whether one happened-before the other, they're equal, or they're concurrent. Foundation of conflict detection in replicated ES.
+---
+
+A **vector clock** is a logical timestamp distributed across
+replicas.  Each replica maintains a per-replica counter; every
+persisted event includes the **current vector clock** at write
+time.
+
+Given two vector clocks `a` and `b`:
+
+| Relation | When |
+| --- | --- |
+| **`a < b`** ("a happens-before b") | Every component `a[i] ≤ b[i]` and at least one strictly less. |
+| **`a == b`** | Every component equal. |
+| **`a` concurrent with `b`** | Neither `<` nor `>`.  Some components have `a > b`, others `a < b`. |
+
+The third case — **concurrent** — is what the replicated-ES
+machinery uses to detect "two replicas wrote independently and
+neither saw the other's write."
+
+## The data shape
+
+```ts
+type VectorClockData = Readonly<Record<ReplicaId, number>>;
+```
+
+A plain object.  Replicas not present are treated as `0` —
+useful for compactness on the wire (skip components that are
+zero).
+
+The framework's `VectorClock` class wraps this:
+
+```ts
+import { VectorClock } from 'actor-ts';
+
+let vc = VectorClock.empty();
+vc = vc.increment('replica-a');   // → { 'replica-a': 1 }
+vc = vc.increment('replica-a');   // → { 'replica-a': 2 }
+vc = vc.merge(VectorClock.fromData({ 'replica-b': 3 }));
+//    → { 'replica-a': 2, 'replica-b': 3 }
+```
+
+## Operations
+
+| Method | Purpose |
+| --- | --- |
+| `empty()` | Zero clock. |
+| `fromData(record)` | Build from a plain object. |
+| `get(replicaId)` | Read one component. |
+| `increment(replicaId)` | Bump a replica's component — called when persisting. |
+| `merge(other)` | Per-replica max. |
+| `compare(other)` | Returns `'<'` / `'>'` / `'=='` / `'concurrent'`. |
+| `toData()` | Plain-object form for serialization. |
+
+## How replicated ES uses them
+
+```
+Replica A writes event_A1 at vc { A: 1 }            ← A's counter bumps
+Replica B (no prior knowledge of A's event):
+  writes event_B1 at vc { B: 1 }                     ← B's counter bumps
+
+Both events end up in the shared journal.
+
+Later, replica A reads B's event:
+  vc { B: 1 } compared to A's current { A: 1 }:
+    → concurrent (A > B for A's component, B > A for B's component)
+    → conflict resolver runs to merge state from both branches
+```
+
+The framework:
+
+1. On each persist, increments **this replica's** component.
+2. Embeds the full vector clock in the persisted event.
+3. On reading another replica's event, compares the embedded
+   vector clock to the local state's vector clock.
+4. If concurrent → invoke the conflict resolver.
+5. If `<` (causally prior) → already applied or strictly older;
+   ignore (or fold into state normally).
+6. If `>` (causally later) → apply to state.
+
+## A walked-through example
+
+```
+t1: Replica A persists event_A1 at vc { A: 1 }
+       state_A = applyEvent(initial, event_A1)
+       state_A's vc = { A: 1 }
+
+t2: Replica B persists event_B1 at vc { B: 1 }    ← concurrent
+       state_B = applyEvent(initial, event_B1)
+       state_B's vc = { B: 1 }
+
+t3: Replica A reads event_B1.
+    Comparing event_B1's vc { B: 1 } to state_A's vc { A: 1 }:
+       → concurrent
+    Invoke resolver:
+       merged_state = resolver.resolve(state_A, [event_A1, event_B1])
+       state_A = merged_state
+       state_A's vc = { A: 1, B: 1 } (the merge)
+
+t4: Replica A persists event_A2 at vc { A: 2, B: 1 }
+       state_A = applyEvent(merged_state, event_A2)
+
+t5: Replica B eventually sees the entire chain — its own,
+    A's pre-merge events, plus A's post-merge events.
+    Resolves any concurrent branches the same way.
+```
+
+Eventually, both replicas converge — given enough cross-replica
+visibility and a deterministic resolver.
+
+## Causality is partial-ordered
+
+Vector clocks **do not** give a total order.  Two events at
+`{ A: 5 }` and `{ B: 5 }` are concurrent — neither "happened
+first."  The order in which they appear in the journal is
+incidental.
+
+This is the **whole point** — replicas write independently;
+clocks track causality, not wall-clock time.
+
+For a total order (rare), pair with a single-writer lease (see
+[Single-writer lease](/actor-ts/persistence/replicated-event-sourcing/single-writer-lease/)).
+
+## Wire format
+
+Vector clocks serialize as plain JSON objects:
+
+```json
+{
+  "_vc": { "A": 5, "B": 3, "C": 1 }
+}
+```
+
+Zero-value components are typically omitted for compactness;
+the framework treats missing keys as `0`.
+
+## Garbage collection
+
+Over time, retired replicas (decommissioned regions, removed
+nodes) leave entries in vector clocks:
+
+```
+vc { A: 100, B: 50, C: 25, RETIRED-D: 7 }
+```
+
+The retired replica's component is irrelevant but takes up
+space.  For long-running deployments with replica churn, the
+framework supports **vector-clock pruning** at snapshot time —
+when a replica is gone for long enough, its component can be
+safely dropped.
+
+This is an advanced topic; the defaults are fine for most
+deployments.
+
+## Working with vector clocks in user code
+
+You usually don't.  The framework manages them internally;
+your conflict resolver receives **events with their vector
+clocks already compared** — you just decide how to merge the
+**state** given the conflicting events.
+
+For diagnostics:
+
+```ts
+override async onCommand(state, cmd) {
+  this.log.debug(`current vc: ${JSON.stringify(this.vectorClock.toData())}`);
+  await this.persist(event, () => {});
+}
+```
+
+`this.vectorClock` is read-only access to the actor's current
+clock.  Useful for logging / debugging concurrent-write
+scenarios.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Replica IDs must be stable forever">
+  ```ts
+  // Replica restarts with a new random ID
+  ```
+  A replica's ID is **part of the vector clock**.  Restarting
+  with a new ID makes the new instance look like a different
+  replica — old vector clocks still contain the old ID's
+  entries.  Use stable IDs (pod name + region, etc.).
+</Aside>
+
+<Aside type="caution" title="Vector clock size grows with replica count">
+  ```ts
+  // 50 replicas → vc has up to 50 entries on each event
+  ```
+  Each event carries the full vc.  For very-large replica
+  counts, this is wire + storage overhead.  Most deployments
+  have ≤ 10 replicas; concern only for extreme scale.
+</Aside>
+
+## Where to next
+
+- **[Replicated event sourcing overview](/actor-ts/persistence/replicated-event-sourcing/overview/)** —
+  the bigger picture.
+- **[Conflict resolver](/actor-ts/persistence/replicated-event-sourcing/conflict-resolver/)** —
+  what consumes the concurrency detection.
+- **[Snapshotting](/actor-ts/persistence/replicated-event-sourcing/snapshotting/)** —
+  vector clocks in snapshots.

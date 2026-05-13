@@ -1,0 +1,219 @@
+---
+title: Per-actor policies
+description: Override compression + encryption settings per actor class. Most actors use the store's defaults; specific actors (sensitive data, large blobs) need different policies. Granular without touching every entity individually.
+---
+
+The object-storage backend can have **store-level defaults** for
+compression + encryption.  But sometimes specific actors need
+**different settings**:
+
+- A sensitive actor needs encryption (others don't).
+- A large-state actor benefits from brotli (others use gzip).
+- A small-state actor opts out of compression.
+
+Override per-actor by implementing the `compression()` /
+`encryption()` methods:
+
+```ts
+class SensitiveActor extends DurableStateActor<Cmd, State> {
+  protected encryption() {
+    return { keyRing: sensitiveKeyRing };
+  }
+
+  protected compression() {
+    return { algorithm: 'gzip' as const, level: 9 };
+  }
+}
+```
+
+The framework calls these on each persist/load and applies the
+returned config.
+
+## Default vs override
+
+```ts
+// Store-level config — applies to every actor unless overridden:
+const store = new ObjectStorageDurableStateStore({
+  backend,
+  compression: { algorithm: 'gzip', level: 6 },
+  encryption:  { keyRing: defaultKeyRing },
+});
+
+// Per-actor: override
+class MyActor extends DurableStateActor<...> {
+  protected compression() { return { algorithm: 'none' as const }; }
+  // encryption() not overridden → uses defaultKeyRing
+}
+```
+
+Each method is **independently overridable**:
+
+- Return your own config → that config applies.
+- Don't override → store's default applies.
+- Return `undefined` from the method → also store's default.
+
+## Use cases
+
+### Per-actor encryption
+
+```ts
+class CreditCardActor extends DurableStateActor<...> {
+  protected encryption() {
+    return { keyRing: pciKeyRing };   // separate key ring for PCI scope
+  }
+}
+
+class GenericActor extends DurableStateActor<...> {
+  // No override → uses store default (no encryption, or generic keyRing)
+}
+```
+
+PCI / HIPAA / GDPR scope: data classified as sensitive uses
+**a separate master key** from non-sensitive.  Compromise of
+one keyRing doesn't expose the other.
+
+### Per-actor compression
+
+```ts
+class ChatTranscriptActor extends DurableStateActor<...> {
+  // Large text state — brotli wins meaningfully
+  protected compression() {
+    return { algorithm: 'brotli' as const, level: 8 };
+  }
+}
+
+class CounterActor extends DurableStateActor<...> {
+  // Tiny state — compression overhead exceeds savings
+  protected compression() {
+    return { algorithm: 'none' as const };
+  }
+}
+```
+
+Match the compression to the data shape.  Default gzip is a
+safe middle ground; per-actor tuning extracts more.
+
+## What happens on persist
+
+```
+DurableStateActor.persist(state)
+  ↓
+serializer.toBinary(state) → JSON or CBOR bytes
+  ↓
+this.compression() → applies if not 'none'
+  ↓
+this.encryption() → applies if set
+  ↓
+backend.put(key, ciphertext, opts)
+```
+
+The framework looks up the actor's overrides **at each persist**
+— so even if you change the override values dynamically (rare),
+new writes use new settings.
+
+## What happens on load
+
+```
+DurableStateActor.preStart
+  ↓
+backend.get(key) → bytes + metadata
+  ↓
+detect encryption from metadata (key-id) → decrypt
+  ↓
+detect compression from metadata (Content-Encoding) → decompress
+  ↓
+serializer.fromBinary → state
+```
+
+**Reads use the metadata** stored with the object, not the
+actor's current overrides.  An object encrypted under
+`pciKeyRing` is decrypted via `pciKeyRing` whether or not the
+actor's current `encryption()` says so.
+
+This means: **rotating an actor's policy doesn't break old
+data** as long as the necessary keys / algorithms are available.
+
+## Migration when changing policies
+
+```ts
+// Old: no encryption.
+// New: encryption under pciKeyRing.
+class CreditCardActor extends DurableStateActor<...> {
+  protected encryption() {
+    return { keyRing: pciKeyRing };
+  }
+}
+```
+
+Old (unencrypted) reads work — no metadata → plaintext path.
+New writes encrypt.  Eventually:
+
+- A **re-encryption sweep** filtered to this actor's
+  persistenceIds migrates the rest.
+
+See [key rotation](/actor-ts/persistence/object-storage/key-rotation/).
+
+## Working with the snapshot store
+
+```ts
+class Account extends PersistentActor<Cmd, Event, State> {
+  // Per-actor compression for snapshots:
+  protected compression() {
+    return { algorithm: 'brotli' as const };
+  }
+
+  // Per-actor encryption for snapshots:
+  protected encryption() {
+    return { keyRing: accountKeyRing };
+  }
+}
+```
+
+Same methods apply when the snapshot store is backed by
+object-storage.  Persistent actors and durable-state actors
+both honor them.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Different keyRings across cluster nodes">
+  ```ts
+  // node-A's actor uses pciKeyRing; node-B's same actor uses generic
+  ```
+  Actors **must** see the same encryption config across the
+  cluster (otherwise post-migration sharded entities can't be
+  read).  Pass key rings from the same source on every node.
+</Aside>
+
+<Aside type="caution" title="Heavy compression per-actor">
+  ```ts
+  // Override to brotli level 11 for "important" actors
+  ```
+  Brotli 11 is slow.  If "important" actors persist frequently,
+  this adds 50-100 ms per persist.  Verify with profiling before
+  setting per-actor heavy-compression overrides.
+</Aside>
+
+<Aside type="caution" title="Override returning new object each call">
+  ```ts
+  protected compression() {
+    return { algorithm: 'gzip', level: 6 };   // ← new object every call
+  }
+  ```
+  Fine for correctness; mildly wasteful (allocates per persist).
+  Hoist to a constant if perf-sensitive:
+  ```ts
+  private static readonly GZIP6 = { algorithm: 'gzip' as const, level: 6 };
+  protected compression() { return Account.GZIP6; }
+  ```
+</Aside>
+
+## Where to next
+
+- **[Object storage overview](/actor-ts/persistence/object-storage/overview/)** —
+  the bigger picture.
+- **[Compression](/actor-ts/persistence/object-storage/compression/)** —
+  algorithm + level details.
+- **[Encryption](/actor-ts/persistence/object-storage/encryption/)** —
+  encryption setup.
+- **[Snapshot store backend](/actor-ts/persistence/object-storage/snapshot-store-backend/)** —
+  for snapshots in object storage.

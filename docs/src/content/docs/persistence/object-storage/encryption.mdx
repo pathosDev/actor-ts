@@ -1,0 +1,234 @@
+---
+title: Encryption
+description: AES-GCM encryption at rest for object-storage payloads — keys are managed via a versioned `MasterKeyRing` for online rotation. Each blob is encrypted under one master key; key IDs are stored alongside ciphertext.
+---
+
+Object-storage payloads support **client-side AES-GCM
+encryption** — the framework encrypts before put, decrypts on
+get, keys managed via a
+[MasterKeyRing](/actor-ts/operations/security/master-key-rotation/).
+
+```ts
+import {
+  ObjectStorageDurableStateStore,
+  S3ObjectStorageBackend,
+  MasterKeyRing,
+} from 'actor-ts';
+
+const keyRing = new MasterKeyRing({
+  keys: { 'k1': process.env.MASTER_KEY_V1! },
+  currentKeyId: 'k1',
+});
+
+const store = new ObjectStorageDurableStateStore({
+  backend: new S3ObjectStorageBackend({ /* ... */ }),
+  encryption: { keyRing },
+});
+```
+
+Now every persisted state is AES-GCM-encrypted under `k1`
+before upload.  Reads transparently decrypt.
+
+## Why client-side encryption
+
+Object stores (S3, GCS, Azure Blob) offer **server-side
+encryption** built-in.  Why also encrypt client-side?
+
+| Threat | Server-side | Client-side |
+| --- | --- | --- |
+| Storage compromise (someone reads from disk) | ✓ | ✓ |
+| Account compromise (someone has S3 credentials) | ✗ | ✓ |
+| Cloud provider compromise | ✗ | ✓ |
+| Audit / compliance requiring "we hold the keys" | ✗ | ✓ |
+
+**Client-side encryption protects against more threats** but
+costs more (CPU per op, key-management overhead).  Most apps
+should use both: server-side as baseline + client-side for
+sensitive payloads.
+
+## Configuration
+
+```ts
+interface EncryptionConfig {
+  keyRing: MasterKeyRing;
+  /** Override the algorithm; default 'AES-GCM'. */
+  algorithm?: 'AES-GCM';
+}
+```
+
+The `MasterKeyRing` carries:
+
+- **`keys`** — keyId → key bytes map.
+- **`currentKeyId`** — which key new writes use.
+
+Multiple keys in the ring let you read older payloads (encrypted
+under older keys) while new payloads use the current key.  This
+is the foundation of
+[key rotation](/actor-ts/persistence/object-storage/key-rotation/).
+
+## How it works
+
+```
+On put:
+  serialize value → bytes → AES-GCM(bytes, currentKey) → ciphertext
+  → metadata { keyId: currentKeyId, iv, tag }
+  → S3.put(ciphertext, x-amz-meta-key-id: currentKeyId, etc.)
+
+On get:
+  S3.get → ciphertext + metadata{ keyId, iv, tag }
+  → keyRing.get(keyId) → decrypt(ciphertext, key, iv, tag)
+  → bytes → deserialize
+```
+
+The **key ID is stored alongside the ciphertext** — every blob
+knows which key it was encrypted with.  This lets the
+framework decrypt **old payloads** using the right key even
+after the current key has been rotated.
+
+## What it encrypts
+
+- **The body** — serialized state / event / snapshot.
+- **Not** — the object key, metadata headers (other than the
+  key ID), the bucket name.
+
+For object metadata that shouldn't leak (sensitive
+persistenceIds), use a separate naming scheme (hash IDs before
+they become object keys).
+
+## Key sources
+
+The master key bytes come from somewhere.  Common patterns:
+
+### Env vars
+
+```ts
+new MasterKeyRing({
+  keys: {
+    'k1': Buffer.from(process.env.MASTER_KEY_V1!, 'base64'),
+  },
+  currentKeyId: 'k1',
+});
+```
+
+Simplest.  Each key is a 32-byte buffer (for AES-256-GCM),
+base64-encoded in the env.
+
+Risk: env vars are visible to anything that can read the
+process environment.  Use only when the env is itself secured
+(K8s secrets, etc.).
+
+### KMS-on-load
+
+```ts
+import { KMS } from '@aws-sdk/client-kms';
+
+const kms = new KMS();
+const decrypted = await kms.decrypt({
+  KeyId:           'alias/master',
+  CiphertextBlob:  Buffer.from(process.env.WRAPPED_KEY!, 'base64'),
+});
+
+const keyRing = new MasterKeyRing({
+  keys: { 'k1': decrypted.Plaintext! },
+  currentKeyId: 'k1',
+});
+```
+
+Master key is **stored encrypted** under a cloud KMS key.  The
+app fetches it on startup, decrypts via KMS, holds in memory.
+
+Better than raw env vars — only KMS access is required to
+recover keys.
+
+### HashiCorp Vault
+
+Similar pattern: pull master keys from Vault at startup.
+
+## CPU cost
+
+AES-GCM is **fast** — modern CPUs have hardware support.
+
+Per 100 KB encrypt + decrypt:
+
+- ~0.5-1 ms on modern x86 / Apple Silicon.
+- Effectively free on small objects.
+
+For most workloads, encryption is invisible in profiles.
+
+## Encryption + compression
+
+```
+encrypt → compress → S3.put       # ✗ no compression benefit on ciphertext
+compress → encrypt → S3.put       # ✓ this is what the framework does
+```
+
+The framework's order is **compress first, then encrypt** —
+compressed bytes are still compressible (not random); after
+encryption, they're effectively random and uncompressable.
+
+If you set both compression and encryption, you get this order
+automatically.
+
+## Reading old payloads
+
+After enabling encryption on a previously-unencrypted bucket:
+
+```
+state/cart-42  ← old, plaintext, no key-id metadata
+state/cart-43  ← new, encrypted, key-id: k1
+```
+
+The framework detects each per-payload via the metadata:
+
+- **No key-id metadata** → plaintext path.
+- **Key-id present** → decrypt via the keyRing.
+
+Means **you can enable encryption gradually** — new writes get
+encrypted, old reads still work, and a background
+re-encryption sweep can migrate the rest.
+
+See [key rotation](/actor-ts/persistence/object-storage/key-rotation/)
+for the rotation flow.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Lose the key, lose the data">
+  ```ts
+  // Master key deleted from secret storage
+  // → all encrypted blobs are now unreadable
+  ```
+  Master keys must be **backed up**.  KMS backups, escrow,
+  multiple geographic copies — encryption-without-recovery is
+  data destruction.
+</Aside>
+
+<Aside type="caution" title="Per-tenant key isolation isn't out-of-the-box">
+  ```ts
+  // Customer A and Customer B both use the same master key
+  ```
+  The framework's encryption is **bucket-wide** — one keyRing
+  for everything.  For per-tenant keys (different customer
+  uses different KEK), wrap the store with per-tenant logic
+  or implement a custom DurableStateStore.
+</Aside>
+
+<Aside type="caution" title="Encrypted backups">
+  ```bash
+  # S3 → cross-region replication
+  # The encrypted bytes are copied; the master key is not
+  ```
+  Server-side replication preserves encryption; the keyRing
+  must be available in every region your app runs in.  Plan
+  for cross-region key distribution.
+</Aside>
+
+## Where to next
+
+- **[Object storage overview](/actor-ts/persistence/object-storage/overview/)** —
+  the bigger picture.
+- **[Key rotation](/actor-ts/persistence/object-storage/key-rotation/)** —
+  the online rotation flow.
+- **[Master key rotation (operations)](/actor-ts/operations/security/master-key-rotation/)** —
+  the operational side.
+- **[Per-actor policies](/actor-ts/persistence/object-storage/per-actor-policies/)** —
+  per-actor encryption configuration.

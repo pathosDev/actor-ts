@@ -1,0 +1,214 @@
+---
+title: Snapshot store backend
+description: ObjectStorageSnapshotStore stores snapshots in object storage — the right shape for cluster-wide shared snapshots, encrypted at rest, with compression. Pair with sharded entities that move between nodes.
+---
+
+`ObjectStorageSnapshotStore` is the snapshot-store
+implementation that uses
+[object storage](/actor-ts/persistence/object-storage/overview/)
+as its backing layer.
+
+```ts
+import {
+  ObjectStorageSnapshotStore,
+  S3ObjectStorageBackend,
+  PersistenceExtensionId,
+} from 'actor-ts';
+
+const snapshotStore = new ObjectStorageSnapshotStore({
+  backend:     new S3ObjectStorageBackend({ region, bucket }),
+  compression: { algorithm: 'gzip' },
+  encryption:  { keyRing },
+});
+
+system.extension(PersistenceExtensionId).configure({
+  journal: someJournal,
+  snapshotStore,
+});
+```
+
+Snapshots written by every `PersistentActor` go to the S3
+bucket; compressed + encrypted per the config.
+
+## When to use it
+
+Three patterns:
+
+1. **Cluster-wide shared snapshots** — sharded entities that
+   move between nodes need any node to be able to load any
+   entity's snapshot.  Object storage works; SQLite per-node
+   doesn't.
+2. **Encrypted snapshots** — server-side and/or client-side
+   encryption at rest required for compliance.
+3. **Cheap snapshot storage** — object storage is far cheaper
+   per GB than SQL stores for read-rarely-rewrite-occasionally
+   data.
+
+For **single-node** deployments,
+[SqliteSnapshotStore](/actor-ts/persistence/snapshot-stores/sqlite/)
+is faster + simpler.
+
+## Configuration
+
+```ts
+interface ObjectStorageSnapshotStoreSettings {
+  backend:      ObjectStorageBackend;
+  prefix?:      string;             // default 'snapshots/'
+  compression?: CompressionConfig;
+  encryption?:  EncryptionConfig;
+}
+```
+
+| Field | Purpose |
+| --- | --- |
+| `backend` | Filesystem or S3 backend. |
+| `prefix` | Object-key prefix.  Useful for sharing buckets. |
+| `compression` | At-rest compression — see [Compression](/actor-ts/persistence/object-storage/compression/). |
+| `encryption` | At-rest encryption — see [Encryption](/actor-ts/persistence/object-storage/encryption/). |
+
+## Key layout
+
+```
+<prefix>/<persistenceId>/seq-<seqNr>
+```
+
+Examples:
+
+```
+snapshots/account-42/seq-100
+snapshots/account-42/seq-200
+snapshots/account-42/seq-300
+```
+
+The framework lists keys under `<prefix>/<persistenceId>/` to
+find the latest snapshot.
+
+For very-large `persistenceId` spaces, listing per-pid is
+typically fast in S3 (per-prefix throughput).  Avoid putting
+all entity types under the same prefix without per-pid
+subdirectories.
+
+## Performance
+
+Snapshot writes go through object-storage's PUT; reads through
+GET.  Numbers for S3 same-region:
+
+- **Save** — 20-50 ms per snapshot.
+- **Load latest** — 1 LIST + 1 GET = 30-60 ms.
+
+For **hot-path snapshot loading** (frequent actor restarts),
+wrap with
+[CachedSnapshotStore](/actor-ts/persistence/snapshot-stores/cached-snapshot-store/):
+
+```ts
+const cached = new CachedSnapshotStore({
+  underlying: new ObjectStorageSnapshotStore({ backend, ... }),
+  maxEntries: 1_000,
+});
+```
+
+Reduces redundant S3 GETs to sub-microsecond cache hits.
+
+## Per-actor overrides
+
+```ts
+class Account extends PersistentActor<...> {
+  protected compression() { return { algorithm: 'brotli' as const }; }
+  protected encryption()  { return { keyRing: accountKeyRing }; }
+}
+```
+
+Per-actor configuration applies to snapshots the same way as
+durable state.  See
+[Per-actor policies](/actor-ts/persistence/object-storage/per-actor-policies/).
+
+## Snapshot lifecycle
+
+```
+PersistentActor.persist(event) succeeds
+  ↓ check snapshotPolicy()
+  ↓ if true → take snapshot
+backend.put('snapshots/<pid>/seq-N', serialized state)
+
+PersistentActor.preStart
+  ↓ list 'snapshots/<pid>/' to find latest seq
+  ↓ backend.get(latest) → decode → onEvent from seq+1 onwards
+```
+
+The framework handles snapshot saves + loads via this layout;
+you set the policy.
+
+## Cleanup of old snapshots
+
+```ts
+new ObjectStorageSnapshotStore({
+  backend,
+  maxSnapshotsPerPid: 5,   // keep 5 most recent; delete older
+});
+```
+
+Without cleanup, old snapshots accumulate indefinitely.
+Configuring `maxSnapshotsPerPid` triggers a cleanup pass on
+each save — only the N most recent are retained.
+
+The framework doesn't auto-delete during reads — there's a
+small window where old snapshots co-exist with new ones.
+
+## Mixing with the journal
+
+```ts
+{
+  journal:       new SqliteJournal({ path: '...' }),
+  snapshotStore: new ObjectStorageSnapshotStore({ backend }),
+}
+```
+
+The journal and snapshot store are **independent**.  Common
+patterns:
+
+- **SQLite journal + ObjectStorage snapshots** — local
+  event-rate, shared snapshots for sharded entities.
+- **Cassandra journal + ObjectStorage snapshots** — both
+  shared across the cluster.
+- **ObjectStorage everything** — when S3 is your only storage.
+  Slower per-op but cheap.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="LIST cost on large pids">
+  ```ts
+  // 100K snapshots for one pid — list returns 100K entries
+  ```
+  Without `maxSnapshotsPerPid`, lists grow unbounded.
+  Configure cleanup; better, use a tighter snapshotPolicy
+  (every N events instead of every event).
+</Aside>
+
+<Aside type="caution" title="Snapshot loss is recovery-time loss">
+  ```ts
+  // S3 bucket lost (regional outage)
+  ```
+  Without snapshots, recovery falls back to full event replay.
+  Bigger journal = slower recovery.  For mission-critical pids,
+  enable S3 cross-region replication on the snapshots bucket.
+</Aside>
+
+<Aside type="caution" title="Encrypted snapshots + old keys">
+  ```ts
+  // Snapshot from 2 years ago, encrypted under retired key
+  ```
+  Don't retire keys until all snapshots are re-encrypted to the
+  new key.  See
+  [Key rotation](/actor-ts/persistence/object-storage/key-rotation/).
+</Aside>
+
+## Where to next
+
+- **[Object storage overview](/actor-ts/persistence/object-storage/overview/)** —
+  the bigger picture.
+- **[Snapshot stores overview](/actor-ts/persistence/snapshots/)** —
+  general snapshot policy.
+- **[CachedSnapshotStore](/actor-ts/persistence/snapshot-stores/cached-snapshot-store/)** —
+  read-through cache.
+- **[Per-actor policies](/actor-ts/persistence/object-storage/per-actor-policies/)** —
+  per-actor compression / encryption.

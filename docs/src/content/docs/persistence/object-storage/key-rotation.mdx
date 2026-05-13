@@ -1,0 +1,182 @@
+---
+title: Key rotation
+description: Online rotation of the master encryption key — add a new key, promote it to current, then run a background re-encryption sweep over existing payloads. Zero downtime; old payloads remain readable throughout.
+---
+
+For object-storage encryption, the master key needs to rotate
+periodically (security policy, compromise response, compliance).
+The framework supports **online rotation** — zero downtime, old
+data readable throughout.
+
+The flow:
+
+```
+   1. Generate new key.  Add to keyRing.keys.  Don't promote yet.
+   2. Roll out.  Old payloads still readable; new writes still use old key.
+   3. Promote new key to currentKeyId.  Roll out.
+   4. New writes use new key.  Old payloads readable via keyRing.
+   5. Run re-encryption sweep.  Old payloads → new key.
+   6. Wait rollback window (~7 days).
+   7. Remove old key from ring.  Cleanup.
+```
+
+This page covers the **store-side mechanics**; for the
+operational walkthrough of the broader rotation,
+see [Master key rotation (operations)](/actor-ts/operations/security/master-key-rotation/).
+
+## The sweep
+
+```ts
+import { reEncryptionSweep } from 'actor-ts';
+
+await reEncryptionSweep({
+  backend:         myBackend,
+  keyRing:         currentKeyRing,
+  targetKeyId:     'k2',                        // re-encrypt under this key
+  batchSize:       100,
+  rateLimit:       50,                          // items / sec
+  filter:          (key) => key.startsWith('state/'),
+});
+```
+
+The sweep:
+
+1. Lists objects in the backend matching `filter`.
+2. For each object: read, check if it's already encrypted under
+   `targetKeyId`.  Skip if so.
+3. Otherwise: decrypt with whichever key it currently uses,
+   re-encrypt with `targetKeyId`, put.
+4. Throttled by `rateLimit`.
+
+## Idempotent + resumable
+
+```ts
+// Sweep crashes mid-run; on restart, picks up where it stopped
+await reEncryptionSweep({ /* same options */ });
+```
+
+The sweep is **stateless** — at each iteration, it checks
+whether the object needs re-encryption and skips if not.
+Re-running is safe (no duplicate work) and resumes from where
+the previous run failed.
+
+For very-large stores, run the sweep in the **background** —
+not blocking the app's primary persistence work.
+
+## Filter for partial rotation
+
+```ts
+await reEncryptionSweep({
+  backend,
+  keyRing,
+  targetKeyId: 'k2',
+  filter: (key) => key.startsWith('state/account-'),
+});
+```
+
+Re-encrypt only matching objects.  Useful for:
+
+- **Per-tenant rotation** — re-encrypt only that tenant's keys.
+- **Per-actor-type rotation** — only `account-` objects.
+- **Phased rotation** — rotate small subsets first to test.
+
+## Rate limiting
+
+```ts
+rateLimit: 50,   // 50 ops / sec
+```
+
+The sweep's I/O can compete with foreground traffic if uncapped.
+A conservative rate-limit lets the sweep run **alongside
+production** without impact.
+
+For a million-object store at 50 ops/sec, the sweep takes
+~5.5 hours.  Acceptable for non-urgent rotations; raise rate for
+urgent ones (compromise response).
+
+## Reading partially-rotated state
+
+During the sweep, the store contains a mix:
+
+```
+state/cart-42   ← still encrypted under k1
+state/cart-43   ← already re-encrypted under k2
+```
+
+The framework reads each using **whichever key the metadata
+says**.  No downtime; partial state is fine.
+
+## Confirming completion
+
+```ts
+import { listObjectsNotMatchingKey } from 'actor-ts';
+
+const stragglers = await listObjectsNotMatchingKey({
+  backend,
+  keyId: 'k2',
+  filter: (key) => key.startsWith('state/'),
+});
+```
+
+After the sweep completes, **verify** no objects are still
+under the old key.  Stragglers might be:
+
+- Newly-created objects that beat the sweep (rare; just run
+  again).
+- Objects in a partial state due to a sweep crash (run again).
+- Objects matching your filter that you forgot about.
+
+Address before retiring the old key.
+
+## After the sweep
+
+```ts
+// 1. Remove old key from ring.
+const newKeyRing = new MasterKeyRing({
+  keys:         { 'k2': process.env.MASTER_KEY_V2! },
+  currentKeyId: 'k2',
+});
+// 2. Roll out — old key is gone.
+```
+
+**Wait the rollback window** (typically 7 days) before
+removing the old key.  Backups might still reference it; you
+want a recovery path.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Deleting old keys without verification">
+  ```ts
+  // Drop k1 from ring before sweep completes
+  // → some objects encrypted with k1 are now unreadable
+  ```
+  Always confirm sweep completion before dropping a key.
+  Lost keys = lost data.
+</Aside>
+
+<Aside type="caution" title="Sweep rate too high">
+  ```ts
+  rateLimit: 10_000   // ✗ saturates S3, costs spike
+  ```
+  Sweep I/O is **opex** — S3 requests cost money.  Rate-limit
+  to a reasonable background pace; don't burn through quota.
+</Aside>
+
+<Aside type="caution" title="Sweep + new writes race">
+  ```ts
+  // Sweep reads cart-42; app writes cart-42 under new key;
+  // sweep re-encrypts with old version → overwrite race
+  ```
+  The framework uses **CAS via ETags** on the sweep's put.  If
+  the app wrote a newer version, the sweep skips this object
+  (it's already current).  Safe; no overwrites.
+</Aside>
+
+## Where to next
+
+- **[Object storage overview](/actor-ts/persistence/object-storage/overview/)** —
+  the bigger picture.
+- **[Encryption](/actor-ts/persistence/object-storage/encryption/)** —
+  the at-rest encryption setup.
+- **[Master key rotation (ops)](/actor-ts/operations/security/master-key-rotation/)** —
+  the operations-side rotation walkthrough.
