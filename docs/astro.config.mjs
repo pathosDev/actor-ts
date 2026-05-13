@@ -178,7 +178,7 @@ export default defineConfig({
       // and in `scaffold.mjs`'s PAGES table — both have to agree.
       sidebar: [
         {
-          label: 'Get Started',
+          label: '🚀 Get Started',
           collapsed: false, // first impression: keep this one open
           items: [
             { label: 'What is actor-ts?',     slug: 'intro/what-is-actor-ts' },
@@ -190,7 +190,7 @@ export default defineConfig({
           ],
         },
         {
-          label: 'Build Actors',
+          label: '🎭 Build Actors',
           collapsed: true,
           items: [
             {
@@ -252,7 +252,7 @@ export default defineConfig({
           ],
         },
         {
-          label: 'Distribute',
+          label: '🌐 Distribute',
           collapsed: true,
           items: [
             {
@@ -346,7 +346,7 @@ export default defineConfig({
           ],
         },
         {
-          label: 'Persist',
+          label: '💾 Persist',
           collapsed: true,
           items: [
             {
@@ -439,7 +439,7 @@ export default defineConfig({
           ],
         },
         {
-          label: 'Integrate',
+          label: '🔌 Integrate',
           collapsed: true,
           items: [
             {
@@ -511,7 +511,7 @@ export default defineConfig({
           ],
         },
         {
-          label: 'Observe',
+          label: '📊 Observe',
           collapsed: true,
           items: [
             { label: 'Overview',                    slug: 'observability/overview' },
@@ -548,7 +548,7 @@ export default defineConfig({
           ],
         },
         {
-          label: 'Test',
+          label: '✅ Test',
           collapsed: true,
           items: [
             { label: 'Overview',                    slug: 'testing/overview' },
@@ -560,7 +560,7 @@ export default defineConfig({
           ],
         },
         {
-          label: 'Operate',
+          label: '⚙️ Operate',
           collapsed: true,
           items: [
             { label: 'Overview',                    slug: 'operations/overview' },
@@ -615,7 +615,7 @@ export default defineConfig({
           ],
         },
         {
-          label: 'Examples',
+          label: '💡 Examples',
           collapsed: true,
           items: [
             { label: 'Overview',                    slug: 'examples/overview' },
@@ -625,7 +625,7 @@ export default defineConfig({
           ],
         },
         {
-          label: 'Migration',
+          label: '🚚 Migration',
           collapsed: true,
           items: [
             { label: 'Overview',                    slug: 'migration/overview' },
@@ -637,7 +637,7 @@ export default defineConfig({
           ],
         },
         {
-          label: 'Reference',
+          label: '📖 Reference',
           collapsed: true,
           items: [
             { label: 'Configuration',               slug: 'reference/configuration' },
@@ -650,7 +650,7 @@ export default defineConfig({
         // plugin — appears below the manual IA groups.
         typeDocSidebarGroup,
         {
-          label: 'Extras',
+          label: '🎁 Extras',
           collapsed: true,
           items: [
             { label: 'Design decisions',            slug: 'extras/design-decisions' },
