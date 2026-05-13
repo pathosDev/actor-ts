@@ -229,6 +229,15 @@ pre:not([class*='language-']) {
   --sl-content-width: 64rem !important;
 }
 
+/* Splash / landing pages have no left sidebar — give them a wider
+ * content column so the CardGrid + sections fill more of the viewport
+ * instead of leaving a big left+right empty strip.  `data-has-hero`
+ * is the attribute Starlight sets on `<html>` when the page uses the
+ * splash template. */
+:root[data-has-hero] {
+  --sl-content-width: 80rem !important;
+}
+
 @media (min-width: 72rem) {
   /* Narrow the right TOC column.  Only kicks in at viewports where
    * the right TOC is actually visible (>= md breakpoint).
@@ -240,15 +249,16 @@ pre:not([class*='language-']) {
    * That formula adds the right-sidebar's "half of leftover space"
    * tail — which at 2560px wide gives the right TOC ~900px of
    * horizontal room despite only ever showing a few short anchor
-   * links.  Override to a fixed 13rem so the saved space falls to
-   * the article column. */
+   * links.  Override to a fixed 11rem (176 px) so the saved space
+   * falls to the article column.  Most TOC headings fit; very long
+   * headings wrap to a second line, which is fine for an anchor list. */
   .right-sidebar-container {
-    width: 13rem !important;
-    max-width: 13rem !important;
+    width: 11rem !important;
+    max-width: 11rem !important;
   }
   .right-sidebar {
-    width: 13rem !important;
-    max-width: 13rem !important;
+    width: 11rem !important;
+    max-width: 11rem !important;
   }
 
   /* Article positioning inside main-pane.

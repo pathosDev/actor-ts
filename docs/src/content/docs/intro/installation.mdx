@@ -1,6 +1,6 @@
 ---
 title: Installation
-description: Installing actor-ts on Bun, Node 22+, or Deno 2+ — plus the optional peer dependencies and how to verify the install.
+description: Installing actor-ts on Bun, Node 20+, or Deno 2+ — plus the optional peer dependencies and how to verify the install.
 ---
 
 `actor-ts` ships as a single npm package.  The core has **two small
@@ -16,7 +16,7 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 | Runtime | Minimum version | Notes |
 | --- | --- | --- |
 | **Bun** | 1.1 | Recommended for development — fastest startup, native SQLite via `bun:sqlite`, native WebSocket server. |
-| **Node.js** | 22.12 | Needs Node 22's worker-threads message-channel + structured-clone improvements.  SQLite via `better-sqlite3` (peer-dep). |
+| **Node.js** | 20.0 | Core works on 20+.  Node 22+ enables native WebSocket without the `ws` peer dep; Node 22.15+ enables native zstd compression without `fzstd`.  SQLite via `better-sqlite3` (peer-dep). |
 | **Deno** | 2.0 | Use the `npm:` specifier — `import { ... } from 'npm:actor-ts'`.  Run with `--allow-net` / `--allow-read` as needed. |
 
 The framework auto-detects which runtime it's executing under and picks
@@ -32,7 +32,7 @@ algorithm and per-runtime caveats.
     bun add actor-ts
     ```
   </TabItem>
-  <TabItem label="Node 22+">
+  <TabItem label="Node 20+">
     ```bash
     npm install actor-ts
     # or
@@ -166,7 +166,7 @@ console.log('install OK');
     bun run verify.ts
     ```
   </TabItem>
-  <TabItem label="Node 22+">
+  <TabItem label="Node 20+">
     ```bash
     npx tsx verify.ts
     ```
@@ -198,10 +198,12 @@ this page) — bump it and re-run.
     Bare specifiers don't resolve in Deno without an import map.
 </Aside>
 
-<Aside type="caution" title="`Node.js v20.x is not supported`">
-  Actor-ts requires Node ≥ 22.12 (Astro and several internal worker
-  features depend on it).  GitHub-hosted runners default to Node 20.x —
-  pin a newer version via `actions/setup-node@v6` with `node-version: '22'`.
+<Aside type="caution" title="Older Node versions">
+  Actor-ts requires Node ≥ 20.0.  On Node 20.x the core works, but
+  some optional features fall back to peer-dep implementations:
+  WebSocket needs the `ws` package (Node 22+ has it natively), and
+  zstd compression needs `fzstd` (Node 22.15+ has it natively).
+  Node ≤ 19 is not supported.
 </Aside>
 
 <Aside type="caution" title="Missing peer dependency at runtime">

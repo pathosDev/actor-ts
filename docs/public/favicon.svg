@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 150" role="img" aria-label="actor-ts">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="3 18 118 118" role="img" aria-label="actor-ts">
   <defs>
     <linearGradient id="grad" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#fcd34d"/>
@@ -10,9 +10,9 @@
     </linearGradient>
   </defs>
 
-  <!-- Mesh of interconnected "actors" — same coordinates as the full logo,
-       wordmark stripped, viewBox tightened to the mesh area so favicon
-       renderers (16-32 px) keep the glyph legible. -->
+  <!-- Mesh of interconnected "actors" — coordinates match the full logo,
+       viewBox tightened to the content bounds so the favicon stays
+       legible at 16-32 px. -->
   <g transform="translate(0, 14)" fill="none" stroke="url(#ringGrad)" stroke-width="4" stroke-linecap="round">
     <line x1="36"  y1="32"  x2="78"  y2="14"/>
     <line x1="36"  y1="32"  x2="14"  y2="78"/>

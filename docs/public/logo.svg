@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 180" role="img" aria-label="actor-ts">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="30 30 580 110" role="img" aria-label="actor-ts">
   <defs>
     <linearGradient id="grad" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#fcd34d"/>
@@ -8,6 +8,14 @@
       <stop offset="0%" stop-color="#6366f1"/>
       <stop offset="100%" stop-color="#06b6d4"/>
     </linearGradient>
+    <style>
+      /* Tagline picks up the host color-scheme — slate-400 on dark
+         backgrounds, slate-500 on light backgrounds. */
+      .tagline { fill: #94a3b8; }
+      @media (prefers-color-scheme: light) {
+        .tagline { fill: #64748b; }
+      }
+    </style>
   </defs>
 
   <!-- mesh of interconnected "actors" -->
@@ -34,12 +42,12 @@
     <circle cx="92"  cy="108" r="7"/>
   </g>
 
-  <!-- wordmark — both "actor" and "ts" in indigo, hyphen in red -->
+  <!-- wordmark — "actor" and "ts" in indigo, hyphen in red -->
   <g font-family="ui-monospace, 'JetBrains Mono', 'Fira Code', Menlo, monospace" font-weight="700">
     <text x="180" y="98" font-size="72" fill="#6366f1" letter-spacing="-2">
       actor<tspan fill="#ef4444">-</tspan><tspan fill="#6366f1">ts</tspan>
     </text>
-    <text x="184" y="132" font-size="16" fill="#475569" letter-spacing="2">
+    <text x="184" y="128" font-size="14" class="tagline" letter-spacing="1.5">
       the actor model · on Bun, Node &amp; Deno
     </text>
   </g>

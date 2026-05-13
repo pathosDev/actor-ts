@@ -1,6 +1,6 @@
 ---
 title: Compatibility matrix
-description: Feature-by-feature support across Bun, Node 22+, and Deno. Use this page to verify before adopting a subsystem.
+description: Feature-by-feature support across Bun, Node 20+, and Deno. Use this page to verify before adopting a subsystem.
 ---
 
 The framework's features have different support levels across
@@ -15,7 +15,7 @@ For each row:
 
 ## Core
 
-| Feature | Bun | Node 22+ | Deno |
+| Feature | Bun | Node 20+ | Deno |
 | --- | --- | --- | --- |
 | `Actor` base class | ✓ | ✓ | ✓ |
 | `ActorSystem` | ✓ | ✓ | ✓ |
@@ -30,7 +30,7 @@ For each row:
 
 ## Typed API
 
-| Feature | Bun | Node 22+ | Deno |
+| Feature | Bun | Node 20+ | Deno |
 | --- | --- | --- | --- |
 | `Behaviors.*` combinators | ✓ | ✓ | ✓ |
 | `TypedActor` | ✓ | ✓ | ✓ |
@@ -38,7 +38,7 @@ For each row:
 
 ## Routing + patterns
 
-| Feature | Bun | Node 22+ | Deno |
+| Feature | Bun | Node 20+ | Deno |
 | --- | --- | --- | --- |
 | `Router.*` | ✓ | ✓ | ✓ |
 | `CircuitBreaker` | ✓ | ✓ | ✓ |
@@ -47,7 +47,7 @@ For each row:
 
 ## Cluster
 
-| Feature | Bun | Node 22+ | Deno |
+| Feature | Bun | Node 20+ | Deno |
 | --- | --- | --- | --- |
 | Cluster join / membership | ✓ | ✓ | ⚠ |
 | Gossip + failure detector | ✓ | ✓ | ⚠ |
@@ -65,7 +65,7 @@ For each row:
 
 ## Persistence
 
-| Feature | Bun | Node 22+ | Deno |
+| Feature | Bun | Node 20+ | Deno |
 | --- | --- | --- | --- |
 | `InMemoryJournal` | ✓ | ✓ | ✓ |
 | `InMemorySnapshotStore` | ✓ | ✓ | ✓ |
@@ -83,7 +83,7 @@ For each row:
 
 ## I/O brokers
 
-| Feature | Bun | Node 22+ | Deno |
+| Feature | Bun | Node 20+ | Deno |
 | --- | --- | --- | --- |
 | `KafkaActor` (`kafkajs`) | ✓ | ✓ | ⚠ |
 | `MqttActor` (`mqtt`) | ✓ | ✓ | ⚠ |
@@ -100,7 +100,7 @@ For each row:
 
 ## HTTP
 
-| Feature | Bun | Node 22+ | Deno |
+| Feature | Bun | Node 20+ | Deno |
 | --- | --- | --- | --- |
 | Route DSL | ✓ | ✓ | ✓ |
 | Marshalling (`entity<T>`) | ✓ | ✓ | ✓ |
@@ -113,7 +113,7 @@ For each row:
 
 ## Cache
 
-| Feature | Bun | Node 22+ | Deno |
+| Feature | Bun | Node 20+ | Deno |
 | --- | --- | --- | --- |
 | In-memory cache | ✓ | ✓ | ✓ |
 | Memcached cache | ⚠ | ✓ | ⚠ |
@@ -121,7 +121,7 @@ For each row:
 
 ## Serialization
 
-| Feature | Bun | Node 22+ | Deno |
+| Feature | Bun | Node 20+ | Deno |
 | --- | --- | --- | --- |
 | JSON | ✓ | ✓ | ✓ |
 | CBOR | ✓ | ✓ | ✓ |
@@ -129,7 +129,7 @@ For each row:
 
 ## Observability
 
-| Feature | Bun | Node 22+ | Deno |
+| Feature | Bun | Node 20+ | Deno |
 | --- | --- | --- | --- |
 | Core metrics | ✓ | ✓ | ✓ |
 | Prometheus exporter | ✓ | ✓ | ✓ |
@@ -142,7 +142,7 @@ For each row:
 
 ## TestKit
 
-| Feature | Bun | Node 22+ | Deno |
+| Feature | Bun | Node 20+ | Deno |
 | --- | --- | --- | --- |
 | `TestKit.create` | ✓ | ✓ | ✓ |
 | `TestProbe` | ✓ | ✓ | ✓ |
@@ -154,8 +154,8 @@ For each row:
 
 ```
 For new projects:                              Bun
-For Node-shop environments:                    Node 22+
-For Lambda / serverless:                       Node 22+
+For Node-shop environments:                    Node 20+
+For Lambda / serverless:                       Node 20+
 For Deno-first organizations:                  Deno (with caveats)
 For mixed:                                     Pick one per cluster
 ```
