@@ -1,0 +1,377 @@
+---
+title: Route DSL
+description: A composable route description — `path`, `get`/`post`/`put`/etc., `concat`, `complete*`, `redirect`, `reject`. Builds a tree at construction; compiles to a flat list at server-bind time.
+---
+
+The route DSL is **just functions**.  Compose them into a route
+tree; the extension flattens the tree into a list of registrations
+the backend understands.
+
+```ts
+import { path, get, post, concat, completeJson, entity, redirect, reject, Status } from 'actor-ts/http';
+
+const orders = path('orders',
+  concat(
+    get(async () => completeJson(200, { orders: [] })),
+    post(async (req) => {
+      const body = entity<NewOrder>(req);
+      if (!body.sku) reject(Status.BadRequest, 'missing sku');
+      return completeJson(201, { id: 'o-1' });
+    }),
+    path(':id',
+      get(async (req) => {
+        const id = parseId(req);
+        return completeJson(200, { id, status: 'ok' });
+      }),
+    ),
+  ),
+);
+
+const api = path('api', orders);
+```
+
+Three core combinators (`path`, `concat`, method-combinators)
+plus three response helpers (`complete*`, `redirect`, `reject`)
+cover ~95 % of routing.
+
+## Core combinators
+
+### `path(segment, child)`
+
+```ts
+path('api', orders)        // → /api/<orders' paths>
+path('api/v1', users)      // → /api/v1/<users' paths>
+```
+
+Prepends a static path segment to every child route.  Composes:
+
+```ts
+path('api',
+  path('v1',
+    path('users',
+      get(handler),         // → GET /api/v1/users
+    ),
+  ),
+);
+```
+
+Path segments with slashes are flattened — `path('api/v1', ...)`
+is equivalent to `path('api', path('v1', ...))`.
+
+### `concat(...routes)`
+
+```ts
+concat(
+  get(getHandler),     // GET this path
+  post(postHandler),   // POST this path
+);
+```
+
+OR-combinator — multiple routes at the same level.  Matching is
+first-match-wins; order matters when patterns overlap.
+
+```ts
+// Multiple methods on the same path:
+path('orders',
+  concat(
+    get(listOrders),
+    post(createOrder),
+    put(updateOrder),
+  ),
+);
+
+// Multiple paths at the same scope:
+concat(
+  path('orders', get(listOrders)),
+  path('customers', get(listCustomers)),
+);
+```
+
+### Method combinators
+
+```ts
+get(handler);       // GET
+post(handler);      // POST
+put(handler);       // PUT
+del(handler);       // DELETE  (named `del` because `delete` is a JS keyword)
+patch(handler);     // PATCH
+head(handler);      // HEAD
+options(handler);   // OPTIONS
+```
+
+Each takes a handler `(req) => Promise<HttpResponse> | HttpResponse`.
+The handler can be async — the framework awaits the return.
+
+## Response helpers
+
+### `completeJson(status, body, headers?)`
+
+```ts
+return completeJson(200, { ok: true });
+return completeJson(201, { id: 'new' }, { 'x-custom': 'value' });
+```
+
+Returns an `HttpResponse` with `Content-Type: application/json`.
+The body is JSON-serialized at write time.
+
+### `completeText(status, body, headers?)`
+
+```ts
+return completeText(200, 'hello');
+```
+
+`Content-Type: text/plain; charset=utf-8`.
+
+### `complete(status, body?, headers?)`
+
+```ts
+return complete(204);                  // No content
+return complete(200, 'raw body');      // No automatic Content-Type
+```
+
+The generic form — pass body / headers / content type explicitly.
+
+### `redirect(url, status?)`
+
+```ts
+return redirect('/login');                              // 302
+return redirect('/new-home', Status.MovedPermanently);  // 301
+```
+
+Sets `Location: <url>` and the appropriate status.  Default is
+`Status.Found` (302).
+
+### `reject(status, message, extra?)`
+
+```ts
+if (!auth) reject(Status.Unauthorized, 'missing token');
+if (!entity.valid) reject(Status.BadRequest, 'invalid payload', { field: 'sku' });
+```
+
+Throws an `HttpError`.  The framework catches it and produces a
+response with the matching status + a JSON body containing the
+message + any extras.
+
+This is the cleanest way to **short-circuit** a handler — no need
+to return early; just throw.
+
+### `Status`
+
+```ts
+import { Status } from 'actor-ts/http';
+
+Status.OK;                    // 200
+Status.Created;               // 201
+Status.NoContent;             // 204
+Status.MovedPermanently;      // 301
+Status.Found;                 // 302
+Status.BadRequest;            // 400
+Status.Unauthorized;          // 401
+Status.Forbidden;             // 403
+Status.NotFound;              // 404
+Status.UnprocessableEntity;   // 422
+Status.TooManyRequests;       // 429
+Status.InternalServerError;   // 500
+Status.ServiceUnavailable;    // 503
+```
+
+Named constants for the common status codes.  Use these over
+literal numbers — easier to read at the call site.
+
+## Working with the request
+
+The handler receives an `HttpRequest`:
+
+```ts
+interface HttpRequest {
+  readonly method:  HttpMethod;
+  readonly path:    string;
+  readonly headers: Record<string, string>;
+  readonly query:   Record<string, string>;
+  readonly body:    Uint8Array | null;
+}
+```
+
+### Path parameters
+
+The current DSL doesn't have a typed path-parameter extractor —
+parameters are part of the raw `req.path`.  Extract by hand:
+
+```ts
+path('orders',
+  path(':id',
+    get(async (req) => {
+      // req.path is e.g. "/api/orders/o-42"
+      const id = req.path.split('/').pop()!;
+      return completeJson(200, { id });
+    }),
+  ),
+);
+```
+
+(A typed-extractor DSL is on the roadmap; see
+[FAQ](/actor-ts/reference/faq/).)
+
+### Query parameters
+
+```ts
+get(async (req) => {
+  const limit = req.query.limit ?? '10';
+  return completeJson(200, { limit: parseInt(limit) });
+});
+```
+
+`req.query` is already parsed — no manual `URLSearchParams`.
+
+### Headers
+
+```ts
+const auth = req.headers['authorization'] ?? '';
+if (!auth.startsWith('Bearer ')) reject(Status.Unauthorized, 'no token');
+```
+
+Lowercased keys.
+
+### Body
+
+```ts
+import { entity } from 'actor-ts/http';
+
+post(async (req) => {
+  const order = entity<NewOrder>(req);
+  // ↑ decodes JSON / CBOR by Content-Type, throws 400 on malformed.
+});
+```
+
+See [Marshalling](/actor-ts/http/marshalling/) for the full body
+story.
+
+## A larger example
+
+```ts
+import {
+  path, concat, get, post, put, del,
+  completeJson, complete, reject, Status, entity,
+} from 'actor-ts/http';
+
+interface Customer { id: string; name: string; }
+
+const customers = path('customers',
+  concat(
+    get(async () => {
+      const all = await ask(registry, { kind: 'list', replyTo: undefined as any });
+      return completeJson(Status.OK, all);
+    }),
+    post(async (req) => {
+      const body = entity<{ name: string }>(req);
+      if (!body.name) reject(Status.BadRequest, 'missing name');
+      const created = await ask(registry, {
+        kind: 'create', name: body.name, replyTo: undefined as any,
+      });
+      return completeJson(Status.Created, created);
+    }),
+    path(':id',
+      concat(
+        get(async (req) => {
+          const id = idOf(req);
+          const c = await ask(registry, { kind: 'get', id, replyTo: undefined as any });
+          if (!c) reject(Status.NotFound, `no customer ${id}`);
+          return completeJson(Status.OK, c);
+        }),
+        put(async (req) => {
+          const id = idOf(req);
+          const body = entity<Partial<Customer>>(req);
+          await ask(registry, { kind: 'update', id, ...body, replyTo: undefined as any });
+          return complete(Status.NoContent);
+        }),
+        del(async (req) => {
+          const id = idOf(req);
+          await ask(registry, { kind: 'delete', id, replyTo: undefined as any });
+          return complete(Status.NoContent);
+        }),
+      ),
+    ),
+  ),
+);
+
+const root = path('api',
+  path('v1', concat(customers, ...)),
+);
+
+await http.newServerAt('0.0.0.0', 8080).bind(root);
+```
+
+The pattern: routes call into actors via `ask`; HTTP handlers stay
+thin; business logic lives in actors.
+
+## Error handling
+
+```ts
+get(async () => {
+  if (somethingWrong) reject(Status.BadRequest, 'bad input');
+  if (notFound)       reject(Status.NotFound, 'not here');
+
+  try {
+    return completeJson(200, await heavyWork());
+  } catch (e) {
+    if (e instanceof MyDomainError) reject(Status.UnprocessableEntity, e.message);
+    throw e;   // unknown errors fall through to a 500
+  }
+});
+```
+
+Two paths for errors:
+
+- **`reject(status, message)`** — for known error cases.  Returns
+  a structured JSON error to the client.
+- **Throw anything else** — caught by the backend, turned into a
+  500 with a generic message.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Don't `return` after `reject`">
+  ```ts
+  if (!auth) {
+    reject(Status.Unauthorized, 'no token');
+    return completeJson(200, ...);   // ← TypeScript flags this as unreachable
+  }
+  ```
+  `reject` is typed `never` — it throws.  Code after it is dead.
+  Just call `reject` and move on.
+</Aside>
+
+<Aside type="caution" title="Returning vs throwing">
+  ```ts
+  return completeJson(401, { error: 'no token' });   // ← also valid
+  // vs:
+  reject(Status.Unauthorized, 'no token');
+  ```
+  Returning a 4xx response works too — semantically equivalent
+  from the client's perspective.  `reject` is just shorter and
+  produces a structured error body for free.  Pick one style per
+  codebase.
+</Aside>
+
+<Aside type="caution" title="First-match-wins in concat">
+  ```ts
+  concat(
+    get(handlerA),
+    get(handlerB),   // ← never runs; handlerA always matches first
+  );
+  ```
+  `concat` is OR with first-match semantics.  Two routes that
+  pattern-match the same request — only the first runs.  The
+  framework doesn't warn about this; review your routing tree.
+</Aside>
+
+## Where to next
+
+- **[HTTP overview](/actor-ts/http/overview/)** — the bigger
+  picture: backends, middleware, extension setup.
+- **[Marshalling](/actor-ts/http/marshalling/)** — `entity<T>(req)`
+  decoding, response encoding via Accept.
+- **[Backends — Fastify](/actor-ts/http/backends/fastify/)** —
+  the default backend's options.
+
+The [`Route` API reference](/actor-ts/api/types/route/) covers the
+full type surface.

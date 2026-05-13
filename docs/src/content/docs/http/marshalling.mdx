@@ -1,0 +1,288 @@
+---
+title: Marshalling
+description: How HTTP request bodies become typed values (`entity<T>(req)`) and typed values become responses (`completeJson` / `marshal`). Content-Type drives the request side, `Accept` drives the response side. JSON and CBOR built-in.
+---
+
+Two halves to the marshalling story:
+
+- **Request side** — decode the raw byte body into a typed value
+  based on `Content-Type`.
+- **Response side** — encode the value back to bytes based on the
+  client's `Accept` header.
+
+For most apps both sides are JSON, and you barely think about
+this.  But the framework supports JSON + CBOR built-in, and the
+extension point is open for custom serializers.
+
+## Decoding the request body
+
+```ts
+import { entity } from 'actor-ts/http';
+
+interface NewOrder { sku: string; quantity: number; }
+
+post(async (req) => {
+  const order = entity<NewOrder>(req);
+  // ↑ throws HTTP 400 if body is missing or malformed
+  // ↑ chooses serializer based on Content-Type:
+  //     application/json → JsonSerializer
+  //     application/cbor → CborSerializer
+  //     anything else    → JsonSerializer (fallback)
+  // ...
+});
+```
+
+The `entity<T>(req)` call:
+
+1. Reads `req.headers['content-type']`.
+2. Picks the matching serializer.
+3. Decodes `req.body` (a `Uint8Array`).
+4. Returns the decoded value cast to `T`.
+
+If the body is missing or malformed, `entity` throws an
+`HttpError(400, ...)` — the framework catches it and produces a
+400 response with the error message.
+
+### Type checking
+
+The cast is **trust-based**.  `entity<NewOrder>(req)` doesn't
+*validate* that the decoded value matches `NewOrder` — it just
+casts the result.  For runtime validation, layer a validator on
+top:
+
+```ts
+import { z } from 'zod';
+
+const NewOrderSchema = z.object({
+  sku:      z.string(),
+  quantity: z.number().int().positive(),
+});
+
+post(async (req) => {
+  const raw = entity<unknown>(req);
+  const parsed = NewOrderSchema.safeParse(raw);
+  if (!parsed.success) reject(Status.BadRequest, 'invalid order shape');
+  const order = parsed.data;   // typed + validated
+  // ...
+});
+```
+
+This is the standard TS pattern — the framework doesn't bundle a
+validator, but every common one (zod, valibot, io-ts, etc.) drops
+in cleanly.
+
+## Encoding the response body
+
+The simplest path is `completeJson`:
+
+```ts
+return completeJson(200, { id: 'o-1', status: 'created' });
+```
+
+The body is JSON-serialized at write time; `Content-Type` is set
+to `application/json; charset=utf-8`.  Use this for the 95 % case.
+
+For content-negotiated responses, use `marshal`:
+
+```ts
+import { marshal } from 'actor-ts/http';
+
+get(async (req) => {
+  const data = await ask(registry, { kind: 'list', replyTo: undefined as any });
+  const { body, contentType } = marshal(req, data);
+  return { status: 200, body, contentType, headers: {} };
+});
+```
+
+`marshal(req, value)` picks a serializer from `req.headers['accept']`:
+
+- `application/cbor` (or `application/x-cbor`) → `CborSerializer`
+- `application/json` (or `*/*`, or unspecified) → `JsonSerializer`
+
+Returns `{ body: Uint8Array; contentType: string }` — pass through
+to your `HttpResponse`.
+
+Use `marshal` when:
+
+- Different clients want different formats.  IoT clients on CBOR,
+  browsers on JSON — the same handler serves both.
+- Bandwidth matters and CBOR's compactness is worth the trade.
+
+Otherwise stick to `completeJson`.
+
+## Built-in serializers
+
+### `JsonSerializer`
+
+Standard JSON via `JSON.stringify` / `JSON.parse`.  Bytes are
+UTF-8.
+
+```ts
+import { JsonSerializer } from 'actor-ts/serialization';
+
+const ser = new JsonSerializer();
+const bytes = ser.toBinary({ hello: 'world' });
+const back = ser.fromBinary(bytes, '');
+```
+
+### `CborSerializer`
+
+CBOR (RFC 8949) — a binary format more compact than JSON for
+nested data, with first-class binary support (no base64 wrapping
+for `Uint8Array` fields).
+
+```ts
+import { CborSerializer } from 'actor-ts/serialization';
+
+const ser = new CborSerializer();
+const bytes = ser.toBinary({ image: new Uint8Array([0xff, 0xd8, ...]) });
+```
+
+Useful when:
+
+- Payloads contain binary data (images, audio chunks).
+- Bandwidth matters (CBOR is typically 20-40 % smaller than JSON
+  for the same data).
+- Both sides agree on CBOR — JSON is still the better choice for
+  human-debuggable APIs.
+
+## Custom serializers
+
+The serializer interface is small:
+
+```ts
+interface Serializer {
+  toBinary(value: unknown): Uint8Array;
+  fromBinary(bytes: Uint8Array, manifest: string): unknown;
+}
+```
+
+You can plug in your own (Protobuf, MessagePack, etc.) by
+implementing this interface — but the HTTP module's MIME-to-serializer
+map is currently a private constant.  For custom serializers in
+HTTP handlers, do the picking manually:
+
+```ts
+import { ProtobufSerializer } from './my-protobuf';
+
+post(async (req) => {
+  const ct = req.headers['content-type'] ?? '';
+  let value: MyMessage;
+  if (ct.includes('application/x-protobuf')) {
+    value = new ProtobufSerializer().fromBinary(req.body!, '') as MyMessage;
+  } else {
+    value = entity<MyMessage>(req);   // JSON fallback
+  }
+  // ...
+});
+```
+
+For the cluster-wire serialization (between nodes, not HTTP), the
+`SerializationExtension` is the right hook — see
+[Serialization overview](/actor-ts/serialization/overview/).
+
+## Encoding errors
+
+```ts
+import { reject, Status } from 'actor-ts/http';
+
+post(async (req) => {
+  const order = entity<NewOrder>(req);
+  // ↑ throws HttpError(400, "Cannot decode body: ...")
+  //   automatically caught and converted to a 400 response
+});
+```
+
+The framework catches `HttpError` and produces a structured response:
+
+```json
+{
+  "error": "Cannot decode body: Unexpected token } in JSON at position 42"
+}
+```
+
+For more specific error responses, `reject` after a manual decode:
+
+```ts
+const raw = entity<unknown>(req);
+const parsed = ValidationSchema.safeParse(raw);
+if (!parsed.success) {
+  reject(Status.UnprocessableEntity, 'invalid shape', {
+    issues: parsed.error.issues,
+  });
+}
+```
+
+The `extra` argument lands in the JSON response body as
+top-level fields, alongside `error: 'invalid shape'`.
+
+## Common patterns
+
+### Empty bodies
+
+```ts
+del(async (req) => {
+  // No body to decode — just do the work and return 204.
+  await ask(registry, { kind: 'delete', id: req.path.split('/').pop(), replyTo: ... });
+  return complete(Status.NoContent);
+});
+```
+
+`entity` throws if the body is empty — don't call it when you
+don't expect a body.
+
+### Pre-validating Content-Type
+
+```ts
+post(async (req) => {
+  const ct = req.headers['content-type'] ?? '';
+  if (!ct.startsWith('application/json')) {
+    reject(Status.UnsupportedMediaType, 'expected JSON');
+  }
+  const order = entity<NewOrder>(req);
+  // ...
+});
+```
+
+Only useful when you want a specific Content-Type rejected
+explicitly rather than going through the JSON fallback.
+
+### Streaming responses
+
+The framework doesn't currently support streaming response bodies
+in the route DSL — `HttpResponse.body` is materialized in memory
+before write.  For SSE or chunked responses, use the
+[`SseActor`](/actor-ts/io/sse/) or drop down to the backend's
+native streaming API.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`entity<T>` doesn't validate">
+  ```ts
+  const order = entity<NewOrder>(req);
+  // ↑ TS thinks `order` is NewOrder, but runtime is `unknown`.
+  ```
+  Add a validator on top.  Without one, a request with
+  `{ "totally": "wrong" }` gives you `order.sku === undefined`
+  and downstream bugs.
+</Aside>
+
+<Aside type="caution" title="Large bodies in memory">
+  ```ts
+  const file = entity<{ data: string }>(req);   // 100 MB upload, all decoded into memory
+  ```
+  The route DSL reads the whole body before invoking the handler.
+  For large uploads, drop to the backend's native streaming API or
+  use a separate endpoint pattern (presigned URL, direct-to-S3
+  upload).
+</Aside>
+
+## Where to next
+
+- **[HTTP overview](/actor-ts/http/overview/)** — the bigger
+  picture: backends, routing, middleware.
+- **[Route DSL](/actor-ts/http/route-dsl/)** — `complete*`,
+  `reject`, full DSL surface.
+- **[Serialization overview](/actor-ts/serialization/overview/)** —
+  the framework-internal serialization layer for cluster wire
+  format.
