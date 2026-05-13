@@ -244,7 +244,7 @@ pre:not([class*='language-']) {
  * scoped-style system inside a layer that competes with our load
  * order.  `!important` is the simplest robust override. */
 :root {
-  --sl-content-width: 64rem !important;
+  --sl-content-width: 80rem !important;
 }
 
 /* Splash / landing pages have no left sidebar — give them a wider
@@ -267,23 +267,21 @@ pre:not([class*='language-']) {
    * That formula adds the right-sidebar's "half of leftover space"
    * tail — which at 2560px wide gives the right TOC ~900px of
    * horizontal room despite only ever showing a few short anchor
-   * links.  Override to a fixed 9rem (144 px) so the saved space
-   * falls to the article column.  Most TOC headings fit; very long
-   * headings wrap to a second line, which is fine for an anchor list. */
+   * links.  Match the LEFT sidebar's width (`--sl-sidebar-width`, =
+   * 18.75rem) so the page reads symmetrically — sidebar | article |
+   * sidebar — instead of the prior lopsided narrow-right column. */
   .right-sidebar-container {
-    width: 9rem !important;
-    max-width: 9rem !important;
-    /* Push the TOC's flex-flow slot to the END of its row (the right
-     * edge of `.main-frame`'s content area).  Without this the TOC
-     * sits flush against the main-pane and any leftover flex-row
-     * space accumulates at the viewport's right edge — making it
-     * look like the TOC is "too wide" because it isn't where you'd
-     * expect it (right-edge of viewport). */
+    width: var(--sl-sidebar-width) !important;
+    max-width: var(--sl-sidebar-width) !important;
+    /* Push the TOC's flex-flow slot to the END of its row (right edge
+     * of `.main-frame`'s content area).  Without this the TOC sits
+     * flush against the main-pane and any leftover flex-row space
+     * accumulates at the viewport's right edge. */
     margin-inline-start: auto !important;
   }
   .right-sidebar {
-    width: 9rem !important;
-    max-width: 9rem !important;
+    width: var(--sl-sidebar-width) !important;
+    max-width: var(--sl-sidebar-width) !important;
     /* The `position: fixed` TOC must be explicitly pinned to the right
      * edge of the viewport, otherwise it inherits its static-position
      * x-coordinate from the container's pre-margin location. */
@@ -292,10 +290,20 @@ pre:not([class*='language-']) {
     inset-inline-start: auto !important;
     inset-inline-end: 0 !important;
   }
-  /* Tighten the TOC panel's internal padding so more of its 9rem goes
-   * to the text rather than indentation. */
-  .right-sidebar-panel {
-    padding-inline: 0.5rem 0.75rem !important;
+
+  /* Main-pane fills the entire space between the left sidebar and the
+   * right TOC.  Combined with `--sl-content-margin-inline: auto auto`
+   * (set below) this centers the article horizontally in that band —
+   * symmetric whitespace on both sides.
+   *
+   * Without this override Starlight's elastic calc would assign main-
+   * pane `content-width + half-leftover` and leave the rest as
+   * unused flex-row space between main-pane and the (flex-end) TOC,
+   * pushing the article off-centre.  Filling the band forces the
+   * article-centering math to be relative to the inter-sidebar
+   * space rather than to that asymmetric main-pane. */
+  [data-has-sidebar][data-has-toc] .main-pane {
+    width: calc(100% - var(--sl-sidebar-width)) !important;
   }
 
   /* Article positioning inside main-pane.
