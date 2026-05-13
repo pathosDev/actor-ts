@@ -1,0 +1,220 @@
+---
+title: Quorum reads and writes
+description: When eventual consistency isn't enough — `updateAsync` and `getAsync` with explicit consistency levels (local / majority / all) give synchronous guarantees about how many replicas have seen / contributed to a value.
+---
+
+DistributedData's default `update` / `get` are **local-only** —
+they apply to the local replica immediately; propagation happens
+via gossip.  For workloads needing stronger guarantees, the
+**`updateAsync`** and **`getAsync`** variants wait for explicit
+replica acknowledgments.
+
+## Local — the default
+
+```ts
+dd.update<GCounter>(
+  'hits',
+  GCounter.empty,
+  (c) => c.increment(dd.selfReplicaId(), 1),
+);
+
+const counter = dd.get<GCounter>('hits');
+```
+
+These operations:
+
+- **`update`** — apply locally, fire-and-forget.  Returns
+  immediately.
+- **`get`** — read the local replica's view.
+
+Behind the scenes, gossip propagates updates to other replicas
+over the next few rounds.
+
+This is the right default — 99 % of DD operations use these.
+
+## When local isn't enough
+
+Three common cases:
+
+1. **Read-after-write across nodes.**  Node A writes, node B
+   immediately reads — the write might not have gossiped yet, so
+   node B sees stale data.
+2. **Confirmed write.**  The app wants to know "at least N other
+   replicas have my update before I move on" — e.g., before
+   replying to a client.
+3. **Strongest-known read.**  When stale is unacceptable for
+   this read (a balance check before a payment), force the read
+   to consult majority replicas.
+
+## `updateAsync` — wait for write acknowledgments
+
+```ts
+await dd.updateAsync<GCounter>(
+  'hits',
+  GCounter.empty,
+  (c) => c.increment(dd.selfReplicaId(), 1),
+  { consistency: 'majority', timeoutMs: 2_000 },
+);
+```
+
+Applies locally + sends to the gossip layer, then **waits for
+acknowledgments** from the configured number of replicas.
+
+| `consistency` | What it waits for |
+| --- | --- |
+| `'local'` (default) | Self only — local apply is the ack. |
+| `'majority'` | ⌈N/2 + 1⌉ replicas have acked. |
+| `'all'` | Every up-member replica has acked. |
+| `{ kind: 'count'; n: 3 }` | Exactly `n` replicas have acked. |
+
+The Promise:
+
+- **Resolves** when enough acks arrive within `timeoutMs`.
+- **Rejects** with a timeout error if not.
+
+A timeout **doesn't undo the local write** — the value is
+already applied locally and gossips normally.  The rejection just
+signals "I'm not sure enough replicas saw it within the deadline."
+
+## `getAsync` — read with consistency
+
+```ts
+const counter = await dd.getAsync<GCounter>('hits',
+  { consistency: 'majority' });
+```
+
+Same `consistency` options.  The replicator queries other replicas
+for their views, **merges** the responses, and returns the
+merged value.
+
+This means a majority read sees **at least every write that
+majority-acknowledged** — the latest "confirmed" value.
+
+## Picking a consistency level
+
+```
+Is stale data acceptable for THIS read/write?
+├── Yes (most cases)                                          → 'local'
+├── No — must be confirmed by enough replicas                 → 'majority'
+└── Absolutely no — every up-member must agree                 → 'all'
+```
+
+`'majority'` is the sweet spot for "important" reads/writes —
+covers most failure scenarios at modest latency.  `'all'`
+guarantees consistency but **fails if any replica is down** (or
+slow), making it brittle.
+
+## Pragmatic patterns
+
+### Write majority + read local
+
+```ts
+// Write with majority — guarantees other replicas know
+await dd.updateAsync('counter', ..., { consistency: 'majority' });
+
+// Read locally — fast, and the value reflects (eventually) what
+// other writers wrote with majority
+const value = dd.get('counter');
+```
+
+This is the **common production pattern**.  Writes pay the
+majority cost; reads are cheap.  The cluster eventually converges.
+
+### Read majority before a critical decision
+
+```ts
+// Read majority — see the latest known value across the cluster
+const balance = await dd.getAsync<PNCounter>('balance',
+  { consistency: 'majority' });
+
+if (balance.value() < 0) {
+  // ... reject the transaction
+}
+```
+
+For one-off reads where staleness matters, pay the cost for a
+strong read.  Don't make every read a majority read — it
+defeats the local-first design.
+
+### All-write for irrevocable changes
+
+```ts
+await dd.updateAsync('config-locked', ..., { consistency: 'all' });
+```
+
+Rare — when you need every replica to have seen the change before
+moving forward.  Brittle (any down replica fails the operation),
+so reserve for truly-irrevocable state transitions.
+
+## Timeouts
+
+```ts
+await dd.updateAsync('x', ..., {
+  consistency: 'majority',
+  timeoutMs:   5_000,
+});
+```
+
+Default timeout is `gossipIntervalMs × 5` — five gossip rounds,
+typically 5 seconds.  Override per call when:
+
+- **Stricter latency budget** — set lower; reject early if
+  consistency can't be achieved.
+- **Looser** — for cross-region clusters where gossip RTT is
+  high, raise the timeout.
+
+On timeout, the Promise rejects with an error you can catch:
+
+```ts
+try {
+  await dd.updateAsync('x', ..., { consistency: 'majority', timeoutMs: 1_000 });
+} catch (e) {
+  // The write succeeded locally but didn't quorum in time.
+  // Decide: retry, surface the error, accept the eventual-consistency outcome.
+}
+```
+
+## What quorum doesn't guarantee
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`'majority'` isn't linearizability">
+  A majority write + a majority read **don't** give you full
+  linearizable semantics.  Concurrent writes still merge per CRDT
+  rules; majority just guarantees enough replicas are in the
+  loop.  For true linearizable shared state, use a singleton.
+</Aside>
+
+<Aside type="caution" title="Quorum across an unstable cluster">
+  ```ts
+  // Cluster of 3 nodes; one is flapping unreachable
+  await dd.updateAsync('x', ..., { consistency: 'majority' });
+  // Sometimes succeeds (2 acks), sometimes fails (1 ack)
+  ```
+  Quorum is **at-the-moment**.  If the cluster's up-member set
+  changes mid-call, the quorum criterion may temporarily fail.
+  Handle the resulting timeout — retry or accept.
+</Aside>
+
+<Aside type="caution" title="Don't quorum every operation">
+  ```ts
+  // Every write is majority — heavy cost
+  for (const item of items) {
+    await dd.updateAsync('counter', ..., { consistency: 'majority' });
+  }
+  ```
+  Quorum operations cost gossip RTT (typically 1-2 s).  For
+  bulk writes, **batch and quorum once at the end**, or accept
+  local writes and let gossip propagate.
+</Aside>
+
+## Where to next
+
+- **[Distributed data overview](/actor-ts/distributed-data/overview/)** —
+  the bigger picture.
+- **[Replication](/actor-ts/distributed-data/replication/)** —
+  how local writes propagate to peers.
+- **[Durable storage](/actor-ts/distributed-data/durable-storage/)** —
+  for state surviving full-cluster restarts.
+- **[Designing data](/actor-ts/distributed-data/crdt-types/designing-data/)** —
+  when DD's eventual-consistency is the wrong fit.

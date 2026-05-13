@@ -1,0 +1,202 @@
+---
+title: Maps (LWWMap, ORMap, GCounterMap)
+description: Three map CRDTs — `LWWMap<K,V>` for last-writer-wins per-key values, `ORMap<K,C>` for maps whose values are themselves CRDTs, `GCounterMap<K>` as a convenient counter-per-key shortcut.
+---
+
+Three map CRDTs, picked by what the **values** are:
+
+| Type | Value type | When |
+| --- | --- | --- |
+| **`LWWMap<K, V>`** | Plain values (LWW per key) | Per-key config — flags, settings. |
+| **`ORMap<K, C>`** | Other CRDTs | Per-key counters, sets, registers. |
+| **`GCounterMap<K>`** | Implicit GCounter values | Per-key counts (clicks per page, requests per route). |
+
+`GCounterMap<K>` is sugar for `ORMap<K, GCounter>` — the common
+case so common it gets its own type.
+
+## LWWMap
+
+```ts
+import { LWWMap } from 'actor-ts';
+
+let m = LWWMap.empty<string, string>();
+m = m.put('node-a', 'theme', 'dark', 1000);
+m = m.put('node-b', 'lang',  'en',   2000);
+m.get('theme');   // → 'dark'
+m.get('lang');    // → 'en'
+```
+
+Per-key LWW semantics — same as
+[LWWRegister](/actor-ts/distributed-data/crdt-types/registers/),
+but indexed.  Concurrent writes to the same key resolve by
+timestamp; writes to different keys don't conflict.
+
+```ts
+m = m.remove('theme');   // also LWW — most-recent action wins
+```
+
+`remove` is also tracked as an LWW operation — a recent remove
+beats an older put, even from a different replica.
+
+Use for **per-key single-value config**: user preferences, feature
+flag overrides per-tenant, version per-resource.
+
+## ORMap
+
+```ts
+import { ORMap, GCounter } from 'actor-ts';
+
+let m = ORMap.empty<string, GCounter>();
+m = m.update('node-a', 'clicks',
+  GCounter.empty,
+  (c) => c.increment('node-a', 1),
+);
+m = m.update('node-b', 'views',
+  GCounter.empty,
+  (c) => c.increment('node-b', 1),
+);
+m.get('clicks')?.value();   // → 1
+```
+
+The values are themselves CRDTs.  Each key's value merges
+**using the value-CRDT's own merge** — `GCounter` keys merge
+per-replica-max, `ORSet` keys add-wins, etc.
+
+```ts
+m = m.update('a', 'tags',
+  () => ORSet.empty<string>(),
+  (s) => s.add('a', 'urgent'),
+);
+```
+
+Heterogeneous value types are allowed but **discouraged** — a
+single ORMap typically holds one CRDT kind per map.  If different
+keys hold different kinds, the framework can't infer types and
+you fight the compiler.
+
+Use for **per-key replicated state** that needs CRDT semantics
+on each key — per-user shopping carts, per-feature counter +
+last-changed register.
+
+### Remove
+
+```ts
+m = m.remove('clicks');
+```
+
+Removing a key from `ORMap` uses the OR-semantics — tagged
+operation that concurrent re-adds can override.  Same "add wins"
+semantics as ORSet.
+
+## GCounterMap
+
+```ts
+import { GCounterMap } from 'actor-ts';
+
+let m = GCounterMap.empty<string>();
+m = m.increment('node-a', 'page-home',  1);
+m = m.increment('node-a', 'page-about', 1);
+m = m.increment('node-b', 'page-home',  1);
+
+m.get('page-home');   // → 2 (sum across replicas)
+m.get('page-about');  // → 1
+```
+
+A `GCounterMap<K>` is functionally `ORMap<K, GCounter>` — a map
+where each value is a counter.  It exists because **per-key counts
+are common enough** (page views per URL, clicks per button,
+requests per route) to warrant a typed shortcut.
+
+The API is flatter:
+
+```ts
+m.increment(replicaId, key, delta);   // bump one key's counter
+m.get(key);                             // → number (sum across replicas)
+m.entries();                            // → IterableIterator<[K, number]>
+```
+
+Use anywhere you'd type `Map<K, number>` in regular code and need
+**concurrent-write convergence**.
+
+## Picking between them
+
+```
+Per-key value type?
+├── A plain value with last-writer-wins resolution      → LWWMap
+├── A CRDT (counter, set, register, another map)        → ORMap
+└── A counter (very common case)                         → GCounterMap (sugar over ORMap<K, GCounter>)
+```
+
+Common shapes:
+
+- **Per-user preferences** — `LWWMap<UserId, UserPrefs>` (user
+  pref edits are LWW; conflicts are rare).
+- **Per-tenant feature flags** — `LWWMap<TenantId, FlagSet>`.
+- **Per-resource view counts** — `GCounterMap<ResourceId>`.
+- **Per-room online members** — `ORMap<RoomId, ORSet<UserId>>`.
+- **Per-shard rebalance counts** — `GCounterMap<ShardId>`.
+
+## Composition
+
+```ts
+// Per-room subscription set + per-room message count
+let rooms = ORMap.empty<string, ORSet<string>>();
+let counts = GCounterMap.empty<string>();
+
+rooms = rooms.update('a', 'general',
+  () => ORSet.empty<string>(),
+  (s) => s.add('a', 'user-1'),
+);
+counts = counts.increment('a', 'general', 1);
+```
+
+`ORMap` of `ORSet` is the common shape for **map of sets**.
+`ORMap` of `LWWRegister<T>` is a typed version of `LWWMap<K, T>`
+with all the same semantics (use `LWWMap` directly when that's
+what you mean).
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="LWWMap and clock skew">
+  Same trap as `LWWRegister` — the per-key LWW math depends on
+  `Date.now()` being consistent.  Wide clock skew = wrong
+  resolution.  For values that need conflict-aware merging, wrap
+  in an MVRegister and use ORMap instead.
+</Aside>
+
+<Aside type="caution" title="Mixed value types in ORMap">
+  ```ts
+  let m = ORMap.empty<string, Crdt<unknown>>();
+  m = m.update('a', 'counter', GCounter.empty, ...);
+  m = m.update('a', 'set',     ORSet.empty,    ...);   // ✗ awkward types
+  ```
+  ORMap's strength is **homogeneous** values.  Heterogeneous
+  mixes fight the type system and lose ergonomics.  Use
+  multiple typed maps for different kinds.
+</Aside>
+
+<Aside type="caution" title="Map size grows monotonically without explicit removes">
+  ```ts
+  let m = LWWMap.empty<string, string>();
+  for (let i = 0; i < 1_000_000; i++) m = m.put('node-a', `key-${i}`, 'x');
+  ```
+  Maps don't auto-expire entries.  In-memory replicas hold every
+  key; gossip carries the full state.  For maps that grow large,
+  consider whether sharding (one actor per key) is a better fit.
+</Aside>
+
+## Where to next
+
+- **[Counters](/actor-ts/distributed-data/crdt-types/counters/)** —
+  for non-keyed counters.
+- **[Registers](/actor-ts/distributed-data/crdt-types/registers/)** —
+  for non-keyed single values.
+- **[Sets](/actor-ts/distributed-data/crdt-types/sets/)** —
+  for non-keyed collections.
+- **[Designing data](/actor-ts/distributed-data/crdt-types/designing-data/)** —
+  picking between flat and map CRDTs.
+
+The [`LWWMap`](/actor-ts/api/classes/lwwmap/),
+[`ORMap`](/actor-ts/api/classes/ormap/), and
+[`GCounterMap`](/actor-ts/api/classes/gcountermap/) API references
+cover the full surface.

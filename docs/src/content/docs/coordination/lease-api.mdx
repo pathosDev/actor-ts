@@ -1,0 +1,250 @@
+---
+title: Lease API
+description: The full `Lease` interface contract — `acquire` / `release` / `checkAlive` / `onLost` — and how the framework uses each method. Plus implementation guidance for custom lease backends.
+---
+
+The `Lease` interface is the framework's distributed-lock
+abstraction.  Implementations differ in backing store (in-memory,
+K8s, etcd); the contract is identical.
+
+```ts
+interface Lease {
+  acquire(): Promise<boolean>;
+  release(): Promise<void>;
+  checkAlive(): boolean;
+  onLost(handler: (reason: string) => void): () => void;
+}
+```
+
+Three methods that do work + one that registers a callback.
+
+## `acquire(): Promise<boolean>`
+
+```ts
+const got = await lease.acquire();
+if (got) {
+  // We hold the lease — proceed with leader-only work
+} else {
+  // Someone else has it — back off and retry later
+}
+```
+
+The semantics:
+
+- **Resolves `true`** if the lease was successfully acquired.
+- **Resolves `false`** if another holder owns the lease.
+- **Rejects** on transient errors (network, backend unavailable).
+
+Implementations typically retry internally up to `acquireRetries`
+times before resolving `false`.  A `false` result means "another
+holder definitively has it"; a rejection means "I don't know."
+
+`acquire()` is idempotent **when this caller already holds the
+lease** — calling `acquire()` twice in a row by the same owner
+returns `true` both times.
+
+## `release(): Promise<void>`
+
+```ts
+await lease.release();
+```
+
+Voluntarily drop ownership.  Calling without holding the lease
+is a no-op — no error.  Resolves once the backend has confirmed
+the release.
+
+The framework calls `release()`:
+
+- When the singleton manager stops being leader (graceful
+  hand-off to another node).
+- When the actor system shuts down via
+  [coordinated shutdown](/actor-ts/fundamentals/coordinated-shutdown/).
+
+For the **non-graceful case** — process crash — the backend's
+TTL handles cleanup automatically; no `release` is sent.
+
+## `checkAlive(): boolean`
+
+```ts
+if (lease.checkAlive()) {
+  // We still own the lease — proceed
+}
+```
+
+A **synchronous, local** check.  No network roundtrip.  Returns
+the holder's most-recent knowledge of "do I still own this?"
+
+Used by the framework to gate ownership-dependent work — e.g.,
+before issuing a shard allocation, the coordinator calls
+`checkAlive()` and aborts if it returns `false`.
+
+Implementations track ownership locally; the backend's renewal
+loop updates the local flag.  This means `checkAlive()` reflects
+**up to one missed renewal of staleness** — a sub-second window
+where the lease might actually be gone but `checkAlive()` still
+returns `true`.
+
+For absolute certainty, use `onLost(...)` and react to the
+notification rather than polling.
+
+## `onLost(handler): () => void`
+
+```ts
+const unsubscribe = lease.onLost((reason) => {
+  console.log(`lease lost: ${reason}`);
+  // Stop leader-only work immediately
+});
+
+// Later: unsubscribe();
+```
+
+Register a callback fired when ownership is lost **unexpectedly**:
+
+- The backend reported the lease was taken over by another holder.
+- The TTL expired without successful renewal (e.g., network
+  partition).
+- The backend itself reported a state inconsistency.
+
+`onLost` fires **once per loss**.  After it fires, `checkAlive()`
+returns `false` and `acquire()` is needed before regaining
+ownership.
+
+The handler should **drop ownership state immediately** — stop
+work, release locks, signal interested actors.  Don't await
+expensive operations; the lease is gone and any other holder may
+already be acting.
+
+Returns an unsubscribe function — call to remove the handler when
+you no longer need it.
+
+## How the framework uses each method
+
+For a singleton with a lease:
+
+```
+ClusterSingletonManager flow:
+  ├── LeaderChanged event fires
+  ├── If this node is now leader:
+  │     ├── lease.acquire()
+  │     │     ├── true → spawn singleton, register onLost
+  │     │     └── false → retry after acquireRetryDelay
+  ├── If this node is no longer leader:
+  │     ├── stop the singleton
+  │     └── lease.release()
+  └── onLost fires → stop singleton, await next LeaderChanged
+```
+
+Same pattern for sharding coordinator:
+
+```
+ShardCoordinator flow:
+  ├── lease.acquire() before processing allocation requests
+  ├── lease.checkAlive() before issuing each allocation
+  ├── onLost → reject pending allocations, stop coordinator
+```
+
+## Writing a custom backend
+
+```ts
+import type { Lease, LeaseSettings } from 'actor-ts';
+
+class EtcdLease implements Lease {
+  private alive = false;
+  private onLostHandlers = new Set<(reason: string) => void>();
+  private renewTimer: NodeJS.Timeout | null = null;
+
+  constructor(private readonly settings: LeaseSettings & { /* etcd-specific */ }) {}
+
+  async acquire(): Promise<boolean> {
+    // Try to atomically CAS the etcd key from empty to this owner.
+    // Start a renewal timer on success.
+    // ...
+  }
+
+  async release(): Promise<void> {
+    // Stop the renewal timer.
+    // CAS the etcd key from this owner to empty.
+    // ...
+  }
+
+  checkAlive(): boolean {
+    return this.alive;
+  }
+
+  onLost(handler: (reason: string) => void): () => void {
+    this.onLostHandlers.add(handler);
+    return () => this.onLostHandlers.delete(handler);
+  }
+
+  private fireOnLost(reason: string): void {
+    this.alive = false;
+    for (const h of this.onLostHandlers) {
+      try { h(reason); } catch { /* swallow */ }
+    }
+  }
+}
+```
+
+Three things any backend needs to get right:
+
+1. **Atomicity on `acquire`** — two concurrent `acquire()` calls
+   from different owners must produce one winner.  The backend's
+   own consistency model has to provide this (CAS, paxos,
+   raft-backed).
+2. **Periodic renewal** — keep the lease alive in the backend.
+   Configurable interval, typically `ttl / 3`.
+3. **`onLost` accuracy** — fire when ownership truly transitions
+   away, including the TTL-expiry case.
+
+Test the implementation against:
+
+- Two concurrent acquires from different owners.
+- Network partition with both sides trying to renew.
+- Holder crash + new acquire after TTL.
+- Holder process pause (e.g., GC stall) longer than TTL.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`checkAlive` is approximate">
+  ```ts
+  if (lease.checkAlive()) {
+    await doWork();   // could complete just after lease was lost
+  }
+  ```
+  Use `checkAlive` to **gate** work, not as proof of ownership.
+  For irreversible actions (committing to an external service),
+  also pass through a backend roundtrip (acquire-already-held
+  is fast) or rely on `onLost` to stop new work.
+</Aside>
+
+<Aside type="caution" title="Don't sleep through TTL">
+  ```ts
+  // GC pause longer than ttlMs?  Lease silently lost.
+  ```
+  TTL-based leases can't tell the difference between "holder
+  crashed" and "holder paused."  If your process can pause longer
+  than the TTL (large GC, suspended VM), set the TTL longer than
+  your worst-case pause.
+</Aside>
+
+<Aside type="caution" title="`release` after `onLost` is harmless">
+  ```ts
+  // We got onLost; now we also call release().
+  ```
+  `release()` is no-op when the lease isn't held.  Calling it
+  defensively after `onLost` is fine.
+</Aside>
+
+## Where to next
+
+- **[Coordination overview](/actor-ts/coordination/overview/)** —
+  the bigger picture.
+- **[InMemoryLease](/actor-ts/coordination/in-memory-lease/)** —
+  the dev/test reference implementation.
+- **[KubernetesLease](/actor-ts/coordination/kubernetes-lease/)** —
+  the production K8s backend.
+- **[Singleton with lease](/actor-ts/cluster/singleton/with-lease/)** —
+  the main consumer.
+
+The [`Lease`](/actor-ts/api/interfaces/lease/) API reference covers
+the full contract.

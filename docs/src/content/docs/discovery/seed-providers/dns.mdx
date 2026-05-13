@@ -1,0 +1,143 @@
+---
+title: DNS seed provider
+description: Resolve seed addresses via DNS — typically SRV records (`_actor-ts._tcp.example.com`) for service discovery, or A records for simpler setups. Works wherever you have DNS-SD infrastructure.
+---
+
+`DnsSeedProvider` resolves seeds via DNS at startup.  Two modes:
+
+| Mode | Lookup | Result |
+| --- | --- | --- |
+| **SRV records** | `_actor-ts._tcp.example.com` | Service + port from records |
+| **A records** | `actor-ts.example.com` | IPs only; port comes from config |
+
+SRV is the more flexible choice (service-discovery-style); A
+records work for simpler setups.
+
+```ts
+import { Cluster, DnsSeedProvider } from 'actor-ts';
+
+const provider = new DnsSeedProvider({
+  service:   '_actor-ts._tcp.example.com',
+});
+
+const seeds = await provider.lookup();
+await Cluster.join(system, { host, port, seeds });
+```
+
+## Configuration
+
+```ts
+interface DnsSeedProviderSettings {
+  service:    string;     // SRV record (or A-record hostname)
+  port?:      number;     // required for A-record mode
+  resolver?:  DnsResolver; // override default Node DNS
+}
+```
+
+### SRV mode (recommended)
+
+```ts
+new DnsSeedProvider({ service: '_actor-ts._tcp.my-app.example.com' });
+```
+
+SRV records carry **host, port, weight, priority** per entry.
+The provider returns `host:port` for every entry the DNS query
+returned.
+
+To create the SRV records:
+
+```
+_actor-ts._tcp.my-app.example.com.   IN SRV  10 100 2552 node-1.my-app.example.com.
+_actor-ts._tcp.my-app.example.com.   IN SRV  10 100 2552 node-2.my-app.example.com.
+_actor-ts._tcp.my-app.example.com.   IN SRV  10 100 2552 node-3.my-app.example.com.
+```
+
+Plus matching A records for the hostnames.  Most DNS-SD
+service-registration tools (Consul, Eureka with DNS plugin)
+publish SRV records automatically.
+
+### A-record mode
+
+```ts
+new DnsSeedProvider({
+  service: 'actor-ts.example.com',
+  port:    2552,
+});
+```
+
+For setups without SRV — DNS only carries IPs.  The provider
+queries A records and pairs each with the configured port.
+
+A records typically point at a load balancer or a round-robin
+DNS list; multiple A entries mean multiple seed candidates.
+
+## When to use it
+
+| Environment | Use |
+| --- | --- |
+| Consul-managed deployments | SRV mode — Consul writes them automatically. |
+| Eureka with DNS plugin | SRV mode. |
+| Manual deployments with DNS server | Either mode; SRV preferred. |
+| Cloud with DNS-based service discovery | SRV mode. |
+| K8s | Use [KubernetesApiSeedProvider](/actor-ts/discovery/seed-providers/kubernetes-api/) — K8s's headless services do produce A records but the K8s API provider is more reliable. |
+
+## DNS caching
+
+```ts
+// The provider does ONE lookup at startup.  No subsequent refresh.
+```
+
+Once `Cluster.join` completes, the cluster's gossip layer takes
+over membership tracking — DNS is no longer consulted.  This
+means:
+
+- **A node added after startup** isn't visible to existing peers
+  via DNS.  It joins via its own DNS lookup, contacts an existing
+  seed, gossip propagates.
+- **DNS TTLs don't matter** for the cluster's runtime — only at
+  startup.
+
+## When NOT
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Slow / unreliable DNS">
+  ```ts
+  // DNS server takes 30 seconds to respond
+  ```
+  `Cluster.join` blocks on DNS resolution.  For setups with
+  slow DNS, the boot delay is real.  Combine with
+  [`ConfigSeedProvider`](/actor-ts/discovery/seed-providers/config/)
+  via [`AggregateSeedProvider`](/actor-ts/discovery/seed-providers/aggregate/)
+  — fall back to static if DNS fails.
+</Aside>
+
+<Aside type="caution" title="DNS round-trips return empty">
+  ```ts
+  // No SRV records exist yet → empty result → cluster doesn't join
+  ```
+  An empty result is treated as "no seeds available," meaning
+  the local node self-bootstraps (becomes the cluster).  This is
+  fine for first-node-up; not what you want on subsequent nodes.
+  Aggregate with a fallback to detect this.
+</Aside>
+
+<Aside type="caution" title="DNS in containers">
+  ```ts
+  // Some container DNS setups don't query SRV records by default
+  ```
+  Test SRV resolution explicitly inside your container image
+  (`getent srv _actor-ts._tcp.example.com`).  Some minimal
+  Alpine setups need explicit `nsswitch.conf` configuration.
+</Aside>
+
+## Where to next
+
+- **[Discovery overview](/actor-ts/discovery/overview/)** — the
+  bigger picture.
+- **[Config seed provider](/actor-ts/discovery/seed-providers/config/)** —
+  the simpler alternative.
+- **[Kubernetes API seed provider](/actor-ts/discovery/seed-providers/kubernetes-api/)** —
+  preferred on K8s.
+- **[Aggregate seed provider](/actor-ts/discovery/seed-providers/aggregate/)** —
+  combine DNS with a static fallback.

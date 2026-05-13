@@ -1,0 +1,198 @@
+---
+title: Coordination overview
+description: Distributed locks for cluster invariants — the `Lease` API gives "exactly one holder at a time" semantics for split-brain protection of singletons and sharding coordinators. Pluggable backends (in-memory for tests, Kubernetes for production).
+---
+
+Sometimes the cluster needs a **single-holder guarantee** that
+membership-only mechanisms can't provide:
+
+- The `ClusterSingleton` should never spawn two instances during
+  a network partition.
+- The sharding coordinator on the leader side of a partition
+  shouldn't issue allocations if another side might also have a
+  leader.
+
+The `Lease` API gives you that guarantee.  A lease is a
+**distributed lock with a TTL** — at most one process holds it at
+a time, with a backend (Kubernetes, etcd, your own) providing the
+single-holder constraint.
+
+## The contract
+
+```ts
+interface Lease {
+  acquire(): Promise<boolean>;
+  release(): Promise<void>;
+  checkAlive(): boolean;
+  onLost(handler: (reason: string) => void): () => void;
+}
+```
+
+Four methods:
+
+- **`acquire()`** — try to claim the lease.  Resolves `true` on
+  success, `false` on contention (someone else has it).
+- **`release()`** — voluntarily drop ownership.  No-op if not
+  held.
+- **`checkAlive()`** — cheap, local "do I still own this lease?"
+  check.
+- **`onLost(cb)`** — register a callback fired if ownership is
+  lost unexpectedly (TTL expired without renewal, another holder
+  took over).
+
+The backend implements the contract.  The framework's built-in
+**`KubernetesLease`** uses K8s native `Lease` resources;
+**`InMemoryLease`** is the test / dev option.
+
+## When you need a lease
+
+Two production scenarios:
+
+| Scenario | Why a lease helps |
+| --- | --- |
+| **Cluster singleton** | Prevents dual-leadership during partition.  See [Singleton with lease](/actor-ts/cluster/singleton/with-lease/). |
+| **Sharding coordinator** | Prevents two coordinators making conflicting allocations.  See [Sharding with lease](/actor-ts/cluster/sharding/with-lease/). |
+
+For most clusters, a **downing strategy** is enough.  Leases are
+the **paranoid-safe** option:
+
+- Downing strategy alone: cluster picks a winner during partition;
+  most apps are fine.
+- Downing strategy + lease: an additional check that prevents
+  edge-case dual-leadership even if downing misfires.
+
+If you can afford the operational cost (K8s namespace permissions,
+etcd cluster, etc.), enable leases for any singleton or sharding
+setup where dual-execution would cause **real damage** —
+double-charging a customer, double-publishing a stream event.
+
+## Lease lifecycle
+
+```
+   not held ──────────► acquired ──────► renewing periodically
+       ▲                    │
+       │                    │
+       │              (renew fails OR explicit release)
+       │                    │
+       └────────────────────┘
+        lease lost — onLost(cb) fires
+```
+
+The flow:
+
+1. Some actor (typically a singleton manager) calls `lease.acquire()`.
+2. Backend tries to record this owner.  Success → returns `true`.
+3. While holding, the backend **renews** every `renewalIntervalMs`
+   (typically `ttl / 3`).
+4. If renewal fails (network blip, backend down, lease taken
+   over), `onLost` fires with the reason.
+5. The actor releases ownership-dependent state immediately.
+
+The TTL is critical — a holder that crashes without `release`
+loses the lease automatically when the TTL expires.  Other
+contenders can then acquire.
+
+## Settings
+
+```ts
+interface LeaseSettings {
+  name:                  string;       // unique lease identifier
+  owner:                 string;       // this holder's identifier (pod name / UUID)
+  ttlMs:                 number;       // auto-expire after this many ms of no-renewal
+  renewalIntervalMs?:    number;       // typically ttl/3
+  acquireRetries?:       number;       // max attempts per acquire()
+  acquireRetryDelayMs?:  number;       // delay between attempts
+}
+```
+
+| Setting | Typical values |
+| --- | --- |
+| `ttlMs` | 15-30 s.  Short enough to recover from a crashed holder, long enough to tolerate gossip / renewal delays. |
+| `renewalIntervalMs` | ~`ttl / 3`.  Renew often enough that a single failed renew doesn't lose the lease. |
+| `acquireRetries` | 3-10 for production. |
+| `acquireRetryDelayMs` | 100-1000 ms. |
+
+## Backends
+
+| Backend | Use |
+| --- | --- |
+| [`InMemoryLease`](/actor-ts/coordination/in-memory-lease/) | Tests and dev.  In-process; not actually distributed. |
+| [`KubernetesLease`](/actor-ts/coordination/kubernetes-lease/) | Production on K8s.  Uses K8s native Lease CRDs. |
+
+For non-K8s production deployments, you'd implement the `Lease`
+interface against your coordination service (etcd, Consul,
+Zookeeper).  The interface is small — ~50 lines of glue.
+
+## A minimal example
+
+```ts
+import { ClusterSingletonManager, KubernetesLease, Props } from 'actor-ts';
+
+const lease = new KubernetesLease({
+  name:                'my-app-singleton-lease',
+  owner:               process.env.POD_NAME!,
+  ttlMs:               30_000,
+  renewalIntervalMs:   10_000,
+  namespace:           process.env.K8S_NAMESPACE!,
+});
+
+system.actorOf(
+  ClusterSingletonManager.props({
+    cluster,
+    typeName:        'job-scheduler',
+    singletonProps:  Props.create(() => new JobScheduler()),
+    lease,           // ← split-brain protection
+  }),
+  'singleton-manager-job-scheduler',
+);
+```
+
+The singleton manager will:
+
+- Try to acquire the lease before spawning the singleton.
+- Renew it while alive.
+- Release it on graceful shutdown.
+- Respond to `lease.onLost(...)` by stopping its singleton.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="A lease isn't a silver bullet">
+  ```ts
+  // Holder thinks it has the lease, but its renewal hasn't reached the backend yet
+  // → another holder could acquire briefly
+  ```
+  Leases give **at most one holder at a time** — but only as
+  good as the backend's consistency.  K8s leases use the API
+  server's strongly-consistent etcd-backed store; in-memory
+  leases give nothing across processes.
+</Aside>
+
+<Aside type="caution" title="Leases don't replace downing">
+  Use both.  Leases handle the singleton/coordinator
+  uniqueness; downing handles the cluster's overall partition
+  recovery (deciding which side keeps running).  Without
+  downing, both sides keep gossiping forever even with a
+  lease — the lease just keeps the singleton invariant.
+</Aside>
+
+<Aside type="caution" title="Renewal failure ≠ lease lost">
+  ```ts
+  // Single renewal attempt fails — usually transient
+  ```
+  The framework retries renewals before declaring the lease
+  lost.  Don't panic at the first failed renew; only `onLost`
+  fires when ownership is genuinely gone.
+</Aside>
+
+## Where to next
+
+- **[Lease API](/actor-ts/coordination/lease-api/)** — the full
+  interface contract.
+- **[InMemoryLease](/actor-ts/coordination/in-memory-lease/)** —
+  the dev / test backend.
+- **[KubernetesLease](/actor-ts/coordination/kubernetes-lease/)** —
+  the K8s-native production backend.
+- **[Singleton with lease](/actor-ts/cluster/singleton/with-lease/)** —
+  using a lease for singleton uniqueness.
+- **[Downing strategies](/actor-ts/cluster/downing-strategies/)** —
+  the complementary partition resolver.

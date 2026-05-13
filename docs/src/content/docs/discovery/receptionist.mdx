@@ -1,0 +1,237 @@
+---
+title: Receptionist
+description: A cluster-wide service registry — actors register under typed service keys; consumers look up by key and get a list of every matching actor across the cluster. Gossip-replicated; auto-cleans on node leave.
+---
+
+The **Receptionist** is a cluster-wide service registry.  Each
+node hosts one Receptionist actor at a well-known path;
+registrations are **local-authoritative** (you trust your own
+node's registrations); peers learn about foreign registrations
+through gossip.
+
+```ts
+import { ReceptionistId, ServiceKey } from 'actor-ts';
+
+const receptionist = system.extension(ReceptionistId).start(cluster);
+
+// 1. Define a typed key for this service
+const apiKey = ServiceKey.of<ApiMsg>('api-service');
+
+// 2. Register an actor under the key
+const api = system.actorOf(Props.create(() => new ApiActor()), 'api');
+receptionist.register(apiKey, api);
+
+// 3. From any node — find every registered actor
+const refs = await receptionist.find(apiKey);
+console.log(`${refs.length} api actors in the cluster`);
+
+// 4. Subscribe to changes
+receptionist.subscribe(apiKey, (listing) => {
+  console.log(`current listing: ${listing.refs.length} actors`);
+});
+```
+
+The receptionist is **per-cluster** — every node sees the same
+listing (with gossip lag, see below).
+
+## Service keys
+
+```ts
+const key = ServiceKey.of<ApiMsg>('api-service');
+//                      ^^^^^^^
+//                      typed payload — consumers know what to tell
+```
+
+A `ServiceKey<T>` carries:
+
+- **A string identifier** — the human-readable key name.
+- **A type parameter** — the message type the registered actor
+  accepts.
+
+Type-safe lookup: `await receptionist.find(apiKey)` returns
+`ActorRef<ApiMsg>[]`.
+
+Keys are **values** — define them once, import them everywhere.
+Convention: in a shared `Keys.ts` module per app.
+
+## Registering
+
+```ts
+receptionist.register(key, actorRef);
+```
+
+Tells the local receptionist: "this actor on this node provides
+the service."  The receptionist:
+
+1. Adds the ref to its local map under `key`.
+2. Watches the ref so it auto-deregisters on stop.
+3. Gossips the addition to peers (next gossip round).
+
+```ts
+receptionist.deregister(key, actorRef);
+```
+
+Voluntary removal.  Useful when an actor "leaves" a service
+without stopping (transient state change).
+
+If the actor just stops normally, the receptionist sees
+`Terminated` and deregisters automatically — no manual cleanup
+needed.
+
+## Finding
+
+```ts
+const refs = await receptionist.find(key);
+//      ^^^^^^^^
+//      Array of every actor registered under this key, across the cluster
+```
+
+The find:
+
+1. Reads local registrations under `key`.
+2. Adds known remote registrations from gossip.
+3. Returns the combined list.
+
+Returns immediately with the **current local view** — no
+synchronous cluster query.  Means: registrations on other nodes
+that haven't gossiped yet are missing.
+
+Within a gossip round or two (1-2 seconds default), every node
+converges on the same view.
+
+## Subscribing
+
+```ts
+const unsubscribe = receptionist.subscribe(key, (listing) => {
+  console.log(`updated listing for ${key.id}: ${listing.refs.length} refs`);
+});
+
+// Later: unsubscribe();
+```
+
+Handler fires whenever the listing for `key` changes — locally
+(register/deregister/stop) or via incoming gossip.
+
+Use for **dynamic routing**: an actor that subscribes to a key
+and updates its routing decisions when refs appear / disappear.
+
+## Cluster-aware vs single-node
+
+```ts
+// In a cluster:
+const receptionist = system.extension(ReceptionistId).start(cluster);
+
+// Without a cluster (single node):
+const receptionist = system.extension(ReceptionistId).start(null);
+```
+
+Without a cluster, the receptionist works **locally only** —
+useful for tests or single-node apps that still want the
+ServiceKey-based lookup API.
+
+For clustered setups, **always pass the cluster** — otherwise
+remote registrations are invisible.
+
+## Auto-cleanup on node leave
+
+When `MemberRemoved` fires for a peer:
+
+- The receptionist forgets every registration that node
+  contributed.
+- Subscribers fire with the updated (smaller) listing.
+
+This handles the "node crashed, didn't get a chance to
+deregister" case — gossip + cluster membership do the cleanup.
+
+## Multiple actors per key
+
+```ts
+receptionist.register(apiKey, instance1);
+receptionist.register(apiKey, instance2);
+receptionist.register(apiKey, instance3);   // all three under the same key
+
+await receptionist.find(apiKey);   // → [instance1, instance2, instance3]
+```
+
+A common pattern: **N workers all registering under the same
+key**.  Consumers see the whole pool and can route however they
+like — round-robin, broadcast, random pick.
+
+## Single actor per key (convention)
+
+```ts
+// One singleton registered for the cluster
+receptionist.register(coordinatorKey, theCoordinator);
+await receptionist.find(coordinatorKey);   // → [theCoordinator]
+```
+
+For singleton-style services, the key has one ref.  Consumers
+pick `refs[0]` (with a fallback for the empty case).
+
+The receptionist doesn't *enforce* single-instance — that's
+the singleton manager's job.  But registering a singleton under
+a key gives consumers a discovery path that survives leadership
+changes.
+
+## When to use it vs alternatives
+
+| Need | Tool |
+| --- | --- |
+| Fixed routees per node, every node has them | `ClusterRouter` with a well-known path |
+| Dynamic registrations, lookup by service name | Receptionist |
+| Exactly one actor cluster-wide | `ClusterSingleton` (registered in receptionist for lookup if desired) |
+| Per-key actors with auto-spawn | `ClusterSharding` |
+
+The receptionist is the **most flexible** discovery — but pay
+gossip cost for the dynamism.  For static routing, the cluster
+router is cheaper.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`find` may return stale refs">
+  ```ts
+  const refs = await receptionist.find(key);
+  refs[0].tell(...);   // ← ref might point to a stopped actor on another node
+  ```
+  If a registration was deregistered on another node moments ago
+  but gossip hasn't propagated, `find` returns the stale ref.
+  The `tell` dead-letters silently.  For high-stakes operations,
+  watch the ref and react to `Terminated`.
+</Aside>
+
+<Aside type="caution" title="Gossip lag on first registration">
+  ```ts
+  receptionist.register(key, actor);
+  await new Promise(r => setImmediate(r));
+  // Local find works immediately; remote nodes wait for gossip.
+  ```
+  Local registrations are visible immediately to local `find`
+  calls.  Remote visibility is bounded by `gossipIntervalMs` (1 s
+  default).  For "wait for registration to propagate everywhere"
+  patterns, `subscribe` on the consumer side and react when
+  the listing arrives.
+</Aside>
+
+<Aside type="caution" title="Same key, different types">
+  ```ts
+  const keyA = ServiceKey.of<MsgA>('foo');
+  const keyB = ServiceKey.of<MsgB>('foo');   // ← same id, different type
+  ```
+  Keys with the same `id` are the **same key** at runtime — the
+  type parameter is compile-time only.  Mixing types under one
+  key is a bug; consumers cast and may send the wrong shape.
+</Aside>
+
+## Where to next
+
+- **[Discovery overview](/actor-ts/discovery/overview/)** — the
+  bigger picture.
+- **[Cluster overview](/actor-ts/cluster/overview/)** — the
+  membership underneath.
+- **[Cluster router](/actor-ts/cluster/cluster-router/)** —
+  static-path alternative for "well-known service" routing.
+- **[Singleton overview](/actor-ts/cluster/singleton/overview/)** —
+  often registered in the receptionist for discovery.
+
+The [`Receptionist`](/actor-ts/api/classes/receptionist/) API
+reference covers the full surface.

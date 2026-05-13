@@ -1,0 +1,194 @@
+---
+title: Kubernetes API seed provider
+description: Query the K8s API server for pods matching a label selector — returns the running pod IPs as seed addresses. The standard choice for K8s deployments.
+---
+
+`KubernetesApiSeedProvider` queries the K8s API for pods matching
+a label selector and returns their IPs as seeds.  Works without
+DNS, without SRV, without manual seed-list maintenance — the
+selector is your contract.
+
+```ts
+import { Cluster, KubernetesApiSeedProvider } from 'actor-ts';
+
+const provider = new KubernetesApiSeedProvider({
+  namespace:     process.env.K8S_NAMESPACE!,
+  labelSelector: 'app=actor-ts',
+  containerPort: 2552,
+});
+
+const seeds = await provider.lookup();
+await Cluster.join(system, {
+  host:  process.env.POD_IP!,
+  port:  2552,
+  seeds,
+});
+```
+
+For every pod matching `app=actor-ts` in the namespace, the
+provider returns `<pod-ip>:2552`.
+
+## Configuration
+
+```ts
+interface KubernetesApiSeedProviderSettings {
+  namespace:           string;
+  labelSelector:       string;
+  containerPort:       number;
+  apiBaseUrl?:         string;   // override in-cluster default
+  serviceAccountToken?: string;  // override in-cluster default
+}
+```
+
+| Field | What |
+| --- | --- |
+| `namespace` | K8s namespace to query — typically your app's namespace. |
+| `labelSelector` | The selector for matching pods (`app=actor-ts`, `role=compute,env=prod`, etc.). |
+| `containerPort` | The cluster-transport port on each matching pod. |
+| `apiBaseUrl` | Defaults to `https://kubernetes.default.svc` (in-cluster). |
+| `serviceAccountToken` | Defaults to the in-cluster token at `/var/run/secrets/.../token`. |
+
+For pods running in-cluster, only the first three are required.
+The framework reads the API URL and SA token from standard
+locations.
+
+## RBAC
+
+The pod's ServiceAccount needs read access to pods in the
+namespace:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: actor-ts-pod-reader
+  namespace: my-app
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: actor-ts-pod-reader
+  namespace: my-app
+subjects:
+  - kind: ServiceAccount
+    name: actor-ts
+roleBinding:
+  kind: Role
+  name: actor-ts-pod-reader
+  apiGroup: rbac.authorization.k8s.io
+```
+
+Without these, the lookup gets a 403; `Cluster.join` retries
+indefinitely.
+
+## What it returns
+
+For each pod matching the selector:
+
+- **Running pods** with non-empty `status.podIP` → included as
+  `<podIP>:<containerPort>`.
+- **Pending / not-running pods** → skipped (no IP yet).
+- **This pod itself** → may be included or not depending on
+  startup race; the cluster handles self-as-seed correctly.
+
+## Cluster-wide vs replica-set
+
+```yaml
+# Match all pods in the app:
+labelSelector: 'app=actor-ts'
+
+# Match only specific role:
+labelSelector: 'app=actor-ts,role=compute'
+
+# Match across multiple deployments:
+labelSelector: 'cluster=my-app'
+```
+
+The selector is what defines your cluster's membership at
+bootstrap.  For most deployments, **one selector per cluster** —
+all pods carrying it bootstrap into one cluster.
+
+For role-based asymmetric clusters (`role=compute` for workers,
+`role=gateway` for HTTP), a single selector (`app=actor-ts`)
+covers both; the role tag inside the cluster is separate from
+the discovery selector.
+
+## What happens at startup
+
+```
+Pod starts → Cluster.join called
+   │
+   ├── KubernetesApiSeedProvider.lookup()
+   │     └── GET /api/v1/namespaces/<ns>/pods?labelSelector=<sel>
+   │     └── filter for Running + non-empty podIP
+   │     └── return [...podIp:port]
+   │
+   ├── Cluster.join tries each seed
+   │     ├── Existing cluster → join successfully
+   │     └── No cluster yet → self-bootstrap
+```
+
+If you're the first pod up, the K8s API returns this pod only.
+The framework's self-bootstrap logic handles this:
+`Cluster.join` with seeds containing only itself self-promotes
+to leader.
+
+Subsequent pods see the existing pods and join through them.
+
+## Tuning the selector
+
+| Selector pattern | Effect |
+| --- | --- |
+| `app=actor-ts` | One cluster across the namespace. |
+| `app=actor-ts,env=prod` | Separate prod and staging clusters in one namespace. |
+| `cluster=my-app-cluster-1` | Explicit cluster name; multiple clusters in one namespace. |
+
+Stable selector design matters — the **cluster's identity** is
+implicit in the selector.  Changing the selector splits the
+cluster.
+
+## When NOT
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Pods without IPs">
+  Pods in `Pending` state have no `podIP` — the provider skips
+  them.  Until at least one pod is `Running`, the lookup returns
+  an empty list.  This is rarely a problem (first pod
+  self-bootstraps), but be aware during fast scale-ups.
+</Aside>
+
+<Aside type="caution" title="Cross-namespace lookup">
+  ```ts
+  namespace: 'other-namespace';   // ✗ unusual; check RBAC
+  ```
+  The default RBAC binding above scopes to one namespace.  For
+  cross-namespace lookups, use ClusterRole + ClusterRoleBinding,
+  or a Role per source namespace.
+</Aside>
+
+<Aside type="caution" title="K8s API rate limits">
+  ```ts
+  // 1000 pods restarting simultaneously → 1000 lookups → API throttling
+  ```
+  The K8s API has per-client rate limits.  For very large
+  deployments, stagger startup (StatefulSet `podManagementPolicy:
+  OrderedReady`) to avoid thundering-herd lookups.
+</Aside>
+
+## Where to next
+
+- **[Discovery overview](/actor-ts/discovery/overview/)** — the
+  bigger picture.
+- **[Kubernetes deployment](/actor-ts/operations/deployment/kubernetes/)** —
+  the full K8s recipe.
+- **[Config seed provider](/actor-ts/discovery/seed-providers/config/)** —
+  fallback for non-K8s.
+- **[Aggregate seed provider](/actor-ts/discovery/seed-providers/aggregate/)** —
+  combine K8s with a fallback.
+- **[Joining and seeds](/actor-ts/cluster/joining-and-seeds/)** —
+  how seeds are consumed.

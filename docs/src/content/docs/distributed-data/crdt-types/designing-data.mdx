@@ -1,0 +1,223 @@
+---
+title: Designing data
+description: A practical guide to picking the right CRDT for a problem. The decision tree, common shapes, anti-patterns, and how to know when CRDTs aren't the right tool at all.
+---
+
+CRDTs are powerful — but only when the data fits.  The wrong type
+produces correct merges of incorrect-for-your-app values.  This
+page is the **decision guide** for picking the right CRDT, or
+deciding CRDTs aren't right at all.
+
+## The decision tree
+
+```
+What's the data?
+│
+├── A single number that only grows
+│       → GCounter
+├── A single number that goes up and down
+│       → PNCounter
+├── A single value (latest writer wins)
+│       → LWWRegister<T>
+├── A single value (want to detect concurrent writes)
+│       → MVRegister<T>
+├── A set that only grows
+│       → GSet<E>
+├── A set with adds and removes
+│       → ORSet<E>
+├── A map of <key → single LWW value>
+│       → LWWMap<K, V>
+├── A map of <key → counter>
+│       → GCounterMap<K>
+├── A map of <key → CRDT>
+│       → ORMap<K, C>
+└── Anything else (rich/structured data, transactional updates, ordered lists)
+        → Not a CRDT fit (see below)
+```
+
+Pin the decision early.  Switching CRDT type later **requires a
+migration** — the wire format differs per type, and stored data
+isn't compatible across them.
+
+## Common shapes
+
+### Online presence
+
+```ts
+// Set of currently-online user IDs:
+ORSet<string>
+```
+
+Users connect (`add`) and disconnect (`remove`).  Concurrent
+connect-from-different-clients is "add wins" — exactly what you
+want when a user opens a second tab while the first is still
+active.
+
+### Per-page click counts
+
+```ts
+GCounterMap<string>;   // string = page URL or ID
+```
+
+Clicks only go up; you want per-page counts.  Increment on each
+click; read by page URL.
+
+### User preferences
+
+```ts
+LWWMap<UserId, UserPrefs>;   // UserPrefs is your prefs shape
+```
+
+Per-user single-value blob.  Latest write wins — fine for "user
+changed their theme in two tabs, the last save persists."
+
+For **fine-grained pref editing** where concurrent changes to
+different fields should both stick: use `ORMap<UserId, LWWMap<FieldName, FieldValue>>`
+— each field is independently LWW.
+
+### Shopping cart
+
+```ts
+ORMap<UserId, ORSet<ItemId>>;
+```
+
+Per-user mutable set of items.  Concurrent add-and-remove of
+the same item: add wins (user added on tab A while clearing on
+tab B → item stays).
+
+### Active session count
+
+```ts
+PNCounter;
+```
+
+Sessions come and go; the net count is interesting.  Use
+`PNCounter` (not `GCounter`!) because sessions also disconnect.
+
+### Per-resource view counter that resets daily
+
+```ts
+// Not a great CRDT fit — "reset" isn't a natural CRDT op.
+```
+
+Instead: store the GCounter as-is; record the current day in a
+separate LWWRegister; subtract the value as of "start of day" when
+reading.  The CRDT keeps growing; the *user-visible* number
+appears to reset.
+
+## What CRDTs *don't* do
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Transactions across keys">
+  ```ts
+  // ✗ Move $5 from accountA to accountB
+  ddA.update(...);   // decrement A
+  ddB.update(...);   // increment B
+  // ↑ if you crash between them, the system is inconsistent
+  ```
+  CRDTs are **per-key** atomic.  Cross-key transactions need
+  a different tool: an event-sourced actor with a saga pattern,
+  a database with multi-row transactions, or a coordination
+  protocol you build yourself.
+</Aside>
+
+<Aside type="caution" title="Ordered lists">
+  ```ts
+  ORSet<string>;   // set has no order
+  ```
+  CRDTs for ordered lists exist (RGA, LSEQ, etc.) but actor-ts
+  doesn't ship them.  For an ordered append-only log, use a
+  **PersistentActor** with events — the journal IS the order.
+  For a list with arbitrary inserts/deletes, design something
+  app-specific.
+</Aside>
+
+<Aside type="caution" title="Strong consistency">
+  ```ts
+  // "Read after write" semantics across nodes
+  dd.update<GCounter>('hits', ..., (c) => c.increment(...));
+  dd.get<GCounter>('hits');   // ← may not reflect the write yet on this node?
+  ```
+  Local writes are immediate; gossip carries to other nodes.
+  Quorum reads/writes give *some* synchronization (see
+  [Quorum reads/writes](/actor-ts/distributed-data/quorum-reads-writes/))
+  but no CRDT gives strict serializability.  For strong
+  consistency, use a singleton with persistence.
+</Aside>
+
+<Aside type="caution" title="Schema migrations">
+  ```ts
+  // Original: ORSet<{ name: string }>
+  // New:      ORSet<{ name: string; email: string }>
+  ```
+  CRDT serialization doesn't have first-class versioning.
+  Changing the element / value type means either:
+  - Forward-compatible additions (new field with default).
+  - A migration step that reads under the old type, writes
+    under the new type, then promotes.
+  Treat schema changes as a separate "manual rolling" exercise.
+</Aside>
+
+## When NOT to use DistributedData at all
+
+Some shapes look CRDT-friendly but **don't fit**:
+
+- **High-cardinality keys** — one DD entry per session for 10M
+  sessions = 10M entries × N nodes.  Use sharding instead.
+- **Large values** — replicating a 50 MB doc to every node every
+  gossip round is wasteful.  Store the doc externally, replicate
+  a pointer.
+- **Frequent writes from a single source** — DD's gossip
+  amortizes over many writers; with one hot writer, you're
+  paying gossip cost for no benefit.  Use a local
+  PersistentActor.
+- **Strict transactional semantics** — DD doesn't do isolation
+  levels.
+
+## Composition patterns
+
+Real apps often combine CRDTs:
+
+```ts
+// Per-tenant configuration:
+//   - tenantId → { features, quota }
+//   - features is a set
+//   - quota is LWW
+type Features = ORSet<string>;
+type Quota    = LWWRegister<number>;
+type Tenant   = ORMap<string, Features | Quota>;
+const tenants = ORMap.empty<string, Tenant>();
+```
+
+The pattern: pick the CRDT for each leaf based on its semantics;
+nest under `ORMap` (the most flexible container).
+
+For homogeneous nests (every tenant has identical structure),
+multiple top-level maps often read more cleanly:
+
+```ts
+const features = ORMap.empty<string, ORSet<string>>();   // tenantId → features
+const quotas   = LWWMap.empty<string, number>();          // tenantId → quota
+```
+
+Trade-off: composition gives atomic per-tenant operations; split
+maps give simpler types but cross-map inconsistency is possible
+(quota updated, features not yet propagated).
+
+## Where to next
+
+- **[Distributed data overview](/actor-ts/distributed-data/overview/)** —
+  the bigger picture.
+- **[Counters](/actor-ts/distributed-data/crdt-types/counters/)** —
+  per-CRDT detail.
+- **[Registers](/actor-ts/distributed-data/crdt-types/registers/)** —
+  per-CRDT detail.
+- **[Sets](/actor-ts/distributed-data/crdt-types/sets/)** —
+  per-CRDT detail.
+- **[Maps](/actor-ts/distributed-data/crdt-types/maps/)** —
+  per-CRDT detail.
+- **[Sharding overview](/actor-ts/cluster/sharding/overview/)** —
+  the per-key-actor alternative.
+- **[PersistentActor](/actor-ts/persistence/persistent-actor/)** —
+  the event-sourced alternative.

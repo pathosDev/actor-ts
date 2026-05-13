@@ -1,0 +1,172 @@
+---
+title: Registers (LWW, MV)
+description: Single-value CRDTs — `LWWRegister<T>` keeps the last write by timestamp; `MVRegister<T>` keeps every concurrent write so the caller can resolve. Pick by whether silent overwrites are acceptable.
+---
+
+Two register CRDTs hold **a single value**, resolving concurrent
+writes differently:
+
+| Type | Concurrent writes resolve as | When |
+| --- | --- | --- |
+| **`LWWRegister<T>`** | Last-Writer-Wins (by timestamp) | Single config value; latest writer is the truth. |
+| **`MVRegister<T>`** | Multiple values kept; caller picks | Want to *detect* and surface concurrent writes. |
+
+Both store a single conceptual value — they differ in the
+conflict-resolution policy.
+
+## LWWRegister
+
+```ts
+import { LWWRegister } from 'actor-ts';
+
+let r = LWWRegister.empty<string>();
+r = r.set('node-a', 'hello', 1000);   // value, timestamp
+r = r.set('node-b', 'world', 2000);
+r.value();   // → 'world' (later timestamp)
+```
+
+State is `{ value, timestamp, replicaId }`.  Merge picks the entry
+with the larger timestamp; ties broken by replica ID for
+determinism.
+
+The contract:
+
+- **Timestamps must be increasing** for sensible LWW semantics.
+  Defaults to `Date.now()` if omitted, but you can pass any
+  monotonic value.
+- **Ties on timestamp use replica ID as tiebreaker.**  Same
+  timestamp + same replica ID = same write; same timestamp +
+  different replicas = lexicographically-later wins.
+- **Last write wins, *silently*.**  Concurrent writes don't surface
+  to the caller — one of them is just gone.
+
+Use for **single-value config** where the latest writer is
+authoritative:
+
+```ts
+// Feature flag — admin toggles it, all nodes see the change
+dd.update<LWWRegister<boolean>>(
+  'feature-x-enabled',
+  () => LWWRegister.empty<boolean>(),
+  (r) => r.set(dd.selfReplicaId(), true),
+);
+```
+
+## MVRegister
+
+```ts
+import { MVRegister } from 'actor-ts';
+
+let r = MVRegister.empty<string>();
+r = r.set('node-a', 'hello');
+r = r.set('node-b', 'world');
+r.values();   // → ['hello', 'world']  (both kept — caller resolves)
+```
+
+State is a set of `{ value, dot }` pairs, where `dot` is a logical
+clock that tracks causality.  Concurrent writes are kept
+side-by-side; sequential writes overwrite.
+
+```ts
+let r = MVRegister.empty<string>();
+
+// Sequential writes — newer overwrites
+r = r.set('a', 'first');
+r = r.set('a', 'second');
+r.values();   // → ['second']
+
+// Concurrent writes — both kept
+let ra = MVRegister.empty<string>().set('a', 'fruit');
+let rb = MVRegister.empty<string>().set('b', 'vegetable');
+ra.merge(rb).values();   // → ['fruit', 'vegetable']
+```
+
+The caller chooses a resolution strategy:
+
+```ts
+const r = dd.get<MVRegister<UserPrefs>>('user-prefs');
+const values = r?.values() ?? [];
+
+if (values.length === 0) {
+  // No writes yet
+} else if (values.length === 1) {
+  // Single value — unambiguous
+  applyPrefs(values[0]);
+} else {
+  // Multiple concurrent writes — pick one strategy:
+  // - Show the user a conflict-resolution UI
+  // - Merge field-by-field
+  // - Pick the longest / shortest / most-recent-by-business-logic
+}
+```
+
+## Picking between them
+
+Two questions:
+
+1. **Is silent overwriting acceptable?**
+   - Yes → `LWWRegister`.
+   - No → `MVRegister`.
+
+2. **Do you have a reliable clock?**
+   - `LWWRegister` depends on `Date.now()` being consistent
+     across nodes.  Wide clock skew (more than a few seconds)
+     produces wrong answers.
+   - `MVRegister` doesn't trust the clock; it tracks causality
+     directly.
+
+For **feature flags, last-known config, current-active value**:
+`LWWRegister` is the simpler choice.
+
+For **user-editable values, shared documents, anything where
+"the user wrote X but the system thinks Y" matters**: `MVRegister`
+preserves both sides so your app can surface the conflict.
+
+## Wider question: does the value need to be a register at all?
+
+If the value is **append-only history** (every write should
+persist), use a `GSet` or `ORSet`.  Registers are for "the
+current value of X," not "every value X has ever had."
+
+If the value is **derived from contributions** (per-replica
+counts), use a counter or counter-map.
+
+If the value is **a structured map**, use `LWWMap` or `ORMap`.
+
+Registers fit when the answer is genuinely **one scalar value**.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="LWWRegister and clock skew">
+  ```ts
+  // Node A's clock: 1000 (correct)
+  // Node B's clock: 5000 (way ahead)
+  // Node A writes "fresh", Node B writes "stale" → "stale" wins forever
+  ```
+  Last-writer-wins by `Date.now()` is only as reliable as your
+  clocks.  Use NTP / similar to keep clocks within seconds, or
+  use MVRegister if clock-skew is a real risk.
+</Aside>
+
+<Aside type="caution" title="MVRegister's values() can blow up">
+  Worst case: every replica writes concurrently → `values()` has
+  N entries.  Usually small, but consider this when many actors
+  write to the same key without coordination.  Frequent
+  re-writes from a single replica do **not** blow up the size —
+  they overwrite that replica's entry.
+</Aside>
+
+## Where to next
+
+- **[Counters](/actor-ts/distributed-data/crdt-types/counters/)** —
+  for additive per-replica state.
+- **[Sets](/actor-ts/distributed-data/crdt-types/sets/)** —
+  GSet / ORSet for collection-style state.
+- **[Maps](/actor-ts/distributed-data/crdt-types/maps/)** —
+  LWWMap is a register-valued map.
+- **[Designing data](/actor-ts/distributed-data/crdt-types/designing-data/)** —
+  picking the right type per problem.
+
+The [`LWWRegister`](/actor-ts/api/classes/lwwregister/) and
+[`MVRegister`](/actor-ts/api/classes/mvregister/) API references
+cover the full surface.

@@ -1,0 +1,178 @@
+---
+title: Sets (GSet, ORSet)
+description: Two set CRDTs — `GSet` for add-only sets, `ORSet` for add-and-remove with "add wins" semantics. Concurrent add+remove resolves to the add observed on the same replica.
+---
+
+Two set CRDTs:
+
+| Type | Operations | When |
+| --- | --- | --- |
+| **`GSet<E>`** | add only | Append-only collections — observed kinds, seen users. |
+| **`ORSet<E>`** | add + remove | Membership sets that come and go. |
+
+Both converge under concurrent writes; `ORSet`'s special trick is
+resolving "concurrent add and remove of the same element" so
+removes don't accidentally delete a still-wanted item.
+
+## GSet
+
+```ts
+import { GSet } from 'actor-ts';
+
+let s = GSet.empty<string>();
+s = s.add('apple');
+s = s.add('banana');
+s.value();   // → Set(['apple', 'banana'])
+```
+
+State is a plain set; merge is a union.  Cannot remove — once
+added, an element stays forever.
+
+Use for:
+
+- **Observed event types** the system has ever seen.
+- **Users that ever logged in** (a `unique-users-ever` set).
+- **Tags applied** to a resource that don't get untagged.
+
+If you need removals, `GSet` is the wrong shape; reach for
+`ORSet`.
+
+### Element identity
+
+```ts
+let s = GSet.empty<UserSession>({ identity: (u) => u.id });
+s = s.add({ id: 'user-42', name: 'Alice' });
+s = s.add({ id: 'user-42', name: 'Alice updated' });
+s.value().size;   // → 1 (same identity)
+```
+
+By default elements are deduplicated by `JSON.stringify(element)`.
+Pass an `identity: (e) => string` function for custom dedup —
+useful when elements are objects with stable IDs but mutable
+other fields.
+
+## ORSet (Observed-Remove Set)
+
+```ts
+import { ORSet } from 'actor-ts';
+
+let s = ORSet.empty<string>();
+s = s.add('node-a', 'apple');
+s = s.add('node-b', 'banana');
+s = s.remove('apple');
+s.value();   // → Set(['banana'])
+```
+
+The trick: every `add` stamps the element with a **unique tag**;
+`remove(e)` removes only the tags currently visible to the
+removing replica.
+
+This makes the "concurrent add + remove" case resolve **toward
+add**:
+
+```ts
+let a0 = ORSet.empty<string>().add('a', 'apple');
+let b0 = a0;                              // both see 'apple' with same tag
+
+let a1 = a0.remove('apple');               // A removes
+let b1 = b0.add('b', 'apple');             // B adds a NEW 'apple' (new tag)
+
+a1.merge(b1).value();   // → Set(['apple'])   — B's add survives
+```
+
+The original 'apple' had the tag B never saw, so B's fresh add
+introduces a new tag.  When A and B merge, A's remove only
+removed the *original* tag; B's tag remains.  Net result: 'apple'
+is in the set.
+
+This "add wins" semantics is what makes ORSet the right choice
+for **shopping carts, presence sets, subscription lists** — sets
+where an item briefly removed by one party shouldn't disappear if
+another party concurrently re-added it.
+
+### Tag generation
+
+Tags are `replicaId × per-replica-counter`.  Each replica keeps a
+monotonic counter; every `add` bumps it.  This guarantees unique
+tags even within the same millisecond, across the cluster.
+
+The counter is **part of the CRDT state** — gossiping is what
+makes it correct.  You don't see or manipulate tags directly;
+they're internal.
+
+### Element identity (same as GSet)
+
+```ts
+const s = ORSet.empty<CartItem>({ identity: (i) => i.sku });
+s.add('node-a', { sku: 'book-1', price: 10 });
+s.add('node-b', { sku: 'book-1', price: 12 });
+// → still one entry (same SKU), but two tags
+//   — the tags are independent of the value's identity
+```
+
+The identity function determines **deduplication**; the tag
+mechanics work per-add regardless.
+
+## Picking between them
+
+| Question | Type |
+| --- | --- |
+| Do you ever need to remove elements? | `ORSet` |
+| Otherwise | `GSet` |
+
+`GSet` is **smaller** (no tag bookkeeping) and **simpler**.  Use
+when "remove an item" isn't part of the workflow.
+
+`ORSet`'s extra cost is the tag tracking — for sets with high
+churn (frequent add/remove cycles on the same element), the
+internal state grows.  See "When ORSet isn't right" below.
+
+## When ORSet isn't right
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Very high add/remove churn">
+  ```ts
+  // 100 000 add+remove cycles per second on the same element
+  ```
+  Each `add` adds a tag; each `remove` removes the tags currently
+  visible.  But tags from concurrent (or stale) adds may linger.
+  Over time, the tag set can grow even when the visible set is
+  small.  For high-churn workloads, periodic state refresh /
+  consolidation (a "snapshot" via direct DD update with a fresh
+  empty ORSet) can help.
+</Aside>
+
+<Aside type="caution" title="Removing without a stable replica ID">
+  ```ts
+  s.remove('apple');   // doesn't need a replica ID
+  ```
+  Note: only `add` takes a replica ID (for tag generation).
+  `remove` is replica-agnostic — it removes whatever tags this
+  replica currently sees.  This is by design.
+</Aside>
+
+<Aside type="caution" title="Don't use plain Set for shared state">
+  ```ts
+  // ✗ this loses information under concurrent edits
+  dd.update('cart', () => new Set(), (s) => { s.add('item'); return s; });
+  ```
+  A plain `Set` isn't a CRDT — its merge semantics don't preserve
+  concurrent updates correctly.  Wrap with `ORSet` (or `GSet`)
+  so the framework's replication knows how to merge.
+</Aside>
+
+## Where to next
+
+- **[Counters](/actor-ts/distributed-data/crdt-types/counters/)** —
+  for additive counts.
+- **[Registers](/actor-ts/distributed-data/crdt-types/registers/)** —
+  for single-value writes.
+- **[Maps](/actor-ts/distributed-data/crdt-types/maps/)** —
+  for keyed associations including ORMap.
+- **[Designing data](/actor-ts/distributed-data/crdt-types/designing-data/)** —
+  the conceptual guide.
+
+The [`GSet`](/actor-ts/api/classes/gset/) and
+[`ORSet`](/actor-ts/api/classes/orset/) API references cover the
+full surface.

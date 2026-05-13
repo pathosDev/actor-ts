@@ -1,0 +1,98 @@
+---
+title: Config seed provider
+description: The simplest seed provider — a static list of `host:port` strings from env vars or constructor arg. The right choice for fixed-IP deployments and Docker Compose.
+---
+
+`ConfigSeedProvider` returns a **static list** of seed addresses
+— from a constructor argument or environment variables.  No
+discovery logic; what you configure is what you get.
+
+```ts
+import { Cluster, ConfigSeedProvider } from 'actor-ts';
+
+const provider = new ConfigSeedProvider({
+  seeds: ['10.0.0.5:2552', '10.0.0.6:2552', '10.0.0.7:2552'],
+});
+
+const seeds = await provider.lookup();
+await Cluster.join(system, { host, port, seeds });
+```
+
+The simplest provider for the simplest case.
+
+## Configuration
+
+```ts
+interface ConfigSeedProviderSettings {
+  seeds?:     string[];           // explicit list
+  envVar?:    string;             // env-var name (CSV)
+}
+```
+
+Two ways to specify:
+
+```ts
+// Explicit:
+new ConfigSeedProvider({ seeds: ['10.0.0.5:2552', '10.0.0.6:2552'] });
+
+// From env (CSV):
+new ConfigSeedProvider({ envVar: 'ACTOR_TS_SEEDS' });
+// where ACTOR_TS_SEEDS='10.0.0.5:2552,10.0.0.6:2552'
+```
+
+Pick whichever fits your deployment pattern.  Env vars are
+typical for containerized deployments where the list comes from a
+config map / orchestrator.
+
+## When to use it
+
+Three good fits:
+
+1. **Docker Compose** — known service names + ports;
+   `actor-ts-1:2552,actor-ts-2:2552,actor-ts-3:2552` in env.
+2. **VMs with fixed IPs** — three production VMs, each with a
+   stable address.
+3. **Tests** — known peer addresses inline in test setup.
+
+## When NOT
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Dynamic environments">
+  ```ts
+  // K8s pods have ephemeral IPs:
+  new ConfigSeedProvider({ seeds: ['10.244.1.5:2552'] });   // ✗ breaks on pod recreation
+  ```
+  Pod IPs change on every recreation.  Use
+  [`KubernetesApiSeedProvider`](/actor-ts/discovery/seed-providers/kubernetes-api/)
+  instead.
+</Aside>
+
+<Aside type="caution" title="Auto-scaling">
+  Fixed seed lists don't grow when nodes scale up.  Once the
+  cluster exists, gossip handles new joiners — but for **first
+  contact**, only the configured seeds are tried.  Aggregate with
+  a DNS or K8s provider for dynamism.
+</Aside>
+
+<Aside type="caution" title="Hostnames vs IPs">
+  ```ts
+  new ConfigSeedProvider({ seeds: ['my-pod.svc.cluster.local:2552'] });
+  ```
+  Hostnames are resolved at lookup time.  If your DNS lags pod
+  startup, lookup fails and `Cluster.join` retries.  Usually
+  works — but IPs are more deterministic when available.
+</Aside>
+
+## Where to next
+
+- **[Discovery overview](/actor-ts/discovery/overview/)** — the
+  bigger picture.
+- **[DNS seed provider](/actor-ts/discovery/seed-providers/dns/)** —
+  for DNS-based discovery.
+- **[Kubernetes API seed provider](/actor-ts/discovery/seed-providers/kubernetes-api/)** —
+  for K8s deployments.
+- **[Aggregate seed provider](/actor-ts/discovery/seed-providers/aggregate/)** —
+  combine multiple providers.
+- **[Joining and seeds](/actor-ts/cluster/joining-and-seeds/)** —
+  how seeds are consumed by the cluster bootstrap.
