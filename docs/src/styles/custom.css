@@ -134,6 +134,24 @@
   margin-inline: auto !important;
 }
 
+/* Hide the H1 since the logo's wordmark already reads "actor-ts" —
+ * applies at every viewport (mobile + desktop).  Was previously only
+ * inside the desktop media query, so mobile still showed the
+ * redundant text-title under the logo image.  The title stays in the
+ * DOM (sr-only pattern) so Pagefind + screen readers + browser tab
+ * still see it. */
+.hero h1[data-page-title] {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
 @media (min-width: 50rem) {
   .hero {
     grid-template-columns: 100% !important;
@@ -160,21 +178,6 @@
   }
   .hero .actions {
     justify-content: center !important;
-  }
-  /* Hide the H1 since the logo's wordmark already reads "actor-ts" —
-   * the title stays in the DOM (still indexed by Pagefind, still
-   * the browser-tab title) but is visually hidden via the standard
-   * sr-only pattern. */
-  .hero h1[data-page-title] {
-    position: absolute !important;
-    width: 1px !important;
-    height: 1px !important;
-    padding: 0 !important;
-    margin: -1px !important;
-    overflow: hidden !important;
-    clip: rect(0, 0, 0, 0) !important;
-    white-space: nowrap !important;
-    border: 0 !important;
   }
 }
 
