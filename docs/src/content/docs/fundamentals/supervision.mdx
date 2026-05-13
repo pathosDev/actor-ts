@@ -1,0 +1,319 @@
+---
+title: Supervision
+description: What happens when an actor's onReceive throws — the four directives (Restart / Resume / Stop / Escalate), one-for-one vs all-for-one strategies, restart counters, and the per-error decider.
+---
+
+When an actor's `onReceive` throws — synchronously or via a rejected
+`Promise` — the failure doesn't crash the process.  It travels up to
+the actor's **parent**, which decides what to do via its **supervisor
+strategy**.  Four outcomes; you pick one per error class.
+
+This is the "let it crash" philosophy actor-ts inherits from Erlang
+and Akka: handling every error inline at the call site is brittle.
+A supervisor a level up has a wider view — it knows whether the
+crashed actor is replaceable (restart it), holds critical state
+(escalate to a higher supervisor), or should give up entirely
+(stop and trigger compensation).
+
+## The four directives
+
+When a child throws, the supervisor's decider returns one of:
+
+| Directive | What it does |
+| --- | --- |
+| **`Restart`** | Throw the broken instance away.  Build a fresh one from the same `Props` factory.  Mailbox is retained; the new instance picks up the next message. |
+| **`Resume`** | Keep the actor's state.  Skip the failing message.  Continue with the next one in the mailbox. |
+| **`Stop`** | Stop the actor permanently.  Children are stopped first.  Further messages go to dead letters. |
+| **`Escalate`** | Re-throw the error at the supervisor's *own* parent.  The supervisor itself usually then gets restarted. |
+
+`Restart` is the default — the framework's `defaultStrategy` returns
+`Restart` for every error.  Use the other three when restart isn't
+the right semantic for your domain.
+
+## A minimal example
+
+```ts
+import { Actor, ActorSystem, Props, OneForOneStrategy, Directive } from 'actor-ts';
+
+class Worker extends Actor<{ kind: 'do-it' } | { kind: 'fail' }> {
+  override onReceive(msg: { kind: 'do-it' } | { kind: 'fail' }): void {
+    if (msg.kind === 'fail') throw new Error('boom');
+    this.log.info('did the work');
+  }
+}
+
+class Boss extends Actor<{ kind: 'spawn-worker' }> {
+  // Custom supervisor strategy for this Boss's children: always restart,
+  // but cap at 5 restarts per minute — beyond that, stop the child.
+  override supervisorStrategy = new OneForOneStrategy(
+    (err) => Directive.Restart,
+    { maxRetries: 5, withinTimeRangeMs: 60_000 },
+  );
+
+  override onReceive(msg: { kind: 'spawn-worker' }): void {
+    const worker = this.context.spawn(Props.create(() => new Worker()));
+    worker.tell({ kind: 'do-it' });
+    worker.tell({ kind: 'fail' });   // <- throws
+    worker.tell({ kind: 'do-it' });  // <- new instance, after restart
+  }
+}
+```
+
+The Boss's supervisor strategy catches the Worker's throw.  The Boss
+sees the failure, applies the `Restart` directive, and the Worker
+processes the next message on a fresh instance.  Three messages,
+three log lines — the second one's `Error: boom` shows up in the
+Boss's log, not as an uncaught exception.
+
+## One-for-one vs all-for-one
+
+Two strategy *scopes* — they control whether the directive applies to
+just the failing child or to all of the parent's children:
+
+import { Aside } from '@astrojs/starlight/components';
+
+**`OneForOneStrategy`** — restart/stop/etc. just the failing child.
+The siblings keep running.  This is the default.  Use when children
+are independent of each other: one user-session crashing shouldn't
+affect the other sessions.
+
+**`AllForOneStrategy`** — apply the directive to *every* child when
+any one fails.  Use when children share state or coordinate tightly
+— a small cluster of actors that must restart together, e.g. a
+producer + consumer pair that talk over an internal channel.
+
+```ts
+import { AllForOneStrategy, Directive } from 'actor-ts';
+
+override supervisorStrategy = new AllForOneStrategy(
+  () => Directive.Restart,
+  { maxRetries: 3, withinTimeRangeMs: 30_000 },
+);
+```
+
+The vast majority of actor-ts code uses `OneForOneStrategy`.  Reach
+for all-for-one only when you've explicitly decided the children's
+states are coupled.
+
+## Per-error deciders
+
+The decider receives the error and returns a directive — so you can
+have different responses per error class:
+
+```ts
+import { decideBy, Directive, OneForOneStrategy } from 'actor-ts';
+
+class TransientNetworkError extends Error {}
+class CorruptedStateError   extends Error {}
+class UnknownProblem        extends Error {}
+
+override supervisorStrategy = new OneForOneStrategy(
+  decideBy(
+    [
+      { match: TransientNetworkError, then: Directive.Resume   },  // skip the bad message
+      { match: CorruptedStateError,   then: Directive.Restart  },  // clean reboot
+      { match: UnknownProblem,        then: Directive.Escalate },  // ask grandparent
+    ],
+    Directive.Restart,   // fallback when none matched
+  ),
+);
+```
+
+`decideBy` is a helper that builds a decider from a list of
+`{ errorClass, directive }` mappings with a fallback.  You can also
+hand-write the decider as a plain function — `(err: Error) => Directive`
+— if you need more sophisticated logic.
+
+## Restart semantics — what's lost, what's kept
+
+When `Restart` fires:
+
+1. The framework calls **`preRestart(reason, message?)`** on the
+   about-to-be-thrown-away instance.  Default: stops all children,
+   calls `postStop`.  Override to release resources held outside the
+   actor (file handles, open sockets, broker connections).
+2. The instance is dropped.  All instance fields (`this.count`,
+   `this.handle`, …) are lost.
+3. A new instance is built from the same `Props.create` factory.
+4. The framework calls **`postRestart(reason)`** on the fresh
+   instance.  Default: calls `preStart`.  Override to re-acquire
+   resources.
+5. The mailbox is **retained**.  The next message (the one *after*
+   the failed one) is processed on the new instance.
+
+The failed message itself is **dropped by default** — it stays out
+of the mailbox.  Override `preRestart` if you need different
+semantics (e.g. push the failed message into a dead-letter queue
+for inspection).
+
+If you want **state preserved across restart**, the actor needs to
+persist that state somewhere external — typically a journal via
+[`PersistentActor`](/actor-ts/persistence/persistent-actor/), or a
+shared `DistributedData` entry.  Restart explicitly does NOT
+preserve in-memory state; that's the whole point — "let it crash"
+trusts the recovery path more than the per-message guard.
+
+<Aside type="tip" title="`preStart` versus `postRestart`">
+  `preStart` runs once on the brand-new actor.  `postRestart` runs
+  on every restart.  The framework's default makes them equivalent
+  (`postRestart` calls `preStart`), so most actors only override
+  `preStart` for resource acquisition.  Override `postRestart`
+  separately when restart needs different behavior than the very
+  first start — e.g. "on restart, log the reason but don't re-emit
+  the welcome event."
+</Aside>
+
+## Restart limits + the time window
+
+Every strategy has two numeric knobs that control "give up" behavior:
+
+- **`maxRetries`** — how many restart attempts the supervisor will
+  tolerate before escalating.  `-1` = unlimited.
+- **`withinTimeRangeMs`** — a sliding time window in milliseconds
+  for counting retries.  `0` = no window (counts are never reset,
+  so `maxRetries` is a process-lifetime cap).
+
+```ts
+new OneForOneStrategy(
+  () => Directive.Restart,
+  { maxRetries: 10, withinTimeRangeMs: 60_000 },   // up to 10 restarts/minute
+);
+```
+
+If a child restarts 11 times in one minute, the 11th failure
+escalates instead — the supervisor itself throws the error at its
+parent.  This protects against infinite restart loops (a child that
+keeps crashing on a permanently-broken state).
+
+For exponential-backoff retries, use the
+[BackoffSupervisor pattern](/actor-ts/patterns/backoff-supervisor/) —
+it wraps a child with a backoff timer so successive restarts get
+progressively delayed, rather than instant + capped.
+
+## Built-in strategies
+
+The framework exports three ready-made strategies for common cases:
+
+| Strategy | Behaviour |
+| --- | --- |
+| `defaultStrategy` | Restart everything, cap 10/minute.  The framework default if you don't override. |
+| `stoppingStrategy` | Stop the failing child immediately, no restart.  Useful when the parent's job is to spawn replacements on demand. |
+| `escalatingStrategy` | Always escalate to the grandparent.  The child gives up; the parent kicks the can up the chain. |
+
+Use these for actors where the standard behaviour fits; build a
+custom `OneForOneStrategy` or `AllForOneStrategy` otherwise.
+
+## The escalation chain
+
+Escalation walks up the parent tree:
+
+```
+   /user
+     │
+     └── /boss              <- escalates here when Worker raises beyond maxRetries
+           │
+           └── /worker      <- thrown here
+```
+
+If `/boss`'s strategy returns `Escalate`, the error re-throws at
+`/user`'s strategy.  `/user` is the root user-guardian; if *its*
+strategy escalates, the system enters a fatal-error state — usually
+followed by `system.terminate()`.
+
+This means "uncaught errors" only happen if every level explicitly
+chooses to escalate, all the way to the root.  Stops are a normal,
+expected outcome; escalation-to-root is the "we don't know what to
+do" signal.
+
+## Top-level actors
+
+Actors spawned via `system.actorOf(...)` have the **root user
+guardian** as their parent.  Its strategy is `defaultStrategy` —
+restart on failure, capped at 10/minute.  Override by passing a
+strategy in `Props`:
+
+```ts
+const ref = system.actorOf(
+  Props.create(() => new MyTopActor())
+    .withSupervisorStrategy(stoppingStrategy),
+);
+```
+
+…or by giving the actor its own children-strategy.  Two different
+things: the strategy *handling* this actor's failures (set on
+`Props`) vs. the strategy *this actor uses* for ITS children
+(set as `override supervisorStrategy` on the class).
+
+## Common pitfalls
+
+<Aside type="caution" title="State you needed survives across restart">
+  ```ts
+  class CountServer extends Actor<...> {
+    private count = 0;  // ← lost on restart!
+    onReceive(msg: ...) {
+      if (msg.causesACrash) throw new Error('oops');
+      this.count++;
+    }
+  }
+  ```
+  On `Restart`, `count` resets to 0.  If the count matters across
+  failures, either:
+  - persist it (use `PersistentActor`),
+  - store it in a shared place (`DistributedData`),
+  - or pick `Resume` instead of `Restart` so state survives.
+  Choose deliberately; don't accidentally pick `Restart` and lose
+  data.
+</Aside>
+
+<Aside type="caution" title="Resume + a corrupt state">
+  `Resume` skips the failing message but keeps the actor's state.
+  If the state is what caused the throw (a corrupted internal data
+  structure), the *next* message will likely fail the same way.
+  `Restart` builds a clean instance; that's usually safer when the
+  failure is state-driven.  Use `Resume` for transient errors
+  (network blip, brief DB unavailability) where the state itself
+  is sound.
+</Aside>
+
+<Aside type="caution" title="Infinite restart loop">
+  Without `maxRetries`, a child that crashes on every message
+  produces an infinite loop — restart → process next message →
+  crash → restart …  The framework's `defaultStrategy` caps at 10
+  per minute precisely to prevent this.  When designing custom
+  strategies, always set a `maxRetries` + `withinTimeRangeMs`
+  unless you have a specific reason not to.
+</Aside>
+
+<Aside type="caution" title="Async errors are caught — uncaught Promise rejections aren't">
+  ```ts
+  override async onReceive(msg) {
+    await operationThatRejects();   // ✓ caught by supervisor
+    
+    setTimeout(() => {
+      somethingThatThrows();        // ✗ NOT caught — runs outside onReceive
+    }, 100);
+  }
+  ```
+  The supervisor only sees what `onReceive` throws or rejects with.
+  Code that runs in a detached callback (raw `setTimeout`, raw
+  `Promise.then` chains that escape the actor) bypasses supervision.
+  Use `context.scheduler` for actor-bound timers; they propagate
+  errors back into the mailbox.
+</Aside>
+
+## Where to next
+
+- **[Actor](/actor-ts/fundamentals/actor/)** — the base class whose
+  `preRestart` / `postRestart` hooks you override.
+- **[BackoffSupervisor](/actor-ts/patterns/backoff-supervisor/)** —
+  exponential-backoff variant for transient failures.
+- **[Death watch](/actor-ts/fundamentals/death-watch/)** —
+  observing when an actor *stops* (vs catching when it throws).
+- **[CircuitBreaker](/actor-ts/patterns/circuit-breaker/)** — when
+  the failure is in a downstream call and you want to back off
+  *before* the call fails.
+- **[Coordinated shutdown](/actor-ts/fundamentals/coordinated-shutdown/)** —
+  graceful-shutdown when the whole system needs to come down.
+
+The [`Supervision` module API reference](/actor-ts/api/) documents
+every directive, strategy class, and helper discussed here.
