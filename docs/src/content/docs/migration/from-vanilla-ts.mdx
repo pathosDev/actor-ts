@@ -1,0 +1,369 @@
+---
+title: From vanilla TypeScript
+description: You've been building with plain Promises, EventEmitters, and ad-hoc class state. Here's what actor-ts gives you that those patterns don't — and concrete before/after code for the most common shapes.
+---
+
+If you're coming from a "regular" TypeScript codebase — `async`
+functions, EventEmitters, mutable class state, manual try/catch
+everywhere — actor-ts looks like a lot of ceremony.  This page is
+the honest case for **when the ceremony pays off**, and the
+concrete patterns that translate from vanilla TS.
+
+## The short version
+
+Reach for actor-ts when:
+
+- **State is shared across many concurrent requests** and you've
+  been writing mutex-like wrappers or accidentally hitting race
+  conditions.
+- **You need to recover from crashes** — a process restart should
+  pick up where the last one left off, not start from zero.
+- **You're distributing work across nodes** and the "send a
+  message to a remote service" pattern is feeling clunky.
+- **Failure handling is brittle** — try/catch everywhere, no
+  central place to say "if this fails, do X."
+
+Stay with vanilla TS when:
+
+- The app is mostly request/response, mostly stateless, single
+  process.  HTTP handler in, JSON out, no shared mutable state.
+- You're not crash-recovering anything.
+- You don't have multiple concurrent things modifying the same
+  state.
+
+## Pattern 1 — Shared mutable state with concurrent writers
+
+### Before
+
+```ts
+class OrderService {
+  private orders = new Map<string, Order>();
+
+  async place(order: Order): Promise<void> {
+    if (this.orders.has(order.id)) throw new Error('duplicate');
+    await this.persistToDB(order);     // ← any await releases the loop
+    this.orders.set(order.id, order);   // ← can race with another `place`
+  }
+}
+```
+
+Subtle race: between `persistToDB` and the `Map.set`, another
+`place()` for the same ID could pass the `has` check.  Result:
+two writes to the DB, possibly two `Map` entries.
+
+You can fix this with a per-key lock, an in-flight set, or a
+queue.  Or:
+
+### After
+
+```ts
+class OrderActor extends PersistentActor<PlaceCmd, OrderPlaced, OrderState> {
+  readonly persistenceId = 'order-registry';
+
+  initialState() { return { orders: {} as Record<string, Order> }; }
+  onEvent(state, e) {
+    if (e.kind === 'placed') return { orders: { ...state.orders, [e.order.id]: e.order } };
+    return state;
+  }
+  onCommand(state, cmd: PlaceCmd) {
+    if (state.orders[cmd.order.id]) return;   // already placed
+    this.persist({ kind: 'placed', order: cmd.order }, () => {});
+  }
+}
+```
+
+The actor processes commands **one at a time**.  Two `PlaceCmd`s
+for the same ID are serialized; the second one sees the state
+updated by the first and skips persisting.  No locks, no
+in-flight sets, no race.
+
+Plus: events are persisted, so a process restart replays them and
+the in-memory state recovers.
+
+## Pattern 2 — EventEmitter + handlers
+
+### Before
+
+```ts
+class WorkerPool extends EventEmitter {
+  async run(job: Job): Promise<void> {
+    this.emit('start', job);
+    try {
+      const result = await execute(job);
+      this.emit('done', job, result);
+    } catch (e) {
+      this.emit('error', job, e);
+    }
+  }
+}
+
+const pool = new WorkerPool();
+pool.on('done', (job, result) => log(`${job.id} done`));
+pool.on('error', (job, err) => alerting.fire(`${job.id} failed`));
+```
+
+Works, but:
+
+- No supervision — if `execute` throws unexpectedly, do listeners
+  still hear about it?
+- Type safety on listeners is fiddly (`EventEmitter` doesn't
+  enforce event-name + arg shape).
+- Hard to add cluster-distribution later.
+
+### After
+
+```ts
+type JobEvent =
+  | { kind: 'started'; job: Job }
+  | { kind: 'done';    job: Job; result: Result }
+  | { kind: 'failed';  job: Job; error: Error };
+
+class Worker extends Actor<{ kind: 'run'; job: Job; replyTo: ActorRef<JobEvent> }> {
+  override async onReceive(msg): Promise<void> {
+    msg.replyTo.tell({ kind: 'started', job: msg.job });
+    try {
+      const result = await execute(msg.job);
+      msg.replyTo.tell({ kind: 'done', job: msg.job, result });
+    } catch (e) {
+      msg.replyTo.tell({ kind: 'failed', job: msg.job, error: e as Error });
+    }
+  }
+}
+```
+
+Type-safe events.  Listener actors are first-class.  The actor's
+supervisor strategy is the central error-handling point — no
+listener-on-error gymnastics.
+
+For multi-listener fan-out, use the
+[event stream](/actor-ts/fundamentals/event-stream/) or
+[DistributedPubSub](/actor-ts/cluster/pubsub/).
+
+## Pattern 3 — Background loop with mutable state
+
+### Before
+
+```ts
+class HealthMonitor {
+  private status = new Map<string, 'up' | 'down'>();
+
+  constructor(private readonly services: string[]) {
+    setInterval(() => this.tick(), 10_000);
+  }
+
+  private async tick(): Promise<void> {
+    for (const svc of this.services) {
+      const ok = await this.ping(svc);
+      this.status.set(svc, ok ? 'up' : 'down');
+    }
+  }
+
+  getStatus(svc: string): 'up' | 'down' {
+    return this.status.get(svc) ?? 'down';
+  }
+}
+```
+
+A long-running object with both **state** and **scheduled work**.
+Issues:
+
+- `getStatus` reads while `tick` might be mid-update — possibly
+  fine for `'up' | 'down'` but not for richer state.
+- No supervision — if `ping` throws, `setInterval` continues but
+  the catch-less code silently breaks.
+- Restarting the whole thing is awkward — no clean way to "reset
+  this monitor" without reaching into its internals.
+
+### After
+
+```ts
+type Msg =
+  | { kind: 'tick' }
+  | { kind: 'get-status'; svc: string; replyTo: ActorRef<'up' | 'down'> };
+
+class HealthMonitor extends Actor<Msg> {
+  private status = new Map<string, 'up' | 'down'>();
+
+  constructor(private readonly services: string[]) { super(); }
+
+  override preStart(): void {
+    this.context.timers.startTimerWithFixedDelay('tick', { kind: 'tick' }, 10_000);
+  }
+
+  override async onReceive(msg: Msg): Promise<void> {
+    if (msg.kind === 'tick') {
+      for (const svc of this.services) {
+        const ok = await this.ping(svc);
+        this.status.set(svc, ok ? 'up' : 'down');
+      }
+    } else if (msg.kind === 'get-status') {
+      msg.replyTo.tell(this.status.get(msg.svc) ?? 'down');
+    }
+  }
+}
+```
+
+`tick` runs **serialized** with `get-status` — never overlapping.
+The timer auto-cancels on stop.  If `onReceive` throws, the
+supervisor decides what to do; a fresh `preStart` re-arms the
+timer.
+
+## Pattern 4 — Saga / multi-step coordination
+
+### Before
+
+```ts
+async function placeOrder(order: NewOrder): Promise<OrderResult> {
+  const reserved = await inventory.reserve(order.items);
+  try {
+    const charged = await payment.charge(order.customerId, order.total);
+    try {
+      const shipped = await shipping.schedule(order);
+      return { ok: true, shippingId: shipped.id };
+    } catch (e) {
+      await payment.refund(charged.id);
+      await inventory.release(reserved.id);
+      throw e;
+    }
+  } catch (e) {
+    await inventory.release(reserved.id);
+    throw e;
+  }
+}
+```
+
+Nested try/catch.  Compensations buried in catch blocks.  Hard
+to reason about partial failures (what if the refund itself
+fails?).
+
+### After (event-sourced saga)
+
+```ts
+type Cmd = { kind: 'place'; order: NewOrder };
+type Event =
+  | { kind: 'inventory-reserved'; resId: string }
+  | { kind: 'payment-charged';     chargeId: string }
+  | { kind: 'shipping-scheduled';  shippingId: string }
+  | { kind: 'compensating-...' };
+
+class OrderSaga extends PersistentActor<Cmd, Event, OrderSagaState> {
+  // ...
+  async onCommand(state, cmd) {
+    if (cmd.kind === 'place') {
+      const reserved = await inventory.reserve(cmd.order.items);
+      this.persist({ kind: 'inventory-reserved', resId: reserved.id }, async () => {
+        try {
+          const charged = await payment.charge(...);
+          this.persist({ kind: 'payment-charged', chargeId: charged.id }, async () => {
+            // ... and so on
+          });
+        } catch (e) {
+          // Compensate — events drive the compensation, too:
+          this.persist({ kind: 'compensating-refund-needed' }, () => {});
+        }
+      });
+    }
+  }
+}
+```
+
+Each step is **persisted before the next** — a process crash mid-saga
+recovers by replaying the event log and resuming.  Compensation
+state is also persisted, so partial-compensation crashes recover
+cleanly.
+
+This is more code than the try/catch version.  Worth it when:
+
+- The saga spans **seconds to minutes** and crash-recovery matters.
+- Compensations are critical (real money / real inventory).
+- You'd otherwise be building this on top of a workflow engine
+  anyway.
+
+For shorter sagas (sub-second, in-memory acceptable on restart),
+the try/catch chain is fine.
+
+## What you give up
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Async stack traces">
+  ```ts
+  // Vanilla:
+  Error: foo failed
+    at OrderService.place (orders.ts:42)
+    at HttpHandler.create (http.ts:18)
+
+  // Actor:
+  Error: foo failed
+    at OrderActor.onReceive (orders.ts:42)
+    at ActorCell._dispatch (internal/ActorCell.ts:580)
+  ```
+  Stack traces inside an actor lose the *caller*'s context — the
+  `tell` happened in some HTTP handler somewhere, but the actor's
+  trace only shows the dispatch.  Mitigate with
+  [LogContext MDC](/actor-ts/fundamentals/logging/) — propagate
+  a `requestId` so logs across actors stitch together.
+</Aside>
+
+<Aside type="caution" title="Synchronous reads">
+  ```ts
+  // Vanilla:
+  const order = service.orders.get(id);   // sync read
+
+  // Actor:
+  const order = await ask(actor, { kind: 'get', id, replyTo: ... });
+  ```
+  Reading state from outside an actor requires a message round-trip.
+  For low-volume reads it's fine; for high-volume reads (a typical
+  HTTP request that needs 5 different reads) you might project the
+  state to a read-side view, or denormalize so one ask gets
+  everything.
+</Aside>
+
+<Aside type="caution" title="Library code expects Promise APIs">
+  ```ts
+  await orm.user.create({ ... });        // ✓ vanilla
+  await ask(orm, { kind: 'create', ... }, 5_000);  // ✗ ORM doesn't speak actors
+  ```
+  ORMs, third-party SDKs, validation libraries — they're all
+  Promise-based.  Wrapping them in actors gives you supervision +
+  serialization but adds a layer.  For boundary code (HTTP handler
+  → ORM → response), the vanilla style often reads better.
+  Actors are most valuable for the **stateful core** of your
+  domain.
+</Aside>
+
+## A staged adoption strategy
+
+You don't have to rewrite everything.  A reasonable adoption order:
+
+1. **Start with one stateful concept** — the registry that's been
+   giving you race conditions.  Wrap it in a `PersistentActor`.
+   HTTP handlers still call it like a service; they just use
+   `ask` instead of method calls.
+2. **Add scheduled work** that's been living in `setInterval`.
+   Convert to actors with `context.timers`.  Supervised, automatic
+   cleanup, testable.
+3. **Add cross-process distribution** when single-process isn't
+   enough.  Cluster-join + sharding lets the registry from step 1
+   span N nodes.
+4. **Add event-sourcing** for workflows that need recovery —
+   sagas, multi-step user flows, billing pipelines.
+
+Each step is independently valuable.  You can stop at any of them
+and have a more reliable system than the all-vanilla version, with
+the rest of your code unchanged.
+
+## Where to next
+
+- **[Quickstart](/actor-ts/intro/quickstart/)** — the "hello
+  actor" walkthrough.
+- **[Why actors](/actor-ts/intro/why-actors/)** — the rationale,
+  in more detail than this page.
+- **[Actor](/actor-ts/fundamentals/actor/)** — the base class
+  you'll extend.
+- **[PersistentActor](/actor-ts/persistence/persistent-actor/)** —
+  the event-sourced variant that replaces "race-prone mutable
+  state."
+- **[Migration overview](/actor-ts/migration/overview/)** —
+  migration guides from other actor frameworks.

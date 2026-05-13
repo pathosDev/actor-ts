@@ -1,0 +1,273 @@
+---
+title: SQLite journal
+description: Zero-dependency single-file journal — Bun uses `bun:sqlite`, Node uses `better-sqlite3`. The right default for single-node production. WAL mode, file-on-disk, prepared statements throughout.
+---
+
+`SqliteJournal` stores events in a SQLite database — a single file
+on disk, durable, no separate server.  It's the **right default
+for single-node production**: zero dependencies (Bun has SQLite
+built in; Node uses `better-sqlite3`), survives restarts, fast
+enough for most workloads.
+
+```ts
+import { SqliteJournal, SqliteSnapshotStore, PersistenceExtensionId, ActorSystem } from 'actor-ts';
+
+const system = ActorSystem.create('my-app');
+system.extension(PersistenceExtensionId).configure({
+  journal: new SqliteJournal({
+    path: '/var/lib/my-app/events.db',
+    wal:  true,
+  }),
+  snapshotStore: new SqliteSnapshotStore({
+    path: '/var/lib/my-app/snapshots.db',
+  }),
+});
+```
+
+A single file per system; the actor system writes through SQLite
+to the OS page cache, which flushes to disk on commit.
+
+## Configuration
+
+```ts
+interface SqliteJournalOptions {
+  path?:        string;     // file path, or ":memory:" for ephemeral
+  eventsTable?: string;     // default "events"
+  wal?:         boolean;    // enable WAL mode (recommended)
+  driver?:      SqliteDriver;   // explicit driver override
+}
+```
+
+### `path`
+
+```ts
+new SqliteJournal({ path: '/var/lib/my-app/events.db' })
+```
+
+The database file.  Absolute paths are best — relative paths are
+resolved from `process.cwd()`, which can surprise you.  The file
+is created if it doesn't exist; existing files are reused (events
+append in place).
+
+For tests, use `':memory:'` — a SQLite-backed in-memory DB that
+behaves exactly like the file version but goes away with the
+process:
+
+```ts
+new SqliteJournal({ path: ':memory:' })
+```
+
+### `eventsTable`
+
+Default `'events'`.  Override if you want multiple systems sharing
+one DB file (e.g. dev rig):
+
+```ts
+new SqliteJournal({ path: 'shared.db', eventsTable: 'orders_events' })
+```
+
+The framework creates the table automatically on first use, with
+the schema:
+
+```sql
+CREATE TABLE events (
+  pid       TEXT NOT NULL,
+  seq       INTEGER NOT NULL,
+  event     BLOB NOT NULL,
+  ts        INTEGER NOT NULL,
+  tags      TEXT,                   -- legacy CSV tags (back-compat)
+  PRIMARY KEY (pid, seq)
+);
+
+CREATE TABLE events_tags (
+  pid       TEXT NOT NULL,
+  seq       INTEGER NOT NULL,
+  tag       TEXT NOT NULL,
+  PRIMARY KEY (pid, seq, tag),
+  FOREIGN KEY (pid, seq) REFERENCES events (pid, seq) ON DELETE CASCADE
+);
+
+CREATE INDEX events_tags_tag ON events_tags (tag);
+```
+
+The dual-table design (events + events_tags) lets tag queries hit
+an index instead of scanning CSV.
+
+### `wal`
+
+```ts
+new SqliteJournal({ path: '...', wal: true })
+```
+
+Enables Write-Ahead Logging mode.  **Recommended for production.**
+WAL gives:
+
+- **Better concurrency** — readers don't block the writer.
+- **Faster commits** — WAL writes are sequential, then checkpoint
+  is batched.
+- **Safer crashes** — recovery is simpler than rollback-journal mode.
+
+The default is *off* to match SQLite's defaults; enable it
+explicitly when you go to production.
+
+### `driver`
+
+```ts
+import { bunSqliteDriver, betterSqlite3Driver } from 'actor-ts/runtime/sqlite';
+
+new SqliteJournal({ path: '...', driver: bunSqliteDriver() })
+new SqliteJournal({ path: '...', driver: betterSqlite3Driver() })
+```
+
+The framework auto-detects the right driver based on the runtime:
+
+- **Bun** → `bun:sqlite` (built-in).
+- **Node** → `better-sqlite3` (peer dependency you install).
+- **Deno** → not yet supported.
+
+Override `driver` when you want a specific backend (tests, pinned
+versions, or running in a runtime where auto-detect doesn't
+work).
+
+## Peer dependency on Node
+
+```bash
+npm install better-sqlite3
+```
+
+When running on Node, `better-sqlite3` is a **peer dependency** —
+the framework doesn't bundle it, you install it.  Bun users don't
+need this; Bun has native SQLite.
+
+The auto-detection imports `better-sqlite3` lazily — only when the
+framework actually needs to open a SQLite database.  If you're on
+Bun and never use SQLite, the missing peer doesn't matter.
+
+## How it performs
+
+Rough numbers (NVMe disk, default settings):
+
+- **Append throughput** — 10 000-50 000 events/sec for small
+  events.  WAL mode helps significantly.
+- **Read throughput** — 100 000+ events/sec for recovery (sequential
+  scan).
+- **Concurrent readers** — many parallel readers don't block writers
+  in WAL mode.
+
+For a single-node app with a few thousand actors emitting events
+per second, SQLite is plenty fast.  For tens of thousands of
+events per second sustained, consider:
+
+- Tuning SQLite pragmas (`synchronous = NORMAL`, `journal_mode = WAL`,
+  larger cache).
+- Sharding across multiple journals.
+- Switching to Cassandra for multi-node distribution.
+
+## Recovery flow
+
+When a `PersistentActor` starts:
+
+1. Load latest snapshot from the snapshot store (if any).
+2. Run `SELECT event FROM events WHERE pid = ? AND seq > ?` to
+   stream events after the snapshot.
+3. Apply each event via `onEvent`.
+
+For a 100 000-event journal with no snapshot, recovery reads
+all 100 000 rows.  Sequential scan with a prepared statement —
+sub-second on modern hardware, but **set up snapshots** for any
+actor that accumulates events.
+
+See [Snapshots](/actor-ts/persistence/snapshots/).
+
+## Backup + restore
+
+Since the journal is a single SQLite file:
+
+```bash
+# Backup (with WAL — use SQLite's online backup):
+sqlite3 events.db ".backup events-$(date +%F).db"
+
+# Or stop the app + cp:
+systemctl stop my-app
+cp events.db events.db.bak
+systemctl start my-app
+```
+
+Online backup is preferred — no downtime, consistent snapshot.
+The standard SQLite tooling applies.
+
+## Pitfalls
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Don't share a SQLite file across processes">
+  ```bash
+  # Two processes writing the same events.db file:
+  bun run app.ts &
+  bun run app.ts &
+  ```
+  SQLite **does** support concurrent processes (file locking), but
+  the actor framework's prepared statements and in-memory bus
+  don't know about other processes' writes.  One process's
+  PersistentActor wouldn't see another process's appends until the
+  next read — and the in-memory `JournalEventBus` is local to the
+  process, so push-based queries miss cross-process events.
+
+  For multi-process setups, use **Cassandra** (built for shared
+  state) or **one SQLite per process** with strict pid partitioning.
+</Aside>
+
+<Aside type="caution" title="Filesystem matters">
+  ```bash
+  # ✗ network filesystem
+  /mnt/nfs/events.db
+
+  # ✓ local disk
+  /var/lib/my-app/events.db
+  ```
+  SQLite over NFS / S3FS / similar is famously broken (file
+  locking semantics).  Local disk only.  For shared storage,
+  use a SQL server or Cassandra.
+</Aside>
+
+<Aside type="caution" title="Bun container images need write access">
+  ```dockerfile
+  USER nobody
+  COPY events.db /data/events.db
+  # → nobody can't write /data/events.db on bind-mount
+  ```
+  Make sure the user running the app has write access to the
+  database file *and* the directory containing it (SQLite creates
+  WAL + shm files alongside the main DB).  `chown -R appuser /data`
+  in the entrypoint.
+</Aside>
+
+## When SQLite isn't enough
+
+Three signals you've outgrown single-file SQLite:
+
+1. **Multi-node** — you need actors on N nodes to share the same
+   event stream.  SQLite per-node doesn't work; switch to
+   Cassandra.
+2. **Sustained 100K+ events/sec** — SQLite can handle it with
+   tuning but you're at the edges; columnar / distributed engines
+   are designed for it.
+3. **Large events (> 1 MB each)** — SQLite stores them as BLOBs;
+   read performance degrades.  Consider event compaction (store
+   pointers to external storage) or a journal designed for large
+   payloads.
+
+## Where to next
+
+- **[Persistence overview](/actor-ts/persistence/overview/)** —
+  the bigger picture.
+- **[In-memory journal](/actor-ts/persistence/journals/in-memory/)** —
+  for tests and dev.
+- **[Cassandra journal](/actor-ts/persistence/journals/cassandra/)** —
+  for multi-node production.
+- **[Snapshots](/actor-ts/persistence/snapshots/)** — to bound the
+  recovery scan.
+- **[Snapshot stores — SQLite](/actor-ts/persistence/snapshot-stores/sqlite/)** —
+  the companion snapshot store.
+- **[Migration recipes](/actor-ts/persistence/migration/recipes/)** —
+  schema evolution on a long-running journal.
