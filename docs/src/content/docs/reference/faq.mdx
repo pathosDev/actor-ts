@@ -1,0 +1,348 @@
+---
+title: FAQ
+description: Quick answers to common questions — when to pick which API, what the framework does and doesn't do, runtime compatibility, performance notes, and the most-frequent "is this a bug or am I holding it wrong?" questions.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## General
+
+### Is actor-ts production-ready?
+
+The framework is **pre-1.0**.  The API surface is stable enough
+that we use it in real applications, but **expect breaking
+changes** until 1.0 ships.  See
+[Version policy](/actor-ts/reference/version-policy/).
+
+What that means in practice:
+
+- The **core actor model** (Actor, mailboxes, dispatchers,
+  supervision, persistence basics) is well-tested and stable.
+- **Cluster features** (sharding, singleton, distributed data)
+  have working implementations but expect API polish.
+- **Some edges** are explicitly experimental — replicated event
+  sourcing, sharded daemon process variants, etc.  Pages flag
+  these.
+
+If you're starting a *new* project where you'd ship before 1.0,
+it's a reasonable bet.  If you're rewriting a critical system,
+wait or budget time for breaking-change adoption.
+
+### Why "actor-ts"?  Why not just use Akka.NET or vanilla TS?
+
+Three reasons:
+
+- **First-class TypeScript types**.  Akka.NET assumes C#; an
+  Akka-style port to TS often loses the type-level benefits.
+  actor-ts is designed for TypeScript-first ergonomics.
+- **Runtime choice**.  Runs on Bun (primary), Node (≥22.12), and
+  Deno — no JVM, no .NET, no separate runtime.
+- **Cluster + persistence + observability** built in, without the
+  "wire it yourself from 8 libraries" tax that vanilla TS would
+  charge.
+
+If you don't need clustering / persistence / supervision, vanilla
+Promise-based code is simpler and you should use it.  Reach for
+actor-ts when the runtime-model benefits actually matter.
+
+### Does it work in the browser?
+
+No.  The framework targets server-side runtimes — Bun, Node,
+Deno — because most actor patterns (clustering, persistence,
+TCP transports, file-based journals) need server-side primitives.
+A subset could in theory run in the browser, but there's no
+browser-mode build.
+
+For browser-side reactive patterns, look at signals/effects
+libraries (Solid, MobX) — different model, better fit.
+
+## Picking APIs
+
+### Typed or untyped Actor?
+
+Both work; both run on the same engine.  Pick:
+
+- **Untyped** if you're learning the actor model, want one-to-one
+  parity with Akka examples, or have an actor with substantial
+  mutable state.
+- **Typed** if you want functional state-machine ergonomics,
+  cast-free child spawning, or are coming from Akka-Typed / Cats
+  Effect.
+
+You can mix them — typed parents spawn untyped children and vice
+versa.  See [Typed overview](/actor-ts/typed/overview/).
+
+### `tell`, `ask`, or `pipeTo`?
+
+- **`tell`** is the default.  Fire-and-forget.  Use unless you
+  specifically need a reply.
+- **`ask`** when you need a `Promise<Reply>` — typically HTTP
+  handlers, sagas, tests.  Has overhead (temporary ref) so don't
+  use it in tight loops.
+- **`pipeTo`** when an async operation should land *as a message*
+  in an actor's mailbox.  The non-blocking alternative to
+  `await` inside `onReceive`.
+
+See [Ask pattern](/actor-ts/fundamentals/ask-pattern/) and
+[Future patterns](/actor-ts/patterns/futures-patterns/).
+
+### PersistentActor or DurableStateActor?
+
+Pick by whether you need **history**:
+
+- **PersistentActor** persists every state-changing event.  Replay
+  to recover.  Use when history matters (audit, time travel,
+  projections, append-only domains).
+- **DurableStateActor** persists the current state snapshot,
+  overwriting on each update.  Use when the current value is all
+  you need.
+
+See [Persistence overview](/actor-ts/persistence/overview/).
+
+### Singleton, Sharding, or DistributedData?
+
+- **Singleton** — exactly one actor cluster-wide.  Coordinators,
+  schedulers, leader-elected services.
+- **Sharding** — one actor per *key*, distributed across nodes.
+  Per-user sessions, per-IoT-device controllers.
+- **DistributedData** — eventually-consistent shared state via
+  CRDTs.  Counters, flags, sets that everyone reads and writes.
+
+See the [Distribution overviews](/actor-ts/cluster/overview/).
+
+## Performance
+
+### How many actors can I spawn?
+
+In rough numbers (single Bun process, 4-core machine):
+
+- **100 000 actors** is comfortable — minimal memory overhead per
+  actor, sub-millisecond send latency.
+- **1 000 000 actors** is feasible but tight on memory.  Consider
+  passivation patterns (idle entities stop themselves).
+- **10 000 000+ actors** needs sharding across nodes — one node
+  can't hold that many efficiently.
+
+The dominant cost is the actor's **own state**, not the framework's
+bookkeeping.
+
+### What's the per-message overhead?
+
+Roughly:
+
+- **`tell`** — ~50 ns per call on hot path (microtask
+  dispatcher).  Memory: ~200 bytes per envelope.
+- **`ask`** — ~5 μs per call (temporary ref construction).
+  Memory: ~500 bytes plus Promise machinery.
+- **Cross-cluster `tell`** — bounded by network + serialization
+  cost.  Sub-millisecond on localhost, ms-range over LAN.
+
+For comparison: a raw `function call` is ~1 ns.  Actor messaging
+costs 50-200× a direct call — which is fine for most workloads
+but visible if you'd hammer the same actor with millions of
+messages per second.
+
+### Should I worry about garbage collection?
+
+The framework doesn't allocate aggressively, but it does allocate.
+Hot paths (`tell`, mailbox enqueue/dequeue) create envelopes per
+message; high-throughput actors *can* show in GC profiles.
+
+For low-allocation hot paths:
+
+- Reuse message objects when safe (but **only** if the receiver
+  doesn't keep a reference).
+- Use `MicrotaskDispatcher` for compute-heavy actors that don't
+  share the event loop with HTTP I/O.
+
+## Cluster
+
+### What's the minimum cluster size?
+
+**One node** is valid.  `Cluster.join` with no seeds (or
+unreachable seeds) gives you a singleton cluster — the local
+node auto-promotes to leader.  Every cluster extension (sharding,
+singleton, pubsub) works in single-node mode.
+
+This means you can develop and test cluster code without a Docker
+Compose setup.
+
+### How do I handle split-brain?
+
+Two layers:
+
+- **Downing strategies** that force a winner during partition.
+  See [Downing strategies](/actor-ts/cluster/downing-strategies/).
+- **Optional leases** for sharding coordinator and singletons.
+  See [Singleton with lease](/actor-ts/cluster/singleton/with-lease/).
+
+Without a downing strategy, the default behavior is "wait
+indefinitely" — operators must down nodes manually.  Pick one for
+production.
+
+### Can I use Kubernetes for cluster discovery?
+
+Yes — the `kubernetes-api` seed provider lists pods matching a
+label selector and uses them as seeds.  See
+[Discovery — Kubernetes API](/actor-ts/discovery/seed-providers/kubernetes-api/).
+
+For lease-based singletons in K8s, the
+[Kubernetes lease](/actor-ts/coordination/kubernetes-lease/)
+implementation uses K8s native Lease CRDs.
+
+## Persistence
+
+### What journal should I use?
+
+- **`InMemoryJournal`** for tests and dev.
+- **`SqliteJournal`** for single-node production (best
+  performance-to-simplicity ratio).
+- **`CassandraJournal`** when multiple nodes need to share the
+  same event stream.
+- **Custom** when none of these fit — implement the `Journal`
+  interface against your storage.
+
+See [Journals — In-memory](/actor-ts/persistence/journals/in-memory/)
+and [SQLite](/actor-ts/persistence/journals/sqlite/).
+
+### How do I evolve event schemas?
+
+Use **event adapters**.  Every event persists in a versioned
+envelope (`{ _v, _t, _e }`); the adapter's `upcast(stored,
+version)` is called on read to migrate older versions to the
+current shape.
+
+See [Migration overview](/actor-ts/persistence/migration/overview/).
+
+### Are projections delivered exactly-once?
+
+Each projection persists its own offset; if a projection crashes
+after processing event N but before persisting offset N, it'll
+re-process N on restart.  In that sense, **at-least-once**.
+
+For exactly-once semantics, the projection must be idempotent
+(use the event's seqNr as a dedup key) or transactional (commit
+the view + offset atomically).  See
+[Projections](/actor-ts/persistence/projections/).
+
+## Runtime + tooling
+
+### What about TypeScript versions?
+
+We test against **TypeScript 5.6+**.  Earlier versions may work
+but aren't supported.  The framework uses some features
+(e.g., `const` type parameters) that landed in recent releases.
+
+### Why ts-pattern?
+
+It's the cleanest way we found to express `match().exhaustive()`
+in TS — the discriminated-union dispatch pattern is everywhere in
+the codebase and a hand-rolled switch loses the exhaustiveness
+check.
+
+You're not *required* to use ts-pattern in your own code; plain
+`if/else` ladders work fine.  See
+[Pattern matching](/actor-ts/fundamentals/pattern-matching/).
+
+### Bun vs Node — which should I pick?
+
+**Bun** if you can.  Faster startup, faster cold paths, native
+SQLite, native test runner.  We test Bun as the primary runtime.
+
+**Node** (≥22.12) is fully supported as a fallback.  Some
+performance is left on the table compared to Bun, but the
+feature surface is identical.
+
+**Deno** is supported but receives less testing — file a bug if
+you hit a Deno-specific issue.
+
+See [Runtime — Compatibility matrix](/actor-ts/runtime/compatibility-matrix/).
+
+## Debugging
+
+<Aside type="caution" title="Why isn't my actor receiving messages?">
+  Three common causes:
+  - **The ref points at a stopped actor** — messages route to
+    `/deadLetters` (check the system log).
+  - **The mailbox is full** with `reject` overflow — `tell` throws
+    `MailboxFullError` at the sender.  Catch it where you tell.
+  - **Recovery hasn't finished** for a `PersistentActor` — messages
+    sent before `onRecoveryComplete` are stashed.  Slow recovery
+    causes apparent delays.
+</Aside>
+
+<Aside type="caution" title="Why does my actor keep restarting?">
+  Usually `onReceive` is throwing.  Check the system log — every
+  failure is logged with the error and the directive applied.
+  The default supervisor restarts up to 10/minute, then escalates;
+  beyond that you'll see "supervisor giving up" in the logs.
+</Aside>
+
+<Aside type="caution" title="Why is my ask timing out?">
+  Three causes, in order of likelihood:
+  - **The receiver doesn't `tell` the reply** — check the receiver's
+    `onReceive` handler.
+  - **The receiver is dead or restarting** — `Terminated` for the
+    target arrives but not the reply.
+  - **The reply-to ref is the wrong one** — `ask` generates a
+    temporary ref; if you don't use the one in the message
+    (`cmd.replyTo`), the reply goes elsewhere.
+</Aside>
+
+<Aside type="caution" title="Why don't my events replay?">
+  Three causes:
+  - **`persistenceId` changed** between runs — events are stored by
+    pid; a different pid = different stream.
+  - **Wrong journal** — check `actor-ts.persistence.journal.plugin`
+    matches what you wrote with.
+  - **Snapshot has a higher seqNr than the journal** — the framework
+    refuses to load a snapshot that claims to be ahead of the journal
+    (corruption guard).  Delete the snapshot if it's recoverable.
+</Aside>
+
+## Comparison to Akka / other frameworks
+
+### Is this Akka, but in TypeScript?
+
+Spiritually yes — the actor model, supervision, sharding,
+persistence, distributed data, the cluster gossip protocol all
+trace their lineage to Akka.
+
+Differences:
+
+- **No Scala / JVM** — pure TypeScript, runs on JS runtimes.
+- **No fiber-based concurrency** — JavaScript is single-threaded
+  per process; we use the microtask/macrotask queue.
+- **No streaming** — Akka Streams isn't ported.  Use a separate
+  library for backpressure-driven async pipelines.
+- **Smaller surface** — only the actor-model parts.  Akka HTTP,
+  Akka Persistence Query, Alpakka, etc. have analogs but are
+  intentionally simpler than the JVM counterparts.
+
+If you need Akka *exactly*, use Akka.  This is a TypeScript-first
+port that picks the most-useful 80%.
+
+### From Orleans?
+
+Orleans actors are **virtual** — addressed by ID, auto-spawned on
+first message, auto-passivated when idle.  actor-ts sharding is
+the closest analog (see
+[Sharding overview](/actor-ts/cluster/sharding/overview/)).
+Differences:
+
+- Sharding entities are *not* virtual by default — they're
+  passivated explicitly (or by idle timeout).
+- Sharded entity placement is one-actor-per-key, like Orleans
+  grains, but the placement strategy is hash-mod-region by
+  default, not Orleans's directory-based.
+
+Migration guide: [from-orleans](/actor-ts/migration/from-orleans/).
+
+## Where to next
+
+- **[Glossary](/actor-ts/reference/glossary/)** — terms used
+  throughout the docs.
+- **[Version policy](/actor-ts/reference/version-policy/)** —
+  what's stable, experimental, or planned.
+- **[Configuration](/actor-ts/reference/configuration/)** — every
+  HOCON key.

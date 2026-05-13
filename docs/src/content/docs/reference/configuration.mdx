@@ -1,0 +1,296 @@
+---
+title: Configuration
+description: Every HOCON key the framework reads, grouped by module — defaults, overrides, environment substitution. Plus the resolution order between code, config file, and built-in reference.
+---
+
+actor-ts uses **HOCON** for configuration — the same superset of
+JSON that Akka uses, with substitutions, durations, sizes, and
+includes.  Three layers, resolved highest-first:
+
+1. **Constructor arguments** to `ActorSystem.create(name, settings)`
+   — explicit code overrides.
+2. **User config** — `application.conf` at the project root, or an
+   explicit path via `configFile`, or an inline `config` object in
+   the settings.
+3. **Reference defaults** — bundled in the framework as
+   `REFERENCE_CONF` (see `src/config/reference.ts`).
+
+Anything not specified in layers 1 or 2 falls through to the
+reference default.
+
+## A complete `application.conf`
+
+```hocon
+actor-ts {
+  system { name = "my-app" }
+  logger { level = "info" }
+
+  dispatcher {
+    default    = "immediate"   # immediate | microtask | throughput
+    throughput = 16
+  }
+
+  cluster {
+    gossip-interval     = 1s
+    seed-retry-interval = 3s
+    failure-detector {
+      heartbeat-interval = 500ms
+      unreachable-after  = 2s
+      down-after         = 5s
+    }
+  }
+
+  remote {
+    transport = "tcp"
+    tcp {
+      hostname = "0.0.0.0"
+      port     = ${?ACTOR_TS_PORT}   # env-var substitution; falls back to default
+    }
+    max-frame-size = 1M
+  }
+
+  persistence {
+    journal        { plugin = "actor-ts.persistence.journal.in-memory"        }
+    snapshot-store { plugin = "actor-ts.persistence.snapshot-store.in-memory" }
+  }
+
+  sharding {
+    number-of-shards    = 64
+    rebalance-interval  = 2s
+    remember-entities   = false
+  }
+}
+```
+
+Place this at the project root.  The framework auto-loads it on
+`ActorSystem.create`.
+
+## The keys, grouped by module
+
+### `actor-ts.system`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `system.name` | `"default"` | System name — used in actor paths and cluster identification. |
+
+### `actor-ts.logger`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `logger.level` | `"info"` | One of `debug` / `info` / `warn` / `error` / `off`. |
+
+### `actor-ts.dispatcher`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `dispatcher.default` | `"immediate"` | `immediate` (default) / `microtask` / `throughput`. |
+| `dispatcher.throughput` | `16` | Messages a `ThroughputDispatcher` processes before yielding. |
+
+### `actor-ts.cluster`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `cluster.gossip-interval` | `1s` | How often gossip is exchanged with a random peer. |
+| `cluster.seed-retry-interval` | `3s` | How often to retry seed connections during join. |
+| `cluster.leader-election` | `"lowest-address"` | Strategy for picking a new leader. |
+| `cluster.failure-detector.heartbeat-interval` | `500ms` | How often heartbeats are sent. |
+| `cluster.failure-detector.unreachable-after` | `2s` | Suspicion threshold for `unreachable` status. |
+| `cluster.failure-detector.down-after` | `5s` | Suspicion threshold for forced down. |
+
+### `actor-ts.remote`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `remote.transport` | `"tcp"` | Currently only `"tcp"` and the in-memory test transport. |
+| `remote.tcp.hostname` | `"0.0.0.0"` | TCP bind address. |
+| `remote.tcp.port` | `2552` | TCP bind port. |
+| `remote.tls.enabled` | `false` | Toggle TLS on the cluster transport. |
+| `remote.max-frame-size` | `1M` | Maximum allowed wire frame size. |
+
+### `actor-ts.http`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `http.backend` | `"fastify"` | One of `fastify` / `bun` / `express`. |
+| `http.shutdown-grace-period` | `5s` | Time to drain in-flight requests on shutdown. |
+
+### `actor-ts.persistence`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `persistence.journal.plugin` | `"...in-memory"` | Fully-qualified key to the journal's config. |
+| `persistence.snapshot-store.plugin` | `"...in-memory"` | Fully-qualified key to the snapshot store's config. |
+| `persistence.recovery.mode` | `"eager"` | `eager` (default) — replay all events on preStart.  `parallel` — replay in chunks. |
+
+The plugin keys point to *another* config section that holds
+that plugin's settings.  E.g. `actor-ts.persistence.journal.sqlite`
+contains the SQLite journal's `path`, `pragmas`, etc.  See each
+journal page in [Persistence](/actor-ts/persistence/overview/) for
+the per-plugin keys.
+
+### `actor-ts.sharding`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `sharding.number-of-shards` | `64` | How many shards the entity space is divided into. |
+| `sharding.rebalance-interval` | `2s` | Gap between coordinator-driven rebalance passes. |
+| `sharding.hand-off-timeout` | `10s` | How long to wait for HandOffComplete before force-reallocating. |
+| `sharding.remember-entities` | `false` | Persist the set of active entity IDs. |
+| `sharding.passivation-idle` | `0ms` | Auto-passivate an entity after this idle window.  `0` = disabled. |
+
+### `actor-ts.coordinated-shutdown`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `coordinated-shutdown.default-phase-timeout` | `5s` | Default per-phase timeout. |
+| `coordinated-shutdown.terminate-actor-system` | `true` | Whether to call `system.terminate()` in the final phase. |
+| `coordinated-shutdown.exit-jvm` | `false` | Whether to call `process.exit()` after shutdown. |
+
+### `actor-ts.worker` *(multi-runtime workers)*
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `worker.count` | `"auto"` | Number of workers — `"auto"` uses `navigator.hardwareConcurrency`. |
+| `worker.restart-policy` | `"on-failure"` | `always` / `on-failure` / `never`. |
+
+### Broker plugins — `actor-ts.io.broker.*`
+
+Each broker actor reads from its own subtree.  See the per-protocol
+pages for the keys:
+
+| Subtree | Page |
+| --- | --- |
+| `io.broker.kafka` | [Kafka](/actor-ts/io/kafka/) |
+| `io.broker.mqtt` | [MQTT](/actor-ts/io/mqtt/) |
+| `io.broker.amqp` | [AMQP](/actor-ts/io/amqp/) |
+| `io.broker.nats` | [NATS](/actor-ts/io/nats/) |
+| `io.broker.jetstream` | [JetStream](/actor-ts/io/nats/) *(same page, JetStream variant)* |
+| `io.broker.redis-streams` | [Redis Streams](/actor-ts/io/redis-streams/) |
+| `io.broker.grpc.{client,server}` | [gRPC](/actor-ts/io/grpc/) |
+| `io.broker.websocket` | [WebSocket client](/actor-ts/io/websocket/) |
+| `io.broker.sse` | [SSE](/actor-ts/io/sse/) |
+| `io.broker.tcp` | [TCP](/actor-ts/io/tcp/) |
+| `io.broker.udp` | [UDP](/actor-ts/io/udp/) |
+
+## HOCON-specific syntax
+
+### Durations
+
+```hocon
+gossip-interval = 1s        # 1000 ms
+unreachable-after = 2.5s    # 2500 ms
+down-after = 5000ms         # explicit ms
+gc-cadence = 10m            # minutes
+ttl = 24h                   # hours
+```
+
+Recognized units: `ns`, `us`, `ms`, `s`, `m`, `h`, `d`.
+
+### Sizes
+
+```hocon
+max-frame-size = 1M         # 1 048 576 bytes
+buffer = 64K
+heap = 2G
+```
+
+Recognized units: `B`, `K`, `M`, `G`, `T` — binary (1024) by
+default.
+
+### Environment substitution
+
+```hocon
+port = ${?ACTOR_TS_PORT}              # use env if set, else fall through
+log-level = ${?LOG_LEVEL}             # same
+api-key = ${API_KEY}                  # required — error if env is unset
+fallback-port = ${?ENV_PORT}
+fallback-port = ${fallback-port:-2552}  # default-if-empty syntax
+```
+
+Use `${?ENV}` for optional, `${ENV}` for required.
+
+### Includes
+
+```hocon
+include "shared-cluster.conf"
+
+actor-ts.cluster.failure-detector.heartbeat-interval = 250ms
+```
+
+Loads `shared-cluster.conf` and overlays your local section on top.
+
+## Reading config in code
+
+```ts
+const system = ActorSystem.create('my-app', {
+  config: {
+    'actor-ts.cluster.gossip-interval': '500ms',
+  },
+});
+
+// Inside an actor / extension:
+const cfg = system.config;
+const interval = cfg.getDuration('actor-ts.cluster.gossip-interval');
+//      → 500 (in ms)
+```
+
+The `Config` interface has typed getters: `getString`, `getNumber`,
+`getBoolean`, `getDuration`, `getSize`, `getStringList`, etc.
+Missing keys throw unless you check first with `hasPath`.
+
+## Loading order
+
+```
+1. REFERENCE_CONF                           ← bundled defaults
+2. application.conf (CWD)                   ← project root, auto-loaded
+3. file path from `configFile` setting      ← explicit override
+4. ENV var ACTOR_TS_CONFIG                  ← path or inline HOCON
+5. constructor `config: { ... }`            ← code-level override
+6. constructor field overrides              ← explicit fields beat config
+   (logLevel, dispatcher, scheduler, …)
+```
+
+Each layer overlays on top of the previous.  Layer 6 (constructor
+fields) always wins for the fields it covers; everything else
+flows through the HOCON merge.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Plugin keys are fully-qualified paths">
+  ```hocon
+  persistence.journal.plugin = "actor-ts.persistence.journal.sqlite"
+  ```
+  Note the `actor-ts.` prefix.  The plugin key is the full HOCON
+  path to where that plugin's settings live, not a short name.
+  Short names like `"sqlite"` won't be resolved.
+</Aside>
+
+<Aside type="caution" title="Use `${?ENV}` for secrets">
+  ```hocon
+  api-key = "sk_live_abc..."   # ← committed in plaintext, bad
+  api-key = ${?API_KEY}        # ← read from env, won't end up in git
+  ```
+  Never put credentials in `application.conf`.  Use env-var
+  substitution and let your secret manager fill them in at
+  deploy time.
+</Aside>
+
+<Aside type="caution" title="Durations require units">
+  ```hocon
+  gossip-interval = 1000       # ✗ ambiguous — ms? seconds?
+  gossip-interval = 1s         # ✓ unit-suffixed
+  ```
+  HOCON parses bare numbers as numbers, not durations.  Keys
+  that expect durations require an explicit unit.
+</Aside>
+
+## Where to next
+
+- **[Actor system](/actor-ts/fundamentals/actor-system/)** —
+  how settings reach the framework.
+- **[Cluster overview](/actor-ts/cluster/overview/)** — the keys
+  most relevant to multi-node setups.
+- **[Persistence overview](/actor-ts/persistence/overview/)** —
+  journal + snapshot-store plugin selection.
+- **[Version policy](/actor-ts/reference/version-policy/)** —
+  what's stable vs experimental.

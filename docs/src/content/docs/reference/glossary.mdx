@@ -1,0 +1,380 @@
+---
+title: Glossary
+description: Terms used throughout the documentation — short definitions with links to the page that covers each in depth.
+---
+
+## A
+
+**Actor.**  An entity with its own state and behavior that
+processes messages one at a time.  The basic unit of computation
+in the actor model.  See [Actor](/actor-ts/fundamentals/actor/).
+
+**ActorPath.**  The unique hierarchical name for an actor in a
+system, e.g. `actor-ts://my-app/user/api/sessions/user-42`.  See
+[Actor paths](/actor-ts/fundamentals/actor-paths/).
+
+**ActorRef.**  A typed handle to an actor — the value you `tell`.
+See [Actor](/actor-ts/fundamentals/actor/).
+
+**ActorSelection.**  A lookup *description* for an actor by path
+string; resolved on demand to an `ActorRef`.  See
+[Actor paths](/actor-ts/fundamentals/actor-paths/).
+
+**ActorSystem.**  The top-level container for actors; one (or a
+few) per process.  Owns the dispatcher, scheduler, supervisor
+tree, and extensions.  See
+[ActorSystem](/actor-ts/fundamentals/actor-system/).
+
+**AllForOneStrategy.**  A supervisor strategy where one child's
+failure causes the same directive to apply to every sibling.  See
+[Supervision](/actor-ts/fundamentals/supervision/).
+
+**Ask.**  Request/response over actors — `ask(ref, msg, timeout)`
+returns a Promise for the reply.  See
+[Ask pattern](/actor-ts/fundamentals/ask-pattern/).
+
+**At-least-once delivery.**  A message-delivery guarantee where
+duplicates are possible but losses are not.  See
+[Delivery](/actor-ts/delivery/overview/).
+
+## B
+
+**Backoff supervisor.**  A supervisor that restarts its child with
+exponential backoff between attempts.  See
+[Backoff supervisor](/actor-ts/patterns/backoff-supervisor/).
+
+**Become.**  Replace the current message handler with a new one.
+See [Become and stash](/actor-ts/fundamentals/become-and-stash/).
+
+**Behavior.**  In the typed API, a value describing how to handle
+the next message.  Composed with `Behaviors.*` combinators.  See
+[Behaviors](/actor-ts/typed/behaviors/).
+
+**Broadcast.**  A router strategy (or a `Broadcast<T>` wrapper)
+that sends a message to every routee.  See
+[Strategies](/actor-ts/routing/strategies/).
+
+## C
+
+**Circuit breaker.**  A three-state wrapper (closed/open/half-open)
+that fails fast after sustained downstream failures.  See
+[Circuit breaker](/actor-ts/patterns/circuit-breaker/).
+
+**Cluster.**  A group of actor systems that gossip membership and
+route messages across the network.  See
+[Cluster overview](/actor-ts/cluster/overview/).
+
+**ClusterSharding.**  Distributes per-key actors across cluster
+nodes with automatic rebalancing.  See
+[Sharding overview](/actor-ts/cluster/sharding/overview/).
+
+**ClusterSingleton.**  Exactly one actor cluster-wide, hosted on
+the leader.  See
+[Singleton overview](/actor-ts/cluster/singleton/overview/).
+
+**Command.**  In event sourcing, a request to do something —
+distinct from the event that records what happened.  See
+[PersistentActor](/actor-ts/persistence/persistent-actor/).
+
+**CoordinatedShutdown.**  Phased shutdown DSL with task
+registration per named phase.  See
+[Coordinated shutdown](/actor-ts/fundamentals/coordinated-shutdown/).
+
+**CRDT.**  Conflict-free Replicated Data Type — a data type whose
+merge operation is commutative, associative, and idempotent, so
+gossip convergence works without coordination.  See
+[Distributed data](/actor-ts/distributed-data/overview/).
+
+## D
+
+**DeadLetter.**  The synthetic recipient for messages with no
+live target.  See [ActorSystem](/actor-ts/fundamentals/actor-system/).
+
+**Death watch.**  An actor's mechanism for being notified when
+another actor stops.  See
+[Death watch](/actor-ts/fundamentals/death-watch/).
+
+**Directive.**  The supervisor's decision for a child failure:
+`Restart` / `Resume` / `Stop` / `Escalate`.  See
+[Supervision](/actor-ts/fundamentals/supervision/).
+
+**Discriminated union.**  A TypeScript type pattern where each
+variant has a tag field (`kind`) — the framework's convention for
+messages.  See [Messages](/actor-ts/fundamentals/messages/).
+
+**Dispatcher.**  Schedules an actor's message processing onto the
+JavaScript event loop.  See
+[Dispatchers](/actor-ts/fundamentals/dispatchers/).
+
+**DistributedData.**  CRDT-replicated state across the cluster.
+See [Distributed data overview](/actor-ts/distributed-data/overview/).
+
+**DistributedPubSub.**  Topic-based publish/subscribe across the
+cluster.  See [PubSub](/actor-ts/cluster/pubsub/).
+
+**Downing strategy.**  Logic that decides which side of a network
+partition wins and which downs itself.  See
+[Downing strategies](/actor-ts/cluster/downing-strategies/).
+
+**DurableStateActor.**  Persists a single state snapshot per
+`persistenceId` (vs. PersistentActor's event log).  See
+[Durable state](/actor-ts/persistence/durable-state/).
+
+## E
+
+**Entity.**  In sharding, a single actor identified by an entity
+ID.  See [Sharding overview](/actor-ts/cluster/sharding/overview/).
+
+**Envelope.**  The internal wrapper around a message in transit:
+`{ message, sender, context?, trace? }`.
+
+**Event.**  In event sourcing, the persisted fact recording that
+something happened.  Distinct from a command.  See
+[PersistentActor](/actor-ts/persistence/persistent-actor/).
+
+**Event adapter.**  Schema-evolution upcaster for events.  See
+[Migration overview](/actor-ts/persistence/migration/overview/).
+
+**Event sourcing.**  A persistence model where state is derived
+by replaying a log of events.  See
+[Persistence overview](/actor-ts/persistence/overview/).
+
+**Event stream.**  System-wide pub/sub bus, scoped to one
+ActorSystem.  See
+[Event stream](/actor-ts/fundamentals/event-stream/).
+
+**Extension.**  Plugin mechanism — lazy-initialized, system-scoped
+services (cluster, persistence, metrics, …).  See
+[ActorSystem](/actor-ts/fundamentals/actor-system/).
+
+## F
+
+**Failure detector.**  Phi-accrual detector that flags
+unreachable peers based on missing heartbeats.  See
+[Failure detector](/actor-ts/cluster/failure-detector/).
+
+**FIFO.**  First-in-first-out — the default mailbox order.  See
+[Mailboxes](/actor-ts/fundamentals/mailboxes/).
+
+**FSM.**  Finite-state-machine pattern; both in-memory and
+event-sourced variants exist.  See
+[FSM overview](/actor-ts/persistence/fsm/overview/).
+
+## G
+
+**Gossip.**  The cluster's membership-propagation protocol —
+members exchange views periodically until convergence.  See
+[Cluster overview](/actor-ts/cluster/overview/).
+
+**Guardian.**  Top-level system actors: `/user`, `/system`,
+`/deadLetters`.  See
+[ActorSystem](/actor-ts/fundamentals/actor-system/).
+
+## H
+
+**HOCON.**  Human-Optimized Configuration Object Notation — the
+config format actor-ts uses.  See
+[Configuration](/actor-ts/reference/configuration/).
+
+## J
+
+**Journal.**  The append-only event store for `PersistentActor`s.
+See [Persistence overview](/actor-ts/persistence/overview/).
+
+## K
+
+**Kill.**  System message that raises `ActorKilledError` —
+triggers the supervisor strategy.  See
+[Poison pill and Kill](/actor-ts/fundamentals/poison-pill-and-kill/).
+
+## L
+
+**Lease.**  Coordination primitive — exactly-one actor holds a
+named lease at a time.  Used to prevent split-brain for
+singletons and sharding coordinators.  See
+[Coordination](/actor-ts/coordination/overview/).
+
+**LogContext / MDC.**  Mapped Diagnostic Context — per-async-stack
+key-value store that propagates with `tell` and across cluster
+hops.  See [Logging](/actor-ts/fundamentals/logging/).
+
+## M
+
+**Mailbox.**  The per-actor message queue.  Default unbounded
+FIFO; bounded and priority variants ship.  See
+[Mailboxes](/actor-ts/fundamentals/mailboxes/).
+
+**Message.**  Any value `tell`'d to an actor.  Convention:
+discriminated union tagged by `kind`.  See
+[Messages](/actor-ts/fundamentals/messages/).
+
+## N
+
+**Node.**  In a cluster, a single ActorSystem instance bound to
+a host:port.  See [Cluster overview](/actor-ts/cluster/overview/).
+
+## O
+
+**`onReceive`.**  An actor's method that handles each incoming
+message.  See [Actor](/actor-ts/fundamentals/actor/).
+
+**OneForOneStrategy.**  The default supervisor strategy — a
+failing child gets the directive; siblings are unaffected.  See
+[Supervision](/actor-ts/fundamentals/supervision/).
+
+## P
+
+**Passivation.**  Stopping an idle sharded entity to free memory;
+next message for the same ID re-spawns it.  See
+[Sharding overview](/actor-ts/cluster/sharding/overview/).
+
+**`persist`.**  In `PersistentActor`, the call that writes an
+event to the journal and invokes the callback after the event has
+been applied via `onEvent`.  See
+[PersistentActor](/actor-ts/persistence/persistent-actor/).
+
+**`persistenceId`.**  The unique identifier for an entity's
+event stream in the journal.
+
+**PersistentActor.**  Event-sourced actor base class.  See
+[PersistentActor](/actor-ts/persistence/persistent-actor/).
+
+**Phi accrual.**  The failure detector's underlying algorithm —
+suspicion accumulates based on heartbeat history.
+
+**`pipeTo`.**  Route a Promise's eventual result into an actor's
+mailbox as a message.  See
+[Future patterns](/actor-ts/patterns/futures-patterns/).
+
+**PoisonPill.**  System message that triggers a graceful
+stop-after-drain.  See
+[Poison pill and Kill](/actor-ts/fundamentals/poison-pill-and-kill/).
+
+**Pool.**  A router that creates its routees from `Props`.  See
+[Pool vs group](/actor-ts/routing/pool-vs-group/).
+
+**Projection.**  Read-side view built from a `PersistentActor`'s
+event stream.  See [Projections](/actor-ts/persistence/projections/).
+
+**Props.**  Immutable description of how to construct an actor —
+factory + supervisor strategy + dispatcher + mailbox.  See
+[Props](/actor-ts/fundamentals/props/).
+
+## R
+
+**Reachability.**  Whether the failure detector currently sees a
+peer as heartbeating.
+
+**Receive timeout.**  Timer that fires when no user message has
+arrived in N ms.  See
+[Receive timeout](/actor-ts/fundamentals/receive-timeout/).
+
+**Rebalance.**  Sharding's process of moving shards between
+nodes when membership changes.  See
+[Rebalance](/actor-ts/cluster/sharding/rebalance/).
+
+**Remember entities.**  Sharding option that persists the active
+entity-ID set so they re-spawn after a coordinator failover.  See
+[Remember entities](/actor-ts/cluster/sharding/remember-entities/).
+
+**`replyTo`.**  Convention: a field on a request message that
+carries the `ActorRef` to reply to.  See
+[Messages](/actor-ts/fundamentals/messages/).
+
+**Region.**  The per-node sharding actor that hosts entities for
+shards it owns and routes others.  See
+[Sharding overview](/actor-ts/cluster/sharding/overview/).
+
+**Restart.**  Supervisor directive — throw away the broken
+instance, build a fresh one.  See
+[Supervision](/actor-ts/fundamentals/supervision/).
+
+**Resume.**  Supervisor directive — keep the state, skip the
+failing message.  See
+[Supervision](/actor-ts/fundamentals/supervision/).
+
+**Routee.**  An actor that receives messages routed by a
+[Router](/actor-ts/routing/router/).
+
+**Router.**  An actor that forwards each message to one (or all)
+of its routees per a strategy.  See
+[Router](/actor-ts/routing/router/).
+
+## S
+
+**Scheduler.**  System-level scheduler — runs delayed and
+periodic tasks.  Distinct from per-actor
+`TimerScheduler`.  See
+[Timers and scheduling](/actor-ts/fundamentals/timers-and-scheduling/).
+
+**Seed node.**  An address a joining node contacts to enter the
+cluster.  See
+[Joining and seeds](/actor-ts/cluster/joining-and-seeds/).
+
+**Shard.**  A subset of entity IDs hashed together.  Owned by
+exactly one node at a time.  See
+[Sharding overview](/actor-ts/cluster/sharding/overview/).
+
+**Snapshot.**  Periodic state dump that shortens recovery for
+`PersistentActor`s.  See [Snapshots](/actor-ts/persistence/snapshots/).
+
+**Split-brain.**  When a network partition splits the cluster
+into two halves that both think the other is gone.  See
+[Downing strategies](/actor-ts/cluster/downing-strategies/).
+
+**Stash.**  Park the currently-handled message for later replay.
+See [Become and stash](/actor-ts/fundamentals/become-and-stash/).
+
+**Supervisor strategy.**  Per-parent logic that maps a child's
+error to a directive.  See
+[Supervision](/actor-ts/fundamentals/supervision/).
+
+## T
+
+**`tell`.**  Fire-and-forget send.  The default actor verb.  See
+[Messages](/actor-ts/fundamentals/messages/).
+
+**`Terminated`.**  System message delivered to watchers when a
+watched actor stops.  See
+[Death watch](/actor-ts/fundamentals/death-watch/).
+
+**Tombstone.**  In gossip, a record kept after a member is
+removed to prevent stale gossip from resurrecting it.
+
+**Tracer.**  Observability abstraction for distributed tracing —
+typically wraps an OpenTelemetry SDK.  See
+[Tracing](/actor-ts/observability/tracing/tracer-api/).
+
+**ts-pattern.**  Library used for `match().exhaustive()`
+dispatch on discriminated unions.  See
+[Pattern matching](/actor-ts/fundamentals/pattern-matching/).
+
+**Typed actor.**  The functional alternative to subclassing
+`Actor` — actors as `Behavior<T>` values.  See
+[Typed overview](/actor-ts/typed/overview/).
+
+## U
+
+**Unbecome.**  Restore the previous behavior after a `become`
+that stacked it.  See
+[Become and stash](/actor-ts/fundamentals/become-and-stash/).
+
+**Unreachable.**  A cluster member the failure detector flags as
+not heartbeating.  Not yet officially downed.  See
+[Failure detector](/actor-ts/cluster/failure-detector/).
+
+## V
+
+**Vector clock.**  Logical clock used in replicated event
+sourcing to track concurrent updates.  See
+[Replicated ES — Vector clocks](/actor-ts/persistence/replicated-event-sourcing/vector-clocks/).
+
+## W
+
+**Watch / unwatch.**  Subscribe (or unsubscribe) to the
+`Terminated` notification for another actor.  See
+[Death watch](/actor-ts/fundamentals/death-watch/).
+
+**Weakly-up.**  A transient member state — gossip-visible but not
+yet leader-confirmed.  See
+[Weakly-up](/actor-ts/cluster/weakly-up/).
