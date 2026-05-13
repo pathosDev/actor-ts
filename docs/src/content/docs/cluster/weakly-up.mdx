@@ -1,0 +1,178 @@
+---
+title: Weakly-up
+description: A transient member state between `joining` and `up` — gossip-visible but not yet leader-confirmed. Lets a partitioned cluster make partial progress without waiting for full convergence.
+---
+
+In a healthy cluster, a joining node transitions from `joining` to
+`up` over a few gossip rounds — once the leader sees it.  But when
+the cluster is **partitioned**, the leader's view doesn't include
+the partitioned side; a node joining the minority side waits
+indefinitely.
+
+**Weakly-up** is a transient state that breaks this deadlock:
+after a configured delay, a joiner that hasn't reached `up` is
+auto-promoted to `weakly-up`.  It's gossip-visible to its
+partition; the cluster can route to it without the leader's
+involvement — but with some restrictions.
+
+```
+   joining ──── (delay elapses, leader still hasn't confirmed) ────►  weakly-up
+      │                                                                  │
+      └─── (leader visible, gossip converges) ─────────────────────►    up
+                                                                          │
+                                                          weakly-up ──────┘
+                                                          (eventually also confirmed)
+```
+
+## When this matters
+
+In normal operation, the transition `joining → up` happens within
+a second or two — you never see `weakly-up`.  It comes up only
+during:
+
+- **Cold-start with a partition** — multiple nodes booting
+  simultaneously across a partial network.
+- **A leader-side outage during join** — the leader is
+  unreachable but the joiner can reach other members.
+- **Stretched clusters with high RTT** — the gossip-to-leader
+  round trip is slow enough to exceed a configured threshold.
+
+Without weakly-up, none of these scenarios make progress; the
+joiner is stuck in `joining` forever (or until the leader
+appears).
+
+## Enabling weakly-up
+
+```ts
+await Cluster.join(system, {
+  host, port, seeds,
+  weaklyUpAfterMs: 3_000,   // auto-promote after 3s in joining
+});
+```
+
+The default is `0` (disabled).  Pick a value high enough that
+normal `joining → up` is the common path, but low enough that a
+stalled join progresses within reasonable time.
+
+3-10 seconds is typical.  Less and you'd promote during routine
+slow gossip rounds; more and the stalled-join recovery is
+sluggish.
+
+## What weakly-up members can and can't do
+
+| Capability | `weakly-up` |
+| --- | --- |
+| Receive `tell` from other peers in the same partition | ✓ |
+| Subscribe to cluster events | ✓ |
+| Be a routee in cluster-router pools | ✗ |
+| Host sharding entities | ✗ |
+| Win a singleton election | ✗ |
+
+The split: **passive participation works**, **active
+responsibilities don't**.  A `weakly-up` member can still serve
+HTTP requests landing on it, but cluster-managed responsibilities
+wait for full `up` confirmation.
+
+This is conservative on purpose — a weakly-up member might
+actually be on the *minority* side of a partition (it's just not
+confirmed either way yet).  Letting it host a singleton would
+risk dual-leadership.
+
+## The full state path
+
+```
+fresh node     joining     weakly-up    up    leaving   exiting   removed
+   (init)        │            │          │       │         │         │
+                 └────┬───────┘          │       └────┬────┘         │
+                      │                  │            │              │
+                      └──────────────────┘            └──────────────┘
+                          (most common)                  (graceful exit)
+```
+
+`weakly-up` is **transient** — once the leader becomes reachable
+and gossip converges, the member transitions to `up`.  It can also
+go straight from `weakly-up` to `leaving` or `removed` if it's
+stopped without ever reaching `up`.
+
+## Observing the transition
+
+```ts
+import { MemberWeaklyUp, MemberUp } from 'actor-ts';
+
+cluster.subscribe(MemberWeaklyUp, (evt) => {
+  console.log(`${evt.member.address} promoted to weakly-up`);
+});
+
+cluster.subscribe(MemberUp, (evt) => {
+  console.log(`${evt.member.address} reached full up`);
+});
+```
+
+In dashboards or monitoring, count `MemberWeaklyUp` events — a
+non-zero rate in steady state means partitions are happening (or
+the threshold is set too low for your network).
+
+## When to enable, when not
+
+**Enable when:**
+
+- Cold-start partition tolerance matters (multi-AZ deployments,
+  CI multi-node tests with imperfect networking).
+- Your application has work that doesn't *require* full cluster
+  membership (e.g., an HTTP API that can serve cached reads
+  even before the cluster fully forms).
+
+**Don't enable when:**
+
+- Your app's correctness depends on "every node in the cluster
+  agrees on membership before doing anything."  Stay strict;
+  let joins wait for full convergence.
+- The cluster is small + stable, and you'd rather see "join
+  stuck" alerts than silent half-membership.
+
+## Pitfalls
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Weakly-up isn't a substitute for downing">
+  ```ts
+  weaklyUpAfterMs: 3_000;
+  // ✗ no downingProvider
+  ```
+  Weakly-up helps **join** during partition; it doesn't help the
+  partition *resolve*.  After the partition heals, you still need
+  a downing strategy to evict the losing side.  Use both.
+</Aside>
+
+<Aside type="caution" title="Weakly-up members may surprise you">
+  ```ts
+  const members = cluster.upMembers();
+  // ↑ doesn't include weakly-up members
+  ```
+  `upMembers()` is strict — only fully-up.  If your code branches
+  on "are at least 3 members up?" without considering weakly-up,
+  a partitioned cluster might pass the check on one side and
+  fail on the other.  Decide explicitly which state(s) your
+  logic considers "live."
+</Aside>
+
+<Aside type="caution" title="Very-short `weaklyUpAfterMs` thrashes">
+  ```ts
+  weaklyUpAfterMs: 200;
+  ```
+  Below the failure-detector's `unreachableAfterMs`, you'd
+  promote members during routine gossip-round-trip delays — and
+  then demote them again when the leader's response finally
+  arrives.  Keep `weaklyUpAfterMs > unreachableAfterMs`.
+</Aside>
+
+## Where to next
+
+- **[Cluster overview](/actor-ts/cluster/overview/)** — the
+  full membership state machine.
+- **[Joining and seeds](/actor-ts/cluster/joining-and-seeds/)** —
+  what happens before weakly-up.
+- **[Failure detector](/actor-ts/cluster/failure-detector/)** —
+  the threshold to keep `weaklyUpAfterMs` above.
+- **[Downing strategies](/actor-ts/cluster/downing-strategies/)** —
+  the complementary mechanism for partition recovery.

@@ -1,0 +1,233 @@
+---
+title: Joining and seeds
+description: How a node enters a cluster — seed contact, the join handshake, leader election, the gossip-to-Up transition. Plus seed-discovery strategies (static list, DNS, K8s API) and what happens when no seeds are reachable.
+---
+
+A node enters a cluster by **contacting a seed node**.  The seed
+gossips back its current membership view; the joiner is added as
+`joining`, propagates through gossip, and once the leader sees it
+(plus convergence), transitions to `up`.
+
+```
+   joining node                 seed node(s)                cluster
+        │                            │                          │
+        │ ── Join announcement ─────►│                          │
+        │                            │ ── gossip Join ─────────►│
+        │ ◄── Gossip (current view) ─│                          │
+        │                            │                          │
+        │   (joining → weakly-up? → up over a few gossip rounds)
+```
+
+This page covers the **mechanics** of that handshake, plus the
+seed-discovery layer on top.
+
+## The simplest case — explicit seeds
+
+```ts
+import { ActorSystem, Cluster } from 'actor-ts';
+
+const system = ActorSystem.create('my-app');
+
+const cluster = await Cluster.join(system, {
+  host:  '10.0.0.5',
+  port:  2552,
+  seeds: ['10.0.0.5:2552', '10.0.0.6:2552', '10.0.0.7:2552'],
+});
+```
+
+Three seeds.  The joiner contacts each in order until one
+responds.  Once any seed accepts, the cluster's gossip propagates
+the new member; convergence to `up` happens within a few seconds
+on a healthy network.
+
+The seed list is just a **bootstrap hint** — once joined, the
+node learns about every other peer via gossip.  Seeds don't have
+to be special after the join.
+
+## Configuration
+
+```ts
+interface ClusterSettings {
+  host:                       string;       // this node's address
+  port:                       number;       // this node's TCP port
+  seeds?:                     string[];     // peer addresses for bootstrap
+  roles?:                     string[];     // role tags
+  failureDetector?:           Partial<...>;
+  transport?:                 Transport;
+  gossipIntervalMs?:          number;
+  seedRetryIntervalMs?:       number;       // retry interval if no seed responds
+  // ...
+}
+```
+
+The seed-related knobs:
+
+| Setting | Default | What |
+| --- | --- | --- |
+| `seeds` | `[]` | List of `"host:port"` strings.  Empty = "I'm the first." |
+| `seedRetryIntervalMs` | 3000 | If no seed responds, retry the list this often until one does. |
+
+## The first node
+
+```ts
+const cluster = await Cluster.join(system, {
+  host:  '0.0.0.0',
+  port:  2552,
+  seeds: [],
+});
+```
+
+An empty `seeds` list (or one that's all-unreachable) means **this
+node bootstraps the cluster by itself**.  It auto-promotes to
+leader; future joiners contact *it*.
+
+This makes single-node development trivial — no seed list to
+maintain.  Add a second node later by giving it the first's
+address as a seed.
+
+**For production**, give every node the same seed list (3-5
+addresses, ideally well-known nodes you don't expect to churn).
+Order doesn't matter; the joiner tries each.
+
+## Self-seeded nodes — the bootstrap race
+
+```
+3 fresh nodes, all in seed list [n1, n2, n3]
+    │
+    n1 contacts n2 → n2 has no cluster yet, says "no" / times out
+    n1 contacts n3 → same
+    n1 contacts itself → recognizes self, auto-bootstraps
+    │
+    n2 + n3 contact each other → both no cluster yet
+    n2 + n3 contact n1 → n1 is now leader → join through it
+```
+
+When a cluster cold-starts (all nodes coming up simultaneously),
+the joiners race.  The framework's seed-retry logic handles this:
+
+- Each node retries its seed list at `seedRetryIntervalMs`.
+- One node eventually contacts itself first; that's the
+  bootstrap.
+- The rest converge on the now-existing cluster.
+
+The default 3-second retry makes cold-start convergence reliable
+in a few rounds.
+
+## Seed discovery — beyond a static list
+
+A hard-coded seed list works for tests and small clusters.  For
+production where nodes have dynamic IPs (containers, K8s pods),
+use a **seed provider**:
+
+| Provider | When |
+| --- | --- |
+| **[Config](/actor-ts/discovery/seed-providers/config/)** | Static list (the case above). |
+| **[DNS](/actor-ts/discovery/seed-providers/dns/)** | Resolves `_actor-ts._tcp.example.com` SRV records. |
+| **[Kubernetes API](/actor-ts/discovery/seed-providers/kubernetes-api/)** | Lists pods matching a label selector. |
+| **[Aggregate](/actor-ts/discovery/seed-providers/aggregate/)** | Falls through multiple providers (e.g. K8s, then DNS). |
+
+```ts
+import { KubernetesApiSeedProvider } from 'actor-ts/discovery';
+
+const seedProvider = new KubernetesApiSeedProvider({
+  namespace:     'default',
+  labelSelector: 'app=actor-ts',
+  containerPort: 2552,
+});
+
+const seeds = await seedProvider.discover();
+
+const cluster = await Cluster.join(system, {
+  host:  process.env.POD_IP!,
+  port:  2552,
+  seeds,
+});
+```
+
+The provider returns a snapshot of seed addresses; the framework
+uses them to bootstrap the join.  See
+[Discovery overview](/actor-ts/discovery/overview/) for the seed
+provider model.
+
+## Watching the join progress
+
+```ts
+import { SelfUp, MemberUp } from 'actor-ts';
+
+cluster.subscribe(SelfUp, (evt) => {
+  console.log(`this node is now Up`);
+});
+
+cluster.subscribe(MemberUp, (evt) => {
+  console.log(`peer ${evt.member.address} reached Up`);
+});
+```
+
+Two key events:
+
+- **`SelfUp`** fires once when *this* node transitions to `up`.
+  Useful gate for starting work that requires cluster
+  membership.
+- **`MemberUp`** fires every time *any* member reaches `up`.
+
+For startup logic that needs other members ("wait until at least 3
+nodes are up before serving traffic"), count `MemberUp`s after
+`SelfUp`.
+
+## What can go wrong
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Seeds unreachable, no self in list">
+  ```ts
+  // ✗ this node isn't a seed, no other seed responds
+  Cluster.join(system, { host: 'n4', port: 2552, seeds: ['n1', 'n2', 'n3'] });
+  ```
+  The join retries forever (silent at default log level).  If
+  the seed list is genuinely unreachable, the node never joins.
+  Either include this node in the seed list (everyone is a
+  seed) or implement health checks that surface "no cluster
+  joined" as an alert.
+</Aside>
+
+<Aside type="caution" title="Two clusters forming with the same name">
+  ```ts
+  // Network partition right at startup:
+  // - n1, n2 reach each other → form cluster
+  // - n3 can't reach them → bootstraps its own cluster
+  // - Partition heals → two clusters with the same name now exist
+  ```
+  Once the partition heals, the gossip protocol *doesn't* merge
+  the two clusters automatically — they're independent.  Mitigate
+  with a downing strategy ([downing-strategies](/actor-ts/cluster/downing-strategies/))
+  and **don't bootstrap during partition** if you can help it
+  (use a seed strategy that fails fast rather than self-bootstrapping
+  on no-seed-response — see weakly-up).
+</Aside>
+
+<Aside type="caution" title="Hostname vs IP mismatch">
+  ```ts
+  // Joiner sees seed as `pod-abc-123.cluster.local`
+  // Seed sees itself as `10.244.1.5`
+  // → gossip's address comparison treats them as different members
+  ```
+  Member identity uses the **address the node advertised at
+  join**.  If different peers see different addresses for the
+  same node (typical in K8s with hostnames), the cluster forms
+  but each node sees the peer as a stranger.  Use the K8s seed
+  provider, which resolves to pod IPs consistently, or set
+  `host` to the IP rather than the hostname.
+</Aside>
+
+## Where to next
+
+- **[Cluster overview](/actor-ts/cluster/overview/)** — the
+  bigger picture.
+- **[Weakly-up](/actor-ts/cluster/weakly-up/)** — gradual-join
+  semantics for slow convergence.
+- **[Failure detector](/actor-ts/cluster/failure-detector/)** —
+  how heartbeats keep the membership view fresh after join.
+- **[Discovery overview](/actor-ts/discovery/overview/)** — seed
+  providers for dynamic environments.
+- **[Downing strategies](/actor-ts/cluster/downing-strategies/)** —
+  split-brain resolution after the cluster forms.

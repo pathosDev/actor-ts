@@ -1,0 +1,240 @@
+---
+title: Cluster router
+description: A router whose routees are derived dynamically from cluster up-members — one routee per node carrying a matching role, at a well-known path. Auto-rebuilds on membership changes. The cluster-aware counterpart to the local `Router`.
+---
+
+The local [`Router`](/actor-ts/routing/router/) creates its routees
+as its own children — a fixed pool on one node.  The
+**`ClusterRouter`** is different: its routees are **other nodes'
+actors at a well-known path**, and the routee set changes as
+cluster membership changes.
+
+```
+                 ClusterRouter on node-A
+                          │
+              ┌───────────┼───────────┐
+              ▼           ▼           ▼
+        node-A's      node-B's     node-C's
+        /user/worker  /user/worker /user/worker
+        (one per up-member with role=compute)
+```
+
+Every up-member with role `compute` (configurable) has a worker
+at `/user/worker`; the router routes incoming messages across them
+per a strategy.  Add a node, the router picks it up; remove a node,
+the router stops sending to it — no restart needed.
+
+See [Pool vs group](/actor-ts/routing/pool-vs-group/) for the
+distinction between local pools and cluster groups.
+
+## A minimal example
+
+```ts
+import { ActorSystem, Cluster, ClusterRouter, Props, Actor } from 'actor-ts';
+
+class Worker extends Actor<{ payload: string }> {
+  override onReceive(msg: { payload: string }): void {
+    this.log.info(`worked on ${msg.payload}`);
+  }
+}
+
+const system  = ActorSystem.create('my-app');
+const cluster = await Cluster.join(system, { host, port, seeds, roles: ['compute'] });
+
+// 1. Every node spawns its own worker at /user/worker
+system.actorOf(Props.create(() => new Worker()), 'worker');
+
+// 2. Any node can build a cluster router targeting these workers
+const router = system.actorOf(
+  ClusterRouter.props({
+    cluster,
+    routerType:  'round-robin',
+    routeePath:  '/user/worker',
+    role:        'compute',
+  }),
+  'compute-router',
+);
+
+// 3. Tell the router — message gets routed to one node's worker
+router.tell({ payload: 'work-1' });
+```
+
+The pattern: each node deploys the routee actors locally; one (or
+more) nodes spawn a `ClusterRouter` that targets them.  The
+router's strategy decides which node's worker handles each message.
+
+## Configuration
+
+```ts
+interface ClusterRouterOptions<TMsg> {
+  cluster:     Cluster;
+  routerType:  'round-robin' | 'random' | 'consistent-hashing' | 'broadcast';
+  routeePath:  string;
+  role?:       string;
+  extractKey?: (msg: TMsg) => string;
+}
+```
+
+| Field | Required | What |
+| --- | --- | --- |
+| `cluster` | Yes | The cluster — used for membership tracking + the wire transport. |
+| `routerType` | Yes | One of the four strategies. |
+| `routeePath` | Yes | The path the routee actor lives at on each node (typically `/user/<actorName>`). |
+| `role` | No | If set, only members carrying this role are routees. |
+| `extractKey` | When `routerType: 'consistent-hashing'` | Extracts the routing key from a message. |
+
+## The four strategies
+
+| Strategy | What it does |
+| --- | --- |
+| `'round-robin'` | One routee per message, cycling. |
+| `'random'` | One routee per message, uniformly random. |
+| `'consistent-hashing'` | Pin same `extractKey` to same routee via rendezvous hashing. |
+| `'broadcast'` | Send to every routee. |
+
+The first three are 1-of-N routing; broadcast is fan-out.  See
+[Strategies](/actor-ts/routing/strategies/) for the picking
+guidance — same trade-offs apply, just spread across cluster nodes
+instead of pool members.
+
+### Consistent-hashing
+
+```ts
+ClusterRouter.props({
+  cluster,
+  routerType:  'consistent-hashing',
+  routeePath:  '/user/cache',
+  extractKey:  (msg) => msg.userId,
+});
+```
+
+Required for `'consistent-hashing'`.  The function pulls a string
+key out of each message; the router pins messages with the same
+key to the same node via rendezvous hashing.
+
+Useful when each routee maintains **per-key state**: a cache of
+that user's data, a session, an in-progress workflow.  Topology
+changes shuffle a fraction of keys (proportional to the
+add/remove), not all of them.
+
+If `extractKey` returns the same value forever, every message goes
+to the same routee (effectively a singleton).  Make sure it varies
+across your actual workload.
+
+## Routee discovery
+
+Every gossip round, the router re-derives its routee set from the
+cluster's up-members.  Triggers a rebuild on:
+
+- `MemberUp` — a new up-member matching the role.  Add it.
+- `MemberRemoved` — a removed member.  Drop it.
+
+The set is **ordered deterministically** (by address), so
+round-robin counters stay sane across rebuilds.
+
+## When the routee set is empty
+
+```ts
+router.tell({ payload: 'a' });
+// → if no up-members match `role`, message is dropped with a warning log
+```
+
+**Important:** an empty routee set means **messages drop to dead
+letters**.  The framework doesn't queue while waiting for routees
+— that would silently grow without bound.
+
+For "start serving once the pool has at least N routees,"
+subscribe to `MemberUp` and gate request handling on a counter.
+
+## Role-filtering
+
+```ts
+ClusterRouter.props({
+  cluster,
+  role: 'compute',
+  // ...
+});
+```
+
+Only up-members carrying the `compute` role are candidates.
+Useful for asymmetric clusters:
+
+- Nodes with `compute` role do heavy work.
+- Nodes with `gateway` role handle HTTP traffic.
+- Nodes with `coordinator` role host singletons.
+
+The role is declared at `Cluster.join` time per node.  The router's
+`role` field filters; without it, **every up-member is a candidate**.
+
+## Self-routing
+
+If the local node is a candidate (matches the role), the router
+*may* route to a worker on the same node.  The transport handles
+loopback the same as any cross-node delivery — through the
+transport's local-loopback path.
+
+This means the router's load distribution is symmetric — no
+preference for local routees, no penalty either.  Round-robin
+puts you in the cycle like every other node.
+
+## Stopping
+
+```ts
+router.stop();
+// or: router.tell(PoisonPill.instance);
+```
+
+Stops the router actor.  **Routees are unaffected** — they're on
+other nodes; they keep running.  This is the group-router model:
+the router owns *the routing*, not the routees themselves.
+
+For comparison, a local pool router cascade-stops its routees on
+stop.  See [Pool vs group](/actor-ts/routing/pool-vs-group/).
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Routee actors must exist on every targeted node">
+  ```ts
+  // Some nodes spawn /user/worker, others don't
+  ```
+  The cluster router doesn't probe for liveness beyond membership —
+  if a node matches the role but doesn't have `/user/worker`, the
+  `tell` arrives at a dead path on that node and dead-letters.
+  Make routee deployment uniform across role-carrying nodes.
+</Aside>
+
+<Aside type="caution" title="`broadcast` + reply-to refs">
+  ```ts
+  router.tell({ kind: 'get', replyTo: client });
+  // ↑ broadcast → every routee replies → caller gets N replies
+  ```
+  Same trap as the local `Router.broadcast`.  Useful for
+  consensus-style reads (count replies); usually a bug otherwise.
+</Aside>
+
+<Aside type="caution" title="Consistent-hashing with skewed keys">
+  ```ts
+  extractKey: (msg) => msg.userId,
+  // ↑ if 80 % of traffic is for one user, one routee handles 80 %
+  ```
+  Same problem as any hash-based scheme — skewed keys produce
+  hot spots.  If the key distribution isn't roughly uniform,
+  consider [sharding](/actor-ts/cluster/sharding/overview/) (one
+  actor per key, all isolated) or aggregating before routing.
+</Aside>
+
+## Where to next
+
+- **[Routing overview](/actor-ts/routing/overview/)** — the
+  bigger routing picture.
+- **[Pool vs group](/actor-ts/routing/pool-vs-group/)** — the
+  conceptual difference from local `Router`.
+- **[Strategies](/actor-ts/routing/strategies/)** — round-robin /
+  random / consistent-hashing in detail.
+- **[Sharding overview](/actor-ts/cluster/sharding/overview/)** —
+  for per-key actors with stronger placement guarantees.
+- **[Cluster overview](/actor-ts/cluster/overview/)** — the
+  membership the router reads.
+
+The [`ClusterRouter`](/actor-ts/api/classes/clusterrouter/) API
+reference covers the full options.

@@ -1,0 +1,227 @@
+---
+title: Remember entities
+description: Persist the set of active entity IDs so they re-spawn automatically after a coordinator failover. The difference between "entity recovery is eager" and "entity recovery is lazy on next message."
+---
+
+By default, sharded entities are **lazy**: an entity actor exists
+only after it's received its first message.  Without
+`rememberEntities`, a cluster cold-start or coordinator failover
+means the active entity set is empty — entities respawn on demand
+as messages arrive.
+
+For many workloads this is fine.  But sometimes you want
+entities to be **eagerly recreated**:
+
+- They have scheduled background work that should run regardless
+  of incoming messages.
+- They've subscribed to something external and need to be alive to
+  process it.
+- Failover should restore the full working set instantly, not
+  trickle through as users hit each entity.
+
+`rememberEntities: true` is the toggle.
+
+## Enabling
+
+```ts
+sharding.start({
+  typeName:           'session',
+  entityProps:        Props.create(() => new SessionActor()),
+  extractEntityId:    (msg) => msg.userId,
+  rememberEntities:   true,
+});
+```
+
+What it does:
+
+- Each entity's *existence* (its ID) is persisted to a
+  **remember-entities store**.
+- On cluster cold-start, or after a coordinator failover, the
+  coordinator reads the set of known entity IDs and asks each
+  shard region to **re-spawn** them eagerly.
+
+The default store uses the system's
+[Journal](/actor-ts/persistence/overview/), so you get this for
+free when persistence is configured.  Override with
+`rememberEntitiesStore` if you need a different backing store.
+
+## What's persisted
+
+Just the **identities** of active entities — not their state.
+Entity state is the entity's own responsibility
+([PersistentActor](/actor-ts/persistence/persistent-actor/) journals
+state changes; remember-entities tracks which IDs to bring back).
+
+Two-store split:
+
+```
+Journal (your events)            RememberEntitiesStore (just IDs)
+  pid=cart-user-42                  entityIds = ['cart-user-42', 'cart-user-43', ...]
+  event 1                            
+  event 2
+  event 3
+```
+
+This is intentional — the remember store has different access
+patterns (small, frequent writes when entities start/stop) and
+benefits from being separable.
+
+## What's NOT persisted
+
+- The shard a given entity belonged to.  On respawn, allocation
+  runs again (per the
+  [allocation strategy](/actor-ts/cluster/sharding/allocation-strategy/)).
+- The entity's **state**.  If you want state to survive, the
+  entity must persist it itself via `PersistentActor` or external
+  storage.
+
+## Without persistence backend
+
+If you use `rememberEntities: true` but haven't configured a
+journal:
+
+```ts
+sharding.start({
+  typeName: '...',
+  entityProps: ...,
+  extractEntityId: ...,
+  rememberEntities: true,
+  rememberEntitiesStore: null,   // explicit opt-out of persistence
+});
+```
+
+Passing `null` falls back to the v1 in-memory-only behavior — the
+entity set is tracked in process memory and lost on coordinator
+failover.  Useful for dev / tests; pointless in production.
+
+Without `rememberEntitiesStore: null` and without a configured
+journal, the framework auto-instantiates a `JournalRememberEntitiesStore`
+backed by the (in-memory by default) journal — which is fine for
+testing but **doesn't survive restart**.  Make sure your journal
+is durable in production.
+
+## Custom store
+
+```ts
+import type { RememberEntitiesStore } from 'actor-ts/cluster/sharding';
+
+class RedisRememberEntitiesStore implements RememberEntitiesStore {
+  async addEntity(typeName: string, entityId: string): Promise<void> { /* SADD */ }
+  async removeEntity(typeName: string, entityId: string): Promise<void> { /* SREM */ }
+  async listEntities(typeName: string): Promise<ReadonlyArray<string>> { /* SMEMBERS */ }
+}
+
+sharding.start({
+  // ...
+  rememberEntities:        true,
+  rememberEntitiesStore:   new RedisRememberEntitiesStore(),
+});
+```
+
+The interface is small.  Useful if you want the entity registry on
+a different backing store than the rest of your persistence (e.g.,
+Redis for low-latency entity-set lookups while the journal is on
+Cassandra).
+
+## Costs
+
+`rememberEntities: true` adds two write operations per entity
+lifetime:
+
+1. **One write when the entity spawns** (`addEntity`).
+2. **One write when the entity passivates / stops** (`removeEntity`).
+
+For high-churn entities (millions of short-lived sessions per
+hour), this is real overhead.  Consider:
+
+- Skip `rememberEntities` for short-lived workloads.
+- Use a fast store (in-memory Redis) instead of the default
+  journal.
+- Batch writes if you're implementing a custom store.
+
+For low-churn workloads (10K stable entities), the cost is
+negligible.
+
+## When to use it
+
+| Scenario | Use rememberEntities? |
+| --- | --- |
+| Per-user sessions, short-lived, re-spawn on next request | No |
+| Long-running coordinators, must be alive to do scheduled work | Yes |
+| IoT device handlers, must subscribe to MQTT topics on startup | Yes |
+| Per-tenant cache, expensive to rebuild | Yes |
+| Per-order saga, must continue from where it left off after failover | Yes |
+| Per-request transient actor, dies in seconds | No |
+
+The rule: **if "do I need this entity alive even without a recent
+message?" is yes**, enable it.
+
+## Interaction with passivation
+
+Passivation stops idle entities.  With `rememberEntities`:
+
+```
+entity active → passivate (idle) → entity stops → store: removeEntity?
+```
+
+The framework's behavior:
+
+- **Idle-timeout passivation** (`passivationIdleMs`) — removes the
+  entity from the store.  Next message respawns it; the store
+  receives an `addEntity` again.
+- **`maxEntities` LRU passivation** — same.
+- **`Passivate` from the entity itself** — same.
+
+For workloads where you want **eager re-spawn even of recently-idle
+entities**, set `passivationIdleMs: 0` so they stay around.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Cold-start storms">
+  ```ts
+  // 100 000 remembered entities + cluster cold-start
+  // → all 100 000 spawn within seconds
+  ```
+  The framework spawns remembered entities **eagerly** after
+  coordinator initialization.  For very large entity sets, this
+  is a thundering herd — N journals replay simultaneously, N
+  preStarts run.  Mitigate by sharding-by-id (entities load in
+  parallel across shard regions), and by ensuring entity preStart
+  is cheap (snapshot-led recovery instead of full journal replay).
+</Aside>
+
+<Aside type="caution" title="Wrong store choice creates inconsistency">
+  ```ts
+  rememberEntitiesStore: customStore,
+  // But the journal (where the entities persist their state) is elsewhere
+  ```
+  Remember-store and entity-state-store don't share a transaction.
+  An entity ID can appear in the remember store without
+  corresponding events in the journal (race during shutdown), or
+  vice versa.  In practice this is benign — a missing journal
+  means the entity starts fresh; an orphan remember entry leads
+  to a brief no-op entity.
+</Aside>
+
+<Aside type="caution" title="Don't enable without a real journal">
+  ```ts
+  rememberEntities: true,
+  // ↑ but using InMemoryJournal in production
+  ```
+  The in-memory journal loses data on restart — so the remember
+  store loses every entity ID.  Defeats the purpose.  Always pair
+  `rememberEntities: true` with a durable journal (SQLite for
+  single-node, Cassandra for multi-node) in production.
+</Aside>
+
+## Where to next
+
+- **[Sharding overview](/actor-ts/cluster/sharding/overview/)** —
+  the bigger picture.
+- **[Rebalance](/actor-ts/cluster/sharding/rebalance/)** — what
+  happens when remembered entities move.
+- **[PersistentActor](/actor-ts/persistence/persistent-actor/)** —
+  for the entity's *state* recovery (orthogonal to
+  remember-entities).
+- **[Journals](/actor-ts/persistence/journals/in-memory/)** — the
+  default backing store.

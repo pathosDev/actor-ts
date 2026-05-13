@@ -1,0 +1,234 @@
+---
+title: Allocation strategy
+description: The coordinator's per-shard placement logic — `HashAllocationStrategy` (default, deterministic), `LeastShardAllocationStrategy` (load-balancing), or a custom implementation. Decides which node owns each shard.
+---
+
+The sharding coordinator picks a node for each shard:
+
+- **At first contact** — when a shard ID appears for the first
+  time, the coordinator runs `allocate(shardId, candidates, currentShards)`
+  to pick its owner.
+- **On rebalance** — every few seconds, the coordinator runs
+  `rebalance(currentShards, candidates, inProgress)` to find
+  shards that should move.
+
+The two built-in strategies trade simplicity for balance:
+
+| Strategy | Allocation | Rebalance |
+| --- | --- | --- |
+| **`HashAllocationStrategy`** *(default)* | `shardId mod sorted-candidates` | Only when the candidate set changes. |
+| **`LeastShardAllocationStrategy`** | Candidate with fewest shards. | Drains the busiest node into the rest. |
+
+## HashAllocationStrategy
+
+```ts
+import { HashAllocationStrategy } from 'actor-ts';
+
+sharding.start({
+  typeName:           'cart',
+  entityProps:        Props.create(() => new CartActor()),
+  extractEntityId:    (msg) => msg.entityId,
+  allocationStrategy: new HashAllocationStrategy(),   // default
+});
+```
+
+The formula:
+
+```ts
+const sorted = [...candidates].sort();
+return sorted[shardId % sorted.length];
+```
+
+**Picks:**
+
+- **Deterministic** — given the same candidate set, same shards
+  always land on same nodes.
+- **Minimal rebalance** — only shards whose hash-target changes
+  need to move (when nodes join or leave).
+- **Zero state** — the strategy doesn't track anything; it's a
+  pure function.
+
+**Doesn't:**
+
+- **Balance by load** — uneven entity activity means some nodes
+  end up busier than others, even with the same shard count.
+- **Compensate for slow nodes** — a struggling member still gets
+  its fair share of shards.
+
+Right for **uniform workloads** where shards are roughly equal in
+cost, or as a sensible default while you measure whether you need
+something smarter.
+
+## LeastShardAllocationStrategy
+
+```ts
+import { LeastShardAllocationStrategy } from 'actor-ts';
+
+sharding.start({
+  // ...
+  allocationStrategy: new LeastShardAllocationStrategy(
+    /* rebalanceThreshold */ 1,
+    /* maxSimultaneousRebalance */ 3,
+  ),
+});
+```
+
+The formula:
+
+- **Allocate**: pick the candidate with the fewest shards
+  currently hosted (ties broken by address order).
+- **Rebalance**: if `max(shardCount) - min(shardCount) >=
+  rebalanceThreshold`, move shards off the busiest node(s) to the
+  least.  At most `maxSimultaneousRebalance` shards per pass.
+
+**Picks:**
+
+- **Converges to balance** even when nodes have joined / left
+  unevenly.
+- **Throttled rebalance** — bounded per-pass moves avoid
+  thrashing.
+- **Address-tiebreak** — deterministic ordering with no surprises.
+
+**Doesn't:**
+
+- **Know about per-shard load** — it counts shards, not work.
+  Two shards holding very different amounts of work look the
+  same.
+- **React instantly** — `maxSimultaneousRebalance` caps the
+  per-pass movement; in a 100-shard cluster gaining a new node,
+  full rebalance takes ~33 passes (×rebalanceInterval — typically
+  a minute or so).
+
+### Tuning the knobs
+
+```ts
+new LeastShardAllocationStrategy(2, 5);
+//                                │  └── up to 5 shards move per pass
+//                                └── trigger only when imbalance ≥ 2
+```
+
+- **`rebalanceThreshold`** — bigger value = less churn, more
+  tolerance for imbalance.  `1` makes any imbalance trigger a
+  rebalance; `5` waits for a real difference.
+- **`maxSimultaneousRebalance`** — bigger value = faster
+  convergence, more handoff traffic.  3 is a reasonable middle.
+
+For 100-shard clusters with frequent membership churn, raise both
+(threshold ~3, max ~10).  For 16-shard clusters where each shard
+move is expensive (large state), keep them low.
+
+## Custom strategies
+
+Implement the interface:
+
+```ts
+interface AllocationStrategy {
+  allocate(
+    shardId: number,
+    candidates: ReadonlyArray<NodeAddress>,
+    currentShards: ReadonlyMap<string, ReadonlySet<number>>,
+  ): NodeAddress;
+
+  rebalance(
+    currentShards: ReadonlyMap<string, ReadonlySet<number>>,
+    candidates: ReadonlyArray<NodeAddress>,
+    rebalanceInProgress: ReadonlySet<number>,
+  ): Set<number>;
+}
+```
+
+Useful for app-specific rules:
+
+- **Pin certain shards to certain nodes** — e.g., shards with
+  IDs < 10 always go to the `coordinator`-role nodes.
+- **Affinity / anti-affinity** — keep specific shards together,
+  or always apart.
+- **Capacity-aware** — query each node's metrics, weight by
+  available memory.
+
+```ts
+class RoleAffinityAllocationStrategy implements AllocationStrategy {
+  constructor(private readonly coordinatorAddrs: Set<string>) {}
+
+  allocate(shardId, candidates, currentShards) {
+    if (shardId < 10) {
+      // Pin low-id shards to coordinator nodes
+      const coord = candidates.find(c => this.coordinatorAddrs.has(c.toString()));
+      if (coord) return coord;
+    }
+    return new HashAllocationStrategy().allocate(shardId, candidates, currentShards);
+  }
+
+  rebalance() { return new Set(); }   // no rebalance for the example
+}
+```
+
+The strategy runs **in the coordinator**, which is a singleton on
+the cluster leader.  It must be **deterministic enough that two
+coordinators (during a leader-change handover) would converge on
+the same decision** — or at least not undo each other's work.
+
+## Performance
+
+`allocate` runs once per new shard ID — bounded by `numShards`
+(default 100).  Even an expensive strategy is fine here.
+
+`rebalance` runs every `rebalanceIntervalMs` (default 2 s).  It
+sees the full current state.  Keep it under 100 ms or so to
+avoid blocking the coordinator's other work.
+
+## Picking
+
+For most clusters:
+
+1. **Default** (`HashAllocationStrategy`) — start here.  Measure.
+2. **`LeastShardAllocationStrategy`** — switch if the default
+   produces visible hot-spots (one node CPU-saturated while
+   others idle).
+3. **Custom** — only when neither built-in fits, and you have
+   specific evidence the customization helps.
+
+Don't reach for a custom strategy preemptively.  The built-ins
+cover ~95 % of use cases.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Rebalance under handoff cost">
+  ```ts
+  new LeastShardAllocationStrategy(1, 100);   // ✗ aggressive
+  ```
+  Each shard move triggers a handoff: stop entities, wait for
+  ack, allocate new home, re-spawn entities, replay journals.
+  For persistent entities with large state, this is expensive.
+  Keep `maxSimultaneousRebalance` low (≤ 5) for big-state
+  workloads.
+</Aside>
+
+<Aside type="caution" title="Strategies aren't synced to the entity store">
+  ```ts
+  // The strategy doesn't know about `rememberEntities`
+  ```
+  An entity that uses `rememberEntities: true` to survive
+  failover doesn't influence allocation — only shard count does.
+  A node with many "lazy" remembered entities looks equally
+  loaded to one with active ones.  This is usually fine but can
+  surprise.
+</Aside>
+
+<Aside type="caution" title="No least-load strategy built-in">
+  The framework doesn't ship a strategy that uses per-node CPU
+  or memory metrics.  `LeastShard` counts shards, not work.
+  For genuinely-load-aware allocation, a custom strategy is the
+  only route.
+</Aside>
+
+## Where to next
+
+- **[Sharding overview](/actor-ts/cluster/sharding/overview/)** —
+  the big picture: how allocation fits with rebalance + handoff.
+- **[Rebalance](/actor-ts/cluster/sharding/rebalance/)** — the
+  handoff protocol the strategy triggers.
+- **[Remember entities](/actor-ts/cluster/sharding/remember-entities/)** —
+  what happens to entity *placement* on a respawn.
+- **[Sharded daemon process](/actor-ts/cluster/sharding/sharded-daemon-process/)** —
+  uses `LeastShardAllocationStrategy` by default.

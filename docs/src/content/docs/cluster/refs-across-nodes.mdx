@@ -1,0 +1,232 @@
+---
+title: Refs across nodes
+description: How an `ActorRef` pointing at an actor on a different node works — wire-encoding of refs, the path-with-host format, the cluster transport's role, and what happens to messages when a remote node disappears.
+---
+
+In a single-node system, an `ActorRef` is a direct in-memory
+handle.  In a clustered system, an `ActorRef` can point at an
+actor on **any** node — and the same `tell` works the same way:
+
+```ts
+const remote: ActorRef<Msg> = /* ref to an actor on a different node */;
+remote.tell({ kind: 'do-it' });
+// → serialized, sent over the cluster transport, delivered to the remote mailbox
+```
+
+The framework hides the network layer.  But understanding **how**
+helps when something goes wrong (messages disappearing, latency
+spiking, refs failing to resolve).
+
+## The path-with-host format
+
+A local-only ref's path looks like:
+
+```
+actor-ts://my-app/user/api/sessions/user-42
+```
+
+A cluster-aware ref includes the **host:port** of its owning node:
+
+```
+actor-ts://my-app@10.0.0.5:2552/user/api/sessions/user-42
+            │       └────────┘
+            │       node's address (assigned at Cluster.join time)
+            └── system name
+```
+
+The host fragment tells the local runtime *which node* hosts this
+actor.  When you `tell` a remote ref, the framework:
+
+1. Reads the host:port from the ref's path.
+2. Looks up the cluster transport's connection to that node.
+3. Serializes the message + the ref's local-path segments.
+4. Writes a wire frame.
+5. Receiving node deserializes; locally resolves the path
+   segments to a real actor; `tell`s the local ref.
+
+## How refs cross the wire
+
+Inside a message, an `ActorRef` field serializes as the
+**path-with-host string**.  On the receiving node, the
+deserializer reconstructs a `RemoteActorRef` pointing back at the
+original node:
+
+```ts
+type GetMsg = {
+  kind: 'get';
+  replyTo: ActorRef<number>;   // ← will serialize as a path string
+};
+
+remoteRegistry.tell({
+  kind: 'get',
+  replyTo: this.context.self,   // → "actor-ts://my-app@10.0.0.3:2552/user/asker"
+});
+```
+
+The receiving node sees `replyTo` as a `RemoteActorRef` pointing
+at `10.0.0.3:2552/.../asker`.  Calling `tell` on it goes through
+the same encoding-and-transport machinery in reverse.
+
+This means **request/response between actors on different nodes**
+just works — the reply travels back to the original asker over
+the cluster transport.
+
+## The cluster transport
+
+The transport (TCP by default, in-memory in tests) carries:
+
+- **Cluster control traffic** — gossip, heartbeats, downing
+  signals.
+- **Envelope traffic** — your `tell`s wrapped in a routing
+  envelope.
+
+Both share the same TCP connection per peer pair.  The framework
+multiplexes them; you don't see this distinction.
+
+See [Transports](/actor-ts/cluster/transports/) for the TCP and
+in-memory implementations.
+
+## Resolving a remote ref by path
+
+```ts
+import { ActorSelection } from 'actor-ts';
+
+const remote = await system.actorSelection(
+  'actor-ts://my-app@10.0.0.5:2552/user/api/sessions/user-42',
+).resolveOne(5_000);
+
+remote.tell({ kind: 'do-it' });
+```
+
+`actorSelection` parses the path-with-host; `resolveOne` returns a
+`RemoteActorRef` you can `tell`.  Useful when:
+
+- The target's location is known by convention (a well-known
+  sharding path or singleton proxy).
+- A message contains a path string (e.g., from an HTTP request).
+
+For routine cluster work, you'd usually hold a ref obtained from
+the cluster's own machinery (sharding region, singleton proxy,
+event-stream subscriber) — `actorSelection` is the lookup
+escape hatch.
+
+## What happens when the remote node disappears
+
+```ts
+const remote: ActorRef = /* on a node that just left the cluster */;
+
+remote.tell({ kind: 'do-it' });
+// → message routes to dead letters; sender doesn't see the failure
+```
+
+`tell` to a remote ref on a stopped/unreachable node:
+
+1. The framework tries to write to the transport.
+2. The transport sees no live connection (or one in
+   half-closed state).
+3. The message is dropped to dead letters.
+
+Two ways to detect this:
+
+- **`context.watch(remoteRef)`** — receive a `Terminated`
+  notification when the remote actor stops *or* the remote node
+  goes unreachable+downed.  The `Terminated.addressTerminated`
+  flag distinguishes "actor stopped" from "node lost."
+- **Subscribe to cluster events** — `MemberRemoved` /
+  `UnreachableMember` for the host's address tells you the
+  whole node is gone.
+
+See [Death watch](/actor-ts/fundamentals/death-watch/) for the
+per-actor variant.
+
+## Serialization
+
+Messages crossing the wire need to be **serializable**.  The
+framework's [SerializationExtension](/actor-ts/serialization/overview/)
+handles this — JSON by default, CBOR when configured.
+
+```ts
+{
+  kind: 'place',
+  order: { items: ['book-1'], total: 19.99 },
+  replyTo: this.context.self,   // ← ref serializes as path string
+}
+```
+
+Plain values (strings, numbers, arrays, plain objects) serialize
+trivially.  Things that don't survive:
+
+- **Functions / closures** — can't cross a process boundary.
+- **Class instances with methods** — methods are lost; only data
+  fields survive.
+- **`Map` / `Set`** — JSON serializes them as `{}` (no entries).
+  Use plain objects or arrays.
+- **Symbols, BigInts** (without serializer registration).
+
+See [Messages](/actor-ts/fundamentals/messages/) for the immutability
++ wire-format conventions.
+
+## Performance
+
+Rough numbers:
+
+- **Local `tell` (same actor system)** — 50-200 ns.
+- **Cluster-local `tell` (loopback transport)** — sub-millisecond.
+- **Cluster `tell` over LAN** — 0.5-2 ms for small messages.
+- **Cluster `tell` over WAN** — bounded by network RTT.
+
+The framework batches envelopes opportunistically — many tells in
+quick succession share TCP writes when possible.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Don't assume a remote actor exists">
+  ```ts
+  const remote: ActorRef = ...;
+  remote.tell({ kind: 'do' });
+  // → did this arrive?  The local code can't tell.
+  ```
+  `tell` is fire-and-forget locally; it's even more "fire and
+  forget" remotely.  For confirmation, use `ask` with a sane
+  timeout, watch the remote ref, or design the protocol with
+  acknowledgments.
+</Aside>
+
+<Aside type="caution" title="Latency is hard to measure from inside an actor">
+  ```ts
+  const t0 = Date.now();
+  remoteRegistry.tell({ kind: 'get', replyTo: ... });
+  // ↑ when does this clock stop? When the reply arrives — not when this returns.
+  ```
+  `tell` returns immediately; latency is measured *between* the
+  send and the receipt of a reply.  Use `ask` if you want a
+  Promise that captures the round-trip.
+</Aside>
+
+<Aside type="caution" title="Sending huge payloads over the cluster transport">
+  ```ts
+  remoteActor.tell({ kind: 'upload', data: hugeBlob });   // 100 MB
+  ```
+  The cluster transport's max-frame-size default is 1 MB
+  (configurable via `actor-ts.remote.max-frame-size`).  Frames
+  larger than that fail; the message dead-letters.  For large
+  payloads, use a separate side-channel (HTTP upload, S3
+  presigned URL) and pass a reference in the actor message.
+</Aside>
+
+## Where to next
+
+- **[Cluster overview](/actor-ts/cluster/overview/)** — the
+  bigger picture: how nodes find each other, gossip,
+  membership.
+- **[Transports](/actor-ts/cluster/transports/)** — TCP and
+  in-memory implementations.
+- **[Serialization overview](/actor-ts/serialization/overview/)** —
+  the wire format for cross-node messages.
+- **[Messages](/actor-ts/fundamentals/messages/)** — the
+  conventions that make messages serializable.
+- **[Death watch](/actor-ts/fundamentals/death-watch/)** —
+  detecting that a remote actor stopped.
+
+The [`RemoteActorRef`](/actor-ts/api/classes/remoteactorref/) API
+reference covers the wire ref implementation.

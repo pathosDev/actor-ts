@@ -1,0 +1,248 @@
+---
+title: Transports
+description: The cluster's wire layer — `TcpTransport` (production, runs on Bun/Node/Deno via runtime adapters) and `InMemoryTransport` (tests). Both implement the same `Transport` interface; the cluster is identical across them.
+---
+
+The cluster transport is the **wire** between cluster nodes — it
+delivers gossip messages, heartbeats, and application
+envelopes (your `tell`s to remote actors).  Two implementations
+ship with the framework:
+
+| Transport | Use |
+| --- | --- |
+| **`TcpTransport`** | Production.  Real TCP sockets, optional TLS. |
+| **`InMemoryTransport`** | Tests.  Loops frames through in-process JS structures — no networking. |
+
+Both implement the same `Transport` interface, so cluster behavior
+is identical regardless of which is plugged in.
+
+## The interface
+
+```ts
+interface Transport {
+  readonly self: NodeAddress;
+  start(): Promise<void>;
+  shutdown(): Promise<void>;
+  setHandler(handler: (from: NodeAddress, msg: WireMessage) => void): void;
+  send(to: NodeAddress, msg: WireMessage): void;
+  disconnect(peer: NodeAddress): void;
+  peers(): NodeAddress[];
+}
+```
+
+Small surface — bootstrap, send, receive, disconnect.  The cluster
+plugs in a handler and gets a stream of inbound wire messages with
+their sender address.
+
+## TcpTransport (default)
+
+```ts
+import { Cluster, TcpTransport } from 'actor-ts';
+
+const cluster = await Cluster.join(system, {
+  host:  '0.0.0.0',
+  port:  2552,
+  seeds: ['...'],
+  // transport defaults to TcpTransport — no need to pass explicitly
+});
+```
+
+What it does:
+
+- **Listens** on `host:port` for incoming connections.
+- **Connects** to peers as needed (on first send, or to seeds at
+  join time).
+- **Per-frame size cap** (default 16 MiB) — frames larger than this
+  are rejected to prevent a DoS via fake length-prefix.
+- **Auto-reconnect** — if a connection drops mid-cluster-life,
+  reconnects on the next send.
+
+### Runtime backends
+
+`TcpTransport` doesn't talk directly to the OS — it goes through a
+`TcpBackend` interface, with one implementation per runtime:
+
+| Runtime | Backend | Underlying API |
+| --- | --- | --- |
+| Bun | `bunTcpBackend` | `Bun.listen` / `Bun.connect` |
+| Node | `nodeTcpBackend` | `node:net` |
+| Deno | `denoTcpBackend` | `Deno.listen` / `Deno.connect` |
+
+Auto-detected via `getTcpBackend()`.  You usually don't think about
+this — same `TcpTransport` works on every runtime.
+
+### Optional TLS
+
+```ts
+import { Cluster, TcpTransport } from 'actor-ts';
+
+const transport = new TcpTransport(
+  NodeAddress.parse('actor-ts://my-app@10.0.0.5:2552'),
+  system.log,
+  {
+    cert:           '...',     // PEM
+    key:            '...',     // PEM
+    ca:             '...',     // optional CA bundle
+    rejectUnauthorized: true,
+  },
+);
+
+await Cluster.join(system, { host, port, seeds, transport });
+```
+
+TLS-wrapped TCP, all-or-nothing per cluster.  See
+[Cluster security](/actor-ts/operations/security/cluster-security/)
+for the production recipe.
+
+### Frame size
+
+```ts
+new TcpTransport(self, log, null, 64 * 1024 * 1024);   // 64 MiB max frame
+```
+
+Override the per-frame size cap.  Default 16 MiB is enough for
+typical cluster traffic (gossip, heartbeats, small envelopes).
+Larger values *don't* improve general throughput — they only
+matter for individual large messages.
+
+## InMemoryTransport (tests)
+
+```ts
+import { InMemoryTransport, Cluster } from 'actor-ts';
+import { TestKit } from 'actor-ts/testkit';
+
+// Shared global bus — every transport with the same bus can talk to each other
+const bus = InMemoryTransport.newBus();
+
+const tk1 = TestKit.create('node-1');
+const tk2 = TestKit.create('node-2');
+
+await Cluster.join(tk1.system, {
+  host: '1', port: 0,
+  seeds: ['1:0'],
+  transport: new InMemoryTransport({ self: 'actor-ts://node-1@1:0', bus, log: tk1.system.log }),
+});
+
+await Cluster.join(tk2.system, {
+  host: '2', port: 0,
+  seeds: ['1:0'],
+  transport: new InMemoryTransport({ self: 'actor-ts://node-2@2:0', bus, log: tk2.system.log }),
+});
+```
+
+How it works:
+
+- A **shared bus** routes messages between in-process transports.
+- Each transport registers itself with the bus by address.
+- `send(to, msg)` looks up the recipient in the bus and invokes
+  its handler directly — no sockets, no serialization to bytes.
+
+Used by [MultiNodeSpec](/actor-ts/testing/multi-node-spec/) — the
+multi-node test harness — to spin up multi-node clusters in **one
+process**.
+
+### What it doesn't simulate
+
+- **Network failures.**  By default, the bus delivers reliably.
+  For fault injection, you'd extend the bus with drop / delay /
+  reorder logic.
+- **Latency.**  Delivery is synchronous within an event-loop turn.
+- **Serialization.**  Messages are passed by reference, not bytes.
+  If your test actually needs to exercise serialization (e.g.,
+  testing CBOR codec), use `TcpTransport` over loopback instead.
+
+## Custom transport
+
+Implementing `Transport` against a different wire is rare but
+possible.  Examples:
+
+- **WebSocket transport** — for browser-side cluster participants
+  (theoretical; not implemented).
+- **MessageChannel transport** — for worker-thread clusters in a
+  single OS process.  Used by the "worker mesh" pattern.
+
+The interface is small enough that a competent implementation is
+~200 lines of code; the difficulty is in matching the framing +
+heartbeat semantics the cluster expects.
+
+## Diagnostics
+
+```ts
+const peers = transport.peers();   // currently-connected addresses
+```
+
+The transport doesn't expose per-connection metrics directly —
+use the cluster's metrics extension to get connection counts and
+bytes sent/received per peer.
+
+For lower-level inspection (specific frame contents), enable
+debug logging on the system:
+
+```ts
+const system = ActorSystem.create('my-app', { logLevel: 'debug' });
+// Look for [tcp-transport] log lines
+```
+
+## Multiplexing
+
+A single TCP connection between two nodes carries:
+
+- **Gossip messages** — cluster membership exchanges.
+- **Heartbeat messages** — failure-detection.
+- **Envelope messages** — your `tell`s, encoded with routing
+  information.
+- **Subsystem messages** — sharding protocol, pubsub gossip,
+  DistributedData replication.
+
+All multiplexed onto the same TCP stream.  There's no
+priority-routing — heartbeats and your bulk traffic share the
+pipe.  For most workloads this is fine; for explicit isolation
+(reserve bandwidth for cluster control), you'd need a custom
+transport with per-channel framing.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Transports aren't authenticated by default">
+  ```ts
+  new TcpTransport(self, log);   // ← no TLS, no auth
+  ```
+  Plain TCP is fine inside a private network.  On any
+  internet-facing link (rare for cluster, but possible),
+  configure TLS + a shared secret.  See
+  [Cluster security](/actor-ts/operations/security/cluster-security/).
+</Aside>
+
+<Aside type="caution" title="MTU and frame size">
+  ```ts
+  // A 1.5 MB tell goes through a single TCP frame attempt
+  remoteRegistry.tell({ kind: 'upload', data: bigBuffer });
+  ```
+  Large envelopes get fragmented at the TCP layer, then reassembled
+  on the receiving side.  Per-frame size cap on the transport
+  rejects them if they exceed the configured limit (16 MiB default).
+  For large data, use a side-channel (S3, HTTP) and pass references.
+</Aside>
+
+<Aside type="caution" title="Localhost loopback is special">
+  ```ts
+  // Two nodes on the same machine:
+  host: '127.0.0.1', port: 2552      // node 1
+  host: '127.0.0.1', port: 2553      // node 2
+  ```
+  This works (TCP loopback is genuine networking) but each node
+  needs a **unique port**.  For cluster-in-one-process tests
+  without ports, use `InMemoryTransport`.
+</Aside>
+
+## Where to next
+
+- **[Cluster overview](/actor-ts/cluster/overview/)** — what
+  rides on the transport.
+- **[Refs across nodes](/actor-ts/cluster/refs-across-nodes/)** —
+  how envelopes encode actor refs for cross-node delivery.
+- **[Cluster security](/actor-ts/operations/security/cluster-security/)** —
+  TLS + auth.
+- **[Worker mesh](/actor-ts/cluster/worker-mesh/)** —
+  MessageChannel-based transport for in-process workers.
+- **[MultiNodeSpec](/actor-ts/testing/multi-node-spec/)** —
+  uses `InMemoryTransport` for multi-node tests.

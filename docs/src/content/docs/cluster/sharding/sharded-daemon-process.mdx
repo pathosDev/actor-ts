@@ -1,0 +1,230 @@
+---
+title: Sharded daemon process
+description: Run exactly N named daemon actors spread across the cluster — each gets a stable index (0..N-1), the cluster respawns missing daemons on failover. Built on top of sharding + remember-entities; the closest thing to "cluster-wide background workers."
+---
+
+Sometimes you need **N background workers**, distributed across
+the cluster, each with a stable identity:
+
+- A worker per partition of work (think Kafka consumer-group
+  pattern, but inside the cluster).
+- N scheduled coordinators, one per timezone, one per region.
+- N background reconcilers each owning a slice of work-IDs.
+
+A [singleton](/actor-ts/cluster/singleton/overview/) gives you
+**one** of these.  Sharding gives you **one per entity ID**.
+**`ShardedDaemonProcess`** gives you **exactly N**, indexed
+`0..N-1`, spread evenly across the cluster, automatically
+respawned on failover.
+
+## A minimal example
+
+```ts
+import { ActorSystem, Cluster, Actor, Props } from 'actor-ts';
+import { ShardedDaemonProcess } from 'actor-ts';
+
+class Reconciler extends Actor<{ kind: 'check' }> {
+  constructor(public readonly index: number) { super(); }
+
+  override preStart(): void {
+    this.log.info(`reconciler #${this.index} starting`);
+    // schedule periodic check, e.g.:
+    this.context.timers.startTimerWithFixedDelay(
+      'check', { kind: 'check' }, 60_000,
+    );
+  }
+
+  override onReceive(msg: { kind: 'check' }): void {
+    this.log.info(`reconciler #${this.index} ticking`);
+    // ... per-index work
+  }
+}
+
+const system  = ActorSystem.create('my-app');
+const cluster = await Cluster.join(system, { host, port, seeds });
+
+const handle = ShardedDaemonProcess.init(system, cluster, {
+  name:        'reconciler',
+  numDaemons:  8,
+  behaviorFor: (i) => Props.create(() => new Reconciler(i)),
+});
+
+// Each of the 8 daemons starts automatically.  No further setup needed.
+
+// Optionally: send a message to a specific index
+handle.tell(3, { kind: 'check' });
+```
+
+Three things happen on `init`:
+
+1. The framework registers a sharded entity type
+   (`daemon-reconciler`).
+2. Each entity ID is just the daemon's index as a string (`'0'`,
+   `'1'`, …, `'7'`).
+3. Internal "wake-up" messages are sent to every index, forcing
+   the sharding machinery to materialize the entity actors on the
+   nodes the coordinator chose.
+
+After this, all 8 daemons are running, distributed across
+cluster nodes, each with its stable index visible via the
+constructor argument.
+
+## What the handle gives you
+
+```ts
+interface ShardedDaemonProcessHandle<T> {
+  readonly region: ActorRef<DaemonEnvelope<T>>;
+  tell(index: number, message: T): void;
+  stop(): void;
+}
+```
+
+- **`region`** — the underlying sharding region ref.  Messages
+  sent here must be wrapped in `{ index, body }` envelopes; use
+  `handle.tell` instead.
+- **`tell(index, msg)`** — convenience for sending to daemon `i`.
+- **`stop()`** — stops the liveness heartbeat and cluster
+  subscription.  Does **not** stop the daemons themselves —
+  they keep running until the cluster shuts down.
+
+## How it builds on sharding
+
+`ShardedDaemonProcess` is **a thin wrapper around ClusterSharding**:
+
+- `typeName: 'daemon-<name>'`.
+- `extractEntityId: env => env.index.toString()`.
+- `rememberEntities: true` — so a node failure re-spawns the
+  daemon elsewhere.
+- `allocationStrategy: LeastShardAllocationStrategy` by default —
+  spreads daemons evenly.
+
+You could write all this manually with `ClusterSharding.start`
+yourself.  The wrapper exists to:
+
+- Save you the boilerplate.
+- Auto-send wake-up messages on init so daemons materialize
+  eagerly.
+- Subscribe to `LeaderChanged` / `MemberRemoved` and re-send
+  wake-ups, ensuring daemons that should be running actually
+  are.
+- Provide the `livenessIntervalMs` safety net.
+
+## Liveness heartbeat
+
+```ts
+ShardedDaemonProcess.init(system, cluster, {
+  name:                  'reconciler',
+  numDaemons:            8,
+  behaviorFor:           (i) => Props.create(() => new Reconciler(i)),
+  livenessIntervalMs:    30_000,   // default — pings each index every 30s
+});
+```
+
+Periodically (default every 30 s), the wrapper sends a synthetic
+"wake-up" to every index.  If a daemon for some index was
+unexpectedly stopped (a node leaving + a brief partition just at
+the wrong moment), the wake-up causes the sharding machinery to
+re-spawn it on a current up-member.
+
+This is **belt-and-braces** — most failover is handled by
+sharding's own cluster-event subscriptions.  The liveness ping
+covers the edge case where an event was missed.
+
+Set to `0` to disable.  Useful in tests where you control the
+cluster events deterministically.
+
+## Configuration
+
+```ts
+interface ShardedDaemonProcessSettings<T> {
+  name:                 string;          // unique daemon-set identifier
+  numDaemons:           number;          // total daemons across the cluster
+  behaviorFor:          (i: number) => Props<T>;
+  role?:                string;          // restrict to specific nodes
+  livenessIntervalMs?:  number;          // safety-net ping cadence; default 30s
+}
+```
+
+| Field | What |
+| --- | --- |
+| `name` | A unique daemon-set name.  Two `init` calls with the same name conflict. |
+| `numDaemons` | How many daemons to run.  Fixed at init; can't change without restart. |
+| `behaviorFor(i)` | Returns `Props` for daemon `i`.  Use `i` to differentiate per-index logic. |
+| `role` | Only nodes carrying this role host daemons (passed through to sharding). |
+| `livenessIntervalMs` | Safety-net ping cadence; default 30s. |
+
+## When to reach for it
+
+Three good fits:
+
+1. **Partitioned background work** — `N` reconciliation jobs each
+   owning a slice of IDs.  Modulo or hash to assign work to
+   daemon index.
+2. **Distributed schedulers** — a per-timezone scheduler, a
+   per-region quota-replenisher.  Each daemon's index maps to its
+   scope.
+3. **Stream-processing groups** — when integrating with Kafka /
+   broker actors, each daemon can be one consumer-group member.
+
+## When NOT to use it
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="One daemon = use a singleton">
+  ```ts
+  ShardedDaemonProcess.init(..., { numDaemons: 1, ... });   // ✗
+  ```
+  For `numDaemons: 1`, use [ClusterSingleton](/actor-ts/cluster/singleton/overview/) —
+  it has explicit semantics for "exactly one cluster-wide"
+  (election, lease, etc.), whereas sharded-daemon with N=1 is
+  *almost* a singleton but loses the explicit guarantees.
+</Aside>
+
+<Aside type="caution" title="Many daemons = use sharding directly">
+  ```ts
+  ShardedDaemonProcess.init(..., { numDaemons: 100_000, ... });   // ✗
+  ```
+  Sharded daemon does eager startup of every index.  For
+  large `N`, you'd be spawning thousands of actors at init time
+  — a thundering herd.  Use plain sharding with lazy entity
+  creation instead (entities exist only after first message).
+</Aside>
+
+<Aside type="caution" title="Each daemon's behavior must be deterministic by index">
+  ```ts
+  behaviorFor: (i) => Props.create(() => new Reconciler(Math.random())),
+  // ↑ random differs between leader-changes; daemon 3 on node-A and
+  //   daemon 3 on node-B after failover behave differently
+  ```
+  The Props factory must produce **the same behavior** for the
+  same index — otherwise a failover gives you a different daemon
+  3 than before.  Use `i` (and any external lookup keyed by `i`)
+  consistently.
+</Aside>
+
+## Comparison
+
+| Tool | What |
+| --- | --- |
+| [ClusterSingleton](/actor-ts/cluster/singleton/overview/) | Exactly 1 actor cluster-wide. |
+| **ShardedDaemonProcess** | Exactly N indexed actors, distributed. |
+| [ClusterSharding](/actor-ts/cluster/sharding/overview/) | One actor per key (potentially infinite). |
+| [ClusterRouter](/actor-ts/cluster/cluster-router/) | Route messages across pre-existing actors on every node. |
+
+The "right tool by cardinality": 1 → singleton, **fixed N → daemon-process**,
+many (one per business entity) → sharding, "every node" →
+cluster router.
+
+## Where to next
+
+- **[Sharding overview](/actor-ts/cluster/sharding/overview/)** —
+  the foundation it builds on.
+- **[Singleton overview](/actor-ts/cluster/singleton/overview/)** —
+  for N=1.
+- **[Allocation strategy](/actor-ts/cluster/sharding/allocation-strategy/)** —
+  what places the daemons.
+- **[Remember entities](/actor-ts/cluster/sharding/remember-entities/)** —
+  what makes them survive coordinator failover.
+
+The [`ShardedDaemonProcess`](/actor-ts/api/classes/shardeddaemonprocess/)
+API reference covers the full surface.
