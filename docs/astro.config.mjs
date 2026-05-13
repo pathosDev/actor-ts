@@ -22,10 +22,47 @@
  * **i18n** ships with EN as the default locale and DE as a second
  * locale.  Pages without a DE translation transparently fall back to EN.
  */
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import { createStarlightTypeDocPlugin } from 'starlight-typedoc';
 import rehypeMermaid from 'rehype-mermaid';
+
+// Make JetBrains Mono available inside Playwright/Chromium during
+// Mermaid SSR so the headless browser measures text with the same
+// font the user's runtime browser renders with (loaded via
+// `@fontsource` in `custom.css`).  Without this, SSR falls back to a
+// narrow sans-serif, computes too-small bboxes, and labels like
+// "routee-1" get clipped to "routee-:" at runtime.
+//
+// The font is base64-embedded into a `@font-face` declaration so
+// Playwright doesn't need network access or knowledge of our
+// `node_modules` layout — it just sees plain CSS.  `rehype-mermaid`'s
+// `css` option accepts a path to a CSS file, so we write the
+// generated CSS to a build-time temp file the plugin picks up.
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = dirname(__filename);
+
+const jetbrainsMonoB64 = readFileSync(
+  resolve(__dirname, 'node_modules/@fontsource/jetbrains-mono/files/jetbrains-mono-latin-400-normal.woff2'),
+).toString('base64');
+
+const mermaidCssDir  = resolve(__dirname, '.astro');
+const mermaidCssPath = resolve(mermaidCssDir, 'mermaid-fonts.css');
+mkdirSync(mermaidCssDir, { recursive: true });
+writeFileSync(
+  mermaidCssPath,
+  `@font-face {
+  font-family: 'JetBrains Mono';
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+  src: url(data:font/woff2;base64,${jetbrainsMonoB64}) format('woff2');
+}
+`,
+);
 
 // TypeDoc → Starlight bridge.  Generates the API reference from
 // JSDoc comments in `../src/`, writes Markdown pages under
@@ -58,6 +95,15 @@ export default defineConfig({
           // <img>), 'pre-mermaid' (no SSR, client-side render).  Inline
           // is the cleanest for theming + accessibility.
           strategy: 'inline-svg',
+          // Inject JetBrains Mono into the Playwright/Chromium page so
+          // SSR text-measurement matches the runtime browser (which
+          // also loads JetBrains Mono via @fontsource).  Without this
+          // the headless Chromium falls back to a narrow sans-serif,
+          // computes a too-small bbox, and node labels like "routee-1"
+          // get clipped to "routee-:" at runtime.  The plugin's `css`
+          // option expects a file PATH (not inline CSS) — generated
+          // above into `.astro/mermaid-fonts.css`.
+          css: mermaidCssPath,
           // Match our dark/light palette.  Mermaid's 'dark' theme uses a
           // dark background which fits Starlight's default dark mode;
           // light pages get re-themed via CSS variables on the SVG.
@@ -71,16 +117,12 @@ export default defineConfig({
               lineColor:          '#94a3b8',  // slate-400   — connection lines
               secondaryColor:     '#312e81',  // indigo-900  — alt node bg
               tertiaryColor:      '#0f172a',  // slate-900   — bg
-              // Trebuchet MS is Mermaid's own default — both Playwright
-              // (during SSR) and the user's browser at runtime have it,
-              // so the text-width Mermaid pre-computes for each node box
-              // matches what eventually renders.  Don't override with
-              // JetBrains Mono: that font isn't installed inside
-              // Playwright's headless Chromium, so SSR measures with a
-              // narrow fallback font, runtime renders with the much
-              // wider real JetBrains Mono, and labels like "routee-1"
-              // get clipped to "routee-:".
-              fontFamily:         '"trebuchet ms", verdana, arial, sans-serif',
+              // JetBrains Mono matches the rest of the site's code-block
+              // font + the logo wordmark — keeps diagrams visually
+              // unified with the surrounding docs.  Loaded into
+              // Playwright via the `css` option above so SSR and
+              // runtime measure with the same font.
+              fontFamily:         "'JetBrains Mono', ui-monospace, monospace",
               fontSize:           '14px',
             },
             flowchart:  { htmlLabels: true, curve: 'basis', padding: 12 },

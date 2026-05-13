@@ -232,10 +232,14 @@ fragment:
 
 ```
 actor-ts://my-app@10.0.0.5:2552/user/api/sessions/user-42
-            │       │              │
-            │       └── node-host:port
-            └── system name
 ```
+
+| Segment | What it is |
+| --- | --- |
+| `actor-ts://` | The scheme — same as local paths. |
+| `my-app` | The cluster's system name. |
+| `@10.0.0.5:2552` | The node's host:port, assigned at `Cluster.join` time. |
+| `/user/api/sessions/user-42` | The actor path inside that node, identical in shape to a single-node path. |
 
 That fragment tells the runtime *which node* this actor lives on.
 A bare path like `actor-ts://my-app/user/foo` (no host) is local

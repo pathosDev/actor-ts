@@ -240,25 +240,21 @@
 
 /* ----- Mermaid diagram font ------------------------------------------- */
 
-/* Force runtime font inside Mermaid SVG `foreignObject` labels to
- * match what Playwright/Chromium measured with at SSR time.  Without
- * this, the host page's `--sl-font` (Inter Variable) cascades into
- * the foreignObject content, runtime renders wider than the
- * pre-computed bbox, and labels get clipped (e.g. "routee-1" →
- * "routee-:").  Trebuchet MS is Mermaid's own default and is
- * present in both headless Chromium and every desktop browser.
+/* Pin the font inside Mermaid SVG `foreignObject` labels to JetBrains
+ * Mono — same as the rest of the site's code-blocks and the logo
+ * wordmark.  Without this, the host page's `--sl-font` (Inter
+ * Variable) would cascade into the foreignObject content and override
+ * Mermaid's own font-family.
  *
- * Mermaid sets `font-family` on `.nodeLabel`, `.edgeLabel`,
- * `.actor` etc. inside its SVG, but our app-wide Inter override
- * has higher specificity through CSS inheritance.  Anchor the
- * override to `[id^="mermaid-"]` (Mermaid's generated SVG IDs all
- * start with `mermaid-`) so it only touches diagrams, never the
- * rest of the page. */
+ * JetBrains Mono is loaded into Playwright/Chromium at SSR time via
+ * rehype-mermaid's `css` option (see astro.config.mjs) so SSR text
+ * measurement matches the runtime rendering and labels don't get
+ * clipped. */
 [id^="mermaid-"] foreignObject,
 [id^="mermaid-"] foreignObject *,
 [id^="mermaid-"] text,
 [id^="mermaid-"] tspan {
-  font-family: "trebuchet ms", verdana, arial, sans-serif !important;
+  font-family: 'JetBrains Mono', ui-monospace, monospace !important;
 }
 
 /* ----- Code-block polish ----------------------------------------------- */
