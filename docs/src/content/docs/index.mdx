@@ -20,6 +20,10 @@ hero:
       link: /intro/quickstart/
       icon: right-arrow
       variant: primary
+    - text: What is actor-ts?
+      link: /intro/what-is-actor-ts/
+      icon: open-book
+      variant: minimal
     - text: Why actors?
       link: /intro/why-actors/
       icon: information
@@ -36,35 +40,52 @@ import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 <CardGrid>
   <Card title="Actors, supervision, lifecycle" icon="seti:typescript">
-    The classic actor toolkit — `Actor`, `Props`, `tell` / `ask`, mailboxes,
-    dispatchers, supervision strategies, `become` / `stash`, death-watch,
-    coordinated shutdown.  Single-process or clustered.
+    The classic actor model in idiomatic TypeScript.  Each actor owns
+    its state and processes messages one at a time, so you stop
+    reasoning about locks and race conditions.  When a child fails,
+    its parent gets to decide whether to restart, escalate, or stop
+    it — supervision trees give you fault tolerance as a structural
+    property, not as a try/catch afterthought.
   </Card>
   <Card title="Cluster + sharding" icon="puzzle">
-    Gossip membership, phi-accrual failure detection, downing strategies,
-    cross-node refs, distributed pub/sub, cluster singleton with lease
-    coordination, entity sharding with rebalancing and remember-entities.
+    Run the same actor system across many nodes.  Members discover
+    each other via gossip, the failure detector flags unreachable
+    peers, and split-brain resolvers decide who survives a partition.
+    Sharding distributes long-lived stateful entities across the
+    cluster, rebalances when nodes join or leave, and remembers
+    which entity lives where so a restart picks up cleanly.
   </Card>
   <Card title="Event sourcing + persistence" icon="document">
-    `PersistentActor` with persist / onEvent / snapshots, `DurableState`,
-    projections, persistence query, replicated event sourcing with vector
-    clocks.  Pluggable journals (in-memory, SQLite, Cassandra, object-storage).
+    Make actor state survive crashes by recording the events that
+    led to it instead of the state itself.  `PersistentActor` replays
+    its event log on startup; `DurableState` writes a single snapshot
+    when full history isn't useful.  Journals plug in — in-memory for
+    tests, SQLite for single-node prod, Cassandra or S3 for scale —
+    with first-class snapshotting + projections for read-side views.
   </Card>
   <Card title="Distributed data (CRDTs)" icon="random">
-    GCounter, PNCounter, LWWRegister, MVRegister, GSet, ORSet, LWWMap,
-    ORMap.  Quorum reads/writes, gossip replication, durable storage,
-    subscriber pattern for live updates.
+    Shared state across the cluster without a coordinator.  Eight
+    conflict-free replicated data types — counters, registers, sets,
+    maps — that always converge to the same value no matter the
+    order of updates.  Pick quorum reads + writes when you want
+    strong-ish consistency, or accept gossip propagation when you
+    don't.  Durable backend keeps the state across restarts.
   </Card>
   <Card title="Integrations" icon="external">
-    HTTP (Fastify, Express, Hono) with a route-DSL.  Brokers — Kafka,
-    MQTT, AMQP, NATS, Redis Streams, gRPC, SSE, WebSocket, raw TCP/UDP.
-    Cache — in-memory, Redis, Memcached.  Serialization — JSON, CBOR, custom.
+    The world outside the actor system, behind one consistent shape.
+    HTTP with a directive-style route DSL on Fastify, Express, or
+    Hono backends.  Message brokers — Kafka, MQTT, AMQP, NATS, Redis
+    Streams, gRPC, SSE, WebSocket, raw sockets — all wrapped by a
+    common `BrokerActor` base with reconnect, buffering, and fan-out
+    baked in.  Cache + serialization are pluggable abstractions.
   </Card>
   <Card title="Observability + testing" icon="approve-check">
-    Stock metrics for actors / mailboxes / cluster + exporters
-    (Prometheus, OTel).  Tracer API + OTel spans.  Management endpoints
-    for health, members, sharding.  TestKit with probes, manual scheduler,
-    multi-node spec.
+    Production-grade visibility from day one.  Stock metrics for
+    every actor, mailbox depth, gossip lag, restart counts — exported
+    via Prometheus or OpenTelemetry.  Per-message tracer spans, so a
+    request flows through your cluster with one trace ID.  Management
+    HTTP endpoints expose cluster state.  TestKit gives deterministic
+    multi-node tests with a manual scheduler for time control.
   </Card>
 </CardGrid>
 
@@ -72,13 +93,18 @@ import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 <CardGrid>
   <LinkCard
+    title="What is actor-ts?"
+    description="The project in context — what the actor model gives you, why a TypeScript port, what 'batteries-included' means here, an honest assessment of where the framework is today."
+    href="/intro/what-is-actor-ts/"
+  />
+  <LinkCard
     title="Quickstart"
-    description="Five minutes to a running actor — installation, first message, supervision."
+    description="Five minutes from zero to a running actor — installation, first message, supervision in action, clean shutdown."
     href="/intro/quickstart/"
   />
   <LinkCard
     title="Why actors?"
-    description="The model in plain terms — what an actor is, why it's not just a worker thread or a Promise."
+    description="The model in plain terms — what an actor is, why it's not just a worker thread or a Promise, where it stops being the right tool."
     href="/intro/why-actors/"
   />
   <LinkCard
@@ -88,7 +114,7 @@ import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
   />
   <LinkCard
     title="Migration guides"
-    description="Coming from Akka-JVM, Pekko, Orleans, Akka.NET, or vanilla TypeScript? Here's what's different."
+    description="Coming from Akka-JVM, Pekko, Orleans, Akka.NET, or vanilla TypeScript? Here's what's the same, what's different, and how to translate the patterns."
     href="/migration/overview/"
   />
 </CardGrid>
