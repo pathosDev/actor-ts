@@ -119,16 +119,55 @@ import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
   />
 </CardGrid>
 
+## See it in action
+
+Two end-to-end sample apps live in the repo, each with six
+interchangeable frontends (Plain HTML, Lit, Angular, React, Next.js,
+SvelteKit) talking the same WebSocket protocol to a clustered
+backend.  Clone, `bun examples/<sample>/backend/main.ts`, open the
+frontend in a browser, and poke at a real running actor system.
+
+<CardGrid>
+  <LinkCard
+    title="Chat sample"
+    description="Multi-room chat with persistence, DMs, typing indicators, read receipts, and production-realistic auth. Exercises ClusterSharding, DistributedPubSub, PersistentActor, DistributedData (ORSet, LWWMap), ClusterSingleton, and singleton failover end-to-end."
+    href="https://github.com/pathosDev/actor-ts/tree/main/examples/chat"
+  />
+  <LinkCard
+    title="Voice sample"
+    description="Voice rooms with PCM-encoded audio streaming over WebSocket. Same cluster infrastructure as the chat sample, different wire shape — useful for seeing how the framework handles high-frequency binary message flows."
+    href="https://github.com/pathosDev/actor-ts/tree/main/examples/voice"
+  />
+</CardGrid>
+
 ## Status
 
-actor-ts is **pre-1.0**.  The API surface is broad and battle-tested in
-internal use, but breaking changes can land between minor versions until
-1.0 is cut.  See the
-[Version policy](/reference/version-policy/) for the SemVer
-plan, and the
-[ROADMAP](https://github.com/pathosDev/actor-ts/blob/main/ROADMAP.md)
-for what's coming next.
+actor-ts is **pre-1.0**.  The API surface is broad and battle-tested
+in internal use, but breaking changes can land between minor versions
+until 1.0 is cut.  Pinning a specific minor version in your
+`package.json` and reading the
+[CHANGELOG](https://github.com/pathosDev/actor-ts/blob/main/CHANGELOG.md)
+before upgrading is the safe play during this phase.
 
-Runnable end-to-end demos:
-[chat sample](https://github.com/pathosDev/actor-ts/tree/main/examples/chat),
-[voice sample](https://github.com/pathosDev/actor-ts/tree/main/examples/voice).
+<CardGrid>
+  <LinkCard
+    title="Version policy"
+    description="The SemVer plan, what's considered stable today, and what's still in flux pre-1.0."
+    href="/reference/version-policy/"
+  />
+  <LinkCard
+    title="Roadmap"
+    description="Open milestones, work in progress, and the path to 1.0 — kept in the repo's ROADMAP.md."
+    href="https://github.com/pathosDev/actor-ts/blob/main/ROADMAP.md"
+  />
+  <LinkCard
+    title="CHANGELOG"
+    description="Per-version release notes — read before bumping a minor version, since pre-1.0 minor bumps may include breaking changes."
+    href="https://github.com/pathosDev/actor-ts/blob/main/CHANGELOG.md"
+  />
+  <LinkCard
+    title="Issues + discussions"
+    description="Bug reports, feature requests, design questions — GitHub Issues is the canonical place for everything tracked."
+    href="https://github.com/pathosDev/actor-ts/issues"
+  />
+</CardGrid>
