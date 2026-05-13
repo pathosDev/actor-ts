@@ -1,11 +1,11 @@
 /**
  * Astro Starlight configuration for the actor-ts documentation site.
  *
- * Site lives at:
- *   - `https://pathosDev.github.io/actor-ts/` during the `pathosDev.github.io`
- *     subpath phase (current), hence `site` + `base` set to the repo path.
- *   - Move to a custom domain later by clearing `base`, setting `site` to
- *     the new origin, and configuring the CNAME under repo Settings -> Pages.
+ * Site lives at `https://actor-ts.dev/` — custom domain served by
+ * GitHub Pages.  The CNAME file under `docs/public/CNAME` carries the
+ * domain into the Pages build; the GH Pages repo setting must point at
+ * the same domain (Settings → Pages → Custom domain → actor-ts.dev).
+ * No `base` is set because the docs live at the domain root.
  *
  * **Sidebar** is intentionally minimal at this commit (1.1).  The full IA
  * (12 Parts × ~150 pages) lands in Commit 2.3 once the skeleton pages exist;
@@ -35,8 +35,7 @@ import rehypeMermaid from 'rehype-mermaid';
 const [starlightTypeDoc, typeDocSidebarGroup] = createStarlightTypeDocPlugin();
 
 export default defineConfig({
-  site: 'https://pathosDev.github.io',
-  base: '/actor-ts',
+  site: 'https://actor-ts.dev',
   // Mermaid SSR.  `rehype-mermaid` runs Playwright/Chromium headless at
   // build time to render each ```mermaid``` block into an inline SVG.
   // Result: no client-side JS, no flash-of-unrendered-text, accessible
@@ -101,7 +100,7 @@ export default defineConfig({
           attrs: {
             rel: 'icon',
             type: 'image/svg+xml',
-            href: '/actor-ts/favicon.svg',
+            href: '/favicon.svg',
           },
         },
         {
@@ -110,7 +109,7 @@ export default defineConfig({
             rel: 'icon',
             type: 'image/png',
             sizes: '32x32',
-            href: '/actor-ts/favicon-32.png',
+            href: '/favicon-32.png',
           },
         },
         {
@@ -119,7 +118,7 @@ export default defineConfig({
             rel: 'icon',
             type: 'image/png',
             sizes: '192x192',
-            href: '/actor-ts/favicon-192.png',
+            href: '/favicon-192.png',
           },
         },
         {
@@ -127,7 +126,7 @@ export default defineConfig({
           attrs: {
             rel: 'apple-touch-icon',
             sizes: '192x192',
-            href: '/actor-ts/favicon-192.png',
+            href: '/favicon-192.png',
           },
         },
       ],

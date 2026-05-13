@@ -64,7 +64,7 @@ import { Aside } from '@astrojs/starlight/components';
   new ConfigSeedProvider({ seeds: ['10.244.1.5:2552'] });   // ✗ breaks on pod recreation
   ```
   Pod IPs change on every recreation.  Use
-  [`KubernetesApiSeedProvider`](/actor-ts/discovery/seed-providers/kubernetes-api/)
+  [`KubernetesApiSeedProvider`](/discovery/seed-providers/kubernetes-api/)
   instead.
 </Aside>
 
@@ -86,13 +86,13 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Discovery overview](/actor-ts/discovery/overview/)** — the
+- **[Discovery overview](/discovery/overview/)** — the
   bigger picture.
-- **[DNS seed provider](/actor-ts/discovery/seed-providers/dns/)** —
+- **[DNS seed provider](/discovery/seed-providers/dns/)** —
   for DNS-based discovery.
-- **[Kubernetes API seed provider](/actor-ts/discovery/seed-providers/kubernetes-api/)** —
+- **[Kubernetes API seed provider](/discovery/seed-providers/kubernetes-api/)** —
   for K8s deployments.
-- **[Aggregate seed provider](/actor-ts/discovery/seed-providers/aggregate/)** —
+- **[Aggregate seed provider](/discovery/seed-providers/aggregate/)** —
   combine multiple providers.
-- **[Joining and seeds](/actor-ts/cluster/joining-and-seeds/)** —
+- **[Joining and seeds](/cluster/joining-and-seeds/)** —
   how seeds are consumed by the cluster bootstrap.

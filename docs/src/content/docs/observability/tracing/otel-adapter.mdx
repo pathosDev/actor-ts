@@ -4,7 +4,7 @@ description: Bridge the framework's `Tracer` interface to the OpenTelemetry SDK 
 ---
 
 `OtelTracerAdapter` is the production-grade tracer.  It plugs the
-framework's [`Tracer`](/actor-ts/observability/tracing/tracer-api/)
+framework's [`Tracer`](/observability/tracing/tracer-api/)
 interface into the OpenTelemetry SDK, so spans flow to whatever
 backend you've configured (Jaeger, Tempo, Honeycomb, Datadog,
 New Relic, Grafana Cloud).
@@ -136,7 +136,7 @@ adapter.start();
 
 The OTel SDK ties traces, metrics, and logs together via shared
 context.  See
-[OTel metrics adapter](/actor-ts/observability/metrics/otel-adapter/).
+[OTel metrics adapter](/observability/metrics/otel-adapter/).
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -160,11 +160,11 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Tracer API](/actor-ts/observability/tracing/tracer-api/)** —
+- **[Tracer API](/observability/tracing/tracer-api/)** —
   the interface this adapter implements.
-- **[Recording tracer](/actor-ts/observability/tracing/recording-tracer/)** —
+- **[Recording tracer](/observability/tracing/recording-tracer/)** —
   test alternative.
-- **[Actor tracing](/actor-ts/observability/tracing/actor-tracing/)** —
+- **[Actor tracing](/observability/tracing/actor-tracing/)** —
   the framework's auto-spans.
-- **[OTel metrics adapter](/actor-ts/observability/metrics/otel-adapter/)** —
+- **[OTel metrics adapter](/observability/metrics/otel-adapter/)** —
   companion for metrics.

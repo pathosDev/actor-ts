@@ -130,7 +130,7 @@ the type system can't help you with.  `become` makes each phase its
 own function, with its own valid-message set, naturally narrowed.
 
 For a more formalized version of the same idea, see the
-[FSM](/actor-ts/persistence/fsm/) pattern — explicit state +
+[FSM](/persistence/fsm/) pattern — explicit state +
 transition declarations on top of the same engine.
 
 ## `stash` — park, then replay
@@ -188,7 +188,7 @@ Three details that matter:
 - **The stash has a capacity.**  By default the buffer is bounded
   to prevent memory leaks from runaway stashing; overflow throws
   `StashOverflowError`.  Configure via system settings if you need
-  larger / smaller; see [Configuration](/actor-ts/reference/configuration/).
+  larger / smaller; see [Configuration](/reference/configuration/).
 
 ### `stash` + `become` — the canonical combo
 
@@ -276,15 +276,15 @@ dropped during the initialization window.
 
 ## Where to next
 
-- **[Actor](/actor-ts/fundamentals/actor/)** — the base class
+- **[Actor](/fundamentals/actor/)** — the base class
   whose `onReceive` you swap with `become`.
-- **[Mailboxes](/actor-ts/fundamentals/mailboxes/)** — `unstashAll`
+- **[Mailboxes](/fundamentals/mailboxes/)** — `unstashAll`
   re-inserts into the mailbox; the mailbox decides the order.
-- **[FSM](/actor-ts/persistence/fsm/)** — a more formal
+- **[FSM](/persistence/fsm/)** — a more formal
   state-machine style on top of the same `become` engine.
-- **[Typed behaviors](/actor-ts/typed/behaviors/)** — the typed
+- **[Typed behaviors](/typed/behaviors/)** — the typed
   API expresses the same idea as functional `Behavior<T>` values
   rather than mutating context.
 
-The [`ActorContext`](/actor-ts/api/interfaces/actorcontext/) API
+The [`ActorContext`](/api/interfaces/actorcontext/) API
 reference covers `become`, `stash`, and the full surface.

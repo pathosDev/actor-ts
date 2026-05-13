@@ -37,10 +37,10 @@ Four providers ship:
 
 | Provider | Use |
 | --- | --- |
-| [`ConfigSeedProvider`](/actor-ts/discovery/seed-providers/config/) | Static list from env vars / config. |
-| [`DnsSeedProvider`](/actor-ts/discovery/seed-providers/dns/) | DNS SRV-record resolution. |
-| [`KubernetesApiSeedProvider`](/actor-ts/discovery/seed-providers/kubernetes-api/) | Live pod listing via the K8s API. |
-| [`AggregateSeedProvider`](/actor-ts/discovery/seed-providers/aggregate/) | Chain multiple providers with fallback. |
+| [`ConfigSeedProvider`](/discovery/seed-providers/config/) | Static list from env vars / config. |
+| [`DnsSeedProvider`](/discovery/seed-providers/dns/) | DNS SRV-record resolution. |
+| [`KubernetesApiSeedProvider`](/discovery/seed-providers/kubernetes-api/) | Live pod listing via the K8s API. |
+| [`AggregateSeedProvider`](/discovery/seed-providers/aggregate/) | Chain multiple providers with fallback. |
 
 Pick by your deployment environment:
 
@@ -51,7 +51,7 @@ Pick by your deployment environment:
 
 For most apps, you pick one provider, configure it once, and
 move on.  See
-[Joining and seeds](/actor-ts/cluster/joining-and-seeds/) for the
+[Joining and seeds](/cluster/joining-and-seeds/) for the
 full join protocol.
 
 ## Receptionist
@@ -85,7 +85,7 @@ Use the receptionist when:
 - **Cross-node discovery is needed** — find an actor regardless
   of which node hosts it.
 
-See [Receptionist](/actor-ts/discovery/receptionist/) for the
+See [Receptionist](/discovery/receptionist/) for the
 full API.
 
 ## Seed providers vs receptionist
@@ -135,23 +135,23 @@ Seed providers run **once**; the receptionist runs **continuously**.
 
 ### Seed providers
 
-- **[Config](/actor-ts/discovery/seed-providers/config/)** — static
+- **[Config](/discovery/seed-providers/config/)** — static
   list.
-- **[DNS](/actor-ts/discovery/seed-providers/dns/)** — SRV / A
+- **[DNS](/discovery/seed-providers/dns/)** — SRV / A
   records.
-- **[Kubernetes API](/actor-ts/discovery/seed-providers/kubernetes-api/)** —
+- **[Kubernetes API](/discovery/seed-providers/kubernetes-api/)** —
   pod listing.
-- **[Aggregate](/actor-ts/discovery/seed-providers/aggregate/)** —
+- **[Aggregate](/discovery/seed-providers/aggregate/)** —
   chain with fallback.
 
 ### Receptionist
 
-- **[Receptionist](/actor-ts/discovery/receptionist/)** — the
+- **[Receptionist](/discovery/receptionist/)** — the
   service registry.
 
 ### Related
 
-- **[Joining and seeds](/actor-ts/cluster/joining-and-seeds/)** —
+- **[Joining and seeds](/cluster/joining-and-seeds/)** —
   the cluster-bootstrap mechanism that consumes seed providers.
-- **[Cluster overview](/actor-ts/cluster/overview/)** — the
+- **[Cluster overview](/cluster/overview/)** — the
   membership model underneath both.

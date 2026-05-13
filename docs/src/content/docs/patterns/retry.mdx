@@ -161,7 +161,7 @@ class MyActor extends Actor<...> {
 Awaiting inside `onReceive` blocks the actor's mailbox until the
 retry completes — same trade-off as any await inside an
 `onReceive`.  See
-[Ask pattern](/actor-ts/fundamentals/ask-pattern/) for when this
+[Ask pattern](/fundamentals/ask-pattern/) for when this
 is a problem.
 
 ## Compared to circuit breaker
@@ -221,12 +221,12 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Backoff supervisor](/actor-ts/patterns/backoff-supervisor/)** —
+- **[Backoff supervisor](/patterns/backoff-supervisor/)** —
   the actor-restart equivalent of retry.
-- **[Backoff policy](/actor-ts/patterns/backoff-policy/)** — pure
+- **[Backoff policy](/patterns/backoff-policy/)** — pure
   delay-calculation primitives for custom retry loops.
-- **[Circuit breaker](/actor-ts/patterns/circuit-breaker/)** —
+- **[Circuit breaker](/patterns/circuit-breaker/)** —
   the complementary "stop calling for a while" primitive.
 
-The [`retry`](/actor-ts/api/functions/retry/) API reference covers
+The [`retry`](/api/functions/retry/) API reference covers
 the full signature.

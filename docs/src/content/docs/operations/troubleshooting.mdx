@@ -9,10 +9,10 @@ cause(s)**, and what to **check / log / measure** to confirm.
 
 For the diagnostic tools themselves:
 
-- [Logging](/actor-ts/fundamentals/logging/) — structured logs.
-- [Stock metrics](/actor-ts/observability/metrics/stock-metrics/) —
+- [Logging](/fundamentals/logging/) — structured logs.
+- [Stock metrics](/observability/metrics/stock-metrics/) —
   built-in actor / cluster metrics.
-- [Tracing](/actor-ts/observability/tracing/tracer-api/) —
+- [Tracing](/observability/tracing/tracer-api/) —
   per-request flow.
 
 ## Cluster
@@ -54,7 +54,7 @@ Causes:
 
 1. **Tight failure-detector thresholds** for the network's
    jitter.  See
-   [failure-detector tuning](/actor-ts/operations/tuning/failure-detector/).
+   [failure-detector tuning](/operations/tuning/failure-detector/).
 2. **Network partitions** (real ones — diagnose at the
    infrastructure level).
 3. **GC pauses** longer than the unreachable threshold.
@@ -150,7 +150,7 @@ If P99 recovery is > 1 second, **set a snapshot policy**:
 override snapshotPolicy() { return everyNEvents(100); }
 ```
 
-See [Snapshots](/actor-ts/persistence/snapshots/).
+See [Snapshots](/persistence/snapshots/).
 
 ### Symptom: events recovered but state is wrong
 
@@ -199,9 +199,9 @@ node --inspect / Bun's profiler
 ```
 
 Check
-[mailbox sizing](/actor-ts/operations/tuning/mailbox-sizing/) +
+[mailbox sizing](/operations/tuning/mailbox-sizing/) +
 the leak patterns in
-[event stream](/actor-ts/fundamentals/event-stream/).
+[event stream](/fundamentals/event-stream/).
 
 ### Symptom: HTTP latency high under load
 
@@ -211,7 +211,7 @@ Cause: an actor monopolizes the event loop, starving HTTP
 handlers.
 
 Fix: per-actor
-[ThroughputDispatcher](/actor-ts/operations/tuning/dispatcher-tuning/)
+[ThroughputDispatcher](/operations/tuning/dispatcher-tuning/)
 on the heavy actor.
 
 ## Tests + dev
@@ -232,7 +232,7 @@ afterEach(async () => {
 });
 ```
 
-See [TestKit](/actor-ts/testing/testkit/).
+See [TestKit](/testing/testkit/).
 
 ### Symptom: flaky timing-sensitive tests
 
@@ -242,7 +242,7 @@ Cause: real-clock timing in tests.  CI machines are slower /
 different.
 
 Fix: use
-[ManualScheduler](/actor-ts/testing/manual-scheduler/) and
+[ManualScheduler](/testing/manual-scheduler/) and
 control time deterministically.
 
 ## Where to start when nothing's obvious
@@ -260,13 +260,13 @@ control time deterministically.
 
 ## Where to next
 
-- **[Operations overview](/actor-ts/operations/overview/)** —
+- **[Operations overview](/operations/overview/)** —
   the broader production checklist.
-- **[FAQ](/actor-ts/reference/faq/)** — common questions and
+- **[FAQ](/reference/faq/)** — common questions and
   pitfalls.
-- **[Stock metrics](/actor-ts/observability/metrics/stock-metrics/)** —
+- **[Stock metrics](/observability/metrics/stock-metrics/)** —
   what to read when symptoms emerge.
-- **[Logging](/actor-ts/fundamentals/logging/)** — how to make
+- **[Logging](/fundamentals/logging/)** — how to make
   logs actually useful.
-- **[Tracing](/actor-ts/observability/tracing/tracer-api/)** —
+- **[Tracing](/observability/tracing/tracer-api/)** —
   per-request flow when logs aren't enough.

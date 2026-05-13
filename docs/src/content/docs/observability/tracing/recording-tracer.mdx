@@ -4,7 +4,7 @@ description: Test-friendly `Tracer` that captures every span in memory for asser
 ---
 
 `RecordingTracer` is the test counterpart to
-[`OtelTracerAdapter`](/actor-ts/observability/tracing/otel-adapter/).
+[`OtelTracerAdapter`](/observability/tracing/otel-adapter/).
 Instead of exporting spans, it **stores them in memory** —
 tests assert on the recorded spans.
 
@@ -141,14 +141,14 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Tracer API](/actor-ts/observability/tracing/tracer-api/)** —
+- **[Tracer API](/observability/tracing/tracer-api/)** —
   the interface this implements.
-- **[OTel adapter](/actor-ts/observability/tracing/otel-adapter/)** —
+- **[OTel adapter](/observability/tracing/otel-adapter/)** —
   the production alternative.
-- **[Actor tracing](/actor-ts/observability/tracing/actor-tracing/)** —
+- **[Actor tracing](/observability/tracing/actor-tracing/)** —
   what the framework auto-spans, observable via this tracer.
-- **[TestKit](/actor-ts/testing/testkit/)** — pair with the
+- **[TestKit](/testing/testkit/)** — pair with the
   recording tracer for assertion-friendly tests.
 
-The [`RecordingTracer`](/actor-ts/api/classes/recordingtracer/)
+The [`RecordingTracer`](/api/classes/recordingtracer/)
 API reference covers the full surface.

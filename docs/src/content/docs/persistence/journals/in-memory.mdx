@@ -52,7 +52,7 @@ internally.  Operations are:
 
 Every `append` also publishes the event to the in-process
 `JournalEventBus` — so push-based queries (see
-[Push-based query](/actor-ts/persistence/push-based-query/)) work
+[Push-based query](/persistence/push-based-query/)) work
 in real time without polling.
 
 ## When to use it
@@ -66,8 +66,8 @@ Three legitimate cases:
 3. **Throwaway demos** — when the data isn't supposed to survive.
 
 For anything that needs to **persist across restarts**, switch to
-[SQLite](/actor-ts/persistence/journals/sqlite/) or
-[Cassandra](/actor-ts/persistence/journals/cassandra/).
+[SQLite](/persistence/journals/sqlite/) or
+[Cassandra](/persistence/journals/cassandra/).
 
 ## Test pattern
 
@@ -168,13 +168,13 @@ run against fast in-memory journals.
 
 ## Where to next
 
-- **[Persistence overview](/actor-ts/persistence/overview/)** —
+- **[Persistence overview](/persistence/overview/)** —
   the bigger picture.
-- **[SQLite journal](/actor-ts/persistence/journals/sqlite/)** —
+- **[SQLite journal](/persistence/journals/sqlite/)** —
   the single-node production default.
-- **[Cassandra journal](/actor-ts/persistence/journals/cassandra/)** —
+- **[Cassandra journal](/persistence/journals/cassandra/)** —
   for multi-node production.
-- **[PersistentActor](/actor-ts/persistence/persistent-actor/)** —
+- **[PersistentActor](/persistence/persistent-actor/)** —
   what's writing the events.
-- **[Snapshot stores — In-memory](/actor-ts/persistence/snapshot-stores/in-memory/)** —
+- **[Snapshot stores — In-memory](/persistence/snapshot-stores/in-memory/)** —
   the companion in-memory snapshot store.

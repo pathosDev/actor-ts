@@ -136,8 +136,8 @@ supervisor strategy is the central error-handling point — no
 listener-on-error gymnastics.
 
 For multi-listener fan-out, use the
-[event stream](/actor-ts/fundamentals/event-stream/) or
-[DistributedPubSub](/actor-ts/cluster/pubsub/).
+[event stream](/fundamentals/event-stream/) or
+[DistributedPubSub](/cluster/pubsub/).
 
 ## Pattern 3 — Background loop with mutable state
 
@@ -301,7 +301,7 @@ import { Aside } from '@astrojs/starlight/components';
   Stack traces inside an actor lose the *caller*'s context — the
   `tell` happened in some HTTP handler somewhere, but the actor's
   trace only shows the dispatch.  Mitigate with
-  [LogContext MDC](/actor-ts/fundamentals/logging/) — propagate
+  [LogContext MDC](/fundamentals/logging/) — propagate
   a `requestId` so logs across actors stitch together.
 </Aside>
 
@@ -356,14 +356,14 @@ the rest of your code unchanged.
 
 ## Where to next
 
-- **[Quickstart](/actor-ts/intro/quickstart/)** — the "hello
+- **[Quickstart](/intro/quickstart/)** — the "hello
   actor" walkthrough.
-- **[Why actors](/actor-ts/intro/why-actors/)** — the rationale,
+- **[Why actors](/intro/why-actors/)** — the rationale,
   in more detail than this page.
-- **[Actor](/actor-ts/fundamentals/actor/)** — the base class
+- **[Actor](/fundamentals/actor/)** — the base class
   you'll extend.
-- **[PersistentActor](/actor-ts/persistence/persistent-actor/)** —
+- **[PersistentActor](/persistence/persistent-actor/)** —
   the event-sourced variant that replaces "race-prone mutable
   state."
-- **[Migration overview](/actor-ts/migration/overview/)** —
+- **[Migration overview](/migration/overview/)** —
   migration guides from other actor frameworks.

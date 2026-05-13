@@ -3,7 +3,7 @@ title: WrapLegacy
 description: Upgrade pre-envelope events to versioned envelopes — when introducing adapters to an existing journal, `wrapLegacy(...)` treats raw events as version 1 and feeds them into the migration chain. The bridge for adopting migration in a brownfield codebase.
 ---
 
-The framework's [envelope format](/actor-ts/persistence/migration/envelope-format/)
+The framework's [envelope format](/persistence/migration/envelope-format/)
 only kicks in when an adapter is configured.  **Before** you set
 an adapter, events are stored **raw**:
 
@@ -181,13 +181,13 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Migration overview](/actor-ts/persistence/migration/overview/)** —
+- **[Migration overview](/persistence/migration/overview/)** —
   the bigger picture.
-- **[Envelope format](/actor-ts/persistence/migration/envelope-format/)** —
+- **[Envelope format](/persistence/migration/envelope-format/)** —
   what an envelope looks like.
-- **[DefaultAdapter](/actor-ts/persistence/migration/default-adapter/)** —
+- **[DefaultAdapter](/persistence/migration/default-adapter/)** —
   for additive migrations.
-- **[MigratingAdapter](/actor-ts/persistence/migration/migrating-adapter/)** —
+- **[MigratingAdapter](/persistence/migration/migrating-adapter/)** —
   for chained transformations (commonly wrapped by `wrapLegacy`).
-- **[Recipes](/actor-ts/persistence/migration/recipes/)** — the
+- **[Recipes](/persistence/migration/recipes/)** — the
   recipe for "I'm introducing adapters to an existing system."

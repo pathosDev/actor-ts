@@ -117,7 +117,7 @@ Restart + 10/minute cap.  Reach for `withSupervisorStrategy` when
 that's not right — e.g. a worker that should be stopped on failure
 rather than restarted because its parent will spawn a replacement.
 
-See [Supervision](/actor-ts/fundamentals/supervision/) for the
+See [Supervision](/fundamentals/supervision/) for the
 full strategy semantics.
 
 ### `withDispatcher`
@@ -143,7 +143,7 @@ Useful when:
 
 For most apps, the system-level dispatcher applies uniformly and
 you never need this.  See
-[Dispatchers](/actor-ts/fundamentals/dispatchers/).
+[Dispatchers](/fundamentals/dispatchers/).
 
 ### `withMailboxCapacity`
 
@@ -178,7 +178,7 @@ Full control — return any `Mailbox` subclass.  The factory is
 called once per actor incarnation; on restart, a fresh empty
 mailbox-data-structure is created.
 
-See [Mailboxes](/actor-ts/fundamentals/mailboxes/) for the
+See [Mailboxes](/fundamentals/mailboxes/) for the
 overflow policies and priority semantics.
 
 ## Naming on spawn
@@ -228,7 +228,7 @@ clean.
 ### Props for typed actors
 
 The typed-actor API has its own `Props`-equivalent (the typed
-`Behaviors.setup(...)` flow); see [Typed actors](/actor-ts/typed/typed-actor/).
+`Behaviors.setup(...)` flow); see [Typed actors](/typed/typed-actor/).
 The untyped `Props` covered here is the more general — accepts a
 factory returning `Actor<TMsg>`, where the message type comes from
 the actor's own class declaration.
@@ -270,16 +270,16 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Actor](/actor-ts/fundamentals/actor/)** — the base class
+- **[Actor](/fundamentals/actor/)** — the base class
   whose constructor the factory invokes.
-- **[Supervision](/actor-ts/fundamentals/supervision/)** — the
+- **[Supervision](/fundamentals/supervision/)** — the
   strategy you pass to `withSupervisorStrategy`.
-- **[Dispatchers](/actor-ts/fundamentals/dispatchers/)** — the
+- **[Dispatchers](/fundamentals/dispatchers/)** — the
   scheduler you pass to `withDispatcher`.
-- **[Mailboxes](/actor-ts/fundamentals/mailboxes/)** — the queue
+- **[Mailboxes](/fundamentals/mailboxes/)** — the queue
   you pass to `withMailbox` / `withMailboxCapacity`.
-- **[ActorSystem](/actor-ts/fundamentals/actor-system/)** — the
+- **[ActorSystem](/fundamentals/actor-system/)** — the
   `system.actorOf(props, name?)` that consumes Props.
 
-The [`Props`](/actor-ts/api/classes/props/) API reference covers
+The [`Props`](/api/classes/props/) API reference covers
 the full builder set.

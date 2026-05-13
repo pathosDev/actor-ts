@@ -4,7 +4,7 @@ description: A `Lease` implementation backed by an in-process registry — usefu
 ---
 
 `InMemoryLease` is the dev / test implementation of the
-[`Lease`](/actor-ts/coordination/lease-api/) interface.  It holds
+[`Lease`](/coordination/lease-api/) interface.  It holds
 the lease state in **process memory** — so multiple `InMemoryLease`
 instances sharing the same `name` mutually exclude correctly, but
 only within a single process.
@@ -40,7 +40,7 @@ import { Aside } from '@astrojs/starlight/components';
   `InMemoryLease` doesn't survive a process restart, isn't
   shared across processes, and gives no protection against
   split-brain in a real cluster.  For production with multiple
-  pods, use [`KubernetesLease`](/actor-ts/coordination/kubernetes-lease/).
+  pods, use [`KubernetesLease`](/coordination/kubernetes-lease/).
 </Aside>
 
 <Aside type="caution" title="Cross-process tests">
@@ -100,7 +100,7 @@ The implementation:
   (default `ttl / 3`).
 
 For deterministic tests, you may want to inject a
-[ManualScheduler](/actor-ts/testing/manual-scheduler/) into the
+[ManualScheduler](/testing/manual-scheduler/) into the
 registry — but the framework's `InMemoryLease` currently uses
 real timers.  For very-deterministic lease-timing tests, mock
 `Date.now()` and use direct registry manipulation.
@@ -152,11 +152,11 @@ depending on a real K8s API.
 
 ## Where to next
 
-- **[Coordination overview](/actor-ts/coordination/overview/)** —
+- **[Coordination overview](/coordination/overview/)** —
   the bigger picture.
-- **[Lease API](/actor-ts/coordination/lease-api/)** — the
+- **[Lease API](/coordination/lease-api/)** — the
   contract `InMemoryLease` implements.
-- **[KubernetesLease](/actor-ts/coordination/kubernetes-lease/)** —
+- **[KubernetesLease](/coordination/kubernetes-lease/)** —
   the production alternative.
-- **[MultiNodeSpec](/actor-ts/testing/multi-node-spec/)** — the
+- **[MultiNodeSpec](/testing/multi-node-spec/)** — the
   multi-node test harness this pairs with.

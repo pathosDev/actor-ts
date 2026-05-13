@@ -125,7 +125,7 @@ Place this at the project root.  The framework auto-loads it on
 The plugin keys point to *another* config section that holds
 that plugin's settings.  E.g. `actor-ts.persistence.journal.sqlite`
 contains the SQLite journal's `path`, `pragmas`, etc.  See each
-journal page in [Persistence](/actor-ts/persistence/overview/) for
+journal page in [Persistence](/persistence/overview/) for
 the per-plugin keys.
 
 ### `actor-ts.sharding`
@@ -160,17 +160,17 @@ pages for the keys:
 
 | Subtree | Page |
 | --- | --- |
-| `io.broker.kafka` | [Kafka](/actor-ts/io/kafka/) |
-| `io.broker.mqtt` | [MQTT](/actor-ts/io/mqtt/) |
-| `io.broker.amqp` | [AMQP](/actor-ts/io/amqp/) |
-| `io.broker.nats` | [NATS](/actor-ts/io/nats/) |
-| `io.broker.jetstream` | [JetStream](/actor-ts/io/nats/) *(same page, JetStream variant)* |
-| `io.broker.redis-streams` | [Redis Streams](/actor-ts/io/redis-streams/) |
-| `io.broker.grpc.{client,server}` | [gRPC](/actor-ts/io/grpc/) |
-| `io.broker.websocket` | [WebSocket client](/actor-ts/io/websocket/) |
-| `io.broker.sse` | [SSE](/actor-ts/io/sse/) |
-| `io.broker.tcp` | [TCP](/actor-ts/io/tcp/) |
-| `io.broker.udp` | [UDP](/actor-ts/io/udp/) |
+| `io.broker.kafka` | [Kafka](/io/kafka/) |
+| `io.broker.mqtt` | [MQTT](/io/mqtt/) |
+| `io.broker.amqp` | [AMQP](/io/amqp/) |
+| `io.broker.nats` | [NATS](/io/nats/) |
+| `io.broker.jetstream` | [JetStream](/io/nats/) *(same page, JetStream variant)* |
+| `io.broker.redis-streams` | [Redis Streams](/io/redis-streams/) |
+| `io.broker.grpc.{client,server}` | [gRPC](/io/grpc/) |
+| `io.broker.websocket` | [WebSocket client](/io/websocket/) |
+| `io.broker.sse` | [SSE](/io/sse/) |
+| `io.broker.tcp` | [TCP](/io/tcp/) |
+| `io.broker.udp` | [UDP](/io/udp/) |
 
 ## HOCON-specific syntax
 
@@ -286,11 +286,11 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Actor system](/actor-ts/fundamentals/actor-system/)** —
+- **[Actor system](/fundamentals/actor-system/)** —
   how settings reach the framework.
-- **[Cluster overview](/actor-ts/cluster/overview/)** — the keys
+- **[Cluster overview](/cluster/overview/)** — the keys
   most relevant to multi-node setups.
-- **[Persistence overview](/actor-ts/persistence/overview/)** —
+- **[Persistence overview](/persistence/overview/)** —
   journal + snapshot-store plugin selection.
-- **[Version policy](/actor-ts/reference/version-policy/)** —
+- **[Version policy](/reference/version-policy/)** —
   what's stable vs experimental.

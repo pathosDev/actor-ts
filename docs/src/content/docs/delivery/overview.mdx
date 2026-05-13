@@ -72,8 +72,8 @@ Combined with a persistent `highWatermark`, this gives
 
 | Controller | Role |
 | --- | --- |
-| **[ProducerController](/actor-ts/delivery/producer-controller/)** | Wraps the sender side — assigns sequence numbers, holds unacked messages, retransmits. |
-| **[ConsumerController](/actor-ts/delivery/consumer-controller/)** | Wraps the receiver side — orders messages by seq, dedupes, sends acks. |
+| **[ProducerController](/delivery/producer-controller/)** | Wraps the sender side — assigns sequence numbers, holds unacked messages, retransmits. |
+| **[ConsumerController](/delivery/consumer-controller/)** | Wraps the receiver side — orders messages by seq, dedupes, sends acks. |
 
 Pair them via a **producer-consumer link** — each producer
 talks to one consumer (or N consumers via routing, but the
@@ -188,11 +188,11 @@ a broker (Kafka, etc.).
 
 ## Where to next
 
-- **[Producer controller](/actor-ts/delivery/producer-controller/)** —
+- **[Producer controller](/delivery/producer-controller/)** —
   sender-side details.
-- **[Consumer controller](/actor-ts/delivery/consumer-controller/)** —
+- **[Consumer controller](/delivery/consumer-controller/)** —
   receiver-side details.
-- **[Ack semantics](/actor-ts/delivery/ack-semantics/)** — what
+- **[Ack semantics](/delivery/ack-semantics/)** — what
   acks mean and when they fire.
-- **[PersistentActor](/actor-ts/persistence/persistent-actor/)** —
+- **[PersistentActor](/persistence/persistent-actor/)** —
   pairing with persistence for full durability.

@@ -206,7 +206,7 @@ class Account extends PersistentActor<...> {
 }
 ```
 
-For [sharded entities](/actor-ts/cluster/sharding/overview/), the
+For [sharded entities](/cluster/sharding/overview/), the
 shard region typically passes the entity ID via constructor, and
 the persistence ID derives from it.
 
@@ -237,7 +237,7 @@ override snapshotPolicy() {
 }
 ```
 
-See [Snapshots](/actor-ts/persistence/snapshots/) for the full
+See [Snapshots](/persistence/snapshots/) for the full
 configuration.
 
 ## Tagging events for projections
@@ -250,7 +250,7 @@ class Account extends PersistentActor<...> {
 }
 ```
 
-[Projections](/actor-ts/persistence/projections/) read events from
+[Projections](/persistence/projections/) read events from
 the journal **by tag**.  Tagging an event makes it discoverable to
 a read-side view that subscribes to `'account'` events.
 
@@ -283,7 +283,7 @@ envelope (version + type + payload) at persist time, and unwrapped
 through `adapter.upcast(stored, version)` at read time.  Backward
 compatibility is the actor's responsibility.
 
-See [Migration overview](/actor-ts/persistence/migration/overview/)
+See [Migration overview](/persistence/migration/overview/)
 for the full migration story.
 
 ## Common pitfalls
@@ -347,18 +347,18 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Persistence overview](/actor-ts/persistence/overview/)** —
+- **[Persistence overview](/persistence/overview/)** —
   the bigger picture: PersistentActor vs DurableStateActor.
-- **[Snapshots](/actor-ts/persistence/snapshots/)** — replay-window
+- **[Snapshots](/persistence/snapshots/)** — replay-window
   reduction in detail.
-- **[Projections](/actor-ts/persistence/projections/)** — read-side
+- **[Projections](/persistence/projections/)** — read-side
   views over the event stream.
-- **[Journals — SQLite](/actor-ts/persistence/journals/sqlite/)** —
+- **[Journals — SQLite](/persistence/journals/sqlite/)** —
   production journal for single-node.
-- **[Migration overview](/actor-ts/persistence/migration/overview/)** —
+- **[Migration overview](/persistence/migration/overview/)** —
   evolving event schemas.
-- **[Replicated event sourcing](/actor-ts/persistence/replicated-event-sourcing/overview/)** —
+- **[Replicated event sourcing](/persistence/replicated-event-sourcing/overview/)** —
   multi-writer event sourcing for cluster setups.
 
-The [`PersistentActor`](/actor-ts/api/classes/persistentactor/)
+The [`PersistentActor`](/api/classes/persistentactor/)
 API reference covers the full base-class surface.

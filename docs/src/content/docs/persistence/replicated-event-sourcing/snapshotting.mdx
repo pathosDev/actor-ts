@@ -4,7 +4,7 @@ description: Snapshots for replicated event sourcing — they carry the vector c
 ---
 
 In single-writer event sourcing,
-[snapshots](/actor-ts/persistence/snapshots/) save the state at
+[snapshots](/persistence/snapshots/) save the state at
 a particular seqNr — recovery loads the snapshot, replays events
 after that seqNr.
 
@@ -194,16 +194,16 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   Resolver upgrades are schema changes — roll out via standard
   migration patterns.  See
-  [Migration overview](/actor-ts/persistence/migration/overview/).
+  [Migration overview](/persistence/migration/overview/).
 </Aside>
 
 ## Where to next
 
-- **[Replicated event sourcing overview](/actor-ts/persistence/replicated-event-sourcing/overview/)** —
+- **[Replicated event sourcing overview](/persistence/replicated-event-sourcing/overview/)** —
   the bigger picture.
-- **[Vector clocks](/actor-ts/persistence/replicated-event-sourcing/vector-clocks/)** —
+- **[Vector clocks](/persistence/replicated-event-sourcing/vector-clocks/)** —
   what's stored alongside the state.
-- **[Conflict resolver](/actor-ts/persistence/replicated-event-sourcing/conflict-resolver/)** —
+- **[Conflict resolver](/persistence/replicated-event-sourcing/conflict-resolver/)** —
   invoked during recovery for concurrent events.
-- **[Snapshots](/actor-ts/persistence/snapshots/)** — the
+- **[Snapshots](/persistence/snapshots/)** — the
   single-writer counterpart.

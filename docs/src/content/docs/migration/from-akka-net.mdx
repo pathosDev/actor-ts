@@ -8,7 +8,7 @@ runs on .NET / .NET Framework, with the same actor model,
 clustering, and persistence story.
 
 For migration, **Akka.NET ≈ Akka (JVM)** — the
-[from-akka-jvm guide](/actor-ts/migration/from-akka-jvm/) covers
+[from-akka-jvm guide](/migration/from-akka-jvm/) covers
 the conceptual mapping.  This page focuses on **C# specifics**
 and what changes in TypeScript.
 
@@ -200,7 +200,7 @@ Single `onEvent` instead of split `Recover<T>` / `Command<T>`.
 ## Configuration
 
 Akka.NET uses **HOCON** for configuration — same as Akka JVM.
-actor-ts also uses **HOCON** ([Configuration](/actor-ts/reference/configuration/)).
+actor-ts also uses **HOCON** ([Configuration](/reference/configuration/)).
 
 The key prefixes differ:
 
@@ -256,9 +256,9 @@ Same as Akka JVM:
 
 ## Where to next
 
-- **[from-akka-jvm](/actor-ts/migration/from-akka-jvm/)** —
+- **[from-akka-jvm](/migration/from-akka-jvm/)** —
   the main reference (Akka.NET mirrors JVM Akka).
-- **[Migration overview](/actor-ts/migration/overview/)** —
+- **[Migration overview](/migration/overview/)** —
   cross-framework comparison.
-- **[Quickstart](/actor-ts/intro/quickstart/)** — actor-ts
+- **[Quickstart](/intro/quickstart/)** — actor-ts
   hello world.

@@ -69,7 +69,7 @@ expect(reply.value).toBe(42);
 
 Wait for the next message; assert it's an instance of `Class`.
 Useful for `Success` / `Failure` envelopes from
-[pipeTo](/actor-ts/patterns/futures-patterns/), or any class-based
+[pipeTo](/patterns/futures-patterns/), or any class-based
 message type.
 
 ### `expectNoMessage(timeoutMs)`
@@ -259,12 +259,12 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[TestKit](/actor-ts/testing/testkit/)** — the wrapper that
+- **[TestKit](/testing/testkit/)** — the wrapper that
   creates the probe.
-- **[Testing overview](/actor-ts/testing/overview/)** — when to
+- **[Testing overview](/testing/overview/)** — when to
   use probes vs other testing tools.
-- **[ManualScheduler](/actor-ts/testing/manual-scheduler/)** —
+- **[ManualScheduler](/testing/manual-scheduler/)** —
   for tests that need deterministic timer fires.
 
-The [`TestProbe`](/actor-ts/api/classes/testprobe/) API reference
+The [`TestProbe`](/api/classes/testprobe/) API reference
 covers the full surface.

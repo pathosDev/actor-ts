@@ -31,13 +31,13 @@ This shape buys three things:
    (via [ts-pattern](https://github.com/gvergnaud/ts-pattern)) refuses
    to compile if you add a new `kind` and forget to handle it.  The
    actor-ts codebase uses this pattern everywhere — see
-   [Pattern matching](/actor-ts/fundamentals/pattern-matching/).
+   [Pattern matching](/fundamentals/pattern-matching/).
 2. **Type narrowing inside handlers.**  Inside the `.with({ kind: 'set' }, ...)`
    arm, `m.to` is typed as `number` automatically — no casts, no
    `as never`.
 3. **Wire-format stability.**  When a message crosses a process or
    cluster boundary, the serializer reads `kind` to decide how to
-   reconstitute the value.  See [Serialization](/actor-ts/serialization/overview/).
+   reconstitute the value.  See [Serialization](/serialization/overview/).
 
 The convention is `kind: string`, lowercase, kebab-case for multi-word.
 Capital-K `Kind` works too but isn't what the framework uses.
@@ -140,7 +140,7 @@ for that ref:
   wants the reply to go to whoever asked them.  Note: `this.sender`
   is `Option<ActorRef>` — empty when the message came from outside
   the actor system.
-- **A throwaway "ask" probe** — what the [Ask pattern](/actor-ts/fundamentals/ask-pattern/)
+- **A throwaway "ask" probe** — what the [Ask pattern](/fundamentals/ask-pattern/)
   builds for you.  Returns a `Promise<Reply>`.
 
 The reply-to-ref idiom is more verbose than a method call but earns
@@ -170,7 +170,7 @@ its own commands.
 
 ## Cmd vs Event — the persistent-actor split
 
-For actors that persist events ([PersistentActor](/actor-ts/persistence/persistent-actor/)),
+For actors that persist events ([PersistentActor](/persistence/persistent-actor/)),
 the framework splits **commands** (what to do) from **events** (what
 already happened):
 
@@ -202,7 +202,7 @@ event); events are eternal (the journal entry).  Naming them
 distinctly — past-tense for events (`Deposited`), imperative for
 commands (`DepositCmd`) — keeps the conceptual line clear.
 
-See [PersistentActor](/actor-ts/persistence/persistent-actor/) for the
+See [PersistentActor](/persistence/persistent-actor/) for the
 full event-sourcing story.
 
 ## Common pitfalls
@@ -247,18 +247,18 @@ full event-sourcing story.
 
 ## Where to next
 
-- **[Pattern matching](/actor-ts/fundamentals/pattern-matching/)** —
+- **[Pattern matching](/fundamentals/pattern-matching/)** —
   the `match().exhaustive()` idiom used in every example on this
   page.
-- **[Ask pattern](/actor-ts/fundamentals/ask-pattern/)** —
+- **[Ask pattern](/fundamentals/ask-pattern/)** —
   `ask(ref, msg, timeout)` returns a Promise for the reply, avoiding
   the manual reply-to-ref dance.
-- **[Actor](/actor-ts/fundamentals/actor/)** — the base class, the
+- **[Actor](/fundamentals/actor/)** — the base class, the
   `onReceive` signature, the context references that produce reply
   refs.
-- **[Serialization](/actor-ts/serialization/overview/)** — what
+- **[Serialization](/serialization/overview/)** — what
   happens to your messages when they cross a process / cluster
   boundary; how to register custom serializers when the JSON default
   doesn't fit.
-- **[PersistentActor](/actor-ts/persistence/persistent-actor/)** —
+- **[PersistentActor](/persistence/persistent-actor/)** —
   where the Cmd-vs-Event split becomes load-bearing.

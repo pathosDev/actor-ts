@@ -22,8 +22,8 @@ User=actor-ts
 Group=actor-ts
 WorkingDirectory=/opt/actor-ts
 Environment="NODE_ENV=production"
-EnvironmentFile=/etc/actor-ts/env
-ExecStart=/usr/bin/bun /opt/actor-ts/dist/main.js
+EnvironmentFile=/etc/env
+ExecStart=/usr/bin/bun /opt/dist/main.js
 Restart=on-failure
 RestartSec=10s
 TimeoutStopSec=60s
@@ -58,7 +58,7 @@ sudo journalctl -u actor-ts -f
 ### Cluster across systemd hosts
 
 ```ini
-# /etc/actor-ts/env on each host:
+# /etc/env on each host:
 ACTOR_TS_HOSTNAME=10.0.0.5     # this host's IP
 ACTOR_TS_PORT=2552
 ACTOR_TS_SEEDS=10.0.0.5:2552,10.0.0.6:2552,10.0.0.7:2552
@@ -68,7 +68,7 @@ Three hosts; each knows the full seed list.  Add another host
 later by appending to the seed list and rolling out.
 
 For **dynamic-size deployments** (autoscaling VMs), use the
-[DNS seed provider](/actor-ts/discovery/seed-providers/dns/)
+[DNS seed provider](/discovery/seed-providers/dns/)
 backed by your DNS-SD provider (Consul, Eureka, etc.).
 
 ### Rolling restart on systemd
@@ -107,8 +107,8 @@ binary).
         "NODE_ENV":     "production",
         "ACTOR_TS_PORT": "2552"
       },
-      "error_file":  "/var/log/actor-ts/error.log",
-      "out_file":    "/var/log/actor-ts/out.log"
+      "error_file":  "/var/log/error.log",
+      "out_file":    "/var/log/out.log"
     }
   ]
 }
@@ -176,11 +176,11 @@ fleet, the K8s overhead isn't worth it.
 
 ## Where to next
 
-- **[Kubernetes deployment](/actor-ts/operations/deployment/kubernetes/)** —
+- **[Kubernetes deployment](/operations/deployment/kubernetes/)** —
   the K8s alternative.
-- **[Docker Compose](/actor-ts/operations/deployment/docker-compose/)** —
+- **[Docker Compose](/operations/deployment/docker-compose/)** —
   for local multi-node setups.
-- **[Coordinated shutdown](/actor-ts/fundamentals/coordinated-shutdown/)** —
+- **[Coordinated shutdown](/fundamentals/coordinated-shutdown/)** —
   what your `TimeoutStopSec` / `kill_timeout` needs to allow for.
-- **[Operations overview](/actor-ts/operations/overview/)** —
+- **[Operations overview](/operations/overview/)** —
   production checklist.

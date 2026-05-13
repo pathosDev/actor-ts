@@ -63,7 +63,7 @@ await HttpManagement.start(system, {
 | `POST /cluster/down` | Opt-in (`enableDownEndpoint`) | Force-down a peer by address. |
 | `GET /metrics` | Opt-in (`enableMetricsEndpoint`) | Prometheus text format. |
 
-See [HTTP endpoints](/actor-ts/observability/management/http-endpoints/)
+See [HTTP endpoints](/observability/management/http-endpoints/)
 for the full surface + response shapes.
 
 ## Health checks
@@ -82,7 +82,7 @@ health.addCheck('cache', async () => {
 
 Custom checks plug into `/health` and `/ready`.  A failing
 check makes the endpoint return 503.  See
-[Health checks](/actor-ts/observability/management/health-checks/).
+[Health checks](/observability/management/health-checks/).
 
 ## K8s integration
 
@@ -105,7 +105,7 @@ livenessProbe:
 
 K8s polls these endpoints to decide if the pod should receive
 traffic (ready) or be restarted (live).  See
-[Kubernetes deployment](/actor-ts/operations/deployment/kubernetes/)
+[Kubernetes deployment](/operations/deployment/kubernetes/)
 for the full deployment recipe.
 
 ## Why a separate port
@@ -144,18 +144,18 @@ Two cases:
 1. **You already have an HTTP server** and want to mount management
    routes inline.  Then use `managementRoutes(system, cluster)`
    directly + bind into your existing
-   [HTTP routes](/actor-ts/http/overview/).
+   [HTTP routes](/http/overview/).
 2. **You're running a single-node app without cluster** — health
    checks alone might not justify the extra port.  Consider just
    wiring `/health` into your existing HTTP server.
 
 ## Where to next
 
-- **[Health checks](/actor-ts/observability/management/health-checks/)** —
+- **[Health checks](/observability/management/health-checks/)** —
   custom checks plumbed through `/health`.
-- **[HTTP endpoints](/actor-ts/observability/management/http-endpoints/)** —
+- **[HTTP endpoints](/observability/management/http-endpoints/)** —
   the full endpoint reference.
-- **[Kubernetes deployment](/actor-ts/operations/deployment/kubernetes/)** —
+- **[Kubernetes deployment](/operations/deployment/kubernetes/)** —
   the K8s recipe using these probes.
-- **[Prometheus exporter](/actor-ts/observability/metrics/prometheus-exporter/)** —
+- **[Prometheus exporter](/observability/metrics/prometheus-exporter/)** —
   the metrics endpoint this exposes.

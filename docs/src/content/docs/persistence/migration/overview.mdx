@@ -15,13 +15,13 @@ Four cooperating tools:
 
 | Tool | When |
 | --- | --- |
-| **[Envelope format](/actor-ts/persistence/migration/envelope-format/)** | Every persisted event carries a version tag.  Enables migrating. |
-| **[Schema registry](/actor-ts/persistence/migration/schema-registry/)** | Optional — declares known schemas + their versions. |
-| **[DefaultAdapter](/actor-ts/persistence/migration/default-adapter/)** | Auto-fill defaults for fields added in a newer version. |
-| **[MigratingAdapter](/actor-ts/persistence/migration/migrating-adapter/)** | Chain transformations from v1 → v2 → v3. |
-| **[WrapLegacy](/actor-ts/persistence/migration/wrap-legacy/)** | Upgrade un-envelope'd legacy events to versioned envelopes. |
+| **[Envelope format](/persistence/migration/envelope-format/)** | Every persisted event carries a version tag.  Enables migrating. |
+| **[Schema registry](/persistence/migration/schema-registry/)** | Optional — declares known schemas + their versions. |
+| **[DefaultAdapter](/persistence/migration/default-adapter/)** | Auto-fill defaults for fields added in a newer version. |
+| **[MigratingAdapter](/persistence/migration/migrating-adapter/)** | Chain transformations from v1 → v2 → v3. |
+| **[WrapLegacy](/persistence/migration/wrap-legacy/)** | Upgrade un-envelope'd legacy events to versioned envelopes. |
 
-Plus a more focused page: [Recipes](/actor-ts/persistence/migration/recipes/)
+Plus a more focused page: [Recipes](/persistence/migration/recipes/)
 — the cookbook of common migrations.
 
 ## The envelope
@@ -46,7 +46,7 @@ event in an **envelope** at persist time:
 On read, the adapter sees the version + payload and **upcasts** to
 the current shape before the actor's `onEvent` sees it.
 
-See [Envelope format](/actor-ts/persistence/migration/envelope-format/)
+See [Envelope format](/persistence/migration/envelope-format/)
 for the details.
 
 ## A worked example
@@ -168,7 +168,7 @@ Optional — adapters work without it.  Useful when:
 - You're building tooling that introspects schemas
   (admin dashboards, migration scripts).
 
-See [Schema registry](/actor-ts/persistence/migration/schema-registry/).
+See [Schema registry](/persistence/migration/schema-registry/).
 
 ## Legacy events
 
@@ -187,7 +187,7 @@ const adapter = wrapLegacy<EventV2>({
 
 This treats every unwrapped (raw) event as version 1, lets the
 migration chain run from there.  See
-[WrapLegacy](/actor-ts/persistence/migration/wrap-legacy/).
+[WrapLegacy](/persistence/migration/wrap-legacy/).
 
 ## Operational rollout
 
@@ -205,22 +205,22 @@ Migrations are usually rolled out in phases:
    confirmed no V1 events remain.
 
 For rolling deployments without downtime, see
-[Rolling migration](/actor-ts/operations/upgrades/rolling-migration/)
-and [Recipes](/actor-ts/persistence/migration/recipes/).
+[Rolling migration](/operations/upgrades/rolling-migration/)
+and [Recipes](/persistence/migration/recipes/).
 
 ## Where to next
 
-- **[Envelope format](/actor-ts/persistence/migration/envelope-format/)** —
+- **[Envelope format](/persistence/migration/envelope-format/)** —
   the on-disk format.
-- **[DefaultAdapter](/actor-ts/persistence/migration/default-adapter/)** —
+- **[DefaultAdapter](/persistence/migration/default-adapter/)** —
   zero-config additive migrations.
-- **[MigratingAdapter](/actor-ts/persistence/migration/migrating-adapter/)** —
+- **[MigratingAdapter](/persistence/migration/migrating-adapter/)** —
   chained version transformations.
-- **[WrapLegacy](/actor-ts/persistence/migration/wrap-legacy/)** —
+- **[WrapLegacy](/persistence/migration/wrap-legacy/)** —
   bring pre-envelope events into the system.
-- **[Schema registry](/actor-ts/persistence/migration/schema-registry/)** —
+- **[Schema registry](/persistence/migration/schema-registry/)** —
   the typed schema catalog.
-- **[Recipes](/actor-ts/persistence/migration/recipes/)** — the
+- **[Recipes](/persistence/migration/recipes/)** — the
   decision-tree cookbook.
-- **[Rolling migration](/actor-ts/operations/upgrades/rolling-migration/)** —
+- **[Rolling migration](/operations/upgrades/rolling-migration/)** —
   deploying these changes without downtime.

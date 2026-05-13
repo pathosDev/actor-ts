@@ -4,7 +4,7 @@ description: Thresholds for when peers are marked unreachable / down — `heartb
 ---
 
 The
-[failure detector](/actor-ts/cluster/failure-detector/) decides
+[failure detector](/cluster/failure-detector/) decides
 when a peer is `unreachable` or `down`.  Three knobs:
 
 ```ts
@@ -21,7 +21,7 @@ Cluster.join(system, {
 This page is the **operational tuning guide** — when to change
 these, by how much, and what symptoms each value affects.  For
 the conceptual model, see
-[failure detector](/actor-ts/cluster/failure-detector/).
+[failure detector](/cluster/failure-detector/).
 
 ## The defaults
 
@@ -224,11 +224,11 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Failure detector](/actor-ts/cluster/failure-detector/)** —
+- **[Failure detector](/cluster/failure-detector/)** —
   the conceptual model.
-- **[Gossip cadence tuning](/actor-ts/operations/tuning/gossip-cadence/)** —
+- **[Gossip cadence tuning](/operations/tuning/gossip-cadence/)** —
   the complementary knob.
-- **[Downing strategies](/actor-ts/cluster/downing-strategies/)** —
+- **[Downing strategies](/cluster/downing-strategies/)** —
   what happens after a member is downed.
-- **[Configuration](/actor-ts/reference/configuration/)** — the
+- **[Configuration](/reference/configuration/)** — the
   HOCON keys.

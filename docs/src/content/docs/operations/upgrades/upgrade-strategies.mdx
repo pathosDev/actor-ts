@@ -30,7 +30,7 @@ without changing persisted-data shapes.
 The cluster's gossip + sharding rebalance + coordinated-shutdown
 handle the choreography.  Total downtime: zero (if configured
 right; see
-[Kubernetes deployment](/actor-ts/operations/deployment/kubernetes/)).
+[Kubernetes deployment](/operations/deployment/kubernetes/)).
 
 **Requirements**:
 
@@ -90,7 +90,7 @@ Roll this out via standard rolling deployment.
 all old events are aged out or snapshotted.  Usually keep it
 indefinitely for safety.
 
-See [migration recipes](/actor-ts/persistence/migration/recipes/)
+See [migration recipes](/persistence/migration/recipes/)
 for the per-pattern walkthrough.
 
 ## Pattern — non-additive schema changes
@@ -108,7 +108,7 @@ mechanics need more steps:
 ```
 
 See
-[MigratingAdapter](/actor-ts/persistence/migration/migrating-adapter/)
+[MigratingAdapter](/persistence/migration/migrating-adapter/)
 for the implementation.
 
 ## Inter-actor message changes
@@ -212,13 +212,13 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Operations overview](/actor-ts/operations/overview/)** —
+- **[Operations overview](/operations/overview/)** —
   the production checklist.
-- **[Rolling migration](/actor-ts/operations/upgrades/rolling-migration/)** —
+- **[Rolling migration](/operations/upgrades/rolling-migration/)** —
   the practical step-by-step recipe.
-- **[Migration overview](/actor-ts/persistence/migration/overview/)** —
+- **[Migration overview](/persistence/migration/overview/)** —
   schema evolution for events + state.
-- **[Migration recipes](/actor-ts/persistence/migration/recipes/)** —
+- **[Migration recipes](/persistence/migration/recipes/)** —
   the cookbook.
-- **[Coordinated shutdown](/actor-ts/fundamentals/coordinated-shutdown/)** —
+- **[Coordinated shutdown](/fundamentals/coordinated-shutdown/)** —
   the graceful-stop machinery rolling deploys rely on.

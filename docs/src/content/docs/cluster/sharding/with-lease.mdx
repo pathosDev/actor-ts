@@ -5,7 +5,7 @@ description: Optional split-brain protection for the sharding coordinator — on
 
 The sharding coordinator runs as a cluster singleton — only the
 leader's coordinator is active.  With a
-[downing strategy](/actor-ts/cluster/downing-strategies/) +
+[downing strategy](/cluster/downing-strategies/) +
 healthy network, that's enough.
 
 During a network partition + buggy downing config, **both halves
@@ -75,8 +75,8 @@ interface StartSettings<TMsg> {
 | `acquireRetryIntervalMs` | Retry cadence on failed acquire. |
 
 Same `Lease` abstraction as
-[singleton with lease](/actor-ts/cluster/singleton/with-lease/) —
-see [Coordination](/actor-ts/coordination/overview/) for the
+[singleton with lease](/cluster/singleton/with-lease/) —
+see [Coordination](/coordination/overview/) for the
 interface.
 
 ## What's protected
@@ -110,7 +110,7 @@ Three good fits:
    any single-tenant production system."
 
 For **typical single-region K8s deployments** with a
-[downing strategy](/actor-ts/cluster/downing-strategies/), the
+[downing strategy](/cluster/downing-strategies/), the
 lease is **paranoid-safe** — adds operational complexity for
 protection against rare edge cases.
 
@@ -191,13 +191,13 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Sharding overview](/actor-ts/cluster/sharding/overview/)** —
+- **[Sharding overview](/cluster/sharding/overview/)** —
   the foundation.
-- **[Singleton with lease](/actor-ts/cluster/singleton/with-lease/)** —
+- **[Singleton with lease](/cluster/singleton/with-lease/)** —
   the same pattern for singletons.
-- **[Coordination overview](/actor-ts/coordination/overview/)** —
+- **[Coordination overview](/coordination/overview/)** —
   the lease abstraction.
-- **[KubernetesLease](/actor-ts/coordination/kubernetes-lease/)** —
+- **[KubernetesLease](/coordination/kubernetes-lease/)** —
   the production backend.
-- **[Downing strategies](/actor-ts/cluster/downing-strategies/)** —
+- **[Downing strategies](/cluster/downing-strategies/)** —
   the complementary partition resolver.

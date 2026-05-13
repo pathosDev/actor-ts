@@ -137,19 +137,19 @@ the same way.  No more "did I remember to wrap that in `try`?"
 The framework gives you:
 
 - **Single-process actors**: everything in this guide works in one
-  process, on one core.  See [Actor](/actor-ts/fundamentals/actor/),
-  [Messages](/actor-ts/fundamentals/messages/),
-  [Supervision](/actor-ts/fundamentals/supervision/).
+  process, on one core.  See [Actor](/fundamentals/actor/),
+  [Messages](/fundamentals/messages/),
+  [Supervision](/fundamentals/supervision/).
 - **Multi-core via worker threads**: the `MessageChannel` transport
   runs actors on worker threads with the same API.  See
-  [Cluster transports](/actor-ts/cluster/transports/) and
-  [Worker mesh](/actor-ts/cluster/worker-mesh/).
+  [Cluster transports](/cluster/transports/) and
+  [Worker mesh](/cluster/worker-mesh/).
 - **Multi-process / multi-machine**: TCP-based clustering with
   gossip membership, sharding, and failover.  See
-  [Cluster overview](/actor-ts/cluster/overview/) and
-  [Sharding](/actor-ts/cluster/sharding/overview/).
+  [Cluster overview](/cluster/overview/) and
+  [Sharding](/cluster/sharding/overview/).
 - **Persistence**: actors that recover their state from an event log
-  after a crash.  See [PersistentActor](/actor-ts/persistence/persistent-actor/).
+  after a crash.  See [PersistentActor](/persistence/persistent-actor/).
 
 You can adopt these progressively.  A first iteration runs entirely
 in-process; a second moves hot-path actors to a worker pool; a third
@@ -204,13 +204,13 @@ whiteboard, the boxes are usually actors.
 
 ## Where to next
 
-- Convinced?  Start with [Quickstart](/actor-ts/intro/quickstart/) —
+- Convinced?  Start with [Quickstart](/intro/quickstart/) —
   five minutes to a running actor.
 - Coming from another actor framework?  See the
-  [Migration guides](/actor-ts/migration/overview/) for Akka-JVM,
+  [Migration guides](/migration/overview/) for Akka-JVM,
   Pekko, Orleans, Akka.NET.
 - Want a deeper concept tour?  See
-  [Actor](/actor-ts/fundamentals/actor/),
-  [Messages](/actor-ts/fundamentals/messages/), and
-  [Supervision](/actor-ts/fundamentals/supervision/) in that order —
+  [Actor](/fundamentals/actor/),
+  [Messages](/fundamentals/messages/), and
+  [Supervision](/fundamentals/supervision/) in that order —
   about 20 minutes of reading covers the single-process surface.

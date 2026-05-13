@@ -15,8 +15,8 @@ The framework ships two variants:
 
 | Variant | Persistence | When |
 | --- | --- | --- |
-| **[`FSM`](/actor-ts/persistence/fsm/fsm/)** | In-memory only | Transient state machines (connection lifecycles, request handlers). |
-| **[`PersistentFSM`](/actor-ts/persistence/fsm/persistent-fsm/)** | Event-sourced | Long-running workflows that survive restarts (sagas, approvals, orders). |
+| **[`FSM`](/persistence/fsm/fsm/)** | In-memory only | Transient state machines (connection lifecycles, request handlers). |
+| **[`PersistentFSM`](/persistence/fsm/persistent-fsm/)** | Event-sourced | Long-running workflows that survive restarts (sagas, approvals, orders). |
 
 Both expose the same DSL — `when(state, handler)`, `goto(state, data)`,
 `stay(data)`, `onEnter` / `onExit` callbacks.  The persistent
@@ -122,11 +122,11 @@ For 2 states, `become` is fine.  For 4+, FSM is easier to read.
 
 ## Where to next
 
-- **[FSM](/actor-ts/persistence/fsm/fsm/)** — the in-memory
+- **[FSM](/persistence/fsm/fsm/)** — the in-memory
   variant in detail.
-- **[PersistentFSM](/actor-ts/persistence/fsm/persistent-fsm/)** —
+- **[PersistentFSM](/persistence/fsm/persistent-fsm/)** —
   the event-sourced variant.
-- **[Become and stash](/actor-ts/fundamentals/become-and-stash/)** —
+- **[Become and stash](/fundamentals/become-and-stash/)** —
   the lower-level alternative.
-- **[PersistentActor](/actor-ts/persistence/persistent-actor/)** —
+- **[PersistentActor](/persistence/persistent-actor/)** —
   what PersistentFSM builds on.

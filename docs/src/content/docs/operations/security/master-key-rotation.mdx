@@ -4,7 +4,7 @@ description: Rotate the master encryption key for at-rest data (object-storage s
 ---
 
 For at-rest encryption
-([object-storage encryption](/actor-ts/persistence/object-storage/encryption/),
+([object-storage encryption](/persistence/object-storage/encryption/),
 durable-DD-encryption), the framework's keys live in a
 **`MasterKeyRing`** — a versioned map of key-id → encryption
 key.  Rotation is **online**: new writes go under a fresh key
@@ -208,11 +208,11 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Object storage encryption](/actor-ts/persistence/object-storage/encryption/)** —
+- **[Object storage encryption](/persistence/object-storage/encryption/)** —
   what uses the master keys.
-- **[Object storage key rotation](/actor-ts/persistence/object-storage/key-rotation/)** —
+- **[Object storage key rotation](/persistence/object-storage/key-rotation/)** —
   the storage-side mechanics.
-- **[Cluster security](/actor-ts/operations/security/cluster-security/)** —
+- **[Cluster security](/operations/security/cluster-security/)** —
   in-transit complement to at-rest encryption.
-- **[Operations overview](/actor-ts/operations/overview/)** —
+- **[Operations overview](/operations/overview/)** —
   full security checklist.

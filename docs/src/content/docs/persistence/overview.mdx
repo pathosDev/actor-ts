@@ -124,7 +124,7 @@ from the journal, replays them through `onEvent`, and the
 resulting state is what `onCommand` sees.  Commands aren't
 processed until recovery completes.
 
-See [PersistentActor](/actor-ts/persistence/persistent-actor/) for
+See [PersistentActor](/persistence/persistent-actor/) for
 the full surface.
 
 ## Durable state in five minutes
@@ -152,7 +152,7 @@ class Cart extends DurableStateActor<CartCmd, State> {
 `preStart` loads it back; `this.state` reflects the loaded value.
 No event log; no replay; just "save the current state."
 
-See [DurableStateActor](/actor-ts/persistence/durable-state/) for
+See [DurableStateActor](/persistence/durable-state/) for
 the full API.
 
 ## Event sourcing vs durable state — picking one
@@ -176,7 +176,7 @@ Event sourcing wins when:
 - **State is large** but changes are small — appending a 100-byte
   event is cheaper than writing the whole state.
 - **You want projections** — read-side views over the event
-  stream, see [Projections](/actor-ts/persistence/projections/).
+  stream, see [Projections](/persistence/projections/).
 - **Schema evolution is a long game** — event types can be
   migrated independently from current state.
 
@@ -213,7 +213,7 @@ On startup, the framework:
 A 100-event window is fast.  Pick the snapshot interval based on
 your event rate and acceptable startup time.
 
-See [Snapshots](/actor-ts/persistence/snapshots/) for the
+See [Snapshots](/persistence/snapshots/) for the
 configuration and per-actor policy options.
 
 ## Projections — read-side views
@@ -245,7 +245,7 @@ This decouples writes (the `PersistentActor`'s journal) from
 reads (the projection's view) — the read side can be denormalized
 for the query patterns it serves.
 
-See [Projections](/actor-ts/persistence/projections/) for the
+See [Projections](/persistence/projections/) for the
 full pattern.
 
 ## Pluggable backends
@@ -267,8 +267,8 @@ interface SnapshotStore {
 ```
 
 Built-in implementations live under
-[`persistence/journals/*`](/actor-ts/persistence/journals/in-memory/)
-and [`persistence/snapshot-stores/*`](/actor-ts/persistence/snapshot-stores/in-memory/).
+[`persistence/journals/*`](/persistence/journals/in-memory/)
+and [`persistence/snapshot-stores/*`](/persistence/snapshot-stores/in-memory/).
 
 For production, the **SQLite** journal+snapshot+state combo
 covers single-node deployments; the **Cassandra** journal covers
@@ -307,21 +307,21 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[PersistentActor](/actor-ts/persistence/persistent-actor/)** —
+- **[PersistentActor](/persistence/persistent-actor/)** —
   the event-sourcing API in depth.
-- **[Durable state](/actor-ts/persistence/durable-state/)** —
+- **[Durable state](/persistence/durable-state/)** —
   the simpler snapshot-style alternative.
-- **[Snapshots](/actor-ts/persistence/snapshots/)** — replay-window
+- **[Snapshots](/persistence/snapshots/)** — replay-window
   reduction for event-sourced actors.
-- **[Projections](/actor-ts/persistence/projections/)** — read-side
+- **[Projections](/persistence/projections/)** — read-side
   views built from event streams.
-- **[Journals — In-memory](/actor-ts/persistence/journals/in-memory/)** —
+- **[Journals — In-memory](/persistence/journals/in-memory/)** —
   the tests/dev default.
-- **[Journals — SQLite](/actor-ts/persistence/journals/sqlite/)** —
+- **[Journals — SQLite](/persistence/journals/sqlite/)** —
   single-node production default.
-- **[Migration overview](/actor-ts/persistence/migration/overview/)** —
+- **[Migration overview](/persistence/migration/overview/)** —
   evolving event/state schemas over time.
 
-The [`PersistentActor`](/actor-ts/api/classes/persistentactor/) and
-[`DurableStateActor`](/actor-ts/api/classes/durablestateactor/) API
+The [`PersistentActor`](/api/classes/persistentactor/) and
+[`DurableStateActor`](/api/classes/durablestateactor/) API
 references cover the full base-class surface.

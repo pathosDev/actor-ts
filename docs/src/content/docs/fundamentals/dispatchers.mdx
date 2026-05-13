@@ -73,7 +73,7 @@ isn't:
   before the next macrotask, so `MicrotaskDispatcher` is preferred
   for tests that expect "send N messages, observe all N effects"
   without a yield between them.  See
-  [TestKit](/actor-ts/testing/testkit/) for the test-specific
+  [TestKit](/testing/testkit/) for the test-specific
   dispatcher.
 
 ## Writing a custom dispatcher
@@ -150,11 +150,11 @@ I/O on the same node.
 
 ## Where to next
 
-- **[Mailboxes](/actor-ts/fundamentals/mailboxes/)** — the queue
+- **[Mailboxes](/fundamentals/mailboxes/)** — the queue
   the dispatcher pulls from.  FIFO / bounded / priority.
-- **[Timers and scheduling](/actor-ts/fundamentals/timers-and-scheduling/)** —
+- **[Timers and scheduling](/fundamentals/timers-and-scheduling/)** —
   actor-bound timers; uses the scheduler, not the dispatcher.
-- **[ActorSystem](/actor-ts/fundamentals/actor-system/)** —
+- **[ActorSystem](/fundamentals/actor-system/)** —
   passing a dispatcher via the settings argument.
-- **[TestKit](/actor-ts/testing/testkit/)** — the test-specific
+- **[TestKit](/testing/testkit/)** — the test-specific
   dispatcher that runs synchronously for assertion-friendly tests.

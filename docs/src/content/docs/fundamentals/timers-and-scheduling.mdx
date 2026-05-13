@@ -187,7 +187,7 @@ There's no built-in mode for that.
   slower than the *worst-case* handler latency, or bound the
   mailbox with `drop-head` and accept that some ticks will be
   dropped under load.  See
-  [Mailboxes](/actor-ts/fundamentals/mailboxes/).
+  [Mailboxes](/fundamentals/mailboxes/).
 </Aside>
 
 ## Tests + the `ManualScheduler`
@@ -212,7 +212,7 @@ clock.advance(1);     // tick fires
 
 The same `ManualScheduler` plugs into `context.timers` — actor-bound
 timers respect it via the system's `Scheduler` injection.  See
-[TestKit](/actor-ts/testing/testkit/) for the full test-time story.
+[TestKit](/testing/testkit/) for the full test-time story.
 
 ## When the timer choice matters
 
@@ -230,16 +230,16 @@ Reach for `ManualScheduler` in tests to make time deterministic.
 
 ## Where to next
 
-- **[Receive timeout](/actor-ts/fundamentals/receive-timeout/)** —
+- **[Receive timeout](/fundamentals/receive-timeout/)** —
   the higher-level "I've been idle for N seconds, fire an
   internal event" wrapper that uses timers underneath.
-- **[Mailboxes](/actor-ts/fundamentals/mailboxes/)** — where the
+- **[Mailboxes](/fundamentals/mailboxes/)** — where the
   timer-fired messages land.
-- **[Dispatchers](/actor-ts/fundamentals/dispatchers/)** — when the
+- **[Dispatchers](/fundamentals/dispatchers/)** — when the
   dispatched timer-fire is actually processed.
-- **[TestKit](/actor-ts/testing/testkit/)** — the `ManualScheduler`
+- **[TestKit](/testing/testkit/)** — the `ManualScheduler`
   + assertion helpers for deterministic timer tests.
 
-The [`Scheduler`](/actor-ts/api/classes/scheduler/) and
-[`TimerScheduler`](/actor-ts/api/interfaces/timerscheduler/) API
+The [`Scheduler`](/api/classes/scheduler/) and
+[`TimerScheduler`](/api/interfaces/timerscheduler/) API
 references cover the full signatures.

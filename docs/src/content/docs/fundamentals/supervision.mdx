@@ -148,7 +148,7 @@ for inspection).
 
 If you want **state preserved across restart**, the actor needs to
 persist that state somewhere external — typically a journal via
-[`PersistentActor`](/actor-ts/persistence/persistent-actor/), or a
+[`PersistentActor`](/persistence/persistent-actor/), or a
 shared `DistributedData` entry.  Restart explicitly does NOT
 preserve in-memory state; that's the whole point — "let it crash"
 trusts the recovery path more than the per-message guard.
@@ -186,7 +186,7 @@ parent.  This protects against infinite restart loops (a child that
 keeps crashing on a permanently-broken state).
 
 For exponential-backoff retries, use the
-[BackoffSupervisor pattern](/actor-ts/patterns/backoff-supervisor/) —
+[BackoffSupervisor pattern](/patterns/backoff-supervisor/) —
 it wraps a child with a backoff timer so successive restarts get
 progressively delayed, rather than instant + capped.
 
@@ -303,17 +303,17 @@ things: the strategy *handling* this actor's failures (set on
 
 ## Where to next
 
-- **[Actor](/actor-ts/fundamentals/actor/)** — the base class whose
+- **[Actor](/fundamentals/actor/)** — the base class whose
   `preRestart` / `postRestart` hooks you override.
-- **[BackoffSupervisor](/actor-ts/patterns/backoff-supervisor/)** —
+- **[BackoffSupervisor](/patterns/backoff-supervisor/)** —
   exponential-backoff variant for transient failures.
-- **[Death watch](/actor-ts/fundamentals/death-watch/)** —
+- **[Death watch](/fundamentals/death-watch/)** —
   observing when an actor *stops* (vs catching when it throws).
-- **[CircuitBreaker](/actor-ts/patterns/circuit-breaker/)** — when
+- **[CircuitBreaker](/patterns/circuit-breaker/)** — when
   the failure is in a downstream call and you want to back off
   *before* the call fails.
-- **[Coordinated shutdown](/actor-ts/fundamentals/coordinated-shutdown/)** —
+- **[Coordinated shutdown](/fundamentals/coordinated-shutdown/)** —
   graceful-shutdown when the whole system needs to come down.
 
-The [`Supervision` module API reference](/actor-ts/api/) documents
+The [`Supervision` module API reference](/api/) documents
 every directive, strategy class, and helper discussed here.

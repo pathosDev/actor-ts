@@ -76,7 +76,7 @@ actor-ts {
 The framework loads it automatically when present.  ENV substitution
 (`${?ENV_NAME}`) works in HOCON the same way as Akka — values pulled
 from the environment fall back to the default when unset.  See
-[Configuration](/actor-ts/reference/configuration/) for every key
+[Configuration](/reference/configuration/) for every key
 the framework reads.
 
 ## Spawning actors
@@ -111,7 +111,7 @@ class Parent extends Actor<...> {
 
 Children are tied to the parent's lifecycle — when the parent stops,
 all children stop first.  Children's failures escalate to the
-parent's [supervisor strategy](/actor-ts/fundamentals/supervision/).
+parent's [supervisor strategy](/fundamentals/supervision/).
 Top-level actors (from `system.actorOf`) escalate to the system's
 root guardian instead.
 
@@ -214,7 +214,7 @@ process.on('SIGTERM', async () => {
 ```
 
 …but the framework provides a richer pattern for that — see
-[Coordinated shutdown](/actor-ts/fundamentals/coordinated-shutdown/)
+[Coordinated shutdown](/fundamentals/coordinated-shutdown/)
 for the 12-phase ordered-shutdown DSL, which handles K8s PreStop
 hooks, in-flight HTTP requests, draining brokers, etc.
 
@@ -242,10 +242,10 @@ Two situations where a second system makes sense:
 - **Worker-thread isolation**: the main thread runs one system, a
   worker thread runs another, both spanning the same cluster via
   the `MessageChannelTransport`.  This is the
-  [Worker mesh](/actor-ts/cluster/worker-mesh/) pattern — multiple
+  [Worker mesh](/cluster/worker-mesh/) pattern — multiple
   systems per OS process, all participating in the same cluster.
 - **Test fixtures**: a `TestActorSystem` per test case so cleanup is
-  guaranteed.  See [TestKit](/actor-ts/testing/testkit/).
+  guaranteed.  See [TestKit](/testing/testkit/).
 
 ## Common pitfalls
 
@@ -278,14 +278,14 @@ Two situations where a second system makes sense:
 
 ## Where to next
 
-- **[Actor](/actor-ts/fundamentals/actor/)** — the class you'll
+- **[Actor](/fundamentals/actor/)** — the class you'll
   spawn into the system.
-- **[Coordinated shutdown](/actor-ts/fundamentals/coordinated-shutdown/)** —
+- **[Coordinated shutdown](/fundamentals/coordinated-shutdown/)** —
   graceful-shutdown DSL beyond a plain `terminate`.
-- **[Cluster overview](/actor-ts/cluster/overview/)** — when you go
+- **[Cluster overview](/cluster/overview/)** — when you go
   from one system per process to many systems in a cluster.
-- **[Configuration](/actor-ts/reference/configuration/)** — every
+- **[Configuration](/reference/configuration/)** — every
   HOCON key the framework reads, grouped by extension.
 
-The [`ActorSystem` class API reference](/actor-ts/api/classes/actorsystem/)
+The [`ActorSystem` class API reference](/api/classes/actorsystem/)
 documents every public method discussed here.

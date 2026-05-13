@@ -74,7 +74,7 @@ For local development:
 For **production**, this isn't the right tool — Docker
 Compose lacks the scheduling, scaling, and recovery primitives
 that K8s provides.  See
-[Kubernetes deployment](/actor-ts/operations/deployment/kubernetes/)
+[Kubernetes deployment](/operations/deployment/kubernetes/)
 for production.
 
 ## Cluster discovery
@@ -107,7 +107,7 @@ await Cluster.join(system, {
 
 For **dynamic-size clusters** in compose (scaling via `docker
 compose up --scale actor-ts=5`), use the
-[DNS seed provider](/actor-ts/discovery/seed-providers/dns/)
+[DNS seed provider](/discovery/seed-providers/dns/)
 instead.
 
 ## Shared persistence
@@ -204,11 +204,11 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Kubernetes deployment](/actor-ts/operations/deployment/kubernetes/)** —
+- **[Kubernetes deployment](/operations/deployment/kubernetes/)** —
   the production path.
-- **[Process manager](/actor-ts/operations/deployment/process-manager/)** —
+- **[Process manager](/operations/deployment/process-manager/)** —
   for VM-based deployment.
-- **[Discovery overview](/actor-ts/discovery/overview/)** — seed
+- **[Discovery overview](/discovery/overview/)** — seed
   providers for various environments.
-- **[Operations overview](/actor-ts/operations/overview/)** —
+- **[Operations overview](/operations/overview/)** —
   the production checklist.

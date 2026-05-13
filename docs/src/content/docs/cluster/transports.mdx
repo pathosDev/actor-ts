@@ -91,7 +91,7 @@ await Cluster.join(system, { host, port, seeds, transport });
 ```
 
 TLS-wrapped TCP, all-or-nothing per cluster.  See
-[Cluster security](/actor-ts/operations/security/cluster-security/)
+[Cluster security](/operations/security/cluster-security/)
 for the production recipe.
 
 ### Frame size
@@ -137,7 +137,7 @@ How it works:
 - `send(to, msg)` looks up the recipient in the bus and invokes
   its handler directly — no sockets, no serialization to bytes.
 
-Used by [MultiNodeSpec](/actor-ts/testing/multi-node-spec/) — the
+Used by [MultiNodeSpec](/testing/multi-node-spec/) — the
 multi-node test harness — to spin up multi-node clusters in **one
 process**.
 
@@ -209,7 +209,7 @@ import { Aside } from '@astrojs/starlight/components';
   Plain TCP is fine inside a private network.  On any
   internet-facing link (rare for cluster, but possible),
   configure TLS + a shared secret.  See
-  [Cluster security](/actor-ts/operations/security/cluster-security/).
+  [Cluster security](/operations/security/cluster-security/).
 </Aside>
 
 <Aside type="caution" title="MTU and frame size">
@@ -236,13 +236,13 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Cluster overview](/actor-ts/cluster/overview/)** — what
+- **[Cluster overview](/cluster/overview/)** — what
   rides on the transport.
-- **[Refs across nodes](/actor-ts/cluster/refs-across-nodes/)** —
+- **[Refs across nodes](/cluster/refs-across-nodes/)** —
   how envelopes encode actor refs for cross-node delivery.
-- **[Cluster security](/actor-ts/operations/security/cluster-security/)** —
+- **[Cluster security](/operations/security/cluster-security/)** —
   TLS + auth.
-- **[Worker mesh](/actor-ts/cluster/worker-mesh/)** —
+- **[Worker mesh](/cluster/worker-mesh/)** —
   MessageChannel-based transport for in-process workers.
-- **[MultiNodeSpec](/actor-ts/testing/multi-node-spec/)** —
+- **[MultiNodeSpec](/testing/multi-node-spec/)** —
   uses `InMemoryTransport` for multi-node tests.

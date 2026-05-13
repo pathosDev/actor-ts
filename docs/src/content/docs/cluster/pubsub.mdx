@@ -211,7 +211,7 @@ Two pub/sub bus implementations; pick by scope:
 
 | Bus | Scope | Topic key |
 | --- | --- | --- |
-| [Event stream](/actor-ts/fundamentals/event-stream/) | One ActorSystem | Class (`instanceof`) |
+| [Event stream](/fundamentals/event-stream/) | One ActorSystem | Class (`instanceof`) |
 | `DistributedPubSub` | Cluster-wide | String topic |
 
 Use the event stream for in-system dispatch; use DistributedPubSub
@@ -220,12 +220,12 @@ different concerns.
 
 ## Where to next
 
-- **[Cluster overview](/actor-ts/cluster/overview/)** — the
+- **[Cluster overview](/cluster/overview/)** — the
   membership underneath.
-- **[Event stream](/actor-ts/fundamentals/event-stream/)** — the
+- **[Event stream](/fundamentals/event-stream/)** — the
   single-system pub/sub for comparison.
-- **[Refs across nodes](/actor-ts/cluster/refs-across-nodes/)** —
+- **[Refs across nodes](/cluster/refs-across-nodes/)** —
   how the mediator's cross-node deliveries serialize.
 
-The [`DistributedPubSubMediator`](/actor-ts/api/classes/distributedpubsubmediator/)
+The [`DistributedPubSubMediator`](/api/classes/distributedpubsubmediator/)
 API reference covers the full protocol.

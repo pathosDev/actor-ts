@@ -54,7 +54,7 @@ But it also means:
   restarted routee has nothing left from the previous instance.
   If routees hold state that should survive routing-pool
   restarts, persist it (see
-  [PersistentActor](/actor-ts/persistence/persistent-actor/)).
+  [PersistentActor](/persistence/persistent-actor/)).
 - **Size is fixed at spawn time.**  `Router.roundRobin(4, ...)`
   always has 4 routees.  To resize, stop and re-spawn.
 - **Routees don't have names you'd recognize.**  They're
@@ -111,7 +111,7 @@ But also:
 - **An empty pool drops messages with a warning.**  If no node
   matches the role, every `tell` to the router lands in dead
   letters.  See the
-  [Cluster router](/actor-ts/cluster/cluster-router/) docs for
+  [Cluster router](/cluster/cluster-router/) docs for
   the exact semantics.
 - **Supervision is per-node.**  Each routee is supervised by its
   own parent on its own node — the cluster router has no
@@ -151,7 +151,7 @@ cluster router is always group-shaped.  If you want a fixed pool
 that happens to span a cluster, you'd write a top-level
 "deployment" actor per node that spawns the local routees, plus a
 `ClusterRouter` that targets them by path.  See
-[Sharded daemon process](/actor-ts/cluster/sharding/sharded-daemon-process/)
+[Sharded daemon process](/cluster/sharding/sharded-daemon-process/)
 for the pattern that comes closest to "spawn N global workers."
 
 ## Stopping behavior, compared
@@ -166,17 +166,17 @@ The asymmetry matters for **graceful shutdown** — a pool router
 folds cleanly when the system terminates; a group router leaves
 behind routees on other nodes that don't know this caller is gone.
 Use coordinated shutdown to do the right thing (see
-[Coordinated shutdown](/actor-ts/fundamentals/coordinated-shutdown/)).
+[Coordinated shutdown](/fundamentals/coordinated-shutdown/)).
 
 ## Where to next
 
-- **[Router](/actor-ts/routing/router/)** — the local pool-router
+- **[Router](/routing/router/)** — the local pool-router
   API.
-- **[Cluster router](/actor-ts/cluster/cluster-router/)** — the
+- **[Cluster router](/cluster/cluster-router/)** — the
   group-router API.
-- **[Sharded daemon process](/actor-ts/cluster/sharding/sharded-daemon-process/)** —
+- **[Sharded daemon process](/cluster/sharding/sharded-daemon-process/)** —
   cluster-wide background workers, the closest thing to a
   "cluster pool."
-- **[Strategies](/actor-ts/routing/strategies/)** — the routing
+- **[Strategies](/routing/strategies/)** — the routing
   decisions apply identically to both models; the difference is
   what's on the routees list, not how the strategy picks.

@@ -141,7 +141,7 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   Local writes are immediate; gossip carries to other nodes.
   Quorum reads/writes give *some* synchronization (see
-  [Quorum reads/writes](/actor-ts/distributed-data/quorum-reads-writes/))
+  [Quorum reads/writes](/distributed-data/quorum-reads-writes/))
   but no CRDT gives strict serializability.  For strong
   consistency, use a singleton with persistence.
 </Aside>
@@ -207,17 +207,17 @@ maps give simpler types but cross-map inconsistency is possible
 
 ## Where to next
 
-- **[Distributed data overview](/actor-ts/distributed-data/overview/)** —
+- **[Distributed data overview](/distributed-data/overview/)** —
   the bigger picture.
-- **[Counters](/actor-ts/distributed-data/crdt-types/counters/)** —
+- **[Counters](/distributed-data/crdt-types/counters/)** —
   per-CRDT detail.
-- **[Registers](/actor-ts/distributed-data/crdt-types/registers/)** —
+- **[Registers](/distributed-data/crdt-types/registers/)** —
   per-CRDT detail.
-- **[Sets](/actor-ts/distributed-data/crdt-types/sets/)** —
+- **[Sets](/distributed-data/crdt-types/sets/)** —
   per-CRDT detail.
-- **[Maps](/actor-ts/distributed-data/crdt-types/maps/)** —
+- **[Maps](/distributed-data/crdt-types/maps/)** —
   per-CRDT detail.
-- **[Sharding overview](/actor-ts/cluster/sharding/overview/)** —
+- **[Sharding overview](/cluster/sharding/overview/)** —
   the per-key-actor alternative.
-- **[PersistentActor](/actor-ts/persistence/persistent-actor/)** —
+- **[PersistentActor](/persistence/persistent-actor/)** —
   the event-sourced alternative.

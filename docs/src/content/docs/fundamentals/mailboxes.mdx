@@ -197,7 +197,7 @@ mailbox instance from the factory.  The factory is called once per
 actor instance (including on restart), so each restarted actor
 gets a fresh empty mailbox-data-structure.  System-level mailbox
 defaults can also be configured via `application.conf` (see
-[Configuration](/actor-ts/reference/configuration/)).
+[Configuration](/reference/configuration/)).
 
 <Aside type="caution" title="Don't share a mailbox instance across actors">
   ```ts
@@ -226,7 +226,7 @@ reinsert.  Notably for `PriorityMailbox`, unstashed messages are
 even if you stashed it while urgent messages were arriving.  Stash
 order is preserved within a priority tier.
 
-See [Become and stash](/actor-ts/fundamentals/become-and-stash/) for
+See [Become and stash](/fundamentals/become-and-stash/) for
 the full behavior-switching story.
 
 ## When the mailbox choice matters
@@ -251,16 +251,16 @@ alternative in three situations:
 
 ## Where to next
 
-- **[Dispatchers](/actor-ts/fundamentals/dispatchers/)** — the
+- **[Dispatchers](/fundamentals/dispatchers/)** — the
   scheduler that pulls from the mailbox.  Mailbox = the queue;
   dispatcher = when to drain it.
-- **[Become and stash](/actor-ts/fundamentals/become-and-stash/)** —
+- **[Become and stash](/fundamentals/become-and-stash/)** —
   parking messages for later, restoring them via `unstashAll`.
-- **[Actor](/actor-ts/fundamentals/actor/)** — `onReceive` is what
+- **[Actor](/fundamentals/actor/)** — `onReceive` is what
   the mailbox delivers messages to.
-- **[Coordinated shutdown](/actor-ts/fundamentals/coordinated-shutdown/)** —
+- **[Coordinated shutdown](/fundamentals/coordinated-shutdown/)** —
   what happens to pending mailbox messages during graceful shutdown.
 
-The [`BoundedMailbox`](/actor-ts/api/classes/boundedmailbox/) and
-[`PriorityMailbox`](/actor-ts/api/classes/prioritymailbox/) API
+The [`BoundedMailbox`](/api/classes/boundedmailbox/) and
+[`PriorityMailbox`](/api/classes/prioritymailbox/) API
 references cover the full settings shape.

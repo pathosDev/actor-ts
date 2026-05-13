@@ -40,7 +40,7 @@ interface ResponseCacheSettings {
 
 | Field | Purpose |
 | --- | --- |
-| `cache` | The [Cache](/actor-ts/cache/overview/) backend.  `InMemoryCache` for single-node; Redis for shared. |
+| `cache` | The [Cache](/cache/overview/) backend.  `InMemoryCache` for single-node; Redis for shared. |
 | `ttlMs` | How long each cached response stays valid. |
 | `varyHeaders` | Headers included in the cache key.  Different `Accept` headers → different cache entries. |
 | `cacheable(req, res)` | Predicate that decides whether to cache.  Default: cache all 2xx GETs. |
@@ -172,16 +172,16 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   Set a max-entries on the cache; without it, response caches
   grow until exhaustion.  See
-  [In-memory cache](/actor-ts/cache/in-memory/).
+  [In-memory cache](/cache/in-memory/).
 </Aside>
 
 ## Where to next
 
-- **[HTTP overview](/actor-ts/http/overview/)** — the bigger
+- **[HTTP overview](/http/overview/)** — the bigger
   picture.
-- **[Rate limit middleware](/actor-ts/http/middleware/rate-limit/)** —
+- **[Rate limit middleware](/http/middleware/rate-limit/)** —
   complementary middleware.
-- **[Idempotency-key middleware](/actor-ts/http/middleware/idempotency-key/)** —
+- **[Idempotency-key middleware](/http/middleware/idempotency-key/)** —
   for write-dedup.
-- **[Cache overview](/actor-ts/cache/overview/)** — the backend
+- **[Cache overview](/cache/overview/)** — the backend
   this middleware uses.

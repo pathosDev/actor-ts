@@ -4,7 +4,7 @@ description: Production-grade `Lease` backed by K8s native Lease resources. Stro
 ---
 
 `KubernetesLease` implements the
-[`Lease`](/actor-ts/coordination/lease-api/) interface against
+[`Lease`](/coordination/lease-api/) interface against
 Kubernetes's built-in `Lease` resource (the `coordination.k8s.io/v1`
 API).  Production-grade: backed by etcd, strongly consistent,
 RBAC-controlled.
@@ -157,7 +157,7 @@ If the patch fails:
 - Network partition prevents renewal for longer than `ttlMs`.
 
 The handler should drop ownership state immediately — see
-[Lease API](/actor-ts/coordination/lease-api/) for the contract.
+[Lease API](/coordination/lease-api/) for the contract.
 
 ## Cost
 
@@ -231,13 +231,13 @@ sweep in test teardown.
 
 ## Where to next
 
-- **[Coordination overview](/actor-ts/coordination/overview/)** —
+- **[Coordination overview](/coordination/overview/)** —
   the bigger picture.
-- **[Lease API](/actor-ts/coordination/lease-api/)** — the
+- **[Lease API](/coordination/lease-api/)** — the
   contract `KubernetesLease` implements.
-- **[InMemoryLease](/actor-ts/coordination/in-memory-lease/)** —
+- **[InMemoryLease](/coordination/in-memory-lease/)** —
   the dev/test alternative.
-- **[Kubernetes deployment](/actor-ts/operations/deployment/kubernetes/)** —
+- **[Kubernetes deployment](/operations/deployment/kubernetes/)** —
   the broader K8s recipe.
-- **[Singleton with lease](/actor-ts/cluster/singleton/with-lease/)** —
+- **[Singleton with lease](/cluster/singleton/with-lease/)** —
   the main consumer.

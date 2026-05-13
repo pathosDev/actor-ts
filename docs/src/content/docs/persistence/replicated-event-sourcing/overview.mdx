@@ -4,7 +4,7 @@ description: Multi-writer event sourcing — multiple replicas of the same entit
 ---
 
 Standard
-[event sourcing](/actor-ts/persistence/persistent-actor/) has
+[event sourcing](/persistence/persistent-actor/) has
 **one writer per `persistenceId`** — a single actor instance
 appends events; another instance (after failover) replays them.
 This is fine for sharded entities where the framework
@@ -42,8 +42,8 @@ need it.  Use cases:
   on multiple cluster nodes without singleton coordination.
 
 For typical sharded-entity setups,
-[ClusterSharding](/actor-ts/cluster/sharding/overview/) +
-[PersistentActor](/actor-ts/persistence/persistent-actor/) gives
+[ClusterSharding](/cluster/sharding/overview/) +
+[PersistentActor](/persistence/persistent-actor/) gives
 exactly-one-writer per key automatically — simpler than this.
 
 ## What you give up
@@ -107,10 +107,10 @@ The actor extends `ReplicatedEventSourcedActor` instead of
 
 | Component | Purpose |
 | --- | --- |
-| **[VectorClock](/actor-ts/persistence/replicated-event-sourcing/vector-clocks/)** | Tracks causality across replicas — detects concurrent writes. |
-| **[ConflictResolver](/actor-ts/persistence/replicated-event-sourcing/conflict-resolver/)** | Decides how to merge concurrent events into a single state. |
-| **[Single-writer lease](/actor-ts/persistence/replicated-event-sourcing/single-writer-lease/)** | Optional — gates writes via a lease for stronger consistency. |
-| **[Replicated snapshots](/actor-ts/persistence/replicated-event-sourcing/snapshotting/)** | Snapshots that include the vector clock for full recovery. |
+| **[VectorClock](/persistence/replicated-event-sourcing/vector-clocks/)** | Tracks causality across replicas — detects concurrent writes. |
+| **[ConflictResolver](/persistence/replicated-event-sourcing/conflict-resolver/)** | Decides how to merge concurrent events into a single state. |
+| **[Single-writer lease](/persistence/replicated-event-sourcing/single-writer-lease/)** | Optional — gates writes via a lease for stronger consistency. |
+| **[Replicated snapshots](/persistence/replicated-event-sourcing/snapshotting/)** | Snapshots that include the vector clock for full recovery. |
 
 Each gets its own deep-dive page.
 
@@ -160,15 +160,15 @@ Use when                       Default                      You really need it
 
 ## Where to next
 
-- **[Vector clocks](/actor-ts/persistence/replicated-event-sourcing/vector-clocks/)** —
+- **[Vector clocks](/persistence/replicated-event-sourcing/vector-clocks/)** —
   how concurrency is detected.
-- **[Conflict resolver](/actor-ts/persistence/replicated-event-sourcing/conflict-resolver/)** —
+- **[Conflict resolver](/persistence/replicated-event-sourcing/conflict-resolver/)** —
   how concurrent events merge.
-- **[Single-writer lease](/actor-ts/persistence/replicated-event-sourcing/single-writer-lease/)** —
+- **[Single-writer lease](/persistence/replicated-event-sourcing/single-writer-lease/)** —
   optional stronger-consistency gate.
-- **[Replicated snapshots](/actor-ts/persistence/replicated-event-sourcing/snapshotting/)** —
+- **[Replicated snapshots](/persistence/replicated-event-sourcing/snapshotting/)** —
   vector-clock-aware snapshots.
-- **[PersistentActor](/actor-ts/persistence/persistent-actor/)** —
+- **[PersistentActor](/persistence/persistent-actor/)** —
   the simpler single-writer alternative.
-- **[Sharding overview](/actor-ts/cluster/sharding/overview/)** —
+- **[Sharding overview](/cluster/sharding/overview/)** —
   the usual scale-out pattern.

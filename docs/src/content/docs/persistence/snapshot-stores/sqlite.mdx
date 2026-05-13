@@ -5,7 +5,7 @@ description: Single-file durable snapshot store, paired with `SqliteJournal` for
 
 `SqliteSnapshotStore` persists snapshots to a SQLite file —
 durable, zero-dependency on Bun, peer-dep on Node.  Pair with
-[`SqliteJournal`](/actor-ts/persistence/journals/sqlite/) for the
+[`SqliteJournal`](/persistence/journals/sqlite/) for the
 **standard single-node production setup**.
 
 ```ts
@@ -36,7 +36,7 @@ interface SqliteSnapshotStoreOptions {
 ```
 
 Same fields as the journal — see
-[SQLite journal](/actor-ts/persistence/journals/sqlite/) for the
+[SQLite journal](/persistence/journals/sqlite/) for the
 full discussion of each.
 
 ## Schema
@@ -73,7 +73,7 @@ For multi-node deployments where the journal is Cassandra, you can
 **still use SQLite for snapshots** if each entity always recovers
 on the same node.  But for sharded entities (which move between
 nodes), the snapshot store also needs to be shared — see
-[Object storage snapshot store](/actor-ts/persistence/object-storage/snapshot-store-backend/).
+[Object storage snapshot store](/persistence/object-storage/snapshot-store-backend/).
 
 ## Performance
 
@@ -83,19 +83,19 @@ nodes), the snapshot store also needs to be shared — see
 
 For very-large snapshots (multi-MB state), serialization is the
 bottleneck.  Consider compression
-([Object storage compression](/actor-ts/persistence/object-storage/compression/))
+([Object storage compression](/persistence/object-storage/compression/))
 or a different snapshot strategy.
 
 ## Where to next
 
-- **[Snapshots](/actor-ts/persistence/snapshots/)** — the
+- **[Snapshots](/persistence/snapshots/)** — the
   policy + mechanics.
-- **[SQLite journal](/actor-ts/persistence/journals/sqlite/)** —
+- **[SQLite journal](/persistence/journals/sqlite/)** —
   the journal you pair this with.
-- **[In-memory snapshot store](/actor-ts/persistence/snapshot-stores/in-memory/)** —
+- **[In-memory snapshot store](/persistence/snapshot-stores/in-memory/)** —
   for tests.
-- **[Cached snapshot store](/actor-ts/persistence/snapshot-stores/cached-snapshot-store/)** —
+- **[Cached snapshot store](/persistence/snapshot-stores/cached-snapshot-store/)** —
   read-through cache.
 
-The [`SqliteSnapshotStore`](/actor-ts/api/classes/sqlitesnapshotstore/)
+The [`SqliteSnapshotStore`](/api/classes/sqlitesnapshotstore/)
 API reference covers the full options.

@@ -46,9 +46,9 @@ Three things going on:
 
 | Piece | Lives in | Page |
 | --- | --- | --- |
-| **Routing** | `actor-ts/http` exports `path`, `get`, `post`, `complete*`, etc. | [Route DSL](/actor-ts/http/route-dsl/) |
-| **Marshalling** | `entity<T>(req)` decode + `completeJson` encode. | [Marshalling](/actor-ts/http/marshalling/) |
-| **Backend** | Pluggable HTTP server — Fastify by default, Bun.serve, Express. | [Backends](/actor-ts/http/backends/fastify/) |
+| **Routing** | `actor-ts/http` exports `path`, `get`, `post`, `complete*`, etc. | [Route DSL](/http/route-dsl/) |
+| **Marshalling** | `entity<T>(req)` decode + `completeJson` encode. | [Marshalling](/http/marshalling/) |
+| **Backend** | Pluggable HTTP server — Fastify by default, Bun.serve, Express. | [Backends](/http/backends/fastify/) |
 
 The DSL builds an in-memory route tree; the extension's
 `newServerAt(...).bind(routes)` flattens it and registers
@@ -79,7 +79,7 @@ All three implement the same `HttpServerBackend` interface — the
 route DSL compiles identically; the backend just owns the
 listen/dispatch loop.
 
-See the [backend pages](/actor-ts/http/backends/fastify/) for the
+See the [backend pages](/http/backends/fastify/) for the
 configuration options each accepts.
 
 ## The HTTP client
@@ -100,8 +100,8 @@ identically on Bun, Node 20+, and Deno (every supported runtime
 has fetch built in).
 
 For more elaborate client patterns (retries, caching), wrap the
-client in a [retry](/actor-ts/patterns/retry/) +
-[circuit-breaker](/actor-ts/patterns/circuit-breaker/) call.
+client in a [retry](/patterns/retry/) +
+[circuit-breaker](/patterns/circuit-breaker/) call.
 
 ## Middleware
 
@@ -127,7 +127,7 @@ The framework ships three:
 
 Each is a `Route -> Route` transformer — wraps a sub-tree of routes
 with its behavior.  Compose by nesting.  See
-[middleware pages](/actor-ts/http/middleware/response-cache/).
+[middleware pages](/http/middleware/response-cache/).
 
 ## Connecting HTTP to actors
 
@@ -193,22 +193,22 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Route DSL](/actor-ts/http/route-dsl/)** — the full DSL:
+- **[Route DSL](/http/route-dsl/)** — the full DSL:
   `path`, `get`/`post`/`put`/etc., `concat`, `complete*`,
   `redirect`, `reject`.
-- **[Marshalling](/actor-ts/http/marshalling/)** — `entity<T>`,
+- **[Marshalling](/http/marshalling/)** — `entity<T>`,
   Content-Type-driven decoding, response encoding.
-- **[Fastify backend](/actor-ts/http/backends/fastify/)** —
+- **[Fastify backend](/http/backends/fastify/)** —
   default backend's configuration.
-- **[Bun.serve backend](/actor-ts/http/backends/fastify/) /
-  [Express backend](/actor-ts/http/backends/express/)** —
+- **[Bun.serve backend](/http/backends/fastify/) /
+  [Express backend](/http/backends/express/)** —
   alternatives.
-- **[Response cache middleware](/actor-ts/http/middleware/response-cache/)** —
+- **[Response cache middleware](/http/middleware/response-cache/)** —
   caching for GET responses.
-- **[Rate limit middleware](/actor-ts/http/middleware/rate-limit/)** —
+- **[Rate limit middleware](/http/middleware/rate-limit/)** —
   per-key rate limiting.
-- **[Idempotency-key middleware](/actor-ts/http/middleware/idempotency-key/)** —
+- **[Idempotency-key middleware](/http/middleware/idempotency-key/)** —
   write-deduplication for mutations.
 
-The [`HttpExtension`](/actor-ts/api/classes/httpextension/) API
+The [`HttpExtension`](/api/classes/httpextension/) API
 reference covers the full surface.

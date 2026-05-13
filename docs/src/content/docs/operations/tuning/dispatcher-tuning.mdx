@@ -4,7 +4,7 @@ description: Picking the right dispatcher per workload — microtask for tight l
 ---
 
 The
-[dispatcher](/actor-ts/fundamentals/dispatchers/) decides
+[dispatcher](/fundamentals/dispatchers/) decides
 **when actor messages run** on the JavaScript event loop.  Three
 shapes ship:
 
@@ -141,7 +141,7 @@ traffic.
 ## Measuring
 
 Use the
-[stock metric](/actor-ts/observability/metrics/stock-metrics/)
+[stock metric](/observability/metrics/stock-metrics/)
 `actor_message_duration_ms`:
 
 ```
@@ -196,9 +196,9 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Dispatchers](/actor-ts/fundamentals/dispatchers/)** — the
+- **[Dispatchers](/fundamentals/dispatchers/)** — the
   conceptual reference.
-- **[Mailbox sizing](/actor-ts/operations/tuning/mailbox-sizing/)** —
+- **[Mailbox sizing](/operations/tuning/mailbox-sizing/)** —
   the complementary knob.
-- **[Stock metrics](/actor-ts/observability/metrics/stock-metrics/)** —
+- **[Stock metrics](/observability/metrics/stock-metrics/)** —
   the per-actor performance metrics.

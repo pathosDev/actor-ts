@@ -21,7 +21,7 @@ snapshot of the state, overwritten on each `persist(newState)`.
             └─────────────────────────────────┘
 ```
 
-Compared to [`PersistentActor`](/actor-ts/persistence/persistent-actor/):
+Compared to [`PersistentActor`](/persistence/persistent-actor/):
 
 | Aspect | `PersistentActor` | `DurableStateActor` |
 | --- | --- | --- |
@@ -197,7 +197,7 @@ class Cart extends DurableStateActor<...> {
 
 The persisted record gets wrapped in a `{ _v, _t, _e }` envelope;
 on load, the adapter's `upcast` runs to migrate older versions.
-See [Migration overview](/actor-ts/persistence/migration/overview/)
+See [Migration overview](/persistence/migration/overview/)
 for the full story.
 
 ## Encryption + compression
@@ -214,7 +214,7 @@ class Sensitive extends DurableStateActor<...> {
 Honored by stores that implement them (object-storage with
 encryption, etc.); ignored by stores that don't (in-memory,
 SQLite).  See
-[Object storage encryption](/actor-ts/persistence/object-storage/encryption/)
+[Object storage encryption](/persistence/object-storage/encryption/)
 for the durable-state encryption story.
 
 ## Common pitfalls
@@ -258,14 +258,14 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Persistence overview](/actor-ts/persistence/overview/)** —
+- **[Persistence overview](/persistence/overview/)** —
   the durable-state vs event-sourcing decision.
-- **[PersistentActor](/actor-ts/persistence/persistent-actor/)** —
+- **[PersistentActor](/persistence/persistent-actor/)** —
   when history matters.
-- **[Migration overview](/actor-ts/persistence/migration/overview/)** —
+- **[Migration overview](/persistence/migration/overview/)** —
   evolving state schemas.
-- **[Object storage](/actor-ts/persistence/object-storage/overview/)** —
+- **[Object storage](/persistence/object-storage/overview/)** —
   S3 + filesystem backends for durable state.
 
-The [`DurableStateActor`](/actor-ts/api/classes/durablestateactor/)
+The [`DurableStateActor`](/api/classes/durablestateactor/)
 API reference covers the full surface.

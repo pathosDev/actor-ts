@@ -9,8 +9,8 @@ mailbox, same dispatcher, same supervisor tree — but its
 `onReceive` delegates into whichever Behavior is currently active.
 
 You don't construct `TypedActor` directly.  The three spawn helpers
-([`spawnTyped`](/actor-ts/typed/spawn-typed/),
-[`typedProps`](/actor-ts/typed/spawn-typed/), and `spawnTypedChild`)
+([`spawnTyped`](/typed/spawn-typed/),
+[`typedProps`](/typed/spawn-typed/), and `spawnTypedChild`)
 wrap it for you.  But knowing how it works clarifies the typed-DSL
 semantics — especially what "the runtime interprets the Behavior"
 actually means.
@@ -173,12 +173,12 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Behaviors](/actor-ts/typed/behaviors/)** — the DSL that
+- **[Behaviors](/typed/behaviors/)** — the DSL that
   produces the values `TypedActor` interprets.
-- **[Spawn typed](/actor-ts/typed/spawn-typed/)** — the three
+- **[Spawn typed](/typed/spawn-typed/)** — the three
   helpers wrapping `TypedActor` for normal use.
-- **[Actor (untyped)](/actor-ts/fundamentals/actor/)** — the
+- **[Actor (untyped)](/fundamentals/actor/)** — the
   parent class `TypedActor` extends.
-- **[Supervision](/actor-ts/fundamentals/supervision/)** — what
+- **[Supervision](/fundamentals/supervision/)** — what
   the `Behaviors.supervise(...).onFailure(...)` strategy
   routes to.

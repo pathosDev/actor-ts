@@ -124,7 +124,7 @@ useful for *fan-out* shapes:
 
 If you want broadcast for *some* messages but routing for others,
 keep the router non-broadcast and wrap occasional messages in
-`Broadcast<T>` — see [Router](/actor-ts/routing/router/).
+`Broadcast<T>` — see [Router](/routing/router/).
 
 ## Consistent-hashing *(cluster only)*
 
@@ -158,7 +158,7 @@ deterministically, across the cluster.
 - Balance perfectly under skewed-key workloads.  If 80 % of traffic
   is `userId=42`, that one routee carries 80 % of the load.  Skewed
   keys need a different approach — see
-  [Sharding](/actor-ts/cluster/sharding/overview/) for the heavier
+  [Sharding](/cluster/sharding/overview/) for the heavier
   per-key-actor pattern.
 - Pin to a fixed routee.  Topology changes do shuffle some keys;
   for hard guarantees, use a singleton or sharded entity.
@@ -230,12 +230,12 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Router](/actor-ts/routing/router/)** — the factories that
+- **[Router](/routing/router/)** — the factories that
   wrap each strategy in ready-to-spawn Props.
-- **[Pool vs group](/actor-ts/routing/pool-vs-group/)** — how
+- **[Pool vs group](/routing/pool-vs-group/)** — how
   these strategies behave when applied to a fixed pool vs a
   dynamic group of routees.
-- **[Cluster router](/actor-ts/cluster/cluster-router/)** — where
+- **[Cluster router](/cluster/cluster-router/)** — where
   consistent-hashing lives.
-- **[Sharding](/actor-ts/cluster/sharding/overview/)** — the
+- **[Sharding](/cluster/sharding/overview/)** — the
   heavier alternative when keys need true per-key actors.

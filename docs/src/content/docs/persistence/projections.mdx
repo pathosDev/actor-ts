@@ -140,7 +140,7 @@ per `pollIntervalMs`.  Tuning:
 - Higher (5-10 s) → slow visibility but cheap.
 
 For very-low-latency read-model updates, see
-[Push-based query](/actor-ts/persistence/push-based-query/) which
+[Push-based query](/persistence/push-based-query/) which
 gets sub-poll-interval delivery via the in-process event bus.
 
 ## Per-pid projections
@@ -217,14 +217,14 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Persistence overview](/actor-ts/persistence/overview/)** —
+- **[Persistence overview](/persistence/overview/)** —
   the bigger picture.
-- **[PersistentActor](/actor-ts/persistence/persistent-actor/)** —
+- **[PersistentActor](/persistence/persistent-actor/)** —
   what produces the events.
-- **[Persistence query](/actor-ts/persistence/persistence-query/)** —
+- **[Persistence query](/persistence/persistence-query/)** —
   the read-side API the projection uses.
-- **[Push-based query](/actor-ts/persistence/push-based-query/)** —
+- **[Push-based query](/persistence/push-based-query/)** —
   sub-poll-interval delivery via the event bus.
 
-The [`ProjectionActor`](/actor-ts/api/classes/projectionactor/) API
+The [`ProjectionActor`](/api/classes/projectionactor/) API
 reference covers all settings.

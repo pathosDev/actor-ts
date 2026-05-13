@@ -55,7 +55,7 @@ simplicity.  For parallelism:
 
 - **Cluster across processes** — N processes, each one ActorSystem,
   joined into one cluster.
-- **[Worker mesh](/actor-ts/cluster/worker-mesh/)** — N worker
+- **[Worker mesh](/cluster/worker-mesh/)** — N worker
   threads, each one ActorSystem, in the **same process** via
   MessageChannel.
 
@@ -155,15 +155,15 @@ Multi-actor transactions need either:
   reason about; better matches actor semantics.
 
 The framework supports the **saga pattern** (via
-[PersistentFSM](/actor-ts/persistence/fsm/persistent-fsm/) or
+[PersistentFSM](/persistence/fsm/persistent-fsm/) or
 custom workflows).  It doesn't ship built-in transactions —
 the cost-benefit isn't there for most workloads.
 
 ## Where to next
 
-- **[Architecture Decision Records](/actor-ts/extras/architecture-decision-records/)** —
+- **[Architecture Decision Records](/extras/architecture-decision-records/)** —
   if you want even more "why" content.
-- **[Version policy](/actor-ts/reference/version-policy/)** —
+- **[Version policy](/reference/version-policy/)** —
   what's stable vs experimental.
-- **[FAQ](/actor-ts/reference/faq/)** — common questions about
+- **[FAQ](/reference/faq/)** — common questions about
   the framework.

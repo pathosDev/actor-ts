@@ -178,7 +178,7 @@ BackoffSupervisor.props({
 ```
 
 Override the default exponential backoff with any
-[`BackoffPolicy`](/actor-ts/patterns/backoff-policy/) — linear,
+[`BackoffPolicy`](/patterns/backoff-policy/) — linear,
 fibonacci, custom.  `minBackoff` / `maxBackoff` are still
 required (they're advisory caps; the framework uses them for the
 `resetCounter` heuristic), but the `policy` controls the actual
@@ -252,15 +252,15 @@ attempts."
 
 ## Where to next
 
-- **[Backoff policy](/actor-ts/patterns/backoff-policy/)** —
+- **[Backoff policy](/patterns/backoff-policy/)** —
   the `exponentialBackoff` / `linearBackoff` primitives that
   produce the policy value.
-- **[Supervision](/actor-ts/fundamentals/supervision/)** — the
+- **[Supervision](/fundamentals/supervision/)** — the
   plain-supervision baseline this builds on.
-- **[Circuit breaker](/actor-ts/patterns/circuit-breaker/)** —
+- **[Circuit breaker](/patterns/circuit-breaker/)** —
   for backing off *before* a call fails (not after).
-- **[Retry](/actor-ts/patterns/retry/)** — per-call retry with
+- **[Retry](/patterns/retry/)** — per-call retry with
   similar backoff math, but outside the actor world.
 
-The [`BackoffSupervisor`](/actor-ts/api/classes/backoffsupervisor/)
+The [`BackoffSupervisor`](/api/classes/backoffsupervisor/)
 API reference covers all options.

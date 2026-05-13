@@ -225,18 +225,18 @@ removes the boilerplate at the call sites.
 
 ## Where to next
 
-- **[Messages](/actor-ts/fundamentals/messages/)** — the
+- **[Messages](/fundamentals/messages/)** — the
   `replyTo: ActorRef<T>` field convention covered in detail.
-- **[Actor](/actor-ts/fundamentals/actor/)** — `this.sender` and how
+- **[Actor](/fundamentals/actor/)** — `this.sender` and how
   the framework wires it.
-- **[ActorSystem](/actor-ts/fundamentals/actor-system/)** — where
+- **[ActorSystem](/fundamentals/actor-system/)** — where
   temporary ask refs are registered and torn down.
-- **[CircuitBreaker](/actor-ts/patterns/circuit-breaker/)** — when
+- **[CircuitBreaker](/patterns/circuit-breaker/)** — when
   the ask's downstream call is flakey and you want to fail fast
   rather than time out.
-- **[Future patterns](/actor-ts/patterns/futures-patterns/)** —
+- **[Future patterns](/patterns/futures-patterns/)** —
   `pipeTo`, `after`, sequence — composing async results back into
   the actor world without `await`-blocking.
 
-The [`ask` function API reference](/actor-ts/api/functions/ask/)
+The [`ask` function API reference](/api/functions/ask/)
 documents the full signature and error types.

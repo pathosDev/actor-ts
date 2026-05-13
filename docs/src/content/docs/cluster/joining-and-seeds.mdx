@@ -121,10 +121,10 @@ use a **seed provider**:
 
 | Provider | When |
 | --- | --- |
-| **[Config](/actor-ts/discovery/seed-providers/config/)** | Static list (the case above). |
-| **[DNS](/actor-ts/discovery/seed-providers/dns/)** | Resolves `_actor-ts._tcp.example.com` SRV records. |
-| **[Kubernetes API](/actor-ts/discovery/seed-providers/kubernetes-api/)** | Lists pods matching a label selector. |
-| **[Aggregate](/actor-ts/discovery/seed-providers/aggregate/)** | Falls through multiple providers (e.g. K8s, then DNS). |
+| **[Config](/discovery/seed-providers/config/)** | Static list (the case above). |
+| **[DNS](/discovery/seed-providers/dns/)** | Resolves `_actor-ts._tcp.example.com` SRV records. |
+| **[Kubernetes API](/discovery/seed-providers/kubernetes-api/)** | Lists pods matching a label selector. |
+| **[Aggregate](/discovery/seed-providers/aggregate/)** | Falls through multiple providers (e.g. K8s, then DNS). |
 
 ```ts
 import { KubernetesApiSeedProvider } from 'actor-ts/discovery';
@@ -146,7 +146,7 @@ const cluster = await Cluster.join(system, {
 
 The provider returns a snapshot of seed addresses; the framework
 uses them to bootstrap the join.  See
-[Discovery overview](/actor-ts/discovery/overview/) for the seed
+[Discovery overview](/discovery/overview/) for the seed
 provider model.
 
 ## Watching the join progress
@@ -199,7 +199,7 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   Once the partition heals, the gossip protocol *doesn't* merge
   the two clusters automatically — they're independent.  Mitigate
-  with a downing strategy ([downing-strategies](/actor-ts/cluster/downing-strategies/))
+  with a downing strategy ([downing-strategies](/cluster/downing-strategies/))
   and **don't bootstrap during partition** if you can help it
   (use a seed strategy that fails fast rather than self-bootstrapping
   on no-seed-response — see weakly-up).
@@ -221,13 +221,13 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Cluster overview](/actor-ts/cluster/overview/)** — the
+- **[Cluster overview](/cluster/overview/)** — the
   bigger picture.
-- **[Weakly-up](/actor-ts/cluster/weakly-up/)** — gradual-join
+- **[Weakly-up](/cluster/weakly-up/)** — gradual-join
   semantics for slow convergence.
-- **[Failure detector](/actor-ts/cluster/failure-detector/)** —
+- **[Failure detector](/cluster/failure-detector/)** —
   how heartbeats keep the membership view fresh after join.
-- **[Discovery overview](/actor-ts/discovery/overview/)** — seed
+- **[Discovery overview](/discovery/overview/)** — seed
   providers for dynamic environments.
-- **[Downing strategies](/actor-ts/cluster/downing-strategies/)** —
+- **[Downing strategies](/cluster/downing-strategies/)** —
   split-brain resolution after the cluster forms.

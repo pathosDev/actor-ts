@@ -9,13 +9,13 @@ get, set, atomic increment, set-if-absent, delete.
 
 Used by:
 
-- [Response cache middleware](/actor-ts/http/middleware/response-cache/) —
+- [Response cache middleware](/http/middleware/response-cache/) —
   GET-response caching.
-- [Rate limit middleware](/actor-ts/http/middleware/rate-limit/) —
+- [Rate limit middleware](/http/middleware/rate-limit/) —
   per-key counters.
-- [Idempotency-key middleware](/actor-ts/http/middleware/idempotency-key/) —
+- [Idempotency-key middleware](/http/middleware/idempotency-key/) —
   write-dedup.
-- [CachedSnapshotStore](/actor-ts/persistence/snapshot-stores/cached-snapshot-store/) —
+- [CachedSnapshotStore](/persistence/snapshot-stores/cached-snapshot-store/) —
   snapshot read-through cache.
 
 ## The interface
@@ -33,7 +33,7 @@ interface Cache {
 ```
 
 Small surface — no pattern scans, no pub/sub (the cluster has
-its own [pub/sub](/actor-ts/cluster/pubsub/)).
+its own [pub/sub](/cluster/pubsub/)).
 
 ## Three backends
 
@@ -168,14 +168,14 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[In-memory cache](/actor-ts/cache/in-memory/)** — the
+- **[In-memory cache](/cache/in-memory/)** — the
   default backend.
-- **[Memcached cache](/actor-ts/cache/memcached/)** — for
+- **[Memcached cache](/cache/memcached/)** — for
   Memcached deployments.
-- **[Redis cache](/actor-ts/cache/redis/)** — for Redis
+- **[Redis cache](/cache/redis/)** — for Redis
   deployments.
-- **[Response cache middleware](/actor-ts/http/middleware/response-cache/)** —
+- **[Response cache middleware](/http/middleware/response-cache/)** —
   the primary consumer.
 
-The [`Cache`](/actor-ts/api/interfaces/cache/) API reference
+The [`Cache`](/api/interfaces/cache/) API reference
 covers the full interface.

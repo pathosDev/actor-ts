@@ -79,7 +79,7 @@ stateDiagram-v2
   but it isn't routable yet.
 - **`weakly-up`** *(optional)* — gossip-visible to peers but the
   leader hasn't confirmed it.  Useful for partition-tolerant joins;
-  see [Weakly-up](/actor-ts/cluster/weakly-up/).
+  see [Weakly-up](/cluster/weakly-up/).
 - **`up`** — fully in the cluster, routable.  This is the
   steady-state status.
 - **`unreachable`** — the failure detector flagged this peer as
@@ -115,7 +115,7 @@ work without a leader-elected coordinator: every concurrent update
 is eventually seen by every peer.
 
 For the deep dive, see
-[Joining and seeds](/actor-ts/cluster/joining-and-seeds/).
+[Joining and seeds](/cluster/joining-and-seeds/).
 
 ## What the failure detector does
 
@@ -131,7 +131,7 @@ detector flags it as suspect.
 
 Adaptive — the detector accommodates variable network latency,
 not just a fixed timeout.  See
-[Failure detector](/actor-ts/cluster/failure-detector/) for the
+[Failure detector](/cluster/failure-detector/) for the
 phi math.
 
 ## Split-brain and downing
@@ -150,7 +150,7 @@ actor-ts ships several **downing strategies**:
 | `KeepReferee` | A designated referee node's view wins. |
 | `KeepQuorum` | Requires a configured quorum size; failures below it down the cluster. |
 
-See [Downing strategies](/actor-ts/cluster/downing-strategies/) for
+See [Downing strategies](/cluster/downing-strategies/) for
 the full set.  Pick deliberately — the default (no downing
 strategy) requires manual intervention during a partition.
 
@@ -174,7 +174,7 @@ delivers it.  Reply-to refs serialize cleanly — the receiving node
 re-attaches a remote-routable handle so replies flow back over
 the same transport.
 
-See [Refs across nodes](/actor-ts/cluster/refs-across-nodes/) for
+See [Refs across nodes](/cluster/refs-across-nodes/) for
 the wire-format details.
 
 ## What sits on top
@@ -185,12 +185,12 @@ build on it:
 
 | Extension | What it adds |
 | --- | --- |
-| **[Sharding](/actor-ts/cluster/sharding/overview/)** | One actor per "entity key," distributed across nodes, with automatic rebalancing on membership changes. |
-| **[Singleton](/actor-ts/cluster/singleton/overview/)** | One actor cluster-wide.  Re-spawned elsewhere if the host node leaves. |
-| **[DistributedPubSub](/actor-ts/cluster/pubsub/)** | Topic-based fan-out across the cluster. |
-| **[DistributedData](/actor-ts/distributed-data/overview/)** | CRDT-based shared state with eventual consistency. |
-| **[Cluster router](/actor-ts/cluster/cluster-router/)** | Routes messages across cluster-up-members at a well-known path. |
-| **[Receptionist](/actor-ts/discovery/receptionist/)** | Service registry — actors register, others look up by key. |
+| **[Sharding](/cluster/sharding/overview/)** | One actor per "entity key," distributed across nodes, with automatic rebalancing on membership changes. |
+| **[Singleton](/cluster/singleton/overview/)** | One actor cluster-wide.  Re-spawned elsewhere if the host node leaves. |
+| **[DistributedPubSub](/cluster/pubsub/)** | Topic-based fan-out across the cluster. |
+| **[DistributedData](/distributed-data/overview/)** | CRDT-based shared state with eventual consistency. |
+| **[Cluster router](/cluster/cluster-router/)** | Routes messages across cluster-up-members at a well-known path. |
+| **[Receptionist](/discovery/receptionist/)** | Service registry — actors register, others look up by key. |
 
 You don't enable these by default; you reach for them when needed.
 This page covers the foundation they all share — once you
@@ -250,19 +250,19 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Joining and seeds](/actor-ts/cluster/joining-and-seeds/)** —
+- **[Joining and seeds](/cluster/joining-and-seeds/)** —
   the join protocol, seed-node configuration, what happens if all
   seeds are unreachable.
-- **[Sharding overview](/actor-ts/cluster/sharding/overview/)** —
+- **[Sharding overview](/cluster/sharding/overview/)** —
   one-actor-per-entity-key with automatic rebalancing.
-- **[Singleton overview](/actor-ts/cluster/singleton/overview/)** —
+- **[Singleton overview](/cluster/singleton/overview/)** —
   exactly-one cluster-wide.
-- **[Distributed data overview](/actor-ts/distributed-data/overview/)** —
+- **[Distributed data overview](/distributed-data/overview/)** —
   shared state via CRDTs.
-- **[Failure detector](/actor-ts/cluster/failure-detector/)** — the
+- **[Failure detector](/cluster/failure-detector/)** — the
   phi-accrual mechanism.
-- **[Downing strategies](/actor-ts/cluster/downing-strategies/)** —
+- **[Downing strategies](/cluster/downing-strategies/)** —
   resolving split-brain.
 
-The [`Cluster`](/actor-ts/api/classes/cluster/) API reference covers
+The [`Cluster`](/api/classes/cluster/) API reference covers
 the join/leave/subscribe surface.

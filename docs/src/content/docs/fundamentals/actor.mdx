@@ -53,7 +53,7 @@ Three things to notice:
 
 - **The type parameter `<Cmd>`** constrains what messages this actor
   accepts.  `ref.tell({ kind: 'bogus' })` is a TypeScript error at the
-  call site.  See [Messages](/actor-ts/fundamentals/messages/) for the
+  call site.  See [Messages](/fundamentals/messages/) for the
   discriminated-union convention this codebase uses everywhere.
 - **`override onReceive(cmd: Cmd): void`** is the only required
   override.  The base class declares it `abstract`, so the compiler
@@ -82,7 +82,7 @@ const counter2 = system.actorOf(Props.create(() => new Counter()), 'counter');
 ```
 
 `Props.create(...)` wraps the factory + supervisor strategy + dispatcher
-choice into one value.  See [Props](/actor-ts/fundamentals/props/) for
+choice into one value.  See [Props](/fundamentals/props/) for
 the full surface.
 
 ## Sending messages
@@ -97,7 +97,7 @@ counter.tell({ kind: 'reset' });
 
 `tell` is **fire-and-forget**.  It enqueues the message into the
 mailbox and returns immediately — the actor processes it on its own
-schedule.  For request/response, see [Ask pattern](/actor-ts/fundamentals/ask-pattern/).
+schedule.  For request/response, see [Ask pattern](/fundamentals/ask-pattern/).
 
 ## The context references
 
@@ -183,7 +183,7 @@ import { Aside } from '@astrojs/starlight/components';
   state is gone) and builds a new one from the same `Props.create`
   factory.  Messages that arrived during the restart window stay in
   the mailbox; the new instance picks them up.  See
-  [Supervision](/actor-ts/fundamentals/supervision/) for the full
+  [Supervision](/fundamentals/supervision/) for the full
   decision tree.
 </Aside>
 
@@ -209,8 +209,8 @@ tied to the parent's lifecycle — when the parent stops, all children
 stop first (postStop runs bottom-up).  Supervision decisions for a
 child go to the parent's supervisor strategy.
 
-See [Actor paths](/actor-ts/fundamentals/actor-paths/) for the path
-hierarchy and [Supervision](/actor-ts/fundamentals/supervision/) for
+See [Actor paths](/fundamentals/actor-paths/) for the path
+hierarchy and [Supervision](/fundamentals/supervision/) for
 how parent-child failure propagation works.
 
 ## Async `onReceive`
@@ -279,7 +279,7 @@ class DbWriterFanout extends Actor<{ row: Row }> {
   the `tell` goes to dead letters.  Use `context.scheduler` (which
   cancels timers automatically on `postStop`) instead of raw
   `setTimeout` for actor-bound scheduling.  See
-  [Timers and scheduling](/actor-ts/fundamentals/timers-and-scheduling/).
+  [Timers and scheduling](/fundamentals/timers-and-scheduling/).
 </Aside>
 
 <Aside type="caution" title="`this.sender` returns Option, not ActorRef">
@@ -296,16 +296,16 @@ class DbWriterFanout extends Actor<{ row: Row }> {
 
 ## Where to next
 
-- **[Messages](/actor-ts/fundamentals/messages/)** — the discriminated-
+- **[Messages](/fundamentals/messages/)** — the discriminated-
   union convention every actor uses for its incoming type.
-- **[Actor paths](/actor-ts/fundamentals/actor-paths/)** — how
+- **[Actor paths](/fundamentals/actor-paths/)** — how
   parent/child hierarchies form addresses.
-- **[Supervision](/actor-ts/fundamentals/supervision/)** — what
+- **[Supervision](/fundamentals/supervision/)** — what
   happens when `onReceive` throws.
-- **[Become and stash](/actor-ts/fundamentals/become-and-stash/)** —
+- **[Become and stash](/fundamentals/become-and-stash/)** —
   switching behavior at runtime and buffering messages.
-- **[Ask pattern](/actor-ts/fundamentals/ask-pattern/)** —
+- **[Ask pattern](/fundamentals/ask-pattern/)** —
   request/response when fire-and-forget isn't enough.
 
-The [`Actor` class API reference](/actor-ts/api/classes/actor/) has the
+The [`Actor` class API reference](/api/classes/actor/) has the
 full signature for every method discussed here.

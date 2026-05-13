@@ -121,9 +121,9 @@ actor on a single node.  For state that should survive:
 - **`PersistentActor`** — the singleton persists events; the new
   instance replays them from the journal.  Most production
   singletons use this.  See
-  [PersistentActor](/actor-ts/persistence/persistent-actor/).
+  [PersistentActor](/persistence/persistent-actor/).
 - **`DurableState`** — simpler: snapshot the current state;
-  restore on restart.  See [DurableState](/actor-ts/persistence/durable-state/).
+  restore on restart.  See [DurableState](/persistence/durable-state/).
 - **`DistributedData`** — for state that needs to be readable
   *before* the singleton restarts.  Most singletons don't need
   this; their state is private to the singleton.
@@ -143,7 +143,7 @@ Three defenses, in order of complexity:
 1. **A downing strategy** that picks a winning side during
    partition (default option, no lease needed).  The losing side
    downs itself; only one half remains active.  See
-   [Downing strategies](/actor-ts/cluster/downing-strategies/).
+   [Downing strategies](/cluster/downing-strategies/).
 2. **A lease**, passed to the manager:
    ```ts
    ClusterSingletonManager.props({
@@ -156,7 +156,7 @@ Three defenses, in order of complexity:
    The manager must successfully acquire the lease before spawning
    the singleton.  Only one side of a partition can hold the lease,
    so even with two leaders, only one singleton exists.  See
-   [Singleton with lease](/actor-ts/cluster/singleton/with-lease/).
+   [Singleton with lease](/cluster/singleton/with-lease/).
 
 The combination of "downing strategy + lease" is paranoid-safe;
 each alone is usually enough.
@@ -174,8 +174,8 @@ A singleton has overhead beyond a normal actor:
   on a new leader.
 
 If exactness isn't required (you'd be happy with N replicas), use
-a [cluster router](/actor-ts/cluster/cluster-router/) or
-[sharding](/actor-ts/cluster/sharding/overview/) instead — both
+a [cluster router](/cluster/cluster-router/) or
+[sharding](/cluster/sharding/overview/) instead — both
 scale horizontally with no leader-bottleneck.
 
 ## When NOT to use a singleton
@@ -198,7 +198,7 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   If you're tracking per-key state and the key space is large,
   this is a sharding problem.  Use
-  [ClusterSharding](/actor-ts/cluster/sharding/overview/) instead —
+  [ClusterSharding](/cluster/sharding/overview/) instead —
   one actor *per key*, distributed across nodes.
 </Aside>
 
@@ -212,17 +212,17 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[ClusterSingletonManager](/actor-ts/cluster/singleton/manager/)** —
+- **[ClusterSingletonManager](/cluster/singleton/manager/)** —
   the per-node manager that elects + spawns the singleton.
-- **[Singleton with lease](/actor-ts/cluster/singleton/with-lease/)** —
+- **[Singleton with lease](/cluster/singleton/with-lease/)** —
   split-brain protection via a coordination lease.
-- **[Coordination](/actor-ts/coordination/overview/)** — the lease
+- **[Coordination](/coordination/overview/)** — the lease
   abstraction itself.
-- **[Sharding overview](/actor-ts/cluster/sharding/overview/)** —
+- **[Sharding overview](/cluster/sharding/overview/)** —
   for the per-key-actor pattern.
-- **[Cluster overview](/actor-ts/cluster/overview/)** — the
+- **[Cluster overview](/cluster/overview/)** — the
   membership + leader-election machinery underneath.
 
-The [`ClusterSingletonManager`](/actor-ts/api/classes/clustersingletonmanager/)
-and [`ClusterSingletonProxy`](/actor-ts/api/classes/clustersingletonproxy/)
+The [`ClusterSingletonManager`](/api/classes/clustersingletonmanager/)
+and [`ClusterSingletonProxy`](/api/classes/clustersingletonproxy/)
 API references cover the full configuration surface.

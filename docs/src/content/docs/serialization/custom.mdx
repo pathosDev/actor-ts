@@ -182,7 +182,7 @@ For Protobuf, the wire format itself is forward-compatible (new
 fields ignored by old code).  You only need explicit migration
 when the **semantic** changes (renames, splits) — handled by your
 custom serializer the same way the framework's
-[migration adapters](/actor-ts/persistence/migration/overview/)
+[migration adapters](/persistence/migration/overview/)
 handle JSON-format evolution.
 
 ## Registering with the extension
@@ -241,11 +241,11 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Serialization overview](/actor-ts/serialization/overview/)** —
+- **[Serialization overview](/serialization/overview/)** —
   the bigger picture.
-- **[JSON serializer](/actor-ts/serialization/json/)** — the
+- **[JSON serializer](/serialization/json/)** — the
   default.
-- **[CBOR serializer](/actor-ts/serialization/cbor/)** — the
+- **[CBOR serializer](/serialization/cbor/)** — the
   binary alternative.
-- **[Migration overview](/actor-ts/persistence/migration/overview/)** —
+- **[Migration overview](/persistence/migration/overview/)** —
   schema evolution patterns.

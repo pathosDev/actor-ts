@@ -171,7 +171,7 @@ With an adapter set, snapshots are persisted in a `{ _v, _t, _e }`
 envelope; on load, the adapter migrates older versions before
 returning the state.
 
-See [Migration overview](/actor-ts/persistence/migration/overview/)
+See [Migration overview](/persistence/migration/overview/)
 for the broader migration strategy (event adapters + snapshot
 adapters together).
 
@@ -230,17 +230,17 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[PersistentActor](/actor-ts/persistence/persistent-actor/)** —
+- **[PersistentActor](/persistence/persistent-actor/)** —
   the base class whose `snapshotPolicy()` you override.
-- **[Snapshot stores — In-memory](/actor-ts/persistence/snapshot-stores/in-memory/)** —
+- **[Snapshot stores — In-memory](/persistence/snapshot-stores/in-memory/)** —
   the dev / test store.
-- **[Snapshot stores — SQLite](/actor-ts/persistence/snapshot-stores/sqlite/)** —
+- **[Snapshot stores — SQLite](/persistence/snapshot-stores/sqlite/)** —
   single-node production.
-- **[Snapshot stores — Cached](/actor-ts/persistence/snapshot-stores/cached-snapshot-store/)** —
+- **[Snapshot stores — Cached](/persistence/snapshot-stores/cached-snapshot-store/)** —
   read-through cache over another store.
-- **[Migration overview](/actor-ts/persistence/migration/overview/)** —
+- **[Migration overview](/persistence/migration/overview/)** —
   state + event schema evolution.
 
-The [`SnapshotStore`](/actor-ts/api/interfaces/snapshotstore/) and
-[`SnapshotPolicy`](/actor-ts/api/types/snapshotpolicy/) API
+The [`SnapshotStore`](/api/interfaces/snapshotstore/) and
+[`SnapshotPolicy`](/api/types/snapshotpolicy/) API
 references cover the full surface.

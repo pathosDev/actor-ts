@@ -25,7 +25,7 @@ GET /health
 ```
 
 503 with `{ ok: false }` if a check fails.  See
-[Health checks](/actor-ts/observability/management/health-checks/).
+[Health checks](/observability/management/health-checks/).
 
 ### `GET /ready`
 
@@ -133,7 +133,7 @@ actor_messages_processed_total{class="Worker",path="..."} 12345
 ```
 
 Prometheus text format.  See
-[Prometheus exporter](/actor-ts/observability/metrics/prometheus-exporter/).
+[Prometheus exporter](/observability/metrics/prometheus-exporter/).
 
 ## Admin (opt-in)
 
@@ -250,13 +250,13 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Management overview](/actor-ts/observability/management/overview/)** —
+- **[Management overview](/observability/management/overview/)** —
   the bigger picture.
-- **[Health checks](/actor-ts/observability/management/health-checks/)** —
+- **[Health checks](/observability/management/health-checks/)** —
   custom check registration.
-- **[Cluster overview](/actor-ts/cluster/overview/)** — the
+- **[Cluster overview](/cluster/overview/)** — the
   membership semantics behind the `/cluster/*` endpoints.
-- **[Kubernetes deployment](/actor-ts/operations/deployment/kubernetes/)** —
+- **[Kubernetes deployment](/operations/deployment/kubernetes/)** —
   the K8s recipe using these endpoints.
-- **[Prometheus exporter](/actor-ts/observability/metrics/prometheus-exporter/)** —
+- **[Prometheus exporter](/observability/metrics/prometheus-exporter/)** —
   the metrics format details.

@@ -27,7 +27,7 @@ m.get('lang');    // → 'en'
 ```
 
 Per-key LWW semantics — same as
-[LWWRegister](/actor-ts/distributed-data/crdt-types/registers/),
+[LWWRegister](/distributed-data/crdt-types/registers/),
 but indexed.  Concurrent writes to the same key resolve by
 timestamp; writes to different keys don't conflict.
 
@@ -187,16 +187,16 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Counters](/actor-ts/distributed-data/crdt-types/counters/)** —
+- **[Counters](/distributed-data/crdt-types/counters/)** —
   for non-keyed counters.
-- **[Registers](/actor-ts/distributed-data/crdt-types/registers/)** —
+- **[Registers](/distributed-data/crdt-types/registers/)** —
   for non-keyed single values.
-- **[Sets](/actor-ts/distributed-data/crdt-types/sets/)** —
+- **[Sets](/distributed-data/crdt-types/sets/)** —
   for non-keyed collections.
-- **[Designing data](/actor-ts/distributed-data/crdt-types/designing-data/)** —
+- **[Designing data](/distributed-data/crdt-types/designing-data/)** —
   picking between flat and map CRDTs.
 
-The [`LWWMap`](/actor-ts/api/classes/lwwmap/),
-[`ORMap`](/actor-ts/api/classes/ormap/), and
-[`GCounterMap`](/actor-ts/api/classes/gcountermap/) API references
+The [`LWWMap`](/api/classes/lwwmap/),
+[`ORMap`](/api/classes/ormap/), and
+[`GCounterMap`](/api/classes/gcountermap/) API references
 cover the full surface.

@@ -8,9 +8,9 @@ the outside:
 
 | Pillar | What it answers | Module |
 | --- | --- | --- |
-| **Metrics** | "What's the rate / count / latency right now?" | [`MetricsExtension`](/actor-ts/observability/metrics/core-metrics/) |
-| **Tracing** | "What did this single request do?" | [`TracingExtension`](/actor-ts/observability/tracing/tracer-api/) |
-| **Management** | "Is the system alive and healthy?" | [`HttpManagement`](/actor-ts/observability/management/overview/) |
+| **Metrics** | "What's the rate / count / latency right now?" | [`MetricsExtension`](/observability/metrics/core-metrics/) |
+| **Tracing** | "What did this single request do?" | [`TracingExtension`](/observability/tracing/tracer-api/) |
+| **Management** | "Is the system alive and healthy?" | [`HttpManagement`](/observability/management/overview/) |
 
 All three are **extensions** — they don't run unless you reach for
 them.  An app that ignores observability has no overhead from
@@ -60,7 +60,7 @@ to a metrics backend uses an **exporter**:
 | `PromClientAdapter` | Pushes into the `prom-client` library if you're already using it. |
 | `OtelMetricsAdapter` | Reports via OpenTelemetry. |
 
-See [Prometheus exporter](/actor-ts/observability/metrics/prometheus-exporter/)
+See [Prometheus exporter](/observability/metrics/prometheus-exporter/)
 for the deep dive on each.
 
 ### Stock metrics
@@ -75,7 +75,7 @@ extension is started:
 - **Cluster metrics** — member count by state, gossip lag,
   reachability flips.
 
-See [Stock metrics](/actor-ts/observability/metrics/stock-metrics/)
+See [Stock metrics](/observability/metrics/stock-metrics/)
 for the full list.  These give you "are my actors processing
 messages?" out of the box without writing any metric code.
 
@@ -114,8 +114,8 @@ The end result: one trace per logical request, even when it hops
 through 4-5 actors.
 
 The exporter is OpenTelemetry-style.  Use
-[OtelTracerAdapter](/actor-ts/observability/tracing/otel-adapter/)
-in production; a [RecordingTracer](/actor-ts/observability/tracing/recording-tracer/)
+[OtelTracerAdapter](/observability/tracing/otel-adapter/)
+in production; a [RecordingTracer](/observability/tracing/recording-tracer/)
 exists for tests.
 
 ## Management endpoints
@@ -144,7 +144,7 @@ server) that exposes endpoints for operations:
 
 Useful for K8s probes (liveness + readiness) and ad-hoc
 operational debugging.  See
-[HTTP endpoints](/actor-ts/observability/management/http-endpoints/)
+[HTTP endpoints](/observability/management/http-endpoints/)
 for the full surface.
 
 ### Health checks
@@ -159,7 +159,7 @@ management.addHealthCheck('db', async () => {
 Custom checks plug into `/health/ready` — a failing check makes the
 endpoint return 503, which K8s reads as "don't route to this pod."
 
-See [Health checks](/actor-ts/observability/management/health-checks/)
+See [Health checks](/observability/management/health-checks/)
 for the configuration.
 
 ## What to wire up first
@@ -212,25 +212,25 @@ import { Aside } from '@astrojs/starlight/components';
 
 ### Metrics
 
-- **[Core metrics](/actor-ts/observability/metrics/core-metrics/)** —
+- **[Core metrics](/observability/metrics/core-metrics/)** —
   counter / gauge / histogram / timer in detail.
-- **[Prometheus exporter](/actor-ts/observability/metrics/prometheus-exporter/)** —
+- **[Prometheus exporter](/observability/metrics/prometheus-exporter/)** —
   scrape endpoint setup.
-- **[Stock metrics](/actor-ts/observability/metrics/stock-metrics/)** —
+- **[Stock metrics](/observability/metrics/stock-metrics/)** —
   the out-of-the-box actor/mailbox/cluster metrics.
 
 ### Tracing
 
-- **[Tracer API](/actor-ts/observability/tracing/tracer-api/)** —
+- **[Tracer API](/observability/tracing/tracer-api/)** —
   the tracer contract + recording.
-- **[OTel adapter](/actor-ts/observability/tracing/otel-adapter/)** —
+- **[OTel adapter](/observability/tracing/otel-adapter/)** —
   OpenTelemetry integration.
-- **[Actor tracing](/actor-ts/observability/tracing/actor-tracing/)** —
+- **[Actor tracing](/observability/tracing/actor-tracing/)** —
   per-actor span propagation.
 
 ### Management
 
-- **[Health checks](/actor-ts/observability/management/health-checks/)** —
+- **[Health checks](/observability/management/health-checks/)** —
   liveness + readiness.
-- **[HTTP endpoints](/actor-ts/observability/management/http-endpoints/)** —
+- **[HTTP endpoints](/observability/management/http-endpoints/)** —
   the management server's full endpoint set.

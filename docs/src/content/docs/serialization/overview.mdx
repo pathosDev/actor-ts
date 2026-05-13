@@ -87,8 +87,8 @@ matter and the debuggability is valuable.
 For **bandwidth-sensitive** cases (large cluster, lots of
 events, IoT-style payloads), CBOR wins meaningfully.
 
-See [JsonSerializer](/actor-ts/serialization/json/) +
-[CborSerializer](/actor-ts/serialization/cbor/) for details.
+See [JsonSerializer](/serialization/json/) +
+[CborSerializer](/serialization/cbor/) for details.
 
 ## Custom serializers
 
@@ -105,7 +105,7 @@ ext.bind(MyEvent, new ProtobufSerializer<MyEvent>(MyEventSchema));
 Now every `MyEvent` value uses Protobuf for serialization
 across the wire / to journal.  Other types still use JSON.
 
-See [Custom serializers](/actor-ts/serialization/custom/) for
+See [Custom serializers](/serialization/custom/) for
 the full setup.
 
 ## What can be serialized
@@ -161,7 +161,7 @@ import { Aside } from '@astrojs/starlight/components';
   // In-process tests succeed; cross-cluster surfaces a serialization bug
   ```
   In-process tests don't exercise serialization.  Test with
-  [MultiNodeSpec](/actor-ts/testing/multi-node-spec/) or
+  [MultiNodeSpec](/testing/multi-node-spec/) or
   ParallelMultiNodeSpec to ensure messages serialize correctly.
 </Aside>
 
@@ -177,13 +177,13 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[JSON serializer](/actor-ts/serialization/json/)** — the
+- **[JSON serializer](/serialization/json/)** — the
   default.
-- **[CBOR serializer](/actor-ts/serialization/cbor/)** — the
+- **[CBOR serializer](/serialization/cbor/)** — the
   binary alternative.
-- **[Custom serializers](/actor-ts/serialization/custom/)** —
+- **[Custom serializers](/serialization/custom/)** —
   Protobuf, Avro, etc.
-- **[Messages](/actor-ts/fundamentals/messages/)** — what
+- **[Messages](/fundamentals/messages/)** — what
   shapes survive serialization.
-- **[Refs across nodes](/actor-ts/cluster/refs-across-nodes/)** —
+- **[Refs across nodes](/cluster/refs-across-nodes/)** —
   the cluster wire that consumes serializers.

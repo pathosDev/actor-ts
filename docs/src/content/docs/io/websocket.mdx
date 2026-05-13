@@ -6,7 +6,7 @@ description: Outbound WebSocket connection actor — connects to a remote WS end
 `WebSocketActor` opens a **client-side** WebSocket connection to
 a remote endpoint.  For accepting **incoming** WS connections
 (server side), see
-[ServerWebSocketActor](/actor-ts/io/server-websocket/).
+[ServerWebSocketActor](/io/server-websocket/).
 
 ```ts
 import { ActorSystem, Props, WebSocketActor } from 'actor-ts';
@@ -63,7 +63,7 @@ that's up to the subscriber.
 ## Auto-reconnect
 
 The base
-[BrokerActor lifecycle](/actor-ts/io/broker-actor-base/) handles
+[BrokerActor lifecycle](/io/broker-actor-base/) handles
 reconnect with backoff.  An unexpected disconnect:
 
 - Transitions the actor to `disconnected`.
@@ -103,7 +103,7 @@ Three primary fits:
 3. **Custom WS-based protocols** layered on top.
 
 For server-side WebSocket (accepting client connections), use
-[ServerWebSocketActor](/actor-ts/io/server-websocket/).
+[ServerWebSocketActor](/io/server-websocket/).
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -127,11 +127,11 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[I/O overview](/actor-ts/io/overview/)** — the bigger
+- **[I/O overview](/io/overview/)** — the bigger
   picture.
-- **[Server WebSocket](/actor-ts/io/server-websocket/)** — for
+- **[Server WebSocket](/io/server-websocket/)** — for
   accepting inbound WS connections.
-- **[SSE](/actor-ts/io/sse/)** — server-sent events as a
+- **[SSE](/io/sse/)** — server-sent events as a
   one-way streaming alternative.
-- **[BrokerActor base](/actor-ts/io/broker-actor-base/)** — the
+- **[BrokerActor base](/io/broker-actor-base/)** — the
   shared lifecycle.

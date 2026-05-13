@@ -48,7 +48,7 @@ What gets **dropped or transformed**:
 | Class instances | Serialized as plain `{ ...fields }`; methods lost. |
 
 For **most actor messages**, this is fine — the framework's
-[message conventions](/actor-ts/fundamentals/messages/) already
+[message conventions](/fundamentals/messages/) already
 discourage non-serializable shapes.
 
 ## Size
@@ -129,11 +129,11 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Serialization overview](/actor-ts/serialization/overview/)** —
+- **[Serialization overview](/serialization/overview/)** —
   the bigger picture.
-- **[CBOR serializer](/actor-ts/serialization/cbor/)** — the
+- **[CBOR serializer](/serialization/cbor/)** — the
   binary alternative.
-- **[Custom serializers](/actor-ts/serialization/custom/)** —
+- **[Custom serializers](/serialization/custom/)** —
   Protobuf / Avro / etc.
-- **[Messages](/actor-ts/fundamentals/messages/)** — the
+- **[Messages](/fundamentals/messages/)** — the
   conventions for serialize-friendly shapes.

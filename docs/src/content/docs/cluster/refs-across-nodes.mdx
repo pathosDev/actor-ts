@@ -83,7 +83,7 @@ The transport (TCP by default, in-memory in tests) carries:
 Both share the same TCP connection per peer pair.  The framework
 multiplexes them; you don't see this distinction.
 
-See [Transports](/actor-ts/cluster/transports/) for the TCP and
+See [Transports](/cluster/transports/) for the TCP and
 in-memory implementations.
 
 ## Resolving a remote ref by path
@@ -136,13 +136,13 @@ Two ways to detect this:
   `UnreachableMember` for the host's address tells you the
   whole node is gone.
 
-See [Death watch](/actor-ts/fundamentals/death-watch/) for the
+See [Death watch](/fundamentals/death-watch/) for the
 per-actor variant.
 
 ## Serialization
 
 Messages crossing the wire need to be **serializable**.  The
-framework's [SerializationExtension](/actor-ts/serialization/overview/)
+framework's [SerializationExtension](/serialization/overview/)
 handles this — JSON by default, CBOR when configured.
 
 ```ts
@@ -163,7 +163,7 @@ trivially.  Things that don't survive:
   Use plain objects or arrays.
 - **Symbols, BigInts** (without serializer registration).
 
-See [Messages](/actor-ts/fundamentals/messages/) for the immutability
+See [Messages](/fundamentals/messages/) for the immutability
 + wire-format conventions.
 
 ## Performance
@@ -216,17 +216,17 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Cluster overview](/actor-ts/cluster/overview/)** — the
+- **[Cluster overview](/cluster/overview/)** — the
   bigger picture: how nodes find each other, gossip,
   membership.
-- **[Transports](/actor-ts/cluster/transports/)** — TCP and
+- **[Transports](/cluster/transports/)** — TCP and
   in-memory implementations.
-- **[Serialization overview](/actor-ts/serialization/overview/)** —
+- **[Serialization overview](/serialization/overview/)** —
   the wire format for cross-node messages.
-- **[Messages](/actor-ts/fundamentals/messages/)** — the
+- **[Messages](/fundamentals/messages/)** — the
   conventions that make messages serializable.
-- **[Death watch](/actor-ts/fundamentals/death-watch/)** —
+- **[Death watch](/fundamentals/death-watch/)** —
   detecting that a remote actor stopped.
 
-The [`RemoteActorRef`](/actor-ts/api/classes/remoteactorref/) API
+The [`RemoteActorRef`](/api/classes/remoteactorref/) API
 reference covers the wire ref implementation.

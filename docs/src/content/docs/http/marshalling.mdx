@@ -179,7 +179,7 @@ post(async (req) => {
 
 For the cluster-wire serialization (between nodes, not HTTP), the
 `SerializationExtension` is the right hook — see
-[Serialization overview](/actor-ts/serialization/overview/).
+[Serialization overview](/serialization/overview/).
 
 ## Encoding errors
 
@@ -252,7 +252,7 @@ explicitly rather than going through the JSON fallback.
 The framework doesn't currently support streaming response bodies
 in the route DSL — `HttpResponse.body` is materialized in memory
 before write.  For SSE or chunked responses, use the
-[`SseActor`](/actor-ts/io/sse/) or drop down to the backend's
+[`SseActor`](/io/sse/) or drop down to the backend's
 native streaming API.
 
 import { Aside } from '@astrojs/starlight/components';
@@ -279,10 +279,10 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[HTTP overview](/actor-ts/http/overview/)** — the bigger
+- **[HTTP overview](/http/overview/)** — the bigger
   picture: backends, routing, middleware.
-- **[Route DSL](/actor-ts/http/route-dsl/)** — `complete*`,
+- **[Route DSL](/http/route-dsl/)** — `complete*`,
   `reject`, full DSL surface.
-- **[Serialization overview](/actor-ts/serialization/overview/)** —
+- **[Serialization overview](/serialization/overview/)** —
   the framework-internal serialization layer for cluster wire
   format.

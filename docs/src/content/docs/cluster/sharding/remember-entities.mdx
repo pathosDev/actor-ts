@@ -41,7 +41,7 @@ What it does:
   shard region to **re-spawn** them eagerly.
 
 The default store uses the system's
-[Journal](/actor-ts/persistence/overview/), so you get this for
+[Journal](/persistence/overview/), so you get this for
 free when persistence is configured.  Override with
 `rememberEntitiesStore` if you need a different backing store.
 
@@ -49,7 +49,7 @@ free when persistence is configured.  Override with
 
 Just the **identities** of active entities — not their state.
 Entity state is the entity's own responsibility
-([PersistentActor](/actor-ts/persistence/persistent-actor/) journals
+([PersistentActor](/persistence/persistent-actor/) journals
 state changes; remember-entities tracks which IDs to bring back).
 
 Two-store split:
@@ -70,7 +70,7 @@ benefits from being separable.
 
 - The shard a given entity belonged to.  On respawn, allocation
   runs again (per the
-  [allocation strategy](/actor-ts/cluster/sharding/allocation-strategy/)).
+  [allocation strategy](/cluster/sharding/allocation-strategy/)).
 - The entity's **state**.  If you want state to survive, the
   entity must persist it itself via `PersistentActor` or external
   storage.
@@ -216,12 +216,12 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Sharding overview](/actor-ts/cluster/sharding/overview/)** —
+- **[Sharding overview](/cluster/sharding/overview/)** —
   the bigger picture.
-- **[Rebalance](/actor-ts/cluster/sharding/rebalance/)** — what
+- **[Rebalance](/cluster/sharding/rebalance/)** — what
   happens when remembered entities move.
-- **[PersistentActor](/actor-ts/persistence/persistent-actor/)** —
+- **[PersistentActor](/persistence/persistent-actor/)** —
   for the entity's *state* recovery (orthogonal to
   remember-entities).
-- **[Journals](/actor-ts/persistence/journals/in-memory/)** — the
+- **[Journals](/persistence/journals/in-memory/)** — the
   default backing store.

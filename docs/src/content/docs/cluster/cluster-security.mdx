@@ -10,7 +10,7 @@ multi-tenant K8s, untrusted intermediaries.
 
 This page is the **how-to** for securing the cluster transport.
 For the operational context, see
-[Operations — Cluster security](/actor-ts/operations/security/cluster-security/).
+[Operations — Cluster security](/operations/security/cluster-security/).
 
 ## What needs securing
 
@@ -143,7 +143,7 @@ spec:
               key: cluster-secret
       volumeMounts:
         - name: tls
-          mountPath: /etc/actor-ts/tls
+          mountPath: /etc/tls
           readOnly: true
   volumes:
     - name: tls
@@ -216,11 +216,11 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Operations — Cluster security](/actor-ts/operations/security/cluster-security/)** —
+- **[Operations — Cluster security](/operations/security/cluster-security/)** —
   operational walk-through.
-- **[TLS everywhere](/actor-ts/operations/security/tls-everywhere/)** —
+- **[TLS everywhere](/operations/security/tls-everywhere/)** —
   TLS across other components.
-- **[Transports](/actor-ts/cluster/transports/)** — the cluster
+- **[Transports](/cluster/transports/)** — the cluster
   transport interface.
-- **[Configuration](/actor-ts/reference/configuration/)** — the
+- **[Configuration](/reference/configuration/)** — the
   TLS HOCON keys.

@@ -99,7 +99,7 @@ What the cluster *does* with that:
 | --- | --- |
 | `healthy` | Normal routing.  No effect. |
 | `unreachable` | Mark the member `unreachable` in the membership table.  Routers skip them; sharding doesn't allocate new shards to them.  Singleton manager won't elect a leader from an unreachable side. |
-| `down` | Trigger downing.  If a [downing strategy](/actor-ts/cluster/downing-strategies/) is configured, it decides which addresses to forcibly evict; the cluster announces those nodes as `removed`. |
+| `down` | Trigger downing.  If a [downing strategy](/cluster/downing-strategies/) is configured, it decides which addresses to forcibly evict; the cluster announces those nodes as `removed`. |
 
 **Crucially:** the detector deciding `down` doesn't automatically
 remove the peer.  Removal goes through the downing strategy — the
@@ -187,16 +187,16 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Cluster overview](/actor-ts/cluster/overview/)** — the
+- **[Cluster overview](/cluster/overview/)** — the
   membership state machine the detector feeds.
-- **[Downing strategies](/actor-ts/cluster/downing-strategies/)** —
+- **[Downing strategies](/cluster/downing-strategies/)** —
   what happens *after* the detector decides `down`.
-- **[Joining and seeds](/actor-ts/cluster/joining-and-seeds/)** —
+- **[Joining and seeds](/cluster/joining-and-seeds/)** —
   how peers first appear in the membership table.
-- **[Configuration](/actor-ts/reference/configuration/)** — the
+- **[Configuration](/reference/configuration/)** — the
   HOCON keys (`actor-ts.cluster.failure-detector.*`).
-- **[Failure-detector tuning](/actor-ts/operations/tuning/failure-detector/)** —
+- **[Failure-detector tuning](/operations/tuning/failure-detector/)** —
   the operations-focused tuning page.
 
-The [`FailureDetector`](/actor-ts/api/classes/failuredetector/) API
+The [`FailureDetector`](/api/classes/failuredetector/) API
 reference covers the full surface.

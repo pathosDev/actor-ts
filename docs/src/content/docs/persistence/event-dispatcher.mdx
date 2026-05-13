@@ -96,7 +96,7 @@ The issue:
 - **TypeScript would catch this if you `assertNever`** at the
   end, but it's manual and easy to forget.
 - **ts-pattern's `.exhaustive()`** works too — see
-  [Pattern matching](/actor-ts/fundamentals/pattern-matching/) —
+  [Pattern matching](/fundamentals/pattern-matching/) —
   but it's a runtime check inside the function.
 
 `eventDispatcher` makes the check **compile-time only** — the
@@ -168,12 +168,12 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[PersistentActor](/actor-ts/persistence/persistent-actor/)** —
+- **[PersistentActor](/persistence/persistent-actor/)** —
   where the dispatcher slots into `onEvent`.
-- **[Pattern matching](/actor-ts/fundamentals/pattern-matching/)** —
+- **[Pattern matching](/fundamentals/pattern-matching/)** —
   the ts-pattern alternative for runtime exhaustiveness.
-- **[Messages](/actor-ts/fundamentals/messages/)** — the
+- **[Messages](/fundamentals/messages/)** — the
   `kind`-tagged discriminated-union convention.
 
-The [`eventDispatcher`](/actor-ts/api/functions/eventdispatcher/)
+The [`eventDispatcher`](/api/functions/eventdispatcher/)
 API reference covers the full builder.

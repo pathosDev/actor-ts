@@ -50,8 +50,8 @@ Two production scenarios:
 
 | Scenario | Why a lease helps |
 | --- | --- |
-| **Cluster singleton** | Prevents dual-leadership during partition.  See [Singleton with lease](/actor-ts/cluster/singleton/with-lease/). |
-| **Sharding coordinator** | Prevents two coordinators making conflicting allocations.  See [Sharding with lease](/actor-ts/cluster/sharding/with-lease/). |
+| **Cluster singleton** | Prevents dual-leadership during partition.  See [Singleton with lease](/cluster/singleton/with-lease/). |
+| **Sharding coordinator** | Prevents two coordinators making conflicting allocations.  See [Sharding with lease](/cluster/sharding/with-lease/). |
 
 For most clusters, a **downing strategy** is enough.  Leases are
 the **paranoid-safe** option:
@@ -116,8 +116,8 @@ interface LeaseSettings {
 
 | Backend | Use |
 | --- | --- |
-| [`InMemoryLease`](/actor-ts/coordination/in-memory-lease/) | Tests and dev.  In-process; not actually distributed. |
-| [`KubernetesLease`](/actor-ts/coordination/kubernetes-lease/) | Production on K8s.  Uses K8s native Lease CRDs. |
+| [`InMemoryLease`](/coordination/in-memory-lease/) | Tests and dev.  In-process; not actually distributed. |
+| [`KubernetesLease`](/coordination/kubernetes-lease/) | Production on K8s.  Uses K8s native Lease CRDs. |
 
 For non-K8s production deployments, you'd implement the `Lease`
 interface against your coordination service (etcd, Consul,
@@ -186,13 +186,13 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Lease API](/actor-ts/coordination/lease-api/)** — the full
+- **[Lease API](/coordination/lease-api/)** — the full
   interface contract.
-- **[InMemoryLease](/actor-ts/coordination/in-memory-lease/)** —
+- **[InMemoryLease](/coordination/in-memory-lease/)** —
   the dev / test backend.
-- **[KubernetesLease](/actor-ts/coordination/kubernetes-lease/)** —
+- **[KubernetesLease](/coordination/kubernetes-lease/)** —
   the K8s-native production backend.
-- **[Singleton with lease](/actor-ts/cluster/singleton/with-lease/)** —
+- **[Singleton with lease](/cluster/singleton/with-lease/)** —
   using a lease for singleton uniqueness.
-- **[Downing strategies](/actor-ts/cluster/downing-strategies/)** —
+- **[Downing strategies](/cluster/downing-strategies/)** —
   the complementary partition resolver.

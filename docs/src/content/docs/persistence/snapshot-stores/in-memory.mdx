@@ -5,7 +5,7 @@ description: The reference snapshot-store implementation — backed by an in-pro
 
 `InMemorySnapshotStore` keeps snapshots in a `Map<persistenceId,
 Snapshot[]>` in process memory.  Like
-[`InMemoryJournal`](/actor-ts/persistence/journals/in-memory/),
+[`InMemoryJournal`](/persistence/journals/in-memory/),
 it's the **default** when no snapshot store is configured —
 zero setup, ideal for tests, **never use in production**.
 
@@ -62,9 +62,9 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Snapshots](/actor-ts/persistence/snapshots/)** — the
+- **[Snapshots](/persistence/snapshots/)** — the
   policy / mechanics.
-- **[SQLite snapshot store](/actor-ts/persistence/snapshot-stores/sqlite/)** —
+- **[SQLite snapshot store](/persistence/snapshot-stores/sqlite/)** —
   single-node production.
-- **[Cached snapshot store](/actor-ts/persistence/snapshot-stores/cached-snapshot-store/)** —
+- **[Cached snapshot store](/persistence/snapshot-stores/cached-snapshot-store/)** —
   wrap any store with an in-process cache.

@@ -45,9 +45,9 @@ in its own page.
 
 | How | When |
 | --- | --- |
-| **[Kubernetes](/actor-ts/operations/deployment/kubernetes/)** | Cloud + container orchestration.  StatefulSets, headless services, RBAC for the K8s API seed provider. |
-| **[Docker Compose](/actor-ts/operations/deployment/docker-compose/)** | Local multi-node clusters for testing and small deployments. |
-| **[Process manager](/actor-ts/operations/deployment/process-manager/)** | systemd / PM2 — for bare-metal or VM deployments. |
+| **[Kubernetes](/operations/deployment/kubernetes/)** | Cloud + container orchestration.  StatefulSets, headless services, RBAC for the K8s API seed provider. |
+| **[Docker Compose](/operations/deployment/docker-compose/)** | Local multi-node clusters for testing and small deployments. |
+| **[Process manager](/operations/deployment/process-manager/)** | systemd / PM2 — for bare-metal or VM deployments. |
 
 K8s is the most common production path; the page covers Deployment
 vs StatefulSet, PreStop hooks, and the seed-provider configuration.
@@ -59,10 +59,10 @@ you see specific symptoms:
 
 | Knob | When to tune |
 | --- | --- |
-| **[Gossip cadence](/actor-ts/operations/tuning/gossip-cadence/)** | Large clusters (>20 nodes) where the default 1-second gossip is wasteful, or small clusters where you want faster convergence. |
-| **[Failure detector](/actor-ts/operations/tuning/failure-detector/)** | Tight networks (LAN) where 2-second unreachable detection is too slow, or noisy networks where it triggers false alarms. |
-| **[Mailbox sizing](/actor-ts/operations/tuning/mailbox-sizing/)** | When you see memory growth from unbounded mailboxes, or when bounded mailboxes are dropping more than expected. |
-| **[Dispatcher tuning](/actor-ts/operations/tuning/dispatcher-tuning/)** | When you observe HTTP latency degradation under actor-heavy load, or low CPU utilization with high actor throughput. |
+| **[Gossip cadence](/operations/tuning/gossip-cadence/)** | Large clusters (>20 nodes) where the default 1-second gossip is wasteful, or small clusters where you want faster convergence. |
+| **[Failure detector](/operations/tuning/failure-detector/)** | Tight networks (LAN) where 2-second unreachable detection is too slow, or noisy networks where it triggers false alarms. |
+| **[Mailbox sizing](/operations/tuning/mailbox-sizing/)** | When you see memory growth from unbounded mailboxes, or when bounded mailboxes are dropping more than expected. |
+| **[Dispatcher tuning](/operations/tuning/dispatcher-tuning/)** | When you observe HTTP latency degradation under actor-heavy load, or low CPU utilization with high actor throughput. |
 
 If you can't articulate the symptom, don't tune.  Defaults aren't
 optimal but they're rarely *bad*.
@@ -73,9 +73,9 @@ Three layers:
 
 | Concern | Page |
 | --- | --- |
-| **Cluster transport TLS + auth** | [Cluster security](/actor-ts/operations/security/cluster-security/) |
-| **Encryption at rest for persisted data** | [Master key rotation](/actor-ts/operations/security/master-key-rotation/) |
-| **TLS everywhere** (HTTP, brokers, journals) | [TLS everywhere](/actor-ts/operations/security/tls-everywhere/) |
+| **Cluster transport TLS + auth** | [Cluster security](/operations/security/cluster-security/) |
+| **Encryption at rest for persisted data** | [Master key rotation](/operations/security/master-key-rotation/) |
+| **TLS everywhere** (HTTP, brokers, journals) | [TLS everywhere](/operations/security/tls-everywhere/) |
 
 The cluster transport defaults to **unauthenticated TCP** — fine
 inside a private network, dangerous on the public internet.
@@ -90,11 +90,11 @@ when configured for it.  Two distinct concerns:
 - **Code rollouts** — replacing node binaries while the cluster
   stays up.  Handled by K8s rolling updates + coordinated
   shutdown.  See
-  [Rolling migration](/actor-ts/operations/upgrades/rolling-migration/).
+  [Rolling migration](/operations/upgrades/rolling-migration/).
 - **Schema migrations** — evolving event/state shapes over time.
   Handled by event adapters + envelope versioning.  See
-  [Upgrade strategies](/actor-ts/operations/upgrades/upgrade-strategies/)
-  and [Persistence migration overview](/actor-ts/persistence/migration/overview/).
+  [Upgrade strategies](/operations/upgrades/upgrade-strategies/)
+  and [Persistence migration overview](/persistence/migration/overview/).
 
 The rolling-migration page is the most practical — a step-by-step
 recipe for "I need to add a field to my event without taking the
@@ -113,7 +113,7 @@ Tests hang at the end              → Forgot await system.terminate()
 Memory grows unboundedly           → Unbounded mailboxes; pick a mailbox cap
 ```
 
-See [Troubleshooting](/actor-ts/operations/troubleshooting/) for
+See [Troubleshooting](/operations/troubleshooting/) for
 the diagnostic-by-symptom catalog.
 
 ## When things go wrong
@@ -125,7 +125,7 @@ import { Aside } from '@astrojs/starlight/components';
   is logged.  With `LogContext` MDC (correlation IDs propagating
   across `tell`), a multi-actor request trail stitches together in
   one log query.  Configure structured logging from day one — see
-  [Logging](/actor-ts/fundamentals/logging/).
+  [Logging](/fundamentals/logging/).
 </Aside>
 
 <Aside type="caution" title="The second place is metrics">
@@ -133,7 +133,7 @@ import { Aside } from '@astrojs/starlight/components';
   member count, sharding region count — enough to identify
   "something is off" before users notice.  Wire a Prometheus
   exporter in production.  See
-  [Stock metrics](/actor-ts/observability/metrics/stock-metrics/).
+  [Stock metrics](/observability/metrics/stock-metrics/).
 </Aside>
 
 <Aside type="caution" title="The third place is traces">
@@ -146,28 +146,28 @@ import { Aside } from '@astrojs/starlight/components';
 
 ### Deployment
 
-- [Kubernetes](/actor-ts/operations/deployment/kubernetes/)
-- [Docker Compose](/actor-ts/operations/deployment/docker-compose/)
-- [Process manager](/actor-ts/operations/deployment/process-manager/)
+- [Kubernetes](/operations/deployment/kubernetes/)
+- [Docker Compose](/operations/deployment/docker-compose/)
+- [Process manager](/operations/deployment/process-manager/)
 
 ### Tuning
 
-- [Gossip cadence](/actor-ts/operations/tuning/gossip-cadence/)
-- [Failure detector](/actor-ts/operations/tuning/failure-detector/)
-- [Mailbox sizing](/actor-ts/operations/tuning/mailbox-sizing/)
-- [Dispatcher tuning](/actor-ts/operations/tuning/dispatcher-tuning/)
+- [Gossip cadence](/operations/tuning/gossip-cadence/)
+- [Failure detector](/operations/tuning/failure-detector/)
+- [Mailbox sizing](/operations/tuning/mailbox-sizing/)
+- [Dispatcher tuning](/operations/tuning/dispatcher-tuning/)
 
 ### Security
 
-- [Cluster security](/actor-ts/operations/security/cluster-security/)
-- [Master key rotation](/actor-ts/operations/security/master-key-rotation/)
-- [TLS everywhere](/actor-ts/operations/security/tls-everywhere/)
+- [Cluster security](/operations/security/cluster-security/)
+- [Master key rotation](/operations/security/master-key-rotation/)
+- [TLS everywhere](/operations/security/tls-everywhere/)
 
 ### Upgrades
 
-- [Rolling migration](/actor-ts/operations/upgrades/rolling-migration/)
-- [Upgrade strategies](/actor-ts/operations/upgrades/upgrade-strategies/)
+- [Rolling migration](/operations/upgrades/rolling-migration/)
+- [Upgrade strategies](/operations/upgrades/upgrade-strategies/)
 
 ### Diagnostics
 
-- [Troubleshooting](/actor-ts/operations/troubleshooting/)
+- [Troubleshooting](/operations/troubleshooting/)

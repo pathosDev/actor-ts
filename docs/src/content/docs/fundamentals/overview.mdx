@@ -47,36 +47,36 @@ flowchart TB
 Each box maps to one or two pages:
 
 - The **ActorSystem** box itself —
-  [Actor system](/actor-ts/fundamentals/actor-system/).
+  [Actor system](/fundamentals/actor-system/).
 - Every **Actor** —
-  [Actor](/actor-ts/fundamentals/actor/) (the class) +
-  [Props](/actor-ts/fundamentals/props/) (how to construct it).
+  [Actor](/fundamentals/actor/) (the class) +
+  [Props](/fundamentals/props/) (how to construct it).
 - The **mailbox** —
-  [Mailboxes](/actor-ts/fundamentals/mailboxes/).
+  [Mailboxes](/fundamentals/mailboxes/).
 - The **tell** arrow —
-  [Messages](/actor-ts/fundamentals/messages/).
+  [Messages](/fundamentals/messages/).
 - The **onReceive** loop's scheduling —
-  [Dispatchers](/actor-ts/fundamentals/dispatchers/).
+  [Dispatchers](/fundamentals/dispatchers/).
 - The **context.*** that the actor uses —
-  [Become and stash](/actor-ts/fundamentals/become-and-stash/),
-  [Death watch](/actor-ts/fundamentals/death-watch/),
-  [Timers and scheduling](/actor-ts/fundamentals/timers-and-scheduling/),
-  [Receive timeout](/actor-ts/fundamentals/receive-timeout/),
-  [Logging](/actor-ts/fundamentals/logging/).
+  [Become and stash](/fundamentals/become-and-stash/),
+  [Death watch](/fundamentals/death-watch/),
+  [Timers and scheduling](/fundamentals/timers-and-scheduling/),
+  [Receive timeout](/fundamentals/receive-timeout/),
+  [Logging](/fundamentals/logging/).
 - The **parent-child** relationship's failure handling —
-  [Supervision](/actor-ts/fundamentals/supervision/).
+  [Supervision](/fundamentals/supervision/).
 - The **path** that names every actor —
-  [Actor paths](/actor-ts/fundamentals/actor-paths/).
+  [Actor paths](/fundamentals/actor-paths/).
 - System-wide pub/sub on the side —
-  [Event stream](/actor-ts/fundamentals/event-stream/).
+  [Event stream](/fundamentals/event-stream/).
 - Termination signals from outside —
-  [Poison pill and Kill](/actor-ts/fundamentals/poison-pill-and-kill/).
+  [Poison pill and Kill](/fundamentals/poison-pill-and-kill/).
 - Whole-system graceful shutdown —
-  [Coordinated shutdown](/actor-ts/fundamentals/coordinated-shutdown/).
+  [Coordinated shutdown](/fundamentals/coordinated-shutdown/).
 - Request/reply on top of `tell` —
-  [Ask pattern](/actor-ts/fundamentals/ask-pattern/).
+  [Ask pattern](/fundamentals/ask-pattern/).
 - The match-on-`kind` idiom every page uses —
-  [Pattern matching](/actor-ts/fundamentals/pattern-matching/).
+  [Pattern matching](/fundamentals/pattern-matching/).
 
 That's the lot.  About twenty pages, each ~250-400 lines, each
 zooming in on one slice.
@@ -89,14 +89,14 @@ Three reasonable paths:
 
 For developers who want to start coding immediately:
 
-1. [Actor](/actor-ts/fundamentals/actor/) — the class.
-2. [Messages](/actor-ts/fundamentals/messages/) — the
+1. [Actor](/fundamentals/actor/) — the class.
+2. [Messages](/fundamentals/messages/) — the
    discriminated-union convention.
-3. [Pattern matching](/actor-ts/fundamentals/pattern-matching/) —
+3. [Pattern matching](/fundamentals/pattern-matching/) —
    the `match().exhaustive()` idiom.
-4. [Actor system](/actor-ts/fundamentals/actor-system/) — how to
+4. [Actor system](/fundamentals/actor-system/) — how to
    spawn the actor.
-5. [Ask pattern](/actor-ts/fundamentals/ask-pattern/) — how to
+5. [Ask pattern](/fundamentals/ask-pattern/) — how to
    read replies.
 
 That's ~1 hour of reading, after which you can write a working
@@ -106,16 +106,16 @@ toy app.
 
 For developers wanting the conceptual picture before writing code:
 
-1. [Actor system](/actor-ts/fundamentals/actor-system/) — the
+1. [Actor system](/fundamentals/actor-system/) — the
    container.
-2. [Actor](/actor-ts/fundamentals/actor/) — the entity.
-3. [Mailboxes](/actor-ts/fundamentals/mailboxes/) +
-   [Dispatchers](/actor-ts/fundamentals/dispatchers/) — what makes
+2. [Actor](/fundamentals/actor/) — the entity.
+3. [Mailboxes](/fundamentals/mailboxes/) +
+   [Dispatchers](/fundamentals/dispatchers/) — what makes
    one-at-a-time work.
-4. [Supervision](/actor-ts/fundamentals/supervision/) +
-   [Death watch](/actor-ts/fundamentals/death-watch/) — the
+4. [Supervision](/fundamentals/supervision/) +
+   [Death watch](/fundamentals/death-watch/) — the
    "let it crash" philosophy.
-5. [Coordinated shutdown](/actor-ts/fundamentals/coordinated-shutdown/) —
+5. [Coordinated shutdown](/fundamentals/coordinated-shutdown/) —
    how systems end gracefully.
 
 After this, the rest is filling in details.
@@ -125,17 +125,17 @@ After this, the rest is filling in details.
 For developers migrating from another runtime model
 (Promise/await soup, worker threads, BullMQ-style queues):
 
-1. [Why actors](/actor-ts/intro/why-actors/) — the rationale.
-2. [Messages](/actor-ts/fundamentals/messages/) — replacing
+1. [Why actors](/intro/why-actors/) — the rationale.
+2. [Messages](/fundamentals/messages/) — replacing
    methods.
-3. [Actor](/actor-ts/fundamentals/actor/) — replacing classes
+3. [Actor](/fundamentals/actor/) — replacing classes
    with shared state.
-4. [Supervision](/actor-ts/fundamentals/supervision/) — replacing
+4. [Supervision](/fundamentals/supervision/) — replacing
    try/catch with let-it-crash.
-5. [Ask pattern](/actor-ts/fundamentals/ask-pattern/) — bridging
+5. [Ask pattern](/fundamentals/ask-pattern/) — bridging
    `await` callers with actor-internal flows.
 
-And then on to the [Migration guides](/actor-ts/migration/overview/)
+And then on to the [Migration guides](/migration/overview/)
 for the specific framework comparison.
 
 ## The shape every concept-page follows
@@ -159,16 +159,16 @@ across all pages is the single best resource if you're debugging.
 Once these pages are familiar, the rest of the site builds on
 them:
 
-- **[Typed](/actor-ts/typed/overview/)** — a stricter, typed-by-default
+- **[Typed](/typed/overview/)** — a stricter, typed-by-default
   API for the same model.
-- **[Routing](/actor-ts/routing/overview/)** — fan-out across
+- **[Routing](/routing/overview/)** — fan-out across
   multiple actors with load-balancing strategies.
-- **[Patterns](/actor-ts/patterns/circuit-breaker/)** — reusable
+- **[Patterns](/patterns/circuit-breaker/)** — reusable
   building blocks (circuit breakers, retry helpers, backoff
   supervisors).
-- **[Cluster](/actor-ts/cluster/overview/)** — going from one node
+- **[Cluster](/cluster/overview/)** — going from one node
   to many.
-- **[Persistence](/actor-ts/persistence/overview/)** — making actor
+- **[Persistence](/persistence/overview/)** — making actor
   state survive restarts.
 
 Each of those sections has its own overview page following the
@@ -178,7 +178,7 @@ same pattern.
 
 If you've read this far and just want to write something:
 
-- **[Quickstart](/actor-ts/intro/quickstart/)** — a working hello-actor
+- **[Quickstart](/intro/quickstart/)** — a working hello-actor
   in 5 minutes.
-- **[Actor](/actor-ts/fundamentals/actor/)** — the foundational
+- **[Actor](/fundamentals/actor/)** — the foundational
   page for everything else.

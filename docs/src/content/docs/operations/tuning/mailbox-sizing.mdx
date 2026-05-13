@@ -6,7 +6,7 @@ description: When to use bounded vs unbounded mailboxes, how to pick capacity, a
 The default actor mailbox is **unbounded** — an actor's queue
 can grow without limit if the producer outpaces the consumer.
 For most actors that's fine.  When it's not, you reach for
-[bounded mailboxes](/actor-ts/fundamentals/mailboxes/).
+[bounded mailboxes](/fundamentals/mailboxes/).
 
 This page is the **decision guide** for production mailbox
 sizing.
@@ -111,7 +111,7 @@ If not, reduce capacity or accept that producers will see
 ## Reading the metrics
 
 Stock metrics
-([Stock metrics](/actor-ts/observability/metrics/stock-metrics/))
+([Stock metrics](/observability/metrics/stock-metrics/))
 expose mailbox depth:
 
 ```
@@ -167,7 +167,7 @@ Use for:
 - **HTTP responses** (urgent) vs **batch jobs** (deferrable).
 - **Health pings** vs **bulk metrics**.
 
-See [Mailboxes](/actor-ts/fundamentals/mailboxes/) for the full
+See [Mailboxes](/fundamentals/mailboxes/) for the full
 PriorityMailbox surface.
 
 ## Mailbox + backpressure design
@@ -221,11 +221,11 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Mailboxes](/actor-ts/fundamentals/mailboxes/)** — the
+- **[Mailboxes](/fundamentals/mailboxes/)** — the
   conceptual reference.
-- **[Stock metrics](/actor-ts/observability/metrics/stock-metrics/)** —
+- **[Stock metrics](/observability/metrics/stock-metrics/)** —
   the mailbox-depth + drop metrics.
-- **[Dispatcher tuning](/actor-ts/operations/tuning/dispatcher-tuning/)** —
+- **[Dispatcher tuning](/operations/tuning/dispatcher-tuning/)** —
   the complementary knob.
-- **[Backoff supervisor](/actor-ts/patterns/backoff-supervisor/)** —
+- **[Backoff supervisor](/patterns/backoff-supervisor/)** —
   for stash-on-fail with bounded buffer.

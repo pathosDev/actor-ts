@@ -57,7 +57,7 @@ interface KafkaActorSettings extends BrokerCommonSettings {
 ```
 
 The `BrokerCommonSettings` parent gives you reconnect, buffer,
-breaker — see [BrokerActor base](/actor-ts/io/broker-actor-base/).
+breaker — see [BrokerActor base](/io/broker-actor-base/).
 
 ## Producing
 
@@ -168,7 +168,7 @@ Three primary use cases:
    actor-ts to a system already using Kafka.
 
 For in-cluster pub/sub, prefer
-[DistributedPubSub](/actor-ts/cluster/pubsub/) — no broker
+[DistributedPubSub](/cluster/pubsub/) — no broker
 dependency.
 
 import { Aside } from '@astrojs/starlight/components';
@@ -194,11 +194,11 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[I/O overview](/actor-ts/io/overview/)** — the bigger
+- **[I/O overview](/io/overview/)** — the bigger
   picture.
-- **[BrokerActor base](/actor-ts/io/broker-actor-base/)** — the
+- **[BrokerActor base](/io/broker-actor-base/)** — the
   shared lifecycle.
-- **[DistributedPubSub](/actor-ts/cluster/pubsub/)** — in-cluster
+- **[DistributedPubSub](/cluster/pubsub/)** — in-cluster
   alternative when you don't need Kafka.
-- **[NATS](/actor-ts/io/nats/)** / **[MQTT](/actor-ts/io/mqtt/)** —
+- **[NATS](/io/nats/)** / **[MQTT](/io/mqtt/)** —
   alternative brokers.

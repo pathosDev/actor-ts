@@ -62,7 +62,7 @@ actor-ts://<system>/user/singleton-manager-<typeName>
 
 Hence the actor name `'singleton-manager-job-scheduler'` above
 when `typeName = 'job-scheduler'`.  The
-[ClusterSingletonProxy](/actor-ts/cluster/singleton/overview/) uses
+[ClusterSingletonProxy](/cluster/singleton/overview/) uses
 this path convention to find the manager on whichever node is
 currently leader.
 
@@ -125,7 +125,7 @@ The framework uses **internal events** (no inline awaits) for
 state transitions, so concurrent cluster events can't interleave
 with an in-flight acquire.
 
-See [Singleton with lease](/actor-ts/cluster/singleton/with-lease/)
+See [Singleton with lease](/cluster/singleton/with-lease/)
 for the configuration and lease-impl choices.
 
 ### Lease lost
@@ -170,7 +170,7 @@ When the manager itself fails (which is rare), its supervisor
 
 The old singleton's state is **lost** unless it persists itself.
 For stateful singletons, use
-[PersistentActor](/actor-ts/persistence/persistent-actor/).
+[PersistentActor](/persistence/persistent-actor/).
 
 ## When you'd interact with the manager directly
 
@@ -238,14 +238,14 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Singleton overview](/actor-ts/cluster/singleton/overview/)** —
+- **[Singleton overview](/cluster/singleton/overview/)** —
   the bigger picture: proxy + manager + singleton.
-- **[Singleton with lease](/actor-ts/cluster/singleton/with-lease/)** —
+- **[Singleton with lease](/cluster/singleton/with-lease/)** —
   split-brain protection details.
-- **[Coordination](/actor-ts/coordination/overview/)** — the
+- **[Coordination](/coordination/overview/)** — the
   lease abstraction.
-- **[Cluster overview](/actor-ts/cluster/overview/)** — how
+- **[Cluster overview](/cluster/overview/)** — how
   leader election works at the cluster level.
 
-The [`ClusterSingletonManager`](/actor-ts/api/classes/clustersingletonmanager/)
+The [`ClusterSingletonManager`](/api/classes/clustersingletonmanager/)
 API reference covers all message types and settings.

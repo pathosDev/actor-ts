@@ -12,7 +12,7 @@ import { Aside } from '@astrojs/starlight/components';
 The framework is **pre-1.0**.  The API surface is stable enough
 that we use it in real applications, but **expect breaking
 changes** until 1.0 ships.  See
-[Version policy](/actor-ts/reference/version-policy/).
+[Version policy](/reference/version-policy/).
 
 What that means in practice:
 
@@ -70,7 +70,7 @@ Both work; both run on the same engine.  Pick:
   Effect.
 
 You can mix them — typed parents spawn untyped children and vice
-versa.  See [Typed overview](/actor-ts/typed/overview/).
+versa.  See [Typed overview](/typed/overview/).
 
 ### `tell`, `ask`, or `pipeTo`?
 
@@ -83,8 +83,8 @@ versa.  See [Typed overview](/actor-ts/typed/overview/).
   in an actor's mailbox.  The non-blocking alternative to
   `await` inside `onReceive`.
 
-See [Ask pattern](/actor-ts/fundamentals/ask-pattern/) and
-[Future patterns](/actor-ts/patterns/futures-patterns/).
+See [Ask pattern](/fundamentals/ask-pattern/) and
+[Future patterns](/patterns/futures-patterns/).
 
 ### PersistentActor or DurableStateActor?
 
@@ -97,7 +97,7 @@ Pick by whether you need **history**:
   overwriting on each update.  Use when the current value is all
   you need.
 
-See [Persistence overview](/actor-ts/persistence/overview/).
+See [Persistence overview](/persistence/overview/).
 
 ### Singleton, Sharding, or DistributedData?
 
@@ -108,7 +108,7 @@ See [Persistence overview](/actor-ts/persistence/overview/).
 - **DistributedData** — eventually-consistent shared state via
   CRDTs.  Counters, flags, sets that everyone reads and writes.
 
-See the [Distribution overviews](/actor-ts/cluster/overview/).
+See the [Distribution overviews](/cluster/overview/).
 
 ## Performance
 
@@ -172,9 +172,9 @@ Compose setup.
 Two layers:
 
 - **Downing strategies** that force a winner during partition.
-  See [Downing strategies](/actor-ts/cluster/downing-strategies/).
+  See [Downing strategies](/cluster/downing-strategies/).
 - **Optional leases** for sharding coordinator and singletons.
-  See [Singleton with lease](/actor-ts/cluster/singleton/with-lease/).
+  See [Singleton with lease](/cluster/singleton/with-lease/).
 
 Without a downing strategy, the default behavior is "wait
 indefinitely" — operators must down nodes manually.  Pick one for
@@ -184,10 +184,10 @@ production.
 
 Yes — the `kubernetes-api` seed provider lists pods matching a
 label selector and uses them as seeds.  See
-[Discovery — Kubernetes API](/actor-ts/discovery/seed-providers/kubernetes-api/).
+[Discovery — Kubernetes API](/discovery/seed-providers/kubernetes-api/).
 
 For lease-based singletons in K8s, the
-[Kubernetes lease](/actor-ts/coordination/kubernetes-lease/)
+[Kubernetes lease](/coordination/kubernetes-lease/)
 implementation uses K8s native Lease CRDs.
 
 ## Persistence
@@ -202,8 +202,8 @@ implementation uses K8s native Lease CRDs.
 - **Custom** when none of these fit — implement the `Journal`
   interface against your storage.
 
-See [Journals — In-memory](/actor-ts/persistence/journals/in-memory/)
-and [SQLite](/actor-ts/persistence/journals/sqlite/).
+See [Journals — In-memory](/persistence/journals/in-memory/)
+and [SQLite](/persistence/journals/sqlite/).
 
 ### How do I evolve event schemas?
 
@@ -212,7 +212,7 @@ envelope (`{ _v, _t, _e }`); the adapter's `upcast(stored,
 version)` is called on read to migrate older versions to the
 current shape.
 
-See [Migration overview](/actor-ts/persistence/migration/overview/).
+See [Migration overview](/persistence/migration/overview/).
 
 ### Are projections delivered exactly-once?
 
@@ -223,7 +223,7 @@ re-process N on restart.  In that sense, **at-least-once**.
 For exactly-once semantics, the projection must be idempotent
 (use the event's seqNr as a dedup key) or transactional (commit
 the view + offset atomically).  See
-[Projections](/actor-ts/persistence/projections/).
+[Projections](/persistence/projections/).
 
 ## Runtime + tooling
 
@@ -242,7 +242,7 @@ check.
 
 You're not *required* to use ts-pattern in your own code; plain
 `if/else` ladders work fine.  See
-[Pattern matching](/actor-ts/fundamentals/pattern-matching/).
+[Pattern matching](/fundamentals/pattern-matching/).
 
 ### Bun vs Node — which should I pick?
 
@@ -256,7 +256,7 @@ feature surface is identical.
 **Deno** is supported but receives less testing — file a bug if
 you hit a Deno-specific issue.
 
-See [Runtime — Compatibility matrix](/actor-ts/runtime/compatibility-matrix/).
+See [Runtime — Compatibility matrix](/runtime/compatibility-matrix/).
 
 ## Debugging
 
@@ -327,7 +327,7 @@ port that picks the most-useful 80%.
 Orleans actors are **virtual** — addressed by ID, auto-spawned on
 first message, auto-passivated when idle.  actor-ts sharding is
 the closest analog (see
-[Sharding overview](/actor-ts/cluster/sharding/overview/)).
+[Sharding overview](/cluster/sharding/overview/)).
 Differences:
 
 - Sharding entities are *not* virtual by default — they're
@@ -336,13 +336,13 @@ Differences:
   grains, but the placement strategy is hash-mod-region by
   default, not Orleans's directory-based.
 
-Migration guide: [from-orleans](/actor-ts/migration/from-orleans/).
+Migration guide: [from-orleans](/migration/from-orleans/).
 
 ## Where to next
 
-- **[Glossary](/actor-ts/reference/glossary/)** — terms used
+- **[Glossary](/reference/glossary/)** — terms used
   throughout the docs.
-- **[Version policy](/actor-ts/reference/version-policy/)** —
+- **[Version policy](/reference/version-policy/)** —
   what's stable, experimental, or planned.
-- **[Configuration](/actor-ts/reference/configuration/)** — every
+- **[Configuration](/reference/configuration/)** — every
   HOCON key.

@@ -108,19 +108,19 @@ The same file runs unchanged under `bun run`, `node` and `deno run`.
 
 ## Documentation
 
-> 📚 **[pathosDev.github.io/actor-ts](https://pathosDev.github.io/actor-ts/)** —
+> 📚 **[actor-ts.dev](https://actor-ts.dev/)** —
 > full documentation site with concept guides, runnable examples, and an
 > auto-generated API reference.
 
 The docs site is the canonical entry point.  Highlights:
 
-- **[Quickstart](https://pathosDev.github.io/actor-ts/intro/quickstart/)** —
+- **[Quickstart](https://actor-ts.dev/intro/quickstart/)** —
   hello-actor in five minutes.
-- **[Why actors?](https://pathosDev.github.io/actor-ts/intro/why-actors/)** —
+- **[Why actors?](https://actor-ts.dev/intro/why-actors/)** —
   what the actor model gives you that Promise/Worker code doesn't.
-- **[Migrating from Akka / Pekko / Orleans](https://pathosDev.github.io/actor-ts/migration/overview/)** —
+- **[Migrating from Akka / Pekko / Orleans](https://actor-ts.dev/migration/overview/)** —
   for people coming from another actor framework.
-- **[API reference](https://pathosDev.github.io/actor-ts/api/)** —
+- **[API reference](https://actor-ts.dev/api/)** —
   every public class, function, type generated from JSDoc.
 
 ---

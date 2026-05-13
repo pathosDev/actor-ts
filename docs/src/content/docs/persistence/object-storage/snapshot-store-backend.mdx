@@ -5,7 +5,7 @@ description: ObjectStorageSnapshotStore stores snapshots in object storage — t
 
 `ObjectStorageSnapshotStore` is the snapshot-store
 implementation that uses
-[object storage](/actor-ts/persistence/object-storage/overview/)
+[object storage](/persistence/object-storage/overview/)
 as its backing layer.
 
 ```ts
@@ -45,7 +45,7 @@ Three patterns:
    data.
 
 For **single-node** deployments,
-[SqliteSnapshotStore](/actor-ts/persistence/snapshot-stores/sqlite/)
+[SqliteSnapshotStore](/persistence/snapshot-stores/sqlite/)
 is faster + simpler.
 
 ## Configuration
@@ -63,8 +63,8 @@ interface ObjectStorageSnapshotStoreSettings {
 | --- | --- |
 | `backend` | Filesystem or S3 backend. |
 | `prefix` | Object-key prefix.  Useful for sharing buckets. |
-| `compression` | At-rest compression — see [Compression](/actor-ts/persistence/object-storage/compression/). |
-| `encryption` | At-rest encryption — see [Encryption](/actor-ts/persistence/object-storage/encryption/). |
+| `compression` | At-rest compression — see [Compression](/persistence/object-storage/compression/). |
+| `encryption` | At-rest encryption — see [Encryption](/persistence/object-storage/encryption/). |
 
 ## Key layout
 
@@ -98,7 +98,7 @@ GET.  Numbers for S3 same-region:
 
 For **hot-path snapshot loading** (frequent actor restarts),
 wrap with
-[CachedSnapshotStore](/actor-ts/persistence/snapshot-stores/cached-snapshot-store/):
+[CachedSnapshotStore](/persistence/snapshot-stores/cached-snapshot-store/):
 
 ```ts
 const cached = new CachedSnapshotStore({
@@ -120,7 +120,7 @@ class Account extends PersistentActor<...> {
 
 Per-actor configuration applies to snapshots the same way as
 durable state.  See
-[Per-actor policies](/actor-ts/persistence/object-storage/per-actor-policies/).
+[Per-actor policies](/persistence/object-storage/per-actor-policies/).
 
 ## Snapshot lifecycle
 
@@ -199,16 +199,16 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   Don't retire keys until all snapshots are re-encrypted to the
   new key.  See
-  [Key rotation](/actor-ts/persistence/object-storage/key-rotation/).
+  [Key rotation](/persistence/object-storage/key-rotation/).
 </Aside>
 
 ## Where to next
 
-- **[Object storage overview](/actor-ts/persistence/object-storage/overview/)** —
+- **[Object storage overview](/persistence/object-storage/overview/)** —
   the bigger picture.
-- **[Snapshot stores overview](/actor-ts/persistence/snapshots/)** —
+- **[Snapshot stores overview](/persistence/snapshots/)** —
   general snapshot policy.
-- **[CachedSnapshotStore](/actor-ts/persistence/snapshot-stores/cached-snapshot-store/)** —
+- **[CachedSnapshotStore](/persistence/snapshot-stores/cached-snapshot-store/)** —
   read-through cache.
-- **[Per-actor policies](/actor-ts/persistence/object-storage/per-actor-policies/)** —
+- **[Per-actor policies](/persistence/object-storage/per-actor-policies/)** —
   per-actor compression / encryption.

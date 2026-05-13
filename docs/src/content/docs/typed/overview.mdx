@@ -7,7 +7,7 @@ actor-ts ships **two layers** for the same actor model:
 
 | API | Style | Source of truth |
 | --- | --- | --- |
-| **Untyped** (the [fundamentals](/actor-ts/fundamentals/overview/)) | Subclass `Actor<TMsg>`, override `onReceive`, mutate `this.state`. | This is the lower-level, more flexible API. |
+| **Untyped** (the [fundamentals](/fundamentals/overview/)) | Subclass `Actor<TMsg>`, override `onReceive`, mutate `this.state`. | This is the lower-level, more flexible API. |
 | **Typed** (this section) | Compose `Behavior<T>` values via `Behaviors.receive(...)`, return next behavior from handlers. | A functional facade on top of the untyped engine. |
 
 The framework runs both on the same dispatcher, the same mailbox,
@@ -146,17 +146,17 @@ A handful of building blocks:
 | `Behaviors.ignore` | Sentinel: silently drop every message. |
 
 Each page in this section drills into one slice — see
-[Behaviors](/actor-ts/typed/behaviors/) for the combinators,
-[Typed actor](/actor-ts/typed/typed-actor/) for the engine that
-hosts a behavior, [Spawn typed](/actor-ts/typed/spawn-typed/) for
+[Behaviors](/typed/behaviors/) for the combinators,
+[Typed actor](/typed/typed-actor/) for the engine that
+hosts a behavior, [Spawn typed](/typed/spawn-typed/) for
 the three spawn helpers.
 
 ## Where to next
 
-- **[Behaviors](/actor-ts/typed/behaviors/)** — the full DSL.
-- **[Typed actor](/actor-ts/typed/typed-actor/)** — what runs a
+- **[Behaviors](/typed/behaviors/)** — the full DSL.
+- **[Typed actor](/typed/typed-actor/)** — what runs a
   Behavior at runtime.
-- **[Spawn typed](/actor-ts/typed/spawn-typed/)** — `spawnTyped`,
+- **[Spawn typed](/typed/spawn-typed/)** — `spawnTyped`,
   `typedProps`, `spawnTypedChild`.
-- **[Fundamentals overview](/actor-ts/fundamentals/overview/)** —
+- **[Fundamentals overview](/fundamentals/overview/)** —
   the untyped concept map; many ideas carry over.

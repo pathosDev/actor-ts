@@ -172,7 +172,7 @@ The framework publishes several event types you can subscribe to:
 | Event | Where it comes from |
 | --- | --- |
 | `DeadLetter` | Every message routed to `/deadLetters` is also published.  Useful for "alarms on lost messages." |
-| `ClusterEvent` (subclasses) | `MemberUp`, `MemberRemoved`, `UnreachableMember`, etc.  See [Cluster](/actor-ts/cluster/overview/). |
+| `ClusterEvent` (subclasses) | `MemberUp`, `MemberRemoved`, `UnreachableMember`, etc.  See [Cluster](/cluster/overview/). |
 | `JournalEvent` | Persisted events emitted by `PersistentActor`s, for `Projection` consumers. |
 | Broker events | `BrokerActor` subclasses publish connect/disconnect/lag events. |
 
@@ -181,13 +181,13 @@ publishes.
 
 ## Where to next
 
-- **[DistributedPubSub](/actor-ts/cluster/pubsub/)** — cluster-wide
+- **[DistributedPubSub](/cluster/pubsub/)** — cluster-wide
   publish/subscribe with topic routing; complementary to the
   local event stream.
-- **[Actor system](/actor-ts/fundamentals/actor-system/)** —
+- **[Actor system](/fundamentals/actor-system/)** —
   `system.eventStream` is where you reach the bus.
-- **[Messages](/actor-ts/fundamentals/messages/)** — the shape
+- **[Messages](/fundamentals/messages/)** — the shape
   rules (immutable, no method refs) apply equally to events.
 
-The [`EventStream`](/actor-ts/api/classes/eventstream/) API
+The [`EventStream`](/api/classes/eventstream/) API
 reference covers the full surface.

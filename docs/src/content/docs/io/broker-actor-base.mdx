@@ -24,7 +24,7 @@ BrokerActor (abstract base)
 Subclasses implement the three protocol hooks; the base handles
 the rest.  This page documents what's **shared**.  For
 per-protocol specifics, see the
-[per-protocol pages](/actor-ts/io/overview/).
+[per-protocol pages](/io/overview/).
 
 ## The state machine
 
@@ -137,7 +137,7 @@ reconnect: {
 
 Configurable per actor.  The base uses the same exponential-backoff
 math as
-[BackoffPolicy](/actor-ts/patterns/backoff-policy/), with jitter
+[BackoffPolicy](/patterns/backoff-policy/), with jitter
 to avoid synchronized retries across clients.
 
 Each attempt fires `BrokerReconnectAttempt` on the event stream;
@@ -223,11 +223,11 @@ maps cleanly to `this.fanOut(...)`.
 
 ## Where to next
 
-- **[I/O overview](/actor-ts/io/overview/)** — the bigger
+- **[I/O overview](/io/overview/)** — the bigger
   picture: which protocols ship.
-- **[Kafka](/actor-ts/io/kafka/)** / **[MQTT](/actor-ts/io/mqtt/)** /
-  **[NATS](/actor-ts/io/nats/)** / etc. — per-protocol pages.
-- **[Event stream](/actor-ts/fundamentals/event-stream/)** —
+- **[Kafka](/io/kafka/)** / **[MQTT](/io/mqtt/)** /
+  **[NATS](/io/nats/)** / etc. — per-protocol pages.
+- **[Event stream](/fundamentals/event-stream/)** —
   where lifecycle events are published.
-- **[Backoff policy](/actor-ts/patterns/backoff-policy/)** —
+- **[Backoff policy](/patterns/backoff-policy/)** —
   the math behind the reconnect loop.

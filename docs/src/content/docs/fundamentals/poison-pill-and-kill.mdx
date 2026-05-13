@@ -149,7 +149,7 @@ directive, the termination sequence is the same:
    don't affect the termination.
 3. **Watchers are notified**.  Every actor that called
    `context.watch(thisRef)` receives a `Terminated(thisRef)`
-   message.  See [Death watch](/actor-ts/fundamentals/death-watch/).
+   message.  See [Death watch](/fundamentals/death-watch/).
 4. **Mailbox is drained to dead letters**.  Any messages still in
    the queue (including the PoisonPill itself — the framework
    skips it) are routed to `/deadLetters`.
@@ -190,16 +190,16 @@ Differences:
 
 ## Where to next
 
-- **[Supervision](/actor-ts/fundamentals/supervision/)** — what
+- **[Supervision](/fundamentals/supervision/)** — what
   the supervisor does when `Kill` raises `ActorKilledError`.
-- **[Death watch](/actor-ts/fundamentals/death-watch/)** — how
+- **[Death watch](/fundamentals/death-watch/)** — how
   watchers are notified when an actor (via any of these paths)
   stops.
-- **[Coordinated shutdown](/actor-ts/fundamentals/coordinated-shutdown/)** —
+- **[Coordinated shutdown](/fundamentals/coordinated-shutdown/)** —
   graceful shutdown of the *whole* system, not single actors.
-- **[ActorSystem](/actor-ts/fundamentals/actor-system/)** — the
+- **[ActorSystem](/fundamentals/actor-system/)** — the
   `system.terminate()` call that cascade-stops every actor.
 
-The [`PoisonPill`](/actor-ts/api/classes/poisonpill/) and
-[`Kill`](/actor-ts/api/classes/kill/) API references document the
+The [`PoisonPill`](/api/classes/poisonpill/) and
+[`Kill`](/api/classes/kill/) API references document the
 signal constants.

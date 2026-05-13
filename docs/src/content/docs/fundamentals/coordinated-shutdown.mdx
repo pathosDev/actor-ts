@@ -219,7 +219,7 @@ The `sleep` in PreStop gives the load balancer time to drop this
 pod from rotation **before** the actor system starts shutting down
 — so in-flight HTTP requests don't see "I'm draining, go away."
 
-See [Operations — Kubernetes](/actor-ts/operations/deployment/kubernetes/)
+See [Operations — Kubernetes](/operations/deployment/kubernetes/)
 for the full deployment manifest.
 
 ## Multi-trigger safety
@@ -337,17 +337,17 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Actor system](/actor-ts/fundamentals/actor-system/)** —
+- **[Actor system](/fundamentals/actor-system/)** —
   the `terminate()` that runs at the end of the pipeline.
-- **[Cluster overview](/actor-ts/cluster/overview/)** — the
+- **[Cluster overview](/cluster/overview/)** — the
   cluster phases (`cluster-leave`, `cluster-exiting`, …) wire
   themselves up automatically when the cluster extension is
   active.
-- **[Kubernetes deployment](/actor-ts/operations/deployment/kubernetes/)** —
+- **[Kubernetes deployment](/operations/deployment/kubernetes/)** —
   the full PreStop + SIGTERM + grace-period recipe.
-- **[Persistence — Migration](/actor-ts/persistence/migration/overview/)** —
+- **[Persistence — Migration](/persistence/migration/overview/)** —
   rolling shutdown for journal migrations.
 
-The [`CoordinatedShutdown`](/actor-ts/api/classes/coordinatedshutdown/)
+The [`CoordinatedShutdown`](/api/classes/coordinatedshutdown/)
 API reference covers `addTask`, `addPhase`, `run`, and the full
 phase constant set.

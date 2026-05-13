@@ -152,7 +152,7 @@ const ready = Behaviors.receive<Msg>((ctx, msg) => {
 
 Capacity-bounded stash, with `stash` / `unstashAll` / `isEmpty` /
 `isFull` / `size`.  Same semantics as
-[the untyped `context.stash`](/actor-ts/fundamentals/become-and-stash/),
+[the untyped `context.stash`](/fundamentals/become-and-stash/),
 exposed as a value rather than via context.
 
 ### `supervise(behavior).onFailure(strategy)`
@@ -173,7 +173,7 @@ the inner handler are routed through the strategy — Restart
 re-initializes the behavior (resets to its initial form), Stop
 terminates, Resume skips the failing message.
 
-See [Supervision](/actor-ts/fundamentals/supervision/) for the
+See [Supervision](/fundamentals/supervision/) for the
 directive semantics; they apply identically in the typed form.
 
 ## The five sentinels
@@ -296,12 +296,12 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Typed actor](/actor-ts/typed/typed-actor/)** — the runtime
+- **[Typed actor](/typed/typed-actor/)** — the runtime
   that interprets a Behavior.
-- **[Spawn typed](/actor-ts/typed/spawn-typed/)** — `spawnTyped`,
+- **[Spawn typed](/typed/spawn-typed/)** — `spawnTyped`,
   `typedProps`, `spawnTypedChild`.
-- **[Supervision](/actor-ts/fundamentals/supervision/)** — what
+- **[Supervision](/fundamentals/supervision/)** — what
   `Behaviors.supervise(...).onFailure(...)` uses internally.
-- **[Become and stash (untyped)](/actor-ts/fundamentals/become-and-stash/)** —
+- **[Become and stash (untyped)](/fundamentals/become-and-stash/)** —
   the OO equivalents of `Behaviors.withStash` + behavior-switching
   via return values.

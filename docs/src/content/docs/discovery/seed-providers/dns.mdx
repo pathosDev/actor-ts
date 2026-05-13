@@ -79,7 +79,7 @@ DNS list; multiple A entries mean multiple seed candidates.
 | Eureka with DNS plugin | SRV mode. |
 | Manual deployments with DNS server | Either mode; SRV preferred. |
 | Cloud with DNS-based service discovery | SRV mode. |
-| K8s | Use [KubernetesApiSeedProvider](/actor-ts/discovery/seed-providers/kubernetes-api/) — K8s's headless services do produce A records but the K8s API provider is more reliable. |
+| K8s | Use [KubernetesApiSeedProvider](/discovery/seed-providers/kubernetes-api/) — K8s's headless services do produce A records but the K8s API provider is more reliable. |
 
 ## DNS caching
 
@@ -107,8 +107,8 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   `Cluster.join` blocks on DNS resolution.  For setups with
   slow DNS, the boot delay is real.  Combine with
-  [`ConfigSeedProvider`](/actor-ts/discovery/seed-providers/config/)
-  via [`AggregateSeedProvider`](/actor-ts/discovery/seed-providers/aggregate/)
+  [`ConfigSeedProvider`](/discovery/seed-providers/config/)
+  via [`AggregateSeedProvider`](/discovery/seed-providers/aggregate/)
   — fall back to static if DNS fails.
 </Aside>
 
@@ -133,11 +133,11 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Discovery overview](/actor-ts/discovery/overview/)** — the
+- **[Discovery overview](/discovery/overview/)** — the
   bigger picture.
-- **[Config seed provider](/actor-ts/discovery/seed-providers/config/)** —
+- **[Config seed provider](/discovery/seed-providers/config/)** —
   the simpler alternative.
-- **[Kubernetes API seed provider](/actor-ts/discovery/seed-providers/kubernetes-api/)** —
+- **[Kubernetes API seed provider](/discovery/seed-providers/kubernetes-api/)** —
   preferred on K8s.
-- **[Aggregate seed provider](/actor-ts/discovery/seed-providers/aggregate/)** —
+- **[Aggregate seed provider](/discovery/seed-providers/aggregate/)** —
   combine DNS with a static fallback.

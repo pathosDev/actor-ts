@@ -80,7 +80,7 @@ The `addressTerminated` flag matters in cluster setups: if the
 node hosting the watched actor leaves the cluster, all actors on
 that node are considered terminated, and watchers across the
 cluster receive a `Terminated` with this flag set.  See
-[Cluster](/actor-ts/cluster/overview/) for the membership story.
+[Cluster](/cluster/overview/) for the membership story.
 
 ## `unwatch`
 
@@ -159,7 +159,7 @@ class Manager extends Actor<Cmd | Terminated> {
 This is a common shape for graceful shutdown: a coordinator
 watches the actors it's responsible for, and only exits once
 every one of them is gone.  The
-[Coordinated shutdown](/actor-ts/fundamentals/coordinated-shutdown/)
+[Coordinated shutdown](/fundamentals/coordinated-shutdown/)
 DSL formalizes this pattern at the system level.
 
 ### Watching across the cluster
@@ -176,7 +176,7 @@ Watch works the same way across nodes — the framework propagates
 termination notifications through the cluster transport.  If the
 remote node becomes unreachable, the watcher receives `Terminated`
 with `addressTerminated = true`.  See
-[Refs across nodes](/actor-ts/cluster/refs-across-nodes/) for the
+[Refs across nodes](/cluster/refs-across-nodes/) for the
 wire protocol that makes this work.
 
 ## What it does NOT replace
@@ -234,19 +234,19 @@ the actors they *depend on* (which are someone else's children).
 
 ## Where to next
 
-- **[Supervision](/actor-ts/fundamentals/supervision/)** — the
+- **[Supervision](/fundamentals/supervision/)** — the
   parent-handles-child-failure mechanism.  Death watch is the
   observer-handles-actor-stop mechanism — distinct, often used
   together.
-- **[Poison pill and Kill](/actor-ts/fundamentals/poison-pill-and-kill/)** —
+- **[Poison pill and Kill](/fundamentals/poison-pill-and-kill/)** —
   the two ways to terminate an actor, both of which trigger
   `Terminated` for any watchers.
-- **[Coordinated shutdown](/actor-ts/fundamentals/coordinated-shutdown/)** —
+- **[Coordinated shutdown](/fundamentals/coordinated-shutdown/)** —
   uses watch internally to wait for whole subsystems to drain.
-- **[Refs across nodes](/actor-ts/cluster/refs-across-nodes/)** —
+- **[Refs across nodes](/cluster/refs-across-nodes/)** —
   how `Terminated` propagates when the watched actor lives on a
   different node.
 
-The [`ActorContext.watch`](/actor-ts/api/interfaces/actorcontext/)
-and [`Terminated`](/actor-ts/api/classes/terminated/) API references
+The [`ActorContext.watch`](/api/interfaces/actorcontext/)
+and [`Terminated`](/api/classes/terminated/) API references
 cover the full signatures.

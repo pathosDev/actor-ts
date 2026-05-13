@@ -38,7 +38,7 @@ Two paths:
    for every owned shard.
 2. **Strategy-driven** — every `rebalanceIntervalMs` (default 2s),
    the coordinator asks the
-   [allocation strategy](/actor-ts/cluster/sharding/allocation-strategy/)
+   [allocation strategy](/cluster/sharding/allocation-strategy/)
    for its rebalance recommendations.  `LeastShardAllocationStrategy`
    returns shards to drain off busy nodes; `HashAllocationStrategy`
    returns shards whose hash-target moved.
@@ -101,7 +101,7 @@ dropped.  The cost: latency spikes during rebalance windows.
 
 ## When entities have state
 
-For persistent entities ([PersistentActor](/actor-ts/persistence/persistent-actor/)):
+For persistent entities ([PersistentActor](/persistence/persistent-actor/)):
 
 - `postStop` on the source side finalizes any pending persist.
 - The new entity instance on the destination replays the journal
@@ -138,7 +138,7 @@ Mitigation:
 - Tune `handOffTimeoutMs` to your worst-case persist time + buffer.
 - For the split-brain risk, consider a lease on the sharding
   coordinator (see
-  [sharding with-lease](/actor-ts/cluster/sharding/with-lease/)).
+  [sharding with-lease](/cluster/sharding/with-lease/)).
 
 ## Rebalance vs scaling
 
@@ -195,11 +195,11 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Sharding overview](/actor-ts/cluster/sharding/overview/)** —
+- **[Sharding overview](/cluster/sharding/overview/)** —
   the broader picture.
-- **[Allocation strategy](/actor-ts/cluster/sharding/allocation-strategy/)** —
+- **[Allocation strategy](/cluster/sharding/allocation-strategy/)** —
   what decides the new homes.
-- **[Remember entities](/actor-ts/cluster/sharding/remember-entities/)** —
+- **[Remember entities](/cluster/sharding/remember-entities/)** —
   affects what gets re-spawned after handoff.
-- **[Sharding with lease](/actor-ts/cluster/sharding/with-lease/)** —
+- **[Sharding with lease](/cluster/sharding/with-lease/)** —
   split-brain protection for the coordinator.

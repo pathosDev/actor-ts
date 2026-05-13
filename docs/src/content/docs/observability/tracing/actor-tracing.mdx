@@ -136,7 +136,7 @@ inside the actor's processing.
 
 When tracing is active, the framework merges `traceId` and
 `spanId` into the
-[LogContext](/actor-ts/fundamentals/logging/) so every log line
+[LogContext](/fundamentals/logging/) so every log line
 emitted during a span includes them:
 
 ```
@@ -199,11 +199,11 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Tracer API](/actor-ts/observability/tracing/tracer-api/)** —
+- **[Tracer API](/observability/tracing/tracer-api/)** —
   the underlying interface.
-- **[OTel adapter](/actor-ts/observability/tracing/otel-adapter/)** —
+- **[OTel adapter](/observability/tracing/otel-adapter/)** —
   pipe to your tracing backend.
-- **[Recording tracer](/actor-ts/observability/tracing/recording-tracer/)** —
+- **[Recording tracer](/observability/tracing/recording-tracer/)** —
   for test assertions.
-- **[Logging — LogContext](/actor-ts/fundamentals/logging/)** —
+- **[Logging — LogContext](/fundamentals/logging/)** —
   the MDC that gets enriched with trace IDs.

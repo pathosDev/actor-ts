@@ -11,7 +11,7 @@ the cluster, each with a stable identity:
 - N scheduled coordinators, one per timezone, one per region.
 - N background reconcilers each owning a slice of work-IDs.
 
-A [singleton](/actor-ts/cluster/singleton/overview/) gives you
+A [singleton](/cluster/singleton/overview/) gives you
 **one** of these.  Sharding gives you **one per entity ID**.
 **`ShardedDaemonProcess`** gives you **exactly N**, indexed
 `0..N-1`, spread evenly across the cluster, automatically
@@ -174,7 +174,7 @@ import { Aside } from '@astrojs/starlight/components';
   ```ts
   ShardedDaemonProcess.init(..., { numDaemons: 1, ... });   // ✗
   ```
-  For `numDaemons: 1`, use [ClusterSingleton](/actor-ts/cluster/singleton/overview/) —
+  For `numDaemons: 1`, use [ClusterSingleton](/cluster/singleton/overview/) —
   it has explicit semantics for "exactly one cluster-wide"
   (election, lease, etc.), whereas sharded-daemon with N=1 is
   *almost* a singleton but loses the explicit guarantees.
@@ -206,10 +206,10 @@ import { Aside } from '@astrojs/starlight/components';
 
 | Tool | What |
 | --- | --- |
-| [ClusterSingleton](/actor-ts/cluster/singleton/overview/) | Exactly 1 actor cluster-wide. |
+| [ClusterSingleton](/cluster/singleton/overview/) | Exactly 1 actor cluster-wide. |
 | **ShardedDaemonProcess** | Exactly N indexed actors, distributed. |
-| [ClusterSharding](/actor-ts/cluster/sharding/overview/) | One actor per key (potentially infinite). |
-| [ClusterRouter](/actor-ts/cluster/cluster-router/) | Route messages across pre-existing actors on every node. |
+| [ClusterSharding](/cluster/sharding/overview/) | One actor per key (potentially infinite). |
+| [ClusterRouter](/cluster/cluster-router/) | Route messages across pre-existing actors on every node. |
 
 The "right tool by cardinality": 1 → singleton, **fixed N → daemon-process**,
 many (one per business entity) → sharding, "every node" →
@@ -217,14 +217,14 @@ cluster router.
 
 ## Where to next
 
-- **[Sharding overview](/actor-ts/cluster/sharding/overview/)** —
+- **[Sharding overview](/cluster/sharding/overview/)** —
   the foundation it builds on.
-- **[Singleton overview](/actor-ts/cluster/singleton/overview/)** —
+- **[Singleton overview](/cluster/singleton/overview/)** —
   for N=1.
-- **[Allocation strategy](/actor-ts/cluster/sharding/allocation-strategy/)** —
+- **[Allocation strategy](/cluster/sharding/allocation-strategy/)** —
   what places the daemons.
-- **[Remember entities](/actor-ts/cluster/sharding/remember-entities/)** —
+- **[Remember entities](/cluster/sharding/remember-entities/)** —
   what makes them survive coordinator failover.
 
-The [`ShardedDaemonProcess`](/actor-ts/api/classes/shardeddaemonprocess/)
+The [`ShardedDaemonProcess`](/api/classes/shardeddaemonprocess/)
 API reference covers the full surface.

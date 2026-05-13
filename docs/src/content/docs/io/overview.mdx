@@ -209,7 +209,7 @@ import { Aside } from '@astrojs/starlight/components';
 </Aside>
 
 <Aside type="caution" title="HTTP servers are a separate module">
-  The framework has a dedicated [HTTP](/actor-ts/http/overview/)
+  The framework has a dedicated [HTTP](/http/overview/)
   module with a route DSL, marshalling, middleware, and three
   pluggable backends (Fastify, Express, Hono).  It's not built
   on `BrokerActor` — HTTP servers don't fit the
@@ -247,19 +247,19 @@ parts.
 
 ## Where to next
 
-- **Per-protocol pages** — [Kafka](/actor-ts/io/kafka/),
-  [MQTT](/actor-ts/io/mqtt/), [AMQP](/actor-ts/io/amqp/),
-  [NATS](/actor-ts/io/nats/), [Redis Streams](/actor-ts/io/redis-streams/),
-  [gRPC](/actor-ts/io/grpc/), [WebSocket client](/actor-ts/io/websocket/),
-  [WebSocket server](/actor-ts/io/server-websocket/),
-  [SSE](/actor-ts/io/sse/), [TCP](/actor-ts/io/tcp/),
-  [UDP](/actor-ts/io/udp/).
-- **[BrokerActor base class](/actor-ts/io/broker-actor-base/)** —
+- **Per-protocol pages** — [Kafka](/io/kafka/),
+  [MQTT](/io/mqtt/), [AMQP](/io/amqp/),
+  [NATS](/io/nats/), [Redis Streams](/io/redis-streams/),
+  [gRPC](/io/grpc/), [WebSocket client](/io/websocket/),
+  [WebSocket server](/io/server-websocket/),
+  [SSE](/io/sse/), [TCP](/io/tcp/),
+  [UDP](/io/udp/).
+- **[BrokerActor base class](/io/broker-actor-base/)** —
   the shared lifecycle and configuration.
-- **[HTTP overview](/actor-ts/http/overview/)** — the separate
+- **[HTTP overview](/http/overview/)** — the separate
   HTTP server module.
-- **[Event stream](/actor-ts/fundamentals/event-stream/)** — where
+- **[Event stream](/fundamentals/event-stream/)** — where
   broker lifecycle events are published.
 
-The [`BrokerActor`](/actor-ts/api/classes/brokeractor/) API
+The [`BrokerActor`](/api/classes/brokeractor/) API
 reference covers the full base-class surface.

@@ -76,7 +76,7 @@ A fifth "smallest-mailbox" strategy (route to the routee with the
 shortest queue) is **not** implemented in the local router; it's a
 roadmap item for the cluster router.
 
-See [Strategies](/actor-ts/routing/strategies/) for the deep dive,
+See [Strategies](/routing/strategies/) for the deep dive,
 plus the `Broadcast` message wrapper that overrides the strategy
 per-message.
 
@@ -91,7 +91,7 @@ For most cases, pool is what you want.  The group model surfaces
 when you want existing actors (e.g. shard regions, fixed-name
 workers spawned at startup) to receive routed traffic.
 
-See [Pool vs group](/actor-ts/routing/pool-vs-group/) for when each
+See [Pool vs group](/routing/pool-vs-group/) for when each
 shape is the right fit.
 
 ## Routers and supervision
@@ -132,11 +132,11 @@ at a time *each*.  Two alternatives worth knowing:
 - **Sharding** is the right tool when each unit of work has a
   key and you need *exactly one* live actor per key (with
   failover, rebalancing, etc.).  See
-  [Sharding](/actor-ts/cluster/sharding/overview/).
+  [Sharding](/cluster/sharding/overview/).
 - **DistributedPubSub** is the right tool for fan-out where the
   subscriber set is dynamic — actors come and go, and any of them
   can receive published events.  See
-  [DistributedPubSub](/actor-ts/cluster/pubsub/).
+  [DistributedPubSub](/cluster/pubsub/).
 
 Routing is a fixed-size pool with a deterministic strategy.  When
 that's what you need, it's the simplest tool; when it isn't,
@@ -144,11 +144,11 @@ reach for something else.
 
 ## Where to next
 
-- **[Router](/actor-ts/routing/router/)** — the `Router.roundRobin(...)`,
+- **[Router](/routing/router/)** — the `Router.roundRobin(...)`,
   `.random(...)`, `.broadcast(...)`, `.custom(...)` factories.
-- **[Strategies](/actor-ts/routing/strategies/)** — what each
+- **[Strategies](/routing/strategies/)** — what each
   strategy does, plus writing your own.
-- **[Pool vs group](/actor-ts/routing/pool-vs-group/)** — when to
+- **[Pool vs group](/routing/pool-vs-group/)** — when to
   use a router that spawns its routees vs one that finds them.
-- **[Cluster router](/actor-ts/cluster/cluster-router/)** — the
+- **[Cluster router](/cluster/cluster-router/)** — the
   membership-driven cluster equivalent.

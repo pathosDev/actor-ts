@@ -4,7 +4,7 @@ description: Optional split-brain protection for `ClusterSingleton` — only the
 ---
 
 The
-[singleton manager](/actor-ts/cluster/singleton/manager/) by
+[singleton manager](/cluster/singleton/manager/) by
 default elects a singleton based on cluster gossip alone.
 During partitions + insufficient downing, **both halves can
 elect their own leader** → two singletons exist.
@@ -71,7 +71,7 @@ ClusterSingletonManager.props({
 ```
 
 `Lease` is the same abstraction as
-[Coordination](/actor-ts/coordination/overview/) — InMemoryLease
+[Coordination](/coordination/overview/) — InMemoryLease
 for tests, KubernetesLease for production.
 
 ## Reading the protection level
@@ -182,7 +182,7 @@ import { Aside } from '@astrojs/starlight/components';
       resources: ["leases"]
       verbs: ["get", "create", "update", "patch", "delete"]
   ```
-  See [KubernetesLease](/actor-ts/coordination/kubernetes-lease/).
+  See [KubernetesLease](/coordination/kubernetes-lease/).
 </Aside>
 
 <Aside type="caution" title="Singleton state across failover">
@@ -196,13 +196,13 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Singleton overview](/actor-ts/cluster/singleton/overview/)** —
+- **[Singleton overview](/cluster/singleton/overview/)** —
   the foundation.
-- **[Singleton manager](/actor-ts/cluster/singleton/manager/)** —
+- **[Singleton manager](/cluster/singleton/manager/)** —
   the per-node election logic.
-- **[Sharding with lease](/actor-ts/cluster/sharding/with-lease/)** —
+- **[Sharding with lease](/cluster/sharding/with-lease/)** —
   the same pattern for sharding.
-- **[Coordination](/actor-ts/coordination/overview/)** — the
+- **[Coordination](/coordination/overview/)** — the
   lease abstraction.
-- **[KubernetesLease](/actor-ts/coordination/kubernetes-lease/)** —
+- **[KubernetesLease](/coordination/kubernetes-lease/)** —
   production backend.

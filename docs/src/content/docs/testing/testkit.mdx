@@ -80,7 +80,7 @@ await probe.expectMsg({ kind: 'done' });
 ```
 
 Returns a `TestProbe` scoped to this kit's system.  See
-[TestProbe](/actor-ts/testing/test-probe/) for the full
+[TestProbe](/testing/test-probe/) for the full
 expectations API.
 
 ### `tk.within(durationMs, fn)`
@@ -127,7 +127,7 @@ await probe.expectMsg('tick');
 
 Returns both the kit and its `ManualScheduler` so the test can
 advance virtual time.  See
-[ManualScheduler](/actor-ts/testing/manual-scheduler/) for the
+[ManualScheduler](/testing/manual-scheduler/) for the
 full virtual-clock semantics.
 
 ## Fixture patterns
@@ -186,7 +186,7 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Multi-node cluster tests">
   TestKit creates **one** ActorSystem.  For cluster scenarios
   (sharding placement, singleton failover, gossip convergence),
-  use [MultiNodeSpec](/actor-ts/testing/multi-node-spec/) which
+  use [MultiNodeSpec](/testing/multi-node-spec/) which
   spins up N systems in one process.
 </Aside>
 
@@ -212,14 +212,14 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Testing overview](/actor-ts/testing/overview/)** — the big
+- **[Testing overview](/testing/overview/)** — the big
   picture: unit, time-deterministic, multi-node.
-- **[TestProbe](/actor-ts/testing/test-probe/)** — the fake-actor
+- **[TestProbe](/testing/test-probe/)** — the fake-actor
   expectations API.
-- **[ManualScheduler](/actor-ts/testing/manual-scheduler/)** —
+- **[ManualScheduler](/testing/manual-scheduler/)** —
   virtual time.
-- **[MultiNodeSpec](/actor-ts/testing/multi-node-spec/)** — for
+- **[MultiNodeSpec](/testing/multi-node-spec/)** — for
   cluster scenarios.
 
-The [`TestKit`](/actor-ts/api/classes/testkit/) API reference
+The [`TestKit`](/api/classes/testkit/) API reference
 covers the full surface.

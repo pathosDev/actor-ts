@@ -3,7 +3,7 @@ title: Cluster router
 description: A router whose routees are derived dynamically from cluster up-members — one routee per node carrying a matching role, at a well-known path. Auto-rebuilds on membership changes. The cluster-aware counterpart to the local `Router`.
 ---
 
-The local [`Router`](/actor-ts/routing/router/) creates its routees
+The local [`Router`](/routing/router/) creates its routees
 as its own children — a fixed pool on one node.  The
 **`ClusterRouter`** is different: its routees are **other nodes'
 actors at a well-known path**, and the routee set changes as
@@ -24,7 +24,7 @@ at `/user/worker`; the router routes incoming messages across them
 per a strategy.  Add a node, the router picks it up; remove a node,
 the router stops sending to it — no restart needed.
 
-See [Pool vs group](/actor-ts/routing/pool-vs-group/) for the
+See [Pool vs group](/routing/pool-vs-group/) for the
 distinction between local pools and cluster groups.
 
 ## A minimal example
@@ -93,7 +93,7 @@ interface ClusterRouterOptions<TMsg> {
 | `'broadcast'` | Send to every routee. |
 
 The first three are 1-of-N routing; broadcast is fan-out.  See
-[Strategies](/actor-ts/routing/strategies/) for the picking
+[Strategies](/routing/strategies/) for the picking
 guidance — same trade-offs apply, just spread across cluster nodes
 instead of pool members.
 
@@ -189,7 +189,7 @@ other nodes; they keep running.  This is the group-router model:
 the router owns *the routing*, not the routees themselves.
 
 For comparison, a local pool router cascade-stops its routees on
-stop.  See [Pool vs group](/actor-ts/routing/pool-vs-group/).
+stop.  See [Pool vs group](/routing/pool-vs-group/).
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -219,22 +219,22 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   Same problem as any hash-based scheme — skewed keys produce
   hot spots.  If the key distribution isn't roughly uniform,
-  consider [sharding](/actor-ts/cluster/sharding/overview/) (one
+  consider [sharding](/cluster/sharding/overview/) (one
   actor per key, all isolated) or aggregating before routing.
 </Aside>
 
 ## Where to next
 
-- **[Routing overview](/actor-ts/routing/overview/)** — the
+- **[Routing overview](/routing/overview/)** — the
   bigger routing picture.
-- **[Pool vs group](/actor-ts/routing/pool-vs-group/)** — the
+- **[Pool vs group](/routing/pool-vs-group/)** — the
   conceptual difference from local `Router`.
-- **[Strategies](/actor-ts/routing/strategies/)** — round-robin /
+- **[Strategies](/routing/strategies/)** — round-robin /
   random / consistent-hashing in detail.
-- **[Sharding overview](/actor-ts/cluster/sharding/overview/)** —
+- **[Sharding overview](/cluster/sharding/overview/)** —
   for per-key actors with stronger placement guarantees.
-- **[Cluster overview](/actor-ts/cluster/overview/)** — the
+- **[Cluster overview](/cluster/overview/)** — the
   membership the router reads.
 
-The [`ClusterRouter`](/actor-ts/api/classes/clusterrouter/) API
+The [`ClusterRouter`](/api/classes/clusterrouter/) API
 reference covers the full options.

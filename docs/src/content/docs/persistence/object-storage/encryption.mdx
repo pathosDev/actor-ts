@@ -6,7 +6,7 @@ description: AES-GCM encryption at rest for object-storage payloads — keys are
 Object-storage payloads support **client-side AES-GCM
 encryption** — the framework encrypts before put, decrypts on
 get, keys managed via a
-[MasterKeyRing](/actor-ts/operations/security/master-key-rotation/).
+[MasterKeyRing](/operations/security/master-key-rotation/).
 
 ```ts
 import {
@@ -64,7 +64,7 @@ The `MasterKeyRing` carries:
 Multiple keys in the ring let you read older payloads (encrypted
 under older keys) while new payloads use the current key.  This
 is the foundation of
-[key rotation](/actor-ts/persistence/object-storage/key-rotation/).
+[key rotation](/persistence/object-storage/key-rotation/).
 
 ## How it works
 
@@ -187,7 +187,7 @@ Means **you can enable encryption gradually** — new writes get
 encrypted, old reads still work, and a background
 re-encryption sweep can migrate the rest.
 
-See [key rotation](/actor-ts/persistence/object-storage/key-rotation/)
+See [key rotation](/persistence/object-storage/key-rotation/)
 for the rotation flow.
 
 import { Aside } from '@astrojs/starlight/components';
@@ -224,11 +224,11 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Object storage overview](/actor-ts/persistence/object-storage/overview/)** —
+- **[Object storage overview](/persistence/object-storage/overview/)** —
   the bigger picture.
-- **[Key rotation](/actor-ts/persistence/object-storage/key-rotation/)** —
+- **[Key rotation](/persistence/object-storage/key-rotation/)** —
   the online rotation flow.
-- **[Master key rotation (operations)](/actor-ts/operations/security/master-key-rotation/)** —
+- **[Master key rotation (operations)](/operations/security/master-key-rotation/)** —
   the operational side.
-- **[Per-actor policies](/actor-ts/persistence/object-storage/per-actor-policies/)** —
+- **[Per-actor policies](/persistence/object-storage/per-actor-policies/)** —
   per-actor encryption configuration.

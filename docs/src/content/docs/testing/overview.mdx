@@ -85,8 +85,8 @@ await tk.shutdown();
 production.  Tests assert on what the probe sees.
 
 This is the canonical shape — see
-[TestKit](/actor-ts/testing/testkit/) and
-[TestProbe](/actor-ts/testing/test-probe/).
+[TestKit](/testing/testkit/) and
+[TestProbe](/testing/test-probe/).
 
 ### Time-deterministic — `ManualScheduler`
 
@@ -107,7 +107,7 @@ Actors using `context.timers.startSingleTimer` or
 `system.scheduler.scheduleOnce` get their fires driven by the
 manual scheduler — no real `setTimeout`, no flakiness.
 
-See [ManualScheduler](/actor-ts/testing/manual-scheduler/).
+See [ManualScheduler](/testing/manual-scheduler/).
 
 ### Distributed — `MultiNodeSpec`
 
@@ -133,7 +133,7 @@ the in-memory transport.  Useful for verifying sharding behaviour,
 cluster-singleton failover, distributed-data merge semantics — all
 without a Docker-Compose setup.
 
-See [MultiNodeSpec](/actor-ts/testing/multi-node-spec/).
+See [MultiNodeSpec](/testing/multi-node-spec/).
 
 ## What to test
 
@@ -197,13 +197,13 @@ Both produce the same actor behavior.
 
 ## Where to next
 
-- **[TestKit](/actor-ts/testing/testkit/)** — the convenience
+- **[TestKit](/testing/testkit/)** — the convenience
   facade around ActorSystem for tests.
-- **[TestProbe](/actor-ts/testing/test-probe/)** — the fake actor
+- **[TestProbe](/testing/test-probe/)** — the fake actor
   for assertions.
-- **[ManualScheduler](/actor-ts/testing/manual-scheduler/)** —
+- **[ManualScheduler](/testing/manual-scheduler/)** —
   virtual-time scheduler for deterministic timer tests.
-- **[MultiNodeSpec](/actor-ts/testing/multi-node-spec/)** —
+- **[MultiNodeSpec](/testing/multi-node-spec/)** —
   multi-node cluster tests in one process.
-- **[ParallelMultiNodeSpec](/actor-ts/testing/parallel-multi-node/)** —
+- **[ParallelMultiNodeSpec](/testing/parallel-multi-node/)** —
   multi-node cluster tests in separate processes.

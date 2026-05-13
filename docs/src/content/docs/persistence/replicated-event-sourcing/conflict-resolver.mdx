@@ -5,7 +5,7 @@ description: The user-supplied function that decides how to merge concurrent eve
 
 When two replicas of the same entity write events concurrently
 (detected via
-[vector clocks](/actor-ts/persistence/replicated-event-sourcing/vector-clocks/)),
+[vector clocks](/persistence/replicated-event-sourcing/vector-clocks/)),
 the framework needs to know **how to merge** them.  That's the
 **conflict resolver** — a function you supply.
 
@@ -197,7 +197,7 @@ semantically:
 
 For these, the right answer is often **single-writer with a
 lease** — see
-[Single-writer lease](/actor-ts/persistence/replicated-event-sourcing/single-writer-lease/).
+[Single-writer lease](/persistence/replicated-event-sourcing/single-writer-lease/).
 Forces sequential writes; no conflicts to resolve.
 
 Use replicated ES when conflicts are **expected to merge
@@ -248,11 +248,11 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Replicated event sourcing overview](/actor-ts/persistence/replicated-event-sourcing/overview/)** —
+- **[Replicated event sourcing overview](/persistence/replicated-event-sourcing/overview/)** —
   the bigger picture.
-- **[Vector clocks](/actor-ts/persistence/replicated-event-sourcing/vector-clocks/)** —
+- **[Vector clocks](/persistence/replicated-event-sourcing/vector-clocks/)** —
   how conflicts are detected.
-- **[Single-writer lease](/actor-ts/persistence/replicated-event-sourcing/single-writer-lease/)** —
+- **[Single-writer lease](/persistence/replicated-event-sourcing/single-writer-lease/)** —
   preventing conflicts vs resolving them.
-- **[Snapshotting](/actor-ts/persistence/replicated-event-sourcing/snapshotting/)** —
+- **[Snapshotting](/persistence/replicated-event-sourcing/snapshotting/)** —
   snapshots that include the resolver's converged state.

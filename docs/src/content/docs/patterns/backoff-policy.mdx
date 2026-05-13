@@ -18,7 +18,7 @@ interface BackoffPolicy {
 second `1`, and so on.  Returns the delay in milliseconds.
 
 Two built-ins, both producing values you can plug into a
-[`BackoffSupervisor`](/actor-ts/patterns/backoff-supervisor/) or
+[`BackoffSupervisor`](/patterns/backoff-supervisor/) or
 use standalone.
 
 ## Exponential backoff
@@ -145,7 +145,7 @@ while (true) {
 ```
 
 For the more common case of "retry N times with backoff," see
-[Retry](/actor-ts/patterns/retry/), which has its own delay
+[Retry](/patterns/retry/), which has its own delay
 options (without going through `BackoffPolicy`).  The standalone
 policy is most useful when you're integrating with an existing
 retry/scheduler abstraction and just need the delay-computation
@@ -200,15 +200,15 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Backoff supervisor](/actor-ts/patterns/backoff-supervisor/)** —
+- **[Backoff supervisor](/patterns/backoff-supervisor/)** —
   the actor-restart wrapper that consumes a `BackoffPolicy`.
-- **[Retry](/actor-ts/patterns/retry/)** — per-call retry with
+- **[Retry](/patterns/retry/)** — per-call retry with
   its own delay options; doesn't go through `BackoffPolicy` but
   the underlying math is similar.
-- **[Circuit breaker](/actor-ts/patterns/circuit-breaker/)** —
+- **[Circuit breaker](/patterns/circuit-breaker/)** —
   for when "wait longer between attempts" should escalate to
   "stop attempting entirely for a while."
 
-The [`exponentialBackoff`](/actor-ts/api/functions/exponentialbackoff/)
-and [`linearBackoff`](/actor-ts/api/functions/linearbackoff/) API
+The [`exponentialBackoff`](/api/functions/exponentialbackoff/)
+and [`linearBackoff`](/api/functions/linearbackoff/) API
 references cover the full options.

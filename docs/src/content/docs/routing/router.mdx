@@ -106,7 +106,7 @@ multiple for fan-out.  Empty iterable means "drop this message"
 (silent, no dead-letter routing — your responsibility to log if
 needed).
 
-See [Strategies](/actor-ts/routing/strategies/) for the full
+See [Strategies](/routing/strategies/) for the full
 strategy type and built-in implementations.
 
 ## Spawning the routees yourself
@@ -118,9 +118,9 @@ instead (e.g. shard regions, specific named workers), the local
 
 For cluster setups, `ClusterRouter` does have a "find existing
 actors by path" mode — see
-[Pool vs group](/actor-ts/routing/pool-vs-group/) for the
+[Pool vs group](/routing/pool-vs-group/) for the
 distinction and
-[Cluster router](/actor-ts/cluster/cluster-router/) for the
+[Cluster router](/cluster/cluster-router/) for the
 cluster API.
 
 ## Stopping the pool
@@ -176,17 +176,17 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Strategies](/actor-ts/routing/strategies/)** — round-robin,
+- **[Strategies](/routing/strategies/)** — round-robin,
   random, broadcast, custom; plus the
   cluster-only consistent-hashing.
-- **[Pool vs group](/actor-ts/routing/pool-vs-group/)** — when
+- **[Pool vs group](/routing/pool-vs-group/)** — when
   you want existing routees instead of pool-spawned ones.
-- **[Cluster router](/actor-ts/cluster/cluster-router/)** — the
+- **[Cluster router](/cluster/cluster-router/)** — the
   membership-driven cluster equivalent.
-- **[Props](/actor-ts/fundamentals/props/)** — the routee Props
+- **[Props](/fundamentals/props/)** — the routee Props
   shape; `withSupervisorStrategy`, `withDispatcher`, etc., all
   apply to routees individually.
 
-The [`Router`](/actor-ts/api/variables/router/) and
-[`Broadcast`](/actor-ts/api/classes/broadcast/) API references
+The [`Router`](/api/variables/router/) and
+[`Broadcast`](/api/classes/broadcast/) API references
 cover the full surface.

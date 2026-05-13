@@ -58,7 +58,7 @@ The framework calls `release()`:
 - When the singleton manager stops being leader (graceful
   hand-off to another node).
 - When the actor system shuts down via
-  [coordinated shutdown](/actor-ts/fundamentals/coordinated-shutdown/).
+  [coordinated shutdown](/fundamentals/coordinated-shutdown/).
 
 For the **non-graceful case** — process crash — the backend's
 TTL handles cleanup automatically; no `release` is sent.
@@ -237,14 +237,14 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Coordination overview](/actor-ts/coordination/overview/)** —
+- **[Coordination overview](/coordination/overview/)** —
   the bigger picture.
-- **[InMemoryLease](/actor-ts/coordination/in-memory-lease/)** —
+- **[InMemoryLease](/coordination/in-memory-lease/)** —
   the dev/test reference implementation.
-- **[KubernetesLease](/actor-ts/coordination/kubernetes-lease/)** —
+- **[KubernetesLease](/coordination/kubernetes-lease/)** —
   the production K8s backend.
-- **[Singleton with lease](/actor-ts/cluster/singleton/with-lease/)** —
+- **[Singleton with lease](/cluster/singleton/with-lease/)** —
   the main consumer.
 
-The [`Lease`](/actor-ts/api/interfaces/lease/) API reference covers
+The [`Lease`](/api/interfaces/lease/) API reference covers
 the full contract.

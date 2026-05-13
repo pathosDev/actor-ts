@@ -4,7 +4,7 @@ description: An event-sourced FSM — transitions are persisted as events; on re
 ---
 
 `PersistentFSM` is the event-sourced variant of
-[FSM](/actor-ts/persistence/fsm/fsm/).  Each state transition
+[FSM](/persistence/fsm/fsm/).  Each state transition
 becomes a **persisted event** — on restart, the FSM replays them
 and resumes in the exact state it was in.
 
@@ -76,7 +76,7 @@ preStart():
 ```
 
 Same idiom as
-[PersistentActor](/actor-ts/persistence/persistent-actor/) —
+[PersistentActor](/persistence/persistent-actor/) —
 replay deterministically rebuilds the state machine's exact
 position.
 
@@ -121,7 +121,7 @@ Pick the interval based on transition frequency:
   needed.
 - **Many transitions** (100+) — snapshot every 50-100 events.
 
-See [Snapshots](/actor-ts/persistence/snapshots/) for the
+See [Snapshots](/persistence/snapshots/) for the
 general policy guidance.
 
 ## Side effects per transition
@@ -240,16 +240,16 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[FSM overview](/actor-ts/persistence/fsm/overview/)** — the
+- **[FSM overview](/persistence/fsm/overview/)** — the
   bigger picture.
-- **[FSM (in-memory)](/actor-ts/persistence/fsm/fsm/)** — the
+- **[FSM (in-memory)](/persistence/fsm/fsm/)** — the
   non-persistent variant.
-- **[PersistentActor](/actor-ts/persistence/persistent-actor/)** —
+- **[PersistentActor](/persistence/persistent-actor/)** —
   the underlying event-sourcing engine.
-- **[Snapshots](/actor-ts/persistence/snapshots/)** — bounding
+- **[Snapshots](/persistence/snapshots/)** — bounding
   the replay window.
-- **[Migration overview](/actor-ts/persistence/migration/overview/)** —
+- **[Migration overview](/persistence/migration/overview/)** —
   for evolving state-data schemas over time.
 
-The [`PersistentFSM`](/actor-ts/api/classes/persistentfsm/) API
+The [`PersistentFSM`](/api/classes/persistentfsm/) API
 reference covers the full surface.

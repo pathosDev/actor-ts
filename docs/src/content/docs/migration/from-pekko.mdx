@@ -10,7 +10,7 @@ Akka changed its licensing in 2022.  Pekko maintains the
 proprietary.
 
 For migration purposes, **Pekko ≈ Akka 2.6** — everything in the
-[from-akka-jvm guide](/actor-ts/migration/from-akka-jvm/) applies.
+[from-akka-jvm guide](/migration/from-akka-jvm/) applies.
 This page covers the **Pekko-specific differences**.
 
 ## Pekko vs Akka — what's different
@@ -34,7 +34,7 @@ Otherwise, the API is identical to Akka 2.6.
 ## Migrating to actor-ts
 
 Treat your Pekko codebase exactly like Akka 2.6 — see
-[from-akka-jvm](/actor-ts/migration/from-akka-jvm/) for the
+[from-akka-jvm](/migration/from-akka-jvm/) for the
 full mapping.
 
 The same conceptual cheatsheet applies:
@@ -62,7 +62,7 @@ or a separate library.
 
 ### Pekko HTTP → use the framework's HTTP module
 
-actor-ts's [HTTP module](/actor-ts/http/overview/) covers the
+actor-ts's [HTTP module](/http/overview/) covers the
 common Pekko HTTP use cases — routing, marshalling, middleware.
 Less feature-complete (no compile-time-typed route DSL like
 Pekko HTTP's), but simpler.
@@ -70,7 +70,7 @@ Pekko HTTP's), but simpler.
 ### Pekko Persistence Query → PersistenceQuery
 
 actor-ts has
-[PersistenceQuery](/actor-ts/persistence/persistence-query/)
+[PersistenceQuery](/persistence/persistence-query/)
 with the same conceptual shape (live + snapshot queries by pid
 or tag), but exposed as `AsyncIterable` instead of Stream.
 
@@ -83,7 +83,7 @@ Same as for Akka:
 2. **One bounded context at a time** — migrate per-domain.
 3. **Re-export persistence carefully** — Pekko's JSON-Jackson
    events read into actor-ts via an
-   [EventAdapter](/actor-ts/persistence/migration/migrating-adapter/).
+   [EventAdapter](/persistence/migration/migrating-adapter/).
 
 ## Why migrate from Pekko at all?
 
@@ -101,9 +101,9 @@ stick with it.
 
 ## Where to next
 
-- **[from-akka-jvm](/actor-ts/migration/from-akka-jvm/)** —
+- **[from-akka-jvm](/migration/from-akka-jvm/)** —
   the main reference (Pekko mirrors Akka 2.6).
-- **[Migration overview](/actor-ts/migration/overview/)** —
+- **[Migration overview](/migration/overview/)** —
   cross-framework comparison.
-- **[Quickstart](/actor-ts/intro/quickstart/)** — actor-ts
+- **[Quickstart](/intro/quickstart/)** — actor-ts
   hello world.

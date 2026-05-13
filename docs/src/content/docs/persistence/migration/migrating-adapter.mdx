@@ -76,7 +76,7 @@ skipping versions; no parallel paths.
 - **Multi-step evolution** — v1 → v2 → v3 → v4, each step
   building on the last.
 
-For pure additions, [DefaultAdapter](/actor-ts/persistence/migration/default-adapter/)
+For pure additions, [DefaultAdapter](/persistence/migration/default-adapter/)
 is simpler.  For arbitrarily-shaped migrations, use a
 custom `EventAdapter`.
 
@@ -151,7 +151,7 @@ journal — they're load-bearing.
 
 ## Schema registry integration
 
-For projects using the [schema registry](/actor-ts/persistence/migration/schema-registry/),
+For projects using the [schema registry](/persistence/migration/schema-registry/),
 you can validate that the chain's source/destination versions
 align with the registry's declared versions.  Optional but
 useful as a sanity check in tests.
@@ -197,13 +197,13 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Migration overview](/actor-ts/persistence/migration/overview/)** —
+- **[Migration overview](/persistence/migration/overview/)** —
   the bigger picture.
-- **[Envelope format](/actor-ts/persistence/migration/envelope-format/)** —
+- **[Envelope format](/persistence/migration/envelope-format/)** —
   the underlying wire format.
-- **[DefaultAdapter](/actor-ts/persistence/migration/default-adapter/)** —
+- **[DefaultAdapter](/persistence/migration/default-adapter/)** —
   the additive-only alternative.
-- **[WrapLegacy](/actor-ts/persistence/migration/wrap-legacy/)** —
+- **[WrapLegacy](/persistence/migration/wrap-legacy/)** —
   for bringing pre-envelope events into the chain.
-- **[Recipes](/actor-ts/persistence/migration/recipes/)** — common
+- **[Recipes](/persistence/migration/recipes/)** — common
   patterns walked through.

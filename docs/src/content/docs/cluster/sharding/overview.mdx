@@ -92,9 +92,9 @@ perspective.  Behind the scenes:
 | **Entity** | One per `entityId`.  Hosted on whichever node currently owns the shard the ID hashes to. |
 
 Each level has its own page in the cluster section — see
-[ShardRegion](/actor-ts/cluster/sharding/), the
-[allocation strategy](/actor-ts/cluster/sharding/allocation-strategy/),
-and [rebalance](/actor-ts/cluster/sharding/rebalance/) for the
+[ShardRegion](/cluster/sharding/), the
+[allocation strategy](/cluster/sharding/allocation-strategy/),
+and [rebalance](/cluster/sharding/rebalance/) for the
 mechanics.
 
 ## Configuration
@@ -176,7 +176,7 @@ The handoff isn't instant — buffered messages wait for the
 "handoff complete" signal before being forwarded to the new
 owner.  This avoids messages racing past a half-moved entity.
 
-See [Rebalance](/actor-ts/cluster/sharding/rebalance/) for the
+See [Rebalance](/cluster/sharding/rebalance/) for the
 full protocol.
 
 ## State across failover
@@ -189,10 +189,10 @@ For state that should survive:
 
 - **`PersistentActor`** — the entity persists events to a
   journal; on a fresh node, it replays the journal at startup.
-  See [PersistentActor](/actor-ts/persistence/persistent-actor/).
+  See [PersistentActor](/persistence/persistent-actor/).
 - **`DurableStateActor`** — simpler: persist the current state
   snapshot; restore on restart.  See
-  [DurableState](/actor-ts/persistence/durable-state/).
+  [DurableState](/persistence/durable-state/).
 - **`DistributedData`** — for state that should be readable from
   *any* node (not just the entity's current host), use a CRDT in
   the DD replicator instead.
@@ -224,7 +224,7 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   If every message ends up routing to the same entity, you have a
   singleton, not sharding.  Use
-  [ClusterSingleton](/actor-ts/cluster/singleton/overview/) instead
+  [ClusterSingleton](/cluster/singleton/overview/) instead
   — it's the right tool for one-actor-cluster-wide.
 </Aside>
 
@@ -244,18 +244,18 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[ShardRegion](/actor-ts/cluster/sharding/) ** *(stub)* — the
+- **[ShardRegion](/cluster/sharding/) ** *(stub)* — the
   per-node region actor; configuration deep dive.
-- **[Allocation strategy](/actor-ts/cluster/sharding/allocation-strategy/)** —
+- **[Allocation strategy](/cluster/sharding/allocation-strategy/)** —
   default hash-mod-regions, custom strategies.
-- **[Rebalance](/actor-ts/cluster/sharding/rebalance/)** — the
+- **[Rebalance](/cluster/sharding/rebalance/)** — the
   handoff protocol.
-- **[Remember entities](/actor-ts/cluster/sharding/remember-entities/)** —
+- **[Remember entities](/cluster/sharding/remember-entities/)** —
   persistent entity-registry for fast recovery.
-- **[Singleton overview](/actor-ts/cluster/singleton/overview/)** —
+- **[Singleton overview](/cluster/singleton/overview/)** —
   for one-actor-cluster-wide.
-- **[Sharded daemon process](/actor-ts/cluster/sharding/sharded-daemon-process/)** —
+- **[Sharded daemon process](/cluster/sharding/sharded-daemon-process/)** —
   fixed-count workers distributed by sharding.
 
-The [`ClusterSharding`](/actor-ts/api/classes/clustersharding/)
+The [`ClusterSharding`](/api/classes/clustersharding/)
 API reference covers the full surface.

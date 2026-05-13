@@ -224,7 +224,7 @@ livenessProbe:  /health/alive
 ```
 
 The framework's
-[HttpManagement](/actor-ts/observability/management/overview/)
+[HttpManagement](/observability/management/overview/)
 extension exposes these endpoints.
 
 - **`/health/ready`** — "should this pod receive traffic?"
@@ -289,7 +289,7 @@ Five pieces in order:
    fire on SIGTERM to gracefully drain.
 5. **Keep alive** — the process hangs until SIGTERM arrives.
 
-See [Discovery — Kubernetes API](/actor-ts/discovery/seed-providers/kubernetes-api/)
+See [Discovery — Kubernetes API](/discovery/seed-providers/kubernetes-api/)
 for the seed provider's full options.
 
 ## Rolling updates
@@ -338,7 +338,7 @@ import { Aside } from '@astrojs/starlight/components';
 </Aside>
 
 <Aside type="caution" title="Pre-1.0 of K8sLeaseProvider">
-  The [Kubernetes lease](/actor-ts/coordination/kubernetes-lease/)
+  The [Kubernetes lease](/coordination/kubernetes-lease/)
   provider uses K8s native Lease resources for split-brain
   protection in singletons.  It works but has fewer production
   hours than the rest of the framework — exercise the failover
@@ -347,15 +347,15 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Operations overview](/actor-ts/operations/overview/)** — the
+- **[Operations overview](/operations/overview/)** — the
   bigger picture across all production concerns.
-- **[Discovery — Kubernetes API](/actor-ts/discovery/seed-providers/kubernetes-api/)** —
+- **[Discovery — Kubernetes API](/discovery/seed-providers/kubernetes-api/)** —
   the seed provider's options.
-- **[Coordinated shutdown](/actor-ts/fundamentals/coordinated-shutdown/)** —
+- **[Coordinated shutdown](/fundamentals/coordinated-shutdown/)** —
   the phased-shutdown DSL.
-- **[HttpManagement](/actor-ts/observability/management/overview/)** —
+- **[HttpManagement](/observability/management/overview/)** —
   the /health/* endpoints K8s probes hit.
-- **[Cluster security](/actor-ts/operations/security/cluster-security/)** —
+- **[Cluster security](/operations/security/cluster-security/)** —
   TLS + auth for the cluster transport.
-- **[Rolling migration](/actor-ts/operations/upgrades/rolling-migration/)** —
+- **[Rolling migration](/operations/upgrades/rolling-migration/)** —
   schema-breaking changes during a rollout.

@@ -24,8 +24,8 @@ Three scenarios:
 3. **Dev / local** — same code without Redis on the laptop.
 
 For **multi-pod** production, use
-[Redis](/actor-ts/cache/redis/) or
-[Memcached](/actor-ts/cache/memcached/) instead — pods would
+[Redis](/cache/redis/) or
+[Memcached](/cache/memcached/) instead — pods would
 each have their own copy otherwise.
 
 ## Configuration
@@ -126,11 +126,11 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Cache overview](/actor-ts/cache/overview/)** — the bigger
+- **[Cache overview](/cache/overview/)** — the bigger
   picture.
-- **[Redis cache](/actor-ts/cache/redis/)** — multi-pod
+- **[Redis cache](/cache/redis/)** — multi-pod
   alternative.
-- **[Memcached cache](/actor-ts/cache/memcached/)** —
+- **[Memcached cache](/cache/memcached/)** —
   alternative.
-- **[CachedSnapshotStore](/actor-ts/persistence/snapshot-stores/cached-snapshot-store/)** —
+- **[CachedSnapshotStore](/persistence/snapshot-stores/cached-snapshot-store/)** —
   one consumer of the cache abstraction.

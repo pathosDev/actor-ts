@@ -86,7 +86,7 @@ toward the global state.
 | **`ORMap<K, C>`** | A map where the values are themselves CRDTs. | Per-key counters, per-key sets. |
 | **`GCounterMap<K>`** | Convenience: a map of GCounters. | Per-key click counters, per-tenant request counts. |
 
-See [CRDT types](/actor-ts/distributed-data/crdt-types/) for the
+See [CRDT types](/distributed-data/crdt-types/) for the
 deep dive on each — `merge()` semantics, when they fit, when they
 don't.
 
@@ -161,7 +161,7 @@ The durable layer persists changes to disk (or wherever the
 durable-state store lives); on restart, the replica's state is
 restored before joining the gossip.
 
-See [Durable storage](/actor-ts/distributed-data/durable-storage/)
+See [Durable storage](/distributed-data/durable-storage/)
 for the configuration details.
 
 ## When NOT to use DistributedData
@@ -179,7 +179,7 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="High-cardinality keyspace">
   Every node holds every key.  10 000 keys is fine; 10 million is
   not.  For per-key state at scale, use
-  [sharding](/actor-ts/cluster/sharding/overview/) — each entity
+  [sharding](/cluster/sharding/overview/) — each entity
   is one actor on one node, not replicated.
 </Aside>
 
@@ -202,18 +202,18 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[CRDT types](/actor-ts/distributed-data/crdt-types/)** —
+- **[CRDT types](/distributed-data/crdt-types/)** —
   deep dive on each type's semantics.
-- **[Replication](/actor-ts/distributed-data/replication/)** — how
+- **[Replication](/distributed-data/replication/)** — how
   gossip moves updates between replicas.
-- **[Quorum reads/writes](/actor-ts/distributed-data/quorum-reads-writes/)** —
+- **[Quorum reads/writes](/distributed-data/quorum-reads-writes/)** —
   the consistency-level knobs in detail.
-- **[Durable storage](/actor-ts/distributed-data/durable-storage/)** —
+- **[Durable storage](/distributed-data/durable-storage/)** —
   for survive-restart state.
-- **[Cluster overview](/actor-ts/cluster/overview/)** — the
+- **[Cluster overview](/cluster/overview/)** — the
   membership underneath.
-- **[Sharding overview](/actor-ts/cluster/sharding/overview/)** —
+- **[Sharding overview](/cluster/sharding/overview/)** —
   the per-key alternative when keys are too numerous to replicate.
 
-The [`DistributedData`](/actor-ts/api/classes/distributeddata/)
+The [`DistributedData`](/api/classes/distributeddata/)
 API reference covers the full extension surface.

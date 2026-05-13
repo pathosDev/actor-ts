@@ -21,7 +21,7 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 The framework auto-detects which runtime it's executing under and picks
 the right backends transparently — see
-[Runtime overview](/actor-ts/runtime/overview/) for the detection
+[Runtime overview](/runtime/overview/) for the detection
 algorithm and per-runtime caveats.
 
 ## Core install
@@ -192,7 +192,7 @@ this page) — bump it and re-run.
 ## Troubleshooting
 
 <Aside type="caution" title="`Cannot find module 'actor-ts'`">
-  - **Bun / Node**: check `node_modules/actor-ts/` exists.  Re-run
+  - **Bun / Node**: check `node_modules/` exists.  Re-run
     `bun add actor-ts` or `npm install` if it doesn't.
   - **Deno**: use the `npm:` specifier — `import { ... } from 'npm:actor-ts'`.
     Bare specifiers don't resolve in Deno without an import map.
@@ -219,9 +219,9 @@ this page) — bump it and re-run.
 
 ## Where to next
 
-- **[Quickstart](/actor-ts/intro/quickstart/)** — five minutes to a
+- **[Quickstart](/intro/quickstart/)** — five minutes to a
   running actor.
-- **[Why actors?](/actor-ts/intro/why-actors/)** — the philosophy
+- **[Why actors?](/intro/why-actors/)** — the philosophy
   behind the framework.
-- **[Learning path](/actor-ts/intro/learning-path/)** — suggested
+- **[Learning path](/intro/learning-path/)** — suggested
   reading order based on what you want to build.

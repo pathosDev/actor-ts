@@ -4,7 +4,7 @@ description: Sub-poll-interval event delivery — the journal publishes to an in
 ---
 
 The default
-[`PersistenceQuery`](/actor-ts/persistence/persistence-query/) is
+[`PersistenceQuery`](/persistence/persistence-query/) is
 **poll-based**: live streams check the journal every
 `pollIntervalMs` (default 1 s) for new events.  Fine for most
 projections, but introduces up to 1 second of latency per event.
@@ -116,7 +116,7 @@ Push delivery is **strictly in-process**.  For cross-node push
 delivery:
 
 - The framework's
-  [DistributedPubSub](/actor-ts/cluster/pubsub/) handles
+  [DistributedPubSub](/cluster/pubsub/) handles
   general-purpose cluster pub/sub.  You'd manually publish on
   events you want streamed cluster-wide.
 - The Cassandra journal has the option of using **CDC** for
@@ -166,11 +166,11 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[Persistence overview](/actor-ts/persistence/overview/)** —
+- **[Persistence overview](/persistence/overview/)** —
   the bigger picture.
-- **[Persistence query](/actor-ts/persistence/persistence-query/)** —
+- **[Persistence query](/persistence/persistence-query/)** —
   the underlying API.
-- **[Projections](/actor-ts/persistence/projections/)** — what
+- **[Projections](/persistence/projections/)** — what
   consumes the bus.
-- **[DistributedPubSub](/actor-ts/cluster/pubsub/)** — for
+- **[DistributedPubSub](/cluster/pubsub/)** — for
   cross-node real-time fan-out.
