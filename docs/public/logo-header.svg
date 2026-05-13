@@ -8,17 +8,11 @@
       <stop offset="0%" stop-color="#6366f1"/>
       <stop offset="100%" stop-color="#06b6d4"/>
     </linearGradient>
-    <style>
-      /* Tagline picks up the host color-scheme — slate-400 on dark
-         backgrounds, slate-500 on light backgrounds. */
-      .tagline { fill: #94a3b8; }
-      @media (prefers-color-scheme: light) {
-        .tagline { fill: #64748b; }
-      }
-    </style>
   </defs>
 
-  <!-- mesh of interconnected "actors" — left side, 0..118 × 0..118 -->
+  <!-- Same mesh + wordmark as the full logo (`logo.svg`), without the
+       tagline.  Used in the Starlight top-nav where the tagline would
+       render too small to read. -->
   <g fill="none" stroke="url(#ringGrad)" stroke-width="2.5" stroke-linecap="round">
     <line x1="33" y1="28" x2="75" y2="10"/>
     <line x1="33" y1="28" x2="11" y2="74"/>
@@ -42,13 +36,9 @@
     <circle cx="89"  cy="104" r="7"/>
   </g>
 
-  <!-- wordmark: "actor-ts" — indigo + red hyphen + indigo -->
   <g font-family="ui-monospace, 'JetBrains Mono', 'Fira Code', Menlo, monospace" font-weight="700">
     <text x="130" y="75" font-size="64" fill="#6366f1" letter-spacing="-1">
       actor<tspan fill="#ef4444">-</tspan><tspan fill="#6366f1">ts</tspan>
-    </text>
-    <text x="132" y="108" font-size="14" class="tagline" letter-spacing="1.5">
-      the actor model · on Bun, Node &amp; Deno
     </text>
   </g>
 </svg>

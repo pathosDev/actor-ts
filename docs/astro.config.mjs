@@ -89,11 +89,12 @@ export default defineConfig({
         'Akka-style actor model for TypeScript. Runs on Bun, Node, and Deno. ' +
         'Cluster sharding, event sourcing, distributed data, persistence, and ' +
         'observability — all in idiomatic TS.',
-      // Logo replaces the textual title in the top-nav.  Source file lives
-      // under `public/` so the build serves it at `/<base>/logo.svg`.
-      logo: { src: './public/logo.svg', replacesTitle: true },
-      // Favicon is auto-detected from `public/favicon.svg`; explicit
-      // `head` entry below pins the SVG MIME-type for older browsers.
+      // Logo in the top-nav uses the PNG variant without the tagline —
+      // the tagline would be unreadable at navbar height, and PNG avoids
+      // font-fallback drift on systems without JetBrains Mono.  The full
+      // logo with tagline is reserved for the splash hero + README.
+      logo: { src: './public/logo-header.png', replacesTitle: true },
+      // Favicons — SVG for modern browsers, PNG fallbacks for older ones.
       head: [
         {
           tag: 'link',
@@ -101,6 +102,32 @@ export default defineConfig({
             rel: 'icon',
             type: 'image/svg+xml',
             href: '/actor-ts/favicon.svg',
+          },
+        },
+        {
+          tag: 'link',
+          attrs: {
+            rel: 'icon',
+            type: 'image/png',
+            sizes: '32x32',
+            href: '/actor-ts/favicon-32.png',
+          },
+        },
+        {
+          tag: 'link',
+          attrs: {
+            rel: 'icon',
+            type: 'image/png',
+            sizes: '192x192',
+            href: '/actor-ts/favicon-192.png',
+          },
+        },
+        {
+          tag: 'link',
+          attrs: {
+            rel: 'apple-touch-icon',
+            sizes: '192x192',
+            href: '/actor-ts/favicon-192.png',
           },
         },
       ],
