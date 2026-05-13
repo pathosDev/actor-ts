@@ -13,27 +13,31 @@ hides the protocol behind a uniform contract**: connect on
 buffer outgoing messages while disconnected, reconnect with
 backoff, surface lifecycle events on the event stream.
 
-```
-                ┌─────────────────────────────────┐
-                │     BrokerActor (base class)    │
-                │                                  │
-                │   • Lifecycle state machine     │
-                │     disconnected → connecting → │
-                │     connected → disconnecting   │
-                │                                  │
-                │   • Outbound buffer (bounded)   │
-                │   • Reconnect with backoff      │
-                │   • Subscriber fan-out          │
-                │   • Lifecycle events            │
-                │     on system.eventStream       │
-                └─────────────────────────────────┘
-                              ▲
-              ┌───────────────┼───────────────┐
-              │               │               │
-       KafkaActor       MqttActor        NatsActor       (et al.)
-              │               │               │
-           Kafka            MQTT            NATS
-            wire             wire            wire
+```mermaid
+flowchart TB
+  BASE["<b>BrokerActor</b> (base class)<br/>• Lifecycle state machine<br/>disconnected → connecting → connected → disconnecting<br/>• Outbound buffer (bounded)<br/>• Reconnect with backoff<br/>• Subscriber fan-out<br/>• Lifecycle events on system.eventStream"]
+  K["KafkaActor"]
+  M["MqttActor"]
+  N["NatsActor"]
+  ETC["...et al."]
+  WK[("Kafka wire")]
+  WM[("MQTT wire")]
+  WN[("NATS wire")]
+  K -- "extends" --> BASE
+  M -- "extends" --> BASE
+  N -- "extends" --> BASE
+  ETC -- "extends" --> BASE
+  K --> WK
+  M --> WM
+  N --> WN
+  classDef base   fill:#0f172a,stroke:#6366f1,stroke-width:2px,color:#f1f5f9;
+  classDef sub    fill:#312e81,stroke:#818cf8,stroke-width:1.5px,color:#f1f5f9;
+  classDef wire   fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
+  classDef etc    fill:#1e293b,stroke:#475569,color:#94a3b8;
+  class BASE base
+  class K,M,N sub
+  class WK,WM,WN wire
+  class ETC etc
 ```
 
 Subclasses implement three hooks (`connectImpl`, `disconnectImpl`,
@@ -61,11 +65,20 @@ Each has its own page in this section.  This overview covers the
 
 ## The lifecycle state machine
 
-```
-disconnected ──▶ connecting ──▶ connected
-      ▲                              │
-      │                              ▼
-      └────── disconnecting ◀────────┘
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> disconnected
+  disconnected --> connecting
+  connecting --> connected
+  connected --> disconnecting
+  disconnecting --> disconnected
+  classDef ok    fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef warn  fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
+  classDef step  fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
+  class connected ok
+  class disconnected warn
+  class connecting,disconnecting step
 ```
 
 Linear transitions during normal operation:

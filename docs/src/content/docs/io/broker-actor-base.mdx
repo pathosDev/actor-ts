@@ -9,17 +9,20 @@ class owns the **shared lifecycle**: connection state machine,
 reconnect-with-backoff, outbound buffer, subscriber fan-out,
 lifecycle event publishing.
 
-```
-BrokerActor (abstract base)
-├── lifecycle state machine
-├── outbound buffer
-├── reconnect loop
-├── subscriber tracking
-└── three abstract methods:
-    ├── connectImpl()
-    ├── disconnectImpl()
-    └── dispatchOutgoing(envelope)
-```
+`BrokerActor` (the abstract base) owns:
+
+- **Lifecycle state machine** — `disconnected ↔ connecting ↔ connected ↔ disconnecting`.
+- **Outbound buffer** — messages sent before the connection is up.
+- **Reconnect loop** — exponential backoff on connection loss.
+- **Subscriber tracking** — fan-out for incoming events.
+
+Subclasses implement three protocol hooks:
+
+| Hook | When called |
+| --- | --- |
+| `connectImpl` | Open the protocol-specific connection. |
+| `disconnectImpl` | Close it cleanly. |
+| `dispatchOutgoing(envelope)` | Send a single buffered message on the wire. |
 
 Subclasses implement the three protocol hooks; the base handles
 the rest.  This page documents what's **shared**.  For
@@ -28,13 +31,21 @@ per-protocol specifics, see the
 
 ## The state machine
 
-```
-disconnected ──connect──► connecting ──ok──► connected
-     ▲                        │                  │
-     │                     fail                  ▼
-     │                        ▼            disconnecting
-     │                  reconnect cycle          │
-     └────────────────────────┴──────────────────┘
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> disconnected
+  disconnected --> connecting: connect
+  connecting --> connected: ok
+  connecting --> disconnected: fail — reconnect cycle
+  connected --> disconnecting: stop
+  disconnecting --> disconnected
+  classDef ok    fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef warn  fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
+  classDef step  fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
+  class connected ok
+  class disconnected warn
+  class connecting,disconnecting step
 ```
 
 Four states:

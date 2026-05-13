@@ -9,19 +9,15 @@ setups).  For workloads where loss is unacceptable, the framework
 provides **reliable delivery** via the
 **`ProducerController` / `ConsumerController`** pair.
 
-```
-Sender side                  Receiver side
-   │                             │
-   ProducerController             ConsumerController
-       │                             │
-       │ msg #1                      │
-       ├────────────────────────────►│  buffer + dispatch to handler
-       │                             │
-       │                  ack #1     │
-       │◄────────────────────────────┤  handler succeeded
-       │                             │
-       │ msg #2                      │
-       ├────────────────────────────►│  ...
+```mermaid
+sequenceDiagram
+  participant P as ProducerController
+  participant C as ConsumerController
+  P->>C: msg #1
+  Note over C: buffer + dispatch to handler
+  C-->>P: ack #1 — handler succeeded
+  P->>C: msg #2
+  Note over C: ...
 ```
 
 Adds **sequence numbers** + **acks** to the basic `tell`

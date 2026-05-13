@@ -34,11 +34,18 @@ const consumer = system.actorOf(
 
 The producer's messages flow:
 
-```
-ProducerController → ConsumerController → Order in seq → OrderProcessor.onReceive
-                                                                 │
-                                          ack ◄──────────────────┤
-                          (back to producer)
+```mermaid
+flowchart LR
+  PC["ProducerController"]
+  CC["ConsumerController"]
+  SEQ["Order in seq"]
+  HANDLER["OrderProcessor.onReceive"]
+  PC --> CC --> SEQ --> HANDLER
+  HANDLER -- "ack — back to producer" --> PC
+  classDef ctrl fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef step fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
+  class PC,CC ctrl
+  class SEQ,HANDLER step
 ```
 
 ## Configuration
