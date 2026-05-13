@@ -1,0 +1,243 @@
+---
+title: Receive timeout
+description: Detect idle actors — `context.setReceiveTimeout(ms)` fires a `ReceiveTimeout` message into the mailbox whenever the actor goes `ms` without receiving any user message. Standard tool for session expiry, lazy passivation, and watchdog patterns.
+---
+
+A **receive timeout** is the actor-bound equivalent of "this thing
+has been quiet for too long — do something."  You set a duration;
+if no user message arrives within that window, the framework
+delivers a `ReceiveTimeout` system message to the actor.
+
+```ts
+import { Actor, ReceiveTimeout } from 'actor-ts';
+
+type Msg = { kind: 'activity' } | ReceiveTimeout;
+
+class Session extends Actor<Msg> {
+  override preStart(): void {
+    // Idle for 30 s → fire a ReceiveTimeout.
+    this.context.setReceiveTimeout(30_000);
+  }
+
+  override onReceive(msg: Msg): void {
+    if (msg === ReceiveTimeout.instance) {
+      this.log.info('session idle — stopping');
+      this.context.stopSelf();
+      return;
+    }
+    // Any user message resets the idle timer.
+    this.log.info('activity');
+  }
+}
+```
+
+Three things to notice:
+
+1. **`setReceiveTimeout(ms)`** arms the timer.  After `ms` of no
+   user messages, `ReceiveTimeout.instance` lands in the mailbox.
+2. **Every user message resets the timer.**  The clock starts over
+   from each `onReceive` invocation.  Activity = the actor is
+   alive; silence = the timer counts down.
+3. **The timeout fires repeatedly** — once delivered, the timer
+   re-arms.  An actor that doesn't process the `ReceiveTimeout`
+   keeps receiving them every `ms`.  Use `cancelReceiveTimeout()`
+   or `setReceiveTimeout(0)` to stop.
+
+## The API
+
+```ts
+interface ActorContext<TMsg> {
+  setReceiveTimeout(ms: number): void;
+  cancelReceiveTimeout(): void;
+}
+```
+
+Two methods.  `setReceiveTimeout(0)` is equivalent to
+`cancelReceiveTimeout()` — the timer is disabled.  Passing a
+positive value (re-)arms it.
+
+## Common patterns
+
+### Session expiry
+
+```ts
+class Session extends Actor<SessionMsg | ReceiveTimeout> {
+  constructor(private readonly userId: string) { super(); }
+
+  override preStart(): void {
+    this.context.setReceiveTimeout(15 * 60_000);   // 15 minutes
+  }
+
+  override onReceive(msg: SessionMsg | ReceiveTimeout): void {
+    if (msg === ReceiveTimeout.instance) {
+      this.log.info(`session ${this.userId} expired`);
+      this.context.stopSelf();
+      return;
+    }
+    // Process the session message...
+  }
+}
+```
+
+A per-user session actor that auto-stops after 15 minutes of
+inactivity.  When the user comes back, a fresh actor spawns; the
+old one is gone.  This is the bread-and-butter use of receive
+timeouts.
+
+### Passivation in sharded entities
+
+```ts
+class Entity extends Actor<EntityMsg | ReceiveTimeout> {
+  override preStart(): void {
+    this.context.setReceiveTimeout(2 * 60_000);   // 2 minutes idle
+  }
+
+  override onReceive(msg: EntityMsg | ReceiveTimeout): void {
+    if (msg === ReceiveTimeout.instance) {
+      // Tell the shard region we're done — it will stop us cleanly.
+      this.context.parent.forEach((p) =>
+        p.tell({ kind: 'passivate', entityId: this.id }));
+      return;
+    }
+    // ...
+  }
+}
+```
+
+Cluster sharding pairs naturally with receive timeouts: an entity
+that's been idle for some time signals its region to passivate it,
+freeing memory.  When a new message for the same entity-id
+arrives, the region re-spawns the entity from its persisted state.
+
+See [Sharding](/actor-ts/cluster/sharding/overview/) for the full
+passivation protocol.
+
+### Watchdog for downstream silence
+
+```ts
+class Heartbeat extends Actor<...> {
+  override preStart(): void {
+    // We expect the upstream to push at least every 30 s.
+    this.context.setReceiveTimeout(30_000);
+    this.upstream.tell({ kind: 'subscribe', subscriber: this.self });
+  }
+
+  override onReceive(msg): void {
+    if (msg === ReceiveTimeout.instance) {
+      this.log.warn('upstream silent — re-subscribing');
+      this.upstream.tell({ kind: 'subscribe', subscriber: this.self });
+      // Don't stop — keep trying.
+      return;
+    }
+    // Process the heartbeat...
+  }
+}
+```
+
+Catching "the upstream stopped sending events" without an explicit
+`ping` from this side.  The receive timeout is the *absence* of
+traffic — it fires precisely when there's nothing else to react to.
+
+## Interaction with `system` messages
+
+The timer counts **user messages only**.  System messages
+(`PoisonPill`, `Kill`, supervisor signals, internal events) do
+*not* reset it.  This matters because:
+
+- An actor with a long-running system-message stream (e.g.
+  receiving `Terminated` from many watched children) still triggers
+  receive timeouts if no *user* messages arrive.
+- Likewise, a quiet actor that receives a `PoisonPill` from
+  outside doesn't get a "last receive timeout" before stopping —
+  the PoisonPill triggers normal shutdown, the receive-timeout
+  state is cleaned up.
+
+## Interaction with `become`
+
+Switching behavior with `context.become(...)` does **not** affect
+the receive timeout.  The same `ms` window applies to whichever
+handler is currently active.  Two phases of an actor share one
+timeout — re-arm explicitly in `become` if you want phase-specific
+durations:
+
+```ts
+private idle = (msg) => {
+  if (msg.kind === 'start') {
+    this.context.become(this.working);
+    this.context.setReceiveTimeout(60_000);   // 1 min idle in working mode
+  }
+};
+
+private working = (msg) => {
+  if (msg === ReceiveTimeout.instance) {
+    this.context.become(this.idle);
+    this.context.setReceiveTimeout(0);   // no timeout in idle mode
+  }
+};
+```
+
+## ReceiveTimeout messages and the mailbox
+
+`ReceiveTimeout.instance` is delivered via the same path as any
+other user message — it's enqueued, dispatched, handed to
+`onReceive`.  Three knock-on effects:
+
+- **A backed-up mailbox delays receive timeouts.**  If the actor
+  has 100 user messages queued and processes them slowly, the
+  `ReceiveTimeout` from a quiet period earlier might land *after*
+  some of those messages — by which point the actor isn't idle
+  anymore.  This is usually fine (a busy actor isn't idle by
+  definition), but the timing isn't guaranteed.
+- **`ReceiveTimeout.instance` is a singleton**, so identity
+  comparison (`msg === ReceiveTimeout.instance`) is reliable.
+- **Restart resets the timer**.  On restart, the new instance
+  starts with no receive-timeout configured; call
+  `setReceiveTimeout` in `preStart` (or `postRestart`) to re-arm.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Receive timeout vs heartbeat ticker">
+  ```ts
+  // ✗ wrong tool — receive timeout doesn't tick every N ms.
+  this.context.setReceiveTimeout(5_000);   // expects "every 5s, fire"
+  ```
+  Receive timeout fires when **the inbox is silent**, not on a
+  fixed schedule.  If you want a regular tick regardless of
+  traffic, use
+  `context.timers.startTimerWithFixedDelay(...)` — see
+  [Timers and scheduling](/actor-ts/fundamentals/timers-and-scheduling/).
+</Aside>
+
+<Aside type="caution" title="Setting and forgetting">
+  An actor that calls `setReceiveTimeout(60_000)` in `preStart`
+  and ignores the resulting `ReceiveTimeout` messages will see
+  one delivered every 60 s for its lifetime.  Either handle it,
+  cancel it once you no longer need it, or set it to 0 in
+  `become` phases that don't want it.
+</Aside>
+
+<Aside type="caution" title="Very-short timeouts compete with user traffic">
+  ```ts
+  this.context.setReceiveTimeout(10);   // 10 ms
+  ```
+  A 10 ms idle window plus a busy mailbox means the timeout fires
+  rarely (because user messages arrive faster than the window).
+  Sub-second timeouts are usually a sign the receive-timeout
+  isn't the right tool — use `context.timers` for sub-second
+  scheduling.
+</Aside>
+
+## Where to next
+
+- **[Timers and scheduling](/actor-ts/fundamentals/timers-and-scheduling/)** —
+  for *scheduled* fires; receive timeout is for *idle-detection*.
+- **[Sharding — Remember entities](/actor-ts/cluster/sharding/remember-entities/)** —
+  receive-timeout-driven passivation in cluster setups.
+- **[Actor](/actor-ts/fundamentals/actor/)** — the base class
+  whose `context.setReceiveTimeout` you call.
+- **[Mailboxes](/actor-ts/fundamentals/mailboxes/)** — where
+  ReceiveTimeout messages land.
+
+The [`ActorContext.setReceiveTimeout`](/actor-ts/api/interfaces/actorcontext/)
+and [`ReceiveTimeout`](/actor-ts/api/classes/receivetimeout/) API
+references cover the full signatures.

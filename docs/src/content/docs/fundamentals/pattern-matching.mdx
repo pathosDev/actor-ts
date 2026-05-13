@@ -1,0 +1,211 @@
+---
+title: Pattern matching
+description: The `match(msg).with(...).exhaustive()` idiom that actor-ts uses everywhere — built on ts-pattern. Compile-time exhaustiveness, type narrowing, and the conventions for matching on `kind` discriminators.
+---
+
+Inside an actor's `onReceive`, you receive a value of the actor's
+message-union type and dispatch on its shape.  This codebase uses
+[ts-pattern](https://github.com/gvergnaud/ts-pattern) for that —
+specifically the `match(value).with(...).exhaustive()` idiom.  Three
+benefits over hand-rolled `if/else` ladders:
+
+1. **Compile-time exhaustiveness.**  Forget a `kind`, the compiler
+   fails — no silent fallthrough.
+2. **Type narrowing inside each arm.**  No `as` casts, no manual
+   `if (msg.kind === ...)` guards inside handlers.
+3. **Readable for non-trivial unions.**  At 5+ variants the
+   `match` form stays scannable; an `if/else if` ladder doesn't.
+
+## A minimal example
+
+```ts
+import { Actor } from 'actor-ts';
+import { match } from 'ts-pattern';
+
+type Cmd =
+  | { readonly kind: 'inc' }
+  | { readonly kind: 'dec' }
+  | { readonly kind: 'set'; readonly to: number }
+  | { readonly kind: 'reset' };
+
+class Counter extends Actor<Cmd> {
+  private count = 0;
+
+  override onReceive(cmd: Cmd): void {
+    match(cmd)
+      .with({ kind: 'inc' },   ()  => { this.count++; })
+      .with({ kind: 'dec' },   ()  => { this.count--; })
+      .with({ kind: 'set' },   (m) => { this.count = m.to; })
+      .with({ kind: 'reset' }, ()  => { this.count = 0; })
+      .exhaustive();
+  }
+}
+```
+
+Inside the `set` arm, `m` is automatically typed as
+`{ kind: 'set'; to: number }` — the discriminator narrows the type
+without a cast.
+
+`.exhaustive()` at the end is the **compile-time check**: if you
+add `{ kind: 'double' }` to `Cmd` later and forget the matching
+`.with({ kind: 'double' }, ...)` arm, TypeScript refuses to
+compile, pointing at the `.exhaustive()` call.  The build catches
+the omission; you never ship a silently-dropped message.
+
+## The `kind` convention
+
+The framework's discriminated-union convention is **`kind: string`,
+lowercase, kebab-case for multi-word**:
+
+```ts
+type AccountCmd =
+  | { readonly kind: 'deposit';      readonly amount: number }
+  | { readonly kind: 'withdraw';     readonly amount: number }
+  | { readonly kind: 'close-account' }
+  | { readonly kind: 'get-balance';  readonly replyTo: ActorRef<number> };
+```
+
+Why `kind` and not `type` or `tag`:
+
+- `type` would conflict with TypeScript's `type` keyword in
+  type-narrowing reads (annoying, not broken).
+- `tag` is fine but less self-explanatory than `kind`.
+- Akka uses sealed-trait subclasses; in TS-land, `kind` is the
+  most common community idiom.
+
+Sticking to the convention pays off in three places: ts-pattern's
+exhaustiveness check works, the serializer can dispatch by `kind`
+across the wire, and editors can auto-complete on the literal
+union.
+
+## Common ts-pattern features
+
+### Object-pattern narrowing
+
+```ts
+match(cmd)
+  .with({ kind: 'deposit', amount: P.number },  (m) => { /* m.amount: number */ })
+  .with({ kind: 'deposit', amount: 0 },          ()  => { /* zero-amount deposit */ })
+  .otherwise(() => { /* fallthrough */ });
+```
+
+Patterns can refine on field values too — `amount: 0` matches only
+when the amount is literally zero, falling through to the more
+general `P.number` arm if not.
+
+`P` is ts-pattern's pattern-builder namespace.  Useful primitives:
+
+| Pattern | What it matches |
+| --- | --- |
+| `P.string` | Any string |
+| `P.number` | Any number |
+| `P.array(P.string)` | Array of strings |
+| `P.union('a', 'b')` | One of the literals |
+| `P.when((x) => x > 0)` | Predicate guard |
+| `P.any` | Wildcard |
+
+See [the ts-pattern docs](https://github.com/gvergnaud/ts-pattern)
+for the full set.
+
+### Returning a value
+
+`match` is an expression — you can return values:
+
+```ts
+const reply = match(cmd)
+  .with({ kind: 'get' }, () => this.count)
+  .with({ kind: 'inc' }, () => this.count + 1)
+  .exhaustive();
+```
+
+Inside an actor's `onReceive`, you mostly use it for its
+side-effects (`tell` to a reply-to ref, mutate fields).  But for
+typed-actor `Behavior` returns, the expression form is convenient.
+
+### `.otherwise` vs `.exhaustive`
+
+```ts
+match(cmd)
+  .with({ kind: 'inc' }, () => { ... })
+  .with({ kind: 'dec' }, () => { ... })
+  .otherwise(() => this.log.warn('unknown cmd'));   // runtime fallback
+```
+
+`.otherwise(fn)` catches anything not matched.  Use it for actors
+that handle a *subset* of a wider message type — e.g. a
+`PersistentActor` that intentionally ignores commands it can't
+yet handle.
+
+**Default to `.exhaustive()`**.  `.otherwise()` disables the
+exhaustiveness check; reach for it deliberately when "ignore the
+rest" is the right semantic.
+
+## When to prefer plain `if`
+
+For two- or three-variant unions, a plain `if`-chain reads cleaner:
+
+```ts
+override onReceive(cmd: Cmd): void {
+  if (cmd.kind === 'inc') this.count++;
+  else if (cmd.kind === 'dec') this.count--;
+  else cmd.replyTo.tell(this.count);
+}
+```
+
+TypeScript narrows inside each branch — the `else` arm sees
+`{ kind: 'get'; replyTo: ... }` automatically.  You lose the
+`.exhaustive()` check, but at 2-3 variants the cost is low.
+
+The rule of thumb: **use `match` from 4+ variants**, especially
+when arms need destructuring (`(m) => m.amount`).
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`.exhaustive()` complains and the error is opaque">
+  Usually means you added a new `kind` and forgot an arm.
+  TypeScript points at the `.exhaustive()` line and tells you
+  which case is missing — read the error carefully, it names the
+  variant.  If the error stays cryptic, switch the
+  `.exhaustive()` to `.otherwise(() => null)` temporarily to
+  isolate which arm is wrong, then put it back.
+</Aside>
+
+<Aside type="caution" title="Don't pattern-match on `instanceof` for cross-process messages">
+  ```ts
+  match(msg)
+    .with(P.instanceOf(UserLoggedIn), () => ...)   // ← breaks across the wire
+  ```
+  Class identity doesn't survive serialization — the receiver
+  reconstitutes a plain object, not an instance of the original
+  class.  Match on `kind` (or on shape) instead; that's why the
+  framework standardizes on `kind: string`.  For
+  `event-stream`-style class-routed messages, the bus does the
+  `instanceof` check on the publisher's side; subscribers can
+  rely on the narrowed type without re-checking.
+</Aside>
+
+## ts-pattern as a runtime dependency
+
+ts-pattern is a peer dependency of the framework — you install it
+yourself:
+
+```bash
+bun add ts-pattern
+# or: npm install ts-pattern
+```
+
+The framework doesn't require you to use it; you can write
+`onReceive` as a plain switch.  But every code example in the
+docs assumes `import { match } from 'ts-pattern'` is available,
+because that's the convention the codebase follows.
+
+## Where to next
+
+- **[Messages](/actor-ts/fundamentals/messages/)** — the
+  discriminated-union shape that `match` dispatches on.
+- **[Actor](/actor-ts/fundamentals/actor/)** — the `onReceive`
+  signature inside which `match` runs.
+- **[ts-pattern documentation](https://github.com/gvergnaud/ts-pattern)** —
+  the library's full feature surface.
+- **[Typed actors](/actor-ts/typed/typed-actor/)** — the typed
+  API expresses some patterns more directly via Behaviors.

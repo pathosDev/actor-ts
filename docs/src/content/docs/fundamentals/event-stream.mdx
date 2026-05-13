@@ -1,0 +1,193 @@
+---
+title: Event stream
+description: A system-wide pub/sub bus — subscribe to a *class* of event, receive an instance via `tell` whenever someone publishes. Predicate filtering, class-hierarchy delivery, and where to use it instead of direct messaging.
+---
+
+The **event stream** is a system-wide bus for one-to-many messaging
+that doesn't fit the parent-child or sender-receiver shape.  Any
+actor can subscribe to a class of event; any code can publish; the
+bus matches and `tell`s the event to every subscriber.
+
+```ts
+import { Actor, ActorSystem, Props } from 'actor-ts';
+
+class UserLoggedIn {
+  constructor(public readonly userId: string) {}
+}
+
+class AuditLogger extends Actor<UserLoggedIn> {
+  override preStart(): void {
+    this.context.system.eventStream.subscribe(this.context.self, UserLoggedIn);
+  }
+  override onReceive(event: UserLoggedIn): void {
+    this.log.info(`user ${event.userId} logged in`);
+  }
+}
+
+class MetricsCollector extends Actor<UserLoggedIn> {
+  override preStart(): void {
+    this.context.system.eventStream.subscribe(this.context.self, UserLoggedIn);
+  }
+  override onReceive(event: UserLoggedIn): void {
+    this.incrementCounter('logins');
+  }
+}
+
+const system = ActorSystem.create('demo');
+system.actorOf(Props.create(() => new AuditLogger()));
+system.actorOf(Props.create(() => new MetricsCollector()));
+
+// Anywhere — including outside an actor:
+system.eventStream.publish(new UserLoggedIn('user-42'));
+// → both subscribers receive the event
+```
+
+The publisher doesn't know how many subscribers exist, and the
+subscribers don't know who's publishing.  That's the whole point —
+loose coupling for cross-cutting concerns (logging, metrics, audit,
+fan-out alerts).
+
+## The API
+
+```ts
+class EventStream {
+  subscribe<T>(
+    subscriber: ActorRef,
+    channel: new (...args: any[]) => T,
+    predicate?: (event: T) => boolean,
+  ): boolean;
+
+  unsubscribe<T>(subscriber: ActorRef, channel?: new (...args: any[]) => T): boolean;
+
+  publish(event: object): void;
+}
+```
+
+Three operations:
+
+- **`subscribe(ref, ClassName)`** — register interest in a class of
+  events.  Returns `true` if a new subscription was added, `false`
+  if a duplicate was ignored.
+- **`unsubscribe(ref, ClassName?)`** — remove subscriptions.  With
+  the class, just that channel; without, every subscription for
+  that ref.
+- **`publish(event)`** — fire-and-forget.  The bus walks its
+  subscription list, matches via `instanceof`, and `tell`s each
+  match.
+
+Matching is `instanceof`-based, so **subclass instances reach
+base-class subscribers**:
+
+```ts
+class SystemEvent {}
+class UserLoggedIn extends SystemEvent {}
+class UserLoggedOut extends SystemEvent {}
+
+eventStream.subscribe(auditor, SystemEvent);   // catches both
+eventStream.subscribe(loginCounter, UserLoggedIn);   // catches only the in-events
+```
+
+This makes hierarchical event taxonomies easy: subscribers pick
+their level.
+
+## Predicate filtering
+
+```ts
+eventStream.subscribe(
+  metricsActor,
+  HttpResponse,
+  (event) => event.status >= 500,   // only deliver 5xx responses
+);
+```
+
+For high-frequency channels (cluster events, every HTTP response,
+every metric tick), filtering on the **bus side** is cheaper than
+filtering inside each subscriber's `onReceive`.
+
+Three details:
+
+- **No dedup for predicate-bearing subscriptions.**  Without a
+  predicate, the bus dedups per `(subscriber, channel)` pair —
+  re-calling `subscribe` is a no-op.  With a predicate, every
+  call adds a new subscription, because predicate functions have
+  no identity contract.  "Replace this filter" means `unsubscribe`
+  then `subscribe` again.
+- **A throwing predicate is treated as "no match"** for that
+  delivery.  Other subscribers are unaffected; the subscription
+  stays active.  A warning is logged via the system logger.
+- **Predicates run at publish time**, on the publisher's stack.
+  Keep them fast and pure — a heavy predicate slows every publish.
+
+## When to use the event stream
+
+Three good fits:
+
+1. **Cross-cutting observation** — logging, metrics, audit.  Many
+   subscribers, none of which the publisher should know about.
+2. **System-wide notifications** — "the cluster gained a member,"
+   "the cache flushed."  The cluster extension publishes its own
+   events here; you can subscribe and react.
+3. **De-coupling actor wiring** in tests — instead of plumbing a
+   spy ref through five layers, publish on the stream and let the
+   spy subscribe directly.
+
+## When NOT to use it
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="One specific receiver = use a ref">
+  If exactly one actor should receive the message, hold its `ActorRef`
+  and `tell` it.  The event stream is for *fan-out*; using it as a
+  "I don't want to type the ref" shortcut adds runtime cost (every
+  publish walks the subscription list) and obscures intent.  Refs
+  are the default; the bus is the exception.
+</Aside>
+
+<Aside type="caution" title="High-volume in-band data">
+  Streaming sensor readings at 10 kHz through the event stream
+  delivers every reading to every subscriber synchronously inside
+  `publish`.  For bulk in-band data, use direct refs (one
+  per-source mailbox) or DistributedPubSub for cluster-scoped
+  publish with topic routing.  The bus is a coordination tool, not
+  a data pipeline.
+</Aside>
+
+<Aside type="caution" title="The dead-letter case">
+  ```ts
+  eventStream.subscribe(ref, Event);
+  ref.stop();
+  eventStream.publish(new Event());   // → goes to dead letters
+  ```
+  The bus doesn't auto-unsubscribe stopped refs.  Subsequent
+  publishes still `tell` the dead ref; the system routes them to
+  `/deadLetters`, which logs a warning.  If a subscriber is
+  short-lived, `unsubscribe` it in `postStop` — or rely on the
+  dead-letter cleanup if you don't mind the noise.
+</Aside>
+
+## Built-in events worth subscribing to
+
+The framework publishes several event types you can subscribe to:
+
+| Event | Where it comes from |
+| --- | --- |
+| `DeadLetter` | Every message routed to `/deadLetters` is also published.  Useful for "alarms on lost messages." |
+| `ClusterEvent` (subclasses) | `MemberUp`, `MemberRemoved`, `UnreachableMember`, etc.  See [Cluster](/actor-ts/cluster/overview/). |
+| `JournalEvent` | Persisted events emitted by `PersistentActor`s, for `Projection` consumers. |
+| Broker events | `BrokerActor` subclasses publish connect/disconnect/lag events. |
+
+See each extension's docs for the full event vocabulary it
+publishes.
+
+## Where to next
+
+- **[DistributedPubSub](/actor-ts/cluster/pubsub/)** — cluster-wide
+  publish/subscribe with topic routing; complementary to the
+  local event stream.
+- **[Actor system](/actor-ts/fundamentals/actor-system/)** —
+  `system.eventStream` is where you reach the bus.
+- **[Messages](/actor-ts/fundamentals/messages/)** — the shape
+  rules (immutable, no method refs) apply equally to events.
+
+The [`EventStream`](/actor-ts/api/classes/eventstream/) API
+reference covers the full surface.
