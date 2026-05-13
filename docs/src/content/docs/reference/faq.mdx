@@ -35,8 +35,8 @@ Three reasons:
 - **First-class TypeScript types**.  Akka.NET assumes C#; an
   Akka-style port to TS often loses the type-level benefits.
   actor-ts is designed for TypeScript-first ergonomics.
-- **Runtime choice**.  Runs on Bun (primary), Node (≥22.12), and
-  Deno — no JVM, no .NET, no separate runtime.
+- **Runtime choice**.  Runs on Bun (primary), Node, and Deno —
+  no JVM, no .NET, no separate runtime.
 - **Cluster + persistence + observability** built in, without the
   "wire it yourself from 8 libraries" tax that vanilla TS would
   charge.
@@ -249,9 +249,9 @@ You're not *required* to use ts-pattern in your own code; plain
 **Bun** if you can.  Faster startup, faster cold paths, native
 SQLite, native test runner.  We test Bun as the primary runtime.
 
-**Node** (≥22.12) is fully supported as a fallback.  Some
-performance is left on the table compared to Bun, but the
-feature surface is identical.
+**Node** is fully supported as a fallback.  Some performance is
+left on the table compared to Bun, but the feature surface is
+identical.
 
 **Deno** is supported but receives less testing — file a bug if
 you hit a Deno-specific issue.

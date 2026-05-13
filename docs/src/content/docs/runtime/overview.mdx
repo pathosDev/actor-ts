@@ -1,6 +1,6 @@
 ---
 title: Runtime overview
-description: actor-ts runs on Bun, Node.js (≥ 22.12), and Deno. This page covers the runtime-detection model, what differs between them, and how to pick. Bun is the primary target; Node is fully supported; Deno is best-effort.
+description: actor-ts runs on Bun, Node.js, and Deno. This page covers the runtime-detection model, what differs between them, and how to pick. Bun is the primary target; Node is fully supported; Deno is best-effort.
 ---
 
 actor-ts targets **three JavaScript runtimes**:
@@ -8,7 +8,7 @@ actor-ts targets **three JavaScript runtimes**:
 | Runtime | Status | Notes |
 | --- | --- | --- |
 | **Bun** | Primary | The runtime we test against first.  Native SQLite, native test runner, fastest startup. |
-| **Node** (≥ 22.12) | Fully supported | Requires `better-sqlite3` peer dep for SQLite paths. |
+| **Node** | Fully supported | Requires `better-sqlite3` peer dep for SQLite paths.  Some optional features need Node 22+ for native paths. |
 | **Deno** | Best-effort | Works for most features; less testing than Bun/Node. |
 
 The framework's **runtime-detection model** picks the right
@@ -21,9 +21,9 @@ adapts.
 For most users:
 
 - **Bun if you can**.  Faster, lighter, fewer peer deps.
-- **Node ≥ 22.12 if your environment requires it** — most
-  managed platforms (AWS Lambda layers, Cloud Functions, etc.)
-  default to Node.
+- **Node if your environment requires it** — most managed
+  platforms (AWS Lambda layers, Cloud Functions, etc.) default
+  to Node.
 - **Deno if you're already invested in it**.
 
 ## How runtime detection works
@@ -135,13 +135,15 @@ import { Aside } from '@astrojs/starlight/components';
   surface during slow boots.
 </Aside>
 
-<Aside type="caution" title="Node < 22.12 isn't supported">
+<Aside type="caution" title="Node < 20 isn't supported">
   ```bash
   node --version
   # v18.x.x  ← not supported
   ```
-  actor-ts uses newer APIs (top-level await, `node:test`, etc.).
-  Upgrade to 22.12+ or use Bun.
+  actor-ts needs Node 20+ for WebCrypto + the runtime APIs we
+  rely on.  Some optional features (native WebSocket, native
+  zstd) prefer 22+ but fall back to peer deps on 20.
+  Upgrade to 20+ or use Bun.
 </Aside>
 
 ## Where to next

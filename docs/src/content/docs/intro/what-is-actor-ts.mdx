@@ -7,7 +7,7 @@ description: A from-scratch port of the actor model to idiomatic TypeScript — 
 fault-tolerant systems in TypeScript** using the actor model — the
 same mental model the JVM world has had in Akka and Pekko, .NET has
 had in Orleans and Akka.NET, and Erlang has had since the 80s.  It
-runs natively on **Bun**, **Node.js 20+**, and **Deno 2+**, picking
+runs natively on **Bun**, **Node.js**, and **Deno**, picking
 the right runtime backend (TCP sockets, worker threads, SQLite, HTTP
 serve primitives) automatically based on which globals are present.
 
@@ -43,7 +43,7 @@ extensive, and the design wins out over thread-pool-plus-mutex code
 the moment your concurrency picture gets non-trivial.
 
 TypeScript is **the dominant language for application backends
-today**.  Bun, Node 20+, and Deno 2+ all give you fast startup,
+today**.  Bun, Node, and Deno all give you fast startup,
 solid TypeScript ergonomics, and a healthy ecosystem.  Yet the
 actor-model toolkit for TS has historically been thin — you'd
 either write your own primitives, glue together promise/worker-thread
@@ -137,8 +137,8 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## A note on runtimes
 
-The framework treats the three runtimes — Bun, Node 20+, Deno 2+
-— as **first-class peers**.  All three are CI-tested for the
+The framework treats the three runtimes — Bun, Node, Deno —
+as **first-class peers**.  All three are CI-tested for the
 features they support; the
 [compatibility matrix](/runtime/compatibility-matrix/) is the
 definitive reference for what works where.

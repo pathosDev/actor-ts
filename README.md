@@ -39,8 +39,8 @@
 
 `actor-ts` is a **batteries-included actor-model runtime** for TypeScript —
 messages, mailboxes, supervisors, location-transparent refs, the whole
-Erlang/Akka mental model — running natively on **Bun**, **Node.js 20+**, and
-**Deno 2+**.
+Erlang/Akka mental model — running natively on **Bun**, **Node.js**, and
+**Deno**.
 
 A short tour of what's in the box:
 
@@ -80,8 +80,8 @@ abstractions in [`src/runtime/`](./src/runtime/) and auto-detect at startup.
 
 ```bash
 bun add actor-ts                                  # Bun
-npm install actor-ts                              # Node 20+
-# Deno 2+: no install — import via `npm:actor-ts`
+npm install actor-ts                              # Node
+# Deno: no install — import via `npm:actor-ts`
 ```
 
 ```ts

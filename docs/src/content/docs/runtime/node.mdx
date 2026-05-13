@@ -1,9 +1,9 @@
 ---
 title: Node.js
-description: Node.js 22.12+ is fully supported. A few subsystems require peer dependencies (`better-sqlite3` for SQLite, `ws` for WebSocket server). Use Node when your platform requires it or your team already runs Node.
+description: Node.js 20 or later is fully supported. A few subsystems require peer dependencies (`better-sqlite3` for SQLite, `ws` for WebSocket server). Use Node when your platform requires it or your team already runs Node.
 ---
 
-actor-ts runs on **Node.js 22.12 and later**.  Fully supported;
+actor-ts runs on **Node.js 20 and later**.  Fully supported;
 the framework's CI runs against Node alongside Bun.
 
 ## Why Node
@@ -21,15 +21,15 @@ For new greenfield projects without these constraints,
 ## Installation
 
 ```bash
-nvm install 22.12
-nvm use 22.12
-node --version    # v22.12.0 or later
+nvm install 20
+nvm use 20
+node --version    # v20.0.0 or later
 ```
 
 For Docker:
 
 ```dockerfile
-FROM node:22-alpine
+FROM node:20-alpine
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
@@ -37,19 +37,31 @@ COPY . .
 CMD ["node", "dist/main.js"]
 ```
 
-## Why 22.12 specifically
+## Why Node 20 as the floor
 
-The framework uses:
+The framework needs:
 
-- **Native test runner** (`node:test`) — needs ≥ 20, fully
-  stable on 22.
-- **AsyncLocalStorage `.run()` improvements** — stable on 22.
-- **Built-in `fetch`** — stable on 18+, but combined with the
-  other requirements, 22.12 is the floor.
+- **`globalThis.crypto.subtle`** (WebCrypto) — present on Node 20+;
+  used for AES-GCM in object-storage encryption.
+- **Built-in `fetch`** — stable on Node 18+.
+- **`AsyncLocalStorage`** — long-stable.
+- **`node:test`** — needs Node 20.
 
-Older Node versions (20, 18) **may work** for the core actor
-API but aren't supported — file bugs against the supported
-version range only.
+Node 18 may work for the core actor API but isn't actively
+tested — file bugs against Node 20+ only.
+
+A couple of features unlock natively on **newer Node versions**
+(without a peer-dep fallback):
+
+- **Native `WebSocket`** — global `WebSocket` constructor is
+  built in on Node 22+.  On Node 20, install the `ws` peer dep
+  for `ServerWebSocketActor` / `WebSocketActor`.
+- **Native `zstd` compression** — `node:zlib` gained `zstdCompress`
+  / `zstdDecompress` on Node 22.15.  On older Node, install the
+  `fzstd` peer dep for object-storage zstd codecs.
+
+Both peer-dep paths are well-tested; "needing a peer dep" doesn't
+mean "broken on Node 20."
 
 ## Peer dependencies
 
@@ -164,7 +176,7 @@ matter.  For high-throughput tight-loop work, Bun wins.
 
 ```yaml
 # Lambda function definition:
-Runtime: nodejs22.x
+Runtime: nodejs20.x
 MemorySize: 1024
 Handler: dist/main.handler
 ```
@@ -204,10 +216,10 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Node version drift between dev and prod">
   ```json
   // package.json
-  { "engines": { "node": ">=22.12" } }
+  { "engines": { "node": ">=20" } }
   ```
   Pin the Node version in `engines`.  Without it, dev might use
-  Node 24 and prod Node 20 — subtle API differences cause
+  Node 24 and prod Node 18 — subtle API differences cause
   weird bugs.
 </Aside>
 
