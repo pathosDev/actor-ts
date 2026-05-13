@@ -1,0 +1,222 @@
+---
+title: Node.js
+description: Node.js 22.12+ is fully supported. A few subsystems require peer dependencies (`better-sqlite3` for SQLite, `ws` for WebSocket server). Use Node when your platform requires it or your team already runs Node.
+---
+
+actor-ts runs on **Node.js 22.12 and later**.  Fully supported;
+the framework's CI runs against Node alongside Bun.
+
+## Why Node
+
+| Reason | Detail |
+| --- | --- |
+| **Managed-platform support** | AWS Lambda, Cloud Functions, Vercel, Cloudflare Pages all accept Node. |
+| **Long-term-support reasons** | Some compliance regimes require Node's LTS branches. |
+| **Existing Node infrastructure** | Existing build/deploy/monitor stacks integrate naturally. |
+| **Wider native-module support** | Some native modules (e.g., specific encryption libraries) lag behind on Bun. |
+
+For new greenfield projects without these constraints,
+**Bun is usually preferable** — fewer peer deps, faster startup.
+
+## Installation
+
+```bash
+nvm install 22.12
+nvm use 22.12
+node --version    # v22.12.0 or later
+```
+
+For Docker:
+
+```dockerfile
+FROM node:22-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev
+COPY . .
+CMD ["node", "dist/main.js"]
+```
+
+## Why 22.12 specifically
+
+The framework uses:
+
+- **Native test runner** (`node:test`) — needs ≥ 20, fully
+  stable on 22.
+- **AsyncLocalStorage `.run()` improvements** — stable on 22.
+- **Built-in `fetch`** — stable on 18+, but combined with the
+  other requirements, 22.12 is the floor.
+
+Older Node versions (20, 18) **may work** for the core actor
+API but aren't supported — file bugs against the supported
+version range only.
+
+## Peer dependencies
+
+Node setups need a few peer deps the framework doesn't bundle:
+
+| Subsystem | Peer dep |
+| --- | --- |
+| SQLite journal / snapshot store / state | `better-sqlite3` |
+| WebSocket server (`ServerWebSocketActor`) | `ws` |
+| Kafka | `kafkajs` |
+| MQTT | `mqtt` |
+| AMQP | `amqplib` |
+| NATS | `nats` |
+| Redis | `redis` |
+| gRPC | `@grpc/grpc-js @grpc/proto-loader` |
+| Cassandra | `cassandra-driver` |
+| OTel | `@opentelemetry/api @opentelemetry/sdk-*` + exporter |
+
+Install only what you use:
+
+```bash
+npm install actor-ts ts-pattern
+# Plus per-subsystem:
+npm install better-sqlite3   # for SQLite persistence
+npm install kafkajs           # for Kafka actor
+```
+
+The framework's lazy imports mean **missing peer deps don't
+break unused features** — if you never instantiate
+`KafkaActor`, you can skip `kafkajs`.
+
+## SQLite on Node
+
+```bash
+npm install better-sqlite3
+```
+
+Then:
+
+```ts
+import { SqliteJournal } from 'actor-ts';
+
+// Auto-detects better-sqlite3 on Node.
+new SqliteJournal({ path: '/var/lib/events.db' });
+```
+
+`better-sqlite3` is a native module — first install requires
+build tools (gyp, Python, a C++ compiler).  Most Linux base
+images include these; alpine-based images may need:
+
+```dockerfile
+RUN apk add --no-cache python3 make g++
+```
+
+For pre-built binaries:
+
+```bash
+npm install better-sqlite3 --prefer-offline
+```
+
+Most platforms have pre-built artifacts; you rarely build from
+source.
+
+## Running tests
+
+```bash
+# With Node's native runner:
+node --test --test-name-pattern="..."
+
+# With Vitest:
+npx vitest
+
+# With Jest:
+npx jest
+```
+
+TestKit works with all three.  The framework's own tests use
+`bun:test`, but the **TestKit API is runner-agnostic**.
+
+## ESM vs CommonJS
+
+actor-ts ships **ESM** (`type: "module"` in package.json).  In
+Node:
+
+```ts
+// In your app's package.json:
+{
+  "type": "module"
+}
+
+// import actor-ts:
+import { ActorSystem } from 'actor-ts';
+```
+
+For CommonJS projects, you'd need a build step (esbuild, tsc with
+ES module interop) to bridge.  Easier: use ESM throughout.
+
+## Performance on Node
+
+Rough numbers vs Bun:
+
+- **Tell throughput**: ~6-8M msgs/sec (slower than Bun).
+- **HTTP throughput**: comparable for Fastify-based servers.
+- **Startup time**: 300-500ms vs Bun's sub-100ms.
+
+For long-running production services, the startup gap doesn't
+matter.  For high-throughput tight-loop work, Bun wins.
+
+## Common platforms
+
+### AWS Lambda
+
+```yaml
+# Lambda function definition:
+Runtime: nodejs22.x
+MemorySize: 1024
+Handler: dist/main.handler
+```
+
+Cold-start dominates for short-lived invocations.  Pre-warm via
+provisioned concurrency for latency-sensitive workloads.
+
+The cluster model **doesn't fit Lambda well** — actors expect
+a long-running process.  For Lambda, use actor-ts as a
+single-actor-per-invocation pattern (or use a different
+architecture for short-lived workloads).
+
+### Cloud Functions / Vercel / Netlify
+
+Same caveats — these platforms are short-lived-process
+environments.  Single-actor patterns work; clustering doesn't.
+
+### Long-running VMs / containers
+
+Native fit.  Use systemd / PM2 (see
+[Process manager](/actor-ts/operations/deployment/process-manager/))
+or K8s (see
+[Kubernetes deployment](/actor-ts/operations/deployment/kubernetes/)).
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Native modules require build tools">
+  ```bash
+  npm install better-sqlite3
+  # → fails on minimal Alpine without g++/python3
+  ```
+  Container images need build tools or pre-built binaries.
+  Use the official `node` image (Debian-based) rather than
+  `node:alpine` to avoid this.
+</Aside>
+
+<Aside type="caution" title="Node version drift between dev and prod">
+  ```json
+  // package.json
+  { "engines": { "node": ">=22.12" } }
+  ```
+  Pin the Node version in `engines`.  Without it, dev might use
+  Node 24 and prod Node 20 — subtle API differences cause
+  weird bugs.
+</Aside>
+
+## Where to next
+
+- **[Runtime overview](/actor-ts/runtime/overview/)** — the
+  bigger picture.
+- **[Bun](/actor-ts/runtime/bun/)** — the primary alternative.
+- **[Compatibility matrix](/actor-ts/runtime/compatibility-matrix/)** —
+  feature-by-feature support.
+- **[Installation](/actor-ts/intro/installation/)** — install
+  steps.

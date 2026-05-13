@@ -1,0 +1,292 @@
+---
+title: TLS everywhere
+description: Configuring TLS across every network surface — cluster transport, HTTP server, broker actors (Kafka/MQTT/AMQP/NATS/Redis), management endpoint. Each component has its own TLS knobs; this page is the catalog.
+---
+
+Production-secure means **TLS on every network surface**.  Each
+component of the framework has its own TLS configuration; this
+page is the **catalog** of where to enable it and what cert
+material each needs.
+
+## Cluster transport
+
+```ts
+import { TcpTransport, Cluster } from 'actor-ts';
+
+const transport = new TcpTransport(self, log, {
+  cert: fs.readFileSync('./tls/cluster.crt'),
+  key:  fs.readFileSync('./tls/cluster.key'),
+  ca:   fs.readFileSync('./tls/ca.crt'),
+  rejectUnauthorized: true,
+});
+
+await Cluster.join(system, { host, port, seeds, transport });
+```
+
+Mutually-authenticated TLS between cluster nodes.  See
+[cluster security](/actor-ts/operations/security/cluster-security/)
+for the full discussion.
+
+**Don't skip this** — even on internal networks, defense in
+depth applies.
+
+## HTTP server
+
+```ts
+import { HttpExtensionId } from 'actor-ts';
+
+const http = system.extension(HttpExtensionId);
+
+await http.newServerAt('0.0.0.0', 8443)
+  .useBackend(new FastifyBackend({
+    tls: {
+      cert: fs.readFileSync('./tls/http.crt'),
+      key:  fs.readFileSync('./tls/http.key'),
+    },
+  }))
+  .bind(routes);
+```
+
+For HTTPS at the application layer.  Often **terminated at the
+load balancer** instead — in K8s, the Service/Ingress handles
+TLS, the app speaks plain HTTP internally.  Pick by your
+infrastructure shape.
+
+## Management endpoint
+
+```ts
+await HttpManagement.start(system, {
+  port: 8558,
+  tls:  {
+    cert: fs.readFileSync('./tls/mgmt.crt'),
+    key:  fs.readFileSync('./tls/mgmt.key'),
+  },
+});
+```
+
+The management server is internal-only by default — but
+**TLS still helps**:
+
+- Protects against lateral movement inside a compromised
+  network.
+- Required by some compliance regimes regardless of network
+  topology.
+
+## Broker actors
+
+Each broker actor has its own TLS knobs:
+
+### Kafka
+
+```ts
+new KafkaActor({
+  brokers: ['kafka-1:9093'],
+  ssl:     true,
+  sasl: {
+    mechanism: 'scram-sha-512',
+    username: process.env.KAFKA_USER!,
+    password: process.env.KAFKA_PASS!,
+  },
+});
+```
+
+### MQTT
+
+```ts
+new MqttActor({
+  url:      'mqtts://mqtt.example.com:8883',
+  username: process.env.MQTT_USER,
+  password: process.env.MQTT_PASS,
+});
+```
+
+`mqtts://` URL scheme.  Cert verification follows the
+underlying `mqtt` package's defaults.
+
+### AMQP
+
+```ts
+new AmqpActor({
+  url: 'amqps://rabbitmq.example.com:5671',
+  // amqplib uses URL params for TLS configuration
+});
+```
+
+`amqps://` URL scheme.
+
+### NATS
+
+```ts
+new NatsActor({
+  servers: ['nats://nats.example.com:4222'],
+  tls: {
+    ca:   fs.readFileSync('./tls/nats-ca.crt'),
+    cert: fs.readFileSync('./tls/nats-client.crt'),
+    key:  fs.readFileSync('./tls/nats-client.key'),
+  },
+});
+```
+
+mTLS via the `tls` object — common for production NATS.
+
+### Redis Streams
+
+```ts
+new RedisStreamsActor({
+  url: 'rediss://redis.example.com:6380',
+  tls: true,
+});
+```
+
+`rediss://` URL scheme (note the double-s).
+
+### gRPC
+
+```ts
+new GrpcClientActor({
+  target: 'orders.example.com:50051',
+  tls: {
+    ca: fs.readFileSync('./tls/ca.crt'),
+  },
+});
+```
+
+For mutual TLS, add `cert` + `key`.
+
+### WebSocket
+
+```ts
+new WebSocketActor({
+  url: 'wss://realtime.example.com/feed',
+});
+```
+
+`wss://` URL scheme.  Cert verification follows the runtime's
+TLS defaults.
+
+## Persistence backends
+
+### SQLite
+
+```
+N/A — local-file access.  TLS not applicable.
+```
+
+### Cassandra
+
+```ts
+new CassandraJournal({
+  contactPoints: ['cass-1.example.com:9042'],
+  ssl: {
+    cert: fs.readFileSync('./tls/cass-client.crt'),
+    key:  fs.readFileSync('./tls/cass-client.key'),
+    ca:   fs.readFileSync('./tls/cass-ca.crt'),
+  },
+});
+```
+
+Cassandra clusters typically run with mTLS in production.
+
+### Object storage
+
+```ts
+new ObjectStorageDurableStateStore({
+  backend: new S3Backend({
+    region: 'eu-west-1',
+    // S3 uses HTTPS by default
+  }),
+});
+```
+
+Cloud object storage (S3, GCS, Azure Blob) **always uses
+TLS**.  No configuration needed beyond pointing at the
+endpoint.
+
+## Cert provisioning
+
+Three patterns in K8s production:
+
+### cert-manager
+
+```yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: actor-ts-cluster
+spec:
+  secretName: actor-ts-cluster-tls
+  issuerRef:
+    name: actor-ts-ca
+    kind: ClusterIssuer
+  commonName: actor-ts
+  dnsNames: [actor-ts-cluster.svc]
+  duration: 8760h
+  renewBefore: 720h
+```
+
+cert-manager auto-renews certs before expiry.  Most production
+K8s setups use it.
+
+### Vault Agent
+
+Vault Agent runs as a sidecar; pulls certs into the pod's
+filesystem; renews automatically.  Useful when you already
+have HashiCorp Vault.
+
+### Manual + scheduled rotation
+
+For non-K8s environments, scheduled cron jobs that pull fresh
+certs from an internal CA + restart the affected services.
+Works but requires careful operational discipline.
+
+## What about CA chain?
+
+```ts
+ca: fs.readFileSync('./tls/ca.crt'),
+```
+
+Most internal setups: **one CA, signs all client + server
+certs**.  The cert verification needs the CA cert at both ends.
+
+Cloud-managed certificates (Let's Encrypt, AWS ACM): use
+**public CA bundles** — already present in most runtimes.  No
+explicit `ca` needed.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="TLS without verification">
+  ```ts
+  // ✗
+  tls: { rejectUnauthorized: false }
+  ```
+  Encryption without verification = MITM is possible.  Always
+  verify peer certs.
+</Aside>
+
+<Aside type="caution" title="Same cert across all components">
+  ```ts
+  // One wildcard cert for everything
+  ```
+  Tempting but combines the blast radius.  Different certs per
+  component (cluster, HTTP, broker) means a compromised cert
+  is contained.
+</Aside>
+
+<Aside type="caution" title="Cert expiration silently breaks things">
+  ```ts
+  // 1-year cert expires; cluster suddenly can't form
+  ```
+  TLS certs **expire**.  Set up monitoring on cert expiration;
+  rotate well before.
+</Aside>
+
+## Where to next
+
+- **[Cluster security](/actor-ts/operations/security/cluster-security/)** —
+  the cluster-transport detail.
+- **[Master key rotation](/actor-ts/operations/security/master-key-rotation/)** —
+  for data at rest.
+- **[Kubernetes deployment](/actor-ts/operations/deployment/kubernetes/)** —
+  the K8s recipe + cert-manager integration.
+- **[Operations overview](/actor-ts/operations/overview/)** —
+  the production-security checklist.

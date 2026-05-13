@@ -1,0 +1,272 @@
+---
+title: Troubleshooting
+description: Diagnostic-by-symptom catalog for the most-common production issues — cluster won't form, sharded entities aren't appearing, persistence is slow, memory growth, etc. With the metrics + log queries to confirm the diagnosis.
+---
+
+When something's wrong in production, this page is the
+**starting point**.  Each section is a **symptom**, the **likely
+cause(s)**, and what to **check / log / measure** to confirm.
+
+For the diagnostic tools themselves:
+
+- [Logging](/actor-ts/fundamentals/logging/) — structured logs.
+- [Stock metrics](/actor-ts/observability/metrics/stock-metrics/) —
+  built-in actor / cluster metrics.
+- [Tracing](/actor-ts/observability/tracing/tracer-api/) —
+  per-request flow.
+
+## Cluster
+
+### Symptom: cluster won't form
+
+**Pods start, but never reach Up.**
+
+Causes to check (in order):
+
+1. **Seeds unreachable** — wrong addresses / DNS / RBAC.
+2. **Cluster port firewalled** — pods can't talk on 2552.
+3. **Different system names** — `ActorSystem.create('app-a')` on
+   one node, `'app-b'` on another.
+4. **TLS misconfiguration** — handshake fails silently.
+
+Diagnostics:
+
+```ts
+cluster.subscribe(MemberJoined, (e) => system.log.info(`saw join: ${e.member.address}`));
+cluster.subscribe(SelfUp, () => system.log.info('self up'));
+```
+
+Check whether `SelfUp` fires.  If not, the local node hasn't
+even bootstrapped.  Look at the seed-provider output:
+
+```bash
+kubectl logs pod-1 | grep -i seed
+# → "discovered N seeds: ..."  ← should not be empty
+```
+
+If empty: seed provider's selector / DNS / config is wrong.
+
+### Symptom: cluster flaps
+
+**Members oscillate between reachable and unreachable.**
+
+Causes:
+
+1. **Tight failure-detector thresholds** for the network's
+   jitter.  See
+   [failure-detector tuning](/actor-ts/operations/tuning/failure-detector/).
+2. **Network partitions** (real ones — diagnose at the
+   infrastructure level).
+3. **GC pauses** longer than the unreachable threshold.
+
+Diagnostics:
+
+```promql
+rate(cluster_unreachable_duration_ms_count[5m]) > 0.1
+# Frequent transitions
+```
+
+In logs:
+
+```
+[INFO ] cluster — node-X marked unreachable
+[INFO ] cluster — node-X marked reachable
+[INFO ] cluster — node-X marked unreachable
+```
+
+Persistent flapping signals threshold tuning.
+
+## Sharding
+
+### Symptom: sharded entities don't spawn
+
+**Messages to a sharding region don't reach entities.**
+
+Causes:
+
+1. **Coordinator not yet started** — sharding is async; messages
+   sent before the coordinator is ready get buffered.
+2. **No nodes match the `role`** — empty up-member set, so no
+   shards are allocated.
+3. **extractEntityId returns undefined** — the message routing
+   has nothing to hash.
+
+Diagnostics:
+
+```promql
+sharding_shards_hosted{type="entity-type"}
+# Should equal numShards (total) across the cluster
+```
+
+Logs:
+
+```bash
+kubectl logs pod-1 | grep -i shard
+# → "coordinator: allocating shard X to node-Y"
+```
+
+If you see "no candidates," your `role` filter rejects every
+node.  Check role tags in `Cluster.join`.
+
+### Symptom: rebalance storm
+
+**Sharding metrics show continuous rebalances; entities
+flicker.**
+
+Causes:
+
+1. **Aggressive allocation strategy** — `LeastShardAllocationStrategy`
+   with `rebalanceThreshold: 1` and frequent membership changes.
+2. **Flapping cluster** (see above) — every change triggers
+   rebalance.
+
+Fix:
+
+```ts
+new LeastShardAllocationStrategy(/* threshold */ 5, /* max */ 3);
+```
+
+Higher threshold = less sensitivity to small imbalances.
+
+## Persistence
+
+### Symptom: actor takes 30 seconds to start
+
+**`preStart` takes a long time; the actor's first
+`onReceive` is delayed.**
+
+Cause: **deep journal without snapshots**.  Recovery reads
+every event ever.
+
+Diagnostics:
+
+```promql
+histogram_quantile(0.99, persistence_recovery_duration_ms_bucket)
+```
+
+If P99 recovery is > 1 second, **set a snapshot policy**:
+
+```ts
+override snapshotPolicy() { return everyNEvents(100); }
+```
+
+See [Snapshots](/actor-ts/persistence/snapshots/).
+
+### Symptom: events recovered but state is wrong
+
+**On restart, the actor's state doesn't match what it should
+be from the journal.**
+
+Causes:
+
+1. **`onEvent` has a side effect** — runs during replay and
+   somehow alters the state path.
+2. **`onEvent` uses `Date.now()` or random** — non-deterministic;
+   each replay produces different state.
+3. **Schema change without an adapter** — old events have a
+   different shape than what `onEvent` expects.
+
+Diagnostics: compare the actor's state after recovery to
+what's in the journal.  Replay manually in a test to isolate.
+
+## Memory + performance
+
+### Symptom: memory grows unboundedly
+
+**Heap grows linearly with uptime; eventually OOM.**
+
+Causes (most common first):
+
+1. **Unbounded mailboxes** with a slow consumer.  Mailbox depth
+   metric grows.
+2. **Subscriber set leaks** — actors registering with the
+   event stream or DistributedPubSub but never unsubscribing
+   on stop.
+3. **DistributedData keys** accumulating — `LWWMap` with
+   millions of keys.
+4. **Persistent buffers** — stash buffers, ask reply-to refs.
+
+Diagnostics:
+
+```promql
+actor_mailbox_size{class=...}
+# Find actors with persistently large queues
+```
+
+```bash
+# Heap dump via runtime tools:
+node --inspect / Bun's profiler
+```
+
+Check
+[mailbox sizing](/actor-ts/operations/tuning/mailbox-sizing/) +
+the leak patterns in
+[event stream](/actor-ts/fundamentals/event-stream/).
+
+### Symptom: HTTP latency high under load
+
+**Actor work is fine; HTTP responses are slow.**
+
+Cause: an actor monopolizes the event loop, starving HTTP
+handlers.
+
+Fix: per-actor
+[ThroughputDispatcher](/actor-ts/operations/tuning/dispatcher-tuning/)
+on the heavy actor.
+
+## Tests + dev
+
+### Symptom: tests hang at the end
+
+**Bun / Vitest test process doesn't exit.**
+
+Cause: `await system.terminate()` not called in a fixture
+teardown.  Leaked schedulers / actor cells keep the event
+loop alive.
+
+Fix:
+
+```ts
+afterEach(async () => {
+  await tk.shutdown();
+});
+```
+
+See [TestKit](/actor-ts/testing/testkit/).
+
+### Symptom: flaky timing-sensitive tests
+
+**Tests pass locally, fail in CI.**
+
+Cause: real-clock timing in tests.  CI machines are slower /
+different.
+
+Fix: use
+[ManualScheduler](/actor-ts/testing/manual-scheduler/) and
+control time deterministically.
+
+## Where to start when nothing's obvious
+
+```
+1. Check logs for ERROR-level entries.  Filter by time window
+   around the issue.
+2. Check stock metrics — what changed?  (rate of restarts,
+   mailbox depth, member count).
+3. Check cluster events on the event stream.
+4. If a request is failing, follow the trace ID through logs /
+   trace backend.
+5. Reproduce in a multi-node-spec test if you can.
+```
+
+## Where to next
+
+- **[Operations overview](/actor-ts/operations/overview/)** —
+  the broader production checklist.
+- **[FAQ](/actor-ts/reference/faq/)** — common questions and
+  pitfalls.
+- **[Stock metrics](/actor-ts/observability/metrics/stock-metrics/)** —
+  what to read when symptoms emerge.
+- **[Logging](/actor-ts/fundamentals/logging/)** — how to make
+  logs actually useful.
+- **[Tracing](/actor-ts/observability/tracing/tracer-api/)** —
+  per-request flow when logs aren't enough.

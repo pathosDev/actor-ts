@@ -1,0 +1,186 @@
+---
+title: Process manager deployment
+description: Running actor-ts under systemd / PM2 on VMs — when Kubernetes is overkill and you have a fixed set of VMs to deploy onto. Process supervision + restart-on-crash + boot integration.
+---
+
+For deployments **without container orchestration** — bare-metal,
+VMs, smaller setups — process managers like **systemd** (Linux)
+or **PM2** (Node-focused) supervise actor-ts processes.
+
+## systemd
+
+```ini
+# /etc/systemd/system/actor-ts.service
+[Unit]
+Description=actor-ts application
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=actor-ts
+Group=actor-ts
+WorkingDirectory=/opt/actor-ts
+Environment="NODE_ENV=production"
+EnvironmentFile=/etc/actor-ts/env
+ExecStart=/usr/bin/bun /opt/actor-ts/dist/main.js
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=60s
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable actor-ts
+sudo systemctl start actor-ts
+
+sudo systemctl status actor-ts
+sudo journalctl -u actor-ts -f
+```
+
+### Key directives
+
+| Directive | Purpose |
+| --- | --- |
+| `Restart=on-failure` | Auto-restart on non-zero exit.  Combined with `RestartSec=10s` for backoff. |
+| `TimeoutStopSec=60s` | How long systemd waits after SIGTERM before SIGKILL.  Sized to match coordinated-shutdown phase budget. |
+| `KillSignal=SIGTERM` | The graceful-shutdown signal.  Triggers
+  the framework's coordinated-shutdown hooks. |
+| `User`/`Group` | Run as non-root.  Always. |
+| `StandardOutput=journal` | Logs flow to journald — collected centrally. |
+
+### Cluster across systemd hosts
+
+```ini
+# /etc/actor-ts/env on each host:
+ACTOR_TS_HOSTNAME=10.0.0.5     # this host's IP
+ACTOR_TS_PORT=2552
+ACTOR_TS_SEEDS=10.0.0.5:2552,10.0.0.6:2552,10.0.0.7:2552
+```
+
+Three hosts; each knows the full seed list.  Add another host
+later by appending to the seed list and rolling out.
+
+For **dynamic-size deployments** (autoscaling VMs), use the
+[DNS seed provider](/actor-ts/discovery/seed-providers/dns/)
+backed by your DNS-SD provider (Consul, Eureka, etc.).
+
+### Rolling restart on systemd
+
+```bash
+# Stop one node at a time, wait for cluster to converge, then next:
+ssh host-1 'sudo systemctl restart actor-ts'
+# Wait for re-up:
+ssh host-2 'curl http://localhost:8558/ready'
+# Then:
+ssh host-2 'sudo systemctl restart actor-ts'
+# ...
+```
+
+Manual but straightforward.  Tooling like **Ansible** or
+**Salt** automates the orchestration.
+
+## PM2
+
+PM2 is Node-focused; works well for actor-ts on Node (Bun has
+native support but doesn't natively integrate with PM2's
+binary).
+
+```json
+// ecosystem.config.json
+{
+  "apps": [
+    {
+      "name":        "actor-ts",
+      "script":      "dist/main.js",
+      "exec_mode":   "fork",
+      "instances":   1,
+      "max_memory_restart": "2G",
+      "kill_timeout": 60000,
+      "env_production": {
+        "NODE_ENV":     "production",
+        "ACTOR_TS_PORT": "2552"
+      },
+      "error_file":  "/var/log/actor-ts/error.log",
+      "out_file":    "/var/log/actor-ts/out.log"
+    }
+  ]
+}
+```
+
+```bash
+pm2 start ecosystem.config.json --env production
+pm2 startup        # generate systemd config so PM2 starts on boot
+pm2 save           # persist current state
+```
+
+### Key options
+
+| Option | Purpose |
+| --- | --- |
+| `exec_mode: "fork"` | One process per actor-ts node.  Don't use cluster-mode (PM2's cluster-mode confuses cluster semantics). |
+| `instances: 1` | One instance.  Multiple actor-ts in cluster-mode would each try to be the same node, breaking things. |
+| `kill_timeout: 60000` | SIGTERM → SIGKILL window.  Match coordinated-shutdown. |
+| `max_memory_restart` | Auto-restart if memory exceeds.  Combined with metrics to alert before kill. |
+
+## Avoiding common pitfalls
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="PM2 cluster mode confuses actor-ts cluster">
+  ```json
+  { "exec_mode": "cluster", "instances": 4 }
+  ```
+  PM2's "cluster mode" runs N node.js workers behind a TCP
+  load balancer.  Each would try to bind the same actor-ts
+  port → conflicts.  Always use `exec_mode: "fork"`.
+</Aside>
+
+<Aside type="caution" title="Restart loop without backoff">
+  ```ini
+  Restart=on-failure
+  # no RestartSec → restarts immediately, repeatedly, on a
+  # config error
+  ```
+  Set `RestartSec=10s` (or higher) to backoff and let
+  monitoring catch the loop.
+</Aside>
+
+<Aside type="caution" title="Logs filling /var/log">
+  ```ini
+  StandardOutput=journal
+  ```
+  systemd-journald handles log rotation.  Direct file logging
+  (PM2 logs) requires you to set up logrotate or accept the
+  disk fill.
+</Aside>
+
+## When to use process managers vs K8s
+
+| Scenario | Choice |
+| --- | --- |
+| ≤ 5 VMs, stable, manual operations | systemd / PM2 |
+| Dynamic scaling, ≥ 10 VMs | Kubernetes |
+| Bare-metal with hardware affinity | systemd |
+| Multi-cloud / on-prem hybrid | Kubernetes (or HashiCorp Nomad) |
+
+Process managers are **lower abstraction** — fewer features but
+fewer dependencies.  For a single-machine prod or a small VM
+fleet, the K8s overhead isn't worth it.
+
+## Where to next
+
+- **[Kubernetes deployment](/actor-ts/operations/deployment/kubernetes/)** —
+  the K8s alternative.
+- **[Docker Compose](/actor-ts/operations/deployment/docker-compose/)** —
+  for local multi-node setups.
+- **[Coordinated shutdown](/actor-ts/fundamentals/coordinated-shutdown/)** —
+  what your `TimeoutStopSec` / `kill_timeout` needs to allow for.
+- **[Operations overview](/actor-ts/operations/overview/)** —
+  production checklist.

@@ -1,0 +1,249 @@
+---
+title: Cluster security
+description: TLS + authentication on the cluster transport — encrypt traffic, authenticate peers, prevent unauthorized cluster joins. Mandatory for clusters that cross untrusted networks.
+---
+
+The cluster transport defaults to **plain TCP without
+authentication** — fast, simple, fine for a private network.
+**Not fine** for any cluster that crosses an untrusted boundary
+(the public internet, multi-tenant kubernetes, cross-region
+links without VPN).
+
+This page covers the production-security setup for the cluster
+transport.
+
+## Two concerns
+
+| Concern | How to address |
+| --- | --- |
+| **Eavesdropping** — peer-to-peer traffic readable by anyone on the wire. | TLS on the cluster transport. |
+| **Unauthorized joins** — a malicious node connects + becomes a cluster member. | Shared-secret auth on the handshake. |
+
+Both should be enabled together for any external-facing
+cluster.
+
+## Enabling TLS
+
+```ts
+import { TcpTransport, NodeAddress, Cluster } from 'actor-ts';
+import fs from 'node:fs';
+
+const transport = new TcpTransport(
+  NodeAddress.parse('actor-ts://my-app@10.0.0.5:2552'),
+  system.log,
+  {
+    cert: fs.readFileSync('./tls/cluster.crt'),
+    key:  fs.readFileSync('./tls/cluster.key'),
+    ca:   fs.readFileSync('./tls/ca.crt'),
+    rejectUnauthorized: true,   // verify peer certs
+  },
+);
+
+await Cluster.join(system, {
+  host:      '10.0.0.5',
+  port:      2552,
+  seeds:     [...],
+  transport,
+});
+```
+
+The TLS settings:
+
+- **`cert`** + **`key`** — this node's certificate + private key.
+- **`ca`** — trusted CA bundle.  Use to verify peers'
+  certificates.
+- **`rejectUnauthorized: true`** — fail handshakes where the
+  peer's cert isn't signed by `ca`.
+
+With `rejectUnauthorized: true` + a shared CA, the cluster
+becomes **mutually authenticated** — every connection requires
+a peer cert signed by the trusted CA.
+
+## Certificate management
+
+Three approaches:
+
+### Self-signed for development
+
+```bash
+openssl req -x509 -newkey rsa:4096 -keyout cluster.key -out cluster.crt -days 365 -nodes -subj "/CN=actor-ts"
+```
+
+Use the same cert + key on every node.  Fine for dev / staging.
+Don't use in production.
+
+### Private CA for production
+
+```bash
+# Create a CA once:
+openssl req -x509 -newkey rsa:4096 -keyout ca.key -out ca.crt -days 3650 -nodes -subj "/CN=actor-ts-ca"
+
+# Per-node certs signed by the CA:
+openssl req -newkey rsa:4096 -keyout node-1.key -out node-1.csr -nodes -subj "/CN=node-1"
+openssl x509 -req -in node-1.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out node-1.crt -days 365
+```
+
+Each node gets its own cert; everyone trusts the CA.  Rotating
+certs is per-node and doesn't require touching the CA.
+
+### Cert-manager / vault for K8s
+
+For K8s deployments, use **cert-manager** with an internal CA
+or HashiCorp Vault.  Certs are mounted as volume secrets;
+rotation handled by the cert manager.
+
+```yaml
+# Example cert-manager Certificate spec:
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: actor-ts-cluster
+spec:
+  secretName: actor-ts-cluster-tls
+  issuerRef:
+    name: actor-ts-ca
+    kind: ClusterIssuer
+  commonName: actor-ts
+  dnsNames:
+    - actor-ts-cluster.svc
+  duration: 8760h
+  renewBefore: 720h
+```
+
+The pod mounts the secret as files; the actor reads them.
+
+## Shared-secret auth (optional layer)
+
+Beyond TLS, the framework can require a **shared secret** in
+the cluster handshake:
+
+```ts
+new TcpTransport(self, log, tlsOpts, /* maxFrame */ undefined, {
+  sharedSecret: process.env.CLUSTER_SECRET,
+});
+```
+
+Every node needs the same secret.  Mismatched secrets fail
+the handshake; bad actors without the secret can't join.
+
+With **TLS + mTLS already in place**, the shared secret adds
+belt-and-braces — handle the **insider threat** of a compromised
+private CA, where an attacker who got a cert could still be
+blocked.  For most deployments, mTLS alone is sufficient.
+
+## Firewall the cluster port
+
+```
+Cluster port (2552) — internal-only:
+- pods can talk to pods on 2552
+- not exposed via Service / Ingress
+- LoadBalancer never sees it
+```
+
+Even with TLS + auth, **expose the cluster port narrowly**.
+A NetworkPolicy in K8s:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: actor-ts-cluster-internal-only
+spec:
+  podSelector:
+    matchLabels:
+      app: actor-ts
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: actor-ts
+      ports:
+        - protocol: TCP
+          port: 2552
+```
+
+Only `app=actor-ts` pods can reach port 2552 on each other.
+
+## Threat model
+
+| Threat | Mitigation |
+| --- | --- |
+| Network eavesdropping | TLS |
+| Man-in-the-middle | TLS + cert verification |
+| Unauthorized cluster join | mTLS + shared secret |
+| Insider with stolen cert | Shared secret + cert rotation |
+| Compromised pod inside the cluster | Application-level auth (out of scope here) |
+
+The cluster transport handles transport-level security.
+Application-level concerns (auth between specific actors,
+per-tenant isolation) remain your job — the cluster
+transport is **trusted within itself**.
+
+## Per-deployment recipe
+
+```ts
+// production.ts
+import { TcpTransport, Cluster } from 'actor-ts';
+
+const tlsSettings = {
+  cert: fs.readFileSync(process.env.TLS_CERT_PATH!),
+  key:  fs.readFileSync(process.env.TLS_KEY_PATH!),
+  ca:   fs.readFileSync(process.env.TLS_CA_PATH!),
+  rejectUnauthorized: true,
+};
+
+const transport = new TcpTransport(self, log, tlsSettings);
+
+await Cluster.join(system, {
+  host,
+  port,
+  seeds,
+  transport,
+});
+```
+
+Env vars carry paths; the cert-manager / vault mounts the
+files.  Code stays generic across environments.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Self-signed certs in production">
+  ```ts
+  // Same self-signed cert reused across years + many nodes
+  ```
+  Self-signed is convenient but: no rotation story, no revocation,
+  cert compromise = cluster compromise.  Use a private CA from
+  day one of production.
+</Aside>
+
+<Aside type="caution" title="`rejectUnauthorized: false`">
+  ```ts
+  rejectUnauthorized: false,   // ✗ accepts any cert
+  ```
+  Tempting during debug ("certs don't match my hostnames").
+  Means **any TLS connection is accepted** — defeats the
+  authentication.  Fix the cert hostnames instead.
+</Aside>
+
+<Aside type="caution" title="Cert expiration">
+  ```ts
+  // Cert expires; cluster suddenly can't form
+  ```
+  TLS certs have expiry dates.  Without rotation automation,
+  certs eventually expire and the cluster goes offline.  Use
+  cert-manager, set up renewal alerts, or use very-long-lived
+  internal CA certs (10+ years).
+</Aside>
+
+## Where to next
+
+- **[Operations overview](/actor-ts/operations/overview/)** —
+  production-readiness checklist.
+- **[TLS everywhere](/actor-ts/operations/security/tls-everywhere/)** —
+  TLS for HTTP + brokers + journals.
+- **[Master key rotation](/actor-ts/operations/security/master-key-rotation/)** —
+  rotating data-at-rest encryption keys.
+- **[Transports](/actor-ts/cluster/transports/)** — the
+  underlying transport interface.
+- **[Configuration](/actor-ts/reference/configuration/)** — the
+  HOCON keys for TLS settings.

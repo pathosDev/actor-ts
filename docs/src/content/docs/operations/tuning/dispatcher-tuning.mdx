@@ -1,0 +1,204 @@
+---
+title: Dispatcher tuning
+description: Picking the right dispatcher per workload — microtask for tight loops, immediate (default) for balanced HTTP traffic, throughput for batch-heavy. Plus the throughput knob for the `ThroughputDispatcher`.
+---
+
+The
+[dispatcher](/actor-ts/fundamentals/dispatchers/) decides
+**when actor messages run** on the JavaScript event loop.  Three
+shapes ship:
+
+| Dispatcher | Schedules via | Fits |
+| --- | --- | --- |
+| `MicrotaskDispatcher` | `queueMicrotask` | CPU-tight; no I/O. |
+| `ImmediateDispatcher` *(default)* | `setImmediate` / `setTimeout(0)` | HTTP servers + mixed I/O. |
+| `ThroughputDispatcher` | `setImmediate` with N-then-yield | Batch processing. |
+
+The default — `ImmediateDispatcher` — is right for **most apps**.
+This page covers when it isn't, and how to pick a better fit.
+
+## Default behavior
+
+```ts
+const system = ActorSystem.create('my-app');
+//  ↑ uses ImmediateDispatcher by default
+```
+
+Actor messages run via `setImmediate`, which yields between
+each message — letting I/O callbacks (HTTP handlers, broker
+messages, timer fires) interleave naturally.
+
+For HTTP servers + broker-actor clusters (the common case),
+this gives **good HTTP latency** at the cost of slightly
+higher per-message overhead.
+
+## Symptom: high HTTP latency under actor load
+
+```
+P99 HTTP response time is 200ms; actors are processing tens
+of thousands of messages/sec.  The actor work isn't the
+problem — it's that HTTP requests can't get a turn.
+```
+
+**Cause**: an actor (or group of actors) is processing
+messages so fast that HTTP handlers wait for a turn.
+
+**Fix**: stick with `ImmediateDispatcher` (the default) and
+**bound the busy actors with a throughput dispatcher per-actor**:
+
+```ts
+import { ThroughputDispatcher } from 'actor-ts';
+
+const heavyActor = system.actorOf(
+  Props.create(() => new HeavyWorker())
+    .withDispatcher(new ThroughputDispatcher({ throughput: 100 })),
+);
+```
+
+The heavy actor processes 100 messages, yields, lets HTTP
+catch up, processes 100 more.  HTTP latency drops; throughput
+on the heavy actor is barely affected.
+
+## Symptom: low actor throughput, low CPU usage
+
+```
+The actor system is doing 1000 msg/sec on an idle CPU.
+Profile shows time spent in setImmediate.
+```
+
+**Cause**: `ImmediateDispatcher` has per-message overhead from
+yielding to the event loop on every message.  For tight-loop
+CPU work without I/O, this is wasted.
+
+**Fix**: use `MicrotaskDispatcher`:
+
+```ts
+import { MicrotaskDispatcher } from 'actor-ts';
+
+const cpuActor = system.actorOf(
+  Props.create(() => new CpuIntensive())
+    .withDispatcher(new MicrotaskDispatcher()),
+);
+```
+
+Microtasks bypass the event loop, ~50× faster scheduling.
+**Caveat**: a CPU-tight actor on microtask can **starve I/O**
+(network reads, timers).  Use only when:
+
+- The actor doesn't share the system with HTTP traffic
+  (compute-only workers).
+- The actor itself doesn't `await` I/O (purely CPU).
+
+## ThroughputDispatcher options
+
+```ts
+new ThroughputDispatcher({
+  throughput:        100,        // messages per batch
+  yieldStrategy:     'setImmediate',   // or 'setTimeout' or 'microtask'
+});
+```
+
+- **`throughput`** — messages processed per actor before
+  yielding.  Higher = more throughput, worse I/O interleaving.
+  Common values: 10-1000.
+- **`yieldStrategy`** — how to yield between batches.
+  `setImmediate` is the I/O-friendly default; `microtask`
+  yields shorter but doesn't release the event loop.
+
+For a batch processor handling broker messages: `throughput: 200`
+is a reasonable starting point.
+
+## Per-actor dispatcher
+
+```ts
+const heavy = system.actorOf(
+  Props.create(() => new BulkProcessor())
+    .withDispatcher(new ThroughputDispatcher({ throughput: 500 })),
+);
+
+const httpHandler = system.actorOf(
+  Props.create(() => new HttpHandler()),
+  // → uses system's default ImmediateDispatcher
+);
+```
+
+Mix freely.  Heavy actors get their own throughput-tuned
+dispatcher; HTTP handlers stay on the default.  This is the
+**recommended production pattern**.
+
+## System-wide dispatcher
+
+```ts
+const system = ActorSystem.create('my-app', {
+  dispatcher: new ThroughputDispatcher({ throughput: 100 }),
+});
+```
+
+Override the default for **every actor that doesn't specify
+otherwise**.  Useful for batch-only systems with no HTTP
+traffic.
+
+## Measuring
+
+Use the
+[stock metric](/actor-ts/observability/metrics/stock-metrics/)
+`actor_message_duration_ms`:
+
+```
+P50 ≈ work time
+P99 - P50 ≈ dispatcher latency (queueing)
+```
+
+If P99 is far higher than P50 with little work-time variance,
+**dispatcher tuning helps**.
+
+The
+`actor_mailbox_size` gauge under load shows whether actors are
+keeping up.  Persistently growing depth = either a slow handler
+or a misconfigured dispatcher.
+
+## Heuristics
+
+```
+HTTP server + actors        → ImmediateDispatcher (default)
+Compute-heavy + no HTTP     → MicrotaskDispatcher
+Batch processing            → ThroughputDispatcher (throughput 100-500)
+Mixed: heavy actor + HTTP   → ImmediateDispatcher default + ThroughputDispatcher per heavy actor
+```
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="MicrotaskDispatcher + HTTP server in same system">
+  ```ts
+  // System-wide MicrotaskDispatcher + an HTTP server in the same system
+  ```
+  Microtask-scheduled actors can monopolize the event loop;
+  HTTP responses get starved.  Either go per-actor (only heavy
+  actors on microtask) or split into two systems.
+</Aside>
+
+<Aside type="caution" title="Tuning before measuring">
+  ```ts
+  // "Let me use ThroughputDispatcher for everything"
+  ```
+  Don't.  The default works for most apps.  Tune only when
+  metrics show latency / throughput issues that the dispatcher
+  could plausibly cause.
+</Aside>
+
+<Aside type="caution" title="Very high throughput values">
+  ```ts
+  new ThroughputDispatcher({ throughput: 100_000 });
+  ```
+  Processing 100K messages without yielding starves everything
+  else in the same process.  Stay below ~1000.
+</Aside>
+
+## Where to next
+
+- **[Dispatchers](/actor-ts/fundamentals/dispatchers/)** — the
+  conceptual reference.
+- **[Mailbox sizing](/actor-ts/operations/tuning/mailbox-sizing/)** —
+  the complementary knob.
+- **[Stock metrics](/actor-ts/observability/metrics/stock-metrics/)** —
+  the per-actor performance metrics.

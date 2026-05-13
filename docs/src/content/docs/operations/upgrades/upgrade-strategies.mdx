@@ -1,0 +1,224 @@
+---
+title: Upgrade strategies
+description: Two kinds of upgrades, two patterns — code upgrades (rolling, no schema change) vs schema-breaking upgrades (need migration first, then rolling). Pick the right shape; bias toward additive changes when possible.
+---
+
+Two kinds of production upgrade:
+
+| Kind | Pattern |
+| --- | --- |
+| **Code-only upgrade** | New binary, same schemas.  Rolling deployment — old + new versions coexist briefly. |
+| **Schema-breaking upgrade** | New shapes for events / state / messages.  Migration first, then rolling deployment. |
+
+Pick the kind, follow the pattern.  Mixing them naively breaks
+production — old nodes can't read new schemas or vice versa.
+
+## Code-only upgrades
+
+The common case.  Bug fixes, refactors, behavior tweaks
+without changing persisted-data shapes.
+
+```
+1. Build the new binary (tag v1.2.3).
+2. Deploy via rolling update.
+3. K8s replaces pods one at a time.
+4. Each pod: SIGTERM → coordinated-shutdown → drain → new pod
+   spawns → cluster-rejoin.
+5. Done.
+```
+
+The cluster's gossip + sharding rebalance + coordinated-shutdown
+handle the choreography.  Total downtime: zero (if configured
+right; see
+[Kubernetes deployment](/actor-ts/operations/deployment/kubernetes/)).
+
+**Requirements**:
+
+- Replicas ≥ 2.  Single-replica clusters can't drain cleanly.
+- Coordinated shutdown configured with sane phase timeouts.
+- Health checks correctly gate readiness.
+
+## Schema-breaking upgrades
+
+Whenever the upgrade changes:
+
+- **Event shapes** in a journal.
+- **State shapes** in a durable-state store.
+- **Message shapes** that nodes might send each other during
+  the rolling window.
+- **Configuration keys** that move between major versions.
+
+The pattern: **make the change additive**, then upgrade.
+
+## Pattern — additive event shapes
+
+Old code wrote:
+
+```ts
+type DepositedV1 = { kind: 'deposited'; amount: number };
+```
+
+New code wants:
+
+```ts
+type DepositedV2 = { kind: 'deposited'; amount: number; currency: string };
+```
+
+**Step 1: deploy intermediate code** that accepts both shapes.
+
+```ts
+class Account extends PersistentActor<...> {
+  override eventAdapter() {
+    return new DefaultAdapter<DepositedV2>({
+      currentVersion: 2,
+      defaults:       { currency: 'USD' },
+    });
+  }
+}
+```
+
+This step:
+
+- **Writes V2** events under the new shape.
+- **Reads V1** events with `currency` defaulted to USD.
+- **Works in old + new** clusters because old code reads its
+  own shape and ignores envelope wrapping.
+
+Roll this out via standard rolling deployment.
+
+**Step 2 (optional later)** — drop the `DefaultAdapter` once
+all old events are aged out or snapshotted.  Usually keep it
+indefinitely for safety.
+
+See [migration recipes](/actor-ts/persistence/migration/recipes/)
+for the per-pattern walkthrough.
+
+## Pattern — non-additive schema changes
+
+For **renames**, **restructures**, **removed fields**, the
+mechanics need more steps:
+
+```
+1. Deploy code that READS old + writes NEW.  (`MigratingAdapter`)
+2. Roll out fully.  All new events are now in the new shape.
+3. Deploy code that READS NEW only (no longer supports old).
+   Drops the migrating step.
+4. Optional: bulk-migration to rewrite still-extant old events
+   into the new shape if you'd like to drop adapter complexity.
+```
+
+See
+[MigratingAdapter](/actor-ts/persistence/migration/migrating-adapter/)
+for the implementation.
+
+## Inter-actor message changes
+
+```ts
+// v1 message: { kind: 'request' }
+// v2 message: { kind: 'request', traceId: string }
+```
+
+During a rolling deployment, **old nodes might send v1 to new
+nodes** (or vice versa).  The new code must tolerate both
+versions of incoming messages.
+
+**Strategy**:
+
+1. **Add the new field as optional** in the message type.
+2. **New code can handle messages missing the field** (default
+   it).
+3. **Deploy**.  Old → new sends without the field, works.  New →
+   old sends with the field, old ignores it.
+
+Once everything's on v2, the field can become required in a
+**later deployment**.
+
+## Configuration changes
+
+```hocon
+# v1 → v2: renamed config key
+actor-ts.cluster.gossip-interval = 1s     # v1
+actor-ts.cluster.gossip-interval-ms = 1000 # v2 (renamed)
+```
+
+The framework's config system **doesn't auto-migrate** renamed
+keys.  Two strategies:
+
+- **Read both** in the code that loads config; honor either name
+  until you can require the new one.
+- **Run migration scripts** that rewrite `application.conf` to
+  the new key names.
+
+Easier: **avoid renaming config keys**.  When you must,
+deprecate the old name + warn at startup for one release before
+removing.
+
+## What if you can't avoid downtime?
+
+Sometimes the schema-break is bad enough that an online migration
+is genuinely impossible — different storage backend, fundamental
+restructuring.  Then **plan downtime**:
+
+```
+1. Announce maintenance window.
+2. Coordinated shutdown of the entire cluster.
+3. Run offline migration scripts (sometimes hours).
+4. Bring up the new version.
+5. Smoke-test before user traffic.
+```
+
+Frequency: ideally **never**.  But occasionally inevitable.
+
+## Rollback strategy
+
+**Always have a rollback plan**:
+
+- **Code-only**: previous binary still works against same
+  schemas.  Roll back via K8s rolling-back.
+- **Schema-breaking**: the *previous* code reads the *new*
+  shapes (because step 1 was additive).  Rollback is safe.
+- **Non-additive change**: harder — the rollback step needs to
+  also know the new shape.  Avoid; if necessary, use feature
+  flags to gate the new code path while keeping the old one
+  reachable.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Schema break without migration code">
+  ```ts
+  // Add a required field, deploy
+  // → all old events fail to deserialize after deploy
+  ```
+  Always have an adapter (or default) for the transition.
+  Otherwise the new code can't read the old data.
+</Aside>
+
+<Aside type="caution" title="Skipping the additive step">
+  ```ts
+  // Step 1 + 3 merged into one deploy
+  ```
+  Means there's no "old + new coexist" window.  In a
+  rolling-update, old nodes briefly run alongside new — both
+  must read the same data.  Multi-step is safer.
+</Aside>
+
+<Aside type="caution" title="No rollback test">
+  ```ts
+  // Deploy goes well; rollback path never exercised
+  ```
+  Practice rollback in staging.  Production is no time to find
+  out the rollback breaks.
+</Aside>
+
+## Where to next
+
+- **[Operations overview](/actor-ts/operations/overview/)** —
+  the production checklist.
+- **[Rolling migration](/actor-ts/operations/upgrades/rolling-migration/)** —
+  the practical step-by-step recipe.
+- **[Migration overview](/actor-ts/persistence/migration/overview/)** —
+  schema evolution for events + state.
+- **[Migration recipes](/actor-ts/persistence/migration/recipes/)** —
+  the cookbook.
+- **[Coordinated shutdown](/actor-ts/fundamentals/coordinated-shutdown/)** —
+  the graceful-stop machinery rolling deploys rely on.

@@ -1,0 +1,234 @@
+---
+title: Failure detector tuning
+description: Thresholds for when peers are marked unreachable / down — `heartbeatIntervalMs`, `unreachableAfterMs`, `downAfterMs`. Defaults are LAN-focused; cross-region clusters need to bump them up. Operational tuning, not framework code.
+---
+
+The
+[failure detector](/actor-ts/cluster/failure-detector/) decides
+when a peer is `unreachable` or `down`.  Three knobs:
+
+```ts
+Cluster.join(system, {
+  host, port, seeds,
+  failureDetector: {
+    heartbeatIntervalMs: 500,    // default
+    unreachableAfterMs:  2_000,   // default
+    downAfterMs:         5_000,   // default
+  },
+});
+```
+
+This page is the **operational tuning guide** — when to change
+these, by how much, and what symptoms each value affects.  For
+the conceptual model, see
+[failure detector](/actor-ts/cluster/failure-detector/).
+
+## The defaults
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `heartbeatIntervalMs` | 500 | How often heartbeats are sent. |
+| `unreachableAfterMs` | 2 000 | Silence threshold for `unreachable`. |
+| `downAfterMs` | 5 000 | Silence threshold for `down`. |
+
+LAN clusters: defaults are fine.  Cross-region or noisy
+networks need adjustment.
+
+## Symptom-driven tuning
+
+### Symptom: false-positive unreachable
+
+```
+Member flips to unreachable, then back to reachable, then
+unreachable, then reachable.  Flapping every few seconds.
+```
+
+**Cause**: `unreachableAfterMs` is too tight for your
+network's jitter.  Brief GC pauses or transient network
+delays exceed the threshold.
+
+**Fix**: raise `unreachableAfterMs`.
+
+```ts
+failureDetector: {
+  heartbeatIntervalMs: 500,
+  unreachableAfterMs:  5_000,    // ← was 2_000
+  downAfterMs:         15_000,    // ← was 5_000 (keep ratio similar)
+}
+```
+
+### Symptom: slow failover
+
+```
+A node dies, but the cluster takes 10+ seconds to react.
+Singletons / sharded entities don't move for a long time.
+```
+
+**Cause**: `unreachableAfterMs` + downing-strategy delay is
+too long.  The cluster is waiting before deciding.
+
+**Fix**: lower `unreachableAfterMs` and `downAfterMs`
+proportionally.
+
+```ts
+failureDetector: {
+  heartbeatIntervalMs: 250,     // ← was 500
+  unreachableAfterMs:  1_000,    // ← was 2_000
+  downAfterMs:         3_000,    // ← was 5_000
+}
+```
+
+Trade-off: more false positives on jittery networks.  Measure
+your network's RTT + jitter first.
+
+### Symptom: cross-region cluster flaps
+
+```
+WAN-spanning cluster.  Members at the far region intermittently
+show unreachable, recover seconds later.
+```
+
+**Cause**: defaults assume LAN-style latencies (sub-ms RTT).
+A 100ms-RTT WAN with normal jitter exceeds the 2s threshold
+under typical conditions.
+
+**Fix**: substantially raise all three thresholds.
+
+```ts
+failureDetector: {
+  heartbeatIntervalMs: 1_000,    // ← was 500
+  unreachableAfterMs:  10_000,    // ← was 2_000
+  downAfterMs:         30_000,    // ← was 5_000
+}
+```
+
+For cross-region clusters, **bias toward stability over fast
+detection**.  A 30-second window catches real failures while
+tolerating WAN jitter.
+
+### Symptom: heartbeat bandwidth too high
+
+```
+Cluster transport bandwidth shows constant ~5 % of capacity
+just for heartbeats.
+```
+
+**Cause**: heartbeats run at 500ms × N peers.  Large
+clusters multiply.
+
+**Fix**: raise `heartbeatIntervalMs`.
+
+```ts
+failureDetector: {
+  heartbeatIntervalMs: 2_000,    // ← was 500
+  unreachableAfterMs:  6_000,    // ← keep ratio
+  downAfterMs:         15_000,
+}
+```
+
+Bandwidth scales linearly with frequency.  Going from 500 ms to
+2 s drops heartbeat traffic 4x.
+
+## Keeping the ratios sane
+
+```
+unreachableAfterMs ≥ 3 × heartbeatIntervalMs
+downAfterMs        ≥ 2 × unreachableAfterMs
+```
+
+These minimums prevent flapping from a single missed
+heartbeat:
+
+- `unreachableAfterMs >= 3 × heartbeat` → tolerates up to 2
+  consecutive missed heartbeats before flagging.
+- `downAfterMs >= 2 × unreachable` → "stay unreachable for a
+  while" before declaring down.
+
+The defaults (500 / 2000 / 5000) follow this rule: 2000 = 4×
+500, 5000 = 2.5× 2000.
+
+## Tuning per-environment
+
+Different environments often need different values:
+
+```hocon
+# application.conf
+actor-ts.cluster.failure-detector {
+  heartbeat-interval = ${?HEARTBEAT_INTERVAL}
+  unreachable-after  = ${?UNREACHABLE_AFTER}
+  down-after         = ${?DOWN_AFTER}
+}
+```
+
+Set via env vars per-environment:
+
+```bash
+# Local dev (fast):
+export HEARTBEAT_INTERVAL=250ms
+export UNREACHABLE_AFTER=1s
+
+# Production WAN:
+export HEARTBEAT_INTERVAL=1s
+export UNREACHABLE_AFTER=10s
+```
+
+Don't hard-code production values; the difference between dev
+and prod tuning is real.
+
+## Measuring before tuning
+
+```ts
+cluster.subscribe(MemberUnreachable, (evt) => {
+  metrics.counter('cluster_unreachable_total', { address: evt.member.address.toString() }).inc();
+});
+
+cluster.subscribe(MemberReachable, (evt) => {
+  // also track time spent unreachable
+});
+```
+
+Histogram-track "duration in unreachable state."  P99 should be
+**well below** `downAfterMs` (otherwise legitimate flaps
+trigger downing).  P50 + jitter gives you network's RTT
+profile.
+
+For most teams, **a week of observing in production** is more
+useful than guessing at tuning values up front.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Tuning during incidents">
+  ```ts
+  // Cluster is flapping → "let me bump unreachableAfterMs to 60s"
+  ```
+  Don't tune during an outage.  Restart with the same values
+  to confirm the problem first; tune only after a clean
+  recovery.  Hot-changing thresholds masks the root cause and
+  often creates new ones.
+</Aside>
+
+<Aside type="caution" title="Tight thresholds + downing strategy">
+  ```ts
+  unreachableAfterMs: 500,
+  // Combined with KeepMajority → minority side down-immediately
+  ```
+  Aggressive thresholds + automatic downing make minor
+  network blips cause real downtime.  Bias toward stability
+  in production.
+</Aside>
+
+<Aside type="caution" title="Asymmetric tuning across nodes">
+  Different nodes with different thresholds disagree about who's
+  unreachable.  Use the same values everywhere.
+</Aside>
+
+## Where to next
+
+- **[Failure detector](/actor-ts/cluster/failure-detector/)** —
+  the conceptual model.
+- **[Gossip cadence tuning](/actor-ts/operations/tuning/gossip-cadence/)** —
+  the complementary knob.
+- **[Downing strategies](/actor-ts/cluster/downing-strategies/)** —
+  what happens after a member is downed.
+- **[Configuration](/actor-ts/reference/configuration/)** — the
+  HOCON keys.

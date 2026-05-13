@@ -1,0 +1,188 @@
+---
+title: Compatibility matrix
+description: Feature-by-feature support across Bun, Node 22+, and Deno. Use this page to verify before adopting a subsystem.
+---
+
+The framework's features have different support levels across
+runtimes.  This page is the **definitive reference**.
+
+For each row:
+
+- **✓** = supported, tested in CI.
+- **⚠** = works, but not actively CI'd.
+- **✗** = not supported.
+- **N/A** = doesn't apply.
+
+## Core
+
+| Feature | Bun | Node 22+ | Deno |
+| --- | --- | --- | --- |
+| `Actor` base class | ✓ | ✓ | ✓ |
+| `ActorSystem` | ✓ | ✓ | ✓ |
+| `Props` + `withDispatcher` etc. | ✓ | ✓ | ✓ |
+| `MicrotaskDispatcher` / `ImmediateDispatcher` / `ThroughputDispatcher` | ✓ | ✓ | ✓ |
+| `BoundedMailbox` / `PriorityMailbox` | ✓ | ✓ | ✓ |
+| Supervision strategies | ✓ | ✓ | ✓ |
+| `context.timers` + `system.scheduler` | ✓ | ✓ | ✓ |
+| Death watch | ✓ | ✓ | ✓ |
+| `become` / `stash` / `unstashAll` | ✓ | ✓ | ✓ |
+| Pattern matching (ts-pattern) | ✓ | ✓ | ✓ |
+
+## Typed API
+
+| Feature | Bun | Node 22+ | Deno |
+| --- | --- | --- | --- |
+| `Behaviors.*` combinators | ✓ | ✓ | ✓ |
+| `TypedActor` | ✓ | ✓ | ✓ |
+| `spawnTyped` / `spawnTypedChild` / `typedProps` | ✓ | ✓ | ✓ |
+
+## Routing + patterns
+
+| Feature | Bun | Node 22+ | Deno |
+| --- | --- | --- | --- |
+| `Router.*` | ✓ | ✓ | ✓ |
+| `CircuitBreaker` | ✓ | ✓ | ✓ |
+| `BackoffSupervisor` | ✓ | ✓ | ✓ |
+| `retry`, `pipeTo`, `after` | ✓ | ✓ | ✓ |
+
+## Cluster
+
+| Feature | Bun | Node 22+ | Deno |
+| --- | --- | --- | --- |
+| Cluster join / membership | ✓ | ✓ | ⚠ |
+| Gossip + failure detector | ✓ | ✓ | ⚠ |
+| `TcpTransport` | ✓ | ✓ | ⚠ |
+| TLS on cluster transport | ✓ | ✓ | ⚠ |
+| `InMemoryTransport` (tests) | ✓ | ✓ | ✓ |
+| `ClusterSingleton` | ✓ | ✓ | ⚠ |
+| `ClusterSharding` | ✓ | ✓ | ⚠ |
+| `DistributedPubSub` | ✓ | ✓ | ⚠ |
+| `DistributedData` | ✓ | ✓ | ⚠ |
+| Cluster router | ✓ | ✓ | ⚠ |
+| Receptionist | ✓ | ✓ | ⚠ |
+| `KubernetesLease` | ✓ | ✓ | ⚠ |
+| `InMemoryLease` | ✓ | ✓ | ✓ |
+
+## Persistence
+
+| Feature | Bun | Node 22+ | Deno |
+| --- | --- | --- | --- |
+| `InMemoryJournal` | ✓ | ✓ | ✓ |
+| `InMemorySnapshotStore` | ✓ | ✓ | ✓ |
+| `SqliteJournal` | ✓ (`bun:sqlite`) | ✓ (`better-sqlite3` peer dep) | ✗ |
+| `SqliteSnapshotStore` | ✓ | ✓ | ✗ |
+| `CassandraJournal` | ⚠ | ✓ (`cassandra-driver`) | ⚠ |
+| `CachedSnapshotStore` | ✓ | ✓ | ✓ |
+| `PersistentActor` | ✓ | ✓ | ✓ |
+| `DurableStateActor` | ✓ | ✓ | ✓ |
+| `ProjectionActor` | ✓ | ✓ | ✓ |
+| Object-storage snapshot store (filesystem) | ✓ | ✓ | ✓ |
+| Object-storage snapshot store (S3) | ⚠ | ✓ | ⚠ |
+| Schema-migration adapters | ✓ | ✓ | ✓ |
+| Replicated event sourcing | ⚠ | ✓ | ✗ |
+
+## I/O brokers
+
+| Feature | Bun | Node 22+ | Deno |
+| --- | --- | --- | --- |
+| `KafkaActor` (`kafkajs`) | ✓ | ✓ | ⚠ |
+| `MqttActor` (`mqtt`) | ✓ | ✓ | ⚠ |
+| `AmqpActor` (`amqplib`) | ⚠ | ✓ | ⚠ |
+| `NatsActor` (`nats`) | ✓ | ✓ | ⚠ |
+| `JetStreamActor` | ✓ | ✓ | ⚠ |
+| `RedisStreamsActor` (`redis`) | ✓ | ✓ | ⚠ |
+| `GrpcServerActor` / `GrpcClientActor` | ✓ | ✓ | ⚠ |
+| `WebSocketActor` (client) | ✓ | ✓ | ✓ |
+| `ServerWebSocketActor` | ✓ (`Bun.serve`) | ✓ (`ws`) | ⚠ |
+| `SseActor` | ✓ | ✓ | ✓ |
+| `TcpSocketActor` | ✓ | ✓ | ✓ |
+| `UdpSocketActor` | ✓ | ✓ | ✓ |
+
+## HTTP
+
+| Feature | Bun | Node 22+ | Deno |
+| --- | --- | --- | --- |
+| Route DSL | ✓ | ✓ | ✓ |
+| Marshalling (`entity<T>`) | ✓ | ✓ | ✓ |
+| `FastifyBackend` | ✓ | ✓ | ✓ |
+| `BunServeBackend` | ✓ | N/A | N/A |
+| `ExpressBackend` | ✓ | ✓ | ⚠ |
+| Middleware (response-cache, rate-limit, idempotency-key) | ✓ | ✓ | ✓ |
+| `HttpClient` (uses fetch) | ✓ | ✓ | ✓ |
+| `HttpManagement` | ✓ | ✓ | ✓ |
+
+## Cache
+
+| Feature | Bun | Node 22+ | Deno |
+| --- | --- | --- | --- |
+| In-memory cache | ✓ | ✓ | ✓ |
+| Memcached cache | ⚠ | ✓ | ⚠ |
+| Redis cache | ✓ | ✓ | ⚠ |
+
+## Serialization
+
+| Feature | Bun | Node 22+ | Deno |
+| --- | --- | --- | --- |
+| JSON | ✓ | ✓ | ✓ |
+| CBOR | ✓ | ✓ | ✓ |
+| Custom serializers | ✓ | ✓ | ✓ |
+
+## Observability
+
+| Feature | Bun | Node 22+ | Deno |
+| --- | --- | --- | --- |
+| Core metrics | ✓ | ✓ | ✓ |
+| Prometheus exporter | ✓ | ✓ | ✓ |
+| `prom-client` adapter | ✓ | ✓ | ⚠ |
+| OTel metrics adapter | ✓ | ✓ | ⚠ |
+| `RecordingTracer` | ✓ | ✓ | ✓ |
+| OTel tracing adapter | ✓ | ✓ | ⚠ |
+| Stock metrics | ✓ | ✓ | ✓ |
+| Health checks | ✓ | ✓ | ✓ |
+
+## TestKit
+
+| Feature | Bun | Node 22+ | Deno |
+| --- | --- | --- | --- |
+| `TestKit.create` | ✓ | ✓ | ✓ |
+| `TestProbe` | ✓ | ✓ | ✓ |
+| `ManualScheduler` | ✓ | ✓ | ✓ |
+| `MultiNodeSpec` | ✓ | ✓ | ⚠ |
+| `ParallelMultiNodeSpec` | ✓ | ✓ | ⚠ |
+
+## Cell-recommended targets
+
+```
+For new projects:                              Bun
+For Node-shop environments:                    Node 22+
+For Lambda / serverless:                       Node 22+
+For Deno-first organizations:                  Deno (with caveats)
+For mixed:                                     Pick one per cluster
+```
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Reading the warning marker">
+  ```
+  ⚠ = the framework hasn't seen production hours on this runtime
+  for this feature.  Usually works; might have edge cases.
+  ```
+  If you encounter problems on a ⚠ feature, file a bug — most
+  Deno-specific issues are simple fixes.
+</Aside>
+
+<Aside type="caution" title="Version pinning">
+  ```json
+  // package.json
+  { "engines": { "bun": ">=1.1.30", "node": ">=22.12" } }
+  ```
+  Pin both Bun and Node engines if your code runs on either —
+  prevents accidental dev/prod runtime drift.
+</Aside>
+
+## Where to next
+
+- **[Runtime overview](/actor-ts/runtime/overview/)** — the
+  conceptual model.
+- **[Bun](/actor-ts/runtime/bun/)** / **[Node](/actor-ts/runtime/node/)** / **[Deno](/actor-ts/runtime/deno/)** — per-runtime details.
+- **[Installation](/actor-ts/intro/installation/)** — install steps.

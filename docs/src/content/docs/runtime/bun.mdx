@@ -1,0 +1,166 @@
+---
+title: Bun
+description: Bun is actor-ts's primary runtime — fastest startup, built-in SQLite, native test runner, zero peer dependencies for most features. Recommended for new projects.
+---
+
+Bun is the **primary runtime** actor-ts targets.  Tested first;
+performance benchmarks run against Bun; the docs assume Bun by
+default.
+
+## Why Bun
+
+| Reason | Detail |
+| --- | --- |
+| **Fast startup** | ~3-5× faster cold start vs Node. |
+| **Built-in SQLite** | `bun:sqlite` — no peer deps. |
+| **Built-in test runner** | `bun:test` — works for the framework's tests + your own. |
+| **Native HTTP / WebSocket** | `Bun.serve` for production-grade HTTP. |
+| **Fewer peer deps** | Bun replaces `ws`, `better-sqlite3`, and several others. |
+
+## Installation
+
+```bash
+curl -fsSL https://bun.sh/install | bash
+# or via Homebrew: brew install oven-sh/bun/bun
+```
+
+Check:
+
+```bash
+bun --version    # need 1.1+
+```
+
+For Docker:
+
+```dockerfile
+FROM oven/bun:1.1
+WORKDIR /app
+COPY . .
+RUN bun install
+CMD ["bun", "run", "dist/main.js"]
+```
+
+## Creating a project
+
+```bash
+bun init
+bun add actor-ts
+bun add ts-pattern    # peer dep used by the framework's examples
+```
+
+For specific protocol actors:
+
+```bash
+bun add kafkajs       # for KafkaActor
+bun add mqtt          # for MqttActor
+bun add amqplib       # for AmqpActor
+bun add nats          # for NatsActor / JetStreamActor
+bun add redis         # for RedisStreamsActor
+bun add @grpc/grpc-js @grpc/proto-loader   # for GrpcActor
+```
+
+Most peer deps you skip unless using that specific protocol.
+
+## Running tests
+
+```bash
+bun test
+```
+
+Bun's test runner is **drop-in compatible** with Jest's API
+(`describe` / `it` / `expect`).  TestKit works directly:
+
+```ts
+import { describe, it, beforeEach, afterEach } from 'bun:test';
+import { TestKit } from 'actor-ts/testkit';
+
+describe('Counter', () => {
+  let tk: TestKit;
+  beforeEach(() => { tk = TestKit.create(); });
+  afterEach(async () => { await tk.shutdown(); });
+
+  it('increments', async () => {
+    // ...
+  });
+});
+```
+
+For Bun-specific test features, see the [Bun docs](https://bun.sh/docs/cli/test).
+
+## SQLite on Bun
+
+```ts
+import { SqliteJournal } from 'actor-ts';
+
+// Bun auto-detects bun:sqlite — no driver setup needed.
+new SqliteJournal({ path: '/var/lib/events.db' });
+```
+
+`bun:sqlite` is a built-in.  No `better-sqlite3` install
+required.
+
+## TCP + HTTP
+
+Bun has native APIs for both, but the framework picks them
+automatically via runtime detection.  No config needed.
+
+For **HTTP backend**, you can opt into Bun's native:
+
+```ts
+import { BunServeBackend } from 'actor-ts/http';
+
+await http.newServerAt('0.0.0.0', 8080)
+  .useBackend(new BunServeBackend())
+  .bind(routes);
+```
+
+Bun's HTTP is **fast** (faster than Fastify in benchmarks).
+Worth using if your hot path is HTTP-heavy.  For broader
+ecosystem (Fastify plugins, middleware), stick with the
+default Fastify backend.
+
+## Performance on Bun
+
+Rough numbers (single Bun process, M-series Mac):
+
+- **Tell throughput**: ~10M msgs/sec on `MicrotaskDispatcher`.
+- **HTTP throughput**: ~150K req/sec for trivial routes.
+- **SQLite append throughput**: ~50K events/sec.
+
+Bun consistently wins on **startup time** (sub-100ms vs Node's
+~300-500ms).  Helpful for fast test iteration.
+
+## Bun-specific limitations
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Some Node packages have edge cases">
+  ```bash
+  # Most Node packages work; a few don't:
+  # - Native bindings that link against Node ABI specifically
+  # - Some streams-API edge cases
+  ```
+  Bun strives for Node compat but isn't bug-compatible.  If a
+  third-party package misbehaves, check Bun's
+  [Node-compat notes](https://bun.sh/docs/runtime/nodejs-apis)
+  for known differences.
+</Aside>
+
+<Aside type="caution" title="Lambda / serverless support">
+  ```bash
+  # AWS Lambda doesn't ship Bun as a runtime
+  ```
+  Cloud functions / Lambda layers typically require Node.  If
+  serverless is your target, use Node.
+</Aside>
+
+## Where to next
+
+- **[Runtime overview](/actor-ts/runtime/overview/)** — the
+  bigger picture.
+- **[Node](/actor-ts/runtime/node/)** — for Node-specific
+  notes.
+- **[Compatibility matrix](/actor-ts/runtime/compatibility-matrix/)** —
+  feature-by-feature support.
+- **[Installation](/actor-ts/intro/installation/)** — the
+  per-runtime install steps.

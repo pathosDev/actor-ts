@@ -1,0 +1,162 @@
+---
+title: Gossip cadence
+description: How often cluster members exchange gossip — controls convergence speed vs network chatter. Default 1 s suits most clusters. Tune up for large clusters, down for latency-sensitive failover.
+---
+
+Cluster membership propagates via **gossip** — every
+`gossipIntervalMs`, each member picks a random reachable peer
+and exchanges its membership view.  After a few rounds, the
+cluster converges.
+
+```ts
+Cluster.join(system, {
+  host, port, seeds,
+  gossipIntervalMs: 1_000,    // default
+});
+```
+
+The default is **1 second**.  Most clusters never need to
+change it.
+
+## What it controls
+
+| Lower (e.g. 250 ms) | Default (1 s) | Higher (e.g. 5 s) |
+| --- | --- | --- |
+| Faster convergence | Balanced | Slower convergence |
+| More gossip messages | Modest traffic | Less traffic |
+| Faster failover detection | Standard | Slower failover |
+
+Concretely:
+
+- A 5-node cluster at 1 s gossip → typical convergence after
+  a join: 2-3 seconds.
+- At 250 ms gossip: ~700 ms.
+- At 5 s: ~10-15 seconds.
+
+## When to lower
+
+Reduce below 1 second when:
+
+- **Latency-sensitive failover** — singleton or sharding
+  patterns where leader-change should propagate in
+  sub-second.  500 ms is reasonable; 250 ms is aggressive.
+- **Small cluster (≤5 nodes)** — gossip volume stays
+  manageable.
+- **Quiet network** — no other constraints; faster is fine.
+
+## When to raise
+
+Increase above 1 second when:
+
+- **Large cluster (20+ nodes)** — gossip volume grows O(N²)
+  in the worst case across the cluster.  5 s slows
+  convergence proportionally but reduces network noise
+  significantly.
+- **Bandwidth-constrained network** — cross-region or
+  cross-WAN clusters where chatty gossip is wasteful.
+- **Stable cluster** — rarely changes; faster gossip doesn't
+  help.
+
+## The bandwidth math
+
+Per-node gossip bandwidth roughly:
+
+```
+   gossip_size × (1 / gossipIntervalMs) × peers_per_round
+```
+
+Per-cluster:
+
+```
+   N × gossip_size × (1 / gossipIntervalMs)
+```
+
+Where:
+
+- **gossip_size** is ~100-500 bytes per member in the view.  In
+  a 10-node cluster, gossip messages run ~1-2 KB.
+- **peers_per_round** is 1 (one random peer per tick).
+- **N** = cluster size.
+
+For a 50-node cluster at default 1 s gossip:
+
+```
+   50 × ~5 KB × 1/s = 250 KB/s aggregate
+```
+
+Negligible on a LAN.  On a high-latency WAN at 10 ms RTT,
+each gossip round adds 10 ms of in-flight time — converges
+slower than you'd hope.
+
+## Interaction with other timings
+
+Gossip cadence affects **several other operations**:
+
+| Operation | How gossip affects it |
+| --- | --- |
+| Convergence after `join` | Direct — slower gossip = slower up. |
+| Failure-detector unreachable detection | Indirectly — gossip carries last-seen times. |
+| Sharding rebalance | Coordinator decisions ride on gossip. |
+| DistributedPubSub topic propagation | Topic→node map gossips at the cluster rate. |
+| Receptionist service registry | Same — gossip carries registrations. |
+
+A slower `gossipIntervalMs` slows **all of these**.  This is
+usually fine in stable clusters; problematic in
+fast-changing workloads.
+
+## Recommended values
+
+| Cluster size | Network | Recommended `gossipIntervalMs` |
+| --- | --- | --- |
+| 3-5 nodes | LAN | 250-500 ms |
+| 5-15 nodes | LAN | 1 s (default) |
+| 15-50 nodes | LAN | 1-2 s |
+| 50+ nodes | LAN | 2-5 s |
+| Cross-region | WAN | 2-5 s |
+| Latency-sensitive | LAN | 250-500 ms |
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Tuning by guesswork">
+  ```ts
+  gossipIntervalMs: 100;   // ✗ "let's make it fast"
+  ```
+  Don't tune blindly.  Measure convergence latency
+  (`SelfUp` to fully-converged) and gossip bandwidth in your
+  actual environment.  The defaults are sensible — change only
+  with evidence.
+</Aside>
+
+<Aside type="caution" title="Asymmetric values across nodes">
+  ```ts
+  // node-A: gossipIntervalMs: 250
+  // node-B: gossipIntervalMs: 1000
+  ```
+  Each node uses its own interval for **sending**, but
+  receives at whatever cadence peers send.  Asymmetric values
+  produce confusing convergence behavior.  Make every node use
+  the same `gossipIntervalMs`.
+</Aside>
+
+<Aside type="caution" title="Very-fast gossip + many members">
+  ```ts
+  // 100-node cluster at 100ms gossip
+  ```
+  100 ms × 100 nodes = 1000 messages/sec aggregate across the
+  cluster.  Each carrying full membership state.  At some scale
+  this dominates the actual workload's traffic.  Cap at 500 ms
+  for large clusters.
+</Aside>
+
+## Where to next
+
+- **[Cluster overview](/actor-ts/cluster/overview/)** — what
+  gossip carries.
+- **[Joining and seeds](/actor-ts/cluster/joining-and-seeds/)** —
+  how the first gossip round bootstraps a member.
+- **[Failure detector](/actor-ts/cluster/failure-detector/)** —
+  consumes gossip for heartbeat tracking.
+- **[Failure-detector tuning](/actor-ts/operations/tuning/failure-detector/)** —
+  the complementary tuning knob.
+- **[Configuration](/actor-ts/reference/configuration/)** — the
+  HOCON key for this setting.

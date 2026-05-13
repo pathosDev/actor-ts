@@ -1,0 +1,231 @@
+---
+title: Mailbox sizing
+description: When to use bounded vs unbounded mailboxes, how to pick capacity, and what overflow policies cost. The decision is per-actor — production rarely uses one-size-fits-all defaults.
+---
+
+The default actor mailbox is **unbounded** — an actor's queue
+can grow without limit if the producer outpaces the consumer.
+For most actors that's fine.  When it's not, you reach for
+[bounded mailboxes](/actor-ts/fundamentals/mailboxes/).
+
+This page is the **decision guide** for production mailbox
+sizing.
+
+## Default behavior
+
+```ts
+const ref = system.actorOf(Props.create(() => new Worker()));
+//  ↑ unbounded FIFO mailbox; mailbox can grow until OOM
+```
+
+Unbounded mailboxes are **fast** and **forgiving** — a brief
+burst is absorbed, the actor drains it eventually.  Most actors
+should use them.
+
+The trap: a **sustained mismatch** (producer faster than
+consumer) grows memory monotonically.  Eventually:
+
+- Heap exhaustion → process OOM-killed.
+- Long GC pauses → cluster flaps.
+- Backpressure absent → producer doesn't know there's a problem.
+
+For these cases, bound.
+
+## When to bound
+
+Three patterns where bounded mailboxes pay off:
+
+### 1. Producer/consumer mismatch known in advance
+
+```ts
+// Slow consumer: writes to disk at 10/sec; producer pushes 1000/sec
+const slowWriter = system.actorOf(
+  Props.create(() => new SlowWriter())
+    .withMailbox(() => new BoundedMailbox({
+      capacity: 1_000,
+      overflow: 'reject',
+    })),
+);
+```
+
+Bound at the worst-case-acceptable buffer.  `reject` propagates
+backpressure to the sender — they see `MailboxFullError` and
+adapt (retry, drop, alert).
+
+### 2. Telemetry-style actors (stale data is wrong)
+
+```ts
+const telemetry = system.actorOf(
+  Props.create(() => new MetricsAggregator())
+    .withMailbox(() => new BoundedMailbox({
+      capacity: 5_000,
+      overflow: 'drop-head',
+    })),
+);
+```
+
+For metrics, sensor readings, status pings — **fresher is
+better**.  `drop-head` discards the oldest pending message when
+new ones arrive, keeping the queue full of recent data.
+
+### 3. Critical actors near limits
+
+```ts
+const auth = system.actorOf(
+  Props.create(() => new AuthActor())
+    .withMailbox(() => new BoundedMailbox({
+      capacity: 10_000,
+      overflow: 'drop-new',
+    })),
+);
+```
+
+`drop-new` discards incoming messages when full — preserves
+already-queued work.  Right when "the queue I have is the work
+I care about" — partial denial of service is preferable to
+processing nothing.
+
+## Picking capacity
+
+Three factors:
+
+1. **Worst-case burst size** — how many messages arrive in the
+   worst-case window before the consumer can drain.
+2. **Per-message memory** — `capacity × bytes_per_message`
+   bounds the memory cost.
+3. **Latency budget** — `capacity / drain_rate` bounds the
+   worst-case latency a message waits before processing.
+
+For a worker processing 100 msg/sec, expecting bursts up to
+1000 msg arriving in 1 second:
+
+```
+capacity = 1000                          # worst-case burst
+worst-case latency = 1000 / 100 = 10s     # if fully queued
+```
+
+If 10 seconds of queue is acceptable, capacity 1000 is fine.
+If not, reduce capacity or accept that producers will see
+`MailboxFullError`.
+
+## Reading the metrics
+
+Stock metrics
+([Stock metrics](/actor-ts/observability/metrics/stock-metrics/))
+expose mailbox depth:
+
+```
+actor_mailbox_size{class="Worker", path="..."}
+actor_mailbox_dropped_total{class="Worker", path="...", reason="drop-head"}
+```
+
+Watch:
+
+- **`mailbox_size`** — high values relative to capacity indicate
+  pressure.
+- **`mailbox_dropped_total`** — non-zero with `drop-head` /
+  `drop-new` is by design; spikes warrant investigation.
+- **`MailboxFullError` rate** at the sender — usually surfaces
+  as supervisor restarts of the sending actor.
+
+## The three overflow policies, compared
+
+| Policy | When |
+| --- | --- |
+| **`reject`** (default) | Backpressure surfaces to sender.  Sender must handle. |
+| **`drop-head`** | Telemetry / metrics — newest wins. |
+| **`drop-new`** | Critical work — preserve queued, drop incoming. |
+
+Pick by **what the right answer is on overflow**:
+
+- "Sender should retry / alert" → `reject`.
+- "Stale data is wrong" → `drop-head`.
+- "Queued work is precious" → `drop-new`.
+
+There's no "best" — context-dependent.
+
+## Priority mailboxes
+
+For actors with **mixed urgency**:
+
+```ts
+import { PriorityMailbox } from 'actor-ts';
+
+const worker = system.actorOf(
+  Props.create(() => new Worker())
+    .withMailbox(() => new PriorityMailbox<Msg>({
+      priorityFor: (m) => m.kind === 'urgent' ? 0 : 5,
+    })),
+);
+```
+
+Lower numbers = higher priority.  System messages always
+trump.
+
+Use for:
+
+- **HTTP responses** (urgent) vs **batch jobs** (deferrable).
+- **Health pings** vs **bulk metrics**.
+
+See [Mailboxes](/actor-ts/fundamentals/mailboxes/) for the full
+PriorityMailbox surface.
+
+## Mailbox + backpressure design
+
+```
+producer  →  reject backpressure  →  sender slows down
+producer  →  drop-head             →  producer keeps going; reader sees latest
+producer  →  drop-new              →  producer keeps going; reader processes earliest
+```
+
+Bounded mailboxes are **one layer** in a backpressure story.
+For end-to-end backpressure (the upstream system slowing down),
+you'd combine:
+
+- Bounded mailbox at the actor.
+- Sender retry logic.
+- Upstream rate-limiting (HTTP 429, broker push-back).
+
+The mailbox enforces the local boundary; the rest is your
+protocol design.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Defaulting all actors to bounded">
+  ```ts
+  // ✗ blanket bounded everywhere
+  ```
+  Most actors are fine with unbounded.  Bounding adds an
+  overflow-policy decision; if the wrong one is picked, the
+  cure is worse than the disease.  Reach for bounded only when
+  evidence (memory growth, OOM kills) supports it.
+</Aside>
+
+<Aside type="caution" title="Tiny capacities">
+  ```ts
+  new BoundedMailbox({ capacity: 10 });   // ✗ no burst tolerance
+  ```
+  Capacities below the natural burst size hurt — `reject` fires
+  on normal traffic.  Start at ~10x the steady-state arrival
+  rate over your handling window.
+</Aside>
+
+<Aside type="caution" title="Mailbox sizing alone won't fix slow handlers">
+  ```ts
+  // Handler takes 500ms; arrival rate 100/sec → mailbox always full
+  ```
+  No bound prevents an actor whose handler is too slow.  Fix
+  the handler latency first (parallelize, offload to a worker),
+  then bound the mailbox.
+</Aside>
+
+## Where to next
+
+- **[Mailboxes](/actor-ts/fundamentals/mailboxes/)** — the
+  conceptual reference.
+- **[Stock metrics](/actor-ts/observability/metrics/stock-metrics/)** —
+  the mailbox-depth + drop metrics.
+- **[Dispatcher tuning](/actor-ts/operations/tuning/dispatcher-tuning/)** —
+  the complementary knob.
+- **[Backoff supervisor](/actor-ts/patterns/backoff-supervisor/)** —
+  for stash-on-fail with bounded buffer.

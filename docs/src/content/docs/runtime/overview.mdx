@@ -1,0 +1,157 @@
+---
+title: Runtime overview
+description: actor-ts runs on Bun, Node.js (≥ 22.12), and Deno. This page covers the runtime-detection model, what differs between them, and how to pick. Bun is the primary target; Node is fully supported; Deno is best-effort.
+---
+
+actor-ts targets **three JavaScript runtimes**:
+
+| Runtime | Status | Notes |
+| --- | --- | --- |
+| **Bun** | Primary | The runtime we test against first.  Native SQLite, native test runner, fastest startup. |
+| **Node** (≥ 22.12) | Fully supported | Requires `better-sqlite3` peer dep for SQLite paths. |
+| **Deno** | Best-effort | Works for most features; less testing than Bun/Node. |
+
+The framework's **runtime-detection model** picks the right
+backend at startup for runtime-specific things — SQLite drivers,
+TCP backends, file APIs.  You write the same code; the framework
+adapts.
+
+## Picking a runtime
+
+For most users:
+
+- **Bun if you can**.  Faster, lighter, fewer peer deps.
+- **Node ≥ 22.12 if your environment requires it** — most
+  managed platforms (AWS Lambda layers, Cloud Functions, etc.)
+  default to Node.
+- **Deno if you're already invested in it**.
+
+## How runtime detection works
+
+The framework checks at module-load time:
+
+```ts
+if (typeof Bun !== 'undefined') { /* Bun */ }
+else if (typeof Deno !== 'undefined') { /* Deno */ }
+else if (typeof process !== 'undefined') { /* Node */ }
+```
+
+Specific subsystems (SQLite, TCP, fs) have their own adapter
+files; each one detects + picks the right backend.
+
+This means **no runtime flag** — the framework just works on
+whichever runtime starts it.
+
+## What differs across runtimes
+
+For most code, **nothing differs**:
+
+- Actor lifecycle.
+- Cluster gossip.
+- Persistence + journals.
+- HTTP routing + serving.
+- Brokers (most don't care about the runtime).
+
+What does differ:
+
+| Concern | Bun | Node | Deno |
+| --- | --- | --- | --- |
+| **SQLite** | `bun:sqlite` (built-in) | `better-sqlite3` (peer dep) | Not supported |
+| **TCP** | `Bun.connect` / `Bun.listen` | `node:net` | `Deno.connect` / `Deno.listen` |
+| **WebSocket server** | `Bun.serve` (built-in) | `ws` (peer dep) | `Deno.serveHttp` |
+| **HTTP server** | Fastify / Bun.serve / Express | Fastify / Express | Fastify |
+| **File I/O** | `Bun.file` / `node:fs` | `node:fs` | `Deno.open` |
+| **Test runner** | `bun:test` | `node:test` / vitest / jest | `Deno.test` |
+
+See the
+[compatibility matrix](/actor-ts/runtime/compatibility-matrix/)
+for the full breakdown.
+
+## Cross-runtime cluster
+
+You can run a cluster with **mixed runtimes**:
+
+```
+node-1: Bun
+node-2: Node 22
+node-3: Bun
+```
+
+Cluster gossip + transport are wire-format compatible across all
+three.  Mostly useful for **migration** — gradual rollout from
+Node to Bun, for example.
+
+In practice, **prefer one runtime per cluster** — mixing makes
+debugging harder (different stack traces, different error
+messages, different perf profiles).
+
+## Runtime upgrades
+
+| Upgrade | Effort |
+| --- | --- |
+| Bun patch versions | Drop-in; restart pods. |
+| Bun major versions | Test in staging; should be drop-in but worth verifying. |
+| Node patch | Drop-in. |
+| Node minor (e.g. 22.x → 22.y) | Drop-in. |
+| Node major (e.g. 20 → 22) | Test thoroughly; some node APIs change. |
+| Switching Bun ↔ Node | Test full workload; perf profile differs. |
+
+For production, **pin runtime versions** in your container
+image:
+
+```dockerfile
+FROM oven/bun:1.1.30    # explicit tag, no `latest`
+```
+
+## When to deploy on each
+
+**Bun is recommended for:**
+
+- New projects.
+- Cluster nodes you control.
+- Maximum perf / minimum dependencies.
+
+**Node is recommended for:**
+
+- Existing Node-shop infrastructure.
+- Platforms that don't yet support Bun (AWS Lambda, Cloud
+  Functions, some PaaS).
+- Compliance reasons (Node has a much older audit trail).
+
+**Deno is recommended for:**
+
+- Deno-first organizations.
+- Edge-style deployments (Deno Deploy).
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Bun + Node version mixing in dev">
+  ```bash
+  # Dev: bun run dev
+  # Prod: node dist/main.js
+  ```
+  Test in prod's runtime occasionally — perf characteristics
+  differ.  Bun's fast startup hides issues that Node would
+  surface during slow boots.
+</Aside>
+
+<Aside type="caution" title="Node < 22.12 isn't supported">
+  ```bash
+  node --version
+  # v18.x.x  ← not supported
+  ```
+  actor-ts uses newer APIs (top-level await, `node:test`, etc.).
+  Upgrade to 22.12+ or use Bun.
+</Aside>
+
+## Where to next
+
+- **[Bun](/actor-ts/runtime/bun/)** — Bun-specific setup +
+  features.
+- **[Node](/actor-ts/runtime/node/)** — Node-specific setup +
+  peer deps.
+- **[Deno](/actor-ts/runtime/deno/)** — Deno-specific notes.
+- **[Compatibility matrix](/actor-ts/runtime/compatibility-matrix/)** —
+  what works where.
+- **[Installation](/actor-ts/intro/installation/)** — the
+  per-runtime install steps.

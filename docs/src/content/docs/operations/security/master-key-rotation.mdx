@@ -1,0 +1,218 @@
+---
+title: Master key rotation
+description: Rotate the master encryption key for at-rest data (object-storage snapshots, durable state) without downtime. Use a `MasterKeyRing` to encrypt new data under a fresh key; old data stays readable under the old key; a background re-encryption sweep eventually moves everything to current.
+---
+
+For at-rest encryption
+([object-storage encryption](/actor-ts/persistence/object-storage/encryption/),
+durable-DD-encryption), the framework's keys live in a
+**`MasterKeyRing`** — a versioned map of key-id → encryption
+key.  Rotation is **online**: new writes go under a fresh key
+ID; old reads still work under whatever key they were
+encrypted with; a background sweep eventually re-encrypts
+older data.
+
+```ts
+import { MasterKeyRing } from 'actor-ts';
+
+const keyRing = new MasterKeyRing({
+  keys: {
+    'k1': process.env.MASTER_KEY_V1!,
+    'k2': process.env.MASTER_KEY_V2!,   // new — current
+  },
+  currentKeyId: 'k2',
+});
+```
+
+`currentKeyId` is the key used for **new writes**.  Reads
+consult `keys` to find the right key for whatever the stored
+data is encrypted under.
+
+## When to rotate
+
+Three triggers:
+
+1. **Scheduled rotation** — a security policy (every 90 days,
+   yearly).
+2. **Suspected compromise** — leaked key material; rotate
+   immediately.
+3. **Compliance** — regulatory requirements mandating periodic
+   rotation.
+
+Even without a specific trigger, **periodic rotation is good
+practice** — limits blast radius of an undetected leak.
+
+## The rotation flow
+
+```
+   1. Generate a fresh key.  Add to keyRing.keys; do NOT yet
+      promote to currentKeyId.
+   2. Roll out the updated keyRing to all nodes.  Verify reads
+      work — old data still uses old key, new data still uses
+      previous key.
+   3. Update currentKeyId to the new key.  Roll out.  New writes
+      use the new key.  Old data still readable.
+   4. Run the re-encryption sweep.  Old data is read, decrypted,
+      re-encrypted under the new key.
+   5. Once the sweep completes, remove the old key from keyRing.
+      Keep a rollback window of ~7 days where the old key is
+      still available; after that, drop it.
+```
+
+The framework supports each of these steps without downtime.
+
+## Step 1 — add the new key
+
+```ts
+const keyRing = new MasterKeyRing({
+  keys: {
+    'k1': process.env.MASTER_KEY_V1!,
+    'k2': process.env.MASTER_KEY_V2!,   // new
+  },
+  currentKeyId: 'k1',   // still v1 — only added v2 to ring
+});
+```
+
+Roll out this config to every node.  Reads of v1-encrypted data
+still work; writes still use v1.
+
+This step is **safe and reversible** — if v2 isn't actually
+needed yet, revert by removing it from `keys`.
+
+## Step 2 — promote the new key
+
+```ts
+const keyRing = new MasterKeyRing({
+  keys: {
+    'k1': process.env.MASTER_KEY_V1!,
+    'k2': process.env.MASTER_KEY_V2!,
+  },
+  currentKeyId: 'k2',   // ← now v2
+});
+```
+
+Roll out.  New writes go under v2.  Reads consult the keyRing
+and find the right key (v1 or v2) based on the stored data's
+key-id header.
+
+After this step, **gradually new data accumulates under v2** as
+the workload writes.  Old data **stays under v1** until
+re-encrypted.
+
+## Step 3 — re-encrypt sweep
+
+```ts
+import { ReEncryptionSweep } from 'actor-ts';
+
+const sweep = new ReEncryptionSweep({
+  store:           snapshotStore,
+  keyRing,
+  targetKeyId:     'k2',
+  batchSize:       100,
+  rateLimit:       50,   // items per second
+});
+
+await sweep.run();
+```
+
+The sweep walks the store, finds items not encrypted under
+`targetKeyId`, decrypts + re-encrypts.
+
+Knobs:
+
+- **`batchSize`** — items processed per batch.
+- **`rateLimit`** — bound the I/O rate so the sweep doesn't
+  hammer the underlying storage.
+- **`filter`** — limit to specific persistenceIds (for partial
+  rotation).
+
+The sweep is **idempotent + resumable** — interrupting it and
+re-running picks up where it left off.  Tracks progress in
+the store's metadata.
+
+## Step 4 — retire the old key
+
+After the sweep completes (every item encrypted under v2):
+
+```ts
+const keyRing = new MasterKeyRing({
+  keys: {
+    'k2': process.env.MASTER_KEY_V2!,
+  },
+  currentKeyId: 'k2',
+});
+```
+
+Drop v1 entirely.  Any data still encrypted under v1 (e.g.,
+backups that haven't been re-encrypted) is now unreadable.
+
+**Wait a rollback window before dropping.**  ~7 days lets you
+recover from "oh no, the sweep didn't actually cover all the
+backups."  After confirmed migration, drop v1.
+
+## Storage of master keys
+
+The keyRing doesn't ship a key-storage backend.  Common
+patterns:
+
+| Source | Pattern |
+| --- | --- |
+| **Env vars** | `process.env.MASTER_KEY_V2` — simplest, fine for tests. |
+| **K8s secrets** | Mounted as files; read at startup. |
+| **HashiCorp Vault** | Pull dynamically at startup; refresh periodically. |
+| **AWS KMS / GCP KMS / Azure Key Vault** | Cloud KMS APIs.  Decrypt-on-load via the KMS encryption keys. |
+
+For production, **KMS is the right answer** — keys never leave
+the secure boundary in plaintext form.
+
+## Multi-cluster considerations
+
+If multiple clusters share the same encrypted store (e.g., a
+DR replica that reads the primary's backups), **all clusters
+need the same keyRing**.  Rotate them together; don't let one
+cluster fall behind on key generations.
+
+## Failure modes
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Dropping the old key before sweep completes">
+  ```ts
+  // currentKeyId: 'k2' + dropped k1 from keyRing
+  // BUT some data still encrypted under k1
+  ```
+  Result: that data is **permanently unreadable**.  No
+  recovery short of restoring the dropped key.  Always finish
+  the sweep + retain the old key for a rollback window before
+  retiring.
+</Aside>
+
+<Aside type="caution" title="Sweep on a too-tight rate limit">
+  ```ts
+  rateLimit: 1000_000,   // ✗ saturates storage
+  ```
+  Sweep is background work.  Tight rate limits prevent it
+  competing with foreground traffic.  Slow sweep is fine —
+  bias toward "won't impact prod" over "finishes fast."
+</Aside>
+
+<Aside type="caution" title="Master keys in plain env">
+  ```ts
+  process.env.MASTER_KEY_V2 = "raw-secret-key";   // ✗ exposed in deployment metadata
+  ```
+  Env vars are visible to anything that can read the process's
+  environment.  Use KMS-backed decryption-on-load for
+  production — the env contains only a reference, not the
+  actual key.
+</Aside>
+
+## Where to next
+
+- **[Object storage encryption](/actor-ts/persistence/object-storage/encryption/)** —
+  what uses the master keys.
+- **[Object storage key rotation](/actor-ts/persistence/object-storage/key-rotation/)** —
+  the storage-side mechanics.
+- **[Cluster security](/actor-ts/operations/security/cluster-security/)** —
+  in-transit complement to at-rest encryption.
+- **[Operations overview](/actor-ts/operations/overview/)** —
+  full security checklist.
