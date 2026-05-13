@@ -17,25 +17,35 @@ in the repo.
 
 ## Architecture
 
-```
-                  ┌──────────────────────────────────────┐
-                  │   3-node cluster                     │
-                  │                                      │
-   HTTP clients ──┼─► HTTP server                       │
-   WebSocket   ──┼─► WS server                          │
-                  │                                      │
-                  │   Sharded UserSession actors:        │
-                  │     - one per logged-in user        │
-                  │     - holds their socket + state    │
-                  │                                      │
-                  │   ChatRoom actors (PersistentActor):│
-                  │     - one per room                  │
-                  │     - persists message history      │
-                  │                                      │
-                  │   DistributedPubSub:                │
-                  │     - per-room topic                │
-                  │     - rooms publish; sessions sub   │
-                  └──────────────────────────────────────┘
+```mermaid
+flowchart LR
+  HTTP[/"HTTP clients"/]
+  WS[/"WebSocket clients"/]
+  subgraph CLUSTER["3-node cluster"]
+    direction TB
+    HSRV["HTTP server"]
+    WSRV["WS server"]
+    US["Sharded UserSession actors<br/><i>one per logged-in user<br/>holds their socket + state</i>"]
+    ROOM["ChatRoom actors (PersistentActor)<br/><i>one per room<br/>persists message history</i>"]
+    PUB["DistributedPubSub<br/><i>per-room topic<br/>rooms publish; sessions subscribe</i>"]
+    HSRV --> US
+    WSRV --> US
+    US -- "join / send" --> ROOM
+    ROOM -- "publish" --> PUB
+    PUB -- "deliver" --> US
+  end
+  HTTP --> HSRV
+  WS --> WSRV
+  classDef client  fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
+  classDef cluster fill:#0f172a,stroke:#6366f1,stroke-width:2px,color:#f1f5f9;
+  classDef edge    fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef actor   fill:#312e81,stroke:#818cf8,stroke-width:1.5px,color:#f1f5f9;
+  classDef bus     fill:#1e293b,stroke:#06b6d4,stroke-width:2px,color:#67e8f9;
+  class HTTP,WS client
+  class CLUSTER cluster
+  class HSRV,WSRV edge
+  class US,ROOM actor
+  class PUB bus
 ```
 
 The full path of a "user sends message" flow:

@@ -16,27 +16,30 @@ in the repo.
 
 ## Architecture
 
-```
-   Audio source (microphone, file)
-       │
-       │ chunks via Kafka
-       ▼
-   KafkaActor (consumer)
-       │
-       │ routes by session ID
-       ▼
-   VoiceSessionActor (sharded, persistent)
-       │
-       ├── persists transcript chunks as events
-       │
-       ├── pushes transcript updates to client via WS
-       │
-       └── publishes to projection topic
-              │
-              ▼
-         TranscriptProjection
-              │
-              └── builds searchable index (e.g., in SQL)
+```mermaid
+flowchart TB
+  SRC[/"Audio source — microphone, file"/]
+  KAFKA["KafkaActor (consumer)"]
+  VOICE["VoiceSessionActor<br/><i>sharded, persistent</i>"]
+  JOURNAL[("Journal<br/><i>transcript chunks as events</i>")]
+  CLIENT[/"WS client"/]
+  PUB["projection topic"]
+  PROJ["TranscriptProjection"]
+  INDEX[("searchable index<br/><i>e.g. SQL</i>")]
+  SRC -- "chunks via Kafka" --> KAFKA
+  KAFKA -- "route by session ID" --> VOICE
+  VOICE --> JOURNAL
+  VOICE --> CLIENT
+  VOICE --> PUB --> PROJ --> INDEX
+  classDef src   fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
+  classDef actor fill:#312e81,stroke:#818cf8,stroke-width:1.5px,color:#f1f5f9;
+  classDef store fill:#1e293b,stroke:#06b6d4,stroke-width:2px,color:#67e8f9;
+  classDef bus   fill:#0f172a,stroke:#6366f1,color:#f1f5f9;
+  classDef client fill:#1e293b,stroke:#475569,color:#cbd5e1;
+  class SRC,CLIENT src
+  class KAFKA,VOICE,PROJ actor
+  class JOURNAL,INDEX store
+  class PUB bus
 ```
 
 ## Running it
