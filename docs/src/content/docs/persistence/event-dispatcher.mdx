@@ -1,0 +1,179 @@
+---
+title: Event dispatcher
+description: A typed builder for `PersistentActor.onEvent` — `eventDispatcher<State, Event>().on('kind', fn).build()` refuses to compile until every event kind has a handler. Catch missing variants at build time, not on the next replay.
+---
+
+`PersistentActor.onEvent` is a pure state-update function:
+**every** event variant must be handled, or replay produces
+incorrect state.  The natural shape is a switch on `event.kind`
+— but TypeScript doesn't enforce exhaustiveness on a plain switch
+inside a method.
+
+`eventDispatcher` is a **typed builder** that does:
+
+```ts
+import { eventDispatcher } from 'actor-ts';
+
+type State = { count: number };
+type Event =
+  | { kind: 'incremented'; by: number }
+  | { kind: 'decremented'; by: number }
+  | { kind: 'reset' };
+
+const onEvent = eventDispatcher<State, Event>()
+  .on('incremented', (s, e) => ({ count: s.count + e.by }))
+  .on('decremented', (s, e) => ({ count: s.count - e.by }))
+  .on('reset',       () => ({ count: 0 }))
+  .build();
+
+class Counter extends PersistentActor<Cmd, Event, State> {
+  override onEvent = onEvent;
+  // ... rest of the actor
+}
+```
+
+Three things to notice:
+
+- Each `.on(kind, fn)` adds a handler for one variant.
+- `.build()` only **type-checks** when every variant of `Event['kind']`
+  has been covered.
+- Adding a new variant to `Event` without a matching `.on(...)`
+  causes a compile error on `.build()`.
+
+The compile error names the missing kind — making the fix
+mechanical: "I added 'finalized' but forgot a handler; the
+compiler points at `.build()` and tells me 'finalized' is
+missing."
+
+## How it works
+
+```ts
+interface EventDispatcherBuilder<S, E, Handled extends string> {
+  on<K extends Exclude<E['kind'], Handled>>(
+    kind: K,
+    fn: (state: S, event: Extract<E, { kind: K }>) => S,
+  ): EventDispatcherBuilder<S, E, Handled | K>;
+
+  build(): Handled extends E['kind']
+    ? (state: S, event: E) => S
+    : EventDispatcherIncomplete<...>;
+}
+```
+
+The `Handled` type parameter tracks which kinds you've added.
+`.build()` returns either:
+
+- A callable `(state, event) => state` if every kind is covered.
+- An `EventDispatcherIncomplete<...>` value otherwise — not
+  callable; using it produces a TypeScript error along the lines
+  of "this expression is not callable; type
+  EventDispatcherIncomplete (with the unhandled kind in the
+  parameter) has no call signatures."
+
+The `__unhandled` phantom field carries the missing kind so the
+error message is informative.
+
+## Why use it over a plain switch
+
+```ts
+// Plain switch — works but loses exhaustiveness
+override onEvent(state: State, event: Event): State {
+  switch (event.kind) {
+    case 'incremented': return { count: state.count + event.by };
+    case 'decremented': return { count: state.count - event.by };
+    case 'reset':       return { count: 0 };
+  }
+  return state;   // ← silently swallow unknown kinds
+}
+```
+
+The issue:
+
+- **Unknown kinds fall through to `return state`** — the event is
+  silently ignored.  After adding `{ kind: 'finalized' }` to the
+  union, replay produces wrong state because the new kind never
+  contributes.
+- **TypeScript would catch this if you `assertNever`** at the
+  end, but it's manual and easy to forget.
+- **ts-pattern's `.exhaustive()`** works too — see
+  [Pattern matching](/actor-ts/fundamentals/pattern-matching/) —
+  but it's a runtime check inside the function.
+
+`eventDispatcher` makes the check **compile-time only** — the
+builder type-tracks which kinds remain unhandled.
+
+## A practical recipe
+
+```ts
+// Define the dispatcher once, near the event types:
+const onAccountEvent = eventDispatcher<AccountState, AccountEvent>()
+  .on('deposited', (s, e) => ({ balance: s.balance + e.amount }))
+  .on('withdrawn', (s, e) => ({ balance: s.balance - e.amount }))
+  .on('frozen',    (s)    => ({ ...s, frozen: true }))
+  .on('unfrozen',  (s)    => ({ ...s, frozen: false }))
+  .build();
+
+// Use it in the actor:
+class Account extends PersistentActor<Cmd, AccountEvent, AccountState> {
+  override onEvent = onAccountEvent;
+  // ... onCommand etc.
+}
+```
+
+The dispatcher is a **pure value** — testable in isolation, no
+dependency on the actor instance:
+
+```ts
+// Unit test the dispatcher directly:
+test('deposit increments balance', () => {
+  const s0 = { balance: 0 };
+  const s1 = onAccountEvent(s0, { kind: 'deposited', amount: 100 });
+  expect(s1.balance).toBe(100);
+});
+```
+
+## When NOT to use it
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Very simple events">
+  ```ts
+  // Two event kinds — overkill?
+  ```
+  For 2-3 simple variants where the if-chain is shorter than the
+  builder, a plain method might read cleaner.  Add the dispatcher
+  when the variant count grows or the code shapes get repetitive.
+</Aside>
+
+<Aside type="caution" title="Events without a `kind` discriminator">
+  ```ts
+  type Event = string | number;   // ✗ no kind field
+  ```
+  The dispatcher requires the union variants to discriminate on
+  `kind`.  For non-discriminated unions, use `ts-pattern` or
+  a plain `switch (typeof event)`.
+</Aside>
+
+<Aside type="caution" title="Handler side effects">
+  ```ts
+  .on('deposited', (s, e) => {
+    sendNotification();   // ✗ side effect in onEvent
+    return { balance: s.balance + e.amount };
+  });
+  ```
+  `onEvent` is **pure** — it runs on every recovery.  Side
+  effects in here duplicate per restart.  Put them in the
+  `persist` callback in `onCommand` instead.
+</Aside>
+
+## Where to next
+
+- **[PersistentActor](/actor-ts/persistence/persistent-actor/)** —
+  where the dispatcher slots into `onEvent`.
+- **[Pattern matching](/actor-ts/fundamentals/pattern-matching/)** —
+  the ts-pattern alternative for runtime exhaustiveness.
+- **[Messages](/actor-ts/fundamentals/messages/)** — the
+  `kind`-tagged discriminated-union convention.
+
+The [`eventDispatcher`](/actor-ts/api/functions/eventdispatcher/)
+API reference covers the full builder.

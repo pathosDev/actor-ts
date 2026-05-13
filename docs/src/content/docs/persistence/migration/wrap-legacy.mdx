@@ -1,0 +1,193 @@
+---
+title: WrapLegacy
+description: Upgrade pre-envelope events to versioned envelopes — when introducing adapters to an existing journal, `wrapLegacy(...)` treats raw events as version 1 and feeds them into the migration chain. The bridge for adopting migration in a brownfield codebase.
+---
+
+The framework's [envelope format](/actor-ts/persistence/migration/envelope-format/)
+only kicks in when an adapter is configured.  **Before** you set
+an adapter, events are stored **raw**:
+
+```json
+{ "kind": "deposited", "amount": 100 }
+```
+
+After you set one, new events are wrapped:
+
+```json
+{ "_v": 1, "_t": "deposited", "_e": { "kind": "deposited", "amount": 100 } }
+```
+
+This creates a problem when introducing adapters to an
+**existing journal**: old raw events lack the envelope, but the
+adapter expects envelopes.  Reading a raw event throws
+`MigrationError`.
+
+**`wrapLegacy`** bridges:
+
+```ts
+import { wrapLegacy, MigratingAdapter } from 'actor-ts';
+
+class Account extends PersistentActor<...> {
+  override eventAdapter() {
+    return wrapLegacy<EventV2>({
+      legacyVersion: 1,
+      baseAdapter:   new MigratingAdapter<EventV2>({
+        currentVersion: 2,
+        chain: [{ from: 1, to: 2, fn: v1ToV2 }],
+      }),
+    });
+  }
+}
+```
+
+What this does:
+
+- On a **raw event** (no `_v` / `_t` / `_e` keys): treat it as
+  `version: 1`.  Pass the raw event as the v1 payload into the
+  inner adapter.
+- On an **envelope event**: pass through to the inner adapter
+  unchanged.
+
+So existing raw events flow through the same migration chain as
+new envelope-wrapped events.
+
+## Configuration
+
+```ts
+interface WrapLegacySettings<E> {
+  legacyVersion: number;        // version to assign to raw events
+  baseAdapter:   EventAdapter<E>;
+}
+```
+
+| Field | What |
+| --- | --- |
+| `legacyVersion` | The version raw events are treated as.  Typically `1`. |
+| `baseAdapter` | The "real" adapter that handles the rest. |
+
+The legacy version should be **the version your code wrote raw
+events under** — usually `1`, but if you've been on v1 a while
+and skipped envelope adoption until v3, use `legacyVersion: 1`
+and chain `1→2`, `2→3`.
+
+## When to use it
+
+Three scenarios:
+
+1. **Adding adapters to an existing journal** — the most common
+   case.  Wrap once; from this point on, new events are
+   envelopes, old events flow through legacy-wrapping.
+2. **Migrating from a different framework** — old events written
+   by a previous system are now in this journal.  Treat them as
+   `legacyVersion` and migrate up.
+3. **Mixed environments during gradual rollout** — some events
+   were written by an old version of your code (raw); some by
+   a new version (envelope).  Wrap to handle both.
+
+After **all** raw events have been read (or replaced by snapshots
+that contain the migrated state), you could in principle drop the
+`wrapLegacy` wrapper.  In practice, leave it on — the cost is
+negligible and the safety net is valuable.
+
+## What gets considered "legacy"
+
+The detection is simple: a stored payload **without all of `_v`,
+`_t`, `_e`** is legacy.  This is unambiguous in practice — real
+events virtually never have all three underscore-prefixed fields
+by coincidence.
+
+## Multiple legacy versions
+
+If your journal contains raw events from **multiple legacy
+versions**, `wrapLegacy` alone isn't enough — it gives one
+`legacyVersion` to all raw events.
+
+For multi-legacy scenarios, you'd write a custom adapter that
+inspects the raw event's shape to decide its version:
+
+```ts
+class MultiLegacyAdapter implements EventAdapter<EventV3> {
+  upcast(stored: unknown, version: number): EventV3 {
+    if (version > 0) {
+      // Envelope event with known version — chain handles it
+      return innerChain.upcast(stored, version);
+    }
+    // Legacy event — sniff shape to determine version
+    const e = stored as any;
+    if ('cents' in e) return innerChain.upcast(e, 2);   // looks like v2 shape
+    if ('amount' in e) return innerChain.upcast(e, 1);   // looks like v1 shape
+    throw new Error('unknown legacy event shape');
+  }
+}
+```
+
+This is rare; most projects have a single pre-envelope shape and
+`wrapLegacy` is sufficient.
+
+## Snapshot compatibility
+
+Snapshots have their own adapter (`stateAdapter()`), independent
+of `eventAdapter()`.  If you have legacy raw snapshots (pre-
+envelope), wrap them similarly:
+
+```ts
+class Account extends PersistentActor<...> {
+  override snapshotAdapter() {
+    return wrapLegacy<StateV2>({
+      legacyVersion: 1,
+      baseAdapter: new MigratingAdapter<StateV2>({ ... }),
+    });
+  }
+}
+```
+
+For most setups, snapshots are written less often than events
+and were already enveloped when adapters were introduced — but
+double-check before assuming.
+
+## Pitfalls
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Wrong `legacyVersion`">
+  ```ts
+  wrapLegacy<EventV3>({ legacyVersion: 2, ... });
+  // ✗ raw events get fed into the v2→v3 step, but they're actually v1
+  ```
+  The `legacyVersion` must match the shape of your existing raw
+  events.  Get this wrong and the migration chain receives
+  malformed input.
+</Aside>
+
+<Aside type="caution" title="Mixed envelope/non-envelope without wrap">
+  ```ts
+  // Adapter set without wrapLegacy — first raw event throws
+  override eventAdapter() { return new MigratingAdapter(...); }
+  ```
+  Use `wrapLegacy` whenever the journal might contain raw events
+  — even if you think they're all enveloped, the safety net is
+  cheap.
+</Aside>
+
+<Aside type="caution" title="Don't conflate with a one-time backfill">
+  ```ts
+  // Run a script to wrap every existing event in an envelope?
+  ```
+  Possible, but invasive: requires journal-write access + risks
+  data damage.  `wrapLegacy` does the wrapping **at read time** —
+  no journal modification needed.  Stick with that unless you
+  have a specific reason to rewrite the journal.
+</Aside>
+
+## Where to next
+
+- **[Migration overview](/actor-ts/persistence/migration/overview/)** —
+  the bigger picture.
+- **[Envelope format](/actor-ts/persistence/migration/envelope-format/)** —
+  what an envelope looks like.
+- **[DefaultAdapter](/actor-ts/persistence/migration/default-adapter/)** —
+  for additive migrations.
+- **[MigratingAdapter](/actor-ts/persistence/migration/migrating-adapter/)** —
+  for chained transformations (commonly wrapped by `wrapLegacy`).
+- **[Recipes](/actor-ts/persistence/migration/recipes/)** — the
+  recipe for "I'm introducing adapters to an existing system."

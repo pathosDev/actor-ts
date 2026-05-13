@@ -1,0 +1,132 @@
+---
+title: FSM overview
+description: Finite-state-machine pattern on top of the actor model — explicit named states, transition handlers, optional event-sourced persistence. The right shape for protocols with a small, well-defined state set (sagas, connection lifecycles, approval workflows).
+---
+
+A **finite-state machine** is the right modeling tool when an
+actor has a **small, named set of states** with explicit
+transitions between them.  Examples:
+
+- A connection lifecycle: `disconnected → connecting → connected → disconnecting`.
+- An order workflow: `placed → confirmed → shipped → delivered`.
+- A document approval: `draft → review → approved | rejected`.
+
+The framework ships two variants:
+
+| Variant | Persistence | When |
+| --- | --- | --- |
+| **[`FSM`](/actor-ts/persistence/fsm/fsm/)** | In-memory only | Transient state machines (connection lifecycles, request handlers). |
+| **[`PersistentFSM`](/actor-ts/persistence/fsm/persistent-fsm/)** | Event-sourced | Long-running workflows that survive restarts (sagas, approvals, orders). |
+
+Both expose the same DSL — `when(state, handler)`, `goto(state, data)`,
+`stay(data)`, `onEnter` / `onExit` callbacks.  The persistent
+variant adds a journal-backed recovery layer.
+
+## A minimal example
+
+```ts
+import { FSM, Props, ActorSystem } from 'actor-ts';
+
+type State = 'closed' | 'open';
+type Data  = { openedAt?: number };
+type Msg   = 'open' | 'close';
+
+class Door extends FSM<State, Data, Msg> {
+  constructor() {
+    super('closed', {});
+
+    this.when('closed', (data, msg) => {
+      if (msg === 'open') return this.goto('open', { openedAt: Date.now() });
+      return this.stay(data);
+    });
+
+    this.when('open', (data, msg) => {
+      if (msg === 'close') return this.goto('closed', {});
+      return this.stay(data);
+    });
+
+    this.onEnter('open', (data) => {
+      this.log.info(`door opened at ${data.openedAt}`);
+    });
+  }
+}
+
+const system = ActorSystem.create('demo');
+const door = system.actorOf(Props.create(() => new Door()));
+door.tell('open');
+door.tell('close');
+```
+
+Three pieces:
+
+- **`when(state, handler)`** — registers the handler for that
+  state.  Returns `goto(...)` or `stay(...)` to determine the
+  transition.
+- **`onEnter(state, fn)`** / **`onExit(state, fn)`** — optional
+  callbacks fired on each enter / exit of a state.
+- **`goto(state, data)`** / **`stay(data)`** — transition
+  builders.
+
+The current state is **explicit and named** — easier to reason
+about than nested `become(...)` calls or a flag-and-switch
+pattern.
+
+## When to reach for FSM
+
+Three signals the pattern fits:
+
+1. **The actor has 3+ named states** with distinct behavior in
+   each.
+2. **Transitions are explicit** — "from state X on message Y, go
+   to state Z."
+3. **Side effects belong to state transitions**, not to message
+   handling per se — `onEnter` is the natural home for "start
+   the connection-keep-alive timer when entering `connected`."
+
+For actors with **just one** state (or a boolean toggle), an
+ordinary `Actor` reads cleaner.  For complex stateful
+workflows with hierarchical states, parallel substates, etc.,
+look at heavier libraries (XState) — actor-ts's FSM is
+intentionally flat.
+
+## FSM vs PersistentFSM
+
+| Use FSM when | Use PersistentFSM when |
+| --- | --- |
+| State is rebuildable on restart | State must survive restart |
+| Short-lived | Long-running |
+| State changes don't need audit | State transitions are the business story |
+| No external persistence layer | Event sourcing already in use |
+
+For a saga that walks through 10 steps over hours, persisting
+each transition is critical — a crash mid-saga should resume
+where it left off.  Use `PersistentFSM`.
+
+For a connection actor that lives for a few seconds, persisting
+each transition is wasteful — if it crashes, restart from
+disconnected.  Use plain `FSM`.
+
+## FSM vs become
+
+`Actor.become(...)` is also state-machine-ish — swap the receive
+handler.  The differences:
+
+- **FSM has named states**; `become` is anonymous closures.
+- **FSM has explicit transitions** (`goto`); `become` is "call
+  `context.become` with a new closure."
+- **FSM has typed-state inspection** — `this.stateName` /
+  `this.stateData`; `become` doesn't expose the current
+  behavior.
+
+For 2 states, `become` is fine.  For 4+, FSM is easier to read.
+
+## Where to next
+
+- **[FSM](/actor-ts/persistence/fsm/fsm/)** — the in-memory
+  variant in detail.
+- **[PersistentFSM](/actor-ts/persistence/fsm/persistent-fsm/)** —
+  the event-sourced variant.
+- **[Become and stash](/actor-ts/fundamentals/become-and-stash/)** —
+  the lower-level alternative.
+- **[PersistentActor](/actor-ts/persistence/persistent-actor/)** —
+  what PersistentFSM builds on.

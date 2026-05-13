@@ -1,0 +1,186 @@
+---
+title: Envelope format
+description: The wire-format wrapper for versioned events and state — `{ _v, _t, _e }`. Auto-applied when an adapter is configured; on read, the framework unwraps + upcasts via the adapter. Plain events still work without an envelope, until you opt in.
+---
+
+When an actor has an `eventAdapter()` (or `stateAdapter()`), every
+persisted payload is wrapped in a **versioned envelope** before
+write:
+
+```json
+{
+  "_v": 2,                                    // version
+  "_t": "deposited",                          // type tag
+  "_e": { "kind": "deposited", "amount": 100, "currency": "USD" }
+}
+```
+
+On read, the framework unwraps this and routes through the
+adapter's `upcast(payload, version)`.  The adapter sees the
+**version** + the **payload**; it returns the current-shape
+event.
+
+## The fields
+
+| Field | Type | Purpose |
+| --- | --- | --- |
+| `_v` | number | The version this payload was written under. |
+| `_t` | string | The type tag — typically the event/state name.  Optional but useful for tooling. |
+| `_e` | object | The actual payload. |
+
+Underscores so they don't collide with user fields.  The framework
+considers any object with these three keys an envelope.
+
+## When envelopes are applied
+
+```ts
+class Account extends PersistentActor<...> {
+  override eventAdapter() {
+    return new SomeAdapter();
+  }
+}
+```
+
+Setting an adapter makes the framework wrap events on write +
+unwrap on read.  Without an adapter, events are written
+**raw** — no envelope.
+
+This is **strict on read**: once you set an adapter, reading a
+non-envelope event throws `MigrationError`.  You can't mix
+enveloped + raw events for the same pid without WrapLegacy
+([see below](#mixing-with-legacy-non-envelope-events)).
+
+For first-time deployments (fresh journal), you can either start
+with adapters from the beginning (every event has `_v: 1`) or
+defer adapter introduction until you actually need migration.
+Most teams add adapters only when the first breaking change
+arrives.
+
+## What the adapter sees
+
+```ts
+interface EventAdapter<E> {
+  upcast(stored: unknown, version: number): E;
+}
+```
+
+`stored` is the **`_e` payload** — without the envelope.
+`version` is the **`_v`** value.  The adapter's job:
+
+- Inspect `version`.
+- If it's the current version, cast `stored` to `E` (the current
+  shape) and return.
+- If it's older, transform `stored` to the current shape, then
+  return.
+
+The framework's built-in adapters (DefaultAdapter,
+MigratingAdapter) encapsulate this pattern.  Custom adapters
+implement the same.
+
+## Versioning your events
+
+When you want to bump the version:
+
+```ts
+class Account extends PersistentActor<...> {
+  override eventAdapter() {
+    return new MigratingAdapter<EventV2>({
+      currentVersion: 2,
+      chain: [
+        { from: 1, to: 2, fn: v1ToV2 },
+      ],
+    });
+  }
+}
+```
+
+The adapter declares the **current version**.  New events written
+by `onCommand` now get `_v: 2` envelopes.  Old `_v: 1` events get
+upcast through the chain.
+
+This works **regardless of what version a given event was
+written under** — the migration chain handles each.
+
+## Mixing with legacy non-envelope events
+
+If you're adding an adapter to an existing journal that has
+already-persisted raw events:
+
+```ts
+class Account extends PersistentActor<...> {
+  override eventAdapter() {
+    return wrapLegacy<EventV2>({
+      legacyVersion: 1,
+      baseAdapter: new MigratingAdapter<EventV2>({
+        currentVersion: 2,
+        chain: [{ from: 1, to: 2, fn: v1ToV2 }],
+      }),
+    });
+  }
+}
+```
+
+`wrapLegacy` treats any non-envelope event as **version 1** and
+feeds it through the rest of the chain.  See
+[WrapLegacy](/actor-ts/persistence/migration/wrap-legacy/) for
+details.
+
+## Persistence formats
+
+The envelope is a regular JSON object — serialized by whatever
+serializer your journal uses (JSON for the SQLite + in-memory
+journals, customizable for Cassandra).
+
+This means:
+
+- **JSON-safe types only** in `_e` — no functions, no
+  `Symbol`s, no `BigInt`s without a custom serializer.
+- **Deeply-nested objects work** — the envelope is one level
+  deep; `_e` itself can be arbitrarily complex.
+- **Binary-friendly via CBOR** — if you configure CBOR
+  serialization, the envelope serializes as CBOR (more compact,
+  binary-friendly).
+
+## Pitfalls
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Adding an adapter to an existing journal">
+  ```ts
+  // Journal has 10K raw events; you add an adapter.
+  override eventAdapter() { return new MigratingAdapter(...); }
+  ```
+  Without `wrapLegacy`, recovery throws on the first raw event.
+  Always use `wrapLegacy` when introducing adapters to existing
+  data.
+</Aside>
+
+<Aside type="caution" title="Removing an adapter">
+  ```ts
+  // Adapter was set; now removed.  Old envelope events still in journal.
+  ```
+  Without the adapter, recovery sees envelopes (with `_v`, `_t`,
+  `_e`) and tries to feed them to `onEvent` as-is.  Either keep
+  the adapter forever (the typical answer), or run a one-off
+  migration script that strips envelopes from the journal.
+</Aside>
+
+<Aside type="caution" title="Envelope fields appearing in events">
+  ```ts
+  // If your event itself has a field called _v, it conflicts
+  type Event = { _v: number; kind: 'deposited' };
+  ```
+  Underscore-prefixed keys are framework-reserved.  Don't use
+  `_v`, `_t`, `_e` as field names in your event payloads.
+</Aside>
+
+## Where to next
+
+- **[Migration overview](/actor-ts/persistence/migration/overview/)** —
+  the bigger picture.
+- **[DefaultAdapter](/actor-ts/persistence/migration/default-adapter/)** —
+  zero-config additive migrations.
+- **[MigratingAdapter](/actor-ts/persistence/migration/migrating-adapter/)** —
+  chained transformations.
+- **[WrapLegacy](/actor-ts/persistence/migration/wrap-legacy/)** —
+  for mixing with non-envelope legacy events.

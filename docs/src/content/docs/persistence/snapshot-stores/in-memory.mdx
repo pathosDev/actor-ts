@@ -1,0 +1,70 @@
+---
+title: In-memory snapshot store
+description: The reference snapshot-store implementation — backed by an in-process Map. Use in tests and dev; for production, switch to SQLite or object storage.
+---
+
+`InMemorySnapshotStore` keeps snapshots in a `Map<persistenceId,
+Snapshot[]>` in process memory.  Like
+[`InMemoryJournal`](/actor-ts/persistence/journals/in-memory/),
+it's the **default** when no snapshot store is configured —
+zero setup, ideal for tests, **never use in production**.
+
+```ts
+import { InMemorySnapshotStore, PersistenceExtensionId, ActorSystem } from 'actor-ts';
+
+const system = ActorSystem.create('demo');
+system.extension(PersistenceExtensionId).configure({
+  journal:       new InMemoryJournal(),
+  snapshotStore: new InMemorySnapshotStore(),
+});
+```
+
+## What it does
+
+Implements the `SnapshotStore` interface — `save`, `loadLatest`,
+`deleteUpTo`.  Each `persistenceId` maps to an array of snapshots
+ordered by sequence number.
+
+- **`save(pid, snapshot)`** — append to the pid's array.
+- **`loadLatest(pid)`** — return the highest-seq snapshot, or
+  `None`.
+- **`deleteUpTo(pid, seqNr)`** — splice off snapshots with seq
+  ≤ seqNr.
+
+The implementation is **reference semantics** — every other
+snapshot store must match this behavior (modulo persistence /
+encryption / compression specifics).
+
+## When to use it
+
+- **Tests** — fast, no IO, clean teardown per test.
+- **Dev** — when you don't want a real snapshot file lying
+  around between runs.
+- **Reference for custom implementations** — read the source
+  for the contract.
+
+## When NOT to use it
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Production">
+  Data dies with the process.  A restart loses every snapshot,
+  so recovery falls back to full event-log replay every time —
+  defeats the point of snapshots.
+</Aside>
+
+<Aside type="caution" title="Long-running tests">
+  Snapshots accumulate in memory.  A benchmark that takes 1M
+  snapshots over a run grows the Map linearly.  For long tests,
+  configure `deleteUpTo` cleanup or use the SQLite store with
+  `:memory:`.
+</Aside>
+
+## Where to next
+
+- **[Snapshots](/actor-ts/persistence/snapshots/)** — the
+  policy / mechanics.
+- **[SQLite snapshot store](/actor-ts/persistence/snapshot-stores/sqlite/)** —
+  single-node production.
+- **[Cached snapshot store](/actor-ts/persistence/snapshot-stores/cached-snapshot-store/)** —
+  wrap any store with an in-process cache.

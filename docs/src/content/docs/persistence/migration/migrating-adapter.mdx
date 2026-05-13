@@ -1,0 +1,209 @@
+---
+title: MigratingAdapter
+description: Chain version-to-version transformations via a sequence of typed migration steps. The framework runs whichever steps apply to a given persisted version. The right tool for non-additive migrations (renames, splits, restructures).
+---
+
+`MigratingAdapter` handles **non-additive** migrations — renames,
+restructures, computed-from-other-fields — through a **chain of
+version transformations**.
+
+```ts
+import { MigratingAdapter } from 'actor-ts';
+
+type EventV1 = { kind: 'deposited'; amount: number };
+type EventV2 = { kind: 'deposited'; cents: number; currency: string };
+type EventV3 = { kind: 'deposited'; cents: number; currency: string; tenantId: string };
+
+class Account extends PersistentActor<Cmd, EventV3, State> {
+  constructor(public readonly tenantId: string) { super(); }
+
+  override eventAdapter() {
+    return new MigratingAdapter<EventV3>({
+      currentVersion: 3,
+      chain: [
+        { from: 1, to: 2, fn: (v1: EventV1) => ({
+          kind: v1.kind,
+          cents: v1.amount * 100,
+          currency: 'USD',
+        }) },
+        { from: 2, to: 3, fn: (v2: EventV2) => ({
+          ...v2,
+          tenantId: this.tenantId,
+        }) },
+      ],
+    });
+  }
+}
+```
+
+The chain:
+
+- **V1 → V2** restructures: rename `amount` to `cents`, multiply
+  by 100, hardcode `currency`.
+- **V2 → V3** adds: pull `tenantId` from the actor instance.
+
+The adapter applies whichever steps are needed:
+
+- V1 events: run both steps → V3 shape.
+- V2 events: run only the V2→V3 step → V3 shape.
+- V3 events: no steps → already current.
+
+## Configuration
+
+```ts
+interface MigratingAdapterSettings<E> {
+  currentVersion: number;
+  chain:          Array<MigrationStep<unknown, unknown>>;
+}
+
+interface MigrationStep<From, To> {
+  from: number;
+  to:   number;
+  fn:   (from: From) => To;
+}
+```
+
+Steps **must be contiguous** — `1 → 2`, `2 → 3`, etc.  No
+skipping versions; no parallel paths.
+
+## When to use it
+
+`MigratingAdapter` is the right tool when:
+
+- **Renames** — `amount` → `cents`.
+- **Restructures** — flat fields → nested objects, or vice versa.
+- **Computed fields** — new field derived from old fields.
+- **Multi-step evolution** — v1 → v2 → v3 → v4, each step
+  building on the last.
+
+For pure additions, [DefaultAdapter](/actor-ts/persistence/migration/default-adapter/)
+is simpler.  For arbitrarily-shaped migrations, use a
+custom `EventAdapter`.
+
+## Closure context
+
+```ts
+class Account extends PersistentActor<...> {
+  constructor(public readonly tenantId: string) { super(); }
+
+  override eventAdapter() {
+    return new MigratingAdapter<EventV3>({
+      chain: [
+        // The migration function closes over `this.tenantId`:
+        { from: 2, to: 3, fn: (v2) => ({ ...v2, tenantId: this.tenantId }) },
+      ],
+    });
+  }
+}
+```
+
+Steps are **plain functions** — they can close over the actor's
+constructor arguments.  Useful for per-instance migration
+context (per-tenant defaults, per-region currency).
+
+## Step-by-step semantics
+
+Given V1 event + chain `[1→2, 2→3]`:
+
+```
+storedV1 → fn1→2(storedV1) = intermediateV2 → fn2→3(intermediateV2) = finalV3
+```
+
+The intermediate types **don't need to match** any historical
+event shape — they're just stepping stones.  This is sometimes
+helpful: the v1→v2 step might produce a temporary shape that's
+neither v1 nor canonical v2, and the v2→v3 step normalizes.
+
+## Error handling
+
+```ts
+{ from: 1, to: 2, fn: (v1) => {
+  if (v1.amount < 0) throw new Error('invalid v1 event');
+  return { kind: v1.kind, cents: v1.amount * 100 };
+}}
+```
+
+If a step throws, recovery fails with the error wrapped in
+`MigrationError`.  The actor's `onRecoveryFailure` is called.
+
+Default: this propagates to the actor's supervisor.  Override
+`onRecoveryFailure` if you want to skip problematic events (rare;
+usually you want to find them, not skip them).
+
+## Renumbering vs new step
+
+```ts
+// Scenario: V2 is in production, all events V1 and V2.
+// Now you want V3.  Add a step:
+
+chain: [
+  { from: 1, to: 2, fn: v1To2 },
+  { from: 2, to: 3, fn: v2To3 },   // NEW
+]
+```
+
+Add the V2→V3 step; keep the existing V1→V2 step.  Set
+`currentVersion: 3`.  Existing V2 events get upcast through the
+new step; V3 events get written directly.
+
+**Never modify existing steps** that handled events still in the
+journal — they're load-bearing.
+
+## Schema registry integration
+
+For projects using the [schema registry](/actor-ts/persistence/migration/schema-registry/),
+you can validate that the chain's source/destination versions
+align with the registry's declared versions.  Optional but
+useful as a sanity check in tests.
+
+## Pitfalls
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Skipping versions">
+  ```ts
+  chain: [
+    { from: 1, to: 3, fn: v1To3 },   // ✗ skips v2 — adapter sees v2 events and panics
+  ]
+  ```
+  Steps must form a contiguous chain.  If v2 events exist (or
+  could exist), include the v2→v3 step explicitly.
+</Aside>
+
+<Aside type="caution" title="Migrations with side effects">
+  ```ts
+  { from: 1, to: 2, fn: (v1) => {
+    fetchSomethingExpensive();   // ✗ runs on every recovery
+    return ...;
+  }}
+  ```
+  Migration steps are pure — they run on every recovery for
+  every affected event.  Side effects (API calls, DB lookups)
+  duplicate per recovery and slow down replay.  Pre-compute and
+  cache externally if needed.
+</Aside>
+
+<Aside type="caution" title="Forgetting to bump currentVersion">
+  ```ts
+  new MigratingAdapter<EventV3>({
+    currentVersion: 2,   // ✗ left at 2; new events written as v2
+    chain: [..., { from: 2, to: 3, fn: ... }],
+  });
+  ```
+  The new step runs on read (v2 → v3), but new events still
+  write as v2.  Always bump `currentVersion` when adding a
+  step at the head of the chain.
+</Aside>
+
+## Where to next
+
+- **[Migration overview](/actor-ts/persistence/migration/overview/)** —
+  the bigger picture.
+- **[Envelope format](/actor-ts/persistence/migration/envelope-format/)** —
+  the underlying wire format.
+- **[DefaultAdapter](/actor-ts/persistence/migration/default-adapter/)** —
+  the additive-only alternative.
+- **[WrapLegacy](/actor-ts/persistence/migration/wrap-legacy/)** —
+  for bringing pre-envelope events into the chain.
+- **[Recipes](/actor-ts/persistence/migration/recipes/)** — common
+  patterns walked through.

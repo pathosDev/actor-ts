@@ -1,0 +1,242 @@
+---
+title: FSM
+description: The in-memory finite-state machine — extend `FSM<StateName, StateData, Msg>`, register `when(...)` handlers + `onEnter` / `onExit` callbacks. State lives only in memory; lost on restart.
+---
+
+`FSM<SName, SData, Msg>` is the base class for in-memory state
+machines.  Three type parameters:
+
+- **`SName`** — string-union of state names: `'closed' | 'open'`.
+- **`SData`** — the state's associated data: `{ openedAt?: number }`.
+- **`Msg`** — the actor's message type.
+
+```ts
+import { FSM } from 'actor-ts';
+
+type DoorState = 'closed' | 'open';
+type DoorData  = { openedAt?: number };
+type DoorMsg   = 'open' | 'close' | 'status';
+
+class Door extends FSM<DoorState, DoorData, DoorMsg> {
+  constructor() {
+    super('closed', {});
+
+    this.when('closed', (data, msg) => {
+      if (msg === 'open') return this.goto('open', { openedAt: Date.now() });
+      return this.stay(data);
+    });
+
+    this.when('open', (data, msg) => {
+      if (msg === 'close') return this.goto('closed', {});
+      return this.stay(data);
+    });
+
+    this.onEnter('open',  (data) => this.log.info(`door opened at ${data.openedAt}`));
+    this.onExit('open',   () => this.log.info(`door closing`));
+  }
+}
+```
+
+## The DSL
+
+```ts
+class FSM<SName, SData, Msg> extends Actor<Msg> {
+  // In subclass constructor:
+  protected when(state: SName, handler: StateHandler<SName, SData, Msg>): void;
+  protected onEnter(state: SName, fn: (data: SData) => void | Promise<void>): void;
+  protected onExit(state: SName, fn: (data: SData) => void | Promise<void>): void;
+  protected onTransition(fn: TransitionCallback<SName, SData>): void;
+
+  // In handlers:
+  protected goto(state: SName, data: SData): Transition<SName, SData>;
+  protected stay(data: SData): StayTransition<SData>;
+
+  // Read-only:
+  protected readonly stateName: SName;
+  protected readonly stateData: SData;
+}
+```
+
+The pattern: configure transitions in the constructor.  The base
+class's `onReceive` routes each message to the handler for the
+current state.
+
+## `when` — state handlers
+
+```ts
+this.when('closed', (data, msg) => {
+  if (msg === 'open') return this.goto('open', { openedAt: Date.now() });
+  return this.stay(data);
+});
+```
+
+The handler:
+
+- Receives the **current state data** and the **incoming
+  message**.
+- Returns a **transition** — `goto(newState, newData)` to move,
+  or `stay(data)` to stay (possibly with updated data).
+- May be async — return a `Promise<FsmResult>`.
+
+Asynchronous handlers serialize like any `Actor.onReceive` —
+the next message waits.
+
+## `goto` and `stay`
+
+```ts
+this.goto('open', { openedAt: Date.now() });   // → transition
+this.stay({ ...data, lastChecked: Date.now() });  // → stay; new data
+this.stay(data);   // → stay; unchanged data
+```
+
+- **`goto(state, data)`** — transition.  Fires `onExit` for the
+  current state, sets the new state + data, fires `onEnter` for
+  the new state.
+- **`stay(data)`** — no transition, but data is updated.  No
+  `onEnter` / `onExit` fires.
+
+Both return values you can `return` directly.
+
+## `onEnter` and `onExit`
+
+```ts
+this.onEnter('open', (data) => {
+  this.log.info(`opened, will close in 10s`);
+  this.context.timers.startSingleTimer('auto-close', 'close', 10_000);
+});
+
+this.onExit('open', () => {
+  this.context.timers.cancel('auto-close');
+});
+```
+
+Fire on state entry / exit.  Useful for:
+
+- **Setting up timers** in `onEnter` and tearing them down in
+  `onExit`.
+- **Logging transitions** without coupling that to message
+  handling.
+- **Notifying watchers** when entering specific states.
+
+Errors in these callbacks **propagate to the actor's supervisor**
+— same as any `onReceive` error.
+
+## `onTransition`
+
+```ts
+this.onTransition((from, to, data) => {
+  metrics.counter('fsm.transitions', { from, to }).inc();
+});
+```
+
+Fired on **every** transition with the from-state, to-state, and
+new data.  Use for global instrumentation (every transition gets
+metric'd) without listing per-state callbacks.
+
+Multiple listeners are supported — `onTransition` appends each.
+
+## Reading the current state
+
+```ts
+// In handler / callback code:
+this.stateName;   // → SName
+this.stateData;   // → SData
+```
+
+Read-only access.  Mutating these directly would skip transition
+logic; the framework enforces this is read-only by typing.
+
+Useful for **decisions** within a handler that depend on more
+than the message:
+
+```ts
+this.when('connecting', (data, msg) => {
+  if (msg === 'connected') return this.goto('connected', { sessionId: msg.id });
+  if (msg === 'timeout' && data.retries < 3) {
+    return this.stay({ ...data, retries: data.retries + 1 });
+  }
+  return this.goto('disconnected', {});
+});
+```
+
+## State data evolution
+
+```ts
+type DoorData = { openedAt?: number };
+
+this.when('closed', (data, msg) => {
+  return this.goto('open', { ...data, openedAt: Date.now() });
+});
+```
+
+State data is **immutable per transition** — you produce a new
+object.  The framework stores the returned value; the previous
+value is gone.
+
+Mutations work technically (`data.openedAt = Date.now()`) but
+break testability and reasoning.  Treat state data as immutable.
+
+## Restart semantics
+
+```ts
+// Actor restarts → constructor runs → FSM resets to initialState
+```
+
+On restart, the FSM **starts over** at the constructor-provided
+initial state + data.  Unlike PersistentActor, there's no
+event log to replay.
+
+If state must survive restart, use
+[PersistentFSM](/actor-ts/persistence/fsm/persistent-fsm/).
+
+## Pitfalls
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Forgetting to handle a state's message">
+  ```ts
+  this.when('closed', (data, msg) => {
+    if (msg === 'open') return this.goto('open', { ... });
+    // ✗ forgot to return for other messages — TypeScript catches this
+  });
+  ```
+  TypeScript flags missing return paths.  For unhandled messages,
+  return `this.stay(data)` explicitly.
+</Aside>
+
+<Aside type="caution" title="Async handler + timer races">
+  ```ts
+  this.when('connecting', async (data, msg) => {
+    await someSlowCheck();
+    return this.goto('connected', { ... });
+  });
+  ```
+  While the handler awaits, the actor's mailbox stays serialized
+  — no other message processes.  This is normal `onReceive`
+  semantics and usually fine.  But if a timer fires during the
+  await, its tick waits for the handler — increasing latency.
+</Aside>
+
+<Aside type="caution" title="State data with closures">
+  ```ts
+  // ✗ closures don't survive restart and can leak
+  this.stay({ retryCallback: () => this.something() });
+  ```
+  Keep state data **serializable** — plain values, no
+  closures, no actor refs.  This matters for testability and
+  for migrating to PersistentFSM later.
+</Aside>
+
+## Where to next
+
+- **[FSM overview](/actor-ts/persistence/fsm/overview/)** — the
+  bigger picture.
+- **[PersistentFSM](/actor-ts/persistence/fsm/persistent-fsm/)** —
+  the persistent variant.
+- **[Become and stash](/actor-ts/fundamentals/become-and-stash/)** —
+  the lower-level alternative.
+- **[Timers and scheduling](/actor-ts/fundamentals/timers-and-scheduling/)** —
+  the timers commonly paired with state transitions.
+
+The [`FSM`](/actor-ts/api/classes/fsm/) API reference covers the
+full surface.

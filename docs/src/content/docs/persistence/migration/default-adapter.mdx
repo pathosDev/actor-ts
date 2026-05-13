@@ -1,0 +1,183 @@
+---
+title: DefaultAdapter
+description: Zero-effort migration for additive changes — declare default values for fields added in newer versions; older payloads read back with the defaults filled in. The right tool when "I just added a field" describes the change.
+---
+
+`DefaultAdapter` handles the **simplest migration shape**: a new
+version added fields, all of which have sensible defaults.
+
+```ts
+import { DefaultAdapter } from 'actor-ts';
+
+type EventV1 = { kind: 'deposited'; amount: number };
+type EventV2 = { kind: 'deposited'; amount: number; currency: string };
+
+class Account extends PersistentActor<Cmd, EventV2, State> {
+  override eventAdapter() {
+    return new DefaultAdapter<EventV2>({
+      currentVersion: 2,
+      defaults:       { currency: 'USD' },
+    });
+  }
+}
+```
+
+V1 events `{ kind: 'deposited', amount: 100 }` read back as
+`{ kind: 'deposited', amount: 100, currency: 'USD' }` — defaults
+fill in.  V2 events read unchanged.
+
+## When this is enough
+
+`DefaultAdapter` is the right tool when:
+
+- **Pure addition** — new fields are added; old ones unchanged.
+- **Defaults are stable** — the default value is the same forever
+  (or at least until the next version bump).
+- **Order doesn't matter** — adding multiple fields across
+  versions all collapse to "fill in whatever's missing."
+
+This covers ~50 % of real-world migrations.  When it doesn't fit,
+reach for [MigratingAdapter](/actor-ts/persistence/migration/migrating-adapter/).
+
+## Configuration
+
+```ts
+interface DefaultAdapterSettings<E> {
+  currentVersion: number;
+  defaults:       Partial<E>;
+}
+```
+
+| Field | What |
+| --- | --- |
+| `currentVersion` | The version newly-written events carry. |
+| `defaults` | Field-name → default-value mapping for fields possibly missing in older events. |
+
+The adapter applies defaults by spreading `defaults` first, then
+the stored event:
+
+```ts
+{
+  ...defaults,           // fallback values
+  ...storedPayload,      // actual values overwrite defaults
+}
+```
+
+Already-set fields in the stored payload **win** — defaults only
+fill gaps.
+
+## Multiple version bumps
+
+```ts
+// v1 → v2: added `currency`
+// v2 → v3: added `metadata`
+class Account extends PersistentActor<...> {
+  override eventAdapter() {
+    return new DefaultAdapter<EventV3>({
+      currentVersion: 3,
+      defaults: {
+        currency: 'USD',
+        metadata: {},
+      },
+    });
+  }
+}
+```
+
+The adapter doesn't care about version transitions individually
+— it just makes sure all `defaults` fields are present.  Works
+for V1 (missing both), V2 (missing only metadata), V3 (has both).
+
+## When the default isn't right
+
+Consider `currency: 'USD'` for an account opened in Germany in
+2015 — the default is wrong (should be EUR).  Two options:
+
+### Use MigratingAdapter for context-aware migration
+
+```ts
+new MigratingAdapter<EventV2>({
+  currentVersion: 2,
+  chain: [
+    { from: 1, to: 2, fn: (v1) => ({
+      ...v1,
+      currency: lookupCurrencyByTimestamp(v1.ts),
+    })},
+  ],
+});
+```
+
+The chain function has access to the full V1 event, so it can
+derive a per-event default from context.
+
+### Backfill instead of default
+
+If the historical events should be **rewritten** to have correct
+currency, run a one-off migration script that reads each event,
+rewrites it with the correct currency, and writes it back to a
+fresh pid (or updates the journal in place if you have write
+access).
+
+This is rare — usually keeping old events as-is + using a
+context-aware adapter is fine.
+
+## Type safety
+
+```ts
+new DefaultAdapter<EventV2>({
+  currentVersion: 2,
+  defaults: {
+    currency: 'USD',
+    nonExistentField: 'oops',   // ✓ compiles — but never used
+  },
+});
+```
+
+TypeScript allows extra fields in `Partial<E>` — they just don't
+do anything if the event type doesn't include them.  Watch for
+typos in field names; they fail silently.
+
+## Pitfalls
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Wrong default for an old event">
+  ```ts
+  // V1 events from 2015 → currency: 'USD' default → wrong for non-US tenants
+  ```
+  Defaults are static.  If "the right default depends on the
+  event" applies, use MigratingAdapter with a per-event function
+  instead.
+</Aside>
+
+<Aside type="caution" title="Renaming fields">
+  ```ts
+  // V1: { amount: number }
+  // V2: { value: number }   ← renamed
+  ```
+  DefaultAdapter doesn't handle renames — old events still have
+  `amount`, new events expect `value`.  Use a MigratingAdapter
+  that explicitly transforms `{ amount } → { value }`.
+</Aside>
+
+<Aside type="caution" title="Required fields without defaults">
+  ```ts
+  // V2 adds `currency`, no default provided
+  new DefaultAdapter<EventV2>({ currentVersion: 2, defaults: {} });
+  ```
+  V1 events come out missing `currency`.  TypeScript still
+  thinks the type is satisfied (the adapter erases to `E`), but
+  `event.currency` is `undefined` at runtime.  Always provide
+  defaults for fields that are not optional in the new type.
+</Aside>
+
+## Where to next
+
+- **[Migration overview](/actor-ts/persistence/migration/overview/)** —
+  the bigger picture.
+- **[Envelope format](/actor-ts/persistence/migration/envelope-format/)** —
+  how versioning works on disk.
+- **[MigratingAdapter](/actor-ts/persistence/migration/migrating-adapter/)** —
+  for non-additive transformations.
+- **[Recipes](/actor-ts/persistence/migration/recipes/)** — the
+  per-pattern cookbook.

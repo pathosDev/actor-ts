@@ -1,0 +1,119 @@
+---
+title: Cached snapshot store
+description: A decorator that wraps any `SnapshotStore` with an LRU read-through cache. Useful when the underlying store is slow (network-mounted, encrypted) and snapshot loads happen frequently (high actor churn).
+---
+
+`CachedSnapshotStore` is a **decorator** — wrap any
+`SnapshotStore` to add an in-process LRU cache for reads.
+
+```ts
+import {
+  CachedSnapshotStore,
+  ObjectStorageSnapshotStore,
+  PersistenceExtensionId,
+} from 'actor-ts';
+
+const underlying = new ObjectStorageSnapshotStore({
+  /* S3 bucket config */
+});
+
+const cached = new CachedSnapshotStore({
+  underlying,
+  maxEntries: 1_000,         // LRU size
+  ttlMs:      60_000,         // optional TTL
+});
+
+system.extension(PersistenceExtensionId).configure({
+  journal:       myJournal,
+  snapshotStore: cached,
+});
+```
+
+## When you need it
+
+Three patterns:
+
+1. **Slow underlying store** — object storage with multi-hop
+   network latency, encrypted state with expensive decryption.
+2. **Frequent actor churn** — sharded entities passivating /
+   re-spawning constantly, each load re-reading the same
+   snapshot.
+3. **Recovery storms** — full-cluster restart, every actor loads
+   its snapshot at once.  Cache reduces redundant loads when
+   the same snapshot is queried during the storm.
+
+For local SQLite-backed snapshots (sub-millisecond reads), the
+cache adds overhead with no benefit.  **Use it only when the
+underlying store has measurable read latency.**
+
+## Configuration
+
+```ts
+interface CachedSnapshotStoreSettings {
+  underlying: SnapshotStore;
+  maxEntries: number;     // LRU capacity
+  ttlMs?:     number;     // optional expiration
+}
+```
+
+| Field | What |
+| --- | --- |
+| `underlying` | The real snapshot store the cache fronts. |
+| `maxEntries` | Max cached entries.  LRU eviction beyond this. |
+| `ttlMs` | Optional — drop cache entries this old.  Useful if snapshots may be deleted externally. |
+
+## Cache semantics
+
+- **`loadLatest(pid)`** — check cache; on hit, return.  On miss,
+  load from underlying, cache the result, return.
+- **`save(pid, snapshot)`** — write through to underlying, then
+  update the cache.
+- **`deleteUpTo(pid, seqNr)`** — write through, invalidate the
+  pid's cache entry.
+
+The cache is **consistent with writes** — a save followed by
+`loadLatest` returns the just-saved snapshot, never a stale value.
+
+## Performance
+
+For a slow underlying store (say, 50 ms per load), the cache
+turns subsequent loads of the same snapshot into sub-microsecond
+operations.  A typical sharded-entity workload sees 80-95 % hit
+rate after warm-up.
+
+The cache itself is in-process — no shared cache across nodes.
+For a cluster of N nodes, each has its own cache; misses on a
+fresh node pay the full underlying-load cost.
+
+## Pitfalls
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="External modifications">
+  ```ts
+  // Underlying store modified outside the cache (manual
+  // SQL update, batch backfill) → cache returns stale data
+  ```
+  The cache assumes **it's the only writer**.  If something
+  else writes to the underlying store, set a TTL or invalidate
+  manually.
+</Aside>
+
+<Aside type="caution" title="Sized too small">
+  ```ts
+  maxEntries: 100;   // ✗ for 10 000 active entities
+  ```
+  An undersized cache thrashes — every load hits cache, then
+  evicts.  Size `maxEntries` to at least the working-set size.
+</Aside>
+
+## Where to next
+
+- **[Snapshots](/actor-ts/persistence/snapshots/)** — the policy
+  this is in service of.
+- **[Object storage snapshot store](/actor-ts/persistence/object-storage/snapshot-store-backend/)** —
+  the common slow underlying store.
+- **[In-memory snapshot store](/actor-ts/persistence/snapshot-stores/in-memory/)** —
+  for tests.
+- **[SQLite snapshot store](/actor-ts/persistence/snapshot-stores/sqlite/)** —
+  the single-node default.

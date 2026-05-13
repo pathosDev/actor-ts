@@ -1,0 +1,208 @@
+---
+title: Cassandra journal
+description: Distributed event journal backed by Cassandra — the right choice when multiple cluster nodes need to share the same event stream. Lower-latency than network-mounted SQLite, scales to billions of events, with tag-indexed query support.
+---
+
+`CassandraJournal` stores events in a Cassandra cluster.  Unlike
+SQLite (one file per node), Cassandra is **shared across cluster
+nodes** — any node can append, read, or query events for any
+persistenceId.
+
+```ts
+import { CassandraJournal, PersistenceExtensionId } from 'actor-ts';
+
+system.extension(PersistenceExtensionId).configure({
+  journal: new CassandraJournal({
+    contactPoints: ['cassandra-1:9042', 'cassandra-2:9042'],
+    keyspace:      'my_app_events',
+    table:         'events',
+  }),
+});
+```
+
+## When to use it
+
+Cassandra is the production choice for **multi-node clusters with
+shared persistence**:
+
+- **Sharded entities that move between nodes** — `PersistentActor`s
+  spawned on different nodes need to read each other's journals
+  during rebalance.
+- **Cross-node projections** — a projection on node-A needs to
+  see events written on node-B.
+- **High-throughput single-shard scenarios** that exceed SQLite's
+  per-machine ceiling.
+
+For single-node deployments, **`SqliteJournal` is simpler and
+cheaper** — Cassandra has operational complexity (multi-node
+cluster, repair, tuning) you don't need.
+
+## Configuration
+
+```ts
+interface CassandraJournalOptions {
+  contactPoints:    string[];      // cluster contact points
+  keyspace:         string;        // keyspace (created externally)
+  table?:           string;        // events table name, default 'events'
+  tagsTable?:       string;        // tag-index table, default 'events_tags'
+  consistencyLevel?: ConsistencyLevel;   // default LOCAL_QUORUM
+  /* ... plus driver-level options ... */
+}
+```
+
+| Field | What |
+| --- | --- |
+| `contactPoints` | Initial Cassandra contact nodes.  Driver discovers the rest. |
+| `keyspace` | Pre-existing keyspace.  The framework creates tables but **not** the keyspace itself. |
+| `table` | Events table name.  Default `events`. |
+| `tagsTable` | Tag index table.  Default `events_tags`. |
+| `consistencyLevel` | Driver consistency for reads/writes.  `LOCAL_QUORUM` for production. |
+
+The framework auto-creates the two tables on first use, with
+schemas:
+
+```cql
+CREATE TABLE events (
+  pid       text,
+  seq       bigint,
+  event     blob,
+  ts        bigint,
+  PRIMARY KEY (pid, seq)
+);
+
+CREATE TABLE events_tags (
+  tag        text,
+  ts         bigint,
+  pid        text,
+  seq        bigint,
+  event_ref  blob,
+  PRIMARY KEY (tag, ts, pid, seq)
+);
+```
+
+The events table is keyed by `pid` — recovery for one
+persistenceId reads one partition.  The tags table is keyed by
+`tag` — projection queries hit one partition per tag.
+
+## Setup
+
+Provision the keyspace with appropriate replication:
+
+```cql
+CREATE KEYSPACE my_app_events
+  WITH replication = {
+    'class': 'NetworkTopologyStrategy',
+    'datacenter1': 3,
+  };
+```
+
+`NetworkTopologyStrategy` with a replication factor of 3 is
+typical for production.  The framework's writes go via
+`LOCAL_QUORUM`, which needs 2 of 3 replicas for ack.
+
+## Consistency model
+
+Cassandra is **eventually consistent across replicas** — but
+each write is **linearized per pid** (via `seq` as the
+partitioning key).  Practical guarantees:
+
+- A given pid's events have a strict total order (sequenceNr).
+- Replays see events in seq order regardless of which Cassandra
+  replica responds.
+- Cross-pid event order in tag queries is **timestamp-bound**
+  but not strict — events with the same `ts` may interleave.
+
+For most event-sourced applications, this is fine — within a
+single entity (pid), order is strict; across entities, partial
+order via timestamp is acceptable.
+
+## Multi-DC
+
+Cassandra natively supports multi-datacenter replication.
+Configure replication per DC:
+
+```cql
+CREATE KEYSPACE my_app_events
+  WITH replication = {
+    'class': 'NetworkTopologyStrategy',
+    'dc1': 3,
+    'dc2': 3,
+  };
+```
+
+The actor-ts journal doesn't care — writes go to local DC
+(via `LOCAL_QUORUM`), cross-DC replication is async and handled
+by Cassandra.
+
+## Costs
+
+Approximate write performance (single Cassandra cluster):
+
+- **Single-pid append** — sub-millisecond at the journal level.
+  Driven by Cassandra's commit log + memtable.
+- **Cross-pid throughput** — scales linearly with cluster size.
+  10K events/sec per Cassandra node is realistic.
+- **Tag query** — bounded by tag partition size.  Hot tags
+  (every event tagged 'audit') become hot partitions; consider
+  finer-grained tagging or bucketing if you see one tag carrying
+  100M+ events.
+
+## Backup + restore
+
+Cassandra has its own backup strategy — snapshots via `nodetool
+snapshot`, incremental backups, plus operational tooling
+(Medusa, Cassandra Backup tool).  The journal doesn't add
+anything special; treat it as you would any other Cassandra
+keyspace.
+
+## Pitfalls
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Don't run Cassandra single-node in production">
+  ```ts
+  contactPoints: ['localhost:9042'];   // ✗ single node
+  ```
+  Cassandra's value is replication.  Single-node Cassandra is
+  strictly worse than SQLite — same operational footprint, no
+  durability advantage.  Either run a real Cassandra cluster
+  or use SQLite per-node.
+</Aside>
+
+<Aside type="caution" title="Tag partitions can get hot">
+  ```ts
+  override tagsFor(event) { return ['audit']; }
+  ```
+  Every event tagged 'audit' goes to one Cassandra partition.
+  With 10M events/day, that partition gets huge.  Consider
+  bucketing (`audit-2025-W19`) for high-volume tags, or use
+  finer-grained tags.
+</Aside>
+
+<Aside type="caution" title="Recovery cost">
+  Recovery of a pid with 100K events reads 100K rows from one
+  Cassandra partition.  Fast (Cassandra is good at this) but
+  not free.  Use snapshots aggressively for actors that
+  accumulate.
+</Aside>
+
+<Aside type="caution" title="Schema changes">
+  The framework auto-creates the events tables on first use.
+  Schema changes (adding columns) are a manual `ALTER TABLE`
+  exercise.  Pre-1.0, schema may evolve in framework releases —
+  read the CHANGELOG before upgrading.
+</Aside>
+
+## Where to next
+
+- **[Persistence overview](/actor-ts/persistence/overview/)** —
+  the bigger picture.
+- **[SQLite journal](/actor-ts/persistence/journals/sqlite/)** —
+  the single-node alternative.
+- **[In-memory journal](/actor-ts/persistence/journals/in-memory/)** —
+  for tests.
+- **[Snapshots](/actor-ts/persistence/snapshots/)** — bound the
+  recovery scan.
+
+The [`CassandraJournal`](/actor-ts/api/classes/cassandrajournal/)
+API reference covers the full options.
