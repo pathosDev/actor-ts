@@ -42,12 +42,15 @@
     <circle cx="89"  cy="104" r="7"/>
   </g>
 
-  <!-- wordmark: "actor-ts" — indigo + red hyphen + indigo -->
+  <!-- wordmark + tagline: positioned so the wordmark+tagline BLOCK is
+       vertically centered in the viewBox, matching the mesh's vertical
+       center on its left.  Wordmark baseline y=72, tagline baseline
+       y=98 — block visual center lands at viewBox center y≈59.5. -->
   <g font-family="ui-monospace, 'JetBrains Mono', 'Fira Code', Menlo, monospace" font-weight="700">
-    <text x="130" y="75" font-size="64" fill="#6366f1" letter-spacing="-1">
+    <text x="130" y="72" font-size="64" fill="#6366f1" letter-spacing="-1">
       actor<tspan fill="#ef4444">-</tspan><tspan fill="#6366f1">ts</tspan>
     </text>
-    <text x="132" y="108" font-size="14" class="tagline" letter-spacing="1.5">
+    <text x="132" y="98" font-size="14" class="tagline" letter-spacing="1.5">
       the actor model · on Bun, Node &amp; Deno
     </text>
   </g>

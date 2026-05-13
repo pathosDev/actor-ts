@@ -105,11 +105,29 @@
     text-align: center !important;
     justify-items: center !important;
     padding-block: clamp(2rem, calc(1rem + 6vmin), 5rem) !important;
+    /* Generous vertical gap between the logo image and the tagline +
+     * actions stack below.  Was hugging too close. */
+    row-gap: 2.5rem !important;
   }
   .hero > img,
   .hero > .hero-html {
     order: 1 !important;
     width: min(100%, 36rem) !important;
+    margin-inline: auto !important;
+  }
+  /* The `.hero-html` wrapper is a flex container by default (Starlight
+   * adds `sl-flex` to it).  Without explicit justify-content, the
+   * `<img>` inside sits flush-left within the container and reads as
+   * "off-centre" on the page even when the wrapper itself is centred.
+   * Force the image to fill + centre inside its wrapper. */
+  .hero .hero-html {
+    justify-content: center !important;
+    align-items: center !important;
+  }
+  .hero .hero-html img {
+    display: block !important;
+    max-width: 100% !important;
+    height: auto !important;
     margin-inline: auto !important;
   }
   .hero .stack {
