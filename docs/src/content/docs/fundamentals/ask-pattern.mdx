@@ -1,0 +1,242 @@
+---
+title: Ask pattern
+description: Request/response between actors — `ask(ref, message, timeout)` returns a Promise for the reply. Timeouts, error handling, and when to prefer plain `tell` instead.
+---
+
+`tell` is fire-and-forget — it returns immediately and you never see
+the actor's response.  Most actor-to-actor communication is fine like
+that.  But sometimes you need a *reply*: an HTTP handler that asks
+an actor for state and serializes it as a response, a saga that needs
+the result of step N before issuing step N+1, a test that wants to
+assert on a return value.
+
+`ask` is the helper for those cases.  It sends a message to an actor,
+attaches a temporary "reply-to" ref under the hood, and returns a
+Promise that resolves with the first reply or rejects on timeout.
+
+## A minimal example
+
+```ts
+import { Actor, ActorSystem, Props, ask, type ActorRef } from 'actor-ts';
+
+type Cmd =
+  | { readonly kind: 'inc' }
+  | { readonly kind: 'get'; readonly replyTo: ActorRef<number> };
+
+class Counter extends Actor<Cmd> {
+  private count = 0;
+  override onReceive(cmd: Cmd): void {
+    if (cmd.kind === 'inc') this.count++;
+    else if (cmd.kind === 'get') cmd.replyTo.tell(this.count);
+  }
+}
+
+const system = ActorSystem.create('demo');
+const counter = system.actorOf(Props.create(() => new Counter()));
+
+counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'inc' });
+
+// Inside the request, `replyTo` is `this.sender` from the recipient's
+// perspective.  But you'd have to construct that yourself.  `ask`
+// wires it for you: builds a temporary ref, attaches it, returns a
+// Promise.
+const current = await ask<Cmd, number>(counter, {
+  kind: 'get',
+  replyTo: undefined as any,  // ask sets this — see below
+}, 5_000);
+console.log(current);  // 2
+
+await system.terminate();
+```
+
+The signature:
+
+```ts
+function ask<TReq, TRes = unknown>(
+  target:    ActorRef<TReq>,
+  message:   TReq,
+  timeoutMs: number = 5_000,
+): Promise<TRes>
+```
+
+Three parameters: the actor to ask, the message to send, and a
+timeout in milliseconds.  Returns `Promise<TRes>` — resolves with
+the first reply, rejects with `AskTimeoutError` if no reply comes
+within the timeout.
+
+## The `replyTo` field convention
+
+`ask` works by sending your message *with a temporary reply-to ref
+attached*.  The receiver replies by tellling that ref.
+
+By convention, the framework uses **`replyTo`** as the field name in
+the request message, and the recipient pattern-matches on it the
+same as any other field.  Look at the `Cmd` type above: the `'get'`
+variant has `replyTo: ActorRef<number>`.
+
+For the recipient, it's just a regular `tell` on a regular ref:
+
+```ts
+if (cmd.kind === 'get') {
+  cmd.replyTo.tell(this.count);
+}
+```
+
+Inside the recipient, you can also reach the same ref via
+`this.sender` — it's an `Option<ActorRef>`, and `ask` attaches the
+temporary ref through that channel too:
+
+```ts
+if (cmd.kind === 'get') {
+  this.sender.forEach((replyTo) => replyTo.tell(this.count));
+}
+```
+
+Either works.  Using an explicit `replyTo` field makes the type
+contract more obvious (the request shape declares it expects a
+reply of type `ActorRef<number>`); using `this.sender` is more
+implicit but works for actors that handle both `ask`-style and
+fire-and-forget messages.
+
+## Timeouts + the AskTimeoutError
+
+```ts
+import { ask, AskTimeoutError } from 'actor-ts';
+
+try {
+  const result = await ask(counter, { kind: 'get', replyTo: undefined as any }, 1_000);
+  console.log(result);
+} catch (e) {
+  if (e instanceof AskTimeoutError) {
+    console.log('counter did not reply in time');
+  } else {
+    throw e;
+  }
+}
+```
+
+The timeout is mandatory in spirit — defaulting to 5 seconds catches
+the case where you forgot to think about it.  Tune per call site:
+
+- Cheap in-process replies: 100-500 ms.
+- Cross-cluster lookups: 1-5 s depending on network expectations.
+- Anything that might hit a slow downstream (DB query, HTTP call
+  inside the actor): match the underlying-call's timeout + a
+  small buffer.
+
+When the timeout fires, the temporary reply-to ref is stopped.  A
+late reply from the actor goes to dead letters and the
+`AskTimeoutError` rejects the Promise.  The actor itself isn't
+affected — it has no idea the asker gave up.
+
+## Replying with an Error
+
+import { Aside } from '@astrojs/starlight/components';
+
+A recipient can **reject** an ask by replying with an `Error`
+instance.  The `ask` Promise rejects with that error rather than
+resolving with the message.
+
+```ts
+class Service extends Actor<Cmd> {
+  override onReceive(cmd: Cmd): void {
+    if (cmd.kind === 'fetch') {
+      if (this.unavailable) {
+        cmd.replyTo.tell(new Error('service unavailable'));
+        return;
+      }
+      cmd.replyTo.tell(this.data);
+    }
+  }
+}
+
+try {
+  const data = await ask(service, { kind: 'fetch', replyTo: undefined as any });
+} catch (e) {
+  // e is the actor's "service unavailable" Error.
+}
+```
+
+This is a deliberate convention — the framework recognizes
+`Error`-typed replies and rejects the Promise.  Carry domain errors
+the normal way (typed via the reply union) for everything else;
+reserve the `Error`-reply path for genuine failure states.
+
+## When NOT to use `ask`
+
+`ask` is convenient but it has overhead — it allocates a temporary
+ref, registers it with the system, and tears it down on
+resolution/timeout.  Three situations where plain `tell` is the
+right call instead:
+
+<Aside type="caution" title="High-frequency fire-and-forget">
+  Logging-style messages, telemetry pings, broadcasts — anywhere you
+  don't actually need the reply.  Use `tell`.  An ask cycle per
+  message adds latency *and* GC churn for the temporary refs.
+</Aside>
+
+<Aside type="caution" title="The recipient won't reply">
+  Some actors fan out to children and the *children* reply; some
+  trigger side effects without returning anything.  `ask`-ing those
+  actors guarantees a timeout.  Read the recipient's contract first —
+  if it doesn't acknowledge, use `tell`.
+</Aside>
+
+<Aside type="caution" title="Inside an actor's `onReceive`, when waiting blocks the mailbox">
+  ```ts
+  override async onReceive(msg) {
+    const dep = await ask(other, { kind: 'q', replyTo: undefined as any });
+    // ↑ this actor's mailbox blocks until the ask resolves.
+    this.useDep(dep);
+  }
+  ```
+  Awaiting inside `onReceive` serializes the actor's own
+  processing — that's the framework's per-actor guarantee.  But
+  the actor can't process its OWN incoming messages during the
+  await.  If the ask hits a slow downstream, this actor falls
+  behind.  Prefer spawning a child or using `pipeTo` to wire the
+  result back to the actor via an internal message instead.
+</Aside>
+
+## A cleaner ask pattern with helper types
+
+The `undefined as any` placeholder above is ugly.  A common refinement
+is to split the request type so the `replyTo` field is filled by
+`ask`, not by the caller:
+
+```ts
+type GetRequest = { readonly kind: 'get'; readonly replyTo: ActorRef<number> };
+
+// Helper: caller provides everything EXCEPT replyTo; the ask helper
+// (or a wrapper around `ask`) injects the reply-to ref.
+type AskMessage<T extends { replyTo: ActorRef<unknown> }> = Omit<T, 'replyTo'>;
+
+async function askCounter(ref: ActorRef<GetRequest>): Promise<number> {
+  // Internally, `ask` attaches the reply-to.  This wrapper hides the
+  // placeholder.
+  return ask<GetRequest, number>(ref, { kind: 'get' } as GetRequest, 1_000);
+}
+```
+
+For codebases with many ask-shaped messages, building a tiny wrapper
+per message type or a generic `askTyped(ref, kind, fields)` helper
+removes the boilerplate at the call sites.
+
+## Where to next
+
+- **[Messages](/actor-ts/fundamentals/messages/)** — the
+  `replyTo: ActorRef<T>` field convention covered in detail.
+- **[Actor](/actor-ts/fundamentals/actor/)** — `this.sender` and how
+  the framework wires it.
+- **[ActorSystem](/actor-ts/fundamentals/actor-system/)** — where
+  temporary ask refs are registered and torn down.
+- **[CircuitBreaker](/actor-ts/patterns/circuit-breaker/)** — when
+  the ask's downstream call is flakey and you want to fail fast
+  rather than time out.
+- **[Future patterns](/actor-ts/patterns/futures-patterns/)** —
+  `pipeTo`, `after`, sequence — composing async results back into
+  the actor world without `await`-blocking.
+
+The [`ask` function API reference](/actor-ts/api/functions/ask/)
+documents the full signature and error types.
