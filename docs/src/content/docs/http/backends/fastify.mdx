@@ -1,0 +1,154 @@
+---
+title: Fastify backend
+description: The default HTTP backend — wraps Fastify, the most-battle-tested Node HTTP framework. Right for production. Supports TLS, raw Fastify-instance access for plugins, and the full DSL.
+---
+
+`FastifyBackend` is the **default** HTTP backend for actor-ts.
+Wraps Fastify — fast, well-maintained, with a huge ecosystem of
+plugins (JWT auth, validation, swagger, etc.).
+
+```ts
+import { ActorSystem, HttpExtensionId } from 'actor-ts';
+
+const http = system.extension(HttpExtensionId);
+
+await http.newServerAt('0.0.0.0', 8080).bind(routes);
+//  ↑ Fastify by default
+```
+
+To make the backend explicit:
+
+```ts
+import { FastifyBackend } from 'actor-ts/http';
+
+await http.newServerAt('0.0.0.0', 8080)
+  .useBackend(new FastifyBackend())
+  .bind(routes);
+```
+
+## Configuration
+
+```ts
+new FastifyBackend({
+  logger:    false,           // Fastify's built-in logger — leave off; use actor-ts log
+  bodyLimit: 1_048_576,       // 1 MiB request body cap
+  tls: {
+    cert: fs.readFileSync('./tls/cert.pem'),
+    key:  fs.readFileSync('./tls/key.pem'),
+  },
+});
+```
+
+Most settings pass through to Fastify's `FastifyServerOptions`.
+The framework configures route registration; you tune Fastify's
+own knobs.
+
+## TLS
+
+```ts
+new FastifyBackend({
+  tls: {
+    cert: fs.readFileSync('./tls/cert.pem'),
+    key:  fs.readFileSync('./tls/key.pem'),
+    // For mTLS:
+    ca:                fs.readFileSync('./tls/ca.pem'),
+    requestCert:       true,
+    rejectUnauthorized: true,
+  },
+});
+```
+
+Standard Fastify TLS options.  For most production setups, TLS
+**terminates at the load balancer** — the app speaks plain HTTP
+internally — but in-app TLS is supported when needed.
+
+## Accessing the raw Fastify instance
+
+```ts
+const backend = new FastifyBackend();
+await http.newServerAt('0.0.0.0', 8080)
+  .useBackend(backend)
+  .bind(routes);
+
+// After bind, the raw Fastify instance is available:
+backend.app.register(fastifyJwt, { secret: '...' });
+backend.app.addHook('onRequest', authHook);
+```
+
+Use for **plugins not exposed via the framework's DSL**:
+
+- JWT / OAuth authentication.
+- Request validation (`@fastify/swagger`).
+- CORS (`@fastify/cors`).
+- Compression.
+
+The actor-ts DSL handles routing; Fastify plugins handle cross-cutting
+concerns.  They compose cleanly.
+
+## Lifecycle
+
+```
+1. FastifyBackend.start(host, port) — creates Fastify instance
+2. The framework registers each compiled route on Fastify
+3. Fastify.listen() — opens the port
+4. On shutdown: Fastify.close() — drains in-flight requests, then exits
+```
+
+`Fastify.close()` waits for in-flight requests to complete
+before resolving — pairs with
+[coordinated shutdown](/actor-ts/fundamentals/coordinated-shutdown/)'s
+`service-stop` phase.
+
+## Peer dependency
+
+```bash
+npm install fastify
+# or: bun add fastify
+```
+
+The framework doesn't bundle Fastify; install separately.
+
+## Performance
+
+Rough numbers for trivial routes:
+
+- **150K-200K req/sec** on Bun (with `bun:test` benchmark).
+- **80K-120K req/sec** on Node 22.
+- **P50 latency** sub-millisecond for trivial handlers; higher
+  for routes that ask actors.
+
+Fastify is one of the fastest Node HTTP frameworks; the
+framework's actor-routing overhead is the next bottleneck for
+hot routes.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Don't use Fastify's logger and actor-ts log together">
+  ```ts
+  new FastifyBackend({ logger: true });   // ✗ creates noise
+  ```
+  Fastify's built-in logger duplicates actor-ts's logging.
+  Disable Fastify's logger; rely on `system.log` for structured
+  logging.
+</Aside>
+
+<Aside type="caution" title="Plugins that override routes">
+  ```ts
+  // Fastify plugin that hooks into /api/* overrides actor-ts routes
+  ```
+  Be careful with plugins that register routes — they might
+  conflict with the framework's route registration.  Register
+  plugins **before** binding actor-ts routes if both target
+  overlapping paths.
+</Aside>
+
+## Where to next
+
+- **[HTTP overview](/actor-ts/http/overview/)** — the bigger
+  picture.
+- **[Route DSL](/actor-ts/http/route-dsl/)** — what gets
+  registered with Fastify.
+- **[Express backend](/actor-ts/http/backends/express/)** — the
+  alternative.
+- **[Bun.serve backend](/actor-ts/http/backends/fastify/)** —
+  Bun-native option.

@@ -1,0 +1,139 @@
+---
+title: JSON serializer
+description: JsonSerializer is the default — wraps `JSON.stringify` / `JSON.parse` with UTF-8 encoding. Human-debuggable; universal. The right choice unless you need the size or speed of CBOR or a typed schema like Protobuf.
+---
+
+`JsonSerializer` is the **default** serializer.  Standard JSON
+via `JSON.stringify` + `JSON.parse`; bytes are UTF-8.
+
+```ts
+import { JsonSerializer } from 'actor-ts';
+
+const serializer = new JsonSerializer();
+const bytes = serializer.toBinary({ kind: 'inc', n: 1 });
+//  → Uint8Array of '{"kind":"inc","n":1}' as UTF-8
+
+const decoded = serializer.fromBinary(bytes, '');
+//  → { kind: 'inc', n: 1 }
+```
+
+## Why JSON is the default
+
+- **Universal** — every language has a JSON parser.
+- **Human-readable** — open a journal file with `cat`; see the
+  events.
+- **Schema-flexible** — no compile step; types evolve via
+  ordinary code changes (+ schema-migration adapters).
+- **Battle-tested** — every Web API speaks JSON.
+
+For most apps, **you'll never change serializers** — JSON
+covers it.
+
+## What it handles
+
+- Plain objects, arrays.
+- Strings, numbers, booleans, `null`.
+- Nested combinations.
+
+What gets **dropped or transformed**:
+
+| Type | Behavior |
+| --- | --- |
+| `undefined` | Dropped from objects / arrays. |
+| `Date` | Stringified via `toISOString()`; round-trips as string. |
+| `Map` / `Set` | Serialized as empty `{}`. |
+| `BigInt` | Throws `TypeError`. |
+| `Function` | Dropped (in objects); arrays become `null`. |
+| `Symbol` | Dropped. |
+| Class instances | Serialized as plain `{ ...fields }`; methods lost. |
+
+For **most actor messages**, this is fine — the framework's
+[message conventions](/actor-ts/fundamentals/messages/) already
+discourage non-serializable shapes.
+
+## Size
+
+JSON is **larger than binary formats** for the same data:
+
+- Numbers are decimal strings (`"42"` is 4 bytes vs CBOR's 2).
+- Field names are repeated (every record has `"kind":"..."`).
+- Binary data (`Uint8Array`) base64-encodes (33 % overhead).
+
+For text-heavy or repetitive data, JSON's overhead is **small**.
+For binary-heavy data (images, encoded payloads), CBOR saves
+meaningfully.
+
+## Performance
+
+Rough numbers per serialize/deserialize pair:
+
+- **Small object** (~50 bytes): ~1-2 microseconds.
+- **Medium object** (~1 KB): ~5-15 microseconds.
+- **Large object** (~100 KB): ~1-2 ms.
+
+`JSON.parse` / `JSON.stringify` are native code in V8/JSC —
+fast enough that JSON serialization is rarely the bottleneck.
+
+## When to switch to something else
+
+```
+Need to interop with non-JSON systems?              → Custom (Protobuf/Avro)
+Bandwidth-bound (large or many small messages)?     → CBOR
+Need typed schemas in source control?                → Custom (Protobuf)
+Otherwise                                            → Stay on JSON
+```
+
+Most production apps stay on JSON for the actor wire and
+persistence — the perf / size gains from switching rarely
+justify the operational complexity.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Date round-trip">
+  ```ts
+  ref.tell({ at: new Date() });
+  // Sender:   { at: Date(2025-05-13T12:00:00Z) }
+  // Receiver: { at: "2025-05-13T12:00:00.000Z" }  ← string, not Date
+  ```
+  Receiver gets a **string**, not a `Date`.  Convert
+  explicitly:
+  ```ts
+  override onReceive(msg) {
+    const at = new Date(msg.at);   // string → Date
+  }
+  ```
+  Or use `Date.now()` (number) instead of `new Date()` in
+  messages.
+</Aside>
+
+<Aside type="caution" title="BigInt throws">
+  ```ts
+  ref.tell({ id: 1234567890123456789n });   // ✗ TypeError
+  ```
+  JSON can't serialize BigInt.  Convert to string in the
+  message:
+  ```ts
+  ref.tell({ id: String(myBigInt) });
+  ```
+  Or use CBOR, which has BigInt support.
+</Aside>
+
+<Aside type="caution" title="`Map` and `Set` serialize to `{}`">
+  ```ts
+  ref.tell({ m: new Map([['a', 1]]) });
+  // → JSON: { "m": {} } — Map entries lost
+  ```
+  JSON doesn't know how to serialize Map / Set.  Convert to
+  arrays of tuples or plain objects before sending.
+</Aside>
+
+## Where to next
+
+- **[Serialization overview](/actor-ts/serialization/overview/)** —
+  the bigger picture.
+- **[CBOR serializer](/actor-ts/serialization/cbor/)** — the
+  binary alternative.
+- **[Custom serializers](/actor-ts/serialization/custom/)** —
+  Protobuf / Avro / etc.
+- **[Messages](/actor-ts/fundamentals/messages/)** — the
+  conventions for serialize-friendly shapes.

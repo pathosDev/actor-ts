@@ -1,0 +1,156 @@
+---
+title: CBOR serializer
+description: CborSerializer is a compact binary alternative to JSON — smaller payloads, native binary fields, faster on large data. Right when bandwidth matters or messages carry binary content.
+---
+
+`CborSerializer` encodes values using **CBOR (RFC 8949)** — a
+compact binary serialization format.  More compact than JSON,
+faster for binary-heavy data, similar API surface.
+
+```ts
+import { CborSerializer } from 'actor-ts';
+
+const serializer = new CborSerializer();
+const bytes = serializer.toBinary({ kind: 'inc', n: 1 });
+//  → Uint8Array (binary CBOR, smaller than JSON)
+
+const decoded = serializer.fromBinary(bytes, '');
+//  → { kind: 'inc', n: 1 }
+```
+
+## When CBOR makes sense
+
+| You should switch to CBOR if... |
+| --- |
+| Messages carry **binary data** (images, encoded payloads). |
+| Cluster bandwidth is measurable / metered (cross-region, cellular IoT). |
+| Persistence storage costs scale with payload size. |
+| Sustained millions of small messages where JSON parse cost shows in profiles. |
+
+For most apps, **JSON is fine** — CBOR's gains don't justify
+the loss of human-debuggability.
+
+## Size comparison
+
+| Payload | JSON | CBOR | Savings |
+| --- | --- | --- | --- |
+| `{ kind: 'inc' }` | 14 bytes | 9 bytes | 36 % |
+| Order with 5 items | 250 bytes | 180 bytes | 28 % |
+| Image bytes (10 KB) | 13.3 KB (base64) | 10 KB (native) | 25 % |
+| Deeply nested object | varies | varies | typically 20-40 % |
+
+Bigger savings on **binary data** (no base64 overhead) and
+**repeated field names** (CBOR can string-table at the
+protocol level).
+
+## What CBOR handles better than JSON
+
+| Type | JSON | CBOR |
+| --- | --- | --- |
+| **`Uint8Array`** | base64 string | Native bytes |
+| **`Map`** | Lost (becomes `{}`) | Native map |
+| **`BigInt`** | Throws | Supported via tag |
+| **`Date`** | ISO string | Native via tag (epoch) |
+| **Float precision** | 15-17 significant digits | Full IEEE 754 |
+
+For data with binary fields or Map / BigInt, CBOR preserves the
+type info.
+
+## Enabling CBOR system-wide
+
+```ts
+import { SerializationExtensionId, CborSerializer } from 'actor-ts';
+
+const ext = system.extension(SerializationExtensionId);
+ext.setDefault(new CborSerializer());
+```
+
+Now every cross-node `tell`, every persisted event, every
+durable-state write uses CBOR by default.
+
+Per-class binding still works:
+
+```ts
+ext.bind(MyEvent, new ProtobufSerializer<MyEvent>());
+// MyEvent uses Protobuf; everything else uses CBOR
+```
+
+## Per-call serialization
+
+```ts
+import { CborSerializer } from 'actor-ts';
+
+const ser = new CborSerializer();
+const bytes = ser.toBinary({ data: someUint8Array });
+
+// Later:
+const back = ser.fromBinary(bytes, '') as { data: Uint8Array };
+```
+
+Useful when you want CBOR for a specific use case (e.g., HTTP
+response bodies for binary data) without switching the cluster
+default.
+
+## Wire format
+
+CBOR is **a binary tagged format**.  Inspecting raw bytes
+requires a CBOR-aware tool:
+
+```bash
+$ cat events.cbor | cbor-diag
+# decoded to diagnostic notation
+```
+
+For debugging, you may want to **briefly switch to JSON** when
+hunting a bug, then switch back.
+
+## Library
+
+The framework's CBOR implementation is internal — pure JS, no
+extra dependencies.  Compliant with RFC 8949.
+
+For external interop (sending CBOR to non-actor-ts systems),
+the framework's encoding follows the standard — any
+RFC-8949-compliant decoder reads it.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="CBOR isn't human-debuggable">
+  ```bash
+  # cat events.json — readable
+  # cat events.cbor — gibberish
+  ```
+  Debugging requires CBOR tools.  For staging / dev, consider
+  JSON; switch to CBOR only in prod.  Or run both: JSON for
+  on-disk persistence, CBOR for wire.
+</Aside>
+
+<Aside type="caution" title="Receiver must use the same serializer">
+  ```ts
+  // Sender: CborSerializer; Receiver: JsonSerializer
+  ```
+  Cross-node messages need the same serializer on both ends.
+  Roll out CBOR cluster-wide before relying on it.
+</Aside>
+
+<Aside type="caution" title="Float precision in CBOR">
+  ```ts
+  ref.tell({ price: 99.99 });
+  // JSON: "99.99" (string-precise)
+  // CBOR: IEEE 754 double — `99.9900000000000091...`
+  ```
+  Floats serialize as IEEE 754.  Both JSON and CBOR have this
+  issue; CBOR is more visible because the bytes are exact.
+  For money, **use strings or integer cents** in messages.
+</Aside>
+
+## Where to next
+
+- **[Serialization overview](/actor-ts/serialization/overview/)** —
+  the bigger picture.
+- **[JSON serializer](/actor-ts/serialization/json/)** — the
+  default.
+- **[Custom serializers](/actor-ts/serialization/custom/)** —
+  for typed schemas.
+- **[Object storage compression](/actor-ts/persistence/object-storage/compression/)** —
+  the other size-reduction lever.

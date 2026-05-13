@@ -1,0 +1,187 @@
+---
+title: Response cache middleware
+description: Cache GET responses by URL + Vary headers. Useful for read-heavy APIs with stable responses. Configurable TTL, conditional caching via predicate, pluggable cache backend.
+---
+
+`responseCacheMiddleware` wraps a route subtree with **GET-response
+caching** — same URL + same Vary headers → cached response served
+without invoking the handler.
+
+```ts
+import { responseCacheMiddleware, path, get } from 'actor-ts/http';
+import { InMemoryCache } from 'actor-ts';
+
+const routes = responseCacheMiddleware({
+  ttlMs:  30_000,
+  cache:  new InMemoryCache(),
+})(
+  path('api',
+    path('catalog',
+      get(async () => /* expensive lookup */),
+    ),
+  ),
+);
+```
+
+Cache for 30 seconds.  First request hits the handler; subsequent
+GETs in the next 30 s return the cached response.
+
+## Configuration
+
+```ts
+interface ResponseCacheSettings {
+  cache:        Cache;
+  ttlMs:        number;
+  varyHeaders?: string[];           // default: ['accept', 'accept-encoding']
+  cacheable?:   (req, res) => boolean;
+  keyExtra?:    (req) => string;
+}
+```
+
+| Field | Purpose |
+| --- | --- |
+| `cache` | The [Cache](/actor-ts/cache/overview/) backend.  `InMemoryCache` for single-node; Redis for shared. |
+| `ttlMs` | How long each cached response stays valid. |
+| `varyHeaders` | Headers included in the cache key.  Different `Accept` headers → different cache entries. |
+| `cacheable(req, res)` | Predicate that decides whether to cache.  Default: cache all 2xx GETs. |
+| `keyExtra(req)` | Add extra cache-key segments (per-tenant, per-user). |
+
+## Cache key composition
+
+The default key:
+
+```
+GET <pathname>?<sorted-query-params> [Vary: accept=..., accept-encoding=...]
+```
+
+Sorted query params ensure `/items?a=1&b=2` and `/items?b=2&a=1`
+hit the same cache entry.
+
+Customize with `keyExtra` for per-user / per-tenant caches:
+
+```ts
+responseCacheMiddleware({
+  cache,
+  ttlMs:     30_000,
+  keyExtra:  (req) => req.headers['x-tenant-id'] ?? 'public',
+})(...)
+```
+
+Now different tenants get separate cache entries.
+
+## When to cache
+
+```
+GET /api/products       → cache (stable, read-heavy)
+POST /api/orders        → don't cache (mutation)
+GET /api/users/me       → don't cache by default (per-user)
+GET /api/feed?cursor=X  → cache (one entry per cursor)
+```
+
+The middleware **only caches GETs** (by default).  Mutations
+(`POST` / `PUT` / `DELETE` / `PATCH`) pass through unchanged.
+
+## Cache invalidation
+
+The middleware **doesn't auto-invalidate** on writes.  Caching
+relies on TTL expiry.
+
+For **stronger consistency**, two patterns:
+
+### Short TTLs
+
+```ts
+responseCacheMiddleware({ cache, ttlMs: 1_000 });   // 1 second
+```
+
+Sub-second TTLs limit staleness.  Good for "real-time-ish" APIs.
+
+### Manual invalidation
+
+```ts
+// After a write that affects /api/products:
+await cache.delete('GET:/api/products');
+```
+
+The middleware exposes the cache; you can `delete` to invalidate
+specific keys.  Useful for "write to /products invalidates the
+listing" patterns.
+
+## Shared cache across pods
+
+```ts
+import { RedisCache } from 'actor-ts';
+
+responseCacheMiddleware({
+  cache:  new RedisCache({ url: 'redis://...' }),
+  ttlMs:  30_000,
+})(...)
+```
+
+With a Redis-backed cache, all pods share the same cache —
+useful for multi-pod deployments where you want consistent
+caching.
+
+For **per-pod caches** (each pod has its own InMemoryCache),
+pods may serve different cached responses briefly until TTLs
+align.  Often acceptable; depends on consistency requirements.
+
+## Vary headers
+
+```ts
+responseCacheMiddleware({
+  cache,
+  ttlMs: 30_000,
+  varyHeaders: ['accept', 'accept-language', 'x-tenant-id'],
+});
+```
+
+Each unique combination of these headers gets a separate cache
+entry.  Useful for:
+
+- **Content negotiation** — JSON vs CBOR responses cached
+  separately.
+- **Localization** — per-language responses.
+- **Multi-tenancy** — alternative to `keyExtra`.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Caching authenticated responses">
+  ```ts
+  // GET /api/users/me with cache → all users see the first user's response
+  ```
+  Without `keyExtra` (or `varyHeaders` including authorization),
+  cached responses leak across users.  Use `keyExtra: (req) =>
+  hashUser(req.headers.authorization)` or skip caching for
+  per-user endpoints.
+</Aside>
+
+<Aside type="caution" title="Cache stampede">
+  ```ts
+  // TTL expires; 1000 concurrent requests all hit the handler
+  ```
+  When a popular cached entry expires, every concurrent
+  requester recomputes.  Either accept it (usually fine) or
+  add a stale-while-revalidate pattern (not in the framework
+  yet — implement manually).
+</Aside>
+
+<Aside type="caution" title="Memory cap on in-memory caches">
+  ```ts
+  new InMemoryCache();   // no cap — eventually OOMs
+  ```
+  Set a max-entries on the cache; without it, response caches
+  grow until exhaustion.  See
+  [In-memory cache](/actor-ts/cache/in-memory/).
+</Aside>
+
+## Where to next
+
+- **[HTTP overview](/actor-ts/http/overview/)** — the bigger
+  picture.
+- **[Rate limit middleware](/actor-ts/http/middleware/rate-limit/)** —
+  complementary middleware.
+- **[Idempotency-key middleware](/actor-ts/http/middleware/idempotency-key/)** —
+  for write-dedup.
+- **[Cache overview](/actor-ts/cache/overview/)** — the backend
+  this middleware uses.

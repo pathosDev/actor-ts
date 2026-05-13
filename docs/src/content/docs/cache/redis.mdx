@@ -1,0 +1,226 @@
+---
+title: Redis cache
+description: RedisCache wraps `ioredis` for distributed caching via Redis. Single-server or cluster mode; persistence options; full Cache interface support with single-round-trip bulk operations. The right multi-pod choice when Redis is available.
+---
+
+`RedisCache` is the **Redis-backed** Cache implementation.
+Production-ready, multi-pod-safe, with single-round-trip bulk
+operations.
+
+```ts
+import { RedisCache } from 'actor-ts';
+
+const cache = new RedisCache({
+  url: 'redis://redis.example.com:6379',
+});
+```
+
+## When to use Redis
+
+Most multi-pod production cases:
+
+- **Multi-pod cache sharing** — pods see the same cache state.
+- **Bulk operations matter** — MGET / MSET single round-trip.
+- **Persistence wanted** — AOF / RDB survive Redis restart.
+- **You already run Redis** — reuse existing infrastructure.
+
+For single-pod, [in-memory](/actor-ts/cache/in-memory/) is
+simpler.
+
+## Configuration
+
+```ts
+interface RedisCacheSettings {
+  url?:       string;                // 'redis://host:port'
+  host?:      string;
+  port?:      number;
+  password?:  string;
+  username?:  string;
+  db?:        number;
+  keyPrefix?: string;
+  tls?:       boolean;               // true for `rediss://`
+  cluster?:   ClusterNodes;          // for Redis Cluster
+}
+```
+
+URL form:
+
+```ts
+new RedisCache({ url: 'redis://localhost:6379/0' });
+new RedisCache({ url: 'rediss://redis.example.com:6380' });  // TLS
+new RedisCache({ url: 'redis://user:pass@host:6379' });
+```
+
+Field form:
+
+```ts
+new RedisCache({
+  host:    'redis.example.com',
+  port:    6379,
+  password: process.env.REDIS_PASS,
+  db:      1,
+  keyPrefix: 'my-app:',
+});
+```
+
+`keyPrefix` is applied to **every** key — useful when sharing
+a Redis instance across multiple apps:
+
+```ts
+keyPrefix: 'my-app:cache:'
+// → 'my-app:cache:user:42', 'my-app:cache:session:abc', ...
+```
+
+## Cluster mode
+
+```ts
+new RedisCache({
+  cluster: {
+    nodes: [
+      { host: 'redis-1', port: 6379 },
+      { host: 'redis-2', port: 6379 },
+      { host: 'redis-3', port: 6379 },
+    ],
+  },
+});
+```
+
+`ioredis` handles the cluster protocol (MOVED / ASK redirects,
+slot tracking).  Use Redis Cluster for **horizontal scale**
+beyond a single Redis server's memory.
+
+## TLS
+
+```ts
+new RedisCache({ url: 'rediss://redis.example.com:6380' });
+// or:
+new RedisCache({ host: '...', port: 6380, tls: true });
+```
+
+`rediss://` URL prefix or explicit `tls: true`.  Cert
+verification goes through Node's TLS defaults; for self-signed
+in dev, you'd need explicit ioredis TLS options.
+
+## Bulk operations are real bulk
+
+```ts
+const users = await cache.mget<User>(['user:1', 'user:2', 'user:3']);
+//                                              ↑
+//                                       single MGET round-trip
+```
+
+`mget` on RedisCache → single Redis `MGET` command → one
+network round-trip.  Critical for the **sharded-entity
+hydration** pattern (rebuilding state for many entities on
+node startup).
+
+## Atomic `incr` + `setIfAbsent`
+
+Both map to Redis primitives:
+
+- **`incr`** → Redis `INCR` (atomic, no race).
+- **`setIfAbsent`** → Redis `SET NX` (atomic CAS).
+
+Used by the framework's rate-limit + idempotency-key
+middleware.  Safe across pods.
+
+## Pipelining
+
+```ts
+// Not exposed directly in Cache; ioredis pipelining is automatic
+// for batched calls within the same tick.
+```
+
+`ioredis` pipelines commands issued in the same JS turn,
+sending them in a single TCP write.  The Cache interface
+doesn't expose pipelining explicitly; the framework's
+implementation uses pipelining where helpful.
+
+## Peer dependency
+
+```bash
+npm install ioredis
+# or: bun add ioredis
+```
+
+`ioredis` is the underlying client.  Versions 5+ are tested.
+
+## Redis persistence settings
+
+Redis supports two persistence modes:
+
+- **RDB** — periodic snapshots.  Default in many configs.
+- **AOF** — append-only log.  More durable, slower.
+
+The framework's Cache doesn't care about Redis-side persistence
+config — caches are opportunistic.  But for **cache survival
+across Redis restarts**, enable RDB at minimum.
+
+## TLS to managed Redis
+
+```ts
+new RedisCache({
+  url: 'rediss://default:password@my-cluster.cache.amazonaws.com:6380',
+});
+```
+
+AWS ElastiCache, GCP Memorystore, Azure Cache for Redis — all
+support `rediss://` URLs.  Use them.
+
+## Cluster connection handling
+
+```ts
+new RedisCache({
+  cluster: { nodes: [...] },
+  options: {
+    enableReadyCheck:    true,
+    maxRetriesPerRequest: 3,
+  },
+});
+```
+
+Defaults to ioredis sensible-defaults.  For very-tight latency
+or specific connection-pool sizing, pass `ioredis`-style
+options explicitly.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Large objects in the cache">
+  ```ts
+  cache.set('user:full', user, 60_000);   // 5 MB user object
+  ```
+  Redis is a memory database.  Large values consume server
+  memory + network bandwidth.  Cache **identifiers** + fetch
+  full objects from the source store on miss.
+</Aside>
+
+<Aside type="caution" title="Don't run two unrelated apps on the same Redis without keyPrefix">
+  ```ts
+  // App-A and App-B both write `user:42`
+  ```
+  Without `keyPrefix`, key collisions corrupt both apps.
+  Use distinct prefixes (`my-app-a:`, `my-app-b:`) or separate
+  Redis DBs / instances.
+</Aside>
+
+<Aside type="caution" title="Redis Cluster + cross-slot operations">
+  ```ts
+  // mget(['user:1', 'user:2']) — keys hash to different slots
+  ```
+  In Redis Cluster, MGET requires all keys to be in the same
+  slot.  ioredis handles cross-slot MGETs by fanning out
+  per-slot, but each fan-out is a separate round-trip.  For
+  performance, design keys to **hash-tag** related keys to the
+  same slot: `{user:42}:profile`, `{user:42}:settings`.
+</Aside>
+
+## Where to next
+
+- **[Cache overview](/actor-ts/cache/overview/)** — the
+  bigger picture.
+- **[In-memory cache](/actor-ts/cache/in-memory/)** — for
+  single-pod.
+- **[Memcached cache](/actor-ts/cache/memcached/)** —
+  alternative.
+- **[HTTP middleware](/actor-ts/http/middleware/response-cache/)** —
+  primary consumers of the cache.

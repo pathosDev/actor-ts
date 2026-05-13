@@ -1,0 +1,181 @@
+---
+title: Cache overview
+description: A small, opportunistic cache abstraction — seven core operations (get / set / incr / setIfAbsent / delete / mget / mset). Three backends ship — in-memory, Redis, Memcached. Consumed by HTTP middleware and the cached-snapshot-store decorator.
+---
+
+The `Cache` interface is the framework's **opportunistic
+key/value cache**.  Three operations cover ~95 % of real cases:
+get, set, atomic increment, set-if-absent, delete.
+
+Used by:
+
+- [Response cache middleware](/actor-ts/http/middleware/response-cache/) —
+  GET-response caching.
+- [Rate limit middleware](/actor-ts/http/middleware/rate-limit/) —
+  per-key counters.
+- [Idempotency-key middleware](/actor-ts/http/middleware/idempotency-key/) —
+  write-dedup.
+- [CachedSnapshotStore](/actor-ts/persistence/snapshot-stores/cached-snapshot-store/) —
+  snapshot read-through cache.
+
+## The interface
+
+```ts
+interface Cache {
+  get<V>(key: string): Promise<Option<V>>;
+  set<V>(key: string, value: V, ttlMs?: number): Promise<void>;
+  incr(key: string, ttlMs?: number): Promise<number>;
+  setIfAbsent<V>(key: string, value: V, ttlMs?: number): Promise<boolean>;
+  delete(...keys: string[]): Promise<void>;
+  mget<V>(keys: string[]): Promise<Map<string, V>>;
+  mset(entries: Array<[string, unknown, number?]>): Promise<void>;
+}
+```
+
+Small surface — no pattern scans, no pub/sub (the cluster has
+its own [pub/sub](/actor-ts/cluster/pubsub/)).
+
+## Three backends
+
+| Backend | Use |
+| --- | --- |
+| **`InMemoryCache`** | Single-pod / tests.  In-process Map. |
+| **`RedisCache`** | Multi-pod production.  Wraps `ioredis`. |
+| **`MemcachedCache`** | Multi-pod where Memcached fits.  Wraps `memjs`. |
+
+Pick by deployment shape:
+
+- **Single pod** — InMemoryCache.  Fast, zero-deps.
+- **Multi-pod with Redis already** — RedisCache.
+- **Multi-pod with Memcached already** — MemcachedCache.
+- **Multi-pod, no preference** — RedisCache.  More features
+  (pub/sub, persistence, etc.) and the wider ecosystem.
+
+## Opportunistic semantics
+
+Caches are **lossy by design**.  A `get` returning `None` means
+"not cached" — the caller's job is to **fall back to the source
+of truth**:
+
+```ts
+const cached = await cache.get<User>(`user:${id}`);
+if (cached.isSome()) return cached.value;
+
+const user = await db.users.findById(id);   // ← source of truth
+await cache.set(`user:${id}`, user, 60_000);
+return user;
+```
+
+If `set` fails (Redis down, network blip), the cache stays
+empty — but the call still returns the right answer (the
+source of truth was consulted).
+
+Cache implementations **return defaults on transient failures**
+rather than throwing.  Misuse (bad TTL, malformed value)
+throws.
+
+## TTL semantics
+
+```ts
+await cache.set('key', value, 60_000);   // expires in 60s
+await cache.set('key', value);            // no expiry
+```
+
+- **With `ttlMs`** — entry expires after the window.
+- **Without** — entry stays until evicted (LRU on
+  InMemoryCache; backend-policy on Redis / Memcached).
+
+Most uses: **always set a TTL**.  No-TTL entries grow until
+eviction; explicit TTLs are predictable.
+
+## Atomic increment
+
+```ts
+const count = await cache.incr(`requests:${userId}`, 60_000);
+if (count > 100) throw new Error('rate limit');
+```
+
+`incr` returns the **new** count after incrementing.  When
+`ttlMs` is set AND the counter was just created (count === 1),
+the TTL is set.
+
+Used by rate-limit middleware for fixed-window counters.
+
+## Set-if-absent
+
+```ts
+const got = await cache.setIfAbsent('lock:key', 'me', 5_000);
+if (got) {
+  // I won the race; do the work
+} else {
+  // Someone else has it
+}
+```
+
+Atomic CAS-style write.  Used by idempotency-key middleware to
+detect "I'm the first request with this key."
+
+## Bulk operations
+
+```ts
+const users = await cache.mget<User>(['user:1', 'user:2', 'user:3']);
+// → Map<string, User> — missing keys absent
+```
+
+Round-trip optimization.  Critical for **shared-entity-hydration**
+patterns after a sharding rebalance — pull every active entity's
+state in one Redis call instead of N.
+
+`mset` is the dual:
+
+```ts
+await cache.mset([
+  ['user:1', user1, 60_000],
+  ['user:2', user2, 60_000],
+]);
+```
+
+## When NOT to use the cache
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Don't cache user-facing critical state">
+  ```ts
+  // Account balance cached for 60s → stale balance shown to user
+  ```
+  Caches are eventually-consistent.  For values the user takes
+  action on (balances, available stock), read from the source of
+  truth.
+</Aside>
+
+<Aside type="caution" title="Don't use as a transactional store">
+  ```ts
+  // Two operations: decrement counter + send email
+  // → cache.incr() succeeds; email fails → counter wrong
+  ```
+  Caches give atomicity per key.  Cross-key atomicity needs a
+  transactional store.
+</Aside>
+
+<Aside type="caution" title="Don't put large values">
+  ```ts
+  cache.set('user:full', user, 60_000);   // 5 MB object
+  ```
+  Caches are tuned for small values.  Large objects waste
+  memory + bandwidth.  Cache small references; fetch full
+  objects from the DB.
+</Aside>
+
+## Where to next
+
+- **[In-memory cache](/actor-ts/cache/in-memory/)** — the
+  default backend.
+- **[Memcached cache](/actor-ts/cache/memcached/)** — for
+  Memcached deployments.
+- **[Redis cache](/actor-ts/cache/redis/)** — for Redis
+  deployments.
+- **[Response cache middleware](/actor-ts/http/middleware/response-cache/)** —
+  the primary consumer.
+
+The [`Cache`](/actor-ts/api/interfaces/cache/) API reference
+covers the full interface.

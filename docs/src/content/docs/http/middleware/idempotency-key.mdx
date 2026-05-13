@@ -1,0 +1,221 @@
+---
+title: Idempotency-key middleware
+description: Deduplicate write requests via an `Idempotency-Key` header — second request with the same key returns the first request's stored response. Standard pattern for payment / order APIs where retries shouldn't double-charge.
+---
+
+`idempotencyKeyMiddleware` enforces **at-most-once write
+processing** via a client-provided header:
+
+```
+POST /api/payments
+Idempotency-Key: tx-1684923847-abc
+
+→ 201 Created  (first time — processed + stored)
+{ "txId": "tx-42" }
+
+POST /api/payments
+Idempotency-Key: tx-1684923847-abc   ← same key
+
+→ 201 Created  (second time — returned from cache, no re-processing)
+{ "txId": "tx-42" }
+```
+
+The handler runs **only on the first request**.  Subsequent
+requests with the same key return the cached response.
+
+```ts
+import { idempotencyKeyMiddleware, path, post } from 'actor-ts/http';
+import { InMemoryCache } from 'actor-ts';
+
+const routes = idempotencyKeyMiddleware({
+  cache:    new InMemoryCache(),
+  ttlMs:    24 * 60 * 60_000,   // 24 hours
+  required: false,                // header is optional by default
+})(
+  path('api',
+    path('payments', post(processPayment)),
+  ),
+);
+```
+
+## Why this matters
+
+Network retries are common.  Without idempotency:
+
+```
+Client → POST /payments  ($100)
+         → network timeout (request actually succeeded server-side)
+Client → POST /payments  ($100)   ← retry; charges twice
+```
+
+With idempotency-key, the retry sees "key already processed,
+here's the original response."  No double charge.
+
+## Configuration
+
+```ts
+interface IdempotencyKeyMiddlewareSettings {
+  cache:        Cache;
+  ttlMs:        number;
+  required?:    boolean;        // require header; reject if missing
+  headerName?:  string;         // default 'idempotency-key'
+  scope?:       (req) => string; // namespace keys by tenant / user
+}
+```
+
+| Field | Purpose |
+| --- | --- |
+| `cache` | Backing store.  Redis is required for multi-pod. |
+| `ttlMs` | How long to remember each key.  Typically 24-48 hours. |
+| `required` | If true, missing header → 400.  Default `false` (optional). |
+| `headerName` | Customize the header name. |
+| `scope(req)` | Namespace keys (e.g., per-user) so collisions don't cross tenants. |
+
+## What gets cached
+
+```ts
+{
+  status:  201,
+  headers: { 'content-type': 'application/json' },
+  body:    '{"txId":"tx-42"}',
+}
+```
+
+The middleware stores the **complete response**.  Subsequent
+requests with the same key get an identical response — same
+status, headers, body.
+
+For **error responses**, behavior is configurable.  By default:
+4xx + 5xx are **also cached** (so a "payment failed" reply
+isn't re-processed into a "payment succeeded" on retry).  This
+matches the standard idempotency-key semantic.
+
+## Per-tenant scoping
+
+```ts
+idempotencyKeyMiddleware({
+  cache,
+  ttlMs: 24 * 60 * 60_000,
+  scope: (req) => req.headers['x-tenant-id'] ?? 'global',
+});
+```
+
+Tenant A's `key-123` is different from tenant B's `key-123`.
+Important when:
+
+- Different tenants might pick the same key by chance.
+- You're billing or auditing per-tenant.
+
+## Multi-pod with Redis
+
+```ts
+import { RedisCache } from 'actor-ts';
+
+idempotencyKeyMiddleware({
+  cache:  new RedisCache({ url: 'redis://...' }),
+  ttlMs:  24 * 60 * 60_000,
+});
+```
+
+With Redis backing, **every pod sees the same idempotency
+state** — a retry to pod-2 after the original hit pod-1
+returns the cached response.
+
+InMemoryCache → per-pod state → retries hitting different
+pods could double-process.  Always Redis for prod.
+
+## Where to use
+
+```
+POST /api/payments        ✓ idempotency-key recommended
+POST /api/orders          ✓ same
+POST /api/emails          ✓ avoid double-sends
+PUT  /api/users/:id       ✓ retries safe
+GET  /api/users/me        ✗ no need (idempotent already)
+DELETE /api/orders/:id    ✓ retries safe
+```
+
+Apply to **any mutating endpoint where double-processing is
+harmful**.
+
+## Client-side responsibility
+
+```js
+const key = `${userId}-${operation}-${Date.now()}-${random}`;
+
+fetch('/api/payments', {
+  method: 'POST',
+  headers: {
+    'idempotency-key': key,
+    'content-type':    'application/json',
+  },
+  body: JSON.stringify({ amount: 100 }),
+});
+
+// On retry: REUSE THE SAME KEY
+fetch('/api/payments', {
+  method: 'POST',
+  headers: { 'idempotency-key': key },   // ← same key
+  body:    JSON.stringify({ amount: 100 }),
+});
+```
+
+The **client must generate the key + retry with the same
+key**.  If the client generates a fresh key per try, the
+middleware sees them as different requests and processes each.
+
+Common bug: generating a key inside the retry loop instead of
+once before the first attempt.
+
+## In-flight handling
+
+If two requests with the same key arrive **simultaneously**
+(double-click, concurrent retry):
+
+- The first to grab the cache lock processes; the second sees
+  "still in flight" and... varies by implementation.
+
+The framework's middleware **locks per-key**: the second
+request waits for the first to complete, then returns the
+cached response.  Sub-second wait usually; bounded by handler
+runtime.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Cache loss = double processing">
+  ```ts
+  // Cache TTL expires; client retries the original request
+  ```
+  After TTL, the key is forgotten.  A delayed retry now
+  processes again.  Pick TTL longer than any reasonable retry
+  window (24 hours typical for payments).
+</Aside>
+
+<Aside type="caution" title="In-memory cache + multiple pods">
+  ```ts
+  // Pod-1 handles first; retry hits pod-2 (different InMemoryCache)
+  ```
+  Pod-2's cache doesn't see pod-1's key → re-processes.
+  Use Redis.
+</Aside>
+
+<Aside type="caution" title="Idempotency-key with non-idempotent side effects">
+  ```ts
+  // Handler creates a Stripe charge.  First time succeeds; cached.
+  // But Stripe also has its own idempotency-key concept; you'd want to pass it through.
+  ```
+  When the handler calls **other** idempotent services
+  (Stripe, payment processors), forward the idempotency-key
+  to them.  Belt and braces.
+</Aside>
+
+## Where to next
+
+- **[HTTP overview](/actor-ts/http/overview/)** — the bigger
+  picture.
+- **[Response cache middleware](/actor-ts/http/middleware/response-cache/)** —
+  complementary read-side.
+- **[Rate limit middleware](/actor-ts/http/middleware/rate-limit/)** —
+  per-key request limits.
+- **[Cache overview](/actor-ts/cache/overview/)** — the backing
+  store.

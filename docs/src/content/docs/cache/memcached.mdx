@@ -1,0 +1,139 @@
+---
+title: Memcached cache
+description: MemcachedCache wraps `memjs` for distributed caching via Memcached. Smaller memory footprint than Redis, simpler protocol, no persistence (rebuilds on restart). Right when you already run Memcached.
+---
+
+`MemcachedCache` is the **Memcached-backed** Cache
+implementation.  Distributed cache across pods, shared across
+processes.
+
+```ts
+import { MemcachedCache } from 'actor-ts';
+
+const cache = new MemcachedCache({
+  servers: ['memcached-1:11211', 'memcached-2:11211'],
+});
+```
+
+## When to use Memcached
+
+Two main reasons:
+
+1. **Existing Memcached infrastructure** — your team runs it
+   already.
+2. **Pure cache use case** — you don't need Redis's extra
+   features (persistence, pub/sub, scripting, sorted sets).
+
+Memcached is **simpler than Redis** — fewer features, smaller
+operational footprint, smaller memory overhead.  For pure
+key-value caching with TTLs, it's plenty.
+
+## Configuration
+
+```ts
+interface MemcachedCacheSettings {
+  servers:      string[];               // 'host:port'
+  username?:    string;
+  password?:    string;
+  timeoutMs?:   number;
+  retries?:     number;
+}
+```
+
+`memjs` (the underlying client) supports SASL auth via
+`username`/`password`.  Multiple servers are hash-distributed.
+
+## Peer dependency
+
+```bash
+npm install memjs
+# or: bun add memjs
+```
+
+## What works
+
+| Cache method | Memcached implementation |
+| --- | --- |
+| `get`/`set`/`delete` | Direct Memcached commands. |
+| `incr` | Memcached `INCR`/`ADD` combination. |
+| `setIfAbsent` | Memcached `ADD` (atomic). |
+| `mget`/`mset` | Parallel single-key operations. |
+
+`mget`/`mset` aren't single-round-trip on Memcached (no
+multi-key commands).  The framework parallelizes the
+individual operations.
+
+## Memcached vs Redis
+
+| Aspect | Memcached | Redis |
+| --- | --- | --- |
+| Memory overhead per entry | Lower | Higher |
+| Multi-key operations | Slower (parallel single-key) | Faster (MGET, MSET) |
+| Persistence | None | RDB / AOF available |
+| Pub/sub | No | Yes |
+| Data types | String only | Strings, lists, sets, hashes, sorted sets |
+| Cluster support | Client-side hashing | Built-in clustering |
+| Replication | No (or via sidecars) | Built-in replication |
+
+For pure cache: **either works**.  Redis wins for **almost
+everything else** the framework might want.  Memcached wins for
+**minimum operational footprint** when caching is the only need.
+
+## Eviction
+
+```ts
+// Memcached configured with --memory-limit=2048 (MB)
+// → LRU eviction once full
+```
+
+Memcached's eviction is **LRU**, configured at the
+Memcached-server level (not from the cache client).  No
+client-side eviction policy.
+
+For a fixed-size cache, this is fine — Memcached drops old
+entries to make room.
+
+## Connection pooling
+
+`memjs` maintains its own connection pool; the framework
+doesn't manage it directly.  Tune via memjs options if needed
+(usually defaults are fine).
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="No persistence">
+  ```bash
+  # systemctl restart memcached
+  # → entire cache gone
+  ```
+  Memcached has zero persistence.  Treat caches as
+  rebuild-from-source — never store anything you can't
+  recompute.
+</Aside>
+
+<Aside type="caution" title="No multi-key atomic operations">
+  ```ts
+  // Two operations: read A, set B based on A → race possible
+  ```
+  Memcached doesn't have transactions / atomic multi-key
+  operations.  For "atomic counter + check" patterns, the
+  framework's `incr` is the only atomic primitive.
+</Aside>
+
+<Aside type="caution" title="Memcached cluster scaling">
+  ```ts
+  servers: ['m1:11211', 'm2:11211'];
+  // Adding m3: keys rebalance via consistent-hashing — some cache misses during the rebalance
+  ```
+  Memcached scaling requires client-side consistent-hashing
+  awareness.  `memjs` handles it; expect a brief cache-miss
+  spike when the cluster topology changes.
+</Aside>
+
+## Where to next
+
+- **[Cache overview](/actor-ts/cache/overview/)** — the bigger
+  picture.
+- **[In-memory cache](/actor-ts/cache/in-memory/)** — for
+  single-pod.
+- **[Redis cache](/actor-ts/cache/redis/)** — more features.

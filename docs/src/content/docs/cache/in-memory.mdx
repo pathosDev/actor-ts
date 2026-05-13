@@ -1,0 +1,136 @@
+---
+title: In-memory cache
+description: The default `Cache` — backed by an in-process Map with LRU eviction + per-entry TTL. Single-pod only; lost on restart. Right for tests, dev, and single-node production setups.
+---
+
+`InMemoryCache` is the **default** Cache implementation.
+In-process, LRU eviction, per-entry TTL — fast and zero
+dependencies.
+
+```ts
+import { InMemoryCache } from 'actor-ts';
+
+const cache = new InMemoryCache({
+  maxEntries: 10_000,
+});
+```
+
+## When to use it
+
+Three scenarios:
+
+1. **Tests** — fast, no IO, clean teardown.
+2. **Single-pod production** — no need to share cache state.
+3. **Dev / local** — same code without Redis on the laptop.
+
+For **multi-pod** production, use
+[Redis](/actor-ts/cache/redis/) or
+[Memcached](/actor-ts/cache/memcached/) instead — pods would
+each have their own copy otherwise.
+
+## Configuration
+
+```ts
+interface InMemoryCacheSettings {
+  maxEntries?:   number;     // LRU cap; default 10_000
+  cleanupMs?:    number;     // expired-entry sweep cadence; default 60_000
+}
+```
+
+| Field | Purpose |
+| --- | --- |
+| `maxEntries` | Bound on cache size.  LRU eviction beyond this. |
+| `cleanupMs` | How often to sweep expired entries.  Without this, expired entries linger until accessed. |
+
+For most apps, defaults are fine.
+
+## LRU eviction
+
+```
+maxEntries: 1000
+
+→ 1001st distinct key inserted → least-recently-used entry evicted
+```
+
+LRU means **frequently-accessed entries stay**; rarely-accessed
+ones go.  Good for read-heavy caches where the hot set fits in
+memory but the long tail doesn't.
+
+## TTL handling
+
+```ts
+await cache.set('key', value, 60_000);   // expires at now + 60s
+```
+
+Two cleanup paths:
+
+1. **Lazy** — on `get`, expired entries return None (and are
+   removed).
+2. **Periodic sweep** — every `cleanupMs`, the cache walks
+   expired entries and removes them.  Reduces memory for
+   write-then-never-read keys.
+
+## Sharing across the system
+
+```ts
+import { CacheExtensionId } from 'actor-ts';
+
+system.extension(CacheExtensionId).configure({
+  defaultCache: new InMemoryCache({ maxEntries: 50_000 }),
+});
+
+// Reach via:
+const cache = system.extension(CacheExtensionId).cache;
+```
+
+A **system-wide cache** that multiple consumers (HTTP middleware,
+projection actors, custom code) share.  Useful when:
+
+- You want one configured cache instance, not one per consumer.
+- Cache stats accumulate across the system.
+
+For per-route caches, instantiate `new InMemoryCache()` directly
+without going through the extension.
+
+## When it's wrong for production
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Multi-pod state divergence">
+  ```ts
+  // 4 pods, each with its own InMemoryCache → 4 independent caches
+  ```
+  Same request hitting different pods can get cached responses
+  from one pod and miss on another.  Use Redis for shared
+  multi-pod state.
+</Aside>
+
+<Aside type="caution" title="Restart loses everything">
+  ```bash
+  # kubectl delete pod my-app-1
+  # → entire pod's cache gone
+  ```
+  In-memory caches don't survive restart.  For caches where
+  cold-start cost is significant (rebuilding takes minutes),
+  use Redis (persists) or accept the cold-start.
+</Aside>
+
+<Aside type="caution" title="Unbounded growth without maxEntries">
+  ```ts
+  new InMemoryCache();   // defaults to 10_000 — fine
+  new InMemoryCache({ maxEntries: Infinity });   // ✗ OOMs
+  ```
+  Always set (or accept) a bound.  An unbounded cache fills
+  memory eventually.
+</Aside>
+
+## Where to next
+
+- **[Cache overview](/actor-ts/cache/overview/)** — the bigger
+  picture.
+- **[Redis cache](/actor-ts/cache/redis/)** — multi-pod
+  alternative.
+- **[Memcached cache](/actor-ts/cache/memcached/)** —
+  alternative.
+- **[CachedSnapshotStore](/actor-ts/persistence/snapshot-stores/cached-snapshot-store/)** —
+  one consumer of the cache abstraction.

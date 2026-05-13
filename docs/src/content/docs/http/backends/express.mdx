@@ -1,0 +1,153 @@
+---
+title: Express backend
+description: Wrap Express as the HTTP backend — useful when your team already runs Express + has middleware investments. Slower than Fastify but with the widest middleware ecosystem.
+---
+
+`ExpressBackend` lets you run actor-ts routes through
+**Express** — the most-widely-used Node HTTP framework.  Right
+choice when:
+
+- You already have **Express middleware** invested (custom auth,
+  session handling, app-specific instrumentation).
+- Team familiarity with Express > framework benefits of Fastify.
+- You're **incrementally migrating** an existing Express app to
+  actor-ts.
+
+```ts
+import { ActorSystem, HttpExtensionId } from 'actor-ts';
+import { ExpressBackend } from 'actor-ts/http';
+
+const http = system.extension(HttpExtensionId);
+
+await http.newServerAt('0.0.0.0', 8080)
+  .useBackend(new ExpressBackend())
+  .bind(routes);
+```
+
+## Configuration
+
+```ts
+new ExpressBackend({
+  bodyLimit: '1mb',   // body-parser limit
+  trustProxy: true,    // honor X-Forwarded-* headers
+});
+```
+
+Express-style settings.
+
+## Adding Express middleware
+
+```ts
+import express from 'express';
+import { ExpressBackend } from 'actor-ts/http';
+
+const backend = new ExpressBackend();
+await http.newServerAt('0.0.0.0', 8080)
+  .useBackend(backend)
+  .bind(routes);
+
+// Access the raw Express app:
+backend.app.use(express.session({ secret: '...' }));
+backend.app.use(rateLimitMiddleware);
+backend.app.use(customAuth);
+```
+
+Express middleware **wraps** the actor-ts routes — request
+flows through your middleware first, then to the actor-ts
+handler.
+
+This is **the main reason to pick Express** over Fastify: the
+middleware ecosystem.  If you don't need it, Fastify is faster.
+
+## TLS
+
+```ts
+import https from 'node:https';
+
+new ExpressBackend({
+  https: {
+    cert: fs.readFileSync('./tls/cert.pem'),
+    key:  fs.readFileSync('./tls/key.pem'),
+  },
+});
+```
+
+Backed by Node's `https` module.  Same caveats as the Fastify
+backend — typically TLS terminates at the load balancer.
+
+## Peer dependency
+
+```bash
+npm install express
+# or: bun add express
+```
+
+For Express 5+ recommendation; older versions may work but
+aren't tested.
+
+## Performance
+
+Rough numbers:
+
+- **40K-60K req/sec** for trivial routes (slower than Fastify).
+- **P50 latency** similar; throughput differs.
+
+Express's middleware chain has more overhead than Fastify's
+hooks.  For high-throughput paths, prefer Fastify; for paths
+gated by heavy middleware, the framework choice doesn't matter
+much.
+
+## Migrating from existing Express app
+
+If you have an existing Express app and want to add actor-ts:
+
+```ts
+import express from 'express';
+import { actorTsRouter } from 'actor-ts/http/express-adapter';
+
+const app = express();
+
+// Existing routes:
+app.use('/legacy', oldLegacyRouter);
+
+// actor-ts routes mounted under a prefix:
+app.use('/v2', actorTsRouter(system, routes));
+
+app.listen(8080);
+```
+
+The framework exposes an Express-router adapter for this case —
+mount actor-ts routes alongside existing Express ones without
+swapping the whole HTTP stack.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Express vs Fastify benchmarks">
+  ```ts
+  // Choose Express because "it's simpler"
+  ```
+  Both are simple from an actor-ts perspective.  Fastify is
+  faster.  Express has more middleware.  Pick by **what
+  middleware you need**, not by perceived simplicity.
+</Aside>
+
+<Aside type="caution" title="Async error handling">
+  ```ts
+  app.use((req, res, next) => {
+    asyncWork().then(...);   // ✗ unhandled rejection
+  });
+  ```
+  Express's default error handling is synchronous-friendly.
+  For async middleware, use `express-async-errors` or wrap
+  manually.  The actor-ts routes themselves handle async
+  cleanly; this is about your custom middleware.
+</Aside>
+
+## Where to next
+
+- **[HTTP overview](/actor-ts/http/overview/)** — the bigger
+  picture.
+- **[Fastify backend](/actor-ts/http/backends/fastify/)** — the
+  default + recommended.
+- **[Route DSL](/actor-ts/http/route-dsl/)** — what backends
+  register.

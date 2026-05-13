@@ -1,0 +1,189 @@
+---
+title: Serialization overview
+description: How actor-ts converts in-memory values to bytes for cluster wire + persistence. JSON by default; CBOR for compact binary; custom serializers for protocols (Protobuf, Avro). One `SerializationExtension` chooses by class binding.
+---
+
+Two scenarios require turning JS values into bytes:
+
+1. **Cluster wire** — a `tell` to a remote actor needs the
+   message serialized for TCP transmission.
+2. **Persistence** — events / snapshots / durable state stored
+   on disk or in a journal.
+
+The framework's `Serializer` interface is the abstraction.
+Two built-ins ship:
+
+| Serializer | Format | When |
+| --- | --- | --- |
+| **`JsonSerializer`** | JSON | Default.  Human-debuggable, widely understood. |
+| **`CborSerializer`** | CBOR (RFC 8949) | Compact, binary-native, faster. |
+
+Plus an extension point: implement `Serializer<T>` for
+**Protobuf, Avro, MessagePack**, etc.
+
+## How it works
+
+```
+Sender side:
+  tell(remoteRef, msg)
+    → SerializationExtension picks serializer for typeof(msg)
+    → serializer.toBinary(msg) → Uint8Array
+    → wrapped with serializerId + manifest + bytes
+    → cluster transport sends over the wire
+
+Receiver side:
+    cluster transport receives bytes
+    → SerializationExtension picks serializer by serializerId
+    → serializer.fromBinary(bytes, manifest) → reconstituted value
+    → delivered to actor's onReceive
+```
+
+The `serializerId` + `manifest` tell the receiver **which
+serializer to use** + **what type to reconstruct**.
+
+## The Serializer interface
+
+```ts
+interface Serializer<T = unknown> {
+  readonly id: number;            // unique per serializer
+  readonly name: string;          // human-readable
+  includesManifest: boolean;
+  manifest(obj: T): string;       // type tag
+  toBinary(obj: T): Uint8Array;
+  fromBinary(bytes: Uint8Array, manifest: string): T;
+}
+```
+
+Small surface — encode, decode, identify.  The framework's
+`SerializationExtension` maps classes to serializers (via
+`bind`); on serialization, the extension looks up which
+serializer to use for the value's class.
+
+## Default behavior
+
+```ts
+const system = ActorSystem.create('my-app');
+// → JsonSerializer registered as default
+// → Every value serializes as JSON unless a specific serializer is bound
+```
+
+If you do nothing, every value's bytes are JSON.  Plain
+objects, arrays, strings, numbers — all work.  Class instances
+serialize as plain objects (losing methods).
+
+## Picking JSON or CBOR
+
+| Aspect | JSON | CBOR |
+| --- | --- | --- |
+| Wire size | Larger | ~20-40 % smaller |
+| Speed | Slower than CBOR for binary data | Faster |
+| Debugging | Trivial (text) | Requires CBOR-aware tool |
+| Binary fields | base64-encoded (wasteful) | Native binary |
+| Library support | Universal | Solid in JS land |
+
+For **most apps**, JSON is fine — the perf difference doesn't
+matter and the debuggability is valuable.
+
+For **bandwidth-sensitive** cases (large cluster, lots of
+events, IoT-style payloads), CBOR wins meaningfully.
+
+See [JsonSerializer](/actor-ts/serialization/json/) +
+[CborSerializer](/actor-ts/serialization/cbor/) for details.
+
+## Custom serializers
+
+For Protobuf / Avro / etc., implement `Serializer<T>` and
+register:
+
+```ts
+import { SerializationExtensionId } from 'actor-ts';
+
+const ext = system.extension(SerializationExtensionId);
+ext.bind(MyEvent, new ProtobufSerializer<MyEvent>(MyEventSchema));
+```
+
+Now every `MyEvent` value uses Protobuf for serialization
+across the wire / to journal.  Other types still use JSON.
+
+See [Custom serializers](/actor-ts/serialization/custom/) for
+the full setup.
+
+## What can be serialized
+
+The default JSON serializer handles:
+
+- Plain objects (`{ a: 1, b: 'two' }`).
+- Arrays.
+- Strings, numbers, booleans, `null`.
+- Nested combinations of the above.
+
+**Cannot serialize**:
+
+- Functions / closures (no method survival).
+- Class instances with methods (methods lost; data fields
+  survive).
+- `Map` / `Set` (JSON-stringified as `{}`).
+- `Date` (round-trips through string; type info lost).
+- `BigInt` (throws).
+- Symbols (silently dropped).
+
+CBOR handles a few more (binary `Uint8Array` natively, `Map`
+as a real map), but not functions.
+
+For complex types, **convert to plain objects before sending**:
+
+```ts
+// ✗
+ref.tell({ when: new Date() });
+
+// ✓
+ref.tell({ when: Date.now() });
+```
+
+## Where serialization fires
+
+```
+1. cluster wire — every cross-node tell.
+2. PersistentActor.persist(event) — events to the journal.
+3. DurableStateActor.persist(state) — state to the store.
+4. Snapshot writes — snapshots to the snapshot store.
+5. DistributedData — replicated state across the cluster.
+```
+
+In-process tells **don't** serialize — the receiver gets the
+exact in-memory reference.  Serialization happens only at
+**process / disk / cluster** boundaries.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Test what crosses the boundary">
+  ```ts
+  // In-process tests succeed; cross-cluster surfaces a serialization bug
+  ```
+  In-process tests don't exercise serialization.  Test with
+  [MultiNodeSpec](/actor-ts/testing/multi-node-spec/) or
+  ParallelMultiNodeSpec to ensure messages serialize correctly.
+</Aside>
+
+<Aside type="caution" title="Mixing JSON + CBOR mid-cluster">
+  ```ts
+  // node-A binds CBOR for MyEvent; node-B doesn't
+  ```
+  Every node in a cluster needs the **same serialization
+  binding** for cross-node messages.  Otherwise nodes can't
+  decode each other's messages.  Roll out serialization
+  changes carefully.
+</Aside>
+
+## Where to next
+
+- **[JSON serializer](/actor-ts/serialization/json/)** — the
+  default.
+- **[CBOR serializer](/actor-ts/serialization/cbor/)** — the
+  binary alternative.
+- **[Custom serializers](/actor-ts/serialization/custom/)** —
+  Protobuf, Avro, etc.
+- **[Messages](/actor-ts/fundamentals/messages/)** — what
+  shapes survive serialization.
+- **[Refs across nodes](/actor-ts/cluster/refs-across-nodes/)** —
+  the cluster wire that consumes serializers.
