@@ -40,19 +40,13 @@ ClusterClient is the escape hatch for cases where it can't be.
 
 ## How it works
 
-```
-External process                Cluster
-       │                            │
-       │ contact cluster receptionist
-       │ via well-known path        │
-       ├───────────────────────────►│
-       │                            │
-       │   receptionist responds    │
-       │   with known service refs  │
-       │◄───────────────────────────┤
-       │                            │
-       │ send messages to refs      │
-       ├───────────────────────────►│
+```mermaid
+sequenceDiagram
+  participant Ext as External process
+  participant Cluster
+  Ext->>Cluster: contact cluster receptionist (well-known path)
+  Cluster-->>Ext: known service refs
+  Ext->>Cluster: send messages to refs
 ```
 
 The client:

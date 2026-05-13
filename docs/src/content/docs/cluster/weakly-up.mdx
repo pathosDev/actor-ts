@@ -15,13 +15,19 @@ auto-promoted to `weakly-up`.  It's gossip-visible to its
 partition; the cluster can route to it without the leader's
 involvement — but with some restrictions.
 
-```
-   joining ──── (delay elapses, leader still hasn't confirmed) ────►  weakly-up
-      │                                                                  │
-      └─── (leader visible, gossip converges) ─────────────────────►    up
-                                                                          │
-                                                          weakly-up ──────┘
-                                                          (eventually also confirmed)
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> joining
+  joining --> up: leader visible,<br/>gossip converges
+  joining --> weakly_up: delay elapses,<br/>leader still hasn't confirmed
+  weakly_up --> up: leader eventually confirms
+  classDef start fill:#1e293b,stroke:#475569,color:#cbd5e1;
+  classDef warn  fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
+  classDef ok    fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  class joining start
+  class weakly_up warn
+  class up ok
 ```
 
 ## When this matters
@@ -80,13 +86,25 @@ risk dual-leadership.
 
 ## The full state path
 
-```
-fresh node     joining     weakly-up    up    leaving   exiting   removed
-   (init)        │            │          │       │         │         │
-                 └────┬───────┘          │       └────┬────┘         │
-                      │                  │            │              │
-                      └──────────────────┘            └──────────────┘
-                          (most common)                  (graceful exit)
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> joining
+  joining --> weakly_up: delay (optional)
+  joining --> up: leader confirms
+  weakly_up --> up: leader confirms
+  up --> leaving: cluster.leave()
+  leaving --> exiting
+  exiting --> removed
+  removed --> [*]
+  classDef start fill:#1e293b,stroke:#475569,color:#cbd5e1;
+  classDef warn  fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
+  classDef ok    fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef gone  fill:#1e293b,stroke:#475569,color:#94a3b8;
+  class joining start
+  class weakly_up warn
+  class up ok
+  class leaving,exiting,removed gone
 ```
 
 `weakly-up` is **transient** — once the leader becomes reachable

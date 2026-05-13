@@ -6,18 +6,23 @@ description: Topic-based publish/subscribe across the cluster — every node hos
 `DistributedPubSub` is the **cluster-wide** version of the local
 event stream — pub/sub by topic name, working across nodes.
 
-```
-   Publisher                     Subscribers (on any node)
-      │                                  │
-      └──► node-A's mediator             │
-              │                          │
-              ├──► local sub on node-A  ─┘
-              │
-              └──► gossip-known subs on other nodes
-                       │
-                       └──► node-B's mediator
-                                │
-                                └──► local sub on node-B
+```mermaid
+flowchart LR
+  PUB(["Publisher"])
+  MA["node-A's mediator"]
+  SA["local sub on node-A"]
+  MB["node-B's mediator"]
+  SB["local sub on node-B"]
+  PUB --> MA
+  MA --> SA
+  MA -- "gossip-known subs<br/>on other nodes" --> MB
+  MB --> SB
+  classDef pub fill:#312e81,stroke:#818cf8,stroke-width:2px,color:#f1f5f9;
+  classDef med fill:#1e293b,stroke:#06b6d4,stroke-width:1.5px,color:#67e8f9;
+  classDef sub fill:#1e293b,stroke:#475569,color:#cbd5e1;
+  class PUB pub
+  class MA,MB med
+  class SA,SB sub
 ```
 
 Each node hosts a **mediator** at a well-known path

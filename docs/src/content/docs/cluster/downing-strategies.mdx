@@ -14,17 +14,24 @@ A **downing strategy** picks a winning side and forcibly downs the
 losing side.  The losing nodes' actors stop; the winning side
 continues as the cluster.
 
-```
-        before partition                   during partition
-   ┌─────────────────────┐          ┌──────────┐  ┌──────────┐
-   │ n1  n2  n3  n4  n5  │          │ n1 n2 n3 │  │ n4 n5    │
-   └─────────────────────┘          └──────────┘  └──────────┘
-                                      majority      minority
-                                         │              │
-                                   (KeepMajority decides)
-                                         │              │
-                                         ▼              ▼
-                                     continues    downs itself
+```mermaid
+flowchart LR
+  subgraph BEFORE["Before partition"]
+    direction LR
+    B[/"n1 · n2 · n3 · n4 · n5"/]
+  end
+  subgraph AFTER["During partition (KeepMajority decides)"]
+    direction TB
+    MAJ["n1 · n2 · n3<br/><b>majority → continues</b>"]
+    MIN["n4 · n5<br/><b>minority → downs itself</b>"]
+  end
+  BEFORE -- "network split" --> AFTER
+  classDef ok    fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef bad   fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
+  classDef neutral fill:#1e293b,stroke:#475569,color:#cbd5e1;
+  class B neutral
+  class MAJ ok
+  class MIN bad
 ```
 
 Without a strategy: both halves keep running.  When the partition

@@ -9,12 +9,19 @@ JavaScript is single-threaded per actor system.  For
 thread — all participating in the same cluster via a
 **MessageChannel transport**.
 
-```
-Main process (single OS process)
-├── ActorSystem 'main'  (main thread)
-├── ActorSystem 'w1'    (Worker thread 1)
-├── ActorSystem 'w2'    (Worker thread 2)
-└── ActorSystem 'w3'    (Worker thread 3)
+```mermaid
+flowchart TB
+  subgraph PROC["Main process (single OS process)"]
+    direction TB
+    MAIN["ActorSystem 'main'<br/><i>main thread</i>"]
+    W1["ActorSystem 'w1'<br/><i>Worker thread 1</i>"]
+    W2["ActorSystem 'w2'<br/><i>Worker thread 2</i>"]
+    W3["ActorSystem 'w3'<br/><i>Worker thread 3</i>"]
+  end
+  classDef proc fill:#0f172a,stroke:#6366f1,stroke-width:2px,color:#f1f5f9;
+  classDef sys  fill:#312e81,stroke:#818cf8,stroke-width:1.5px,color:#f1f5f9;
+  class PROC proc
+  class MAIN,W1,W2,W3 sys
 ```
 
 Each is a **separate cluster node** to the cluster's view —

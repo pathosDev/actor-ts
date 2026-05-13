@@ -6,14 +6,20 @@ description: The mechanism for declaring a peer unreachable — heartbeats track
 A clustered actor system needs to **agree on who's alive**.
 The failure detector is the per-peer state machine that decides:
 
-```
-healthy ──── no heartbeat for `unreachableAfterMs` ────► unreachable
-   ▲                                                          │
-   │                                                          │
-   │ heartbeat received                no heartbeat for       │
-   │                              `downAfterMs` more          │
-   └────────────────────────                  ▼               │
-                                            down (recommended)
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> healthy
+  healthy --> unreachable: no heartbeat for unreachableAfterMs
+  unreachable --> healthy: heartbeat received
+  unreachable --> down: no heartbeat for downAfterMs more
+  down --> [*]: removed (recommended)
+  classDef ok   fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef warn fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
+  classDef gone fill:#1e293b,stroke:#475569,color:#94a3b8;
+  class healthy ok
+  class unreachable warn
+  class down gone
 ```
 
 - **`healthy`** — heartbeats arriving normally.
@@ -112,10 +118,18 @@ Every node runs its own detector, watching its own peers.  This
 means **two nodes can disagree** about whether a third is
 reachable:
 
-```
-n1 ──── healthy heartbeats ────► n2
-n1 ──── (network partition) ──── n3  ← n1 sees n3 as unreachable
-n2 ──── healthy heartbeats ──── n3   ← n2 sees n3 as healthy
+```mermaid
+flowchart LR
+  N1((n1))
+  N2((n2))
+  N3((n3))
+  N1 -- "healthy heartbeats" --> N2
+  N2 -- "healthy heartbeats" --> N3
+  N1 -. "network partition<br/>(n1 sees n3 unreachable;<br/>n2 sees n3 healthy)" .- N3
+  classDef ok  fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef mid fill:#1e293b,stroke:#475569,color:#cbd5e1;
+  class N1,N2 ok
+  class N3 mid
 ```
 
 The cluster gossip propagates these per-node observations.  A

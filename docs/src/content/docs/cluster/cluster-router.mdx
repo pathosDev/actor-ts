@@ -9,14 +9,23 @@ as its own children — a fixed pool on one node.  The
 actors at a well-known path**, and the routee set changes as
 cluster membership changes.
 
-```
-                 ClusterRouter on node-A
-                          │
-              ┌───────────┼───────────┐
-              ▼           ▼           ▼
-        node-A's      node-B's     node-C's
-        /user/worker  /user/worker /user/worker
-        (one per up-member with role=compute)
+```mermaid
+flowchart TB
+  ROUTER["ClusterRouter on node-A"]
+  WA["node-A's<br/>/user/worker"]
+  WB["node-B's<br/>/user/worker"]
+  WC["node-C's<br/>/user/worker"]
+  ROUTER --> WA
+  ROUTER --> WB
+  ROUTER --> WC
+  NOTE[/"one per up-member with role=compute"/]
+  ROUTER -.-> NOTE
+  classDef router fill:#312e81,stroke:#818cf8,stroke-width:1.5px,color:#f1f5f9;
+  classDef worker fill:#1e293b,stroke:#475569,color:#cbd5e1;
+  classDef note   fill:transparent,stroke:transparent,color:#94a3b8;
+  class ROUTER router
+  class WA,WB,WC worker
+  class NOTE note
 ```
 
 Every up-member with role `compute` (configurable) has a worker

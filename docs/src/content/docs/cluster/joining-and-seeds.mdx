@@ -8,14 +8,15 @@ gossips back its current membership view; the joiner is added as
 `joining`, propagates through gossip, and once the leader sees it
 (plus convergence), transitions to `up`.
 
-```
-   joining node                 seed node(s)                cluster
-        │                            │                          │
-        │ ── Join announcement ─────►│                          │
-        │                            │ ── gossip Join ─────────►│
-        │ ◄── Gossip (current view) ─│                          │
-        │                            │                          │
-        │   (joining → weakly-up? → up over a few gossip rounds)
+```mermaid
+sequenceDiagram
+  participant J as joining node
+  participant S as seed node(s)
+  participant C as cluster
+  J->>S: Join announcement
+  S->>C: gossip Join
+  S-->>J: Gossip (current view)
+  Note over J: joining → weakly-up? → up<br/>over a few gossip rounds
 ```
 
 This page covers the **mechanics** of that handshake, plus the
@@ -91,15 +92,22 @@ Order doesn't matter; the joiner tries each.
 
 ## Self-seeded nodes — the bootstrap race
 
-```
-3 fresh nodes, all in seed list [n1, n2, n3]
-    │
-    n1 contacts n2 → n2 has no cluster yet, says "no" / times out
-    n1 contacts n3 → same
-    n1 contacts itself → recognizes self, auto-bootstraps
-    │
-    n2 + n3 contact each other → both no cluster yet
-    n2 + n3 contact n1 → n1 is now leader → join through it
+```mermaid
+sequenceDiagram
+  participant N1 as n1
+  participant N2 as n2
+  participant N3 as n3
+  Note over N1,N3: All three fresh, all in seed list [n1, n2, n3]
+  N1->>N2: contact seed
+  N2-->>N1: no cluster yet / times out
+  N1->>N3: contact seed
+  N3-->>N1: no cluster yet / times out
+  N1->>N1: contact self → recognizes, auto-bootstraps
+  Note over N1: n1 is now leader
+  N2->>N1: contact seed
+  N1-->>N2: join through me
+  N3->>N1: contact seed
+  N1-->>N3: join through me
 ```
 
 When a cluster cold-starts (all nodes coming up simultaneously),

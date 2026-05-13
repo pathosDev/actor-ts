@@ -29,10 +29,14 @@ A cluster-aware ref includes the **host:port** of its owning node:
 
 ```
 actor-ts://my-app@10.0.0.5:2552/user/api/sessions/user-42
-            │       └────────┘
-            │       node's address (assigned at Cluster.join time)
-            └── system name
 ```
+
+| Segment | What it is |
+| --- | --- |
+| `actor-ts://` | The scheme — same as local paths. |
+| `my-app` | The cluster's system name. |
+| `@10.0.0.5:2552` | The node's address, assigned at `Cluster.join` time. |
+| `/user/api/sessions/user-42` | The actor path inside that node, identical in shape to a single-node path. |
 
 The host fragment tells the local runtime *which node* hosts this
 actor.  When you `tell` a remote ref, the framework:
