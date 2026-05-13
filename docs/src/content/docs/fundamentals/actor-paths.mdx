@@ -8,13 +8,18 @@ identifier built from its position in the supervisor tree:
 
 ```
 actor-ts://my-app/user/api/sessions/user-42
-            │      │    │       │       │
-            │      │    │       │       └── leaf actor name
-            │      │    │       └── parent (a SessionManager)
-            │      │    └── grandparent (an Api manager)
-            │      └── user-guardian (every user actor is under /user)
-            └── system name from ActorSystem.create('my-app')
 ```
+
+Reading left to right:
+
+| Segment | What it is |
+| --- | --- |
+| `actor-ts://` | The scheme — same for every actor-ts path. |
+| `my-app` | The system name from `ActorSystem.create('my-app')`. |
+| `user` | The user-guardian — every actor you spawn lives under `/user`. |
+| `api` | A great-grandparent (e.g. an `Api` manager). |
+| `sessions` | The immediate parent (e.g. a `SessionManager`). |
+| `user-42` | The leaf actor's own name. |
 
 The path identifies an actor uniquely within its system, the way a
 filesystem path identifies a file: at any moment, the path either

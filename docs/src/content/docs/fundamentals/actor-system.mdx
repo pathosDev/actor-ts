@@ -120,11 +120,23 @@ root guardian instead.
 Every actor has a path under the system root.  Three top-level
 "guardian" actors sit just below the root:
 
-```
-actor-ts://my-app/
-  ├── /user           ← your application's actors live here
-  ├── /system         ← framework-internal actors (event-stream listeners, ...)
-  └── /deadLetters    ← messages sent to non-existent or stopped refs
+```mermaid
+flowchart LR
+  ROOT(["actor-ts://my-app/"])
+  USER["/user<br/><i>your application's actors</i>"]
+  SYS["/system<br/><i>framework-internal actors</i>"]
+  DEAD["/deadLetters<br/><i>messages to dead refs</i>"]
+  ROOT --> USER
+  ROOT --> SYS
+  ROOT --> DEAD
+  classDef root  fill:#0f172a,stroke:#6366f1,stroke-width:2px,color:#f1f5f9;
+  classDef user  fill:#312e81,stroke:#818cf8,stroke-width:1.5px,color:#f1f5f9;
+  classDef sys   fill:#1e293b,stroke:#475569,color:#cbd5e1;
+  classDef dead  fill:#1e293b,stroke:#475569,color:#94a3b8;
+  class ROOT root
+  class USER user
+  class SYS sys
+  class DEAD dead
 ```
 
 When you call `system.actorOf(props)`, the actor is created under

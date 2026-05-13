@@ -207,12 +207,19 @@ custom `OneForOneStrategy` or `AllForOneStrategy` otherwise.
 
 Escalation walks up the parent tree:
 
-```
-   /user
-     │
-     └── /boss              <- escalates here when Worker raises beyond maxRetries
-           │
-           └── /worker      <- thrown here
+```mermaid
+flowchart TB
+  USER["/user<br/><i>user-guardian</i>"]
+  BOSS["/boss<br/><i>escalates here when Worker raises beyond maxRetries</i>"]
+  WORKER["/worker<br/><i>throws here</i>"]
+  WORKER -- "escalate" --> BOSS
+  BOSS -- "escalate" --> USER
+  classDef root   fill:#0f172a,stroke:#6366f1,stroke-width:2px,color:#f1f5f9;
+  classDef parent fill:#312e81,stroke:#818cf8,stroke-width:1.5px,color:#f1f5f9;
+  classDef child  fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
+  class USER root
+  class BOSS parent
+  class WORKER child
 ```
 
 If `/boss`'s strategy returns `Escalate`, the error re-throws at
