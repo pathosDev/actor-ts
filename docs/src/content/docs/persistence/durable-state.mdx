@@ -7,18 +7,25 @@ description: The simpler persistence model — `DurableStateActor` persists a *s
 to survive" persistence model.  No event log, no replay — just a
 snapshot of the state, overwritten on each `persist(newState)`.
 
-```
-            ┌─────────────────────────────────┐
-            │   DurableStateActor              │
-            │                                  │
-            │   onReceive(cmd):                │
-            │     ┌─────────────────────────┐  │
-            │     │  this.state ────►       │  │
-            │     │  next = transform(...)  │  │
-            │     │  await this.persist(next)──┼──► Durable State Store
-            │     │  revision++             │  │
-            │     └─────────────────────────┘  │
-            └─────────────────────────────────┘
+```mermaid
+flowchart LR
+  subgraph DSA["DurableStateActor"]
+    direction TB
+    CMD["onReceive(cmd)"]
+    READ["read this.state"]
+    NEXT["next = transform(...)"]
+    PERSIST["await this.persist(next)"]
+    REV["revision++"]
+    CMD --> READ --> NEXT --> PERSIST --> REV
+  end
+  STORE[("Durable State Store")]
+  PERSIST --> STORE
+  classDef actor fill:#312e81,stroke:#818cf8,stroke-width:1.5px,color:#f1f5f9;
+  classDef step  fill:#1e293b,stroke:#475569,color:#cbd5e1;
+  classDef store fill:#1e293b,stroke:#06b6d4,stroke-width:2px,color:#67e8f9;
+  class DSA actor
+  class CMD,READ,NEXT,PERSIST,REV step
+  class STORE store
 ```
 
 Compared to [`PersistentActor`](/persistence/persistent-actor/):

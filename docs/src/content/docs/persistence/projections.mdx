@@ -6,11 +6,25 @@ description: Read-side views derived from a `PersistentActor`'s event stream —
 A `PersistentActor` writes events.  A **projection** consumes
 them, building a **read-side view** tailored for queries:
 
-```
-   write side                                 read side
-   ──────────                                 ─────────
-   PersistentActor    →   journal   →   ProjectionActor   →   read-model
-   (commands)             (events)        (handler)            (SQL/Redis/etc)
+```mermaid
+flowchart LR
+  subgraph WRITE["write side"]
+    direction LR
+    PA["PersistentActor<br/><i>commands in</i>"]
+  end
+  JOURNAL[("Journal<br/><i>events</i>")]
+  subgraph READ["read side"]
+    direction LR
+    PROJ["ProjectionActor<br/><i>handler</i>"]
+    MODEL[("read-model<br/><i>SQL / Redis / etc.</i>")]
+  end
+  PA --> JOURNAL --> PROJ --> MODEL
+  classDef section fill:#0f172a,stroke:#6366f1,stroke-width:1.5px,color:#f1f5f9;
+  classDef actor   fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef store   fill:#1e293b,stroke:#06b6d4,stroke-width:2px,color:#67e8f9;
+  class WRITE,READ section
+  class PA,PROJ actor
+  class JOURNAL,MODEL store
 ```
 
 The journal is **append-only and authoritative**.  Projections

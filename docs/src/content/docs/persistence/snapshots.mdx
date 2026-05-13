@@ -129,14 +129,26 @@ unless you explicitly ask via the store's lower-level API.
 
 ## Recovery flow with snapshots
 
-```
-preStart:
-  ├── load latest snapshot for persistenceId
-  │     ├── found at seqNr=500 → state = snapshot.state, seq = 500
-  │     └── not found            → state = initialState(), seq = 0
-  ├── read events from journal starting at seq+1
-  │     └── for each event: state = onEvent(state, event); seq++
-  └── onRecoveryComplete(state)
+```mermaid
+flowchart TB
+  START(["preStart"])
+  LOAD["load latest snapshot<br/>for persistenceId"]
+  FOUND{"found?"}
+  WITH["state = snapshot.state<br/>seq = 500"]
+  NEW["state = initialState<br/>seq = 0"]
+  READ["read events from journal<br/>starting at seq+1"]
+  APPLY["for each event:<br/>state = onEvent(state, event)<br/>seq++"]
+  DONE[/"onRecoveryComplete(state)"/]
+  START --> LOAD --> FOUND
+  FOUND -- "yes — at seqNr=500" --> WITH
+  FOUND -- "no" --> NEW
+  WITH --> READ
+  NEW --> READ
+  READ --> APPLY --> DONE
+  classDef step fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
+  classDef ok   fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  class LOAD,READ,APPLY step
+  class WITH,NEW,DONE ok
 ```
 
 `onEvent` is still pure — same rule as without snapshots.  The

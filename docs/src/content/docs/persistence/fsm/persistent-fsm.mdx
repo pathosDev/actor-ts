@@ -67,13 +67,12 @@ newData)`) — but this generates noise events.
 
 ## Recovery
 
-```ts
-preStart():
-  └── read all StateChangeEvents for persistenceId
-       └── replay each: from → to, set data
-  └── current state + data = result of replay
-  └── onReceive available
-```
+1. **`preStart`** reads every `StateChangeEvent` for the
+   `persistenceId` from the journal.
+2. **Replays each event** in order — applies `from → to` plus the
+   stored data.
+3. **Final state + data** are the result of the replay; the FSM is
+   now `onReceive`-available with that state.
 
 Same idiom as
 [PersistentActor](/persistence/persistent-actor/) —

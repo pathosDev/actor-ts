@@ -120,13 +120,27 @@ Full control; no constraints on shape transformations.
 
 ## Picking a strategy
 
-```
-Is the change ADDITIVE (new fields only, with sensible defaults)?
-├── Yes      → DefaultAdapter (zero-effort)
-├── No, but transformable from old → new
-│   ├── Single-step  → MigratingAdapter
-│   └── Multi-step   → MigratingAdapter (chain)
-└── Restructured (renames, splits, joins) → Custom EventAdapter
+```mermaid
+flowchart TB
+  Q1{"Is the change ADDITIVE?<br/>(new fields only, sensible defaults)"}
+  Q2{"Transformable from old → new?"}
+  Q3{"Single-step or multi-step?"}
+  DEF["DefaultAdapter<br/><i>zero-effort</i>"]
+  MIG1["MigratingAdapter"]
+  MIG2["MigratingAdapter<br/><i>chain</i>"]
+  CUSTOM["Custom EventAdapter<br/><i>restructured: renames, splits, joins</i>"]
+  Q1 -- "yes" --> DEF
+  Q1 -- "no" --> Q2
+  Q2 -- "yes" --> Q3
+  Q2 -- "no" --> CUSTOM
+  Q3 -- "single-step" --> MIG1
+  Q3 -- "multi-step" --> MIG2
+  classDef q  fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
+  classDef ok fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef warn fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
+  class Q1,Q2,Q3 q
+  class DEF,MIG1,MIG2 ok
+  class CUSTOM warn
 ```
 
 ## State adapters

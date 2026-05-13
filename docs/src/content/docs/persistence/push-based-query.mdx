@@ -12,20 +12,19 @@ projections, but introduces up to 1 second of latency per event.
 For lower latency, the framework adds **push delivery** via an
 in-process **`JournalEventBus`**:
 
-```
-   PersistentActor                          ProjectionActor
-        │                                         │
-        │ persist(event)                          │
-        ▼                                         │
-      Journal                                     │
-        │                                         │
-        ├─ store event                            │
-        ├─ publish to JournalEventBus  ───────────► wake immediately
-        │                                         │
-        ▼                                         │
-  (next poll would catch it eventually)            handle event
-                                                    │
-                                                    save offset
+```mermaid
+sequenceDiagram
+  participant PA as PersistentActor
+  participant J as Journal
+  participant BUS as JournalEventBus
+  participant PROJ as ProjectionActor
+  PA->>J: persist event
+  Note over J: store event
+  J->>BUS: publish
+  BUS->>PROJ: wake immediately
+  PROJ->>PROJ: handle event
+  PROJ->>PROJ: save offset
+  Note over PROJ: next poll would also<br/>catch it eventually
 ```
 
 The bus delivers in **single-digit milliseconds** instead of the

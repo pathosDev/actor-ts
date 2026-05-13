@@ -92,21 +92,23 @@ ownership + routes writes to the current writer.
 
 ## Failover sequence
 
-```
-   Writer A holds lease.
-       │
-       │ A crashes (or its lease TTL expires)
-       ▼
-   Lease becomes available.
-       │
-       │ Replicas B, C, D race to acquire.
-       │ Only one wins (atomic lease acquire).
-       ▼
-   New writer (say B) starts writing.
-       │
-       │ A recovers; sees lease is held; runs as read-only.
-       ▼
-   Stable.
+```mermaid
+sequenceDiagram
+  participant A as Writer A
+  participant L as Lease backend
+  participant B as Replica B
+  participant CD as Replicas C, D
+  Note over A,L: A holds lease
+  A--xL: crashes — or lease TTL expires
+  Note over L: lease becomes available
+  B->>L: acquire
+  CD->>L: acquire
+  L-->>B: success — atomic
+  L-->>CD: fail
+  Note over B: new writer — starts writing
+  A->>L: recovers, checks lease
+  L-->>A: held by B — A runs read-only
+  Note over A,CD: Stable
 ```
 
 Failover window: TTL of the lease (typically 15-30 s).  Shorter

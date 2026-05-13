@@ -159,14 +159,23 @@ the full API.
 
 The honest decision tree:
 
-```
-Do you need a history of state changes (audit, undo, projections)?
-├── Yes → PersistentActor.
-└── No.
-    Is the state shape simple and the volume small enough that
-    "rewrite the full thing on every change" is fine?
-    ├── Yes → DurableStateActor.
-    └── No → PersistentActor anyway (only changes get appended).
+```mermaid
+flowchart TB
+  Q1{"Need a history of state changes?<br/>(audit, undo, projections)"}
+  Q2{"Is state shape simple<br/>and volume small enough that<br/>rewriting the whole thing<br/>on every change is fine?"}
+  PA1["PersistentActor"]
+  PA2["PersistentActor<br/>(only changes get appended)"]
+  DS["DurableStateActor"]
+  Q1 -- "yes" --> PA1
+  Q1 -- "no" --> Q2
+  Q2 -- "yes" --> DS
+  Q2 -- "no" --> PA2
+  classDef q     fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
+  classDef ok    fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef alt   fill:#1e293b,stroke:#475569,color:#cbd5e1;
+  class Q1,Q2 q
+  class PA1,PA2 ok
+  class DS alt
 ```
 
 Event sourcing wins when:

@@ -16,16 +16,24 @@ once — on different nodes, in different regions — and each
 persists independently.  The framework uses **vector clocks** to
 detect concurrent edits + **conflict resolvers** to merge them.
 
-```
-   Replica A (eu-west)        Replica B (us-east)
-        │                            │
-        │ persist event_A1           │ persist event_B1
-        ▼                            ▼
-   Shared journal  ←  gossip / async replication  →  Shared journal
-        │                            │
-        │ both reads from journal    │
-        ▼                            ▼
-   converge (via vector clock + resolver)
+```mermaid
+flowchart TB
+  A["Replica A<br/>eu-west"]
+  B["Replica B<br/>us-east"]
+  JA[("Shared journal")]
+  JB[("Shared journal")]
+  CONV(["converge via vector clock + resolver"])
+  A -- "persist event_A1" --> JA
+  B -- "persist event_B1" --> JB
+  JA -- "gossip /<br/>async replication" --- JB
+  JA --> CONV
+  JB --> CONV
+  classDef replica fill:#312e81,stroke:#818cf8,stroke-width:1.5px,color:#f1f5f9;
+  classDef store   fill:#1e293b,stroke:#06b6d4,stroke-width:2px,color:#67e8f9;
+  classDef merge   fill:#0f172a,stroke:#6366f1,stroke-width:2px,color:#f1f5f9;
+  class A,B replica
+  class JA,JB store
+  class CONV merge
 ```
 
 ## When to use it
