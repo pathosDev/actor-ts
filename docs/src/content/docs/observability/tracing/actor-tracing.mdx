@@ -22,14 +22,25 @@ back to the sender's.
 
 For a typical request flow:
 
-```
-HTTP request                                       ← root span
-└── actor.receive (api-actor)                      ← child
-    └── actor.ask (ask db-actor)                   ← grandchild
-        └── cluster.envelope.send                   ← cross-wire
-        └── cluster.envelope.receive (on db node)   ← peer side
-            └── actor.receive (db-actor)            ← processes
-                └── actor.persist                   ← writes journal
+```mermaid
+flowchart TB
+  R[/"HTTP request<br/><i>root span</i>"/]
+  API["actor.receive — api-actor"]
+  ASK["actor.ask — ask db-actor"]
+  SEND["cluster.envelope.send<br/><i>cross-wire</i>"]
+  RECV["cluster.envelope.receive on db node<br/><i>peer side</i>"]
+  DB["actor.receive — db-actor"]
+  PERSIST["actor.persist<br/><i>writes journal</i>"]
+  R --> API --> ASK
+  ASK --> SEND --> RECV --> DB --> PERSIST
+  classDef root fill:#0f172a,stroke:#6366f1,stroke-width:2px,color:#f1f5f9;
+  classDef api  fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef wire fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
+  classDef db   fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
+  class R root
+  class API,ASK api
+  class SEND,RECV wire
+  class DB,PERSIST db
 ```
 
 Each span carries the trace ID — your tracing backend stitches

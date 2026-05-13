@@ -103,11 +103,19 @@ Spans **chain across tells** — an actor that processes a request
 and tells another actor passes the current span context via the
 envelope; the second actor's span links back to the first.
 
-```
-HTTP request
- └── actor /user/api    receives request
-      └── actor /user/db     processes query   (linked back)
-           └── (Postgres span via OTel auto-instrumentation)
+```mermaid
+flowchart TB
+  REQ[/"HTTP request"/]
+  API["actor /user/api<br/><i>receives request</i>"]
+  DB["actor /user/db<br/><i>processes query — linked back</i>"]
+  PG["Postgres span<br/><i>OTel auto-instrumentation</i>"]
+  REQ --> API --> DB --> PG
+  classDef root  fill:#0f172a,stroke:#6366f1,stroke-width:2px,color:#f1f5f9;
+  classDef actor fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef ext   fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
+  class REQ root
+  class API,DB actor
+  class PG ext
 ```
 
 The end result: one trace per logical request, even when it hops

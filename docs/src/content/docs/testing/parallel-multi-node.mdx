@@ -101,20 +101,16 @@ the test can't reach the child's in-memory actors directly.
 
 ## When to use which
 
-```
-┌──────────────────────────────────────────────────────────┐
-│  Test concept                       MultiNodeSpec  Parallel │
-├──────────────────────────────────────────────────────────┤
-│  Cluster membership semantics         ✓              ✓     │
-│  Sharding distribution                 ✓              ✓     │
-│  Singleton failover                    ✓              ✓     │
-│  Gossip convergence                    ✓              ✓     │
-│  Serialization round-trip              ✗              ✓     │
-│  Per-process memory isolation          ✗              ✓     │
-│  Real TCP semantics                    ✗              ✓     │
-│  CI speed                              very fast      slow  │
-└──────────────────────────────────────────────────────────┘
-```
+| Test concept | `MultiNodeSpec` | `ParallelMultiNodeSpec` |
+| --- | :---: | :---: |
+| Cluster membership semantics | ✓ | ✓ |
+| Sharding distribution | ✓ | ✓ |
+| Singleton failover | ✓ | ✓ |
+| Gossip convergence | ✓ | ✓ |
+| Serialization round-trip | ✗ | ✓ |
+| Per-process memory isolation | ✗ | ✓ |
+| Real TCP semantics | ✗ | ✓ |
+| CI speed | very fast | slow |
 
 For 90 % of tests, MultiNodeSpec.  For the 10 % where
 fidelity matters, ParallelMultiNodeSpec.

@@ -102,16 +102,14 @@ cluster down."
 
 ## Troubleshooting
 
-```
-Symptom                            → Likely cause
-─────────────────────────────────────────────────────────
-Actor isn't receiving messages     → Stopped ref, dead-letter, mailbox full
-Cluster won't form                 → Seed nodes unreachable, port conflict
-Sharded entities won't spawn       → Coordinator not on a leader, role mismatch
-PersistentActor takes 30s to start → No snapshot, deep journal — set snapshotPolicy
-Tests hang at the end              → Forgot await system.terminate()
-Memory grows unboundedly           → Unbounded mailboxes; pick a mailbox cap
-```
+| Symptom | Likely cause |
+| --- | --- |
+| Actor isn't receiving messages | Stopped ref, dead-letter, mailbox full |
+| Cluster won't form | Seed nodes unreachable, port conflict |
+| Sharded entities won't spawn | Coordinator not on a leader, role mismatch |
+| `PersistentActor` takes 30 s to start | No snapshot, deep journal — set `snapshotPolicy` |
+| Tests hang at the end | Forgot `await system.terminate()` |
+| Memory grows unboundedly | Unbounded mailboxes; pick a mailbox cap |
 
 See [Troubleshooting](/operations/troubleshooting/) for
 the diagnostic-by-symptom catalog.
