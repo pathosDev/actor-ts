@@ -1,0 +1,166 @@
+---
+title: SSE (Server-Sent Events)
+description: One-way streaming from server to client over HTTP — `text/event-stream`. Simpler than WebSocket; auto-reconnect built into the browser EventSource API; works through HTTP infrastructure.
+---
+
+`SseActor` exposes a Server-Sent Events endpoint.  SSE is a
+**one-way push** protocol from server to client over plain
+HTTP — simpler than WebSocket, with browser-native
+auto-reconnect via the `EventSource` API.
+
+```ts
+import { ActorSystem, Props, SseActor } from 'actor-ts';
+
+const sse = system.actorOf(
+  Props.create(() => new SseActor({
+    host: '0.0.0.0',
+    port: 8080,
+    path: '/events',
+  })),
+  'sse',
+);
+
+// Anywhere in the app — push to all connected clients:
+sse.tell({
+  kind:  'broadcast',
+  event: 'order-placed',
+  data:  JSON.stringify({ orderId: 'o-1' }),
+});
+
+// Push to a specific connection:
+sse.tell({
+  kind:           'send',
+  connectionId:   'conn-42',
+  event:          'private',
+  data:           '...',
+});
+```
+
+Browser clients consume via:
+
+```js
+const events = new EventSource('http://my-server/events');
+events.addEventListener('order-placed', (e) => {
+  console.log(JSON.parse(e.data));
+});
+```
+
+## Settings
+
+```ts
+interface SseActorSettings extends BrokerCommonSettings {
+  host:        string;
+  port:        number;
+  path?:       string;             // default '/events'
+  keepaliveMs?: number;             // default 30_000 — sends comments to keep connections alive
+}
+```
+
+`keepaliveMs` controls how often the server sends comment frames
+(`: keepalive`) to prevent intermediate proxies from closing
+idle connections.  30 seconds is typical.
+
+## Event format
+
+SSE has a specific wire format:
+
+```
+event: order-placed
+data: {"orderId":"o-1"}
+id: 42
+
+event: ping
+data:
+
+```
+
+The framework constructs this for you:
+
+```ts
+sse.tell({
+  kind:  'broadcast',
+  event: 'order-placed',     // event name (default 'message')
+  data:  JSON.stringify(o),  // payload
+  id:    String(Date.now()),  // optional — used by client for last-event-id reconnect
+});
+```
+
+`id` is important: when a client disconnects and reconnects (the
+browser does this automatically), it sends `Last-Event-ID` —
+your actor can resume from there.
+
+## Last-Event-ID for resumable streams
+
+```ts
+class SseActor extends Actor<...> {
+  override onReceive(msg) {
+    if (msg.kind === 'connection-opened') {
+      const lastId = msg.lastEventId;
+      if (lastId) {
+        // Replay events newer than lastId to this client
+        this.replayFrom(msg.connectionId, lastId);
+      }
+    }
+  }
+}
+```
+
+Critical for **resumable streams** — without it, the client
+loses events while disconnected.  Combined with an event store
+(or a journal-backed projection), you can build at-least-once
+push delivery.
+
+## When to use SSE
+
+Three primary fits:
+
+1. **One-way push from server to browser** — live feeds,
+   notifications, real-time dashboards.
+2. **When WebSocket is overkill** — simpler protocol, easier
+   debugging (it's just HTTP).
+3. **HTTP-infrastructure-friendly** — works through proxies,
+   load balancers, CDNs that don't understand WS.
+
+For **bi-directional** comm, use WebSocket.  For **request/response**
+RPC, use plain HTTP.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="One-way only">
+  ```ts
+  // Client can't send anything via the SSE connection itself
+  ```
+  Client → server messages need a separate HTTP POST.  This is
+  fine for most "feed" use cases.  For chat, WebSocket is
+  better.
+</Aside>
+
+<Aside type="caution" title="Connection limits">
+  ```ts
+  // Browser allows ~6 SSE connections per origin
+  ```
+  Each open SSE is a persistent HTTP connection.  Browsers cap
+  at ~6 per origin.  For dashboards with many panels, multiplex
+  through one connection with event-name filtering, not many
+  connections.
+</Aside>
+
+<Aside type="caution" title="Reconnect is automatic, replay isn't">
+  ```ts
+  // Browser auto-reconnects but server defaults to "stream from now"
+  ```
+  Use `id` + `Last-Event-ID` for resumable streams.  Without it,
+  messages sent during disconnect are silently lost from the
+  client's perspective.
+</Aside>
+
+## Where to next
+
+- **[I/O overview](/actor-ts/io/overview/)** — the bigger
+  picture.
+- **[Server WebSocket](/actor-ts/io/server-websocket/)** — for
+  bi-directional.
+- **[BrokerActor base](/actor-ts/io/broker-actor-base/)** — the
+  shared lifecycle.
+- **[HTTP overview](/actor-ts/http/overview/)** — for plain
+  request/response.

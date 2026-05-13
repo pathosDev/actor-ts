@@ -1,0 +1,137 @@
+---
+title: WebSocket (client)
+description: Outbound WebSocket connection actor — connects to a remote WS endpoint, forwards incoming messages to subscribers, sends outbound messages. Auto-reconnect with backoff. Wraps the runtime's native WebSocket.
+---
+
+`WebSocketActor` opens a **client-side** WebSocket connection to
+a remote endpoint.  For accepting **incoming** WS connections
+(server side), see
+[ServerWebSocketActor](/actor-ts/io/server-websocket/).
+
+```ts
+import { ActorSystem, Props, WebSocketActor } from 'actor-ts';
+
+const ws = system.actorOf(
+  Props.create(() => new WebSocketActor({
+    url: 'wss://realtime.example.com/feed',
+    protocols: ['my-proto-v1'],
+    headers: {
+      authorization: `Bearer ${process.env.API_TOKEN}`,
+    },
+  })),
+  'ws-client',
+);
+
+// Subscribe to inbound messages:
+ws.tell({ kind: 'subscribe', subscriber: feedHandler });
+
+// Send:
+ws.tell({ kind: 'send', payload: JSON.stringify({ subscribe: 'channel-1' }) });
+```
+
+## Settings
+
+```ts
+interface WebSocketActorSettings extends BrokerCommonSettings {
+  url:        string;                        // ws:// or wss://
+  protocols?: string | string[];             // subprotocols
+  headers?:   Record<string, string>;        // initial-handshake headers
+  pingIntervalMs?: number;                   // application-level ping; default off
+}
+```
+
+## Inbound messages
+
+```ts
+class FeedHandler extends Actor<WsInbound> {
+  override onReceive(msg: WsInbound): void {
+    if (msg.kind === 'text') {
+      const event = JSON.parse(msg.payload);
+      this.handleEvent(event);
+    } else if (msg.kind === 'binary') {
+      // raw Uint8Array
+      this.handleBinary(msg.payload);
+    }
+  }
+}
+```
+
+Two inbound kinds — `text` and `binary` — matching the WebSocket
+frame types.  The framework doesn't dispatch on payload content;
+that's up to the subscriber.
+
+## Auto-reconnect
+
+The base
+[BrokerActor lifecycle](/actor-ts/io/broker-actor-base/) handles
+reconnect with backoff.  An unexpected disconnect:
+
+- Transitions the actor to `disconnected`.
+- Fires `BrokerDisconnected` on the event stream.
+- Starts the reconnect cycle.
+- After each successful re-connect, fires `BrokerConnected`.
+
+**Outbound messages** sent during disconnection are **buffered**
+(per the outbound buffer policy).  Inbound subscribers are
+preserved across reconnect.
+
+## Ping / keep-alive
+
+```ts
+new WebSocketActor({
+  url: 'wss://...',
+  pingIntervalMs: 30_000,   // send a ping every 30s
+});
+```
+
+Application-level ping prevents intermediate proxies / load
+balancers from closing idle connections.  Most production
+WebSocket setups need this.
+
+The protocol-level WebSocket ping (control frame) is sent
+automatically; the application-level ping is for **proxies that
+inspect payload, not frames**.
+
+## When to use it
+
+Three primary fits:
+
+1. **Subscribing to real-time data feeds** — stock tickers,
+   crypto exchanges, social-media streams.
+2. **Outbound WebSocket clients** to third-party services
+   (Slack RTM, OpenAI streaming, IoT vendor APIs).
+3. **Custom WS-based protocols** layered on top.
+
+For server-side WebSocket (accepting client connections), use
+[ServerWebSocketActor](/actor-ts/io/server-websocket/).
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Browser-side WebSocket is different">
+  ```ts
+  // Browser app connecting to a server — use new WebSocket() directly
+  ```
+  This actor is for **server-side outgoing** connections.
+  Browser clients use the browser's native WebSocket API.
+</Aside>
+
+<Aside type="caution" title="Binary vs text">
+  ```ts
+  ws.tell({ kind: 'send', payload: someUint8Array });   // binary
+  ws.tell({ kind: 'send', payload: 'hello' });           // text
+  ```
+  Type of the payload determines the frame type.  Mixed servers
+  expect one or the other — match what your remote endpoint
+  expects.
+</Aside>
+
+## Where to next
+
+- **[I/O overview](/actor-ts/io/overview/)** — the bigger
+  picture.
+- **[Server WebSocket](/actor-ts/io/server-websocket/)** — for
+  accepting inbound WS connections.
+- **[SSE](/actor-ts/io/sse/)** — server-sent events as a
+  one-way streaming alternative.
+- **[BrokerActor base](/actor-ts/io/broker-actor-base/)** — the
+  shared lifecycle.

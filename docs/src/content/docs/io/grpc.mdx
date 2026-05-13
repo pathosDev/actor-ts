@@ -1,0 +1,190 @@
+---
+title: gRPC
+description: Typed RPC + streaming over HTTP/2 — `GrpcServerActor` exposes services, `GrpcClientActor` calls remote services. Wraps `@grpc/grpc-js`. Right shape for inter-service communication where Protobuf-typed contracts matter.
+---
+
+The framework provides two actor classes for gRPC:
+
+| Class | Role |
+| --- | --- |
+| **`GrpcServerActor`** | Hosts a gRPC server; exposes service methods. |
+| **`GrpcClientActor`** | Connects to a remote gRPC service; calls methods. |
+
+Both wrap `@grpc/grpc-js`.  Useful when you have **Protobuf-typed
+contracts** and want the broker-actor lifecycle (reconnect,
+buffer, subscriber fan-out) for client-side calls.
+
+## Server
+
+```ts
+import { ActorSystem, Props, GrpcServerActor } from 'actor-ts';
+
+const server = system.actorOf(
+  Props.create(() => new GrpcServerActor({
+    host:    '0.0.0.0',
+    port:    50051,
+    services: [
+      {
+        protoPath:    './proto/orders.proto',
+        serviceName:  'orders.v1.OrderService',
+        handler:      orderHandlerRef,   // actor that processes incoming calls
+      },
+    ],
+  })),
+  'grpc-server',
+);
+```
+
+Inbound RPC calls are forwarded to `handler` as actor messages.
+The framework de-serializes the Protobuf payload and wraps it in
+an envelope.
+
+## Client
+
+```ts
+import { GrpcClientActor } from 'actor-ts';
+
+const client = system.actorOf(
+  Props.create(() => new GrpcClientActor({
+    target:       'orders.svc:50051',
+    protoPath:    './proto/orders.proto',
+    serviceName:  'orders.v1.OrderService',
+  })),
+  'orders-client',
+);
+
+// Make a unary call:
+client.tell({
+  kind:    'unary',
+  method:  'GetOrder',
+  request: { id: 'order-42' },
+  replyTo: this.self,
+});
+
+// Receive the response:
+override onReceive(msg: GrpcReply) {
+  if (msg.kind === 'reply')  handleOrder(msg.response);
+  if (msg.kind === 'error')  handleError(msg.error);
+}
+```
+
+The actor handles connection management, retries, and routing the
+reply to whoever asked.
+
+## Streaming modes
+
+gRPC supports four call types; the framework handles all:
+
+| Type | Client sends | Server returns |
+| --- | --- | --- |
+| **Unary** | One request | One response |
+| **Server-streaming** | One request | Stream of responses |
+| **Client-streaming** | Stream of requests | One response |
+| **Bi-directional streaming** | Stream of requests | Stream of responses |
+
+```ts
+// Server-streaming:
+client.tell({
+  kind:        'server-stream',
+  method:      'WatchOrders',
+  request:     { customerId: '42' },
+  subscriber:  streamHandler,   // gets each response
+});
+
+// Bi-directional:
+client.tell({
+  kind:        'bidi-stream',
+  method:      'Chat',
+  subscriber:  chatHandler,
+});
+// Send messages into the stream:
+client.tell({ kind: 'stream-send', method: 'Chat', message: { text: 'hello' } });
+```
+
+Streams stay open until either side closes them or the actor stops.
+
+## TLS
+
+```ts
+new GrpcServerActor({
+  host:  '0.0.0.0',
+  port:  50051,
+  tls: {
+    cert: fs.readFileSync('./server.crt'),
+    key:  fs.readFileSync('./server.key'),
+  },
+  services: [...],
+});
+
+new GrpcClientActor({
+  target: 'orders.svc:50051',
+  tls: {
+    ca: fs.readFileSync('./ca.crt'),
+  },
+  ...
+});
+```
+
+Standard TLS configuration via `cert` / `key` / `ca`.  For
+mutual TLS (mTLS), provide the client's cert + key.
+
+## Peer dependency
+
+```bash
+npm install @grpc/grpc-js @grpc/proto-loader
+# or: bun add @grpc/grpc-js @grpc/proto-loader
+```
+
+Both packages are peer dependencies.
+
+## When to use gRPC
+
+Two primary fits:
+
+1. **Service-to-service inside a cluster** where Protobuf-typed
+   contracts matter for evolution.
+2. **External clients** that already speak gRPC (mobile apps,
+   other-language services).
+
+For internal actor-to-actor communication inside a cluster, the
+[cluster transport](/actor-ts/cluster/refs-across-nodes/) is
+better — typed via TypeScript directly, no Protobuf required.
+gRPC is for **cross-language** or **external-contract** cases.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Proto-file synchronization">
+  ```ts
+  // Client and server load the same .proto file
+  ```
+  The `protoPath` must reference compatible Protobuf schemas
+  on both sides.  Out-of-sync .proto files produce confusing
+  errors (unknown field tags, wrong message shape).  Use a
+  shared proto repo or codegen pipeline.
+</Aside>
+
+<Aside type="caution" title="Streaming has no buffering">
+  ```ts
+  // Server-stream pushes messages; if subscriber is slow, it backs up in memory
+  ```
+  Unlike the regular broker-actor outbound buffer, gRPC streams
+  push as fast as the network allows.  For slow consumers,
+  implement backpressure inside the subscriber actor.
+</Aside>
+
+<Aside type="caution" title="Long-lived streams + reconnect">
+  Streams **don't survive** a reconnect — the cycle re-establishes
+  the underlying connection but doesn't restart in-flight
+  streams.  Re-subscribe after a `BrokerConnected` event.
+</Aside>
+
+## Where to next
+
+- **[I/O overview](/actor-ts/io/overview/)** — the bigger
+  picture.
+- **[BrokerActor base](/actor-ts/io/broker-actor-base/)** — the
+  shared lifecycle.
+- **[Refs across nodes](/actor-ts/cluster/refs-across-nodes/)** —
+  for cluster-internal RPC (TypeScript-typed alternative).
+- **[HTTP overview](/actor-ts/http/overview/)** — for HTTP-based
+  RPC instead.

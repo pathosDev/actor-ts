@@ -1,0 +1,164 @@
+---
+title: TCP
+description: Raw TCP socket actor — `TcpSocketActor` for outbound clients. Per-connection child actors for inbound (via a separate listener pattern). The right tool when you need to talk a custom binary protocol and none of the higher-level options fit.
+---
+
+`TcpSocketActor` wraps a **client-side** TCP connection.  For
+**listening** on a port (accepting inbound TCP connections), the
+framework's pattern is "spawn one client-actor per incoming
+connection from a listener actor."
+
+```ts
+import { ActorSystem, Props, TcpSocketActor } from 'actor-ts';
+
+const tcp = system.actorOf(
+  Props.create(() => new TcpSocketActor({
+    host: 'metrics-collector.example.com',
+    port: 8125,
+  })),
+  'tcp-client',
+);
+
+// Send raw bytes:
+tcp.tell({ kind: 'send', payload: new Uint8Array([0x01, 0x02, 0x03]) });
+
+// Or text:
+tcp.tell({ kind: 'send-text', payload: 'PING\n' });
+
+// Subscribe to inbound bytes:
+tcp.tell({ kind: 'subscribe', subscriber: protocolHandler });
+```
+
+## Settings
+
+```ts
+interface TcpSocketActorSettings extends BrokerCommonSettings {
+  host:           string;
+  port:           number;
+  keepAlive?:     boolean;
+  keepAliveDelay?: number;
+  noDelay?:       boolean;         // disable Nagle's algorithm
+  framer?:        TcpFramer;       // optional frame-parsing layer
+}
+```
+
+## Inbound messages
+
+```ts
+class ProtocolHandler extends Actor<TcpInbound> {
+  override onReceive(msg: TcpInbound): void {
+    if (msg.kind === 'data') {
+      const bytes = msg.payload;   // Uint8Array
+      this.handleBytes(bytes);
+    } else if (msg.kind === 'connected') {
+      this.log.info('TCP connected');
+    } else if (msg.kind === 'disconnected') {
+      this.log.info('TCP disconnected');
+    }
+  }
+}
+```
+
+Each `data` message carries a chunk of bytes — **NOT** a logical
+message.  TCP is a byte stream; framing is your job.
+
+## Framing
+
+```ts
+import { LengthPrefixedFramer } from 'actor-ts';
+
+new TcpSocketActor({
+  host, port,
+  framer: new LengthPrefixedFramer({ prefixSize: 4 }),
+});
+```
+
+Optional framer that parses byte stream into discrete messages.
+The framework ships:
+
+- **`LengthPrefixedFramer`** — 4-byte (configurable) length
+  prefix.
+- **`DelimitedFramer`** — line-delimited or terminated by a
+  specific byte sequence (newline, NUL, etc.).
+- **Custom** — implement `TcpFramer` for protocols like
+  HTTP/1.1, redis-protocol, etc.
+
+With a framer, `TcpInbound`'s `data` message contains **one full
+frame**, not arbitrary chunks.
+
+## Listener pattern for inbound
+
+The framework doesn't ship a "TCP listener actor" — write one
+that spawns `TcpSocketActor`-like handlers per accepted
+connection:
+
+```ts
+// In an init actor:
+import net from 'node:net';
+
+const server = net.createServer((socket) => {
+  const handler = system.actorOf(
+    Props.create(() => new IncomingConnectionActor(socket)),
+  );
+});
+server.listen(port, host);
+```
+
+For most use cases, **don't roll your own TCP server** — use
+HTTP, WebSocket, or a higher-level protocol instead.
+
+## When to use TCP
+
+Three legitimate uses:
+
+1. **Talking to legacy protocols** — proprietary protocols
+   that don't have higher-level wrappers.
+2. **Custom binary protocols** — game servers, metric
+   collectors with custom wire formats.
+3. **Bridging to non-HTTP services** — message queues with
+   proprietary wire (some financial protocols, e.g.).
+
+For new application protocols, **don't reach for raw TCP first**.
+HTTP, WebSocket, or gRPC are better starting points for almost
+everything.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="TCP gives you bytes, not messages">
+  ```ts
+  // Send 'hello' and 'world' separately
+  tcp.tell({ kind: 'send-text', payload: 'hello' });
+  tcp.tell({ kind: 'send-text', payload: 'world' });
+  // Receiver might see: 'hel', 'loworld' or 'hellowor', 'ld' — chunks not aligned
+  ```
+  Use a framer.  Always.  Without one, application code has to
+  re-assemble arbitrary byte boundaries — easy to get wrong.
+</Aside>
+
+<Aside type="caution" title="No connection multiplexing">
+  ```ts
+  // Each TCP connection is one stream
+  ```
+  Want bidirectional + multiplexed?  Use HTTP/2 (via gRPC) or
+  WebSocket.  Raw TCP is single-stream per connection.
+</Aside>
+
+<Aside type="caution" title="Backpressure isn't automatic">
+  ```ts
+  // Send faster than network can drain
+  for (let i = 0; i < 1_000_000; i++) tcp.tell({ kind: 'send', payload: huge });
+  ```
+  The kernel buffer fills; subsequent sends queue in memory.
+  For sustained-write workloads, throttle the producer or use
+  a higher-level protocol with built-in flow control.
+</Aside>
+
+## Where to next
+
+- **[I/O overview](/actor-ts/io/overview/)** — the bigger
+  picture.
+- **[BrokerActor base](/actor-ts/io/broker-actor-base/)** — the
+  shared lifecycle.
+- **[UDP](/actor-ts/io/udp/)** — the connectionless alternative.
+- **[gRPC](/actor-ts/io/grpc/)** — typed RPC over HTTP/2 — usually
+  the better choice than raw TCP.
