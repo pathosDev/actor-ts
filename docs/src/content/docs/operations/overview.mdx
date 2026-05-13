@@ -1,0 +1,173 @@
+---
+title: Operations overview
+description: What changes between "works on my machine" and "works in production" — deployment, tuning, security, upgrades, and the diagnostics you'll reach for when something is off.
+---
+
+The framework runs the same code in dev and prod, but
+**production deployment** has its own set of considerations that
+don't matter on a laptop:
+
+| Topic | Concerns |
+| --- | --- |
+| **Deployment** | How does a node start, register with the cluster, accept traffic, and shut down cleanly? |
+| **Tuning** | Gossip cadence, mailbox sizes, failure-detector thresholds — defaults are sensible, but workloads vary. |
+| **Security** | TLS on the cluster transport, secret management, key rotation. |
+| **Upgrades** | Schema migrations, rolling deployments without downtime. |
+| **Troubleshooting** | What logs, metrics, and traces tell you about a misbehaving system. |
+
+This section maps each to a deeper page.
+
+## A production-ready setup checklist
+
+For a non-trivial actor system going to production:
+
+```
+□ Persistence backend chosen + production-grade
+   (e.g. SQLite for single-node, Cassandra for multi-node)
+□ Cluster wired up (if multi-node) with concrete seed strategy
+□ Downing strategy configured (split-brain protection)
+□ Coordinated shutdown configured with SIGTERM hooks
+□ Health checks exposed via HttpManagement
+□ Metrics exposed via Prometheus or OTel
+□ Log aggregation hooked up (structured logging via withFields/MDC)
+□ TLS enabled on the cluster transport
+□ Secrets via env vars, NOT in application.conf
+□ Kubernetes manifests with PreStop hook + grace period
+□ Tracing optional but configured if multi-actor flows exist
+□ Runbook for "actor X keeps crashing" / "cluster won't form"
+```
+
+None of these are framework-specific tricks — they're general
+production hygiene applied to an actor system.  Each is covered
+in its own page.
+
+## Deployment
+
+| How | When |
+| --- | --- |
+| **[Kubernetes](/actor-ts/operations/deployment/kubernetes/)** | Cloud + container orchestration.  StatefulSets, headless services, RBAC for the K8s API seed provider. |
+| **[Docker Compose](/actor-ts/operations/deployment/docker-compose/)** | Local multi-node clusters for testing and small deployments. |
+| **[Process manager](/actor-ts/operations/deployment/process-manager/)** | systemd / PM2 — for bare-metal or VM deployments. |
+
+K8s is the most common production path; the page covers Deployment
+vs StatefulSet, PreStop hooks, and the seed-provider configuration.
+
+## Tuning
+
+Defaults work for most workloads — reach for these pages when
+you see specific symptoms:
+
+| Knob | When to tune |
+| --- | --- |
+| **[Gossip cadence](/actor-ts/operations/tuning/gossip-cadence/)** | Large clusters (>20 nodes) where the default 1-second gossip is wasteful, or small clusters where you want faster convergence. |
+| **[Failure detector](/actor-ts/operations/tuning/failure-detector/)** | Tight networks (LAN) where 2-second unreachable detection is too slow, or noisy networks where it triggers false alarms. |
+| **[Mailbox sizing](/actor-ts/operations/tuning/mailbox-sizing/)** | When you see memory growth from unbounded mailboxes, or when bounded mailboxes are dropping more than expected. |
+| **[Dispatcher tuning](/actor-ts/operations/tuning/dispatcher-tuning/)** | When you observe HTTP latency degradation under actor-heavy load, or low CPU utilization with high actor throughput. |
+
+If you can't articulate the symptom, don't tune.  Defaults aren't
+optimal but they're rarely *bad*.
+
+## Security
+
+Three layers:
+
+| Concern | Page |
+| --- | --- |
+| **Cluster transport TLS + auth** | [Cluster security](/actor-ts/operations/security/cluster-security/) |
+| **Encryption at rest for persisted data** | [Master key rotation](/actor-ts/operations/security/master-key-rotation/) |
+| **TLS everywhere** (HTTP, brokers, journals) | [TLS everywhere](/actor-ts/operations/security/tls-everywhere/) |
+
+The cluster transport defaults to **unauthenticated TCP** — fine
+inside a private network, dangerous on the public internet.
+Always enable TLS + shared-secret auth for any cluster that
+crosses untrusted boundaries.
+
+## Upgrades
+
+The framework supports **rolling deployments without downtime**
+when configured for it.  Two distinct concerns:
+
+- **Code rollouts** — replacing node binaries while the cluster
+  stays up.  Handled by K8s rolling updates + coordinated
+  shutdown.  See
+  [Rolling migration](/actor-ts/operations/upgrades/rolling-migration/).
+- **Schema migrations** — evolving event/state shapes over time.
+  Handled by event adapters + envelope versioning.  See
+  [Upgrade strategies](/actor-ts/operations/upgrades/upgrade-strategies/)
+  and [Persistence migration overview](/actor-ts/persistence/migration/overview/).
+
+The rolling-migration page is the most practical — a step-by-step
+recipe for "I need to add a field to my event without taking the
+cluster down."
+
+## Troubleshooting
+
+```
+Symptom                            → Likely cause
+─────────────────────────────────────────────────────────
+Actor isn't receiving messages     → Stopped ref, dead-letter, mailbox full
+Cluster won't form                 → Seed nodes unreachable, port conflict
+Sharded entities won't spawn       → Coordinator not on a leader, role mismatch
+PersistentActor takes 30s to start → No snapshot, deep journal — set snapshotPolicy
+Tests hang at the end              → Forgot await system.terminate()
+Memory grows unboundedly           → Unbounded mailboxes; pick a mailbox cap
+```
+
+See [Troubleshooting](/actor-ts/operations/troubleshooting/) for
+the diagnostic-by-symptom catalog.
+
+## When things go wrong
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="The first place to look is logs">
+  Every supervisor decision, every cluster event, every dead-letter
+  is logged.  With `LogContext` MDC (correlation IDs propagating
+  across `tell`), a multi-actor request trail stitches together in
+  one log query.  Configure structured logging from day one — see
+  [Logging](/actor-ts/fundamentals/logging/).
+</Aside>
+
+<Aside type="caution" title="The second place is metrics">
+  Stock metrics give you actor message-rate, mailbox depth, cluster
+  member count, sharding region count — enough to identify
+  "something is off" before users notice.  Wire a Prometheus
+  exporter in production.  See
+  [Stock metrics](/actor-ts/observability/metrics/stock-metrics/).
+</Aside>
+
+<Aside type="caution" title="The third place is traces">
+  Spans propagate across `tell` and across cluster nodes.  Single
+  request, end-to-end view — much faster to diagnose than tailing
+  logs.  Enable selectively when you have multi-actor flows.
+</Aside>
+
+## Where to next
+
+### Deployment
+
+- [Kubernetes](/actor-ts/operations/deployment/kubernetes/)
+- [Docker Compose](/actor-ts/operations/deployment/docker-compose/)
+- [Process manager](/actor-ts/operations/deployment/process-manager/)
+
+### Tuning
+
+- [Gossip cadence](/actor-ts/operations/tuning/gossip-cadence/)
+- [Failure detector](/actor-ts/operations/tuning/failure-detector/)
+- [Mailbox sizing](/actor-ts/operations/tuning/mailbox-sizing/)
+- [Dispatcher tuning](/actor-ts/operations/tuning/dispatcher-tuning/)
+
+### Security
+
+- [Cluster security](/actor-ts/operations/security/cluster-security/)
+- [Master key rotation](/actor-ts/operations/security/master-key-rotation/)
+- [TLS everywhere](/actor-ts/operations/security/tls-everywhere/)
+
+### Upgrades
+
+- [Rolling migration](/actor-ts/operations/upgrades/rolling-migration/)
+- [Upgrade strategies](/actor-ts/operations/upgrades/upgrade-strategies/)
+
+### Diagnostics
+
+- [Troubleshooting](/actor-ts/operations/troubleshooting/)
