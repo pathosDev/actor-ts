@@ -99,6 +99,41 @@
  * everything in one centered column also reads better at wide
  * viewports than the asymmetric side-by-side default. */
 
+/* ---- Mobile-first hero image rules (apply at ALL viewport widths) ---- */
+
+/* Logo container — wider than Starlight's default `min(70%, 20rem)` so
+ * the logo has visible presence even on small phones.  Capped at 36rem
+ * (576 px) so it doesn't blow up on desktop. */
+.hero > img,
+.hero > .hero-html {
+  width: min(100%, 36rem) !important;
+  margin-inline: auto !important;
+}
+
+/* The `.hero-html` wrapper is a flex container (Starlight adds
+ * `sl-flex` to it).  Without explicit `justify-content`, the `<img>`
+ * inside sits flush-left within the wrapper and reads as off-centre
+ * even when the wrapper itself is centred.  Force the image to centre
+ * inside its wrapper. */
+.hero .hero-html {
+  justify-content: center !important;
+  align-items: center !important;
+}
+
+/* The logo PNG has intrinsic 1029×238 dimensions.  Without an
+ * explicit `max-width`, on mobile viewports (< 50rem) the img renders
+ * at its natural width and overflows the hero-html container — the
+ * logo bleeds off the right edge of the screen on phones.  Cap at
+ * 100% of the wrapper to keep it inside the viewport.  This rule
+ * must live OUTSIDE the desktop media query below — otherwise mobile
+ * has no img max-width and overflows. */
+.hero .hero-html img {
+  display: block !important;
+  max-width: 100% !important;
+  height: auto !important;
+  margin-inline: auto !important;
+}
+
 @media (min-width: 50rem) {
   .hero {
     grid-template-columns: 100% !important;
@@ -112,23 +147,6 @@
   .hero > img,
   .hero > .hero-html {
     order: 1 !important;
-    width: min(100%, 36rem) !important;
-    margin-inline: auto !important;
-  }
-  /* The `.hero-html` wrapper is a flex container by default (Starlight
-   * adds `sl-flex` to it).  Without explicit justify-content, the
-   * `<img>` inside sits flush-left within the container and reads as
-   * "off-centre" on the page even when the wrapper itself is centred.
-   * Force the image to fill + centre inside its wrapper. */
-  .hero .hero-html {
-    justify-content: center !important;
-    align-items: center !important;
-  }
-  .hero .hero-html img {
-    display: block !important;
-    max-width: 100% !important;
-    height: auto !important;
-    margin-inline: auto !important;
   }
   .hero .stack {
     order: 2 !important;
