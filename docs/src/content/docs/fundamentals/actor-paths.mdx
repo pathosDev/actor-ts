@@ -1,0 +1,258 @@
+---
+title: Actor paths
+description: Every actor has a unique hierarchical path under its system. How paths are composed, how to resolve them via `ActorSelection`, and when you'd use a path lookup instead of holding a ref.
+---
+
+Every actor in the system has a **path** — a hierarchical
+identifier built from its position in the supervisor tree:
+
+```
+actor-ts://my-app/user/api/sessions/user-42
+            │      │    │       │       │
+            │      │    │       │       └── leaf actor name
+            │      │    │       └── parent (a SessionManager)
+            │      │    └── grandparent (an Api manager)
+            │      └── user-guardian (every user actor is under /user)
+            └── system name from ActorSystem.create('my-app')
+```
+
+The path identifies an actor uniquely within its system, the way a
+filesystem path identifies a file: at any moment, the path either
+resolves to a live actor or doesn't.
+
+You'll see paths in three places:
+
+- **Log lines** — every actor's `log` is bound to its path, so log
+  messages carry the full hierarchy.
+- **`Terminated.actor.path`** — when an actor stops, watchers can
+  inspect the path to dispatch on which actor it was.
+- **`ActorSelection`** — looking up actors by path string rather
+  than holding a ref.
+
+## The `ActorPath` value
+
+`context.path` and `ref.path` both return an `ActorPath`:
+
+```ts
+import { Actor } from 'actor-ts';
+
+class Logger extends Actor<Msg> {
+  override preStart(): void {
+    this.log.info(`starting; my path is ${this.context.path}`);
+    // → "starting; my path is actor-ts://my-app/user/logger"
+
+    this.log.info(`depth = ${this.context.path.depth()}`);
+    // → "depth = 2"  (root is 0, /user is 1, /user/logger is 2)
+
+    this.log.info(`elements = ${this.context.path.elements().join(' → ')}`);
+    // → "elements = / → user → logger"
+  }
+}
+```
+
+The full surface:
+
+| Member | What it gives you |
+| --- | --- |
+| `path.name` | The leaf segment (`'logger'` above). |
+| `path.parent` | The parent's `ActorPath`, or `null` for the root. |
+| `path.systemName` | The system name (`'my-app'` above). |
+| `path.elements()` | Array of segment names from root to leaf. |
+| `path.depth()` | Distance from root (root = 0). |
+| `path.isAncestorOf(other)` | Does this path enclose `other`? |
+| `path.equals(other)` | Lexical equality (compares `toString()` output). |
+| `path.toString()` | Canonical URI form: `actor-ts://<sys>/<segments>`. |
+
+Paths are **immutable values** — calling `path.child('thing')`
+returns a new path; it doesn't mutate the original.
+
+## How paths are assigned
+
+You can pass a `name` when spawning:
+
+```ts
+const ref = system.actorOf(Props.create(() => new Foo()), 'my-foo');
+// ref.path.toString() === 'actor-ts://my-app/user/my-foo'
+
+const child = this.context.actorOf(Props.create(() => new Bar()), 'bar');
+// child.path.toString() === 'actor-ts://my-app/user/my-foo/bar'
+```
+
+If you omit the name, the framework synthesizes one (`'$1'`,
+`'$2'`, …).  Two rules govern naming:
+
+1. **Names must be unique among siblings.**  `context.actorOf(props, 'bar')`
+   followed by another `context.actorOf(props, 'bar')` on the same
+   parent throws — that path is already in use.
+2. **The name "looks like a path segment."**  No slashes, no
+   leading dots, no whitespace.  The framework validates this.
+
+The `uid` field on `ActorPath` distinguishes successive incarnations
+of the same path — if `my-foo` stops and is then re-spawned at the
+same path, the second one has a different `uid`.  Most code never
+looks at `uid`; the framework uses it internally to make sure
+messages aimed at the *old* incarnation don't accidentally land in
+the new one.
+
+## `ActorSelection` — lookup by path
+
+```ts
+import { ActorSystem } from 'actor-ts';
+
+const system = ActorSystem.create('my-app');
+
+const selection = system.actorSelection('/user/api/sessions/user-42');
+const ref = await selection.resolveOne(5_000);
+ref.tell({ kind: 'whatever' });
+```
+
+`actorSelection(pathString)` builds a *description* of where to
+look.  `resolveOne(timeoutMs)` walks the actor tree to find a
+match; it retries every 10 ms until the deadline, useful when the
+caller races with the actor's spawn.
+
+Two ways to send to a selection:
+
+- **`selection.tell(msg)`** — resolve once, deliver immediately
+  if found, dead-letter if not.  No retry.  Useful when you have
+  a clear expectation the actor exists; missing it is an error.
+- **`(await selection.resolveOne(timeout)).tell(msg)`** — wait
+  until the actor exists (or time out).  Useful for spawn-race
+  scenarios.
+
+### Accepted path formats
+
+`actorSelection` parses three input shapes:
+
+```ts
+system.actorSelection('actor-ts://my-app/user/api');   // absolute URI
+system.actorSelection('/user/api');                     // absolute path
+system.actorSelection('user/api');                      // absolute path, no leading slash
+```
+
+URI form is what `ActorPath.toString()` produces, so round-tripping
+a path through string form works.  The system-name in URI form is
+checked — selecting `actor-ts://other-app/user/api` from a system
+named `my-app` returns null (a different system entirely).
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="No wildcards in v1">
+  ```ts
+  system.actorSelection('/user/sessions/*');   // ← does NOT match all children
+  ```
+  Selection paths must be **exact** in the current version.  The
+  `*` is parsed as a literal segment name (which doesn't exist).
+  For "send to every child," hold the parent ref and tell it; the
+  parent can broadcast to `context.children`.  Wildcard selections
+  are a roadmap item.
+</Aside>
+
+## When to use a path, when to use a ref
+
+Refs are the **default** way to address actors.  Hold the
+`ActorRef` you got at spawn time, pass it around, store it in
+fields.  The compiler knows the actor's message type; selection
+returns `unknown`-typed refs that you lose typing on.
+
+Reach for an `ActorSelection` in three situations:
+
+1. **Cross-tree lookup** by convention — the actor you want lives
+   at a well-known path (`/user/sharding/region`, `/system/pubsub`),
+   and there's no clean way to thread the ref through.
+2. **Spawn-race resolution** — caller doesn't know exactly when
+   the target spawns; `resolveOne(timeout)` waits.
+3. **Looking up actors received as strings** — e.g. an HTTP
+   request body contains `"/user/sessions/user-42"` and you want
+   to forward to that actor.  Parse + select; never trust the
+   string without re-checking that the actor exists.
+
+For routine in-actor wiring, prefer **passing refs through
+constructors / messages / parent-child relationships**:
+
+```ts
+// ✗ awkward
+class Worker extends Actor<...> {
+  override onReceive(msg) {
+    const cache = await this.context.actorSelection('/user/cache').resolveOne();
+    cache.tell({ kind: 'put', ... });
+  }
+}
+
+// ✓ direct
+class Worker extends Actor<...> {
+  constructor(private readonly cache: ActorRef<CacheMsg>) { super(); }
+  override onReceive(msg) {
+    this.cache.tell({ kind: 'put', ... });
+  }
+}
+const cache  = system.actorOf(Props.create(() => new Cache()), 'cache');
+const worker = system.actorOf(Props.create(() => new Worker(cache)));
+```
+
+The constructor-injection version is type-safe, doesn't depend on
+path-naming conventions, and survives renames trivially.
+
+## Special top-level paths
+
+Three top-level guardian paths exist in every system:
+
+| Path | What lives there |
+| --- | --- |
+| `/user` | Your application's top-level actors (everything `system.actorOf(...)` creates). |
+| `/system` | Framework internals (event-stream listeners, cluster gossipers, the dead-letter actor itself, …). |
+| `/deadLetters` | The synthetic recipient for messages with no live target. |
+
+You rarely interact with `/system` paths directly — the extensions
+(cluster, pubsub, sharding) expose their own typed APIs that
+shield you from the path scheme.  But knowing the paths exist is
+useful when reading log output or debugging "where did this
+message go?"
+
+<Aside type="caution" title="Don't construct paths from string concat">
+  ```ts
+  const path = `/user/api/${userId}/session-${sessionId}`;   // ← brittle
+  system.actorSelection(path);
+  ```
+  If `userId` contains a slash or `..`, you've created an injection
+  bug — the parser will split on the slash and walk into an
+  unintended subtree.  Either validate the segment first (alphanum +
+  hyphen only) or use refs instead of paths.
+</Aside>
+
+## Cluster paths
+
+When the cluster extension is active, paths get a host-port
+fragment:
+
+```
+actor-ts://my-app@10.0.0.5:2552/user/api/sessions/user-42
+            │       │              │
+            │       └── node-host:port
+            └── system name
+```
+
+That fragment tells the runtime *which node* this actor lives on.
+A bare path like `actor-ts://my-app/user/foo` (no host) is local
+to the resolving system.  The cluster transport handles the
+host-routed delivery transparently — your `tell` looks the same
+in both cases.
+
+See [Refs across nodes](/actor-ts/cluster/refs-across-nodes/) for
+how the host-aware path is wire-encoded.
+
+## Where to next
+
+- **[Props](/actor-ts/fundamentals/props/)** — the configuration
+  bundle that includes the optional `name` for the actor's path.
+- **[Actor system](/actor-ts/fundamentals/actor-system/)** — the
+  guardian hierarchy (`/user`, `/system`, `/deadLetters`).
+- **[Refs across nodes](/actor-ts/cluster/refs-across-nodes/)** —
+  how paths and refs work across cluster nodes.
+- **[Discovery](/actor-ts/discovery/overview/)** — for actors
+  whose location isn't known by path but by service-registry
+  semantics.
+
+The [`ActorPath`](/actor-ts/api/classes/actorpath/) and
+[`ActorSelection`](/actor-ts/api/classes/actorselection/) API
+references cover the full method set.
