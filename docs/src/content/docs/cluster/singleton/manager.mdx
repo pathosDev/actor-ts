@@ -8,16 +8,31 @@ singleton election logic.  Every node runs one; only the leader's
 manager has an active singleton child.  When leadership changes,
 the old manager stops its child; the new manager spawns one.
 
-```
-              cluster (3 nodes, n1 is leader)
-                          │
-        ┌─────────────────┼─────────────────┐
-        │                 │                 │
-     manager           manager           manager
-     (on n1)           (on n2)           (on n3)
-        │                 │                 │
-   singleton            (standby)        (standby)
-   (running)
+```mermaid
+flowchart TB
+  CLUSTER(["cluster (3 nodes, n1 is leader)"])
+  M1["manager on n1"]
+  M2["manager on n2"]
+  M3["manager on n3"]
+  S["singleton (running)"]
+  STB1["standby"]
+  STB2["standby"]
+  CLUSTER --> M1
+  CLUSTER --> M2
+  CLUSTER --> M3
+  M1 --> S
+  M2 --> STB1
+  M3 --> STB2
+  classDef cluster fill:#0f172a,stroke:#6366f1,stroke-width:2px,color:#f1f5f9;
+  classDef leader  fill:#312e81,stroke:#818cf8,stroke-width:1.5px,color:#f1f5f9;
+  classDef mgr     fill:#1e293b,stroke:#475569,color:#cbd5e1;
+  classDef active  fill:#312e81,stroke:#06b6d4,stroke-width:2px,color:#67e8f9;
+  classDef passive fill:#1e293b,stroke:#475569,color:#94a3b8;
+  class CLUSTER cluster
+  class M1 leader
+  class M2,M3 mgr
+  class S active
+  class STB1,STB2 passive
 ```
 
 The proxy on every node tracks "where is the leader's manager?"
@@ -105,15 +120,30 @@ ClusterSingletonManager.props({
 
 Adds an async gate on the lease.  The flow:
 
-```
-LeaderChanged → I'm leader now?  → yes → lease.acquire()
-                                 │            ↓
-                                 │      acquired? → spawn singleton
-                                 │            ↓
-                                 │      failed?   → retry after `acquireRetryIntervalMs`
-                                 │
-                                 └────→ no → release lease (if held) + stop singleton
-                                                                       (if any)
+```mermaid
+flowchart TB
+  EVT[/"LeaderChanged"/]
+  ASK{"I'm leader<br/>now?"}
+  ACQ["lease.acquire()"]
+  GOT{"acquired?"}
+  SPAWN["spawn singleton"]
+  RETRY["retry after<br/>acquireRetryIntervalMs"]
+  RELEASE["release lease (if held)<br/>+ stop singleton (if any)"]
+  EVT --> ASK
+  ASK -- "yes" --> ACQ
+  ASK -- "no"  --> RELEASE
+  ACQ --> GOT
+  GOT -- "yes" --> SPAWN
+  GOT -- "no"  --> RETRY
+  RETRY --> ACQ
+  classDef evt    fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
+  classDef ok     fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef warn   fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
+  classDef step   fill:#1e293b,stroke:#475569,color:#cbd5e1;
+  class EVT evt
+  class ACQ,SPAWN ok
+  class RETRY,RELEASE warn
+  class ASK,GOT step
 ```
 
 The lease provider — typically a Kubernetes Lease resource —

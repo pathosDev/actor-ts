@@ -36,22 +36,21 @@ race on the lease; only one wins.
 
 ## How it works
 
-```
-Cluster gossip says: A is the leader, then network partition...
-       │
-       │ both A and B see themselves as leader
-       ▼
-   manager_A.acquire(lease) ──► race ──► manager_B.acquire(lease)
-                                    │
-                          ┌─────────┴─────────┐
-                          ▼                   ▼
-                  acquire wins for A    acquire fails for B
-                          │                   │
-                          ▼                   ▼
-                    spawn singleton      stay passive
-       │                                       │
-       │ partition heals; gossip converges     │
-       │ acquire's onLost fires on retired side │
+```mermaid
+sequenceDiagram
+  participant A as manager_A
+  participant B as manager_B
+  participant L as Lease backend
+  Note over A,B: Network partition —<br/>both A and B see themselves as leader
+  A->>L: acquire lease
+  B->>L: acquire lease
+  Note over L: race — atomic CAS
+  L-->>A: success
+  L-->>B: fail
+  A->>A: spawn singleton
+  B->>B: stay passive
+  Note over A,B: Partition heals — gossip converges
+  L-->>A: onLost fires on retired side
 ```
 
 The lease backend (K8s API server) provides the **atomic

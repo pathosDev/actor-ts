@@ -102,9 +102,10 @@ The formula:
 ### Tuning the knobs
 
 ```ts
-new LeastShardAllocationStrategy(2, 5);
-//                                │  └── up to 5 shards move per pass
-//                                └── trigger only when imbalance ≥ 2
+new LeastShardAllocationStrategy(
+  /* rebalanceThreshold       */ 2, // trigger only when imbalance ≥ 2
+  /* maxSimultaneousRebalance */ 5, // up to 5 shards move per pass
+);
 ```
 
 - **`rebalanceThreshold`** — bigger value = less churn, more

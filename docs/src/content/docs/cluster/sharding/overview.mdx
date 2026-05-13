@@ -15,20 +15,32 @@ node's local **region** spawns the entity actor on demand.  When
 nodes come and go, the coordinator rebalances shards across the
 new topology.
 
-```
-                    cluster of 3 nodes
-                          │
-        ┌─────────────────┼──────────────────┐
-        │                 │                  │
-     node-1            node-2             node-3
-    region              region              region
-        │                 │                  │
-   shards 1-33        shards 34-66        shards 67-100
-        │                 │                  │
-  entities for      entities for       entities for
-   keys hashing     keys hashing        keys hashing
-   to those         to those           to those
-   shards           shards             shards
+```mermaid
+flowchart TB
+  CLUSTER(["cluster of 3 nodes"])
+  N1["node-1 region"]
+  N2["node-2 region"]
+  N3["node-3 region"]
+  S1["shards 1-33"]
+  S2["shards 34-66"]
+  S3["shards 67-100"]
+  E1["entities for keys<br/>hashing to those shards"]
+  E2["entities for keys<br/>hashing to those shards"]
+  E3["entities for keys<br/>hashing to those shards"]
+  CLUSTER --> N1
+  CLUSTER --> N2
+  CLUSTER --> N3
+  N1 --> S1 --> E1
+  N2 --> S2 --> E2
+  N3 --> S3 --> E3
+  classDef cluster fill:#0f172a,stroke:#6366f1,stroke-width:2px,color:#f1f5f9;
+  classDef region  fill:#312e81,stroke:#818cf8,stroke-width:1.5px,color:#f1f5f9;
+  classDef shard   fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
+  classDef entity  fill:#1e293b,stroke:#475569,color:#cbd5e1;
+  class CLUSTER cluster
+  class N1,N2,N3 region
+  class S1,S2,S3 shard
+  class E1,E2,E3 entity
 ```
 
 Each entity is **one actor**, on **one node**, at a time — just

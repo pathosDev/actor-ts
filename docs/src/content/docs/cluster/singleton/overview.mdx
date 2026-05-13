@@ -9,16 +9,31 @@ node leaves, the next-elected leader re-spawns it.  Callers on any
 node send messages via a **proxy** that routes to wherever the
 singleton currently lives.
 
-```
-                cluster of 3 nodes
-                       │
-        ┌──────────────┼─────────────┐
-        │              │             │
-     node-1         node-2        node-3
-    (leader)
-        │
-   Singleton      manager-only    manager-only
-    (active)        (standby)      (standby)
+```mermaid
+flowchart TB
+  CLUSTER(["cluster of 3 nodes"])
+  N1["node-1<br/><b>(leader)</b>"]
+  N2["node-2"]
+  N3["node-3"]
+  SING["Singleton (active)"]
+  STB1["manager-only<br/>(standby)"]
+  STB2["manager-only<br/>(standby)"]
+  CLUSTER --> N1
+  CLUSTER --> N2
+  CLUSTER --> N3
+  N1 --> SING
+  N2 --> STB1
+  N3 --> STB2
+  classDef cluster fill:#0f172a,stroke:#6366f1,stroke-width:2px,color:#f1f5f9;
+  classDef leader  fill:#312e81,stroke:#818cf8,stroke-width:1.5px,color:#f1f5f9;
+  classDef node    fill:#1e293b,stroke:#475569,color:#cbd5e1;
+  classDef active  fill:#312e81,stroke:#06b6d4,stroke-width:2px,color:#67e8f9;
+  classDef passive fill:#1e293b,stroke:#475569,color:#94a3b8;
+  class CLUSTER cluster
+  class N1 leader
+  class N2,N3 node
+  class SING active
+  class STB1,STB2 passive
 ```
 
 Three actors per node make this work:

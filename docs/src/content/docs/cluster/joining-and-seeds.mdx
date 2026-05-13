@@ -11,11 +11,11 @@ gossips back its current membership view; the joiner is added as
 ```mermaid
 sequenceDiagram
   participant J as joining node
-  participant S as seed node(s)
+  participant S as seed nodes
   participant C as cluster
   J->>S: Join announcement
   S->>C: gossip Join
-  S-->>J: Gossip (current view)
+  S-->>J: Gossip — current view
   Note over J: joining → weakly-up? → up<br/>over a few gossip rounds
 ```
 

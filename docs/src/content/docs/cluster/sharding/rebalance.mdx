@@ -9,19 +9,16 @@ coordinator drives the process: it picks shards to relocate, tells
 the source region to hand off, and waits for confirmation before
 re-allocating.
 
-```
-         coordinator                 source region         destination region
-              │                            │                       │
-              ├── HandOff(shardId) ───────►│                       │
-              │                            │                       │
-              │           (drain entities + buffer messages)        │
-              │                            │                       │
-              │ ◄── HandOffComplete ───────┤                       │
-              │                            │                       │
-              ├── allocate new home ──────────────────────────────►│
-              │                                                    │
-              │            (region accepts shard, spawns entities  │
-              │             as messages arrive)                    │
+```mermaid
+sequenceDiagram
+  participant C as coordinator
+  participant S as source region
+  participant D as destination region
+  C->>S: HandOff for shardId
+  Note over S: drain entities + buffer messages
+  S-->>C: HandOffComplete
+  C->>D: allocate new home
+  Note over D: region accepts shard,<br/>spawns entities as messages arrive
 ```
 
 This is intentionally **conservative** — buffered messages wait

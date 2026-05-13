@@ -37,22 +37,21 @@ processes shard allocations.
 
 ## How it works
 
-```
-Two nodes A + B both think they're cluster leader
-  (partition + insufficient downing config).
-       │
-       │ both attempt lease.acquire()
-       ▼
-   Lease backend (K8s Lease) — atomic CAS
-       │
-       ├── A's acquire succeeds → A is coordinator
-       └── B's acquire fails → B's coordinator stays passive
-       │
-       │ When A loses lease (TTL expiry, crash):
-       │
-       │ B's renewing acquire fires → B becomes coordinator
-       ▼
-   Coordinator transitions cleanly; allocations resume.
+```mermaid
+sequenceDiagram
+  participant A as node A
+  participant B as node B
+  participant L as Lease backend
+  Note over A,B: Both think they're cluster leader<br/>partition + insufficient downing config
+  A->>L: lease.acquire
+  B->>L: lease.acquire
+  Note over L: atomic CAS — exactly one wins
+  L-->>A: success — A is coordinator
+  L-->>B: fail — B's coordinator stays passive
+  Note over A: TTL expiry or crash
+  B->>L: renewing acquire fires
+  L-->>B: success — B becomes coordinator
+  Note over A,B: Coordinator transitions cleanly<br/>allocations resume
 ```
 
 The lease backend (K8s API server, etcd) provides the **atomic
