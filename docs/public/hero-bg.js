@@ -13,6 +13,15 @@
 (function () {
   if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
 
+  // Skip on mobile / small viewports.  At narrow widths the particle
+  // network reads as distracting clutter behind the hero content
+  // rather than a subtle background — the eye can't help following
+  // the dots because they're closer to the title.  Threshold matches
+  // the splash hero's desktop-layout breakpoint in `custom.css`
+  // (`@media (min-width: 50rem)`) so the animation appears exactly
+  // when the rest of the page switches to the wider layout.
+  if (!window.matchMedia('(min-width: 50rem)').matches) return;
+
   const main = document.querySelector('main');
   if (!main) return;
 
