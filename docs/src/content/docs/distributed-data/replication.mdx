@@ -17,20 +17,14 @@ fine; for cases where it isn't, see
 
 ## The flow
 
-```
-node-A                          node-B
-  │                               │
-  │ local update applied          │
-  │ (immediate)                   │
-  │                               │
-  └─ gossip tick ──────────────► (delta arrives)
-                                  │
-                                  │ merge into local state
-                                  │ (per-CRDT merge function)
-                                  │
-                                  │ if local value changed:
-                                  │   notify subscribers
-                                  │
+```mermaid
+sequenceDiagram
+  participant A as node-A
+  participant B as node-B
+  Note over A: local update applied — immediate
+  A->>B: gossip tick — delta arrives
+  Note over B: merge into local state<br/>per-CRDT merge function
+  Note over B: if local value changed<br/>notify subscribers
 ```
 
 Local writes are **immediate**.  Gossip is for **propagation**.

@@ -9,19 +9,33 @@ key.  Updates apply locally first; gossip propagates them; conflicting
 concurrent updates merge automatically via the data type's CRDT
 semantics.
 
-```
-            cluster of 3 nodes — every node has every key
-                            │
-        ┌───────────────────┼────────────────────┐
-        │                   │                    │
-     node-1              node-2               node-3
-   replica of "hits"   replica of "hits"   replica of "hits"
-   GCounter(a=10,b=4)  GCounter(a=10,b=5)  GCounter(a=10,b=5)
-                            │
-                  gossip continuously merges
-                            │
-                  all replicas converge:
-   GCounter(a=10,b=5)  GCounter(a=10,b=5)  GCounter(a=10,b=5)
+```mermaid
+flowchart TB
+  CLUSTER(["cluster of 3 nodes — every node holds every key"])
+  N1["node-1 replica of <b>hits</b><br/>GCounter a=10 b=4"]
+  N2["node-2 replica of <b>hits</b><br/>GCounter a=10 b=5"]
+  N3["node-3 replica of <b>hits</b><br/>GCounter a=10 b=5"]
+  GOSSIP[/"gossip continuously merges"/]
+  C1["node-1 converged<br/>GCounter a=10 b=5"]
+  C2["node-2 converged<br/>GCounter a=10 b=5"]
+  C3["node-3 converged<br/>GCounter a=10 b=5"]
+  CLUSTER --> N1
+  CLUSTER --> N2
+  CLUSTER --> N3
+  N1 --> GOSSIP
+  N2 --> GOSSIP
+  N3 --> GOSSIP
+  GOSSIP --> C1
+  GOSSIP --> C2
+  GOSSIP --> C3
+  classDef cluster fill:#0f172a,stroke:#6366f1,stroke-width:2px,color:#f1f5f9;
+  classDef before  fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
+  classDef merge   fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
+  classDef after   fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  class CLUSTER cluster
+  class N1,N2,N3 before
+  class GOSSIP merge
+  class C1,C2,C3 after
 ```
 
 The shared state is **CRDT** — conflict-free replicated data type.

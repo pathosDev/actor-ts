@@ -92,11 +92,22 @@ majority-acknowledged** — the latest "confirmed" value.
 
 ## Picking a consistency level
 
-```
-Is stale data acceptable for THIS read/write?
-├── Yes (most cases)                                          → 'local'
-├── No — must be confirmed by enough replicas                 → 'majority'
-└── Absolutely no — every up-member must agree                 → 'all'
+```mermaid
+flowchart TB
+  Q{"Is stale data acceptable<br/>for THIS read/write?"}
+  LOCAL["'local'"]
+  MAJ["'majority'"]
+  ALL["'all'"]
+  Q -- "yes — most cases" --> LOCAL
+  Q -- "no — must be confirmed<br/>by enough replicas" --> MAJ
+  Q -- "absolutely no — every<br/>up-member must agree" --> ALL
+  classDef ok    fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef warn  fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
+  classDef step  fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
+  class Q step
+  class LOCAL ok
+  class MAJ ok
+  class ALL warn
 ```
 
 `'majority'` is the sweet spot for "important" reads/writes —

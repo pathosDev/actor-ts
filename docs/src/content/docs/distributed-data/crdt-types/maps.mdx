@@ -120,12 +120,11 @@ Use anywhere you'd type `Map<K, number>` in regular code and need
 
 ## Picking between them
 
-```
-Per-key value type?
-├── A plain value with last-writer-wins resolution      → LWWMap
-├── A CRDT (counter, set, register, another map)        → ORMap
-└── A counter (very common case)                         → GCounterMap (sugar over ORMap<K, GCounter>)
-```
+| Per-key value type | Map type |
+| --- | --- |
+| A plain value with last-writer-wins resolution | `LWWMap` |
+| A CRDT (counter, set, register, another map) | `ORMap` |
+| A counter (very common case) | `GCounterMap` — sugar over `ORMap<K, GCounter>` |
 
 Common shapes:
 

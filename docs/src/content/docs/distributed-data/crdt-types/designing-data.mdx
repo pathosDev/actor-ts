@@ -10,30 +10,18 @@ deciding CRDTs aren't right at all.
 
 ## The decision tree
 
-```
-What's the data?
-│
-├── A single number that only grows
-│       → GCounter
-├── A single number that goes up and down
-│       → PNCounter
-├── A single value (latest writer wins)
-│       → LWWRegister<T>
-├── A single value (want to detect concurrent writes)
-│       → MVRegister<T>
-├── A set that only grows
-│       → GSet<E>
-├── A set with adds and removes
-│       → ORSet<E>
-├── A map of <key → single LWW value>
-│       → LWWMap<K, V>
-├── A map of <key → counter>
-│       → GCounterMap<K>
-├── A map of <key → CRDT>
-│       → ORMap<K, C>
-└── Anything else (rich/structured data, transactional updates, ordered lists)
-        → Not a CRDT fit (see below)
-```
+| What's the data? | CRDT |
+| --- | --- |
+| A single number that only grows | `GCounter` |
+| A single number that goes up and down | `PNCounter` |
+| A single value, latest-writer-wins | `LWWRegister<T>` |
+| A single value, want to detect concurrent writes | `MVRegister<T>` |
+| A set that only grows | `GSet<E>` |
+| A set with adds and removes | `ORSet<E>` |
+| A map of *key → single LWW value* | `LWWMap<K, V>` |
+| A map of *key → counter* | `GCounterMap<K>` |
+| A map of *key → CRDT* | `ORMap<K, C>` |
+| Anything else (rich/structured data, transactional updates, ordered lists) | Not a CRDT fit — see below |
 
 Pin the decision early.  Switching CRDT type later **requires a
 migration** — the wire format differs per type, and stored data
