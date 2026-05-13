@@ -89,6 +89,59 @@
   --sl-font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', Menlo, monospace;
 }
 
+/* ----- Splash-page hero: centered, logo-on-top ------------------------- */
+
+/* Starlight's splash hero defaults to a two-column grid (`7fr 4fr`) at
+ * widths >= 50rem — title/tagline/actions on the left, image on the
+ * right.  For our landing page we want the LOGO at the top (centered)
+ * with the tagline + CTAs underneath, because the logo wordmark
+ * already reads "actor-ts" and works as the visual title.  Stacking
+ * everything in one centered column also reads better at wide
+ * viewports than the asymmetric side-by-side default. */
+
+@media (min-width: 50rem) {
+  .hero {
+    grid-template-columns: 100% !important;
+    text-align: center !important;
+    justify-items: center !important;
+    padding-block: clamp(2rem, calc(1rem + 6vmin), 5rem) !important;
+  }
+  .hero > img,
+  .hero > .hero-html {
+    order: 1 !important;
+    width: min(100%, 36rem) !important;
+    margin-inline: auto !important;
+  }
+  .hero .stack {
+    order: 2 !important;
+    align-items: center !important;
+    gap: 1.5rem !important;
+  }
+  .hero .copy {
+    align-items: center !important;
+    text-align: center !important;
+    max-width: 48rem;
+  }
+  .hero .actions {
+    justify-content: center !important;
+  }
+  /* Hide the H1 since the logo's wordmark already reads "actor-ts" —
+   * the title stays in the DOM (still indexed by Pagefind, still
+   * the browser-tab title) but is visually hidden via the standard
+   * sr-only pattern. */
+  .hero h1[data-page-title] {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+  }
+}
+
 /* ----- CTA button gradient — echo of the logo's connection lines ------- */
 
 /* Starlight's `<LinkButton variant="primary">` on landing pages.  Uses
@@ -187,20 +240,42 @@ pre:not([class*='language-']) {
    * That formula adds the right-sidebar's "half of leftover space"
    * tail — which at 2560px wide gives the right TOC ~900px of
    * horizontal room despite only ever showing a few short anchor
-   * links.  Override to a fixed 14rem so the saved space falls to
+   * links.  Override to a fixed 13rem so the saved space falls to
    * the article column. */
   .right-sidebar-container {
-    width: 14rem !important;
-    max-width: 14rem !important;
+    width: 13rem !important;
+    max-width: 13rem !important;
   }
   .right-sidebar {
-    width: 14rem !important;
-    max-width: 14rem !important;
+    width: 13rem !important;
+    max-width: 13rem !important;
   }
-  /* Main-pane uses a symmetric `calc()` — narrowing it explicitly
-   * so the article gets the full saved width on the right side. */
-  .main-pane {
-    width: calc(100% - var(--sl-sidebar-width) - 14rem) !important;
-    max-width: calc(100% - var(--sl-sidebar-width) - 14rem) !important;
+
+  /* Article positioning inside main-pane.
+   *
+   * Starlight's default `--sl-content-margin-inline: auto 0` glues the
+   * article flush against the right edge of main-pane = right next to
+   * the TOC.  At wide viewports with our narrowed TOC, that leaves a
+   * big empty stripe to the LEFT of the article and zero breathing
+   * room on the RIGHT — exactly the "shifted right + too close to
+   * TOC" symptom.
+   *
+   * Override to `auto auto` (centered) so the article sits in the
+   * middle of its main-pane.  Combined with Starlight's elastic
+   * main-pane formula, this yields symmetric whitespace on both sides
+   * of the article — visually balanced.  No explicit width override
+   * on `.main-pane` (the previous one made main-pane fill the entire
+   * leftover space, which combined with `auto 0` jammed the article
+   * against the TOC). */
+  [data-has-sidebar][data-has-toc] .main-pane {
+    --sl-content-margin-inline: auto auto !important;
+  }
+
+  /* A small explicit gap between the article right-edge and the TOC.
+   * Even with centered article margins, at narrower wide viewports
+   * (e.g. 1440px) the article can still come close to TOC.  The
+   * padding gives a guaranteed minimum gap. */
+  .sl-container.astro-7nkwcw3z {
+    padding-inline-end: 2rem;
   }
 }
