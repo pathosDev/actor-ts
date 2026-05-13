@@ -1,0 +1,84 @@
+---
+title: Examples overview
+description: Runnable examples in the repo — a chat app demonstrating clustering + pubsub, a voice-pipeline showing brokers + persistence, plus stand-alone snippets for individual concepts.
+---
+
+The framework ships **runnable examples** under
+[`examples/`](https://github.com/pathosDev/actor-ts/tree/main/examples)
+in the repo.  Each is a fully-working app you can clone + run.
+
+## What ships
+
+| Example | Demonstrates |
+| --- | --- |
+| **[Chat sample](/actor-ts/examples/chat-sample/)** | Cluster + DistributedPubSub + sharded user-sessions + HTTP/WS endpoint. |
+| **[Voice sample](/actor-ts/examples/voice-sample/)** | WebSocket + Kafka + PersistentActor + projections. |
+| **[Stand-alone snippets](/actor-ts/examples/stand-alone-snippets/)** | Bite-sized examples per concept — Counter, Saga, Health, etc. |
+
+For **first contact with actor-ts**, start with the
+[Quickstart](/actor-ts/intro/quickstart/) — it's a 5-minute
+hello-actor.  Then the chat or voice sample for a working
+multi-feature app.
+
+## Running an example
+
+```bash
+# Clone the repo:
+git clone https://github.com/pathosDev/actor-ts.git
+cd actor-ts/examples/chat
+
+# Install + run:
+bun install
+bun run dev
+```
+
+Each example has its own README with setup steps.
+
+## Picking an example
+
+If you want to see...
+
+- **Cluster + entities** → chat sample.
+- **Broker integration (Kafka)** → voice sample.
+- **PersistentActor patterns** → voice sample.
+- **Distributed pub/sub** → chat sample.
+- **HTTP + WebSocket** → both samples.
+- **A specific concept in isolation** → stand-alone snippets.
+
+## Reading the examples
+
+The examples follow a few conventions:
+
+- **`src/actors/`** — actor classes.
+- **`src/messages.ts`** — shared message types.
+- **`src/main.ts`** — entry point with cluster join + HTTP server
+  startup.
+- **`src/handlers/`** — HTTP / WS route handlers.
+
+Reading an example takes ~30 minutes for the full architecture;
+faster if you're already familiar with the framework.
+
+## Contributing examples
+
+If you build something with actor-ts and think it'd help others
+— a saga workflow, a Kafka-driven analytics pipeline, a
+multi-tenant SaaS skeleton — **PRs welcome**.
+
+Examples that get included:
+
+- **Self-contained** — work without external services beyond
+  Docker / Compose.
+- **Documented** — README with what it does + how it works.
+- **Realistic** — solve a real problem (not just "show this
+  feature").
+
+## Where to next
+
+- **[Chat sample](/actor-ts/examples/chat-sample/)** —
+  cluster + pubsub.
+- **[Voice sample](/actor-ts/examples/voice-sample/)** — brokers
+  + persistence.
+- **[Stand-alone snippets](/actor-ts/examples/stand-alone-snippets/)** —
+  per-concept code.
+- **[Quickstart](/actor-ts/intro/quickstart/)** — the
+  5-minute introduction.

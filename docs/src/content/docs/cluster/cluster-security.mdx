@@ -1,0 +1,226 @@
+---
+title: Cluster security
+description: TLS + shared-secret authentication on the cluster transport — encrypt gossip + envelope traffic and prevent unauthorized cluster joins. Required for any cluster crossing untrusted networks.
+---
+
+The cluster transport defaults to **unauthenticated plain TCP**.
+Fine inside a private network where every host is already
+trusted.  **Not fine** anywhere else — public internet,
+multi-tenant K8s, untrusted intermediaries.
+
+This page is the **how-to** for securing the cluster transport.
+For the operational context, see
+[Operations — Cluster security](/actor-ts/operations/security/cluster-security/).
+
+## What needs securing
+
+| Threat | Mitigation |
+| --- | --- |
+| Eavesdropping | TLS on cluster transport |
+| MITM (interception + modification) | TLS + cert verification |
+| Unauthorized join (anyone with port access can join) | mTLS + shared-secret auth |
+| Compromised cert (issued for a stolen identity) | Cert rotation + revocation |
+
+## Enabling TLS
+
+```ts
+import { TcpTransport, NodeAddress, Cluster } from 'actor-ts';
+
+const transport = new TcpTransport(
+  NodeAddress.parse('actor-ts://my-app@10.0.0.5:2552'),
+  system.log,
+  {
+    cert: fs.readFileSync('./tls/cluster.crt'),
+    key:  fs.readFileSync('./tls/cluster.key'),
+    ca:   fs.readFileSync('./tls/ca.crt'),
+    rejectUnauthorized: true,
+  },
+);
+
+await Cluster.join(system, { host, port, seeds, transport });
+```
+
+TLS-wrapped TCP, all-or-nothing per cluster.  Every node uses
+the same TLS config; mixed plain + TLS doesn't work.
+
+## Cert layout
+
+The minimum:
+
+- A **CA cert** + private key (used to sign per-node certs).
+- A **per-node cert** + private key (signed by the CA).
+
+```bash
+# Generate CA (one time):
+openssl req -x509 -newkey rsa:4096 -keyout ca.key -out ca.crt -days 3650 -nodes \
+  -subj "/CN=actor-ts-ca"
+
+# Per-node cert:
+openssl req -newkey rsa:4096 -keyout node-1.key -out node-1.csr -nodes \
+  -subj "/CN=node-1.cluster.local"
+
+openssl x509 -req -in node-1.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
+  -out node-1.crt -days 365
+```
+
+Each node loads:
+
+- Its own cert + key.
+- The CA cert (to verify peers' certs).
+
+## Mutual TLS
+
+```ts
+{
+  cert: fs.readFileSync('./tls/this-node.crt'),
+  key:  fs.readFileSync('./tls/this-node.key'),
+  ca:   fs.readFileSync('./tls/ca.crt'),
+  rejectUnauthorized: true,        // ← reject peers without valid certs
+}
+```
+
+With `rejectUnauthorized: true` + a shared CA, **every
+connection requires both sides to present a valid cert** signed
+by the CA.  No anonymous joins; no plain-text fallback.
+
+## Shared-secret as defense in depth
+
+Beyond mTLS, the framework supports an additional
+**shared-secret check** in the cluster handshake:
+
+```ts
+new TcpTransport(self, log, tlsOpts, /* maxFrame */ undefined, {
+  sharedSecret: process.env.CLUSTER_SECRET,
+});
+```
+
+Every node compares the secret during the initial handshake;
+mismatch fails the connection.
+
+When useful:
+
+- **Insider threat** — someone with a valid cert but
+  unauthorized.
+- **CA compromise** — if your CA's key leaks, a shared secret
+  is an extra barrier.
+
+For most deployments, **mTLS alone is sufficient**.  The shared
+secret is paranoid-safe.
+
+## In K8s
+
+cert-manager + secrets is the standard pattern:
+
+```yaml
+# Cert managed by cert-manager:
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: actor-ts-cluster
+spec:
+  secretName: actor-ts-cluster-tls
+  issuerRef:
+    name: actor-ts-ca
+    kind: ClusterIssuer
+  commonName: actor-ts
+  dnsNames:
+    - actor-ts-cluster.svc
+  duration: 8760h
+  renewBefore: 720h
+
+---
+# Pod mounts the secret + cluster-secret:
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+    - name: app
+      env:
+        - name: CLUSTER_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: actor-ts-secrets
+              key: cluster-secret
+      volumeMounts:
+        - name: tls
+          mountPath: /etc/actor-ts/tls
+          readOnly: true
+  volumes:
+    - name: tls
+      secret:
+        secretName: actor-ts-cluster-tls
+```
+
+cert-manager auto-renews certs; pods reload them on restart.
+For zero-downtime cert rotation, use a **rolling restart** after
+new certs are in place.
+
+## Firewall
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cluster-internal-only
+spec:
+  podSelector:
+    matchLabels:
+      app: actor-ts
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: actor-ts
+      ports:
+        - protocol: TCP
+          port: 2552
+```
+
+Only `app=actor-ts` pods can reach port 2552.  Combined with
+mTLS + shared secret, this is **three independent layers**.
+
+## Performance impact
+
+TLS adds ~5-15 % overhead per byte on the transport.  For
+typical actor messages (small payloads, modest rate),
+imperceptible.  For high-throughput cluster traffic, measurable
+but rarely the bottleneck.
+
+## When NOT to enable
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Trusted network, single tenant">
+  ```
+  Internal corp network, dedicated VLAN, all nodes you control
+  ```
+  Plain TCP is fine here.  Adding TLS adds operational cost
+  (cert rotation) without security benefit.  Threat model first.
+</Aside>
+
+<Aside type="caution" title="Self-signed for production">
+  ```ts
+  // Same self-signed cert, no rotation strategy
+  ```
+  Self-signed is fine for dev / staging.  Production needs a
+  CA + rotation plan — cert-manager or equivalent.
+</Aside>
+
+<Aside type="caution" title="`rejectUnauthorized: false`">
+  ```ts
+  rejectUnauthorized: false,
+  ```
+  Defeats authentication.  Accepts any cert.  Never in
+  production.
+</Aside>
+
+## Where to next
+
+- **[Operations — Cluster security](/actor-ts/operations/security/cluster-security/)** —
+  operational walk-through.
+- **[TLS everywhere](/actor-ts/operations/security/tls-everywhere/)** —
+  TLS across other components.
+- **[Transports](/actor-ts/cluster/transports/)** — the cluster
+  transport interface.
+- **[Configuration](/actor-ts/reference/configuration/)** — the
+  TLS HOCON keys.

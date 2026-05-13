@@ -1,0 +1,101 @@
+---
+title: Intro glossary
+description: Terms you'll see in the first few pages of the docs — quick definitions for the foundational vocabulary. For the full glossary, see the reference section.
+---
+
+A starter vocabulary for the **foundational concepts**.  For
+the comprehensive cross-reference with every term used in the
+docs, see the
+[full glossary](/actor-ts/reference/glossary/).
+
+## Core
+
+**Actor.**  An entity with its own state + behavior that
+processes messages one at a time.  See
+[Actor](/actor-ts/fundamentals/actor/).
+
+**ActorSystem.**  The top-level container for actors — one per
+process, owns the dispatcher + scheduler + supervisor tree.
+See [ActorSystem](/actor-ts/fundamentals/actor-system/).
+
+**ActorRef.**  A typed handle to an actor.  You `tell` and
+`ask` via the ref.  See [Actor](/actor-ts/fundamentals/actor/).
+
+**Mailbox.**  The per-actor message queue.  Default FIFO,
+unbounded.  See [Mailboxes](/actor-ts/fundamentals/mailboxes/).
+
+**Dispatcher.**  Schedules when an actor's `onReceive` runs on
+the JS event loop.  See
+[Dispatchers](/actor-ts/fundamentals/dispatchers/).
+
+## Communication
+
+**`tell`.**  Fire-and-forget send.  The default verb.  See
+[Messages](/actor-ts/fundamentals/messages/).
+
+**`ask`.**  Request/response over actors — returns a Promise.
+See [Ask pattern](/actor-ts/fundamentals/ask-pattern/).
+
+**Message.**  Any value you `tell`.  Convention: discriminated
+union with a `kind` field.  See
+[Messages](/actor-ts/fundamentals/messages/).
+
+## Lifecycle
+
+**Supervisor strategy.**  Per-parent logic that maps a child's
+error to a directive (Restart / Resume / Stop / Escalate).
+See [Supervision](/actor-ts/fundamentals/supervision/).
+
+**Death watch.**  Subscribe to "this actor stopped" events via
+`context.watch(ref)`.  See
+[Death watch](/actor-ts/fundamentals/death-watch/).
+
+**PoisonPill.**  System message that gracefully stops an actor
+after its mailbox drains.  See
+[Poison pill and Kill](/actor-ts/fundamentals/poison-pill-and-kill/).
+
+## Distribution
+
+**Cluster.**  A group of actor systems that gossip membership.
+See [Cluster overview](/actor-ts/cluster/overview/).
+
+**Sharding.**  One-actor-per-entity-key, distributed across
+nodes.  See
+[Sharding overview](/actor-ts/cluster/sharding/overview/).
+
+**Singleton.**  Exactly one actor cluster-wide.  See
+[Singleton overview](/actor-ts/cluster/singleton/overview/).
+
+## Persistence
+
+**PersistentActor.**  Event-sourced actor base class.  Events
+are durable; state is derived from them.  See
+[PersistentActor](/actor-ts/persistence/persistent-actor/).
+
+**Journal.**  The append-only event store.  See
+[Persistence overview](/actor-ts/persistence/overview/).
+
+**Snapshot.**  Periodic state dump that bounds the
+event-replay window.  See
+[Snapshots](/actor-ts/persistence/snapshots/).
+
+## Quick patterns
+
+**`onReceive`.**  An actor's main method — handles each
+incoming message.
+
+**`context`.**  The runtime API every actor has access to —
+spawning children, timers, watch, become.
+
+**`Props`.**  The construction recipe for an actor — factory
++ optional supervisor / dispatcher / mailbox.  See
+[Props](/actor-ts/fundamentals/props/).
+
+## Where to next
+
+- **[Glossary (full)](/actor-ts/reference/glossary/)** — the
+  comprehensive term reference.
+- **[Quickstart](/actor-ts/intro/quickstart/)** — see the
+  vocabulary in action.
+- **[Fundamentals overview](/actor-ts/fundamentals/overview/)** —
+  the conceptual map.

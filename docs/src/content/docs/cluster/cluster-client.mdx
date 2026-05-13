@@ -1,0 +1,164 @@
+---
+title: Cluster client
+description: Connect to a cluster from outside it — a non-member process (mobile, browser-bridge, external service) talks to actors inside without joining as a peer. Useful for asymmetric setups where the external party shouldn't participate in gossip.
+---
+
+`ClusterClient` lets a **process outside the cluster** talk to
+actors inside.  The external process isn't a cluster member —
+no gossip, no membership state — but it can `tell` and `ask`
+cluster-internal actors via known **receptionist contacts**.
+
+```ts
+import { ClusterClient } from 'actor-ts';
+
+const client = ClusterClient.create({
+  contacts: ['actor-ts://my-app@10.0.0.5:2552/system/receptionist'],
+});
+
+// Send to a well-known cluster actor:
+client.send('/user/api/orders', { kind: 'place', ... });
+
+// Or via receptionist by service key:
+client.sendByKey(ServiceKey.of<ApiMsg>('api'), { kind: 'list-orders' });
+```
+
+## When to use it
+
+Three legitimate use cases:
+
+1. **External services** that don't belong in the actor cluster
+   but need to talk to it — a Python ML service that posts to
+   a Kafka actor inside the cluster.
+2. **Mobile / desktop clients via a bridge** — a server-side
+   bridge holds a ClusterClient + exposes a REST/WS API
+   externally.
+3. **Cross-cluster federation** — two clusters where one needs
+   to talk to specific actors in the other without merging.
+
+For typical setups, **everything is part of the cluster** —
+ClusterClient is the escape hatch for cases where it can't be.
+
+## How it works
+
+```
+External process                Cluster
+       │                            │
+       │ contact cluster receptionist
+       │ via well-known path        │
+       ├───────────────────────────►│
+       │                            │
+       │   receptionist responds    │
+       │   with known service refs  │
+       │◄───────────────────────────┤
+       │                            │
+       │ send messages to refs      │
+       ├───────────────────────────►│
+```
+
+The client:
+
+1. Connects to one or more **contacts** (known cluster nodes
+   running a `ClusterClientReceptionist`).
+2. Discovers available services via the receptionist.
+3. Routes messages to the right actors.
+4. Handles failover when contacts become unreachable —
+   reconnects to another.
+
+## Configuration
+
+```ts
+interface ClusterClientSettings {
+  contacts:            string[];       // at least one cluster-node path
+  reconnectIntervalMs?: number;
+  acceptableHeartbeatPauseMs?: number;
+}
+```
+
+`contacts` is the list of receptionist paths.  The client
+randomly picks one to connect to; on failure, falls back to
+others.
+
+For **stable contact addresses**, the cluster side typically
+deploys a `ClusterClientReceptionist` on a fixed pod (or
+sharded set) at a well-known path.
+
+## Server side — ClusterClientReceptionist
+
+```ts
+import { ClusterClientReceptionist } from 'actor-ts';
+
+system.actorOf(
+  ClusterClientReceptionist.props({
+    cluster,
+    role: 'frontend',   // optional — restrict to specific nodes
+  }),
+  'cluster-client-receptionist',
+);
+```
+
+The receptionist exposes registered services to external
+clients.  Register actors:
+
+```ts
+const receptionistRef = system.actorSelection('/user/cluster-client-receptionist');
+
+receptionistRef.tell({
+  kind:    'register-service',
+  key:     ServiceKey.of<OrdersMsg>('orders'),
+  ref:     ordersActor,
+});
+```
+
+External clients can then `sendByKey('orders', msg)`.
+
+## Comparison with cluster-aware ActorRef
+
+```ts
+// Inside the cluster — actors talk directly:
+const ref = await system.actorSelection('actor-ts://my-app@host:2552/user/api').resolveOne();
+ref.tell(...);
+
+// Outside the cluster — ClusterClient:
+const client = ClusterClient.create({ contacts: [...] });
+client.send('/user/api', ...);
+```
+
+Differences:
+
+- **Inside**: requires cluster membership.  Refs propagate via
+  gossip; you can hold long-lived refs.
+- **ClusterClient**: no membership; refs are resolved per
+  message via the receptionist.
+
+## When NOT to use it
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="HTTP / gRPC is usually simpler">
+  ```
+  External service → ClusterClient → cluster
+  ```
+  Setting up ClusterClient + a serialization-compatible client
+  is work.  For most external-facing APIs, **HTTP or gRPC**
+  inside the cluster (with the cluster running an HTTP server)
+  is simpler — external clients use standard HTTP libraries,
+  not actor-ts-specific clients.
+</Aside>
+
+<Aside type="caution" title="Browser / mobile direct connections">
+  ```ts
+  // Browser → ClusterClient → cluster
+  ```
+  ClusterClient needs **TCP from the client**.  Browsers don't
+  do TCP; mobile apps usually shouldn't.  Use a server-side
+  bridge that fronts the cluster with HTTP/WS.
+</Aside>
+
+## Where to next
+
+- **[Refs across nodes](/actor-ts/cluster/refs-across-nodes/)** —
+  in-cluster ref semantics for comparison.
+- **[Receptionist](/actor-ts/discovery/receptionist/)** — the
+  in-cluster service registry; ClusterClient builds on top.
+- **[HTTP overview](/actor-ts/http/overview/)** — the more
+  common external-facing alternative.

@@ -1,0 +1,135 @@
+---
+title: Architecture Decision Records
+description: Where the project's major architectural decisions are recorded — design rationale, alternatives considered, why one approach was picked over another. Optional reading; useful when contributing or trying to understand "why is it like this?"
+---
+
+The project keeps **Architecture Decision Records** (ADRs) for
+non-trivial design choices.  Each ADR documents:
+
+- **The decision** — what was decided.
+- **Context** — what problem prompted the choice.
+- **Alternatives considered** — what else was on the table.
+- **Trade-offs** — what was given up vs gained.
+- **Consequences** — what this implies for the codebase.
+
+For most users, ADRs are **optional reading** — they're for
+contributors + curious users who want the deep "why."
+
+## Where they live
+
+ADRs are kept in the repo under
+[`docs/adr/`](https://github.com/pathosDev/actor-ts/tree/main/docs/adr)
+(if present) or as long-form comments in the relevant source
+files.
+
+The framework follows the
+[ADR pattern](https://github.com/joelparkerhenderson/architecture-decision-record)
+loosely — not every PR generates an ADR, but major decisions
+do.
+
+## Existing ADRs
+
+(The actual ADR list is in the repo; this is a high-level
+sample.)
+
+| ADR | Topic |
+| --- | --- |
+| **001** | Why Bun as the primary runtime. |
+| **002** | The TypeScript-first message contract (vs. runtime checks). |
+| **003** | HOCON over YAML for configuration. |
+| **004** | The CRDT type set (which to ship, why not more). |
+| **005** | Single-process vs multi-process clustering as the default. |
+| **006** | The `Lease` abstraction (vs. embedded coordination). |
+| **007** | At-least-once delivery model (vs. exactly-once promises). |
+| **008** | Why `ts-pattern` as a peer dependency, not bundled. |
+| **009** | The schema-migration envelope format. |
+
+These names are illustrative — the actual ADR repo has its own
+numbering + scope.
+
+## When a new ADR is added
+
+A new ADR is written when:
+
+- A **design change** affects multiple modules.
+- A **trade-off** is non-obvious and future contributors would
+  ask "why?"
+- An **API surface** is being committed to.
+
+Trivial refactors and bug fixes **don't get ADRs**.  The bar is
+"would a smart contributor a year from now thank you for
+writing this down?"
+
+## Reading an ADR
+
+ADRs are written in plain Markdown:
+
+```markdown
+# ADR 005: Single-process clustering
+
+## Context
+Akka and Pekko run a JVM cluster across processes.  For
+TypeScript, single-process and multi-process are both
+plausible defaults.
+
+## Decision
+Cluster across processes is the default.  Single-process
+"worker mesh" is a separate opt-in.
+
+## Alternatives
+- Single-process default: simpler, less flexible.
+- Worker-thread cluster: complex to debug.
+- TCP-only cluster: today's default, most operationally
+  familiar.
+
+## Trade-offs
+We gain operational simplicity (each process is independent).
+We lose in-memory cluster-internal sharing.
+
+## Consequences
+- The cluster transport defaults to TCP.
+- Worker-mesh has its own transport + setup.
+- Tests use MultiNodeSpec (in-process) or
+  ParallelMultiNodeSpec (process-isolated).
+```
+
+Read the relevant ADR before proposing changes to the same
+area — context might dissuade or reframe your proposal.
+
+## Contributing ADRs
+
+If you submit a PR that **changes a significant design choice**,
+include an ADR.  Reviewers will ask for one if it's missing.
+
+Template:
+
+```markdown
+# ADR NNN: <title>
+
+## Context
+<the problem you're solving>
+
+## Decision
+<what you decided>
+
+## Alternatives
+<what else you considered>
+
+## Trade-offs
+<what you gain vs lose>
+
+## Consequences
+<what this implies>
+```
+
+Keep ADRs **short** (1-2 pages).  Long-form discussion goes in
+the PR or in a design doc.
+
+## Where to next
+
+- **[Design decisions](/actor-ts/extras/design-decisions/)** —
+  shorter-form "why" content.
+- **[FAQ](/actor-ts/reference/faq/)** — common questions about
+  the framework.
+- **[Version policy](/actor-ts/reference/version-policy/)** —
+  what's stable + the upgrade story.

@@ -1,0 +1,112 @@
+---
+title: Learning path
+description: Three reading orders through the docs depending on your goal — fastest path to writing code, conceptual deep-dive, or migrating from another framework. Pick the one that matches what you're trying to do.
+---
+
+The site has 200-ish pages.  Most of them are reference; a much
+smaller subset is the **learning material**.  This page maps
+three different paths depending on what you're trying to do.
+
+## Path 1 — Just write code
+
+For people who want to **start coding in 30 minutes**:
+
+1. **[Quickstart](/actor-ts/intro/quickstart/)** — a working
+   hello-actor in 5 minutes.
+2. **[Actor](/actor-ts/fundamentals/actor/)** — the base class +
+   `onReceive`.
+3. **[Messages](/actor-ts/fundamentals/messages/)** — the
+   discriminated-union convention.
+4. **[Pattern matching](/actor-ts/fundamentals/pattern-matching/)** —
+   the `match().exhaustive()` idiom.
+5. **[ActorSystem](/actor-ts/fundamentals/actor-system/)** — how
+   to spawn the actor.
+6. **[Ask pattern](/actor-ts/fundamentals/ask-pattern/)** — how
+   to read replies.
+
+After this you can write basic actors.  Everything else can
+be read on demand as you encounter the need.
+
+## Path 2 — Understand the model first
+
+For people who want the **conceptual picture** before writing
+code:
+
+1. **[Why actors](/actor-ts/intro/why-actors/)** — the rationale.
+2. **[ActorSystem](/actor-ts/fundamentals/actor-system/)** — the
+   container.
+3. **[Actor](/actor-ts/fundamentals/actor/)** — the entity.
+4. **[Mailboxes](/actor-ts/fundamentals/mailboxes/)** +
+   **[Dispatchers](/actor-ts/fundamentals/dispatchers/)** —
+   what makes one-at-a-time work.
+5. **[Supervision](/actor-ts/fundamentals/supervision/)** +
+   **[Death watch](/actor-ts/fundamentals/death-watch/)** — the
+   "let it crash" philosophy.
+6. **[Coordinated shutdown](/actor-ts/fundamentals/coordinated-shutdown/)** —
+   how systems end gracefully.
+
+After this you have the **mental model**.  The rest of the docs
+fills in details.
+
+## Path 3 — Coming from another framework
+
+For people **migrating from elsewhere**:
+
+1. **[Migration overview](/actor-ts/migration/overview/)** — the
+   cross-framework conceptual map.
+2. **The specific migration guide**:
+   - [from-akka-jvm](/actor-ts/migration/from-akka-jvm/)
+   - [from-pekko](/actor-ts/migration/from-pekko/)
+   - [from-orleans](/actor-ts/migration/from-orleans/)
+   - [from-akka-net](/actor-ts/migration/from-akka-net/)
+   - [from-vanilla-ts](/actor-ts/migration/from-vanilla-ts/)
+3. **[Quickstart](/actor-ts/intro/quickstart/)** to confirm
+   the basic API matches expectations.
+4. **The fundamentals deep dives** that map to what you
+   already know — most concepts carry over.
+
+After this you can translate your existing patterns.  The
+framework's conventions take a few weeks to internalize; the
+underlying model carries over from any actor framework.
+
+## What you don't need to read
+
+The docs cover **everything that ships**, but most of it is
+**reference**.  You don't need to read:
+
+- **Per-CRDT pages** unless you're using DistributedData.
+- **Per-broker pages** unless you're integrating that broker.
+- **Migration adapter detail** unless you're evolving schemas.
+- **Cluster tuning** unless you're hitting specific symptoms.
+
+The
+[FAQ](/actor-ts/reference/faq/) +
+[Glossary](/actor-ts/reference/glossary/) cover the
+"someone asked about X" cases.  Reach for them when you have a
+specific question.
+
+## A reasonable reading order from "I know nothing"
+
+If you're brand new to actor frameworks:
+
+1. **Why actors** — gets you bought in.
+2. **Quickstart** — confirms the basics work.
+3. **Actor / Messages / Pattern matching** — the core triple.
+4. **ActorSystem** — how to set up.
+5. **Supervision** — the differentiating concept.
+6. **Mailboxes / Dispatchers** — the "how does this work" layer.
+7. **Sharding overview + Cluster overview** — when you need
+   distribution.
+8. **Persistence overview** — when state should survive.
+
+After ~3 hours of reading, you've covered the foundation.
+Everything else is built on these.
+
+## Where to next
+
+- **[Quickstart](/actor-ts/intro/quickstart/)** — the
+  5-minute hello-actor.
+- **[Fundamentals overview](/actor-ts/fundamentals/overview/)** —
+  the concept map.
+- **[FAQ](/actor-ts/reference/faq/)** — quick answers.
+- **[Glossary](/actor-ts/reference/glossary/)** — term reference.

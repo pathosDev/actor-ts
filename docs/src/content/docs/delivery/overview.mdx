@@ -1,0 +1,198 @@
+---
+title: Delivery overview
+description: At-least-once and effectively-once delivery via `ProducerController` / `ConsumerController` — sequence-number-based ack pattern that handles message duplication + reordering across actor restarts and cluster failover.
+---
+
+By default, `tell` is **fire-and-forget**.  Messages may be lost
+(stopped recipient, mailbox overflow, network drops in cluster
+setups).  For workloads where loss is unacceptable, the framework
+provides **reliable delivery** via the
+**`ProducerController` / `ConsumerController`** pair.
+
+```
+Sender side                  Receiver side
+   │                             │
+   ProducerController             ConsumerController
+       │                             │
+       │ msg #1                      │
+       ├────────────────────────────►│  buffer + dispatch to handler
+       │                             │
+       │                  ack #1     │
+       │◄────────────────────────────┤  handler succeeded
+       │                             │
+       │ msg #2                      │
+       ├────────────────────────────►│  ...
+```
+
+Adds **sequence numbers** + **acks** to the basic `tell`
+contract.  Producer holds unacked messages; consumer dedups by
+seq.
+
+## When to reach for this
+
+For workloads where:
+
+- **Loss is unacceptable** — payment instructions, audit
+  records, billing events.
+- **Duplicates are tolerable but rare** — at-least-once with
+  consumer-side dedup is fine.
+- **Order matters within a stream** — sequence numbers preserve.
+
+For workloads where loss is acceptable (telemetry, metrics,
+fire-and-forget UX updates), use plain `tell`.
+
+## At-least-once vs effectively-once
+
+The framework's reliable delivery is **at-least-once** by
+default — a message may be redelivered if the producer crashes
+between sending and receiving the ack.
+
+For **effectively-once**, the consumer dedupes by sequence
+number:
+
+```ts
+class IdempotentConsumer extends Actor<DeliveryMsg> {
+  private highWatermark = 0;
+
+  override onReceive(msg: DeliveryMsg): void {
+    if (msg.seq <= this.highWatermark) {
+      // Duplicate — already processed
+      return;
+    }
+    this.handle(msg);
+    this.highWatermark = msg.seq;
+  }
+}
+```
+
+Combined with a persistent `highWatermark`, this gives
+**exactly-once-processing** in the durable sense.
+
+## The two controllers
+
+| Controller | Role |
+| --- | --- |
+| **[ProducerController](/actor-ts/delivery/producer-controller/)** | Wraps the sender side — assigns sequence numbers, holds unacked messages, retransmits. |
+| **[ConsumerController](/actor-ts/delivery/consumer-controller/)** | Wraps the receiver side — orders messages by seq, dedupes, sends acks. |
+
+Pair them via a **producer-consumer link** — each producer
+talks to one consumer (or N consumers via routing, but the
+link is 1:1 per stream).
+
+## A minimal example
+
+```ts
+import {
+  ProducerController,
+  ConsumerController,
+  type DeliveryEnvelope,
+} from 'actor-ts';
+
+// Producer side:
+const producer = system.actorOf(
+  ProducerController.props<OrderEvent>({
+    producerId:    'order-producer-1',
+    consumer:      consumerRef,
+    maxOutstanding: 100,
+  }),
+);
+
+producer.tell({ kind: 'send', payload: { orderId: 'o-1', amount: 100 } });
+
+// Consumer side:
+class OrderProcessor extends Actor<DeliveryEnvelope<OrderEvent>> {
+  private highWatermark = 0;
+
+  override onReceive(msg: DeliveryEnvelope<OrderEvent>): void {
+    if (msg.seq <= this.highWatermark) {
+      msg.ack();   // acknowledge (already-processed-skip)
+      return;
+    }
+    this.processOrder(msg.payload);
+    this.highWatermark = msg.seq;
+    msg.ack();
+  }
+}
+
+const consumer = system.actorOf(
+  ConsumerController.props<OrderEvent>({
+    consumerId: 'order-consumer-1',
+    delegate:   processorRef,
+  }),
+);
+```
+
+The framework handles seq assignment, retransmission,
+ordering — your code handles the business logic + dedup.
+
+## Sequence-number semantics
+
+```
+Each producer assigns strictly increasing seq numbers, starting at 1:
+  msg 1, msg 2, msg 3, ...
+
+The consumer sees them IN ORDER (after retransmissions sort out):
+  msg 1, msg 2, msg 3, ...
+
+Duplicates (due to retransmit) appear with the SAME seq:
+  msg 1, msg 1 (dup), msg 2, ...
+  → consumer dedupes by seq
+```
+
+The seq is **per-producer** — multiple producers have
+independent seq spaces.
+
+## Combining with persistence
+
+For full durability across producer / consumer crashes:
+
+```ts
+class Producer extends PersistentActor<...> {
+  // ... persists state including unacked messages ...
+}
+
+class Consumer extends PersistentActor<...> {
+  // ... persists the highWatermark ...
+}
+```
+
+Persisting on both sides gives **end-to-end exactly-once**:
+
+- Producer crashes mid-send → recovers from journal →
+  resumes from the last-acked seq.
+- Consumer crashes mid-process → recovers highWatermark →
+  dedup still works.
+
+Without persistence, recovery resets to zero on both sides.
+
+## Comparison with broker-based delivery
+
+```
+Producer/ConsumerController:  in-cluster reliable delivery
+Kafka / RabbitMQ / NATS:       external broker-mediated delivery
+```
+
+Both achieve at-least-once + dedup-via-seq.  Differences:
+
+| Aspect | In-cluster controllers | External broker |
+| --- | --- | --- |
+| Operational complexity | Low — part of the cluster | High — separate broker to run |
+| Latency | Sub-millisecond | Network + broker overhead |
+| Throughput | Bounded by single-actor processing | Higher (broker scales independently) |
+| External consumers | No (cluster-internal) | Yes |
+| Persistence | Via PersistentActor | Built into broker |
+
+For **cluster-internal** reliable delivery, use the
+controllers.  For **external systems or cross-cluster**, use
+a broker (Kafka, etc.).
+
+## Where to next
+
+- **[Producer controller](/actor-ts/delivery/producer-controller/)** —
+  sender-side details.
+- **[Consumer controller](/actor-ts/delivery/consumer-controller/)** —
+  receiver-side details.
+- **[Ack semantics](/actor-ts/delivery/ack-semantics/)** — what
+  acks mean and when they fire.
+- **[PersistentActor](/actor-ts/persistence/persistent-actor/)** —
+  pairing with persistence for full durability.

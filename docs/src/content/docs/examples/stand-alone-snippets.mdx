@@ -1,0 +1,120 @@
+---
+title: Stand-alone snippets
+description: Bite-sized examples for individual concepts — Counter, saga, circuit breaker, health endpoint, sharded entity, persistent FSM. Each is a self-contained file you can run with `bun snippet.ts`.
+---
+
+When you want to **see one concept in isolation**, the
+stand-alone snippets are the right place.  Each is a single
+file demonstrating one pattern — no Docker, no peers,
+runnable with `bun`.
+
+Find them under
+[`examples/snippets/`](https://github.com/pathosDev/actor-ts/tree/main/examples/snippets)
+in the repo.
+
+## What's there
+
+| Snippet | Concept |
+| --- | --- |
+| `01-counter.ts` | The minimal Actor — extends Actor, handles two message kinds. |
+| `02-ask-pattern.ts` | Request/response via `ask`. |
+| `03-supervision.ts` | Custom strategy with `decideBy`. |
+| `04-become-state-machine.ts` | `context.become(...)` for state transitions. |
+| `05-event-stream.ts` | System-wide pub/sub. |
+| `06-timers.ts` | `context.timers` for scheduled work. |
+| `07-receive-timeout.ts` | Idle detection. |
+| `08-typed-counter.ts` | The same counter via `Behaviors.*`. |
+| `09-routing.ts` | Local pool router. |
+| `10-circuit-breaker.ts` | `CircuitBreaker` wrapping an HTTP call. |
+| `11-backoff-supervisor.ts` | Exponential-backoff restart. |
+| `12-persistent-actor.ts` | Event-sourced bank account. |
+| `13-durable-state.ts` | Snapshot-style persistence. |
+| `14-projection.ts` | Read-side view via `ProjectionActor`. |
+| `15-cluster-singleton.ts` | Singleton with manager + proxy. |
+| `16-cluster-sharding.ts` | Per-key sharded entities. |
+| `17-pubsub.ts` | Cluster-wide DistributedPubSub. |
+| `18-distributed-data.ts` | GCounter + ORSet over the cluster. |
+| `19-saga.ts` | Multi-step PersistentFSM. |
+| `20-management-http.ts` | Health checks + /metrics. |
+
+Each snippet is **50-200 lines**.  Read in a few minutes; modify
+to play with the concept.
+
+## Running
+
+```bash
+git clone https://github.com/pathosDev/actor-ts.git
+cd actor-ts/examples/snippets
+
+bun install
+bun 01-counter.ts
+```
+
+Each snippet runs to completion and exits.  No long-running
+processes; no external dependencies.
+
+For cluster-related snippets (singleton, sharding, pubsub, DD),
+the snippets use **`MultiNodeSpec`** to simulate a cluster
+inside one process — no Docker required.
+
+## Patterns
+
+Most snippets follow the same shape:
+
+```ts
+import { ActorSystem, ... } from 'actor-ts';
+
+// 1. Set up the system + actors.
+const system = ActorSystem.create('demo');
+const ref = system.actorOf(Props.create(() => new MyActor()));
+
+// 2. Send some messages.
+ref.tell({ ... });
+ref.tell({ ... });
+
+// 3. Wait for processing (a small await or expect on a probe).
+await new Promise(r => setTimeout(r, 100));
+
+// 4. Print result + clean up.
+console.log(...);
+await system.terminate();
+```
+
+For more complex flows (cluster, persistence), the snippets use
+`TestKit` + `TestProbe` for clean teardown.
+
+## Modifying
+
+Snippets are the easiest place to **experiment**:
+
+```bash
+# Copy, edit, run:
+cp 01-counter.ts my-experiment.ts
+# Edit my-experiment.ts
+bun my-experiment.ts
+```
+
+The framework is set up via the local repo's `actor-ts`
+package — your edits run against the live source.
+
+## Contributing snippets
+
+If you've worked out a clever pattern, **PR a snippet**.
+Criteria:
+
+- **One file, ≤ 200 lines.**
+- **One concept** demonstrated clearly.
+- **Self-contained** — runnable without external services.
+- **Comments** explaining what the code shows.
+
+Mark your snippet's number from the next available slot in
+the existing sequence; update the README in `snippets/`.
+
+## Where to next
+
+- **[Examples overview](/actor-ts/examples/overview/)** —
+  larger runnable apps.
+- **[Quickstart](/actor-ts/intro/quickstart/)** — the 5-minute
+  introduction.
+- **[Fundamentals overview](/actor-ts/fundamentals/overview/)** —
+  the concept map.

@@ -1,0 +1,141 @@
+---
+title: Version policy
+description: Pre-1.0 caveats — what's stable, what's experimental, the SemVer plan. The framework is in active development; expect breaking changes until 1.0.
+---
+
+actor-ts is **pre-1.0**.  The API surface is stable enough to
+build with, but **expect breaking changes** at minor-version
+bumps until 1.0 ships.
+
+This page is the **honest assessment** of what's stable, what's
+experimental, and what to expect.
+
+## Status overview
+
+| Area | Status |
+| --- | --- |
+| **Core actor model** (Actor, ActorRef, Props) | Stable.  API unlikely to change. |
+| **Supervision** | Stable. |
+| **Mailboxes, dispatchers, scheduling** | Stable. |
+| **Cluster (membership, gossip)** | Stable. |
+| **Cluster Sharding** | Stable; some advanced features (rebalance modes) may evolve. |
+| **Cluster Singleton** | Stable. |
+| **DistributedPubSub** | Stable. |
+| **DistributedData** | Stable. |
+| **PersistentActor** | Stable. |
+| **Snapshot stores** | Stable. |
+| **Migration adapters** | Stable. |
+| **HTTP module** | Stable for the route DSL; backends may evolve. |
+| **Broker actors** | Stable.  New protocols may add. |
+| **Coordination (Lease)** | Stable for `Lease` interface; lease backends may evolve. |
+| **Replicated event sourcing** | Experimental.  API may change. |
+| **Worker mesh** | Experimental.  Use cautiously. |
+| **ProducerController / ConsumerController** | Experimental.  Production use possible; expect refinement. |
+
+## Versioning until 1.0
+
+Pre-1.0:
+
+- **Patch versions (0.x.Y)** — bug fixes, no breaking changes.
+- **Minor versions (0.X.0)** — new features, may include
+  breaking changes.
+- **Major version (1.0.0)** — API stabilization commitment.
+
+Read the
+[CHANGELOG](https://github.com/pathosDev/actor-ts/blob/main/CHANGELOG.md)
+before upgrading minor versions.
+
+## After 1.0
+
+Once 1.0 ships, **strict SemVer applies**:
+
+- **Patch (X.Y.Z+1)** — bug fixes only.
+- **Minor (X.Y+1.0)** — additions; backward-compatible.
+- **Major (X+1.0.0)** — breaking changes; explicit migration
+  guide.
+
+The framework will follow Akka's eventual approach — major
+version bumps are rare; minor versions add features without
+breaking existing code.
+
+## What "stable" means here
+
+**Stable** = we don't expect to break this API.  But pre-1.0:
+
+- Method signatures may gain optional parameters.
+- Config keys may gain new sub-keys.
+- New return-type fields may appear (additive).
+
+**Not** stable:
+
+- Renaming methods or classes.
+- Removing functionality.
+
+If a breaking change happens at a "stable" surface, **the
+CHANGELOG will flag it prominently** with a migration note.
+
+## What "experimental" means
+
+**Experimental** = we're still iterating on the API or
+implementation:
+
+- Method signatures may change.
+- Behavior may change in non-obvious ways.
+- Performance characteristics are not yet optimized.
+
+Using experimental features in production is **OK** — we use
+them ourselves — but expect to update code at minor-version
+bumps.
+
+If a feature is **deeply** experimental (we're not sure it'll
+survive), the docs say so explicitly on that feature's page.
+
+## Deprecation policy
+
+When something is renamed or replaced:
+
+1. **One minor version with a deprecation warning** — the old
+   API works + logs a warning at startup or first use.
+2. **Removal in the next minor version**.
+
+This gives ~1-3 months of grace per deprecation cycle.
+
+Post-1.0, deprecation cycles will be longer (typically a full
+major version).
+
+## Specific roadmap items
+
+Things we plan to add / change:
+
+- **OTel auto-instrumentation polish** — better default spans
+  + attributes.
+- **More cluster transports** — WebSocket option for browser-bridge,
+  QUIC for edge.
+- **Sharding rebalance v2** — smarter strategies than
+  least-shard.
+- **More CRDT types** — counter-set, sequence CRDT for ordered
+  lists.
+
+None of these break existing code; they're additive.
+
+## Reporting issues
+
+For bugs or feedback:
+
+- **GitHub Issues** — for bugs, feature requests, design
+  questions.
+- **Pull Requests** — welcome; CONTRIBUTING.md has the
+  guidelines.
+
+Tag issues with the relevant area (cluster, persistence, etc.)
+so they reach the right code-owners faster.
+
+## Where to next
+
+- **[Configuration](/actor-ts/reference/configuration/)** —
+  HOCON keys.
+- **[FAQ](/actor-ts/reference/faq/)** — common questions.
+- **[Glossary](/actor-ts/reference/glossary/)** — term
+  reference.
+- **[CHANGELOG](https://github.com/pathosDev/actor-ts/blob/main/CHANGELOG.md)** —
+  per-version changes.

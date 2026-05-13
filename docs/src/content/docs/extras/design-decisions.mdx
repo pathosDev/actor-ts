@@ -1,0 +1,169 @@
+---
+title: Design decisions
+description: The "why" behind some key choices — why Bun first, why ts-pattern, why a single-threaded model, why these CRDTs. Not a tutorial; context for people wondering "why isn't it like X?"
+---
+
+A handful of choices in the framework's design that aren't
+obvious.  Reading this is **optional** — useful when you wonder
+"why isn't it like X?"
+
+## Why Bun first
+
+Three reasons:
+
+1. **Fast startup** — sub-100ms cold start vs Node's 300-500ms.
+   Matters for test loops + serverless cold starts (when those
+   apply).
+2. **Built-in SQLite, test runner, HTTP** — fewer peer deps.
+3. **Modern runtime ergonomics** — top-level await, built-in
+   bundler, simpler stdlib surface.
+
+Node 22+ is also fully supported.  Deno is best-effort.  The
+**framework is runtime-agnostic by design**; Bun is just the
+primary target for testing + benchmarks.
+
+## Why ts-pattern (not switch / if-else)
+
+```ts
+match(msg)
+  .with({ kind: 'inc' }, () => state.count++)
+  .with({ kind: 'dec' }, () => state.count--)
+  .exhaustive();
+```
+
+- **Compile-time exhaustiveness**.  Adding a new variant to the
+  union without an `with(...)` arm fails to compile.  No
+  silent fallthrough.
+- **Type narrowing inside arms**.  No casts, no manual guards.
+- **Readable at scale**.  Switch + assertNever works at 2-3
+  variants; loses out at 5+.
+
+It's an **opt-in convention** — you can write actors with plain
+switch.  The docs use `match` because it's the safer pattern.
+
+## Why a single-threaded model
+
+JavaScript is single-threaded per process.  Multi-threading
+options:
+
+- **`worker_threads`** — separate JS contexts.  Hard to share
+  state.
+- **Cluster module** — multi-process via fork.
+
+The framework picks **single-threaded per ActorSystem** for
+simplicity.  For parallelism:
+
+- **Cluster across processes** — N processes, each one ActorSystem,
+  joined into one cluster.
+- **[Worker mesh](/actor-ts/cluster/worker-mesh/)** — N worker
+  threads, each one ActorSystem, in the **same process** via
+  MessageChannel.
+
+Both give parallelism without the shared-mutable-state problems
+that multi-threaded actor systems (Akka JVM) historically had.
+
+## Why these CRDTs
+
+The framework ships:
+
+- GCounter / PNCounter (counters).
+- GSet / ORSet (sets).
+- LWWRegister / MVRegister (single values).
+- LWWMap / ORMap / GCounterMap (maps).
+
+**Why not more?** Coverage of the common 95% of distributed-state
+use cases:
+
+- Counters → GCounter / PNCounter.
+- Sets (frequent in chat / presence / configs) → GSet / ORSet.
+- Single values (configs / flags) → LWW / MV register.
+- Per-key state → maps.
+
+**What's missing?**
+
+- **Sequence CRDTs** (RGA, LSEQ for ordered lists).  Niche;
+  hard to get right; rarely needed.
+- **Tree CRDTs** for collaborative docs.  Out of scope —
+  domain-specific libraries handle this better.
+- **Counter-with-cap CRDT** (decrement gated by a max).  Not
+  a standard CRDT; could be expressed via custom merge.
+
+For the missing pieces, build app-specific patterns on top of
+the primitives or open an issue if widely needed.
+
+## Why no Akka Streams port
+
+Akka Streams (and Pekko Streams) is a substantial library —
+backpressure, materializers, graph DSL.  Porting it to TypeScript
+would be **a major project on its own**.  The framework's
+scope is the actor model + clustering + persistence; streams
+are out of scope.
+
+For TypeScript-side streaming:
+
+- **AsyncIterable** for pull-based.
+- **`pipeTo`** for actor-bridge.
+- Third-party libraries (RxJS, Effect's Stream) for richer
+  patterns.
+
+## Why HOCON instead of YAML / TOML
+
+```hocon
+actor-ts {
+  cluster.gossip-interval = 1s
+  cluster.failure-detector.unreachable-after = 2s
+}
+```
+
+HOCON is **what Akka uses**; coming from Akka, the config files
+need minimal changes.
+
+HOCON has features that YAML / TOML don't:
+
+- **Environment-variable substitution** — `${?ENV_VAR}`.
+- **Duration types** — `1s`, `5m`, `2h` natively understood.
+- **Size types** — `64K`, `1M`, `2G`.
+- **File includes** — `include "shared.conf"`.
+- **Object merging** — additive overlays.
+
+YAML is more widely known but lacks some of these.  TOML is
+similarly featured but less ecosystem-supported.
+
+## Why explicit replyTo refs
+
+Akka has `sender()` (implicit).  actor-ts has `this.sender`
+(Option) **and** explicit `replyTo` refs in messages.
+
+Why both?
+
+- **`this.sender`** is implicit and tied to the message's
+  arrival.  Works for ask-style + tell-with-sender.
+- **Explicit `replyTo`** is **type-safe** — the message type
+  declares what reply type to expect; the compiler can verify.
+
+Convention: **explicit `replyTo` for ask-style request/response**,
+`this.sender` for opt-in reply patterns where the caller may
+or may not want a reply.
+
+## Why no built-in transactions across actors
+
+Multi-actor transactions need either:
+
+- A **distributed transaction protocol** (2PC, 3PC, paxos).
+  Complex; brittle in real networks.
+- **Sagas** with explicit compensation steps.  Easier to
+  reason about; better matches actor semantics.
+
+The framework supports the **saga pattern** (via
+[PersistentFSM](/actor-ts/persistence/fsm/persistent-fsm/) or
+custom workflows).  It doesn't ship built-in transactions —
+the cost-benefit isn't there for most workloads.
+
+## Where to next
+
+- **[Architecture Decision Records](/actor-ts/extras/architecture-decision-records/)** —
+  if you want even more "why" content.
+- **[Version policy](/actor-ts/reference/version-policy/)** —
+  what's stable vs experimental.
+- **[FAQ](/actor-ts/reference/faq/)** — common questions about
+  the framework.

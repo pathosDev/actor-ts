@@ -1,0 +1,218 @@
+---
+title: MultiNodeSpec
+description: Spin up N cluster nodes in one process for testing cluster behavior — sharding, singletons, gossip convergence — without Docker. Each "node" is a separate `ActorSystem` with an in-memory transport.
+---
+
+`MultiNodeSpec` runs **N cluster nodes inside one test process**.
+Each is a real `ActorSystem`; they communicate via
+`InMemoryTransport` (no TCP).  Useful for testing cluster
+behavior — sharding, singletons, gossip convergence,
+failover — without Docker.
+
+```ts
+import { MultiNodeSpec } from 'actor-ts/testkit';
+
+const spec = await MultiNodeSpec.create({
+  systemName: 'cluster-spec',
+  nodes:      3,
+});
+
+// spec.nodes is an array of ActorSystems, all joined into one cluster:
+const node1 = spec.nodes[0];
+const node2 = spec.nodes[1];
+
+// Spawn actors on different nodes:
+const probe = spec.createTestProbe(0);
+const remote = node2.actorOf(Props.create(() => new Worker()));
+
+remote.tell({ kind: 'do', replyTo: probe });
+await probe.expectMsg({ kind: 'done' });
+
+await spec.shutdown();
+```
+
+## When to use it
+
+Three primary cases:
+
+1. **Testing cluster behavior** — sharding rebalances, singleton
+   failover, gossip convergence — verifying these without
+   real network setup.
+2. **Reproducing distributed bugs** — easier to isolate when
+   the entire cluster runs in one process.
+3. **CI-friendly cluster tests** — fast (sub-second), no
+   Docker, no ports.
+
+For tests that need **real network behavior** (TCP semantics,
+TLS, cross-host latency), use
+[ParallelMultiNodeSpec](/actor-ts/testing/parallel-multi-node/)
+or external Docker-Compose.
+
+## Configuration
+
+```ts
+interface MultiNodeSpecSettings {
+  systemName: string;
+  nodes:      number;
+  roles?:     Array<string | undefined>;   // per-node roles
+  config?:    Record<string, unknown>;
+}
+```
+
+| Field | Purpose |
+| --- | --- |
+| `systemName` | Logical name — appears in actor paths. |
+| `nodes` | Number of cluster nodes to spin up. |
+| `roles` | Per-node role tags. |
+| `config` | HOCON overrides for all nodes. |
+
+## Per-node roles
+
+```ts
+const spec = await MultiNodeSpec.create({
+  systemName: 'cluster-spec',
+  nodes:      3,
+  roles:      ['frontend', 'compute', 'compute'],
+});
+
+// Now:
+// node 0 has role 'frontend'
+// node 1 + 2 have role 'compute'
+```
+
+Useful for testing role-filtered allocation:
+
+```ts
+ClusterSharding.get(spec.nodes[1], cluster1).start({
+  // ...
+  role: 'compute',
+  // → only nodes 1 + 2 host shards
+});
+```
+
+## What's shared
+
+All nodes share:
+
+- **The same `InMemoryTransport` bus** — they can talk to each
+  other.
+- **The same gossip protocol** — membership converges.
+- **Independent actor systems** — separate dispatchers,
+  schedulers, supervisor trees.
+
+This means:
+
+- **Real cluster semantics** — members come up, gossip converges,
+  failure detector observes, sharding rebalances.
+- **No serialization** — messages between "nodes" pass by
+  reference (in-process).  Not a fit for testing
+  serialization-dependent behavior.
+
+## Failover testing
+
+```ts
+// Verify singleton failover:
+const spec = await MultiNodeSpec.create({ systemName: 'spec', nodes: 3 });
+
+// ... start singleton ...
+
+// Find the host node:
+const hostNode = ...;   // identify via cluster.state.leader
+
+// Simulate failure:
+await spec.terminateNode(hostNode);
+
+// Wait for failover:
+await new Promise(r => setTimeout(r, 5_000));
+
+// Verify singleton moved:
+const newHost = ...;
+expect(newHost).not.toBe(hostNode);
+
+await spec.shutdown();
+```
+
+`spec.terminateNode(index)` terminates a specific node — the
+others observe the unreachable status, gossip the change,
+trigger downing + failover.
+
+## Per-node TestProbe
+
+```ts
+const probe0 = spec.createTestProbe(0);   // probe on node 0
+const probe1 = spec.createTestProbe(1);   // probe on node 1
+```
+
+Each probe is **bound to one node's actor system**.  Useful
+when testing routing — verify that a message ends up on the
+expected node.
+
+## Sharding tests
+
+```ts
+const spec = await MultiNodeSpec.create({ nodes: 3 });
+
+const regions = spec.nodes.map(sys =>
+  ClusterSharding.get(sys, /* cluster ref */).start<Cmd>({
+    typeName: 'entity',
+    entityProps: Props.create(() => new Entity()),
+    extractEntityId: (msg) => msg.id,
+  })
+);
+
+// Spawn entities; verify they spread across nodes:
+for (const id of ['e1', 'e2', 'e3', 'e4', 'e5']) {
+  regions[0].tell({ id, kind: 'wake-up' });
+}
+
+// Inspect placement:
+const placement = await ask(regions[0], { kind: 'list-shards', replyTo: ... });
+expect(placement.regions.size).toBeGreaterThan(1);   // distributed
+
+await spec.shutdown();
+```
+
+The framework's coordinator distributes shards across the
+multi-node-spec just like a real cluster.
+
+## What MultiNodeSpec doesn't test
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Serialization">
+  ```ts
+  // Messages pass by reference between nodes in MultiNodeSpec
+  ```
+  Serialization-dependent bugs (functions in messages,
+  non-serializable types) don't surface in MultiNodeSpec.
+  Use ParallelMultiNodeSpec or real-cluster integration tests
+  for serialization coverage.
+</Aside>
+
+<Aside type="caution" title="Real network failure modes">
+  ```ts
+  // Packet loss, TCP keepalive, congestion — none apply here
+  ```
+  In-memory transport is reliable.  For network-fault tests,
+  use Toxiproxy + real Docker setups.
+</Aside>
+
+<Aside type="caution" title="Process-level isolation">
+  ```ts
+  // One crashed node in MultiNodeSpec → crashes the test
+  ```
+  All "nodes" share the test process's event loop + memory.
+  A genuine OOM on one node OOMs the test.  Use
+  ParallelMultiNodeSpec for process-isolated tests.
+</Aside>
+
+## Where to next
+
+- **[Testing overview](/actor-ts/testing/overview/)** — the
+  bigger picture.
+- **[TestKit](/actor-ts/testing/testkit/)** — single-system
+  testing.
+- **[ParallelMultiNodeSpec](/actor-ts/testing/parallel-multi-node/)** —
+  multi-process variant.
+- **[Cluster overview](/actor-ts/cluster/overview/)** — what
+  MultiNodeSpec simulates.

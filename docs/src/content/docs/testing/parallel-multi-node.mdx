@@ -1,0 +1,172 @@
+---
+title: ParallelMultiNodeSpec
+description: Multi-node tests in **separate OS processes** — TCP transport, full serialization, process-isolated crashes. Slower than MultiNodeSpec but tests behavior that requires real isolation.
+---
+
+`ParallelMultiNodeSpec` is the **process-isolated** variant of
+[MultiNodeSpec](/actor-ts/testing/multi-node-spec/).  Each
+"node" runs in **its own OS process**, communicating via real
+TCP.  Tests the same shape but at higher fidelity.
+
+```ts
+import { ParallelMultiNodeSpec } from 'actor-ts/testkit';
+
+const spec = await ParallelMultiNodeSpec.create({
+  systemName: 'parallel-spec',
+  nodes:      3,
+  nodeScript: './tests/cluster-node.ts',
+});
+
+// Each node runs in a child process; tests interact via spec's API.
+
+await spec.shutdown();
+```
+
+## When to use it
+
+For tests that need **real-world fidelity**:
+
+- **Serialization** — messages cross the wire as bytes.
+- **Process isolation** — one node OOMing doesn't affect others.
+- **Real TCP** — actual network conditions (loopback, but
+  TCP).
+- **Per-process Bun/Node tooling** — debugger attach,
+  perf profiling, etc.
+
+For most cluster tests, **MultiNodeSpec is faster + simpler** —
+use ParallelMultiNodeSpec only when single-process tests don't
+cover the case.
+
+## Configuration
+
+```ts
+interface ParallelMultiNodeSpecSettings {
+  systemName:  string;
+  nodes:       number;
+  nodeScript:  string;                  // entry file each node runs
+  nodeEnv?:    Record<string, string>;  // env vars for each node
+  startupTimeoutMs?: number;
+}
+```
+
+| Field | Purpose |
+| --- | --- |
+| `nodeScript` | Path to a TS file each node executes — sets up actor system + cluster join. |
+| `nodeEnv` | Env vars passed to all child processes. |
+| `startupTimeoutMs` | How long to wait for all nodes to reach Up. |
+
+## The node script
+
+Each child process runs this:
+
+```ts
+// tests/cluster-node.ts
+import { ActorSystem, Cluster, MessageChannelTransport } from 'actor-ts';
+
+const port = parseInt(process.env.ACTOR_TS_PORT!);
+const seeds = (process.env.ACTOR_TS_SEEDS ?? '').split(',').filter(Boolean);
+
+const system = ActorSystem.create('parallel-spec');
+const cluster = await Cluster.join(system, { host: 'localhost', port, seeds });
+
+// Wait for the test's instructions:
+process.on('message', (msg) => {
+  // Handle test commands sent via IPC
+  if (msg === 'spawn-counter') {
+    const ref = system.actorOf(Props.create(() => new Counter()));
+    process.send!({ kind: 'ready', path: ref.path.toString() });
+  }
+  // ...
+});
+```
+
+The script is **what each child process becomes** — sets up its
+own actor system, joins the cluster, listens for IPC commands
+from the test.
+
+## IPC
+
+```ts
+// In the test:
+spec.sendToNode(0, { kind: 'spawn-counter' });
+const reply = await spec.expectFromNode(0, ...);
+```
+
+Communication between the test process + each node process
+goes via **IPC messages** (parent-child).  The test orchestrates;
+nodes execute.
+
+This is more verbose than MultiNodeSpec — but **necessary**:
+the test can't reach the child's in-memory actors directly.
+
+## When to use which
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  Test concept                       MultiNodeSpec  Parallel │
+├──────────────────────────────────────────────────────────┤
+│  Cluster membership semantics         ✓              ✓     │
+│  Sharding distribution                 ✓              ✓     │
+│  Singleton failover                    ✓              ✓     │
+│  Gossip convergence                    ✓              ✓     │
+│  Serialization round-trip              ✗              ✓     │
+│  Per-process memory isolation          ✗              ✓     │
+│  Real TCP semantics                    ✗              ✓     │
+│  CI speed                              very fast      slow  │
+└──────────────────────────────────────────────────────────┘
+```
+
+For 90 % of tests, MultiNodeSpec.  For the 10 % where
+fidelity matters, ParallelMultiNodeSpec.
+
+## Cost
+
+Spinning up child processes:
+
+- **Per-node startup**: 200-500ms (Bun loads, joins cluster).
+- **3-node spec**: ~1.5s total.
+- **Compared to MultiNodeSpec**: sub-100ms total.
+
+For **tight test loops** (many test cases), the cost adds up.
+Use ParallelMultiNodeSpec sparingly — one or two key tests for
+real serialization / isolation, MultiNodeSpec for the rest.
+
+## Cleanup
+
+```ts
+await spec.shutdown();
+// → terminates all child processes
+// → unblocks the test process to exit
+```
+
+**Always call shutdown** — orphaned child processes leak.
+The test framework typically cleans them up if the test
+crashes, but explicit shutdown is safer.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Child-process crashes are silent">
+  ```ts
+  // Child throws an unhandled error; ParallelMultiNodeSpec
+  // sees a dead process, not the error
+  ```
+  Have your node script catch + log errors verbosely.
+  Otherwise debugging child failures is painful.
+</Aside>
+
+<Aside type="caution" title="Port allocation">
+  ```ts
+  // Two tests in parallel both bind port 2552
+  ```
+  ParallelMultiNodeSpec auto-allocates random ports.  Don't
+  hard-code port numbers if you run tests in parallel.
+</Aside>
+
+## Where to next
+
+- **[Testing overview](/actor-ts/testing/overview/)** — the
+  bigger picture.
+- **[MultiNodeSpec](/actor-ts/testing/multi-node-spec/)** — the
+  faster single-process variant.
+- **[TestKit](/actor-ts/testing/testkit/)** — for single-system
+  tests.

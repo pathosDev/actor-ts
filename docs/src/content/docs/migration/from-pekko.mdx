@@ -1,0 +1,109 @@
+---
+title: From Apache Pekko
+description: Pekko is the Apache Software Foundation's fork of Akka (created when Akka changed its license). The actor model + clustering + persistence are virtually identical. Most of the Akka migration guide applies.
+---
+
+[Apache Pekko](https://pekko.apache.org/) is the **community
+fork of Akka** that the Apache Software Foundation created when
+Akka changed its licensing in 2022.  Pekko maintains the
+**Akka 2.6 API** under Apache 2.0 license; future Akka is
+proprietary.
+
+For migration purposes, **Pekko ≈ Akka 2.6** — everything in the
+[from-akka-jvm guide](/actor-ts/migration/from-akka-jvm/) applies.
+This page covers the **Pekko-specific differences**.
+
+## Pekko vs Akka — what's different
+
+Pekko is a **drop-in replacement** for Akka 2.6 with one
+notable change: **all package names changed from `akka.*` to
+`org.apache.pekko.*`**.
+
+```scala
+// Akka:
+import akka.actor.Actor
+import akka.cluster.sharding.ClusterSharding
+
+// Pekko:
+import org.apache.pekko.actor.Actor
+import org.apache.pekko.cluster.sharding.ClusterSharding
+```
+
+Otherwise, the API is identical to Akka 2.6.
+
+## Migrating to actor-ts
+
+Treat your Pekko codebase exactly like Akka 2.6 — see
+[from-akka-jvm](/actor-ts/migration/from-akka-jvm/) for the
+full mapping.
+
+The same conceptual cheatsheet applies:
+
+| Pekko | actor-ts |
+| --- | --- |
+| `Actor` | `Actor<TMsg>` |
+| `ActorRef` | `ActorRef<T>` |
+| `Cluster` | `Cluster` |
+| `ClusterSharding` | `ClusterSharding` |
+| `PersistentActor` | `PersistentActor` |
+| `ClusterSingletonManager` | `ClusterSingletonManager` |
+
+## Pekko-specific considerations
+
+### License compatibility
+
+Pekko is **Apache 2.0** — actor-ts is also permissively
+licensed.  No license conflicts during migration.
+
+### Pekko Streams → not in actor-ts
+
+Just like Akka Streams: not ported.  Use Promise-based patterns
+or a separate library.
+
+### Pekko HTTP → use the framework's HTTP module
+
+actor-ts's [HTTP module](/actor-ts/http/overview/) covers the
+common Pekko HTTP use cases — routing, marshalling, middleware.
+Less feature-complete (no compile-time-typed route DSL like
+Pekko HTTP's), but simpler.
+
+### Pekko Persistence Query → PersistenceQuery
+
+actor-ts has
+[PersistenceQuery](/actor-ts/persistence/persistence-query/)
+with the same conceptual shape (live + snapshot queries by pid
+or tag), but exposed as `AsyncIterable` instead of Stream.
+
+## Migration strategies
+
+Same as for Akka:
+
+1. **Don't rewrite everything at once** — run actor-ts in a
+   new service fronting the Pekko system.
+2. **One bounded context at a time** — migrate per-domain.
+3. **Re-export persistence carefully** — Pekko's JSON-Jackson
+   events read into actor-ts via an
+   [EventAdapter](/actor-ts/persistence/migration/migrating-adapter/).
+
+## Why migrate from Pekko at all?
+
+If Pekko works for you, **don't migrate** — the use case for
+actor-ts is:
+
+- You want a **TypeScript-first** stack rather than JVM.
+- Your deployment is **container-first** with sub-second
+  startup matters.
+- You'd rather **avoid the JVM** for operational reasons
+  (memory profile, GC tuning).
+
+If none of those apply, Pekko is a solid choice on the JVM —
+stick with it.
+
+## Where to next
+
+- **[from-akka-jvm](/actor-ts/migration/from-akka-jvm/)** —
+  the main reference (Pekko mirrors Akka 2.6).
+- **[Migration overview](/actor-ts/migration/overview/)** —
+  cross-framework comparison.
+- **[Quickstart](/actor-ts/intro/quickstart/)** — actor-ts
+  hello world.
