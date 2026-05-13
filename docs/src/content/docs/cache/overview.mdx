@@ -45,7 +45,7 @@ its own [pub/sub](/actor-ts/cluster/pubsub/)).
 
 Pick by deployment shape:
 
-- **Single pod** — InMemoryCache.  Fast, zero-deps.
+- **Single pod** — InMemoryCache.  Fast, no extra peer deps.
 - **Multi-pod with Redis already** — RedisCache.
 - **Multi-pod with Memcached already** — MemcachedCache.
 - **Multi-pod, no preference** — RedisCache.  More features

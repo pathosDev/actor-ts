@@ -115,23 +115,72 @@ kbd {
   font-feature-settings: 'liga' 1, 'calt' 1, 'tnum' 1;
 }
 
+/* ----- ASCII-art / box-drawing diagrams ------------------------------- */
+
+/* Many docs pages use ASCII box-drawing characters (┌ ─ │ └) inside
+ * code blocks to render simple architecture diagrams.  With ligatures
+ * ON these mis-align because `->`, `=>`, `==` collapse to single
+ * glyphs of different width than two separate ASCII chars — boxes get
+ * crooked.
+ *
+ * For text blocks (`pre` without a language class — `language-text`
+ * or `language-plaintext` are Shiki's defaults for fenced blocks with
+ * no language), turn ligatures OFF and force tabular numerals.  Real
+ * code blocks (`language-ts`, `language-bash`, etc.) keep ligatures,
+ * because there ligatures help readability rather than alignment. */
+pre.language-text code,
+pre.language-plaintext code,
+pre:not([class*='language-']) code,
+pre.has-language-none code {
+  font-feature-settings: 'liga' 0, 'calt' 0, 'tnum' 1 !important;
+  font-variant-ligatures: none;
+}
+
+/* Make plain-text "diagram" blocks visually distinct from real code:
+ * a softer background, a left-accent stripe in indigo (the connection-
+ * line color of the logo), and slightly tighter line-height so tall
+ * box-drawings stay compact.  Visually says "this is a diagram, not
+ * something you copy-paste." */
+pre.language-text,
+pre.language-plaintext,
+pre:not([class*='language-']) {
+  border-left: 3px solid var(--sl-color-accent) !important;
+  line-height: 1.45 !important;
+}
+
 /* ----- Wider main content + narrower right TOC ------------------------- */
 
-/* Default `--sl-content-width` is 45rem (720px).  Combined with the
- * right-sidebar-container's `sidebar-width + half-leftover/2` formula,
- * this leaves the main content centered in a column with substantial
- * empty space on both sides at viewports >= 1280px.
+/* Two-step adjustment:
  *
- * Bump the content width to 56rem (896px) so the main column fills
- * more of the available viewport.  Code blocks still wrap reasonably
- * (~100 chars at our font size) and the right-TOC column shrinks
- * automatically via Starlight's calc formula — less leftover space
- * to split.
+ * (1) Bump `--sl-content-width` from Starlight's default 45rem (720px)
+ *     to 64rem (1024px).  Code blocks with ~110-char lines now fit
+ *     without horizontal scroll; long type signatures and table-heavy
+ *     reference pages get the room they need.
  *
- * 56rem is a moderate increase — typical TS code lines that wrap at
- * ~80 chars stay comfortably below that.  Long type signatures or
- * generics with many arguments get more horizontal room without
- * needing scrollbars. */
+ * (2) Narrow the right-TOC sidebar specifically.  Starlight uses the
+ *     same `--sl-sidebar-width` (18.75rem) for BOTH left and right
+ *     sidebars.  Overriding it globally would also shrink the left
+ *     nav, which we don't want — the left nav needs the width for the
+ *     12 top-level Parts and their sub-groups.  So we target the
+ *     right sidebar directly via `.right-sidebar-container` /
+ *     `aside.right-sidebar`.
+ *
+ * The right TOC only shows page-internal anchors — typically 4-8
+ * short headings.  13rem (208px) is plenty for those, and the saved
+ * ~6rem of horizontal space goes straight to the article column. */
 :root {
-  --sl-content-width: 56rem;
+  --sl-content-width: 64rem;
+}
+
+@media (min-width: 72rem) {
+  /* Narrow the right TOC column.  Only kicks in at viewports where
+   * the right TOC is actually visible (>= md breakpoint). */
+  .right-sidebar-container {
+    width: 14rem;
+    max-width: 14rem;
+  }
+  .right-sidebar {
+    width: 14rem;
+    max-width: 14rem;
+  }
 }

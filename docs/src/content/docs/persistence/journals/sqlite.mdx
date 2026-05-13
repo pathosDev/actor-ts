@@ -1,13 +1,14 @@
 ---
 title: SQLite journal
-description: Zero-dependency single-file journal — Bun uses `bun:sqlite`, Node uses `better-sqlite3`. The right default for single-node production. WAL mode, file-on-disk, prepared statements throughout.
+description: Single-file SQLite journal — Bun uses the built-in `bun:sqlite`, Node uses `better-sqlite3` as a peer dep. The right default for single-node production. WAL mode, file-on-disk, prepared statements throughout.
 ---
 
 `SqliteJournal` stores events in a SQLite database — a single file
 on disk, durable, no separate server.  It's the **right default
-for single-node production**: zero dependencies (Bun has SQLite
-built in; Node uses `better-sqlite3`), survives restarts, fast
-enough for most workloads.
+for single-node production**: on Bun the driver is built in
+(`bun:sqlite`, no install), on Node it's a single peer-dep
+(`better-sqlite3`).  Survives restarts, fast enough for most
+workloads.
 
 ```ts
 import { SqliteJournal, SqliteSnapshotStore, PersistenceExtensionId, ActorSystem } from 'actor-ts';

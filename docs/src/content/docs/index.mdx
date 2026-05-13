@@ -1,0 +1,102 @@
+---
+title: actor-ts
+description: Akka-style actor model for TypeScript — cluster sharding, event sourcing, distributed data, observability. Runs on Bun, Node, and Deno.
+template: splash
+hero:
+  tagline: |
+    The actor model for TypeScript — cluster sharding, event sourcing,
+    distributed data, persistence, observability.  Runs on Bun, Node, and Deno.
+  image:
+    html: |
+      <img src="/actor-ts/logo.svg" alt="actor-ts" style="max-width: 100%; height: auto;" />
+  actions:
+    - text: Get started
+      link: /actor-ts/intro/quickstart/
+      icon: right-arrow
+      variant: primary
+    - text: Why actors?
+      link: /actor-ts/intro/why-actors/
+      icon: information
+      variant: minimal
+    - text: View on GitHub
+      link: https://github.com/pathosDev/actor-ts
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+## What you get
+
+<CardGrid>
+  <Card title="Actors, supervision, lifecycle" icon="seti:typescript">
+    The classic actor toolkit — `Actor`, `Props`, `tell` / `ask`, mailboxes,
+    dispatchers, supervision strategies, `become` / `stash`, death-watch,
+    coordinated shutdown.  Single-process or clustered.
+  </Card>
+  <Card title="Cluster + sharding" icon="puzzle">
+    Gossip membership, phi-accrual failure detection, downing strategies,
+    cross-node refs, distributed pub/sub, cluster singleton with lease
+    coordination, entity sharding with rebalancing and remember-entities.
+  </Card>
+  <Card title="Event sourcing + persistence" icon="document">
+    `PersistentActor` with persist / onEvent / snapshots, `DurableState`,
+    projections, persistence query, replicated event sourcing with vector
+    clocks.  Pluggable journals (in-memory, SQLite, Cassandra, object-storage).
+  </Card>
+  <Card title="Distributed data (CRDTs)" icon="random">
+    GCounter, PNCounter, LWWRegister, MVRegister, GSet, ORSet, LWWMap,
+    ORMap.  Quorum reads/writes, gossip replication, durable storage,
+    subscriber pattern for live updates.
+  </Card>
+  <Card title="Integrations" icon="external">
+    HTTP (Fastify, Express, Hono) with a route-DSL.  Brokers — Kafka,
+    MQTT, AMQP, NATS, Redis Streams, gRPC, SSE, WebSocket, raw TCP/UDP.
+    Cache — in-memory, Redis, Memcached.  Serialization — JSON, CBOR, custom.
+  </Card>
+  <Card title="Observability + testing" icon="approve-check">
+    Stock metrics for actors / mailboxes / cluster + exporters
+    (Prometheus, OTel).  Tracer API + OTel spans.  Management endpoints
+    for health, members, sharding.  TestKit with probes, manual scheduler,
+    multi-node spec.
+  </Card>
+</CardGrid>
+
+## Where to start
+
+<CardGrid>
+  <LinkCard
+    title="Quickstart"
+    description="Five minutes to a running actor — installation, first message, supervision."
+    href="/actor-ts/intro/quickstart/"
+  />
+  <LinkCard
+    title="Why actors?"
+    description="The model in plain terms — what an actor is, why it's not just a worker thread or a Promise."
+    href="/actor-ts/intro/why-actors/"
+  />
+  <LinkCard
+    title="Learning path"
+    description="Suggested reading order based on what you're building — single-node, cluster, persistence-heavy, integration-heavy."
+    href="/actor-ts/intro/learning-path/"
+  />
+  <LinkCard
+    title="Migration guides"
+    description="Coming from Akka-JVM, Pekko, Orleans, Akka.NET, or vanilla TypeScript? Here's what's different."
+    href="/actor-ts/migration/overview/"
+  />
+</CardGrid>
+
+## Status
+
+actor-ts is **pre-1.0**.  The API surface is broad and battle-tested in
+internal use, but breaking changes can land between minor versions until
+1.0 is cut.  See the
+[Version policy](/actor-ts/reference/version-policy/) for the SemVer
+plan, and the
+[ROADMAP](https://github.com/pathosDev/actor-ts/blob/main/ROADMAP.md)
+for what's coming next.
+
+Runnable end-to-end demos:
+[chat sample](https://github.com/pathosDev/actor-ts/tree/main/examples/chat),
+[voice sample](https://github.com/pathosDev/actor-ts/tree/main/examples/voice).

@@ -3,9 +3,11 @@ title: Installation
 description: Installing actor-ts on Bun, Node 22+, or Deno 2+ — plus the optional peer dependencies and how to verify the install.
 ---
 
-`actor-ts` ships as a single npm package.  The core has **zero runtime
-dependencies**; everything else is opt-in via peer dependencies you only
-install when you use the corresponding extension.
+`actor-ts` ships as a single npm package.  The core has **two small
+runtime dependencies** (`ts-pattern` for exhaustive matching, `fastify`
+for the default HTTP backend); everything else — Kafka, Redis, S3,
+Cassandra, gRPC — is opt-in via peer dependencies you only install
+when you use the corresponding extension.
 
 ## Runtime requirements
 
@@ -62,10 +64,10 @@ installed.
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="tip" title="Why peer deps?">
-  Keeping the core install small (zero deps) means a small chat sample
-  pulls ~2 MB.  A user who needs Kafka adds `kafkajs` themselves; a user
-  who needs S3 adds `@aws-sdk/client-s3`.  No bundle bloat for features
-  you don't use.
+  Keeping the core install small (just two runtime deps) means a chat
+  sample pulls a handful of MB.  A user who needs Kafka adds `kafkajs`
+  themselves; a user who needs S3 adds `@aws-sdk/client-s3`.  No bundle
+  bloat for features you don't use.
 </Aside>
 
 ### HTTP backends

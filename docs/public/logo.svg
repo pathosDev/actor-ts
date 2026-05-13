@@ -34,9 +34,9 @@
     <circle cx="92"  cy="108" r="7"/>
   </g>
 
-  <!-- wordmark -->
+  <!-- wordmark — both "actor" and "ts" in indigo, hyphen in red -->
   <g font-family="ui-monospace, 'JetBrains Mono', 'Fira Code', Menlo, monospace" font-weight="700">
-    <text x="180" y="98" font-size="72" fill="#0f172a" letter-spacing="-2">
+    <text x="180" y="98" font-size="72" fill="#6366f1" letter-spacing="-2">
       actor<tspan fill="#ef4444">-</tspan><tspan fill="#6366f1">ts</tspan>
     </text>
     <text x="184" y="132" font-size="16" fill="#475569" letter-spacing="2">
