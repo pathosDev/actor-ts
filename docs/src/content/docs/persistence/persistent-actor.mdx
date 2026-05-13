@@ -1,0 +1,364 @@
+---
+title: PersistentActor
+description: Event-sourced actor base class — `onCommand` decides what to persist, `onEvent` updates state purely. On startup, the framework replays the journal so the actor resumes where the last instance left off.
+---
+
+`PersistentActor<Cmd, Event, State>` is the framework's
+event-sourcing base class.  The model:
+
+- Commands come in.
+- The command handler **validates** and decides what facts
+  happened — those facts are **events**, persisted to the journal.
+- After persistence, a pure **event handler** updates state.
+
+On startup, the framework reads the journal and replays every event
+through the event handler.  The resulting state is what the actor
+sees on its first command — wherever the last instance left off,
+this one resumes.
+
+## A minimal example
+
+```ts
+import { PersistentActor, ActorSystem, Props } from 'actor-ts';
+import { PersistenceExtensionId, InMemoryJournal, InMemorySnapshotStore } from 'actor-ts';
+
+type Cmd =
+  | { kind: 'deposit'; amount: number }
+  | { kind: 'withdraw'; amount: number };
+
+type Event =
+  | { kind: 'deposited'; amount: number; ts: number }
+  | { kind: 'withdrawn'; amount: number; ts: number };
+
+interface State { balance: number; }
+
+class Account extends PersistentActor<Cmd, Event, State> {
+  readonly persistenceId = 'account-42';
+
+  initialState(): State { return { balance: 0 }; }
+
+  // Pure: state + event → new state.  Runs both on persist + recovery.
+  onEvent(state: State, e: Event): State {
+    if (e.kind === 'deposited') return { balance: state.balance + e.amount };
+    if (e.kind === 'withdrawn') return { balance: state.balance - e.amount };
+    return state;
+  }
+
+  // Handle a command — validate, persist if valid.
+  onCommand(state: State, cmd: Cmd): void {
+    if (cmd.kind === 'deposit') {
+      this.persist(
+        { kind: 'deposited', amount: cmd.amount, ts: Date.now() },
+        (next) => { /* side effects with the new state */ },
+      );
+    } else if (cmd.kind === 'withdraw') {
+      if (state.balance < cmd.amount) {
+        // Reject — don't persist anything.
+        this.log.warn(`insufficient funds`);
+        return;
+      }
+      this.persist(
+        { kind: 'withdrawn', amount: cmd.amount, ts: Date.now() },
+        () => {},
+      );
+    }
+  }
+}
+
+// Setup:
+const system = ActorSystem.create('demo');
+system.extension(PersistenceExtensionId).configure({
+  journal:       new InMemoryJournal(),
+  snapshotStore: new InMemorySnapshotStore(),
+});
+
+const account = system.actorOf(Props.create(() => new Account()), 'account-42');
+account.tell({ kind: 'deposit',  amount: 100 });
+account.tell({ kind: 'withdraw', amount: 30 });
+// state is { balance: 70 } — and stays that way across restarts.
+```
+
+## The three abstract methods
+
+Every `PersistentActor` subclass implements three methods:
+
+### `initialState()`
+
+The state before any events.  Called at the start of recovery, and
+the result is what `onEvent` builds on top of.
+
+```ts
+initialState(): State {
+  return { balance: 0 };
+}
+```
+
+### `onEvent(state, event) → newState`
+
+**Pure** — no side effects, no `tell`s, no `await`s.  Just
+`state + event → state`.  This function runs both:
+
+- **On replay** — once per persisted event, when the actor starts
+  and the journal is replayed.
+- **After persist** — once when a new event lands.
+
+Pure-ness matters because the same events will replay many times
+over the actor's lifetime.  A side effect inside `onEvent` runs
+during every recovery, which means duplicate emails / duplicate
+HTTP calls / duplicated everything.
+
+### `onCommand(state, cmd) → void | Promise<void>`
+
+Validates the command against the current state and decides what
+events to persist.  Three valid outcomes:
+
+- **`this.persist(event, cb)`** — persist an event.  The
+  callback runs with the new state once the event is appended
+  and applied via `onEvent`.  Side effects go here.
+- **Reply without persisting** — for read-only commands (e.g.
+  `{ kind: 'get-balance' }`), reach into `state` and `tell` the
+  reply directly.
+- **Reject** — log, ignore, or reply with an error.  No events
+  written.
+
+```ts
+onCommand(state: State, cmd: Cmd): void {
+  if (cmd.kind === 'get-balance') {
+    cmd.replyTo.tell(state.balance);    // read-only — no persist
+    return;
+  }
+  if (cmd.kind === 'withdraw') {
+    if (state.balance < cmd.amount) return;   // reject
+    this.persist({ kind: 'withdrawn', amount: cmd.amount, ts: Date.now() },
+      () => {});
+  }
+}
+```
+
+## The `persist` callback
+
+```ts
+this.persist(event, (newState) => {
+  // 1. event has been written to the journal
+  // 2. onEvent has been called; this.state and `newState` reflect it
+  // 3. it's safe to do side effects here
+  this.sender.forEach(s => s.tell({ ok: true, balance: newState.balance }));
+});
+```
+
+Three guarantees the callback gives you:
+
+1. **The event is durable** — if the process crashes after this,
+   the journal still has it.  The next recovery picks it up.
+2. **The state reflects it** — `onEvent` has run; `this.state` is
+   the new state.
+3. **Commands are stashed during the persist** — incoming
+   commands wait until the persist completes and its callback
+   fires.  No interleaving.
+
+The third point is what makes `persist` safe to use as the
+"transaction boundary" for command processing.  Side effects (replies,
+notifications, follow-up tells) belong in the callback.
+
+## Recovery
+
+When the actor starts:
+
+```
+preStart() runs:
+  → load latest snapshot (if any) → set state, seqNr
+  → read events from journal starting at seqNr+1
+  → for each event, state = onEvent(state, event)
+  → onRecoveryComplete(state)
+  → ready to process the first command
+```
+
+While recovery is running, **no commands are processed**.  The
+mailbox piles up; once recovery finishes, the actor drains them
+in order against the recovered state.
+
+`onRecoveryComplete(state)` is an optional hook fired after the
+last event is replayed.  Use it for one-time post-recovery setup
+(register watchers, fetch related actors, etc.) — but not for
+side effects per event, which would duplicate on every restart.
+
+## Persistence ID
+
+Every `PersistentActor` declares a `persistenceId`:
+
+```ts
+class Account extends PersistentActor<...> {
+  readonly persistenceId = 'account-42';
+}
+```
+
+The ID **identifies the event stream** in the journal.  Two
+actors with the same `persistenceId` would share the same event
+log — usually a bug.
+
+For per-entity actors (one account per user, one cart per user),
+make the ID dependent on the entity:
+
+```ts
+class Account extends PersistentActor<...> {
+  constructor(public readonly userId: string) { super(); }
+  readonly persistenceId = `account-${this.userId}`;
+}
+```
+
+For [sharded entities](/actor-ts/cluster/sharding/overview/), the
+shard region typically passes the entity ID via constructor, and
+the persistence ID derives from it.
+
+## Snapshots
+
+Replaying 100 000 events at startup is slow.  Configure a snapshot
+policy:
+
+```ts
+import { everyNEvents } from 'actor-ts';
+
+class Account extends PersistentActor<...> {
+  override snapshotPolicy() { return everyNEvents(100); }
+  // After every 100 events, the current state is snapshotted.
+}
+```
+
+The framework writes a snapshot via the snapshot store; on
+recovery, it loads the snapshot first and only replays events
+*after* that snapshot's seqNr.
+
+`everyNEvents(N)` is the common case.  For custom policies (snapshot
+on a specific event kind, time-based), implement:
+
+```ts
+override snapshotPolicy() {
+  return (seqNr, state, event) => event.kind === 'finalized';
+}
+```
+
+See [Snapshots](/actor-ts/persistence/snapshots/) for the full
+configuration.
+
+## Tagging events for projections
+
+```ts
+class Account extends PersistentActor<...> {
+  override tagsFor(event: Event): ReadonlyArray<string> | undefined {
+    return ['account'];   // or based on event kind
+  }
+}
+```
+
+[Projections](/actor-ts/persistence/projections/) read events from
+the journal **by tag**.  Tagging an event makes it discoverable to
+a read-side view that subscribes to `'account'` events.
+
+Returning `undefined` (the default) means "no tags" — fine if you
+don't have projections yet.
+
+## Schema evolution — event adapters
+
+When event shapes change over time (a field is renamed, a value
+is split, an enum is added), old events stay in the journal forever.
+The **event adapter** upgrades them on read:
+
+```ts
+import { EventAdapter } from 'actor-ts';
+
+class V1ToV2Adapter implements EventAdapter<EventV2> {
+  upcast(stored: unknown, version: number): EventV2 {
+    if (version === 1) return migrate(stored as EventV1);
+    return stored as EventV2;
+  }
+}
+
+class Account extends PersistentActor<...> {
+  override eventAdapter() { return new V1ToV2Adapter(); }
+}
+```
+
+With an adapter configured, every event is wrapped in a `{ _v, _t, _e }`
+envelope (version + type + payload) at persist time, and unwrapped
+through `adapter.upcast(stored, version)` at read time.  Backward
+compatibility is the actor's responsibility.
+
+See [Migration overview](/actor-ts/persistence/migration/overview/)
+for the full migration story.
+
+## Common pitfalls
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Side effects in `onEvent`">
+  ```ts
+  override onEvent(state, event) {
+    if (event.kind === 'deposited') {
+      sendEmail(event.amount);   // ✗ runs on every recovery
+    }
+    return { balance: state.balance + event.amount };
+  }
+  ```
+  `onEvent` runs once on persist *and* once per recovery.  An
+  email-sending side effect duplicates on every restart.  Side
+  effects belong in the `persist` callback — that runs exactly
+  once per event, at persist time only.
+</Aside>
+
+<Aside type="caution" title="Commands during recovery">
+  ```ts
+  const actor = system.actorOf(Props.create(() => new Account()));
+  actor.tell({ kind: 'deposit', amount: 100 });
+  // ↑ this `tell` arrives before recovery completes
+  ```
+  Commands sent before recovery finishes are stashed and processed
+  once `onRecoveryComplete` runs.  This is usually transparent
+  but it means a slow recovery (10 000 events through a slow
+  journal) delays the first response.  Monitor recovery latency
+  in production.
+</Aside>
+
+<Aside type="caution" title="Mutating state from `onCommand`">
+  ```ts
+  onCommand(state, cmd) {
+    state.balance += cmd.amount;   // ✗ mutating state directly
+  }
+  ```
+  Don't write to `state` directly.  Every state change must go
+  through `persist` + `onEvent`, so the journal is the source of
+  truth.  Direct mutation works *for the current process* but
+  the next recovery starts from `initialState()` again and
+  replays the journal — your unwritten change is gone.
+</Aside>
+
+<Aside type="caution" title="Determinism in `onEvent`">
+  ```ts
+  onEvent(state, event) {
+    return { lastSeen: Date.now() };   // ✗ different value on replay
+  }
+  ```
+  `onEvent` *must* produce the same state given the same events,
+  no matter when it runs.  `Date.now()`, `Math.random()`, reading
+  external state from inside `onEvent` all break this.  Bake any
+  non-determinism into the **event payload** when you persist
+  (`{ kind: 'observed', at: Date.now() }`); `onEvent` then just
+  reads `event.at`.
+</Aside>
+
+## Where to next
+
+- **[Persistence overview](/actor-ts/persistence/overview/)** —
+  the bigger picture: PersistentActor vs DurableStateActor.
+- **[Snapshots](/actor-ts/persistence/snapshots/)** — replay-window
+  reduction in detail.
+- **[Projections](/actor-ts/persistence/projections/)** — read-side
+  views over the event stream.
+- **[Journals — SQLite](/actor-ts/persistence/journals/sqlite/)** —
+  production journal for single-node.
+- **[Migration overview](/actor-ts/persistence/migration/overview/)** —
+  evolving event schemas.
+- **[Replicated event sourcing](/actor-ts/persistence/replicated-event-sourcing/overview/)** —
+  multi-writer event sourcing for cluster setups.
+
+The [`PersistentActor`](/actor-ts/api/classes/persistentactor/)
+API reference covers the full base-class surface.
