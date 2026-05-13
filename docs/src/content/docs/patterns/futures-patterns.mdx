@@ -1,0 +1,279 @@
+---
+title: Future patterns
+description: Bridge async promises into the actor world — `pipeTo` routes a promise's result into an actor's mailbox, `after` delays a factory invocation, `Success`/`Failure` wrap results in a typed envelope. The actor-friendly alternative to `await` inside `onReceive`.
+---
+
+Promises and actors are two different concurrency models living
+in the same TypeScript runtime.  An actor's `onReceive` *can*
+`await` a promise, but doing so blocks the actor's mailbox until
+the promise settles.  The framework's **future patterns** are a
+small set of helpers for crossing the bridge without blocking.
+
+| Helper | Role |
+| --- | --- |
+| `pipeTo` | Send a promise's eventual result *as a message* to an actor. |
+| `after` | Wait `delayMs`, then run a factory; cancellable. |
+| `Success<T>` / `Failure` | Tagged envelope types — `pipeTo` wraps results in these by default. |
+
+Together they let you initiate async work, keep `onReceive`
+non-blocking, and receive the result as another message.
+
+## The problem: `await` inside `onReceive`
+
+```ts
+class Slow extends Actor<...> {
+  override async onReceive(msg): Promise<void> {
+    const data = await this.downstream.fetch(msg.id);
+    // ↑ everything in this actor's mailbox waits until fetch resolves.
+    this.handle(data);
+  }
+}
+```
+
+The actor's per-message guarantee says: only one `onReceive`
+invocation runs at a time.  An `await` keeps the invocation alive
+until the promise settles — meaning the *next* message can't be
+processed until then.
+
+If `downstream.fetch` is fast and reliable, this is fine.  If it's
+slow or flaky, the actor's mailbox piles up.
+
+## `pipeTo` — send the result as a message
+
+```ts
+import { Actor, pipeTo, Success, Failure } from 'actor-ts';
+
+type Msg =
+  | { kind: 'fetch'; id: string }
+  | Success<Item>
+  | Failure;
+
+class Fast extends Actor<Msg> {
+  override onReceive(msg: Msg): void {
+    if (msg.kind === 'fetch') {
+      pipeTo(this.downstream.fetch(msg.id), this.context.self);
+      return;   // doesn't block — onReceive returns immediately
+    }
+    if (msg instanceof Success) {
+      this.handle(msg.value);
+    } else if (msg instanceof Failure) {
+      this.log.warn(`fetch failed: ${msg.error.message}`);
+    }
+  }
+}
+```
+
+`pipeTo(promise, recipient)` schedules a callback on the promise
+that `tell`s the result to the recipient:
+
+- **Fulfillment** → `recipient.tell(new Success(value))`
+- **Rejection** → `recipient.tell(new Failure(error))`
+
+The actor's mailbox isn't blocked.  The result lands as a normal
+message, processed in order alongside everything else.
+
+The full signature:
+
+```ts
+function pipeTo<T>(
+  promise:   Promise<T>,
+  recipient: ActorRef,
+  options?:  PipeToOptions,
+): Promise<T>;
+
+interface PipeToOptions {
+  sender?: ActorRef | null;
+  wrap?:   boolean;   // default true — wrap in Success/Failure
+}
+```
+
+### Unwrapped pipe
+
+```ts
+pipeTo(promise, target, { wrap: false });
+```
+
+With `wrap: false`, the **raw fulfillment value** is told to the
+target (no `Success` envelope), and **rejections are dropped
+silently**.  Useful when:
+
+- The target expects the value's raw shape (e.g. an HTTP-handler
+  actor expecting the JSON body directly).
+- You handle errors elsewhere (a separate error pipe, or you've
+  already attached a `.catch`).
+
+### Forwarding sender
+
+```ts
+pipeTo(promise, target, { sender: this.context.self });
+```
+
+By default, `pipeTo` sends with no sender ref.  Pass `sender` to
+attribute the message to a specific actor — useful for routing
+the result back to whoever asked.
+
+## `Success` and `Failure` — the envelope types
+
+```ts
+import { Success, Failure } from 'actor-ts';
+
+new Success(42);                    // wraps a value
+new Failure(new Error('oops'));     // wraps an error
+```
+
+Simple tagged classes — values are immutable after construction.
+Pattern-match with `instanceof`:
+
+```ts
+override onReceive(msg: Success<Item> | Failure | Cmd): void {
+  if (msg instanceof Success) {
+    this.handle(msg.value);
+  } else if (msg instanceof Failure) {
+    this.fail(msg.error);
+  } else {
+    // it's a Cmd
+  }
+}
+```
+
+Or in ts-pattern:
+
+```ts
+import { P, match } from 'ts-pattern';
+
+match(msg)
+  .with(P.instanceOf(Success), (s) => this.handle(s.value))
+  .with(P.instanceOf(Failure), (f) => this.fail(f.error))
+  .otherwise(() => { /* ... */ });
+```
+
+Use them when the receiving actor's message type already includes
+arbitrary results — the wrappers prevent accidental treatment of
+raw promise results as commands.
+
+## `after` — run a factory after a delay
+
+```ts
+import { after } from 'actor-ts';
+
+const result = await after(5_000, () => fetchSomething());
+```
+
+Wait 5 seconds, then call the factory and resolve with its result.
+The wait isn't a blocking `sleep` — it's `setTimeout` + a
+Promise — so the rest of the program runs normally.
+
+The factory is called **once** after the delay; the returned
+Promise resolves/rejects with whatever the factory produces.
+
+### Cancellation
+
+```ts
+const p = after(5_000, () => fetchSomething());
+
+// Later, maybe:
+p.cancel();
+// → p rejects with Error('after: cancelled')
+```
+
+The returned `CancellablePromise<T>` has a `.cancel()` method that
+clears the timer and rejects the promise.  Useful for building
+timeout-style abort logic:
+
+```ts
+const work = expensiveOperation();
+const watchdog = after(5_000, async () => { throw new Error('took too long'); });
+
+try {
+  const winner = await Promise.race([work, watchdog]);
+  watchdog.cancel();   // we won, clean up the timer
+  return winner;
+} catch (err) {
+  // either the work threw or the watchdog fired
+  throw err;
+}
+```
+
+### Combining `after` + `pipeTo`
+
+```ts
+pipeTo(
+  after(1_000, () => this.downstream.fetch(id)),
+  this.context.self,
+);
+```
+
+Schedule a downstream fetch in 1 second; pipe the result into
+the actor's own mailbox.  Useful for "kick off later but stay
+non-blocking" patterns.
+
+## Comparison to `context.timers`
+
+`context.timers.startSingleTimer` and `after` look similar — both
+fire something after a delay.  The differences:
+
+| Aspect | `context.timers` | `after` |
+| --- | --- | --- |
+| Delivers via | `tell` to `this.self` | Resolves a Promise |
+| Cancellation | `timers.cancel(key)` | `cancellable.cancel()` |
+| Auto-cancel on actor stop | Yes | No |
+| Best for | Actor-internal scheduling | Bridging actor + promise |
+
+If you're inside an actor and want to schedule a delayed message,
+prefer `context.timers`.  If you're outside an actor or you want
+the delay to chain into a promise pipeline, use `after`.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`pipeTo` to a stopped actor">
+  ```ts
+  pipeTo(promise, actor);
+  actor.stop();
+  // → when promise resolves, the Success/Failure goes to dead letters
+  ```
+  `pipeTo` doesn't check if the recipient is still alive when the
+  promise resolves — it just `tell`s.  If the actor stopped in
+  the meantime, the message dead-letters.  Usually fine; if the
+  result is important enough to track, watch the actor and abort
+  the work in the `Terminated` handler.
+</Aside>
+
+<Aside type="caution" title="`pipeTo` doesn't carry MDC across the boundary">
+  The promise resolves outside any `LogContext.run` scope, so
+  the `tell` that follows might not carry the original MDC.
+  If the result needs the same correlation id as the request that
+  initiated it, wrap the promise:
+  ```ts
+  const ctx = LogContext.snapshot();
+  pipeTo(
+    promise.then(v => LogContext.run(ctx, () => v)),
+    target,
+  );
+  ```
+  This is a v1 rough edge — see roadmap for tracing-aware pipeTo.
+</Aside>
+
+<Aside type="caution" title="`after(0, factory)` is not the same as `factory()`">
+  ```ts
+  await after(0, factory);   // factory runs on the next tick (via setTimeout(0))
+  await factory();           // factory runs synchronously
+  ```
+  Zero-delay `after` still defers via the event loop — useful for
+  yield-and-resume but slower than direct invocation when latency
+  matters.
+</Aside>
+
+## Where to next
+
+- **[Ask pattern](/actor-ts/fundamentals/ask-pattern/)** — for the
+  blocking `await` flavor when that's actually what you want.
+- **[Timers and scheduling](/actor-ts/fundamentals/timers-and-scheduling/)** —
+  `context.timers.startSingleTimer` for actor-bound delays.
+- **[Retry](/actor-ts/patterns/retry/)** — for retry-then-pipeTo
+  combinations.
+
+The [`pipeTo`](/actor-ts/api/functions/pipeto/),
+[`after`](/actor-ts/api/functions/after/), and
+[`Success`](/actor-ts/api/classes/success/) /
+[`Failure`](/actor-ts/api/classes/failure/) API references cover
+the full surface.

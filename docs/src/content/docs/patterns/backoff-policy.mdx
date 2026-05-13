@@ -1,0 +1,214 @@
+---
+title: Backoff policy
+description: Pure backoff-policy primitives — `exponentialBackoff` and `linearBackoff`, both producing a `BackoffPolicy` value with `delayFor(restartCount)`. Used by BackoffSupervisor, but standalone for any "how long should I wait?" calculation.
+---
+
+A **backoff policy** is a function from "how many times has this
+failed?" to "how long should I wait before trying again?"  Decoupled
+from any specific retry or supervisor, so the calculation is
+trivially testable and reusable.
+
+```ts
+interface BackoffPolicy {
+  delayFor(restartCount: number): number;
+}
+```
+
+`restartCount` is 0-based — the *first* retry passes `0`, the
+second `1`, and so on.  Returns the delay in milliseconds.
+
+Two built-ins, both producing values you can plug into a
+[`BackoffSupervisor`](/actor-ts/patterns/backoff-supervisor/) or
+use standalone.
+
+## Exponential backoff
+
+```ts
+import { exponentialBackoff } from 'actor-ts';
+
+const policy = exponentialBackoff({
+  minMs:        200,
+  maxMs:        10_000,
+  randomFactor: 0.2,
+});
+
+policy.delayFor(0);   // ~200ms  (±20% jitter)
+policy.delayFor(1);   // ~400ms
+policy.delayFor(2);   // ~800ms
+policy.delayFor(3);   // ~1600ms
+policy.delayFor(4);   // ~3200ms
+policy.delayFor(5);   // ~6400ms
+policy.delayFor(6);   // ~10_000 (clamped)
+policy.delayFor(30);  // ~10_000 (still clamped)
+```
+
+The formula: `min × 2^n` clamped to `max`, multiplied by
+`1 + random(-randomFactor, +randomFactor)`.
+
+Three knobs:
+
+| Field | Meaning |
+| --- | --- |
+| `minMs` | Floor for the delay.  The first retry waits at least this long. |
+| `maxMs` | Ceiling for the delay.  Once `min × 2^n` exceeds this, the policy returns `maxMs` (jittered). |
+| `randomFactor` *(default 0.2)* | Jitter fraction in `[0, 1]`.  The actual delay is `base * (1 + sign * randomFactor)` where `sign` is uniform in `[-1, 1]`. |
+
+**Why exponential?**  A failing upstream usually needs *time* to
+recover.  Doubling the wait gives it more time without infinite
+delays.  And clamping at `max` prevents pathologically long waits
+after many failures.
+
+**Why jitter?**  When N clients all retry at the same delay, they
+synchronize their next attempt — the next retry is a thundering
+herd, increasing the chance the upstream stays broken.  Adding
+±20 % noise scatters retries in time so the herd disperses.
+
+## Linear backoff
+
+```ts
+import { linearBackoff } from 'actor-ts';
+
+const policy = linearBackoff({
+  minMs:  500,
+  maxMs:  5_000,
+  stepMs: 500,
+});
+
+policy.delayFor(0);   // ~500ms
+policy.delayFor(1);   // ~1000ms
+policy.delayFor(2);   // ~1500ms
+policy.delayFor(3);   // ~2000ms
+policy.delayFor(8);   // ~4500ms
+policy.delayFor(9);   // ~5000ms (clamped)
+policy.delayFor(20);  // ~5000ms (still clamped)
+```
+
+The formula: `min + step × n` clamped to `max`, with the same
+jitter contract.
+
+**When linear?**  Niche — when you specifically want bounded
+growth rather than exponential.  Examples:
+
+- A polling cadence that should level off quickly (poll every
+  500 ms, 1 s, 1.5 s, … capped at 5 s).
+- A producer rate-limiting itself when receiving backpressure —
+  the *rate* of growth in the wait time matches the
+  steady-state-acceptable load on the consumer.
+
+Exponential is usually the better choice for *recovery* (give the
+upstream time to heal).  Linear is better for *steady-state*
+adaptation.
+
+## Determinism in tests
+
+Both policies accept an optional `random: () => number` override:
+
+```ts
+let seed = 0;
+const deterministicRandom = () => (seed = (seed * 9301 + 49297) % 233280) / 233280;
+
+const policy = exponentialBackoff({
+  minMs:        100,
+  maxMs:        10_000,
+  randomFactor: 0.2,
+  random:       deterministicRandom,
+});
+
+// Now `policy.delayFor(n)` is reproducible.
+```
+
+A linear congruential generator is good enough for tests; for
+production randomness, the default `Math.random` is fine.
+
+## Standalone usage
+
+The policy doesn't have to feed into a supervisor.  Anywhere you'd
+write `await new Promise(r => setTimeout(r, computeDelay(n)))`,
+plug a policy in:
+
+```ts
+import { exponentialBackoff } from 'actor-ts';
+
+const policy = exponentialBackoff({ minMs: 200, maxMs: 5_000 });
+
+let attempt = 0;
+while (true) {
+  try {
+    const result = await someRiskyCall();
+    return result;
+  } catch (err) {
+    const delay = policy.delayFor(attempt++);
+    await new Promise(r => setTimeout(r, delay));
+    if (attempt >= 5) throw err;
+  }
+}
+```
+
+For the more common case of "retry N times with backoff," see
+[Retry](/actor-ts/patterns/retry/), which has its own delay
+options (without going through `BackoffPolicy`).  The standalone
+policy is most useful when you're integrating with an existing
+retry/scheduler abstraction and just need the delay-computation
+piece.
+
+## Custom policies
+
+Implement the `BackoffPolicy` interface:
+
+```ts
+import type { BackoffPolicy } from 'actor-ts';
+
+// Fibonacci backoff — for fun.
+function fibBackoff(opts: { maxMs: number }): BackoffPolicy {
+  return {
+    delayFor(n: number): number {
+      let a = 100, b = 100;
+      for (let i = 0; i < n; i++) { [a, b] = [b, a + b]; }
+      return Math.min(a, opts.maxMs);
+    },
+  };
+}
+```
+
+Pass it into `BackoffSupervisor` via the `policy` option and you've
+overridden the default exponential growth.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`randomFactor` outside `[0, 1]`">
+  ```ts
+  exponentialBackoff({ minMs: 100, maxMs: 1000, randomFactor: 1.5 });
+  // → throws: randomFactor must be in [0, 1]
+  ```
+  `1.0` already means "delay can be twice the base or zero" —
+  values beyond that produce negative delays after the jitter,
+  which the implementation floors at 0 anyway.  The validation
+  catches the obvious mistake.
+</Aside>
+
+<Aside type="caution" title="Very large `maxMs` + many failures">
+  ```ts
+  policy.delayFor(60);   // → maxMs (clamped, but the call still happened)
+  ```
+  The policy itself is fine — it clamps cleanly at `maxMs`.  The
+  trap is upstream: a caller waiting 5 minutes between attempts
+  has probably gone past "transient failure" and into "dead
+  upstream."  Pair backoff with a *retry budget*: cap total
+  attempts or total elapsed time, surface a permanent failure
+  to a higher-level alert.
+</Aside>
+
+## Where to next
+
+- **[Backoff supervisor](/actor-ts/patterns/backoff-supervisor/)** —
+  the actor-restart wrapper that consumes a `BackoffPolicy`.
+- **[Retry](/actor-ts/patterns/retry/)** — per-call retry with
+  its own delay options; doesn't go through `BackoffPolicy` but
+  the underlying math is similar.
+- **[Circuit breaker](/actor-ts/patterns/circuit-breaker/)** —
+  for when "wait longer between attempts" should escalate to
+  "stop attempting entirely for a while."
+
+The [`exponentialBackoff`](/actor-ts/api/functions/exponentialbackoff/)
+and [`linearBackoff`](/actor-ts/api/functions/linearbackoff/) API
+references cover the full options.

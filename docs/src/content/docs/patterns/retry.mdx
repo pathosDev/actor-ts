@@ -1,0 +1,232 @@
+---
+title: Retry
+description: A functional `retry(factory, options)` helper — call a function up to N times with optional exponential backoff. Lives outside the actor world; pair with `ask` for actor calls. Distinct from BackoffSupervisor which restarts whole actors.
+---
+
+`retry` is a pure async function for "try this call up to N times,
+with backoff between attempts."  It's the simplest layer in the
+resilience stack — no actors, no state, just a Promise-returning
+factory.
+
+```ts
+import { retry } from 'actor-ts';
+
+const data = await retry(
+  () => fetch('https://example.com/items').then(r => r.json()),
+  { attempts: 3, delayMs: 200, factor: 2 },
+);
+```
+
+The factory is called up to 3 times.  Each retry waits longer:
+attempt 1 immediately, attempt 2 after 200 ms, attempt 3 after
+400 ms.  Returns the first success; rejects with the last error
+if every attempt fails.
+
+## The signature
+
+```ts
+function retry<T>(factory: () => Promise<T>, options: RetryOptions): Promise<T>;
+
+interface RetryOptions {
+  attempts:        number;     // total including initial call (>= 1)
+  delayMs?:        number;     // base delay between attempts
+  factor?:         number;     // multiplier for exponential backoff (default 1)
+  maxDelayMs?:     number;     // ceiling for any individual delay
+  shouldRetry?:    (err: Error, attempt: number) => boolean;
+  onAttempt?:      (err: Error, attempt: number) => void;
+}
+```
+
+The `attempts` field is **total attempts**, not retries — `attempts:
+1` runs the factory exactly once with no retries.  `attempts: 3`
+runs up to 3 times.
+
+## Configuring the backoff
+
+Four knobs cooperate to control the delay between attempts:
+
+| Setting | What it does |
+| --- | --- |
+| `delayMs` | Base delay between attempts.  Default `0` (no wait). |
+| `factor` | Multiplier per attempt.  Delay on attempt N is `delayMs × factor^(N-1)`.  Default `1` (constant). |
+| `maxDelayMs` | Upper bound on any single delay.  Default unbounded. |
+
+```ts
+// Constant 500ms between attempts:
+retry(factory, { attempts: 5, delayMs: 500 });
+
+// Exponential: 200ms, 400ms, 800ms, capped at 5s:
+retry(factory, { attempts: 6, delayMs: 200, factor: 2, maxDelayMs: 5_000 });
+
+// Fibonacci-ish: ad-hoc via factor=1.6:
+retry(factory, { attempts: 5, delayMs: 100, factor: 1.6 });
+```
+
+No jitter — the delay is deterministic per attempt.  If you need
+jittered retries (recommended for high-concurrency scenarios that
+might synchronize), wrap the policy:
+
+```ts
+import { retry, exponentialBackoff } from 'actor-ts';
+
+const policy = exponentialBackoff({ minMs: 200, maxMs: 5_000, randomFactor: 0.2 });
+
+async function jitteredRetry<T>(factory: () => Promise<T>, attempts: number): Promise<T> {
+  for (let i = 0; i < attempts; i++) {
+    try { return await factory(); }
+    catch (e) {
+      if (i === attempts - 1) throw e;
+      await new Promise(r => setTimeout(r, policy.delayFor(i)));
+    }
+  }
+  throw new Error('unreachable');
+}
+```
+
+Or use `BackoffSupervisor` if the thing being retried is an actor
+restart.
+
+## Selective retry — `shouldRetry`
+
+```ts
+class TransientError extends Error {}
+class PermanentError extends Error {}
+
+await retry(
+  () => callExternalAPI(),
+  {
+    attempts:    5,
+    delayMs:     500,
+    factor:      2,
+    shouldRetry: (err) => err instanceof TransientError,
+  },
+);
+```
+
+`shouldRetry` runs after every failed attempt.  Return `false` to
+**short-circuit** — the retry loop exits immediately with that
+error, no more attempts.
+
+Use it to differentiate transient and permanent failures:
+
+- **Transient** (network blip, rate limit, lock-contention) →
+  retry.
+- **Permanent** (validation error, auth failure, 4xx) → don't
+  retry; the next attempt will fail the same way.
+
+## Observability — `onAttempt`
+
+```ts
+await retry(factory, {
+  attempts:  3,
+  delayMs:   500,
+  onAttempt: (err, attempt) => {
+    metrics.counter('retry.attempt').inc({ attempt });
+    log.warn(`attempt ${attempt} failed: ${err.message}`);
+  },
+});
+```
+
+Fires after every failed attempt, including the final one.  Use
+it for retry-aware metrics and logging — counters per attempt,
+spans for tracing, alerts on "we ran out of retries."
+
+## Compared to BackoffSupervisor
+
+| Use case | Reach for... |
+| --- | --- |
+| A single `Promise`-returning call (HTTP fetch, DB query, ask) | `retry` |
+| An actor that fails and should be respawned | `BackoffSupervisor` |
+| A call protected by short-circuit behavior | `CircuitBreaker` (often combined with `retry` inside) |
+
+`retry` is the **call-level** primitive.  `BackoffSupervisor` is
+the **actor-level** primitive.  They don't compete — pick by what
+you're protecting.
+
+For an actor that wants to retry its *own* downstream call,
+`retry` inside `onReceive` is fine:
+
+```ts
+class MyActor extends Actor<...> {
+  override async onReceive(msg): Promise<void> {
+    const result = await retry(
+      () => this.callDownstream(msg),
+      { attempts: 3, delayMs: 200, factor: 2 },
+    );
+    // ...
+  }
+}
+```
+
+Awaiting inside `onReceive` blocks the actor's mailbox until the
+retry completes — same trade-off as any await inside an
+`onReceive`.  See
+[Ask pattern](/actor-ts/fundamentals/ask-pattern/) for when this
+is a problem.
+
+## Compared to circuit breaker
+
+A circuit breaker is **per-dependency state** that says "stop
+trying this thing for a while."  Retry is **per-call** logic that
+says "try again right now after a short wait."
+
+Combine them — retry *inside* a breaker call:
+
+```ts
+breaker.call(() => retry(
+  () => fetch('https://flaky.example'),
+  { attempts: 3, delayMs: 100, factor: 2 },
+));
+```
+
+The retry handles transient blips during a single call; the
+breaker tracks the trend across many calls.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`retry` doesn't know about cancellation">
+  ```ts
+  const p = retry(longCall, { attempts: 5, delayMs: 1000 });
+  // ... user clicked cancel ...
+  // p will still run all attempts.
+  ```
+  There's no built-in cancellation.  If you need to abort,
+  pass an `AbortSignal` to the factory and check it inside:
+  ```ts
+  retry(() => longCall({ signal: ac.signal }), { attempts: 5, delayMs: 1000 });
+  ```
+  An `AbortError` thrown by the factory bypasses `shouldRetry`'s
+  default "retry any" — provide a `shouldRetry` that returns
+  `false` for `AbortError` to fail fast on cancellation.
+</Aside>
+
+<Aside type="caution" title="Don't retry non-idempotent operations blindly">
+  ```ts
+  retry(() => paymentApi.charge(card, amount), { attempts: 3, delayMs: 1000 });
+  ```
+  If the first call succeeds but the response is lost in transit,
+  the retry charges the card *again*.  Either make the operation
+  idempotent (request-id, idempotency key) or **don't retry**
+  side-effecting calls without that protection.
+</Aside>
+
+<Aside type="caution" title="`delayMs * factor^N` can overflow">
+  ```ts
+  retry(factory, { attempts: 50, delayMs: 100, factor: 2 });
+  // Attempt 30: delay = 100 × 2^29 ≈ 1.6 years
+  ```
+  Always set `maxDelayMs` for `factor > 1`.  Otherwise a high
+  `attempts` count produces absurd delays.
+</Aside>
+
+## Where to next
+
+- **[Backoff supervisor](/actor-ts/patterns/backoff-supervisor/)** —
+  the actor-restart equivalent of retry.
+- **[Backoff policy](/actor-ts/patterns/backoff-policy/)** — pure
+  delay-calculation primitives for custom retry loops.
+- **[Circuit breaker](/actor-ts/patterns/circuit-breaker/)** —
+  the complementary "stop calling for a while" primitive.
+
+The [`retry`](/actor-ts/api/functions/retry/) API reference covers
+the full signature.
