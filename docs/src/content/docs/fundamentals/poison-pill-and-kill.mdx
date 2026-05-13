@@ -1,0 +1,205 @@
+---
+title: Poison pill and Kill
+description: The two built-in stop signals — `PoisonPill` is the graceful "stop after drain" envelope, `Kill` raises an exception that goes through supervision. Plus `ref.stop()`, `context.stopSelf()`, and the underlying lifecycle.
+---
+
+There are four ways to terminate an actor:
+
+| Signal | Effect | Goes through supervision? |
+| --- | --- | --- |
+| `ref.stop()` | Equivalent to `tell(PoisonPill.instance)`.  Stop after current mailbox drains. | No (clean stop). |
+| `context.stopSelf()` | The actor stops itself; same drain-then-stop semantics. | No. |
+| `ref.tell(PoisonPill.instance)` | Same as `ref.stop()` — the explicit form. | No. |
+| `ref.tell(Kill.instance)` | Immediate failure — raises `ActorKilledError` to the supervisor. | **Yes** — supervisor decides Restart / Resume / Stop / Escalate. |
+
+`PoisonPill` is the right tool 95 % of the time.  `Kill` is the
+escape hatch for the rare case where you want a non-faulting actor
+to trip its supervisor strategy from outside.
+
+## `PoisonPill` — graceful stop
+
+```ts
+import { ActorSystem, Props, PoisonPill } from 'actor-ts';
+
+const system = ActorSystem.create('demo');
+const actor = system.actorOf(Props.create(() => new Worker()));
+
+actor.tell({ kind: 'work', n: 1 });
+actor.tell({ kind: 'work', n: 2 });
+actor.tell({ kind: 'work', n: 3 });
+actor.tell(PoisonPill.instance);   // ← queued behind the three works
+actor.tell({ kind: 'work', n: 4 });
+//        ↑ this one goes to dead letters: the actor stops after #3.
+```
+
+The semantics:
+
+- `PoisonPill` is a **user message**.  It rides in the user queue
+  behind everything `tell`'d earlier.
+- When the actor's `onReceive` would have been called with the
+  PoisonPill, the framework intercepts it and triggers a clean
+  termination instead — `postStop` runs, children are stopped
+  first (cascade), and the actor's ref starts routing future
+  messages to dead letters.
+- Anything `tell`'d *after* the PoisonPill is enqueued is **not**
+  processed by this actor.  It either lands in the now-stopped
+  mailbox (and gets drained to dead letters) or, if the actor has
+  already stopped, routes directly to dead letters.
+
+This is the "drain before stop" guarantee: an actor in the middle
+of important work won't lose it.  Outstanding messages in the
+mailbox get processed; only the messages that arrive *after* the
+PoisonPill are dropped.
+
+### `ref.stop()` is just `tell(PoisonPill.instance)`
+
+```ts
+// These two lines are identical:
+actor.stop();
+actor.tell(PoisonPill.instance);
+```
+
+Both enqueue a PoisonPill on the actor's mailbox.  Use whichever
+reads better at the call site.
+
+### `context.stopSelf()`
+
+Inside an `onReceive`, the actor can request its own termination:
+
+```ts
+override onReceive(msg: Msg): void {
+  if (msg.kind === 'done') {
+    this.log.info('completed — winding down');
+    this.context.stopSelf();
+  }
+}
+```
+
+`stopSelf` schedules a stop that takes effect after the current
+`onReceive` finishes.  The actor processes any remaining mailbox
+content and *then* stops — same drain-then-stop semantic as
+PoisonPill from outside.  Use this for actors that decide their own
+end-of-life ("once-only" workers, sagas that complete and clean up
+themselves).
+
+## `Kill` — terminate via supervision
+
+```ts
+import { Kill } from 'actor-ts';
+
+actor.tell(Kill.instance);
+```
+
+`Kill` is also a user message, but when the runtime sees it, it
+raises an `ActorKilledError` *as if* the actor's `onReceive` had
+thrown.  This goes through the actor's supervisor — same path as a
+regular failure.
+
+The supervisor's decider sees an `ActorKilledError` and applies
+whichever directive matches:
+
+- **Default strategy** → `Restart`.  The actor is rebuilt; mailbox
+  continues.
+- **A strategy that maps `ActorKilledError` to `Stop`** → the actor
+  is stopped permanently.
+- **A strategy that maps it to `Escalate`** → the parent's parent
+  gets the error.
+
+This is the *only* way for an outside actor to trip the
+supervision tree without modifying the supervised actor's code.
+
+### When `Kill` is the right tool
+
+The legitimate uses are narrow:
+
+- **Forcing a restart**: a control-plane signal that says "this
+  actor's state is suspect, reset it" — sent to a supervisor that
+  uses the default Restart strategy.
+- **Tests** that want to verify supervision behavior under the
+  same code path the framework uses for real failures.
+- **External health-check failures**: a healthcheck reports the
+  actor's invariants are broken; killing it lets the supervisor
+  rebuild from a clean slate.
+
+For "clean shutdown," prefer `PoisonPill` / `stop`.  For "the
+actor itself decided to fail," throw inside `onReceive`.  `Kill`
+is a deliberate "you'll get the supervisor's reaction, not a
+clean stop" choice.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Don't reach for `Kill` when `stop` would do">
+  `Kill` triggers the supervisor strategy.  With the default
+  `defaultStrategy` (restart up to 10/minute), `actor.tell(Kill.instance)`
+  doesn't actually stop the actor — it restarts it.  If your goal
+  is "make this actor go away," use `ref.stop()`.  `Kill` is for
+  "I want the supervisor to see this as a failure."
+</Aside>
+
+## What happens during termination
+
+Whether triggered by PoisonPill, `stop()`, or a supervisor `Stop`
+directive, the termination sequence is the same:
+
+1. **Children are stopped first**, recursively.  Each child runs
+   its own termination; the parent waits.
+2. **`postStop` runs** on the actor.  Override this to release
+   resources (close sockets, flush buffers, unregister from
+   external systems).  Errors thrown in `postStop` are logged but
+   don't affect the termination.
+3. **Watchers are notified**.  Every actor that called
+   `context.watch(thisRef)` receives a `Terminated(thisRef)`
+   message.  See [Death watch](/actor-ts/fundamentals/death-watch/).
+4. **Mailbox is drained to dead letters**.  Any messages still in
+   the queue (including the PoisonPill itself — the framework
+   skips it) are routed to `/deadLetters`.
+5. **The ref starts routing to dead letters**.  Future `tell` calls
+   to this ref no longer find a live actor; they go to the system's
+   dead-letter handler.
+
+This sequence is the same whether the trigger came from outside
+(`PoisonPill`) or inside (`stopSelf` / `throw` + supervisor Stop).
+The only difference is who issued the request — the actual
+termination logic is one code path.
+
+## `Kill` vs. throwing in `onReceive`
+
+These two are nearly equivalent from the supervisor's perspective:
+
+```ts
+// Option A: tell Kill from outside.
+otherActor.tell(Kill.instance);
+
+// Option B: the actor itself throws on a specific message.
+override onReceive(msg) {
+  if (msg.kind === 'kill-me') throw new Error('requested');
+}
+otherActor.tell({ kind: 'kill-me' });
+```
+
+Both raise an exception that the supervisor strategy handles.
+Differences:
+
+- **The error type** is `ActorKilledError` for Kill, your own
+  Error class for an explicit throw.  This matters if your
+  supervisor uses `decideBy([{ match: ... }])` to dispatch on
+  error type.
+- **No code change is needed for Kill** — the actor doesn't have
+  to accept a "kill me" message in its type.  Useful for
+  killing third-party actors you don't control.
+
+## Where to next
+
+- **[Supervision](/actor-ts/fundamentals/supervision/)** — what
+  the supervisor does when `Kill` raises `ActorKilledError`.
+- **[Death watch](/actor-ts/fundamentals/death-watch/)** — how
+  watchers are notified when an actor (via any of these paths)
+  stops.
+- **[Coordinated shutdown](/actor-ts/fundamentals/coordinated-shutdown/)** —
+  graceful shutdown of the *whole* system, not single actors.
+- **[ActorSystem](/actor-ts/fundamentals/actor-system/)** — the
+  `system.terminate()` call that cascade-stops every actor.
+
+The [`PoisonPill`](/actor-ts/api/classes/poisonpill/) and
+[`Kill`](/actor-ts/api/classes/kill/) API references document the
+signal constants.
