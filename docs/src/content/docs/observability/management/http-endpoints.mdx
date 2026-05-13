@@ -1,0 +1,262 @@
+---
+title: HTTP endpoints
+description: The full management endpoint surface — `/health`, `/ready`, `/cluster/*`, `/metrics`, plus the opt-in admin endpoints (`/cluster/leave`, `/cluster/down`). Response shapes and status codes documented per endpoint.
+---
+
+The management server exposes a small set of operational
+endpoints.  Most are read-only (safe to expose to monitoring);
+admin ones are opt-in.
+
+## Health probes
+
+### `GET /health`
+
+Liveness — is this process fundamentally healthy?
+
+```
+GET /health
+→ 200 OK
+{
+  "ok": true,
+  "checks": {
+    "actor-system-alive": { "ok": true }
+  }
+}
+```
+
+503 with `{ ok: false }` if a check fails.  See
+[Health checks](/actor-ts/observability/management/health-checks/).
+
+### `GET /ready`
+
+Readiness — should this pod receive traffic?
+
+```
+GET /ready
+→ 200 OK
+{
+  "ok": true,
+  "checks": {
+    "actor-system-alive":   { "ok": true },
+    "cluster-up":           { "ok": true }
+  }
+}
+```
+
+The `cluster-up` check fails until `SelfUp` fires.  Custom
+checks contribute to the response.  503 if any fails.
+
+## Cluster info
+
+Available when `cluster` is passed to `HttpManagement.start`.
+
+### `GET /cluster/members`
+
+```
+GET /cluster/members
+→ 200 OK
+{
+  "selfAddress": "actor-ts://my-app@10.0.0.5:2552",
+  "leader":      "actor-ts://my-app@10.0.0.5:2552",
+  "members": [
+    {
+      "address":   "actor-ts://my-app@10.0.0.5:2552",
+      "status":    "up",
+      "roles":     ["compute"],
+      "uniqueAddress": { "address": "...", "uid": 1 }
+    },
+    ...
+  ]
+}
+```
+
+Full membership snapshot.  Useful for:
+
+- **Manual cluster-state checks** during incidents.
+- **External dashboards** that visualize the cluster.
+- **Tests** verifying cluster joining.
+
+### `GET /cluster/leader`
+
+```
+GET /cluster/leader
+→ 200 OK
+{ "leader": "actor-ts://my-app@10.0.0.5:2552" }
+```
+
+Just the leader's address.  Useful for monitoring leadership
+churn.
+
+### `GET /cluster/shards?type=<typeName>`
+
+```
+GET /cluster/shards?type=cart
+→ 200 OK
+{
+  "typeName": "cart",
+  "regions": [
+    {
+      "address": "actor-ts://my-app@10.0.0.5:2552",
+      "shards":  [0, 1, 2, ..., 33]
+    },
+    {
+      "address": "actor-ts://my-app@10.0.0.6:2552",
+      "shards":  [34, 35, ..., 66]
+    },
+    ...
+  ]
+}
+```
+
+Shows the shard-to-region allocation for a sharded type.  Use
+for:
+
+- **Verifying even distribution** after a rebalance.
+- **Diagnosing hot regions** (one region with too many shards).
+- **Manual rebalance triggers** in development.
+
+## Metrics
+
+### `GET /metrics`
+
+Opt-in via `enableMetricsEndpoint: true`.
+
+```
+GET /metrics
+→ 200 OK
+Content-Type: text/plain; version=0.0.4
+
+# HELP actor_messages_processed_total ...
+# TYPE actor_messages_processed_total counter
+actor_messages_processed_total{class="Worker",path="..."} 12345
+...
+```
+
+Prometheus text format.  See
+[Prometheus exporter](/actor-ts/observability/metrics/prometheus-exporter/).
+
+## Admin (opt-in)
+
+### `POST /cluster/leave`
+
+Opt-in via `enableLeaveEndpoint: true`.
+
+```
+POST /cluster/leave
+→ 200 OK
+{ "status": "leaving" }
+```
+
+Triggers graceful cluster-leave.  The node transitions through
+`leaving` → `exiting` → `removed`; shards rebalance away; the
+actor system terminates (configurable).
+
+Use for:
+
+- **Pod retirement** before rolling-update.
+- **Manual node-out during incidents**.
+
+Gate behind authentication — anyone with port access can drain
+your node.
+
+### `POST /cluster/down`
+
+Opt-in via `enableDownEndpoint: true`.
+
+```
+POST /cluster/down
+{ "address": "actor-ts://my-app@10.0.0.5:2552" }
+
+→ 200 OK
+{ "downed": "actor-ts://my-app@10.0.0.5:2552" }
+```
+
+Force-downs a remote member by address.  Destructive — the
+target's actors stop, its shards reallocate elsewhere.
+
+Use for:
+
+- **Split-brain recovery** when no downing strategy is
+  configured.
+- **Removing stuck `unreachable` members** that refuse to
+  recover.
+
+**High-risk endpoint** — gate behind auth + audit logs.
+
+## Custom routes
+
+```ts
+import { managementRoutes, path, get, concat, completeJson } from 'actor-ts';
+
+const baseRoutes = managementRoutes(system, cluster).routes;
+
+const customRoutes = concat(
+  baseRoutes,
+  path('admin',
+    get(async () => completeJson(200, { appVersion: '1.2.3' })),
+  ),
+);
+
+await http.newServerAt(host, port).bind(customRoutes);
+```
+
+`managementRoutes(system, cluster, opts)` returns the base
+routes; combine with your own using `concat`.  Useful for
+adding app-specific admin endpoints alongside the standard set.
+
+## Response format
+
+All endpoints return **JSON** by default, with one exception:
+`/metrics` returns **text/plain** for Prometheus.
+
+Errors are structured:
+
+```json
+{
+  "error":  "Missing query parameter: type",
+  "status": 400
+}
+```
+
+Status codes follow HTTP conventions: 200 for success, 4xx for
+client errors, 5xx for server errors.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`/cluster/leave` is one-way">
+  ```
+  POST /cluster/leave → node removed → cannot rejoin without restart
+  ```
+  Once a node leaves, it can't rejoin in the same process — its
+  membership state is gone.  Restart to rejoin.
+</Aside>
+
+<Aside type="caution" title="`/cluster/down` is irrecoverable">
+  ```
+  POST /cluster/down → target is removed from cluster
+  ```
+  The downed node sees `MemberRemoved` for itself; it can't
+  participate further.  Restart it to rejoin.
+</Aside>
+
+<Aside type="caution" title="No request validation by default">
+  ```ts
+  // POST /cluster/down with empty body → 400, but no field-level validation
+  ```
+  Wire the management server behind your usual API-validation
+  layer for production — or trust callers (since the port is
+  internal-only).
+</Aside>
+
+## Where to next
+
+- **[Management overview](/actor-ts/observability/management/overview/)** —
+  the bigger picture.
+- **[Health checks](/actor-ts/observability/management/health-checks/)** —
+  custom check registration.
+- **[Cluster overview](/actor-ts/cluster/overview/)** — the
+  membership semantics behind the `/cluster/*` endpoints.
+- **[Kubernetes deployment](/actor-ts/operations/deployment/kubernetes/)** —
+  the K8s recipe using these endpoints.
+- **[Prometheus exporter](/actor-ts/observability/metrics/prometheus-exporter/)** —
+  the metrics format details.

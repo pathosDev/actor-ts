@@ -1,0 +1,181 @@
+---
+title: Prometheus exporter
+description: Expose metrics as Prometheus text format — `exportPrometheus(registry)` returns the scrape-ready string. Pair with the management HTTP endpoint to give Prometheus a `/metrics` URL to poll.
+---
+
+The Prometheus exporter turns the in-process metrics registry
+into the **Prometheus text format** that Prometheus / Grafana /
+Thanos scrape from `/metrics`.
+
+```ts
+import { ActorSystem, MetricsExtensionId, exportPrometheus } from 'actor-ts';
+
+const system = ActorSystem.create('my-app');
+const metrics = system.extension(MetricsExtensionId);
+
+// Inside an HTTP handler:
+get(async () => {
+  const text = exportPrometheus(metrics.registry);
+  return { status: 200, body: text, contentType: 'text/plain; version=0.0.4' };
+});
+```
+
+Returns a single string in Prometheus 0.0.4 exposition format:
+
+```
+# HELP http_requests_total Total HTTP requests
+# TYPE http_requests_total counter
+http_requests_total{route="/orders"} 1234
+http_requests_total{route="/users"} 567
+
+# HELP sessions_active Currently active sessions
+# TYPE sessions_active gauge
+sessions_active 123
+
+# HELP http_request_duration_ms HTTP request latency
+# TYPE http_request_duration_ms histogram
+http_request_duration_ms_bucket{route="/orders",le="10"} 100
+http_request_duration_ms_bucket{route="/orders",le="50"} 250
+http_request_duration_ms_bucket{route="/orders",le="+Inf"} 300
+http_request_duration_ms_count{route="/orders"} 300
+http_request_duration_ms_sum{route="/orders"} 12450
+```
+
+## Via the management endpoint
+
+The easiest path is via the
+[HttpManagement](/actor-ts/observability/management/overview/)
+helper:
+
+```ts
+import { HttpManagement } from 'actor-ts';
+
+await HttpManagement.start(system, {
+  port: 8558,
+  enableMetricsEndpoint: true,   // ← exposes GET /metrics
+});
+```
+
+Prometheus scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: 'actor-ts'
+    static_configs:
+      - targets: ['my-app:8558']
+```
+
+The management server runs on a **separate port** from your app's
+main HTTP server.  Typical pattern: app on 8080 (public), management
+on 8558 (internal-only).
+
+## Manual wiring
+
+If you're not using `HttpManagement`, route a `GET /metrics`
+yourself:
+
+```ts
+import { path, get } from 'actor-ts/http';
+import { exportPrometheus } from 'actor-ts';
+
+const routes = path('metrics',
+  get(async () => ({
+    status: 200,
+    body: exportPrometheus(metrics.registry),
+    contentType: 'text/plain; version=0.0.4',
+    headers: {},
+  })),
+);
+```
+
+Bind on a dedicated port if you can — Prometheus's scrapes are
+periodic and shouldn't share the app port.
+
+## Naming conventions
+
+```
+http_requests_total              # counter — `_total` suffix
+sessions_active                   # gauge — no suffix
+http_request_duration_seconds    # histogram — _bucket / _count / _sum
+process_cpu_seconds_total        # counter again — Prometheus naming
+```
+
+Prometheus has **conventions** ([naming guide](https://prometheus.io/docs/practices/naming/)):
+
+- **Counters** end in `_total` (or describe what's counted).
+- **Histograms / timers** include the unit in the name
+  (`_seconds`, `_ms`, `_bytes`).
+- **`_count` / `_sum`** are framework-appended suffixes for
+  histograms.
+- **Labels** are snake_case strings.
+
+The framework doesn't enforce these — but Prometheus tooling
+expects them.
+
+## Scrape cadence vs gauge update rate
+
+- **Scrape every 15-30 seconds** — Prometheus default.
+- **Update gauges at any cadence** — Prometheus only sees the
+  value at scrape time.
+- **Counters** can be incremented at any rate; Prometheus
+  computes the rate from successive scrapes.
+
+For very-fast-changing values (memory usage, mailbox depth),
+the gauge may be stale by the time it's scraped.  That's
+fine — Prometheus is **eventually consistent** with its
+samples.
+
+## Exposition format details
+
+| Series | Format |
+| --- | --- |
+| Counter | One line per series.  `metric_name{labels} value` |
+| Gauge | Same as counter. |
+| Histogram | One `_bucket{le=N}` line per bucket + `_count` + `_sum`. |
+
+The exporter handles the formatting; you don't construct it
+manually.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Don't expose /metrics publicly">
+  ```
+  Public: GET https://my-app.example.com/metrics
+  ```
+  Metrics often reveal **internal state** (which routes are hot,
+  what error rates look like, how many users you have).  Restrict
+  to internal network or behind authentication.
+</Aside>
+
+<Aside type="caution" title="Scrape frequency vs label cardinality">
+  ```ts
+  // 1000 series × 1s scrape interval × 30 days = LOTS of data
+  ```
+  Prometheus storage scales with `series count × scrape interval`.
+  Bound your label cardinality (see
+  [core metrics](/actor-ts/observability/metrics/core-metrics/))
+  before adding labels.
+</Aside>
+
+<Aside type="caution" title="Histograms have rendering cost">
+  ```ts
+  // 100 histograms × 10 buckets × 50 label combos = 50,000 series
+  ```
+  Each histogram bucket is a separate series.  Bucket counts
+  multiply with label cardinality.  Use small bucket counts
+  (~10) for histograms with rich labels.
+</Aside>
+
+## Where to next
+
+- **[Observability overview](/actor-ts/observability/overview/)** —
+  the bigger picture.
+- **[Core metrics](/actor-ts/observability/metrics/core-metrics/)** —
+  the four primitives.
+- **[Management overview](/actor-ts/observability/management/overview/)** —
+  the easy way to expose `/metrics`.
+- **[Stock metrics](/actor-ts/observability/metrics/stock-metrics/)** —
+  the framework's auto-recorded metrics that appear here.
+
+The [`exportPrometheus`](/actor-ts/api/functions/exportprometheus/)
+function reference covers the full API.

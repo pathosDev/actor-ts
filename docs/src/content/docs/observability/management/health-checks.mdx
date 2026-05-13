@@ -1,0 +1,202 @@
+---
+title: Health checks
+description: Custom liveness + readiness checks plugged into the management server's `/health` + `/ready` endpoints. Each check returns ok or not-ok; the endpoint returns 200 iff all checks pass.
+---
+
+The management server exposes two health endpoints:
+
+- **`GET /health`** — **liveness**.  Returns 200 if the process
+  is operational.
+- **`GET /ready`** — **readiness**.  Returns 200 if the pod is
+  ready to receive traffic (cluster up + custom checks pass).
+
+The framework registers some defaults (cluster-up for ready),
+plus you can plug in **custom checks** for app-specific health.
+
+```ts
+import { HttpManagement } from 'actor-ts';
+
+const { health } = await HttpManagement.start(system, { port: 8558 });
+
+health.addCheck('database', async () => {
+  const ok = await db.ping();
+  return ok ? { ok: true } : { ok: false, reason: 'db unreachable' };
+});
+
+health.addCheck('cache', async () => {
+  try {
+    await redis.ping();
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: (e as Error).message };
+  }
+});
+```
+
+When **any check returns `{ ok: false }`**, the endpoint
+returns **503** with a JSON body listing the failed checks.
+
+## The check signature
+
+```ts
+type HealthCheck = () => Promise<HealthCheckResult>;
+
+interface HealthCheckResult {
+  ok:       boolean;
+  reason?:  string;       // human-readable failure description
+  details?: unknown;       // structured info for diagnostics
+}
+```
+
+Checks are async — return a Promise.  Long-running checks block
+the response, so keep them fast (sub-second, ideally < 100 ms).
+
+## Liveness vs readiness
+
+| Probe | What it answers | What K8s does on failure |
+| --- | --- | --- |
+| **Liveness** (`/health`) | "Is this process fundamentally broken?" | **Restart** the pod. |
+| **Readiness** (`/ready`) | "Should this pod receive traffic right now?" | **Stop routing** to this pod (keep it running). |
+
+Different semantics drive different checks:
+
+- **Liveness** should only fail for **unrecoverable** issues —
+  actor system crashed, deadlock detected, fundamental
+  invariants broken.  Restart is the only fix.
+- **Readiness** can fail for **transient** issues — DB is
+  briefly unreachable, cache is warming up, cluster is
+  rejoining.  No restart needed; just don't route here yet.
+
+**Don't put all checks into both** — restarting a pod because the
+external DB blipped is wrong; the DB blip will pass.  Put DB
+checks in **readiness** only.
+
+## Built-in readiness check
+
+When the management server is configured with a `cluster`, the
+default readiness check fails if the local node isn't `Up`:
+
+```
+GET /ready
+{ ok: false, reason: 'cluster not joined yet' }
+```
+
+Returns 200 once `SelfUp` fires.  This is the canonical "wait
+for the cluster" check.
+
+## Multiple checks
+
+```ts
+health.addCheck('database',          dbCheck);
+health.addCheck('cache',             cacheCheck);
+health.addCheck('downstream-api',    apiCheck);
+```
+
+All checks run **in parallel** when the endpoint is hit.  The
+response includes per-check status:
+
+```json
+{
+  "ok": false,
+  "checks": {
+    "cluster":         { "ok": true },
+    "database":        { "ok": false, "reason": "connection refused" },
+    "cache":           { "ok": true },
+    "downstream-api":  { "ok": true }
+  }
+}
+```
+
+The aggregate `ok` is `true` iff **every** check is true.
+
+## Liveness-only checks
+
+```ts
+health.addCheck('actor-system-alive', async () => {
+  return {
+    ok:     !system.isTerminated,
+    reason: system.isTerminated ? 'system terminated' : undefined,
+  };
+}, { liveness: true, readiness: false });
+```
+
+The optional second argument routes a check to **liveness only**
+(default `readiness: true`) or **readiness only**.
+
+The "system not terminated" check is automatically registered as
+liveness-only by the framework — it's an unrecoverable state.
+
+## Tests for checks
+
+```ts
+import { TestKit } from 'actor-ts/testkit';
+
+it('health check fails when DB is down', async () => {
+  const tk = TestKit.create();
+  const { health } = await HttpManagement.start(tk.system, { port: 0 });
+
+  health.addCheck('db', async () => ({ ok: false, reason: 'mock' }));
+
+  const result = await health.run();
+  expect(result.ok).toBe(false);
+  expect(result.checks!.db).toEqual({ ok: false, reason: 'mock' });
+
+  await tk.shutdown();
+});
+```
+
+`HealthCheckRegistry.run()` exposes the same logic the
+endpoint uses — useful for unit-testing your checks.
+
+## Timeouts
+
+```ts
+health.addCheck('slow-thing', slowCheck, { timeoutMs: 2_000 });
+```
+
+Per-check timeout.  A check exceeding the timeout is treated as
+`{ ok: false, reason: 'timeout' }`.
+
+Without a timeout, a hung check blocks the whole `/health`
+response — eventually triggering K8s's own probe timeout (10 s
+default) and a restart.  Set check timeouts conservatively.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Don't restart pods for transient DB outages">
+  ```ts
+  health.addCheck('db', dbPing);   // liveness AND readiness
+  ```
+  By default checks register for both.  A DB blip makes liveness
+  fail → K8s restarts → new pod also can't reach DB → restart
+  loop.  Make DB checks **readiness-only**.
+</Aside>
+
+<Aside type="caution" title="Checks are unauthenticated">
+  ```ts
+  // Anyone with port 8558 access can hit /health and see check results
+  ```
+  The check responses can leak detail (DB hostnames in error
+  messages).  Don't expose 8558 publicly; restrict to internal
+  network or auth proxy.
+</Aside>
+
+<Aside type="caution" title="Slow checks delay responses">
+  ```ts
+  health.addCheck('slow', async () => {
+    await new Promise(r => setTimeout(r, 5_000));
+    return { ok: true };
+  });
+  ```
+  Slow checks delay every probe response.  Add `timeoutMs` or
+  redesign the check to be sub-second.
+</Aside>
+
+## Where to next
+
+- **[Management overview](/actor-ts/observability/management/overview/)** —
+  the bigger picture.
+- **[HTTP endpoints](/actor-ts/observability/management/http-endpoints/)** —
+  the full endpoint reference.
+- **[Kubernetes deployment](/actor-ts/operations/deployment/kubernetes/)** —
+  the probe configuration this pairs with.

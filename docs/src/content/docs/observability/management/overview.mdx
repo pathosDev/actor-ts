@@ -1,0 +1,161 @@
+---
+title: Management overview
+description: A small HTTP server exposing operational endpoints — health checks, cluster state, sharding info, metrics. Runs on a separate port from your app; firewall-friendly. Wire into K8s probes; debug from the command line.
+---
+
+`HttpManagement` is a **small HTTP server** for operations.
+Separate from your app's main HTTP server, on a separate port
+(8558 by convention), exposing:
+
+- **Health probes** — liveness + readiness for K8s.
+- **Cluster info** — members, leader, sharding regions.
+- **Metrics** — Prometheus exposition (optional).
+- **Admin endpoints** — leave / down (optional, off by default).
+
+```ts
+import { HttpManagement } from 'actor-ts';
+
+await HttpManagement.start(system, {
+  port:                    8558,
+  cluster,                 // optional — enables cluster endpoints
+  enableMetricsEndpoint:   true,
+});
+```
+
+That's it.  The server runs on `0.0.0.0:8558`, serving the
+endpoints below.
+
+## Configuration
+
+```ts
+interface HttpManagementSettings {
+  port:                    number;
+  host?:                   string;            // default '0.0.0.0'
+  cluster?:                Cluster | null;    // enables cluster routes
+  enableLeaveEndpoint?:    boolean;            // default false
+  enableDownEndpoint?:     boolean;            // default false
+  enableMetricsEndpoint?:  boolean;            // default false
+}
+```
+
+Most production deployments:
+
+```ts
+await HttpManagement.start(system, {
+  port:                  8558,
+  cluster,
+  enableMetricsEndpoint: true,    // for Prometheus
+  enableLeaveEndpoint:   false,   // admin-only; gate behind auth
+  enableDownEndpoint:    false,
+});
+```
+
+## The endpoints
+
+| Endpoint | Always on? | Purpose |
+| --- | --- | --- |
+| `GET /health` | ✓ | Liveness — 200 iff health checks pass. |
+| `GET /ready` | ✓ | Readiness — 200 iff cluster up + checks pass. |
+| `GET /cluster/members` | When `cluster` is set | Membership JSON. |
+| `GET /cluster/leader` | When `cluster` is set | Leader address. |
+| `GET /cluster/shards?type=<name>` | When `cluster` is set | Shard placement for a sharded type. |
+| `POST /cluster/leave` | Opt-in (`enableLeaveEndpoint`) | Trigger graceful cluster-leave. |
+| `POST /cluster/down` | Opt-in (`enableDownEndpoint`) | Force-down a peer by address. |
+| `GET /metrics` | Opt-in (`enableMetricsEndpoint`) | Prometheus text format. |
+
+See [HTTP endpoints](/actor-ts/observability/management/http-endpoints/)
+for the full surface + response shapes.
+
+## Health checks
+
+```ts
+const { health } = await HttpManagement.start(system, { port: 8558 });
+
+health.addCheck('database', async () => {
+  return (await db.ping()) ? { ok: true } : { ok: false, reason: 'db unreachable' };
+});
+
+health.addCheck('cache', async () => {
+  return (await cache.ping()) ? { ok: true } : { ok: false };
+});
+```
+
+Custom checks plug into `/health` and `/ready`.  A failing
+check makes the endpoint return 503.  See
+[Health checks](/actor-ts/observability/management/health-checks/).
+
+## K8s integration
+
+```yaml
+# In your pod spec:
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8558
+  initialDelaySeconds: 5
+  periodSeconds:       5
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8558
+  initialDelaySeconds: 30
+  periodSeconds:       10
+```
+
+K8s polls these endpoints to decide if the pod should receive
+traffic (ready) or be restarted (live).  See
+[Kubernetes deployment](/actor-ts/operations/deployment/kubernetes/)
+for the full deployment recipe.
+
+## Why a separate port
+
+```
+App port (8080):     public, behind a load balancer
+Management (8558):    internal-only, firewalled off
+```
+
+The management endpoints reveal **internal state** — cluster
+member addresses, metric values, etc.  Exposing them publicly is
+a security risk.  Keep on a separate port + firewall internally.
+
+In K8s, this is **per-pod** — probes hit `:8558` from the
+kubelet (same node), but no Service exposes it externally.
+
+## Behind an auth proxy
+
+For more access control:
+
+```yaml
+# In your Service / Ingress config:
+# - 8080 → public
+# - 8558 → not exposed publicly; mTLS internally
+```
+
+Some production setups expose management behind a side-car proxy
+that handles auth (Envoy + JWT, Linkerd + mTLS).  The framework
+doesn't bundle auth — keep management closed; let infrastructure
+handle access control.
+
+## When NOT to use HttpManagement
+
+Two cases:
+
+1. **You already have an HTTP server** and want to mount management
+   routes inline.  Then use `managementRoutes(system, cluster)`
+   directly + bind into your existing
+   [HTTP routes](/actor-ts/http/overview/).
+2. **You're running a single-node app without cluster** — health
+   checks alone might not justify the extra port.  Consider just
+   wiring `/health` into your existing HTTP server.
+
+## Where to next
+
+- **[Health checks](/actor-ts/observability/management/health-checks/)** —
+  custom checks plumbed through `/health`.
+- **[HTTP endpoints](/actor-ts/observability/management/http-endpoints/)** —
+  the full endpoint reference.
+- **[Kubernetes deployment](/actor-ts/operations/deployment/kubernetes/)** —
+  the K8s recipe using these probes.
+- **[Prometheus exporter](/actor-ts/observability/metrics/prometheus-exporter/)** —
+  the metrics endpoint this exposes.

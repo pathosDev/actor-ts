@@ -1,0 +1,211 @@
+---
+title: Core metrics
+description: The four metric primitives — Counter, Gauge, Histogram, Timer — plus the label model that turns one metric into many time-series. Cardinality discipline is the user's responsibility.
+---
+
+The metrics extension exposes four classic primitives:
+
+| Type | Direction | When |
+| --- | --- | --- |
+| **Counter** | Monotonically increases | Total events, totals over time. |
+| **Gauge** | Settable / inc / dec | Point-in-time values that go up and down. |
+| **Histogram** | Distribution of observations | Latency, payload size. |
+| **Timer** | Histogram + ergonomic timing | "How long did this take?" |
+
+```ts
+import { ActorSystem, MetricsExtensionId } from 'actor-ts';
+
+const metrics = system.extension(MetricsExtensionId);
+
+const requests = metrics.counter('http_requests_total', { route: '/orders' });
+const active   = metrics.gauge('sessions_active');
+const latency  = metrics.histogram('http_request_duration_ms', { route: '/orders' });
+const timer    = metrics.timer('db_query_duration_ms', { table: 'users' });
+
+requests.inc();
+active.set(123);
+latency.observe(42);
+
+const stop = timer.start();
+await heavyWork();
+stop();   // observes the elapsed time
+```
+
+## Counters
+
+```ts
+const c = metrics.counter('events_total', { source: 'web' });
+
+c.inc();      // → +1
+c.inc(3);     // → +3
+c.value();    // → 4
+```
+
+**Monotonic** — only goes up.  Negative increments throw.  Reset
+on process restart.
+
+For "things you count":
+
+- Total requests received.
+- Total errors emitted.
+- Total cache hits / misses.
+
+For things that go down (active sessions decreasing), use a
+**gauge**, not a counter.
+
+## Gauges
+
+```ts
+const g = metrics.gauge('sessions_active');
+
+g.set(100);      // → 100
+g.inc();         // → 101
+g.dec(5);        // → 96
+g.value();       // → 96
+```
+
+Settable + bidirectional.  Represents **a point-in-time value**.
+
+For "things you measure right now":
+
+- Active sessions / connections.
+- Mailbox depth.
+- Queue size.
+- Available memory.
+
+## Histograms
+
+```ts
+const h = metrics.histogram('http_request_duration_ms', { route: '/orders' }, {
+  buckets: [10, 25, 50, 100, 250, 500, 1000, 2500, 5000],
+});
+
+h.observe(42);
+h.observe(118);
+h.observe(7);
+```
+
+A histogram counts how many observations fell **into each
+bucket**.  At export time, you see:
+
+```
+http_request_duration_ms_bucket{route="/orders", le="10"}      1
+http_request_duration_ms_bucket{route="/orders", le="25"}      1
+http_request_duration_ms_bucket{route="/orders", le="50"}      2
+http_request_duration_ms_bucket{route="/orders", le="100"}     2
+http_request_duration_ms_bucket{route="/orders", le="250"}     3
+http_request_duration_ms_bucket{route="/orders", le="+Inf"}    3
+http_request_duration_ms_count{route="/orders"}                3
+http_request_duration_ms_sum{route="/orders"}                  167
+```
+
+Prometheus computes percentiles (`p50`, `p95`, `p99`) at query
+time from these buckets.
+
+**Picking buckets**:
+
+- Pick buckets that capture **your SLO**.  For an HTTP latency
+  histogram with a 200ms p95 target, include `100, 200, 500`.
+- **Powers of 2 or 10** are common defaults — bias toward fewer
+  buckets in the noise floor, more around your target.
+- **Default buckets** (used if you don't specify):
+  `[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]`
+  — seconds-scale.  Override for ms-scale.
+
+## Timers
+
+```ts
+const t = metrics.timer('db_query_duration_ms', { table: 'users' });
+
+// Pattern 1: start/stop
+const stop = t.start();
+await runQuery();
+stop();
+
+// Pattern 2: wrap
+const result = await t.time(async () => runQuery());
+```
+
+A timer is a histogram with **ergonomics for timing things**.
+`start()` returns a stop function that observes the elapsed
+duration; `time(fn)` wraps a function.
+
+The underlying histogram uses default millisecond buckets — fine
+for most workloads.
+
+## Labels
+
+```ts
+metrics.counter('events_total', { source: 'web', env: 'prod' });
+```
+
+Labels turn **one metric into many time-series**.  At export
+time, each unique label combination is a separate series:
+
+```
+events_total{source="web",   env="prod"} 1234
+events_total{source="web",   env="staging"} 56
+events_total{source="batch", env="prod"} 89
+```
+
+Read in Prometheus / Grafana as filters or group-by axes.
+
+### Cardinality discipline
+
+```ts
+// ✗ HIGH-CARDINALITY — DON'T
+metrics.counter('events_total', {
+  requestId: req.id,        // unique per request
+  userId:    req.user.id,   // unique per user
+});
+```
+
+Every unique label combination creates a series.  Unbounded
+labels (request id, user id, timestamps) produce **unbounded
+series** — your monitoring system runs out of memory.
+
+**Bounded labels only**:
+
+- Route names (`/orders`, `/users/:id`).
+- Environment / region.
+- Status codes / kinds (a few dozen values).
+- Pod names if the pod count is bounded.
+
+Aim for **< 100 series per metric**.  Above that, alarm.
+
+## Reading values in-process
+
+```ts
+const counter = metrics.counter('events_total');
+counter.inc();
+counter.value();   // → 1
+```
+
+`value()` returns the **current** counter / gauge value.  For
+histograms, use `snapshot()`:
+
+```ts
+const h = metrics.histogram('latency');
+h.observe(10);
+h.observe(20);
+h.snapshot();
+// → { count: 2, sum: 30, buckets: Map<le, count> }
+```
+
+Useful for **tests** and **custom exporters**.
+
+## Where to next
+
+- **[Observability overview](/actor-ts/observability/overview/)** —
+  the bigger picture.
+- **[Prometheus exporter](/actor-ts/observability/metrics/prometheus-exporter/)** —
+  expose `/metrics` for Prometheus to scrape.
+- **[Stock metrics](/actor-ts/observability/metrics/stock-metrics/)** —
+  the framework's auto-recorded actor/mailbox/cluster metrics.
+- **[OTel adapter](/actor-ts/observability/metrics/otel-adapter/)** —
+  pipe metrics through OpenTelemetry.
+- **[prom-client adapter](/actor-ts/observability/metrics/prom-client-adapter/)** —
+  for projects already using `prom-client`.
+
+The [`MetricsExtension`](/actor-ts/api/classes/metricsextension/)
+API reference covers the full surface.

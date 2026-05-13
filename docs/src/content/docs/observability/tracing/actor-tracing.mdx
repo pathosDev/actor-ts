@@ -1,0 +1,209 @@
+---
+title: Actor tracing
+description: What the framework auto-spans when tracing is enabled — one span per `onReceive`, attributes for the actor path / class / message kind, parent context from sender. Spans chain across `tell` and across cluster nodes via W3C `traceparent`.
+---
+
+When the tracing extension is configured, the framework
+**automatically creates one span per actor message** plus
+infrastructure spans for cluster-wire envelopes.  Spans **chain
+across tells** — a message handler that `tell`s another actor
+passes the active span context, so the receiver's span links
+back to the sender's.
+
+## Auto-instrumented spans
+
+| Span name | When | Notable attributes |
+| --- | --- | --- |
+| `actor.receive` | Once per message delivered to `onReceive`. | `actor.path`, `actor.class`, `messaging.message_kind` |
+| `actor.persist` | PersistentActor.persist() call. | `persistence.id`, `persistence.sequence_nr` |
+| `actor.ask` | An `ask(...)` call. | `actor.path` of the target |
+| `cluster.envelope.send` | Outbound cross-cluster envelope. | `peer.address`, `messaging.message_kind` |
+| `cluster.envelope.receive` | Inbound cross-cluster envelope. | Same |
+
+For a typical request flow:
+
+```
+HTTP request                                       ← root span
+└── actor.receive (api-actor)                      ← child
+    └── actor.ask (ask db-actor)                   ← grandchild
+        └── cluster.envelope.send                   ← cross-wire
+        └── cluster.envelope.receive (on db node)   ← peer side
+            └── actor.receive (db-actor)            ← processes
+                └── actor.persist                   ← writes journal
+```
+
+Each span carries the trace ID — your tracing backend stitches
+them into one trace.
+
+## Causal chaining
+
+```ts
+// Within an actor:
+override async onReceive(msg) {
+  // tracer.activeSpan() returns the actor.receive span
+  // tell creates an envelope with traceparent set
+  this.downstream.tell({ kind: 'derived', from: msg.id });
+  // The downstream actor's actor.receive span has THIS span as parent
+}
+```
+
+`tell` snapshots the active span context onto the envelope (via
+`tracer.injectContext()`).  On receive, the framework runs
+`tracer.withActiveSpan(span, ...)` to make the actor's onReceive
+see the chain.
+
+Across cluster nodes, the same `traceparent` rides on the wire
+envelope.  The receiving node extracts it; its
+`actor.receive` span links back to the sender's.
+
+## Span attributes
+
+```ts
+// actor.receive attributes:
+{
+  'actor.path':            'actor-ts://my-app/user/api/sessions/user-42',
+  'actor.class':           'SessionActor',
+  'actor.system':          'my-app',
+  'messaging.message_kind': 'login',
+  // Persisted on error:
+  'error.message':         '...',
+}
+```
+
+For cluster envelopes:
+
+```ts
+{
+  'peer.address':          'actor-ts://my-app@10.0.0.5:2552',
+  'messaging.message_kind': 'login',
+  'wire.bytes':            234,
+}
+```
+
+These follow OpenTelemetry semantic conventions where
+applicable, so off-the-shelf dashboards (Honeycomb, Datadog,
+Grafana Tempo) work without customization.
+
+## Disabling auto-tracing
+
+```ts
+system.extension(TracingExtensionId).configure({
+  tracer:              new OtelTracerAdapter(...),
+  autoSpanReceive:     false,   // don't auto-span actor.receive
+  autoSpanPersist:     false,
+  autoSpanClusterWire: true,
+});
+```
+
+Useful when you only want **manual spans** at specific code
+points, or to reduce span volume in very-high-throughput
+systems.
+
+The framework's auto-instrumentation is **opt-in by default**
+when a non-Noop tracer is set; disable per-category if needed.
+
+## Adding application-level spans
+
+```ts
+override async onReceive(msg) {
+  const tracer = this.context.system.extension(TracingExtensionId).tracer;
+  const span = tracer.startSpan('process-order', {
+    attributes: {
+      'order.id':     msg.orderId,
+      'order.amount': msg.amount,
+    },
+  });
+  try {
+    await tracer.withActiveSpan(span, async () => {
+      // ... processing ...
+    });
+    span.setStatus('ok');
+  } catch (e) {
+    span.recordException(e as Error);
+    span.setStatus('error', (e as Error).message);
+    throw e;
+  } finally {
+    span.end();
+  }
+}
+```
+
+Application spans appear **as children of the auto-generated
+`actor.receive` span** — your custom logic sits naturally
+inside the actor's processing.
+
+## MDC integration
+
+When tracing is active, the framework merges `traceId` and
+`spanId` into the
+[LogContext](/actor-ts/fundamentals/logging/) so every log line
+emitted during a span includes them:
+
+```
+[2025-05-13T12:00:00Z] INFO ... actor processing {traceId=abc, spanId=def, correlationId=...}
+```
+
+Means your logs and traces share IDs — click from a slow trace
+in Honeycomb to the matching log lines in Loki.  Plus: spans
+include the existing MDC keys as attributes.
+
+## Performance
+
+When tracing is **disabled** (NoopTracer), the auto-instrumentation
+is **zero overhead** — the framework's hot paths short-circuit
+without allocating spans or doing async-storage lookups.
+
+When **enabled**, each message processed adds:
+
+- One span allocation (small object).
+- A few attribute writes.
+- One AsyncLocalStorage scope.
+
+Total cost per message: **~5-10 microseconds**.  Significant for
+million-msg-per-second systems; negligible otherwise.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Trace volume in high-throughput systems">
+  ```ts
+  // 100,000 messages/sec × 1 span each = 100K spans/sec
+  ```
+  At this rate, **always sample**.  See the OTel adapter's
+  sampling section for the typical 1-10 % production rate.
+</Aside>
+
+<Aside type="caution" title="Span attributes from message contents">
+  ```ts
+  // The framework includes messaging.message_kind by default
+  // It does NOT auto-include message field values
+  ```
+  This is by design — message contents may contain PII or
+  large payloads.  Add custom attributes manually where it's
+  safe and useful.
+</Aside>
+
+<Aside type="caution" title="`pipeTo` doesn't propagate active span">
+  ```ts
+  pipeTo(externalCall(), target);
+  // Target's onReceive doesn't see this caller's active span
+  ```
+  Manual workaround:
+  ```ts
+  const ctx = tracer.injectContext();
+  pipeTo(externalCall(), target, { sender: this.self });
+  // Then target reads its own carrier from message metadata if needed
+  ```
+  This is a known limitation; spans don't auto-chain through
+  pipeTo currently.
+</Aside>
+
+## Where to next
+
+- **[Tracer API](/actor-ts/observability/tracing/tracer-api/)** —
+  the underlying interface.
+- **[OTel adapter](/actor-ts/observability/tracing/otel-adapter/)** —
+  pipe to your tracing backend.
+- **[Recording tracer](/actor-ts/observability/tracing/recording-tracer/)** —
+  for test assertions.
+- **[Logging — LogContext](/actor-ts/fundamentals/logging/)** —
+  the MDC that gets enriched with trace IDs.

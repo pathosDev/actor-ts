@@ -1,0 +1,170 @@
+---
+title: OTel tracing adapter
+description: Bridge the framework's `Tracer` interface to the OpenTelemetry SDK — `@opentelemetry/api` + an exporter of your choice. The production tracing setup.
+---
+
+`OtelTracerAdapter` is the production-grade tracer.  It plugs the
+framework's [`Tracer`](/actor-ts/observability/tracing/tracer-api/)
+interface into the OpenTelemetry SDK, so spans flow to whatever
+backend you've configured (Jaeger, Tempo, Honeycomb, Datadog,
+New Relic, Grafana Cloud).
+
+```ts
+import { trace as otelTrace } from '@opentelemetry/api';
+import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
+import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
+import { SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { ActorSystem, TracingExtensionId, OtelTracerAdapter } from 'actor-ts';
+
+// 1. Set up the OTel SDK
+const provider = new NodeTracerProvider();
+provider.addSpanProcessor(new SimpleSpanProcessor(
+  new OTLPTraceExporter({ url: 'https://otel-collector.example.com/v1/traces' }),
+));
+provider.register();
+
+// 2. Wire the adapter
+const system = ActorSystem.create('my-app');
+system.extension(TracingExtensionId).configure({
+  tracer: new OtelTracerAdapter({
+    tracer: otelTrace.getTracer('actor-ts', '1.0.0'),
+  }),
+});
+```
+
+With this set up, the framework's auto-spans (one per actor
+message) flow to your tracing backend, joined with W3C
+`traceparent` context across cluster nodes.
+
+## Configuration
+
+```ts
+interface OtelTracerAdapterSettings {
+  tracer:   OtelTracer;           // from @opentelemetry/api
+  sampler?: Sampler;              // optional — usually configured at SDK level
+}
+```
+
+Minimal — the OTel SDK does the heavy lifting (export, sampling,
+batching, etc.).  The adapter just translates between APIs.
+
+## Sampling
+
+```ts
+import { ParentBasedSampler, TraceIdRatioBasedSampler } from '@opentelemetry/sdk-trace-base';
+
+const provider = new NodeTracerProvider({
+  sampler: new ParentBasedSampler({
+    root: new TraceIdRatioBasedSampler(0.1),   // sample 10 % of traces
+  }),
+});
+```
+
+For high-throughput systems, sampling is essential:
+
+- **`TraceIdRatioBasedSampler(0.1)`** — 10 % of traces.
+- **`AlwaysOnSampler()`** — every trace (dev / low-volume).
+- **`AlwaysOffSampler()`** — none (debugging only).
+- **`ParentBasedSampler(...)`** — defer to parent's sampling
+  decision; samples downstream of an already-sampled trace.
+
+The framework records spans at full rate; the SDK decides
+which to export.  Unsampled spans still propagate context for
+correlation but don't export — zero backend cost.
+
+## Exporters
+
+OTel SDK supports many exporters:
+
+| Exporter | Backend |
+| --- | --- |
+| `@opentelemetry/exporter-trace-otlp-http` | OTLP (Tempo, Jaeger, generic collectors) |
+| `@opentelemetry/exporter-trace-otlp-grpc` | OTLP via gRPC |
+| `@opentelemetry/exporter-jaeger` | Jaeger native |
+| `@opentelemetry/exporter-zipkin` | Zipkin |
+| Vendor-specific | Datadog, New Relic, Honeycomb, ... |
+
+Pick by your backend's preferred protocol.  OTLP-over-HTTP is
+the most general — works with the OpenTelemetry Collector,
+which then routes to any backend.
+
+## Resource attributes
+
+```ts
+import { Resource } from '@opentelemetry/resources';
+
+const provider = new NodeTracerProvider({
+  resource: new Resource({
+    'service.name':       'my-app',
+    'service.version':    '1.2.3',
+    'deployment.environment': 'production',
+    'host.name':          process.env.HOSTNAME,
+  }),
+});
+```
+
+Resource attributes are **stamped on every span** and the most
+useful place to put global context (service name, version,
+region, pod name).
+
+## Peer dependencies
+
+```bash
+npm install @opentelemetry/api @opentelemetry/sdk-trace-node
+# Plus an exporter:
+npm install @opentelemetry/exporter-trace-otlp-http
+```
+
+Bring your own SDK + exporter combo — the framework doesn't
+bundle either.
+
+## Combining with metrics
+
+```ts
+// Set up tracer:
+system.extension(TracingExtensionId).configure({
+  tracer: new OtelTracerAdapter({ tracer: otelTrace.getTracer('actor-ts') }),
+});
+
+// Set up metrics:
+const adapter = new OtelMetricsAdapter({
+  source: metrics.registry,
+  meter:  otelMetrics.getMeter('actor-ts'),
+});
+adapter.start();
+```
+
+The OTel SDK ties traces, metrics, and logs together via shared
+context.  See
+[OTel metrics adapter](/actor-ts/observability/metrics/otel-adapter/).
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Sampling at production rates">
+  ```ts
+  // 1 million msgs/sec × full tracing = unusable backend
+  ```
+  At high throughput, **always sample**.  10 % is typical;
+  some teams go down to 0.1 %.  Combined with head-based
+  sampling (drop early), backend cost stays manageable.
+</Aside>
+
+<Aside type="caution" title="OTel SDK versions">
+  ```ts
+  // @opentelemetry/api v1.x may not match sdk-trace-node v2.x
+  ```
+  OpenTelemetry SDK versions need to align — major-version
+  mismatches break.  Pin both to compatible majors in
+  `package.json`.
+</Aside>
+
+## Where to next
+
+- **[Tracer API](/actor-ts/observability/tracing/tracer-api/)** —
+  the interface this adapter implements.
+- **[Recording tracer](/actor-ts/observability/tracing/recording-tracer/)** —
+  test alternative.
+- **[Actor tracing](/actor-ts/observability/tracing/actor-tracing/)** —
+  the framework's auto-spans.
+- **[OTel metrics adapter](/actor-ts/observability/metrics/otel-adapter/)** —
+  companion for metrics.

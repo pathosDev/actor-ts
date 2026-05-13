@@ -1,0 +1,220 @@
+---
+title: Tracer API
+description: The framework's tracing abstraction — `startSpan`, `withActiveSpan`, span attributes, status, exceptions. Zero overhead when disabled; pluggable backend via adapters (OTel, recording-tracer for tests).
+---
+
+The framework's tracing API is a **minimal abstraction over
+distributed tracing**.  Designed so that:
+
+- **Tracing-off is zero-cost** — the default `NoopTracer`
+  short-circuits every call; no allocations, no async-storage
+  lookups.
+- **No SDK dependency** — actor-ts doesn't pull
+  `@opentelemetry/sdk-*`; you bring your own.
+- **W3C-compatible cross-wire** — spans serialize to W3C
+  `traceparent` for downstream OTel services.
+
+```ts
+import { ActorSystem, TracingExtensionId, OtelTracerAdapter } from 'actor-ts';
+
+const system = ActorSystem.create('my-app');
+
+system.extension(TracingExtensionId).configure({
+  tracer: new OtelTracerAdapter({ /* OTel SDK */ }),
+});
+
+// With tracing enabled, the framework auto-spans actor message handling.
+// User code can also create custom spans:
+const tracer = system.extension(TracingExtensionId).tracer;
+const span = tracer.startSpan('process-order');
+try {
+  await processOrder(...);
+  span.setStatus('ok');
+} catch (e) {
+  span.recordException(e as Error);
+  span.setStatus('error', (e as Error).message);
+  throw e;
+} finally {
+  span.end();
+}
+```
+
+## The interface
+
+```ts
+interface Tracer {
+  startSpan(name: string, opts?: SpanOptions): Span;
+  withActiveSpan<T>(span: Span, fn: () => T): T;
+  activeSpan(): Span | null;
+  injectContext(): TraceCarrier | null;
+  extractContext(carrier: TraceCarrier | null): SpanContext | null;
+}
+
+interface Span {
+  context(): SpanContext;
+  setAttribute(key: string, value: string | number | boolean): this;
+  setStatus(status: 'ok' | 'error', message?: string): this;
+  recordException(err: Error): this;
+  end(endTimeMs?: number): void;
+  readonly ended: boolean;
+}
+```
+
+Minimal surface — close to OpenTelemetry's API but smaller.
+
+## Starting spans
+
+```ts
+const span = tracer.startSpan('http-call', {
+  attributes: {
+    'http.method': 'GET',
+    'http.url':    'https://example.com',
+  },
+  kind:           'client',
+});
+```
+
+`SpanOptions`:
+
+| Field | What |
+| --- | --- |
+| `parent` | Explicit parent context.  `undefined` → use active span.  `null` → root span. |
+| `attributes` | Initial attributes. |
+| `kind` | `internal` / `server` / `client` / `producer` / `consumer`. |
+| `startTimeMs` | Override the start time. |
+
+## Active span
+
+```ts
+const span = tracer.startSpan('outer');
+
+await tracer.withActiveSpan(span, async () => {
+  const child = tracer.startSpan('inner');   // parent = outer (auto)
+  // ... work ...
+  child.end();
+});
+
+span.end();
+```
+
+`withActiveSpan(span, fn)` runs `fn` with `span` as the active
+span — child spans created inside auto-link as children.  Uses
+`AsyncLocalStorage` under the hood, so the active span
+propagates across `await`s.
+
+`activeSpan()` reads the current active span; `null` outside any
+scope.
+
+## Setting attributes and status
+
+```ts
+span.setAttribute('user.id', userId);
+span.setAttribute('order.amount', order.amount);
+span.setStatus('ok');
+// or:
+span.setStatus('error', 'payment-declined');
+span.recordException(error);
+```
+
+Attributes are key/value pairs visible in your tracing backend.
+Status + exception turn the span red in most UIs.
+
+## Cross-wire propagation
+
+```ts
+// Sender side — inject context into a carrier
+const carrier = tracer.injectContext();
+sendToOtherService(payload, carrier);
+
+// Receiver side — extract + create root from parent
+const parentCtx = tracer.extractContext(carrier);
+const span = tracer.startSpan('handle', { parent: parentCtx });
+```
+
+`TraceCarrier` is a key/value map; the framework's cluster
+transport puts these into wire envelopes automatically.  Outside
+the actor system (HTTP servers, broker messages), inject /
+extract manually to bridge tracing across services.
+
+## Picking a tracer
+
+| Tracer | When |
+| --- | --- |
+| **`NoopTracer`** | Default.  Tracing disabled.  Zero overhead. |
+| **`RecordingTracer`** | Tests.  Records every span in memory for assertions. |
+| **`OtelTracerAdapter`** | Production.  Pipes through OpenTelemetry SDK. |
+
+Production: configure the OTel adapter to export to your tracing
+backend (Jaeger, Tempo, Honeycomb, Datadog, etc.).  Tests: use
+the recording tracer to assert specific spans were created.
+
+## Span lifetime
+
+```ts
+const span = tracer.startSpan('work');
+// ...
+span.end();
+// span.ended === true after end()
+// further methods (setAttribute, end again) are no-ops
+```
+
+**Spans must be ended** — otherwise the tracer leaks memory.
+The framework auto-ends spans for actor message handling; user
+code is responsible for spans it creates.
+
+A common pattern is try/finally:
+
+```ts
+const span = tracer.startSpan('work');
+try {
+  return await doWork();
+} catch (e) {
+  span.recordException(e as Error);
+  throw e;
+} finally {
+  span.end();
+}
+```
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Forgetting to call `end()`">
+  ```ts
+  const span = tracer.startSpan('forgotten');
+  // no end() — span leaks in memory + never exports
+  ```
+  Use try/finally or a wrapper helper to guarantee `end()`.
+</Aside>
+
+<Aside type="caution" title="Span attributes leak PII">
+  ```ts
+  span.setAttribute('user.email', user.email);   // ✗ PII in traces
+  ```
+  Traces are typically less-protected than primary databases.
+  Don't put personal data, secrets, or anything else
+  privacy-sensitive into attributes.
+</Aside>
+
+<Aside type="caution" title="Active-span propagation across `pipeTo`">
+  ```ts
+  pipeTo(promise, target);
+  // ↑ active span on the sender side; target's handler runs in a fresh scope
+  ```
+  `pipeTo` doesn't currently propagate the active span context.
+  For tracing across pipeTo'd futures, manually capture
+  `tracer.injectContext()` before piping.
+</Aside>
+
+## Where to next
+
+- **[Observability overview](/actor-ts/observability/overview/)** —
+  the bigger picture.
+- **[Actor tracing](/actor-ts/observability/tracing/actor-tracing/)** —
+  what the framework auto-spans.
+- **[OTel adapter](/actor-ts/observability/tracing/otel-adapter/)** —
+  pipe to OpenTelemetry.
+- **[Recording tracer](/actor-ts/observability/tracing/recording-tracer/)** —
+  the test-friendly in-memory backend.
+
+The [`Tracer`](/actor-ts/api/interfaces/tracer/) API reference
+covers the full surface.
