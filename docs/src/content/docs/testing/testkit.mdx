@@ -1,0 +1,225 @@
+---
+title: TestKit
+description: The test-time facade around `ActorSystem` — quiet logging by default, a one-line `createTestProbe()`, a `within(ms, fn)` deadline helper, and clean `shutdown()`. Most actor tests start with `TestKit.create()`.
+---
+
+`TestKit` is a thin convenience wrapper around `ActorSystem` for
+tests.  It gives you a ready-to-use system with sensible test
+defaults — quiet logger, easy probe creation, deterministic
+shutdown.
+
+```ts
+import { TestKit } from 'actor-ts/testkit';
+
+const tk = TestKit.create('my-spec');
+const probe = tk.createTestProbe();
+const ref = tk.system.actorOf(Props.create(() => new Worker(probe)));
+
+ref.tell({ kind: 'do' });
+await probe.expectMsg('done');
+
+await tk.shutdown();
+```
+
+Three things the kit does for you:
+
+- Builds the `ActorSystem` with a `NoopLogger` by default — no
+  console spam during test runs.
+- Exposes `createTestProbe()` so you don't have to thread the
+  system into every probe constructor.
+- Owns `shutdown()` — call once at test end; safely tears down
+  the system, scheduler, and dispatcher.
+
+## The API
+
+```ts
+class TestKit {
+  static create(name?: string, opts?: TestKitOptions): TestKit;
+  static withManualScheduler(name?, opts?): { kit: TestKit; scheduler: ManualScheduler };
+
+  readonly system: ActorSystem;
+
+  createTestProbe(opts?: TestProbeOptions): TestProbe;
+  within<T>(durationMs: number, fn: () => Promise<T>): Promise<T>;
+  shutdown(): Promise<void>;
+}
+
+interface TestKitOptions extends ActorSystemSettings {
+  quiet?: boolean;   // default true — use NoopLogger
+}
+```
+
+### `TestKit.create(name?, options?)`
+
+Builds a kit with a fresh system.  The `name` is the system name —
+useful when running parallel test suites that mustn't share state.
+Defaults to `'test-kit'`.
+
+```ts
+const tk = TestKit.create('my-spec', {
+  quiet:    false,            // turn logging on
+  logLevel: LogLevel.Debug,
+  config:   { /* HOCON overrides */ },
+});
+```
+
+With `quiet: false` you get console logs — useful when debugging a
+failing test.  Otherwise, log calls are no-ops, which keeps your
+test output clean.
+
+### `tk.createTestProbe(options?)`
+
+```ts
+const probe = tk.createTestProbe({
+  defaultTimeoutMs: 5_000,    // default wait for expect/receive
+  name: 'order-probe',         // visible in logs
+});
+
+ref.tell({ kind: 'do', replyTo: probe });
+await probe.expectMsg({ kind: 'done' });
+```
+
+Returns a `TestProbe` scoped to this kit's system.  See
+[TestProbe](/actor-ts/testing/test-probe/) for the full
+expectations API.
+
+### `tk.within(durationMs, fn)`
+
+```ts
+await tk.within(1_000, async () => {
+  ref.tell({ kind: 'do' });
+  await probe.expectMsg('done');
+});
+```
+
+Run `fn` and assert it **completed in under `durationMs`**.
+Throws if it took longer.  Useful for "this should be fast" SLAs
+inside tests, without depending on the test runner's per-test
+timeout.
+
+Note: this is a *soft* deadline — `fn` still runs to completion
+even if it overshoots.  It just throws after the fact.
+
+### `tk.shutdown()`
+
+```ts
+afterEach(async () => {
+  await tk.shutdown();
+});
+```
+
+Terminates the underlying system.  **Always call this** in a
+fixture teardown — without it, the test process leaks a live
+system that keeps the event loop alive.  Some test runners
+(Bun, Vitest) detect this and fail the suite; others hang.
+
+### `TestKit.withManualScheduler()`
+
+```ts
+const { kit, scheduler } = TestKit.withManualScheduler('my-spec');
+
+const ref = kit.system.actorOf(Props.create(() => new Heartbeat(probe)));
+ref.tell({ kind: 'start' });
+
+scheduler.advance(5_000);   // jump 5 virtual seconds
+await probe.expectMsg('tick');
+```
+
+Returns both the kit and its `ManualScheduler` so the test can
+advance virtual time.  See
+[ManualScheduler](/actor-ts/testing/manual-scheduler/) for the
+full virtual-clock semantics.
+
+## Fixture patterns
+
+### Per-test fixture (Bun, Vitest, Jest)
+
+```ts
+import { describe, it, beforeEach, afterEach } from 'bun:test';
+
+describe('Counter', () => {
+  let tk: TestKit;
+  let probe: TestProbe;
+
+  beforeEach(() => {
+    tk = TestKit.create();
+    probe = tk.createTestProbe();
+  });
+
+  afterEach(async () => {
+    await tk.shutdown();
+  });
+
+  it('increments', async () => {
+    const ref = tk.system.actorOf(Props.create(() => new Counter()));
+    ref.tell({ kind: 'inc' });
+    ref.tell({ kind: 'get', replyTo: probe as ActorRef<number> });
+    await probe.expectMsg(1);
+  });
+});
+```
+
+A fresh kit per test — no state leakage between tests, slightly
+slower than sharing one kit but worth it for isolation.
+
+### Shared fixture for read-only tests
+
+```ts
+describe('PureBehaviorTests', () => {
+  let tk: TestKit;
+
+  beforeAll(() => { tk = TestKit.create(); });
+  afterAll(async () => { await tk.shutdown(); });
+
+  // each `it` uses tk.createTestProbe() for its own probe, but the
+  // underlying ActorSystem is shared.
+});
+```
+
+Faster than per-test setup; only safe when tests don't mutate
+shared actors.
+
+## What TestKit doesn't do
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Multi-node cluster tests">
+  TestKit creates **one** ActorSystem.  For cluster scenarios
+  (sharding placement, singleton failover, gossip convergence),
+  use [MultiNodeSpec](/actor-ts/testing/multi-node-spec/) which
+  spins up N systems in one process.
+</Aside>
+
+<Aside type="caution" title="Real I/O integration">
+  TestKit is for **pure unit + small integration tests**.  Tests
+  that need a real Kafka / Redis / Postgres should be in a
+  separate suite, marked appropriately for slow runs.  Don't mix
+  in-memory probe tests with broker-dependent tests in the same
+  file.
+</Aside>
+
+<Aside type="caution" title="Test isolation when name collides">
+  ```ts
+  // ✗ both tests use the same name → cluster identity conflict
+  const tk1 = TestKit.create('my-app');
+  const tk2 = TestKit.create('my-app');
+  ```
+  Two systems with the same name + same network = they'd join
+  each other if cluster were enabled.  For non-cluster tests it's
+  fine, but get into the habit of unique names per test or use
+  the default `'test-kit'`.
+</Aside>
+
+## Where to next
+
+- **[Testing overview](/actor-ts/testing/overview/)** — the big
+  picture: unit, time-deterministic, multi-node.
+- **[TestProbe](/actor-ts/testing/test-probe/)** — the fake-actor
+  expectations API.
+- **[ManualScheduler](/actor-ts/testing/manual-scheduler/)** —
+  virtual time.
+- **[MultiNodeSpec](/actor-ts/testing/multi-node-spec/)** — for
+  cluster scenarios.
+
+The [`TestKit`](/actor-ts/api/classes/testkit/) API reference
+covers the full surface.

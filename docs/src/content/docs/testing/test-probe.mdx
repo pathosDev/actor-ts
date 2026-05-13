@@ -1,0 +1,270 @@
+---
+title: TestProbe
+description: A fake `ActorRef` that captures messages instead of processing them — pass it in place of a real actor and assert on what it receives. The standard tool for actor unit tests.
+---
+
+A `TestProbe` is an `ActorRef` that **doesn't run user code**.
+Instead, every `tell` lands in a buffer the test can assert on.
+Pass a probe wherever you'd pass a real actor; the actor under
+test sees a normal ref and `tell`s it as usual.
+
+```ts
+const tk = TestKit.create();
+const probe = tk.createTestProbe();
+
+const ref = tk.system.actorOf(Props.create(() => new Worker(probe)));
+//                                                          ^-- probe instead of the real downstream
+ref.tell({ kind: 'work' });
+
+await probe.expectMsg({ kind: 'work-done' });
+await tk.shutdown();
+```
+
+`Worker` `tell`s the "downstream" — which is actually the probe.
+The probe captures the message; `expectMsg` consumes it and
+asserts the shape.
+
+## Creating a probe
+
+```ts
+const probe = tk.createTestProbe({
+  defaultTimeoutMs: 5_000,    // default wait for expect/receive — default 3s
+  name:             'order-probe',
+});
+```
+
+Both options are optional.  Without `defaultTimeoutMs`, every
+`expect*` call waits up to 3 seconds.  Without `name`, the probe
+gets an auto-generated path.
+
+The probe extends `ActorRef`, so you can pass it anywhere an
+`ActorRef<T>` is expected — though it's typed as `unknown` (it
+accepts every message kind).  Cast if needed:
+
+```ts
+ref.tell({ kind: 'get', replyTo: probe as ActorRef<number> });
+```
+
+## Expectations
+
+### `expectMsg(expected)`
+
+```ts
+await probe.expectMsg('done');
+await probe.expectMsg({ kind: 'reply', value: 42 });
+```
+
+Wait for the next message, deep-equal it against `expected`.
+Throws if the shape doesn't match or the timeout expires.  Returns
+the message so you can chain assertions.
+
+### `expectMsgType(Class)`
+
+```ts
+import { Success } from 'actor-ts';
+
+const reply = await probe.expectMsgType(Success);
+expect(reply.value).toBe(42);
+```
+
+Wait for the next message; assert it's an instance of `Class`.
+Useful for `Success` / `Failure` envelopes from
+[pipeTo](/actor-ts/patterns/futures-patterns/), or any class-based
+message type.
+
+### `expectNoMessage(timeoutMs)`
+
+```ts
+ref.tell({ kind: 'do-nothing' });
+await probe.expectNoMessage(200);
+// → asserts no message arrived in 200ms
+```
+
+The inverse of `expectMsg` — assert that **nothing** arrives in
+the given window.  Useful for "this command should be silently
+ignored" or "the actor should not reply to this."
+
+The default window is 300 ms — short enough to keep tests fast,
+long enough to catch most spurious sends.
+
+### `receiveOne(timeoutMs?)` / `receiveN(n, timeoutMs?)`
+
+```ts
+const msg = await probe.receiveOne();
+const msgs = await probe.receiveN(3);
+```
+
+Get the next message(s) **without asserting**.  Use when the
+shape varies and you want to inspect with custom logic:
+
+```ts
+const msg = await probe.receiveOne();
+if (msg.kind === 'success') expect(msg.value).toBeGreaterThan(0);
+else expect(msg.error).toBeDefined();
+```
+
+### `fishForMessage(predicate)`
+
+```ts
+const ready = await probe.fishForMessage(
+  (m) => typeof m === 'object' && m.kind === 'ready',
+  5_000,
+);
+```
+
+Discard messages until one matches the predicate.  Useful when
+the actor under test emits a stream of messages and you only care
+about one specific kind.  Discarded messages are gone — they
+can't be re-asserted later.
+
+### `messageCount` / `hasMessage()`
+
+```ts
+expect(probe.messageCount).toBe(0);
+ref.tell({ kind: 'do' });
+await new Promise(r => setImmediate(r));   // yield once for the tell to land
+expect(probe.hasMessage()).toBe(true);
+```
+
+Synchronous inspection — no waiting.  Use to check "are there any
+queued messages I haven't consumed?"
+
+## The last sender
+
+```ts
+ref.tell({ kind: 'get', replyTo: probe });
+await probe.expectMsg({ kind: 'reply', value: 42 });
+expect(probe.sender).toBe(ref);   // who sent the last received message
+```
+
+After `expectMsg` / `receiveOne` / etc., `probe.sender` holds the
+sender of that just-consumed message.  Useful for asserting that
+"this reply came from the right actor."
+
+`probe.reply(msg)` is a shortcut that `tell`s the last sender:
+
+```ts
+ref.tell({ kind: 'request' }, probe);
+await probe.expectMsg({ kind: 'request' });
+probe.reply({ kind: 'response' });
+// ↑ same as: probe.sender.tell({ kind: 'response' }, probe);
+```
+
+Common in tests that simulate two-way conversations — let the
+probe receive a request, then have it reply.
+
+## `clearInbox`
+
+```ts
+ref.tell({ kind: 'one' });
+ref.tell({ kind: 'two' });
+probe.clearInbox();   // drops both, queue is empty again
+
+ref.tell({ kind: 'three' });
+await probe.expectMsg({ kind: 'three' });
+```
+
+Useful between test phases when you want to ignore setup-phase
+messages and assert only on what comes next.
+
+## Patterns
+
+### Probe as a stand-in for a downstream actor
+
+```ts
+class OrderHandler extends Actor<OrderCmd> {
+  constructor(private readonly db: ActorRef<DbCmd>) { super(); }
+  override onReceive(cmd: OrderCmd): void {
+    this.db.tell({ kind: 'insert', orderId: cmd.id });
+  }
+}
+
+it('forwards orders to db', async () => {
+  const dbProbe = tk.createTestProbe();
+  const handler = tk.system.actorOf(Props.create(() =>
+    new OrderHandler(dbProbe as ActorRef<DbCmd>)));
+
+  handler.tell({ kind: 'place-order', id: 'o-1' });
+  await dbProbe.expectMsg({ kind: 'insert', orderId: 'o-1' });
+});
+```
+
+The probe replaces a real DB actor; the test sees the call without
+needing the DB to exist.
+
+### Probe as a reply-to target
+
+```ts
+const counter = tk.system.actorOf(Props.create(() => new Counter()));
+counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'get', replyTo: probe as ActorRef<number> });
+await probe.expectMsg(2);
+```
+
+For ask-style messages — the probe stands in for the asker.
+
+### Multiple probes
+
+```ts
+const a = tk.createTestProbe({ name: 'a-probe' });
+const b = tk.createTestProbe({ name: 'b-probe' });
+
+const router = tk.system.actorOf(...);
+router.tell({ kind: 'send', target: 'a', payload: 'hello' });
+
+await a.expectMsg('hello');
+await b.expectNoMessage(100);
+```
+
+Verify routing logic by checking each probe's inbox.
+
+## Pitfalls
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`expectMsg` consumes from the buffer">
+  ```ts
+  await probe.expectMsg('a');
+  await probe.expectMsg('a');   // fails — first call already consumed it
+  ```
+  Each `expectMsg` removes one message.  If you need to assert on
+  the same message twice, capture the return value:
+  ```ts
+  const got = await probe.expectMsg('a');
+  expect(got).toEqual('a');
+  expect(typeof got).toBe('string');
+  ```
+</Aside>
+
+<Aside type="caution" title="Long timeouts hide slow code">
+  ```ts
+  await probe.expectMsg('done', 30_000);   // 30s wait
+  ```
+  If your actor is slow enough to need 30 s, the test is broken
+  — actors should be sub-millisecond.  Use the
+  `ManualScheduler` if real time is involved, not large timeouts.
+</Aside>
+
+<Aside type="caution" title="Synchronous reads after `tell`">
+  ```ts
+  ref.tell({ kind: 'do' });
+  expect(probe.messageCount).toBe(1);   // ✗ usually 0
+  ```
+  `tell` schedules; processing happens on the next event-loop
+  turn.  Synchronously checking `messageCount` right after a
+  `tell` usually sees 0.  Use the async `expectMsg(...)` instead,
+  which waits for delivery.
+</Aside>
+
+## Where to next
+
+- **[TestKit](/actor-ts/testing/testkit/)** — the wrapper that
+  creates the probe.
+- **[Testing overview](/actor-ts/testing/overview/)** — when to
+  use probes vs other testing tools.
+- **[ManualScheduler](/actor-ts/testing/manual-scheduler/)** —
+  for tests that need deterministic timer fires.
+
+The [`TestProbe`](/actor-ts/api/classes/testprobe/) API reference
+covers the full surface.

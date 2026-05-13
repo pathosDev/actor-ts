@@ -1,0 +1,209 @@
+---
+title: Testing overview
+description: Three layers of testing — unit-test an actor with TestKit + TestProbe, time-travel with ManualScheduler, and run multi-node cluster scenarios in one process via MultiNodeSpec. The framework's testing tools at a glance.
+---
+
+Actor systems are tricky to test naively because two things are
+hard from outside:
+
+- **Asynchrony** — every `tell` happens later; assertions need to
+  wait.
+- **Time** — receive timeouts, scheduled retries, gossip rounds
+  all depend on the clock.
+
+The framework's **TestKit** gives you tools to control both:
+
+| Tool | Solves |
+| --- | --- |
+| **`TestKit`** | A ready-to-use ActorSystem with quiet logging + helper methods. |
+| **`TestProbe`** | A fake actor that captures messages for assertions. |
+| **`ManualScheduler`** | A virtual-clock scheduler — time advances only when you say so. |
+| **`MultiNodeSpec`** | Spin up multiple cluster nodes in **one process** for cluster-scenario tests. |
+| **`ParallelMultiNodeSpec`** | Run nodes in separate processes when isolation matters. |
+
+The first three are for **unit + integration tests** of a single
+actor system; the last two for **distributed scenarios**.
+
+## A minimal test
+
+```ts
+import { describe, it, expect } from 'bun:test';
+import { Actor, Props, TestKit } from 'actor-ts/testkit';
+
+type Cmd = { kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> };
+
+class Counter extends Actor<Cmd> {
+  private count = 0;
+  override onReceive(cmd: Cmd): void {
+    if (cmd.kind === 'inc') this.count++;
+    else cmd.replyTo.tell(this.count);
+  }
+}
+
+describe('Counter', () => {
+  it('increments and replies', async () => {
+    const tk = TestKit.create('counter-spec');
+    const probe = tk.createTestProbe();
+
+    const counter = tk.system.actorOf(Props.create(() => new Counter()));
+    counter.tell({ kind: 'inc' });
+    counter.tell({ kind: 'inc' });
+    counter.tell({ kind: 'get', replyTo: probe as ActorRef<number> });
+
+    await probe.expectMsg(2);
+    await tk.shutdown();
+  });
+});
+```
+
+Two things from the testkit doing the work:
+
+- **`TestKit.create(name)`** builds a fresh ActorSystem with quiet
+  logging — no console spam during test runs.
+- **`probe.expectMsg(2)`** asserts the next message the probe
+  receives is exactly `2`, with a default 3-second timeout.
+
+`tk.shutdown()` at the end is critical — without it, the test
+leaves a live system + dispatcher running, and the test process
+may hang.
+
+## The three layers
+
+### Unit — actor in isolation
+
+```ts
+const tk = TestKit.create();
+const probe = tk.createTestProbe();
+const ref = tk.system.actorOf(Props.create(() => new MyActor(probe)));
+ref.tell({ kind: 'do' });
+await probe.expectMsg('done');
+await tk.shutdown();
+```
+
+`MyActor` is constructed with `probe` as a callback target — it
+`tell`s the probe in place of whatever it would tell in
+production.  Tests assert on what the probe sees.
+
+This is the canonical shape — see
+[TestKit](/actor-ts/testing/testkit/) and
+[TestProbe](/actor-ts/testing/test-probe/).
+
+### Time-deterministic — `ManualScheduler`
+
+```ts
+const { kit, scheduler } = TestKit.withManualScheduler();
+const probe = kit.createTestProbe();
+
+const ref = kit.system.actorOf(Props.create(() => new ScheduledThing(probe)));
+ref.tell({ kind: 'start' });
+
+scheduler.advance(5_000);   // virtual time jumps 5 seconds
+await probe.expectMsg({ kind: 'fired' });
+
+await kit.shutdown();
+```
+
+Actors using `context.timers.startSingleTimer` or
+`system.scheduler.scheduleOnce` get their fires driven by the
+manual scheduler — no real `setTimeout`, no flakiness.
+
+See [ManualScheduler](/actor-ts/testing/manual-scheduler/).
+
+### Distributed — `MultiNodeSpec`
+
+```ts
+import { MultiNodeSpec } from 'actor-ts/testkit';
+
+const spec = await MultiNodeSpec.create({
+  systemName: 'cluster-spec',
+  nodes:      3,
+});
+
+// `spec.nodes` is an array of ActorSystems, all joined into one cluster.
+const node1Probe = spec.createTestProbe(0);
+const remote = spec.nodes[1].actorOf(Props.create(() => new Worker()));
+remote.tell({ kind: 'do', replyTo: node1Probe });
+await node1Probe.expectMsg({ kind: 'done' });
+
+await spec.shutdown();
+```
+
+Three actor systems join a cluster inside one test process, with
+the in-memory transport.  Useful for verifying sharding behaviour,
+cluster-singleton failover, distributed-data merge semantics — all
+without a Docker-Compose setup.
+
+See [MultiNodeSpec](/actor-ts/testing/multi-node-spec/).
+
+## What to test
+
+Three categories:
+
+1. **Pure behavior** — give the actor a sequence of messages,
+   assert on the probe.  Most actor unit tests look like this.
+2. **State + persistence** — for PersistentActors, test the
+   recovery path explicitly by stopping the actor and re-spawning
+   it.  Assert the recovered state matches what you'd expect from
+   the event sequence.
+3. **Distributed behavior** — for cluster features, MultiNodeSpec
+   gives you a "real-enough" cluster to test sharding placement,
+   singleton failover, etc.
+
+## What not to test
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Don't test the framework itself">
+  ```ts
+  // ✗ testing that `tell` actually delivers a message
+  ref.tell({ kind: 'do' });
+  await probe.expectMsg({ kind: 'do' });
+  ```
+  Trust the framework; test *your* actor's behavior.  This kind
+  of test passes when the framework is broken in a way that
+  doesn't matter to your app.
+</Aside>
+
+<Aside type="caution" title="Don't write integration tests that need real I/O">
+  Bun-Kafka, Bun-Redis etc. tests against real brokers are slow
+  and flakey.  Use the **in-memory transport** for cluster tests
+  and stub broker calls behind plain interfaces.  Reserve real-I/O
+  tests for a separate "smoke test" tier outside the unit-test
+  suite.
+</Aside>
+
+<Aside type="caution" title="Real timers in actor tests">
+  ```ts
+  // ✗ uses real setTimeout
+  await new Promise(r => setTimeout(r, 100));
+  expect(probe.messageCount).toBe(1);
+  ```
+  Sleeping for "long enough" makes tests slow and flakey.  Use
+  `await probe.expectMsg(...)` (it waits-then-asserts) or
+  `ManualScheduler` (it advances virtual time).
+</Aside>
+
+## TestKit vs raw ActorSystem in tests
+
+Both work.  `TestKit` is convenience:
+
+- Defaults to `NoopLogger` — no console spam.
+- Provides `createTestProbe()`, `within(ms, fn)`, `shutdown()`.
+- One-liner setup via `TestKit.create()`.
+
+For complex test setups (custom logger, multiple systems, specific
+extensions), raw `ActorSystem.create(...)` may read more clearly.
+Both produce the same actor behavior.
+
+## Where to next
+
+- **[TestKit](/actor-ts/testing/testkit/)** — the convenience
+  facade around ActorSystem for tests.
+- **[TestProbe](/actor-ts/testing/test-probe/)** — the fake actor
+  for assertions.
+- **[ManualScheduler](/actor-ts/testing/manual-scheduler/)** —
+  virtual-time scheduler for deterministic timer tests.
+- **[MultiNodeSpec](/actor-ts/testing/multi-node-spec/)** —
+  multi-node cluster tests in one process.
+- **[ParallelMultiNodeSpec](/actor-ts/testing/parallel-multi-node/)** —
+  multi-node cluster tests in separate processes.
