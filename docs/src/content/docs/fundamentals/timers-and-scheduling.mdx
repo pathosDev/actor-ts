@@ -1,0 +1,245 @@
+---
+title: Timers and scheduling
+description: Two ways to fire delayed work — the system-level `Scheduler` for one-shot or recurring tasks, and the per-actor `TimerScheduler` keyed by string for actor-bound timers that auto-cancel on stop.
+---
+
+Actors often need to do something later — re-poll a downstream
+service every 30 seconds, time out a session after 5 minutes,
+re-publish a stale heartbeat.  The framework gives you two APIs
+for that.
+
+| API | Lifetime | Use it when |
+| --- | --- | --- |
+| `system.scheduler` | Tied to the actor *system*.  Survives any actor stop / restart. | One-shot delays initiated *outside* an actor, or work that must outlive the actor that started it. |
+| `this.context.timers` *(per-actor `TimerScheduler`)* | Tied to the actor instance.  **Auto-cancels** on stop *and* on restart. | Most actor-internal timers — heartbeats, periodic refreshes, idle timeouts. |
+
+If you're inside an `onReceive`, default to `context.timers`.  Use
+`system.scheduler` only for the few cases where you really want a
+timer to outlive the actor.
+
+## `context.timers` — actor-bound timers
+
+```ts
+import { Actor, ActorSystem, Props } from 'actor-ts';
+
+type Msg = { readonly kind: 'tick' } | { readonly kind: 'set'; readonly intervalMs: number };
+
+class Heartbeat extends Actor<Msg> {
+  override preStart(): void {
+    // Fire { kind: 'tick' } every 5 s, starting immediately.
+    this.context.timers.startTimerWithFixedDelay('hb', { kind: 'tick' }, 5_000);
+  }
+
+  override onReceive(msg: Msg): void {
+    if (msg.kind === 'tick') {
+      this.log.info('heartbeat');
+    } else if (msg.kind === 'set') {
+      // Replace the timer with a new interval.  Same key → old one cancels.
+      this.context.timers.startTimerWithFixedDelay('hb', { kind: 'tick' }, msg.intervalMs);
+    }
+  }
+}
+
+const system = ActorSystem.create('demo');
+system.actorOf(Props.create(() => new Heartbeat()));
+```
+
+Two key observations:
+
+- **Timers are keyed by a string.**  Calling `startTimerWithFixedDelay('hb', ...)`
+  a second time replaces the existing `'hb'` timer — no duplicate fires.
+  Useful for "reset on activity" patterns.
+- **Timers send `tell` to `this.self`.**  The fire goes through the
+  actor's mailbox like any other message; it's serialized with the
+  actor's other work, supervised by the actor's supervisor, and
+  visible in actor traces.
+
+The full surface:
+
+```ts
+interface TimerScheduler<TMsg = unknown> {
+  startSingleTimer(key: string, message: TMsg, delayMs: number): void;
+  startTimerWithFixedDelay(
+    key: string, message: TMsg, intervalMs: number, initialDelayMs?: number,
+  ): void;
+  cancel(key: string): boolean;
+  cancelAll(): void;
+  isTimerActive(key: string): boolean;
+  activeKeys(): string[];
+}
+```
+
+`cancelAll` runs automatically on `postStop` — you never have to
+remember to clean up.  Same on restart: the framework cancels every
+active timer before the new actor instance starts, so a restarted
+actor never inherits stale timers from the dead one.
+
+## `system.scheduler` — system-level scheduling
+
+```ts
+import { ActorSystem } from 'actor-ts';
+
+const system = ActorSystem.create('demo');
+
+// Fire-and-forget a message after 10 s.
+system.scheduler.scheduleOnce(10_000, someActor, { kind: 'wake-up' });
+
+// Run a callback every 30 s, starting in 5 s.
+const cancellable = system.scheduler.scheduleAtFixedRateFn(
+  5_000, 30_000,
+  () => console.log('still alive'),
+);
+
+// Later, stop it.
+cancellable.cancel();
+```
+
+The four methods are pairs of "send a message" / "run a function":
+
+| Method | What it does |
+| --- | --- |
+| `scheduleOnce(delayMs, target, message, sender?)` | Send `message` to `target` once, after `delayMs`. |
+| `scheduleOnceFn(delayMs, fn)` | Run `fn` once after `delayMs`. |
+| `scheduleAtFixedRate(initialDelayMs, intervalMs, target, message, sender?)` | Send `message` repeatedly. |
+| `scheduleAtFixedRateFn(initialDelayMs, intervalMs, fn)` | Run `fn` repeatedly. |
+
+Every method returns a `Cancellable`:
+
+```ts
+interface Cancellable {
+  cancel(): boolean;
+  readonly isCancelled: boolean;
+}
+```
+
+The `cancel()` returns `true` if it actually cancelled an active
+schedule, `false` if it was already cancelled or fired.
+
+### When to prefer `system.scheduler`
+
+Three legitimate cases for reaching past `context.timers` to the
+system scheduler:
+
+1. **Initiating work from outside the actor world.**  A `SIGTERM`
+   handler that schedules a `coordinatedShutdown` call after a
+   short drain delay.  No actor involved — the system scheduler is
+   the right home.
+2. **Work that must outlive a specific actor.**  A "retry in 60 s"
+   timer set up by actor A, where the retry should still fire even
+   if A restarts in the meantime.  Rare — usually the right answer
+   is "have A's parent set the timer", but the option exists.
+3. **Inside framework code** (extensions, transports, …) — anywhere
+   that doesn't have an actor context.
+
+For ordinary actor-internal timers, `context.timers` is always the
+right choice.
+
+## Errors inside timer callbacks
+
+Both timer flavors propagate errors slightly differently:
+
+- **`context.timers`** fires by `tell`ing the actor — the resulting
+  `onReceive` invocation goes through the normal supervision path.
+  A throw inside the handler is caught by the supervisor, just like
+  a regular message.
+- **`system.scheduler.scheduleAtFixedRateFn(...)` / `scheduleOnceFn(...)`**
+  catches and logs throws (`console.error('[actor-ts] scheduler error:', e)`)
+  but doesn't escalate.  A failing scheduler callback won't crash
+  the system; it also won't be noticed unless you log-tail.
+- **`system.scheduler.scheduleOnce(...)` / `scheduleAtFixedRate(...)`**
+  delivers via `target.tell(...)`.  Errors handled by the *target's*
+  supervisor.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`setTimeout` and `setInterval` directly inside `onReceive`">
+  ```ts
+  override onReceive(msg) {
+    setTimeout(() => {
+      this.context.spawn(...);   // ← async escape
+    }, 1_000);
+  }
+  ```
+  Raw `setTimeout` callbacks run **outside** the actor's
+  message-processing turn — and any throw is uncaught by
+  supervision.  Worse, they can fire after the actor has stopped,
+  with `this.context` operating on a destroyed cell.  Use
+  `context.timers.startSingleTimer(...)` instead: the fire becomes
+  an ordinary message to `this.self`, supervised and stop-safe.
+</Aside>
+
+## Fixed-rate semantics
+
+`scheduleAtFixedRate` does **not** chase missed firings.  If the
+target's mailbox backs up and a `tick` is still queued when the
+next interval elapses, you get *two* ticks in the mailbox rather
+than the framework skipping the missed one — but the framework
+also doesn't compress them.  Same goes for `startTimerWithFixedDelay`.
+
+If you need missed-firing-detection (e.g., "if more than 30 s
+elapsed since the last tick, fire a catch-up event"), record the
+last-fire timestamp in the actor and inspect it on each tick.
+There's no built-in mode for that.
+
+<Aside type="caution" title="High-frequency timers are mailbox pressure">
+  A 10-ms-interval timer on an actor that takes 50 ms to handle
+  each tick produces an ever-growing mailbox.  Pick an interval
+  slower than the *worst-case* handler latency, or bound the
+  mailbox with `drop-head` and accept that some ticks will be
+  dropped under load.  See
+  [Mailboxes](/actor-ts/fundamentals/mailboxes/).
+</Aside>
+
+## Tests + the `ManualScheduler`
+
+In tests, real-time waiting is a nightmare — flakey, slow, and
+order-dependent.  The framework ships a `ManualScheduler` that
+implements the same `Scheduler` interface but only advances time
+when you call `advance(ms)`:
+
+```ts
+import { ActorSystem } from 'actor-ts';
+import { ManualScheduler } from 'actor-ts/testkit';
+
+const clock = new ManualScheduler();
+const system = ActorSystem.create('test', { scheduler: clock });
+
+system.scheduler.scheduleOnce(1_000, someActor, { kind: 'tick' });
+
+clock.advance(999);   // nothing yet
+clock.advance(1);     // tick fires
+```
+
+The same `ManualScheduler` plugs into `context.timers` — actor-bound
+timers respect it via the system's `Scheduler` injection.  See
+[TestKit](/actor-ts/testing/testkit/) for the full test-time story.
+
+## When the timer choice matters
+
+Default: **`context.timers`**.  It auto-cancels on stop, integrates
+with supervision, and shows up in actor traces.  90 % of your
+timer code lives here.
+
+Reach for `system.scheduler` when:
+
+- You're outside an actor context entirely (SIGTERM handler,
+  extension startup, top-level glue code).
+- A schedule must outlive a specific actor.
+
+Reach for `ManualScheduler` in tests to make time deterministic.
+
+## Where to next
+
+- **[Receive timeout](/actor-ts/fundamentals/receive-timeout/)** —
+  the higher-level "I've been idle for N seconds, fire an
+  internal event" wrapper that uses timers underneath.
+- **[Mailboxes](/actor-ts/fundamentals/mailboxes/)** — where the
+  timer-fired messages land.
+- **[Dispatchers](/actor-ts/fundamentals/dispatchers/)** — when the
+  dispatched timer-fire is actually processed.
+- **[TestKit](/actor-ts/testing/testkit/)** — the `ManualScheduler`
+  + assertion helpers for deterministic timer tests.
+
+The [`Scheduler`](/actor-ts/api/classes/scheduler/) and
+[`TimerScheduler`](/actor-ts/api/interfaces/timerscheduler/) API
+references cover the full signatures.

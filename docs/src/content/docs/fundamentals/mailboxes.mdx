@@ -1,0 +1,266 @@
+---
+title: Mailboxes
+description: The per-actor queue — default FIFO, BoundedMailbox with overflow policies, PriorityMailbox, system-message precedence, and how to attach one via Props.
+---
+
+Each actor has exactly **one mailbox** — a FIFO queue of envelopes
+waiting to be processed.  When you call `ref.tell(msg)`, the
+framework wraps `msg` in an envelope (with sender, log-context, and
+optional trace context) and enqueues it on the recipient's mailbox.
+The dispatcher pulls the next envelope, hands it to the actor's
+`onReceive`, and waits for that to finish before pulling the next
+one.
+
+That gives every actor the "one message at a time" guarantee — and
+the mailbox is the thing that makes that physically true.
+
+## The default mailbox
+
+If you don't configure anything, the actor gets a plain unbounded
+FIFO mailbox.  Unbounded means there's no per-actor cap; a slow
+consumer can grow the queue arbitrarily large until your process
+runs out of memory.  That's the *right* default for most actors,
+where the throughput is balanced and a transient burst is fine.
+
+But "unbounded" is also the wrong default for two situations:
+
+- An actor that receives more messages than it can ever drain (a
+  fast producer + slow consumer mismatch).  Bound it; pick an
+  overflow policy.
+- An actor that handles a mix of urgent and routine messages,
+  where you want the urgent ones to jump the line.  Use a priority
+  mailbox.
+
+## System messages always come first
+
+Inside every mailbox, two queues live side-by-side: **user messages**
+(your `tell`s) and **system messages** (lifecycle signals — create,
+terminate, failure, watch, …).  System messages have **absolute
+precedence**: even if 10 000 user messages are queued, the next
+`stop` signal or supervisor `failure` is processed before any of
+them.
+
+This matters because:
+
+- Calling `ref.stop()` on an actor with a long mailbox doesn't
+  wait for that mailbox to drain — the `terminate` system message
+  jumps to the front, and the actor stops promptly.
+- A failing actor's supervisor decision (Restart / Resume / Stop)
+  takes effect immediately, not after the queue clears.
+
+You don't normally see this distinction — system messages are
+emitted by the framework, not by your code.  But understanding it
+explains why "stop is fast" and "supervision reacts instantly."
+
+## `BoundedMailbox`
+
+```ts
+import { Actor, ActorSystem, Props, BoundedMailbox } from 'actor-ts';
+
+class SlowConsumer extends Actor<{ kind: 'work'; n: number }> {
+  override async onReceive(msg: { kind: 'work'; n: number }): Promise<void> {
+    await new Promise(r => setTimeout(r, 100));   // simulate slow work
+    this.log.info(`processed ${msg.n}`);
+  }
+}
+
+const system = ActorSystem.create('demo');
+
+const consumer = system.actorOf(
+  Props.create(() => new SlowConsumer())
+    .withMailbox(() => new BoundedMailbox({ capacity: 1_000, overflow: 'drop-head' })),
+);
+```
+
+The mailbox here holds up to 1 000 user messages.  When a 1 001st
+message arrives, the **overflow policy** decides what happens.
+
+Three policies:
+
+| Policy | What happens on overflow |
+| --- | --- |
+| `'drop-head'` | Dequeue the *oldest* message in the queue, discard it, enqueue the new one.  Newest messages always make it in. |
+| `'drop-new'` | Discard the *incoming* message.  The old queue is preserved unchanged. |
+| `'reject'` *(default)* | Throw `MailboxFullError` at the `tell` site.  Caller surfaces the backpressure. |
+
+Picking between them is a backpressure-vs-loss trade-off:
+
+- **`drop-head`** = "freshest wins."  Right for telemetry, sensor
+  data, status pings — where stale messages are worthless and the
+  latest snapshot is the only thing that matters.
+- **`drop-new`** = "first wins."  Right for command-streams where
+  re-ordering is unacceptable and dropping a late arrival is OK.
+- **`reject`** = "let the sender deal with it."  Right when the
+  sender has a meaningful backoff response (retry, route to a
+  different actor, return 503 from an HTTP handler).
+
+`droppedCount` on the mailbox instance tracks how many messages
+have been discarded — useful to wire into a metrics gauge so you
+notice when the bound is hit.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`reject` and the calling actor">
+  `reject` throws at the **`tell` call site**.  If actor A
+  `tell`s B and B's mailbox is full with the `reject` policy,
+  the throw lands inside A's `onReceive` — caught by A's
+  supervisor, not B's.  That's usually fine (the supervisor for
+  A decides how A handles the unreachability), but it means
+  "B's mailbox is overflowing" surfaces as "A keeps restarting,"
+  which can confuse triage.  Wire a metric on `droppedCount`
+  rather than relying on supervisor logs to catch it.
+</Aside>
+
+## `PriorityMailbox`
+
+```ts
+import { Actor, ActorSystem, Props, PriorityMailbox } from 'actor-ts';
+
+type Msg =
+  | { readonly kind: 'urgent'; readonly text: string }
+  | { readonly kind: 'normal'; readonly text: string }
+  | { readonly kind: 'bulk';   readonly text: string };
+
+class Worker extends Actor<Msg> {
+  override onReceive(msg: Msg): void {
+    this.log.info(`[${msg.kind}] ${msg.text}`);
+  }
+}
+
+const worker = system.actorOf(
+  Props.create(() => new Worker())
+    .withMailbox(() => new PriorityMailbox<Msg>({
+      priorityFor: (msg) => msg.kind === 'urgent' ? 0
+                          : msg.kind === 'normal' ? 5
+                          : 10,
+    })),
+);
+
+worker.tell({ kind: 'bulk',   text: 'batch import row 1' });
+worker.tell({ kind: 'normal', text: 'user login' });
+worker.tell({ kind: 'urgent', text: 'page-out: disk full' });
+// → processed order: urgent → normal → bulk
+```
+
+The `priorityFor` callback runs at *enqueue* time, computing a
+numeric priority per message.  **Lower numbers go first** (priority
+0 is highest), and ties break by FIFO insertion order — so two
+`'normal'` messages stay in send-order relative to each other.
+
+Common shapes for `priorityFor`:
+
+- **Per-`kind` constant table** — like the example above.  Easy to
+  read, easy to evolve.
+- **Field-derived** — `priorityFor: (m) => m.deadlineMs` makes
+  earliest-deadline messages run first.  Works because both axes
+  are "lower = sooner."
+- **Caller-tagged** — sender includes `priority: number` in the
+  message and `priorityFor` just reads it.  Sometimes the right
+  call; usually a smell that the recipient should derive priority
+  from message content instead.
+
+<Aside type="caution" title="Priority mailboxes break FIFO across kinds">
+  A `normal` message sent *after* an `urgent` one can still
+  arrive at `onReceive` *first*.  If your invariants depend on
+  "in the order it was sent," priority mailboxes aren't right
+  — split into two actors instead, one per priority class, and
+  funnel via a router.
+</Aside>
+
+The current implementation uses a sorted-insertion array — O(log n)
+locate + O(n) splice on each enqueue.  Fine for mailboxes that stay
+in the low thousands; if you have a sustained 10 000-message backlog
+where priority insertion shows up in profiles, the mailbox is open
+to a heap-backed swap (see the source).
+
+## Per-actor mailbox via Props
+
+Two knobs on `Props`:
+
+```ts
+import { Props, BoundedMailbox } from 'actor-ts';
+
+// Just bound the default FIFO — convenience helper.
+Props.create(() => new MyActor()).withMailboxCapacity(500);
+
+// Full custom factory — pick the type and configure it.
+Props.create(() => new MyActor())
+  .withMailbox(() => new BoundedMailbox({ capacity: 500, overflow: 'drop-head' }));
+```
+
+`withMailboxCapacity(n)` is shorthand for "the default FIFO, but
+bounded with the default `reject` overflow."  Useful when you
+just want a cap and don't care about the policy details.
+
+`withMailbox(factory)` is the general form — you return a brand-new
+mailbox instance from the factory.  The factory is called once per
+actor instance (including on restart), so each restarted actor
+gets a fresh empty mailbox-data-structure.  System-level mailbox
+defaults can also be configured via `application.conf` (see
+[Configuration](/actor-ts/reference/configuration/)).
+
+<Aside type="caution" title="Don't share a mailbox instance across actors">
+  ```ts
+  const shared = new BoundedMailbox({ capacity: 100 });
+  Props.create(() => new A()).withMailbox(() => shared);
+  Props.create(() => new B()).withMailbox(() => shared);  // wrong
+  ```
+  Each actor needs its **own** mailbox.  Returning the same
+  instance from two factories pipes both actors' messages into
+  one queue — they'll see each other's messages and the runtime
+  gets confused about which actor is being dispatched.  The
+  factory exists exactly so you create a fresh one each time.
+</Aside>
+
+## Mailboxes + stash
+
+When an actor calls `this.context.stash()` inside `onReceive`, the
+current message is parked.  When the actor later calls
+`unstashAll()`, the parked messages are re-prepended to the front
+of the mailbox.
+
+This works the same way for all three mailbox types — the framework
+calls `mailbox.prependUser(envs)`, and the mailbox decides how to
+reinsert.  Notably for `PriorityMailbox`, unstashed messages are
+*re-prioritized*: a stashed `bulk` message rejoins the `bulk` tier,
+even if you stashed it while urgent messages were arriving.  Stash
+order is preserved within a priority tier.
+
+See [Become and stash](/actor-ts/fundamentals/become-and-stash/) for
+the full behavior-switching story.
+
+## When the mailbox choice matters
+
+For most actors, the default unbounded FIFO is right.  Reach for an
+alternative in three situations:
+
+1. **Producer/consumer mismatch.**  The producer can emit faster
+   than the consumer can drain.  Bound the consumer's mailbox;
+   pick an overflow policy that matches the workload (drop-head
+   for telemetry, reject for HTTP-driven backpressure).
+2. **Latency budget per kind.**  Some messages must be handled in
+   tens of milliseconds (user-facing requests), others can wait
+   minutes (background reconciliation).  Priority mailbox; the
+   urgent kind gets `0`, the background kind gets `100`.
+3. **Memory bound.**  An actor with no application-level priority
+   distinction, but whose mailbox could in theory grow without
+   limit (an audit-log subscriber that falls behind during a
+   spike).  Bound it at a number that matches your memory budget;
+   `drop-head` if the latest events are most valuable, `reject` +
+   metric if the loss should be visible.
+
+## Where to next
+
+- **[Dispatchers](/actor-ts/fundamentals/dispatchers/)** — the
+  scheduler that pulls from the mailbox.  Mailbox = the queue;
+  dispatcher = when to drain it.
+- **[Become and stash](/actor-ts/fundamentals/become-and-stash/)** —
+  parking messages for later, restoring them via `unstashAll`.
+- **[Actor](/actor-ts/fundamentals/actor/)** — `onReceive` is what
+  the mailbox delivers messages to.
+- **[Coordinated shutdown](/actor-ts/fundamentals/coordinated-shutdown/)** —
+  what happens to pending mailbox messages during graceful shutdown.
+
+The [`BoundedMailbox`](/actor-ts/api/classes/boundedmailbox/) and
+[`PriorityMailbox`](/actor-ts/api/classes/prioritymailbox/) API
+references cover the full settings shape.
