@@ -8,20 +8,23 @@ endpoint, a slow DB query, an ask to a struggling actor) and
 short-circuits when failure is sustained.  Three states form a
 simple state machine:
 
-```
-       success                  failure
-  ┌──────────────────┐    ┌──────────────────┐
-  │                  │    │                  │
-  ▼     closed       │    │       open       ▼
-  ░░░░░░░░░░░░░░░░░░ │    │   ░░░░░░░░░░░░░░░░
-  calls pass through │    │   calls fail fast
-                     │    │
-        failures ≥ maxFailures      reset timeout elapsed
-                     │    │
-                     ▼    │
-                  half-open
-                 first call after
-                 timeout — a probe
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> Closed
+  Closed: Closed\ncalls pass through
+  Open: Open\ncalls fail fast
+  HalfOpen: Half-open\nprobe call
+  Closed --> Open: failures ≥ maxFailures
+  Open --> HalfOpen: reset timeout elapsed
+  HalfOpen --> Closed: probe succeeds
+  HalfOpen --> Open: probe fails
+  classDef ok    fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef bad   fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
+  classDef probe fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
+  class Closed ok
+  class Open bad
+  class HalfOpen probe
 ```
 
 - **Closed** (start): calls pass through; failures are counted.

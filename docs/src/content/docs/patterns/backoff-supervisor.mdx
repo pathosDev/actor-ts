@@ -62,20 +62,27 @@ sender refs preserved for ask-style replies).
 
 Five steps, in execution order:
 
-```
-        ┌───────────────────────────────────────────────────────┐
-        │                  BackoffSupervisor                    │
-        │                                                       │
-        │   spawn child           crash                         │
-        │   ─────────────►        ───────►   Terminated         │
-        │                                                       │
-        │             ┌─── schedule next spawn after            │
-        │             │      backoff.delayFor(n) ms             │
-        │             ▼                                         │
-        │   ─── messages buffered ───  (stash or drop)          │
-        │                                                       │
-        │   spawn child #2 → drain stash → ...                  │
-        └───────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+  subgraph SUP["BackoffSupervisor"]
+    direction TB
+    SPAWN["spawn child"]
+    CRASH["child crashes → Terminated"]
+    WAIT["schedule next spawn<br/>after backoff.delayFor(n) ms"]
+    BUFFER["incoming messages buffered<br/>(stash or drop)"]
+    RESPAWN["spawn child #2 → drain stash → ..."]
+    SPAWN --> CRASH --> WAIT --> RESPAWN
+    WAIT --> BUFFER
+    BUFFER --> RESPAWN
+  end
+  classDef sup    fill:#0f172a,stroke:#6366f1,stroke-width:2px,color:#f1f5f9;
+  classDef step   fill:#1e293b,stroke:#475569,color:#cbd5e1;
+  classDef crash  fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
+  classDef buf    fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
+  class SUP sup
+  class SPAWN,WAIT,RESPAWN step
+  class CRASH crash
+  class BUFFER buf
 ```
 
 The framework names successive children `child-1`, `child-2`,
