@@ -1,0 +1,241 @@
+---
+title: Routing strategies
+description: Round-robin, random, broadcast, custom — what the local router ships with. Plus consistent-hashing for cluster routers. How each picks routees, when each fits, and how to write your own.
+---
+
+A **routing strategy** is a function: given the routee list and a
+bit of state, return which routee(s) should receive the next
+message.
+
+```ts
+type RoutingStrategy = (
+  routees: ReadonlyArray<ActorRef>,
+  state:   { readonly messageIndex: number },
+) => Iterable<ActorRef>;
+```
+
+Return one ref for single-target routing, multiple for fan-out, or
+nothing to drop.  The local router ships three implementations
+plus a `custom` slot; the cluster router adds consistent-hashing.
+
+## Round-robin
+
+```ts
+Router.roundRobin(4, routeeProps);
+```
+
+Cycles through the routee list — message 1 → routee 1, message 2 →
+routee 2, …, message 5 → routee 1 again.  Implementation:
+
+```ts
+function roundRobinStrategy(): RoutingStrategy {
+  return (routees, state) => {
+    if (routees.length === 0) return [];
+    return [routees[state.messageIndex % routees.length]];
+  };
+}
+```
+
+**Picks:**
+
+- Even distribution by message *count* (not by message *cost*).
+- Deterministic and inspectable — a debugger sees exactly which
+  routee got each message.
+- Re-routing on resize: if a routee disappears or a new one
+  appears, the same `messageIndex` lands on a different routee.
+
+**Doesn't:**
+
+- Load-balance by work cost.  Message 100 might be a heavy job;
+  the router doesn't know.  If one routee gets all the expensive
+  jobs by chance, it falls behind.
+- Provide a "stick to the same routee for related messages"
+  guarantee.  Use consistent-hashing for that.
+
+Right default for **homogeneous workloads** — message processing
+times are roughly equal across messages.
+
+## Random
+
+```ts
+Router.random(4, routeeProps);
+```
+
+```ts
+function randomStrategy(): RoutingStrategy {
+  return (routees) => {
+    if (routees.length === 0) return [];
+    return [routees[Math.floor(Math.random() * routees.length)]];
+  };
+}
+```
+
+Picks a routee uniformly at random.
+
+**Picks:**
+
+- Same statistical distribution as round-robin in the long run,
+  but no shared state — useful in stateless / pure functional
+  setups.
+- More resilient to "synchronized" senders.  If two callers
+  cooperate with their own indices, round-robin can end up
+  hammering the same routees; random doesn't.
+
+**Doesn't:**
+
+- Give you deterministic behavior in tests.  Inject a seedable
+  RNG and write a custom strategy if reproducibility matters.
+
+Right choice when **statelessness matters more than predictability**.
+
+## Broadcast
+
+```ts
+Router.broadcast(4, routeeProps);
+```
+
+```ts
+function broadcastStrategy(): RoutingStrategy {
+  return (routees) => routees;   // every routee
+}
+```
+
+Sends every message to every routee.  The pool runs in lockstep —
+useful for *fan-out* shapes:
+
+- Cache invalidation: every routee holds a cache; when a key
+  changes, broadcast tells them all.
+- Periodic refresh: every routee re-reads config when a `Refresh`
+  message arrives.
+- Heartbeat: every routee checks in on a tick.
+
+**Picks:**
+
+- N-way fan-out with N-way work.  Each message is processed N
+  times.  Total throughput is N × per-routee throughput, but each
+  routee sees the full message load.
+
+**Doesn't:**
+
+- Parallelize *work* — every routee does the same work.  This is
+  fan-out, not load-balancing.
+- Make sense for request/response — every routee replies, the
+  caller sees N replies.
+
+If you want broadcast for *some* messages but routing for others,
+keep the router non-broadcast and wrap occasional messages in
+`Broadcast<T>` — see [Router](/actor-ts/routing/router/).
+
+## Consistent-hashing *(cluster only)*
+
+```ts
+import { ClusterRouter } from 'actor-ts';
+
+ClusterRouter.props({
+  cluster,
+  routerType: 'consistent-hashing',
+  routeePath: '/user/worker',
+  extractKey: (msg) => msg.userId,
+});
+```
+
+Computes a hash of `extractKey(msg)` and picks the routee whose
+own hash is closest (rendezvous hashing).  Same key → same routee,
+deterministically, across the cluster.
+
+**Picks:**
+
+- **Stickiness.**  A long-running stream of messages tagged
+  `userId=42` always lands on the same routee.  The routee can
+  maintain per-key state (cache, in-progress session) without a
+  coordinator.
+- **Topology-stable.**  Adding or removing a routee only reshuffles
+  the keys whose nearest hash changed — a fraction proportional to
+  `1/N`, not all of them.
+
+**Doesn't:**
+
+- Balance perfectly under skewed-key workloads.  If 80 % of traffic
+  is `userId=42`, that one routee carries 80 % of the load.  Skewed
+  keys need a different approach — see
+  [Sharding](/actor-ts/cluster/sharding/overview/) for the heavier
+  per-key-actor pattern.
+- Pin to a fixed routee.  Topology changes do shuffle some keys;
+  for hard guarantees, use a singleton or sharded entity.
+
+Right choice for **session-affine** routing in cluster setups
+where the key space is reasonably uniform.
+
+## Custom strategies
+
+```ts
+import { Router, type RoutingStrategy } from 'actor-ts';
+
+// Always route to the first routee for the first 100 messages
+// (warm one cache before spreading load), then round-robin.
+const warmupStrategy: RoutingStrategy = (routees, state) => {
+  if (routees.length === 0) return [];
+  if (state.messageIndex < 100) return [routees[0]];
+  return [routees[state.messageIndex % routees.length]];
+};
+
+system.actorOf(Router.custom(4, workerProps, warmupStrategy));
+```
+
+Anything that satisfies `RoutingStrategy` works.  The state slot
+gets the monotonic message index — that's the only state the local
+router maintains.  For strategies that need *more* state (a hash
+ring, a per-routee load gauge), close over your own state in the
+function:
+
+```ts
+function smallestMailboxStrategy(): RoutingStrategy {
+  return (routees) => {
+    // Stub — the framework doesn't expose mailbox-size per routee in v1.
+    // A real implementation would need a side-channel to query each routee.
+    return [routees[0]];
+  };
+}
+```
+
+The framework doesn't expose mailbox-size from the outside, so a
+true "smallest-mailbox" strategy needs side-channel mechanics
+(asking each routee for its current depth).  This is a roadmap
+item; until it ships, custom strategies are limited to
+information available in the router actor itself.
+
+## What's not implemented
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="No smallest-mailbox in v1">
+  Akka's `SmallestMailboxPool` picks the routee with the shortest
+  queue.  actor-ts doesn't expose mailbox depth across actor
+  boundaries (it's per-actor state), so this strategy isn't
+  implemented.  For workload-aware load-balancing, the practical
+  pattern is **back-pressure at the boundary** — bound each
+  routee's mailbox with `reject` overflow, let the caller (or a
+  router-side custom strategy) react to rejections.
+</Aside>
+
+<Aside type="caution" title="No scatter-gather">
+  Some actor frameworks have "scatter-gather" routers that send
+  the same message to N routees and reply with the first / best
+  / merged response.  actor-ts doesn't ship one; you'd build it
+  as a custom router actor that wraps `ask` over the routees and
+  consolidates replies.  Most callers don't need this — broadcast
+  + a coordinator actor on the recipient side covers similar
+  ground.
+</Aside>
+
+## Where to next
+
+- **[Router](/actor-ts/routing/router/)** — the factories that
+  wrap each strategy in ready-to-spawn Props.
+- **[Pool vs group](/actor-ts/routing/pool-vs-group/)** — how
+  these strategies behave when applied to a fixed pool vs a
+  dynamic group of routees.
+- **[Cluster router](/actor-ts/cluster/cluster-router/)** — where
+  consistent-hashing lives.
+- **[Sharding](/actor-ts/cluster/sharding/overview/)** — the
+  heavier alternative when keys need true per-key actors.

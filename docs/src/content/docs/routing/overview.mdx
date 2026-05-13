@@ -1,0 +1,154 @@
+---
+title: Routing overview
+description: Spread work across N actors instead of one — a router is a single actor that forwards each message to one (or all) of its routees. Local Router for in-process pools; ClusterRouter for membership-driven cluster pools.
+---
+
+A **router** is an actor whose only job is to forward each incoming
+message to one (or more) of its **routees**.  You spawn the router
+once; behind it sit N worker actors; senders `tell` the router and
+never know how many routees exist.
+
+Two shapes ship with the framework:
+
+| Form | Where it lives | Routees are... |
+| --- | --- | --- |
+| **`Router`** (local) | One node, one actor system. | Children of the router, **created at spawn time** with the same `Props`. |
+| **`ClusterRouter`** | Across cluster nodes. | Up-members of the cluster, **derived from membership** + a routee path. |
+
+Both expose the same external surface: a single `ActorRef<TMsg>`
+that callers `tell`.  The difference is *what's on the other side*.
+
+## When to reach for a router
+
+Three patterns:
+
+1. **Parallelize CPU-heavy work.**  A single actor is bottlenecked
+   by its one-at-a-time guarantee; a 4-routee round-robin router
+   gives you 4-way parallelism without breaking message ordering
+   *within* a routee.
+2. **Spread load across nodes.**  A cluster router with role-filtered
+   routees gives you fan-out across every node carrying the
+   `'compute'` role.  Add a node, the router picks it up; remove a
+   node, the router stops sending to it.
+3. **Pin work to a routee deterministically.**  Consistent-hashing
+   (cluster only) puts every message with the same key on the same
+   routee — useful when each routee maintains per-key state
+   (a cache, a session, a counter).
+
+## A minimal example
+
+```ts
+import { ActorSystem, Props, Router, Actor } from 'actor-ts';
+
+class Worker extends Actor<{ payload: string }> {
+  override onReceive(msg: { payload: string }): void {
+    this.log.info(`worked on ${msg.payload}`);
+  }
+}
+
+const system = ActorSystem.create('demo');
+
+const pool = system.actorOf(
+  Router.roundRobin(4, Props.create(() => new Worker())),
+  'workers',
+);
+
+pool.tell({ payload: 'a' });   // → worker-1
+pool.tell({ payload: 'b' });   // → worker-2
+pool.tell({ payload: 'c' });   // → worker-3
+pool.tell({ payload: 'd' });   // → worker-4
+pool.tell({ payload: 'e' });   // → worker-1 (round-robin wraps)
+```
+
+The `pool` ref looks like a single actor to callers; under the hood
+the routing actor cycles through four `Worker` children.
+
+## The four strategies
+
+| Strategy | What it does | Best for |
+| --- | --- | --- |
+| **`round-robin`** | One routee per message, cycling.  Even distribution by message count. | Homogeneous workloads. |
+| **`random`** | One routee per message, uniformly random. | Same as round-robin, but stateless. |
+| **`broadcast`** | Every routee gets every message. | Notifications, cache invalidations. |
+| **`consistent-hashing`** *(cluster only)* | One routee per message, key-pinned. | Per-key state (sharding-lite). |
+
+A fifth "smallest-mailbox" strategy (route to the routee with the
+shortest queue) is **not** implemented in the local router; it's a
+roadmap item for the cluster router.
+
+See [Strategies](/actor-ts/routing/strategies/) for the deep dive,
+plus the `Broadcast` message wrapper that overrides the strategy
+per-message.
+
+## Pool vs group
+
+The local `Router` is always a **pool** — it creates its routees
+itself.  The cluster `ClusterRouter` is more like a **group** — the
+routees already exist (one actor per up-member at a well-known
+path), and the router just *finds* them.
+
+For most cases, pool is what you want.  The group model surfaces
+when you want existing actors (e.g. shard regions, fixed-name
+workers spawned at startup) to receive routed traffic.
+
+See [Pool vs group](/actor-ts/routing/pool-vs-group/) for when each
+shape is the right fit.
+
+## Routers and supervision
+
+The router is a regular actor — it has its own supervisor strategy.
+The default is "watch each routee, log if it stops."  When a routee
+crashes:
+
+- Without intervention, the routee's parent (the router) applies
+  its supervisor strategy.  By default that's the framework's
+  `defaultStrategy` — Restart up to 10/minute.
+- The restarted routee re-joins the pool at the same path.  The
+  router doesn't have to do anything special.
+- Anything routed to the routee during its brief restart window
+  goes to dead letters (the routee's mailbox is drained before
+  the restart, then fresh).
+
+For per-routee supervision strategies, configure them on the
+routee `Props`:
+
+```ts
+const routeeProps = Props.create(() => new Worker())
+  .withSupervisorStrategy(stoppingStrategy);
+
+system.actorOf(Router.roundRobin(4, routeeProps), 'workers');
+```
+
+Now any worker that throws is **stopped** instead of restarted —
+and the router watches it die, but the pool just becomes smaller.
+You'd combine this with a higher-level supervisor that decides
+when to re-spawn the whole pool.
+
+## Routers are not (the only) way to parallelize
+
+A router gives you `N` independent actors processing one message
+at a time *each*.  Two alternatives worth knowing:
+
+- **Sharding** is the right tool when each unit of work has a
+  key and you need *exactly one* live actor per key (with
+  failover, rebalancing, etc.).  See
+  [Sharding](/actor-ts/cluster/sharding/overview/).
+- **DistributedPubSub** is the right tool for fan-out where the
+  subscriber set is dynamic — actors come and go, and any of them
+  can receive published events.  See
+  [DistributedPubSub](/actor-ts/cluster/pubsub/).
+
+Routing is a fixed-size pool with a deterministic strategy.  When
+that's what you need, it's the simplest tool; when it isn't,
+reach for something else.
+
+## Where to next
+
+- **[Router](/actor-ts/routing/router/)** — the `Router.roundRobin(...)`,
+  `.random(...)`, `.broadcast(...)`, `.custom(...)` factories.
+- **[Strategies](/actor-ts/routing/strategies/)** — what each
+  strategy does, plus writing your own.
+- **[Pool vs group](/actor-ts/routing/pool-vs-group/)** — when to
+  use a router that spawns its routees vs one that finds them.
+- **[Cluster router](/actor-ts/cluster/cluster-router/)** — the
+  membership-driven cluster equivalent.

@@ -1,0 +1,192 @@
+---
+title: Router
+description: The local pool-router — `Router.roundRobin`, `.random`, `.broadcast`, `.custom` produce `Props` you spawn like any actor. Plus `Broadcast` to override the strategy per-message.
+---
+
+`Router` is the local pool-router — the routees are children of the
+router actor, created when the router is spawned, supervised by it.
+
+The API has four factories:
+
+```ts
+Router.roundRobin(size, routeeProps)
+Router.random(size, routeeProps)
+Router.broadcast(size, routeeProps)
+Router.custom(size, routeeProps, strategy)
+```
+
+Each returns a `Props<TMsg | Broadcast<TMsg>>` — pass it to
+`system.actorOf` or `context.actorOf` like any other Props.  The
+type parameter from `routeeProps` flows through, so the resulting
+ref is typed.
+
+## A minimal example
+
+```ts
+import { ActorSystem, Props, Router, Actor, Broadcast } from 'actor-ts';
+
+type Msg = { payload: string };
+
+class Worker extends Actor<Msg> {
+  override onReceive(msg: Msg): void {
+    this.log.info(`processed ${msg.payload}`);
+  }
+}
+
+const system = ActorSystem.create('demo');
+
+const pool = system.actorOf(
+  Router.roundRobin(4, Props.create(() => new Worker())),
+  'workers',
+);
+
+// One message per routee, cycling:
+pool.tell({ payload: 'a' });   // → routee-1
+pool.tell({ payload: 'b' });   // → routee-2
+pool.tell({ payload: 'c' });   // → routee-3
+pool.tell({ payload: 'd' });   // → routee-4
+
+// Override the strategy for a single message — send to ALL routees:
+pool.tell(new Broadcast({ payload: 'announce' }));
+```
+
+The pool's path is `actor-ts://demo/user/workers`; the routees are
+`actor-ts://demo/user/workers/routee-1` through `routee-4`.
+
+## What happens at spawn time
+
+When you `actorOf` a router Props, the runtime:
+
+1. Creates one `RouterActor` instance.  It's the actor with the
+   path you provided (`'workers'` in the example).
+2. Inside `RouterActor.preStart`, it spawns `size` children using
+   `routeeProps`, named `routee-1` through `routee-N`.
+3. It `watch`es every routee so it can react if one stops.
+
+The router is now ready.  Any `tell` to the router ref runs the
+strategy and forwards.
+
+## `Broadcast` — override the strategy per-message
+
+```ts
+import { Broadcast } from 'actor-ts';
+
+pool.tell({ payload: 'a' });                        // normal: one routee
+pool.tell(new Broadcast({ payload: 'announce' }));  // every routee
+```
+
+`Broadcast<T>` wraps a payload.  The router unwraps it, ignores the
+strategy, and sends the inner message to *every* routee.  Useful
+for occasional fan-out messages (cache invalidation, schema
+update notifications) that don't fit the routine routing pattern.
+
+The router accepts both `TMsg` and `Broadcast<TMsg>` — the type
+parameter on the returned Props reflects that.
+
+## `Router.custom` — bring your own strategy
+
+```ts
+import { Router, type RoutingStrategy } from 'actor-ts';
+
+// Send to the FIRST routee for the first 100 messages, then round-robin.
+const warmupStrategy: RoutingStrategy = (routees, state) => {
+  if (state.messageIndex < 100) return [routees[0]];
+  return [routees[state.messageIndex % routees.length]];
+};
+
+const pool = system.actorOf(
+  Router.custom(4, Props.create(() => new Worker()), warmupStrategy),
+  'workers',
+);
+```
+
+A `RoutingStrategy` is a function from `(routees, state)` to an
+`Iterable<ActorRef>` — return one ref for single-target routing,
+multiple for fan-out.  Empty iterable means "drop this message"
+(silent, no dead-letter routing — your responsibility to log if
+needed).
+
+See [Strategies](/actor-ts/routing/strategies/) for the full
+strategy type and built-in implementations.
+
+## Spawning the routees yourself
+
+`Router.roundRobin(size, props)` is a pool — the router creates
+routees from `props`.  If you want to route to *existing* actors
+instead (e.g. shard regions, specific named workers), the local
+`Router` doesn't support that; you'd write a custom router actor.
+
+For cluster setups, `ClusterRouter` does have a "find existing
+actors by path" mode — see
+[Pool vs group](/actor-ts/routing/pool-vs-group/) for the
+distinction and
+[Cluster router](/actor-ts/cluster/cluster-router/) for the
+cluster API.
+
+## Stopping the pool
+
+`pool.stop()` (or `pool.tell(PoisonPill.instance)`) stops the
+router, which cascade-stops every routee.  Or stop a single routee
+by addressing it directly:
+
+```ts
+const oneRoutee = (await system.actorSelection(
+  '/user/workers/routee-2'
+).resolveOne()) as ActorRef<Msg>;
+
+oneRoutee.stop();
+```
+
+When a routee stops, the router watches it and… does nothing by
+default in the framework's current router.  The pool size
+effectively shrinks until restart.  For self-healing pools, wrap
+the routee Props in a supervisor strategy that restarts on Stop
+(or wrap the whole pool in a BackoffSupervisor).
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`size = 0` is a bug">
+  ```ts
+  Router.roundRobin(0, props);   // ← compiles, but every message goes nowhere
+  ```
+  A zero-routee pool returns an empty iterable from the strategy,
+  so every `tell` is dropped (silently — no dead-letter routing).
+  The framework doesn't validate `size > 0`; we should.  Until
+  then, the responsibility is yours.
+</Aside>
+
+<Aside type="caution" title="Routees can't tell who sent a message">
+  When a sender `tell`s the router, the router forwards to the
+  routee with the **original sender** preserved.  `this.sender`
+  inside the routee is the original caller, not the router.  This
+  is by design — the routee should be indistinguishable from a
+  non-routed actor.
+</Aside>
+
+<Aside type="caution" title="`broadcast` routers + reply-to refs">
+  ```ts
+  pool.tell({ kind: 'get', replyTo: client });
+  // ↑ if pool is Router.broadcast(4, ...), client gets 4 replies.
+  ```
+  Broadcast strategy fans out the *raw* message, including any
+  reply-to ref inside.  Every routee replies; the caller sees N
+  responses.  Sometimes that's what you want (replicated reads
+  with quorum); usually it's a bug.
+</Aside>
+
+## Where to next
+
+- **[Strategies](/actor-ts/routing/strategies/)** — round-robin,
+  random, broadcast, custom; plus the
+  cluster-only consistent-hashing.
+- **[Pool vs group](/actor-ts/routing/pool-vs-group/)** — when
+  you want existing routees instead of pool-spawned ones.
+- **[Cluster router](/actor-ts/cluster/cluster-router/)** — the
+  membership-driven cluster equivalent.
+- **[Props](/actor-ts/fundamentals/props/)** — the routee Props
+  shape; `withSupervisorStrategy`, `withDispatcher`, etc., all
+  apply to routees individually.
+
+The [`Router`](/actor-ts/api/variables/router/) and
+[`Broadcast`](/actor-ts/api/classes/broadcast/) API references
+cover the full surface.
