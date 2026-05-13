@@ -89,6 +89,48 @@
   --sl-font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', Menlo, monospace;
 }
 
+/* ----- Hero background canvas (animated particle network) ------------- */
+
+/* The canvas is JS-prepended to `<main>` at script-load on splash pages
+ * only (no canvas element exists elsewhere, so no scoping is needed
+ * here).  Spans the top viewport-worth of the document and fades out
+ * at the bottom so the transition into the "What you get" section is
+ * smooth.  Painted behind hero content via DOM order — being the
+ * first child of `<main>`, the canvas paints before the hero content
+ * blocks render on top. */
+#hero-bg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  width: 100%;
+  height: 100vh;
+  pointer-events: none;
+  z-index: 0;
+  /* Soft fade-out at the bottom — keeps the "What you get" section
+   * visually clean as the canvas trails off behind it. */
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 1) 0%,
+    rgba(0, 0, 0, 1) 55%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 1) 0%,
+    rgba(0, 0, 0, 1) 55%,
+    rgba(0, 0, 0, 0) 100%
+  );
+}
+
+/* Hero content sits above the canvas — explicit stacking context so
+ * the canvas's `z-index: 0` doesn't accidentally overlap headlines. */
+.hero,
+.content-panel {
+  position: relative;
+  z-index: 1;
+}
+
 /* ----- Splash-page hero: centered, logo-on-top ------------------------- */
 
 /* Starlight's splash hero defaults to a two-column grid (`7fr 4fr`) at
