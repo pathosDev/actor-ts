@@ -1,0 +1,307 @@
+---
+title: Behaviors
+description: The functional DSL — `Behaviors.setup`, `receive`, `receiveMessage`, `withTimers`, `withStash`, `supervise`, plus the sentinels (same/stopped/unhandled/empty/ignore). Compose actors as values, not classes.
+---
+
+The **`Behaviors`** namespace is a collection of combinators that
+build `Behavior<T>` values.  A behavior describes what the actor
+does when the next message arrives — and what behavior it adopts
+after that.  An actor's lifetime is just a sequence of behaviors:
+each handler returns the next one.
+
+```ts
+import { Behaviors, spawnTyped, ActorSystem } from 'actor-ts';
+
+type Msg = { kind: 'tick' };
+
+const ticker = Behaviors.receive<Msg>((ctx, msg) => {
+  ctx.log.info(`tick at ${Date.now()}`);
+  return Behaviors.same;   // keep being a ticker
+});
+
+const system = ActorSystem.create('demo');
+const ref = spawnTyped(system, ticker);
+```
+
+`Behaviors.receive` builds the most common behavior: a handler that
+runs on every message and returns the next behavior.  The `same`
+sentinel says "stay as I am" — the same closure handles the next
+message.
+
+## The four constructors
+
+### `receive` — handler with context + message
+
+```ts
+const counter = (n: number): Behavior<Msg> => Behaviors.receive<Msg>((ctx, msg) => {
+  switch (msg.kind) {
+    case 'inc': return counter(n + 1);
+    case 'dec': return counter(n - 1);
+    case 'get': msg.replyTo.tell(n); return Behaviors.same;
+  }
+});
+```
+
+The handler receives both a `TypedActorContext<T>` (for spawning
+children, logging, watching) and the message.  Returns the next
+behavior — `Behaviors.same` keeps the closure; a fresh
+`counter(n + 1)` adopts a new closure with updated state.
+
+### `receiveMessage` — handler without context
+
+```ts
+const counter = (n: number): Behavior<Msg> => Behaviors.receiveMessage<Msg>((msg) => {
+  if (msg.kind === 'inc') return counter(n + 1);
+  return Behaviors.same;
+});
+```
+
+Shortcut for the common case where you don't need the context.
+Equivalent to `Behaviors.receive((_ctx, msg) => ...)`.
+
+### `receiveWithSignal` — handler + lifecycle signals
+
+```ts
+const watcher = Behaviors.receiveWithSignal<Msg>(
+  (ctx, msg) => {
+    // handle user message...
+    return Behaviors.same;
+  },
+  (ctx, signal) => {
+    if (signal.kind === 'terminated') {
+      ctx.log.info(`watched actor ${signal.ref.path} stopped`);
+    }
+    return Behaviors.same;
+  },
+);
+```
+
+The signal handler fires for lifecycle events:
+
+| Signal kind | When |
+| --- | --- |
+| `'post-stop'` | The actor is stopping.  Use for cleanup. |
+| `'pre-restart'` | The supervisor is about to restart the actor.  `signal.reason` is the error. |
+| `'terminated'` | A watched actor stopped.  `signal.ref` is its ref. |
+
+This is the typed-DSL equivalent of overriding `postStop`,
+`preRestart`, and handling `Terminated` messages in the untyped
+form.
+
+### `setup` — capture the context once
+
+```ts
+const myActor = Behaviors.setup<Msg>((ctx) => {
+  ctx.log.info(`I'm starting at ${ctx.path}`);
+  const helper = ctx.spawn(helperBehavior, 'helper');
+  return Behaviors.receive((_ctx, msg) => {
+    helper.tell(msg);   // helper captured in closure
+    return Behaviors.same;
+  });
+});
+```
+
+`setup` runs once when the actor starts.  Use it for one-time
+initialization that the receive-handler should close over:
+spawning children, capturing `ctx.self` for the children to know,
+opening external connections.
+
+## The decorators
+
+Three combinators wrap another behavior with extra capabilities:
+
+### `withTimers`
+
+```ts
+import { Behaviors, type TimerScheduler } from 'actor-ts';
+
+const heartbeat = Behaviors.withTimers<Msg>((timers) => {
+  timers.startTimerWithFixedDelay('hb', { kind: 'tick' }, 5_000);
+
+  return Behaviors.receiveMessage((msg) => {
+    if (msg.kind === 'tick') console.log('heartbeat');
+    return Behaviors.same;
+  });
+});
+```
+
+The `TimerScheduler` API is the same one `context.timers` gives
+in the untyped form.  `withTimers` captures it in a closure so
+the receive handler has access without going through `ctx.timers`
+on every message.
+
+### `withStash`
+
+```ts
+const init = Behaviors.withStash<Msg>(100, (stash) => {
+  return Behaviors.receive((ctx, msg) => {
+    if (msg.kind === 'ready') {
+      stash.unstashAll();   // replay all buffered messages
+      return ready;
+    }
+    stash.stash(msg);       // park everything else for later
+    return Behaviors.same;
+  });
+});
+
+const ready = Behaviors.receive<Msg>((ctx, msg) => {
+  // handle messages normally
+  return Behaviors.same;
+});
+```
+
+Capacity-bounded stash, with `stash` / `unstashAll` / `isEmpty` /
+`isFull` / `size`.  Same semantics as
+[the untyped `context.stash`](/actor-ts/fundamentals/become-and-stash/),
+exposed as a value rather than via context.
+
+### `supervise(behavior).onFailure(strategy)`
+
+```ts
+import { Behaviors, OneForOneStrategy, Directive } from 'actor-ts';
+
+const supervised = Behaviors
+  .supervise(myReceiveBehavior)
+  .onFailure(new OneForOneStrategy(
+    (err) => Directive.Restart,
+    { maxRetries: 5, withinTimeRangeMs: 60_000 },
+  ));
+```
+
+Wrap a behavior with a supervisor strategy.  Errors thrown from
+the inner handler are routed through the strategy — Restart
+re-initializes the behavior (resets to its initial form), Stop
+terminates, Resume skips the failing message.
+
+See [Supervision](/actor-ts/fundamentals/supervision/) for the
+directive semantics; they apply identically in the typed form.
+
+## The five sentinels
+
+Values you return from a handler to express a transition decision:
+
+| Sentinel | Meaning |
+| --- | --- |
+| `Behaviors.same` | Keep the current behavior.  The handler closure runs again on the next message. |
+| `Behaviors.stopped` | Stop the actor.  Equivalent to `context.stopSelf()` in the untyped form. |
+| `Behaviors.unhandled` | This message isn't handled here; route to dead letters. |
+| `Behaviors.empty` | The behavior accepts messages but does nothing.  Useful as a placeholder. |
+| `Behaviors.ignore` | Drop every message silently (no dead-letter routing). |
+
+The first three are the most useful day-to-day.  `empty` and
+`ignore` exist for special cases — a "this actor is intentionally
+silent for now" stub or a sink that should swallow traffic.
+
+## A multi-behavior example
+
+```ts
+import { Behaviors, type Behavior, spawnTyped, ActorSystem } from 'actor-ts';
+
+type Msg =
+  | { kind: 'configure'; url: string }
+  | { kind: 'request';   payload: string };
+
+const initializing = Behaviors.withStash<Msg>(100, (stash) =>
+  Behaviors.receive<Msg>((ctx, msg) => {
+    if (msg.kind === 'configure') {
+      const url = msg.url;
+      stash.unstashAll();
+      return ready(url);
+    }
+    stash.stash(msg);
+    return Behaviors.same;
+  }),
+);
+
+const ready = (url: string): Behavior<Msg> =>
+  Behaviors.receive<Msg>((ctx, msg) => {
+    if (msg.kind === 'request') {
+      ctx.log.info(`POST ${url}: ${msg.payload}`);
+    }
+    return Behaviors.same;
+  });
+
+const system = ActorSystem.create('demo');
+spawnTyped(system, initializing);
+```
+
+Two behaviors:
+
+- `initializing` stashes everything until a `configure` arrives,
+  then transitions to `ready(url)` after replaying the stash.
+- `ready` handles requests using the captured `url`.
+
+The transitions are explicit returns; the state lives in closure
+parameters; there's no `this` to worry about.
+
+## Composition order
+
+Decorators compose outside-in.  `Behaviors.supervise(Behaviors.withTimers(...))`
+means "supervise the timers-using behavior"; `Behaviors.withTimers(Behaviors.supervise(...))`
+means "give the supervised inner the timers."  In practice:
+
+```ts
+const supervised = Behaviors
+  .supervise(Behaviors.withTimers((timers) =>
+    Behaviors.receive((ctx, msg) => Behaviors.same)
+  ))
+  .onFailure(strategy);
+```
+
+`supervise` is *outside* the `withTimers`, so the strategy
+oversees the whole construction.  This is almost always the right
+nesting.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Returning a fresh behavior each message">
+  ```ts
+  Behaviors.receive((ctx, msg) => Behaviors.receive((ctx2, msg2) => ...));
+  ```
+  Returning a freshly-constructed receive value is fine, but
+  `Behaviors.same` is cheaper — it's a singleton value the runtime
+  recognizes and shortcuts.  Use `same` when the next behavior is
+  literally the same closure; build a new value only when state
+  actually changes.
+</Aside>
+
+<Aside type="caution" title="Forgetting to return `Behaviors.same`">
+  ```ts
+  Behaviors.receive((ctx, msg) => {
+    ctx.log.info('handled');
+    // ← TypeScript will flag this — no return.
+  });
+  ```
+  The handler must return *some* behavior.  Forgetting `same` is
+  a type error — the compiler catches it.  In the untyped form, a
+  missing return is silently fine; the typed form makes
+  transitions explicit-by-default.
+</Aside>
+
+<Aside type="caution" title="Mutating closure-captured state">
+  ```ts
+  const counter = (n: number): Behavior<Msg> => {
+    let count = n;
+    return Behaviors.receive((ctx, msg) => {
+      count++;        // ← mutating the closure
+      return Behaviors.same;
+    });
+  };
+  ```
+  The whole point of the typed form is functional updates — pass
+  the new state to a new behavior.  Mutating closure state works,
+  but you've reinvented the untyped form with extra ceremony.  If
+  state mutation feels natural here, use untyped instead.
+</Aside>
+
+## Where to next
+
+- **[Typed actor](/actor-ts/typed/typed-actor/)** — the runtime
+  that interprets a Behavior.
+- **[Spawn typed](/actor-ts/typed/spawn-typed/)** — `spawnTyped`,
+  `typedProps`, `spawnTypedChild`.
+- **[Supervision](/actor-ts/fundamentals/supervision/)** — what
+  `Behaviors.supervise(...).onFailure(...)` uses internally.
+- **[Become and stash (untyped)](/actor-ts/fundamentals/become-and-stash/)** —
+  the OO equivalents of `Behaviors.withStash` + behavior-switching
+  via return values.

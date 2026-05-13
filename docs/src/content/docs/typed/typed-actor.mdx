@@ -1,0 +1,184 @@
+---
+title: TypedActor
+description: The runtime that interprets a Behavior — bridges the typed DSL to the untyped Actor engine. Internal class; users reach it through `spawnTyped`, `typedProps`, or `spawnTypedChild`.
+---
+
+`TypedActor<T>` is the runtime host that takes a `Behavior<T>` value
+and runs it.  Internally, it's an `Actor<T>` subclass — same
+mailbox, same dispatcher, same supervisor tree — but its
+`onReceive` delegates into whichever Behavior is currently active.
+
+You don't construct `TypedActor` directly.  The three spawn helpers
+([`spawnTyped`](/actor-ts/typed/spawn-typed/),
+[`typedProps`](/actor-ts/typed/spawn-typed/), and `spawnTypedChild`)
+wrap it for you.  But knowing how it works clarifies the typed-DSL
+semantics — especially what "the runtime interprets the Behavior"
+actually means.
+
+## How a Behavior becomes an actor
+
+```ts
+import { Behaviors, spawnTyped, ActorSystem } from 'actor-ts';
+
+const myBehavior = Behaviors.receive<Msg>((ctx, msg) => {
+  // ... handle msg
+  return Behaviors.same;
+});
+
+const system = ActorSystem.create('demo');
+const ref = spawnTyped(system, myBehavior);
+// Under the hood: system.actorOf(Props.create(() => new TypedActor(myBehavior)))
+```
+
+The framework:
+
+1. Constructs a `TypedActor<T>` with `myBehavior` as the initial
+   value.
+2. In `preStart`, **resolves** the initial behavior — walks through
+   any `setup` / `withTimers` / `withStash` / `supervise` wrappers
+   until it lands on a leaf (a `receive` or a sentinel).
+3. On every message, calls the resolved handler.  The return value
+   becomes the new "current behavior."
+4. If the return is `same`, nothing changes.  If it's a fresh
+   behavior, the framework resolves *that* and adopts it as the
+   new current.
+
+## The resolution loop
+
+Composed behaviors unwrap one layer at a time.  Given:
+
+```ts
+const b = Behaviors.supervise(
+  Behaviors.withTimers((timers) =>
+    Behaviors.setup((ctx) =>
+      Behaviors.receive((ctx, msg) => Behaviors.same))))
+  .onFailure(strategy);
+```
+
+The resolver walks:
+
+```
+supervise(...)        ← capture supervise strategy, recurse into child
+  withTimers(...)     ← capture timer scheduler, recurse into factory's return
+    setup(...)        ← run factory(ctx), recurse into return
+      receive(...)    ← leaf — store as `current`
+```
+
+Each wrapper has its side effect once (install the supervisor,
+capture the timers, run the setup factory) and disappears.  The
+final shape is a plain `receive` value.  The framework remembers
+the supervise strategy and timer scheduler across the actor's
+lifetime; the `setup` factory only runs the first time and on
+restart.
+
+A wrapper cycle (a `setup` that returns itself, or a `supervise`
+that recurses) is bounded at 64 hops — after that the resolver
+throws, surfacing the misconfiguration loud rather than spinning
+forever.
+
+## Transitions
+
+```ts
+Behaviors.receive<Msg>((ctx, msg) => {
+  if (msg.kind === 'start') return runningBehavior;
+  if (msg.kind === 'stop')  return Behaviors.stopped;
+  return Behaviors.same;
+});
+```
+
+Three outcomes:
+
+- `Behaviors.same` → the same closure handles the next message.
+  The runtime keeps `current` unchanged.
+- A different `Behavior<T>` value → the runtime resolves it and
+  swaps it in.  Wrappers run their side effects again (a fresh
+  `setup` runs, fresh timers get captured if `withTimers` is
+  re-introduced — important for "phase 1 had a timer, phase 2
+  doesn't" patterns).
+- `Behaviors.stopped` → the runtime stops the actor.
+- `Behaviors.unhandled` → the message routes to dead letters; the
+  current behavior stays.
+
+## Lifecycle signals
+
+```ts
+Behaviors.receiveWithSignal<Msg>(
+  (ctx, msg) => Behaviors.same,
+  (ctx, signal) => {
+    if (signal.kind === 'post-stop') ctx.log.info('cleaning up');
+    if (signal.kind === 'pre-restart') ctx.log.warn(`restarting: ${signal.reason}`);
+    if (signal.kind === 'terminated') ctx.log.info(`${signal.ref.path} stopped`);
+    return Behaviors.same;
+  },
+);
+```
+
+The signal handler is invoked from the framework's `postStop` /
+`preRestart` / Terminated-message-delivery hooks.  Three signals:
+
+| Kind | Triggered by |
+| --- | --- |
+| `post-stop` | The actor is stopping (any reason: PoisonPill, `Behaviors.stopped`, supervisor Stop). |
+| `pre-restart` | A failure is about to be restarted.  `signal.reason` is the error. |
+| `terminated` | A watched actor (`ctx.watch(ref)`) stopped.  `signal.ref` is its ref. |
+
+The return value works the same as the receive handler — `same` to
+keep the current behavior, a new behavior to swap.
+
+## Where the seams show
+
+`TypedActor` is the bridge — and at the seam between typed and
+untyped, a few details surface:
+
+- **Failures inside a typed handler reach the typed-supervisor
+  first.**  If the handler is wrapped in
+  `Behaviors.supervise(...).onFailure(strategy)`, that strategy
+  handles the error.  If not, it propagates to the *parent's*
+  supervisor — same as untyped.
+- **`ctx.spawn(behavior)` returns a fully-typed `ActorRef<U>`.**
+  The runtime wraps the child in another `TypedActor<U>`.  This
+  is the cast-free child spawning the typed form provides.
+- **Watching is one-way.**  A typed actor can `ctx.watch(ref)` an
+  untyped ref or vice versa.  The terminated signal arrives at
+  the typed side via the `terminated` signal; at the untyped side
+  via a `Terminated` message.
+
+## Initial-behavior gotchas
+
+The behavior you pass to `spawnTyped(system, behavior)` becomes
+the *initial* current.  Two edge cases:
+
+- **`Behaviors.same` as initial** is meaningless — there's
+  nothing to keep.  The runtime treats it as `Behaviors.empty`
+  (silent no-op), so the actor exists but drops all messages.
+  This usually surfaces a logic bug somewhere.
+- **`Behaviors.stopped` as initial** stops the actor in `preStart`.
+  The actor's ref is returned but it's already terminating.
+  Useful when "should this actor exist?" is determined by some
+  external check at spawn time.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Don't instantiate `TypedActor` directly">
+  ```ts
+  const actor = new TypedActor<Msg>(behavior);   // ← not the spawn API
+  system.actorOf(Props.create(() => actor));      // ← won't behave like a fresh actor
+  ```
+  Like any `Actor`, the typed runtime needs a fresh instance on
+  every restart.  The spawn helpers (`spawnTyped`, `typedProps`,
+  `spawnTypedChild`) close over the Behavior value and produce a
+  new `TypedActor` each time the Props factory runs.  Don't
+  shortcut.
+</Aside>
+
+## Where to next
+
+- **[Behaviors](/actor-ts/typed/behaviors/)** — the DSL that
+  produces the values `TypedActor` interprets.
+- **[Spawn typed](/actor-ts/typed/spawn-typed/)** — the three
+  helpers wrapping `TypedActor` for normal use.
+- **[Actor (untyped)](/actor-ts/fundamentals/actor/)** — the
+  parent class `TypedActor` extends.
+- **[Supervision](/actor-ts/fundamentals/supervision/)** — what
+  the `Behaviors.supervise(...).onFailure(...)` strategy
+  routes to.
