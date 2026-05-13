@@ -13,28 +13,35 @@ This page is the map.
 
 ## The picture
 
-```
-                ┌───────────────────────────────────────────────────┐
-                │                  ActorSystem                      │
-                │  ┌────────────────────────────────────────────┐   │
-                │  │              /user (guardian)              │   │
-                │  │   ┌──────────────────────────┐             │   │
-                │  │   │  Actor   "worker-1"      │             │   │
-                │  │   │                          │             │   │
-                │  │  ─┤◀── mailbox ── tell()  ◀──┼── (callers) │   │
-                │  │   │      │                   │             │   │
-                │  │   │   onReceive(msg)         │             │   │
-                │  │   │      │                   │             │   │
-                │  │   │   state, log,            │             │   │
-                │  │   │   children, context.*    │             │   │
-                │  │   └──────────────┬───────────┘             │   │
-                │  │                  │                         │   │
-                │  │       ┌──────────┴───────────┐             │   │
-                │  │       │ "child-a" "child-b"  │             │   │
-                │  │       └──────────────────────┘             │   │
-                │  └────────────────────────────────────────────┘   │
-                │           dispatcher  scheduler  eventStream      │
-                └───────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+  subgraph SYS["ActorSystem"]
+    direction TB
+    subgraph GUARD["/user (guardian)"]
+      direction TB
+      subgraph A["Actor &quot;worker-1&quot;"]
+        direction TB
+        MB["mailbox"]
+        OR["onReceive(msg)"]
+        CTX["state · log · children · context.*"]
+        MB --> OR --> CTX
+      end
+      CHILD["child-a · child-b"]
+      A --> CHILD
+    end
+    INFRA["dispatcher · scheduler · eventStream"]
+  end
+  CALLER(["callers"]) -- "tell()" --> MB
+  classDef sys      fill:#0f172a,stroke:#6366f1,stroke-width:2px,color:#f1f5f9;
+  classDef guardian fill:#1e293b,stroke:#6366f1,stroke-width:1.5px,color:#f1f5f9;
+  classDef actor    fill:#312e81,stroke:#818cf8,stroke-width:1.5px,color:#f1f5f9;
+  classDef caller   fill:#1e293b,stroke:#06b6d4,stroke-width:2px,color:#67e8f9;
+  classDef leaf     fill:#1e293b,stroke:#475569,color:#cbd5e1;
+  class SYS sys;
+  class GUARD guardian;
+  class A actor;
+  class CALLER caller;
+  class MB,OR,CTX,CHILD,INFRA leaf;
 ```
 
 Each box maps to one or two pages:

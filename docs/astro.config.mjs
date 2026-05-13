@@ -25,6 +25,7 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import { createStarlightTypeDocPlugin } from 'starlight-typedoc';
+import rehypeMermaid from 'rehype-mermaid';
 
 // TypeDoc → Starlight bridge.  Generates the API reference from
 // JSDoc comments in `../src/`, writes Markdown pages under
@@ -36,6 +37,51 @@ const [starlightTypeDoc, typeDocSidebarGroup] = createStarlightTypeDocPlugin();
 export default defineConfig({
   site: 'https://pathosDev.github.io',
   base: '/actor-ts',
+  // Mermaid SSR.  `rehype-mermaid` runs Playwright/Chromium headless at
+  // build time to render each ```mermaid``` block into an inline SVG.
+  // Result: no client-side JS, no flash-of-unrendered-text, accessible
+  // SVG markup, works with the static GitHub Pages host.
+  //
+  // We tell Shiki (Starlight's default syntax highlighter) to NOT touch
+  // mermaid code blocks — otherwise it would consume them as plain code
+  // and our rehype plugin would see nothing to render.
+  markdown: {
+    syntaxHighlight: {
+      type: 'shiki',
+      excludeLangs: ['mermaid', 'math'],
+    },
+    rehypePlugins: [
+      [
+        rehypeMermaid,
+        {
+          // 'inline-svg' inlines the rendered SVG directly into the HTML.
+          // Other options: 'img-svg' (SVG in <img>), 'img-png' (PNG in
+          // <img>), 'pre-mermaid' (no SSR, client-side render).  Inline
+          // is the cleanest for theming + accessibility.
+          strategy: 'inline-svg',
+          // Match our dark/light palette.  Mermaid's 'dark' theme uses a
+          // dark background which fits Starlight's default dark mode;
+          // light pages get re-themed via CSS variables on the SVG.
+          mermaidConfig: {
+            theme: 'dark',
+            themeVariables: {
+              // Indigo accents, slate base — same palette as the logo.
+              primaryColor:       '#1e293b',  // slate-800   — node bg
+              primaryTextColor:   '#f1f5f9',  // slate-100   — node text
+              primaryBorderColor: '#6366f1',  // indigo-500  — node border
+              lineColor:          '#94a3b8',  // slate-400   — connection lines
+              secondaryColor:     '#312e81',  // indigo-900  — alt node bg
+              tertiaryColor:      '#0f172a',  // slate-900   — bg
+              fontFamily:         "'JetBrains Mono', ui-monospace, monospace",
+              fontSize:           '14px',
+            },
+            flowchart:  { htmlLabels: true, curve: 'basis' },
+            sequence:   { actorMargin: 50 },
+          },
+        },
+      ],
+    ],
+  },
   integrations: [
     starlight({
       title: 'actor-ts',

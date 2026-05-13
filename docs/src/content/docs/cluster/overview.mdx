@@ -54,12 +54,25 @@ convergence).
 
 Every member goes through a small state machine:
 
-```
-   joining → weakly-up → up → leaving → exiting → removed
-                          ↓                          ↑
-                     unreachable                  (tombstone)
-                          ↑↓
-                     reachable
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> joining
+  joining --> weaklyUp: optional
+  joining --> up
+  weaklyUp --> up: leader confirms
+  up --> unreachable: failure detector
+  unreachable --> up: heartbeat resumes
+  up --> leaving: cluster.leave()
+  leaving --> exiting
+  exiting --> removed
+  removed --> [*]: tombstone TTL
+  classDef happy   fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef warn    fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
+  classDef gone    fill:#1e293b,stroke:#475569,color:#94a3b8;
+  class joining,weaklyUp,up happy
+  class unreachable warn
+  class leaving,exiting,removed gone
 ```
 
 - **`joining`** — just announced itself.  Other peers know about it

@@ -162,25 +162,45 @@ pre:not([class*='language-']) {
  *     sidebars.  Overriding it globally would also shrink the left
  *     nav, which we don't want — the left nav needs the width for the
  *     12 top-level Parts and their sub-groups.  So we target the
- *     right sidebar directly via `.right-sidebar-container` /
- *     `aside.right-sidebar`.
+ *     right sidebar's `.right-sidebar-container` directly and override
+ *     Starlight's `calc()`-based width that depends on `--sl-content-
+ *     width` and `--sl-sidebar-width`.
  *
- * The right TOC only shows page-internal anchors — typically 4-8
- * short headings.  13rem (208px) is plenty for those, and the saved
- * ~6rem of horizontal space goes straight to the article column. */
+ * Why `!important` on the width rules: Starlight's own rules use the
+ * `:where()` pseudo-class to keep specificity at 0, expecting custom
+ * CSS to override.  In practice the cascade still goes Starlight's
+ * way for these calc() rules because they're injected by the Astro
+ * scoped-style system inside a layer that competes with our load
+ * order.  `!important` is the simplest robust override. */
 :root {
-  --sl-content-width: 64rem;
+  --sl-content-width: 64rem !important;
 }
 
 @media (min-width: 72rem) {
   /* Narrow the right TOC column.  Only kicks in at viewports where
-   * the right TOC is actually visible (>= md breakpoint). */
+   * the right TOC is actually visible (>= md breakpoint).
+   *
+   * Starlight's rule:
+   *   .right-sidebar-container { width: calc(var(--sl-sidebar-width)
+   *     + (100% - var(--sl-content-width) - var(--sl-sidebar-width)) / 2) }
+   *
+   * That formula adds the right-sidebar's "half of leftover space"
+   * tail — which at 2560px wide gives the right TOC ~900px of
+   * horizontal room despite only ever showing a few short anchor
+   * links.  Override to a fixed 14rem so the saved space falls to
+   * the article column. */
   .right-sidebar-container {
-    width: 14rem;
-    max-width: 14rem;
+    width: 14rem !important;
+    max-width: 14rem !important;
   }
   .right-sidebar {
-    width: 14rem;
-    max-width: 14rem;
+    width: 14rem !important;
+    max-width: 14rem !important;
+  }
+  /* Main-pane uses a symmetric `calc()` — narrowing it explicitly
+   * so the article gets the full saved width on the right side. */
+  .main-pane {
+    width: calc(100% - var(--sl-sidebar-width) - 14rem) !important;
+    max-width: calc(100% - var(--sl-sidebar-width) - 14rem) !important;
   }
 }

@@ -20,25 +20,36 @@ picks up where the last one left off.
 
 ## The big picture
 
-```
-                    ┌───────────────────────────┐
-                    │   PersistentActor          │
-                    │   ┌─────────────────────┐  │
-                    │   │  onCommand(cmd)     │  │
-                    │   │  → persist(event)   │──┼──► Journal (append-only event log)
-                    │   │  → state mutated   ◄┼─────── Snapshot Store (periodic state)
-                    │   │  via onEvent       │  │
-                    │   └─────────────────────┘  │
-                    └───────────────────────────┘
+```mermaid
+flowchart LR
+  subgraph PA["PersistentActor"]
+    direction TB
+    PA_CMD["onCommand(cmd)"]
+    PA_PERSIST["persist(event)"]
+    PA_EVT["onEvent → state mutates"]
+    PA_CMD --> PA_PERSIST --> PA_EVT
+  end
+  JOURNAL[("Journal<br/>append-only event log")]
+  SNAPSHOT[("Snapshot Store<br/>periodic state")]
+  PA_PERSIST --> JOURNAL
+  SNAPSHOT --> PA_EVT
 
-                    ┌───────────────────────────┐
-                    │   DurableStateActor        │
-                    │   ┌─────────────────────┐  │
-                    │   │  onCommand(cmd)     │  │
-                    │   │  → persist(newState)│──┼──► Durable State Store (single value)
-                    │   │  → revision++       │  │
-                    │   └─────────────────────┘  │
-                    └───────────────────────────┘
+  subgraph DSA["DurableStateActor"]
+    direction TB
+    DSA_CMD["onCommand(cmd)"]
+    DSA_PERSIST["persist(newState)"]
+    DSA_REV["revision++"]
+    DSA_CMD --> DSA_PERSIST --> DSA_REV
+  end
+  DSTORE[("Durable State Store<br/>single value")]
+  DSA_PERSIST --> DSTORE
+
+  classDef actor   fill:#312e81,stroke:#818cf8,stroke-width:1.5px,color:#f1f5f9;
+  classDef store   fill:#1e293b,stroke:#06b6d4,stroke-width:2px,color:#67e8f9;
+  classDef step    fill:#0f172a,stroke:#475569,color:#cbd5e1;
+  class PA,DSA actor
+  class JOURNAL,SNAPSHOT,DSTORE store
+  class PA_CMD,PA_PERSIST,PA_EVT,DSA_CMD,DSA_PERSIST,DSA_REV step
 ```
 
 The journal and the durable-state store are **pluggable**.  The

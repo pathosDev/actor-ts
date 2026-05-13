@@ -93,6 +93,15 @@ jobs:
         working-directory: docs
         run: bun install
 
+      # rehype-mermaid renders ```mermaid``` blocks at build time by
+      # driving headless Chromium via Playwright.  The npm package
+      # ships only the JS bindings; the actual browser binary has to
+      # be fetched separately.  `--with-deps` pulls the Linux system
+      # libs Chromium needs on the GH Actions Ubuntu runner.
+      - name: Install Playwright browsers (for Mermaid SSR)
+        working-directory: docs
+        run: bunx playwright install --with-deps chromium
+
       - name: Build site (includes TypeDoc API generation)
         working-directory: docs
         run: bun run build
