@@ -15,19 +15,22 @@ const kafka = system.actorOf(
   Props.create(() => new KafkaActor({
     brokers:   ['kafka-1:9092', 'kafka-2:9092'],
     clientId:  'my-app',
+    // Consumer-actor target is configured here, once.
     consumer:  {
       groupId: 'my-app-orders',
       topics:  ['orders', 'payments'],
+      target:  orderHandler,
     },
   })),
   'kafka',
 );
 
-// Subscribe to consume:
-kafka.tell({ kind: 'subscribe', subscriber: handler });
+// Add another topic at runtime (the constructor-time `topics` covers
+// the common case; `subscribe` is for late-binding additions).
+kafka.tell({ kind: 'subscribe', topic: 'audit' });
 
 // Publish:
-kafka.tell({ kind: 'publish', topic: 'audit', value: 'something' });
+kafka.tell({ kind: 'publish', publish: { topic: 'audit', value: 'something' } });
 ```
 
 ## Settings
@@ -51,7 +54,8 @@ interface KafkaActorSettings extends BrokerCommonSettings {
     fromBeginning?:  boolean;
     commitMode?:     'auto' | 'manual';
     commitTimeoutMs?: number;
-    topics?:         string[];
+    topics?:         ReadonlyArray<string>;
+    target?:         ActorRef<KafkaRecord>;     // consumer-actor for inbound records
   };
 }
 ```
@@ -63,11 +67,13 @@ breaker — see [BrokerActor base](/io/broker-actor-base/).
 
 ```ts
 kafka.tell({
-  kind:   'publish',
-  topic:  'orders',
-  key:    orderId,         // optional — partitions by key
-  value:  JSON.stringify(order),
-  headers: { 'x-trace': traceId },
+  kind: 'publish',
+  publish: {
+    topic:   'orders',
+    key:     orderId,        // optional — partitions by key
+    value:   JSON.stringify(order),
+    headers: { 'x-trace': traceId },
+  },
 });
 ```
 
@@ -80,7 +86,9 @@ deduplicates retries within the producer session.
 ## Consuming
 
 ```ts
-kafka.tell({ kind: 'subscribe', subscriber: orderHandler });
+// The consumer-actor target is wired up via settings (see above);
+// `subscribe` only adds further topics at runtime if needed.
+kafka.tell({ kind: 'subscribe', topic: 'orders' });
 
 class OrderHandler extends Actor<KafkaRecord> {
   override onReceive(record: KafkaRecord): void {
@@ -91,11 +99,10 @@ class OrderHandler extends Actor<KafkaRecord> {
 }
 ```
 
-Each subscriber receives every record for the topics the actor's
-consumer is subscribed to.  Multiple subscribers each see every
-record — they don't share work.  For Kafka's consumer-group
-work-sharing, use **multiple actor instances** with the same
-`groupId`.
+The actor delivers every consumed record to `consumer.target`.
+For Kafka's consumer-group work-sharing, use **multiple actor
+instances** with the same `groupId` — each instance owns a
+subset of partitions.
 
 ## Commit modes
 

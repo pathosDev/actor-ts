@@ -13,27 +13,26 @@ import { ActorSystem, Props, AmqpActor } from 'actor-ts';
 const amqp = system.actorOf(
   Props.create(() => new AmqpActor({
     url: 'amqp://guest:guest@rabbitmq:5672',
-    exchanges: [
-      { name: 'orders', type: 'topic', durable: true },
-    ],
-    queues: [
-      { name: 'order-processor', durable: true, bindings: [
-        { exchange: 'orders', routingKey: 'placed.#' },
-      ]},
+    // Queue → consumer-actor wiring lives in `bindings` on the
+    // settings — declared once when the actor connects.  Runtime
+    // subscribe / unsubscribe isn't a v1 surface; if you need to
+    // attach a new consumer after start, restart the actor with
+    // updated bindings.
+    bindings: [
+      { queue: 'order-processor', exchange: 'orders', routingKey: 'placed.#', target: handler },
     ],
   })),
   'amqp',
 );
 
-// Subscribe to consume from a queue:
-amqp.tell({ kind: 'subscribe-queue', queue: 'order-processor', subscriber: handler });
-
 // Publish to an exchange:
 amqp.tell({
-  kind:       'publish',
-  exchange:   'orders',
-  routingKey: 'placed.priority',
-  payload:    JSON.stringify(order),
+  kind: 'publish',
+  publish: {
+    exchange:   'orders',
+    routingKey: 'placed.priority',
+    content:    JSON.stringify(order),
+  },
 });
 ```
 
@@ -41,30 +40,23 @@ amqp.tell({
 
 ```ts
 interface AmqpActorSettings extends BrokerCommonSettings {
-  url:         string;                  // amqp:// or amqps://
-  exchanges?:  ExchangeDefinition[];    // declared on connect
-  queues?:     QueueDefinition[];       // declared + bound on connect
-  prefetch?:   number;                  // consumer prefetch count
+  url:        string;                          // amqp:// or amqps://
+  prefetch?:  number;                          // unacked messages per consumer; default 1
+  autoAck?:   boolean;                         // ack on delivery vs after processing; default true
+  bindings?:  ReadonlyArray<AmqpQueueBinding>; // queue ↔ exchange ↔ routingKey ↔ target
 }
 
-interface ExchangeDefinition {
-  name:       string;
-  type:       'direct' | 'topic' | 'fanout' | 'headers';
-  durable?:   boolean;
-  autoDelete?: boolean;
-}
-
-interface QueueDefinition {
-  name:       string;
-  durable?:   boolean;
-  exclusive?: boolean;
-  autoDelete?: boolean;
-  bindings?:  Array<{ exchange: string; routingKey?: string; args?: Record<string, unknown> }>;
+interface AmqpQueueBinding {
+  queue:       string;
+  exchange?:   string;                         // omit for the default exchange
+  routingKey?: string;
+  target:      ActorRef<AmqpDelivery>;         // consumer-actor for this queue
 }
 ```
 
-The actor declares exchanges + queues + bindings on connect
-(idempotent — re-declaration of identical definitions is fine).
+Bindings declare the queue, the exchange binding, AND the
+consumer-actor target in one go — the actor wires everything up
+on connect (idempotent re-declaration).
 
 ## Exchanges and routing
 
@@ -89,26 +81,35 @@ routing keys (`orders.placed.priority`, `orders.cancelled`,
 
 ## Ack / nack
 
+Set `autoAck: false` in settings, then the handler tells the
+result back via `{ kind: 'ack', delivery }` or `{ kind: 'nack',
+delivery, requeue }` on the AMQP actor's ref.
+
 ```ts
-class OrderHandler extends Actor<AmqpMessage> {
-  override async onReceive(msg: AmqpMessage): Promise<void> {
+class OrderHandler extends Actor<AmqpDelivery> {
+  constructor(private readonly amqp: ActorRef<AmqpCmd>) { super(); }
+
+  override async onReceive(delivery: AmqpDelivery): Promise<void> {
     try {
-      await processOrder(msg);
-      msg.ack();   // tell the broker the message was processed
+      await processOrder(delivery);
+      this.amqp.tell({ kind: 'ack', delivery });
     } catch (err) {
-      msg.nack({ requeue: true });   // put back on the queue
+      this.amqp.tell({ kind: 'nack', delivery, requeue: true });
     }
   }
 }
 ```
 
-Every inbound message has `ack()` / `nack(opts)` methods.  The
-broker holds the message in **unacked state** until you call
-one — if the consumer crashes, the broker re-delivers on the
-next connection.
+Every inbound `AmqpDelivery` carries an opaque `ackToken` the
+actor uses to identify the broker-side message — you don't touch
+it directly, just pass the whole `delivery` back in the `ack` /
+`nack` tell.
 
-Use `nack({ requeue: false })` to send to a dead-letter queue
-(if configured) — useful when retry won't help.
+The broker holds the message in **unacked state** until your
+handler responds — if the consumer crashes, the broker
+re-delivers on the next connection.  Use `requeue: false` to
+send to a dead-letter queue (if configured) — useful when retry
+won't help.
 
 ## Prefetch
 

@@ -15,19 +15,23 @@ const kafka = system.actorOf(
   Props.create(() => new KafkaActor({
     brokers:   ['kafka-1:9092', 'kafka-2:9092'],
     clientId:  'my-app',
+    // Consumer-Actor-Target wird einmalig hier konfiguriert.
     consumer:  {
       groupId: 'my-app-orders',
       topics:  ['orders', 'payments'],
+      target:  orderHandler,
     },
   })),
   'kafka',
 );
 
-// Konsum subscribieren:
-kafka.tell({ kind: 'subscribe', subscriber: handler });
+// Ein weiteres Topic zur Laufzeit hinzufügen (das `topics` aus dem
+// Konstruktor deckt den Normalfall ab; `subscribe` ist für späte
+// Ergänzungen).
+kafka.tell({ kind: 'subscribe', topic: 'audit' });
 
 // Publishen:
-kafka.tell({ kind: 'publish', topic: 'audit', value: 'something' });
+kafka.tell({ kind: 'publish', publish: { topic: 'audit', value: 'something' } });
 ```
 
 ## Settings
@@ -51,7 +55,8 @@ interface KafkaActorSettings extends BrokerCommonSettings {
     fromBeginning?:  boolean;
     commitMode?:     'auto' | 'manual';
     commitTimeoutMs?: number;
-    topics?:         string[];
+    topics?:         ReadonlyArray<string>;
+    target?:         ActorRef<KafkaRecord>;     // Consumer-Actor für eingehende Records
   };
 }
 ```
@@ -63,11 +68,13 @@ Breaker — siehe [BrokerActor-Basis](/de/io/broker-actor-base/).
 
 ```ts
 kafka.tell({
-  kind:   'publish',
-  topic:  'orders',
-  key:    orderId,         // optional — partitioniert nach Key
-  value:  JSON.stringify(order),
-  headers: { 'x-trace': traceId },
+  kind: 'publish',
+  publish: {
+    topic:   'orders',
+    key:     orderId,        // optional — partitioniert nach Key
+    value:   JSON.stringify(order),
+    headers: { 'x-trace': traceId },
+  },
 });
 ```
 
@@ -82,7 +89,10 @@ der Producer-Session.
 ## Consumen
 
 ```ts
-kafka.tell({ kind: 'subscribe', subscriber: orderHandler });
+// Das Consumer-Actor-Target wird über die Settings verdrahtet
+// (siehe oben); `subscribe` ergänzt zur Laufzeit nur weitere
+// Topics, wenn nötig.
+kafka.tell({ kind: 'subscribe', topic: 'orders' });
 
 class OrderHandler extends Actor<KafkaRecord> {
   override onReceive(record: KafkaRecord): void {
@@ -93,11 +103,10 @@ class OrderHandler extends Actor<KafkaRecord> {
 }
 ```
 
-Jeder Subscriber bekommt jeden Record für die Topics, die der
-Consumer des Actors subscribiert hat.  Mehrere Subscriber sehen
-jeweils jeden Record — sie teilen sich die Arbeit nicht.  Für
-Kafkas Consumer-Group-Work-Sharing nimm **mehrere Actor-Instanzen**
-mit derselben `groupId`.
+Der Actor liefert jeden konsumierten Record an `consumer.target`.
+Für Kafkas Consumer-Group-Work-Sharing nimm **mehrere
+Actor-Instanzen** mit derselben `groupId` — jede Instanz
+übernimmt eine Teilmenge der Partitionen.
 
 ## Commit-Modi
 

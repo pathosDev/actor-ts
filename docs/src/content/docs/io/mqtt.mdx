@@ -22,19 +22,21 @@ const mqtt = system.actorOf(
 
 // Subscribe to a topic (with optional wildcards):
 mqtt.tell({
-  kind:       'subscribe-mqtt',
-  topic:      'sensors/+/temp',
-  qos:        1,
-  subscriber: telemetryHandler,
+  kind:   'subscribe',
+  topic:  'sensors/+/temp',
+  qos:    1,
+  target: telemetryHandler,
 });
 
 // Publish:
 mqtt.tell({
-  kind:    'publish',
-  topic:   'commands/device-42',
-  payload: JSON.stringify({ action: 'reboot' }),
-  qos:     1,
-  retain:  false,
+  kind: 'publish',
+  publish: {
+    topic:   'commands/device-42',
+    payload: JSON.stringify({ action: 'reboot' }),
+    qos:     1,
+    retain:  false,
+  },
 });
 ```
 
@@ -83,10 +85,10 @@ QoS 0 is fine.
 ## Topic wildcards
 
 ```ts
-mqtt.tell({ kind: 'subscribe-mqtt', topic: 'sensors/+/temp', qos: 1, subscriber: handler });
+mqtt.tell({ kind: 'subscribe', topic: 'sensors/+/temp', qos: 1, target: handler });
 // matches: 'sensors/dev1/temp', 'sensors/dev2/temp', ...
 
-mqtt.tell({ kind: 'subscribe-mqtt', topic: 'devices/#', qos: 1, subscriber: handler });
+mqtt.tell({ kind: 'subscribe', topic: 'devices/#', qos: 1, target: handler });
 // matches: 'devices/anything/anywhere/...'
 ```
 
@@ -99,10 +101,12 @@ mqtt.tell({ kind: 'subscribe-mqtt', topic: 'devices/#', qos: 1, subscriber: hand
 
 ```ts
 mqtt.tell({
-  kind:    'publish',
-  topic:   'config/device-42',
-  payload: JSON.stringify({ ... }),
-  retain:  true,    // ← stored by the broker
+  kind: 'publish',
+  publish: {
+    topic:   'config/device-42',
+    payload: JSON.stringify({ ... }),
+    retain:  true,    // ← stored by the broker
+  },
 });
 ```
 

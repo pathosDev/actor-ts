@@ -20,16 +20,18 @@ const nats = system.actorOf(
 
 // Subscribieren (Wildcards unterstützt):
 nats.tell({
-  kind:       'subscribe-nats',
-  subject:    'events.>',
-  subscriber: eventHandler,
+  kind:    'subscribe',
+  subject: 'events.>',
+  target:  eventHandler,
 });
 
 // Publishen:
 nats.tell({
-  kind:    'publish',
-  subject: 'events.user.signup',
-  payload: JSON.stringify(event),
+  kind: 'publish',
+  publish: {
+    subject: 'events.user.signup',
+    payload: JSON.stringify(event),
+  },
 });
 ```
 

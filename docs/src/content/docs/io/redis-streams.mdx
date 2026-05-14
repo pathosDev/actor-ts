@@ -13,22 +13,23 @@ import { ActorSystem, Props, RedisStreamsActor } from 'actor-ts';
 
 const redis = system.actorOf(
   Props.create(() => new RedisStreamsActor({
-    url:           'redis://localhost:6379',
-    consumerGroup: 'order-processors',
-    consumerName:  'worker-1',
-    streams:       ['orders', 'payments'],
+    url:     'redis://localhost:6379',
+    streams: ['orders', 'payments'],
+    // Consumer-group wiring + consumer-actor target live in
+    // settings — there is no runtime `subscribe` surface.
+    consumerGroup: { group: 'order-processors', consumer: 'worker-1' },
+    target:        orderHandler,
   })),
   'redis',
 );
 
-// Subscribe (consumer-group reads):
-redis.tell({ kind: 'subscribe-streams', subscriber: handler });
-
-// Publish:
+// Publish (XADD under the hood):
 redis.tell({
-  kind:    'xadd',
-  stream:  'orders',
-  fields:  { sku: 'book-1', quantity: '2' },
+  kind: 'publish',
+  publish: {
+    stream: 'orders',
+    fields: { sku: 'book-1', quantity: '2' },
+  },
 });
 ```
 
@@ -36,14 +37,15 @@ redis.tell({
 
 ```ts
 interface RedisStreamsActorSettings extends BrokerCommonSettings {
-  url:            string;
-  consumerGroup?: string;          // required for XREADGROUP mode
-  consumerName?:  string;          // unique within the group
-  streams?:       string[];        // streams to consume from
-  blockTimeoutMs?: number;          // XREAD block; default 5_000
-  count?:         number;          // batch size; default 100
-  password?:      string;
-  tls?:           boolean;
+  url:           string;                          // 'redis://host:6379'
+  streams?:      ReadonlyArray<string>;           // streams to consume
+  consumerGroup?: {
+    group:           string;
+    consumer:        string;
+    createIfMissing?: boolean;                    // default true
+  };
+  blockMs?:      number;                          // XREADGROUP block; default 5_000
+  target?:       ActorRef<RedisStreamEntry>;      // consumer-actor for inbound entries
 }
 ```
 
@@ -53,7 +55,7 @@ interface RedisStreamsActorSettings extends BrokerCommonSettings {
 
 ```ts
 // No consumerGroup → uses XREAD
-new RedisStreamsActor({ url, streams: ['events'] });
+new RedisStreamsActor({ url, streams: ['events'], target: handler });
 ```
 
 Reads from the stream's **`$` (latest)** position by default —
@@ -68,9 +70,9 @@ should process every message.
 ```ts
 new RedisStreamsActor({
   url,
-  streams: ['orders'],
-  consumerGroup: 'workers',
-  consumerName:  'worker-1',
+  streams:       ['orders'],
+  consumerGroup: { group: 'workers', consumer: 'worker-1' },
+  target:        handler,
 });
 ```
 
@@ -91,10 +93,12 @@ worker, processed, acked, done.
 
 ```ts
 class OrderProcessor extends Actor<RedisStreamEntry> {
+  constructor(private readonly redis: ActorRef<RedisStreamsCmd>) { super(); }
+
   override async onReceive(entry: RedisStreamEntry): Promise<void> {
     const order = JSON.parse(entry.fields.body);
     await processOrder(order);
-    this.redis.tell({ kind: 'xack', stream: entry.stream, id: entry.id });
+    this.redis.tell({ kind: 'ack', stream: entry.stream, id: entry.id });
   }
 }
 ```
@@ -115,23 +119,19 @@ re-delivers, your handler can skip already-processed IDs.
 
 ## Pending Entries List (PEL)
 
-Un-acked messages stay in the consumer group's PEL.  After a
-consumer crash, another consumer can claim those messages:
+Un-acked messages stay in the consumer group's PEL — Redis
+tracks every delivered-but-not-acked entry per consumer.  After
+a consumer crash, those entries can be **manually re-claimed**
+via `XCLAIM` against the Redis server (outside the actor
+surface).  A future actor command would wrap that; for now,
+run `XCLAIM` from a separate ioredis client or use a sidecar
+process.
 
-```ts
-redis.tell({
-  kind:       'xclaim',
-  stream:     'orders',
-  group:      'workers',
-  consumer:   'worker-1',
-  ids:        ['1684923847-0'],
-  minIdleMs:  60_000,    // only claim if idle > 60s
-});
-```
-
-For automatic re-delivery, the framework's broker-actor base
-class handles common cases — see the API reference for the
-manual `xclaim` flow.
+For at-least-once delivery in the common path: tell `ack` after
+processing, and a consumer that crashes mid-processing simply
+leaves the entry in the PEL — the next consumer that starts
+with the same group can pick up where the previous one stopped
+(via XPENDING + XCLAIM).
 
 ## Peer dependency
 
