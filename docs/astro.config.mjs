@@ -187,6 +187,16 @@ export default defineConfig({
       // font-fallback drift on systems without JetBrains Mono.  The full
       // logo with tagline is reserved for the splash hero + README.
       logo: { src: './public/logo-header.png', replacesTitle: true },
+      // Replace Starlight's native-<select> language dropdown with a
+      // custom popover that renders inline SVG flags next to each
+      // locale's native-name label.  Native unicode flag emojis don't
+      // render reliably on Windows (Chrome / Firefox show boxed letter
+      // pairs instead of actual flags), so we ship our own SVGs via
+      // the `country-flag-icons` package.  See the component file for
+      // the keyboard / accessibility wiring.
+      components: {
+        LanguageSelect: './src/components/LanguageSelect.astro',
+      },
       // Register custom Shiki grammars so HOCON + PromQL code blocks
       // get proper syntax highlighting instead of falling back to
       // plain text + emitting "language not found" build warnings.

@@ -416,3 +416,26 @@ pre:not([class*='language-']) {
     padding-inline-end: 2rem;
   }
 }
+
+/* ----- Top-right controls: widen the theme select ---------------------- */
+
+/* Starlight's <ThemeSelect> uses an internal <Select> component that
+ * hard-codes `width="6.25em"` and applies `text-overflow: ellipsis`,
+ * which truncates the longer localised theme options (e.g. Russian
+ * "Тёмная" / "Светлая", Japanese "ライト") to "...".  Bump the
+ * per-component CSS variable that drives the width and disable the
+ * ellipsis so any remaining overflow shows normally rather than
+ * silently as "...".
+ *
+ * (LanguageSelect doesn't need this rule any more — it's overridden
+ * by our custom `src/components/LanguageSelect.astro` which uses a
+ * <details>-based popover, not the native <select>.)
+ *
+ * CSS variables cascade child-ward by default; setting
+ * `--sl-select-width` directly on <select> overrides the inline
+ * `style="--sl-select-width: ..."` that Starlight puts on the parent
+ * <label>. */
+starlight-theme-select select {
+  --sl-select-width: 7em;
+  text-overflow: clip;
+}
