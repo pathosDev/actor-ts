@@ -150,6 +150,90 @@ The five lines map to the actor model's five core ideas:
    complete. For real apps, hook this into a SIGTERM handler — see
    [Coordinated shutdown](/fundamentals/coordinated-shutdown/).
 
+## Going further
+
+A `string` mailbox is the absolute minimum — the framework gets
+interesting once messages start carrying structure. Two short
+extensions of the hello-actor sample to make that concrete:
+
+### Typed messages with a discriminated union
+
+Real actors receive *commands*, not bare values. The convention is a
+discriminated union — every message carries a `kind` literal that
+narrows the union inside `onReceive`. `match(cmd).exhaustive()` from
+[`ts-pattern`](https://github.com/gvergnaud/ts-pattern) gives you a
+compile-time check that every variant is handled: add a new `kind`
+without a matching `with(...)` arm and TypeScript fails the build.
+
+```ts
+import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
+import { match } from 'ts-pattern';
+
+type Cmd =
+  | { kind: 'inc' }
+  | { kind: 'dec' }
+  | { kind: 'get'; replyTo: ActorRef<number> };
+
+class Counter extends Actor<Cmd> {
+  private count = 0;
+  override onReceive(cmd: Cmd): void {
+    match(cmd)
+      .with({ kind: 'inc' }, () => { this.count++; })
+      .with({ kind: 'dec' }, () => { this.count--; })
+      .with({ kind: 'get' }, (m) => m.replyTo.tell(this.count))
+      .exhaustive();
+  }
+}
+
+const system  = ActorSystem.create('counters');
+const counter = system.actorOf(Props.create(() => new Counter()));
+
+counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'dec' });
+```
+
+The `{ kind: 'get'; replyTo: ActorRef<number> }` variant is the
+standard shape for "give me a reply": the requester passes its own
+ref (or, more commonly, one provided by `ask`, below) and the
+counter `tell`s the answer back. See
+[Messages](/fundamentals/messages/) and
+[Pattern matching](/fundamentals/pattern-matching/)
+for the deep dive.
+
+### Getting a reply with `ask`
+
+`tell` is fire-and-forget. For request/response use `ask`: it
+spawns a one-shot reply actor under the hood, injects it as
+`replyTo`, and resolves a typed `Promise` when the actor sends its
+answer back. There's a configurable timeout so a non-responsive
+actor doesn't hang the caller forever.
+
+```ts
+import { ActorSystem, Props, ask } from 'actor-ts';
+
+const system  = ActorSystem.create('counters');
+const counter = system.actorOf(Props.create(() => new Counter()));
+
+counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'inc' });
+
+const value = await ask<Cmd, number>(
+  counter,
+  // `ask` fills in the real reply ref — the placeholder satisfies
+  // the static type without exposing the internal one-shot actor.
+  { kind: 'get', replyTo: undefined as any },
+  5_000,
+);
+console.log(value);  // 2
+
+await system.terminate();
+```
+
+See [Ask pattern](/fundamentals/ask-pattern/) for timeout
+behaviour, error handling, and the dead-letter case (target actor
+stopped before replying).
+
 ## Where to next
 
 You have a running actor. From here the docs branch out depending on

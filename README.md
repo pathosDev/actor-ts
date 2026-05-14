@@ -106,6 +106,118 @@ The same file runs unchanged under `bun run`, `node` and `deno run`.
 
 ---
 
+## A few more patterns
+
+A flavour of what idiomatic `actor-ts` code looks like — pick the
+snippet that matches what you're reaching for.
+
+### Typed messages + pattern matching
+
+Discriminated-union messages plus `match().exhaustive()` from
+[`ts-pattern`](https://github.com/gvergnaud/ts-pattern) give you a
+compile-time check that every variant is handled. Add a new variant
+to `Cmd` without a matching `with(...)` arm and TypeScript fails the
+build.
+
+```ts
+import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
+import { match } from 'ts-pattern';
+
+type Cmd =
+  | { kind: 'inc' }
+  | { kind: 'dec' }
+  | { kind: 'get'; replyTo: ActorRef<number> };
+
+class Counter extends Actor<Cmd> {
+  private count = 0;
+  override onReceive(cmd: Cmd): void {
+    match(cmd)
+      .with({ kind: 'inc' }, () => { this.count++; })
+      .with({ kind: 'dec' }, () => { this.count--; })
+      .with({ kind: 'get' }, m => m.replyTo.tell(this.count))
+      .exhaustive();
+  }
+}
+```
+
+### Ask pattern — request / response
+
+`tell` is fire-and-forget; `ask` awaits a typed reply with a
+configurable timeout. Under the hood it spawns a one-shot reply
+actor, wires it as `replyTo`, and resolves the returned promise
+when the target actor sends its answer back.
+
+```ts
+import { ActorSystem, Props, ask } from 'actor-ts';
+
+const system  = ActorSystem.create('demo');
+const counter = system.actorOf(Props.create(() => new Counter()));
+
+counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'inc' });
+
+const value = await ask<Cmd, number>(
+  counter,
+  { kind: 'get', replyTo: undefined as any },  // ask() injects the real ref
+  5_000,
+);
+console.log(value);  // 2
+```
+
+### Event-sourced actor
+
+State is rebuilt from a journal on every restart — no in-place
+mutation, no "did this write commit?" question. Same `Counter` API
+the rest of the app sees, every mutation durable.
+
+```ts
+import { PersistentActor, ActorSystem, Props } from 'actor-ts';
+
+type Cmd   = { kind: 'inc' } | { kind: 'dec' };
+type Event = { kind: 'incremented' } | { kind: 'decremented' };
+interface State { count: number }
+
+class Counter extends PersistentActor<Cmd, Event, State> {
+  readonly persistenceId = 'counter-1';
+  initialState(): State { return { count: 0 }; }
+  onEvent(s: State, e: Event): State {
+    return e.kind === 'incremented'
+      ? { count: s.count + 1 }
+      : { count: s.count - 1 };
+  }
+  onCommand(_state: State, cmd: Cmd): void {
+    this.persist({
+      kind: cmd.kind === 'inc' ? 'incremented' : 'decremented',
+    });
+  }
+}
+```
+
+### Cluster sharding — N instances behind one ref
+
+Same actor code; the framework routes per-entity messages to the
+correct node in the cluster and migrates entities when nodes come
+and go. The `ShardRegion` ref you get back behaves like any other
+`ActorRef` to callers.
+
+```ts
+import { ActorSystem, Cluster, ClusterSharding, Props } from 'actor-ts';
+
+const system   = ActorSystem.create('app');
+const cluster  = await Cluster.join(system, { host, port, seeds });
+const sharding = ClusterSharding.get(system, cluster);
+
+const cartRegion = sharding.start<CartCmd>({
+  typeName:        'cart',
+  entityProps:     Props.create(() => new CartActor()),
+  extractEntityId: (msg) => msg.entityId,
+});
+
+cartRegion.tell({ entityId: 'user-42', kind: 'add', sku: 'book-1' });
+```
+
+---
+
 ## Documentation
 
 > 📚 **[actor-ts.dev](https://actor-ts.dev/)** —
