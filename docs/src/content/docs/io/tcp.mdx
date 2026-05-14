@@ -45,16 +45,15 @@ interface TcpSocketActorSettings extends BrokerCommonSettings {
 ## Inbound messages
 
 ```ts
+import { match } from 'ts-pattern';
+
 class ProtocolHandler extends Actor<TcpInbound> {
   override onReceive(msg: TcpInbound): void {
-    if (msg.kind === 'data') {
-      const bytes = msg.payload;   // Uint8Array
-      this.handleBytes(bytes);
-    } else if (msg.kind === 'connected') {
-      this.log.info('TCP connected');
-    } else if (msg.kind === 'disconnected') {
-      this.log.info('TCP disconnected');
-    }
+    match(msg)
+      .with({ kind: 'data' },         (m) => this.handleBytes(m.payload))   // Uint8Array
+      .with({ kind: 'connected' },    () => { this.log.info('TCP connected'); })
+      .with({ kind: 'disconnected' }, () => { this.log.info('TCP disconnected'); })
+      .exhaustive();
   }
 }
 ```

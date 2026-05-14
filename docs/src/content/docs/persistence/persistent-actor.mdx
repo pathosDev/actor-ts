@@ -21,6 +21,7 @@ this one resumes.
 ```ts
 import { PersistentActor, ActorSystem, Props } from 'actor-ts';
 import { PersistenceExtensionId, InMemoryJournal, InMemorySnapshotStore } from 'actor-ts';
+import { match } from 'ts-pattern';
 
 type Cmd =
   | { kind: 'deposit'; amount: number }
@@ -39,29 +40,33 @@ class Account extends PersistentActor<Cmd, Event, State> {
 
   // Pure: state + event → new state.  Runs both on persist + recovery.
   onEvent(state: State, e: Event): State {
-    if (e.kind === 'deposited') return { balance: state.balance + e.amount };
-    if (e.kind === 'withdrawn') return { balance: state.balance - e.amount };
-    return state;
+    return match(e)
+      .with({ kind: 'deposited' }, (ev) => ({ balance: state.balance + ev.amount }))
+      .with({ kind: 'withdrawn' }, (ev) => ({ balance: state.balance - ev.amount }))
+      .exhaustive();
   }
 
   // Handle a command — validate, persist if valid.
   onCommand(state: State, cmd: Cmd): void {
-    if (cmd.kind === 'deposit') {
-      this.persist(
-        { kind: 'deposited', amount: cmd.amount, ts: Date.now() },
-        (next) => { /* side effects with the new state */ },
-      );
-    } else if (cmd.kind === 'withdraw') {
-      if (state.balance < cmd.amount) {
-        // Reject — don't persist anything.
-        this.log.warn(`insufficient funds`);
-        return;
-      }
-      this.persist(
-        { kind: 'withdrawn', amount: cmd.amount, ts: Date.now() },
-        () => {},
-      );
-    }
+    match(cmd)
+      .with({ kind: 'deposit' }, (c) => {
+        this.persist(
+          { kind: 'deposited', amount: c.amount, ts: Date.now() },
+          (next) => { /* side effects with the new state */ },
+        );
+      })
+      .with({ kind: 'withdraw' }, (c) => {
+        if (state.balance < c.amount) {
+          // Reject — don't persist anything.
+          this.log.warn(`insufficient funds`);
+          return;
+        }
+        this.persist(
+          { kind: 'withdrawn', amount: c.amount, ts: Date.now() },
+          () => {},
+        );
+      })
+      .exhaustive();
   }
 }
 

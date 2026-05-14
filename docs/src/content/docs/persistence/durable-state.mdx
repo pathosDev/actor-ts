@@ -48,6 +48,7 @@ trail.
 ```ts
 import { DurableStateActor, type DurableStateSettings, ActorSystem, Props } from 'actor-ts';
 import { InMemoryDurableStateStore } from 'actor-ts';
+import { match } from 'ts-pattern';
 
 type CartCmd =
   | { kind: 'add';    sku: string }
@@ -60,13 +61,11 @@ class Cart extends DurableStateActor<CartCmd, State> {
   constructor(settings: DurableStateSettings<State>) { super(settings); }
 
   override async onReceive(cmd: CartCmd): Promise<void> {
-    if (cmd.kind === 'add') {
-      await this.persist({ items: [...this.state.items, cmd.sku] });
-    } else if (cmd.kind === 'remove') {
-      await this.persist({ items: this.state.items.filter(s => s !== cmd.sku) });
-    } else if (cmd.kind === 'view') {
-      cmd.replyTo.tell(this.state);
-    }
+    await match(cmd)
+      .with({ kind: 'add' },    (c) => this.persist({ items: [...this.state.items, c.sku] }))
+      .with({ kind: 'remove' }, (c) => this.persist({ items: this.state.items.filter(s => s !== c.sku) }))
+      .with({ kind: 'view' },   (c) => { c.replyTo.tell(this.state); })
+      .exhaustive();
   }
 }
 

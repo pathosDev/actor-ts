@@ -43,15 +43,14 @@ interface WebSocketActorSettings extends BrokerCommonSettings {
 ## Eingehende Nachrichten
 
 ```ts
+import { match } from 'ts-pattern';
+
 class FeedHandler extends Actor<WsInbound> {
   override onReceive(msg: WsInbound): void {
-    if (msg.kind === 'text') {
-      const event = JSON.parse(msg.payload);
-      this.handleEvent(event);
-    } else if (msg.kind === 'binary') {
-      // rohe Uint8Array
-      this.handleBinary(msg.payload);
-    }
+    match(msg)
+      .with({ kind: 'text' },   (m) => this.handleEvent(JSON.parse(m.payload)))
+      .with({ kind: 'binary' }, (m) => this.handleBinary(m.payload))   // rohe Uint8Array
+      .exhaustive();
   }
 }
 ```

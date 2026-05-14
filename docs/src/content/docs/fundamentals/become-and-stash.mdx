@@ -137,6 +137,7 @@ transition declarations on top of the same engine.
 
 ```ts
 import { Actor, ActorSystem, Props } from 'actor-ts';
+import { match } from 'ts-pattern';
 
 type Msg =
   | { readonly kind: 'configure'; readonly url: string }
@@ -146,18 +147,21 @@ class Worker extends Actor<Msg> {
   private url?: string;
 
   override onReceive(msg: Msg): void {
-    if (msg.kind === 'configure') {
-      this.url = msg.url;
-      // Now drain whatever piled up while we were unconfigured.
-      this.context.unstashAll();
-    } else if (msg.kind === 'request') {
-      if (!this.url) {
-        // Not ready yet — park this message.
-        this.context.stash();
-        return;
-      }
-      this.log.info(`POST ${this.url}: ${msg.payload}`);
-    }
+    match(msg)
+      .with({ kind: 'configure' }, (m) => {
+        this.url = m.url;
+        // Now drain whatever piled up while we were unconfigured.
+        this.context.unstashAll();
+      })
+      .with({ kind: 'request' }, (m) => {
+        if (!this.url) {
+          // Not ready yet — park this message.
+          this.context.stash();
+          return;
+        }
+        this.log.info(`POST ${this.url}: ${m.payload}`);
+      })
+      .exhaustive();
   }
 }
 ```
