@@ -50,3 +50,6 @@ examples/chat/frontend-*/.svelte-kit/
 
 # Claude Code per-user settings
 .claude/
+
+# Throwaway scratch space (release-note drafts, smoke-test files etc.).
+tmp/
