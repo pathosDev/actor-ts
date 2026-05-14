@@ -1,0 +1,138 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "promql",
+  "scopeName": "source.promql",
+  "aliases": ["PromQL"],
+  "fileTypes": ["promql"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#functions" },
+    { "include": "#aggregation-operators" },
+    { "include": "#binary-operators" },
+    { "include": "#keywords" },
+    { "include": "#durations" },
+    { "include": "#numbers" },
+    { "include": "#label-selectors" },
+    { "include": "#metric-names" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "match": "#.*$", "name": "comment.line.number-sign.promql" }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.promql",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            { "match": "\\\\.", "name": "constant.character.escape.promql" }
+          ]
+        },
+        {
+          "name": "string.quoted.single.promql",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            { "match": "\\\\.", "name": "constant.character.escape.promql" }
+          ]
+        },
+        {
+          "name": "string.quoted.backtick.promql",
+          "begin": "`",
+          "end": "`"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "match": "\\b(abs|absent|absent_over_time|acos|acosh|asin|asinh|atan|atanh|avg_over_time|ceil|changes|clamp|clamp_max|clamp_min|cos|cosh|count_over_time|day_of_month|day_of_week|day_of_year|days_in_month|deg|delta|deriv|exp|floor|histogram_count|histogram_fraction|histogram_quantile|histogram_stddev|histogram_stdvar|histogram_sum|holt_winters|hour|idelta|increase|irate|label_join|label_replace|last_over_time|ln|log10|log2|max_over_time|min_over_time|minute|month|pi|predict_linear|present_over_time|quantile_over_time|rad|rate|resets|round|scalar|sgn|sin|sinh|sort|sort_desc|sqrt|stddev_over_time|stdvar_over_time|sum_over_time|tan|tanh|time|timestamp|vector|year)\\b(?=\\s*\\()",
+          "name": "support.function.builtin.promql"
+        }
+      ]
+    },
+    "aggregation-operators": {
+      "patterns": [
+        {
+          "match": "\\b(sum|min|max|avg|group|stddev|stdvar|count|count_values|bottomk|topk|quantile)\\b(?=\\s*(\\(|by|without))",
+          "name": "keyword.other.aggregation.promql"
+        }
+      ]
+    },
+    "binary-operators": {
+      "patterns": [
+        { "match": "(==|!=|>=|<=|=~|!~|<|>)", "name": "keyword.operator.comparison.promql" },
+        { "match": "(\\+|-|\\*|/|%|\\^)",     "name": "keyword.operator.arithmetic.promql" },
+        { "match": "\\b(and|or|unless)\\b",   "name": "keyword.operator.logical.promql" }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "match": "\\b(by|without|on|ignoring|group_left|group_right|offset|bool)\\b",
+          "name": "keyword.other.modifier.promql"
+        },
+        {
+          "match": "\\b(if|else|Inf|NaN)\\b",
+          "name": "constant.language.promql"
+        }
+      ]
+    },
+    "durations": {
+      "patterns": [
+        {
+          "match": "\\d+(\\.\\d+)?(ms|s|m|h|d|w|y)",
+          "name": "constant.numeric.duration.promql"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "match": "-?\\b\\d+(\\.\\d+)?([eE][+-]?\\d+)?\\b",
+          "name": "constant.numeric.promql"
+        }
+      ]
+    },
+    "label-selectors": {
+      "patterns": [
+        {
+          "begin": "\\{",
+          "end": "\\}",
+          "name": "meta.label-selector.promql",
+          "patterns": [
+            {
+              "match": "([A-Za-z_][A-Za-z0-9_]*)\\s*(==|!=|=~|!~|=)",
+              "captures": {
+                "1": { "name": "entity.other.attribute-name.label.promql" },
+                "2": { "name": "keyword.operator.comparison.promql" }
+              }
+            },
+            { "include": "#strings" },
+            { "match": ",", "name": "punctuation.separator.promql" }
+          ]
+        }
+      ]
+    },
+    "metric-names": {
+      "patterns": [
+        {
+          "match": "\\b([A-Za-z_:][A-Za-z0-9_:]*)\\b",
+          "name": "entity.name.metric.promql"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        { "match": "[\\[\\]]",  "name": "punctuation.bracket.range.promql" },
+        { "match": "[(){}]",      "name": "punctuation.bracket.promql" },
+        { "match": ",",           "name": "punctuation.separator.promql" }
+      ]
+    }
+  }
+}

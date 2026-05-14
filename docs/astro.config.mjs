@@ -49,6 +49,24 @@ const jetbrainsMonoB64 = readFileSync(
   resolve(__dirname, 'node_modules/@fontsource/jetbrains-mono/files/jetbrains-mono-latin-400-normal.woff2'),
 ).toString('base64');
 
+// Custom Shiki grammars for languages that Starlight's bundled Shiki
+// doesn't ship out of the box but that this codebase uses:
+//   - HOCON (`.conf`)  — used in configuration + tuning + migration
+//     docs; the canonical config format for JVM-style actor toolkits.
+//   - PromQL            — used in observability + troubleshooting
+//     docs for Prometheus example queries.
+// Without these, expressive-code falls back to plain text and emits
+// build-time warnings ("could not find language X").  The TextMate
+// grammars live under `src/grammars/` and cover the syntactic surface
+// each language actually exercises in the docs (comments, strings,
+// keywords, numbers, durations, identifiers).
+const hoconGrammar = JSON.parse(readFileSync(
+  resolve(__dirname, 'src/grammars/hocon.tmLanguage.json'), 'utf-8',
+));
+const promqlGrammar = JSON.parse(readFileSync(
+  resolve(__dirname, 'src/grammars/promql.tmLanguage.json'), 'utf-8',
+));
+
 const mermaidCssDir  = resolve(__dirname, '.astro');
 const mermaidCssPath = resolve(mermaidCssDir, 'mermaid-fonts.css');
 mkdirSync(mermaidCssDir, { recursive: true });
@@ -161,7 +179,7 @@ export default defineConfig({
     starlight({
       title: 'actor-ts',
       description:
-        'Akka-style actor model for TypeScript. Runs on Bun, Node, and Deno. ' +
+        'Actor model for TypeScript. Runs on Bun, Node, and Deno. ' +
         'Cluster sharding, event sourcing, distributed data, persistence, and ' +
         'observability — all in idiomatic TS.',
       // Logo in the top-nav uses the PNG variant without the tagline —
@@ -169,6 +187,15 @@ export default defineConfig({
       // font-fallback drift on systems without JetBrains Mono.  The full
       // logo with tagline is reserved for the splash hero + README.
       logo: { src: './public/logo-header.png', replacesTitle: true },
+      // Register custom Shiki grammars so HOCON + PromQL code blocks
+      // get proper syntax highlighting instead of falling back to
+      // plain text + emitting "language not found" build warnings.
+      // Grammars live under `src/grammars/`; loaded above.
+      expressiveCode: {
+        shiki: {
+          langs: [hoconGrammar, promqlGrammar],
+        },
+      },
       // Favicons — SVG for modern browsers, PNG fallbacks for older ones.
       head: [
         {

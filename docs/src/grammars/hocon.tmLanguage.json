@@ -1,0 +1,107 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "hocon",
+  "scopeName": "source.hocon",
+  "aliases": ["HOCON", "conf"],
+  "fileTypes": ["conf", "hocon"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#substitutions" },
+    { "include": "#multiline-strings" },
+    { "include": "#strings" },
+    { "include": "#keywords" },
+    { "include": "#durations" },
+    { "include": "#sizes" },
+    { "include": "#numbers" },
+    { "include": "#keys" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "match": "(#|//).*$", "name": "comment.line.hocon" }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.hocon",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            { "match": "\\\\.", "name": "constant.character.escape.hocon" }
+          ]
+        }
+      ]
+    },
+    "multiline-strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.triple.hocon",
+          "begin": "\"\"\"",
+          "end": "\"\"\""
+        }
+      ]
+    },
+    "substitutions": {
+      "patterns": [
+        {
+          "name": "variable.other.substitution.hocon",
+          "match": "\\$\\{\\??[^}]+\\}"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "match": "\\b(true|false|null|on|off|yes|no)\\b",
+          "name": "constant.language.hocon"
+        },
+        {
+          "match": "\\b(include)\\b",
+          "name": "keyword.control.import.hocon"
+        }
+      ]
+    },
+    "durations": {
+      "patterns": [
+        {
+          "match": "(?<![A-Za-z_])\\d+(\\.\\d+)?\\s*(ns|us|μs|ms|s|m|h|d)\\b",
+          "name": "constant.numeric.duration.hocon"
+        }
+      ]
+    },
+    "sizes": {
+      "patterns": [
+        {
+          "match": "(?<![A-Za-z_])\\d+\\s*(B|K|KB|Ki|KiB|M|MB|Mi|MiB|G|GB|Gi|GiB|T|TB|Ti|TiB|P|PB|Pi|PiB|E|EB|Ei|EiB|Z|ZB|Zi|ZiB|Y|YB|Yi|YiB)\\b",
+          "name": "constant.numeric.size.hocon"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "match": "-?\\b\\d+(\\.\\d+)?([eE][+-]?\\d+)?\\b",
+          "name": "constant.numeric.hocon"
+        }
+      ]
+    },
+    "keys": {
+      "patterns": [
+        {
+          "match": "(?:^|,)\\s*([A-Za-z_][\\w.\\-]*)\\s*(?=[:={\\[])",
+          "captures": {
+            "1": { "name": "support.type.property-name.hocon" }
+          }
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        { "match": "[{}\\[\\]]", "name": "punctuation.bracket.hocon" },
+        { "match": "[:=,]",       "name": "punctuation.separator.hocon" }
+      ]
+    }
+  }
+}
