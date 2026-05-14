@@ -45,26 +45,26 @@ Die zuverlässige Zustellung des Frameworks ist standardmäßig
 **at-least-once** — eine Nachricht kann erneut zugestellt werden,
 wenn der Producer zwischen Senden und Empfang des ACK abstürzt.
 
-Für **effectively-once** dedupliziert der Consumer nach Sequence
-Number:
+Für **effectively-once** dedupliziert der Controller eingehende
+Duplikate bereits pro `(producerId, seq)` — aber nur innerhalb
+seiner In-Memory-Lebensdauer.  Wenn Du Dedup brauchst, das
+Consumer-Restarts überlebt, persistiere Deine eigene
+processed-Seq zusammen mit dem Business-State im Handler:
 
 ```ts
-class IdempotentConsumer extends Actor<DeliveryMsg> {
-  private highWatermark = 0;
-
-  override onReceive(msg: DeliveryMsg): void {
-    if (msg.seq <= this.highWatermark) {
-      // Duplikat — schon verarbeitet
-      return;
-    }
-    this.handle(msg);
-    this.highWatermark = msg.seq;
-  }
-}
+new ConsumerController<DeliveryMsg>({
+  handler: async (body) => {
+    if (await alreadyProcessed(body.id)) return;   // dein Idempotenz-Check
+    await this.handle(body);
+    await markProcessed(body.id);
+  },
+});
 ```
 
-Kombiniert mit einer persistenten `highWatermark` ergibt das im
-durable-Sinn **exactly-once-Verarbeitung**.
+Der In-Memory-Dedup des Controllers fängt den häufigen
+Retransmit-vor-ACK-Fall ab; das persistente Dedup Deines Handlers
+fängt Consumer-Crashes mitten in der Verarbeitung ab.  Zusammen
+ergeben sie **effectively-once** im durable-Sinn.
 
 ## Die zwei Controller
 
@@ -81,47 +81,37 @@ Routing, aber der Link ist 1:1 pro Stream).
 
 ```ts
 import {
+  Props,
   ProducerController,
   ConsumerController,
-  type DeliveryEnvelope,
 } from 'actor-ts';
 
-// Producer-Seite:
-const producer = system.actorOf(
-  ProducerController.props<OrderEvent>({
-    producerId:    'order-producer-1',
-    consumer:      consumerRef,
-    maxOutstanding: 100,
-  }),
-);
-
-producer.tell({ kind: 'send', payload: { orderId: 'o-1', amount: 100 } });
-
-// Consumer-Seite:
-class OrderProcessor extends Actor<DeliveryEnvelope<OrderEvent>> {
-  private highWatermark = 0;
-
-  override onReceive(msg: DeliveryEnvelope<OrderEvent>): void {
-    if (msg.seq <= this.highWatermark) {
-      msg.ack();   // bestätigen (schon-verarbeitet-Skip)
-      return;
-    }
-    this.processOrder(msg.payload);
-    this.highWatermark = msg.seq;
-    msg.ack();
-  }
-}
-
+// Consumer-Seite — Handler-Funktion, Auto-ACK bei Resolve:
 const consumer = system.actorOf(
-  ConsumerController.props<OrderEvent>({
-    consumerId: 'order-consumer-1',
-    delegate:   processorRef,
-  }),
+  Props.create(() => new ConsumerController<OrderEvent>({
+    handler: async (order) => {
+      await processOrder(order);
+    },
+  })),
 );
+
+// Producer-Seite — umwickelt ausgehende Nachrichten mit Seq- + ACK-Tracking:
+const producer = system.actorOf(
+  Props.create(() => new ProducerController<OrderEvent>({
+    producerId: 'order-producer-1',
+    consumer,
+    windowSize: 16,
+  })),
+);
+
+producer.tell({
+  kind: 'reliable-delivery.send',
+  body: { orderId: 'o-1', amount: 100 },
+});
 ```
 
-Das Framework übernimmt Seq-Vergabe, Retransmission, Ordering —
-dein Code macht Business-Logik + Dedup.
+Das Framework übernimmt Seq-Vergabe, Retransmission und Dedup —
+Dein Code macht nur die Business-Logik im Handler.
 
 ## Semantik der Sequence Numbers
 
@@ -145,24 +135,27 @@ unabhängige Seq-Räume.
 Für vollständige Durability über Producer-/Consumer-Crashes:
 
 ```ts
-class Producer extends PersistentActor<...> {
-  // ... persistiert State inklusive unbestätigter Nachrichten ...
-}
+// Producer-Seite: persistiere den In-Flight-Buffer (die
+// Nachrichten, die du getellt hast, für die aber noch kein ACK
+// kam), damit ein Crash vor dem ACK sie nicht verliert.
 
-class Consumer extends PersistentActor<...> {
-  // ... persistiert die highWatermark ...
-}
+// Consumer-Seite: persistiere im Handler die processed-Seq pro
+// Producer, damit ein Crash mitten in der Verarbeitung kein
+// abgeschlossenes Werk-Stück erneut ausführt.
 ```
 
-Persistieren auf beiden Seiten gibt **End-to-End exactly-once**:
+Persistieren auf beiden Seiten gibt **End-to-End
+effectively-once**:
 
-- Producer crasht mitten im Send → erholt sich aus dem Journal
-  → setzt ab der letzten geACKten Seq fort.
-- Consumer crasht mitten im Process → erholt highWatermark →
-  Dedup funktioniert weiter.
+- Producer crasht mitten im Send → erholt den persistierten
+  In-Flight-Buffer → setzt das Retransmitten unbestätigter
+  Nachrichten fort.
+- Consumer crasht mitten im Process → erholt die persistierte
+  processed-Seq → der Handler dedupliziert die erneute Zustellung.
 
 Ohne Persistenz setzt die Recovery auf beiden Seiten auf null
-zurück.
+zurück — der Producer vergisst unbestätigte Nachrichten und der
+In-Memory-Dedup des Consumers ist weg.
 
 ## Vergleich mit Broker-basierter Zustellung
 

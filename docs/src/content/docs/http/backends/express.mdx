@@ -48,7 +48,7 @@ await http.newServerAt('0.0.0.0', 8080)
 
 // Access the raw Express app:
 backend.app.use(express.session({ secret: '...' }));
-backend.app.use(rateLimitMiddleware);
+backend.app.use(expressRateLimitFromNpm);
 backend.app.use(customAuth);
 ```
 

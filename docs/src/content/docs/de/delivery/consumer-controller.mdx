@@ -1,34 +1,28 @@
 ---
 title: ConsumerController
-description: Empfänger-seitige zuverlässige Zustellung — ordnet nach Seq, dedupliziert Duplikate, sendet ACKs. Umwickelt einen Delegate-Actor, der die eigentliche Verarbeitung macht.
+description: Empfänger-seitige zuverlässige Zustellung — dedupliziert pro (producerId, seq), ruft eine Handler-Funktion auf, ACKt automatisch nach erfolgreichem Handler-Resolve.
 ---
 
 `ConsumerController` ist die Empfänger-Seite zuverlässiger
 Zustellung.  Er:
 
-- Empfängt Nachrichten von einem oder mehreren `ProducerController`n.
-- Ordnet nach Sequence Number.
-- Dedupliziert Duplikate (gleiche Seq).
-- Liefert in Ordnung an einen **Delegate**-Actor.
-- Sendet ACKs zurück an den Producer, nachdem verarbeitet wurde.
+- Empfängt `Delivery<T>`-Envelopes von einem oder mehreren
+  `ProducerController`n.
+- Dedupliziert Duplikate (gleiches `producerId` + `seq`).
+- Ruft eine User-**Handler-Funktion** mit dem Message-Body auf.
+- ACKt **automatisch** an den Producer zurück, sobald der
+  Handler resolved; wirft der Handler, kein ACK — der Producer
+  retransmittiert.
 
 ```ts
-import { ConsumerController } from 'actor-ts';
-
-class OrderProcessor extends Actor<DeliveryEnvelope<OrderEvent>> {
-  override async onReceive(msg: DeliveryEnvelope<OrderEvent>): Promise<void> {
-    await this.process(msg.payload);
-    msg.ack();   // an den Producer bestätigen
-  }
-}
-
-const processor = system.actorOf(Props.create(() => new OrderProcessor()));
+import { Props, ConsumerController } from 'actor-ts';
 
 const consumer = system.actorOf(
-  ConsumerController.props<OrderEvent>({
-    consumerId: 'order-consumer',
-    delegate:   processor,
-  }),
+  Props.create(() => new ConsumerController<OrderEvent>({
+    handler: async (order) => {
+      await processOrder(order);
+    },
+  })),
 );
 ```
 
@@ -38,167 +32,150 @@ Die Nachrichten des Producers fließen:
 flowchart LR
   PC["ProducerController"]
   CC["ConsumerController"]
-  SEQ["Ordnung nach Seq"]
-  HANDLER["OrderProcessor.onReceive"]
-  PC --> CC --> SEQ --> HANDLER
-  HANDLER -- "ACK — zurück zum Producer" --> PC
+  HANDLER["handler(body)"]
+  PC --> CC --> HANDLER
+  HANDLER -- "Auto-ACK bei Resolve" --> PC
   classDef ctrl fill:#312e81,stroke:#818cf8,color:#f1f5f9;
   classDef step fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
   class PC,CC ctrl
-  class SEQ,HANDLER step
+  class HANDLER step
 ```
 
 ## Konfiguration
 
 ```ts
 interface ConsumerControllerSettings<T> {
-  consumerId:      string;
-  delegate:        ActorRef<DeliveryEnvelope<T>>;
-  bufferSize?:     number;                  // Default 100
+  handler: (body: T) => void | Promise<void>;
 }
 ```
 
-| Feld | Zweck |
-| --- | --- |
-| `consumerId` | Stabiler Identifier — wird für Recovery gebraucht. |
-| `delegate` | Der Actor, der die eigentliche Arbeit macht.  Empfängt `DeliveryEnvelope<T>`. |
-| `bufferSize` | Interner Buffer für Out-of-order-Eingang. |
+Die einzige Einstellung ist der Handler.  Den Dedup-State pro
+Producer hält der Controller intern — Du konfigurierst weder
+eine Buffer-Größe noch eine Consumer-ID.
 
-## DeliveryEnvelope
+## Handler-Kontrakt
+
+Der Controller ruft `handler(body)` einmal pro *neuem*
+`(producerId, seq)`-Paar auf.  Sobald der Handler resolved,
+schickt der Controller ein ACK zurück an den Producer (via
+`Delivery.replyTo`), und der Producer gibt seinen In-Flight-Slot
+frei.
 
 ```ts
-interface DeliveryEnvelope<T> {
-  readonly payload:    T;
-  readonly seq:        number;
-  readonly producerId: string;
-  ack(): void;
-  nack(reason?: string): void;
-}
+new ConsumerController<OrderEvent>({
+  handler: async (order) => {
+    await processOrder(order);
+    // ACK wird automatisch gesendet, sobald das hier zurückkehrt.
+  },
+});
 ```
 
-Das `onReceive` des Delegates bekommt das Envelope.  Ruf `ack()`
-nach erfolgreicher Verarbeitung; der Producer kann die gebufferte
-Nachricht dann freigeben.
-
-### ACK vs. NACK
+### Handler wirft oder rejected → kein ACK → Producer retransmittiert
 
 ```ts
-override onReceive(msg: DeliveryEnvelope<OrderEvent>): void {
-  try {
-    this.process(msg.payload);
-    msg.ack();
-  } catch (e) {
-    msg.nack(`error: ${(e as Error).message}`);
-    // Producer wird retransmitten
-  }
-}
-```
-
-`ack` gibt die Nachricht aus dem Buffer des Producers frei.
-
-`nack` sagt dem Producer "ich habe es nicht geschafft;
-retransmitte, wenn bereit".  Der Default-ConsumerController +
-ProducerController des Frameworks behandeln NACK als "warten +
-retransmitten"; manche Custom-Setups handhaben es anders.
-
-### Idempotente Verarbeitung
-
-```ts
-class IdempotentConsumer extends Actor<DeliveryEnvelope<OrderEvent>> {
-  private highWatermark = 0;
-
-  override onReceive(msg: DeliveryEnvelope<OrderEvent>): void {
-    if (msg.seq <= this.highWatermark) {
-      // Schon verarbeitet; bestätigen, um den Producer freizugeben
-      msg.ack();
-      return;
+new ConsumerController<OrderEvent>({
+  handler: async (order) => {
+    if (!isValid(order)) {
+      throw new Error('invalid order');
     }
-    this.process(msg.payload);
-    this.highWatermark = msg.seq;
-    msg.ack();
-  }
-}
+    await processOrder(order);
+  },
+});
 ```
 
-Dedup via `highWatermark`.  Kombiniert mit Persistenz des
-Watermarks ergibt das **effectively-once**-Verarbeitung.
+Werfen (oder ein gerejectetes Promise zurückgeben) **verhindert
+das ACK**.  Der `resendTimeoutMs`-Timer des Producers feuert und
+schickt dieselbe Seq erneut.  Das ist der einzige
+"NACK"-Mechanismus — es gibt keine explizite NACK-Nachricht.
+
+### Duplikat-Behandlung läuft automatisch
+
+Wenn dasselbe `(producerId, seq)` erneut ankommt (z. B. weil der
+Producer retransmittiert hat, bevor unser ACK ihn erreicht hat),
+überspringt der Controller den Handler und schickt einfach
+nochmal das ACK.  Kein Applikations-Code nötig — der Controller
+hält `contiguous` und Out-of-order-Seqs pro Producer intern fest.
+
+Für **fachliche Idempotenz** (z. B. "eine Kreditkarte nicht
+doppelt belasten, auch nicht über Consumer-Neustarts hinweg")
+persistiere Deine eigene processed-Seq zusammen mit dem
+Business-State — der In-Memory-Dedup des Controllers ist nach
+einem Restart weg.
 
 ## Out-of-order-Behandlung
 
 ```
 Producer sendet 1, 2, 3
 Netzwerk liefert: 1, 3, 2
-ConsumerController buffert 3 (wartet auf 2)
-Wenn 2 ankommt → 2 liefern, dann 3 liefern
+ConsumerController hält am Start { contiguous: 1, above: {} }
+Nach Ankunft von 3 → { contiguous: 1, above: {3} } (Handler lief für seq 3)
+Nach Ankunft von 2 → { contiguous: 3, above: {} } (Handler lief für seq 2,
+                                                   dann gleitet contiguous bis 3)
 ```
 
-Der interne Buffer hält Out-of-order-Nachrichten, bis die Lücke
-gefüllt ist.  Begrenzt durch `bufferSize`.
+Der Controller pflegt einen `contiguous`-High-Watermark plus
+eine Menge von Out-of-order-Seqs, die darüber bereits ausgeliefert
+wurden.  Jede neu ankommende Seq wird gegen beides geprüft —
+Duplikate überspringen den Handler und re-ACKen; neue Seqs
+führen den Handler aus und updaten danach den State.
 
-Wenn Lücken sich nicht füllen (Producer crashed, Nachricht
-endgültig verloren):
-
-```
-Wird im Buffer gehalten, bis bufferSize überschritten ist
-→ die älteste blockierende Nachricht wird (still) verworfen
-→ die nächsten Nachrichten können weiterlaufen
-```
-
-Für Workloads, in denen das zählt, **vertrau auf die
-Retransmit-Logik des Producers** — der Producer wird unbestätigte
-Nachrichten weiterhin senden.
+Es gibt keine feste Buffer-Größe und keine stillen Drops — der
+Producer retransmittiert ungeACKte Nachrichten weiter, bis der
+Handler resolved und das ACK ankommt.
 
 ## Failure-Semantik
 
 ```
-Consumer crasht während der Verarbeitung:
-  - Nachricht wurde nicht geACKt
-  - Producer retransmittiert nach Timeout
-  - Neuer Consumer (oder restarteter alter) verarbeitet erneut
-  - Idempotenter Handler dedupliziert via highWatermark
+Consumer crasht mitten im Handler:
+  - Handler resolved nie → kein ACK gesendet
+  - Producer retransmittiert nach `resendTimeoutMs`
+  - Neuer Consumer (oder restarteter alter) sieht die Seq erneut
+  - Der In-Memory-Dedup-State des Controllers ist weg, Handler läuft erneut
 ```
 
-**at-least-once**-Zustellung; Idempotenz liegt in deiner
-Verantwortung.
+**at-least-once**-Zustellung; Idempotenz liegt in Deiner
+Verantwortung.  Für Consumer-Crashes, die nicht erneut
+verarbeiten dürfen, persistiere die processed-Seq zusammen mit
+dem Business-State im Handler.
 
 ## Mehrere Producer
 
 ```ts
-const consumer = system.actorOf(ConsumerController.props({
-  consumerId: 'multi-input',
-  delegate:   processor,
-}));
+const consumer = system.actorOf(
+  Props.create(() => new ConsumerController<OrderEvent>({
+    handler: async (order) => { await processOrder(order); },
+  })),
+);
 
 // Mehrere Producer senden an denselben Consumer:
-const p1 = system.actorOf(ProducerController.props({ consumer: consumerRef, producerId: 'p1' }));
-const p2 = system.actorOf(ProducerController.props({ consumer: consumerRef, producerId: 'p2' }));
+const p1 = system.actorOf(Props.create(() =>
+  new ProducerController({ consumer, producerId: 'p1' })));
+const p2 = system.actorOf(Props.create(() =>
+  new ProducerController({ consumer, producerId: 'p2' })));
 ```
 
 Jeder Producer pflegt seine eigene Seq.  Der Consumer
-dedupliziert **pro Producer** (highWatermark pro producerId):
+dedupliziert **pro Producer** automatisch — er hält einen
+separaten `(contiguous, above)`-Dedup-State pro `producerId`,
+sodass die Seq-Räume zweier Producer nicht kollidieren.
 
-```ts
-class MultiProducerConsumer extends Actor<DeliveryEnvelope<T>> {
-  private watermarks = new Map<string, number>();
-
-  override onReceive(msg: DeliveryEnvelope<T>): void {
-    const hwm = this.watermarks.get(msg.producerId) ?? 0;
-    if (msg.seq <= hwm) { msg.ack(); return; }
-    this.process(msg.payload);
-    this.watermarks.set(msg.producerId, msg.seq);
-    msg.ack();
-  }
-}
-```
+Dein Handler sieht nur den Body — `producerId` und `seq` sind
+die Sache des Controllers.  Falls Du sie für Business-Logik
+brauchst, persistiere einen Wrapper, der sie durch Deine
+Verarbeitungs-Pipeline trägt.
 
 ## Cluster-aware
 
-Der `delegate` kann ein **Remote-Actor** sein.  Der Consumer
-Controller routet Envelopes über den Cluster-Transport;
-Serialisierung passiert an der Cluster-Grenze.
+Die `consumer`-Ref des Producers kann auf einen **Remote-Consumer**
+zeigen (anderer Cluster-Node).  Der Cluster-Transport
+serialisiert die Envelopes; der ACK-Pfad nutzt denselben
+Transport in Gegenrichtung.
 
-In der Praxis: Consumer + Delegate **co-located halten** —
-eine cross-cluster Delegate-Ref hat unnötigen Overhead.
+In der Praxis: platziere den Consumer nah an den Daten seines
+Handlers — wenn der Handler eine lokale Datenbank trifft, lass
+den Consumer auf demselben Node laufen wie die Datenbank.
+Cross-cluster-Delivery ist für durchsatzgebundene Workloads in
+Ordnung, fügt aber pro ACK eine Round-Trip hinzu.
 
 ## Wohin als Nächstes
 
@@ -209,4 +186,6 @@ eine cross-cluster Delegate-Ref hat unnötigen Overhead.
 - **[ACK-Semantik](/de/delivery/ack-semantics/)** — wann ACKs
   feuern.
 - **[PersistentActor](/de/persistence/persistent-actor/)** —
-  zum Persistieren der highWatermark.
+  zum Persistieren der processed-Seq, wenn Du
+  Effectively-once-Verarbeitung über Consumer-Restarts hinweg
+  brauchst.

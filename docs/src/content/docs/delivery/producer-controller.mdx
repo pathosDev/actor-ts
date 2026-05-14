@@ -8,19 +8,19 @@ assigning **sequence numbers** + holding them until **acked** by
 the consumer.
 
 ```ts
-import { ProducerController } from 'actor-ts';
+import { Props, ProducerController } from 'actor-ts';
 
 const producer = system.actorOf(
-  ProducerController.props<OrderEvent>({
-    producerId:     'orders',                  // stable identity
-    consumer:       consumerRef,
-    maxOutstanding: 100,                       // backpressure cap
-    retransmitDelayMs: 5_000,
-  }),
+  Props.create(() => new ProducerController<OrderEvent>({
+    producerId:      'orders',                  // stable identity
+    consumer:        consumerRef,
+    windowSize:      16,                        // flow-control window
+    resendTimeoutMs: 500,
+  })),
   'producer',
 );
 
-producer.tell({ kind: 'send', payload: { orderId: 'o-1' } });
+producer.tell({ kind: 'reliable-delivery.send', body: { orderId: 'o-1' } });
 ```
 
 Internally:
@@ -28,41 +28,41 @@ Internally:
 - Assigns seq 1 to the first message, 2 to the next, ...
 - Sends each via wrapped tell to the consumer.
 - Holds in a buffer until acked.
-- Retransmits if no ack within `retransmitDelayMs`.
+- Retransmits if no ack within `resendTimeoutMs`.
 
 ## Configuration
 
 ```ts
 interface ProducerControllerSettings<T> {
-  producerId:         string;              // stable identifier
-  consumer:           ActorRef<DeliveryEnvelope<T>>;
-  maxOutstanding?:    number;              // default 100
-  retransmitDelayMs?: number;              // default 5000
+  consumer:          ActorRef<Delivery<T>>;
+  resendTimeoutMs?:  number;       // default 500
+  windowSize?:       number;       // default 16
+  producerId?:       string;       // auto-generated if omitted
 }
 ```
 
 | Field | Purpose |
 | --- | --- |
-| `producerId` | Stable identifier across restarts — needed if you persist state to match across recovery. |
-| `consumer` | The ConsumerController ref. |
-| `maxOutstanding` | Backpressure — pause sending after N unacked messages. |
-| `retransmitDelayMs` | How long to wait for an ack before retransmitting. |
+| `consumer` | The `ConsumerController` ref to deliver to. |
+| `resendTimeoutMs` | How long to wait for an ack before retransmitting. |
+| `windowSize` | Flow-control window — pauses queueing after N unacked messages in flight. |
+| `producerId` | Stable identifier used by the consumer to dedup across restarts. Auto-generated if omitted, but for persisted producers you'll want a stable string so recovery matches up. |
 
 ## Backpressure
 
 ```ts
-maxOutstanding: 100
+windowSize: 16
 ```
 
-The producer holds up to 100 unacked messages.  Beyond that,
-incoming `{ kind: 'send' }` messages are **stashed** — the
+The producer holds up to 16 unacked messages in flight.  Beyond that,
+incoming `{ kind: 'reliable-delivery.send' }` messages are **queued** — the
 caller's tell succeeds, but actual sending pauses until the
 consumer's acks free up the buffer.
 
 For senders that need to know about pressure:
 
 ```ts
-const result = await ask(producer, { kind: 'send', payload, replyTo: ... }, 30_000);
+const result = await ask(producer, { kind: 'reliable-delivery.send', body, replyTo: ... }, 30_000);
 //                                         ^ replies after the message is at least sent
 ```
 
@@ -71,13 +71,13 @@ giving you a natural backpressure signal.
 
 ## Retransmission
 
-When an ack doesn't arrive within `retransmitDelayMs`:
+When an ack doesn't arrive within `resendTimeoutMs`:
 
 ```
 seq 5 sent at t=0
 seq 5 ack never arrives
-at t=5000 → retransmit seq 5
-at t=10000 → retransmit seq 5
+at t=500 → retransmit seq 5
+at t=1000 → retransmit seq 5
 ... until ack arrives or producer stops
 ```
 
@@ -108,8 +108,8 @@ persistence on top.
 
 ```ts
 // One producer per consumer:
-const p1 = system.actorOf(ProducerController.props({ consumer: c1Ref, ... }));
-const p2 = system.actorOf(ProducerController.props({ consumer: c2Ref, ... }));
+const p1 = system.actorOf(Props.create(() => new ProducerController({ consumer: c1Ref, ... })));
+const p2 = system.actorOf(Props.create(() => new ProducerController({ consumer: c2Ref, ... })));
 ```
 
 Each ProducerController is **1:1 with one ConsumerController**.

@@ -43,26 +43,26 @@ The framework's reliable delivery is **at-least-once** by
 default — a message may be redelivered if the producer crashes
 between sending and receiving the ack.
 
-For **effectively-once**, the consumer dedupes by sequence
-number:
+For **effectively-once**, the controller already dedupes
+incoming duplicates per `(producerId, seq)` — but only within
+its in-memory lifetime.  If you need dedup that survives
+consumer restarts, persist your own processed-seq alongside
+the business state in the handler:
 
 ```ts
-class IdempotentConsumer extends Actor<DeliveryMsg> {
-  private highWatermark = 0;
-
-  override onReceive(msg: DeliveryMsg): void {
-    if (msg.seq <= this.highWatermark) {
-      // Duplicate — already processed
-      return;
-    }
-    this.handle(msg);
-    this.highWatermark = msg.seq;
-  }
-}
+new ConsumerController<DeliveryMsg>({
+  handler: async (body) => {
+    if (await alreadyProcessed(body.id)) return;   // your idempotency check
+    await this.handle(body);
+    await markProcessed(body.id);
+  },
+});
 ```
 
-Combined with a persistent `highWatermark`, this gives
-**exactly-once-processing** in the durable sense.
+The controller's in-memory dedup handles the common
+retransmit-before-ack case; your handler's persisted dedup
+handles consumer crashes mid-processing.  Together they give
+**effectively-once** in the durable sense.
 
 ## The two controllers
 
@@ -79,43 +79,33 @@ link is 1:1 per stream).
 
 ```ts
 import {
+  Props,
   ProducerController,
   ConsumerController,
-  type DeliveryEnvelope,
 } from 'actor-ts';
 
-// Producer side:
-const producer = system.actorOf(
-  ProducerController.props<OrderEvent>({
-    producerId:    'order-producer-1',
-    consumer:      consumerRef,
-    maxOutstanding: 100,
-  }),
-);
-
-producer.tell({ kind: 'send', payload: { orderId: 'o-1', amount: 100 } });
-
-// Consumer side:
-class OrderProcessor extends Actor<DeliveryEnvelope<OrderEvent>> {
-  private highWatermark = 0;
-
-  override onReceive(msg: DeliveryEnvelope<OrderEvent>): void {
-    if (msg.seq <= this.highWatermark) {
-      msg.ack();   // acknowledge (already-processed-skip)
-      return;
-    }
-    this.processOrder(msg.payload);
-    this.highWatermark = msg.seq;
-    msg.ack();
-  }
-}
-
+// Consumer side — handler function, auto-ack on resolve:
 const consumer = system.actorOf(
-  ConsumerController.props<OrderEvent>({
-    consumerId: 'order-consumer-1',
-    delegate:   processorRef,
-  }),
+  Props.create(() => new ConsumerController<OrderEvent>({
+    handler: async (order) => {
+      await processOrder(order);
+    },
+  })),
 );
+
+// Producer side — wraps outgoing messages in seq + ack tracking:
+const producer = system.actorOf(
+  Props.create(() => new ProducerController<OrderEvent>({
+    producerId: 'order-producer-1',
+    consumer,
+    windowSize: 16,
+  })),
+);
+
+producer.tell({
+  kind: 'reliable-delivery.send',
+  body: { orderId: 'o-1', amount: 100 },
+});
 ```
 
 The framework handles seq assignment, retransmission,
@@ -143,23 +133,25 @@ independent seq spaces.
 For full durability across producer / consumer crashes:
 
 ```ts
-class Producer extends PersistentActor<...> {
-  // ... persists state including unacked messages ...
-}
+// Producer-side: persist the in-flight buffer (the messages
+// you've tell'd but haven't seen an ack for) so a crash before
+// ack doesn't lose them.
 
-class Consumer extends PersistentActor<...> {
-  // ... persists the highWatermark ...
-}
+// Consumer-side: persist the processed-seq per producer in
+// your handler so a crash mid-processing doesn't re-run a
+// completed unit of work.
 ```
 
-Persisting on both sides gives **end-to-end exactly-once**:
+Persisting on both sides gives **end-to-end effectively-once**:
 
-- Producer crashes mid-send → recovers from journal →
-  resumes from the last-acked seq.
-- Consumer crashes mid-process → recovers highWatermark →
-  dedup still works.
+- Producer crashes mid-send → recovers persisted in-flight
+  buffer → resumes retransmitting unacked messages.
+- Consumer crashes mid-process → recovers persisted
+  processed-seq → handler dedupes the redelivery.
 
-Without persistence, recovery resets to zero on both sides.
+Without persistence, recovery resets to zero on both sides —
+the producer forgets unacked messages and the consumer's
+in-memory dedup is gone.
 
 ## Comparison with broker-based delivery
 

@@ -162,7 +162,7 @@ import { Aside } from '@astrojs/starlight/components';
   ```ts
   override onReceive(msg) {
     setTimeout(() => {
-      this.context.spawn(...);   // ← Async-Escape
+      this.context.actorOf(...);   // ← Async-Escape
     }, 1_000);
   }
   ```

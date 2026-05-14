@@ -95,13 +95,13 @@ const root = system.actorOf(
 The returned `ActorRef` is a handle, not the instance.  Pass it
 around, store it, hand it to other actors.
 
-Inside an actor, **child actors** are spawned via `context.spawn`,
+Inside an actor, **child actors** are spawned via `context.actorOf`,
 not `system.actorOf`:
 
 ```ts
 class Parent extends Actor<...> {
   override onReceive(msg) {
-    const child = this.context.spawn(
+    const child = this.context.actorOf(
       Props.create(() => new Child()),
       'worker',
     );

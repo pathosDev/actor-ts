@@ -3,7 +3,7 @@ title: Idempotency-Key-Middleware
 description: Schreibende Requests über einen `Idempotency-Key`-Header deduplizieren — ein zweiter Request mit demselben Key bekommt die gespeicherte Response des ersten Requests zurück. Standardmuster für Zahlungs-/Order-APIs, in denen Retries nicht doppelt abbuchen sollen.
 ---
 
-`idempotencyKeyMiddleware` setzt **At-most-once-Schreibverarbeitung**
+`idempotent` setzt **At-most-once-Schreibverarbeitung**
 über einen vom Client gelieferten Header durch:
 
 ```
@@ -24,17 +24,17 @@ Der Handler läuft **nur beim ersten Request**.  Spätere Requests
 mit demselben Key liefern die gecachte Response.
 
 ```ts
-import { idempotencyKeyMiddleware, path, post } from 'actor-ts/http';
+import { idempotent, path, post } from 'actor-ts/http';
 import { InMemoryCache } from 'actor-ts';
 
-const routes = idempotencyKeyMiddleware({
-  cache:    new InMemoryCache(),
-  ttlMs:    24 * 60 * 60_000,   // 24 Stunden
-  required: false,                // Header ist standardmäßig optional
-})(
-  path('api',
-    path('payments', post(processPayment)),
-  ),
+const dedup = idempotent({
+  cache:         new InMemoryCache(),
+  ttlMs:         24 * 60 * 60_000,   // 24 Stunden
+  missingHeader: 'reject',           // 400, wenn der Header fehlt
+});
+
+const routes = path('api',
+  path('payments', post(dedup(processPayment))),
 );
 ```
 
@@ -54,22 +54,30 @@ hier ist die ursprüngliche Response."  Keine Doppelbuchung.
 ## Konfiguration
 
 ```ts
-interface IdempotencyKeyMiddlewareSettings {
-  cache:        Cache;
-  ttlMs:        number;
-  required?:    boolean;        // Header erforderlich; ablehnen, wenn fehlt
-  headerName?:  string;         // Default 'idempotency-key'
-  scope?:       (req) => string; // Keys nach Mandant / User namespacen
+interface IdempotencyOptions {
+  cache:          Cache;
+  ttlMs?:         number;                              // Default 24 h
+  headerName?:    string;                              // Default 'idempotency-key'
+  keyPrefix?:     string;                              // Default 'idem:'
+  missingHeader?: 'reject' | 'pass-through';           // Default 'reject'
 }
 ```
 
 | Feld | Zweck |
 | --- | --- |
 | `cache` | Backing-Store.  Redis ist für Multi-Pod nötig. |
-| `ttlMs` | Wie lange jeder Key gemerkt wird.  Typisch 24–48 Stunden. |
-| `required` | Wenn true, fehlender Header → 400.  Default `false` (optional). |
-| `headerName` | Header-Namen anpassen. |
-| `scope(req)` | Keys namespacen (z. B. pro User), damit Kollisionen nicht über Mandanten leaken. |
+| `ttlMs` | Wie lange jeder Key gemerkt wird.  Default 24 Stunden. |
+| `headerName` | Header-Namen anpassen (case-insensitive).  Default `'idempotency-key'`. |
+| `keyPrefix` | Cache-Key-Namespace.  Default `'idem:'`, damit mehrere Idempotency-Wrapper im selben Redis nicht kollidieren. |
+| `missingHeader` | Was tun, wenn der Header fehlt.  Default `'reject'` (400); auf `'pass-through'` setzen, um den Handler ohne Dedup laufen zu lassen, wenn nur manche Clients Idempotency nutzen. |
+
+Der Wrapper speichert zusätzlich einen **SHA-256-Hash des
+Request-Bodies** neben jeder gecachten Response.  Wenn ein
+zweiter Request mit demselben Key, aber anderem Body
+hereinkommt, lehnt der Wrapper mit 422 ab — das verhindert, dass
+ein Client (böswillig oder fehlerhaft) denselben Key für einen
+semantisch anderen Request wiederverwendet und so die falsche
+gespeicherte Response erhält.
 
 ## Was gecacht wird
 
@@ -93,15 +101,20 @@ Semantik.
 
 ## Scoping pro Mandant
 
+Für Key-Isolation pro Mandant baue einen separaten
+`idempotent`-Wrapper pro Mandant (oder nimm den Mandanten in
+`keyPrefix` auf):
+
 ```ts
-idempotencyKeyMiddleware({
-  cache,
-  ttlMs: 24 * 60 * 60_000,
-  scope: (req) => req.headers['x-tenant-id'] ?? 'global',
-});
+const dedupForTenant = (tenant: string) =>
+  idempotent({
+    cache,
+    ttlMs:     24 * 60 * 60_000,
+    keyPrefix: `idem:${tenant}:`,
+  });
 ```
 
-Mandant As `key-123` ist verschieden von Mandant Bs `key-123`.
+Mandant As `key-123` ist dann verschieden von Mandant Bs `key-123`.
 Wichtig, wenn:
 
 - Verschiedene Mandanten zufällig denselben Key wählen könnten.
@@ -112,7 +125,7 @@ Wichtig, wenn:
 ```ts
 import { RedisCache } from 'actor-ts';
 
-idempotencyKeyMiddleware({
+idempotent({
   cache:  new RedisCache({ url: 'redis://...' }),
   ttlMs:  24 * 60 * 60_000,
 });

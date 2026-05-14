@@ -3,36 +3,46 @@ title: Rate limit middleware
 description: Per-key token-bucket rate limiting on HTTP routes. Default per-IP; configurable key (per-user, per-tenant). Backed by the Cache abstraction, so single-pod uses memory and multi-pod uses Redis.
 ---
 
-`rateLimitMiddleware` enforces **per-key request limits** on a
-route subtree.  Default: per-IP, fixed-window counter via the
-cache.  Returns **429** when the limit is exceeded.
+`rateLimit` is a per-key request limiter.  It returns a
+**handler wrapper** — call it with the options, then call the
+returned function with the handler you want to protect.
+Excess requests get **429** with a `Retry-After` header.
 
 ```ts
-import { rateLimitMiddleware } from 'actor-ts/http';
+import { rateLimit } from 'actor-ts/http';
 import { InMemoryCache } from 'actor-ts';
 
-const routes = rateLimitMiddleware({
-  cache:       new InMemoryCache(),
-  windowMs:    60_000,           // 1 minute window
-  maxRequests: 100,              // 100 reqs per IP per minute
-})(
-  path('api', /* ... */),
-);
+const limited = rateLimit({
+  cache:    new InMemoryCache(),
+  windowMs: 60_000,                       // 1 minute window
+  max:      100,                          // 100 reqs per key per minute
+  key:      (req) => req.headers['x-forwarded-for'] ?? 'unknown',
+});
+
+const routes = path('api', post(limited(apiHandler)));
 ```
 
-Each unique IP gets a 100/minute budget.  Excess requests get
-429 with a `Retry-After` header.
+Each distinct key (here: per `X-Forwarded-For` IP) gets a 100/minute
+budget.  Excess requests get 429 with a `Retry-After` header.
 
 ## Configuration
 
 ```ts
-interface RateLimitSettings {
-  cache:        Cache;
-  windowMs:     number;
-  maxRequests:  number;
-  keyExtra?:    (req: HttpRequest) => string;
-  message?:     string;
-  statusCode?:  number;          // default 429
+interface RateLimitOptions {
+  cache:       Cache;
+  windowMs:    number;
+  max:         number;
+  key:         (req: HttpRequest) => string | Promise<string>;
+  keyPrefix?:  string;                    // default 'rl:'
+  onLimit?:    (ctx: RateLimitContext) => HttpResponse;
+}
+
+interface RateLimitContext {
+  key:               string;
+  count:             number;
+  max:               number;
+  windowMs:          number;
+  retryAfterSeconds: number;
 }
 ```
 
@@ -40,21 +50,21 @@ interface RateLimitSettings {
 | --- | --- |
 | `cache` | Backing store (in-memory or Redis). |
 | `windowMs` | Fixed-window size. |
-| `maxRequests` | Max requests per key per window. |
-| `keyExtra(req)` | Override the key.  Default: client IP. |
-| `message` | Body of the 429 response. |
-| `statusCode` | Override the status (default 429). |
+| `max` | Max requests per key per window. |
+| `key(req)` | Derive the rate-limit key — typically client IP, user ID, or API key. **Required.** |
+| `keyPrefix` | Cache-key namespace.  Default `'rl:'` so multiple limiters in the same Redis don't collide. |
+| `onLimit(ctx)` | Override the 429 response — full control over status / body / headers. |
 
 ## Custom keying
 
 ```ts
-rateLimitMiddleware({
+const limited = rateLimit({
   cache,
-  windowMs:    60_000,
-  maxRequests: 100,
-  keyExtra:    (req) => {
+  windowMs: 60_000,
+  max:      100,
+  key:      (req) => {
     const userId = extractUserId(req);
-    return userId ? `user:${userId}` : `ip:${req.ip}`;
+    return userId ? `user:${userId}` : `ip:${req.headers['x-forwarded-for'] ?? 'unknown'}`;
   },
 });
 ```
@@ -74,7 +84,7 @@ works across pods with Redis backing.
 Fixed window (default):
   - Window starts when the first request in a key arrives.
   - Increments a counter in the cache.
-  - When counter exceeds maxRequests, subsequent requests in the
+  - When counter exceeds `max`, subsequent requests in the
     window get 429.
   - TTL on the counter ensures fresh windows start cleanly.
 ```
@@ -100,10 +110,11 @@ Clients use these to back off without retrying randomly.
 ```ts
 import { RedisCache } from 'actor-ts';
 
-rateLimitMiddleware({
-  cache:       new RedisCache({ url: 'redis://...' }),
-  windowMs:    60_000,
-  maxRequests: 100,
+rateLimit({
+  cache:    new RedisCache({ url: 'redis://...' }),
+  windowMs: 60_000,
+  max:      100,
+  key:      (req) => req.headers['x-forwarded-for'] ?? 'unknown',
 });
 ```
 
@@ -119,7 +130,7 @@ Acceptable for permissive limits; problematic for strict ones.
 Three good fits:
 
 1. **Public APIs** — prevent abuse / DoS.
-2. **Tier-based limits** — different `keyExtra` per tier
+2. **Tier-based limits** — different `key` per tier
    (free / paid / enterprise).
 3. **Per-action limits** — login attempts, password resets,
    email-send rates.
@@ -127,30 +138,32 @@ Three good fits:
 ## Layered rate limits
 
 ```ts
-// Different limits per route subtree:
-const apiRoutes = rateLimitMiddleware({
-  windowMs: 60_000, maxRequests: 1000,
-  keyExtra: (req) => req.user?.id ?? req.ip,
-})(
-  concat(
-    rateLimitMiddleware({
-      windowMs: 60_000, maxRequests: 10,
-      keyExtra: (req) => `login:${req.ip}`,
-    })(path('login', post(loginHandler))),
+// Different limits per handler:
+const apiLimited = rateLimit({
+  cache, windowMs: 60_000, max: 1000,
+  key: (req) => req.headers['x-user-id'] ?? req.headers['x-forwarded-for'] ?? 'anon',
+});
 
-    path('orders', /* normal limit */),
-  ),
+const loginLimited = rateLimit({
+  cache, windowMs: 60_000, max: 10,
+  key: (req) => `login:${req.headers['x-forwarded-for'] ?? 'unknown'}`,
+});
+
+const routes = concat(
+  path('login',  post(loginLimited(loginHandler))),
+  path('orders', get(apiLimited(ordersHandler))),
 );
 ```
 
-Stricter limits on sensitive routes; more permissive on
-general traffic.  Compose by nesting.
+Stricter limits on sensitive handlers; more permissive on
+general traffic.  Compose by wrapping each handler with the
+matching limiter.
 
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Trusting X-Forwarded-For">
   ```ts
-  keyExtra: (req) => req.headers['x-forwarded-for'];   // ✗ spoofable
+  key: (req) => req.headers['x-forwarded-for'];   // ✗ spoofable
   ```
   Behind a load balancer / proxy, the real IP is in
   `X-Forwarded-For` (or similar).  But clients can set this

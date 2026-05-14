@@ -130,7 +130,7 @@ class Echo extends Actor<{ text: string }> {
     this.log.debug('echo done');
 
     // (5. `this.context` — der volle ActorContext für tiefere APIs:
-    //     `context.spawn(...)` für Kinder, `context.watch(...)` für
+    //     `context.actorOf(...)` für Kinder, `context.watch(...)` für
     //     Death-Watch, `context.become(...)` zum Verhaltenswechsel.)
     void this.context;
   }
@@ -196,13 +196,13 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Kinder
 
-Actors können Kinder haben.  Verwende `context.spawn` aus dem
+Actors können Kinder haben.  Verwende `context.actorOf` aus dem
 `onReceive` der Eltern heraus:
 
 ```ts
 class Parent extends Actor<{ kind: 'add-child'; name: string }> {
   override onReceive(msg: { kind: 'add-child'; name: string }): void {
-    const child = this.context.spawn(
+    const child = this.context.actorOf(
       Props.create(() => new Worker()),
       msg.name,
     );
@@ -255,7 +255,7 @@ class DbWriterFanout extends Actor<{ row: Row }> {
   override onReceive(msg: { row: Row }): void {
     // Spawn-and-forget: Kind erledigt den langsamen DB-Write, Parent
     // bleibt für die nächste Nachricht in der Mailbox verfügbar.
-    this.context.spawn(Props.create(() =>
+    this.context.actorOf(Props.create(() =>
       new SingleShotWriter(this.db, msg.row)
     ));
   }

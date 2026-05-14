@@ -3,22 +3,24 @@ title: Rate-Limit-Middleware
 description: Token-Bucket-Rate-Limiting pro Key auf HTTP-Routen. Standard pro IP; konfigurierbarer Key (pro User, pro Mandant). Auf der Cache-Abstraktion aufgebaut, sodass Single-Pod den Speicher und Multi-Pod Redis nutzt.
 ---
 
-`rateLimitMiddleware` setzt **Request-Limits pro Key** auf einem
-Routen-Teilbaum durch.  Default: pro IP, Fixed-Window-Counter
-über den Cache.  Liefert **429**, wenn das Limit überschritten
-ist.
+`rateLimit` ist ein Request-Limiter pro Key.  Er gibt einen
+**Handler-Wrapper** zurück — rufe ihn mit den Optionen auf und
+übergib der zurückgegebenen Funktion den Handler, den Du schützen
+willst.  Überschüssige Requests bekommen **429** mit einem
+`Retry-After`-Header.
 
 ```ts
-import { rateLimitMiddleware } from 'actor-ts/http';
+import { rateLimit } from 'actor-ts/http';
 import { InMemoryCache } from 'actor-ts';
 
-const routes = rateLimitMiddleware({
-  cache:       new InMemoryCache(),
-  windowMs:    60_000,           // 1-Minuten-Fenster
-  maxRequests: 100,              // 100 Requests pro IP pro Minute
-})(
-  path('api', /* ... */),
-);
+const limited = rateLimit({
+  cache:    new InMemoryCache(),
+  windowMs: 60_000,                       // 1-Minuten-Fenster
+  max:      100,                          // 100 Requests pro Key pro Minute
+  key:      (req) => req.headers['x-forwarded-for'] ?? 'unknown',
+});
+
+const routes = path('api', post(limited(apiHandler)));
 ```
 
 Jede eindeutige IP bekommt ein Budget von 100/Minute.
@@ -28,13 +30,21 @@ Header.
 ## Konfiguration
 
 ```ts
-interface RateLimitSettings {
-  cache:        Cache;
-  windowMs:     number;
-  maxRequests:  number;
-  keyExtra?:    (req: HttpRequest) => string;
-  message?:     string;
-  statusCode?:  number;          // Default 429
+interface RateLimitOptions {
+  cache:       Cache;
+  windowMs:    number;
+  max:         number;
+  key:         (req: HttpRequest) => string | Promise<string>;
+  keyPrefix?:  string;                    // Default 'rl:'
+  onLimit?:    (ctx: RateLimitContext) => HttpResponse;
+}
+
+interface RateLimitContext {
+  key:               string;
+  count:             number;
+  max:               number;
+  windowMs:          number;
+  retryAfterSeconds: number;
 }
 ```
 
@@ -42,19 +52,19 @@ interface RateLimitSettings {
 | --- | --- |
 | `cache` | Backing-Store (In-Memory oder Redis). |
 | `windowMs` | Größe des Fixed-Windows. |
-| `maxRequests` | Maximale Requests pro Key pro Fenster. |
-| `keyExtra(req)` | Überschreibt den Key.  Default: Client-IP. |
-| `message` | Body der 429-Response. |
-| `statusCode` | Überschreibt den Status (Default 429). |
+| `max` | Maximale Requests pro Key pro Fenster. |
+| `key(req)` | Leitet den Rate-Limit-Key her — typischerweise Client-IP, User-ID oder API-Key. **Erforderlich.** |
+| `keyPrefix` | Cache-Key-Namespace.  Default `'rl:'`, damit mehrere Limiter im selben Redis nicht kollidieren. |
+| `onLimit(ctx)` | Überschreibt die 429-Response — volle Kontrolle über Status / Body / Header. |
 
 ## Eigenes Keying
 
 ```ts
-rateLimitMiddleware({
+rateLimit({
   cache,
   windowMs:    60_000,
-  maxRequests: 100,
-  keyExtra:    (req) => {
+  max: 100,
+  key:    (req) => {
     const userId = extractUserId(req);
     return userId ? `user:${userId}` : `ip:${req.ip}`;
   },
@@ -77,7 +87,7 @@ funktioniert.
 Fixed-Window (Default):
   - Das Fenster startet, wenn der erste Request für einen Key kommt.
   - Inkrementiert einen Zähler im Cache.
-  - Wenn der Zähler maxRequests übersteigt, bekommen weitere Requests
+  - Wenn der Zähler max übersteigt, bekommen weitere Requests
     im Fenster 429.
   - TTL auf dem Zähler sorgt dafür, dass frische Fenster sauber starten.
 ```
@@ -103,10 +113,10 @@ Clients nutzen die, um zu backoffen, statt zufällig zu retrien.
 ```ts
 import { RedisCache } from 'actor-ts';
 
-rateLimitMiddleware({
+rateLimit({
   cache:       new RedisCache({ url: 'redis://...' }),
   windowMs:    60_000,
-  maxRequests: 100,
+  max: 100,
 });
 ```
 
@@ -124,7 +134,7 @@ problematisch.
 Drei gute Einsatzfälle:
 
 1. **Öffentliche APIs** — Missbrauch / DoS verhindern.
-2. **Tier-basierte Limits** — unterschiedliche `keyExtra` pro
+2. **Tier-basierte Limits** — unterschiedliche `key` pro
    Tier (free / paid / enterprise).
 3. **Per-Aktion-Limits** — Login-Versuche, Passwort-Resets,
    E-Mail-Versandraten.
@@ -132,30 +142,32 @@ Drei gute Einsatzfälle:
 ## Geschichtete Rate-Limits
 
 ```ts
-// Unterschiedliche Limits pro Routen-Teilbaum:
-const apiRoutes = rateLimitMiddleware({
-  windowMs: 60_000, maxRequests: 1000,
-  keyExtra: (req) => req.user?.id ?? req.ip,
-})(
-  concat(
-    rateLimitMiddleware({
-      windowMs: 60_000, maxRequests: 10,
-      keyExtra: (req) => `login:${req.ip}`,
-    })(path('login', post(loginHandler))),
+// Unterschiedliche Limits pro Handler:
+const apiLimited = rateLimit({
+  cache, windowMs: 60_000, max: 1000,
+  key: (req) => req.headers['x-user-id'] ?? req.headers['x-forwarded-for'] ?? 'anon',
+});
 
-    path('orders', /* normales Limit */),
-  ),
+const loginLimited = rateLimit({
+  cache, windowMs: 60_000, max: 10,
+  key: (req) => `login:${req.headers['x-forwarded-for'] ?? 'unknown'}`,
+});
+
+const routes = concat(
+  path('login',  post(loginLimited(loginHandler))),
+  path('orders', get(apiLimited(ordersHandler))),
 );
 ```
 
-Strengere Limits auf sensiblen Routen; großzügigere auf
-allgemeinem Traffic.  Komponiere durch Verschachteln.
+Strengere Limits auf sensiblen Handlern; großzügigere auf
+allgemeinem Traffic.  Komponiere, indem Du jeden Handler mit dem
+passenden Limiter einwickelst.
 
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="X-Forwarded-For vertrauen">
   ```ts
-  keyExtra: (req) => req.headers['x-forwarded-for'];   // ✗ spoofbar
+  key: (req) => req.headers['x-forwarded-for'];   // ✗ spoofbar
   ```
   Hinter einem Load-Balancer / Proxy steht die echte IP in
   `X-Forwarded-For` (oder ähnlich).  Aber Clients können diesen

@@ -20,8 +20,8 @@ conflict-resolution policy.
 import { LWWRegister } from 'actor-ts';
 
 let r = LWWRegister.empty<string>();
-r = r.set('node-a', 'hello', 1000);   // value, timestamp
-r = r.set('node-b', 'world', 2000);
+r = r.assign('node-a', 'hello', 1000);   // value, timestamp
+r = r.assign('node-b', 'world', 2000);
 r.value();   // → 'world' (later timestamp)
 ```
 
@@ -48,7 +48,7 @@ authoritative:
 dd.update<LWWRegister<boolean>>(
   'feature-x-enabled',
   () => LWWRegister.empty<boolean>(),
-  (r) => r.set(dd.selfReplicaId(), true),
+  (r) => r.assign(dd.selfReplicaId(), true),
 );
 ```
 
@@ -58,8 +58,8 @@ dd.update<LWWRegister<boolean>>(
 import { MVRegister } from 'actor-ts';
 
 let r = MVRegister.empty<string>();
-r = r.set('node-a', 'hello');
-r = r.set('node-b', 'world');
+r = r.assign('node-a', 'hello');
+r = r.assign('node-b', 'world');
 r.values();   // → ['hello', 'world']  (both kept — caller resolves)
 ```
 
@@ -71,13 +71,13 @@ side-by-side; sequential writes overwrite.
 let r = MVRegister.empty<string>();
 
 // Sequential writes — newer overwrites
-r = r.set('a', 'first');
-r = r.set('a', 'second');
+r = r.assign('a', 'first');
+r = r.assign('a', 'second');
 r.values();   // → ['second']
 
 // Concurrent writes — both kept
-let ra = MVRegister.empty<string>().set('a', 'fruit');
-let rb = MVRegister.empty<string>().set('b', 'vegetable');
+let ra = MVRegister.empty<string>().assign('a', 'fruit');
+let rb = MVRegister.empty<string>().assign('b', 'vegetable');
 ra.merge(rb).values();   // → ['fruit', 'vegetable']
 ```
 

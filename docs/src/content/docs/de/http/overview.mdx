@@ -59,7 +59,7 @@ registriert alles beim gewählten Backend.
 ## Die Backends
 
 ```ts
-import { FastifyBackend, BunServeBackend, ExpressBackend } from 'actor-ts/http';
+import { FastifyBackend, ExpressBackend, HonoBackend } from 'actor-ts/http';
 
 // Default — keine Einrichtung nötig:
 await http.newServerAt(host, port).bind(routes);
@@ -67,15 +67,15 @@ await http.newServerAt(host, port).bind(routes);
 
 // Explizite Wahl:
 await http.newServerAt(host, port)
-  .useBackend(new BunServeBackend())
+  .useBackend(new HonoBackend())
   .bind(routes);
 ```
 
 | Backend | Runtime-Eignung | Wann |
 | --- | --- | --- |
 | **`FastifyBackend`** *(Default)* | Bun, Node | Produktions-Default — Fastify ist das am stärksten kampferprobte. |
-| **`BunServeBackend`** | Nur Bun | Wenn du null Peer-Dependencies willst; nutzt Buns natives `Bun.serve`. |
 | **`ExpressBackend`** | Node, Bun | Das bestehende Express-Middleware-Ökosystem passt sauber rein. |
+| **`HonoBackend`** | Bun, Node, Deno | Schlank + edge-tauglich; die Bun- und Deno-nativeste Option. |
 
 Alle drei implementieren dasselbe `HttpServerBackend`-Interface —
 die Route-DSL kompiliert identisch; das Backend besitzt nur die
@@ -108,11 +108,11 @@ Client in einen [Retry](/de/patterns/retry/)- +
 ## Middleware
 
 ```ts
-import { responseCacheMiddleware, rateLimitMiddleware } from 'actor-ts/http';
+import { cached, rateLimit } from 'actor-ts/http';
 
 const routes = concat(
-  rateLimitMiddleware({ rps: 100 })(
-    responseCacheMiddleware({ ttlMs: 30_000 })(
+  rateLimit({ max: 100, intervalMs: 1_000 })(
+    cached({ ttlMs: 30_000 })(
       path('api', /* ... */),
     ),
   ),
@@ -123,13 +123,14 @@ Das Framework liefert drei:
 
 | Middleware | Was sie tut |
 | --- | --- |
-| **Response-Cache** | Cached GET-Responses mit Key aus URL + Vary-Headern. |
-| **Rate-Limit** | Token-Bucket-Rate-Limiter pro IP / pro Key. |
-| **Idempotency-Key** | Dedupliziert Writes anhand eines `Idempotency-Key`-Headers. |
+| **Response-Cache** (`cached`) | Cached die Antwort eines Handlers, key'd über eine `key(req)`-Funktion. |
+| **Rate-Limit** (`rateLimit`) | Per-Key-Request-Limiter mit Fixed-Window-Counter im Cache. |
+| **Idempotency-Key** (`idempotent`) | Dedupliziert Writes anhand eines `Idempotency-Key`-Headers. |
 
-Jede ist ein `Route -> Route`-Transformer — sie wickelt einen
-Teilbaum von Routen mit ihrem Verhalten ein.  Kombiniere durch
-Verschachteln.  Siehe die
+Jede ist ein Handler-Wrapper — du rufst sie mit den Optionen
+auf und übergibst der zurückgegebenen Funktion den Handler, der
+geschützt werden soll.  Kombiniere durch Verschachteln auf
+Handler-Ebene.  Siehe die
 [Middleware-Seiten](/de/http/middleware/response-cache/).
 
 ## HTTP an Actors anschließen

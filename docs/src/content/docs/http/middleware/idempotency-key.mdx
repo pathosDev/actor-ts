@@ -3,8 +3,8 @@ title: Idempotency-key middleware
 description: Deduplicate write requests via an `Idempotency-Key` header — second request with the same key returns the first request's stored response. Standard pattern for payment / order APIs where retries shouldn't double-charge.
 ---
 
-`idempotencyKeyMiddleware` enforces **at-most-once write
-processing** via a client-provided header:
+`idempotent` enforces **at-most-once write processing** via a
+client-provided header:
 
 ```
 POST /api/payments
@@ -24,17 +24,17 @@ The handler runs **only on the first request**.  Subsequent
 requests with the same key return the cached response.
 
 ```ts
-import { idempotencyKeyMiddleware, path, post } from 'actor-ts/http';
+import { idempotent, path, post } from 'actor-ts/http';
 import { InMemoryCache } from 'actor-ts';
 
-const routes = idempotencyKeyMiddleware({
-  cache:    new InMemoryCache(),
-  ttlMs:    24 * 60 * 60_000,   // 24 hours
-  required: false,                // header is optional by default
-})(
-  path('api',
-    path('payments', post(processPayment)),
-  ),
+const dedup = idempotent({
+  cache:         new InMemoryCache(),
+  ttlMs:         24 * 60 * 60_000,   // 24 hours
+  missingHeader: 'reject',           // 400 when the header is absent
+});
+
+const routes = path('api',
+  path('payments', post(dedup(processPayment))),
 );
 ```
 
@@ -54,22 +54,29 @@ here's the original response."  No double charge.
 ## Configuration
 
 ```ts
-interface IdempotencyKeyMiddlewareSettings {
-  cache:        Cache;
-  ttlMs:        number;
-  required?:    boolean;        // require header; reject if missing
-  headerName?:  string;         // default 'idempotency-key'
-  scope?:       (req) => string; // namespace keys by tenant / user
+interface IdempotencyOptions {
+  cache:          Cache;
+  ttlMs?:         number;                              // default 24h
+  headerName?:    string;                              // default 'idempotency-key'
+  keyPrefix?:     string;                              // default 'idem:'
+  missingHeader?: 'reject' | 'pass-through';           // default 'reject'
 }
 ```
 
 | Field | Purpose |
 | --- | --- |
 | `cache` | Backing store.  Redis is required for multi-pod. |
-| `ttlMs` | How long to remember each key.  Typically 24-48 hours. |
-| `required` | If true, missing header → 400.  Default `false` (optional). |
-| `headerName` | Customize the header name. |
-| `scope(req)` | Namespace keys (e.g., per-user) so collisions don't cross tenants. |
+| `ttlMs` | How long to remember each key.  Default 24 hours. |
+| `headerName` | Customize the header name (case-insensitive match).  Default `'idempotency-key'`. |
+| `keyPrefix` | Cache-key namespace.  Default `'idem:'` so multiple idempotency wrappers in the same Redis don't collide. |
+| `missingHeader` | What to do when the header is absent.  Default `'reject'` (400); set `'pass-through'` to run the handler without dedup when only some clients use idempotency. |
+
+The wrapper also stores a **SHA-256 hash of the request body**
+alongside each cached response.  When a second request arrives
+with the same key but a different body, the wrapper rejects
+with 422 — preventing a client (malicious or buggy) from
+reusing a key for a semantically different request to receive
+the wrong stored response.
 
 ## What gets cached
 
@@ -92,26 +99,33 @@ matches the standard idempotency-key semantic.
 
 ## Per-tenant scoping
 
+For per-tenant key isolation, build a separate `idempotent`
+wrapper per tenant (or include the tenant in `keyPrefix`):
+
 ```ts
-idempotencyKeyMiddleware({
-  cache,
-  ttlMs: 24 * 60 * 60_000,
-  scope: (req) => req.headers['x-tenant-id'] ?? 'global',
-});
+const dedupForTenant = (tenant: string) =>
+  idempotent({
+    cache,
+    ttlMs:     24 * 60 * 60_000,
+    keyPrefix: `idem:${tenant}:`,
+  });
 ```
 
-Tenant A's `key-123` is different from tenant B's `key-123`.
 Important when:
 
 - Different tenants might pick the same key by chance.
 - You're billing or auditing per-tenant.
+
+If you need a single wrapper that derives the tenant from the
+request itself, wrap the handler with a thin adapter that
+re-keys the cache before calling `idempotent`'s wrapper.
 
 ## Multi-pod with Redis
 
 ```ts
 import { RedisCache } from 'actor-ts';
 
-idempotencyKeyMiddleware({
+idempotent({
   cache:  new RedisCache({ url: 'redis://...' }),
   ttlMs:  24 * 60 * 60_000,
 });

@@ -57,7 +57,7 @@ everything with the chosen backend.
 ## The backends
 
 ```ts
-import { FastifyBackend, BunServeBackend, ExpressBackend } from 'actor-ts/http';
+import { FastifyBackend, ExpressBackend, HonoBackend } from 'actor-ts/http';
 
 // Default — no setup needed:
 await http.newServerAt(host, port).bind(routes);
@@ -65,15 +65,15 @@ await http.newServerAt(host, port).bind(routes);
 
 // Explicit choice:
 await http.newServerAt(host, port)
-  .useBackend(new BunServeBackend())
+  .useBackend(new HonoBackend())
   .bind(routes);
 ```
 
 | Backend | Runtime fit | When |
 | --- | --- | --- |
 | **`FastifyBackend`** *(default)* | Bun, Node | Production default — Fastify is the most-battle-tested. |
-| **`BunServeBackend`** | Bun only | When you want zero peer dependencies; uses Bun's native `Bun.serve`. |
 | **`ExpressBackend`** | Node, Bun | Existing Express middleware ecosystem fits cleanly. |
+| **`HonoBackend`** | Bun, Node, Deno | Tiny + edge-friendly; the most Bun-and-Deno-native option. |
 
 All three implement the same `HttpServerBackend` interface — the
 route DSL compiles identically; the backend just owns the
@@ -106,11 +106,11 @@ client in a [retry](/patterns/retry/) +
 ## Middleware
 
 ```ts
-import { responseCacheMiddleware, rateLimitMiddleware } from 'actor-ts/http';
+import { cached, rateLimit } from 'actor-ts/http';
 
 const routes = concat(
-  rateLimitMiddleware({ rps: 100 })(
-    responseCacheMiddleware({ ttlMs: 30_000 })(
+  rateLimit({ max: 100, intervalMs: 1_000 })(
+    cached({ ttlMs: 30_000 })(
       path('api', /* ... */),
     ),
   ),

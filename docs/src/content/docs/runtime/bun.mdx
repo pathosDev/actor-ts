@@ -104,20 +104,21 @@ required.
 Bun has native APIs for both, but the framework picks them
 automatically via runtime detection.  No config needed.
 
-For **HTTP backend**, you can opt into Bun's native:
+For **HTTP backend**, the lightest option is `HonoBackend`,
+which Hono builds on the WHATWG `fetch` adapter Bun already
+exposes:
 
 ```ts
-import { BunServeBackend } from 'actor-ts/http';
+import { HonoBackend } from 'actor-ts/http';
 
 await http.newServerAt('0.0.0.0', 8080)
-  .useBackend(new BunServeBackend())
+  .useBackend(new HonoBackend())
   .bind(routes);
 ```
 
-Bun's HTTP is **fast** (faster than Fastify in benchmarks).
-Worth using if your hot path is HTTP-heavy.  For broader
-ecosystem (Fastify plugins, middleware), stick with the
-default Fastify backend.
+Hono is **fast on Bun** and tree-shakes to a tiny bundle.  For
+the broader Node ecosystem (Fastify plugins, middleware), stick
+with the default Fastify backend.
 
 ## Performance on Bun
 

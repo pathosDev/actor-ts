@@ -3,39 +3,41 @@ title: Response-Cache-Middleware
 description: GET-Responses nach URL + Vary-Headern cachen. Nützlich für leseintensive APIs mit stabilen Responses. Konfigurierbares TTL, bedingtes Caching über Prädikat, pluggable Cache-Backend.
 ---
 
-`responseCacheMiddleware` umschließt einen Routen-Teilbaum mit
-**Caching von GET-Responses** — gleiche URL + gleiche Vary-Header
-→ gecachte Response wird zurückgegeben, ohne den Handler
-aufzurufen.
+`cached` umschließt einen Handler mit **Response-Caching**,
+key'd über eine vom Nutzer übergebene `key(req)`-Funktion.  Ein
+Cache-Treffer liefert die gespeicherte Response, ohne den
+darunterliegenden Handler aufzurufen.
 
 ```ts
-import { responseCacheMiddleware, path, get } from 'actor-ts/http';
+import { cached, path, get } from 'actor-ts/http';
 import { InMemoryCache } from 'actor-ts';
 
-const routes = responseCacheMiddleware({
-  ttlMs:  30_000,
-  cache:  new InMemoryCache(),
-})(
-  path('api',
-    path('catalog',
-      get(async () => /* teures Lookup */),
-    ),
+const productCache = cached({
+  cache: new InMemoryCache(),
+  ttlMs: 30_000,
+  key:   (req) => `products:${pathParam(req, 'id')}`,
+});
+
+const routes = path('api',
+  path('products',
+    get(productCache(async (req) => /* teures Lookup */)),
   ),
 );
 ```
 
-30 Sekunden cachen.  Der erste Request trifft den Handler; spätere
-GETs in den nächsten 30 s liefern die gecachte Response zurück.
+30 Sekunden pro Produkt-ID cachen.  Der erste Request trifft den
+Handler; spätere GETs in den nächsten 30 s liefern die gecachte
+Response zurück.
 
 ## Konfiguration
 
 ```ts
-interface ResponseCacheSettings {
-  cache:        Cache;
-  ttlMs:        number;
-  varyHeaders?: string[];           // Default: ['accept', 'accept-encoding']
-  cacheable?:   (req, res) => boolean;
-  keyExtra?:    (req) => string;
+interface ResponseCacheOptions {
+  cache:          Cache;
+  ttlMs:          number;
+  key:            (req: HttpRequest) => string | Promise<string>;
+  keyPrefix?:     string;                            // Default 'rsp:'
+  cacheStatuses?: ReadonlyArray<number>;             // Default [200]
 }
 ```
 
@@ -43,9 +45,9 @@ interface ResponseCacheSettings {
 | --- | --- |
 | `cache` | Das [Cache](/de/cache/overview/)-Backend.  `InMemoryCache` für Single-Node; Redis für geteilt. |
 | `ttlMs` | Wie lange jede gecachte Response gültig bleibt. |
-| `varyHeaders` | Header, die in den Cache-Key einfließen.  Unterschiedliche `Accept`-Header → unterschiedliche Cache-Einträge. |
-| `cacheable(req, res)` | Prädikat, das entscheidet, ob gecacht wird.  Default: alle 2xx-GETs cachen. |
-| `keyExtra(req)` | Zusätzliche Segmente für den Cache-Key (pro Mandant, pro User). |
+| `key(req)` | Leitet den Cache-Key aus dem Request her — typischerweise inklusive URL-Params, Mandanten-ID, Accept-Header usw.  **Erforderlich.** |
+| `keyPrefix` | Cache-Key-Namespace.  Default `'rsp:'`, damit mehrere Response-Caches im selben Redis nicht kollidieren. |
+| `cacheStatuses` | Welche Statuscodes gecacht werden.  Default `[200]` — nur 2xx-Responses landen im Cache. |
 
 ## Zusammensetzung des Cache-Keys
 
@@ -58,13 +60,13 @@ GET <pathname>?<sortierte-query-params> [Vary: accept=..., accept-encoding=...]
 Sortierte Query-Parameter sorgen dafür, dass `/items?a=1&b=2` und
 `/items?b=2&a=1` denselben Cache-Eintrag treffen.
 
-Mit `keyExtra` für per-User- / per-Mandant-Caches anpassen:
+Mit `key` für per-User- / per-Mandant-Caches anpassen:
 
 ```ts
-responseCacheMiddleware({
+cached({
   cache,
   ttlMs:     30_000,
-  keyExtra:  (req) => req.headers['x-tenant-id'] ?? 'public',
+  key:  (req) => req.headers['x-tenant-id'] ?? 'public',
 })(...)
 ```
 
@@ -92,7 +94,7 @@ Für **stärkere Konsistenz** zwei Muster:
 ### Kurze TTLs
 
 ```ts
-responseCacheMiddleware({ cache, ttlMs: 1_000 });   // 1 Sekunde
+cached({ cache, ttlMs: 1_000 });   // 1 Sekunde
 ```
 
 Sub-Sekunden-TTLs begrenzen die Veraltung.  Gut für
@@ -114,7 +116,7 @@ mit `delete` invalidieren.  Nützlich für Muster wie "Write nach
 ```ts
 import { RedisCache } from 'actor-ts';
 
-responseCacheMiddleware({
+cached({
   cache:  new RedisCache({ url: 'redis://...' }),
   ttlMs:  30_000,
 })(...)
@@ -132,7 +134,7 @@ abhängig von den Konsistenzanforderungen.
 ## Vary-Header
 
 ```ts
-responseCacheMiddleware({
+cached({
   cache,
   ttlMs: 30_000,
   varyHeaders: ['accept', 'accept-language', 'x-tenant-id'],
@@ -145,7 +147,7 @@ Cache-Eintrag.  Nützlich für:
 - **Content-Negotiation** — JSON-vs.-CBOR-Responses getrennt
   gecacht.
 - **Lokalisierung** — Responses pro Sprache.
-- **Multi-Tenancy** — Alternative zu `keyExtra`.
+- **Multi-Tenancy** — Alternative zu `key`.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -153,9 +155,9 @@ import { Aside } from '@astrojs/starlight/components';
   ```ts
   // GET /api/users/me mit Cache → alle User sehen die Response des ersten Users
   ```
-  Ohne `keyExtra` (oder `varyHeaders` inklusive Authorization)
+  Ohne `key` (oder `varyHeaders` inklusive Authorization)
   lecken gecachte Responses über User hinweg.  Nimm
-  `keyExtra: (req) => hashUser(req.headers.authorization)` oder
+  `key: (req) => hashUser(req.headers.authorization)` oder
   überspring das Caching für per-User-Endpoints.
 </Aside>
 

@@ -54,7 +54,7 @@ class Boss extends Actor<{ kind: 'spawn-worker' }> {
   );
 
   override onReceive(msg: { kind: 'spawn-worker' }): void {
-    const worker = this.context.spawn(Props.create(() => new Worker()));
+    const worker = this.context.actorOf(Props.create(() => new Worker()));
     worker.tell({ kind: 'do-it' });
     worker.tell({ kind: 'fail' });   // <- throwt
     worker.tell({ kind: 'do-it' });  // <- neue Instanz, nach Restart

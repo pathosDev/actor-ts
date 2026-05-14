@@ -5,100 +5,112 @@ description: Wann ACKs feuern, was sie für Producer- und Consumer-State bedeute
 
 Das ACK ist das **Kern-Primitiv** zuverlässiger Zustellung —
 der Producer gibt gebufferte Nachrichten frei, sobald sie
-geACKt sind; der Consumer hat die Nachricht "offiziell
-verarbeitet", bevor er ackt.  Das Timing des ACK zählt.
+geACKt sind.  Der Controller verwaltet das ACK-Timing für Dich;
+wie der Handler resolved, steuert, ob das ACK feuert.
 
-## Wann ACKen
+## Wie das ACK wirklich feuert
 
-Drei Positionen:
+```
+1. ConsumerController empfängt ein Delivery-Envelope
+2. Controller prüft den Dedup-State pro Producer
+   → bekannte Seq → nur re-ACK, Handler überspringen
+   → neue Seq   → handler(body) aufrufen, auf Resolve warten
+3. Handler resolved → Controller sendet ACK an msg.replyTo
+   Handler wirft   → Controller ACKt NICHT
+4. Producer empfängt ACK → entfernt Seq aus dem In-Flight-Buffer
+                          → gibt einen Window-Slot für den nächsten Send frei
+```
 
-| Strategie | Wann das ACK feuert | at-least-once vs. exactly-once |
+Der Handler ist der einzige User-seitige Schalter.  Was *im*
+`handler(body)` passiert, ist Dein Code; was *darum herum*
+passiert (Dedup, ACK, replyTo-Verdrahtung, Retransmit-Timing)
+ist Aufgabe des Controllers.
+
+## Drei Muster
+
+| Muster | Handler-Form | Garantie |
 | --- | --- | --- |
-| **ACK-first** | Vor der Verarbeitung | Verliert Nachrichten bei Consumer-Crash mitten im Handler.  **at-most-once**. |
-| **ACK-last** | Nach der Verarbeitung | Retransmittiert bei Crash mitten im Handler.  **at-least-once**. |
-| **Persist-then-ACK** | Nach der Persistenz | Wie ACK-last + State überlebt Restart.  **effectively-once**. |
-
-**ACK-last** ist der Framework-Default + empfohlen.  Kombiniert
-mit idempotenter Verarbeitung oder persistierter High-Watermark
-ergibt das starke Zustellgarantien.
+| **Resolve bei Erfolg** (Default) | Handler erledigt die Arbeit, gibt void oder ein resolved Promise zurück | at-least-once mit In-Memory-Dedup |
+| **Wirft bei Misserfolg** | Handler wirft / rejected, wenn die Verarbeitung fehlschlug → Controller überspringt das ACK → Producer sendet erneut | at-least-once mit Retry |
+| **Vor Resolve persistieren** | Handler awaitet einen Journal-Write, bevor er zurückkehrt | effectively-once über Consumer-Restart hinweg |
 
 ```ts
-class Consumer extends Actor<DeliveryEnvelope<T>> {
-  override async onReceive(msg: DeliveryEnvelope<T>): Promise<void> {
-    // ACK-last:
-    await this.processIdempotently(msg.payload);
-    msg.ack();
-  }
-}
+new ConsumerController<T>({
+  handler: async (body) => {
+    await this.processIdempotently(body);  // ACK-bei-Resolve
+  },
+});
 ```
 
 ## Was zwischen Verarbeitung und ACK passiert
 
 ```
-1. Handler beginnt die Verarbeitung (msg.payload)
-2. Handler abgeschlossen
-3. Handler ruft msg.ack()
-4. ConsumerController sendet ACK-Envelope an den Producer
+1. Handler beginnt die Verarbeitung (body)
+2. Handler abgeschlossen (resolved)
+3. Controller serialisiert ein ACK-Envelope
+4. Controller tellt die replyTo-Ref des Producers
 5. Producer entfernt msg aus dem Unacked-Buffer
 ```
 
-Wenn der Consumer zwischen **3** und **4** crasht, kommt das
-ACK trotzdem beim Producer an.  Kein Problem.
+Wenn der Consumer zwischen **2** und **4** crasht, erreicht das
+ACK den Producer nie.  Der Producer retransmittiert nach
+`resendTimeoutMs`.  Der In-Memory-Dedup des Controllers ist nach
+dem Crash weg, also läuft der Handler für dieselbe Seq erneut —
+mach ihn idempotent oder persistiere die processed-Seq zusammen
+mit dem Business-State.
 
-Wenn der Consumer zwischen **2** und **3** crasht, kommt das
-ACK nie an.  Der Producer retransmittiert nach Timeout.
+## Vor Resolve persistieren
 
-**Das Fenster von "Verarbeitung fertig" bis "ACK gesendet"** ist
-die schmale Zone, in der Duplikate entstehen.  Idempotente
-Handler (oder persistierte High-Watermark) decken sie ab.
-
-## Persist-then-ACK
-
-Für effectively-once-Verarbeitung von Seiteneffekten:
+Für effectively-once-Verarbeitung von Seiteneffekten **`await`
+den Journal-Write innerhalb des Handlers**.  Wenn
+`handler(body)` resolved, sind sowohl Dein Event ALS AUCH der
+implizite "diese Seq ist verarbeitet"-Marker durable; das
+folgende ACK des Controllers teilt dem Producer nur mit, dass
+er seinen Slot freigeben kann.
 
 ```ts
-class PersistentConsumer extends PersistentActor<...> {
-  private highWatermark = 0;
-
-  override async onCommand(state, cmd: { kind: 'process'; env: DeliveryEnvelope<T> }): Promise<void> {
-    const msg = cmd.env;
-
-    if (msg.seq <= this.highWatermark) {
-      msg.ack();   // Dedup
-      return;
-    }
-
-    // Verarbeiten + atomar persistieren:
-    await this.persistAsync(
-      { kind: 'processed', seq: msg.seq, payload: msg.payload },
-      () => {
-        this.highWatermark = msg.seq;
-        msg.ack();
-      },
-    );
-  }
+class PersistentEventLog extends PersistentActor<Cmd, Event, State> {
+  // …onCommand / onEvent ausgelassen…
 }
+
+const log = system.actorOf(Props.create(() => new PersistentEventLog()));
+
+const consumer = system.actorOf(
+  Props.create(() => new ConsumerController<OrderEvent>({
+    handler: async (order) => {
+      // ask() resolved, sobald der PersistentActor das Event
+      // journalt hat.  Crasht der Consumer, bevor das resolved,
+      // retransmittiert der Producer und der Handler läuft
+      // erneut — aber der Dedup des PersistentActor (Event-ID
+      // oder Seq im Event-Payload) fängt den Re-Run ab.
+      await ask(log, { kind: 'append', order }, 30_000);
+    },
+  })),
+);
 ```
 
-Die Sequenz:
+Die Sequenz bei sauberem Lauf:
 
-1. Envelope empfangen.
-2. Skippen, wenn schon verarbeitet.
-3. **Event + neuen High-Watermark ins Journal persistieren**.
-4. Nach der Persistenz: ACKen.
+1. Delivery kommt an.
+2. Controller ruft `handler(body)` auf.
+3. Handler fragt das Journal, das Journal schreibt, das ask resolved.
+4. Controller sendet ACK → Producer gibt seinen Slot frei.
 
-Bei Crash:
+Bei Crash zwischen Schritt 2 und Schritt 3's Resolve:
 
-- **Vor der Persistenz**: Producer retransmittiert; die neue
-  Consumer-Actor-Instanz hat die alte High-Watermark; verarbeitet
-  erneut.  Netto: keine Duplizierung.
-- **Nach der Persistenz, vor dem ACK**: Producer retransmittiert;
-  die neue Instanz hat die **neue** High-Watermark; Dedup skippt
-  und ACKt das Duplikat.  Netto: keine Duplizierung.
+- **Bevor der Journal-Write committed**: Producer retransmittiert;
+  der Handler läuft erneut; der Dedup auf Journal-Seite fängt
+  ihn ab.  Netto: keine Duplizierung.
+- **Nachdem der Journal-Write committed hat, aber bevor das ACK
+  des Controllers den Producer erreicht**: Producer
+  retransmittiert; der Handler läuft erneut; der Dedup auf
+  Journal-Seite springt sofort raus und der Controller ACKt
+  sofort.  Netto: keine Duplizierung.
 
-Kombiniert mit **persistentem Producer-State** (Unacked-Message-Buffer
-im Journal des Producers) ist das **End-to-End durable +
-idempotent**.
+Für End-to-End-Durability paare das mit **persistentem
+Producer-State** — speichere den In-Flight-Buffer des Producers
+in einem Journal, damit ein Producer-seitiger Crash keine
+unbestätigten Nachrichten verliert.
 
 ## Crash-Szenarien
 
@@ -140,49 +152,52 @@ wiederherstellbar** — irgendwann kommt eines an.
 ## Langsamer Consumer
 
 ```
-Producer.maxOutstanding = 100
+Producer.windowSize = 16
 Consumer braucht 10 s pro Nachricht
 ```
 
-Backpressure: nach 100 unbestätigten Nachrichten **nimmt die
-Send-Queue des Producers** keine neuen Sends mehr an.  Sender
-sehen Backpressure (entweder stashen Tells oder Asks werden
-abgelehnt).
+Backpressure: sobald 16 unbestätigte Nachrichten in Flight
+sind, **sendet der Producer nicht weiter**, bis ein ACK einen
+Slot freigibt.  Eingehende
+`{ kind: 'reliable-delivery.send' }`-Tells reihen sich innerhalb
+des Producers ein, bis das Window aufgeht.
 
 Das ist gut — das System kann nicht weiter vor sich selbst
-davonlaufen als die Buffergröße.
+davonlaufen als das Flow-Control-Window.
 
 ## Cluster-Failover
 
 ```
-Consumer auf node-A verarbeitet msg #5 + sendet ACK
-node-A crasht, bevor das ACK-Envelope node-B (Producer) erreicht
+Consumer auf node-A verarbeitet msg #5; Controller queued das ACK
+node-A crasht, bevor das ACK-Tell abgeschlossen ist
 ```
 
-Producer sieht im Retransmit-Fenster kein ACK → retransmittiert.
+Producer sieht im `resendTimeoutMs`-Fenster kein ACK →
+retransmittiert.
 
-Wenn der `delegate` des Consumers **sharded** ist (während des
-Failovers verschoben), wird die neue Instanz:
+Wenn der Consumer **sharded** ist (die Entity wandert beim
+Failover), wird die neue Instanz:
 
 - Den Retransmit empfangen.
-- Ihre High-Watermark (aus Snapshot oder Replay) nachschlagen.
-- Dedupen, wenn schon verarbeitet.
+- Einen leeren In-Memory-Dedup-State haben (frischer `ConsumerController`).
+- Den Handler aufrufen — der für Effectively-once seine eigene
+  processed-Seq persistieren muss.
 
-Für sharded Consumer **immer mit Persistenz paaren** — sonst
-setzt der Dedup-State beim Rebalance zurück.
+Für sharded Consumer **immer den Handler mit Persistenz paaren**
+— sonst setzt der Dedup des Controllers bei jedem Rebalance
+zurück, und Du bekommst volle Wiederverarbeitung.
 
 ## ACK als Garantie (oder nicht)
 
-```
-msg.ack();
-```
+Das ACK ist **Fire-and-Forget** vom Controller zum `replyTo` des
+Producers.  Der Controller wartet nicht auf die Zustellung —
+wenn das Netzwerk das ACK verliert, retransmittiert der Producer
+nach `resendTimeoutMs`, und der Dedup des Controllers re-ACKt
+sofort.
 
-Das `ack()` des Frameworks ist **Fire-and-Forget** — sendet das
-ACK-Envelope, wartet nicht auf Bestätigung.  Wenn das Netzwerk
-es verliert, fängt die Retransmit-Logik des Frameworks es ein.
-
-Das heißt: **`ack()` aufzurufen blockiert deinen Handler nicht.**
-Keine zusätzliche Latenz.
+Das heißt: **Dein Handler zahlt keine Latenz-Kosten für das
+ACK**.  Der Controller emittiert das ACK, nachdem
+`handler(body)` resolved, und macht weiter.
 
 ## Wann du die Controller NICHT einsetzt
 
@@ -206,15 +221,23 @@ import { Aside } from '@astrojs/starlight/components';
   cluster-intern.
 </Aside>
 
-<Aside type="caution" title="ACK vergessen">
+<Aside type="caution" title="Fehler im Handler verschlucken">
   ```ts
-  override onReceive(msg) {
-    this.process(msg.payload);
-    // ✗ msg.ack() vergessen
+  handler: async (body) => {
+    try {
+      await this.process(body);
+    } catch (err) {
+      this.log.warn('fehlgeschlagen', err);
+      // ✗ gefangen — Handler resolved sauber → Controller ACKt
+      //   die Nachricht als "fertig", obwohl die Verarbeitung
+      //   fehlschlug
+    }
   }
   ```
-  Ohne ACK denkt der Producer, die Nachricht sei nicht
-  angekommen → retransmittiert ewig.  Immer ACKen (oder NACKen).
+  Wenn der Handler sauber resolved, ACKt der Controller.  Lass
+  Exceptions entweder propagieren (sodass der Producer
+  retransmittiert und der Handler retryt) oder persistiere den
+  Fehler für einen separaten Retry-Workflow, bevor Du resolvest.
 </Aside>
 
 ## Wohin als Nächstes
