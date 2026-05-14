@@ -27,7 +27,6 @@ import {
   InMemoryJournal,
   InMemoryOffsetStore,
   InMemoryQuery,
-  PersistenceExtensionId,
   PersistentActor,
   ProjectionActor,
   Props,
@@ -109,8 +108,7 @@ async function main(): Promise<void> {
   const journal = new InMemoryJournal();
   const ledger = new BankStatementLedger();
 
-  const sys = ActorSystem.create('bank');
-  sys.extension(PersistenceExtensionId).setJournal(journal);
+  const sys = ActorSystem.create('bank', { persistence: { journal } });
 
   // Spawn the projection FIRST so it picks up every event from the
   // start of the run.  In production you'd persist the offset (see

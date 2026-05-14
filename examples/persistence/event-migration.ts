@@ -17,7 +17,6 @@ import {
   ActorSystem,
   InMemoryJournal,
   InMemorySnapshotStore,
-  PersistenceExtensionId,
   PersistentActor,
   Props,
   ask,
@@ -67,9 +66,9 @@ async function main(): Promise<void> {
     { _v: 1, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', amount: 100 } as DepositedV1 },
   ], 0);
 
-  const sys = ActorSystem.create('migration-additive');
-  sys.extension(PersistenceExtensionId).setJournal(journal);
-  sys.extension(PersistenceExtensionId).setSnapshotStore(snapshots);
+  const sys = ActorSystem.create('migration-additive', {
+    persistence: { journal, snapshotStore: snapshots },
+  });
 
   const acct = sys.spawn(Props.create(() => new Account('alice')), 'alice');
   console.log('after recovery →', await ask(acct, { kind: 'balance' }, 500));

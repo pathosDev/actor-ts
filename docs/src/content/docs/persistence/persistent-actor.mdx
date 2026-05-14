@@ -20,7 +20,7 @@ this one resumes.
 
 ```ts
 import { PersistentActor, ActorSystem, Props } from 'actor-ts';
-import { PersistenceExtensionId, InMemoryJournal, InMemorySnapshotStore } from 'actor-ts';
+import { InMemoryJournal, InMemorySnapshotStore } from 'actor-ts';
 import { match } from 'ts-pattern';
 
 type Cmd =
@@ -70,11 +70,12 @@ class Account extends PersistentActor<Cmd, Event, State> {
   }
 }
 
-// Setup:
-const system = ActorSystem.create('demo');
-system.extension(PersistenceExtensionId).configure({
-  journal:       new InMemoryJournal(),
-  snapshotStore: new InMemorySnapshotStore(),
+// Setup — wire journal + snapshot store inline via the create option:
+const system = ActorSystem.create('demo', {
+  persistence: {
+    journal:       new InMemoryJournal(),
+    snapshotStore: new InMemorySnapshotStore(),
+  },
 });
 
 const account = system.spawn(Props.create(() => new Account()), 'account-42');

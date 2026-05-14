@@ -11,7 +11,6 @@
 import { match, P } from 'ts-pattern';
 import {
   ActorSystem,
-  PersistenceExtensionId,
   PersistentActor,
   Props,
   SqliteJournal,
@@ -63,9 +62,7 @@ async function main(): Promise<void> {
   const snapshots = new SqliteSnapshotStore({ path: ':memory:', keepN: 2 });
 
   // --- first incarnation: record events ---
-  const sys1 = ActorSystem.create('bank');
-  sys1.extension(PersistenceExtensionId).setJournal(journal);
-  sys1.extension(PersistenceExtensionId).setSnapshotStore(snapshots);
+  const sys1 = ActorSystem.create('bank', { persistence: { journal, snapshotStore: snapshots } });
 
   const acct1 = sys1.spawn(Props.create(() => new Account('alice')), 'alice');
   for (const amount of [100, 50, 20, 30, 10, 5, 100]) {
@@ -76,9 +73,7 @@ async function main(): Promise<void> {
   await sys1.terminate();
 
   // --- second incarnation: recover from the same journal ---
-  const sys2 = ActorSystem.create('bank-restart');
-  sys2.extension(PersistenceExtensionId).setJournal(journal);
-  sys2.extension(PersistenceExtensionId).setSnapshotStore(snapshots);
+  const sys2 = ActorSystem.create('bank-restart', { persistence: { journal, snapshotStore: snapshots } });
 
   const acct2 = sys2.spawn(Props.create(() => new Account('alice')), 'alice');
   console.log('after restart, balance →', await ask(acct2, { kind: 'balance' }, 500));

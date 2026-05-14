@@ -20,7 +20,6 @@ import {
   ActorSystem,
   Props,
   ask,
-  PersistenceExtensionId,
   InMemoryJournal,
   PersistentFSM,
   type FsmStateData,
@@ -88,8 +87,7 @@ async function main(): Promise<void> {
   const journal = new InMemoryJournal();
 
   // --- run 1: drive the workflow ---
-  const sys1 = ActorSystem.create('order-demo-1');
-  sys1.extension(PersistenceExtensionId).setJournal(journal);
+  const sys1 = ActorSystem.create('order-demo-1', { persistence: { journal } });
 
   const ref1 = sys1.spawn(Props.create(() => new OrderFsm()), 'order');
   await pretty(ref1, 'initial');
@@ -107,8 +105,7 @@ async function main(): Promise<void> {
 
   // --- run 2: brand-new system, same journal — verify recovery ---
   console.log('\n--- restart, recovering from journal ---');
-  const sys2 = ActorSystem.create('order-demo-2');
-  sys2.extension(PersistenceExtensionId).setJournal(journal);
+  const sys2 = ActorSystem.create('order-demo-2', { persistence: { journal } });
 
   const ref2 = sys2.spawn(Props.create(() => new OrderFsm()), 'order');
   await pretty(ref2, 'recovered');

@@ -24,7 +24,6 @@ import {
   ActorSystem,
   Props,
   ask,
-  PersistenceExtensionId,
   PersistentActor,
   InMemorySchemaRegistry,
   InMemoryJournal,
@@ -110,9 +109,8 @@ class Account extends PersistentActor<{ kind: 'deposit'; cents: number }, Deposi
 /* --------------------------- Main ------------------------------ */
 
 async function main(): Promise<void> {
-  const sys = ActorSystem.create('schema-registry-demo');
   const journal = new InMemoryJournal();
-  sys.extension(PersistenceExtensionId).setJournal(journal);
+  const sys = ActorSystem.create('schema-registry-demo', { persistence: { journal } });
 
   // Pre-seed the journal with a v1-shaped event (representing data
   // written before the schema evolved) — wrapped in the standard

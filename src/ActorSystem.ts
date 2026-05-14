@@ -20,6 +20,9 @@ import { ActorCell } from './internal/ActorCell.js';
 import { DeadLetterRef } from './internal/DeadLetterRef.js';
 import { Guardian, systemGuardianStrategy, userGuardianStrategy } from './internal/Guardian.js';
 import { LocalActorRef } from './internal/LocalActorRef.js';
+import type { Journal } from './persistence/Journal.js';
+import type { SnapshotStore } from './persistence/SnapshotStore.js';
+import { PersistenceExtensionId } from './persistence/PersistenceExtension.js';
 
 export interface ActorSystemSettings {
   readonly logger?: Logger;
@@ -38,6 +41,21 @@ export interface ActorSystemSettings {
   readonly config?: Config | ConfigObject;
   /** Explicit path to `application.conf`; overrides `ACTOR_TS_CONFIG` + CWD lookup. */
   readonly configFile?: string;
+  /**
+   * Persistence overrides — wire a real journal / snapshot store at
+   * system creation time instead of reaching into the extension after
+   * the fact.  Either field is independent; omit one to keep the
+   * in-memory default for that slot.
+   *
+   * Equivalent to:
+   *   const sys = ActorSystem.create(name);
+   *   sys.extension(PersistenceExtensionId).setJournal(journal);
+   *   sys.extension(PersistenceExtensionId).setSnapshotStore(snapshotStore);
+   */
+  readonly persistence?: {
+    readonly journal?: Journal;
+    readonly snapshotStore?: SnapshotStore;
+  };
 }
 
 /**
@@ -98,6 +116,16 @@ export class ActorSystem {
       'system',
     );
     this.systemGuardianCell = (systemRef as LocalActorRef<unknown>).getCell();
+
+    // Apply persistence overrides AFTER the guardians are wired up so the
+    // extension registry exists.  Either field is independent — omitted
+    // slots keep the auto-default in-memory plugin
+    // (see PersistenceExtension.journal / snapshotStore getters).
+    if (settings.persistence) {
+      const ext = this.extensions.get(PersistenceExtensionId);
+      if (settings.persistence.journal) ext.setJournal(settings.persistence.journal);
+      if (settings.persistence.snapshotStore) ext.setSnapshotStore(settings.persistence.snapshotStore);
+    }
   }
 
   /** Create a new actor system. */
