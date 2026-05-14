@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="#"><img alt="license" src="https://img.shields.io/badge/license-MIT-8b5cf6?style=flat-square"/></a>
+  <a href="./LICENSE"><img alt="license" src="https://img.shields.io/badge/license-Apache_2.0-8b5cf6?style=flat-square"/></a>
   <a href="#"><img alt="status" src="https://img.shields.io/badge/status-experimental-f59e0b?style=flat-square"/></a>
 </p>
 
