@@ -1,6 +1,6 @@
 ---
 title: Ask pattern
-description: Request/response between actors — `ask(ref, message, timeout)` returns a Promise for the reply. Timeouts, error handling, and when to prefer plain `tell` instead.
+description: Request/response between actors — `ref.ask(message, timeout)` returns a Promise for the reply. Timeouts, error handling, and when to prefer plain `tell` instead.
 ---
 
 `tell` is fire-and-forget — it returns immediately and you never see
@@ -51,11 +51,8 @@ Two equivalent shapes:
 ref.ask<Reply>(message, timeoutMs?): Promise<Reply>
 
 // Free function — useful in places where you want the explicit form:
-function ask<TReq, TRes = unknown>(
-  target:    ActorRef<TReq>,
-  message:   OmitReplyTo<TReq>,
-  timeoutMs: number = 5_000,
-): Promise<TRes>
+function target:    ActorRef<TReq>.ask<TRes = unknown>(message:   OmitReplyTo<TReq>,
+  timeoutMs: number = 5_000,): Promise<TRes>
 ```
 
 The `OmitReplyTo<TReq>` parameter type subtracts `replyTo` from
@@ -102,10 +99,10 @@ fire-and-forget messages.
 ## Timeouts + the AskTimeoutError
 
 ```ts
-import { ask, AskTimeoutError } from 'actor-ts';
+import {  AskTimeoutError } from 'actor-ts';
 
 try {
-  const result = await ask(counter, { kind: 'get' }, 1_000);
+  const result = await counter.ask({ kind: 'get' }, 1_000);
   console.log(result);
 } catch (e) {
   if (e instanceof AskTimeoutError) {
@@ -152,7 +149,7 @@ class Service extends Actor<Cmd> {
 }
 
 try {
-  const data = await ask(service, { kind: 'fetch' });
+  const data = await service.ask({ kind: 'fetch' });
 } catch (e) {
   // e is the actor's "service unavailable" Error.
 }
@@ -186,7 +183,7 @@ right call instead:
 <Aside type="caution" title="Inside an actor's `onReceive`, when waiting blocks the mailbox">
   ```ts
   override async onReceive(msg) {
-    const dep = await ask(other, { kind: 'q' });
+    const dep = await other.ask({ kind: 'q' });
     // ↑ this actor's mailbox blocks until the ask resolves.
     this.useDep(dep);
   }

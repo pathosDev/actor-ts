@@ -77,9 +77,9 @@ Schicke diese an `ps.mediator` (ein `ActorRef`). Nutze `ask`, wenn
 du das Ack brauchst:
 
 ```ts
-import { ask } from 'actor-ts';
+import {} from 'actor-ts';
 
-await ask(ps.mediator, new Subscribe('chat.room.general', room));
+await ps.mediator.ask(new Subscribe('chat.room.general', room));
 ```
 
 ## Topics

@@ -15,7 +15,6 @@ import {
   InMemorySnapshotStore,
   PersistentActor,
   Props,
-  ask,
   MigrationChain,
   type EventAdapter,
 } from '../../src/index.js';
@@ -78,9 +77,9 @@ async function main(): Promise<void> {
 
   const acct = sys.spawn(Props.create(() => new Account('alice')), 'alice');
   // v1 (1.5 USD = 150 cents) + v2 (2 EUR = 200 cents) + v3 (99 cents) = 449 cents.
-  console.log('after recovery (cents) →', await ask(acct, { kind: 'balance' }, 500));
-  console.log('deposit 100 cents EUR  →', await ask(acct, { kind: 'deposit', cents: 100 }, 500));
-  console.log('final (cents)          →', await ask(acct, { kind: 'balance' }, 500));
+  console.log('after recovery (cents) →', await acct.ask({ kind: 'balance' }, 500));
+  console.log('deposit 100 cents EUR  →', await acct.ask({ kind: 'deposit', cents: 100 }, 500));
+  console.log('final (cents)          →', await acct.ask({ kind: 'balance' }, 500));
 
   await sys.terminate();
 }

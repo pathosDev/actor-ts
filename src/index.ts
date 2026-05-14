@@ -173,7 +173,6 @@ export {
 } from './SystemMessages.js';
 
 // Patterns — Success / Failure live in util/Try.js (already exported above).
-export { ask } from './Ask.js';
 export {
   pipeTo,
   after,

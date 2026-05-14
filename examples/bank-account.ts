@@ -7,7 +7,7 @@
  *   tsx examples/bank-account.ts
  */
 import { match } from 'ts-pattern';
-import { Actor, ActorSystem, Props, ask } from '../src/index.js';
+import { Actor, ActorSystem, Props } from '../src/index.js';
 
 type Command =
   | { kind: 'deposit'; amount: number }
@@ -43,12 +43,12 @@ async function main(): Promise<void> {
   const system = ActorSystem.create('bank');
   const account = system.spawn(Props.create(() => new AccountActor()), 'alice');
 
-  console.log('deposit 100 ->', await ask(account, { kind: 'deposit', amount: 100 }, 500));
-  console.log('withdraw 30 ->', await ask(account, { kind: 'withdraw', amount: 30 }, 500));
-  console.log('balance     ->', await ask(account, { kind: 'balance' }, 500));
+  console.log('deposit 100 ->', await account.ask({ kind: 'deposit', amount: 100 }, 500));
+  console.log('withdraw 30 ->', await account.ask({ kind: 'withdraw', amount: 30 }, 500));
+  console.log('balance     ->', await account.ask({ kind: 'balance' }, 500));
 
   try {
-    await ask(account, { kind: 'withdraw', amount: 999 }, 500);
+    await account.ask({ kind: 'withdraw', amount: 999 }, 500);
   } catch (e) {
     console.log('withdraw 999 rejected as expected:', (e as Error).message);
   }

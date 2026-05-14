@@ -17,7 +17,6 @@ import {
   HttpError,
   Props,
   Status,
-  ask,
   complete,
   completeJson,
   concat,
@@ -59,7 +58,7 @@ async function main(): Promise<void> {
     numShards: 16,
   });
 
-  const askUser = (cmd: UserCmd): Promise<UserReply> => ask<UserCmd, UserReply>(region, cmd, 500);
+  const askUser = (cmd: UserCmd): Promise<UserReply> => region.ask<UserReply>(cmd, 500);
 
   const routes = path('users', concat(
     path(':id', concat(

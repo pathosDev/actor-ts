@@ -1,6 +1,6 @@
 ---
 title: Ask-Pattern
-description: Request/Response zwischen Actors — `ask(ref, message, timeout)` gibt ein Promise für die Antwort zurück. Timeouts, Fehlerbehandlung und wann lieber einfaches `tell` zu bevorzugen ist.
+description: Request/Response zwischen Actors — `ref.ask(message, timeout)` gibt ein Promise für die Antwort zurück. Timeouts, Fehlerbehandlung und wann lieber einfaches `tell` zu bevorzugen ist.
 ---
 
 `tell` ist Fire-and-Forget — es kehrt sofort zurück und du siehst die
@@ -53,11 +53,8 @@ Zwei äquivalente Schreibweisen:
 ref.ask<Reply>(message, timeoutMs?): Promise<Reply>
 
 // Freie Funktion — nützlich, wo du die explizite Form willst:
-function ask<TReq, TRes = unknown>(
-  target:    ActorRef<TReq>,
-  message:   OmitReplyTo<TReq>,
-  timeoutMs: number = 5_000,
-): Promise<TRes>
+function target:    ActorRef<TReq>.ask<TRes = unknown>(message:   OmitReplyTo<TReq>,
+  timeoutMs: number = 5_000,): Promise<TRes>
 ```
 
 Der Parameter-Typ `OmitReplyTo<TReq>` zieht `replyTo` aus jeder
@@ -107,10 +104,10 @@ behandeln.
 ## Timeouts + der AskTimeoutError
 
 ```ts
-import { ask, AskTimeoutError } from 'actor-ts';
+import {  AskTimeoutError } from 'actor-ts';
 
 try {
-  const result = await ask(counter, { kind: 'get' }, 1_000);
+  const result = await counter.ask({ kind: 'get' }, 1_000);
   console.log(result);
 } catch (e) {
   if (e instanceof AskTimeoutError) {
@@ -158,7 +155,7 @@ class Service extends Actor<Cmd> {
 }
 
 try {
-  const data = await ask(service, { kind: 'fetch' });
+  const data = await service.ask({ kind: 'fetch' });
 } catch (e) {
   // e ist der "service unavailable"-Error des Actors.
 }
@@ -192,7 +189,7 @@ Drei Situationen, in denen einfaches `tell` der richtige Aufruf ist:
 <Aside type="caution" title="Innerhalb des `onReceive` eines Actors, wenn das Warten die Mailbox blockiert">
   ```ts
   override async onReceive(msg) {
-    const dep = await ask(other, { kind: 'q' });
+    const dep = await other.ask({ kind: 'q' });
     // ↑ die Mailbox dieses Actors blockiert, bis der ask resolved.
     this.useDep(dep);
   }

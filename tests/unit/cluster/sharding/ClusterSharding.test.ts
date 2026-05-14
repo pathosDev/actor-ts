@@ -7,7 +7,6 @@ import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import { ClusterSharding } from '../../../../src/cluster/sharding/ClusterSharding.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import { Props } from '../../../../src/Props.js';
-import { ask } from '../../../../src/Ask.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
 
 type Cmd = { id: string; op: 'ping' | 'echo'; payload?: string };
@@ -67,7 +66,7 @@ describe('ClusterSharding — initialization after convergence', () => {
     await waitFor(() => nodes.every((n) => n.cluster.upMembers().length === 2));
     await sleep(200);
 
-    const reply = await ask<Cmd, string>(seed.region, { id: 'warm-0', op: 'ping' }, 3_000);
+    const reply = await seed.region.ask<string>({ id: 'warm-0', op: 'ping' }, 3_000);
     expect(reply).toBe('pong');
 
     await stopAll(nodes);
@@ -87,7 +86,7 @@ describe('ClusterSharding — initialization after convergence', () => {
     // regardless of whether the shard is local or remote relative to the asker.
     const replies = await Promise.all(
       Array.from({ length: 16 }, (_, i) =>
-        ask<Cmd, string>(seed.region, { id: `e-${i}`, op: 'echo', payload: `reply-${i}` }, 3_000),
+        seed.region.ask<string>({ id: `e-${i}`, op: 'echo', payload: `reply-${i}` }, 3_000),
       ),
     );
     expect(replies).toEqual(Array.from({ length: 16 }, (_, i) => `reply-${i}`));
@@ -106,8 +105,8 @@ describe('ClusterSharding — initialization after convergence', () => {
     await sleep(200);
 
     for (let i = 0; i < 8; i++) {
-      const fromA = await ask<Cmd, string>(seed.region, { id: `x-${i}`, op: 'ping' }, 3_000);
-      const fromB = await ask<Cmd, string>(n1.region,   { id: `y-${i}`, op: 'ping' }, 3_000);
+      const fromA = await seed.region.ask<string>({ id: `x-${i}`, op: 'ping' }, 3_000);
+      const fromB = await n1.region.ask<string>({ id: `y-${i}`, op: 'ping' }, 3_000);
       expect(fromA).toBe('pong');
       expect(fromB).toBe('pong');
     }
@@ -126,7 +125,7 @@ describe('ClusterSharding — initialization after convergence', () => {
     // Let the coordinator's rebalance timer fire at least once.
     await sleep(2_200);
 
-    const reply = await ask<Cmd, string>(seed.region, { id: 'warm-0', op: 'ping' }, 3_000);
+    const reply = await seed.region.ask<string>({ id: 'warm-0', op: 'ping' }, 3_000);
     expect(reply).toBe('pong');
 
     await stopAll(nodes);
@@ -184,9 +183,7 @@ describe('ClusterSharding — LRU passivation (#82)', () => {
       const ids = ['a', 'b', 'c', 'd', 'e'];
       const firstTags = new Map<string, string>();
       for (const id of ids) {
-        const tag = await ask<{ id: string; op: 'ping' }, string>(
-          node.region, { id, op: 'ping' }, 3_000,
-        );
+        const tag = await node.region.ask<string>({ id, op: 'ping' }, 3_000,);
         firstTags.set(id, tag);
         // Tiny gap so each entity's `lastActivity` is distinguishable.
         await sleep(5);
@@ -199,17 +196,13 @@ describe('ClusterSharding — LRU passivation (#82)', () => {
       // 'a' and 'b' were the oldest — eviction should have replaced
       // them with fresh instances on subsequent activity.  We re-ping
       // them and assert the tag is *different* (fresh instance).
-      const aAgain = await ask<{ id: string; op: 'ping' }, string>(
-        node.region, { id: 'a', op: 'ping' }, 3_000,
-      );
+      const aAgain = await node.region.ask<string>({ id: 'a', op: 'ping' }, 3_000,);
       expect(aAgain).not.toBe(firstTags.get('a'));
 
       // 'd' and 'e' are recent and must NOT have been evicted —
       // their tag stays stable.  (We DON'T check 'c' because the
       // exact eviction count depends on serialised mailbox timing.)
-      const eAgain = await ask<{ id: string; op: 'ping' }, string>(
-        node.region, { id: 'e', op: 'ping' }, 3_000,
-      );
+      const eAgain = await node.region.ask<string>({ id: 'e', op: 'ping' }, 3_000,);
       expect(eAgain).toBe(firstTags.get('e'));
     } finally {
       await stopAll([node]);
@@ -226,16 +219,12 @@ describe('ClusterSharding — LRU passivation (#82)', () => {
       const ids = ['p', 'q', 'r', 's', 't'];
       const firstTags = new Map<string, string>();
       for (const id of ids) {
-        const tag = await ask<{ id: string; op: 'ping' }, string>(
-          node.region, { id, op: 'ping' }, 3_000,
-        );
+        const tag = await node.region.ask<string>({ id, op: 'ping' }, 3_000,);
         firstTags.set(id, tag);
       }
       await sleep(50);
       for (const id of ids) {
-        const same = await ask<{ id: string; op: 'ping' }, string>(
-          node.region, { id, op: 'ping' }, 3_000,
-        );
+        const same = await node.region.ask<string>({ id, op: 'ping' }, 3_000,);
         expect(same).toBe(firstTags.get(id));
       }
     } finally {
@@ -250,20 +239,14 @@ describe('ClusterSharding — LRU passivation (#82)', () => {
     const node = await startLruNode('lru-recreate', 46_201, 2);
     try {
       await sleep(60);
-      const t1 = await ask<{ id: string; op: 'ping' }, string>(
-        node.region, { id: 'evictee', op: 'ping' }, 3_000,
-      );
+      const t1 = await node.region.ask<string>({ id: 'evictee', op: 'ping' }, 3_000,);
       // Drive enough fresh ids to push 'evictee' out of the cap.
       for (const id of ['f1', 'f2', 'f3']) {
         await sleep(5);
-        await ask<{ id: string; op: 'ping' }, string>(
-          node.region, { id, op: 'ping' }, 3_000,
-        );
+        await node.region.ask<string>({ id, op: 'ping' }, 3_000,);
       }
       await sleep(50);
-      const t2 = await ask<{ id: string; op: 'ping' }, string>(
-        node.region, { id: 'evictee', op: 'ping' }, 3_000,
-      );
+      const t2 = await node.region.ask<string>({ id: 'evictee', op: 'ping' }, 3_000,);
       // Different tag confirms re-creation; second ask succeeding at
       // all confirms re-spawn went through cleanly.
       expect(t2).not.toBe(t1);

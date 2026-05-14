@@ -19,7 +19,6 @@ import {
   PersistenceExtensionId,
   PersistentActor,
   Props,
-  ask,
   everyNEvents,
   registerCassandraPlugins,
 } from '../../src/index.js';
@@ -113,17 +112,17 @@ async function main(): Promise<void> {
   const alice = system.spawnAnonymous(Props.create(() => new Account('alice')));
 
   console.log('--- first run ---');
-  console.log('deposit 100 →', await ask(alice, { kind: 'deposit', amount: 100 }, 3_000));
-  console.log('deposit 200 →', await ask(alice, { kind: 'deposit', amount: 200 }, 3_000));
-  console.log('withdraw 50 →', await ask(alice, { kind: 'withdraw', amount: 50 }, 3_000));
-  console.log('balance    →', await ask(alice, { kind: 'balance' }, 3_000));
+  console.log('deposit 100 →', await alice.ask({ kind: 'deposit', amount: 100 }, 3_000));
+  console.log('deposit 200 →', await alice.ask({ kind: 'deposit', amount: 200 }, 3_000));
+  console.log('withdraw 50 →', await alice.ask({ kind: 'withdraw', amount: 50 }, 3_000));
+  console.log('balance    →', await alice.ask({ kind: 'balance' }, 3_000));
 
   // "Crash" — stop the actor, rebuild, replay.
   alice.stop();
   await Bun.sleep(50);
   console.log('--- second run (state replayed from Scylla) ---');
   const alice2 = system.spawnAnonymous(Props.create(() => new Account('alice')));
-  console.log('balance    →', await ask(alice2, { kind: 'balance' }, 3_000));
+  console.log('balance    →', await alice2.ask({ kind: 'balance' }, 3_000));
 
   await ext.journal.close?.();
   await ext.snapshotStore.close?.();

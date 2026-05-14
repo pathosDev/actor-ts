@@ -251,7 +251,7 @@ full event-sourcing story.
   the `match().exhaustive()` idiom used in every example on this
   page.
 - **[Ask pattern](/fundamentals/ask-pattern/)** —
-  `ask(ref, msg, timeout)` returns a Promise for the reply, avoiding
+  `ref.ask(msg, timeout)` returns a Promise for the reply, avoiding
   the manual reply-to-ref dance.
 - **[Actor](/fundamentals/actor/)** — the base class, the
   `onReceive` signature, the context references that produce reply

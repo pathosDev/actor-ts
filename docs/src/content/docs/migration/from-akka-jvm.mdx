@@ -15,7 +15,7 @@ named identically.  This guide walks through the translation.
 | `akka.actor.ActorRef` | `ActorRef<T>` |
 | `akka.actor.Props` | `Props<TMsg>` |
 | `tell(msg)` / `!` | `tell(msg)` |
-| `ask(msg).mapTo[T]` | `ask<TReq, TRes>(ref, msg, timeoutMs)` |
+| `ask(msg).mapTo[T]` | `ref.ask<TRes>(msg, timeoutMs)` |
 | `context.spawnAnonymous(props)` | `context.spawnAnonymous(props)` |
 | `OneForOneStrategy` | `OneForOneStrategy` |
 | `AllForOneStrategy` | `AllForOneStrategy` |

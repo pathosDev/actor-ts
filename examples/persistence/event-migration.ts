@@ -19,7 +19,6 @@ import {
   InMemorySnapshotStore,
   PersistentActor,
   Props,
-  ask,
   defaultsAdapter,
   type EventAdapter,
 } from '../../src/index.js';
@@ -71,9 +70,9 @@ async function main(): Promise<void> {
   });
 
   const acct = sys.spawn(Props.create(() => new Account('alice')), 'alice');
-  console.log('after recovery →', await ask(acct, { kind: 'balance' }, 500));
-  console.log('deposit 50 EUR →', await ask(acct, { kind: 'deposit', amount: 50 }, 500));
-  console.log('balance        →', await ask(acct, { kind: 'balance' }, 500));
+  console.log('after recovery →', await acct.ask({ kind: 'balance' }, 500));
+  console.log('deposit 50 EUR →', await acct.ask({ kind: 'deposit', amount: 50 }, 500));
+  console.log('balance        →', await acct.ask({ kind: 'balance' }, 500));
 
   // Inspect what's now on disk: legacy v1 entry + new v2 entry.
   const stored = await journal.read<unknown>('alice', 1);

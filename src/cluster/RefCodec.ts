@@ -30,11 +30,11 @@ export function isWireActorRef(v: unknown): v is WireActorRef {
 
 /**
  * Recursively walk a user message value and replace every `ActorRef`
- * instance with a `WireActorRef` marker.  Local refs (including
- * `PromiseActorRef` and `DeadLetterRef`) are stamped with `fromAddress`
- * so the receiver can reconstruct a `RemoteActorRef` pointing back here.
- * Remote refs carry their existing target node.  `Nobody` becomes a
- * sentinel marker.
+ * instance with a `WireActorRef` marker.  Local refs (including the
+ * short-lived ask-response ref and `DeadLetterRef`) are stamped with
+ * `fromAddress` so the receiver can reconstruct a `RemoteActorRef`
+ * pointing back here.  Remote refs carry their existing target node.
+ * `Nobody` becomes a sentinel marker.
  *
  * Non-ref values pass through untouched — this walker only rewrites refs.
  */
@@ -67,7 +67,7 @@ function encodeSingleRef(ref: ActorRef, fromAddress: NodeAddress): WireActorRef 
       system: ref.targetNode.systemName,
     };
   }
-  // Local refs (LocalActorRef / PromiseActorRef / DeadLetterRef) — tag
+  // Local refs (LocalActorRef / ask-response ref / DeadLetterRef) — tag
   // with our own address so the other side can send back to us.
   return {
     $ref: WIRE_REF_TAG,

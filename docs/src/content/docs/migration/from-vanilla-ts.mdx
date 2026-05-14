@@ -311,7 +311,7 @@ import { Aside } from '@astrojs/starlight/components';
   const order = service.orders.get(id);   // sync read
 
   // Actor:
-  const order = await ask(actor, { kind: 'get', id, replyTo: ... });
+  const order = await actor.ask({ kind: 'get', id, replyTo: ... });
   ```
   Reading state from outside an actor requires a message round-trip.
   For low-volume reads it's fine; for high-volume reads (a typical
@@ -323,7 +323,7 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Library code expects Promise APIs">
   ```ts
   await orm.user.create({ ... });        // ✓ vanilla
-  await ask(orm, { kind: 'create', ... }, 5_000);  // ✗ ORM doesn't speak actors
+  await orm.ask({ kind: 'create', ... }, 5_000);  // ✗ ORM doesn't speak actors
   ```
   ORMs, third-party SDKs, validation libraries — they're all
   Promise-based.  Wrapping them in actors gives you supervision +

@@ -11,7 +11,6 @@ import {
   CircuitBreaker,
   CircuitBreakerOpenError,
   Props,
-  ask,
 } from '../../src/index.js';
 
 type Cmd = { kind: 'ping'; id: number } | { kind: 'hang' };
@@ -38,7 +37,7 @@ async function main(): Promise<void> {
   // First: 3 hangs in a row → breaker opens.
   for (let i = 0; i < 3; i++) {
     try {
-      await breaker.call(() => ask<Cmd, string>(svc, { kind: 'hang' }, 100));
+      await breaker.call(() => svc.ask<string>({ kind: 'hang' }, 100));
     } catch (e) {
       console.log(`call#${i} failed: ${(e as Error).name}`);
     }
@@ -46,7 +45,7 @@ async function main(): Promise<void> {
 
   // Now a normal ping — should be rejected immediately with CircuitBreakerOpenError.
   try {
-    const v = await breaker.call(() => ask<Cmd, string>(svc, { kind: 'ping', id: 42 }, 100));
+    const v = await breaker.call(() => svc.ask<string>({ kind: 'ping', id: 42 }, 100));
     console.log(`unexpected success: ${v}`);
   } catch (e) {
     if (e instanceof CircuitBreakerOpenError) console.log('rejected fast — breaker is open');
@@ -54,7 +53,7 @@ async function main(): Promise<void> {
 
   // Wait for the reset window; next call probes in half-open state.
   await Bun.sleep(450);
-  const v = await breaker.call(() => ask<Cmd, string>(svc, { kind: 'ping', id: 99 }, 100));
+  const v = await breaker.call(() => svc.ask<string>({ kind: 'ping', id: 99 }, 100));
   console.log(`probe succeeded → ${v}, state=${breaker.state}`);
 
   await system.terminate();

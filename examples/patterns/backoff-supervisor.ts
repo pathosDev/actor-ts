@@ -21,7 +21,6 @@ import {
   ActorSystem,
   BackoffSupervisor,
   Props,
-  ask,
 } from '../../src/index.js';
 
 type Cmd =
@@ -71,7 +70,7 @@ async function main(): Promise<void> {
   console.log('client → waiting for the connector to stabilise...');
   await Bun.sleep(2_000);
 
-  const r1 = await ask<unknown, string>(supervisor, { kind: 'fetch', id: 1 }, 1_000);
+  const r1 = await supervisor.ask<string>({ kind: 'fetch', id: 1 }, 1_000);
   console.log('client ← got:', r1);
 
   // --- 2. Mid-run crash + stash demo ---
@@ -85,9 +84,9 @@ async function main(): Promise<void> {
   // These three asks land while the supervisor is in its backoff window
   // — they get stashed, drained to the next incarnation, and reply back.
   const replies = await Promise.all([
-    ask<unknown, string>(supervisor, { kind: 'fetch', id: 2 }, 5_000),
-    ask<unknown, string>(supervisor, { kind: 'fetch', id: 3 }, 5_000),
-    ask<unknown, string>(supervisor, { kind: 'fetch', id: 4 }, 5_000),
+    supervisor.ask<string>({ kind: 'fetch', id: 2 }, 5_000),
+    supervisor.ask<string>({ kind: 'fetch', id: 3 }, 5_000),
+    supervisor.ask<string>({ kind: 'fetch', id: 4 }, 5_000),
   ]);
   console.log('client ← got:', replies);
 

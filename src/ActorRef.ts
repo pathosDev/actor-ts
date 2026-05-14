@@ -1,29 +1,19 @@
 import { ActorPath } from './ActorPath.js';
-import { PoisonPill, Kill } from './SystemMessages.js';
+import { AskTimeoutError, PoisonPill, Kill } from './SystemMessages.js';
 
 /**
  * Drop `replyTo: ActorRef<...>` from any variant of a message union
  * that declares one.  Distributes across unions: variants without
  * `replyTo` pass through untouched; variants with `replyTo` lose just
- * that field.  Lives here (not in Ask.ts) so `ActorRef` can reference
- * it without importing the runtime ask implementation — that would
- * create an import cycle through PromiseActorRef.
+ * that field.  Used by `ActorRef.ask()` so callers never have to
+ * supply the `replyTo` field — the framework synthesises and injects
+ * one on every call.
  */
 export type OmitReplyTo<TMsg> = TMsg extends { replyTo: ActorRef<unknown> }
   ? Omit<TMsg, 'replyTo'>
   : TMsg;
 
-/** Set by `Ask.ts` on module init so `ActorRef.ask()` can call into it
- *  without `ActorRef.ts` importing `Ask.ts` (which would cycle through
- *  PromiseActorRef → ActorRef). */
-let askImpl: (<TReq, TRes>(
-  target: ActorRef<TReq>,
-  message: OmitReplyTo<TReq>,
-  timeoutMs?: number,
-) => Promise<TRes>) | null = null;
-
-/** @internal — Ask.ts calls this once when it loads. */
-export function _registerAskImpl(impl: typeof askImpl): void { askImpl = impl; }
+let askCounter = 0;
 
 /**
  * Handle to an actor.  The only way to interact with an actor — you never
@@ -50,14 +40,20 @@ export abstract class ActorRef<TMsg = unknown> {
    *
    *     const value = await counter.ask<number>({ kind: 'get' });
    */
-  ask<TRes = unknown>(message: OmitReplyTo<TMsg>, timeoutMs?: number): Promise<TRes> {
-    if (askImpl === null) {
-      throw new Error(
-        'ActorRef.ask() called before Ask.ts loaded — make sure the framework entry point ' +
-        'is imported (e.g. `import * as ActorTs from "actor-ts"`) at least once before use.',
-      );
-    }
-    return askImpl<TMsg, TRes>(this as ActorRef<TMsg>, message, timeoutMs);
+  ask<TRes = unknown>(message: OmitReplyTo<TMsg>, timeoutMs: number = 5_000): Promise<TRes> {
+    const name = `askResp-${++askCounter}`;
+    const systemName = this.path.systemName;
+    const ref = new AskResponseRef<TRes>(systemName, name, timeoutMs, this.path.toString());
+    // Inject `replyTo: ref` into the message so recipients that read
+    // `msg.replyTo` work without the caller supplying it.  Recipients
+    // that read `this.sender` see the same ref (passed via `tell`'s
+    // second arg).
+    const enriched =
+      typeof message === 'object' && message !== null
+        ? ({ ...(message as object), replyTo: ref } as unknown as TMsg)
+        : (message as unknown as TMsg);
+    this.tell(enriched, ref as unknown as ActorRef);
+    return ref.promise;
   }
 
   /** Gracefully stop this actor after it drains its mailbox. */
@@ -70,6 +66,53 @@ export abstract class ActorRef<TMsg = unknown> {
 
   equals(other: ActorRef): boolean {
     return this.path.toString() === other.path.toString();
+  }
+}
+
+/**
+ * Short-lived ref synthesised by {@link ActorRef.ask} to capture the
+ * recipient's reply.  Accepts the first message (success or `Error`-shaped
+ * failure) and either resolves or rejects its promise; further messages
+ * are dropped.  If `timeoutMs` elapses before a reply, rejects with
+ * {@link AskTimeoutError}.
+ *
+ * Lives in `ActorRef.ts` (not a separate file) so the abstract `ActorRef`
+ * class has a concrete reply-ref to instantiate without any module-cycle
+ * gymnastics — `AskResponseRef extends ActorRef`, both in the same file.
+ */
+class AskResponseRef<T> extends ActorRef<unknown> {
+  readonly path: ActorPath;
+  readonly promise: Promise<T>;
+  private resolveFn!: (value: T) => void;
+  private rejectFn!: (err: Error) => void;
+  private settled = false;
+  private timer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(systemName: string, name: string, timeoutMs: number, targetLabel: string) {
+    super();
+    this.path = new ActorPath(name, null, systemName);
+    this.promise = new Promise<T>((resolve, reject) => {
+      this.resolveFn = resolve;
+      this.rejectFn = reject;
+    });
+    if (timeoutMs > 0) {
+      this.timer = setTimeout(() => {
+        if (!this.settled) {
+          this.settled = true;
+          this.rejectFn(new AskTimeoutError(
+            `Ask timed out after ${timeoutMs}ms waiting for reply from ${targetLabel}`,
+          ));
+        }
+      }, timeoutMs);
+    }
+  }
+
+  tell(message: unknown): void {
+    if (this.settled) return;
+    this.settled = true;
+    if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+    if (message instanceof Error) this.rejectFn(message);
+    else this.resolveFn(message as T);
   }
 }
 

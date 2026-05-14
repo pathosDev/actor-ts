@@ -259,13 +259,13 @@ interface Customer { id: string; name: string; }
 const customers = path('customers',
   concat(
     get(async () => {
-      const all = await ask(registry, { kind: 'list' });
+      const all = await registry.ask({ kind: 'list' });
       return completeJson(Status.OK, all);
     }),
     post(async (req) => {
       const body = entity<{ name: string }>(req);
       if (!body.name) reject(Status.BadRequest, 'missing name');
-      const created = await ask(registry, {
+      const created = await registry.ask({
         kind: 'create', name: body.name,
       });
       return completeJson(Status.Created, created);
@@ -274,19 +274,19 @@ const customers = path('customers',
       concat(
         get(async (req) => {
           const id = idOf(req);
-          const c = await ask(registry, { kind: 'get', id });
+          const c = await registry.ask({ kind: 'get', id });
           if (!c) reject(Status.NotFound, `no customer ${id}`);
           return completeJson(Status.OK, c);
         }),
         put(async (req) => {
           const id = idOf(req);
           const body = entity<Partial<Customer>>(req);
-          await ask(registry, { kind: 'update', id, ...body });
+          await registry.ask({ kind: 'update', id, ...body });
           return complete(Status.NoContent);
         }),
         del(async (req) => {
           const id = idOf(req);
-          await ask(registry, { kind: 'delete', id });
+          await registry.ask({ kind: 'delete', id });
           return complete(Status.NoContent);
         }),
       ),

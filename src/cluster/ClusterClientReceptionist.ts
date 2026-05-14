@@ -39,7 +39,7 @@
  * deterministic shape.
  */
 
-import { ask } from '../Ask.js';
+import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
@@ -122,7 +122,7 @@ export class ClusterClientReceptionist implements Extension {
         return;
       }
 
-      const target = refOpt.value as { tell: (m: unknown, s?: unknown) => void };
+      const target = refOpt.value as ActorRef<unknown>;
       if (env.askId === undefined) {
         // Fire-and-forget tell.
         try { target.tell(env.body); } catch (e) {
@@ -132,7 +132,7 @@ export class ClusterClientReceptionist implements Extension {
       }
 
       // Ask-and-reply.
-      void ask(target as never, env.body as never, askTimeoutMs).then(
+      void target.ask(env.body as never, askTimeoutMs).then(
         (reply) => {
           this.sendReply(cluster, from, env.askId!, true, reply);
         },

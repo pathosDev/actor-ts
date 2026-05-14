@@ -22,7 +22,6 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
-import { ask } from '../../../src/Ask.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { Props } from '../../../src/Props.js';
 import {
@@ -183,7 +182,7 @@ describe('BackoffSupervisor — message forwarding', () => {
       await sleep(30);
       // Now the supervisor is in its backoff window; ask sits in the
       // stash, gets drained when the new child spawns, and replies.
-      const reply = await ask<unknown, number>(supervisor, { kind: 'echo', value: 42 }, 1_000);
+      const reply = await supervisor.ask<number>({ kind: 'echo', value: 42 }, 1_000);
       expect(reply).toBe(42);
     } finally {
       supervisor.stop();
@@ -209,13 +208,13 @@ describe('BackoffSupervisor — message forwarding', () => {
       await sleep(30);
       // Now: this ask hits drop mode and never reaches a child.
       let timedOut = false;
-      try { await ask<unknown, number>(supervisor, { kind: 'echo', value: 1 }, 50); }
+      try { await supervisor.ask<number>({ kind: 'echo', value: 1 }, 50); }
       catch { timedOut = true; }
       expect(timedOut).toBe(true);
 
       // After the backoff completes, a fresh ask gets through.
       await sleep(120);
-      const reply = await ask<unknown, number>(supervisor, { kind: 'echo', value: 99 }, 500);
+      const reply = await supervisor.ask<number>({ kind: 'echo', value: 99 }, 500);
       expect(reply).toBe(99);
     } finally {
       supervisor.stop();
@@ -241,9 +240,7 @@ describe('BackoffSupervisor — preStart failures', () => {
       // Two preStart failures with delays 40 + 80 ms — give the cycle
       // time to land on the third child before asking.
       await sleep(200);
-      const reply = await ask<unknown, number>(
-        supervisor, { kind: 'echo', value: 7 }, 500,
-      );
+      const reply = await supervisor.ask<number>({ kind: 'echo', value: 7 }, 500,);
       expect(reply).toBe(7);
       // Two restarts were scheduled: first at count=0, second at count=1.
       expect(policy.calls).toEqual([0, 1]);
@@ -414,17 +411,11 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
       // anything that lands while currentChild is set but unconfirmed
       // gets stashed — and stays there across subsequent crashes —
       // until the eventually-successful child drains the queue.
-      const firstAsk = ask<{ kind: 'echo'; value: number }, number>(
-        supervisor, { kind: 'echo', value: 1 }, 4_000,
-      ).then((r) => replies.push(r));
+      const firstAsk = supervisor.ask<number>({ kind: 'echo', value: 1 }, 4_000,).then((r) => replies.push(r));
       await sleep(50);
-      const secondAsk = ask<{ kind: 'echo'; value: number }, number>(
-        supervisor, { kind: 'echo', value: 2 }, 4_000,
-      ).then((r) => replies.push(r));
+      const secondAsk = supervisor.ask<number>({ kind: 'echo', value: 2 }, 4_000,).then((r) => replies.push(r));
       await sleep(50);
-      const thirdAsk = ask<{ kind: 'echo'; value: number }, number>(
-        supervisor, { kind: 'echo', value: 3 }, 4_000,
-      ).then((r) => replies.push(r));
+      const thirdAsk = supervisor.ask<number>({ kind: 'echo', value: 3 }, 4_000,).then((r) => replies.push(r));
 
       await Promise.all([firstAsk, secondAsk, thirdAsk]);
       expect(replies.sort((a, b) => a - b)).toEqual([1, 2, 3]);
@@ -452,9 +443,7 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
       'sup-grace-default',
     );
     try {
-      const reply = await ask<{ kind: 'echo'; value: number }, number>(
-        supervisor, { kind: 'echo', value: 7 }, 1_000,
-      );
+      const reply = await supervisor.ask<number>({ kind: 'echo', value: 7 }, 1_000,);
       expect(reply).toBe(7);
     } finally {
       supervisor.stop();

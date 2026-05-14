@@ -23,7 +23,6 @@ import {
   Actor,
   ActorSystem,
   Props,
-  ask,
   PersistentActor,
   InMemorySchemaRegistry,
   InMemoryJournal,
@@ -122,10 +121,10 @@ async function main(): Promise<void> {
   const ref = sys.spawn(Props.create(() => new Account()), 'acct');
   // Recovery: replays the v1 event through the registry's upcasters
   // (v1 → v2 fills currency=USD, v2 → v3 multiplies amount × 100).
-  let state = await ask<unknown, AccountState>(ref, { kind: 'deposit', cents: 750 }, 1_000);
+  let state = await ref.ask<AccountState>({ kind: 'deposit', cents: 750 }, 1_000);
   console.log('after deposit:', state);
 
-  state = await ask<unknown, AccountState>(ref, { kind: 'deposit', cents: 250 }, 1_000);
+  state = await ref.ask<AccountState>({ kind: 'deposit', cents: 250 }, 1_000);
   console.log('after deposit:', state);
 
   await sys.terminate();

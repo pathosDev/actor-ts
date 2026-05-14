@@ -16,7 +16,6 @@ import { Actor } from '../../../../src/Actor.js';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import { Props } from '../../../../src/Props.js';
-import { ask } from '../../../../src/Ask.js';
 import { defaultsAdapter } from '../../../../src/persistence/migration/defaultsAdapter.js';
 import { isEnvelope } from '../../../../src/persistence/migration/Envelope.js';
 import {
@@ -147,9 +146,7 @@ describe('migrateInMemoryJournal — bulk rewrite', () => {
       // Send a no-op message so we can wait for recovery to complete.
       // (PersistentActor processes the recovery before the first user
       // message lands.)
-      const reply = await ask<unknown, { balance: number; currency: string }>(
-        ref, { kind: 'snapshot' }, 1_000,
-      ).catch(() => null);
+      const reply = await ref.ask<{ balance: number; currency: string }>({ kind: 'snapshot' }, 1_000,).catch(() => null);
       void reply;
       // Direct state read via internal API isn't exposed; instead we
       // rely on the journal having been recovered without throwing.

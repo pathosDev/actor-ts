@@ -19,7 +19,6 @@ import {
   Actor,
   ActorSystem,
   Props,
-  ask,
   InMemoryJournal,
   PersistentFSM,
   type FsmStateData,
@@ -79,7 +78,7 @@ class OrderFsm extends PersistentFSM<OrderCmd, OrderEvent, OrderState, OrderData
 }
 
 async function pretty(ref: ActorRef<OrderCmd>, label: string): Promise<void> {
-  const s = await ask<OrderCmd, FsmStateData<OrderState, OrderData>>(ref, { kind: 'getState' }, 500);
+  const s = await ref.ask<FsmStateData<OrderState, OrderData>>({ kind: 'getState' }, 500);
   console.log(`${label}: state=${s.state} amountPaid=${s.data.amountPaid} carrier=${s.data.carrier ?? '-'}`);
 }
 

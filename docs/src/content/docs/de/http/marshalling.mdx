@@ -90,7 +90,7 @@ Für content-negotiated Responses nimm `marshal`:
 import { marshal } from 'actor-ts/http';
 
 get(async (req) => {
-  const data = await ask(registry, { kind: 'list' });
+  const data = await registry.ask({ kind: 'list' });
   const { body, contentType } = marshal(req, data);
   return { status: 200, body, contentType, headers: {} };
 });
@@ -229,7 +229,7 @@ Response-Body, neben `error: 'invalid shape'`.
 ```ts
 del(async (req) => {
   // Kein Body zu dekodieren — einfach die Arbeit machen und 204 zurückgeben.
-  await ask(registry, { kind: 'delete', id: req.path.split('/').pop(), replyTo: ... });
+  await registry.ask({ kind: 'delete', id: req.path.split('/').pop(), replyTo: ... });
   return complete(Status.NoContent);
 });
 ```

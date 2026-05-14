@@ -63,7 +63,7 @@ eigentliche Senden pausiert, bis ACKs den Slot freigeben.
 Für Sender, die wissen müssen, wann Druck herrscht:
 
 ```ts
-const result = await ask(producer, { kind: 'reliable-delivery.send', body, replyTo: ... }, 30_000);
+const result = await producer.ask({ kind: 'reliable-delivery.send', body, replyTo: ... }, 30_000);
 //                                         ^ antwortet, nachdem die Nachricht mindestens gesendet wurde
 ```
 

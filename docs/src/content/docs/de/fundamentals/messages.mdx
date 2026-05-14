@@ -264,7 +264,7 @@ vollständige Event-Sourcing-Geschichte.
   das `match().exhaustive()`-Idiom, das in jedem Beispiel auf dieser
   Seite verwendet wird.
 - **[Ask-Pattern](/de/fundamentals/ask-pattern/)** —
-  `ask(ref, msg, timeout)` gibt ein Promise für die Antwort zurück
+  `ref.ask(msg, timeout)` gibt ein Promise für die Antwort zurück
   und vermeidet den manuellen Reply-to-Ref-Tanz.
 - **[Actor](/de/fundamentals/actor/)** — die Basisklasse, die
   `onReceive`-Signatur, die Context-Referenzen, die Reply-Refs

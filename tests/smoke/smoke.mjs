@@ -36,7 +36,7 @@ try {
 }
 const {
   Actor, ActorSystem, Cluster, InMemoryTransport, LogLevel,
-  NoopLogger, NodeAddress, Props, ask,
+  NoopLogger, NodeAddress, Props,
 } = actorTs;
 
 const runtime = detectRuntime();
@@ -58,7 +58,7 @@ try {
   const ref = sys.spawnAnonymous(Props.create(() => new Counter()));
   const N = 10_000;
   for (let i = 0; i < N; i++) ref.tell('inc');
-  const got = await ask(ref, 'get', 5_000);
+  const got = await ref.ask('get', 5_000);
   if (got !== N) throw new Error(`counter mismatch: ${got} !== ${N}`);
   await sys.terminate();
   console.log(`✓ core messaging — ${N} tells, counter = ${got}`);

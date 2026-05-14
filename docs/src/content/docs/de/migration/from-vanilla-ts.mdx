@@ -320,7 +320,7 @@ import { Aside } from '@astrojs/starlight/components';
   const order = service.orders.get(id);   // synchroner Read
 
   // Actor:
-  const order = await ask(actor, { kind: 'get', id, replyTo: ... });
+  const order = await actor.ask({ kind: 'get', id, replyTo: ... });
   ```
   State von außerhalb eines Actors zu lesen, erfordert einen
   Nachrichten-Roundtrip.  Für Low-Volume-Reads ist das in
@@ -333,7 +333,7 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Library-Code erwartet Promise-APIs">
   ```ts
   await orm.user.create({ ... });        // ✓ vanilla
-  await ask(orm, { kind: 'create', ... }, 5_000);  // ✗ ORM spricht keine Actors
+  await orm.ask({ kind: 'create', ... }, 5_000);  // ✗ ORM spricht keine Actors
   ```
   ORMs, Drittanbieter-SDKs, Validierungs-Libraries - sie sind
   alle Promise-basiert.  Sie in Actors zu wrappen gibt dir

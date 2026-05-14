@@ -167,7 +167,7 @@ for (const id of ['e1', 'e2', 'e3', 'e4', 'e5']) {
 }
 
 // Placement inspizieren:
-const placement = await ask(regions[0], { kind: 'list-shards', replyTo: ... });
+const placement = await regions[0].ask({ kind: 'list-shards', replyTo: ... });
 expect(placement.regions.size).toBeGreaterThan(1);   // verteilt
 
 await spec.shutdown();

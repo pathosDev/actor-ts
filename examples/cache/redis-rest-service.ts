@@ -32,7 +32,6 @@ import {
   Props,
   RedisCache,
   Status,
-  ask,
   cached,
   complete,
   completeJson,
@@ -90,7 +89,7 @@ async function main(): Promise<void> {
     extractEntityId: (msg: UserCmd) => ('id' in msg ? msg.id : msg.user.id),
     numShards: 16,
   });
-  const askUser = (cmd: UserCmd): Promise<UserReply> => ask<UserCmd, UserReply>(region, cmd, 500);
+  const askUser = (cmd: UserCmd): Promise<UserReply> => region.ask<UserReply>(cmd, 500);
 
   // Rate limit: 60 req/min per IP — applied to every endpoint below.
   const limit = rateLimit({

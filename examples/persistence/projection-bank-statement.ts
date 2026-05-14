@@ -22,7 +22,6 @@
 import { match, P } from 'ts-pattern';
 import {
   ActorSystem,
-  ask,
   everyNEvents,
   InMemoryJournal,
   InMemoryOffsetStore,
@@ -127,10 +126,10 @@ async function main(): Promise<void> {
   // Drive a couple of accounts.
   const alice = sys.spawn(Props.create(() => new Account('alice')), 'alice');
   const bob = sys.spawn(Props.create(() => new Account('bob')), 'bob');
-  for (const amt of [100, 50, 30]) await ask(alice, { kind: 'deposit', amount: amt }, 500);
-  await ask(alice, { kind: 'withdraw', amount: 60 }, 500);
-  for (const amt of [200, 75]) await ask(bob, { kind: 'deposit', amount: amt }, 500);
-  await ask(bob, { kind: 'withdraw', amount: 25 }, 500);
+  for (const amt of [100, 50, 30]) await alice.ask({ kind: 'deposit', amount: amt }, 500);
+  await alice.ask({ kind: 'withdraw', amount: 60 }, 500);
+  for (const amt of [200, 75]) await bob.ask({ kind: 'deposit', amount: amt }, 500);
+  await bob.ask({ kind: 'withdraw', amount: 25 }, 500);
 
   // Give the projection a beat to drain the last batch.
   await Bun.sleep(250);

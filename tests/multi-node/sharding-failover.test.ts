@@ -23,7 +23,6 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
 import { Props } from '../../src/Props.js';
-import { ask } from '../../src/Ask.js';
 import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
 import { ShardedDaemonProcess } from '../../src/cluster/sharding/ShardedDaemonProcess.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
@@ -82,7 +81,7 @@ describe('multi-node sharding failover', () => {
       // Warm up: ensure every shard has a home before crashing the leader.
       await Bun.sleep(300);
       for (let i = 0; i < 16; i++) {
-        const r = await ask<Cmd, string>(regions.b, { id: `pre-${i}`, op: 'ping' }, 3_000);
+        const r = await regions.b.ask<string>({ id: `pre-${i}`, op: 'ping' }, 3_000);
         expect(r).toBe('pong');
       }
 
@@ -103,7 +102,7 @@ describe('multi-node sharding failover', () => {
       // may have been homed on the dead leader and need re-allocation —
       // that's the point of the test.
       for (let i = 0; i < 16; i++) {
-        const r = await ask<Cmd, string>(regions.b, { id: `post-${i}`, op: 'ping' }, 5_000);
+        const r = await regions.b.ask<string>({ id: `post-${i}`, op: 'ping' }, 5_000);
         expect(r).toBe('pong');
       }
     } finally {
@@ -137,7 +136,7 @@ describe('multi-node sharding failover', () => {
       // Start a batch of 32 asks against region 'a', then crash 'c' during
       // the batch.  Expectation: every ask eventually returns 'pong'.
       const inflight = Array.from({ length: 32 }, (_, i) =>
-        ask<Cmd, string>(regions.a, { id: `mid-${i}`, op: 'ping' }, 8_000),
+        regions.a.ask<string>({ id: `mid-${i}`, op: 'ping' }, 8_000),
       );
 
       // Crash 'c' shortly after issuing — some asks land on shards that
@@ -192,7 +191,7 @@ describe('multi-node sharding failover', () => {
 
       // Survivors continue to serve.
       for (let i = 0; i < 8; i++) {
-        const r = await ask<Cmd, string>(regions.a, { id: `part-${i}`, op: 'ping' }, 5_000);
+        const r = await regions.a.ask<string>({ id: `part-${i}`, op: 'ping' }, 5_000);
         expect(r).toBe('pong');
       }
 
@@ -242,7 +241,7 @@ describe('multi-node sharding failover', () => {
         let i = 0;
         while (Date.now() < stopAt) {
           try {
-            await ask<Cmd, string>(regions.a, { id: `churn-${i++ % 16}`, op: 'ping' }, 4_000);
+            await regions.a.ask<string>({ id: `churn-${i++ % 16}`, op: 'ping' }, 4_000);
             replies++;
           } catch { failures++; }
           await Bun.sleep(5);
@@ -262,7 +261,7 @@ describe('multi-node sharding failover', () => {
       expect(replies + failures).toBeGreaterThan(20);
       // …and after the churn settles, asks succeed again.
       await Bun.sleep(300);
-      const finalReply = await ask<Cmd, string>(regions.a, { id: `final`, op: 'ping' }, 5_000);
+      const finalReply = await regions.a.ask<string>({ id: `final`, op: 'ping' }, 5_000);
       expect(finalReply).toBe('pong');
     } finally {
       await spec.stop();

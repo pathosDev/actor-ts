@@ -28,7 +28,6 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
 import { Props } from '../../src/Props.js';
-import { ask } from '../../src/Ask.js';
 import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
 import { ShardCoordinator } from '../../src/cluster/sharding/ShardCoordinator.js';
 import {
@@ -149,7 +148,7 @@ describe('multi-node sharding lease — split-brain protection', () => {
       expect(heldCount).toBe(1);
 
       // Sanity: ask via any region — the system is functional.
-      const reply = await ask<Cmd, string>(regions.a, { id: 'e-1', op: 'ping' }, 3_000);
+      const reply = await regions.a.ask<string>({ id: 'e-1', op: 'ping' }, 3_000);
       expect(reply).toBe('pong');
 
       // Now partition.  Whichever role is currently active stays

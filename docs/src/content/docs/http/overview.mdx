@@ -137,17 +137,14 @@ The route handler returns a `Promise<HttpResponse>` — you can
 freely `await` actor calls inside:
 
 ```ts
-import { ask } from 'actor-ts';
+import {} from 'actor-ts';
 
 const routes = path('orders',
   path(':id',
     get(async (req) => {
       const id = req.path.split('/').pop();
-      const order = await ask(
-        orderRegistry,
-        { kind: 'get', id },
-        5_000,
-      );
+      const order = await orderRegistry.ask({ kind: 'get', id },
+        5_000,);
       return completeJson(200, order);
     }),
   ),

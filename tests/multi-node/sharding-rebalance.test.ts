@@ -25,7 +25,6 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
 import { Props } from '../../src/Props.js';
-import { ask } from '../../src/Ask.js';
 import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
@@ -91,7 +90,7 @@ describe('multi-node sharding rebalance', () => {
       // point of location-transparent regions.
       const round1 = await Promise.all(
         Array.from({ length: 16 }, (_, i) =>
-          ask<Cmd, string>(regions.a, { id: `e-${i}`, op: 'ping' }, 3_000),
+          regions.a.ask<string>({ id: `e-${i}`, op: 'ping' }, 3_000),
         ),
       );
       expect(round1).toEqual(Array.from({ length: 16 }, () => 'pong'));
@@ -115,7 +114,7 @@ describe('multi-node sharding rebalance', () => {
       // here), but the response semantics are identical.
       const round2 = await Promise.all(
         Array.from({ length: 16 }, (_, i) =>
-          ask<Cmd, string>(regions.a, { id: `e-${i}`, op: 'ping' }, 5_000),
+          regions.a.ask<string>({ id: `e-${i}`, op: 'ping' }, 5_000),
         ),
       );
       expect(round2).toEqual(Array.from({ length: 16 }, () => 'pong'));
@@ -123,7 +122,7 @@ describe('multi-node sharding rebalance', () => {
       // And from b's region — proves ask routing works from any survivor.
       const round3 = await Promise.all(
         Array.from({ length: 8 }, (_, i) =>
-          ask<Cmd, string>(regions.b, { id: `f-${i}`, op: 'echo', payload: `r-${i}` }, 5_000),
+          regions.b.ask<string>({ id: `f-${i}`, op: 'echo', payload: `r-${i}` }, 5_000),
         ),
       );
       expect(round3).toEqual(Array.from({ length: 8 }, (_, i) => `r-${i}`));

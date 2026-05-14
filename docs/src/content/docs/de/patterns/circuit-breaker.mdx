@@ -64,7 +64,7 @@ du sie wickeln.  Für Actor-zu-Actor-Calls wickle ein `ask`:
 const breaker = new CircuitBreaker({ maxFailures: 3, resetTimeoutMs: 10_000 });
 
 async function askWithBreaker(): Promise<Reply> {
-  return breaker.call(() => ask(target, { kind: 'q' }, 5_000));
+  return breaker.call(() => target.ask({ kind: 'q' }, 5_000));
 }
 ```
 

@@ -8,7 +8,6 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../src/Actor.js';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
-import { ask } from '../../../../src/Ask.js';
 import { AskTimeoutError } from '../../../../src/SystemMessages.js';
 import { Cluster } from '../../../../src/cluster/Cluster.js';
 import { ClusterSharding } from '../../../../src/cluster/sharding/ClusterSharding.js';
@@ -92,7 +91,7 @@ describe('ClusterSharding + Lease', () => {
     // sits in its buffer.  An ask with a tight timeout therefore
     // times out instead of returning 'pong'.
     await expect(
-      ask<Cmd, string>(a.region, { id: 'e-1', op: 'ping' }, 400)
+      a.region.ask<string>({ id: 'e-1', op: 'ping' }, 400)
     ).rejects.toBeInstanceOf(AskTimeoutError);
 
     // Now release the foreign lease — the coordinator's retry tick
@@ -100,7 +99,7 @@ describe('ClusterSharding + Lease', () => {
     await foreign.release();
     await waitFor(() => lease.checkAlive(), 2_000);
 
-    const reply = await ask<Cmd, string>(a.region, { id: 'e-1', op: 'ping' }, 3_000);
+    const reply = await a.region.ask<string>({ id: 'e-1', op: 'ping' }, 3_000);
     expect(reply).toBe('pong');
 
     await stop(a);
@@ -116,7 +115,7 @@ describe('ClusterSharding + Lease', () => {
 
     // Initial ask succeeds — coordinator acquired the lease cleanly.
     await waitFor(() => lease.checkAlive(), 2_000);
-    expect(await ask<Cmd, string>(a.region, { id: 'e-1', op: 'ping' }, 2_000)).toBe('pong');
+    expect(await a.region.ask<string>({ id: 'e-1', op: 'ping' }, 2_000)).toBe('pong');
 
     // Force the lease away by clearing the store + having a usurper
     // take it.  The InMemoryLease's renewal loop will fail and fire
@@ -134,13 +133,13 @@ describe('ClusterSharding + Lease', () => {
     // While the usurper still holds, asks fail — the coordinator
     // is passive even though it's still the cluster leader.
     await expect(
-      ask<Cmd, string>(a.region, { id: 'e-2', op: 'ping' }, 400)
+      a.region.ask<string>({ id: 'e-2', op: 'ping' }, 400)
     ).rejects.toBeInstanceOf(AskTimeoutError);
 
     // Hand the lease back; the coordinator's retry tick re-acquires.
     await usurper.release();
     await waitFor(() => lease.checkAlive(), 3_000);
-    expect(await ask<Cmd, string>(a.region, { id: 'e-3', op: 'ping' }, 3_000)).toBe('pong');
+    expect(await a.region.ask<string>({ id: 'e-3', op: 'ping' }, 3_000)).toBe('pong');
 
     await stop(a);
   }, 20_000);

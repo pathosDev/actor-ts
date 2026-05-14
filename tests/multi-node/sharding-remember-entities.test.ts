@@ -35,7 +35,6 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
-import { ask } from '../../src/Ask.js';
 import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
 import { JournalRememberEntitiesStore } from '../../src/cluster/sharding/RememberEntitiesStore.js';
 import { InMemoryJournal } from '../../src/persistence/journals/InMemoryJournal.js';
@@ -129,7 +128,7 @@ describe('Sharding remember-entities — persistent registry', () => {
       // triggers an EntityStarted notification to the coordinator,
       // which appends to the registry journal.
       for (const id of ids) {
-        const reply = await ask<Cmd, string>(regions.a, { id, op: 'ping' }, 3_000);
+        const reply = await regions.a.ask<string>({ id, op: 'ping' }, 3_000);
         expect(reply).toBe('pong');
       }
       // Allow EntityStarted journal writes to settle (fire-and-forget
@@ -147,7 +146,7 @@ describe('Sharding remember-entities — persistent registry', () => {
       // Send ONE message to one entity → triggers the single shard's
       // allocation → coordinator ships RememberedEntities (loaded
       // from journal) → region pre-creates ALL five.
-      const reply = await ask<Cmd, string>(regions2.a, { id: 'e-1', op: 'ping' }, 3_000);
+      const reply = await regions2.a.ask<string>({ id: 'e-1', op: 'ping' }, 3_000);
       expect(reply).toBe('pong');
 
       // Allow the region to drain RememberedEntities + spawn the rest.

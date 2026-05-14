@@ -86,7 +86,7 @@ const region = ClusterSharding.get(system, cluster).start<Cmd>({
 });
 
 // Get profile via ask:
-const profile = await ask(region, {
+const profile = await region.ask({
   entityId: 'user-42',
   kind:     'get-profile',
   replyTo:  undefined as any,

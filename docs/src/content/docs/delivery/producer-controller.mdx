@@ -62,7 +62,7 @@ consumer's acks free up the buffer.
 For senders that need to know about pressure:
 
 ```ts
-const result = await ask(producer, { kind: 'reliable-delivery.send', body, replyTo: ... }, 30_000);
+const result = await producer.ask({ kind: 'reliable-delivery.send', body, replyTo: ... }, 30_000);
 //                                         ^ replies after the message is at least sent
 ```
 

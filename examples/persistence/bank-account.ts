@@ -15,7 +15,6 @@ import {
   Props,
   SqliteJournal,
   SqliteSnapshotStore,
-  ask,
   everyNEvents,
 } from '../../src/index.js';
 
@@ -66,17 +65,17 @@ async function main(): Promise<void> {
 
   const acct1 = sys1.spawn(Props.create(() => new Account('alice')), 'alice');
   for (const amount of [100, 50, 20, 30, 10, 5, 100]) {
-    console.log('deposit', amount, '→', await ask(acct1, { kind: 'deposit', amount }, 500));
+    console.log('deposit', amount, '→', await acct1.ask({ kind: 'deposit', amount }, 500));
   }
-  console.log('withdraw 60 →', await ask(acct1, { kind: 'withdraw', amount: 60 }, 500));
-  console.log('balance    →', await ask(acct1, { kind: 'balance' }, 500));
+  console.log('withdraw 60 →', await acct1.ask({ kind: 'withdraw', amount: 60 }, 500));
+  console.log('balance    →', await acct1.ask({ kind: 'balance' }, 500));
   await sys1.terminate();
 
   // --- second incarnation: recover from the same journal ---
   const sys2 = ActorSystem.create('bank-restart', { persistence: { journal, snapshotStore: snapshots } });
 
   const acct2 = sys2.spawn(Props.create(() => new Account('alice')), 'alice');
-  console.log('after restart, balance →', await ask(acct2, { kind: 'balance' }, 500));
+  console.log('after restart, balance →', await acct2.ask({ kind: 'balance' }, 500));
   await sys2.terminate();
 
   await journal.close();

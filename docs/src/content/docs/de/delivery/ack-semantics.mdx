@@ -83,7 +83,7 @@ const consumer = system.spawn(
       // retransmittiert der Producer und der Handler läuft
       // erneut — aber der Dedup des PersistentActor (Event-ID
       // oder Seq im Event-Payload) fängt den Re-Run ab.
-      await ask(log, { kind: 'append', order }, 30_000);
+      await log.ask({ kind: 'append', order }, 30_000);
     },
   })),
 );
