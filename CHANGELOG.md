@@ -9,6 +9,32 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-05-15
+
+Docs-only patch release covering the first round of post-v0.9.0
+publish feedback.
+
+### Fixed
+
+- README logo no longer 404s on the npmjs.com package page —
+  switched from relative `./docs/public/logo.png` to an absolute
+  `raw.githubusercontent.com/pathosDev/actor-ts/main/...` URL.
+  Relative paths inside raw `<img>` tags aren't rewritten by
+  npm's README renderer, only Markdown image syntax is.
+- README license badge link similarly switched to an absolute
+  `github.com/.../LICENSE` URL.
+- README "## License" section text — said "MIT" left over from
+  the original metadata-only declaration; corrected to
+  "Apache 2.0" matching the v0.9.0 relicense.
+- Sub-package READMEs (`benchmarks/`, `examples/chat/`,
+  `examples/voice/`) referenced a non-existent `assets/logo.svg`
+  path (the `assets/` folder never existed in this layout).
+  Switched to the same absolute
+  `raw.githubusercontent.com/pathosDev/actor-ts/main/docs/public/logo.svg`
+  URL the root README now uses — consistent across every README
+  and robust under any rendering target (GitHub, npm, mirrored
+  forks).
+
 ## [0.9.0] — 2026-05-14
 
 The "public-launch readiness" release.  Six workstreams accumulated

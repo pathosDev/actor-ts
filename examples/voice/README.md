@@ -1,4 +1,4 @@
-<p align="center"><img src="../../assets/logo.svg" width="200" alt="actor-ts" /></p>
+<p align="center"><img src="https://raw.githubusercontent.com/pathosDev/actor-ts/main/docs/public/logo.svg" width="200" alt="actor-ts" /></p>
 
 # Voice sample — distributed walkie-talkie + group + Teams-style rooms
 

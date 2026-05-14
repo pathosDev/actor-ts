@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="../assets/logo.svg" alt="actor-ts" width="420"/>
+  <img src="https://raw.githubusercontent.com/pathosDev/actor-ts/main/docs/public/logo.svg" alt="actor-ts" width="420"/>
 </p>
 
 <p align="center"><em>Micro-benchmarks for actor-ts on Bun, Node.js, and Deno — throughput, latency, memory, scaling.</em></p>

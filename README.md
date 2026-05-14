@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./docs/public/logo.png" alt="actor-ts" width="560"/>
+  <img src="https://raw.githubusercontent.com/pathosDev/actor-ts/main/docs/public/logo.png" alt="actor-ts" width="560"/>
 </p>
 
 <p align="center">
@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="./LICENSE"><img alt="license" src="https://img.shields.io/badge/license-Apache_2.0-8b5cf6?style=flat-square"/></a>
+  <a href="https://github.com/pathosDev/actor-ts/blob/main/LICENSE"><img alt="license" src="https://img.shields.io/badge/license-Apache_2.0-8b5cf6?style=flat-square"/></a>
   <a href="#"><img alt="status" src="https://img.shields.io/badge/status-experimental-f59e0b?style=flat-square"/></a>
 </p>
 
@@ -266,4 +266,4 @@ Issues and feature requests live on
 
 ## License
 
-[MIT](./LICENSE).
+[Apache 2.0](./LICENSE).

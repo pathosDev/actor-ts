@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="../../assets/logo.svg" width="200" alt="actor-ts" />
+  <img src="https://raw.githubusercontent.com/pathosDev/actor-ts/main/docs/public/logo.svg" width="200" alt="actor-ts" />
 </p>
 
 # Chat — multi-frontend sample for actor-ts
