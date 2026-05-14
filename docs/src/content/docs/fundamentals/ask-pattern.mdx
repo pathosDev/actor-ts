@@ -17,7 +17,7 @@ Promise that resolves with the first reply or rejects on timeout.
 ## A minimal example
 
 ```ts
-import { Actor, ActorSystem, Props, ask, type ActorRef } from 'actor-ts';
+import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
 
 type Cmd =
   | { readonly kind: 'inc' }
@@ -37,33 +37,33 @@ const counter = system.spawnAnonymous(Props.create(() => new Counter()));
 counter.tell({ kind: 'inc' });
 counter.tell({ kind: 'inc' });
 
-// Inside the request, `replyTo` is `this.sender` from the recipient's
-// perspective.  But you'd have to construct that yourself.  `ask`
-// wires it for you: builds a temporary ref, attaches it, returns a
-// Promise.
-const current = await ask<Cmd, number>(counter, {
-  kind: 'get',
-  replyTo: undefined as any,  // ask sets this — see below
-}, 5_000);
+// Method-on-ref form — terse, infers the reply type:
+const current = await counter.ask<number>({ kind: 'get' }, 5_000);
 console.log(current);  // 2
 
 await system.terminate();
 ```
 
-The signature:
+Two equivalent shapes:
 
 ```ts
+// Method on every ActorRef — infers Reply from the type argument:
+ref.ask<Reply>(message, timeoutMs?): Promise<Reply>
+
+// Free function — useful in places where you want the explicit form:
 function ask<TReq, TRes = unknown>(
   target:    ActorRef<TReq>,
-  message:   TReq,
+  message:   OmitReplyTo<TReq>,
   timeoutMs: number = 5_000,
 ): Promise<TRes>
 ```
 
-Three parameters: the actor to ask, the message to send, and a
-timeout in milliseconds.  Returns `Promise<TRes>` — resolves with
-the first reply, rejects with `AskTimeoutError` if no reply comes
-within the timeout.
+The `OmitReplyTo<TReq>` parameter type subtracts `replyTo` from
+every variant of the message union that declares it — callers never
+write the field themselves.  The framework allocates a one-shot
+reply ref, attaches it both as `context.sender` and (when the
+message shape expects it) as `message.replyTo`, and resolves the
+promise with the first reply.
 
 ## The `replyTo` field convention
 
@@ -105,7 +105,7 @@ fire-and-forget messages.
 import { ask, AskTimeoutError } from 'actor-ts';
 
 try {
-  const result = await ask(counter, { kind: 'get', replyTo: undefined as any }, 1_000);
+  const result = await ask(counter, { kind: 'get' }, 1_000);
   console.log(result);
 } catch (e) {
   if (e instanceof AskTimeoutError) {
@@ -152,7 +152,7 @@ class Service extends Actor<Cmd> {
 }
 
 try {
-  const data = await ask(service, { kind: 'fetch', replyTo: undefined as any });
+  const data = await ask(service, { kind: 'fetch' });
 } catch (e) {
   // e is the actor's "service unavailable" Error.
 }
@@ -186,7 +186,7 @@ right call instead:
 <Aside type="caution" title="Inside an actor's `onReceive`, when waiting blocks the mailbox">
   ```ts
   override async onReceive(msg) {
-    const dep = await ask(other, { kind: 'q', replyTo: undefined as any });
+    const dep = await ask(other, { kind: 'q' });
     // ↑ this actor's mailbox blocks until the ask resolves.
     this.useDep(dep);
   }
@@ -198,30 +198,6 @@ right call instead:
   behind.  Prefer spawning a child or using `pipeTo` to wire the
   result back to the actor via an internal message instead.
 </Aside>
-
-## A cleaner ask pattern with helper types
-
-The `undefined as any` placeholder above is ugly.  A common refinement
-is to split the request type so the `replyTo` field is filled by
-`ask`, not by the caller:
-
-```ts
-type GetRequest = { readonly kind: 'get'; readonly replyTo: ActorRef<number> };
-
-// Helper: caller provides everything EXCEPT replyTo; the ask helper
-// (or a wrapper around `ask`) injects the reply-to ref.
-type AskMessage<T extends { replyTo: ActorRef<unknown> }> = Omit<T, 'replyTo'>;
-
-async function askCounter(ref: ActorRef<GetRequest>): Promise<number> {
-  // Internally, `ask` attaches the reply-to.  This wrapper hides the
-  // placeholder.
-  return ask<GetRequest, number>(ref, { kind: 'get' } as GetRequest, 1_000);
-}
-```
-
-For codebases with many ask-shaped messages, building a tiny wrapper
-per message type or a generic `askTyped(ref, kind, fields)` helper
-removes the boilerplate at the call sites.
 
 ## Where to next
 

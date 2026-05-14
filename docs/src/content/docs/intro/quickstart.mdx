@@ -203,14 +203,11 @@ for the deep dive.
 
 ### Getting a reply with `ask`
 
-`tell` is fire-and-forget. For request/response use `ask`: it
-spawns a one-shot reply actor under the hood, injects it as
-`replyTo`, and resolves a typed `Promise` when the actor sends its
-answer back. There's a configurable timeout so a non-responsive
-actor doesn't hang the caller forever.
+`tell` is fire-and-forget. For request/response there are two
+equivalent shapes:
 
 ```ts
-import { ActorSystem, Props, ask } from 'actor-ts';
+import { ActorSystem, Props } from 'actor-ts';
 
 const system  = ActorSystem.create('counters');
 const counter = system.spawnAnonymous(Props.create(() => new Counter()));
@@ -218,17 +215,25 @@ const counter = system.spawnAnonymous(Props.create(() => new Counter()));
 counter.tell({ kind: 'inc' });
 counter.tell({ kind: 'inc' });
 
-const value = await ask<Cmd, number>(
-  counter,
-  // `ask` fills in the real reply ref — the placeholder satisfies
-  // the static type without exposing the internal one-shot actor.
-  { kind: 'get', replyTo: undefined as any },
-  5_000,
-);
+// Method-on-ref — terse, infers the reply type:
+const value = await counter.ask<number>({ kind: 'get' }, 5_000);
 console.log(value);  // 2
 
 await system.terminate();
 ```
+
+Or use the free function for the same effect:
+
+```ts
+import { ask } from 'actor-ts';
+
+const value = await ask<Cmd, number>(counter, { kind: 'get' }, 5_000);
+```
+
+Either way, the framework spawns a one-shot reply actor under the
+hood, fills it in as `replyTo` AND as `context.sender` on the
+target, and resolves the promise with the first reply (or rejects
+with `AskTimeoutError`).  Callers never write `replyTo` themselves.
 
 See [Ask pattern](/fundamentals/ask-pattern/) for timeout
 behaviour, error handling, and the dead-letter case (target actor

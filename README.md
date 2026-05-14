@@ -142,13 +142,13 @@ class Counter extends Actor<Cmd> {
 
 ### Ask pattern — request / response
 
-`tell` is fire-and-forget; `ask` awaits a typed reply with a
-configurable timeout. Under the hood it spawns a one-shot reply
-actor, wires it as `replyTo`, and resolves the returned promise
-when the target actor sends its answer back.
+`tell` is fire-and-forget; `ref.ask<Reply>(msg)` awaits a typed
+reply with a configurable timeout.  The framework spawns a
+one-shot reply actor, wires it as both `replyTo` and
+`context.sender`, and resolves the promise when the target replies.
 
 ```ts
-import { ActorSystem, Props, ask } from 'actor-ts';
+import { ActorSystem, Props } from 'actor-ts';
 
 const system  = ActorSystem.create('demo');
 const counter = system.spawnAnonymous(Props.create(() => new Counter()));
@@ -156,11 +156,7 @@ const counter = system.spawnAnonymous(Props.create(() => new Counter()));
 counter.tell({ kind: 'inc' });
 counter.tell({ kind: 'inc' });
 
-const value = await ask<Cmd, number>(
-  counter,
-  { kind: 'get', replyTo: undefined as any },  // ask() injects the real ref
-  5_000,
-);
+const value = await counter.ask<number>({ kind: 'get' }, 5_000);
 console.log(value);  // 2
 ```
 

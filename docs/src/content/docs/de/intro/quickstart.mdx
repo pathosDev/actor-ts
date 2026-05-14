@@ -213,15 +213,11 @@ Tiefe siehe [Messages](/de/fundamentals/messages/) und
 
 ### Antwort bekommen mit `ask`
 
-`tell` ist Fire-and-Forget. Für Request/Response nutze `ask`: es
-spawnt unter der Haube einen One-Shot-Reply-Actor, injiziert ihn
-als `replyTo`, und löst ein typisiertes `Promise` auf, sobald der
-Actor seine Antwort zurücksendet. Ein konfigurierbarer Timeout
-sorgt dafür, dass ein nicht antwortender Actor den Aufrufer nicht
-unendlich blockiert.
+`tell` ist Fire-and-Forget.  Für Request/Response gibt es zwei
+äquivalente Schreibweisen:
 
 ```ts
-import { ActorSystem, Props, ask } from 'actor-ts';
+import { ActorSystem, Props } from 'actor-ts';
 
 const system  = ActorSystem.create('counters');
 const counter = system.spawnAnonymous(Props.create(() => new Counter()));
@@ -229,17 +225,26 @@ const counter = system.spawnAnonymous(Props.create(() => new Counter()));
 counter.tell({ kind: 'inc' });
 counter.tell({ kind: 'inc' });
 
-const value = await ask<Cmd, number>(
-  counter,
-  // `ask` füllt die echte Reply-Ref ein — der Placeholder erfüllt
-  // den statischen Typ, ohne den internen One-Shot-Actor offenzulegen.
-  { kind: 'get', replyTo: undefined as any },
-  5_000,
-);
+// Methode-auf-Ref — knapp, leitet den Reply-Typ ab:
+const value = await counter.ask<number>({ kind: 'get' }, 5_000);
 console.log(value);  // 2
 
 await system.terminate();
 ```
+
+Oder mit der freien Funktion für denselben Effekt:
+
+```ts
+import { ask } from 'actor-ts';
+
+const value = await ask<Cmd, number>(counter, { kind: 'get' }, 5_000);
+```
+
+In beiden Fällen spawnt das Framework unter der Haube einen
+One-Shot-Reply-Actor, setzt ihn als `replyTo` UND als
+`context.sender` beim Ziel ein und löst das Promise mit der
+ersten Antwort auf (oder rejected mit `AskTimeoutError`).  Aufrufer
+schreiben selbst nie `replyTo` hin.
 
 Siehe [Ask Pattern](/de/fundamentals/ask-pattern/) für
 Timeout-Verhalten, Error Handling und den Dead-Letter-Fall

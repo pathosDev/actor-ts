@@ -19,7 +19,7 @@ bei Timeout rejected.
 ## Ein minimales Beispiel
 
 ```ts
-import { Actor, ActorSystem, Props, ask, type ActorRef } from 'actor-ts';
+import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
 
 type Cmd =
   | { readonly kind: 'inc' }
@@ -39,33 +39,33 @@ const counter = system.spawnAnonymous(Props.create(() => new Counter()));
 counter.tell({ kind: 'inc' });
 counter.tell({ kind: 'inc' });
 
-// Innerhalb des Requests ist `replyTo` aus Sicht des Empfängers
-// `this.sender`.  Aber das müsstest du selbst konstruieren.  `ask`
-// verdrahtet das für dich: baut eine temporäre Ref, hängt sie an,
-// gibt ein Promise zurück.
-const current = await ask<Cmd, number>(counter, {
-  kind: 'get',
-  replyTo: undefined as any,  // ask setzt das — siehe unten
-}, 5_000);
+// Methode-auf-Ref — knapp, leitet den Reply-Typ ab:
+const current = await counter.ask<number>({ kind: 'get' }, 5_000);
 console.log(current);  // 2
 
 await system.terminate();
 ```
 
-Die Signatur:
+Zwei äquivalente Schreibweisen:
 
 ```ts
+// Methode auf jeder ActorRef — leitet Reply aus dem Type-Argument ab:
+ref.ask<Reply>(message, timeoutMs?): Promise<Reply>
+
+// Freie Funktion — nützlich, wo du die explizite Form willst:
 function ask<TReq, TRes = unknown>(
   target:    ActorRef<TReq>,
-  message:   TReq,
+  message:   OmitReplyTo<TReq>,
   timeoutMs: number = 5_000,
 ): Promise<TRes>
 ```
 
-Drei Parameter: der Actor, den du fragst, die zu sendende Nachricht
-und ein Timeout in Millisekunden.  Gibt `Promise<TRes>` zurück —
-resolved mit der ersten Antwort, rejected mit `AskTimeoutError`, wenn
-innerhalb des Timeouts keine Antwort kommt.
+Der Parameter-Typ `OmitReplyTo<TReq>` zieht `replyTo` aus jeder
+Variante der Message-Union ab, die es deklariert — Aufrufer schreiben
+das Feld selbst nie hin.  Das Framework allokiert eine
+One-Shot-Reply-Ref, hängt sie sowohl als `context.sender` als auch
+(wenn die Message-Shape es erwartet) als `message.replyTo` an und
+löst das Promise mit der ersten Antwort auf.
 
 ## Die `replyTo`-Feld-Konvention
 
@@ -110,7 +110,7 @@ behandeln.
 import { ask, AskTimeoutError } from 'actor-ts';
 
 try {
-  const result = await ask(counter, { kind: 'get', replyTo: undefined as any }, 1_000);
+  const result = await ask(counter, { kind: 'get' }, 1_000);
   console.log(result);
 } catch (e) {
   if (e instanceof AskTimeoutError) {
@@ -158,7 +158,7 @@ class Service extends Actor<Cmd> {
 }
 
 try {
-  const data = await ask(service, { kind: 'fetch', replyTo: undefined as any });
+  const data = await ask(service, { kind: 'fetch' });
 } catch (e) {
   // e ist der "service unavailable"-Error des Actors.
 }
@@ -192,7 +192,7 @@ Drei Situationen, in denen einfaches `tell` der richtige Aufruf ist:
 <Aside type="caution" title="Innerhalb des `onReceive` eines Actors, wenn das Warten die Mailbox blockiert">
   ```ts
   override async onReceive(msg) {
-    const dep = await ask(other, { kind: 'q', replyTo: undefined as any });
+    const dep = await ask(other, { kind: 'q' });
     // ↑ die Mailbox dieses Actors blockiert, bis der ask resolved.
     this.useDep(dep);
   }
@@ -205,31 +205,6 @@ Drei Situationen, in denen einfaches `tell` der richtige Aufruf ist:
   es, ein Kind zu spawnen oder `pipeTo` zu verwenden, um das Ergebnis
   über eine interne Nachricht zurück an den Actor zu leiten.
 </Aside>
-
-## Ein sauberes Ask-Pattern mit Helper-Typen
-
-Der `undefined as any`-Platzhalter oben ist hässlich.  Eine übliche
-Verfeinerung ist, den Request-Typ zu splitten, sodass das
-`replyTo`-Feld von `ask` gesetzt wird, nicht vom Aufrufer:
-
-```ts
-type GetRequest = { readonly kind: 'get'; readonly replyTo: ActorRef<number> };
-
-// Helper: Aufrufer liefert alles AUSSER replyTo; der ask-Helfer
-// (oder ein Wrapper um `ask`) injiziert die Reply-to-Ref.
-type AskMessage<T extends { replyTo: ActorRef<unknown> }> = Omit<T, 'replyTo'>;
-
-async function askCounter(ref: ActorRef<GetRequest>): Promise<number> {
-  // Intern hängt `ask` die Reply-to an.  Dieser Wrapper versteckt den
-  // Platzhalter.
-  return ask<GetRequest, number>(ref, { kind: 'get' } as GetRequest, 1_000);
-}
-```
-
-Für Codebasen mit vielen Ask-artigen Nachrichten entfernt das Bauen
-eines kleinen Wrappers pro Nachrichtentyp oder eines generischen
-`askTyped(ref, kind, fields)`-Helfers den Boilerplate an den
-Aufrufstellen.
 
 ## Wie es weitergeht
 
