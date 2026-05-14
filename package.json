@@ -2,10 +2,33 @@
   "name": "actor-ts",
   "version": "0.9.0",
   "description": "An actor-model framework for TypeScript — runs on Bun, Node.js and Deno",
+  "author": "pathosDev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pathosDev/actor-ts.git"
+  },
+  "bugs": {
+    "url": "https://github.com/pathosDev/actor-ts/issues"
+  },
+  "homepage": "https://actor-ts.dev",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "module": "dist/index.js",
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "bunx tsc",
     "watch": "bunx tsc --watch",
@@ -18,7 +41,8 @@
     "smoke:node": "bun run build && ACTOR_TS_SMOKE_USE_DIST=1 node tests/smoke/smoke.mjs",
     "smoke:deno": "bun run build && ACTOR_TS_SMOKE_USE_DIST=1 deno run --allow-read --allow-env tests/smoke/smoke.mjs",
     "smoke": "bun run smoke:bun && bun run smoke:node && bun run smoke:deno",
-    "bench": "bun run benchmarks/run-all.ts"
+    "bench": "bun run benchmarks/run-all.ts",
+    "prepublishOnly": "bun run clean && bun run build && bun run typecheck && bun test"
   },
   "keywords": [
     "actor",
