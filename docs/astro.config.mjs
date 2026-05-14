@@ -314,7 +314,7 @@ export default defineConfig({
         fr:      { label: 'Français',             lang: 'fr' },
         ja:      { label: '日本語',                lang: 'ja' },
         ko:      { label: '한국어',                lang: 'ko' },
-        'pt-BR': { label: 'Português brasileiro', lang: 'pt-BR' },
+        'pt-BR': { label: 'Português (BR)',       lang: 'pt-BR' },
         ru:      { label: 'Русский',              lang: 'ru' },
         'zh-CN': { label: '简体中文',              lang: 'zh-CN' },
       },
