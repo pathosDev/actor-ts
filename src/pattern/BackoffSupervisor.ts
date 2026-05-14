@@ -40,7 +40,8 @@ import {
  *   2. Death-watches the child (`context.watch`) and listens for
  *      `Terminated`.  Either a crash-induced stop or an external
  *      `child.stop()` triggers the same backoff path — pragmatic for
- *      a v1, matches Akka's `BackoffSupervisor` "onTerminated" mode.
+ *      a v1; finer-grained "respawn only on crash" behaviour is
+ *      available via the `respawnOn: 'failure'` option below.
  *   3. On `Terminated` it schedules a single-shot timer to spawn a
  *      fresh child after `policy.delayFor(restartCount)` ms.
  *   4. While the child is dead, user messages are buffered (`stash`
@@ -86,8 +87,9 @@ export type ForwardStrategy =
   | 'drop';
 
 /**
- * Which terminations should trigger a respawn (#68).  Mirrors Akka's
- * split between `Backoff.onFailure` and `Backoff.onStop`:
+ * Which terminations should trigger a respawn (#68).  Two modes,
+ * because the right answer depends on whether you treat a clean
+ * self-stop as recoverable or as a deliberate end of life:
  *
  *   - `'any'` *(default)* — respawn on every termination, whether the
  *     child crashed (uncaught throw) or stopped itself cleanly

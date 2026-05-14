@@ -9,8 +9,7 @@
  * **Pattern: pass the lease to ClusterSingleton.start().**  The
  * singleton manager handles the acquire-loop, the onLost-stop, and
  * the release-on-shutdown internally — user code reduces to the
- * actor itself plus a one-line lease config.  Akka's
- * `ClusterSingleton.props(...).withLease(...)` is the prior art.
+ * actor itself plus a one-line lease config.
  *
  * **In-cluster usage (default — no env vars):**
  *

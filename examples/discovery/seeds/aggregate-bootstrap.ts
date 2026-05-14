@@ -16,7 +16,7 @@ async function main(): Promise<void> {
   // Simulate a K8s provider that would return pod IPs in production; here we
   // fake `fetchEndpoints` to show the shape.
   const k8s = new KubernetesApiSeedProvider({
-    namespace: 'default', serviceName: 'akka-app',
+    namespace: 'default', serviceName: 'cluster-app',
     systemName: 'my-app', port: 2552,
     fetchEndpoints: async () => {
       // In real life this hits the API.  For the demo we pretend nothing
@@ -27,7 +27,7 @@ async function main(): Promise<void> {
 
   // DNS provider with an injected resolve — pretend 2 pods are visible.
   const dns = new DnsSeedProvider({
-    hostname: 'akka-app.default.svc.cluster.local',
+    hostname: 'cluster-app.default.svc.cluster.local',
     systemName: 'my-app',
     port: 2552,
     resolve: async () => ['10.244.0.1', '10.244.0.2'],

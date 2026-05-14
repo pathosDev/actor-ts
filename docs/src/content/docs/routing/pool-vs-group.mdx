@@ -153,10 +153,11 @@ relate to the router.
 
 ## A common confusion: cluster-aware *pool* routers
 
-The pool/group distinction is sometimes muddied by Akka's
-`ClusterPool`, which spawns its own routees but *across* cluster
-nodes (one routee per node).  actor-ts doesn't have this — the
-cluster router is always group-shaped.  If you want a fixed pool
+The pool/group distinction is sometimes muddied by the
+"cluster-pool" pattern in other actor toolkits, which spawns its
+own routees but *across* cluster nodes (one routee per node).
+actor-ts doesn't expose that — the cluster router is always
+group-shaped.  If you want a fixed pool
 that happens to span a cluster, you'd write a top-level
 "deployment" actor per node that spawns the local routees, plus a
 `ClusterRouter` that targets them by path.  See

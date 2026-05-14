@@ -2,7 +2,7 @@ import { NodeAddress } from '../cluster/NodeAddress.js';
 import type { SeedProvider } from './SeedProvider.js';
 
 export interface DnsSeedProviderSettings {
-  /** Hostname to resolve (e.g. `akka-cluster.default.svc.cluster.local`). */
+  /** Hostname to resolve (e.g. `my-cluster.default.svc.cluster.local`). */
   readonly hostname: string;
   /** System name to stamp on discovered NodeAddresses. */
   readonly systemName: string;

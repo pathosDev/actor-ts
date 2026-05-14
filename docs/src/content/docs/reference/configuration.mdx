@@ -3,9 +3,9 @@ title: Configuration
 description: Every HOCON key the framework reads, grouped by module — defaults, overrides, environment substitution. Plus the resolution order between code, config file, and built-in reference.
 ---
 
-actor-ts uses **HOCON** for configuration — the same superset of
-JSON that Akka uses, with substitutions, durations, sizes, and
-includes.  Three layers, resolved highest-first:
+actor-ts uses **HOCON** for configuration — a superset of JSON
+common in JVM config files, with substitutions, durations, sizes,
+and includes.  Three layers, resolved highest-first:
 
 1. **Constructor arguments** to `ActorSystem.create(name, settings)`
    — explicit code overrides.

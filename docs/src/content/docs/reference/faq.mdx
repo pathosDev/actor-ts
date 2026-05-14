@@ -28,13 +28,14 @@ If you're starting a *new* project where you'd ship before 1.0,
 it's a reasonable bet.  If you're rewriting a critical system,
 wait or budget time for breaking-change adoption.
 
-### Why "actor-ts"?  Why not just use Akka.NET or vanilla TS?
+### Why "actor-ts"?  Why not just use a JVM actor framework or vanilla TS?
 
 Three reasons:
 
-- **First-class TypeScript types**.  Akka.NET assumes C#; an
-  Akka-style port to TS often loses the type-level benefits.
-  actor-ts is designed for TypeScript-first ergonomics.
+- **First-class TypeScript types**.  Most existing actor toolkits
+  target a different runtime (JVM, .NET, Erlang); porting their
+  shape to TS loses the type-level benefits.  actor-ts is designed
+  for TypeScript-first ergonomics.
 - **Runtime choice**.  Runs on Bun (primary), Node, and Deno —
   no JVM, no .NET, no separate runtime.
 - **Cluster + persistence + observability** built in, without the
@@ -63,11 +64,11 @@ libraries (Solid, MobX) — different model, better fit.
 Both work; both run on the same engine.  Pick:
 
 - **Untyped** if you're learning the actor model, want one-to-one
-  parity with Akka examples, or have an actor with substantial
-  mutable state.
+  parity with classic actor-framework examples, or have an actor
+  with substantial mutable state.
 - **Typed** if you want functional state-machine ergonomics,
-  cast-free child spawning, or are coming from Akka-Typed / Cats
-  Effect.
+  cast-free child spawning, or are coming from typed actor APIs
+  on other runtimes / from Cats Effect.
 
 You can mix them — typed parents spawn untyped children and vice
 versa.  See [Typed overview](/typed/overview/).
@@ -300,27 +301,31 @@ See [Runtime — Compatibility matrix](/runtime/compatibility-matrix/).
     (corruption guard).  Delete the snapshot if it's recoverable.
 </Aside>
 
-## Comparison to Akka / other frameworks
+## Comparison to other actor frameworks
 
-### Is this Akka, but in TypeScript?
+### Is this an actor framework from another runtime, in TypeScript?
 
 Spiritually yes — the actor model, supervision, sharding,
 persistence, distributed data, the cluster gossip protocol all
-trace their lineage to Akka.
+have prior art on the JVM (Akka, Pekko) and .NET (Orleans), and
+the framework draws from that lineage.  See the
+[migration guides](/migration/overview/) for the closest
+concept-by-concept maps.
 
-Differences:
+Differences from the JVM-style actor toolkits:
 
 - **No Scala / JVM** — pure TypeScript, runs on JS runtimes.
 - **No fiber-based concurrency** — JavaScript is single-threaded
   per process; we use the microtask/macrotask queue.
-- **No streaming** — Akka Streams isn't ported.  Use a separate
-  library for backpressure-driven async pipelines.
-- **Smaller surface** — only the actor-model parts.  Akka HTTP,
-  Akka Persistence Query, Alpakka, etc. have analogs but are
-  intentionally simpler than the JVM counterparts.
+- **No streaming DSL** — backpressure-driven async pipelines
+  aren't ported.  Use a separate library for that.
+- **Smaller surface** — only the actor-model parts.  HTTP
+  routing, persistence-query, and broker integrations have
+  analogs but are intentionally simpler than the JVM counterparts.
 
-If you need Akka *exactly*, use Akka.  This is a TypeScript-first
-port that picks the most-useful 80%.
+If you need exact behavioural compatibility with another
+framework, use that framework.  This is a TypeScript-first port
+that picks the most-useful 80% of the actor-model toolkit.
 
 ### From Orleans?
 

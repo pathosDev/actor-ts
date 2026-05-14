@@ -105,8 +105,8 @@ Three things the untyped API does more cleanly:
 - The actor is a state machine and you want phases to be different
   *behaviors* (different valid-message sets per phase).  The typed
   form makes the transitions explicit returns.
-- You're coming from Akka-Typed, Cats Effect, or fp-ts and the
-  functional style feels native.
+- You're coming from a typed actor API on another runtime, from
+  Cats Effect, or fp-ts and the functional style feels native.
 - You want compiler-checked state-transition logic — typed
   behaviors compose at type level.
 
@@ -117,8 +117,8 @@ Three things the untyped API does more cleanly:
   ceremony than value.
 - You're learning the actor model and don't want a second layer
   of abstraction in the way.
-- You want one-to-one parity with Akka-untyped or other actor
-  libraries you've used.
+- You want one-to-one parity with classic untyped actor APIs from
+  other libraries you've used.
 
 **You can mix them.**  An untyped parent can spawn typed children
 via `spawnTypedChild(ctx, behavior)`, and a typed parent can spawn

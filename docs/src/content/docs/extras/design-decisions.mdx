@@ -60,7 +60,7 @@ simplicity.  For parallelism:
   MessageChannel.
 
 Both give parallelism without the shared-mutable-state problems
-that multi-threaded actor systems (Akka JVM) historically had.
+that multi-threaded JVM-based actor systems historically had.
 
 ## Why these CRDTs
 
@@ -91,13 +91,14 @@ use cases:
 For the missing pieces, build app-specific patterns on top of
 the primitives or open an issue if widely needed.
 
-## Why no Akka Streams port
+## Why no Streams DSL
 
-Akka Streams (and Pekko Streams) is a substantial library —
-backpressure, materializers, graph DSL.  Porting it to TypeScript
-would be **a major project on its own**.  The framework's
-scope is the actor model + clustering + persistence; streams
-are out of scope.
+The JVM actor world has a separate streams library on top of
+its actor toolkit — Akka Streams and Pekko Streams cover
+backpressure, materializers, a graph DSL.  Porting an equivalent
+to TypeScript would be **a major project on its own**.  The
+framework's scope is the actor model + clustering + persistence;
+streams DSLs are out of scope.
 
 For TypeScript-side streaming:
 
@@ -115,8 +116,9 @@ actor-ts {
 }
 ```
 
-HOCON is **what Akka uses**; coming from Akka, the config files
-need minimal changes.
+HOCON is the de-facto **JVM-config format** — readers coming from
+Akka or Pekko or any Lightbend-Config-based stack land in a
+familiar shape with minimal changes.
 
 HOCON has features that YAML / TOML don't:
 
@@ -131,8 +133,9 @@ similarly featured but less ecosystem-supported.
 
 ## Why explicit replyTo refs
 
-Akka has `sender()` (implicit).  actor-ts has `this.sender`
-(Option) **and** explicit `replyTo` refs in messages.
+Classic JVM actor frameworks expose an implicit `sender()`.
+actor-ts has `this.sender` (Option) **and** explicit `replyTo`
+refs in messages.
 
 Why both?
 

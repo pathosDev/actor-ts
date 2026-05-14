@@ -52,8 +52,10 @@ const EMPTY: LogContextData = Object.freeze({});
 
 /**
  * The `LogContext` namespace exposes the MDC operations.  The class-
- * style `LogContext.run(...)` shape mirrors how Akka's MDC is used and
- * keeps the public API tight without exporting the underlying
+ * style `LogContext.run(...)` shape follows the MDC pattern — a
+ * scoped, thread-local-like map of diagnostic context that
+ * propagates through every log line inside `fn` — and keeps the
+ * public API tight without exporting the underlying
  * `AsyncLocalStorage` instance.
  */
 export const LogContext = {

@@ -35,9 +35,9 @@ import { pickRendezvous } from './ConsistentHashing.js';
  * address), so round-robin counters stay sane across rebuilds.
  *
  * **Empty set.**  If no member matches the role (or the cluster is
- * empty), messages are dropped with a warn-level log.  This mirrors
- * Akka — the router doesn't queue while waiting for routees, since
- * that would silently grow unbounded.
+ * empty), messages are dropped with a warn-level log.  The router
+ * deliberately doesn't queue while waiting for routees, since that
+ * would silently grow unbounded.
  *
  * **Rebuild trigger.**  Subscribes to `cluster.subscribe(...)` and
  * rebuilds on `MemberUp` / `MemberRemoved`.  Other events

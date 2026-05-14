@@ -209,10 +209,10 @@ information available in the router actor itself.
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="No smallest-mailbox in v1">
-  Akka's `SmallestMailboxPool` picks the routee with the shortest
-  queue.  actor-ts doesn't expose mailbox depth across actor
-  boundaries (it's per-actor state), so this strategy isn't
-  implemented.  For workload-aware load-balancing, the practical
+  A common strategy on other actor toolkits is "smallest mailbox"
+  — pick the routee with the shortest queue.  actor-ts doesn't
+  expose mailbox depth across actor boundaries (it's per-actor
+  state), so this strategy isn't implemented.  For workload-aware load-balancing, the practical
   pattern is **back-pressure at the boundary** — bound each
   routee's mailbox with `reject` overflow, let the caller (or a
   router-side custom strategy) react to rejections.

@@ -8,8 +8,8 @@ When an actor's `onReceive` throws — synchronously or via a rejected
 the actor's **parent**, which decides what to do via its **supervisor
 strategy**.  Four outcomes; you pick one per error class.
 
-This is the "let it crash" philosophy actor-ts inherits from Erlang
-and Akka: handling every error inline at the call site is brittle.
+This is the "let it crash" philosophy actor-ts inherits from Erlang:
+handling every error inline at the call site is brittle.
 A supervisor a level up has a wider view — it knows whether the
 crashed actor is replaceable (restart it), holds critical state
 (escalate to a higher supervisor), or should give up entirely

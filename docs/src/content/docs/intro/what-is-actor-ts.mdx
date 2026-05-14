@@ -1,15 +1,19 @@
 ---
 title: What is actor-ts?
-description: A from-scratch port of the actor model to idiomatic TypeScript — Akka and Pekko on the JVM, Orleans in .NET, and now actor-ts on Bun, Node, and Deno.
+description: A from-scratch port of the actor model to idiomatic TypeScript — actors, supervision, clustering, sharding, persistence, observability, all on Bun, Node, and Deno.
 ---
 
 `actor-ts` is a runtime for building **concurrent, distributed, and
-fault-tolerant systems in TypeScript** using the actor model — the
-same mental model the JVM world has had in Akka and Pekko, .NET has
-had in Orleans and Akka.NET, and Erlang has had since the 80s.  It
-runs natively on **Bun**, **Node.js**, and **Deno**, picking
-the right runtime backend (TCP sockets, worker threads, SQLite, HTTP
+fault-tolerant systems in TypeScript** using the actor model.  It
+runs natively on **Bun**, **Node.js**, and **Deno**, picking the
+right runtime backend (TCP sockets, worker threads, SQLite, HTTP
 serve primitives) automatically based on which globals are present.
+
+The actor model itself isn't new — it has prior art in Erlang on
+the BEAM VM since the 80s, on the JVM via Akka and Pekko since the
+2010s, and in .NET via Orleans.  `actor-ts` is the TypeScript-native
+equivalent, written from scratch to fit the runtime ecosystem
+TypeScript actually lives in.
 
 ## The mental model in one paragraph
 
@@ -36,34 +40,33 @@ of that one primitive**.
 
 The actor model has been the production answer for highly concurrent
 backends for forty years.  Telecom switches run on it.  WhatsApp
-ran tens of millions of concurrent connections per Erlang node.
-LinkedIn, Verizon, Tesla, Hootsuite, Iron.io, Walmart Canada all
-have Akka stories.  The model is battle-tested, the literature is
-extensive, and the design wins out over thread-pool-plus-mutex code
-the moment your concurrency picture gets non-trivial.
+ran tens of millions of concurrent connections per BEAM node.  The
+model is battle-tested, the literature is extensive, and the design
+wins out over thread-pool-plus-mutex code the moment your
+concurrency picture gets non-trivial.
 
 TypeScript is **the dominant language for application backends
-today**.  Bun, Node, and Deno all give you fast startup,
-solid TypeScript ergonomics, and a healthy ecosystem.  Yet the
+today**.  Bun, Node, and Deno all give you fast startup, solid
+TypeScript ergonomics, and a healthy ecosystem.  Yet the
 actor-model toolkit for TS has historically been thin — you'd
 either write your own primitives, glue together promise/worker-thread
-soup that approximated actors badly, or accept that "anything beyond
-a toy needs the JVM."
+soup that approximated actors badly, or accept that "anything
+beyond a toy needs the JVM."
 
-`actor-ts` is the answer to "what if we just had Akka over here?"
-A from-scratch port of the actor-model stack — actors, supervision,
-cluster, sharding, persistence, observability, HTTP, brokers — built
-in idiomatic TypeScript, leaning on the type system where Akka's
-Scala API used trait composition and Akka's typed API used type
-parameters.
+`actor-ts` exists to close that gap.  A full-coverage port of the
+actor-model stack — actors, supervision, cluster, sharding,
+persistence, observability, HTTP, brokers — built in idiomatic
+TypeScript, leaning on the type system (discriminated unions,
+`match().exhaustive()`, generic actor refs) where JVM ports leaned
+on traits and type parameters.
 
 ## What "batteries-included" means here
 
 A docs reader looking for "an actor library for TS" finds a few on
-npm.  Most of them stop at the basic actor abstraction: a class with
-a message-handler.  That's the easy part.  The hard parts — the
-ones the Akka community spent two decades getting right — are the
-operational pieces around the actor.
+npm.  Most of them stop at the basic actor abstraction: a class
+with a message-handler.  That's the easy part.  The hard parts —
+the ones forty years of production experience with the actor model
+have established — are the operational pieces around the actor.
 
 `actor-ts` tries to ship them all in one package:
 
@@ -79,11 +82,12 @@ operational pieces around the actor.
 - **Persistence** — `PersistentActor` for event-sourced state,
   `DurableState` for the simpler "save a snapshot" case, both with
   pluggable journals (in-memory, SQLite, Cassandra) and snapshot
-  stores.  Plus the migration toolchain for evolving schemas without
-  rewriting old events.
+  stores.  Plus the migration toolchain for evolving schemas
+  without rewriting old events.
 - **Distributed data** — eight CRDTs (counters, registers, sets,
-  maps) with durable storage and gossip replication, for state that
-  should converge across the cluster without leader coordination.
+  maps) with durable storage and gossip replication, for state
+  that should converge across the cluster without leader
+  coordination.
 - **Integrations** — HTTP server with a route DSL (Fastify default,
   Express + Hono backends), brokers for Kafka / MQTT / NATS / AMQP /
   Redis Streams / gRPC / WebSocket, object storage for S3 / MinIO /
@@ -96,14 +100,12 @@ Actors**, **Distribute**, **Persist**, **Integrate**, **Observe**.
 Each section has an overview page that explains the *why* of its
 subsystem; each subsystem has its own pages going into detail.
 
-The shape of the API surface, and the names of most concepts, will
-feel **familiar to anyone who has used Akka** — `ActorRef`, `Props`,
-`tell` / `ask`, `become` / `stash`, supervision strategies, the
-extensions API, the receptionist, distributed pub/sub, cluster
-singleton.  Where the JVM idioms didn't carry, we picked the
-TypeScript-native equivalent — discriminated unions for messages,
-`match().exhaustive()` for handlers, peer-dependency-gated
-extensions for optional integrations.
+The shape of the API surface — `ActorRef`, `Props`, `tell` / `ask`,
+`become` / `stash`, supervision strategies, the extensions API, the
+receptionist, distributed pub/sub, cluster singleton — will feel
+familiar to anyone who has used a typed actor framework on another
+runtime.  Where JVM idioms didn't carry, we picked the
+TypeScript-native equivalent.
 
 ## What it is, what it isn't
 
@@ -112,12 +114,13 @@ documentation site, runnable examples (chat, voice), and test
 coverage well into four digits.  Production-shaped: the kind of
 thing you'd build a real backend on, if you were inclined.
 
-**It isn't** — battle-tested at scale.  Nobody is running ten million
-concurrent connections on this today.  The framework is **pre-1.0**;
-the API surface is broad but not all of it is set in stone.  And it
-was written with **heavy AI pair-programming assistance**, which is
-a strength (consistency, coverage, comments) and a caveat (some
-corners may be more "looks right" than "verified right").
+**It isn't** — battle-tested at scale.  Nobody is running ten
+million concurrent connections on this today.  The framework is
+**pre-1.0**; the API surface is broad but not all of it is set in
+stone.  And it was written with **heavy AI pair-programming
+assistance**, which is a strength (consistency, coverage,
+comments) and a caveat (some corners may be more "looks right"
+than "verified right").
 
 import { Aside } from '@astrojs/starlight/components';
 

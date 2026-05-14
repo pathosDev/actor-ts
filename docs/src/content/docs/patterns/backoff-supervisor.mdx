@@ -122,7 +122,9 @@ The most interesting fields:
 
 `'failure'` is the right default if you're modelling "restart on
 unexpected death" — a clean self-stop is a deliberate choice the
-supervisor should honor.  `'any'` matches Akka's v1 behavior.
+supervisor should honor.  `'any'` restarts on every termination —
+the broadest possible policy, useful when the supervisor doesn't
+care why the child stopped.
 
 ### `forward` — what to do with messages while the child is dead
 

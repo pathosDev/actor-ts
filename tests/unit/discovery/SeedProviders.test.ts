@@ -84,7 +84,7 @@ describe('AggregateSeedProvider', () => {
 describe('KubernetesApiSeedProvider', () => {
   test('maps returned pod IPs into NodeAddresses', async () => {
     const p = new KubernetesApiSeedProvider({
-      namespace: 'default', serviceName: 'akka-app', systemName: 'sys', port: 2552,
+      namespace: 'default', serviceName: 'cluster-app', systemName: 'sys', port: 2552,
       fetchEndpoints: async () => ['10.244.0.1', '10.244.0.2'],
     });
     const addrs = await p.lookup();

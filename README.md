@@ -39,7 +39,7 @@
 
 `actor-ts` is a **batteries-included actor-model runtime** for TypeScript —
 messages, mailboxes, supervisors, location-transparent refs, the whole
-Erlang/Akka mental model — running natively on **Bun**, **Node.js**, and
+Erlang-style actor toolkit — running natively on **Bun**, **Node.js**, and
 **Deno**.
 
 A short tour of what's in the box:
@@ -49,7 +49,7 @@ A short tour of what's in the box:
 - **Cluster** — gossip membership, φ-accrual failure detection, split-brain
   resolvers, weakly-up, multiple transports (TCP, MessageChannel, in-memory).
 - **Cluster sharding + singleton + pub-sub + reliable delivery + receptionist**
-  — production patterns from the Akka playbook.
+  — production patterns from the actor-model tradition.
 - **Distributed Data** — eight CRDTs (counters, registers, sets, maps) with
   durable-storage backend, quorum reads/writes, automatic gossip.
 - **Persistence** — `PersistentActor`, `DurableState`, snapshots, projections,

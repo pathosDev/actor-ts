@@ -23,7 +23,7 @@ This document tracks the planned direction.  Nothing here is committed work — 
 - Master-key rotation sweep race (HIGH) — #109
 - LeaseMajority split-brain at network-latency (HIGH) — #142
 
-## Akka-parity quick wins
+## Feature-parity quick wins
 
 - `Inbox` — synchronous adapter for non-actor callers — #181
 - PersistenceQuery `AllPersistenceIds` live + cursor-paginated `currentPersistenceIds` — #156
@@ -47,7 +47,7 @@ This document tracks the planned direction.  Nothing here is committed work — 
 
 ## Bigger threads (L / XL — own design phase)
 
-- Akka-Streams DSL subset (`SourceQueue`, `MergeHub`, `BroadcastHub`) — #147 (legacy #54)
+- Streams DSL subset (`SourceQueue`, `MergeHub`, `BroadcastHub`) — #147 (legacy #54)
 - WASM / edge-runtime subpackage — #209
 - Distributed transactions (Orleans-style ACID 2PC across grains) — #171
 - Multi-DC clustering with DC-local failure detection — #149
@@ -55,7 +55,7 @@ This document tracks the planned direction.  Nothing here is committed work — 
 ## Documentation
 
 - Documentation site with TypeDoc + custom layout (#26)
-- Performance benchmarks vs Akka.NET / Akka JVM (#27)
+- Performance benchmarks vs JVM actor frameworks (#27)
 
 ## Explicitly out of scope
 

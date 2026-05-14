@@ -96,7 +96,7 @@ describe('Mailbox', () => {
   });
 
   test('sender is carried through dequeue', () => {
-    const fakeSender = { path: { toString: () => 'akka://x/y' } } as never;
+    const fakeSender = { path: { toString: () => 'actor-ts://x/y' } } as never;
     const m = new Mailbox<string>();
     m.enqueue({ message: 'hello', sender: fakeSender });
     const out = m.dequeueUser()!;

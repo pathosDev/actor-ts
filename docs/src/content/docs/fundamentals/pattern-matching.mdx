@@ -70,8 +70,8 @@ Why `kind` and not `type` or `tag`:
 - `type` would conflict with TypeScript's `type` keyword in
   type-narrowing reads (annoying, not broken).
 - `tag` is fine but less self-explanatory than `kind`.
-- Akka uses sealed-trait subclasses; in TS-land, `kind` is the
-  most common community idiom.
+- JVM-typed actor frameworks use sealed-trait subclasses; in
+  TS-land, `kind` is the most common community idiom.
 
 Sticking to the convention pays off in three places: ts-pattern's
 exhaustiveness check works, the serializer can dispatch by `kind`
