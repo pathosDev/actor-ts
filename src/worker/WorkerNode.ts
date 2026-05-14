@@ -47,7 +47,7 @@ export const WorkerNode = {
     const init = await new Promise<WorkerInitMessage>((resolve, reject) => {
       const onMsg = (e: { data: unknown }): void => {
         const data = e.data as Partial<WorkerInitMessage>;
-        if (data && data.kind === 'actor-ts.worker-init') {
+        if (data && data.kind === 'worker-init') {
           selfScope.onmessage = null;
           resolve(data as WorkerInitMessage);
         }
@@ -56,7 +56,7 @@ export const WorkerNode = {
       // property) even when addEventListener('message', …) is a no-op.  We
       // set `onmessage` directly so the init frame is seen reliably.
       selfScope.onmessage = onMsg;
-      const hello: WorkerHelloMessage = { kind: 'actor-ts.worker-hello' };
+      const hello: WorkerHelloMessage = { kind: 'worker-hello' };
       post?.call(selfScope, hello);
       const t = setTimeout(
         () => reject(new Error('WorkerNode.join() timed out waiting for init')),
@@ -80,7 +80,7 @@ export const WorkerNode = {
       transport,
       initData: init.data as TInit,
       ready(): void {
-        const msg: WorkerReadyMessage = { kind: 'actor-ts.worker-ready', self: init.self };
+        const msg: WorkerReadyMessage = { kind: 'worker-ready', self: init.self };
         post?.call(selfScope, msg);
       },
     };
@@ -94,7 +94,7 @@ function buildWorkerPort(
   let handler: ((e: { data: unknown }) => void) | null = null;
   const listener = (e: { data: unknown }): void => {
     const msg = e.data as { kind?: string } | undefined;
-    if (msg && msg.kind === 'actor-ts.transport' && handler) {
+    if (msg && msg.kind === 'worker-transport' && handler) {
       handler({ data: (msg as WorkerTransportMessage).envelope });
     }
   };
@@ -110,7 +110,7 @@ function buildWorkerPort(
   return {
     postMessage(v: unknown) {
       const envelope: BrokeredMessage = v as BrokeredMessage;
-      const msg: WorkerTransportMessage = { kind: 'actor-ts.transport', envelope };
+      const msg: WorkerTransportMessage = { kind: 'worker-transport', envelope };
       post?.call(selfScope, msg);
     },
     get onmessage() { return handler; },

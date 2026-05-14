@@ -84,10 +84,17 @@ export const ConfigKeys = {
   /** Cluster transport root — `actor-ts.transport`. */
   transport: 'actor-ts.transport',
 
-  /** Worker IPC sentinels — used by the multi-runtime test harness. */
+  /**
+   * Worker IPC sentinels — used by the multi-runtime test harness and
+   * the worker-mesh code.  Unlike the config paths above, these are
+   * message-`kind` strings, so they intentionally drop the `actor-ts.`
+   * prefix — wire-format discriminators don't need a framework
+   * namespace.
+   */
   worker: {
-    hello: 'actor-ts.worker-hello',
-    init: 'actor-ts.worker-init',
-    ready: 'actor-ts.worker-ready',
+    hello:     'worker-hello',
+    init:      'worker-init',
+    ready:     'worker-ready',
+    transport: 'worker-transport',
   },
 } as const;

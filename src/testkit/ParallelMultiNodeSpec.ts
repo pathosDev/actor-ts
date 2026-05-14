@@ -348,7 +348,7 @@ export class ParallelMultiNodeSpec {
       scenarioInitData: this.settings.scenarioInitDataFor?.(role),
     };
     const init: WorkerInitMessage = {
-      kind: 'actor-ts.worker-init',
+      kind: 'worker-init',
       self: address.toJSON(),
       systemName: role,
       data: initData,
@@ -382,14 +382,14 @@ export class ParallelMultiNodeSpec {
     let handler: ((e: { data: unknown }) => void) | null = null;
     worker.addEventListener('message', (e) => {
       const msg = (e.data ?? undefined) as { kind?: string } | undefined;
-      if (msg && msg.kind === 'actor-ts.transport' && handler) {
+      if (msg && msg.kind === 'worker-transport' && handler) {
         handler({ data: (msg as WorkerTransportMessage).envelope });
       }
     });
     return {
       postMessage(v: unknown): void {
         const envelope: BrokeredMessage = v as BrokeredMessage;
-        const msg: WorkerTransportMessage = { kind: 'actor-ts.transport', envelope };
+        const msg: WorkerTransportMessage = { kind: 'worker-transport', envelope };
         worker.postMessage(msg);
       },
       get onmessage(): ((e: { data: unknown }) => void) | null { return handler; },
@@ -409,11 +409,11 @@ export class ParallelMultiNodeSpec {
       const onMessage = (e: { data?: unknown }): void => {
         const msg = (e.data ?? undefined) as { kind?: string } | undefined;
         if (!msg) return;
-        if (msg.kind === 'actor-ts.worker-hello') {
+        if (msg.kind === 'worker-hello') {
           const hello: WorkerHelloMessage = msg as WorkerHelloMessage;
           void hello;
           worker.postMessage(init);
-        } else if (msg.kind === 'actor-ts.worker-ready') {
+        } else if (msg.kind === 'worker-ready') {
           const ready: WorkerReadyMessage = msg as WorkerReadyMessage;
           void ready;
           clearTimeout(timeout);

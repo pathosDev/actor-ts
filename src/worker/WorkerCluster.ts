@@ -26,24 +26,24 @@ export interface WorkerHandle {
 }
 
 export interface WorkerHelloMessage {
-  readonly kind: 'actor-ts.worker-hello';
+  readonly kind: 'worker-hello';
 }
 
 export interface WorkerInitMessage {
-  readonly kind: 'actor-ts.worker-init';
+  readonly kind: 'worker-init';
   readonly self: ReturnType<NodeAddress['toJSON']>;
   readonly systemName: string;
   readonly data: unknown;
 }
 
 export interface WorkerReadyMessage {
-  readonly kind: 'actor-ts.worker-ready';
+  readonly kind: 'worker-ready';
   readonly self: ReturnType<NodeAddress['toJSON']>;
 }
 
 /** Wire frame flowing in both directions on every worker↔main channel. */
 export interface WorkerTransportMessage {
-  readonly kind: 'actor-ts.transport';
+  readonly kind: 'worker-transport';
   readonly envelope: BrokeredMessage;
 }
 
@@ -127,7 +127,7 @@ export class WorkerCluster {
     const handle: WorkerHandle = { id: index, address: addr, worker };
 
     const init: WorkerInitMessage = {
-      kind: 'actor-ts.worker-init',
+      kind: 'worker-init',
       self: addr.toJSON(),
       systemName: this.settings.systemName,
       data: this.settings.initData,
@@ -149,14 +149,14 @@ export class WorkerCluster {
     let handler: ((e: { data: unknown }) => void) | null = null;
     worker.addEventListener('message', (e) => {
       const msg = (e.data ?? undefined) as { kind?: string } | undefined;
-      if (msg && msg.kind === 'actor-ts.transport' && handler) {
+      if (msg && msg.kind === 'worker-transport' && handler) {
         handler({ data: (msg as WorkerTransportMessage).envelope });
       }
     });
     return {
       postMessage(v: unknown) {
         const envelope: BrokeredMessage = v as BrokeredMessage;
-        const msg: WorkerTransportMessage = { kind: 'actor-ts.transport', envelope };
+        const msg: WorkerTransportMessage = { kind: 'worker-transport', envelope };
         worker.postMessage(msg);
       },
       get onmessage() { return handler; },
@@ -174,9 +174,9 @@ export class WorkerCluster {
       const onMessage = (e: { data?: unknown }): void => {
         const msg = (e.data ?? undefined) as { kind?: string } | undefined;
         if (!msg) return;
-        if (msg.kind === 'actor-ts.worker-hello') {
+        if (msg.kind === 'worker-hello') {
           worker.postMessage(init);
-        } else if (msg.kind === 'actor-ts.worker-ready') {
+        } else if (msg.kind === 'worker-ready') {
           clearTimeout(timeout);
           worker.removeEventListener('message', onMessage);
           resolve();
