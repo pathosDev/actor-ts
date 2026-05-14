@@ -9,6 +9,127 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-05-14
+
+The "public-launch readiness" release.  Six workstreams accumulated
+since v0.8.0 (142 commits total): the docs site goes live at
+`actor-ts.dev` with 199+ pages and full German translation; a wave
+of API shortcuts collapses the clustered-actor setup from 15–30
+lines to a single `Cluster.bootstrap({ name })`; eight latent
+security weaknesses get patched; a code-quality sprint closes 17
+audit-catalog issues; the chat sample grows DMs / typing /
+read-receipts / production-grade auth.
+
+### Added — Quality-of-life API shortcuts
+
+- `Cluster.bootstrap({ name })` — one-call setup that builds the
+  `ActorSystem`, joins the cluster, starts the Receptionist, and
+  wires `SIGTERM` / `SIGINT` shutdown.  Discovery defaults to an
+  env-driven chain (`CLUSTER_SEEDS` → Kubernetes API → DNS) via
+  the new `autoDiscovery()` builder so the same code runs
+  single-node in dev and joins an existing cluster in production
+  without a config change.
+- `cluster.sharding` getter on `Cluster` — replaces the
+  `ClusterSharding.get(system, cluster)` ceremony.  The static
+  form still works for callers that need to reference the class
+  from outside a `Cluster` handle.
+- `ClusterSharding.start('cart', CartActor, { extractEntityId })`
+  — class-shorthand overload that wraps the entity in
+  `Props.create(() => new CartActor())` internally.  Factory form
+  also accepted (`() => new CartActor(deps)`); full-form
+  `start({ typeName, entityProps, ... })` stays valid.
+- `ref.ask<TRes>(msg, timeoutMs?)` — method form of the ask
+  pattern.  Auto-injects `replyTo: ref` on the message so
+  recipients can read either `this.sender` or `msg.replyTo`
+  without callers supplying it.  `OmitReplyTo<TMsg>` distributes
+  across unions so the call site never has to satisfy the
+  `replyTo` field.
+- `system.spawnTyped(behavior, name)` +
+  `system.spawnTypedAnonymous(behavior)` — method form symmetric
+  to `spawn` / `spawnAnonymous`.  Same pair on `ActorContext` for
+  typed-child creation from untyped parents.
+- `system.http(port, { host?, backend? })` — Fastify-default HTTP
+  shortcut.  Returns the same `ServerBuilder` as the explicit
+  `system.extension(HttpExtensionId).newServerAt(...)` chain.
+- `ActorSystem.create('app', { persistence: { journal,
+  snapshotStore } })` — wire real persistence backends at creation
+  time.  Either slot is independent; the in-memory default stays
+  in place for the omitted slot.
+
+### Removed — replaced by method forms
+
+- Free function `ask(ref, msg, timeoutMs?)` — use
+  `ref.ask<TRes>(msg, timeoutMs?)`.  Pre-1.0, no compat shim.
+- Free functions `spawnTyped(system, behavior, name?)` and
+  `spawnTypedChild(ctx, behavior, name?)` — use
+  `system.spawnTyped(...)` / `ctx.spawnTyped(...)` (with
+  anonymous variants).  Internal `Ask.ts` and
+  `internal/PromiseActorRef.ts` modules deleted; ask impl
+  inlined into `ActorRef.ts`.
+
+### Security
+
+Eight latent weaknesses patched.  All defenses are at the
+deserialisation / boundary layer with regression tests pinning
+both the attack vector and the legitimate path.
+
+- **Wire-frame size cap** — `cluster/protocol` rejects frames
+  claiming gigabyte+ lengths before allocation; defeats a
+  4-GiB-claim memory-exhaustion DoS.  Configurable; `Infinity`
+  cap remains the escape hatch.
+- **Path-traversal block in `FilesystemObjectStorageBackend`** —
+  keys containing `..` or absolute-path patterns rejected at the
+  boundary instead of being resolved through to disk.
+- **Memcached protocol injection** — `MemcachedCache` keys
+  validated against the 250-byte / printable-ASCII rule before
+  being placed on the wire; defeats injection via attacker-
+  controlled keys.
+- **Gossip-version cap against permanent-down exploit** —
+  versions more than 24 h above the local wall-clock are
+  rejected on the spot; previously a malicious peer could send
+  `version: MAX_SAFE_INTEGER` to pin a healed node as `down`
+  forever.
+- **Snapshot-seq validation on recovery** — `PersistentActor`
+  rejects snapshots whose `seqNr` is non-monotonic with the
+  journal; defeats tampered-snapshot replay.
+- **WebSocket inbound frame size cap** — `WebSocketActor`
+  rejects oversized inbound frames before assembly; defeats
+  memory-exhaustion DoS via fragmented frames.
+- **Duplicate-identity hello rejection** — `cluster/transport`
+  refuses a second hello frame claiming an already-connected
+  identity; defeats peer-hijack where an attacker rebinds to a
+  victim's `from` address.  Legitimate reconnect (after clean
+  close) unaffected.
+- **Idempotency-key cache binding** — `http/cache/idempotency`
+  ties each cached response to the request fingerprint (method
+  + path + body hash) so a poisoned key can't replay one
+  response across different requests.
+
+### Documentation
+
+- **Public website at [actor-ts.dev](https://actor-ts.dev)** —
+  Astro Starlight site under `docs/`, 199+ pages across the
+  12-Part IA, full Quickstart + fundamentals + per-subsystem
+  deep-dives + migration guides + API reference (TypeDoc).
+- **Full German translation** — every page mirrored under
+  `/de/`.  Seven additional UI locales (fr, es, ja, ko, pt-BR,
+  ru, zh-CN) staged with sidebar labels translated; full content
+  translations tracked as #300–#306.
+- **Mermaid diagrams throughout** — replaces ASCII art across
+  all subsystem pages (cluster, sharding, distributed-data,
+  persistence, observability, operations, testing, IO, delivery).
+- **Landing-page polish** — animated particle-network hero,
+  prose-driven "What is actor-ts" cards, See-it-in-action status
+  grid, custom-domain redirect, mobile-responsive splash.
+- **Issue templates** — `.github/ISSUE_TEMPLATE/` gains
+  `security_report.yml`; bug template gets a security-flag
+  checkbox.
+- `decodeCrdt` (`src/crdt/DistributedData.ts`) annotated as the
+  codebase's reference shape for discriminator-union dispatch,
+  with explicit notes on what makes the existing
+  `const _exhaustive: never = json` pattern safe and when to
+  prefer it vs `match().exhaustive()` (#231).
+
 ### Code-quality hygiene sprint
 
 A focused refactor pass — no behavioural changes, no public-API
@@ -137,14 +258,6 @@ rejection (7).
   TTL semantics.  InMemoryCache wired as first consumer; Redis +
   Memcached can opt-in once their mock-client factories are
   available (#287, scope-adjusted).
-
-### Docs
-
-- `decodeCrdt` (`src/crdt/DistributedData.ts`) annotated as the
-  codebase's reference shape for discriminator-union dispatch,
-  with explicit notes on what makes the existing
-  `const _exhaustive: never = json` pattern safe and when to prefer
-  it vs `match().exhaustive()` (#231).
 
 ### Issue hygiene
 
