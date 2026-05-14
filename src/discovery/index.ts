@@ -6,6 +6,8 @@ export type { DnsSeedProviderSettings } from './DnsSeedProvider.js';
 export { AggregateSeedProvider } from './AggregateSeedProvider.js';
 export { KubernetesApiSeedProvider } from './KubernetesApiSeedProvider.js';
 export type { KubernetesApiSeedProviderSettings } from './KubernetesApiSeedProvider.js';
+export { autoDiscovery, singleProviderDiscovery } from './autoDiscovery.js';
+export type { AutoDiscoverySettings } from './autoDiscovery.js';
 export { ServiceKey } from './ServiceKey.js';
 export {
   Receptionist,

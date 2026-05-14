@@ -196,6 +196,32 @@ export class Cluster {
   }
 
   /**
+   * One-call bootstrap — creates the {@link ActorSystem}, joins the
+   * cluster, starts the Receptionist, waits for `SelfUp`, and wires
+   * SIGTERM/SIGINT shutdown.  The headline shape for the clustered
+   * case:
+   *
+   * ```ts
+   * const { system, cluster, shutdown } = await Cluster.bootstrap({ name: 'my-app' });
+   * ```
+   *
+   * For full configuration knobs see {@link ClusterBootstrapOptions}.
+   * For the power-user path (own `ActorSystem.create`, own
+   * `Cluster.join`, own signal wiring) keep using those directly —
+   * this is purely additive sugar.
+   *
+   * The helper lives in `ClusterBootstrap.ts` and is loaded lazily
+   * here to avoid a static import cycle (`ClusterBootstrap` ↔
+   * `Cluster.join`).
+   */
+  static async bootstrap(
+    opts: import('./ClusterBootstrap.js').ClusterBootstrapOptions,
+  ): Promise<import('./ClusterBootstrap.js').BootstrappedCluster> {
+    const { bootstrapCluster } = await import('./ClusterBootstrap.js');
+    return bootstrapCluster(opts);
+  }
+
+  /**
    * Subscribe to membership events.  The listener is immediately replayed
    * the current cluster state as a series of Member/SelfUp events so that
    * late subscribers still see the world they joined.

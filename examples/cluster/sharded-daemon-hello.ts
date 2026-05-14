@@ -8,7 +8,6 @@
  */
 import {
   Actor,
-  ActorSystem,
   Cluster,
   InMemoryTransport,
   NodeAddress,
@@ -23,13 +22,19 @@ class Worker extends Actor<string> {
 }
 
 async function main(): Promise<void> {
-  const sys = ActorSystem.create('daemon-hello');
-  const cluster = await Cluster.join(sys, {
+  // `Cluster.bootstrap` packages ActorSystem.create + Cluster.join +
+  // signal-based shutdown into one call.  For this single-node demo
+  // we still hand it an `InMemoryTransport` and turn off the SIGTERM
+  // wiring so the script can shut itself down at the end.
+  const { system, cluster, shutdown } = await Cluster.bootstrap({
+    name: 'daemon-hello',
     host: 'local', port: 1,
     transport: new InMemoryTransport(new NodeAddress('daemon-hello', 'local', 1)),
+    receptionist: false,
+    shutdownOnSignals: false,
   });
 
-  const handle = ShardedDaemonProcess.init<string>(sys, cluster, {
+  const handle = ShardedDaemonProcess.init<string>(system, cluster, {
     name: 'workers',
     numDaemons: 6,
     behaviorFor: (i) => Props.create(() => new Worker(i)),
@@ -41,8 +46,7 @@ async function main(): Promise<void> {
   handle.tell(5, 'job-C');
 
   await Bun.sleep(80);
-  await cluster.leave();
-  await sys.terminate();
+  await shutdown();
 }
 
 void main();

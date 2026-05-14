@@ -11,7 +11,6 @@
  */
 import {
   Actor,
-  ActorSystem,
   Cluster,
   ClusterSharding,
   LogLevel,
@@ -19,7 +18,6 @@ import {
   MemberRemoved,
   MemberUnreachable,
   MemberUp,
-  Props,
   ShardMapChanged,
 } from '../../src/index.js';
 
@@ -64,12 +62,18 @@ function parseArgs(argv: string[]): { port: number; seeds: string[]; host: strin
 
 async function main(): Promise<void> {
   const { port, seeds, host } = parseArgs(process.argv.slice(2));
-  const system = ActorSystem.create('counter-cluster', { logLevel: LogLevel.Info });
-
-  const cluster = await Cluster.join(system, {
+  // `Cluster.bootstrap` rolls ActorSystem.create + Cluster.join +
+  // SIGTERM/SIGINT-driven shutdown into one call.  We disable the
+  // built-in signal wiring here because the example installs its
+  // own shutdown handler (with `clearInterval` cleanup).
+  const { system, cluster, shutdown: clusterShutdown } = await Cluster.bootstrap({
+    name: 'counter-cluster',
+    logLevel: LogLevel.Info,
     host,
     port,
     seeds,
+    receptionist: false,
+    shutdownOnSignals: false,
     failureDetector: { heartbeatIntervalMs: 300, unreachableAfterMs: 1_500, downAfterMs: 3_500 },
     gossipIntervalMs: 500,
   });
@@ -106,8 +110,7 @@ async function main(): Promise<void> {
 
   const shutdown = async (): Promise<void> => {
     clearInterval(interval);
-    await cluster.leave();
-    await system.terminate();
+    await clusterShutdown();
     process.exit(0);
   };
   process.on('SIGINT', shutdown);

@@ -515,6 +515,8 @@ export {
   DnsSeedProvider,
   AggregateSeedProvider,
   KubernetesApiSeedProvider,
+  autoDiscovery,
+  singleProviderDiscovery,
 } from './discovery/index.js';
 export type {
   ReceptionistSettings,
@@ -523,6 +525,7 @@ export type {
   ConfigSeedProviderSettings,
   DnsSeedProviderSettings,
   KubernetesApiSeedProviderSettings,
+  AutoDiscoverySettings,
 } from './discovery/index.js';
 
 // Typed Behaviors DSL (functional facade over the OO Actor API).

@@ -255,8 +255,23 @@ what you want to do:
   for how parent actors recover from child crashes.
 - **Distribute across machines**: see the [Cluster overview](/cluster/overview/)
   and [Sharding overview](/cluster/sharding/overview/) — the
-  same code you wrote above can run across N nodes with a few extra
-  lines of configuration.
+  same code you wrote above can run across N nodes with a single
+  extra line.  `Cluster.bootstrap` builds the `ActorSystem`, joins
+  the cluster, starts the Receptionist and wires `SIGTERM` /
+  `SIGINT` shutdown in one call:
+
+  ```ts
+  import { Cluster, Props } from 'actor-ts';
+
+  const { system } = await Cluster.bootstrap({ name: 'hello' });
+  const ref = system.spawn(Props.create(() => new Greeter()), 'greeter');
+  ref.tell('world');
+  ```
+
+  Discovery defaults to an env-driven chain — `CLUSTER_SEEDS` →
+  Kubernetes API → DNS — so the same code runs single-node in
+  local dev and joins an existing cluster in production without a
+  config change.
 - **Persist state across restarts**: see [PersistentActor](/persistence/persistent-actor/)
   for event sourcing and [Snapshots](/persistence/snapshots/)
   for bounded recovery time.

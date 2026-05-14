@@ -266,8 +266,23 @@ Doku, je nachdem, was Du tun willst:
   dafür, wie Eltern-Actors sich von Kind-Abstürzen erholen.
 - **Über Maschinen verteilen**: siehe die [Cluster Overview](/de/cluster/overview/)
   und [Sharding Overview](/de/cluster/sharding/overview/) — derselbe
-  Code, den Du oben geschrieben hast, kann über N Nodes mit ein
-  paar zusätzlichen Konfigurationszeilen laufen.
+  Code, den Du oben geschrieben hast, kann über N Nodes mit einer
+  einzigen zusätzlichen Zeile laufen.  `Cluster.bootstrap` baut das
+  `ActorSystem`, tritt dem Cluster bei, startet den Receptionist und
+  verdrahtet `SIGTERM` / `SIGINT`-Shutdown in einem Call:
+
+  ```ts
+  import { Cluster, Props } from 'actor-ts';
+
+  const { system } = await Cluster.bootstrap({ name: 'hello' });
+  const ref = system.spawn(Props.create(() => new Greeter()), 'greeter');
+  ref.tell('world');
+  ```
+
+  Die Discovery defaultet auf eine env-gesteuerte Kette —
+  `CLUSTER_SEEDS` → Kubernetes API → DNS — sodass derselbe Code
+  lokal als Single-Node läuft und in Produktion ohne Config-Änderung
+  einem bestehenden Cluster beitritt.
 - **State über Neustarts hinweg persistieren**: siehe [PersistentActor](/de/persistence/persistent-actor/)
   für Event Sourcing und [Snapshots](/de/persistence/snapshots/)
   für begrenzte Recovery-Zeit.

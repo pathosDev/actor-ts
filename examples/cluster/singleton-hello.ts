@@ -25,14 +25,21 @@ class Echo extends Actor<string> {
   override postStop(): void { console.log(`[${this.where}] singleton stopped here`); }
 }
 
+// `Cluster.bootstrap` builds the ActorSystem + Cluster + Receptionist
+// + SIGTERM/SIGINT wiring in one call.  For this in-process demo we
+// still hand it an `InMemoryTransport` (so the three "nodes" can
+// talk without real TCP) and disable signal handlers (so the demo
+// shuts down on its own).
 async function startNode(host: string, port: number, seeds: string[] = []): Promise<{ sys: ActorSystem; cluster: Cluster; name: string }> {
-  const sys = ActorSystem.create('cluster');
-  const cluster = await Cluster.join(sys, {
+  const { system, cluster } = await Cluster.bootstrap({
+    name: 'cluster',
     host, port, seeds,
     transport: new InMemoryTransport(new NodeAddress('cluster', host, port)),
     gossipIntervalMs: 80,
+    receptionist: false,
+    shutdownOnSignals: false,
   });
-  return { sys, cluster, name: host };
+  return { sys: system, cluster, name: host };
 }
 
 async function main(): Promise<void> {

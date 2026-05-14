@@ -34,14 +34,16 @@ class PartitionWorker extends Actor<string> {
 async function startNode(host: string, port: number, seeds: string[] = []): Promise<{
   sys: ActorSystem; cluster: Cluster; name: string;
 }> {
-  const sys = ActorSystem.create('fixed-workers');
-  const cluster = await Cluster.join(sys, {
+  const { system, cluster } = await Cluster.bootstrap({
+    name: 'fixed-workers',
     host, port, seeds,
     transport: new InMemoryTransport(new NodeAddress('fixed-workers', host, port)),
     failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
     gossipIntervalMs: 80,
+    receptionist: false,
+    shutdownOnSignals: false,
   });
-  return { sys, cluster, name: host };
+  return { sys: system, cluster, name: host };
 }
 
 async function main(): Promise<void> {

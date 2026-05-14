@@ -197,16 +197,17 @@ and go. The `ShardRegion` ref you get back behaves like any other
 `ActorRef` to callers.
 
 ```ts
-import { ActorSystem, Cluster, ClusterSharding, Props } from 'actor-ts';
+import { Cluster, ClusterSharding } from 'actor-ts';
 
-const system   = ActorSystem.create('app');
-const cluster  = await Cluster.join(system, { host, port, seeds });
+// One-call bootstrap — system + cluster + receptionist + SIGTERM
+// wiring in one line.  Discovery defaults to an env-driven chain
+// (CLUSTER_SEEDS → K8s API → DNS); local dev with no env produces
+// a single-node cluster, which is exactly what you want.
+const { system, cluster } = await Cluster.bootstrap({ name: 'app' });
 const sharding = ClusterSharding.get(system, cluster);
 
-const cartRegion = sharding.start<CartCmd>({
-  typeName:        'cart',
-  entityProps:     Props.create(() => new CartActor()),
-  extractEntityId: (msg) => msg.entityId,
+const cartRegion = sharding.start('cart', CartActor, {
+  extractEntityId: (msg: CartCmd) => msg.entityId,
 });
 
 cartRegion.tell({ entityId: 'user-42', kind: 'add', sku: 'book-1' });

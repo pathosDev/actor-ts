@@ -22,12 +22,20 @@ Zwei Sichtweisen:
 
 ## Ein minimales Beispiel
 
+`Cluster.bootstrap` bündelt die vier Schritte, die Du sonst von Hand
+verdrahten würdest — das `ActorSystem` erstellen, Seeds auflösen,
+`Cluster.join` rufen, `SIGTERM`/`SIGINT` einhängen — in einem
+einzigen Aufruf:
+
 ```ts
-import { ActorSystem, Cluster } from 'actor-ts';
+import { Cluster } from 'actor-ts';
 
-const system = ActorSystem.create('my-app');
+// Lokale Entwicklung — keine Env-Variablen, keine Seeds: Single-Node-Cluster.
+const { system, cluster, shutdown } = await Cluster.bootstrap({ name: 'my-app' });
 
-const cluster = await Cluster.join(system, {
+// Mit expliziten Overrides:
+const { system, cluster } = await Cluster.bootstrap({
+  name:  'my-app',
   host:  '0.0.0.0',
   port:  2552,
   seeds: ['node-a:2552', 'node-b:2552'],
@@ -35,9 +43,23 @@ const cluster = await Cluster.join(system, {
 });
 
 // Sobald beigetreten:
-cluster.state;                       // → ClusterState
 cluster.upMembers();                 // → ReadonlyArray<Member> der Up-Nodes
-cluster.subscribe(MemberUp, ...);    // auf Mitgliedschaftsevents lauschen
+cluster.subscribe((evt) => { /* MemberUp, MemberDown, ... */ });
+```
+
+Für volle Kontrolle (eigener Dispatcher, manuelle Signal-Behandlung,
+eigene Discovery-Schleife) bleibt das Low-Level-Paar weiter
+verfügbar:
+
+```ts
+import { ActorSystem, Cluster } from 'actor-ts';
+
+const system  = ActorSystem.create('my-app');
+const cluster = await Cluster.join(system, {
+  host:  '0.0.0.0',
+  port:  2552,
+  seeds: ['node-a:2552', 'node-b:2552'],
+});
 ```
 
 Drei Einstellungen leisten die meiste Arbeit:

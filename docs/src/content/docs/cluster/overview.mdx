@@ -20,12 +20,19 @@ Two ways to think about it:
 
 ## A minimal example
 
+`Cluster.bootstrap` packages the four steps you'd otherwise wire by
+hand — create the `ActorSystem`, resolve seeds, `Cluster.join`,
+hook up `SIGTERM`/`SIGINT` — into a single call:
+
 ```ts
-import { ActorSystem, Cluster } from 'actor-ts';
+import { Cluster } from 'actor-ts';
 
-const system = ActorSystem.create('my-app');
+// Local dev — no env vars, no seeds: single-node cluster.
+const { system, cluster, shutdown } = await Cluster.bootstrap({ name: 'my-app' });
 
-const cluster = await Cluster.join(system, {
+// With explicit overrides:
+const { system, cluster } = await Cluster.bootstrap({
+  name:  'my-app',
   host:  '0.0.0.0',
   port:  2552,
   seeds: ['node-a:2552', 'node-b:2552'],
@@ -33,9 +40,22 @@ const cluster = await Cluster.join(system, {
 });
 
 // Once joined:
-cluster.state;                       // → ClusterState
 cluster.upMembers();                 // → ReadonlyArray<Member> of up-status nodes
-cluster.subscribe(MemberUp, ...);    // listen for membership events
+cluster.subscribe((evt) => { /* MemberUp, MemberDown, ... */ });
+```
+
+For full control (custom dispatcher, manual signal handling,
+own discovery loop) the lower-level pair still works:
+
+```ts
+import { ActorSystem, Cluster } from 'actor-ts';
+
+const system  = ActorSystem.create('my-app');
+const cluster = await Cluster.join(system, {
+  host:  '0.0.0.0',
+  port:  2552,
+  seeds: ['node-a:2552', 'node-b:2552'],
+});
 ```
 
 Three settings are doing most of the work:
