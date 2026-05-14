@@ -91,7 +91,7 @@ async function main(): Promise<void> {
   const sys1 = ActorSystem.create('order-demo-1');
   sys1.extension(PersistenceExtensionId).setJournal(journal);
 
-  const ref1 = sys1.actorOf(Props.create(() => new OrderFsm()), 'order');
+  const ref1 = sys1.spawn(Props.create(() => new OrderFsm()), 'order');
   await pretty(ref1, 'initial');
 
   ref1.tell({ kind: 'ship', carrier: 'fedex' });   // invalid — ignored, state unchanged
@@ -110,7 +110,7 @@ async function main(): Promise<void> {
   const sys2 = ActorSystem.create('order-demo-2');
   sys2.extension(PersistenceExtensionId).setJournal(journal);
 
-  const ref2 = sys2.actorOf(Props.create(() => new OrderFsm()), 'order');
+  const ref2 = sys2.spawn(Props.create(() => new OrderFsm()), 'order');
   await pretty(ref2, 'recovered');
 
   await sys2.terminate();

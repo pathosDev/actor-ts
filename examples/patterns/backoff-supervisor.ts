@@ -54,7 +54,7 @@ class FlakyConnector extends Actor<Cmd> {
 async function main(): Promise<void> {
   const system = ActorSystem.create('backoff-demo');
 
-  const supervisor = system.actorOf(
+  const supervisor = system.spawn(
     BackoffSupervisor.props({
       childProps: Props.create(() => new FlakyConnector()),
       childName: 'connector',

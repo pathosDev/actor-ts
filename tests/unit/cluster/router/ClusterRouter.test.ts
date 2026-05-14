@@ -55,8 +55,8 @@ describe('ClusterRouter — single node', () => {
     const { sys, cluster } = await startNode('rr-single', 89_001, ['compute']);
     try {
       // Worker lives at /user/worker on every targeted node.
-      sys.actorOf(Props.create(() => new Worker()), 'worker');
-      const router = sys.actorOf(
+      sys.spawn(Props.create(() => new Worker()), 'worker');
+      const router = sys.spawn(
         ClusterRouter.props<ReceivedMsg>({
           cluster,
           role: 'compute',
@@ -82,8 +82,8 @@ describe('ClusterRouter — single node', () => {
     received = [];
     const { sys, cluster } = await startNode('rr-norole', 89_002, ['frontend']);
     try {
-      sys.actorOf(Props.create(() => new Worker()), 'worker');
-      const router = sys.actorOf(
+      sys.spawn(Props.create(() => new Worker()), 'worker');
+      const router = sys.spawn(
         ClusterRouter.props<ReceivedMsg>({
           cluster,
           role: 'compute',                           // filters out 'frontend'-only node
@@ -107,8 +107,8 @@ describe('ClusterRouter — single node', () => {
     received = [];
     const { sys, cluster } = await startNode('ch-single', 89_003);
     try {
-      sys.actorOf(Props.create(() => new Worker()), 'worker');
-      const router = sys.actorOf(
+      sys.spawn(Props.create(() => new Worker()), 'worker');
+      const router = sys.spawn(
         ClusterRouter.props<ReceivedMsg>({
           cluster,
           routerType: 'consistent-hashing',
@@ -136,8 +136,8 @@ describe('ClusterRouter — single node', () => {
     received = [];
     const { sys, cluster } = await startNode('bc-single', 89_004);
     try {
-      sys.actorOf(Props.create(() => new Worker()), 'worker');
-      const router = sys.actorOf(
+      sys.spawn(Props.create(() => new Worker()), 'worker');
+      const router = sys.spawn(
         ClusterRouter.props<ReceivedMsg>({
           cluster,
           routerType: 'broadcast',
@@ -159,8 +159,8 @@ describe('ClusterRouter — single node', () => {
     received = [];
     const { sys, cluster } = await startNode('bc-msg', 89_005);
     try {
-      sys.actorOf(Props.create(() => new Worker()), 'worker');
-      const router = sys.actorOf(
+      sys.spawn(Props.create(() => new Worker()), 'worker');
+      const router = sys.spawn(
         ClusterRouter.props<ReceivedMsg>({
           cluster,
           routerType: 'round-robin',                 // not broadcast type

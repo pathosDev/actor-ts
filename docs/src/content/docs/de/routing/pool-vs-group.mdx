@@ -23,7 +23,7 @@ und Resize denkst.
 ```ts
 import { Router, Props } from 'actor-ts';
 
-const pool = system.actorOf(
+const pool = system.spawn(
   Router.roundRobin(4, Props.create(() => new Worker())),
   'workers',
 );
@@ -80,7 +80,7 @@ Workers, alle gleich, die einen Stream von Arbeit parallelisieren.
 ```ts
 import { ClusterRouter } from 'actor-ts';
 
-const router = system.actorOf(
+const router = system.spawn(
   ClusterRouter.props({
     cluster,
     routerType: 'round-robin',

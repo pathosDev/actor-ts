@@ -10,7 +10,7 @@ for durable streams, see the [JetStream](#jetstream) variant.
 ```ts
 import { ActorSystem, Props, NatsActor } from 'actor-ts';
 
-const nats = system.actorOf(
+const nats = system.spawn(
   Props.create(() => new NatsActor({
     servers: ['nats://nats-1:4222', 'nats://nats-2:4222'],
     name:    'my-app',
@@ -122,7 +122,7 @@ For NATS with **durability**, use `JetStreamActor`:
 ```ts
 import { JetStreamActor } from 'actor-ts';
 
-const js = system.actorOf(
+const js = system.spawn(
   Props.create(() => new JetStreamActor({
     servers: ['nats://nats-1:4222'],
     streams: [

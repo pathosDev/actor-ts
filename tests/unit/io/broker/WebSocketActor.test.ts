@@ -41,17 +41,17 @@ describe('WebSocketActor — round-trip via Bun.serve echo', () => {
     const srv = startBunWsEcho();
     const sys = ActorSystem.create('ws-1', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const collector = new CollectActor();
-    const target = sys.actorOf(Props.create(() => collector));
+    const target = sys.spawnAnonymous(Props.create(() => collector));
 
     let connected = false;
     sys.eventStream.subscribe(
-      sys.actorOf(Props.create(() => new (class extends Actor<unknown> {
+      sys.spawnAnonymous(Props.create(() => new (class extends Actor<unknown> {
         override onReceive(_: unknown): void { connected = true; }
       })())),
       BrokerConnected,
     );
 
-    const ref = sys.actorOf(Props.create(() => new WebSocketActor({
+    const ref = sys.spawnAnonymous(Props.create(() => new WebSocketActor({
       url: `ws://localhost:${srv.port}`, target,
     })));
     await sleep(80);
@@ -69,8 +69,8 @@ describe('WebSocketActor — round-trip via Bun.serve echo', () => {
     const srv = startBunWsEcho();
     const sys = ActorSystem.create('ws-2', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const collector = new CollectActor();
-    const target = sys.actorOf(Props.create(() => collector));
-    const ref = sys.actorOf(Props.create(() => new WebSocketActor({
+    const target = sys.spawnAnonymous(Props.create(() => collector));
+    const ref = sys.spawnAnonymous(Props.create(() => new WebSocketActor({
       url: `ws://localhost:${srv.port}`, target,
     })));
     await sleep(80);
@@ -125,8 +125,8 @@ describe('WebSocketActor — oversize-frame DoS hardening', () => {
     const srv = startBunWsFlooder(2 * 1024 * 1024, 'binary');
     const sys = ActorSystem.create('ws-evil-1', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const collector = new CollectActor();
-    const target = sys.actorOf(Props.create(() => collector));
-    sys.actorOf(Props.create(() => new WebSocketActor({
+    const target = sys.spawnAnonymous(Props.create(() => collector));
+    sys.spawnAnonymous(Props.create(() => new WebSocketActor({
       url: `ws://localhost:${srv.port}`, target,
     })));
     await sleep(200);
@@ -140,8 +140,8 @@ describe('WebSocketActor — oversize-frame DoS hardening', () => {
     const srv = startBunWsFlooder(2 * 1024 * 1024, 'text');
     const sys = ActorSystem.create('ws-evil-2', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const collector = new CollectActor();
-    const target = sys.actorOf(Props.create(() => collector));
-    sys.actorOf(Props.create(() => new WebSocketActor({
+    const target = sys.spawnAnonymous(Props.create(() => collector));
+    sys.spawnAnonymous(Props.create(() => new WebSocketActor({
       url: `ws://localhost:${srv.port}`, target,
     })));
     await sleep(200);
@@ -154,8 +154,8 @@ describe('WebSocketActor — oversize-frame DoS hardening', () => {
     const srv = startBunWsFlooder(200 * 1024, 'binary');     // 200 KiB
     const sys = ActorSystem.create('ws-evil-3', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const collector = new CollectActor();
-    const target = sys.actorOf(Props.create(() => collector));
-    sys.actorOf(Props.create(() => new WebSocketActor({
+    const target = sys.spawnAnonymous(Props.create(() => collector));
+    sys.spawnAnonymous(Props.create(() => new WebSocketActor({
       url: `ws://localhost:${srv.port}`,
       target,
       maxInboundFrameBytes: 100 * 1024,    // 100 KiB cap → 200 KiB rejected
@@ -170,8 +170,8 @@ describe('WebSocketActor — oversize-frame DoS hardening', () => {
     const srv = startBunWsFlooder(512 * 1024, 'binary');     // 512 KiB, under 1 MiB default
     const sys = ActorSystem.create('ws-ok', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const collector = new CollectActor();
-    const target = sys.actorOf(Props.create(() => collector));
-    sys.actorOf(Props.create(() => new WebSocketActor({
+    const target = sys.spawnAnonymous(Props.create(() => collector));
+    sys.spawnAnonymous(Props.create(() => new WebSocketActor({
       url: `ws://localhost:${srv.port}`, target,
     })));
     await sleep(200);
@@ -187,8 +187,8 @@ describe('WebSocketActor — oversize-frame DoS hardening', () => {
     const srv = startBunWsFlooder(2 * 1024 * 1024, 'binary');
     const sys = ActorSystem.create('ws-uncapped', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const collector = new CollectActor();
-    const target = sys.actorOf(Props.create(() => collector));
-    sys.actorOf(Props.create(() => new WebSocketActor({
+    const target = sys.spawnAnonymous(Props.create(() => collector));
+    sys.spawnAnonymous(Props.create(() => new WebSocketActor({
       url: `ws://localhost:${srv.port}`,
       target,
       maxInboundFrameBytes: Number.POSITIVE_INFINITY,

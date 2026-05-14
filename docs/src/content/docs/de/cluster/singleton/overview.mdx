@@ -77,7 +77,7 @@ const system  = ActorSystem.create('my-app');
 const cluster = await Cluster.join(system, { host, port, seeds });
 
 // Auf jedem Node: starte den Manager.
-system.actorOf(
+system.spawn(
   ClusterSingletonManager.props({
     cluster,
     typeName:        'job-scheduler',
@@ -88,7 +88,7 @@ system.actorOf(
 );
 
 // Auf jedem Node: ein Proxy, um mit ihm zu reden.
-const proxy = system.actorOf(
+const proxy = system.spawn(
   ClusterSingletonProxy.props({
     cluster,
     typeName: 'job-scheduler',

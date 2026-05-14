@@ -98,7 +98,7 @@ describe('ReliableDelivery — resilience', () => {
         d.replyTo.tell({ kind: 'reliable-delivery.ack', producerId: d.producerId, seq: d.seq });
       }
     }
-    const consumerRef = kit.system.actorOf(Props.create(() => new Flaky()), 'flaky');
+    const consumerRef = kit.system.spawn(Props.create(() => new Flaky()), 'flaky');
 
     const producer = ReliableDelivery.producer<string>(kit.system, {
       consumer: consumerRef,

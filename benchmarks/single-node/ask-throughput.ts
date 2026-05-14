@@ -13,7 +13,7 @@ class Echo extends Actor<string> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('bench-ask', { logger: new NoopLogger(), logLevel: LogLevel.Off });
-  const ref = system.actorOf(Props.create(() => new Echo()));
+  const ref = system.spawnAnonymous(Props.create(() => new Echo()));
 
   await runGroup('single-node · ask-throughput', [
     {

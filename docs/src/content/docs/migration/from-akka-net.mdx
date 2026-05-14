@@ -46,7 +46,7 @@ class Counter extends Actor<Cmd> {
 }
 
 const system = ActorSystem.create('MySystem');
-const counter = system.actorOf(Props.create(() => new Counter()), 'counter');
+const counter = system.spawn(Props.create(() => new Counter()), 'counter');
 counter.tell({ kind: 'inc' });
 ```
 

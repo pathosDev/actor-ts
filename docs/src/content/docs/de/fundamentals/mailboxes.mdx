@@ -70,7 +70,7 @@ class SlowConsumer extends Actor<{ kind: 'work'; n: number }> {
 
 const system = ActorSystem.create('demo');
 
-const consumer = system.actorOf(
+const consumer = system.spawn(
   Props.create(() => new SlowConsumer())
     .withMailbox(() => new BoundedMailbox({ capacity: 1_000, overflow: 'drop-head' })),
 );
@@ -134,7 +134,7 @@ class Worker extends Actor<Msg> {
   }
 }
 
-const worker = system.actorOf(
+const worker = system.spawn(
   Props.create(() => new Worker())
     .withMailbox(() => new PriorityMailbox<Msg>({
       priorityFor: (msg) => msg.kind === 'urgent' ? 0

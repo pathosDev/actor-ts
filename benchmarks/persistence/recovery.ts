@@ -45,7 +45,7 @@ async function main(): Promise<void> {
   ext.setSnapshotStore(snapshots);
 
   const recovery = (pid: string) => async (): Promise<void> => {
-    const ref = system.actorOf(Props.create(() => new Counter(pid)));
+    const ref = system.spawnAnonymous(Props.create(() => new Counter(pid)));
     await ask<Cmd, number>(ref, 'get', 30_000);
     ref.stop();
   };

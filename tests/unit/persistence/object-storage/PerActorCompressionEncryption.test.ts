@@ -71,7 +71,7 @@ describe('PersistentActor — actor-level compression hook', () => {
     sys.extension(PersistenceExtensionId).setJournal(new InMemoryJournal());
     sys.extension(PersistenceExtensionId).setSnapshotStore(snapshots);
 
-    const ref = sys.actorOf(Props.create(() => new CountingActor('a', { algorithm: 'zstd' })), 'a');
+    const ref = sys.spawn(Props.create(() => new CountingActor('a', { algorithm: 'zstd' })), 'a');
     ref.tell({ kind: 'inc' });
     await sleep(40);
 
@@ -92,7 +92,7 @@ describe('PersistentActor — actor-level compression hook', () => {
     sys.extension(PersistenceExtensionId).setSnapshotStore(snapshots);
 
     // Actor without hooks → plugin default applies.
-    const ref = sys.actorOf(Props.create(() => new CountingActor('a')), 'a');
+    const ref = sys.spawn(Props.create(() => new CountingActor('a')), 'a');
     ref.tell({ kind: 'inc' });
     await sleep(40);
 
@@ -113,7 +113,7 @@ describe('PersistentActor — actor-level encryption hook', () => {
     sys.extension(PersistenceExtensionId).setJournal(new InMemoryJournal());
     sys.extension(PersistenceExtensionId).setSnapshotStore(snapshots);
 
-    const ref = sys.actorOf(Props.create(() => new CountingActor('a', { algorithm: 'none' }, enc)), 'a');
+    const ref = sys.spawn(Props.create(() => new CountingActor('a', { algorithm: 'none' }, enc)), 'a');
     ref.tell({ kind: 'inc' });
     ref.tell({ kind: 'inc' });
     await sleep(40);
@@ -136,7 +136,7 @@ describe('PersistentActor — actor-level encryption hook', () => {
     class Recoverer extends CountingActor {
       override onRecoveryComplete(s: State): void { recoveredState = s; }
     }
-    sys2.actorOf(Props.create(() => new Recoverer('a', { algorithm: 'none' }, enc)), 'a');
+    sys2.spawn(Props.create(() => new Recoverer('a', { algorithm: 'none' }, enc)), 'a');
     await sleep(40);
     expect(recoveredState).toEqual({ count: 2 });
     await sys2.terminate();
@@ -173,7 +173,7 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
     });
     const sys = ActorSystem.create('ds-comp', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const probe = makeProbe(sys);
-    const ref = sys.actorOf(Props.create(() =>
+    const ref = sys.spawn(Props.create(() =>
       new Counter({ persistenceId: 'a', store, emptyState: () => ({ v: 0 }) }, { algorithm: 'zstd' }) as unknown as ActorBase<DsCmd>,
     ), 'a');
     ref.tell({ kind: 'set', v: 7, replyTo: probe.ref });
@@ -190,7 +190,7 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
 
     const sys = ActorSystem.create('ds-aes', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const probe = makeProbe(sys);
-    const ref = sys.actorOf(Props.create(() =>
+    const ref = sys.spawn(Props.create(() =>
       new Counter({ persistenceId: 'b', store, emptyState: () => ({ v: 0 }) },
         { algorithm: 'none' }, enc) as unknown as ActorBase<DsCmd>,
     ), 'b');
@@ -207,7 +207,7 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
     // Restart on the same backend with the same hook → recovery decrypts.
     const sys2 = ActorSystem.create('ds-aes-2', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const probe2 = makeProbe(sys2);
-    const ref2 = sys2.actorOf(Props.create(() =>
+    const ref2 = sys2.spawn(Props.create(() =>
       new Counter({ persistenceId: 'b', store, emptyState: () => ({ v: 0 }) },
         { algorithm: 'none' }, enc) as unknown as ActorBase<DsCmd>,
     ), 'b');
@@ -241,6 +241,6 @@ function makeProbe(sys: ActorSystem): { ref: ActorRef; received: unknown[] } {
   class P extends (Actor as new () => { onReceive(_: unknown): void }) {
     onReceive(m: unknown): void { received.push(m); }
   }
-  const ref = sys.actorOf(Props.create(() => new P() as unknown as ActorBase<unknown>), `p-${Math.random().toString(36).slice(2, 6)}`);
+  const ref = sys.spawn(Props.create(() => new P() as unknown as ActorBase<unknown>), `p-${Math.random().toString(36).slice(2, 6)}`);
   return { ref, received };
 }

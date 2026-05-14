@@ -17,7 +17,7 @@ Zustellung.  Er:
 ```ts
 import { Props, ConsumerController } from 'actor-ts';
 
-const consumer = system.actorOf(
+const consumer = system.spawn(
   Props.create(() => new ConsumerController<OrderEvent>({
     handler: async (order) => {
       await processOrder(order);
@@ -141,16 +141,16 @@ dem Business-State im Handler.
 ## Mehrere Producer
 
 ```ts
-const consumer = system.actorOf(
+const consumer = system.spawn(
   Props.create(() => new ConsumerController<OrderEvent>({
     handler: async (order) => { await processOrder(order); },
   })),
 );
 
 // Mehrere Producer senden an denselben Consumer:
-const p1 = system.actorOf(Props.create(() =>
+const p1 = system.spawnAnonymous(Props.create(() =>
   new ProducerController({ consumer, producerId: 'p1' })));
-const p2 = system.actorOf(Props.create(() =>
+const p2 = system.spawnAnonymous(Props.create(() =>
   new ProducerController({ consumer, producerId: 'p2' })));
 ```
 

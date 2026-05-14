@@ -9,7 +9,7 @@
  *     }
  *
  *     const system = ActorSystem.create('demo');
- *     const ref = system.actorOf(Props.create(() => new Hello()), 'hello');
+ *     const ref = system.spawn(Props.create(() => new Hello()), 'hello');
  *     ref.tell('world');
  *     await system.terminate();
  */

@@ -34,7 +34,7 @@ class LampActor extends Actor<'toggle'> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('become-demo');
-  const lamp = system.actorOf(Props.create(() => new LampActor()), 'lamp');
+  const lamp = system.spawn(Props.create(() => new LampActor()), 'lamp');
 
   for (let i = 0; i < 6; i++) lamp.tell('toggle');
 

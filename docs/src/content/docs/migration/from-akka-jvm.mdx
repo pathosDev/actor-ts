@@ -16,7 +16,7 @@ named identically.  This guide walks through the translation.
 | `akka.actor.Props` | `Props<TMsg>` |
 | `tell(msg)` / `!` | `tell(msg)` |
 | `ask(msg).mapTo[T]` | `ask<TReq, TRes>(ref, msg, timeoutMs)` |
-| `context.actorOf(props)` | `context.actorOf(props)` |
+| `context.spawnAnonymous(props)` | `context.spawnAnonymous(props)` |
 | `OneForOneStrategy` | `OneForOneStrategy` |
 | `AllForOneStrategy` | `AllForOneStrategy` |
 | `become(receive)` | `context.become(handler)` |
@@ -179,7 +179,7 @@ Key differences:
 
 ```scala
 // Akka Scala:
-val singleton = system.actorOf(
+val singleton = system.spawn(
   ClusterSingletonManager.props(
     singletonProps = Props[MyActor],
     terminationMessage = PoisonPill,
@@ -189,7 +189,7 @@ val singleton = system.actorOf(
 )
 
 // actor-ts:
-system.actorOf(
+system.spawn(
   ClusterSingletonManager.props({
     cluster,
     typeName: 'my-singleton',

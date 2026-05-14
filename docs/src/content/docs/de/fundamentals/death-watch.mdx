@@ -31,8 +31,8 @@ class Watcher extends Actor<Terminated | { kind: 'watch'; ref: ActorRef }> {
 
 const system = ActorSystem.create('demo');
 
-const observed = system.actorOf(Props.create(() => new SomeActor()));
-const watcher  = system.actorOf(Props.create(() => new Watcher()));
+const observed = system.spawnAnonymous(Props.create(() => new SomeActor()));
+const watcher  = system.spawnAnonymous(Props.create(() => new Watcher()));
 
 watcher.tell({ kind: 'watch', ref: observed });
 observed.stop();   // → Watcher loggt "watched actor stopped: ..."
@@ -141,7 +141,7 @@ class Manager extends Actor<Cmd | Terminated> {
 
   override preStart(): void {
     for (let i = 0; i < 4; i++) {
-      const child = this.context.actorOf(Props.create(() => new Worker()), `worker-${i}`);
+      const child = this.context.spawn(Props.create(() => new Worker()), `worker-${i}`);
       this.alive.add(child.path.name);
       this.context.watch(child);
     }

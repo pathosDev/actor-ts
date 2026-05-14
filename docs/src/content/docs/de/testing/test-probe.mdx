@@ -13,7 +13,7 @@ sieht eine normale Ref und `tell`t sie wie üblich.
 const tk = TestKit.create();
 const probe = tk.createTestProbe();
 
-const ref = tk.system.actorOf(Props.create(() => new Worker(probe)));
+const ref = tk.system.spawnAnonymous(Props.create(() => new Worker(probe)));
 //                                                          ^-- Probe anstelle des echten Downstreams
 ref.tell({ kind: 'work' });
 
@@ -190,7 +190,7 @@ class OrderHandler extends Actor<OrderCmd> {
 
 it('leitet Orders an db weiter', async () => {
   const dbProbe = tk.createTestProbe();
-  const handler = tk.system.actorOf(Props.create(() =>
+  const handler = tk.system.spawnAnonymous(Props.create(() =>
     new OrderHandler(dbProbe as ActorRef<DbCmd>)));
 
   handler.tell({ kind: 'place-order', id: 'o-1' });
@@ -204,7 +204,7 @@ Call, ohne dass die DB existieren muss.
 ### Probe als Reply-to-Ziel
 
 ```ts
-const counter = tk.system.actorOf(Props.create(() => new Counter()));
+const counter = tk.system.spawnAnonymous(Props.create(() => new Counter()));
 counter.tell({ kind: 'inc' });
 counter.tell({ kind: 'inc' });
 counter.tell({ kind: 'get', replyTo: probe as ActorRef<number> });
@@ -219,7 +219,7 @@ Für Ask-artige Nachrichten — die Probe steht für den Fragenden.
 const a = tk.createTestProbe({ name: 'a-probe' });
 const b = tk.createTestProbe({ name: 'b-probe' });
 
-const router = tk.system.actorOf(...);
+const router = tk.system.spawnAnonymous(...);
 router.tell({ kind: 'send', target: 'a', payload: 'hello' });
 
 await a.expectMsg('hello');

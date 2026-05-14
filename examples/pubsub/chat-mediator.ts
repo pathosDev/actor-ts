@@ -29,7 +29,7 @@ async function main(): Promise<void> {
   const mediator = system.extension(DistributedPubSubId).start(cluster);
 
   for (const name of ['alice', 'bob', 'carol']) {
-    const sub = system.actorOf(Props.create(() => new Subscriber(name)), name);
+    const sub = system.spawn(Props.create(() => new Subscriber(name)), name);
     mediator.tell(new Subscribe('chat', sub));
   }
 

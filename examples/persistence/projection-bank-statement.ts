@@ -127,8 +127,8 @@ async function main(): Promise<void> {
   });
 
   // Drive a couple of accounts.
-  const alice = sys.actorOf(Props.create(() => new Account('alice')), 'alice');
-  const bob = sys.actorOf(Props.create(() => new Account('bob')), 'bob');
+  const alice = sys.spawn(Props.create(() => new Account('alice')), 'alice');
+  const bob = sys.spawn(Props.create(() => new Account('bob')), 'bob');
   for (const amt of [100, 50, 30]) await ask(alice, { kind: 'deposit', amount: amt }, 500);
   await ask(alice, { kind: 'withdraw', amount: 60 }, 500);
   for (const amt of [200, 75]) await ask(bob, { kind: 'deposit', amount: amt }, 500);

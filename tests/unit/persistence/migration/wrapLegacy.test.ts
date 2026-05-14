@@ -143,7 +143,7 @@ describe('migrateInMemoryJournal — bulk rewrite', () => {
     const sys = ActorSystem.create('migrate-replay', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     sys.extension(PersistenceExtensionId).setJournal(journal);
     try {
-      const ref = sys.actorOf(Props.create(() => new Account()), 'acct');
+      const ref = sys.spawn(Props.create(() => new Account()), 'acct');
       // Send a no-op message so we can wait for recovery to complete.
       // (PersistentActor processes the recovery before the first user
       // message lands.)

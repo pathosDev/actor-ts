@@ -149,7 +149,7 @@ class DaemonHost<T> extends Actor<DaemonEnvelope<T>> {
   override preStart(): void {
     const index = indexFromEntityName(this.context.path.name);
     const props = this.behaviorFor(index);
-    this.inner = this.context.actorOf(props, 'daemon');
+    this.inner = this.context.spawn(props, 'daemon');
   }
 
   override onReceive(msg: DaemonEnvelope<T> | T | Wakeup): void {

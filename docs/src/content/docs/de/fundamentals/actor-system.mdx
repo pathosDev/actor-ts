@@ -28,7 +28,7 @@ bedeutet "ich bin ein separater Cluster".
 
 `create` kehrt synchron zurück.  Die Root-Guardians des Systems werden
 eifrig erzeugt; User-Actors existieren noch nicht — du spawnst sie
-über `actorOf` (unten beschrieben).
+über `spawn` (unten beschrieben).
 
 ## Konfiguration
 
@@ -82,12 +82,12 @@ für jeden Schlüssel, den das Framework liest.
 
 ## Actors spawnen
 
-Top-Level-Actors werden über `system.actorOf` gespawnt:
+Top-Level-Actors werden über `system.spawn` gespawnt:
 
 ```ts
 import { Props } from 'actor-ts';
 
-const root = system.actorOf(
+const root = system.spawn(
   Props.create(() => new MyRootActor()),
   'root',   // optionaler Name; Framework wählt einen, wenn weggelassen
 );
@@ -96,13 +96,13 @@ const root = system.actorOf(
 Die zurückgegebene `ActorRef` ist ein Handle, keine Instanz.  Gib es
 weiter, speichere es, übergib es an andere Actors.
 
-Innerhalb eines Actors werden **Child-Actors** über `context.actorOf`
-gespawnt, nicht über `system.actorOf`:
+Innerhalb eines Actors werden **Child-Actors** über `context.spawn`
+gespawnt, nicht über `system.spawn`:
 
 ```ts
 class Parent extends Actor<...> {
   override onReceive(msg) {
-    const child = this.context.actorOf(
+    const child = this.context.spawn(
       Props.create(() => new Child()),
       'worker',
     );
@@ -113,7 +113,7 @@ class Parent extends Actor<...> {
 Kinder sind an den Lebenszyklus des Parents gebunden — wenn der
 Parent stoppt, stoppen zuerst alle Kinder.  Fehler von Kindern
 eskalieren an die [Supervisor-Strategie](/de/fundamentals/supervision/)
-des Parents.  Top-Level-Actors (aus `system.actorOf`) eskalieren
+des Parents.  Top-Level-Actors (aus `system.spawn`) eskalieren
 stattdessen an den Root-Guardian des Systems.
 
 ## Die Guardian-Hierarchie
@@ -140,7 +140,7 @@ flowchart LR
   class DEAD dead
 ```
 
-Wenn du `system.actorOf(props)` aufrufst, wird der Actor unter
+Wenn du `system.spawnAnonymous(props)` aufrufst, wird der Actor unter
 `/user` erzeugt.  Wenn das System terminiert, stoppen die Guardians in
 umgekehrter Reihenfolge nacheinander: User-Actors zuerst (damit sie
 ihre Arbeit beenden können), dann die System-Internas.
@@ -270,7 +270,7 @@ Zwei Situationen, in denen ein zweites System Sinn macht:
 <Aside type="caution" title="Spawnen, bevor `await system.extension(...).start(...)` resolved">
   Cluster + DistributedData + DistributedPubSub brauchen alle eine
   kurze Aufwärmphase, bevor sie nutzbar sind.  Wenn du
-  `system.actorOf(...)` einen Actor erzeugst, der sofort auf
+  `system.spawnAnonymous(...)` einen Actor erzeugst, der sofort auf
   `chat.room.general` publisht, während der PubSub-Mediator noch
   initialisiert, geht der Publish in die Dead Letters.  Entweder
   await die `start(...)` der Extension zuerst oder puffere ausgehende

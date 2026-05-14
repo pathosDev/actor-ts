@@ -55,10 +55,8 @@ export function serverWebSocketActorOf(
   opts: ServerWebSocketActorOptions & { readonly name?: string } = {},
 ): ActorRef<WebSocketCmd> {
   const { name, ...actorOpts } = opts;
-  return system.actorOf(
-    Props.create(() => new ServerWebSocketActor(socket, actorOpts)) as Props<WebSocketCmd>,
-    name,
-  );
+  const props = Props.create(() => new ServerWebSocketActor(socket, actorOpts)) as Props<WebSocketCmd>;
+  return name !== undefined ? system.spawn(props, name) : system.spawnAnonymous(props);
 }
 
 /* --------------------------- Bun adapter ------------------------------ */
@@ -184,7 +182,7 @@ export function bunWebSocketHandlers<UserData = unknown>(
       const bridge = new BunWebSocketBridge(ws);
       const slotName = opts.actorName?.(ws as BunServerWebSocketLike<BunWebSocketSlot<UserData>>)
         ?? `ws-${++counter}`;
-      const ref = system.actorOf(
+      const ref = system.spawn(
         Props.create(() => new ServerWebSocketActor(bridge, {
           target: opts.target,
           stopOnSocketClose: opts.stopOnSocketClose,

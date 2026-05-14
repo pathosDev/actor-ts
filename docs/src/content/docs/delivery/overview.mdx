@@ -85,7 +85,7 @@ import {
 } from 'actor-ts';
 
 // Consumer side — handler function, auto-ack on resolve:
-const consumer = system.actorOf(
+const consumer = system.spawn(
   Props.create(() => new ConsumerController<OrderEvent>({
     handler: async (order) => {
       await processOrder(order);
@@ -94,7 +94,7 @@ const consumer = system.actorOf(
 );
 
 // Producer side — wraps outgoing messages in seq + ack tracking:
-const producer = system.actorOf(
+const producer = system.spawn(
   Props.create(() => new ProducerController<OrderEvent>({
     producerId: 'order-producer-1',
     consumer,

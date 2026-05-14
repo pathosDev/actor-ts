@@ -167,14 +167,14 @@ subscribierten Topic landet) publisht der Broker-Actor an
 haben:
 
 ```ts
-const kafka = system.actorOf(
+const kafka = system.spawn(
   Props.create(() => new KafkaActor({
     bootstrapServers: 'localhost:9092',
     consumer: { groupId: 'my-app', topics: ['orders'] },
   })),
 );
 
-const handler = system.actorOf(Props.create(() => new OrderHandler()));
+const handler = system.spawnAnonymous(Props.create(() => new OrderHandler()));
 
 kafka.tell({ kind: 'subscribe', subscriber: handler });
 // Jede eingehende Order wird jetzt an `handler` gesendet.

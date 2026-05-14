@@ -16,7 +16,7 @@ import { TestKit } from 'actor-ts/testkit';
 const { kit, scheduler } = TestKit.withManualScheduler();
 const probe = kit.createTestProbe();
 
-const ref = kit.system.actorOf(Props.create(() => new Heartbeat(probe)));
+const ref = kit.system.spawnAnonymous(Props.create(() => new Heartbeat(probe)));
 ref.tell({ kind: 'start' });
 
 scheduler.advance(5_000);   // virtuelle Zeit springt 5 Sekunden
@@ -163,7 +163,7 @@ describe('Session-Expiry', () => {
   afterEach(async () => { await kit.shutdown(); });
 
   it('läuft nach 15 Minuten Inaktivität ab', async () => {
-    const session = kit.system.actorOf(Props.create(() =>
+    const session = kit.system.spawnAnonymous(Props.create(() =>
       new Session(probe, 'user-42')));
 
     session.tell({ kind: 'activity' });   // setzt den Timer zurück

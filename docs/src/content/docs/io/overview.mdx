@@ -162,14 +162,14 @@ topic), the broker actor publishes to **subscribers** — actor refs
 registered as interested:
 
 ```ts
-const kafka = system.actorOf(
+const kafka = system.spawn(
   Props.create(() => new KafkaActor({
     bootstrapServers: 'localhost:9092',
     consumer: { groupId: 'my-app', topics: ['orders'] },
   })),
 );
 
-const handler = system.actorOf(Props.create(() => new OrderHandler()));
+const handler = system.spawnAnonymous(Props.create(() => new OrderHandler()));
 
 kafka.tell({ kind: 'subscribe', subscriber: handler });
 // Now every inbound order is told to `handler`.

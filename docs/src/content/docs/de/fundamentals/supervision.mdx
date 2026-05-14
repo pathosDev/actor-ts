@@ -54,7 +54,7 @@ class Boss extends Actor<{ kind: 'spawn-worker' }> {
   );
 
   override onReceive(msg: { kind: 'spawn-worker' }): void {
-    const worker = this.context.actorOf(Props.create(() => new Worker()));
+    const worker = this.context.spawnAnonymous(Props.create(() => new Worker()));
     worker.tell({ kind: 'do-it' });
     worker.tell({ kind: 'fail' });   // <- throwt
     worker.tell({ kind: 'do-it' });  // <- neue Instanz, nach Restart
@@ -247,13 +247,13 @@ was wir tun sollen"-Signal.
 
 ## Top-Level-Actors
 
-Actors, die über `system.actorOf(...)` gespawnt werden, haben den
+Actors, die über `system.spawnAnonymous(...)` gespawnt werden, haben den
 **Root-User-Guardian** als Parent.  Seine Strategie ist
 `defaultStrategy` — Restart bei Fehler, gecappt bei 10/Minute.
 Überschreibe, indem du eine Strategie in `Props` übergibst:
 
 ```ts
-const ref = system.actorOf(
+const ref = system.spawn(
   Props.create(() => new MyTopActor())
     .withSupervisorStrategy(stoppingStrategy),
 );

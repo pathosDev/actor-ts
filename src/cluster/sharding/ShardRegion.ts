@@ -335,7 +335,7 @@ export class ShardRegion<TMsg = unknown> extends Actor<TMsg | ShardingMessage | 
 
   private createEntity(shardId: number, entityId: string): EntityState {
     this.log.debug(`[sharding] spawning entity '${entityId}' in shard ${shardId} of '${this.cfg.typeName}'`);
-    const ref = this.context.actorOf(this.cfg.entityProps, `entity-${sanitizeName(entityId)}`);
+    const ref = this.context.spawn(this.cfg.entityProps, `entity-${sanitizeName(entityId)}`);
     this.context.watch(ref);
     const state: EntityState = { ref: ref as ActorRef<unknown>, lastActivity: Date.now(), passivating: null };
     this.entities.set(entityId, state);

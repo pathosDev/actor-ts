@@ -68,12 +68,12 @@ async function main(): Promise<void> {
   const system = ActorSystem.create('js-orders-demo');
   let js!: ActorRef<JetStreamCmd>;
 
-  const processor = system.actorOf(
+  const processor = system.spawn(
     Props.create(() => new OrderProcessor(js)),
     'processor',
   );
 
-  js = system.actorOf(
+  js = system.spawn(
     Props.create(() => new JetStreamActor({
       servers: ['nats://localhost:4222'],
       stream: {

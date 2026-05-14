@@ -13,7 +13,7 @@ class Greeter extends Actor<string> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('selection-hello');
-  system.actorOf(Props.create(() => new Greeter()), 'greeter');
+  system.spawn(Props.create(() => new Greeter()), 'greeter');
 
   // Tell without resolving — fire-and-forget; delivers or drops to dead letters.
   system.actorSelection('/user/greeter').tell('world');

@@ -27,7 +27,7 @@ name means "I'm a separate cluster".
 
 `create` returns synchronously.  The system's root guardians are
 spawned eagerly; user actors don't exist yet — you spawn them via
-`actorOf` (covered below).
+`spawn` (covered below).
 
 ## Configuration
 
@@ -81,12 +81,12 @@ the framework reads.
 
 ## Spawning actors
 
-Top-level actors are spawned via `system.actorOf`:
+Top-level actors are spawned via `system.spawn`:
 
 ```ts
 import { Props } from 'actor-ts';
 
-const root = system.actorOf(
+const root = system.spawn(
   Props.create(() => new MyRootActor()),
   'root',   // optional name; framework picks one if omitted
 );
@@ -95,13 +95,13 @@ const root = system.actorOf(
 The returned `ActorRef` is a handle, not the instance.  Pass it
 around, store it, hand it to other actors.
 
-Inside an actor, **child actors** are spawned via `context.actorOf`,
-not `system.actorOf`:
+Inside an actor, **child actors** are spawned via `context.spawn`,
+not `system.spawn`:
 
 ```ts
 class Parent extends Actor<...> {
   override onReceive(msg) {
-    const child = this.context.actorOf(
+    const child = this.context.spawn(
       Props.create(() => new Child()),
       'worker',
     );
@@ -112,7 +112,7 @@ class Parent extends Actor<...> {
 Children are tied to the parent's lifecycle — when the parent stops,
 all children stop first.  Children's failures escalate to the
 parent's [supervisor strategy](/fundamentals/supervision/).
-Top-level actors (from `system.actorOf`) escalate to the system's
+Top-level actors (from `system.spawn`) escalate to the system's
 root guardian instead.
 
 ## The guardian hierarchy
@@ -139,7 +139,7 @@ flowchart LR
   class DEAD dead
 ```
 
-When you call `system.actorOf(props)`, the actor is created under
+When you call `system.spawnAnonymous(props)`, the actor is created under
 `/user`.  When the system terminates, the guardians cascade-stop in
 reverse order: user actors first (so they get to finish their work),
 then system internals.
@@ -263,7 +263,7 @@ Two situations where a second system makes sense:
 
 <Aside type="caution" title="Spawning before `await system.extension(...).start(...)` resolves">
   Cluster + DistributedData + DistributedPubSub all need a brief
-  warm-up before they're usable.  If you `system.actorOf(...)` an
+  warm-up before they're usable.  If you `system.spawnAnonymous(...)` an
   actor that immediately publishes on `chat.room.general` while the
   PubSub mediator is still initializing, the publish goes to dead
   letters.  Either await the extension's `start(...)` first, or

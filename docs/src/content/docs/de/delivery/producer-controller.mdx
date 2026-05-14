@@ -10,7 +10,7 @@ Consumer **geACKt** sind.
 ```ts
 import { Props, ProducerController } from 'actor-ts';
 
-const producer = system.actorOf(
+const producer = system.spawn(
   Props.create(() => new ProducerController<OrderEvent>({
     producerId:      'orders',                  // stabile Identität
     consumer:        consumerRef,
@@ -110,8 +110,8 @@ du Persistenz darauf.
 
 ```ts
 // Ein Producer pro Consumer:
-const p1 = system.actorOf(Props.create(() => new ProducerController({ consumer: c1Ref, ... })));
-const p2 = system.actorOf(Props.create(() => new ProducerController({ consumer: c2Ref, ... })));
+const p1 = system.spawnAnonymous(Props.create(() => new ProducerController({ consumer: c1Ref, ... })));
+const p2 = system.spawnAnonymous(Props.create(() => new ProducerController({ consumer: c2Ref, ... })));
 ```
 
 Jeder ProducerController ist **1:1 mit einem ConsumerController**.

@@ -23,7 +23,7 @@ class TickActor extends Actor<'tick' | 'once'> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('scheduler');
-  const actor = system.actorOf(Props.create(() => new TickActor()), 'ticker');
+  const actor = system.spawn(Props.create(() => new TickActor()), 'ticker');
 
   // Fire once after 100ms.
   system.scheduler.scheduleOnce(100, actor, 'once');

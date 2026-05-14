@@ -17,7 +17,7 @@ Router.custom(size, routeeProps, strategy)
 ```
 
 Jede gibt ein `Props<TMsg | Broadcast<TMsg>>` zurück — übergib es
-an `system.actorOf` oder `context.actorOf` wie alle anderen Props.
+an `system.spawn` oder `context.spawn` wie alle anderen Props.
 Der Typ-Parameter von `routeeProps` fließt durch, die resultierende
 Ref ist also typisiert.
 
@@ -36,7 +36,7 @@ class Worker extends Actor<Msg> {
 
 const system = ActorSystem.create('demo');
 
-const pool = system.actorOf(
+const pool = system.spawn(
   Router.roundRobin(4, Props.create(() => new Worker())),
   'workers',
 );
@@ -56,7 +56,7 @@ sind `actor-ts://demo/user/workers/routee-1` bis `routee-4`.
 
 ## Was zur Spawn-Zeit passiert
 
-Wenn du eine Router-Props mit `actorOf` ausführst, tut die Runtime:
+Wenn du eine Router-Props mit `spawn` ausführst, tut die Runtime:
 
 1. Erstellt eine `RouterActor`-Instanz.  Das ist der Actor mit dem
    Pfad, den du angegeben hast (`'workers'` im Beispiel).
@@ -97,7 +97,7 @@ const warmupStrategy: RoutingStrategy = (routees, state) => {
   return [routees[state.messageIndex % routees.length]];
 };
 
-const pool = system.actorOf(
+const pool = system.spawn(
   Router.custom(4, Props.create(() => new Worker()), warmupStrategy),
   'workers',
 );

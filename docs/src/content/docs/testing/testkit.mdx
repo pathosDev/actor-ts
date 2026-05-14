@@ -13,7 +13,7 @@ import { TestKit } from 'actor-ts/testkit';
 
 const tk = TestKit.create('my-spec');
 const probe = tk.createTestProbe();
-const ref = tk.system.actorOf(Props.create(() => new Worker(probe)));
+const ref = tk.system.spawnAnonymous(Props.create(() => new Worker(probe)));
 
 ref.tell({ kind: 'do' });
 await probe.expectMsg('done');
@@ -118,7 +118,7 @@ system that keeps the event loop alive.  Some test runners
 ```ts
 const { kit, scheduler } = TestKit.withManualScheduler('my-spec');
 
-const ref = kit.system.actorOf(Props.create(() => new Heartbeat(probe)));
+const ref = kit.system.spawnAnonymous(Props.create(() => new Heartbeat(probe)));
 ref.tell({ kind: 'start' });
 
 scheduler.advance(5_000);   // jump 5 virtual seconds
@@ -151,7 +151,7 @@ describe('Counter', () => {
   });
 
   it('increments', async () => {
-    const ref = tk.system.actorOf(Props.create(() => new Counter()));
+    const ref = tk.system.spawnAnonymous(Props.create(() => new Counter()));
     ref.tell({ kind: 'inc' });
     ref.tell({ kind: 'get', replyTo: probe as ActorRef<number> });
     await probe.expectMsg(1);

@@ -71,7 +71,7 @@ async function main(): Promise<void> {
   sys.extension(PersistenceExtensionId).setJournal(journal);
   sys.extension(PersistenceExtensionId).setSnapshotStore(snapshots);
 
-  const acct = sys.actorOf(Props.create(() => new Account('alice')), 'alice');
+  const acct = sys.spawn(Props.create(() => new Account('alice')), 'alice');
   console.log('after recovery →', await ask(acct, { kind: 'balance' }, 500));
   console.log('deposit 50 EUR →', await ask(acct, { kind: 'deposit', amount: 50 }, 500));
   console.log('balance        →', await ask(acct, { kind: 'balance' }, 500));

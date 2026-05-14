@@ -264,13 +264,13 @@ describe('Behaviors.empty / Behaviors.ignore', () => {
 });
 
 describe('typedProps — interop with OO Actor API', () => {
-  test('typedProps works through system.actorOf', async () => {
+  test('typedProps works through system.spawn', async () => {
     const sys = newSys();
     const kit = TestKit.create('typed-props', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const probe = kit.createTestProbe<number>();
 
     const b = Behaviors.receiveMessage<number>((m) => { probe.tell(m * 2); return Behaviors.same; });
-    const ref = kit.system.actorOf(typedProps(b));
+    const ref = kit.system.spawnAnonymous(typedProps(b));
     ref.tell(21);
     expect(await probe.expectMsg(42, 500)).toBe(42);
 

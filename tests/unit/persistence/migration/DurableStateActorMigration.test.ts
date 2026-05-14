@@ -66,7 +66,7 @@ describe('DurableStateActor — adapter round-trip', () => {
     const store = new InMemoryDurableStateStore();
     const sys = ActorSystem.create('ds-rt', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const probe = makeProbe(sys);
-    const ref = sys.actorOf(props(store, 'acct'), 'a');
+    const ref = sys.spawn(props(store, 'acct'), 'a');
     ref.tell({ kind: 'deposit', amount: 50, replyTo: probe.ref });
     await sleep(30);
 
@@ -85,14 +85,14 @@ describe('DurableStateActor — adapter round-trip', () => {
     const store = new InMemoryDurableStateStore();
     const sys = ActorSystem.create('ds-restart', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const probe = makeProbe(sys);
-    const ref = sys.actorOf(props(store, 'acct'), 'a');
+    const ref = sys.spawn(props(store, 'acct'), 'a');
     ref.tell({ kind: 'deposit', amount: 100, replyTo: probe.ref });
     await sleep(30);
     await sys.terminate();
 
     const sys2 = ActorSystem.create('ds-restart-2', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const probe2 = makeProbe(sys2);
-    const ref2 = sys2.actorOf(props(store, 'acct'), 'a');
+    const ref2 = sys2.spawn(props(store, 'acct'), 'a');
     ref2.tell({ kind: 'state', replyTo: probe2.ref });
     await sleep(30);
     expect(probe2.received).toContainEqual({ balance: 100, currency: 'EUR' });
@@ -109,7 +109,7 @@ describe('DurableStateActor — v1 → v2 upcast', () => {
     });
     const sys = ActorSystem.create('ds-upcast', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const probe = makeProbe(sys);
-    const ref = sys.actorOf(props(store, 'acct'), 'a');
+    const ref = sys.spawn(props(store, 'acct'), 'a');
     ref.tell({ kind: 'state', replyTo: probe.ref });
     await sleep(30);
     expect(probe.received).toContainEqual({ balance: 999, currency: 'USD' });
@@ -126,7 +126,7 @@ describe('DurableStateActor — strict mode', () => {
     let captured: StrictAccount | null = null;
     const probe = makeProbe(sys);
     void probe;
-    sys.actorOf(Props.create(() => {
+    sys.spawn(Props.create(() => {
       const a = new StrictAccount({
         persistenceId: 'acct', store, emptyState: (): State => ({ balance: 0, currency: 'USD' }),
       });
@@ -155,7 +155,7 @@ describe('DurableStateActor — no adapter regression', () => {
     }
     const sys = ActorSystem.create('ds-raw', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const probe = makeProbe(sys);
-    const ref = sys.actorOf(Props.create(() => new RawAccount({
+    const ref = sys.spawn(Props.create(() => new RawAccount({
       persistenceId: 'r', store, emptyState: (): StateV1 => ({ balance: 0 }),
     }) as unknown as Actor<Cmd>), 'raw');
     ref.tell({ kind: 'deposit', amount: 7, replyTo: probe.ref });
@@ -176,6 +176,6 @@ function makeProbe(sys: ActorSystem): Probe {
   class P extends (Actor as new () => { onReceive(_: unknown): void; }) {
     onReceive(m: unknown): void { received.push(m); }
   }
-  const ref = sys.actorOf(Props.create(() => new P() as unknown as Actor<unknown>), `p-${Math.random().toString(36).slice(2, 6)}`);
+  const ref = sys.spawn(Props.create(() => new P() as unknown as Actor<unknown>), `p-${Math.random().toString(36).slice(2, 6)}`);
   return { ref, received };
 }

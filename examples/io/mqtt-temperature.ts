@@ -59,10 +59,10 @@ async function main(): Promise<void> {
     },
   });
 
-  const aggregatorRef = system.actorOf(Props.create(() => new Aggregator()), 'agg');
+  const aggregatorRef = system.spawn(Props.create(() => new Aggregator()), 'agg');
 
   // Constructor settings = per-instance.  brokerUrl comes from HOCON.
-  const mqttRef = system.actorOf(Props.create(() => new MqttActor({
+  const mqttRef = system.spawn(Props.create(() => new MqttActor({
     clientId: 'temperature-demo',
     subscriptions: [
       { topic: 'sensors/+/temp', target: aggregatorRef },

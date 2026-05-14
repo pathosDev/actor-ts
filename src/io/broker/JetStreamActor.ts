@@ -45,7 +45,7 @@ import type { BrokerCommonSettings } from './BrokerSettings.js';
  *
  * **Example.**
  *
- *   const js = system.actorOf(Props.create(() => new JetStreamActor({
+ *   const js = system.spawnAnonymous(Props.create(() => new JetStreamActor({
  *     servers: ['nats://localhost:4222'],
  *     stream:  { name: 'ORDERS', subjects: ['orders.*'] },
  *     consumer: { durable: 'order-processor', ackWaitMs: 30_000 },

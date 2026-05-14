@@ -52,7 +52,7 @@ const cluster = await Cluster.join(system, { host, port, seeds });
 const ps      = DistributedPubSub.start(system, { cluster });
 
 // Subscribe (typically in an actor's preStart):
-const room = system.actorOf(Props.create(() => new ChatRoom()));
+const room = system.spawnAnonymous(Props.create(() => new ChatRoom()));
 ps.mediator.tell(new Subscribe('chat.room.general', room));
 
 // Publish (anywhere — from any node, in or out of an actor):

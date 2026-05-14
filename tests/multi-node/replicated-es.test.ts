@@ -73,7 +73,7 @@ describe('Replicated ES — three-node convergence', () => {
       const refs = new Map<string, ActorRef<Cmd>>();
       for (const role of ['a', 'b', 'c'] as const) {
         const cluster = spec.clusterFor(role);
-        const ref = spec.systemFor(role).actorOf(
+        const ref = spec.systemFor(role).spawn(
           Props.create<Cmd>(() => {
             const inst = new ReplicatedCounter(cluster);
             instances.set(role, inst);
@@ -133,7 +133,7 @@ describe('Replicated ES — three-node convergence', () => {
       const refs = new Map<string, ActorRef<Cmd>>();
       for (const role of ['a', 'b', 'c'] as const) {
         const cluster = spec.clusterFor(role);
-        const ref = spec.systemFor(role).actorOf(
+        const ref = spec.systemFor(role).spawn(
           Props.create<Cmd>(() => {
             const inst = new ReplicatedCounter(cluster);
             instances.set(role, inst);

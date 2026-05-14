@@ -46,7 +46,7 @@ die Proxies verschieben ihr Ziel.
 ```ts
 import { ClusterSingletonManager, Props } from 'actor-ts';
 
-system.actorOf(
+system.spawn(
   ClusterSingletonManager.props({
     cluster,
     typeName:        'job-scheduler',
@@ -257,7 +257,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Manager-Name muss der Konvention folgen">
   ```ts
-  system.actorOf(ClusterSingletonManager.props({...}), 'whatever');
+  system.spawn(ClusterSingletonManager.props({...}), 'whatever');
   // ✗ Proxy sucht `/user/singleton-manager-<typeName>`, nicht /user/whatever
   ```
   Nutze `singletonManagerPath(...)` oder buchstabier die

@@ -78,7 +78,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
    * `this.child` here, send `PoisonPill`, and wait for the
    * `Terminated` system message before allowing another `spawn()`.
    * Without this, a fast leader-flap (or two cluster events back-to-
-   * back from `handleLeave`) reaches `actorOf` while the previous
+   * back from `handleLeave`) reaches `spawn` while the previous
    * child cell is still in the parent's `_children` map — the new
    * spawn fails with "Child name 'X' is not unique".  It also avoids
    * spawning a second user actor (e.g. a fresh `HttpIngressActor`
@@ -310,14 +310,14 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
 
   private spawn(): void {
     if (this.child) return;
-    // The previous child is still terminating.  Don't try to actorOf
+    // The previous child is still terminating.  Don't try to spawn
     // with the same name — its cell is still in the parent's children
     // map — and don't bring up the user actor (e.g. an HTTP server
     // re-binding the same port) until postStop has released its
     // resources.  `handleTerminated` will retrigger the reconcile
     // once `pendingStop` clears.
     if (this.pendingStop) return;
-    this.child = this.context.actorOf(this.settings.singletonProps, this.settings.typeName);
+    this.child = this.context.spawn(this.settings.singletonProps, this.settings.typeName);
     this.context.watch(this.child);
     this.log.info(`singleton '${this.settings.typeName}' started on this node (now leader)`);
   }

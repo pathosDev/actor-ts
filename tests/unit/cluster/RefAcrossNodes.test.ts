@@ -96,7 +96,7 @@ describe('ActorRef serialisation across cluster nodes', () => {
     });
 
     // Probe lives on node B — its LocalActorRef is therefore OWNED by B.
-    const probeOnB = b.sys.actorOf(Props.create(() => new Probe()), 'probe');
+    const probeOnB = b.sys.spawn(Props.create(() => new Probe()), 'probe');
 
     // Give sharding a moment to allocate initial shards (the first ask from
     // the non-hoster node otherwise races the coordinator).

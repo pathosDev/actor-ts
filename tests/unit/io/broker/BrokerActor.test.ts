@@ -107,7 +107,7 @@ function spawnFake(
 ): { ref: ActorRef<FakeCmd>; brokerReady: Promise<FakeBroker> } {
   let resolve!: (b: FakeBroker) => void;
   const brokerReady = new Promise<FakeBroker>((r) => { resolve = r; });
-  const ref = sys.actorOf(Props.create(() => {
+  const ref = sys.spawnAnonymous(Props.create(() => {
     const b = new FakeBroker(settings);
     resolve(b);
     return b as unknown as Actor<FakeCmd>;
@@ -158,7 +158,7 @@ describe('BrokerActor — settings resolution', () => {
   test('missing required setting raises BrokerSettingsError', async () => {
     const sys = makeSystem('cfg-4');
     let captured: Error | null = null;
-    sys.actorOf(Props.create(() => {
+    sys.spawnAnonymous(Props.create(() => {
       const b = new FakeBroker();  // no endpoint anywhere
       // Intercept preStart to capture the error.
       const orig = b.preStart.bind(b);
@@ -183,7 +183,7 @@ describe('BrokerActor — lifecycle', () => {
     const sys = makeSystem('lc-1');
     let connectedCount = 0;
     sys.eventStream.subscribe(
-      sys.actorOf(Props.create(() => new (class extends Actor<unknown> {
+      sys.spawnAnonymous(Props.create(() => new (class extends Actor<unknown> {
         override onReceive(_: unknown): void { connectedCount++; }
       })())),
       BrokerConnected,
@@ -201,7 +201,7 @@ describe('BrokerActor — lifecycle', () => {
     const sys = makeSystem('lc-2');
     let disconnectedCount = 0;
     sys.eventStream.subscribe(
-      sys.actorOf(Props.create(() => new (class extends Actor<unknown> {
+      sys.spawnAnonymous(Props.create(() => new (class extends Actor<unknown> {
         override onReceive(_: unknown): void { disconnectedCount++; }
       })())),
       BrokerDisconnected,
@@ -253,7 +253,7 @@ describe('BrokerActor — reconnect', () => {
     const sys = makeSystem('rc-3');
     let reconnectAttempts = 0;
     sys.eventStream.subscribe(
-      sys.actorOf(Props.create(() => new (class extends Actor<unknown> {
+      sys.spawnAnonymous(Props.create(() => new (class extends Actor<unknown> {
         override onReceive(_: unknown): void { reconnectAttempts++; }
       })())),
       BrokerReconnectAttempt,
@@ -302,7 +302,7 @@ describe('BrokerActor — outbound buffer', () => {
     const sys = makeSystem('ob-2');
     let overflows = 0;
     sys.eventStream.subscribe(
-      sys.actorOf(Props.create(() => new (class extends Actor<unknown> {
+      sys.spawnAnonymous(Props.create(() => new (class extends Actor<unknown> {
         override onReceive(_: unknown): void { overflows++; }
       })())),
       BrokerBufferOverflow,
@@ -328,7 +328,7 @@ describe('BrokerActor — outbound buffer', () => {
     const sys = makeSystem('ob-3');
     let notConnected = 0;
     sys.eventStream.subscribe(
-      sys.actorOf(Props.create(() => new (class extends Actor<unknown> {
+      sys.spawnAnonymous(Props.create(() => new (class extends Actor<unknown> {
         override onReceive(_: unknown): void { notConnected++; }
       })())),
       BrokerNotConnected,
@@ -356,7 +356,7 @@ describe('BrokerActor — subscribers', () => {
     const sys = makeSystem('sub-1');
     const probes = [new ProbeActor(), new ProbeActor()];
     const refs = probes.map((p, i) =>
-      sys.actorOf(Props.create(() => p as unknown as Actor<unknown>), `p${i}`),
+      sys.spawn(Props.create(() => p as unknown as Actor<unknown>), `p${i}`),
     );
     const { brokerReady } = spawnFake(sys, { endpoint: 'h' });
     const broker = await brokerReady;
@@ -375,7 +375,7 @@ describe('BrokerActor — subscribers', () => {
   test('unsubscribe removes from fanOut targets', async () => {
     const sys = makeSystem('sub-2');
     const probe = new ProbeActor();
-    const probeRef = sys.actorOf(Props.create(() => probe as unknown as Actor<unknown>));
+    const probeRef = sys.spawnAnonymous(Props.create(() => probe as unknown as Actor<unknown>));
     const { brokerReady } = spawnFake(sys, { endpoint: 'h' });
     const broker = await brokerReady;
     await sleep(20);
@@ -392,7 +392,7 @@ describe('BrokerActor — subscribers', () => {
   test('multiple topics for one ref tracked independently', async () => {
     const sys = makeSystem('sub-3');
     const probe = new ProbeActor();
-    const probeRef = sys.actorOf(Props.create(() => probe as unknown as Actor<unknown>));
+    const probeRef = sys.spawnAnonymous(Props.create(() => probe as unknown as Actor<unknown>));
     const { brokerReady } = spawnFake(sys, { endpoint: 'h' });
     const broker = await brokerReady;
     await sleep(20);

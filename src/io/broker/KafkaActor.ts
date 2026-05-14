@@ -142,7 +142,7 @@ export type KafkaCmd =
  *     successfully passed through `commit` is committed; a crash or
  *     `nack` re-delivers.
  *
- *   const kafka = system.actorOf(Props.create(() => new KafkaActor({
+ *   const kafka = system.spawnAnonymous(Props.create(() => new KafkaActor({
  *     brokers: ['kafka:9092'],
  *     consumer: { groupId: 'orders', commitMode: 'manual' },
  *     topics: ['orders'],

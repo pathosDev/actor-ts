@@ -16,7 +16,7 @@ describe('ask', () => {
       override onReceive(m: string): void { this.sender.forEach((__s) => __s.tell(`echo:${m}`)); }
     }
     const sys = newSystem();
-    const ref = sys.actorOf(Props.create(() => new Echo()), 'echo');
+    const ref = sys.spawn(Props.create(() => new Echo()), 'echo');
     const reply = await ask<string, string>(ref, 'hi', 500);
     expect(reply).toBe('echo:hi');
     await sys.terminate();
@@ -25,7 +25,7 @@ describe('ask', () => {
   test('rejects with AskTimeoutError after the timeout', async () => {
     class Silent extends Actor<string> { override onReceive(_: string): void {} }
     const sys = newSystem();
-    const ref = sys.actorOf(Props.create(() => new Silent()), 's');
+    const ref = sys.spawn(Props.create(() => new Silent()), 's');
     let caught: unknown = null;
     try { await ask(ref, 'hi', 20); } catch (e) { caught = e; }
     expect(caught).toBeInstanceOf(AskTimeoutError);
@@ -41,7 +41,7 @@ describe('ask', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.actorOf(Props.create(() => new Peek()), 'p');
+    const ref = sys.spawn(Props.create(() => new Peek()), 'p');
     await ask(ref, 'x', 100);
     expect(senderName).toBeDefined();
     expect(senderName!.startsWith('askResp-')).toBe(true);
@@ -55,7 +55,7 @@ describe('ask', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.actorOf(Props.create(() => new Rejector()), 'r');
+    const ref = sys.spawn(Props.create(() => new Rejector()), 'r');
     let err: Error | null = null;
     try { await ask(ref, 'hi', 500); } catch (e) { err = e as Error; }
     expect(err).not.toBeNull();
@@ -71,7 +71,7 @@ describe('ask', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.actorOf(Props.create(() => new DoubleReply()), 'd');
+    const ref = sys.spawn(Props.create(() => new DoubleReply()), 'd');
     const reply = await ask<string, string>(ref, 'x', 500);
     expect(reply).toBe('first');
     // Give the second tell a chance — it must not blow up anything.
@@ -84,7 +84,7 @@ describe('ask', () => {
       override onReceive(m: string): void { this.sender.forEach((__s) => __s.tell(m)); }
     }
     const sys = newSystem();
-    const ref = sys.actorOf(Props.create(() => new Echo()), 'e');
+    const ref = sys.spawn(Props.create(() => new Echo()), 'e');
     const reply = await ask<string, string>(ref, 'hi', 0);
     expect(reply).toBe('hi');
     await sys.terminate();

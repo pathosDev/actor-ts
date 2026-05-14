@@ -15,7 +15,7 @@ import { pickRendezvous } from './ConsistentHashing.js';
  * `consistent-hashing` sibling that pins messages with the same
  * extracted key to the same node.
  *
- *   const router = system.actorOf(
+ *   const router = system.spawn(
  *     ClusterRouter.props({
  *       cluster,
  *       role: 'compute',                              // optional role filter

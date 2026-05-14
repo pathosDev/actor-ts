@@ -11,7 +11,7 @@ WS-Verbindungen (Serverseite) siehe
 ```ts
 import { ActorSystem, Props, WebSocketActor } from 'actor-ts';
 
-const ws = system.actorOf(
+const ws = system.spawn(
   Props.create(() => new WebSocketActor({
     url: 'wss://realtime.example.com/feed',
     protocols: ['my-proto-v1'],

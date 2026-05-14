@@ -246,7 +246,7 @@ export class ReceptionistExtension {
 
   start(cluster?: Cluster | null, settings: Omit<ReceptionistSettings, 'cluster'> = {}): ActorRef<Msg> {
     if (this.started) return this.started;
-    const ref = this.system.actorOf(
+    const ref = this.system.spawn(
       Props.create<Msg>(() => new Receptionist({ cluster: cluster ?? null, ...settings })),
       'receptionist',
     );

@@ -16,7 +16,7 @@ class Counter extends Actor<'inc' | 'report'> {
 async function main(): Promise<void> {
   const tk = TestKit.create('testprobe-demo');
   const probe = tk.createTestProbe();
-  const counter = tk.system.actorOf(Props.create(() => new Counter()), 'counter');
+  const counter = tk.system.spawn(Props.create(() => new Counter()), 'counter');
 
   counter.tell('inc');
   counter.tell('inc');

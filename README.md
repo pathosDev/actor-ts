@@ -94,7 +94,7 @@ class Greeter extends Actor<string> {
 }
 
 const system = ActorSystem.create('hello');
-const ref    = system.actorOf(Props.create(() => new Greeter()), 'greeter');
+const ref    = system.spawn(Props.create(() => new Greeter()), 'greeter');
 
 ref.tell('world');
 
@@ -151,7 +151,7 @@ when the target actor sends its answer back.
 import { ActorSystem, Props, ask } from 'actor-ts';
 
 const system  = ActorSystem.create('demo');
-const counter = system.actorOf(Props.create(() => new Counter()));
+const counter = system.spawnAnonymous(Props.create(() => new Counter()));
 
 counter.tell({ kind: 'inc' });
 counter.tell({ kind: 'inc' });

@@ -103,7 +103,7 @@ describe('BackoffSupervisor — restart cadence', () => {
     crashesObserved = 0;
     const sys = newSystem('backoff-cadence');
     const policy = new RecordingPolicy([40, 80, 160]);
-    const supervisor = sys.actorOf(
+    const supervisor = sys.spawn(
       BackoffSupervisor.props(withDefaults({
         childProps: Props.create(() => new Flaky()),
         policy,
@@ -133,7 +133,7 @@ describe('BackoffSupervisor — restart cadence', () => {
     crashesObserved = 0;
     const sys = newSystem('backoff-reset');
     const policy = new RecordingPolicy([20, 40, 80, 160]);
-    const supervisor = sys.actorOf(
+    const supervisor = sys.spawn(
       BackoffSupervisor.props(withDefaults({
         childProps: Props.create(() => new Flaky()),
         policy,
@@ -165,7 +165,7 @@ describe('BackoffSupervisor — message forwarding', () => {
   test('stash mode buffers messages during backoff and forwards them with original senders', async () => {
     crashesObserved = 0;
     const sys = newSystem('backoff-stash');
-    const supervisor = sys.actorOf(
+    const supervisor = sys.spawn(
       BackoffSupervisor.props(withDefaults({
         childProps: Props.create(() => new Flaky()),
         // Slow the respawn down so we have a clear backoff window.
@@ -194,7 +194,7 @@ describe('BackoffSupervisor — message forwarding', () => {
   test('drop mode discards messages during the backoff window', async () => {
     crashesObserved = 0;
     const sys = newSystem('backoff-drop');
-    const supervisor = sys.actorOf(
+    const supervisor = sys.spawn(
       BackoffSupervisor.props(withDefaults({
         childProps: Props.create(() => new Flaky()),
         policy: new RecordingPolicy([100]),
@@ -229,7 +229,7 @@ describe('BackoffSupervisor — preStart failures', () => {
     preStartCrashCounter = { left: 2 };  // crash twice, then succeed
     const sys = newSystem('backoff-prestart');
     const policy = new RecordingPolicy([40, 80]);
-    const supervisor = sys.actorOf(
+    const supervisor = sys.spawn(
       BackoffSupervisor.props(withDefaults({
         childProps: Props.create(() => new FailingPreStart()),
         policy,
@@ -259,7 +259,7 @@ describe('BackoffSupervisor — lifecycle', () => {
     crashesObserved = 0;
     const sys = newSystem('backoff-cancel');
     const policy = new RecordingPolicy([300]);  // long backoff
-    const supervisor = sys.actorOf(
+    const supervisor = sys.spawn(
       BackoffSupervisor.props(withDefaults({
         childProps: Props.create(() => new Flaky()),
         policy,
@@ -331,7 +331,7 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
   test('triggerOn=failure: child crash respawns; clean self-stop does NOT', async () => {
     lifecycleSpawns = 0; lifecycleStops = 0;
     const sys = newSystem('backoff-trigger-failure');
-    const supervisor = sys.actorOf(
+    const supervisor = sys.spawn(
       BackoffSupervisor.props({
         childProps: Props.create(() => new SelfStopChild()),
         minBackoff: 30,
@@ -363,7 +363,7 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
   test('triggerOn=stop: clean self-stop respawns; child crash does NOT', async () => {
     lifecycleSpawns = 0; lifecycleStops = 0;
     const sys = newSystem('backoff-trigger-stop');
-    const supervisor = sys.actorOf(
+    const supervisor = sys.spawn(
       BackoffSupervisor.props({
         childProps: Props.create(() => new SelfStopChild()),
         minBackoff: 30,
@@ -398,7 +398,7 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
     preStartCrashCounter = { left: 3 };
     const sys = newSystem('backoff-stash-survives');
     const replies: number[] = [];
-    const supervisor = sys.actorOf(
+    const supervisor = sys.spawn(
       BackoffSupervisor.props<{ kind: 'echo'; value: number }>({
         childProps: Props.create(() => new FailingPreStart()),
         minBackoff: 40,
@@ -440,7 +440,7 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
     // don't pay drainGraceMs of latency for the absence of any
     // crash.
     const sys = newSystem('backoff-grace-default');
-    const supervisor = sys.actorOf(
+    const supervisor = sys.spawn(
       BackoffSupervisor.props<{ kind: 'echo'; value: number }>({
         childProps: Props.create(() => new Flaky()) as unknown as Props<{ kind: 'echo'; value: number }>,
         minBackoff: 80,
@@ -465,7 +465,7 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
   test('triggerOn=any (default): both crash AND clean self-stop respawn', async () => {
     lifecycleSpawns = 0; lifecycleStops = 0;
     const sys = newSystem('backoff-trigger-any');
-    const supervisor = sys.actorOf(
+    const supervisor = sys.spawn(
       BackoffSupervisor.props({
         childProps: Props.create(() => new SelfStopChild()),
         minBackoff: 30,

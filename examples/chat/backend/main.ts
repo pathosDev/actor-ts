@@ -186,7 +186,7 @@ async function main(): Promise<void> {
   });
 
   // -------- 7. OnlineUsersActor (top-level, runs on every node) --------
-  const onlineUsers = system.actorOf(
+  const onlineUsers = system.spawn(
     Props.create(() => new OnlineUsersActor()),
     'online-users',
   );
@@ -197,7 +197,7 @@ async function main(): Promise<void> {
   // fan-out pattern as `OnlineUsersActor`: each interested local
   // session subscribes here once per room, the actor maintains a
   // single DD-level subscription on its behalf.
-  const readReceipts = system.actorOf(
+  const readReceipts = system.spawn(
     Props.create(() => new ReadReceiptsActor()),
     'read-receipts',
   );
@@ -210,7 +210,7 @@ async function main(): Promise<void> {
   // step is idempotent (ORSet.add of an existing element is a no-op),
   // and each instance fans out only to its own local subscribers.
   // No singleton needed.
-  const roomDirectory = system.actorOf(
+  const roomDirectory = system.spawn(
     Props.create(() => new ChatRoomDirectoryActor()),
     'chat-room-directory',
   );

@@ -81,7 +81,7 @@ async function main(): Promise<void> {
 
   // Spawn a client on each node and subscribe it via the proxy.
   for (const { sys, name } of [a, b, c]) {
-    const client = sys.actorOf(Props.create(() => new CronClient(name)));
+    const client = sys.spawnAnonymous(Props.create(() => new CronClient(name)));
     sys.extension(ClusterSingletonId).get<CronCmd>('cron').forEach(h =>
       h.proxy.tell({ kind: 'subscribe', sub: client }),
     );

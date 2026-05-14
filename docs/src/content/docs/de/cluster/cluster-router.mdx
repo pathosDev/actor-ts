@@ -52,10 +52,10 @@ const system  = ActorSystem.create('my-app');
 const cluster = await Cluster.join(system, { host, port, seeds, roles: ['compute'] });
 
 // 1. Jeder Node spawnt seinen eigenen Worker an /user/worker
-system.actorOf(Props.create(() => new Worker()), 'worker');
+system.spawn(Props.create(() => new Worker()), 'worker');
 
 // 2. Jeder Node kann einen Cluster-Router bauen, der diese Worker anspricht
-const router = system.actorOf(
+const router = system.spawn(
   ClusterRouter.props({
     cluster,
     routerType:  'round-robin',

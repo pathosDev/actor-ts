@@ -35,7 +35,7 @@ import { MultiNodeTransport } from './internal/MultiNodeTransport.js';
  *   await spec.start();
  *   await spec.awaitMembers('a', 3);
  *
- *   spec.systemFor('b').actorOf(...);
+ *   spec.systemFor('b').spawnAnonymous(...);
  *   await spec.crash('b');
  *   await spec.awaitMembers('a', 2);
  *

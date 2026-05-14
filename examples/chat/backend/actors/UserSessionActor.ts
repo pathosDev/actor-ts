@@ -8,7 +8,7 @@
  * **Why not wrap the socket in a ServerWebSocketActor child?**
  * Because actor instantiation in this framework is async (the
  * actor's `preStart` runs on the actor mailbox, not synchronously
- * inside `actorOf`).  In the small window between Fastify accepting
+ * inside `spawn`).  In the small window between Fastify accepting
  * the upgrade and the wrapper actor's `preStart` actually adding
  * listeners, the client's first frame (typically `login`) is
  * delivered to the raw socket and dropped because no listener is

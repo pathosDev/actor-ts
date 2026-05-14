@@ -127,14 +127,14 @@ describe('SingletonManager with lease', () => {
 
     // (cluster wiring elided)
 
-    tk1.system.actorOf(
+    tk1.system.spawn(
       ClusterSingletonManager.props({
         cluster: cluster1, typeName: 's', singletonProps: ..., lease: lease1,
       }),
       'singleton-manager-s',
     );
 
-    tk2.system.actorOf(
+    tk2.system.spawn(
       ClusterSingletonManager.props({
         cluster: cluster2, typeName: 's', singletonProps: ..., lease: lease2,
       }),

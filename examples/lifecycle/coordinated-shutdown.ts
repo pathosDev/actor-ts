@@ -49,7 +49,7 @@ async function main(): Promise<void> {
     console.log('5. closing DB pool, flushing metrics');
   });
 
-  system.actorOf(Props.create(() => new Worker()), 'worker');
+  system.spawn(Props.create(() => new Worker()), 'worker');
   await new Promise(r => setTimeout(r, 150));
 
   console.log('--- cs.run() ---');

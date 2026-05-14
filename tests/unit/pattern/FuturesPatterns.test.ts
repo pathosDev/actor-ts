@@ -51,7 +51,7 @@ describe('pipeTo', () => {
         probe.tell({ value: m.value, sender: this.sender.map((s) => s.path.name).toNullable() });
       }
     }
-    const holder = kit.system.actorOf(Props.create(() => new Holder()));
+    const holder = kit.system.spawnAnonymous(Props.create(() => new Holder()));
     pipeTo(Promise.resolve('hello'), holder, { sender: probe });
 
     const got = await probe.receiveOne(200) as { value: string; sender: string | null };

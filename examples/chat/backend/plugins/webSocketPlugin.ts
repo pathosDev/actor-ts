@@ -72,7 +72,7 @@ export interface WebSocketPluginOptions {
  * GET and never trigger the upgrade.
  *
  * **Why attach `socket.on('message', ...)` here, not inside the
- * actor?**  The actor system's `actorOf` returns an `ActorRef`
+ * actor?**  The actor system's `spawn` returns an `ActorRef`
  * synchronously but defers `preStart` to a later mailbox tick.  In
  * that small window between Fastify accepting the upgrade and the
  * actor's preStart running, the client's first frame (the `login`)
@@ -108,10 +108,10 @@ export const webSocketRoutePlugin: FastifyPluginAsync<WebSocketPluginOptions> = 
     const id = ++counter;
     opts.system.log.info(`[ws] connection accepted (session ${id})`);
 
-    // -- 1. Spawn the session actor.  `actorOf` returns synchronously;
+    // -- 1. Spawn the session actor.  `spawn` returns synchronously;
     //       the actor's mailbox queues messages we tell it before
     //       its `preStart` runs, so we can safely forward right away.
-    const session: ActorRef<InboundFrame | SocketClosed> = opts.system.actorOf(
+    const session: ActorRef<InboundFrame | SocketClosed> = opts.system.spawn(
       Props.create(() =>
         new UserSessionActor({
           socket: socket as unknown as ServerWebSocketLike,

@@ -50,7 +50,7 @@ const backend = new S3ObjectStorageBackend({
 
 const stateStore = new ObjectStorageDurableStateStore({ backend });
 
-const cart = system.actorOf(Props.create(() => new Cart({
+const cart = system.spawnAnonymous(Props.create(() => new Cart({
   persistenceId: `cart-${userId}`,
   store:         stateStore,
   emptyState:    () => ({ items: [] }),

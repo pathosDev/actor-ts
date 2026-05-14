@@ -46,8 +46,8 @@ async function runPooled(system: ActorSystem, routees: number): Promise<void> {
   const counter: Counter = { n: 0 };
   const workerProps = Props.create(() => makeWorker(counter));
   const ref = (routees === 1
-    ? system.actorOf(workerProps)
-    : system.actorOf(Router.roundRobin(routees, workerProps))) as ActorRef<'work'>;
+    ? system.spawnAnonymous(workerProps)
+    : system.spawnAnonymous(Router.roundRobin(routees, workerProps))) as ActorRef<'work'>;
 
   // Warm-up: run one full batch before the measured loop so the routees
   // have started and the event loop has reached steady state.

@@ -161,7 +161,7 @@ describe('DistributedPubSub — gossip-payload audit (#80)', () => {
     const a = await startNode('ps-audit-cycles', 'h', 51301);
 
     let captured: DistributedPubSubMediator | null = null;
-    const auditMediator = a.system.actorOf(
+    const auditMediator = a.system.spawn(
       Props.create(() => {
         captured = new DistributedPubSubMediator({ cluster: a.cluster, gossipIntervalMs: 100 });
         return captured;
@@ -206,7 +206,7 @@ describe('DistributedPubSub — gossip-payload audit (#80)', () => {
     const a = await startNode('ps-audit-bytes', 'h', 51302);
 
     let captured: DistributedPubSubMediator | null = null;
-    const auditMediator = a.system.actorOf(
+    const auditMediator = a.system.spawn(
       Props.create(() => {
         captured = new DistributedPubSubMediator({ cluster: a.cluster, gossipIntervalMs: 100 });
         return captured;
@@ -247,7 +247,7 @@ describe('DistributedPubSub — gossip-payload audit (#80)', () => {
     const a = await startNode('ps-audit-schema', 'h', 51303);
 
     let captured: DistributedPubSubMediator | null = null;
-    const auditMediator = a.system.actorOf(
+    const auditMediator = a.system.spawn(
       Props.create(() => {
         captured = new DistributedPubSubMediator({ cluster: a.cluster, gossipIntervalMs: 100 });
         return captured;

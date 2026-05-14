@@ -15,7 +15,7 @@ class Worker extends Actor<string> {
 async function main(): Promise<void> {
   const system = ActorSystem.create('router-demo');
 
-  const pool = system.actorOf(
+  const pool = system.spawn(
     Router.roundRobin(4, Props.create(() => new Worker())),
     'pool',
   );

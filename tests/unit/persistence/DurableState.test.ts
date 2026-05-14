@@ -73,15 +73,15 @@ describe('DurableStateActor', () => {
     class Sink extends (await import('../../../src/Actor.js')).Actor<{ kind: string }> {
       override onReceive(m: { kind: string }): void { reply.push(m); }
     }
-    const sink = sys.actorOf(Props.create(() => new Sink()));
+    const sink = sys.spawnAnonymous(Props.create(() => new Sink()));
 
-    const ref = sys.actorOf(kvProps(store, 'user-1'));
+    const ref = sys.spawnAnonymous(kvProps(store, 'user-1'));
     ref.tell({ kind: 'set', key: 'name', value: 'alice', replyTo: sink });
     await sleep(40);
     ref.stop();
     await sleep(30);
 
-    const restarted = sys.actorOf(kvProps(store, 'user-1'));
+    const restarted = sys.spawnAnonymous(kvProps(store, 'user-1'));
     restarted.tell({ kind: 'get', key: 'name', replyTo: sink });
     await sleep(40);
 

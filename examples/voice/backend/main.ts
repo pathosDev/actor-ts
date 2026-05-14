@@ -121,7 +121,7 @@ async function main(): Promise<void> {
   const sessions = new SessionStore(ddHandle);
 
   // -------- 5. VoicePresenceActor (one per node) --------
-  const voicePresence = system.actorOf(
+  const voicePresence = system.spawn(
     Props.create(() => new VoicePresenceActor()),
     'voice-presence',
   );

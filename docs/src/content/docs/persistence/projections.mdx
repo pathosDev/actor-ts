@@ -57,7 +57,7 @@ const projection = ProjectionActor.byTag<AccountEvent>({
   },
 });
 
-system.actorOf(Props.create(() => projection), 'balance-projection');
+system.spawn(Props.create(() => projection), 'balance-projection');
 ```
 
 The actor:
@@ -184,9 +184,9 @@ For that, use a single tag-based projection that hashes by pid.
 
 ```ts
 // Three projections, three offset cursors, three independent views:
-system.actorOf(Props.create(() => ProjectionActor.byTag<E>({ name: 'balance', ... })));
-system.actorOf(Props.create(() => ProjectionActor.byTag<E>({ name: 'audit-log', ... })));
-system.actorOf(Props.create(() => ProjectionActor.byTag<E>({ name: 'monthly-stats', ... })));
+system.spawnAnonymous(Props.create(() => ProjectionActor.byTag<E>({ name: 'balance', ... })));
+system.spawnAnonymous(Props.create(() => ProjectionActor.byTag<E>({ name: 'audit-log', ... })));
+system.spawnAnonymous(Props.create(() => ProjectionActor.byTag<E>({ name: 'monthly-stats', ... })));
 ```
 
 Each has its own offset cursor; they read independently from the

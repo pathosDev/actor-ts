@@ -30,7 +30,7 @@ class Flaky extends Actor<{ kind: 'do-it' }> {
 
 const system = ActorSystem.create('demo');
 
-const supervisor = system.actorOf(
+const supervisor = system.spawn(
   BackoffSupervisor.props({
     childProps: Props.create(() => new Flaky()),
     minBackoff: 200,

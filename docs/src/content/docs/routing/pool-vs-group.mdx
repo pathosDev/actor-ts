@@ -21,7 +21,7 @@ think about lifecycle, supervision, and resize.
 ```ts
 import { Router, Props } from 'actor-ts';
 
-const pool = system.actorOf(
+const pool = system.spawn(
   Router.roundRobin(4, Props.create(() => new Worker())),
   'workers',
 );
@@ -77,7 +77,7 @@ workers, all the same, parallelizing one stream of work.
 ```ts
 import { ClusterRouter } from 'actor-ts';
 
-const router = system.actorOf(
+const router = system.spawn(
   ClusterRouter.props({
     cluster,
     routerType: 'round-robin',

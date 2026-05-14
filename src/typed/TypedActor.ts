@@ -196,7 +196,8 @@ class TypedActorContextImpl<T> implements TypedActorContext<T> {
   get log(): import('../Logger.js').Logger { return this.oo.log; }
 
   spawn<U>(behavior: Behavior<U>, name?: string): ActorRef<U> {
-    return this.oo.actorOf(Props.create(() => new TypedActor<U>(behavior)), name);
+    const props = Props.create(() => new TypedActor<U>(behavior));
+    return name !== undefined ? this.oo.spawn(props, name) : this.oo.spawnAnonymous(props);
   }
 
   stop(ref: ActorRef): void { this.oo.stop(ref); }

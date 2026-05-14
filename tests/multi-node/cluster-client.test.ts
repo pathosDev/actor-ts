@@ -68,7 +68,7 @@ async function startNode(systemName: string, port: number, seeds: string[] = [])
     gossipIntervalMs: 200,
   });
   const echoImpl = new EchoActor();
-  const echo = system.actorOf(
+  const echo = system.spawn(
     Props.create(() => echoImpl), 'echo',
   ) as unknown as NodeHandle['echo'];
   echo.actorImpl = echoImpl;

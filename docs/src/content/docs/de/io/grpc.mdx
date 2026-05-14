@@ -20,7 +20,7 @@ Aufrufe willst.
 ```ts
 import { ActorSystem, Props, GrpcServerActor } from 'actor-ts';
 
-const server = system.actorOf(
+const server = system.spawn(
   Props.create(() => new GrpcServerActor({
     host:    '0.0.0.0',
     port:    50051,
@@ -45,7 +45,7 @@ und verpackt es in ein Envelope.
 ```ts
 import { GrpcClientActor } from 'actor-ts';
 
-const client = system.actorOf(
+const client = system.spawn(
   Props.create(() => new GrpcClientActor({
     target:       'orders.svc:50051',
     protoPath:    './proto/orders.proto',

@@ -74,7 +74,7 @@ class Cart extends DurableStateActor<CartCmd, State> {
 const system = ActorSystem.create('demo');
 const store  = new InMemoryDurableStateStore();
 
-const cart = system.actorOf(
+const cart = system.spawn(
   Props.create(() => new Cart({
     persistenceId: 'cart-user-42',
     store,

@@ -29,8 +29,8 @@ const props = Props.create(() => new Worker())
 ```
 
 Each `with…` returns a **new** `Props` — the originals are immutable.
-Build up the recipe, then hand it to `system.actorOf` or
-`context.actorOf`.
+Build up the recipe, then hand it to `system.spawn` or
+`context.spawn`.
 
 ## Why a factory, not an instance
 
@@ -183,15 +183,15 @@ overflow policies and priority semantics.
 
 ## Naming on spawn
 
-The actor *name* is passed to `actorOf` / `spawn`, not stored on
+The actor *name* is passed to `spawn` / `spawn`, not stored on
 `Props`:
 
 ```ts
 const props = Props.create(() => new Worker());
 
-system.actorOf(props, 'worker-1');           // → /user/worker-1
-system.actorOf(props, 'worker-2');           // → /user/worker-2
-this.context.actorOf(props, 'sub-worker');   // → /user/<this>/sub-worker
+system.spawn(props, 'worker-1');           // → /user/worker-1
+system.spawn(props, 'worker-2');           // → /user/worker-2
+this.context.spawn(props, 'sub-worker');   // → /user/<this>/sub-worker
 ```
 
 The reason: `Props` is intended to be **reusable**.  The same
@@ -218,7 +218,7 @@ function workerProps(db: ActorRef<DbMsg>): Props<WorkerMsg> {
 
 // Spawn many with the same recipe:
 for (let i = 0; i < 8; i++) {
-  this.context.actorOf(workerProps(db), `worker-${i}`);
+  this.context.spawn(workerProps(db), `worker-${i}`);
 }
 ```
 
@@ -256,8 +256,8 @@ import { Aside } from '@astrojs/starlight/components';
     .withSupervisorStrategy(stoppingStrategy);
 
   // Two siblings, both stopped on failure — fine.
-  system.actorOf(props, 'a');
-  system.actorOf(props, 'b');
+  system.spawn(props, 'a');
+  system.spawn(props, 'b');
 
   // But: do you really want both to use stoppingStrategy?
   ```
@@ -279,7 +279,7 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Mailboxes](/fundamentals/mailboxes/)** — the queue
   you pass to `withMailbox` / `withMailboxCapacity`.
 - **[ActorSystem](/fundamentals/actor-system/)** — the
-  `system.actorOf(props, name?)` that consumes Props.
+  `system.spawn(props, name?)` that consumes Props.
 
 The [`Props`](/api/classes/props/) API reference covers
 the full builder set.

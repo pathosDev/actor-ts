@@ -40,7 +40,7 @@ export class DistributedPubSub implements Extension {
     if (this._mediator) throw new Error('DistributedPubSub is already bound to a different cluster');
     this._cluster = cluster;
 
-    const mediator = this.system.actorOf(
+    const mediator = this.system.spawn(
       Props.create(() => new DistributedPubSubMediator({ cluster, ...settings })),
       'pubsub-mediator',
     );

@@ -54,7 +54,7 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
     });
     try {
       // First actor — succeeds.
-      const a1 = sys.actorOf(
+      const a1 = sys.spawn(
         Props.create(() => new Counter(cluster) as unknown as Actor<unknown>),
         'a1',
       );
@@ -65,7 +65,7 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
       // The actor goes into supervision-restart loop; we let it
       // settle and then verify the registry blocked it consistently
       // (every restart attempt re-throws because a1 is still live).
-      const a2 = sys.actorOf(
+      const a2 = sys.spawn(
         Props.create(() => new Counter(cluster) as unknown as Actor<unknown>),
         'a2',
       );
@@ -93,7 +93,7 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
       gossipIntervalMs: 30,
     });
     try {
-      const a1 = sys.actorOf(
+      const a1 = sys.spawn(
         Props.create(() => new Counter(cluster) as unknown as Actor<unknown>),
         'a1',
       );
@@ -103,7 +103,7 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
       await Bun.sleep(50);
 
       // Fresh spawn with the same pid — no failure.
-      const a2 = sys.actorOf(
+      const a2 = sys.spawn(
         Props.create(() => new Counter(cluster) as unknown as Actor<unknown>),
         'a2',
       );

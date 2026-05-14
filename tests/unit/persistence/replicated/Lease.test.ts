@@ -84,7 +84,7 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
     const { sys, cluster } = await bootCluster('lease-default', 70_001);
     let actor: LeasedCounter | null = null;
     try {
-      sys.actorOf(
+      sys.spawn(
         Props.create(() => {
           actor = new LeasedCounter(cluster, 'no-lease', 'r1', null);
           return actor as unknown as Actor<unknown>;
@@ -118,7 +118,7 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
     try {
       const leaseA = new InMemoryLease({ name: 'shared-pid', owner: 'a', ttlMs: 30_000 });
       const leaseB = new InMemoryLease({ name: 'shared-pid', owner: 'b', ttlMs: 30_000 });
-      sys.actorOf(
+      sys.spawn(
         Props.create(() => {
           a = new LeasedCounter(cluster, 'lease-a', 'r-a', leaseA);
           return a as unknown as Actor<unknown>;
@@ -126,7 +126,7 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
         'a',
       );
       await sleep(60);
-      sys.actorOf(
+      sys.spawn(
         Props.create(() => {
           b = new LeasedCounter(cluster, 'lease-b', 'r-b', leaseB);
           return b as unknown as Actor<unknown>;
@@ -164,7 +164,7 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
       // Short TTL so the renewal loop runs every ~70 ms — quick
       // enough for the test to observe loss without a long sleep.
       const lease = new InMemoryLease({ name: 'losable', owner: 'a', ttlMs: 200 });
-      sys.actorOf(
+      sys.spawn(
         Props.create(() => {
           a = new LeasedCounter(cluster, 'lease-loss', 'r-a', lease);
           return a as unknown as Actor<unknown>;
@@ -201,7 +201,7 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
     try {
       const first = new InMemoryLease({ name: 'handover', owner: 'first', ttlMs: 30_000 });
       let ref1: LeasedCounter | null = null;
-      const a1 = sys.actorOf(
+      const a1 = sys.spawn(
         Props.create(() => {
           ref1 = new LeasedCounter(cluster, 'handover-1', 'r-1', first);
           return ref1 as unknown as Actor<unknown>;
@@ -219,7 +219,7 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
       // the same lease name.
       const second = new InMemoryLease({ name: 'handover', owner: 'second', ttlMs: 30_000 });
       let ref2: LeasedCounter | null = null;
-      sys.actorOf(
+      sys.spawn(
         Props.create(() => {
           ref2 = new LeasedCounter(cluster, 'handover-2', 'r-2', second);
           return ref2 as unknown as Actor<unknown>;

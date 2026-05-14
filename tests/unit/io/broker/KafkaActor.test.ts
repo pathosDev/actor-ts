@@ -138,9 +138,9 @@ async function bootActor(
   sys: ActorSystem, settings: Partial<KafkaActorSettings>,
 ): Promise<{ actor: ActorRef<KafkaCmd>; mock: MockKafka; target: CapturingTarget }> {
   const target = new CapturingTarget();
-  const targetRef = sys.actorOf(Props.create(() => target), 'target');
+  const targetRef = sys.spawn(Props.create(() => target), 'target');
   const ref = { current: null as MockKafkaActor | null };
-  const actor = sys.actorOf(
+  const actor = sys.spawn(
     Props.create(() => {
       const a = new MockKafkaActor({ ...settings, target: targetRef });
       ref.current = a;

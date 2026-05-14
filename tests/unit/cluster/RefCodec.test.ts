@@ -57,7 +57,7 @@ describe('RefCodec — encodeRefs', () => {
   test('local refs carry the sender node address', async () => {
     const sys = ActorSystem.create('enc-local', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
-      const ref = sys.actorOf(Props.create(() => new Noop()), 'foo');
+      const ref = sys.spawn(Props.create(() => new Noop()), 'foo');
       const encoded = encodeRefs(ref, from) as WireActorRef;
       expect(isWireActorRef(encoded)).toBe(true);
       expect(encoded.path).toContain('foo');
@@ -91,8 +91,8 @@ describe('RefCodec — encodeRefs', () => {
   test('nested refs inside arrays and objects all get encoded', async () => {
     const sys = ActorSystem.create('enc-nested', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
-      const a = sys.actorOf(Props.create(() => new Noop()), 'a');
-      const b = sys.actorOf(Props.create(() => new Noop()), 'b');
+      const a = sys.spawn(Props.create(() => new Noop()), 'a');
+      const b = sys.spawn(Props.create(() => new Noop()), 'b');
       const msg = {
         kind: 'introduce',
         peers: [a, b],
@@ -150,7 +150,7 @@ describe('RefCodec — decodeRefs', () => {
   });
 
   test('marker pointing at a live local actor resolves to that local ref', () => {
-    const local = system.actorOf(Props.create(() => new Noop()), 'target');
+    const local = system.spawn(Props.create(() => new Noop()), 'target');
     const self = cluster.selfAddress;
     const wire: WireActorRef = {
       $ref: 'actor',
@@ -192,7 +192,7 @@ describe('RefCodec — decodeRefs', () => {
   });
 
   test('nested markers inside arrays and objects are all restored', () => {
-    const local = system.actorOf(Props.create(() => new Noop()), 'nested-target');
+    const local = system.spawn(Props.create(() => new Noop()), 'nested-target');
     const self = cluster.selfAddress;
     const mkWire = (path: string): WireActorRef => ({
       $ref: 'actor', path, host: self.host, port: self.port, system: self.systemName,
@@ -214,7 +214,7 @@ describe('RefCodec — round-trip through JSON.stringify', () => {
   test('encoded refs survive JSON.stringify → JSON.parse and decode back', async () => {
     const { system, cluster } = await buildCluster('rt-test', 51_300);
     try {
-      const local = system.actorOf(Props.create(() => new Noop()), 'rt-actor');
+      const local = system.spawn(Props.create(() => new Noop()), 'rt-actor');
       const msg = { kind: 'ping', replyTo: local, bag: [local, Nobody] };
 
       // Simulate the wire path: encode, JSON round-trip, decode.

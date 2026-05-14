@@ -36,7 +36,7 @@ describe('Actor tracing — auto-instrumentation', () => {
     }
 
     try {
-      const r = sys.actorOf(Props.create(() => new Recv()), 'r');
+      const r = sys.spawn(Props.create(() => new Recv()), 'r');
       const client = tracer.startSpan('client.handle-request');
       tracer.withActiveSpan(client, () => {
         r.tell('hello');
@@ -73,8 +73,8 @@ describe('Actor tracing — auto-instrumentation', () => {
     }
 
     try {
-      const b = sys.actorOf(Props.create(() => new B()), 'b');
-      const a = sys.actorOf(Props.create(() => new A()), 'a');
+      const b = sys.spawn(Props.create(() => new B()), 'b');
+      const a = sys.spawn(Props.create(() => new A()), 'a');
       const client = tracer.startSpan('client');
       tracer.withActiveSpan(client, () => a.tell({ msg: 'forward', next: b }));
       await sleep(60);
@@ -107,7 +107,7 @@ describe('Actor tracing — auto-instrumentation', () => {
     }
 
     try {
-      const b = sys.actorOf(Props.create(() => new Bomb()), 'b');
+      const b = sys.spawn(Props.create(() => new Bomb()), 'b');
       const root = tracer.startSpan('client');
       tracer.withActiveSpan(root, () => b.tell('boom'));
       await sleep(50);
@@ -131,7 +131,7 @@ describe('Actor tracing — auto-instrumentation', () => {
     }
 
     try {
-      const r = sys.actorOf(Props.create(() => new R()), 'r');
+      const r = sys.spawn(Props.create(() => new R()), 'r');
       r.tell('x');
       await sleep(30);
       expect(tracer.recorded()).toEqual([]);

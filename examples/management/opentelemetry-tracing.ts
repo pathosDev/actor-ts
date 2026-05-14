@@ -46,9 +46,9 @@ const tracer = new RecordingTracer();
 const system = ActorSystem.create('otel-demo');
 system.extension(TracingExtensionId).enable(tracer);
 
-const step3 = system.actorOf(Props.create(() => new Step()), 'step-3');
-const step2 = system.actorOf(Props.create(() => new Step()), 'step-2');
-const step1 = system.actorOf(Props.create(() => new Step()), 'step-1');
+const step3 = system.spawn(Props.create(() => new Step()), 'step-3');
+const step2 = system.spawn(Props.create(() => new Step()), 'step-2');
+const step1 = system.spawn(Props.create(() => new Step()), 'step-1');
 
 // Drive a request.  The client span is the trace root; downstream
 // actor.receive spans link back through the chain step1 → step2 → step3.

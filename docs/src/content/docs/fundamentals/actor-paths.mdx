@@ -76,18 +76,18 @@ returns a new path; it doesn't mutate the original.
 You can pass a `name` when spawning:
 
 ```ts
-const ref = system.actorOf(Props.create(() => new Foo()), 'my-foo');
+const ref = system.spawn(Props.create(() => new Foo()), 'my-foo');
 // ref.path.toString() === 'actor-ts://my-app/user/my-foo'
 
-const child = this.context.actorOf(Props.create(() => new Bar()), 'bar');
+const child = this.context.spawn(Props.create(() => new Bar()), 'bar');
 // child.path.toString() === 'actor-ts://my-app/user/my-foo/bar'
 ```
 
 If you omit the name, the framework synthesizes one (`'$1'`,
 `'$2'`, …).  Two rules govern naming:
 
-1. **Names must be unique among siblings.**  `context.actorOf(props, 'bar')`
-   followed by another `context.actorOf(props, 'bar')` on the same
+1. **Names must be unique among siblings.**  `context.spawn(props, 'bar')`
+   followed by another `context.spawn(props, 'bar')` on the same
    parent throws — that path is already in use.
 2. **The name "looks like a path segment."**  No slashes, no
    leading dots, no whitespace.  The framework validates this.
@@ -191,8 +191,8 @@ class Worker extends Actor<...> {
     this.cache.tell({ kind: 'put', ... });
   }
 }
-const cache  = system.actorOf(Props.create(() => new Cache()), 'cache');
-const worker = system.actorOf(Props.create(() => new Worker(cache)));
+const cache  = system.spawn(Props.create(() => new Cache()), 'cache');
+const worker = system.spawnAnonymous(Props.create(() => new Worker(cache)));
 ```
 
 The constructor-injection version is type-safe, doesn't depend on
@@ -204,7 +204,7 @@ Three top-level guardian paths exist in every system:
 
 | Path | What lives there |
 | --- | --- |
-| `/user` | Your application's top-level actors (everything `system.actorOf(...)` creates). |
+| `/user` | Your application's top-level actors (everything `system.spawnAnonymous(...)` creates). |
 | `/system` | Framework internals (event-stream listeners, cluster gossipers, the dead-letter actor itself, …). |
 | `/deadLetters` | The synthetic recipient for messages with no live target. |
 

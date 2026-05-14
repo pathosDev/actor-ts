@@ -10,7 +10,7 @@ AWS IoT Core).  Supports both MQTT 3.1.1 and 5; topic wildcards
 ```ts
 import { ActorSystem, Props, MqttActor } from 'actor-ts';
 
-const mqtt = system.actorOf(
+const mqtt = system.spawn(
   Props.create(() => new MqttActor({
     url:        'mqtts://mqtt.example.com:8883',
     clientId:   'my-app',

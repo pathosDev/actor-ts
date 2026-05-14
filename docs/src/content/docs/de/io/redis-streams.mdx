@@ -11,7 +11,7 @@ ohne Kafka oder NATS aufzusetzen.
 ```ts
 import { ActorSystem, Props, RedisStreamsActor } from 'actor-ts';
 
-const redis = system.actorOf(
+const redis = system.spawn(
   Props.create(() => new RedisStreamsActor({
     url:     'redis://localhost:6379',
     streams: ['orders', 'payments'],

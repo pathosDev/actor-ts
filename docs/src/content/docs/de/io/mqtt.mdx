@@ -10,7 +10,7 @@ Wildcards (`+`, `#`); QoS 0/1/2; Retained Messages.
 ```ts
 import { ActorSystem, Props, MqttActor } from 'actor-ts';
 
-const mqtt = system.actorOf(
+const mqtt = system.spawn(
   Props.create(() => new MqttActor({
     url:        'mqtts://mqtt.example.com:8883',
     clientId:   'my-app',

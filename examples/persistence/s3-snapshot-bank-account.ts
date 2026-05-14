@@ -156,7 +156,7 @@ async function main(): Promise<void> {
     // encryption: { mode: 'client-aes256-gcm', masterKey: new Uint8Array(32).fill(0xab) },
   });
 
-  const acct1 = sys1.actorOf(Props.create(() => new Account('alice')), 'alice');
+  const acct1 = sys1.spawn(Props.create(() => new Account('alice')), 'alice');
   for (const amount of [100, 50, 20, 30, 10, 5, 100]) {
     console.log('deposit', amount, '→', await ask(acct1, { kind: 'deposit', amount }, 500));
   }
@@ -179,7 +179,7 @@ async function main(): Promise<void> {
     backend: spec,
     prefix: 'env-prod/snapshots/',
   });
-  const acct2 = sys2.actorOf(Props.create(() => new Account('alice')), 'alice');
+  const acct2 = sys2.spawn(Props.create(() => new Account('alice')), 'alice');
   console.log('after restart, balance →', await ask(acct2, { kind: 'balance' }, 500));
   await sys2.terminate();
 

@@ -87,13 +87,13 @@ export class ActorSystem {
       '',
     );
 
-    const userRef = this.rootCell.actorOf(
+    const userRef = this.rootCell.spawn(
       Props.create(() => new Guardian(userGuardianStrategy)),
       'user',
     );
     this.userGuardianCell = (userRef as LocalActorRef<unknown>).getCell();
 
-    const systemRef = this.rootCell.actorOf(
+    const systemRef = this.rootCell.spawn(
       Props.create(() => new Guardian(systemGuardianStrategy)),
       'system',
     );
@@ -113,12 +113,32 @@ export class ActorSystem {
     return this.extensions.get(id);
   }
 
-  /** Spawn a top-level user actor under /user. */
-  actorOf<T>(props: Props<T>, name?: string): ActorRef<T> {
+  /**
+   * Spawn a top-level user actor under /user with a deterministic
+   * caller-supplied name.  The name must be unique among siblings
+   * (i.e. children of `/user`) — if a child with the same name
+   * already exists, the call throws.
+   *
+   * For an auto-generated name, see {@link spawnAnonymous}.
+   */
+  spawn<T>(props: Props<T>, name: string): ActorRef<T> {
     if (this._terminating || this._terminated) {
       throw new Error(`Cannot create actors on a terminated ActorSystem '${this.name}'`);
     }
-    return this.userGuardianCell.actorOf(props, name);
+    return this.userGuardianCell.spawn(props, name);
+  }
+
+  /**
+   * Spawn a top-level user actor under /user with an auto-generated
+   * name.  Use when the caller doesn't care about the path — e.g.
+   * one-shot async work, throwaway helpers.  For a deterministic
+   * name, see {@link spawn}.
+   */
+  spawnAnonymous<T>(props: Props<T>): ActorRef<T> {
+    if (this._terminating || this._terminated) {
+      throw new Error(`Cannot create actors on a terminated ActorSystem '${this.name}'`);
+    }
+    return this.userGuardianCell.spawnAnonymous(props);
   }
 
   /**

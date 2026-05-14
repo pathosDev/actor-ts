@@ -58,7 +58,7 @@ class ConnectionFsm extends FSM<State, Data, Cmd> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('fsm-conn');
-  const ref = system.actorOf(Props.create(() => new ConnectionFsm()), 'conn');
+  const ref = system.spawn(Props.create(() => new ConnectionFsm()), 'conn');
 
   ref.tell({ kind: 'connect' });
   await Bun.sleep(30);

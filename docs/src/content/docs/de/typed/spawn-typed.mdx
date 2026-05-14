@@ -87,7 +87,7 @@ const props = typedProps(counter(0))
   .withMailboxCapacity(500)
   .withDispatcher(myDispatcher);
 
-const ref = system.actorOf(props, 'counter');
+const ref = system.spawn(props, 'counter');
 ```
 
 Wenn du ein typisiertes Behavior willst, die API aber `Props<T>`
@@ -102,7 +102,7 @@ function typedProps<T>(behavior: Behavior<T>): Props<T>;
 ```
 
 Die zurückgegebenen Props können überall übergeben werden, wo
-`Props<T>` erwartet wird — `system.actorOf`, `context.actorOf`,
+`Props<T>` erwartet wird — `system.spawn`, `context.spawn`,
 `Cluster.singletonProxy`, der Entity-Props-Slot der
 Sharding-Region.
 
@@ -206,4 +206,4 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Props](/de/fundamentals/props/)** — die untyped
   Konfiguration, die `typedProps` zurückgibt.
 - **[Actor-System](/de/fundamentals/actor-system/)** — die
-  `actorOf`-API, die die Helfer letztlich aufrufen.
+  `spawn`-API, die die Helfer letztlich aufrufen.

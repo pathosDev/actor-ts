@@ -36,8 +36,8 @@ describe('SseActor — round-trip via Bun.serve', () => {
 
     const sys = ActorSystem.create('sse-1', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const collector = new CollectActor();
-    const target = sys.actorOf(Props.create(() => collector));
-    sys.actorOf(Props.create(() => new SseActor({
+    const target = sys.spawnAnonymous(Props.create(() => collector));
+    sys.spawnAnonymous(Props.create(() => new SseActor({
       url: `http://localhost:${server.port}/`, target,
       reconnect: false,  // disable so the test ends predictably
     })));

@@ -16,7 +16,7 @@ class ResultHandler extends Actor<Success<number> | Failure> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('pipe-hello');
-  const ref = system.actorOf(Props.create(() => new ResultHandler()), 'handler');
+  const ref = system.spawn(Props.create(() => new ResultHandler()), 'handler');
 
   // Promise that resolves to a number — arrives as Success.
   pipeTo(Promise.resolve(42), ref);

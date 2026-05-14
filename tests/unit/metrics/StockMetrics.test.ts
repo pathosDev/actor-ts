@@ -38,9 +38,9 @@ describe('Stock actor metrics', () => {
       // expresses "three more user actors" as a delta.
       await sleep(20);
       const baseline = valueFor(reg, 'actor_created_total') ?? 0;
-      sys.actorOf(Props.create(() => new Echo()), 'a');
-      sys.actorOf(Props.create(() => new Echo()), 'b');
-      sys.actorOf(Props.create(() => new Echo()), 'c');
+      sys.spawn(Props.create(() => new Echo()), 'a');
+      sys.spawn(Props.create(() => new Echo()), 'b');
+      sys.spawn(Props.create(() => new Echo()), 'c');
       await sleep(20);
       expect((valueFor(reg, 'actor_created_total') ?? 0) - baseline).toBe(3);
     } finally {
@@ -52,7 +52,7 @@ describe('Stock actor metrics', () => {
     const sys = ActorSystem.create('m-msgs', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const reg = sys.extension(MetricsExtensionId).enable();
     try {
-      const a = sys.actorOf(Props.create(() => new Echo()), 'a');
+      const a = sys.spawn(Props.create(() => new Echo()), 'a');
       a.tell('1'); a.tell('2'); a.tell('3');
       await sleep(30);
       expect(valueFor(reg, 'actor_messages_delivered_total')).toBe(3);
@@ -65,7 +65,7 @@ describe('Stock actor metrics', () => {
     const sys = ActorSystem.create('m-term', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const reg = sys.extension(MetricsExtensionId).enable();
     try {
-      const a = sys.actorOf(Props.create(() => new Echo()), 'a');
+      const a = sys.spawn(Props.create(() => new Echo()), 'a');
       a.stop();
       await sleep(40);
       expect((valueFor(reg, 'actor_terminated_total') ?? 0)).toBeGreaterThanOrEqual(1);
@@ -78,7 +78,7 @@ describe('Stock actor metrics', () => {
     const sys = ActorSystem.create('m-hist', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const reg = sys.extension(MetricsExtensionId).enable();
     try {
-      const a = sys.actorOf(Props.create(() => new Echo()), 'a');
+      const a = sys.spawn(Props.create(() => new Echo()), 'a');
       a.tell('1'); a.tell('2');
       await sleep(40);
       const sumSample = reg.collect().find(
@@ -121,7 +121,7 @@ describe('MetricsExtension — opt-in', () => {
   test('without enable(), the registry is the noop and stock metrics produce no samples', async () => {
     const sys = ActorSystem.create('m-noop', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
-      sys.actorOf(Props.create(() => new Echo()), 'a');
+      sys.spawn(Props.create(() => new Echo()), 'a');
       await sleep(20);
       const reg = sys.extension(MetricsExtensionId).get();
       expect(reg.collect()).toEqual([]);

@@ -45,7 +45,7 @@ export class ReliableDelivery {
     settings: ConsumerControllerSettings<T>,
     name?: string,
   ): ConsumerHandle {
-    const ref = system.actorOf(
+    const ref = system.spawn(
       Props.create(() => new ConsumerController<T>(settings) as unknown as import('../Actor.js').Actor<Delivery<unknown>>),
       name ?? `reliable-consumer-${++counter}`,
     );
@@ -58,7 +58,7 @@ export class ReliableDelivery {
     settings: ProducerControllerSettings<T>,
     name?: string,
   ): ProducerHandle<T> {
-    const ref = system.actorOf(
+    const ref = system.spawn(
       Props.create(() => new ProducerController<T>(settings) as unknown as import('../Actor.js').Actor<ProducerSend<T>>),
       name ?? `reliable-producer-${++counter}`,
     );

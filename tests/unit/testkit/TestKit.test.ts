@@ -23,7 +23,7 @@ describe('TestKit', () => {
       class Loud extends Actor<string> {
         override onReceive(m: string): void { this.log.info('hello', m); }
       }
-      const ref = tk.system.actorOf(Props.create(() => new Loud()), 'loud');
+      const ref = tk.system.spawn(Props.create(() => new Loud()), 'loud');
       ref.tell('world');
       await Bun.sleep(30);
       expect(lines).toEqual([]);
@@ -49,7 +49,7 @@ describe('TestKit', () => {
       }
       override onReceive(m: string): void { this.probe.tell(m); }
     }
-    kit.system.actorOf(Props.create(() => new T(probe)), 't');
+    kit.system.spawn(Props.create(() => new T(probe)), 't');
 
     await Bun.sleep(10); // let preStart run
     // No wall-clock elapsed — without advance the timer stays pending.

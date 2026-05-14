@@ -99,7 +99,7 @@ async function startActor(
     gossipIntervalMs: 30,
   });
   let instance!: CountingCounter;
-  const ref = sys.actorOf(
+  const ref = sys.spawn(
     Props.create<Cmd>(() => {
       const a = new CountingCounter(cluster);
       instance = a;

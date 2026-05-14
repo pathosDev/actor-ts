@@ -48,7 +48,7 @@ class Worker extends Actor<{ payload: string }> {
 
 const system = ActorSystem.create('demo');
 
-const pool = system.actorOf(
+const pool = system.spawn(
   Router.roundRobin(4, Props.create(() => new Worker())),
   'workers',
 );
@@ -116,7 +116,7 @@ routee `Props`:
 const routeeProps = Props.create(() => new Worker())
   .withSupervisorStrategy(stoppingStrategy);
 
-system.actorOf(Router.roundRobin(4, routeeProps), 'workers');
+system.spawn(Router.roundRobin(4, routeeProps), 'workers');
 ```
 
 Now any worker that throws is **stopped** instead of restarted —

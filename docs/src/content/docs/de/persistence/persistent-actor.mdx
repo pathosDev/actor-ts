@@ -74,7 +74,7 @@ system.extension(PersistenceExtensionId).configure({
   snapshotStore: new InMemorySnapshotStore(),
 });
 
-const account = system.actorOf(Props.create(() => new Account()), 'account-42');
+const account = system.spawn(Props.create(() => new Account()), 'account-42');
 account.tell({ kind: 'deposit',  amount: 100 });
 account.tell({ kind: 'withdraw', amount: 30 });
 // state ist { balance: 70 } — und bleibt das über Neustarts hinweg.
@@ -314,7 +314,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Commands während der Recovery">
   ```ts
-  const actor = system.actorOf(Props.create(() => new Account()));
+  const actor = system.spawnAnonymous(Props.create(() => new Account()));
   actor.tell({ kind: 'deposit', amount: 100 });
   // ↑ dieses `tell` kommt an, bevor die Recovery abgeschlossen ist
   ```

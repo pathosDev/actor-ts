@@ -44,7 +44,7 @@ class Counter extends Actor<CountMsg> {
 describe('ActorContext.throttle (#83)', () => {
   test('pause mode — burst messages process immediately, excess waits for refill', async () => {
     const counter = new Counter();
-    const ref = sys.actorOf(Props.create(() => counter), 'pause-mode');
+    const ref = sys.spawn(Props.create(() => counter), 'pause-mode');
 
     // Configure throttle from inside the actor (one of the two
     // valid contexts — the other being a behavior-injection wrapper).
@@ -78,7 +78,7 @@ describe('ActorContext.throttle (#83)', () => {
       }
     }
     const dc = new DropCounter();
-    const ref = sys.actorOf(Props.create(() => dc), 'drop-mode');
+    const ref = sys.spawn(Props.create(() => dc), 'drop-mode');
     await sleep(10);
 
     // Fire 20 ticks at once.  Burst=2 means 2 process, the other
@@ -110,7 +110,7 @@ describe('ActorContext.throttle (#83)', () => {
     // post-cancel "no more rate limit" behaviour with a generous
     // upper bound for the through-queue wait.
     const counter = new Counter();
-    const ref = sys.actorOf(Props.create(() => counter), 'cancel-throttle');
+    const ref = sys.spawn(Props.create(() => counter), 'cancel-throttle');
     ref.tell({ kind: 'configure-throttle' }); // qps=10, burst=2
     await sleep(10);
 
@@ -138,7 +138,7 @@ describe('ActorContext.throttle (#83)', () => {
       }
       override onReceive(_m: CountMsg): void { /* noop */ }
     }
-    const ref = sys.actorOf(Props.create(() => new Strict()), 'strict');
+    const ref = sys.spawn(Props.create(() => new Strict()), 'strict');
     await sleep(20);
 
     // Drain the burst.

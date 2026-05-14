@@ -81,7 +81,7 @@ sharded set) at a well-known path.
 ```ts
 import { ClusterClientReceptionist } from 'actor-ts';
 
-system.actorOf(
+system.spawn(
   ClusterClientReceptionist.props({
     cluster,
     role: 'frontend',   // optional — restrict to specific nodes

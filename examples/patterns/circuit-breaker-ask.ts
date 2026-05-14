@@ -26,7 +26,7 @@ class FlakyService extends Actor<Cmd> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('cb-realistic');
-  const svc = system.actorOf(Props.create(() => new FlakyService()), 'svc');
+  const svc = system.spawn(Props.create(() => new FlakyService()), 'svc');
 
   const breaker = new CircuitBreaker({
     maxFailures: 3,

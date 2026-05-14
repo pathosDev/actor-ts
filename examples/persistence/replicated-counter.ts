@@ -91,7 +91,7 @@ async function main(): Promise<void> {
   const instances = new Map<string, ReplicatedCounter>();
   for (const role of ['a', 'b', 'c'] as const) {
     const cluster = spec.clusterFor(role);
-    const ref = spec.systemFor(role).actorOf(
+    const ref = spec.systemFor(role).spawn(
       Props.create<Cmd>(() => {
         const inst = new ReplicatedCounter(cluster, role);
         instances.set(role, inst);

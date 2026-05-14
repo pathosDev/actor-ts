@@ -49,7 +49,7 @@ messages so fast that HTTP handlers wait for a turn.
 ```ts
 import { ThroughputDispatcher } from 'actor-ts';
 
-const heavyActor = system.actorOf(
+const heavyActor = system.spawn(
   Props.create(() => new HeavyWorker())
     .withDispatcher(new ThroughputDispatcher({ throughput: 100 })),
 );
@@ -75,7 +75,7 @@ CPU work without I/O, this is wasted.
 ```ts
 import { MicrotaskDispatcher } from 'actor-ts';
 
-const cpuActor = system.actorOf(
+const cpuActor = system.spawn(
   Props.create(() => new CpuIntensive())
     .withDispatcher(new MicrotaskDispatcher()),
 );
@@ -111,12 +111,12 @@ is a reasonable starting point.
 ## Per-actor dispatcher
 
 ```ts
-const heavy = system.actorOf(
+const heavy = system.spawn(
   Props.create(() => new BulkProcessor())
     .withDispatcher(new ThroughputDispatcher({ throughput: 500 })),
 );
 
-const httpHandler = system.actorOf(
+const httpHandler = system.spawn(
   Props.create(() => new HttpHandler()),
   // → uses system's default ImmediateDispatcher
 );

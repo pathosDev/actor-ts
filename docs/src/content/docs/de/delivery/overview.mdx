@@ -87,7 +87,7 @@ import {
 } from 'actor-ts';
 
 // Consumer-Seite — Handler-Funktion, Auto-ACK bei Resolve:
-const consumer = system.actorOf(
+const consumer = system.spawn(
   Props.create(() => new ConsumerController<OrderEvent>({
     handler: async (order) => {
       await processOrder(order);
@@ -96,7 +96,7 @@ const consumer = system.actorOf(
 );
 
 // Producer-Seite — umwickelt ausgehende Nachrichten mit Seq- + ACK-Tracking:
-const producer = system.actorOf(
+const producer = system.spawn(
   Props.create(() => new ProducerController<OrderEvent>({
     producerId: 'order-producer-1',
     consumer,

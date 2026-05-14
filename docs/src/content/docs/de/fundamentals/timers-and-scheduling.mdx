@@ -42,7 +42,7 @@ class Heartbeat extends Actor<Msg> {
 }
 
 const system = ActorSystem.create('demo');
-system.actorOf(Props.create(() => new Heartbeat()));
+system.spawnAnonymous(Props.create(() => new Heartbeat()));
 ```
 
 Zwei zentrale Beobachtungen:
@@ -162,7 +162,7 @@ import { Aside } from '@astrojs/starlight/components';
   ```ts
   override onReceive(msg) {
     setTimeout(() => {
-      this.context.actorOf(...);   // ← Async-Escape
+      this.context.spawnAnonymous(...);   // ← Async-Escape
     }, 1_000);
   }
   ```

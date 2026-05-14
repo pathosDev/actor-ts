@@ -85,7 +85,7 @@ const props = typedProps(counter(0))
   .withMailboxCapacity(500)
   .withDispatcher(myDispatcher);
 
-const ref = system.actorOf(props, 'counter');
+const ref = system.spawn(props, 'counter');
 ```
 
 When you want a typed Behavior but the API takes `Props<T>` (because
@@ -100,7 +100,7 @@ function typedProps<T>(behavior: Behavior<T>): Props<T>;
 ```
 
 The returned Props can be passed anywhere `Props<T>` is expected —
-`system.actorOf`, `context.actorOf`, `Cluster.singletonProxy`, the
+`system.spawn`, `context.spawn`, `Cluster.singletonProxy`, the
 sharding region's entity-props slot.
 
 ## Typed-actor-to-typed-child: `ctx.spawn`
@@ -200,4 +200,4 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Props](/fundamentals/props/)** — the untyped
   configuration `typedProps` returns.
 - **[Actor system](/fundamentals/actor-system/)** — the
-  `actorOf` API the helpers ultimately call.
+  `spawn` API the helpers ultimately call.

@@ -11,7 +11,7 @@ Verbindung von einem Listener-Actor genau einen Client-Actor".
 ```ts
 import { ActorSystem, Props, TcpSocketActor } from 'actor-ts';
 
-const tcp = system.actorOf(
+const tcp = system.spawn(
   Props.create(() => new TcpSocketActor({
     host: 'metrics-collector.example.com',
     port: 8125,
@@ -97,7 +97,7 @@ spawnt:
 import net from 'node:net';
 
 const server = net.createServer((socket) => {
-  const handler = system.actorOf(
+  const handler = system.spawn(
     Props.create(() => new IncomingConnectionActor(socket)),
   );
 });

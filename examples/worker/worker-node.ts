@@ -22,7 +22,7 @@ async function main(): Promise<void> {
     failureDetector: { heartbeatIntervalMs: 100, unreachableAfterMs: 400, downAfterMs: 800 },
     gossipIntervalMs: 120,
   });
-  system.actorOf(Props.create(() => new HelloWorker(ctx.initData.workerId)), 'hello');
+  system.spawn(Props.create(() => new HelloWorker(ctx.initData.workerId)), 'hello');
   ctx.ready();
   setTimeout(async () => {
     await cluster.leave();

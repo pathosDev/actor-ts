@@ -16,7 +16,7 @@ export interface TestKitOptions extends ActorSystemSettings {
  *
  *   const tk = TestKit.create('my-spec');
  *   const probe = tk.createTestProbe();
- *   const ref = tk.system.actorOf(Props.create(() => new Worker(probe)), 'worker');
+ *   const ref = tk.system.spawn(Props.create(() => new Worker(probe)), 'worker');
  *   ref.tell('go');
  *   await probe.expectMsg('done');
  *   await tk.shutdown();

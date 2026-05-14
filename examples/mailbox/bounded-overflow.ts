@@ -23,7 +23,7 @@ async function main(): Promise<void> {
   const system = ActorSystem.create('bnd-hello');
   const props = Props.create(() => new SlowPrinter())
     .withMailbox(() => new BoundedMailbox<number>({ capacity: 2, overflow: 'drop-head' }) as never);
-  const ref = system.actorOf(props);
+  const ref = system.spawnAnonymous(props);
 
   for (let i = 0; i < 10; i++) ref.tell(i);
   await Bun.sleep(200);

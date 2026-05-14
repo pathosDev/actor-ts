@@ -30,7 +30,7 @@ class Monitor extends Actor<Msg> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('timers-demo');
-  system.actorOf(Props.create(() => new Monitor()), 'monitor');
+  system.spawn(Props.create(() => new Monitor()), 'monitor');
   await new Promise(r => setTimeout(r, 400));
   await system.terminate();
 }

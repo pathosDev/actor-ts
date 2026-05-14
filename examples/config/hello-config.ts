@@ -32,7 +32,7 @@ async function main(): Promise<void> {
     },
   });
 
-  const diag = system.actorOf(Props.create(() => new DiagActor()), 'diag');
+  const diag = system.spawn(Props.create(() => new DiagActor()), 'diag');
   diag.tell('report');
   await new Promise(resolve => setTimeout(resolve, 50));
   await system.terminate();

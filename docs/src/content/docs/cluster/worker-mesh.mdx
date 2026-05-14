@@ -150,7 +150,7 @@ CPU-bound entity work parallelizes across cores.
 
 ```ts
 // Worker that handles GPU-bound jobs:
-system.actorOf(Props.create(() => new GpuJobActor()), 'gpu-jobs');
+system.spawn(Props.create(() => new GpuJobActor()), 'gpu-jobs');
 
 // Crashes within this worker stay isolated from main + other workers
 ```

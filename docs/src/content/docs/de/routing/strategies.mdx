@@ -186,7 +186,7 @@ const warmupStrategy: RoutingStrategy = (routees, state) => {
   return [routees[state.messageIndex % routees.length]];
 };
 
-system.actorOf(Router.custom(4, workerProps, warmupStrategy));
+system.spawnAnonymous(Router.custom(4, workerProps, warmupStrategy));
 ```
 
 Alles, was `RoutingStrategy` erfüllt, funktioniert.  Der

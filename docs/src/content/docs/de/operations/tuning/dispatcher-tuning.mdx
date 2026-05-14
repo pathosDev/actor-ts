@@ -51,7 +51,7 @@ bounden**:
 ```ts
 import { ThroughputDispatcher } from 'actor-ts';
 
-const heavyActor = system.actorOf(
+const heavyActor = system.spawn(
   Props.create(() => new HeavyWorker())
     .withDispatcher(new ThroughputDispatcher({ throughput: 100 })),
 );
@@ -77,7 +77,7 @@ ohne I/O ist das Verschwendung.
 ```ts
 import { MicrotaskDispatcher } from 'actor-ts';
 
-const cpuActor = system.actorOf(
+const cpuActor = system.spawn(
   Props.create(() => new CpuIntensive())
     .withDispatcher(new MicrotaskDispatcher()),
 );
@@ -113,12 +113,12 @@ Für einen Batch-Prozessor, der Broker-Nachrichten verarbeitet:
 ## Per-Actor-Dispatcher
 
 ```ts
-const heavy = system.actorOf(
+const heavy = system.spawn(
   Props.create(() => new BulkProcessor())
     .withDispatcher(new ThroughputDispatcher({ throughput: 500 })),
 );
 
-const httpHandler = system.actorOf(
+const httpHandler = system.spawn(
   Props.create(() => new HttpHandler()),
   // → nutzt den ImmediateDispatcher-Default des Systems
 );

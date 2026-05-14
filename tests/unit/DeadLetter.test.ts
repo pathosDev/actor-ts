@@ -19,8 +19,8 @@ describe('DeadLetter routing', () => {
     class Nothing extends Actor<string> { override onReceive(_: string): void {} }
 
     const sys = newSystem();
-    sys.actorOf(Props.create(() => new Listener()), 'lst');
-    const dead = sys.actorOf(Props.create(() => new Nothing()), 'n');
+    sys.spawn(Props.create(() => new Listener()), 'lst');
+    const dead = sys.spawn(Props.create(() => new Nothing()), 'n');
     dead.stop();
     await sleep(30);
 
@@ -42,7 +42,7 @@ describe('DeadLetter routing', () => {
       override onReceive(m: DeadLetter): void { seen.push(m); }
     }
     const sys = newSystem();
-    sys.actorOf(Props.create(() => new Listener()), 'lst');
+    sys.spawn(Props.create(() => new Listener()), 'lst');
     // Import Nobody lazily to avoid unused at top.
     const { Nobody } = await import('../../src/ActorRef.js');
     Nobody.tell('nothing');

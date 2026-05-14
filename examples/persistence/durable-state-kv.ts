@@ -43,7 +43,7 @@ async function main(): Promise<void> {
   const system = ActorSystem.create('durable-kv');
   const store = new InMemoryDurableStateStore();
 
-  let ref = system.actorOf(Props.create(() => new KVStore({
+  let ref = system.spawnAnonymous(Props.create(() => new KVStore({
     persistenceId: 'app-config', store, emptyState: () => ({ map: {} }),
   }) as unknown as Actor<Cmd>));
 
@@ -56,7 +56,7 @@ async function main(): Promise<void> {
   ref.stop();
   await Bun.sleep(20);
   console.log('--- actor restarted ---');
-  ref = system.actorOf(Props.create(() => new KVStore({
+  ref = system.spawnAnonymous(Props.create(() => new KVStore({
     persistenceId: 'app-config', store, emptyState: () => ({ map: {} }),
   }) as unknown as Actor<Cmd>));
 

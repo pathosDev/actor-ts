@@ -101,7 +101,7 @@ async function startNode(
       received.push(m.id);
     }
   }
-  sys.actorOf(Props.create(() => new Worker()), 'worker');
+  sys.spawn(Props.create(() => new Worker()), 'worker');
 
   return { role: roles[0] ?? 'no-role', sys, cluster, received };
 }
@@ -121,7 +121,7 @@ describe('ClusterRouter — multi-node', () => {
       await waitFor(() => a.cluster.upMembers().length === 3);
 
       // Router lives on node A; routees include all three nodes.
-      const router = a.sys.actorOf(
+      const router = a.sys.spawn(
         ClusterRouter.props<{ kind: 'work'; id: string }>({
           cluster: a.cluster,
           role: 'compute',
@@ -167,7 +167,7 @@ describe('ClusterRouter — multi-node', () => {
     try {
       await waitFor(() => a.cluster.upMembers().length === 3);
 
-      const router = a.sys.actorOf(
+      const router = a.sys.spawn(
         ClusterRouter.props<{ kind: 'work'; id: string }>({
           cluster: a.cluster,
           routerType: 'consistent-hashing',
@@ -216,7 +216,7 @@ describe('ClusterRouter — multi-node', () => {
     try {
       await waitFor(() => a.cluster.upMembers().length === 3);
 
-      const router = a.sys.actorOf(
+      const router = a.sys.spawn(
         ClusterRouter.props<{ kind: 'work'; id: string }>({
           cluster: a.cluster,
           role: 'compute',
@@ -252,7 +252,7 @@ describe('ClusterRouter — multi-node', () => {
     try {
       await waitFor(() => a.cluster.upMembers().length === 3);
 
-      const router = a.sys.actorOf(
+      const router = a.sys.spawn(
         ClusterRouter.props<{ kind: 'work'; id: string }>({
           cluster: a.cluster,
           role: 'compute',
@@ -316,7 +316,7 @@ describe('ClusterRouter — multi-node', () => {
     try {
       await waitFor(() => a.cluster.upMembers().length === 3);
 
-      const router = a.sys.actorOf(
+      const router = a.sys.spawn(
         ClusterRouter.props<{ kind: 'work'; id: string }>({
           cluster: a.cluster,
           routerType: 'round-robin',

@@ -59,7 +59,7 @@ const projection = ProjectionActor.byTag<AccountEvent>({
   },
 });
 
-system.actorOf(Props.create(() => projection), 'balance-projection');
+system.spawn(Props.create(() => projection), 'balance-projection');
 ```
 
 Der Actor:
@@ -190,9 +190,9 @@ die nach pid hasht.
 
 ```ts
 // Drei Projektionen, drei Offset-Cursors, drei unabhängige Views:
-system.actorOf(Props.create(() => ProjectionActor.byTag<E>({ name: 'balance', ... })));
-system.actorOf(Props.create(() => ProjectionActor.byTag<E>({ name: 'audit-log', ... })));
-system.actorOf(Props.create(() => ProjectionActor.byTag<E>({ name: 'monthly-stats', ... })));
+system.spawnAnonymous(Props.create(() => ProjectionActor.byTag<E>({ name: 'balance', ... })));
+system.spawnAnonymous(Props.create(() => ProjectionActor.byTag<E>({ name: 'audit-log', ... })));
+system.spawnAnonymous(Props.create(() => ProjectionActor.byTag<E>({ name: 'monthly-stats', ... })));
 ```
 
 Jede hat ihren eigenen Offset-Cursor; sie lesen unabhängig vom

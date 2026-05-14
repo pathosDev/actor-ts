@@ -11,7 +11,7 @@ import { ActorSystem, Props, KafkaActor } from 'actor-ts';
 
 const system = ActorSystem.create('my-app');
 
-const kafka = system.actorOf(
+const kafka = system.spawn(
   Props.create(() => new KafkaActor({
     brokers:   ['kafka-1:9092', 'kafka-2:9092'],
     clientId:  'my-app',

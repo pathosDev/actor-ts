@@ -23,7 +23,7 @@ const node2 = spec.nodes[1];
 
 // Spawn actors on different nodes:
 const probe = spec.createTestProbe(0);
-const remote = node2.actorOf(Props.create(() => new Worker()));
+const remote = node2.spawnAnonymous(Props.create(() => new Worker()));
 
 remote.tell({ kind: 'do', replyTo: probe });
 await probe.expectMsg({ kind: 'done' });

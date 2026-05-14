@@ -31,7 +31,7 @@ describe('FSM', () => {
   test('initial state handles messages', async () => {
     const events: string[] = [];
     const sys = ActorSystem.create('fsm', { logger: new NoopLogger(), logLevel: LogLevel.Off });
-    const ref = sys.actorOf(Props.create(() => new Door((e) => events.push(e))));
+    const ref = sys.spawnAnonymous(Props.create(() => new Door((e) => events.push(e))));
 
     ref.tell('open');
     await Bun.sleep(20);
@@ -49,7 +49,7 @@ describe('FSM', () => {
   test('data mutation via stay / goto', async () => {
     const events: string[] = [];
     const sys = ActorSystem.create('fsm-2', { logger: new NoopLogger(), logLevel: LogLevel.Off });
-    const ref = sys.actorOf(Props.create(() => new Door((e) => events.push(e))));
+    const ref = sys.spawnAnonymous(Props.create(() => new Door((e) => events.push(e))));
 
     ref.tell('open');
     ref.tell('close');
@@ -67,7 +67,7 @@ describe('FSM', () => {
       constructor() { super('a', null); /* no handlers registered */ }
     }
     const kit = TestKit.create('fsm-missing', { logger: new NoopLogger(), logLevel: LogLevel.Off });
-    const ref = kit.system.actorOf(Props.create(() => new Broken()));
+    const ref = kit.system.spawnAnonymous(Props.create(() => new Broken()));
     ref.tell('anything');
     await Bun.sleep(20);
     // The actor is still alive — subsequent tells don't throw.

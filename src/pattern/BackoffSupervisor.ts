@@ -20,7 +20,7 @@ import {
  * window, third-party API hiccup — and immediate restart would just
  * hammer the broken dependency.
  *
- *   const supervisor = system.actorOf(
+ *   const supervisor = system.spawn(
  *     BackoffSupervisor.props({
  *       childProps: Props.create(() => new MyFlaky()),
  *       minBackoff: 200,
@@ -348,7 +348,7 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
   private spawnChild(): void {
     this.incarnation += 1;
     const name = `${this.childName}-${this.incarnation}`;
-    const child = this.context.actorOf(this.opts.childProps, name);
+    const child = this.context.spawn(this.opts.childProps, name);
     this.context.watch(child);
     this.currentChild = child;
     this.spawnTs = this.clock();

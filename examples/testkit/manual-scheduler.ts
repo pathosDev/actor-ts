@@ -16,7 +16,7 @@ class Heartbeat extends Actor<'tick'> {
 async function main(): Promise<void> {
   const { kit, scheduler } = TestKit.withManualScheduler('ms-demo');
   const probe = kit.createTestProbe();
-  kit.system.actorOf(Props.create(() => new Heartbeat(probe)), 'hb');
+  kit.system.spawn(Props.create(() => new Heartbeat(probe)), 'hb');
 
   // preStart runs on its own dispatcher tick — give it a real micro-sleep.
   await Bun.sleep(5);

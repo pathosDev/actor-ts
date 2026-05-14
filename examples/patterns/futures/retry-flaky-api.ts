@@ -43,7 +43,7 @@ class UserHandler extends Actor<Success<{ userId: number }> | Failure> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('retry-demo');
-  const ref = system.actorOf(Props.create(() => new UserHandler()), 'user-handler');
+  const ref = system.spawn(Props.create(() => new UserHandler()), 'user-handler');
 
   const work = (): Promise<{ userId: number }> =>
     retry(flakyRemoteCall, {

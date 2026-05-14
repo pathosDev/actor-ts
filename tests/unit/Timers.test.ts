@@ -18,7 +18,7 @@ describe('context.timers.startSingleTimer', () => {
       override onReceive(m: string): void { seen.push(m); }
     }
     const sys = newSystem();
-    sys.actorOf(Props.create(() => new T()), 'a');
+    sys.spawn(Props.create(() => new T()), 'a');
     await sleep(100);
     expect(seen).toEqual(['tick']);
     await sys.terminate();
@@ -34,7 +34,7 @@ describe('context.timers.startSingleTimer', () => {
       override onReceive(m: string): void { seen.push(m); }
     }
     const sys = newSystem();
-    sys.actorOf(Props.create(() => new T()), 'a');
+    sys.spawn(Props.create(() => new T()), 'a');
     await sleep(100);
     expect(seen).toEqual(['new']);
     await sys.terminate();
@@ -55,7 +55,7 @@ describe('context.timers.startSingleTimer', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.actorOf(Props.create(() => new T()), 'a');
+    const ref = sys.spawn(Props.create(() => new T()), 'a');
     ref.tell('cancel');
     await sleep(100);
     expect(seen).toEqual([]);
@@ -70,7 +70,7 @@ describe('context.timers.startSingleTimer', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.actorOf(Props.create(() => new T()), 'a');
+    const ref = sys.spawn(Props.create(() => new T()), 'a');
     ref.tell('go');
     await sleep(30);
     expect(result).toBe(false);
@@ -91,7 +91,7 @@ describe('context.timers.startTimerWithFixedDelay', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.actorOf(Props.create(() => new T()), 'a');
+    const ref = sys.spawn(Props.create(() => new T()), 'a');
     await sleep(110);
     const snapshot = count;
     ref.tell('cancel');
@@ -115,7 +115,7 @@ describe('context.timers lifecycle integration', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.actorOf(Props.create(() => new T()), 'a');
+    const ref = sys.spawn(Props.create(() => new T()), 'a');
     await sleep(80);
     ref.tell('stop');
     await sleep(30);
@@ -143,7 +143,7 @@ describe('context.timers lifecycle integration', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.actorOf(Props.create(() => new T()), 'a');
+    const ref = sys.spawn(Props.create(() => new T()), 'a');
     ref.tell('report');
     ref.tell('cancel');
     await sleep(30);

@@ -151,7 +151,7 @@ CPU-gebundene Entity-Arbeit parallelisiert über Cores.
 
 ```ts
 // Worker, der GPU-gebundene Jobs handhabt:
-system.actorOf(Props.create(() => new GpuJobActor()), 'gpu-jobs');
+system.spawn(Props.create(() => new GpuJobActor()), 'gpu-jobs');
 
 // Abstürze in diesem Worker bleiben isoliert von main + anderen Workern
 ```

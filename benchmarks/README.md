@@ -172,7 +172,7 @@ async function main(): Promise<void> {
       name: 'spawn + stop',
       unit: 'actor',
       iterations: 5_000,
-      run: () => { const ref = system.actorOf(Props.create(() => new Noop())); ref.stop(); },
+      run: () => { const ref = system.spawnAnonymous(Props.create(() => new Noop())); ref.stop(); },
     },
   ]);
 

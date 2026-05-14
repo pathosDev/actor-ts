@@ -144,7 +144,7 @@ können ihren eigenen über `Props` spezifizieren:
 ```ts
 import { Props, MicrotaskDispatcher } from 'actor-ts';
 
-const fastActor = system.actorOf(
+const fastActor = system.spawn(
   Props.create(() => new Crunchy())
     .withDispatcher(new MicrotaskDispatcher()),
 );

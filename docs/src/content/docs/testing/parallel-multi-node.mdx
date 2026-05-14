@@ -73,7 +73,7 @@ const cluster = await Cluster.join(system, { host: 'localhost', port, seeds });
 process.on('message', (msg) => {
   // Handle test commands sent via IPC
   if (msg === 'spawn-counter') {
-    const ref = system.actorOf(Props.create(() => new Counter()));
+    const ref = system.spawnAnonymous(Props.create(() => new Counter()));
     process.send!({ kind: 'ready', path: ref.path.toString() });
   }
   // ...

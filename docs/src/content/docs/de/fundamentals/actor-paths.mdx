@@ -78,10 +78,10 @@ einen neuen Pfad zurück; es mutiert das Original nicht.
 Du kannst beim Spawnen einen `name` mitgeben:
 
 ```ts
-const ref = system.actorOf(Props.create(() => new Foo()), 'my-foo');
+const ref = system.spawn(Props.create(() => new Foo()), 'my-foo');
 // ref.path.toString() === 'actor-ts://my-app/user/my-foo'
 
-const child = this.context.actorOf(Props.create(() => new Bar()), 'bar');
+const child = this.context.spawn(Props.create(() => new Bar()), 'bar');
 // child.path.toString() === 'actor-ts://my-app/user/my-foo/bar'
 ```
 
@@ -89,7 +89,7 @@ Wenn du den Namen weglässt, synthetisiert das Framework einen
 (`'$1'`, `'$2'`, …).  Zwei Regeln gelten beim Namen:
 
 1. **Namen müssen unter Geschwistern eindeutig sein.**  Zweimal
-   `context.actorOf(props, 'bar')` auf demselben Parent wirft einen
+   `context.spawn(props, 'bar')` auf demselben Parent wirft einen
    Fehler — der Pfad ist bereits in Verwendung.
 2. **Der Name "sieht aus wie ein Pfadsegment."**  Keine Slashes,
    keine führenden Punkte, keine Leerzeichen.  Das Framework
@@ -199,8 +199,8 @@ class Worker extends Actor<...> {
     this.cache.tell({ kind: 'put', ... });
   }
 }
-const cache  = system.actorOf(Props.create(() => new Cache()), 'cache');
-const worker = system.actorOf(Props.create(() => new Worker(cache)));
+const cache  = system.spawn(Props.create(() => new Cache()), 'cache');
+const worker = system.spawnAnonymous(Props.create(() => new Worker(cache)));
 ```
 
 Die Konstruktor-Injection-Variante ist typsicher, hängt nicht von
@@ -212,7 +212,7 @@ Drei Top-Level-Guardian-Pfade existieren in jedem System:
 
 | Pfad | Was dort lebt |
 | --- | --- |
-| `/user` | Die Top-Level-Actors deiner Anwendung (alles, was `system.actorOf(...)` erzeugt). |
+| `/user` | Die Top-Level-Actors deiner Anwendung (alles, was `system.spawnAnonymous(...)` erzeugt). |
 | `/system` | Framework-Internas (Event-Stream-Listener, Cluster-Gossiper, der Dead-Letter-Actor selbst, …). |
 | `/deadLetters` | Der synthetische Empfänger für Nachrichten ohne lebendes Ziel. |
 

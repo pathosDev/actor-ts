@@ -86,7 +86,7 @@ describe('Props.withMailbox — end-to-end via actor', () => {
       .withMailbox<{ label: string; pri: number }>(
         () => new PriorityMailbox({ priorityFor: (m: { label: string; pri: number }) => m.pri }) as never,
       );
-    const ref = kit.system.actorOf(props);
+    const ref = kit.system.spawnAnonymous(props);
 
     // Send burst while the actor is still being initialised so multiple
     // messages sit in the mailbox at once.
@@ -121,7 +121,7 @@ describe('Props.withMailbox — end-to-end via actor', () => {
     }
     const props = Props.create(() => new Slow())
       .withMailbox(() => new BoundedMailbox<number>({ capacity: 3, overflow: 'drop-new' }) as never);
-    const ref = kit.system.actorOf(props);
+    const ref = kit.system.spawnAnonymous(props);
 
     for (let i = 0; i < 8; i++) ref.tell(i);
     await sleep(200);

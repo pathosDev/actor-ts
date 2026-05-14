@@ -46,7 +46,7 @@ class ParentActor extends Actor<number> {
   }
 
   override preStart(): void {
-    this.worker = this.context.actorOf(Props.create(() => new FlakyWorker()), 'worker');
+    this.worker = this.context.spawn(Props.create(() => new FlakyWorker()), 'worker');
   }
 
   override onReceive(n: number): void {
@@ -56,7 +56,7 @@ class ParentActor extends Actor<number> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('supervision');
-  const parent = system.actorOf(Props.create(() => new ParentActor()), 'parent');
+  const parent = system.spawn(Props.create(() => new ParentActor()), 'parent');
 
   for (let i = 1; i <= 6; i++) parent.tell(i);
 

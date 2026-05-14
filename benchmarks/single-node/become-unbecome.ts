@@ -27,7 +27,7 @@ class Swapper extends Actor<Msg> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('bench-become', { logger: new NoopLogger(), logLevel: LogLevel.Off });
-  const ref = system.actorOf(Props.create(() => new Swapper()));
+  const ref = system.spawnAnonymous(Props.create(() => new Swapper()));
 
   await runGroup('single-node · become/unbecome', [
     {

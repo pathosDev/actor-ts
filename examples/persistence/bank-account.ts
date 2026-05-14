@@ -67,7 +67,7 @@ async function main(): Promise<void> {
   sys1.extension(PersistenceExtensionId).setJournal(journal);
   sys1.extension(PersistenceExtensionId).setSnapshotStore(snapshots);
 
-  const acct1 = sys1.actorOf(Props.create(() => new Account('alice')), 'alice');
+  const acct1 = sys1.spawn(Props.create(() => new Account('alice')), 'alice');
   for (const amount of [100, 50, 20, 30, 10, 5, 100]) {
     console.log('deposit', amount, '→', await ask(acct1, { kind: 'deposit', amount }, 500));
   }
@@ -80,7 +80,7 @@ async function main(): Promise<void> {
   sys2.extension(PersistenceExtensionId).setJournal(journal);
   sys2.extension(PersistenceExtensionId).setSnapshotStore(snapshots);
 
-  const acct2 = sys2.actorOf(Props.create(() => new Account('alice')), 'alice');
+  const acct2 = sys2.spawn(Props.create(() => new Account('alice')), 'alice');
   console.log('after restart, balance →', await ask(acct2, { kind: 'balance' }, 500));
   await sys2.terminate();
 

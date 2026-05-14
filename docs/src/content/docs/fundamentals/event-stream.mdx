@@ -34,8 +34,8 @@ class MetricsCollector extends Actor<UserLoggedIn> {
 }
 
 const system = ActorSystem.create('demo');
-system.actorOf(Props.create(() => new AuditLogger()));
-system.actorOf(Props.create(() => new MetricsCollector()));
+system.spawnAnonymous(Props.create(() => new AuditLogger()));
+system.spawnAnonymous(Props.create(() => new MetricsCollector()));
 
 // Anywhere — including outside an actor:
 system.eventStream.publish(new UserLoggedIn('user-42'));

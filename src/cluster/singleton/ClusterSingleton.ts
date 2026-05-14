@@ -89,7 +89,7 @@ export class ClusterSingleton {
       mgr._envelopeUnsub = envelopeUnsub;
       return mgr;
     });
-    managerRef = this.system.actorOf(managerProps, `singleton-manager-${settings.typeName}`);
+    managerRef = this.system.spawn(managerProps, `singleton-manager-${settings.typeName}`);
     const proxy = new ClusterSingletonProxy<T>(cluster, settings.typeName, managerRef);
     const handle: SingletonHandle<T> = {
       proxy, manager: managerRef,

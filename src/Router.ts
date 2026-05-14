@@ -52,7 +52,7 @@ class RouterActor<TMsg> extends Actor<TMsg | Broadcast<TMsg>> {
 
   override async preStart(): Promise<void> {
     for (let i = 0; i < this.cfg.size; i++) {
-      const routee = this.context.actorOf(this.cfg.routeeProps, `routee-${i + 1}`);
+      const routee = this.context.spawn(this.cfg.routeeProps, `routee-${i + 1}`);
       this.routees.push(routee as ActorRef<TMsg>);
       this.context.watch(routee);
     }
@@ -72,7 +72,7 @@ class RouterActor<TMsg> extends Actor<TMsg | Broadcast<TMsg>> {
 /**
  * Helpers that return ready-to-spawn Props for pool-style routers.
  * Example:
- *   const pool = system.actorOf(Router.roundRobin(5, Props.create(() => new Worker())));
+ *   const pool = system.spawnAnonymous(Router.roundRobin(5, Props.create(() => new Worker())));
  *   pool.tell('work');
  *   pool.tell(new Broadcast('announce'));
  */

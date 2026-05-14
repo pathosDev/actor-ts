@@ -10,7 +10,7 @@ delivery is fine** and latency matters more than reliability.
 ```ts
 import { ActorSystem, Props, UdpSocketActor } from 'actor-ts';
 
-const udp = system.actorOf(
+const udp = system.spawn(
   Props.create(() => new UdpSocketActor({
     bindHost: '0.0.0.0',
     bindPort: 8125,         // bind for receiving

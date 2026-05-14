@@ -92,9 +92,9 @@ async function main(): Promise<void> {
     const sys = ActorSystem.create('grpc-demo');
 
     // Server side.
-    const getHandler = sys.actorOf(Props.create(() => new GetSensorHandler()), 'get');
-    const watchHandler = sys.actorOf(Props.create(() => new WatchSensorHandler()), 'watch');
-    const server = sys.actorOf(Props.create(() => new GrpcServerActor({
+    const getHandler = sys.spawn(Props.create(() => new GetSensorHandler()), 'get');
+    const watchHandler = sys.spawn(Props.create(() => new WatchSensorHandler()), 'watch');
+    const server = sys.spawn(Props.create(() => new GrpcServerActor({
       protoPath,
       packageName: 'sensor.v1',
       serviceName: 'SensorService',
@@ -109,8 +109,8 @@ async function main(): Promise<void> {
     await Bun.sleep(300);  // let the server bind
 
     // Client side.
-    const collector = sys.actorOf(Props.create(() => new ReplyCollector()), 'collector');
-    const client = sys.actorOf(Props.create(() => new GrpcClientActor({
+    const collector = sys.spawn(Props.create(() => new ReplyCollector()), 'collector');
+    const client = sys.spawn(Props.create(() => new GrpcClientActor({
       protoPath,
       packageName: 'sensor.v1',
       serviceName: 'SensorService',

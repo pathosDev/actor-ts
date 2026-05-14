@@ -56,7 +56,7 @@ describe('PersistentActor — write + recover', () => {
   test('persists events and applies them to the state', async () => {
     const { system } = makeSystem();
     const seen: unknown[] = [];
-    const ref = system.actorOf(Props.create(() => new Account('acct-1', m => seen.push(m))), 'a');
+    const ref = system.spawn(Props.create(() => new Account('acct-1', m => seen.push(m))), 'a');
     ref.tell({ kind: 'deposit', amount: 100 });
     ref.tell({ kind: 'deposit', amount: 50 });
     ref.tell({ kind: 'withdraw', amount: 30 });
@@ -82,7 +82,7 @@ describe('PersistentActor — write + recover', () => {
     ], 0);
 
     const seen: unknown[] = [];
-    system.actorOf(Props.create(() => new Account('acct-7', m => seen.push(m))), 'a');
+    system.spawn(Props.create(() => new Account('acct-7', m => seen.push(m))), 'a');
     await sleep(30);
     expect(seen).toContainEqual({ ready: 12 });
     void snapshots; // snapshot path not used in this test
@@ -99,7 +99,7 @@ describe('PersistentActor — write + recover', () => {
       { kind: 'deposited', amount: 50 },   // seq 4 — AFTER snapshot, MUST be applied
     ], 0);
     const seen: unknown[] = [];
-    system.actorOf(Props.create(() => new Account('acct-snap', m => seen.push(m))), 'a');
+    system.spawn(Props.create(() => new Account('acct-snap', m => seen.push(m))), 'a');
     await sleep(30);
     expect(seen).toContainEqual({ ready: 550 });
     await system.terminate();
@@ -127,7 +127,7 @@ describe('PersistentActor — stash during persist', () => {
       }
     }
 
-    const ref = system.actorOf(Props.create(() => new Slow()), 'slow');
+    const ref = system.spawn(Props.create(() => new Slow()), 'slow');
     ref.tell('ping');
     ref.tell('fast');
     ref.tell('fast');
@@ -153,7 +153,7 @@ describe('PersistentActor — snapshots', () => {
       }
     }
 
-    const ref = system.actorOf(Props.create(() => new Counter()), 'c');
+    const ref = system.spawn(Props.create(() => new Counter()), 'c');
     for (let i = 0; i < 7; i++) ref.tell('inc');
     await sleep(40);
 
@@ -176,7 +176,7 @@ describe('PersistentActor — persistAll atomic batch', () => {
         await this.persistAll([1, 2, 3]);
       }
     }
-    const ref = system.actorOf(Props.create(() => new Batch()), 'b');
+    const ref = system.spawn(Props.create(() => new Batch()), 'b');
     ref.tell('go');
     await sleep(30);
     const events = await journal.read<number>('batch', 1);
@@ -197,7 +197,7 @@ describe('PersistentActor — tagsFor', () => {
       override tagsFor(): readonly string[] { return ['orders']; }
       async onCommand(): Promise<void> { await this.persist({ op: 'x' }); }
     }
-    const ref = system.actorOf(Props.create(() => new Tagged()), 'tg');
+    const ref = system.spawn(Props.create(() => new Tagged()), 'tg');
     ref.tell('go');
     await sleep(30);
     const [evt] = await journal.read('tagged', 1);
@@ -242,7 +242,7 @@ describe('PersistentActor — snapshot integrity hardening', () => {
     // Recovery should throw a clear error rather than silently
     // recover with the attacker's state.
     const events: unknown[] = [];
-    const ref = system.actorOf(Props.create(() => new Account('tampered-1', (m) => events.push(m))), 't1');
+    const ref = system.spawn(Props.create(() => new Account('tampered-1', (m) => events.push(m))), 't1');
     // Wait briefly — recovery error should bubble up; the actor will
     // be terminated by the supervisor.  We assert by checking the
     // actor never reached recovery-complete (which would emit `ready`).
@@ -259,7 +259,7 @@ describe('PersistentActor — snapshot integrity hardening', () => {
     await snapshots.save('tampered-2', -1, { balance: 99_999 });
 
     const events: unknown[] = [];
-    system.actorOf(Props.create(() => new Account('tampered-2', (m) => events.push(m))), 't2');
+    system.spawn(Props.create(() => new Account('tampered-2', (m) => events.push(m))), 't2');
     await sleep(150);
     expect(events.find((e) => (e as { ready?: number }).ready !== undefined)).toBeUndefined();
     await system.terminate();
@@ -271,7 +271,7 @@ describe('PersistentActor — snapshot integrity hardening', () => {
     await snapshots.save('tampered-3', Number.NaN, { balance: 99_999 });
 
     const events: unknown[] = [];
-    system.actorOf(Props.create(() => new Account('tampered-3', (m) => events.push(m))), 't3');
+    system.spawn(Props.create(() => new Account('tampered-3', (m) => events.push(m))), 't3');
     await sleep(150);
     expect(events.find((e) => (e as { ready?: number }).ready !== undefined)).toBeUndefined();
     await system.terminate();
@@ -287,7 +287,7 @@ describe('PersistentActor — snapshot integrity hardening', () => {
     await snapshots.save('tampered-4', 4, { balance: 99_999 });
 
     const events: unknown[] = [];
-    system.actorOf(Props.create(() => new Account('tampered-4', (m) => events.push(m))), 't4');
+    system.spawn(Props.create(() => new Account('tampered-4', (m) => events.push(m))), 't4');
     await sleep(150);
     expect(events.find((e) => (e as { ready?: number }).ready !== undefined)).toBeUndefined();
     await system.terminate();
@@ -301,7 +301,7 @@ describe('PersistentActor — snapshot integrity hardening', () => {
     await snapshots.save('legit-1', 2, { balance: 150 });
 
     const events: unknown[] = [];
-    const ref = system.actorOf(Props.create(() => new Account('legit-1', (m) => events.push(m))), 'l1');
+    const ref = system.spawn(Props.create(() => new Account('legit-1', (m) => events.push(m))), 'l1');
     await sleep(150);
     expect(events).toContainEqual({ ready: 150 });
     void ref;
@@ -318,7 +318,7 @@ describe('PersistentActor — snapshot integrity hardening', () => {
     await snapshots.save('legit-2', 1, { balance: 100 });
 
     const events: unknown[] = [];
-    system.actorOf(Props.create(() => new Account('legit-2', (m) => events.push(m))), 'l2');
+    system.spawn(Props.create(() => new Account('legit-2', (m) => events.push(m))), 'l2');
     await sleep(150);
     expect(events).toContainEqual({ ready: 175 });   // 100 + 50 + 25
     await system.terminate();

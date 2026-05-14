@@ -22,7 +22,7 @@ to trip its supervisor strategy from outside.
 import { ActorSystem, Props, PoisonPill } from 'actor-ts';
 
 const system = ActorSystem.create('demo');
-const actor = system.actorOf(Props.create(() => new Worker()));
+const actor = system.spawnAnonymous(Props.create(() => new Worker()));
 
 actor.tell({ kind: 'work', n: 1 });
 actor.tell({ kind: 'work', n: 2 });

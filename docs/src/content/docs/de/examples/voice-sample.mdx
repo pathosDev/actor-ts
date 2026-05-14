@@ -67,7 +67,7 @@ Audio-Chunks verarbeitet werden.
 ### Broker-Integration
 
 ```ts
-const kafka = system.actorOf(
+const kafka = system.spawn(
   Props.create(() => new KafkaActor({
     brokers: ['kafka:9092'],
     consumer: { groupId: 'voice-processor', topics: ['audio-chunks'] },
@@ -135,7 +135,7 @@ const projection = ProjectionActor.byTag<SessionEvent>({
   },
 });
 
-system.actorOf(Props.create(() => projection));
+system.spawnAnonymous(Props.create(() => projection));
 ```
 
 Die Projektion liest die `'transcript'`-getaggten Events des

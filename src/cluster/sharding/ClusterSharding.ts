@@ -104,7 +104,7 @@ export class ClusterSharding {
       this.cluster,
       (path: string) => this.regionsByPath.get(path) ?? null,
     );
-    const ref = this.system.actorOf(
+    const ref = this.system.spawn(
       // ShardRegion internally handles extra envelope types; cast to Actor<TMsg>
       // so the returned ref presents the user-facing signature.
       Props.create<TMsg>(() => new ShardRegion<TMsg>(cfg) as unknown as import('../../Actor.js').Actor<TMsg>),
@@ -137,7 +137,7 @@ export class ClusterSharding {
       acquireRetryIntervalMs: settings.acquireRetryIntervalMs,
       localResolver: (path) => this.regionsByPath.get(path) ?? this.coordinators.get(this.typeNameFromCoordinatorPath(path) ?? '') ?? null,
     };
-    const ref = this.system.actorOf(
+    const ref = this.system.spawn(
       Props.create(() => new ShardCoordinator(coordinatorSettings)),
       `sharding-coordinator-${settings.typeName}`,
     );

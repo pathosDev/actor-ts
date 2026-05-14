@@ -35,7 +35,7 @@ async function main(): Promise<void> {
     }) as never);
 
   const drain = async (props: typeof defaultProps): Promise<void> => {
-    const ref = system.actorOf(props);
+    const ref = system.spawnAnonymous(props);
     for (let i = 0; i < batch; i++) ref.tell({ pri: (i * 7) % 5, id: i });
     await ask<Msg, number>(ref, { kind: 'count' }, 30_000);
     ref.stop();

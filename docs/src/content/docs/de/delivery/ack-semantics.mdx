@@ -73,9 +73,9 @@ class PersistentEventLog extends PersistentActor<Cmd, Event, State> {
   // …onCommand / onEvent ausgelassen…
 }
 
-const log = system.actorOf(Props.create(() => new PersistentEventLog()));
+const log = system.spawnAnonymous(Props.create(() => new PersistentEventLog()));
 
-const consumer = system.actorOf(
+const consumer = system.spawn(
   Props.create(() => new ConsumerController<OrderEvent>({
     handler: async (order) => {
       // ask() resolved, sobald der PersistentActor das Event

@@ -53,7 +53,7 @@ describe('Phase 2 actors — settings validation', () => {
   test('KafkaActor without `brokers` raises BrokerSettingsError', async () => {
     const sys = makeSys('kafka-validate');
     let captured: Error | null = null;
-    sys.actorOf(Props.create(() => {
+    sys.spawnAnonymous(Props.create(() => {
       const a = new KafkaActor({});
       const orig = a.preStart.bind(a);
       a.preStart = async (): Promise<void> => {
@@ -71,7 +71,7 @@ describe('Phase 2 actors — settings validation', () => {
   test('GrpcClientActor without endpoint raises BrokerSettingsError', async () => {
     const sys = makeSys('grpc-validate');
     let captured: Error | null = null;
-    sys.actorOf(Props.create(() => {
+    sys.spawnAnonymous(Props.create(() => {
       const a = new GrpcClientActor({
         protoPath: 'x.proto', packageName: 'x', serviceName: 'X',
         // endpoint missing
@@ -101,7 +101,7 @@ describe('Phase 2 actors — settings precedence (constructor wins over HOCON)',
     let captured: KafkaActor | null = null;
     let resolve!: (a: KafkaActor) => void;
     const ready = new Promise<KafkaActor>((r) => { resolve = r; });
-    sys.actorOf(Props.create(() => {
+    sys.spawnAnonymous(Props.create(() => {
       const a = new KafkaActor({ brokers: ['ctor:9092'] });  // ctor wins
       // We'll never actually try to connect — kafkajs isn't installed.
       // Override preStart to swallow the connect error after settings

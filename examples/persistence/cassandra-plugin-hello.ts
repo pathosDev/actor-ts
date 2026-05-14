@@ -63,7 +63,7 @@ async function main(): Promise<void> {
     snapshotStore: { contactPoints: ['fake'], keyspace: 'app' },
   });
 
-  let counter = system.actorOf(Props.create(() => new Counter()));
+  let counter = system.spawnAnonymous(Props.create(() => new Counter()));
   counter.tell({ kind: 'inc', amount: 10 });
   counter.tell({ kind: 'inc', amount: 32 });
   await Bun.sleep(60);
@@ -71,7 +71,7 @@ async function main(): Promise<void> {
   // "Crash and restart" — the new actor replays events from the journal.
   counter.stop();
   await Bun.sleep(30);
-  counter = system.actorOf(Props.create(() => new Counter()));
+  counter = system.spawnAnonymous(Props.create(() => new Counter()));
 
   await Bun.sleep(60);
   // Use ask to read the state so we see the replay worked.

@@ -27,7 +27,7 @@ const myBehavior = Behaviors.receive<Msg>((ctx, msg) => {
 
 const system = ActorSystem.create('demo');
 const ref = spawnTyped(system, myBehavior);
-// Under the hood: system.actorOf(Props.create(() => new TypedActor(myBehavior)))
+// Under the hood: system.spawnAnonymous(Props.create(() => new TypedActor(myBehavior)))
 ```
 
 The framework:
@@ -162,7 +162,7 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Don't instantiate `TypedActor` directly">
   ```ts
   const actor = new TypedActor<Msg>(behavior);   // ← not the spawn API
-  system.actorOf(Props.create(() => actor));      // ← won't behave like a fresh actor
+  system.spawnAnonymous(Props.create(() => actor));      // ← won't behave like a fresh actor
   ```
   Like any `Actor`, the typed runtime needs a fresh instance on
   every restart.  The spawn helpers (`spawnTyped`, `typedProps`,

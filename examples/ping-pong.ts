@@ -40,8 +40,8 @@ class Ponger extends Actor<PingPong> {
 async function main(): Promise<void> {
   const system = ActorSystem.create('ping-pong');
 
-  const ponger = system.actorOf(Props.create(() => new Ponger()), 'ponger');
-  const pinger = system.actorOf(Props.create(() => new Pinger(() => ponger)), 'pinger');
+  const ponger = system.spawn(Props.create(() => new Ponger()), 'ponger');
+  const pinger = system.spawn(Props.create(() => new Pinger(() => ponger)), 'pinger');
 
   pinger.tell({ kind: 'start' });
 

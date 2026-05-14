@@ -186,7 +186,7 @@ export class ProjectionActor {
     system: ActorSystem,
     settings: ByPidSettings<E>,
   ): ActorRef<unknown> {
-    return system.actorOf(
+    return system.spawn(
       Props.create(() => new ByPidProjectionActor<E>(settings) as unknown as Actor<unknown>),
       `projection-${settings.name}-${sanitize(settings.persistenceId)}`,
     );
@@ -197,7 +197,7 @@ export class ProjectionActor {
     system: ActorSystem,
     settings: ByTagSettings<E>,
   ): ActorRef<unknown> {
-    return system.actorOf(
+    return system.spawn(
       Props.create(() => new ByTagProjectionActor<E>(settings) as unknown as Actor<unknown>),
       `projection-${settings.name}-tag-${sanitize(settings.tag)}`,
     );

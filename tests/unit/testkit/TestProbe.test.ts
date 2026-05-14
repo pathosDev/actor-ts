@@ -127,7 +127,7 @@ describe('TestProbe integrates with real actors', () => {
     }
     const tk = TestKit.create();
     const probe = tk.createTestProbe();
-    const ref = tk.system.actorOf(Props.create(() => new Echo()), 'echo');
+    const ref = tk.system.spawn(Props.create(() => new Echo()), 'echo');
     ref.tell('hi', probe);
     expect(await probe.receiveOne(200)).toBe('echo:hi');
     await tk.shutdown();

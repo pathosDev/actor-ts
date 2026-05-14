@@ -39,7 +39,7 @@ describe('Receptionist — local', () => {
     const probe = kit.createTestProbe<Listing<string>>();
     const receptionist = kit.system.extension(ReceptionistId).start(null);
 
-    const svc = kit.system.actorOf(Props.create(() => new Service()), 'svc');
+    const svc = kit.system.spawn(Props.create(() => new Service()), 'svc');
     const key = ServiceKey.of<string>('echo');
     receptionist.tell(new Register(key, svc));
 
@@ -60,12 +60,12 @@ describe('Receptionist — local', () => {
     const l0 = await probe.expectMsgType(Listing, 500) as Listing<string>;
     expect(l0.refs.length).toBe(0);
 
-    const a = kit.system.actorOf(Props.create(() => new Service()), 'a');
+    const a = kit.system.spawn(Props.create(() => new Service()), 'a');
     receptionist.tell(new Register(key, a));
     const l1 = await probe.expectMsgType(Listing, 500) as Listing<string>;
     expect(l1.refs.length).toBe(1);
 
-    const b = kit.system.actorOf(Props.create(() => new Service()), 'b');
+    const b = kit.system.spawn(Props.create(() => new Service()), 'b');
     receptionist.tell(new Register(key, b));
     const l2 = await probe.expectMsgType(Listing, 500) as Listing<string>;
     expect(l2.refs.length).toBe(2);
@@ -79,7 +79,7 @@ describe('Receptionist — local', () => {
     const probe = kit.createTestProbe();
     const receptionist = kit.system.extension(ReceptionistId).start(null);
 
-    const svc = kit.system.actorOf(Props.create(() => new Service()), 'svc');
+    const svc = kit.system.spawn(Props.create(() => new Service()), 'svc');
     const key = ServiceKey.of<string>('ack-key');
     receptionist.tell(new Register(key, svc, probe));
 
@@ -94,7 +94,7 @@ describe('Receptionist — local', () => {
     const probe = kit.createTestProbe<Listing<string>>();
     const receptionist = kit.system.extension(ReceptionistId).start(null);
 
-    const svc = kit.system.actorOf(Props.create(() => new Service()), 'svc');
+    const svc = kit.system.spawn(Props.create(() => new Service()), 'svc');
     const key = ServiceKey.of<string>('temp');
 
     receptionist.tell(new Subscribe(key, probe));
@@ -132,7 +132,7 @@ describe('Receptionist — cluster-wide', () => {
       a.cluster.upMembers().length === 2 && b.cluster.upMembers().length === 2,
     );
 
-    const aSvc = a.system.actorOf(Props.create(() => new Service()), 'svc-on-a');
+    const aSvc = a.system.spawn(Props.create(() => new Service()), 'svc-on-a');
     const key = ServiceKey.of<string>('shared');
     a.receptionist.tell(new Register(key, aSvc) as never);
 
@@ -157,7 +157,7 @@ describe('Receptionist — cluster-wide', () => {
       a.cluster.upMembers().length === 2 && b.cluster.upMembers().length === 2,
     );
 
-    const aSvc = a.system.actorOf(Props.create(() => new Service()), 'svc-leave');
+    const aSvc = a.system.spawn(Props.create(() => new Service()), 'svc-leave');
     const key = ServiceKey.of<string>('leaving');
     a.receptionist.tell(new Register(key, aSvc) as never);
 

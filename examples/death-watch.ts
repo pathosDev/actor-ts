@@ -21,7 +21,7 @@ class Watcher extends Actor<'start' | 'kill' | Terminated> {
 
   override onReceive(msg: 'start' | 'kill' | Terminated): void {
     if (msg === 'start') {
-      this.child = this.context.actorOf(Props.create(() => new Child()), 'kid');
+      this.child = this.context.spawn(Props.create(() => new Child()), 'kid');
       this.context.watch(this.child);
       this.child.tell('work');
       return;
@@ -39,7 +39,7 @@ class Watcher extends Actor<'start' | 'kill' | Terminated> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('death-watch');
-  const watcher = system.actorOf(Props.create(() => new Watcher()), 'watcher');
+  const watcher = system.spawn(Props.create(() => new Watcher()), 'watcher');
   watcher.tell('start');
   await new Promise(resolve => setTimeout(resolve, 40));
   watcher.tell('kill');

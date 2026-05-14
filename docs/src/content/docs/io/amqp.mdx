@@ -10,7 +10,7 @@ queues, routing keys, ack/nack semantics.
 ```ts
 import { ActorSystem, Props, AmqpActor } from 'actor-ts';
 
-const amqp = system.actorOf(
+const amqp = system.spawn(
   Props.create(() => new AmqpActor({
     url: 'amqp://guest:guest@rabbitmq:5672',
     // Queue → consumer-actor wiring lives in `bindings` on the

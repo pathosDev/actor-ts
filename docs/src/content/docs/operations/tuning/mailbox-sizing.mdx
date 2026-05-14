@@ -14,7 +14,7 @@ sizing.
 ## Default behavior
 
 ```ts
-const ref = system.actorOf(Props.create(() => new Worker()));
+const ref = system.spawnAnonymous(Props.create(() => new Worker()));
 //  ↑ unbounded FIFO mailbox; mailbox can grow until OOM
 ```
 
@@ -39,7 +39,7 @@ Three patterns where bounded mailboxes pay off:
 
 ```ts
 // Slow consumer: writes to disk at 10/sec; producer pushes 1000/sec
-const slowWriter = system.actorOf(
+const slowWriter = system.spawn(
   Props.create(() => new SlowWriter())
     .withMailbox(() => new BoundedMailbox({
       capacity: 1_000,
@@ -55,7 +55,7 @@ adapt (retry, drop, alert).
 ### 2. Telemetry-style actors (stale data is wrong)
 
 ```ts
-const telemetry = system.actorOf(
+const telemetry = system.spawn(
   Props.create(() => new MetricsAggregator())
     .withMailbox(() => new BoundedMailbox({
       capacity: 5_000,
@@ -71,7 +71,7 @@ new ones arrive, keeping the queue full of recent data.
 ### 3. Critical actors near limits
 
 ```ts
-const auth = system.actorOf(
+const auth = system.spawn(
   Props.create(() => new AuthActor())
     .withMailbox(() => new BoundedMailbox({
       capacity: 10_000,
@@ -151,7 +151,7 @@ For actors with **mixed urgency**:
 ```ts
 import { PriorityMailbox } from 'actor-ts';
 
-const worker = system.actorOf(
+const worker = system.spawn(
   Props.create(() => new Worker())
     .withMailbox(() => new PriorityMailbox<Msg>({
       priorityFor: (m) => m.kind === 'urgent' ? 0 : 5,

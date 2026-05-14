@@ -13,7 +13,7 @@ class GreeterActor extends Actor<string> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('hello');
-  const greeter = system.actorOf(Props.create(() => new GreeterActor()), 'greeter');
+  const greeter = system.spawn(Props.create(() => new GreeterActor()), 'greeter');
 
   greeter.tell('World');
   greeter.tell('actor-ts');

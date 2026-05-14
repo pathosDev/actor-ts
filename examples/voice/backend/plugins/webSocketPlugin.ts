@@ -60,7 +60,7 @@ export const webSocketRoutePlugin: FastifyPluginAsync<WebSocketPluginOptions> = 
     const id = ++counter;
     opts.system.log.info(`[ws] connection accepted (session ${id})`);
 
-    const session: ActorRef<InboundFrame | SocketClosed> = opts.system.actorOf(
+    const session: ActorRef<InboundFrame | SocketClosed> = opts.system.spawn(
       Props.create(() =>
         new VoiceSessionActor({
           socket: socket as unknown as ServerWebSocketLike,

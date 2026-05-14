@@ -41,9 +41,9 @@ async function main(): Promise<void> {
   console.log(`[server] listening on ws://localhost:${server.port}`);
 
   const sys = ActorSystem.create('ws-demo');
-  const printer = sys.actorOf(Props.create(() => new Printer()), 'printer');
+  const printer = sys.spawn(Props.create(() => new Printer()), 'printer');
 
-  const ws = sys.actorOf(Props.create(() => new WebSocketActor({
+  const ws = sys.spawn(Props.create(() => new WebSocketActor({
     url: `ws://localhost:${server.port}`,
     target: printer,
     pingIntervalMs: 5_000,

@@ -18,7 +18,7 @@ const receptionist = system.extension(ReceptionistId).start(cluster);
 const apiKey = ServiceKey.of<ApiMsg>('api-service');
 
 // 2. Register an actor under the key
-const api = system.actorOf(Props.create(() => new ApiActor()), 'api');
+const api = system.spawn(Props.create(() => new ApiActor()), 'api');
 receptionist.register(apiKey, api);
 
 // 3. From any node — find every registered actor

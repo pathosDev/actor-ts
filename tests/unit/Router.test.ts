@@ -67,7 +67,7 @@ describe('Router.roundRobin (integration)', () => {
   test('distributes messages evenly across routees', async () => {
     const hits = new Map<string, number>();
     const sys = newSystem();
-    const pool = sys.actorOf(
+    const pool = sys.spawn(
       Router.roundRobin(3, Props.create(() => new (countingWorker(hits))())),
       'pool',
     );
@@ -81,7 +81,7 @@ describe('Router.roundRobin (integration)', () => {
   test('routee names follow "routee-N" convention', async () => {
     const hits = new Map<string, number>();
     const sys = newSystem();
-    const pool = sys.actorOf(
+    const pool = sys.spawn(
       Router.roundRobin(2, Props.create(() => new (countingWorker(hits))())),
       'pool',
     );
@@ -97,7 +97,7 @@ describe('Router.random (integration)', () => {
   test('delivers total count of messages across the pool', async () => {
     const hits = new Map<string, number>();
     const sys = newSystem();
-    const pool = sys.actorOf(
+    const pool = sys.spawn(
       Router.random(4, Props.create(() => new (countingWorker(hits))())),
       'pool',
     );
@@ -115,7 +115,7 @@ describe('Router.broadcast (explicit Broadcast message)', () => {
   test('Broadcast delivers to every routee', async () => {
     const hits = new Map<string, number>();
     const sys = newSystem();
-    const pool = sys.actorOf(
+    const pool = sys.spawn(
       Router.roundRobin(4, Props.create(() => new (countingWorker(hits))())),
       'pool',
     );

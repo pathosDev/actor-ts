@@ -34,8 +34,20 @@ export interface ActorContext<TMsg = unknown> {
   /** Logger bound to this actor's path. */
   readonly log: Logger;
 
-  /** Spawn a child actor under this one.  `name` must be unique among siblings. */
-  actorOf<T>(props: Props<T>, name?: string): ActorRef<T>;
+  /**
+   * Spawn a child actor under this one with a deterministic
+   * caller-supplied name.  The name must be unique among siblings.
+   * For an auto-generated name, see {@link spawnAnonymous}.
+   */
+  spawn<T>(props: Props<T>, name: string): ActorRef<T>;
+
+  /**
+   * Spawn a child actor under this one with an auto-generated name.
+   * Useful for one-shot helpers and other transient children where
+   * the caller doesn't need a stable path.  For a deterministic
+   * name, see {@link spawn}.
+   */
+  spawnAnonymous<T>(props: Props<T>): ActorRef<T>;
 
   /** Look up a direct child by name.  `None` if no such child exists. */
   child(name: string): Option<ActorRef>;

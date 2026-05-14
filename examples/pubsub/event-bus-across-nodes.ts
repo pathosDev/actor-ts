@@ -62,15 +62,15 @@ async function main(): Promise<void> {
   console.log('cluster formed with 3 nodes');
 
   // B cares about orders + everything broadcast.
-  const bOrders = b.system.actorOf(Props.create(() => new TopicListener('nodeB@orders')));
+  const bOrders = b.system.spawnAnonymous(Props.create(() => new TopicListener('nodeB@orders')));
   b.mediator.tell(new Subscribe('orders', bOrders));
-  const bBroadcast = b.system.actorOf(Props.create(() => new TopicListener('nodeB@broadcast')));
+  const bBroadcast = b.system.spawnAnonymous(Props.create(() => new TopicListener('nodeB@broadcast')));
   b.mediator.tell(new Subscribe('broadcast', bBroadcast));
 
   // C cares about shipping + broadcast.
-  const cShipping = c.system.actorOf(Props.create(() => new TopicListener('nodeC@shipping')));
+  const cShipping = c.system.spawnAnonymous(Props.create(() => new TopicListener('nodeC@shipping')));
   c.mediator.tell(new Subscribe('shipping', cShipping));
-  const cBroadcast = c.system.actorOf(Props.create(() => new TopicListener('nodeC@broadcast')));
+  const cBroadcast = c.system.spawnAnonymous(Props.create(() => new TopicListener('nodeC@broadcast')));
   c.mediator.tell(new Subscribe('broadcast', cBroadcast));
 
   // Let two gossip rounds replicate the topic registry.

@@ -185,7 +185,7 @@ describe('ClusterSingleton — two nodes', () => {
     // Regression: when a node briefly hosts the singleton, then loses
     // leadership (child stopping), then reclaims leadership before the
     // child's cell has been GC'd from the parent's children map,
-    // `actorOf` used to throw "Child name 'X' is not unique".  The
+    // `spawn` used to throw "Child name 'X' is not unique".  The
     // fix watches the child and defers the next `spawn()` until the
     // `Terminated` system message arrives.  This test forces that
     // flap by starting the higher-addressed node first (so it
@@ -197,7 +197,7 @@ describe('ClusterSingleton — two nodes', () => {
     // reliably hits the bug pre-fix: the second `reconcileSync` on
     // B fires from `handleLeave`'s synchronous emit chain *before*
     // B's previous child cell has finished terminating, so the
-    // pre-fix `actorOf` would throw "name not unique".
+    // pre-fix `spawn` would throw "name not unique".
     const SYS = 'sng-flap';
     // Start B first (higher address, will be sole leader briefly).
     const b = await startNode(SYS, 'h', 52402);
@@ -250,7 +250,7 @@ describe('ClusterSingleton — two nodes', () => {
     // Stop A immediately — its leave message reaches B while B's
     // previous Marker cell is still mid-`postStop`.  B's reconcile
     // fires from `handleLeave`'s synchronous emit chain.  Pre-fix,
-    // this is where `actorOf` threw "name not unique"; with the fix,
+    // this is where `spawn` threw "name not unique"; with the fix,
     // the spawn waits for the `Terminated` message and then runs.
     await stop(a);
     await waitFor(

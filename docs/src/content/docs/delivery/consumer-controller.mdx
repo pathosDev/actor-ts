@@ -16,7 +16,7 @@ It:
 ```ts
 import { Props, ConsumerController } from 'actor-ts';
 
-const consumer = system.actorOf(
+const consumer = system.spawn(
   Props.create(() => new ConsumerController<OrderEvent>({
     handler: async (order) => {
       await processOrder(order);
@@ -136,16 +136,16 @@ processed-seq alongside business state in your handler.
 ## Multiple producers
 
 ```ts
-const consumer = system.actorOf(
+const consumer = system.spawn(
   Props.create(() => new ConsumerController<OrderEvent>({
     handler: async (order) => { await processOrder(order); },
   })),
 );
 
 // Multiple producers send to the same consumer:
-const p1 = system.actorOf(Props.create(() =>
+const p1 = system.spawnAnonymous(Props.create(() =>
   new ProducerController({ consumer, producerId: 'p1' })));
-const p2 = system.actorOf(Props.create(() =>
+const p2 = system.spawnAnonymous(Props.create(() =>
   new ProducerController({ consumer, producerId: 'p2' })));
 ```
 

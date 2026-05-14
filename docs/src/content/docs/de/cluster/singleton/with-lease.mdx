@@ -13,7 +13,7 @@ Die **Single-Writer-Lease** verhindert das:
 ```ts
 import { ClusterSingletonManager, KubernetesLease } from 'actor-ts';
 
-system.actorOf(
+system.spawn(
   ClusterSingletonManager.props({
     cluster,
     typeName:        'job-scheduler',

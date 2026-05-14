@@ -54,7 +54,7 @@ class Worker extends Actor<{ id: number }> {
     await Bun.sleep(2 + Math.random() * 5);
   }
 }
-const worker = system.actorOf(Props.create(() => new Worker()), 'worker');
+const worker = system.spawn(Props.create(() => new Worker()), 'worker');
 
 let n = 0;
 const tick = setInterval(() => {

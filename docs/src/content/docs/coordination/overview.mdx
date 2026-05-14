@@ -143,7 +143,7 @@ const lease = new KubernetesLease({
   namespace:           process.env.K8S_NAMESPACE!,
 });
 
-system.actorOf(
+system.spawn(
   ClusterSingletonManager.props({
     cluster,
     typeName:        'job-scheduler',

@@ -19,7 +19,7 @@ async function main(): Promise<void> {
       unit: 'actor',
       iterations: 5_000,
       run: () => {
-        const ref = system.actorOf(props);
+        const ref = system.spawnAnonymous(props);
         ref.stop();
       },
     },
@@ -30,7 +30,7 @@ async function main(): Promise<void> {
       opsPerIteration: 100,
       run: () => {
         const refs = [];
-        for (let i = 0; i < 100; i++) refs.push(system.actorOf(props));
+        for (let i = 0; i < 100; i++) refs.push(system.spawnAnonymous(props));
         for (const r of refs) r.stop();
       },
     },

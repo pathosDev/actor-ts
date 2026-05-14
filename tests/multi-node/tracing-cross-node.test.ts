@@ -65,7 +65,7 @@ describe('Distributed tracing — cross-node propagation', () => {
       class Echo extends Actor<string> {
         override onReceive(_m: string): void { /* span recorded automatically */ }
       }
-      b.sys.actorOf(Props.create(() => new Echo()), 'echo');
+      b.sys.spawn(Props.create(() => new Echo()), 'echo');
       const echoOnB = new RemoteActorRef<string>(
         b.cluster.selfAddress,
         `actor-ts://${sysName}/user/echo`,
@@ -123,7 +123,7 @@ describe('Distributed tracing — cross-node propagation', () => {
       class Echo extends Actor<string> {
         override onReceive(_m: string): void { /* */ }
       }
-      sysB.actorOf(Props.create(() => new Echo()), 'echo');
+      sysB.spawn(Props.create(() => new Echo()), 'echo');
       const echoOnB = new RemoteActorRef<string>(
         clusterB.selfAddress,
         `actor-ts://${sysName}/user/echo`,

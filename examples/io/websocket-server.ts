@@ -71,14 +71,14 @@ class PerClientForwarder extends Actor<WebSocketFrame> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('ws-server-demo');
-  const chat = system.actorOf(Props.create(() => new ChatRoom()), 'chat');
+  const chat = system.spawn(Props.create(() => new ChatRoom()), 'chat');
 
   const handlers = bunWebSocketHandlers(system, {
     onOpen: (_ws, ref) => {
       // Spin up a per-client forwarder that bridges inbound frames
       // into the chat room.  Wire it AFTER the connection actor
       // exists so it can pass `ref` along.
-      const forwarder = system.actorOf(
+      const forwarder = system.spawn(
         Props.create(() => new PerClientForwarder(chat, ref)),
       );
       // Re-target the connection actor at the forwarder.  In a

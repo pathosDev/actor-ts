@@ -41,7 +41,7 @@ async function main(): Promise<void> {
   const system = ActorSystem.create('pri-dispatch');
   const props = Props.create(() => new Dispatcher())
     .withMailbox(() => new PriorityMailbox<Msg>({ priorityFor }) as never);
-  const ref = system.actorOf(props);
+  const ref = system.spawnAnonymous(props);
 
   // Fire a burst: a bunch of logs, a heartbeat, a command, a few more logs.
   for (let i = 0; i < 6; i++) ref.tell({ kind: 'log', line: `bulk-${i}` });

@@ -20,7 +20,7 @@ describe('watch / unwatch', () => {
       private w?: ActorRef<'die'>;
       override onReceive(m: 'go' | Terminated): void {
         if (m === 'go') {
-          this.w = this.context.actorOf(Props.create(() => new Watched()), 'wd') as ActorRef<'die'>;
+          this.w = this.context.spawn(Props.create(() => new Watched()), 'wd') as ActorRef<'die'>;
           this.context.watch(this.w);
           this.w.tell('die');
         } else if (m instanceof Terminated) {
@@ -29,7 +29,7 @@ describe('watch / unwatch', () => {
       }
     }
     const sys = newSystem();
-    const p = sys.actorOf(Props.create(() => new Watcher()), 'p');
+    const p = sys.spawn(Props.create(() => new Watcher()), 'p');
     p.tell('go');
     await sleep(50);
     expect(seen).toEqual(['wd']);
@@ -45,7 +45,7 @@ describe('watch / unwatch', () => {
       private w?: ActorRef<'die'>;
       override onReceive(m: 'go' | 'unwatch' | 'kill' | Terminated): void {
         if (m === 'go') {
-          this.w = this.context.actorOf(Props.create(() => new Watched()), 'wd') as ActorRef<'die'>;
+          this.w = this.context.spawn(Props.create(() => new Watched()), 'wd') as ActorRef<'die'>;
           this.context.watch(this.w);
         } else if (m === 'unwatch') {
           this.context.unwatch(this.w!);
@@ -57,7 +57,7 @@ describe('watch / unwatch', () => {
       }
     }
     const sys = newSystem();
-    const p = sys.actorOf(Props.create(() => new Watcher()), 'p');
+    const p = sys.spawn(Props.create(() => new Watcher()), 'p');
     p.tell('go');
     p.tell('unwatch');
     p.tell('kill');
@@ -78,12 +78,12 @@ describe('watch / unwatch', () => {
 
     const sys = newSystem();
     // Create target, immediately stop it, wait until terminated.
-    const target = sys.actorOf(Props.create(() => new Target()), 'dead');
+    const target = sys.spawn(Props.create(() => new Target()), 'dead');
     target.stop();
     await sleep(30);
 
     // Now spin up a watcher that receives the (terminated) ref.
-    const w = sys.actorOf(Props.create(() => new LateWatcher()), 'w');
+    const w = sys.spawn(Props.create(() => new LateWatcher()), 'w');
     w.tell(target);
     await sleep(50);
     expect(seen).toEqual(['dead']);
@@ -97,14 +97,14 @@ describe('watch / unwatch', () => {
     class Watcher extends Actor<'go'> {
       returnedSame?: boolean;
       override onReceive(_: 'go'): void {
-        const child = this.context.actorOf(Props.create(() => new X()), 'x');
+        const child = this.context.spawn(Props.create(() => new X()), 'x');
         const watched = this.context.watch(child);
         this.returnedSame = watched === child;
       }
     }
     const sys = newSystem();
     const instance = new Watcher();
-    const ref = sys.actorOf(Props.create(() => instance), 'w');
+    const ref = sys.spawn(Props.create(() => instance), 'w');
     ref.tell('go');
     await sleep(30);
     expect(instance.returnedSame).toBe(true);

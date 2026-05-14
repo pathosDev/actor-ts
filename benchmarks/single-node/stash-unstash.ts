@@ -32,7 +32,7 @@ async function main(): Promise<void> {
   const system = ActorSystem.create('bench-stash', { logger: new NoopLogger(), logLevel: LogLevel.Off });
 
   const run = async (batch: number): Promise<void> => {
-    const ref = system.actorOf(Props.create(() => new Staller()));
+    const ref = system.spawnAnonymous(Props.create(() => new Staller()));
     for (let i = 0; i < batch; i++) ref.tell({ kind: 'work' });
     ref.tell({ kind: 'go' });
     await ask<Msg, number>(ref, { kind: 'count' }, 30_000);

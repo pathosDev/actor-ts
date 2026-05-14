@@ -32,10 +32,10 @@ async function main(): Promise<void> {
   const receptionist = system.extension(ReceptionistId).start(null);
 
   const echoKey = ServiceKey.of<string>('echo');
-  const echo = system.actorOf(Props.create(() => new Echo()), 'echo');
+  const echo = system.spawn(Props.create(() => new Echo()), 'echo');
   receptionist.tell(new Register(echoKey, echo));
 
-  const client = system.actorOf(Props.create(() => new Client()), 'client');
+  const client = system.spawn(Props.create(() => new Client()), 'client');
   receptionist.tell(new Find(echoKey, client));
 
   await Bun.sleep(50);

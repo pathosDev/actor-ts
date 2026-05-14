@@ -30,7 +30,7 @@ const props = Props.create(() => new Worker())
 
 Jedes `with…` gibt ein **neues** `Props` zurück — die Originale sind
 unveränderlich.  Baue das Rezept auf und gib es dann an
-`system.actorOf` oder `context.actorOf`.
+`system.spawn` oder `context.spawn`.
 
 ## Warum eine Factory, keine Instanz
 
@@ -184,15 +184,15 @@ Overflow-Policies und Priority-Semantik.
 
 ## Naming beim Spawn
 
-Der Actor-*Name* wird an `actorOf` / `spawn` übergeben, nicht auf
+Der Actor-*Name* wird an `spawn` / `spawn` übergeben, nicht auf
 `Props` gespeichert:
 
 ```ts
 const props = Props.create(() => new Worker());
 
-system.actorOf(props, 'worker-1');           // → /user/worker-1
-system.actorOf(props, 'worker-2');           // → /user/worker-2
-this.context.actorOf(props, 'sub-worker');   // → /user/<this>/sub-worker
+system.spawn(props, 'worker-1');           // → /user/worker-1
+system.spawn(props, 'worker-2');           // → /user/worker-2
+this.context.spawn(props, 'sub-worker');   // → /user/<this>/sub-worker
 ```
 
 Der Grund: `Props` ist als **wiederverwendbar** gedacht.  Dasselbe
@@ -220,7 +220,7 @@ function workerProps(db: ActorRef<DbMsg>): Props<WorkerMsg> {
 
 // Viele mit demselben Rezept spawnen:
 for (let i = 0; i < 8; i++) {
-  this.context.actorOf(workerProps(db), `worker-${i}`);
+  this.context.spawn(workerProps(db), `worker-${i}`);
 }
 ```
 
@@ -258,8 +258,8 @@ import { Aside } from '@astrojs/starlight/components';
     .withSupervisorStrategy(stoppingStrategy);
 
   // Zwei Geschwister, beide bei Fehler gestoppt — okay.
-  system.actorOf(props, 'a');
-  system.actorOf(props, 'b');
+  system.spawn(props, 'a');
+  system.spawn(props, 'b');
 
   // Aber: willst du wirklich, dass beide stoppingStrategy verwenden?
   ```
@@ -281,7 +281,7 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Mailboxes](/de/fundamentals/mailboxes/)** — die Queue,
   die du an `withMailbox` / `withMailboxCapacity` übergibst.
 - **[ActorSystem](/de/fundamentals/actor-system/)** — das
-  `system.actorOf(props, name?)`, das Props konsumiert.
+  `system.spawn(props, name?)`, das Props konsumiert.
 
 Die [`Props`](/api/classes/props/)-API-Referenz deckt den vollen
 Builder-Set ab.

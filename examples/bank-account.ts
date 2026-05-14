@@ -41,7 +41,7 @@ class AccountActor extends Actor<Command> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('bank');
-  const account = system.actorOf(Props.create(() => new AccountActor()), 'alice');
+  const account = system.spawn(Props.create(() => new AccountActor()), 'alice');
 
   console.log('deposit 100 ->', await ask(account, { kind: 'deposit', amount: 100 }, 500));
   console.log('withdraw 30 ->', await ask(account, { kind: 'withdraw', amount: 30 }, 500));

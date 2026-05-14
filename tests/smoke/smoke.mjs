@@ -55,7 +55,7 @@ try {
     }
   }
   const sys = ActorSystem.create('smoke-core', { logger: new NoopLogger(), logLevel: LogLevel.Off });
-  const ref = sys.actorOf(Props.create(() => new Counter()));
+  const ref = sys.spawnAnonymous(Props.create(() => new Counter()));
   const N = 10_000;
   for (let i = 0; i < N; i++) ref.tell('inc');
   const got = await ask(ref, 'get', 5_000);

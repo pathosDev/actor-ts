@@ -85,12 +85,12 @@ async function main(): Promise<void> {
   // Forward decl so the processor can refer to the kafka actor.
   let kafka!: ActorRef<KafkaCmd>;
 
-  const processor = system.actorOf(
+  const processor = system.spawn(
     Props.create(() => new OrderProcessor(kafka)),
     'processor',
   );
 
-  kafka = system.actorOf(
+  kafka = system.spawn(
     Props.create(() => new KafkaActor({
       brokers: ['localhost:9092'],
       clientId: 'eo-demo',

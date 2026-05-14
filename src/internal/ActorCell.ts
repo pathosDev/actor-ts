@@ -120,16 +120,24 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
     return out;
   }
 
-  actorOf<T>(props: Props<T>, name?: string): ActorRef<T> {
+  spawn<T>(props: Props<T>, name: string): ActorRef<T> {
+    return this._createChild(props, name);
+  }
+
+  spawnAnonymous<T>(props: Props<T>): ActorRef<T> {
+    return this._createChild(props, `$${++this._anonChildCounter}`);
+  }
+
+  /** @internal — single child-creation path shared by spawn / spawnAnonymous. */
+  private _createChild<T>(props: Props<T>, name: string): ActorRef<T> {
     if (this.state === 'terminated' || this.state === 'terminating') {
       throw new Error(`Cannot spawn children from terminated actor ${this.path}`);
     }
-    const childName = name ?? `$${++this._anonChildCounter}`;
-    if (this._children.has(childName)) {
-      throw new Error(`Child name '${childName}' is not unique under ${this.path}`);
+    if (this._children.has(name)) {
+      throw new Error(`Child name '${name}' is not unique under ${this.path}`);
     }
-    const cell = new ActorCell<T>(this.system, props, this as unknown as ActorCell<unknown>, childName);
-    this._children.set(childName, cell);
+    const cell = new ActorCell<T>(this.system, props, this as unknown as ActorCell<unknown>, name);
+    this._children.set(name, cell);
     return cell.self;
   }
 

@@ -41,14 +41,14 @@ async function main(): Promise<void> {
   // Spawn workers under a shared "workers" parent so the path prefix is stable.
   class WorkersRoot extends Actor<never> {
     override preStart(): void {
-      this.context.actorOf(Props.create(() => new ImageWorker()), 'images');
-      this.context.actorOf(Props.create(() => new EmailWorker()), 'email');
-      this.context.actorOf(Props.create(() => new AuditWorker()), 'audit');
+      this.context.spawn(Props.create(() => new ImageWorker()), 'images');
+      this.context.spawn(Props.create(() => new EmailWorker()), 'email');
+      this.context.spawn(Props.create(() => new AuditWorker()), 'audit');
     }
     override onReceive(): void {}
   }
-  system.actorOf(Props.create(() => new WorkersRoot()), 'workers');
-  const dispatcher = system.actorOf(Props.create(() => new Dispatcher()), 'dispatcher');
+  system.spawn(Props.create(() => new WorkersRoot()), 'workers');
+  const dispatcher = system.spawn(Props.create(() => new Dispatcher()), 'dispatcher');
 
   // Let the workers finish preStart (they were spawned asynchronously).
   await Bun.sleep(20);

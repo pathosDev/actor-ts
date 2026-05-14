@@ -45,7 +45,7 @@ describe('Counter', () => {
     const tk = TestKit.create('counter-spec');
     const probe = tk.createTestProbe();
 
-    const counter = tk.system.actorOf(Props.create(() => new Counter()));
+    const counter = tk.system.spawnAnonymous(Props.create(() => new Counter()));
     counter.tell({ kind: 'inc' });
     counter.tell({ kind: 'inc' });
     counter.tell({ kind: 'get', replyTo: probe as ActorRef<number> });
@@ -74,7 +74,7 @@ may hang.
 ```ts
 const tk = TestKit.create();
 const probe = tk.createTestProbe();
-const ref = tk.system.actorOf(Props.create(() => new MyActor(probe)));
+const ref = tk.system.spawnAnonymous(Props.create(() => new MyActor(probe)));
 ref.tell({ kind: 'do' });
 await probe.expectMsg('done');
 await tk.shutdown();
@@ -94,7 +94,7 @@ This is the canonical shape — see
 const { kit, scheduler } = TestKit.withManualScheduler();
 const probe = kit.createTestProbe();
 
-const ref = kit.system.actorOf(Props.create(() => new ScheduledThing(probe)));
+const ref = kit.system.spawnAnonymous(Props.create(() => new ScheduledThing(probe)));
 ref.tell({ kind: 'start' });
 
 scheduler.advance(5_000);   // virtual time jumps 5 seconds
@@ -121,7 +121,7 @@ const spec = await MultiNodeSpec.create({
 
 // `spec.nodes` is an array of ActorSystems, all joined into one cluster.
 const node1Probe = spec.createTestProbe(0);
-const remote = spec.nodes[1].actorOf(Props.create(() => new Worker()));
+const remote = spec.nodes[1].spawnAnonymous(Props.create(() => new Worker()));
 remote.tell({ kind: 'do', replyTo: node1Probe });
 await node1Probe.expectMsg({ kind: 'done' });
 

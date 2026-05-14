@@ -36,7 +36,7 @@ async function main(): Promise<void> {
     // A code override still wins over the file contents.
     config: { 'actor-ts': { logger: { level: 'info' } } },
   });
-  const diag = system.actorOf(Props.create(() => new DiagActor()), 'diag');
+  const diag = system.spawn(Props.create(() => new DiagActor()), 'diag');
   diag.tell('report');
   await new Promise(resolve => setTimeout(resolve, 50));
   await system.terminate();

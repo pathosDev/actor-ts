@@ -54,13 +54,13 @@ async function main(): Promise<void> {
 
   for (const { sys, cluster, name } of [a, b, c]) {
     const r = sys.extension(ReceptionistId).start(cluster, { gossipIntervalMs: 80 });
-    const w = sys.actorOf(Props.create(() => new Worker(name)), `worker-${name}`);
+    const w = sys.spawn(Props.create(() => new Worker(name)), `worker-${name}`);
     r.tell(new Register(key, w));
   }
 
   // Subscribe on node A; expect to see 1, then 2, then 3 workers over time.
   const aReceptionist = a.sys.extension(ReceptionistId).get()!;
-  const client = a.sys.actorOf(Props.create(() => new StreamClient()), 'client');
+  const client = a.sys.spawn(Props.create(() => new StreamClient()), 'client');
   aReceptionist.tell(new Subscribe(key, client));
 
   await Bun.sleep(500);

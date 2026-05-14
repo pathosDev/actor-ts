@@ -110,7 +110,7 @@ async function main(): Promise<void> {
     },
   });
 
-  const alice = system.actorOf(Props.create(() => new Account('alice')));
+  const alice = system.spawnAnonymous(Props.create(() => new Account('alice')));
 
   console.log('--- first run ---');
   console.log('deposit 100 →', await ask(alice, { kind: 'deposit', amount: 100 }, 3_000));
@@ -122,7 +122,7 @@ async function main(): Promise<void> {
   alice.stop();
   await Bun.sleep(50);
   console.log('--- second run (state replayed from Scylla) ---');
-  const alice2 = system.actorOf(Props.create(() => new Account('alice')));
+  const alice2 = system.spawnAnonymous(Props.create(() => new Account('alice')));
   console.log('balance    →', await ask(alice2, { kind: 'balance' }, 3_000));
 
   await ext.journal.close?.();

@@ -33,7 +33,7 @@ describe('LogContext — actor-to-actor propagation', () => {
 
     const sys = ActorSystem.create('mdc-1', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
-      const r = sys.actorOf(Props.create(() => new Receiver()), 'r');
+      const r = sys.spawn(Props.create(() => new Receiver()), 'r');
       LogContext.run({ correlationId: 'abc-123' }, () => {
         r.tell('hello');
       });
@@ -64,8 +64,8 @@ describe('LogContext — actor-to-actor propagation', () => {
 
     const sys = ActorSystem.create('mdc-chain', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
-      const bottom = sys.actorOf(Props.create(() => new Bottom()), 'b');
-      const middle = sys.actorOf(Props.create(() => new Middle()), 'm');
+      const bottom = sys.spawn(Props.create(() => new Bottom()), 'b');
+      const middle = sys.spawn(Props.create(() => new Middle()), 'm');
       LogContext.run({ requestId: 'req-9', user: 'u-1' }, () => {
         middle.tell({ msg: 'forward', bottom });
       });
@@ -86,7 +86,7 @@ describe('LogContext — actor-to-actor propagation', () => {
     }
     const sys = ActorSystem.create('mdc-none', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
-      const r = sys.actorOf(Props.create(() => new R()), 'r');
+      const r = sys.spawn(Props.create(() => new R()), 'r');
       r.tell('plain');
       await sleep(30);
       expect(observed).toEqual([{}]);
@@ -104,7 +104,7 @@ describe('LogContext — actor-to-actor propagation', () => {
     }
     const sys = ActorSystem.create('mdc-parallel', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
-      const r = sys.actorOf(Props.create(() => new R()), 'r');
+      const r = sys.spawn(Props.create(() => new R()), 'r');
       LogContext.run({ branch: 'A' }, () => r.tell({ id: 'a' }));
       LogContext.run({ branch: 'B' }, () => r.tell({ id: 'b' }));
       await sleep(50);

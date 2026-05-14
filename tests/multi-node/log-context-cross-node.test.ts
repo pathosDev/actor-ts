@@ -80,9 +80,9 @@ describe('LogContext — cross-node propagation', () => {
       await waitFor(() => a.cluster.upMembers().length === 2);
 
       // Echo lives on B.  Probe lives on A.
-      b.sys.actorOf(Props.create(() => new Echo()), 'echo');
+      b.sys.spawn(Props.create(() => new Echo()), 'echo');
       const probeActor = new Probe();
-      const probeRef = a.sys.actorOf(Props.create(() => probeActor), 'probe');
+      const probeRef = a.sys.spawn(Props.create(() => probeActor), 'probe');
 
       // Build a RemoteActorRef from A pointing at /user/echo on B.
       // ActorSelection won't help here — it resolves only locally.
@@ -121,7 +121,7 @@ describe('LogContext — cross-node propagation', () => {
     const b = await startNode(sysName, 60_012, [`${sysName}@h:60011`]);
     try {
       await waitFor(() => a.cluster.upMembers().length === 2);
-      b.sys.actorOf(Props.create(() => new Echo()), 'echo');
+      b.sys.spawn(Props.create(() => new Echo()), 'echo');
       const echoOnB = new RemoteActorRef<string>(
         b.cluster.selfAddress,
         `actor-ts://${sysName}/user/echo`,

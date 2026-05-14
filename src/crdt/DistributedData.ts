@@ -267,11 +267,11 @@ export class DistributedData implements Extension {
     // shared "view" the public handle reads, so callers don't have to
     // ask().
     const view: SharedView = { state: new Map(), listeners: new Map() };
-    const ref = this.system.actorOf(
+    const ref = this.system.spawn(
       Props.create(() => new DistributedDataActor({ cluster, settings, view })),
       'distributed-data',
     );
-    // Register wire handlers SYNCHRONOUSLY here — `actorOf` returns
+    // Register wire handlers SYNCHRONOUSLY here — `spawn` returns
     // before the actor's async `preStart` has run, but quorum
     // writes/reads need every peer to already be routing inbound
     // requests by the time the originator sends them.  Forwarding via

@@ -16,7 +16,7 @@ backend automatically.
 After this guide you'll know:
 
 - How to define an actor by extending `Actor<T>`.
-- How to spawn it via `system.actorOf(Props.create(...))`.
+- How to spawn it via `system.spawnAnonymous(Props.create(...))`.
 - The difference between `tell` (fire-and-forget) and the actor's
   `onReceive` handler.
 - How to shut the system down without leaking timers or sockets.
@@ -74,7 +74,7 @@ const system = ActorSystem.create('hello');
 
 // 3. Spawn the actor.  `Props.create(() => new Greeter())` is the
 //    factory; `'greeter'` is the actor's name in the hierarchy.
-const ref = system.actorOf(Props.create(() => new Greeter()), 'greeter');
+const ref = system.spawn(Props.create(() => new Greeter()), 'greeter');
 
 // 4. Send a message.  `tell` is fire-and-forget — it returns
 //    immediately, the actor processes the message asynchronously on
@@ -131,7 +131,7 @@ The five lines map to the actor model's five core ideas:
    processing), the supervisor hierarchy (which catches actor failures),
    the scheduler, the event stream. There's typically one per process.
 
-3. **`system.actorOf(Props.create(() => new Greeter()))`** — `Props` is
+3. **`system.spawnAnonymous(Props.create(() => new Greeter()))`** — `Props` is
    actor-ts's way to defer construction. The system needs to control
    *when* the actor instance is created (on its mailbox thread, not on
    yours), so you hand it a factory rather than a pre-built instance.
@@ -186,7 +186,7 @@ class Counter extends Actor<Cmd> {
 }
 
 const system  = ActorSystem.create('counters');
-const counter = system.actorOf(Props.create(() => new Counter()));
+const counter = system.spawnAnonymous(Props.create(() => new Counter()));
 
 counter.tell({ kind: 'inc' });
 counter.tell({ kind: 'inc' });
@@ -213,7 +213,7 @@ actor doesn't hang the caller forever.
 import { ActorSystem, Props, ask } from 'actor-ts';
 
 const system  = ActorSystem.create('counters');
-const counter = system.actorOf(Props.create(() => new Counter()));
+const counter = system.spawnAnonymous(Props.create(() => new Counter()));
 
 counter.tell({ kind: 'inc' });
 counter.tell({ kind: 'inc' });

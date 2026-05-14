@@ -77,9 +77,9 @@ describe('ServerWebSocketActor — inbound', () => {
     const sys = ActorSystem.create('sws-text', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
       const target = new CapturingTarget();
-      const targetRef = sys.actorOf(Props.create(() => target), 'target');
+      const targetRef = sys.spawn(Props.create(() => target), 'target');
       const sock = new MockSocket();
-      sys.actorOf(Props.create(() => new ServerWebSocketActor(sock, { target: targetRef })), 'ws');
+      sys.spawn(Props.create(() => new ServerWebSocketActor(sock, { target: targetRef })), 'ws');
       await sleep(20);
 
       sock.receiveMessage('hello');
@@ -94,9 +94,9 @@ describe('ServerWebSocketActor — inbound', () => {
     const sys = ActorSystem.create('sws-binary', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
       const target = new CapturingTarget();
-      const targetRef = sys.actorOf(Props.create(() => target), 'target');
+      const targetRef = sys.spawn(Props.create(() => target), 'target');
       const sock = new MockSocket();
-      sys.actorOf(Props.create(() => new ServerWebSocketActor(sock, { target: targetRef })), 'ws');
+      sys.spawn(Props.create(() => new ServerWebSocketActor(sock, { target: targetRef })), 'ws');
       await sleep(20);
 
       // Plain Uint8Array.
@@ -122,7 +122,7 @@ describe('ServerWebSocketActor — inbound', () => {
     const sys = ActorSystem.create('sws-close', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
       const sock = new MockSocket();
-      const ref = sys.actorOf(Props.create(() => new ServerWebSocketActor(sock)), 'ws');
+      const ref = sys.spawn(Props.create(() => new ServerWebSocketActor(sock)), 'ws');
       await sleep(20);
 
       // Pre-close: send works.
@@ -148,7 +148,7 @@ describe('ServerWebSocketActor — inbound', () => {
     const sys = ActorSystem.create('sws-keep', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
       const sock = new MockSocket();
-      const ref = sys.actorOf(
+      const ref = sys.spawn(
         Props.create(() => new ServerWebSocketActor(sock, { stopOnSocketClose: false })),
         'ws',
       );
@@ -171,7 +171,7 @@ describe('ServerWebSocketActor — inbound', () => {
     try {
       const seen: Error[] = [];
       const sock = new MockSocket();
-      sys.actorOf(
+      sys.spawn(
         Props.create(() => new ServerWebSocketActor(sock, {
           onError: (err) => seen.push(err),
           stopOnSocketClose: false,
@@ -194,7 +194,7 @@ describe('ServerWebSocketActor — outbound', () => {
     const sys = ActorSystem.create('sws-out', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
       const sock = new MockSocket();
-      const ref = sys.actorOf(Props.create(() => new ServerWebSocketActor(sock)), 'ws');
+      const ref = sys.spawn(Props.create(() => new ServerWebSocketActor(sock)), 'ws');
       await sleep(20);
 
       ref.tell({ kind: 'sendText', data: 'hi' });
@@ -222,7 +222,7 @@ describe('serverWebSocketActorOf — convenience spawn', () => {
     const sys = ActorSystem.create('sws-of', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
       const target = new CapturingTarget();
-      const targetRef = sys.actorOf(Props.create(() => target), 'target');
+      const targetRef = sys.spawn(Props.create(() => target), 'target');
       const sock = new MockSocket();
       const ref = serverWebSocketActorOf(sys, sock, { target: targetRef, name: 'conn-1' });
       await sleep(20);
@@ -253,7 +253,7 @@ describe('bunWebSocketHandlers — Bun.serve adapter', () => {
     const sys = ActorSystem.create('sws-bun', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
       const target = new CapturingTarget();
-      const targetRef = sys.actorOf(Props.create(() => target), 'target');
+      const targetRef = sys.spawn(Props.create(() => target), 'target');
 
       const onOpenObservations: string[] = [];
       const onCloseObservations: string[] = [];

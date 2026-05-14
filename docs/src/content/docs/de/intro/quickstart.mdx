@@ -17,7 +17,7 @@ Deno — das richtige Runtime-Backend wird automatisch gewählt.
 Nach diesem Guide weißt Du:
 
 - Wie Du einen Actor definierst, indem Du `Actor<T>` erweiterst.
-- Wie Du ihn via `system.actorOf(Props.create(...))` spawnst.
+- Wie Du ihn via `system.spawnAnonymous(Props.create(...))` spawnst.
 - Den Unterschied zwischen `tell` (fire-and-forget) und dem
   `onReceive`-Handler des Actors.
 - Wie Du das System herunterfährst, ohne Timer oder Sockets zu lecken.
@@ -76,7 +76,7 @@ const system = ActorSystem.create('hello');
 
 // 3. Spawne den Actor.  `Props.create(() => new Greeter())` ist die
 //    Factory; `'greeter'` ist der Name des Actors in der Hierarchie.
-const ref = system.actorOf(Props.create(() => new Greeter()), 'greeter');
+const ref = system.spawn(Props.create(() => new Greeter()), 'greeter');
 
 // 4. Sende eine Nachricht.  `tell` ist fire-and-forget — es kehrt
 //    sofort zurück, der Actor verarbeitet die Nachricht asynchron
@@ -136,7 +136,7 @@ Die fünf Zeilen bilden auf die fünf Kernideen des Actor-Modells ab:
    Actor-Fehler auffängt), den Scheduler, den Event-Stream. Es
    gibt typischerweise einen pro Prozess.
 
-3. **`system.actorOf(Props.create(() => new Greeter()))`** — `Props`
+3. **`system.spawnAnonymous(Props.create(() => new Greeter()))`** — `Props`
    ist actor-ts' Art, die Konstruktion aufzuschieben. Das System
    muss kontrollieren, *wann* die Actor-Instanz erstellt wird (auf
    seinem Mailbox-Thread, nicht auf Deinem), also gibst Du ihm eine
@@ -197,7 +197,7 @@ class Counter extends Actor<Cmd> {
 }
 
 const system  = ActorSystem.create('counters');
-const counter = system.actorOf(Props.create(() => new Counter()));
+const counter = system.spawnAnonymous(Props.create(() => new Counter()));
 
 counter.tell({ kind: 'inc' });
 counter.tell({ kind: 'inc' });
@@ -224,7 +224,7 @@ unendlich blockiert.
 import { ActorSystem, Props, ask } from 'actor-ts';
 
 const system  = ActorSystem.create('counters');
-const counter = system.actorOf(Props.create(() => new Counter()));
+const counter = system.spawnAnonymous(Props.create(() => new Counter()));
 
 counter.tell({ kind: 'inc' });
 counter.tell({ kind: 'inc' });

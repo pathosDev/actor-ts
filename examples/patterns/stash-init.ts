@@ -38,7 +38,7 @@ class LoadingRepo extends Actor<Cmd> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('stash-demo');
-  const repo = system.actorOf(Props.create(() => new LoadingRepo()), 'repo');
+  const repo = system.spawn(Props.create(() => new LoadingRepo()), 'repo');
 
   // Fire queries immediately; they pile up until the repo is warm.
   repo.tell({ kind: 'query', q: 'alice' });

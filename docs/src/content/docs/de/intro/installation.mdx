@@ -157,7 +157,7 @@ class Ping extends Actor<'ping'> {
 }
 
 const system = ActorSystem.create('verify');
-const ref = system.actorOf(Props.create(() => new Ping()));
+const ref = system.spawnAnonymous(Props.create(() => new Ping()));
 ref.tell('ping');
 await new Promise((r) => setTimeout(r, 20));
 await system.terminate();
