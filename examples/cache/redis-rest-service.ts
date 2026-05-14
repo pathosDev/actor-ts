@@ -27,7 +27,6 @@ import {
   CacheExtensionId,
   Cluster,
   ClusterSharding,
-  HttpExtensionId,
   HttpError,
   InMemoryCache,
   Props,
@@ -137,8 +136,7 @@ async function main(): Promise<void> {
     }))),
   ));
 
-  const http = system.extension(HttpExtensionId);
-  const binding = await http.newServerAt('127.0.0.1', 8080).bind(routes);
+  const binding = await system.http(8080, { host: '127.0.0.1' }).bind(routes);
   system.log.info(`REST+cache service listening on http://${binding.host}:${binding.port}`);
   system.log.info(`Cache backend: ${process.env.ACTOR_TS_CACHE === 'redis' ? 'Redis' : 'InMemory'}`);
 

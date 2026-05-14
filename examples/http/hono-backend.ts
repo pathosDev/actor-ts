@@ -17,7 +17,6 @@
 import {
   ActorSystem,
   HonoBackend,
-  HttpExtensionId,
   Status,
   complete,
   completeJson,
@@ -32,7 +31,6 @@ interface User { readonly id: string; readonly name: string; }
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('hono-demo');
-  const http = system.extension(HttpExtensionId);
 
   const users = new Map<string, User>();
 
@@ -58,9 +56,7 @@ async function main(): Promise<void> {
   //   const app = backend.getApp();
   //   app.use('/*', cors());
 
-  const binding = await http.newServerAt('127.0.0.1', 8080)
-    .useBackend(backend)
-    .bind(routes);
+  const binding = await system.http(8080, { host: '127.0.0.1', backend }).bind(routes);
 
   console.log(`Hono server listening on http://${binding.host}:${binding.port}`);
 

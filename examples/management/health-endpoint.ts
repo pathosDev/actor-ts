@@ -11,7 +11,6 @@
 import {
   ActorSystem,
   Cluster,
-  HttpExtensionId,
   InMemoryTransport,
   NodeAddress,
   managementRoutes,
@@ -28,8 +27,7 @@ async function main(): Promise<void> {
   // Register a trivial readiness check.
   health.addReadiness(() => ({ name: 'config-loaded', status: true }));
 
-  const http = system.extension(HttpExtensionId);
-  const binding = await http.newServerAt('127.0.0.1', 8558).bind(routes);
+  const binding = await system.http(8558, { host: '127.0.0.1' }).bind(routes);
   console.log(`management endpoint on http://${binding.host}:${binding.port}`);
 
   // Let the server run for a short while in the demo, then shut down.

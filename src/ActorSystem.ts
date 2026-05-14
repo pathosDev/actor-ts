@@ -23,6 +23,8 @@ import { LocalActorRef } from './internal/LocalActorRef.js';
 import type { Journal } from './persistence/Journal.js';
 import type { SnapshotStore } from './persistence/SnapshotStore.js';
 import { PersistenceExtensionId } from './persistence/PersistenceExtension.js';
+import type { HttpServerBackend } from './http/backend/HttpServerBackend.js';
+import { HttpExtensionId, type ServerBuilder } from './http/HttpExtension.js';
 
 export interface ActorSystemSettings {
   readonly logger?: Logger;
@@ -139,6 +141,31 @@ export class ActorSystem {
    */
   extension<T extends Extension>(id: ExtensionId<T>): T {
     return this.extensions.get(id);
+  }
+
+  /**
+   * Shortcut — bind an HTTP server on `port` (and optionally `host`)
+   * with the framework's default Fastify backend.  Equivalent to:
+   *
+   *     system.extension(HttpExtensionId)
+   *           .newServerAt(host ?? '0.0.0.0', port)
+   *           .useBackend(backend ?? new FastifyBackend())
+   *
+   * For non-default backends, pass `backend:` — typically
+   * `new ExpressBackend(opts)` or `new HonoBackend(opts)`.  Returns
+   * the `ServerBuilder` so you can chain `.bind(routes)`:
+   *
+   *     const binding = await system.http(8080).bind(routes);
+   *
+   * Note — `FastifyBackend` is a hard dependency of the framework
+   * (not a peer-dep), so the default path needs no extra installs.
+   */
+  http(
+    port: number,
+    opts: { readonly host?: string; readonly backend?: HttpServerBackend } = {},
+  ): ServerBuilder {
+    const builder = this.extensions.get(HttpExtensionId).newServerAt(opts.host ?? '0.0.0.0', port);
+    return opts.backend ? builder.useBackend(opts.backend) : builder;
   }
 
   /**

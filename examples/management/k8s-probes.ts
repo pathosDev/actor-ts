@@ -15,7 +15,6 @@
 import {
   ActorSystem,
   Cluster,
-  HttpExtensionId,
   InMemoryTransport,
   NodeAddress,
   managementRoutes,
@@ -40,8 +39,7 @@ async function main(): Promise<void> {
   health.addReadiness(() => ({ name: 'config', status: true }));
   health.addReadiness(() => ({ name: 'db', status: dbConnected, detail: dbConnected ? '' : 'connecting' }));
 
-  const http = system.extension(HttpExtensionId);
-  const binding = await http.newServerAt('0.0.0.0', 8558).bind(routes);
+  const binding = await system.http(8558).bind(routes);
   console.log(`Kubernetes probes on http://${binding.host}:${binding.port}`);
   console.log(`  Liveness:  GET  /health`);
   console.log(`  Readiness: GET  /ready   (currently DOWN — db not connected)`);

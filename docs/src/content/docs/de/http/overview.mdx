@@ -9,11 +9,10 @@ Nachrichten", deshalb bekommen sie eine eigene DSL und Backend-
 Abstraktion.
 
 ```ts
-import { ActorSystem, HttpExtensionId } from 'actor-ts';
-import { path, get, post, completeJson, entity } from 'actor-ts/http';
+import { ActorSystem } from 'actor-ts';
+import { path, get, post, completeJson, entity, concat } from 'actor-ts/http';
 
 const system = ActorSystem.create('my-app');
-const http   = system.extension(HttpExtensionId);
 
 const routes = path('api',
   path('orders',
@@ -28,7 +27,7 @@ const routes = path('api',
   ),
 );
 
-const binding = await http.newServerAt('0.0.0.0', 8080).bind(routes);
+const binding = await system.http(8080).bind(routes);
 console.log(`gebunden auf ${binding.host}:${binding.port}`);
 ```
 
@@ -40,9 +39,9 @@ Drei Dinge passieren hier:
 - **Der Marshaller** — `entity<T>(req)` dekodiert den Request-
   Body je nach Content-Type; `completeJson` / `completeText`
   encoden die Response.
-- **Die Extension** —
-  `system.extension(HttpExtensionId).newServerAt(host, port).bind(routes)`
-  startet einen Server.
+- **Der Shortcut** — `system.http(port).bind(routes)` startet
+  einen Server mit dem Standard-Fastify-Backend.  Für ein anderes
+  Backend übergibst Du `backend:` (siehe unten).
 
 ## Die drei Bausteine
 
@@ -50,23 +49,27 @@ Drei Dinge passieren hier:
 | --- | --- | --- |
 | **Routing** | `actor-ts/http` exportiert `path`, `get`, `post`, `complete*` usw. | [Route-DSL](/de/http/route-dsl/) |
 | **Marshalling** | `entity<T>(req)`-Dekodierung + `completeJson`-Kodierung. | [Marshalling](/de/http/marshalling/) |
-| **Backend** | Pluggable HTTP-Server — Fastify per Default, Bun.serve, Express. | [Backends](/de/http/backends/fastify/) |
+| **Backend** | Pluggable HTTP-Server — Fastify per Default, Hono, Express. | [Backends](/de/http/backends/fastify/) |
 
-Die DSL baut einen In-Memory-Routenbaum; das
-`newServerAt(...).bind(routes)` der Extension flacht ihn ab und
-registriert alles beim gewählten Backend.
+Die DSL baut einen In-Memory-Routenbaum;
+`system.http(...).bind(routes)` flacht ihn ab und registriert
+alles beim gewählten Backend.
 
 ## Die Backends
 
 ```ts
-import { FastifyBackend, ExpressBackend, HonoBackend } from 'actor-ts/http';
+import { HonoBackend } from 'actor-ts/http';
 
-// Default — keine Einrichtung nötig:
-await http.newServerAt(host, port).bind(routes);
-// → nutzt FastifyBackend
+// Default — keine Einrichtung nötig; Fastify ist eine Hard-Dependency:
+await system.http(8080).bind(routes);
 
-// Explizite Wahl:
-await http.newServerAt(host, port)
+// Explizite Wahl (Express / Hono sind Peer-Deps; Opt-in):
+await system.http(8080, { backend: new HonoBackend() }).bind(routes);
+
+// Volle Kontrolle — die Extension-Surface bleibt erhalten:
+import { HttpExtensionId } from 'actor-ts';
+await system.extension(HttpExtensionId)
+  .newServerAt('0.0.0.0', 8080)
   .useBackend(new HonoBackend())
   .bind(routes);
 ```

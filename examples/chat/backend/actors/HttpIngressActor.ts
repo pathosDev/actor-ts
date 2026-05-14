@@ -32,7 +32,6 @@ import {
   type ActorRef,
   type ActorSystem,
 } from '../../../../src/index.js';
-import { HttpExtensionId } from '../../../../src/http/index.js';
 import { FastifyBackend } from '../../../../src/http/backend/FastifyBackend.js';
 import type { ServerBinding } from '../../../../src/http/backend/HttpServerBackend.js';
 import type {
@@ -138,11 +137,7 @@ export class HttpIngressActor extends Actor<never> {
       readReceipts: this.deps.readReceipts,
     });
 
-    const http = system.extension(HttpExtensionId);
-    this.binding = await http
-      .newServerAt(host, httpPort)
-      .useBackend(backend)
-      .bind(buildRoutes());
+    this.binding = await system.http(httpPort, { host, backend }).bind(buildRoutes());
     this.log.info(
       `[ingress] HTTP server listening on ${scheme}://${this.binding.host}:${this.binding.port}/`,
     );

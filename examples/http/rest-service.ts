@@ -14,7 +14,6 @@ import {
   ActorSystem,
   Cluster,
   ClusterSharding,
-  HttpExtensionId,
   HttpError,
   Props,
   Status,
@@ -91,8 +90,7 @@ async function main(): Promise<void> {
     }),
   ));
 
-  const http = system.extension(HttpExtensionId);
-  const binding = await http.newServerAt('127.0.0.1', 8080).bind(routes);
+  const binding = await system.http(8080, { host: '127.0.0.1' }).bind(routes);
   system.log.info(`REST service listening on http://${binding.host}:${binding.port}`);
 
   process.on('SIGINT', async () => {
