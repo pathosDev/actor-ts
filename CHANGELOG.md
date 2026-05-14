@@ -242,7 +242,8 @@ optional message types and HTTP routes; no existing callers break.
   force-down of a remote peer.  Symmetric to `Cluster.leave()` but
   for someone else's address.  Returns `true` if the member was
   found and downed, `false` if the address was unknown or already
-  terminal.  Refuses to down `selfAddress` — that's `leave()`'s job.
+  terminal.  Refuses to down `selfAddress` — that's `leave()`'s
+  job (#56).
 
 ## [0.7.0] — 2026-05-11
 
@@ -371,7 +372,7 @@ optional message types and HTTP routes; no existing callers break.
   `OnlineUsersActor` via DistributedData + DistributedPubSub,
   cluster-singleton HTTP front door (auto-failover ~5–10 s), six
   frontends (Plain, Lit, Svelte, React, Next.js, Angular) sharing
-  one `protocol.ts` over the wire.
+  one `protocol.ts` over the wire (#94, #95, #96, #97).
 - `examples/voice/` — distributed voice server: 1:1 PTT, group, and
   Teams-style rooms; `MediaRecorder` + `MediaSource` per-sender
   audio relay over WebSocket binary frames; same six-frontend
