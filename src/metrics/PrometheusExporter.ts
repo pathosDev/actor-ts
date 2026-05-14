@@ -32,8 +32,8 @@ export function exportPrometheus(registry: MetricsRegistry): string {
     if (group.length === 0) continue;
     const head = group[0]!;
     if (head.help) out.push(`# HELP ${name} ${escapeHelp(head.help)}`);
-    out.push(`# TYPE ${name} ${head.type}`);
-    if (head.type === 'histogram') {
+    out.push(`# TYPE ${name} ${head.kind}`);
+    if (head.kind === 'histogram') {
       // Histogram emission: bucket rows, then _sum and _count.
       // Layout per series: all bucket rows for one label set, then _sum + _count
       // for that label set.  We separate by labelKey first.

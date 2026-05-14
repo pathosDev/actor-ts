@@ -47,7 +47,7 @@ export const WorkerNode = {
     const init = await new Promise<WorkerInitMessage>((resolve, reject) => {
       const onMsg = (e: { data: unknown }): void => {
         const data = e.data as Partial<WorkerInitMessage>;
-        if (data && data.type === 'actor-ts.worker-init') {
+        if (data && data.kind === 'actor-ts.worker-init') {
           selfScope.onmessage = null;
           resolve(data as WorkerInitMessage);
         }
@@ -56,7 +56,7 @@ export const WorkerNode = {
       // property) even when addEventListener('message', …) is a no-op.  We
       // set `onmessage` directly so the init frame is seen reliably.
       selfScope.onmessage = onMsg;
-      const hello: WorkerHelloMessage = { type: 'actor-ts.worker-hello' };
+      const hello: WorkerHelloMessage = { kind: 'actor-ts.worker-hello' };
       post?.call(selfScope, hello);
       const t = setTimeout(
         () => reject(new Error('WorkerNode.join() timed out waiting for init')),
@@ -69,7 +69,7 @@ export const WorkerNode = {
 
     // ---- Phase 2: build a PortLike that multiplexes over the worker's
     //      native postMessage channel.  We already share that channel
-    //      with the init/hello/ready frames — filter by `type` so
+    //      with the init/hello/ready frames — filter by `kind` so
     //      transport traffic doesn't collide with lifecycle frames. ----
     const transportPort = buildWorkerPort(selfScope, post);
     const transport = new MessageChannelTransport(self, transportPort);
@@ -80,7 +80,7 @@ export const WorkerNode = {
       transport,
       initData: init.data as TInit,
       ready(): void {
-        const msg: WorkerReadyMessage = { type: 'actor-ts.worker-ready', self: init.self };
+        const msg: WorkerReadyMessage = { kind: 'actor-ts.worker-ready', self: init.self };
         post?.call(selfScope, msg);
       },
     };
@@ -93,8 +93,8 @@ function buildWorkerPort(
 ): PortLike {
   let handler: ((e: { data: unknown }) => void) | null = null;
   const listener = (e: { data: unknown }): void => {
-    const msg = e.data as { type?: string } | undefined;
-    if (msg && msg.type === 'actor-ts.transport' && handler) {
+    const msg = e.data as { kind?: string } | undefined;
+    if (msg && msg.kind === 'actor-ts.transport' && handler) {
       handler({ data: (msg as WorkerTransportMessage).envelope });
     }
   };
@@ -110,7 +110,7 @@ function buildWorkerPort(
   return {
     postMessage(v: unknown) {
       const envelope: BrokeredMessage = v as BrokeredMessage;
-      const msg: WorkerTransportMessage = { type: 'actor-ts.transport', envelope };
+      const msg: WorkerTransportMessage = { kind: 'actor-ts.transport', envelope };
       post?.call(selfScope, msg);
     },
     get onmessage() { return handler; },

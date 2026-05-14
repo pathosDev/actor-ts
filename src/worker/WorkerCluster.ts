@@ -26,24 +26,24 @@ export interface WorkerHandle {
 }
 
 export interface WorkerHelloMessage {
-  readonly type: 'actor-ts.worker-hello';
+  readonly kind: 'actor-ts.worker-hello';
 }
 
 export interface WorkerInitMessage {
-  readonly type: 'actor-ts.worker-init';
+  readonly kind: 'actor-ts.worker-init';
   readonly self: ReturnType<NodeAddress['toJSON']>;
   readonly systemName: string;
   readonly data: unknown;
 }
 
 export interface WorkerReadyMessage {
-  readonly type: 'actor-ts.worker-ready';
+  readonly kind: 'actor-ts.worker-ready';
   readonly self: ReturnType<NodeAddress['toJSON']>;
 }
 
 /** Wire frame flowing in both directions on every worker↔main channel. */
 export interface WorkerTransportMessage {
-  readonly type: 'actor-ts.transport';
+  readonly kind: 'actor-ts.transport';
   readonly envelope: BrokeredMessage;
 }
 
@@ -127,7 +127,7 @@ export class WorkerCluster {
     const handle: WorkerHandle = { id: index, address: addr, worker };
 
     const init: WorkerInitMessage = {
-      type: 'actor-ts.worker-init',
+      kind: 'actor-ts.worker-init',
       self: addr.toJSON(),
       systemName: this.settings.systemName,
       data: this.settings.initData,
@@ -148,15 +148,15 @@ export class WorkerCluster {
   private brokerFacade(worker: WorkerLike): PortLike {
     let handler: ((e: { data: unknown }) => void) | null = null;
     worker.addEventListener('message', (e) => {
-      const msg = (e.data ?? undefined) as { type?: string } | undefined;
-      if (msg && msg.type === 'actor-ts.transport' && handler) {
+      const msg = (e.data ?? undefined) as { kind?: string } | undefined;
+      if (msg && msg.kind === 'actor-ts.transport' && handler) {
         handler({ data: (msg as WorkerTransportMessage).envelope });
       }
     });
     return {
       postMessage(v: unknown) {
         const envelope: BrokeredMessage = v as BrokeredMessage;
-        const msg: WorkerTransportMessage = { type: 'actor-ts.transport', envelope };
+        const msg: WorkerTransportMessage = { kind: 'actor-ts.transport', envelope };
         worker.postMessage(msg);
       },
       get onmessage() { return handler; },
@@ -172,11 +172,11 @@ export class WorkerCluster {
         reject(new Error(`Worker ${addr} did not become ready within ${this.settings.readyTimeoutMs}ms`));
       }, this.settings.readyTimeoutMs);
       const onMessage = (e: { data?: unknown }): void => {
-        const msg = (e.data ?? undefined) as { type?: string } | undefined;
+        const msg = (e.data ?? undefined) as { kind?: string } | undefined;
         if (!msg) return;
-        if (msg.type === 'actor-ts.worker-hello') {
+        if (msg.kind === 'actor-ts.worker-hello') {
           worker.postMessage(init);
-        } else if (msg.type === 'actor-ts.worker-ready') {
+        } else if (msg.kind === 'actor-ts.worker-ready') {
           clearTimeout(timeout);
           worker.removeEventListener('message', onMessage);
           resolve();

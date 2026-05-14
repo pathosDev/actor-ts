@@ -58,25 +58,25 @@ export class TypedActor<T> extends Actor<T> {
     const resolved = this.resolve(this.initial);
     // `same` on the initial behavior makes no sense — treat as empty so the
     // actor exists but drops messages (surfaces the user error as silence).
-    this.current = resolved._kind === 'same' ? { _kind: 'empty' } : resolved;
+    this.current = resolved.kind === 'same' ? { kind: 'empty' } : resolved;
     this.maybeHandleTerminalSentinel();
   }
 
   override onReceive(message: T): void {
     // Sentinels that short-circuit without running a handler:
     const shortCircuit = match(this.current)
-      .with({ _kind: 'ignore' }, () => true as const)
-      .with({ _kind: 'empty' }, () => true as const)
-      .with({ _kind: 'unhandled' }, () => { this.forwardToDeadLetters(message); return true as const; })
-      .with({ _kind: 'stopped' }, () => { this.forwardToDeadLetters(message); return true as const; })
-      .with({ _kind: 'receive' }, () => false as const)
+      .with({ kind: 'ignore' }, () => true as const)
+      .with({ kind: 'empty' }, () => true as const)
+      .with({ kind: 'unhandled' }, () => { this.forwardToDeadLetters(message); return true as const; })
+      .with({ kind: 'stopped' }, () => { this.forwardToDeadLetters(message); return true as const; })
+      .with({ kind: 'receive' }, () => false as const)
       .exhaustive();
     if (shortCircuit) return;
 
     // `current` is narrowed to ReceiveBehavior by the match above, but TS
     // can't carry that across the branch — re-narrow locally.
     const receiveBehavior = this.current;
-    if (receiveBehavior._kind !== 'receive') return;
+    if (receiveBehavior.kind !== 'receive') return;
 
     let next: Behavior<T>;
     try {
@@ -86,11 +86,11 @@ export class TypedActor<T> extends Actor<T> {
       throw err;
     }
 
-    if (next._kind === 'same') return;
-    if (next._kind === 'unhandled') { this.forwardToDeadLetters(message); return; }
+    if (next.kind === 'same') return;
+    if (next.kind === 'unhandled') { this.forwardToDeadLetters(message); return; }
 
     const resolved = this.resolve(next);
-    if (resolved._kind === 'same') return; // defensive — resolve shouldn't produce 'same'
+    if (resolved.kind === 'same') return; // defensive — resolve shouldn't produce 'same'
     this.current = resolved;
     this.maybeHandleTerminalSentinel();
   }
@@ -121,7 +121,7 @@ export class TypedActor<T> extends Actor<T> {
       .with(Directive.Resume, () => true)
       .with(Directive.Restart, () => {
         const resolved = this.resolve(supervise.child);
-        this.current = resolved._kind === 'same' ? { _kind: 'empty' } : resolved;
+        this.current = resolved.kind === 'same' ? { kind: 'empty' } : resolved;
         this.maybeHandleTerminalSentinel();
         return true;
       })
@@ -145,30 +145,30 @@ export class TypedActor<T> extends Actor<T> {
     let cur: Behavior<T> = b;
     for (let hops = 0; hops < 64; hops++) {
       const step: ResolveStep = match(cur)
-        .with({ _kind: 'setup' }, (n): ResolveStep => ({
+        .with({ kind: 'setup' }, (n): ResolveStep => ({
           step: 'continue', next: n.factory(this.typedCtx),
         }))
-        .with({ _kind: 'with-timers' }, (n): ResolveStep => ({
+        .with({ kind: 'with-timers' }, (n): ResolveStep => ({
           step: 'continue', next: n.factory(this.context.timers as TimerScheduler<T>),
         }))
-        .with({ _kind: 'with-stash' }, (n): ResolveStep => {
+        .with({ kind: 'with-stash' }, (n): ResolveStep => {
           const buf = new StashBufferImpl<T>(n.capacity, this.self);
           this.stashBuffers.push(buf);
           return { step: 'continue', next: n.factory(buf) };
         })
-        .with({ _kind: 'supervise' }, (n): ResolveStep => {
+        .with({ kind: 'supervise' }, (n): ResolveStep => {
           this.activeSupervise = n;
           return { step: 'continue', next: n.child };
         })
-        .with({ _kind: 'receive' }, (n): ResolveStep => {
+        .with({ kind: 'receive' }, (n): ResolveStep => {
           if (n.onSignal) this.signalHandler = n.onSignal;
           return { step: 'done', final: n };
         })
-        .with({ _kind: 'same' }, (n): ResolveStep => ({ step: 'done', final: n }))
-        .with({ _kind: 'stopped' }, (n): ResolveStep => ({ step: 'done', final: n }))
-        .with({ _kind: 'unhandled' }, (n): ResolveStep => ({ step: 'done', final: n }))
-        .with({ _kind: 'empty' }, (n): ResolveStep => ({ step: 'done', final: n }))
-        .with({ _kind: 'ignore' }, (n): ResolveStep => ({ step: 'done', final: n }))
+        .with({ kind: 'same' }, (n): ResolveStep => ({ step: 'done', final: n }))
+        .with({ kind: 'stopped' }, (n): ResolveStep => ({ step: 'done', final: n }))
+        .with({ kind: 'unhandled' }, (n): ResolveStep => ({ step: 'done', final: n }))
+        .with({ kind: 'empty' }, (n): ResolveStep => ({ step: 'done', final: n }))
+        .with({ kind: 'ignore' }, (n): ResolveStep => ({ step: 'done', final: n }))
         .exhaustive();
 
       if (step.step === 'done') return step.final;
@@ -178,7 +178,7 @@ export class TypedActor<T> extends Actor<T> {
   }
 
   private maybeHandleTerminalSentinel(): void {
-    if (this.current._kind === 'stopped') this.context.stopSelf();
+    if (this.current.kind === 'stopped') this.context.stopSelf();
   }
 
   private forwardToDeadLetters(message: T): void {

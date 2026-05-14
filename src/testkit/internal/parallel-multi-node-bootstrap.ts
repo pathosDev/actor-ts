@@ -66,16 +66,16 @@ interface InitData {
 }
 
 type ControlRequest =
-  | { type: 'mns-test.query-members'; reqId: number }
-  | { type: 'mns-test.query-leader'; reqId: number }
-  | { type: 'mns-test.leave'; reqId: number }
-  | { type: 'mns-test.run-command'; reqId: number; command: string; args: unknown };
+  | { kind: 'mns-test.query-members'; reqId: number }
+  | { kind: 'mns-test.query-leader'; reqId: number }
+  | { kind: 'mns-test.leave'; reqId: number }
+  | { kind: 'mns-test.run-command'; reqId: number; command: string; args: unknown };
 
 type ControlResponse =
-  | { type: 'mns-test.query-members-response'; reqId: number; members: MemberSnapshot[] }
-  | { type: 'mns-test.query-leader-response'; reqId: number; leader: string | null }
-  | { type: 'mns-test.leave-response'; reqId: number; error?: string }
-  | { type: 'mns-test.run-command-response'; reqId: number; result: unknown; error?: string };
+  | { kind: 'mns-test.query-members-response'; reqId: number; members: MemberSnapshot[] }
+  | { kind: 'mns-test.query-leader-response'; reqId: number; leader: string | null }
+  | { kind: 'mns-test.leave-response'; reqId: number; error?: string }
+  | { kind: 'mns-test.run-command-response'; reqId: number; result: unknown; error?: string };
 
 /** Member view as a JSON-serialisable snapshot — Member instances
  *  themselves carry NodeAddress objects which postMessage flattens
@@ -154,24 +154,24 @@ async function main(): Promise<void> {
 
   const onControl = async (data: unknown): Promise<void> => {
     const msg = data as Partial<ControlRequest> | undefined;
-    if (!msg || typeof msg.type !== 'string' || !msg.type.startsWith('mns-test.')) return;
+    if (!msg || typeof msg.kind !== 'string' || !msg.kind.startsWith('mns-test.')) return;
 
-    switch (msg.type) {
+    switch (msg.kind) {
       case 'mns-test.query-members': {
-        const m = (msg as ControlRequest & { type: 'mns-test.query-members' }).reqId;
+        const m = (msg as ControlRequest & { kind: 'mns-test.query-members' }).reqId;
         const snap: MemberSnapshot[] = cluster.getMembers().map((mem) => ({
           address: mem.address.toString(),
           status: mem.status,
           roles: Array.from(mem.roles),
         }));
-        reply({ type: 'mns-test.query-members-response', reqId: m, members: snap });
+        reply({ kind: 'mns-test.query-members-response', reqId: m, members: snap });
         return;
       }
       case 'mns-test.query-leader': {
         const reqId = (msg as { reqId: number }).reqId;
         const ldr = cluster.leader().toNullable();
         reply({
-          type: 'mns-test.query-leader-response',
+          kind: 'mns-test.query-leader-response',
           reqId,
           leader: ldr ? ldr.address.toString() : null,
         });
@@ -181,10 +181,10 @@ async function main(): Promise<void> {
         const reqId = (msg as { reqId: number }).reqId;
         try {
           await cluster.leave();
-          reply({ type: 'mns-test.leave-response', reqId });
+          reply({ kind: 'mns-test.leave-response', reqId });
         } catch (err) {
           reply({
-            type: 'mns-test.leave-response', reqId,
+            kind: 'mns-test.leave-response', reqId,
             error: (err as Error).message,
           });
         }
@@ -197,17 +197,17 @@ async function main(): Promise<void> {
         const handler = scenario.commands?.[command];
         if (!handler) {
           reply({
-            type: 'mns-test.run-command-response', reqId, result: undefined,
+            kind: 'mns-test.run-command-response', reqId, result: undefined,
             error: `no handler for command '${command}'`,
           });
           return;
         }
         try {
           const result = await handler(args, scenarioCtx);
-          reply({ type: 'mns-test.run-command-response', reqId, result });
+          reply({ kind: 'mns-test.run-command-response', reqId, result });
         } catch (err) {
           reply({
-            type: 'mns-test.run-command-response', reqId, result: undefined,
+            kind: 'mns-test.run-command-response', reqId, result: undefined,
             error: (err as Error).message,
           });
         }

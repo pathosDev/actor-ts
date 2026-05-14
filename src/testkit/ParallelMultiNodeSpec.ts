@@ -95,14 +95,14 @@ let nextPortBase = 30_500;          // disjoint from MultiNodeSpec's 30_000
 /* ---------- Control channel: same wire as the bootstrap expects ---------- */
 
 interface QueryMembersResponse {
-  type: 'mns-test.query-members-response'; reqId: number; members: MemberSnapshot[];
+  kind: 'mns-test.query-members-response'; reqId: number; members: MemberSnapshot[];
 }
 interface QueryLeaderResponse {
-  type: 'mns-test.query-leader-response'; reqId: number; leader: string | null;
+  kind: 'mns-test.query-leader-response'; reqId: number; leader: string | null;
 }
-interface LeaveResponse { type: 'mns-test.leave-response'; reqId: number; error?: string }
+interface LeaveResponse { kind: 'mns-test.leave-response'; reqId: number; error?: string }
 interface RunCommandResponse {
-  type: 'mns-test.run-command-response'; reqId: number; result: unknown; error?: string;
+  kind: 'mns-test.run-command-response'; reqId: number; result: unknown; error?: string;
 }
 type ControlResponse =
   | QueryMembersResponse | QueryLeaderResponse
@@ -215,7 +215,7 @@ export class ParallelMultiNodeSpec {
     const node = this.requireNode(role);
     if (node.removed) return;
     node.removed = true;
-    try { await this.controlRpc(node, { type: 'mns-test.leave' }); }
+    try { await this.controlRpc(node, { kind: 'mns-test.leave' }); }
     catch { /* ignore — graceful leave is best-effort */ }
     // After cluster.leave returns, the worker has closed its
     // transport; we still have to terminate the worker process.
@@ -242,13 +242,13 @@ export class ParallelMultiNodeSpec {
   /** Async snapshot of the worker's view of cluster members. */
   async getMembers(role: string): Promise<MemberSnapshot[]> {
     const node = this.requireNode(role);
-    const resp = await this.controlRpc<QueryMembersResponse>(node, { type: 'mns-test.query-members' });
+    const resp = await this.controlRpc<QueryMembersResponse>(node, { kind: 'mns-test.query-members' });
     return resp.members;
   }
 
   async getLeader(role: string): Promise<string | null> {
     const node = this.requireNode(role);
-    const resp = await this.controlRpc<QueryLeaderResponse>(node, { type: 'mns-test.query-leader' });
+    const resp = await this.controlRpc<QueryLeaderResponse>(node, { kind: 'mns-test.query-leader' });
     return resp.leader;
   }
 
@@ -256,7 +256,7 @@ export class ParallelMultiNodeSpec {
   async runIn<R = unknown>(role: string, command: string, args: unknown = undefined): Promise<R> {
     const node = this.requireNode(role);
     const resp = await this.controlRpc<RunCommandResponse>(node, {
-      type: 'mns-test.run-command', command, args,
+      kind: 'mns-test.run-command', command, args,
     });
     if (resp.error) throw new Error(`runIn(${role}, ${command}): ${resp.error}`);
     return resp.result as R;
@@ -348,7 +348,7 @@ export class ParallelMultiNodeSpec {
       scenarioInitData: this.settings.scenarioInitDataFor?.(role),
     };
     const init: WorkerInitMessage = {
-      type: 'actor-ts.worker-init',
+      kind: 'actor-ts.worker-init',
       self: address.toJSON(),
       systemName: role,
       data: initData,
@@ -365,8 +365,8 @@ export class ParallelMultiNodeSpec {
     // postMessage stream.  Cluster transport frames are tagged
     // `actor-ts.transport`; control frames are `mns-test.*`.
     worker.addEventListener('message', (e) => {
-      const data = (e.data ?? undefined) as { type?: string } | undefined;
-      if (!data?.type || !data.type.startsWith('mns-test.')) return;
+      const data = (e.data ?? undefined) as { kind?: string } | undefined;
+      if (!data?.kind || !data.kind.startsWith('mns-test.')) return;
       const reqId = (data as { reqId?: number }).reqId;
       const pending = reqId !== undefined ? this.pending.get(reqId) : undefined;
       if (!pending) return;
@@ -381,15 +381,15 @@ export class ParallelMultiNodeSpec {
   private brokerFacade(worker: WorkerLike): PortLike {
     let handler: ((e: { data: unknown }) => void) | null = null;
     worker.addEventListener('message', (e) => {
-      const msg = (e.data ?? undefined) as { type?: string } | undefined;
-      if (msg && msg.type === 'actor-ts.transport' && handler) {
+      const msg = (e.data ?? undefined) as { kind?: string } | undefined;
+      if (msg && msg.kind === 'actor-ts.transport' && handler) {
         handler({ data: (msg as WorkerTransportMessage).envelope });
       }
     });
     return {
       postMessage(v: unknown): void {
         const envelope: BrokeredMessage = v as BrokeredMessage;
-        const msg: WorkerTransportMessage = { type: 'actor-ts.transport', envelope };
+        const msg: WorkerTransportMessage = { kind: 'actor-ts.transport', envelope };
         worker.postMessage(msg);
       },
       get onmessage(): ((e: { data: unknown }) => void) | null { return handler; },
@@ -407,13 +407,13 @@ export class ParallelMultiNodeSpec {
         reject(new Error(`Worker ${addr} did not become ready within 10s`));
       }, 10_000);
       const onMessage = (e: { data?: unknown }): void => {
-        const msg = (e.data ?? undefined) as { type?: string } | undefined;
+        const msg = (e.data ?? undefined) as { kind?: string } | undefined;
         if (!msg) return;
-        if (msg.type === 'actor-ts.worker-hello') {
+        if (msg.kind === 'actor-ts.worker-hello') {
           const hello: WorkerHelloMessage = msg as WorkerHelloMessage;
           void hello;
           worker.postMessage(init);
-        } else if (msg.type === 'actor-ts.worker-ready') {
+        } else if (msg.kind === 'actor-ts.worker-ready') {
           const ready: WorkerReadyMessage = msg as WorkerReadyMessage;
           void ready;
           clearTimeout(timeout);
@@ -433,7 +433,7 @@ export class ParallelMultiNodeSpec {
    */
   private controlRpc<R extends ControlResponse>(
     node: NodeRecord,
-    request: { type: string; command?: string; args?: unknown },
+    request: { kind: string; command?: string; args?: unknown },
   ): Promise<R> {
     if (!node.worker) {
       return Promise.reject(new Error(`controlRpc: role '${node.role}' has been crashed/left`));
@@ -442,7 +442,7 @@ export class ParallelMultiNodeSpec {
     return new Promise<R>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(reqId);
-        reject(new Error(`controlRpc(${request.type}): timed out after 5s`));
+        reject(new Error(`controlRpc(${request.kind}): timed out after 5s`));
       }, 5_000);
       this.pending.set(reqId, {
         resolve: (v) => resolve(v as R),

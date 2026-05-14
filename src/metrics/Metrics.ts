@@ -40,7 +40,7 @@ export interface MetricSample {
   /** Free-form description for `# HELP`. */
   readonly help: string;
   /** `'counter'`, `'gauge'`, `'histogram'`. */
-  readonly type: 'counter' | 'gauge' | 'histogram';
+  readonly kind: 'counter' | 'gauge' | 'histogram';
   /** Series-level labels.  Empty object for unlabeled series. */
   readonly labels: Labels;
   /** Counter / gauge value, or histogram sum (when `bucket` is set). */
@@ -170,17 +170,17 @@ class HistogramImpl implements Histogram {
  * label-tuple; series are created lazily on first label access.
  */
 interface CounterFamily {
-  readonly type: 'counter';
+  readonly kind: 'counter';
   readonly help: string;
   readonly children: Map<string, { labels: Labels; metric: CounterImpl }>;
 }
 interface GaugeFamily {
-  readonly type: 'gauge';
+  readonly kind: 'gauge';
   readonly help: string;
   readonly children: Map<string, { labels: Labels; metric: GaugeImpl }>;
 }
 interface HistogramFamily {
-  readonly type: 'histogram';
+  readonly kind: 'histogram';
   readonly help: string;
   readonly buckets: ReadonlyArray<number>;
   readonly children: Map<string, { labels: Labels; metric: HistogramImpl }>;
@@ -247,14 +247,14 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
     const out: MetricSample[] = [];
     for (const [name, family] of this.families) {
       for (const child of family.children.values()) {
-        if (family.type === 'counter') {
+        if (family.kind === 'counter') {
           out.push({
-            name, help: family.help, type: 'counter',
+            name, help: family.help, kind: 'counter',
             labels: child.labels, value: (child.metric as CounterImpl).value,
           });
-        } else if (family.type === 'gauge') {
+        } else if (family.kind === 'gauge') {
           out.push({
-            name, help: family.help, type: 'gauge',
+            name, help: family.help, kind: 'gauge',
             labels: child.labels, value: (child.metric as GaugeImpl).value,
           });
         } else {
@@ -264,13 +264,13 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
           for (let i = 0; i < h.buckets.length; i++) {
             cumulative = h.counts[i]!;       // counts are already cumulative inside observe()
             out.push({
-              name, help: family.help, type: 'histogram',
+              name, help: family.help, kind: 'histogram',
               labels: child.labels, value: cumulative,
               bucket: h.buckets[i]!,
             });
           }
           out.push({
-            name, help: family.help, type: 'histogram',
+            name, help: family.help, kind: 'histogram',
             labels: child.labels, value: 0,  // unused for sum/count rows
             sum: h.sum, count: h.count,
           });
@@ -287,26 +287,26 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
   /* ----------------------------- internals ---------------------------- */
 
   private familyOf(
-    name: string, type: Family['type'], help: string | undefined,
+    name: string, kind: Family['kind'], help: string | undefined,
     buckets?: ReadonlyArray<number>,
   ): Family {
     const existing = this.families.get(name);
     if (existing) {
-      if (existing.type !== type) {
+      if (existing.kind !== kind) {
         throw new Error(
-          `Metric '${name}' already registered as ${existing.type}, can't reuse as ${type}`,
+          `Metric '${name}' already registered as ${existing.kind}, can't reuse as ${kind}`,
         );
       }
       return existing;
     }
     let family: Family;
-    if (type === 'counter') {
-      family = { type: 'counter', help: help ?? '', children: new Map() };
-    } else if (type === 'gauge') {
-      family = { type: 'gauge', help: help ?? '', children: new Map() };
+    if (kind === 'counter') {
+      family = { kind: 'counter', help: help ?? '', children: new Map() };
+    } else if (kind === 'gauge') {
+      family = { kind: 'gauge', help: help ?? '', children: new Map() };
     } else {
       family = {
-        type: 'histogram',
+        kind: 'histogram',
         help: help ?? '',
         buckets: buckets ?? DEFAULT_HISTOGRAM_BUCKETS,
         children: new Map(),

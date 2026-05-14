@@ -29,38 +29,38 @@ export type Behavior<T> =
   | IgnoreBehavior;
 
 export interface ReceiveBehavior<T> {
-  readonly _kind: 'receive';
+  readonly kind: 'receive';
   readonly handler: (ctx: TypedActorContext<T>, msg: T) => Behavior<T>;
   readonly onSignal?: (ctx: TypedActorContext<T>, signal: Signal) => Behavior<T>;
 }
 
 export interface SetupBehavior<T> {
-  readonly _kind: 'setup';
+  readonly kind: 'setup';
   readonly factory: (ctx: TypedActorContext<T>) => Behavior<T>;
 }
 
 export interface WithTimersBehavior<T> {
-  readonly _kind: 'with-timers';
+  readonly kind: 'with-timers';
   readonly factory: (timers: import('../ActorContext.js').TimerScheduler<T>) => Behavior<T>;
 }
 
 export interface WithStashBehavior<T> {
-  readonly _kind: 'with-stash';
+  readonly kind: 'with-stash';
   readonly capacity: number;
   readonly factory: (stash: StashBuffer<T>) => Behavior<T>;
 }
 
 export interface SuperviseBehavior<T> {
-  readonly _kind: 'supervise';
+  readonly kind: 'supervise';
   readonly child: Behavior<T>;
   readonly strategy: SupervisorStrategy;
 }
 
-export interface SameBehavior { readonly _kind: 'same'; }
-export interface StoppedBehavior { readonly _kind: 'stopped'; }
-export interface UnhandledBehavior { readonly _kind: 'unhandled'; }
-export interface EmptyBehavior { readonly _kind: 'empty'; }
-export interface IgnoreBehavior { readonly _kind: 'ignore'; }
+export interface SameBehavior { readonly kind: 'same'; }
+export interface StoppedBehavior { readonly kind: 'stopped'; }
+export interface UnhandledBehavior { readonly kind: 'unhandled'; }
+export interface EmptyBehavior { readonly kind: 'empty'; }
+export interface IgnoreBehavior { readonly kind: 'ignore'; }
 
 /**
  * Lightweight stash interface handed to `Behaviors.withStash` factories.

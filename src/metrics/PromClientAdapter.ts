@@ -102,19 +102,19 @@ export interface PromClientAdapterOptions {
 /* --------------------------- adapter --------------------------- */
 
 interface CounterEntry {
-  readonly type: 'counter';
+  readonly kind: 'counter';
   readonly help: string;
   readonly labelNames: ReadonlyArray<string>;
   readonly impl: PromClientCounter;
 }
 interface GaugeEntry {
-  readonly type: 'gauge';
+  readonly kind: 'gauge';
   readonly help: string;
   readonly labelNames: ReadonlyArray<string>;
   readonly impl: PromClientGauge;
 }
 interface HistogramEntry {
-  readonly type: 'histogram';
+  readonly kind: 'histogram';
   readonly help: string;
   readonly labelNames: ReadonlyArray<string>;
   readonly buckets: ReadonlyArray<number>;
@@ -171,8 +171,8 @@ export function promClientRegistry(opts: PromClientAdapterOptions): MetricsRegis
     const fullN = fullName(name);
     const existing = families.get(fullN);
     if (existing) {
-      if (existing.type !== 'counter') {
-        throw new Error(`promClientRegistry: '${fullN}' is already registered as ${existing.type}`);
+      if (existing.kind !== 'counter') {
+        throw new Error(`promClientRegistry: '${fullN}' is already registered as ${existing.kind}`);
       }
       return existing;
     }
@@ -183,7 +183,7 @@ export function promClientRegistry(opts: PromClientAdapterOptions): MetricsRegis
       labelNames: labelNames.length > 0 ? labelNames : undefined,
       registers: [registry],
     });
-    const entry: CounterEntry = { type: 'counter', help: opts2?.help ?? fullN, labelNames, impl };
+    const entry: CounterEntry = { kind: 'counter', help: opts2?.help ?? fullN, labelNames, impl };
     families.set(fullN, entry);
     return entry;
   }
@@ -192,8 +192,8 @@ export function promClientRegistry(opts: PromClientAdapterOptions): MetricsRegis
     const fullN = fullName(name);
     const existing = families.get(fullN);
     if (existing) {
-      if (existing.type !== 'gauge') {
-        throw new Error(`promClientRegistry: '${fullN}' is already registered as ${existing.type}`);
+      if (existing.kind !== 'gauge') {
+        throw new Error(`promClientRegistry: '${fullN}' is already registered as ${existing.kind}`);
       }
       return existing;
     }
@@ -204,7 +204,7 @@ export function promClientRegistry(opts: PromClientAdapterOptions): MetricsRegis
       labelNames: labelNames.length > 0 ? labelNames : undefined,
       registers: [registry],
     });
-    const entry: GaugeEntry = { type: 'gauge', help: opts2?.help ?? fullN, labelNames, impl };
+    const entry: GaugeEntry = { kind: 'gauge', help: opts2?.help ?? fullN, labelNames, impl };
     families.set(fullN, entry);
     return entry;
   }
@@ -213,8 +213,8 @@ export function promClientRegistry(opts: PromClientAdapterOptions): MetricsRegis
     const fullN = fullName(name);
     const existing = families.get(fullN);
     if (existing) {
-      if (existing.type !== 'histogram') {
-        throw new Error(`promClientRegistry: '${fullN}' is already registered as ${existing.type}`);
+      if (existing.kind !== 'histogram') {
+        throw new Error(`promClientRegistry: '${fullN}' is already registered as ${existing.kind}`);
       }
       return existing;
     }
@@ -228,7 +228,7 @@ export function promClientRegistry(opts: PromClientAdapterOptions): MetricsRegis
       registers: [registry],
     });
     const entry: HistogramEntry = {
-      type: 'histogram', help: opts2?.help ?? fullN, labelNames,
+      kind: 'histogram', help: opts2?.help ?? fullN, labelNames,
       buckets: [...buckets], impl,
     };
     families.set(fullN, entry);
