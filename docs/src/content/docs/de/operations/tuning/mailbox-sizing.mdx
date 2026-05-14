@@ -1,0 +1,233 @@
+---
+title: Mailbox-Sizing
+description: Wann bounded vs unbounded Mailboxes, wie man die Kapazität wählt und was Overflow-Policies kosten. Die Entscheidung ist pro Actor — Produktion benutzt selten one-size-fits-all-Defaults.
+---
+
+Die Default-Mailbox eines Actors ist **unbounded** — die Queue
+eines Actors kann ohne Limit wachsen, wenn der Producer den
+Consumer überholt. Für die meisten Actors ist das in Ordnung.
+Wenn nicht, greifst du zu
+[bounded Mailboxes](/de/fundamentals/mailboxes/).
+
+Diese Seite ist der **Entscheidungs-Guide** für Produktions-Mailbox-Sizing.
+
+## Default-Verhalten
+
+```ts
+const ref = system.actorOf(Props.create(() => new Worker()));
+//  ↑ unbounded FIFO-Mailbox; Mailbox kann bis zum OOM wachsen
+```
+
+Unbounded Mailboxes sind **schnell** und **nachsichtig** — ein
+kurzer Burst wird absorbiert, der Actor arbeitet ihn irgendwann
+ab. Die meisten Actors sollten sie nutzen.
+
+Die Falle: Ein **anhaltendes Mismatch** (Producer schneller als
+Consumer) lässt den Speicher monoton wachsen. Schließlich:
+
+- Heap erschöpft → Prozess OOM-gekillt.
+- Lange GC-Pausen → Cluster flappt.
+- Kein Backpressure → der Producer weiß nicht, dass es ein Problem
+  gibt.
+
+Für diese Fälle: bounden.
+
+## Wann bounden
+
+Drei Muster, in denen sich bounded Mailboxes lohnen:
+
+### 1. Producer/Consumer-Mismatch vorab bekannt
+
+```ts
+// Langsamer Consumer: schreibt 10/sec auf Disk; Producer pusht 1000/sec
+const slowWriter = system.actorOf(
+  Props.create(() => new SlowWriter())
+    .withMailbox(() => new BoundedMailbox({
+      capacity: 1_000,
+      overflow: 'reject',
+    })),
+);
+```
+
+Bounde auf den Worst-Case-akzeptablen Puffer. `reject` propagiert
+Backpressure zum Sender — er sieht `MailboxFullError` und passt
+sich an (Retry, Drop, Alert).
+
+### 2. Telemetrie-artige Actors (veraltete Daten sind falsch)
+
+```ts
+const telemetry = system.actorOf(
+  Props.create(() => new MetricsAggregator())
+    .withMailbox(() => new BoundedMailbox({
+      capacity: 5_000,
+      overflow: 'drop-head',
+    })),
+);
+```
+
+Für Metriken, Sensorwerte, Status-Pings — **frischer ist besser**.
+`drop-head` verwirft die älteste wartende Nachricht, wenn neue
+ankommen, und hält die Queue mit aktuellen Daten gefüllt.
+
+### 3. Kritische Actors nahe an Limits
+
+```ts
+const auth = system.actorOf(
+  Props.create(() => new AuthActor())
+    .withMailbox(() => new BoundedMailbox({
+      capacity: 10_000,
+      overflow: 'drop-new',
+    })),
+);
+```
+
+`drop-new` verwirft eingehende Nachrichten, wenn voll — bewahrt
+bereits eingereihte Arbeit. Richtig, wenn "die Queue, die ich habe,
+ist die Arbeit, die mich interessiert" gilt — teilweiser Denial of
+Service ist besser, als gar nichts zu verarbeiten.
+
+## Kapazität wählen
+
+Drei Faktoren:
+
+1. **Worst-Case-Burst-Größe** — wieviele Nachrichten im
+   Worst-Case-Fenster ankommen, bevor der Consumer drainen kann.
+2. **Speicher pro Nachricht** — `capacity × bytes_per_message`
+   begrenzt die Speicherkosten.
+3. **Latenz-Budget** — `capacity / drain_rate` begrenzt die
+   Worst-Case-Latenz, die eine Nachricht vor der Verarbeitung
+   wartet.
+
+Für einen Worker, der 100 msg/sec verarbeitet und Bursts bis zu
+1000 msg in 1 Sekunde erwartet:
+
+```
+capacity = 1000                          # Worst-Case-Burst
+Worst-Case-Latenz = 1000 / 100 = 10s     # bei voller Queue
+```
+
+Wenn 10 Sekunden Queue okay sind, ist Kapazität 1000 fein. Wenn
+nicht, Kapazität reduzieren oder akzeptieren, dass Producer
+`MailboxFullError` sehen.
+
+## Die Metriken lesen
+
+Stock-Metriken
+([Stock-Metriken](/de/observability/metrics/stock-metrics/))
+exponieren die Mailbox-Tiefe:
+
+```
+actor_mailbox_size{class="Worker", path="..."}
+actor_mailbox_dropped_total{class="Worker", path="...", reason="drop-head"}
+```
+
+Beobachte:
+
+- **`mailbox_size`** — hohe Werte relativ zur Kapazität deuten
+  auf Druck hin.
+- **`mailbox_dropped_total`** — ungleich Null mit `drop-head` /
+  `drop-new` ist beabsichtigt; Spikes verdienen Untersuchung.
+- **`MailboxFullError`-Rate** beim Sender — taucht meist als
+  Supervisor-Restarts des sendenden Actors auf.
+
+## Die drei Overflow-Policies im Vergleich
+
+| Policy | Wann |
+| --- | --- |
+| **`reject`** (Default) | Backpressure schlägt zum Sender durch. Der Sender muss handeln. |
+| **`drop-head`** | Telemetrie / Metriken — Neueste gewinnt. |
+| **`drop-new`** | Kritische Arbeit — Eingereihtes behalten, Eingehendes droppen. |
+
+Wähle nach **der richtigen Antwort auf Overflow**:
+
+- "Sender soll retryen / alerten" → `reject`.
+- "Veraltete Daten sind falsch" → `drop-head`.
+- "Eingereihte Arbeit ist wertvoll" → `drop-new`.
+
+Es gibt kein "Bestes" — kontextabhängig.
+
+## Priority-Mailboxes
+
+Für Actors mit **gemischter Dringlichkeit**:
+
+```ts
+import { PriorityMailbox } from 'actor-ts';
+
+const worker = system.actorOf(
+  Props.create(() => new Worker())
+    .withMailbox(() => new PriorityMailbox<Msg>({
+      priorityFor: (m) => m.kind === 'urgent' ? 0 : 5,
+    })),
+);
+```
+
+Niedrigere Zahlen = höhere Priorität. System-Nachrichten
+übertrumpfen immer.
+
+Nutze für:
+
+- **HTTP-Antworten** (dringend) vs **Batch-Jobs** (aufschiebbar).
+- **Health-Pings** vs **Bulk-Metriken**.
+
+Siehe [Mailboxes](/de/fundamentals/mailboxes/) für die volle
+PriorityMailbox-Oberfläche.
+
+## Mailbox + Backpressure-Design
+
+```
+producer  →  reject Backpressure  →  Sender verlangsamt sich
+producer  →  drop-head             →  Producer macht weiter; Reader sieht das Neueste
+producer  →  drop-new              →  Producer macht weiter; Reader verarbeitet das Älteste
+```
+
+Bounded Mailboxes sind **eine Ebene** in einer Backpressure-Story.
+Für Ende-zu-Ende-Backpressure (das vorgelagerte System wird
+langsamer) kombinierst du:
+
+- Bounded Mailbox am Actor.
+- Sender-Retry-Logik.
+- Upstream-Rate-Limiting (HTTP 429, Broker-Pushback).
+
+Die Mailbox erzwingt die lokale Grenze; der Rest ist dein
+Protokoll-Design.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Alle Actors per Default bounded">
+  ```ts
+  // ✗ pauschal überall bounded
+  ```
+  Die meisten Actors sind mit unbounded fein. Bounden ergänzt eine
+  Overflow-Policy-Entscheidung; wenn die falsche gewählt wird, ist
+  die Medizin schlimmer als die Krankheit. Greif zu bounded nur,
+  wenn Evidenz (Speicherwachstum, OOM-Kills) es stützt.
+</Aside>
+
+<Aside type="caution" title="Winzige Kapazitäten">
+  ```ts
+  new BoundedMailbox({ capacity: 10 });   // ✗ keine Burst-Toleranz
+  ```
+  Kapazitäten unter der natürlichen Burst-Größe schaden — `reject`
+  feuert bei normalem Traffic. Starte bei ~10× der Steady-State-Ankunftsrate
+  über dein Verarbeitungsfenster.
+</Aside>
+
+<Aside type="caution" title="Mailbox-Sizing allein fixt keine langsamen Handler">
+  ```ts
+  // Handler braucht 500ms; Ankunftsrate 100/sec → Mailbox immer voll
+  ```
+  Kein Bound verhindert einen Actor, dessen Handler zu langsam ist.
+  Fix die Handler-Latenz zuerst (parallelisieren, auf Worker
+  auslagern), dann bounde die Mailbox.
+</Aside>
+
+## Wohin als nächstes
+
+- **[Mailboxes](/de/fundamentals/mailboxes/)** — die
+  konzeptuelle Referenz.
+- **[Stock-Metriken](/de/observability/metrics/stock-metrics/)** —
+  die Mailbox-Depth- + Drop-Metriken.
+- **[Dispatcher-Tuning](/de/operations/tuning/dispatcher-tuning/)** —
+  der komplementäre Knopf.
+- **[Backoff-Supervisor](/de/patterns/backoff-supervisor/)** —
+  für Stash-on-Fail mit bounded Puffer.

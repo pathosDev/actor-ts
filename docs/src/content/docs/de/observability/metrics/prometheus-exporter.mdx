@@ -1,0 +1,186 @@
+---
+title: Prometheus-Exporter
+description: Metriken im Prometheus-Textformat exponieren — `exportPrometheus(registry)` gibt den scrape-fertigen String zurück. Kombiniere mit dem HTTP-Management-Endpunkt, um Prometheus eine `/metrics`-URL zum Pollen zu geben.
+---
+
+Der Prometheus-Exporter verwandelt die In-Process-
+Metriken-Registry in das **Prometheus-Textformat**, das
+Prometheus / Grafana / Thanos von `/metrics` scrapen.
+
+```ts
+import { ActorSystem, MetricsExtensionId, exportPrometheus } from 'actor-ts';
+
+const system = ActorSystem.create('my-app');
+const metrics = system.extension(MetricsExtensionId);
+
+// In einem HTTP-Handler:
+get(async () => {
+  const text = exportPrometheus(metrics.registry);
+  return { status: 200, body: text, contentType: 'text/plain; version=0.0.4' };
+});
+```
+
+Gibt einen einzelnen String im Prometheus-0.0.4-Exposition-Format
+zurück:
+
+```
+# HELP http_requests_total Total HTTP requests
+# TYPE http_requests_total counter
+http_requests_total{route="/orders"} 1234
+http_requests_total{route="/users"} 567
+
+# HELP sessions_active Currently active sessions
+# TYPE sessions_active gauge
+sessions_active 123
+
+# HELP http_request_duration_ms HTTP request latency
+# TYPE http_request_duration_ms histogram
+http_request_duration_ms_bucket{route="/orders",le="10"} 100
+http_request_duration_ms_bucket{route="/orders",le="50"} 250
+http_request_duration_ms_bucket{route="/orders",le="+Inf"} 300
+http_request_duration_ms_count{route="/orders"} 300
+http_request_duration_ms_sum{route="/orders"} 12450
+```
+
+## Über den Management-Endpunkt
+
+Der einfachste Weg führt über den
+[HttpManagement](/de/observability/management/overview/)-
+Helper:
+
+```ts
+import { HttpManagement } from 'actor-ts';
+
+await HttpManagement.start(system, {
+  port: 8558,
+  enableMetricsEndpoint: true,   // ← exponiert GET /metrics
+});
+```
+
+Prometheus-Scrape-Config:
+
+```yaml
+scrape_configs:
+  - job_name: 'actor-ts'
+    static_configs:
+      - targets: ['my-app:8558']
+```
+
+Der Management-Server läuft auf einem **separaten Port** vom
+Haupt-HTTP-Server deiner App. Typisches Muster: App auf 8080
+(öffentlich), Management auf 8558 (nur intern).
+
+## Manuelles Verdrahten
+
+Wenn du `HttpManagement` nicht nutzt, route `GET /metrics`
+selbst:
+
+```ts
+import { path, get } from 'actor-ts/http';
+import { exportPrometheus } from 'actor-ts';
+
+const routes = path('metrics',
+  get(async () => ({
+    status: 200,
+    body: exportPrometheus(metrics.registry),
+    contentType: 'text/plain; version=0.0.4',
+    headers: {},
+  })),
+);
+```
+
+Binde wenn möglich an einen dedizierten Port — Prometheus'
+Scrapes sind periodisch und sollten den App-Port nicht teilen.
+
+## Namenskonventionen
+
+```
+http_requests_total              # Counter — Suffix `_total`
+sessions_active                   # Gauge — kein Suffix
+http_request_duration_seconds    # Histogram — _bucket / _count / _sum
+process_cpu_seconds_total        # Counter — Prometheus-Namensgebung
+```
+
+Prometheus hat **Konventionen** ([Naming-Guide](https://prometheus.io/docs/practices/naming/)):
+
+- **Counter** enden auf `_total` (oder beschreiben, was gezählt
+  wird).
+- **Histogramme / Timer** enthalten die Einheit im Namen
+  (`_seconds`, `_ms`, `_bytes`).
+- **`_count` / `_sum`** sind vom Framework angehängte Suffixe
+  für Histogramme.
+- **Labels** sind snake_case-Strings.
+
+Das Framework erzwingt diese nicht — aber Prometheus-Tooling
+erwartet sie.
+
+## Scrape-Frequenz vs Gauge-Update-Rate
+
+- **Scrape alle 15-30 Sekunden** — Prometheus-Default.
+- **Gauges in beliebiger Kadenz aktualisieren** — Prometheus
+  sieht nur den Wert zur Scrape-Zeit.
+- **Counter** können in beliebiger Rate inkrementiert werden;
+  Prometheus berechnet die Rate aus aufeinanderfolgenden Scrapes.
+
+Für sehr schnell ändernde Werte (Speichernutzung,
+Mailbox-Tiefe) kann der Gauge zur Scrape-Zeit veraltet sein.
+Das ist okay — Prometheus ist mit seinen Samples
+**eventually consistent**.
+
+## Details zum Exposition-Format
+
+| Serie | Format |
+| --- | --- |
+| Counter | Eine Zeile pro Serie. `metric_name{labels} value` |
+| Gauge | Gleich wie Counter. |
+| Histogram | Eine `_bucket{le=N}`-Zeile pro Bucket + `_count` + `_sum`. |
+
+Der Exporter übernimmt die Formatierung; du baust sie nicht
+manuell.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Exponiere `/metrics` nicht öffentlich">
+  ```
+  Public: GET https://my-app.example.com/metrics
+  ```
+  Metriken legen oft **internen Zustand** offen (welche Routen
+  hot sind, wie hoch Fehlerraten sind, wie viele User du hast).
+  Beschränke auf das interne Netzwerk oder hinter
+  Authentifizierung.
+</Aside>
+
+<Aside type="caution" title="Scrape-Frequenz vs Label-Kardinalität">
+  ```ts
+  // 1000 Serien × 1 s Scrape-Intervall × 30 Tage = SEHR viele Daten
+  ```
+  Prometheus-Speicher skaliert mit
+  `Serien-Anzahl × Scrape-Intervall`. Beschränke deine
+  Label-Kardinalität (siehe
+  [Core-Metriken](/de/observability/metrics/core-metrics/))
+  bevor du Labels hinzufügst.
+</Aside>
+
+<Aside type="caution" title="Histogramme haben Rendering-Kosten">
+  ```ts
+  // 100 Histogramme × 10 Buckets × 50 Label-Kombos = 50 000 Serien
+  ```
+  Jeder Histogram-Bucket ist eine separate Serie. Bucket-Anzahl
+  multipliziert sich mit Label-Kardinalität. Nutze kleine
+  Bucket-Anzahlen (~10) für Histogramme mit vielen Labels.
+</Aside>
+
+## Wo es weitergeht
+
+- **[Observability — Überblick](/de/observability/overview/)** —
+  das größere Bild.
+- **[Core-Metriken](/de/observability/metrics/core-metrics/)** —
+  die vier Primitive.
+- **[Management — Überblick](/de/observability/management/overview/)** —
+  der einfache Weg, `/metrics` zu exponieren.
+- **[Stock-Metriken](/de/observability/metrics/stock-metrics/)** —
+  die automatisch aufgezeichneten Metriken des Frameworks, die
+  hier erscheinen.
+
+Die [`exportPrometheus`](/api/functions/exportprometheus/)-
+Funktion-Referenz deckt die volle API ab.

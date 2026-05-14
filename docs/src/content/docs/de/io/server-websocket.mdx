@@ -1,0 +1,174 @@
+---
+title: Server-WebSocket
+description: Eingehender WebSocket-Server-Actor — nimmt Client-Verbindungen entgegen, routet Nachrichten pro Verbindung an Handler. Pro Verbindung ein Child-Actor, der das Protokoll behandelt. Backend-Adapter für Bun, Node `ws`, Fastify.
+---
+
+`ServerWebSocketActor` betreibt einen **Server**.  Clients
+verbinden sich von außen; der Actor nimmt jede Verbindung an,
+spawnt pro Verbindung einen Child-Handler und routet eingehende
+Nachrichten dorthin.
+
+```ts
+import { ActorSystem, Props, ServerWebSocketActor, Actor } from 'actor-ts';
+
+class Connection extends Actor<WsConnInbound> {
+  constructor(public readonly id: string) { super(); }
+
+  override onReceive(msg: WsConnInbound): void {
+    if (msg.kind === 'opened')  this.log.info(`Verbindung offen: ${this.id}`);
+    if (msg.kind === 'text')    this.log.info(`von ${this.id}: ${msg.payload}`);
+    if (msg.kind === 'closed')  this.log.info(`Verbindung geschlossen: ${this.id}`);
+  }
+}
+
+const server = system.actorOf(
+  Props.create(() => new ServerWebSocketActor({
+    host: '0.0.0.0',
+    port: 8080,
+    onConnection: (id) => Props.create(() => new Connection(id)),
+  })),
+  'ws-server',
+);
+```
+
+Jede eingehende WS-Verbindung spawnt ein `Connection`-Child.
+Nachrichten auf dieser Verbindung kommen als `WsConnInbound` an;
+das Framework death-watcht den Verbindungs-Actor, sodass dessen
+Beendigung den darunterliegenden Socket schließt.
+
+## Settings
+
+```ts
+interface ServerWebSocketActorSettings extends BrokerCommonSettings {
+  host:           string;
+  port:           number;
+  onConnection:   (id: string) => Props<WsConnInbound>;
+  backend?:       'bun' | 'ws' | 'fastify';   // Default Auto-Erkennung
+  path?:          string;                       // auf einen bestimmten Pfad einschränken
+  tls?:           TlsOptions;
+}
+```
+
+`onConnection` wird für jede neue Verbindung aufgerufen.  Gib
+einen `Props` für den Per-Connection-Actor zurück — meist eine
+Klasse, die die ID + den State der Verbindung hält.
+
+## Backend-Wahl
+
+```ts
+{ backend: 'bun' }      // Buns eingebauter WS-Server
+{ backend: 'ws' }       // Node-Paket 'ws' (Default für Node)
+{ backend: 'fastify' }  // an einen bestehenden Fastify-Server gehängt
+```
+
+| Backend | Runtime-Eignung |
+| --- | --- |
+| `'bun'` | Nur Bun.  Nutzt das native WebSocket von `Bun.serve`. |
+| `'ws'` | Node + Bun.  Nutzt das npm-Paket `ws`. |
+| `'fastify'` | Teilt sich einen Port mit einem HTTP-Server über `@fastify/websocket`. |
+
+Auto-Erkennung wählt `'bun'` auf Bun, `'ws'` auf Node.
+
+## An eine bestimmte Verbindung senden
+
+```ts
+// Der Per-Connection-Actor sendet über seinen Parent zurück:
+override onReceive(msg: WsConnInbound) {
+  if (msg.kind === 'text') {
+    msg.respond('echo: ' + msg.payload);
+    // oder: msg.respondBinary(uint8array);
+  }
+}
+```
+
+Das Framework hängt `respond(text)` / `respondBinary(bytes)` /
+`close()`-Methoden an jede eingehende Nachricht.  Einfaches
+Request/Response innerhalb einer einzelnen Verbindung.
+
+Für **Broadcast** (an jeden verbundenen Client senden) hält der
+Parent-Actor das Child-Set:
+
+```ts
+// Im Server-Actor:
+this.broadcastText('event: ' + JSON.stringify({ ... }));
+```
+
+Die `broadcast*`-Methoden des Frameworks iterieren jede aktive
+Verbindung.
+
+## Pfad-Routing
+
+```ts
+new ServerWebSocketActor({
+  host: '0.0.0.0',
+  port: 8080,
+  path: '/feed',          // nur Verbindungen auf /feed annehmen
+  onConnection: ...,
+});
+```
+
+Für mehrere Endpoints auf demselben Port spawne mehrere
+`ServerWebSocketActor`s mit unterschiedlichen `path`s, oder
+betreibe einen einzelnen und route innerhalb von `onConnection`
+basierend auf der Request-URL.
+
+## Peer-Dependency
+
+```bash
+npm install ws         # für backend: 'ws'
+# Bun hat WebSocket-Support eingebaut
+```
+
+## Wann einsetzen
+
+Drei gute Einsatzfälle:
+
+1. **Echtzeit-UIs** — Updates an Browser-Clients pushen.
+2. **Eigene Messaging-Protokolle** — Game-Server, Chat-Backends.
+3. **Webhooks über WS** — Polling durch Push ersetzen.
+
+Für einseitige Streams vom Server zum Client ist
+[SSE](/de/io/sse/) einfacher.  Für Request/Reply-RPC ist
+[HTTP](/de/http/overview/) (mit WS für Upgrade) die Norm.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Connection-Actors lecken, wenn sie nicht gestoppt werden">
+  ```ts
+  // Verbindung schließt → Connection-Actor sollte auch stoppen
+  ```
+  Das Framework stoppt den Connection-Actor automatisch, wenn der
+  Socket schließt; wenn dein Code aber anderswo Referenzen hält
+  (Registries, Parent-State), gib sie in `postStop` frei, um
+  Speicher freizugeben.
+</Aside>
+
+<Aside type="caution" title="Langsame Clients blockieren den Event-Loop des Servers">
+  ```ts
+  // Per-Connection-Handler wartet 5s, bevor er auf Ping antwortet
+  ```
+  WS-Handler teilen sich den Event-Loop mit dem Rest des Actor-
+  Systems.  Langsame Handler isolieren nicht.  Für aufwendige
+  Per-Connection-Arbeit lager in einen Worker-Thread oder ein
+  separates Actor-System aus.
+</Aside>
+
+<Aside type="caution" title="Kein automatisches Backpressure beim Broadcast">
+  ```ts
+  // 1 MB an 10 000 verbundene Clients broadcasten
+  ```
+  Broadcasts iterieren jeden Client synchron.  Für High-Fan-out-
+  Broadcasts batche + yielde (nutze den Dispatcher, damit andere
+  Actors zwischen Batches laufen können).
+</Aside>
+
+## Wohin als Nächstes
+
+- **[I/O-Übersicht](/de/io/overview/)** — das große
+  Bild.
+- **[WebSocket (Client)](/de/io/websocket/)** — für
+  ausgehende Verbindungen.
+- **[SSE](/de/io/sse/)** — Server-Sent-Events-
+  Alternative.
+- **[HTTP-Übersicht](/de/http/overview/)** — für gewöhnliches
+  HTTP-Request/Response.

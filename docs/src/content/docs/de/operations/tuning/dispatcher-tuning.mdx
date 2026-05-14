@@ -1,0 +1,205 @@
+---
+title: Dispatcher-Tuning
+description: Den richtigen Dispatcher pro Workload wählen — Microtask für tight loops, Immediate (Default) für ausgewogenen HTTP-Traffic, Throughput für batch-lastiges. Plus der Throughput-Knopf für den `ThroughputDispatcher`.
+---
+
+Der
+[Dispatcher](/de/fundamentals/dispatchers/) entscheidet, **wann
+Actor-Nachrichten** auf der JavaScript-Event-Loop laufen. Drei
+Formen werden ausgeliefert:
+
+| Dispatcher | Schedult via | Passt zu |
+| --- | --- | --- |
+| `MicrotaskDispatcher` | `queueMicrotask` | CPU-tight; kein I/O. |
+| `ImmediateDispatcher` *(Default)* | `setImmediate` / `setTimeout(0)` | HTTP-Server + gemischtes I/O. |
+| `ThroughputDispatcher` | `setImmediate` mit N-dann-yield | Batch-Verarbeitung. |
+
+Der Default — `ImmediateDispatcher` — passt für **die meisten Apps**.
+Diese Seite behandelt, wann er nicht passt und wie du eine bessere
+Wahl triffst.
+
+## Default-Verhalten
+
+```ts
+const system = ActorSystem.create('my-app');
+//  ↑ nutzt per Default ImmediateDispatcher
+```
+
+Actor-Nachrichten laufen via `setImmediate`, das zwischen jeder
+Nachricht yieldet — damit I/O-Callbacks (HTTP-Handler,
+Broker-Nachrichten, Timer-Feuer) natürlich verschränken.
+
+Für HTTP-Server + Broker-Actor-Cluster (der häufige Fall) ergibt
+das **gute HTTP-Latenz** auf Kosten von etwas höherem
+Per-Message-Overhead.
+
+## Symptom: hohe HTTP-Latenz unter Actor-Last
+
+```
+P99-HTTP-Response-Time ist 200ms; Actors verarbeiten Zehntausende
+Nachrichten/sec. Die Actor-Arbeit ist nicht das Problem — sondern
+dass HTTP-Requests nicht drankommen.
+```
+
+**Ursache**: Ein Actor (oder eine Gruppe Actors) verarbeitet
+Nachrichten so schnell, dass HTTP-Handler auf ihren Turn warten.
+
+**Fix**: Beim `ImmediateDispatcher` (Default) bleiben und **die
+beschäftigten Actors mit einem Throughput-Dispatcher pro Actor
+bounden**:
+
+```ts
+import { ThroughputDispatcher } from 'actor-ts';
+
+const heavyActor = system.actorOf(
+  Props.create(() => new HeavyWorker())
+    .withDispatcher(new ThroughputDispatcher({ throughput: 100 })),
+);
+```
+
+Der schwere Actor verarbeitet 100 Nachrichten, yieldet, lässt
+HTTP aufholen, verarbeitet 100 weitere. HTTP-Latenz sinkt;
+Durchsatz beim schweren Actor wird kaum beeinträchtigt.
+
+## Symptom: niedriger Actor-Durchsatz, niedrige CPU-Nutzung
+
+```
+Das Actor-System macht 1000 msg/sec auf einer idle CPU. Profil
+zeigt Zeit in setImmediate verbracht.
+```
+
+**Ursache**: `ImmediateDispatcher` hat Per-Message-Overhead durch
+das Yield zur Event Loop bei jeder Nachricht. Für Tight-Loop-CPU-Arbeit
+ohne I/O ist das Verschwendung.
+
+**Fix**: `MicrotaskDispatcher` nutzen:
+
+```ts
+import { MicrotaskDispatcher } from 'actor-ts';
+
+const cpuActor = system.actorOf(
+  Props.create(() => new CpuIntensive())
+    .withDispatcher(new MicrotaskDispatcher()),
+);
+```
+
+Microtasks umgehen die Event Loop, ~50× schnelleres Scheduling.
+**Caveat**: Ein CPU-tighter Actor auf Microtask kann **I/O
+aushungern** (Netzwerk-Reads, Timer). Nur nutzen, wenn:
+
+- Der Actor das System nicht mit HTTP-Traffic teilt
+  (Compute-Only-Worker).
+- Der Actor selbst nicht `await` auf I/O macht (rein CPU).
+
+## ThroughputDispatcher-Optionen
+
+```ts
+new ThroughputDispatcher({
+  throughput:        100,        // Nachrichten pro Batch
+  yieldStrategy:     'setImmediate',   // oder 'setTimeout' oder 'microtask'
+});
+```
+
+- **`throughput`** — Nachrichten, die pro Actor vor dem Yield
+  verarbeitet werden. Höher = mehr Durchsatz, schlechtere
+  I/O-Verschränkung. Übliche Werte: 10-1000.
+- **`yieldStrategy`** — wie zwischen Batches geyieldet wird.
+  `setImmediate` ist der I/O-freundliche Default; `microtask`
+  yieldet kürzer, gibt aber die Event Loop nicht frei.
+
+Für einen Batch-Prozessor, der Broker-Nachrichten verarbeitet:
+`throughput: 200` ist ein vernünftiger Startpunkt.
+
+## Per-Actor-Dispatcher
+
+```ts
+const heavy = system.actorOf(
+  Props.create(() => new BulkProcessor())
+    .withDispatcher(new ThroughputDispatcher({ throughput: 500 })),
+);
+
+const httpHandler = system.actorOf(
+  Props.create(() => new HttpHandler()),
+  // → nutzt den ImmediateDispatcher-Default des Systems
+);
+```
+
+Frei mischen. Schwere Actors bekommen ihren eigenen
+throughput-getuneten Dispatcher; HTTP-Handler bleiben auf dem
+Default. Das ist das **empfohlene Produktionsmuster**.
+
+## Systemweiter Dispatcher
+
+```ts
+const system = ActorSystem.create('my-app', {
+  dispatcher: new ThroughputDispatcher({ throughput: 100 }),
+});
+```
+
+Override den Default für **jeden Actor, der nichts anderes
+spezifiziert**. Nützlich für Batch-only-Systeme ohne HTTP-Traffic.
+
+## Messen
+
+Nutze die
+[Stock-Metrik](/de/observability/metrics/stock-metrics/)
+`actor_message_duration_ms`:
+
+```
+P50 ≈ Arbeitszeit
+P99 - P50 ≈ Dispatcher-Latenz (Queueing)
+```
+
+Wenn P99 deutlich höher als P50 mit kleiner Varianz der Arbeitszeit
+ist, **hilft Dispatcher-Tuning**.
+
+Das Gauge
+`actor_mailbox_size` unter Last zeigt, ob Actors mitkommen.
+Dauerhaft wachsende Tiefe = entweder ein langsamer Handler oder
+ein fehlkonfigurierter Dispatcher.
+
+## Heuristiken
+
+```
+HTTP-Server + Actors        → ImmediateDispatcher (Default)
+Compute-heavy + kein HTTP   → MicrotaskDispatcher
+Batch-Verarbeitung          → ThroughputDispatcher (throughput 100-500)
+Gemischt: schwerer Actor + HTTP   → ImmediateDispatcher-Default + ThroughputDispatcher pro schwerem Actor
+```
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="MicrotaskDispatcher + HTTP-Server im selben System">
+  ```ts
+  // System-weiter MicrotaskDispatcher + ein HTTP-Server im selben System
+  ```
+  Microtask-geschedulte Actors können die Event Loop monopolisieren;
+  HTTP-Responses werden ausgehungert. Entweder pro Actor (nur
+  schwere Actors auf Microtask) oder in zwei Systeme aufteilen.
+</Aside>
+
+<Aside type="caution" title="Tuning vor Messen">
+  ```ts
+  // "Ich nehm einfach ThroughputDispatcher für alles"
+  ```
+  Nicht. Der Default funktioniert für die meisten Apps. Tune nur,
+  wenn Metriken Latenz- / Durchsatz-Probleme zeigen, die der
+  Dispatcher plausibel verursachen könnte.
+</Aside>
+
+<Aside type="caution" title="Sehr hohe Throughput-Werte">
+  ```ts
+  new ThroughputDispatcher({ throughput: 100_000 });
+  ```
+  100K Nachrichten ohne Yield zu verarbeiten hungert alles andere
+  im selben Prozess aus. Bleib unter ~1000.
+</Aside>
+
+## Wohin als nächstes
+
+- **[Dispatcher](/de/fundamentals/dispatchers/)** — die
+  konzeptuelle Referenz.
+- **[Mailbox-Sizing](/de/operations/tuning/mailbox-sizing/)** —
+  der komplementäre Knopf.
+- **[Stock-Metriken](/de/observability/metrics/stock-metrics/)** —
+  die Per-Actor-Performance-Metriken.

@@ -1,0 +1,146 @@
+---
+title: DNS Seed Provider
+description: Seed-Adressen über DNS auflösen — typischerweise SRV-Records (`_actor-ts._tcp.example.com`) für Service Discovery, oder A-Records für einfachere Setups. Funktioniert überall, wo du DNS-SD-Infrastruktur hast.
+---
+
+`DnsSeedProvider` löst Seeds beim Start via DNS auf.  Zwei Modi:
+
+| Modus | Lookup | Ergebnis |
+| --- | --- | --- |
+| **SRV-Records** | `_actor-ts._tcp.example.com` | Service + Port aus Records |
+| **A-Records** | `actor-ts.example.com` | Nur IPs; Port kommt aus Config |
+
+SRV ist die flexiblere Wahl (Service-Discovery-Style); A-Records
+funktionieren für einfachere Setups.
+
+```ts
+import { Cluster, DnsSeedProvider } from 'actor-ts';
+
+const provider = new DnsSeedProvider({
+  service:   '_actor-ts._tcp.example.com',
+});
+
+const seeds = await provider.lookup();
+await Cluster.join(system, { host, port, seeds });
+```
+
+## Konfiguration
+
+```ts
+interface DnsSeedProviderSettings {
+  service:    string;     // SRV-Record (oder Hostname für A-Record)
+  port?:      number;     // erforderlich für A-Record-Modus
+  resolver?:  DnsResolver; // Default-Node-DNS überschreiben
+}
+```
+
+### SRV-Modus (empfohlen)
+
+```ts
+new DnsSeedProvider({ service: '_actor-ts._tcp.my-app.example.com' });
+```
+
+SRV-Records tragen pro Eintrag **Host, Port, Weight, Priority**.
+Der Provider gibt für jeden Eintrag, den die DNS-Abfrage
+zurückgegeben hat, `host:port` zurück.
+
+Um die SRV-Records anzulegen:
+
+```
+_actor-ts._tcp.my-app.example.com.   IN SRV  10 100 2552 node-1.my-app.example.com.
+_actor-ts._tcp.my-app.example.com.   IN SRV  10 100 2552 node-2.my-app.example.com.
+_actor-ts._tcp.my-app.example.com.   IN SRV  10 100 2552 node-3.my-app.example.com.
+```
+
+Plus passende A-Records für die Hostnames.  Die meisten
+DNS-SD-Service-Registrierungstools (Consul, Eureka mit
+DNS-Plugin) publizieren SRV-Records automatisch.
+
+### A-Record-Modus
+
+```ts
+new DnsSeedProvider({
+  service: 'actor-ts.example.com',
+  port:    2552,
+});
+```
+
+Für Setups ohne SRV — DNS trägt nur IPs.  Der Provider fragt
+A-Records ab und paart jede mit dem konfigurierten Port.
+
+A-Records zeigen typischerweise auf einen Loadbalancer oder eine
+Round-Robin-DNS-Liste; mehrere A-Einträge bedeuten mehrere
+Seed-Kandidaten.
+
+## Wann du ihn einsetzt
+
+| Umgebung | Verwendung |
+| --- | --- |
+| Consul-verwaltete Deployments | SRV-Modus — Consul schreibt sie automatisch. |
+| Eureka mit DNS-Plugin | SRV-Modus. |
+| Manuelle Deployments mit DNS-Server | Beide Modi; SRV bevorzugt. |
+| Cloud mit DNS-basiertem Service Discovery | SRV-Modus. |
+| K8s | Nimm [KubernetesApiSeedProvider](/de/discovery/seed-providers/kubernetes-api/) — K8s' Headless Services produzieren zwar A-Records, aber der K8s-API-Provider ist zuverlässiger. |
+
+## DNS-Caching
+
+```ts
+// Der Provider macht EIN Lookup beim Start.  Kein späteres Refresh.
+```
+
+Sobald `Cluster.join` fertig ist, übernimmt die Gossip-Schicht
+des Clusters das Membership-Tracking — DNS wird nicht mehr
+konsultiert.  Das heißt:
+
+- **Ein Node, der nach dem Start hinzugefügt wird**, ist für
+  existierende Peers nicht via DNS sichtbar.  Er joint über
+  seinen eigenen DNS-Lookup, kontaktiert einen existierenden
+  Seed, Gossip propagiert weiter.
+- **DNS-TTLs spielen für die Cluster-Laufzeit keine Rolle** —
+  nur beim Start.
+
+## Wann NICHT
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Langsames / unzuverlässiges DNS">
+  ```ts
+  // DNS-Server braucht 30 Sekunden zum Antworten
+  ```
+  `Cluster.join` blockiert auf DNS-Auflösung.  Bei Setups mit
+  langsamem DNS ist die Boot-Verzögerung real.  Kombiniere mit
+  [`ConfigSeedProvider`](/de/discovery/seed-providers/config/)
+  via [`AggregateSeedProvider`](/de/discovery/seed-providers/aggregate/)
+  — Fallback auf statisch, wenn DNS fehlschlägt.
+</Aside>
+
+<Aside type="caution" title="DNS-Roundtrips liefern leer zurück">
+  ```ts
+  // Noch keine SRV-Records → leeres Ergebnis → Cluster joint nicht
+  ```
+  Ein leeres Ergebnis wird als "keine Seeds verfügbar" behandelt,
+  was heißt, dass der lokale Node sich selbst bootstrapt (zum
+  Cluster wird).  Beim ersten Node-Up okay; bei folgenden Nodes
+  nicht das, was du willst.  Aggregiere mit einem Fallback, um
+  das zu erkennen.
+</Aside>
+
+<Aside type="caution" title="DNS in Containern">
+  ```ts
+  // Manche Container-DNS-Setups fragen SRV-Records nicht standardmäßig ab
+  ```
+  Teste die SRV-Auflösung explizit innerhalb deines Container-Images
+  (`getent srv _actor-ts._tcp.example.com`).  Manche minimalen
+  Alpine-Setups brauchen explizite `nsswitch.conf`-Konfiguration.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[Discovery im Überblick](/de/discovery/overview/)** — das
+  Gesamtbild.
+- **[Config Seed Provider](/de/discovery/seed-providers/config/)** —
+  die einfachere Alternative.
+- **[Kubernetes-API Seed Provider](/de/discovery/seed-providers/kubernetes-api/)** —
+  bevorzugt auf K8s.
+- **[Aggregate Seed Provider](/de/discovery/seed-providers/aggregate/)** —
+  DNS mit statischem Fallback kombinieren.

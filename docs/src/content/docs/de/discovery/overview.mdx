@@ -1,0 +1,158 @@
+---
+title: Discovery im Überblick
+description: Wie Cluster-Nodes einander finden (Seed Provider) und wie Actors einander innerhalb des Clusters finden (Receptionist Service Registry). Zwei verschiedene Mechanismen — Seed-Time-Bootstrap vs. Runtime-Service-Lookup.
+---
+
+"Discovery" in actor-ts umfasst **zwei getrennte Anliegen**:
+
+| Anliegen | Mechanismus | Wann |
+| --- | --- | --- |
+| **Cluster-Bootstrap** | Seed Provider | Einmal beim Start des Nodes — wie dieser Node seine Peers findet. |
+| **Runtime-Service-Lookup** | Receptionist | Während des Betriebs — wie Actors einander per Service Key finden. |
+
+Beide teilen den Namen "Discovery", weil beide
+**Lookup-basiertes Addressing** sind, aber die Protokolle und
+Anwendungsfälle sind verschieden.
+
+## Seed Provider
+
+Seed Provider beantworten: **"Welche Adressen soll ich beim
+Join-Zeitpunkt als Cluster-Seeds probieren?"**
+
+```ts
+import { Cluster, KubernetesApiSeedProvider } from 'actor-ts';
+
+const provider = new KubernetesApiSeedProvider({
+  namespace:     'my-app',
+  labelSelector: 'app=actor-ts',
+  containerPort: 2552,
+});
+
+const seeds = await provider.lookup();
+
+await Cluster.join(system, { host, port, seeds });
+```
+
+Vier Provider werden mitgeliefert:
+
+| Provider | Verwendung |
+| --- | --- |
+| [`ConfigSeedProvider`](/de/discovery/seed-providers/config/) | Statische Liste aus Env-Vars / Config. |
+| [`DnsSeedProvider`](/de/discovery/seed-providers/dns/) | DNS-SRV-Record-Auflösung. |
+| [`KubernetesApiSeedProvider`](/de/discovery/seed-providers/kubernetes-api/) | Live-Pod-Listing via K8s-API. |
+| [`AggregateSeedProvider`](/de/discovery/seed-providers/aggregate/) | Mehrere Provider mit Fallback verketten. |
+
+Wähle nach deiner Deployment-Umgebung:
+
+- **K8s** → `KubernetesApiSeedProvider`.
+- **VMs mit DNS-SD** → `DnsSeedProvider`.
+- **Statische Deployments / Docker Compose** → `ConfigSeedProvider`.
+- **Mehrere Umgebungen / DR-Szenarien** → `AggregateSeedProvider`.
+
+Für die meisten Apps wählst du einen Provider, konfigurierst ihn
+einmal und gehst weiter.  Siehe
+[Joining und Seeds](/de/cluster/joining-and-seeds/) für das
+vollständige Join-Protokoll.
+
+## Receptionist
+
+Der Receptionist beantwortet: **"Welche Actors sind unter diesem
+Service Key registriert, irgendwo im Cluster?"**
+
+```ts
+import { Receptionist, ServiceKey } from 'actor-ts';
+
+// Auf node-A:
+const receptionist = system.extension(ReceptionistId).start(cluster);
+const key = ServiceKey.of<MyMsg>('my-service');
+
+receptionist.register(key, myActor);
+
+// Auf node-B:
+const refs = await receptionist.find(key);   // → ActorRef[] über den ganzen Cluster
+```
+
+Ein cluster-weites Service-Registry.  Jeder Node hostet einen
+Receptionist-Actor; Registrierungen sind lokal autoritativ; Peers
+erfahren über Gossip von fremden Registrierungen.
+
+Nimm den Receptionist, wenn:
+
+- **Actor-Location ist dynamisch** — Actors kommen und gehen,
+  und Consumer sollen keine Pfade hartkodieren.
+- **Mehrere Actors teilen sich einen Service** — N Worker
+  registrieren sich alle unter demselben Key; Consumer sehen
+  sie alle.
+- **Cross-Node-Discovery wird gebraucht** — einen Actor finden,
+  unabhängig davon, welcher Node ihn hostet.
+
+Siehe [Receptionist](/de/discovery/receptionist/) für die
+vollständige API.
+
+## Seed Provider vs. Receptionist
+
+| Frage | Werkzeug |
+| --- | --- |
+| Wie findet DIESER Node Peers zum Joinen? | Seed Provider |
+| Wie findet ein Actor zur Laufzeit einen anderen Actor? | Receptionist |
+| Wie routet ein HTTP-Loadbalancer Requests an meine Pods? | K8s Service (nicht das hier) |
+| Wie entdeckt ein Service-Mesh-Proxy Backends? | Service Mesh (nicht das hier) |
+
+Die Discovery des Frameworks ist **für Cluster-Internes**.
+Externer Service Discovery (Consul, Eureka, Service Meshes) ist
+Sache deiner Infrastruktur; actor-ts holt sich daraus beim Start
+seine Peer-Adressen, beteiligt sich sonst aber nicht.
+
+## Wann du beides nutzen könntest
+
+Ein typisches K8s-Deployment:
+
+```ts
+// 1. Seed Discovery — wie dieser Pod beim Start Peers findet
+const seeds = await new KubernetesApiSeedProvider({
+  namespace:     process.env.K8S_NAMESPACE!,
+  labelSelector: 'app=actor-ts',
+  containerPort: 2552,
+}).lookup();
+
+await Cluster.join(system, { host, port, seeds });
+
+// 2. Receptionist — für Runtime-Actor-Lookup
+const receptionist = system.extension(ReceptionistId).start(cluster);
+
+// Den API-Actor dieses Pods registrieren:
+receptionist.register(
+  ServiceKey.of<ApiMsg>('api'),
+  system.actorOf(Props.create(() => new ApiActor()), 'api'),
+);
+
+// Andere Actors finden ihn:
+const apis = await receptionist.find(ServiceKey.of<ApiMsg>('api'));
+```
+
+Seed Provider laufen **einmal**; der Receptionist läuft
+**kontinuierlich**.
+
+## Wohin als Nächstes
+
+### Seed Provider
+
+- **[Config](/de/discovery/seed-providers/config/)** — statische
+  Liste.
+- **[DNS](/de/discovery/seed-providers/dns/)** — SRV-/A-Records.
+- **[Kubernetes-API](/de/discovery/seed-providers/kubernetes-api/)** —
+  Pod-Listing.
+- **[Aggregate](/de/discovery/seed-providers/aggregate/)** —
+  mit Fallback verketten.
+
+### Receptionist
+
+- **[Receptionist](/de/discovery/receptionist/)** — das
+  Service-Registry.
+
+### Verwandtes
+
+- **[Joining und Seeds](/de/cluster/joining-and-seeds/)** —
+  der Cluster-Bootstrap-Mechanismus, der Seed Provider konsumiert.
+- **[Cluster im Überblick](/de/cluster/overview/)** — das
+  Membership-Modell, das beiden zugrunde liegt.

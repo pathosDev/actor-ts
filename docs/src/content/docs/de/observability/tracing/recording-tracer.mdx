@@ -1,0 +1,154 @@
+---
+title: Recording-Tracer
+description: Test-freundlicher `Tracer`, der jeden Span im Speicher für Assertions erfasst. Nutze in Unit-Tests, um zu verifizieren „dieser Actor hat einen Span mit diesen Attributen erzeugt", ohne eine OTel-Pipeline aufzusetzen.
+---
+
+`RecordingTracer` ist das Test-Pendant zu
+[`OtelTracerAdapter`](/de/observability/tracing/otel-adapter/).
+Anstatt Spans zu exportieren, **speichert er sie im Speicher** —
+Tests asserten auf die aufgezeichneten Spans.
+
+```ts
+import { TestKit, RecordingTracer, TracingExtensionId } from 'actor-ts';
+
+const tracer = new RecordingTracer();
+const tk = TestKit.create();
+tk.system.extension(TracingExtensionId).configure({ tracer });
+
+// ... Actor ausführen ...
+ref.tell({ kind: 'process' });
+await probe.expectMsg(...);
+
+// Auf aufgezeichnete Spans asserten:
+const spans = tracer.recordedSpans();
+expect(spans).toHaveLength(1);
+expect(spans[0].name).toBe('actor.receive');
+expect(spans[0].attributes['actor.path']).toContain('worker');
+```
+
+## Was er aufzeichnet
+
+Jeder `RecordedSpan`:
+
+```ts
+interface RecordedSpan {
+  name:        string;
+  context:     SpanContext;
+  parent?:     SpanContext;
+  attributes:  Record<string, AttributeValue>;
+  events:      Array<{ name: string; attrs: ... }>;
+  status:      { status: 'ok' | 'error'; message?: string };
+  startTimeMs: number;
+  endTimeMs:   number;
+  ended:       boolean;
+  kind:        SpanKind;
+}
+```
+
+Du siehst, welche Attribute gesetzt wurden, wann der Span
+gestartet + beendet wurde, seine Art, seinen Parent (zum
+Verifizieren von Kausalitätsketten) und seinen Endstatus.
+
+## Die API
+
+```ts
+class RecordingTracer implements Tracer {
+  // ... volles Tracer-Interface ...
+
+  recordedSpans(): RecordedSpan[];          // alle Spans, inkl. unbeendeter
+  finishedSpans(): RecordedSpan[];          // Spans, bei denen end() aufgerufen wurde
+  reset(): void;                            // aufgezeichneten Zustand leeren
+}
+```
+
+`recordedSpans` gibt jeden Span zurück, den der Tracer erzeugen
+sollte. `finishedSpans` filtert auf die, die beendet wurden —
+nützlich, um „Span gestartet und nie beendet"-Bugs zu erkennen.
+
+## Übliche Assertion-Muster
+
+### „Hat das Framework die Nachricht dieses Actors auto-gespan'd?"
+
+```ts
+ref.tell({ kind: 'work' });
+await probe.expectMsg(...);
+
+const spans = tracer.finishedSpans();
+const receive = spans.find(s => s.name === 'actor.receive' && s.attributes['actor.path']?.includes('worker'));
+expect(receive).toBeDefined();
+expect(receive!.status.status).toBe('ok');
+```
+
+### „Hat mein Custom-Span mit den richtigen Attributen gefeuert?"
+
+```ts
+const orderSpan = tracer.finishedSpans().find(s => s.name === 'place-order');
+expect(orderSpan).toBeDefined();
+expect(orderSpan!.attributes['order.id']).toBe('o-1');
+expect(orderSpan!.attributes['order.amount']).toBe(42);
+```
+
+### „Haben sich die Spans korrekt verkettet?"
+
+```ts
+const spans = tracer.finishedSpans();
+const parent = spans.find(s => s.name === 'http-request');
+const child  = spans.find(s => s.name === 'db-query');
+
+expect(child!.parent?.traceId).toBe(parent!.context.traceId);
+```
+
+Nützlich zum Verifizieren der **Trace-Kausalität** — Parent-
+Kontext korrekt an Child-Spans propagiert.
+
+## Zwischen Tests zurücksetzen
+
+```ts
+beforeEach(() => tracer.reset());
+```
+
+Ohne Reset akkumulieren aufgezeichnete Spans über Tests hinweg.
+Reset bei jedem Test, um Assertions nur auf die Spans des
+aktuellen Tests zu halten.
+
+## Performance
+
+Aufzeichnen ist **billig** — Anhängen an ein Array. Aber Spans
+akkumulieren im Speicher. Bei langen Test-Läufen periodisch
+`reset`, um Speicher-Wachstum zu vermeiden.
+
+## Wann NICHT nutzen
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Produktion">
+  ```ts
+  // RecordingTracer hält jeden Span ewig im Speicher
+  ```
+  Speicher wächst unbeschränkt. Das ist ein **Test-only**-
+  Tracer. Für Produktion nutze den OTel-Adapter.
+</Aside>
+
+<Aside type="caution" title="Cross-Cluster-Kontext">
+  ```ts
+  // RecordingTracer serialisiert Kontext nicht wirklich Cross-Wire
+  ```
+  In Single-Process-MultiNodeSpec-Tests funktioniert der
+  Recording-Tracer — jeder Node teilt sich denselben Prozess.
+  Für Cross-Process-/Cross-Node-Tracing-Tests bräuchtest du eine
+  echte OTel-Pipeline.
+</Aside>
+
+## Wo es weitergeht
+
+- **[Tracer-API](/de/observability/tracing/tracer-api/)** —
+  das Interface, das dies implementiert.
+- **[OTel-Adapter](/de/observability/tracing/otel-adapter/)** —
+  die Produktions-Alternative.
+- **[Actor-Tracing](/de/observability/tracing/actor-tracing/)** —
+  was das Framework auto-span'd, beobachtbar via diesen Tracer.
+- **[TestKit](/de/testing/testkit/)** — kombiniere mit dem
+  Recording-Tracer für assertions-freundliche Tests.
+
+Die [`RecordingTracer`](/api/classes/recordingtracer/)-API-
+Referenz deckt die volle Oberfläche ab.

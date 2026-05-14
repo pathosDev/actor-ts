@@ -1,0 +1,277 @@
+---
+title: Nachrichten
+description: Wie Actors miteinander sprechen — die Discriminated-Union-Konvention, Immutability-Regeln, das `tell`-Verb, Request/Response über Reply-to-Refs und das Pattern-Matching-Idiom, das diese Codebasis überall verwendet.
+---
+
+Eine **Nachricht** ist jeder Wert, der an einen Actor gesendet wird.
+Das Typsystem erzwingt, welche Nachrichten ein gegebener Actor
+akzeptiert (über den `Actor<TMsg>`-Typparameter), und die Runtime
+liefert Nachrichten eine nach der anderen an das `onReceive` des
+Actors aus.
+
+Diese Seite deckt die Konventionen ab, denen actor-ts-Code beim
+Strukturieren von Nachrichten folgt — wie sie aussehen, wie du auf
+ihnen dispatched, was du NICHT in sie packen solltest und welche
+Muster am häufigsten vorkommen.
+
+## Die Discriminated-Union-Konvention
+
+Das wichtigste einzelne Muster in dieser Codebasis: **Nachrichten sind
+Discriminated Unions, getaggt mit einem `kind`-Feld**.
+
+```ts
+type CounterCmd =
+  | { readonly kind: 'inc' }
+  | { readonly kind: 'dec' }
+  | { readonly kind: 'set'; readonly to: number }
+  | { readonly kind: 'get'; readonly replyTo: ActorRef<number> };
+```
+
+Diese Form bringt drei Dinge:
+
+1. **Compile-time-Exhaustiveness.**  `match(cmd).with(...).exhaustive()`
+   (über [ts-pattern](https://github.com/gvergnaud/ts-pattern)) weigert
+   sich zu kompilieren, wenn du einen neuen `kind` hinzufügst und
+   vergisst, ihn zu behandeln.  Die actor-ts-Codebasis verwendet dieses
+   Muster überall — siehe
+   [Pattern Matching](/de/fundamentals/pattern-matching/).
+2. **Typ-Narrowing innerhalb von Handlern.**  Innerhalb des
+   `.with({ kind: 'set' }, ...)`-Arms ist `m.to` automatisch als
+   `number` typisiert — keine Casts, kein `as never`.
+3. **Stabilität des Wire-Formats.**  Wenn eine Nachricht eine
+   Prozess- oder Cluster-Grenze überquert, liest der Serializer `kind`,
+   um zu entscheiden, wie er den Wert wieder zusammensetzt.  Siehe
+   [Serialisierung](/de/serialization/overview/).
+
+Die Konvention ist `kind: string`, klein geschrieben, kebab-case für
+mehrere Wörter.  Großgeschriebenes `Kind` funktioniert auch, ist aber
+nicht das, was das Framework verwendet.
+
+## Ein vollständiges Beispiel
+
+```ts
+import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
+import { match } from 'ts-pattern';
+
+type CounterCmd =
+  | { readonly kind: 'inc' }
+  | { readonly kind: 'dec' }
+  | { readonly kind: 'get'; readonly replyTo: ActorRef<number> };
+
+class Counter extends Actor<CounterCmd> {
+  private count = 0;
+
+  override onReceive(cmd: CounterCmd): void {
+    match(cmd)
+      .with({ kind: 'inc' }, () => { this.count++; })
+      .with({ kind: 'dec' }, () => { this.count--; })
+      .with({ kind: 'get' }, (m) => m.replyTo.tell(this.count))
+      .exhaustive();
+  }
+}
+
+const system = ActorSystem.create('counters');
+const counter = system.actorOf(Props.create(() => new Counter()));
+
+counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'inc' });
+// Später nach dem Count über eine Reply-to-Ref fragen — siehe Ask-Pattern.
+```
+
+Wenn du später eine `kind: 'reset'`-Variante zu `CounterCmd`
+hinzufügst, schlägt das `.exhaustive()`-Compile fehl, bis du einen
+`.with({ kind: 'reset' }, ...)`-Arm hinzufügst.  Kein Runtime-Crash,
+keine still verschluckte Nachricht — der Compiler fängt es ab.
+
+## Immutability-Regeln
+
+Nachrichten sollten **unveränderlich** sein, sobald sie eingereiht
+sind.  Zwei Gründe:
+
+1. **Dieselbe Nachricht kann in manchen Szenarien zweimal verarbeitet
+   werden** — Restart-nach-Fehler spielt gepufferte Nachrichten erneut
+   ab; Reliable-Delivery sendet unbestätigte erneut.  Mutation
+   zwischen Auslieferungen führt zu "Phantom"-Zustandsänderungen.
+2. **Cross-Process-Sends serialisieren die Nachricht beim Senden und
+   deserialisieren sie beim Empfangen.**  Der Empfänger bekommt eine
+   *Kopie*; das Mutieren des Sender-Objekts nach `tell` hat keinen
+   Effekt auf die Kopie — aber diese Asymmetrie erzeugt verwirrende
+   Bugs (der lokale Fall sieht die Mutation, der Remote-Fall nicht).
+
+Praktische Faustregeln:
+
+- Verwende `readonly`-Eigenschaften (`readonly kind`, `readonly replyTo`, …).
+  Der TypeScript-Compiler fängt dann versehentliche Schreibzugriffe ab.
+- Bevorzuge schlichte Objekte (`{ kind: 'x', n: 1 }`) gegenüber Klassen
+  — sie serialisieren trivial, keine Methoden-Verluste über
+  Prozessgrenzen hinweg.
+- Behandle Arrays / verschachtelte Objekte innerhalb einer Nachricht
+  als tief unveränderlich.  Wenn du "updaten" musst, gib eine neue
+  Nachricht zurück; mutiere nicht die eingehende.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Keine Funktionen / Klassen mit Methoden in Nachrichten">
+  Wenn eine Nachricht eine Prozessgrenze überquert (Cluster, Worker
+  Thread, HTTP-über-WebSocket-Bridge), ist das Wire-Format JSON oder
+  CBOR — keines trägt Funktionszeiger.  Einen Callback in eine
+  Nachricht zu packen funktioniert im Prozess und bricht still, sobald
+  der Actor auf einen anderen Node wandert.  Verwende
+  `replyTo: ActorRef<...>` für Callback-artiges Verhalten; Refs
+  serialisieren korrekt über Nodes hinweg.
+</Aside>
+
+## Request/Response: die Reply-to-Ref
+
+`tell` ist Fire-and-Forget.  Für Request/Response ist die Konvention,
+ein `replyTo: ActorRef<ReplyType>`-Feld in der Request-Nachricht zu
+inkludieren:
+
+```ts
+type Get = { readonly kind: 'get'; readonly replyTo: ActorRef<number> };
+type ReplyOK = { readonly kind: 'reply-ok'; readonly value: number };
+
+class Counter extends Actor<Get> {
+  private count = 42;
+  override onReceive(cmd: Get): void {
+    cmd.replyTo.tell(this.count);
+  }
+}
+```
+
+Der Aufrufer liefert eine Ref, an die der Actor die Antwort sendet.
+Drei Quellen für diese Ref:
+
+- **`this.self`**, wenn der Aufrufer ein anderer Actor ist, der die
+  Antwort an sich selbst geliefert haben will.
+- **`this.sender`**, wenn der Aufrufer auf eine frühere Nachricht
+  reagiert und die Antwort an den ursprünglichen Frager gehen soll.
+  Hinweis: `this.sender` ist `Option<ActorRef>` — leer, wenn die
+  Nachricht von außerhalb des Actor-Systems kam.
+- **Eine wegwerfbare "Ask"-Probe** — was das
+  [Ask-Pattern](/de/fundamentals/ask-pattern/) für dich baut.  Gibt
+  ein `Promise<Reply>` zurück.
+
+Das Reply-to-Ref-Idiom ist umständlicher als ein Methodenaufruf,
+bringt aber drei Dinge: Requests und Replies sind zeitlich entkoppelt
+(kein `await`-Chain), die Antwort kann von einem *anderen* Actor
+kommen als dem, der gefragt wurde, und derselbe Code funktioniert
+lokal und cross-Cluster.
+
+## Reply-Type-Generics
+
+Ein häufiger Formfehler: `replyTo: ActorRef<number>` zu deklarieren,
+wenn der Actor manchmal mit `{ kind: 'reply-ok' }` und manchmal mit
+`{ kind: 'reply-error' }` antwortet.
+
+Verwende eine Discriminated Union auch für den **Reply**-Typ:
+
+```ts
+type GetReply =
+  | { readonly kind: 'reply-ok';    readonly value: number }
+  | { readonly kind: 'reply-error'; readonly reason: string };
+
+type Get = { readonly kind: 'get'; readonly replyTo: ActorRef<GetReply> };
+```
+
+Das `onReceive` des Aufrufers kann dann auf dem `kind` der Antwort
+`match()`en, um die Erfolgs- und Fehlerpfade auf dieselbe Weise zu
+unterscheiden, wie es seine eigenen Befehle dispatched.
+
+## Cmd vs Event — der Persistent-Actor-Split
+
+Für Actors, die Events persistieren ([PersistentActor](/de/persistence/persistent-actor/)),
+trennt das Framework **Commands** (was zu tun ist) von **Events** (was
+bereits passiert ist):
+
+```ts
+type DepositCmd = { readonly kind: 'deposit'; readonly amount: number };
+
+type Deposited = { readonly kind: 'deposited'; readonly amount: number; readonly ts: number };
+
+class Account extends PersistentActor<DepositCmd, Deposited, { balance: number }> {
+  // Command-Handler: validieren + Event persistieren
+  async onCommand(state, cmd: DepositCmd): Promise<void> {
+    if (cmd.kind === 'deposit') {
+      const event: Deposited = { kind: 'deposited', amount: cmd.amount, ts: Date.now() };
+      await this.persist(event, () => { /* Seiteneffekte nach dem Persistieren */ });
+    }
+  }
+
+  // Event-Handler: nur Zustands-Update — läuft sowohl beim Schreiben als auch bei Recovery
+  onEvent(state, event: Deposited): { balance: number } {
+    if (event.kind === 'deposited') return { balance: state.balance + event.amount };
+    return state;
+  }
+}
+```
+
+Der Split ist wichtig, weil **Events der dauerhafte Record sind**, die
+beim Restart erneut abgespielt werden.  Commands sind transient (die
+Anfrage, die das Event erzeugt hat); Events sind ewig (der
+Journal-Eintrag).  Sie eindeutig zu benennen — Vergangenheitsform für
+Events (`Deposited`), Imperativ für Commands (`DepositCmd`) — hält die
+konzeptionelle Linie klar.
+
+Siehe [PersistentActor](/de/persistence/persistent-actor/) für die
+vollständige Event-Sourcing-Geschichte.
+
+## Häufige Fallstricke
+
+<Aside type="caution" title="`readonly` vergessen">
+  ```ts
+  type Cmd = { kind: 'inc'; amount: number };
+  //                       ^ kein `readonly`
+
+  function evil(cmd: Cmd) {
+    cmd.amount++;     // valides TS — kein Compile-Fehler
+  }
+  ```
+  Ohne `readonly` erlaubt der Typ Mutation, und irgendwer irgendwo
+  wird sie irgendwann machen.  Mach `readonly` zum Default; es
+  kostet nichts.
+</Aside>
+
+<Aside type="caution" title="`match().exhaustive()` motzt und du siehst nicht warum">
+  Meistens hast du einen neuen `kind` zur Union hinzugefügt, aber
+  vergessen, einen `.with({ kind: 'new-kind' }, ...)`-Arm hinzuzufügen.
+  TypeScript zeigt mit der fehlenden Variante in der Typfehler-Meldung
+  auf die `.exhaustive()`-Zeile.  Arm hinzufügen; Fehler verschwindet.
+</Aside>
+
+<Aside type="caution" title="Eine Nachricht zu senden bedeutet, dass du sie nicht mehr besitzt">
+  Nach `ref.tell(msg)` behandle `msg` als Eigentum des Empfängers.
+  Lies oder schreibe nicht von Sender-Seite aus auf ihren Feldern.
+  Klingt offensichtlich — aber wenn du die Referenz für einen
+  Folgeaufruf hältst, kopiere oder rebuilde lieber, als zu mutieren.
+</Aside>
+
+<Aside type="caution" title="`replyTo: ActorRef<unknown>` verschluckt den Reply-Typ">
+  ```ts
+  type Cmd = { kind: 'q'; replyTo: ActorRef<unknown> };
+  //                                          ^^^^^^^^ Typen verloren
+  ```
+  Der Aufrufer kann der Ref alles `tell`en, und der Empfänger kann
+  sich nicht auf die Form verlassen.  Spezifiziere immer den
+  Reply-Typ — selbst `ActorRef<unknown>` ist ein Smell, bevorzuge
+  `ActorRef<MyReply>`.
+</Aside>
+
+## Wie es weitergeht
+
+- **[Pattern Matching](/de/fundamentals/pattern-matching/)** —
+  das `match().exhaustive()`-Idiom, das in jedem Beispiel auf dieser
+  Seite verwendet wird.
+- **[Ask-Pattern](/de/fundamentals/ask-pattern/)** —
+  `ask(ref, msg, timeout)` gibt ein Promise für die Antwort zurück
+  und vermeidet den manuellen Reply-to-Ref-Tanz.
+- **[Actor](/de/fundamentals/actor/)** — die Basisklasse, die
+  `onReceive`-Signatur, die Context-Referenzen, die Reply-Refs
+  produzieren.
+- **[Serialisierung](/de/serialization/overview/)** — was mit
+  deinen Nachrichten passiert, wenn sie eine Prozess-/Cluster-Grenze
+  überqueren; wie du eigene Serializer registrierst, wenn der
+  JSON-Default nicht passt.
+- **[PersistentActor](/de/persistence/persistent-actor/)** —
+  wo der Cmd-vs-Event-Split tragend wird.

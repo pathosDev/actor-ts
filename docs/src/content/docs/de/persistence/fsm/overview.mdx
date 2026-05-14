@@ -1,0 +1,141 @@
+---
+title: FSM im Überblick
+description: Finite-State-Machine-Muster obenauf des Actor-Modells — explizite benannte Zustände, Transition-Handler, optionale event-sourced Persistenz. Die richtige Form für Protokolle mit einem kleinen, wohldefinierten Zustandssatz (Sagas, Connection-Lifecycles, Approval-Workflows).
+---
+
+Eine **endliche Zustandsmaschine** ist das richtige
+Modellierungs-Werkzeug, wenn ein Actor einen **kleinen,
+benannten Satz von Zuständen** mit expliziten Übergängen
+zwischen ihnen hat.  Beispiele:
+
+- Ein Connection-Lifecycle:
+  `disconnected → connecting → connected → disconnecting`.
+- Ein Order-Workflow:
+  `placed → confirmed → shipped → delivered`.
+- Eine Dokument-Freigabe: `draft → review → approved | rejected`.
+
+Das Framework liefert zwei Varianten:
+
+| Variante | Persistenz | Wann |
+| --- | --- | --- |
+| **[`FSM`](/de/persistence/fsm/fsm/)** | Nur In-Memory | Transiente Zustandsmaschinen (Connection-Lifecycles, Request-Handler). |
+| **[`PersistentFSM`](/de/persistence/fsm/persistent-fsm/)** | Event-sourced | Lange laufende Workflows, die Neustarts überleben (Sagas, Approvals, Orders). |
+
+Beide exponieren dieselbe DSL — `when(state, handler)`,
+`goto(state, data)`, `stay(data)`, `onEnter`- /
+`onExit`-Callbacks.  Die persistente Variante fügt eine
+journal-gestützte Recovery-Schicht hinzu.
+
+## Ein minimales Beispiel
+
+```ts
+import { FSM, Props, ActorSystem } from 'actor-ts';
+
+type State = 'closed' | 'open';
+type Data  = { openedAt?: number };
+type Msg   = 'open' | 'close';
+
+class Door extends FSM<State, Data, Msg> {
+  constructor() {
+    super('closed', {});
+
+    this.when('closed', (data, msg) => {
+      if (msg === 'open') return this.goto('open', { openedAt: Date.now() });
+      return this.stay(data);
+    });
+
+    this.when('open', (data, msg) => {
+      if (msg === 'close') return this.goto('closed', {});
+      return this.stay(data);
+    });
+
+    this.onEnter('open', (data) => {
+      this.log.info(`door opened at ${data.openedAt}`);
+    });
+  }
+}
+
+const system = ActorSystem.create('demo');
+const door = system.actorOf(Props.create(() => new Door()));
+door.tell('open');
+door.tell('close');
+```
+
+Drei Teile:
+
+- **`when(state, handler)`** — registriert den Handler für
+  diesen Zustand.  Gibt `goto(...)` oder `stay(...)` zurück, um
+  den Übergang zu bestimmen.
+- **`onEnter(state, fn)`** / **`onExit(state, fn)`** —
+  optionale Callbacks, die beim Eintritt / Austritt eines
+  Zustands gefeuert werden.
+- **`goto(state, data)`** / **`stay(data)`** —
+  Transition-Builder.
+
+Der aktuelle Zustand ist **explizit und benannt** — einfacher
+zu durchdenken als verschachtelte `become(...)`-Aufrufe oder
+ein Flag-and-Switch-Pattern.
+
+## Wann zur FSM greifen
+
+Drei Signale, dass das Muster passt:
+
+1. **Der Actor hat 3+ benannte Zustände** mit unterschiedlichem
+   Verhalten in jedem.
+2. **Übergänge sind explizit** — "von Zustand X bei Message Y,
+   gehe zu Zustand Z."
+3. **Seiteneffekte gehören zu Zustandsübergängen**, nicht zur
+   Message-Behandlung per se — `onEnter` ist die natürliche
+   Heimat für "starte den Connection-Keep-Alive-Timer beim
+   Eintritt in `connected`."
+
+Für Actors mit **nur einem** Zustand (oder einem Boolean-Toggle)
+liest sich ein gewöhnlicher `Actor` sauberer.  Für komplexe
+Stateful-Workflows mit hierarchischen Zuständen, parallelen
+Substates, etc. schau dir schwerere Libraries (XState) an —
+die FSM von actor-ts ist absichtlich flach.
+
+## FSM vs. PersistentFSM
+
+| FSM verwenden, wenn | PersistentFSM verwenden, wenn |
+| --- | --- |
+| State beim Neustart neu aufbaubar ist | State Neustart überleben muss |
+| Kurzlebig | Lange laufend |
+| Zustandsänderungen kein Audit brauchen | Zustandsübergänge sind die Business-Story |
+| Keine externe Persistenz-Schicht | Event Sourcing bereits im Einsatz |
+
+Für eine Saga, die über Stunden durch 10 Schritte läuft, ist
+das Persistieren jedes Übergangs kritisch — ein Crash mitten
+in der Saga sollte dort fortsetzen, wo er aufgehört hat.
+Verwende `PersistentFSM`.
+
+Für einen Connection-Actor, der ein paar Sekunden lebt, ist
+das Persistieren jedes Übergangs verschwenderisch — wenn er
+abstürzt, von disconnected neu starten.  Verwende plain `FSM`.
+
+## FSM vs. become
+
+`Actor.become(...)` ist auch zustandsmaschinenartig — den
+Receive-Handler austauschen.  Die Unterschiede:
+
+- **FSM hat benannte Zustände**; `become` sind anonyme
+  Closures.
+- **FSM hat explizite Übergänge** (`goto`); `become` ist "ruf
+  `context.become` mit einem neuen Closure auf."
+- **FSM hat typisierte Zustands-Inspektion** —
+  `this.stateName` / `this.stateData`; `become` exponiert das
+  aktuelle Verhalten nicht.
+
+Für 2 Zustände ist `become` in Ordnung.  Für 4+ ist FSM
+einfacher zu lesen.
+
+## Wie geht's weiter
+
+- **[FSM](/de/persistence/fsm/fsm/)** — die In-Memory-
+  Variante im Detail.
+- **[PersistentFSM](/de/persistence/fsm/persistent-fsm/)** —
+  die event-sourced Variante.
+- **[Become und Stash](/de/fundamentals/become-and-stash/)** —
+  die Lower-Level-Alternative.
+- **[PersistentActor](/de/persistence/persistent-actor/)** —
+  worauf PersistentFSM aufbaut.

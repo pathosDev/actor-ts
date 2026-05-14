@@ -1,0 +1,197 @@
+---
+title: Delivery im Überblick
+description: at-least-once- und effectively-once-Zustellung via `ProducerController` / `ConsumerController` — Sequence-Number-basiertes ACK-Muster, das Nachrichten-Duplikate und Reordering über Actor-Restarts und Cluster-Failover hinweg handhabt.
+---
+
+Standardmäßig ist `tell` **Fire-and-Forget**.  Nachrichten können
+verloren gehen (gestoppter Empfänger, Mailbox-Overflow,
+Netzwerk-Drops in Cluster-Setups).  Für Workloads, in denen
+Verluste inakzeptabel sind, liefert das Framework **zuverlässige
+Zustellung** über das Paar
+**`ProducerController` / `ConsumerController`**.
+
+```mermaid
+sequenceDiagram
+  participant P as ProducerController
+  participant C as ConsumerController
+  P->>C: msg #1
+  Note over C: buffern + an Handler dispatchen
+  C-->>P: ACK #1 — Handler erfolgreich
+  P->>C: msg #2
+  Note over C: ...
+```
+
+Ergänzt **Sequence Numbers** + **ACKs** zum einfachen
+`tell`-Vertrag.  Der Producer hält unbestätigte Nachrichten;
+der Consumer dedupliziert per Sequence Number.
+
+## Wann du dazu greifst
+
+Für Workloads, in denen:
+
+- **Verlust inakzeptabel ist** — Zahlungsinstruktionen,
+  Audit-Records, Billing-Events.
+- **Duplikate tolerierbar, aber selten sind** — at-least-once mit
+  Consumer-seitiger Dedup reicht.
+- **Reihenfolge innerhalb eines Streams zählt** — Sequence
+  Numbers bewahren sie.
+
+Für Workloads, in denen Verlust akzeptabel ist (Telemetrie,
+Metriken, Fire-and-Forget UX Updates), nimm einfaches `tell`.
+
+## at-least-once vs. effectively-once
+
+Die zuverlässige Zustellung des Frameworks ist standardmäßig
+**at-least-once** — eine Nachricht kann erneut zugestellt werden,
+wenn der Producer zwischen Senden und Empfang des ACK abstürzt.
+
+Für **effectively-once** dedupliziert der Consumer nach Sequence
+Number:
+
+```ts
+class IdempotentConsumer extends Actor<DeliveryMsg> {
+  private highWatermark = 0;
+
+  override onReceive(msg: DeliveryMsg): void {
+    if (msg.seq <= this.highWatermark) {
+      // Duplikat — schon verarbeitet
+      return;
+    }
+    this.handle(msg);
+    this.highWatermark = msg.seq;
+  }
+}
+```
+
+Kombiniert mit einer persistenten `highWatermark` ergibt das im
+durable-Sinn **exactly-once-Verarbeitung**.
+
+## Die zwei Controller
+
+| Controller | Rolle |
+| --- | --- |
+| **[ProducerController](/de/delivery/producer-controller/)** | Umwickelt die Sender-Seite — vergibt Sequence Numbers, hält unbestätigte Nachrichten, retransmittiert. |
+| **[ConsumerController](/de/delivery/consumer-controller/)** | Umwickelt die Empfänger-Seite — ordnet Nachrichten nach Seq, dedupliziert, sendet ACKs. |
+
+Paare sie über einen **Producer-Consumer-Link** — jeder
+Producer spricht mit einem Consumer (oder N Consumern via
+Routing, aber der Link ist 1:1 pro Stream).
+
+## Ein minimales Beispiel
+
+```ts
+import {
+  ProducerController,
+  ConsumerController,
+  type DeliveryEnvelope,
+} from 'actor-ts';
+
+// Producer-Seite:
+const producer = system.actorOf(
+  ProducerController.props<OrderEvent>({
+    producerId:    'order-producer-1',
+    consumer:      consumerRef,
+    maxOutstanding: 100,
+  }),
+);
+
+producer.tell({ kind: 'send', payload: { orderId: 'o-1', amount: 100 } });
+
+// Consumer-Seite:
+class OrderProcessor extends Actor<DeliveryEnvelope<OrderEvent>> {
+  private highWatermark = 0;
+
+  override onReceive(msg: DeliveryEnvelope<OrderEvent>): void {
+    if (msg.seq <= this.highWatermark) {
+      msg.ack();   // bestätigen (schon-verarbeitet-Skip)
+      return;
+    }
+    this.processOrder(msg.payload);
+    this.highWatermark = msg.seq;
+    msg.ack();
+  }
+}
+
+const consumer = system.actorOf(
+  ConsumerController.props<OrderEvent>({
+    consumerId: 'order-consumer-1',
+    delegate:   processorRef,
+  }),
+);
+```
+
+Das Framework übernimmt Seq-Vergabe, Retransmission, Ordering —
+dein Code macht Business-Logik + Dedup.
+
+## Semantik der Sequence Numbers
+
+```
+Jeder Producer vergibt strikt aufsteigende Seq-Nummern, beginnend bei 1:
+  msg 1, msg 2, msg 3, ...
+
+Der Consumer sieht sie IN ORDER (nachdem Retransmissions sich aufgelöst haben):
+  msg 1, msg 2, msg 3, ...
+
+Duplikate (durch Retransmit) erscheinen mit DERSELBEN Seq:
+  msg 1, msg 1 (dup), msg 2, ...
+  → Consumer dedupliziert per Seq
+```
+
+Die Seq ist **pro Producer** — mehrere Producer haben
+unabhängige Seq-Räume.
+
+## Mit Persistenz kombinieren
+
+Für vollständige Durability über Producer-/Consumer-Crashes:
+
+```ts
+class Producer extends PersistentActor<...> {
+  // ... persistiert State inklusive unbestätigter Nachrichten ...
+}
+
+class Consumer extends PersistentActor<...> {
+  // ... persistiert die highWatermark ...
+}
+```
+
+Persistieren auf beiden Seiten gibt **End-to-End exactly-once**:
+
+- Producer crasht mitten im Send → erholt sich aus dem Journal
+  → setzt ab der letzten geACKten Seq fort.
+- Consumer crasht mitten im Process → erholt highWatermark →
+  Dedup funktioniert weiter.
+
+Ohne Persistenz setzt die Recovery auf beiden Seiten auf null
+zurück.
+
+## Vergleich mit Broker-basierter Zustellung
+
+```
+Producer-/ConsumerController:  cluster-interne zuverlässige Zustellung
+Kafka / RabbitMQ / NATS:       externe Broker-vermittelte Zustellung
+```
+
+Beide erreichen at-least-once + Dedup-via-Seq.  Unterschiede:
+
+| Aspekt | In-Cluster-Controller | Externer Broker |
+| --- | --- | --- |
+| Operative Komplexität | Niedrig — Teil des Clusters | Hoch — separater Broker zu betreiben |
+| Latenz | Sub-Millisekunde | Netzwerk- + Broker-Overhead |
+| Durchsatz | Begrenzt durch Single-Actor-Verarbeitung | Höher (Broker skaliert unabhängig) |
+| Externe Consumer | Nein (cluster-intern) | Ja |
+| Persistenz | Über PersistentActor | In den Broker eingebaut |
+
+Für **cluster-interne** zuverlässige Zustellung nimm die
+Controller.  Für **externe Systeme oder Cross-Cluster** einen
+Broker (Kafka etc.).
+
+## Wohin als Nächstes
+
+- **[Producer Controller](/de/delivery/producer-controller/)** —
+  Sender-seitige Details.
+- **[Consumer Controller](/de/delivery/consumer-controller/)** —
+  Empfänger-seitige Details.
+- **[ACK-Semantik](/de/delivery/ack-semantics/)** — was
+  ACKs bedeuten und wann sie feuern.
+- **[PersistentActor](/de/persistence/persistent-actor/)** —
+  Paarung mit Persistenz für volle Durability.

@@ -1,0 +1,228 @@
+---
+title: TestKit
+description: Die Test-Zeit-Fassade um `ActorSystem` — leises Logging als Default, ein einzeiliges `createTestProbe()`, ein `within(ms, fn)`-Deadline-Helper und sauberes `shutdown()`. Die meisten Actor-Tests starten mit `TestKit.create()`.
+---
+
+`TestKit` ist ein dünner Convenience-Wrapper um `ActorSystem`
+für Tests. Er gibt dir ein einsatzbereites System mit
+sinnvollen Test-Defaults — leiser Logger, einfache
+Probe-Erzeugung, deterministischer Shutdown.
+
+```ts
+import { TestKit } from 'actor-ts/testkit';
+
+const tk = TestKit.create('my-spec');
+const probe = tk.createTestProbe();
+const ref = tk.system.actorOf(Props.create(() => new Worker(probe)));
+
+ref.tell({ kind: 'do' });
+await probe.expectMsg('done');
+
+await tk.shutdown();
+```
+
+Drei Dinge, die das Kit für dich macht:
+
+- Baut das `ActorSystem` standardmäßig mit einem `NoopLogger` —
+  kein Konsolen-Spam während Test-Läufen.
+- Stellt `createTestProbe()` bereit, sodass du das System nicht
+  durch jeden Probe-Konstruktor fädeln musst.
+- Besitzt `shutdown()` — einmal am Test-Ende aufrufen; baut
+  System, Scheduler und Dispatcher sicher ab.
+
+## Die API
+
+```ts
+class TestKit {
+  static create(name?: string, opts?: TestKitOptions): TestKit;
+  static withManualScheduler(name?, opts?): { kit: TestKit; scheduler: ManualScheduler };
+
+  readonly system: ActorSystem;
+
+  createTestProbe(opts?: TestProbeOptions): TestProbe;
+  within<T>(durationMs: number, fn: () => Promise<T>): Promise<T>;
+  shutdown(): Promise<void>;
+}
+
+interface TestKitOptions extends ActorSystemSettings {
+  quiet?: boolean;   // Default true — NoopLogger nutzen
+}
+```
+
+### `TestKit.create(name?, options?)`
+
+Baut ein Kit mit frischem System. Der `name` ist der System-Name
+— nützlich, wenn parallele Test-Suites keinen geteilten State
+haben dürfen. Default ist `'test-kit'`.
+
+```ts
+const tk = TestKit.create('my-spec', {
+  quiet:    false,            // Logging einschalten
+  logLevel: LogLevel.Debug,
+  config:   { /* HOCON-Overrides */ },
+});
+```
+
+Mit `quiet: false` bekommst du Konsolen-Logs — nützlich beim
+Debuggen eines fehlschlagenden Tests. Andernfalls sind
+Log-Aufrufe No-Ops, was deine Test-Ausgabe sauber hält.
+
+### `tk.createTestProbe(options?)`
+
+```ts
+const probe = tk.createTestProbe({
+  defaultTimeoutMs: 5_000,    // Default-Wartezeit für expect/receive
+  name: 'order-probe',         // sichtbar in Logs
+});
+
+ref.tell({ kind: 'do', replyTo: probe });
+await probe.expectMsg({ kind: 'done' });
+```
+
+Gibt einen `TestProbe` zurück, gescoped auf das System dieses
+Kits. Siehe [TestProbe](/de/testing/test-probe/) für die volle
+Expectations-API.
+
+### `tk.within(durationMs, fn)`
+
+```ts
+await tk.within(1_000, async () => {
+  ref.tell({ kind: 'do' });
+  await probe.expectMsg('done');
+});
+```
+
+Führe `fn` aus und assertete, dass es **in weniger als
+`durationMs` abgeschlossen wurde**. Wirft, wenn es länger
+gedauert hat. Nützlich für „das sollte schnell sein"-SLAs
+innerhalb von Tests, ohne vom Per-Test-Timeout des Test-Runners
+abzuhängen.
+
+Hinweis: das ist eine *weiche* Deadline — `fn` läuft auch dann
+zu Ende, wenn es überzieht. Es wirft nur im Nachhinein.
+
+### `tk.shutdown()`
+
+```ts
+afterEach(async () => {
+  await tk.shutdown();
+});
+```
+
+Terminiert das zugrundeliegende System. **Rufe das immer** in
+einem Fixture-Teardown — ohne ihn leakt der Test-Prozess ein
+lebendes System, das die Event-Loop am Leben hält. Manche
+Test-Runner (Bun, Vitest) erkennen das und lassen die Suite
+fehlschlagen; andere hängen.
+
+### `TestKit.withManualScheduler()`
+
+```ts
+const { kit, scheduler } = TestKit.withManualScheduler('my-spec');
+
+const ref = kit.system.actorOf(Props.create(() => new Heartbeat(probe)));
+ref.tell({ kind: 'start' });
+
+scheduler.advance(5_000);   // 5 virtuelle Sekunden springen
+await probe.expectMsg('tick');
+```
+
+Gibt sowohl das Kit als auch seinen `ManualScheduler` zurück,
+damit der Test virtuelle Zeit voranbringen kann. Siehe
+[ManualScheduler](/de/testing/manual-scheduler/) für die volle
+Virtual-Clock-Semantik.
+
+## Fixture-Muster
+
+### Per-Test-Fixture (Bun, Vitest, Jest)
+
+```ts
+import { describe, it, beforeEach, afterEach } from 'bun:test';
+
+describe('Counter', () => {
+  let tk: TestKit;
+  let probe: TestProbe;
+
+  beforeEach(() => {
+    tk = TestKit.create();
+    probe = tk.createTestProbe();
+  });
+
+  afterEach(async () => {
+    await tk.shutdown();
+  });
+
+  it('inkrementiert', async () => {
+    const ref = tk.system.actorOf(Props.create(() => new Counter()));
+    ref.tell({ kind: 'inc' });
+    ref.tell({ kind: 'get', replyTo: probe as ActorRef<number> });
+    await probe.expectMsg(1);
+  });
+});
+```
+
+Ein frisches Kit pro Test — kein State-Leakage zwischen Tests,
+leicht langsamer als ein geteiltes Kit, aber wert für die
+Isolation.
+
+### Geteiltes Fixture für read-only-Tests
+
+```ts
+describe('PureBehaviorTests', () => {
+  let tk: TestKit;
+
+  beforeAll(() => { tk = TestKit.create(); });
+  afterAll(async () => { await tk.shutdown(); });
+
+  // jedes `it` nutzt tk.createTestProbe() für seine eigene Probe, aber
+  // das zugrundeliegende ActorSystem wird geteilt.
+});
+```
+
+Schneller als Per-Test-Setup; nur sicher, wenn Tests keine
+geteilten Actor mutieren.
+
+## Was TestKit nicht macht
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Multi-Node-Cluster-Tests">
+  TestKit erzeugt **ein** ActorSystem. Für Cluster-Szenarien
+  (Sharding-Placement, Singleton-Failover, Gossip-Konvergenz)
+  nutze [MultiNodeSpec](/de/testing/multi-node-spec/), das N
+  Systeme in einem Prozess hochfährt.
+</Aside>
+
+<Aside type="caution" title="Echte I/O-Integration">
+  TestKit ist für **reine Unit- + kleine Integrationstests**.
+  Tests, die echtes Kafka / Redis / Postgres brauchen, sollten in
+  einer separaten Suite sein, angemessen markiert für langsame
+  Läufe. Mische keine In-Memory-Probe-Tests mit broker-
+  abhängigen Tests in derselben Datei.
+</Aside>
+
+<Aside type="caution" title="Test-Isolation bei Namens-Kollision">
+  ```ts
+  // ✗ beide Tests nutzen denselben Namen → Cluster-Identitäts-Konflikt
+  const tk1 = TestKit.create('my-app');
+  const tk2 = TestKit.create('my-app');
+  ```
+  Zwei Systeme mit demselben Namen + demselben Netzwerk = sie
+  würden einander joinen, wäre Cluster aktiviert. Für
+  Nicht-Cluster-Tests okay, aber gewöhne dir eindeutige Namen pro
+  Test an oder nutze den Default `'test-kit'`.
+</Aside>
+
+## Wo es weitergeht
+
+- **[Testing — Überblick](/de/testing/overview/)** — das große
+  Bild: Unit, zeit-deterministisch, multi-node.
+- **[TestProbe](/de/testing/test-probe/)** — die Fake-Actor-
+  Expectations-API.
+- **[ManualScheduler](/de/testing/manual-scheduler/)** —
+  virtuelle Zeit.
+- **[MultiNodeSpec](/de/testing/multi-node-spec/)** — für
+  Cluster-Szenarien.
+
+Die [`TestKit`](/api/classes/testkit/)-API-Referenz deckt die
+volle Oberfläche ab.

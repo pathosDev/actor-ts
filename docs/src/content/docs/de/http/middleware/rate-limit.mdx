@@ -1,0 +1,197 @@
+---
+title: Rate-Limit-Middleware
+description: Token-Bucket-Rate-Limiting pro Key auf HTTP-Routen. Standard pro IP; konfigurierbarer Key (pro User, pro Mandant). Auf der Cache-Abstraktion aufgebaut, sodass Single-Pod den Speicher und Multi-Pod Redis nutzt.
+---
+
+`rateLimitMiddleware` setzt **Request-Limits pro Key** auf einem
+Routen-Teilbaum durch.  Default: pro IP, Fixed-Window-Counter
+über den Cache.  Liefert **429**, wenn das Limit überschritten
+ist.
+
+```ts
+import { rateLimitMiddleware } from 'actor-ts/http';
+import { InMemoryCache } from 'actor-ts';
+
+const routes = rateLimitMiddleware({
+  cache:       new InMemoryCache(),
+  windowMs:    60_000,           // 1-Minuten-Fenster
+  maxRequests: 100,              // 100 Requests pro IP pro Minute
+})(
+  path('api', /* ... */),
+);
+```
+
+Jede eindeutige IP bekommt ein Budget von 100/Minute.
+Überschüssige Requests bekommen 429 mit einem `Retry-After`-
+Header.
+
+## Konfiguration
+
+```ts
+interface RateLimitSettings {
+  cache:        Cache;
+  windowMs:     number;
+  maxRequests:  number;
+  keyExtra?:    (req: HttpRequest) => string;
+  message?:     string;
+  statusCode?:  number;          // Default 429
+}
+```
+
+| Feld | Zweck |
+| --- | --- |
+| `cache` | Backing-Store (In-Memory oder Redis). |
+| `windowMs` | Größe des Fixed-Windows. |
+| `maxRequests` | Maximale Requests pro Key pro Fenster. |
+| `keyExtra(req)` | Überschreibt den Key.  Default: Client-IP. |
+| `message` | Body der 429-Response. |
+| `statusCode` | Überschreibt den Status (Default 429). |
+
+## Eigenes Keying
+
+```ts
+rateLimitMiddleware({
+  cache,
+  windowMs:    60_000,
+  maxRequests: 100,
+  keyExtra:    (req) => {
+    const userId = extractUserId(req);
+    return userId ? `user:${userId}` : `ip:${req.ip}`;
+  },
+});
+```
+
+Pro User bei Authentifizierung; pro IP, wenn nicht.  Häufiges
+Muster:
+
+- **Authentifizierte Routen** — Limit pro User.
+- **Öffentliche Routen** — Limit pro IP.
+
+Kombiniere mit der [Cache](/de/cache/overview/)-Abstraktion des
+Frameworks, damit der Limiter über Pods hinweg mit Redis-Backing
+funktioniert.
+
+## Wie das Zählen funktioniert
+
+```
+Fixed-Window (Default):
+  - Das Fenster startet, wenn der erste Request für einen Key kommt.
+  - Inkrementiert einen Zähler im Cache.
+  - Wenn der Zähler maxRequests übersteigt, bekommen weitere Requests
+    im Fenster 429.
+  - TTL auf dem Zähler sorgt dafür, dass frische Fenster sauber starten.
+```
+
+Die Implementierung nutzt das **`incr` mit TTL** des Caches —
+atomar über Pods hinweg, wenn Redis im Backing steht.
+
+## Response-Header
+
+Die Middleware setzt:
+
+```
+X-RateLimit-Limit:     100
+X-RateLimit-Remaining: 47
+X-RateLimit-Reset:     1716297600   ← Unix-Zeitstempel, wann das Fenster zurückgesetzt wird
+Retry-After:           23           ← (nur bei 429) Sekunden bis zum Reset
+```
+
+Clients nutzen die, um zu backoffen, statt zufällig zu retrien.
+
+## Cluster-fähiges Rate-Limiting
+
+```ts
+import { RedisCache } from 'actor-ts';
+
+rateLimitMiddleware({
+  cache:       new RedisCache({ url: 'redis://...' }),
+  windowMs:    60_000,
+  maxRequests: 100,
+});
+```
+
+Mit Redis-gestütztem Cache **teilen sich alle Pods den Zähler** —
+ein Client, der irgendeinen Pod trifft, sammelt gegen dasselbe
+Budget an.
+
+Mit `InMemoryCache` hat jeder Pod seinen eigenen Zähler — ein
+Client, der über 4 Pods verteilt ist, bekommt effektiv das
+**4-fache** Limit.  Für großzügige Limits akzeptabel; für strikte
+problematisch.
+
+## Wann einsetzen
+
+Drei gute Einsatzfälle:
+
+1. **Öffentliche APIs** — Missbrauch / DoS verhindern.
+2. **Tier-basierte Limits** — unterschiedliche `keyExtra` pro
+   Tier (free / paid / enterprise).
+3. **Per-Aktion-Limits** — Login-Versuche, Passwort-Resets,
+   E-Mail-Versandraten.
+
+## Geschichtete Rate-Limits
+
+```ts
+// Unterschiedliche Limits pro Routen-Teilbaum:
+const apiRoutes = rateLimitMiddleware({
+  windowMs: 60_000, maxRequests: 1000,
+  keyExtra: (req) => req.user?.id ?? req.ip,
+})(
+  concat(
+    rateLimitMiddleware({
+      windowMs: 60_000, maxRequests: 10,
+      keyExtra: (req) => `login:${req.ip}`,
+    })(path('login', post(loginHandler))),
+
+    path('orders', /* normales Limit */),
+  ),
+);
+```
+
+Strengere Limits auf sensiblen Routen; großzügigere auf
+allgemeinem Traffic.  Komponiere durch Verschachteln.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="X-Forwarded-For vertrauen">
+  ```ts
+  keyExtra: (req) => req.headers['x-forwarded-for'];   // ✗ spoofbar
+  ```
+  Hinter einem Load-Balancer / Proxy steht die echte IP in
+  `X-Forwarded-For` (oder ähnlich).  Aber Clients können diesen
+  Header selbst setzen, wenn der Proxy nicht so konfiguriert ist,
+  dass er ihn entfernt.  Vertrau nur, wenn **dein Proxy in der
+  Kette ist und den Header überschreibt**.
+</Aside>
+
+<Aside type="caution" title="In-Memory-Cache über Pods">
+  ```ts
+  // 4 Pods × 100-Req-Limit = effektiv 400/min für einen User
+  ```
+  Nimm einen Redis-gestützten Cache für produktive Multi-Pod-
+  Deployments.  Der In-Memory-Cache reicht nur für Single-Pod
+  oder "grobes" Limiting.
+</Aside>
+
+<Aside type="caution" title="Randeffekte bei Fixed-Window">
+  ```ts
+  // Limit ist 100/Minute.
+  // Bei t=59s: User trifft 100; bei t=60s: Fenster reset; bei t=61s: User trifft weitere 100.
+  // → 200 Requests in 2 Sekunden
+  ```
+  Fixed-Windows haben Randeffekte, wenn Bursts Fenstergrenzen
+  überschreiten.  Für strikten Burst-Schutz liefert das Framework
+  derzeit keine Sliding-Window- oder Token-Bucket-Variante —
+  falls nötig, manuell umsetzen.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[HTTP-Übersicht](/de/http/overview/)** — das große
+  Bild.
+- **[Response-Cache-Middleware](/de/http/middleware/response-cache/)** —
+  komplementäre Lese-Middleware.
+- **[Idempotency-Key-Middleware](/de/http/middleware/idempotency-key/)** —
+  für Write-Dedup.
+- **[Cache-Übersicht](/de/cache/overview/)** — der
+  Backing-Store.

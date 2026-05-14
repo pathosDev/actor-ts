@@ -1,0 +1,194 @@
+---
+title: Serialization im Überblick
+description: Wie actor-ts In-Memory-Werte zu Bytes konvertiert für Cluster-Wire + Persistenz. Standardmäßig JSON; CBOR für kompaktes Binärformat; eigene Serializer für Protokolle (Protobuf, Avro). Eine `SerializationExtension` wählt anhand von Klassenbindungen.
+---
+
+Zwei Szenarien erfordern es, JS-Werte in Bytes zu verwandeln:
+
+1. **Cluster-Wire** — ein `tell` an einen Remote-Actor braucht
+   die Nachricht serialisiert für die TCP-Übertragung.
+2. **Persistenz** — Events / Snapshots / Durable State auf der
+   Platte oder im Journal gespeichert.
+
+Das `Serializer`-Interface des Frameworks ist die Abstraktion.
+Zwei eingebaute werden mitgeliefert:
+
+| Serializer | Format | Wann |
+| --- | --- | --- |
+| **`JsonSerializer`** | JSON | Default.  Menschenlesbar debugbar, weit verbreitet. |
+| **`CborSerializer`** | CBOR (RFC 8949) | Kompakt, binärnativ, schneller. |
+
+Plus ein Extension-Point: implementiere `Serializer<T>` für
+**Protobuf, Avro, MessagePack** usw.
+
+## Wie das funktioniert
+
+```
+Sender-Seite:
+  tell(remoteRef, msg)
+    → SerializationExtension wählt Serializer für typeof(msg)
+    → serializer.toBinary(msg) → Uint8Array
+    → mit serializerId + manifest + bytes umhüllt
+    → Cluster-Transport sendet über die Leitung
+
+Empfänger-Seite:
+    Cluster-Transport empfängt Bytes
+    → SerializationExtension wählt Serializer per serializerId
+    → serializer.fromBinary(bytes, manifest) → rekonstruierter Wert
+    → an onReceive des Actors ausgeliefert
+```
+
+Die `serializerId` + das `manifest` sagen dem Empfänger,
+**welchen Serializer er verwenden soll** + **welcher Typ zu
+rekonstruieren ist**.
+
+## Das Serializer-Interface
+
+```ts
+interface Serializer<T = unknown> {
+  readonly id: number;            // pro Serializer eindeutig
+  readonly name: string;          // menschenlesbar
+  includesManifest: boolean;
+  manifest(obj: T): string;       // Type-Tag
+  toBinary(obj: T): Uint8Array;
+  fromBinary(bytes: Uint8Array, manifest: string): T;
+}
+```
+
+Kleine Oberfläche — encoden, decoden, identifizieren.  Die
+`SerializationExtension` des Frameworks mappt Klassen auf
+Serializer (über `bind`); bei der Serialisierung schlägt die
+Extension nach, welcher Serializer für die Klasse des Werts zu
+verwenden ist.
+
+## Default-Verhalten
+
+```ts
+const system = ActorSystem.create('my-app');
+// → JsonSerializer als Default registriert
+// → Jeder Wert wird als JSON serialisiert, solange kein spezifischer Serializer gebunden ist
+```
+
+Wenn du nichts tust, sind die Bytes jedes Wertes JSON.  Plain-
+Objekte, Arrays, Strings, Zahlen — alles funktioniert.
+Klasseninstanzen werden als Plain-Objekte serialisiert (Methoden
+gehen verloren).
+
+## JSON oder CBOR wählen
+
+| Aspekt | JSON | CBOR |
+| --- | --- | --- |
+| Wire-Größe | Größer | ~20–40 % kleiner |
+| Geschwindigkeit | Langsamer als CBOR für Binärdaten | Schneller |
+| Debugging | Trivial (Text) | Braucht ein CBOR-fähiges Tool |
+| Binäre Felder | base64-encoded (verschwenderisch) | Native Binärform |
+| Library-Support | Universal | Solide im JS-Land |
+
+Für **die meisten Apps** ist JSON okay — der Perf-Unterschied
+zählt nicht und die Debugbarkeit ist wertvoll.
+
+Für **bandbreitenkritische** Fälle (großer Cluster, viele Events,
+IoT-artige Payloads) gewinnt CBOR spürbar.
+
+Siehe [JsonSerializer](/de/serialization/json/) +
+[CborSerializer](/de/serialization/cbor/) für Details.
+
+## Eigene Serializer
+
+Für Protobuf / Avro / usw. implementiere `Serializer<T>` und
+registriere:
+
+```ts
+import { SerializationExtensionId } from 'actor-ts';
+
+const ext = system.extension(SerializationExtensionId);
+ext.bind(MyEvent, new ProtobufSerializer<MyEvent>(MyEventSchema));
+```
+
+Jetzt verwendet jeder `MyEvent`-Wert Protobuf für die
+Serialisierung über die Leitung / ins Journal.  Andere Typen
+nutzen weiterhin JSON.
+
+Siehe [Eigene Serializer](/de/serialization/custom/) für das
+volle Setup.
+
+## Was sich serialisieren lässt
+
+Der Default-JSON-Serializer behandelt:
+
+- Plain-Objekte (`{ a: 1, b: 'two' }`).
+- Arrays.
+- Strings, Zahlen, Booleans, `null`.
+- Verschachtelte Kombinationen davon.
+
+**Lässt sich nicht serialisieren**:
+
+- Funktionen / Closures (keine Methoden-Überlebensgarantie).
+- Klasseninstanzen mit Methoden (Methoden verloren; Datenfelder
+  überleben).
+- `Map` / `Set` (von JSON als `{}` stringified).
+- `Date` (geht über String-Round-Trip; Typinformation verloren).
+- `BigInt` (wirft).
+- Symbole (still verworfen).
+
+CBOR kann ein paar mehr (binäre `Uint8Array` nativ, `Map` als
+echte Map), aber keine Funktionen.
+
+Für komplexe Typen **konvertier vor dem Senden in Plain-Objekte**:
+
+```ts
+// ✗
+ref.tell({ when: new Date() });
+
+// ✓
+ref.tell({ when: Date.now() });
+```
+
+## Wo Serialisierung passiert
+
+```
+1. Cluster-Wire — jedes Cross-Node-tell.
+2. PersistentActor.persist(event) — Events ins Journal.
+3. DurableStateActor.persist(state) — State in den Store.
+4. Snapshot-Writes — Snapshots in den Snapshot-Store.
+5. DistributedData — replizierter State über den Cluster.
+```
+
+In-Process-Tells **serialisieren nicht** — der Empfänger bekommt
+die exakte In-Memory-Referenz.  Serialisierung passiert nur an
+**Prozess- / Disk- / Cluster-Grenzen**.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Teste das, was die Grenze überschreitet">
+  ```ts
+  // In-Process-Tests grünen; Cross-Cluster bringt einen Serialisierungs-Bug zum Vorschein
+  ```
+  In-Process-Tests üben keine Serialisierung.  Teste mit
+  [MultiNodeSpec](/de/testing/multi-node-spec/) oder
+  ParallelMultiNodeSpec, um sicherzustellen, dass Nachrichten
+  korrekt serialisieren.
+</Aside>
+
+<Aside type="caution" title="JSON + CBOR mid-Cluster mischen">
+  ```ts
+  // node-A bindet CBOR für MyEvent; node-B nicht
+  ```
+  Jeder Node in einem Cluster braucht für Cross-Node-Nachrichten
+  dieselbe **Serialisierungs-Bindung**.  Sonst können die Nodes
+  einander Nachrichten nicht dekodieren.  Rolle
+  Serialisierungsänderungen vorsichtig aus.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[JSON-Serializer](/de/serialization/json/)** — der
+  Default.
+- **[CBOR-Serializer](/de/serialization/cbor/)** — die
+  binäre Alternative.
+- **[Eigene Serializer](/de/serialization/custom/)** —
+  Protobuf, Avro usw.
+- **[Nachrichten](/de/fundamentals/messages/)** — welche
+  Formen Serialisierung überleben.
+- **[Refs zwischen Nodes](/de/cluster/refs-across-nodes/)** —
+  der Cluster-Wire, der Serializer konsumiert.

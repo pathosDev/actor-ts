@@ -1,0 +1,182 @@
+---
+title: Design-Entscheidungen
+description: Das "Warum" hinter einigen zentralen Entscheidungen — warum Bun zuerst, warum ts-pattern, warum ein Single-Threaded-Modell, warum diese CRDTs. Kein Tutorial; Kontext für Leute, die sich fragen "warum ist es nicht wie X?"
+---
+
+Eine Handvoll Entscheidungen im Design des Frameworks, die nicht
+offensichtlich sind.  Dies zu lesen ist **optional** — nützlich,
+wenn Du Dich fragst "warum ist es nicht wie X?"
+
+## Warum zuerst Bun
+
+Drei Gründe:
+
+1. **Schneller Startup** — Sub-100ms Cold Start vs. Nodes
+   300-500ms.  Wichtig für Test-Loops + Serverless Cold Starts
+   (wo diese zutreffen).
+2. **Eingebautes SQLite, Test Runner, HTTP** — weniger
+   Peer-Deps.
+3. **Moderne Runtime-Ergonomie** — Top-Level await, eingebauter
+   Bundler, einfachere stdlib-Oberfläche.
+
+Node wird ebenfalls voll unterstützt.  Deno ist Best-Effort.
+Das **Framework ist runtime-agnostisch by design**; Bun ist
+einfach das primäre Ziel für Tests + Benchmarks.
+
+## Warum ts-pattern (nicht switch / if-else)
+
+```ts
+match(msg)
+  .with({ kind: 'inc' }, () => state.count++)
+  .with({ kind: 'dec' }, () => state.count--)
+  .exhaustive();
+```
+
+- **Compile-Time-Exhaustiveness**.  Eine neue Variante zur Union
+  hinzuzufügen, ohne ein `with(...)`-Arm, schlägt beim
+  Kompilieren fehl.  Kein stilles Durchfallen.
+- **Type Narrowing innerhalb von Arms**.  Keine Casts, keine
+  manuellen Guards.
+- **Lesbar im großen Maßstab**.  Switch + assertNever
+  funktioniert bei 2-3 Varianten; verliert bei 5+.
+
+Es ist eine **Opt-in-Konvention** — Du kannst Actors mit einfachem
+Switch schreiben.  Die Doku verwendet `match`, weil es das
+sicherere Pattern ist.
+
+## Warum ein Single-Threaded-Modell
+
+JavaScript ist pro Prozess Single-Threaded.
+Multi-Threading-Optionen:
+
+- **`worker_threads`** — separate JS-Kontexte.  Schwer, State zu
+  teilen.
+- **Cluster-Modul** — Multi-Prozess via Fork.
+
+Das Framework wählt **Single-Threaded pro ActorSystem** für
+Einfachheit.  Für Parallelität:
+
+- **Cluster über Prozesse** — N Prozesse, jeder ein
+  ActorSystem, zu einem Cluster zusammengeschlossen.
+- **[Worker Mesh](/de/cluster/worker-mesh/)** — N Worker
+  Threads, jeder ein ActorSystem, im **selben Prozess** via
+  MessageChannel.
+
+Beides gibt Parallelität ohne die Probleme mit geteiltem
+mutable State, die multi-threaded JVM-basierte Actor-Systeme
+historisch hatten.
+
+## Warum diese CRDTs
+
+Das Framework liefert aus:
+
+- GCounter / PNCounter (Counter).
+- GSet / ORSet (Sets).
+- LWWRegister / MVRegister (Einzelwerte).
+- LWWMap / ORMap / GCounterMap (Maps).
+
+**Warum nicht mehr?** Abdeckung der häufigen 95% der
+Distributed-State-Use-Cases:
+
+- Counter → GCounter / PNCounter.
+- Sets (häufig in Chat / Presence / Configs) → GSet / ORSet.
+- Einzelwerte (Configs / Flags) → LWW / MV Register.
+- State pro Key → Maps.
+
+**Was fehlt?**
+
+- **Sequence CRDTs** (RGA, LSEQ für geordnete Listen).  Nische;
+  schwer richtig hinzubekommen; selten gebraucht.
+- **Tree CRDTs** für kollaborative Docs.  Außerhalb des Scopes —
+  domänenspezifische Libraries handhaben das besser.
+- **Counter-mit-Cap CRDT** (Decrement, durch ein Max begrenzt).
+  Kein Standard-CRDT; könnte über Custom Merge ausgedrückt
+  werden.
+
+Für die fehlenden Stücke baue app-spezifische Patterns auf den
+Primitiven auf oder öffne ein Issue, wenn breit benötigt.
+
+## Warum keine Streams-DSL
+
+Die JVM-Actor-Welt hat eine separate Streams-Library auf ihrem
+Actor-Toolkit — Akka Streams und Pekko Streams decken
+Backpressure, Materializers, eine Graph-DSL.  Ein Äquivalent
+nach TypeScript zu portieren wäre **ein großes Projekt für
+sich**.  Der Scope des Frameworks ist das Actor-Modell +
+Clustering + Persistenz; Streams-DSLs sind außerhalb des
+Scopes.
+
+Für TypeScript-seitiges Streaming:
+
+- **AsyncIterable** für Pull-basiert.
+- **`pipeTo`** für Actor-Bridge.
+- Drittanbieter-Libraries (RxJS, Effect's Stream) für reichere
+  Patterns.
+
+## Warum HOCON statt YAML / TOML
+
+```hocon
+actor-ts {
+  cluster.gossip-interval = 1s
+  cluster.failure-detector.unreachable-after = 2s
+}
+```
+
+HOCON ist das De-facto-**JVM-Config-Format** — Leser, die von
+Akka oder Pekko oder einem Lightbend-Config-basierten Stack
+kommen, landen in einer vertrauten Form mit minimalen
+Änderungen.
+
+HOCON hat Features, die YAML / TOML nicht haben:
+
+- **Environment-Variable-Substitution** — `${?ENV_VAR}`.
+- **Duration-Typen** — `1s`, `5m`, `2h` nativ verstanden.
+- **Size-Typen** — `64K`, `1M`, `2G`.
+- **File Includes** — `include "shared.conf"`.
+- **Object Merging** — additive Overlays.
+
+YAML ist breiter bekannt, aber es fehlen einige davon.  TOML ist
+ähnlich ausgestattet, aber weniger ökosystem-unterstützt.
+
+## Warum explizite replyTo Refs
+
+Klassische JVM-Actor-Frameworks exponieren ein implizites
+`sender()`.  actor-ts hat `this.sender` (Option) **und**
+explizite `replyTo`-Refs in Nachrichten.
+
+Warum beide?
+
+- **`this.sender`** ist implizit und an die Ankunft der
+  Nachricht gebunden.  Funktioniert für Ask-Style +
+  Tell-with-Sender.
+- **Expliziter `replyTo`** ist **typsicher** — der
+  Nachrichtentyp deklariert, welchen Antwort-Typ zu erwarten
+  ist; der Compiler kann es verifizieren.
+
+Konvention: **expliziter `replyTo` für Ask-Style-Request/Response**,
+`this.sender` für Opt-in-Reply-Patterns, bei denen der Aufrufer
+eine Antwort wollen kann oder nicht.
+
+## Warum keine eingebauten Transaktionen über Actors hinweg
+
+Multi-Actor-Transaktionen brauchen entweder:
+
+- Ein **verteiltes Transaktions-Protokoll** (2PC, 3PC, Paxos).
+  Komplex; brüchig in echten Netzwerken.
+- **Sagas** mit expliziten Kompensations-Schritten.  Leichter
+  zu erfassen; passt besser zu Actor-Semantik.
+
+Das Framework unterstützt das **Saga-Pattern** (via
+[PersistentFSM](/de/persistence/fsm/persistent-fsm/) oder
+Custom-Workflows).  Es liefert keine eingebauten Transaktionen
+aus — das Kosten-Nutzen-Verhältnis ist für die meisten Workloads
+nicht da.
+
+## Wie es weitergeht
+
+- **[Architecture Decision Records](/de/extras/architecture-decision-records/)** —
+  wenn Du noch mehr "Warum"-Inhalt willst.
+- **[Versionspolitik](/de/reference/version-policy/)** —
+  was stabil vs. experimentell ist.
+- **[FAQ](/de/reference/faq/)** — häufige Fragen zum
+  Framework.

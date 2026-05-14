@@ -1,0 +1,217 @@
+---
+title: Snapshot-Store-Backend
+description: ObjectStorageSnapshotStore speichert Snapshots in Object Storage — die richtige Form für cluster-weit geteilte Snapshots, verschlüsselt at rest, mit Kompression. Paare ihn mit Sharded Entities, die zwischen Nodes wandern.
+---
+
+`ObjectStorageSnapshotStore` ist die Snapshot-Store-
+Implementierung, die
+[Object Storage](/de/persistence/object-storage/overview/) als
+Backing-Schicht verwendet.
+
+```ts
+import {
+  ObjectStorageSnapshotStore,
+  S3ObjectStorageBackend,
+  PersistenceExtensionId,
+} from 'actor-ts';
+
+const snapshotStore = new ObjectStorageSnapshotStore({
+  backend:     new S3ObjectStorageBackend({ region, bucket }),
+  compression: { algorithm: 'gzip' },
+  encryption:  { keyRing },
+});
+
+system.extension(PersistenceExtensionId).configure({
+  journal: someJournal,
+  snapshotStore,
+});
+```
+
+Snapshots, die von jedem `PersistentActor` geschrieben werden,
+gehen in den S3-Bucket; komprimiert + verschlüsselt gemäß der
+Config.
+
+## Wann verwenden
+
+Drei Muster:
+
+1. **Cluster-weit geteilte Snapshots** — Sharded Entities, die
+   zwischen Nodes wandern, brauchen, dass jeder Node den
+   Snapshot jeder Entity laden kann.  Object Storage
+   funktioniert; SQLite pro Node nicht.
+2. **Verschlüsselte Snapshots** — Server-Side- und/oder
+   Client-Side-Verschlüsselung at rest für Compliance erforderlich.
+3. **Günstiger Snapshot-Storage** — Object Storage ist pro GB
+   viel günstiger als SQL-Stores für
+   selten-gelesene-gelegentlich-überschriebene Daten.
+
+Für **Single-Node**-Deployments ist
+[SqliteSnapshotStore](/de/persistence/snapshot-stores/sqlite/)
+schneller + einfacher.
+
+## Konfiguration
+
+```ts
+interface ObjectStorageSnapshotStoreSettings {
+  backend:      ObjectStorageBackend;
+  prefix?:      string;             // Default 'snapshots/'
+  compression?: CompressionConfig;
+  encryption?:  EncryptionConfig;
+}
+```
+
+| Feld | Zweck |
+| --- | --- |
+| `backend` | Filesystem- oder S3-Backend. |
+| `prefix` | Object-Key-Prefix.  Nützlich, um Buckets zu teilen. |
+| `compression` | At-Rest-Kompression — siehe [Kompression](/de/persistence/object-storage/compression/). |
+| `encryption` | At-Rest-Verschlüsselung — siehe [Verschlüsselung](/de/persistence/object-storage/encryption/). |
+
+## Key-Layout
+
+```
+<prefix>/<persistenceId>/seq-<seqNr>
+```
+
+Beispiele:
+
+```
+snapshots/account-42/seq-100
+snapshots/account-42/seq-200
+snapshots/account-42/seq-300
+```
+
+Das Framework listet Keys unter `<prefix>/<persistenceId>/`, um
+den neuesten Snapshot zu finden.
+
+Für sehr große `persistenceId`-Räume ist das Listen pro pid in S3
+typischerweise schnell (Per-Prefix-Durchsatz).  Vermeide es, alle
+Entity-Typen unter denselben Prefix ohne Per-pid-Unterordner zu
+packen.
+
+## Performance
+
+Snapshot-Writes gehen durch das PUT von Object Storage; Reads
+durch GET.  Zahlen für S3 Same-Region:
+
+- **Save** — 20-50 ms pro Snapshot.
+- **Load latest** — 1 LIST + 1 GET = 30-60 ms.
+
+Für **Hot-Path-Snapshot-Laden** (häufige Actor-Neustarts) wickle
+es mit
+[CachedSnapshotStore](/de/persistence/snapshot-stores/cached-snapshot-store/)
+ein:
+
+```ts
+const cached = new CachedSnapshotStore({
+  underlying: new ObjectStorageSnapshotStore({ backend, ... }),
+  maxEntries: 1_000,
+});
+```
+
+Reduziert redundante S3-GETs auf Sub-Mikrosekunden-Cache-Hits.
+
+## Per-Actor-Overrides
+
+```ts
+class Account extends PersistentActor<...> {
+  protected compression() { return { algorithm: 'brotli' as const }; }
+  protected encryption()  { return { keyRing: accountKeyRing }; }
+}
+```
+
+Per-Actor-Konfiguration gilt für Snapshots auf dieselbe Weise wie
+für Durable State.  Siehe
+[Per-Actor-Policies](/de/persistence/object-storage/per-actor-policies/).
+
+## Snapshot-Lifecycle
+
+```
+PersistentActor.persist(event) gelingt
+  ↓ snapshotPolicy() prüfen
+  ↓ wenn true → Snapshot machen
+backend.put('snapshots/<pid>/seq-N', serialisierter State)
+
+PersistentActor.preStart
+  ↓ 'snapshots/<pid>/' auflisten, um die neueste seq zu finden
+  ↓ backend.get(latest) → dekodieren → onEvent ab seq+1
+```
+
+Das Framework handhabt Snapshot-Saves + -Loads über dieses
+Layout; du setzt die Policy.
+
+## Cleanup alter Snapshots
+
+```ts
+new ObjectStorageSnapshotStore({
+  backend,
+  maxSnapshotsPerPid: 5,   // die 5 neuesten behalten; ältere löschen
+});
+```
+
+Ohne Cleanup akkumulieren alte Snapshots unbegrenzt.
+`maxSnapshotsPerPid` zu konfigurieren triggert einen Cleanup-Pass
+bei jedem Save — nur die N neuesten werden behalten.
+
+Das Framework löscht beim Lesen nicht automatisch — es gibt ein
+kleines Fenster, in dem alte Snapshots mit neuen koexistieren.
+
+## Mischen mit dem Journal
+
+```ts
+{
+  journal:       new SqliteJournal({ path: '...' }),
+  snapshotStore: new ObjectStorageSnapshotStore({ backend }),
+}
+```
+
+Das Journal und der Snapshot-Store sind **unabhängig**.  Häufige
+Muster:
+
+- **SQLite-Journal + ObjectStorage-Snapshots** — lokale
+  Event-Rate, geteilte Snapshots für Sharded Entities.
+- **Cassandra-Journal + ObjectStorage-Snapshots** — beide über
+  den Cluster geteilt.
+- **ObjectStorage alles** — wenn S3 dein einziger Storage ist.
+  Langsamer pro Op, aber billig.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="LIST-Kosten bei großen pids">
+  ```ts
+  // 100K Snapshots für eine pid — List gibt 100K Einträge zurück
+  ```
+  Ohne `maxSnapshotsPerPid` wachsen Lists unbegrenzt.
+  Konfiguriere Cleanup; besser noch, verwende eine engere
+  snapshotPolicy (alle N Events statt jedes Event).
+</Aside>
+
+<Aside type="caution" title="Snapshot-Verlust ist Recovery-Zeit-Verlust">
+  ```ts
+  // S3-Bucket verloren (regionale Outage)
+  ```
+  Ohne Snapshots fällt die Recovery auf vollständigen
+  Event-Replay zurück.  Größeres Journal = langsamere Recovery.
+  Für missionskritische pids aktiviere S3-Cross-Region-Replikation
+  auf dem Snapshots-Bucket.
+</Aside>
+
+<Aside type="caution" title="Verschlüsselte Snapshots + alte Schlüssel">
+  ```ts
+  // Snapshot von vor 2 Jahren, verschlüsselt unter pensioniertem Schlüssel
+  ```
+  Pensioniere keine Schlüssel, bis alle Snapshots auf den neuen
+  Schlüssel neu verschlüsselt sind.  Siehe
+  [Schlüsselrotation](/de/persistence/object-storage/key-rotation/).
+</Aside>
+
+## Wie geht's weiter
+
+- **[Object Storage im Überblick](/de/persistence/object-storage/overview/)** —
+  das größere Bild.
+- **[Snapshot Stores im Überblick](/de/persistence/snapshots/)** —
+  allgemeine Snapshot-Policy.
+- **[CachedSnapshotStore](/de/persistence/snapshot-stores/cached-snapshot-store/)** —
+  Read-Through-Cache.
+- **[Per-Actor-Policies](/de/persistence/object-storage/per-actor-policies/)** —
+  Per-Actor-Kompression / -Verschlüsselung.

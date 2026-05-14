@@ -1,0 +1,209 @@
+---
+title: Spawn Typed
+description: Drei Helfer, um ein `Behavior<T>` in die Runtime zu bringen — `spawnTyped` für Top-Level-Actors, `spawnTypedChild` aus einem untyped-Parent heraus, `typedProps` zum Überbrücken in die OO-Props-API.
+---
+
+Ein `Behavior<T>` ist ein Wert.  Um ihn in die Runtime zu bringen
+— um eine tatsächliche `ActorRef<T>` zu bekommen, der du
+Nachrichten `tell`en kannst — verwende einen von drei Helfern:
+
+| Helfer | Spawn-Ziel | Aufrufer |
+| --- | --- | --- |
+| `spawnTyped(system, behavior, name?)` | Top-Level-Actor unter `/user`. | Außerhalb eines Actors. |
+| `spawnTypedChild(ctx, behavior, name?)` | Child eines untyped-Actors. | Innerhalb eines untyped `Actor.onReceive`. |
+| `typedProps(behavior)` → `Props<T>` | Überall, wo `Props` akzeptiert wird. | Wenn du ein Behavior in APIs stecken willst, die `Props` nehmen. |
+
+Für Typed-Actor-zu-Typed-Child-Spawning verwende stattdessen die
+**`ctx.spawn(...)`-Methode auf `TypedActorContext`** — unten
+beschrieben.
+
+## `spawnTyped` — Top-Level
+
+```ts
+import { ActorSystem, Behaviors, spawnTyped } from 'actor-ts';
+
+type Cmd = { kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> };
+
+const counter = (n: number): Behavior<Cmd> => Behaviors.receive((ctx, cmd) => {
+  if (cmd.kind === 'inc') return counter(n + 1);
+  if (cmd.kind === 'get') { cmd.replyTo.tell(n); return Behaviors.same; }
+  return Behaviors.same;
+});
+
+const system = ActorSystem.create('demo');
+const ref = spawnTyped(system, counter(0), 'counter');
+//    ^- ActorRef<Cmd>
+```
+
+Die Signatur:
+
+```ts
+function spawnTyped<T>(
+  system:   ActorSystem,
+  behavior: Behavior<T>,
+  name?:    string,
+): ActorRef<T>;
+```
+
+Gibt eine typisierte `ActorRef<T>` zurück — `tell` akzeptiert nur
+`Cmd`-förmige Nachrichten, der Compiler erzwingt das.
+
+## `spawnTypedChild` — typed Child von einem untyped Parent
+
+```ts
+import { Actor, type ActorContext, Behaviors, spawnTypedChild } from 'actor-ts';
+
+class UntypedParent extends Actor<...> {
+  override preStart(): void {
+    const typedChild = spawnTypedChild(this.context, counter(0), 'child');
+    // typedChild: ActorRef<Cmd>
+    typedChild.tell({ kind: 'inc' });
+  }
+}
+```
+
+Die Signatur:
+
+```ts
+function spawnTypedChild<T>(
+  ctx:      ActorContext,
+  behavior: Behavior<T>,
+  name?:    string,
+): ActorRef<T>;
+```
+
+Nützlich, wenn du einen bestehenden untyped-Supervisor hast, der
+typisierte Workers spawnen muss.  Das Kind ist ein normaler Eintrag
+in der Children-Liste des Parents — Supervisor-Strategien gelten
+nach der Strategie des Parents, Death Watch funktioniert in beide
+Richtungen.
+
+## `typedProps` — Interop mit `Props`
+
+```ts
+import { typedProps } from 'actor-ts';
+
+const props = typedProps(counter(0))
+  .withMailboxCapacity(500)
+  .withDispatcher(myDispatcher);
+
+const ref = system.actorOf(props, 'counter');
+```
+
+Wenn du ein typisiertes Behavior willst, die API aber `Props<T>`
+nimmt (weil es ein älterer Einstiegspunkt ist oder weil du
+`with…`-Builder verketten willst), gibt `typedProps(behavior)` die
+richtigen `Props<T>` zurück.
+
+Die Form:
+
+```ts
+function typedProps<T>(behavior: Behavior<T>): Props<T>;
+```
+
+Die zurückgegebenen Props können überall übergeben werden, wo
+`Props<T>` erwartet wird — `system.actorOf`, `context.actorOf`,
+`Cluster.singletonProxy`, der Entity-Props-Slot der
+Sharding-Region.
+
+## Typed-Actor-zu-Typed-Child: `ctx.spawn`
+
+Innerhalb eines typisierten Handlers exponiert der Context sein
+eigenes `spawn`:
+
+```ts
+const parent: Behavior<ParentMsg> = Behaviors.setup((ctx) => {
+  const child = ctx.spawn(workerBehavior, 'worker');
+  //    ^- ActorRef<WorkerMsg>
+
+  return Behaviors.receive((ctx, msg) => {
+    child.tell({ kind: 'do-it' });
+    return Behaviors.same;
+  });
+});
+```
+
+Das ist der **Standard-Weg** für typed-Parents, typed-Children zu
+spawnen.  Gleiche Semantik wie `spawnTypedChild` von der
+untyped-Seite, aber durchgehend typisiert — `ctx.spawn(behavior)`
+kennt den Nachrichtentyp des Kindes aus dem Typ-Parameter des
+Behaviors.
+
+Kein `spawnTyped`-Import nötig innerhalb von typed-Code; der
+Context liefert es.
+
+## Naming + Pfade
+
+Der `name`-Parameter ist in allen vier Einstiegspunkten optional:
+
+- Weglassen → das Framework generiert einen (`'$1'`, `'$2'`, ...).
+- Angeben → muss unter Geschwistern eindeutig sein.
+
+Der Pfad des resultierenden Actors folgt dem Standardformat:
+
+- `spawnTyped(system, b, 'counter')` →
+  `actor-ts://my-app/user/counter`
+- `spawnTypedChild(parentCtx, b, 'worker')` →
+  `actor-ts://my-app/user/<parent>/worker`
+- `ctx.spawn(b, 'worker')` →
+  `actor-ts://my-app/user/<parent>/worker`
+
+Siehe [Actor-Pfade](/de/fundamentals/actor-paths/) für die
+Pfad-Semantik.
+
+## Wann welches verwenden
+
+```
+Aufrufer ist außerhalb eines Actors:
+    → spawnTyped(system, b, name)
+
+Aufrufer ist innerhalb eines untyped Actor.onReceive:
+    → spawnTypedChild(this.context, b, name)
+
+Aufrufer ist innerhalb eines typed Behaviors.setup oder Handlers:
+    → ctx.spawn(b, name)
+
+Du hast eine Funktion, die Props<T> nimmt, und willst ein Behavior verwenden:
+    → typedProps(b)
+```
+
+Die drei Helfer sind absichtlich klein — jeder handhabt einen
+häufigen Fall.  `typedProps` ist die Notluke, wenn du ein Behavior
+in Props-förmige APIs stecken musst.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Teile ein Behavior nicht über Actor-Instanzen">
+  ```ts
+  const sharedBehavior = counter(0);
+  spawnTyped(system, sharedBehavior, 'a');
+  spawnTyped(system, sharedBehavior, 'b');   // ← beide starten bei count=0, okay
+  ```
+  Behaviors sind Werte — sie zu *lesen* ist okay.  Die Falle ist,
+  wenn der Behavior-Closure mutablen Zustand einfängt und du ihn
+  mutierst: beide Actors sehen dieselbe mutierte Referenz.  Halte
+  dich an unveränderliche Parameter in deinen Behavior-Closures;
+  die typed-Form ist dafür entworfen.
+</Aside>
+
+<Aside type="caution" title="Namens-Kollisionen">
+  ```ts
+  spawnTyped(system, b, 'counter');
+  spawnTyped(system, b, 'counter');   // ← throwt — Name bereits in Verwendung
+  ```
+  Namen müssen unter Geschwistern eindeutig sein.  Entweder
+  weglassen (auto-generiert) oder ein eindeutiges Schema verwenden
+  (`counter-${id}`, `worker-${slot}`).  Gleiche Regel wie bei
+  untyped-Spawn.
+</Aside>
+
+## Wie es weitergeht
+
+- **[Behaviors](/de/typed/behaviors/)** — das DSL, das die
+  Werte produziert, die du diesen Helfern übergibst.
+- **[Typed Actor](/de/typed/typed-actor/)** — die Runtime,
+  die alle vier Helfer wickeln.
+- **[Props](/de/fundamentals/props/)** — die untyped
+  Konfiguration, die `typedProps` zurückgibt.
+- **[Actor-System](/de/fundamentals/actor-system/)** — die
+  `actorOf`-API, die die Helfer letztlich aufrufen.

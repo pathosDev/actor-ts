@@ -1,0 +1,177 @@
+---
+title: Counter (GCounter, PNCounter)
+description: Zwei Count-basierte CRDTs — `GCounter` für Grow-only-Counter (Page Views, Total Uploads), `PNCounter`, wenn Dekremente erlaubt sind (aktive Sessions, verfügbarer Bestand). Merge per Replika-Max; nebenläufige Inkremente summieren sich.
+---
+
+Zwei Counter-CRDTs:
+
+| Typ | Wertebereich | Wann |
+| --- | --- | --- |
+| **`GCounter`** | `[0, ∞)` — geht nur nach oben | Page Views, Total Messages, abgeschlossene Jobs. |
+| **`PNCounter`** | `(-∞, ∞)` — beide Richtungen | Aktive Sessions, Items im Warenkorb, verfügbarer Bestand. |
+
+Beide konvergieren bei nebenläufigen Writes, indem sie
+**Beiträge pro Replika** tracken und beim Lesen summieren.
+
+## GCounter
+
+```ts
+import { GCounter } from 'actor-ts';
+
+let c = GCounter.empty();
+c = c.increment('node-a', 3);
+c = c.increment('node-b', 5);
+c.value();   // → 8
+```
+
+Der State ist eine `Map<ReplicaId, number>` — jede Replika hält
+ihren eigenen Beitrag, mergebar per Schlüssel-Max.
+
+Der Vertrag:
+
+- **Inkremente müssen ≥ 0 sein.**  Ein negatives `delta` wirft.
+- **`replica` ist die stabile ID jeder Replika** — in
+  DistributedData nimm `dd.selfReplicaId()`.
+- **Merge nimmt das Maximum pro Replika** — Merges erneut
+  anzuwenden ist idempotent.
+
+```ts
+const a = GCounter.empty().increment('a', 3);
+const b = GCounter.empty().increment('b', 5);
+
+a.merge(b).value();          // → 8
+a.merge(b).merge(b).value(); // → 8 (idempotent)
+b.merge(a).value();           // → 8 (kommutativ)
+```
+
+Nimm ihn für jeden **monoton wachsenden Count** — beobachtete
+Events insgesamt, hochgeladene Bytes insgesamt, erfolgreiche Jobs
+insgesamt.  Falsche Form für Dinge, die *runter* gehen
+(Stornierungen, Rücknahmen).
+
+## PNCounter
+
+```ts
+import { PNCounter } from 'actor-ts';
+
+let c = PNCounter.empty();
+c = c.increment('node-a', 5);
+c = c.decrement('node-b', 2);
+c.value();   // → 3
+```
+
+Intern **zwei `GCounter`** — einer für positive Beiträge, einer
+für negative.  Der Wert ist `positive.value() - negative.value()`.
+
+Gleicher idempotenter und kommutativer Merge.  Wichtig:
+
+- **Replika-IDs werden separat für Inkremente und Dekremente
+  getrackt.**  Wenn Node A inkrementiert und dann Node A
+  dekrementiert, subtrahiert das nicht vom selben Counter —
+  jedes geht auf seine eigene Seite.
+- Der Wert kann negativ sein, wenn Dekremente Inkremente
+  überholen.
+
+```ts
+const a = PNCounter.empty().increment('a', 5).decrement('a', 3);
+a.value();   // → 2 (5 - 3)
+
+const b = PNCounter.empty().decrement('b', 10);
+a.merge(b).value();   // → -8 (5 - 13)
+```
+
+Nimm ihn für **alles, was in beide Richtungen geht** — Items im
+Warenkorb, verfügbarer Bestand, Saldo nach Ausgleichen.
+
+## Mit DistributedData verwenden
+
+```ts
+import { GCounter, type DistributedData } from 'actor-ts';
+
+const dd: DistributedData = system.extension(DistributedDataId).start(cluster);
+
+dd.update<GCounter>(
+  'request-count',
+  GCounter.empty,
+  (c) => c.increment(dd.selfReplicaId(), 1),
+);
+
+const counter = dd.get<GCounter>('request-count');
+console.log(counter?.value());
+```
+
+Drei Dinge zu beachten:
+
+- **`dd.selfReplicaId()`** ist die stabile ID dieser Replika —
+  übergib sie jedem `increment` / `decrement`.
+- **`GCounter.empty` ist die Factory** — DistributedData ruft sie
+  auf, wenn der Key noch keinen Wert hat.
+- **`get` ist lokal** — gibt zurück, was die lokale Replika
+  beobachtet hat.  Für Majority Reads nimm `getAsync` mit
+  `consistency: 'majority'`.
+
+## Auswahl zwischen beiden
+
+| Frage | Typ |
+| --- | --- |
+| Geht der Count je nach unten? | `PNCounter` |
+| Sonst | `GCounter` |
+
+`GCounter` ist **einfacher** (eine Map, kleinere
+Wire-Kodierung) und **sicherer** (kann nicht versehentlich
+dekrementieren).  Nimm ihn, wann immer die Semantik "geht nur
+nach oben" ist.
+
+Für alles, wo Dekremente vorkommen, ist `PNCounter` die richtige
+Form — aber lies genau: "Items im Warenkorb" sieht aus wie ein
+GCounter ("Anzahl hinzugefügter Items"), aber du willst
+Dekremente, wenn Items entfernt werden; das ist PNCounter.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="GCounter ist Grow-only — wirklich Grow-only">
+  ```ts
+  GCounter.empty().increment('a', -3);   // wirft
+  ```
+  Negative Inkremente werden nicht unterstützt — die Mathematik
+  würde nicht aufgehen (nebenläufige +3 und -3 auf
+  verschiedenen Replikas würden eins verlieren).  Wenn du beide
+  Richtungen brauchst, nimm PNCounter.
+</Aside>
+
+<Aside type="caution" title="Wähle eine stabile Replika-ID">
+  ```ts
+  c.increment(Math.random().toString(), 1);   // ✗ jeder Aufruf andere ID
+  ```
+  Replika-IDs müssen **stabil pro Node/Prozess** für die gesamte
+  Cluster-Lebensdauer sein — sonst trägt jedes Inkrement zu
+  einer neuen "Replika" bei und der Counter wächst linear mit
+  der Anzahl Operationen.  Nimm `dd.selfReplicaId()`.
+</Aside>
+
+<Aside type="caution" title="High-Throughput-Counter via DD sind nicht immer richtig">
+  ```ts
+  // Counter 1 Million Mal pro Sekunde im Cluster hochzählen
+  ```
+  Jedes Inkrement läuft durch den DistributedData-Replicator —
+  Gossip trägt den Merge an die Peers.  Für sehr hochfrequente
+  Counter erwäge lokale atomare Counter mit periodischem Flush
+  nach DD.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[Distributed Data im Überblick](/de/distributed-data/overview/)** —
+  das Gesamtbild.
+- **[Register](/de/distributed-data/crdt-types/registers/)** —
+  LWW- / MV-Register mit einem Wert.
+- **[Sets](/de/distributed-data/crdt-types/sets/)** —
+  GSet (Add-only) und ORSet (mit Removes).
+- **[Maps](/de/distributed-data/crdt-types/maps/)** —
+  CRDT-Container pro Key inklusive GCounterMap.
+- **[Daten gestalten](/de/distributed-data/crdt-types/designing-data/)** —
+  das richtige CRDT für dein Problem wählen.
+
+Die API-Referenzen [`GCounter`](/api/classes/gcounter/) und
+[`PNCounter`](/api/classes/pncounter/) decken die vollständige
+Oberfläche ab.

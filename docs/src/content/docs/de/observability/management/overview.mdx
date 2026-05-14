@@ -1,0 +1,165 @@
+---
+title: Management — Überblick
+description: Ein kleiner HTTP-Server, der betriebliche Endpunkte exponiert — Health Checks, Cluster-Zustand, Sharding-Info, Metriken. Läuft auf einem separaten Port von deiner App; firewall-freundlich. In K8s-Probes verdrahten; per Kommandozeile debuggen.
+---
+
+`HttpManagement` ist ein **kleiner HTTP-Server** für Operations.
+Getrennt vom Haupt-HTTP-Server deiner App, auf einem separaten
+Port (8558 per Konvention), und exponiert:
+
+- **Health-Probes** — Liveness + Readiness für K8s.
+- **Cluster-Info** — Mitglieder, Leader, Sharding-Regionen.
+- **Metriken** — Prometheus-Exposition (optional).
+- **Admin-Endpunkte** — Leave / Down (optional, standardmäßig
+  aus).
+
+```ts
+import { HttpManagement } from 'actor-ts';
+
+await HttpManagement.start(system, {
+  port:                    8558,
+  cluster,                 // optional — aktiviert Cluster-Endpunkte
+  enableMetricsEndpoint:   true,
+});
+```
+
+Das war's. Der Server läuft auf `0.0.0.0:8558` und bedient die
+Endpunkte unten.
+
+## Konfiguration
+
+```ts
+interface HttpManagementSettings {
+  port:                    number;
+  host?:                   string;            // Default '0.0.0.0'
+  cluster?:                Cluster | null;    // aktiviert Cluster-Routen
+  enableLeaveEndpoint?:    boolean;            // Default false
+  enableDownEndpoint?:     boolean;            // Default false
+  enableMetricsEndpoint?:  boolean;            // Default false
+}
+```
+
+Die meisten Produktivsysteme:
+
+```ts
+await HttpManagement.start(system, {
+  port:                  8558,
+  cluster,
+  enableMetricsEndpoint: true,    // für Prometheus
+  enableLeaveEndpoint:   false,   // nur Admin; hinter Auth gaten
+  enableDownEndpoint:    false,
+});
+```
+
+## Die Endpunkte
+
+| Endpunkt | Immer an? | Zweck |
+| --- | --- | --- |
+| `GET /health` | ✓ | Liveness — 200 wenn Health Checks bestehen. |
+| `GET /ready` | ✓ | Readiness — 200 wenn Cluster up + Checks bestehen. |
+| `GET /cluster/members` | Wenn `cluster` gesetzt | Membership-JSON. |
+| `GET /cluster/leader` | Wenn `cluster` gesetzt | Leader-Adresse. |
+| `GET /cluster/shards?type=<name>` | Wenn `cluster` gesetzt | Shard-Verteilung für einen sharded Typ. |
+| `POST /cluster/leave` | Opt-in (`enableLeaveEndpoint`) | Graceful Cluster-Leave auslösen. |
+| `POST /cluster/down` | Opt-in (`enableDownEndpoint`) | Peer per Adresse force-downen. |
+| `GET /metrics` | Opt-in (`enableMetricsEndpoint`) | Prometheus-Textformat. |
+
+Siehe [HTTP-Endpunkte](/de/observability/management/http-endpoints/)
+für die volle Oberfläche + Response-Shapes.
+
+## Health Checks
+
+```ts
+const { health } = await HttpManagement.start(system, { port: 8558 });
+
+health.addCheck('database', async () => {
+  return (await db.ping()) ? { ok: true } : { ok: false, reason: 'db unreachable' };
+});
+
+health.addCheck('cache', async () => {
+  return (await cache.ping()) ? { ok: true } : { ok: false };
+});
+```
+
+Eigene Checks hängen sich in `/health` und `/ready`. Ein
+fehlschlagender Check lässt den Endpunkt 503 zurückgeben. Siehe
+[Health Checks](/de/observability/management/health-checks/).
+
+## K8s-Integration
+
+```yaml
+# In deinem Pod-Spec:
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8558
+  initialDelaySeconds: 5
+  periodSeconds:       5
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8558
+  initialDelaySeconds: 30
+  periodSeconds:       10
+```
+
+K8s pollt diese Endpunkte, um zu entscheiden, ob der Pod Traffic
+bekommen soll (ready) oder neu gestartet werden soll (live).
+Siehe
+[Kubernetes-Deployment](/de/operations/deployment/kubernetes/)
+für das vollständige Deployment-Rezept.
+
+## Warum ein separater Port
+
+```
+App-Port (8080):     öffentlich, hinter einem Load Balancer
+Management (8558):    nur intern, intern firewall'd
+```
+
+Die Management-Endpunkte legen **internen Zustand** offen —
+Cluster-Mitgliederadressen, Metrikwerte usw. Sie öffentlich zu
+exponieren ist ein Sicherheitsrisiko. Halte auf separatem Port +
+firewall intern.
+
+In K8s ist das **per-Pod** — Probes treffen `:8558` vom
+Kubelet (gleicher Node), aber kein Service exponiert es extern.
+
+## Hinter einem Auth-Proxy
+
+Für mehr Zugriffskontrolle:
+
+```yaml
+# In deinem Service-/Ingress-Config:
+# - 8080 → öffentlich
+# - 8558 → nicht öffentlich exponiert; mTLS intern
+```
+
+Manche Produktivsysteme exponieren Management hinter einem
+Side-Car-Proxy, der Auth handhabt (Envoy + JWT, Linkerd + mTLS).
+Das Framework bündelt keine Auth — halte Management geschlossen;
+lass die Infrastruktur Zugriffskontrolle handhaben.
+
+## Wann HttpManagement NICHT nutzen
+
+Zwei Fälle:
+
+1. **Du hast schon einen HTTP-Server** und möchtest Management-
+   Routen inline mounten. Dann nutze `managementRoutes(system, cluster)`
+   direkt und binde in deine bestehenden
+   [HTTP-Routen](/de/http/overview/) ein.
+2. **Du betreibst eine Single-Node-App ohne Cluster** — Health-
+   Checks allein rechtfertigen den Extra-Port vielleicht nicht.
+   Überlege, einfach `/health` in deinen bestehenden HTTP-Server
+   zu verdrahten.
+
+## Wo es weitergeht
+
+- **[Health Checks](/de/observability/management/health-checks/)** —
+  Custom-Checks durch `/health` durchgereicht.
+- **[HTTP-Endpunkte](/de/observability/management/http-endpoints/)** —
+  die volle Endpunkt-Referenz.
+- **[Kubernetes-Deployment](/de/operations/deployment/kubernetes/)** —
+  das K8s-Rezept, das diese Probes nutzt.
+- **[Prometheus-Exporter](/de/observability/metrics/prometheus-exporter/)** —
+  der Metrik-Endpunkt, den dies exponiert.

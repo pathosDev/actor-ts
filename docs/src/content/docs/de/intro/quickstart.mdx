@@ -1,0 +1,217 @@
+---
+title: Quickstart
+description: Hello-Actor in fünf Minuten — einen Actor spawnen, ihm eine Nachricht senden, sauber herunterfahren. Läuft identisch auf Bun, Node und Deno.
+---
+
+Fünf Minuten von "was ist ein Actor" zu "ich habe einen laufen, der
+Nachrichten sendet und empfängt." Dieser Guide setzt keine
+Vorerfahrung mit dem Actor-Modell voraus.
+
+## Was Du am Ende hast
+
+Ein kleines Programm, das ein `ActorSystem` erzeugt, einen einzelnen
+`Greeter`-Actor darin spawnt, dem Actor eine Nachricht sendet und
+herunterfährt. Dieselbe Datei läuft unverändert unter Bun, Node und
+Deno — das richtige Runtime-Backend wird automatisch gewählt.
+
+Nach diesem Guide weißt Du:
+
+- Wie Du einen Actor definierst, indem Du `Actor<T>` erweiterst.
+- Wie Du ihn via `system.actorOf(Props.create(...))` spawnst.
+- Den Unterschied zwischen `tell` (fire-and-forget) und dem
+  `onReceive`-Handler des Actors.
+- Wie Du das System herunterfährst, ohne Timer oder Sockets zu lecken.
+
+## Installieren
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+<Tabs>
+  <TabItem label="Bun">
+    ```bash
+    bun add actor-ts
+    ```
+  </TabItem>
+  <TabItem label="Node">
+    ```bash
+    npm install actor-ts
+    ```
+  </TabItem>
+  <TabItem label="Deno">
+    Kein Installationsschritt. Direkt von npm importieren:
+
+    ```ts
+    import { Actor, ActorSystem, Props } from 'npm:actor-ts';
+    ```
+
+    Mit `--allow-net` (für den TCP-Cluster-Transport) und
+    `--allow-read` (zum Lesen von Konfig-Dateien) ausführen, wenn Du
+    sie brauchst.
+  </TabItem>
+</Tabs>
+
+Für eine vollständige Installationsanleitung — einschließlich der
+optionalen Peer-Dependencies (`better-sqlite3`, `@hono/node-server`,
+Broker-Clients) — siehe die [Installation](/de/intro/installation/)-Seite.
+
+## Hello, Actor
+
+Erstelle `hello.ts` und füge ein:
+
+```ts
+import { Actor, ActorSystem, Props } from 'actor-ts';
+
+// 1. Definiere einen Actor.  Der Typparameter `<string>` schränkt
+//    ein, welche Nachrichten dieser Actor akzeptiert — das Typsystem
+//    fängt schlechte Sends zur Compile-Zeit.
+class Greeter extends Actor<string> {
+  override onReceive(name: string): void {
+    console.log(`hello, ${name}!`);
+  }
+}
+
+// 2. Erzeuge das System.  Ein `ActorSystem` pro Prozess ist die
+//    Norm; alles andere lebt darin.
+const system = ActorSystem.create('hello');
+
+// 3. Spawne den Actor.  `Props.create(() => new Greeter())` ist die
+//    Factory; `'greeter'` ist der Name des Actors in der Hierarchie.
+const ref = system.actorOf(Props.create(() => new Greeter()), 'greeter');
+
+// 4. Sende eine Nachricht.  `tell` ist fire-and-forget — es kehrt
+//    sofort zurück, der Actor verarbeitet die Nachricht asynchron
+//    auf seiner eigenen Mailbox.
+ref.tell('world');
+
+// 5. Gib der Mailbox einen Tick zum Leerlaufen, dann fahre herunter.
+//    In einer echten App würdest Du via `CoordinatedShutdown` auf
+//    SIGTERM terminieren; für dieses Skript reicht ein kurzes
+//    Sleep.
+await new Promise((resolve) => setTimeout(resolve, 20));
+await system.terminate();
+```
+
+Ausführen:
+
+<Tabs>
+  <TabItem label="Bun">
+    ```bash
+    bun run hello.ts
+    ```
+  </TabItem>
+  <TabItem label="Node">
+    ```bash
+    npx tsx hello.ts
+    # oder zuerst kompilieren: tsc hello.ts && node hello.js
+    ```
+  </TabItem>
+  <TabItem label="Deno">
+    ```bash
+    deno run hello.ts
+    ```
+  </TabItem>
+</Tabs>
+
+Du siehst:
+
+```
+hello, world!
+```
+
+Das ist die ganze Schleife: definieren → spawnen → tell → terminieren.
+
+## Was gerade passiert ist
+
+Die fünf Zeilen bilden auf die fünf Kernideen des Actor-Modells ab:
+
+1. **`class Greeter extends Actor<string>`** — ein Actor ist eine
+   Klasse mit einer privaten Mailbox und einem einzigen
+   `onReceive`-Handler. Der Typparameter sagt "dieser Actor
+   akzeptiert `string`-Nachrichten" — ihm eine Zahl zu senden, wäre
+   ein TypeScript-Fehler zur Compile-Zeit.
+
+2. **`ActorSystem.create('hello')`** — das `ActorSystem` ist der
+   Runtime-Container. Es besitzt den Dispatcher (der die
+   Nachrichtenverarbeitung plant), die Supervisor-Hierarchie (die
+   Actor-Fehler auffängt), den Scheduler, den Event-Stream. Es
+   gibt typischerweise einen pro Prozess.
+
+3. **`system.actorOf(Props.create(() => new Greeter()))`** — `Props`
+   ist actor-ts' Art, die Konstruktion aufzuschieben. Das System
+   muss kontrollieren, *wann* die Actor-Instanz erstellt wird (auf
+   seinem Mailbox-Thread, nicht auf Deinem), also gibst Du ihm eine
+   Factory statt einer vorgefertigten Instanz. Das zurückgegebene
+   `ActorRef` ist ein Handle, nicht der Actor selbst — Du kannst es
+   über den Cluster weitergeben, speichern, an andere Actors
+   übergeben.
+
+4. **`ref.tell('world')`** — `tell` ist das primäre Actor-Verb. Es
+   queued die Nachricht in die Mailbox des Actors und kehrt sofort
+   zurück. Der Actor verarbeitet seine Mailbox eine Nachricht nach
+   der anderen auf einem einzigen logischen Thread, sodass Du nie
+   über Locks oder Races innerhalb von `onReceive` nachdenken
+   musst.
+
+5. **`system.terminate()`** — graceful Shutdown. Stoppt den
+   Dispatcher, stoppt alle Actors (via den Supervisor-Tree),
+   schließt die Transports. Gibt ein Promise zurück, das auflöst,
+   wenn der Teardown abgeschlossen ist. Für echte Apps hänge das
+   an einen SIGTERM-Handler — siehe
+   [Coordinated Shutdown](/de/fundamentals/coordinated-shutdown/).
+
+## Wie es weitergeht
+
+Du hast einen laufenden Actor. Von hier aus verzweigt sich die
+Doku, je nachdem, was Du tun willst:
+
+- **Interessantere Nachrichten senden**: siehe [Messages](/de/fundamentals/messages/)
+  für die Konventionen (discriminated unions, Immutability, das
+  `kind`-Feld) und [Pattern Matching](/de/fundamentals/pattern-matching/)
+  für das `match().exhaustive()`-Dispatch-Idiom, das diese
+  Codebase überall verwendet.
+- **Antwort vom Actor zurückbekommen**: siehe [Ask Pattern](/de/fundamentals/ask-pattern/)
+  — das Request/Response-Äquivalent zu `tell`.
+- **Fehler behandeln**: siehe [Supervision](/de/fundamentals/supervision/)
+  dafür, wie Eltern-Actors sich von Kind-Abstürzen erholen.
+- **Über Maschinen verteilen**: siehe die [Cluster Overview](/de/cluster/overview/)
+  und [Sharding Overview](/de/cluster/sharding/overview/) — derselbe
+  Code, den Du oben geschrieben hast, kann über N Nodes mit ein
+  paar zusätzlichen Konfigurationszeilen laufen.
+- **State über Neustarts hinweg persistieren**: siehe [PersistentActor](/de/persistence/persistent-actor/)
+  für Event Sourcing und [Snapshots](/de/persistence/snapshots/)
+  für begrenzte Recovery-Zeit.
+
+Wenn Du die ganze Oberfläche des Frameworks auf einmal sehen
+willst, ist das
+[Chat-Beispiel](https://github.com/pathosDev/actor-ts/tree/main/examples/chat)
+die umfassendste End-to-End-Demonstration — es verwendet Sharding,
+Persistenz, Distributed PubSub, Distributed Data, Cluster
+Singleton, HTTP-Routing, sechs austauschbare Frontends, alles.
+
+## Fehlerbehebung
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`bun run hello.ts` beendet sich ohne Ausgabe">
+  Du hast wahrscheinlich die Zeile `await new Promise(r => setTimeout(r, 20))`
+  weggelassen — `tell` queued asynchron, und `system.terminate()`
+  bricht in-flight Processing ab, wenn die Mailbox noch nicht
+  geleert wurde.  Der 20 ms Sleep gibt dem Dispatcher einen Tick,
+  um `onReceive` auszuführen.  Echte Anwendungen terminieren auf
+  SIGTERM, nachdem alle Business-Logik sich gesetzt hat.
+</Aside>
+
+<Aside type="caution" title="TypeScript beschwert sich über `override`">
+  Setze `"noImplicitOverride": true` in Deiner `tsconfig.json`
+  (oder entferne das `override`-Keyword, wenn Du es lieber nicht
+  aktivierst).  Der eigene Code von actor-ts verwendet `override`
+  überall, weil die strenge Konfiguration des Frameworks sich
+  darauf verlässt, um Lifecycle-Method-Typo-Bugs zu fangen.
+</Aside>
+
+<Aside type="caution" title="Deno: `Cannot find module 'actor-ts'`">
+  Denos Modul-Auflösung benötigt den `npm:`-Specifier beim
+  Importieren von npm.  Verwende `import { ... } from 'npm:actor-ts'`,
+  nicht den Bare Specifier.  Deno holt das Paket beim ersten Lauf
+  und cached es.
+</Aside>

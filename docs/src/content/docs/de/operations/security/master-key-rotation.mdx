@@ -1,0 +1,219 @@
+---
+title: Master-Key-Rotation
+description: Rotiere den Master-Verschlüsselungsschlüssel für At-rest-Daten (Object-Storage-Snapshots, Durable State) ohne Downtime. Nutze einen `MasterKeyRing`, um neue Daten unter einem frischen Schlüssel zu verschlüsseln; alte Daten bleiben unter dem alten Schlüssel lesbar; ein Hintergrund-Re-Encryption-Sweep zieht irgendwann alles auf den aktuellen Schlüssel.
+---
+
+Für At-rest-Verschlüsselung
+([Object-Storage-Verschlüsselung](/de/persistence/object-storage/encryption/),
+Durable-DD-Verschlüsselung) leben die Schlüssel des Frameworks in
+einem **`MasterKeyRing`** — einer versionierten Map von Key-ID zu
+Verschlüsselungsschlüssel. Rotation ist **online**: Neue Writes
+laufen unter einer frischen Key-ID; alte Reads funktionieren weiter
+unter dem Schlüssel, mit dem sie verschlüsselt wurden; ein
+Hintergrund-Sweep verschlüsselt ältere Daten irgendwann neu.
+
+```ts
+import { MasterKeyRing } from 'actor-ts';
+
+const keyRing = new MasterKeyRing({
+  keys: {
+    'k1': process.env.MASTER_KEY_V1!,
+    'k2': process.env.MASTER_KEY_V2!,   // neu — aktuell
+  },
+  currentKeyId: 'k2',
+});
+```
+
+`currentKeyId` ist der Schlüssel, der für **neue Writes** genutzt
+wird. Reads konsultieren `keys`, um den richtigen Schlüssel für die
+jeweils gespeicherten Daten zu finden.
+
+## Wann rotieren
+
+Drei Auslöser:
+
+1. **Geplante Rotation** — eine Security-Policy (alle 90 Tage,
+   jährlich).
+2. **Vermutete Kompromittierung** — geleaktes Schlüsselmaterial;
+   sofort rotieren.
+3. **Compliance** — regulatorische Anforderungen schreiben
+   periodische Rotation vor.
+
+Auch ohne spezifischen Auslöser ist **periodische Rotation gute
+Praxis** — begrenzt den Blast Radius eines unentdeckten Leaks.
+
+## Der Rotations-Ablauf
+
+```
+   1. Frischen Schlüssel erzeugen. Zu keyRing.keys hinzufügen; NOCH
+      NICHT als currentKeyId promoten.
+   2. Den aktualisierten keyRing auf allen Nodes ausrollen.
+      Verifizieren, dass Reads funktionieren — alte Daten nutzen
+      weiter den alten Schlüssel, neue Daten weiter den vorherigen.
+   3. currentKeyId auf den neuen Schlüssel updaten. Ausrollen. Neue
+      Writes nutzen den neuen Schlüssel. Alte Daten weiter lesbar.
+   4. Den Re-Encryption-Sweep laufen lassen. Alte Daten werden
+      gelesen, entschlüsselt, mit dem neuen Schlüssel neu verschlüsselt.
+   5. Sobald der Sweep durch ist, den alten Schlüssel aus keyRing
+      entfernen. Ein Rollback-Fenster von ~7 Tagen halten, in dem
+      der alte Schlüssel noch verfügbar ist; danach droppen.
+```
+
+Das Framework unterstützt jeden dieser Schritte ohne Downtime.
+
+## Schritt 1 — den neuen Schlüssel hinzufügen
+
+```ts
+const keyRing = new MasterKeyRing({
+  keys: {
+    'k1': process.env.MASTER_KEY_V1!,
+    'k2': process.env.MASTER_KEY_V2!,   // neu
+  },
+  currentKeyId: 'k1',   // weiter v1 — v2 nur zum Ring hinzugefügt
+});
+```
+
+Diese Config auf jeden Node ausrollen. Reads von v1-verschlüsselten
+Daten funktionieren weiter; Writes nutzen weiter v1.
+
+Dieser Schritt ist **sicher und umkehrbar** — wenn v2 doch nicht
+gebraucht wird, einfach aus `keys` entfernen.
+
+## Schritt 2 — den neuen Schlüssel promoten
+
+```ts
+const keyRing = new MasterKeyRing({
+  keys: {
+    'k1': process.env.MASTER_KEY_V1!,
+    'k2': process.env.MASTER_KEY_V2!,
+  },
+  currentKeyId: 'k2',   // ← jetzt v2
+});
+```
+
+Ausrollen. Neue Writes laufen unter v2. Reads konsultieren den
+keyRing und finden den richtigen Schlüssel (v1 oder v2) anhand des
+Key-ID-Headers der gespeicherten Daten.
+
+Nach diesem Schritt **sammeln sich neue Daten unter v2 an**, sobald
+der Workload schreibt. Alte Daten **bleiben unter v1**, bis sie neu
+verschlüsselt werden.
+
+## Schritt 3 — Re-Encryption-Sweep
+
+```ts
+import { ReEncryptionSweep } from 'actor-ts';
+
+const sweep = new ReEncryptionSweep({
+  store:           snapshotStore,
+  keyRing,
+  targetKeyId:     'k2',
+  batchSize:       100,
+  rateLimit:       50,   // Items pro Sekunde
+});
+
+await sweep.run();
+```
+
+Der Sweep läuft durch den Store, findet Items, die nicht unter
+`targetKeyId` verschlüsselt sind, entschlüsselt + verschlüsselt neu.
+
+Knöpfe:
+
+- **`batchSize`** — Items pro Batch.
+- **`rateLimit`** — begrenzt die I/O-Rate, damit der Sweep das
+  zugrundeliegende Storage nicht hämmert.
+- **`filter`** — auf spezifische PersistenceIds beschränken (für
+  partielle Rotation).
+
+Der Sweep ist **idempotent + wiederaufnehmbar** — unterbrechen und
+neu starten greift dort wieder, wo aufgehört wurde. Tracked
+Fortschritt in den Metadaten des Stores.
+
+## Schritt 4 — den alten Schlüssel ausmustern
+
+Nachdem der Sweep durch ist (jedes Item unter v2 verschlüsselt):
+
+```ts
+const keyRing = new MasterKeyRing({
+  keys: {
+    'k2': process.env.MASTER_KEY_V2!,
+  },
+  currentKeyId: 'k2',
+});
+```
+
+v1 komplett droppen. Daten, die weiter unter v1 verschlüsselt sind
+(z. B. Backups, die nicht neu verschlüsselt wurden), sind jetzt
+nicht mehr lesbar.
+
+**Warte ein Rollback-Fenster vor dem Droppen.** ~7 Tage lassen
+dich davon erholen, falls "ach nein, der Sweep hat doch nicht alle
+Backups erfasst". Nach bestätigter Migration v1 droppen.
+
+## Speicherung der Master-Keys
+
+Der keyRing liefert kein Key-Storage-Backend mit. Übliche Muster:
+
+| Quelle | Muster |
+| --- | --- |
+| **Env-Vars** | `process.env.MASTER_KEY_V2` — einfachste Variante, fein für Tests. |
+| **K8s-Secrets** | Als Files gemountet; beim Start gelesen. |
+| **HashiCorp Vault** | Dynamisch beim Start ziehen; periodisch erneuern. |
+| **AWS KMS / GCP KMS / Azure Key Vault** | Cloud-KMS-APIs. Decrypt-on-Load via die KMS-Encryption-Keys. |
+
+Für Produktion ist **KMS die richtige Antwort** — Schlüssel
+verlassen die sichere Grenze nie im Klartext.
+
+## Multi-Cluster-Aspekte
+
+Wenn mehrere Cluster denselben verschlüsselten Store teilen (z. B.
+eine DR-Replica, die die Backups der Primary liest), brauchen
+**alle Cluster denselben keyRing**. Gemeinsam rotieren; nicht
+zulassen, dass ein Cluster bei Schlüssel-Generationen zurückfällt.
+
+## Failure-Modes
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Den alten Schlüssel vor Sweep-Ende droppen">
+  ```ts
+  // currentKeyId: 'k2' + k1 aus keyRing gedroppt
+  // ABER manche Daten weiter unter k1 verschlüsselt
+  ```
+  Folge: Diese Daten sind **permanent unlesbar**. Keine Recovery
+  außer der gedroppte Schlüssel wird wiederhergestellt. Erst den
+  Sweep beenden + den alten Schlüssel ein Rollback-Fenster lang
+  behalten, dann ausmustern.
+</Aside>
+
+<Aside type="caution" title="Sweep mit zu strenger Rate-Limit">
+  ```ts
+  rateLimit: 1000_000,   // ✗ sättigt das Storage
+  ```
+  Der Sweep ist Hintergrundarbeit. Strenge Rate-Limits verhindern,
+  dass er gegen Foreground-Traffic konkurriert. Langsamer Sweep ist
+  okay — bias auf "beeinträchtigt Prod nicht" statt auf "ist schnell
+  fertig".
+</Aside>
+
+<Aside type="caution" title="Master-Keys in plain Env">
+  ```ts
+  process.env.MASTER_KEY_V2 = "raw-secret-key";   // ✗ in Deployment-Metadaten sichtbar
+  ```
+  Env-Vars sind für alles sichtbar, was die Umgebung des Prozesses
+  lesen kann. Nutze für Produktion KMS-gestützte
+  Decryption-on-Load — die Umgebung enthält nur eine Referenz,
+  nicht den eigentlichen Schlüssel.
+</Aside>
+
+## Wohin als nächstes
+
+- **[Object-Storage-Verschlüsselung](/de/persistence/object-storage/encryption/)** —
+  was die Master-Keys nutzt.
+- **[Object-Storage-Key-Rotation](/de/persistence/object-storage/key-rotation/)** —
+  die Storage-seitigen Mechaniken.
+- **[Cluster-Sicherheit](/de/operations/security/cluster-security/)** —
+  das In-Transit-Pendant zur At-rest-Verschlüsselung.
+- **[Operations-Überblick](/de/operations/overview/)** —
+  vollständige Security-Checkliste.

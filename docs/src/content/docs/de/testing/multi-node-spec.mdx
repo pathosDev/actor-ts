@@ -1,0 +1,219 @@
+---
+title: MultiNodeSpec
+description: Fahre N Cluster-Nodes in einem Prozess hoch, um Cluster-Verhalten zu testen — Sharding, Singletons, Gossip-Konvergenz — ohne Docker. Jeder „Node" ist ein separates `ActorSystem` mit In-Memory-Transport.
+---
+
+`MultiNodeSpec` lässt **N Cluster-Nodes innerhalb eines
+Test-Prozesses** laufen. Jeder ist ein echtes `ActorSystem`; sie
+kommunizieren via `InMemoryTransport` (kein TCP). Nützlich zum
+Testen von Cluster-Verhalten — Sharding, Singletons, Gossip-
+Konvergenz, Failover — ohne Docker.
+
+```ts
+import { MultiNodeSpec } from 'actor-ts/testkit';
+
+const spec = await MultiNodeSpec.create({
+  systemName: 'cluster-spec',
+  nodes:      3,
+});
+
+// spec.nodes ist ein Array von ActorSystems, alle in einen Cluster gejoint:
+const node1 = spec.nodes[0];
+const node2 = spec.nodes[1];
+
+// Spawne Actor auf verschiedenen Nodes:
+const probe = spec.createTestProbe(0);
+const remote = node2.actorOf(Props.create(() => new Worker()));
+
+remote.tell({ kind: 'do', replyTo: probe });
+await probe.expectMsg({ kind: 'done' });
+
+await spec.shutdown();
+```
+
+## Wann nutzen
+
+Drei primäre Fälle:
+
+1. **Cluster-Verhalten testen** — Sharding-Rebalances,
+   Singleton-Failover, Gossip-Konvergenz — diese ohne echtes
+   Netzwerk-Setup verifizieren.
+2. **Verteilte Bugs reproduzieren** — leichter zu isolieren,
+   wenn der gesamte Cluster in einem Prozess läuft.
+3. **CI-freundliche Cluster-Tests** — schnell (sub-Sekunde),
+   kein Docker, keine Ports.
+
+Für Tests, die **echtes Netzwerkverhalten** brauchen (TCP-
+Semantik, TLS, Cross-Host-Latenz), nutze
+[ParallelMultiNodeSpec](/de/testing/parallel-multi-node/)
+oder externes Docker-Compose.
+
+## Konfiguration
+
+```ts
+interface MultiNodeSpecSettings {
+  systemName: string;
+  nodes:      number;
+  roles?:     Array<string | undefined>;   // Per-Node-Rollen
+  config?:    Record<string, unknown>;
+}
+```
+
+| Feld | Zweck |
+| --- | --- |
+| `systemName` | Logischer Name — erscheint in Actor-Pfaden. |
+| `nodes` | Anzahl der hochzufahrenden Cluster-Nodes. |
+| `roles` | Per-Node-Rollen-Tags. |
+| `config` | HOCON-Overrides für alle Nodes. |
+
+## Per-Node-Rollen
+
+```ts
+const spec = await MultiNodeSpec.create({
+  systemName: 'cluster-spec',
+  nodes:      3,
+  roles:      ['frontend', 'compute', 'compute'],
+});
+
+// Nun:
+// Node 0 hat Rolle 'frontend'
+// Node 1 + 2 haben Rolle 'compute'
+```
+
+Nützlich, um rollen-gefilterte Allokation zu testen:
+
+```ts
+ClusterSharding.get(spec.nodes[1], cluster1).start({
+  // ...
+  role: 'compute',
+  // → nur Nodes 1 + 2 hosten Shards
+});
+```
+
+## Was geteilt wird
+
+Alle Nodes teilen sich:
+
+- **Denselben `InMemoryTransport`-Bus** — sie können
+  miteinander reden.
+- **Dasselbe Gossip-Protokoll** — Membership konvergiert.
+- **Unabhängige Actor-Systeme** — separate Dispatcher,
+  Scheduler, Supervisor-Bäume.
+
+Das heißt:
+
+- **Echte Cluster-Semantik** — Mitglieder kommen hoch, Gossip
+  konvergiert, Failure-Detector beobachtet, Sharding
+  rebalancet.
+- **Keine Serialisierung** — Nachrichten zwischen „Nodes" werden
+  per Referenz übergeben (in-process). Kein Fit zum Testen
+  serialisierungs-abhängigen Verhaltens.
+
+## Failover-Tests
+
+```ts
+// Singleton-Failover verifizieren:
+const spec = await MultiNodeSpec.create({ systemName: 'spec', nodes: 3 });
+
+// ... Singleton starten ...
+
+// Den Host-Node finden:
+const hostNode = ...;   // via cluster.state.leader identifizieren
+
+// Failure simulieren:
+await spec.terminateNode(hostNode);
+
+// Auf Failover warten:
+await new Promise(r => setTimeout(r, 5_000));
+
+// Verifizieren, dass der Singleton umgezogen ist:
+const newHost = ...;
+expect(newHost).not.toBe(hostNode);
+
+await spec.shutdown();
+```
+
+`spec.terminateNode(index)` terminiert einen spezifischen Node
+— die anderen beobachten den Unreachable-Status, gossipen die
+Änderung, lösen Downing + Failover aus.
+
+## Per-Node-TestProbe
+
+```ts
+const probe0 = spec.createTestProbe(0);   // Probe auf Node 0
+const probe1 = spec.createTestProbe(1);   // Probe auf Node 1
+```
+
+Jede Probe ist **an das Actor-System eines Nodes gebunden**.
+Nützlich beim Testen von Routing — verifizieren, dass eine
+Nachricht auf dem erwarteten Node landet.
+
+## Sharding-Tests
+
+```ts
+const spec = await MultiNodeSpec.create({ nodes: 3 });
+
+const regions = spec.nodes.map(sys =>
+  ClusterSharding.get(sys, /* Cluster-Ref */).start<Cmd>({
+    typeName: 'entity',
+    entityProps: Props.create(() => new Entity()),
+    extractEntityId: (msg) => msg.id,
+  })
+);
+
+// Entities spawnen; verifizieren, dass sie sich über Nodes verteilen:
+for (const id of ['e1', 'e2', 'e3', 'e4', 'e5']) {
+  regions[0].tell({ id, kind: 'wake-up' });
+}
+
+// Placement inspizieren:
+const placement = await ask(regions[0], { kind: 'list-shards', replyTo: ... });
+expect(placement.regions.size).toBeGreaterThan(1);   // verteilt
+
+await spec.shutdown();
+```
+
+Der Koordinator des Frameworks verteilt Shards über die
+Multi-Node-Spec wie in einem echten Cluster.
+
+## Was MultiNodeSpec nicht testet
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Serialisierung">
+  ```ts
+  // Nachrichten gehen in MultiNodeSpec per Referenz zwischen Nodes
+  ```
+  Serialisierungsabhängige Bugs (Funktionen in Nachrichten,
+  nicht-serialisierbare Typen) tauchen in MultiNodeSpec nicht
+  auf. Nutze ParallelMultiNodeSpec oder Echt-Cluster-
+  Integrationstests für Serialisierungs-Abdeckung.
+</Aside>
+
+<Aside type="caution" title="Echte Netzwerk-Fehlermodi">
+  ```ts
+  // Paketverlust, TCP-Keepalive, Congestion — nichts davon gilt hier
+  ```
+  In-Memory-Transport ist zuverlässig. Für Netzwerk-Fault-Tests
+  nutze Toxiproxy + echte Docker-Setups.
+</Aside>
+
+<Aside type="caution" title="Prozess-Level-Isolation">
+  ```ts
+  // Ein gecrashter Node in MultiNodeSpec → crasht den Test
+  ```
+  Alle „Nodes" teilen die Event-Loop + den Speicher des Test-
+  Prozesses. Ein echter OOM auf einem Node OOMt den Test. Nutze
+  ParallelMultiNodeSpec für prozess-isolierte Tests.
+</Aside>
+
+## Wo es weitergeht
+
+- **[Testing — Überblick](/de/testing/overview/)** — das
+  größere Bild.
+- **[TestKit](/de/testing/testkit/)** — Single-System-
+  Testing.
+- **[ParallelMultiNodeSpec](/de/testing/parallel-multi-node/)** —
+  die Multi-Prozess-Variante.
+- **[Cluster — Überblick](/de/cluster/overview/)** — was
+  MultiNodeSpec simuliert.

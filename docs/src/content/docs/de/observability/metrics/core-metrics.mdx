@@ -1,0 +1,216 @@
+---
+title: Core-Metriken
+description: Die vier Metrik-Primitive — Counter, Gauge, Histogram, Timer — plus das Label-Modell, das aus einer Metrik viele Zeitreihen macht. Kardinalitätsdisziplin liegt in der Verantwortung des Anwenders.
+---
+
+Die Metrics-Extension stellt vier klassische Primitive bereit:
+
+| Typ | Richtung | Wann |
+| --- | --- | --- |
+| **Counter** | Monoton steigend | Gesamtevents, Gesamtwerte über die Zeit. |
+| **Gauge** | Setzbar / inc / dec | Werte zu einem Zeitpunkt, die rauf und runter gehen. |
+| **Histogram** | Verteilung von Beobachtungen | Latenz, Payload-Größe. |
+| **Timer** | Histogram + ergonomisches Timing | „Wie lange hat das gedauert?" |
+
+```ts
+import { ActorSystem, MetricsExtensionId } from 'actor-ts';
+
+const metrics = system.extension(MetricsExtensionId);
+
+const requests = metrics.counter('http_requests_total', { route: '/orders' });
+const active   = metrics.gauge('sessions_active');
+const latency  = metrics.histogram('http_request_duration_ms', { route: '/orders' });
+const timer    = metrics.timer('db_query_duration_ms', { table: 'users' });
+
+requests.inc();
+active.set(123);
+latency.observe(42);
+
+const stop = timer.start();
+await heavyWork();
+stop();   // beobachtet die verstrichene Zeit
+```
+
+## Counter
+
+```ts
+const c = metrics.counter('events_total', { source: 'web' });
+
+c.inc();      // → +1
+c.inc(3);     // → +3
+c.value();    // → 4
+```
+
+**Monoton** — geht nur nach oben. Negative Inkremente werfen
+einen Fehler. Reset beim Prozess-Neustart.
+
+Für „Dinge, die du zählst":
+
+- Empfangene Requests insgesamt.
+- Ausgelöste Fehler insgesamt.
+- Cache-Hits / -Misses insgesamt.
+
+Für Dinge, die runtergehen (aktive Sessions sinken), nutze einen
+**Gauge**, keinen Counter.
+
+## Gauges
+
+```ts
+const g = metrics.gauge('sessions_active');
+
+g.set(100);      // → 100
+g.inc();         // → 101
+g.dec(5);        // → 96
+g.value();       // → 96
+```
+
+Setzbar + bidirektional. Repräsentiert **einen Wert zu einem
+Zeitpunkt**.
+
+Für „Dinge, die du gerade misst":
+
+- Aktive Sessions / Verbindungen.
+- Mailbox-Tiefe.
+- Queue-Größe.
+- Verfügbarer Speicher.
+
+## Histogramme
+
+```ts
+const h = metrics.histogram('http_request_duration_ms', { route: '/orders' }, {
+  buckets: [10, 25, 50, 100, 250, 500, 1000, 2500, 5000],
+});
+
+h.observe(42);
+h.observe(118);
+h.observe(7);
+```
+
+Ein Histogram zählt, wie viele Beobachtungen **in jeden Bucket**
+fielen. Zur Export-Zeit siehst du:
+
+```
+http_request_duration_ms_bucket{route="/orders", le="10"}      1
+http_request_duration_ms_bucket{route="/orders", le="25"}      1
+http_request_duration_ms_bucket{route="/orders", le="50"}      2
+http_request_duration_ms_bucket{route="/orders", le="100"}     2
+http_request_duration_ms_bucket{route="/orders", le="250"}     3
+http_request_duration_ms_bucket{route="/orders", le="+Inf"}    3
+http_request_duration_ms_count{route="/orders"}                3
+http_request_duration_ms_sum{route="/orders"}                  167
+```
+
+Prometheus berechnet Perzentile (`p50`, `p95`, `p99`) zur
+Query-Zeit aus diesen Buckets.
+
+**Buckets wählen**:
+
+- Wähle Buckets, die **dein SLO** abbilden. Für ein
+  HTTP-Latenz-Histogram mit 200 ms p95-Ziel inkludiere
+  `100, 200, 500`.
+- **Zweier- oder Zehnerpotenzen** sind übliche Defaults — neige
+  zu weniger Buckets im Noise-Floor und mehr rund um dein Ziel.
+- **Default-Buckets** (genutzt, wenn du keine spezifizierst):
+  `[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]`
+  — Sekundenskala. Überschreibe für ms-Skala.
+
+## Timer
+
+```ts
+const t = metrics.timer('db_query_duration_ms', { table: 'users' });
+
+// Pattern 1: start/stop
+const stop = t.start();
+await runQuery();
+stop();
+
+// Pattern 2: wrap
+const result = await t.time(async () => runQuery());
+```
+
+Ein Timer ist ein Histogram mit **Ergonomie zum Timen von
+Dingen**. `start()` gibt eine Stop-Funktion zurück, die die
+verstrichene Dauer beobachtet; `time(fn)` umhüllt eine Funktion.
+
+Das zugrundeliegende Histogram nutzt Default-Millisekunden-
+Buckets — okay für die meisten Workloads.
+
+## Labels
+
+```ts
+metrics.counter('events_total', { source: 'web', env: 'prod' });
+```
+
+Labels machen aus **einer Metrik viele Zeitreihen**. Zur
+Export-Zeit ist jede eindeutige Label-Kombination eine separate
+Serie:
+
+```
+events_total{source="web",   env="prod"} 1234
+events_total{source="web",   env="staging"} 56
+events_total{source="batch", env="prod"} 89
+```
+
+In Prometheus / Grafana lesbar als Filter oder Group-by-Achsen.
+
+### Kardinalitätsdisziplin
+
+```ts
+// ✗ HOCH-KARDINAL — TU DAS NICHT
+metrics.counter('events_total', {
+  requestId: req.id,        // unique pro Request
+  userId:    req.user.id,   // unique pro User
+});
+```
+
+Jede eindeutige Label-Kombination erzeugt eine Serie.
+Unbeschränkte Labels (Request-ID, User-ID, Zeitstempel)
+produzieren **unbeschränkte Serien** — dein Monitoring-System
+geht der Speicher aus.
+
+**Nur beschränkte Labels**:
+
+- Route-Namen (`/orders`, `/users/:id`).
+- Environment / Region.
+- Status-Codes / Arten (ein paar Dutzend Werte).
+- Pod-Namen, wenn die Pod-Anzahl beschränkt ist.
+
+Ziel: **< 100 Serien pro Metrik**. Darüber Alarm schlagen.
+
+## Werte im Prozess auslesen
+
+```ts
+const counter = metrics.counter('events_total');
+counter.inc();
+counter.value();   // → 1
+```
+
+`value()` gibt den **aktuellen** Counter-/Gauge-Wert zurück. Für
+Histogramme nutze `snapshot()`:
+
+```ts
+const h = metrics.histogram('latency');
+h.observe(10);
+h.observe(20);
+h.snapshot();
+// → { count: 2, sum: 30, buckets: Map<le, count> }
+```
+
+Nützlich für **Tests** und **eigene Exporter**.
+
+## Wo es weitergeht
+
+- **[Observability — Überblick](/de/observability/overview/)** —
+  das größere Bild.
+- **[Prometheus-Exporter](/de/observability/metrics/prometheus-exporter/)** —
+  `/metrics` für Prometheus zum Scrapen freilegen.
+- **[Stock-Metriken](/de/observability/metrics/stock-metrics/)** —
+  die automatisch aufgezeichneten Actor/Mailbox/Cluster-Metriken
+  des Frameworks.
+- **[OTel-Adapter](/de/observability/metrics/otel-adapter/)** —
+  Metriken durch OpenTelemetry pipen.
+- **[prom-client-Adapter](/de/observability/metrics/prom-client-adapter/)** —
+  für Projekte, die schon `prom-client` nutzen.
+
+Die [`MetricsExtension`](/api/classes/metricsextension/)
+API-Referenz deckt die volle Oberfläche ab.

@@ -1,0 +1,140 @@
+---
+title: JSON-Serializer
+description: JsonSerializer ist der Default — umschließt `JSON.stringify` / `JSON.parse` mit UTF-8-Kodierung. Menschenlesbar debugbar; universell. Die richtige Wahl, solange du nicht die Größe oder Geschwindigkeit von CBOR oder ein typisiertes Schema wie Protobuf brauchst.
+---
+
+`JsonSerializer` ist der **Default**-Serializer.  Standard-JSON
+über `JSON.stringify` + `JSON.parse`; Bytes sind UTF-8.
+
+```ts
+import { JsonSerializer } from 'actor-ts';
+
+const serializer = new JsonSerializer();
+const bytes = serializer.toBinary({ kind: 'inc', n: 1 });
+//  → Uint8Array von '{"kind":"inc","n":1}' als UTF-8
+
+const decoded = serializer.fromBinary(bytes, '');
+//  → { kind: 'inc', n: 1 }
+```
+
+## Warum JSON der Default ist
+
+- **Universell** — jede Sprache hat einen JSON-Parser.
+- **Menschenlesbar** — öffne eine Journal-Datei mit `cat`; sieh
+  die Events.
+- **Schema-flexibel** — kein Compile-Schritt; Typen entwickeln
+  sich durch ganz normale Code-Änderungen weiter (+ Schema-
+  Migrations-Adapter).
+- **Kampferprobt** — jede Web-API spricht JSON.
+
+Für die meisten Apps **wirst du nie Serializer wechseln** — JSON
+deckt es ab.
+
+## Was er behandelt
+
+- Plain-Objekte, Arrays.
+- Strings, Zahlen, Booleans, `null`.
+- Verschachtelte Kombinationen.
+
+Was **verworfen oder transformiert** wird:
+
+| Typ | Verhalten |
+| --- | --- |
+| `undefined` | Aus Objekten / Arrays verworfen. |
+| `Date` | Über `toISOString()` stringified; geht als String durch den Round-Trip. |
+| `Map` / `Set` | Als leeres `{}` serialisiert. |
+| `BigInt` | Wirft `TypeError`. |
+| `Function` | Verworfen (in Objekten); Arrays werden zu `null`. |
+| `Symbol` | Verworfen. |
+| Klasseninstanzen | Als plain `{ ...fields }` serialisiert; Methoden verloren. |
+
+Für **die meisten Actor-Nachrichten** ist das okay — die
+[Message-Konventionen](/de/fundamentals/messages/) des Frameworks
+raten ohnehin von nicht serialisierbaren Formen ab.
+
+## Größe
+
+JSON ist **größer als Binärformate** für dieselben Daten:
+
+- Zahlen sind Dezimal-Strings (`"42"` sind 4 Bytes vs. 2 bei CBOR).
+- Feldnamen wiederholen sich (jeder Record hat `"kind":"..."`).
+- Binärdaten (`Uint8Array`) werden base64-kodiert (33 % Overhead).
+
+Für textlastige oder sich wiederholende Daten ist JSONs Overhead
+**klein**.  Für binärlastige Daten (Bilder, kodierte Payloads)
+spart CBOR spürbar.
+
+## Performance
+
+Grobe Zahlen pro Serialize-/Deserialize-Paar:
+
+- **Kleines Objekt** (~50 Bytes): ~1–2 Mikrosekunden.
+- **Mittleres Objekt** (~1 KB): ~5–15 Mikrosekunden.
+- **Großes Objekt** (~100 KB): ~1–2 ms.
+
+`JSON.parse` / `JSON.stringify` sind nativer Code in V8/JSC —
+schnell genug, dass JSON-Serialisierung selten zum Bottleneck wird.
+
+## Wann auf etwas anderes wechseln
+
+```
+Mit Nicht-JSON-Systemen interoperieren?              → Custom (Protobuf/Avro)
+Bandbreitenkritisch (große oder viele kleine Nachrichten)?  → CBOR
+Typisierte Schemas in Versionskontrolle nötig?       → Custom (Protobuf)
+Sonst                                                → Bei JSON bleiben
+```
+
+Die meisten Produktions-Apps bleiben für Actor-Wire und Persistenz
+bei JSON — die Perf-/Größenvorteile eines Wechsels rechtfertigen
+selten die operative Komplexität.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Date-Round-Trip">
+  ```ts
+  ref.tell({ at: new Date() });
+  // Sender:   { at: Date(2025-05-13T12:00:00Z) }
+  // Empfänger: { at: "2025-05-13T12:00:00.000Z" }  ← String, kein Date
+  ```
+  Der Empfänger bekommt einen **String**, kein `Date`.  Wandle
+  explizit:
+  ```ts
+  override onReceive(msg) {
+    const at = new Date(msg.at);   // String → Date
+  }
+  ```
+  Oder nimm in Nachrichten `Date.now()` (Zahl) statt
+  `new Date()`.
+</Aside>
+
+<Aside type="caution" title="BigInt wirft">
+  ```ts
+  ref.tell({ id: 1234567890123456789n });   // ✗ TypeError
+  ```
+  JSON kann BigInt nicht serialisieren.  Wandle in der Nachricht
+  in einen String:
+  ```ts
+  ref.tell({ id: String(myBigInt) });
+  ```
+  Oder nimm CBOR, das BigInt-Support hat.
+</Aside>
+
+<Aside type="caution" title="`Map` und `Set` werden zu `{}`">
+  ```ts
+  ref.tell({ m: new Map([['a', 1]]) });
+  // → JSON: { "m": {} } — Map-Einträge verloren
+  ```
+  JSON weiß nicht, wie es Map / Set serialisieren soll.  Wandle
+  vor dem Senden in Arrays von Tupeln oder Plain-Objekte um.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[Serialization-Übersicht](/de/serialization/overview/)** —
+  das große Bild.
+- **[CBOR-Serializer](/de/serialization/cbor/)** — die
+  binäre Alternative.
+- **[Eigene Serializer](/de/serialization/custom/)** —
+  Protobuf / Avro / usw.
+- **[Nachrichten](/de/fundamentals/messages/)** — die
+  Konventionen für serialisierungsfreundliche Formen.

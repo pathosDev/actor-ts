@@ -1,0 +1,156 @@
+---
+title: UDP
+description: Datagram-Socket-Actor — `UdpSocketActor` zum Senden + Empfangen von UDP-Paketen. Verbindungslos; keine Zustellgarantie; keine Reihenfolge. Das richtige Werkzeug für Telemetrie, Multicast, niedrige Latenz, "Fire-and-Forget auf Netzwerk-Ebene".
+---
+
+`UdpSocketActor` umschließt einen UDP-Socket — verbindungslos, keine
+ACKs, keine Retries, paketorientiert.  Nimm ihn, wenn **Best-Effort-
+Zustellung in Ordnung ist** und Latenz wichtiger ist als
+Zuverlässigkeit.
+
+```ts
+import { ActorSystem, Props, UdpSocketActor } from 'actor-ts';
+
+const udp = system.actorOf(
+  Props.create(() => new UdpSocketActor({
+    bindHost: '0.0.0.0',
+    bindPort: 8125,         // bind zum Empfangen
+  })),
+  'udp',
+);
+
+// An einen Remote-Endpoint senden:
+udp.tell({
+  kind:    'send',
+  host:    'collector.example.com',
+  port:    8125,
+  payload: new TextEncoder().encode('cpu.usage:0.42|g'),
+});
+
+// Eingehende Pakete subscribieren:
+udp.tell({ kind: 'subscribe', subscriber: packetHandler });
+```
+
+## Settings
+
+```ts
+interface UdpSocketActorSettings extends BrokerCommonSettings {
+  bindHost?: string;             // Default '0.0.0.0'; '' deaktiviert Empfang
+  bindPort?: number;             // 0 = zufällig; weglassen deaktiviert Empfang
+  reuseAddr?: boolean;           // Default false
+  ipv6Only?: boolean;            // Default false
+  multicast?: {
+    address:   string;
+    interface?: string;
+    ttl?:      number;
+    loopback?: boolean;
+  };
+}
+```
+
+## Nur Senden
+
+```ts
+new UdpSocketActor({ bindHost: '', bindPort: undefined });   // ✓ nur senden
+```
+
+Ohne `bindPort` lauscht der Actor nicht — er ist ein reiner
+**Sender**.  Nützlich für einseitige Telemetrie (statsd, syslog).
+
+## Eingehende Pakete
+
+```ts
+class PacketHandler extends Actor<UdpInbound> {
+  override onReceive(msg: UdpInbound): void {
+    if (msg.kind === 'packet') {
+      // msg.payload — Uint8Array
+      // msg.from   — { host, port } des Senders
+      this.handleDatagram(msg.payload, msg.from);
+    }
+  }
+}
+```
+
+Jedes Paket ist **eine logische Nachricht** — UDP erhält
+Paketgrenzen (anders als TCPs Byte-Stream).
+
+## Multicast
+
+```ts
+new UdpSocketActor({
+  bindPort: 5353,
+  multicast: {
+    address: '224.0.0.251',     // mDNS
+    interface: '0.0.0.0',
+    ttl: 1,
+    loopback: false,
+  },
+});
+```
+
+Tritt der Multicast-Gruppe auf dem angegebenen Interface bei.
+Nützlich für **Service Discovery** (mDNS, SSDP),
+**Statusverteilung** im LAN.
+
+Für routbares Multicast über Cluster-Knoten muss das Netz
+Multicast erlauben (die meisten Cloud-Netze blockieren es; viele
+On-prem-Netze auch).
+
+## Wann UDP
+
+Drei gute Einsatzfälle:
+
+1. **Telemetrie** — Metriken an einen Collector senden (statsd,
+   DogStatsD).  Verlust eines Pakets ist akzeptabel; Latenz zählt.
+2. **Service Discovery im LAN** — mDNS / SSDP / proprietäre
+   Broadcast-Schemata.
+3. **Hochfrequente Low-Stakes-Daten** — Spielpositionen,
+   Sensor-Streams, bei denen das nächste Paket das vorherige
+   ersetzt.
+
+Nicht die richtige Form für:
+
+- **Alles, was Zustellgarantie braucht** — nimm TCP oder ein
+  höherrangiges, zuverlässiges Protokoll.
+- **Alles, was Reihenfolge braucht** — UDP-Pakete kommen in
+  beliebiger Reihenfolge an.
+- **Alles, das größer als die MTU ist** — Pakete >1500 Bytes
+  fragmentieren + können leichter verloren gehen.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Keine Zustellgarantie">
+  ```ts
+  udp.tell({ kind: 'send', ... });
+  // ↑ das Framework sendet; ob das Netz ausliefert, ist unbekannt
+  ```
+  UDP ist Fire-and-Forget.  Wenn die Anwendung wissen muss, ob das
+  Paket ankam, bau Acknowledgment ins Protokoll ein oder nimm TCP.
+</Aside>
+
+<Aside type="caution" title="MTU liegt typischerweise um 1500 Bytes">
+  ```ts
+  udp.tell({ kind: 'send', payload: new Uint8Array(10_000) });   // ✗ fragmentiert
+  ```
+  Pakete größer als die Pfad-MTU fragmentieren auf der IP-Schicht.
+  Fragmentierte Pakete gehen mit höherer Wahrscheinlichkeit
+  verloren (Verlust eines Fragments = ganzes Paket verloren).
+  Halte Payloads ≤1400 Bytes für Sicherheit.
+</Aside>
+
+<Aside type="caution" title="Multicast in Cloud-Umgebungen">
+  ```ts
+  // AWS, GCP, Azure: Multicast meist nicht unterstützt
+  ```
+  Die meisten Cloud-Provider blockieren Multicast.  Für Cloud-
+  interne Discovery nimm stattdessen einen
+  [Seed-Provider](/de/discovery/overview/).
+</Aside>
+
+## Wohin als Nächstes
+
+- **[I/O-Übersicht](/de/io/overview/)** — das große
+  Bild.
+- **[TCP](/de/io/tcp/)** — für verlässliche Byte-Streams.
+- **[BrokerActor-Basis](/de/io/broker-actor-base/)** — der
+  gemeinsame Lifecycle.

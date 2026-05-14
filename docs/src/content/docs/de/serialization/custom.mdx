@@ -1,0 +1,259 @@
+---
+title: Eigene Serializer
+description: Protobuf, Avro, MessagePack oder jedes andere Format einklinken, indem du `Serializer<T>` implementierst und es über die SerializationExtension an bestimmte Nachrichtenklassen bindest. Pro-Klasse-Serialisierung; JSON / CBOR fallen als Defaults zurück.
+---
+
+Für Formate jenseits von JSON / CBOR — **Protobuf, Avro,
+MessagePack, FlatBuffers** — implementierst du das
+`Serializer<T>`-Interface und bindest es an bestimmte
+Nachrichtenklassen.
+
+```ts
+import { Serializer, SerializationExtensionId } from 'actor-ts';
+
+class ProtoOrderSerializer implements Serializer<Order> {
+  readonly id = 100;
+  readonly name = 'order-protobuf';
+  readonly includesManifest = false;
+
+  manifest(_obj: Order): string { return ''; }
+
+  toBinary(obj: Order): Uint8Array {
+    return OrderProto.encode(obj).finish();
+  }
+
+  fromBinary(bytes: Uint8Array, _manifest: string): Order {
+    return OrderProto.decode(bytes);
+  }
+}
+
+// Verdrahten:
+const ext = system.extension(SerializationExtensionId);
+ext.bind(Order, new ProtoOrderSerializer());
+```
+
+Jetzt fließt jede `Order`-Instanz durch Protobuf; jeder andere
+Wert nutzt das Default-JSON/CBOR.
+
+## Das Serializer-Interface
+
+```ts
+interface Serializer<T = unknown> {
+  readonly id:                number;
+  readonly name:              string;
+  includesManifest:           boolean;
+  manifest(obj: T):           string;
+  toBinary(obj: T):           Uint8Array;
+  fromBinary(bytes: Uint8Array, manifest: string): T;
+}
+```
+
+- **`id`** — eindeutige Zahl ≥ 100 (1–99 für Built-ins reserviert).
+  In jeden Frame eingebettet; teilt dem Empfänger mit, welchen
+  Serializer er verwenden soll.
+- **`name`** — nur Diagnose.
+- **`includesManifest`** — ob `manifest()` brauchbare Infos
+  zurückgibt.
+- **`manifest(obj)`** — gibt einen String zurück, der den konkreten
+  Typ identifiziert.  Verwende es, wenn ein Serializer mehrere
+  Typen behandelt und der Decoder wissen muss, welchen.
+- **`toBinary`** / **`fromBinary`** — das eigentliche Encode /
+  Decode.
+
+## Binding nach Klasse
+
+```ts
+ext.bind(Order, orderSerializer);
+ext.bind(Payment, paymentSerializer);
+ext.bind(Cancellation, cancelSerializer);
+```
+
+Die Extension mappt Werte auf Serializer über den **Konstruktor**:
+`value instanceof Class` → den an diese Klasse gebundenen
+Serializer nutzen.
+
+Das heißt:
+
+- **Plain-Objekte** matchen kein Binding → fallen auf den Default
+  zurück (JSON oder CBOR).
+- **Klasseninstanzen** matchen ihre Klassen-Bindung.
+- **Subklassen** matchen die Bindung des Parents (weil
+  `instanceof` transitiv ist).
+
+## Wann ein eigener Serializer
+
+Drei gute Einsatzfälle:
+
+1. **Cross-Language-Interop** — dein Actor-System muss mit
+   Nicht-JS-Services über Protobuf / Avro / ähnlich sprechen.
+2. **Schema-erzwungene Evolution** — Protobuf-Schema-Dateien in
+   der Versionskontrolle sind die kanonischen Typen; das
+   Framework liest aus ihnen.
+3. **Spezifische Perf-/Größenanforderungen** — FlatBuffers für
+   Zero-Copy-Reads, MessagePack für eine Größe zwischen JSON +
+   CBOR.
+
+Für typische Apps ohne diese Einschränkungen **reichen JSON
+oder CBOR**.
+
+## Protobuf-Beispiel
+
+```ts
+import { Serializer } from 'actor-ts';
+import { Order } from './generated/order_pb.js';
+
+class OrderProtoSerializer implements Serializer<Order> {
+  readonly id = 100;
+  readonly name = 'order-pb';
+  readonly includesManifest = true;
+
+  manifest(obj: Order): string {
+    return `order.v${obj.getVersion()}`;
+  }
+
+  toBinary(obj: Order): Uint8Array {
+    return obj.serializeBinary();
+  }
+
+  fromBinary(bytes: Uint8Array, manifest: string): Order {
+    const order = Order.deserializeBinary(bytes);
+    if (manifest && manifest !== `order.v${order.getVersion()}`) {
+      throw new Error(`version mismatch: ${manifest} vs v${order.getVersion()}`);
+    }
+    return order;
+  }
+}
+
+ext.bind(Order, new OrderProtoSerializer());
+```
+
+Das Manifest trägt Versionsinfo; der Decoder verifiziert.  In
+Kombination mit Protobufs Wire-Level-Rückwärtskompatibilität kannst
+du Schemas weiterentwickeln, während alte Nachrichten korrekt
+dekodieren.
+
+## MessagePack-Beispiel
+
+```ts
+import { encode, decode } from '@msgpack/msgpack';
+
+class MessagePackSerializer implements Serializer<unknown> {
+  readonly id = 101;
+  readonly name = 'msgpack';
+  readonly includesManifest = false;
+
+  manifest(): string { return ''; }
+  toBinary(obj: unknown): Uint8Array { return encode(obj); }
+  fromBinary(bytes: Uint8Array): unknown { return decode(bytes); }
+}
+
+// Als systemweiter Default:
+ext.setDefault(new MessagePackSerializer());
+```
+
+MessagePack sitzt zwischen JSON (Größe, Parse-Speed) und Protobuf
+(typisierte Schemas).  Nützlich, wenn du ein CBOR-ähnliches
+Format mit breiteren Cross-Language-Libraries willst.
+
+## Pro Klasse vs. systemweit
+
+```
+ext.bind(Class, serializer)    → nur diese Klasse
+ext.setDefault(serializer)      → jeder Wert (ersetzt JSON/CBOR)
+```
+
+Pro Klasse ist **sicherer** — behält den Default-Fallback für
+Dinge, die du nicht zu binden gedacht hast.  Systemweit ist
+**einheitlich** — jede Nachricht nutzt dasselbe Format.
+
+Für die meisten Apps: **pro Klasse für spezifische Typen**
+(Protobuf'te Events), **JSON-Default** für alles andere.
+
+## Schema-Evolution mit eigenen Serializern
+
+Eigene Serializer sollten **Vorwärts- + Rückwärtskompatibilität**
+behandeln:
+
+```ts
+fromBinary(bytes: Uint8Array, manifest: string): Order {
+  if (manifest === 'order.v1') {
+    return migrateV1ToV2(Order.deserializeBinary(bytes));
+  }
+  return Order.deserializeBinary(bytes);
+}
+```
+
+Bei Protobuf ist das Wire-Format selbst vorwärtskompatibel (neue
+Felder werden von altem Code ignoriert).  Du brauchst explizite
+Migration nur, wenn sich die **Semantik** ändert (Renames,
+Splits) — von deinem eigenen Serializer auf die gleiche Weise
+behandelt, wie die
+[Migration-Adapter](/de/persistence/migration/overview/) des
+Frameworks die Evolution von JSON-Formaten behandeln.
+
+## Registrierung bei der Extension
+
+```ts
+const ext = system.extension(SerializationExtensionId);
+
+// Spezifische Klassen binden:
+ext.bind(Order, orderSerializer);
+ext.bind(Payment, paymentSerializer);
+
+// Einen Serializer der Lookup-Tabelle hinzufügen, ohne zu binden:
+ext.register(myCustomSerializer);
+// → über ID für `fromBinary`-Aufrufe verfügbar, kein Auto-Routing
+```
+
+`bind` fügt **Routing** hinzu (diese Klasse nutzt diesen
+Serializer).  `register` fügt nur der **Lookup-Tabelle** etwas
+hinzu (zum Dekodieren von Bytes, die mit der ID dieses Serializers
+gelabelt sind); nützlich, wenn der Serializer implizit (über
+Manifest-Dispatch) genutzt wird, aber nicht für eine bestimmte
+Klasse.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="ID-Kollisionen">
+  ```ts
+  // Zwei Serializer mit derselben id
+  ext.register(new ProtoSerializer());      // id: 100
+  ext.register(new MsgPackSerializer());    // id: 100  ← Kollision
+  ```
+  Jeder Serializer braucht eine eindeutige `id`.  Wähle ≥ 100
+  für eigene Serializer; tracke sie in deiner Codebasis wie ein
+  Protobuf-Field-Register.
+</Aside>
+
+<Aside type="caution" title="Bindungen mitten im Flug hinzufügen">
+  ```ts
+  // Cluster steht; pod-2 bindet einen neuen Serializer; pod-1 weiß nichts davon
+  ```
+  Rolle Änderungen an eigenen Serializern über Standard-Upgrade-
+  Prozeduren aus.  Pods, denen eine Bindung fehlt, können
+  Nachrichten von Pods, die sie haben, nicht dekodieren.
+</Aside>
+
+<Aside type="caution" title="Serializer-State über Neustart">
+  ```ts
+  class StatefulSerializer implements Serializer<T> {
+    private counter = 0;
+    // ...
+  }
+  ```
+  Serializer sollten keinen veränderlichen Per-Instanz-State
+  haben — sie können von mehreren Actors geteilt, nebenläufig
+  aufgerufen und bei Neustart frisch instanziiert werden.
+  Zustandslose Implementierungen sind sicher.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[Serialization-Übersicht](/de/serialization/overview/)** —
+  das große Bild.
+- **[JSON-Serializer](/de/serialization/json/)** — der
+  Default.
+- **[CBOR-Serializer](/de/serialization/cbor/)** — die
+  binäre Alternative.
+- **[Migration-Übersicht](/de/persistence/migration/overview/)** —
+  Schema-Evolutions-Muster.

@@ -1,0 +1,235 @@
+---
+title: Remember Entities
+description: Persistiere die Menge aktiver Entity-IDs, sodass sie nach einem Koordinator-Failover automatisch neu gespawnt werden. Der Unterschied zwischen "Entity-Recovery ist eager" und "Entity-Recovery ist lazy bei der nächsten Nachricht".
+---
+
+Sharded Entities sind standardmäßig **lazy**: ein Entity-Actor
+existiert erst, nachdem er seine erste Nachricht empfangen hat.
+Ohne `rememberEntities` bedeutet ein Cluster-Kaltstart oder
+Koordinator-Failover, dass die aktive Entity-Menge leer ist —
+Entities werden bei Bedarf neu gespawnt, sobald Nachrichten
+ankommen.
+
+Für viele Workloads ist das in Ordnung. Manchmal aber willst du,
+dass Entities **eager neu erstellt** werden:
+
+- Sie haben geplante Hintergrundarbeit, die unabhängig von
+  eingehenden Nachrichten laufen sollte.
+- Sie haben etwas Externes abonniert und müssen am Leben sein,
+  um es zu verarbeiten.
+- Failover sollte das volle Arbeitsset sofort wiederherstellen,
+  nicht durchsickern, sobald Nutzer auf jede Entity treffen.
+
+`rememberEntities: true` ist der Schalter.
+
+## Aktivieren
+
+```ts
+sharding.start({
+  typeName:           'session',
+  entityProps:        Props.create(() => new SessionActor()),
+  extractEntityId:    (msg) => msg.userId,
+  rememberEntities:   true,
+});
+```
+
+Was es tut:
+
+- Die *Existenz* jeder Entity (ihre ID) wird in einem
+  **Remember-Entities-Store** persistiert.
+- Beim Cluster-Kaltstart oder nach einem Koordinator-Failover
+  liest der Koordinator die Menge bekannter Entity-IDs und bittet
+  jede Shard-Region, sie eager **neu zu spawnen**.
+
+Der Default-Store nutzt das [Journal](/de/persistence/overview/) des
+Systems, sodass du das umsonst bekommst, sobald Persistenz
+konfiguriert ist. Überschreibe mit `rememberEntitiesStore`, wenn du
+einen anderen Backing-Store brauchst.
+
+## Was persistiert wird
+
+Nur die **Identitäten** aktiver Entities — nicht ihr Zustand. Der
+Entity-Zustand ist die Verantwortung der Entity selbst
+([PersistentActor](/de/persistence/persistent-actor/) journalisiert
+Zustandsänderungen; Remember-Entities verfolgt, welche IDs
+zurückgebracht werden sollen).
+
+Zwei-Speicher-Aufteilung:
+
+```
+Journal (deine Events)            RememberEntitiesStore (nur IDs)
+  pid=cart-user-42                  entityIds = ['cart-user-42', 'cart-user-43', ...]
+  Event 1                            
+  Event 2
+  Event 3
+```
+
+Das ist absichtlich — der Remember-Store hat andere
+Zugriffsmuster (kleine, häufige Writes, wenn Entities
+starten/stoppen) und profitiert davon, separierbar zu sein.
+
+## Was NICHT persistiert wird
+
+- Der Shard, zu dem eine gegebene Entity gehört hat. Bei Respawn
+  läuft die Allokation erneut (per
+  [Allokationsstrategie](/de/cluster/sharding/allocation-strategy/)).
+- Der **Zustand** der Entity. Wenn du willst, dass Zustand
+  überlebt, muss die Entity ihn selbst persistieren — über
+  `PersistentActor` oder externen Storage.
+
+## Ohne Persistenz-Backend
+
+Wenn du `rememberEntities: true` verwendest, aber kein Journal
+konfiguriert hast:
+
+```ts
+sharding.start({
+  typeName: '...',
+  entityProps: ...,
+  extractEntityId: ...,
+  rememberEntities: true,
+  rememberEntitiesStore: null,   // explizites Opt-Out aus Persistenz
+});
+```
+
+`null` zu übergeben fällt zurück auf das v1-In-Memory-Only-Verhalten —
+die Entity-Menge wird im Prozessspeicher verfolgt und bei
+Koordinator-Failover verloren. Nützlich für Dev / Tests; sinnlos
+in Produktion.
+
+Ohne `rememberEntitiesStore: null` und ohne konfiguriertes Journal
+instanziiert das Framework automatisch einen
+`JournalRememberEntitiesStore` mit dem (standardmäßig In-Memory)
+Journal — was zum Testen in Ordnung ist, aber **einen Neustart
+nicht überlebt**. Stelle sicher, dass dein Journal in Produktion
+dauerhaft ist.
+
+## Eigener Store
+
+```ts
+import type { RememberEntitiesStore } from 'actor-ts/cluster/sharding';
+
+class RedisRememberEntitiesStore implements RememberEntitiesStore {
+  async addEntity(typeName: string, entityId: string): Promise<void> { /* SADD */ }
+  async removeEntity(typeName: string, entityId: string): Promise<void> { /* SREM */ }
+  async listEntities(typeName: string): Promise<ReadonlyArray<string>> { /* SMEMBERS */ }
+}
+
+sharding.start({
+  // ...
+  rememberEntities:        true,
+  rememberEntitiesStore:   new RedisRememberEntitiesStore(),
+});
+```
+
+Die Schnittstelle ist klein. Nützlich, wenn du die Entity-Registry
+auf einem anderen Backing-Store als den Rest deiner Persistenz
+willst (z. B. Redis für latenzarme Entity-Set-Lookups, während das
+Journal auf Cassandra liegt).
+
+## Kosten
+
+`rememberEntities: true` fügt zwei Write-Operationen pro
+Entity-Lebenszyklus hinzu:
+
+1. **Ein Write, wenn die Entity spawnt** (`addEntity`).
+2. **Ein Write, wenn die Entity passiviert / stoppt**
+   (`removeEntity`).
+
+Für High-Churn-Entities (Millionen kurzlebiger Sessions pro
+Stunde) ist das echter Overhead. Erwäge:
+
+- `rememberEntities` für kurzlebige Workloads überspringen.
+- Einen schnellen Store (In-Memory-Redis) statt des
+  Default-Journals nutzen.
+- Writes batchen, wenn du einen eigenen Store implementierst.
+
+Für Low-Churn-Workloads (10K stabile Entities) sind die Kosten
+vernachlässigbar.
+
+## Wann verwenden
+
+| Szenario | rememberEntities nutzen? |
+| --- | --- |
+| Per-User-Sessions, kurzlebig, beim nächsten Request neu spawnen | Nein |
+| Lange laufende Koordinatoren, müssen leben, um geplante Arbeit zu tun | Ja |
+| IoT-Device-Handler, müssen beim Start MQTT-Topics abonnieren | Ja |
+| Per-Tenant-Cache, teuer zu rebauen | Ja |
+| Per-Order-Saga, muss nach Failover dort weiter, wo sie aufgehört hat | Ja |
+| Per-Request-temporärer-Actor, stirbt in Sekunden | Nein |
+
+Die Regel: **wenn "brauche ich diese Entity am Leben auch ohne
+kürzliche Nachricht?" ein Ja ist**, aktivieren.
+
+## Interaktion mit Passivierung
+
+Passivierung stoppt idle Entities. Mit `rememberEntities`:
+
+```
+Entity aktiv → passiviere (idle) → Entity stoppt → Store: removeEntity?
+```
+
+Verhalten des Frameworks:
+
+- **Idle-Timeout-Passivierung** (`passivationIdleMs`) — entfernt die
+  Entity aus dem Store. Nächste Nachricht spawnt sie neu; der
+  Store empfängt erneut ein `addEntity`.
+- **`maxEntities`-LRU-Passivierung** — dasselbe.
+- **`Passivate` von der Entity selbst** — dasselbe.
+
+Für Workloads, in denen du **eager Re-Spawn auch von kürzlich
+inaktiven Entities** willst, setze `passivationIdleMs: 0`, damit
+sie bleiben.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Kaltstart-Stürme">
+  ```ts
+  // 100 000 gemerkte Entities + Cluster-Kaltstart
+  // → alle 100 000 spawnen innerhalb von Sekunden
+  ```
+  Das Framework spawnt gemerkte Entities **eager** nach der
+  Koordinator-Initialisierung. Für sehr große Entity-Mengen ist
+  das ein donnernder Schub — N Journals werden gleichzeitig
+  abgespielt, N preStarts laufen. Mildere das, indem du nach ID
+  shardest (Entities laden parallel über Shard-Regionen) und
+  sicherstellst, dass entity preStart günstig ist
+  (snapshot-geführte Recovery statt vollem Journal-Replay).
+</Aside>
+
+<Aside type="caution" title="Falsche Store-Wahl erzeugt Inkonsistenz">
+  ```ts
+  rememberEntitiesStore: customStore,
+  // Aber das Journal (wo Entities ihren State persistieren) liegt woanders
+  ```
+  Remember-Store und Entity-State-Store teilen sich keine
+  Transaktion. Eine Entity-ID kann im Remember-Store auftauchen,
+  ohne entsprechende Events im Journal (Race beim Shutdown), oder
+  umgekehrt. In der Praxis ist das harmlos — ein fehlendes
+  Journal bedeutet, dass die Entity frisch startet; ein verwaister
+  Remember-Eintrag führt zu einer kurzen No-Op-Entity.
+</Aside>
+
+<Aside type="caution" title="Nicht ohne ein echtes Journal aktivieren">
+  ```ts
+  rememberEntities: true,
+  // ↑ aber InMemoryJournal in Produktion
+  ```
+  Das In-Memory-Journal verliert Daten beim Neustart — also
+  verliert der Remember-Store jede Entity-ID. Untergräbt den
+  Zweck. Paare `rememberEntities: true` in Produktion immer mit
+  einem dauerhaften Journal (SQLite für Single-Node, Cassandra
+  für Multi-Node).
+</Aside>
+
+## Wohin als Nächstes
+
+- **[Sharding-Überblick](/de/cluster/sharding/overview/)** —
+  das größere Bild.
+- **[Rebalance](/de/cluster/sharding/rebalance/)** — was
+  passiert, wenn gemerkte Entities wandern.
+- **[PersistentActor](/de/persistence/persistent-actor/)** —
+  für die *Zustands*-Recovery der Entity (orthogonal zu
+  Remember-Entities).
+- **[Journals](/de/persistence/journals/in-memory/)** — der
+  Default-Backing-Store.

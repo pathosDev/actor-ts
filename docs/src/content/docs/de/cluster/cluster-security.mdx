@@ -1,0 +1,231 @@
+---
+title: Cluster-Sicherheit
+description: TLS + Shared-Secret-Authentifizierung auf dem Cluster-Transport — verschlüsselt Gossip- und Envelope-Verkehr und verhindert unautorisierte Cluster-Joins. Pflicht für jeden Cluster, der über nicht vertrauenswürdige Netzwerke läuft.
+---
+
+Der Cluster-Transport ist standardmäßig **unauthentifiziertes
+Plain-TCP**. In Ordnung innerhalb eines privaten Netzwerks, in dem
+jeder Host bereits vertrauenswürdig ist. **Nicht in Ordnung**
+irgendwo sonst — öffentliches Internet, Multi-Tenant-K8s, nicht
+vertrauenswürdige Vermittler.
+
+Diese Seite ist die **How-to** zur Absicherung des
+Cluster-Transports. Für den operativen Kontext siehe
+[Operations — Cluster-Sicherheit](/de/operations/security/cluster-security/).
+
+## Was abzusichern ist
+
+| Bedrohung | Maßnahme |
+| --- | --- |
+| Lauschangriff | TLS auf dem Cluster-Transport |
+| MITM (Abfangen + Verändern) | TLS + Zertifikatsprüfung |
+| Unautorisierter Join (jeder mit Port-Zugriff kann joinen) | mTLS + Shared-Secret-Auth |
+| Kompromittiertes Zertifikat (für gestohlene Identität ausgestellt) | Cert-Rotation + Revocation |
+
+## TLS aktivieren
+
+```ts
+import { TcpTransport, NodeAddress, Cluster } from 'actor-ts';
+
+const transport = new TcpTransport(
+  NodeAddress.parse('actor-ts://my-app@10.0.0.5:2552'),
+  system.log,
+  {
+    cert: fs.readFileSync('./tls/cluster.crt'),
+    key:  fs.readFileSync('./tls/cluster.key'),
+    ca:   fs.readFileSync('./tls/ca.crt'),
+    rejectUnauthorized: true,
+  },
+);
+
+await Cluster.join(system, { host, port, seeds, transport });
+```
+
+TLS-gewrapptes TCP, alles-oder-nichts pro Cluster. Jeder Node
+verwendet dieselbe TLS-Konfiguration; gemischtes Plain + TLS
+funktioniert nicht.
+
+## Cert-Layout
+
+Das Minimum:
+
+- Ein **CA-Cert** + privater Schlüssel (zum Signieren von
+  Per-Node-Certs).
+- Ein **Per-Node-Cert** + privater Schlüssel (von der CA signiert).
+
+```bash
+# CA erzeugen (einmalig):
+openssl req -x509 -newkey rsa:4096 -keyout ca.key -out ca.crt -days 3650 -nodes \
+  -subj "/CN=actor-ts-ca"
+
+# Per-Node-Cert:
+openssl req -newkey rsa:4096 -keyout node-1.key -out node-1.csr -nodes \
+  -subj "/CN=node-1.cluster.local"
+
+openssl x509 -req -in node-1.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
+  -out node-1.crt -days 365
+```
+
+Jeder Node lädt:
+
+- Sein eigenes Cert + Key.
+- Das CA-Cert (um die Certs der Peers zu verifizieren).
+
+## Mutual TLS
+
+```ts
+{
+  cert: fs.readFileSync('./tls/this-node.crt'),
+  key:  fs.readFileSync('./tls/this-node.key'),
+  ca:   fs.readFileSync('./tls/ca.crt'),
+  rejectUnauthorized: true,        // ← Peers ohne gültiges Cert ablehnen
+}
+```
+
+Mit `rejectUnauthorized: true` + einer gemeinsamen CA verlangt
+**jede Verbindung von beiden Seiten ein gültiges, von der CA
+signiertes Cert**. Keine anonymen Joins; kein Plain-Text-Fallback.
+
+## Shared Secret als Defense in Depth
+
+Über mTLS hinaus unterstützt das Framework eine zusätzliche
+**Shared-Secret-Prüfung** im Cluster-Handshake:
+
+```ts
+new TcpTransport(self, log, tlsOpts, /* maxFrame */ undefined, {
+  sharedSecret: process.env.CLUSTER_SECRET,
+});
+```
+
+Jeder Node vergleicht das Secret während des initialen Handshakes;
+ein Mismatch lässt die Verbindung scheitern.
+
+Wann nützlich:
+
+- **Insider-Bedrohung** — jemand mit gültigem Cert, aber
+  unautorisiert.
+- **CA-Kompromittierung** — falls der Schlüssel deiner CA leakt,
+  ist ein Shared Secret eine zusätzliche Barriere.
+
+Für die meisten Deployments **reicht mTLS allein**. Das Shared
+Secret ist paranoid-sicher.
+
+## In K8s
+
+cert-manager + Secrets ist das Standardmuster:
+
+```yaml
+# Cert verwaltet von cert-manager:
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: actor-ts-cluster
+spec:
+  secretName: actor-ts-cluster-tls
+  issuerRef:
+    name: actor-ts-ca
+    kind: ClusterIssuer
+  commonName: actor-ts
+  dnsNames:
+    - actor-ts-cluster.svc
+  duration: 8760h
+  renewBefore: 720h
+
+---
+# Pod mounted das Secret + Cluster-Secret:
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+    - name: app
+      env:
+        - name: CLUSTER_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: actor-ts-secrets
+              key: cluster-secret
+      volumeMounts:
+        - name: tls
+          mountPath: /etc/tls
+          readOnly: true
+  volumes:
+    - name: tls
+      secret:
+        secretName: actor-ts-cluster-tls
+```
+
+cert-manager erneuert Certs automatisch; Pods laden sie beim
+Neustart neu. Für Cert-Rotation ohne Downtime nutze einen
+**Rolling Restart**, nachdem neue Certs bereitliegen.
+
+## Firewall
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cluster-internal-only
+spec:
+  podSelector:
+    matchLabels:
+      app: actor-ts
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: actor-ts
+      ports:
+        - protocol: TCP
+          port: 2552
+```
+
+Nur `app=actor-ts`-Pods können Port 2552 erreichen. Kombiniert mit
+mTLS + Shared Secret sind das **drei unabhängige Schichten**.
+
+## Performance-Auswirkung
+
+TLS fügt ~5-15 % Overhead pro Byte auf dem Transport hinzu. Für
+typische Actor-Nachrichten (kleine Payloads, moderater Durchsatz)
+unbemerkbar. Für hochfrequenten Cluster-Verkehr messbar, aber
+selten der Flaschenhals.
+
+## Wann NICHT aktivieren
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Vertrauenswürdiges Netzwerk, Single-Tenant">
+  ```
+  Internes Firmennetzwerk, eigenes VLAN, alle Nodes, die du kontrollierst
+  ```
+  Plain-TCP ist hier in Ordnung. TLS hinzuzufügen, bringt
+  operative Kosten (Cert-Rotation) ohne Sicherheitsgewinn. Erst
+  Bedrohungsmodell.
+</Aside>
+
+<Aside type="caution" title="Self-signed für Produktion">
+  ```ts
+  // Dasselbe selbstsignierte Cert, keine Rotationsstrategie
+  ```
+  Self-signed ist für Dev / Staging in Ordnung. Produktion
+  braucht eine CA + Rotationsplan — cert-manager oder
+  Äquivalent.
+</Aside>
+
+<Aside type="caution" title="`rejectUnauthorized: false`">
+  ```ts
+  rejectUnauthorized: false,
+  ```
+  Hebelt die Authentifizierung aus. Akzeptiert jedes Cert. Nie
+  in Produktion.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[Operations — Cluster-Sicherheit](/de/operations/security/cluster-security/)** —
+  operativer Walk-Through.
+- **[TLS überall](/de/operations/security/tls-everywhere/)** —
+  TLS über andere Komponenten hinweg.
+- **[Transports](/de/cluster/transports/)** — die Schnittstelle
+  des Cluster-Transports.
+- **[Konfiguration](/de/reference/configuration/)** — die
+  TLS-HOCON-Keys.

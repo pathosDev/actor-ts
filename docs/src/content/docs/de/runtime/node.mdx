@@ -1,0 +1,241 @@
+---
+title: Node.js
+description: Node.js 20 oder neuer ist voll unterstützt. Ein paar Subsysteme brauchen Peer-Dependencies (`better-sqlite3` für SQLite, `ws` für WebSocket-Server). Nutze Node, wenn deine Plattform es verlangt oder dein Team schon Node betreibt.
+---
+
+actor-ts läuft auf **Node.js 20 und neuer**. Voll unterstützt;
+die CI des Frameworks läuft neben Bun auch gegen Node.
+
+## Warum Node
+
+| Grund | Detail |
+| --- | --- |
+| **Managed-Platform-Support** | AWS Lambda, Cloud Functions, Vercel, Cloudflare Pages akzeptieren alle Node. |
+| **LTS-Gründe** | Manche Compliance-Regime verlangen Node's LTS-Branches. |
+| **Bestehende Node-Infrastruktur** | Bestehende Build-/Deploy-/Monitor-Stacks integrieren sich natürlich. |
+| **Breitere native-Modul-Unterstützung** | Manche nativen Module (z. B. spezifische Verschlüsselungsbibliotheken) hinken auf Bun hinterher. |
+
+Für neue Greenfield-Projekte ohne diese Einschränkungen ist
+**Bun meist vorzuziehen** — weniger Peer-Deps, schnellerer
+Start.
+
+## Installation
+
+```bash
+nvm install 20
+nvm use 20
+node --version    # v20.0.0 oder neuer
+```
+
+Für Docker:
+
+```dockerfile
+FROM node:20-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev
+COPY . .
+CMD ["node", "dist/main.js"]
+```
+
+## Warum Node 20 als Untergrenze
+
+Das Framework braucht:
+
+- **`globalThis.crypto.subtle`** (WebCrypto) — auf Node 20+
+  vorhanden; genutzt für AES-GCM in Object-Storage-
+  Verschlüsselung.
+- **Eingebautes `fetch`** — stabil auf Node 18+.
+- **`AsyncLocalStorage`** — lang stabil.
+- **`node:test`** — braucht Node 20.
+
+Node 18 funktioniert vielleicht für die Core-Actor-API, wird
+aber nicht aktiv getestet — melde Bugs nur gegen Node 20+.
+
+Ein paar Features unlocken nativ auf **neueren Node-Versionen**
+(ohne Peer-Dep-Fallback):
+
+- **Natives `WebSocket`** — globaler `WebSocket`-Konstruktor
+  ist auf Node 22+ eingebaut. Auf Node 20 installiere die
+  `ws`-Peer-Dep für `ServerWebSocketActor` / `WebSocketActor`.
+- **Native `zstd`-Kompression** — `node:zlib` bekam
+  `zstdCompress` / `zstdDecompress` auf Node 22.15. Auf älterem
+  Node installiere die `fzstd`-Peer-Dep für Object-Storage-
+  zstd-Codecs.
+
+Beide Peer-Dep-Pfade sind gut getestet; „braucht eine Peer-Dep"
+heißt nicht „kaputt auf Node 20."
+
+## Peer-Dependencies
+
+Node-Setups brauchen ein paar Peer-Deps, die das Framework nicht
+mitliefert:
+
+| Subsystem | Peer-Dep |
+| --- | --- |
+| SQLite-Journal / -Snapshot-Store / -State | `better-sqlite3` |
+| WebSocket-Server (`ServerWebSocketActor`) | `ws` |
+| Kafka | `kafkajs` |
+| MQTT | `mqtt` |
+| AMQP | `amqplib` |
+| NATS | `nats` |
+| Redis | `redis` |
+| gRPC | `@grpc/grpc-js @grpc/proto-loader` |
+| Cassandra | `cassandra-driver` |
+| OTel | `@opentelemetry/api @opentelemetry/sdk-*` + Exporter |
+
+Installiere nur, was du nutzt:
+
+```bash
+npm install actor-ts ts-pattern
+# Plus pro Subsystem:
+npm install better-sqlite3   # für SQLite-Persistenz
+npm install kafkajs           # für Kafka-Actor
+```
+
+Die Lazy-Imports des Frameworks heißen, **fehlende Peer-Deps
+brechen ungenutzte Features nicht** — wenn du nie einen
+`KafkaActor` instanziierst, kannst du `kafkajs` weglassen.
+
+## SQLite auf Node
+
+```bash
+npm install better-sqlite3
+```
+
+Dann:
+
+```ts
+import { SqliteJournal } from 'actor-ts';
+
+// Erkennt automatisch better-sqlite3 auf Node.
+new SqliteJournal({ path: '/var/lib/events.db' });
+```
+
+`better-sqlite3` ist ein natives Modul — Erst-Install verlangt
+Build-Tools (gyp, Python, einen C++-Compiler). Die meisten
+Linux-Base-Images haben diese; Alpine-basierte Images brauchen
+vielleicht:
+
+```dockerfile
+RUN apk add --no-cache python3 make g++
+```
+
+Für vorgefertigte Binaries:
+
+```bash
+npm install better-sqlite3 --prefer-offline
+```
+
+Die meisten Plattformen haben vorgefertigte Artefakte; du baust
+selten aus dem Quellcode.
+
+## Tests laufen lassen
+
+```bash
+# Mit Node's nativem Runner:
+node --test --test-name-pattern="..."
+
+# Mit Vitest:
+npx vitest
+
+# Mit Jest:
+npx jest
+```
+
+TestKit funktioniert mit allen dreien. Die eigenen Tests des
+Frameworks nutzen `bun:test`, aber die **TestKit-API ist
+runner-agnostisch**.
+
+## ESM vs CommonJS
+
+actor-ts liefert **ESM** (`type: "module"` in package.json). In
+Node:
+
+```ts
+// In der package.json deiner App:
+{
+  "type": "module"
+}
+
+// actor-ts importieren:
+import { ActorSystem } from 'actor-ts';
+```
+
+Für CommonJS-Projekte bräuchtest du einen Build-Schritt
+(esbuild, tsc mit ES-Module-Interop), um zu überbrücken.
+Einfacher: nutze ESM durchgängig.
+
+## Performance auf Node
+
+Grobe Zahlen vs Bun:
+
+- **Tell-Durchsatz**: ~6-8 M msgs/sec (langsamer als Bun).
+- **HTTP-Durchsatz**: vergleichbar für Fastify-basierte Server.
+- **Start-Zeit**: 300-500 ms vs Bun's sub-100 ms.
+
+Für lang laufende Produktionsdienste zählt die Start-Lücke
+nicht. Für hochdurchsatz-starke Tight-Loop-Arbeit gewinnt Bun.
+
+## Gängige Plattformen
+
+### AWS Lambda
+
+```yaml
+# Lambda-Function-Definition:
+Runtime: nodejs20.x
+MemorySize: 1024
+Handler: dist/main.handler
+```
+
+Cold-Start dominiert bei kurzen Invocations. Pre-warm via
+Provisioned Concurrency für latenz-sensitive Workloads.
+
+Das Cluster-Modell **passt nicht gut zu Lambda** — Actor
+erwarten einen lang laufenden Prozess. Für Lambda nutze actor-ts
+als Single-Actor-per-Invocation-Muster (oder nutze eine andere
+Architektur für kurzlebige Workloads).
+
+### Cloud Functions / Vercel / Netlify
+
+Dieselben Einschränkungen — diese Plattformen sind kurzlebige
+Prozess-Umgebungen. Single-Actor-Muster funktionieren;
+Clustering nicht.
+
+### Lang laufende VMs / Container
+
+Natürlicher Fit. Nutze systemd / PM2 (siehe
+[Process Manager](/de/operations/deployment/process-manager/))
+oder K8s (siehe
+[Kubernetes-Deployment](/de/operations/deployment/kubernetes/)).
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Native Module brauchen Build-Tools">
+  ```bash
+  npm install better-sqlite3
+  # → schlägt auf minimalem Alpine ohne g++/python3 fehl
+  ```
+  Container-Images brauchen Build-Tools oder vorgefertigte
+  Binaries. Nutze das offizielle `node`-Image (Debian-basiert)
+  statt `node:alpine`, um das zu vermeiden.
+</Aside>
+
+<Aside type="caution" title="Node-Version-Drift zwischen Dev und Prod">
+  ```json
+  // package.json
+  { "engines": { "node": ">=20" } }
+  ```
+  Pinne die Node-Version in `engines`. Ohne sie nutzt Dev
+  vielleicht Node 24 und Prod Node 18 — subtile API-Unterschiede
+  verursachen merkwürdige Bugs.
+</Aside>
+
+## Wo es weitergeht
+
+- **[Runtime — Überblick](/de/runtime/overview/)** — das
+  größere Bild.
+- **[Bun](/de/runtime/bun/)** — die primäre Alternative.
+- **[Kompatibilitäts-Matrix](/de/runtime/compatibility-matrix/)** —
+  Feature-für-Feature-Unterstützung.
+- **[Installation](/de/intro/installation/)** — Install-Schritte.

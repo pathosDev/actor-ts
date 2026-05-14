@@ -1,0 +1,201 @@
+---
+title: Redis Streams
+description: Redis Streams als Broker — `XADD` zum Publishen, `XREAD` / `XREADGROUP` zum Konsumieren. Consumer Groups für Work-Sharing mit ACK-Semantik. Die richtige Form, wenn Redis schon im Stack steht und du leichtgewichtiges Streaming willst.
+---
+
+`RedisStreamsActor` integriert mit Redis Streams (der Familie
+`XADD` / `XREAD` / `XREADGROUP`).  Die richtige Form, wenn Redis
+bereits in deiner Infrastruktur steckt und du Streaming willst,
+ohne Kafka oder NATS aufzusetzen.
+
+```ts
+import { ActorSystem, Props, RedisStreamsActor } from 'actor-ts';
+
+const redis = system.actorOf(
+  Props.create(() => new RedisStreamsActor({
+    url:           'redis://localhost:6379',
+    consumerGroup: 'order-processors',
+    consumerName:  'worker-1',
+    streams:       ['orders', 'payments'],
+  })),
+  'redis',
+);
+
+// Subscribieren (Consumer-Group-Reads):
+redis.tell({ kind: 'subscribe-streams', subscriber: handler });
+
+// Publishen:
+redis.tell({
+  kind:    'xadd',
+  stream:  'orders',
+  fields:  { sku: 'book-1', quantity: '2' },
+});
+```
+
+## Settings
+
+```ts
+interface RedisStreamsActorSettings extends BrokerCommonSettings {
+  url:            string;
+  consumerGroup?: string;          // erforderlich für XREADGROUP-Modus
+  consumerName?:  string;          // innerhalb der Gruppe eindeutig
+  streams?:       string[];        // Streams, von denen konsumiert wird
+  blockTimeoutMs?: number;          // XREAD-Block; Default 5_000
+  count?:         number;          // Batch-Größe; Default 100
+  password?:      string;
+  tls?:           boolean;
+}
+```
+
+## Consumer-Modi
+
+### Ohne Consumer Group — `XREAD`
+
+```ts
+// Keine consumerGroup → nutzt XREAD
+new RedisStreamsActor({ url, streams: ['events'] });
+```
+
+Liest standardmäßig ab der **`$` (latest)**-Position des Streams —
+jeder Consumer sieht jede Nachricht nach dem Subscribe.  Kein ACK;
+kein Work-Sharing.
+
+Gut für **Broadcast-artige** Verteilung, bei der jeder Consumer
+jede Nachricht verarbeiten soll.
+
+### Mit Consumer Group — `XREADGROUP`
+
+```ts
+new RedisStreamsActor({
+  url,
+  streams: ['orders'],
+  consumerGroup: 'workers',
+  consumerName:  'worker-1',
+});
+```
+
+Consumer-Group-Modus:
+
+- **Work-Sharing** — jede Nachricht geht an **einen** Consumer
+  in der Gruppe.
+- **ACK-Semantik** — Consumer rufen nach der Verarbeitung `XACK`
+  auf; ungeackte Nachrichten werden in der **Pending Entries
+  List (PEL)** geführt und können erneut zugestellt werden.
+- **Mehrere Worker** — N Actor-Instanzen in derselben Gruppe
+  teilen sich die Last.
+
+Das ist der richtige Modus für **Work Queues** — Orders gehen an
+einen Worker, werden verarbeitet, geackt, fertig.
+
+## Eingehende Nachrichten
+
+```ts
+class OrderProcessor extends Actor<RedisStreamEntry> {
+  override async onReceive(entry: RedisStreamEntry): Promise<void> {
+    const order = JSON.parse(entry.fields.body);
+    await processOrder(order);
+    this.redis.tell({ kind: 'xack', stream: entry.stream, id: entry.id });
+  }
+}
+```
+
+Der `entry`:
+
+```ts
+interface RedisStreamEntry {
+  stream:  string;
+  id:      string;                          // z. B. "1684923847-0"
+  fields:  Record<string, string>;          // dein XADD-Payload
+}
+```
+
+Stream-IDs sind `<millis>-<seq>`-Strings.  Nimm die **`id` als
+Dedup-Key** für idempotente Verarbeitung — selbst wenn Redis
+erneut zustellt, kann dein Handler schon verarbeitete IDs
+überspringen.
+
+## Pending Entries List (PEL)
+
+Ungeackte Nachrichten bleiben in der PEL der Consumer Group.
+Nach einem Consumer-Crash kann ein anderer Consumer diese
+Nachrichten claimen:
+
+```ts
+redis.tell({
+  kind:       'xclaim',
+  stream:     'orders',
+  group:      'workers',
+  consumer:   'worker-1',
+  ids:        ['1684923847-0'],
+  minIdleMs:  60_000,    // nur claimen, wenn idle > 60s
+});
+```
+
+Für automatische Wiederzustellung behandelt die Broker-Actor-
+Basisklasse häufige Fälle — siehe die API-Referenz für den
+manuellen `xclaim`-Flow.
+
+## Peer-Dependency
+
+```bash
+npm install redis
+# oder: bun add redis
+```
+
+Nutzt den offiziellen `redis`- (node-redis) v4+-Client.
+
+## Wann Redis Streams
+
+Drei gute Einsatzfälle:
+
+1. **Bestehende Redis-Infrastruktur** — Streaming hinzufügen,
+   ohne einen neuen Broker auszurollen.
+2. **Anforderungen an Sub-Millisekunden-Latenz** — Redis ist
+   schnell.
+3. **Kleinere Workloads** — Millionen pro Tag, nicht Milliarden.
+   Für riesige Skalierung ist Kafka zweckgebaut.
+
+Nicht die richtige Form für:
+
+- **Langzeit-Retention** — Redis Streams können persistieren,
+  sind aber nicht für jahrelange Retention ausgelegt.
+- **Massive Parallelität** — Redis ist single-threaded; ein
+  Redis-Server wird zum Bottleneck.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Stream-Länge standardmäßig unbegrenzt">
+  ```ts
+  // Jedes XADD lässt den Stream wachsen; alte Einträge bleiben für immer
+  ```
+  Nutze `MAXLEN ~ N` bei `XADD`, um die Stream-Länge zu deckeln,
+  oder periodisch `XTRIM`.  Sonst wächst der Stream linear mit
+  der Publish-Rate.
+</Aside>
+
+<Aside type="caution" title="Kein Partitionskonzept wie Kafka">
+  Redis Streams sind lineare Logs — keine Partitionierung
+  innerhalb eines Streams.  Für Reihenfolge pro Key nimm
+  **mehrere Streams** (einen pro Key-Präfix) und route beim
+  Publishen.
+</Aside>
+
+<Aside type="caution" title="Persistenz hängt von der Redis-Config ab">
+  ```ts
+  // Redis ohne AOF / RDB → Neustart verliert alles
+  ```
+  Redis-Durability wird auf Redis-Ebene konfiguriert (AOF / RDB /
+  beides / keines).  Stelle sicher, dass deine Redis-Instanz die
+  Durability bietet, die du brauchst.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[I/O-Übersicht](/de/io/overview/)** — das große
+  Bild.
+- **[Kafka](/de/io/kafka/)** — wenn die Skalierung Redis
+  übersteigt.
+- **[NATS JetStream](/de/io/nats/)** — durable Streams ohne
+  Redis.
+- **[BrokerActor-Basis](/de/io/broker-actor-base/)** —
+  der gemeinsame Lifecycle.

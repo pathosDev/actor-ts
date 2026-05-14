@@ -1,0 +1,168 @@
+---
+title: Dispatcher
+description: Die Komponente, die entscheidet, wann Actors laufen — Microtask vs Immediate vs Throughput, was jeder als Trade-off mitbringt und wie du sie konfigurierst oder ersetzt.
+---
+
+Ein **Dispatcher** plant die Ausführung der
+Nachrichtenverarbeitungs-Einheiten von Actors.  Immer wenn die
+Mailbox eines Actors eine Nachricht zur Verarbeitung bereit hat,
+entscheidet der Dispatcher, *wann* die Runtime sie zieht und
+`onReceive` ausführt.
+
+JavaScript ist single-threaded, hat aber zwei verschränkende
+Primitives für "mach das später": die **Microtask-Queue**
+(`queueMicrotask`, `Promise.then`) und die **Macrotask-Queue**
+(`setImmediate`, `setTimeout(0)`).  Zwischen ihnen zu wählen, ist die
+Aufgabe des Dispatchers, und die Wahl hat reale Konsequenzen für
+Durchsatz, Fairness und Latenz.
+
+## Die drei eingebauten Dispatcher
+
+Das Framework liefert drei aus, exponiert als Klassen, die du
+instanziierst und an `ActorSystem.create` übergibst:
+
+| Dispatcher | Plant via | Trade-off |
+| --- | --- | --- |
+| `MicrotaskDispatcher` | `queueMicrotask` | Am schnellsten.  Kann I/O und Timer bei nachhaltiger Actor-Last aushungern. |
+| `ImmediateDispatcher` *(default)* | `setImmediate` oder `setTimeout(0)` | Lässt I/O + Timer zwischen Actor-Nachrichten verschränken.  Etwas höhere Per-Message-Latenz. |
+| `ThroughputDispatcher` | `setImmediate` mit konfigurierbarem run-N-then-yield-Budget | Wie `ImmediateDispatcher`, verarbeitet aber bis zu `throughput` Nachrichten Back-to-Back, bevor es nachgibt.  Balanciert Durchsatz gegen Fairness. |
+
+Der Default ist `ImmediateDispatcher` — Fairness mit I/O ist der
+richtige Default für HTTP-Server und broker-backed Actors, die in
+actor-ts-Anwendungen beide häufig vorkommen.
+
+## Einen Dispatcher wählen
+
+```ts
+import { ActorSystem, MicrotaskDispatcher } from 'actor-ts';
+
+// Verwende Microtasks: maximaler Durchsatz, minimaler Scheduling-Overhead.
+// Wähle, wenn du gar kein I/O hast ODER I/O so selten ist, dass
+// Starvation keine Sorge ist.
+const system = ActorSystem.create('compute-heavy', {
+  dispatcher: new MicrotaskDispatcher(),
+});
+```
+
+```ts
+import { ActorSystem, ThroughputDispatcher } from 'actor-ts';
+
+const system = ActorSystem.create('mixed-workload', {
+  dispatcher: new ThroughputDispatcher(50),
+  // Laufe bis zu 50 Nachrichten pro Actor, bevor an I/O nachgegeben
+  // wird.  Default ist ~5 im `ImmediateDispatcher`; es auf 50 zu
+  // erhöhen, gewinnt beim Durchsatz auf Kosten der
+  // HTTP-Response-Latenz.
+});
+```
+
+## Wann die Dispatcher-Wahl wichtig ist
+
+import { Aside } from '@astrojs/starlight/components';
+
+Für die meisten Apps ist **der Default in Ordnung**.  Drei
+Situationen, in denen er es nicht ist:
+
+- **Compute-lastige Actor-Pipelines ohne I/O.**  Ein ETL-artiger Job,
+  der aus einem Journal liest, in Actors transformiert, in ein
+  anderes Journal schreibt — keine Live-HTTP-Requests, keine
+  Broker-Callbacks.  `MicrotaskDispatcher` entfernt hier ~50 % des
+  Per-Message-Overheads gegenüber Immediate.
+- **Latenz-sensitive HTTP-Server.**  HTTP-Responses müssen prompt
+  geflusht werden; wenn deine Actors die Event-Loop monopolisieren,
+  wächst die Response-Latenz.  Bleibe bei `ImmediateDispatcher` (dem
+  Default) oder gehe auf ein kleineres Throughput-Budget runter.
+- **Tests, die deterministisches Ordering brauchen.**  Microtasks
+  vervollständigen vor der nächsten Macrotask, `MicrotaskDispatcher`
+  wird also für Tests bevorzugt, die "N Nachrichten senden, alle N
+  Effekte beobachten" ohne ein Yield dazwischen erwarten.  Siehe
+  [TestKit](/de/testing/testkit/) für den test-spezifischen
+  Dispatcher.
+
+## Einen eigenen Dispatcher schreiben
+
+Das `Dispatcher`-Interface ist winzig:
+
+```ts
+interface Dispatcher {
+  readonly id: string;
+  execute(fn: () => void | Promise<void>): void;
+}
+```
+
+Implementiere diese zwei, und du hast einen eigenen Dispatcher.
+Häufige Gründe dafür:
+
+- **Tracing**: Wrap die Arbeitseinheit, um einen OpenTelemetry-Span
+  anzuhängen, damit jede Actor-Nachricht ihren eigenen
+  Trace-Kontext bekommt.
+- **Metering**: Zähle verarbeitete Nachrichten, melde an einen
+  Metrics-Collector.
+- **Per-Priority-Isolation**: Halte eine "Schnellspur" für
+  System-Actors, während User-Actors auf einer separaten Queue
+  laufen.  (Für die meisten Apps reichen Per-Actor-Prioritäten via
+  `PriorityMailbox`; Per-Dispatcher-Isolation ist ein
+  fortgeschrittener Fall.)
+
+```ts
+import type { Dispatcher } from 'actor-ts';
+
+class TracingDispatcher implements Dispatcher {
+  readonly id = 'tracing-dispatcher';
+  constructor(private readonly inner: Dispatcher) {}
+  execute(fn: () => void | Promise<void>): void {
+    this.inner.execute(() => withTraceContext(fn));
+  }
+}
+```
+
+Wrap-and-Delegate ist die übliche Form — behalte das
+darunterliegende Scheduling-Verhalten, füge nur Querschnitt-Anliegen
+hinzu.
+
+<Aside type="caution" title="Schreibe keinen synchronen Dispatcher in Produktion">
+  ```ts
+  class SyncDispatcher implements Dispatcher {
+    execute(fn: () => void): void { fn(); }
+  }
+  ```
+  Synchrone Ausführung untergräbt die Actor-Modell-Invarianten: ein
+  Actor, der `tell` auf einem anderen Actor aufruft und synchron auf
+  das `onReceive` des Empfängers wartet, ist nicht mehr
+  "Fire-and-Forget" — und das `await` des Empfängers innerhalb seines
+  `onReceive` wird den Stack des Aufrufers blockieren.  Das Framework
+  bietet `ImmediateDispatcher` für Tests, die
+  deterministisch-aussehende Sync-Semantik brauchen; Produktion
+  sollte die Async-Varianten verwenden.
+</Aside>
+
+## Per-Actor-Dispatcher
+
+Das Actor-System hat *einen* Default-Dispatcher.  Einzelne Actors
+können ihren eigenen über `Props` spezifizieren:
+
+```ts
+import { Props, MicrotaskDispatcher } from 'actor-ts';
+
+const fastActor = system.actorOf(
+  Props.create(() => new Crunchy())
+    .withDispatcher(new MicrotaskDispatcher()),
+);
+```
+
+Die meisten Apps brauchen keine Per-Actor-Dispatcher — der
+System-Level-Dispatcher gilt uniform.  Greife dazu, wenn du eine
+gemischte Workload hast, bei der manche Actors Durchsatz brauchen,
+während andere Fairness mit I/O auf demselben Node brauchen.
+
+## Wie es weitergeht
+
+- **[Mailboxes](/de/fundamentals/mailboxes/)** — die Queue,
+  aus der der Dispatcher zieht.  FIFO / Bounded / Priority.
+- **[Timer und Scheduling](/de/fundamentals/timers-and-scheduling/)** —
+  actor-gebundene Timer; verwendet den Scheduler, nicht den
+  Dispatcher.
+- **[ActorSystem](/de/fundamentals/actor-system/)** —
+  Übergabe eines Dispatchers via Settings-Argument.
+- **[TestKit](/de/testing/testkit/)** — der test-spezifische
+  Dispatcher, der synchron läuft für Assertion-freundliche Tests.

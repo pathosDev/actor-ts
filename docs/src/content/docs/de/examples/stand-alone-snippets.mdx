@@ -1,0 +1,120 @@
+---
+title: Eigenständige Snippets
+description: Häppchengroße Beispiele für einzelne Konzepte - Counter, Saga, Circuit Breaker, Health-Endpoint, sharded Entity, persistente FSM. Jedes ist eine self-contained Datei, die du mit `bun snippet.ts` ausführen kannst.
+---
+
+Wenn du **ein Konzept isoliert sehen** willst, sind die
+eigenständigen Snippets der richtige Ort.  Jedes ist eine
+einzelne Datei, die ein Pattern demonstriert - kein Docker,
+keine Peers, lauffähig mit `bun`.
+
+Zu finden unter
+[`examples/snippets/`](https://github.com/pathosDev/actor-ts/tree/main/examples/snippets)
+im Repo.
+
+## Was es gibt
+
+| Snippet | Konzept |
+| --- | --- |
+| `01-counter.ts` | Der minimale Actor - extends Actor, behandelt zwei Nachrichten-Arten. |
+| `02-ask-pattern.ts` | Request/Response via `ask`. |
+| `03-supervision.ts` | Eigene Strategie mit `decideBy`. |
+| `04-become-state-machine.ts` | `context.become(...)` für State-Übergänge. |
+| `05-event-stream.ts` | Systemweites PubSub. |
+| `06-timers.ts` | `context.timers` für zeitgesteuerte Arbeit. |
+| `07-receive-timeout.ts` | Leerlauf-Erkennung. |
+| `08-typed-counter.ts` | Derselbe Counter via `Behaviors.*`. |
+| `09-routing.ts` | Lokaler Pool-Router. |
+| `10-circuit-breaker.ts` | `CircuitBreaker` um einen HTTP-Call. |
+| `11-backoff-supervisor.ts` | Exponentielles Backoff-Restart. |
+| `12-persistent-actor.ts` | Event-Sourced Bankkonto. |
+| `13-durable-state.ts` | Persistenz im Snapshot-Stil. |
+| `14-projection.ts` | Read-Side-View via `ProjectionActor`. |
+| `15-cluster-singleton.ts` | Singleton mit Manager + Proxy. |
+| `16-cluster-sharding.ts` | Sharded Entities pro Schlüssel. |
+| `17-pubsub.ts` | Cluster-weites DistributedPubSub. |
+| `18-distributed-data.ts` | GCounter + ORSet über den Cluster. |
+| `19-saga.ts` | Mehrstufige PersistentFSM. |
+| `20-management-http.ts` | Health-Checks + /metrics. |
+
+Jedes Snippet ist **50-200 Zeilen**.  Liest sich in ein paar
+Minuten; verändere es, um mit dem Konzept zu spielen.
+
+## Ausführen
+
+```bash
+git clone https://github.com/pathosDev/actor-ts.git
+cd actor-ts/examples/snippets
+
+bun install
+bun 01-counter.ts
+```
+
+Jedes Snippet läuft bis zum Ende und beendet sich.  Keine
+langlaufenden Prozesse; keine externen Abhängigkeiten.
+
+Für cluster-bezogene Snippets (Singleton, Sharding, PubSub, DD)
+nutzen die Snippets **`MultiNodeSpec`**, um einen Cluster
+innerhalb eines Prozesses zu simulieren - kein Docker nötig.
+
+## Patterns
+
+Die meisten Snippets folgen demselben Aufbau:
+
+```ts
+import { ActorSystem, ... } from 'actor-ts';
+
+// 1. System + Actors aufsetzen.
+const system = ActorSystem.create('demo');
+const ref = system.actorOf(Props.create(() => new MyActor()));
+
+// 2. Ein paar Nachrichten senden.
+ref.tell({ ... });
+ref.tell({ ... });
+
+// 3. Auf Verarbeitung warten (kleines await oder expect auf einer Probe).
+await new Promise(r => setTimeout(r, 100));
+
+// 4. Ergebnis ausgeben + aufräumen.
+console.log(...);
+await system.terminate();
+```
+
+Für komplexere Flows (Cluster, Persistenz) nutzen die Snippets
+`TestKit` + `TestProbe` für sauberes Teardown.
+
+## Anpassen
+
+Snippets sind der einfachste Ort zum **Experimentieren**:
+
+```bash
+# Kopieren, editieren, ausführen:
+cp 01-counter.ts my-experiment.ts
+# my-experiment.ts editieren
+bun my-experiment.ts
+```
+
+Das Framework wird über das `actor-ts`-Package des lokalen Repos
+eingebunden - deine Edits laufen gegen die Live-Quelle.
+
+## Snippets beitragen
+
+Wenn du ein cleveres Pattern erarbeitet hast, **stelle einen
+PR mit einem Snippet**.  Kriterien:
+
+- **Eine Datei, ≤ 200 Zeilen.**
+- **Ein Konzept** klar demonstriert.
+- **Self-contained** - lauffähig ohne externe Services.
+- **Kommentare**, die erklären, was der Code zeigt.
+
+Vergib deinem Snippet die nächste freie Nummer in der
+bestehenden Sequenz; aktualisiere die README in `snippets/`.
+
+## Wohin als Nächstes
+
+- **[Examples - Übersicht](/de/examples/overview/)** -
+  größere lauffähige Apps.
+- **[Quickstart](/de/intro/quickstart/)** - die
+  5-Minuten-Einführung.
+- **[Fundamentals - Übersicht](/de/fundamentals/overview/)** -
+  die Konzept-Landkarte.

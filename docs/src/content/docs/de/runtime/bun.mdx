@@ -1,0 +1,168 @@
+---
+title: Bun
+description: Bun ist die primäre Runtime von actor-ts — schnellster Start, eingebautes SQLite, nativer Test-Runner, null Peer-Dependencies für die meisten Features. Empfohlen für neue Projekte.
+---
+
+Bun ist die **primäre Runtime**, die actor-ts adressiert. Zuerst
+getestet; Performance-Benchmarks laufen gegen Bun; die Docs
+nehmen standardmäßig Bun an.
+
+## Warum Bun
+
+| Grund | Detail |
+| --- | --- |
+| **Schneller Start** | ~3-5× schnellerer Cold-Start vs Node. |
+| **Eingebautes SQLite** | `bun:sqlite` — keine Peer-Deps. |
+| **Eingebauter Test-Runner** | `bun:test` — funktioniert für die Tests des Frameworks + deine eigenen. |
+| **Natives HTTP / WebSocket** | `Bun.serve` für produktionstaugliches HTTP. |
+| **Weniger Peer-Deps** | Bun ersetzt `ws`, `better-sqlite3` und einige andere. |
+
+## Installation
+
+```bash
+curl -fsSL https://bun.sh/install | bash
+# oder via Homebrew: brew install oven-sh/bun/bun
+```
+
+Check:
+
+```bash
+bun --version    # 1.1+ benötigt
+```
+
+Für Docker:
+
+```dockerfile
+FROM oven/bun:1.1
+WORKDIR /app
+COPY . .
+RUN bun install
+CMD ["bun", "run", "dist/main.js"]
+```
+
+## Ein Projekt erzeugen
+
+```bash
+bun init
+bun add actor-ts
+bun add ts-pattern    # Peer-Dep, die von den Framework-Beispielen genutzt wird
+```
+
+Für spezifische Protokoll-Actor:
+
+```bash
+bun add kafkajs       # für KafkaActor
+bun add mqtt          # für MqttActor
+bun add amqplib       # für AmqpActor
+bun add nats          # für NatsActor / JetStreamActor
+bun add redis         # für RedisStreamsActor
+bun add @grpc/grpc-js @grpc/proto-loader   # für GrpcActor
+```
+
+Die meisten Peer-Deps überspringst du, sofern du das spezifische
+Protokoll nicht nutzt.
+
+## Tests laufen lassen
+
+```bash
+bun test
+```
+
+Bun's Test-Runner ist **drop-in-kompatibel** mit Jests API
+(`describe` / `it` / `expect`). TestKit funktioniert direkt:
+
+```ts
+import { describe, it, beforeEach, afterEach } from 'bun:test';
+import { TestKit } from 'actor-ts/testkit';
+
+describe('Counter', () => {
+  let tk: TestKit;
+  beforeEach(() => { tk = TestKit.create(); });
+  afterEach(async () => { await tk.shutdown(); });
+
+  it('inkrementiert', async () => {
+    // ...
+  });
+});
+```
+
+Für Bun-spezifische Test-Features siehe die [Bun-Docs](https://bun.sh/docs/cli/test).
+
+## SQLite auf Bun
+
+```ts
+import { SqliteJournal } from 'actor-ts';
+
+// Bun erkennt automatisch bun:sqlite — kein Treiber-Setup nötig.
+new SqliteJournal({ path: '/var/lib/events.db' });
+```
+
+`bun:sqlite` ist eingebaut. Kein `better-sqlite3`-Install
+erforderlich.
+
+## TCP + HTTP
+
+Bun hat native APIs für beides, aber das Framework wählt sie
+automatisch via Runtime-Erkennung. Keine Config nötig.
+
+Fürs **HTTP-Backend** kannst du Bun-nativ opt-in:
+
+```ts
+import { BunServeBackend } from 'actor-ts/http';
+
+await http.newServerAt('0.0.0.0', 8080)
+  .useBackend(new BunServeBackend())
+  .bind(routes);
+```
+
+Bun's HTTP ist **schnell** (schneller als Fastify in Benchmarks).
+Lohnt sich, wenn dein Hot-Path HTTP-lastig ist. Für breitere
+Ecosystem (Fastify-Plugins, Middleware) bleibe beim Default-
+Fastify-Backend.
+
+## Performance auf Bun
+
+Grobe Zahlen (Single-Bun-Prozess, M-Series-Mac):
+
+- **Tell-Durchsatz**: ~10 M msgs/sec auf `MicrotaskDispatcher`.
+- **HTTP-Durchsatz**: ~150 K req/sec für triviale Routen.
+- **SQLite-Append-Durchsatz**: ~50 K Events/sec.
+
+Bun gewinnt konsistent bei **Start-Zeit** (sub-100 ms vs Nodes
+~300-500 ms). Hilfreich für schnelle Test-Iteration.
+
+## Bun-spezifische Limitierungen
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Manche Node-Pakete haben Edge-Cases">
+  ```bash
+  # Die meisten Node-Pakete funktionieren; ein paar nicht:
+  # - Native Bindings, die spezifisch gegen Node-ABI linken
+  # - Manche Streams-API-Edge-Cases
+  ```
+  Bun strebt Node-Kompatibilität an, ist aber nicht
+  Bug-kompatibel. Wenn ein Drittanbieter-Paket fehlverhält,
+  prüfe Bun's
+  [Node-Compat-Notes](https://bun.sh/docs/runtime/nodejs-apis)
+  für bekannte Unterschiede.
+</Aside>
+
+<Aside type="caution" title="Lambda- / Serverless-Unterstützung">
+  ```bash
+  # AWS Lambda liefert Bun nicht als Runtime aus
+  ```
+  Cloud Functions / Lambda Layers verlangen typischerweise Node.
+  Wenn Serverless dein Ziel ist, nutze Node.
+</Aside>
+
+## Wo es weitergeht
+
+- **[Runtime — Überblick](/de/runtime/overview/)** — das
+  größere Bild.
+- **[Node](/de/runtime/node/)** — für Node-spezifische
+  Hinweise.
+- **[Kompatibilitäts-Matrix](/de/runtime/compatibility-matrix/)** —
+  Feature-für-Feature-Unterstützung.
+- **[Installation](/de/intro/installation/)** — die
+  Per-Runtime-Install-Schritte.

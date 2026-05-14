@@ -1,0 +1,276 @@
+---
+title: Actor-Pfade
+description: Jeder Actor hat einen eindeutigen hierarchischen Pfad unter seinem System. Wie Pfade zusammengesetzt werden, wie du sie über `ActorSelection` auflöst und wann du ein Pfad-Lookup statt einer gehaltenen Ref verwenden würdest.
+---
+
+Jeder Actor im System hat einen **Pfad** — eine hierarchische
+Kennung, gebaut aus seiner Position im Supervisionsbaum:
+
+```
+actor-ts://my-app/user/api/sessions/user-42
+```
+
+Von links nach rechts gelesen:
+
+| Segment | Was es ist |
+| --- | --- |
+| `actor-ts://` | Das Schema — für jeden actor-ts-Pfad gleich. |
+| `my-app` | Der Systemname aus `ActorSystem.create('my-app')`. |
+| `user` | Der User-Guardian — jeder Actor, den du spawnst, lebt unter `/user`. |
+| `api` | Ein Urgroßelter (z.B. ein `Api`-Manager). |
+| `sessions` | Der direkte Parent (z.B. ein `SessionManager`). |
+| `user-42` | Der eigene Name des Leaf-Actors. |
+
+
+Der Pfad identifiziert einen Actor eindeutig innerhalb seines Systems,
+wie ein Dateisystempfad eine Datei identifiziert: zu jedem Zeitpunkt
+löst der Pfad entweder zu einem lebenden Actor auf oder nicht.
+
+Du siehst Pfade an drei Stellen:
+
+- **Log-Zeilen** — das `log` jedes Actors ist an seinen Pfad
+  gebunden, Log-Nachrichten tragen also die vollständige Hierarchie.
+- **`Terminated.actor.path`** — wenn ein Actor stoppt, können
+  Watcher den Pfad inspizieren, um auf den jeweiligen Actor zu
+  dispatchen.
+- **`ActorSelection`** — Actors per Pfad-String nachschlagen,
+  statt eine Ref zu halten.
+
+## Der `ActorPath`-Wert
+
+`context.path` und `ref.path` geben beide einen `ActorPath` zurück:
+
+```ts
+import { Actor } from 'actor-ts';
+
+class Logger extends Actor<Msg> {
+  override preStart(): void {
+    this.log.info(`starting; my path is ${this.context.path}`);
+    // → "starting; my path is actor-ts://my-app/user/logger"
+
+    this.log.info(`depth = ${this.context.path.depth()}`);
+    // → "depth = 2"  (Root ist 0, /user ist 1, /user/logger ist 2)
+
+    this.log.info(`elements = ${this.context.path.elements().join(' → ')}`);
+    // → "elements = / → user → logger"
+  }
+}
+```
+
+Die vollständige Schnittstelle:
+
+| Member | Was es dir gibt |
+| --- | --- |
+| `path.name` | Das Leaf-Segment (oben `'logger'`). |
+| `path.parent` | Der `ActorPath` des Parents oder `null` für die Wurzel. |
+| `path.systemName` | Der Systemname (oben `'my-app'`). |
+| `path.elements()` | Array der Segmentnamen von der Wurzel zum Leaf. |
+| `path.depth()` | Abstand zur Wurzel (Wurzel = 0). |
+| `path.isAncestorOf(other)` | Schließt dieser Pfad `other` ein? |
+| `path.equals(other)` | Lexikalische Gleichheit (vergleicht `toString()`-Output). |
+| `path.toString()` | Kanonische URI-Form: `actor-ts://<sys>/<segments>`. |
+
+Pfade sind **unveränderliche Werte** — `path.child('thing')` gibt
+einen neuen Pfad zurück; es mutiert das Original nicht.
+
+## Wie Pfade zugewiesen werden
+
+Du kannst beim Spawnen einen `name` mitgeben:
+
+```ts
+const ref = system.actorOf(Props.create(() => new Foo()), 'my-foo');
+// ref.path.toString() === 'actor-ts://my-app/user/my-foo'
+
+const child = this.context.actorOf(Props.create(() => new Bar()), 'bar');
+// child.path.toString() === 'actor-ts://my-app/user/my-foo/bar'
+```
+
+Wenn du den Namen weglässt, synthetisiert das Framework einen
+(`'$1'`, `'$2'`, …).  Zwei Regeln gelten beim Namen:
+
+1. **Namen müssen unter Geschwistern eindeutig sein.**  Zweimal
+   `context.actorOf(props, 'bar')` auf demselben Parent wirft einen
+   Fehler — der Pfad ist bereits in Verwendung.
+2. **Der Name "sieht aus wie ein Pfadsegment."**  Keine Slashes,
+   keine führenden Punkte, keine Leerzeichen.  Das Framework
+   validiert das.
+
+Das `uid`-Feld auf `ActorPath` unterscheidet aufeinanderfolgende
+Inkarnationen desselben Pfads — wenn `my-foo` stoppt und dann am
+selben Pfad neu gespawnt wird, hat die zweite eine andere `uid`.
+Die meiste Code schaut nie auf `uid`; das Framework verwendet es
+intern, um sicherzustellen, dass Nachrichten an die *alte*
+Inkarnation nicht versehentlich in der neuen landen.
+
+## `ActorSelection` — Lookup per Pfad
+
+```ts
+import { ActorSystem } from 'actor-ts';
+
+const system = ActorSystem.create('my-app');
+
+const selection = system.actorSelection('/user/api/sessions/user-42');
+const ref = await selection.resolveOne(5_000);
+ref.tell({ kind: 'whatever' });
+```
+
+`actorSelection(pathString)` baut eine *Beschreibung* davon, wo zu
+suchen ist.  `resolveOne(timeoutMs)` durchläuft den Actor-Baum, um
+einen Match zu finden; es retried alle 10 ms bis zum Deadline,
+nützlich, wenn der Aufrufer mit dem Spawn des Actors race-t.
+
+Zwei Wege, einer Selection etwas zu senden:
+
+- **`selection.tell(msg)`** — einmal auflösen, sofort liefern, wenn
+  gefunden, in Dead Letters legen, wenn nicht.  Kein Retry.  Nützlich,
+  wenn du eine klare Erwartung hast, dass der Actor existiert; ihn zu
+  verfehlen ist ein Fehler.
+- **`(await selection.resolveOne(timeout)).tell(msg)`** — warte, bis
+  der Actor existiert (oder bis zum Timeout).  Nützlich für
+  Spawn-Race-Szenarien.
+
+### Akzeptierte Pfadformate
+
+`actorSelection` parst drei Input-Formen:
+
+```ts
+system.actorSelection('actor-ts://my-app/user/api');   // absolute URI
+system.actorSelection('/user/api');                     // absoluter Pfad
+system.actorSelection('user/api');                      // absoluter Pfad, ohne führenden Slash
+```
+
+Die URI-Form ist das, was `ActorPath.toString()` produziert,
+Round-Tripping eines Pfads durch die String-Form funktioniert also.
+Der Systemname in URI-Form wird geprüft —
+`actor-ts://other-app/user/api` aus einem System namens `my-app` zu
+selektieren gibt null zurück (ein komplett anderes System).
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Keine Wildcards in v1">
+  ```ts
+  system.actorSelection('/user/sessions/*');   // ← matcht NICHT alle Kinder
+  ```
+  Selection-Pfade müssen in der aktuellen Version **exakt** sein.
+  Das `*` wird als wörtlicher Segmentname geparst (der nicht
+  existiert).  Für "an jedes Kind senden" halte die Parent-Ref und
+  telle sie; der Parent kann an `context.children` broadcasten.
+  Wildcard-Selections sind ein Roadmap-Item.
+</Aside>
+
+## Wann Pfad verwenden, wann Ref
+
+Refs sind der **Default**-Weg, Actors zu adressieren.  Halte die
+`ActorRef`, die du beim Spawn bekommen hast, gib sie weiter, speichere
+sie in Feldern.  Der Compiler kennt den Nachrichtentyp des Actors;
+Selection gibt `unknown`-typisierte Refs zurück, mit denen du
+Typisierung verlierst.
+
+Greife in drei Situationen zu einer `ActorSelection`:
+
+1. **Cross-Tree-Lookup** per Konvention — der gewünschte Actor lebt
+   an einem bekannten Pfad (`/user/sharding/region`,
+   `/system/pubsub`), und es gibt keinen sauberen Weg, die Ref
+   durchzureichen.
+2. **Spawn-Race-Auflösung** — der Aufrufer weiß nicht genau, wann
+   das Target gespawnt wird; `resolveOne(timeout)` wartet.
+3. **Lookups von Actors, die als Strings empfangen wurden** — z.B.
+   ein HTTP-Request-Body enthält `"/user/sessions/user-42"`, und du
+   willst an diesen Actor weiterleiten.  Parse + Select; vertraue
+   dem String nie, ohne zu re-checken, dass der Actor existiert.
+
+Für die alltägliche In-Actor-Verdrahtung bevorzuge **Refs durch
+Konstruktoren / Nachrichten / Eltern-Kind-Beziehungen
+weiterzureichen**:
+
+```ts
+// ✗ umständlich
+class Worker extends Actor<...> {
+  override onReceive(msg) {
+    const cache = await this.context.actorSelection('/user/cache').resolveOne();
+    cache.tell({ kind: 'put', ... });
+  }
+}
+
+// ✓ direkt
+class Worker extends Actor<...> {
+  constructor(private readonly cache: ActorRef<CacheMsg>) { super(); }
+  override onReceive(msg) {
+    this.cache.tell({ kind: 'put', ... });
+  }
+}
+const cache  = system.actorOf(Props.create(() => new Cache()), 'cache');
+const worker = system.actorOf(Props.create(() => new Worker(cache)));
+```
+
+Die Konstruktor-Injection-Variante ist typsicher, hängt nicht von
+Pfad-Naming-Konventionen ab und überlebt Renames trivial.
+
+## Spezielle Top-Level-Pfade
+
+Drei Top-Level-Guardian-Pfade existieren in jedem System:
+
+| Pfad | Was dort lebt |
+| --- | --- |
+| `/user` | Die Top-Level-Actors deiner Anwendung (alles, was `system.actorOf(...)` erzeugt). |
+| `/system` | Framework-Internas (Event-Stream-Listener, Cluster-Gossiper, der Dead-Letter-Actor selbst, …). |
+| `/deadLetters` | Der synthetische Empfänger für Nachrichten ohne lebendes Ziel. |
+
+Du interagierst selten direkt mit `/system`-Pfaden — die Extensions
+(Cluster, PubSub, Sharding) bieten ihre eigenen typisierten APIs an,
+die dich vom Pfad-Schema abschirmen.  Aber zu wissen, dass die Pfade
+existieren, ist nützlich, wenn du Log-Output liest oder "wo ist diese
+Nachricht hingegangen?" debuggst.
+
+<Aside type="caution" title="Pfade nicht aus String-Konkat bauen">
+  ```ts
+  const path = `/user/api/${userId}/session-${sessionId}`;   // ← brüchig
+  system.actorSelection(path);
+  ```
+  Wenn `userId` einen Slash oder `..` enthält, hast du einen
+  Injection-Bug erzeugt — der Parser splittet am Slash und läuft in
+  einen unbeabsichtigten Subtree.  Validiere entweder das Segment
+  zuerst (nur Alphanum + Bindestriche) oder verwende Refs statt Pfade.
+</Aside>
+
+## Cluster-Pfade
+
+Wenn die Cluster-Extension aktiv ist, bekommen Pfade ein
+Host-Port-Fragment:
+
+```
+actor-ts://my-app@10.0.0.5:2552/user/api/sessions/user-42
+```
+
+| Segment | Was es ist |
+| --- | --- |
+| `actor-ts://` | Das Schema — gleich wie bei lokalen Pfaden. |
+| `my-app` | Der Systemname des Clusters. |
+| `@10.0.0.5:2552` | Host:Port des Nodes, zur `Cluster.join`-Zeit zugewiesen. |
+| `/user/api/sessions/user-42` | Der Actor-Pfad innerhalb dieses Nodes, in der Form identisch zu einem Single-Node-Pfad. |
+
+Dieses Fragment sagt der Runtime, *auf welchem Node* dieser Actor
+lebt.  Ein nackter Pfad wie `actor-ts://my-app/user/foo` (ohne Host)
+ist lokal zum auflösenden System.  Der Cluster-Transport handhabt die
+host-geroutete Auslieferung transparent — dein `tell` sieht in beiden
+Fällen gleich aus.
+
+Siehe [Refs zwischen Nodes](/de/cluster/refs-across-nodes/) dafür,
+wie der host-aware Pfad wire-encoded wird.
+
+## Wie es weitergeht
+
+- **[Props](/de/fundamentals/props/)** — das
+  Konfigurations-Bundle, das den optionalen `name` für den Pfad des
+  Actors enthält.
+- **[Actor-System](/de/fundamentals/actor-system/)** — die
+  Guardian-Hierarchie (`/user`, `/system`, `/deadLetters`).
+- **[Refs zwischen Nodes](/de/cluster/refs-across-nodes/)** —
+  wie Pfade und Refs über Cluster-Nodes hinweg funktionieren.
+- **[Discovery](/de/discovery/overview/)** — für Actors,
+  deren Position nicht per Pfad, sondern per
+  Service-Registry-Semantik bekannt ist.
+
+Die [`ActorPath`](/api/classes/actorpath/)- und
+[`ActorSelection`](/api/classes/actorselection/)-API-Referenzen
+decken den vollständigen Method-Set ab.

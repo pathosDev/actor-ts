@@ -1,0 +1,188 @@
+---
+title: Stock-Metriken
+description: Die Metriken, die das Framework automatisch aufzeichnet — Actor-Message-Raten, Mailbox-Tiefen, Cluster-Mitgliedschaft, Sharding-Zähler. Geben dir „ist das System gesund?" Out-of-the-Box, ohne eine einzige Instrumentierung zu schreiben.
+---
+
+Wenn die Metrics-Extension startet, **zeichnet das Framework
+automatisch** eine Basislinie an Metriken auf, die das Actor-
+System, Mailboxen, Cluster, Sharding, Persistence und Broker-
+Actor abdecken.
+
+```ts
+import { ActorSystem, MetricsExtensionId } from 'actor-ts';
+
+const metrics = system.extension(MetricsExtensionId);
+// Stock-Metriken beginnen aufzuzeichnen — kein weiteres Setup
+```
+
+Das sind die Metriken, die du dir sonst selbst schreiben
+würdest. Sie Out-of-the-Box auszuliefern erlaubt dir, sofort ein
+Dashboard zu verdrahten.
+
+## Actor-Metriken
+
+Per-Actor-Class-Metriken — deckt die Actor ab, die
+Anwendungslogik hosten:
+
+| Metrik | Typ | Labels | Bedeutung |
+| --- | --- | --- | --- |
+| `actor_messages_received_total` | counter | `class`, `path` | Insgesamt in eine Actor-Mailbox geroutete Nachrichten. |
+| `actor_messages_processed_total` | counter | `class`, `path` | Insgesamt an `onReceive` übergebene Nachrichten. |
+| `actor_messages_failed_total` | counter | `class`, `path` | Nachrichten, deren `onReceive` geworfen hat. |
+| `actor_message_duration_ms` | histogram | `class`, `path` | Verarbeitungszeit pro Nachricht. |
+| `actor_restarts_total` | counter | `class`, `path` | Supervisor-getriebene Restarts. |
+
+Das `path`-Label kann hoch-kardinal sein (ein Pfad pro Actor).
+Für sharded Entities (Tausende Pfade) deckelt das Framework
+Label-Serien — nur die **ersten N Pfade** werden individuell
+verfolgt, der Rest aggregiert in eine einzige `_other`-Serie.
+
+## Mailbox-Metriken
+
+| Metrik | Typ | Labels | Bedeutung |
+| --- | --- | --- | --- |
+| `actor_mailbox_size` | gauge | `class`, `path` | Aktuelle Tiefe. |
+| `actor_mailbox_enqueued_total` | counter | `class`, `path` | Enqueues insgesamt. |
+| `actor_mailbox_dequeued_total` | counter | `class`, `path` | Dequeues insgesamt. |
+| `actor_mailbox_dropped_total` | counter | `class`, `path`, `reason` | Drops nach Overflow-Policy. |
+
+`mailbox_size` ist die **Zeitpunkt-Tiefe**; kombiniert mit
+Enqueue-/Dequeue-Raten kannst du Backpressure berechnen.
+
+Ein hohes `mailbox_size` mit wachsendem `dropped_total` ist ein
+**Slow-Consumer-Signal** — der Actor kommt mit seiner
+Eingangsrate nicht mit.
+
+## Cluster-Metriken
+
+| Metrik | Typ | Labels | Bedeutung |
+| --- | --- | --- | --- |
+| `cluster_members_count` | gauge | `status` | Mitglieder in jedem Zustand (Joining/Up/Unreachable/etc.) |
+| `cluster_gossip_messages_total` | counter | `direction` | Gossip-Count ein/aus. |
+| `cluster_member_transitions_total` | counter | `from`, `to` | Zustandsübergänge pro Typ. |
+| `cluster_unreachable_duration_ms` | histogram | — | Wie lange unerreichbare Mitglieder so bleiben. |
+
+Zum Monitoring der Cluster-Gesundheit:
+
+- `cluster_members_count{status="up"}` sollte deiner
+  konfigurierten Replica-Anzahl entsprechen.
+- `cluster_members_count{status="unreachable"} > 0` ist ein
+  Alert-Auslöser.
+- `cluster_unreachable_duration_ms` p99 gibt „wie flappy ist
+  das Netzwerk" — hohe Werte heißen, dein Failure-Detector
+  braucht möglicherweise Tuning.
+
+## Sharding-Metriken
+
+| Metrik | Typ | Labels | Bedeutung |
+| --- | --- | --- | --- |
+| `sharding_shards_hosted` | gauge | `type`, `region` | Shards pro Region pro Typ gehostet. |
+| `sharding_entities_count` | gauge | `type`, `region` | Aktive Entities pro Region. |
+| `sharding_rebalances_total` | counter | `type` | Rebalance-Events. |
+| `sharding_handoffs_total` | counter | `type`, `outcome` | Handoff-Erfolg/-Fehlschlag. |
+| `sharding_passivations_total` | counter | `type`, `reason` | Idle-Timeout / Max-Entities / manuell. |
+
+Nützliche Dashboards:
+
+- **Heiße Regionen** — `sharding_shards_hosted` pro Region.
+- **Entity-Churn** — `sharding_passivations_total`-Rate.
+- **Rebalance-Frequenz** — hohe Werte deuten auf Cluster-
+  Instabilität.
+
+## Persistence-Metriken
+
+| Metrik | Typ | Labels | Bedeutung |
+| --- | --- | --- | --- |
+| `persistence_events_written_total` | counter | `pid_prefix` | Geschriebene Events. |
+| `persistence_events_replayed_total` | counter | `pid_prefix` | Während Recovery gelesene Events. |
+| `persistence_snapshot_saves_total` | counter | `pid_prefix` | Geschriebene Snapshots. |
+| `persistence_recovery_duration_ms` | histogram | `pid_prefix` | Zeit von preStart bis Recovery-Complete. |
+
+`recovery_duration_ms` ist eine der actionable-sten Metriken —
+wenn Recovery anfängt Sekunden zu brauchen, **snapshot
+aggressiver**.
+
+`pid_prefix` ist eine Label-Gruppe, abgeleitet aus deiner
+`persistenceId` — z. B. aggregiert `account-*` alle
+Account-Events.
+
+## Broker-Actor-Metriken
+
+Für [BrokerActor](/de/io/broker-actor-base/)-Subklassen
+(Kafka, MQTT usw.):
+
+| Metrik | Typ | Labels | Bedeutung |
+| --- | --- | --- | --- |
+| `broker_state` | gauge | `actor`, `endpoint` | 0 = disconnected, 1 = connected, etc. |
+| `broker_connect_attempts_total` | counter | `actor`, `endpoint`, `outcome` | Connect-Versuche, Erfolg/Fehlschlag. |
+| `broker_messages_in_total` | counter | `actor`, `topic` | Eingehende Nachrichten vom Broker. |
+| `broker_messages_out_total` | counter | `actor`, `topic` | Ausgehende Nachrichten zum Broker. |
+| `broker_buffer_size` | gauge | `actor` | Ausgangs-Buffer-Tiefe. |
+| `broker_buffer_overflow_total` | counter | `actor`, `policy` | Buffer-Overflows. |
+
+`broker_state` ist das **schnellste Signal** für
+Verbindungsprobleme — ein Gauge, der unter 1 fällt, heißt, ein
+Broker ist down.
+
+## Stock-Metriken deaktivieren
+
+```ts
+system.extension(MetricsExtensionId, {
+  enableStockMetrics: false,    // aus
+});
+```
+
+Wenn der Overhead der Stock-Metriken zählt (CPU-enge Loops,
+sehr hoher Actor-Churn), kannst du dich abmelden. Die meisten
+Produktivsysteme lassen sie an — der Overhead ist
+vernachlässigbar.
+
+## Labels anpassen
+
+```ts
+const metrics = system.extension(MetricsExtensionId);
+metrics.registry.setStaticLabels({
+  region: 'eu-west-1',
+  env:    'production',
+});
+```
+
+Statische Labels gelten für **jede Metrik**. Nützlich für den
+globalen Kontext, auf den das Metrik-Backend joinen sollte
+(Region, Env, Pod-Name).
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Hoch-kardinales `path`-Label">
+  ```ts
+  // Per-sharded-Entity-Actor: Tausende verschiedene Pfade
+  actor_messages_processed_total{path="actor-ts://.../entity-1"}
+  actor_messages_processed_total{path="actor-ts://.../entity-2"}
+  ...
+  ```
+  Das Framework deckelt Per-Pfad-Serien auf die ersten N
+  eindeutigen Pfade (konfigurierbar). Oberhalb des Caps
+  aggregieren Pfade in `path="_other"`. Tune den Cap oder
+  strippe das Pfad-Label für hoch-kardinale Szenarien.
+</Aside>
+
+<Aside type="caution" title="Counter werden beim Neustart zurückgesetzt">
+  ```ts
+  // Nach einem Pod-Neustart fängt actor_messages_processed_total wieder bei 0 an
+  ```
+  Counter sind **per-Prozess**. Prometheus versteht das
+  (berechnet Raten über die steigende Serie; behandelt Resets
+  sauber). Aber rohe Counter-Werte sind über Neustarts hinweg
+  nicht aussagekräftig.
+</Aside>
+
+## Wo es weitergeht
+
+- **[Observability — Überblick](/de/observability/overview/)** —
+  das größere Bild.
+- **[Core-Metriken](/de/observability/metrics/core-metrics/)** —
+  für deine eigenen Custom-Metriken.
+- **[Prometheus-Exporter](/de/observability/metrics/prometheus-exporter/)** —
+  wie du diese scrapest.
+- **[Management — Überblick](/de/observability/management/overview/)** —
+  für den `/metrics`-Endpunkt.

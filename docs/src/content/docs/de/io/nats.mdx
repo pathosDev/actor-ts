@@ -1,0 +1,205 @@
+---
+title: NATS
+description: NATS-Core-Pub/Sub — Fire-and-Forget, Request/Reply, Wildcard-Subjects. Die leichtgewichtige Alternative zu Kafka / RabbitMQ, wenn Durability nicht nötig ist. Umschließt `nats.js`. JetStream-Variante für durable Streams.
+---
+
+`NatsActor` integriert mit NATS — dem leichtgewichtigen Pub/Sub-
+Broker.  Core-NATS ist **Fire-and-Forget ohne Durability**; für
+durable Streams siehe die [JetStream](#jetstream)-Variante.
+
+```ts
+import { ActorSystem, Props, NatsActor } from 'actor-ts';
+
+const nats = system.actorOf(
+  Props.create(() => new NatsActor({
+    servers: ['nats://nats-1:4222', 'nats://nats-2:4222'],
+    name:    'my-app',
+  })),
+  'nats',
+);
+
+// Subscribieren (Wildcards unterstützt):
+nats.tell({
+  kind:       'subscribe-nats',
+  subject:    'events.>',
+  subscriber: eventHandler,
+});
+
+// Publishen:
+nats.tell({
+  kind:    'publish',
+  subject: 'events.user.signup',
+  payload: JSON.stringify(event),
+});
+```
+
+## Settings
+
+```ts
+interface NatsActorSettings extends BrokerCommonSettings {
+  servers:    string[] | string;
+  name?:      string;            // Client-Identifier
+  user?:      string;
+  pass?:      string;
+  token?:     string;
+  tls?:       TlsOptions;
+  pingInterval?: number;         // Default 120s
+}
+```
+
+## Subjects (NATS-Topics)
+
+NATS nutzt mit `.` getrennte Subjects:
+
+```
+events.user.signup
+events.user.delete
+orders.priority.placed
+metrics.gauge.cpu
+```
+
+Subjects sind **case-sensitive**; per Konvention kleinbuchstabig +
+punktgetrennt.
+
+### Wildcards
+
+| Wildcard | Trifft |
+| --- | --- |
+| `*` | Genau ein Token (trifft `user` in `events.user.signup`). |
+| `>` | Ein oder mehr Tokens (trifft `user.signup` in `events.user.signup`). |
+
+```ts
+'events.>'          → events.user.signup, events.user.delete, events.order.placed
+'events.*.signup'   → events.user.signup, events.admin.signup
+```
+
+`>` darf nur als **letztes** Token vorkommen.
+
+## Request / Reply
+
+NATS unterstützt synchrones Request/Reply nativ:
+
+```ts
+nats.tell({
+  kind:        'request',
+  subject:     'account.balance',
+  payload:     JSON.stringify({ accountId: '42' }),
+  timeoutMs:   1_000,
+  replyTo:     this.self,   // bekommt die Reply-Nachricht
+});
+
+// Reply-Handler:
+override onReceive(msg: NatsRequestReply): void {
+  if (msg.kind === 'reply')  this.handleBalance(JSON.parse(...));
+  if (msg.kind === 'timeout') this.handleTimeout();
+}
+```
+
+Das ist **schnell** — ein paar hundert Mikrosekunden Round-Trip
+auf localhost.  Wird viel als "RPC über NATS"-Muster genutzt.
+
+## Wann NATS
+
+Drei primäre Anwendungsfälle:
+
+1. **Hochvolumiges Pub/Sub** ohne die operative Komplexität von
+   Kafka.
+2. **Microservice-Request/Reply** — synchrone Calls zwischen
+   Services über Subjects.
+3. **Leichtgewichtige Event-Verteilung** — Fire-and-Forget-
+   Benachrichtigungen, Metriken, Log-Streams.
+
+Für **durable** Streams (Replay, Historie, ACK-Semantik) siehe
+JetStream unten.  Für **clusterinternes** Pub/Sub ist
+[DistributedPubSub](/de/cluster/pubsub/) einfacher.
+
+## JetStream
+
+Für NATS mit **Durability** nimm `JetStreamActor`:
+
+```ts
+import { JetStreamActor } from 'actor-ts';
+
+const js = system.actorOf(
+  Props.create(() => new JetStreamActor({
+    servers: ['nats://nats-1:4222'],
+    streams: [
+      {
+        name:     'ORDERS',
+        subjects: ['orders.>'],
+        storage:  'file',
+        maxAge:   86_400 * 7,   // 7 Tage Retention
+      },
+    ],
+  })),
+  'js',
+);
+```
+
+JetStream-Schichten:
+
+- **Stream** — durables Log, Subjects → Records.
+- **Consumer** — Lese-Cursor; mehrere Consumer können denselben
+  Stream unabhängig lesen.
+- **ACK-Semantik** — wie bei AMQP acken Consumer jede Nachricht.
+
+Nimm JetStream, wenn du brauchst:
+
+- **Replay** — Consumer können zu beliebigen Offsets
+  zurückspulen.
+- **Persistenz** — überlebt Broker-Neustarts (dateibasierter
+  Storage).
+- **Geordneter Konsum pro Subject**.
+
+Kafka schlägt JetStream weiterhin bei **massiver Skalierung**
+(Milliarden Events/s über Hunderte Partitionen).  JetStream ist
+der Sweet Spot für "weniger als Kafka, mehr als Core-NATS".
+
+## Peer-Dependency
+
+```bash
+npm install nats
+# oder: bun add nats
+```
+
+Das Paket `nats` enthält sowohl Core-NATS- als auch JetStream-
+Clients.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Core-NATS hat keine Durability">
+  ```ts
+  // Subscriber trennt sich → In-Flight-Nachrichten sind VERLOREN
+  ```
+  Core-NATS queued keine Nachrichten für offline Subscriber.  Für
+  durable Zustellung nimm JetStream.
+</Aside>
+
+<Aside type="caution" title="Verwaltung der Reply-Subjects">
+  ```ts
+  // Jedes `request` allokiert ein temporäres Reply-Subject; Broker-Ressourcen skalieren mit gleichzeitigen Requests
+  ```
+  Schwere Request/Reply-Lasten (10K+ gleichzeitig) verbrauchen
+  viele temporäre Subjects.  Meist okay, aber beobachte die
+  Broker-Metriken.
+</Aside>
+
+<Aside type="caution" title="Wildcards + viele Subscriber">
+  ```ts
+  // Ein Subscriber für '>' = "gib mir alles"
+  ```
+  Wildcard-Subscriber empfangen jeden passenden Publish.  Für
+  Monitoring okay; fürs Routing bevorzuge engere Pattern, damit
+  nicht jedes Event durch jeden Consumer wandert.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[I/O-Übersicht](/de/io/overview/)** — das große
+  Bild.
+- **[BrokerActor-Basis](/de/io/broker-actor-base/)** — der
+  gemeinsame Lifecycle.
+- **[Kafka](/de/io/kafka/)** — schwereres durables Streaming.
+- **[MQTT](/de/io/mqtt/)** — IoT-fokussierte Alternative.
+- **[DistributedPubSub](/de/cluster/pubsub/)** — für
+  clusterinternes Pub/Sub.

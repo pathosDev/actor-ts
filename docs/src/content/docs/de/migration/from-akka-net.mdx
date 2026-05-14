@@ -1,0 +1,270 @@
+---
+title: Von Akka.NET
+description: Akka.NET ist die .NET-Portierung von Akka. Das Actor-Modell + Clustering + Persistenz sind nahezu identisch zu JVM-Akka. Der Großteil des from-akka-jvm-Guides gilt; diese Seite behandelt die .NET-spezifischen Unterschiede.
+---
+
+[Akka.NET](https://getakka.net/) ist die **.NET-Portierung von
+Akka** - läuft auf .NET / .NET Framework, mit demselben
+Actor-Modell, Clustering und Persistenz.
+
+Für die Migration gilt **Akka.NET ≈ Akka (JVM)** - der
+[from-akka-jvm-Guide](/de/migration/from-akka-jvm/) deckt das
+konzeptionelle Mapping ab.  Diese Seite fokussiert sich auf
+**C#-Spezifika** und was sich in TypeScript ändert.
+
+## Konzept-Mapping
+
+```csharp
+// Akka.NET (C#):
+public class Counter : ReceiveActor {
+  private int _count;
+  public Counter() {
+    Receive<string>(cmd => {
+      if (cmd == "inc")  _count++;
+      else if (cmd == "get") Sender.Tell(_count);
+    });
+  }
+}
+
+var system = ActorSystem.Create("MySystem");
+var counter = system.ActorOf<Counter>("counter");
+counter.Tell("inc");
+```
+
+```ts
+// actor-ts:
+import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
+
+type Cmd = { kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> };
+
+class Counter extends Actor<Cmd> {
+  private count = 0;
+  override onReceive(cmd: Cmd): void {
+    if (cmd.kind === 'inc')  this.count++;
+    else if (cmd.kind === 'get') cmd.replyTo.tell(this.count);
+  }
+}
+
+const system = ActorSystem.create('MySystem');
+const counter = system.actorOf(Props.create(() => new Counter()), 'counter');
+counter.tell({ kind: 'inc' });
+```
+
+Unterschiede zu Akka.NET:
+
+- **Keine `ReceiveActor`-Basis + `Receive<T>`-Registrierungen** -
+  nutze `onReceive(msg)` mit einem Switch / Pattern-Match.
+- **Nachrichten-Typen sind explizit** - `Cmd`-Union vs. Akka.NETs
+  oft-untypisiertes `Receive<object>`.
+- **Lambda-Stil-Verhaltensdefinition** ist nicht
+  TypeScript-freundlich - Klasse mit `onReceive` ist die Idiomatik.
+
+## Sender / Reply
+
+```csharp
+// Akka.NET:
+Receive<GetState>(_ => Sender.Tell(_state));
+```
+
+```ts
+// actor-ts - Option 1: replyTo in der Nachricht
+type Cmd = { kind: 'get-state'; replyTo: ActorRef<State> };
+
+class MyActor extends Actor<Cmd> {
+  onReceive(cmd: Cmd): void {
+    if (cmd.kind === 'get-state') cmd.replyTo.tell(this.state);
+  }
+}
+
+// actor-ts - Option 2: this.sender (Option-Typ)
+class MyActor extends Actor<Cmd> {
+  onReceive(cmd: Cmd): void {
+    if (cmd.kind === 'get-state') {
+      this.sender.forEach(s => s.tell(this.state));
+    }
+  }
+}
+```
+
+Bevorzuge **Option 1** (explizites `replyTo`) - typsicher und
+klar über den Vertrag.
+
+## Supervisor-Strategie
+
+```csharp
+// Akka.NET:
+protected override SupervisorStrategy SupervisorStrategy() =>
+  new OneForOneStrategy(maxNrOfRetries: 5, withinTimeRange: TimeSpan.FromMinutes(1),
+    decider: ex => ex switch {
+      ArithmeticException _ => Directive.Resume,
+      _ => Directive.Restart,
+    });
+```
+
+```ts
+// actor-ts:
+override supervisorStrategy = new OneForOneStrategy(
+  decideBy([
+    { match: TypeError, then: Directive.Resume },
+  ], Directive.Restart),
+  { maxRetries: 5, withinTimeRangeMs: 60_000 },
+);
+```
+
+Gleiche Form - der Decider gibt Direktiven basierend auf dem
+Exception-Typ zurück.
+
+## Cluster
+
+```csharp
+// Akka.NET:
+var cluster = Cluster.Get(system);
+cluster.Join(Address.Parse("akka.tcp://MySystem@host:port"));
+```
+
+```ts
+// actor-ts:
+const cluster = await Cluster.join(system, {
+  host: 'host',
+  port: 2552,
+  seeds: ['host:2552', ...],
+});
+```
+
+Gleiche Join-Semantik; actor-ts nutzt URL-ähnliche Seeds vs.
+Akka.NETs explizite Address.
+
+## Sharding
+
+```csharp
+// Akka.NET:
+var region = ClusterSharding.Get(system).Start(
+  typeName: "Counter",
+  entityProps: Props.Create<CounterActor>(),
+  settings: ClusterShardingSettings.Create(system),
+  messageExtractor: new MessageExtractor()
+);
+```
+
+```ts
+// actor-ts:
+const region = ClusterSharding.get(system, cluster).start<Cmd>({
+  typeName: 'Counter',
+  entityProps: Props.create(() => new CounterActor()),
+  extractEntityId: (cmd) => cmd.entityId,
+  numShards: 100,
+});
+```
+
+Konzeptionell Drop-in.  `MessageExtractor` wird zu
+`extractEntityId`; die Shard-ID wird automatisch abgeleitet.
+
+## Persistenz
+
+```csharp
+// Akka.NET:
+public class Account : ReceivePersistentActor {
+  public override string PersistenceId => "account-" + Id;
+  private decimal _balance;
+
+  public Account() {
+    Recover<Deposited>(e => _balance += e.Amount);
+
+    Command<Deposit>(c => Persist(new Deposited(c.Amount), e => _balance += e.Amount));
+  }
+}
+```
+
+```ts
+// actor-ts:
+class Account extends PersistentActor<Cmd, Event, State> {
+  constructor(public readonly id: string) { super(); }
+  readonly persistenceId = `account-${this.id}`;
+
+  initialState(): State { return { balance: 0 }; }
+
+  onEvent(state: State, event: Event): State {
+    if (event.kind === 'deposited') return { balance: state.balance + event.amount };
+    return state;
+  }
+
+  onCommand(state: State, cmd: Cmd): void {
+    if (cmd.kind === 'deposit') {
+      this.persist({ kind: 'deposited', amount: cmd.amount }, () => {});
+    }
+  }
+}
+```
+
+Ein einzelnes `onEvent` statt geteilter `Recover<T>` /
+`Command<T>`.
+
+## Konfiguration
+
+Akka.NET nutzt **HOCON** zur Konfiguration - genau wie Akka JVM.
+actor-ts nutzt ebenfalls **HOCON**
+([Konfiguration](/de/reference/configuration/)).
+
+Die Schlüssel-Präfixe unterscheiden sich:
+
+```hocon
+# Akka.NET:
+akka {
+  cluster {
+    seed-nodes = [...]
+    failure-detector { ... }
+  }
+}
+
+# actor-ts:
+actor-ts {
+  cluster {
+    gossip-interval = 1s
+    failure-detector { ... }
+  }
+}
+```
+
+Anderer Root-Key (`akka` vs. `actor-ts`), andere konkrete Keys,
+aber das **HOCON-Format und die Konventionen sind dieselben**.
+
+## Was du aufgibst
+
+- **C#-Sprachfeatures** - LINQ, async/await mit Structured
+  Concurrency, etc.  TypeScript hat async/await, aber das
+  Ökosystem ist anders.
+- **.NET-Ökosystem** - Akka.NET integriert sich mit .NETs
+  Auth-, ORM- usw. Ökosystemen.  actor-ts nutzt die von
+  Node / Bun.
+- **Einige Akka.NET-spezifische Features** - DotNetty-Transport,
+  Hyperion-Serialisierung etc. haben keine direkten Äquivalente.
+
+## Was du gewinnst
+
+- **TypeScript-Typen** - Nachrichten-Typen werden an der
+  Grenze geprüft.
+- **Schnellerer Start** - Bun startet in sub-100 ms vs.
+  .NETs ~500 ms-1 s.
+- **Container-Native** - kleinere Images, weniger
+  Memory-Baseline.
+
+## Migrations-Strategien
+
+Wie bei Akka JVM:
+
+1. **Nicht alles auf einmal umschreiben.**  Lass actor-ts in
+   einem neuen Service laufen, der das Akka.NET-System
+   vorlagert.
+2. **Einen Bounded Context nach dem anderen.**
+3. **Persistenz vorsichtig migrieren** - Akka.NETs
+   JSON.NET-serialisierte Events können von actor-ts mit einem
+   EventAdapter gelesen werden.
+
+## Wohin als Nächstes
+
+- **[from-akka-jvm](/de/migration/from-akka-jvm/)** -
+  die Hauptreferenz (Akka.NET spiegelt JVM-Akka).
+- **[Migration - Übersicht](/de/migration/overview/)** -
+  Framework-übergreifender Vergleich.
+- **[Quickstart](/de/intro/quickstart/)** - actor-ts
+  Hello-World.

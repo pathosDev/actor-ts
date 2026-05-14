@@ -1,0 +1,252 @@
+---
+title: Von Akka (JVM)
+description: actor-ts ist stark von Akka inspiriert. Die meisten Konzepte mappen direkt - Actor, ActorRef, Supervisor, Cluster, Sharding, Singleton, PersistentActor. Dieser Guide ist die Konzept-für-Konzept-Übersetzung für Scala-/Java-Akka-Entwickler.
+---
+
+actor-ts ist **der engste spirituelle Cousin von Akka** im
+TypeScript-Umfeld.  Die meisten Konzepte mappen 1:1; viele APIs
+sind identisch benannt.  Dieser Guide führt durch die
+Übersetzung.
+
+## Konzept-Mapping
+
+| Akka (JVM) | actor-ts |
+| --- | --- |
+| `akka.actor.Actor` | `Actor<TMsg>` |
+| `akka.actor.ActorRef` | `ActorRef<T>` |
+| `akka.actor.Props` | `Props<TMsg>` |
+| `tell(msg)` / `!` | `tell(msg)` |
+| `ask(msg).mapTo[T]` | `ask<TReq, TRes>(ref, msg, timeoutMs)` |
+| `context.actorOf(props)` | `context.spawn(props)` |
+| `OneForOneStrategy` | `OneForOneStrategy` |
+| `AllForOneStrategy` | `AllForOneStrategy` |
+| `become(receive)` | `context.become(handler)` |
+| `stash() / unstashAll()` | `context.stash() / context.unstashAll()` |
+| `context.watch(ref)` | `context.watch(ref)` |
+| `Terminated(ref)` | `Terminated`-Systemnachricht |
+| `PoisonPill` | `PoisonPill.instance` |
+| `Kill` | `Kill.instance` |
+| `setReceiveTimeout(d)` | `context.setReceiveTimeout(ms)` |
+| `EventStream` | `system.eventStream` |
+| `Cluster.get(system).join(...)` | `Cluster.join(system, settings)` |
+| `ClusterSharding` | `ClusterSharding` |
+| `ClusterSingleton` | `ClusterSingletonManager` / `Proxy` |
+| `DistributedPubSub` | `DistributedPubSub` |
+| `DistributedData` | `DistributedData` (per Extension) |
+| `PersistentActor` | `PersistentActor` |
+| `persist(event)(cb)` | `this.persist(event, cb)` |
+| `Akka HTTP` | `HttpExtension` + Route-DSL |
+| `Akka Streams` | **NICHT verfügbar** |
+
+## Before/After
+
+### Actor
+
+```scala
+// Akka Scala:
+class Counter extends Actor {
+  var count = 0
+  def receive = {
+    case "inc"    => count += 1
+    case "get"    => sender() ! count
+  }
+}
+
+// actor-ts:
+import { Actor, type ActorRef } from 'actor-ts';
+
+type Cmd = { kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> };
+
+class Counter extends Actor<Cmd> {
+  private count = 0;
+  override onReceive(cmd: Cmd): void {
+    if (cmd.kind === 'inc') this.count++;
+    else cmd.replyTo.tell(this.count);
+  }
+}
+```
+
+Unterschiede:
+
+- TypeScript braucht **explizite Nachrichten-Typen** (`Cmd`) -
+  Akkas `Any` lässt sich nicht übersetzen.
+- `sender()` wird zu einer **expliziten `replyTo`-Ref** in der
+  Nachricht oder zu `this.sender` (Option).
+- Keine Pattern-Matching-Syntax; nutze `if/else` oder `ts-pattern`.
+
+### Supervisor
+
+```scala
+// Akka Scala:
+override val supervisorStrategy = OneForOneStrategy() {
+  case _: ArithmeticException => Resume
+  case _: NullPointerException => Restart
+  case _: Exception => Escalate
+}
+
+// actor-ts:
+override supervisorStrategy = new OneForOneStrategy(
+  decideBy([
+    { match: ArithmeticError,    then: Directive.Resume   },
+    { match: NullPointerError,   then: Directive.Restart  },
+    { match: Error,              then: Directive.Escalate },
+  ]),
+);
+```
+
+Benennung + Struktur identisch; die Direktiven sind dieselben.
+
+### Cluster + Sharding
+
+```scala
+// Akka Scala:
+val cluster = Cluster(system)
+cluster.join(Address("akka", "MySystem", "host", port))
+
+val region = ClusterSharding(system).start(
+  typeName = "Counter",
+  entityProps = Props[Counter],
+  settings = ClusterShardingSettings(system),
+  extractEntityId = ...,
+  extractShardId  = ...,
+)
+
+// actor-ts:
+const cluster = await Cluster.join(system, { host, port, seeds });
+
+const region = ClusterSharding.get(system, cluster).start({
+  typeName: 'Counter',
+  entityProps: Props.create(() => new Counter()),
+  extractEntityId: (msg) => msg.id,
+  numShards: 100,
+});
+```
+
+Größtenteils Drop-in.  Unterschiede:
+
+- `extractShardId` wird in actor-ts aus
+  `extractEntityId + numShards` **abgeleitet**
+  (`shardId = hash(entityId) % numShards`).  Keine separate
+  Funktion.
+- `ClusterShardingSettings` steht inline als Optionen von
+  `start()`.
+
+### PersistentActor
+
+```scala
+// Akka Scala:
+class Account(val id: String) extends PersistentActor {
+  override def persistenceId = s"account-$id"
+  var balance = 0
+
+  override def receiveCommand = {
+    case Deposit(amt) =>
+      persist(Deposited(amt))(e => balance += e.amount)
+  }
+
+  override def receiveRecover = {
+    case Deposited(amt) => balance += amt
+  }
+}
+
+// actor-ts:
+class Account extends PersistentActor<Cmd, Event, State> {
+  constructor(public readonly id: string) { super(); }
+  readonly persistenceId = `account-${this.id}`;
+
+  initialState(): State { return { balance: 0 }; }
+
+  onEvent(state: State, event: Event): State {
+    if (event.kind === 'deposited') return { balance: state.balance + event.amount };
+    return state;
+  }
+
+  onCommand(state: State, cmd: Cmd): void {
+    if (cmd.kind === 'deposit') {
+      this.persist({ kind: 'deposited', amount: cmd.amount }, () => {});
+    }
+  }
+}
+```
+
+Schlüssel-Unterschiede:
+
+- **Ein einziges `onEvent`** statt geteilter `receiveCommand` /
+  `receiveRecover`.  Läuft sowohl beim Persistieren als auch bei
+  Recovery.
+- **`persist`-Callback-Signatur** - `(newState) => void` statt
+  `(event) => unit`.
+- State ist **expliziter Typ-Parameter** - Akkas
+  zustandsbehaftete Variable wird zu einer State-Form.
+
+### Cluster Singleton
+
+```scala
+// Akka Scala:
+val singleton = system.actorOf(
+  ClusterSingletonManager.props(
+    singletonProps = Props[MyActor],
+    terminationMessage = PoisonPill,
+    settings = ClusterSingletonManagerSettings(system),
+  ),
+  name = "singletonManager",
+)
+
+// actor-ts:
+system.actorOf(
+  ClusterSingletonManager.props({
+    cluster,
+    typeName: 'my-singleton',
+    singletonProps: Props.create(() => new MyActor()),
+  }),
+  'singleton-manager-my-singleton',
+);
+```
+
+Dasselbe Modell, leicht andere Konfigurations-Form.
+
+## Was fehlt
+
+- **Akka Streams** - keine Portierung.  Nutze Promise-basierte
+  Patterns oder eine separate Streams-Library.
+- **Akka HTTPs typisierte Route-DSL** - actor-ts hat eine
+  eigene DSL, aber sie ist einfacher / weniger feature-reich.
+- **Akka Persistence Querys reaktive Stream-API** - actor-ts hat
+  `PersistenceQuery`, aber als `AsyncIterable`, nicht als Stream.
+- **Einige fortgeschrittene Supervision-Features** -
+  Backoff-Supervision existiert; "watch a Future"-Patterns
+  brauchen manuelles Wiring.
+
+## Was besser ist
+
+- **TypeScript-Typen** - Nachrichten-Typen werden an der
+  Compile-Grenze geprüft.  Keine `Any`- / `case class`-Runtime-Checks.
+- **Buns schneller Start** - sub-100 ms statt 1+ Sekunde der JVM.
+- **Kleinere Binaries** - keine JVM zum Ausliefern.
+- **Einfacheres operationelles Modell** - Single-Process JS
+  statt JVM-Tuning.
+
+## Migrations-Ansatz
+
+Für eine bestehende Akka-App, die actor-ts erwägt:
+
+1. **Nicht alles auf einmal umschreiben.**  Lass actor-ts in
+   einem neuen Service laufen, der das Akka-System via HTTP/gRPC
+   vorlagert.
+2. **Einen Bounded Context nach dem anderen migrieren** - wähle
+   eine self-contained Domäne (Orders, Sessions) und portiere
+   sie.
+3. **Persistenz vorsichtig re-exportieren** - von Akka
+   geschriebene Events sind JSON, wenn du Jackson genutzt hast;
+   actor-ts kann sie mit einem EventAdapter lesen.
+
+## Wohin als Nächstes
+
+- **[Quickstart](/de/intro/quickstart/)** - actor-ts
+  Hello-World.
+- **[Fundamentals - Übersicht](/de/fundamentals/overview/)** -
+  Konzept-Landkarte.
+- **[Migration - Übersicht](/de/migration/overview/)** -
+  Framework-übergreifender Vergleich.
+- **[from-pekko](/de/migration/from-pekko/)** - für den
+  Pekko-Fork.

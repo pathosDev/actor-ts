@@ -1,0 +1,364 @@
+---
+title: Kubernetes-Deployment
+description: Ein funktionierendes Rezept — StatefulSet (oder Deployment) + Headless Service + RBAC für den K8s-API-Seed-Provider + PreStop-Hook + Readiness-Probes. Die Defaults, mit denen ein actor-ts-Cluster in Produktion läuft.
+---
+
+Kubernetes ist das häufigste Deployment-Ziel. Das Framework
+verträgt sich gut mit K8s, sobald ein paar Dinge sitzen: stabile
+Identität (für stateful Actors), Seed-Discovery (damit Nodes sich
+finden) und ein sauberer Shutdown-Pfad (damit Rolling Updates
+keinen Traffic verlieren).
+
+Diese Seite ist ein funktionierendes Rezept — kopieren, anpassen,
+deployen.
+
+## Das vollständige Manifest
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: actor-ts
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: actor-ts-pod-reader
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: actor-ts
+subjects:
+  - kind: ServiceAccount
+    name: actor-ts
+roleRef:
+  kind: Role
+  name: actor-ts-pod-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: actor-ts-cluster
+spec:
+  clusterIP: None                  # headless — DNS liefert Pod-IPs
+  selector:
+    app: actor-ts
+  ports:
+    - name: cluster
+      port: 2552
+      targetPort: 2552
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: actor-ts
+spec:
+  selector:
+    app: actor-ts
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+    - name: management
+      port: 8558
+      targetPort: 8558
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: actor-ts
+spec:
+  serviceName: actor-ts-cluster
+  replicas: 3
+  selector:
+    matchLabels:
+      app: actor-ts
+  template:
+    metadata:
+      labels:
+        app: actor-ts
+    spec:
+      serviceAccountName: actor-ts
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: app
+          image: ghcr.io/your-org/your-app:1.2.3
+          ports:
+            - name: cluster
+              containerPort: 2552
+            - name: http
+              containerPort: 8080
+            - name: management
+              containerPort: 8558
+          env:
+            - name: ACTOR_TS_HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: ACTOR_TS_PORT
+              value: "2552"
+            - name: K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: K8S_LABEL_SELECTOR
+              value: "app=actor-ts"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: actor-ts-secrets
+                  key: db-password
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: management
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health/alive
+              port: management
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          lifecycle:
+            preStop:
+              exec:
+                # LB drainen, bevor SIGTERM die App erreicht
+                command: ["/bin/sh", "-c", "sleep 10"]
+```
+
+## Was die einzelnen Teile tun
+
+### ServiceAccount + RBAC
+
+```yaml
+ServiceAccount: actor-ts
+Role:           actor-ts-pod-reader   # get + list pods
+RoleBinding:    bindet beides
+```
+
+Der K8s-API-Seed-Provider muss **Pods listen** können, die einem
+Label-Selector entsprechen, um Peers zu finden. Ohne dieses RBAC-Grant
+bekommt der Seed-Provider 403 und der Cluster bildet sich nie.
+
+### Headless Service für Cluster-Gossip
+
+```yaml
+clusterIP: None
+```
+
+Ein **headless** Service liefert die Pod-IPs direkt per DNS (keine
+ClusterIP-Virtual-Address). Nützlich, wenn Nodes stabile, direkte
+Peer-Identitäten brauchen — die Heartbeats des Failure Detectors
+zielen auf spezifische Pod-IPs, nicht auf eine load-balancete
+Abstraktion.
+
+### Regulärer Service für Traffic
+
+```yaml
+clusterIP: <default>
+```
+
+Ein normaler Service für HTTP und den Management-Endpunkt — die
+profitieren von Load Balancing. Cluster-Traffic geht über den
+Headless Service, App-Traffic über diesen.
+
+### StatefulSet vs Deployment
+
+| Nimm | Wann |
+| --- | --- |
+| **StatefulSet** | Stabile Pod-Namen (`actor-ts-0`, `actor-ts-1`, ...). Nützlich, wenn du vorhersagbare Identität für Entity-Placement willst oder wenn pro-Pod Persistent Volumes gemountet werden. |
+| **Deployment** | Pod-Namen sind zufällig. Okay, wenn deine App stateless ist (keine pro-Pod-Identität erforderlich) und Persistence extern liegt (Cassandra-Journal, geteilter S3-Snapshot-Store). |
+
+Für sharded Actors mit `remember-entities = true` auf pro-Pod
+Persistent Volumes ist StatefulSet die richtige Wahl. Für
+extern-persistierten State (Cluster gegen ein geteiltes
+Postgres/Cassandra) ist Deployment in Ordnung und einfacher.
+
+### `terminationGracePeriodSeconds`
+
+```yaml
+terminationGracePeriodSeconds: 30
+```
+
+K8s sendet SIGTERM, wartet dann diese Zeitspanne vor SIGKILL.
+Dimensioniert nach:
+
+- **HTTP-Drain** — typischerweise 5-10 s.
+- **Cluster-Leave-Gossip** — 5-15 s für Konvergenz.
+- **Journal-Flush** — abhängig vom Journal.
+
+30 s sind ein vernünftiger Default. Erhöhe, wenn dein Cluster groß
+oder das Failure-Detector-Fenster lang ist.
+
+### `preStop`-Sleep
+
+```yaml
+preStop:
+  exec:
+    command: ["/bin/sh", "-c", "sleep 10"]
+```
+
+Kritisch für saubere Rolling Updates. Der Ablauf:
+
+1. K8s markiert den Pod als **terminating** und startet den
+   `preStop`-Hook parallel zur Load-Balancer-Deregistrierung.
+2. **`sleep 10`** — gibt dem Load Balancer Zeit, keinen neuen
+   Traffic mehr an diesen Pod zu schicken.
+3. Nach dem Sleep sendet K8s SIGTERM.
+4. Die Coordinated-Shutdown-Hooks der App drainen in-flight Requests,
+   verlassen den Cluster usw.
+
+Ohne den Sleep läuft SIGTERM gegen die LB-Deregistrierung — in-flight
+Requests können "draining"-Antworten sehen.
+
+### Readiness- + Liveness-Probes
+
+```yaml
+readinessProbe: /health/ready
+livenessProbe:  /health/alive
+```
+
+Die
+[HttpManagement](/de/observability/management/overview/)-Extension
+des Frameworks stellt diese Endpunkte bereit.
+
+- **`/health/ready`** — "soll dieser Pod Traffic bekommen?"
+  Liefert während des Shutdowns 503, damit der LB ihn vor SIGTERM
+  rauswirft. Nutze, um App-spezifische Health-Checks abzusichern
+  (DB erreichbar, Dependencies warm etc.).
+- **`/health/alive`** — "ist dieser Pod grundlegend kaputt?"
+  Schlägt fehl → K8s startet den Pod neu. Reserviere für wirklich
+  unrettbare Zustände — Actor-System läuft nicht, OOM-artige
+  Bedingungen.
+
+## App-seitige Verdrahtung
+
+```ts
+import { ActorSystem, Cluster, CoordinatedShutdownId, HttpManagement } from 'actor-ts';
+import { KubernetesApiSeedProvider } from 'actor-ts/discovery';
+
+const system = ActorSystem.create('my-app');
+const cs     = system.extension(CoordinatedShutdownId);
+
+// 1. Cluster-Join mit K8s-API-Seed-Discovery
+const seeds = await new KubernetesApiSeedProvider({
+  namespace:     process.env.K8S_NAMESPACE!,
+  labelSelector: process.env.K8S_LABEL_SELECTOR!,
+  containerPort: 2552,
+}).discover();
+
+const cluster = await Cluster.join(system, {
+  host:  process.env.ACTOR_TS_HOSTNAME!,
+  port:  parseInt(process.env.ACTOR_TS_PORT!),
+  seeds,
+  roles: ['compute'],
+});
+
+// 2. Management-Endpunkte
+const management = await HttpManagement.start(system, {
+  port:    8558,
+  cluster,
+});
+
+// 3. App-HTTP-Server
+const http = system.extension(HttpExtensionId);
+await http.newServerAt('0.0.0.0', 8080).bind(routes);
+
+// 4. SIGTERM → Coordinated Shutdown
+cs.installProcessHooks();
+
+// 5. Prozess am Leben halten
+await new Promise(() => {});
+```
+
+Fünf Schritte in der Reihenfolge:
+
+1. **Cluster-Join mit Seed-Discovery** — der K8s-API-Seed-Provider
+   fragt Pods ab, die `app=actor-ts` matchen, und nutzt deren IPs
+   als Seeds. Auf dem ersten Pod ist die Seed-Liste nur er selbst
+   (der Auto-Promote-to-Leader-Pfad).
+2. **Management-Endpunkte** — `/health/*` für die K8s-Probes,
+   `/cluster/members` zum Debuggen.
+3. **App-HTTP** — deine Routes, getrennter Port vom Management.
+4. **SIGTERM-Hooks** — Coordinated Shutdown installiert Hooks, die
+   bei SIGTERM zum graceful Drain feuern.
+5. **Am Leben halten** — der Prozess hängt, bis SIGTERM kommt.
+
+Siehe [Discovery — Kubernetes API](/de/discovery/seed-providers/kubernetes-api/)
+für die vollständigen Optionen des Seed-Providers.
+
+## Rolling Updates
+
+```bash
+kubectl rollout restart statefulset/actor-ts
+```
+
+Für jeden Pod, der Reihe nach (StatefulSet) oder beliebig
+(Deployment):
+
+1. K8s markiert den Pod als terminating + startet `preStop`.
+2. **10-Sekunden-LB-Drain**.
+3. SIGTERM kommt an.
+4. Coordinated Shutdown läuft:
+   - Keine neuen HTTP-Requests mehr annehmen.
+   - In-flight Requests drainen.
+   - `cluster.leave()` ausgeben.
+   - Auf Bestätigung des Leaves durch den Cluster warten.
+   - Das Actor-System terminieren.
+5. Prozess beendet sich sauber.
+6. K8s startet einen neuen Pod aus dem neuen Image.
+7. Der neue Pod tritt dem Cluster via Seed-Provider bei.
+
+Für sharded Entities **passiert das Rebalancing automatisch** — die
+Shards des gehenden Nodes werden neu zugeteilt; neue Entities
+respawnen auf dem neuen Pod aus dem Journal.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Setze nicht `replicas: 1` für stateful Actors">
+  Ein Ein-Replica-Cluster hat keinen Failover-Partner. Mitten im
+  Rolling Update ist der Cluster kurz leer — sharded Singletons gehen
+  unter, in-flight Requests scheitern. Nutze mindestens `replicas: 3`
+  oder richte eine Strategie ein, die deinem Workload kurze
+  Nichtverfügbarkeit erlaubt.
+</Aside>
+
+<Aside type="caution" title="`terminationGracePeriodSeconds` < Shutdown-Zeit">
+  ```yaml
+  terminationGracePeriodSeconds: 5    # ✗ zu kurz
+  ```
+  Wenn der Shutdown länger braucht, schickt K8s mittendrin SIGKILL —
+  der Cluster bekommt kein sauberes Leave, Journals werden nicht
+  geflusht, in-flight Requests gekillt. Sorg dafür, dass die Grace
+  länger ist als deine längste Shutdown-Phase.
+</Aside>
+
+<Aside type="caution" title="Pre-1.0 des K8sLeaseProviders">
+  Der [Kubernetes-Lease](/de/coordination/kubernetes-lease/)-Provider
+  nutzt native K8s-Lease-Ressourcen für Split-Brain-Schutz in
+  Singletons. Er funktioniert, hat aber weniger Produktionsstunden als
+  der Rest des Frameworks — übe den Failover-Pfad in Staging, bevor
+  du dich darauf verlässt.
+</Aside>
+
+## Wohin als nächstes
+
+- **[Operations-Überblick](/de/operations/overview/)** — das
+  Gesamtbild aller Produktionsbelange.
+- **[Discovery — Kubernetes API](/de/discovery/seed-providers/kubernetes-api/)** —
+  die Optionen des Seed-Providers.
+- **[Coordinated Shutdown](/de/fundamentals/coordinated-shutdown/)** —
+  die DSL für phased Shutdown.
+- **[HttpManagement](/de/observability/management/overview/)** —
+  die /health/*-Endpunkte, gegen die K8s-Probes laufen.
+- **[Cluster-Sicherheit](/de/operations/security/cluster-security/)** —
+  TLS + Auth für den Cluster-Transport.
+- **[Rolling Migration](/de/operations/upgrades/rolling-migration/)** —
+  schema-brechende Änderungen während eines Rollouts.

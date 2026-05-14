@@ -1,0 +1,187 @@
+---
+title: Sets (GSet, ORSet)
+description: Zwei Set-CRDTs — `GSet` für Add-only-Sets, `ORSet` für Add-und-Remove mit "Add wins"-Semantik. Nebenläufiges Add+Remove löst sich zum auf derselben Replika beobachteten Add auf.
+---
+
+Zwei Set-CRDTs:
+
+| Typ | Operationen | Wann |
+| --- | --- | --- |
+| **`GSet<E>`** | nur add | Append-only-Collections — beobachtete Arten, gesehene User. |
+| **`ORSet<E>`** | add + remove | Membership-Sets, deren Elemente kommen und gehen. |
+
+Beide konvergieren bei nebenläufigen Writes; der Spezial-Trick
+von `ORSet` ist die Auflösung von "nebenläufigem Add und Remove
+desselben Elements", damit Removes nicht versehentlich ein noch
+gewolltes Item löschen.
+
+## GSet
+
+```ts
+import { GSet } from 'actor-ts';
+
+let s = GSet.empty<string>();
+s = s.add('apple');
+s = s.add('banana');
+s.value();   // → Set(['apple', 'banana'])
+```
+
+Der State ist ein einfaches Set; Merge ist eine Vereinigung.
+Kann nicht entfernen — einmal hinzugefügt, bleibt ein Element
+für immer drin.
+
+Nimm es für:
+
+- **Beobachtete Event-Typen**, die das System je gesehen hat.
+- **User, die sich je eingeloggt haben** (ein `unique-users-ever`-Set).
+- **Tags, die auf eine Ressource angewendet** und nicht wieder
+  entfernt werden.
+
+Wenn du Removes brauchst, ist `GSet` die falsche Form; greif zu
+`ORSet`.
+
+### Element-Identität
+
+```ts
+let s = GSet.empty<UserSession>({ identity: (u) => u.id });
+s = s.add({ id: 'user-42', name: 'Alice' });
+s = s.add({ id: 'user-42', name: 'Alice updated' });
+s.value().size;   // → 1 (gleiche Identität)
+```
+
+Standardmäßig werden Elemente per `JSON.stringify(element)`
+dedupliziert.  Übergib eine `identity: (e) => string`-Funktion
+für eigene Dedup-Logik — nützlich, wenn Elemente Objekte mit
+stabilen IDs, aber veränderlichen anderen Feldern sind.
+
+## ORSet (Observed-Remove Set)
+
+```ts
+import { ORSet } from 'actor-ts';
+
+let s = ORSet.empty<string>();
+s = s.add('node-a', 'apple');
+s = s.add('node-b', 'banana');
+s = s.remove('apple');
+s.value();   // → Set(['banana'])
+```
+
+Der Trick: jedes `add` stempelt das Element mit einem
+**eindeutigen Tag**; `remove(e)` entfernt nur die Tags, die für
+die entfernende Replika gerade sichtbar sind.
+
+Damit löst sich der Fall "nebenläufig Add + Remove" **zugunsten
+des Add** auf:
+
+```ts
+let a0 = ORSet.empty<string>().add('a', 'apple');
+let b0 = a0;                              // beide sehen 'apple' mit demselben Tag
+
+let a1 = a0.remove('apple');               // A entfernt
+let b1 = b0.add('b', 'apple');             // B fügt ein NEUES 'apple' hinzu (neuer Tag)
+
+a1.merge(b1).value();   // → Set(['apple'])   — Bs Add überlebt
+```
+
+Das ursprüngliche 'apple' hatte den Tag, den B nie sah, also
+führt Bs frisches Add einen neuen Tag ein.  Beim Merge von A
+und B entfernte As Remove nur den *ursprünglichen* Tag; Bs Tag
+bleibt.  Nettoergebnis: 'apple' ist im Set.
+
+Diese "Add wins"-Semantik macht ORSet zur richtigen Wahl für
+**Shopping-Carts, Presence-Sets, Subscription-Listen** — Sets,
+in denen ein kurzzeitig von einer Partei entferntes Item nicht
+verschwinden sollte, wenn eine andere Partei es nebenläufig
+wieder hinzufügt.
+
+### Tag-Generierung
+
+Tags sind `replicaId × per-replica-counter`.  Jede Replika hält
+einen monotonen Counter; jedes `add` erhöht ihn.  Das garantiert
+eindeutige Tags selbst innerhalb derselben Millisekunde, über
+den ganzen Cluster.
+
+Der Counter ist **Teil des CRDT-State** — Gossipen macht es
+korrekt.  Du siehst und manipulierst Tags nicht direkt; sie sind
+intern.
+
+### Element-Identität (wie bei GSet)
+
+```ts
+const s = ORSet.empty<CartItem>({ identity: (i) => i.sku });
+s.add('node-a', { sku: 'book-1', price: 10 });
+s.add('node-b', { sku: 'book-1', price: 12 });
+// → trotzdem ein Eintrag (gleiche SKU), aber zwei Tags
+//   — die Tags sind unabhängig von der Identität des Werts
+```
+
+Die Identity-Funktion bestimmt die **Deduplikation**; die
+Tag-Mechanik arbeitet pro Add unabhängig davon.
+
+## Auswahl zwischen beiden
+
+| Frage | Typ |
+| --- | --- |
+| Brauchst du jemals Removes? | `ORSet` |
+| Sonst | `GSet` |
+
+`GSet` ist **kleiner** (keine Tag-Buchhaltung) und **einfacher**.
+Nimm es, wenn "Item entfernen" nicht Teil des Workflows ist.
+
+Die zusätzlichen Kosten von `ORSet` sind das Tag-Tracking — für
+Sets mit hoher Churn (häufige Add/Remove-Zyklen auf demselben
+Element) wächst der interne State.  Siehe "Wann ORSet nicht
+passt" unten.
+
+## Wann ORSet nicht passt
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Sehr hohe Add/Remove-Churn">
+  ```ts
+  // 100 000 Add+Remove-Zyklen pro Sekunde auf demselben Element
+  ```
+  Jedes `add` fügt einen Tag hinzu; jedes `remove` entfernt die
+  aktuell sichtbaren Tags.  Aber Tags von nebenläufigen (oder
+  veralteten) Adds können hängen bleiben.  Mit der Zeit kann das
+  Tag-Set wachsen, selbst wenn das sichtbare Set klein ist.
+  Für Workloads mit hoher Churn kann ein periodischer
+  State-Refresh / eine Konsolidierung (ein "Snapshot" via
+  direktem DD-Update mit einem frischen leeren ORSet) helfen.
+</Aside>
+
+<Aside type="caution" title="Entfernen ohne stabile Replika-ID">
+  ```ts
+  s.remove('apple');   // braucht keine Replika-ID
+  ```
+  Hinweis: nur `add` nimmt eine Replika-ID (für die
+  Tag-Generierung).  `remove` ist Replika-agnostisch — es
+  entfernt, was diese Replika aktuell an Tags sieht.  Das ist
+  per Design.
+</Aside>
+
+<Aside type="caution" title="Nimm kein Plain Set für Shared State">
+  ```ts
+  // ✗ verliert Information bei nebenläufigen Edits
+  dd.update('cart', () => new Set(), (s) => { s.add('item'); return s; });
+  ```
+  Ein einfaches `Set` ist kein CRDT — seine Merge-Semantik
+  bewahrt nebenläufige Updates nicht korrekt.  Wrappe mit
+  `ORSet` (oder `GSet`), damit die Replikation des Frameworks
+  weiß, wie zu mergen ist.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[Counter](/de/distributed-data/crdt-types/counters/)** —
+  für additive Counts.
+- **[Register](/de/distributed-data/crdt-types/registers/)** —
+  für Einzelwert-Writes.
+- **[Maps](/de/distributed-data/crdt-types/maps/)** —
+  für keyed Assoziationen inklusive ORMap.
+- **[Daten gestalten](/de/distributed-data/crdt-types/designing-data/)** —
+  der konzeptionelle Leitfaden.
+
+Die API-Referenzen [`GSet`](/api/classes/gset/) und
+[`ORSet`](/api/classes/orset/) decken die vollständige
+Oberfläche ab.

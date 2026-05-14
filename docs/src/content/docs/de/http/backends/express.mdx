@@ -1,0 +1,156 @@
+---
+title: Express-Backend
+description: Express als HTTP-Backend einwickeln — nützlich, wenn dein Team schon Express betreibt + Middleware-Investitionen hat. Langsamer als Fastify, aber mit dem größten Middleware-Ökosystem.
+---
+
+`ExpressBackend` erlaubt dir, actor-ts-Routen durch **Express**
+laufen zu lassen — das am häufigsten genutzte Node-HTTP-
+Framework.  Die richtige Wahl, wenn:
+
+- Du bereits in **Express-Middleware** investiert hast (eigene
+  Auth, Session-Handling, app-spezifische Instrumentierung).
+- Die Vertrautheit deines Teams mit Express größer ist als die
+  Framework-Vorteile von Fastify.
+- Du eine bestehende Express-App **inkrementell** zu actor-ts
+  migrierst.
+
+```ts
+import { ActorSystem, HttpExtensionId } from 'actor-ts';
+import { ExpressBackend } from 'actor-ts/http';
+
+const http = system.extension(HttpExtensionId);
+
+await http.newServerAt('0.0.0.0', 8080)
+  .useBackend(new ExpressBackend())
+  .bind(routes);
+```
+
+## Konfiguration
+
+```ts
+new ExpressBackend({
+  bodyLimit: '1mb',   // body-parser-Limit
+  trustProxy: true,    // X-Forwarded-*-Header berücksichtigen
+});
+```
+
+Settings im Express-Stil.
+
+## Express-Middleware hinzufügen
+
+```ts
+import express from 'express';
+import { ExpressBackend } from 'actor-ts/http';
+
+const backend = new ExpressBackend();
+await http.newServerAt('0.0.0.0', 8080)
+  .useBackend(backend)
+  .bind(routes);
+
+// Zugriff auf die rohe Express-App:
+backend.app.use(express.session({ secret: '...' }));
+backend.app.use(rateLimitMiddleware);
+backend.app.use(customAuth);
+```
+
+Express-Middleware **umhüllt** die actor-ts-Routen — der Request
+fließt zuerst durch deine Middleware, dann zum actor-ts-Handler.
+
+Das ist **der Hauptgrund**, Express statt Fastify zu nehmen: das
+Middleware-Ökosystem.  Wenn du es nicht brauchst, ist Fastify
+schneller.
+
+## TLS
+
+```ts
+import https from 'node:https';
+
+new ExpressBackend({
+  https: {
+    cert: fs.readFileSync('./tls/cert.pem'),
+    key:  fs.readFileSync('./tls/key.pem'),
+  },
+});
+```
+
+Gestützt auf das `https`-Modul von Node.  Dieselben Vorbehalte
+wie beim Fastify-Backend — typischerweise terminiert TLS am
+Load-Balancer.
+
+## Peer-Dependency
+
+```bash
+npm install express
+# oder: bun add express
+```
+
+Express 5+ empfohlen; ältere Versionen können funktionieren,
+sind aber nicht getestet.
+
+## Performance
+
+Grobe Zahlen:
+
+- **40K–60K req/sec** für triviale Routen (langsamer als Fastify).
+- **P50-Latenz** ähnlich; der Durchsatz unterscheidet sich.
+
+Die Middleware-Kette von Express hat mehr Overhead als Fastifys
+Hooks.  Für High-Throughput-Pfade bevorzuge Fastify; für Pfade,
+die durch schwere Middleware ausgebremst werden, spielt die
+Framework-Wahl kaum eine Rolle.
+
+## Migration aus einer bestehenden Express-App
+
+Wenn du eine bestehende Express-App hast und actor-ts hinzufügen
+willst:
+
+```ts
+import express from 'express';
+import { actorTsRouter } from 'actor-ts/http/express-adapter';
+
+const app = express();
+
+// Bestehende Routen:
+app.use('/legacy', oldLegacyRouter);
+
+// actor-ts-Routen unter einem Präfix gemountet:
+app.use('/v2', actorTsRouter(system, routes));
+
+app.listen(8080);
+```
+
+Das Framework stellt für diesen Fall einen Express-Router-Adapter
+bereit — actor-ts-Routen neben bestehenden Express-Routen
+mounten, ohne den ganzen HTTP-Stack auszutauschen.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Express vs. Fastify im Benchmark">
+  ```ts
+  // Express wählen, weil "es einfacher ist"
+  ```
+  Aus actor-ts-Sicht sind beide einfach.  Fastify ist schneller.
+  Express hat mehr Middleware.  Wähle nach **der Middleware, die
+  du brauchst**, nicht nach gefühlter Einfachheit.
+</Aside>
+
+<Aside type="caution" title="Async-Fehlerbehandlung">
+  ```ts
+  app.use((req, res, next) => {
+    asyncWork().then(...);   // ✗ unhandled rejection
+  });
+  ```
+  Die Default-Fehlerbehandlung von Express ist synchron-freundlich.
+  Für Async-Middleware nimm `express-async-errors` oder wrap
+  manuell.  Die actor-ts-Routen selbst behandeln Async sauber;
+  hier geht's um deine eigene Middleware.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[HTTP-Übersicht](/de/http/overview/)** — das große
+  Bild.
+- **[Fastify-Backend](/de/http/backends/fastify/)** — das
+  Default + die Empfehlung.
+- **[Route-DSL](/de/http/route-dsl/)** — was die Backends
+  registrieren.

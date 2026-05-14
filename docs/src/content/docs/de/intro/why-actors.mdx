@@ -1,0 +1,233 @@
+---
+title: Warum Actors?
+description: Was Dir das Actor-Modell gibt, das Promise-Suppe, Worker Threads und Code mit geteiltem State nicht geben — und wo es das falsche Werkzeug ist.
+---
+
+Das Actor-Modell ist eine Art, nebenläufige und verteilte Systeme zu
+strukturieren, die es seit den 1970ern gibt.  Erlang hat es in den 90ern
+berühmt gemacht, die JVM hat es in den 2010ern via Akka und Pekko
+aufgegriffen, und actor-ts bringt dieselben Ideen nach TypeScript.
+
+Wenn Du nicht-trivialen Promise-basierten Code geschrieben hast, hast Du
+die Probleme, die Actors lösen, schon kennengelernt — sie nennen sich
+nur anders.
+
+## Das Problem, das Actors lösen
+
+Drei Schmerzpunkte in nebenläufigem Code, in steigender Reihenfolge der
+Hässlichkeit:
+
+### 1.  Geteilter veränderlicher State unter Nebenläufigkeit
+
+```ts
+let balance = 0;
+
+async function deposit(amount: number) {
+  const current = await readFromDB();
+  balance = current + amount;       // ← Race hier
+  await writeToDB(balance);
+}
+```
+
+Zwei Einzahlungen laufen nebenläufig → beide lesen `0`, beide schreiben
+`+amount` — eine Einzahlung verloren.  Das Promise-/`async-await`-Modell
+gibt Dir Parallelität, aber kein Synchronisationsprimitiv.  Im Kleinen
+greifst Du zu Mutexen (`p-mutex`, `async-mutex`); im Mittleren greifst
+Du zu einer Queue; im Großen fängst Du an, Actor-artige Muster selbst
+zu basteln.
+
+### 2.  Statusbehaftete langlebige Komponenten
+
+```ts
+class CounterService {
+  private count = 0;
+  increment() { this.count++; }
+  get() { return this.count; }
+}
+```
+
+Okay in einem Request-Scoped-Service.  Okay in einer Single-User-CLI.
+Falsch, sobald mehrere nebenläufige Aufrufer es anfassen können —
+`increment` ist nicht atomar, das Integer-Read in `get` kann mitten im
+Write passieren.
+
+Die übliche Antwort ist "mach die Klasse zustandslos und lege den State
+in Redis / Postgres."  Das funktioniert, aber Du hast jetzt *ein*
+Concurrency-Problem (In-Process-Race) gegen *zwei* operative Probleme
+eingetauscht (Network-Roundtrips bei jedem Read und denselben Race in
+Deinem Datenspeicher, es sei denn, Du verwendest Transaktionen oder
+Compare-and-Swap).
+
+### 3.  Fehlererholung und Supervision
+
+Was passiert mit Deiner statusbehafteten Komponente, wenn ein Fehler
+aus einem Handler entweicht?
+
+```ts
+try {
+  await someUnreliableOp();
+} catch (e) {
+  // ???
+}
+```
+
+Du kannst es loggen.  Du kannst es erneut versuchen.  Aber was ist mit
+dem partiellen State, den Deine Komponente vor dem Throw aufgebaut hat?
+Ist das Objekt noch sicher zu benutzen?  Sollte die Komponente neu
+gestartet oder ganz abgerissen werden?  Sollten Aufrufer wissen, dass
+sie abgestürzt ist?  Vanilla JS gibt Dir keine Antworten — Du baust sie
+pro Service, meistens inkonsistent.
+
+## Was das Actor-Modell Dir gibt
+
+Drei Kernideen; jede adressiert einen der Schmerzpunkte oben.
+
+### Actors kapseln State
+
+Ein Actor ist eine Klasse mit einer privaten Mailbox und einer einzigen
+`onReceive`-Methode.  Nachrichten kommen in die Mailbox; der Actor
+verarbeitet sie **eine nach der anderen** auf seinem eigenen logischen
+Thread.  Innerhalb von `onReceive` kannst Du die Felder des Actors frei
+lesen und mutieren — Dir ist garantiert, dass Du der Einzige bist, der
+liest oder schreibt.
+
+```ts
+class Counter extends Actor<{ kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> }> {
+  private count = 0;
+  override onReceive(msg: typeof this.cmd): void {
+    if (msg.kind === 'inc')  this.count++;
+    else if (msg.kind === 'get') msg.replyTo.tell(this.count);
+  }
+}
+```
+
+Kein Mutex, kein Lock, kein Atomic — der Actor *ist* die
+Serialisierungsgrenze.  `count++` ist sicher, weil
+Actor-Nachrichten sequenziell laufen.
+
+### Nachrichten sind der einzige Vertrag
+
+Du rufst die Methoden eines Actors nie direkt auf.  Du hältst ein
+`ActorRef`, das genau ein Verb hat: `tell(message)`.  Die Nachricht
+geht in die Mailbox; der Actor zieht sie heraus, wenn er bereit ist.
+
+Das sieht unnötig restriktiv aus — bis Du merkst, dass es drei Dinge
+umsonst macht:
+
+- **Asynchronität**: Jedes `tell` ist standardmäßig fire-and-forget.
+  Kein `await`, das Deine Aufrufstellen vollstopft; keine versehentlich
+  synchronen Engpässe.
+- **Backpressure**: Die Mailbox hat eine Länge.  Wenn sie voll ist,
+  kannst Du eine Policy wählen (neu droppen / alt droppen / werfen),
+  ohne den Code des Actors zu ändern.
+- **Location Transparency**: Ein lokales `tell` und ein
+  cross-process `tell` sehen an der Aufrufstelle identisch aus.  Wenn
+  Du den Actor auf eine andere Node verschieben willst, fasst Du die
+  Aufrufer nicht an — Du konfigurierst nur den Cluster.
+
+### Supervisors behandeln Fehler als erstklassiges Anliegen
+
+Jeder Actor hat ein Elternteil.  Wenn `onReceive` eines Actors wirft,
+geht die Exception an die *Supervisionsstrategie* des Elternteils, die
+zwischen vier Ergebnissen entscheidet:
+
+- **Restart**: den kaputten Actor abreißen, einen frischen bauen
+  (sauberer State), Nachrichten wiederholen, die während der
+  Downtime gepuffert wurden.
+- **Resume**: den State des Actors behalten, die schlechte Nachricht
+  überspringen, weitermachen.
+- **Stop**: den Actor permanent töten; weitere Nachrichten gehen an
+  Dead Letters.
+- **Escalate**: an den *Elternteil des Elternteils* werfen.
+
+Du konfigurierst das einmal pro Actor-Klasse, und jeder Fehler wird
+auf die gleiche Weise behandelt.  Kein "habe ich daran gedacht, das in
+ein `try` zu wickeln?" mehr.
+
+## Wie das auf actor-ts abbildet
+
+Das Framework gibt Dir:
+
+- **Single-Process-Actors**: Alles in diesem Guide funktioniert in
+  einem Prozess, auf einem Kern.  Siehe [Actor](/de/fundamentals/actor/),
+  [Messages](/de/fundamentals/messages/),
+  [Supervision](/de/fundamentals/supervision/).
+- **Multi-Core via Worker Threads**: Der `MessageChannel`-Transport
+  betreibt Actors auf Worker Threads mit derselben API.  Siehe
+  [Cluster Transports](/de/cluster/transports/) und
+  [Worker Mesh](/de/cluster/worker-mesh/).
+- **Multi-Process / Multi-Machine**: TCP-basiertes Clustering mit
+  Gossip-Membership, Sharding und Failover.  Siehe
+  [Cluster overview](/de/cluster/overview/) und
+  [Sharding](/de/cluster/sharding/overview/).
+- **Persistenz**: Actors, die ihren State nach einem Crash aus einem
+  Event-Log wiederherstellen.  Siehe
+  [PersistentActor](/de/persistence/persistent-actor/).
+
+Du kannst diese progressiv übernehmen.  Eine erste Iteration läuft
+komplett in-process; eine zweite verschiebt Hot-Path-Actors in einen
+Worker-Pool; eine dritte führt Sharding über Maschinen ein.  Der Code
+des Actors selbst ändert sich nicht.
+
+## Wann Actors NICHT zu verwenden sind
+
+Actors sind mächtig, aber nicht kostenlos.  Drei Kategorien, in die
+sie schlecht passen:
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Zustandslose Request/Response-Services">
+  Wenn Dein Service einen Request liest, eine DB abfragt, eine
+  Antwort zurückgibt und alles dazwischen vergisst, brauchst Du
+  keine Actors.  Verwende einen einfachen HTTP-Handler mit dem
+  DB-Pool, der Dir die richtigen Concurrency-Knöpfe gibt.
+  Actor-Overhead (Mailbox-Buchhaltung, Supervisor-Tree) ist
+  verschwendet bei Workloads, die nichts zu kapseln haben.
+</Aside>
+
+<Aside type="caution" title="Reine Datentransformationen">
+  ETL-Pipelines, Batch-Transforms, "gegeben eine Liste, gib mir
+  eine andere Liste" — keines davon braucht eine langlebige
+  statusbehaftete Komponente.  `Promise.all` und Async-Iterables
+  lösen sie besser.  Bei Actors geht es um State + Lebenszyklus +
+  Fehlersemantik, nicht um reinen Datenfluss.
+</Aside>
+
+<Aside type="caution" title="Code, bei dem jede Operation synchron-blockierend sein muss">
+  Einige Embedded-/Realtime-Domänen erfordern deterministische
+  Blocking-Semantik.  Actor-basierter Code ist async-by-default und
+  Du kannst ihn nicht zu blockierend hochstufen, ohne die Garantien
+  des Modells zu verlieren.  In TS/JS ist das selten, aber
+  erwähnenswert.
+</Aside>
+
+## Wann Actors die richtige Wahl sind
+
+Du willst wahrscheinlich Actors, wenn:
+
+- Du **State pro Entität** hast, der länger als ein Request leben
+  muss — Sessions, Nutzerinventare, Chat-Räume, laufende
+  Konversationen, Sagas.
+- Du **Fehlerisolierung** brauchst: Der Absturz einer User-Session
+  sollte nicht die anderen Nutzer kaputtmachen.
+- Du Richtung **Verteilung** gehst — geshardeter State über Nodes
+  oder Skalierung über einen einzelnen Node-/Bun-Prozess hinaus.
+- Du etwas modellierst, das **konzeptionell ein Zustandsautomat**
+  ist — Workflows, Bestellungen, Geräte, Spiele.
+
+Oder pointierter: Wenn Deine Design-Notizen Kästchen und Pfeile auf
+einem Whiteboard haben, sind die Kästchen meistens Actors.
+
+## Wie es weitergeht
+
+- Überzeugt?  Starte mit [Quickstart](/de/intro/quickstart/) —
+  fünf Minuten zu einem laufenden Actor.
+- Kommst Du von einem anderen Actor-Framework?  Siehe die
+  [Migration Guides](/de/migration/overview/) für Akka-JVM,
+  Pekko, Orleans, Akka.NET.
+- Willst Du eine tiefere Konzept-Tour?  Siehe
+  [Actor](/de/fundamentals/actor/),
+  [Messages](/de/fundamentals/messages/) und
+  [Supervision](/de/fundamentals/supervision/) in dieser
+  Reihenfolge — etwa 20 Minuten Lektüre decken die
+  Single-Process-Oberfläche ab.

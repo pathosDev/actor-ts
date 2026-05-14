@@ -1,0 +1,249 @@
+---
+title: Routing-Strategien
+description: Round-Robin, Random, Broadcast, Custom — was der lokale Router mitbringt. Plus Consistent-Hashing für Cluster-Router. Wie jede Routees wählt, wann jede passt und wie du deine eigene schreibst.
+---
+
+Eine **Routing-Strategie** ist eine Funktion: gegeben die
+Routee-Liste und etwas Zustand, gib zurück, welche(r) Routee(s) die
+nächste Nachricht empfangen sollen.
+
+```ts
+type RoutingStrategy = (
+  routees: ReadonlyArray<ActorRef>,
+  state:   { readonly messageIndex: number },
+) => Iterable<ActorRef>;
+```
+
+Gib eine Ref für Single-Target-Routing zurück, mehrere für Fan-Out
+oder nichts zum Verwerfen.  Der lokale Router liefert drei
+Implementierungen aus, plus einen `custom`-Slot; der Cluster-Router
+fügt Consistent-Hashing hinzu.
+
+## Round-Robin
+
+```ts
+Router.roundRobin(4, routeeProps);
+```
+
+Zykelt durch die Routee-Liste — Nachricht 1 → Routee 1, Nachricht 2
+→ Routee 2, …, Nachricht 5 → Routee 1 wieder.  Implementierung:
+
+```ts
+function roundRobinStrategy(): RoutingStrategy {
+  return (routees, state) => {
+    if (routees.length === 0) return [];
+    return [routees[state.messageIndex % routees.length]];
+  };
+}
+```
+
+**Schafft:**
+
+- Gleichmäßige Verteilung nach Nachrichten-*Count* (nicht nach
+  Nachrichten-*Kosten*).
+- Deterministisch und inspizierbar — ein Debugger sieht genau,
+  welcher Routee jede Nachricht bekommen hat.
+- Re-Routing bei Resize: wenn ein Routee verschwindet oder ein
+  neuer auftaucht, landet derselbe `messageIndex` auf einem anderen
+  Routee.
+
+**Schafft nicht:**
+
+- Load-Balancing nach Arbeitskosten.  Nachricht 100 könnte ein
+  schwerer Job sein; der Router weiß es nicht.  Wenn ein Routee per
+  Zufall alle teuren Jobs bekommt, fällt er zurück.
+- Eine "Bleibe beim selben Routee für verwandte Nachrichten"-Garantie
+  liefern.  Verwende dafür Consistent-Hashing.
+
+Richtiger Default für **homogene Workloads** — die
+Nachrichten-Verarbeitungszeiten sind grob gleich über Nachrichten.
+
+## Random
+
+```ts
+Router.random(4, routeeProps);
+```
+
+```ts
+function randomStrategy(): RoutingStrategy {
+  return (routees) => {
+    if (routees.length === 0) return [];
+    return [routees[Math.floor(Math.random() * routees.length)]];
+  };
+}
+```
+
+Wählt einen Routee gleichverteilt zufällig.
+
+**Schafft:**
+
+- Gleiche statistische Verteilung wie Round-Robin auf lange Sicht,
+  aber kein geteilter Zustand — nützlich in zustandslosen / rein
+  funktionalen Setups.
+- Resilienter gegen "synchronisierte" Sender.  Wenn zwei Aufrufer
+  mit ihren eigenen Indizes kooperieren, kann Round-Robin dieselben
+  Routees hämmern; Random nicht.
+
+**Schafft nicht:**
+
+- Dir deterministisches Verhalten in Tests geben.  Injiziere einen
+  seedbaren RNG und schreibe eine eigene Strategie, wenn
+  Reproduzierbarkeit wichtig ist.
+
+Richtige Wahl, wenn **Zustandslosigkeit wichtiger als
+Vorhersagbarkeit ist**.
+
+## Broadcast
+
+```ts
+Router.broadcast(4, routeeProps);
+```
+
+```ts
+function broadcastStrategy(): RoutingStrategy {
+  return (routees) => routees;   // jeder Routee
+}
+```
+
+Sendet jede Nachricht an jeden Routee.  Der Pool läuft im
+Gleichschritt — nützlich für *Fan-Out*-Formen:
+
+- Cache-Invalidierung: jeder Routee hält einen Cache; wenn sich ein
+  Key ändert, sagt der Broadcast es allen.
+- Periodischer Refresh: jeder Routee liest die Config neu, wenn
+  eine `Refresh`-Nachricht ankommt.
+- Heartbeat: jeder Routee checkt bei einem Tick ein.
+
+**Schafft:**
+
+- N-Wege-Fan-Out mit N-Wege-Arbeit.  Jede Nachricht wird N-mal
+  verarbeitet.  Gesamtdurchsatz ist N × Per-Routee-Durchsatz, aber
+  jeder Routee sieht die volle Nachrichten-Last.
+
+**Schafft nicht:**
+
+- *Arbeit* parallelisieren — jeder Routee tut dieselbe Arbeit.  Das
+  ist Fan-Out, nicht Load-Balancing.
+- Sinn für Request/Response — jeder Routee antwortet, der Aufrufer
+  sieht N Antworten.
+
+Wenn du Broadcast für *manche* Nachrichten willst, aber Routing für
+andere, halte den Router non-Broadcast und wickele gelegentliche
+Nachrichten in `Broadcast<T>` — siehe
+[Router](/de/routing/router/).
+
+## Consistent-Hashing *(nur Cluster)*
+
+```ts
+import { ClusterRouter } from 'actor-ts';
+
+ClusterRouter.props({
+  cluster,
+  routerType: 'consistent-hashing',
+  routeePath: '/user/worker',
+  extractKey: (msg) => msg.userId,
+});
+```
+
+Berechnet einen Hash von `extractKey(msg)` und wählt den Routee,
+dessen eigener Hash am nächsten ist (Rendezvous-Hashing).  Gleicher
+Key → gleicher Routee, deterministisch, über den Cluster hinweg.
+
+**Schafft:**
+
+- **Stickiness.**  Ein langer Stream von Nachrichten getagged mit
+  `userId=42` landet immer beim selben Routee.  Der Routee kann
+  Per-Key-Zustand halten (Cache, in-Progress-Session) ohne
+  Koordinator.
+- **Topologie-stabil.**  Einen Routee hinzuzufügen oder zu
+  entfernen, mischt nur die Keys neu, deren nächster Hash sich
+  geändert hat — ein Anteil proportional zu `1/N`, nicht alle.
+
+**Schafft nicht:**
+
+- Perfekt unter schiefen Key-Workloads balancieren.  Wenn 80 % des
+  Traffics `userId=42` ist, trägt dieser eine Routee 80 % der Last.
+  Schiefe Keys brauchen einen anderen Ansatz — siehe
+  [Sharding](/de/cluster/sharding/overview/) für das schwerere
+  Per-Key-Actor-Pattern.
+- An einen festen Routee pinnen.  Topologie-Änderungen mischen
+  manche Keys; für harte Garantien verwende einen Singleton oder
+  eine sharded Entity.
+
+Richtige Wahl für **session-affines** Routing in Cluster-Setups,
+bei denen der Key-Space einigermaßen uniform ist.
+
+## Eigene Strategien
+
+```ts
+import { Router, type RoutingStrategy } from 'actor-ts';
+
+// Route immer für die ersten 100 Nachrichten an den ersten Routee
+// (einen Cache aufwärmen, bevor die Last verteilt wird), dann Round-Robin.
+const warmupStrategy: RoutingStrategy = (routees, state) => {
+  if (routees.length === 0) return [];
+  if (state.messageIndex < 100) return [routees[0]];
+  return [routees[state.messageIndex % routees.length]];
+};
+
+system.actorOf(Router.custom(4, workerProps, warmupStrategy));
+```
+
+Alles, was `RoutingStrategy` erfüllt, funktioniert.  Der
+Zustands-Slot bekommt den monotonen Message-Index — das ist der
+einzige Zustand, den der lokale Router hält.  Für Strategien, die
+*mehr* Zustand brauchen (einen Hash-Ring, einen Per-Routee-Load-Gauge),
+closeover eigenen Zustand in der Funktion:
+
+```ts
+function smallestMailboxStrategy(): RoutingStrategy {
+  return (routees) => {
+    // Stub — das Framework exponiert die Mailbox-Größe pro Routee in v1 nicht.
+    // Eine echte Implementierung bräuchte einen Side-Channel, um jeden Routee zu fragen.
+    return [routees[0]];
+  };
+}
+```
+
+Das Framework exponiert die Mailbox-Größe nicht von außen, eine
+echte "Smallest-Mailbox"-Strategie braucht also Side-Channel-Mechaniken
+(jeden Routee nach seiner aktuellen Tiefe fragen).  Das ist ein
+Roadmap-Item; bis es geshippt wird, sind eigene Strategien auf
+Informationen begrenzt, die im Router-Actor selbst verfügbar sind.
+
+## Was nicht implementiert ist
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Kein Smallest-Mailbox in v1">
+  Eine häufige Strategie in anderen Actor-Toolkits ist "Smallest
+  Mailbox" — wähle den Routee mit der kürzesten Queue.  actor-ts
+  exponiert keine Mailbox-Tiefe über Actor-Grenzen hinweg (es ist
+  Per-Actor-Zustand), diese Strategie ist also nicht implementiert.
+  Für Workload-aware-Load-Balancing ist das praktische Pattern
+  **Backpressure an der Grenze** — begrenze die Mailbox jedes
+  Routees mit `reject`-Overflow, lass den Aufrufer (oder eine
+  router-seitige eigene Strategie) auf Ablehnungen reagieren.
+</Aside>
+
+<Aside type="caution" title="Kein Scatter-Gather">
+  Manche Actor-Frameworks haben "Scatter-Gather"-Router, die
+  dieselbe Nachricht an N Routees senden und mit der ersten /
+  besten / gemergeten Antwort antworten.  actor-ts liefert keinen
+  aus; du würdest ihn als eigenen Router-Actor bauen, der `ask`
+  über die Routees wickelt und Antworten konsolidiert.  Die
+  meisten Aufrufer brauchen das nicht — Broadcast + ein
+  Koordinator-Actor auf der Empfänger-Seite deckt ähnlichen Boden.
+</Aside>
+
+## Wie es weitergeht
+
+- **[Router](/de/routing/router/)** — die Factories, die
+  jede Strategie in spawn-fertige Props wickeln.
+- **[Pool vs Group](/de/routing/pool-vs-group/)** — wie
+  sich diese Strategien verhalten, wenn sie auf einen festen Pool
+  vs eine dynamische Gruppe von Routees angewendet werden.
+- **[Cluster-Router](/de/cluster/cluster-router/)** — wo
+  Consistent-Hashing lebt.
+- **[Sharding](/de/cluster/sharding/overview/)** — die
+  schwerere Alternative, wenn Keys echte Per-Key-Actors brauchen.

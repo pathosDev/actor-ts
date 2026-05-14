@@ -1,0 +1,282 @@
+---
+title: TestProbe
+description: Eine Fake-`ActorRef`, die Nachrichten erfasst, anstatt sie zu verarbeiten — übergib sie anstelle eines echten Actors und assertete auf das, was sie empfängt. Das Standard-Werkzeug für Actor-Unit-Tests.
+---
+
+Ein `TestProbe` ist eine `ActorRef`, die **keinen User-Code
+ausführt**. Stattdessen landet jedes `tell` in einem Buffer, auf
+den der Test asserten kann. Übergib eine Probe überall, wo du
+einen echten Actor übergeben würdest; der zu testende Actor
+sieht eine normale Ref und `tell`t sie wie üblich.
+
+```ts
+const tk = TestKit.create();
+const probe = tk.createTestProbe();
+
+const ref = tk.system.actorOf(Props.create(() => new Worker(probe)));
+//                                                          ^-- Probe anstelle des echten Downstreams
+ref.tell({ kind: 'work' });
+
+await probe.expectMsg({ kind: 'work-done' });
+await tk.shutdown();
+```
+
+`Worker` `tell`t den „Downstream" — der tatsächlich die Probe
+ist. Die Probe erfasst die Nachricht; `expectMsg` konsumiert sie
+und assertet die Form.
+
+## Eine Probe erzeugen
+
+```ts
+const probe = tk.createTestProbe({
+  defaultTimeoutMs: 5_000,    // Default-Wartezeit für expect/receive — Default 3s
+  name:             'order-probe',
+});
+```
+
+Beide Optionen sind optional. Ohne `defaultTimeoutMs` wartet
+jeder `expect*`-Aufruf bis zu 3 Sekunden. Ohne `name` bekommt
+die Probe einen auto-generierten Pfad.
+
+Die Probe erbt von `ActorRef`, sodass du sie überall übergeben
+kannst, wo eine `ActorRef<T>` erwartet wird — obwohl sie als
+`unknown` typisiert ist (sie akzeptiert jede Nachrichten-Art).
+Caste, falls nötig:
+
+```ts
+ref.tell({ kind: 'get', replyTo: probe as ActorRef<number> });
+```
+
+## Erwartungen
+
+### `expectMsg(expected)`
+
+```ts
+await probe.expectMsg('done');
+await probe.expectMsg({ kind: 'reply', value: 42 });
+```
+
+Wartet auf die nächste Nachricht, vergleicht sie deep-equal mit
+`expected`. Wirft, wenn die Form nicht passt oder das Timeout
+abläuft. Gibt die Nachricht zurück, sodass du Assertions ketten
+kannst.
+
+### `expectMsgType(Class)`
+
+```ts
+import { Success } from 'actor-ts';
+
+const reply = await probe.expectMsgType(Success);
+expect(reply.value).toBe(42);
+```
+
+Wartet auf die nächste Nachricht; assertet, dass sie eine
+Instanz von `Class` ist. Nützlich für `Success`- / `Failure`-
+Envelopes aus [pipeTo](/de/patterns/futures-patterns/) oder
+beliebige klassenbasierte Message-Typen.
+
+### `expectNoMessage(timeoutMs)`
+
+```ts
+ref.tell({ kind: 'do-nothing' });
+await probe.expectNoMessage(200);
+// → assertet, dass in 200ms keine Nachricht kam
+```
+
+Das Gegenteil von `expectMsg` — assertet, dass im gegebenen
+Fenster **nichts** ankommt. Nützlich für „dieses Kommando sollte
+still ignoriert werden" oder „der Actor sollte darauf nicht
+antworten."
+
+Das Default-Fenster sind 300 ms — kurz genug, um Tests schnell
+zu halten, lang genug, um die meisten unerwünschten Sends zu
+fangen.
+
+### `receiveOne(timeoutMs?)` / `receiveN(n, timeoutMs?)`
+
+```ts
+const msg = await probe.receiveOne();
+const msgs = await probe.receiveN(3);
+```
+
+Hole die nächste(n) Nachricht(en), **ohne zu asserten**. Nutze
+es, wenn die Form variiert und du sie mit eigener Logik
+inspizieren willst:
+
+```ts
+const msg = await probe.receiveOne();
+if (msg.kind === 'success') expect(msg.value).toBeGreaterThan(0);
+else expect(msg.error).toBeDefined();
+```
+
+### `fishForMessage(predicate)`
+
+```ts
+const ready = await probe.fishForMessage(
+  (m) => typeof m === 'object' && m.kind === 'ready',
+  5_000,
+);
+```
+
+Verwirf Nachrichten, bis eine das Prädikat erfüllt. Nützlich,
+wenn der zu testende Actor einen Strom von Nachrichten emittiert
+und dich nur eine bestimmte Art interessiert. Verworfene
+Nachrichten sind weg — sie können später nicht mehr assertet
+werden.
+
+### `messageCount` / `hasMessage()`
+
+```ts
+expect(probe.messageCount).toBe(0);
+ref.tell({ kind: 'do' });
+await new Promise(r => setImmediate(r));   // einmal yielden, damit der tell ankommt
+expect(probe.hasMessage()).toBe(true);
+```
+
+Synchrone Inspektion — kein Warten. Nutze, um zu prüfen „gibt es
+gequeuete Nachrichten, die ich noch nicht konsumiert habe?"
+
+## Der letzte Sender
+
+```ts
+ref.tell({ kind: 'get', replyTo: probe });
+await probe.expectMsg({ kind: 'reply', value: 42 });
+expect(probe.sender).toBe(ref);   // wer die zuletzt empfangene Nachricht gesendet hat
+```
+
+Nach `expectMsg` / `receiveOne` / etc. hält `probe.sender` den
+Sender der eben konsumierten Nachricht. Nützlich, um zu
+asserten, dass „diese Antwort vom richtigen Actor kam."
+
+`probe.reply(msg)` ist eine Abkürzung, die dem letzten Sender
+`tell`t:
+
+```ts
+ref.tell({ kind: 'request' }, probe);
+await probe.expectMsg({ kind: 'request' });
+probe.reply({ kind: 'response' });
+// ↑ dasselbe wie: probe.sender.tell({ kind: 'response' }, probe);
+```
+
+Gängig in Tests, die Zwei-Wege-Konversationen simulieren — lass
+die Probe einen Request empfangen, dann antworten lassen.
+
+## `clearInbox`
+
+```ts
+ref.tell({ kind: 'one' });
+ref.tell({ kind: 'two' });
+probe.clearInbox();   // verwirft beide, Queue ist wieder leer
+
+ref.tell({ kind: 'three' });
+await probe.expectMsg({ kind: 'three' });
+```
+
+Nützlich zwischen Testphasen, wenn du Setup-Phasen-Nachrichten
+ignorieren willst und nur auf das asserten möchtest, was als
+Nächstes kommt.
+
+## Muster
+
+### Probe als Stellvertreter für einen Downstream-Actor
+
+```ts
+class OrderHandler extends Actor<OrderCmd> {
+  constructor(private readonly db: ActorRef<DbCmd>) { super(); }
+  override onReceive(cmd: OrderCmd): void {
+    this.db.tell({ kind: 'insert', orderId: cmd.id });
+  }
+}
+
+it('leitet Orders an db weiter', async () => {
+  const dbProbe = tk.createTestProbe();
+  const handler = tk.system.actorOf(Props.create(() =>
+    new OrderHandler(dbProbe as ActorRef<DbCmd>)));
+
+  handler.tell({ kind: 'place-order', id: 'o-1' });
+  await dbProbe.expectMsg({ kind: 'insert', orderId: 'o-1' });
+});
+```
+
+Die Probe ersetzt einen echten DB-Actor; der Test sieht den
+Call, ohne dass die DB existieren muss.
+
+### Probe als Reply-to-Ziel
+
+```ts
+const counter = tk.system.actorOf(Props.create(() => new Counter()));
+counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'get', replyTo: probe as ActorRef<number> });
+await probe.expectMsg(2);
+```
+
+Für Ask-artige Nachrichten — die Probe steht für den Fragenden.
+
+### Mehrere Proben
+
+```ts
+const a = tk.createTestProbe({ name: 'a-probe' });
+const b = tk.createTestProbe({ name: 'b-probe' });
+
+const router = tk.system.actorOf(...);
+router.tell({ kind: 'send', target: 'a', payload: 'hello' });
+
+await a.expectMsg('hello');
+await b.expectNoMessage(100);
+```
+
+Routing-Logik verifizieren, indem du den Inbox jeder Probe
+prüfst.
+
+## Stolperfallen
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`expectMsg` konsumiert aus dem Buffer">
+  ```ts
+  await probe.expectMsg('a');
+  await probe.expectMsg('a');   // fehlt — erster Aufruf hat es schon konsumiert
+  ```
+  Jedes `expectMsg` entfernt eine Nachricht. Wenn du auf
+  derselben Nachricht zweimal asserten musst, captureste den
+  Rückgabewert:
+  ```ts
+  const got = await probe.expectMsg('a');
+  expect(got).toEqual('a');
+  expect(typeof got).toBe('string');
+  ```
+</Aside>
+
+<Aside type="caution" title="Lange Timeouts verstecken langsamen Code">
+  ```ts
+  await probe.expectMsg('done', 30_000);   // 30 s Wartezeit
+  ```
+  Wenn dein Actor langsam genug ist, dass er 30 s braucht, ist
+  der Test kaputt — Actor sollten sub-Millisekunde sein. Nutze
+  `ManualScheduler`, wenn echte Zeit involviert ist, keine großen
+  Timeouts.
+</Aside>
+
+<Aside type="caution" title="Synchrone Reads nach `tell`">
+  ```ts
+  ref.tell({ kind: 'do' });
+  expect(probe.messageCount).toBe(1);   // ✗ meist 0
+  ```
+  `tell` plant; Verarbeitung passiert in der nächsten Event-Loop-
+  Runde. Synchron `messageCount` direkt nach einem `tell` zu
+  prüfen sieht meist 0. Nutze stattdessen das asynchrone
+  `expectMsg(...)`, das auf Zustellung wartet.
+</Aside>
+
+## Wo es weitergeht
+
+- **[TestKit](/de/testing/testkit/)** — der Wrapper, der die
+  Probe erzeugt.
+- **[Testing — Überblick](/de/testing/overview/)** — wann
+  Proben vs andere Test-Werkzeuge nutzen.
+- **[ManualScheduler](/de/testing/manual-scheduler/)** —
+  für Tests, die deterministisches Timer-Feuern brauchen.
+
+Die [`TestProbe`](/api/classes/testprobe/)-API-Referenz deckt
+die volle Oberfläche ab.

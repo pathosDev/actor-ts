@@ -1,0 +1,255 @@
+---
+title: Timer und Scheduling
+description: Zwei Wege, verzögerte Arbeit auszulösen — der System-Level-`Scheduler` für One-Shot- oder wiederkehrende Tasks und der Per-Actor-`TimerScheduler`, der per String-Key für actor-gebundene Timer indexiert ist, die bei Stop automatisch abgebrochen werden.
+---
+
+Actors müssen oft etwas später tun — alle 30 Sekunden einen
+Downstream-Service neu pollen, eine Session nach 5 Minuten timen
+lassen, einen veralteten Heartbeat re-publishen.  Das Framework gibt
+dir zwei APIs dafür.
+
+| API | Lebenszeit | Verwende es, wenn |
+| --- | --- | --- |
+| `system.scheduler` | Gebunden an das Actor-*System*.  Überlebt jeden Actor-Stop / -Restart. | One-Shot-Verzögerungen, die *außerhalb* eines Actors initiiert werden, oder Arbeit, die den Actor, der sie startet, überleben muss. |
+| `this.context.timers` *(Per-Actor-`TimerScheduler`)* | Gebunden an die Actor-Instanz.  **Auto-cancelt** bei Stop *und* bei Restart. | Die meisten actor-internen Timer — Heartbeats, periodische Refreshes, Idle-Timeouts. |
+
+Wenn du innerhalb eines `onReceive` bist, default zu
+`context.timers`.  Verwende `system.scheduler` nur für die wenigen
+Fälle, in denen du wirklich willst, dass ein Timer den Actor
+überlebt.
+
+## `context.timers` — actor-gebundene Timer
+
+```ts
+import { Actor, ActorSystem, Props } from 'actor-ts';
+
+type Msg = { readonly kind: 'tick' } | { readonly kind: 'set'; readonly intervalMs: number };
+
+class Heartbeat extends Actor<Msg> {
+  override preStart(): void {
+    // Feuere { kind: 'tick' } alle 5 s, sofort beginnend.
+    this.context.timers.startTimerWithFixedDelay('hb', { kind: 'tick' }, 5_000);
+  }
+
+  override onReceive(msg: Msg): void {
+    if (msg.kind === 'tick') {
+      this.log.info('heartbeat');
+    } else if (msg.kind === 'set') {
+      // Ersetze den Timer mit einem neuen Intervall.  Gleicher Key → alter wird gecancelt.
+      this.context.timers.startTimerWithFixedDelay('hb', { kind: 'tick' }, msg.intervalMs);
+    }
+  }
+}
+
+const system = ActorSystem.create('demo');
+system.actorOf(Props.create(() => new Heartbeat()));
+```
+
+Zwei zentrale Beobachtungen:
+
+- **Timer sind per String-Key indexiert.**  Ein zweiter Aufruf von
+  `startTimerWithFixedDelay('hb', ...)` ersetzt den bestehenden
+  `'hb'`-Timer — keine doppelten Feuerungen.  Nützlich für
+  "Reset-on-Activity"-Patterns.
+- **Timer senden `tell` an `this.self`.**  Der Fire läuft wie jede
+  andere Nachricht durch die Mailbox des Actors; er wird mit der
+  übrigen Arbeit des Actors serialisiert, vom Supervisor des Actors
+  supervised und in Actor-Traces sichtbar.
+
+Die vollständige Schnittstelle:
+
+```ts
+interface TimerScheduler<TMsg = unknown> {
+  startSingleTimer(key: string, message: TMsg, delayMs: number): void;
+  startTimerWithFixedDelay(
+    key: string, message: TMsg, intervalMs: number, initialDelayMs?: number,
+  ): void;
+  cancel(key: string): boolean;
+  cancelAll(): void;
+  isTimerActive(key: string): boolean;
+  activeKeys(): string[];
+}
+```
+
+`cancelAll` läuft automatisch bei `postStop` — du musst nie ans
+Aufräumen denken.  Genauso bei Restart: das Framework cancelt jeden
+aktiven Timer, bevor die neue Actor-Instanz startet, ein neu
+gestarteter Actor erbt also nie veraltete Timer vom toten.
+
+## `system.scheduler` — System-Level-Scheduling
+
+```ts
+import { ActorSystem } from 'actor-ts';
+
+const system = ActorSystem.create('demo');
+
+// Fire-and-Forget einer Nachricht nach 10 s.
+system.scheduler.scheduleOnce(10_000, someActor, { kind: 'wake-up' });
+
+// Führe einen Callback alle 30 s aus, beginnend in 5 s.
+const cancellable = system.scheduler.scheduleAtFixedRateFn(
+  5_000, 30_000,
+  () => console.log('still alive'),
+);
+
+// Später, stoppe ihn.
+cancellable.cancel();
+```
+
+Die vier Methoden sind Paare aus "sende eine Nachricht" / "führe eine
+Funktion aus":
+
+| Methode | Was sie tut |
+| --- | --- |
+| `scheduleOnce(delayMs, target, message, sender?)` | Sende `message` einmal an `target`, nach `delayMs`. |
+| `scheduleOnceFn(delayMs, fn)` | Führe `fn` einmal aus, nach `delayMs`. |
+| `scheduleAtFixedRate(initialDelayMs, intervalMs, target, message, sender?)` | Sende `message` wiederholt. |
+| `scheduleAtFixedRateFn(initialDelayMs, intervalMs, fn)` | Führe `fn` wiederholt aus. |
+
+Jede Methode gibt ein `Cancellable` zurück:
+
+```ts
+interface Cancellable {
+  cancel(): boolean;
+  readonly isCancelled: boolean;
+}
+```
+
+Der `cancel()` gibt `true` zurück, wenn es tatsächlich einen aktiven
+Schedule gecancelt hat, `false`, wenn er bereits gecancelt oder
+gefeuert hat.
+
+### Wann `system.scheduler` zu bevorzugen ist
+
+Drei legitime Fälle, am `context.timers` vorbei zum
+System-Scheduler zu greifen:
+
+1. **Arbeit aus der Außenwelt initiieren.**  Ein
+   `SIGTERM`-Handler, der nach einer kurzen Drain-Verzögerung einen
+   `coordinatedShutdown`-Call plant.  Kein Actor involviert — der
+   System-Scheduler ist die richtige Heimat.
+2. **Arbeit, die einen spezifischen Actor überleben muss.**  Ein
+   "Retry in 60 s"-Timer, der von Actor A aufgesetzt wurde, bei dem
+   der Retry trotzdem feuern soll, selbst wenn A in der Zwischenzeit
+   neu startet.  Selten — meistens ist die richtige Antwort "lasse
+   den Parent von A den Timer setzen", aber die Option existiert.
+3. **Innerhalb von Framework-Code** (Extensions, Transports, …) —
+   überall, wo es keinen Actor-Kontext gibt.
+
+Für gewöhnliche actor-interne Timer ist `context.timers` immer die
+richtige Wahl.
+
+## Fehler in Timer-Callbacks
+
+Beide Timer-Spielarten propagieren Fehler etwas anders:
+
+- **`context.timers`** feuert, indem es dem Actor `tell`t — der
+  resultierende `onReceive`-Aufruf läuft durch den normalen
+  Supervisions-Pfad.  Ein Throw im Handler wird vom Supervisor
+  gefangen, genau wie bei einer regulären Nachricht.
+- **`system.scheduler.scheduleAtFixedRateFn(...)` / `scheduleOnceFn(...)`**
+  fängt und loggt Throws (`console.error('[actor-ts] scheduler error:', e)`),
+  eskaliert aber nicht.  Ein fehlschlagender Scheduler-Callback
+  crasht das System nicht; er wird auch nicht bemerkt, außer du
+  log-tailst.
+- **`system.scheduler.scheduleOnce(...)` / `scheduleAtFixedRate(...)`**
+  liefert via `target.tell(...)`.  Fehler werden vom Supervisor des
+  *Targets* behandelt.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`setTimeout` und `setInterval` direkt in `onReceive`">
+  ```ts
+  override onReceive(msg) {
+    setTimeout(() => {
+      this.context.spawn(...);   // ← Async-Escape
+    }, 1_000);
+  }
+  ```
+  Rohe `setTimeout`-Callbacks laufen **außerhalb** der
+  Nachrichtenverarbeitungs-Runde des Actors — und jeder Throw wird
+  von der Supervision nicht gefangen.  Schlimmer: sie können
+  feuern, nachdem der Actor gestoppt hat, mit `this.context`, das
+  auf einer zerstörten Zelle operiert.  Verwende stattdessen
+  `context.timers.startSingleTimer(...)`: der Fire wird zu einer
+  gewöhnlichen Nachricht an `this.self`, supervised und stop-sicher.
+</Aside>
+
+## Fixed-Rate-Semantik
+
+`scheduleAtFixedRate` jagt **keine** verpassten Feuerungen.  Wenn
+sich die Mailbox des Targets staut und ein `tick` noch in der Queue
+ist, wenn das nächste Intervall verstreicht, bekommst du *zwei*
+Ticks in der Mailbox, statt dass das Framework den verpassten
+überspringt — aber das Framework komprimiert sie auch nicht.
+Dasselbe gilt für `startTimerWithFixedDelay`.
+
+Wenn du Missed-Firing-Detection brauchst (z.B. "wenn mehr als 30 s
+seit dem letzten Tick verstrichen sind, feuere ein Catch-Up-Event"),
+zeichne den Last-Fire-Timestamp im Actor auf und inspiziere ihn bei
+jedem Tick.  Es gibt keinen eingebauten Modus dafür.
+
+<Aside type="caution" title="Hochfrequente Timer sind Mailbox-Druck">
+  Ein 10-ms-Intervall-Timer auf einem Actor, der 50 ms braucht, um
+  jeden Tick zu behandeln, produziert eine ständig wachsende
+  Mailbox.  Wähle ein Intervall langsamer als die
+  *Worst-Case*-Handler-Latenz oder begrenze die Mailbox mit
+  `drop-head` und akzeptiere, dass manche Ticks unter Last verworfen
+  werden.  Siehe [Mailboxes](/de/fundamentals/mailboxes/).
+</Aside>
+
+## Tests + der `ManualScheduler`
+
+In Tests ist Echtzeit-Warten ein Albtraum — flakey, langsam und
+order-abhängig.  Das Framework liefert einen `ManualScheduler`, der
+dieselbe `Scheduler`-Schnittstelle implementiert, aber die Zeit nur
+voranschreitet, wenn du `advance(ms)` aufrufst:
+
+```ts
+import { ActorSystem } from 'actor-ts';
+import { ManualScheduler } from 'actor-ts/testkit';
+
+const clock = new ManualScheduler();
+const system = ActorSystem.create('test', { scheduler: clock });
+
+system.scheduler.scheduleOnce(1_000, someActor, { kind: 'tick' });
+
+clock.advance(999);   // noch nichts
+clock.advance(1);     // tick feuert
+```
+
+Derselbe `ManualScheduler` lässt sich in `context.timers` stecken —
+actor-gebundene Timer respektieren ihn über die `Scheduler`-Injection
+des Systems.  Siehe [TestKit](/de/testing/testkit/) für die volle
+Test-Zeit-Geschichte.
+
+## Wann die Timer-Wahl wichtig ist
+
+Default: **`context.timers`**.  Auto-Cancel bei Stop, integriert sich
+mit Supervision und taucht in Actor-Traces auf.  90 % deines
+Timer-Codes lebt hier.
+
+Greife zu `system.scheduler`, wenn:
+
+- Du komplett außerhalb eines Actor-Kontexts bist (SIGTERM-Handler,
+  Extension-Startup, Top-Level-Glue-Code).
+- Ein Schedule einen spezifischen Actor überleben muss.
+
+Greife zu `ManualScheduler` in Tests, um Zeit deterministisch zu
+machen.
+
+## Wie es weitergeht
+
+- **[Receive-Timeout](/de/fundamentals/receive-timeout/)** —
+  der höhergeordnete "ich war N Sekunden im Leerlauf, feuere ein
+  internes Event"-Wrapper, der Timer darunter verwendet.
+- **[Mailboxes](/de/fundamentals/mailboxes/)** — wo die
+  vom Timer ausgelösten Nachrichten landen.
+- **[Dispatcher](/de/fundamentals/dispatchers/)** — wann der
+  dispatched Timer-Fire tatsächlich verarbeitet wird.
+- **[TestKit](/de/testing/testkit/)** — der `ManualScheduler`
+  + Assertion-Helfer für deterministische Timer-Tests.
+
+Die [`Scheduler`](/api/classes/scheduler/)- und
+[`TimerScheduler`](/api/interfaces/timerscheduler/)-API-Referenzen
+decken die vollen Signaturen ab.

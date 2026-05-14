@@ -1,0 +1,245 @@
+---
+title: Verschlüsselung
+description: AES-GCM-Verschlüsselung at rest für Object-Storage-Payloads — Schlüssel werden über einen versionierten `MasterKeyRing` für Online-Rotation verwaltet. Jeder Blob ist unter einem Master-Key verschlüsselt; Key-IDs werden neben dem Ciphertext gespeichert.
+---
+
+Object-Storage-Payloads unterstützen
+**Client-Side-AES-GCM-Verschlüsselung** — das Framework
+verschlüsselt vor dem Put, entschlüsselt beim Get, Schlüssel
+werden über einen
+[MasterKeyRing](/de/operations/security/master-key-rotation/)
+verwaltet.
+
+```ts
+import {
+  ObjectStorageDurableStateStore,
+  S3ObjectStorageBackend,
+  MasterKeyRing,
+} from 'actor-ts';
+
+const keyRing = new MasterKeyRing({
+  keys: { 'k1': process.env.MASTER_KEY_V1! },
+  currentKeyId: 'k1',
+});
+
+const store = new ObjectStorageDurableStateStore({
+  backend: new S3ObjectStorageBackend({ /* ... */ }),
+  encryption: { keyRing },
+});
+```
+
+Jetzt wird jeder persistierte State vor dem Upload mit AES-GCM
+unter `k1` verschlüsselt.  Reads entschlüsseln transparent.
+
+## Warum Client-Side-Verschlüsselung
+
+Object Stores (S3, GCS, Azure Blob) bieten eingebaute
+**Server-Side-Encryption**.  Warum auch Client-Side
+verschlüsseln?
+
+| Bedrohung | Server-Side | Client-Side |
+| --- | --- | --- |
+| Storage-Kompromittierung (jemand liest von der Disk) | ✓ | ✓ |
+| Account-Kompromittierung (jemand hat S3-Credentials) | ✗ | ✓ |
+| Cloud-Provider-Kompromittierung | ✗ | ✓ |
+| Audit / Compliance, die "wir halten die Schlüssel" verlangt | ✗ | ✓ |
+
+**Client-Side-Verschlüsselung schützt vor mehr Bedrohungen**,
+kostet aber mehr (CPU pro Op, Schlüsselverwaltungs-Overhead).
+Die meisten Apps sollten beides verwenden: Server-Side als
+Baseline + Client-Side für sensible Payloads.
+
+## Konfiguration
+
+```ts
+interface EncryptionConfig {
+  keyRing: MasterKeyRing;
+  /** Den Algorithmus überschreiben; Default 'AES-GCM'. */
+  algorithm?: 'AES-GCM';
+}
+```
+
+Der `MasterKeyRing` trägt:
+
+- **`keys`** — keyId → Schlüssel-Bytes-Map.
+- **`currentKeyId`** — welchen Schlüssel neue Writes verwenden.
+
+Mehrere Schlüssel im Ring lassen dich ältere Payloads (unter
+älteren Schlüsseln verschlüsselt) lesen, während neue Payloads
+den aktuellen Schlüssel verwenden.  Das ist das Fundament der
+[Schlüsselrotation](/de/persistence/object-storage/key-rotation/).
+
+## Wie es funktioniert
+
+```
+Beim Put:
+  Wert serialisieren → Bytes → AES-GCM(bytes, currentKey) → Ciphertext
+  → Metadaten { keyId: currentKeyId, iv, tag }
+  → S3.put(ciphertext, x-amz-meta-key-id: currentKeyId, etc.)
+
+Beim Get:
+  S3.get → Ciphertext + Metadaten{ keyId, iv, tag }
+  → keyRing.get(keyId) → decrypt(ciphertext, key, iv, tag)
+  → Bytes → deserialisieren
+```
+
+Die **Key-ID wird neben dem Ciphertext gespeichert** — jeder Blob
+weiß, mit welchem Schlüssel er verschlüsselt wurde.  Das lässt
+das Framework **alte Payloads** mit dem richtigen Schlüssel
+entschlüsseln, auch nachdem der aktuelle Schlüssel rotiert
+wurde.
+
+## Was es verschlüsselt
+
+- **Den Body** — serialisierter State / Event / Snapshot.
+- **Nicht** — den Object-Key, Metadaten-Header (außer der Key-ID),
+  den Bucket-Namen.
+
+Für Object-Metadaten, die nicht durchsickern sollten (sensible
+persistenceIds), verwende ein separates Naming-Schema (hashe IDs,
+bevor sie zu Object-Keys werden).
+
+## Schlüsselquellen
+
+Die Master-Key-Bytes kommen irgendwoher.  Häufige Muster:
+
+### Env-Vars
+
+```ts
+new MasterKeyRing({
+  keys: {
+    'k1': Buffer.from(process.env.MASTER_KEY_V1!, 'base64'),
+  },
+  currentKeyId: 'k1',
+});
+```
+
+Am einfachsten.  Jeder Schlüssel ist ein 32-Byte-Buffer (für
+AES-256-GCM), base64-kodiert in der Env.
+
+Risiko: Env-Vars sind für alles sichtbar, das die
+Prozess-Umgebung lesen kann.  Verwende nur, wenn die Env selbst
+gesichert ist (K8s-Secrets, etc.).
+
+### KMS-on-Load
+
+```ts
+import { KMS } from '@aws-sdk/client-kms';
+
+const kms = new KMS();
+const decrypted = await kms.decrypt({
+  KeyId:           'alias/master',
+  CiphertextBlob:  Buffer.from(process.env.WRAPPED_KEY!, 'base64'),
+});
+
+const keyRing = new MasterKeyRing({
+  keys: { 'k1': decrypted.Plaintext! },
+  currentKeyId: 'k1',
+});
+```
+
+Der Master-Key wird **verschlüsselt unter einem Cloud-KMS-Key
+gespeichert**.  Die App holt ihn beim Start, entschlüsselt über
+KMS, hält ihn im Speicher.
+
+Besser als rohe Env-Vars — nur KMS-Zugriff ist erforderlich, um
+Schlüssel wiederherzustellen.
+
+### HashiCorp Vault
+
+Ähnliches Muster: Master-Keys beim Start aus Vault ziehen.
+
+## CPU-Kosten
+
+AES-GCM ist **schnell** — moderne CPUs haben
+Hardware-Unterstützung.
+
+Pro 100 KB Verschlüsseln + Entschlüsseln:
+
+- ~0,5-1 ms auf modernem x86 / Apple Silicon.
+- Auf kleinen Objekten effektiv kostenlos.
+
+Für die meisten Workloads ist Verschlüsselung in Profilen
+unsichtbar.
+
+## Verschlüsselung + Kompression
+
+```
+verschlüsseln → komprimieren → S3.put       # ✗ kein Kompressionsnutzen auf Ciphertext
+komprimieren → verschlüsseln → S3.put       # ✓ das macht das Framework
+```
+
+Die Reihenfolge des Frameworks ist **zuerst komprimieren, dann
+verschlüsseln** — komprimierte Bytes sind immer noch
+komprimierbar (nicht zufällig); nach der Verschlüsselung sind sie
+effektiv zufällig und unkomprimierbar.
+
+Wenn du sowohl Kompression als auch Verschlüsselung setzt,
+bekommst du diese Reihenfolge automatisch.
+
+## Alte Payloads lesen
+
+Nachdem du Verschlüsselung auf einem zuvor unverschlüsselten
+Bucket aktiviert hast:
+
+```
+state/cart-42  ← alt, Plaintext, keine Key-ID-Metadaten
+state/cart-43  ← neu, verschlüsselt, Key-ID: k1
+```
+
+Das Framework erkennt jedes Pro-Payload über die Metadaten:
+
+- **Keine Key-ID-Metadaten** → Plaintext-Pfad.
+- **Key-ID vorhanden** → über den keyRing entschlüsseln.
+
+Bedeutet, **du kannst Verschlüsselung schrittweise aktivieren** —
+neue Writes werden verschlüsselt, alte Reads funktionieren immer
+noch, und ein Hintergrund-Re-Encryption-Sweep kann den Rest
+migrieren.
+
+Siehe [Schlüsselrotation](/de/persistence/object-storage/key-rotation/)
+für den Rotation-Flow.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Schlüssel verlieren, Daten verlieren">
+  ```ts
+  // Master-Key aus Secret-Storage gelöscht
+  // → alle verschlüsselten Blobs sind jetzt unlesbar
+  ```
+  Master-Keys müssen **gesichert** sein.  KMS-Backups, Escrow,
+  mehrere geografische Kopien — Verschlüsselung-ohne-Recovery ist
+  Datenzerstörung.
+</Aside>
+
+<Aside type="caution" title="Per-Tenant-Schlüssel-Isolation ist nicht out-of-the-box">
+  ```ts
+  // Kunde A und Kunde B verwenden beide denselben Master-Key
+  ```
+  Die Verschlüsselung des Frameworks ist **bucket-weit** — ein
+  keyRing für alles.  Für Per-Tenant-Schlüssel (verschiedene
+  Kunden verwenden verschiedene KEKs) wickle den Store mit
+  Per-Tenant-Logik ein oder implementiere einen
+  benutzerdefinierten DurableStateStore.
+</Aside>
+
+<Aside type="caution" title="Verschlüsselte Backups">
+  ```bash
+  # S3 → Cross-Region-Replikation
+  # Die verschlüsselten Bytes werden kopiert; der Master-Key nicht
+  ```
+  Server-Side-Replikation erhält Verschlüsselung; der keyRing muss
+  in jeder Region verfügbar sein, in der deine App läuft.  Plane
+  für Cross-Region-Schlüsselverteilung.
+</Aside>
+
+## Wie geht's weiter
+
+- **[Object Storage im Überblick](/de/persistence/object-storage/overview/)** —
+  das größere Bild.
+- **[Schlüsselrotation](/de/persistence/object-storage/key-rotation/)** —
+  der Online-Rotations-Flow.
+- **[Master-Key-Rotation (Operations)](/de/operations/security/master-key-rotation/)** —
+  die operative Seite.
+- **[Per-Actor-Policies](/de/persistence/object-storage/per-actor-policies/)** —
+  Per-Actor-Verschlüsselungskonfiguration.

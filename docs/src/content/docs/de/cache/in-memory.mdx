@@ -1,0 +1,139 @@
+---
+title: In-Memory-Cache
+description: Der Default-`Cache` — eine In-Process-Map mit LRU-Eviction + TTL pro Eintrag. Nur Single-Pod; geht bei Neustart verloren. Richtig für Tests, Dev und Single-Node-Produktions-Setups.
+---
+
+`InMemoryCache` ist die **Default**-Cache-Implementierung.
+In-Process, LRU-Eviction, TTL pro Eintrag — schnell und keine
+Abhängigkeiten.
+
+```ts
+import { InMemoryCache } from 'actor-ts';
+
+const cache = new InMemoryCache({
+  maxEntries: 10_000,
+});
+```
+
+## Wann einsetzen
+
+Drei Szenarien:
+
+1. **Tests** — schnell, kein I/O, sauberes Teardown.
+2. **Single-Pod-Produktion** — kein Bedarf, Cache-State zu teilen.
+3. **Dev / lokal** — derselbe Code ohne Redis auf dem Laptop.
+
+Für **Multi-Pod**-Produktion nimm stattdessen
+[Redis](/de/cache/redis/) oder
+[Memcached](/de/cache/memcached/) — sonst hätten die Pods je
+eine eigene Kopie.
+
+## Konfiguration
+
+```ts
+interface InMemoryCacheSettings {
+  maxEntries?:   number;     // LRU-Cap; Default 10_000
+  cleanupMs?:    number;     // Sweep-Rhythmus für abgelaufene Einträge; Default 60_000
+}
+```
+
+| Feld | Zweck |
+| --- | --- |
+| `maxEntries` | Obergrenze für die Cache-Größe.  LRU-Eviction darüber hinaus. |
+| `cleanupMs` | Wie oft abgelaufene Einträge gesweept werden.  Ohne das verweilen abgelaufene Einträge bis zum Zugriff. |
+
+Für die meisten Apps reichen die Defaults.
+
+## LRU-Eviction
+
+```
+maxEntries: 1000
+
+→ 1001. eindeutiger Key eingefügt → der am längsten nicht genutzte Eintrag wird evicted
+```
+
+LRU heißt **häufig genutzte Einträge bleiben**; selten genutzte
+fliegen raus.  Gut für leseintensive Caches, bei denen das Hot-Set
+in den Speicher passt, der Long-Tail aber nicht.
+
+## TTL-Behandlung
+
+```ts
+await cache.set('key', value, 60_000);   // läuft ab bei now + 60s
+```
+
+Zwei Cleanup-Pfade:
+
+1. **Lazy** — beim `get` geben abgelaufene Einträge None zurück
+   (und werden entfernt).
+2. **Periodisches Sweep** — alle `cleanupMs` läuft der Cache
+   über abgelaufene Einträge und entfernt sie.  Reduziert
+   Speicher für Keys, die geschrieben, aber nie gelesen werden.
+
+## Über das System teilen
+
+```ts
+import { CacheExtensionId } from 'actor-ts';
+
+system.extension(CacheExtensionId).configure({
+  defaultCache: new InMemoryCache({ maxEntries: 50_000 }),
+});
+
+// Zugriff über:
+const cache = system.extension(CacheExtensionId).cache;
+```
+
+Ein **systemweiter Cache**, den mehrere Konsumenten (HTTP-
+Middleware, Projection-Actors, eigener Code) teilen.  Nützlich,
+wenn:
+
+- Du eine konfigurierte Cache-Instanz willst, nicht eine pro
+  Konsument.
+- Cache-Statistiken sich systemweit ansammeln.
+
+Für Per-Route-Caches instanziiere `new InMemoryCache()` direkt,
+ohne über die Extension zu gehen.
+
+## Wann er für Produktion falsch ist
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="State-Divergenz über Pods">
+  ```ts
+  // 4 Pods, jeder mit eigenem InMemoryCache → 4 unabhängige Caches
+  ```
+  Derselbe Request kann auf verschiedenen Pods gecachte Responses
+  von einem Pod bekommen und auf einem anderen verfehlen.  Nimm
+  Redis für geteilten Multi-Pod-State.
+</Aside>
+
+<Aside type="caution" title="Neustart verliert alles">
+  ```bash
+  # kubectl delete pod my-app-1
+  # → der gesamte Cache des Pods weg
+  ```
+  In-Memory-Caches überleben keinen Neustart.  Für Caches, bei
+  denen Kaltstart-Kosten erheblich sind (Wiederaufbau dauert
+  Minuten), nimm Redis (persistiert) oder akzeptiere den
+  Kaltstart.
+</Aside>
+
+<Aside type="caution" title="Unbegrenztes Wachstum ohne maxEntries">
+  ```ts
+  new InMemoryCache();   // defaultet zu 10_000 — okay
+  new InMemoryCache({ maxEntries: Infinity });   // ✗ fliegt mit OOM
+  ```
+  Setze (oder akzeptiere) immer eine Schranke.  Ein unbegrenzter
+  Cache füllt irgendwann den Speicher.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[Cache-Übersicht](/de/cache/overview/)** — das große
+  Bild.
+- **[Redis-Cache](/de/cache/redis/)** — Multi-Pod-
+  Alternative.
+- **[Memcached-Cache](/de/cache/memcached/)** —
+  Alternative.
+- **[CachedSnapshotStore](/de/persistence/snapshot-stores/cached-snapshot-store/)** —
+  ein Konsument der Cache-Abstraktion.

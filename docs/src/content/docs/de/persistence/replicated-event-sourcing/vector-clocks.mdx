@@ -1,0 +1,212 @@
+---
+title: Vector Clocks
+description: Per-Replica logische Zeitstempel, die verwendet werden, um nebenläufige Edits zu erkennen. Eine Vector Clock ist ein `Record<ReplicaId, number>`; zwei Clocks zu vergleichen sagt dir, ob eine vor der anderen passierte, sie gleich sind oder nebenläufig. Fundament der Konflikterkennung in Replicated ES.
+---
+
+Eine **Vector Clock** ist ein logischer Zeitstempel, der über
+Replicas verteilt ist.  Jede Replica unterhält einen
+Per-Replica-Counter; jedes persistierte Event enthält die
+**aktuelle Vector Clock** zum Schreibzeitpunkt.
+
+Gegeben zwei Vector Clocks `a` und `b`:
+
+| Relation | Wann |
+| --- | --- |
+| **`a < b`** ("a happens-before b") | Jede Komponente `a[i] ≤ b[i]` und mindestens eine strikt kleiner. |
+| **`a == b`** | Jede Komponente gleich. |
+| **`a` nebenläufig zu `b`** | Weder `<` noch `>`.  Einige Komponenten haben `a > b`, andere `a < b`. |
+
+Der dritte Fall — **nebenläufig** — ist das, was die
+Replicated-ES-Maschinerie verwendet, um zu erkennen "zwei
+Replicas haben unabhängig geschrieben, und keine hat den Write
+der anderen gesehen."
+
+## Die Datenform
+
+```ts
+type VectorClockData = Readonly<Record<ReplicaId, number>>;
+```
+
+Ein plain Object.  Replicas, die nicht vorhanden sind, werden als
+`0` behandelt — nützlich für Kompaktheit auf dem Wire (Komponenten
+überspringen, die null sind).
+
+Die `VectorClock`-Klasse des Frameworks wickelt das ein:
+
+```ts
+import { VectorClock } from 'actor-ts';
+
+let vc = VectorClock.empty();
+vc = vc.increment('replica-a');   // → { 'replica-a': 1 }
+vc = vc.increment('replica-a');   // → { 'replica-a': 2 }
+vc = vc.merge(VectorClock.fromData({ 'replica-b': 3 }));
+//    → { 'replica-a': 2, 'replica-b': 3 }
+```
+
+## Operationen
+
+| Methode | Zweck |
+| --- | --- |
+| `empty()` | Null-Clock. |
+| `fromData(record)` | Aus einem plain Object bauen. |
+| `get(replicaId)` | Eine Komponente lesen. |
+| `increment(replicaId)` | Die Komponente einer Replica erhöhen — beim Persistieren aufgerufen. |
+| `merge(other)` | Per-Replica-Maximum. |
+| `compare(other)` | Gibt `'<'` / `'>'` / `'=='` / `'concurrent'` zurück. |
+| `toData()` | Plain-Object-Form für die Serialisierung. |
+
+## Wie Replicated ES sie verwendet
+
+```
+Replica A schreibt event_A1 bei vc { A: 1 }            ← A's Counter erhöht sich
+Replica B (ohne Vorwissen über A's Event):
+  schreibt event_B1 bei vc { B: 1 }                     ← B's Counter erhöht sich
+
+Beide Events landen im geteilten Journal.
+
+Später liest Replica A das Event von B:
+  vc { B: 1 } verglichen mit A's aktuellem { A: 1 }:
+    → nebenläufig (A > B für A's Komponente, B > A für B's Komponente)
+    → Conflict Resolver läuft, um State aus beiden Branches zu mergen
+```
+
+Das Framework:
+
+1. Inkrementiert bei jedem Persist die Komponente **dieser
+   Replica**.
+2. Bettet die volle Vector Clock in das persistierte Event ein.
+3. Beim Lesen des Events einer anderen Replica vergleicht die
+   eingebettete Vector Clock mit der Vector Clock des lokalen
+   States.
+4. Wenn nebenläufig → den Conflict Resolver aufrufen.
+5. Wenn `<` (kausal vorher) → bereits angewendet oder strikt
+   älter; ignorieren (oder normal in den State falten).
+6. Wenn `>` (kausal später) → auf den State anwenden.
+
+## Ein durchgespieltes Beispiel
+
+```
+t1: Replica A persistiert event_A1 bei vc { A: 1 }
+       state_A = applyEvent(initial, event_A1)
+       state_A's vc = { A: 1 }
+
+t2: Replica B persistiert event_B1 bei vc { B: 1 }    ← nebenläufig
+       state_B = applyEvent(initial, event_B1)
+       state_B's vc = { B: 1 }
+
+t3: Replica A liest event_B1.
+    Vergleich von event_B1's vc { B: 1 } mit state_A's vc { A: 1 }:
+       → nebenläufig
+    Resolver aufrufen:
+       merged_state = resolver.resolve(state_A, [event_A1, event_B1])
+       state_A = merged_state
+       state_A's vc = { A: 1, B: 1 } (der Merge)
+
+t4: Replica A persistiert event_A2 bei vc { A: 2, B: 1 }
+       state_A = applyEvent(merged_state, event_A2)
+
+t5: Replica B sieht schließlich die gesamte Kette — die eigene,
+    A's Pre-Merge-Events, plus A's Post-Merge-Events.
+    Löst alle nebenläufigen Branches auf dieselbe Weise auf.
+```
+
+Schließlich konvergieren beide Replicas — bei ausreichender
+Cross-Replica-Sichtbarkeit und einem deterministischen Resolver.
+
+## Kausalität ist partiell geordnet
+
+Vector Clocks geben **keine** Totalordnung.  Zwei Events bei
+`{ A: 5 }` und `{ B: 5 }` sind nebenläufig — keines ist "zuerst
+passiert."  Die Reihenfolge, in der sie im Journal erscheinen, ist
+zufällig.
+
+Das ist **der ganze Punkt** — Replicas schreiben unabhängig;
+Clocks verfolgen Kausalität, nicht Wall-Clock-Zeit.
+
+Für eine Totalordnung (selten) paare es mit einem Single-Writer-
+Lease (siehe
+[Single-Writer-Lease](/de/persistence/replicated-event-sourcing/single-writer-lease/)).
+
+## Wire-Format
+
+Vector Clocks serialisieren als plain JSON-Objekte:
+
+```json
+{
+  "_vc": { "A": 5, "B": 3, "C": 1 }
+}
+```
+
+Null-Wert-Komponenten werden typischerweise für Kompaktheit
+weggelassen; das Framework behandelt fehlende Keys als `0`.
+
+## Garbage Collection
+
+Über die Zeit hinterlassen pensionierte Replicas
+(dekommissionierte Regionen, entfernte Nodes) Einträge in Vector
+Clocks:
+
+```
+vc { A: 100, B: 50, C: 25, RETIRED-D: 7 }
+```
+
+Die Komponente der pensionierten Replica ist irrelevant, aber
+nimmt Platz ein.  Für lange laufende Deployments mit
+Replica-Churn unterstützt das Framework
+**Vector-Clock-Pruning** zur Snapshot-Zeit — wenn eine Replica
+lange genug weg ist, kann ihre Komponente sicher gedroppt werden.
+
+Das ist ein fortgeschrittenes Thema; die Defaults sind für die
+meisten Deployments in Ordnung.
+
+## Mit Vector Clocks in User-Code arbeiten
+
+Tust du normalerweise nicht.  Das Framework verwaltet sie
+intern; dein Conflict Resolver erhält **Events mit ihren Vector
+Clocks bereits verglichen** — du entscheidest nur, wie der
+**State** angesichts der konfligierenden Events gemergt wird.
+
+Für Diagnostik:
+
+```ts
+override async onCommand(state, cmd) {
+  this.log.debug(`current vc: ${JSON.stringify(this.vectorClock.toData())}`);
+  await this.persist(event, () => {});
+}
+```
+
+`this.vectorClock` ist Read-only-Zugriff auf die aktuelle Clock
+des Actors.  Nützlich für Logging / Debugging von
+Nebenläufig-Write-Szenarien.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Replica-IDs müssen für immer stabil sein">
+  ```ts
+  // Replica startet mit einer neuen zufälligen ID neu
+  ```
+  Die ID einer Replica ist **Teil der Vector Clock**.  Mit einer
+  neuen ID neu zu starten lässt die neue Instanz wie eine andere
+  Replica aussehen — alte Vector Clocks enthalten immer noch die
+  Einträge der alten ID.  Verwende stabile IDs (Pod-Name + Region,
+  etc.).
+</Aside>
+
+<Aside type="caution" title="Vector-Clock-Größe wächst mit der Replica-Anzahl">
+  ```ts
+  // 50 Replicas → vc hat bis zu 50 Einträge bei jedem Event
+  ```
+  Jedes Event trägt die volle vc.  Für sehr große
+  Replica-Anzahlen ist das Wire- + Storage-Overhead.  Die meisten
+  Deployments haben ≤ 10 Replicas; nur ein Anliegen für extreme
+  Skala.
+</Aside>
+
+## Wie geht's weiter
+
+- **[Replicated Event Sourcing im Überblick](/de/persistence/replicated-event-sourcing/overview/)** —
+  das größere Bild.
+- **[Conflict Resolver](/de/persistence/replicated-event-sourcing/conflict-resolver/)** —
+  was die Nebenläufigkeitserkennung konsumiert.
+- **[Snapshotting](/de/persistence/replicated-event-sourcing/snapshotting/)** —
+  Vector Clocks in Snapshots.

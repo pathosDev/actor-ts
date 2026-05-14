@@ -1,0 +1,238 @@
+---
+title: Retry
+description: Ein funktionaler `retry(factory, options)`-Helfer — rufe eine Funktion bis zu N-mal mit optionalem Exponential-Backoff auf. Lebt außerhalb der Actor-Welt; paare mit `ask` für Actor-Calls. Unterscheidet sich von BackoffSupervisor, der ganze Actors neu startet.
+---
+
+`retry` ist eine reine Async-Funktion für "versuche diesen Call bis
+zu N-mal, mit Backoff zwischen den Versuchen."  Es ist die
+einfachste Schicht im Resilienz-Stack — keine Actors, kein Zustand,
+nur eine Promise-zurückgebende Factory.
+
+```ts
+import { retry } from 'actor-ts';
+
+const data = await retry(
+  () => fetch('https://example.com/items').then(r => r.json()),
+  { attempts: 3, delayMs: 200, factor: 2 },
+);
+```
+
+Die Factory wird bis zu 3-mal aufgerufen.  Jeder Retry wartet
+länger: Versuch 1 sofort, Versuch 2 nach 200 ms, Versuch 3 nach
+400 ms.  Gibt den ersten Erfolg zurück; rejected mit dem letzten
+Fehler, wenn jeder Versuch fehlschlägt.
+
+## Die Signatur
+
+```ts
+function retry<T>(factory: () => Promise<T>, options: RetryOptions): Promise<T>;
+
+interface RetryOptions {
+  attempts:        number;     // gesamt inklusive initialer Call (>= 1)
+  delayMs?:        number;     // Base-Delay zwischen Versuchen
+  factor?:         number;     // Multiplikator für Exponential-Backoff (Default 1)
+  maxDelayMs?:     number;     // Obergrenze für jedes einzelne Delay
+  shouldRetry?:    (err: Error, attempt: number) => boolean;
+  onAttempt?:      (err: Error, attempt: number) => void;
+}
+```
+
+Das `attempts`-Feld ist **Gesamt-Versuche**, nicht Retries —
+`attempts: 1` führt die Factory genau einmal ohne Retries aus.
+`attempts: 3` läuft bis zu 3-mal.
+
+## Das Backoff konfigurieren
+
+Vier Knöpfe kooperieren zur Steuerung des Delays zwischen Versuchen:
+
+| Setting | Was es tut |
+| --- | --- |
+| `delayMs` | Base-Delay zwischen Versuchen.  Default `0` (kein Warten). |
+| `factor` | Multiplikator pro Versuch.  Delay bei Versuch N ist `delayMs × factor^(N-1)`.  Default `1` (konstant). |
+| `maxDelayMs` | Obergrenze für jedes einzelne Delay.  Default unbegrenzt. |
+
+```ts
+// Konstant 500ms zwischen Versuchen:
+retry(factory, { attempts: 5, delayMs: 500 });
+
+// Exponentiell: 200ms, 400ms, 800ms, gecappt bei 5s:
+retry(factory, { attempts: 6, delayMs: 200, factor: 2, maxDelayMs: 5_000 });
+
+// Fibonacci-artig: ad-hoc via factor=1.6:
+retry(factory, { attempts: 5, delayMs: 100, factor: 1.6 });
+```
+
+Kein Jitter — das Delay ist deterministisch pro Versuch.  Wenn du
+gejitterte Retries brauchst (empfohlen für High-Concurrency-Szenarien,
+die synchronisieren könnten), wickle die Policy:
+
+```ts
+import { retry, exponentialBackoff } from 'actor-ts';
+
+const policy = exponentialBackoff({ minMs: 200, maxMs: 5_000, randomFactor: 0.2 });
+
+async function jitteredRetry<T>(factory: () => Promise<T>, attempts: number): Promise<T> {
+  for (let i = 0; i < attempts; i++) {
+    try { return await factory(); }
+    catch (e) {
+      if (i === attempts - 1) throw e;
+      await new Promise(r => setTimeout(r, policy.delayFor(i)));
+    }
+  }
+  throw new Error('unreachable');
+}
+```
+
+Oder verwende `BackoffSupervisor`, wenn das, was retried wird, ein
+Actor-Restart ist.
+
+## Selektives Retry — `shouldRetry`
+
+```ts
+class TransientError extends Error {}
+class PermanentError extends Error {}
+
+await retry(
+  () => callExternalAPI(),
+  {
+    attempts:    5,
+    delayMs:     500,
+    factor:      2,
+    shouldRetry: (err) => err instanceof TransientError,
+  },
+);
+```
+
+`shouldRetry` läuft nach jedem fehlgeschlagenen Versuch.  Gib
+`false` zurück, um **kurzzuschließen** — die Retry-Loop endet
+sofort mit diesem Fehler, keine weiteren Versuche.
+
+Verwende es, um zwischen transienten und permanenten Fehlern zu
+unterscheiden:
+
+- **Transient** (Netzwerk-Aussetzer, Rate-Limit, Lock-Contention)
+  → retry.
+- **Permanent** (Validierungsfehler, Auth-Fehler, 4xx) → nicht
+  retrien; der nächste Versuch wird auf dieselbe Weise
+  fehlschlagen.
+
+## Observability — `onAttempt`
+
+```ts
+await retry(factory, {
+  attempts:  3,
+  delayMs:   500,
+  onAttempt: (err, attempt) => {
+    metrics.counter('retry.attempt').inc({ attempt });
+    log.warn(`attempt ${attempt} failed: ${err.message}`);
+  },
+});
+```
+
+Feuert nach jedem fehlgeschlagenen Versuch, inklusive dem letzten.
+Verwende es für retry-bewusste Metriken und Logging — Counter pro
+Versuch, Spans fürs Tracing, Alerts auf "uns sind die Retries
+ausgegangen."
+
+## Verglichen mit BackoffSupervisor
+
+| Use Case | Greife zu... |
+| --- | --- |
+| Ein einzelner `Promise`-zurückgebender Call (HTTP-Fetch, DB-Query, Ask) | `retry` |
+| Ein Actor, der fehlschlägt und respawned werden soll | `BackoffSupervisor` |
+| Ein Call, geschützt durch Kurzschlussverhalten | `CircuitBreaker` (oft kombiniert mit `retry` innen) |
+
+`retry` ist das **Call-Level**-Primitive.  `BackoffSupervisor` ist
+das **Actor-Level**-Primitive.  Sie konkurrieren nicht — wähle,
+was du schützt.
+
+Für einen Actor, der seinen *eigenen* Downstream-Call retrien
+will, ist `retry` innerhalb von `onReceive` okay:
+
+```ts
+class MyActor extends Actor<...> {
+  override async onReceive(msg): Promise<void> {
+    const result = await retry(
+      () => this.callDownstream(msg),
+      { attempts: 3, delayMs: 200, factor: 2 },
+    );
+    // ...
+  }
+}
+```
+
+Innerhalb von `onReceive` zu awaiten, blockiert die Mailbox des
+Actors, bis der Retry vollendet ist — derselbe Trade-off wie jedes
+Await innerhalb eines `onReceive`.  Siehe
+[Ask-Pattern](/de/fundamentals/ask-pattern/) dafür, wann das ein
+Problem ist.
+
+## Verglichen mit Circuit Breaker
+
+Ein Circuit Breaker ist **Per-Dependency-Zustand**, der sagt "höre
+für eine Weile auf, dieses Ding zu versuchen."  Retry ist
+**Per-Call**-Logik, die sagt "versuche jetzt nach einem kurzen
+Warten erneut."
+
+Kombiniere sie — Retry *innerhalb* eines Breaker-Calls:
+
+```ts
+breaker.call(() => retry(
+  () => fetch('https://flaky.example'),
+  { attempts: 3, delayMs: 100, factor: 2 },
+));
+```
+
+Der Retry handhabt transiente Aussetzer während eines einzelnen
+Calls; der Breaker trackt den Trend über viele Calls.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`retry` weiß nichts über Cancellation">
+  ```ts
+  const p = retry(longCall, { attempts: 5, delayMs: 1000 });
+  // ... User hat auf Cancel geklickt ...
+  // p wird trotzdem alle Versuche durchlaufen.
+  ```
+  Es gibt keine eingebaute Cancellation.  Wenn du abbrechen musst,
+  übergib ein `AbortSignal` an die Factory und prüfe es innen:
+  ```ts
+  retry(() => longCall({ signal: ac.signal }), { attempts: 5, delayMs: 1000 });
+  ```
+  Ein von der Factory geworfener `AbortError` umgeht den Default
+  "retrye alles" von `shouldRetry` — liefere ein `shouldRetry`,
+  das für `AbortError` `false` zurückgibt, um bei Cancellation
+  schnell zu scheitern.
+</Aside>
+
+<Aside type="caution" title="Retrye nicht-idempotente Operationen nicht blind">
+  ```ts
+  retry(() => paymentApi.charge(card, amount), { attempts: 3, delayMs: 1000 });
+  ```
+  Wenn der erste Call gelingt, aber die Response im Transit
+  verloren geht, belastet der Retry die Karte *erneut*.  Mache die
+  Operation entweder idempotent (Request-ID, Idempotency-Key)
+  oder **retrye keine** seiteneffekt-behafteten Calls ohne diesen
+  Schutz.
+</Aside>
+
+<Aside type="caution" title="`delayMs * factor^N` kann überlaufen">
+  ```ts
+  retry(factory, { attempts: 50, delayMs: 100, factor: 2 });
+  // Versuch 30: Delay = 100 × 2^29 ≈ 1.6 Jahre
+  ```
+  Setze immer `maxDelayMs` für `factor > 1`.  Sonst produziert ein
+  hoher `attempts`-Count absurde Delays.
+</Aside>
+
+## Wie es weitergeht
+
+- **[Backoff-Supervisor](/de/patterns/backoff-supervisor/)** —
+  das Actor-Restart-Äquivalent zu Retry.
+- **[Backoff-Policy](/de/patterns/backoff-policy/)** — reine
+  Delay-Berechnungs-Primitives für eigene Retry-Loops.
+- **[Circuit Breaker](/de/patterns/circuit-breaker/)** —
+  das komplementäre "Hör eine Weile auf zu rufen"-Primitive.
+
+Die [`retry`](/api/functions/retry/)-API-Referenz deckt die volle
+Signatur ab.

@@ -1,0 +1,216 @@
+---
+title: Backoff-Policy
+description: Reine Backoff-Policy-Primitives — `exponentialBackoff` und `linearBackoff`, beide produzieren einen `BackoffPolicy`-Wert mit `delayFor(restartCount)`. Vom BackoffSupervisor verwendet, aber standalone für jede "wie lange soll ich warten?"-Berechnung.
+---
+
+Eine **Backoff-Policy** ist eine Funktion von "wie oft ist das
+fehlgeschlagen?" zu "wie lange soll ich warten, bevor ich es erneut
+versuche?"  Entkoppelt von jedem spezifischen Retry oder Supervisor,
+sodass die Berechnung trivial testbar und wiederverwendbar ist.
+
+```ts
+interface BackoffPolicy {
+  delayFor(restartCount: number): number;
+}
+```
+
+`restartCount` ist 0-basiert — der *erste* Retry übergibt `0`, der
+zweite `1` und so weiter.  Gibt das Delay in Millisekunden zurück.
+
+Zwei Eingebaute, beide produzieren Werte, die du in einen
+[`BackoffSupervisor`](/de/patterns/backoff-supervisor/) stecken oder
+standalone verwenden kannst.
+
+## Exponential Backoff
+
+```ts
+import { exponentialBackoff } from 'actor-ts';
+
+const policy = exponentialBackoff({
+  minMs:        200,
+  maxMs:        10_000,
+  randomFactor: 0.2,
+});
+
+policy.delayFor(0);   // ~200ms  (±20% Jitter)
+policy.delayFor(1);   // ~400ms
+policy.delayFor(2);   // ~800ms
+policy.delayFor(3);   // ~1600ms
+policy.delayFor(4);   // ~3200ms
+policy.delayFor(5);   // ~6400ms
+policy.delayFor(6);   // ~10_000 (gecappt)
+policy.delayFor(30);  // ~10_000 (immer noch gecappt)
+```
+
+Die Formel: `min × 2^n` gecappt auf `max`, multipliziert mit
+`1 + random(-randomFactor, +randomFactor)`.
+
+Drei Knöpfe:
+
+| Feld | Bedeutung |
+| --- | --- |
+| `minMs` | Untergrenze für das Delay.  Der erste Retry wartet mindestens so lang. |
+| `maxMs` | Obergrenze für das Delay.  Sobald `min × 2^n` das überschreitet, gibt die Policy `maxMs` zurück (gejittert). |
+| `randomFactor` *(Default 0.2)* | Jitter-Anteil in `[0, 1]`.  Das tatsächliche Delay ist `base * (1 + sign * randomFactor)`, wobei `sign` gleichverteilt in `[-1, 1]` ist. |
+
+**Warum exponentiell?**  Ein fehlschlagendes Upstream braucht meist
+*Zeit* zum Erholen.  Das Warten zu verdoppeln, gibt ihm mehr Zeit
+ohne unendliche Delays.  Und das Cappen bei `max` verhindert
+pathologisch lange Wartezeiten nach vielen Fehlern.
+
+**Warum Jitter?**  Wenn N Clients alle mit dem gleichen Delay
+retrien, synchronisieren sie ihren nächsten Versuch — der nächste
+Retry ist eine donnernde Herde, was die Chance erhöht, dass das
+Upstream kaputt bleibt.  ±20 % Rauschen hinzuzufügen, streut die
+Retries in der Zeit, sodass die Herde sich auflöst.
+
+## Linear Backoff
+
+```ts
+import { linearBackoff } from 'actor-ts';
+
+const policy = linearBackoff({
+  minMs:  500,
+  maxMs:  5_000,
+  stepMs: 500,
+});
+
+policy.delayFor(0);   // ~500ms
+policy.delayFor(1);   // ~1000ms
+policy.delayFor(2);   // ~1500ms
+policy.delayFor(3);   // ~2000ms
+policy.delayFor(8);   // ~4500ms
+policy.delayFor(9);   // ~5000ms (gecappt)
+policy.delayFor(20);  // ~5000ms (immer noch gecappt)
+```
+
+Die Formel: `min + step × n` gecappt auf `max`, mit demselben
+Jitter-Vertrag.
+
+**Wann linear?**  Nische — wenn du spezifisch begrenztes Wachstum
+statt exponentiell willst.  Beispiele:
+
+- Eine Poll-Kadenz, die schnell abflachen soll (alle 500 ms, 1 s,
+  1,5 s, … gecappt bei 5 s).
+- Ein Producer, der sich selbst rate-limited, wenn er Backpressure
+  empfängt — die *Wachstumsrate* der Wartezeit matcht die
+  steady-state-akzeptable Last auf dem Consumer.
+
+Exponentiell ist meist die bessere Wahl für *Recovery* (gib dem
+Upstream Zeit zu heilen).  Linear ist besser für
+*Steady-State*-Adaption.
+
+## Determinismus in Tests
+
+Beide Policies akzeptieren ein optionales `random: () => number`-Override:
+
+```ts
+let seed = 0;
+const deterministicRandom = () => (seed = (seed * 9301 + 49297) % 233280) / 233280;
+
+const policy = exponentialBackoff({
+  minMs:        100,
+  maxMs:        10_000,
+  randomFactor: 0.2,
+  random:       deterministicRandom,
+});
+
+// Jetzt ist `policy.delayFor(n)` reproduzierbar.
+```
+
+Ein linearer Kongruenzgenerator ist für Tests gut genug; für
+Produktions-Zufälligkeit ist das Default-`Math.random` in Ordnung.
+
+## Standalone-Nutzung
+
+Die Policy muss nicht in einen Supervisor fließen.  Überall, wo du
+`await new Promise(r => setTimeout(r, computeDelay(n)))` schreiben
+würdest, stecke eine Policy ein:
+
+```ts
+import { exponentialBackoff } from 'actor-ts';
+
+const policy = exponentialBackoff({ minMs: 200, maxMs: 5_000 });
+
+let attempt = 0;
+while (true) {
+  try {
+    const result = await someRiskyCall();
+    return result;
+  } catch (err) {
+    const delay = policy.delayFor(attempt++);
+    await new Promise(r => setTimeout(r, delay));
+    if (attempt >= 5) throw err;
+  }
+}
+```
+
+Für den häufigeren Fall "N-mal mit Backoff retrien" siehe
+[Retry](/de/patterns/retry/), das eigene Delay-Optionen hat (ohne
+durch `BackoffPolicy` zu gehen).  Die Standalone-Policy ist am
+nützlichsten, wenn du mit einer bestehenden
+Retry/Scheduler-Abstraktion integrierst und nur das
+Delay-Berechnungs-Stück brauchst.
+
+## Eigene Policies
+
+Implementiere das `BackoffPolicy`-Interface:
+
+```ts
+import type { BackoffPolicy } from 'actor-ts';
+
+// Fibonacci-Backoff — zum Spaß.
+function fibBackoff(opts: { maxMs: number }): BackoffPolicy {
+  return {
+    delayFor(n: number): number {
+      let a = 100, b = 100;
+      for (let i = 0; i < n; i++) { [a, b] = [b, a + b]; }
+      return Math.min(a, opts.maxMs);
+    },
+  };
+}
+```
+
+Übergib es an `BackoffSupervisor` via die `policy`-Option, und du
+hast das Default-Exponential-Wachstum überschrieben.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`randomFactor` außerhalb `[0, 1]`">
+  ```ts
+  exponentialBackoff({ minMs: 100, maxMs: 1000, randomFactor: 1.5 });
+  // → throwt: randomFactor must be in [0, 1]
+  ```
+  `1.0` bedeutet bereits "Delay kann doppelt so lang wie Base oder
+  null sein" — Werte darüber produzieren negative Delays nach dem
+  Jitter, was die Implementierung sowieso auf 0 floort.  Die
+  Validierung fängt den offensichtlichen Fehler.
+</Aside>
+
+<Aside type="caution" title="Sehr großes `maxMs` + viele Fehler">
+  ```ts
+  policy.delayFor(60);   // → maxMs (gecappt, aber der Aufruf passierte)
+  ```
+  Die Policy selbst ist in Ordnung — sie cappt sauber bei `maxMs`.
+  Die Falle ist Upstream: ein Aufrufer, der 5 Minuten zwischen
+  Versuchen wartet, ist wahrscheinlich von "transientem Fehler" in
+  "totes Upstream" gewandert.  Paare Backoff mit einem
+  *Retry-Budget*: cappe Gesamt-Versuche oder Gesamt-verstrichene
+  Zeit, surface einen permanenten Fehler an einen
+  Higher-Level-Alert.
+</Aside>
+
+## Wie es weitergeht
+
+- **[Backoff-Supervisor](/de/patterns/backoff-supervisor/)** —
+  der Actor-Restart-Wrapper, der eine `BackoffPolicy` konsumiert.
+- **[Retry](/de/patterns/retry/)** — Per-Call-Retry mit
+  eigenen Delay-Optionen; geht nicht durch `BackoffPolicy`, aber
+  die zugrunde liegende Mathematik ist ähnlich.
+- **[Circuit Breaker](/de/patterns/circuit-breaker/)** —
+  für wenn "länger zwischen Versuchen warten" zu "eine Weile gar
+  nicht mehr versuchen" eskalieren soll.
+
+Die [`exponentialBackoff`](/api/functions/exponentialbackoff/)- und
+[`linearBackoff`](/api/functions/linearbackoff/)-API-Referenzen
+decken die vollen Optionen ab.

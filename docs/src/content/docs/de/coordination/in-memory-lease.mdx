@@ -1,0 +1,168 @@
+---
+title: InMemoryLease
+description: Eine `Lease`-Implementierung, die durch ein In-Process-Registry gestützt ist — nützlich für Tests und Dev. Nur Single-Process; nicht über Nodes hinweg verteilt. In Produktion nicht einsetzen.
+---
+
+`InMemoryLease` ist die Dev-/Test-Implementierung des
+[`Lease`](/de/coordination/lease-api/)-Interfaces.  Sie hält den
+Lease-State im **Prozessspeicher** — mehrere `InMemoryLease`-Instanzen,
+die denselben `name` teilen, schließen sich also korrekt aus,
+aber nur innerhalb eines Prozesses.
+
+```ts
+import { InMemoryLease } from 'actor-ts/coordination';
+
+const lease = new InMemoryLease({
+  name:  'my-singleton',
+  owner: 'instance-1',
+  ttlMs: 30_000,
+});
+
+await lease.acquire();   // → true (erstes Acquire)
+```
+
+## Wann du sie einsetzt
+
+- **Unit Tests** für Actors, die einen `Lease`-Parameter
+  bekommen — übergib `InMemoryLease`, um Lease-Verhalten ohne
+  echtes Backend zu verifizieren.
+- **Dev** für Code, der einen Lease braucht, aber du willst
+  Kubernetes oder etcd nicht lokal aufsetzen.
+- **MultiNodeSpec-Tests** — jeder "Node" läuft in einem Prozess,
+  also schließt sich ein über die Test-Nodes geteiltes
+  InMemoryLease korrekt aus.
+
+## Wann du sie NICHT einsetzt
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Produktion">
+  `InMemoryLease` überlebt keinen Prozess-Restart, wird nicht
+  über Prozesse hinweg geteilt und schützt nicht vor Split-Brain
+  in einem echten Cluster.  Für Produktion mit mehreren Pods
+  nimm [`KubernetesLease`](/de/coordination/kubernetes-lease/).
+</Aside>
+
+<Aside type="caution" title="Tests über Prozessgrenzen">
+  Tests mit `ParallelMultiNodeSpec` (mehrere Prozesse) können
+  kein InMemoryLease teilen — jeder Prozess hat sein eigenes
+  Registry.  Entweder für diese Tests auf ein wirklich-verteiltes
+  Lease zurückfallen oder beim Single-Process-MultiNodeSpec
+  bleiben.
+</Aside>
+
+## Das Registry teilen
+
+Um denselben Lease über mehrere `InMemoryLease`-Instanzen **innerhalb
+eines Prozesses** zu nutzen, müssen sie das Registry teilen:
+
+```ts
+import { InMemoryLeaseRegistry } from 'actor-ts/coordination';
+
+const registry = new InMemoryLeaseRegistry();
+
+const leaseA = new InMemoryLease({
+  name:     'singleton-x',
+  owner:    'node-a',
+  ttlMs:    30_000,
+  registry,
+});
+
+const leaseB = new InMemoryLease({
+  name:     'singleton-x',  // gleicher Name
+  owner:    'node-b',
+  ttlMs:    30_000,
+  registry, // gleiches Registry → schließen sich aus
+});
+
+await leaseA.acquire();   // → true
+await leaseB.acquire();   // → false (leaseA hält ihn)
+```
+
+Das ist das **`MultiNodeSpec`-Muster** — jeder simulierte Node
+bekommt ein `InMemoryLease` gegen ein gemeinsames Registry, und
+sie kämpfen um den Lease, wie es echte verteilte Peers tun
+würden.
+
+Ohne explizites `registry` bekommt jedes `InMemoryLease` sein
+eigenes privates Registry — effektiv kein gegenseitiger
+Ausschluss.
+
+## Verhaltensdetails
+
+Die Implementierung:
+
+- **`acquire()`** CAS-t den Registry-Slot atomar.  Gibt `true`
+  zurück, wenn sie ihn beansprucht hat; `false`, wenn ein
+  anderer Owner ihn hält.
+- **TTL-Ablauf** — wenn der Halter nicht innerhalb von `ttlMs`
+  renewt, gibt das Registry automatisch frei (eine
+  setTimeout-getriebene Bereinigung).
+- **`onLost`** feuert, wenn ein anderer Halter übernimmt (via
+  TTL-Ablauf-Mechanismus) oder wenn das Registry forciert geleert
+  wird.
+- **Renewal** läuft auf einem `setInterval` zum
+  `renewalIntervalMs` (Default `ttl / 3`).
+
+Für deterministische Tests willst du vielleicht einen
+[ManualScheduler](/de/testing/manual-scheduler/) in das Registry
+injizieren — das `InMemoryLease` des Frameworks nutzt aber
+aktuell echte Timer.  Für sehr-deterministische
+Lease-Timing-Tests mocke `Date.now()` und manipuliere das
+Registry direkt.
+
+## Beispiel: ein Singleton-Test
+
+```ts
+import { describe, it, expect } from 'bun:test';
+import { TestKit, InMemoryLease, InMemoryLeaseRegistry } from 'actor-ts/testkit';
+import { ClusterSingletonManager, Props } from 'actor-ts';
+
+describe('SingletonManager mit Lease', () => {
+  it('nur ein Halter spawnt den Singleton', async () => {
+    const tk1 = TestKit.create('node-1');
+    const tk2 = TestKit.create('node-2');
+    const registry = new InMemoryLeaseRegistry();
+
+    const lease1 = new InMemoryLease({
+      name: 'singleton', owner: 'n1', ttlMs: 30_000, registry,
+    });
+    const lease2 = new InMemoryLease({
+      name: 'singleton', owner: 'n2', ttlMs: 30_000, registry,
+    });
+
+    // (Cluster-Verdrahtung ausgelassen)
+
+    tk1.system.actorOf(
+      ClusterSingletonManager.props({
+        cluster: cluster1, typeName: 's', singletonProps: ..., lease: lease1,
+      }),
+      'singleton-manager-s',
+    );
+
+    tk2.system.actorOf(
+      ClusterSingletonManager.props({
+        cluster: cluster2, typeName: 's', singletonProps: ..., lease: lease2,
+      }),
+      'singleton-manager-s',
+    );
+
+    // Nur einer sollte je das Singleton-Actor-Child haben.
+    // ... per Probes asserten ...
+  });
+});
+```
+
+Diese Art Test verifiziert die Lease-Integration, ohne von einer
+echten K8s-API abzuhängen.
+
+## Wohin als Nächstes
+
+- **[Koordination im Überblick](/de/coordination/overview/)** —
+  das Gesamtbild.
+- **[Lease-API](/de/coordination/lease-api/)** — der Vertrag,
+  den `InMemoryLease` implementiert.
+- **[KubernetesLease](/de/coordination/kubernetes-lease/)** —
+  die Produktions-Alternative.
+- **[MultiNodeSpec](/de/testing/multi-node-spec/)** — das
+  Multi-Node-Test-Harness, das dazu passt.

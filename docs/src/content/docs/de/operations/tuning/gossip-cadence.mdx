@@ -1,0 +1,162 @@
+---
+title: Gossip-Kadenz
+description: Wie oft Cluster-Mitglieder Gossip austauschen — steuert Konvergenzgeschwindigkeit vs Netzwerk-Geschwätz. Default 1 s passt für die meisten Cluster. Für große Cluster hochdrehen, für latenz-sensitiven Failover runter.
+---
+
+Cluster-Membership propagiert per **Gossip** — alle
+`gossipIntervalMs` wählt jedes Mitglied einen zufälligen erreichbaren
+Peer und tauscht seine Membership-Sicht aus. Nach ein paar Runden
+konvergiert der Cluster.
+
+```ts
+Cluster.join(system, {
+  host, port, seeds,
+  gossipIntervalMs: 1_000,    // default
+});
+```
+
+Der Default ist **1 Sekunde**. Die meisten Cluster müssen ihn nie
+ändern.
+
+## Was er steuert
+
+| Niedriger (z. B. 250 ms) | Default (1 s) | Höher (z. B. 5 s) |
+| --- | --- | --- |
+| Schnellere Konvergenz | Ausgewogen | Langsamere Konvergenz |
+| Mehr Gossip-Nachrichten | Moderater Traffic | Weniger Traffic |
+| Schnellere Failover-Erkennung | Standard | Langsamerer Failover |
+
+Konkret:
+
+- Ein 5-Node-Cluster bei 1 s Gossip → typische Konvergenz nach
+  einem Join: 2-3 Sekunden.
+- Bei 250 ms Gossip: ~700 ms.
+- Bei 5 s: ~10-15 Sekunden.
+
+## Wann senken
+
+Unter 1 Sekunde drücken, wenn:
+
+- **Latenz-sensitiver Failover** — Singleton- oder Sharding-Muster,
+  bei denen ein Leader-Wechsel im Sub-Sekunden-Bereich propagieren
+  soll. 500 ms ist vernünftig; 250 ms ist aggressiv.
+- **Kleiner Cluster (≤5 Nodes)** — das Gossip-Volumen bleibt
+  handhabbar.
+- **Ruhiges Netzwerk** — keine sonstigen Einschränkungen;
+  schneller ist okay.
+
+## Wann erhöhen
+
+Über 1 Sekunde anheben, wenn:
+
+- **Großer Cluster (20+ Nodes)** — das Gossip-Volumen wächst im
+  Worst Case clusterweit O(N²). 5 s verlangsamt die Konvergenz
+  proportional, reduziert aber den Netzwerkrauschpegel deutlich.
+- **Bandbreiten-beschränktes Netzwerk** — Cross-Region- oder
+  Cross-WAN-Cluster, in denen schwatzhaftes Gossip Verschwendung
+  ist.
+- **Stabiler Cluster** — ändert sich selten; schnelleres Gossip
+  hilft nicht.
+
+## Die Bandbreiten-Mathematik
+
+Per-Node-Gossip-Bandbreite grob:
+
+```
+   gossip_size × (1 / gossipIntervalMs) × peers_per_round
+```
+
+Per-Cluster:
+
+```
+   N × gossip_size × (1 / gossipIntervalMs)
+```
+
+Mit:
+
+- **gossip_size** ~100-500 Bytes pro Mitglied in der Sicht. In einem
+  10-Node-Cluster liegen Gossip-Nachrichten bei ~1-2 KB.
+- **peers_per_round** = 1 (ein zufälliger Peer pro Tick).
+- **N** = Cluster-Größe.
+
+Für einen 50-Node-Cluster bei 1 s Default-Gossip:
+
+```
+   50 × ~5 KB × 1/s = 250 KB/s gesamt
+```
+
+Vernachlässigbar im LAN. Im High-Latency-WAN bei 10 ms RTT
+verlängert jede Gossip-Runde die In-Flight-Zeit um 10 ms —
+konvergiert langsamer als man hoffen würde.
+
+## Wechselwirkung mit anderen Timings
+
+Gossip-Kadenz betrifft **mehrere andere Operationen**:
+
+| Operation | Wie Gossip darauf wirkt |
+| --- | --- |
+| Konvergenz nach `join` | Direkt — langsameres Gossip = langsameres Up. |
+| Failure-Detector-Unreachable-Detection | Indirekt — Gossip trägt Last-Seen-Zeiten. |
+| Sharding-Rebalance | Coordinator-Entscheidungen reiten auf Gossip. |
+| DistributedPubSub-Topic-Propagation | Topic→Node-Map gossipt mit der Cluster-Rate. |
+| Receptionist-Service-Registry | Dito — Gossip trägt Registrierungen. |
+
+Ein langsameres `gossipIntervalMs` verlangsamt **all das**. In
+stabilen Clustern üblicherweise okay; problematisch bei sich schnell
+ändernden Workloads.
+
+## Empfohlene Werte
+
+| Cluster-Größe | Netzwerk | Empfohlenes `gossipIntervalMs` |
+| --- | --- | --- |
+| 3-5 Nodes | LAN | 250-500 ms |
+| 5-15 Nodes | LAN | 1 s (Default) |
+| 15-50 Nodes | LAN | 1-2 s |
+| 50+ Nodes | LAN | 2-5 s |
+| Cross-Region | WAN | 2-5 s |
+| Latenz-sensitiv | LAN | 250-500 ms |
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Tuning per Bauchgefühl">
+  ```ts
+  gossipIntervalMs: 100;   // ✗ "machen wir's schnell"
+  ```
+  Tune nicht blind. Miss Konvergenzlatenz (`SelfUp` bis
+  voll-konvergiert) und Gossip-Bandbreite in deiner echten
+  Umgebung. Die Defaults sind vernünftig — ändere nur mit Evidenz.
+</Aside>
+
+<Aside type="caution" title="Asymmetrische Werte über Nodes hinweg">
+  ```ts
+  // node-A: gossipIntervalMs: 250
+  // node-B: gossipIntervalMs: 1000
+  ```
+  Jeder Node nutzt sein eigenes Intervall zum **Senden**, empfängt
+  aber in der Kadenz, in der die Peers senden. Asymmetrische Werte
+  erzeugen verwirrendes Konvergenzverhalten. Lass jeden Node dasselbe
+  `gossipIntervalMs` nutzen.
+</Aside>
+
+<Aside type="caution" title="Sehr schnelles Gossip + viele Mitglieder">
+  ```ts
+  // 100-Node-Cluster bei 100ms Gossip
+  ```
+  100 ms × 100 Nodes = 1000 Nachrichten/sec clusterweit. Jede trägt
+  die volle Membership. Bei genügend Skala dominiert das den
+  eigentlichen Workload-Traffic. Bei großen Clustern auf 500 ms
+  deckeln.
+</Aside>
+
+## Wohin als nächstes
+
+- **[Cluster-Überblick](/de/cluster/overview/)** — was Gossip
+  trägt.
+- **[Joining und Seeds](/de/cluster/joining-and-seeds/)** —
+  wie die erste Gossip-Runde ein Mitglied bootstrapped.
+- **[Failure Detector](/de/cluster/failure-detector/)** —
+  konsumiert Gossip für Heartbeat-Tracking.
+- **[Failure-Detector-Tuning](/de/operations/tuning/failure-detector/)** —
+  der komplementäre Tuning-Knopf.
+- **[Konfiguration](/de/reference/configuration/)** — der
+  HOCON-Key für diese Einstellung.

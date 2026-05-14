@@ -1,0 +1,181 @@
+---
+title: Event Dispatcher
+description: Ein typisierter Builder für `PersistentActor.onEvent` — `eventDispatcher<State, Event>().on('kind', fn).build()` weigert sich zu kompilieren, bis jede Event-Art einen Handler hat. Fehlende Varianten beim Build erwischen, nicht beim nächsten Replay.
+---
+
+`PersistentActor.onEvent` ist eine reine State-Update-Funktion:
+**Jede** Event-Variante muss behandelt werden, sonst produziert das
+Replay falschen State.  Die natürliche Form ist ein Switch auf
+`event.kind` — aber TypeScript erzwingt Erschöpfung nicht bei einem
+plain Switch innerhalb einer Methode.
+
+`eventDispatcher` ist ein **typisierter Builder**, der das tut:
+
+```ts
+import { eventDispatcher } from 'actor-ts';
+
+type State = { count: number };
+type Event =
+  | { kind: 'incremented'; by: number }
+  | { kind: 'decremented'; by: number }
+  | { kind: 'reset' };
+
+const onEvent = eventDispatcher<State, Event>()
+  .on('incremented', (s, e) => ({ count: s.count + e.by }))
+  .on('decremented', (s, e) => ({ count: s.count - e.by }))
+  .on('reset',       () => ({ count: 0 }))
+  .build();
+
+class Counter extends PersistentActor<Cmd, Event, State> {
+  override onEvent = onEvent;
+  // ... Rest des Actors
+}
+```
+
+Drei Dinge fallen auf:
+
+- Jedes `.on(kind, fn)` fügt einen Handler für eine Variante hinzu.
+- `.build()` **type-checkt nur**, wenn jede Variante von
+  `Event['kind']` abgedeckt ist.
+- Eine neue Variante zu `Event` hinzuzufügen ohne ein passendes
+  `.on(...)` verursacht einen Compile-Fehler auf `.build()`.
+
+Der Compile-Fehler nennt die fehlende Art — was den Fix mechanisch
+macht: "Ich habe 'finalized' hinzugefügt, aber den Handler vergessen;
+der Compiler zeigt auf `.build()` und sagt mir, dass 'finalized'
+fehlt."
+
+## Wie es funktioniert
+
+```ts
+interface EventDispatcherBuilder<S, E, Handled extends string> {
+  on<K extends Exclude<E['kind'], Handled>>(
+    kind: K,
+    fn: (state: S, event: Extract<E, { kind: K }>) => S,
+  ): EventDispatcherBuilder<S, E, Handled | K>;
+
+  build(): Handled extends E['kind']
+    ? (state: S, event: E) => S
+    : EventDispatcherIncomplete<...>;
+}
+```
+
+Der Typ-Parameter `Handled` verfolgt, welche Arten du hinzugefügt
+hast.  `.build()` gibt entweder zurück:
+
+- Eine aufrufbare `(state, event) => state`, wenn jede Art abgedeckt
+  ist.
+- Einen `EventDispatcherIncomplete<...>`-Wert sonst — nicht
+  aufrufbar; ihn zu verwenden produziert einen TypeScript-Fehler
+  in der Art von "this expression is not callable; type
+  EventDispatcherIncomplete (mit der unbehandelten Art im Parameter)
+  has no call signatures."
+
+Das `__unhandled`-Phantom-Feld trägt die fehlende Art, damit die
+Fehlermeldung informativ ist.
+
+## Warum es einem plain Switch vorziehen
+
+```ts
+// Plain Switch — funktioniert, verliert aber die Erschöpfungsprüfung
+override onEvent(state: State, event: Event): State {
+  switch (event.kind) {
+    case 'incremented': return { count: state.count + event.by };
+    case 'decremented': return { count: state.count - event.by };
+    case 'reset':       return { count: 0 };
+  }
+  return state;   // ← unbekannte Arten still schlucken
+}
+```
+
+Das Problem:
+
+- **Unbekannte Arten fallen durch zu `return state`** — das Event
+  wird still ignoriert.  Nachdem `{ kind: 'finalized' }` zur Union
+  hinzugefügt wurde, produziert das Replay falschen State, weil die
+  neue Art nie beiträgt.
+- **TypeScript würde das mit `assertNever`** am Ende erwischen, aber
+  das ist manuell und leicht zu vergessen.
+- **`.exhaustive()` von ts-pattern** funktioniert ebenfalls — siehe
+  [Pattern Matching](/de/fundamentals/pattern-matching/) —
+  aber es ist ein Laufzeit-Check innerhalb der Funktion.
+
+`eventDispatcher` macht den Check **nur zur Compile-Zeit** — der
+Builder-Typ verfolgt, welche Arten unbehandelt bleiben.
+
+## Ein praktisches Rezept
+
+```ts
+// Definiere den Dispatcher einmal in der Nähe der Event-Typen:
+const onAccountEvent = eventDispatcher<AccountState, AccountEvent>()
+  .on('deposited', (s, e) => ({ balance: s.balance + e.amount }))
+  .on('withdrawn', (s, e) => ({ balance: s.balance - e.amount }))
+  .on('frozen',    (s)    => ({ ...s, frozen: true }))
+  .on('unfrozen',  (s)    => ({ ...s, frozen: false }))
+  .build();
+
+// Verwende ihn im Actor:
+class Account extends PersistentActor<Cmd, AccountEvent, AccountState> {
+  override onEvent = onAccountEvent;
+  // ... onCommand etc.
+}
+```
+
+Der Dispatcher ist ein **reiner Wert** — isoliert testbar, ohne
+Abhängigkeit von der Actor-Instanz:
+
+```ts
+// Unit-teste den Dispatcher direkt:
+test('deposit increments balance', () => {
+  const s0 = { balance: 0 };
+  const s1 = onAccountEvent(s0, { kind: 'deposited', amount: 100 });
+  expect(s1.balance).toBe(100);
+});
+```
+
+## Wann NICHT zu verwenden
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Sehr einfache Events">
+  ```ts
+  // Zwei Event-Arten — Overkill?
+  ```
+  Bei 2-3 einfachen Varianten, wo die If-Kette kürzer ist als der
+  Builder, liest sich eine plain Methode vielleicht sauberer.  Füge
+  den Dispatcher hinzu, wenn die Variantenzahl wächst oder die
+  Code-Formen sich wiederholen.
+</Aside>
+
+<Aside type="caution" title="Events ohne `kind`-Diskriminator">
+  ```ts
+  type Event = string | number;   // ✗ kein kind-Feld
+  ```
+  Der Dispatcher verlangt, dass die Union-Varianten auf `kind`
+  diskriminieren.  Für nicht-diskriminierte Unions verwende
+  `ts-pattern` oder einen plain `switch (typeof event)`.
+</Aside>
+
+<Aside type="caution" title="Seiteneffekte im Handler">
+  ```ts
+  .on('deposited', (s, e) => {
+    sendNotification();   // ✗ Seiteneffekt in onEvent
+    return { balance: s.balance + e.amount };
+  });
+  ```
+  `onEvent` ist **rein** — es läuft bei jeder Recovery.
+  Seiteneffekte hier drin duplizieren pro Neustart.  Pack sie
+  stattdessen in den `persist`-Callback in `onCommand`.
+</Aside>
+
+## Wie geht's weiter
+
+- **[PersistentActor](/de/persistence/persistent-actor/)** —
+  wo der Dispatcher in `onEvent` einsteigt.
+- **[Pattern Matching](/de/fundamentals/pattern-matching/)** —
+  die ts-pattern-Alternative für Laufzeit-Erschöpfung.
+- **[Messages](/de/fundamentals/messages/)** — die
+  `kind`-getaggte Diskriminierte-Union-Konvention.
+
+Die [`eventDispatcher`](/api/functions/eventdispatcher/)-API-Referenz
+deckt den vollständigen Builder ab.

@@ -1,0 +1,197 @@
+---
+title: MQTT
+description: MQTT-3.1.1-/-5-Broker-Actor — publisht an Topics mit konfigurierbarem QoS, subscribiert Topic-Filter (Wildcards), Retained Messages. Die richtige Form für IoT und Telemetrie. Umschließt das Paket `mqtt`.
+---
+
+`MqttActor` integriert mit MQTT-Brokern (Mosquitto, EMQ X, HiveMQ,
+AWS IoT Core).  Unterstützt sowohl MQTT 3.1.1 als auch 5; Topic-
+Wildcards (`+`, `#`); QoS 0/1/2; Retained Messages.
+
+```ts
+import { ActorSystem, Props, MqttActor } from 'actor-ts';
+
+const mqtt = system.actorOf(
+  Props.create(() => new MqttActor({
+    url:        'mqtts://mqtt.example.com:8883',
+    clientId:   'my-app',
+    username:   process.env.MQTT_USER,
+    password:   process.env.MQTT_PASS,
+  })),
+  'mqtt',
+);
+
+// Ein Topic subscribieren (mit optionalen Wildcards):
+mqtt.tell({
+  kind:       'subscribe-mqtt',
+  topic:      'sensors/+/temp',
+  qos:        1,
+  subscriber: telemetryHandler,
+});
+
+// Publishen:
+mqtt.tell({
+  kind:    'publish',
+  topic:   'commands/device-42',
+  payload: JSON.stringify({ action: 'reboot' }),
+  qos:     1,
+  retain:  false,
+});
+```
+
+## Settings
+
+```ts
+interface MqttActorSettings extends BrokerCommonSettings {
+  url:        string;          // mqtt:// oder mqtts://
+  clientId?:  string;
+  username?:  string;
+  password?:  string;
+  keepalive?: number;          // Sekunden; Default 60
+  clean?:     boolean;          // Default true
+  protocolVersion?: 3 | 4 | 5; // Default 4 (= MQTT 3.1.1)
+  will?: {
+    topic:    string;
+    payload:  string | Uint8Array;
+    qos:      0 | 1 | 2;
+    retain:   boolean;
+  };
+}
+```
+
+Häufige Muster:
+
+- **`clean: false`** — die Session bleibt bestehen; der Broker
+  liefert Nachrichten, die während der Trennung verpasst wurden
+  (abhängig von der Broker-Konfiguration).
+- **`will: { ... }`** — der Broker publisht das, wenn der Client
+  unsauber die Verbindung verliert.  Nützlich für Präsenz
+  ("device-42-offline").
+- **`protocolVersion: 5`** — aktiviert MQTT-5-Features (Response-
+  Topics, Message-Ablauf).  Braucht einen v5-fähigen Broker.
+
+## QoS-Level
+
+| QoS | Zustellung | Kosten |
+| --- | --- | --- |
+| **0** | At-most-once.  Fire-and-Forget. | Am günstigsten; Nachrichten können verloren gehen. |
+| **1** | At-least-once.  Broker speichert bis ACK. | Default für die meisten Anwendungsfälle.  Duplikate möglich. |
+| **2** | Exactly-once.  Voller Handshake. | Am langsamsten; selten nötig. |
+
+Für IoT-Telemetrie ist **QoS 1** die typische Balance.  Befehle an
+Geräte: ebenfalls QoS 1 (oder QoS 2, falls Duplikate schädlich
+wären).  Statusupdates, die schnell überholt werden (Sensorwerte):
+QoS 0 ist okay.
+
+## Topic-Wildcards
+
+```ts
+mqtt.tell({ kind: 'subscribe-mqtt', topic: 'sensors/+/temp', qos: 1, subscriber: handler });
+// passt zu: 'sensors/dev1/temp', 'sensors/dev2/temp', ...
+
+mqtt.tell({ kind: 'subscribe-mqtt', topic: 'devices/#', qos: 1, subscriber: handler });
+// passt zu: 'devices/irgendwas/irgendwo/...'
+```
+
+| Wildcard | Trifft |
+| --- | --- |
+| `+` | Genau eine Ebene. |
+| `#` | Mehrere Ebenen (muss das letzte Segment sein). |
+
+## Retained Messages
+
+```ts
+mqtt.tell({
+  kind:    'publish',
+  topic:   'config/device-42',
+  payload: JSON.stringify({ ... }),
+  retain:  true,    // ← vom Broker gespeichert
+});
+```
+
+Eine Retained Message wird **vom Broker gespeichert** und an jeden
+neuen Subscriber sofort ausgeliefert.  Verwende sie für:
+
+- **Konfiguration** — Geräte, die beim Verbinden die aktuellste
+  Config lesen.
+- **Letzter bekannter Status** — der zuletzt bekannte Zustand
+  eines Geräts, sichtbar für frische Subscriber.
+
+Setze retain auf `false` für normale Pub/Sub-Nachrichten — sonst
+hält der Broker jede alte Nachricht für immer sichtbar.
+
+## Eingehende Nachrichten
+
+Subscriber empfangen `MqttMessage`:
+
+```ts
+interface MqttMessage {
+  readonly topic:   string;
+  readonly payload: Uint8Array;
+  readonly qos:     0 | 1 | 2;
+  readonly retain:  boolean;
+}
+
+class TelemetryHandler extends Actor<MqttMessage> {
+  override onReceive(msg: MqttMessage): void {
+    const data = JSON.parse(new TextDecoder().decode(msg.payload));
+    this.log.info(`${msg.topic}: ${data.value}`);
+  }
+}
+```
+
+## Peer-Dependency
+
+```bash
+npm install mqtt
+# oder: bun add mqtt
+```
+
+## Wann MQTT
+
+Drei gute Einsatzfälle:
+
+1. **IoT / Telemetrie** — Geräte publishen Sensordaten und
+   subscribieren Befehle.
+2. **Brücken aus bestehender MQTT-Infrastruktur** — wenn der
+   Broker schon da ist.
+3. **Leichtgewichtiges Pub/Sub** — wenn Kafka Overkill ist (kleine
+   Payloads, keine Replay-Historie nötig).
+
+Für clusterinternes Pub/Sub ist
+[DistributedPubSub](/de/cluster/pubsub/) einfacher (kein
+externer Broker).
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Persistente Session und `clean: false`">
+  ```ts
+  clean: false   // ✗ erfordert eine stabile clientId
+  ```
+  Persistente Sessions brauchen über Reconnects hinweg **dieselbe
+  clientId** — der Broker tracked Subscriptions + gequeuete
+  Nachrichten pro clientId.  Eine zufällige clientId pro Connect
+  macht `clean: false` nutzlos.
+</Aside>
+
+<Aside type="caution" title="QoS 2 ist teuer">
+  Nimm QoS 2 nicht für Traffic im Telemetrie-Stil.  Die meisten
+  IoT-Anwendungsfälle akzeptieren QoS-1-Duplikate eher als die
+  Latenzkosten von QoS 2.
+</Aside>
+
+<Aside type="caution" title="Wildcard-Subscriptions vervielfachen Traffic">
+  ```ts
+  topic: '#'   // ✗ subscribiert jede Nachricht auf dem Broker
+  ```
+  `#` an der Wurzel matched alles.  In einem multi-tenant Broker
+  ist das selten, was du willst.  Halte Wildcards eng.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[I/O-Übersicht](/de/io/overview/)** — das große
+  Bild.
+- **[BrokerActor-Basis](/de/io/broker-actor-base/)** — der
+  gemeinsame Lifecycle.
+- **[Kafka](/de/io/kafka/)** — für durables Streaming.
+- **[NATS](/de/io/nats/)** — für leichtgewichtiges Pub/Sub.

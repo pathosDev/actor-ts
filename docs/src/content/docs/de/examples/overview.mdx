@@ -1,0 +1,85 @@
+---
+title: Examples - Übersicht
+description: Lauffähige Beispiele im Repo - eine Chat-App, die Clustering + PubSub demonstriert, eine Voice-Pipeline mit Brokern + Persistenz, plus eigenständige Snippets für einzelne Konzepte.
+---
+
+Das Framework liefert **lauffähige Beispiele** unter
+[`examples/`](https://github.com/pathosDev/actor-ts/tree/main/examples)
+im Repo.  Jedes ist eine voll funktionsfähige App, die du klonen
+und starten kannst.
+
+## Was mitgeliefert wird
+
+| Beispiel | Demonstriert |
+| --- | --- |
+| **[Chat-Sample](/de/examples/chat-sample/)** | Cluster + DistributedPubSub + sharded User-Sessions + HTTP/WS-Endpoint. |
+| **[Voice-Sample](/de/examples/voice-sample/)** | WebSocket + Kafka + PersistentActor + Projektionen. |
+| **[Eigenständige Snippets](/de/examples/stand-alone-snippets/)** | Häppchengroße Beispiele pro Konzept - Counter, Saga, Health, etc. |
+
+Für den **ersten Kontakt mit actor-ts** starte mit dem
+[Quickstart](/de/intro/quickstart/) - das ist ein 5-Minuten
+Hello-Actor.  Danach das Chat- oder Voice-Sample für eine
+funktionierende Multi-Feature-App.
+
+## Ein Beispiel ausführen
+
+```bash
+# Repo klonen:
+git clone https://github.com/pathosDev/actor-ts.git
+cd actor-ts/examples/chat
+
+# Installieren + starten:
+bun install
+bun run dev
+```
+
+Jedes Beispiel hat seine eigene README mit Setup-Schritten.
+
+## Ein Beispiel auswählen
+
+Wenn du sehen willst...
+
+- **Cluster + Entities** → Chat-Sample.
+- **Broker-Integration (Kafka)** → Voice-Sample.
+- **PersistentActor-Patterns** → Voice-Sample.
+- **Distributed Pub/Sub** → Chat-Sample.
+- **HTTP + WebSocket** → beide Samples.
+- **Ein einzelnes Konzept isoliert** → eigenständige Snippets.
+
+## Die Beispiele lesen
+
+Die Beispiele folgen ein paar Konventionen:
+
+- **`src/actors/`** - Actor-Klassen.
+- **`src/messages.ts`** - geteilte Nachrichten-Typen.
+- **`src/main.ts`** - Einstiegspunkt mit Cluster-Join und
+  HTTP-Server-Start.
+- **`src/handlers/`** - HTTP-/WS-Route-Handler.
+
+Ein Beispiel zu lesen dauert ~30 Minuten für die ganze
+Architektur; schneller, wenn du das Framework schon kennst.
+
+## Beispiele beitragen
+
+Wenn du etwas mit actor-ts baust und denkst, es würde anderen
+helfen - ein Saga-Workflow, eine Kafka-getriebene Analytics-Pipeline,
+ein Multi-Tenant-SaaS-Skeleton - **PRs sind willkommen**.
+
+Beispiele, die aufgenommen werden:
+
+- **Self-contained** - laufen ohne externe Services außer
+  Docker / Compose.
+- **Dokumentiert** - README mit was es tut + wie es funktioniert.
+- **Realistisch** - lösen ein echtes Problem (nicht nur "zeig
+  dieses Feature").
+
+## Wohin als Nächstes
+
+- **[Chat-Sample](/de/examples/chat-sample/)** -
+  Cluster + PubSub.
+- **[Voice-Sample](/de/examples/voice-sample/)** - Broker
+  + Persistenz.
+- **[Eigenständige Snippets](/de/examples/stand-alone-snippets/)** -
+  Code pro Konzept.
+- **[Quickstart](/de/intro/quickstart/)** - die
+  5-Minuten-Einführung.

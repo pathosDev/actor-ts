@@ -1,0 +1,249 @@
+---
+title: FSM
+description: Die In-Memory-Zustandsmaschine — erweitere `FSM<StateName, StateData, Msg>`, registriere `when(...)`-Handler + `onEnter` / `onExit`-Callbacks. Der State lebt nur im Speicher; beim Neustart verloren.
+---
+
+`FSM<SName, SData, Msg>` ist die Basisklasse für
+In-Memory-Zustandsmaschinen.  Drei Typ-Parameter:
+
+- **`SName`** — String-Union der Zustandsnamen:
+  `'closed' | 'open'`.
+- **`SData`** — die zugehörigen Daten des Zustands:
+  `{ openedAt?: number }`.
+- **`Msg`** — der Message-Typ des Actors.
+
+```ts
+import { FSM } from 'actor-ts';
+
+type DoorState = 'closed' | 'open';
+type DoorData  = { openedAt?: number };
+type DoorMsg   = 'open' | 'close' | 'status';
+
+class Door extends FSM<DoorState, DoorData, DoorMsg> {
+  constructor() {
+    super('closed', {});
+
+    this.when('closed', (data, msg) => {
+      if (msg === 'open') return this.goto('open', { openedAt: Date.now() });
+      return this.stay(data);
+    });
+
+    this.when('open', (data, msg) => {
+      if (msg === 'close') return this.goto('closed', {});
+      return this.stay(data);
+    });
+
+    this.onEnter('open',  (data) => this.log.info(`door opened at ${data.openedAt}`));
+    this.onExit('open',   () => this.log.info(`door closing`));
+  }
+}
+```
+
+## Die DSL
+
+```ts
+class FSM<SName, SData, Msg> extends Actor<Msg> {
+  // Im Subklassen-Konstruktor:
+  protected when(state: SName, handler: StateHandler<SName, SData, Msg>): void;
+  protected onEnter(state: SName, fn: (data: SData) => void | Promise<void>): void;
+  protected onExit(state: SName, fn: (data: SData) => void | Promise<void>): void;
+  protected onTransition(fn: TransitionCallback<SName, SData>): void;
+
+  // In Handlern:
+  protected goto(state: SName, data: SData): Transition<SName, SData>;
+  protected stay(data: SData): StayTransition<SData>;
+
+  // Read-only:
+  protected readonly stateName: SName;
+  protected readonly stateData: SData;
+}
+```
+
+Das Muster: konfiguriere Übergänge im Konstruktor.  Das
+`onReceive` der Basisklasse routet jede Message zum Handler für
+den aktuellen Zustand.
+
+## `when` — Zustands-Handler
+
+```ts
+this.when('closed', (data, msg) => {
+  if (msg === 'open') return this.goto('open', { openedAt: Date.now() });
+  return this.stay(data);
+});
+```
+
+Der Handler:
+
+- Erhält die **aktuellen Zustands-Daten** und die **eingehende
+  Message**.
+- Gibt einen **Transition** zurück — `goto(newState, newData)`,
+  um zu wechseln, oder `stay(data)`, um zu bleiben (möglicherweise
+  mit aktualisierten Daten).
+- Kann async sein — gibt einen `Promise<FsmResult>` zurück.
+
+Asynchrone Handler serialisieren wie jedes `Actor.onReceive` —
+die nächste Message wartet.
+
+## `goto` und `stay`
+
+```ts
+this.goto('open', { openedAt: Date.now() });   // → Übergang
+this.stay({ ...data, lastChecked: Date.now() });  // → bleiben; neue Daten
+this.stay(data);   // → bleiben; unveränderte Daten
+```
+
+- **`goto(state, data)`** — Übergang.  Feuert `onExit` für den
+  aktuellen Zustand, setzt den neuen Zustand + Daten, feuert
+  `onEnter` für den neuen Zustand.
+- **`stay(data)`** — kein Übergang, aber Daten werden
+  aktualisiert.  Kein `onEnter` / `onExit` feuert.
+
+Beide geben Werte zurück, die du direkt `return`-en kannst.
+
+## `onEnter` und `onExit`
+
+```ts
+this.onEnter('open', (data) => {
+  this.log.info(`opened, will close in 10s`);
+  this.context.timers.startSingleTimer('auto-close', 'close', 10_000);
+});
+
+this.onExit('open', () => {
+  this.context.timers.cancel('auto-close');
+});
+```
+
+Feuern beim Zustands-Eintritt / -Austritt.  Nützlich für:
+
+- **Timer einrichten** in `onEnter` und sie in `onExit` abbauen.
+- **Übergänge loggen**, ohne das an die Message-Behandlung zu
+  koppeln.
+- **Watcher benachrichtigen** beim Eintritt in bestimmte
+  Zustände.
+
+Fehler in diesen Callbacks **propagieren zum Supervisor des
+Actors** — genauso wie jeder `onReceive`-Fehler.
+
+## `onTransition`
+
+```ts
+this.onTransition((from, to, data) => {
+  metrics.counter('fsm.transitions', { from, to }).inc();
+});
+```
+
+Feuert bei **jedem** Übergang mit dem From-State, To-State und
+neuen Daten.  Verwende es für globale Instrumentierung (jeder
+Übergang wird gemessen), ohne Per-State-Callbacks aufzulisten.
+
+Mehrere Listener werden unterstützt — `onTransition` hängt jeden
+an.
+
+## Den aktuellen Zustand lesen
+
+```ts
+// In Handler- / Callback-Code:
+this.stateName;   // → SName
+this.stateData;   // → SData
+```
+
+Read-only-Zugriff.  Diese direkt zu mutieren würde
+Transition-Logik überspringen; das Framework erzwingt das per
+Typing als Read-only.
+
+Nützlich für **Entscheidungen** innerhalb eines Handlers, die
+von mehr als der Message abhängen:
+
+```ts
+this.when('connecting', (data, msg) => {
+  if (msg === 'connected') return this.goto('connected', { sessionId: msg.id });
+  if (msg === 'timeout' && data.retries < 3) {
+    return this.stay({ ...data, retries: data.retries + 1 });
+  }
+  return this.goto('disconnected', {});
+});
+```
+
+## State-Daten-Evolution
+
+```ts
+type DoorData = { openedAt?: number };
+
+this.when('closed', (data, msg) => {
+  return this.goto('open', { ...data, openedAt: Date.now() });
+});
+```
+
+State-Daten sind **per Transition immutable** — du produzierst
+ein neues Objekt.  Das Framework speichert den zurückgegebenen
+Wert; der vorherige Wert ist weg.
+
+Mutationen funktionieren technisch
+(`data.openedAt = Date.now()`), brechen aber Testbarkeit und
+Reasoning.  Behandle State-Daten als immutable.
+
+## Restart-Semantik
+
+```ts
+// Actor startet neu → Konstruktor läuft → FSM setzt auf initialState zurück
+```
+
+Beim Neustart **beginnt** die FSM beim vom Konstruktor
+bereitgestellten initialen Zustand + Daten neu.  Im Gegensatz
+zu PersistentActor gibt es kein Event-Log zum Abspielen.
+
+Wenn der State Neustart überleben muss, verwende
+[PersistentFSM](/de/persistence/fsm/persistent-fsm/).
+
+## Stolperfallen
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Vergessen, die Message eines Zustands zu behandeln">
+  ```ts
+  this.when('closed', (data, msg) => {
+    if (msg === 'open') return this.goto('open', { ... });
+    // ✗ vergessen, für andere Messages zu returnen — TypeScript fängt das
+  });
+  ```
+  TypeScript flaggt fehlende Return-Pfade.  Für unbehandelte
+  Messages gib explizit `this.stay(data)` zurück.
+</Aside>
+
+<Aside type="caution" title="Async-Handler + Timer-Races">
+  ```ts
+  this.when('connecting', async (data, msg) => {
+    await someSlowCheck();
+    return this.goto('connected', { ... });
+  });
+  ```
+  Während der Handler awaited, bleibt die Mailbox des Actors
+  serialisiert — keine andere Message verarbeitet.  Das ist
+  normale `onReceive`-Semantik und normalerweise in Ordnung.
+  Aber wenn ein Timer während des Awaits feuert, wartet sein
+  Tick auf den Handler — was die Latenz erhöht.
+</Aside>
+
+<Aside type="caution" title="State-Daten mit Closures">
+  ```ts
+  // ✗ Closures überleben Neustart nicht und können leaken
+  this.stay({ retryCallback: () => this.something() });
+  ```
+  Halte State-Daten **serialisierbar** — plain Werte, keine
+  Closures, keine Actor-Refs.  Das ist wichtig für Testbarkeit
+  und für die spätere Migration zu PersistentFSM.
+</Aside>
+
+## Wie geht's weiter
+
+- **[FSM im Überblick](/de/persistence/fsm/overview/)** — das
+  größere Bild.
+- **[PersistentFSM](/de/persistence/fsm/persistent-fsm/)** —
+  die persistente Variante.
+- **[Become und Stash](/de/fundamentals/become-and-stash/)** —
+  die Lower-Level-Alternative.
+- **[Timer und Scheduling](/de/fundamentals/timers-and-scheduling/)** —
+  die Timer, die häufig mit Zustandsübergängen gepaart werden.
+
+Die [`FSM`](/api/classes/fsm/)-API-Referenz deckt die
+vollständige Oberfläche ab.

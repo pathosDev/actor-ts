@@ -1,0 +1,207 @@
+---
+title: Kafka
+description: Apache-Kafka-Broker-Actor — publisht Records an ein Topic, konsumiert ein Topic über eine Consumer Group. SASL + TLS unterstützt; Auto- oder Manual-Commit-Semantik. Umschließt `kafkajs` unter der Haube.
+---
+
+`KafkaActor` integriert mit Apache Kafka.  Umschließt intern
+`kafkajs`; du importierst es nicht direkt.
+
+```ts
+import { ActorSystem, Props, KafkaActor } from 'actor-ts';
+
+const system = ActorSystem.create('my-app');
+
+const kafka = system.actorOf(
+  Props.create(() => new KafkaActor({
+    brokers:   ['kafka-1:9092', 'kafka-2:9092'],
+    clientId:  'my-app',
+    consumer:  {
+      groupId: 'my-app-orders',
+      topics:  ['orders', 'payments'],
+    },
+  })),
+  'kafka',
+);
+
+// Konsum subscribieren:
+kafka.tell({ kind: 'subscribe', subscriber: handler });
+
+// Publishen:
+kafka.tell({ kind: 'publish', topic: 'audit', value: 'something' });
+```
+
+## Settings
+
+```ts
+interface KafkaActorSettings extends BrokerCommonSettings {
+  brokers:    string[] | string;           // Bootstrap-Server
+  clientId?:  string;
+  sasl?:      {
+    mechanism: 'plain' | 'scram-sha-256' | 'scram-sha-512';
+    username:  string;
+    password:  string;
+  };
+  ssl?:        boolean;
+  producer?: {
+    idempotent?:               boolean;
+    allowAutoTopicCreation?:   boolean;
+  };
+  consumer?: {
+    groupId?:        string;
+    fromBeginning?:  boolean;
+    commitMode?:     'auto' | 'manual';
+    commitTimeoutMs?: number;
+    topics?:         string[];
+  };
+}
+```
+
+Der Parent `BrokerCommonSettings` gibt dir Reconnect, Buffer,
+Breaker — siehe [BrokerActor-Basis](/de/io/broker-actor-base/).
+
+## Producen
+
+```ts
+kafka.tell({
+  kind:   'publish',
+  topic:  'orders',
+  key:    orderId,         // optional — partitioniert nach Key
+  value:  JSON.stringify(order),
+  headers: { 'x-trace': traceId },
+});
+```
+
+Bei getrennter Verbindung gepuffert; beim Reconnect in
+Reihenfolge geflusht.
+
+Für **strikte Reihenfolge** innerhalb einer Partition setze
+`producer.idempotent: true` und gib einen konsistenten `key` für
+zusammengehörige Records — kafkajs dedupliziert Retries innerhalb
+der Producer-Session.
+
+## Consumen
+
+```ts
+kafka.tell({ kind: 'subscribe', subscriber: orderHandler });
+
+class OrderHandler extends Actor<KafkaRecord> {
+  override onReceive(record: KafkaRecord): void {
+    // record.topic / partition / offset / key / value / timestamp / headers
+    const order = JSON.parse(new TextDecoder().decode(record.value!));
+    this.process(order);
+  }
+}
+```
+
+Jeder Subscriber bekommt jeden Record für die Topics, die der
+Consumer des Actors subscribiert hat.  Mehrere Subscriber sehen
+jeweils jeden Record — sie teilen sich die Arbeit nicht.  Für
+Kafkas Consumer-Group-Work-Sharing nimm **mehrere Actor-Instanzen**
+mit derselben `groupId`.
+
+## Commit-Modi
+
+```ts
+consumer: { commitMode: 'auto' }    // at-least-once
+consumer: { commitMode: 'manual' }  // exactly-once-with-processing
+```
+
+**`auto`** (Default): kafkajs committed, nachdem der Handler
+zurückkehrt.  Crash zwischen Handler und Commit → erneute
+Auslieferung beim nächsten Start.  At-least-once.  Handler müssen
+idempotent sein.
+
+**`manual`**: der Consumer pausiert bei jedem Record und wartet
+auf eine explizite Commit-Nachricht:
+
+```ts
+override async onReceive(record: KafkaRecord): Promise<void> {
+  await processIdempotently(record);
+  this.kafka.tell({
+    kind:      'commit',
+    topic:     record.topic,
+    partition: record.partition,
+    offset:    record.offset,
+  });
+}
+```
+
+Liefert **Exactly-once-with-processing**-Semantik, wenn deine
+Verarbeitung selbst transaktional ist.  `commitTimeoutMs`
+(Default 30 s) deckelt, wie lange die Pumpe wartet, bevor sie
+aufgibt und einen Rebalance auslöst.
+
+## Auth + TLS
+
+```ts
+new KafkaActor({
+  brokers: ['kafka-1:9093'],
+  ssl:     true,
+  sasl: {
+    mechanism: 'scram-sha-512',
+    username:  process.env.KAFKA_USER!,
+    password:  process.env.KAFKA_PASS!,
+  },
+});
+```
+
+Sowohl TLS (`ssl: true`) als auch SASL-Credentials werden an
+kafkajs durchgereicht.  Nimm Env-Variablen für Secrets;
+hardcode sie nicht in `application.conf`.
+
+## Peer-Dependency
+
+```bash
+npm install kafkajs
+# oder: bun add kafkajs
+```
+
+`kafkajs` ist eine Peer-Dependency — das Framework bundelt es
+nicht.  Du installierst es, wenn du `KafkaActor` nutzt.
+
+## Wann Kafka
+
+Drei primäre Anwendungsfälle:
+
+1. **Durables Event-Streaming** — mehrere Consumer lesen denselben
+   Stream mit verschiedenen Offsets; wiederabspielbare Historie.
+2. **Producer und Consumer entkoppeln** — High-Volume-Downstreams,
+   die nicht das Tempo des Producers vorgeben sollten.
+3. **Brücken zu bestehender Kafka-Infrastruktur** — actor-ts an
+   ein bereits Kafka nutzendes System anbinden.
+
+Für clusterinternes Pub/Sub bevorzuge
+[DistributedPubSub](/de/cluster/pubsub/) — keine Broker-
+Abhängigkeit.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Rebalancing der Consumer Group">
+  ```ts
+  // Ein neues Consumer-Group-Mitglied löst einen Rebalance aus
+  ```
+  Kafka-Rebalances verursachen kurze Nichtverfügbarkeit (typisch
+  Sekunden).  Bestehende Handler beenden In-Flight-Arbeit; neue
+  Partitionen werden neu zugewiesen.  Halte deine Handler-Latenz
+  innerhalb von Kafkas Session-Timeout (Default 30 s), um nicht
+  mitten im Handler aus der Gruppe geworfen zu werden.
+</Aside>
+
+<Aside type="caution" title="Langsame Handler fallen zurück">
+  Kafkajs deckelt die In-Flight-Rate — wenn dein Handler 500 ms
+  pro Record braucht, verarbeitet der Consumer ~2 Records/s.  Für
+  hochvolumigen Konsum parallelisiere innerhalb des Handlers
+  (Promise.all-Batches) oder skaliere durch Hinzufügen von
+  Consumer-Group-Mitgliedern.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[I/O-Übersicht](/de/io/overview/)** — das große
+  Bild.
+- **[BrokerActor-Basis](/de/io/broker-actor-base/)** — der
+  gemeinsame Lifecycle.
+- **[DistributedPubSub](/de/cluster/pubsub/)** — clusterinterne
+  Alternative, wenn du kein Kafka brauchst.
+- **[NATS](/de/io/nats/)** / **[MQTT](/de/io/mqtt/)** —
+  alternative Broker.

@@ -1,0 +1,245 @@
+---
+title: Refs über Nodes hinweg
+description: Wie ein `ActorRef`, der auf einen Actor auf einem anderen Node zeigt, funktioniert — Wire-Encoding von Refs, das Pfad-mit-Host-Format, die Rolle des Cluster-Transports und was mit Nachrichten passiert, wenn ein Remote-Node verschwindet.
+---
+
+In einem Single-Node-System ist ein `ActorRef` ein direkter
+In-Memory-Handle. In einem geclusterten System kann ein `ActorRef`
+auf einen Actor auf **jedem** Node zeigen — und derselbe `tell`
+funktioniert auf gleiche Weise:
+
+```ts
+const remote: ActorRef<Msg> = /* Ref auf einen Actor auf einem anderen Node */;
+remote.tell({ kind: 'do-it' });
+// → serialisiert, über den Cluster-Transport gesendet, in die Remote-Mailbox zugestellt
+```
+
+Das Framework versteckt die Netzwerkschicht. Aber zu verstehen,
+**wie** das funktioniert, hilft, wenn etwas schiefläuft (Nachrichten
+verschwinden, Latenz schießt hoch, Refs lassen sich nicht
+auflösen).
+
+## Das Pfad-mit-Host-Format
+
+Der Pfad eines rein-lokalen Refs sieht so aus:
+
+```
+actor-ts://my-app/user/api/sessions/user-42
+```
+
+Ein Cluster-fähiger Ref enthält den **host:port** seines
+besitzenden Nodes:
+
+```
+actor-ts://my-app@10.0.0.5:2552/user/api/sessions/user-42
+```
+
+| Segment | Was es ist |
+| --- | --- |
+| `actor-ts://` | Das Schema — wie bei lokalen Pfaden. |
+| `my-app` | Der System-Name des Clusters. |
+| `@10.0.0.5:2552` | Die Adresse des Nodes, vergeben bei `Cluster.join`. |
+| `/user/api/sessions/user-42` | Der Actor-Pfad innerhalb dieses Nodes, gleicher Aufbau wie ein Single-Node-Pfad. |
+
+Das Host-Fragment sagt der lokalen Runtime, *welcher Node* diesen
+Actor hostet. Wenn du einem Remote-Ref ein `tell` schickst, macht
+das Framework:
+
+1. Liest den host:port aus dem Pfad des Refs.
+2. Schlägt die Verbindung des Cluster-Transports zu diesem Node
+   nach.
+3. Serialisiert die Nachricht + die Lokalpfad-Segmente des Refs.
+4. Schreibt einen Wire-Frame.
+5. Der empfangende Node deserialisiert; löst lokal die
+   Pfad-Segmente zu einem echten Actor auf; macht ein `tell` auf
+   den lokalen Ref.
+
+## Wie Refs über die Leitung wandern
+
+In einer Nachricht serialisiert ein `ActorRef`-Feld als der
+**Pfad-mit-Host-String**. Auf dem empfangenden Node rekonstruiert
+der Deserializer einen `RemoteActorRef`, der zurück auf den
+Originalknoten zeigt:
+
+```ts
+type GetMsg = {
+  kind: 'get';
+  replyTo: ActorRef<number>;   // ← serialisiert als Pfad-String
+};
+
+remoteRegistry.tell({
+  kind: 'get',
+  replyTo: this.context.self,   // → "actor-ts://my-app@10.0.0.3:2552/user/asker"
+});
+```
+
+Der empfangende Node sieht `replyTo` als `RemoteActorRef`, der auf
+`10.0.0.3:2552/.../asker` zeigt. Ein `tell` darauf läuft umgekehrt
+durch dieselbe Encoding-und-Transport-Maschinerie.
+
+Das bedeutet, dass **Request/Response zwischen Actors auf
+verschiedenen Nodes** einfach funktioniert — die Antwort reist
+über den Cluster-Transport zurück zum ursprünglichen Anfrager.
+
+## Der Cluster-Transport
+
+Der Transport (TCP per Default, In-Memory in Tests) trägt:
+
+- **Cluster-Steuerverkehr** — Gossip, Heartbeats,
+  Downing-Signale.
+- **Envelope-Verkehr** — deine `tell`s, in einen
+  Routing-Envelope gewickelt.
+
+Beide teilen sich dieselbe TCP-Verbindung pro Peer-Paar. Das
+Framework multiplext sie; du siehst diesen Unterschied nicht.
+
+Siehe [Transports](/de/cluster/transports/) für die TCP- und
+In-Memory-Implementierungen.
+
+## Einen Remote-Ref per Pfad auflösen
+
+```ts
+import { ActorSelection } from 'actor-ts';
+
+const remote = await system.actorSelection(
+  'actor-ts://my-app@10.0.0.5:2552/user/api/sessions/user-42',
+).resolveOne(5_000);
+
+remote.tell({ kind: 'do-it' });
+```
+
+`actorSelection` parst den Pfad-mit-Host; `resolveOne` gibt einen
+`RemoteActorRef` zurück, dem du `tell` schicken kannst. Nützlich,
+wenn:
+
+- Der Standort des Ziels per Konvention bekannt ist (ein bekannter
+  Sharding-Pfad oder Singleton-Proxy).
+- Eine Nachricht einen Pfad-String enthält (z. B. aus einem
+  HTTP-Request).
+
+Für Routine-Cluster-Arbeit hältst du normalerweise einen Ref aus
+der eigenen Maschinerie des Clusters (Sharding-Region,
+Singleton-Proxy, Event-Stream-Subscriber) — `actorSelection` ist
+der Lookup-Notausgang.
+
+## Was passiert, wenn der Remote-Node verschwindet
+
+```ts
+const remote: ActorRef = /* auf einem Node, der den Cluster gerade verlassen hat */;
+
+remote.tell({ kind: 'do-it' });
+// → Nachricht landet in Dead Letters; Sender sieht den Fehler nicht
+```
+
+Ein `tell` an einen Remote-Ref auf einem gestoppten/unerreichbaren
+Node:
+
+1. Das Framework versucht, auf den Transport zu schreiben.
+2. Der Transport sieht keine lebendige Verbindung (oder eine im
+   halb-geschlossenen Zustand).
+3. Die Nachricht wird zu Dead Letters fallen gelassen.
+
+Zwei Wege, das zu erkennen:
+
+- **`context.watch(remoteRef)`** — eine `Terminated`-Benachrichtigung
+  empfangen, wenn der Remote-Actor stoppt *oder* der Remote-Node
+  unerreichbar+downed wird. Das `Terminated.addressTerminated`-Flag
+  unterscheidet "Actor gestoppt" von "Node verloren".
+- **Cluster-Events abonnieren** — `MemberRemoved` /
+  `UnreachableMember` für die Adresse des Hosts sagt dir, dass der
+  ganze Node weg ist.
+
+Siehe [Death watch](/de/fundamentals/death-watch/) für die
+Per-Actor-Variante.
+
+## Serialisierung
+
+Nachrichten, die die Leitung überqueren, müssen **serialisierbar**
+sein. Die [SerializationExtension](/de/serialization/overview/) des
+Frameworks regelt das — JSON per Default, CBOR wenn konfiguriert.
+
+```ts
+{
+  kind: 'place',
+  order: { items: ['book-1'], total: 19.99 },
+  replyTo: this.context.self,   // ← Ref serialisiert als Pfad-String
+}
+```
+
+Einfache Werte (Strings, Zahlen, Arrays, Plain Objects)
+serialisieren trivial. Dinge, die nicht überleben:
+
+- **Funktionen / Closures** — können keine Prozessgrenze überqueren.
+- **Klasseninstanzen mit Methoden** — Methoden gehen verloren; nur
+  Datenfelder überleben.
+- **`Map` / `Set`** — JSON serialisiert sie als `{}` (keine
+  Einträge). Nutze Plain Objects oder Arrays.
+- **Symbols, BigInts** (ohne Serializer-Registrierung).
+
+Siehe [Nachrichten](/de/fundamentals/messages/) für die Unveränderlichkeits-
+und Wire-Format-Konventionen.
+
+## Performance
+
+Grobe Zahlen:
+
+- **Lokales `tell` (dasselbe Actor-System)** — 50-200 ns.
+- **Cluster-lokales `tell` (Loopback-Transport)** — sub-Millisekunde.
+- **Cluster-`tell` über LAN** — 0,5-2 ms für kleine Nachrichten.
+- **Cluster-`tell` über WAN** — durch die Netzwerk-RTT begrenzt.
+
+Das Framework batched Envelopes opportunistisch — viele Tells in
+schneller Folge teilen sich TCP-Writes, wo möglich.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Nimm nicht an, dass ein Remote-Actor existiert">
+  ```ts
+  const remote: ActorRef = ...;
+  remote.tell({ kind: 'do' });
+  // → ist das angekommen?  Der lokale Code kann es nicht sagen.
+  ```
+  `tell` ist lokal fire-and-forget; remote ist es noch mehr "fire
+  and forget". Für Bestätigung nutze `ask` mit sinnvollem Timeout,
+  beobachte den Remote-Ref, oder gestalte das Protokoll mit
+  Acknowledgments.
+</Aside>
+
+<Aside type="caution" title="Latenz ist von innerhalb eines Actors schwer zu messen">
+  ```ts
+  const t0 = Date.now();
+  remoteRegistry.tell({ kind: 'get', replyTo: ... });
+  // ↑ wann stoppt diese Uhr? Wenn die Antwort kommt — nicht wenn das hier zurückkehrt.
+  ```
+  `tell` kehrt sofort zurück; Latenz wird *zwischen* dem Senden
+  und dem Empfangen einer Antwort gemessen. Nutze `ask`, wenn du
+  ein Promise willst, das den Round-Trip einfängt.
+</Aside>
+
+<Aside type="caution" title="Riesige Payloads über den Cluster-Transport senden">
+  ```ts
+  remoteActor.tell({ kind: 'upload', data: hugeBlob });   // 100 MB
+  ```
+  Der Max-Frame-Size-Default des Cluster-Transports ist 1 MB
+  (konfigurierbar über `actor-ts.remote.max-frame-size`). Größere
+  Frames scheitern; die Nachricht landet in Dead Letters. Für
+  große Payloads nutze einen separaten Nebenkanal (HTTP-Upload,
+  S3 Presigned URL) und übergib eine Referenz in der
+  Actor-Nachricht.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[Cluster-Überblick](/de/cluster/overview/)** — das größere
+  Bild: wie sich Nodes finden, Gossip, Mitgliedschaft.
+- **[Transports](/de/cluster/transports/)** — TCP- und
+  In-Memory-Implementierungen.
+- **[Serialisierungs-Überblick](/de/serialization/overview/)** —
+  das Wire-Format für Cross-Node-Nachrichten.
+- **[Nachrichten](/de/fundamentals/messages/)** — die Konventionen,
+  die Nachrichten serialisierbar machen.
+- **[Death watch](/de/fundamentals/death-watch/)** —
+  erkennen, dass ein Remote-Actor gestoppt hat.
+
+Die [`RemoteActorRef`](/api/classes/remoteactorref/) API-Referenz
+deckt die Wire-Ref-Implementierung ab.

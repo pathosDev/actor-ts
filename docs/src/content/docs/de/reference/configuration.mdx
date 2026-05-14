@@ -1,0 +1,299 @@
+---
+title: Konfiguration
+description: Jeder HOCON-Key, den das Framework liest, gruppiert nach Modul — Defaults, Overrides, Environment-Substitution. Plus die Auflösungsreihenfolge zwischen Code, Config-Datei und eingebauter Referenz.
+---
+
+actor-ts verwendet **HOCON** zur Konfiguration — eine Obermenge von
+JSON, die in JVM-Config-Dateien üblich ist, mit Substitutionen,
+Durations, Sizes und Includes.  Drei Schichten, von oben nach unten
+aufgelöst:
+
+1. **Konstruktor-Argumente** an `ActorSystem.create(name, settings)`
+   — explizite Code-Overrides.
+2. **Nutzer-Config** — `application.conf` im Projekt-Root, oder ein
+   expliziter Pfad via `configFile`, oder ein inline `config`-Objekt
+   in den Settings.
+3. **Reference-Defaults** — im Framework gebündelt als
+   `REFERENCE_CONF` (siehe `src/config/reference.ts`).
+
+Alles, was nicht in Schicht 1 oder 2 spezifiziert ist, fällt auf
+den Reference-Default zurück.
+
+## Eine vollständige `application.conf`
+
+```hocon
+actor-ts {
+  system { name = "my-app" }
+  logger { level = "info" }
+
+  dispatcher {
+    default    = "immediate"   # immediate | microtask | throughput
+    throughput = 16
+  }
+
+  cluster {
+    gossip-interval     = 1s
+    seed-retry-interval = 3s
+    failure-detector {
+      heartbeat-interval = 500ms
+      unreachable-after  = 2s
+      down-after         = 5s
+    }
+  }
+
+  remote {
+    transport = "tcp"
+    tcp {
+      hostname = "0.0.0.0"
+      port     = ${?ACTOR_TS_PORT}   # Env-Var-Substitution; fällt auf Default zurück
+    }
+    max-frame-size = 1M
+  }
+
+  persistence {
+    journal        { plugin = "actor-ts.persistence.journal.in-memory"        }
+    snapshot-store { plugin = "actor-ts.persistence.snapshot-store.in-memory" }
+  }
+
+  sharding {
+    number-of-shards    = 64
+    rebalance-interval  = 2s
+    remember-entities   = false
+  }
+}
+```
+
+Platziere das im Projekt-Root.  Das Framework lädt es bei
+`ActorSystem.create` automatisch.
+
+## Die Keys, gruppiert nach Modul
+
+### `actor-ts.system`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `system.name` | `"default"` | Systemname — verwendet in Actor-Pfaden und zur Cluster-Identifikation. |
+
+### `actor-ts.logger`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `logger.level` | `"info"` | Einer von `debug` / `info` / `warn` / `error` / `off`. |
+
+### `actor-ts.dispatcher`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `dispatcher.default` | `"immediate"` | `immediate` (Default) / `microtask` / `throughput`. |
+| `dispatcher.throughput` | `16` | Nachrichten, die ein `ThroughputDispatcher` verarbeitet, bevor er nachgibt. |
+
+### `actor-ts.cluster`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `cluster.gossip-interval` | `1s` | Wie oft Gossip mit einem zufälligen Peer ausgetauscht wird. |
+| `cluster.seed-retry-interval` | `3s` | Wie oft Seed-Verbindungen während des Joins wiederholt werden. |
+| `cluster.leader-election` | `"lowest-address"` | Strategie zur Auswahl eines neuen Leaders. |
+| `cluster.failure-detector.heartbeat-interval` | `500ms` | Wie oft Heartbeats gesendet werden. |
+| `cluster.failure-detector.unreachable-after` | `2s` | Verdachtsschwelle für `unreachable`-Status. |
+| `cluster.failure-detector.down-after` | `5s` | Verdachtsschwelle für erzwungenes Down. |
+
+### `actor-ts.remote`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `remote.transport` | `"tcp"` | Derzeit nur `"tcp"` und der In-Memory-Test-Transport. |
+| `remote.tcp.hostname` | `"0.0.0.0"` | TCP-Bind-Adresse. |
+| `remote.tcp.port` | `2552` | TCP-Bind-Port. |
+| `remote.tls.enabled` | `false` | TLS auf dem Cluster-Transport umschalten. |
+| `remote.max-frame-size` | `1M` | Maximal erlaubte Wire-Frame-Größe. |
+
+### `actor-ts.http`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `http.backend` | `"fastify"` | Einer von `fastify` / `bun` / `express`. |
+| `http.shutdown-grace-period` | `5s` | Zeit, um in-flight Requests beim Shutdown leerlaufen zu lassen. |
+
+### `actor-ts.persistence`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `persistence.journal.plugin` | `"...in-memory"` | Voll qualifizierter Key zur Konfig des Journals. |
+| `persistence.snapshot-store.plugin` | `"...in-memory"` | Voll qualifizierter Key zur Konfig des Snapshot Stores. |
+| `persistence.recovery.mode` | `"eager"` | `eager` (Default) — alle Events bei preStart wieder abspielen.  `parallel` — in Chunks wieder abspielen. |
+
+Die Plugin-Keys zeigen auf *einen anderen* Config-Abschnitt, der
+die Settings dieses Plugins enthält.  Z. B. enthält
+`actor-ts.persistence.journal.sqlite` die `path`, `pragmas` etc.
+des SQLite-Journals.  Siehe jede Journal-Seite in
+[Persistence](/de/persistence/overview/) für die per-Plugin-Keys.
+
+### `actor-ts.sharding`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `sharding.number-of-shards` | `64` | In wie viele Shards der Entity-Raum geteilt wird. |
+| `sharding.rebalance-interval` | `2s` | Abstand zwischen koordinator-getriebenen Rebalance-Passes. |
+| `sharding.hand-off-timeout` | `10s` | Wie lange auf HandOffComplete gewartet wird, bevor zwangsumverteilt wird. |
+| `sharding.remember-entities` | `false` | Persistiere die Menge aktiver Entity-IDs. |
+| `sharding.passivation-idle` | `0ms` | Auto-Passiviere eine Entität nach diesem Idle-Fenster.  `0` = deaktiviert. |
+
+### `actor-ts.coordinated-shutdown`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `coordinated-shutdown.default-phase-timeout` | `5s` | Default-Timeout pro Phase. |
+| `coordinated-shutdown.terminate-actor-system` | `true` | Ob in der finalen Phase `system.terminate()` aufgerufen wird. |
+| `coordinated-shutdown.exit-jvm` | `false` | Ob nach dem Shutdown `process.exit()` aufgerufen wird. |
+
+### `actor-ts.worker` *(Multi-Runtime-Worker)*
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `worker.count` | `"auto"` | Anzahl Worker — `"auto"` verwendet `navigator.hardwareConcurrency`. |
+| `worker.restart-policy` | `"on-failure"` | `always` / `on-failure` / `never`. |
+
+### Broker-Plugins — `actor-ts.io.broker.*`
+
+Jeder Broker-Actor liest aus seinem eigenen Subtree.  Siehe die
+per-Protokoll-Seiten für die Keys:
+
+| Subtree | Seite |
+| --- | --- |
+| `io.broker.kafka` | [Kafka](/de/io/kafka/) |
+| `io.broker.mqtt` | [MQTT](/de/io/mqtt/) |
+| `io.broker.amqp` | [AMQP](/de/io/amqp/) |
+| `io.broker.nats` | [NATS](/de/io/nats/) |
+| `io.broker.jetstream` | [JetStream](/de/io/nats/) *(gleiche Seite, JetStream-Variante)* |
+| `io.broker.redis-streams` | [Redis Streams](/de/io/redis-streams/) |
+| `io.broker.grpc.{client,server}` | [gRPC](/de/io/grpc/) |
+| `io.broker.websocket` | [WebSocket Client](/de/io/websocket/) |
+| `io.broker.sse` | [SSE](/de/io/sse/) |
+| `io.broker.tcp` | [TCP](/de/io/tcp/) |
+| `io.broker.udp` | [UDP](/de/io/udp/) |
+
+## HOCON-spezifische Syntax
+
+### Durations
+
+```hocon
+gossip-interval = 1s        # 1000 ms
+unreachable-after = 2.5s    # 2500 ms
+down-after = 5000ms         # explizite ms
+gc-cadence = 10m            # Minuten
+ttl = 24h                   # Stunden
+```
+
+Erkannte Einheiten: `ns`, `us`, `ms`, `s`, `m`, `h`, `d`.
+
+### Sizes
+
+```hocon
+max-frame-size = 1M         # 1 048 576 Bytes
+buffer = 64K
+heap = 2G
+```
+
+Erkannte Einheiten: `B`, `K`, `M`, `G`, `T` — standardmäßig
+binär (1024).
+
+### Environment-Substitution
+
+```hocon
+port = ${?ACTOR_TS_PORT}              # nutze env, falls gesetzt, sonst fallback
+log-level = ${?LOG_LEVEL}             # gleich
+api-key = ${API_KEY}                  # required — Fehler, wenn env nicht gesetzt
+fallback-port = ${?ENV_PORT}
+fallback-port = ${fallback-port:-2552}  # default-if-empty Syntax
+```
+
+Verwende `${?ENV}` für optional, `${ENV}` für required.
+
+### Includes
+
+```hocon
+include "shared-cluster.conf"
+
+actor-ts.cluster.failure-detector.heartbeat-interval = 250ms
+```
+
+Lädt `shared-cluster.conf` und legt Deinen lokalen Abschnitt
+darüber.
+
+## Config im Code lesen
+
+```ts
+const system = ActorSystem.create('my-app', {
+  config: {
+    'actor-ts.cluster.gossip-interval': '500ms',
+  },
+});
+
+// Innerhalb eines Actors / einer Extension:
+const cfg = system.config;
+const interval = cfg.getDuration('actor-ts.cluster.gossip-interval');
+//      → 500 (in ms)
+```
+
+Das `Config`-Interface hat typisierte Getter: `getString`, `getNumber`,
+`getBoolean`, `getDuration`, `getSize`, `getStringList`, etc.
+Fehlende Keys werfen, es sei denn, Du prüfst zuerst mit `hasPath`.
+
+## Ladereihenfolge
+
+```
+1. REFERENCE_CONF                           ← gebündelte Defaults
+2. application.conf (CWD)                   ← Projekt-Root, auto-geladen
+3. Dateipfad aus `configFile`-Setting       ← expliziter Override
+4. ENV-Var ACTOR_TS_CONFIG                  ← Pfad oder inline HOCON
+5. Konstruktor `config: { ... }`            ← Code-Level-Override
+6. Konstruktor-Feld-Overrides               ← explizite Felder schlagen Config
+   (logLevel, dispatcher, scheduler, …)
+```
+
+Jede Schicht überlagert die vorherige.  Schicht 6
+(Konstruktor-Felder) gewinnt immer für die Felder, die sie
+abdeckt; alles andere fließt durch den HOCON-Merge.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Plugin-Keys sind voll qualifizierte Pfade">
+  ```hocon
+  persistence.journal.plugin = "actor-ts.persistence.journal.sqlite"
+  ```
+  Beachte das `actor-ts.`-Präfix.  Der Plugin-Key ist der volle
+  HOCON-Pfad zu dem Ort, an dem die Settings dieses Plugins
+  leben, kein Kurzname.  Kurznamen wie `"sqlite"` werden nicht
+  aufgelöst.
+</Aside>
+
+<Aside type="caution" title="Verwende `${?ENV}` für Secrets">
+  ```hocon
+  api-key = "sk_live_abc..."   # ← im Klartext committet, schlecht
+  api-key = ${?API_KEY}        # ← aus env gelesen, landet nicht in git
+  ```
+  Lege niemals Credentials in `application.conf`.  Verwende
+  Env-Var-Substitution und lass Deinen Secret-Manager sie zur
+  Deploy-Zeit füllen.
+</Aside>
+
+<Aside type="caution" title="Durations erfordern Einheiten">
+  ```hocon
+  gossip-interval = 1000       # ✗ mehrdeutig — ms? Sekunden?
+  gossip-interval = 1s         # ✓ einheitssuffigiert
+  ```
+  HOCON parst nackte Zahlen als Zahlen, nicht als Durations.
+  Keys, die Durations erwarten, benötigen eine explizite Einheit.
+</Aside>
+
+## Wie es weitergeht
+
+- **[Actor System](/de/fundamentals/actor-system/)** —
+  wie Settings das Framework erreichen.
+- **[Cluster Overview](/de/cluster/overview/)** — die Keys,
+  die für Multi-Node-Setups am relevantesten sind.
+- **[Persistence Overview](/de/persistence/overview/)** —
+  Journal- + Snapshot-Store-Plugin-Auswahl.
+- **[Versionspolitik](/de/reference/version-policy/)** —
+  was stabil vs. experimentell ist.

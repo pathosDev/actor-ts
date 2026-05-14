@@ -1,0 +1,168 @@
+---
+title: Typed — Überblick
+description: Eine zweite API für dasselbe Actor-Modell — Behaviors als Werte statt Klassen, mit strikt typisierten Spawns, Context und Self-Referenzen. Wann typed gegenüber untyped zu wählen ist.
+---
+
+actor-ts liefert **zwei Schichten** für dasselbe Actor-Modell aus:
+
+| API | Stil | Source of Truth |
+| --- | --- | --- |
+| **Untyped** (die [Fundamentals](/de/fundamentals/overview/)) | Subklasse `Actor<TMsg>`, override `onReceive`, mutiere `this.state`. | Das ist die niedrigere, flexiblere API. |
+| **Typed** (dieser Bereich) | Komponiere `Behavior<T>`-Werte via `Behaviors.receive(...)`, gib das nächste Behavior aus Handlern zurück. | Eine funktionale Fassade auf der untyped-Engine. |
+
+Das Framework lässt beide auf demselben Dispatcher, derselben
+Mailbox, demselben Supervisionsbaum laufen.  Die Wahl ist
+**Ausdrucksstil**, nicht Fähigkeit.
+
+## Ein direkter Vergleich
+
+Derselbe Counter, zwei Wege:
+
+**Untyped:**
+
+```ts
+import { Actor, Props, ActorSystem } from 'actor-ts';
+
+type Cmd = { kind: 'inc' } | { kind: 'dec' };
+
+class Counter extends Actor<Cmd> {
+  private count = 0;
+  override onReceive(cmd: Cmd): void {
+    if (cmd.kind === 'inc') this.count++;
+    else this.count--;
+  }
+}
+
+const system = ActorSystem.create('demo');
+const counter = system.actorOf(Props.create(() => new Counter()));
+```
+
+**Typed:**
+
+```ts
+import { Behaviors, spawnTyped, ActorSystem } from 'actor-ts';
+
+type Cmd = { kind: 'inc' } | { kind: 'dec' };
+
+const counter = (n: number) => Behaviors.receive<Cmd>((_ctx, cmd) =>
+  cmd.kind === 'inc' ? counter(n + 1) : counter(n - 1)
+);
+
+const system = ActorSystem.create('demo');
+const ref = spawnTyped(system, counter(0));
+```
+
+Gleiche Runtime-Semantik; unterschiedliche Ergonomie:
+
+- Die untyped-Form hält `count` in einem Feld, mutiert es, gibt
+  `void` zurück.  Klassisches OO.
+- Die typed-Form übergibt `n` als Parameter an das nächste
+  Behavior.  Kein mutabler Zustand — das nächste Behavior fängt den
+  neuen Count in seinem Closure ein.
+
+## Was dir typed bringt
+
+Vier Dinge, die die typed-API tut und untyped nicht:
+
+1. **Zustand als Parameter, nicht als Felder.**  Jedes Behavior
+   fängt seinen Zustand in einem Closure ein; der "nächste Zustand"
+   ist das, was du aus dem Handler zurückgibst.  Weniger
+   Footgun-anfällig als `this.x`-Mutation, besonders beim
+   Refactoring.
+2. **Pure-funktionales Message-Handling.**  Handler sind
+   `(ctx, msg) => Behavior<T>` — keine Seiteneffekte auf `this`,
+   keine imperative State-Machine.  Einfacher isoliert zu testen;
+   ein Behavior ist nur ein Wert.
+3. **`Behaviors.same` / `Behaviors.stopped`-Sentinels.**  Der
+   Return-Type des Handlers ist die State-Transition-Entscheidung
+   des Actors, "behalte dasselbe Behavior" und "stoppe den Actor"
+   sind also Werte, die du zurückgibst, statt imperativer
+   `context.stopSelf()`-Aufrufe.
+4. **Cast-freies Child-Spawning.**  `ctx.spawn(behavior)` gibt eine
+   `ActorRef<U>` zurück, typisiert auf den Nachrichtentyp des
+   Kindes, abgeleitet vom Behavior.  Keine
+   `as ActorRef<...>`-Casts zur Spawn-Zeit.
+
+## Was dir untyped bringt
+
+Drei Dinge, die die untyped-API sauberer tut:
+
+1. **Mutabler Zustand über Nachrichten hinweg.**  Wenn der Actor
+   ein komplexes Aggregat hat (eine `Map`, einen Buffer, eine
+   State-Machine mit fünf Feldern), wird es umständlich, es durch
+   jeden Behavior-Return zu fädeln.  `this` zu mutieren ist okay.
+2. **Lifecycle-Hooks (`preStart`, `postStop`, `preRestart`).**  Die
+   typed-API exponiert diese als `Signal`-Events auf einem
+   `receiveWithSignal`-Handler, was etwas umständlicher ist als
+   das Überschreiben einer Methode.
+3. **Direkter Interop mit dem Rest des Frameworks.**  Die meisten
+   Beispiele in den Docs verwenden die untyped-Form.  Die meisten
+   Cluster-Extensions (Sharding, Singleton, PubSub) sind ohnehin
+   in `ActorRef<T>` typisiert — aber ihre *Internas* sind
+   untyped-Klassen, und das leakt gelegentlich an den Nähten.
+
+## Wann welches wählen
+
+**Wähle typed, wenn:**
+
+- Der Actor eine State-Machine ist und du willst, dass Phasen
+  verschiedene *Behaviors* sind (verschiedene Valid-Message-Sets
+  pro Phase).  Die typed-Form macht die Übergänge zu expliziten
+  Returns.
+- Du von einer typed-Actor-API auf einer anderen Runtime, von Cats
+  Effect oder fp-ts kommst und der funktionale Stil sich natürlich
+  anfühlt.
+- Du compiler-geprüfte State-Transition-Logik willst — typed
+  Behaviors komponieren auf Typ-Ebene.
+
+**Wähle untyped, wenn:**
+
+- Der Actor erheblichen mutablen Zustand hat (einen Cache, einen
+  Buffer, eine Subscriber-Menge) und ihn durch Behaviors zu fädeln
+  mehr Zeremonie als Wert ist.
+- Du das Actor-Modell lernst und keine zweite
+  Abstraktions-Schicht im Weg willst.
+- Du Eins-zu-eins-Parität mit klassischen untyped-Actor-APIs aus
+  anderen Bibliotheken willst, die du verwendet hast.
+
+**Du kannst sie mischen.**  Ein untyped-Parent kann typed-Kinder
+über `spawnTypedChild(ctx, behavior)` spawnen, und ein typed-Parent
+kann untyped-Kinder über `ctx.spawn(behavior)` spawnen, wobei das
+Behavior eine `Actor`-Subklasse wickelt.  Refs sind interoperabel —
+beide Formen exponieren `ActorRef<T>` mit derselben
+`tell(msg)`-Signatur.
+
+## Wie die typed-Schnittstelle aussieht
+
+Eine Handvoll Bausteine:
+
+| Kombinator | Was er tut |
+| --- | --- |
+| `Behaviors.setup(ctx => behavior)` | Läuft einmal mit dem Context; gibt das initiale Behavior zurück.  Wie ein "Konstruktor". |
+| `Behaviors.receive((ctx, msg) => behavior)` | Standard-Message-Handler.  Gibt das nächste Behavior zurück. |
+| `Behaviors.receiveMessage(msg => behavior)` | Shortcut, wenn du den Context nicht brauchst. |
+| `Behaviors.receiveWithSignal(handler, signalHandler)` | Fügt einen Lifecycle-Signal-Handler hinzu (postStop, preRestart, terminated). |
+| `Behaviors.withTimers(timers => behavior)` | Fängt den Per-Actor-`TimerScheduler` in einem Closure ein. |
+| `Behaviors.withStash(capacity, stash => behavior)` | Fängt einen `StashBuffer<T>` mit der gegebenen Kapazität ein. |
+| `Behaviors.supervise(behavior).onFailure(strategy)` | Wickelt ein Behavior mit einer Supervisor-Strategie. |
+| `Behaviors.same` | Sentinel: behalte das aktuelle Behavior. |
+| `Behaviors.stopped` | Sentinel: stoppe den Actor. |
+| `Behaviors.unhandled` | Sentinel: diese Nachricht ist unhandled (geht zu Dead Letters). |
+| `Behaviors.empty` | Sentinel: No-Op-Handler. |
+| `Behaviors.ignore` | Sentinel: verwirf jede Nachricht still. |
+
+Jede Seite in diesem Bereich bohrt in einen Ausschnitt — siehe
+[Behaviors](/de/typed/behaviors/) für die Kombinatoren,
+[Typed Actor](/de/typed/typed-actor/) für die Engine, die ein
+Behavior hostet, [Spawn Typed](/de/typed/spawn-typed/) für die drei
+Spawn-Helfer.
+
+## Wie es weitergeht
+
+- **[Behaviors](/de/typed/behaviors/)** — das volle DSL.
+- **[Typed Actor](/de/typed/typed-actor/)** — was ein
+  Behavior zur Laufzeit ausführt.
+- **[Spawn Typed](/de/typed/spawn-typed/)** — `spawnTyped`,
+  `typedProps`, `spawnTypedChild`.
+- **[Fundamentals-Überblick](/de/fundamentals/overview/)** —
+  die untyped Konzeptkarte; viele Ideen übertragen sich.

@@ -1,0 +1,259 @@
+---
+title: Death Watch
+description: Wie ein Actor beobachtet, wann ein anderer Actor stoppt — `context.watch(ref)` löst eine `Terminated(ref)`-Systemnachricht im Watcher aus, wenn `ref` terminiert. Symmetrisch zur Supervision, aber für Geschwister- und Cross-Tree-Beobachtung.
+---
+
+Supervision fängt *Fehler* ab — was zu tun ist, wenn das `onReceive`
+eines Child-Actors einen Throw wirft.  **Death Watch** fängt
+*Termination* ab — zu wissen, dass irgendein anderer Actor gestoppt
+hat, aus welchem Grund auch immer (sauberer Stop, Crash jenseits der
+Restart-Limits, Parent terminiert, Netzwerk-Partition).
+
+Die beiden Mechanismen sind absichtlich verschieden: Ein
+fehlschlagendes Kind ist das Problem seines Parents; ein stoppendes
+Geschwister ist ein Notification-Event, das jeder andere Actor
+abonnieren kann.
+
+## Ein minimales Beispiel
+
+```ts
+import { Actor, ActorSystem, Props, Terminated, type ActorRef } from 'actor-ts';
+
+class Watcher extends Actor<Terminated | { kind: 'watch'; ref: ActorRef }> {
+  override onReceive(msg: Terminated | { kind: 'watch'; ref: ActorRef }): void {
+    if (msg instanceof Terminated) {
+      this.log.info(`watched actor stopped: ${msg.actor.path}`);
+    } else if (msg.kind === 'watch') {
+      this.context.watch(msg.ref);
+    }
+  }
+}
+
+const system = ActorSystem.create('demo');
+
+const observed = system.actorOf(Props.create(() => new SomeActor()));
+const watcher  = system.actorOf(Props.create(() => new Watcher()));
+
+watcher.tell({ kind: 'watch', ref: observed });
+observed.stop();   // → Watcher loggt "watched actor stopped: ..."
+```
+
+Drei Dinge passieren:
+
+1. **`context.watch(ref)`** registriert das Interesse des Watchers.
+   Keine Nachricht geht an den beobachteten Actor — er weiß nicht,
+   dass er beobachtet wird.
+2. Wenn der beobachtete Actor **terminiert** (aus welchem Grund auch
+   immer), liefert das Framework jedem Watcher eine
+   `Terminated`-Nachricht.
+3. Das `onReceive` des Watchers behandelt `Terminated` wie jede andere
+   Nachricht.  Weil sie über die Mailbox ankommt, ist die Ordnung
+   gegenüber User-Nachrichten wohldefiniert: alle `tell`s, die
+   *vor* dem Stop des beobachteten Actors gesendet wurden, werden in
+   Reihenfolge verarbeitet, danach folgt das `Terminated`.
+
+## Die `Terminated`-Nachricht
+
+```ts
+class Terminated {
+  constructor(
+    public readonly actor: ActorRef,
+    public readonly existenceConfirmed: boolean = true,
+    public readonly addressTerminated: boolean = false,
+  ) {}
+}
+```
+
+Drei Felder:
+
+| Feld | Bedeutung |
+| --- | --- |
+| `actor` | Die Ref, die gestoppt hat.  Dieselbe Instanz, die du an `watch` übergeben hast. |
+| `existenceConfirmed` | `true`, wenn das Framework diesen Actor tatsächlich vor seiner Termination existieren sah; `false`, wenn du eine Ref beobachtet hast, die bereits ungültig war. |
+| `addressTerminated` | `true`, wenn der gesamte **Node** unerreichbar wurde (Cluster-Fall), nicht nur dieser einzelne Actor. |
+
+Einen bereits gestoppten Actor zu beobachten, liefert `Terminated`
+**sofort** mit `existenceConfirmed = false`.  Das ist Design — dein
+Watcher bekommt immer eine Notification, egal wann du registriert
+hast.  Behandle `existenceConfirmed` als "hat der Watch den Actor zu
+irgendeinem Zeitpunkt lebend erwischt", nicht als Fehlersignal.
+
+Das `addressTerminated`-Flag ist in Cluster-Setups wichtig: wenn der
+Node, der den beobachteten Actor hostet, den Cluster verlässt, gelten
+alle Actors auf diesem Node als terminiert, und Watcher im Cluster
+empfangen ein `Terminated` mit gesetztem Flag.  Siehe
+[Cluster](/de/cluster/overview/) für die Membership-Geschichte.
+
+## `unwatch`
+
+```ts
+context.unwatch(ref);
+```
+
+Höre auf, `Terminated` für diese Ref zu empfangen.  Idempotent —
+`unwatch` auf einer Ref aufzurufen, die du nicht beobachtet hast, ist
+ein No-Op.
+
+Wenn ein Actor stoppt, werden seine Watch-Registrierungen automatisch
+aufgeräumt; du musst nicht alles `unwatch`en, bevor du stoppst.
+Verwende `unwatch` nur, wenn ein Actor sein Interesse mid-flight
+*ändern* muss ("dieses Kind interessiert mich nicht mehr").
+
+## Häufige Muster
+
+### Auto-Stop bei Verlust einer Abhängigkeit
+
+Ein Worker, der ohne eine bestimmte Abhängigkeit keinen Zweck hat,
+sollte sich selbst stoppen, wenn diese Abhängigkeit es tut:
+
+```ts
+class Worker extends Actor<Msg | Terminated> {
+  constructor(private readonly db: ActorRef) {
+    super();
+  }
+  override preStart(): void {
+    this.context.watch(this.db);
+  }
+  override onReceive(msg: Msg | Terminated): void {
+    if (msg instanceof Terminated && msg.actor === this.db) {
+      this.log.warn('DB stopped — winding down');
+      this.context.stopSelf();
+      return;
+    }
+    // ... handhabe Msg
+  }
+}
+```
+
+Der Supervisionsbaum handhabt Fehler *innerhalb* des Actors; Death
+Watch handhabt "der Actor, von dem ich abhänge, ist aus irgendeinem
+anderen Grund verschwunden" (Parent-Stop, manueller Stop von außen,
+Cluster-Eviction).
+
+### Cleanup-Koordination
+
+Ein Manager-Actor, der N Kinder spawnt und reagieren will, wenn alle
+gestoppt haben:
+
+```ts
+class Manager extends Actor<Cmd | Terminated> {
+  private alive = new Set<string>();
+
+  override preStart(): void {
+    for (let i = 0; i < 4; i++) {
+      const child = this.context.actorOf(Props.create(() => new Worker()), `worker-${i}`);
+      this.alive.add(child.path.name);
+      this.context.watch(child);
+    }
+  }
+
+  override onReceive(msg: Cmd | Terminated): void {
+    if (msg instanceof Terminated) {
+      this.alive.delete(msg.actor.path.name);
+      if (this.alive.size === 0) {
+        this.log.info('all workers stopped — manager exiting');
+        this.context.stopSelf();
+      }
+    }
+    // ... handhabe Cmd
+  }
+}
+```
+
+Das ist eine häufige Form für sauberen Shutdown: ein Koordinator
+beobachtet die Actors, für die er verantwortlich ist, und beendet
+sich erst, wenn jeder einzelne weg ist.  Die
+[Coordinated Shutdown](/de/fundamentals/coordinated-shutdown/)-DSL
+formalisiert dieses Pattern auf System-Ebene.
+
+### Watchen über den Cluster hinweg
+
+```ts
+const remoteEntity = await this.system.actorSelection(
+  'actor-ts://my-app@10.0.0.5:2552/user/sharding/Entity/12345',
+).resolveOne(1_000);
+
+this.context.watch(remoteEntity);
+```
+
+Watch funktioniert über Nodes hinweg auf dieselbe Weise — das
+Framework propagiert Termination-Notifications über den
+Cluster-Transport.  Wenn der Remote-Node unerreichbar wird, empfängt
+der Watcher `Terminated` mit `addressTerminated = true`.  Siehe
+[Refs zwischen Nodes](/de/cluster/refs-across-nodes/) für das
+Wire-Protokoll, das das möglich macht.
+
+## Was es NICHT ersetzt
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Death Watch ist kein try/catch">
+  ```ts
+  this.context.watch(child);
+  child.tell({ kind: 'do-it' });
+  // Wenn `do-it` throwt, *restartet* das Kind — kein Terminated.
+  ```
+  `Terminated` feuert nur bei **Stop**, nicht bei jedem Fehler.  Ein
+  Actor, der abstürzt und neu startet (die Default-Supervisor-Strategie),
+  ist immer noch lebendig — seine Mailbox drainet weiter, keine
+  Terminated-Nachricht.  Wenn du über Fehler Bescheid wissen willst,
+  verwende eine eigene Supervisor-Strategie auf dem Parent; Death
+  Watch ist strikt für Stop-Events.
+</Aside>
+
+<Aside type="caution" title="`Terminated` für einen Actor, den du nie beobachtet hast">
+  ```ts
+  override onReceive(msg) {
+    if (msg instanceof Terminated) { ... }   // ← wird das jemals feuern?
+  }
+  ```
+  Wenn du nie `context.watch` aufrufst, kommt `Terminated` nicht an.
+  Watching ist Opt-In, pro Watcher.  Das eigene Termination-Signal
+  eines Actors an seinen Supervisor ist separat — das fließt über den
+  internen "Child Stopped"-Pfad, nicht als `Terminated`-Nachricht.
+</Aside>
+
+<Aside type="caution" title="`self` beobachten">
+  `context.watch(this.self)` ist legal, aber sinnlos.  Bis das
+  `Terminated` feuern würde, hat der Actor bereits gestoppt — seine
+  Mailbox ist geschlossen.  Die Notification geht zu Dead Letters.
+  Verwende `postStop` für Cleanup, das laufen muss, wenn *dieser*
+  Actor stoppt; Death Watch ist zur Beobachtung *anderer* Actors.
+</Aside>
+
+## Watch + Supervision — wann welches verwenden
+
+Die beiden Mechanismen decken verschiedene Fälle ab:
+
+- **Verwende Supervision**, wenn der Actor, der Fehler behandelt, der
+  *Parent* des fehlschlagenden Actors ist.  Restart/Resume/Stop/Escalate
+  pro Fehlerklasse ist, wofür Supervision da ist.
+- **Verwende Death Watch**, wenn der Beobachter **nicht** der Parent
+  ist — ein Geschwister, das wissen muss, wann eine Abhängigkeit
+  verschwindet, ein Cross-Tree-Manager, der von ihm gespawnte Workers
+  beobachtet, ein HTTP-Handler, der bemerkt, dass der Backend-Actor
+  gestorben ist.
+
+Viele Actors verwenden beides: supervisen ihre *eigenen* Kinder und
+beobachten die Actors, von denen sie *abhängen* (die jemand anderes
+Kinder sind).
+
+## Wie es weitergeht
+
+- **[Supervision](/de/fundamentals/supervision/)** — der
+  Parent-handhabt-Kind-Fehler-Mechanismus.  Death Watch ist der
+  Beobachter-handhabt-Actor-Stop-Mechanismus — verschieden, oft
+  zusammen verwendet.
+- **[Poison Pill und Kill](/de/fundamentals/poison-pill-and-kill/)** —
+  die zwei Wege, einen Actor zu terminieren, die beide `Terminated`
+  für etwaige Watcher auslösen.
+- **[Coordinated Shutdown](/de/fundamentals/coordinated-shutdown/)** —
+  verwendet Watch intern, um auf das Drainen ganzer Subsysteme zu
+  warten.
+- **[Refs zwischen Nodes](/de/cluster/refs-across-nodes/)** —
+  wie `Terminated` propagiert, wenn der beobachtete Actor auf einem
+  anderen Node lebt.
+
+Die [`ActorContext.watch`](/api/interfaces/actorcontext/)- und
+[`Terminated`](/api/classes/terminated/)-API-Referenzen decken die
+vollen Signaturen ab.

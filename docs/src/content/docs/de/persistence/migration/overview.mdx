@@ -1,0 +1,251 @@
+---
+title: Migration im Überblick
+description: Schema-Evolution für persistierte Daten. Events leben für immer im Journal, State-Formen ändern sich über die Zeit. Drei Werkzeuge — versionierte Envelopes, Schema-Registry und Adapter. Wähle die Strategie danach, wie invasiv die Änderung ist.
+---
+
+Event-sourced Systeme behalten Events **für immer**.  Ein Event,
+das in v1 deines Codes geschrieben wurde, bleibt im Journal,
+wenn v3 ausgeliefert wird.  Wenn v3 dieses Event liest, kann die
+Form falsch sein: ein Feld wurde umbenannt, ein Enum hat eine
+Variante bekommen, ein Wert wurde in zwei gesplittet.
+
+Das Migrations-Toolkit des Frameworks beantwortet: **"Wie
+entwickle ich Event- / State-Formen weiter, ohne Recovery zu
+brechen?"**
+
+Vier kooperierende Werkzeuge:
+
+| Werkzeug | Wann |
+| --- | --- |
+| **[Envelope-Format](/de/persistence/migration/envelope-format/)** | Jedes persistierte Event trägt einen Versions-Tag.  Ermöglicht Migration. |
+| **[Schema-Registry](/de/persistence/migration/schema-registry/)** | Optional — deklariert bekannte Schemas + ihre Versionen. |
+| **[DefaultAdapter](/de/persistence/migration/default-adapter/)** | Defaults automatisch füllen für Felder, die in einer neueren Version hinzugefügt wurden. |
+| **[MigratingAdapter](/de/persistence/migration/migrating-adapter/)** | Transformationen von v1 → v2 → v3 verketten. |
+| **[WrapLegacy](/de/persistence/migration/wrap-legacy/)** | Un-envelope'te Legacy-Events auf versionierte Envelopes hochrüsten. |
+
+Plus eine fokussiertere Seite:
+[Rezepte](/de/persistence/migration/recipes/) — das Kochbuch
+häufiger Migrationen.
+
+## Der Envelope
+
+Ohne Migration sind persistierte Events rohe Payloads:
+
+```json
+{ "kind": "deposited", "amount": 100 }
+```
+
+Wenn du einen Adapter an den Actor hängst, verpackt das Framework
+das Event zur Persist-Zeit in einen **Envelope**:
+
+```json
+{
+  "_v": 1,                                    // Version
+  "_t": "deposited",                          // Typ-Tag
+  "_e": { "kind": "deposited", "amount": 100 } // Payload
+}
+```
+
+Beim Lesen sieht der Adapter die Version + Payload und
+**upcasted** auf die aktuelle Form, bevor das `onEvent` des
+Actors sie sieht.
+
+Siehe [Envelope-Format](/de/persistence/migration/envelope-format/)
+für die Details.
+
+## Ein durchgespieltes Beispiel
+
+Du lieferst v1 aus:
+
+```ts
+type EventV1 = { kind: 'deposited'; amount: number };
+```
+
+Das Journal akkumuliert V1-Events.  In v2 fügst du `currency`
+hinzu:
+
+```ts
+type EventV2 = { kind: 'deposited'; amount: number; currency: string };
+```
+
+`currency` zum Typ hinzuzufügen bricht die Recovery für
+V1-Events (die das Feld nicht haben).  Drei Optionen:
+
+### Option A — Default
+
+Richte einen `DefaultAdapter` ein, der fehlende Felder füllt:
+
+```ts
+class Account extends PersistentActor<...> {
+  override eventAdapter() {
+    return new DefaultAdapter<EventV2>({
+      defaults: { currency: 'USD' },
+    });
+  }
+}
+```
+
+V1-Events werden zurückgelesen als
+`{ kind: 'deposited', amount: 100, currency: 'USD' }`.  Billig,
+automatisch, **funktioniert nur für additive Änderungen**.
+
+### Option B — Migrieren
+
+```ts
+class Account extends PersistentActor<...> {
+  override eventAdapter() {
+    return new MigratingAdapter<EventV2>({
+      chain: [
+        // v0 → v1: Identity (keine Änderung)
+        // v1 → v2: currency aus einem Backed-out-Lookup hinzufügen
+        { from: 1, to: 2, fn: (v1) => ({ ...v1, currency: lookupCurrency(v1) }) },
+      ],
+    });
+  }
+}
+```
+
+Die Chain läuft sequenziell.  V1-Events fließen durch den
+`1 → 2`-Schritt; V2-Events überspringen ihn.
+
+### Option C — Benutzerdefiniert
+
+Für komplexe Migrationen (Umbenennungen, Restrukturierung,
+Splitting) implementiere `EventAdapter<E>` direkt:
+
+```ts
+class V1ToV2Adapter implements EventAdapter<EventV2> {
+  upcast(stored: unknown, version: number): EventV2 {
+    if (version === 1) return migrateV1ToV2(stored as EventV1);
+    return stored as EventV2;
+  }
+}
+```
+
+Volle Kontrolle; keine Einschränkungen bei Formtransformationen.
+
+## Eine Strategie wählen
+
+```mermaid
+flowchart TB
+  Q1{"Ist die Änderung ADDITIV?<br/>(nur neue Felder, sinnvolle Defaults)"}
+  Q2{"Transformierbar von alt → neu?"}
+  Q3{"Single-Step oder Multi-Step?"}
+  DEF["DefaultAdapter<br/><i>kein Aufwand</i>"]
+  MIG1["MigratingAdapter"]
+  MIG2["MigratingAdapter<br/><i>Chain</i>"]
+  CUSTOM["Benutzerdefinierter EventAdapter<br/><i>restrukturiert: Umbenennungen, Splits, Joins</i>"]
+  Q1 -- "ja" --> DEF
+  Q1 -- "nein" --> Q2
+  Q2 -- "ja" --> Q3
+  Q2 -- "nein" --> CUSTOM
+  Q3 -- "Single-Step" --> MIG1
+  Q3 -- "Multi-Step" --> MIG2
+  classDef q  fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
+  classDef ok fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef warn fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
+  class Q1,Q2,Q3 q
+  class DEF,MIG1,MIG2 ok
+  class CUSTOM warn
+```
+
+## State-Adapter
+
+`DurableStateActor` hat die gleiche Maschinerie über
+`StateAdapter`:
+
+```ts
+class Cart extends DurableStateActor<...> {
+  protected stateAdapter() {
+    return new DefaultAdapter<StateV2>({ defaults: { ... } });
+  }
+}
+```
+
+Persistierte States werden in den gleichen Envelope (`_v` /
+`_t` / `_e`) verpackt.  Die gleichen Migrations-Werkzeuge
+funktionieren für beide Persistenz-Arten.
+
+## Schema-Registry
+
+Für größere Codebases mit vielen Event-Typen gibt die
+**Schema-Registry** ein typisiertes Register aller bekannten
+Event-Formen + ihrer Versionen:
+
+```ts
+import { SchemaRegistry } from 'actor-ts';
+
+const registry = new SchemaRegistry()
+  .add('Deposited', 2)
+  .add('Withdrawn', 1)
+  .add('AccountClosed', 1);
+```
+
+Optional — Adapter funktionieren ohne sie.  Nützlich, wenn:
+
+- Du eine einzige Source of Truth für "welche Versionen
+  existieren" willst.
+- Du Laufzeit-Validierung willst, dass Events zu einem
+  registrierten Schema passen.
+- Du Tooling baust, das Schemas introspectet (Admin-Dashboards,
+  Migrations-Skripte).
+
+Siehe [Schema-Registry](/de/persistence/migration/schema-registry/).
+
+## Legacy-Events
+
+Wenn dein Journal Events aus der Zeit vor der Adapter-Aktivierung
+hat, haben sie keine Envelopes — sie sind rohe Payloads.  Der
+**WrapLegacy**-Helper überbrückt:
+
+```ts
+import { wrapLegacy } from 'actor-ts';
+
+const adapter = wrapLegacy<EventV2>({
+  legacyVersion: 1,
+  baseAdapter: new MigratingAdapter<EventV2>({ chain: [...] }),
+});
+```
+
+Das behandelt jedes nicht eingewickelte (rohe) Event als
+Version 1 und lässt die Migrations-Chain von dort laufen.  Siehe
+[WrapLegacy](/de/persistence/migration/wrap-legacy/).
+
+## Operatives Rollout
+
+Migrationen werden normalerweise in Phasen ausgerollt:
+
+1. **Code-Änderung** — den Adapter hinzufügen, mit der neuen
+   Version deployen, die alt + neu lesen kann.
+2. **Verifizieren** — mehrere persistenceIds wiederherstellen;
+   sicherstellen, dass weder alte noch neue Events Fehler
+   produzieren.
+3. **V2-Events zu schreiben beginnen** — dein `onCommand`
+   produziert V2-förmige Events (der Adapter wird auf dem
+   Write-Pfad nicht involviert).
+4. **(Optional) Schema-Cleanup** — sobald genug V2-Events
+   akkumulieren und Snapshots die V1-Events abdecken, kannst du
+   die Chain vereinfachen, indem du sehr alte Versionsschritte
+   entfernst, wenn du bestätigt hast, dass keine V1-Events mehr
+   verbleiben.
+
+Für Rolling Deployments ohne Downtime siehe
+[Rolling Migration](/de/operations/upgrades/rolling-migration/)
+und [Rezepte](/de/persistence/migration/recipes/).
+
+## Wie geht's weiter
+
+- **[Envelope-Format](/de/persistence/migration/envelope-format/)** —
+  das On-Disk-Format.
+- **[DefaultAdapter](/de/persistence/migration/default-adapter/)** —
+  Zero-Config-Additive-Migrationen.
+- **[MigratingAdapter](/de/persistence/migration/migrating-adapter/)** —
+  verkettete Versions-Transformationen.
+- **[WrapLegacy](/de/persistence/migration/wrap-legacy/)** —
+  Pre-Envelope-Events ins System bringen.
+- **[Schema-Registry](/de/persistence/migration/schema-registry/)** —
+  der typisierte Schema-Katalog.
+- **[Rezepte](/de/persistence/migration/recipes/)** — das
+  Entscheidungsbaum-Kochbuch.
+- **[Rolling Migration](/de/operations/upgrades/rolling-migration/)** —
+  diese Änderungen ohne Downtime deployen.

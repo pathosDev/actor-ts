@@ -1,0 +1,234 @@
+---
+title: Failure-Detector-Tuning
+description: Schwellen dafür, wann Peers als unreachable / down markiert werden — `heartbeatIntervalMs`, `unreachableAfterMs`, `downAfterMs`. Defaults sind LAN-orientiert; Cross-Region-Cluster müssen sie hochziehen. Operatives Tuning, kein Framework-Code.
+---
+
+Der
+[Failure Detector](/de/cluster/failure-detector/) entscheidet, wann
+ein Peer `unreachable` oder `down` ist. Drei Knöpfe:
+
+```ts
+Cluster.join(system, {
+  host, port, seeds,
+  failureDetector: {
+    heartbeatIntervalMs: 500,    // default
+    unreachableAfterMs:  2_000,   // default
+    downAfterMs:         5_000,   // default
+  },
+});
+```
+
+Diese Seite ist der **operative Tuning-Guide** — wann du diese
+Werte änderst, um wieviel und welche Symptome jeder Wert
+beeinflusst. Für das konzeptuelle Modell siehe
+[Failure Detector](/de/cluster/failure-detector/).
+
+## Die Defaults
+
+| Einstellung | Default | Bedeutung |
+| --- | --- | --- |
+| `heartbeatIntervalMs` | 500 | Wie oft Heartbeats gesendet werden. |
+| `unreachableAfterMs` | 2 000 | Stille-Schwelle für `unreachable`. |
+| `downAfterMs` | 5 000 | Stille-Schwelle für `down`. |
+
+LAN-Cluster: Defaults sind fein. Cross-Region- oder verrauschte
+Netzwerke brauchen Anpassung.
+
+## Symptom-getriebenes Tuning
+
+### Symptom: False-Positive Unreachable
+
+```
+Mitglied flippt zu unreachable, dann zurück zu reachable, dann
+unreachable, dann reachable. Flapping alle paar Sekunden.
+```
+
+**Ursache**: `unreachableAfterMs` ist zu eng für den Jitter deines
+Netzwerks. Kurze GC-Pausen oder vorübergehende Netzwerkverzögerungen
+überschreiten die Schwelle.
+
+**Fix**: `unreachableAfterMs` anheben.
+
+```ts
+failureDetector: {
+  heartbeatIntervalMs: 500,
+  unreachableAfterMs:  5_000,    // ← war 2_000
+  downAfterMs:         15_000,    // ← war 5_000 (Verhältnis ähnlich halten)
+}
+```
+
+### Symptom: Langsamer Failover
+
+```
+Ein Node stirbt, aber der Cluster reagiert erst nach 10+ Sekunden.
+Singletons / sharded Entities ziehen lange nicht um.
+```
+
+**Ursache**: `unreachableAfterMs` + Downing-Strategy-Verzögerung
+ist zu lang. Der Cluster wartet, bevor er entscheidet.
+
+**Fix**: `unreachableAfterMs` und `downAfterMs` proportional
+senken.
+
+```ts
+failureDetector: {
+  heartbeatIntervalMs: 250,     // ← war 500
+  unreachableAfterMs:  1_000,    // ← war 2_000
+  downAfterMs:         3_000,    // ← war 5_000
+}
+```
+
+Trade-off: Mehr False Positives in jitterigen Netzwerken. Miss
+RTT + Jitter deines Netzwerks vorher.
+
+### Symptom: Cross-Region-Cluster flappt
+
+```
+WAN-übergreifender Cluster. Mitglieder in der entfernten Region
+zeigen sich intermittierend unreachable, erholen sich Sekunden
+später.
+```
+
+**Ursache**: Defaults nehmen LAN-Latenzen an (Sub-ms RTT). Ein
+100ms-RTT-WAN mit normalem Jitter überschreitet die 2-s-Schwelle
+unter typischen Bedingungen.
+
+**Fix**: Alle drei Schwellen deutlich anheben.
+
+```ts
+failureDetector: {
+  heartbeatIntervalMs: 1_000,    // ← war 500
+  unreachableAfterMs:  10_000,    // ← war 2_000
+  downAfterMs:         30_000,    // ← war 5_000
+}
+```
+
+Für Cross-Region-Cluster **bias auf Stabilität statt schneller
+Detection**. Ein 30-Sekunden-Fenster fängt echte Ausfälle, toleriert
+WAN-Jitter.
+
+### Symptom: Heartbeat-Bandbreite zu hoch
+
+```
+Cluster-Transport-Bandbreite zeigt konstant ~5 % Kapazität nur
+für Heartbeats.
+```
+
+**Ursache**: Heartbeats laufen bei 500 ms × N Peers. Große Cluster
+multiplizieren das.
+
+**Fix**: `heartbeatIntervalMs` erhöhen.
+
+```ts
+failureDetector: {
+  heartbeatIntervalMs: 2_000,    // ← war 500
+  unreachableAfterMs:  6_000,    // ← Verhältnis halten
+  downAfterMs:         15_000,
+}
+```
+
+Bandbreite skaliert linear mit der Frequenz. Von 500 ms auf 2 s
+zu gehen drückt Heartbeat-Traffic um Faktor 4.
+
+## Die Verhältnisse vernünftig halten
+
+```
+unreachableAfterMs ≥ 3 × heartbeatIntervalMs
+downAfterMs        ≥ 2 × unreachableAfterMs
+```
+
+Diese Mindestwerte verhindern Flapping aus einem einzelnen
+versäumten Heartbeat:
+
+- `unreachableAfterMs >= 3 × heartbeat` → toleriert bis zu 2
+  aufeinanderfolgende verfehlte Heartbeats, bevor markiert wird.
+- `downAfterMs >= 2 × unreachable` → "bleib eine Weile unreachable",
+  bevor down erklärt wird.
+
+Die Defaults (500 / 2000 / 5000) folgen dieser Regel: 2000 = 4×
+500, 5000 = 2,5× 2000.
+
+## Per-Umgebungs-Tuning
+
+Verschiedene Umgebungen brauchen oft verschiedene Werte:
+
+```hocon
+# application.conf
+actor-ts.cluster.failure-detector {
+  heartbeat-interval = ${?HEARTBEAT_INTERVAL}
+  unreachable-after  = ${?UNREACHABLE_AFTER}
+  down-after         = ${?DOWN_AFTER}
+}
+```
+
+Setze per Env-Var pro Umgebung:
+
+```bash
+# Lokale Entwicklung (schnell):
+export HEARTBEAT_INTERVAL=250ms
+export UNREACHABLE_AFTER=1s
+
+# Produktion WAN:
+export HEARTBEAT_INTERVAL=1s
+export UNREACHABLE_AFTER=10s
+```
+
+Hardcode keine Produktionswerte; der Unterschied zwischen Dev-
+und Prod-Tuning ist real.
+
+## Vor dem Tuning messen
+
+```ts
+cluster.subscribe(MemberUnreachable, (evt) => {
+  metrics.counter('cluster_unreachable_total', { address: evt.member.address.toString() }).inc();
+});
+
+cluster.subscribe(MemberReachable, (evt) => {
+  // Auch die Dauer im Unreachable-Zustand tracken
+});
+```
+
+Tracke "Dauer im Unreachable-Zustand" als Histogramm. P99 sollte
+**deutlich unter** `downAfterMs` liegen (sonst triggern legitime
+Flaps Downing). P50 + Jitter ergibt das RTT-Profil deines Netzwerks.
+
+Für die meisten Teams ist **eine Woche Beobachtung in Produktion**
+nützlicher als vorab zu raten.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Tuning während Incidents">
+  ```ts
+  // Cluster flappt → "ich heb mal unreachableAfterMs auf 60s"
+  ```
+  Tune nicht während eines Outages. Restarte mit denselben Werten,
+  um das Problem erstmal zu bestätigen; tune erst nach sauberer
+  Recovery. Hot-Changes maskieren die Root Cause und schaffen oft
+  neue.
+</Aside>
+
+<Aside type="caution" title="Enge Schwellen + Downing-Strategie">
+  ```ts
+  unreachableAfterMs: 500,
+  // Kombiniert mit KeepMajority → Minderheitsseite sofort down
+  ```
+  Aggressive Schwellen + automatisches Downing lassen kleine
+  Netzwerkstörungen echte Downtime verursachen. Bias auf Stabilität
+  in Produktion.
+</Aside>
+
+<Aside type="caution" title="Asymmetrisches Tuning über Nodes">
+  Verschiedene Nodes mit verschiedenen Schwellen sind uneinig
+  darüber, wer unreachable ist. Nutze überall dieselben Werte.
+</Aside>
+
+## Wohin als nächstes
+
+- **[Failure Detector](/de/cluster/failure-detector/)** —
+  das konzeptuelle Modell.
+- **[Gossip-Kadenz-Tuning](/de/operations/tuning/gossip-cadence/)** —
+  der komplementäre Knopf.
+- **[Downing-Strategien](/de/cluster/downing-strategies/)** —
+  was nach dem Downing eines Mitglieds passiert.
+- **[Konfiguration](/de/reference/configuration/)** — die
+  HOCON-Keys.

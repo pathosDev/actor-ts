@@ -1,0 +1,181 @@
+---
+title: Kompression
+description: Komprimiere Objekte zur Write-Zeit mit gzip / brotli / deflate — tauscht CPU gegen Storage und Bandbreite. Konfiguriert auf Store-Ebene (Default für alle Keys) oder per Actor (selektiv). Dekompression ist beim Lesen transparent.
+---
+
+Object Storage unterstützt **At-Rest-Kompression** — Bodies
+werden vor dem Put komprimiert, beim Get dekomprimiert.  Vier
+Algorithmen unterstützt; tausche CPU gegen Storage / Bandbreite.
+
+```ts
+import {
+  ObjectStorageDurableStateStore,
+  S3ObjectStorageBackend,
+} from 'actor-ts';
+
+const store = new ObjectStorageDurableStateStore({
+  backend: new S3ObjectStorageBackend({ /* ... */ }),
+  compression: {
+    algorithm: 'gzip',
+    level:     6,        // 1 (schnell) – 9 (am besten); Default 6
+  },
+});
+```
+
+Jetzt wird jeder persistierte State vor dem Upload gzip-komprimiert.
+Reads dekomprimieren transparent.
+
+## Algorithmen
+
+| Algorithmus | Kompressionsverhältnis | CPU-Kosten | Wann |
+| --- | --- | --- | --- |
+| **`gzip`** | Gut (typisch 50-70 %) | Moderat | Sicherer Default — universelle Unterstützung, gut getunt. |
+| **`brotli`** | Besser (typisch 60-80 %) | Höher | Wenn Storage / Bandbreitenkosten > CPU. |
+| **`deflate`** | Ähnlich wie gzip | Etwas weniger | Nische; `gzip` ist derselbe Algo + Header. |
+| **`none`** | Keine | Null | Default. |
+
+Für **text-lastigen State** (JSON) gibt gzip leicht 70 %
+Reduktion.  Für **bereits komprimierte Daten** (verschlüsselte
+Bytes, Image-Daten) bringt Kompression fast keinen Wert und
+verschwendet CPU.
+
+## Konfiguration
+
+```ts
+interface CompressionConfig {
+  algorithm: 'gzip' | 'brotli' | 'deflate' | 'none';
+  level?:    number;       // algorithmus-spezifisch
+}
+```
+
+**Level** sind algorithmus-spezifisch:
+
+- **gzip**: 1 (schnellster, weniger Kompression) bis 9 (langsamster,
+  beste).  Default 6.
+- **brotli**: 0-11.  Default 4 (Sweet Spot für Runtime).
+- **deflate**: 1-9.  Default 6.
+
+Für die meisten Workloads sind **Defaults in Ordnung**.  Drehe
+nur hoch, wenn Storage-Kosten dominieren.
+
+## Wie es funktioniert
+
+```
+Beim Put:
+  Wert serialisieren → Bytes → gzip(bytes) → S3.put(compressed, contentEncoding: 'gzip')
+
+Beim Get:
+  S3.get → Bytes + contentEncoding-Header → dekomprimieren → Bytes → deserialisieren
+```
+
+Das Framework schreibt `Content-Encoding: gzip` (oder `br`, etc.)
+auf den Put, liest es beim Get zurück, dekomprimiert
+entsprechend.  Wenn ein gespeichertes Objekt kein
+Content-Encoding hat (von einer alten Version ohne Kompression
+geschrieben wurde), wird es as-is gelesen.
+
+Das bedeutet, **komprimierte + unkomprimierte Objekte im selben
+Bucket zu mischen** funktioniert — das Framework handhabt jedes
+laut Header.
+
+## Kompression + Serialisierung
+
+```
+serialisieren → JSON-Bytes → gzip → S3
+```
+
+Kompression läuft **nach der Serialisierung**.  Für maximale
+Größenreduktion kombiniere **CBOR-Serialisierung +
+gzip-Kompression** — CBOR schrumpft die Struktur; gzip eliminiert
+verbleibende Redundanz.
+
+```ts
+new ObjectStorageDurableStateStore({
+  backend,
+  serializer:  new CborSerializer(),
+  compression: { algorithm: 'gzip', level: 6 },
+});
+```
+
+## Wann was verwenden
+
+| Szenario | Algorithmus |
+| --- | --- |
+| Text-lastiger State (großes JSON, lange Beschreibungen) | `gzip` oder `brotli` |
+| Gemischt Text + Zahlen | `gzip` |
+| Bereits verschlüsselte Bytes | `none` (kein Nutzen) |
+| Storage-Kosten-begrenzt | `brotli` (Level 6-8) |
+| CPU-begrenzter Write-Pfad | `none` oder `gzip` Level 1 |
+
+## CPU-Kosten
+
+Pro 100 KB Blob, Single-Thread:
+
+- **gzip Level 6** — ~1-3 ms Encode, ~0,5 ms Decode.
+- **gzip Level 1** — ~0,5 ms Encode, ~0,3 ms Decode.
+- **brotli Level 4** — ~2-5 ms Encode, ~1 ms Decode.
+- **brotli Level 11** — ~50-100 ms Encode (!), ~1 ms Decode.
+
+Brotli Level 11 ist beim Encode sehr langsam — nützlich für
+Write-once-Read-many-Bulk-Archive, nicht für Runtime-Persistenz.
+
+Für typische State-Store-Workloads (kleine Objekte, moderate
+Schreibrate) sind die CPU-Kosten unsichtbar.
+
+## Per-Actor-Override
+
+```ts
+class SmallStateActor extends DurableStateActor<...> {
+  protected compression() { return { algorithm: 'none' as const }; }
+}
+
+class LogStateActor extends DurableStateActor<...> {
+  protected compression() { return { algorithm: 'brotli' as const, level: 8 }; }
+}
+```
+
+Überschreibe den Store-Level-Default pro Actor.  Nützlich, wenn:
+
+- Die meisten Actors kleinen State haben (keine Kompression
+  nötig).
+- Einige großen text-lastigen State haben (hohe Kompression).
+
+Siehe [Per-Actor-Policies](/de/persistence/object-storage/per-actor-policies/).
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Kompression auf winzigen Objekten">
+  ```ts
+  // 50-Byte-State komprimieren → Output ist 80 Bytes (gzip-Overhead)
+  ```
+  Unter ~100 Bytes übersteigen gzip-Header die Einsparungen.  Für
+  durchgängig kleine States überspringe Kompression.
+</Aside>
+
+<Aside type="caution" title="Brotli Level 11 in Hot-Paths">
+  ```ts
+  { algorithm: 'brotli', level: 11 }   // 50-100ms pro Encode
+  ```
+  Halbiert deinen Write-Durchsatz auf kleinen Objekten.  Verwende
+  Level 4-6 für Runtime; reserviere 11 für Batch-Operationen.
+</Aside>
+
+<Aside type="caution" title="Bereits verschlüsselte Blobs">
+  ```ts
+  // Verschlüsseln → gzip
+  // → gzip kann verschlüsselte Bytes nicht komprimieren (effektiv zufällig)
+  ```
+  Verschlüsselung-dann-Kompression ergibt ~0 % Reduktion bei
+  hohen CPU-Kosten.  Komprimiere entweder zuerst (wenn die
+  Reihenfolge für dein Threat-Model keine Rolle spielt) oder
+  überspringe Kompression komplett für verschlüsselte Objekte.
+</Aside>
+
+## Wie geht's weiter
+
+- **[Object Storage im Überblick](/de/persistence/object-storage/overview/)** —
+  das größere Bild.
+- **[Verschlüsselung](/de/persistence/object-storage/encryption/)** —
+  das komplementäre At-Rest-Feature.
+- **[Per-Actor-Policies](/de/persistence/object-storage/per-actor-policies/)** —
+  Kompression pro Actor konfigurieren.

@@ -1,0 +1,234 @@
+---
+title: Installation
+description: actor-ts auf Bun, Node oder Deno installieren — plus die optionalen Peer-Dependencies und wie Du die Installation verifizierst.
+---
+
+`actor-ts` wird als einzelnes npm-Paket ausgeliefert.  Der Kern hat
+**zwei kleine Runtime-Dependencies** (`ts-pattern` für erschöpfendes
+Matching, `fastify` für das Default-HTTP-Backend); alles andere — Kafka,
+Redis, S3, Cassandra, gRPC — ist opt-in über Peer-Dependencies, die Du
+nur installierst, wenn Du die entsprechende Extension verwendest.
+
+## Runtime-Anforderungen
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+| Runtime | Mindestversion | Hinweise |
+| --- | --- | --- |
+| **Bun** | 1.1 | Empfohlen für Entwicklung — schnellster Startup, natives SQLite via `bun:sqlite`, nativer WebSocket-Server. |
+| **Node.js** | 20.0 | Kern funktioniert auf 20+.  Node 22+ aktiviert nativen WebSocket ohne `ws`-Peer-Dep; Node 22.15+ aktiviert native zstd-Kompression ohne `fzstd`.  SQLite via `better-sqlite3` (Peer-Dep). |
+| **Deno** | 2.0 | Verwende den `npm:`-Specifier — `import { ... } from 'npm:actor-ts'`.  Mit `--allow-net` / `--allow-read` ausführen, wenn nötig. |
+
+Das Framework erkennt automatisch, unter welcher Runtime es ausgeführt
+wird, und wählt die richtigen Backends transparent — siehe
+[Runtime Overview](/de/runtime/overview/) für den
+Erkennungsalgorithmus und die per-Runtime-Vorbehalte.
+
+## Core-Installation
+
+<Tabs>
+  <TabItem label="Bun">
+    ```bash
+    bun add actor-ts
+    ```
+  </TabItem>
+  <TabItem label="Node">
+    ```bash
+    npm install actor-ts
+    # oder
+    pnpm add actor-ts
+    # oder
+    yarn add actor-ts
+    ```
+  </TabItem>
+  <TabItem label="Deno">
+    Kein Installationsschritt nötig.  Direkt importieren:
+
+    ```ts
+    import { Actor, ActorSystem, Props } from 'npm:actor-ts';
+    ```
+
+    Deno holt das Paket beim ersten Lauf und cached es.  Füge eine
+    `import_map.json` hinzu, wenn Du `actor-ts` über mehrere Dateien
+    hinweg auf einen kürzeren Specifier aliasen willst.
+  </TabItem>
+</Tabs>
+
+## Optionale Peer-Dependencies
+
+Jede Integration wird durch eine Peer-Dep gesperrt — installiere nur
+die, die Du tatsächlich verwendest.  Nichts wird automatisch geladen;
+die relevante Extension wirft einen klaren "missing peer
+dep"-Fehler, wenn Du versuchst, sie ohne das installierte Paket zu
+verwenden.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="tip" title="Warum Peer-Deps?">
+  Die Core-Installation klein zu halten (nur zwei Runtime-Deps)
+  bedeutet, dass ein Chat-Beispiel eine Handvoll MB zieht.  Ein
+  Nutzer, der Kafka braucht, fügt selbst `kafkajs` hinzu; ein
+  Nutzer, der S3 braucht, fügt `@aws-sdk/client-s3` hinzu.  Kein
+  Bundle-Bloat für Features, die Du nicht verwendest.
+</Aside>
+
+### HTTP-Backends
+
+| Paket | Aktiviert |
+| --- | --- |
+| `fastify` *(Default)* | Fastify-basiertes `HttpServerBackend` — beste Bun + Node Performance. |
+| `express` | Express-basiertes Backend, für Projekte, die bereits auf Express laufen. |
+| `hono` + `@hono/node-server` *(nur Node)* | Hono mit runtime-aware Serve-Primitives — `Bun.serve`, `@hono/node-server`, `Deno.serve` pro Runtime. |
+
+```bash
+bun add fastify                   # oder
+bun add express                   # oder
+bun add hono @hono/node-server    # @hono/node-server ist Node-only
+```
+
+### Persistenz
+
+| Paket | Aktiviert |
+| --- | --- |
+| `better-sqlite3` *(nur Node)* | SQLite-Journal + Snapshot Store auf Node.  Bun verwendet `bun:sqlite` (eingebaut, keine Peer-Dep). |
+| `cassandra-driver` | Cassandra / ScyllaDB Journal + Tag-Index. |
+| `@aws-sdk/client-s3` | S3-kompatibles Object-Storage-Backend (funktioniert mit MinIO, R2, Backblaze B2). |
+| `fzstd` *(optional)* | zstd-Kompression für Object-Storage-Blobs, wenn kein nativer Runtime-Support verfügbar ist. |
+
+### Cache
+
+| Paket | Aktiviert |
+| --- | --- |
+| `ioredis` | Redis-backed `Cache`. |
+| `memjs` | Memcached-backed `Cache`. |
+
+### Message Broker
+
+| Paket | Aktiviert |
+| --- | --- |
+| `kafkajs` | `KafkaActor` — Producer + Consumer. |
+| `mqtt` | `MqttActor`. |
+| `amqplib` | `AmqpActor` — RabbitMQ + AMQP-kompatible Broker. |
+| `nats` | `NatsActor` — inklusive JetStream-Subjects. |
+| `@grpc/grpc-js` + `@grpc/proto-loader` | `GrpcClientActor` + `GrpcServerActor`. |
+| `ws` | `WebSocketActor` (ausgehende Client-Verbindungen). |
+
+### Discovery + Koordination
+
+| Paket | Aktiviert |
+| --- | --- |
+| `@kubernetes/client-node` | `KubernetesApiSeedProvider` + `KubernetesLease`. |
+
+## TypeScript-Konfiguration
+
+Füge die folgenden Compiler-Optionen in Deiner `tsconfig.json` hinzu
+(oder verifiziere sie):
+
+```json
+{
+  "compilerOptions": {
+    "target":  "ES2022",
+    "module":  "ESNext",
+    "moduleResolution": "Bundler",
+    "strict":  true,
+    "noImplicitOverride": true,
+    "exactOptionalPropertyTypes": true,
+    "skipLibCheck": true
+  }
+}
+```
+
+Das Framework verlässt sich auf `noImplicitOverride`, um
+Lifecycle-Method-Typo-Bugs zu fangen (z. B. `onRecieve` statt
+`onReceive`).  Lass es weg, wenn Du es vorziehst, aber Du verlierst
+dieses Sicherheitsnetz.
+
+## Installation verifizieren
+
+Speichere das als `verify.ts`:
+
+```ts
+import { Actor, ActorSystem, Props } from 'actor-ts';
+
+class Ping extends Actor<'ping'> {
+  override onReceive(msg: 'ping'): void {
+    console.log('pong');
+  }
+}
+
+const system = ActorSystem.create('verify');
+const ref = system.actorOf(Props.create(() => new Ping()));
+ref.tell('ping');
+await new Promise((r) => setTimeout(r, 20));
+await system.terminate();
+console.log('install OK');
+```
+
+<Tabs>
+  <TabItem label="Bun">
+    ```bash
+    bun run verify.ts
+    ```
+  </TabItem>
+  <TabItem label="Node">
+    ```bash
+    npx tsx verify.ts
+    ```
+  </TabItem>
+  <TabItem label="Deno">
+    ```bash
+    deno run verify.ts
+    ```
+  </TabItem>
+</Tabs>
+
+Erwartete Ausgabe:
+
+```
+pong
+install OK
+```
+
+Wenn Du beide Zeilen siehst, funktioniert die Installation.  Wenn
+`pong` fehlt, ist Deine Runtime unter der Mindestversion (siehe die
+Tabelle oben auf dieser Seite) — aktualisiere sie und führe erneut
+aus.
+
+## Fehlerbehebung
+
+<Aside type="caution" title="`Cannot find module 'actor-ts'`">
+  - **Bun / Node**: Prüfe, ob `node_modules/` existiert.  Führe
+    `bun add actor-ts` oder `npm install` erneut aus, falls nicht.
+  - **Deno**: Verwende den `npm:`-Specifier — `import { ... } from 'npm:actor-ts'`.
+    Bare Specifier lösen sich in Deno ohne Import Map nicht auf.
+</Aside>
+
+<Aside type="caution" title="Ältere Node-Versionen">
+  actor-ts benötigt Node ≥ 20.0.  Auf Node 20.x funktioniert der
+  Kern, aber einige optionale Features fallen auf
+  Peer-Dep-Implementierungen zurück: WebSocket braucht das
+  `ws`-Paket (Node 22+ hat es nativ), und zstd-Kompression braucht
+  `fzstd` (Node 22.15+ hat es nativ).  Node ≤ 19 wird nicht
+  unterstützt.
+</Aside>
+
+<Aside type="caution" title="Fehlende Peer-Dependency zur Laufzeit">
+  Der Versuch, eine Integration ohne ihre Peer-Dep zu verwenden,
+  erzeugt einen klaren Fehler wie:
+
+  > `Missing peer dependency 'kafkajs'.  Run 'bun add kafkajs' (or
+  > equivalent) to enable the Kafka broker.`
+
+  Installiere das genannte Paket und führe erneut aus.  Siehe die
+  Peer-Dep-Tabellen oben für die vollständige Liste pro
+  Integration.
+</Aside>
+
+## Wie es weitergeht
+
+- **[Quickstart](/de/intro/quickstart/)** — fünf Minuten zu
+  einem laufenden Actor.
+- **[Warum Actors?](/de/intro/why-actors/)** — die Philosophie
+  hinter dem Framework.
+- **[Lernpfad](/de/intro/learning-path/)** — empfohlene
+  Lesereihenfolge basierend auf dem, was Du bauen willst.

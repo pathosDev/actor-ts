@@ -1,0 +1,287 @@
+---
+title: Props
+description: Das Konfigurations-Bundle, das beschreibt, wie ein Actor erstellt wird — Factory-Funktion plus optionale Supervisor-Strategie, Dispatcher und Mailbox. Unveränderlich; verkettbare `with…`-Builder.
+---
+
+`Props` ist das Rezept zur Erstellung eines Actors.  Nicht der Actor
+selbst — eine *Beschreibung* dessen, was zu erstellen ist, die das
+Framework beim Spawnen und bei jedem Restart verwendet.
+
+Das Minimum:
+
+```ts
+import { Props } from 'actor-ts';
+
+const props = Props.create(() => new MyActor());
+```
+
+Eine Factory-Funktion, die eine frische `MyActor`-Instanz zurückgibt.
+Das ist alles, was du für einen Actor mit Default-Supervision,
+Default-Dispatcher und der Default-unbounded-FIFO-Mailbox brauchst.
+
+Für alles darüber hinaus verkettest du `with…`-Builder:
+
+```ts
+const props = Props.create(() => new Worker())
+  .withSupervisorStrategy(stoppingStrategy)
+  .withDispatcher(new MicrotaskDispatcher())
+  .withMailbox(() => new BoundedMailbox({ capacity: 100, overflow: 'drop-head' }));
+```
+
+Jedes `with…` gibt ein **neues** `Props` zurück — die Originale sind
+unveränderlich.  Baue das Rezept auf und gib es dann an
+`system.actorOf` oder `context.spawn`.
+
+## Warum eine Factory, keine Instanz
+
+`Props.create` nimmt eine Factory `() => new MyActor(...)`, nicht die
+Instanz direkt.  Das ist wichtig, weil der Actor **bei jedem Restart
+neu gebaut wird**:
+
+```ts
+class Counter extends Actor<...> {
+  private count = 0;
+  // ...
+}
+
+// Mach das nicht:
+const counter = new Counter();
+const props   = Props.create(() => counter);   // gibt jedes Mal dieselbe Instanz zurück
+
+// Mach das:
+const props = Props.create(() => new Counter());   // frische Instanz pro Aufruf
+```
+
+Wenn du dieselbe Instanz bei einem Restart wiederverwendest, wird der
+Actor nicht zurückgesetzt — er erbt den *kaputten* Zustand vom
+fehlgeschlagenen Lauf.  Die Factory-Form erzwingt einen sauberen
+Schiefer, was der ganze Sinn von "let it crash" ist.
+
+Die Factory schließt jegliche benötigten Konstruktor-Argumente ein:
+
+```ts
+class Worker extends Actor<...> {
+  constructor(
+    private readonly db: ActorRef<DbMsg>,
+    private readonly cfg: Config,
+  ) { super(); }
+}
+
+const props = Props.create(() => new Worker(db, cfg));
+```
+
+`db` und `cfg` werden vom Closure gefangen; jeder Restart sieht
+dieselbe Verdrahtung.
+
+## Die vier Builder
+
+```ts
+class Props<TMsg> {
+  static create<TMsg>(factory: () => Actor<TMsg>): Props<TMsg>;
+
+  withSupervisorStrategy(strategy: SupervisorStrategy): Props<TMsg>;
+  withDispatcher(dispatcher: Dispatcher): Props<TMsg>;
+  withMailboxCapacity(capacity: number): Props<TMsg>;
+  withMailbox(factory: () => Mailbox<TMsg>): Props<TMsg>;
+}
+```
+
+### `withSupervisorStrategy`
+
+```ts
+import { OneForOneStrategy, Directive, stoppingStrategy } from 'actor-ts';
+
+Props.create(() => new Worker())
+  .withSupervisorStrategy(stoppingStrategy);
+
+Props.create(() => new Db())
+  .withSupervisorStrategy(new OneForOneStrategy(
+    (err) => err instanceof TransientError ? Directive.Resume : Directive.Restart,
+    { maxRetries: 5, withinTimeRangeMs: 60_000 },
+  ));
+```
+
+Die hier angehängte Strategie entscheidet, **was passiert, wenn
+DIESER Actor fehlschlägt** — die Strategie seines Supervisors.  Im
+Leben jedes Actors sind zwei Strategien involviert:
+
+- Die **auf den `Props` dieses Actors** — angewendet auf die Fehler
+  *dieses Actors* von seinem Parent.
+- Die **innerhalb der Klasse dieses Actors** (`override supervisorStrategy`)
+  — angewendet auf die Fehler der *Kinder dieses Actors*.
+
+Zwei verschiedene Dinge; die `Props`-Form ist für das erste.  Die
+meisten Actors brauchen keinen Override: die Default-Strategie des
+Parents (oder das `defaultStrategy` des System-Roots) handhabt den
+Fehler mit einem Restart + 10/Minute-Cap.  Greife zu
+`withSupervisorStrategy`, wenn das nicht passt — z.B. ein Worker, der
+bei Fehler gestoppt statt neu gestartet werden soll, weil sein Parent
+einen Ersatz spawnen wird.
+
+Siehe [Supervision](/de/fundamentals/supervision/) für die volle
+Strategie-Semantik.
+
+### `withDispatcher`
+
+```ts
+import { MicrotaskDispatcher, ThroughputDispatcher } from 'actor-ts';
+
+Props.create(() => new Crunchy())
+  .withDispatcher(new MicrotaskDispatcher());
+
+Props.create(() => new BulkProcessor())
+  .withDispatcher(new ThroughputDispatcher(100));
+```
+
+Überschreibe den systemweiten Dispatcher für diesen spezifischen
+Actor.  Nützlich, wenn:
+
+- Ein Actor CPU-lastig ist und von Microtask-Scheduling profitiert
+  (keine I/O-Fairness benötigt).
+- Ein Actor latenzempfindlich ist und den Default-Immediate-Dispatcher
+  braucht, während der Rest des Systems auf einem
+  Hochdurchsatz-Dispatcher läuft.
+
+Für die meisten Apps gilt der System-Level-Dispatcher uniform, und du
+brauchst das nie.  Siehe
+[Dispatcher](/de/fundamentals/dispatchers/).
+
+### `withMailboxCapacity`
+
+```ts
+Props.create(() => new SlowConsumer()).withMailboxCapacity(500);
+```
+
+Kurzform für "die Default-FIFO-Mailbox, aber gebunden auf 500."
+Die Default-Overflow-Policy (`reject`) gilt — eine volle Mailbox
+wirft `MailboxFullError` an der `tell`-Stelle.
+
+Das ist der häufigste Mailbox-Override: ein einfacher Cap mit der
+"Sender spürt den Druck"-Semantik.
+
+### `withMailbox`
+
+```ts
+import { BoundedMailbox, PriorityMailbox } from 'actor-ts';
+
+// Bounded + drop-head:
+Props.create(() => new Telemetry())
+  .withMailbox(() => new BoundedMailbox({ capacity: 1_000, overflow: 'drop-head' }));
+
+// Priority:
+Props.create(() => new Worker())
+  .withMailbox(() => new PriorityMailbox<Msg>({
+    priorityFor: (m) => m.kind === 'urgent' ? 0 : 5,
+  }));
+```
+
+Volle Kontrolle — gib eine beliebige `Mailbox`-Subklasse zurück.  Die
+Factory wird einmal pro Actor-Inkarnation aufgerufen; bei einem
+Restart wird eine frische, leere Mailbox-Datenstruktur erstellt.
+
+Siehe [Mailboxes](/de/fundamentals/mailboxes/) für die
+Overflow-Policies und Priority-Semantik.
+
+## Naming beim Spawn
+
+Der Actor-*Name* wird an `actorOf` / `spawn` übergeben, nicht auf
+`Props` gespeichert:
+
+```ts
+const props = Props.create(() => new Worker());
+
+system.actorOf(props, 'worker-1');           // → /user/worker-1
+system.actorOf(props, 'worker-2');           // → /user/worker-2
+this.context.actorOf(props, 'sub-worker');   // → /user/<this>/sub-worker
+```
+
+Der Grund: `Props` ist als **wiederverwendbar** gedacht.  Dasselbe
+Rezept kann viele Actors mit verschiedenen Namen spawnen.  Wäre
+`name` auf `Props`, bräuchtest du ein frisches `Props` pro Actor —
+ein Footgun für Actors, die einen eindeutigen Namen pro Instanz
+bekommen.
+
+Lass den Namen weg, und das Framework synthetisiert einen (`'$1'`,
+`'$2'`, …).
+
+## Häufige Muster
+
+### Per-Actor-Props-Factory-Funktion
+
+Für Familien von Actors mit verschiedenen Konstruktor-Args wickle
+`Props.create` in einen kleinen Helfer:
+
+```ts
+function workerProps(db: ActorRef<DbMsg>): Props<WorkerMsg> {
+  return Props.create(() => new Worker(db))
+    .withSupervisorStrategy(stoppingStrategy)
+    .withMailboxCapacity(500);
+}
+
+// Viele mit demselben Rezept spawnen:
+for (let i = 0; i < 8; i++) {
+  this.context.actorOf(workerProps(db), `worker-${i}`);
+}
+```
+
+Das hält die Konfiguration an einem Ort und die Aufrufstellen sauber.
+
+### Props für typed Actors
+
+Die typed-Actor-API hat ihr eigenes `Props`-Äquivalent (den typed
+`Behaviors.setup(...)`-Flow); siehe
+[Typed Actors](/de/typed/typed-actor/).  Das untyped `Props`, das
+hier behandelt wird, ist das allgemeinere — akzeptiert eine Factory,
+die `Actor<TMsg>` zurückgibt, wobei der Nachrichtentyp aus der
+Klassendeklaration des Actors selbst kommt.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Capture keinen mutablen Zustand im Factory-Closure">
+  ```ts
+  let counter = 0;
+  const props = Props.create(() => {
+    counter++;
+    return new Worker(counter);
+  });
+  ```
+  Bei einem Restart wird die Factory erneut aufgerufen — und
+  `counter` zählt weiter.  Der neu gestartete Actor sieht ein anderes
+  Argument als der ursprüngliche.  Capture entweder unveränderliche
+  Werte oder akzeptiere, dass sich "das Actor-Argument bei Restart
+  ändert", wenn das tatsächlich gewollt ist (selten, meist ein Bug).
+</Aside>
+
+<Aside type="caution" title="Dieselben `Props` für Actors teilen, die unterschiedliche Supervision brauchen">
+  ```ts
+  const props = Props.create(() => new Worker())
+    .withSupervisorStrategy(stoppingStrategy);
+
+  // Zwei Geschwister, beide bei Fehler gestoppt — okay.
+  system.actorOf(props, 'a');
+  system.actorOf(props, 'b');
+
+  // Aber: willst du wirklich, dass beide stoppingStrategy verwenden?
+  ```
+  `Props` ist unveränderlich, Wiederverwendung ist also sicher — aber
+  die Supervisor-Strategie ist über jeden Actor, der aus denselben
+  Props gespawnt wurde, uniform.  Wenn zwei Actors, die *ähnlich*
+  *aussehen*, tatsächlich unterschiedliche Supervision brauchen, gib
+  ihnen eigene `Props` (oder einen Factory-Helfer); teile nicht.
+</Aside>
+
+## Wie es weitergeht
+
+- **[Actor](/de/fundamentals/actor/)** — die Basisklasse, deren
+  Konstruktor die Factory aufruft.
+- **[Supervision](/de/fundamentals/supervision/)** — die
+  Strategie, die du an `withSupervisorStrategy` übergibst.
+- **[Dispatcher](/de/fundamentals/dispatchers/)** — der
+  Scheduler, den du an `withDispatcher` übergibst.
+- **[Mailboxes](/de/fundamentals/mailboxes/)** — die Queue,
+  die du an `withMailbox` / `withMailboxCapacity` übergibst.
+- **[ActorSystem](/de/fundamentals/actor-system/)** — das
+  `system.actorOf(props, name?)`, das Props konsumiert.
+
+Die [`Props`](/api/classes/props/)-API-Referenz deckt den vollen
+Builder-Set ab.

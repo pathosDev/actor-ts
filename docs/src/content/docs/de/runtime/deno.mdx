@@ -1,0 +1,194 @@
+---
+title: Deno
+description: Deno-Unterstützung ist Best-Effort — die Core-API funktioniert, aber ein paar Subsysteme (SQLite, manche Peer-Dep-lastigen Broker) brauchen Workarounds oder bleiben unsupported. Nutze, wenn du schon auf Deno gesetzt hast; sonst bevorzuge Bun oder Node.
+---
+
+actor-ts läuft auf **Deno**, aber mit Einschränkungen. Die
+Core-Actor-APIs (Actor, ActorSystem, ActorRef, Supervision usw.)
+funktionieren identisch. Subsysteme mit nativen Abhängigkeiten
+sind, wo die Unterstützung variiert.
+
+## Status: Best-Effort
+
+| Subsystem | Status |
+| --- | --- |
+| Core-Actor-API | ✓ Funktioniert |
+| Cluster-Transport (TCP) | ✓ Funktioniert (via `Deno.connect` / `Deno.listen`) |
+| Persistenz — In-Memory | ✓ |
+| Persistenz — SQLite | ✗ Nicht unterstützt |
+| Persistenz — Cassandra | ⚠ Ungetestet |
+| HTTP — Fastify | ✓ Funktioniert |
+| HTTP — Bun.serve | ✗ (Bun-only) |
+| WebSocket-Server (`ServerWebSocketActor`) | ⚠ Workaround nötig |
+| Broker-Actor (Kafka, MQTT usw.) | ⚠ Hängt von der Deno-Kompat des zugrundeliegenden npm-Pakets ab |
+
+Für **Produktion** empfehlen wir **Bun oder Node**, außer deine
+Organisation ist auf Deno festgelegt.
+
+## Installation
+
+```bash
+curl -fsSL https://deno.land/install.sh | sh
+deno --version    # 2.0+ benötigt
+```
+
+## actor-ts nutzen
+
+```ts
+// deno.json
+{
+  "imports": {
+    "actor-ts": "npm:actor-ts",
+    "ts-pattern": "npm:ts-pattern"
+  }
+}
+
+// main.ts
+import { ActorSystem } from 'actor-ts';
+
+const system = ActorSystem.create('my-app');
+// ...
+```
+
+Deno's npm-Kompat lässt dich actor-ts direkt via `npm:`-
+Specifier importieren.
+
+## Was Out-of-the-Box funktioniert
+
+- **Core-Actor-Modell** — Actor, ActorSystem, Dispatcher,
+  Mailboxen, Supervision.
+- **Cluster-Transport** — Deno's TCP-APIs sind verdrahtet.
+- **In-Memory-Persistenz** — funktioniert für Tests + Dev.
+- **DistributedData** — pure-JS, funktioniert.
+- **Event-Stream, Receptionist, Sharding, Singleton** — alles
+  funktioniert.
+
+## Was Workarounds braucht
+
+### SQLite
+
+Nicht unterstützt. Deno hat kein eingebautes SQLite, und weder
+`bun:sqlite` noch `better-sqlite3` funktionieren nativ.
+
+**Workarounds**:
+
+- **`deno_sqlite`** (ein Deno-natives Paket) — implementiere
+  `Journal` manuell dagegen.
+- **HTTP-gestütztes Journal** — umhülle einen Remote-Journal-
+  Service.
+- **Cassandra** stattdessen nutzen — kein SQLite nötig für
+  Multi-Node-Persistenz.
+
+### WebSocket-Server
+
+`ServerWebSocketActor` setzt standardmäßig auf `ws` (Node) oder
+`Bun.serve`. Für Deno schreibe einen dünnen Adapter mit
+`Deno.serveHttp` + `Deno.upgradeWebSocket`.
+
+## Permissions-Modell
+
+Deno's Permission-System verlangt explizite Flags:
+
+```bash
+deno run \
+  --allow-net \
+  --allow-read \
+  --allow-write \
+  --allow-env \
+  main.ts
+```
+
+Für die meisten actor-ts-Apps:
+
+- `--allow-net` — Cluster- + HTTP-Traffic.
+- `--allow-read` — Config-Dateien, Zertifikate.
+- `--allow-write` — für SQLite- / Datei-Persistenz (falls
+  genutzt).
+- `--allow-env` — für Env-Vars.
+
+Für Produktion auf spezifische Berechtigungen einschränken:
+
+```bash
+deno run --allow-net=:2552,:8080 --allow-env=ACTOR_TS_* main.ts
+```
+
+## Deno Deploy
+
+[Deno Deploy](https://deno.com/deploy) ist Deno's edge-artige
+Serverless-Plattform. Kurzlebige Isolates, kein lang laufender
+Prozess — **passt nicht zum Clustering**.
+
+Für Deno-Deploy-Use-Cases:
+
+- Single-Actor-Muster — spawne einen Actor pro Request, dann
+  stoppen.
+- Nutze actor-ts als **Bibliothek** für Actor-Muster innerhalb
+  eines HTTP-Handlers, nicht als Clustering-Primitiv.
+
+## Tests auf Deno
+
+```ts
+import { Deno } from 'deno';
+import { TestKit } from 'actor-ts/testkit';
+
+Deno.test('Counter inkrementiert', async () => {
+  const tk = TestKit.create();
+  // ...
+  await tk.shutdown();
+});
+```
+
+Deno's eingebauter Test-Runner funktioniert mit TestKit.
+
+## Auf Deno migrieren
+
+Wenn du erwägst, von Node / Bun auf Deno umzuziehen:
+
+1. **Verifiziere, dass deine Peer-Deps auf Deno funktionieren** —
+   die meisten NPM-Pakete sind via `npm:` nutzbar, aber ein paar
+   (besonders mit komplexen nativen Bindings) versagen.
+2. **Ersetze SQLite**, falls du es nutzt — wechsle zu In-Memory
+   (Tests) oder Cassandra (Produktion).
+3. **Ersetze `ServerWebSocketActor`**, falls genutzt — schreibe
+   einen Deno-Adapter oder nutze stattdessen SSE.
+4. **Teste Cluster-Formation** gründlich — Deno's TCP-Backend
+   hat weniger Produktions-Stunden.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Deno-Unterstützung hat weniger Test-Stunden">
+  ```ts
+  // Subsysteme, die wir auf Deno nicht aktiv CI'n, können Edge-Cases haben
+  ```
+  Melde Bugs gegen Deno-spezifisches Verhalten; wir kümmern uns,
+  aber Deno bekommt nicht dieselbe Tiefe an Tests wie Bun /
+  Node.
+</Aside>
+
+<Aside type="caution" title="Permissions decken Fehlkonfigurationen auf">
+  ```bash
+  deno run --allow-net=:80 main.ts
+  # → actor-ts versucht, 2552 zu binden; Permission denied
+  ```
+  Sei explizit zu allen Ports + Pfaden. Deno's Permissions
+  decken Bugs auf, die auf Node still durchgehen.
+</Aside>
+
+<Aside type="caution" title="Deno Deploy ist keine lang laufende Runtime">
+  ```ts
+  // Deno Deploy → spawnt Isolates pro Request
+  ```
+  Versuche nicht, ein lang laufendes Actor-System auf Deno
+  Deploy zu betreiben. Nutze es als Bibliothek innerhalb
+  einzelner Handler-Invocations oder nutze Deno auf einer echten
+  VM.
+</Aside>
+
+## Wo es weitergeht
+
+- **[Runtime — Überblick](/de/runtime/overview/)** — das
+  größere Bild.
+- **[Bun](/de/runtime/bun/)** — die empfohlene Alternative.
+- **[Node](/de/runtime/node/)** — die andere Alternative.
+- **[Kompatibilitäts-Matrix](/de/runtime/compatibility-matrix/)** —
+  Feature-für-Feature-Unterstützung.

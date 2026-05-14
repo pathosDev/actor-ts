@@ -1,0 +1,120 @@
+---
+title: Lernpfad
+description: Drei Lesereihenfolgen durch die Doku je nach Ziel — schnellster Weg zum Schreiben von Code, konzeptioneller Deep-Dive oder Migration von einem anderen Framework. Wähle den, der zu dem passt, was Du vorhast.
+---
+
+Die Seite hat etwa 200 Seiten.  Die meisten davon sind Referenz; eine
+viel kleinere Teilmenge ist das **Lernmaterial**.  Diese Seite mappt
+drei verschiedene Pfade, je nachdem, was Du vorhast.
+
+## Pfad 1 — Einfach Code schreiben
+
+Für Leute, die **in 30 Minuten anfangen wollen zu coden**:
+
+1. **[Quickstart](/de/intro/quickstart/)** — ein funktionierender
+   Hello-Actor in 5 Minuten.
+2. **[Actor](/de/fundamentals/actor/)** — die Basisklasse +
+   `onReceive`.
+3. **[Messages](/de/fundamentals/messages/)** — die
+   Discriminated-Union-Konvention.
+4. **[Pattern Matching](/de/fundamentals/pattern-matching/)** —
+   das `match().exhaustive()`-Idiom.
+5. **[ActorSystem](/de/fundamentals/actor-system/)** — wie Du
+   den Actor spawnst.
+6. **[Ask Pattern](/de/fundamentals/ask-pattern/)** — wie Du
+   Antworten liest.
+
+Danach kannst Du grundlegende Actors schreiben.  Alles andere
+kann bei Bedarf gelesen werden, wenn Du den Bedarf bemerkst.
+
+## Pfad 2 — Zuerst das Modell verstehen
+
+Für Leute, die das **konzeptionelle Bild** wollen, bevor sie
+Code schreiben:
+
+1. **[Warum Actors](/de/intro/why-actors/)** — die Rationale.
+2. **[ActorSystem](/de/fundamentals/actor-system/)** — der
+   Container.
+3. **[Actor](/de/fundamentals/actor/)** — die Entität.
+4. **[Mailboxes](/de/fundamentals/mailboxes/)** +
+   **[Dispatchers](/de/fundamentals/dispatchers/)** —
+   was eine-nach-der-anderen zum Funktionieren bringt.
+5. **[Supervision](/de/fundamentals/supervision/)** +
+   **[Death Watch](/de/fundamentals/death-watch/)** — die
+   "let it crash"-Philosophie.
+6. **[Coordinated Shutdown](/de/fundamentals/coordinated-shutdown/)** —
+   wie Systeme graceful enden.
+
+Danach hast Du das **mentale Modell**.  Der Rest der Doku füllt
+Details auf.
+
+## Pfad 3 — Du kommst von einem anderen Framework
+
+Für Leute, die **von woanders migrieren**:
+
+1. **[Migration Overview](/de/migration/overview/)** — die
+   Cross-Framework-Konzept-Map.
+2. **Der spezifische Migration Guide**:
+   - [from-akka-jvm](/de/migration/from-akka-jvm/)
+   - [from-pekko](/de/migration/from-pekko/)
+   - [from-orleans](/de/migration/from-orleans/)
+   - [from-akka-net](/de/migration/from-akka-net/)
+   - [from-vanilla-ts](/de/migration/from-vanilla-ts/)
+3. **[Quickstart](/de/intro/quickstart/)**, um zu bestätigen,
+   dass die grundlegende API den Erwartungen entspricht.
+4. **Die Fundamentals-Deep-Dives**, die auf das abbilden, was
+   Du bereits kennst — die meisten Konzepte tragen sich
+   herüber.
+
+Danach kannst Du Deine bestehenden Patterns übersetzen.  Die
+Konventionen des Frameworks zu verinnerlichen dauert ein paar
+Wochen; das zugrunde liegende Modell trägt sich von jedem
+Actor-Framework herüber.
+
+## Was Du nicht lesen musst
+
+Die Doku deckt **alles ab, was ausgeliefert wird**, aber das
+meiste davon ist **Referenz**.  Du musst nicht lesen:
+
+- **Per-CRDT-Seiten**, es sei denn, Du verwendest
+  DistributedData.
+- **Per-Broker-Seiten**, es sei denn, Du integrierst diesen
+  Broker.
+- **Migrations-Adapter-Details**, es sei denn, Du entwickelst
+  Schemas weiter.
+- **Cluster-Tuning**, es sei denn, Du triffst auf spezifische
+  Symptome.
+
+Die
+[FAQ](/de/reference/faq/) +
+[Glossar](/de/reference/glossary/) decken die
+"jemand hat nach X gefragt"-Fälle ab.  Greife zu ihnen, wenn Du
+eine spezifische Frage hast.
+
+## Eine vernünftige Lesereihenfolge von "ich weiß nichts"
+
+Wenn Du brandneu bei Actor-Frameworks bist:
+
+1. **Warum Actors** — überzeugt Dich.
+2. **Quickstart** — bestätigt, dass das Grundlegende
+   funktioniert.
+3. **Actor / Messages / Pattern Matching** — das Kern-Triple.
+4. **ActorSystem** — wie Du aufsetzt.
+5. **Supervision** — das unterscheidende Konzept.
+6. **Mailboxes / Dispatchers** — die "wie funktioniert
+   das"-Schicht.
+7. **Sharding Overview + Cluster Overview** — wenn Du
+   Verteilung brauchst.
+8. **Persistence Overview** — wenn State überleben soll.
+
+Nach ~3 Stunden Lektüre hast Du die Grundlage abgedeckt.  Alles
+andere baut darauf auf.
+
+## Wie es weitergeht
+
+- **[Quickstart](/de/intro/quickstart/)** — das
+  5-Minuten-Hello-Actor.
+- **[Fundamentals Overview](/de/fundamentals/overview/)** —
+  die Konzept-Map.
+- **[FAQ](/de/reference/faq/)** — schnelle Antworten.
+- **[Glossar](/de/reference/glossary/)** — Begriffsreferenz.

@@ -1,0 +1,156 @@
+---
+title: ProducerController
+description: Sender-seitige zuverlässige Zustellung — vergibt Sequence Numbers, hält Nachrichten bis zum ACK, retransmittiert bei Timeout. Producer-Seite des at-least-once-Vertrags.
+---
+
+`ProducerController` umwickelt die ausgehenden Nachrichten eines
+Senders, vergibt **Sequence Numbers** und hält sie, bis sie vom
+Consumer **geACKt** sind.
+
+```ts
+import { ProducerController } from 'actor-ts';
+
+const producer = system.actorOf(
+  ProducerController.props<OrderEvent>({
+    producerId:     'orders',                  // stabile Identität
+    consumer:       consumerRef,
+    maxOutstanding: 100,                       // Backpressure-Cap
+    retransmitDelayMs: 5_000,
+  }),
+  'producer',
+);
+
+producer.tell({ kind: 'send', payload: { orderId: 'o-1' } });
+```
+
+Intern:
+
+- Vergibt Seq 1 für die erste Nachricht, 2 für die nächste, ...
+- Sendet jede via Wrapped Tell an den Consumer.
+- Hält sie in einem Buffer, bis sie geACKt sind.
+- Retransmittiert, wenn binnen `retransmitDelayMs` kein ACK kommt.
+
+## Konfiguration
+
+```ts
+interface ProducerControllerSettings<T> {
+  producerId:         string;              // stabiler Identifier
+  consumer:           ActorRef<DeliveryEnvelope<T>>;
+  maxOutstanding?:    number;              // Default 100
+  retransmitDelayMs?: number;              // Default 5000
+}
+```
+
+| Feld | Zweck |
+| --- | --- |
+| `producerId` | Stabiler Identifier über Restarts hinweg — gebraucht, wenn du State persistierst, um über die Recovery hinweg zu matchen. |
+| `consumer` | Die ConsumerController-Ref. |
+| `maxOutstanding` | Backpressure — Senden pausiert nach N unbestätigten Nachrichten. |
+| `retransmitDelayMs` | Wie lange auf ein ACK gewartet wird, bevor retransmittiert wird. |
+
+## Backpressure
+
+```ts
+maxOutstanding: 100
+```
+
+Der Producer hält bis zu 100 unbestätigte Nachrichten.  Darüber
+hinaus werden eingehende `{ kind: 'send' }`-Nachrichten
+**gestasht** — das `tell` des Callers ist erfolgreich, aber das
+eigentliche Senden pausiert, bis die ACKs des Consumers den
+Buffer freigeben.
+
+Für Sender, die wissen müssen, wann Druck herrscht:
+
+```ts
+const result = await ask(producer, { kind: 'send', payload, replyTo: ... }, 30_000);
+//                                         ^ antwortet, nachdem die Nachricht mindestens gesendet wurde
+```
+
+`ask`-Sends warten auf die "Ich habe sie gesendet"-Antwort des
+Producers und geben dir damit ein natürliches Backpressure-Signal.
+
+## Retransmission
+
+Wenn ein ACK nicht binnen `retransmitDelayMs` eintrifft:
+
+```
+Seq 5 zum Zeitpunkt t=0 gesendet
+ACK für Seq 5 kommt nie
+bei t=5000 → Seq 5 retransmitten
+bei t=10000 → Seq 5 retransmitten
+... bis das ACK kommt oder der Producer stoppt
+```
+
+Retransmits nutzen **dieselbe Seq** wie das Original.  Der
+Consumer dedupliziert anhand der Seq.
+
+## State + Restart
+
+```ts
+// Ohne Persistenz:
+Producer crasht → Buffer weg → unbestätigte Nachrichten sind verloren
+// Beim Restart setzt das Senden bei Seq 1 wieder ein (kein Resume)
+
+// Mit ProducerController + PersistentActor-Wrapper:
+Producer crasht → Recovery baut Buffer + last-acked-Seq wieder auf
+// Beim Restart setzt das Senden bei der richtigen Seq fort
+```
+
+Für volle Durability den Producer in ein
+`PersistentActor`-Muster einwickeln — ausgehende Nachrichten
+persistieren, bevor gesendet wird; beim Restart unbestätigte
+neu abspielen.
+
+Das einfache `ProducerController` des Frameworks ist **in-memory**
+— ausreichend für ephemere Streams.  Für durable Streams legst
+du Persistenz darauf.
+
+## Mehrere Consumer
+
+```ts
+// Ein Producer pro Consumer:
+const p1 = system.actorOf(ProducerController.props({ consumer: c1Ref, ... }));
+const p2 = system.actorOf(ProducerController.props({ consumer: c2Ref, ... }));
+```
+
+Jeder ProducerController ist **1:1 mit einem ConsumerController**.
+Für Fan-out senden mehrere Producer an verschiedene Consumer.
+
+Für routing-basiertes Fan-out (ein logischer Stream auf N
+Consumer aufgeteilt) würdest du einen eigenen Router darüber
+schreiben.
+
+## Cluster-aware
+
+Die `consumer`-Ref des ProducerController kann auf einen
+**Remote-Consumer** zeigen (anderer Cluster-Node).  Der
+Cluster-Transport serialisiert Envelopes; Retransmissions
+funktionieren gleich.
+
+Der Producer hält den Buffer **lokal** — bei einem Crash des
+Producer-Hosts sind diese Nachrichten verloren, sofern nicht
+persistiert.
+
+## Vergleich mit rohem `tell`
+
+```
+ref.tell(msg):                            ProducerController:
+- Keine Seq, kein ACK, kein Retransmit      - Vertrag zuverlässige Zustellung
+- Verloren bei totem Empfänger              - Übersteht transiente Fehler
+- Sub-Mikrosekunden-Kosten                  - ~50µs Overhead pro Nachricht
+```
+
+Nimm den Controller nur für Streams, in denen Verlust inakzeptabel
+ist; rohes `tell` für alles andere.
+
+## Wohin als Nächstes
+
+- **[Delivery im Überblick](/de/delivery/overview/)** — das
+  Gesamtbild.
+- **[ConsumerController](/de/delivery/consumer-controller/)** —
+  die Empfänger-Seite.
+- **[ACK-Semantik](/de/delivery/ack-semantics/)** — wann ACKs
+  feuern und was sie bedeuten.
+- **[PersistentActor](/de/persistence/persistent-actor/)** —
+  für durable Producer-State.

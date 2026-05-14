@@ -1,0 +1,183 @@
+---
+title: In-Memory-Journal
+description: Die Referenz-Journal-Implementierung — durch plain Arrays gestützt, null Setup, von Tests und Dev verwendet. Daten leben nur so lange wie der Prozess; verwende sie **niemals** in Produktion.
+---
+
+`InMemoryJournal` speichert jedes Event im Prozess-Speicher.  Es
+ist der **Default**, wenn du ein System ohne konfigurierte
+Persistenz erstellst — schnell, null Setup, perfekt für Tests und
+Dev.
+
+```ts
+import { InMemoryJournal, InMemorySnapshotStore, PersistenceExtensionId, ActorSystem } from 'actor-ts';
+
+const system = ActorSystem.create('demo');
+system.extension(PersistenceExtensionId).configure({
+  journal:       new InMemoryJournal(),
+  snapshotStore: new InMemorySnapshotStore(),
+});
+
+// Jetzt schreiben `PersistentActor`s in diesem System in das In-Memory-Journal.
+```
+
+Es ist außerdem die **Referenz-Semantik**, der jede andere
+Journal-Implementierung entsprechen muss — Append-only, monotone
+Sequenznummern, Exactly-once-Delivery an Subscriber,
+Concurrency-Check auf erwarteter Sequenz.
+
+## Was es tut
+
+Der Journal-Vertrag:
+
+```ts
+interface Journal {
+  append<E>(pid: string, events: E[], expectedSeq: number, tags?: string[]): Promise<PersistentEvent<E>[]>;
+  read<E>(pid: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]>;
+  highestSeq(pid: string): Promise<number>;
+  deleteEventsUpTo(pid: string, seqNr: number): Promise<void>;
+  persistenceIds(): AsyncIterable<string>;
+  readonly events: JournalEventBus;
+}
+```
+
+`InMemoryJournal` implementiert all das intern mit einer
+`Map<string, PersistentEvent[]>`.  Operationen sind:
+
+- **`append`** — Events auf das Array des Streams pushen.
+  Concurrency-Check auf `expectedSeq` (wirft
+  `JournalConcurrencyError`, wenn der aktuelle Head nicht passt).
+- **`read`** — das Array nach Sequenznummern-Bereich slicen.
+- **`highestSeq`** — die seqNr des letzten Eintrags lesen (oder 0).
+- **`deleteEventsUpTo`** — das Präfix abschneiden.
+- **`persistenceIds`** — über die Keys der Map iterieren.
+
+Jedes `append` publiziert das Event außerdem in den In-Process-
+`JournalEventBus` — sodass Push-basierte Queries (siehe
+[Push-basierte Query](/de/persistence/push-based-query/)) in
+Echtzeit ohne Polling funktionieren.
+
+## Wann verwenden
+
+Drei legitime Fälle:
+
+1. **Tests** — schnell, kein IO, kein Cleanup zwischen Tests
+   nötig.  Ein frisches System hochziehen, Assertions machen,
+   abreißen.
+2. **Entwicklung** — wenn du dich beim lokalen Iterieren nicht
+   mit einer SQLite-Datei herumschlagen willst.
+3. **Wegwerf-Demos** — wenn die Daten nicht überleben sollen.
+
+Für alles, was **über Neustarts hinweg persistieren** muss,
+wechsle zu [SQLite](/de/persistence/journals/sqlite/) oder
+[Cassandra](/de/persistence/journals/cassandra/).
+
+## Test-Pattern
+
+```ts
+import { describe, it, beforeEach, afterEach } from 'bun:test';
+import { TestKit, InMemoryJournal, InMemorySnapshotStore, PersistenceExtensionId } from 'actor-ts';
+
+describe('OrderActor', () => {
+  let tk: TestKit;
+
+  beforeEach(() => {
+    tk = TestKit.create();
+    tk.system.extension(PersistenceExtensionId).configure({
+      journal:       new InMemoryJournal(),
+      snapshotStore: new InMemorySnapshotStore(),
+    });
+  });
+
+  afterEach(async () => { await tk.shutdown(); });
+
+  it('replays events on restart', async () => {
+    const probe = tk.createTestProbe();
+
+    // Anlegen + ein paar Commands senden
+    let order = tk.system.actorOf(Props.create(() => new OrderActor('order-1')));
+    order.tell({ kind: 'place', sku: 'book-1' });
+    order.tell({ kind: 'place', sku: 'book-2' });
+    await probe.expectMsg({ kind: 'placed', sku: 'book-2' });
+
+    // Stoppen + neu spawnen — gleiche Persistence-ID
+    await tk.system.stop(order);
+    order = tk.system.actorOf(Props.create(() => new OrderActor('order-1')));
+    order.tell({ kind: 'view', replyTo: probe });
+
+    // Wiederhergestellter State sollte beide platzierten Events widerspiegeln
+    await probe.expectMsg({ items: ['book-1', 'book-2'] });
+  });
+});
+```
+
+Ein frisches `InMemoryJournal` pro Test (über `TestKit` pro Test)
+macht jeden Fall isoliert — kein State-Leakage zwischen Tests.
+
+## Was es nicht tut
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Daten sterben mit dem Prozess">
+  Das Journal speichert alles in einer `Map`.  Wenn der Prozess
+  beendet wird, ist die Map weg.  Das ist okay für Tests und Dev —
+  aber **deploye niemals eine Produktions-App mit dem In-Memory-
+  Journal**.  Neustart = totaler Datenverlust.
+</Aside>
+
+<Aside type="caution" title="Nicht über Systeme hinweg geteilt">
+  ```ts
+  const j = new InMemoryJournal();
+  systemA.extension(PersistenceExtensionId).configure({ journal: j });
+  systemB.extension(PersistenceExtensionId).configure({ journal: j });
+  // ↑ gleiche Instanz, aber in einem echten Multi-Process-Setup hat jeder Prozess
+  //   seinen eigenen — die In-Memory-Daten sind nicht zwischen ihnen geteilt.
+  ```
+  Dieselbe `InMemoryJournal`-Instanz über Systeme in einem Prozess
+  zu teilen *funktioniert*, hilft aber in keinem
+  Multi-Process-Deployment.  Für ein geteiltes Journal in einem
+  Cluster verwende Cassandra.
+</Aside>
+
+<Aside type="caution" title="Unbegrenztes Speicherwachstum">
+  Das Journal speichert jedes Event für immer (bis du
+  `deleteEventsUpTo` aufrufst).  Ein lange laufender Test, der
+  Tausende Events pro Sekunde emittiert, lässt den Speicher des
+  Journals linear wachsen.  Für lange laufende Benchmarks entweder
+  aggressiv snapshotten + nach jedem Snapshot `deleteEventsUpTo`
+  aufrufen oder SQLite verwenden, das auf Disk flusht.
+</Aside>
+
+## Auf ein echtes Journal umsteigen
+
+```ts
+// Vorher (Test / Dev):
+system.extension(PersistenceExtensionId).configure({
+  journal: new InMemoryJournal(),
+});
+
+// Nachher (Produktion):
+import { SqliteJournal } from 'actor-ts';
+system.extension(PersistenceExtensionId).configure({
+  journal: new SqliteJournal({ path: '/var/lib/my-app/events.db' }),
+});
+```
+
+Keine Code-Änderungen innerhalb der Actors — das `Journal`-
+Interface ist dasselbe.  Tausche einfach die Implementierung aus.
+
+Deshalb sagen wir "verwende In-Memory für Tests und Dev" — der
+Produktions-Switch ist eine Zeile, und die Test-Suite läuft
+weiter gegen schnelle In-Memory-Journals.
+
+## Wie geht's weiter
+
+- **[Persistenz im Überblick](/de/persistence/overview/)** —
+  das größere Bild.
+- **[SQLite-Journal](/de/persistence/journals/sqlite/)** —
+  der Single-Node-Produktions-Default.
+- **[Cassandra-Journal](/de/persistence/journals/cassandra/)** —
+  für Multi-Node-Produktion.
+- **[PersistentActor](/de/persistence/persistent-actor/)** —
+  was die Events schreibt.
+- **[Snapshot Stores — In-Memory](/de/persistence/snapshot-stores/in-memory/)** —
+  der zugehörige In-Memory-Snapshot-Store.

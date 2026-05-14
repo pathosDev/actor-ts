@@ -1,0 +1,125 @@
+---
+title: Cached-Snapshot-Store
+description: Ein Decorator, der jeden `SnapshotStore` mit einem LRU-Read-Through-Cache einwickelt. Nützlich, wenn der zugrunde liegende Store langsam ist (netzwerk-gemountet, verschlüsselt) und Snapshot-Loads häufig passieren (hohe Actor-Churn).
+---
+
+`CachedSnapshotStore` ist ein **Decorator** — wickle jeden
+`SnapshotStore` ein, um einen In-Process-LRU-Cache für Reads
+hinzuzufügen.
+
+```ts
+import {
+  CachedSnapshotStore,
+  ObjectStorageSnapshotStore,
+  PersistenceExtensionId,
+} from 'actor-ts';
+
+const underlying = new ObjectStorageSnapshotStore({
+  /* S3-Bucket-Config */
+});
+
+const cached = new CachedSnapshotStore({
+  underlying,
+  maxEntries: 1_000,         // LRU-Größe
+  ttlMs:      60_000,         // optionale TTL
+});
+
+system.extension(PersistenceExtensionId).configure({
+  journal:       myJournal,
+  snapshotStore: cached,
+});
+```
+
+## Wann du es brauchst
+
+Drei Muster:
+
+1. **Langsamer zugrunde liegender Store** — Object Storage mit
+   Multi-Hop-Netzwerklatenz, verschlüsselter State mit teurer
+   Entschlüsselung.
+2. **Häufige Actor-Churn** — Sharded Entities, die ständig
+   passivieren / re-spawnen, jeder Load liest denselben Snapshot
+   erneut.
+3. **Recovery-Stürme** — Cluster-weiter Neustart, jeder Actor
+   lädt seinen Snapshot auf einmal.  Der Cache reduziert
+   redundante Loads, wenn derselbe Snapshot während des Sturms
+   abgefragt wird.
+
+Für lokale SQLite-gestützte Snapshots (Sub-Millisekunden-Reads)
+fügt der Cache Overhead ohne Nutzen hinzu.  **Verwende ihn nur,
+wenn der zugrunde liegende Store messbare Read-Latenz hat.**
+
+## Konfiguration
+
+```ts
+interface CachedSnapshotStoreSettings {
+  underlying: SnapshotStore;
+  maxEntries: number;     // LRU-Kapazität
+  ttlMs?:     number;     // optionale Expiration
+}
+```
+
+| Feld | Was |
+| --- | --- |
+| `underlying` | Der echte Snapshot-Store, dem der Cache vorgeschaltet ist. |
+| `maxEntries` | Maximale gecachte Einträge.  LRU-Eviction darüber hinaus. |
+| `ttlMs` | Optional — Cache-Einträge dieses Alters droppen.  Nützlich, wenn Snapshots extern gelöscht werden können. |
+
+## Cache-Semantik
+
+- **`loadLatest(pid)`** — Cache prüfen; bei Hit zurückgeben.  Bei
+  Miss vom Underlying laden, das Ergebnis cachen, zurückgeben.
+- **`save(pid, snapshot)`** — durch zum Underlying schreiben, dann
+  den Cache aktualisieren.
+- **`deleteUpTo(pid, seqNr)`** — durchschreiben, den Cache-Eintrag
+  der pid invalidieren.
+
+Der Cache ist **konsistent mit Writes** — ein Save gefolgt von
+`loadLatest` gibt den gerade gespeicherten Snapshot zurück,
+niemals einen veralteten Wert.
+
+## Performance
+
+Für einen langsamen zugrunde liegenden Store (sagen wir 50 ms pro
+Load) verwandelt der Cache nachfolgende Loads desselben Snapshots
+in Sub-Mikrosekunden-Operationen.  Eine typische
+Sharded-Entity-Workload sieht 80-95 % Hit-Rate nach Warm-up.
+
+Der Cache selbst ist In-Process — kein geteilter Cache über
+Nodes.  Für einen Cluster aus N Nodes hat jeder seinen eigenen
+Cache; Misses auf einem frischen Node zahlen die vollen
+Underlying-Load-Kosten.
+
+## Stolperfallen
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Externe Modifikationen">
+  ```ts
+  // Zugrunde liegender Store wird außerhalb des Caches modifiziert (manuelles
+  // SQL-Update, Batch-Backfill) → Cache gibt veraltete Daten zurück
+  ```
+  Der Cache geht davon aus, dass **er der einzige Writer ist**.
+  Wenn etwas anderes in den Underlying-Store schreibt, setze eine
+  TTL oder invalidiere manuell.
+</Aside>
+
+<Aside type="caution" title="Zu klein dimensioniert">
+  ```ts
+  maxEntries: 100;   // ✗ bei 10 000 aktiven Entities
+  ```
+  Ein zu kleiner Cache thrasht — jeder Load trifft den Cache, dann
+  evictet.  Dimensioniere `maxEntries` mindestens auf die
+  Working-Set-Größe.
+</Aside>
+
+## Wie geht's weiter
+
+- **[Snapshots](/de/persistence/snapshots/)** — die Policy,
+  in deren Dienst das hier steht.
+- **[Object-Storage-Snapshot-Store](/de/persistence/object-storage/snapshot-store-backend/)** —
+  der häufige langsame zugrunde liegende Store.
+- **[In-Memory-Snapshot-Store](/de/persistence/snapshot-stores/in-memory/)** —
+  für Tests.
+- **[SQLite-Snapshot-Store](/de/persistence/snapshot-stores/sqlite/)** —
+  der Single-Node-Default.

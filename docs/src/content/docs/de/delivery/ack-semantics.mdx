@@ -1,0 +1,229 @@
+---
+title: ACK-Semantik
+description: Wann ACKs feuern, was sie für Producer- und Consumer-State bedeuten und wie du sie mit Persistenz für End-to-End-exactly-once kombinierst. Plus die Edge Cases — ACK-Timing bei Crashes, langsame Consumer und Cluster-Failover.
+---
+
+Das ACK ist das **Kern-Primitiv** zuverlässiger Zustellung —
+der Producer gibt gebufferte Nachrichten frei, sobald sie
+geACKt sind; der Consumer hat die Nachricht "offiziell
+verarbeitet", bevor er ackt.  Das Timing des ACK zählt.
+
+## Wann ACKen
+
+Drei Positionen:
+
+| Strategie | Wann das ACK feuert | at-least-once vs. exactly-once |
+| --- | --- | --- |
+| **ACK-first** | Vor der Verarbeitung | Verliert Nachrichten bei Consumer-Crash mitten im Handler.  **at-most-once**. |
+| **ACK-last** | Nach der Verarbeitung | Retransmittiert bei Crash mitten im Handler.  **at-least-once**. |
+| **Persist-then-ACK** | Nach der Persistenz | Wie ACK-last + State überlebt Restart.  **effectively-once**. |
+
+**ACK-last** ist der Framework-Default + empfohlen.  Kombiniert
+mit idempotenter Verarbeitung oder persistierter High-Watermark
+ergibt das starke Zustellgarantien.
+
+```ts
+class Consumer extends Actor<DeliveryEnvelope<T>> {
+  override async onReceive(msg: DeliveryEnvelope<T>): Promise<void> {
+    // ACK-last:
+    await this.processIdempotently(msg.payload);
+    msg.ack();
+  }
+}
+```
+
+## Was zwischen Verarbeitung und ACK passiert
+
+```
+1. Handler beginnt die Verarbeitung (msg.payload)
+2. Handler abgeschlossen
+3. Handler ruft msg.ack()
+4. ConsumerController sendet ACK-Envelope an den Producer
+5. Producer entfernt msg aus dem Unacked-Buffer
+```
+
+Wenn der Consumer zwischen **3** und **4** crasht, kommt das
+ACK trotzdem beim Producer an.  Kein Problem.
+
+Wenn der Consumer zwischen **2** und **3** crasht, kommt das
+ACK nie an.  Der Producer retransmittiert nach Timeout.
+
+**Das Fenster von "Verarbeitung fertig" bis "ACK gesendet"** ist
+die schmale Zone, in der Duplikate entstehen.  Idempotente
+Handler (oder persistierte High-Watermark) decken sie ab.
+
+## Persist-then-ACK
+
+Für effectively-once-Verarbeitung von Seiteneffekten:
+
+```ts
+class PersistentConsumer extends PersistentActor<...> {
+  private highWatermark = 0;
+
+  override async onCommand(state, cmd: { kind: 'process'; env: DeliveryEnvelope<T> }): Promise<void> {
+    const msg = cmd.env;
+
+    if (msg.seq <= this.highWatermark) {
+      msg.ack();   // Dedup
+      return;
+    }
+
+    // Verarbeiten + atomar persistieren:
+    await this.persistAsync(
+      { kind: 'processed', seq: msg.seq, payload: msg.payload },
+      () => {
+        this.highWatermark = msg.seq;
+        msg.ack();
+      },
+    );
+  }
+}
+```
+
+Die Sequenz:
+
+1. Envelope empfangen.
+2. Skippen, wenn schon verarbeitet.
+3. **Event + neuen High-Watermark ins Journal persistieren**.
+4. Nach der Persistenz: ACKen.
+
+Bei Crash:
+
+- **Vor der Persistenz**: Producer retransmittiert; die neue
+  Consumer-Actor-Instanz hat die alte High-Watermark; verarbeitet
+  erneut.  Netto: keine Duplizierung.
+- **Nach der Persistenz, vor dem ACK**: Producer retransmittiert;
+  die neue Instanz hat die **neue** High-Watermark; Dedup skippt
+  und ACKt das Duplikat.  Netto: keine Duplizierung.
+
+Kombiniert mit **persistentem Producer-State** (Unacked-Message-Buffer
+im Journal des Producers) ist das **End-to-End durable +
+idempotent**.
+
+## Crash-Szenarien
+
+### Producer-Crash vor dem Senden
+
+```
+Producer sendet msg #5 → Crash, bevor das Transmit abgeschlossen ist
+```
+
+Recovery: Producer startet neu.  Ohne Persistenz ist msg #5
+verloren.  Mit Persistenz ist die Nachricht im
+Unacked-Buffer-Journal des Producers; wird beim Recovery
+gesendet.
+
+### Consumer-Crash vor der Verarbeitung
+
+```
+Consumer empfängt msg → crasht, bevor der Handler läuft
+```
+
+Kein ACK gesendet; Producer retransmittiert.  Idempotenter
+Handler dedupliziert (oder verarbeitet zum ersten Mal).
+
+### Netzwerk-Drop zwischen Übertragung und ACK
+
+```
+Producer sendet msg #5
+Consumer verarbeitet msg #5
+Consumer sendet ACK #5
+Netzwerk verliert das ACK-Envelope
+```
+
+Producer retransmittiert msg #5 nach Timeout.  Consumer
+dedupliziert (highWatermark schon bei 5); ackt erneut.
+
+Das Dedup-und-Re-ACK-Muster heißt, **transiente ACKs sind
+wiederherstellbar** — irgendwann kommt eines an.
+
+## Langsamer Consumer
+
+```
+Producer.maxOutstanding = 100
+Consumer braucht 10 s pro Nachricht
+```
+
+Backpressure: nach 100 unbestätigten Nachrichten **nimmt die
+Send-Queue des Producers** keine neuen Sends mehr an.  Sender
+sehen Backpressure (entweder stashen Tells oder Asks werden
+abgelehnt).
+
+Das ist gut — das System kann nicht weiter vor sich selbst
+davonlaufen als die Buffergröße.
+
+## Cluster-Failover
+
+```
+Consumer auf node-A verarbeitet msg #5 + sendet ACK
+node-A crasht, bevor das ACK-Envelope node-B (Producer) erreicht
+```
+
+Producer sieht im Retransmit-Fenster kein ACK → retransmittiert.
+
+Wenn der `delegate` des Consumers **sharded** ist (während des
+Failovers verschoben), wird die neue Instanz:
+
+- Den Retransmit empfangen.
+- Ihre High-Watermark (aus Snapshot oder Replay) nachschlagen.
+- Dedupen, wenn schon verarbeitet.
+
+Für sharded Consumer **immer mit Persistenz paaren** — sonst
+setzt der Dedup-State beim Rebalance zurück.
+
+## ACK als Garantie (oder nicht)
+
+```
+msg.ack();
+```
+
+Das `ack()` des Frameworks ist **Fire-and-Forget** — sendet das
+ACK-Envelope, wartet nicht auf Bestätigung.  Wenn das Netzwerk
+es verliert, fängt die Retransmit-Logik des Frameworks es ein.
+
+Das heißt: **`ack()` aufzurufen blockiert deinen Handler nicht.**
+Keine zusätzliche Latenz.
+
+## Wann du die Controller NICHT einsetzt
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Die meisten Nachrichten brauchen das nicht">
+  ```ts
+  // Telemetrie, Health-Pings, vorübergehende UI-Updates
+  ```
+  Zuverlässige Zustellung kostet Overhead — ~50 µs pro
+  Nachricht plus Buchhaltung.  Für volumenstarken,
+  nicht-kritischen Traffic ist einfaches `tell` richtig.
+</Aside>
+
+<Aside type="caution" title="Cross-Process- / Cross-Cluster-Zustellung">
+  ```ts
+  // Externer Consumer außerhalb des Clusters
+  ```
+  Nimm einen Broker (Kafka, NATS) für Cross-Cluster-zuverlässige
+  Zustellung.  ProducerController/ConsumerController sind
+  cluster-intern.
+</Aside>
+
+<Aside type="caution" title="ACK vergessen">
+  ```ts
+  override onReceive(msg) {
+    this.process(msg.payload);
+    // ✗ msg.ack() vergessen
+  }
+  ```
+  Ohne ACK denkt der Producer, die Nachricht sei nicht
+  angekommen → retransmittiert ewig.  Immer ACKen (oder NACKen).
+</Aside>
+
+## Wohin als Nächstes
+
+- **[Delivery im Überblick](/de/delivery/overview/)** — das
+  Gesamtbild.
+- **[ProducerController](/de/delivery/producer-controller/)** —
+  die Sender-Seite.
+- **[ConsumerController](/de/delivery/consumer-controller/)** —
+  die Empfänger-Seite.
+- **[PersistentActor](/de/persistence/persistent-actor/)** —
+  für End-to-End durable Verarbeitung.

@@ -1,0 +1,262 @@
+---
+title: Logging
+description: Der Logger des Frameworks — jeder Actor bekommt ein `this.log`, gebunden an seinen Pfad, mit Debug/Info/Warn/Error-Leveln, strukturierten Feldern via `withFields` und einer MDC (`LogContext`), die über `tell`-Hops und Cluster-Nodes hinweg propagiert.
+---
+
+Jeder Actor hat einen Logger unter `this.log`, automatisch an den
+Pfad des Actors gebunden:
+
+```ts
+import { Actor } from 'actor-ts';
+
+class Worker extends Actor<...> {
+  override onReceive(msg): void {
+    this.log.info('handling message');
+    // → [2025-05-13T11:42:01.123Z] INFO  actor-ts://my-app/user/worker - handling message
+  }
+}
+```
+
+Vier Methoden auf jedem Logger — `debug`, `info`, `warn`, `error`:
+
+```ts
+interface Logger {
+  readonly level: LogLevel;
+  debug(message: string, ...args: unknown[]): void;
+  info(message: string, ...args: unknown[]): void;
+  warn(message: string, ...args: unknown[]): void;
+  error(message: string, ...args: unknown[]): void;
+  withSource(source: string): Logger;
+  withFields(fields: LogContextData): Logger;
+}
+```
+
+Aufrufe unter dem konfigurierten `level` sind No-Ops —
+`this.log.debug(...)` auf einem System, das für `info` konfiguriert
+ist, evaluiert nicht einmal die Argumente (der Level-Check passiert
+zuerst).
+
+## Level konfigurieren
+
+Systemweit über die Settings:
+
+```ts
+const system = ActorSystem.create('my-app', { logLevel: 'debug' });
+```
+
+Oder über die Env- / Config-Datei (`actor-ts.log-level = "debug"` in
+`application.conf`).  Fünf Level: `debug` / `info` / `warn` /
+`error` / `silent`.  Default ist `info`.
+
+## Eigener Logger
+
+Das `Logger`-Interface ist klein.  Implementiere es einmal, gib es
+dem System:
+
+```ts
+import { ActorSystem, type Logger, LogLevel, type LogContextData } from 'actor-ts';
+
+class JsonLogger implements Logger {
+  level = LogLevel.Info;
+  constructor(
+    private readonly source = '',
+    private readonly staticFields: LogContextData = {},
+  ) {}
+  debug(msg: string, ...args: unknown[]): void { this.emit('debug', msg, args); }
+  info (msg: string, ...args: unknown[]): void { this.emit('info',  msg, args); }
+  warn (msg: string, ...args: unknown[]): void { this.emit('warn',  msg, args); }
+  error(msg: string, ...args: unknown[]): void { this.emit('error', msg, args); }
+  withSource(source: string): Logger {
+    return new JsonLogger(source, this.staticFields);
+  }
+  withFields(fields: LogContextData): Logger {
+    return new JsonLogger(this.source, { ...this.staticFields, ...fields });
+  }
+  private emit(level: string, message: string, args: unknown[]): void {
+    process.stdout.write(JSON.stringify({
+      ts: Date.now(),
+      level,
+      source: this.source,
+      message,
+      args,
+      ...this.staticFields,
+    }) + '\n');
+  }
+}
+
+const system = ActorSystem.create('my-app', { logger: new JsonLogger() });
+```
+
+Ein eigener Logger ist das richtige Werkzeug, wenn:
+
+- Du JSON-Output für einen Log-Aggregator (Datadog, Loki, ELK)
+  willst.
+- Du an ein spezifisches Ziel (Datei, stderr, ein Remote-Service)
+  ohne die Default-`console.*`-Aufrufe routen willst.
+- Du strukturierte Felder direkt im Format eingebaut willst.
+
+Das Framework ruft `withSource` einmal pro Actor auf, um den Pfad
+des Actors zu binden; das musst du nicht selbst tun.
+
+## Strukturierte Felder via `withFields`
+
+Statische Felder — derselbe Wert auf jedem Record, der von diesem
+Logger emittiert wird:
+
+```ts
+class ShardCoordinator extends Actor<...> {
+  private readonly log = this.context.log.withFields({
+    component: 'shard-coordinator',
+    shardId:   this.shardId,
+  });
+
+  override onReceive(msg): void {
+    this.log.info('rebalance start');
+    // → ... shard-coordinator - rebalance start {component=shard-coordinator, shardId=12}
+  }
+}
+```
+
+`withFields` gibt einen neuen Logger zurück, der die Felder auf
+jedem Emit eingestempelt hat.  Nützlich für Component-Level-Tagging,
+das sich über Nachrichten nicht ändert.
+
+## Dynamischer Kontext — `LogContext` (MDC)
+
+Für Felder, die *pro Request* statt pro Actor variieren — eine
+Correlation-ID, eine Request-ID, eine User-ID — verwende die
+`LogContext`-MDC.  Setze sie am Einstiegspunkt; jeder Log-Aufruf
+darin liest sie automatisch:
+
+```ts
+import { LogContext } from 'actor-ts';
+
+// HTTP-Request-Handler — wickelt die Actor-Arbeit in einen Kontext-Scope.
+app.post('/orders', async (req, res) => {
+  const correlationId = req.headers['x-correlation-id'] ?? randomUUID();
+
+  await LogContext.run({ correlationId, userId: req.user.id }, async () => {
+    const result = await ask(orderActor, { kind: 'place', ... });
+    res.json(result);
+  });
+});
+
+// Innerhalb jedes Actors, der via `tell` / `ask` von dort erreicht wird:
+class OrderActor extends Actor<...> {
+  override onReceive(msg): void {
+    this.log.info('placing order');
+    // → ... order-actor - placing order {correlationId=abc-123, userId=user-42}
+    paymentActor.tell({ kind: 'charge', ... });
+  }
+}
+```
+
+`LogContext` ist mit `AsyncLocalStorage` unterlegt — der Kontext
+propagiert über `await`s, `tell`s und Cluster-Hops hinweg.  Drei
+Operationen:
+
+| Methode | Was sie tut |
+| --- | --- |
+| `LogContext.run(ctx, fn)` | Führt `fn` mit `ctx` als aktuellem Kontext aus. |
+| `LogContext.with(extra, fn)` | Führt `fn` mit `{ ...current, ...extra }` als Kontext aus. |
+| `LogContext.get()` | Liest den aktuellen Kontext (leeres Objekt, wenn keiner aktiv). |
+
+**Statische Felder (`withFields`) und dynamische MDC mergen zur
+Emit-Zeit**; dynamisch gewinnt bei Schlüssel-Kollision
+(innermost-scope-wins-Intuition).
+
+## Wie MDC über `tell` propagiert
+
+Wenn du `ref.tell(msg)` innerhalb eines `LogContext.run`-Scopes
+aufrufst, snapshotet die Runtime den aktuellen Kontext auf das
+Envelope.  Das `onReceive` des empfangenden Actors läuft unter
+einem frischen `LogContext.run` dieses Snapshots.  Das bedeutet:
+
+- Eine einzige `correlationId` fließt durch jeden Actor, der vom
+  Einstiegspunkt aus erreicht wird.
+- Über Cluster-Nodes hinweg reitet der Snapshot auf dem
+  Wire-Envelope — der empfangende Node stellt ihn wieder her, bevor
+  er `onReceive` aufruft.
+- Die `correlationId` taucht in jeder Log-Zeile der Spur auf,
+  damit dein Aggregator einen Multi-Actor-, Multi-Node-Request zu
+  einem durchsuchbaren Thread zusammenfügen kann.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="MDC-Werte müssen JSON-sicher sein">
+  ```ts
+  LogContext.run({ user: req.user }, fn);   // ← Objekt, kann das Wire nicht überqueren
+  ```
+  `LogContext`-Werte sind nur `string | number | boolean`.  Das
+  wird vom Typ erzwungen — komplexe Objekte zu übergeben, scheitert
+  beim Compile.  Warum: über Cluster-Hops serialisiert der Kontext
+  zu JSON; willkürliche Objekte round-trippen nicht sicher.
+  Übergib die Primitive (`{ userId: req.user.id }`); der Empfänger
+  kann den User nachschlagen, wenn er mehr braucht.
+</Aside>
+
+<Aside type="caution" title="Logging in `onReceive` ≠ Logging in einem setTimeout">
+  ```ts
+  override onReceive(msg) {
+    this.log.info('handling');               // ✓ MDC vorhanden
+    setTimeout(() => {
+      this.log.info('later');                 // ✗ MDC kann verloren gehen
+    }, 1_000);
+  }
+  ```
+  Rohes `setTimeout` läuft außerhalb der
+  Nachrichtenverarbeitungs-Runde des Actors — und `AsyncLocalStorage`
+  kann bis dahin gelöscht sein.  Verwende `context.timers` für
+  actor-gebundene Timer; sie halten die MDC-Propagation am Laufen.
+</Aside>
+
+<Aside type="caution" title="`info`-Aufrufe, die große Objekte allokieren">
+  ```ts
+  this.log.debug('snapshot:', this.expensiveSnapshot());
+  ```
+  Selbst auf `info`-Level läuft `this.expensiveSnapshot()` vor dem
+  Level-Check — es ist ein normales Funktionsargument.  Auf
+  `info`-Level wird das Ergebnis weggeworfen, aber die Arbeit war
+  getan.  Wickle in einen Level-Guard für teure Payloads:
+  ```ts
+  if (this.log.level <= LogLevel.Debug) {
+    this.log.debug('snapshot:', this.expensiveSnapshot());
+  }
+  ```
+</Aside>
+
+## Strukturiertes Logging — `withFields` + MDC zusammen
+
+```ts
+class PerSessionWorker extends Actor<...> {
+  private readonly log = this.context.log.withFields({ sessionId: this.id });
+
+  override async onReceive(msg): Promise<void> {
+    await LogContext.run({ requestId: msg.requestId }, async () => {
+      this.log.info('handling');
+      // → ... per-session-worker - handling {sessionId=abc, requestId=xyz}
+    });
+  }
+}
+```
+
+`sessionId` ist statisch (die Identität des Actors), `requestId`
+ist per-Message-dynamisch.  Beide landen im strukturierten Suffix;
+der Log-Aggregator bekommt einen abfragefreundlichen Record.
+
+## Wie es weitergeht
+
+- **[Actor](/de/fundamentals/actor/)** — `this.log` ist Teil
+  des Contexts, den jeder Actor hat.
+- **[Actor-System](/de/fundamentals/actor-system/)** — die
+  `logger` / `logLevel`-Settings.
+- **[Tracing](/de/observability/tracing/tracer-api/)** —
+  Span-ID-Propagation, gebaut auf demselben
+  `AsyncLocalStorage`-Primitive.
+- **[Observability — Metriken](/de/observability/overview/)** —
+  die Metriken-Schnittstelle, separat von Logs, aber konzeptionell
+  benachbart.
+
+Die [`Logger`](/api/interfaces/logger/)- und
+[`LogContext`](/api/variables/logcontext/)-API-Referenzen decken die
+volle Schnittstelle ab.

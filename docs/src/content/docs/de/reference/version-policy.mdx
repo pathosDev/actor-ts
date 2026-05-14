@@ -1,0 +1,146 @@
+---
+title: Versionspolitik
+description: Pre-1.0-Vorbehalte — was stabil ist, was experimentell ist, der SemVer-Plan. Das Framework ist in aktiver Entwicklung; erwarte Breaking Changes bis 1.0.
+---
+
+actor-ts ist **pre-1.0**.  Die API-Oberfläche ist stabil genug, um
+damit zu bauen, aber **erwarte Breaking Changes** bei Minor-Versions-
+Bumps, bis 1.0 ausgeliefert wird.
+
+Diese Seite ist die **ehrliche Einschätzung** dessen, was stabil ist,
+was experimentell ist und was zu erwarten ist.
+
+## Status-Überblick
+
+| Bereich | Status |
+| --- | --- |
+| **Core Actor-Modell** (Actor, ActorRef, Props) | Stabil.  API wird sich wahrscheinlich nicht ändern. |
+| **Supervision** | Stabil. |
+| **Mailboxes, Dispatchers, Scheduling** | Stabil. |
+| **Cluster (Membership, Gossip)** | Stabil. |
+| **Cluster Sharding** | Stabil; einige fortgeschrittene Features (Rebalance Modes) könnten sich entwickeln. |
+| **Cluster Singleton** | Stabil. |
+| **DistributedPubSub** | Stabil. |
+| **DistributedData** | Stabil. |
+| **PersistentActor** | Stabil. |
+| **Snapshot Stores** | Stabil. |
+| **Migration Adapters** | Stabil. |
+| **HTTP-Modul** | Stabil für die Route-DSL; Backends könnten sich entwickeln. |
+| **Broker-Actors** | Stabil.  Neue Protokolle könnten hinzukommen. |
+| **Coordination (Lease)** | Stabil für `Lease`-Interface; Lease-Backends könnten sich entwickeln. |
+| **Replicated Event Sourcing** | Experimentell.  API könnte sich ändern. |
+| **Worker Mesh** | Experimentell.  Mit Vorsicht verwenden. |
+| **ProducerController / ConsumerController** | Experimentell.  Produktionseinsatz möglich; erwarte Verfeinerungen. |
+
+## Versionierung bis 1.0
+
+Pre-1.0:
+
+- **Patch-Versionen (0.x.Y)** — Bugfixes, keine Breaking Changes.
+- **Minor-Versionen (0.X.0)** — neue Features, können Breaking
+  Changes enthalten.
+- **Major-Version (1.0.0)** — API-Stabilisierungs-Commitment.
+
+Lies das
+[CHANGELOG](https://github.com/pathosDev/actor-ts/blob/main/CHANGELOG.md)
+vor dem Upgrade von Minor-Versionen.
+
+## Nach 1.0
+
+Sobald 1.0 ausgeliefert ist, gilt **striktes SemVer**:
+
+- **Patch (X.Y.Z+1)** — nur Bugfixes.
+- **Minor (X.Y+1.0)** — Ergänzungen; rückwärtskompatibel.
+- **Major (X+1.0.0)** — Breaking Changes; expliziter Migration
+  Guide.
+
+Das Framework folgt einer typischen konservativen SemVer-Kadenz —
+Major-Versions-Bumps sind selten; Minor-Versionen fügen Features
+hinzu, ohne bestehenden Code zu brechen.
+
+## Was "stabil" hier bedeutet
+
+**Stabil** = wir erwarten nicht, diese API zu brechen.  Aber
+pre-1.0:
+
+- Methodensignaturen können optionale Parameter erhalten.
+- Config-Keys können neue Sub-Keys erhalten.
+- Neue Return-Type-Felder können erscheinen (additiv).
+
+**Nicht** stabil:
+
+- Methoden oder Klassen umbenennen.
+- Funktionalität entfernen.
+
+Wenn ein Breaking Change an einer "stabilen" Oberfläche passiert,
+wird das **CHANGELOG es prominent markieren** mit einer
+Migrationsnotiz.
+
+## Was "experimentell" bedeutet
+
+**Experimentell** = wir iterieren noch an der API oder
+Implementierung:
+
+- Methodensignaturen können sich ändern.
+- Verhalten kann sich auf nicht-offensichtliche Weise ändern.
+- Performance-Charakteristiken sind noch nicht optimiert.
+
+Experimentelle Features in der Produktion zu verwenden ist **OK**
+— wir verwenden sie selbst — aber erwarte, Code bei
+Minor-Versions-Bumps zu aktualisieren.
+
+Wenn ein Feature **tief** experimentell ist (wir sind nicht
+sicher, ob es überleben wird), sagt die Doku das explizit auf der
+Feature-Seite.
+
+## Deprecation-Politik
+
+Wenn etwas umbenannt oder ersetzt wird:
+
+1. **Eine Minor-Version mit einer Deprecation-Warnung** — die
+   alte API funktioniert + loggt eine Warnung beim Start oder
+   bei der ersten Verwendung.
+2. **Entfernung in der nächsten Minor-Version**.
+
+Das gibt ~1-3 Monate Schonfrist pro Deprecation-Zyklus.
+
+Post-1.0 werden Deprecation-Zyklen länger sein (typischerweise
+eine ganze Major-Version).
+
+## Spezifische Roadmap-Items
+
+Dinge, die wir hinzuzufügen / zu ändern planen:
+
+- **OTel-Auto-Instrumentation-Politur** — bessere Default-Spans
+  + Attribute.
+- **Mehr Cluster-Transports** — WebSocket-Option für
+  Browser-Bridge, QUIC für Edge.
+- **Sharding Rebalance v2** — schlauere Strategien als
+  Least-Shard.
+- **Mehr CRDT-Typen** — Counter-Set, Sequence CRDT für
+  geordnete Listen.
+
+Keines davon bricht bestehenden Code; sie sind additiv.
+
+## Issues melden
+
+Für Bugs oder Feedback:
+
+- **GitHub Issues** — für Bugs, Feature Requests,
+  Designfragen.
+- **Pull Requests** — willkommen.  Öffne zuerst ein Issue für
+  alles Nicht-Triviale, damit wir uns über den Ansatz einig
+  werden können, bevor Du Code schreibst.
+
+Tagge Issues mit dem relevanten Bereich (Cluster, Persistenz,
+etc.), damit sie die richtigen Code-Owner schneller erreichen.
+
+## Wie es weitergeht
+
+- **[Konfiguration](/de/reference/configuration/)** —
+  HOCON-Keys.
+- **[FAQ](/de/reference/faq/)** — häufige Fragen.
+- **[Glossar](/de/reference/glossary/)** —
+  Begriffsreferenz.
+- **[CHANGELOG](https://github.com/pathosDev/actor-ts/blob/main/CHANGELOG.md)** —
+  Änderungen pro Version.

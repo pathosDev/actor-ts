@@ -1,0 +1,160 @@
+---
+title: Routing — Überblick
+description: Verteile Arbeit über N Actors statt einen — ein Router ist ein einzelner Actor, der jede Nachricht an einen (oder alle) seiner Routees weiterleitet. Lokaler Router für In-Process-Pools; ClusterRouter für mitgliedschafts-getriebene Cluster-Pools.
+---
+
+Ein **Router** ist ein Actor, dessen einzige Aufgabe es ist, jede
+eingehende Nachricht an einen (oder mehrere) seiner **Routees**
+weiterzuleiten.  Du spawnst den Router einmal; hinter ihm sitzen N
+Worker-Actors; Sender `tell`en dem Router und wissen nie, wie viele
+Routees existieren.
+
+Zwei Formen liefert das Framework aus:
+
+| Form | Wo es lebt | Routees sind... |
+| --- | --- | --- |
+| **`Router`** (lokal) | Ein Node, ein Actor-System. | Kinder des Routers, **zur Spawn-Zeit erstellt** mit denselben `Props`. |
+| **`ClusterRouter`** | Über Cluster-Nodes hinweg. | Up-Members des Clusters, **aus Mitgliedschaft abgeleitet** + ein Routee-Pfad. |
+
+Beide exponieren dieselbe externe Schnittstelle: eine einzelne
+`ActorRef<TMsg>`, die Aufrufer `tell`en.  Der Unterschied ist *was
+auf der anderen Seite ist*.
+
+## Wann zu einem Router greifen
+
+Drei Patterns:
+
+1. **CPU-lastige Arbeit parallelisieren.**  Ein einzelner Actor ist
+   durch seine Eine-nach-der-anderen-Garantie gebottlenecked; ein
+   4-Routee-Round-Robin-Router gibt dir 4-fache Parallelität, ohne
+   das Message-Ordering *innerhalb* eines Routees zu brechen.
+2. **Last über Nodes verteilen.**  Ein Cluster-Router mit
+   role-gefilterten Routees gibt dir Fan-Out über jeden Node, der die
+   `'compute'`-Rolle trägt.  Füge einen Node hinzu, der Router nimmt
+   ihn auf; entferne einen Node, der Router stoppt das Senden an ihn.
+3. **Arbeit deterministisch an einen Routee pinnen.**
+   Consistent-Hashing (nur Cluster) legt jede Nachricht mit demselben
+   Key auf denselben Routee — nützlich, wenn jeder Routee
+   Per-Key-Zustand hält (einen Cache, eine Session, einen Zähler).
+
+## Ein minimales Beispiel
+
+```ts
+import { ActorSystem, Props, Router, Actor } from 'actor-ts';
+
+class Worker extends Actor<{ payload: string }> {
+  override onReceive(msg: { payload: string }): void {
+    this.log.info(`worked on ${msg.payload}`);
+  }
+}
+
+const system = ActorSystem.create('demo');
+
+const pool = system.actorOf(
+  Router.roundRobin(4, Props.create(() => new Worker())),
+  'workers',
+);
+
+pool.tell({ payload: 'a' });   // → worker-1
+pool.tell({ payload: 'b' });   // → worker-2
+pool.tell({ payload: 'c' });   // → worker-3
+pool.tell({ payload: 'd' });   // → worker-4
+pool.tell({ payload: 'e' });   // → worker-1 (Round-Robin wraps)
+```
+
+Die `pool`-Ref sieht für Aufrufer wie ein einzelner Actor aus; unter
+der Haube zykelt der Routing-Actor durch vier `Worker`-Kinder.
+
+## Die vier Strategien
+
+| Strategie | Was sie tut | Am besten für |
+| --- | --- | --- |
+| **`round-robin`** | Ein Routee pro Nachricht, zyklisch.  Gleichmäßige Verteilung nach Nachrichten-Count. | Homogene Workloads. |
+| **`random`** | Ein Routee pro Nachricht, gleichverteilt zufällig. | Wie Round-Robin, aber zustandslos. |
+| **`broadcast`** | Jeder Routee bekommt jede Nachricht. | Notifications, Cache-Invalidierungen. |
+| **`consistent-hashing`** *(nur Cluster)* | Ein Routee pro Nachricht, Key-gepinnt. | Per-Key-Zustand (Sharding-Light). |
+
+Eine fünfte "Smallest-Mailbox"-Strategie (an den Routee mit der
+kürzesten Queue routen) ist im lokalen Router **nicht**
+implementiert; es ist ein Roadmap-Item für den Cluster-Router.
+
+Siehe [Strategien](/de/routing/strategies/) für den Deep Dive plus
+den `Broadcast`-Nachrichten-Wrapper, der die Strategie pro Nachricht
+überschreibt.
+
+## Pool vs Group
+
+Der lokale `Router` ist immer ein **Pool** — er erstellt seine
+Routees selbst.  Der Cluster-`ClusterRouter` ist eher eine **Group**
+— die Routees existieren bereits (ein Actor pro Up-Member an einem
+bekannten Pfad), und der Router *findet* sie nur.
+
+Für die meisten Fälle ist Pool das, was du willst.  Das Group-Modell
+taucht auf, wenn du willst, dass bestehende Actors (z.B.
+Shard-Regionen, Fixed-Name-Workers, die beim Startup gespawnt
+wurden) gerouteten Traffic empfangen.
+
+Siehe [Pool vs Group](/de/routing/pool-vs-group/), wann jede Form
+die richtige Passung ist.
+
+## Router und Supervision
+
+Der Router ist ein regulärer Actor — er hat seine eigene
+Supervisor-Strategie.  Der Default ist "beobachte jeden Routee,
+logge, wenn einer stoppt."  Wenn ein Routee crashed:
+
+- Ohne Eingriff wendet der Parent des Routees (der Router) seine
+  Supervisor-Strategie an.  Standardmäßig ist das die
+  `defaultStrategy` des Frameworks — Restart bis zu 10/Minute.
+- Der neu gestartete Routee tritt dem Pool an demselben Pfad wieder
+  bei.  Der Router muss nichts Besonderes tun.
+- Alles, was während des kurzen Restart-Fensters an den Routee
+  geroutet wurde, geht zu Dead Letters (die Mailbox des Routees wird
+  vor dem Restart gedrained, dann frisch).
+
+Für Per-Routee-Supervisor-Strategien konfiguriere sie auf den
+Routee-`Props`:
+
+```ts
+const routeeProps = Props.create(() => new Worker())
+  .withSupervisorStrategy(stoppingStrategy);
+
+system.actorOf(Router.roundRobin(4, routeeProps), 'workers');
+```
+
+Jetzt wird jeder Worker, der throwt, **gestoppt** statt neu
+gestartet — und der Router beobachtet ihn sterben, aber der Pool
+wird einfach kleiner.  Das würdest du mit einem höher-Level-Supervisor
+kombinieren, der entscheidet, wann der ganze Pool neu gespawnt wird.
+
+## Router sind nicht (der einzige) Weg zur Parallelisierung
+
+Ein Router gibt dir `N` unabhängige Actors, die jeweils eine
+Nachricht nach der anderen verarbeiten.  Zwei Alternativen, die
+es zu kennen lohnt:
+
+- **Sharding** ist das richtige Werkzeug, wenn jede Arbeitseinheit
+  einen Key hat und du *genau einen* lebenden Actor pro Key brauchst
+  (mit Failover, Rebalancing, etc.).  Siehe
+  [Sharding](/de/cluster/sharding/overview/).
+- **DistributedPubSub** ist das richtige Werkzeug für Fan-Out, bei
+  dem die Subscriber-Menge dynamisch ist — Actors kommen und gehen,
+  und jeder von ihnen kann publishierte Events empfangen.  Siehe
+  [DistributedPubSub](/de/cluster/pubsub/).
+
+Routing ist ein Pool mit fester Größe und deterministischer
+Strategie.  Wenn das ist, was du brauchst, ist es das einfachste
+Werkzeug; wenn nicht, greife zu etwas anderem.
+
+## Wie es weitergeht
+
+- **[Router](/de/routing/router/)** — die
+  `Router.roundRobin(...)`, `.random(...)`, `.broadcast(...)`,
+  `.custom(...)`-Factories.
+- **[Strategien](/de/routing/strategies/)** — was jede
+  Strategie tut, plus eigene schreiben.
+- **[Pool vs Group](/de/routing/pool-vs-group/)** — wann
+  einen Router verwenden, der seine Routees spawnt, vs einen, der
+  sie findet.
+- **[Cluster-Router](/de/cluster/cluster-router/)** — das
+  mitgliedschafts-getriebene Cluster-Äquivalent.

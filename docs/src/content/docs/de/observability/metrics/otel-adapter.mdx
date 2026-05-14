@@ -1,0 +1,129 @@
+---
+title: OTel-Metrics-Adapter
+description: Sende Framework-Metriken durch das OpenTelemetry-SDK an jedes OTel-fähige Backend (Datadog, New Relic, Grafana Cloud, Honeycomb usw.). Brücke zwischen der Framework-Registry und dem OTel-Meter.
+---
+
+OpenTelemetry ist der **anbieterneutrale Standard** für
+Observability-Daten. Der `OtelMetricsAdapter` spiegelt
+Framework-Metriken in einen OTel-`Meter` — pipe durch
+OTel-Exporter (OTLP, Datadog, Grafana Cloud, Honeycomb,
+New Relic usw.), ohne die Metrik-API des Frameworks anzufassen.
+
+```ts
+import { metrics as otelMetrics } from '@opentelemetry/api';
+import { MeterProvider } from '@opentelemetry/sdk-metrics';
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
+import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
+import { ActorSystem, MetricsExtensionId, OtelMetricsAdapter } from 'actor-ts';
+
+// 1. OTel-SDK aufsetzen
+const meterProvider = new MeterProvider({
+  readers: [new PeriodicExportingMetricReader({
+    exporter: new OTLPMetricExporter({
+      url: 'https://otel-collector.example.com/v1/metrics',
+    }),
+    exportIntervalMillis: 10_000,
+  })],
+});
+otelMetrics.setGlobalMeterProvider(meterProvider);
+
+// 2. Adapter verdrahten
+const system = ActorSystem.create('my-app');
+const metrics = system.extension(MetricsExtensionId);
+
+const adapter = new OtelMetricsAdapter({
+  source: metrics.registry,
+  meter:  otelMetrics.getMeter('actor-ts'),
+});
+
+adapter.start();
+```
+
+Das OTel-SDK kümmert sich um den Export; das Framework emittiert
+ganz normal in seine Registry.
+
+## Konfiguration
+
+```ts
+interface OtelMetricsAdapterSettings {
+  source:           MetricsRegistry;
+  meter:            Meter;                 // aus @opentelemetry/api
+  syncIntervalMs?:  number;                // Default 5000
+  prefix?:          string;
+}
+```
+
+Gleiche Form wie der prom-client-Adapter — eine Source-Registry,
+eine Target-SDK-Komponente, konfigurierbares Sync-Intervall.
+
+## Typ-Mapping
+
+| Framework-Typ | OTel-Instrument |
+| --- | --- |
+| Counter | `Counter` |
+| Gauge | `ObservableGauge` |
+| Histogram | `Histogram` |
+| Timer | `Histogram` |
+
+Labels werden zu OTel-**Attributen**. Bucket-Grenzen werden für
+Histogramme propagiert.
+
+## Peer-Dependencies
+
+```bash
+npm install @opentelemetry/api @opentelemetry/sdk-metrics
+# Plus ein Exporter:
+npm install @opentelemetry/exporter-metrics-otlp-http
+# oder @opentelemetry/exporter-prometheus, etc.
+```
+
+Das Framework bündelt keine OTel-Pakete — bring dein eigenes
+SDK + Exporter-Kombo mit.
+
+## Wann OTel vs Prometheus-Exporter
+
+| OTel nutzen, wenn ... | Prometheus-Exporter nutzen, wenn ... |
+| --- | --- |
+| Du Datadog / New Relic / Grafana Cloud / Honeycomb adressierst | Du selbst-gehostetes Prometheus adressierst |
+| Du Metriken, Traces, Logs in eine OTel-Pipeline mischst | Nur-Metrik-Setups |
+| Du Metriken hinausschiebst (kein Scrape) | Pull-basiertes Scraping |
+
+OTel ist der **flexible** Weg — dein Backend kann sich ändern,
+ohne die Instrumentierung umzuverdrahten. Der
+Prometheus-Exporter ist der **einfachere** Weg, wenn dein
+Backend nur Prometheus ist.
+
+## Kombiniert mit Tracing
+
+```ts
+const tracer = otelMetrics.getMeter('actor-ts');
+// + der Tracing-Adapter:
+const tracerAdapter = new OtelTracerAdapter({
+  tracer: otelTrace.getTracer('actor-ts'),
+});
+```
+
+Beide Adapter teilen das OTel-SDK-Setup — Metriken und Traces
+fließen durch dieselbe OTel-Exporter-Pipeline, korreliert über
+den OTel-Kontext.
+
+Siehe [OTel-Tracing-Adapter](/de/observability/tracing/otel-adapter/).
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="OTel-SDK-Setup ist umgebungsspezifisch">
+  Klebe kein Produktions-OTel-Setup nach Dev — andere
+  Exporter-Endpunkte, andere Sampling-Raten, andere Security-
+  Kontexte. Nutze Env-Vars + eine Config-Schicht zum Umschalten.
+</Aside>
+
+## Wo es weitergeht
+
+- **[Observability — Überblick](/de/observability/overview/)** —
+  das größere Bild.
+- **[Core-Metriken](/de/observability/metrics/core-metrics/)** —
+  was gespiegelt wird.
+- **[OTel-Tracing-Adapter](/de/observability/tracing/otel-adapter/)** —
+  das Pendant für Traces.
+- **[Prometheus-Exporter](/de/observability/metrics/prometheus-exporter/)** —
+  die einfachere Alternative, wenn du nur Prometheus brauchst.

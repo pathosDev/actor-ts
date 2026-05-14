@@ -1,0 +1,226 @@
+---
+title: Upgrade-Strategien
+description: Zwei Arten von Upgrades, zwei Muster — Code-Upgrades (rolling, keine Schema-Änderung) vs schema-brechende Upgrades (zuerst Migration, dann rolling). Wähl die richtige Form; bias auf additive Änderungen, wenn möglich.
+---
+
+Zwei Arten von Produktions-Upgrade:
+
+| Art | Muster |
+| --- | --- |
+| **Code-only-Upgrade** | Neue Binary, gleiche Schemas. Rolling Deployment — alte + neue Versionen koexistieren kurz. |
+| **Schema-brechendes Upgrade** | Neue Shapes für Events / State / Messages. Erst Migration, dann Rolling Deployment. |
+
+Wähle die Art, folge dem Muster. Naiv zu mischen bricht Produktion
+— alte Nodes können neue Schemas nicht lesen oder umgekehrt.
+
+## Code-only-Upgrades
+
+Der häufige Fall. Bugfixes, Refactorings, Verhaltens-Tweaks ohne
+Änderung der persistierten Datenformen.
+
+```
+1. Die neue Binary bauen (Tag v1.2.3).
+2. Per Rolling Update deployen.
+3. K8s ersetzt Pods einen nach dem anderen.
+4. Jeder Pod: SIGTERM → Coordinated Shutdown → Drain → neuer Pod
+   spawnt → Cluster-Rejoin.
+5. Fertig.
+```
+
+Gossip + Sharding-Rebalance + Coordinated Shutdown des Clusters
+übernehmen die Choreographie. Gesamt-Downtime: null (bei richtiger
+Konfiguration; siehe
+[Kubernetes-Deployment](/de/operations/deployment/kubernetes/)).
+
+**Voraussetzungen**:
+
+- Replicas ≥ 2. Ein-Replica-Cluster können nicht sauber drainen.
+- Coordinated Shutdown mit vernünftigen Phasen-Timeouts konfiguriert.
+- Health-Checks gaten Readiness korrekt.
+
+## Schema-brechende Upgrades
+
+Immer wenn das Upgrade ändert:
+
+- **Event-Shapes** in einem Journal.
+- **State-Shapes** in einem Durable-State-Store.
+- **Message-Shapes**, die Nodes einander während des Rolling-Fensters
+  schicken könnten.
+- **Config-Keys**, die sich zwischen Major-Versionen bewegen.
+
+Das Muster: **Mach die Änderung additiv**, dann upgrade.
+
+## Muster — additive Event-Shapes
+
+Alter Code schrieb:
+
+```ts
+type DepositedV1 = { kind: 'deposited'; amount: number };
+```
+
+Neuer Code will:
+
+```ts
+type DepositedV2 = { kind: 'deposited'; amount: number; currency: string };
+```
+
+**Schritt 1: Zwischen-Code deployen**, der beide Shapes akzeptiert.
+
+```ts
+class Account extends PersistentActor<...> {
+  override eventAdapter() {
+    return new DefaultAdapter<DepositedV2>({
+      currentVersion: 2,
+      defaults:       { currency: 'USD' },
+    });
+  }
+}
+```
+
+Dieser Schritt:
+
+- **Schreibt V2-Events** unter der neuen Form.
+- **Liest V1-Events** mit `currency` auf USD defaulted.
+- **Funktioniert in alten + neuen** Clustern, weil alter Code
+  seine eigene Form liest und Envelope-Wrapping ignoriert.
+
+Roll das über Standard-Rolling-Deployment aus.
+
+**Schritt 2 (optional später)** — den `DefaultAdapter` droppen,
+sobald alle alten Events ausgealtert oder snapshottet sind. Meist
+unbegrenzt zur Sicherheit behalten.
+
+Siehe [Migration Recipes](/de/persistence/migration/recipes/) für
+den Per-Muster-Walkthrough.
+
+## Muster — nicht-additive Schema-Änderungen
+
+Für **Renames**, **Restructures**, **entfernte Felder** brauchen
+die Mechaniken mehr Schritte:
+
+```
+1. Code deployen, der ALTES LIEST + NEUES SCHREIBT. (`MigratingAdapter`)
+2. Vollständig ausrollen. Alle neuen Events sind jetzt in der neuen Form.
+3. Code deployen, der NUR NEUES LIEST (unterstützt Altes nicht mehr).
+   Droppt den Migrating-Schritt.
+4. Optional: Bulk-Migration, um noch existierende alte Events in
+   die neue Form umzuschreiben, wenn du Adapter-Komplexität droppen
+   willst.
+```
+
+Siehe
+[MigratingAdapter](/de/persistence/migration/migrating-adapter/)
+für die Implementierung.
+
+## Inter-Actor-Message-Änderungen
+
+```ts
+// v1-Nachricht: { kind: 'request' }
+// v2-Nachricht: { kind: 'request', traceId: string }
+```
+
+Während eines Rolling Deployments **könnten alte Nodes v1 an neue
+Nodes senden** (oder umgekehrt). Der neue Code muss beide Versionen
+eingehender Nachrichten tolerieren.
+
+**Strategie**:
+
+1. **Das neue Feld als optional** im Message-Typ ergänzen.
+2. **Neuer Code kann Nachrichten ohne das Feld handhaben** (es
+   defaulten).
+3. **Deployen**. Alt → neu sendet ohne das Feld, funktioniert. Neu
+   → alt sendet mit dem Feld, alt ignoriert es.
+
+Sobald alles auf v2 ist, kann das Feld in einem **späteren
+Deployment** required werden.
+
+## Konfigurationsänderungen
+
+```hocon
+# v1 → v2: umbenannter Config-Key
+actor-ts.cluster.gossip-interval = 1s     # v1
+actor-ts.cluster.gossip-interval-ms = 1000 # v2 (umbenannt)
+```
+
+Das Config-System des Frameworks **migriert umbenannte Keys nicht
+automatisch**. Zwei Strategien:
+
+- **Beide lesen** im Code, der Config lädt; entweder den Namen
+  ehren, bis du den neuen verlangen kannst.
+- **Migrations-Skripte laufen lassen**, die `application.conf` zu
+  den neuen Key-Namen umschreiben.
+
+Einfacher: **Config-Keys nicht umbenennen**. Wenn doch nötig, alten
+Namen deprecaten + beim Start für ein Release warnen, bevor er
+entfernt wird.
+
+## Was, wenn du Downtime nicht vermeiden kannst?
+
+Manchmal ist der Schema-Break so schlimm, dass eine Online-Migration
+ehrlich gesagt unmöglich ist — anderes Storage-Backend, fundamentales
+Restructuring. Dann **plane Downtime**:
+
+```
+1. Wartungsfenster ankündigen.
+2. Coordinated Shutdown des gesamten Clusters.
+3. Offline-Migrations-Skripte laufen lassen (manchmal Stunden).
+4. Die neue Version hochfahren.
+5. Smoke-Test vor User-Traffic.
+```
+
+Frequenz: idealerweise **nie**. Aber gelegentlich unvermeidlich.
+
+## Rollback-Strategie
+
+**Hab immer einen Rollback-Plan**:
+
+- **Code-only**: Vorherige Binary funktioniert weiter gegen
+  dieselben Schemas. Rollback per K8s-Rolling-Back.
+- **Schema-brechend**: Der *vorherige* Code liest die *neuen*
+  Shapes (weil Schritt 1 additiv war). Rollback ist sicher.
+- **Nicht-additive Änderung**: schwieriger — der Rollback-Schritt
+  muss auch die neue Form kennen. Vermeiden; wenn nötig,
+  Feature-Flags nutzen, um den neuen Code-Pfad zu gaten, während
+  der alte erreichbar bleibt.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Schema-Break ohne Migrations-Code">
+  ```ts
+  // Required Field hinzufügen, deployen
+  // → alle alten Events scheitern beim Deserialisieren nach Deploy
+  ```
+  Hab immer einen Adapter (oder Default) für den Übergang. Sonst
+  kann der neue Code die alten Daten nicht lesen.
+</Aside>
+
+<Aside type="caution" title="Den additiven Schritt überspringen">
+  ```ts
+  // Schritt 1 + 3 in einem Deploy zusammengelegt
+  ```
+  Heißt, es gibt kein "Alt + Neu koexistieren"-Fenster. In einem
+  Rolling Update laufen alte Nodes kurz neben neuen — beide müssen
+  dieselben Daten lesen. Mehrstufig ist sicherer.
+</Aside>
+
+<Aside type="caution" title="Kein Rollback-Test">
+  ```ts
+  // Deploy läuft gut; Rollback-Pfad nie geübt
+  ```
+  Übe Rollback in Staging. Produktion ist nicht die Zeit
+  herauszufinden, dass der Rollback bricht.
+</Aside>
+
+## Wohin als nächstes
+
+- **[Operations-Überblick](/de/operations/overview/)** —
+  die Produktions-Checkliste.
+- **[Rolling Migration](/de/operations/upgrades/rolling-migration/)** —
+  das praktische Schritt-für-Schritt-Rezept.
+- **[Migration-Überblick](/de/persistence/migration/overview/)** —
+  Schema-Evolution für Events + State.
+- **[Migration Recipes](/de/persistence/migration/recipes/)** —
+  das Kochbuch.
+- **[Coordinated Shutdown](/de/fundamentals/coordinated-shutdown/)** —
+  die Graceful-Stop-Maschinerie, auf die Rolling Deploys angewiesen
+  sind.

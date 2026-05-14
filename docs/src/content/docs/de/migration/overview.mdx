@@ -1,0 +1,128 @@
+---
+title: Migration-Guides - Übersicht
+description: Du kommst zu actor-ts von Akka (JVM), Pekko, Orleans oder Akka.NET? Diese Guides übersetzen die Konzepte und Code-Patterns. Plus der from-vanilla-TS-Guide für den häufigsten Adoptionspfad.
+---
+
+Wenn du dich schon mit einem anderen Actor-Framework auskennst,
+übersetzen die Migration-Guides **das, was du schon kennst**, in
+actor-ts-Konventionen.
+
+| Du kommst von | Guide |
+| --- | --- |
+| **Akka (JVM, Scala/Java)** | [from-akka-jvm](/de/migration/from-akka-jvm/) |
+| **Apache Pekko** | [from-pekko](/de/migration/from-pekko/) |
+| **Microsoft Orleans** (.NET-Grains) | [from-orleans](/de/migration/from-orleans/) |
+| **Akka.NET** | [from-akka-net](/de/migration/from-akka-net/) |
+| **Vanilla TS** (Promises, EventEmitter) | [from-vanilla-ts](/de/migration/from-vanilla-ts/) |
+
+Jeder Guide:
+
+- Mappt die Konzepte des Quell-Frameworks auf actor-ts-Äquivalente.
+- Zeigt Before/After-Code für gängige Patterns.
+- Listet auf, was fehlt oder anders ist.
+- Verweist auf die relevantesten actor-ts-Seiten.
+
+## Was übertragbar ist
+
+Wenn du **irgendein** Actor-Framework benutzt hast, sind die
+Kernideen identisch:
+
+- **Actors** als Einheiten aus State + Verhalten mit
+  Nachrichten-Verarbeitung einer nach der anderen.
+- **Mailboxes** als Queues pro Actor.
+- **Supervision** mit Direktiven wie Restart / Resume / Stop /
+  Escalate.
+- **Death Watch** zur Beobachtung des Actor-Lebenszyklus.
+- **Event Sourcing** für State-via-Events.
+
+Wenn du speziell Akka benutzt hast, ist **noch mehr
+übertragbar** - actor-ts ist stark von Akka inspiriert, mit
+Cluster, Sharding, Singleton, DistributedData und
+PersistentActor in vertrauten Namen.
+
+## Was anders ist
+
+Drei Kategorien von Unterschieden:
+
+### TypeScript-spezifisch
+
+- **Keine Fibers / keine JVM** - JavaScript ist pro Prozess
+  Single-Threaded; actor-ts nutzt die Microtask- + Macrotask-Queues
+  für Scheduling.
+- **Kein natives Akka-Typed** - die typisierte API des Frameworks
+  (`Behaviors`) ist inspiriert, aber nicht identisch.
+- **`ts-pattern` statt Pattern Matching** - TypeScript hat
+  keine nativen Match-Ausdrücke; das Framework nutzt ts-pattern
+  als Peer-Dep.
+
+### Kleinere Oberfläche
+
+- **Keine Streams** - Akka Streams wurde nicht portiert.  Nutze
+  Promise-basierte Patterns oder eine separate Library.
+- **Keine FSM als eigenes Modul** in einigen Frameworks; actor-ts
+  hat sie, aber mit anderer API-Form.
+- **Weniger eingebaute Patterns** - actor-ts fokussiert auf die
+  80 % der Features.
+
+### Andere Defaults
+
+- **Bun ist die primäre Runtime** - Node wird auch unterstützt,
+  Deno als Best-Effort.
+- **JSON ist der Default-Serializer** - CBOR + Custom verfügbar.
+- **K8s ist das angenommene Deployment-Ziel** - First-Class
+  K8s-Integration für Seed-Discovery + Lease +
+  Management-Endpoints.
+
+## Konzept-Spickzettel
+
+Zur schnellen Übersetzung:
+
+| Konzept | Akka JVM / Pekko | Orleans | Akka.NET | actor-ts |
+| --- | --- | --- | --- | --- |
+| Actor | `Actor` / `Behavior[T]` | Grain | `ActorBase` | `Actor<T>` |
+| Actor-Identität | `ActorRef` | `IGrainKey` | `IActorRef` | `ActorRef<T>` |
+| Senden (fire-and-forget) | `tell` / `!` | `IGrainObserver` | `Tell` | `tell()` |
+| Senden (Request-Reply) | `ask` / `?` | Grain-Methoden-Aufruf | `Ask` | `ask()` |
+| Supervisor-Strategie | `SupervisorStrategy` | (eingeschränkt) | `SupervisorStrategy` | `OneForOneStrategy` / `AllForOneStrategy` |
+| Sharded Entity | Cluster Sharding | Grain | Cluster Sharding | `ClusterSharding` |
+| Singleton | Cluster Singleton | (manuell) | Cluster Singleton | `ClusterSingleton` |
+| Event Sourcing | Akka Persistence | Orleans Event Sourcing | Akka.NET Persistence | `PersistentActor` |
+| Lease-Koordination | Coordination | (manuell) | `ClusterSingleton`-Lease | `Lease` |
+| Test-Framework | TestKit / TestProbe | TestCluster | TestKit | `TestKit` / `TestProbe` |
+
+## Einen Startpunkt wählen
+
+Lies den Guide für dein Quell-Framework, dann:
+
+1. **[Quickstart](/de/intro/quickstart/)** - 5-Minuten
+   actor-ts-Hello-World.
+2. **[Fundamentals - Übersicht](/de/fundamentals/overview/)** -
+   die Konzept-Landkarte.
+3. **[Migration-Guide](/de/migration/overview/)** - diese
+   Seite.
+4. **Spezifischer Guide für dein Quell-Framework** -
+   Pattern-für-Pattern-Übersetzungen.
+
+## Migration ist selten ein One-Shot
+
+Für die meisten Teams ist Migration **inkrementell**:
+
+- **Schritt 1**: Ein kleines Actor-System neben bestehendem
+  Code laufen lassen.  Vielleicht ein neues Feature.
+- **Schritt 2**: Ein zustandsbehaftetes Konzept migrieren
+  (eine Registry, ein Job-Runner).  HTTP-Handler rufen es
+  weiterhin wie einen Service auf.
+- **Schritt 3**: Clustering / Persistenz nach Bedarf hinzufügen.
+- **Schritt 4**: Mehr migrieren.
+
+Du musst nicht alles umschreiben, um zu profitieren.  Siehe
+[from-vanilla-ts](/de/migration/from-vanilla-ts/) für das
+gestaffelte Adoptions-Pattern.
+
+## Wohin als Nächstes
+
+- **[from-akka-jvm](/de/migration/from-akka-jvm/)**
+- **[from-pekko](/de/migration/from-pekko/)**
+- **[from-orleans](/de/migration/from-orleans/)**
+- **[from-akka-net](/de/migration/from-akka-net/)**
+- **[from-vanilla-ts](/de/migration/from-vanilla-ts/)**

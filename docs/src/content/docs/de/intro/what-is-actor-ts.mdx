@@ -1,0 +1,191 @@
+---
+title: Was ist actor-ts?
+description: Ein From-Scratch-Port des Actor-Modells nach idiomatischem TypeScript — Actors, Supervision, Clustering, Sharding, Persistenz, Observability, alles auf Bun, Node und Deno.
+---
+
+`actor-ts` ist eine Runtime zum Bauen **nebenläufiger, verteilter und
+fehlertoleranter Systeme in TypeScript** mit dem Actor-Modell.  Es
+läuft nativ auf **Bun**, **Node.js** und **Deno** und wählt das
+richtige Runtime-Backend (TCP Sockets, Worker Threads, SQLite, HTTP
+Serve Primitives) automatisch, basierend darauf, welche Globals
+vorhanden sind.
+
+Das Actor-Modell selbst ist nicht neu — es hat Vorgeschichte in Erlang
+auf der BEAM VM seit den 80ern, auf der JVM via Akka und Pekko seit
+den 2010ern und in .NET via Orleans.  `actor-ts` ist das
+TypeScript-native Äquivalent, von Grund auf neu geschrieben, um in das
+Runtime-Ökosystem zu passen, in dem TypeScript tatsächlich lebt.
+
+## Das mentale Modell in einem Absatz
+
+Ein **Actor** ist eine kleine Einheit aus State und Verhalten, die
+**eine Nachricht nach der anderen** verarbeitet.  Actors teilen sich
+keinen Speicher; sie kommunizieren, indem sie sich Nachrichten in
+gegenseitige Mailboxes senden.  Eine Mailbox ist einfach eine Queue,
+und die Schleife des Actors lautet "Nachricht herausnehmen, Handler
+ausführen, wiederholen."  Weil es keinen geteilten State gibt und
+genau eine Nachricht pro Actor in Bearbeitung ist, brauchst Du keine
+Locks, keine sorgfältige Sequenzierung, denkst nicht über Race
+Conditions innerhalb eines Actors nach — das Modell gibt Dir
+Serialisierbarkeit umsonst.  Actors bilden **Supervisionsbäume**: Wenn
+ein Kind abstürzt, entscheidet sein Elternteil, ob es neu gestartet,
+der Fehler eskaliert oder es heruntergefahren wird.  Dasselbe Modell
+skaliert von einem einzelnen Prozess zu einem Cluster von Maschinen
+via **Location Transparency** — ein `ActorRef` weiß nicht und kümmert
+sich nicht darum, ob der Actor, auf den er zeigt, im selben Prozess,
+einem anderen Prozess oder einem anderen Rechenzentrum lebt.
+
+Das ist der konzeptionelle Kern.  Alles andere — Sharding, Persistenz,
+verteilte Daten, Cluster-Membership, Pub-Sub — ist **auf diesem einen
+Primitiv** aufgebaut.
+
+## Warum ein TypeScript-Port?
+
+Das Actor-Modell ist seit vierzig Jahren die Produktionsantwort für
+hochgradig nebenläufige Backends.  Telekommunikations-Switches laufen
+darauf.  WhatsApp hat damit zehntausende Millionen gleichzeitiger
+Verbindungen pro BEAM-Node bewältigt.  Das Modell ist
+produktionserprobt, die Literatur ist umfangreich, und der Entwurf
+schlägt Thread-Pool-plus-Mutex-Code in dem Moment, in dem Dein
+Concurrency-Bild nicht-trivial wird.
+
+TypeScript ist **heute die dominante Sprache für Anwendungs-Backends**.
+Bun, Node und Deno geben Dir alle schnelle Startzeiten, solide
+TypeScript-Ergonomie und ein gesundes Ökosystem.  Doch das
+Actor-Modell-Toolkit für TS war historisch dünn — Du hast entweder
+Deine eigenen Primitiven geschrieben, hast Promise-/Worker-Thread-Suppe
+zusammengeklebt, die Actors schlecht approximierte, oder Du hast
+akzeptiert, dass "alles über ein Spielzeug hinaus die JVM braucht."
+
+`actor-ts` existiert, um diese Lücke zu schließen.  Ein vollständiger
+Port des Actor-Modell-Stacks — Actors, Supervision, Cluster, Sharding,
+Persistenz, Observability, HTTP, Broker — gebaut in idiomatischem
+TypeScript, gestützt auf das Typsystem (discriminated unions,
+`match().exhaustive()`, generische Actor-Refs), wo sich JVM-Ports auf
+Traits und Typparameter stützten.
+
+## Was "batteries-included" hier bedeutet
+
+Ein Docs-Leser, der nach "einer Actor-Library für TS" sucht, findet
+einige auf npm.  Die meisten hören bei der grundlegenden
+Actor-Abstraktion auf: einer Klasse mit einem Message-Handler.  Das
+ist der einfache Teil.  Die harten Teile — die, die vierzig Jahre
+Produktionserfahrung mit dem Actor-Modell etabliert haben — sind die
+operativen Stücke rund um den Actor.
+
+`actor-ts` versucht, sie alle in einem Paket auszuliefern:
+
+- **Clustering** — Gossip-basierte Membership mit Leader Election,
+  Weakly-Up-Übergängen, φ-accrual Failure Detection,
+  Split-Brain-Resolvern.  Nichts davon sollte ein
+  Anwendungsentwickler selbst schreiben.
+- **Sharding** — Für statusbehaftete Actors, die ewig leben, musst
+  Du sie über den Cluster verteilen, Dir merken, welche Node welche
+  Entität hält, und beim Hinzufügen oder Entfernen von Nodes neu
+  balancieren.  Sharding kümmert sich um den Koordinator, den
+  Hand-off, die Passivation, das Remember-Entities-Backend.
+- **Persistenz** — `PersistentActor` für event-sourced State,
+  `DurableState` für den einfacheren "Speicher einen Snapshot"-Fall,
+  beide mit steckbaren Journals (in-memory, SQLite, Cassandra) und
+  Snapshot Stores.  Plus die Migrations-Toolchain für die Evolution
+  von Schemas, ohne alte Events neu zu schreiben.
+- **Verteilte Daten** — acht CRDTs (Counters, Registers, Sets, Maps)
+  mit durablem Storage und Gossip-Replikation, für State, der über
+  den Cluster konvergieren soll, ohne Leader-Koordination.
+- **Integrationen** — HTTP-Server mit einer Route-DSL (Fastify
+  Default, Express- + Hono-Backends), Broker für Kafka / MQTT /
+  NATS / AMQP / Redis Streams / gRPC / WebSocket, Object Storage
+  für S3 / MinIO / R2 / Filesystem mit Kompression + Verschlüsselung.
+- **Observability** — Prometheus-Metriken, OpenTelemetry-Tracing,
+  Management-Endpunkte, Stock-Metriken out of the box.
+
+Der vollständige Feature-Katalog steht in der linken Sidebar — **Build
+Actors**, **Distribute**, **Persist**, **Integrate**, **Observe**.
+Jeder Abschnitt hat eine Übersichtsseite, die das *Warum* seines
+Subsystems erklärt; jedes Subsystem hat eigene Seiten, die ins Detail
+gehen.
+
+Die Form der API-Oberfläche — `ActorRef`, `Props`, `tell` / `ask`,
+`become` / `stash`, Supervisionsstrategien, die Extensions-API, der
+Receptionist, Distributed Pub/Sub, Cluster Singleton — wird jedem
+vertraut vorkommen, der ein typisiertes Actor-Framework auf einer
+anderen Runtime verwendet hat.  Wo JVM-Idiome nicht übertragbar waren,
+haben wir das TypeScript-native Äquivalent gewählt.
+
+## Was es ist, was es nicht ist
+
+**Es ist** — ein ernsthaftes, vollständig abdeckendes
+Actor-Modell-Toolkit, mit einer Dokumentationsseite, lauffähigen
+Beispielen (Chat, Voice) und Testabdeckung gut im vierstelligen
+Bereich.  Produktionsreif geformt: die Art von Sache, auf der Du ein
+echtes Backend bauen würdest, wenn Du dazu geneigt wärst.
+
+**Es ist nicht** — produktionserprobt im großen Maßstab.  Niemand
+betreibt heute zehn Millionen gleichzeitiger Verbindungen darauf.
+Das Framework ist **pre-1.0**; die API-Oberfläche ist breit, aber
+nicht alles davon ist in Stein gemeißelt.  Und es wurde mit
+**umfangreicher AI-Pair-Programming-Unterstützung** geschrieben, was
+eine Stärke (Konsistenz, Abdeckung, Kommentare) und ein Vorbehalt
+(einige Ecken könnten eher "sieht richtig aus" als "verifiziert
+richtig" sein) ist.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Dies ist ein AI-unterstütztes Hobbyprojekt">
+  Große Teile von actor-ts wurden mit AI-Pair-Programming geschrieben
+  und **sind nicht in der Produktion produktionserprobt**.  Die
+  Testabdeckung ist gut (~1740 Tests, ~85 % Line), aber die
+  Oberfläche ist enorm.  Nutze es zum Lernen, zum Prototyping, zum
+  Benchmarken von Ideen — nicht, um echtes Geld, Nutzer oder Daten
+  zu handhaben.
+
+  Wo bekannte Limitierungen oder dünne Stellen existieren, werden
+  sie auf der relevanten Docs-Seite genannt, statt überspielt zu
+  werden.  Pre-1.0-Versionierung bedeutet, dass Minor-Bumps
+  potenziell Breaking Changes sind — siehe die
+  [Versionspolitik](/de/reference/version-policy/) für die
+  vollständigen Vorbehalte.
+</Aside>
+
+## Eine Anmerkung zu Runtimes
+
+Das Framework behandelt die drei Runtimes — Bun, Node, Deno — als
+**erstklassige Peers**.  Alle drei werden in der CI für die Features
+getestet, die sie unterstützen; die
+[Kompatibilitätsmatrix](/de/runtime/compatibility-matrix/) ist die
+definitive Referenz dafür, was wo funktioniert.
+
+Bun ist das **primäre Entwicklungsziel**: schnellster Cold Start,
+eingebautes SQLite via `bun:sqlite`, eingebauter WebSocket-Server,
+nativer Test-Runner.  Die meisten internen Benchmarks wurden auf Bun
+gemessen.
+
+Node ist die **produktive Realität**: bei weitem die häufigste
+Deployment-Umgebung, die Runtime, die Dein Infrastruktur-Team bereits
+kennt, gegen die die meisten npm-Pakete zuerst getestet werden.
+Einige actor-ts-Features (native WebSocket, native zstd-Kompression)
+erfordern Node 22+, um einen Peer-Dependency-Fallback zu vermeiden;
+alles andere funktioniert auf Node 20+.
+
+Deno ist die **Best-Effort-Runtime**: funktioniert für die meisten
+Features via `npm:`-Specifier, aber eine Handvoll Integrationen
+wurden nicht erschöpfend getestet.
+
+Interne Abstraktionen leben hinter kleinen `src/runtime/*`-Modulen,
+die beim Start automatisch erkennen.  Du schreibst Deinen
+Anwendungscode einmal; der Runtime-Adapter wählt das richtige Backend.
+
+## Wie es weitergeht
+
+- **Willst Du es ausprobieren?**  [Quickstart](/de/intro/quickstart/) —
+  fünf Minuten zu einem laufenden Actor.
+- **Willst Du zuerst die Philosophie?**  [Warum Actors?](/de/intro/why-actors/) —
+  was Dir das Actor-Modell gibt, das Promise-and-Worker-Code nicht
+  gibt.
+- **Installierst Du?**  [Installation](/de/intro/installation/) —
+  vollständige Anleitung inklusive der optionalen Peer-Dependencies.
+- **Verloren in der Oberfläche?**  [Lernpfad](/de/intro/learning-path/) —
+  empfohlene Lesereihenfolge basierend auf dem, was Du bauen willst.
+- **Kommst Du von Akka, Pekko, Orleans oder Akka.NET?**  Die
+  [Migration Guides](/de/migration/overview/) bilden Konzept für
+  Konzept von diesen Frameworks auf actor-ts ab.

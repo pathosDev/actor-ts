@@ -1,0 +1,229 @@
+---
+title: Redis-Cache
+description: RedisCache umschließt `ioredis` für verteiltes Caching über Redis. Single-Server- oder Cluster-Modus; Persistenz-Optionen; volle Cache-Interface-Unterstützung mit Single-Round-Trip-Bulk-Operationen. Die richtige Multi-Pod-Wahl, wenn Redis verfügbar ist.
+---
+
+`RedisCache` ist die **Redis-gestützte** Cache-Implementierung.
+Produktionsreif, Multi-Pod-sicher, mit Single-Round-Trip-Bulk-
+Operationen.
+
+```ts
+import { RedisCache } from 'actor-ts';
+
+const cache = new RedisCache({
+  url: 'redis://redis.example.com:6379',
+});
+```
+
+## Wann Redis
+
+Die meisten Multi-Pod-Produktionsfälle:
+
+- **Cache-Sharing über Pods** — Pods sehen denselben Cache-State.
+- **Bulk-Operationen zählen** — MGET / MSET in einem Round-Trip.
+- **Persistenz gewünscht** — AOF / RDB überleben Redis-Neustarts.
+- **Du betreibst schon Redis** — bestehende Infrastruktur
+  wiederverwenden.
+
+Für Single-Pod ist [In-Memory](/de/cache/in-memory/) einfacher.
+
+## Konfiguration
+
+```ts
+interface RedisCacheSettings {
+  url?:       string;                // 'redis://host:port'
+  host?:      string;
+  port?:      number;
+  password?:  string;
+  username?:  string;
+  db?:        number;
+  keyPrefix?: string;
+  tls?:       boolean;               // true für `rediss://`
+  cluster?:   ClusterNodes;          // für Redis Cluster
+}
+```
+
+URL-Form:
+
+```ts
+new RedisCache({ url: 'redis://localhost:6379/0' });
+new RedisCache({ url: 'rediss://redis.example.com:6380' });  // TLS
+new RedisCache({ url: 'redis://user:pass@host:6379' });
+```
+
+Feld-Form:
+
+```ts
+new RedisCache({
+  host:    'redis.example.com',
+  port:    6379,
+  password: process.env.REDIS_PASS,
+  db:      1,
+  keyPrefix: 'my-app:',
+});
+```
+
+`keyPrefix` wird auf **jeden** Key angewendet — nützlich, wenn
+du eine Redis-Instanz über mehrere Apps teilst:
+
+```ts
+keyPrefix: 'my-app:cache:'
+// → 'my-app:cache:user:42', 'my-app:cache:session:abc', ...
+```
+
+## Cluster-Modus
+
+```ts
+new RedisCache({
+  cluster: {
+    nodes: [
+      { host: 'redis-1', port: 6379 },
+      { host: 'redis-2', port: 6379 },
+      { host: 'redis-3', port: 6379 },
+    ],
+  },
+});
+```
+
+`ioredis` übernimmt das Cluster-Protokoll (MOVED-/ASK-Redirects,
+Slot-Tracking).  Nimm Redis Cluster für **horizontale Skalierung**
+über den Speicher eines einzelnen Redis-Servers hinaus.
+
+## TLS
+
+```ts
+new RedisCache({ url: 'rediss://redis.example.com:6380' });
+// oder:
+new RedisCache({ host: '...', port: 6380, tls: true });
+```
+
+URL-Präfix `rediss://` oder explizit `tls: true`.  Cert-
+Verifizierung läuft über Nodes TLS-Defaults; für selbstsignierte
+Zertifikate im Dev brauchst du explizite ioredis-TLS-Optionen.
+
+## Bulk-Operationen sind echtes Bulk
+
+```ts
+const users = await cache.mget<User>(['user:1', 'user:2', 'user:3']);
+//                                              ↑
+//                                       ein MGET-Round-Trip
+```
+
+`mget` auf RedisCache → ein einzelner Redis-`MGET`-Befehl →
+ein Netzwerk-Round-Trip.  Entscheidend für das Muster der
+**Hydratation gesharder Entitäten** (State für viele Entitäten
+beim Node-Start wieder aufbauen).
+
+## Atomare `incr` + `setIfAbsent`
+
+Beide mappen auf Redis-Primitive:
+
+- **`incr`** → Redis `INCR` (atomar, kein Race).
+- **`setIfAbsent`** → Redis `SET NX` (atomares CAS).
+
+Wird von der Rate-Limit- + Idempotency-Key-Middleware des
+Frameworks genutzt.  Sicher über Pods hinweg.
+
+## Pipelining
+
+```ts
+// Nicht direkt im Cache exponiert; ioredis-Pipelining ist automatisch
+// für gebatcheten Aufrufe innerhalb desselben Ticks.
+```
+
+`ioredis` pipelined Befehle, die im selben JS-Tick abgesetzt
+werden, und sendet sie in einem einzigen TCP-Write.  Das Cache-
+Interface exponiert Pipelining nicht explizit; die Implementierung
+des Frameworks nutzt Pipelining, wo hilfreich.
+
+## Peer-Dependency
+
+```bash
+npm install ioredis
+# oder: bun add ioredis
+```
+
+`ioredis` ist der zugrunde liegende Client.  Versionen 5+ sind
+getestet.
+
+## Redis-Persistenz-Settings
+
+Redis unterstützt zwei Persistenz-Modi:
+
+- **RDB** — periodische Snapshots.  Default in vielen Configs.
+- **AOF** — Append-only-Log.  Durabler, langsamer.
+
+Der Cache des Frameworks kümmert sich nicht um Redis-seitige
+Persistenz-Config — Caches sind opportunistisch.  Aber für
+**Cache-Überleben über Redis-Neustarts** aktiviere mindestens
+RDB.
+
+## TLS zu Managed-Redis
+
+```ts
+new RedisCache({
+  url: 'rediss://default:password@my-cluster.cache.amazonaws.com:6380',
+});
+```
+
+AWS ElastiCache, GCP Memorystore, Azure Cache for Redis —
+alle unterstützen `rediss://`-URLs.  Nutze sie.
+
+## Cluster-Verbindungsverwaltung
+
+```ts
+new RedisCache({
+  cluster: { nodes: [...] },
+  options: {
+    enableReadyCheck:    true,
+    maxRetriesPerRequest: 3,
+  },
+});
+```
+
+Defaultet auf vernünftige ioredis-Defaults.  Für sehr enge Latenz
+oder spezifische Connection-Pool-Größen gib `ioredis`-artige
+Optionen explizit mit.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Große Objekte im Cache">
+  ```ts
+  cache.set('user:full', user, 60_000);   // 5-MB-User-Objekt
+  ```
+  Redis ist eine Speicherdatenbank.  Große Werte verbrauchen
+  Serverspeicher + Netzwerk-Bandbreite.  Cache **Identifier** +
+  hole volle Objekte bei Miss aus dem Source-Store.
+</Aside>
+
+<Aside type="caution" title="Keine zwei unverwandten Apps ohne keyPrefix auf demselben Redis">
+  ```ts
+  // App-A und App-B schreiben beide `user:42`
+  ```
+  Ohne `keyPrefix` korrumpieren Key-Kollisionen beide Apps.
+  Nimm eindeutige Präfixe (`my-app-a:`, `my-app-b:`) oder
+  separate Redis-DBs / -Instanzen.
+</Aside>
+
+<Aside type="caution" title="Redis-Cluster + Cross-Slot-Operationen">
+  ```ts
+  // mget(['user:1', 'user:2']) — Keys hashen in verschiedene Slots
+  ```
+  In Redis Cluster braucht MGET, dass alle Keys im selben Slot
+  liegen.  ioredis behandelt Cross-Slot-MGETs durch Aufspalten
+  pro Slot, aber jedes Aufspalten ist ein eigener Round-Trip.
+  Für Performance gestalte Keys so, dass verwandte Keys via
+  **Hash-Tag** in denselben Slot fallen: `{user:42}:profile`,
+  `{user:42}:settings`.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[Cache-Übersicht](/de/cache/overview/)** — das
+  große Bild.
+- **[In-Memory-Cache](/de/cache/in-memory/)** — für
+  Single-Pod.
+- **[Memcached-Cache](/de/cache/memcached/)** —
+  Alternative.
+- **[HTTP-Middleware](/de/http/middleware/response-cache/)** —
+  primäre Konsumenten des Caches.

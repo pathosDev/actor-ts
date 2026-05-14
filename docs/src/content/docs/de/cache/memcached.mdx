@@ -1,0 +1,141 @@
+---
+title: Memcached-Cache
+description: MemcachedCache umschließt `memjs` für verteiltes Caching über Memcached. Geringerer Speicher-Footprint als Redis, einfacheres Protokoll, keine Persistenz (baut bei Neustart neu auf). Richtig, wenn du schon Memcached betreibst.
+---
+
+`MemcachedCache` ist die **Memcached-gestützte** Cache-
+Implementierung.  Verteilter Cache über Pods, geteilt über
+Prozesse hinweg.
+
+```ts
+import { MemcachedCache } from 'actor-ts';
+
+const cache = new MemcachedCache({
+  servers: ['memcached-1:11211', 'memcached-2:11211'],
+});
+```
+
+## Wann Memcached
+
+Zwei Hauptgründe:
+
+1. **Bestehende Memcached-Infrastruktur** — dein Team betreibt
+   es bereits.
+2. **Reiner Cache-Anwendungsfall** — du brauchst Redis' Extra-
+   Features nicht (Persistenz, Pub/Sub, Scripting, Sorted Sets).
+
+Memcached ist **einfacher als Redis** — weniger Features,
+geringerer operativer Footprint, geringerer Speicher-Overhead.
+Für pures Key-Value-Caching mit TTLs reicht das voll.
+
+## Konfiguration
+
+```ts
+interface MemcachedCacheSettings {
+  servers:      string[];               // 'host:port'
+  username?:    string;
+  password?:    string;
+  timeoutMs?:   number;
+  retries?:     number;
+}
+```
+
+`memjs` (der zugrunde liegende Client) unterstützt SASL-Auth
+über `username`/`password`.  Mehrere Server werden über Hashing
+verteilt.
+
+## Peer-Dependency
+
+```bash
+npm install memjs
+# oder: bun add memjs
+```
+
+## Was funktioniert
+
+| Cache-Methode | Memcached-Implementierung |
+| --- | --- |
+| `get`/`set`/`delete` | Direkte Memcached-Befehle. |
+| `incr` | Kombination aus Memcached `INCR`/`ADD`. |
+| `setIfAbsent` | Memcached `ADD` (atomar). |
+| `mget`/`mset` | Parallele Single-Key-Operationen. |
+
+`mget`/`mset` sind auf Memcached nicht Single-Round-Trip (keine
+Multi-Key-Befehle).  Das Framework parallelisiert die einzelnen
+Operationen.
+
+## Memcached vs. Redis
+
+| Aspekt | Memcached | Redis |
+| --- | --- | --- |
+| Speicher-Overhead pro Eintrag | Niedriger | Höher |
+| Multi-Key-Operationen | Langsamer (parallele Single-Key) | Schneller (MGET, MSET) |
+| Persistenz | Keine | RDB / AOF verfügbar |
+| Pub/Sub | Nein | Ja |
+| Datentypen | Nur Strings | Strings, Listen, Sets, Hashes, Sorted Sets |
+| Cluster-Support | Clientseitiges Hashing | Eingebautes Clustering |
+| Replikation | Keine (oder über Sidecars) | Eingebaute Replikation |
+
+Für puren Cache: **beides funktioniert**.  Redis gewinnt bei
+**fast allem anderen**, was das Framework wollen könnte.
+Memcached gewinnt bei **minimalem operativen Footprint**, wenn
+Caching der einzige Bedarf ist.
+
+## Eviction
+
+```ts
+// Memcached konfiguriert mit --memory-limit=2048 (MB)
+// → LRU-Eviction, sobald voll
+```
+
+Memcacheds Eviction ist **LRU**, konfiguriert auf der Memcached-
+Serverebene (nicht vom Cache-Client).  Keine clientseitige
+Eviction-Policy.
+
+Für einen Cache fester Größe ist das okay — Memcached wirft alte
+Einträge raus, um Platz zu schaffen.
+
+## Connection-Pooling
+
+`memjs` hält seinen eigenen Connection-Pool; das Framework
+verwaltet ihn nicht direkt.  Tune über memjs-Optionen, falls
+nötig (meist sind die Defaults okay).
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Keine Persistenz">
+  ```bash
+  # systemctl restart memcached
+  # → ganzer Cache weg
+  ```
+  Memcached hat null Persistenz.  Behandle Caches als
+  "neu-aus-Quelle-bauen" — speichere nie etwas, das du nicht
+  neu berechnen kannst.
+</Aside>
+
+<Aside type="caution" title="Keine atomaren Multi-Key-Operationen">
+  ```ts
+  // Zwei Operationen: A lesen, B basierend auf A setzen → Race möglich
+  ```
+  Memcached hat keine Transaktionen / atomaren Multi-Key-
+  Operationen.  Für "atomarer Counter + Check"-Muster ist das
+  `incr` des Frameworks das einzige atomare Primitiv.
+</Aside>
+
+<Aside type="caution" title="Skalierung des Memcached-Clusters">
+  ```ts
+  servers: ['m1:11211', 'm2:11211'];
+  // m3 hinzufügen: Keys rebalancieren über Consistent-Hashing — einige Cache-Misses während des Rebalances
+  ```
+  Memcached-Skalierung braucht clientseitiges Bewusstsein für
+  Consistent-Hashing.  `memjs` erledigt das; rechne mit einem
+  kurzen Cache-Miss-Spike, wenn sich die Cluster-Topologie ändert.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[Cache-Übersicht](/de/cache/overview/)** — das große
+  Bild.
+- **[In-Memory-Cache](/de/cache/in-memory/)** — für
+  Single-Pod.
+- **[Redis-Cache](/de/cache/redis/)** — mehr Features.

@@ -1,0 +1,220 @@
+---
+title: Pattern Matching
+description: Das `match(msg).with(...).exhaustive()`-Idiom, das actor-ts überall verwendet — gebaut auf ts-pattern. Compile-time-Exhaustiveness, Typ-Narrowing und die Konventionen zum Matchen auf `kind`-Diskriminatoren.
+---
+
+Innerhalb des `onReceive` eines Actors empfängst du einen Wert vom
+Nachrichten-Union-Typ des Actors und dispatched auf seine Form.
+Diese Codebasis verwendet dafür
+[ts-pattern](https://github.com/gvergnaud/ts-pattern) — spezifisch
+das `match(value).with(...).exhaustive()`-Idiom.  Drei Vorteile
+gegenüber handgeschriebenen `if/else`-Leitern:
+
+1. **Compile-time-Exhaustiveness.**  Vergiss ein `kind`, der
+   Compiler scheitert — kein stiller Durchfall.
+2. **Typ-Narrowing innerhalb jedes Arms.**  Keine `as`-Casts, keine
+   manuellen `if (msg.kind === ...)`-Guards innerhalb von Handlern.
+3. **Lesbar für nicht-triviale Unions.**  Bei 5+ Varianten bleibt
+   die `match`-Form scannbar; eine `if/else if`-Leiter tut das
+   nicht.
+
+## Ein minimales Beispiel
+
+```ts
+import { Actor } from 'actor-ts';
+import { match } from 'ts-pattern';
+
+type Cmd =
+  | { readonly kind: 'inc' }
+  | { readonly kind: 'dec' }
+  | { readonly kind: 'set'; readonly to: number }
+  | { readonly kind: 'reset' };
+
+class Counter extends Actor<Cmd> {
+  private count = 0;
+
+  override onReceive(cmd: Cmd): void {
+    match(cmd)
+      .with({ kind: 'inc' },   ()  => { this.count++; })
+      .with({ kind: 'dec' },   ()  => { this.count--; })
+      .with({ kind: 'set' },   (m) => { this.count = m.to; })
+      .with({ kind: 'reset' }, ()  => { this.count = 0; })
+      .exhaustive();
+  }
+}
+```
+
+Innerhalb des `set`-Arms ist `m` automatisch als
+`{ kind: 'set'; to: number }` typisiert — der Diskriminator
+verengt den Typ ohne Cast.
+
+`.exhaustive()` am Ende ist der **Compile-time-Check**: wenn du
+später `{ kind: 'double' }` zu `Cmd` hinzufügst und den passenden
+`.with({ kind: 'double' }, ...)`-Arm vergisst, weigert sich
+TypeScript zu kompilieren und zeigt auf den
+`.exhaustive()`-Aufruf.  Der Build fängt das Versäumnis ab; du
+shippst nie eine still verworfene Nachricht.
+
+## Die `kind`-Konvention
+
+Die Discriminated-Union-Konvention des Frameworks ist
+**`kind: string`, klein geschrieben, kebab-case für mehrere
+Wörter**:
+
+```ts
+type AccountCmd =
+  | { readonly kind: 'deposit';      readonly amount: number }
+  | { readonly kind: 'withdraw';     readonly amount: number }
+  | { readonly kind: 'close-account' }
+  | { readonly kind: 'get-balance';  readonly replyTo: ActorRef<number> };
+```
+
+Warum `kind` und nicht `type` oder `tag`:
+
+- `type` würde mit TypeScripts `type`-Keyword bei
+  Typ-Narrowing-Lesevorgängen kollidieren (lästig, nicht kaputt).
+- `tag` ist in Ordnung, aber weniger selbsterklärend als `kind`.
+- JVM-typisierte Actor-Frameworks verwenden Sealed-Trait-Subklassen;
+  in TS-Land ist `kind` das häufigste Community-Idiom.
+
+Sich an die Konvention zu halten, zahlt sich an drei Stellen aus:
+die Exhaustiveness-Prüfung von ts-pattern funktioniert, der
+Serializer kann über die Wire-Grenze per `kind` dispatchen, und
+Editoren können auf der Literal-Union autovervollständigen.
+
+## Häufige ts-pattern-Features
+
+### Object-Pattern-Narrowing
+
+```ts
+match(cmd)
+  .with({ kind: 'deposit', amount: P.number },  (m) => { /* m.amount: number */ })
+  .with({ kind: 'deposit', amount: 0 },          ()  => { /* Zero-Amount-Deposit */ })
+  .otherwise(() => { /* Fallthrough */ });
+```
+
+Patterns können auch auf Feldwerten verfeinern — `amount: 0` matcht
+nur, wenn der Betrag wörtlich null ist, und fällt sonst auf den
+allgemeineren `P.number`-Arm durch.
+
+`P` ist der Pattern-Builder-Namespace von ts-pattern.  Nützliche
+Primitives:
+
+| Pattern | Was es matcht |
+| --- | --- |
+| `P.string` | Jeder String |
+| `P.number` | Jede Zahl |
+| `P.array(P.string)` | Array von Strings |
+| `P.union('a', 'b')` | Eines der Literale |
+| `P.when((x) => x > 0)` | Predicate-Guard |
+| `P.any` | Wildcard |
+
+Siehe [die ts-pattern-Docs](https://github.com/gvergnaud/ts-pattern)
+für den vollen Set.
+
+### Einen Wert zurückgeben
+
+`match` ist ein Ausdruck — du kannst Werte zurückgeben:
+
+```ts
+const reply = match(cmd)
+  .with({ kind: 'get' }, () => this.count)
+  .with({ kind: 'inc' }, () => this.count + 1)
+  .exhaustive();
+```
+
+Innerhalb des `onReceive` eines Actors verwendest du es meist für
+seine Seiteneffekte (`tell` an eine Reply-to-Ref, Felder mutieren).
+Aber für typed-Actor-`Behavior`-Returns ist die Ausdrucksform
+bequem.
+
+### `.otherwise` vs `.exhaustive`
+
+```ts
+match(cmd)
+  .with({ kind: 'inc' }, () => { ... })
+  .with({ kind: 'dec' }, () => { ... })
+  .otherwise(() => this.log.warn('unknown cmd'));   // Runtime-Fallback
+```
+
+`.otherwise(fn)` fängt alles, was nicht gematcht wurde.  Verwende
+es für Actors, die ein *Subset* eines breiteren Nachrichtentyps
+behandeln — z.B. ein `PersistentActor`, der bewusst Commands
+ignoriert, die er noch nicht behandeln kann.
+
+**Default zu `.exhaustive()`**.  `.otherwise()` deaktiviert die
+Exhaustiveness-Prüfung; greife bewusst dazu, wenn "ignoriere den
+Rest" die richtige Semantik ist.
+
+## Wann ein einfaches `if` zu bevorzugen ist
+
+Für Unions mit zwei oder drei Varianten liest sich eine einfache
+`if`-Kette sauberer:
+
+```ts
+override onReceive(cmd: Cmd): void {
+  if (cmd.kind === 'inc') this.count++;
+  else if (cmd.kind === 'dec') this.count--;
+  else cmd.replyTo.tell(this.count);
+}
+```
+
+TypeScript verengt innerhalb jedes Branchs — der `else`-Arm sieht
+automatisch `{ kind: 'get'; replyTo: ... }`.  Du verlierst den
+`.exhaustive()`-Check, aber bei 2-3 Varianten sind die Kosten
+niedrig.
+
+Die Faustregel: **verwende `match` ab 4+ Varianten**, besonders
+wenn Arms Destructuring brauchen (`(m) => m.amount`).
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`.exhaustive()` motzt und der Fehler ist undurchsichtig">
+  Meistens hast du einen neuen `kind` hinzugefügt und einen Arm
+  vergessen.  TypeScript zeigt auf die `.exhaustive()`-Zeile und
+  sagt dir, welcher Fall fehlt — lies die Fehlermeldung sorgfältig,
+  sie nennt die Variante.  Wenn der Fehler kryptisch bleibt,
+  schalte das `.exhaustive()` temporär auf `.otherwise(() => null)`
+  um, um zu isolieren, welcher Arm falsch ist, dann zurück.
+</Aside>
+
+<Aside type="caution" title="Pattern-Matche nicht auf `instanceof` für Cross-Process-Nachrichten">
+  ```ts
+  match(msg)
+    .with(P.instanceOf(UserLoggedIn), () => ...)   // ← bricht über das Wire
+  ```
+  Klassenidentität überlebt die Serialisierung nicht — der
+  Empfänger rekonstituiert ein einfaches Objekt, keine Instanz der
+  ursprünglichen Klasse.  Matche stattdessen auf `kind` (oder auf
+  Form); deswegen standardisiert das Framework auf `kind: string`.
+  Für `event-stream`-artige klassen-geroutete Nachrichten macht
+  der Bus den `instanceof`-Check auf der Publisher-Seite;
+  Subscriber können sich auf den verengten Typ verlassen, ohne ihn
+  erneut zu prüfen.
+</Aside>
+
+## ts-pattern als Runtime-Abhängigkeit
+
+ts-pattern ist eine Peer-Abhängigkeit des Frameworks — du
+installierst es selbst:
+
+```bash
+bun add ts-pattern
+# oder: npm install ts-pattern
+```
+
+Das Framework verlangt nicht, dass du es verwendest; du kannst
+`onReceive` als einfaches Switch schreiben.  Aber jedes
+Codebeispiel in den Docs nimmt an, dass `import { match } from 'ts-pattern'`
+verfügbar ist, weil das die Konvention ist, der die Codebasis folgt.
+
+## Wie es weitergeht
+
+- **[Nachrichten](/de/fundamentals/messages/)** — die
+  Discriminated-Union-Form, auf der `match` dispatched.
+- **[Actor](/de/fundamentals/actor/)** — die
+  `onReceive`-Signatur, innerhalb derer `match` läuft.
+- **[ts-pattern-Dokumentation](https://github.com/gvergnaud/ts-pattern)** —
+  die volle Feature-Schnittstelle der Bibliothek.
+- **[Typed Actors](/de/typed/typed-actor/)** — die typed-API
+  drückt manche Patterns direkter über Behaviors aus.

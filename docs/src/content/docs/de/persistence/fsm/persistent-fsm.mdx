@@ -1,0 +1,262 @@
+---
+title: PersistentFSM
+description: Eine event-sourced FSM — Übergänge werden als Events persistiert; beim Neustart spielt die FSM sie ab, um den exakten Zustand wiederherzustellen, in dem sie war. Die richtige Form für lange laufende Workflows (Sagas, Multi-Step-Approvals), bei denen jeder Übergang Teil der Business-Story ist.
+---
+
+`PersistentFSM` ist die event-sourced Variante von
+[FSM](/de/persistence/fsm/fsm/).  Jeder Zustandsübergang wird zu
+einem **persistierten Event** — beim Neustart spielt die FSM sie
+ab und setzt im exakten Zustand fort, in dem sie war.
+
+```ts
+import { PersistentFSM } from 'actor-ts';
+
+type State = 'created' | 'submitted' | 'approved' | 'rejected';
+type Data  = { id: string; reviewer?: string; reason?: string };
+type Msg   = { kind: 'submit' } | { kind: 'approve'; reviewer: string } | { kind: 'reject'; reason: string };
+
+class OrderApproval extends PersistentFSM<State, Data, Msg> {
+  readonly persistenceId = `order-${this.orderId}`;
+
+  constructor(private readonly orderId: string) {
+    super('created', { id: orderId });
+
+    this.when('created', (data, msg) => {
+      if (msg.kind === 'submit') return this.goto('submitted', data);
+      return this.stay(data);
+    });
+
+    this.when('submitted', (data, msg) => {
+      if (msg.kind === 'approve') return this.goto('approved', { ...data, reviewer: msg.reviewer });
+      if (msg.kind === 'reject')  return this.goto('rejected', { ...data, reason: msg.reason });
+      return this.stay(data);
+    });
+
+    // Terminale Zustände — keine weiteren Übergänge.
+    this.when('approved',  (data) => this.stay(data));
+    this.when('rejected',  (data) => this.stay(data));
+  }
+}
+```
+
+Ein Neustart **spielt** die persistierten Übergänge (Events)
+**ab**, sodass die FSM genau dort weitermacht, wo die vorherige
+Inkarnation aufgehört hat — einschließlich des aktuellen
+Zustandsnamens, der Daten und etwaiger laufender
+Seiteneffekt-Buchhaltung.
+
+## Was persistiert wird
+
+Jeder Übergang (`goto`) wird als `StateChangeEvent`
+persistiert:
+
+```ts
+type StateChangeEvent<SName, SData> = {
+  from: SName;
+  to:   SName;
+  data: SData;
+  ts:   number;
+};
+```
+
+Das Framework schreibt ein Event pro Übergang.  `stay(...)`
+persistiert **nicht** — nur Zustandsänderungen werden
+aufgezeichnet.
+
+Das ist eine bewusste Wahl: Stays sind normalerweise
+Daten-Updates, die keine Durability für FSM-Korrektheit
+brauchen.  Wenn du Daten-Updates auch persistiert brauchst,
+übergehe explizit (`goto('same-state', newData)`) — aber das
+erzeugt Noise-Events.
+
+## Recovery
+
+1. **`preStart`** liest jedes `StateChangeEvent` für die
+   `persistenceId` aus dem Journal.
+2. **Spielt jedes Event** der Reihe nach ab — wendet
+   `from → to` plus die gespeicherten Daten an.
+3. **Finaler Zustand + Daten** sind das Ergebnis des Replays;
+   die FSM ist jetzt mit diesem Zustand für `onReceive`
+   verfügbar.
+
+Dieselbe Idiomatik wie
+[PersistentActor](/de/persistence/persistent-actor/) — Replay
+baut deterministisch die exakte Position der Zustandsmaschine
+wieder auf.
+
+`when`-Handler laufen während des Replays nicht — sie sind für
+die **Command-Behandlung** (den nächsten Übergang entscheiden),
+nicht für die Zustands-Ableitung.  Der Übergang selbst ist das,
+was gespeichert wird; Replay setzt nur den Zustand.
+
+## Konfiguration
+
+```ts
+class OrderApproval extends PersistentFSM<S, D, M> {
+  abstract readonly persistenceId: string;
+
+  // Optionale Overrides:
+  snapshotPolicy(): SnapshotPolicy<...> { return everyNEvents(50); }
+  eventAdapter(): EventAdapter<...> | undefined { return undefined; }
+  // ... gleiche wie PersistentActor
+}
+```
+
+Erbt dieselbe Persistenz-Maschinerie wie `PersistentActor`:
+
+- `persistenceId` — der Event-Stream-Key.
+- `snapshotPolicy` — periodische Snapshots zur Replay-Begrenzung.
+- `eventAdapter` / `snapshotAdapter` — Schema-Migration.
+- `tagsFor` — Events für Projektions-Konsum taggen.
+
+## Snapshots für FSMs
+
+```ts
+override snapshotPolicy() { return everyNEvents(50); }
+```
+
+Für lange laufende FSMs, die viele Übergänge akkumulieren,
+begrenzen Snapshots den Replay.  Der Snapshot serialisiert
+`{ stateName, stateData }` — ein kompakter Blob.
+
+Wähle das Intervall basierend auf der Übergangs-Frequenz:
+
+- **Wenige Übergänge pro Actor-Lebensdauer** (~10) — kein
+  Snapshot nötig.
+- **Viele Übergänge** (100+) — Snapshot alle 50-100 Events.
+
+Siehe [Snapshots](/de/persistence/snapshots/) für die
+allgemeine Policy-Guidance.
+
+## Seiteneffekte pro Übergang
+
+```ts
+class OrderApproval extends PersistentFSM<State, Data, Msg> {
+  // ...
+
+  override async onEnter(state: State, data: Data): Promise<void> {
+    if (state === 'submitted') {
+      await this.notifyReviewer(data);   // ← Seiteneffekt bei Übergang
+    }
+  }
+}
+```
+
+`onEnter`-Callbacks laufen **nur bei Zustandsänderungen** — sowohl
+zur Übergangszeit als auch **NICHT** während des Replays.  Das ist
+der Schlüssel-Unterschied zu PersistentActor: Persistente FSMs
+behandeln den Zustands-Eintritt als Seiteneffekt-Hook, und die
+Recovery überspringt sie.
+
+Das bedeutet, **Seiteneffekte können in `onEnter` leben**, ohne
+Sorge vor Duplizierung beim Neustart.  Das ist ein bedeutsamer
+ergonomischer Gewinn gegenüber PersistentActors "Seiteneffekte
+nur im Persist-Callback."
+
+```
+Event-Flow während eines Übergangs:
+  1. Handler gibt goto(newState, newData) zurück
+  2. Framework persistiert StateChangeEvent
+  3. onExit(oldState, oldData) feuert
+  4. onEnter(newState, newData) feuert  ← Seiteneffekte hier
+  5. Antwort / weitere Arbeit läuft weiter
+
+Event-Flow während der Recovery:
+  1. Persistierte Events lesen
+  2. Für jedes: Zustand + Daten aktualisieren (keine Callbacks)
+  3. onReceive setzt fort — erstes neues Command läuft normal
+```
+
+## Lange laufendes Workflow-Beispiel
+
+Eine Multi-Step-Saga:
+
+```ts
+type SagaState =
+  | 'reserved-inventory'
+  | 'charged-payment'
+  | 'scheduled-shipping'
+  | 'completed'
+  | 'compensating-inventory'
+  | 'compensating-payment'
+  | 'failed';
+
+class OrderSaga extends PersistentFSM<SagaState, Data, Msg> {
+  // Jeder Übergang wird persistiert. Ein Crash mitten in der Saga
+  // setzt vom letzten persistierten Zustand fort — keine Arbeit geht verloren.
+
+  this.when('reserved-inventory', (data, msg) => {
+    if (msg.kind === 'payment-success') return this.goto('charged-payment', { ... });
+    if (msg.kind === 'payment-failure') return this.goto('compensating-inventory', { ... });
+    return this.stay(data);
+  });
+
+  override async onEnter(state, data) {
+    if (state === 'charged-payment') {
+      await scheduleShipping(data);   // sicher — feuert einmal pro echtem Übergang
+    }
+    if (state === 'compensating-inventory') {
+      await releaseInventory(data);
+    }
+  }
+}
+```
+
+Die Kombination aus **persistierten Übergängen** +
+**nicht-abgespielten onEnter-Callbacks** macht dieses Muster
+viel sauberer als PersistentActor-mit-Event-Handlern für
+zustandsmaschinen-förmige Workflows.
+
+## Stolperfallen
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`stay`-Updates werden nicht persistiert">
+  ```ts
+  this.when('current', (data, msg) => this.stay({ ...data, counter: data.counter + 1 }));
+  ```
+  `stay(newData)` aktualisiert die In-Memory-Daten, wird aber
+  **nicht persistiert**.  Beim Neustart setzt sich der Counter
+  auf das zurück, was das letzte `goto` gesetzt hat.  Für
+  kritische Daten gehe über (oder verwende einen separaten
+  PersistentActor für die Daten-Akkumulation).
+</Aside>
+
+<Aside type="caution" title="Seiteneffekte in Handlern, nicht in onEnter">
+  ```ts
+  this.when('idle', async (data, msg) => {
+    await externalCall();   // ✗ läuft bei jedem Replay vor dem Recovery-Abschluss
+    return this.goto('working', data);
+  });
+  ```
+  Handler laufen nur bei **neuen** Messages, nicht während des
+  Replays — das ist okay für Stay-Entscheidungen, aber
+  **Seiteneffekte in Handlern** riskieren immer noch
+  Duplizierung, wenn der Actor mitten im Call abstürzt.
+  Bevorzuge Seiteneffekte in `onEnter` des Ziel-Zustands.
+</Aside>
+
+<Aside type="caution" title="Gleiche `persistenceId` für FSM und anderen Actor">
+  ```ts
+  // Zwei Actors verwenden 'order-42' — Konflikt!
+  ```
+  PersistentFSM und PersistentActor teilen sich das Journal.
+  Gleiche `persistenceId` = gleicher Event-Stream.  Verwende
+  unterschiedliche IDs (`order-fsm-42` vs. `order-events-42`).
+</Aside>
+
+## Wie geht's weiter
+
+- **[FSM im Überblick](/de/persistence/fsm/overview/)** — das
+  größere Bild.
+- **[FSM (In-Memory)](/de/persistence/fsm/fsm/)** — die
+  nicht-persistente Variante.
+- **[PersistentActor](/de/persistence/persistent-actor/)** —
+  die zugrunde liegende Event-Sourcing-Engine.
+- **[Snapshots](/de/persistence/snapshots/)** — das
+  Replay-Fenster begrenzen.
+- **[Migration im Überblick](/de/persistence/migration/overview/)** —
+  zur Weiterentwicklung von State-Daten-Schemas über die Zeit.
+
+Die [`PersistentFSM`](/api/classes/persistentfsm/)-API-Referenz
+deckt die vollständige Oberfläche ab.

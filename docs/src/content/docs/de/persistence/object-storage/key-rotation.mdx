@@ -1,0 +1,189 @@
+---
+title: Schlüsselrotation
+description: Online-Rotation des Master-Verschlüsselungs-Keys — neuen Key hinzufügen, ihn zum aktuellen befördern, dann einen Hintergrund-Re-Encryption-Sweep über bestehende Payloads laufen lassen. Null Downtime; alte Payloads bleiben durchgängig lesbar.
+---
+
+Für Object-Storage-Verschlüsselung muss der Master-Key
+periodisch rotiert werden (Security-Policy,
+Kompromittierungs-Response, Compliance).  Das Framework
+unterstützt **Online-Rotation** — null Downtime, alte Daten
+durchgängig lesbar.
+
+Der Flow:
+
+```
+   1. Neuen Key generieren.  Zu keyRing.keys hinzufügen.  Noch nicht befördern.
+   2. Ausrollen.  Alte Payloads weiterhin lesbar; neue Writes verwenden noch alten Key.
+   3. Neuen Key zu currentKeyId befördern.  Ausrollen.
+   4. Neue Writes verwenden neuen Key.  Alte Payloads lesbar über keyRing.
+   5. Re-Encryption-Sweep laufen lassen.  Alte Payloads → neuer Key.
+   6. Rollback-Fenster abwarten (~7 Tage).
+   7. Alten Key aus dem Ring entfernen.  Cleanup.
+```
+
+Diese Seite deckt die **Store-seitige Mechanik** ab; für die
+operative Komplettübersicht der breiteren Rotation siehe
+[Master-Key-Rotation (Operations)](/de/operations/security/master-key-rotation/).
+
+## Der Sweep
+
+```ts
+import { reEncryptionSweep } from 'actor-ts';
+
+await reEncryptionSweep({
+  backend:         myBackend,
+  keyRing:         currentKeyRing,
+  targetKeyId:     'k2',                        // unter diesem Key neu verschlüsseln
+  batchSize:       100,
+  rateLimit:       50,                          // Items / sec
+  filter:          (key) => key.startsWith('state/'),
+});
+```
+
+Der Sweep:
+
+1. Listet Objekte im Backend auf, die zum `filter` passen.
+2. Für jedes Objekt: lesen, prüfen, ob es bereits unter
+   `targetKeyId` verschlüsselt ist.  Überspringen, wenn ja.
+3. Sonst: mit dem aktuell verwendeten Key entschlüsseln, mit
+   `targetKeyId` neu verschlüsseln, putten.
+4. Gedrosselt durch `rateLimit`.
+
+## Idempotent + fortsetzbar
+
+```ts
+// Sweep stürzt mitten im Run ab; beim Neustart macht es dort weiter, wo es gestoppt hat
+await reEncryptionSweep({ /* gleiche Optionen */ });
+```
+
+Der Sweep ist **stateless** — bei jeder Iteration prüft er, ob
+das Objekt Neu-Verschlüsselung braucht und überspringt, wenn
+nicht.  Erneutes Ausführen ist sicher (keine doppelte Arbeit) und
+setzt fort, wo der vorherige Run scheiterte.
+
+Für sehr große Stores lass den Sweep im **Hintergrund** laufen —
+nicht blockierend für die primäre Persistenz-Arbeit der App.
+
+## Filter für partielle Rotation
+
+```ts
+await reEncryptionSweep({
+  backend,
+  keyRing,
+  targetKeyId: 'k2',
+  filter: (key) => key.startsWith('state/account-'),
+});
+```
+
+Nur passende Objekte neu verschlüsseln.  Nützlich für:
+
+- **Per-Tenant-Rotation** — nur die Keys dieses Tenants neu
+  verschlüsseln.
+- **Per-Actor-Typ-Rotation** — nur `account-`-Objekte.
+- **Phasenweise Rotation** — kleine Teilmengen zuerst rotieren,
+  um zu testen.
+
+## Rate-Limiting
+
+```ts
+rateLimit: 50,   // 50 Ops / sec
+```
+
+Das I/O des Sweeps kann mit Vordergrund-Traffic konkurrieren,
+wenn ungebremst.  Ein konservativer Rate-Limit lässt den Sweep
+**neben der Produktion** ohne Auswirkung laufen.
+
+Für einen Million-Objekt-Store bei 50 Ops/sec dauert der Sweep
+~5,5 Stunden.  Akzeptabel für nicht-dringende Rotationen;
+erhöhe die Rate für dringende (Kompromittierungs-Response).
+
+## Partiell rotierten State lesen
+
+Während des Sweeps enthält der Store einen Mix:
+
+```
+state/cart-42   ← weiterhin unter k1 verschlüsselt
+state/cart-43   ← bereits unter k2 neu verschlüsselt
+```
+
+Das Framework liest jedes mit **dem Key, den die Metadaten
+sagen**.  Keine Downtime; partieller State ist in Ordnung.
+
+## Abschluss bestätigen
+
+```ts
+import { listObjectsNotMatchingKey } from 'actor-ts';
+
+const stragglers = await listObjectsNotMatchingKey({
+  backend,
+  keyId: 'k2',
+  filter: (key) => key.startsWith('state/'),
+});
+```
+
+Nachdem der Sweep abgeschlossen ist, **verifiziere**, dass keine
+Objekte mehr unter dem alten Key sind.  Nachzügler könnten sein:
+
+- Neu erstellte Objekte, die dem Sweep zuvorkamen (selten; einfach
+  erneut ausführen).
+- Objekte in einem partiellen State aufgrund eines
+  Sweep-Crashes (erneut ausführen).
+- Objekte, die zu deinem Filter passen und an die du nicht
+  gedacht hast.
+
+Adressiere das, bevor du den alten Key pensionierst.
+
+## Nach dem Sweep
+
+```ts
+// 1. Alten Key aus dem Ring entfernen.
+const newKeyRing = new MasterKeyRing({
+  keys:         { 'k2': process.env.MASTER_KEY_V2! },
+  currentKeyId: 'k2',
+});
+// 2. Ausrollen — alter Key ist weg.
+```
+
+**Warte das Rollback-Fenster ab** (typischerweise 7 Tage), bevor
+du den alten Key entfernst.  Backups könnten ihn immer noch
+referenzieren; du willst einen Wiederherstellungspfad.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Alte Keys ohne Verifikation löschen">
+  ```ts
+  // k1 aus dem Ring entfernen, bevor der Sweep abgeschlossen ist
+  // → manche mit k1 verschlüsselte Objekte sind jetzt unlesbar
+  ```
+  Bestätige immer den Sweep-Abschluss, bevor du einen Key
+  droppst.  Verlorene Schlüssel = verlorene Daten.
+</Aside>
+
+<Aside type="caution" title="Sweep-Rate zu hoch">
+  ```ts
+  rateLimit: 10_000   // ✗ sättigt S3, Kosten steigen
+  ```
+  Sweep-I/O ist **OpEx** — S3-Requests kosten Geld.  Rate-limite
+  auf eine vernünftige Hintergrund-Geschwindigkeit; verbrenne
+  keine Quota.
+</Aside>
+
+<Aside type="caution" title="Sweep + neue Writes im Race">
+  ```ts
+  // Sweep liest cart-42; App schreibt cart-42 unter neuem Key;
+  // Sweep verschlüsselt mit alter Version neu → Overwrite-Race
+  ```
+  Das Framework verwendet **CAS über ETags** auf dem Put des
+  Sweeps.  Wenn die App eine neuere Version geschrieben hat,
+  überspringt der Sweep dieses Objekt (es ist bereits aktuell).
+  Sicher; keine Überschreibungen.
+</Aside>
+
+## Wie geht's weiter
+
+- **[Object Storage im Überblick](/de/persistence/object-storage/overview/)** —
+  das größere Bild.
+- **[Verschlüsselung](/de/persistence/object-storage/encryption/)** —
+  das At-Rest-Verschlüsselungs-Setup.
+- **[Master-Key-Rotation (Ops)](/de/operations/security/master-key-rotation/)** —
+  die Operations-seitige Rotations-Komplettübersicht.

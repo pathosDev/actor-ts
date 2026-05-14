@@ -1,0 +1,193 @@
+---
+title: Envelope-Format
+description: Der Wire-Format-Wrapper für versionierte Events und State — `{ _v, _t, _e }`. Automatisch angewendet, wenn ein Adapter konfiguriert ist; beim Lesen entpackt und upcasted das Framework über den Adapter. Plain Events funktionieren weiterhin ohne Envelope, bis du dich anmeldest.
+---
+
+Wenn ein Actor einen `eventAdapter()` (oder `stateAdapter()`)
+hat, wird jede persistierte Payload vor dem Write in einen
+**versionierten Envelope** verpackt:
+
+```json
+{
+  "_v": 2,                                    // Version
+  "_t": "deposited",                          // Typ-Tag
+  "_e": { "kind": "deposited", "amount": 100, "currency": "USD" }
+}
+```
+
+Beim Lesen entpackt das Framework das und routet es durch das
+`upcast(payload, version)` des Adapters.  Der Adapter sieht die
+**Version** + die **Payload**; er gibt das
+aktuelle-Form-Event zurück.
+
+## Die Felder
+
+| Feld | Typ | Zweck |
+| --- | --- | --- |
+| `_v` | number | Die Version, unter der diese Payload geschrieben wurde. |
+| `_t` | string | Der Typ-Tag — typischerweise der Event-/State-Name.  Optional, aber nützlich für Tooling. |
+| `_e` | object | Die tatsächliche Payload. |
+
+Unterstriche, damit sie nicht mit User-Feldern kollidieren.  Das
+Framework betrachtet jedes Objekt mit diesen drei Keys als
+Envelope.
+
+## Wann Envelopes angewendet werden
+
+```ts
+class Account extends PersistentActor<...> {
+  override eventAdapter() {
+    return new SomeAdapter();
+  }
+}
+```
+
+Einen Adapter zu setzen, lässt das Framework Events beim Write
+einwickeln + beim Read auspacken.  Ohne Adapter werden Events
+**roh** geschrieben — kein Envelope.
+
+Das ist **strikt beim Lesen**: sobald du einen Adapter setzt,
+wirft das Lesen eines Nicht-Envelope-Events `MigrationError`.
+Du kannst eingewickelte + rohe Events nicht für dieselbe pid
+mischen ohne WrapLegacy
+([siehe unten](#mischen-mit-legacy-nicht-envelope-events)).
+
+Für Erst-Deployments (frisches Journal) kannst du entweder von
+Anfang an mit Adaptern starten (jedes Event hat `_v: 1`) oder
+die Adapter-Einführung verzögern, bis du Migration wirklich
+brauchst.  Die meisten Teams fügen Adapter erst hinzu, wenn die
+erste Breaking Change kommt.
+
+## Was der Adapter sieht
+
+```ts
+interface EventAdapter<E> {
+  upcast(stored: unknown, version: number): E;
+}
+```
+
+`stored` ist die **`_e`-Payload** — ohne den Envelope.
+`version` ist der **`_v`**-Wert.  Der Job des Adapters:
+
+- `version` inspizieren.
+- Wenn es die aktuelle Version ist, `stored` zu `E` (die aktuelle
+  Form) casten und zurückgeben.
+- Wenn es älter ist, `stored` in die aktuelle Form transformieren,
+  dann zurückgeben.
+
+Die eingebauten Adapter des Frameworks (DefaultAdapter,
+MigratingAdapter) kapseln dieses Pattern.  Benutzerdefinierte
+Adapter implementieren dasselbe.
+
+## Versionierung deiner Events
+
+Wenn du die Version hochziehen willst:
+
+```ts
+class Account extends PersistentActor<...> {
+  override eventAdapter() {
+    return new MigratingAdapter<EventV2>({
+      currentVersion: 2,
+      chain: [
+        { from: 1, to: 2, fn: v1ToV2 },
+      ],
+    });
+  }
+}
+```
+
+Der Adapter deklariert die **aktuelle Version**.  Neue Events,
+die von `onCommand` geschrieben werden, bekommen jetzt
+`_v: 2`-Envelopes.  Alte `_v: 1`-Events werden über die Chain
+hochgekastet.
+
+Das funktioniert **unabhängig davon, unter welcher Version ein
+gegebenes Event geschrieben wurde** — die Migrations-Chain
+handhabt jedes.
+
+## Mischen mit Legacy-Nicht-Envelope-Events
+
+Wenn du einen Adapter zu einem existierenden Journal hinzufügst,
+das bereits persistierte rohe Events hat:
+
+```ts
+class Account extends PersistentActor<...> {
+  override eventAdapter() {
+    return wrapLegacy<EventV2>({
+      legacyVersion: 1,
+      baseAdapter: new MigratingAdapter<EventV2>({
+        currentVersion: 2,
+        chain: [{ from: 1, to: 2, fn: v1ToV2 }],
+      }),
+    });
+  }
+}
+```
+
+`wrapLegacy` behandelt jedes Nicht-Envelope-Event als
+**Version 1** und füttert es durch den Rest der Chain.  Siehe
+[WrapLegacy](/de/persistence/migration/wrap-legacy/) für
+Details.
+
+## Persistenz-Formate
+
+Der Envelope ist ein reguläres JSON-Objekt — serialisiert von
+welchem Serializer auch immer dein Journal verwendet (JSON für
+die SQLite- + In-Memory-Journals, anpassbar für Cassandra).
+
+Das bedeutet:
+
+- **Nur JSON-sichere Typen** in `_e` — keine Funktionen, keine
+  `Symbol`s, keine `BigInt`s ohne benutzerdefinierten
+  Serializer.
+- **Tief verschachtelte Objekte funktionieren** — der Envelope ist
+  eine Ebene tief; `_e` selbst kann beliebig komplex sein.
+- **Binary-freundlich über CBOR** — wenn du
+  CBOR-Serialisierung konfigurierst, serialisiert der Envelope
+  als CBOR (kompakter, binary-freundlich).
+
+## Stolperfallen
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Einen Adapter zu einem existierenden Journal hinzufügen">
+  ```ts
+  // Journal hat 10K rohe Events; du fügst einen Adapter hinzu.
+  override eventAdapter() { return new MigratingAdapter(...); }
+  ```
+  Ohne `wrapLegacy` wirft die Recovery beim ersten rohen Event.
+  Verwende immer `wrapLegacy`, wenn du Adapter zu existierenden
+  Daten einführst.
+</Aside>
+
+<Aside type="caution" title="Einen Adapter entfernen">
+  ```ts
+  // Adapter war gesetzt; jetzt entfernt.  Alte Envelope-Events sind noch im Journal.
+  ```
+  Ohne den Adapter sieht die Recovery Envelopes (mit `_v`, `_t`,
+  `_e`) und versucht, sie `onEvent` as-is zu füttern.  Behalte
+  entweder den Adapter für immer (die typische Antwort) oder
+  führe ein einmaliges Migrations-Skript aus, das Envelopes vom
+  Journal entfernt.
+</Aside>
+
+<Aside type="caution" title="Envelope-Felder erscheinen in Events">
+  ```ts
+  // Wenn dein Event selbst ein Feld namens _v hat, kollidiert es
+  type Event = { _v: number; kind: 'deposited' };
+  ```
+  Mit Unterstrich präfixierte Keys sind framework-reserviert.
+  Verwende `_v`, `_t`, `_e` nicht als Feldnamen in deinen
+  Event-Payloads.
+</Aside>
+
+## Wie geht's weiter
+
+- **[Migration im Überblick](/de/persistence/migration/overview/)** —
+  das größere Bild.
+- **[DefaultAdapter](/de/persistence/migration/default-adapter/)** —
+  Zero-Config-Additive-Migrationen.
+- **[MigratingAdapter](/de/persistence/migration/migrating-adapter/)** —
+  verkettete Transformationen.
+- **[WrapLegacy](/de/persistence/migration/wrap-legacy/)** —
+  zum Mischen mit Nicht-Envelope-Legacy-Events.

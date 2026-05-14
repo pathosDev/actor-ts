@@ -1,0 +1,183 @@
+---
+title: actor-ts
+description: Actor-Modell für TypeScript — Cluster Sharding, Event Sourcing, verteilte Daten, Observability. Läuft auf Bun, Node und Deno.
+template: splash
+head:
+  # Override the browser-tab title.  Without this Starlight emits
+  # "actor-ts | actor-ts" (page title + site title), which reads as a
+  # duplicate.  Use the tagline as the suffix instead.
+  - tag: title
+    content: 'actor-ts — das Actor-Modell für TypeScript'
+hero:
+  tagline: |
+    Das Actor-Modell für TypeScript — Cluster Sharding, Event Sourcing,
+    verteilte Daten, Persistenz, Observability.  Läuft auf Bun, Node und Deno.
+  image:
+    html: |
+      <img src="/logo.png" alt="actor-ts Wortmarke mit Logo aus vernetzten Actors" />
+  actions:
+    - text: Loslegen
+      link: /de/intro/what-is-actor-ts/
+      icon: right-arrow
+      variant: primary
+    - text: Warum Actors?
+      link: /de/intro/why-actors/
+      icon: information
+      variant: minimal
+    - text: Auf GitHub ansehen
+      link: https://github.com/pathosDev/actor-ts
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+<script is:inline src="/hero-bg.js" defer></script>
+
+## 📦 Was Du bekommst
+
+<CardGrid>
+  <Card title="Actors, Supervision, Lebenszyklus" icon="seti:typescript">
+    Das klassische Actor-Modell in idiomatischem TypeScript.  Jeder Actor
+    besitzt seinen eigenen State und verarbeitet Nachrichten eine nach
+    der anderen — Du musst also nicht mehr über Locks und Race Conditions
+    nachdenken.  Wenn ein Kind abstürzt, entscheidet sein Elternteil, ob
+    es neu gestartet, eskaliert oder gestoppt wird — Supervisionsbäume
+    geben Dir Fehlertoleranz als strukturelle Eigenschaft, nicht als
+    nachträgliches try/catch.
+  </Card>
+  <Card title="Cluster + Sharding" icon="puzzle">
+    Lass dasselbe Actor-System über viele Nodes hinweg laufen.  Mitglieder
+    finden sich per Gossip, der Failure Detector markiert unerreichbare
+    Peers, und Split-Brain-Resolver entscheiden, wer eine Partition
+    überlebt.  Sharding verteilt langlebige, statusbehaftete Entitäten
+    über den Cluster, balanciert beim Hinzufügen oder Entfernen von Nodes
+    neu und merkt sich, welche Entität wo lebt — so läuft ein Neustart
+    sauber weiter.
+  </Card>
+  <Card title="Event Sourcing + Persistenz" icon="document">
+    Mach Actor-State absturzsicher, indem Du die Events aufzeichnest, die
+    dazu geführt haben, statt des States selbst.  `PersistentActor` spielt
+    sein Event-Log beim Start wieder ab; `DurableState` schreibt einen
+    einzelnen Snapshot, wenn die vollständige Historie nicht nützlich ist.
+    Journals sind steckbar — in-memory für Tests, SQLite für Single-Node-
+    Produktion, Cassandra oder S3 für Skalierung — mit erstklassigem
+    Snapshotting und Projektionen für Read-Side-Views.
+  </Card>
+  <Card title="Verteilte Daten (CRDTs)" icon="random">
+    Geteilter State über den Cluster ohne Koordinator.  Acht
+    konfliktfreie replizierte Datentypen — Counters, Registers, Sets,
+    Maps — die immer zum gleichen Wert konvergieren, egal in welcher
+    Reihenfolge Updates kommen.  Wähle Quorum Reads + Writes für
+    strikt-ish Konsistenz oder akzeptiere Gossip-Propagierung, wenn Du
+    sie nicht brauchst.  Ein durables Backend bewahrt den State über
+    Neustarts hinweg.
+  </Card>
+  <Card title="Integrationen" icon="external">
+    Die Welt außerhalb des Actor-Systems, hinter einer konsistenten Form.
+    HTTP mit einer Directive-Style-Route-DSL auf Fastify-, Express- oder
+    Hono-Backends.  Message Broker — Kafka, MQTT, AMQP, NATS, Redis
+    Streams, gRPC, SSE, WebSocket, raw Sockets — alle umhüllt von einer
+    gemeinsamen `BrokerActor`-Basis mit Reconnect, Buffering und Fan-out
+    von Haus aus.  Cache + Serialisierung sind steckbare Abstraktionen.
+  </Card>
+  <Card title="Observability + Testing" icon="approve-check">
+    Produktionsreife Sichtbarkeit von Tag eins.  Stock-Metriken für jeden
+    Actor, Mailbox-Tiefe, Gossip-Lag, Restart-Counter — exportiert über
+    Prometheus oder OpenTelemetry.  Per-Message-Tracer-Spans, sodass eine
+    Anfrage mit einer Trace-ID durch Deinen Cluster fließt.  Management-
+    HTTP-Endpunkte zeigen den Cluster-Status.  TestKit liefert
+    deterministische Multi-Node-Tests mit einem manuellen Scheduler für
+    Zeitkontrolle.
+  </Card>
+</CardGrid>
+
+## 🧭 Wo Du starten solltest
+
+<CardGrid>
+  <LinkCard
+    title="📖 Was ist actor-ts?"
+    description="Das Projekt im Kontext — was Dir das Actor-Modell bringt, warum ein TypeScript-Port, was 'batteries-included' hier bedeutet, eine ehrliche Einschätzung, wo das Framework heute steht."
+    href="/de/intro/what-is-actor-ts/"
+  />
+  <LinkCard
+    title="🤔 Warum Actors?"
+    description="Das Modell in einfachen Worten — was ein Actor ist, warum es nicht einfach ein Worker-Thread oder ein Promise ist, wo es aufhört, das richtige Werkzeug zu sein."
+    href="/de/intro/why-actors/"
+  />
+  <LinkCard
+    title="⚡ Quickstart"
+    description="Fünf Minuten von null zu einem laufenden Actor — Installation, erste Nachricht, Supervision in Aktion, sauberes Herunterfahren."
+    href="/de/intro/quickstart/"
+  />
+  <LinkCard
+    title="📦 Installation"
+    description="Die vollständige Installationsgeschichte — Runtime-Anforderungen (Bun, Node, Deno), Peer-Dependencies pro Integration, TypeScript-Konfiguration und ein Verify-Snippet."
+    href="/de/intro/installation/"
+  />
+  <LinkCard
+    title="📚 Lernpfad"
+    description="Empfohlene Lesereihenfolge je nachdem, was Du baust — Single-Node, Cluster, persistenzlastig, integrationslastig."
+    href="/de/intro/learning-path/"
+  />
+  <LinkCard
+    title="🚚 Migration Guides"
+    description="Kommst Du von Akka-JVM, Pekko, Orleans, Akka.NET oder reinem TypeScript? Hier ist, was gleich ist, was anders ist und wie Du die Patterns übersetzt."
+    href="/de/migration/overview/"
+  />
+</CardGrid>
+
+## 🎬 Live erleben
+
+Zwei End-to-End-Beispiel-Apps leben im Repo, jede mit sechs
+austauschbaren Frontends (Plain HTML, Lit, Angular, React, Next.js,
+SvelteKit), die dasselbe WebSocket-Protokoll mit einem geclusterten
+Backend sprechen.  Klonen, `bun examples/<sample>/backend/main.ts`,
+Frontend im Browser öffnen und ein echtes laufendes Actor-System
+herumstochern.
+
+<CardGrid>
+  <LinkCard
+    title="💬 Chat-Beispiel"
+    description="Multi-Room-Chat mit Persistenz, DMs, Tipp-Indikatoren, Lesebestätigungen und produktionsrealistischer Auth. Übt ClusterSharding, DistributedPubSub, PersistentActor, DistributedData (ORSet, LWWMap), ClusterSingleton und Singleton-Failover End-to-End."
+    href="https://github.com/pathosDev/actor-ts/tree/main/examples/chat"
+  />
+  <LinkCard
+    title="🎙️ Voice-Beispiel"
+    description="Voice-Räume mit PCM-codiertem Audio-Streaming über WebSocket. Dieselbe Cluster-Infrastruktur wie das Chat-Beispiel, andere Wire-Form — nützlich, um zu sehen, wie das Framework hochfrequente binäre Nachrichtenströme handhabt."
+    href="https://github.com/pathosDev/actor-ts/tree/main/examples/voice"
+  />
+</CardGrid>
+
+## 🚧 Status
+
+actor-ts ist **pre-1.0**.  Die API-Oberfläche ist breit und im
+internen Einsatz produktionserprobt, aber bis 1.0 geschnitten ist,
+können zwischen Minor-Versionen Breaking Changes landen.  Eine
+bestimmte Minor-Version in Deiner `package.json` zu pinnen und das
+[CHANGELOG](https://github.com/pathosDev/actor-ts/blob/main/CHANGELOG.md)
+vor dem Upgrade zu lesen, ist während dieser Phase das sichere
+Vorgehen.
+
+<CardGrid>
+  <LinkCard
+    title="📋 Versionspolitik"
+    description="Der SemVer-Plan, was heute als stabil gilt und was pre-1.0 noch im Fluss ist."
+    href="/de/reference/version-policy/"
+  />
+  <LinkCard
+    title="🗺️ Roadmap"
+    description="Offene Meilensteine, laufende Arbeit und der Pfad zu 1.0 — geführt in der ROADMAP.md des Repos."
+    href="https://github.com/pathosDev/actor-ts/blob/main/ROADMAP.md"
+  />
+  <LinkCard
+    title="📝 CHANGELOG"
+    description="Release Notes pro Version — vor dem Erhöhen einer Minor-Version lesen, da pre-1.0 Minor-Bumps Breaking Changes enthalten können."
+    href="https://github.com/pathosDev/actor-ts/blob/main/CHANGELOG.md"
+  />
+  <LinkCard
+    title="🐛 Issues + Diskussionen"
+    description="Bug Reports, Feature Requests, Designfragen — GitHub Issues ist der kanonische Ort für alles, was getrackt wird."
+    href="https://github.com/pathosDev/actor-ts/issues"
+  />
+</CardGrid>

@@ -1,0 +1,104 @@
+---
+title: Intro-Glossar
+description: Begriffe, die Du in den ersten Seiten der Doku siehst — schnelle Definitionen für das grundlegende Vokabular. Für das vollständige Glossar siehe den Reference-Bereich.
+---
+
+Ein Starter-Vokabular für die **grundlegenden Konzepte**.  Für
+die umfassende Cross-Reference mit jedem in der Doku
+verwendeten Begriff siehe das
+[vollständige Glossar](/de/reference/glossary/).
+
+## Kern
+
+**Actor.**  Eine Entität mit eigenem State + Verhalten, die
+Nachrichten eine nach der anderen verarbeitet.  Siehe
+[Actor](/de/fundamentals/actor/).
+
+**ActorSystem.**  Der oberste Container für Actors — einer pro
+Prozess, besitzt den Dispatcher + Scheduler + Supervisionsbaum.
+Siehe [ActorSystem](/de/fundamentals/actor-system/).
+
+**ActorRef.**  Ein typisiertes Handle auf einen Actor.  Du
+`tell`st und `ask`st über den Ref.  Siehe
+[Actor](/de/fundamentals/actor/).
+
+**Mailbox.**  Die Nachrichten-Queue pro Actor.  Default FIFO,
+unbounded.  Siehe [Mailboxes](/de/fundamentals/mailboxes/).
+
+**Dispatcher.**  Plant, wann `onReceive` eines Actors auf dem
+JS-Event-Loop läuft.  Siehe
+[Dispatchers](/de/fundamentals/dispatchers/).
+
+## Kommunikation
+
+**`tell`.**  Fire-and-forget Send.  Das Default-Verb.  Siehe
+[Messages](/de/fundamentals/messages/).
+
+**`ask`.**  Request/Response über Actors — gibt ein Promise
+zurück.  Siehe [Ask Pattern](/de/fundamentals/ask-pattern/).
+
+**Message.**  Jeder Wert, den Du `tell`st.  Konvention:
+Discriminated Union mit einem `kind`-Feld.  Siehe
+[Messages](/de/fundamentals/messages/).
+
+## Lebenszyklus
+
+**Supervisionsstrategie.**  Logik pro Elternteil, die den
+Fehler eines Kindes auf eine Direktive abbildet (Restart /
+Resume / Stop / Escalate).  Siehe
+[Supervision](/de/fundamentals/supervision/).
+
+**Death Watch.**  Abonniere "dieser Actor hat aufgehört"-Events
+via `context.watch(ref)`.  Siehe
+[Death Watch](/de/fundamentals/death-watch/).
+
+**PoisonPill.**  Systemnachricht, die einen Actor graceful
+stoppt, nachdem seine Mailbox leer ist.  Siehe
+[Poison Pill und Kill](/de/fundamentals/poison-pill-and-kill/).
+
+## Verteilung
+
+**Cluster.**  Eine Gruppe von Actor-Systemen, die ihre
+Membership per Gossip austauschen.  Siehe
+[Cluster Overview](/de/cluster/overview/).
+
+**Sharding.**  Ein-Actor-pro-Entity-Key, über Nodes verteilt.
+Siehe
+[Sharding Overview](/de/cluster/sharding/overview/).
+
+**Singleton.**  Genau ein Actor cluster-weit.  Siehe
+[Singleton Overview](/de/cluster/singleton/overview/).
+
+## Persistenz
+
+**PersistentActor.**  Event-sourced Actor-Basisklasse.  Events
+sind durable; State wird aus ihnen abgeleitet.  Siehe
+[PersistentActor](/de/persistence/persistent-actor/).
+
+**Journal.**  Der Append-Only-Event-Store.  Siehe
+[Persistence Overview](/de/persistence/overview/).
+
+**Snapshot.**  Periodischer State-Dump, der das
+Event-Replay-Fenster begrenzt.  Siehe
+[Snapshots](/de/persistence/snapshots/).
+
+## Schnelle Patterns
+
+**`onReceive`.**  Die Hauptmethode eines Actors — behandelt
+jede eingehende Nachricht.
+
+**`context`.**  Die Runtime-API, auf die jeder Actor Zugriff
+hat — Kinder spawnen, Timer, Watch, Become.
+
+**`Props`.**  Das Konstruktionsrezept für einen Actor —
+Factory + optionaler Supervisor / Dispatcher / Mailbox.  Siehe
+[Props](/de/fundamentals/props/).
+
+## Wie es weitergeht
+
+- **[Glossar (vollständig)](/de/reference/glossary/)** — die
+  umfassende Begriffsreferenz.
+- **[Quickstart](/de/intro/quickstart/)** — das
+  Vokabular in Aktion sehen.
+- **[Fundamentals Overview](/de/fundamentals/overview/)** —
+  die konzeptionelle Map.

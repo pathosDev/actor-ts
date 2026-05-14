@@ -1,0 +1,372 @@
+---
+title: PersistentActor
+description: Event-sourced Actor-Basisklasse — `onCommand` entscheidet, was persistiert wird, `onEvent` aktualisiert den State rein. Beim Start spielt das Framework das Journal ab, sodass der Actor dort weitermacht, wo die letzte Instanz aufgehört hat.
+---
+
+`PersistentActor<Cmd, Event, State>` ist die Event-Sourcing-Basisklasse
+des Frameworks.  Das Modell:
+
+- Commands kommen rein.
+- Der Command-Handler **validiert** und entscheidet, welche Fakten
+  passiert sind — diese Fakten sind **Events**, die ins Journal
+  persistiert werden.
+- Nach der Persistenz aktualisiert ein reiner **Event-Handler** den
+  State.
+
+Beim Start liest das Framework das Journal und spielt jedes Event
+durch den Event-Handler ab.  Der resultierende State ist das, was der
+Actor bei seinem ersten Command sieht — wo auch immer die letzte
+Instanz aufgehört hat, diese macht weiter.
+
+## Ein minimales Beispiel
+
+```ts
+import { PersistentActor, ActorSystem, Props } from 'actor-ts';
+import { PersistenceExtensionId, InMemoryJournal, InMemorySnapshotStore } from 'actor-ts';
+
+type Cmd =
+  | { kind: 'deposit'; amount: number }
+  | { kind: 'withdraw'; amount: number };
+
+type Event =
+  | { kind: 'deposited'; amount: number; ts: number }
+  | { kind: 'withdrawn'; amount: number; ts: number };
+
+interface State { balance: number; }
+
+class Account extends PersistentActor<Cmd, Event, State> {
+  readonly persistenceId = 'account-42';
+
+  initialState(): State { return { balance: 0 }; }
+
+  // Rein: state + event → neuer state. Läuft sowohl bei Persist als auch bei Recovery.
+  onEvent(state: State, e: Event): State {
+    if (e.kind === 'deposited') return { balance: state.balance + e.amount };
+    if (e.kind === 'withdrawn') return { balance: state.balance - e.amount };
+    return state;
+  }
+
+  // Ein Command behandeln — validieren, bei Gültigkeit persistieren.
+  onCommand(state: State, cmd: Cmd): void {
+    if (cmd.kind === 'deposit') {
+      this.persist(
+        { kind: 'deposited', amount: cmd.amount, ts: Date.now() },
+        (next) => { /* Seiteneffekte mit dem neuen State */ },
+      );
+    } else if (cmd.kind === 'withdraw') {
+      if (state.balance < cmd.amount) {
+        // Ablehnen — nichts persistieren.
+        this.log.warn(`insufficient funds`);
+        return;
+      }
+      this.persist(
+        { kind: 'withdrawn', amount: cmd.amount, ts: Date.now() },
+        () => {},
+      );
+    }
+  }
+}
+
+// Setup:
+const system = ActorSystem.create('demo');
+system.extension(PersistenceExtensionId).configure({
+  journal:       new InMemoryJournal(),
+  snapshotStore: new InMemorySnapshotStore(),
+});
+
+const account = system.actorOf(Props.create(() => new Account()), 'account-42');
+account.tell({ kind: 'deposit',  amount: 100 });
+account.tell({ kind: 'withdraw', amount: 30 });
+// state ist { balance: 70 } — und bleibt das über Neustarts hinweg.
+```
+
+## Die drei abstrakten Methoden
+
+Jede `PersistentActor`-Subklasse implementiert drei Methoden:
+
+### `initialState()`
+
+Der State, bevor irgendwelche Events da sind.  Wird am Anfang der
+Recovery aufgerufen, und das Ergebnis ist das, worauf `onEvent`
+aufbaut.
+
+```ts
+initialState(): State {
+  return { balance: 0 };
+}
+```
+
+### `onEvent(state, event) → newState`
+
+**Rein** — keine Seiteneffekte, keine `tell`s, keine `await`s.  Nur
+`state + event → state`.  Diese Funktion läuft sowohl:
+
+- **Beim Replay** — einmal pro persistiertem Event, wenn der Actor
+  startet und das Journal abgespielt wird.
+- **Nach dem Persist** — einmal, wenn ein neues Event landet.
+
+Reinheit ist wichtig, weil dieselben Events über die Lebensdauer des
+Actors viele Male abgespielt werden.  Ein Seiteneffekt in `onEvent`
+läuft bei jeder Recovery, was duplizierte E-Mails / duplizierte
+HTTP-Calls / alles dupliziert bedeutet.
+
+### `onCommand(state, cmd) → void | Promise<void>`
+
+Validiert das Command gegen den aktuellen State und entscheidet,
+welche Events persistiert werden.  Drei gültige Ergebnisse:
+
+- **`this.persist(event, cb)`** — ein Event persistieren.  Der
+  Callback läuft mit dem neuen State, sobald das Event angehängt
+  und per `onEvent` angewendet ist.  Seiteneffekte gehören hierher.
+- **Antworten ohne Persist** — für Read-only-Commands (z. B.
+  `{ kind: 'get-balance' }`) greifst du auf `state` zu und schickst
+  die Antwort direkt per `tell`.
+- **Ablehnen** — loggen, ignorieren oder mit einem Fehler antworten.
+  Keine Events werden geschrieben.
+
+```ts
+onCommand(state: State, cmd: Cmd): void {
+  if (cmd.kind === 'get-balance') {
+    cmd.replyTo.tell(state.balance);    // read-only — kein Persist
+    return;
+  }
+  if (cmd.kind === 'withdraw') {
+    if (state.balance < cmd.amount) return;   // ablehnen
+    this.persist({ kind: 'withdrawn', amount: cmd.amount, ts: Date.now() },
+      () => {});
+  }
+}
+```
+
+## Der `persist`-Callback
+
+```ts
+this.persist(event, (newState) => {
+  // 1. Das Event wurde ins Journal geschrieben
+  // 2. onEvent wurde aufgerufen; this.state und `newState` spiegeln es wider
+  // 3. Es ist sicher, hier Seiteneffekte auszuführen
+  this.sender.forEach(s => s.tell({ ok: true, balance: newState.balance }));
+});
+```
+
+Drei Garantien, die der Callback dir gibt:
+
+1. **Das Event ist durable** — wenn der Prozess danach abstürzt,
+   hat das Journal es trotzdem.  Die nächste Recovery nimmt es auf.
+2. **Der State spiegelt es wider** — `onEvent` ist gelaufen;
+   `this.state` ist der neue State.
+3. **Commands werden während des Persist gestasht** — eingehende
+   Commands warten, bis der Persist abgeschlossen ist und sein
+   Callback feuert.  Keine Verschachtelung.
+
+Der dritte Punkt macht `persist` sicher als
+"Transaktions-Grenze" für die Command-Verarbeitung.  Seiteneffekte
+(Antworten, Benachrichtigungen, Follow-up-Tells) gehören in den
+Callback.
+
+## Recovery
+
+Wenn der Actor startet:
+
+```
+preStart() läuft:
+  → neuesten Snapshot laden (falls vorhanden) → state, seqNr setzen
+  → Events aus dem Journal lesen ab seqNr+1
+  → für jedes Event: state = onEvent(state, event)
+  → onRecoveryComplete(state)
+  → bereit, das erste Command zu verarbeiten
+```
+
+Während die Recovery läuft, werden **keine Commands verarbeitet**.
+Die Mailbox füllt sich; sobald die Recovery fertig ist, arbeitet der
+Actor sie der Reihe nach gegen den wiederhergestellten State ab.
+
+`onRecoveryComplete(state)` ist ein optionaler Hook, der nach dem
+Abspielen des letzten Events feuert.  Verwende ihn für einmaliges
+Post-Recovery-Setup (Watchers registrieren, verwandte Actors
+beschaffen, etc.) — aber nicht für Seiteneffekte pro Event, die bei
+jedem Neustart duplizieren würden.
+
+## Persistenz-ID
+
+Jeder `PersistentActor` deklariert eine `persistenceId`:
+
+```ts
+class Account extends PersistentActor<...> {
+  readonly persistenceId = 'account-42';
+}
+```
+
+Die ID **identifiziert den Event-Stream** im Journal.  Zwei Actors
+mit derselben `persistenceId` würden sich das gleiche Event-Log
+teilen — meistens ein Bug.
+
+Für Per-Entity-Actors (ein Account pro User, ein Cart pro User)
+mache die ID abhängig von der Entity:
+
+```ts
+class Account extends PersistentActor<...> {
+  constructor(public readonly userId: string) { super(); }
+  readonly persistenceId = `account-${this.userId}`;
+}
+```
+
+Für [sharded Entities](/de/cluster/sharding/overview/) übergibt
+die Shard-Region typischerweise die Entity-ID per Konstruktor, und
+die Persistenz-ID leitet sich daraus ab.
+
+## Snapshots
+
+100 000 Events beim Start abspielen ist langsam.  Konfiguriere eine
+Snapshot-Policy:
+
+```ts
+import { everyNEvents } from 'actor-ts';
+
+class Account extends PersistentActor<...> {
+  override snapshotPolicy() { return everyNEvents(100); }
+  // Nach jeweils 100 Events wird der aktuelle State gesnappshottet.
+}
+```
+
+Das Framework schreibt einen Snapshot über den Snapshot Store; bei
+der Recovery lädt es den Snapshot zuerst und spielt nur Events
+*nach* der seqNr dieses Snapshots ab.
+
+`everyNEvents(N)` ist der häufige Fall.  Für individuelle Policies
+(Snapshot bei einer bestimmten Event-Art, zeitbasiert),
+implementiere:
+
+```ts
+override snapshotPolicy() {
+  return (seqNr, state, event) => event.kind === 'finalized';
+}
+```
+
+Siehe [Snapshots](/de/persistence/snapshots/) für die
+vollständige Konfiguration.
+
+## Events für Projektionen taggen
+
+```ts
+class Account extends PersistentActor<...> {
+  override tagsFor(event: Event): ReadonlyArray<string> | undefined {
+    return ['account'];   // oder basierend auf der Event-Art
+  }
+}
+```
+
+[Projektionen](/de/persistence/projections/) lesen Events aus
+dem Journal **nach Tag**.  Ein Event zu taggen macht es entdeckbar
+für eine Read-Side-View, die `'account'`-Events abonniert.
+
+`undefined` zurückzugeben (der Default) bedeutet "keine Tags" —
+in Ordnung, wenn du noch keine Projektionen hast.
+
+## Schema-Evolution — Event-Adapter
+
+Wenn sich Event-Formen über die Zeit ändern (ein Feld wird umbenannt,
+ein Wert wird gesplittet, ein Enum wird hinzugefügt), bleiben alte
+Events für immer im Journal.  Der **Event-Adapter** rüstet sie beim
+Lesen auf:
+
+```ts
+import { EventAdapter } from 'actor-ts';
+
+class V1ToV2Adapter implements EventAdapter<EventV2> {
+  upcast(stored: unknown, version: number): EventV2 {
+    if (version === 1) return migrate(stored as EventV1);
+    return stored as EventV2;
+  }
+}
+
+class Account extends PersistentActor<...> {
+  override eventAdapter() { return new V1ToV2Adapter(); }
+}
+```
+
+Mit einem konfigurierten Adapter wird jedes Event in einem
+`{ _v, _t, _e }`-Envelope (Version + Typ + Payload) zur Persist-Zeit
+verpackt und beim Lesen über `adapter.upcast(stored, version)`
+entpackt.  Rückwärtskompatibilität ist die Verantwortung des Actors.
+
+Siehe [Migration im Überblick](/de/persistence/migration/overview/)
+für die vollständige Migrations-Story.
+
+## Häufige Stolperfallen
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Seiteneffekte in `onEvent`">
+  ```ts
+  override onEvent(state, event) {
+    if (event.kind === 'deposited') {
+      sendEmail(event.amount);   // ✗ läuft bei jeder Recovery
+    }
+    return { balance: state.balance + event.amount };
+  }
+  ```
+  `onEvent` läuft einmal beim Persist *und* einmal pro Recovery.
+  Ein E-Mail-Versand-Seiteneffekt dupliziert bei jedem Neustart.
+  Seiteneffekte gehören in den `persist`-Callback — der läuft genau
+  einmal pro Event, nur zur Persist-Zeit.
+</Aside>
+
+<Aside type="caution" title="Commands während der Recovery">
+  ```ts
+  const actor = system.actorOf(Props.create(() => new Account()));
+  actor.tell({ kind: 'deposit', amount: 100 });
+  // ↑ dieses `tell` kommt an, bevor die Recovery abgeschlossen ist
+  ```
+  Commands, die vor Abschluss der Recovery gesendet werden, werden
+  gestasht und verarbeitet, sobald `onRecoveryComplete` läuft.  Das
+  ist normalerweise transparent, bedeutet aber, dass eine langsame
+  Recovery (10 000 Events durch ein langsames Journal) die erste
+  Antwort verzögert.  Überwache die Recovery-Latenz in Produktion.
+</Aside>
+
+<Aside type="caution" title="State aus `onCommand` mutieren">
+  ```ts
+  onCommand(state, cmd) {
+    state.balance += cmd.amount;   // ✗ State direkt mutieren
+  }
+  ```
+  Schreibe nicht direkt in `state`.  Jede Zustandsänderung muss
+  durch `persist` + `onEvent` gehen, damit das Journal die Source
+  of Truth ist.  Direkte Mutation funktioniert *für den aktuellen
+  Prozess*, aber die nächste Recovery startet wieder von
+  `initialState()` und spielt das Journal ab — deine nicht
+  geschriebene Änderung ist weg.
+</Aside>
+
+<Aside type="caution" title="Determinismus in `onEvent`">
+  ```ts
+  onEvent(state, event) {
+    return { lastSeen: Date.now() };   // ✗ anderer Wert beim Replay
+  }
+  ```
+  `onEvent` *muss* denselben State bei denselben Events erzeugen,
+  egal wann es läuft.  `Date.now()`, `Math.random()`, das Lesen
+  externen States innerhalb von `onEvent` brechen all das.  Backe
+  jeden Nicht-Determinismus in die **Event-Payload** ein, wenn du
+  persistierst (`{ kind: 'observed', at: Date.now() }`); `onEvent`
+  liest dann einfach `event.at`.
+</Aside>
+
+## Wie geht's weiter
+
+- **[Persistenz im Überblick](/de/persistence/overview/)** —
+  das größere Bild: PersistentActor vs. DurableStateActor.
+- **[Snapshots](/de/persistence/snapshots/)** —
+  Replay-Fenster-Reduktion im Detail.
+- **[Projektionen](/de/persistence/projections/)** — Read-Side-Views
+  über den Event-Stream.
+- **[Journals — SQLite](/de/persistence/journals/sqlite/)** —
+  Produktions-Journal für Single-Node.
+- **[Migration im Überblick](/de/persistence/migration/overview/)** —
+  Event-Schemas weiterentwickeln.
+- **[Replicated Event Sourcing](/de/persistence/replicated-event-sourcing/overview/)** —
+  Multi-Writer Event Sourcing für Cluster-Setups.
+
+Die [`PersistentActor`](/api/classes/persistentactor/)-API-Referenz
+deckt die vollständige Basisklassen-Oberfläche ab.

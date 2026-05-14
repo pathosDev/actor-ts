@@ -1,0 +1,226 @@
+---
+title: Per-Actor-Policies
+description: Überschreibe Kompressions- + Verschlüsselungseinstellungen pro Actor-Klasse. Die meisten Actors verwenden die Defaults des Stores; bestimmte Actors (sensitive Daten, große Blobs) brauchen andere Policies. Granular, ohne jede Entity einzeln anzufassen.
+---
+
+Das Object-Storage-Backend kann **Store-Level-Defaults** für
+Kompression + Verschlüsselung haben.  Aber manchmal brauchen
+bestimmte Actors **andere Einstellungen**:
+
+- Ein sensibler Actor braucht Verschlüsselung (andere nicht).
+- Ein Actor mit großem State profitiert von Brotli (andere
+  verwenden gzip).
+- Ein Actor mit kleinem State verzichtet auf Kompression.
+
+Überschreibe pro Actor, indem du die Methoden `compression()` /
+`encryption()` implementierst:
+
+```ts
+class SensitiveActor extends DurableStateActor<Cmd, State> {
+  protected encryption() {
+    return { keyRing: sensitiveKeyRing };
+  }
+
+  protected compression() {
+    return { algorithm: 'gzip' as const, level: 9 };
+  }
+}
+```
+
+Das Framework ruft diese bei jedem Persist/Load auf und wendet
+die zurückgegebene Config an.
+
+## Default vs. Override
+
+```ts
+// Store-Level-Config — gilt für jeden Actor, sofern nicht überschrieben:
+const store = new ObjectStorageDurableStateStore({
+  backend,
+  compression: { algorithm: 'gzip', level: 6 },
+  encryption:  { keyRing: defaultKeyRing },
+});
+
+// Per-Actor: Override
+class MyActor extends DurableStateActor<...> {
+  protected compression() { return { algorithm: 'none' as const }; }
+  // encryption() nicht überschrieben → verwendet defaultKeyRing
+}
+```
+
+Jede Methode ist **unabhängig überschreibbar**:
+
+- Eigene Config zurückgeben → diese Config gilt.
+- Nicht überschreiben → Default des Stores gilt.
+- `undefined` aus der Methode zurückgeben → ebenfalls Default
+  des Stores.
+
+## Use Cases
+
+### Per-Actor-Verschlüsselung
+
+```ts
+class CreditCardActor extends DurableStateActor<...> {
+  protected encryption() {
+    return { keyRing: pciKeyRing };   // separater Key Ring für PCI-Scope
+  }
+}
+
+class GenericActor extends DurableStateActor<...> {
+  // Kein Override → verwendet Store-Default (keine Verschlüsselung oder generischer keyRing)
+}
+```
+
+PCI / HIPAA / GDPR-Scope: als sensibel klassifizierte Daten
+verwenden einen **separaten Master-Key** von nicht-sensiblen.
+Kompromittierung eines keyRings exponiert den anderen nicht.
+
+### Per-Actor-Kompression
+
+```ts
+class ChatTranscriptActor extends DurableStateActor<...> {
+  // Großer Text-State — Brotli gewinnt deutlich
+  protected compression() {
+    return { algorithm: 'brotli' as const, level: 8 };
+  }
+}
+
+class CounterActor extends DurableStateActor<...> {
+  // Winziger State — Kompressions-Overhead übersteigt Einsparungen
+  protected compression() {
+    return { algorithm: 'none' as const };
+  }
+}
+```
+
+Passe die Kompression an die Datenform an.  Default gzip ist ein
+sicherer Mittelweg; Per-Actor-Tuning holt mehr raus.
+
+## Was beim Persist passiert
+
+```
+DurableStateActor.persist(state)
+  ↓
+serializer.toBinary(state) → JSON- oder CBOR-Bytes
+  ↓
+this.compression() → angewendet, wenn nicht 'none'
+  ↓
+this.encryption() → angewendet, wenn gesetzt
+  ↓
+backend.put(key, ciphertext, opts)
+```
+
+Das Framework schaut bei **jedem Persist** die Overrides des
+Actors nach — selbst wenn du die Override-Werte dynamisch
+änderst (selten), verwenden neue Writes neue Einstellungen.
+
+## Was beim Load passiert
+
+```
+DurableStateActor.preStart
+  ↓
+backend.get(key) → Bytes + Metadaten
+  ↓
+Verschlüsselung aus Metadaten erkennen (key-id) → entschlüsseln
+  ↓
+Kompression aus Metadaten erkennen (Content-Encoding) → dekomprimieren
+  ↓
+serializer.fromBinary → State
+```
+
+**Reads verwenden die mit dem Objekt gespeicherten Metadaten**,
+nicht die aktuellen Overrides des Actors.  Ein unter `pciKeyRing`
+verschlüsseltes Objekt wird über `pciKeyRing` entschlüsselt,
+egal ob das aktuelle `encryption()` des Actors das sagt oder
+nicht.
+
+Das bedeutet: **das Rotieren einer Actor-Policy bricht alte Daten
+nicht**, solange die notwendigen Keys / Algorithmen verfügbar
+sind.
+
+## Migration beim Ändern von Policies
+
+```ts
+// Alt: keine Verschlüsselung.
+// Neu: Verschlüsselung unter pciKeyRing.
+class CreditCardActor extends DurableStateActor<...> {
+  protected encryption() {
+    return { keyRing: pciKeyRing };
+  }
+}
+```
+
+Alte (unverschlüsselte) Reads funktionieren — keine Metadaten →
+Plaintext-Pfad.  Neue Writes verschlüsseln.  Schließlich:
+
+- Ein **Re-Encryption-Sweep**, gefiltert auf die
+  persistenceIds dieses Actors, migriert den Rest.
+
+Siehe [Schlüsselrotation](/de/persistence/object-storage/key-rotation/).
+
+## Mit dem Snapshot-Store arbeiten
+
+```ts
+class Account extends PersistentActor<Cmd, Event, State> {
+  // Per-Actor-Kompression für Snapshots:
+  protected compression() {
+    return { algorithm: 'brotli' as const };
+  }
+
+  // Per-Actor-Verschlüsselung für Snapshots:
+  protected encryption() {
+    return { keyRing: accountKeyRing };
+  }
+}
+```
+
+Gleiche Methoden gelten, wenn der Snapshot-Store durch Object
+Storage gestützt wird.  Persistent Actors und Durable State
+Actors honorieren beide.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Unterschiedliche keyRings über Cluster-Nodes">
+  ```ts
+  // Der Actor von Node-A verwendet pciKeyRing; derselbe Actor von Node-B verwendet generic
+  ```
+  Actors **müssen** dieselbe Verschlüsselungs-Config über den
+  Cluster sehen (sonst können nach der Migration Sharded Entities
+  nicht gelesen werden).  Reiche Key-Rings von derselben Quelle
+  auf jedem Node herein.
+</Aside>
+
+<Aside type="caution" title="Schwere Kompression pro Actor">
+  ```ts
+  // Override auf Brotli Level 11 für "wichtige" Actors
+  ```
+  Brotli 11 ist langsam.  Wenn "wichtige" Actors häufig
+  persistieren, fügt das 50-100 ms pro Persist hinzu.  Verifiziere
+  mit Profiling, bevor du Per-Actor-Heavy-Compression-Overrides
+  setzt.
+</Aside>
+
+<Aside type="caution" title="Override gibt bei jedem Aufruf ein neues Objekt zurück">
+  ```ts
+  protected compression() {
+    return { algorithm: 'gzip', level: 6 };   // ← neues Objekt bei jedem Aufruf
+  }
+  ```
+  Für die Korrektheit in Ordnung; leicht verschwenderisch
+  (allokiert pro Persist).  Heve es zu einer Konstante hoch, wenn
+  perf-sensitiv:
+  ```ts
+  private static readonly GZIP6 = { algorithm: 'gzip' as const, level: 6 };
+  protected compression() { return Account.GZIP6; }
+  ```
+</Aside>
+
+## Wie geht's weiter
+
+- **[Object Storage im Überblick](/de/persistence/object-storage/overview/)** —
+  das größere Bild.
+- **[Kompression](/de/persistence/object-storage/compression/)** —
+  Algorithmus- + Level-Details.
+- **[Verschlüsselung](/de/persistence/object-storage/encryption/)** —
+  Verschlüsselungs-Setup.
+- **[Snapshot-Store-Backend](/de/persistence/object-storage/snapshot-store-backend/)** —
+  für Snapshots in Object Storage.

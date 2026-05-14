@@ -1,0 +1,175 @@
+---
+title: Schema-Registry
+description: Ein typisiertes Register bekannter Event- / State-Schemas + ihrer Versionen. Optional, aber nützlich in großen Codebases — Single Source of Truth für "welche Schemas existieren", Laufzeit-Validierung und Tooling, das Schemas introspectet.
+---
+
+Für größere Codebases mit vielen Event-Typen wird **zu wissen,
+was existiert**, ein Problem.  Jeder `PersistentActor`
+deklariert seine Events; einige haben Adapter; Versionen leben
+in den Adapter-Configs.  Kein zentraler Katalog.
+
+`SchemaRegistry` ist der optionale Katalog:
+
+```ts
+import { SchemaRegistry } from 'actor-ts';
+
+export const registry = new SchemaRegistry()
+  .add('Deposited',     2)
+  .add('Withdrawn',     1)
+  .add('AccountFrozen', 3)
+  .add('AccountClosed', 1);
+```
+
+Eine einfache **typisierte Map von Event-Name → aktuelle
+Version**.  Verwende sie, um:
+
+- Den aktuellen Stand jedes Schemas zu **dokumentieren**.
+- Zu **validieren**, dass Adapter die richtige Version
+  deklarieren.
+- **Tooling anzutreiben** — Admin-Dashboards, Dev-Tools, die
+  Journal-Inhalte zeigen.
+
+Die meisten Projekte brauchen sie nicht.  Greif danach, wenn du
+**10+ Event-Typen** hast und dich dabei ertappst, manuell zu
+verfolgen, welche bei welcher Version ist.
+
+## Ein minimales Beispiel
+
+```ts
+import { SchemaRegistry } from 'actor-ts';
+
+// Geteiltes Modul — `schemas.ts`:
+export const registry = new SchemaRegistry()
+  .add('Deposited', 2)
+  .add('Withdrawn', 1)
+  .add('Frozen',    3);
+
+export type SchemaName = 'Deposited' | 'Withdrawn' | 'Frozen';
+```
+
+Dann in Actors:
+
+```ts
+import { registry } from './schemas.js';
+
+class Account extends PersistentActor<...> {
+  override eventAdapter() {
+    return new MigratingAdapter<DepositedEventV2>({
+      currentVersion: registry.versionOf('Deposited'),   // → 2
+      chain: [...],
+    });
+  }
+}
+```
+
+Die `currentVersion` des Adapters und der Wert der Registry
+**müssen übereinstimmen**.  Zieh aus der Registry, um das zu
+erzwingen.
+
+## Die API
+
+```ts
+class SchemaRegistry {
+  add(name: string, version: number): SchemaRegistry;
+  versionOf(name: string): number;
+  has(name: string): boolean;
+  list(): Array<{ name: string; version: number }>;
+}
+```
+
+- **`add(name, version)`** — ein Schema registrieren.  Gibt die
+  Registry zum Verketten zurück.
+- **`versionOf(name)`** — die aktuelle Version lesen.  Wirft,
+  wenn nicht registriert.
+- **`has(name)`** — Existenz prüfen.
+- **`list()`** — alles Registrierte aufzählen.
+
+Immutable: `add()` gibt eine neue Registry zurück; das Original
+wird nicht mutiert.  Nützlich für Test-Scaffolding, wo du
+frische Registries pro Test willst.
+
+## Validierung gegen Adapter
+
+```ts
+import { SchemaRegistry, validateAdapter } from 'actor-ts';
+
+// Während Tests / Startup:
+const adapter = new MigratingAdapter<EventV2>({ currentVersion: 2, chain: [...] });
+validateAdapter(adapter, registry, 'Deposited');
+// → wirft, wenn currentVersion(2) !== registry.versionOf('Deposited')
+```
+
+Für Produktions-Code rufe `validateAdapter` beim System-Startup
+als Sicherheitsnetz auf: wenn du die Version eines Adapters
+hochziehst, aber vergisst, die Registry zu aktualisieren,
+schlägt der Validate-Call laut fehl.
+
+## Tooling
+
+Ein paar häufige Tooling-Formen, die von der Registry profitieren:
+
+```ts
+// Admin-Panel: jeden Event-Typ und seine aktuelle Version auflisten
+const all = registry.list();   // → [{ name: 'Deposited', version: 2 }, ...]
+
+// Dev-Skript: warnen, wenn ein Event im Journal eine Version hat,
+// die HÖHER ist als das, was die Registry kennt (ein Deploy-Issue)
+for await (const event of query.eventsByPersistenceId(...)) {
+  const envelopeVersion = event.event._v;
+  const expectedMax = registry.versionOf(event.event._t);
+  if (envelopeVersion > expectedMax) {
+    console.warn(`event ${event.event._t} has version ${envelopeVersion}, registry knows up to ${expectedMax}`);
+  }
+}
+```
+
+## Wann du sie nicht brauchst
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Kleine Projekte">
+  ```ts
+  // 3 Event-Typen insgesamt — Registry fügt Komplexität ohne Wert hinzu
+  ```
+  Für kleine Projekte lebt die Versions-Konstante neben dem
+  Adapter, und das ist in Ordnung.  Adoptiere die Registry,
+  wenn du dich dabei ertappst, dass du über Dateien hinweg
+  suchst, um dich zu erinnern "auf welcher Version ist
+  Deposited?"
+</Aside>
+
+<Aside type="caution" title="Nicht dasselbe wie Avro-Schemas">
+  ```ts
+  // Die Registry trackt Namen + Versions-Nummern — NICHT die tatsächlichen Schemas
+  ```
+  Das ist nicht Apache Avro / Confluent Schema Registry.  Sie
+  speichert nicht das strukturelle Schema jedes Events.  Für
+  Wire-Format-Schema-Erzwingung würdest du eine separate
+  Validierungs-Library (zod, valibot) auf Adapter-Ebene
+  integrieren.
+</Aside>
+
+<Aside type="caution" title="Mehrere Umgebungen">
+  ```ts
+  // Prod-Registry unterscheidet sich von Dev — welche ist kanonisch?
+  ```
+  Behandle die Registry als **per Deployment** — eine Konstante
+  in deinem Code.  Wenn verschiedene Umgebungen verschiedene
+  Versionen haben (während eines Staged Rollouts), spiegelt sich
+  das im deployten Code wider, nicht in verschiedenen
+  Laufzeit-Registries.
+</Aside>
+
+## Wie geht's weiter
+
+- **[Migration im Überblick](/de/persistence/migration/overview/)** —
+  das größere Bild.
+- **[DefaultAdapter](/de/persistence/migration/default-adapter/)** —
+  die typisierten Adapter, die die Registry konsumieren.
+- **[MigratingAdapter](/de/persistence/migration/migrating-adapter/)** —
+  die verkettete Alternative.
+- **[Envelope-Format](/de/persistence/migration/envelope-format/)** —
+  die On-Disk-Form mit `_v` / `_t` / `_e`.
+
+Die [`SchemaRegistry`](/api/classes/schemaregistry/)-API-Referenz
+deckt die vollständige Oberfläche ab.

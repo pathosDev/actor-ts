@@ -1,0 +1,183 @@
+---
+title: Cache im Überblick
+description: Eine kleine, opportunistische Cache-Abstraktion — sieben Kernoperationen (get / set / incr / setIfAbsent / delete / mget / mset). Drei Backends sind dabei — In-Memory, Redis, Memcached. Genutzt von HTTP-Middleware und vom Cached-Snapshot-Store-Dekorator.
+---
+
+Das `Cache`-Interface ist der **opportunistische Key/Value-Cache**
+des Frameworks.  Drei Operationen decken ~95 % der realen Fälle ab:
+get, set, atomares Inkrement, set-if-absent, delete.
+
+Genutzt von:
+
+- [Response-Cache-Middleware](/de/http/middleware/response-cache/) —
+  Caching von GET-Responses.
+- [Rate-Limit-Middleware](/de/http/middleware/rate-limit/) —
+  Zähler pro Key.
+- [Idempotency-Key-Middleware](/de/http/middleware/idempotency-key/) —
+  Write-Dedup.
+- [CachedSnapshotStore](/de/persistence/snapshot-stores/cached-snapshot-store/) —
+  Read-Through-Cache für Snapshots.
+
+## Das Interface
+
+```ts
+interface Cache {
+  get<V>(key: string): Promise<Option<V>>;
+  set<V>(key: string, value: V, ttlMs?: number): Promise<void>;
+  incr(key: string, ttlMs?: number): Promise<number>;
+  setIfAbsent<V>(key: string, value: V, ttlMs?: number): Promise<boolean>;
+  delete(...keys: string[]): Promise<void>;
+  mget<V>(keys: string[]): Promise<Map<string, V>>;
+  mset(entries: Array<[string, unknown, number?]>): Promise<void>;
+}
+```
+
+Kleine Oberfläche — keine Pattern-Scans, kein Pub/Sub (der
+Cluster hat sein eigenes [Pub/Sub](/de/cluster/pubsub/)).
+
+## Drei Backends
+
+| Backend | Einsatz |
+| --- | --- |
+| **`InMemoryCache`** | Single-Pod / Tests.  In-Process-Map. |
+| **`RedisCache`** | Multi-Pod-Produktion.  Umschließt `ioredis`. |
+| **`MemcachedCache`** | Multi-Pod, wo Memcached passt.  Umschließt `memjs`. |
+
+Wähle nach Deployment-Form:
+
+- **Single-Pod** — InMemoryCache.  Schnell, keine extra Peer-Deps.
+- **Multi-Pod mit bereits vorhandenem Redis** — RedisCache.
+- **Multi-Pod mit bereits vorhandenem Memcached** — MemcachedCache.
+- **Multi-Pod ohne Präferenz** — RedisCache.  Mehr Features
+  (Pub/Sub, Persistenz usw.) und das größere Ökosystem.
+
+## Opportunistische Semantik
+
+Caches sind **per Design verlustbehaftet**.  Ein `get`, das
+`None` zurückgibt, heißt "nicht gecacht" — Aufgabe des Aufrufers
+ist, auf die **Quelle der Wahrheit** zurückzufallen:
+
+```ts
+const cached = await cache.get<User>(`user:${id}`);
+if (cached.isSome()) return cached.value;
+
+const user = await db.users.findById(id);   // ← Quelle der Wahrheit
+await cache.set(`user:${id}`, user, 60_000);
+return user;
+```
+
+Wenn `set` fehlschlägt (Redis down, Netzwerk-Aussetzer), bleibt
+der Cache leer — aber der Aufruf liefert trotzdem die richtige
+Antwort (die Quelle der Wahrheit wurde konsultiert).
+
+Cache-Implementierungen **liefern bei transienten Fehlern
+Defaults zurück**, statt zu werfen.  Missbrauch (schlechte TTL,
+malformed Value) wirft.
+
+## TTL-Semantik
+
+```ts
+await cache.set('key', value, 60_000);   // läuft in 60s ab
+await cache.set('key', value);            // kein Ablauf
+```
+
+- **Mit `ttlMs`** — Eintrag läuft nach dem Fenster ab.
+- **Ohne** — Eintrag bleibt, bis er evicted wird (LRU bei
+  InMemoryCache; Backend-Policy bei Redis / Memcached).
+
+Die meisten Einsätze: **immer eine TTL setzen**.  Einträge ohne
+TTL wachsen bis zur Eviction; explizite TTLs sind vorhersehbar.
+
+## Atomares Inkrement
+
+```ts
+const count = await cache.incr(`requests:${userId}`, 60_000);
+if (count > 100) throw new Error('rate limit');
+```
+
+`incr` liefert den **neuen** Zählerstand nach dem Inkrement.
+Wenn `ttlMs` gesetzt ist UND der Zähler gerade erst erzeugt wurde
+(count === 1), wird die TTL gesetzt.
+
+Wird von der Rate-Limit-Middleware für Fixed-Window-Counter
+genutzt.
+
+## Set-if-absent
+
+```ts
+const got = await cache.setIfAbsent('lock:key', 'me', 5_000);
+if (got) {
+  // Ich habe das Rennen gewonnen; mach die Arbeit
+} else {
+  // Jemand anderes hat es
+}
+```
+
+Atomarer Schreibvorgang im CAS-Stil.  Wird von der Idempotency-
+Key-Middleware genutzt, um "ich bin der erste Request mit diesem
+Key" zu erkennen.
+
+## Bulk-Operationen
+
+```ts
+const users = await cache.mget<User>(['user:1', 'user:2', 'user:3']);
+// → Map<string, User> — fehlende Keys nicht enthalten
+```
+
+Round-Trip-Optimierung.  Entscheidend für **Hydratation geteilter
+Entitäten** nach einem Sharding-Rebalance — den State jeder
+aktiven Entität in einem Redis-Call statt N holen.
+
+`mset` ist das Gegenstück:
+
+```ts
+await cache.mset([
+  ['user:1', user1, 60_000],
+  ['user:2', user2, 60_000],
+]);
+```
+
+## Wann den Cache NICHT nutzen
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Cache keinen nutzerseitig kritischen State">
+  ```ts
+  // Kontostand 60s gecacht → veralteter Saldo dem User angezeigt
+  ```
+  Caches sind eventually consistent.  Für Werte, auf denen der
+  User Aktionen aufbaut (Salden, verfügbarer Bestand), lies aus
+  der Quelle der Wahrheit.
+</Aside>
+
+<Aside type="caution" title="Nicht als transaktionalen Store nutzen">
+  ```ts
+  // Zwei Operationen: Counter dekrementieren + E-Mail senden
+  // → cache.incr() klappt; E-Mail schlägt fehl → Counter falsch
+  ```
+  Caches geben Atomarität pro Key.  Atomarität über Keys hinweg
+  braucht einen transaktionalen Store.
+</Aside>
+
+<Aside type="caution" title="Keine großen Werte rein">
+  ```ts
+  cache.set('user:full', user, 60_000);   // 5-MB-Objekt
+  ```
+  Caches sind auf kleine Werte ausgelegt.  Große Objekte
+  verschwenden Speicher + Bandbreite.  Cache kleine Referenzen;
+  hole volle Objekte aus der DB.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[In-Memory-Cache](/de/cache/in-memory/)** — das
+  Default-Backend.
+- **[Memcached-Cache](/de/cache/memcached/)** — für
+  Memcached-Deployments.
+- **[Redis-Cache](/de/cache/redis/)** — für Redis-
+  Deployments.
+- **[Response-Cache-Middleware](/de/http/middleware/response-cache/)** —
+  der primäre Konsument.
+
+Die [`Cache`](/api/interfaces/cache/)-API-Referenz deckt das
+volle Interface ab.

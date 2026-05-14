@@ -1,0 +1,137 @@
+---
+title: WebSocket (Client)
+description: Ausgehender WebSocket-Verbindungs-Actor — verbindet sich mit einem Remote-WS-Endpoint, leitet eingehende Nachrichten an Subscriber weiter, sendet ausgehende Nachrichten. Auto-Reconnect mit Backoff. Umschließt das native WebSocket der Runtime.
+---
+
+`WebSocketActor` öffnet eine **clientseitige** WebSocket-Verbindung
+zu einem Remote-Endpoint.  Zum Annehmen **eingehender**
+WS-Verbindungen (Serverseite) siehe
+[ServerWebSocketActor](/de/io/server-websocket/).
+
+```ts
+import { ActorSystem, Props, WebSocketActor } from 'actor-ts';
+
+const ws = system.actorOf(
+  Props.create(() => new WebSocketActor({
+    url: 'wss://realtime.example.com/feed',
+    protocols: ['my-proto-v1'],
+    headers: {
+      authorization: `Bearer ${process.env.API_TOKEN}`,
+    },
+  })),
+  'ws-client',
+);
+
+// Eingehende Nachrichten subscribieren:
+ws.tell({ kind: 'subscribe', subscriber: feedHandler });
+
+// Senden:
+ws.tell({ kind: 'send', payload: JSON.stringify({ subscribe: 'channel-1' }) });
+```
+
+## Settings
+
+```ts
+interface WebSocketActorSettings extends BrokerCommonSettings {
+  url:        string;                        // ws:// oder wss://
+  protocols?: string | string[];             // Subprotokolle
+  headers?:   Record<string, string>;        // Header für den initialen Handshake
+  pingIntervalMs?: number;                   // Ping auf Anwendungsebene; Default aus
+}
+```
+
+## Eingehende Nachrichten
+
+```ts
+class FeedHandler extends Actor<WsInbound> {
+  override onReceive(msg: WsInbound): void {
+    if (msg.kind === 'text') {
+      const event = JSON.parse(msg.payload);
+      this.handleEvent(event);
+    } else if (msg.kind === 'binary') {
+      // rohe Uint8Array
+      this.handleBinary(msg.payload);
+    }
+  }
+}
+```
+
+Zwei eingehende Arten — `text` und `binary` — passend zu den
+WebSocket-Frame-Typen.  Das Framework dispatched nicht nach
+Payload-Inhalt; das ist Sache des Subscribers.
+
+## Auto-Reconnect
+
+Der gemeinsame
+[BrokerActor-Lifecycle](/de/io/broker-actor-base/) übernimmt
+Reconnect mit Backoff.  Eine unerwartete Trennung:
+
+- Versetzt den Actor in `disconnected`.
+- Löst `BrokerDisconnected` auf dem Event-Stream aus.
+- Startet den Reconnect-Zyklus.
+- Nach jedem erfolgreichen Reconnect löst `BrokerConnected` aus.
+
+**Ausgehende Nachrichten**, die während der Trennung gesendet
+werden, werden **gepuffert** (gemäß Outbound-Buffer-Policy).
+Eingehende Subscriber bleiben über Reconnects hinweg erhalten.
+
+## Ping / Keep-Alive
+
+```ts
+new WebSocketActor({
+  url: 'wss://...',
+  pingIntervalMs: 30_000,   // alle 30s einen Ping senden
+});
+```
+
+Ein Ping auf Anwendungsebene verhindert, dass zwischengeschaltete
+Proxies / Load-Balancer Idle-Verbindungen schließen.  Die meisten
+produktiven WebSocket-Setups brauchen das.
+
+Der WebSocket-Ping auf Protokollebene (Control-Frame) wird
+automatisch gesendet; der Ping auf Anwendungsebene ist für
+**Proxies, die Payloads inspizieren, keine Frames**.
+
+## Wann einsetzen
+
+Drei primäre Einsatzfälle:
+
+1. **Echtzeit-Datenfeeds subscribieren** — Aktien-Ticker,
+   Krypto-Börsen, Social-Media-Streams.
+2. **Ausgehende WebSocket-Clients** zu Drittservices
+   (Slack RTM, OpenAI-Streaming, IoT-Vendor-APIs).
+3. **Eigene WS-basierte Protokolle**, die darauf aufsetzen.
+
+Für serverseitiges WebSocket (Client-Verbindungen annehmen) nimm
+[ServerWebSocketActor](/de/io/server-websocket/).
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="WebSocket im Browser ist etwas anderes">
+  ```ts
+  // Browser-App, die einen Server kontaktiert — nimm new WebSocket() direkt
+  ```
+  Dieser Actor ist für **serverseitig ausgehende** Verbindungen.
+  Browser-Clients verwenden die native WebSocket-API des Browsers.
+</Aside>
+
+<Aside type="caution" title="Binary vs. text">
+  ```ts
+  ws.tell({ kind: 'send', payload: someUint8Array });   // binary
+  ws.tell({ kind: 'send', payload: 'hello' });           // text
+  ```
+  Der Typ des Payloads bestimmt den Frame-Typ.  Gemischte Server
+  erwarten das eine oder das andere — pass dich an, was dein
+  Remote-Endpoint erwartet.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[I/O-Übersicht](/de/io/overview/)** — das große
+  Bild.
+- **[Server-WebSocket](/de/io/server-websocket/)** — zum
+  Annehmen eingehender WS-Verbindungen.
+- **[SSE](/de/io/sse/)** — Server-Sent Events als
+  einseitige Streaming-Alternative.
+- **[BrokerActor-Basis](/de/io/broker-actor-base/)** — der
+  gemeinsame Lifecycle.

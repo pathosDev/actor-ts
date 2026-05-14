@@ -1,0 +1,190 @@
+---
+title: Chat-Sample
+description: Eine funktionierende Chat-App - Cluster aus 3 Nodes, sharded User-Sessions, DistributedPubSub für Room-Broadcasts, HTTP für REST, WebSocket für Live-Updates. Repo unter `examples/chat/`.
+---
+
+Das Chat-Sample ist eine **komplette Demo-App**, die zeigt, wie
+die Teile des Frameworks zusammenspielen:
+
+- **Cluster** aus 3 Nodes (über Docker Compose).
+- **Sharded User-Session-Actors** - einer pro eingeloggtem User.
+- **DistributedPubSub** für Cross-Node-Chatroom-Broadcasts.
+- **PersistentActor** für die Chatroom-History.
+- **HTTP + WebSocket** für das Client-Interface.
+
+Zu finden unter [`examples/chat/`](https://github.com/pathosDev/actor-ts/tree/main/examples/chat)
+im Repo.
+
+## Architektur
+
+```mermaid
+flowchart LR
+  HTTP[/"HTTP-Clients"/]
+  WS[/"WebSocket-Clients"/]
+  subgraph CLUSTER["3-Node-Cluster"]
+    direction TB
+    HSRV["HTTP-Server"]
+    WSRV["WS-Server"]
+    US["Sharded UserSession-Actors<br/><i>einer pro eingeloggtem User<br/>hält Socket + State</i>"]
+    ROOM["ChatRoom-Actors (PersistentActor)<br/><i>einer pro Room<br/>persistiert Nachrichten-History</i>"]
+    PUB["DistributedPubSub<br/><i>Topic pro Room<br/>Rooms publishen; Sessions abonnieren</i>"]
+    HSRV --> US
+    WSRV --> US
+    US -- "join / send" --> ROOM
+    ROOM -- "publish" --> PUB
+    PUB -- "deliver" --> US
+  end
+  HTTP --> HSRV
+  WS --> WSRV
+  classDef client  fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
+  classDef cluster fill:#0f172a,stroke:#6366f1,stroke-width:2px,color:#f1f5f9;
+  classDef edge    fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef actor   fill:#312e81,stroke:#818cf8,stroke-width:1.5px,color:#f1f5f9;
+  classDef bus     fill:#1e293b,stroke:#06b6d4,stroke-width:2px,color:#67e8f9;
+  class HTTP,WS client
+  class CLUSTER cluster
+  class HSRV,WSRV edge
+  class US,ROOM actor
+  class PUB bus
+```
+
+Der vollständige Pfad eines "User sendet Nachricht"-Flows:
+
+```
+1. Der WS-Client des Users sendet "send-message" an seinen HTTP-Server.
+2. Der WS-Handler leitet an den UserSession-Actor des Users weiter (sharded).
+3. UserSession fragt den zuständigen ChatRoom-Actor (sharded nach Room-ID).
+4. ChatRoom persistiert die Nachricht via PersistentActor.persist().
+5. ChatRoom publisht auf DistributedPubSub auf das Topic "room.<roomId>".
+6. Jede UserSession, die dieses Topic abonniert hat, empfängt die Nachricht.
+7. UserSessions pushen an ihre jeweiligen WS-Clients.
+```
+
+Cluster + Persistenz + PubSub + WebSocket - alle zusammen am
+Werk.
+
+## Ausführen
+
+```bash
+# Repo klonen:
+git clone https://github.com/pathosDev/actor-ts.git
+cd actor-ts/examples/chat
+
+# Alles starten (Cluster + Cassandra + WS):
+docker compose up -d
+
+# Cluster prüfen:
+curl http://localhost:8551/cluster/members
+# → 3 members "up"
+
+# Chat-UI öffnen:
+open http://localhost:3000
+```
+
+Das Docker-Compose-Setup startet:
+
+- 3 actor-ts-Pods.
+- 1 Cassandra-Node (geteiltes Journal für persistente Rooms).
+- 1 Nginx vor den HTTP+WS-Endpoints.
+
+## Demonstrierte Schlüssel-Patterns
+
+### Sharded Sessions
+
+```ts
+const sessionRegion = ClusterSharding.get(system, cluster).start<SessionMsg>({
+  typeName: 'session',
+  entityProps: Props.create(() => new UserSessionActor()),
+  extractEntityId: (msg) => msg.userId,
+  rememberEntities: true,
+});
+```
+
+Ein Actor pro eingeloggtem User, verteilt über die Nodes.
+`rememberEntities` erhält die Registry über Failover hinweg.
+
+### PersistentActor für Rooms
+
+```ts
+class ChatRoomActor extends PersistentActor<RoomCmd, RoomEvent, RoomState> {
+  readonly persistenceId = `room-${this.roomId}`;
+  // ... onCommand persistiert; onEvent aktualisiert State ...
+}
+```
+
+Jeder Room-Actor zeichnet jede Nachricht auf; Recovery spielt
+sie zurück.
+
+### Distributed Pub/Sub für Fan-out
+
+```ts
+// ChatRoom publisht nach dem Persistieren:
+ps.mediator.tell(new Publish(`room.${roomId}`, message));
+
+// UserSession abonniert, wenn der User einem Room beitritt:
+ps.mediator.tell(new Subscribe(`room.${roomId}`, this.self));
+```
+
+Sessions auf beliebigen Nodes empfangen Room-Nachrichten,
+unabhängig davon, auf welchem Node der ChatRoom publisht.
+
+### WebSocket pro User
+
+```ts
+class UserSessionActor extends Actor<SessionMsg> {
+  private ws: WebSocket | null = null;
+
+  override onReceive(msg: SessionMsg): void {
+    if (msg.kind === 'connect-ws') this.ws = msg.socket;
+    if (msg.kind === 'inbound')    this.ws?.send(JSON.stringify(msg.payload));
+  }
+}
+```
+
+Jede Session hält den WebSocket ihres Users; Sends pushen direkt
+zum Client.
+
+## Was es nicht demonstriert
+
+- **Sharded Daemon Processes** - das Chat-Sample braucht keine
+  fixen Background-Worker.
+- **DistributedData CRDTs** - Chat-Daten gehen durch
+  PersistentActor, nicht DD.
+- **Replicated Event Sourcing** - ein Single-Writer pro Room
+  reicht aus.
+
+Dafür siehe die
+[eigenständigen Snippets](/de/examples/stand-alone-snippets/)
+oder das [Voice-Sample](/de/examples/voice-sample/).
+
+## Dateistruktur
+
+```
+examples/chat/
+├── docker-compose.yml
+├── README.md
+├── package.json
+├── src/
+│   ├── main.ts                  # Einstieg: Cluster-Join + HTTP/WS-Bind
+│   ├── actors/
+│   │   ├── UserSessionActor.ts
+│   │   └── ChatRoomActor.ts
+│   ├── messages.ts              # geteilte Nachrichten-Typen
+│   └── handlers/
+│       ├── httpRoutes.ts
+│       └── wsHandlers.ts
+└── ui/                          # minimale HTML/JS-Chat-UI
+```
+
+~500 Zeilen TypeScript insgesamt.  Gute Größe, um es
+end-to-end zu lesen.
+
+## Wohin als Nächstes
+
+- **[Voice-Sample](/de/examples/voice-sample/)** -
+  Broker-Integration + Projektionen.
+- **[Sharding-Übersicht](/de/cluster/sharding/overview/)** -
+  das Actor-pro-Entity-Pattern.
+- **[DistributedPubSub](/de/cluster/pubsub/)** - Cluster-PubSub.
+- **[PersistentActor](/de/persistence/persistent-actor/)** -
+  Event-Sourced Rooms.

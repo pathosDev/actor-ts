@@ -1,0 +1,191 @@
+---
+title: Kompatibilitäts-Matrix
+description: Feature-für-Feature-Unterstützung über Bun, Node 20+ und Deno. Nutze diese Seite zum Verifizieren, bevor du ein Subsystem adoptierst.
+---
+
+Die Features des Frameworks haben unterschiedliche
+Unterstützungs-Level über Runtimes hinweg. Diese Seite ist die
+**definitive Referenz**.
+
+Für jede Zeile:
+
+- **✓** = unterstützt, in CI getestet.
+- **⚠** = funktioniert, aber nicht aktiv CI'd.
+- **✗** = nicht unterstützt.
+- **N/A** = trifft nicht zu.
+
+## Core
+
+| Feature | Bun | Node 20+ | Deno |
+| --- | --- | --- | --- |
+| `Actor`-Basisklasse | ✓ | ✓ | ✓ |
+| `ActorSystem` | ✓ | ✓ | ✓ |
+| `Props` + `withDispatcher` etc. | ✓ | ✓ | ✓ |
+| `MicrotaskDispatcher` / `ImmediateDispatcher` / `ThroughputDispatcher` | ✓ | ✓ | ✓ |
+| `BoundedMailbox` / `PriorityMailbox` | ✓ | ✓ | ✓ |
+| Supervision-Strategien | ✓ | ✓ | ✓ |
+| `context.timers` + `system.scheduler` | ✓ | ✓ | ✓ |
+| Death-Watch | ✓ | ✓ | ✓ |
+| `become` / `stash` / `unstashAll` | ✓ | ✓ | ✓ |
+| Pattern-Matching (ts-pattern) | ✓ | ✓ | ✓ |
+
+## Typed-API
+
+| Feature | Bun | Node 20+ | Deno |
+| --- | --- | --- | --- |
+| `Behaviors.*`-Kombinatoren | ✓ | ✓ | ✓ |
+| `TypedActor` | ✓ | ✓ | ✓ |
+| `spawnTyped` / `spawnTypedChild` / `typedProps` | ✓ | ✓ | ✓ |
+
+## Routing + Patterns
+
+| Feature | Bun | Node 20+ | Deno |
+| --- | --- | --- | --- |
+| `Router.*` | ✓ | ✓ | ✓ |
+| `CircuitBreaker` | ✓ | ✓ | ✓ |
+| `BackoffSupervisor` | ✓ | ✓ | ✓ |
+| `retry`, `pipeTo`, `after` | ✓ | ✓ | ✓ |
+
+## Cluster
+
+| Feature | Bun | Node 20+ | Deno |
+| --- | --- | --- | --- |
+| Cluster-Join / -Membership | ✓ | ✓ | ⚠ |
+| Gossip + Failure-Detector | ✓ | ✓ | ⚠ |
+| `TcpTransport` | ✓ | ✓ | ⚠ |
+| TLS auf Cluster-Transport | ✓ | ✓ | ⚠ |
+| `InMemoryTransport` (Tests) | ✓ | ✓ | ✓ |
+| `ClusterSingleton` | ✓ | ✓ | ⚠ |
+| `ClusterSharding` | ✓ | ✓ | ⚠ |
+| `DistributedPubSub` | ✓ | ✓ | ⚠ |
+| `DistributedData` | ✓ | ✓ | ⚠ |
+| Cluster-Router | ✓ | ✓ | ⚠ |
+| Receptionist | ✓ | ✓ | ⚠ |
+| `KubernetesLease` | ✓ | ✓ | ⚠ |
+| `InMemoryLease` | ✓ | ✓ | ✓ |
+
+## Persistenz
+
+| Feature | Bun | Node 20+ | Deno |
+| --- | --- | --- | --- |
+| `InMemoryJournal` | ✓ | ✓ | ✓ |
+| `InMemorySnapshotStore` | ✓ | ✓ | ✓ |
+| `SqliteJournal` | ✓ (`bun:sqlite`) | ✓ (`better-sqlite3` Peer-Dep) | ✗ |
+| `SqliteSnapshotStore` | ✓ | ✓ | ✗ |
+| `CassandraJournal` | ⚠ | ✓ (`cassandra-driver`) | ⚠ |
+| `CachedSnapshotStore` | ✓ | ✓ | ✓ |
+| `PersistentActor` | ✓ | ✓ | ✓ |
+| `DurableStateActor` | ✓ | ✓ | ✓ |
+| `ProjectionActor` | ✓ | ✓ | ✓ |
+| Object-Storage-Snapshot-Store (Dateisystem) | ✓ | ✓ | ✓ |
+| Object-Storage-Snapshot-Store (S3) | ⚠ | ✓ | ⚠ |
+| Schema-Migrations-Adapter | ✓ | ✓ | ✓ |
+| Replicated Event Sourcing | ⚠ | ✓ | ✗ |
+
+## I/O-Broker
+
+| Feature | Bun | Node 20+ | Deno |
+| --- | --- | --- | --- |
+| `KafkaActor` (`kafkajs`) | ✓ | ✓ | ⚠ |
+| `MqttActor` (`mqtt`) | ✓ | ✓ | ⚠ |
+| `AmqpActor` (`amqplib`) | ⚠ | ✓ | ⚠ |
+| `NatsActor` (`nats`) | ✓ | ✓ | ⚠ |
+| `JetStreamActor` | ✓ | ✓ | ⚠ |
+| `RedisStreamsActor` (`redis`) | ✓ | ✓ | ⚠ |
+| `GrpcServerActor` / `GrpcClientActor` | ✓ | ✓ | ⚠ |
+| `WebSocketActor` (Client) | ✓ | ✓ | ✓ |
+| `ServerWebSocketActor` | ✓ (`Bun.serve`) | ✓ (`ws`) | ⚠ |
+| `SseActor` | ✓ | ✓ | ✓ |
+| `TcpSocketActor` | ✓ | ✓ | ✓ |
+| `UdpSocketActor` | ✓ | ✓ | ✓ |
+
+## HTTP
+
+| Feature | Bun | Node 20+ | Deno |
+| --- | --- | --- | --- |
+| Route-DSL | ✓ | ✓ | ✓ |
+| Marshalling (`entity<T>`) | ✓ | ✓ | ✓ |
+| `FastifyBackend` | ✓ | ✓ | ✓ |
+| `BunServeBackend` | ✓ | N/A | N/A |
+| `ExpressBackend` | ✓ | ✓ | ⚠ |
+| Middleware (Response-Cache, Rate-Limit, Idempotency-Key) | ✓ | ✓ | ✓ |
+| `HttpClient` (nutzt fetch) | ✓ | ✓ | ✓ |
+| `HttpManagement` | ✓ | ✓ | ✓ |
+
+## Cache
+
+| Feature | Bun | Node 20+ | Deno |
+| --- | --- | --- | --- |
+| In-Memory-Cache | ✓ | ✓ | ✓ |
+| Memcached-Cache | ⚠ | ✓ | ⚠ |
+| Redis-Cache | ✓ | ✓ | ⚠ |
+
+## Serialisierung
+
+| Feature | Bun | Node 20+ | Deno |
+| --- | --- | --- | --- |
+| JSON | ✓ | ✓ | ✓ |
+| CBOR | ✓ | ✓ | ✓ |
+| Eigene Serializer | ✓ | ✓ | ✓ |
+
+## Observability
+
+| Feature | Bun | Node 20+ | Deno |
+| --- | --- | --- | --- |
+| Core-Metriken | ✓ | ✓ | ✓ |
+| Prometheus-Exporter | ✓ | ✓ | ✓ |
+| `prom-client`-Adapter | ✓ | ✓ | ⚠ |
+| OTel-Metrics-Adapter | ✓ | ✓ | ⚠ |
+| `RecordingTracer` | ✓ | ✓ | ✓ |
+| OTel-Tracing-Adapter | ✓ | ✓ | ⚠ |
+| Stock-Metriken | ✓ | ✓ | ✓ |
+| Health Checks | ✓ | ✓ | ✓ |
+
+## TestKit
+
+| Feature | Bun | Node 20+ | Deno |
+| --- | --- | --- | --- |
+| `TestKit.create` | ✓ | ✓ | ✓ |
+| `TestProbe` | ✓ | ✓ | ✓ |
+| `ManualScheduler` | ✓ | ✓ | ✓ |
+| `MultiNodeSpec` | ✓ | ✓ | ⚠ |
+| `ParallelMultiNodeSpec` | ✓ | ✓ | ⚠ |
+
+## Empfohlene Ziele
+
+```
+Für neue Projekte:                            Bun
+Für Node-Shop-Umgebungen:                     Node 20+
+Für Lambda / Serverless:                      Node 20+
+Für Deno-First-Organisationen:                Deno (mit Einschränkungen)
+Für gemischt:                                 Wähle eine pro Cluster
+```
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Den Warn-Marker lesen">
+  ```
+  ⚠ = das Framework hat keine Produktions-Stunden auf dieser Runtime
+  für dieses Feature gesehen. Funktioniert meist; könnte Edge-Cases haben.
+  ```
+  Wenn du Probleme bei einem ⚠-Feature triffst, melde einen
+  Bug — die meisten Deno-spezifischen Issues sind einfache
+  Fixes.
+</Aside>
+
+<Aside type="caution" title="Version-Pinning">
+  ```json
+  // package.json
+  { "engines": { "bun": ">=1.1", "node": ">=20" } }
+  ```
+  Pinne sowohl Bun- als auch Node-Engines, wenn dein Code auf
+  beiden läuft — verhindert versehentlichen Dev-/Prod-Runtime-
+  Drift.
+</Aside>
+
+## Wo es weitergeht
+
+- **[Runtime — Überblick](/de/runtime/overview/)** — das
+  konzeptuelle Modell.
+- **[Bun](/de/runtime/bun/)** / **[Node](/de/runtime/node/)** / **[Deno](/de/runtime/deno/)** — Per-Runtime-Details.
+- **[Installation](/de/intro/installation/)** — Install-Schritte.

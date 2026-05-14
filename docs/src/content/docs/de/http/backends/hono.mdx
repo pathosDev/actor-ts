@@ -1,0 +1,161 @@
+---
+title: Hono-Backend
+description: Hono ist das runtime-agnostische, ultraleichte HTTP-Framework — läuft auf Bun, Node, Deno, Cloudflare Workers, Lambda. Nimm es, wenn derselbe Code über Runtimes hinweg laufen soll, inklusive Edge.
+---
+
+[Hono](https://hono.dev/) ist ein **runtime-agnostisches** HTTP-
+Framework — derselbe Code läuft auf Bun, Node, Deno, Cloudflare
+Workers, AWS Lambda, Vercel usw.  `HonoBackend` wickelt es für
+actor-ts ein.
+
+```ts
+import { ActorSystem, HttpExtensionId } from 'actor-ts';
+import { HonoBackend } from 'actor-ts/http';
+
+const http = system.extension(HttpExtensionId);
+
+await http.newServerAt('0.0.0.0', 8080)
+  .useBackend(new HonoBackend())
+  .bind(routes);
+```
+
+## Wann Hono
+
+Hono ist die richtige Wahl, wenn:
+
+- **Edge / Serverless** — Cloudflare Workers, Vercel Edge,
+  Deno Deploy.  Hono ist eines der wenigen HTTP-Frameworks, die
+  in solchen Umgebungen laufen.
+- **Cross-Runtime-Portabilität** — derselbe Code auf Bun + Node
+  + Edge.
+- **Minimaler Overhead** — Hono ist leichter als Fastify,
+  schneller als Express.
+
+Für einen typischen, langlebigen Produktionsserver ist **Fastify
+meist vorzuziehen** — größeres Plugin-Ökosystem, mehr
+Produktionsstunden.  Hono glänzt, wenn "läuft an vielen Orten"
+harte Anforderung ist.
+
+## Cross-Runtime- + Serverless-Vorbehalt
+
+```ts
+// Auf einer langlebigen VM: das funktioniert
+await http.newServerAt('0.0.0.0', 8080)
+  .useBackend(new HonoBackend())
+  .bind(routes);
+
+// Auf Cloudflare Workers: es gibt kein "newServerAt(host, port)"
+//   Die Runtime ruft pro Request einen Handler auf.
+```
+
+`HonoBackend` exponiert seine zugrunde liegende `Hono`-Instanz:
+
+```ts
+const backend = new HonoBackend();
+const honoApp = backend.app;   // ← in die Edge-Runtime exportieren
+```
+
+In Cloudflare Workers:
+
+```ts
+// worker.ts
+export default { fetch: honoApp.fetch };
+```
+
+Die actor-ts-Seite läuft dann **In-Memory innerhalb des Isolates**
+— kurzlebig, kein Clustering, keine Persistenz.  Nützlich für
+zustandslose Request-Handling-Logik, die von Actor-Mustern
+profitiert (Zustandsautomaten, Validierungs-Pipelines).
+
+Für langlebige Actor-Systeme mit Cluster + Persistenz
+**läuft nicht auf Edge-Runtimes** — die sind Isolate-pro-Request,
+keine langlebigen Prozesse.
+
+## Konfiguration
+
+```ts
+new HonoBackend({
+  // Hono selbst hat minimale Konfiguration; die meisten Einstellungen kommen über Routen / Middleware
+});
+```
+
+## Hono-Middleware
+
+```ts
+import { logger, cors, secureHeaders } from 'hono/middleware';
+
+const backend = new HonoBackend();
+await http.newServerAt('0.0.0.0', 8080)
+  .useBackend(backend)
+  .bind(routes);
+
+backend.app.use('*', logger());
+backend.app.use('/api/*', cors());
+backend.app.use('*', secureHeaders());
+```
+
+Honos Middleware-Ökosystem ist kleiner als das von Express, deckt
+aber die üblichen Fälle ab — CORS, Security-Header, JWT-Auth,
+Basic-Auth, Komprimierung.
+
+## Peer-Dependency
+
+```bash
+npm install hono
+# oder: bun add hono
+```
+
+## Performance
+
+Grobe Zahlen:
+
+- **100K–150K req/sec** auf Bun für triviale Routen.
+- **Etwas langsamer als Fastify** auf Node.
+- **Edge-Runtime-Zahlen** hängen von der Plattform ab
+  (Cloudflare Workers: ~50K req/sec pro Worker; von der
+  Plattform gedrosselt).
+
+## Edge-Runtime-Vorbehalte
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Edge-Runtime + actor-ts-Cluster">
+  ```ts
+  // Cloudflare Workers + cluster.join()
+  ```
+  Edge-Runtimes unterstützen keine ausgehenden TCP-Verbindungen
+  (oder nur über spezifische Plattform-APIs).  Der Cluster-Join
+  schlägt fehl.  Versuche nicht, auf Edge zu clustern — nutze
+  actor-ts ausschließlich als Library innerhalb des Request-
+  Lifecycles.
+</Aside>
+
+<Aside type="caution" title="In-Memory-State über Requests hinweg">
+  ```ts
+  // Zwei Cloudflare-Worker-Aufrufe: verschiedene Isolates
+  // → In-Memory-Actor-State teilt sich nicht
+  ```
+  Edge-Isolates sind **pro Request** (oder kurz für Warm-up
+  geteilt).  Erwarte nicht, dass State zwischen Requests
+  überlebt.  Für State nimm externen Storage (KV, D1 usw.).
+</Aside>
+
+<Aside type="caution" title="Langlebige Actors in Edge-Isolates">
+  ```ts
+  // Einen Actor spawnen, der stundenlang leben soll
+  ```
+  Edge-Runtimes laufen in Timeouts (Cloudflare: 30 s Wallclock).
+  Langlebige Actors passen nicht.  Nutze sie nur für kurzlebige
+  Per-Request-Actor-Muster.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[HTTP-Übersicht](/de/http/overview/)** — das große
+  Bild.
+- **[Fastify-Backend](/de/http/backends/fastify/)** — für
+  Node-/Bun-Produktionsserver.
+- **[Express-Backend](/de/http/backends/express/)** — für
+  Express-Middleware-reiche Apps.
+- **[Hono-Docs](https://hono.dev/)** — Honos eigene
+  Dokumentation.

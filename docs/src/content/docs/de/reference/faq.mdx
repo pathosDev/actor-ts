@@ -1,0 +1,383 @@
+---
+title: FAQ
+description: Schnelle Antworten auf häufige Fragen — wann welche API gewählt werden sollte, was das Framework tut und nicht tut, Runtime-Kompatibilität, Performance-Notizen und die häufigsten "ist das ein Bug oder halte ich es falsch?"-Fragen.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Allgemein
+
+### Ist actor-ts produktionsreif?
+
+Das Framework ist **pre-1.0**.  Die API-Oberfläche ist stabil
+genug, dass wir es in echten Anwendungen verwenden, aber
+**erwarte Breaking Changes**, bis 1.0 ausgeliefert wird.  Siehe
+[Versionspolitik](/de/reference/version-policy/).
+
+Was das in der Praxis bedeutet:
+
+- Das **Core Actor-Modell** (Actor, Mailboxes, Dispatchers,
+  Supervision, Persistenz-Basics) ist gut getestet und stabil.
+- **Cluster-Features** (Sharding, Singleton, Distributed Data)
+  haben funktionierende Implementierungen, aber erwarte
+  API-Politur.
+- **Einige Kanten** sind explizit experimentell — Replicated
+  Event Sourcing, Sharded-Daemon-Process-Varianten etc.  Seiten
+  markieren diese.
+
+Wenn Du ein *neues* Projekt startest, das Du vor 1.0
+ausliefern würdest, ist es eine vernünftige Wette.  Wenn Du ein
+kritisches System neu schreibst, warte oder budgetiere Zeit für
+Breaking-Change-Adoption.
+
+### Warum "actor-ts"?  Warum nicht einfach ein JVM-Actor-Framework oder reines TS verwenden?
+
+Drei Gründe:
+
+- **Erstklassige TypeScript-Typen**.  Die meisten bestehenden
+  Actor-Toolkits zielen auf eine andere Runtime (JVM, .NET,
+  Erlang); ihre Form nach TS zu portieren verliert die
+  Type-Level-Vorteile.  actor-ts ist für
+  TypeScript-First-Ergonomie entworfen.
+- **Runtime-Wahl**.  Läuft auf Bun (primär), Node und Deno —
+  keine JVM, kein .NET, keine separate Runtime.
+- **Cluster + Persistenz + Observability** eingebaut, ohne die
+  "verdrahte es selbst aus 8 Libraries"-Steuer, die Vanilla
+  TS verlangen würde.
+
+Wenn Du Clustering / Persistenz / Supervision nicht brauchst,
+ist Vanilla Promise-basierter Code einfacher und Du solltest
+ihn verwenden.  Greife zu actor-ts, wenn die
+Runtime-Modell-Vorteile tatsächlich wichtig sind.
+
+### Funktioniert es im Browser?
+
+Nein.  Das Framework zielt auf server-seitige Runtimes — Bun,
+Node, Deno — weil die meisten Actor-Patterns (Clustering,
+Persistenz, TCP-Transports, datei-basierte Journals)
+server-seitige Primitive brauchen.  Eine Teilmenge könnte
+theoretisch im Browser laufen, aber es gibt keinen Browser-Modus-
+Build.
+
+Für browser-seitige reaktive Patterns schau Dir
+Signals-/Effects-Libraries an (Solid, MobX) — anderes Modell,
+bessere Passung.
+
+## APIs auswählen
+
+### Typed oder Untyped Actor?
+
+Beide funktionieren; beide laufen auf derselben Engine.  Wähle:
+
+- **Untyped**, wenn Du das Actor-Modell lernst, eine
+  Eins-zu-eins-Parität mit klassischen
+  Actor-Framework-Beispielen willst oder einen Actor mit
+  beträchtlichem mutable State hast.
+- **Typed**, wenn Du funktionale State-Machine-Ergonomie willst,
+  Cast-Free Child Spawning oder von typisierten Actor-APIs auf
+  anderen Runtimes / von Cats Effect kommst.
+
+Du kannst sie mischen — Typed Parents spawnen Untyped Children
+und umgekehrt.  Siehe [Typed Overview](/de/typed/overview/).
+
+### `tell`, `ask` oder `pipeTo`?
+
+- **`tell`** ist der Default.  Fire-and-forget.  Verwende es,
+  es sei denn, Du brauchst spezifisch eine Antwort.
+- **`ask`**, wenn Du ein `Promise<Reply>` brauchst — typischerweise
+  HTTP-Handler, Sagas, Tests.  Hat Overhead (temporärer Ref),
+  also verwende es nicht in engen Schleifen.
+- **`pipeTo`**, wenn eine asynchrone Operation *als Nachricht* in
+  der Mailbox eines Actors landen soll.  Die nicht-blockierende
+  Alternative zu `await` innerhalb von `onReceive`.
+
+Siehe [Ask Pattern](/de/fundamentals/ask-pattern/) und
+[Future Patterns](/de/patterns/futures-patterns/).
+
+### PersistentActor oder DurableStateActor?
+
+Wähle danach, ob Du **Historie** brauchst:
+
+- **PersistentActor** persistiert jedes State-änderende Event.
+  Replay zur Wiederherstellung.  Verwende es, wenn Historie
+  wichtig ist (Audit, Time Travel, Projektionen, Append-Only-
+  Domänen).
+- **DurableStateActor** persistiert den aktuellen
+  State-Snapshot, überschreibt bei jedem Update.  Verwende es,
+  wenn der aktuelle Wert alles ist, was Du brauchst.
+
+Siehe [Persistence Overview](/de/persistence/overview/).
+
+### Singleton, Sharding oder DistributedData?
+
+- **Singleton** — genau ein Actor cluster-weit.  Koordinatoren,
+  Scheduler, Leader-elected Services.
+- **Sharding** — ein Actor pro *Key*, verteilt über Nodes.
+  Sessions pro Nutzer, Controller pro IoT-Gerät.
+- **DistributedData** — eventuell-konsistenter geteilter State
+  via CRDTs.  Counter, Flags, Sets, die alle lesen und
+  schreiben.
+
+Siehe die [Distribution Overviews](/de/cluster/overview/).
+
+## Performance
+
+### Wie viele Actors kann ich spawnen?
+
+In groben Zahlen (einzelner Bun-Prozess, 4-Kern-Maschine):
+
+- **100 000 Actors** ist komfortabel — minimaler Memory-Overhead
+  pro Actor, Sub-Millisekunden-Send-Latenz.
+- **1 000 000 Actors** ist machbar, aber bei Memory eng.
+  Erwäge Passivation-Patterns (Idle-Entities stoppen sich
+  selbst).
+- **10 000 000+ Actors** braucht Sharding über Nodes — eine
+  Node kann nicht so viele effizient halten.
+
+Die dominierenden Kosten sind der **eigene State des Actors**,
+nicht die Buchhaltung des Frameworks.
+
+### Was ist der Overhead pro Nachricht?
+
+Grob:
+
+- **`tell`** — ~50 ns pro Aufruf auf Hot Path
+  (Microtask-Dispatcher).  Speicher: ~200 Bytes pro Envelope.
+- **`ask`** — ~5 μs pro Aufruf (temporäre Ref-Konstruktion).
+  Speicher: ~500 Bytes plus Promise-Maschinerie.
+- **Cross-Cluster `tell`** — begrenzt durch Netzwerk- +
+  Serialisierungs-Kosten.  Sub-Millisekunde auf Localhost,
+  ms-Bereich über LAN.
+
+Zum Vergleich: Ein roher `function call` ist ~1 ns.
+Actor-Messaging kostet 50-200× einen direkten Aufruf — was für
+die meisten Workloads in Ordnung ist, aber sichtbar wird, wenn
+Du denselben Actor mit Millionen von Nachrichten pro Sekunde
+bombardieren würdest.
+
+### Sollte ich mir um Garbage Collection Sorgen machen?
+
+Das Framework allokiert nicht aggressiv, aber es allokiert.  Hot
+Paths (`tell`, Mailbox-Enqueue/Dequeue) erzeugen Envelopes pro
+Nachricht; Actors mit hohem Durchsatz *können* sich in GC-Profilen
+zeigen.
+
+Für Low-Allocation-Hot-Paths:
+
+- Wiederverwende Message-Objects, wenn sicher (aber **nur**, wenn
+  der Empfänger keine Referenz behält).
+- Verwende `MicrotaskDispatcher` für rechenintensive Actors, die
+  den Event-Loop nicht mit HTTP-I/O teilen.
+
+## Cluster
+
+### Was ist die minimale Cluster-Größe?
+
+**Eine Node** ist gültig.  `Cluster.join` ohne Seeds (oder mit
+unerreichbaren Seeds) gibt Dir einen Singleton-Cluster — die
+lokale Node befördert sich automatisch zum Leader.  Jede
+Cluster-Extension (Sharding, Singleton, PubSub) funktioniert im
+Single-Node-Modus.
+
+Das bedeutet, dass Du Cluster-Code ohne ein Docker-Compose-Setup
+entwickeln und testen kannst.
+
+### Wie handle ich Split-Brain?
+
+Zwei Schichten:
+
+- **Downing-Strategien**, die während einer Partition einen
+  Gewinner erzwingen.  Siehe
+  [Downing Strategies](/de/cluster/downing-strategies/).
+- **Optionale Leases** für Sharding-Koordinator und Singletons.
+  Siehe [Singleton with Lease](/de/cluster/singleton/with-lease/).
+
+Ohne eine Downing-Strategie ist das Default-Verhalten
+"unbegrenzt warten" — Operatoren müssen Nodes manuell downen.
+Wähle eine für die Produktion.
+
+### Kann ich Kubernetes für Cluster Discovery verwenden?
+
+Ja — der `kubernetes-api`-Seed-Provider listet Pods auf, die zu
+einem Label-Selector passen, und verwendet sie als Seeds.  Siehe
+[Discovery — Kubernetes API](/de/discovery/seed-providers/kubernetes-api/).
+
+Für Lease-basierte Singletons in K8s verwendet die
+[Kubernetes Lease](/de/coordination/kubernetes-lease/)-Implementation
+native K8s-Lease-CRDs.
+
+## Persistenz
+
+### Welches Journal sollte ich verwenden?
+
+- **`InMemoryJournal`** für Tests und Dev.
+- **`SqliteJournal`** für Single-Node-Produktion (bestes
+  Performance-zu-Einfachheit-Verhältnis).
+- **`CassandraJournal`**, wenn mehrere Nodes denselben
+  Event-Stream teilen müssen.
+- **Custom**, wenn keines davon passt — implementiere das
+  `Journal`-Interface gegen Deinen Storage.
+
+Siehe [Journals — In-Memory](/de/persistence/journals/in-memory/)
+und [SQLite](/de/persistence/journals/sqlite/).
+
+### Wie entwickle ich Event-Schemas weiter?
+
+Verwende **Event Adapters**.  Jedes Event persistiert in einem
+versionierten Envelope (`{ _v, _t, _e }`); der `upcast(stored,
+version)` des Adapters wird beim Lesen aufgerufen, um ältere
+Versionen auf die aktuelle Form zu migrieren.
+
+Siehe [Migration Overview](/de/persistence/migration/overview/).
+
+### Werden Projektionen exactly-once geliefert?
+
+Jede Projektion persistiert ihren eigenen Offset; wenn eine
+Projektion nach der Verarbeitung von Event N, aber vor dem
+Persistieren von Offset N abstürzt, wird sie N beim Neustart
+erneut verarbeiten.  In dem Sinn **at-least-once**.
+
+Für exactly-once-Semantik muss die Projektion idempotent sein
+(verwende die seqNr des Events als Dedup-Key) oder transaktional
+(View + Offset atomar committen).  Siehe
+[Projections](/de/persistence/projections/).
+
+## Runtime + Tooling
+
+### Was ist mit TypeScript-Versionen?
+
+Wir testen gegen **TypeScript 5.6+**.  Frühere Versionen
+funktionieren möglicherweise, werden aber nicht unterstützt.
+Das Framework verwendet einige Features (z. B. `const`-
+Typparameter), die in jüngsten Releases gelandet sind.
+
+### Warum ts-pattern?
+
+Es ist der sauberste Weg, den wir gefunden haben, um
+`match().exhaustive()` in TS auszudrücken — das
+Discriminated-Union-Dispatch-Pattern ist überall in der Codebase,
+und ein handgerollter Switch verliert die Exhaustiveness-Prüfung.
+
+Du *musst* ts-pattern in Deinem eigenen Code nicht verwenden;
+einfache `if/else`-Leitern funktionieren.  Siehe
+[Pattern Matching](/de/fundamentals/pattern-matching/).
+
+### Bun vs Node — welches sollte ich wählen?
+
+**Bun**, wenn Du kannst.  Schnellerer Start, schnellere
+Cold-Paths, natives SQLite, nativer Test-Runner.  Wir testen
+Bun als primäre Runtime.
+
+**Node** wird voll als Fallback unterstützt.  Etwas Performance
+bleibt im Vergleich zu Bun liegen, aber die Feature-Oberfläche
+ist identisch.
+
+**Deno** wird unterstützt, erhält aber weniger Tests — melde
+einen Bug, wenn Du auf ein Deno-spezifisches Issue stößt.
+
+Siehe [Runtime — Compatibility Matrix](/de/runtime/compatibility-matrix/).
+
+## Debugging
+
+<Aside type="caution" title="Warum empfängt mein Actor keine Nachrichten?">
+  Drei häufige Ursachen:
+  - **Der Ref zeigt auf einen gestoppten Actor** — Nachrichten
+    werden an `/deadLetters` geroutet (prüfe das System-Log).
+  - **Die Mailbox ist voll** mit `reject`-Overflow — `tell` wirft
+    `MailboxFullError` am Sender.  Fang es dort, wo Du tellst.
+  - **Recovery ist noch nicht abgeschlossen** für einen
+    `PersistentActor` — Nachrichten, die vor `onRecoveryComplete`
+    gesendet werden, werden gestasht.  Langsame Recovery
+    verursacht scheinbare Verzögerungen.
+</Aside>
+
+<Aside type="caution" title="Warum startet mein Actor ständig neu?">
+  Normalerweise wirft `onReceive`.  Prüfe das System-Log — jeder
+  Fehler wird mit dem Error und der angewendeten Direktive
+  geloggt.  Der Default-Supervisor restartet bis zu 10/Minute,
+  dann eskaliert er; darüber hinaus siehst Du "supervisor
+  giving up" in den Logs.
+</Aside>
+
+<Aside type="caution" title="Warum läuft mein Ask in ein Timeout?">
+  Drei Ursachen, in absteigender Wahrscheinlichkeit:
+  - **Der Empfänger `tell`t die Antwort nicht** — prüfe den
+    `onReceive`-Handler des Empfängers.
+  - **Der Empfänger ist tot oder neu am Starten** —
+    `Terminated` für das Ziel kommt an, aber nicht die Antwort.
+  - **Der Reply-To-Ref ist der falsche** — `ask` generiert einen
+    temporären Ref; wenn Du nicht den in der Nachricht
+    (`cmd.replyTo`) verwendest, geht die Antwort woanders hin.
+</Aside>
+
+<Aside type="caution" title="Warum werden meine Events nicht wieder abgespielt?">
+  Drei Ursachen:
+  - **`persistenceId` hat sich zwischen Läufen geändert** —
+    Events werden nach PID gespeichert; eine andere PID = ein
+    anderer Stream.
+  - **Falsches Journal** — prüfe, dass
+    `actor-ts.persistence.journal.plugin` zu dem passt, mit dem
+    Du geschrieben hast.
+  - **Snapshot hat eine höhere seqNr als das Journal** — das
+    Framework weigert sich, einen Snapshot zu laden, der
+    behauptet, dem Journal voraus zu sein (Korruptions-Schutz).
+    Lösche den Snapshot, wenn er wiederherstellbar ist.
+</Aside>
+
+## Vergleich zu anderen Actor-Frameworks
+
+### Ist das ein Actor-Framework von einer anderen Runtime, in TypeScript?
+
+Geistig ja — das Actor-Modell, Supervision, Sharding,
+Persistenz, Distributed Data, das Cluster-Gossip-Protokoll haben
+alle Vorgeschichte auf der JVM (Akka, Pekko) und in .NET
+(Orleans), und das Framework zieht aus dieser Linie.  Siehe die
+[Migration Guides](/de/migration/overview/) für die
+nächsten Konzept-für-Konzept-Maps.
+
+Unterschiede zu den JVM-Style-Actor-Toolkits:
+
+- **Kein Scala / JVM** — reines TypeScript, läuft auf
+  JS-Runtimes.
+- **Keine Fiber-basierte Concurrency** — JavaScript ist pro
+  Prozess Single-Threaded; wir verwenden die
+  Microtask-/Macrotask-Queue.
+- **Keine Streaming-DSL** — backpressure-getriebene async
+  Pipelines sind nicht portiert.  Verwende eine separate
+  Library dafür.
+- **Kleinere Oberfläche** — nur die Actor-Modell-Teile.
+  HTTP-Routing, Persistence-Query und Broker-Integrationen
+  haben Analoga, sind aber absichtlich einfacher als die
+  JVM-Pendants.
+
+Wenn Du exakte verhaltensmäßige Kompatibilität mit einem
+anderen Framework brauchst, verwende dieses Framework.  Das ist
+ein TypeScript-First-Port, der die nützlichsten 80% des
+Actor-Modell-Toolkits aussucht.
+
+### Von Orleans?
+
+Orleans-Actors sind **virtuell** — adressiert über ID, beim
+ersten Nachrichteneingang automatisch gespawnt, im Idle
+automatisch passiviert.  actor-ts-Sharding ist das nächste
+Analogon (siehe
+[Sharding Overview](/de/cluster/sharding/overview/)).
+Unterschiede:
+
+- Sharding-Entities sind *nicht* standardmäßig virtuell — sie
+  werden explizit (oder durch Idle-Timeout) passiviert.
+- Geshardete Entity-Platzierung ist ein-Actor-pro-Key, wie
+  Orleans-Grains, aber die Placement-Strategie ist
+  standardmäßig Hash-Mod-Region, nicht Orleans'
+  Directory-basierte.
+
+Migration Guide: [from-orleans](/de/migration/from-orleans/).
+
+## Wie es weitergeht
+
+- **[Glossar](/de/reference/glossary/)** — Begriffe, die
+  in der gesamten Doku verwendet werden.
+- **[Versionspolitik](/de/reference/version-policy/)** —
+  was stabil, experimentell oder geplant ist.
+- **[Konfiguration](/de/reference/configuration/)** —
+  jeder HOCON-Key.

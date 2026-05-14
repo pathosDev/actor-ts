@@ -1,0 +1,263 @@
+---
+title: ManualScheduler
+description: Ein Virtual-Clock-`Scheduler`, der Timer nur feuert, wenn du `advance(ms)` aufrufst. Das Standard-Werkzeug für deterministische Tests von Actor, die `context.timers` oder `system.scheduler` nutzen.
+---
+
+`ManualScheduler` ist eine `Scheduler`-Implementierung, bei der
+**Zeit nicht von selbst voranschreitet**. Plane einen
+5-Sekunden-Timer; nichts feuert, bis du explizit
+`scheduler.advance(5_000)` aufrufst. Der Test läuft in
+deterministischer virtueller Zeit, ohne Echt-Uhr-
+Abhängigkeiten — keine flakigen „schlafe lang genug"-Muster.
+
+```ts
+import { TestKit } from 'actor-ts/testkit';
+
+const { kit, scheduler } = TestKit.withManualScheduler();
+const probe = kit.createTestProbe();
+
+const ref = kit.system.actorOf(Props.create(() => new Heartbeat(probe)));
+ref.tell({ kind: 'start' });
+
+scheduler.advance(5_000);   // virtuelle Zeit springt 5 Sekunden
+await probe.expectMsg('tick');
+
+await kit.shutdown();
+```
+
+`Heartbeat` plant einen Tick via
+`context.timers.startSingleTimer('tick', tickMsg, 5_000)`. Echte
+Zeit verstreicht nie; der `advance(5_000)` feuert den Timer.
+
+## Warum das wichtig ist
+
+```ts
+// Ohne ManualScheduler:
+ref.tell({ kind: 'start' });
+await new Promise(r => setTimeout(r, 5_100));   // hoffe, echte Zeit verstrich
+await probe.expectMsg('tick');
+```
+
+Das funktioniert *meistens*. Dann läuft CI langsamer; der Test
+schläft 5,1 s, aber der Scheduler feuert bei 5,0 s, während
+`expectMsg` bei 5,1 s prüft — flakey. Oder deine lokale Maschine
+ist schnell; der Test wartet jedes Mal 5,1 s, obwohl der Timer
+bei 5,0 s feuert — langsam.
+
+`ManualScheduler` entfernt die Abhängigkeit von echter Zeit.
+Tests sind schnell (kein Warten) und deterministisch (advance
+feuert Timer in Reihenfolge).
+
+## Die API
+
+```ts
+class ManualScheduler extends Scheduler {
+  now(): number;                                  // aktuelle virtuelle Zeit (ms)
+  advance(durationMs: number): void;              // vorwärts springen, gereifte Timer feuern
+  advanceTo(absoluteMs: number): void;            // zu einer spezifischen virtuellen Zeit springen
+  pendingCount: number;                           // nicht abgebrochene geplante Aufgaben
+}
+```
+
+Vom `Scheduler` geerbt:
+
+```ts
+scheduleOnce(delayMs, target, message, sender?): Cancellable
+scheduleOnceFn(delayMs, fn): Cancellable
+scheduleAtFixedRate(initialDelay, interval, target, message, sender?): Cancellable
+scheduleAtFixedRateFn(initialDelay, interval, fn): Cancellable
+```
+
+Echtes `setTimeout` wird **nicht** genutzt. Jeder Schedule ist
+eine Virtual-Time-Aufgabe, die nur via `advance` feuert.
+
+## Über TestKit nutzen
+
+```ts
+const { kit, scheduler } = TestKit.withManualScheduler('my-spec');
+```
+
+Zwei Werte:
+
+- `kit` — ein normales `TestKit`, dessen `system` den
+  Manual-Scheduler verdrahtet hat.
+- `scheduler` — der Manual-Scheduler. Rufe `advance` darauf, um
+  Timer zu feuern.
+
+Wenn der zu testende Actor `context.timers.startSingleTimer`
+oder `system.scheduler.scheduleOnce` nutzt, routet das Framework
+durch den Scheduler des Systems — der hier der manuelle ist.
+Virtuelle Zeit kontrolliert *alle* Actor-Timer.
+
+## Ohne TestKit nutzen
+
+```ts
+import { ActorSystem, ManualScheduler } from 'actor-ts';
+
+const scheduler = new ManualScheduler();
+const system = ActorSystem.create('my-spec', { scheduler });
+
+// ... Test-Code ...
+
+await system.terminate();
+```
+
+Gleiche Idee — übergib den Manual-Scheduler an
+`ActorSystem.create` via die Settings.
+
+## Zeit voranbringen
+
+```ts
+scheduler.advance(1_000);   // 1 Sekunde springen, Timer in dem Fenster feuern
+scheduler.advanceTo(5_000); // zu virtueller Zeit = 5000 ms springen
+scheduler.now();            // → 5000
+```
+
+`advance(ms)` ist der gängige Fall. Aufgaben, die im
+voraneilenden Fenster feuern sollen, laufen **in Reihenfolge**,
+sequenziell, bevor `advance` zurückkehrt.
+
+`advanceTo(absoluteMs)` ist für den Fall, dass du eine Zielzeit
+aufgenommen hast und dorthin vorspringen willst (nützlich für
+„nach-N-von-etwas"-Muster zu testen).
+
+### Wiederholende Timer
+
+```ts
+ref.tell({ kind: 'start-heartbeat' });   // plant alle 1s
+scheduler.advance(3_500);
+// → feuert bei virtuell 1000, 2000, 3000 (dreimal)
+```
+
+Eine `scheduleAtFixedRate`-Aufgabe feuert in jedem Intervall,
+während virtuelle Zeit jedes Vielfache überquert. `advance(3500)`
+ab `t=0` feuert die Aufgabe dreimal.
+
+### Reihenfolge zählt
+
+Innerhalb eines `advance` feuern Aufgaben in ihrer *geplanten*
+Reihenfolge (früheste zuerst; Gleichstände werden durch
+Einfüge-Reihenfolge gebrochen). Wenn eine Aufgabe nach dem
+Feuern weitere Aufgaben plant (z. B. ein Heartbeat re-armed),
+werden diese der Queue hinzugefügt und feuern, falls ihre
+Planungszeit ins selbe `advance`-Fenster fällt.
+
+## Ein praktisches Test-Muster
+
+```ts
+import { describe, it, beforeEach, afterEach } from 'bun:test';
+import { TestKit, type ManualScheduler } from 'actor-ts/testkit';
+
+describe('Session-Expiry', () => {
+  let kit: TestKit;
+  let scheduler: ManualScheduler;
+  let probe: TestProbe;
+
+  beforeEach(() => {
+    const setup = TestKit.withManualScheduler();
+    kit = setup.kit;
+    scheduler = setup.scheduler;
+    probe = kit.createTestProbe();
+  });
+
+  afterEach(async () => { await kit.shutdown(); });
+
+  it('läuft nach 15 Minuten Inaktivität ab', async () => {
+    const session = kit.system.actorOf(Props.create(() =>
+      new Session(probe, 'user-42')));
+
+    session.tell({ kind: 'activity' });   // setzt den Timer zurück
+    scheduler.advance(14 * 60_000);
+    await probe.expectNoMessage(0);       // noch nicht abgelaufen
+
+    scheduler.advance(60_000 + 1);        // überquert 15 Min
+    await probe.expectMsg({ kind: 'session-expired', userId: 'user-42' });
+  });
+});
+```
+
+Der Test läuft in **Mikrosekunden Wall-Clock-Zeit**, übt aber
+ein 15-Minuten-Idle-Timeout exakt aus.
+
+## Interaktion mit `await` und Microtasks
+
+```ts
+ref.tell({ kind: 'start' });
+scheduler.advance(5_000);
+await probe.expectMsg('tick');
+```
+
+Zweistufige Verarbeitung:
+
+1. `advance` feuert den Timer synchron — er `tell`t den Actor.
+2. Der `tell` wird vom Dispatcher in der nächsten Microtask-
+   Runde verarbeitet, die läuft, wenn du etwas `await`est.
+
+`expectMsg` gibt eine Promise zurück, die intern `await`et —
+also wurde der Tick bis zur Auflösung verarbeitet und die
+Nachricht ist im Buffer der Probe.
+
+Du musst meistens nicht darüber nachdenken. Aber wenn du
+synchron nach `advance` zu `probe.messageCount` greifst und 0
+siehst, wurde der Actor noch nicht dispatched — `await` etwas,
+um zu yielden.
+
+## Stolperfallen
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`new Date()` und `Date.now()` werden nicht virtualisiert">
+  ```ts
+  override onReceive(msg) {
+    const at = Date.now();   // ← echte Wall-Clock, NICHT virtuelle Zeit
+    this.persist({ kind: 'observed', at });
+  }
+  ```
+  `ManualScheduler` virtualisiert den Scheduler des Actor-Systems
+  **nicht** `Date.now()` oder `new Date()`. Wenn dein Actor
+  Zeitstempel aufzeichnet, sind das echte Wall-Clock-Werte
+  während Tests. Für deterministische Tests mit Zeitstempeln
+  injiziere eine Clock:
+  ```ts
+  class MyActor extends Actor<...> {
+    constructor(private readonly clock: () => number = Date.now) { super(); }
+  }
+  ```
+  und übergib in Tests `() => scheduler.now()`.
+</Aside>
+
+<Aside type="caution" title="Misch keine echten Timer mit `ManualScheduler`">
+  ```ts
+  setTimeout(() => probe.tell(...), 100);   // ← echter Timer, läuft nicht mit dem Scheduler mit
+  ```
+  Rohes `setTimeout` läuft auf der echten Uhr; der Manual-
+  Scheduler weiß nichts davon. Nutze die Scheduler-API des
+  Frameworks (`context.timers`, `system.scheduler`) für alles
+  Zeitbasierte in Tests.
+</Aside>
+
+<Aside type="caution" title="`expectMsg` hat weiter ein Echt-Zeit-Timeout">
+  ```ts
+  await probe.expectMsg('tick');   // 3 s Echt-Timeout standardmäßig
+  ```
+  Das `expectMsg` der Probe wartet auf echte Zeit, dass die
+  Nachricht ankommt — auch wenn der *Trigger* (der Timer)
+  virtuell ist. Das ist okay: `advance` feuert den Timer
+  synchron, und der `tell` wird in der nächsten Microtask-Runde
+  verarbeitet. Der 3-Sekunden-Default reicht reichlich.
+</Aside>
+
+## Wo es weitergeht
+
+- **[TestKit](/de/testing/testkit/)** — die Fassade mit
+  `withManualScheduler()`.
+- **[Timer und Scheduling](/de/fundamentals/timers-and-scheduling/)** —
+  die Timer-API, die der Scheduler antreibt.
+- **[Receive-Timeout](/de/fundamentals/receive-timeout/)** —
+  ein weiterer zeitgetriebener Mechanismus, der von virtueller
+  Zeit profitiert.
+- **[Testing — Überblick](/de/testing/overview/)** — das
+  größere Bild.
+
+Die [`ManualScheduler`](/api/classes/manualscheduler/)-API-
+Referenz deckt die volle Oberfläche ab.

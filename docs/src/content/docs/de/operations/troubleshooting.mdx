@@ -1,0 +1,277 @@
+---
+title: Troubleshooting
+description: Diagnose-nach-Symptom-Katalog für die häufigsten Produktionsprobleme — Cluster bildet sich nicht, sharded Entities tauchen nicht auf, Persistence ist langsam, Speicherwachstum etc. Mit den Metriken + Log-Abfragen, um die Diagnose zu bestätigen.
+---
+
+Wenn in Produktion etwas schiefläuft, ist diese Seite der
+**Startpunkt**. Jeder Abschnitt ist ein **Symptom**, die
+**wahrscheinliche(n) Ursache(n)** und was zu **prüfen / loggen /
+messen** ist, um die Diagnose zu bestätigen.
+
+Für die Diagnose-Werkzeuge selbst:
+
+- [Logging](/de/fundamentals/logging/) — strukturierte Logs.
+- [Stock-Metriken](/de/observability/metrics/stock-metrics/) —
+  eingebaute Actor- / Cluster-Metriken.
+- [Tracing](/de/observability/tracing/tracer-api/) —
+  Per-Request-Flow.
+
+## Cluster
+
+### Symptom: Cluster bildet sich nicht
+
+**Pods starten, erreichen aber nie Up.**
+
+Ursachen zum Prüfen (in dieser Reihenfolge):
+
+1. **Seeds unerreichbar** — falsche Adressen / DNS / RBAC.
+2. **Cluster-Port via Firewall blockiert** — Pods können auf 2552
+   nicht reden.
+3. **Unterschiedliche System-Namen** — `ActorSystem.create('app-a')`
+   auf einem Node, `'app-b'` auf einem anderen.
+4. **TLS-Fehlkonfiguration** — Handshake scheitert lautlos.
+
+Diagnostik:
+
+```ts
+cluster.subscribe(MemberJoined, (e) => system.log.info(`saw join: ${e.member.address}`));
+cluster.subscribe(SelfUp, () => system.log.info('self up'));
+```
+
+Prüfe, ob `SelfUp` feuert. Wenn nicht, hat der lokale Node nicht
+einmal gebootstrappt. Schau dir die Ausgabe des Seed-Providers an:
+
+```bash
+kubectl logs pod-1 | grep -i seed
+# → "discovered N seeds: ..."  ← darf nicht leer sein
+```
+
+Wenn leer: Selector / DNS / Config des Seed-Providers ist falsch.
+
+### Symptom: Cluster flappt
+
+**Mitglieder schwanken zwischen reachable und unreachable.**
+
+Ursachen:
+
+1. **Zu enge Failure-Detector-Schwellen** für den Jitter des
+   Netzwerks. Siehe
+   [Failure-Detector-Tuning](/de/operations/tuning/failure-detector/).
+2. **Netzwerk-Partitionen** (echte — diagnostiziere auf
+   Infrastruktur-Ebene).
+3. **GC-Pausen** länger als die Unreachable-Schwelle.
+
+Diagnostik:
+
+```promql
+rate(cluster_unreachable_duration_ms_count[5m]) > 0.1
+# Häufige Übergänge
+```
+
+In Logs:
+
+```
+[INFO ] cluster — node-X marked unreachable
+[INFO ] cluster — node-X marked reachable
+[INFO ] cluster — node-X marked unreachable
+```
+
+Anhaltendes Flapping signalisiert Schwellen-Tuning.
+
+## Sharding
+
+### Symptom: Sharded Entities spawnen nicht
+
+**Nachrichten an eine Sharding-Region erreichen keine Entities.**
+
+Ursachen:
+
+1. **Coordinator noch nicht gestartet** — Sharding ist asynchron;
+   vor Coordinator-Bereitschaft gesendete Nachrichten werden
+   gepuffert.
+2. **Keine Nodes matchen die `role`** — leeres Up-Member-Set, also
+   werden keine Shards allokiert.
+3. **extractEntityId liefert undefined** — das Message-Routing hat
+   nichts zum Hashen.
+
+Diagnostik:
+
+```promql
+sharding_shards_hosted{type="entity-type"}
+# Sollte numShards (gesamt) clusterweit entsprechen
+```
+
+Logs:
+
+```bash
+kubectl logs pod-1 | grep -i shard
+# → "coordinator: allocating shard X to node-Y"
+```
+
+Siehst du "no candidates", lehnt dein `role`-Filter jeden Node ab.
+Prüfe Role-Tags in `Cluster.join`.
+
+### Symptom: Rebalance-Storm
+
+**Sharding-Metriken zeigen ständige Rebalances; Entities
+flackern.**
+
+Ursachen:
+
+1. **Aggressive Allocation-Strategy** — `LeastShardAllocationStrategy`
+   mit `rebalanceThreshold: 1` und häufigen
+   Mitgliedschaftsänderungen.
+2. **Flappender Cluster** (siehe oben) — jede Änderung triggert
+   Rebalance.
+
+Fix:
+
+```ts
+new LeastShardAllocationStrategy(/* threshold */ 5, /* max */ 3);
+```
+
+Höhere Schwelle = weniger Empfindlichkeit gegenüber kleinen
+Ungleichgewichten.
+
+## Persistence
+
+### Symptom: Actor braucht 30 Sekunden zum Starten
+
+**`preStart` braucht lange; das erste `onReceive` des Actors
+verzögert sich.**
+
+Ursache: **tiefes Journal ohne Snapshots**. Recovery liest jedes
+jemals gespeicherte Event.
+
+Diagnostik:
+
+```promql
+histogram_quantile(0.99, persistence_recovery_duration_ms_bucket)
+```
+
+Wenn P99-Recovery > 1 Sekunde ist, **setze eine Snapshot-Policy**:
+
+```ts
+override snapshotPolicy() { return everyNEvents(100); }
+```
+
+Siehe [Snapshots](/de/persistence/snapshots/).
+
+### Symptom: Events wiederhergestellt, aber State ist falsch
+
+**Nach Restart entspricht der State des Actors nicht dem, was er
+laut Journal sein sollte.**
+
+Ursachen:
+
+1. **`onEvent` hat einen Seiteneffekt** — läuft während des Replays
+   und verändert irgendwie den State-Pfad.
+2. **`onEvent` nutzt `Date.now()` oder Zufall** — nicht-deterministisch;
+   jeder Replay produziert anderen State.
+3. **Schema-Änderung ohne Adapter** — alte Events haben eine andere
+   Form als `onEvent` erwartet.
+
+Diagnostik: Vergleiche den State des Actors nach Recovery mit dem
+Inhalt des Journals. Replaye manuell in einem Test, um die Ursache
+zu isolieren.
+
+## Speicher + Performance
+
+### Symptom: Speicher wächst unbegrenzt
+
+**Heap wächst linear mit Uptime; irgendwann OOM.**
+
+Ursachen (häufigste zuerst):
+
+1. **Unbounded Mailboxes** mit langsamem Consumer. Die
+   Mailbox-Depth-Metrik wächst.
+2. **Subscriber-Set-Leaks** — Actors registrieren sich am
+   Event-Stream oder DistributedPubSub, aber unsubscriben sich
+   beim Stop nicht.
+3. **DistributedData-Keys** sammeln sich — `LWWMap` mit Millionen
+   Keys.
+4. **Persistente Puffer** — Stash-Puffer, Ask-Reply-To-Refs.
+
+Diagnostik:
+
+```promql
+actor_mailbox_size{class=...}
+# Finde Actors mit dauerhaft großen Queues
+```
+
+```bash
+# Heap-Dump über Runtime-Tools:
+node --inspect / Buns Profiler
+```
+
+Prüfe
+[Mailbox-Sizing](/de/operations/tuning/mailbox-sizing/) +
+die Leak-Muster in
+[Event-Stream](/de/fundamentals/event-stream/).
+
+### Symptom: HTTP-Latenz unter Last hoch
+
+**Actor-Arbeit ist okay; HTTP-Antworten sind langsam.**
+
+Ursache: Ein Actor monopolisiert die Event Loop und hungert
+HTTP-Handler aus.
+
+Fix: Per-Actor
+[ThroughputDispatcher](/de/operations/tuning/dispatcher-tuning/) auf
+den schweren Actor.
+
+## Tests + Dev
+
+### Symptom: Tests hängen am Ende
+
+**Bun- / Vitest-Testprozess beendet sich nicht.**
+
+Ursache: `await system.terminate()` wurde im Fixture-Teardown nicht
+aufgerufen. Geleakte Scheduler / Actor-Cells halten die Event Loop
+am Leben.
+
+Fix:
+
+```ts
+afterEach(async () => {
+  await tk.shutdown();
+});
+```
+
+Siehe [TestKit](/de/testing/testkit/).
+
+### Symptom: Flaky timing-sensitive Tests
+
+**Tests sind lokal grün, fallen aber in CI um.**
+
+Ursache: Real-Clock-Timing in Tests. CI-Maschinen sind langsamer /
+anders.
+
+Fix: Nutze
+[ManualScheduler](/de/testing/manual-scheduler/) und steuere Zeit
+deterministisch.
+
+## Womit anfangen, wenn nichts offensichtlich ist
+
+```
+1. Logs auf ERROR-Level-Einträge prüfen. Nach Zeitfenster um das
+   Problem filtern.
+2. Stock-Metriken prüfen — was hat sich verändert?  (Restart-Rate,
+   Mailbox-Tiefe, Member-Anzahl).
+3. Cluster-Events am Event-Stream prüfen.
+4. Wenn ein Request scheitert, der Trace-ID durch Logs / Trace-Backend
+   folgen.
+5. Wenn möglich, in einem Multi-Node-Spec-Test reproduzieren.
+```
+
+## Wohin als nächstes
+
+- **[Operations-Überblick](/de/operations/overview/)** —
+  die breitere Produktions-Checkliste.
+- **[FAQ](/de/reference/faq/)** — häufige Fragen und Stolperfallen.
+- **[Stock-Metriken](/de/observability/metrics/stock-metrics/)** —
+  was zu lesen ist, wenn Symptome auftauchen.
+- **[Logging](/de/fundamentals/logging/)** — wie Logs tatsächlich
+  nützlich werden.
+- **[Tracing](/de/observability/tracing/tracer-api/)** —
+  Per-Request-Flow, wenn Logs nicht reichen.

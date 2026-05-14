@@ -1,0 +1,282 @@
+---
+title: Mailboxes
+description: Die Per-Actor-Queue — Default FIFO, BoundedMailbox mit Overflow-Policies, PriorityMailbox, System-Message-Vorrang und wie du eine per Props anhängst.
+---
+
+Jeder Actor hat genau **eine Mailbox** — eine FIFO-Queue von
+Envelopes, die auf Verarbeitung warten.  Wenn du `ref.tell(msg)`
+aufrufst, wickelt das Framework `msg` in ein Envelope (mit Sender,
+Log-Kontext und optionalem Trace-Kontext) und reiht es in die Mailbox
+des Empfängers ein.  Der Dispatcher zieht das nächste Envelope,
+übergibt es dem `onReceive` des Actors und wartet, bis das fertig
+ist, bevor er das nächste zieht.
+
+Das gibt jedem Actor die "eine Nachricht nach der anderen"-Garantie
+— und die Mailbox ist das, was das physikalisch wahr macht.
+
+## Die Default-Mailbox
+
+Wenn du nichts konfigurierst, bekommt der Actor eine schlichte,
+unbounded FIFO-Mailbox.  Unbounded heißt, es gibt keinen
+Per-Actor-Cap; ein langsamer Consumer kann die Queue beliebig groß
+wachsen lassen, bis dein Prozess kein Memory mehr hat.  Das ist der
+*richtige* Default für die meisten Actors, bei denen der Durchsatz
+balanciert ist und ein transienter Burst in Ordnung ist.
+
+Aber "unbounded" ist auch der falsche Default für zwei Situationen:
+
+- Ein Actor, der mehr Nachrichten empfängt, als er je drainen kann
+  (ein schneller Producer + langsamer Consumer Mismatch).  Begrenze
+  ihn; wähle eine Overflow-Policy.
+- Ein Actor, der eine Mischung aus dringenden und routinemäßigen
+  Nachrichten behandelt, bei dem die dringenden vorrücken sollen.
+  Verwende eine Priority-Mailbox.
+
+## System-Nachrichten kommen immer zuerst
+
+In jeder Mailbox leben zwei Queues nebeneinander: **User-Nachrichten**
+(deine `tell`s) und **System-Nachrichten** (Lifecycle-Signale —
+Create, Terminate, Failure, Watch, …).  System-Nachrichten haben
+**absoluten Vorrang**: selbst wenn 10.000 User-Nachrichten in der
+Queue stehen, wird das nächste `stop`-Signal oder die
+Supervisor-`failure` vor allen verarbeitet.
+
+Das ist wichtig, weil:
+
+- `ref.stop()` auf einem Actor mit langer Mailbox aufzurufen, wartet
+  nicht darauf, dass die Mailbox drained — die
+  `terminate`-System-Nachricht springt nach vorne, und der Actor
+  stoppt prompt.
+- Die Supervisor-Entscheidung eines fehlschlagenden Actors (Restart
+  / Resume / Stop) tritt sofort in Kraft, nicht erst nachdem die
+  Queue leer ist.
+
+Du siehst diese Unterscheidung normalerweise nicht —
+System-Nachrichten werden vom Framework emittiert, nicht von deinem
+Code.  Aber sie zu verstehen, erklärt, warum "Stop schnell ist" und
+"Supervision sofort reagiert."
+
+## `BoundedMailbox`
+
+```ts
+import { Actor, ActorSystem, Props, BoundedMailbox } from 'actor-ts';
+
+class SlowConsumer extends Actor<{ kind: 'work'; n: number }> {
+  override async onReceive(msg: { kind: 'work'; n: number }): Promise<void> {
+    await new Promise(r => setTimeout(r, 100));   // langsame Arbeit simulieren
+    this.log.info(`processed ${msg.n}`);
+  }
+}
+
+const system = ActorSystem.create('demo');
+
+const consumer = system.actorOf(
+  Props.create(() => new SlowConsumer())
+    .withMailbox(() => new BoundedMailbox({ capacity: 1_000, overflow: 'drop-head' })),
+);
+```
+
+Die Mailbox hier hält bis zu 1.000 User-Nachrichten.  Wenn eine
+1.001-te Nachricht ankommt, entscheidet die **Overflow-Policy**, was
+passiert.
+
+Drei Policies:
+
+| Policy | Was bei Overflow passiert |
+| --- | --- |
+| `'drop-head'` | Dequeue die *älteste* Nachricht in der Queue, verwirf sie, reihe die neue ein.  Neueste Nachrichten kommen immer rein. |
+| `'drop-new'` | Verwirf die *eingehende* Nachricht.  Die alte Queue bleibt unverändert. |
+| `'reject'` *(default)* | Wirf `MailboxFullError` an der `tell`-Stelle.  Der Aufrufer trägt den Backpressure. |
+
+Die Wahl zwischen ihnen ist ein Backpressure-vs-Verlust-Trade-off:
+
+- **`drop-head`** = "Frisch gewinnt."  Richtig für Telemetrie,
+  Sensor-Daten, Status-Pings — wo veraltete Nachrichten wertlos
+  sind und nur der letzte Snapshot zählt.
+- **`drop-new`** = "Erst gewinnt."  Richtig für Command-Streams, bei
+  denen Umordnung inakzeptabel ist und das Verwerfen einer späten
+  Ankunft okay ist.
+- **`reject`** = "Lass den Sender damit umgehen."  Richtig, wenn der
+  Sender eine sinnvolle Backoff-Antwort hat (Retry, an einen anderen
+  Actor routen, 503 aus einem HTTP-Handler zurückgeben).
+
+`droppedCount` auf der Mailbox-Instanz verfolgt, wie viele
+Nachrichten verworfen wurden — nützlich, um es in eine Metrik-Gauge
+zu verdrahten, damit du es bemerkst, wenn das Limit getroffen wird.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`reject` und der aufrufende Actor">
+  `reject` throwt an der **`tell`-Aufrufstelle**.  Wenn Actor A
+  B `tell`t und Bs Mailbox mit der `reject`-Policy voll ist, landet
+  der Throw innerhalb As `onReceive` — gefangen von As Supervisor,
+  nicht Bs.  Das ist meist okay (der Supervisor für A entscheidet,
+  wie A mit der Unerreichbarkeit umgeht), aber es bedeutet, dass
+  "Bs Mailbox läuft über" als "A restartet immer wieder"
+  auftaucht, was die Triage verwirren kann.  Verdrahte eine Metrik
+  auf `droppedCount`, statt dich auf Supervisor-Logs zu verlassen,
+  um es zu fangen.
+</Aside>
+
+## `PriorityMailbox`
+
+```ts
+import { Actor, ActorSystem, Props, PriorityMailbox } from 'actor-ts';
+
+type Msg =
+  | { readonly kind: 'urgent'; readonly text: string }
+  | { readonly kind: 'normal'; readonly text: string }
+  | { readonly kind: 'bulk';   readonly text: string };
+
+class Worker extends Actor<Msg> {
+  override onReceive(msg: Msg): void {
+    this.log.info(`[${msg.kind}] ${msg.text}`);
+  }
+}
+
+const worker = system.actorOf(
+  Props.create(() => new Worker())
+    .withMailbox(() => new PriorityMailbox<Msg>({
+      priorityFor: (msg) => msg.kind === 'urgent' ? 0
+                          : msg.kind === 'normal' ? 5
+                          : 10,
+    })),
+);
+
+worker.tell({ kind: 'bulk',   text: 'batch import row 1' });
+worker.tell({ kind: 'normal', text: 'user login' });
+worker.tell({ kind: 'urgent', text: 'page-out: disk full' });
+// → Verarbeitungs-Reihenfolge: urgent → normal → bulk
+```
+
+Der `priorityFor`-Callback läuft zur *Enqueue*-Zeit und berechnet
+eine numerische Priorität pro Nachricht.  **Niedrigere Zahlen gehen
+zuerst** (Priorität 0 ist am höchsten), und Gleichstände werden nach
+FIFO-Insertion-Reihenfolge gebrochen — zwei `'normal'`-Nachrichten
+bleiben also in Sende-Reihenfolge zueinander.
+
+Häufige Formen für `priorityFor`:
+
+- **Per-`kind`-Konstantentabelle** — wie das Beispiel oben.  Einfach
+  zu lesen, einfach zu evolvieren.
+- **Feld-abgeleitet** — `priorityFor: (m) => m.deadlineMs` lässt
+  Nachrichten mit frühesten Deadlines zuerst laufen.  Funktioniert,
+  weil beide Achsen "niedriger = früher" sind.
+- **Caller-getagged** — der Sender inkludiert `priority: number` in
+  der Nachricht, und `priorityFor` liest es einfach.  Manchmal der
+  richtige Anruf; meist ein Smell, dass der Empfänger die Priorität
+  stattdessen aus dem Nachrichteninhalt ableiten sollte.
+
+<Aside type="caution" title="Priority-Mailboxes brechen FIFO über Kinds hinweg">
+  Eine `normal`-Nachricht, die *nach* einer `urgent` gesendet wird,
+  kann trotzdem *zuerst* bei `onReceive` ankommen.  Wenn deine
+  Invarianten von "in der Reihenfolge, in der sie gesendet wurden"
+  abhängen, sind Priority-Mailboxes nicht richtig — splitte
+  stattdessen in zwei Actors, einen pro Priority-Klasse, und
+  verteile über einen Router.
+</Aside>
+
+Die aktuelle Implementierung verwendet ein sorted-insertion-Array —
+O(log n) Locate + O(n) Splice bei jedem Enqueue.  In Ordnung für
+Mailboxes, die in den niedrigen Tausenden bleiben; wenn du einen
+nachhaltigen 10.000-Nachrichten-Backlog hast, bei dem
+Priority-Insertion in Profilen auftaucht, ist die Mailbox offen für
+einen Heap-backed-Swap (siehe den Source).
+
+## Per-Actor-Mailbox via Props
+
+Zwei Knöpfe auf `Props`:
+
+```ts
+import { Props, BoundedMailbox } from 'actor-ts';
+
+// Begrenze einfach das Default-FIFO — Convenience-Helper.
+Props.create(() => new MyActor()).withMailboxCapacity(500);
+
+// Volle eigene Factory — wähle den Typ und konfiguriere ihn.
+Props.create(() => new MyActor())
+  .withMailbox(() => new BoundedMailbox({ capacity: 500, overflow: 'drop-head' }));
+```
+
+`withMailboxCapacity(n)` ist Kurzform für "die Default-FIFO, aber
+gebunden mit dem Default-`reject`-Overflow."  Nützlich, wenn du nur
+einen Cap willst und dich nicht für die Policy-Details kümmerst.
+
+`withMailbox(factory)` ist die allgemeine Form — du gibst eine
+brandneue Mailbox-Instanz aus der Factory zurück.  Die Factory wird
+einmal pro Actor-Instanz aufgerufen (inklusive bei Restart), jeder
+neu gestartete Actor bekommt also eine frische, leere
+Mailbox-Datenstruktur.  System-Level-Mailbox-Defaults können auch
+über `application.conf` konfiguriert werden (siehe
+[Konfiguration](/de/reference/configuration/)).
+
+<Aside type="caution" title="Teile keine Mailbox-Instanz über Actors hinweg">
+  ```ts
+  const shared = new BoundedMailbox({ capacity: 100 });
+  Props.create(() => new A()).withMailbox(() => shared);
+  Props.create(() => new B()).withMailbox(() => shared);  // falsch
+  ```
+  Jeder Actor braucht seine **eigene** Mailbox.  Dieselbe Instanz
+  aus zwei Factories zurückzugeben, pipt die Nachrichten beider
+  Actors in eine Queue — sie sehen die Nachrichten des jeweils
+  anderen, und die Runtime wird verwirrt darüber, welcher Actor
+  dispatched wird.  Die Factory existiert genau dafür, dass du
+  jedes Mal eine frische erzeugst.
+</Aside>
+
+## Mailboxes + Stash
+
+Wenn ein Actor `this.context.stash()` innerhalb von `onReceive`
+aufruft, wird die aktuelle Nachricht geparkt.  Wenn der Actor später
+`unstashAll()` aufruft, werden die geparkten Nachrichten an die
+Front der Mailbox re-prepended.
+
+Das funktioniert für alle drei Mailbox-Typen gleich — das Framework
+ruft `mailbox.prependUser(envs)`, und die Mailbox entscheidet, wie
+sie re-inserted.  Besonders bei `PriorityMailbox`: unstashed
+Nachrichten werden *re-priorisiert*: eine gestashte
+`bulk`-Nachricht reiht sich wieder in die `bulk`-Schicht ein, selbst
+wenn du sie gestasht hast, während dringende Nachrichten ankamen.
+Stash-Reihenfolge wird innerhalb einer Priority-Schicht bewahrt.
+
+Siehe [Become und Stash](/de/fundamentals/become-and-stash/) für die
+volle Behavior-Switching-Geschichte.
+
+## Wann die Mailbox-Wahl wichtig ist
+
+Für die meisten Actors ist die Default-unbounded-FIFO richtig.
+Greife in drei Situationen zu einer Alternative:
+
+1. **Producer/Consumer-Mismatch.**  Der Producer kann schneller
+   emittieren, als der Consumer drainen kann.  Begrenze die Mailbox
+   des Consumers; wähle eine Overflow-Policy, die zur Workload passt
+   (drop-head für Telemetrie, reject für HTTP-getriebenen
+   Backpressure).
+2. **Latenz-Budget pro Kind.**  Manche Nachrichten müssen in zehn
+   Millisekunden behandelt werden (user-facing Requests), andere
+   können Minuten warten (Hintergrund-Reconciliation).
+   Priority-Mailbox; die dringende Sorte bekommt `0`, die
+   Hintergrund-Sorte bekommt `100`.
+3. **Memory-Bound.**  Ein Actor ohne Anwendungs-Level-Prioritäts-Unterscheidung,
+   dessen Mailbox aber theoretisch ohne Limit wachsen könnte (ein
+   Audit-Log-Subscriber, der bei einer Spitze zurückfällt).  Begrenze
+   ihn auf eine Zahl, die zu deinem Memory-Budget passt; `drop-head`,
+   wenn die neuesten Events am wertvollsten sind, `reject` + Metrik,
+   wenn der Verlust sichtbar sein sollte.
+
+## Wie es weitergeht
+
+- **[Dispatcher](/de/fundamentals/dispatchers/)** — der
+  Scheduler, der aus der Mailbox zieht.  Mailbox = die Queue;
+  Dispatcher = wann zu drainen ist.
+- **[Become und Stash](/de/fundamentals/become-and-stash/)** —
+  Nachrichten für später parken, sie via `unstashAll` wiederherstellen.
+- **[Actor](/de/fundamentals/actor/)** — `onReceive` ist das,
+  wohin die Mailbox Nachrichten ausliefert.
+- **[Coordinated Shutdown](/de/fundamentals/coordinated-shutdown/)** —
+  was mit ausstehenden Mailbox-Nachrichten während des sauberen
+  Shutdowns passiert.
+
+Die [`BoundedMailbox`](/api/classes/boundedmailbox/)- und
+[`PriorityMailbox`](/api/classes/prioritymailbox/)-API-Referenzen
+decken die volle Settings-Form ab.

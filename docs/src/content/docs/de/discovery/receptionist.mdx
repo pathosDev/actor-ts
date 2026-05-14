@@ -1,0 +1,243 @@
+---
+title: Receptionist
+description: Ein cluster-weites Service-Registry — Actors registrieren sich unter getypten Service Keys; Consumer schauen per Key nach und bekommen eine Liste jedes passenden Actors im Cluster. Per Gossip repliziert; bereinigt sich automatisch beim Verlassen eines Nodes.
+---
+
+Der **Receptionist** ist ein cluster-weites Service-Registry.
+Jeder Node hostet einen Receptionist-Actor unter einem
+wohldefinierten Pfad; Registrierungen sind **lokal autoritativ**
+(du vertraust den Registrierungen deines eigenen Nodes); Peers
+erfahren über Gossip von fremden Registrierungen.
+
+```ts
+import { ReceptionistId, ServiceKey } from 'actor-ts';
+
+const receptionist = system.extension(ReceptionistId).start(cluster);
+
+// 1. Einen getypten Key für diesen Service definieren
+const apiKey = ServiceKey.of<ApiMsg>('api-service');
+
+// 2. Einen Actor unter dem Key registrieren
+const api = system.actorOf(Props.create(() => new ApiActor()), 'api');
+receptionist.register(apiKey, api);
+
+// 3. Von jedem Node — jeden registrierten Actor finden
+const refs = await receptionist.find(apiKey);
+console.log(`${refs.length} API-Actors im Cluster`);
+
+// 4. Auf Änderungen subscriben
+receptionist.subscribe(apiKey, (listing) => {
+  console.log(`aktuelles Listing: ${listing.refs.length} Actors`);
+});
+```
+
+Der Receptionist ist **pro Cluster** — jeder Node sieht dasselbe
+Listing (mit Gossip-Lag, siehe unten).
+
+## Service Keys
+
+```ts
+const key = ServiceKey.of<ApiMsg>('api-service');
+//                      ^^^^^^^
+//                      getypter Payload — Consumer wissen, was sie senden müssen
+```
+
+Ein `ServiceKey<T>` trägt:
+
+- **Einen String-Identifier** — der menschenlesbare Key-Name.
+- **Einen Typ-Parameter** — der Nachrichtentyp, den der
+  registrierte Actor akzeptiert.
+
+Typsicheres Lookup: `await receptionist.find(apiKey)` gibt
+`ActorRef<ApiMsg>[]` zurück.
+
+Keys sind **Werte** — einmal definieren, überall importieren.
+Konvention: in einem geteilten `Keys.ts`-Modul pro App.
+
+## Registrieren
+
+```ts
+receptionist.register(key, actorRef);
+```
+
+Sagt dem lokalen Receptionist: "Dieser Actor auf diesem Node
+liefert den Service."  Der Receptionist:
+
+1. Fügt die Ref seiner lokalen Map unter `key` hinzu.
+2. Watcht die Ref, damit sie bei Stop automatisch deregistriert
+   wird.
+3. Gossipt das Hinzufügen an Peers (nächste Gossip-Runde).
+
+```ts
+receptionist.deregister(key, actorRef);
+```
+
+Freiwilliges Entfernen.  Nützlich, wenn ein Actor einen Service
+"verlässt", ohne zu stoppen (vorübergehender Statuswechsel).
+
+Wenn der Actor einfach normal stoppt, sieht der Receptionist
+`Terminated` und deregistriert automatisch — kein manuelles
+Aufräumen nötig.
+
+## Finden
+
+```ts
+const refs = await receptionist.find(key);
+//      ^^^^^^^^
+//      Array jedes Actors, der unter diesem Key im Cluster registriert ist
+```
+
+Das Find:
+
+1. Liest lokale Registrierungen unter `key`.
+2. Fügt bekannte Remote-Registrierungen aus Gossip hinzu.
+3. Gibt die kombinierte Liste zurück.
+
+Kehrt sofort mit der **aktuellen lokalen Sicht** zurück — keine
+synchrone Cluster-Abfrage.  Bedeutet: Registrierungen auf
+anderen Nodes, die noch nicht gegossipt wurden, fehlen.
+
+Innerhalb einer Gossip-Runde oder zwei (1-2 Sekunden Default)
+konvergiert jeder Node auf dieselbe Sicht.
+
+## Subscriben
+
+```ts
+const unsubscribe = receptionist.subscribe(key, (listing) => {
+  console.log(`aktualisiertes Listing für ${key.id}: ${listing.refs.length} Refs`);
+});
+
+// Später: unsubscribe();
+```
+
+Der Handler feuert, wann immer sich das Listing für `key`
+ändert — lokal (register/deregister/stop) oder via eingehendem
+Gossip.
+
+Nutze es für **dynamisches Routing**: ein Actor, der auf einen
+Key subscribet und seine Routing-Entscheidungen anpasst, wenn
+Refs auftauchen / verschwinden.
+
+## Cluster-aware vs. Single-Node
+
+```ts
+// In einem Cluster:
+const receptionist = system.extension(ReceptionistId).start(cluster);
+
+// Ohne Cluster (Single Node):
+const receptionist = system.extension(ReceptionistId).start(null);
+```
+
+Ohne Cluster funktioniert der Receptionist **nur lokal** —
+nützlich für Tests oder Single-Node-Apps, die trotzdem die
+ServiceKey-basierte Lookup-API wollen.
+
+Für Cluster-Setups **immer den Cluster übergeben** — sonst sind
+Remote-Registrierungen unsichtbar.
+
+## Auto-Bereinigung beim Verlassen eines Nodes
+
+Wenn `MemberRemoved` für einen Peer feuert:
+
+- Vergisst der Receptionist jede Registrierung, die dieser Node
+  beigesteuert hat.
+- Subscriber feuern mit dem aktualisierten (kleineren) Listing.
+
+Das deckt den Fall "Node ist abgestürzt, hatte keine Chance zu
+deregistrieren" ab — Gossip + Cluster-Membership erledigen die
+Bereinigung.
+
+## Mehrere Actors pro Key
+
+```ts
+receptionist.register(apiKey, instance1);
+receptionist.register(apiKey, instance2);
+receptionist.register(apiKey, instance3);   // alle drei unter demselben Key
+
+await receptionist.find(apiKey);   // → [instance1, instance2, instance3]
+```
+
+Ein häufiges Muster: **N Worker registrieren sich alle unter
+demselben Key**.  Consumer sehen den ganzen Pool und können
+routen, wie sie wollen — Round-Robin, Broadcast, Zufallsauswahl.
+
+## Ein Actor pro Key (Konvention)
+
+```ts
+// Ein Singleton für den Cluster registriert
+receptionist.register(coordinatorKey, theCoordinator);
+await receptionist.find(coordinatorKey);   // → [theCoordinator]
+```
+
+Für Singleton-artige Services hat der Key eine Ref.  Consumer
+nehmen `refs[0]` (mit Fallback für den leeren Fall).
+
+Der Receptionist *erzwingt* keine einzelne Instanz — das ist die
+Aufgabe des Singleton Managers.  Aber einen Singleton unter
+einem Key zu registrieren gibt Consumern einen Discovery-Pfad,
+der Leadership-Wechsel überlebt.
+
+## Wann verwenden vs. Alternativen
+
+| Bedarf | Werkzeug |
+| --- | --- |
+| Feste Routees pro Node, jeder Node hat sie | `ClusterRouter` mit einem wohldefinierten Pfad |
+| Dynamische Registrierungen, Lookup per Service-Name | Receptionist |
+| Genau ein Actor cluster-weit | `ClusterSingleton` (bei Bedarf zum Lookup im Receptionist registriert) |
+| Per-Key-Actors mit Auto-Spawn | `ClusterSharding` |
+
+Der Receptionist ist die **flexibelste** Discovery — du zahlst
+aber Gossip-Kosten für die Dynamik.  Für statisches Routing ist
+der Cluster Router günstiger.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`find` kann stale Refs zurückgeben">
+  ```ts
+  const refs = await receptionist.find(key);
+  refs[0].tell(...);   // ← Ref könnte auf einen gestoppten Actor auf einem anderen Node zeigen
+  ```
+  Wenn eine Registrierung gerade auf einem anderen Node
+  deregistriert wurde, der Gossip aber noch nicht propagiert
+  ist, gibt `find` die stale Ref zurück.  Das `tell` landet
+  still in Dead Letters.  Für hochwertige Operationen die Ref
+  watchen und auf `Terminated` reagieren.
+</Aside>
+
+<Aside type="caution" title="Gossip-Lag bei der ersten Registrierung">
+  ```ts
+  receptionist.register(key, actor);
+  await new Promise(r => setImmediate(r));
+  // Lokales Find funktioniert sofort; Remote-Nodes warten auf Gossip.
+  ```
+  Lokale Registrierungen sind sofort für lokale `find`-Aufrufe
+  sichtbar.  Remote-Sichtbarkeit ist durch `gossipIntervalMs`
+  begrenzt (1 s Default).  Für "warte, bis die Registrierung
+  überall propagiert ist"-Muster: auf Consumer-Seite `subscribe`-en
+  und reagieren, wenn das Listing eintrifft.
+</Aside>
+
+<Aside type="caution" title="Gleicher Key, verschiedene Typen">
+  ```ts
+  const keyA = ServiceKey.of<MsgA>('foo');
+  const keyB = ServiceKey.of<MsgB>('foo');   // ← gleiche ID, anderer Typ
+  ```
+  Keys mit gleicher `id` sind zur Laufzeit **derselbe Key** —
+  der Typ-Parameter ist nur zur Compile-Zeit relevant.
+  Verschiedene Typen unter einem Key zu mischen ist ein Bug;
+  Consumer casten und schicken eventuell die falsche Form.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[Discovery im Überblick](/de/discovery/overview/)** — das
+  Gesamtbild.
+- **[Cluster im Überblick](/de/cluster/overview/)** — das
+  Membership-Modell darunter.
+- **[Cluster Router](/de/cluster/cluster-router/)** —
+  Static-Path-Alternative für "wohldefinierten Service"-Routing.
+- **[Singleton im Überblick](/de/cluster/singleton/overview/)** —
+  oft im Receptionist für Discovery registriert.
+
+Die [`Receptionist`](/api/classes/receptionist/)-API-Referenz
+deckt die vollständige Oberfläche ab.

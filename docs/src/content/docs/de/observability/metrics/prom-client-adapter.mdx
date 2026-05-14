@@ -1,0 +1,104 @@
+---
+title: prom-client-Adapter
+description: Brücke der Framework-Metriken in eine bestehende `prom-client`-Registry — nützlich, wenn deine App `prom-client` schon für andere (nicht-actor) Metriken nutzt. Ein Scrape-Endpunkt, alle Metriken.
+---
+
+Wenn deine App `prom-client` (die De-facto-Node-/Prometheus-
+Bibliothek) schon für ihre Nicht-Actor-Metriken nutzt, lässt
+der **`PromClientAdapter`** die Framework-Metriken in derselben
+`prom-client`-Registry leben — ein `/metrics`-Endpunkt, alle
+Metriken zusammen.
+
+```ts
+import { Registry } from 'prom-client';
+import { ActorSystem, MetricsExtensionId, PromClientAdapter } from 'actor-ts';
+
+const promRegistry = new Registry();
+// ... registriere deine bestehenden prom-client-Metriken ...
+
+const system = ActorSystem.create('my-app');
+const metrics = system.extension(MetricsExtensionId);
+
+// Spiegle Framework-Metriken in die prom-client-Registry:
+const adapter = new PromClientAdapter({
+  source: metrics.registry,
+  target: promRegistry,
+});
+
+adapter.start();
+
+// Jetzt enthält der kombinierte Export von prom-client auch Framework-Metriken:
+get(async () => ({
+  status: 200,
+  body: await promRegistry.metrics(),
+  contentType: promRegistry.contentType,
+}));
+```
+
+Der Adapter **spiegelt** Framework-Metriken in einem
+periodischen Intervall (konfigurierbar) in die
+prom-client-Registry. Beide Registries arbeiten normal; der
+Adapter synchronisiert Werte zwischen ihnen.
+
+## Wann nutzen
+
+Zwei Hauptgründe:
+
+1. **Bestehende prom-client-Nutzung** — dein Code emittiert
+   Metriken schon via prom-client; du willst keine zwei
+   Registries pflegen.
+2. **Ein Scrape-Endpunkt** — deine Operatoren erwarten eine
+   einzelne `/metrics`-URL, die alle deine Metriken kombiniert.
+
+Wenn du prom-client noch nicht nutzt, bevorzuge den nativen
+[Prometheus-Exporter](/de/observability/metrics/prometheus-exporter/)
+des Frameworks — keine zusätzliche Dependency.
+
+## Konfiguration
+
+```ts
+interface PromClientAdapterSettings {
+  source:        MetricsRegistry;     // die Registry des Frameworks
+  target:        Registry;             // die von prom-client
+  syncIntervalMs?: number;             // Default 5000
+  prefix?:        string;              // optionaler Namens-Präfix
+}
+```
+
+`syncIntervalMs` ist die Kadenz, in der Framework-Werte in die
+prom-client-Registry kopiert werden. Für die meisten Scrape-
+Setups (alle 15-30 s) ist eine 5-Sekunden-Sync mehr als genug.
+
+`prefix` lässt dich Framework-Metriken namespacen:
+
+```ts
+new PromClientAdapter({
+  source: metrics.registry,
+  target: promRegistry,
+  prefix: 'actorts_',
+});
+
+// → actorts_http_requests_total, actorts_sessions_active, ...
+```
+
+## Peer-Dependency
+
+```bash
+npm install prom-client
+# oder: bun add prom-client
+```
+
+`prom-client` ist Peer — nur benötigt, wenn du diesen Adapter
+nutzt.
+
+## Wo es weitergeht
+
+- **[Observability — Überblick](/de/observability/overview/)** —
+  das größere Bild.
+- **[Core-Metriken](/de/observability/metrics/core-metrics/)** —
+  die Metrik-Primitive des Frameworks, die gespiegelt werden.
+- **[Prometheus-Exporter](/de/observability/metrics/prometheus-exporter/)** —
+  die framework-native Alternative, wenn du prom-client nicht
+  brauchst.
+- **[OTel-Adapter](/de/observability/metrics/otel-adapter/)** —
+  für OpenTelemetry-basierte Pipelines.

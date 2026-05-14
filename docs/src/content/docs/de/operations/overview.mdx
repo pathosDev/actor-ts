@@ -1,0 +1,173 @@
+---
+title: Operations — Überblick
+description: Was sich zwischen "läuft bei mir" und "läuft in Produktion" ändert — Deployment, Tuning, Sicherheit, Upgrades und die Diagnostik, nach der du greifst, wenn etwas schiefläuft.
+---
+
+Das Framework führt in Dev und Prod denselben Code aus, aber
+**Produktions-Deployment** bringt seine eigenen Themen mit, die
+auf dem Laptop keine Rolle spielen:
+
+| Thema | Worum es geht |
+| --- | --- |
+| **Deployment** | Wie startet ein Node, registriert sich am Cluster, nimmt Traffic an und fährt sauber herunter? |
+| **Tuning** | Gossip-Kadenz, Mailbox-Größen, Failure-Detector-Schwellen — Defaults sind vernünftig, aber Workloads unterscheiden sich. |
+| **Sicherheit** | TLS auf dem Cluster-Transport, Secret-Management, Schlüsselrotation. |
+| **Upgrades** | Schema-Migrationen, rolling Deployments ohne Downtime. |
+| **Troubleshooting** | Was Logs, Metriken und Traces über ein sich falsch verhaltendes System verraten. |
+
+Dieser Abschnitt verlinkt jedes Thema auf eine vertiefende Seite.
+
+## Eine Produktions-Checkliste
+
+Für ein nicht-triviales Actor-System, das in Produktion geht:
+
+```
+□ Persistence-Backend gewählt + produktionstauglich
+   (z. B. SQLite für Single-Node, Cassandra für Multi-Node)
+□ Cluster verdrahtet (falls Multi-Node) mit konkreter Seed-Strategie
+□ Downing-Strategie konfiguriert (Split-Brain-Schutz)
+□ Coordinated Shutdown mit SIGTERM-Hooks konfiguriert
+□ Health-Checks via HttpManagement exponiert
+□ Metriken via Prometheus oder OTel exponiert
+□ Log-Aggregation angeschlossen (strukturiertes Logging via withFields/MDC)
+□ TLS auf dem Cluster-Transport aktiviert
+□ Secrets via Env-Vars, NICHT in application.conf
+□ Kubernetes-Manifeste mit PreStop-Hook + Grace Period
+□ Tracing optional, aber konfiguriert, falls Multi-Actor-Flows existieren
+□ Runbook für "Actor X crasht ständig" / "Cluster bildet sich nicht"
+```
+
+Nichts davon sind framework-spezifische Tricks — es ist allgemeine
+Produktions-Hygiene, angewendet auf ein Actor-System. Jeder Punkt
+hat seine eigene Seite.
+
+## Deployment
+
+| Wie | Wann |
+| --- | --- |
+| **[Kubernetes](/de/operations/deployment/kubernetes/)** | Cloud + Container-Orchestrierung. StatefulSets, Headless Services, RBAC für den K8s-API-Seed-Provider. |
+| **[Docker Compose](/de/operations/deployment/docker-compose/)** | Lokale Multi-Node-Cluster zum Testen und für kleine Deployments. |
+| **[Process Manager](/de/operations/deployment/process-manager/)** | systemd / PM2 — für Bare-Metal- oder VM-Deployments. |
+
+K8s ist der häufigste Produktionsweg; die Seite behandelt Deployment
+vs StatefulSet, PreStop-Hooks und die Seed-Provider-Konfiguration.
+
+## Tuning
+
+Defaults funktionieren für die meisten Workloads — greif zu diesen
+Seiten, wenn du spezifische Symptome siehst:
+
+| Knopf | Wann tunen |
+| --- | --- |
+| **[Gossip-Kadenz](/de/operations/tuning/gossip-cadence/)** | Große Cluster (>20 Nodes), wo der Default von 1 Sekunde Gossip verschwenderisch ist, oder kleine Cluster, in denen du schnellere Konvergenz willst. |
+| **[Failure Detector](/de/operations/tuning/failure-detector/)** | Enge Netzwerke (LAN), in denen 2-Sekunden-Unreachable-Detection zu langsam ist, oder verrauschte Netzwerke, in denen sie False Alarms auslöst. |
+| **[Mailbox-Sizing](/de/operations/tuning/mailbox-sizing/)** | Wenn du Speicherwachstum durch unbounded Mailboxes siehst oder wenn bounded Mailboxes mehr droppen als erwartet. |
+| **[Dispatcher-Tuning](/de/operations/tuning/dispatcher-tuning/)** | Wenn du HTTP-Latenz-Degradation unter Actor-Last beobachtest oder niedrige CPU-Auslastung bei hohem Actor-Durchsatz. |
+
+Wenn du das Symptom nicht benennen kannst, tune nicht. Defaults
+sind nicht optimal, aber selten *schlecht*.
+
+## Sicherheit
+
+Drei Ebenen:
+
+| Anliegen | Seite |
+| --- | --- |
+| **Cluster-Transport TLS + Auth** | [Cluster-Sicherheit](/de/operations/security/cluster-security/) |
+| **Verschlüsselung at-rest für persistierte Daten** | [Master-Key-Rotation](/de/operations/security/master-key-rotation/) |
+| **TLS everywhere** (HTTP, Broker, Journals) | [TLS everywhere](/de/operations/security/tls-everywhere/) |
+
+Der Cluster-Transport ist standardmäßig **unauthentifiziertes TCP** —
+ok in einem privaten Netzwerk, gefährlich im öffentlichen Internet.
+Aktiviere immer TLS + Shared-Secret-Auth für jeden Cluster, der
+unsichere Grenzen überschreitet.
+
+## Upgrades
+
+Das Framework unterstützt **rolling Deployments ohne Downtime**,
+wenn entsprechend konfiguriert. Zwei getrennte Anliegen:
+
+- **Code-Rollouts** — Ersetzen der Node-Binaries, während der
+  Cluster läuft. Übernimmt K8s Rolling Update + Coordinated
+  Shutdown. Siehe
+  [Rolling Migration](/de/operations/upgrades/rolling-migration/).
+- **Schema-Migrationen** — Event/State-Shapes über die Zeit
+  weiterentwickeln. Erledigen Event-Adapter + Envelope-Versionierung.
+  Siehe
+  [Upgrade-Strategien](/de/operations/upgrades/upgrade-strategies/)
+  und [Persistence-Migration-Überblick](/de/persistence/migration/overview/).
+
+Die Rolling-Migration-Seite ist die praktischste — ein
+Schritt-für-Schritt-Rezept für "ich muss ein Feld zu meinem Event
+hinzufügen, ohne den Cluster runterzunehmen."
+
+## Troubleshooting
+
+| Symptom | Wahrscheinliche Ursache |
+| --- | --- |
+| Actor empfängt keine Nachrichten | Gestoppte Ref, Dead-Letter, Mailbox voll |
+| Cluster bildet sich nicht | Seed-Nodes unerreichbar, Port-Konflikt |
+| Sharded Entities spawnen nicht | Coordinator nicht auf einem Leader, Role-Mismatch |
+| `PersistentActor` braucht 30 s zum Starten | Kein Snapshot, tiefes Journal — setze `snapshotPolicy` |
+| Tests hängen am Ende | `await system.terminate()` vergessen |
+| Speicher wächst unbegrenzt | Unbounded Mailboxes; setze ein Mailbox-Cap |
+
+Siehe [Troubleshooting](/de/operations/troubleshooting/) für den
+Diagnose-nach-Symptom-Katalog.
+
+## Wenn etwas schiefläuft
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Der erste Anlaufpunkt sind Logs">
+  Jede Supervisor-Entscheidung, jedes Cluster-Event, jeder Dead-Letter
+  wird geloggt. Mit `LogContext` MDC (Correlation IDs, die über
+  `tell` propagieren) fügt sich der Verlauf eines Multi-Actor-Requests
+  in einer einzigen Log-Abfrage zusammen. Konfiguriere strukturiertes
+  Logging vom ersten Tag an — siehe
+  [Logging](/de/fundamentals/logging/).
+</Aside>
+
+<Aside type="caution" title="Der zweite Anlaufpunkt sind Metriken">
+  Stock-Metriken geben dir Actor-Message-Rate, Mailbox-Tiefe,
+  Cluster-Member-Anzahl, Sharding-Region-Anzahl — genug, um
+  "irgendwas läuft schief" zu erkennen, bevor Nutzer es merken.
+  Verkabele in Produktion einen Prometheus-Exporter. Siehe
+  [Stock-Metriken](/de/observability/metrics/stock-metrics/).
+</Aside>
+
+<Aside type="caution" title="Der dritte Anlaufpunkt sind Traces">
+  Spans propagieren über `tell` und über Cluster-Nodes. Ein einzelner
+  Request, Ende-zu-Ende-Sicht — viel schneller zu diagnostizieren als
+  Logs zu tailen. Aktiviere gezielt, wenn du Multi-Actor-Flows hast.
+</Aside>
+
+## Wohin als nächstes
+
+### Deployment
+
+- [Kubernetes](/de/operations/deployment/kubernetes/)
+- [Docker Compose](/de/operations/deployment/docker-compose/)
+- [Process Manager](/de/operations/deployment/process-manager/)
+
+### Tuning
+
+- [Gossip-Kadenz](/de/operations/tuning/gossip-cadence/)
+- [Failure Detector](/de/operations/tuning/failure-detector/)
+- [Mailbox-Sizing](/de/operations/tuning/mailbox-sizing/)
+- [Dispatcher-Tuning](/de/operations/tuning/dispatcher-tuning/)
+
+### Sicherheit
+
+- [Cluster-Sicherheit](/de/operations/security/cluster-security/)
+- [Master-Key-Rotation](/de/operations/security/master-key-rotation/)
+- [TLS everywhere](/de/operations/security/tls-everywhere/)
+
+### Upgrades
+
+- [Rolling Migration](/de/operations/upgrades/rolling-migration/)
+- [Upgrade-Strategien](/de/operations/upgrades/upgrade-strategies/)
+
+### Diagnostik
+
+- [Troubleshooting](/de/operations/troubleshooting/)

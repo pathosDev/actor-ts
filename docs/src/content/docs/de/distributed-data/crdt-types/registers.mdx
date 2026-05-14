@@ -1,0 +1,180 @@
+---
+title: Register (LWW, MV)
+description: CRDTs für einen Einzelwert — `LWWRegister<T>` behält den letzten Write nach Timestamp; `MVRegister<T>` behält jeden nebenläufigen Write, damit der Caller auflösen kann. Wähle danach, ob stille Überschreibungen akzeptabel sind.
+---
+
+Zwei Register-CRDTs halten **einen Einzelwert** und lösen
+nebenläufige Writes unterschiedlich auf:
+
+| Typ | Auflösung nebenläufiger Writes | Wann |
+| --- | --- | --- |
+| **`LWWRegister<T>`** | Last-Writer-Wins (per Timestamp) | Ein Konfigurationswert; der letzte Writer ist die Wahrheit. |
+| **`MVRegister<T>`** | Mehrere Werte werden behalten; Caller wählt | Wenn du nebenläufige Writes *erkennen* und offenlegen willst. |
+
+Beide speichern konzeptionell einen Einzelwert — sie
+unterscheiden sich in der Konfliktauflösungs-Policy.
+
+## LWWRegister
+
+```ts
+import { LWWRegister } from 'actor-ts';
+
+let r = LWWRegister.empty<string>();
+r = r.set('node-a', 'hello', 1000);   // Wert, Timestamp
+r = r.set('node-b', 'world', 2000);
+r.value();   // → 'world' (späterer Timestamp)
+```
+
+Der State ist `{ value, timestamp, replicaId }`.  Merge wählt
+den Eintrag mit dem größeren Timestamp; Ties werden für
+Determinismus über die Replika-ID gelöst.
+
+Der Vertrag:
+
+- **Timestamps müssen steigend sein**, damit die LWW-Semantik
+  sinnvoll ist.  Default ist `Date.now()`, wenn nicht angegeben,
+  aber du kannst jeden monotonen Wert übergeben.
+- **Ties beim Timestamp werden über die Replika-ID als
+  Tiebreaker entschieden.**  Gleicher Timestamp + gleiche
+  Replika-ID = gleicher Write; gleicher Timestamp +
+  verschiedene Replikas = lexikographisch späterer gewinnt.
+- **Der letzte Write gewinnt, *still*.**  Nebenläufige Writes
+  werden dem Caller nicht offengelegt — einer davon ist
+  einfach weg.
+
+Nimm es für **Konfig mit Einzelwert**, wo der letzte Writer
+maßgeblich ist:
+
+```ts
+// Feature Flag — Admin schaltet um, alle Nodes sehen die Änderung
+dd.update<LWWRegister<boolean>>(
+  'feature-x-enabled',
+  () => LWWRegister.empty<boolean>(),
+  (r) => r.set(dd.selfReplicaId(), true),
+);
+```
+
+## MVRegister
+
+```ts
+import { MVRegister } from 'actor-ts';
+
+let r = MVRegister.empty<string>();
+r = r.set('node-a', 'hello');
+r = r.set('node-b', 'world');
+r.values();   // → ['hello', 'world']  (beide behalten — Caller löst auf)
+```
+
+Der State ist ein Set aus `{ value, dot }`-Paaren, wobei `dot`
+ein Logical Clock ist, der Kausalität tracked.  Nebenläufige
+Writes werden nebeneinander behalten; sequenzielle Writes
+überschreiben.
+
+```ts
+let r = MVRegister.empty<string>();
+
+// Sequenzielle Writes — neuer überschreibt
+r = r.set('a', 'first');
+r = r.set('a', 'second');
+r.values();   // → ['second']
+
+// Nebenläufige Writes — beide behalten
+let ra = MVRegister.empty<string>().set('a', 'fruit');
+let rb = MVRegister.empty<string>().set('b', 'vegetable');
+ra.merge(rb).values();   // → ['fruit', 'vegetable']
+```
+
+Der Caller wählt eine Auflösungs-Strategie:
+
+```ts
+const r = dd.get<MVRegister<UserPrefs>>('user-prefs');
+const values = r?.values() ?? [];
+
+if (values.length === 0) {
+  // Noch keine Writes
+} else if (values.length === 1) {
+  // Ein Wert — eindeutig
+  applyPrefs(values[0]);
+} else {
+  // Mehrere nebenläufige Writes — Strategie wählen:
+  // - Dem User ein Konflikt-UI zeigen
+  // - Feld für Feld mergen
+  // - Längsten / kürzesten / fachlich-jüngsten wählen
+}
+```
+
+## Auswahl zwischen beiden
+
+Zwei Fragen:
+
+1. **Ist stilles Überschreiben akzeptabel?**
+   - Ja → `LWWRegister`.
+   - Nein → `MVRegister`.
+
+2. **Hast du eine zuverlässige Uhr?**
+   - `LWWRegister` hängt davon ab, dass `Date.now()` über die
+     Nodes hinweg konsistent ist.  Weite Uhr-Drifts (mehr als
+     ein paar Sekunden) produzieren falsche Antworten.
+   - `MVRegister` vertraut der Uhr nicht; es tracked Kausalität
+     direkt.
+
+Für **Feature Flags, zuletzt bekannte Konfig, aktueller
+aktiver Wert**: `LWWRegister` ist die einfachere Wahl.
+
+Für **user-editierbare Werte, geteilte Dokumente, alles, wo
+"der User hat X geschrieben, das System glaubt aber Y" zählt**:
+`MVRegister` bewahrt beide Seiten, damit deine App den Konflikt
+offenlegen kann.
+
+## Größere Frage: muss der Wert überhaupt ein Register sein?
+
+Wenn der Wert eine **Append-only-Historie** ist (jeder Write
+soll erhalten bleiben), nimm ein `GSet` oder `ORSet`.  Register
+sind für "den aktuellen Wert von X", nicht "jeden Wert, den X
+je hatte".
+
+Wenn der Wert **aus Beiträgen abgeleitet ist** (Counts pro
+Replika), nimm einen Counter oder eine Counter-Map.
+
+Wenn der Wert eine **strukturierte Map** ist, nimm `LWWMap` oder
+`ORMap`.
+
+Register passen, wenn die Antwort wirklich **ein skalarer
+Wert** ist.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="LWWRegister und Uhren-Drift">
+  ```ts
+  // Uhr von Node A: 1000 (korrekt)
+  // Uhr von Node B: 5000 (weit voraus)
+  // Node A schreibt "fresh", Node B schreibt "stale" → "stale" gewinnt für immer
+  ```
+  Last-Writer-Wins per `Date.now()` ist nur so zuverlässig wie
+  deine Uhren.  Nimm NTP / ähnliches, um die Uhren im Bereich
+  von Sekunden zu halten, oder nimm MVRegister, wenn Uhren-Drift
+  ein echtes Risiko ist.
+</Aside>
+
+<Aside type="caution" title="`values()` von MVRegister kann aufblähen">
+  Worst Case: jede Replika schreibt nebenläufig → `values()`
+  hat N Einträge.  Meist klein, aber bedenke das, wenn viele
+  Actors ohne Koordination auf denselben Key schreiben.  Häufige
+  Re-Writes von einer einzelnen Replika blähen die Größe **nicht**
+  auf — sie überschreiben den Eintrag dieser Replika.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[Counter](/de/distributed-data/crdt-types/counters/)** —
+  für additiven State pro Replika.
+- **[Sets](/de/distributed-data/crdt-types/sets/)** —
+  GSet / ORSet für Collection-Style-State.
+- **[Maps](/de/distributed-data/crdt-types/maps/)** —
+  LWWMap ist eine Register-wertige Map.
+- **[Daten gestalten](/de/distributed-data/crdt-types/designing-data/)** —
+  den richtigen Typ pro Problem wählen.
+
+Die API-Referenzen [`LWWRegister`](/api/classes/lwwregister/)
+und [`MVRegister`](/api/classes/mvregister/) decken die
+vollständige Oberfläche ab.

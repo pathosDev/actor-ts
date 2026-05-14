@@ -1,0 +1,71 @@
+---
+title: In-Memory-Snapshot-Store
+description: Die Referenz-Snapshot-Store-Implementierung — durch eine In-Process-Map gestützt. Verwende sie in Tests und Dev; wechsle für Produktion zu SQLite oder Object Storage.
+---
+
+`InMemorySnapshotStore` hält Snapshots in einer
+`Map<persistenceId, Snapshot[]>` im Prozess-Speicher.  Wie
+[`InMemoryJournal`](/de/persistence/journals/in-memory/) ist es
+der **Default**, wenn kein Snapshot-Store konfiguriert ist — null
+Setup, ideal für Tests, **niemals in Produktion verwenden**.
+
+```ts
+import { InMemorySnapshotStore, PersistenceExtensionId, ActorSystem } from 'actor-ts';
+
+const system = ActorSystem.create('demo');
+system.extension(PersistenceExtensionId).configure({
+  journal:       new InMemoryJournal(),
+  snapshotStore: new InMemorySnapshotStore(),
+});
+```
+
+## Was es tut
+
+Implementiert das `SnapshotStore`-Interface — `save`,
+`loadLatest`, `deleteUpTo`.  Jede `persistenceId` mappt auf ein
+Array von Snapshots, geordnet nach Sequenznummer.
+
+- **`save(pid, snapshot)`** — an das Array der pid anhängen.
+- **`loadLatest(pid)`** — den Snapshot mit der höchsten seq
+  zurückgeben oder `None`.
+- **`deleteUpTo(pid, seqNr)`** — Snapshots mit seq ≤ seqNr
+  abschneiden.
+
+Die Implementierung ist **Referenz-Semantik** — jeder andere
+Snapshot-Store muss dieses Verhalten erfüllen (modulo
+Persistenz- / Verschlüsselungs- / Kompressions-Spezifika).
+
+## Wann verwenden
+
+- **Tests** — schnell, kein IO, sauberer Teardown pro Test.
+- **Dev** — wenn du keine echte Snapshot-Datei zwischen Runs
+  herumliegen haben willst.
+- **Referenz für benutzerdefinierte Implementierungen** — lies den
+  Source für den Vertrag.
+
+## Wann NICHT verwenden
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Produktion">
+  Daten sterben mit dem Prozess.  Ein Neustart verliert jeden
+  Snapshot, sodass die Recovery jedes Mal auf vollständigen
+  Event-Log-Replay zurückfällt — was den Sinn von Snapshots
+  zunichtemacht.
+</Aside>
+
+<Aside type="caution" title="Lange laufende Tests">
+  Snapshots akkumulieren im Speicher.  Ein Benchmark, der über
+  einen Run 1M Snapshots macht, lässt die Map linear wachsen.  Für
+  lange Tests konfiguriere `deleteUpTo`-Cleanup oder verwende den
+  SQLite-Store mit `:memory:`.
+</Aside>
+
+## Wie geht's weiter
+
+- **[Snapshots](/de/persistence/snapshots/)** — die
+  Policy / Mechanik.
+- **[SQLite-Snapshot-Store](/de/persistence/snapshot-stores/sqlite/)** —
+  Single-Node-Produktion.
+- **[Cached-Snapshot-Store](/de/persistence/snapshot-stores/cached-snapshot-store/)** —
+  wickle jeden Store mit einem In-Process-Cache ein.

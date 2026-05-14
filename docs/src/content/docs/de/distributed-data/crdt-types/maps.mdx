@@ -1,0 +1,208 @@
+---
+title: Maps (LWWMap, ORMap, GCounterMap)
+description: Drei Map-CRDTs — `LWWMap<K,V>` für Last-Writer-Wins-Werte pro Key, `ORMap<K,C>` für Maps, deren Werte selbst CRDTs sind, `GCounterMap<K>` als bequeme Abkürzung für "Counter pro Key".
+---
+
+Drei Map-CRDTs, ausgewählt danach, was die **Werte** sind:
+
+| Typ | Wert-Typ | Wann |
+| --- | --- | --- |
+| **`LWWMap<K, V>`** | Plain Values (LWW pro Key) | Konfig pro Key — Flags, Einstellungen. |
+| **`ORMap<K, C>`** | Andere CRDTs | Counter, Sets, Register pro Key. |
+| **`GCounterMap<K>`** | Implizite GCounter-Werte | Counts pro Key (Clicks pro Page, Requests pro Route). |
+
+`GCounterMap<K>` ist Zucker über `ORMap<K, GCounter>` — der
+Fall ist so häufig, dass er einen eigenen Typ bekommt.
+
+## LWWMap
+
+```ts
+import { LWWMap } from 'actor-ts';
+
+let m = LWWMap.empty<string, string>();
+m = m.put('node-a', 'theme', 'dark', 1000);
+m = m.put('node-b', 'lang',  'en',   2000);
+m.get('theme');   // → 'dark'
+m.get('lang');    // → 'en'
+```
+
+LWW-Semantik pro Key — wie
+[LWWRegister](/de/distributed-data/crdt-types/registers/), aber
+indiziert.  Nebenläufige Writes auf denselben Key werden über
+Timestamps aufgelöst; Writes auf verschiedene Keys kollidieren
+nicht.
+
+```ts
+m = m.remove('theme');   // ebenfalls LWW — jüngste Aktion gewinnt
+```
+
+`remove` wird ebenfalls als LWW-Operation getrackt — ein
+kürzlicher Remove schlägt ein älteres Put, auch von einer
+anderen Replika.
+
+Nimm es für **Konfig pro Key mit Einzelwert**: User-Preferences,
+Feature-Flag-Overrides pro Tenant, Version pro Ressource.
+
+## ORMap
+
+```ts
+import { ORMap, GCounter } from 'actor-ts';
+
+let m = ORMap.empty<string, GCounter>();
+m = m.update('node-a', 'clicks',
+  GCounter.empty,
+  (c) => c.increment('node-a', 1),
+);
+m = m.update('node-b', 'views',
+  GCounter.empty,
+  (c) => c.increment('node-b', 1),
+);
+m.get('clicks')?.value();   // → 1
+```
+
+Die Werte sind selbst CRDTs.  Der Wert jedes Keys merged **mit
+dem eigenen Merge des Value-CRDT** — `GCounter`-Keys mergen
+per-Replika-Max, `ORSet`-Keys per Add-wins usw.
+
+```ts
+m = m.update('a', 'tags',
+  () => ORSet.empty<string>(),
+  (s) => s.add('a', 'urgent'),
+);
+```
+
+Heterogene Wert-Typen sind erlaubt, aber **abgeraten** — eine
+einzelne ORMap hält typischerweise eine CRDT-Art pro Map.
+Wenn verschiedene Keys verschiedene Arten halten, kann das
+Framework die Typen nicht inferieren und du kämpfst mit dem
+Compiler.
+
+Nimm es für **replizierten State pro Key**, der pro Key
+CRDT-Semantik braucht — Shopping-Carts pro User, Counter +
+Last-Changed-Register pro Feature.
+
+### Remove
+
+```ts
+m = m.remove('clicks');
+```
+
+Einen Key aus `ORMap` zu entfernen nutzt die OR-Semantik —
+getaggte Operation, die nebenläufige Re-Adds überschreiben
+können.  Gleiche "Add wins"-Semantik wie bei ORSet.
+
+## GCounterMap
+
+```ts
+import { GCounterMap } from 'actor-ts';
+
+let m = GCounterMap.empty<string>();
+m = m.increment('node-a', 'page-home',  1);
+m = m.increment('node-a', 'page-about', 1);
+m = m.increment('node-b', 'page-home',  1);
+
+m.get('page-home');   // → 2 (Summe über Replikas)
+m.get('page-about');  // → 1
+```
+
+Eine `GCounterMap<K>` ist funktional `ORMap<K, GCounter>` —
+eine Map, deren Werte jeweils ein Counter sind.  Sie existiert,
+weil **Counts pro Key häufig genug** sind (Page Views pro URL,
+Clicks pro Button, Requests pro Route), um eine getypte
+Abkürzung zu rechtfertigen.
+
+Die API ist flacher:
+
+```ts
+m.increment(replicaId, key, delta);   // den Counter eines Keys hochzählen
+m.get(key);                             // → number (Summe über Replikas)
+m.entries();                            // → IterableIterator<[K, number]>
+```
+
+Nimm sie überall, wo du in normalem Code `Map<K, number>`
+schreiben würdest und **Konvergenz bei nebenläufigen Writes**
+brauchst.
+
+## Auswahl zwischen ihnen
+
+| Wert-Typ pro Key | Map-Typ |
+| --- | --- |
+| Ein Plain Value mit Last-Writer-Wins-Auflösung | `LWWMap` |
+| Ein CRDT (Counter, Set, Register, andere Map) | `ORMap` |
+| Ein Counter (sehr häufiger Fall) | `GCounterMap` — Zucker über `ORMap<K, GCounter>` |
+
+Häufige Formen:
+
+- **User-Preferences pro User** — `LWWMap<UserId, UserPrefs>`
+  (Pref-Edits sind LWW; Konflikte sind selten).
+- **Feature Flags pro Tenant** — `LWWMap<TenantId, FlagSet>`.
+- **View Counts pro Ressource** — `GCounterMap<ResourceId>`.
+- **Online Members pro Raum** — `ORMap<RoomId, ORSet<UserId>>`.
+- **Rebalance Counts pro Shard** — `GCounterMap<ShardId>`.
+
+## Komposition
+
+```ts
+// Subscription-Set pro Raum + Nachrichtenzähler pro Raum
+let rooms = ORMap.empty<string, ORSet<string>>();
+let counts = GCounterMap.empty<string>();
+
+rooms = rooms.update('a', 'general',
+  () => ORSet.empty<string>(),
+  (s) => s.add('a', 'user-1'),
+);
+counts = counts.increment('a', 'general', 1);
+```
+
+`ORMap` von `ORSet` ist die häufige Form für **Map von Sets**.
+`ORMap` von `LWWRegister<T>` ist eine getypte Version von
+`LWWMap<K, T>` mit denselben Semantiken (nimm direkt `LWWMap`,
+wenn du genau das meinst).
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="LWWMap und Uhren-Drift">
+  Dieselbe Falle wie bei `LWWRegister` — die LWW-Mathematik pro
+  Key hängt davon ab, dass `Date.now()` konsistent ist.  Weite
+  Uhren-Drift = falsche Auflösung.  Für Werte, die
+  konflikt-bewusstes Mergen brauchen, in einem MVRegister wrappen
+  und stattdessen ORMap nutzen.
+</Aside>
+
+<Aside type="caution" title="Gemischte Wert-Typen in ORMap">
+  ```ts
+  let m = ORMap.empty<string, Crdt<unknown>>();
+  m = m.update('a', 'counter', GCounter.empty, ...);
+  m = m.update('a', 'set',     ORSet.empty,    ...);   // ✗ unangenehme Typen
+  ```
+  Die Stärke von ORMap sind **homogene** Werte.  Heterogene
+  Mischungen kämpfen mit dem Typsystem und verlieren an
+  Ergonomie.  Nimm mehrere getypte Maps für verschiedene Arten.
+</Aside>
+
+<Aside type="caution" title="Die Map-Größe wächst monoton ohne explizite Removes">
+  ```ts
+  let m = LWWMap.empty<string, string>();
+  for (let i = 0; i < 1_000_000; i++) m = m.put('node-a', `key-${i}`, 'x');
+  ```
+  Maps lassen Einträge nicht automatisch ablaufen.
+  In-Memory-Replikas halten jeden Key; Gossip trägt den
+  Full State.  Bei Maps, die groß werden, überleg, ob Sharding
+  (ein Actor pro Key) die bessere Wahl ist.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[Counter](/de/distributed-data/crdt-types/counters/)** —
+  für nicht-keyed Counter.
+- **[Register](/de/distributed-data/crdt-types/registers/)** —
+  für nicht-keyed Einzelwerte.
+- **[Sets](/de/distributed-data/crdt-types/sets/)** —
+  für nicht-keyed Collections.
+- **[Daten gestalten](/de/distributed-data/crdt-types/designing-data/)** —
+  Auswahl zwischen flachen und Map-CRDTs.
+
+Die API-Referenzen [`LWWMap`](/api/classes/lwwmap/),
+[`ORMap`](/api/classes/ormap/) und
+[`GCounterMap`](/api/classes/gcountermap/) decken die
+vollständige Oberfläche ab.

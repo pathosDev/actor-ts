@@ -1,0 +1,225 @@
+---
+title: Tracer-API
+description: Die Tracing-Abstraktion des Frameworks — `startSpan`, `withActiveSpan`, Span-Attribute, Status, Exceptions. Null Overhead, wenn deaktiviert; austauschbares Backend via Adapter (OTel, Recording-Tracer für Tests).
+---
+
+Die Tracing-API des Frameworks ist eine **minimale Abstraktion
+über verteiltes Tracing**. So entworfen, dass:
+
+- **Tracing aus ist Null-Kosten** — der Default-`NoopTracer`
+  short-circuited jeden Aufruf; keine Allokationen, keine
+  Async-Storage-Lookups.
+- **Keine SDK-Dependency** — actor-ts zieht kein
+  `@opentelemetry/sdk-*`; du bringst dein eigenes mit.
+- **W3C-kompatibles Cross-Wire** — Spans serialisieren zu W3C-
+  `traceparent` für nachgelagerte OTel-Services.
+
+```ts
+import { ActorSystem, TracingExtensionId, OtelTracerAdapter } from 'actor-ts';
+
+const system = ActorSystem.create('my-app');
+
+system.extension(TracingExtensionId).configure({
+  tracer: new OtelTracerAdapter({ /* OTel-SDK */ }),
+});
+
+// Mit aktiviertem Tracing erzeugt das Framework automatisch Spans für Actor-Message-Handling.
+// User-Code kann ebenfalls eigene Spans erzeugen:
+const tracer = system.extension(TracingExtensionId).tracer;
+const span = tracer.startSpan('process-order');
+try {
+  await processOrder(...);
+  span.setStatus('ok');
+} catch (e) {
+  span.recordException(e as Error);
+  span.setStatus('error', (e as Error).message);
+  throw e;
+} finally {
+  span.end();
+}
+```
+
+## Das Interface
+
+```ts
+interface Tracer {
+  startSpan(name: string, opts?: SpanOptions): Span;
+  withActiveSpan<T>(span: Span, fn: () => T): T;
+  activeSpan(): Span | null;
+  injectContext(): TraceCarrier | null;
+  extractContext(carrier: TraceCarrier | null): SpanContext | null;
+}
+
+interface Span {
+  context(): SpanContext;
+  setAttribute(key: string, value: string | number | boolean): this;
+  setStatus(status: 'ok' | 'error', message?: string): this;
+  recordException(err: Error): this;
+  end(endTimeMs?: number): void;
+  readonly ended: boolean;
+}
+```
+
+Minimale Oberfläche — nahe an der API von OpenTelemetry, aber
+kleiner.
+
+## Spans starten
+
+```ts
+const span = tracer.startSpan('http-call', {
+  attributes: {
+    'http.method': 'GET',
+    'http.url':    'https://example.com',
+  },
+  kind:           'client',
+});
+```
+
+`SpanOptions`:
+
+| Feld | Was |
+| --- | --- |
+| `parent` | Expliziter Parent-Kontext. `undefined` → aktiven Span nutzen. `null` → Root-Span. |
+| `attributes` | Initiale Attribute. |
+| `kind` | `internal` / `server` / `client` / `producer` / `consumer`. |
+| `startTimeMs` | Überschreibt die Startzeit. |
+
+## Aktiver Span
+
+```ts
+const span = tracer.startSpan('outer');
+
+await tracer.withActiveSpan(span, async () => {
+  const child = tracer.startSpan('inner');   // Parent = outer (auto)
+  // ... Arbeit ...
+  child.end();
+});
+
+span.end();
+```
+
+`withActiveSpan(span, fn)` führt `fn` mit `span` als aktivem
+Span aus — innerhalb erzeugte Child-Spans verlinken sich
+automatisch als Kinder. Nutzt darunter `AsyncLocalStorage`, sodass
+der aktive Span über `await`s propagiert.
+
+`activeSpan()` liest den aktuellen aktiven Span; `null`
+außerhalb jedes Scopes.
+
+## Attribute und Status setzen
+
+```ts
+span.setAttribute('user.id', userId);
+span.setAttribute('order.amount', order.amount);
+span.setStatus('ok');
+// oder:
+span.setStatus('error', 'payment-declined');
+span.recordException(error);
+```
+
+Attribute sind Key/Value-Paare, sichtbar in deinem Tracing-
+Backend. Status + Exception färben den Span in den meisten UIs
+rot.
+
+## Cross-Wire-Propagierung
+
+```ts
+// Sender-Seite — Kontext in einen Carrier injizieren
+const carrier = tracer.injectContext();
+sendToOtherService(payload, carrier);
+
+// Empfänger-Seite — extrahieren + Root aus Parent erzeugen
+const parentCtx = tracer.extractContext(carrier);
+const span = tracer.startSpan('handle', { parent: parentCtx });
+```
+
+`TraceCarrier` ist eine Key/Value-Map; der Cluster-Transport des
+Frameworks legt diese automatisch in Wire-Envelopes. Außerhalb
+des Actor-Systems (HTTP-Server, Broker-Nachrichten) inject /
+extract manuell, um Tracing über Services zu überbrücken.
+
+## Einen Tracer wählen
+
+| Tracer | Wann |
+| --- | --- |
+| **`NoopTracer`** | Default. Tracing deaktiviert. Null Overhead. |
+| **`RecordingTracer`** | Tests. Speichert jeden Span im Speicher für Assertions. |
+| **`OtelTracerAdapter`** | Produktion. Pipet durch das OpenTelemetry-SDK. |
+
+Produktion: konfiguriere den OTel-Adapter, um zu deinem Tracing-
+Backend zu exportieren (Jaeger, Tempo, Honeycomb, Datadog etc.).
+Tests: nutze den Recording-Tracer, um zu asserten, dass
+spezifische Spans erzeugt wurden.
+
+## Lebensdauer eines Spans
+
+```ts
+const span = tracer.startSpan('work');
+// ...
+span.end();
+// span.ended === true nach end()
+// weitere Methoden (setAttribute, end erneut) sind No-Ops
+```
+
+**Spans müssen beendet werden** — sonst leakt der Tracer
+Speicher. Das Framework beendet Spans für Actor-Message-Handling
+automatisch; User-Code ist verantwortlich für Spans, die er
+erzeugt.
+
+Ein gängiges Muster ist try/finally:
+
+```ts
+const span = tracer.startSpan('work');
+try {
+  return await doWork();
+} catch (e) {
+  span.recordException(e as Error);
+  throw e;
+} finally {
+  span.end();
+}
+```
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`end()` vergessen">
+  ```ts
+  const span = tracer.startSpan('forgotten');
+  // kein end() — Span leakt im Speicher + exportiert nie
+  ```
+  Nutze try/finally oder einen Wrapper-Helper, um `end()` zu
+  garantieren.
+</Aside>
+
+<Aside type="caution" title="Span-Attribute leaken PII">
+  ```ts
+  span.setAttribute('user.email', user.email);   // ✗ PII in Traces
+  ```
+  Traces sind meist weniger geschützt als primäre Datenbanken.
+  Lege keine personenbezogenen Daten, Secrets oder andere
+  datenschutz-sensitive Dinge in Attribute.
+</Aside>
+
+<Aside type="caution" title="Aktive-Span-Propagierung über `pipeTo`">
+  ```ts
+  pipeTo(promise, target);
+  // ↑ aktiver Span auf Sender-Seite; der Handler des Targets läuft in einem frischen Scope
+  ```
+  `pipeTo` propagiert aktuell nicht den aktiven Span-Kontext.
+  Für Tracing über pipeTo'te Futures captureste manuell
+  `tracer.injectContext()` vor dem Pipen.
+</Aside>
+
+## Wo es weitergeht
+
+- **[Observability — Überblick](/de/observability/overview/)** —
+  das größere Bild.
+- **[Actor-Tracing](/de/observability/tracing/actor-tracing/)** —
+  was das Framework automatisch span'd.
+- **[OTel-Adapter](/de/observability/tracing/otel-adapter/)** —
+  zu OpenTelemetry pipen.
+- **[Recording-Tracer](/de/observability/tracing/recording-tracer/)** —
+  das test-freundliche In-Memory-Backend.
+
+Die [`Tracer`](/api/interfaces/tracer/)-API-Referenz deckt die
+volle Oberfläche ab.

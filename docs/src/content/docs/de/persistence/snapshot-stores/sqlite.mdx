@@ -1,0 +1,103 @@
+---
+title: SQLite-Snapshot-Store
+description: Single-File-Durable-Snapshot-Store, gepaart mit `SqliteJournal` für Produktions-Single-Node-Deployments. Gleiche Runtime-Adapter-Story wie das Journal — Buns `bun:sqlite` oder Nodes `better-sqlite3`.
+---
+
+`SqliteSnapshotStore` persistiert Snapshots in eine SQLite-Datei —
+durable, null Dependency auf Bun, Peer-Dep auf Node.  Paare es mit
+[`SqliteJournal`](/de/persistence/journals/sqlite/) für das
+**Standard-Single-Node-Produktions-Setup**.
+
+```ts
+import { SqliteJournal, SqliteSnapshotStore, PersistenceExtensionId, ActorSystem } from 'actor-ts';
+
+const system = ActorSystem.create('my-app');
+system.extension(PersistenceExtensionId).configure({
+  journal: new SqliteJournal({
+    path: '/var/lib/my-app/events.db',
+    wal:  true,
+  }),
+  snapshotStore: new SqliteSnapshotStore({
+    path: '/var/lib/my-app/snapshots.db',
+    wal:  true,
+  }),
+});
+```
+
+## Konfiguration
+
+```ts
+interface SqliteSnapshotStoreOptions {
+  path?:           string;     // Dateipfad oder ':memory:'
+  snapshotsTable?: string;     // Default 'snapshots'
+  wal?:            boolean;    // WAL-Modus aktivieren
+  driver?:         SqliteDriver;
+}
+```
+
+Gleiche Felder wie beim Journal — siehe
+[SQLite-Journal](/de/persistence/journals/sqlite/) für die
+vollständige Diskussion jedes einzelnen.
+
+## Schema
+
+```sql
+CREATE TABLE snapshots (
+  pid     TEXT NOT NULL,
+  seq     INTEGER NOT NULL,
+  state   BLOB NOT NULL,
+  ts      INTEGER NOT NULL,
+  PRIMARY KEY (pid, seq)
+);
+```
+
+Gleiches Pattern wie das Journal: nach `(pid, seq)` geschlüsselt.
+Das Framework liest die **höchste seq** für eine gegebene pid bei
+`loadLatest`.
+
+## Paarung mit dem Journal
+
+```ts
+// Produktion:
+{
+  journal:       new SqliteJournal({ path: '/var/lib/events.db' }),
+  snapshotStore: new SqliteSnapshotStore({ path: '/var/lib/snapshots.db' }),
+}
+```
+
+Das Journal und der Snapshot-Store sind **unabhängige Dateien**.
+Du kannst sie auch in dieselbe Datei mit unterschiedlichen
+Tabellennamen packen — aber zwei Dateien halten Operationen
+einfacher (unabhängiges Backup, unabhängiges Vacuum).
+
+Für Multi-Node-Deployments, in denen das Journal Cassandra ist,
+kannst du **trotzdem SQLite für Snapshots verwenden**, wenn jede
+Entity immer auf demselben Node wiederhergestellt wird.  Aber für
+Sharded Entities (die zwischen Nodes wandern) muss der
+Snapshot-Store auch geteilt sein — siehe
+[Object-Storage-Snapshot-Store](/de/persistence/object-storage/snapshot-store-backend/).
+
+## Performance
+
+- **Snapshot-Write** — single INSERT, ~100 μs.  Dominiert von der
+  Serialisierung, nicht von SQLite-I/O.
+- **Snapshot-Read** — single SELECT, Sub-Millisekunde.
+
+Für sehr große Snapshots (Multi-MB-State) ist die Serialisierung
+der Bottleneck.  Überlege Kompression
+([Object-Storage-Kompression](/de/persistence/object-storage/compression/))
+oder eine andere Snapshot-Strategie.
+
+## Wie geht's weiter
+
+- **[Snapshots](/de/persistence/snapshots/)** — die
+  Policy + Mechanik.
+- **[SQLite-Journal](/de/persistence/journals/sqlite/)** —
+  das Journal, mit dem du das paarst.
+- **[In-Memory-Snapshot-Store](/de/persistence/snapshot-stores/in-memory/)** —
+  für Tests.
+- **[Cached-Snapshot-Store](/de/persistence/snapshot-stores/cached-snapshot-store/)** —
+  Read-Through-Cache.
+
+Die [`SqliteSnapshotStore`](/api/classes/sqlitesnapshotstore/)-API-
+Referenz deckt die vollständigen Optionen ab.

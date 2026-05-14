@@ -1,0 +1,299 @@
+---
+title: Become und Stash
+description: Zwei Wege, wie ein Actor seine eigene Nachrichtenverarbeitung umformt — `context.become(...)` tauscht das aktuelle Verhalten aus, `context.stash()` parkt Nachrichten für späteres Replay via `unstashAll()`.
+---
+
+Das `onReceive` eines Actors ist normalerweise eine einzige Funktion,
+die jeden Nachrichten-Kind behandelt.  Zwei Context-APIs lassen ihn
+diese Verarbeitung im Fluge umformen:
+
+- **`context.become(handler)`** — den aktuellen Receive-Handler
+  temporär durch einen anderen *ersetzen*.  Mit `unbecome()`
+  wiederherstellen.
+- **`context.stash()`** + **`unstashAll()`** — Nachrichten, für die
+  ein Actor noch nicht bereit ist, *parken* und sie dann erneut
+  ausliefern, wenn er bereit ist.
+
+Zusammen sind sie die Antwort des Actor-Modells auf "dieser Actor hat
+Phasen, in denen er keinen normalen Traffic akzeptiert" —
+Initialisierung, Recovery von einem Checkpoint, Drainen vor Shutdown,
+Warten auf einen async-Config-Load.
+
+## `become` — das Verhalten austauschen
+
+```ts
+import { Actor, ActorSystem, Props } from 'actor-ts';
+
+type Msg =
+  | { readonly kind: 'on' }
+  | { readonly kind: 'off' }
+  | { readonly kind: 'press' };
+
+class Switch extends Actor<Msg> {
+  override onReceive(msg: Msg): void {
+    this.offState(msg);
+  }
+
+  private offState = (msg: Msg): void => {
+    if (msg.kind === 'press') {
+      this.log.info('turning on');
+      this.context.become(this.onState);
+    }
+  };
+
+  private onState = (msg: Msg): void => {
+    if (msg.kind === 'press') {
+      this.log.info('turning off');
+      this.context.become(this.offState);
+    }
+  };
+}
+
+const system = ActorSystem.create('demo');
+const sw = system.actorOf(Props.create(() => new Switch()));
+
+sw.tell({ kind: 'press' });   // → "turning on"
+sw.tell({ kind: 'press' });   // → "turning off"
+sw.tell({ kind: 'press' });   // → "turning on"
+```
+
+`become(handler)` tauscht die Funktion aus, die das Framework bei der
+nächsten Nachricht aufruft.  Keine Flag-Felder, keine inline
+`if (this.state === 'on')`-Leiter — das Verhalten *ist* der Zustand.
+
+Die Signatur:
+
+```ts
+become(behavior: Receive<TMsg>, discardOld?: boolean): void;
+unbecome(): void;
+```
+
+`discardOld` ist standardmäßig `true` (ersetzen).  Übergib `false`,
+um das neue Verhalten stattdessen auf einen Stack zu **pushen** —
+`unbecome()` poppt es dann und stellt das vorherige wieder her.
+
+### Gestackte Verhaltensweisen
+
+```ts
+class Loader extends Actor<Cmd> {
+  override onReceive(msg: Cmd): void { this.idle(msg); }
+
+  private idle = (msg: Cmd): void => {
+    if (msg.kind === 'load') {
+      this.context.become(this.loading, /* discardOld */ false);
+      this.startLoading();
+    }
+  };
+
+  private loading = (msg: Cmd): void => {
+    if (msg.kind === 'done') {
+      this.context.unbecome();   // poppt loading, idle kehrt zurück
+    }
+  };
+}
+```
+
+Stacking ist das richtige Werkzeug, wenn du ein *transientes*
+Sub-Verhalten hast ("gerade ladend", "gerade authentifizierend"), das
+zu einem stabilen Basis-Verhalten zurückkehrt, sobald es fertig ist.
+Für Toggles wie das Switch-Beispiel oben ist `discardOld = true` (der
+Default) sauberer.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`become` setzt keinen Zustand zurück">
+  `become` tauscht den *Handler* aus; es berührt die Felder des
+  Actors nicht.  Wenn du einen Zähler, eine Liste von Subscribern
+  oder anderen Instanz-Zustand hast, bleibt er genau wie zuvor.  Das
+  ist meist das, was du willst — aber es bedeutet, dass der Actor
+  für jegliches State-Cleanup beim Übergang verantwortlich ist.
+  Setze Felder an der gleichen Stelle zurück, wo du `become`
+  aufrufst, nicht irgendwo später downstream.
+</Aside>
+
+### Verglichen mit einem schlichten Zustands-Feld
+
+Ohne `become` würde derselbe Switch so aussehen:
+
+```ts
+class Switch extends Actor<Msg> {
+  private isOn = false;
+  override onReceive(msg: Msg): void {
+    if (msg.kind === 'press') {
+      this.isOn = !this.isOn;
+      this.log.info(this.isOn ? 'turning on' : 'turning off');
+    }
+  }
+}
+```
+
+Zwei Zustände — die Plain-Field-Variante ist kürzer.  Wo `become`
+gewinnt, ist bei **N Zuständen**: mit drei oder vier Phasen wächst
+die Inline-`if/else`-Kette auf `isOn` zu einer State-Machine-Leiter,
+bei der das Typsystem dir nicht helfen kann.  `become` macht jede
+Phase zu ihrer eigenen Funktion, mit ihrem eigenen
+Valid-Message-Set, natürlich verengt.
+
+Für eine formellere Version derselben Idee siehe das
+[FSM](/de/persistence/fsm/)-Pattern — explizite Zustands- +
+Transition-Deklarationen auf derselben Engine.
+
+## `stash` — parken, dann replayen
+
+```ts
+import { Actor, ActorSystem, Props } from 'actor-ts';
+
+type Msg =
+  | { readonly kind: 'configure'; readonly url: string }
+  | { readonly kind: 'request';   readonly payload: string };
+
+class Worker extends Actor<Msg> {
+  private url?: string;
+
+  override onReceive(msg: Msg): void {
+    if (msg.kind === 'configure') {
+      this.url = msg.url;
+      // Jetzt drainen, was sich angesammelt hat, während wir unkonfiguriert waren.
+      this.context.unstashAll();
+    } else if (msg.kind === 'request') {
+      if (!this.url) {
+        // Noch nicht bereit — diese Nachricht parken.
+        this.context.stash();
+        return;
+      }
+      this.log.info(`POST ${this.url}: ${msg.payload}`);
+    }
+  }
+}
+```
+
+Der Fluss: Nachrichten, die vor `configure` ankommen, werden gestasht.
+Sobald `configure` läuft, fügt `unstashAll()` sie in der
+Ankunftsreihenfolge wieder vorne in die Mailbox ein, und der Actor
+verarbeitet sie mit nun gesetzter URL.
+
+Die Signaturen:
+
+```ts
+stash(): void;
+unstashAll(): void;
+readonly stashSize: number;
+```
+
+Drei Details, die zählen:
+
+- **`stash()` muss aus einem User-Nachrichten-Handler heraus
+  aufgerufen werden.**  Es parkt die *gerade behandelte* Nachricht.
+  Sie aus `preStart`, einem Timer-Callback, der keine Actor-Nachricht
+  ist, oder außerhalb von `onReceive` aufzurufen, wirft
+  `StashOutsideHandlerError`.
+- **`unstashAll()` ist FIFO.**  Nachrichten kommen in der Reihenfolge
+  zurück, in der sie gestasht wurden.  Für eine `PriorityMailbox`
+  werden sie über die Priority-Funktion erneut eingefügt — eine
+  unstashed Nachricht reiht sich wieder in ihre Priority-Schicht ein,
+  nicht an die absolute Front der Queue.
+- **Der Stash hat eine Kapazität.**  Standardmäßig ist der Buffer
+  gebunden, um Memory-Leaks durch ausuferndes Stashing zu verhindern;
+  Overflow wirft `StashOverflowError`.  Konfiguriere über
+  System-Settings, wenn du größere / kleinere brauchst; siehe
+  [Konfiguration](/de/reference/configuration/).
+
+### `stash` + `become` — die kanonische Kombination
+
+Die zwei APIs komponieren für das "Actor mit Init-Phase"-Pattern:
+
+```ts
+class Worker extends Actor<Msg> {
+  private url?: string;
+
+  override preStart(): void {
+    // Sofort in das "loading config"-Verhalten wechseln.
+    this.context.become(this.loading);
+    void this.loadConfig();
+  }
+
+  private loading = (msg: Msg): void => {
+    if (msg.kind === 'configure') {
+      this.url = msg.url;
+      this.context.become(this.ready);
+      this.context.unstashAll();
+    } else {
+      // Alles andere, was während des Ladens ankommt — stashen.
+      this.context.stash();
+    }
+  };
+
+  private ready = (msg: Msg): void => {
+    if (msg.kind === 'request') {
+      this.log.info(`POST ${this.url}: ${msg.payload}`);
+    }
+  };
+
+  override onReceive(msg: Msg): void {
+    // Initial-Verhalten — das preStart wechselt vor jeder
+    // User-Nachricht in 'loading'.  Das hier befriedigt die Signatur.
+    this.loading(msg);
+  }
+
+  private async loadConfig(): Promise<void> {
+    const cfg = await fetchConfig();
+    this.context.self.tell({ kind: 'configure', url: cfg.url });
+  }
+}
+```
+
+Zwei Verhaltensweisen: `loading` (stasht alles außer `configure`),
+`ready` (behandelt Requests).  Das `become` macht den Übergang
+explizit; das `stash` + `unstashAll` stellt sicher, dass während des
+Initialisierungs-Fensters kein Traffic verloren geht.
+
+<Aside type="caution" title="Ewig stashen — das Silent-Leak-Pattern">
+  ```ts
+  if (!ready) {
+    this.context.stash();
+    return;
+  }
+  // ↑ wenn `ready` nie umschaltet, stapelt sich jede je gesendete Nachricht.
+  ```
+  Wenn das Readiness-Signal nicht ankommen kann (ein Downstream-Config-
+  Service ist unerreichbar, ein Parent-Actor antwortet nie), wächst
+  der Stash, bis er den Kapazitäts-Bound trifft und wirft.  Paare den
+  "stash bei not-ready"-Zweig immer mit einem Timeout — entweder über
+  `context.timers.startSingleTimer('init-timeout', ...)` oder einen
+  Receive-Timeout — damit der Actor erkennen kann "Init nie fertig
+  geworden" und entweder eskalieren oder fehlschlagen kann.
+</Aside>
+
+<Aside type="caution" title="Stash + Restart = Zustand verloren">
+  Bei `Restart` wird die Actor-Instanz weggeworfen — inklusive des
+  Stash-Buffers.  Gestashed Nachrichten werden zusammen mit der
+  kurz-vor-dem-Fehlschlag-stehenden Nachricht zu Dead Letters
+  geroutet.  Wenn die Nachrichten über den Fehler hinweg wichtig
+  sind, persistiere sie (PersistentActor) oder lass einen Parent sie
+  nach Abschluss des Restarts erneut senden.
+</Aside>
+
+## Wann zu welchem greifen
+
+| Situation | Werkzeug |
+| --- | --- |
+| Zwei oder mehr diskrete *Phasen* mit verschiedenen Valid-Message-Sets | `become` |
+| Eine Phase hat eine transiente Sub-Phase, die bei Done wiederherstellen soll | `become(..., discardOld=false)` + `unbecome()` |
+| Boolean-Flag — "ready"/"not ready" — mit gleicher Handler-Form | Ein einfaches Feld (greife nicht zu `become`) |
+| Manche Nachrichten müssen geordnet bis später verschoben werden | `stash` + `unstashAll` |
+| Init-Phase, die allen Non-Init-Traffic puffert | `become(loading)` + `stash` in `loading` + `unstashAll` beim Übergang |
+
+## Wie es weitergeht
+
+- **[Actor](/de/fundamentals/actor/)** — die Basisklasse, deren
+  `onReceive` du mit `become` austauschst.
+- **[Mailboxes](/de/fundamentals/mailboxes/)** — `unstashAll`
+  fügt in die Mailbox ein; die Mailbox entscheidet die Reihenfolge.
+- **[FSM](/de/persistence/fsm/)** — ein formellerer
+  State-Machine-Stil auf derselben `become`-Engine.
+- **[Typed Behaviors](/de/typed/behaviors/)** — die typed-API
+  drückt dieselbe Idee als funktionale `Behavior<T>`-Werte aus, statt
+  Context zu mutieren.
+
+Die [`ActorContext`](/api/interfaces/actorcontext/)-API-Referenz
+deckt `become`, `stash` und die vollständige Schnittstelle ab.

@@ -1,0 +1,243 @@
+---
+title: Allokationsstrategie
+description: Die Per-Shard-Platzierungslogik des Koordinators — `HashAllocationStrategy` (Default, deterministisch), `LeastShardAllocationStrategy` (Lastausgleichend) oder eine eigene Implementierung. Entscheidet, welcher Node welchen Shard besitzt.
+---
+
+Der Sharding-Koordinator wählt für jeden Shard einen Node:
+
+- **Beim ersten Kontakt** — wenn eine Shard-ID erstmals auftaucht,
+  führt der Koordinator `allocate(shardId, candidates, currentShards)`
+  aus, um ihren Besitzer zu wählen.
+- **Beim Rebalance** — alle paar Sekunden führt der Koordinator
+  `rebalance(currentShards, candidates, inProgress)` aus, um
+  Shards zu finden, die wandern sollten.
+
+Die zwei eingebauten Strategien tauschen Einfachheit gegen
+Balance:
+
+| Strategie | Allokation | Rebalance |
+| --- | --- | --- |
+| **`HashAllocationStrategy`** *(Default)* | `shardId mod sorted-candidates` | Nur wenn sich die Kandidatenmenge ändert. |
+| **`LeastShardAllocationStrategy`** | Kandidat mit den wenigsten Shards. | Drainiert den geschäftigsten Node in die übrigen. |
+
+## HashAllocationStrategy
+
+```ts
+import { HashAllocationStrategy } from 'actor-ts';
+
+sharding.start({
+  typeName:           'cart',
+  entityProps:        Props.create(() => new CartActor()),
+  extractEntityId:    (msg) => msg.entityId,
+  allocationStrategy: new HashAllocationStrategy(),   // Default
+});
+```
+
+Die Formel:
+
+```ts
+const sorted = [...candidates].sort();
+return sorted[shardId % sorted.length];
+```
+
+**Macht gut:**
+
+- **Deterministisch** — bei derselben Kandidatenmenge landen
+  dieselben Shards immer auf denselben Nodes.
+- **Minimales Rebalance** — nur Shards, deren Hash-Ziel sich
+  ändert, müssen wandern (wenn Nodes joinen oder gehen).
+- **Kein State** — die Strategie verfolgt nichts; sie ist eine
+  reine Funktion.
+
+**Macht nicht:**
+
+- **Nach Last balancieren** — ungleiche Entity-Aktivität bedeutet,
+  dass manche Nodes beschäftigter werden als andere, selbst bei
+  gleicher Shard-Anzahl.
+- **Langsame Nodes kompensieren** — ein kämpfendes Mitglied
+  bekommt trotzdem seinen fairen Anteil an Shards.
+
+Richtig für **gleichmäßige Workloads**, in denen Shards ungefähr
+gleich teuer sind, oder als sinnvoller Default, während du misst,
+ob du etwas Schlaueres brauchst.
+
+## LeastShardAllocationStrategy
+
+```ts
+import { LeastShardAllocationStrategy } from 'actor-ts';
+
+sharding.start({
+  // ...
+  allocationStrategy: new LeastShardAllocationStrategy(
+    /* rebalanceThreshold */ 1,
+    /* maxSimultaneousRebalance */ 3,
+  ),
+});
+```
+
+Die Formel:
+
+- **Allokation**: wähle den Kandidaten mit den wenigsten aktuell
+  gehosteten Shards (Gleichstand wird per Adress-Ordnung
+  gebrochen).
+- **Rebalance**: wenn `max(shardCount) - min(shardCount) >=
+  rebalanceThreshold`, bewege Shards weg vom geschäftigsten Node
+  zum am wenigsten beschäftigten. Höchstens
+  `maxSimultaneousRebalance` Shards pro Durchgang.
+
+**Macht gut:**
+
+- **Konvergiert zur Balance**, selbst wenn Nodes ungleichmäßig
+  beigetreten/gegangen sind.
+- **Gedrosseltes Rebalance** — begrenzte Per-Pass-Bewegungen
+  vermeiden Thrashing.
+- **Address-Tiebreak** — deterministische Ordnung ohne
+  Überraschungen.
+
+**Macht nicht:**
+
+- **Per-Shard-Last kennen** — sie zählt Shards, nicht Arbeit.
+  Zwei Shards mit sehr unterschiedlicher Arbeitsmenge sehen
+  gleich aus.
+- **Sofort reagieren** — `maxSimultaneousRebalance` kappt die
+  Bewegung pro Durchgang; in einem 100-Shard-Cluster, der einen
+  neuen Node gewinnt, dauert volles Rebalance ~33 Durchgänge
+  (× rebalanceInterval — typisch eine Minute oder so).
+
+### Die Knöpfe tunen
+
+```ts
+new LeastShardAllocationStrategy(
+  /* rebalanceThreshold       */ 2, // erst auslösen, wenn Ungleichgewicht ≥ 2
+  /* maxSimultaneousRebalance */ 5, // bis zu 5 Shards pro Durchgang bewegen
+);
+```
+
+- **`rebalanceThreshold`** — größerer Wert = weniger Churn, mehr
+  Toleranz für Ungleichgewicht. `1` lässt jedes Ungleichgewicht
+  ein Rebalance auslösen; `5` wartet auf echten Unterschied.
+- **`maxSimultaneousRebalance`** — größerer Wert = schnellere
+  Konvergenz, mehr Handoff-Verkehr. 3 ist eine vernünftige Mitte.
+
+Für 100-Shard-Cluster mit häufigem Mitgliedschafts-Churn beide
+erhöhen (Threshold ~3, Max ~10). Für 16-Shard-Cluster, bei denen
+jeder Shard-Move teuer ist (großer State), beide niedrig halten.
+
+## Eigene Strategien
+
+Implementiere die Schnittstelle:
+
+```ts
+interface AllocationStrategy {
+  allocate(
+    shardId: number,
+    candidates: ReadonlyArray<NodeAddress>,
+    currentShards: ReadonlyMap<string, ReadonlySet<number>>,
+  ): NodeAddress;
+
+  rebalance(
+    currentShards: ReadonlyMap<string, ReadonlySet<number>>,
+    candidates: ReadonlyArray<NodeAddress>,
+    rebalanceInProgress: ReadonlySet<number>,
+  ): Set<number>;
+}
+```
+
+Nützlich für app-spezifische Regeln:
+
+- **Bestimmte Shards an bestimmte Nodes pinnen** — z. B. Shards
+  mit IDs < 10 gehen immer auf `coordinator`-Rollen-Nodes.
+- **Affinität / Anti-Affinität** — bestimmte Shards zusammenhalten
+  oder immer trennen.
+- **Kapazitätsbewusst** — jede Node-Metrik abfragen, nach
+  verfügbarem Speicher gewichten.
+
+```ts
+class RoleAffinityAllocationStrategy implements AllocationStrategy {
+  constructor(private readonly coordinatorAddrs: Set<string>) {}
+
+  allocate(shardId, candidates, currentShards) {
+    if (shardId < 10) {
+      // Pinne Shards mit niedrigen IDs an Koordinator-Nodes
+      const coord = candidates.find(c => this.coordinatorAddrs.has(c.toString()));
+      if (coord) return coord;
+    }
+    return new HashAllocationStrategy().allocate(shardId, candidates, currentShards);
+  }
+
+  rebalance() { return new Set(); }   // kein Rebalance für das Beispiel
+}
+```
+
+Die Strategie läuft **im Koordinator**, der ein Singleton auf dem
+Cluster-Leader ist. Sie muss **deterministisch genug sein, dass
+zwei Koordinatoren (während einer Leader-Wechsel-Übergabe) zur
+selben Entscheidung konvergieren würden** — oder sich zumindest
+nicht gegenseitig die Arbeit zunichtemachen.
+
+## Performance
+
+`allocate` läuft einmal pro neuer Shard-ID — begrenzt durch
+`numShards` (Default 100). Selbst eine teure Strategie ist hier in
+Ordnung.
+
+`rebalance` läuft alle `rebalanceIntervalMs` (Default 2 s). Es
+sieht den vollen aktuellen Zustand. Halte es unter ~100 ms, um
+die übrige Arbeit des Koordinators nicht zu blockieren.
+
+## Auswahl
+
+Für die meisten Cluster:
+
+1. **Default** (`HashAllocationStrategy`) — fang hier an. Miss.
+2. **`LeastShardAllocationStrategy`** — wechsele, wenn der Default
+   sichtbare Hotspots produziert (ein Node CPU-saturiert,
+   andere idle).
+3. **Eigene** — nur wenn keine der eingebauten passt und du
+   konkrete Hinweise hast, dass die Anpassung hilft.
+
+Greife nicht präventiv zu einer eigenen Strategie. Die Eingebauten
+decken ~95 % der Fälle ab.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Rebalance bei hohen Handoff-Kosten">
+  ```ts
+  new LeastShardAllocationStrategy(1, 100);   // ✗ aggressiv
+  ```
+  Jeder Shard-Move löst einen Handoff aus: Entities stoppen, auf
+  Ack warten, neues Zuhause allokieren, Entities neu spawnen,
+  Journals abspielen. Für persistente Entities mit großem State
+  ist das teuer. Halte `maxSimultaneousRebalance` niedrig (≤ 5)
+  für Big-State-Workloads.
+</Aside>
+
+<Aside type="caution" title="Strategien sind nicht mit dem Entity-Store synchronisiert">
+  ```ts
+  // Die Strategie weiß nichts über `rememberEntities`
+  ```
+  Eine Entity, die `rememberEntities: true` nutzt, um Failover zu
+  überleben, beeinflusst die Allokation nicht — nur die
+  Shard-Anzahl. Ein Node mit vielen "lazy" gemerkten Entities
+  sieht gleich beladen aus wie einer mit aktiven. Das ist
+  normalerweise in Ordnung, kann aber überraschen.
+</Aside>
+
+<Aside type="caution" title="Keine Least-Load-Strategie eingebaut">
+  Das Framework liefert keine Strategie aus, die Per-Node-CPU oder
+  -Speichermetriken nutzt. `LeastShard` zählt Shards, keine
+  Arbeit. Für wirklich lastbewusste Allokation ist eine eigene
+  Strategie der einzige Weg.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[Sharding-Überblick](/de/cluster/sharding/overview/)** —
+  das große Bild: wie Allokation mit Rebalance + Handoff
+  zusammenspielt.
+- **[Rebalance](/de/cluster/sharding/rebalance/)** — das
+  Handoff-Protokoll, das die Strategie auslöst.
+- **[Remember Entities](/de/cluster/sharding/remember-entities/)** —
+  was mit *Platzierung* einer Entity nach einem Respawn passiert.
+- **[Sharded Daemon Process](/de/cluster/sharding/sharded-daemon-process/)** —
+  nutzt standardmäßig `LeastShardAllocationStrategy`.

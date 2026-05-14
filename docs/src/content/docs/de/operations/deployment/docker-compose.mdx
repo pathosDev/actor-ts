@@ -1,0 +1,211 @@
+---
+title: Docker-Compose-Deployment
+description: Multi-Node-Cluster lokal über Docker Compose — nützlich, um Cluster-Verhalten auf einer einzelnen Maschine zu testen, verteilte Features zu demonstrieren und für lokale Entwicklung ohne Kubernetes-Overhead.
+---
+
+Für **lokale Multi-Node-Cluster** ohne Kubernetes hochzufahren ist
+Docker Compose ein schneller Weg, 3+ Nodes deiner actor-ts-App +
+Dependencies (Cassandra, NATS, Redis) zu betreiben.
+
+```yaml
+# docker-compose.yml
+version: '3.9'
+
+services:
+  actor-ts-1:
+    image: my-app:latest
+    environment:
+      - ACTOR_TS_HOSTNAME=actor-ts-1
+      - ACTOR_TS_PORT=2552
+      - ACTOR_TS_SEEDS=actor-ts-1:2552,actor-ts-2:2552,actor-ts-3:2552
+    ports:
+      - "8081:8080"   # App-HTTP
+      - "8551:8558"   # Management
+    depends_on: [cassandra]
+
+  actor-ts-2:
+    image: my-app:latest
+    environment:
+      - ACTOR_TS_HOSTNAME=actor-ts-2
+      - ACTOR_TS_PORT=2552
+      - ACTOR_TS_SEEDS=actor-ts-1:2552,actor-ts-2:2552,actor-ts-3:2552
+    ports:
+      - "8082:8080"
+      - "8552:8558"
+    depends_on: [cassandra]
+
+  actor-ts-3:
+    image: my-app:latest
+    environment:
+      - ACTOR_TS_HOSTNAME=actor-ts-3
+      - ACTOR_TS_PORT=2552
+      - ACTOR_TS_SEEDS=actor-ts-1:2552,actor-ts-2:2552,actor-ts-3:2552
+    ports:
+      - "8083:8080"
+      - "8553:8558"
+    depends_on: [cassandra]
+
+  cassandra:
+    image: cassandra:4.1
+    ports:
+      - "9042:9042"
+    healthcheck:
+      test: ["CMD", "cqlsh", "-e", "describe keyspaces"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+```
+
+```bash
+docker compose up -d
+# 3 actor-ts-Nodes bilden einen Cluster, Persistence auf geteiltem Cassandra
+```
+
+## Warum Docker Compose
+
+Für lokale Entwicklung:
+
+- **Cluster-Verhalten testen** ohne K8s-Setup.
+- **Produktionsnahe Topologie** lokal reproduzieren — mehrere
+  Nodes, echtes Netzwerk, echtes Persistence-Backend.
+- **Verteilte Features demonstrieren** — Teamkollegen oder in
+  einer Präsentation.
+
+Für **Produktion** ist das nicht das richtige Werkzeug — Docker
+Compose fehlen die Scheduling-, Scaling- und Recovery-Primitiven,
+die K8s mitbringt. Siehe
+[Kubernetes-Deployment](/de/operations/deployment/kubernetes/) für
+Produktion.
+
+## Cluster-Discovery
+
+Im Compose-File:
+
+```yaml
+environment:
+  - ACTOR_TS_SEEDS=actor-ts-1:2552,actor-ts-2:2552,actor-ts-3:2552
+```
+
+Die Seed-Liste jedes Nodes enthält sich selbst + alle Peers. Composes
+DNS löst `actor-ts-1` usw. zu Container-IPs auf.
+
+Die App:
+
+```ts
+import { ConfigSeedProvider } from 'actor-ts';
+
+const seeds = await new ConfigSeedProvider({
+  envVar: 'ACTOR_TS_SEEDS',
+}).lookup();
+
+await Cluster.join(system, {
+  host:  process.env.ACTOR_TS_HOSTNAME!,
+  port:  parseInt(process.env.ACTOR_TS_PORT!),
+  seeds,
+});
+```
+
+Für **dynamische Cluster-Größen** in Compose (Skalieren via `docker
+compose up --scale actor-ts=5`), nutze stattdessen den
+[DNS-Seed-Provider](/de/discovery/seed-providers/dns/).
+
+## Geteilte Persistence
+
+```yaml
+cassandra:
+  image: cassandra:4.1
+```
+
+Ein einzelner Cassandra-Container untermauert alle drei actor-ts-Nodes.
+Ein geteiltes Journal lässt sharded Entities natürlich zwischen
+Nodes migrieren.
+
+Für **einfache lokale Entwicklung** kannst du SQLite pro Node nehmen
+— aber sharded Entities könnten dann nicht migrieren (jeder Node
+kennt nur seine eigene SQLite-Datei).
+
+## Restarts
+
+```yaml
+services:
+  actor-ts-1:
+    restart: unless-stopped
+```
+
+Compose startet gecrashte Container automatisch neu. Beim Restart
+tritt der Node dem Cluster via Seed-Liste wieder bei — die anderen
+zwei Nodes laufen weiter, der genesende holt per Gossip auf.
+
+## Ressourcenlimits
+
+```yaml
+services:
+  actor-ts-1:
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus:   '1.0'
+```
+
+Für das Testen speicherbegrenzter Szenarien setze explizite Limits.
+
+## Beobachten
+
+```bash
+# Cluster-Membership vom Management-Port eines beliebigen Nodes prüfen:
+curl http://localhost:8551/cluster/members
+
+# Logs tailen:
+docker compose logs -f actor-ts-1
+
+# Prometheus-Metriken:
+curl http://localhost:8551/metrics
+```
+
+Für **Multi-Node-Debugging** ergänze Compose um Prometheus- +
+Grafana-Container und zeig sie auf alle drei Management-Ports.
+
+## Wann KEIN Docker Compose
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Produktion">
+  ```yaml
+  # ✗ docker-compose.yml auf dem Produktionsserver
+  ```
+  Compose beherrscht nicht:
+  - **Cross-Host-Scheduling** (nur Single-Machine).
+  - **Rolling Updates** (ein Container nach dem anderen, keine
+    Koordination).
+  - **Health-basiertes Replacement** (Restart bei Crash, aber nicht
+    "Evict aus dem LB während Deployment").
+  - **Cluster-Autoscaling**.
+  Nimm K8s oder einen anderen Orchestrator für Prod.
+</Aside>
+
+<Aside type="caution" title="Cluster über Maschinen hinweg">
+  Compose ist Single-Machine. Für Multi-Machine-Cluster (echt
+  verteilt) nimm K8s oder ein Compose-Äquivalent für Multi-Host
+  (Docker Swarm — heute weniger verbreitet).
+</Aside>
+
+<Aside type="caution" title="Statische Seed-Liste">
+  ```yaml
+  ACTOR_TS_SEEDS=actor-ts-1:2552,actor-ts-2:2552,actor-ts-3:2552
+  ```
+  Auf 4 Nodes zu skalieren erfordert das Update der Env-Vars auf
+  allen Containern. Für dynamische lokale Cluster nutze den
+  DNS-Seed-Provider mit Composes eingebauten DNS-Aliases.
+</Aside>
+
+## Wohin als nächstes
+
+- **[Kubernetes-Deployment](/de/operations/deployment/kubernetes/)** —
+  der Produktionspfad.
+- **[Process Manager](/de/operations/deployment/process-manager/)** —
+  für VM-basiertes Deployment.
+- **[Discovery-Überblick](/de/discovery/overview/)** —
+  Seed-Provider für verschiedene Umgebungen.
+- **[Operations-Überblick](/de/operations/overview/)** —
+  die Produktions-Checkliste.

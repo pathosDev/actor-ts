@@ -1,0 +1,325 @@
+---
+title: Actor
+description: Die fundamentale Actor-Basisklasse — Mailbox, onReceive, Lifecycle-Hooks, Context-Referenzen. Alles andere im Framework baut auf diesen Primitives auf.
+---
+
+Die `Actor`-Klasse ist das fundamentale Primitive in actor-ts.  Jede
+Komponente, die du durch Erweitern von `Actor` baust, bekommt eine
+private Mailbox, eine single-threaded `onReceive`-Schleife,
+Lifecycle-Hooks und eine Handvoll Context-Referenzen (`self`, `sender`,
+`system`, `log`, `context`), um mit dem Rest der Runtime zu sprechen.
+
+Alles andere im Framework — Supervision, Sharding, Persistenz,
+HTTP, Broker — baut auf den Primitives auf, die diese Seite abdeckt.
+
+## Was ein Actor ist
+
+Drei Eigenschaften definieren einen Actor in actor-ts:
+
+1. **Eine private Mailbox.**  Nachrichten an den Actor landen in dieser
+   Mailbox.  Niemand — nicht einmal der Actor selbst — kann direkt in
+   die Mailbox eines anderen Actors greifen.
+2. **Eine single-threaded Nachrichtenschleife.**  Das Framework
+   verarbeitet Nachrichten aus der Mailbox eine nach der anderen.  Zwei
+   Nachrichten laufen nie gleichzeitig für denselben Actor; innerhalb
+   von `onReceive` liest und mutierst du die Felder des Actors ohne
+   Locks oder Atomics.
+3. **Ein Handle, keine Referenz auf die Instanz.**  Wenn du "eine
+   Nachricht an einen Actor sendest", hast du in Wirklichkeit einen
+   `ActorRef<T>` — ein dünnes, ortstransparentes Handle.  Das Framework
+   hält die echte `Actor`-Instanz.  Du kannst Refs über den Cluster
+   weitergeben, sie speichern, sie an andere Actors übergeben; die
+   darunterliegende Klasse siehst du nie.
+
+## Einen definieren
+
+```ts
+import { Actor, ActorSystem, Props } from 'actor-ts';
+
+type Cmd =
+  | { kind: 'inc' }
+  | { kind: 'reset' };
+
+class Counter extends Actor<Cmd> {
+  private count = 0;
+
+  override onReceive(cmd: Cmd): void {
+    if (cmd.kind === 'inc')   this.count++;
+    else if (cmd.kind === 'reset') this.count = 0;
+    this.log.info(`count is now ${this.count}`);
+  }
+}
+```
+
+Drei Dinge, die auffallen:
+
+- **Der Typparameter `<Cmd>`** schränkt ein, welche Nachrichten dieser
+  Actor akzeptiert.  `ref.tell({ kind: 'bogus' })` ist ein
+  TypeScript-Fehler an der Aufrufstelle.  Siehe
+  [Nachrichten](/de/fundamentals/messages/) für die
+  Discriminated-Union-Konvention, die diese Codebasis überall verwendet.
+- **`override onReceive(cmd: Cmd): void`** ist der einzige Pflicht-Override.
+  Die Basisklasse deklariert ihn `abstract`, der Compiler kompiliert
+  also nicht, wenn du ihn vergisst.
+- **`this.log`, `this.count`** — du hast vollen Zugriff auf
+  Instanzfelder.  Single-Threaded-Verarbeitung bedeutet, dass parallele
+  Lese-/Schreibzugriffe kein Thema sind; du denkst über Zustand nach wie
+  in einem Single-Threaded-Programm.
+
+## Einen spawnen
+
+Du machst nicht direkt `new Counter()`.  Das Framework muss
+kontrollieren, **wann** die Instanz erstellt wird (auf ihrem eigenen
+Mailbox-Processing-Thread, nicht auf dem des Aufrufers), und es muss
+Context injizieren (die `self`-Ref, die Supervisor-Strategie, die
+Eltern-Referenz).  Statt einer Instanz übergibst du also eine Factory:
+
+```ts
+const system = ActorSystem.create('demo');
+
+// Anonymer Actor — das System wählt einen Namen.
+const counter = system.actorOf(Props.create(() => new Counter()));
+
+// Benannter Actor — nützlich für Log-Zeilen + Pfad-basiertes Lookup.
+const counter2 = system.actorOf(Props.create(() => new Counter()), 'counter');
+```
+
+`Props.create(...)` packt die Factory + Supervisor-Strategie +
+Dispatcher-Wahl in einen Wert.  Siehe [Props](/de/fundamentals/props/)
+für die volle Schnittstelle.
+
+## Nachrichten senden
+
+Die zurückgegebene `ActorRef` hat ein wichtiges Verb: `tell(message)`.
+
+```ts
+counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'reset' });
+```
+
+`tell` ist **fire-and-forget**.  Es legt die Nachricht in die Mailbox
+und kehrt sofort zurück — der Actor verarbeitet sie in seinem eigenen
+Rhythmus.  Für Request/Response siehe
+[Ask-Pattern](/de/fundamentals/ask-pattern/).
+
+## Die Context-Referenzen
+
+Innerhalb von `onReceive` (und den Lifecycle-Hooks) geben dir vier
+Referenzen Zugriff auf die Runtime:
+
+```ts
+class Echo extends Actor<{ text: string }> {
+  override onReceive(msg: { text: string }): void {
+    // 1. `this.self` — eine Ref auf mich.  Gib das weiter, wenn andere
+    //    Actors mit mir sprechen können sollen.
+    this.log.info(`I am ${this.self.path}`);
+
+    // 2. `this.sender` — Option<ActorRef> für den Absender dieser
+    //    Nachricht.  `None`, wenn kein Absender angehängt war (z.B.
+    //    `tell` von außerhalb des Actor-Systems).  Verwende
+    //    `.forEach(...)`, um nur dann zu antworten, wenn es einen gibt.
+    this.sender.forEach((replyTo) => replyTo.tell({ echo: msg.text }));
+
+    // 3. `this.system` — das ActorSystem.  Top-Level-Actors spawnen,
+    //    Timer planen, Extensions registrieren.
+    void this.system;
+
+    // 4. `this.log` — ein Logger, der bereits mit dem Pfad des Actors
+    //    als strukturiertem Log-Kontext vorverdrahtet ist.
+    this.log.debug('echo done');
+
+    // (5. `this.context` — der volle ActorContext für tiefere APIs:
+    //     `context.spawn(...)` für Kinder, `context.watch(...)` für
+    //     Death-Watch, `context.become(...)` zum Verhaltenswechsel.)
+    void this.context;
+  }
+}
+```
+
+`sender` ist `Option<ActorRef>`, weil nicht jede Nachricht einen Sender
+hat: ein `tell` von außerhalb der Actor-Welt (z.B. von einem
+HTTP-Handler) hängt `None` an.  Verwende `.forEach`, um nur zu
+antworten, wenn einer da ist, oder `.getOrElse(system.deadLetters)`,
+wenn du einen Fallback willst.
+
+## Lifecycle-Hooks
+
+Die Basisklasse definiert vier Lifecycle-Hooks; alle sind
+standardmäßig No-Ops.  Überschreibe die, die du brauchst.
+
+```ts
+class FileWriter extends Actor<{ line: string }> {
+  private handle!: FileHandle;
+
+  override async preStart(): Promise<void> {
+    this.handle = await fs.open(this.config.path, 'a');
+    this.log.info('opened ' + this.config.path);
+  }
+
+  override onReceive(msg: { line: string }): void {
+    this.handle.write(msg.line + '\n').catch((e) => this.log.warn(e));
+  }
+
+  override async postStop(): Promise<void> {
+    await this.handle.close();
+    this.log.info('closed ' + this.config.path);
+  }
+}
+```
+
+Die vier Hooks:
+
+| Hook | Wann er läuft | Default |
+| --- | --- | --- |
+| `preStart()` | Nach der Konstruktion, vor der ersten Nachricht.  Dateien öffnen, mit Brokern verbinden, Subscriber registrieren. | No-Op |
+| `postStop()` | Nachdem der Actor gestoppt wurde (Kinder bereits gestoppt).  Ressourcen schließen, deregistrieren.  Läuft einmal. | No-Op |
+| `preRestart(reason, message?)` | Vor einem Restart, auf der **gleich-zu-verwerfenden** Instanz.  Ruft standardmäßig `postStop()` auf. | ruft `postStop()` |
+| `postRestart(reason)` | Auf der **frischen** Instanz nach einem Restart.  Ruft standardmäßig `preStart()` auf. | ruft `preStart()` |
+
+Alle vier können `Promise<void>` zurückgeben — das Framework wartet
+vor der nächsten Phase ab.  Ein Throw in `preStart` wird an den
+Supervisor eskaliert.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="tip" title="Restart-Semantik">
+  Wenn der Supervisor entscheidet, einen abgestürzten Actor neu zu starten
+  (**restart**), wirft das Framework die kaputte Instanz komplett weg
+  (jeglicher interner Zustand ist also weg) und baut eine neue aus
+  derselben `Props.create`-Factory.  Nachrichten, die während des
+  Restart-Fensters ankamen, bleiben in der Mailbox; die neue Instanz
+  nimmt sie auf.  Siehe
+  [Supervision](/de/fundamentals/supervision/) für den vollen
+  Entscheidungsbaum.
+</Aside>
+
+## Kinder
+
+Actors können Kinder haben.  Verwende `context.spawn` aus dem
+`onReceive` der Eltern heraus:
+
+```ts
+class Parent extends Actor<{ kind: 'add-child'; name: string }> {
+  override onReceive(msg: { kind: 'add-child'; name: string }): void {
+    const child = this.context.spawn(
+      Props.create(() => new Worker()),
+      msg.name,
+    );
+    this.log.info(`spawned child ${child.path}`);
+  }
+}
+```
+
+Der volle Pfad des Kindes wird `/<parent>/<child-name>`.  Kinder sind
+an den Lebenszyklus der Eltern gebunden — wenn die Eltern stoppen,
+stoppen zuerst alle Kinder (`postStop` läuft von unten nach oben).
+Supervision-Entscheidungen für ein Kind gehen an die
+Supervisor-Strategie der Eltern.
+
+Siehe [Actor-Pfade](/de/fundamentals/actor-paths/) für die
+Pfad-Hierarchie und [Supervision](/de/fundamentals/supervision/) dafür,
+wie die Fehlerausbreitung zwischen Eltern und Kindern funktioniert.
+
+## Async `onReceive`
+
+`onReceive` kann `async` sein (gibt `Promise<void>` zurück):
+
+```ts
+class DbWriter extends Actor<{ row: Row }> {
+  override async onReceive(msg: { row: Row }): Promise<void> {
+    await this.db.insert(msg.row);
+    this.log.debug('wrote row ' + msg.row.id);
+  }
+}
+```
+
+**Das Framework wartet auf das zurückgegebene Promise, bevor es die
+nächste Nachricht** aus der Mailbox holt.  Dass `db.insert` pro Actor
+seriell läuft, ist also garantiert — kein Bedarf für einen
+Transaktion-pro-Nachricht-Schutz.
+
+Der Trade-off ist Durchsatz: ein langsames `await` blockiert die
+Nachrichtenverarbeitung **dieses** Actors.  Andere Actors sind nicht
+betroffen (sie haben ihre eigenen Mailboxes), aber wenn du einen Actor
+pro HTTP-Request erstellt hast und jeder 500 ms auf einen DB-Call
+wartet, ist dein Durchsatz auf einen Request pro 500 ms pro Actor
+begrenzt.
+
+Der übliche Fix: einen Child-Actor pro lang laufender Task spawnen,
+den langsamen Op laufen lassen und ihn dem Parent das Ergebnis tellen
+lassen:
+
+```ts
+class DbWriterFanout extends Actor<{ row: Row }> {
+  override onReceive(msg: { row: Row }): void {
+    // Spawn-and-forget: Kind erledigt den langsamen DB-Write, Parent
+    // bleibt für die nächste Nachricht in der Mailbox verfügbar.
+    this.context.spawn(Props.create(() =>
+      new SingleShotWriter(this.db, msg.row)
+    ));
+  }
+}
+```
+
+## Häufige Fallstricke
+
+<Aside type="caution" title="Speichere keinen Mailbox-Zustand im Closure von onReceive">
+  ```ts
+  // SCHLECHT: `seen` ist eine lokale Variable in `onReceive` — jeder
+  // Aufruf bekommt eine frische, leere Map.  Keine Deduplikation über
+  // Nachrichten hinweg.
+  override onReceive(msg: M) {
+    const seen = new Map();
+    if (seen.has(msg.id)) return;
+    seen.set(msg.id, true);
+  }
+
+  // GUT: `seen` ist ein Instanzfeld — bleibt über Aufrufe hinweg erhalten.
+  private seen = new Map();
+  override onReceive(msg: M) {
+    if (this.seen.has(msg.id)) return;
+    this.seen.set(msg.id, true);
+  }
+  ```
+  Actor-Zustand lebt auf `this`, niemals innerhalb des Nachrichten-Handlers.
+</Aside>
+
+<Aside type="caution" title="Capture keine Refs von außerhalb des Actors in Closures, die den Actor überleben">
+  Eine `ActorRef`, die in einem globalen `setTimeout`-Callback gefangen
+  ist, überlebt die Lebenszeit des Actors — wenn der Actor stoppt,
+  feuert der Timer trotzdem und das `tell` landet in den Dead Letters.
+  Verwende `context.scheduler` (das Timer auf `postStop` automatisch
+  cancelt) statt rohem `setTimeout` für actor-gebundenes Scheduling.
+  Siehe [Timer und Scheduling](/de/fundamentals/timers-and-scheduling/).
+</Aside>
+
+<Aside type="caution" title="`this.sender` gibt Option zurück, nicht ActorRef">
+  ```ts
+  // Falsch — `sender` ist `Option<ActorRef>`, nicht `ActorRef`.
+  this.sender.tell({ result });
+
+  // Richtig — `.forEach` führt die Funktion nur aus, wenn es einen Sender gibt.
+  this.sender.forEach((replyTo) => replyTo.tell({ result }));
+  ```
+  `tell` von außerhalb des Actor-Systems trägt keinen Sender,
+  unbedingtes `sender.tell(...)` würde bei solchen Nachrichten
+  einen Throw werfen.
+</Aside>
+
+## Wie es weitergeht
+
+- **[Nachrichten](/de/fundamentals/messages/)** — die
+  Discriminated-Union-Konvention, die jeder Actor für seinen
+  eingehenden Typ verwendet.
+- **[Actor-Pfade](/de/fundamentals/actor-paths/)** — wie
+  Eltern/Kind-Hierarchien Adressen bilden.
+- **[Supervision](/de/fundamentals/supervision/)** — was
+  passiert, wenn `onReceive` einen Throw wirft.
+- **[Become und Stash](/de/fundamentals/become-and-stash/)** —
+  Verhaltenswechsel zur Laufzeit und Puffern von Nachrichten.
+- **[Ask-Pattern](/de/fundamentals/ask-pattern/)** —
+  Request/Response, wenn Fire-and-Forget nicht reicht.
+
+Die [`Actor`-Klassen-API-Referenz](/api/classes/actor/) hat die
+vollständige Signatur für jede hier diskutierte Methode.

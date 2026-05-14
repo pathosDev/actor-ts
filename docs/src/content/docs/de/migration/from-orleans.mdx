@@ -1,0 +1,321 @@
+---
+title: Von Microsoft Orleans
+description: Orleans-Grains mappen eng auf sharded Entities in actor-ts - beide sind schlüsselbasiert, virtuell adressierbar, mit automatischer Aktivierung / Deaktivierung. Dieser Guide führt durch die Modell-Unterschiede und Code-Übersetzungen.
+---
+
+[Microsoft Orleans](https://learn.microsoft.com/en-us/dotnet/orleans/)
+ist ein **grainbasiertes Actor-Framework für .NET**.  Grains
+sind **virtuell** - über ID adressiert, beim ersten Eingang
+automatisch gespawnt, im Leerlauf automatisch deaktiviert.
+Sharded Entities in actor-ts sind das nächste Analogon.
+
+## Das Grain ↔ Sharded-Entity-Mapping
+
+```
+Orleans:                       actor-ts:
+  IGreeter Grain-Interface    →  TypeScript-Nachrichten-Typen (Cmd-Union)
+  GreeterGrain : Grain         →  Actor, der PersistentActor erweitert (oder normaler Actor)
+  IGrainKey                    →  string Entity-ID
+  client.GetGrain<IGreeter>(id)→  Referenz + tell über Sharding-Region
+```
+
+## Before/After
+
+### Grain-Definition
+
+```csharp
+// Orleans (C#):
+public interface IUserGrain : IGrainWithStringKey {
+  Task<UserProfile> GetProfile();
+  Task UpdateName(string name);
+}
+
+public class UserGrain : Grain, IUserGrain {
+  private UserProfile _profile = new();
+
+  public Task<UserProfile> GetProfile() => Task.FromResult(_profile);
+  public Task UpdateName(string name) {
+    _profile = _profile with { Name = name };
+    return Task.CompletedTask;
+  }
+}
+```
+
+```ts
+// actor-ts:
+import { Actor, type ActorRef } from 'actor-ts';
+
+type Cmd =
+  | { entityId: string; kind: 'get-profile'; replyTo: ActorRef<UserProfile> }
+  | { entityId: string; kind: 'update-name'; name: string };
+
+class UserActor extends Actor<Cmd> {
+  private profile: UserProfile = { name: '', email: '' };
+
+  override onReceive(cmd: Cmd): void {
+    if (cmd.kind === 'get-profile') cmd.replyTo.tell(this.profile);
+    if (cmd.kind === 'update-name')  this.profile = { ...this.profile, name: cmd.name };
+  }
+}
+```
+
+Unterschiede:
+
+- **Methodenaufrufe** werden zu **Nachrichten-Arten + Handlern**.
+- **`Task<T>`-Rückgaben** werden zu **expliziten `replyTo`-Refs**.
+- **`IGrainWithStringKey`** ist implizit -
+  `extractEntityId(cmd)` zieht die ID auf der Sharding-Schicht.
+
+### Grain-Client
+
+```csharp
+// Orleans:
+var grain = grainFactory.GetGrain<IUserGrain>("user-42");
+var profile = await grain.GetProfile();
+await grain.UpdateName("Alice");
+```
+
+```ts
+// actor-ts:
+import { ClusterSharding } from 'actor-ts';
+
+const region = ClusterSharding.get(system, cluster).start<Cmd>({
+  typeName: 'user',
+  entityProps: Props.create(() => new UserActor()),
+  extractEntityId: (cmd) => cmd.entityId,
+});
+
+// Profil via ask holen:
+const profile = await ask(region, {
+  entityId: 'user-42',
+  kind:     'get-profile',
+  replyTo:  undefined as any,
+}, 5_000);
+
+// Update via tell:
+region.tell({ entityId: 'user-42', kind: 'update-name', name: 'Alice' });
+```
+
+Die **Region** ist eine einzelne `ActorRef` - Nachrichten werden
+per `extractEntityId` geroutet.  Jede einzigartige ID hat einen
+Actor; beim ersten Eingang spawnt er; bei Leerlauf passiviert
+er.
+
+### Aktivierung / Deaktivierung
+
+```csharp
+// Orleans (Lifecycle-Methoden):
+public override Task OnActivateAsync(CancellationToken token) {
+  // State aus Persistenz laden
+  return base.OnActivateAsync(token);
+}
+
+public override Task OnDeactivateAsync(DeactivationReason reason, CancellationToken token) {
+  // Cleanup
+  return base.OnDeactivateAsync(reason, token);
+}
+```
+
+```ts
+// actor-ts:
+class UserActor extends Actor<Cmd> {
+  override preStart(): void {
+    // Äquivalent zu OnActivateAsync
+  }
+  override postStop(): void {
+    // Äquivalent zu OnDeactivateAsync
+  }
+}
+```
+
+Die `preStart`- + `postStop`-Methoden des Frameworks mappen
+direkt.
+
+Für **automatisches Passivieren bei Leerlauf**:
+
+```ts
+sharding.start({
+  // ...
+  passivationIdleMs: 30_000,   // nach 30 s Leerlauf passivieren - wie Orleans' Default
+});
+```
+
+### Persistenz
+
+```csharp
+// Orleans Event Sourcing:
+[LogConsistencyProvider(ProviderName = "EventStore")]
+public class AccountGrain : JournaledGrain<AccountState, AccountEvent>, IAccount {
+  public Task Deposit(decimal amount) {
+    RaiseEvent(new Deposited(amount));
+    return ConfirmEvents();
+  }
+}
+```
+
+```ts
+// actor-ts:
+class Account extends PersistentActor<Cmd, Event, State> {
+  readonly persistenceId = `account-${this.entityId}`;
+
+  initialState(): State { return { balance: 0 }; }
+
+  onEvent(state: State, event: Event): State {
+    if (event.kind === 'deposited') return { balance: state.balance + event.amount };
+    return state;
+  }
+
+  onCommand(state: State, cmd: Cmd): void {
+    if (cmd.kind === 'deposit') {
+      this.persist({ kind: 'deposited', amount: cmd.amount }, () => {});
+    }
+  }
+}
+```
+
+Sehr ähnliches Pattern.  Orleans nutzt **RaiseEvent + ConfirmEvents**;
+actor-ts nutzt **persist mit Callback**.
+
+## Konzeptionelle Unterschiede
+
+| Orleans | actor-ts |
+| --- | --- |
+| **Virtuelle Actors** - immer existierend, auf Anforderung gespawnt. | **Sharded Entities** sind ähnlich; müssen als sharded Typ **gestartet** werden. |
+| **Verzeichnisbasierte Platzierung** - Silos schlagen Grain-Standorte nach. | **Hash-Mod-Region**-Platzierung per Default; Koordinator verwaltet. |
+| **Streams** - Push-basierter Datenfluss. | **DistributedPubSub** für ähnliche Fan-out-Semantik. |
+| **Reminders** - dauerhafte Timer. | `context.timers` + Persistenz - manuell kombinieren. |
+| **Transaktionen über Grains hinweg** - eingebaut. | **NICHT eingebaut** - nutze Sagas oder Two-Phase-Commit-Patterns. |
+
+## Reminders
+
+```csharp
+// Orleans:
+await this.RegisterOrUpdateReminder("daily-check", TimeSpan.FromDays(1), TimeSpan.FromDays(1));
+
+public Task ReceiveReminder(string reminderName, TickStatus status) {
+  // handle
+}
+```
+
+```ts
+// actor-ts - kein direktes Äquivalent, baue mit Persistenz + Timern:
+class MyActor extends PersistentActor<Cmd, Event, State> {
+  override preStart(): void {
+    super.preStart();
+    this.context.timers.startTimerWithFixedDelay(
+      'daily-check',
+      { kind: 'daily-check' },
+      24 * 60 * 60_000,
+    );
+  }
+}
+```
+
+Timer in actor-ts **überleben Restart nicht** - für echte
+"dauerhafte Reminders" würdest du den Zeitplan persistieren und
+in `onRecoveryComplete` neu armieren.
+
+## Streams
+
+```csharp
+// Orleans Streams:
+var stream = streamProvider.GetStream<Order>(streamId, "orders");
+await stream.OnNextAsync(order);
+await stream.SubscribeAsync((order, _) => ...);
+```
+
+```ts
+// actor-ts-Äquivalent - DistributedPubSub:
+const ps = DistributedPubSub.start(system, { cluster });
+
+ps.mediator.tell(new Publish('orders', order));
+ps.mediator.tell(new Subscribe('orders', subscriberRef));
+```
+
+Cluster-weites PubSub.  Keine Grain-Beteiligung; topic-basierter
+Fan-out.
+
+## Cross-Grain-Transaktionen
+
+```csharp
+// Orleans Transactions (.NET 8+):
+[Transaction(TransactionOption.Required)]
+public async Task Transfer(...) {
+  await fromAccount.Withdraw(amount);
+  await toAccount.Deposit(amount);
+}
+```
+
+actor-ts **hat keine eingebauten Transaktionen über Actors
+hinweg**.  Baue sie mit **Sagas**:
+
+```ts
+class TransferSaga extends PersistentFSM<...> {
+  // Schritt 1: vom Quellkonto abheben.
+  // Schritt 2: auf Zielkonto einzahlen.
+  // Bei Fehlschlag: kompensieren (Quellkonto rückerstatten).
+}
+```
+
+Siehe [PersistentFSM](/de/persistence/fsm/persistent-fsm/)
+für das Saga-Pattern.
+
+## Cluster-Setup
+
+```csharp
+// Orleans (mit K8s):
+var host = Host.CreateDefaultBuilder()
+  .UseOrleans(siloBuilder => siloBuilder
+    .UseKubernetesHosting()
+    .ConfigureEndpoints(siloPort: 11111, gatewayPort: 30000)
+  )
+  .Build();
+```
+
+```ts
+// actor-ts:
+import { KubernetesApiSeedProvider } from 'actor-ts';
+
+const seeds = await new KubernetesApiSeedProvider({
+  namespace: process.env.K8S_NAMESPACE!,
+  labelSelector: 'app=my-app',
+  containerPort: 2552,
+}).discover();
+
+const cluster = await Cluster.join(system, {
+  host: process.env.POD_IP!,
+  port: 2552,
+  seeds,
+});
+```
+
+Andere API-Form, dieselbe Idee.  K8s-Pod-Discovery →
+Cluster-Join.
+
+## Was du aufgibst
+
+- **Method-Call-Semantik** - Orleans-Grain-Aufrufe sind
+  typisierte Methodenaufrufe; actor-ts hat Nachrichten-Typen +
+  Handler.  Verboser; expliziter.
+- **Verteilte Transaktionen über Grains hinweg** - nicht
+  eingebaut.
+- **Reminders als First-Class-Primitive** - kombiniere Timer +
+  Persistenz.
+- **.NET-Ökosystem** - Wechsel zur TS- / JS-Runtime.
+
+## Was du gewinnst
+
+- **TypeScript** für End-to-End-Typisierung.
+- **Buns schneller Start** vs. .NETs Warm-up.
+- **Open-Source-Ökosystem** für Runtime + Persistenz-Backends.
+
+## Wohin als Nächstes
+
+- **[Quickstart](/de/intro/quickstart/)** - actor-ts
+  Hello-World.
+- **[Sharding-Übersicht](/de/cluster/sharding/overview/)** -
+  das nächste Analogon zu Orleans-Grains.
+- **[PersistentActor](/de/persistence/persistent-actor/)** -
+  für Event-Sourced Grains.
+- **[PersistentFSM](/de/persistence/fsm/persistent-fsm/)** -
+  Saga-Pattern für Cross-Grain-Workflows.

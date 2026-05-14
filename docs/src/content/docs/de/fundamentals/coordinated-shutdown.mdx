@@ -1,0 +1,364 @@
+---
+title: Coordinated Shutdown
+description: Ein phasenweises Shutdown-DSL — registriere Tasks gegen benannte Phasen (HTTP drainen, Cluster verlassen, Journals flushen, System terminieren), das Framework führt sie in Abhängigkeitsreihenfolge mit Per-Phase-Timeouts, Recovery und eingebauten SIGTERM-Hooks aus.
+---
+
+`system.terminate()` stoppt das Actor-System, aber eine
+Produktions-App hat normalerweise vor dem Stopp noch Arbeit:
+laufende HTTP-Requests drainen, dem Cluster sagen, dass du gehst,
+ein Journal flushen, Broker-Verbindungen schließen.  Und diese
+Schritte haben eine Reihenfolge — verlasse den Cluster *bevor* du
+die Sharding-Region stoppst; stoppe den HTTP-Server *bevor* die
+Actors, die Requests behandeln.
+
+**Coordinated Shutdown** ist das DSL dafür.  Du registrierst Tasks
+gegen benannte **Phasen**; das Framework führt sie in
+Abhängigkeitsreihenfolge aus, eine Phase nach der nächsten, jede mit
+einem Timeout-Cap.  Ein Aufruf von `run()` aus einem beliebigen
+Trigger (SIGTERM, K8s-PreStop-Hook, ein Admin-Endpoint) führt die
+ganze Pipeline einmal aus.
+
+## Das minimale Beispiel
+
+```ts
+import {
+  ActorSystem,
+  CoordinatedShutdownId,
+  Phases,
+  type Reason,
+} from 'actor-ts';
+
+const system = ActorSystem.create('my-app');
+const cs = system.extension(CoordinatedShutdownId);
+
+cs.addTask(Phases.ServiceUnbind, 'close-http', async (reason) => {
+  await httpServer.close();
+});
+
+cs.addTask(Phases.ServiceRequestsDone, 'drain-in-flight', async () => {
+  await waitForInFlightRequests(/* bis zu 10s */);
+});
+
+cs.installProcessHooks();   // SIGTERM/SIGINT → cs.run(ProcessTerminateReason)
+```
+
+Drei Dinge passieren, wenn SIGTERM ankommt:
+
+1. Die Runtime ruft `cs.run(new ProcessTerminateReason('SIGTERM'))`.
+2. Die Phasen laufen in kanonischer Reihenfolge.  Innerhalb jeder
+   Phase laufen alle registrierten Tasks **parallel**; die Phase
+   wartet auf alle (oder auf ihre Timeouts).
+3. Die Pipeline endet mit dem eingebauten
+   `actor-system-terminate`-Task, der `system.terminate()` für dich
+   aufruft.
+
+Alles dazwischen — HTTP-Unbinding, Cluster-Leave, Journal-Flush —
+ist das, was du hinzugefügt hast.
+
+## Die 12 kanonischen Phasen
+
+In Ausführungsreihenfolge gelistet:
+
+| # | Phasen-Name | Typische Tasks |
+| --- | --- | --- |
+| 1 | `before-service-unbind` | Letzte Ankündigungen, bevor der Server keine Verbindungen mehr akzeptiert. |
+| 2 | `service-unbind` | HTTP-Server / gRPC-Server / WebSocket-Listener stoppen, neue Verbindungen anzunehmen. |
+| 3 | `service-requests-done` | Auf das Ende laufender Requests warten; den Rest abbrechen. |
+| 4 | `service-stop` | Client-Verbindungen schließen, Sockets freigeben. |
+| 5 | `before-cluster-shutdown` | Optionale Pre-Cluster-Leave-Hooks. |
+| 6 | `cluster-sharding-shutdown-region` | Der Sharding-Region sagen, Entitäten zu übergeben. |
+| 7 | `cluster-leave` | Ein `Cluster.leave()` ausgeben — Leaving-Status gossipen. |
+| 8 | `cluster-exiting` | Warten, bis der Cluster den Leave bestätigt. |
+| 9 | `cluster-exiting-done` | Cluster-Übergang als abgeschlossen bestätigen. |
+| 10 | `cluster-shutdown` | Cluster-Transports abbauen. |
+| 11 | `before-actor-system-terminate` | Letzte Chance für App-Level-Cleanup (Journals flushen, Broker schließen). |
+| 12 | `actor-system-terminate` | Der eingebaute `system.terminate()`-Task. |
+
+Du musst nicht jede Phase verwenden.  Leere Phasen sind No-Ops; nur
+Phasen mit registrierten Tasks tun etwas.  In einer Single-Node-App
+ohne Cluster sehen nur die Phasen 1-4 und 11-12 Tasks.
+
+Die `Phases`-Konstante exportiert die kanonischen Namen — bevorzuge
+sie gegenüber String-Literalen für Autocomplete:
+
+```ts
+import { Phases } from 'actor-ts';
+
+cs.addTask(Phases.ServiceUnbind, ...);   // ✓ typisiert
+cs.addTask('service-unbind',    ...);    // ✗ Stringly-typed, kein Auto-Complete
+```
+
+## Eigene Phasen hinzufügen
+
+Für app-spezifische Arbeit, die nicht in eine kanonische Phase
+passt, deklariere deine eigene:
+
+```ts
+cs.addPhase({
+  name: 'flush-metrics',
+  timeoutMs: 3_000,
+  dependsOn: [Phases.BeforeActorSystemTerminate],
+  recover: true,
+});
+
+cs.addTask('flush-metrics', 'push-prometheus', async () => {
+  await metricsRegistry.flush();
+});
+```
+
+Das `dependsOn`-Feld macht die Ordnung DAG-förmig statt linear —
+deine Phase läuft nach `before-actor-system-terminate`, aber **vor**
+`actor-system-terminate` (weil letzteres ersteres in seiner eigenen
+impliziten Kette hat).
+
+Das Framework macht einen topologischen Sort, Zyklen scheitern also
+laut zur Registrierungszeit (`Error: cycle in phase dependencies`).
+
+## Task-Semantik
+
+Jeder Task ist eine Funktion von `Reason` zu `void | Promise<void>`:
+
+```ts
+type ShutdownTask = (reason: Reason) => Promise<void> | void;
+```
+
+Der `reason` lässt einen Task auf den **Grund** des
+Shutdown-Triggers branchen:
+
+```ts
+cs.addTask(Phases.ClusterLeave, 'gossip-leave', async (reason) => {
+  if (reason instanceof ClusterDowningReason) {
+    // Wir wurden gedownt — kein Leave gossipen.
+    return;
+  }
+  await cluster.leave();
+});
+```
+
+Eingebaute `Reason`-Klassen:
+
+| Klasse | Wann |
+| --- | --- |
+| `ProcessTerminateReason(signal)` | SIGTERM/SIGINT via `installProcessHooks`. |
+| `ActorSystemTerminateReason` | User hat `system.terminate()` direkt aufgerufen. |
+| `ClusterLeavingReason` | Cluster hat einen Graceful-Leave initiiert. |
+| `ClusterDowningReason` | Cluster hat diesen Node herausgezwungen. |
+| `UnknownReason` | Trigger nicht spezifiziert. |
+
+Du kannst `Reason` für app-spezifische Trigger subklassen
+(`AdminEndpointReason`, `HotReloadReason`, etc.).
+
+### Parallelität innerhalb einer Phase
+
+Alle Tasks in einer Phase laufen **gleichzeitig** — sie werden
+zusammen gestartet, und die Phase wartet auf den letzten (oder
+seinen Timeout).  Wenn du *innerhalb* einer Phase
+Ordnungs-Anforderungen hast (Task B muss auf Task A warten), packe
+sie in unterschiedliche Phasen mit einem `dependsOn`.
+
+### Timeouts
+
+Jede Phase hat ein `timeoutMs` (Default 5 s); jeder Task wird in
+einen Timeout-Race gewickelt.  Ein Task, der nicht rechtzeitig
+fertig wird, wird geloggt und entweder:
+
+- **Wiederhergestellt** (die Phase fährt fort, `recover: true` —
+  der Default).  Die nächste Phase startet.
+- **Hält die Pipeline an** (`recover: false`).  Nachfolgende Phasen
+  werden *nicht* ausgeführt; der Shutdown stoppt mitten im Flug.
+
+Überschreibe pro Phase:
+
+```ts
+cs.setPhaseTimeout(Phases.ServiceRequestsDone, 30_000);   // 30s Drain-Budget
+```
+
+Oder definiere deine eigene mit gewünschtem `timeoutMs` / `recover`:
+
+```ts
+cs.addPhase({
+  name: 'aggressive-cleanup',
+  timeoutMs: 1_000,        // strikter Cap
+  dependsOn: [Phases.BeforeActorSystemTerminate],
+  recover: false,           // Fehler → Halt
+});
+```
+
+## SIGTERM / SIGINT-Hooks
+
+```ts
+cs.installProcessHooks();
+// Oder: cs.installProcessHooks(['SIGTERM', 'SIGINT', 'SIGUSR2']);
+```
+
+Das hängt Handler an, die `cs.run(new ProcessTerminateReason(signal))`
+aufrufen.  Zweimal aufzurufen ist harmlos (idempotent).  Tests
+überspringen die Hooks meist; Produktion verdrahtet sie immer.
+
+`removeProcessHooks()` macht sie rückgängig — nützlich für Tests,
+die ein System instanziieren, laufen lassen und in einem einzelnen
+Prozess wieder abbauen.
+
+## K8s-PreStop-Integration
+
+In Kubernetes ist die Pod-Shutdown-Sequenz:
+
+```
+1. K8s sendet SIGTERM und beendet die Grace-Period-Uhr des Pods.
+2. K8s ruft auch den PreStop-Hook (falls konfiguriert), läuft parallel.
+3. Nach max(Graceful-Shutdown, Grace-Period) sendet K8s SIGKILL.
+```
+
+Das Standard-Rezept:
+
+```ts
+// Bei SIGTERM Coordinated Shutdown laufen lassen:
+cs.installProcessHooks();
+
+// PreStop-Hook-Script (in deinem Container-Image):
+//   #!/bin/sh
+//   sleep 10   # gib Upstream-LBs Zeit, diesen Pod zu drainen
+//   exit 0
+```
+
+Das `sleep` in PreStop gibt dem Load Balancer Zeit, diesen Pod aus
+der Rotation zu nehmen, **bevor** das Actor-System anfängt
+herunterzufahren — laufende HTTP-Requests sehen also nicht "ich
+draine, geh weg."
+
+Siehe [Operations — Kubernetes](/de/operations/deployment/kubernetes/)
+für das vollständige Deployment-Manifest.
+
+## Multi-Trigger-Sicherheit
+
+`cs.run()` ist **idempotent** — es mehrmals aufzurufen, gibt
+dasselbe laufende Promise zurück.  Drei unabhängige Trigger
+(SIGTERM, ein Admin-Endpoint und ein Cluster-Downing), die alle
+`run` aufrufen, lassen die Pipeline nicht erneut laufen.  Der erste
+Aufruf startet sie; folgende Aufrufe warten auf dieselbe
+Vollendung.
+
+Das ist wichtig, weil du in Produktion oft mehrere Shutdown-Pfade
+hast:
+
+```ts
+// SIGTERM-Pfad:
+cs.installProcessHooks();
+
+// Admin-Endpoint-Pfad:
+app.post('/shutdown', async (req, res) => {
+  await cs.run(new AdminEndpointReason());
+  res.send('ok');
+});
+
+// Cluster-Downing-Pfad wird automatisch von der Cluster-Extension verdrahtet.
+```
+
+Alle drei führen am Ende dieselbe Shutdown-Sequenz einmal aus.
+
+## Was nach `cs.run()`-Abschluss läuft
+
+Bis das Promise resolved:
+
+- Jeder Task in jeder Phase ist entweder erfolgreich oder
+  zeitabgelaufen.
+- Der eingebaute `actor-system-terminate`-Task hat
+  `system.terminate()` aufgerufen, was jeden Actor gestoppt und den
+  Dispatcher und Scheduler geschlossen hat.
+- Der Prozess ist frei zu beenden (`process.exit(0)`).  Nichts mehr
+  zu tun.
+
+Eine übliche Hülle einer Produktions-Main:
+
+```ts
+async function main() {
+  const system = ActorSystem.create('my-app');
+  const cs     = system.extension(CoordinatedShutdownId);
+
+  // Tasks registrieren...
+
+  cs.installProcessHooks();
+
+  // Blockieren, bis Shutdown vollendet (z.B. via SIGTERM).
+  await new Promise(() => {});   // resolved nie; die Hooks treiben den Shutdown
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+```
+
+Wenn SIGTERM ankommt, feuert der Hook `cs.run(...)`, die Pipeline
+läuft, das System terminiert, und Node beendet sauber, weil keine
+Handles mehr die Loop am Leben halten.
+
+## Häufige Fallstricke
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Task-Ordering innerhalb einer Phase">
+  ```ts
+  cs.addTask(Phases.ServiceStop, 'close-pool',      ...);
+  cs.addTask(Phases.ServiceStop, 'close-redis',     ...);
+  // ↑ diese laufen PARALLEL, nicht in Registrierungsreihenfolge.
+  ```
+  Innerhalb einer Phase werden alle Tasks zusammen mit `Promise.all`
+  gestartet.  Wenn Task B auf Task A warten muss, packe sie in
+  *unterschiedliche* Phasen — typischerweise eine eigene Phase mit
+  `dependsOn`.
+</Aside>
+
+<Aside type="caution" title="Hängender Shutdown — ein Task, der hängt">
+  ```ts
+  cs.addTask(Phases.ServiceRequestsDone, 'drain', async () => {
+    await someEventThatNeverFires();   // ← wird timen, aber wie lange?
+  });
+  ```
+  Jeder Task ist durch den Phasen-Timeout begrenzt (Default 5s).
+  Darüber hinaus wird der Task aufgegeben und eine Warnung geloggt.
+  Vertraue einem Task nicht, "so lange zu warten, wie nötig" —
+  `setPhaseTimeout` auf das realistische Max oder setze
+  `recover: false`, um schnell zu scheitern.
+</Aside>
+
+<Aside type="caution" title="`system.terminate()` direkt aufrufen">
+  ```ts
+  await system.terminate();   // umgeht CoordinatedShutdown
+  ```
+  Direktes `terminate()` überspringt jeden Task, den du registriert
+  hast — der HTTP-Server wird nicht gedrained, der Cluster nicht
+  benachrichtigt, das Journal nicht geflusht.  In Produktions-Code
+  gehe immer über `cs.run()`.  Reserviere `system.terminate()` für
+  Tests, in denen das Shutdown-DSL ein Overhead ist, den du nicht
+  brauchst.
+</Aside>
+
+<Aside type="caution" title="Tasks mit Seiteneffekten auf das Actor-System">
+  ```ts
+  cs.addTask(Phases.BeforeActorSystemTerminate, 'final-log', async () => {
+    someActor.tell({ kind: 'goodbye' });   // ← kann zu Dead Letters gehen
+  });
+  ```
+  Bis Phase 11 ist das Actor-System noch am Leben, aber frühere
+  Phasen haben möglicherweise bereits bestimmte Actors gestoppt.
+  Das Framework garantiert nicht, dass ein bestimmter Actor noch
+  läuft — wenn dein Task von einem abhängt, registriere ihn früher
+  (vor der Phase, die ihn stoppt).
+</Aside>
+
+## Wie es weitergeht
+
+- **[Actor-System](/de/fundamentals/actor-system/)** —
+  das `terminate()`, das am Ende der Pipeline läuft.
+- **[Cluster-Überblick](/de/cluster/overview/)** — die
+  Cluster-Phasen (`cluster-leave`, `cluster-exiting`, …) verdrahten
+  sich automatisch, wenn die Cluster-Extension aktiv ist.
+- **[Kubernetes-Deployment](/de/operations/deployment/kubernetes/)** —
+  das vollständige PreStop + SIGTERM + Grace-Period-Rezept.
+- **[Persistenz — Migration](/de/persistence/migration/overview/)** —
+  Rolling Shutdown für Journal-Migrationen.
+
+Die [`CoordinatedShutdown`](/api/classes/coordinatedshutdown/)-API-Referenz
+deckt `addTask`, `addPhase`, `run` und den vollständigen
+Phasen-Konstanten-Set ab.

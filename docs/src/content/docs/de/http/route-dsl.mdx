@@ -1,0 +1,380 @@
+---
+title: Route-DSL
+description: Eine komponierbare Routenbeschreibung — `path`, `get`/`post`/`put`/usw., `concat`, `complete*`, `redirect`, `reject`. Baut beim Konstruieren einen Baum; kompiliert beim Server-Bind zu einer flachen Liste.
+---
+
+Die Route-DSL ist **einfach Funktionen**.  Komponiere sie zu
+einem Routenbaum; die Extension flacht den Baum zu einer Liste
+von Registrierungen ab, die das Backend versteht.
+
+```ts
+import { path, get, post, concat, completeJson, entity, redirect, reject, Status } from 'actor-ts/http';
+
+const orders = path('orders',
+  concat(
+    get(async () => completeJson(200, { orders: [] })),
+    post(async (req) => {
+      const body = entity<NewOrder>(req);
+      if (!body.sku) reject(Status.BadRequest, 'missing sku');
+      return completeJson(201, { id: 'o-1' });
+    }),
+    path(':id',
+      get(async (req) => {
+        const id = parseId(req);
+        return completeJson(200, { id, status: 'ok' });
+      }),
+    ),
+  ),
+);
+
+const api = path('api', orders);
+```
+
+Drei Kern-Kombinatoren (`path`, `concat`, Methoden-Kombinatoren)
+plus drei Response-Helper (`complete*`, `redirect`, `reject`)
+decken ~95 % des Routings ab.
+
+## Kern-Kombinatoren
+
+### `path(segment, child)`
+
+```ts
+path('api', orders)        // → /api/<orders-Pfade>
+path('api/v1', users)      // → /api/v1/<users-Pfade>
+```
+
+Stellt jedem Child-Pfad ein statisches Segment voran.  Komponierbar:
+
+```ts
+path('api',
+  path('v1',
+    path('users',
+      get(handler),         // → GET /api/v1/users
+    ),
+  ),
+);
+```
+
+Pfadsegmente mit Slashes werden flachgelegt — `path('api/v1', ...)`
+ist äquivalent zu `path('api', path('v1', ...))`.
+
+### `concat(...routes)`
+
+```ts
+concat(
+  get(getHandler),     // GET auf diesem Pfad
+  post(postHandler),   // POST auf diesem Pfad
+);
+```
+
+OR-Kombinator — mehrere Routen auf derselben Ebene.  Das Matching
+ist First-Match-Wins; die Reihenfolge zählt, wenn Patterns
+überlappen.
+
+```ts
+// Mehrere Methoden auf demselben Pfad:
+path('orders',
+  concat(
+    get(listOrders),
+    post(createOrder),
+    put(updateOrder),
+  ),
+);
+
+// Mehrere Pfade auf derselben Ebene:
+concat(
+  path('orders', get(listOrders)),
+  path('customers', get(listCustomers)),
+);
+```
+
+### Methoden-Kombinatoren
+
+```ts
+get(handler);       // GET
+post(handler);      // POST
+put(handler);       // PUT
+del(handler);       // DELETE  (heißt `del`, weil `delete` ein JS-Schlüsselwort ist)
+patch(handler);     // PATCH
+head(handler);      // HEAD
+options(handler);   // OPTIONS
+```
+
+Jeder nimmt einen Handler `(req) => Promise<HttpResponse> | HttpResponse`
+entgegen.  Der Handler darf async sein — das Framework awaitet
+den Rückgabewert.
+
+## Response-Helper
+
+### `completeJson(status, body, headers?)`
+
+```ts
+return completeJson(200, { ok: true });
+return completeJson(201, { id: 'new' }, { 'x-custom': 'value' });
+```
+
+Liefert eine `HttpResponse` mit `Content-Type: application/json`.
+Der Body wird beim Schreiben JSON-serialisiert.
+
+### `completeText(status, body, headers?)`
+
+```ts
+return completeText(200, 'hello');
+```
+
+`Content-Type: text/plain; charset=utf-8`.
+
+### `complete(status, body?, headers?)`
+
+```ts
+return complete(204);                  // kein Inhalt
+return complete(200, 'roher Body');    // kein automatischer Content-Type
+```
+
+Die generische Form — Body / Header / Content-Type explizit
+übergeben.
+
+### `redirect(url, status?)`
+
+```ts
+return redirect('/login');                              // 302
+return redirect('/new-home', Status.MovedPermanently);  // 301
+```
+
+Setzt `Location: <url>` und den passenden Status.  Default ist
+`Status.Found` (302).
+
+### `reject(status, message, extra?)`
+
+```ts
+if (!auth) reject(Status.Unauthorized, 'missing token');
+if (!entity.valid) reject(Status.BadRequest, 'invalid payload', { field: 'sku' });
+```
+
+Wirft einen `HttpError`.  Das Framework fängt ihn und erzeugt
+eine Response mit dem passenden Status + einem JSON-Body, der die
+Message + ggf. Extras enthält.
+
+Das ist der sauberste Weg, einen Handler **kurzzuschließen** —
+kein Return nötig; einfach werfen.
+
+### `Status`
+
+```ts
+import { Status } from 'actor-ts/http';
+
+Status.OK;                    // 200
+Status.Created;               // 201
+Status.NoContent;             // 204
+Status.MovedPermanently;      // 301
+Status.Found;                 // 302
+Status.BadRequest;            // 400
+Status.Unauthorized;          // 401
+Status.Forbidden;             // 403
+Status.NotFound;              // 404
+Status.UnprocessableEntity;   // 422
+Status.TooManyRequests;       // 429
+Status.InternalServerError;   // 500
+Status.ServiceUnavailable;    // 503
+```
+
+Benannte Konstanten für die häufigen Status-Codes.  Nimm sie
+gegenüber Zahlen-Literalen — an der Call-Site leichter zu lesen.
+
+## Mit dem Request arbeiten
+
+Der Handler bekommt eine `HttpRequest`:
+
+```ts
+interface HttpRequest {
+  readonly method:  HttpMethod;
+  readonly path:    string;
+  readonly headers: Record<string, string>;
+  readonly query:   Record<string, string>;
+  readonly body:    Uint8Array | null;
+}
+```
+
+### Pfadparameter
+
+Die aktuelle DSL hat keinen typisierten Pfadparameter-Extraktor —
+Parameter sind Teil des rohen `req.path`.  Extrahiere von Hand:
+
+```ts
+path('orders',
+  path(':id',
+    get(async (req) => {
+      // req.path ist z. B. "/api/orders/o-42"
+      const id = req.path.split('/').pop()!;
+      return completeJson(200, { id });
+    }),
+  ),
+);
+```
+
+(Eine typisierte Extraktor-DSL ist auf der Roadmap; siehe
+[FAQ](/de/reference/faq/).)
+
+### Query-Parameter
+
+```ts
+get(async (req) => {
+  const limit = req.query.limit ?? '10';
+  return completeJson(200, { limit: parseInt(limit) });
+});
+```
+
+`req.query` ist bereits geparst — kein manuelles `URLSearchParams`.
+
+### Header
+
+```ts
+const auth = req.headers['authorization'] ?? '';
+if (!auth.startsWith('Bearer ')) reject(Status.Unauthorized, 'no token');
+```
+
+Keys in Kleinbuchstaben.
+
+### Body
+
+```ts
+import { entity } from 'actor-ts/http';
+
+post(async (req) => {
+  const order = entity<NewOrder>(req);
+  // ↑ dekodiert JSON / CBOR je nach Content-Type, wirft 400 bei Malformed.
+});
+```
+
+Siehe [Marshalling](/de/http/marshalling/) für die volle
+Body-Geschichte.
+
+## Ein größeres Beispiel
+
+```ts
+import {
+  path, concat, get, post, put, del,
+  completeJson, complete, reject, Status, entity,
+} from 'actor-ts/http';
+
+interface Customer { id: string; name: string; }
+
+const customers = path('customers',
+  concat(
+    get(async () => {
+      const all = await ask(registry, { kind: 'list', replyTo: undefined as any });
+      return completeJson(Status.OK, all);
+    }),
+    post(async (req) => {
+      const body = entity<{ name: string }>(req);
+      if (!body.name) reject(Status.BadRequest, 'missing name');
+      const created = await ask(registry, {
+        kind: 'create', name: body.name, replyTo: undefined as any,
+      });
+      return completeJson(Status.Created, created);
+    }),
+    path(':id',
+      concat(
+        get(async (req) => {
+          const id = idOf(req);
+          const c = await ask(registry, { kind: 'get', id, replyTo: undefined as any });
+          if (!c) reject(Status.NotFound, `no customer ${id}`);
+          return completeJson(Status.OK, c);
+        }),
+        put(async (req) => {
+          const id = idOf(req);
+          const body = entity<Partial<Customer>>(req);
+          await ask(registry, { kind: 'update', id, ...body, replyTo: undefined as any });
+          return complete(Status.NoContent);
+        }),
+        del(async (req) => {
+          const id = idOf(req);
+          await ask(registry, { kind: 'delete', id, replyTo: undefined as any });
+          return complete(Status.NoContent);
+        }),
+      ),
+    ),
+  ),
+);
+
+const root = path('api',
+  path('v1', concat(customers, ...)),
+);
+
+await http.newServerAt('0.0.0.0', 8080).bind(root);
+```
+
+Das Muster: Routen rufen über `ask` in Actors hinein; HTTP-Handler
+bleiben dünn; Business-Logik lebt in Actors.
+
+## Fehlerbehandlung
+
+```ts
+get(async () => {
+  if (somethingWrong) reject(Status.BadRequest, 'bad input');
+  if (notFound)       reject(Status.NotFound, 'not here');
+
+  try {
+    return completeJson(200, await heavyWork());
+  } catch (e) {
+    if (e instanceof MyDomainError) reject(Status.UnprocessableEntity, e.message);
+    throw e;   // unbekannte Fehler fallen auf einen 500 durch
+  }
+});
+```
+
+Zwei Pfade für Fehler:
+
+- **`reject(status, message)`** — für bekannte Fehlerfälle.
+  Liefert einen strukturierten JSON-Fehler an den Client.
+- **Wirf irgendetwas anderes** — vom Backend gefangen, in einen
+  500 mit generischer Message verwandelt.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Kein `return` nach `reject`">
+  ```ts
+  if (!auth) {
+    reject(Status.Unauthorized, 'no token');
+    return completeJson(200, ...);   // ← TypeScript markiert das als unerreichbar
+  }
+  ```
+  `reject` ist als `never` typisiert — es wirft.  Code danach ist
+  tot.  Ruf einfach `reject` auf und mach weiter.
+</Aside>
+
+<Aside type="caution" title="Returnen vs. werfen">
+  ```ts
+  return completeJson(401, { error: 'no token' });   // ← ebenfalls gültig
+  // vs.:
+  reject(Status.Unauthorized, 'no token');
+  ```
+  Eine 4xx-Response zurückzugeben funktioniert auch — aus
+  Client-Sicht semantisch äquivalent.  `reject` ist nur kürzer
+  und produziert gratis einen strukturierten Fehler-Body.  Wähle
+  pro Codebase einen Stil.
+</Aside>
+
+<Aside type="caution" title="First-Match-Wins in concat">
+  ```ts
+  concat(
+    get(handlerA),
+    get(handlerB),   // ← läuft nie; handlerA matched immer zuerst
+  );
+  ```
+  `concat` ist OR mit First-Match-Semantik.  Zwei Routen, die
+  denselben Request matchen — nur die erste läuft.  Das Framework
+  warnt nicht davor; prüf deinen Routenbaum.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[HTTP-Übersicht](/de/http/overview/)** — das große
+  Bild: Backends, Middleware, Extension-Setup.
+- **[Marshalling](/de/http/marshalling/)** — `entity<T>(req)`-
+  Dekodierung, Response-Kodierung über Accept.
+- **[Backends — Fastify](/de/http/backends/fastify/)** —
+  die Optionen des Default-Backends.
+
+Die [`Route`-API-Referenz](/api/types/route/) deckt die volle
+Type-Oberfläche ab.

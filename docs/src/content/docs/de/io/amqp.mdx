@@ -1,0 +1,179 @@
+---
+title: AMQP (RabbitMQ)
+description: AMQP-0.9.1-Broker-Actor — Exchanges, Queues, Routing-Keys. Standard-RabbitMQ-Semantik. Die richtige Form für Work-Queues + Topic-Exchanges, wenn Reihenfolge und ACKs zählen. Umschließt `amqplib`.
+---
+
+`AmqpActor` integriert mit RabbitMQ (und anderen AMQP-0.9.1-
+Brokern).  Unterstützt Exchanges (direct / topic / fanout /
+headers), Queues, Routing-Keys, ACK/NACK-Semantik.
+
+```ts
+import { ActorSystem, Props, AmqpActor } from 'actor-ts';
+
+const amqp = system.actorOf(
+  Props.create(() => new AmqpActor({
+    url: 'amqp://guest:guest@rabbitmq:5672',
+    exchanges: [
+      { name: 'orders', type: 'topic', durable: true },
+    ],
+    queues: [
+      { name: 'order-processor', durable: true, bindings: [
+        { exchange: 'orders', routingKey: 'placed.#' },
+      ]},
+    ],
+  })),
+  'amqp',
+);
+
+// Konsum von einer Queue subscribieren:
+amqp.tell({ kind: 'subscribe-queue', queue: 'order-processor', subscriber: handler });
+
+// An einen Exchange publishen:
+amqp.tell({
+  kind:       'publish',
+  exchange:   'orders',
+  routingKey: 'placed.priority',
+  payload:    JSON.stringify(order),
+});
+```
+
+## Settings
+
+```ts
+interface AmqpActorSettings extends BrokerCommonSettings {
+  url:         string;                  // amqp:// oder amqps://
+  exchanges?:  ExchangeDefinition[];    // beim Connect deklariert
+  queues?:     QueueDefinition[];       // beim Connect deklariert + gebunden
+  prefetch?:   number;                  // Prefetch-Count des Consumers
+}
+
+interface ExchangeDefinition {
+  name:       string;
+  type:       'direct' | 'topic' | 'fanout' | 'headers';
+  durable?:   boolean;
+  autoDelete?: boolean;
+}
+
+interface QueueDefinition {
+  name:       string;
+  durable?:   boolean;
+  exclusive?: boolean;
+  autoDelete?: boolean;
+  bindings?:  Array<{ exchange: string; routingKey?: string; args?: Record<string, unknown> }>;
+}
+```
+
+Der Actor deklariert Exchanges + Queues + Bindings beim Connect
+(idempotent — eine erneute Deklaration identischer Definitionen
+ist okay).
+
+## Exchanges und Routing
+
+| Typ | Routing |
+| --- | --- |
+| **`direct`** | Exakter Match auf den Routing-Key. |
+| **`topic`** | Wildcard-Pattern-Match (`*` = ein Segment, `#` = viele). |
+| **`fanout`** | Alle gebundenen Queues, Routing-Key ignoriert. |
+| **`headers`** | Match auf Nachrichten-Header, nicht Routing-Key. |
+
+```ts
+exchanges: [
+  { name: 'work',    type: 'direct',  durable: true },  // exaktes Routing
+  { name: 'audit',   type: 'topic',   durable: true },  // Pattern-Match
+  { name: 'notify',  type: 'fanout',  durable: false }, // Broadcast
+];
+```
+
+Häufigstes Muster: **`topic`**-Exchanges mit hierarchischen
+Routing-Keys (`orders.placed.priority`, `orders.cancelled`,
+`payments.failed`).
+
+## ACK / NACK
+
+```ts
+class OrderHandler extends Actor<AmqpMessage> {
+  override async onReceive(msg: AmqpMessage): Promise<void> {
+    try {
+      await processOrder(msg);
+      msg.ack();   // dem Broker mitteilen, dass die Nachricht verarbeitet wurde
+    } catch (err) {
+      msg.nack({ requeue: true });   // zurück in die Queue
+    }
+  }
+}
+```
+
+Jede eingehende Nachricht hat `ack()` / `nack(opts)`-Methoden.
+Der Broker hält die Nachricht im **Unacked-Zustand**, bis du eine
+davon aufrufst — wenn der Consumer crasht, liefert der Broker bei
+der nächsten Verbindung erneut aus.
+
+Nutze `nack({ requeue: false })`, um an eine Dead-Letter-Queue
+zu senden (falls konfiguriert) — nützlich, wenn ein Retry nicht
+hilft.
+
+## Prefetch
+
+```ts
+prefetch: 10   // bis zu 10 ungeackte gleichzeitig pro Consumer konsumieren
+```
+
+Der Default (laut AMQP-Spec) ist **unbegrenzt** — der Broker würde
+jede Nachricht in der Queue pushen.  Setze `prefetch` auf eine
+sinnvolle Batch-Größe (10–50), damit der Consumer nicht
+überfordert wird.
+
+## Peer-Dependency
+
+```bash
+npm install amqplib
+# oder: bun add amqplib
+```
+
+## Wann AMQP
+
+Drei primäre Szenarien:
+
+1. **Work-Queues** — mehrere Consumer konkurrieren um Nachrichten
+   auf einer Queue, pro Nachricht gewinnt ein Consumer.
+2. **Routing + Filterung** — Topic-Exchanges mit reichen
+   Routing-Keys.
+3. **Brücken zu bestehender RabbitMQ-Infrastruktur**.
+
+Für hochvolumiges Streaming skaliert Kafka besser.  Für
+leichtgewichtiges Pub/Sub sind NATS oder MQTT schlanker.  AMQP
+glänzt bei **Enterprise-Style Queue + Routing**, wo Features
+(DLQ, TTL, Prefetch, ACK-Semantik) zählen.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Ungeackte Nachrichten binden Speicher">
+  ```ts
+  // Handler ruft nie ack/nack — ungeackte Nachrichten stapeln sich
+  ```
+  Ohne ACK geht dem Broker irgendwann der Speicher aus.  ACKe oder
+  NACKe immer innerhalb eines vernünftigen Fensters (begrenzt
+  durch das Consumer-Timeout des Brokers).
+</Aside>
+
+<Aside type="caution" title="Durability ist Alles-oder-nichts">
+  ```ts
+  { name: 'q', durable: true },
+  // aber Nachricht publisht mit persistent: false → trotzdem verloren beim Broker-Neustart
+  ```
+  Durable Queues + Durable Exchanges + persistente Nachrichten —
+  alle drei nötig, um Neustarts zu überleben.  Das `publish` des
+  Frameworks ist für durable Exchanges per Default persistent,
+  aber prüf deine Settings, wenn Nachrichten nach einem
+  Broker-Reboot verschwinden.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[I/O-Übersicht](/de/io/overview/)** — das große
+  Bild.
+- **[BrokerActor-Basis](/de/io/broker-actor-base/)** — der
+  gemeinsame Lifecycle.
+- **[Kafka](/de/io/kafka/)** — fürs Streaming.
+- **[NATS](/de/io/nats/)** / **[MQTT](/de/io/mqtt/)** —
+  leichtere Alternativen.

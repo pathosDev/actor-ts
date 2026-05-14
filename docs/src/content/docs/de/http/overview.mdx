@@ -1,0 +1,220 @@
+---
+title: HTTP im Überblick
+description: Eine typisierte Route-DSL mit drei pluggable Backends (Fastify, Bun.serve, Express), ein gemeinsamer HTTP-Client und Middleware für Caching, Rate-Limiting und Idempotenz. Gebaut als Extension; nicht auf `BrokerActor` aufgesetzt.
+---
+
+Das HTTP-Modul ist **getrennt von den I/O-Broker-Actors** —
+HTTP-Server passen nicht in die Form "eine Verbindung, viele
+Nachrichten", deshalb bekommen sie eine eigene DSL und Backend-
+Abstraktion.
+
+```ts
+import { ActorSystem, HttpExtensionId } from 'actor-ts';
+import { path, get, post, completeJson, entity } from 'actor-ts/http';
+
+const system = ActorSystem.create('my-app');
+const http   = system.extension(HttpExtensionId);
+
+const routes = path('api',
+  path('orders',
+    concat(
+      get(async () => completeJson(200, { orders: [] })),
+      post(async (req) => {
+        const order = entity<NewOrder>(req);
+        // ... behandeln ...
+        return completeJson(201, { id: 'o-1' });
+      }),
+    ),
+  ),
+);
+
+const binding = await http.newServerAt('0.0.0.0', 8080).bind(routes);
+console.log(`gebunden auf ${binding.host}:${binding.port}`);
+```
+
+Drei Dinge passieren hier:
+
+- **Die Route-DSL** — `path`, `get`, `post`, `concat` komponieren
+  einen Routenbaum.  Typsicher; wird beim Bind zu einer flachen
+  Liste kompiliert.
+- **Der Marshaller** — `entity<T>(req)` dekodiert den Request-
+  Body je nach Content-Type; `completeJson` / `completeText`
+  encoden die Response.
+- **Die Extension** —
+  `system.extension(HttpExtensionId).newServerAt(host, port).bind(routes)`
+  startet einen Server.
+
+## Die drei Bausteine
+
+| Baustein | Lebt in | Seite |
+| --- | --- | --- |
+| **Routing** | `actor-ts/http` exportiert `path`, `get`, `post`, `complete*` usw. | [Route-DSL](/de/http/route-dsl/) |
+| **Marshalling** | `entity<T>(req)`-Dekodierung + `completeJson`-Kodierung. | [Marshalling](/de/http/marshalling/) |
+| **Backend** | Pluggable HTTP-Server — Fastify per Default, Bun.serve, Express. | [Backends](/de/http/backends/fastify/) |
+
+Die DSL baut einen In-Memory-Routenbaum; das
+`newServerAt(...).bind(routes)` der Extension flacht ihn ab und
+registriert alles beim gewählten Backend.
+
+## Die Backends
+
+```ts
+import { FastifyBackend, BunServeBackend, ExpressBackend } from 'actor-ts/http';
+
+// Default — keine Einrichtung nötig:
+await http.newServerAt(host, port).bind(routes);
+// → nutzt FastifyBackend
+
+// Explizite Wahl:
+await http.newServerAt(host, port)
+  .useBackend(new BunServeBackend())
+  .bind(routes);
+```
+
+| Backend | Runtime-Eignung | Wann |
+| --- | --- | --- |
+| **`FastifyBackend`** *(Default)* | Bun, Node | Produktions-Default — Fastify ist das am stärksten kampferprobte. |
+| **`BunServeBackend`** | Nur Bun | Wenn du null Peer-Dependencies willst; nutzt Buns natives `Bun.serve`. |
+| **`ExpressBackend`** | Node, Bun | Das bestehende Express-Middleware-Ökosystem passt sauber rein. |
+
+Alle drei implementieren dasselbe `HttpServerBackend`-Interface —
+die Route-DSL kompiliert identisch; das Backend besitzt nur die
+Listen-/Dispatch-Schleife.
+
+Siehe die [Backend-Seiten](/de/http/backends/fastify/) für die
+Konfigurationsoptionen, die jedes akzeptiert.
+
+## Der HTTP-Client
+
+```ts
+const response = await http.singleRequest({
+  method: 'POST',
+  url:    'https://api.example.com/orders',
+  headers: { 'content-type': 'application/json' },
+  body:   JSON.stringify({ sku: 'book-1' }),
+});
+
+console.log(response.status, response.body);
+```
+
+Der gemeinsame Client umschließt das native `fetch` der Runtime.
+Funktioniert identisch auf Bun, Node und Deno (jede unterstützte
+Runtime hat fetch eingebaut).
+
+Für aufwendigere Client-Muster (Retries, Caching) wickle den
+Client in einen [Retry](/de/patterns/retry/)- +
+[Circuit-Breaker](/de/patterns/circuit-breaker/)-Aufruf.
+
+## Middleware
+
+```ts
+import { responseCacheMiddleware, rateLimitMiddleware } from 'actor-ts/http';
+
+const routes = concat(
+  rateLimitMiddleware({ rps: 100 })(
+    responseCacheMiddleware({ ttlMs: 30_000 })(
+      path('api', /* ... */),
+    ),
+  ),
+);
+```
+
+Das Framework liefert drei:
+
+| Middleware | Was sie tut |
+| --- | --- |
+| **Response-Cache** | Cached GET-Responses mit Key aus URL + Vary-Headern. |
+| **Rate-Limit** | Token-Bucket-Rate-Limiter pro IP / pro Key. |
+| **Idempotency-Key** | Dedupliziert Writes anhand eines `Idempotency-Key`-Headers. |
+
+Jede ist ein `Route -> Route`-Transformer — sie wickelt einen
+Teilbaum von Routen mit ihrem Verhalten ein.  Kombiniere durch
+Verschachteln.  Siehe die
+[Middleware-Seiten](/de/http/middleware/response-cache/).
+
+## HTTP an Actors anschließen
+
+Der Routen-Handler gibt einen `Promise<HttpResponse>` zurück —
+darin kannst du frei Actor-Calls `await`en:
+
+```ts
+import { ask } from 'actor-ts';
+
+const routes = path('orders',
+  path(':id',
+    get(async (req) => {
+      const id = req.path.split('/').pop();
+      const order = await ask(
+        orderRegistry,
+        { kind: 'get', id, replyTo: undefined as any },
+        5_000,
+      );
+      return completeJson(200, order);
+    }),
+  ),
+);
+```
+
+Das ist **das** häufige Muster — HTTP-Handler sind ein dünner
+Adapter: Request parsen, einen Actor fragen, die Antwort
+marshallen.  Halte Business-Logik in Actors; HTTP-Handler bleiben
+kurz.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Teile keinen State in Routen-Handlern">
+  ```ts
+  let cache: Record<string, Order> = {};   // ✗ geteilter veränderlicher State
+  ```
+  Routen-Handler können parallel laufen — mehrere Requests in
+  Flight.  Einfacher veränderlicher State außerhalb von Actors
+  verursacht dieselben Races wie sonst überall in JavaScript.
+  Wenn du nebenläufigkeitssicheren State brauchst, pack ihn in
+  einen Actor und frag ihn.
+</Aside>
+
+<Aside type="caution" title="Langsame Handler blockieren den HTTP-Server">
+  ```ts
+  get(async () => {
+    await heavyComputation();   // 2 Sekunden
+    return completeJson(200, ...);
+  });
+  ```
+  Alle drei Backends bedienen Handler nebenläufig, aber ein
+  langsamer Handler belegt trotzdem die Lebenszeit einer
+  Verbindung — wenn sich genug davon stapeln, geht dem Server die
+  Kapazität aus.  Lagere schwere Arbeit in einen Actor aus und
+  nimm `ask` mit einem vernünftigen Timeout, oder nimm ein
+  Job-Queue-Muster mit Job-Status-Endpoint.
+</Aside>
+
+<Aside type="caution" title="Backend-spezifische Eigenheiten">
+  Jedes Backend hat sein eigenes vorhandenes Ökosystem: Fastifys
+  Schema-Validierung, Bun.serves WebSocket-Integration, Express-
+  Middleware.  Diese sind **nicht** über die DSL exponiert — du
+  greifst zu ihnen, indem du die Backend-Instanz direkt
+  konfigurierst, bevor du sie an `useBackend` übergibst.  Die
+  Portabilität über Backends hinweg sinkt, sobald du das tust.
+</Aside>
+
+## Wohin als Nächstes
+
+- **[Route-DSL](/de/http/route-dsl/)** — die volle DSL:
+  `path`, `get`/`post`/`put`/usw., `concat`, `complete*`,
+  `redirect`, `reject`.
+- **[Marshalling](/de/http/marshalling/)** — `entity<T>`,
+  Content-Type-gesteuerte Dekodierung, Response-Kodierung.
+- **[Fastify-Backend](/de/http/backends/fastify/)** —
+  Konfiguration des Default-Backends.
+- **[Bun.serve-Backend](/de/http/backends/fastify/) /
+  [Express-Backend](/de/http/backends/express/)** —
+  Alternativen.
+- **[Response-Cache-Middleware](/de/http/middleware/response-cache/)** —
+  Caching für GET-Responses.
+- **[Rate-Limit-Middleware](/de/http/middleware/rate-limit/)** —
+  Rate-Limiting pro Key.
+- **[Idempotency-Key-Middleware](/de/http/middleware/idempotency-key/)** —
+  Write-Deduplizierung für Mutationen.
+
+Die [`HttpExtension`](/api/classes/httpextension/)-API-Referenz
+deckt die volle Oberfläche ab.
