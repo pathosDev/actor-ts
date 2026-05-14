@@ -147,7 +147,7 @@ var region = ClusterSharding.Get(system).Start(
 
 ```ts
 // actor-ts:
-const region = ClusterSharding.get(system, cluster).start<Cmd>({
+const region = cluster.sharding.start<Cmd>({
   typeName: 'Counter',
   entityProps: Props.create(() => new CounterActor()),
   extractEntityId: (cmd) => cmd.entityId,

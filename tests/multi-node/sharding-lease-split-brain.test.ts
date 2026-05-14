@@ -97,7 +97,7 @@ describe('multi-node sharding lease — split-brain protection', () => {
       // which is what makes this a meaningful arbiter — only one
       // owner can hold it across the three coordinators at once.
       const regions: Record<'a' | 'b' | 'c', ActorRef<Cmd>> = {
-        a: ClusterSharding.get(spec.systemFor('a'), spec.clusterFor('a')).start<Cmd>({
+        a: spec.clusterFor('a').sharding.start<Cmd>({
           typeName: 'entity',
           entityProps: Props.create(() => new Entity()),
           extractEntityId: (m) => m.id,
@@ -109,7 +109,7 @@ describe('multi-node sharding lease — split-brain protection', () => {
           }),
           acquireRetryIntervalMs: 100,
         }),
-        b: ClusterSharding.get(spec.systemFor('b'), spec.clusterFor('b')).start<Cmd>({
+        b: spec.clusterFor('b').sharding.start<Cmd>({
           typeName: 'entity',
           entityProps: Props.create(() => new Entity()),
           extractEntityId: (m) => m.id,
@@ -121,7 +121,7 @@ describe('multi-node sharding lease — split-brain protection', () => {
           }),
           acquireRetryIntervalMs: 100,
         }),
-        c: ClusterSharding.get(spec.systemFor('c'), spec.clusterFor('c')).start<Cmd>({
+        c: spec.clusterFor('c').sharding.start<Cmd>({
           typeName: 'entity',
           entityProps: Props.create(() => new Entity()),
           extractEntityId: (m) => m.id,

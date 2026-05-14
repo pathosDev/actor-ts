@@ -34,6 +34,10 @@ import {
 } from './FailureDetector.js';
 import { Member } from './Member.js';
 import { NodeAddress } from './NodeAddress.js';
+// `ClusterSharding` only imports `Cluster` as a type (erased at runtime),
+// so the value-import here doesn't create a runtime cycle — every
+// sharding file uses `import type { Cluster }`.
+import { ClusterSharding } from './sharding/ClusterSharding.js';
 import type {
   EnvelopeMsg,
   GossipMsg,
@@ -219,6 +223,24 @@ export class Cluster {
   ): Promise<import('./ClusterBootstrap.js').BootstrappedCluster> {
     const { bootstrapCluster } = await import('./ClusterBootstrap.js');
     return bootstrapCluster(opts);
+  }
+
+  /**
+   * The cluster's sharding facade.  Lazily constructs (and memoises) a
+   * single `ClusterSharding` instance per `ActorSystem` so callers can
+   * start regions inline:
+   *
+   * ```ts
+   * const region = cluster.sharding.start('cart', CartActor, {
+   *   extractEntityId: (m) => m.entityId,
+   * });
+   * ```
+   *
+   * Equivalent to `ClusterSharding.get(cluster.system, cluster)` —
+   * which still works for callers that prefer the explicit form.
+   */
+  get sharding(): ClusterSharding {
+    return ClusterSharding.get(this.system, this);
   }
 
   /**

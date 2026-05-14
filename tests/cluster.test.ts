@@ -65,7 +65,7 @@ async function startNode(
     }
   }
 
-  const sharding = ClusterSharding.get(system, cluster);
+  const sharding = cluster.sharding;
   const region = sharding.start<Command>({
     typeName: 'counter',
     entityProps: Props.create(() => new CountEntity()),

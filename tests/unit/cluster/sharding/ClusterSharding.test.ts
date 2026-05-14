@@ -42,7 +42,7 @@ async function startNode(sysName: string, p: number, seeds: string[] = []): Prom
     transport: new InMemoryTransport(new NodeAddress(sysName, 'h', p)),
     gossipIntervalMs: 30,
   });
-  const region = ClusterSharding.get(sys, cluster).start<Cmd>({
+  const region = cluster.sharding.start<Cmd>({
     typeName: 'entity',
     entityProps: Props.create(() => new Entity()),
     extractEntityId: (m) => m.id,
@@ -132,6 +132,66 @@ describe('ClusterSharding — initialization after convergence', () => {
   });
 });
 
+/* -------------------------- cluster.sharding facade --------------------- */
+
+describe('cluster.sharding', () => {
+  test('returns a ClusterSharding instance', async () => {
+    const sysName = 'cs-facade-a';
+    const node = await startNode(sysName, 45_500);
+    try {
+      expect(node.cluster.sharding).toBeInstanceOf(ClusterSharding);
+    } finally {
+      await stopAll([node]);
+    }
+  });
+
+  test('is memoised — repeated reads return the same instance', async () => {
+    const sysName = 'cs-facade-b';
+    const node = await startNode(sysName, 45_510);
+    try {
+      const a = node.cluster.sharding;
+      const b = node.cluster.sharding;
+      expect(a).toBe(b);
+    } finally {
+      await stopAll([node]);
+    }
+  });
+
+  test('resolves to the same instance as the explicit ClusterSharding.get(...)', async () => {
+    const sysName = 'cs-facade-c';
+    const node = await startNode(sysName, 45_520);
+    try {
+      const viaProperty = node.cluster.sharding;
+      const viaStatic = ClusterSharding.get(node.sys, node.cluster);
+      expect(viaProperty).toBe(viaStatic);
+    } finally {
+      await stopAll([node]);
+    }
+  });
+
+  test('start() works through the property — round-trips a ping', async () => {
+    const sysName = 'cs-facade-d';
+    const sys = ActorSystem.create(sysName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const cluster = await Cluster.join(sys, {
+      host: 'h', port: 45_530,
+      transport: new InMemoryTransport(new NodeAddress(sysName, 'h', 45_530)),
+      gossipIntervalMs: 30,
+    });
+    try {
+      const region = cluster.sharding.start('entity', Entity, {
+        extractEntityId: (m: Cmd) => m.id,
+        numShards: 4,
+      });
+      await waitFor(() => cluster.upMembers().length === 1);
+      const reply = await region.ask<string>({ id: 'e-1', op: 'ping' }, 2_000);
+      expect(reply).toBe('pong');
+    } finally {
+      await cluster.leave();
+      await sys.terminate();
+    }
+  });
+});
+
 /* -------------------------- LRU passivation (#82) ----------------------- */
 
 /**
@@ -161,7 +221,7 @@ async function startLruNode(
     transport: new InMemoryTransport(new NodeAddress(sysName, 'h', p)),
     gossipIntervalMs: 30,
   });
-  const region = ClusterSharding.get(sys, cluster).start<{ id: string; op: 'ping' }>({
+  const region = cluster.sharding.start<{ id: string; op: 'ping' }>({
     typeName: 'lru-entity',
     entityProps: Props.create(() => new TaggedEntity()),
     extractEntityId: (m) => m.id,

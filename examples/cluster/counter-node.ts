@@ -12,7 +12,6 @@
 import {
   Actor,
   Cluster,
-  ClusterSharding,
   LogLevel,
   MemberDown,
   MemberRemoved,
@@ -91,8 +90,7 @@ async function main(): Promise<void> {
     }
   });
 
-  const sharding = ClusterSharding.get(system, cluster);
-  const region = sharding.start('counter', CounterEntity, {
+  const region = cluster.sharding.start('counter', CounterEntity, {
     extractEntityId: (msg: Command) => msg.id,
     numShards: 16,
   });

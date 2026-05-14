@@ -24,7 +24,6 @@ import * as path from 'node:path';
 import {
   ActorSystem,
   Cluster,
-  ClusterSharding,
   ClusterSingletonId,
   MemberDown,
   MemberRemoved,
@@ -164,7 +163,7 @@ async function main(): Promise<void> {
   }
 
   // -------- 6. ClusterSharding: one ChatRoomActor per room --------
-  const sharding = ClusterSharding.get(system, cluster);
+  const sharding = cluster.sharding;
   const chatRoomRegion = sharding.start('ChatRoom', ChatRoomActor, {
     extractEntityId: (msg: ChatRoomCmd) => msg.room,
     numShards: 16,

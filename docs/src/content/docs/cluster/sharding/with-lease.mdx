@@ -18,7 +18,7 @@ The **single-writer lease** prevents this:
 ```ts
 import { ClusterSharding, KubernetesLease } from 'actor-ts';
 
-const sharding = ClusterSharding.get(system, cluster).start<Cmd>({
+const sharding = cluster.sharding.start<Cmd>({
   typeName:        'order',
   entityProps:     Props.create(() => new OrderEntity()),
   extractEntityId: (msg) => msg.id,

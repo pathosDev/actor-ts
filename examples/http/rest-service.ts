@@ -13,7 +13,6 @@ import {
   Actor,
   ActorSystem,
   Cluster,
-  ClusterSharding,
   HttpError,
   Props,
   Status,
@@ -52,8 +51,7 @@ class UserEntity extends Actor<UserCmd> {
 async function main(): Promise<void> {
   const system = ActorSystem.create('rest-service');
   const cluster = await Cluster.join(system, { host: '127.0.0.1', port: 2552 });
-  const sharding = ClusterSharding.get(system, cluster);
-  const region = sharding.start('user', UserEntity, {
+  const region = cluster.sharding.start('user', UserEntity, {
     extractEntityId: (msg: UserCmd) => ('id' in msg ? msg.id : msg.user.id),
     numShards: 16,
   });

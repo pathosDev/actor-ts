@@ -55,7 +55,7 @@ async function startNodeWithLease(
     transport: new InMemoryTransport(new NodeAddress(systemName, 'h', port)),
     gossipIntervalMs: 30,
   });
-  const region = ClusterSharding.get(sys, cluster).start<Cmd>({
+  const region = cluster.sharding.start<Cmd>({
     typeName: 'entity',
     entityProps: Props.create(() => new Entity()),
     extractEntityId: (m) => m.id,

@@ -96,7 +96,7 @@ async function startSpec(
   }
 
   const start = (role: 'a' | 'b' | 'c'): ActorRef<Cmd> =>
-    ClusterSharding.get(spec.systemFor(role), spec.clusterFor(role)).start<Cmd>({
+    spec.clusterFor(role).sharding.start<Cmd>({
       typeName: 'entity',
       entityProps: Props.create(() => new Entity()),
       extractEntityId: (m) => m.id,

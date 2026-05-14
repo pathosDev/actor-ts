@@ -47,7 +47,7 @@ const TIGHT_FD = {
 function startRegion(
   spec: MultiNodeSpec, role: string,
 ): ActorRef<Cmd> {
-  return ClusterSharding.get(spec.systemFor(role), spec.clusterFor(role)).start<Cmd>({
+  return spec.clusterFor(role).sharding.start<Cmd>({
     typeName: 'entity',
     entityProps: Props.create(() => new Entity()),
     extractEntityId: (m) => m.id,

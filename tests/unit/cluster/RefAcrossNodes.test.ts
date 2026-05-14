@@ -82,13 +82,13 @@ describe('ActorRef serialisation across cluster nodes', () => {
 
     // Both nodes register the sharded type with `role: 'hoster'` so shards
     // can ONLY be allocated to node A (which carries that role).
-    ClusterSharding.get(a.sys, a.cluster).start<Cmd>({
+    a.cluster.sharding.start<Cmd>({
       typeName: 'echo', role: 'hoster',
       entityProps: Props.create(() => new Echo()),
       extractEntityId: (m) => m.id,
       numShards: 16,
     });
-    const bRegion = ClusterSharding.get(b.sys, b.cluster).start<Cmd>({
+    const bRegion = b.cluster.sharding.start<Cmd>({
       typeName: 'echo', role: 'hoster',
       entityProps: Props.create(() => new Echo()),
       extractEntityId: (m) => m.id,
@@ -138,13 +138,13 @@ describe('ActorRef serialisation across cluster nodes', () => {
 
     await waitFor(() => a.cluster.upMembers().length === 2);
 
-    ClusterSharding.get(a.sys, a.cluster).start<Cmd>({
+    a.cluster.sharding.start<Cmd>({
       typeName: 'cap', role: 'hoster',
       entityProps: Props.create(() => new Capturer()),
       extractEntityId: () => 'only',
       numShards: 4,
     });
-    const bRegion = ClusterSharding.get(b.sys, b.cluster).start<Cmd>({
+    const bRegion = b.cluster.sharding.start<Cmd>({
       typeName: 'cap', role: 'hoster',
       entityProps: Props.create(() => new Capturer()),
       extractEntityId: () => 'only',
@@ -191,13 +191,13 @@ describe('ActorRef serialisation across cluster nodes', () => {
 
     await waitFor(() => a.cluster.upMembers().length === 2);
 
-    ClusterSharding.get(a.sys, a.cluster).start<Cmd>({
+    a.cluster.sharding.start<Cmd>({
       typeName: 'checker', role: 'hoster',
       entityProps: Props.create(() => new Checker()),
       extractEntityId: () => 'only',
       numShards: 4,
     });
-    const bRegion = ClusterSharding.get(b.sys, b.cluster).start<Cmd>({
+    const bRegion = b.cluster.sharding.start<Cmd>({
       typeName: 'checker', role: 'hoster',
       entityProps: Props.create(() => new Checker()),
       extractEntityId: () => 'only',

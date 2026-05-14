@@ -114,7 +114,7 @@ val region = ClusterSharding(system).start(
 // actor-ts:
 const cluster = await Cluster.join(system, { host, port, seeds });
 
-const region = ClusterSharding.get(system, cluster).start({
+const region = cluster.sharding.start({
   typeName: 'Counter',
   entityProps: Props.create(() => new Counter()),
   extractEntityId: (msg) => msg.id,

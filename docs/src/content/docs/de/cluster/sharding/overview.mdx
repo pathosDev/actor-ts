@@ -52,7 +52,7 @@ woandershin und die Entities werden dort neu gespawnt.
 ## Ein minimales Beispiel
 
 ```ts
-import { Actor, ActorSystem, Cluster, ClusterSharding } from 'actor-ts';
+import { Actor, Cluster } from 'actor-ts';
 
 type CartCmd =
   | { entityId: string; kind: 'add';   sku: string }
@@ -67,13 +67,10 @@ class CartActor extends Actor<CartCmd> {
   }
 }
 
-// Setup:
-const system  = ActorSystem.create('my-app');
-const cluster = await Cluster.join(system, { host, port, seeds });
-const sharding = ClusterSharding.get(system, cluster);
+// Setup — einzeiliger Cluster- + Sharding-Einstieg:
+const { system, cluster } = await Cluster.bootstrap({ name: 'my-app' });
 
-// Kurzform — übergib die Entity-Klasse, das Framework wickelt sie in Props.create:
-const cartRegion = sharding.start('cart', CartActor, {
+const cartRegion = cluster.sharding.start('cart', CartActor, {
   extractEntityId: (msg: CartCmd) => msg.entityId,
 });
 
@@ -84,20 +81,20 @@ cartRegion.tell({ entityId: 'user-42', kind: 'view', replyTo: ... });
 // Gleiche ID → gleicher Entity-Actor, jedes Mal, unabhängig vom Node.
 ```
 
-`sharding.start()` akzeptiert drei Aufruf-Formen — nimm die, die zur
-Entity passt:
+`cluster.sharding.start()` akzeptiert drei Aufruf-Formen — nimm die,
+die zur Entity passt:
 
 ```ts
 // 1. Klassen-Kurzform (am häufigsten):
-sharding.start('cart', CartActor, { extractEntityId: (m: CartCmd) => m.entityId });
+cluster.sharding.start('cart', CartActor, { extractEntityId: (m: CartCmd) => m.entityId });
 
 // 2. Factory-Kurzform — wenn die Entity Konstruktor-Argumente braucht:
-sharding.start('cart', () => new CartActor(deps), {
+cluster.sharding.start('cart', () => new CartActor(deps), {
   extractEntityId: (m: CartCmd) => m.entityId,
 });
 
 // 3. Vollform — explizite Props + alle Settings:
-sharding.start<CartCmd>({
+cluster.sharding.start<CartCmd>({
   typeName:        'cart',
   entityProps:     Props.create(() => new CartActor()),
   extractEntityId: (m) => m.entityId,
@@ -105,6 +102,12 @@ sharding.start<CartCmd>({
   role:            'cart-host',
 });
 ```
+
+`cluster.sharding` ist eine memoisierte Fassade — wiederholte
+Zugriffe liefern dieselbe `ClusterSharding`-Instanz.  Die explizite
+Form `ClusterSharding.get(system, cluster)` funktioniert weiter und
+liefert dasselbe Objekt; greif dazu nur, wenn Du die Klasse
+außerhalb eines Cluster-Handles brauchst.
 
 Aus Sicht des Aufrufers ist die `cartRegion` ein einzelner
 `ActorRef`. Hinter den Kulissen:

@@ -83,7 +83,7 @@ const spec = await MultiNodeSpec.create({
 Useful for testing role-filtered allocation:
 
 ```ts
-ClusterSharding.get(spec.nodes[1], cluster1).start({
+cluster1.sharding.start({
   // ...
   role: 'compute',
   // → only nodes 1 + 2 host shards
@@ -153,7 +153,7 @@ expected node.
 const spec = await MultiNodeSpec.create({ nodes: 3 });
 
 const regions = spec.nodes.map(sys =>
-  ClusterSharding.get(sys, /* cluster ref */).start<Cmd>({
+  /* cluster ref */.sharding.start<Cmd>({
     typeName: 'entity',
     entityProps: Props.create(() => new Entity()),
     extractEntityId: (msg) => msg.id,

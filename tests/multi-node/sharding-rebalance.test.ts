@@ -61,19 +61,19 @@ describe('multi-node sharding rebalance', () => {
       ]);
 
       const regions: Record<'a' | 'b' | 'c', ActorRef<Cmd>> = {
-        a: ClusterSharding.get(spec.systemFor('a'), spec.clusterFor('a')).start<Cmd>({
+        a: spec.clusterFor('a').sharding.start<Cmd>({
           typeName: 'entity',
           entityProps: Props.create(() => new Entity()),
           extractEntityId: (m) => m.id,
           numShards: 16,
         }),
-        b: ClusterSharding.get(spec.systemFor('b'), spec.clusterFor('b')).start<Cmd>({
+        b: spec.clusterFor('b').sharding.start<Cmd>({
           typeName: 'entity',
           entityProps: Props.create(() => new Entity()),
           extractEntityId: (m) => m.id,
           numShards: 16,
         }),
-        c: ClusterSharding.get(spec.systemFor('c'), spec.clusterFor('c')).start<Cmd>({
+        c: spec.clusterFor('c').sharding.start<Cmd>({
           typeName: 'entity',
           entityProps: Props.create(() => new Entity()),
           extractEntityId: (m) => m.id,

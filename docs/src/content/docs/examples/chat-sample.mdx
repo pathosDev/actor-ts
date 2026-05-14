@@ -92,7 +92,7 @@ The Docker Compose spins up:
 ### Sharded sessions
 
 ```ts
-const sessionRegion = ClusterSharding.get(system, cluster).start<SessionMsg>({
+const sessionRegion = cluster.sharding.start<SessionMsg>({
   typeName: 'session',
   entityProps: Props.create(() => new UserSessionActor()),
   extractEntityId: (msg) => msg.userId,

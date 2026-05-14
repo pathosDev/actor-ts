@@ -58,7 +58,7 @@ async function startNode<TMsg>(opts: {
     failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
     gossipIntervalMs: 80,
   });
-  const region = opts.sharding(ClusterSharding.get(system, cluster));
+  const region = opts.sharding(cluster.sharding);
   return { system, cluster, region };
 }
 

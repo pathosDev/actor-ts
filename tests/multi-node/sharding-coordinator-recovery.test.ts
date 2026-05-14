@@ -101,7 +101,7 @@ describe('ShardCoordinator state persistence — leader failover', () => {
         const store = new DistributedDataCoordinatorStateStore(
           dd, cluster.selfAddress.toString(),
         );
-        regions[role] = ClusterSharding.get(sys, cluster).start<Cmd>({
+        regions[role] = cluster.sharding.start<Cmd>({
           typeName: 'entity',
           entityProps: Props.create(() => new Entity()),
           extractEntityId: (m) => m.id,

@@ -79,7 +79,7 @@ await grain.UpdateName("Alice");
 // actor-ts:
 import { ClusterSharding } from 'actor-ts';
 
-const region = ClusterSharding.get(system, cluster).start<Cmd>({
+const region = cluster.sharding.start<Cmd>({
   typeName: 'user',
   entityProps: Props.create(() => new UserActor()),
   extractEntityId: (cmd) => cmd.entityId,
