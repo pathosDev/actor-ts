@@ -7,7 +7,7 @@
  * Expected output: the counter logs after each increment and stops itself
  * when it reaches the limit.
  */
-import { ActorSystem, Behaviors, spawnTyped, type Behavior } from '../../src/index.js';
+import { ActorSystem, Behaviors, type Behavior } from '../../src/index.js';
 
 type CounterCmd = { kind: 'inc' } | { kind: 'get' };
 
@@ -32,7 +32,7 @@ const counter = (n: number, limit: number): Behavior<CounterCmd> =>
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('typed-counter');
-  const ref = spawnTyped(system, counter(0, 3), 'counter');
+  const ref = system.spawnTyped(counter(0, 3), 'counter');
 
   ref.tell({ kind: 'inc' });
   ref.tell({ kind: 'get' });

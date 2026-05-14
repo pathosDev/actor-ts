@@ -17,6 +17,8 @@ import { metricsOf } from '../metrics/MetricsExtension.js';
 import { tracerOf } from '../tracing/TracingExtension.js';
 import type { Span } from '../tracing/Tracer.js';
 import type { Props } from '../Props.js';
+import type { Behavior } from '../typed/Behavior.js';
+import { typedProps } from '../typed/spawn.js';
 import {
   ActorInitializationError,
   defaultStrategy,
@@ -126,6 +128,14 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
 
   spawnAnonymous<T>(props: Props<T>): ActorRef<T> {
     return this._createChild(props, `$${++this._anonChildCounter}`);
+  }
+
+  spawnTyped<T>(behavior: Behavior<T>, name: string): ActorRef<T> {
+    return this._createChild(typedProps<T>(behavior), name);
+  }
+
+  spawnTypedAnonymous<T>(behavior: Behavior<T>): ActorRef<T> {
+    return this._createChild(typedProps<T>(behavior), `$${++this._anonChildCounter}`);
   }
 
   /** @internal — single child-creation path shared by spawn / spawnAnonymous. */

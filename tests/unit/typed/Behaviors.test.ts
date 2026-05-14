@@ -3,7 +3,6 @@ import { ActorSystem } from '../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import {
   Behaviors,
-  spawnTyped,
   typedProps,
   type Behavior,
 } from '../../../src/typed/index.js';
@@ -22,7 +21,7 @@ describe('Behaviors.receive — basic handler', () => {
       seen.push(msg);
       return Behaviors.same;
     });
-    const ref = spawnTyped(sys, b, 'r');
+    const ref = sys.spawnTyped(b, 'r');
     ref.tell('a'); ref.tell('b'); ref.tell('c');
     await sleep(20);
     expect(seen).toEqual(['a', 'b', 'c']);
@@ -33,7 +32,7 @@ describe('Behaviors.receive — basic handler', () => {
     const sys = newSys();
     const seen: number[] = [];
     const b = Behaviors.receiveMessage<number>((m) => { seen.push(m); return Behaviors.same; });
-    const ref = spawnTyped(sys, b);
+    const ref = sys.spawnTypedAnonymous(b);
     ref.tell(1); ref.tell(2);
     await sleep(20);
     expect(seen).toEqual([1, 2]);
@@ -52,7 +51,7 @@ describe('Behaviors.receive — basic handler', () => {
         return Behaviors.unhandled;
       });
 
-    const ref = spawnTyped(kit.system, counter(0));
+    const ref = kit.system.spawnTypedAnonymous(counter(0));
     ref.tell('inc'); ref.tell('inc'); ref.tell('inc'); ref.tell('get');
     expect(await probe.expectMsg(3, 500)).toBe(3);
     await kit.system.terminate();
@@ -68,7 +67,7 @@ describe('Behaviors.stopped', () => {
     const probe = kit.createTestProbe();
 
     const b = Behaviors.receiveMessage<string>((m) => m === 'die' ? Behaviors.stopped : Behaviors.same);
-    const ref = spawnTyped(kit.system, b);
+    const ref = kit.system.spawnTypedAnonymous(b);
     // Put a watcher on the target so we receive Terminated when it stops.
     kit.system.eventStream.subscribe(probe, Terminated);
     ref.tell('die');
@@ -93,7 +92,7 @@ describe('Behaviors.setup', () => {
       return Behaviors.receiveMessage(() => Behaviors.same);
     });
 
-    const ref = spawnTyped(kit.system, b, 'withSetup');
+    const ref = kit.system.spawnTyped(b, 'withSetup');
     const first = await probe.receiveOne(500);
     expect(typeof first).toBe('string');
     expect((first as string).startsWith('path=')).toBe(true);
@@ -119,7 +118,7 @@ describe('Behaviors.withTimers', () => {
       });
     });
 
-    spawnTyped(kit.system, b);
+    kit.system.spawnTypedAnonymous(b);
     expect(await probe.expectMsg('tick', 500)).toBe('tick');
     await kit.system.terminate();
     await sys.terminate();
@@ -152,7 +151,7 @@ describe('Behaviors.withStash', () => {
     });
 
     const b = Behaviors.withStash<Msg>(16, (stash) => uninit(stash));
-    const ref = spawnTyped(kit.system, b);
+    const ref = kit.system.spawnTypedAnonymous(b);
     ref.tell({ kind: 'work', id: 1 });
     ref.tell({ kind: 'work', id: 2 });
     ref.tell({ kind: 'ready' });
@@ -177,7 +176,7 @@ describe('Behaviors.withStash', () => {
         return Behaviors.same;
       }),
     );
-    const ref = spawnTyped(sys, b);
+    const ref = sys.spawnTypedAnonymous(b);
     ref.tell('a'); ref.tell('b'); ref.tell('c');
     await sleep(30);
     expect(errors.length).toBe(1);
@@ -206,7 +205,7 @@ describe('Behaviors.supervise', () => {
     const b = Behaviors.supervise(inner).onFailure(
       new OneForOneStrategy(() => Directive.Restart, { maxRetries: 5, withinTimeRangeMs: 1_000 }),
     );
-    const ref = spawnTyped(kit.system, b);
+    const ref = kit.system.spawnTypedAnonymous(b);
 
     expect(await probe.expectMsg('init#1', 500)).toBe('init#1');
     ref.tell('one');
@@ -238,7 +237,7 @@ describe('Behaviors.supervise', () => {
     const b = Behaviors.supervise(inner).onFailure(
       new OneForOneStrategy(() => Directive.Resume),
     );
-    const ref = spawnTyped(kit.system, b);
+    const ref = kit.system.spawnTypedAnonymous(b);
     ref.tell('a');
     expect(await probe.expectMsg('a', 500)).toBe('a');
     ref.tell('boom');
@@ -254,7 +253,7 @@ describe('Behaviors.supervise', () => {
 describe('Behaviors.empty / Behaviors.ignore', () => {
   test('ignore silently drops all messages', async () => {
     const sys = newSys();
-    const ref = spawnTyped(sys, Behaviors.ignore);
+    const ref = sys.spawnTypedAnonymous(Behaviors.ignore);
     ref.tell('a' as never); ref.tell('b' as never);
     await sleep(20);
     // No crash and the actor still exists — that's the contract.
@@ -287,11 +286,76 @@ describe('Behaviors.unhandled', () => {
     kit.system.eventStream.subscribe(probe, DeadLetter);
 
     const b = Behaviors.receiveMessage<string>((m) => m === 'yes' ? Behaviors.same : Behaviors.unhandled);
-    const ref = spawnTyped(kit.system, b);
+    const ref = kit.system.spawnTypedAnonymous(b);
     ref.tell('yes');
     ref.tell('no');
     const dl = await probe.receiveOne(500) as { message: unknown };
     expect(dl.message).toBe('no');
     await kit.system.terminate();
+  });
+});
+
+/* ----------------- spawnTyped on ActorSystem + ActorContext ---------------- */
+
+describe('system.spawnTyped + ctx.spawnTyped', () => {
+  test('system.spawnTyped returns a typed ActorRef at the named path', async () => {
+    const sys = newSys();
+    const b = Behaviors.receiveMessage<string>(() => Behaviors.same);
+    const ref = sys.spawnTyped(b, 'named-typed');
+    expect(ref.path.name).toBe('named-typed');
+    expect(ref.path.toString()).toContain('/user/named-typed');
+    await sys.terminate();
+  });
+
+  test('system.spawnTypedAnonymous auto-generates a path under /user', async () => {
+    const sys = newSys();
+    const b = Behaviors.receiveMessage<string>(() => Behaviors.same);
+    const ref = sys.spawnTypedAnonymous(b);
+    expect(ref.path.name.startsWith('$')).toBe(true);
+    expect(ref.path.toString()).toContain('/user/');
+    await sys.terminate();
+  });
+
+  test('ctx.spawnTyped + ctx.spawnTypedAnonymous on an untyped parent', async () => {
+    const sys = newSys();
+    const seen: string[] = [];
+    const { Actor } = await import('../../../src/Actor.js');
+    const { Props } = await import('../../../src/Props.js');
+
+    // Parent forwards every received string to its typed-child set,
+    // exercising both shapes of `ctx.spawnTyped*`.
+    class UntypedParent extends Actor<{ kind: 'fwd'; m: string }> {
+      private named!: import('../../../src/ActorRef.js').ActorRef<string>;
+      private anon!:  import('../../../src/ActorRef.js').ActorRef<string>;
+      override preStart(): void {
+        const childBehavior = Behaviors.receiveMessage<string>((m) => {
+          seen.push(m);
+          return Behaviors.same;
+        });
+        this.named = this.context.spawnTyped(childBehavior, 'typed-child');
+        this.anon  = this.context.spawnTypedAnonymous(childBehavior);
+        // Path checks (the test surface is the parent's own assertions
+        // about what `ctx.spawnTyped*` returned — visible via the child
+        // names the framework recorded).
+        if (this.named.path.name !== 'typed-child') {
+          throw new Error(`named child path was ${this.named.path.name}`);
+        }
+        if (!this.anon.path.name.startsWith('$')) {
+          throw new Error(`anon child path was ${this.anon.path.name}`);
+        }
+      }
+      override onReceive(env: { kind: 'fwd'; m: string }): void {
+        this.named.tell(env.m);
+        this.anon.tell(env.m);
+      }
+    }
+
+    const parent = sys.spawn(Props.create(() => new UntypedParent()), 'parent');
+    parent.tell({ kind: 'fwd', m: 'hi' });
+    await sleep(40);
+    // Both children received the same message — order across children is
+    // not deterministic, so sort.
+    expect(seen.sort()).toEqual(['hi', 'hi']);
+    await sys.terminate();
   });
 });

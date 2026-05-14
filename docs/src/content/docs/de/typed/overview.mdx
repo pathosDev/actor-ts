@@ -40,7 +40,7 @@ const counter = system.spawnAnonymous(Props.create(() => new Counter()));
 **Typed:**
 
 ```ts
-import { Behaviors, spawnTyped, ActorSystem } from 'actor-ts';
+import { ActorSystem, Behaviors } from 'actor-ts';
 
 type Cmd = { kind: 'inc' } | { kind: 'dec' };
 
@@ -49,7 +49,7 @@ const counter = (n: number) => Behaviors.receive<Cmd>((_ctx, cmd) =>
 );
 
 const system = ActorSystem.create('demo');
-const ref = spawnTyped(system, counter(0));
+const ref = system.spawnTypedAnonymous(counter(0));
 ```
 
 Gleiche Runtime-Semantik; unterschiedliche Ergonomie:
@@ -126,7 +126,7 @@ Drei Dinge, die die untyped-API sauberer tut:
   anderen Bibliotheken willst, die du verwendet hast.
 
 **Du kannst sie mischen.**  Ein untyped-Parent kann typed-Kinder
-über `spawnTypedChild(ctx, behavior)` spawnen, und ein typed-Parent
+über `ctx.spawnTypedAnonymous(behavior)` spawnen, und ein typed-Parent
 kann untyped-Kinder über `ctx.spawn(behavior)` spawnen, wobei das
 Behavior eine `Actor`-Subklasse wickelt.  Refs sind interoperabel —
 beide Formen exponieren `ActorRef<T>` mit derselben
@@ -162,7 +162,7 @@ Spawn-Helfer.
 - **[Behaviors](/de/typed/behaviors/)** — das volle DSL.
 - **[Typed Actor](/de/typed/typed-actor/)** — was ein
   Behavior zur Laufzeit ausführt.
-- **[Spawn Typed](/de/typed/spawn-typed/)** — `spawnTyped`,
-  `typedProps`, `spawnTypedChild`.
+- **[Spawn Typed](/de/typed/spawn-typed/)** — `system.spawnTyped`,
+  `ctx.spawnTyped`, `typedProps`.
 - **[Fundamentals-Überblick](/de/fundamentals/overview/)** —
   die untyped Konzeptkarte; viele Ideen übertragen sich.

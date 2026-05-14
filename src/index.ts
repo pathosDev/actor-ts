@@ -532,8 +532,6 @@ export {
   Behaviors,
   TypedActor,
   typedProps,
-  spawnTyped,
-  spawnTypedChild,
   same,
   stopped,
   unhandled,

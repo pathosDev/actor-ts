@@ -10,7 +10,7 @@ Behavior er danach annimmt.  Die Lebenszeit eines Actors ist nur
 eine Sequenz von Behaviors: jeder Handler gibt das nächste zurück.
 
 ```ts
-import { Behaviors, spawnTyped, ActorSystem } from 'actor-ts';
+import { ActorSystem, Behaviors } from 'actor-ts';
 
 type Msg = { kind: 'tick' };
 
@@ -20,7 +20,7 @@ const ticker = Behaviors.receive<Msg>((ctx, msg) => {
 });
 
 const system = ActorSystem.create('demo');
-const ref = spawnTyped(system, ticker);
+const ref = system.spawnTypedAnonymous(ticker);
 ```
 
 `Behaviors.receive` baut das häufigste Behavior: einen Handler, der
@@ -199,7 +199,7 @@ schlucken soll.
 ## Ein Multi-Behavior-Beispiel
 
 ```ts
-import { Behaviors, type Behavior, spawnTyped, ActorSystem } from 'actor-ts';
+import { ActorSystem, Behaviors, type Behavior } from 'actor-ts';
 
 type Msg =
   | { kind: 'configure'; url: string }
@@ -226,7 +226,7 @@ const ready = (url: string): Behavior<Msg> =>
   });
 
 const system = ActorSystem.create('demo');
-spawnTyped(system, initializing);
+system.spawnTypedAnonymous(initializing);
 ```
 
 Zwei Behaviors:
@@ -308,8 +308,8 @@ import { Aside } from '@astrojs/starlight/components';
 
 - **[Typed Actor](/de/typed/typed-actor/)** — die Runtime,
   die ein Behavior interpretiert.
-- **[Spawn Typed](/de/typed/spawn-typed/)** — `spawnTyped`,
-  `typedProps`, `spawnTypedChild`.
+- **[Spawn Typed](/de/typed/spawn-typed/)** — `system.spawnTyped`,
+  `ctx.spawnTyped`, `typedProps`.
 - **[Supervision](/de/fundamentals/supervision/)** — was
   `Behaviors.supervise(...).onFailure(...)` intern verwendet.
 - **[Become und Stash (untyped)](/de/fundamentals/become-and-stash/)** —

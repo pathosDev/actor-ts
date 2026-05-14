@@ -1,25 +1,26 @@
 ---
 title: Spawn typed
-description: Three helpers to put a `Behavior<T>` into the runtime — `spawnTyped` for top-level actors, `spawnTypedChild` from inside an untyped parent, `typedProps` for bridging into the OO Props API.
+description: Put a `Behavior<T>` into the runtime — `system.spawnTyped` for top-level actors, `ctx.spawnTyped` from inside an untyped parent, `typedProps` for bridging into the OO Props API.
 ---
 
 A `Behavior<T>` is a value.  To put it into the runtime — to get
-an actual `ActorRef<T>` you can `tell` messages to — use one of
-three helpers:
+an actual `ActorRef<T>` you can `tell` messages to — use the
+method on whichever host you're spawning from:
 
-| Helper | Spawn target | Caller |
-| --- | --- | --- |
-| `spawnTyped(system, behavior, name?)` | Top-level actor under `/user`. | Outside an actor. |
-| `spawnTypedChild(ctx, behavior, name?)` | Child of an untyped actor. | Inside an untyped `Actor.onReceive`. |
-| `typedProps(behavior)` → `Props<T>` | Anywhere `Props` is accepted. | When you want to plug a Behavior into APIs that take `Props`. |
+| Where | Method |
+| --- | --- |
+| Outside an actor | `system.spawnTyped(behavior, name)` / `system.spawnTypedAnonymous(behavior)` |
+| Inside an untyped `Actor.onReceive` | `this.context.spawnTyped(behavior, name)` / `this.context.spawnTypedAnonymous(behavior)` |
+| Inside a typed `Behaviors.setup` / handler | `ctx.spawn(behavior, name)` |
+| Anywhere `Props<T>` is accepted | `typedProps(behavior)` |
 
-For typed-actor-to-typed-child spawning, use the **`ctx.spawn(...)`
-method on `TypedActorContext`** instead — covered below.
+The method form mirrors the standard OO API — `spawn` vs.
+`spawnAnonymous` for whether you supply a name.
 
-## `spawnTyped` — top-level
+## `system.spawnTyped` — top-level
 
 ```ts
-import { ActorSystem, Behaviors, spawnTyped } from 'actor-ts';
+import { ActorSystem, Behaviors, type Behavior, type ActorRef } from 'actor-ts';
 
 type Cmd = { kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> };
 
@@ -30,51 +31,49 @@ const counter = (n: number): Behavior<Cmd> => Behaviors.receive((ctx, cmd) => {
 });
 
 const system = ActorSystem.create('demo');
-const ref = spawnTyped(system, counter(0), 'counter');
+const ref = system.spawnTyped(counter(0), 'counter');
 //    ^- ActorRef<Cmd>
 ```
 
-The signature:
+The signatures:
 
 ```ts
-function spawnTyped<T>(
-  system:   ActorSystem,
-  behavior: Behavior<T>,
-  name?:    string,
-): ActorRef<T>;
+class ActorSystem {
+  spawnTyped<T>(behavior: Behavior<T>, name: string): ActorRef<T>;
+  spawnTypedAnonymous<T>(behavior: Behavior<T>): ActorRef<T>;
+}
 ```
 
 Returns a typed `ActorRef<T>` — `tell` accepts only `Cmd`-shaped
 messages, the compiler enforces it.
 
-## `spawnTypedChild` — typed child from an untyped parent
+## `ctx.spawnTyped` — typed child from an untyped parent
 
 ```ts
-import { Actor, type ActorContext, Behaviors, spawnTypedChild } from 'actor-ts';
+import { Actor, Behaviors } from 'actor-ts';
 
 class UntypedParent extends Actor<...> {
   override preStart(): void {
-    const typedChild = spawnTypedChild(this.context, counter(0), 'child');
+    const typedChild = this.context.spawnTyped(counter(0), 'child');
     // typedChild: ActorRef<Cmd>
     typedChild.tell({ kind: 'inc' });
   }
 }
 ```
 
-The signature:
+The signatures live on `ActorContext`:
 
 ```ts
-function spawnTypedChild<T>(
-  ctx:      ActorContext,
-  behavior: Behavior<T>,
-  name?:    string,
-): ActorRef<T>;
+interface ActorContext {
+  spawnTyped<T>(behavior: Behavior<T>, name: string): ActorRef<T>;
+  spawnTypedAnonymous<T>(behavior: Behavior<T>): ActorRef<T>;
+}
 ```
 
 Useful when you have an existing untyped supervisor that needs to
-spawn typed workers.  The child is a normal entry in the
-parent's children list — supervisor strategies apply per the
-parent's strategy, death watch works both ways.
+spawn typed workers.  The child is a normal entry in the parent's
+children list — supervisor strategies apply per the parent's
+strategy, death watch works both ways.
 
 ## `typedProps` — interop with `Props`
 
@@ -120,25 +119,20 @@ const parent: Behavior<ParentMsg> = Behaviors.setup((ctx) => {
 ```
 
 This is the **standard way** for typed parents to spawn typed
-children.  Same semantics as `spawnTypedChild` from the untyped
-side, but typed all the way through — `ctx.spawn(behavior)` knows
+children — typed all the way through.  `ctx.spawn(behavior)` knows
 the child's message type from the Behavior's type parameter.
-
-No `spawnTyped` import needed inside typed code; the context
-provides it.
 
 ## Naming + paths
 
-The `name` parameter is optional in all four entry points:
-
-- Omit it → framework generates one (`'$1'`, `'$2'`, ...).
-- Provide it → must be unique among siblings.
+For the deterministic variants (`spawnTyped`), the `name` parameter
+is required and must be unique among siblings.  For
+`spawnTypedAnonymous`, the framework generates one (`'$1'`, `'$2'`, ...).
 
 The resulting actor's path follows the standard format:
 
-- `spawnTyped(system, b, 'counter')` →
+- `system.spawnTyped(b, 'counter')` →
   `actor-ts://my-app/user/counter`
-- `spawnTypedChild(parentCtx, b, 'worker')` →
+- `parentCtx.spawnTyped(b, 'worker')` →
   `actor-ts://my-app/user/<parent>/worker`
 - `ctx.spawn(b, 'worker')` →
   `actor-ts://my-app/user/<parent>/worker`
@@ -150,10 +144,12 @@ path semantics.
 
 ```
 Caller is outside an actor:
-    → spawnTyped(system, b, name)
+    → system.spawnTyped(b, name)         // with a name
+    → system.spawnTypedAnonymous(b)      // throwaway
 
 Caller is inside an untyped Actor.onReceive:
-    → spawnTypedChild(this.context, b, name)
+    → this.context.spawnTyped(b, name)
+    → this.context.spawnTypedAnonymous(b)
 
 Caller is inside a typed Behaviors.setup or handler:
     → ctx.spawn(b, name)
@@ -162,17 +158,17 @@ You have a function that takes Props<T> and you want to use a Behavior:
     → typedProps(b)
 ```
 
-The three helpers are deliberately small — each handles one
-common case.  `typedProps` is the escape hatch when you need to
-plug a behavior into Props-shaped APIs.
+The methods are deliberately small — each handles one common
+case.  `typedProps` is the escape hatch when you need to plug a
+behavior into Props-shaped APIs.
 
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Don't share a Behavior across actor instances">
   ```ts
   const sharedBehavior = counter(0);
-  spawnTyped(system, sharedBehavior, 'a');
-  spawnTyped(system, sharedBehavior, 'b');   // ← both start at count=0, fine
+  system.spawnTyped(sharedBehavior, 'a');
+  system.spawnTyped(sharedBehavior, 'b');   // ← both start at count=0, fine
   ```
   Behaviors are values — *reading* them is fine.  The trap is if
   the behavior closure captures mutable state and you mutate it:
@@ -183,21 +179,22 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Naming collisions">
   ```ts
-  spawnTyped(system, b, 'counter');
-  spawnTyped(system, b, 'counter');   // ← throws — name already in use
+  system.spawnTyped(b, 'counter');
+  system.spawnTyped(b, 'counter');   // ← throws — name already in use
   ```
-  Names must be unique among siblings.  Either omit (auto-generated)
-  or use a unique scheme (`counter-${id}`, `worker-${slot}`).  Same
-  rule as untyped spawn.
+  Names must be unique among siblings.  Either use
+  `spawnTypedAnonymous` (auto-generated) or use a unique scheme
+  (`counter-${id}`, `worker-${slot}`).  Same rule as untyped
+  `spawn`.
 </Aside>
 
 ## Where to next
 
 - **[Behaviors](/typed/behaviors/)** — the DSL that
-  produces the values you pass to these helpers.
+  produces the values you pass to these methods.
 - **[Typed actor](/typed/typed-actor/)** — the runtime
-  that all four helpers wrap.
+  the spawn methods wrap.
 - **[Props](/fundamentals/props/)** — the untyped
   configuration `typedProps` returns.
 - **[Actor system](/fundamentals/actor-system/)** — the
-  `spawn` API the helpers ultimately call.
+  `spawn` API the methods ultimately call.

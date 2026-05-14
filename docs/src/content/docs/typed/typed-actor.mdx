@@ -1,6 +1,6 @@
 ---
 title: TypedActor
-description: The runtime that interprets a Behavior — bridges the typed DSL to the untyped Actor engine. Internal class; users reach it through `spawnTyped`, `typedProps`, or `spawnTypedChild`.
+description: The runtime that interprets a Behavior — bridges the typed DSL to the untyped Actor engine. Internal class; users reach it through `system.spawnTyped`, `ctx.spawnTyped`, or `typedProps`.
 ---
 
 `TypedActor<T>` is the runtime host that takes a `Behavior<T>` value
@@ -8,17 +8,16 @@ and runs it.  Internally, it's an `Actor<T>` subclass — same
 mailbox, same dispatcher, same supervisor tree — but its
 `onReceive` delegates into whichever Behavior is currently active.
 
-You don't construct `TypedActor` directly.  The three spawn helpers
-([`spawnTyped`](/typed/spawn-typed/),
-[`typedProps`](/typed/spawn-typed/), and `spawnTypedChild`)
-wrap it for you.  But knowing how it works clarifies the typed-DSL
-semantics — especially what "the runtime interprets the Behavior"
-actually means.
+You don't construct `TypedActor` directly.  The spawn methods
+([`system.spawnTyped` / `ctx.spawnTyped`](/typed/spawn-typed/) and
+[`typedProps`](/typed/spawn-typed/)) wrap it for you.  But knowing
+how it works clarifies the typed-DSL semantics — especially what
+"the runtime interprets the Behavior" actually means.
 
 ## How a Behavior becomes an actor
 
 ```ts
-import { Behaviors, spawnTyped, ActorSystem } from 'actor-ts';
+import { ActorSystem, Behaviors } from 'actor-ts';
 
 const myBehavior = Behaviors.receive<Msg>((ctx, msg) => {
   // ... handle msg
@@ -26,7 +25,7 @@ const myBehavior = Behaviors.receive<Msg>((ctx, msg) => {
 });
 
 const system = ActorSystem.create('demo');
-const ref = spawnTyped(system, myBehavior);
+const ref = system.spawnTypedAnonymous(myBehavior);
 // Under the hood: system.spawnAnonymous(Props.create(() => new TypedActor(myBehavior)))
 ```
 
@@ -145,7 +144,7 @@ untyped, a few details surface:
 
 ## Initial-behavior gotchas
 
-The behavior you pass to `spawnTyped(system, behavior)` becomes
+The behavior you pass to `system.spawnTypedAnonymous(behavior)` becomes
 the *initial* current.  Two edge cases:
 
 - **`Behaviors.same` as initial** is meaningless — there's
@@ -165,10 +164,10 @@ import { Aside } from '@astrojs/starlight/components';
   system.spawnAnonymous(Props.create(() => actor));      // ← won't behave like a fresh actor
   ```
   Like any `Actor`, the typed runtime needs a fresh instance on
-  every restart.  The spawn helpers (`spawnTyped`, `typedProps`,
-  `spawnTypedChild`) close over the Behavior value and produce a
-  new `TypedActor` each time the Props factory runs.  Don't
-  shortcut.
+  every restart.  The spawn methods (`system.spawnTyped`,
+  `ctx.spawnTyped`) and the `typedProps` helper close over the
+  Behavior value and produce a new `TypedActor` each time the
+  Props factory runs.  Don't shortcut.
 </Aside>
 
 ## Where to next

@@ -17,4 +17,4 @@ export type {
 } from './Behavior.js';
 export type { TypedActorContext } from './TypedActorContext.js';
 export { TypedActor } from './TypedActor.js';
-export { typedProps, spawnTyped, spawnTypedChild } from './spawn.js';
+export { typedProps } from './spawn.js';

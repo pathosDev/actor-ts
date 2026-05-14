@@ -1,26 +1,27 @@
 ---
 title: Spawn Typed
-description: Drei Helfer, um ein `Behavior<T>` in die Runtime zu bringen — `spawnTyped` für Top-Level-Actors, `spawnTypedChild` aus einem untyped-Parent heraus, `typedProps` zum Überbrücken in die OO-Props-API.
+description: Bring ein `Behavior<T>` in die Runtime — `system.spawnTyped` für Top-Level-Actors, `ctx.spawnTyped` aus einem untyped-Parent heraus, `typedProps` zum Überbrücken in die OO-Props-API.
 ---
 
 Ein `Behavior<T>` ist ein Wert.  Um ihn in die Runtime zu bringen
 — um eine tatsächliche `ActorRef<T>` zu bekommen, der du
-Nachrichten `tell`en kannst — verwende einen von drei Helfern:
+Nachrichten `tell`en kannst — verwende die Methode auf dem Host,
+von dem aus du spawnst:
 
-| Helfer | Spawn-Ziel | Aufrufer |
-| --- | --- | --- |
-| `spawnTyped(system, behavior, name?)` | Top-Level-Actor unter `/user`. | Außerhalb eines Actors. |
-| `spawnTypedChild(ctx, behavior, name?)` | Child eines untyped-Actors. | Innerhalb eines untyped `Actor.onReceive`. |
-| `typedProps(behavior)` → `Props<T>` | Überall, wo `Props` akzeptiert wird. | Wenn du ein Behavior in APIs stecken willst, die `Props` nehmen. |
+| Wo | Methode |
+| --- | --- |
+| Außerhalb eines Actors | `system.spawnTyped(behavior, name)` / `system.spawnTypedAnonymous(behavior)` |
+| Innerhalb eines untyped `Actor.onReceive` | `this.context.spawnTyped(behavior, name)` / `this.context.spawnTypedAnonymous(behavior)` |
+| Innerhalb eines typed `Behaviors.setup` / Handlers | `ctx.spawn(behavior, name)` |
+| Überall, wo `Props<T>` akzeptiert wird | `typedProps(behavior)` |
 
-Für Typed-Actor-zu-Typed-Child-Spawning verwende stattdessen die
-**`ctx.spawn(...)`-Methode auf `TypedActorContext`** — unten
-beschrieben.
+Die Methoden-Form spiegelt die Standard-OO-API — `spawn` vs.
+`spawnAnonymous` je nachdem, ob du einen Namen angibst.
 
-## `spawnTyped` — Top-Level
+## `system.spawnTyped` — Top-Level
 
 ```ts
-import { ActorSystem, Behaviors, spawnTyped } from 'actor-ts';
+import { ActorSystem, Behaviors, type Behavior, type ActorRef } from 'actor-ts';
 
 type Cmd = { kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> };
 
@@ -31,45 +32,43 @@ const counter = (n: number): Behavior<Cmd> => Behaviors.receive((ctx, cmd) => {
 });
 
 const system = ActorSystem.create('demo');
-const ref = spawnTyped(system, counter(0), 'counter');
+const ref = system.spawnTyped(counter(0), 'counter');
 //    ^- ActorRef<Cmd>
 ```
 
-Die Signatur:
+Die Signaturen:
 
 ```ts
-function spawnTyped<T>(
-  system:   ActorSystem,
-  behavior: Behavior<T>,
-  name?:    string,
-): ActorRef<T>;
+class ActorSystem {
+  spawnTyped<T>(behavior: Behavior<T>, name: string): ActorRef<T>;
+  spawnTypedAnonymous<T>(behavior: Behavior<T>): ActorRef<T>;
+}
 ```
 
 Gibt eine typisierte `ActorRef<T>` zurück — `tell` akzeptiert nur
 `Cmd`-förmige Nachrichten, der Compiler erzwingt das.
 
-## `spawnTypedChild` — typed Child von einem untyped Parent
+## `ctx.spawnTyped` — typed Child von einem untyped Parent
 
 ```ts
-import { Actor, type ActorContext, Behaviors, spawnTypedChild } from 'actor-ts';
+import { Actor, Behaviors } from 'actor-ts';
 
 class UntypedParent extends Actor<...> {
   override preStart(): void {
-    const typedChild = spawnTypedChild(this.context, counter(0), 'child');
+    const typedChild = this.context.spawnTyped(counter(0), 'child');
     // typedChild: ActorRef<Cmd>
     typedChild.tell({ kind: 'inc' });
   }
 }
 ```
 
-Die Signatur:
+Die Signaturen leben auf `ActorContext`:
 
 ```ts
-function spawnTypedChild<T>(
-  ctx:      ActorContext,
-  behavior: Behavior<T>,
-  name?:    string,
-): ActorRef<T>;
+interface ActorContext {
+  spawnTyped<T>(behavior: Behavior<T>, name: string): ActorRef<T>;
+  spawnTypedAnonymous<T>(behavior: Behavior<T>): ActorRef<T>;
+}
 ```
 
 Nützlich, wenn du einen bestehenden untyped-Supervisor hast, der
@@ -124,26 +123,21 @@ const parent: Behavior<ParentMsg> = Behaviors.setup((ctx) => {
 ```
 
 Das ist der **Standard-Weg** für typed-Parents, typed-Children zu
-spawnen.  Gleiche Semantik wie `spawnTypedChild` von der
-untyped-Seite, aber durchgehend typisiert — `ctx.spawn(behavior)`
-kennt den Nachrichtentyp des Kindes aus dem Typ-Parameter des
-Behaviors.
-
-Kein `spawnTyped`-Import nötig innerhalb von typed-Code; der
-Context liefert es.
+spawnen — durchgehend typisiert.  `ctx.spawn(behavior)` kennt den
+Nachrichtentyp des Kindes aus dem Typ-Parameter des Behaviors.
 
 ## Naming + Pfade
 
-Der `name`-Parameter ist in allen vier Einstiegspunkten optional:
-
-- Weglassen → das Framework generiert einen (`'$1'`, `'$2'`, ...).
-- Angeben → muss unter Geschwistern eindeutig sein.
+Für die deterministischen Varianten (`spawnTyped`) ist der
+`name`-Parameter Pflicht und muss unter Geschwistern eindeutig
+sein.  Für `spawnTypedAnonymous` generiert das Framework einen
+(`'$1'`, `'$2'`, ...).
 
 Der Pfad des resultierenden Actors folgt dem Standardformat:
 
-- `spawnTyped(system, b, 'counter')` →
+- `system.spawnTyped(b, 'counter')` →
   `actor-ts://my-app/user/counter`
-- `spawnTypedChild(parentCtx, b, 'worker')` →
+- `parentCtx.spawnTyped(b, 'worker')` →
   `actor-ts://my-app/user/<parent>/worker`
 - `ctx.spawn(b, 'worker')` →
   `actor-ts://my-app/user/<parent>/worker`
@@ -155,10 +149,12 @@ Pfad-Semantik.
 
 ```
 Aufrufer ist außerhalb eines Actors:
-    → spawnTyped(system, b, name)
+    → system.spawnTyped(b, name)         // mit Namen
+    → system.spawnTypedAnonymous(b)      // wegwerf
 
 Aufrufer ist innerhalb eines untyped Actor.onReceive:
-    → spawnTypedChild(this.context, b, name)
+    → this.context.spawnTyped(b, name)
+    → this.context.spawnTypedAnonymous(b)
 
 Aufrufer ist innerhalb eines typed Behaviors.setup oder Handlers:
     → ctx.spawn(b, name)
@@ -167,7 +163,7 @@ Du hast eine Funktion, die Props<T> nimmt, und willst ein Behavior verwenden:
     → typedProps(b)
 ```
 
-Die drei Helfer sind absichtlich klein — jeder handhabt einen
+Die Methoden sind absichtlich klein — jede handhabt einen
 häufigen Fall.  `typedProps` ist die Notluke, wenn du ein Behavior
 in Props-förmige APIs stecken musst.
 
@@ -176,8 +172,8 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Teile ein Behavior nicht über Actor-Instanzen">
   ```ts
   const sharedBehavior = counter(0);
-  spawnTyped(system, sharedBehavior, 'a');
-  spawnTyped(system, sharedBehavior, 'b');   // ← beide starten bei count=0, okay
+  system.spawnTyped(sharedBehavior, 'a');
+  system.spawnTyped(sharedBehavior, 'b');   // ← beide starten bei count=0, okay
   ```
   Behaviors sind Werte — sie zu *lesen* ist okay.  Die Falle ist,
   wenn der Behavior-Closure mutablen Zustand einfängt und du ihn
@@ -188,22 +184,22 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Namens-Kollisionen">
   ```ts
-  spawnTyped(system, b, 'counter');
-  spawnTyped(system, b, 'counter');   // ← throwt — Name bereits in Verwendung
+  system.spawnTyped(b, 'counter');
+  system.spawnTyped(b, 'counter');   // ← throwt — Name bereits in Verwendung
   ```
   Namen müssen unter Geschwistern eindeutig sein.  Entweder
-  weglassen (auto-generiert) oder ein eindeutiges Schema verwenden
-  (`counter-${id}`, `worker-${slot}`).  Gleiche Regel wie bei
-  untyped-Spawn.
+  `spawnTypedAnonymous` verwenden (auto-generiert) oder ein
+  eindeutiges Schema (`counter-${id}`, `worker-${slot}`).  Gleiche
+  Regel wie bei untyped-`spawn`.
 </Aside>
 
 ## Wie es weitergeht
 
 - **[Behaviors](/de/typed/behaviors/)** — das DSL, das die
-  Werte produziert, die du diesen Helfern übergibst.
+  Werte produziert, die du diesen Methoden übergibst.
 - **[Typed Actor](/de/typed/typed-actor/)** — die Runtime,
-  die alle vier Helfer wickeln.
+  die die Spawn-Methoden wickeln.
 - **[Props](/de/fundamentals/props/)** — die untyped
   Konfiguration, die `typedProps` zurückgibt.
 - **[Actor-System](/de/fundamentals/actor-system/)** — die
-  `spawn`-API, die die Helfer letztlich aufrufen.
+  `spawn`-API, die die Methoden letztlich aufrufen.

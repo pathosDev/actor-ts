@@ -49,6 +49,21 @@ export interface ActorContext<TMsg = unknown> {
    */
   spawnAnonymous<T>(props: Props<T>): ActorRef<T>;
 
+  /**
+   * Spawn a typed-Behavior child with a deterministic name — the
+   * Behavior-DSL counterpart to {@link spawn}.  Wraps the Behavior
+   * in `typedProps` internally so callers don't have to.
+   *
+   *     const child = this.context.spawnTyped(counter(0), 'counter');
+   */
+  spawnTyped<T>(behavior: import('./typed/Behavior.js').Behavior<T>, name: string): ActorRef<T>;
+
+  /**
+   * Anonymous variant of {@link spawnTyped} — the Behavior-DSL
+   * counterpart to {@link spawnAnonymous}.
+   */
+  spawnTypedAnonymous<T>(behavior: import('./typed/Behavior.js').Behavior<T>): ActorRef<T>;
+
   /** Look up a direct child by name.  `None` if no such child exists. */
   child(name: string): Option<ActorRef>;
 

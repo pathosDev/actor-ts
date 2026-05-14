@@ -25,6 +25,8 @@ import type { SnapshotStore } from './persistence/SnapshotStore.js';
 import { PersistenceExtensionId } from './persistence/PersistenceExtension.js';
 import type { HttpServerBackend } from './http/backend/HttpServerBackend.js';
 import { HttpExtensionId, type ServerBuilder } from './http/HttpExtension.js';
+import type { Behavior } from './typed/Behavior.js';
+import { typedProps } from './typed/spawn.js';
 
 export interface ActorSystemSettings {
   readonly logger?: Logger;
@@ -194,6 +196,27 @@ export class ActorSystem {
       throw new Error(`Cannot create actors on a terminated ActorSystem '${this.name}'`);
     }
     return this.userGuardianCell.spawnAnonymous(props);
+  }
+
+  /**
+   * Spawn a typed Behavior under `/user` with a deterministic name —
+   * the Behavior-DSL counterpart to {@link spawn}.  Wraps the Behavior
+   * in `typedProps(behavior)` so callers don't have to thread Props
+   * through the typed API.
+   *
+   *     const ref = system.spawnTyped(counter(0), 'counter');
+   */
+  spawnTyped<T>(behavior: Behavior<T>, name: string): ActorRef<T> {
+    return this.spawn(typedProps<T>(behavior), name);
+  }
+
+  /**
+   * Anonymous variant of {@link spawnTyped} — the Behavior-DSL
+   * counterpart to {@link spawnAnonymous}.  Pick this when the caller
+   * doesn't need a stable path.
+   */
+  spawnTypedAnonymous<T>(behavior: Behavior<T>): ActorRef<T> {
+    return this.spawnAnonymous(typedProps<T>(behavior));
   }
 
   /**

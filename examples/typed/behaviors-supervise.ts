@@ -16,7 +16,6 @@ import {
   Behaviors,
   Directive,
   OneForOneStrategy,
-  spawnTyped,
   type Behavior,
 } from '../../src/index.js';
 
@@ -63,7 +62,7 @@ async function main(): Promise<void> {
   const supervised = Behaviors.supervise(poller(6)).onFailure(
     new OneForOneStrategy(() => Directive.Restart, { maxRetries: 3, withinTimeRangeMs: 5_000 }),
   );
-  const ref = spawnTyped(system, supervised, 'poller');
+  const ref = system.spawnTyped(supervised, 'poller');
 
   // Let a few ticks go by, then cause a crash.
   await Bun.sleep(200);
