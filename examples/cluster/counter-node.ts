@@ -88,10 +88,8 @@ async function main(): Promise<void> {
   });
 
   const sharding = ClusterSharding.get(system, cluster);
-  const region = sharding.start<Command>({
-    typeName: 'counter',
-    entityProps: Props.create(() => new CounterEntity()),
-    extractEntityId: msg => msg.id,
+  const region = sharding.start('counter', CounterEntity, {
+    extractEntityId: (msg: Command) => msg.id,
     numShards: 16,
   });
 

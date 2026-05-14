@@ -93,8 +93,43 @@ export class ClusterSharding {
     return created;
   }
 
-  /** Start a sharded region for a type. Returns the local region ActorRef. */
-  start<TMsg>(settings: StartSettings<TMsg>): ActorRef<TMsg> {
+  /**
+   * Start a sharded region for a type.  Three calling shapes:
+   *
+   * ```ts
+   * // Shorthand: pass the entity class.  Framework wraps it with Props.create.
+   * sharding.start('counter', CounterEntity, {
+   *   extractEntityId: (msg) => msg.id,
+   * });
+   *
+   * // Shorthand: pass a factory.  Useful for closures / DI / no-arg new.
+   * sharding.start('cart', () => new CartEntity(deps), {
+   *   extractEntityId: (msg) => msg.entityId,
+   * });
+   *
+   * // Full-form: explicit Props + all settings (unchanged).
+   * sharding.start({
+   *   typeName: 'counter',
+   *   entityProps: Props.create(() => new CounterEntity()),
+   *   extractEntityId: (msg) => msg.id,
+   * });
+   * ```
+   */
+  start<TMsg>(settings: StartSettings<TMsg>): ActorRef<TMsg>;
+  start<TMsg>(
+    typeName: string,
+    entity: (new () => import('../../Actor.js').Actor<TMsg>) | (() => import('../../Actor.js').Actor<TMsg>),
+    opts: Omit<StartSettings<TMsg>, 'typeName' | 'entityProps'>,
+  ): ActorRef<TMsg>;
+  start<TMsg>(
+    arg1: string | StartSettings<TMsg>,
+    arg2?: (new () => import('../../Actor.js').Actor<TMsg>) | (() => import('../../Actor.js').Actor<TMsg>),
+    arg3?: Omit<StartSettings<TMsg>, 'typeName' | 'entityProps'>,
+  ): ActorRef<TMsg> {
+    const settings = typeof arg1 === 'string'
+      ? this.buildSettingsFromShorthand(arg1, arg2!, arg3 ?? {} as Omit<StartSettings<TMsg>, 'typeName' | 'entityProps'>)
+      : arg1;
+
     this.ensureCoordinator(settings as StartSettings<unknown>);
     const existing = this.findRegionByType(settings.typeName);
     if (existing) return existing as ActorRef<TMsg>;
@@ -112,6 +147,27 @@ export class ClusterSharding {
     );
     this.regionsByPath.set(ref.path.toString(), ref as ActorRef<unknown>);
     return ref;
+  }
+
+  /** @internal — wrap the shorthand entity arg into a Props + assemble full settings. */
+  private buildSettingsFromShorthand<TMsg>(
+    typeName: string,
+    entity: (new () => import('../../Actor.js').Actor<TMsg>) | (() => import('../../Actor.js').Actor<TMsg>),
+    opts: Omit<StartSettings<TMsg>, 'typeName' | 'entityProps'>,
+  ): StartSettings<TMsg> {
+    // Classes have a `.prototype` whose `constructor` === the class itself.
+    // Arrow functions don't have `prototype`; regular non-class functions do
+    // (with `.prototype.constructor === fn`), so we treat anything that's
+    // `new`-able the same way classes are.  The closure form (arrow `() =>
+    // new X()`) falls into the factory branch.
+    const isClass =
+      typeof entity === 'function' &&
+      typeof (entity as { prototype?: { constructor?: unknown } }).prototype === 'object' &&
+      (entity as { prototype?: { constructor?: unknown } }).prototype?.constructor === entity;
+    const factory: () => import('../../Actor.js').Actor<TMsg> = isClass
+      ? () => new (entity as new () => import('../../Actor.js').Actor<TMsg>)()
+      : (entity as () => import('../../Actor.js').Actor<TMsg>);
+    return { ...opts, typeName, entityProps: Props.create<TMsg>(factory) };
   }
 
   /** Start a proxy region — routes to the cluster but never hosts entities. */

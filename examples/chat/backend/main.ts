@@ -165,10 +165,8 @@ async function main(): Promise<void> {
 
   // -------- 6. ClusterSharding: one ChatRoomActor per room --------
   const sharding = ClusterSharding.get(system, cluster);
-  const chatRoomRegion = sharding.start<ChatRoomCmd>({
-    typeName: 'ChatRoom',
-    entityProps: Props.create(() => new ChatRoomActor()),
-    extractEntityId: (msg) => msg.room,
+  const chatRoomRegion = sharding.start('ChatRoom', ChatRoomActor, {
+    extractEntityId: (msg: ChatRoomCmd) => msg.room,
     numShards: 16,
   });
 
@@ -178,10 +176,8 @@ async function main(): Promise<void> {
   // `shared/dm.ts` for the canonicalization.  Sixteen shards matches
   // the chat-room region; the DM workload is similar (write-heavy,
   // small per-entity state) so a single tuning value covers both.
-  const dmChannelRegion = sharding.start<DmChannelCmd>({
-    typeName: 'DmChannel',
-    entityProps: Props.create(() => new DmChannelActor()),
-    extractEntityId: (msg) => msg.pairId,
+  const dmChannelRegion = sharding.start('DmChannel', DmChannelActor, {
+    extractEntityId: (msg: DmChannelCmd) => msg.pairId,
     numShards: 16,
   });
 

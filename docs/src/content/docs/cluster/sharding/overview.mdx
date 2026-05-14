@@ -51,7 +51,7 @@ elsewhere and the entities re-spawn there.
 ## A minimal example
 
 ```ts
-import { Actor, ActorSystem, Cluster, ClusterSharding, Props } from 'actor-ts';
+import { Actor, ActorSystem, Cluster, ClusterSharding } from 'actor-ts';
 
 type CartCmd =
   | { entityId: string; kind: 'add';   sku: string }
@@ -71,10 +71,9 @@ const system  = ActorSystem.create('my-app');
 const cluster = await Cluster.join(system, { host, port, seeds });
 const sharding = ClusterSharding.get(system, cluster);
 
-const cartRegion = sharding.start<CartCmd>({
-  typeName:        'cart',
-  entityProps:     Props.create(() => new CartActor()),
-  extractEntityId: (msg) => msg.entityId,
+// Shorthand — pass the entity class, framework wraps it in Props.create:
+const cartRegion = sharding.start('cart', CartActor, {
+  extractEntityId: (msg: CartCmd) => msg.entityId,
 });
 
 // Usage — `tell` to the region, with entity ID inside the message:
@@ -82,6 +81,28 @@ cartRegion.tell({ entityId: 'user-42', kind: 'add', sku: 'book-1' });
 cartRegion.tell({ entityId: 'user-42', kind: 'view', replyTo: ... });
 //                          ^^^^^^^^^^
 // Same ID → same entity actor, every time, regardless of node.
+```
+
+`sharding.start()` accepts three calling shapes — pick whichever
+fits the entity:
+
+```ts
+// 1. Class shorthand (most common):
+sharding.start('cart', CartActor, { extractEntityId: (m: CartCmd) => m.entityId });
+
+// 2. Factory shorthand — when the entity needs constructor args:
+sharding.start('cart', () => new CartActor(deps), {
+  extractEntityId: (m: CartCmd) => m.entityId,
+});
+
+// 3. Full-form — explicit Props + every setting:
+sharding.start<CartCmd>({
+  typeName:        'cart',
+  entityProps:     Props.create(() => new CartActor()),
+  extractEntityId: (m) => m.entityId,
+  numShards:       16,
+  role:            'cart-host',
+});
 ```
 
 The `cartRegion` is a single `ActorRef` from the caller's

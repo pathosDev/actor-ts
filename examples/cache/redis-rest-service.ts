@@ -86,10 +86,8 @@ async function main(): Promise<void> {
   const cache = pickCache();
   system.extension(CacheExtensionId).setCache('default', cache);
 
-  const region = sharding.start<UserCmd>({
-    typeName: 'user',
-    entityProps: Props.create(() => new UserEntity()),
-    extractEntityId: msg => ('id' in msg ? msg.id : msg.user.id),
+  const region = sharding.start('user', UserEntity, {
+    extractEntityId: (msg: UserCmd) => ('id' in msg ? msg.id : msg.user.id),
     numShards: 16,
   });
   const askUser = (cmd: UserCmd): Promise<UserReply> => ask<UserCmd, UserReply>(region, cmd, 500);
