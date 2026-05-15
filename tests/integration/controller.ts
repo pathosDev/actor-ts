@@ -18,6 +18,8 @@
 
 import { scenario as membershipConvergence } from './scenarios/01-membership-convergence.js';
 import { scenario as splitBrain } from './scenarios/02-split-brain.js';
+import { scenario as receptionistConvergence } from './scenarios/03-receptionist-convergence.js';
+import { scenario as ddataLatencyStorm } from './scenarios/04-ddata-latency-storm.js';
 import type { ControllerCtx, Scenario } from './scenarios/types.js';
 
 const NODES = (process.env.NODES ?? '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -40,6 +42,8 @@ const ctx: ControllerCtx = {
 const scenarios: Scenario[] = [
   membershipConvergence,
   splitBrain,
+  receptionistConvergence,
+  ddataLatencyStorm,
 ];
 
 async function main(): Promise<void> {

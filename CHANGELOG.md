@@ -65,9 +65,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   locally on Docker Desktop and in
   `.github/workflows/integration.yml`; the workflow is
   triggered by pushes to `main`, manual dispatch, and a nightly
-  schedule.  Two scenarios in the initial set: membership
-  convergence (smoke test) and 2:3 split-brain with
-  partition + heal verification.
+  schedule.  Four scenarios:
+  - 01 — membership convergence (smoke test)
+  - 02 — 2:3 split-brain with partition + heal verification
+  - 03 — Receptionist gossip-convergence over a shared
+    `ServiceKey` across all 5 nodes, with partition + heal
+  - 04 — DistributedData `LWWRegister` quorum reads/writes
+    during a 50ms `tc-netem` egress latency storm — proves
+    `majority`-consistency operations survive a real network
+    slowdown
+- **Backend `remoteAddress` wiring** (#312 follow-up) — the
+  Fastify, Express, and Hono backends now populate
+  `HttpRequest.remoteAddress` from the socket peer
+  (`req.ip` / `req.socket.remoteAddress` on Fastify+Express;
+  best-effort across `c.req.raw` / `c.env.requestIP` on Hono).
+  `IpAllowlist` works end-to-end on real socket peers — the
+  pre-existing `getClientIp` override is no longer required for
+  default deployments behind direct connections.
 - **HTTP route middleware framework** (#312) — new
   `withMiddleware(mw, route)` builder + `Middleware` type
   `(req, next) => Promise<HttpResponse> | HttpResponse`.  Middlewares

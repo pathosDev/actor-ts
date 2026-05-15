@@ -62,21 +62,24 @@ async function main(): Promise<void> {
   });
 
   // Management HTTP — auth on so the test exercises the #312 path.
+  // IpAllowlist runs against the real socket peer (now that the
+  // backends populate `req.remoteAddress`) — the docker bridge
+  // network's CIDR is covered by the standard RFC1918 ranges.
+  // ::ffff: prefixes from dual-stack listeners are handled by
+  // IpAllowlist's IPv4-mapped IPv6 normalisation.
   const { routes: mgmtRoutes } = managementRoutes(system, cluster, {
     enableLeaveEndpoint: true,
     enableDownEndpoint: true,
     enableMetricsEndpoint: true,
     auth: BearerTokenAuth({ tokens: [MGMT_TOKEN] }),
-    // No IP allowlist in the integration setup — the network IS the
-    // allowlist (compose bridge network).  Scenarios that exercise
-    // IpAllowlist set their own headers via `getClientIp`.
     ipAllowlist: IpAllowlist({
-      allow: ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '127.0.0.0/8'],
-      // Default getClientIp reads `req.remoteAddress` which the
-      // current backends don't populate yet (#TODO: backend wiring).
-      // Inside the bridge network all peers come from the docker
-      // subnet, so we read the request's first hop via header instead.
-      getClientIp: (req) => req.headers['x-forwarded-for']?.split(',')[0]?.trim() ?? '10.0.0.1',
+      allow: [
+        '10.0.0.0/8',
+        '172.16.0.0/12',     // docker's default bridge address pool
+        '192.168.0.0/16',
+        '127.0.0.0/8',
+        '::1/128',
+      ],
     }),
   });
   const http = system.extension(HttpExtensionId);
@@ -84,8 +87,10 @@ async function main(): Promise<void> {
   logger.info('management HTTP listening', { port: MGMT_PORT });
 
   // Test-control HTTP — no auth, port is only reachable inside the
-  // compose network.
-  const controlRoutes = makeControlRoutes(cluster);
+  // compose network.  Passes both system + cluster so the
+  // route module can lazy-start Receptionist + DistributedData on
+  // first hit from a scenario.
+  const controlRoutes = makeControlRoutes(system, cluster);
   const controlBinding = await http.newServerAt('0.0.0.0', CONTROL_PORT).bind(controlRoutes);
   logger.info('test-control HTTP listening', { port: CONTROL_PORT });
 
