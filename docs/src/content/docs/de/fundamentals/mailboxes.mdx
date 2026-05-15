@@ -16,21 +16,66 @@ Das gibt jedem Actor die "eine Nachricht nach der anderen"-Garantie
 
 ## Die Default-Mailbox
 
-Wenn du nichts konfigurierst, bekommt der Actor eine schlichte,
-unbounded FIFO-Mailbox.  Unbounded heißt, es gibt keinen
-Per-Actor-Cap; ein langsamer Consumer kann die Queue beliebig groß
-wachsen lassen, bis dein Prozess kein Memory mehr hat.  Das ist der
-*richtige* Default für die meisten Actors, bei denen der Durchsatz
-balanciert ist und ein transienter Burst in Ordnung ist.
+Wenn du nichts konfigurierst, bekommt der Actor eine **bounded
+FIFO-Mailbox**: Kapazität 10 000 Nachrichten, Overflow-Policy
+`drop-head`.  Ein langsamer Consumer, der nicht hinterherkommt,
+verwirft seine ältesten Queued-Nachrichten, statt unbeschränkt zu
+wachsen.  Das Framework OOM-t dich nicht wegen eines einzelnen
+durchgehenden Actors.
 
-Aber "unbounded" ist auch der falsche Default für zwei Situationen:
+Warum bounded als Default?  Unbounded war die Vor-#310-Shape und
+ist ein klassisches Akka-Anti-Pattern in Verkleidung: die meisten
+Produktionsincidents, die auf "das Actor-Framework" zurückgingen,
+waren in Wahrheit eine unbounded Mailbox, die mehr Traffic
+absorbierte, als der Actor je drainen konnte — bis der Heap voll
+war.  10 000 ist hoch genug, dass ein gut getunter Actor das im
+normalen Traffic-Spike nie trifft; wenn du es DOCH triffst, ist
+das Actor-Design falsch (slow consumer, Throughput-Mismatch) und
+der Bound macht das operativ sichtbar — statt als nächtliches OOM.
 
-- Ein Actor, der mehr Nachrichten empfängt, als er je drainen kann
-  (ein schneller Producer + langsamer Consumer Mismatch).  Begrenze
-  ihn; wähle eine Overflow-Policy.
+`drop-head` ist die richtige Default-Policy für die häufigen
+Fälle: Telemetrie, Sensor-Readings, Status-Pings, Watch-Events —
+Workloads, bei denen die frischeste Nachricht die einzige ist, die
+zählt, und alte verworfen werden können.  Wenn du andere Semantik
+brauchst (`drop-new` / `reject`) pro Actor, overridest du über
+`Props.withMailbox(...)`.
+
+### Wann den Default überschreiben
+
+- Ein Actor, der **strikte at-least-once-Delivery** unter Bursts
+  braucht.  Gib ihm entweder mehr Kapazität, wechsel zu `drop-new`
+  (Queue bleibt korrekt, Admission wird gedroppt) oder `reject`
+  (Sender weiß, zu backoffen).
+- Ein Actor mit **deterministischen Replay**-Anforderungen
+  (Event Sourcing, Test-Setups).  Nimm
+  `Props.withMailbox(() => new Mailbox())`, um zur unbounded
+  Shape zurückzukehren — eine Nachricht im Replay zu verlieren
+  ist nicht akzeptabel.
 - Ein Actor, der eine Mischung aus dringenden und routinemäßigen
   Nachrichten behandelt, bei dem die dringenden vorrücken sollen.
   Verwende eine Priority-Mailbox.
+
+```ts
+import { Mailbox } from 'actor-ts';  // die unbounded Basis-Mailbox
+
+system.spawn(
+  Props.create(() => new MyActor())
+    .withMailbox(() => new Mailbox()),  // explizites Opt-out vom bounded Default
+);
+```
+
+### Nur-Kapazitäts-Override
+
+Wenn die bounded Shape + `drop-head` passend sind, aber 10 000 die
+falsche Zahl für einen spezifischen Actor ist, setze die Kapazität
+einzeilig — die Default-Factory respektiert sie:
+
+```ts
+system.spawn(
+  Props.create(() => new BurstyActor())
+    .withMailboxCapacity(100_000),     // weiter bounded + drop-head, nur tiefer
+);
+```
 
 ## System-Nachrichten kommen immer zuerst
 

@@ -9,6 +9,61 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Security
+
+- **DurableState revision tampering** (#116) — `ObjectStorageDurableStateStore.load()`
+  previously trusted the `revision` value inside the body JSON, so an
+  attacker with write access to the underlying bucket could roll back
+  state past CAS checks.  Two-track integrity fix: encrypted bodies use
+  AES-GCM with `revision` as AAD (already wired); unencrypted bodies
+  gain an opt-in HMAC-SHA256 over `{ revision, etag }` with per-pid
+  HKDF-derived subkeys.  Set `integrity: { mode: 'hmac-sha256', integrityKey }`
+  on the store + `requireIntegrity: true` to refuse legacy un-tagged
+  bodies on the read path.
+- **ClusterClient ask-ID predictability** (#120) — `nextAskId()` used
+  `Date.now() + counter`, predictable enough that a MitM on the
+  TCP socket could pre-compute likely IDs and inject forged
+  `cluster-client-reply` frames.  Switched to `crypto.randomUUID()`
+  (122 bits of entropy per call).
+- **Master-key rotation sweep race** (#109) — `reEncryptObjectStorage()`
+  had no durable progress token, so a crash forced the resumed run
+  to re-list and re-GET every object from scratch (a 24-hour sweep =
+  a 24-hour wasted re-walk).  Worse: if the operator dropped a
+  retired key from the keyring too soon, the sweep would only
+  notice mid-corpus, leaving the bucket half-rewritten.  Added two
+  opt-in options: `progress: ReEncryptProgressStore` for durable
+  resume tokens (file/Redis/object-storage-backed) and
+  `verifyKeyringCompleteness: boolean` (default `true`) for a
+  pre-sweep sample that refuses to start when a body's key version
+  is absent from `active`/`retired`.
+- **LeaseMajority split-brain** (#142) — a slow `lease.acquire()`
+  that the local defence-in-depth timeout had given up on could
+  later resolve `true` and write `decision=surviveSet`, letting
+  both sides of an equal partition claim victory.  Three layered
+  fixes: (1) monotonic `acquireEpoch` so a late result with a
+  stale epoch is dropped; (2) fire-and-forget `lease.release()`
+  on abandon to undo any wire-side success after the local
+  give-up, with fail-safe-on-rejection (refuse to claim majority
+  on the same view); (3) optional fencing tokens — `Lease.acquireWithToken?():
+  Promise<{ token: string } | null>` with `KubernetesLease`
+  returning `<resourceVersion>/<leaseTransitions>` and
+  `InMemoryLease` a monotonic per-name version stamp.
+
+### Changed
+
+- **Bounded mailbox is now the default** (#310) — every actor spawned
+  without an explicit `Props.withMailbox(...)` gets a
+  `BoundedMailbox` with `capacity = 10_000` and `overflow = 'drop-head'`.
+  The pre-#310 unbounded shape was a classic Akka-anti-pattern in
+  disguise: a runaway producer could absorb the JVM, ahem, the V8
+  heap, until OOM.  10 000 is high enough that a well-tuned actor
+  never hits it on a normal traffic spike; if it does, the actor's
+  throughput is mismatched and the bound makes that operationally
+  visible.  Drops are emitted as the `actor_mailbox_dropped_total`
+  Counter (labels `class`, `path`, `reason`).  Opt back into unbounded
+  per-actor via `Props.withMailbox(() => new Mailbox())`; keep the
+  bounded shape but change the capacity via `Props.withMailboxCapacity(n)`.
+
 ## [0.9.1] — 2026-05-15
 
 Docs-only patch release covering the first round of post-v0.9.0

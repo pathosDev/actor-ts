@@ -34,6 +34,8 @@ import {
   Terminated,
 } from '../SystemMessages.js';
 import { Envelope, Mailbox } from './Mailbox.js';
+import { BoundedMailbox } from '../mailbox/BoundedMailbox.js';
+import { DEFAULT_MAILBOX_CAPACITY, DEFAULT_MAILBOX_OVERFLOW } from '../util/Constants.js';
 import { LocalActorRef } from './LocalActorRef.js';
 import type { SystemCommand } from './SystemCommand.js';
 import type { Cancellable } from '../Scheduler.js';
@@ -104,7 +106,18 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
     this.path = parent
       ? parent.path.child(name, uid)
       : new ActorPath(name, null, system.name, uid);
-    this.mailbox = props.config.mailbox ? props.config.mailbox() : new Mailbox<TMsg>();
+    this.mailbox = props.config.mailbox
+      ? props.config.mailbox()
+      // #310 — bounded by default.  Unbounded was the pre-#310 default
+      // and is still available via `Props.withMailbox(() => new Mailbox())`
+      // for use-cases that need it (deterministic replay, test setups,
+      // tightly-controlled throughput).  See `DEFAULT_MAILBOX_CAPACITY`
+      // + `DEFAULT_MAILBOX_OVERFLOW` for the chosen ceiling + policy.
+      : new BoundedMailbox<TMsg>({
+        capacity: props.config.mailboxCapacity ?? DEFAULT_MAILBOX_CAPACITY,
+        overflow: DEFAULT_MAILBOX_OVERFLOW,
+        onDrop: (reason) => this._onMailboxDrop(reason),
+      });
     this.self = new LocalActorRef<TMsg>(this);
     this.log = system.log.withSource(this.path.toString());
     this.enqueueSystem({ kind: 'create' });
@@ -307,6 +320,14 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
 
   /** @internal */ isTerminated(): boolean { return this.state === 'terminated'; }
   /** @internal */ _nextChildUid(): number { return ++this._childUidCounter; }
+
+  /**
+   * @internal — test-only seam exposing the underlying mailbox so
+   * regression tests can assert the concrete type (e.g. #310 default
+   * is `BoundedMailbox`).  NOT for production use — the mailbox
+   * surface is private by design.
+   */
+  _mailboxForTest(): Mailbox<TMsg> { return this.mailbox; }
 
   /** @internal */
   postUserMessage(message: TMsg, sender: ActorRef | null): void {
@@ -541,6 +562,22 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
       const err = e instanceof Error ? e : new Error(String(e));
       this.failToParent(new ActorInitializationError(`Actor ${this.path} failed to restart`, err));
     }
+  }
+
+  /**
+   * Callback wired from the default `BoundedMailbox` — fires once per
+   * dropped message.  Increments `actor_mailbox_dropped_total` with
+   * labels {class, path, reason} so operators can spot slow-consumer
+   * signals on the standard observability stack.  Cheap when metrics
+   * are disabled (the noop registry's counter is a single object lookup).
+   */
+  private _onMailboxDrop(reason: 'drop-head' | 'drop-new'): void {
+    const cls = this.actor?.constructor.name ?? 'unknown';
+    metricsOf(this.system).counter(
+      'actor_mailbox_dropped_total',
+      { class: cls, path: this.path.toString(), reason },
+      { help: 'Cumulative count of user messages dropped by a bounded mailbox\'s overflow policy.' },
+    ).inc();
   }
 
   private async handleUserMessage(env: Envelope<TMsg>): Promise<void> {

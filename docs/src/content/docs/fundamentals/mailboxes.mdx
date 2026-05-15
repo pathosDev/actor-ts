@@ -16,20 +16,64 @@ the mailbox is the thing that makes that physically true.
 
 ## The default mailbox
 
-If you don't configure anything, the actor gets a plain unbounded
-FIFO mailbox.  Unbounded means there's no per-actor cap; a slow
-consumer can grow the queue arbitrarily large until your process
-runs out of memory.  That's the *right* default for most actors,
-where the throughput is balanced and a transient burst is fine.
+If you don't configure anything, the actor gets a **bounded FIFO
+mailbox**: capacity 10 000 messages, overflow policy `drop-head`.
+A slow consumer that can't keep up sheds its oldest queued
+messages instead of growing without bound.  The framework
+won't OOM you because of one runaway actor.
 
-But "unbounded" is also the wrong default for two situations:
+Why bounded by default?  Unbounded was the pre-#310 shape and it's
+a classic Akka anti-pattern in disguise: most production incidents
+that traced back to "the actor framework" turned out to be an
+unbounded mailbox absorbing more traffic than the actor could ever
+drain, until the heap ran out.  10 000 is high enough that a
+well-tuned actor never hits it on a normal traffic spike; if you
+DO hit it, the actor's design is wrong (slow consumer, throughput
+mismatch) and the bound makes that visible operationally instead
+of as a midnight OOM.
 
-- An actor that receives more messages than it can ever drain (a
-  fast producer + slow consumer mismatch).  Bound it; pick an
-  overflow policy.
+`drop-head` is the right default policy for the common cases:
+telemetry, sensor readings, status pings, watch events — workloads
+where the freshest message is the only one that matters and stale
+ones can be discarded.  When you need different semantics
+(`drop-new` / `reject`) per actor, override via
+`Props.withMailbox(...)`.
+
+### When to override the default
+
+- An actor that needs **strict at-least-once delivery** under
+  bursts.  Either give it more capacity, switch to `drop-new`
+  (so the queue stays correct but admission is dropped), or
+  `reject` (so the sender knows to back off).
+- An actor with **deterministic replay** requirements (event
+  sourcing, test setups).  Use `Props.withMailbox(() => new Mailbox())`
+  to opt back into the unbounded shape — losing a message during
+  replay is unacceptable.
 - An actor that handles a mix of urgent and routine messages,
   where you want the urgent ones to jump the line.  Use a priority
   mailbox.
+
+```ts
+import { Mailbox } from 'actor-ts';  // the unbounded base mailbox
+
+system.spawn(
+  Props.create(() => new MyActor())
+    .withMailbox(() => new Mailbox()),  // explicit opt-out from the bounded default
+);
+```
+
+### Capacity-only override
+
+If the bounded shape + `drop-head` are right but 10 000 is the
+wrong number for one specific actor, set the capacity in one
+line — the default factory honours it:
+
+```ts
+system.spawn(
+  Props.create(() => new BurstyActor())
+    .withMailboxCapacity(100_000),     // still bounded + drop-head, just deeper
+);
+```
 
 ## System messages always come first
 

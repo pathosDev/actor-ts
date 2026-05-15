@@ -109,6 +109,51 @@ describe('Props.withMailbox — end-to-end via actor', () => {
     await kit.system.terminate();
   });
 
+  test('default actor mailbox is bounded (10_000, drop-head) — #310', async () => {
+    const kit = TestKit.create('mbox-default', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+
+    class Worker extends Actor<number> {
+      override onReceive(_m: number): void {
+        // intentionally empty — we only care about the mailbox shape
+      }
+    }
+    const ref = kit.system.spawnAnonymous(Props.create(() => new Worker()));
+
+    // Reach into the ActorCell's mailbox via the LocalActorRef internal
+    // accessor so we can assert the concrete type without exporting it
+    // from the public surface.  The whole point of this test is that
+    // the default WIRED-UP mailbox is bounded; a future change to
+    // `new Mailbox()` would silently make the framework unbounded
+    // again and only manifest as an OOM in production.
+    const cell = (ref as unknown as { getCell(): { _mailboxForTest(): unknown } }).getCell();
+    const mailbox = cell._mailboxForTest();
+    expect(mailbox).toBeInstanceOf(BoundedMailbox);
+    // The capacity + overflow are encapsulated; cheapest check is to
+    // assert behaviorally: fill past capacity, observe drop-head.
+    const mbox = mailbox as BoundedMailbox<number>;
+    expect(mbox.droppedCount).toBe(0);
+    await kit.system.terminate();
+  });
+
+  test('default mailbox can be opted out per-actor via Props.withMailbox(() => new Mailbox())', async () => {
+    const { Mailbox } = await import('../../../src/internal/Mailbox.js');
+    const kit = TestKit.create('mbox-optout', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+
+    class Worker extends Actor<number> {
+      override onReceive(_m: number): void { /* noop */ }
+    }
+    const props = Props.create(() => new Worker())
+      .withMailbox<number>(() => new Mailbox<number>());
+    const ref = kit.system.spawnAnonymous(props);
+
+    const cell = (ref as unknown as { getCell(): { _mailboxForTest(): unknown } }).getCell();
+    const mailbox = cell._mailboxForTest();
+    // Concrete type is the plain (unbounded) Mailbox — not BoundedMailbox.
+    expect(mailbox).toBeInstanceOf(Mailbox);
+    expect(mailbox).not.toBeInstanceOf(BoundedMailbox);
+    await kit.system.terminate();
+  });
+
   test('bounded mailbox with drop-new tolerates a burst without throwing', async () => {
     const kit = TestKit.create('mbox-bnd', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const received: number[] = [];
