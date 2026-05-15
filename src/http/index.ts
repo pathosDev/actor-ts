@@ -20,8 +20,14 @@ export {
   queryParam,
   redirect,
   reject,
+  withMiddleware,
 } from './Route.js';
-export type { CompiledRoute, Route } from './Route.js';
+export type { CompiledRoute, Middleware, Route } from './Route.js';
+
+// Auth + IP-allowlist middleware (#312).  Exported from
+// `./middleware/index.js`; barrel re-exports both for convenience.
+export { BearerTokenAuth, IpAllowlist } from './middleware/index.js';
+export type { BearerTokenAuthOptions, IpAllowlistOptions } from './middleware/index.js';
 
 export { entity, marshal, pickRequestSerializer, pickResponseSerializer } from './Marshalling.js';
 

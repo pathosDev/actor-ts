@@ -10,6 +10,8 @@ import {
   path,
   post,
   Status,
+  withMiddleware,
+  type Middleware,
   type Route,
 } from '../http/index.js';
 import { exportPrometheus } from '../metrics/PrometheusExporter.js';
@@ -33,6 +35,39 @@ export interface ManagementRoutesSettings {
    * because most deployments scrape metrics from a separate port.
    */
   readonly enableMetricsEndpoint?: boolean;
+  /**
+   * Optional authentication middleware applied to the privileged
+   * subset of management routes (#312).  When set, every privileged
+   * endpoint requires the auth — typically `BearerTokenAuth({...})`
+   * or a stack composed via nested `withMiddleware`.
+   *
+   * Privileged = `/cluster/leave`, `/cluster/down`.  The membership
+   * read-only routes (`/cluster/members`, `/cluster/leader`,
+   * `/cluster/shards`) are also covered.  Health-check probes
+   * (`/health`, `/ready`) are deliberately exempt — Kubernetes
+   * liveness/readiness probes cannot easily attach an
+   * Authorization header.
+   *
+   *     auth: BearerTokenAuth({ tokens: [process.env.MGMT_TOKEN!] })
+   */
+  readonly auth?: Middleware;
+  /**
+   * Optional IP-allowlist middleware applied to every management
+   * endpoint INCLUDING `/health` and `/ready` (#312).  Use this for
+   * network-level isolation: only allow probes from inside the
+   * cluster's pod CIDR or from the operator's bastion.
+   *
+   *     ipAllowlist: IpAllowlist({ allow: ['10.0.0.0/8', '127.0.0.1/32'] })
+   */
+  readonly ipAllowlist?: Middleware;
+  /**
+   * Set to true to apply the `auth` middleware to `/health` and
+   * `/ready` as well (#312).  Default: false — those endpoints are
+   * standard liveness/readiness probes and should answer anonymously.
+   * Flip this only when the deployment guarantees the probes can
+   * present credentials.
+   */
+  readonly authProtectHealth?: boolean;
 }
 
 /**
@@ -193,7 +228,7 @@ export function managementRoutes(
     }))
     : get(async () => complete(Status.NotFound, 'metrics endpoint disabled'));
 
-  const routes = path('cluster', concat(
+  let clusterSubtree: Route = path('cluster', concat(
     path('members', clusterMembers),
     path('leader', clusterLeader),
     path('shards', clusterShards),
@@ -201,13 +236,41 @@ export function managementRoutes(
     path('down', downRoute),
   ));
 
-  // Compose with the top-level health endpoints.
-  const all: Route = concat(
-    routes,
+  // Apply bearer-token (or similar) auth to the cluster subtree if
+  // configured.  Health/ready stay anonymous by default (Kubernetes
+  // probes can't attach credentials); `authProtectHealth: true`
+  // flips that for deployments where probes do present a token.
+  if (settings.auth) {
+    clusterSubtree = withMiddleware(settings.auth, clusterSubtree);
+  }
+
+  let healthSubtree: Route = concat(
     path('health', liveness),
     path('ready', readiness),
-    path('metrics', metricsRoute),
   );
+  if (settings.auth && settings.authProtectHealth === true) {
+    healthSubtree = withMiddleware(settings.auth, healthSubtree);
+  }
+
+  // Compose with the top-level health endpoints.  Metrics endpoint
+  // sits OUTSIDE the cluster subtree historically, so it gets the
+  // auth wrap only when explicitly configured (no policy distinction
+  // between metrics and cluster routes).
+  let metricsSubtree: Route = path('metrics', metricsRoute);
+  if (settings.auth) {
+    metricsSubtree = withMiddleware(settings.auth, metricsSubtree);
+  }
+
+  let all: Route = concat(clusterSubtree, healthSubtree, metricsSubtree);
+
+  // IP allowlist wraps EVERY management endpoint, including health/
+  // ready — network-level isolation is independent of who's allowed
+  // to authenticate.  Probes that should reach the endpoint despite
+  // the allowlist must come from an allowed network or the operator
+  // must override `getClientIp` to inspect a trusted header.
+  if (settings.ipAllowlist) {
+    all = withMiddleware(settings.ipAllowlist, all);
+  }
 
   // Suppress unused warning in case the caller doesn't use the system reference.
   void system;

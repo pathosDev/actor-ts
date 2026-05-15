@@ -12,13 +12,35 @@ export interface CompiledRoute {
 }
 
 /**
+ * Per-request hook that runs around a handler.  Receives the request
+ * and a `next()` thunk; either short-circuit by returning your own
+ * response, or call `next()` and pass its result through (optionally
+ * wrapped, decorated, or re-thrown).
+ *
+ * Examples (all shipped in `src/http/middleware/`):
+ *   - `BearerTokenAuth({ tokens })` — checks `Authorization: Bearer`,
+ *     short-circuits with 401 on mismatch.
+ *   - `IpAllowlist({ allow })` — checks `remoteAddress` (or a
+ *     configured extractor) against a CIDR list, short-circuits
+ *     with 403 if not allowed.
+ *
+ * Throwing `HttpError(status, msg)` is the idiomatic short-circuit:
+ * the global error handler catches it and emits the right response.
+ */
+export type Middleware = (
+  req: HttpRequest,
+  next: () => Promise<HttpResponse>,
+) => Promise<HttpResponse> | HttpResponse;
+
+/**
  * Node type emitted by DSL builders like `path(...)`, `get(...)`.  Internal
  * representation is a tree that knows how to flatten into CompiledRoutes.
  */
 export type Route =
   | { readonly kind: 'terminal'; readonly method: HttpMethod; readonly handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse }
   | { readonly kind: 'path'; readonly segment: string; readonly child: Route }
-  | { readonly kind: 'concat'; readonly routes: ReadonlyArray<Route> };
+  | { readonly kind: 'concat'; readonly routes: ReadonlyArray<Route> }
+  | { readonly kind: 'middleware'; readonly middleware: Middleware; readonly child: Route };
 
 /** Compose several sibling routes (OR semantics — first matching wins). */
 export function concat(...routes: Route[]): Route {
@@ -33,6 +55,30 @@ export function path(segment: string, child: Route): Route {
 /** Scope under a path prefix that may capture dynamic segments. */
 export function pathPrefix(segment: string, child: Route): Route {
   return { kind: 'path', segment: normalizeSegment(segment), child };
+}
+
+/**
+ * Wrap every handler in `child`'s subtree with the given `Middleware`.
+ * The middleware runs **before** the handler; it can short-circuit
+ * (return without calling `next()`) or transform the response.
+ *
+ * Nesting composes outside-in: `withMiddleware(a, withMiddleware(b,
+ * get(h)))` runs `a` first, then if it calls `next()`, `b` runs, and
+ * if `b` calls `next()`, the handler `h` runs.
+ *
+ *     const protectedRoutes = withMiddleware(
+ *       BearerTokenAuth({ tokens: [process.env.MGMT_TOKEN!] }),
+ *       withMiddleware(
+ *         IpAllowlist({ allow: ['10.0.0.0/8'] }),
+ *         path('cluster', concat(
+ *           path('down', post(handleDown)),
+ *           path('leave', post(handleLeave)),
+ *         )),
+ *       ),
+ *     );
+ */
+export function withMiddleware(middleware: Middleware, child: Route): Route {
+  return { kind: 'middleware', middleware, child };
 }
 
 function normalizeSegment(s: string): string {
@@ -93,7 +139,27 @@ export function compile(route: Route, prefix: string[] = []): CompiledRoute[] {
     }])
     .with({ kind: 'path' }, (r) => compile(r.child, [...prefix, r.segment]))
     .with({ kind: 'concat' }, (r) => r.routes.flatMap((child) => compile(child, prefix)))
+    .with({ kind: 'middleware' }, (r) => {
+      // Compile the subtree, then wrap each compiled handler with the
+      // middleware.  Nested middlewares stack: an outer-then-inner wrap
+      // builds a function that runs outer first, calls next() to run
+      // inner, and inner's next() runs the original handler.
+      return compile(r.child, prefix).map((c) => ({
+        ...c,
+        handler: wrapHandler(r.middleware, c.handler),
+      }));
+    })
     .exhaustive();
+}
+
+function wrapHandler(
+  middleware: Middleware,
+  handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse,
+): (req: HttpRequest) => Promise<HttpResponse> {
+  return async (req: HttpRequest): Promise<HttpResponse> => {
+    const next = async (): Promise<HttpResponse> => Promise.resolve(handler(req));
+    return Promise.resolve(middleware(req, next));
+  };
 }
 
 function buildPattern(segments: string[]): string {

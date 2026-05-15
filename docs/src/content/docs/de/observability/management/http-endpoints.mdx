@@ -252,6 +252,70 @@ import { Aside } from '@astrojs/starlight/components';
   Callern (da der Port nur intern ist).
 </Aside>
 
+## Authentifizierung & IP-Allowlist (#312)
+
+Die privilegierten Endpunkte (`/cluster/down`, `/cluster/leave`,
+`/cluster/members`, `/cluster/shards`, `/metrics`) akzeptieren
+**standardmäßig** anonyme Requests.  Das ist nur sicher, wenn der
+Management-Port auf einem netzwerkisolierten Bind sitzt
+(separater Service, anderer Port, `127.0.0.1`-only) oder hinter
+einem Reverse-Proxy, der die Auth für dich übernimmt.
+
+Für Produktions-Deployments, die Management-Endpunkte einem
+breiteren Netz exponieren, hänge die mitgelieferten Middlewares
+über `managementRoutes(system, cluster, { auth, ipAllowlist })`
+an:
+
+```ts
+import {
+  BearerTokenAuth,
+  IpAllowlist,
+  managementRoutes,
+} from 'actor-ts';
+
+const { routes } = managementRoutes(system, cluster, {
+  enableLeaveEndpoint: true,
+  enableDownEndpoint: true,
+  enableMetricsEndpoint: true,
+  // Shared-Secret-Bearer-Token (Rotation über mehrere Einträge).
+  auth: BearerTokenAuth({
+    tokens: [process.env.MGMT_TOKEN!],
+    realm: 'my-app-mgmt',
+  }),
+  // Netzwerk-Level-Fence — nur Requests aus diesen CIDRs
+  // erreichen die Anwendung überhaupt.
+  ipAllowlist: IpAllowlist({
+    allow: ['10.0.0.0/8', '127.0.0.1/32'],
+    // Operatoren hinter einem trusted Reverse-Proxy: gib einen
+    // Custom-Extractor mit, der x-forwarded-for liest (der
+    // Default liest die Socket-Peer und ignoriert
+    // Forwarded-Header).
+    // getClientIp: (req) => req.headers['x-forwarded-for']?.split(',')[0]?.trim(),
+  }),
+});
+```
+
+**Policy-Trennung**:
+- `auth` wrappt die privilegierte Teilmenge (`/cluster/*`,
+  `/metrics`).  `/health` und `/ready` bleiben anonym — Kubernetes-
+  Liveness-/Readiness-Probes können nicht so leicht einen
+  Authorization-Header mitschicken.  Setze
+  `authProtectHealth: true`, wenn dein Deployment garantiert,
+  dass die Probes Credentials präsentieren können.
+- `ipAllowlist` wrappt JEDEN Endpunkt inklusive `/health` und
+  `/ready`.  Netzwerk-Level-Isolation ist unabhängig davon, wer
+  authentifiziert ist.
+
+**Fehlermodi**:
+- Fehlender / falscher `Authorization`-Header → `401 Unauthorized`
+  mit `WWW-Authenticate: Bearer realm="..."`.
+- Client-IP außerhalb der Allowlist (oder unauflösbar) →
+  `403 Forbidden`.
+
+Die Middlewares sind general-purpose — du kannst sie auch
+außerhalb des Management-Subtrees über den
+`withMiddleware(mw, route)`-Builder einsetzen.
+
 ## Wo es weitergeht
 
 - **[Management — Überblick](/de/observability/management/overview/)** —

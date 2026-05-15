@@ -51,6 +51,41 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **HTTP route middleware framework** (#312) — new
+  `withMiddleware(mw, route)` builder + `Middleware` type
+  `(req, next) => Promise<HttpResponse> | HttpResponse`.  Middlewares
+  compose outside-in; nested wraps run in declaration order.  The
+  HTTP cache primitives (`rateLimit`, `idempotent`, `cached`) are
+  unchanged, but new orthogonal concerns (auth, allowlists, custom
+  logging, request tracing) can hang off the same hook.
+- **`BearerTokenAuth({ tokens })`** (#312) — built-in middleware
+  that 401s every request lacking a `Authorization: Bearer <token>`
+  header from the configured (rotatable) shared-secret list.
+  Constant-time comparison so an attacker probing tokens can't
+  distinguish "first character wrong" from "last character wrong"
+  by timing.  Rejection includes `WWW-Authenticate: Bearer realm=...`.
+- **`IpAllowlist({ allow })`** (#312) — built-in middleware for
+  CIDR-based network-level isolation.  Parses IPv4 + IPv6 CIDRs
+  (including IPv4-mapped IPv6 like `::ffff:10.0.0.1` so a dual-
+  stack socket peer matches an IPv4 CIDR).  Fail-secure: no
+  resolvable client IP means 403.  Trust-source is explicit:
+  default reads `req.remoteAddress` (the socket peer); operators
+  behind a trusted proxy must opt-in to header trust via the
+  `getClientIp` extractor.
+- **`HttpRequest.remoteAddress?: string`** (#312) — optional new
+  field on the request shape.  Backends should populate from the
+  underlying socket where available.  Consumers that need to
+  trust `x-forwarded-for` must do so explicitly (see
+  `IpAllowlist`'s `getClientIp`).
+- **`managementRoutes`** gains `auth`, `ipAllowlist`, and
+  `authProtectHealth` settings (#312).  By default the auth
+  middleware wraps the privileged subtree (`/cluster/*`,
+  `/metrics`) but leaves `/health` and `/ready` anonymous —
+  standard Kubernetes liveness/readiness probes can't easily
+  attach an Authorization header.  Set `authProtectHealth: true`
+  when the deployment can present credentials on probes.  The
+  IP-allowlist wraps EVERYTHING (network-level isolation
+  precedes any application policy).
 - **`JsonLogger`** (#311) — structured-logging logger that emits one
   `\n`-delimited JSON object per record to `process.stdout` (or an
   injected `JsonLogSink`).  Every record carries `ts` (ISO-8601),

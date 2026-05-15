@@ -15,6 +15,15 @@ export interface HttpRequest {
   readonly params: Readonly<Record<string, string>>;
   /** Raw bytes of the request body (undefined for GET / HEAD). */
   readonly body: Uint8Array | null;
+  /**
+   * Optional remote IP address of the client as the server saw it
+   * (NOT the value of `x-forwarded-for` — that's a header the client
+   * can spoof unless a trusted proxy stripped + replaced it).  Backends
+   * SHOULD populate this from the underlying socket peer; consumers
+   * that need to trust a forwarded header MUST do so explicitly (see
+   * `IpAllowlist`'s `getClientIp` option).
+   */
+  readonly remoteAddress?: string;
 }
 
 export interface HttpResponse {

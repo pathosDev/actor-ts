@@ -14,6 +14,8 @@ import {
   pathParam,
   redirect,
   reject,
+  withMiddleware,
+  type Middleware,
 } from '../../../src/http/Route.js';
 import { HttpError, Status } from '../../../src/http/types.js';
 import type { HttpRequest } from '../../../src/http/types.js';
@@ -147,5 +149,79 @@ describe('compile — segment normalisation', () => {
   test('multiple segments with slashes flatten correctly', () => {
     const routes = compile(path('a/b', path('c/d', get(() => complete(Status.OK, '')))));
     expect(routes[0]!.pattern).toBe('/a/b/c/d');
+  });
+});
+
+describe('compile — withMiddleware (#312)', () => {
+  const passthrough: Middleware = (_req, next) => next();
+  const block: Middleware = () => complete(Status.Unauthorized, 'denied');
+
+  test('middleware wraps the single child handler', async () => {
+    const r = compile(
+      withMiddleware(passthrough, get(() => complete(Status.OK, 'ok'))),
+    );
+    expect(r).toHaveLength(1);
+    const resp = await r[0]!.handler(emptyReq);
+    expect(resp.status).toBe(Status.OK);
+    expect(resp.body).toBe('ok');
+  });
+
+  test('middleware can short-circuit before the handler runs', async () => {
+    let handlerCalled = false;
+    const r = compile(
+      withMiddleware(block, get(() => {
+        handlerCalled = true;
+        return complete(Status.OK, 'should not reach');
+      })),
+    );
+    const resp = await r[0]!.handler(emptyReq);
+    expect(resp.status).toBe(Status.Unauthorized);
+    expect(handlerCalled).toBe(false);
+  });
+
+  test('nested middlewares run outside-in', async () => {
+    const order: string[] = [];
+    const a: Middleware = async (_req, next) => {
+      order.push('a-in');
+      const r = await next();
+      order.push('a-out');
+      return r;
+    };
+    const b: Middleware = async (_req, next) => {
+      order.push('b-in');
+      const r = await next();
+      order.push('b-out');
+      return r;
+    };
+    const route = withMiddleware(a, withMiddleware(b, get(() => {
+      order.push('h');
+      return complete(Status.OK, '');
+    })));
+    const r = compile(route);
+    await r[0]!.handler(emptyReq);
+    expect(order).toEqual(['a-in', 'b-in', 'h', 'b-out', 'a-out']);
+  });
+
+  test('middleware applies to every terminal in the subtree, not siblings', async () => {
+    let aCalls = 0;
+    const counter: Middleware = (_req, next) => { aCalls++; return next(); };
+    const route = concat(
+      withMiddleware(counter, path('protected', get(() => complete(Status.OK, 'p')))),
+      path('open', get(() => complete(Status.OK, 'o'))),
+    );
+    const compiled = compile(route);
+    expect(compiled).toHaveLength(2);
+    const protectedR = compiled.find((c) => c.pattern === '/protected')!;
+    const openR = compiled.find((c) => c.pattern === '/open')!;
+    await protectedR.handler(emptyReq);
+    expect(aCalls).toBe(1);
+    await openR.handler(emptyReq);
+    expect(aCalls).toBe(1);  // sibling not wrapped
+  });
+
+  test('middleware errors propagate as HttpError to the caller', async () => {
+    const bad: Middleware = () => { throw new HttpError(Status.Forbidden, 'no'); };
+    const r = compile(withMiddleware(bad, get(() => complete(Status.OK, ''))));
+    await expect(r[0]!.handler(emptyReq)).rejects.toThrow(HttpError);
   });
 });

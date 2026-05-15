@@ -4,6 +4,8 @@ import { Cluster } from '../../../src/cluster/Cluster.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
+import { BearerTokenAuth } from '../../../src/http/middleware/BearerToken.js';
+import { IpAllowlist } from '../../../src/http/middleware/IpAllowlist.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import {
   HealthCheckRegistry,
@@ -275,5 +277,114 @@ describe('managementRoutes — cluster queries', () => {
 
     await clA.leave(); await clB.leave();
     await sysA.terminate(); await sysB.terminate();
+  });
+});
+
+describe('managementRoutes — auth + IP allowlist (#312)', () => {
+  async function startNode(): Promise<{ sys: ActorSystem; cluster: Cluster }> {
+    const port = 55500 + Math.floor(Math.random() * 300);
+    const sys = ActorSystem.create('mgmt', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const cluster = await Cluster.join(sys, {
+      host: 'h', port,
+      transport: new InMemoryTransport(new NodeAddress('mgmt', 'h', port)),
+      gossipIntervalMs: 80,
+    });
+    return { sys, cluster };
+  }
+
+  test('/cluster/members is 401 without bearer token; 200 with correct token', async () => {
+    const { sys, cluster } = await startNode();
+    const { routes } = managementRoutes(sys, cluster, {
+      auth: BearerTokenAuth({ tokens: ['s3cret-token'] }),
+    });
+    const http = sys.extension(HttpExtensionId);
+    const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
+
+    const denied = await fetch(`http://127.0.0.1:${binding.port}/cluster/members`);
+    expect(denied.status).toBe(401);
+
+    const wrong = await fetch(`http://127.0.0.1:${binding.port}/cluster/members`, {
+      headers: { authorization: 'Bearer wrong-token' },
+    });
+    expect(wrong.status).toBe(401);
+
+    const ok = await fetch(`http://127.0.0.1:${binding.port}/cluster/members`, {
+      headers: { authorization: 'Bearer s3cret-token' },
+    });
+    expect(ok.status).toBe(200);
+
+    await binding.unbind();
+    await cluster.leave(); await sys.terminate();
+  });
+
+  test('/health and /ready remain anonymous when auth is set (default)', async () => {
+    const { sys, cluster } = await startNode();
+    const { routes, health } = managementRoutes(sys, cluster, {
+      auth: BearerTokenAuth({ tokens: ['s3cret-token'] }),
+    });
+    health.addLiveness(() => ({ name: 'ok', status: true }));
+    const http = sys.extension(HttpExtensionId);
+    const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
+
+    // Health probes work WITHOUT a token — the standard K8s probe
+    // path.  This is the explicit-policy contract from #312.
+    const healthRes = await fetch(`http://127.0.0.1:${binding.port}/health`);
+    expect(healthRes.status).toBe(200);
+    const readyRes = await fetch(`http://127.0.0.1:${binding.port}/ready`);
+    expect(readyRes.status).toBe(200);
+
+    await binding.unbind();
+    await cluster.leave(); await sys.terminate();
+  });
+
+  test('authProtectHealth: true forces auth on health/ready too', async () => {
+    const { sys, cluster } = await startNode();
+    const { routes, health } = managementRoutes(sys, cluster, {
+      auth: BearerTokenAuth({ tokens: ['s3cret-token'] }),
+      authProtectHealth: true,
+    });
+    health.addLiveness(() => ({ name: 'ok', status: true }));
+    const http = sys.extension(HttpExtensionId);
+    const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
+
+    const noAuth = await fetch(`http://127.0.0.1:${binding.port}/health`);
+    expect(noAuth.status).toBe(401);
+
+    const withAuth = await fetch(`http://127.0.0.1:${binding.port}/health`, {
+      headers: { authorization: 'Bearer s3cret-token' },
+    });
+    expect(withAuth.status).toBe(200);
+
+    await binding.unbind();
+    await cluster.leave(); await sys.terminate();
+  });
+
+  test('ipAllowlist gates every endpoint including /health by network', async () => {
+    const { sys, cluster } = await startNode();
+    const { routes } = managementRoutes(sys, cluster, {
+      // Allowlist contains nothing useful — we want the middleware to
+      // refuse the request, then we'll relax it via getClientIp.
+      ipAllowlist: IpAllowlist({
+        allow: ['10.0.0.0/8'],
+        // Pin the IP via a custom extractor so the test is not
+        // dependent on whatever the platform reports as remoteAddress.
+        getClientIp: (req) => req.headers['x-test-client'] ?? null,
+      }),
+    });
+    const http = sys.extension(HttpExtensionId);
+    const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
+
+    const denied = await fetch(`http://127.0.0.1:${binding.port}/health`, {
+      headers: { 'x-test-client': '192.168.1.5' },
+    });
+    expect(denied.status).toBe(403);
+
+    const allowed = await fetch(`http://127.0.0.1:${binding.port}/health`, {
+      headers: { 'x-test-client': '10.0.1.2' },
+    });
+    expect(allowed.status).toBe(200);
+
+    await binding.unbind();
+    await cluster.leave(); await sys.terminate();
   });
 });

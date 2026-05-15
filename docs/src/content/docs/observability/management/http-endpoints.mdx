@@ -248,6 +248,65 @@ import { Aside } from '@astrojs/starlight/components';
   internal-only).
 </Aside>
 
+## Authentication & IP allowlisting (#312)
+
+The privileged endpoints (`/cluster/down`, `/cluster/leave`,
+`/cluster/members`, `/cluster/shards`, `/metrics`) accept anonymous
+requests **by default**.  That's only safe when the management port
+is on a network-isolated bind (a separate Service, a different
+port, `127.0.0.1`-only) or behind a reverse-proxy that does
+authentication for you.
+
+For production deployments that expose management endpoints to a
+broader network, attach the built-in middlewares via
+`managementRoutes(system, cluster, { auth, ipAllowlist })`:
+
+```ts
+import {
+  BearerTokenAuth,
+  IpAllowlist,
+  managementRoutes,
+} from 'actor-ts';
+
+const { routes } = managementRoutes(system, cluster, {
+  enableLeaveEndpoint: true,
+  enableDownEndpoint: true,
+  enableMetricsEndpoint: true,
+  // Shared-secret bearer token (rotation supported via multiple entries).
+  auth: BearerTokenAuth({
+    tokens: [process.env.MGMT_TOKEN!],
+    realm: 'my-app-mgmt',
+  }),
+  // Network-level fence — only requests from these CIDRs reach
+  // the application at all.
+  ipAllowlist: IpAllowlist({
+    allow: ['10.0.0.0/8', '127.0.0.1/32'],
+    // Operators behind a trusted reverse-proxy: pass a custom
+    // extractor that reads x-forwarded-for (the default reads
+    // the socket peer and ignores forwarded headers).
+    // getClientIp: (req) => req.headers['x-forwarded-for']?.split(',')[0]?.trim(),
+  }),
+});
+```
+
+**Policy split**:
+- `auth` wraps the privileged subset (`/cluster/*`, `/metrics`).
+  `/health` and `/ready` stay anonymous — Kubernetes
+  liveness/readiness probes can't easily attach an Authorization
+  header.  Set `authProtectHealth: true` when your deployment
+  guarantees the probes can present credentials.
+- `ipAllowlist` wraps EVERY endpoint including `/health` and
+  `/ready`.  Network-level isolation is independent of who's
+  authenticated.
+
+**Failure modes**:
+- Missing / wrong `Authorization` header → `401 Unauthorized`
+  with `WWW-Authenticate: Bearer realm="..."`.
+- Client IP outside the allowlist (or unresolvable) → `403 Forbidden`.
+
+The middlewares are general-purpose — you can use them outside the
+management subtree via the `withMiddleware(mw, route)` builder.
+
 ## Where to next
 
 - **[Management overview](/observability/management/overview/)** —
