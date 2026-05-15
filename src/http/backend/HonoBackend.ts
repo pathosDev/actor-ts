@@ -23,7 +23,17 @@ interface HonoContextLike {
     queries(name?: string): Record<string, string[]> | string[] | undefined;
     header(name?: string): Record<string, string> | string | undefined;
     arrayBuffer(): Promise<ArrayBuffer>;
+    /**
+     * Underlying runtime request — typed as `unknown` here because
+     * the concrete shape varies: a Node `IncomingMessage` under
+     * `@hono/node-server`, a Web-Fetch `Request` under Bun.serve.
+     * We probe optional properties for peer-IP extraction in
+     * `adaptRequest`.
+     */
+    readonly raw?: unknown;
   };
+  /** Runtime-specific environment bag — varies per Hono adapter. */
+  readonly env?: unknown;
 }
 
 type HonoHandler = (c: HonoContextLike) => Promise<Response> | Response;
@@ -224,6 +234,8 @@ export class HonoBackend implements HttpServerBackend {
       if (buf.byteLength > 0) body = new Uint8Array(buf);
     }
 
+    const remoteAddress = extractHonoRemoteAddress(c);
+
     return {
       method,
       path: c.req.path ?? new URL(c.req.url).pathname,
@@ -231,6 +243,7 @@ export class HonoBackend implements HttpServerBackend {
       query,
       params,
       body,
+      ...(remoteAddress ? { remoteAddress } : {}),
     };
   }
 
@@ -271,4 +284,35 @@ export class HonoBackend implements HttpServerBackend {
       );
     }
   }
+}
+
+/**
+ * Best-effort peer-IP extraction across Hono's adapter zoo.  Tries
+ * the well-known shapes (Node-server `c.req.raw.socket.remoteAddress`,
+ * Bun `c.env.requestIP({ ... }).address`, Cloudflare `c.req.raw.cf.ip`),
+ * returns `undefined` if none of them yield a string.  Consumers
+ * that need a guaranteed IP must override `getClientIp` on
+ * IpAllowlist or similar middlewares.
+ */
+function extractHonoRemoteAddress(c: HonoContextLike): string | undefined {
+  // 1. @hono/node-server: c.req.raw is the Node IncomingMessage.
+  const raw = c.req.raw as { socket?: { remoteAddress?: string } } | undefined;
+  if (raw?.socket?.remoteAddress) return raw.socket.remoteAddress;
+
+  // 2. Bun.serve via Hono: connection info lives on `c.env`.
+  //    Bun's adapter exposes a `requestIP` callable.
+  const env = c.env as
+    | { requestIP?: (req: unknown) => { address?: string } | null; incoming?: { socket?: { remoteAddress?: string } } }
+    | undefined;
+  if (env?.requestIP && c.req.raw) {
+    try {
+      const info = env.requestIP(c.req.raw);
+      if (info?.address) return info.address;
+    } catch { /* runtime didn't accept the raw shape — fall through */ }
+  }
+
+  // 3. Some adapters (e.g. Vercel) put the connection info on env.incoming.
+  if (env?.incoming?.socket?.remoteAddress) return env.incoming.socket.remoteAddress;
+
+  return undefined;
 }

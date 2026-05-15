@@ -142,6 +142,14 @@ export class FastifyBackend implements HttpServerBackend {
       else if (Array.isArray(v)) headers[k] = v.join(',');
     }
     const body = this.asBytes(req.body);
+    // Fastify exposes the connecting peer as `req.ip` — that's the
+    // canonical accessor that also respects the `trustProxy` config
+    // when operators have wired it up.  Fall back to the raw socket
+    // peer if `req.ip` isn't populated (e.g. inside a unit-test mock).
+    // The cast is necessary because `FastifyRequest.ip` is typed as
+    // `string` but can be missing in non-standard test doubles.
+    const remoteAddress = (req as unknown as { ip?: string; socket?: { remoteAddress?: string } }).ip
+      ?? (req as unknown as { socket?: { remoteAddress?: string } }).socket?.remoteAddress;
     return {
       method: (req.method as HttpRequest['method']),
       path: req.url,
@@ -149,6 +157,7 @@ export class FastifyBackend implements HttpServerBackend {
       query: (req.query as Record<string, string | string[] | undefined>) ?? {},
       params: (req.params as Record<string, string>) ?? {},
       body,
+      ...(remoteAddress ? { remoteAddress } : {}),
     };
   }
 

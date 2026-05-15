@@ -24,6 +24,14 @@ interface ExpressRequestLike {
   /** Populated by our raw-body middleware. */
   rawBody?: Uint8Array | null;
   body?: unknown;
+  /**
+   * Express's IP accessor — by default the socket peer; when
+   * `app.set('trust proxy', ...)` is configured, the leftmost
+   * `X-Forwarded-For` entry.  Forwarded into `HttpRequest.remoteAddress`.
+   */
+  ip?: string;
+  /** Raw socket — fallback when `req.ip` isn't populated. */
+  socket?: { remoteAddress?: string };
 }
 
 /** Minimal shape of the Express Response we rely on. */
@@ -240,6 +248,11 @@ export class ExpressBackend implements HttpServerBackend {
       else if (Array.isArray(v)) headers[k] = v.join(',');
     }
     const body = req.rawBody ?? null;
+    // Express's `req.ip` is the standard accessor — also honours
+    // `app.set('trust proxy', ...)` when the operator has configured
+    // it.  Fall back to the raw socket peer if `req.ip` isn't set
+    // (test-double / barebones Express setup).
+    const remoteAddress = req.ip ?? req.socket?.remoteAddress;
     return {
       method: req.method.toUpperCase() as HttpRequest['method'],
       path: req.path ?? req.url,
@@ -247,6 +260,7 @@ export class ExpressBackend implements HttpServerBackend {
       query: this.normaliseQuery(req.query),
       params: { ...req.params },
       body,
+      ...(remoteAddress ? { remoteAddress } : {}),
     };
   }
 

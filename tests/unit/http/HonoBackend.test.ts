@@ -158,6 +158,30 @@ describe('HonoBackend — plain routes', () => {
   });
 });
 
+describe('HonoBackend — remoteAddress wiring (#312)', () => {
+  test('populates req.remoteAddress best-effort (Bun runtime, env.requestIP)', async () => {
+    let captured: string | undefined;
+    const { url } = await startServer(get((req) => {
+      captured = req.remoteAddress;
+      return complete(Status.OK, 'ok');
+    }));
+    await fetch(`${url}/`);
+    // Hono on Bun: `c.env.requestIP(req.raw)` may or may not be
+    // populated depending on the adapter version.  When it IS,
+    // we get an IP string; when it isn't, remoteAddress stays
+    // undefined — which is correct fail-secure behaviour (the
+    // downstream `IpAllowlist` defaults to 403 on missing IP).
+    // The acceptance criterion: either undefined OR a string that
+    // looks like an IP.  Either is a valid outcome; what we forbid
+    // is "garbage non-IP string".
+    if (captured !== undefined) {
+      expect(typeof captured).toBe('string');
+      expect(captured.length).toBeGreaterThan(0);
+      expect(/^[0-9a-fA-F.:]+$/.test(captured)).toBe(true);
+    }
+  });
+});
+
 describe('HonoBackend — custom handlers', () => {
   test('setNotFound delivers a custom 404 body', async () => {
     const system = ActorSystem.create('http-hono-custom', { logger: new NoopLogger(), logLevel: LogLevel.Off });

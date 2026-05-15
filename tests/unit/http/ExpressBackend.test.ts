@@ -158,6 +158,20 @@ describe('ExpressBackend — plain routes', () => {
   });
 });
 
+describe('ExpressBackend — remoteAddress wiring (#312)', () => {
+  test('populates req.remoteAddress from req.ip', async () => {
+    let captured: string | undefined;
+    const { url } = await startServer(get((req) => {
+      captured = req.remoteAddress;
+      return complete(Status.OK, 'ok');
+    }));
+    await fetch(`${url}/`);
+    expect(typeof captured).toBe('string');
+    expect(captured!.length).toBeGreaterThan(0);
+    expect(/^[0-9a-fA-F.:]+$/.test(captured!)).toBe(true);
+  });
+});
+
 describe('ExpressBackend — custom handlers', () => {
   test('setNotFound delivers a custom 404 body', async () => {
     const system = ActorSystem.create('http-express-custom', { logger: new NoopLogger(), logLevel: LogLevel.Off });

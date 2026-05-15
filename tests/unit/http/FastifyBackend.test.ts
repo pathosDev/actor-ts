@@ -135,6 +135,24 @@ describe('FastifyBackend — plain routes', () => {
   });
 });
 
+describe('FastifyBackend — remoteAddress wiring (#312)', () => {
+  test('populates req.remoteAddress from the socket peer', async () => {
+    let captured: string | undefined;
+    const { url } = await startServer(get((req) => {
+      captured = req.remoteAddress;
+      return complete(Status.OK, 'ok');
+    }));
+    await fetch(`${url}/`);
+    // Localhost loopback — exact representation varies (127.0.0.1
+    // or ::1 or ::ffff:127.0.0.1 depending on stack), but must
+    // be populated and be a valid IP-shaped string.
+    expect(typeof captured).toBe('string');
+    expect(captured!.length).toBeGreaterThan(0);
+    // Sanity check: looks like an IP (digits / colons / dots only).
+    expect(/^[0-9a-fA-F.:]+$/.test(captured!)).toBe(true);
+  });
+});
+
 describe('FastifyBackend — shutdown semantics', () => {
   test('unbind returns promptly even when WebSocket clients are connected', async () => {
     // Regression: `app.close()` waits for every long-lived
