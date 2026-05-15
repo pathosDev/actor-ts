@@ -40,6 +40,7 @@ import {
   type ShardedCommand,
 } from './sharded-counter.js';
 import { LWWRegister } from '../../../src/crdt/LWWRegister.js';
+import { GCounter } from '../../../src/crdt/GCounter.js';
 import type { WriteConsistency } from '../../../src/crdt/DistributedData.js';
 import {
   clearAll,
@@ -285,6 +286,67 @@ export function makeControlRoutes(
         return completeJson(Status.InternalServerError, { error: (e as Error).message });
       }
     }))),
+
+    // ============== GCounter scenario (#313 — scenario 07) ==============
+
+    // POST /test/ddata/gcounter/inc?key=K&delta=D[&consistency=]
+    // Increments the named `GCounter` by `delta` (default 1) on the
+    // local replica.  The CRDT's monotonic semantics mean the total
+    // converges to the sum of every replica's contribution regardless
+    // of merge order — exactly what scenario 07 hammers concurrently
+    // from all 5 nodes.
+    path('ddata', path('gcounter', path('inc', post(async (req) => {
+      const key = queryParam(req, 'key');
+      const delta = Number(queryParam(req, 'delta') ?? '1');
+      const consistency = (queryParam(req, 'consistency') ?? 'majority') as WriteConsistency;
+      if (!key) return complete(Status.BadRequest, 'missing ?key=');
+      if (!Number.isFinite(delta) || delta < 0) {
+        return complete(Status.BadRequest, 'delta must be a non-negative finite number');
+      }
+      try {
+        const handle = ddataExt.get();
+        const startedAt = Date.now();
+        await handle.updateAsync<GCounter>(
+          key,
+          () => GCounter.empty(),
+          (c: GCounter) => c.increment(handle.selfReplicaId(), delta),
+          { consistency, timeoutMs: 10_000 },
+        );
+        return completeJson(Status.OK, {
+          incremented: { key, delta, consistency },
+          elapsedMs: Date.now() - startedAt,
+        });
+      } catch (e) {
+        return completeJson(Status.InternalServerError, { error: (e as Error).message });
+      }
+    })))),
+
+    // GET /test/ddata/gcounter/value?key=K[&consistency=]
+    // Reads the merged GCounter total under `key`.  404 if the key
+    // hasn't been touched yet (no replica has incremented it).
+    path('ddata', path('gcounter', path('value', get(async (req) => {
+      const key = queryParam(req, 'key');
+      const consistency = (queryParam(req, 'consistency') ?? 'majority') as WriteConsistency;
+      if (!key) return complete(Status.BadRequest, 'missing ?key=');
+      try {
+        const handle = ddataExt.get();
+        const startedAt = Date.now();
+        const counter = await handle.getAsync<GCounter>(key, {
+          consistency,
+          timeoutMs: 10_000,
+        });
+        const elapsedMs = Date.now() - startedAt;
+        if (!counter) return completeJson(Status.NotFound, { key, elapsedMs });
+        return completeJson(Status.OK, {
+          key,
+          value: counter.value(),
+          consistency,
+          elapsedMs,
+        });
+      } catch (e) {
+        return completeJson(Status.InternalServerError, { error: (e as Error).message });
+      }
+    })))),
 
     // ============== Singleton scenario (#313 — scenario 05) ==============
 

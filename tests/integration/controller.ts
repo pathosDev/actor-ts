@@ -22,6 +22,7 @@ import { scenario as receptionistConvergence } from './scenarios/03-receptionist
 import { scenario as ddataLatencyStorm } from './scenarios/04-ddata-latency-storm.js';
 import { scenario as singletonFailover } from './scenarios/05-singleton-failover.js';
 import { scenario as shardingRebalance } from './scenarios/06-sharding-rebalance.js';
+import { scenario as gcounterConcurrent } from './scenarios/07-gcounter-concurrent.js';
 import type { ControllerCtx, Scenario } from './scenarios/types.js';
 
 const NODES = (process.env.NODES ?? '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -51,6 +52,7 @@ const scenarios: Scenario[] = [
   splitBrain,
   receptionistConvergence,
   ddataLatencyStorm,
+  gcounterConcurrent,   // non-destructive
   shardingRebalance,    // — removes one node via cluster.leave()
   singletonFailover,    // — removes ANOTHER node via cluster.leave()
 ];
