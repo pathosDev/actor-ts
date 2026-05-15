@@ -80,11 +80,26 @@ interface PendingAsk {
 
 const HELLO_TIMEOUT_MS = 5_000;
 
-let _askCounter = 0;
+/**
+ * Generate an unpredictable ask ID.  Used by `ClusterClient.ask()` to
+ * route a `cluster-client-reply` frame back to the right pending
+ * promise.
+ *
+ * **Security note (#120)**: previously this was `c${Date.now()}-${counter}`,
+ * which an attacker on the wire (MitM on plaintext, malicious cluster
+ * peer, or someone with frame-level write access via TLS-stripping
+ * proxy) could predict and use to inject a forged reply BEFORE the
+ * legitimate one arrives.  `crypto.randomUUID()` gives 122 bits of
+ * entropy per call — guessing the next ID is computationally
+ * infeasible.  Frame replies whose ID doesn't match a current
+ * pending entry are dropped by `handleReply()` (existing behaviour).
+ */
 function nextAskId(): string {
-  _askCounter = (_askCounter + 1) >>> 0;
-  return `c${Date.now()}-${_askCounter}`;
+  return globalThis.crypto.randomUUID();
 }
+
+/** @internal — test-only handle for the predictability regression. */
+export const _nextAskIdForTest = nextAskId;
 
 /**
  * Connect to a cluster via one of the listed contact-points and exchange
