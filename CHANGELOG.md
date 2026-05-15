@@ -49,6 +49,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   returning `<resourceVersion>/<leaseTransitions>` and
   `InMemoryLease` a monotonic per-name version stamp.
 
+### Added
+
+- **`JsonLogger`** (#311) — structured-logging logger that emits one
+  `\n`-delimited JSON object per record to `process.stdout` (or an
+  injected `JsonLogSink`).  Every record carries `ts` (ISO-8601),
+  `level`, optional `source`, `msg`, the merged static + dynamic
+  MDC, and positional `...args` under an `args` array.  Errors
+  serialise as `{ name, message, stack }`; circular refs,
+  `BigInt`, and functions are sanitised so a log call never throws.
+  Drop-in for log-aggregation pipelines (Loki, ELK, Datadog,
+  CloudWatch, etc.) via the standard stdout-pipe path.
+- **`otelLogger({ api })`** (#311) — bridge to
+  `@opentelemetry/api-logs` for OTLP-Logs pipelines.  Optional peer
+  dep (structural-typed on the OTel surface, like `otelTracer`).
+  Maps severity to OTel's standard severity-number range, attaches
+  the actor's path on `source`, merges static + dynamic MDC into
+  `attributes`, and the SDK auto-links the active span's
+  `traceId`/`spanId` when tracing is enabled in the same process.
+
 ### Changed
 
 - **Bounded mailbox is now the default** (#310) — every actor spawned

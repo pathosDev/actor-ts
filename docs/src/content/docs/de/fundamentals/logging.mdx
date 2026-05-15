@@ -48,52 +48,101 @@ Oder über die Env- / Config-Datei (`actor-ts.log-level = "debug"` in
 `application.conf`).  Fünf Level: `debug` / `info` / `warn` /
 `error` / `silent`.  Default ist `info`.
 
-## Eigener Logger
+## Strukturierte JSON-Logs — eingebauter `JsonLogger`
 
-Das `Logger`-Interface ist klein.  Implementiere es einmal, gib es
-dem System:
+Für Log-Aggregator-Pipelines (Loki, ELK, Datadog, CloudWatch,
+Splunk etc.) willst du ein JSON-Objekt pro Record, nicht den
+menschenlesbaren Text, den der Default-`ConsoleLogger` ausgibt.
+`JsonLogger` ist die mitgelieferte Implementierung:
 
 ```ts
-import { ActorSystem, type Logger, LogLevel, type LogContextData } from 'actor-ts';
+import { ActorSystem, JsonLogger } from 'actor-ts';
 
-class JsonLogger implements Logger {
-  level = LogLevel.Info;
-  constructor(
-    private readonly source = '',
-    private readonly staticFields: LogContextData = {},
-  ) {}
-  debug(msg: string, ...args: unknown[]): void { this.emit('debug', msg, args); }
-  info (msg: string, ...args: unknown[]): void { this.emit('info',  msg, args); }
-  warn (msg: string, ...args: unknown[]): void { this.emit('warn',  msg, args); }
-  error(msg: string, ...args: unknown[]): void { this.emit('error', msg, args); }
-  withSource(source: string): Logger {
-    return new JsonLogger(source, this.staticFields);
-  }
-  withFields(fields: LogContextData): Logger {
-    return new JsonLogger(this.source, { ...this.staticFields, ...fields });
-  }
-  private emit(level: string, message: string, args: unknown[]): void {
-    process.stdout.write(JSON.stringify({
-      ts: Date.now(),
-      level,
-      source: this.source,
-      message,
-      args,
-      ...this.staticFields,
-    }) + '\n');
-  }
-}
-
-const system = ActorSystem.create('my-app', { logger: new JsonLogger() });
+const system = ActorSystem.create('my-app', {
+  logger: new JsonLogger(),
+});
 ```
 
-Ein eigener Logger ist das richtige Werkzeug, wenn:
+Output (ein `\n`-terminiertes JSON-Objekt pro Record):
 
-- Du JSON-Output für einen Log-Aggregator (Datadog, Loki, ELK)
-  willst.
-- Du an ein spezifisches Ziel (Datei, stderr, ein Remote-Service)
-  ohne die Default-`console.*`-Aufrufe routen willst.
-- Du strukturierte Felder direkt im Format eingebaut willst.
+```json
+{"ts":"2026-05-14T12:34:56.789Z","level":"info",
+ "source":"actor-ts://my-app/user/order",
+ "msg":"placing order",
+ "correlationId":"abc-123","userId":"user-42",
+ "args":[{"items":42}]}
+```
+
+Jeder Record trägt `ts` (ISO-8601), `level`, `msg` und die
+gemergten statischen + dynamischen MDC-Felder (statisch aus
+`withFields`, dynamisch aus `LogContext.run`, dynamisch gewinnt
+bei Key-Kollision).  Zusätzliche positionale `...args` aus
+`log.info(msg, extra1, extra2)` landen unter einem `args`-Array
+— Log-Aggregators indexieren verschachtelte Keys automatisch.
+
+`Error`-Instanzen werden als `{ name, message, stack }`
+serialisiert statt als Default-`"{}"` (Errors enumerierbare
+Surface ist leer).  Zyklische Referenzen, `BigInt` und Funktionen
+werden sanitiert, damit ein Log-Call nie wirft.
+
+Der Konstruktor von `JsonLogger` nimmt optional einen Sink —
+default schreibt er nach `process.stdout`, der richtigen Pipe für
+den Docker-Logging-Driver, den Kubernetes-Log-Scraper, `vector`,
+`fluent-bit` und `jq`:
+
+```ts
+new JsonLogger(LogLevel.Info, '', {}, {
+  write: (line) => process.stderr.write(line),  // umleitung nach stderr
+});
+```
+
+## OTLP-Logs-Pipeline — `otelLogger`
+
+Für einen OpenTelemetry-Collector, der über
+`@opentelemetry/sdk-logs` + `OTLPLogExporter` angebunden ist,
+brückst du über die OTel-Logs-API statt stdout-JSON:
+
+```ts
+import * as logsApi from '@opentelemetry/api-logs';
+import { ActorSystem, otelLogger } from 'actor-ts';
+
+// (SDK-Setup: LoggerProvider + OTLP-Exporter registrieren — außerhalb des Scope.)
+
+const system = ActorSystem.create('my-app', {
+  logger: otelLogger({ api: logsApi }),
+});
+```
+
+`@opentelemetry/api-logs` ist eine **optionale Peer-Dep** — das
+Framework importiert sie nie, du bringst deinen vorhandenen
+Namespace-Import mit.  Jedes `this.log.info(...)` in einem Actor
+landet als OTel-`LogRecord` mit Severity gemappt auf OTels
+Standard-Severity-Number-Bereich, dem Actor-Pfad auf `source`,
+den gemergten MDC-Feldern auf `attributes` und der `traceId`/
+`spanId` des aktiven Spans automatisch verlinkt, wenn Tracing
+im selben Prozess aktiv ist.
+
+## Eigener Logger
+
+Das `Logger`-Interface ist klein genug, um es direkt zu
+implementieren, wenn keiner der eingebauten passt — z. B. willst
+du ein spezifisches Binär-Wireformat, willst per Fanout auf
+mehrere Sinks routen, oder eine bestehende Log-Library wrappen.
+Gleiche Shape wie die eingebauten:
+
+```ts
+import { type Logger, LogLevel, type LogContextData } from 'actor-ts';
+
+class MyLogger implements Logger {
+  level = LogLevel.Info;
+  debug(msg: string, ...args: unknown[]): void { /* ... */ }
+  info(msg: string, ...args: unknown[]): void  { /* ... */ }
+  warn(msg: string, ...args: unknown[]): void  { /* ... */ }
+  error(msg: string, ...args: unknown[]): void { /* ... */ }
+  withSource(source: string): Logger { /* gib eine gebundene Kopie zurück */ return this; }
+  withFields(fields: LogContextData): Logger { /* gib eine gebundene Kopie zurück */ return this; }
+}
+```
 
 Das Framework ruft `withSource` einmal pro Actor auf, um den Pfad
 des Actors zu binden; das musst du nicht selbst tun.

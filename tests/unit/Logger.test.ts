@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
-import { ConsoleLogger, LogLevel, NoopLogger } from '../../src/Logger.js';
+import { ConsoleLogger, JsonLogger, LogLevel, NoopLogger, type JsonLogSink } from '../../src/Logger.js';
 import { LogContext } from '../../src/LogContext.js';
 
 describe('LogLevel', () => {
@@ -181,5 +181,126 @@ describe('NoopLogger', () => {
   test('withFields returns the same instance — Noop is opaque', () => {
     const log = new NoopLogger();
     expect(log.withFields({ x: 1 })).toBe(log);
+  });
+});
+
+describe('JsonLogger — #311 structured logging', () => {
+  /** Capture-array sink so tests don't have to touch stdout. */
+  function capturingSink(): { sink: JsonLogSink; lines: string[] } {
+    const lines: string[] = [];
+    return {
+      sink: { write: (line) => { lines.push(line); } },
+      lines,
+    };
+  }
+
+  test('emits one JSON object per record, \\n-delimited', () => {
+    const { sink, lines } = capturingSink();
+    const log = new JsonLogger(LogLevel.Debug, '', {}, sink);
+    log.info('hello');
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.endsWith('\n')).toBe(true);
+    const rec = JSON.parse(lines[0]!);
+    expect(rec.msg).toBe('hello');
+    expect(rec.level).toBe('info');
+    expect(typeof rec.ts).toBe('string');
+    // ISO-8601 timestamp (cheap shape check).
+    expect(rec.ts).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  test('includes source field when bound via withSource', () => {
+    const { sink, lines } = capturingSink();
+    const log = new JsonLogger(LogLevel.Debug, '', {}, sink).withSource('actor://x/user/y');
+    log.info('done');
+    const rec = JSON.parse(lines[0]!);
+    expect(rec.source).toBe('actor://x/user/y');
+  });
+
+  test('omits source when unset (no stray "" key)', () => {
+    const { sink, lines } = capturingSink();
+    const log = new JsonLogger(LogLevel.Debug, '', {}, sink);
+    log.info('done');
+    const rec = JSON.parse(lines[0]!);
+    expect(Object.hasOwn(rec, 'source')).toBe(false);
+  });
+
+  test('merges static fields and dynamic MDC; dynamic wins on collision', () => {
+    const { sink, lines } = capturingSink();
+    const log = new JsonLogger(LogLevel.Debug, '', { component: 'api', requestId: 'static' }, sink);
+    LogContext.run({ requestId: 'dynamic', userId: 'u-42' }, () => {
+      log.info('processed');
+    });
+    const rec = JSON.parse(lines[0]!);
+    expect(rec.component).toBe('api');
+    expect(rec.requestId).toBe('dynamic');   // dynamic wins
+    expect(rec.userId).toBe('u-42');
+  });
+
+  test('extra positional args land under "args"', () => {
+    const { sink, lines } = capturingSink();
+    const log = new JsonLogger(LogLevel.Debug, '', {}, sink);
+    log.info('processed', { items: 42 }, 'extra');
+    const rec = JSON.parse(lines[0]!);
+    expect(rec.args).toEqual([{ items: 42 }, 'extra']);
+  });
+
+  test('Error args serialise name + message + stack instead of "{}"', () => {
+    const { sink, lines } = capturingSink();
+    const log = new JsonLogger(LogLevel.Debug, '', {}, sink);
+    const err = new Error('boom');
+    log.error('failed', err);
+    const rec = JSON.parse(lines[0]!);
+    expect(rec.args[0].name).toBe('Error');
+    expect(rec.args[0].message).toBe('boom');
+    expect(typeof rec.args[0].stack).toBe('string');
+  });
+
+  test('respects level filter — below-level calls do not write', () => {
+    const { sink, lines } = capturingSink();
+    const log = new JsonLogger(LogLevel.Warn, '', {}, sink);
+    log.debug('d');
+    log.info('i');
+    log.warn('w');
+    log.error('e');
+    expect(lines).toHaveLength(2);
+    expect(JSON.parse(lines[0]!).level).toBe('warn');
+    expect(JSON.parse(lines[1]!).level).toBe('error');
+  });
+
+  test('handles circular references without throwing', () => {
+    const { sink, lines } = capturingSink();
+    const log = new JsonLogger(LogLevel.Debug, '', {}, sink);
+    const circ: Record<string, unknown> = { name: 'root' };
+    circ['self'] = circ;
+    expect(() => log.info('circ', circ)).not.toThrow();
+    expect(lines).toHaveLength(1);
+    const rec = JSON.parse(lines[0]!);
+    expect(rec.args[0].self).toBe('[Circular]');
+  });
+
+  test('handles BigInt without throwing', () => {
+    const { sink, lines } = capturingSink();
+    const log = new JsonLogger(LogLevel.Debug, '', {}, sink);
+    expect(() => log.info('big', { n: BigInt('9999999999999999') })).not.toThrow();
+    const rec = JSON.parse(lines[0]!);
+    // BigInt → string in the replacer; survives roundtrip.
+    expect(rec.args[0].n).toBe('9999999999999999');
+  });
+
+  test('withSource and withFields return independent instances', () => {
+    const { sink, lines } = capturingSink();
+    const base = new JsonLogger(LogLevel.Debug, '', { app: 'demo' }, sink);
+    const bound = base.withSource('actor://x').withFields({ component: 'shard' });
+    bound.info('hi');
+    base.info('bye');
+    expect(lines).toHaveLength(2);
+    const r1 = JSON.parse(lines[0]!);
+    const r2 = JSON.parse(lines[1]!);
+    expect(r1.source).toBe('actor://x');
+    expect(r1.component).toBe('shard');
+    expect(r1.app).toBe('demo');
+    expect(r2.source).toBeUndefined();
+    expect(r2.component).toBeUndefined();
+    expect(r2.app).toBe('demo');
   });
 });

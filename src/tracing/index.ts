@@ -37,3 +37,12 @@ export type {
   OtelTraceApi,
   OtelTracerLike,
 } from './OtelAdapter.js';
+export { otelLogger } from './OtelLogsAdapter.js';
+export type {
+  OtelLoggerAdapterOptions,
+  OtelLogsApiLike,
+  OtelLoggerProviderLike,
+  OtelLoggerLike,
+  OtelLogRecord,
+  OtelSeverityNumber,
+} from './OtelLogsAdapter.js';

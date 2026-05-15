@@ -88,8 +88,8 @@ export {
 } from './Dispatcher.js';
 export type { Dispatcher } from './Dispatcher.js';
 export { EventStream } from './EventStream.js';
-export { ConsoleLogger, NoopLogger, LogLevel } from './Logger.js';
-export type { Logger } from './Logger.js';
+export { ConsoleLogger, NoopLogger, JsonLogger, LogLevel } from './Logger.js';
+export type { Logger, JsonLogSink } from './Logger.js';
 export { LogContext } from './LogContext.js';
 export type { LogContextData } from './LogContext.js';
 
@@ -138,6 +138,7 @@ export {
   newTraceId,
   newSpanId,
   otelTracer,
+  otelLogger,
 } from './tracing/index.js';
 export type {
   Tracer,
@@ -159,6 +160,12 @@ export type {
   OtelSpanLike,
   OtelTraceApi,
   OtelTracerLike,
+  OtelLoggerAdapterOptions,
+  OtelLogsApiLike,
+  OtelLoggerProviderLike,
+  OtelLoggerLike,
+  OtelLogRecord,
+  OtelSeverityNumber,
 } from './tracing/index.js';
 
 // System messages
