@@ -20,13 +20,11 @@ import {
 import { Actor } from '../../../src/Actor.js';
 import { Props } from '../../../src/Props.js';
 import type { ActorSystem } from '../../../src/ActorSystem.js';
-import type { ActorRef } from '../../../src/ActorRef.js';
 import type { Cluster } from '../../../src/cluster/Cluster.js';
 import { ReceptionistId } from '../../../src/discovery/index.js';
 import {
   Find,
   Listing,
-  Register,
 } from '../../../src/discovery/ReceptionistMessages.js';
 import { ServiceKey } from '../../../src/discovery/ServiceKey.js';
 import { DistributedDataId } from '../../../src/crdt/index.js';
@@ -43,11 +41,18 @@ import {
  * Per-key shared `ServiceKey` for the Receptionist scenarios.  Every
  * node registers its local "worker" ref under the SAME key — the
  * Listing on any node should contain all live registrations after
- * convergence.  Distinct keys per node would test gossip-of-keys but
- * not gossip-of-registrations-under-a-shared-key, which is the more
- * interesting cluster-discovery shape.
+ * convergence.
+ *
+ * Exported so `node-runner.ts` can do the registration at startup
+ * time — earlier iteration relied on a lazy-on-first-hit
+ * registration which created a wire-handler race: nodes that never
+ * received an HTTP hit had their Receptionist NOT yet subscribed to
+ * the `receptionist-gossip` wire kind, so gossip from
+ * already-started peers got silently dropped on the receiver side.
+ * Same shape for `DistributedDataId` — see `node-runner.ts` for the
+ * bootstrap path.
  */
-const WORKER_KEY = ServiceKey.of<unknown>('workers');
+export const WORKER_KEY = ServiceKey.of<unknown>('workers');
 
 /**
  * One-shot collector actor used to bridge the message-passing
@@ -63,45 +68,15 @@ class ListingCollector extends Actor<Listing> {
   }
 }
 
-/**
- * One-shot worker actor.  Receives one ping message kind, has no
- * behaviour beyond existing for the Receptionist to register.  The
- * point of the scenario is the registration's CLUSTER-WIDE
- * VISIBILITY, not anything the worker actually does.
- */
-class IdleWorker extends Actor<unknown> {
-  override onReceive(_m: unknown): void { /* noop */ }
-}
-
 export function makeControlRoutes(
   system: ActorSystem,
   cluster: Cluster,
 ): Route {
-  // Lazy-init both Receptionist and DistributedData on first hit so
-  // the node-runner doesn't pay the cost for scenarios that never
-  // touch them.  Cached after first init.
-  let receptionistRef: ActorRef | null = null;
-  const ensureReceptionist = (): ActorRef => {
-    if (receptionistRef) return receptionistRef;
-    const ext = system.extension(ReceptionistId);
-    receptionistRef = ext.start(cluster, { gossipIntervalMs: 250 });
-    // Auto-register an IdleWorker under WORKER_KEY so the scenario
-    // doesn't need explicit `/register` calls — the node's mere
-    // existence puts one ref into the cluster's worker pool.
-    const worker = system.spawnAnonymous(Props.create(() => new IdleWorker()));
-    receptionistRef.tell(new Register(WORKER_KEY, worker));
-    return receptionistRef;
-  };
-
-  let ddataStarted = false;
-  const ensureDdata = () => {
-    const ext = system.extension(DistributedDataId);
-    if (!ddataStarted) {
-      ext.start(cluster, { gossipIntervalMs: 250 });
-      ddataStarted = true;
-    }
-    return ext;
-  };
+  // Both extensions are bootstrapped at node-runner startup so the
+  // wire handlers are registered before ANY scenario runs.  Looking
+  // them up here is a cheap `Map.get`.
+  const receptionistRef = system.extension(ReceptionistId).start(cluster);
+  const ddataExt = system.extension(DistributedDataId);
 
   return path('test', concat(
     // GET /test/ping — liveness probe used by docker-compose
@@ -191,12 +166,11 @@ export function makeControlRoutes(
     // GET /test/receptionist/listing
     // Asks the local Receptionist for the current Listing under the
     // shared "workers" key.  Returns `{ refs: [paths], count }`.
-    // First call lazy-starts the Receptionist + auto-registers an
-    // IdleWorker, so the node-runner doesn't need a separate
-    // registration call.  The scenario polls until each node sees
-    // `count === <cluster size>`.
+    // Receptionist + auto-registered IdleWorker are wired in
+    // `node-runner.ts` at boot time so the wire handlers are
+    // already subscribed before any scenario runs (no microtask race
+    // between lazy-start and incoming gossip).
     path('receptionist', path('listing', get(async () => {
-      const recRef = ensureReceptionist();
       try {
         const listing = await new Promise<Listing>((resolve, reject) => {
           const timer = setTimeout(() => reject(new Error('receptionist listing timeout')), 5_000);
@@ -206,7 +180,7 @@ export function makeControlRoutes(
               resolve(l);
             }),
           ));
-          recRef.tell(new Find(WORKER_KEY, collector));
+          receptionistRef.tell(new Find(WORKER_KEY, collector));
         });
         return completeJson(Status.OK, {
           key: WORKER_KEY.id,
@@ -232,7 +206,7 @@ export function makeControlRoutes(
         return complete(Status.BadRequest, 'missing ?key= or ?value=');
       }
       try {
-        const handle = ensureDdata().get();
+        const handle = ddataExt.get();
         const startedAt = Date.now();
         await handle.updateAsync<LWWRegister<string>>(
           key,
@@ -258,7 +232,7 @@ export function makeControlRoutes(
       const consistency = (queryParam(req, 'consistency') ?? 'majority') as WriteConsistency;
       if (!key) return complete(Status.BadRequest, 'missing ?key=');
       try {
-        const handle = ensureDdata().get();
+        const handle = ddataExt.get();
         const startedAt = Date.now();
         const reg = await handle.getAsync<LWWRegister<string>>(key, {
           consistency,

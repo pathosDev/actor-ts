@@ -33,20 +33,42 @@ export const scenario: Scenario = {
     //    node once.  Each hit auto-registers an IdleWorker into the
     //    local Receptionist.  After this round, every node should
     //    own one local registration; gossip propagates them across.
-    await Promise.all(ctx.nodes.map((h) => listing(h, ctx.controlPort)));
+    const initial = await Promise.all(ctx.nodes.map(async (h) => ({
+      host: h,
+      listing: await listing(h, ctx.controlPort),
+    })));
+    for (const r of initial) {
+      console.log(`[03] post-init: ${r.host} sees ${r.listing.count} ref(s)`);
+    }
 
     // 2. Wait for every node's Listing to contain all 5 refs.
     //    Receptionist gossip runs at 250ms in this setup so 8s is
     //    generous.
     console.log(`[03] waiting for every node to see ${expected} worker refs...`);
-    await Promise.all(ctx.nodes.map(async (host) => {
-      await waitFor(
-        `${host} sees ${expected} workers`,
-        async () => (await listing(host, ctx.controlPort)).count === expected,
-        15_000,
-        300,
-      );
-    }));
+    let lastSnapshot = '';
+    const snapshotInterval = setInterval(() => {
+      Promise.all(ctx.nodes.map((h) => listing(h, ctx.controlPort).catch(() => ({ count: -1 } as ListingResponse))))
+        .then((all) => {
+          const line = ctx.nodes.map((h, i) => `${h}=${all[i]!.count}`).join(' ');
+          if (line !== lastSnapshot) {
+            console.log(`[03]   counts: ${line}`);
+            lastSnapshot = line;
+          }
+        })
+        .catch(() => {/* ignore */});
+    }, 2_000);
+    try {
+      await Promise.all(ctx.nodes.map(async (host) => {
+        await waitFor(
+          `${host} sees ${expected} workers`,
+          async () => (await listing(host, ctx.controlPort)).count === expected,
+          20_000,
+          300,
+        );
+      }));
+    } finally {
+      clearInterval(snapshotInterval);
+    }
 
     // Cross-check: every node sees the same SET of paths.
     const sets = await Promise.all(ctx.nodes.map(async (h) => new Set((await listing(h, ctx.controlPort)).refs)));

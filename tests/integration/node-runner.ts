@@ -17,13 +17,18 @@
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { Cluster } from '../../src/cluster/Cluster.js';
 import {
+  Actor,
   BearerTokenAuth,
   HttpExtensionId,
   IpAllowlist,
+  Props,
 } from '../../src/index.js';
 import { JsonLogger, LogLevel } from '../../src/Logger.js';
 import { managementRoutes } from '../../src/management/index.js';
-import { makeControlRoutes } from './lib/control-routes.js';
+import { ReceptionistId } from '../../src/discovery/index.js';
+import { Register } from '../../src/discovery/ReceptionistMessages.js';
+import { DistributedDataId } from '../../src/crdt/index.js';
+import { makeControlRoutes, WORKER_KEY } from './lib/control-routes.js';
 
 const SYSTEM_NAME = process.env.SYSTEM_NAME ?? 'integration';
 const NODE_NAME = process.env.NODE_NAME ?? 'node-x';
@@ -60,6 +65,36 @@ async function main(): Promise<void> {
     failureDetector: { heartbeatIntervalMs: 200, unreachableAfterMs: 1_500, downAfterMs: 4_000 },
     gossipIntervalMs: 250,
   });
+
+  // ============================================================
+  // Bootstrap cluster-wide gossip extensions BEFORE binding HTTP.
+  //
+  // Both Receptionist + DistributedData register `_onWire` handlers
+  // on their respective wire-message kinds inside the actor's
+  // `preStart`.  A peer's outgoing gossip / write-request is
+  // silently dropped on the receiving node if the receiving node
+  // has no handler registered yet.  Bootstrapping these BEFORE the
+  // healthcheck flips green (and therefore before any scenario can
+  // hit the control routes) means every node has all four
+  // wire-kinds subscribed before peer traffic starts flowing —
+  // closes a microtask race the original lazy-on-first-hit design
+  // exposed.
+  // ============================================================
+
+  // Receptionist + auto-registered IdleWorker.  Tighter gossip
+  // interval than the default 1s so convergence in scenarios is
+  // observable inside the test budget.
+  const receptionistRef = system.extension(ReceptionistId).start(cluster, { gossipIntervalMs: 250 });
+  class IdleWorker extends Actor<unknown> {
+    override onReceive(_m: unknown): void { /* noop */ }
+  }
+  const worker = system.spawnAnonymous(Props.create<unknown>(() => new IdleWorker()));
+  receptionistRef.tell(new Register(WORKER_KEY, worker));
+  logger.info('Receptionist started + worker registered', { key: WORKER_KEY.id });
+
+  // DistributedData.  Same gossip-interval tightening.
+  system.extension(DistributedDataId).start(cluster, { gossipIntervalMs: 250 });
+  logger.info('DistributedData started');
 
   // Management HTTP — auth on so the test exercises the #312 path.
   // IpAllowlist runs against the real socket peer (now that the
