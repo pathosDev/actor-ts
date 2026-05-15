@@ -81,6 +81,32 @@ export type EncryptionConfig =
     };
 
 /**
+ * Body integrity directive (#116).  Protects unencrypted bodies
+ * against tamper-in-place at the object-storage layer; encrypted
+ * bodies are already protected by AES-GCM's auth tag.
+ *
+ *   - `mode: 'none'` (default) — back-compat, no integrity check.
+ *   - `mode: 'hmac-sha256'`    — HMAC-SHA256 over the payload with
+ *     `integrityKey`, truncated to 16 bytes (128-bit MAC strength),
+ *     appended to the body and verified at decode.  Key is separate
+ *     from the encryption master key — the threat here is tampering,
+ *     not confidentiality.
+ *
+ * Bodies written before integrity landed have the integrity flag
+ * unset and decode normally even when integrity is configured on the
+ * reader (legacy-safe).  Use the `requireIntegrity` decode option
+ * (per-call or per-store) to refuse such bodies once a deployment
+ * has been fully migrated.
+ */
+export type IntegrityConfig =
+  | { readonly mode: 'none' }
+  | {
+      readonly mode: 'hmac-sha256';
+      /** 32 bytes — fed to HMAC-SHA256 as the signing key. */
+      readonly integrityKey: Uint8Array;
+    };
+
+/**
  * Bag of per-call options that any persistence store may accept.  All
  * fields optional — when omitted, the store falls back to its own
  * configuration (e.g. plugin defaults / per-pid resolver).
@@ -88,6 +114,7 @@ export type EncryptionConfig =
 export interface PersistenceOptions {
   readonly compression?: CompressionConfig;
   readonly encryption?: EncryptionConfig;
+  readonly integrity?: IntegrityConfig;
 }
 
 /**

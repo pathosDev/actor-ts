@@ -12,10 +12,13 @@ import {
 import {
   resolveCompression,
   resolveEncryption,
+  resolveIntegrity,
   type CompressionConfig,
   type CompressionResolver,
   type EncryptionConfig,
   type EncryptionResolver,
+  type IntegrityConfig,
+  type IntegrityResolver,
 } from '../object-storage/PluginConfig.js';
 import {
   DurableStateConcurrencyError,
@@ -51,6 +54,26 @@ export interface ObjectStorageDurableStateStoreOptions {
   readonly prefix?: string;
   readonly compression?: CompressionConfig | CompressionResolver;
   readonly encryption?: EncryptionConfig | EncryptionResolver;
+  /**
+   * Opt-in HMAC-SHA256 integrity protection over each body (#116).
+   * Closes a tamper-in-place gap on unencrypted bodies: without this,
+   * an attacker with write access to the backend bucket can flip the
+   * `revision` field in the JSON and bypass CAS.  Default `{ mode: 'none' }`
+   * is back-compat (no integrity tag); set `{ mode: 'hmac-sha256',
+   * integrityKey }` to protect new writes and verify reads.
+   *
+   * Legacy bodies without the integrity flag still decode cleanly —
+   * tag is opt-in.  Migrate by reading-then-writing once integrity is
+   * enabled.
+   */
+  readonly integrity?: IntegrityConfig | IntegrityResolver;
+  /**
+   * When set with an `integrity` config, decode rejects bodies that
+   * DON'T carry an integrity tag.  Use after a deployment has been
+   * fully migrated so an attacker can't downgrade by re-writing a
+   * body without the tag.
+   */
+  readonly requireIntegrity?: boolean;
 }
 
 interface CachedEntry {
@@ -63,6 +86,8 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
   private readonly prefix: string;
   private readonly compression: CompressionConfig | CompressionResolver | undefined;
   private readonly encryption: EncryptionConfig | EncryptionResolver | undefined;
+  private readonly integrity: IntegrityConfig | IntegrityResolver | undefined;
+  private readonly requireIntegrity: boolean;
   private readonly etagCache = new Map<string, CachedEntry>();
 
   constructor(opts: ObjectStorageDurableStateStoreOptions) {
@@ -70,6 +95,8 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     this.prefix = opts.prefix ?? '';
     this.compression = opts.compression;
     this.encryption = opts.encryption;
+    this.integrity = opts.integrity;
+    this.requireIntegrity = opts.requireIntegrity ?? false;
   }
 
   async load<S>(pid: string, options?: PersistenceOptions): Promise<Option<DurableStateRecord<S>>> {
@@ -78,16 +105,46 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     // Per-call encryption (from the actor) wins over the plugin default.
     const encryption = options?.encryption
       ?? resolveEncryption(this.encryption, pid, { mode: 'none' });
+    const integrity = options?.integrity
+      ?? resolveIntegrity(this.integrity, pid, { mode: 'none' });
+    if (this.requireIntegrity && integrity.mode !== 'hmac-sha256') {
+      throw new JournalError(
+        `ObjectStorageDurableStateStore.load: requireIntegrity=true demands `
+        + `an integrity config with mode='hmac-sha256' (pid=${pid}).`,
+      );
+    }
     const subKeyFor = resolveDecryptSubkey(encryption, pid);
-    const decoded = await decodeBody(
-      fetched.value.body,
-      subKeyFor ? { encryption: { subKeyFor } } : undefined,
-    );
+    let decodeOpts: import('../object-storage/BodyCodec.js').DecodeOptions | undefined;
+    if (subKeyFor || integrity.mode === 'hmac-sha256') {
+      decodeOpts = {
+        ...(subKeyFor ? { encryption: { subKeyFor } } : {}),
+        ...(integrity.mode === 'hmac-sha256'
+          ? {
+              integrity: {
+                integrityKey: integrity.integrityKey,
+                requireIntegrity: this.requireIntegrity,
+              },
+            }
+          : {}),
+      };
+    }
+    let decoded: import('../object-storage/BodyCodec.js').DecodedBody;
+    try {
+      decoded = await decodeBody(fetched.value.body, decodeOpts);
+    } catch (e) {
+      throw new JournalError(
+        `ObjectStorageDurableStateStore.load: integrity / decode failure for ${pid}`,
+        e,
+      );
+    }
     let parsed: { revision: number; state: S; timestamp: number };
     try { parsed = JSON.parse(utf8Decoder.decode(decoded.payload)); }
     catch (e) {
       throw new JournalError(`ObjectStorageDurableStateStore.load: malformed JSON for ${pid}`, e);
     }
+    // Cache AFTER decode succeeds (integrity check inside decodeBody).
+    // Before #116 we cached before parsing; an attacker could tamper
+    // with the revision in the body and the cache would trust it.
     this.etagCache.set(pid, { etag: fetched.value.etag, revision: parsed.revision });
     return some({
       persistenceId: pid,
@@ -112,6 +169,8 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
       ?? resolveCompression(this.compression, pid, { algorithm: 'gzip' });
     const encryption = options?.encryption
       ?? resolveEncryption(this.encryption, pid, { mode: 'none' });
+    const integrity = options?.integrity
+      ?? resolveIntegrity(this.integrity, pid, { mode: 'none' });
 
     const now = Date.now();
     const newRevision = expectedRevision + 1;
@@ -126,6 +185,9 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
             ...(stampVersion ? { keyVersion: active.keyVersion } : {}),
           }
         : undefined,
+      ...(integrity.mode === 'hmac-sha256'
+        ? { integrity: { integrityKey: integrity.integrityKey } }
+        : {}),
     });
 
     const cached = this.etagCache.get(pid);

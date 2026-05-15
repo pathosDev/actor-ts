@@ -1,6 +1,7 @@
 import { match } from 'ts-pattern';
 import { compressorFor, type CompressionAlgo } from './Compression.js';
 import { aesGcmDecrypt, aesGcmEncrypt, IV_LENGTH, randomIv } from './Encryption.js';
+import { constantTimeEqual, HMAC_TAG_LENGTH, hmacSha256 } from './Integrity.js';
 
 /**
  * Wire-format for snapshot / durable-state bodies stored in object storage.
@@ -9,11 +10,16 @@ import { aesGcmDecrypt, aesGcmEncrypt, IV_LENGTH, randomIv } from './Encryption.
  *   Byte  4      : flags          bit0..1 = compression: 0=none, 1=gzip, 2=zstd
  *                                  bit2     = encrypted
  *                                  bit3     = key-versioned (#8 — master-key rotation)
+ *                                  bit4     = integrity HMAC tag appended (#116)
  *   Byte  5      : keyVersion     (0..255)  — only when bit3 set
  *   Bytes ...    : AES-GCM IV     (12 bytes — only when bit2 set, immediately
  *                                   after the keyVersion byte if present, else
  *                                   immediately after flags)
  *   Bytes ...    : payload        (compressed/encrypted JSON)
+ *   Bytes ...    : HMAC tag       (16 bytes — only when bit4 set, suffixed
+ *                                   after the payload; HMAC covers every
+ *                                   byte BEFORE the tag, including the
+ *                                   manifest header)
  *
  * A size-conservative header (5 bytes for unencrypted; 17 for encrypted
  * legacy / 18 for encrypted with explicit version) keeps small snapshots
@@ -26,6 +32,11 @@ import { aesGcmDecrypt, aesGcmEncrypt, IV_LENGTH, randomIv } from './Encryption.
  * decoder treats them as version 0, which transparently maps to either
  * the legacy single-key `masterKey` config or `masterKeys.active.version
  * === 0`.  Mixing old and new bodies in one bucket is therefore safe.
+ *
+ * Same back-compat story for integrity (#116): bodies written before
+ * bit4 landed have it unset and decode without an HMAC check.  Callers
+ * who want to refuse legacy bodies after a migration can pass
+ * `requireIntegrity: true` on decode to enforce.
  */
 
 export const ATS1_MAGIC = new Uint8Array([0x41, 0x54, 0x53, 0x31]); // "ATS1"
@@ -36,6 +47,8 @@ export const COMPRESSION_ZSTD = 0b10;
 export const FLAG_ENCRYPTED = 0b100;
 /** When set with FLAG_ENCRYPTED, the byte after `flags` is a 0..255 key version. */
 export const FLAG_KEY_VERSIONED = 0b1000;
+/** When set, the last {@link HMAC_TAG_LENGTH} bytes are an HMAC-SHA256 over the rest. */
+export const FLAG_INTEGRITY_HMAC = 0b10000;
 
 export interface EncodeOptions {
   readonly compression?: CompressionAlgo;
@@ -52,6 +65,16 @@ export interface EncodeOptions {
    * keys as "version 0".
    */
   readonly encryption?: { readonly subKey: Uint8Array; readonly keyVersion?: number };
+  /**
+   * Opt-in HMAC-SHA256 integrity (#116).  When set, the codec computes
+   * an HMAC over the framed body (everything up to the tag) and appends
+   * the truncated 16-byte tag.  `FLAG_INTEGRITY_HMAC` is set in the
+   * manifest.  Encrypted bodies don't need this for confidentiality
+   * (AES-GCM's auth tag already covers ciphertext), but it ties the
+   * manifest bytes to the body — useful as defense-in-depth against
+   * a manifest-flip attack.
+   */
+  readonly integrity?: { readonly integrityKey: Uint8Array };
 }
 
 /**
@@ -73,6 +96,18 @@ export interface DecodeOptions {
   readonly encryption?:
     | { readonly subKey: Uint8Array }
     | { readonly subKeyFor: SubKeyResolver };
+  /**
+   * When the manifest carries `FLAG_INTEGRITY_HMAC`, the codec verifies
+   * the appended HMAC tag against this key.  Mismatch throws — body
+   * has been tampered.  Setting `requireIntegrity: true` AND providing
+   * a key forces the codec to also REJECT bodies that DON'T carry the
+   * flag (use after a migration to ensure no legacy/unprotected
+   * bodies slip through).
+   */
+  readonly integrity?: {
+    readonly integrityKey: Uint8Array;
+    readonly requireIntegrity?: boolean;
+  };
 }
 
 export interface DecodedBody {
@@ -91,6 +126,7 @@ export async function encodeBody(jsonBytes: Uint8Array, opts: EncodeOptions = {}
   const algo = opts.compression ?? 'none';
   const subKey = opts.encryption?.subKey;
   const keyVersion = opts.encryption?.keyVersion;
+  const integrityKey = opts.integrity?.integrityKey;
 
   // Step 1: compress (if requested).  Encryption-after-compression
   // because compression-after-encryption would defeat compression
@@ -99,6 +135,7 @@ export async function encodeBody(jsonBytes: Uint8Array, opts: EncodeOptions = {}
   const compressed = await compressorFor(algo).compress(jsonBytes);
 
   // Step 2: encrypt (if requested).  IV goes into the manifest.
+  let bodyBeforeIntegrity: Uint8Array;
   if (subKey) {
     if (keyVersion !== undefined) {
       if (!Number.isInteger(keyVersion) || keyVersion < 0 || keyVersion > 255) {
@@ -110,25 +147,37 @@ export async function encodeBody(jsonBytes: Uint8Array, opts: EncodeOptions = {}
     const versioned = keyVersion !== undefined;
     let flags = encodeCompression(algo) | FLAG_ENCRYPTED;
     if (versioned) flags |= FLAG_KEY_VERSIONED;
+    if (integrityKey) flags |= FLAG_INTEGRITY_HMAC;
     const headerLen = ATS1_MAGIC.length + 1 + (versioned ? 1 : 0) + IV_LENGTH;
-    const out = new Uint8Array(headerLen + ciphertext.length);
-    out.set(ATS1_MAGIC, 0);
-    out[4] = flags;
+    bodyBeforeIntegrity = new Uint8Array(headerLen + ciphertext.length);
+    bodyBeforeIntegrity.set(ATS1_MAGIC, 0);
+    bodyBeforeIntegrity[4] = flags;
     let offset = 5;
-    if (versioned) { out[offset] = keyVersion!; offset += 1; }
-    out.set(iv, offset);
+    if (versioned) { bodyBeforeIntegrity[offset] = keyVersion!; offset += 1; }
+    bodyBeforeIntegrity.set(iv, offset);
     offset += IV_LENGTH;
-    out.set(ciphertext, offset);
-    return out;
+    bodyBeforeIntegrity.set(ciphertext, offset);
+  } else {
+    // Step 3 (no encryption): build the plain framed body.
+    let flags = encodeCompression(algo);
+    if (integrityKey) flags |= FLAG_INTEGRITY_HMAC;
+    bodyBeforeIntegrity = new Uint8Array(ATS1_MAGIC.length + 1 + compressed.length);
+    bodyBeforeIntegrity.set(ATS1_MAGIC, 0);
+    bodyBeforeIntegrity[4] = flags;
+    bodyBeforeIntegrity.set(compressed, 5);
   }
 
-  // Step 3 (no encryption): build the plain framed body.
-  const flags = encodeCompression(algo);
-  const out = new Uint8Array(ATS1_MAGIC.length + 1 + compressed.length);
-  out.set(ATS1_MAGIC, 0);
-  out[4] = flags;
-  out.set(compressed, 5);
-  return out;
+  // Step 4 (optional): append the HMAC-SHA256 integrity tag (#116).
+  // Covers the manifest header + payload — any tampering of either
+  // invalidates the tag.
+  if (integrityKey) {
+    const tag = await hmacSha256(integrityKey, bodyBeforeIntegrity);
+    const out = new Uint8Array(bodyBeforeIntegrity.length + tag.length);
+    out.set(bodyBeforeIntegrity, 0);
+    out.set(tag, bodyBeforeIntegrity.length);
+    return out;
+  }
+  return bodyBeforeIntegrity;
 }
 
 /** Decode a body produced by `encodeBody` back into the plaintext payload. */
@@ -140,6 +189,38 @@ export async function decodeBody(framed: Uint8Array, opts: DecodeOptions = {}): 
   const compression = decodeCompression(flags);
   const encrypted = (flags & FLAG_ENCRYPTED) !== 0;
   const versioned = (flags & FLAG_KEY_VERSIONED) !== 0;
+  const hasIntegrity = (flags & FLAG_INTEGRITY_HMAC) !== 0;
+
+  // Integrity check FIRST — before we trust any other manifest byte
+  // beyond `flags` (which we already used to know the tag is there).
+  // The HMAC tag is the last 16 bytes; verifying it proves the rest of
+  // the body wasn't tampered with, including bytes the decode path
+  // hasn't even read yet (#116).
+  let bodyForRest = framed;
+  if (hasIntegrity) {
+    if (framed.length < 5 + HMAC_TAG_LENGTH) {
+      throw new Error('BodyCodec: integrity-tagged body is shorter than the HMAC tag requires.');
+    }
+    if (!opts.integrity?.integrityKey) {
+      throw new Error(
+        'BodyCodec: body carries FLAG_INTEGRITY_HMAC but no integrityKey was supplied for decoding.',
+      );
+    }
+    const sigOffset = framed.length - HMAC_TAG_LENGTH;
+    const expected = framed.subarray(sigOffset);
+    const signed = framed.subarray(0, sigOffset);
+    const actual = await hmacSha256(opts.integrity.integrityKey, signed);
+    if (!constantTimeEqual(actual, expected)) {
+      throw new Error('BodyCodec: integrity check failed — body tampered or wrong integrity key.');
+    }
+    bodyForRest = signed;
+  } else if (opts.integrity?.requireIntegrity) {
+    throw new Error(
+      'BodyCodec: body has no integrity tag but requireIntegrity=true was set.  '
+      + 'Body was either written before integrity was enabled, or is being injected '
+      + 'as part of a downgrade attack.',
+    );
+  }
 
   let payload: Uint8Array;
   let keyVersion: number | undefined;
@@ -149,17 +230,17 @@ export async function decodeBody(framed: Uint8Array, opts: DecodeOptions = {}): 
     }
     let offset = 5;
     if (versioned) {
-      if (framed.length < 6) {
+      if (bodyForRest.length < 6) {
         throw new Error('BodyCodec: encrypted body claims key-versioned but is shorter than the version byte requires.');
       }
-      keyVersion = framed[5]!;
+      keyVersion = bodyForRest[5]!;
       offset = 6;
     }
-    if (framed.length < offset + IV_LENGTH) {
+    if (bodyForRest.length < offset + IV_LENGTH) {
       throw new Error('BodyCodec: encrypted body is shorter than the manifest IV requires.');
     }
-    const iv = framed.subarray(offset, offset + IV_LENGTH);
-    const ciphertext = framed.subarray(offset + IV_LENGTH);
+    const iv = bodyForRest.subarray(offset, offset + IV_LENGTH);
+    const ciphertext = bodyForRest.subarray(offset + IV_LENGTH);
 
     // Resolve the subkey: prefer the resolver path (versioned), fall
     // back to the legacy single-subkey field.  An unversioned body
@@ -184,7 +265,7 @@ export async function decodeBody(framed: Uint8Array, opts: DecodeOptions = {}): 
     const compressedPlaintext = await aesGcmDecrypt(subKey, iv, ciphertext);
     payload = await compressorFor(compression).decompress(compressedPlaintext);
   } else {
-    const compressedSlice = framed.subarray(5);
+    const compressedSlice = bodyForRest.subarray(5);
     payload = await compressorFor(compression).decompress(compressedSlice);
   }
 

@@ -1,6 +1,7 @@
 import type {
   CompressionConfig,
   EncryptionConfig,
+  IntegrityConfig,
 } from '../PersistenceOptions.js';
 
 /**
@@ -27,6 +28,7 @@ export type {
   CompressionAlgo,
   CompressionConfig,
   EncryptionConfig,
+  IntegrityConfig,
   MasterKeyRing,
   MasterKeyRingEntry,
 } from '../PersistenceOptions.js';
@@ -34,6 +36,8 @@ export type {
 export type CompressionResolver = (persistenceId: string) => CompressionConfig | undefined;
 
 export type EncryptionResolver = (persistenceId: string) => EncryptionConfig | undefined;
+
+export type IntegrityResolver = (persistenceId: string) => IntegrityConfig | undefined;
 
 /**
  * Internal: a resolver function with optional introspection metadata.
@@ -94,6 +98,17 @@ export function resolveEncryption(
   pid: string,
   fallback: EncryptionConfig,
 ): EncryptionConfig {
+  if (config === undefined) return fallback;
+  if (typeof config === 'function') return config(pid) ?? fallback;
+  return config;
+}
+
+/** Same shape as `resolveCompression` but for integrity configs (#116). */
+export function resolveIntegrity(
+  config: IntegrityConfig | IntegrityResolver | undefined,
+  pid: string,
+  fallback: IntegrityConfig,
+): IntegrityConfig {
   if (config === undefined) return fallback;
   if (typeof config === 'function') return config(pid) ?? fallback;
   return config;
