@@ -1,4 +1,4 @@
-name: Publish to npm
+name: publish
 
 # Fires when a GitHub Release is published (e.g. via
 # `gh release create vX.Y.Z --latest`).  Pre-release-flagged
