@@ -49,9 +49,35 @@ async function leave(host: string, controlPort: number): Promise<void> {
   if (!res.ok) throw new Error(`/test/leave on ${host} → ${res.status}: ${await res.text()}`);
 }
 
+/** Filter `ctx.nodes` down to the subset that still answers ping —
+ *  earlier scenarios may have left a node already. */
+async function liveNodes(allNodes: ReadonlyArray<string>, controlPort: number): Promise<string[]> {
+  const checks = await Promise.all(allNodes.map(async (h) => {
+    try {
+      const res = await fetch(`http://${h}:${controlPort}/test/ping`, {
+        signal: AbortSignal.timeout(1_000),
+      });
+      return res.ok ? h : null;
+    } catch {
+      return null;
+    }
+  }));
+  return checks.filter((h): h is string => h !== null);
+}
+
 export const scenario: Scenario = {
   name: '05-singleton-failover',
   async run(ctx) {
+    // Earlier scenarios may have left a node — work only with the
+    // members that still answer.  Need >=3 for a meaningful
+    // failover test (1 host + 2 to elect a new leader).
+    const live = await liveNodes(ctx.nodes, ctx.controlPort);
+    if (live.length < 3) {
+      console.log(`[05] skipping — need >=3 live nodes for failover, have ${live.length}`);
+      return;
+    }
+    console.log(`[05] running with ${live.length} live nodes: ${live.join(', ')}`);
+
     // 1. Wait for every node's proxy to report a SAME host —
     //    proxies route to whichever node the cluster currently
     //    considers leader.
@@ -60,7 +86,7 @@ export const scenario: Scenario = {
     await waitFor(
       'every node\'s proxy reports the same singleton host',
       async () => {
-        const responses = await Promise.all(ctx.nodes.map((h) =>
+        const responses = await Promise.all(live.map((h) =>
           who(h, ctx.controlPort).catch(() => null)));
         if (responses.some((r) => r === null)) return false;
         const hosts = new Set(responses.map((r) => r!.host));
@@ -77,13 +103,14 @@ export const scenario: Scenario = {
     //    proxy forwards to the leader, so the singleton's counter
     //    monotonically increases regardless of which proxy was hit.
     console.log('[05] incrementing 7 times via mixed proxies...');
-    const senders = [ctx.nodes[0]!, ctx.nodes[1]!, ctx.nodes[2]!, ctx.nodes[3]!, ctx.nodes[4]!, ctx.nodes[0]!, ctx.nodes[1]!];
+    // Pick `inc` senders from `live` round-robin to spread sources.
+    const senders = Array.from({ length: 7 }, (_, i) => live[i % live.length]!);
     for (const s of senders) await inc(s, ctx.controlPort);
     // Allow async fan-in.
     await sleep(500);
 
-    // Read value back from any node; must equal 7 (counter+initial 0).
-    const afterIncs = await who(ctx.nodes[0]!, ctx.controlPort);
+    // Read value back from any live node; must equal 7.
+    const afterIncs = await who(live[0]!, ctx.controlPort);
     if (afterIncs.value !== 7) {
       throw new Error(`[05] expected singleton.value === 7 after 7 increments, got ${afterIncs.value}`);
     }
@@ -97,7 +124,7 @@ export const scenario: Scenario = {
     // 4. Wait for failover: some OTHER node now hosts.  Filter the
     //    pollee list to exclude the leaving node — its endpoints
     //    will start refusing after a brief window.
-    const remainingNodes = ctx.nodes.filter((n) => n !== initialHost);
+    const remainingNodes = live.filter((n) => n !== initialHost);
     console.log(`[05] waiting for failover (polling ${remainingNodes.length} remaining nodes)...`);
     let newHost: string | null = null;
     await waitFor(

@@ -29,7 +29,13 @@ import { ReceptionistId } from '../../src/discovery/index.js';
 import { Register } from '../../src/discovery/ReceptionistMessages.js';
 import { DistributedDataId } from '../../src/crdt/index.js';
 import { ClusterSingletonId } from '../../src/cluster/singleton/ClusterSingleton.js';
+import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
 import { CounterSingleton } from './lib/singleton.js';
+import {
+  SHARDING_TYPE_NAME,
+  ShardedCounter,
+  type ShardedCommand,
+} from './lib/sharded-counter.js';
 import { makeControlRoutes, WORKER_KEY } from './lib/control-routes.js';
 
 const SYSTEM_NAME = process.env.SYSTEM_NAME ?? 'integration';
@@ -109,6 +115,19 @@ async function main(): Promise<void> {
   });
   logger.info('ClusterSingleton manager started', { typeName: 'counter-singleton' });
 
+  // ClusterSharding — every node hosts a ShardRegion for the
+  // `counter` type; the leader runs the coordinator which assigns
+  // shards to regions.  Each ShardedCounter entity is constructed
+  // with NODE_NAME so the Who-query reveals the entity's host.
+  // numShards=32 gives a reasonable spread across 5 nodes (~6 each).
+  const shardingRegion = ClusterSharding.get(system, cluster).start<ShardedCommand>({
+    typeName: SHARDING_TYPE_NAME,
+    entityProps: Props.create(() => new ShardedCounter(NODE_NAME)),
+    extractEntityId: (msg) => msg.entityId,
+    numShards: 32,
+  });
+  logger.info('ClusterSharding region started', { typeName: SHARDING_TYPE_NAME, numShards: 32 });
+
   // Management HTTP — auth on so the test exercises the #312 path.
   // IpAllowlist runs against the real socket peer (now that the
   // backends populate `req.remoteAddress`) — the docker bridge
@@ -141,6 +160,7 @@ async function main(): Promise<void> {
   // because the proxy is an ActorRef the route module receives).
   const controlRoutes = makeControlRoutes(system, cluster, {
     singletonProxy: singleton.proxy,
+    shardingRegion,
   });
   const controlBinding = await http.newServerAt('0.0.0.0', CONTROL_PORT).bind(controlRoutes);
   logger.info('test-control HTTP listening', { port: CONTROL_PORT });

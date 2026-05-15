@@ -35,6 +35,10 @@ import {
   SingletonWhoReply,
   type SingletonMsg,
 } from './singleton.js';
+import {
+  ShardedWhoReply,
+  type ShardedCommand,
+} from './sharded-counter.js';
 import { LWWRegister } from '../../../src/crdt/LWWRegister.js';
 import type { WriteConsistency } from '../../../src/crdt/DistributedData.js';
 import {
@@ -83,9 +87,19 @@ class SingletonReplyCollector extends Actor<SingletonWhoReply> {
   }
 }
 
+class ShardedReplyCollector extends Actor<ShardedWhoReply> {
+  constructor(private readonly resolve: (r: ShardedWhoReply) => void) { super(); }
+  override onReceive(r: ShardedWhoReply): void {
+    this.resolve(r);
+    this.context.stop(this.context.self);
+  }
+}
+
 export interface ControlDeps {
   /** Singleton proxy from `ClusterSingletonId.start(...)`. */
   readonly singletonProxy: ActorRef<SingletonMsg>;
+  /** Shard-region ref from `ClusterSharding.get(...).start(...)`. */
+  readonly shardingRegion: ActorRef<ShardedCommand>;
 }
 
 export function makeControlRoutes(
@@ -300,6 +314,50 @@ export function makeControlRoutes(
           deps.singletonProxy.tell(new SingletonWho(collector));
         });
         return completeJson(Status.OK, {
+          host: reply.nodeName,
+          value: reply.value,
+        });
+      } catch (e) {
+        return completeJson(Status.InternalServerError, { error: (e as Error).message });
+      }
+    }))),
+
+    // ============== Sharding scenario (#313 — scenario 06) ==============
+
+    // POST /test/sharding/inc?id=X — increment counter for entity X.
+    // The shard region resolves the owning node by hashing X over
+    // numShards (32), routes via cluster envelope if owned remotely.
+    path('sharding', path('inc', post(async (req) => {
+      const id = queryParam(req, 'id');
+      if (!id) return complete(Status.BadRequest, 'missing ?id=');
+      deps.shardingRegion.tell({ entityId: id, op: 'inc' });
+      return completeJson(Status.OK, { sent: { id, op: 'inc' } });
+    }))),
+
+    // GET /test/sharding/who?id=X — query which node currently
+    // hosts entity X (and the entity's local counter value).
+    // Used by scenario 06 to map entities → hosts before + after
+    // a node leaves to verify the coordinator rebalances shards.
+    path('sharding', path('who', get(async (req) => {
+      const id = queryParam(req, 'id');
+      if (!id) return complete(Status.BadRequest, 'missing ?id=');
+      try {
+        const reply = await new Promise<ShardedWhoReply>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('sharding who timeout')), 10_000);
+          const collector = system.spawnAnonymous(Props.create<ShardedWhoReply>(() =>
+            new ShardedReplyCollector((r) => {
+              clearTimeout(timer);
+              resolve(r);
+            }),
+          )) as ActorRef<ShardedWhoReply>;
+          deps.shardingRegion.tell({
+            entityId: id,
+            op: 'who',
+            replyTo: collector,
+          });
+        });
+        return completeJson(Status.OK, {
+          entityId: reply.entityId,
           host: reply.nodeName,
           value: reply.value,
         });
