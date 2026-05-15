@@ -1,0 +1,72 @@
+name: integration
+
+# Real-network multi-node integration tests (#313).
+#
+# This workflow runs `bun run test:integration` — the exact same
+# command that works locally on a developer's laptop with Docker
+# Desktop.  All the Docker-compose + scenario logic lives in
+# `tests/integration/`; this file is intentionally thin so there's
+# no CI-only drift.
+#
+# Triggers:
+#   - Pushes to `main`
+#   - Manual dispatch (workflow_dispatch) — re-run on demand from
+#     the GitHub Actions UI for any branch
+#   - Nightly at 03:00 UTC — catches transport-level flakes that
+#     wouldn't show up in fast unit-test PR runs
+#
+# NOT triggered on PRs by default.  Integration tests are expensive
+# (Docker build + 6-container compose + scenario runtime), and the
+# unit suite already catches most regressions.  When a PR touches
+# `src/cluster/Transport.ts`, `src/cluster/downing/`, `src/runtime/tcp/`,
+# or anything else where TCP-layer timing matters, use `workflow_dispatch`
+# from the PR's branch.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * *'
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Bun
+        # Only needed to expose `bun run test:integration` as the
+        # command — the actual scenarios run INSIDE the Docker
+        # containers, not on the runner.  But the runner needs Bun
+        # to evaluate the npm-script shorthand.
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # Docker is preinstalled on `ubuntu-latest`.  Print the version
+      # so a future Docker-on-Actions outage is visible in the logs.
+      - name: Show Docker version
+        run: docker version
+
+      - name: Run integration scenarios
+        run: bun run test:integration
+        # Surfacing the failure path: when a scenario fails, the
+        # controller exits 1 → docker-compose exits 1 → this step
+        # exits 1 → workflow turns red.  The `--exit-code-from
+        # controller` flag in the npm script is the relay.
+
+      - name: Capture container logs on failure
+        if: failure()
+        run: |
+          # Dump every container's stdout/stderr so a flaky scenario
+          # is debuggable from the workflow logs alone — no need to
+          # re-run locally and pray for repro.  JSON-formatted by
+          # JsonLogger, so the result is grep-friendly.
+          docker compose -f tests/integration/docker-compose.integration.yml logs --no-color || true
+
+      - name: Tear down
+        if: always()
+        run: bun run test:integration:teardown

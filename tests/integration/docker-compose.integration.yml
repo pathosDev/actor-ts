@@ -1,0 +1,133 @@
+# Real-network multi-node integration setup (#313).
+#
+# Brings up 5 cluster-node containers + 1 controller container on a
+# shared bridge network.  Each cluster-node container has NET_ADMIN
+# so it can install iptables + tc rules inside its OWN namespace —
+# no host-level privileged mode, no docker-socket access.
+#
+# Run locally:
+#   bun run test:integration            # build + up + auto-exit on controller
+#   bun run test:integration:teardown   # docker compose down -v
+#
+# CI (.github/workflows/integration.yml) calls the same scripts —
+# no CI-only magic.
+
+name: actor-ts-integration
+
+# ---------------------------------------------------------------------
+# YAML anchor for the shared cluster-node service shape.  Each node
+# overrides `container_name`, `hostname`, and `environment.NODE_NAME`
+# — everything else is identical.  Anchor keeps the per-node block
+# to ~5 lines instead of duplicating the whole stanza.
+# ---------------------------------------------------------------------
+x-node-defaults: &node-defaults
+  build:
+    context: ../..
+    dockerfile: tests/integration/Dockerfile.node
+  cap_add:
+    - NET_ADMIN
+  init: true
+  networks:
+    cluster: {}
+  environment: &node-env-defaults
+    SYSTEM_NAME: integration
+    SEEDS: integration@node-a:9000
+    MGMT_TOKEN: integration-test-token
+    LOG_LEVEL: info
+  healthcheck:
+    test: ["CMD", "curl", "-fsS", "http://localhost:8090/test/ping"]
+    interval: 1s
+    timeout: 1s
+    retries: 60
+    start_period: 5s
+
+services:
+  node-a:
+    <<: *node-defaults
+    container_name: integration-node-a
+    hostname: node-a
+    environment:
+      <<: *node-env-defaults
+      NODE_NAME: node-a
+      HOST: node-a
+      # Seed-of-self for the first node — empty seeds list means
+      # "be the seed".  Other nodes seed back to node-a.
+      SEEDS: ""
+
+  node-b:
+    <<: *node-defaults
+    container_name: integration-node-b
+    hostname: node-b
+    environment:
+      <<: *node-env-defaults
+      NODE_NAME: node-b
+      HOST: node-b
+    depends_on:
+      node-a:
+        condition: service_healthy
+
+  node-c:
+    <<: *node-defaults
+    container_name: integration-node-c
+    hostname: node-c
+    environment:
+      <<: *node-env-defaults
+      NODE_NAME: node-c
+      HOST: node-c
+    depends_on:
+      node-a:
+        condition: service_healthy
+
+  node-d:
+    <<: *node-defaults
+    container_name: integration-node-d
+    hostname: node-d
+    environment:
+      <<: *node-env-defaults
+      NODE_NAME: node-d
+      HOST: node-d
+    depends_on:
+      node-a:
+        condition: service_healthy
+
+  node-e:
+    <<: *node-defaults
+    container_name: integration-node-e
+    hostname: node-e
+    environment:
+      <<: *node-env-defaults
+      NODE_NAME: node-e
+      HOST: node-e
+    depends_on:
+      node-a:
+        condition: service_healthy
+
+  # The controller container drives every scenario; its exit code
+  # is the test result.  `--exit-code-from controller` in the npm
+  # script bubbles it back up.  No NET_ADMIN — the controller only
+  # makes HTTP calls into the node containers.
+  controller:
+    build:
+      context: ../..
+      dockerfile: tests/integration/Dockerfile.node
+    container_name: integration-controller
+    init: true
+    networks:
+      cluster: {}
+    environment:
+      NODES: node-a,node-b,node-c,node-d,node-e
+      MGMT_TOKEN: integration-test-token
+      MGMT_PORT: "8080"
+      CONTROL_PORT: "8090"
+    command: ["bun", "tests/integration/controller.ts"]
+    depends_on:
+      node-a: { condition: service_healthy }
+      node-b: { condition: service_healthy }
+      node-c: { condition: service_healthy }
+      node-d: { condition: service_healthy }
+      node-e: { condition: service_healthy }
+
+networks:
+  cluster:
+    driver: bridge
+    name: actor-ts-integration-cluster

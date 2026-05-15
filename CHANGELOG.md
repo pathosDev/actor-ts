@@ -51,6 +51,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Real-network multi-node integration tests** (#313) — new
+  `tests/integration/` subtree with a Docker-compose setup that
+  brings up 5 cluster-node containers + 1 controller container
+  on a shared bridge network and runs partition / heal /
+  membership-convergence scenarios over a real TCP stack.  All
+  fault injection happens inside each container's network
+  namespace via `iptables` + `tc netem`, so no host privileged
+  mode is required — just `NET_ADMIN` on each cluster-node
+  container.  Two npm scripts ship: `bun run test:integration`
+  (build + up + auto-exit on the controller's status) and
+  `bun run test:integration:teardown`.  The same command works
+  locally on Docker Desktop and in
+  `.github/workflows/integration.yml`; the workflow is
+  triggered by pushes to `main`, manual dispatch, and a nightly
+  schedule.  Two scenarios in the initial set: membership
+  convergence (smoke test) and 2:3 split-brain with
+  partition + heal verification.
 - **HTTP route middleware framework** (#312) — new
   `withMiddleware(mw, route)` builder + `Middleware` type
   `(req, next) => Promise<HttpResponse> | HttpResponse`.  Middlewares

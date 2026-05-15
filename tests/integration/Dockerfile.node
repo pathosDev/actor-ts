@@ -1,0 +1,49 @@
+# Node image used by every container in the integration compose
+# (both the cluster-node containers AND the controller).  One image,
+# many roles — the entrypoint is overridden per service.
+#
+# `iproute2` provides `tc` (used by tests/integration/lib/partition.ts
+# to inject latency).  `iptables-nft` provides packet-drop rules used
+# to simulate partitions inside the container without privileged-mode
+# tricks on the host — each container gets NET_ADMIN via the compose
+# file, scoped to its own network namespace.
+FROM oven/bun:1.3-debian
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      iproute2 \
+      iptables \
+      iputils-ping \
+      ca-certificates \
+      curl \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy package metadata first so `bun install` is cached across source
+# changes.  Source comes in afterwards, so editing a scenario doesn't
+# bust the install layer.
+COPY package.json bun.lock* tsconfig.json ./
+
+# Production-only install: skips devDependencies, which is what we
+# want for the integration image — `better-sqlite3` and friends are
+# native modules that need a Python toolchain to build, and the
+# integration scenarios don't touch SQLite anyway (HTTP + cluster
+# only).  `fastify` and `ts-pattern` are in `dependencies` so the
+# HTTP extension's default `FastifyBackend` resolves correctly.
+#
+# `--ignore-scripts` belts-and-braces against any prod dep that ever
+# adds a native postinstall in the future — none currently does, but
+# the integration image should never run a build step on `bun install`.
+RUN bun install --no-progress --production --ignore-scripts
+
+# Now the source tree.  Bun runs the TS directly — no compile step.
+COPY src/ src/
+COPY tests/ tests/
+
+ENV NODE_ENV=production
+
+# The default CMD runs a cluster node.  The controller service in
+# docker-compose.integration.yml overrides it with the controller
+# entry point.
+CMD ["bun", "tests/integration/node-runner.ts"]

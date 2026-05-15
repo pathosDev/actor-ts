@@ -37,6 +37,8 @@
     "typecheck:dev": "bunx tsc -p tsconfig.dev.json --noEmit",
     "test": "bun test",
     "test:coverage": "bun test --coverage",
+    "test:integration": "docker compose -f tests/integration/docker-compose.integration.yml up --build --abort-on-container-exit --exit-code-from controller",
+    "test:integration:teardown": "docker compose -f tests/integration/docker-compose.integration.yml down -v --remove-orphans",
     "smoke:bun": "bun tests/smoke/smoke.mjs",
     "smoke:node": "bun run build && ACTOR_TS_SMOKE_USE_DIST=1 node tests/smoke/smoke.mjs",
     "smoke:deno": "bun run build && ACTOR_TS_SMOKE_USE_DIST=1 deno run --allow-read --allow-env tests/smoke/smoke.mjs",
