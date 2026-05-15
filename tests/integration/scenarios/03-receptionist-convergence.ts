@@ -70,21 +70,40 @@ export const scenario: Scenario = {
       clearInterval(snapshotInterval);
     }
 
-    // Cross-check: every node sees the same SET of paths.
-    const sets = await Promise.all(ctx.nodes.map(async (h) => new Set((await listing(h, ctx.controlPort)).refs)));
-    const reference = sets[0]!;
-    for (let i = 1; i < sets.length; i++) {
-      const other = sets[i]!;
-      if (other.size !== reference.size) {
-        throw new Error(`[03] ${ctx.nodes[i]} sees ${other.size} refs, ${ctx.nodes[0]} sees ${reference.size}`);
+    // Cross-check: every node's listing should reference all of the
+    // OTHER nodes (as `RemoteActorRef.toString()` shapes prefixed
+    // with `<systemName>@<host>:<port>`) plus exactly one local ref
+    // (no host prefix).  This catches the failure mode where a node
+    // sees 5 refs but they're all from the same peer (a gossip
+    // leak / counter mis-attribution) — the count alone wouldn't
+    // distinguish that from healthy convergence.
+    const allListings = await Promise.all(ctx.nodes.map(async (h) => ({
+      host: h,
+      refs: (await listing(h, ctx.controlPort)).refs,
+    })));
+    for (const { host, refs } of allListings) {
+      const local = refs.filter((r) => !r.includes('@'));
+      const remote = refs.filter((r) => r.includes('@'));
+      if (local.length !== 1) {
+        throw new Error(`[03] ${host} should have exactly 1 local ref, has ${local.length}: ${JSON.stringify(refs)}`);
       }
-      for (const ref of reference) {
-        if (!other.has(ref)) {
-          throw new Error(`[03] ${ctx.nodes[i]} is missing ref ${ref}`);
+      // Every OTHER node should appear once in the remote set.
+      const remoteHosts = new Set(
+        remote.map((r) => {
+          // RemoteActorRef.toString() format: `<sys>@<host>:<port>actor-ts://...`
+          const at = r.indexOf('@');
+          const colon = r.indexOf(':', at);
+          return at >= 0 && colon > at ? r.slice(at + 1, colon) : '<unknown>';
+        }),
+      );
+      for (const peer of ctx.nodes) {
+        if (peer === host) continue;
+        if (!remoteHosts.has(peer)) {
+          throw new Error(`[03] ${host} is missing a remote ref for peer ${peer}; saw remote hosts: ${[...remoteHosts].join(',')}`);
         }
       }
     }
-    console.log(`[03] all ${expected} nodes converged on the same ${reference.size}-worker pool`);
+    console.log(`[03] all ${expected} nodes converged on the same ${expected}-worker pool (1 local + ${expected - 1} remotes each)`);
 
     // 3. Partition test — only if we have >=5 nodes for a clean 2:3 split.
     if (ctx.nodes.length < 5) {
