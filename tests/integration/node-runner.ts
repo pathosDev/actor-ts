@@ -30,12 +30,14 @@ import { Register } from '../../src/discovery/ReceptionistMessages.js';
 import { DistributedDataId } from '../../src/crdt/index.js';
 import { ClusterSingletonId } from '../../src/cluster/singleton/ClusterSingleton.js';
 import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
+import { ClusterClientReceptionistId } from '../../src/cluster/ClusterClientReceptionist.js';
 import { CounterSingleton } from './lib/singleton.js';
 import {
   SHARDING_TYPE_NAME,
   ShardedCounter,
   type ShardedCommand,
 } from './lib/sharded-counter.js';
+import { EchoActor } from './lib/echo.js';
 import { makeControlRoutes, WORKER_KEY } from './lib/control-routes.js';
 
 const SYSTEM_NAME = process.env.SYSTEM_NAME ?? 'integration';
@@ -127,6 +129,17 @@ async function main(): Promise<void> {
     numShards: 32,
   });
   logger.info('ClusterSharding region started', { typeName: SHARDING_TYPE_NAME, numShards: 32 });
+
+  // ClusterClientReceptionist — accepts wire frames from EXTERNAL
+  // (non-cluster-member) `ClusterClient` connections.  The handler
+  // routes by actor path; scenario 09 asks `/user/echo` which
+  // is spawned just below.
+  system.extension(ClusterClientReceptionistId).start(cluster);
+  // Echo actor at `/user/echo` so external ClusterClient asks work.
+  // The actor's host-node identity is in its reply so the scenario
+  // can verify the request actually hit the cluster (not a stub).
+  system.spawn(Props.create<{ kind: 'ping' }>(() => new EchoActor(NODE_NAME)), 'echo');
+  logger.info('ClusterClientReceptionist + /user/echo ready');
 
   // Management HTTP — auth on so the test exercises the #312 path.
   // IpAllowlist runs against the real socket peer (now that the
