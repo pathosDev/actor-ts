@@ -20,6 +20,7 @@ import { scenario as membershipConvergence } from './scenarios/01-membership-con
 import { scenario as splitBrain } from './scenarios/02-split-brain.js';
 import { scenario as receptionistConvergence } from './scenarios/03-receptionist-convergence.js';
 import { scenario as ddataLatencyStorm } from './scenarios/04-ddata-latency-storm.js';
+import { scenario as singletonFailover } from './scenarios/05-singleton-failover.js';
 import type { ControllerCtx, Scenario } from './scenarios/types.js';
 
 const NODES = (process.env.NODES ?? '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -39,11 +40,17 @@ const ctx: ControllerCtx = {
   controlPort: CONTROL_PORT,
 };
 
+// Scenario order: non-destructive scenarios run first (cluster
+// stays at full membership), destructive scenarios (those that
+// remove members via `/test/leave` or `/cluster/down`) run last.
+// 05 onwards may not assume the original 5-node count — they
+// inspect `ctx.nodes` and degrade gracefully.
 const scenarios: Scenario[] = [
   membershipConvergence,
   splitBrain,
   receptionistConvergence,
   ddataLatencyStorm,
+  singletonFailover,    // — removes one node via cluster.leave()
 ];
 
 async function main(): Promise<void> {

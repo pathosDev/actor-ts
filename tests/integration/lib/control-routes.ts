@@ -19,6 +19,7 @@ import {
 } from '../../../src/http/index.js';
 import { Actor } from '../../../src/Actor.js';
 import { Props } from '../../../src/Props.js';
+import type { ActorRef } from '../../../src/ActorRef.js';
 import type { ActorSystem } from '../../../src/ActorSystem.js';
 import type { Cluster } from '../../../src/cluster/Cluster.js';
 import { ReceptionistId } from '../../../src/discovery/index.js';
@@ -28,6 +29,12 @@ import {
 } from '../../../src/discovery/ReceptionistMessages.js';
 import { ServiceKey } from '../../../src/discovery/ServiceKey.js';
 import { DistributedDataId } from '../../../src/crdt/index.js';
+import {
+  SingletonInc,
+  SingletonWho,
+  SingletonWhoReply,
+  type SingletonMsg,
+} from './singleton.js';
 import { LWWRegister } from '../../../src/crdt/LWWRegister.js';
 import type { WriteConsistency } from '../../../src/crdt/DistributedData.js';
 import {
@@ -68,9 +75,23 @@ class ListingCollector extends Actor<Listing> {
   }
 }
 
+class SingletonReplyCollector extends Actor<SingletonWhoReply> {
+  constructor(private readonly resolve: (r: SingletonWhoReply) => void) { super(); }
+  override onReceive(r: SingletonWhoReply): void {
+    this.resolve(r);
+    this.context.stop(this.context.self);
+  }
+}
+
+export interface ControlDeps {
+  /** Singleton proxy from `ClusterSingletonId.start(...)`. */
+  readonly singletonProxy: ActorRef<SingletonMsg>;
+}
+
 export function makeControlRoutes(
   system: ActorSystem,
   cluster: Cluster,
+  deps: ControlDeps,
 ): Route {
   // Both extensions are bootstrapped at node-runner startup so the
   // wire handlers are registered before ANY scenario runs.  Looking
@@ -250,5 +271,55 @@ export function makeControlRoutes(
         return completeJson(Status.InternalServerError, { error: (e as Error).message });
       }
     }))),
+
+    // ============== Singleton scenario (#313 — scenario 05) ==============
+
+    // POST /test/singleton/inc — fire-and-forget increment via the
+    // local proxy.  Every node has a proxy; the singleton itself
+    // lives on the cluster leader.  The proxy buffers until the
+    // leader is known, then forwards.
+    path('singleton', path('inc', post(async () => {
+      deps.singletonProxy.tell(new SingletonInc());
+      return completeJson(Status.OK, { sent: true });
+    }))),
+
+    // GET /test/singleton/who — ask the singleton "who hosts you?"
+    // via a one-shot collector.  Reply is `{ nodeName, value }`.
+    // The scenario polls this from EVERY node to verify they all
+    // route to the same leader.
+    path('singleton', path('who', get(async () => {
+      try {
+        const reply = await new Promise<SingletonWhoReply>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('singleton who timeout')), 5_000);
+          const collector = system.spawnAnonymous(Props.create<SingletonWhoReply>(() =>
+            new SingletonReplyCollector((r) => {
+              clearTimeout(timer);
+              resolve(r);
+            }),
+          )) as ActorRef<SingletonWhoReply>;
+          deps.singletonProxy.tell(new SingletonWho(collector));
+        });
+        return completeJson(Status.OK, {
+          host: reply.nodeName,
+          value: reply.value,
+        });
+      } catch (e) {
+        return completeJson(Status.InternalServerError, { error: (e as Error).message });
+      }
+    }))),
+
+    // POST /test/leave — call `cluster.leave()` on this node.  The
+    // node initiates a graceful departure; remaining members see
+    // `MemberRemoved` for it after gossip propagates.  Used by
+    // scenarios that need to verify failover paths under a
+    // controlled node exit (not a network partition).
+    path('leave', post(async () => {
+      // Fire-and-forget — `cluster.leave()` awaits the goodbye
+      // round-trip, but the HTTP caller doesn't need that.  We
+      // return 202 immediately so the caller can move on; the
+      // node will exit the cluster on its own clock.
+      void cluster.leave();
+      return completeJson(Status.Accepted, { leaving: cluster.selfAddress.toString() });
+    })),
   ));
 }

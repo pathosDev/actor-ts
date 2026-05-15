@@ -28,6 +28,8 @@ import { managementRoutes } from '../../src/management/index.js';
 import { ReceptionistId } from '../../src/discovery/index.js';
 import { Register } from '../../src/discovery/ReceptionistMessages.js';
 import { DistributedDataId } from '../../src/crdt/index.js';
+import { ClusterSingletonId } from '../../src/cluster/singleton/ClusterSingleton.js';
+import { CounterSingleton } from './lib/singleton.js';
 import { makeControlRoutes, WORKER_KEY } from './lib/control-routes.js';
 
 const SYSTEM_NAME = process.env.SYSTEM_NAME ?? 'integration';
@@ -96,6 +98,17 @@ async function main(): Promise<void> {
   system.extension(DistributedDataId).start(cluster, { gossipIntervalMs: 250 });
   logger.info('DistributedData started');
 
+  // ClusterSingleton — every node spawns the manager; only the
+  // leader's manager spawns the actual CounterSingleton child.
+  // The host-node identity is baked into the singleton at construction
+  // time, so `SingletonWho` replies tell us which node currently
+  // hosts the instance (used by scenario 05 to verify failover).
+  const singleton = system.extension(ClusterSingletonId).start(cluster, {
+    typeName: 'counter-singleton',
+    props: Props.create(() => new CounterSingleton(NODE_NAME)),
+  });
+  logger.info('ClusterSingleton manager started', { typeName: 'counter-singleton' });
+
   // Management HTTP — auth on so the test exercises the #312 path.
   // IpAllowlist runs against the real socket peer (now that the
   // backends populate `req.remoteAddress`) — the docker bridge
@@ -122,10 +135,13 @@ async function main(): Promise<void> {
   logger.info('management HTTP listening', { port: MGMT_PORT });
 
   // Test-control HTTP — no auth, port is only reachable inside the
-  // compose network.  Passes both system + cluster so the
-  // route module can lazy-start Receptionist + DistributedData on
-  // first hit from a scenario.
-  const controlRoutes = makeControlRoutes(system, cluster);
+  // compose network.  Passes deps for scenario primitives bootstrapped
+  // above (Receptionist + DDdata are read directly from
+  // `system.extension(...)`; the singleton proxy goes through `deps`
+  // because the proxy is an ActorRef the route module receives).
+  const controlRoutes = makeControlRoutes(system, cluster, {
+    singletonProxy: singleton.proxy,
+  });
   const controlBinding = await http.newServerAt('0.0.0.0', CONTROL_PORT).bind(controlRoutes);
   logger.info('test-control HTTP listening', { port: CONTROL_PORT });
 
