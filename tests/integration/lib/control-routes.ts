@@ -24,8 +24,11 @@ import type { ActorSystem } from '../../../src/ActorSystem.js';
 import type { Cluster } from '../../../src/cluster/Cluster.js';
 import { ReceptionistId } from '../../../src/discovery/index.js';
 import {
+  Deregister,
   Find,
   Listing,
+  Register,
+  Subscribe,
 } from '../../../src/discovery/ReceptionistMessages.js';
 import { ServiceKey } from '../../../src/discovery/ServiceKey.js';
 import { DistributedDataId } from '../../../src/crdt/index.js';
@@ -80,6 +83,65 @@ class ListingCollector extends Actor<Listing> {
   }
 }
 
+/**
+ * Reply from `ContinuousSubscriber` carrying the most recent
+ * Listing it has observed plus the update count (number of
+ * Listings it has received since it started subscribing).
+ */
+class SubscriberSnapshot {
+  constructor(
+    public readonly refs: ReadonlyArray<string>,
+    public readonly updates: number,
+  ) {}
+}
+
+/** Query message — replied to with a `SubscriberSnapshot`. */
+class GetSnapshot {
+  constructor(public readonly replyTo: ActorRef<SubscriberSnapshot>) {}
+}
+
+type SubscriberMsg = Listing | GetSnapshot;
+
+/**
+ * Long-lived subscriber for scenario 08.  Maintains the most recent
+ * Listing it has received (Receptionist sends one immediately on
+ * Subscribe with the current set, then every time the set changes —
+ * register, deregister, peer leaves).  Reachable via a `GetSnapshot`
+ * message so the HTTP route can read the state without breaking the
+ * actor encapsulation.
+ */
+class ContinuousSubscriber extends Actor<SubscriberMsg> {
+  private latest: Listing | null = null;
+  private updates = 0;
+  override onReceive(m: SubscriberMsg): void {
+    if (m instanceof Listing) {
+      this.latest = m;
+      this.updates += 1;
+    } else if (m instanceof GetSnapshot) {
+      const refs = this.latest ? this.latest.refs.map((r) => r.toString()) : [];
+      m.replyTo.tell(new SubscriberSnapshot(refs, this.updates));
+    }
+  }
+}
+
+class SnapshotCollector extends Actor<SubscriberSnapshot> {
+  constructor(private readonly resolve: (s: SubscriberSnapshot) => void) { super(); }
+  override onReceive(s: SubscriberSnapshot): void {
+    this.resolve(s);
+    this.context.stop(this.context.self);
+  }
+}
+
+/**
+ * Plain spawnable IdleWorker used by scenarios 08 to add/remove
+ * registrations on demand.  Same shape as the auto-registered
+ * worker in `node-runner.ts` — duplicated here because the worker
+ * type there is a closure-local class.
+ */
+class ExtraWorker extends Actor<unknown> {
+  override onReceive(_m: unknown): void { /* noop */ }
+}
+
 class SingletonReplyCollector extends Actor<SingletonWhoReply> {
   constructor(private readonly resolve: (r: SingletonWhoReply) => void) { super(); }
   override onReceive(r: SingletonWhoReply): void {
@@ -113,6 +175,27 @@ export function makeControlRoutes(
   // them up here is a cheap `Map.get`.
   const receptionistRef = system.extension(ReceptionistId).start(cluster);
   const ddataExt = system.extension(DistributedDataId);
+
+  // Long-lived Subscribe-based listener for scenario 08.  Issued
+  // immediately at route-build time so the subscriber has time to
+  // accumulate updates before any scenario polls it.  Listings are
+  // dispatched to the subscriber actor's mailbox; scenarios query
+  // its current state via the `GetSnapshot` message.
+  const subscriberRef = system.spawnAnonymous(Props.create<SubscriberMsg>(() =>
+    new ContinuousSubscriber(),
+  )) as ActorRef<SubscriberMsg>;
+  receptionistRef.tell(new Subscribe(
+    // Same key the node-runner registered the auto-IdleWorker under.
+    new ServiceKey('workers'),
+    // Cast: Receptionist expects `ActorRef<Listing>`, our actor
+    // also handles GetSnapshot.  Same underlying mailbox.
+    subscriberRef as unknown as ActorRef<Listing>,
+  ));
+
+  // Track scenario-08's extra worker registration so a follow-up
+  // /deregister can remove it.  Closure-local so multiple
+  // /register hits on the same node replace (not stack).
+  let extraWorkerRef: ActorRef | null = null;
 
   return path('test', concat(
     // GET /test/ping — liveness probe used by docker-compose
@@ -226,6 +309,63 @@ export function makeControlRoutes(
       } catch (e) {
         return completeJson(Status.InternalServerError, { error: (e as Error).message });
       }
+    }))),
+
+    // ============== Receptionist Subscribe (#313 — scenario 08) ==============
+
+    // GET /test/receptionist/subscribed
+    // Asks the local long-lived ContinuousSubscriber for the most
+    // recent Listing it has observed plus the number of updates
+    // received since startup.  Polled by scenario 08 to verify
+    // initial-Listing arrival, register-triggered updates, and
+    // deregister-triggered updates.
+    path('receptionist', path('subscribed', get(async () => {
+      try {
+        const snapshot = await new Promise<SubscriberSnapshot>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('subscribed snapshot timeout')), 5_000);
+          const collector = system.spawnAnonymous(Props.create<SubscriberSnapshot>(() =>
+            new SnapshotCollector((s) => {
+              clearTimeout(timer);
+              resolve(s);
+            }),
+          )) as ActorRef<SubscriberSnapshot>;
+          subscriberRef.tell(new GetSnapshot(collector));
+        });
+        return completeJson(Status.OK, {
+          refs: snapshot.refs,
+          count: snapshot.refs.length,
+          updates: snapshot.updates,
+        });
+      } catch (e) {
+        return completeJson(Status.InternalServerError, { error: (e as Error).message });
+      }
+    }))),
+
+    // POST /test/receptionist/register-extra
+    // Spawns and registers an EXTRA worker on this node under the
+    // shared `workers` key.  Triggers a Listing-change notification
+    // on every subscriber across the cluster (via receptionist
+    // gossip).  Idempotent: a second hit replaces the prior extra
+    // worker (deregisters the old, registers a fresh one) so the
+    // total count stays at `original + 1` per node.
+    path('receptionist', path('register-extra', post(async () => {
+      if (extraWorkerRef) {
+        receptionistRef.tell(new Deregister(new ServiceKey('workers'), extraWorkerRef));
+      }
+      extraWorkerRef = system.spawnAnonymous(Props.create<unknown>(() => new ExtraWorker()));
+      receptionistRef.tell(new Register(new ServiceKey('workers'), extraWorkerRef));
+      return completeJson(Status.OK, { registered: extraWorkerRef.toString() });
+    }))),
+
+    // POST /test/receptionist/deregister-extra
+    // Removes the previously-registered extra worker.  Idempotent:
+    // calling without a prior /register-extra is a no-op.
+    path('receptionist', path('deregister-extra', post(async () => {
+      if (!extraWorkerRef) return completeJson(Status.OK, { wasRegistered: false });
+      receptionistRef.tell(new Deregister(new ServiceKey('workers'), extraWorkerRef));
+      const removed = extraWorkerRef.toString();
+      extraWorkerRef = null;
+      return completeJson(Status.OK, { deregistered: removed });
     }))),
 
     // ============== DistributedData scenario (#313 — scenario 04) ==============
