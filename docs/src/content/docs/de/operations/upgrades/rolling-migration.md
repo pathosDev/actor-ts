@@ -279,6 +279,108 @@ der Sweep ist idempotent und nach einem teilweisen Fehlschlag
 sicher wieder ausführbar. `If-Match` wird intern genutzt, damit ein
 gleichzeitiger Writer nicht still überschrieben wird.
 
+#### Durable Resume-Tokens + Completeness-Check
+
+Für Millionen-Objekt-Buckets hat der naive Sweep oben zwei
+Schwächen, die in der Praxis hart treffen:
+
+1. Ein Crash mittendrin zwingt den Resume-Lauf, **wieder die
+   komplette Liste zu listen und jedes Key per GET zu prüfen**
+   — jeder Body wird erneut auf "schon auf der Active-Version?"
+   geprüft, was einen HEAD/GET pro Objekt kostet, selbst wenn
+   kein PUT mehr nötig wäre. Bei einem 24-Stunden-Sweep heißt
+   das: 24 Stunden verschwendetes Re-Walk.
+2. Wenn der Operator einen Retired-Key **zu früh** aus der
+   Config gedroppt hat (z. B. nur den jüngsten Retired-Eintrag
+   behalten, der Korpus referenziert aber auch einen älteren),
+   bricht der Sweep mittendrin am ersten Body ab, der die
+   fehlende Version nutzt. Eine Hälfte des Korpus ist jetzt
+   unter dem neuen Key, die andere weiter unter dem alten.
+
+Beides wird durch zwei Opt-in-Optionen auf
+`reEncryptObjectStorage` adressiert (v0.10.0, #109):
+
+```ts
+import {
+  reEncryptObjectStorage,
+  InMemoryReEncryptProgressStore,
+  type ReEncryptProgressStore,
+} from 'actor-ts';
+
+// File-backed Progress-Store — übersteht einen Prozess-Crash.
+// (Der mitgelieferte `InMemoryReEncryptProgressStore` ist der
+//  In-Process-Default für Tests; für lange Production-Sweeps
+//  willst du einen durable Backing-Store. Gleiche Shape, plug
+//  beliebiges: Datei auf Disk, einen Redis-Key oder ein
+//  Sentinel-Objekt im selben Bucket unter einem anderen Prefix.)
+const progress: ReEncryptProgressStore = makeFileBackedStore('/var/lib/actor-ts/sweep.json');
+
+const result = await reEncryptObjectStorage(backend, {
+  keyPrefix: 'snapshots/',
+  keyring: {
+    active:  { version: 3, key: NEW },
+    retired: [
+      { version: 2, key: OLDER },
+      { version: 1, key: OLDEST },
+    ],
+  },
+  // — Completeness-Check —
+  // Default true. Sampelt die ersten 100 verschlüsselten Bodies
+  // und weigert sich zu starten, wenn ein Body eine Key-Version
+  // referenziert, die in active/retired fehlt. Fängt das
+  // Dropped-Retired-Key-Footgun ab, BEVOR der Sweep ein
+  // einziges PUT schreibt.
+  verifyKeyringCompleteness: true,
+  // sampleSize: 200,   // optionaler Override; Default = min(100, total)
+
+  // — Durable Resume —
+  // Persistiert den State alle 500 Rewrites. Nach einem Crash
+  // greift der nächste Aufruf von reEncryptObjectStorage genau
+  // hinter dem zuletzt gespeicherten Key — keine erneute
+  // Prüfung bereits umgeschriebener Objekte.
+  progress,
+  saveProgressEveryN: 500,
+
+  onProgress: (e) => process.stderr.write(
+    `${e.idx}/${e.total} ${e.action} ${e.key}\n`),
+});
+
+// Nach erfolgreichem End-to-End-Lauf wird progress.clear()
+// automatisch aufgerufen — ein erneuter Sweep startet wieder
+// von vorne.
+console.log(`rewrote ${result.rewrote} of ${result.scanned}`);
+```
+
+**Was der Progress-Store sieht:**
+
+- Erster Aufruf: `load()` liefert `{ lastKey: null, processedCount: 0 }`,
+  der Sweep läuft von Anfang an.
+- Bei jedem `saveProgressEveryN`-ten Rewrite: `save({ lastKey, processedCount })`
+  wird aufgerufen. Wähle das Intervall, um IO-Overhead gegen
+  Crash-Rewind-Window abzuwägen — `500` heißt, ein Crash wirft
+  maximal ~500 Objekte zurück, was bei einem 10M-Bucket einem
+  0,005%-Rewind entspricht.
+- Nach einem sauberen End-of-Sweep: `clear()` wird aufgerufen.
+  Ein frischer `reEncryptObjectStorage`-Aufruf startet von vorn.
+
+**Wann `verifyKeyringCompleteness` deaktivieren:**
+
+Default ist `true` und sollte das für nahezu alle Operatoren
+auch bleiben. Setze es nur dann auf `false`, wenn:
+
+- Du **unabhängig verifiziert** hast, dass der Keyring komplett
+  ist (z. B. ein separater Audit-Job hat bereits jede vorhandene
+  Body-Version enumeriert und bestätigt, dass jede davon im Ring
+  liegt).
+- Du auf einem Korpus arbeitest, auf dem der Sample-Check selbst
+  teuer wäre (z. B. ein extrem-Cold-Storage-Backend, auf dem die
+  ersten 100 Reads echtes Geld kosten) UND du den oben genannten
+  Unabhängig-Audit-Schritt gegangen bist.
+
+Deaktivieren ohne unabhängige Verifikation tauscht ein
+deterministisches Pre-Flight-Failure gegen einen
+Mitte-im-Korpus-Abbruch — operativ strikt schlechter.
+
 ### Phase 4 — den alten Schlüssel droppen
 
 Nach dem Sweep den `retired[1]`-Eintrag droppen. Manifeste, die auf
@@ -304,6 +406,7 @@ wiederherstellbar.
 | `migrateSnapshotStore(store, pids, fn)`   | Dito für Snapshots                          |
 | `MasterKeyRing` `{ active, retired? }`    | Multi-Version-Encryption-Key-Ring           |
 | `reEncryptObjectStorage(backend, opts)`   | Sweep: jeden Body unter einem Prefix mit dem Active-Key neu verschlüsseln |
+| `ReEncryptProgressStore` / `InMemoryReEncryptProgressStore` | Durable Resume-Tokens für den Sweep (#109) — plug eine Datei-/Redis-/Object-Storage-backed Implementation für Millionen-Objekt-Buckets |
 
 Alle werden aus dem Top-Level-`actor-ts`-Barrel exportiert.
 

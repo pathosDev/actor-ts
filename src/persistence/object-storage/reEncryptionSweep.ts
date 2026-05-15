@@ -36,6 +36,53 @@ import type { ObjectStorageBackend } from './ObjectStorageBackend.js';
 
 const ATS1_MAGIC_PREFIX = new Uint8Array([0x41, 0x54, 0x53, 0x31]); // "ATS1"
 
+/* ============================ progress (#109) ============================ */
+
+/**
+ * Durable resume state for {@link reEncryptObjectStorage}.  Without
+ * this, a crashed sweep had no choice but to re-list and re-check every
+ * key from scratch.  With a progress store, the next run picks up
+ * immediately past the last fully-rewritten key (#109).
+ *
+ * (Named `ReEncryptResumeState` to disambiguate from the existing
+ * `ReEncryptProgress` shape used by the per-event `onProgress` hook —
+ * that one is event-data, this one is durable state.)
+ */
+export interface ReEncryptResumeState {
+  /** Key of the last object the sweep successfully wrote.  `null` = fresh start. */
+  readonly lastKey: string | null;
+  /** Cumulative count of objects rewritten across runs of the same sweep. */
+  readonly processedCount: number;
+}
+
+/**
+ * Crash-resume hook for the re-encryption sweep.  Same shape pattern
+ * as `MigrationProgressStore` (#87) — `load()` once at start, `save()`
+ * every Nth object (configurable via `saveProgressEveryN`), `clear()`
+ * after a successful end-to-end run.
+ *
+ * Implementations write to a small KV store: a JSON file next to the
+ * operator runbook, a single Redis key, an object in the same bucket
+ * under a sentinel prefix, etc.
+ */
+export interface ReEncryptProgressStore {
+  load(): Promise<ReEncryptResumeState>;
+  save(state: ReEncryptResumeState): Promise<void>;
+  clear(): Promise<void>;
+}
+
+/**
+ * In-process default.  Useful for tests and short-lived runs.  For
+ * long-running sweeps that must survive a process crash, plug a
+ * file-backed or backend-backed implementation in instead.
+ */
+export class InMemoryReEncryptProgressStore implements ReEncryptProgressStore {
+  private state: ReEncryptResumeState = { lastKey: null, processedCount: 0 };
+  async load(): Promise<ReEncryptResumeState> { return { ...this.state }; }
+  async save(state: ReEncryptResumeState): Promise<void> { this.state = { ...state }; }
+  async clear(): Promise<void> { this.state = { lastKey: null, processedCount: 0 }; }
+}
+
 export interface ReEncryptOptions {
   /** Common key prefix to sweep (e.g. `'snapshots/'` or `'state/'`). */
   readonly keyPrefix: string;
@@ -74,6 +121,36 @@ export interface ReEncryptOptions {
    * the prefix.  Default: process every key.
    */
   readonly skip?: (key: string) => boolean;
+  /**
+   * Crash-resume hook (#109).  When set, the sweep loads the saved
+   * `lastKey` at start and skips every key ≤ it; after each Nth object
+   * (see {@link saveProgressEveryN}) the new state is persisted.
+   * At successful end the store is cleared so a fresh re-run starts
+   * from the beginning.  Without this, a crash mid-sweep means the
+   * resumed run has to re-list and re-check every key — fine for
+   * small buckets, expensive at million-object scale.
+   */
+  readonly progress?: ReEncryptProgressStore;
+  /**
+   * How often to persist progress.  Default: every 50 objects.  Lower
+   * values trade extra `progress.save()` writes for shorter potential
+   * rewind on crash; higher values reduce overhead at the cost of
+   * re-doing more work on resume.
+   */
+  readonly saveProgressEveryN?: number;
+  /**
+   * When true (default), perform a pre-sweep completeness check on the
+   * keyring: sample the first {@link sampleSize} encrypted objects in
+   * the prefix, gather their key versions, and refuse to start if any
+   * version is missing from `keyring.active`/`retired`.  Catches the
+   * "operator dropped the retired key too soon" footgun BEFORE a single
+   * decrypt failure (which would otherwise mid-sweep abort, leaving the
+   * corpus half-rewritten).  Set `false` to skip — useful when the
+   * operator has independent assurance that the keyring is complete.
+   */
+  readonly verifyKeyringCompleteness?: boolean;
+  /** Sample size for the completeness check.  Default: min(100, total). */
+  readonly sampleSize?: number;
 }
 
 export interface ReEncryptProgress {
@@ -124,7 +201,11 @@ export async function reEncryptObjectStorage(
   backend: ObjectStorageBackend,
   opts: ReEncryptOptions,
 ): Promise<ReEncryptResult> {
-  const items = await backend.list({ prefix: opts.keyPrefix });
+  const rawItems = await backend.list({ prefix: opts.keyPrefix });
+  // Sort lexicographically so that resume by `lastKey` is deterministic
+  // across backends (FS-backend lists in disk order, S3 lists alphabetic
+  // — sorting normalises).
+  const items = [...rawItems].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   const pidFromKey = opts.pidFromKey ?? defaultPidFromKey;
   const result = {
     scanned: 0,
@@ -139,8 +220,60 @@ export async function reEncryptObjectStorage(
       `reEncryptObjectStorage: keyring.active.version must be an integer in [0, 255], got ${activeVersion}`,
     );
   }
+
+  // Pre-sweep keyring-completeness check (#109).  Sample some bodies,
+  // gather their key versions, fail fast if any version isn't in the
+  // keyring.  Better to refuse before touching the corpus than to
+  // half-rewrite and then crash on a missing retired key.
+  if (opts.verifyKeyringCompleteness !== false) {
+    const sampleSize = opts.sampleSize ?? Math.min(100, items.length);
+    const haveVersions = new Set<number>([
+      opts.keyring.active.version,
+      ...(opts.keyring.retired?.map((r) => r.version) ?? []),
+    ]);
+    const missing = new Set<number>();
+    for (let i = 0; i < sampleSize; i++) {
+      const item = items[i]!;
+      if (opts.skip?.(item.key)) continue;
+      const fetched = await backend.get(item.key);
+      if (fetched.isNone()) continue;
+      const framed = fetched.value.body;
+      if (!startsWithAts1(framed)) continue;
+      const flags = framed[4]!;
+      const encrypted = (flags & FLAG_ENCRYPTED) !== 0;
+      if (!encrypted) continue;
+      const versioned = (flags & FLAG_KEY_VERSIONED) !== 0;
+      const bodyVersion = versioned ? framed[5]! : 0;
+      if (!haveVersions.has(bodyVersion)) missing.add(bodyVersion);
+    }
+    if (missing.size > 0) {
+      throw new Error(
+        `reEncryptObjectStorage: keyring is incomplete — bodies in the prefix `
+        + `reference master-key version(s) [${[...missing].sort((a, b) => a - b).join(', ')}] `
+        + `which are absent from the keyring's 'active' and 'retired' lists.  `
+        + `Restore those keys before sweeping, or the sweep will fail mid-corpus.`,
+      );
+    }
+  }
+
+  // Resume from saved progress (#109).
+  let resumeStartIdx = 0;
+  let processedCountBase = 0;
+  if (opts.progress) {
+    const saved = await opts.progress.load();
+    if (saved.lastKey !== null) {
+      // First index where key > lastKey.  Lower-bound scan since items
+      // are sorted.
+      while (resumeStartIdx < items.length && items[resumeStartIdx]!.key <= saved.lastKey) {
+        resumeStartIdx += 1;
+      }
+      processedCountBase = saved.processedCount;
+    }
+  }
+  const saveEveryN = opts.saveProgressEveryN ?? 50;
+
   const total = items.length;
-  for (let idx = 0; idx < total; idx++) {
+  for (let idx = resumeStartIdx; idx < total; idx++) {
     const item = items[idx]!;
     if (opts.skip?.(item.key)) continue;
     result.scanned += 1;
@@ -212,7 +345,20 @@ export async function reEncryptObjectStorage(
     });
     result.rewrote += 1;
     opts.onProgress?.({ key: item.key, idx, total, action: 'rewrote' });
+
+    // Persist progress every Nth REWRITE (skips don't count — they're
+    // cheap to redo).
+    if (opts.progress && result.rewrote % saveEveryN === 0) {
+      await opts.progress.save({
+        lastKey: item.key,
+        processedCount: processedCountBase + result.rewrote,
+      });
+    }
   }
+  // Successful end → clear progress so a fresh re-run starts from the
+  // beginning.  If we crashed instead, the saved progress stays on
+  // disk and the next call resumes.
+  if (opts.progress) await opts.progress.clear();
   return result;
 }
 

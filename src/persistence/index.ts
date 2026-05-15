@@ -216,9 +216,14 @@ export type {
   CompressionResolver,
   EncryptionResolver,
 } from './object-storage/PluginConfig.js';
-export { reEncryptObjectStorage } from './object-storage/reEncryptionSweep.js';
+export {
+  reEncryptObjectStorage,
+  InMemoryReEncryptProgressStore,
+} from './object-storage/reEncryptionSweep.js';
 export type {
   ReEncryptOptions,
   ReEncryptResult,
   ReEncryptProgress,
+  ReEncryptResumeState,
+  ReEncryptProgressStore,
 } from './object-storage/reEncryptionSweep.js';

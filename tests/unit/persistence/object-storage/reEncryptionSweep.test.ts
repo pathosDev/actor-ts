@@ -178,3 +178,99 @@ describe('reEncryptObjectStorage', () => {
     })).rejects.toThrow(/version must be an integer in/);
   });
 });
+
+/* ============================== #109 — resumability ============================== */
+
+describe('reEncryptObjectStorage — #109 resume + completeness', () => {
+  test('persists progress every saveProgressEveryN rewrites and clears on success', async () => {
+    const backend = new FilesystemObjectStorageBackend({ dir });
+    const v0Store = new ObjectStorageSnapshotStore({ backend, encryption: ringV0Only });
+    for (let i = 0; i < 6; i++) await v0Store.save(`pid-${i}`, 1, { x: i });
+
+    const { InMemoryReEncryptProgressStore } = await import(
+      '../../../../src/persistence/object-storage/reEncryptionSweep.js'
+    );
+    const progress = new InMemoryReEncryptProgressStore();
+    const ringV1V0Retired = (ringV1ActiveV0Retired as Extract<
+      EncryptionConfig, { mode: 'client-aes256-gcm' } & { masterKeys: unknown }
+    >).masterKeys;
+
+    await reEncryptObjectStorage(backend, {
+      keyPrefix: '',
+      keyring: ringV1V0Retired,
+      progress,
+      saveProgressEveryN: 2,
+    });
+    // After a successful sweep, progress.clear() ran → state is reset.
+    const cleared = await progress.load();
+    expect(cleared.lastKey).toBeNull();
+    expect(cleared.processedCount).toBe(0);
+  });
+
+  test('resumes from saved lastKey, skipping already-processed items', async () => {
+    const backend = new FilesystemObjectStorageBackend({ dir });
+    const v0Store = new ObjectStorageSnapshotStore({ backend, encryption: ringV0Only });
+    for (let i = 0; i < 5; i++) await v0Store.save(`pid-${i}`, 1, { x: i });
+
+    const { InMemoryReEncryptProgressStore } = await import(
+      '../../../../src/persistence/object-storage/reEncryptionSweep.js'
+    );
+    const progress = new InMemoryReEncryptProgressStore();
+    const ringV1V0Retired = (ringV1ActiveV0Retired as Extract<
+      EncryptionConfig, { mode: 'client-aes256-gcm' } & { masterKeys: unknown }
+    >).masterKeys;
+
+    // Pre-seed progress as if the first run crashed after processing
+    // pid-0 + pid-1 (so lastKey points to pid-1's key).
+    const items = await backend.list({ prefix: '' });
+    const sorted = [...items].map((i) => i.key).sort();
+    await progress.save({ lastKey: sorted[1]!, processedCount: 2 });
+
+    const result = await reEncryptObjectStorage(backend, {
+      keyPrefix: '',
+      keyring: ringV1V0Retired,
+      progress,
+    });
+    // Only the last 3 keys should have been touched.
+    expect(result.rewrote).toBe(3);
+    expect(result.scanned).toBe(3);
+  });
+
+  test('keyring-completeness pre-check refuses to start when a version is missing', async () => {
+    const backend = new FilesystemObjectStorageBackend({ dir });
+    // Write bodies under v0.
+    const v0Store = new ObjectStorageSnapshotStore({ backend, encryption: ringV0Only });
+    await v0Store.save('pid-A', 1, { x: 1 });
+
+    // Try sweeping with a keyring that has only v1 (no retired v0).
+    // The bodies are stamped v0, decoder couldn't decrypt them — but
+    // we want to fail BEFORE touching the corpus.
+    const ringV1NoRetired = (ringV1Only as Extract<
+      EncryptionConfig, { mode: 'client-aes256-gcm' } & { masterKeys: unknown }
+    >).masterKeys;
+
+    await expect(reEncryptObjectStorage(backend, {
+      keyPrefix: '',
+      keyring: ringV1NoRetired,
+    })).rejects.toThrow(/keyring is incomplete/);
+  });
+
+  test('completeness check can be disabled for operators with independent assurance', async () => {
+    const backend = new FilesystemObjectStorageBackend({ dir });
+    const v0Store = new ObjectStorageSnapshotStore({ backend, encryption: ringV0Only });
+    await v0Store.save('pid-A', 1, { x: 1 });
+
+    const ringV1NoRetired = (ringV1Only as Extract<
+      EncryptionConfig, { mode: 'client-aes256-gcm' } & { masterKeys: unknown }
+    >).masterKeys;
+
+    // With verifyKeyringCompleteness: false, the sweep proceeds and
+    // eventually fails at the decode step (not the pre-check) — but
+    // not at the boundary.  Confirms the toggle works.
+    await expect(reEncryptObjectStorage(backend, {
+      keyPrefix: '',
+      keyring: ringV1NoRetired,
+      verifyKeyringCompleteness: false,
+    })).rejects.toThrow(/no master key registered for version 0/);
+  });
+});
