@@ -106,17 +106,38 @@ export class KubernetesLease implements Lease {
   }
 
   async acquire(): Promise<boolean> {
+    return (await this.acquireWithToken()) !== null;
+  }
+
+  /**
+   * Fencing-token variant: returns a backend-issued token assembled
+   * from the K8s `Lease` object's `metadata.resourceVersion` and the
+   * `spec.leaseTransitions` counter — both monotonically bumped by
+   * the API server on every successful PUT.  The combination is
+   * unique per acquire across the lease's lifetime, so a
+   * late-arriving "I acquired" can be distinguished from a fresh
+   * one by its token.
+   *
+   * Format: `<resourceVersion>/<leaseTransitions>` (resourceVersion
+   * is opaque K8s state; leaseTransitions is decimal).
+   */
+  async acquireWithToken(): Promise<{ readonly token: string } | null> {
     const retries = this.settings.acquireRetries ?? 3;
     const retryDelay = this.settings.acquireRetryDelayMs ?? 100;
     for (let attempt = 0; attempt < retries; attempt++) {
       const result = await this.tryAcquireOnce();
-      if (result === 'success') return true;
-      if (result === 'held-by-other') return false;
+      if (result === 'success') {
+        const obj = this.currentLease;
+        const rv = obj?.metadata?.resourceVersion ?? 'unknown';
+        const transitions = obj?.spec.leaseTransitions ?? 0;
+        return { token: `${rv}/${transitions}` };
+      }
+      if (result === 'held-by-other') return null;
       // 'race' — someone else mutated the lease between our GET and PUT;
       // back off briefly and retry.
       if (attempt < retries - 1) await sleep(retryDelay);
     }
-    return false;
+    return null;
   }
 
   /** One pass of GET → CREATE-or-PUT.  Three outcomes: success / held-by-other / race. */
