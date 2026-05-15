@@ -50,7 +50,20 @@ jobs:
       - name: Build
         run: bun run build
 
+      - name: Skip if this version already exists on npm
+        id: version-check
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "actor-ts@$VERSION" version > /dev/null 2>&1; then
+            echo "actor-ts@$VERSION already published — skipping publish step."
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "actor-ts@$VERSION not on npm yet — will publish."
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish to npm
+        if: steps.version-check.outputs.already_published == 'false'
         # No NODE_AUTH_TOKEN env — npm auto-detects the OIDC scenario
         # via `id-token: write` permission + the npm Trusted Publisher
         # config on registry.npmjs.org and uses that path instead.
