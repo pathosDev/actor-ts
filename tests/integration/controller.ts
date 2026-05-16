@@ -28,6 +28,7 @@ import { scenario as clusterClient } from './scenarios/09-cluster-client.js';
 import { scenario as managementAuth } from './scenarios/10-management-auth.js';
 import { scenario as persistenceRecovery } from './scenarios/11-persistence-recovery.js';
 import { scenario as pubsubFanout } from './scenarios/12-pubsub-fanout.js';
+import { scenario as coordinatedShutdown } from './scenarios/13-coordinated-shutdown.js';
 import type { ControllerCtx, Scenario } from './scenarios/types.js';
 
 const NODES = (process.env.NODES ?? '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -65,6 +66,7 @@ const scenarios: Scenario[] = [
   pubsubFanout,         // non-destructive
   shardingRebalance,    // — removes one node via cluster.leave()
   singletonFailover,    // — removes ANOTHER node via cluster.leave()
+  coordinatedShutdown,  // — removes a THIRD node via CoordinatedShutdown.run()
 ];
 
 async function main(): Promise<void> {

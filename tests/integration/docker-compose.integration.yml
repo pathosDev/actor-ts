@@ -34,6 +34,10 @@ x-node-defaults: &node-defaults
     SEEDS: integration@node-a:9000
     MGMT_TOKEN: integration-test-token
     LOG_LEVEL: info
+    # Comma-separated list of all node hostnames — used by
+    # scenario 13's shutdown-trace hook to post a marker to a
+    # peer that's still alive.
+    PEERS: node-a,node-b,node-c,node-d,node-e
   healthcheck:
     test: ["CMD", "curl", "-fsS", "http://localhost:8090/test/ping"]
     interval: 1s

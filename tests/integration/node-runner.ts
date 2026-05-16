@@ -31,6 +31,7 @@ import { DistributedDataId } from '../../src/crdt/index.js';
 import { ClusterSingletonId } from '../../src/cluster/singleton/ClusterSingleton.js';
 import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
 import { ClusterClientReceptionistId } from '../../src/cluster/ClusterClientReceptionist.js';
+import { CoordinatedShutdownId, Phases } from '../../src/CoordinatedShutdown.js';
 import { PersistenceExtensionId } from '../../src/persistence/PersistenceExtension.js';
 import { InMemoryJournal } from '../../src/persistence/journals/InMemoryJournal.js';
 import { InMemorySnapshotStore } from '../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
@@ -52,6 +53,10 @@ const CONTROL_PORT = Number(process.env.CONTROL_PORT ?? 8090);
 const SEEDS = (process.env.SEEDS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 const MGMT_TOKEN = process.env.MGMT_TOKEN ?? 'integration-test-token';
 const LOG_LEVEL = (process.env.LOG_LEVEL ?? 'info').toLowerCase();
+// Comma-separated list of all node hostnames, used by scenario 13's
+// shutdown hook to forward a "I am shutting down" marker to a peer
+// that's still alive (so the controller can verify the hook fired).
+const PEERS = (process.env.PEERS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 
 function parseLevel(name: string): LogLevel {
   switch (name) {
@@ -132,6 +137,27 @@ async function main(): Promise<void> {
     numShards: 32,
   });
   logger.info('ClusterSharding region started', { typeName: SHARDING_TYPE_NAME, numShards: 32 });
+
+  // Pre-register a shutdown-trace hook in `BeforeServiceUnbind`
+  // (runs while the HTTP server is still alive on this node, but
+  // also forwards to a peer so the trace survives this node's
+  // shutdown).  Used by scenario 13 to verify the
+  // CoordinatedShutdown pipeline actually fired hooks on this node.
+  const coordinatedShutdown = system.extension(CoordinatedShutdownId);
+  coordinatedShutdown.addTask(Phases.BeforeServiceUnbind, 'integration-trace-marker', async () => {
+    const peers = PEERS.filter((p) => p !== NODE_NAME);
+    if (peers.length === 0) return;
+    // Best-effort POST to each peer's trace endpoint.  Whichever
+    // is still alive picks up the marker.  Fire-and-forget with
+    // a tight timeout — we're shutting down, can't wait long.
+    await Promise.allSettled(peers.map((p) =>
+      fetch(`http://${p}:${CONTROL_PORT}/test/shutdown-trace/record?from=${encodeURIComponent(NODE_NAME)}&phase=BeforeServiceUnbind`, {
+        method: 'POST',
+        signal: AbortSignal.timeout(1_000),
+      }).catch(() => null),
+    ));
+    logger.info('shutdown-trace marker posted to peers', { peers });
+  });
 
   // Persistence — wire an InMemoryJournal + InMemorySnapshotStore
   // so PersistentActor scenarios (11) can persist events + take

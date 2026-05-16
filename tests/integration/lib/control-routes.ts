@@ -51,6 +51,7 @@ import {
   Publish as PubSubPublish,
   Subscribe as PubSubSubscribe,
 } from '../../../src/cluster/pubsub/Messages.js';
+import { CoordinatedShutdownId } from '../../../src/CoordinatedShutdown.js';
 import { LWWRegister } from '../../../src/crdt/LWWRegister.js';
 import { GCounter } from '../../../src/crdt/GCounter.js';
 import type { WriteConsistency } from '../../../src/crdt/DistributedData.js';
@@ -280,6 +281,13 @@ export function makeControlRoutes(
     'events',
     pubsubReceiver as unknown as ActorRef,
   ));
+
+  // Cross-node shutdown trace markers (scenario 13).  Each node's
+  // pre-registered shutdown hook POSTs to a peer's /test/shutdown-
+  // trace/record before this node's HTTP server closes, so the
+  // controller can later verify that hooks fired even though the
+  // sender node is now offline.
+  const shutdownTrace: Array<{ from: string; phase: string; ts: number }> = [];
 
   // Persistent-counter registry for scenario 11.  Each `id` (the
   // persistenceId) is materialised by an ActorRef on first hit.
@@ -769,6 +777,36 @@ export function makeControlRoutes(
         return completeJson(Status.InternalServerError, { error: (e as Error).message });
       }
     }))),
+
+    // ============== CoordinatedShutdown scenario (#313 — scenario 13) ==============
+
+    // POST /test/shutdown-trace/record?from=X&phase=P
+    // A peer's shutdown hook calls this to leave a marker that
+    // it fired its hook.  Records into the local in-memory trace.
+    path('shutdown-trace', path('record', post(async (req) => {
+      const from = queryParam(req, 'from');
+      const phase = queryParam(req, 'phase');
+      if (!from || !phase) return complete(Status.BadRequest, 'missing ?from= or ?phase=');
+      shutdownTrace.push({ from, phase, ts: Date.now() });
+      return completeJson(Status.OK, { recorded: { from, phase } });
+    }))),
+
+    // GET /test/shutdown-trace
+    // Returns the list of markers received so far.
+    path('shutdown-trace', get(async () => {
+      return completeJson(Status.OK, { markers: shutdownTrace });
+    })),
+
+    // POST /test/coordinated-shutdown
+    // Triggers `CoordinatedShutdown.run()` on this node.  Returns
+    // 202 immediately; the actual shutdown proceeds asynchronously
+    // and the HTTP server will close mid-pipeline.  Use peer's
+    // `/test/shutdown-trace` to observe the hooks firing.
+    path('coordinated-shutdown', post(async () => {
+      // Fire-and-forget so we can respond before the server unbinds.
+      void system.extension(CoordinatedShutdownId).run();
+      return completeJson(Status.Accepted, { triggered: cluster.selfAddress.toString() });
+    })),
 
     // POST /test/leave — call `cluster.leave()` on this node.  The
     // node initiates a graceful departure; remaining members see
