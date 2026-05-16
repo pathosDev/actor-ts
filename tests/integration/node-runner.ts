@@ -144,25 +144,30 @@ async function main(): Promise<void> {
   });
   logger.info('ClusterSharding region started', { typeName: SHARDING_TYPE_NAME, numShards: 32 });
 
-  // Pre-register a shutdown-trace hook in `BeforeServiceUnbind`
-  // (runs while the HTTP server is still alive on this node, but
-  // also forwards to a peer so the trace survives this node's
-  // shutdown).  Used by scenario 13 to verify the
-  // CoordinatedShutdown pipeline actually fired hooks on this node.
+  // Pre-register shutdown-trace hooks in TWO different phases so
+  // scenario 13 can verify the pipeline actually progressed
+  // through both — early (`BeforeServiceUnbind`, phase 1 of 12)
+  // and late (`BeforeActorSystemTerminate`, phase 11 of 12).
+  // Both markers POST to peers via fetch — the outbound HTTP
+  // client survives even after this node's own HTTP server closes
+  // in the intermediate `ServiceUnbind` phase.
   const coordinatedShutdown = system.extension(CoordinatedShutdownId);
-  coordinatedShutdown.addTask(Phases.BeforeServiceUnbind, 'integration-trace-marker', async () => {
+  const postShutdownMarker = async (phase: string): Promise<void> => {
     const peers = PEERS.filter((p) => p !== NODE_NAME);
     if (peers.length === 0) return;
-    // Best-effort POST to each peer's trace endpoint.  Whichever
-    // is still alive picks up the marker.  Fire-and-forget with
-    // a tight timeout — we're shutting down, can't wait long.
     await Promise.allSettled(peers.map((p) =>
-      fetch(`http://${p}:${CONTROL_PORT}/test/shutdown-trace/record?from=${encodeURIComponent(NODE_NAME)}&phase=BeforeServiceUnbind`, {
+      fetch(`http://${p}:${CONTROL_PORT}/test/shutdown-trace/record?from=${encodeURIComponent(NODE_NAME)}&phase=${phase}`, {
         method: 'POST',
         signal: AbortSignal.timeout(1_000),
       }).catch(() => null),
     ));
-    logger.info('shutdown-trace marker posted to peers', { peers });
+    logger.info('shutdown-trace marker posted to peers', { phase, peers });
+  };
+  coordinatedShutdown.addTask(Phases.BeforeServiceUnbind, 'integration-early-marker', async () => {
+    await postShutdownMarker('BeforeServiceUnbind');
+  });
+  coordinatedShutdown.addTask(Phases.BeforeActorSystemTerminate, 'integration-late-marker', async () => {
+    await postShutdownMarker('BeforeActorSystemTerminate');
   });
 
   // Persistence — wire an InMemoryJournal + InMemorySnapshotStore
