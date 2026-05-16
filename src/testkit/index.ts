@@ -5,6 +5,8 @@ export type { TestProbeOptions } from './TestProbe.js';
 export { ManualScheduler } from './ManualScheduler.js';
 export { MultiNodeSpec } from './MultiNodeSpec.js';
 export type { MultiNodeSpecSettings } from './MultiNodeSpec.js';
+export { MultiNodeClusterFixture } from './MultiNodeClusterFixture.js';
+export type { MultiNodeClusterFixture as MultiNodeClusterFixtureType } from './MultiNodeClusterFixture.js';
 export { ParallelMultiNodeSpec } from './ParallelMultiNodeSpec.js';
 export type { ParallelMultiNodeSpecSettings } from './ParallelMultiNodeSpec.js';
 export type {
