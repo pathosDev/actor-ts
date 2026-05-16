@@ -35,6 +35,7 @@ import { CoordinatedShutdownId, Phases } from '../../src/CoordinatedShutdown.js'
 import { PersistenceExtensionId } from '../../src/persistence/PersistenceExtension.js';
 import { InMemoryJournal } from '../../src/persistence/journals/InMemoryJournal.js';
 import { InMemorySnapshotStore } from '../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
+import { MetricsExtensionId } from '../../src/metrics/MetricsExtension.js';
 import { CounterSingleton } from './lib/singleton.js';
 import {
   SHARDING_TYPE_NAME,
@@ -74,6 +75,11 @@ async function main(): Promise<void> {
   logger.info('node-runner starting', { host: HOST, clusterPort: CLUSTER_PORT, seeds: SEEDS });
 
   const system = ActorSystem.create(SYSTEM_NAME, { logger });
+  // Enable the metrics registry — defaults to NoopMetricsRegistry,
+  // which would silently swallow every `counter.inc()` from
+  // `actor_mailbox_dropped_total` (the hook scenario 14 verifies).
+  system.extension(MetricsExtensionId).enable();
+  logger.info('MetricsExtension enabled');
   const cluster = await Cluster.join(system, {
     host: HOST,
     port: CLUSTER_PORT,

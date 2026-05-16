@@ -25,7 +25,7 @@
  * Runs LAST in the suite.
  */
 
-import { clusterLiveNodes, sleep, waitFor, type Scenario } from './types.js';
+import { clusterLiveNodes, waitFor, type Scenario } from './types.js';
 
 interface TraceResponse {
   readonly markers: ReadonlyArray<{ from: string; phase: string; ts: number }>;
@@ -90,14 +90,24 @@ export const scenario: Scenario = {
       throw new Error(`[13] expected most-recent marker phase 'BeforeServiceUnbind', got '${mostRecent.phase}'`);
     }
 
-    // Verify the victim is now unreachable (the shutdown pipeline
-    // includes ActorSystemTerminate which terminates the system
-    // including the HTTP server).
-    await sleep(2_000);
-    const livePost = await clusterLiveNodes(ctx.nodes, ctx.controlPort);
-    if (livePost.includes(victim)) {
-      throw new Error(`[13] expected ${victim} to be gone post-shutdown, still appears live: ${livePost.join(',')}`);
-    }
+    // Wait for the victim to disappear from the cluster.  The full
+    // shutdown pipeline runs ~12 phases (BeforeServiceUnbind →
+    // ServiceUnbind → ServiceRequestsDone → ServiceStop →
+    // BeforeClusterShutdown → ClusterShardingShutdownRegion →
+    // ClusterLeave → ClusterExiting → ClusterExitingDone →
+    // ClusterShutdown → BeforeActorSystemTerminate →
+    // ActorSystemTerminate) each with a 5s default timeout.
+    // Typically completes in 5-15s with the default phase tasks;
+    // 30s is the safe upper bound under CI load.
+    await waitFor(
+      `${victim} disappears from clusterLiveNodes`,
+      async () => {
+        const post = await clusterLiveNodes(ctx.nodes, ctx.controlPort);
+        return !post.includes(victim);
+      },
+      30_000,
+      500,
+    );
     console.log(`[13] ${victim} is gone from the cluster post-shutdown — pipeline completed`);
   },
 };
