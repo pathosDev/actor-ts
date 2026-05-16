@@ -1,0 +1,25 @@
+# Runner image for the K8s API live-integration suite (B.9 / #298).
+#
+# The runner talks to a k3s API server (k3s = single-binary
+# Kubernetes distribution) over its admin kubeconfig.  k3s is the
+# right cost/coverage trade — full K8s API, single container, ~5s
+# boot, no need for nested Docker (unlike kind).
+
+FROM oven/bun:debian
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY package.json bun.lock* tsconfig.json ./
+
+RUN bun install --no-progress --production --ignore-scripts
+
+COPY src/ src/
+COPY tests/ tests/
+
+ENV NODE_ENV=production
+
+CMD ["bun", "tests/integration/brokers/k8s/runner.ts"]

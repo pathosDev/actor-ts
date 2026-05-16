@@ -1,0 +1,73 @@
+# Kubernetes API live-integration suite (B.9 / Closes #298).
+#
+# Runs k3s (lightweight K8s) as the API server, then runs the
+# framework's KubernetesApiSeedProvider against it.  The choice of
+# k3s over kind:
+#   - kind needs nested Docker (kind-in-docker) which is brittle in
+#     CI (Docker-in-Docker pitfalls, slow boot).
+#   - k3s ships as a single binary, runs in one container, boots in
+#     ~5s, and presents the full K8s API.  We're not testing
+#     workload scheduling — just the API surface the seed
+#     provider reads from.
+#
+# Run locally:
+#   bun run test:integration:k8s
+#   bun run test:integration:k8s:teardown
+
+name: actor-ts-integration-k8s
+
+services:
+  k3s:
+    image: rancher/k3s:v1.31.3-k3s1
+    # k3s server runs with privileged because it needs to mount its
+    # own cgroups + iptables for kube-proxy.  This is a test-only
+    # container on a dev/CI host — the security trade-off is
+    # acceptable for the test scope.
+    privileged: true
+    command:
+      - server
+      - --disable=traefik
+      - --disable=servicelb
+      - --disable=metrics-server
+      - --disable-network-policy
+      - --tls-san=k3s
+    environment:
+      K3S_TOKEN: integration-test-token
+      K3S_KUBECONFIG_OUTPUT: /output/kubeconfig.yaml
+      K3S_KUBECONFIG_MODE: "666"
+    volumes:
+      - kubeconfig:/output
+    # K3s needs ~5-10s to fully start.  The kubeconfig file is the
+    # signal — it gets written when the API server is up.
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /output/kubeconfig.yaml && kubectl --kubeconfig /output/kubeconfig.yaml get nodes"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    networks:
+      k8snet: {}
+
+  runner:
+    build:
+      context: ../../../..
+      dockerfile: tests/integration/brokers/k8s/Dockerfile.runner
+    depends_on:
+      k3s:
+        condition: service_healthy
+    environment:
+      KUBECONFIG: /kubeconfig/kubeconfig.yaml
+      # Inside the compose bridge, k3s is reachable as the service name.
+      # We rewrite the kubeconfig server URL at runtime since k3s writes
+      # `127.0.0.1` by default (the perspective of the k3s container itself).
+      K3S_SERVER_URL: https://k3s:6443
+    volumes:
+      - kubeconfig:/kubeconfig:ro
+    networks:
+      k8snet: {}
+
+volumes:
+  kubeconfig: {}
+
+networks:
+  k8snet: {}
