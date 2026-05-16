@@ -46,6 +46,11 @@ import {
   type CounterStateReply,
 } from './persistent-counter.js';
 import { PoisonPill } from '../../../src/SystemMessages.js';
+import { DistributedPubSubId } from '../../../src/cluster/pubsub/DistributedPubSubExtension.js';
+import {
+  Publish as PubSubPublish,
+  Subscribe as PubSubSubscribe,
+} from '../../../src/cluster/pubsub/Messages.js';
 import { LWWRegister } from '../../../src/crdt/LWWRegister.js';
 import { GCounter } from '../../../src/crdt/GCounter.js';
 import type { WriteConsistency } from '../../../src/crdt/DistributedData.js';
@@ -170,6 +175,60 @@ class CounterStateCollector extends Actor<CounterStateReply> {
   }
 }
 
+/**
+ * PubSub message envelope as the test publishes it.  Plain object
+ * (kind: 'event', seq, text) so it survives wire-serialisation
+ * to remote mediators without prototype loss.
+ */
+interface PubSubEvent {
+  readonly kind: 'event';
+  readonly seq: number;
+  readonly text: string;
+}
+
+interface PubSubSnapshotQuery {
+  readonly kind: 'snapshot';
+  readonly replyTo: ActorRef<PubSubSnapshot>;
+}
+
+interface PubSubSnapshot {
+  readonly received: number;
+  readonly lastSeq: number;
+  readonly lastText: string | null;
+}
+
+/**
+ * Long-lived PubSub subscriber for scenario 12.  Accumulates every
+ * `PubSubEvent` it receives on the `events` topic, exposes the
+ * count + most-recent message via a `PubSubSnapshotQuery`.
+ */
+class PubSubReceiver extends Actor<PubSubEvent | PubSubSnapshotQuery> {
+  private received = 0;
+  private lastSeq = -1;
+  private lastText: string | null = null;
+  override onReceive(m: PubSubEvent | PubSubSnapshotQuery): void {
+    if (m.kind === 'event') {
+      this.received += 1;
+      this.lastSeq = m.seq;
+      this.lastText = m.text;
+    } else if (m.kind === 'snapshot') {
+      m.replyTo.tell({
+        received: this.received,
+        lastSeq: this.lastSeq,
+        lastText: this.lastText,
+      });
+    }
+  }
+}
+
+class PubSubSnapshotCollector extends Actor<PubSubSnapshot> {
+  constructor(private readonly resolve: (s: PubSubSnapshot) => void) { super(); }
+  override onReceive(s: PubSubSnapshot): void {
+    this.resolve(s);
+    this.context.stop(this.context.self);
+  }
+}
+
 export interface ControlDeps {
   /** Singleton proxy from `ClusterSingletonId.start(...)`. */
   readonly singletonProxy: ActorRef<SingletonMsg>;
@@ -208,6 +267,19 @@ export function makeControlRoutes(
   // /deregister can remove it.  Closure-local so multiple
   // /register hits on the same node replace (not stack).
   let extraWorkerRef: ActorRef | null = null;
+
+  // DistributedPubSub mediator + persistent local subscriber on
+  // the `events` topic.  Like Receptionist + DDdata, this is wired
+  // BEFORE the HTTP server binds so the mediator's wire-handlers
+  // are registered before any peer publishes.
+  const pubsubMediator = system.extension(DistributedPubSubId).start(cluster);
+  const pubsubReceiver = system.spawnAnonymous(
+    Props.create<PubSubEvent | PubSubSnapshotQuery>(() => new PubSubReceiver()),
+  ) as ActorRef<PubSubEvent | PubSubSnapshotQuery>;
+  pubsubMediator.tell(new PubSubSubscribe(
+    'events',
+    pubsubReceiver as unknown as ActorRef,
+  ));
 
   // Persistent-counter registry for scenario 11.  Each `id` (the
   // persistenceId) is materialised by an ActorRef on first hit.
@@ -658,6 +730,44 @@ export function makeControlRoutes(
       ref.tell(PoisonPill.instance as never);
       persistentCounters.delete(id);
       return completeJson(Status.OK, { id, wasAlive: true });
+    }))),
+
+    // ============== DistributedPubSub scenario (#313 — scenario 12) ==============
+
+    // POST /test/pubsub/publish?topic=T&seq=N&text=M
+    // Publish a `PubSubEvent` on `topic`.  Mediator fans out
+    // locally + gossips/forwards to remote mediators which fan
+    // out on their nodes.  Every subscribed node receives one
+    // copy.
+    path('pubsub', path('publish', post(async (req) => {
+      const topic = queryParam(req, 'topic') ?? 'events';
+      const seq = Number(queryParam(req, 'seq') ?? '0');
+      const text = queryParam(req, 'text') ?? '';
+      const event: PubSubEvent = { kind: 'event', seq, text };
+      pubsubMediator.tell(new PubSubPublish(topic, event));
+      return completeJson(Status.OK, { published: { topic, seq, text } });
+    }))),
+
+    // GET /test/pubsub/received
+    // Returns the local subscriber's view: how many events it has
+    // received, plus the most-recent (seq, text).  The scenario
+    // polls this on every node to verify fan-out.
+    path('pubsub', path('received', get(async () => {
+      try {
+        const snapshot = await new Promise<PubSubSnapshot>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('pubsub snapshot timeout')), 5_000);
+          const collector = system.spawnAnonymous(
+            Props.create<PubSubSnapshot>(() => new PubSubSnapshotCollector((s) => {
+              clearTimeout(timer);
+              resolve(s);
+            })),
+          ) as ActorRef<PubSubSnapshot>;
+          pubsubReceiver.tell({ kind: 'snapshot', replyTo: collector });
+        });
+        return completeJson(Status.OK, snapshot);
+      } catch (e) {
+        return completeJson(Status.InternalServerError, { error: (e as Error).message });
+      }
     }))),
 
     // POST /test/leave — call `cluster.leave()` on this node.  The
