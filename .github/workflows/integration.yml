@@ -10,17 +10,15 @@ name: integration
 #
 # Triggers:
 #   - Pushes to `main`
+#   - PRs targeting `main` — the suite proved fast enough in
+#     practice (~25 s scenarios + ~10 s container startup + cached
+#     build) that the action-minute budget isn't a concern.  PRs
+#     touching cluster / transport / persistence code should
+#     surface regressions BEFORE merge.
 #   - Manual dispatch (workflow_dispatch) — re-run on demand from
-#     the GitHub Actions UI for any branch
+#     the GitHub Actions UI for any branch.
 #   - Nightly at 03:00 UTC — catches transport-level flakes that
-#     wouldn't show up in fast unit-test PR runs
-#
-# NOT triggered on PRs by default.  Integration tests are expensive
-# (Docker build + 6-container compose + scenario runtime), and the
-# unit suite already catches most regressions.  When a PR touches
-# `src/cluster/Transport.ts`, `src/cluster/downing/`, `src/runtime/tcp/`,
-# or anything else where TCP-layer timing matters, use `workflow_dispatch`
-# from the PR's branch.
+#     wouldn't show up in fast unit-test PR runs.
 
 on:
   push:
@@ -30,6 +28,15 @@ on:
       # cluster behaviour over real TCP changes — source code, the
       # integration setup itself, or the workflow.  Skips on docs-
       # only / unit-test-only / README changes.
+      - 'src/**'
+      - 'tests/integration/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'tsconfig.json'
+      - '.github/workflows/integration.yml'
+  pull_request:
+    branches: [main]
+    paths:
       - 'src/**'
       - 'tests/integration/**'
       - 'package.json'

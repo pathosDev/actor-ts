@@ -1,44 +1,18 @@
 name: tests
 
 # Runs the unit / multi-node / smoke suite + the README-badge
-# updater.  Only needs to run when something in the test inputs
-# changes — source, the unit-test or multi-node-test trees, the
-# smoke harness, the dependency manifest, tsconfig, or the
-# workflow itself.  Skips on docs-only / README-only / integration-
-# tests-only changes.
-#
-# Note: this workflow ALSO runs the `Update README badges + inline
-# references` step on push-to-main, which means: if `tests/unit/`
-# is unchanged but the test-count would be re-pinned because of
-# a different cause (e.g. a manual README edit), this won't fire.
-# That's fine — the badges only need to track ACTUAL test count
-# changes, and only `tests/**` + `src/**` changes can drive that.
+# updater.  Deliberately UNFILTERED — the suite is cheap (~2 min)
+# and serves as a "did this commit break anything" safety net on
+# every push and PR.  Docs-only / README-only changes still
+# trigger a run; that costs almost nothing and keeps the green-
+# build streak unambiguous (every commit shows a passing test
+# status, not a "did-not-run" one).
 
 on:
   push:
     branches: [main]
-    paths:
-      - 'src/**'
-      - 'tests/unit/**'
-      - 'tests/multi-node/**'
-      - 'tests/smoke/**'
-      - 'package.json'
-      - 'bun.lock'
-      - 'tsconfig.json'
-      - 'tsconfig.dev.json'
-      - '.github/workflows/test.yml'
   pull_request:
     branches: [main]
-    paths:
-      - 'src/**'
-      - 'tests/unit/**'
-      - 'tests/multi-node/**'
-      - 'tests/smoke/**'
-      - 'package.json'
-      - 'bun.lock'
-      - 'tsconfig.json'
-      - 'tsconfig.dev.json'
-      - '.github/workflows/test.yml'
   workflow_dispatch:
 
 jobs:
