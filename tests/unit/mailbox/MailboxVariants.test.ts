@@ -72,6 +72,69 @@ describe('PriorityMailbox', () => {
     const drained = mbox.drainUser().map(e => e.message);
     expect(drained).toEqual([1, 2, 3, 4, 5]);
   });
+
+  test('suspend blocks dequeueUser; resume unblocks', () => {
+    const mbox = new PriorityMailbox<number>({ priorityFor: (n) => n });
+    mbox.enqueue({ message: 1, sender: null });
+    mbox.enqueue({ message: 2, sender: null });
+    mbox.suspend();
+    expect(mbox.dequeueUser()).toBeUndefined();
+    // hasMessages with a system message + suspended state still returns
+    // true (system messages always drain) — but a pure user-only mbox
+    // returns false while suspended.
+    expect(mbox.hasMessages()).toBe(false);
+    mbox.resume();
+    expect(mbox.dequeueUser()?.message).toBe(1);
+    expect(mbox.dequeueUser()?.message).toBe(2);
+  });
+
+  test('hasMessages mixes system + user correctly', () => {
+    const mbox = new PriorityMailbox<number>({ priorityFor: (n) => n });
+    expect(mbox.hasMessages()).toBe(false);
+    mbox.enqueueSystem({ message: 'sys', sender: null });
+    expect(mbox.hasMessages()).toBe(true);
+    expect(mbox.hasSystemMessages()).toBe(true);
+    expect(mbox.hasUserMessages()).toBe(false);
+    // Suspend keeps system messages drainable.
+    mbox.suspend();
+    expect(mbox.hasMessages()).toBe(true);
+  });
+
+  test('prependUser re-routes envelopes through priority insertion', () => {
+    // Unlike base Mailbox, PriorityMailbox.prependUser re-runs the
+    // priority function — unstashed messages rejoin their priority
+    // tier rather than appearing at the front of the queue.  Pin
+    // this since the contract is unintuitive vs the base class.
+    const mbox = new PriorityMailbox<number>({ priorityFor: (n) => n });
+    mbox.enqueue({ message: 5, sender: null });
+    mbox.enqueue({ message: 1, sender: null });
+    // Now stashed-back: a high-priority 0 and a low-priority 9.
+    mbox.prependUser([
+      { message: 9, sender: null },
+      { message: 0, sender: null },
+    ]);
+    const order: number[] = [];
+    while (mbox.hasUserMessages()) order.push(mbox.dequeueUser()!.message);
+    // Strict priority order: 0, 1, 5, 9.
+    expect(order).toEqual([0, 1, 5, 9]);
+  });
+
+  test('binary-search insertion holds for 100 random priorities', () => {
+    // The insertion is O(log n) locate + O(n) splice — exercise it
+    // with a larger input to catch off-by-one regressions in the
+    // binary-search bounds.
+    const mbox = new PriorityMailbox<number>({ priorityFor: (n) => n });
+    const xs: number[] = [];
+    for (let i = 0; i < 100; i++) {
+      // Deterministic pseudo-random so test failures are reproducible.
+      const v = (i * 37 + 13) % 100;
+      xs.push(v);
+      mbox.enqueue({ message: v, sender: null });
+    }
+    const sorted = [...xs].sort((a, b) => a - b);
+    const drained = mbox.drainUser().map((e) => e.message);
+    expect(drained).toEqual(sorted);
+  });
 });
 
 describe('Props.withMailbox — end-to-end via actor', () => {

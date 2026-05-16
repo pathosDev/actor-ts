@@ -42,6 +42,10 @@ describe('Option — constructors', () => {
     expect(firstSome<number>(none, none)).toBeInstanceOf(None);
     expect(firstSome(some(1), some(2)).getOrElse(0)).toBe(1);
   });
+
+  test('firstSome with empty list returns None', () => {
+    expect(firstSome<number>()).toBeInstanceOf(None);
+  });
 });
 
 describe('Option — map/flatMap/filter/forEach', () => {
@@ -134,6 +138,16 @@ describe('Option — exists / forall / contains / fold', () => {
     expect(some(5).contains(5)).toBe(true);
     expect(some(5).contains(6)).toBe(false);
     expect((none as Option<number>).contains(5)).toBe(false);
+  });
+
+  test('contains uses SameValue (Object.is), not ===', () => {
+    // `===` says NaN !== NaN, but Object.is(NaN, NaN) is true.
+    // Option.contains uses Object.is, so two NaNs match.  Pin this
+    // — the difference matters for anyone using contains() as an
+    // equality probe on float-NaN sentinel values.
+    expect(some(Number.NaN).contains(Number.NaN)).toBe(true);
+    // And the inverse — Object.is(+0, -0) is false (unlike ===).
+    expect(some(0).contains(-0)).toBe(false);
   });
 
   test('fold collapses to a single value', () => {
