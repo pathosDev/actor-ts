@@ -1,0 +1,28 @@
+# Runner image for the gRPC live-integration suite (B.8 / Closes #296).
+#
+# Different shape from the other broker suites — the "broker" here
+# IS the framework's GrpcServerActor.  We run server + client in
+# the same runner against a local proto file (echo.proto).  No
+# external broker container, hence the single-service compose.
+
+FROM oven/bun:debian
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY package.json bun.lock* tsconfig.json ./
+
+RUN bun install --no-progress --production --ignore-scripts
+
+# gRPC peer deps.  The framework uses `@grpc/grpc-js` + `@grpc/proto-loader`.
+RUN bun add @grpc/grpc-js @grpc/proto-loader --no-save
+
+COPY src/ src/
+COPY tests/ tests/
+
+ENV NODE_ENV=production
+
+CMD ["bun", "tests/integration/brokers/grpc/runner.ts"]

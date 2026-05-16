@@ -1,0 +1,27 @@
+# gRPC live-integration suite (B.8 / Closes #296).
+#
+# Unlike the other broker suites this one has NO external broker —
+# the framework's GrpcServerActor IS the server, GrpcClientActor IS
+# the client, and we run them in the same runner against a local
+# echo.proto.  The single service is the runner.
+#
+# Run locally:
+#   bun run test:integration:grpc
+#   bun run test:integration:grpc:teardown
+
+name: actor-ts-integration-grpc
+
+services:
+  runner:
+    build:
+      context: ../../../..
+      dockerfile: tests/integration/brokers/grpc/Dockerfile.runner
+    environment:
+      GRPC_BIND: 0.0.0.0:50051
+      GRPC_ENDPOINT: localhost:50051
+      GRPC_PROTO_PATH: /app/tests/integration/brokers/grpc/echo.proto
+    networks:
+      grpcnet: {}
+
+networks:
+  grpcnet: {}
