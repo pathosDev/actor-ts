@@ -114,6 +114,33 @@ jobs:
           # written so the README job downstream still has data.
           exit $STATUS
 
+      - name: Coverage-floor gate (≥ 90%)
+        # Runs only after the test step succeeded.  Re-parses the
+        # already-captured line coverage and fails the workflow if
+        # it dropped below the floor.  Same parser as the step above,
+        # so the two see the same numbers — pin via a single source
+        # of truth (the badge update sees what the gate enforces).
+        #
+        # Floor configured via the COVERAGE_LINE_FLOOR env var — set
+        # at the workflow level so future tightening (90 → 92 → 95)
+        # is a one-line PR rather than a script-edit.  Local devs run
+        # `bun run test:coverage:gate` to get the same check.
+        if: success() && steps.stats.outputs.lines != ''
+        env:
+          COVERAGE_LINE_FLOOR: '90'
+          PARSED_LINES: ${{ steps.stats.outputs.lines }}
+        run: |
+          if [[ -z "$PARSED_LINES" ]]; then
+            echo "coverage-gate: stats.outputs.lines was empty — parser regression?  Fail loud."
+            exit 1
+          fi
+          if (( PARSED_LINES < COVERAGE_LINE_FLOOR )); then
+            echo "::error::coverage-gate: line coverage ${PARSED_LINES}% < floor ${COVERAGE_LINE_FLOOR}%"
+            echo "Add tests for under-covered files (see the per-file table in the previous step) and rerun."
+            exit 1
+          fi
+          echo "coverage-gate: PASS (${PARSED_LINES}% ≥ ${COVERAGE_LINE_FLOOR}%)"
+
       - name: Update README badges + inline references
         # Always run, including after a failing test step — that's
         # exactly when the badge needs to flip to red.  PRs and

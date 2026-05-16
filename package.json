@@ -37,6 +37,7 @@
     "typecheck:dev": "bunx tsc -p tsconfig.dev.json --noEmit",
     "test": "bun test",
     "test:coverage": "bun test --coverage",
+    "test:coverage:gate": "bun scripts/coverage-gate.mjs",
     "test:integration": "docker compose -f tests/integration/docker-compose.integration.yml up --build --abort-on-container-exit --exit-code-from controller",
     "test:integration:teardown": "docker compose -f tests/integration/docker-compose.integration.yml down -v --remove-orphans",
     "test:integration:s3": "docker compose -f tests/integration/brokers/s3/docker-compose.s3.yml up --build --abort-on-container-exit --exit-code-from runner",
