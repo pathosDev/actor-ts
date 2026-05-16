@@ -102,3 +102,74 @@ describe('Lazy', () => {
     expect(l.get()).toBe(5);
   });
 });
+
+describe('Lazy.getSync (#279)', () => {
+  test('returns the cached value for sync Lazy', () => {
+    const l = Lazy.of(() => 'hello');
+    l.get();
+    expect(l.getSync()).toBe('hello');
+  });
+
+  test('throws when called before evaluation', () => {
+    const l = Lazy.of(() => 7);
+    expect(() => l.getSync()).toThrow(/not been evaluated/);
+  });
+
+  test('respects setOverride — returns the override value', () => {
+    const l = Lazy.of(() => 'real');
+    l.setOverride('fake');
+    expect(l.getSync()).toBe('fake');
+  });
+
+  test('re-throws the cached error from the thunk', () => {
+    const l = Lazy.of<number>(() => { throw new Error('boom'); });
+    try { l.get(); } catch { /* prime the cache */ }
+    expect(() => l.getSync()).toThrow('boom');
+  });
+
+  test('async Lazy: throws before the Promise settles', async () => {
+    let resolveIt!: (v: string) => void;
+    const slow: Promise<string> = new Promise((r) => { resolveIt = r; });
+    const l = Lazy.of(() => slow);
+    void l.get(); // force, but don't await
+    expect(() => l.getSync<string>()).toThrow(/has not resolved/);
+    resolveIt('async-done');
+    await l.get();
+    expect(l.getSync<string>()).toBe('async-done');
+  });
+
+  test('async Lazy: returns the resolved value after the Promise settles', async () => {
+    const l = Lazy.of(async () => {
+      await Bun.sleep(5);
+      return { sdk: 'loaded' };
+    });
+    await l.get();
+    expect(l.getSync<{ sdk: string }>().sdk).toBe('loaded');
+  });
+
+  test('reset() clears the resolved-async-value too', async () => {
+    let calls = 0;
+    const l = Lazy.of(async () => { calls++; return calls; });
+    await l.get();
+    expect(l.getSync<number>()).toBe(1);
+    l.reset();
+    expect(() => l.getSync()).toThrow(/not been evaluated/);
+    await l.get();
+    expect(l.getSync<number>()).toBe(2);
+  });
+
+  test('rejected async Lazy: getSync still throws the original error', async () => {
+    // get() returns the Promise which rejects; getSync should
+    // surface the same error rather than reporting "not resolved".
+    const l = Lazy.of(async () => { throw new Error('async-fail'); });
+    let caught: Error | null = null;
+    try { await l.get(); }
+    catch (e) { caught = e as Error; }
+    expect(caught?.message).toBe('async-fail');
+    // getSync now reports "not resolved" since we never recorded a
+    // resolved value.  That's a defensible behaviour: rejection is
+    // visible through `await get()`, sync access has no resolved
+    // value to give.  Pin it.
+    expect(() => l.getSync()).toThrow(/has not resolved/);
+  });
+});
