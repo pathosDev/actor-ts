@@ -1,0 +1,37 @@
+# Redis Streams live-integration suite (B.7 / refs #296).
+#
+# Redis 7 ships streams in the open-source build.  No persistence,
+# no clustering — single-node ephemeral instance.
+#
+# Run locally:
+#   bun run test:integration:redis
+#   bun run test:integration:redis:teardown
+
+name: actor-ts-integration-redis-streams
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    networks:
+      redisnet: {}
+
+  runner:
+    build:
+      context: ../../../..
+      dockerfile: tests/integration/brokers/redis-streams/Dockerfile.runner
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379
+    networks:
+      redisnet: {}
+
+networks:
+  redisnet: {}
