@@ -1,0 +1,46 @@
+# Runner image for the MinIO/S3 live-integration suite (B.2 / #20).
+#
+# Same base as the cluster integration image — `oven/bun:debian` —
+# but slimmer install set (no `tc`/`iptables` required: the broker
+# tests don't inject network faults).  The image bundles the SDK
+# (`@aws-sdk/client-s3`) on top of the framework deps, since the SDK
+# is an OPTIONAL peer dep in `package.json` and would otherwise be
+# absent.
+#
+# Build is local-by-default — the runner service in
+# docker-compose.s3.yml has `build:` pointed at this file, so
+# `bun run test:integration:s3` will rebuild as needed.
+
+FROM oven/bun:debian
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Cache the install layer separately from source changes.
+COPY package.json bun.lock* tsconfig.json ./
+
+# Production-only install, no postinstall scripts — same constraint
+# as the cluster integration image (no native-build toolchain in
+# this image), since none of the dependencies that the broker tests
+# touch require one.
+RUN bun install --no-progress --production --ignore-scripts
+
+# The S3 SDK is in peerDependencies/optional, so `bun install`
+# above won't pull it.  We add it explicitly into the image so the
+# adapter's lazy `import('@aws-sdk/client-s3')` resolves at runtime.
+# `--no-save` because we don't want to mutate the lockfile from
+# inside an image build.
+RUN bun add @aws-sdk/client-s3 --no-save
+
+# Now the source tree + the suite.
+COPY src/ src/
+COPY tests/ tests/
+
+ENV NODE_ENV=production
+
+# The runner imports the scenarios and exits with 0/1 — that's the
+# signal the npm-script's `--exit-code-from runner` propagates.
+CMD ["bun", "tests/integration/brokers/s3/runner.ts"]

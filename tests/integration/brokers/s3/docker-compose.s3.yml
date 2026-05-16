@@ -1,0 +1,73 @@
+# MinIO live-integration suite (B.2 / #20).
+#
+# Brings up a MinIO container + a runner container that exercises
+# `S3ObjectStorageBackend` against the live S3 API.  MinIO is the
+# primary S3-compatible target because:
+#   - It boots in ~1-2s vs LocalStack's 10-15s, so CI minutes stay tight.
+#   - Its S3 implementation is the closest to AWS spec — fewer
+#     quirks-by-MinIO-only than R2 / B2.
+#   - The Bitnami / minio/minio images are stable and tagged.
+#
+# Run locally:
+#   bun run test:integration:s3
+#   bun run test:integration:s3:teardown
+#
+# References #297 — LocalStack S3 is an optional secondary target
+# that can be layered on later as a separate suite if S3-quirks
+# coverage proves valuable.
+
+name: actor-ts-integration-s3
+
+services:
+  # MinIO server — single node, single drive (no HA, this is a test).
+  # `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` are the credentials the
+  # runner uses.  Bucket creation is handled by an init-step in the
+  # runner itself (it's `bun`-side code so cleanups stay co-located
+  # with the test, not split across compose hooks).
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    healthcheck:
+      # MinIO's readiness URL.  We don't strictly need it (the runner
+      # `waitForPort`s on 9000), but it gives docker compose visibility
+      # into whether the broker is up before the runner starts trying.
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    networks:
+      s3net: {}
+
+  # The runner — builds the test image, blocks until MinIO is ready,
+  # then runs every scenario.  `depends_on` with `condition:
+  # service_healthy` ensures the runner waits for MinIO to report
+  # ready before it starts.  The runner also has its own
+  # `waitForPort` as belts-and-braces for runtimes where compose's
+  # healthcheck propagation isn't reliable (Bun on Windows + Docker
+  # Desktop).
+  runner:
+    build:
+      context: ../../../..
+      dockerfile: tests/integration/brokers/s3/Dockerfile.runner
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      # Endpoint inside the compose bridge — MinIO is reachable via
+      # its service name, not localhost.  `forcePathStyle` matters
+      # for MinIO because virtual-host-style requires DNS for
+      # `bucket.minio` which we'd have to wire up separately.
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: actor-ts-test
+      S3_REGION: us-east-1
+      S3_FORCE_PATH_STYLE: "true"
+    networks:
+      s3net: {}
+
+networks:
+  s3net: {}

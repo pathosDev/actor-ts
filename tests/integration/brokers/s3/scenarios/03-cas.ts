@@ -1,0 +1,46 @@
+/**
+ * CAS — `ifMatch` and `ifNoneMatch:*`.  The unit tests verify
+ * we translate the SDK error correctly; this scenario verifies
+ * the SERVER actually rejects on the expected condition.  MinIO
+ * has supported `If-None-Match: *` PUT since the 2024-08
+ * S3-spec update; older MinIO releases would return 501.  The
+ * pinned image (RELEASE.2025-04-22T22-12-26Z) is well past that.
+ */
+import { ObjectStorageConcurrencyError } from '../../../../../src/persistence/object-storage/ObjectStorageBackend.js';
+import { backend, type S3Ctx } from '../runner.js';
+import type { BrokerScenario } from '../../lib/scenario.js';
+
+export const scenario: BrokerScenario<S3Ctx> = {
+  name: 'CAS — ifMatch + ifNoneMatch live precondition',
+  async run(ctx) {
+    const b = backend(ctx);
+    try {
+      const tag = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const exists = `b2/cas-exists-${tag}.bin`;
+      const moved = `b2/cas-moved-${tag}.bin`;
+
+      // ifNoneMatch:* — first write succeeds, second fails.
+      await b.put(exists, new Uint8Array([0]));
+      let caught: unknown = null;
+      try {
+        await b.put(exists, new Uint8Array([1]), { ifNoneMatch: '*' });
+      } catch (e) { caught = e; }
+      if (!(caught instanceof ObjectStorageConcurrencyError)) {
+        throw new Error(`expected ObjectStorageConcurrencyError, got ${caught}`);
+      }
+
+      // ifMatch — stale etag is rejected after another write moves the object.
+      const { etag: stale } = await b.put(moved, new Uint8Array([0]));
+      await b.put(moved, new Uint8Array([1])); // someone else writes
+      caught = null;
+      try {
+        await b.put(moved, new Uint8Array([2]), { ifMatch: stale });
+      } catch (e) { caught = e; }
+      if (!(caught instanceof ObjectStorageConcurrencyError)) {
+        throw new Error(`expected ObjectStorageConcurrencyError on stale ifMatch, got ${caught}`);
+      }
+    } finally {
+      await b.close();
+    }
+  },
+};
