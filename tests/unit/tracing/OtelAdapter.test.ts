@@ -345,4 +345,129 @@ describe('otelTracer', () => {
     const bRec = api.recorded.find((r) => r.name === 'b.receive')!;
     expect(bRec.parentSpanId).toBe(aSpan.context().spanId);
   });
+
+  test('setStatus translates ok/error to OTel SpanStatusCode', () => {
+    const api = makeFakeOtelApi();
+    const tracer = otelTracer({ api });
+    const okSpan = tracer.startSpan('ok-span');
+    okSpan.setStatus('ok');
+    okSpan.end();
+    const errSpan = tracer.startSpan('err-span');
+    errSpan.setStatus('error', 'something went bad');
+    errSpan.end();
+    expect(api.recorded[0]!.status).toEqual({ code: api.SpanStatusCode.OK });
+    expect(api.recorded[1]!.status).toEqual({
+      code: api.SpanStatusCode.ERROR,
+      message: 'something went bad',
+    });
+  });
+
+  test('setAttribute after end() is silently dropped', () => {
+    const api = makeFakeOtelApi();
+    const tracer = otelTracer({ api });
+    const s = tracer.startSpan('x');
+    s.setAttribute('before', 1);
+    s.end();
+    s.setAttribute('after', 2);
+    expect(api.recorded[0]!.attrs).toEqual({ before: 1 });
+  });
+
+  test('setStatus after end() is silently dropped', () => {
+    const api = makeFakeOtelApi();
+    const tracer = otelTracer({ api });
+    const s = tracer.startSpan('x');
+    s.end();
+    s.setStatus('error', 'too late');
+    expect(api.recorded[0]!.status).toBeUndefined();
+  });
+
+  test('recordException after end() is silently dropped', () => {
+    const api = makeFakeOtelApi();
+    const tracer = otelTracer({ api });
+    const s = tracer.startSpan('x');
+    s.end();
+    s.recordException(new Error('after-end'));
+    expect(api.recorded[0]!.exceptions).toEqual([]);
+  });
+
+  test('startSpan startTime option is forwarded to OTel', () => {
+    const api = makeFakeOtelApi();
+    const tracer = otelTracer({ api });
+    const t0 = Date.now() - 5000;
+    const s = tracer.startSpan('back-dated', { startTimeMs: t0 });
+    s.end();
+    expect(api.recorded[0]!.startTime).toBe(t0);
+  });
+
+  test('end() with an explicit endTime forwards it to OTel', () => {
+    const api = makeFakeOtelApi();
+    const tracer = otelTracer({ api });
+    const s = tracer.startSpan('x');
+    const t1 = Date.now() + 5000;
+    s.end(t1);
+    expect(api.recorded[0]!.endTime).toBe(t1);
+  });
+
+  test('withActiveSpan on a foreign span (not produced by this tracer) degrades to running fn', () => {
+    const api = makeFakeOtelApi();
+    const tracer = otelTracer({ api });
+    // Hand-craft a Span that the WeakMap will not find.
+    const foreign = {
+      context: () => ({ traceId: '0'.repeat(32), spanId: '0'.repeat(16), traceFlags: 0 }),
+      setAttribute: () => foreign,
+      setStatus: () => foreign,
+      recordException: () => foreign,
+      end: () => {},
+      get ended() { return false; },
+    };
+    let ran = false;
+    const out = tracer.withActiveSpan(foreign as unknown as ReturnType<typeof tracer.startSpan>, () => {
+      ran = true;
+      return 42;
+    });
+    expect(ran).toBe(true);
+    expect(out).toBe(42);
+  });
+
+  test('all SpanKinds map to OTel SpanKind correctly', () => {
+    const api = makeFakeOtelApi();
+    const tracer = otelTracer({ api });
+    const kinds = ['internal', 'server', 'client', 'producer', 'consumer'] as const;
+    for (const k of kinds) {
+      const s = tracer.startSpan(`span-${k}`, { kind: k });
+      s.end();
+    }
+    expect(api.recorded.map(r => r.kind)).toEqual([
+      api.SpanKind.INTERNAL,
+      api.SpanKind.SERVER,
+      api.SpanKind.CLIENT,
+      api.SpanKind.PRODUCER,
+      api.SpanKind.CONSUMER,
+    ]);
+  });
+
+  test('user-supplied tracer wins over the auto-resolved one', () => {
+    const api = makeFakeOtelApi();
+    let userTracerCalls = 0;
+    const userTracer = {
+      startSpan(name: string): OtelSpanLike {
+        userTracerCalls++;
+        return {
+          spanContext: () => ({ traceId: 'a'.repeat(32), spanId: 'b'.repeat(16), traceFlags: 1 }),
+          setAttribute: function (): OtelSpanLike { return this; },
+          setStatus: function (): OtelSpanLike { return this; },
+          recordException: (): void => {},
+          end: (): void => {},
+          isRecording: (): boolean => true,
+        };
+      },
+    };
+    const tracer = otelTracer({ api, tracer: userTracer });
+    const s = tracer.startSpan('via-user-tracer');
+    s.end();
+    expect(userTracerCalls).toBe(1);
+    // The api's internal recorded array is bypassed — user tracer
+    // produced the span, not api.trace.getTracer.
+    expect(api.recorded.length).toBe(0);
+  });
 });

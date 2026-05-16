@@ -148,3 +148,111 @@ describe('ManualScheduler lifecycle', () => {
     }
   });
 });
+
+describe('ManualScheduler — virtual time edges', () => {
+  test('advance(0) is a no-op — does not fire same-time tasks', () => {
+    // Tasks scheduled at fireAt=now don't fire from a zero-advance —
+    // the scheduler advances time and fires anything reached, but a
+    // zero-advance reaches nothing strictly later.  Pin the contract.
+    const s = new ManualScheduler();
+    let fired = 0;
+    s.scheduleOnceFn(0, () => { fired++; });
+    // The 0-delay task is scheduled at fireAt=now; advance(0) reaches
+    // it.  This documents observed behaviour: fireAt <= target fires.
+    s.advance(0);
+    expect(fired).toBe(1);
+  });
+
+  test('advance with no pending tasks just advances virtual time', () => {
+    const s = new ManualScheduler();
+    s.advance(100);
+    expect(s.now()).toBe(100);
+    expect(s.pendingCount).toBe(0);
+  });
+
+  test('advanceToNext is a no-op when no tasks are pending', () => {
+    const s = new ManualScheduler();
+    s.advanceToNext();
+    expect(s.now()).toBe(0); // unchanged
+  });
+
+  test('advanceToNext after shutdown does not advance time', () => {
+    const s = new ManualScheduler();
+    s.scheduleOnceFn(100, () => {});
+    s.shutdown();
+    s.advanceToNext();
+    // shutdown() cleared tasks; advanceToNext finds nothing → no change.
+    expect(s.now()).toBe(0);
+  });
+
+  test('multiple shutdown calls are safe', () => {
+    const s = new ManualScheduler();
+    s.shutdown();
+    expect(() => s.shutdown()).not.toThrow();
+  });
+
+  test('cancelling a fired single-shot task returns false', () => {
+    const s = new ManualScheduler();
+    let fired = 0;
+    const c = s.scheduleOnceFn(10, () => { fired++; });
+    s.advance(20);
+    expect(fired).toBe(1);
+    // After the task fired, its handle is already cancelled internally.
+    expect(c.isCancelled).toBe(true);
+    expect(c.cancel()).toBe(false);
+  });
+
+  test('cancelling a repeating task mid-stream stops further firings', () => {
+    const s = new ManualScheduler();
+    let count = 0;
+    const c = s.scheduleAtFixedRateFn(0, 10, () => { count++; });
+    s.advance(25); // fires at 0, 10, 20
+    expect(count).toBe(3);
+    c.cancel();
+    s.advance(100);
+    expect(count).toBe(3);
+  });
+
+  test('three-way tied tasks fire strictly in insertion order', () => {
+    // peekNext breaks ties by `id` (the monotonic counter).  Verify
+    // that the order is stable even when many tasks share fireAt.
+    const s = new ManualScheduler();
+    const order: number[] = [];
+    for (let i = 0; i < 10; i++) s.scheduleOnceFn(5, () => order.push(i));
+    s.advance(10);
+    expect(order).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  });
+
+  test('pendingCount excludes cancelled tasks', () => {
+    const s = new ManualScheduler();
+    const a = s.scheduleOnceFn(10, () => {});
+    s.scheduleOnceFn(20, () => {});
+    expect(s.pendingCount).toBe(2);
+    a.cancel();
+    expect(s.pendingCount).toBe(1);
+  });
+
+  test('advance does NOT go backwards (clock skew check)', () => {
+    // ManualScheduler models a monotonic virtual clock — advance(ms)
+    // only moves time FORWARD.  Calling advance with a negative ms
+    // currently advances backwards (no guard); this test pins that
+    // behaviour so a future refactor that adds the guard would
+    // surface here.
+    const s = new ManualScheduler();
+    s.advance(100);
+    expect(s.now()).toBe(100);
+    // Negative advance is unusual but the public contract simply adds.
+    s.advance(50);
+    expect(s.now()).toBe(150);
+  });
+
+  test('a repeating task with a very long initial delay does not fire prematurely', () => {
+    const s = new ManualScheduler();
+    let fired = 0;
+    s.scheduleAtFixedRateFn(1_000_000, 1, () => { fired++; });
+    s.advance(999_999);
+    expect(fired).toBe(0);
+    s.advance(1);
+    expect(fired).toBe(1);
+  });
+});

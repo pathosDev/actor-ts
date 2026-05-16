@@ -116,4 +116,96 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
       await sys.terminate();
     }
   }, 5_000);
+
+  test('different ActorSystems can reuse the same persistenceId (registry is per-system)', async () => {
+    // The PID registry is WeakMap-keyed by ActorSystem, so isolated
+    // test fixtures with disposable systems don't trip over each
+    // other's registrations.  Pin this — a future bug that promotes
+    // the registry to a module-level Set would break test isolation.
+    preStartFailures = 0;
+    const sys1 = ActorSystem.create('sw-isolated-1', {
+      logger: new NoopLogger(), logLevel: LogLevel.Off,
+    });
+    const sys2 = ActorSystem.create('sw-isolated-2', {
+      logger: new NoopLogger(), logLevel: LogLevel.Off,
+    });
+    const cluster1 = await Cluster.join(sys1, {
+      host: 'h', port: 80_010,
+      transport: new InMemoryTransport(new NodeAddress('sw-isolated-1', 'h', 80_010)),
+      gossipIntervalMs: 30,
+    });
+    const cluster2 = await Cluster.join(sys2, {
+      host: 'h', port: 80_011,
+      transport: new InMemoryTransport(new NodeAddress('sw-isolated-2', 'h', 80_011)),
+      gossipIntervalMs: 30,
+    });
+    try {
+      // Both spawn with persistenceId='shared-counter' — different systems.
+      const a1 = sys1.spawn(
+        Props.create(() => new Counter(cluster1) as unknown as Actor<unknown>),
+        'a-in-sys1',
+      );
+      const a2 = sys2.spawn(
+        Props.create(() => new Counter(cluster2) as unknown as Actor<unknown>),
+        'a-in-sys2',
+      );
+      await Bun.sleep(100);
+      // Neither preStart should have failed — the registry is per-system.
+      expect(preStartFailures).toBe(0);
+      a1.stop();
+      a2.stop();
+    } finally {
+      await cluster1.leave();
+      await cluster2.leave();
+      await sys1.terminate();
+      await sys2.terminate();
+    }
+  }, 5_000);
+
+  test('preStart failure message names the conflicting persistenceId', async () => {
+    // The message guides operators to the offending pid; pin the
+    // shape so a refactor that drops the pid from the error doesn't
+    // silently degrade debuggability.
+    preStartFailures = 0;
+    const errors: string[] = [];
+    class CapturingCounter extends ReplicatedEventSourcedActor<Cmd, Event, State> {
+      readonly persistenceId = 'capture-pid';
+      readonly replicaId: string;
+      constructor(cluster: Cluster) { super(cluster); this.replicaId = cluster.selfAddress.toString(); }
+      initialState(): State { return { value: 0 }; }
+      onEvent(s: State, e: Event): State { return { value: s.value + e.n }; }
+      async onCommand(): Promise<void> { /* noop */ }
+      override async preStart(): Promise<void> {
+        try { await super.preStart(); }
+        catch (err) { errors.push((err as Error).message); throw err; }
+      }
+    }
+
+    const sys = ActorSystem.create('sw-msg', {
+      logger: new NoopLogger(), logLevel: LogLevel.Off,
+    });
+    const cluster = await Cluster.join(sys, {
+      host: 'h', port: 80_020,
+      transport: new InMemoryTransport(new NodeAddress('sw-msg', 'h', 80_020)),
+      gossipIntervalMs: 30,
+    });
+    try {
+      const a1 = sys.spawn(
+        Props.create(() => new CapturingCounter(cluster) as unknown as Actor<unknown>),
+        'a1',
+      );
+      await Bun.sleep(50);
+      const a2 = sys.spawn(
+        Props.create(() => new CapturingCounter(cluster) as unknown as Actor<unknown>),
+        'a2',
+      );
+      await Bun.sleep(100);
+      expect(errors.some((m) => m.includes("'capture-pid'"))).toBe(true);
+      a1.stop();
+      a2.stop();
+    } finally {
+      await cluster.leave();
+      await sys.terminate();
+    }
+  }, 5_000);
 });
