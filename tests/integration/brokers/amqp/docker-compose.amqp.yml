@@ -1,0 +1,44 @@
+# RabbitMQ live-integration suite (B.5 / #23).
+#
+# RabbitMQ takes ~10s to boot — slower than MinIO/Mosquitto but the
+# de-facto AMQP 0.9.1 reference broker.  The compose file pins a
+# specific 3.x release (alpine variant for smaller pulls).
+#
+# Run locally:
+#   bun run test:integration:amqp
+#   bun run test:integration:amqp:teardown
+
+name: actor-ts-integration-amqp
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-alpine
+    # Default credentials are `guest:guest` which only accepts
+    # connections from localhost on a non-Erlang-cookie setup.  The
+    # alpine image relaxes the loopback-only restriction so any
+    # client on the compose bridge can authenticate.
+    healthcheck:
+      # `rabbitmq-diagnostics check_running` exits 0 once the broker
+      # is ready to accept connections.  Faster than `check_port_connectivity`
+      # since it doesn't require the management plugin.
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    networks:
+      amqpnet: {}
+
+  runner:
+    build:
+      context: ../../../..
+      dockerfile: tests/integration/brokers/amqp/Dockerfile.runner
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+    networks:
+      amqpnet: {}
+
+networks:
+  amqpnet: {}

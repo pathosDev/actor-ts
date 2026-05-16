@@ -1,0 +1,23 @@
+# Runner image for the RabbitMQ/AMQP live-integration suite (B.5 / #23).
+
+FROM oven/bun:debian
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY package.json bun.lock* tsconfig.json ./
+
+RUN bun install --no-progress --production --ignore-scripts
+
+# `amqplib` is an optional peer dep.
+RUN bun add amqplib --no-save
+
+COPY src/ src/
+COPY tests/ tests/
+
+ENV NODE_ENV=production
+
+CMD ["bun", "tests/integration/brokers/amqp/runner.ts"]
