@@ -28,7 +28,7 @@
  *      every change, not just on initial Subscribe.
  */
 
-import { waitFor, type Scenario } from './types.js';
+import { clusterLiveNodes, waitFor, type Scenario } from './types.js';
 
 interface SubscribedResponse {
   readonly refs: ReadonlyArray<string>;
@@ -52,24 +52,11 @@ async function deregisterExtra(host: string, controlPort: number): Promise<void>
   if (!res.ok) throw new Error(`/test/receptionist/deregister-extra on ${host} → ${res.status}`);
 }
 
-async function liveNodes(allNodes: ReadonlyArray<string>, controlPort: number): Promise<string[]> {
-  const checks = await Promise.all(allNodes.map(async (h) => {
-    try {
-      const res = await fetch(`http://${h}:${controlPort}/test/ping`, {
-        signal: AbortSignal.timeout(1_000),
-      });
-      return res.ok ? h : null;
-    } catch {
-      return null;
-    }
-  }));
-  return checks.filter((h): h is string => h !== null);
-}
 
 export const scenario: Scenario = {
   name: '08-receptionist-subscribe',
   async run(ctx) {
-    const live = await liveNodes(ctx.nodes, ctx.controlPort);
+    const live = await clusterLiveNodes(ctx.nodes, ctx.controlPort);
     if (live.length < 2) {
       console.log(`[08] skipping — need >=2 live nodes for cross-node Subscribe propagation, have ${live.length}`);
       return;

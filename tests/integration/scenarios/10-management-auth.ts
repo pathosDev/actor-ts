@@ -26,29 +26,16 @@
  * outside the allowlist would 403 before reaching the auth layer.
  */
 
-import { type Scenario } from './types.js';
+import { clusterLiveNodes, type Scenario } from './types.js';
 
 const TOKEN = 'integration-test-token';  // Mirrors MGMT_TOKEN in compose env.
 const MGMT_PORT_DEFAULT = 8080;
 
-async function liveNodes(allNodes: ReadonlyArray<string>, controlPort: number): Promise<string[]> {
-  const checks = await Promise.all(allNodes.map(async (h) => {
-    try {
-      const res = await fetch(`http://${h}:${controlPort}/test/ping`, {
-        signal: AbortSignal.timeout(1_000),
-      });
-      return res.ok ? h : null;
-    } catch {
-      return null;
-    }
-  }));
-  return checks.filter((h): h is string => h !== null);
-}
 
 export const scenario: Scenario = {
   name: '10-management-auth',
   async run(ctx) {
-    const live = await liveNodes(ctx.nodes, ctx.controlPort);
+    const live = await clusterLiveNodes(ctx.nodes, ctx.controlPort);
     if (live.length === 0) {
       console.log('[10] skipping — no live nodes');
       return;

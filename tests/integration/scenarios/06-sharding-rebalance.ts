@@ -16,7 +16,7 @@
  * that holds entities and works with the remaining cluster size.
  */
 
-import { sleep, waitFor, type Scenario } from './types.js';
+import { clusterLiveNodes, sleep, waitFor, type Scenario } from './types.js';
 
 const NUM_ENTITIES = 30;
 const ENTITY_IDS = Array.from({ length: NUM_ENTITIES }, (_, i) => `e-${i + 1}`);
@@ -53,26 +53,11 @@ async function leaveCmd(host: string, controlPort: number): Promise<void> {
   if (!res.ok) throw new Error(`/test/leave on ${host} → ${res.status}`);
 }
 
-/** Quick reachability probe — returns the subset of nodes whose
- *  `/test/ping` answered.  Used to skip departed nodes after 05. */
-async function liveNodes(allNodes: ReadonlyArray<string>, controlPort: number): Promise<string[]> {
-  const checks = await Promise.all(allNodes.map(async (h) => {
-    try {
-      const res = await fetch(`http://${h}:${controlPort}/test/ping`, {
-        signal: AbortSignal.timeout(1_000),
-      });
-      return res.ok ? h : null;
-    } catch {
-      return null;
-    }
-  }));
-  return checks.filter((h): h is string => h !== null);
-}
 
 export const scenario: Scenario = {
   name: '06-sharding-rebalance',
   async run(ctx) {
-    const live = await liveNodes(ctx.nodes, ctx.controlPort);
+    const live = await clusterLiveNodes(ctx.nodes, ctx.controlPort);
     if (live.length < 3) {
       console.log(`[06] skipping — need >=3 live nodes for a meaningful rebalance, have ${live.length}`);
       return;
@@ -114,7 +99,7 @@ export const scenario: Scenario = {
     await waitFor(
       `cluster removes departed ${victim}`,
       async () => {
-        const post = await liveNodes(stillLive, ctx.controlPort);
+        const post = await clusterLiveNodes(stillLive, ctx.controlPort);
         return post.length === stillLive.length;
       },
       10_000,

@@ -26,7 +26,7 @@
  * top of `controller.ts`.
  */
 
-import { sleep, waitFor, type Scenario } from './types.js';
+import { clusterLiveNodes, sleep, waitFor, type Scenario } from './types.js';
 
 interface WhoResponse {
   readonly host: string;
@@ -49,21 +49,6 @@ async function leave(host: string, controlPort: number): Promise<void> {
   if (!res.ok) throw new Error(`/test/leave on ${host} → ${res.status}: ${await res.text()}`);
 }
 
-/** Filter `ctx.nodes` down to the subset that still answers ping —
- *  earlier scenarios may have left a node already. */
-async function liveNodes(allNodes: ReadonlyArray<string>, controlPort: number): Promise<string[]> {
-  const checks = await Promise.all(allNodes.map(async (h) => {
-    try {
-      const res = await fetch(`http://${h}:${controlPort}/test/ping`, {
-        signal: AbortSignal.timeout(1_000),
-      });
-      return res.ok ? h : null;
-    } catch {
-      return null;
-    }
-  }));
-  return checks.filter((h): h is string => h !== null);
-}
 
 export const scenario: Scenario = {
   name: '05-singleton-failover',
@@ -71,7 +56,7 @@ export const scenario: Scenario = {
     // Earlier scenarios may have left a node — work only with the
     // members that still answer.  Need >=3 for a meaningful
     // failover test (1 host + 2 to elect a new leader).
-    const live = await liveNodes(ctx.nodes, ctx.controlPort);
+    const live = await clusterLiveNodes(ctx.nodes, ctx.controlPort);
     if (live.length < 3) {
       console.log(`[05] skipping — need >=3 live nodes for failover, have ${live.length}`);
       return;

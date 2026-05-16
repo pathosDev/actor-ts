@@ -21,7 +21,7 @@
  * total below the expected.
  */
 
-import { sleep, waitFor, type Scenario } from './types.js';
+import { clusterLiveNodes, sleep, waitFor, type Scenario } from './types.js';
 
 const KEY = 'integration-gcounter';
 const INCREMENTS_PER_NODE = 50;
@@ -46,24 +46,11 @@ async function readValue(host: string, controlPort: number): Promise<number | nu
   return body.value;
 }
 
-async function liveNodes(allNodes: ReadonlyArray<string>, controlPort: number): Promise<string[]> {
-  const checks = await Promise.all(allNodes.map(async (h) => {
-    try {
-      const res = await fetch(`http://${h}:${controlPort}/test/ping`, {
-        signal: AbortSignal.timeout(1_000),
-      });
-      return res.ok ? h : null;
-    } catch {
-      return null;
-    }
-  }));
-  return checks.filter((h): h is string => h !== null);
-}
 
 export const scenario: Scenario = {
   name: '07-gcounter-concurrent',
   async run(ctx) {
-    const live = await liveNodes(ctx.nodes, ctx.controlPort);
+    const live = await clusterLiveNodes(ctx.nodes, ctx.controlPort);
     if (live.length < 2) {
       console.log(`[07] skipping — need >=2 live nodes for cross-node convergence, have ${live.length}`);
       return;

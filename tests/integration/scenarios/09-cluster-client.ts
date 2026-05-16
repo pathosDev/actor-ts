@@ -19,7 +19,7 @@
 
 import { ClusterClient } from '../../../src/cluster/ClusterClient.js';
 import { NoopLogger } from '../../../src/Logger.js';
-import { sleep, type Scenario } from './types.js';
+import { clusterLiveNodes, sleep, type Scenario } from './types.js';
 
 interface PongReply {
   readonly kind: 'pong';
@@ -27,24 +27,11 @@ interface PongReply {
   readonly receivedAt: number;
 }
 
-async function liveNodes(allNodes: ReadonlyArray<string>, controlPort: number): Promise<string[]> {
-  const checks = await Promise.all(allNodes.map(async (h) => {
-    try {
-      const res = await fetch(`http://${h}:${controlPort}/test/ping`, {
-        signal: AbortSignal.timeout(1_000),
-      });
-      return res.ok ? h : null;
-    } catch {
-      return null;
-    }
-  }));
-  return checks.filter((h): h is string => h !== null);
-}
 
 export const scenario: Scenario = {
   name: '09-cluster-client',
   async run(ctx) {
-    const live = await liveNodes(ctx.nodes, ctx.controlPort);
+    const live = await clusterLiveNodes(ctx.nodes, ctx.controlPort);
     if (live.length < 1) {
       console.log('[09] skipping — no live nodes to contact');
       return;
