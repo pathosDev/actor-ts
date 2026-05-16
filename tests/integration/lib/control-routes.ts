@@ -54,6 +54,7 @@ import {
 import { CoordinatedShutdownId } from '../../../src/CoordinatedShutdown.js';
 import { exportPrometheus } from '../../../src/metrics/PrometheusExporter.js';
 import { metricsOf } from '../../../src/metrics/MetricsExtension.js';
+import { DnsSeedProvider } from '../../../src/discovery/DnsSeedProvider.js';
 import { LWWRegister } from '../../../src/crdt/LWWRegister.js';
 import { GCounter } from '../../../src/crdt/GCounter.js';
 import type { WriteConsistency } from '../../../src/crdt/DistributedData.js';
@@ -805,6 +806,40 @@ export function makeControlRoutes(
           pubsubReceiver.tell({ kind: 'snapshot', replyTo: collector });
         });
         return completeJson(Status.OK, snapshot);
+      } catch (e) {
+        return completeJson(Status.InternalServerError, { error: (e as Error).message });
+      }
+    }))),
+
+    // ============== Seed Discovery scenario (#313 — scenario 15) ==============
+
+    // GET /test/discovery/dns-lookup?hostname=X[&port=Y]
+    // Runs `DnsSeedProvider.lookup()` against docker's embedded
+    // DNS for service name X.  Returns the resolved NodeAddress
+    // list as JSON.  Exercises the same code path that a real
+    // K8s headless-service / DNS-based bootstrap would take.
+    path('discovery', path('dns-lookup', get(async (req) => {
+      const hostname = queryParam(req, 'hostname');
+      const port = Number(queryParam(req, 'port') ?? '9000');
+      if (!hostname) return complete(Status.BadRequest, 'missing ?hostname=');
+      if (!Number.isInteger(port) || port < 1) return complete(Status.BadRequest, 'port must be a positive integer');
+      try {
+        const provider = new DnsSeedProvider({
+          hostname,
+          port,
+          systemName: 'integration',
+          cacheTtlMs: 0,  // disable cache so each call hits DNS fresh
+        });
+        const startedAt = Date.now();
+        const addresses = await provider.lookup();
+        return completeJson(Status.OK, {
+          hostname,
+          port,
+          systemName: 'integration',
+          addresses: addresses.map((a) => a.toString()),
+          ips: addresses.map((a) => a.host),
+          elapsedMs: Date.now() - startedAt,
+        });
       } catch (e) {
         return completeJson(Status.InternalServerError, { error: (e as Error).message });
       }
