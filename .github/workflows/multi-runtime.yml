@@ -1,0 +1,113 @@
+name: multi-runtime
+
+# Verifies actor-ts boots and the core actor + cluster paths work
+# identically across Bun, Node.js, and Deno.  The smoke test in
+# tests/smoke/smoke.mjs is intentionally runtime-neutral — same
+# script, three invocations.  Job matrix keeps the three runs
+# parallel so the wall clock is bounded by the slowest runtime
+# (Deno, ~30s including the build step).
+#
+# Bun additionally runs the full `bun test` suite — the unit /
+# multi-node suite uses bun:test's APIs and isn't portable to
+# Node/Deno.  Those two runtimes are exercised only via the smoke
+# script + the build output (`dist/`), which is the surface
+# end-users would consume.
+#
+# Triggers identical to test.yml — any change that could plausibly
+# affect a test outcome.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'tsconfig.json'
+      - 'tsconfig.dev.json'
+      - '.github/workflows/multi-runtime.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'tsconfig.json'
+      - 'tsconfig.dev.json'
+      - '.github/workflows/multi-runtime.yml'
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      # fail-fast: false so a Deno-only regression doesn't mask a
+      # Node-only one.  Each runtime gets its own red mark.
+      fail-fast: false
+      matrix:
+        runtime: [bun, node, deno]
+    name: smoke (${{ matrix.runtime }})
+    steps:
+      - uses: actions/checkout@v6
+
+      # Every job needs Bun even for the Node/Deno runs because the
+      # build step (`bun run build`) emits `dist/` which Node/Deno
+      # consume.  Bun's `setup-bun@v2` is fast (~3s cached) so the
+      # overhead is acceptable.
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node.js
+        if: matrix.runtime == 'node'
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Setup Deno
+        if: matrix.runtime == 'deno'
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install
+        run: bun install
+
+      # Bun + Deno can load TS directly.  Node 20 cannot — needs
+      # the compiled output in `dist/`.  Build only for runtimes
+      # that need it; saves ~20s on Bun's smoke job.
+      - name: Build (tsc → dist/)
+        if: matrix.runtime != 'bun'
+        run: bun run build
+
+      - name: Smoke (Bun)
+        if: matrix.runtime == 'bun'
+        run: bun run smoke:bun
+
+      - name: Smoke (Node)
+        if: matrix.runtime == 'node'
+        run: bun run smoke:node
+
+      - name: Smoke (Deno)
+        if: matrix.runtime == 'deno'
+        run: bun run smoke:deno
+
+  # The full bun:test unit suite runs only under Bun (Bun.serve,
+  # better-sqlite3 native compile, fastify autoload — these are
+  # Bun-specific or Bun-tested-only).  This job mirrors the
+  # `test.yml` Bun job but without the README-badge-update side
+  # effect — that stays in test.yml as the canonical updater.
+  unit-bun:
+    runs-on: ubuntu-latest
+    name: bun unit suite
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install
+      - run: bun run typecheck
+      - run: bun test
