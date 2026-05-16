@@ -4,24 +4,25 @@ This document tracks the planned direction.  Nothing here is committed work — 
 
 ## Status
 
-- Post-v0.8.0 + 8 security-hardening fixes (`d454079` → `4cac92a`).
-- ~1 720+ tests green; bug-backlog at 0.
-- A full audit-catalog of ~184 follow-up items is tracked in the issue tracker — security findings, framework features, code-quality refactors.  Filter by label `security` + `severity: <tier>` or by title prefix `[Security] ` / `[Feature] `.
+- Post-v0.9.1 + production-readiness audit response (`[Unreleased]` window).
+- 1 838 unit tests green + 15 real-network multi-node integration scenarios green; bug-backlog at 0.
+- A full audit-catalog of ~175 follow-up items is tracked in the issue tracker — security findings, framework features, code-quality refactors.  Filter by label `security` + `severity: <tier>` or by title prefix `[Security] ` / `[Feature] `.
 
 ## Done since the last roadmap update
 
-- `mget` / `mset` on the `Cache` interface (#14) — landed in v0.7.0
-- MQTT 5.0 user properties + reason codes (#13) — v0.7.0
-- Cluster-management extended HTTP endpoints (#56) — v0.8.0
-- Re-encryption sweep + journal-to-journal copy + ClusterClient + WriteConsistency/ReadConsistency — v0.8.0
-- 8 security-hardening fixes — wire-frame DoS cap, FS path-traversal guard, Memcached CRLF, gossip version cap, snapshot seq integrity, WebSocket frame cap, hello-handshake hijack defense, idempotency body-fingerprint
-
-## Highest priority (critical / high security)
-
-- DurableState revision tampering (CRITICAL) — #116
-- ClusterClient askId predictability (HIGH) — #120
-- Master-key rotation sweep race (HIGH) — #109
-- LeaseMajority split-brain at network-latency (HIGH) — #142
+- **Production-readiness audit response — 5 technical points, all landed in the `[Unreleased]` window:**
+  - DurableState revision tampering — opt-in HMAC-SHA256 integrity (#116, CRITICAL)
+  - ClusterClient askId predictability — `crypto.randomUUID()` (#120, HIGH)
+  - Master-key rotation sweep race — durable resume tokens + keyring-completeness pre-check (#109, HIGH)
+  - LeaseMajority split-brain — epoch-gated acquires + release-on-abandon + optional fencing tokens (#142, HIGH)
+  - Bounded mailbox is now the default — 10 000 / `drop-head` with `actor_mailbox_dropped_total` metric (#310)
+  - `JsonLogger` + `otelLogger` for OTLP-Logs pipelines (#311)
+  - HTTP route middleware + `BearerTokenAuth` + `IpAllowlist` + `managementRoutes` auth integration (#312)
+  - Real-network multi-node integration tests — docker-compose, tc-netem, 15 scenarios covering cluster primitives end-to-end (#313)
+  - Backend `remoteAddress` wiring for Fastify / Express / Hono (#312 follow-up)
+- v0.7.0 — `mget` / `mset` on the `Cache` interface (#14), MQTT 5.0 user properties + reason codes (#13)
+- v0.8.0 — Cluster-management extended HTTP endpoints (#56), Re-encryption sweep + journal-to-journal copy + ClusterClient + WriteConsistency/ReadConsistency
+- v0.8.0 — 8 security-hardening fixes (wire-frame DoS cap, FS path-traversal guard, Memcached CRLF, gossip version cap, snapshot seq integrity, WebSocket frame cap, hello-handshake hijack defense, idempotency body-fingerprint)
 
 ## Feature-parity quick wins
 
@@ -63,4 +64,4 @@ This document tracks the planned direction.  Nothing here is committed work — 
 - Backwards-compatibility guarantees of any kind — pre-1.0.
 - Pull requests — see `README.md` → "Pull requests are not accepted, but well-shaped issues are."
 
-→ Full catalog (all ~184 items): GitHub issues, filterable by title prefix `[Security]` / `[Feature]` and the `security` / `severity: …` labels.
+→ Full catalog (all ~175 items): GitHub issues, filterable by title prefix `[Security]` / `[Feature]` and the `security` / `severity: …` labels.

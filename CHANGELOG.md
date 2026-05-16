@@ -65,15 +65,53 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   locally on Docker Desktop and in
   `.github/workflows/integration.yml`; the workflow is
   triggered by pushes to `main`, manual dispatch, and a nightly
-  schedule.  Four scenarios:
-  - 01 — membership convergence (smoke test)
-  - 02 — 2:3 split-brain with partition + heal verification
-  - 03 — Receptionist gossip-convergence over a shared
+  schedule.  Fifteen scenarios covering the cluster's load-bearing
+  primitives:
+  - **01** — membership convergence (smoke test)
+  - **02** — 2:3 split-brain with partition + heal verification
+  - **03** — Receptionist gossip-convergence over a shared
     `ServiceKey` across all 5 nodes, with partition + heal
-  - 04 — DistributedData `LWWRegister` quorum reads/writes
+  - **04** — DistributedData `LWWRegister` quorum reads/writes
     during a 50ms `tc-netem` egress latency storm — proves
     `majority`-consistency operations survive a real network
     slowdown
+  - **05** — Cluster Singleton failover after the host node
+    `cluster.leave()`s; new leader's manager spawns the
+    singleton, proxies from every remaining node converge
+  - **06** — Cluster Sharding rebalance: 30 entities warmed up,
+    victim node leaves, 8 ex-victim entities relocate to
+    surviving regions via the coordinator's HandOff path
+  - **07** — Concurrent `GCounter` increments from all 5 nodes
+    converge to the exact expected total (proves CRDT merge +
+    `ddata-gossip` wire path under write pressure)
+  - **08** — Receptionist `Subscribe` continuous-listing
+    notifications fire on register / deregister, observable
+    from every cluster node within gossip-propagation latency
+  - **09** — External `ClusterClient` (NOT a cluster member)
+    makes 100 sequential asks against `/user/echo`; exercises
+    the #120 `randomUUID` ask-id path end-to-end
+  - **10** — Management HTTP auth end-to-end: 401 without
+    token, 200 with valid token, 404 with valid token + fake
+    address, /health stays anonymous (probe contract)
+  - **11** — `PersistentActor` event-sourcing + snapshot +
+    replay: 5 increments → snapshot at seq=3 → kill → respawn
+    triggers `recover()` → snapshot-load + replay restores
+    state.  Two-kill cycle verifies determinism.
+  - **12** — `DistributedPubSub` topic fan-out: 15 events
+    published from two different nodes, all 5 subscribers
+    receive both bursts in order
+  - **13** — `CoordinatedShutdown` pipeline progresses through
+    early (`BeforeServiceUnbind`) + late
+    (`BeforeActorSystemTerminate`) phases on a victim node;
+    markers POST'd to a peer observer verify both fired in
+    chronological order
+  - **14** — Bounded mailbox + `actor_mailbox_dropped_total`
+    metric: bombard a slow actor with 15 000 messages, verify
+    ~5 000 drops are counted in the Prometheus output with
+    correct `{class, path, reason}` labels
+  - **15** — `DnsSeedProvider` against docker's embedded DNS:
+    resolves every peer hostname, validates IPv4 shape and
+    `<systemName>@<host>:<port>` stamping
 - **Backend `remoteAddress` wiring** (#312 follow-up) — the
   Fastify, Express, and Hono backends now populate
   `HttpRequest.remoteAddress` from the socket peer
