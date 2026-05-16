@@ -14,7 +14,10 @@ name: actor-ts-integration-kafka
 
 services:
   redpanda:
-    image: redpandadata/redpanda:v25.1.1
+    # `latest` deliberately — integration tests want to surface
+    # upstream Redpanda regressions as soon as they ship.  Production
+    # users pin a specific version themselves.
+    image: redpandadata/redpanda:latest
     # `redpanda start` with the minimal dev-mode flags.  Default
     # listener on 9092 advertised as `redpanda:9092` so the runner
     # service in the compose bridge can connect via the service name.

@@ -11,7 +11,10 @@ name: actor-ts-integration-redis-streams
 
 services:
   redis:
-    image: redis:7-alpine
+    # `latest` deliberately — integration tests want to surface
+    # upstream Redis regressions as soon as they ship.  Production
+    # users pin a specific version themselves.
+    image: redis:latest
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]

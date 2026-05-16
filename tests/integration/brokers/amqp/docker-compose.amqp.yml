@@ -12,7 +12,11 @@ name: actor-ts-integration-amqp
 
 services:
   rabbitmq:
-    image: rabbitmq:3.13-alpine
+    # `latest` deliberately — integration tests want to surface
+    # upstream RabbitMQ regressions as soon as they ship, NOT
+    # whenever someone remembers to bump a pin.  Production users
+    # pin a specific version themselves.
+    image: rabbitmq:latest
     # Default credentials are `guest:guest` which only accepts
     # connections from localhost on a non-Erlang-cookie setup.  The
     # alpine image relaxes the loopback-only restriction so any

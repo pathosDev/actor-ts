@@ -13,7 +13,10 @@ name: actor-ts-integration-mqtt
 
 services:
   mosquitto:
-    image: eclipse-mosquitto:2.0
+    # `latest` deliberately — integration tests want to surface
+    # upstream Mosquitto regressions as soon as they ship.  Production
+    # users pin a specific version themselves.
+    image: eclipse-mosquitto:latest
     volumes:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
     # Quick health probe — `mosquitto_sub` ships with the image and

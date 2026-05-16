@@ -18,7 +18,10 @@ name: actor-ts-integration-k8s
 
 services:
   k3s:
-    image: rancher/k3s:v1.31.3-k3s1
+    # `latest` deliberately — integration tests want to surface
+    # upstream K8s API regressions as soon as they ship.  Production
+    # users pin a specific version themselves.
+    image: rancher/k3s:latest
     # k3s server runs with privileged because it needs to mount its
     # own cgroups + iptables for kube-proxy.  This is a test-only
     # container on a dev/CI host — the security trade-off is

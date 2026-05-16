@@ -12,7 +12,10 @@ name: actor-ts-integration-nats
 
 services:
   nats:
-    image: nats:2.11-alpine
+    # `latest` deliberately — integration tests want to surface
+    # upstream NATS regressions as soon as they ship.  Production
+    # users pin a specific version themselves.
+    image: nats:latest
     # `--port 4222` is the default but make it explicit.  `-DV`
     # enables debug + verbose logging — helpful when a scenario
     # behaves unexpectedly.  Comment out for production-style runs.
