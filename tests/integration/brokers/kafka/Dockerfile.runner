@@ -1,0 +1,24 @@
+# Runner image for the Redpanda/Kafka live-integration suite (B.4 / #22).
+
+FROM oven/bun:debian
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY package.json bun.lock* tsconfig.json ./
+
+RUN bun install --no-progress --production --ignore-scripts
+
+# `kafkajs` is an optional peer dep — pull it in explicitly so the
+# adapter's lazy import resolves.
+RUN bun add kafkajs --no-save
+
+COPY src/ src/
+COPY tests/ tests/
+
+ENV NODE_ENV=production
+
+CMD ["bun", "tests/integration/brokers/kafka/runner.ts"]

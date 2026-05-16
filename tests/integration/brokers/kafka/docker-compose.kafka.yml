@@ -1,0 +1,57 @@
+# Redpanda live-integration suite (B.4 / #22).
+#
+# Redpanda is a Kafka-protocol-compatible broker that boots in ~2s
+# vs a real Kafka cluster's ~30s+ Zookeeper boot.  For broker-level
+# correctness tests against the Kafka protocol, Redpanda is the
+# right cost/coverage trade — the framework adapter (kafkajs)
+# speaks pure Kafka protocol so it can't tell the difference.
+#
+# Run locally:
+#   bun run test:integration:kafka
+#   bun run test:integration:kafka:teardown
+
+name: actor-ts-integration-kafka
+
+services:
+  redpanda:
+    image: redpandadata/redpanda:v25.1.1
+    # `redpanda start` with the minimal dev-mode flags.  Default
+    # listener on 9092 advertised as `redpanda:9092` so the runner
+    # service in the compose bridge can connect via the service name.
+    command:
+      - redpanda
+      - start
+      - --kafka-addr=internal://0.0.0.0:9092
+      - --advertise-kafka-addr=internal://redpanda:9092
+      - --rpc-addr=0.0.0.0:33145
+      - --advertise-rpc-addr=redpanda:33145
+      - --mode=dev-container
+      - --smp=1
+      - --memory=512M
+      - --reserve-memory=0M
+      - --overprovisioned
+      - --node-id=0
+      - --check=false
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "info"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks:
+      kafkanet: {}
+
+  runner:
+    build:
+      context: ../../../..
+      dockerfile: tests/integration/brokers/kafka/Dockerfile.runner
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_CLIENT_ID: actor-ts-runner
+    networks:
+      kafkanet: {}
+
+networks:
+  kafkanet: {}
