@@ -208,4 +208,65 @@ describe('defaultsAdapter — writeVersion (#7)', () => {
       defaults: { 1: { currency: 'USD' } },   // missing defaults[2]
     })).toThrow(/missing defaults\[2\]/);
   });
+
+  test('rejects fractional currentVersion', () => {
+    expect(() => defaultsAdapter<DepositedV2>({
+      manifest: 'X', currentVersion: 2.5, defaults: { 1: { currency: 'USD' } },
+    })).toThrow(/positive integer/);
+  });
+
+  test('rejects fractional writeVersion', () => {
+    expect(() => defaultsAdapter<DepositedV2>({
+      manifest: 'X', currentVersion: 2, writeVersion: 1.5, defaults: { 1: { currency: 'USD' } },
+    })).toThrow(/positive integer/);
+  });
+
+  test('rejects defaults key >= currentVersion (semantically nonsensical)', () => {
+    // A defaults entry at v=currentVersion or later doesn't make sense
+    // — defaults are for filling fields ADDED before the current version.
+    expect(() => defaultsAdapter<DepositedV2>({
+      manifest: 'X',
+      currentVersion: 2,
+      defaults: { 2: { currency: 'USD' } } as never,
+    })).toThrow(/strictly less than currentVersion/);
+  });
+
+  test('rejects non-positive-integer defaults key (e.g. negative)', () => {
+    expect(() => defaultsAdapter<DepositedV2>({
+      manifest: 'X',
+      currentVersion: 2,
+      defaults: { '-1': { currency: 'USD' } } as never,
+    })).toThrow(/positive integers/);
+  });
+});
+
+describe('defaultsSnapshotAdapter — symmetric variant', () => {
+  test('snapshot adapter validates the same edge cases as event adapter', () => {
+    expect(() => defaultsSnapshotAdapter<DepositedV2>({
+      manifest: 'X', currentVersion: 0, defaults: {},
+    })).toThrow(/positive integer/);
+    expect(() => defaultsSnapshotAdapter<DepositedV2>({
+      manifest: 'X', currentVersion: 2, writeVersion: 99, defaults: { 1: { currency: 'USD' } },
+    })).toThrow(/cannot exceed/);
+  });
+
+  test('snapshot adapter at currentVersion writes the payload untouched', () => {
+    const adapter = defaultsSnapshotAdapter<DepositedV2>({
+      manifest: 'BankAccount.State',
+      currentVersion: 2,
+      defaults: { 1: { currency: 'USD' } },
+    });
+    const out = adapter.toJournal({ kind: 'deposited', amount: 5, currency: 'EUR' });
+    expect(out.version).toBe(2);
+    expect(out.payload).toEqual({ kind: 'deposited', amount: 5, currency: 'EUR' });
+  });
+
+  test('snapshot adapter manifest accessor returns the configured manifest', () => {
+    const adapter = defaultsSnapshotAdapter<DepositedV2>({
+      manifest: 'BankAccount.State',
+      currentVersion: 2,
+      defaults: { 1: { currency: 'USD' } },
+    });
+    expect(adapter.manifest()).toBe('BankAccount.State');
+  });
 });

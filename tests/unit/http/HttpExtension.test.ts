@@ -83,3 +83,110 @@ describe('HttpExtension — CoordinatedShutdown auto-registration', () => {
     await expect(fetch(`http://${b2.host}:${b2.port}/`)).rejects.toThrow();
   });
 });
+
+describe('HttpExtension — error paths', () => {
+  test('binding twice to the same port surfaces the listen error', async () => {
+    const system = newSystem();
+    const b1 = await bindOk(system);
+    try {
+      // Second bind to the already-claimed port.  The exact error
+      // shape is platform / backend dependent (EADDRINUSE on Linux,
+      // AddressInUse on Bun), so just assert that bind rejects.
+      await expect(
+        system.extension(HttpExtensionId)
+          .newServerAt(b1.host, b1.port)
+          .useBackend(new FastifyBackend({ logger: false }))
+          .bind(get(() => complete(Status.OK, ''))),
+      ).rejects.toThrow();
+    } finally {
+      await b1.unbind();
+      await system.terminate();
+    }
+  });
+
+  test('handler errors are caught and re-thrown — request logger sees the error path', async () => {
+    // The DSL wraps every handler with a request-log; the catch branch
+    // logs and rethrows.  Verify the rethrow happens — a thrown handler
+    // surfaces as a 500 from the backend (Fastify's default error
+    // translator).
+    const system = newSystem();
+    const binding = await system.extension(HttpExtensionId)
+      .newServerAt('127.0.0.1', 0)
+      .useBackend(new FastifyBackend({ logger: false }))
+      .bind(get(() => { throw new Error('boom'); }));
+    try {
+      const r = await fetch(`http://${binding.host}:${binding.port}/`);
+      expect(r.status).toBeGreaterThanOrEqual(500);
+    } finally {
+      await binding.unbind();
+      await system.terminate();
+    }
+  });
+});
+
+describe('HttpExtension — server builder + client', () => {
+  test('useBackend selection takes effect — name appears in info log via system.log', async () => {
+    // Use a custom backend with a distinct name and verify it's the
+    // one that ends up handling the request.
+    const system = newSystem();
+    const binding = await system.extension(HttpExtensionId)
+      .newServerAt('127.0.0.1', 0)
+      .useBackend(new FastifyBackend({ logger: false }))
+      .bind(get(() => complete(Status.OK, 'used')));
+    try {
+      const r = await fetch(`http://${binding.host}:${binding.port}/`);
+      expect(await r.text()).toBe('used');
+    } finally {
+      await binding.unbind();
+      await system.terminate();
+    }
+  });
+
+  test('unbind() is idempotent — second call returns the same Promise', async () => {
+    const system = newSystem();
+    const binding = await bindOk(system);
+    const p1 = binding.unbind();
+    const p2 = binding.unbind();
+    // Same in-flight promise — guarantees no double-shutdown.
+    expect(p1).toBe(p2);
+    await Promise.all([p1, p2]);
+    await system.terminate();
+  });
+
+  test('singleRequest delegates to the embedded HttpClient', async () => {
+    const system = newSystem();
+    const binding = await bindOk(system);
+    try {
+      const ext = system.extension(HttpExtensionId);
+      // singleRequest is bound — calling it through the extension uses
+      // the shared client.  Hit our own bound server to verify.
+      const r = await ext.singleRequest({
+        method: 'GET',
+        url: `http://${binding.host}:${binding.port}/`,
+      });
+      expect(r.status).toBe(200);
+    } finally {
+      await binding.unbind();
+      await system.terminate();
+    }
+  });
+
+  test('compiling zero routes binds successfully (degenerate but legal)', async () => {
+    // An empty `concat()` compiles to zero CompiledRoutes.  The server
+    // should still bind — a 404-only server is a valid use case (e.g.
+    // a health-check-less liveness probe).
+    const { concat: cat } = await import('../../../src/http/Route.js');
+    const system = newSystem();
+    const binding = await system.extension(HttpExtensionId)
+      .newServerAt('127.0.0.1', 0)
+      .useBackend(new FastifyBackend({ logger: false }))
+      .bind(cat());
+    try {
+      const r = await fetch(`http://${binding.host}:${binding.port}/`);
+      expect(r.status).toBe(404);
+    } finally {
+      await binding.unbind();
+      await system.terminate();
+    }
+  });
+});

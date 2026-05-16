@@ -95,4 +95,53 @@ describe('migratingSnapshotAdapter — symmetric snapshot variant', () => {
     const out = reader.fromJournal(writer.toJournal({ kind: 'deposited', amount: 7, currency: 'EUR' }));
     expect(out).toEqual({ kind: 'deposited', amount: 7, currency: 'USD' });
   });
+
+  test('snapshot adapter rejects writeVersion = 0 / negative / fractional', () => {
+    const chain = buildChain();
+    expect(() => migratingSnapshotAdapter(chain, { writeVersion: 0 })).toThrow(/positive integer/);
+    expect(() => migratingSnapshotAdapter(chain, { writeVersion: -1 })).toThrow(/positive integer/);
+    expect(() => migratingSnapshotAdapter(chain, { writeVersion: 1.5 })).toThrow(/positive integer/);
+  });
+
+  test('snapshot adapter rejects writeVersion > currentVersion symmetrically', () => {
+    expect(() => migratingSnapshotAdapter(buildChain(), { writeVersion: 99 }))
+      .toThrow(/cannot exceed/);
+  });
+});
+
+describe('migratingAdapter — writeVersion edge cases', () => {
+  test('rejects fractional writeVersion', () => {
+    expect(() => migratingAdapter(buildChain(), { writeVersion: 1.5 }))
+      .toThrow(/positive integer/);
+  });
+
+  test('rejects negative writeVersion', () => {
+    expect(() => migratingAdapter(buildChain(), { writeVersion: -1 }))
+      .toThrow(/positive integer/);
+  });
+
+  test('rejects NaN writeVersion', () => {
+    expect(() => migratingAdapter(buildChain(), { writeVersion: Number.NaN }))
+      .toThrow(/positive integer/);
+  });
+
+  test('writeVersion undefined falls back to currentVersion', () => {
+    // No opts at all — same as opts.writeVersion === undefined.
+    const adapter = migratingAdapter(buildChain(), { });
+    const out = adapter.toJournal({ kind: 'deposited', amount: 1, currency: 'USD' });
+    expect(out.version).toBe(2); // chain.currentVersion
+  });
+
+  test('writeVersion = currentVersion explicitly is the same as the default', () => {
+    const adapter = migratingAdapter(buildChain(), { writeVersion: 2 });
+    const out = adapter.toJournal({ kind: 'deposited', amount: 1, currency: 'USD' });
+    expect(out.version).toBe(2);
+    // Payload not downcast — currency stays present.
+    expect((out.payload as DepositedV2).currency).toBe('USD');
+  });
+
+  test('manifest accessor returns the chain manifest', () => {
+    const adapter = migratingAdapter(buildChain());
+    expect(adapter.manifest()).toBe('BankAccount.Deposited');
+  });
 });
