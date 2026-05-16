@@ -26,6 +26,7 @@ import { scenario as gcounterConcurrent } from './scenarios/07-gcounter-concurre
 import { scenario as receptionistSubscribe } from './scenarios/08-receptionist-subscribe.js';
 import { scenario as clusterClient } from './scenarios/09-cluster-client.js';
 import { scenario as managementAuth } from './scenarios/10-management-auth.js';
+import { scenario as persistenceRecovery } from './scenarios/11-persistence-recovery.js';
 import type { ControllerCtx, Scenario } from './scenarios/types.js';
 
 const NODES = (process.env.NODES ?? '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -59,6 +60,7 @@ const scenarios: Scenario[] = [
   receptionistSubscribe,// non-destructive
   clusterClient,        // non-destructive
   managementAuth,       // non-destructive (uses fictional address for /down)
+  persistenceRecovery,  // non-destructive
   shardingRebalance,    // — removes one node via cluster.leave()
   singletonFailover,    // — removes ANOTHER node via cluster.leave()
 ];

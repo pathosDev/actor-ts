@@ -31,6 +31,9 @@ import { DistributedDataId } from '../../src/crdt/index.js';
 import { ClusterSingletonId } from '../../src/cluster/singleton/ClusterSingleton.js';
 import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
 import { ClusterClientReceptionistId } from '../../src/cluster/ClusterClientReceptionist.js';
+import { PersistenceExtensionId } from '../../src/persistence/PersistenceExtension.js';
+import { InMemoryJournal } from '../../src/persistence/journals/InMemoryJournal.js';
+import { InMemorySnapshotStore } from '../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
 import { CounterSingleton } from './lib/singleton.js';
 import {
   SHARDING_TYPE_NAME,
@@ -129,6 +132,17 @@ async function main(): Promise<void> {
     numShards: 32,
   });
   logger.info('ClusterSharding region started', { typeName: SHARDING_TYPE_NAME, numShards: 32 });
+
+  // Persistence — wire an InMemoryJournal + InMemorySnapshotStore
+  // so PersistentActor scenarios (11) can persist events + take
+  // snapshots without a real backend.  Journal lives in this
+  // node-runner process — PoisonPilling the actor stops the
+  // instance but events stay in memory, which is exactly what
+  // scenario 11 needs to verify the replay path.
+  const persistence = system.extension(PersistenceExtensionId);
+  persistence.setJournal(new InMemoryJournal());
+  persistence.setSnapshotStore(new InMemorySnapshotStore());
+  logger.info('PersistenceExtension wired (InMemoryJournal + InMemorySnapshotStore)');
 
   // ClusterClientReceptionist — accepts wire frames from EXTERNAL
   // (non-cluster-member) `ClusterClient` connections.  The handler

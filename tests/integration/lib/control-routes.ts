@@ -40,6 +40,12 @@ import {
   ShardedWhoReply,
   type ShardedCommand,
 } from './sharded-counter.js';
+import {
+  PersistentCounter,
+  type CounterCmd,
+  type CounterStateReply,
+} from './persistent-counter.js';
+import { PoisonPill } from '../../../src/SystemMessages.js';
 import { LWWRegister } from '../../../src/crdt/LWWRegister.js';
 import { GCounter } from '../../../src/crdt/GCounter.js';
 import type { WriteConsistency } from '../../../src/crdt/DistributedData.js';
@@ -156,6 +162,14 @@ class ShardedReplyCollector extends Actor<ShardedWhoReply> {
   }
 }
 
+class CounterStateCollector extends Actor<CounterStateReply> {
+  constructor(private readonly resolve: (r: CounterStateReply) => void) { super(); }
+  override onReceive(r: CounterStateReply): void {
+    this.resolve(r);
+    this.context.stop(this.context.self);
+  }
+}
+
 export interface ControlDeps {
   /** Singleton proxy from `ClusterSingletonId.start(...)`. */
   readonly singletonProxy: ActorRef<SingletonMsg>;
@@ -194,6 +208,25 @@ export function makeControlRoutes(
   // /deregister can remove it.  Closure-local so multiple
   // /register hits on the same node replace (not stack).
   let extraWorkerRef: ActorRef | null = null;
+
+  // Persistent-counter registry for scenario 11.  Each `id` (the
+  // persistenceId) is materialised by an ActorRef on first hit.
+  // PoisonPill clears the entry so the next hit re-spawns (which
+  // triggers journal replay).
+  const persistentCounters = new Map<string, ActorRef<CounterCmd>>();
+  const ensurePersistentCounter = (id: string): ActorRef<CounterCmd> => {
+    const existing = persistentCounters.get(id);
+    if (existing) return existing;
+    // spawnAnonymous (auto-incremented name) so a freshly-killed
+    // counter can be re-spawned without a name collision.  The
+    // PersistentActor's `persistenceId` is what binds it to its
+    // journal entries — the actor path doesn't matter.
+    const ref = system.spawnAnonymous(
+      Props.create<CounterCmd>(() => new PersistentCounter(id)),
+    ) as ActorRef<CounterCmd>;
+    persistentCounters.set(id, ref);
+    return ref;
+  };
 
   return path('test', concat(
     // GET /test/ping — liveness probe used by docker-compose
@@ -576,6 +609,55 @@ export function makeControlRoutes(
       } catch (e) {
         return completeJson(Status.InternalServerError, { error: (e as Error).message });
       }
+    }))),
+
+    // ============== Persistence scenario (#313 — scenario 11) ==============
+
+    // POST /test/persistence/inc?id=X — sends an `inc` command to
+    // the PersistentCounter with persistenceId X.  Spawns the actor
+    // on first hit (which loads/replays journal events).  Subsequent
+    // hits route to the cached ActorRef.
+    path('persistence', path('inc', post(async (req) => {
+      const id = queryParam(req, 'id');
+      if (!id) return complete(Status.BadRequest, 'missing ?id=');
+      ensurePersistentCounter(id).tell({ kind: 'inc' });
+      return completeJson(Status.OK, { sent: { id, op: 'inc' } });
+    }))),
+
+    // GET /test/persistence/state?id=X — sends `get-state` to the
+    // counter; replies with `{ count: N }`.  If the actor was
+    // PoisonPilled, this implicitly triggers a respawn → replay.
+    path('persistence', path('state', get(async (req) => {
+      const id = queryParam(req, 'id');
+      if (!id) return complete(Status.BadRequest, 'missing ?id=');
+      try {
+        const state = await new Promise<CounterStateReply>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('counter get-state timeout')), 5_000);
+          const collector = system.spawnAnonymous(Props.create<CounterStateReply>(() =>
+            new CounterStateCollector((s) => {
+              clearTimeout(timer);
+              resolve(s);
+            }),
+          )) as ActorRef<CounterStateReply>;
+          ensurePersistentCounter(id).tell({ kind: 'get-state', replyTo: collector });
+        });
+        return completeJson(Status.OK, { id, count: state.count });
+      } catch (e) {
+        return completeJson(Status.InternalServerError, { error: (e as Error).message });
+      }
+    }))),
+
+    // POST /test/persistence/kill?id=X — PoisonPills the counter
+    // and drops it from the registry.  The next /inc or /state on
+    // the same id will re-spawn → replay from journal.
+    path('persistence', path('kill', post(async (req) => {
+      const id = queryParam(req, 'id');
+      if (!id) return complete(Status.BadRequest, 'missing ?id=');
+      const ref = persistentCounters.get(id);
+      if (!ref) return completeJson(Status.OK, { id, wasAlive: false });
+      ref.tell(PoisonPill.instance as never);
+      persistentCounters.delete(id);
+      return completeJson(Status.OK, { id, wasAlive: true });
     }))),
 
     // POST /test/leave — call `cluster.leave()` on this node.  The
