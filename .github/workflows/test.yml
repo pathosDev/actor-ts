@@ -1,18 +1,34 @@
 name: tests
 
 # Runs the unit / multi-node / smoke suite + the README-badge
-# updater.  Deliberately UNFILTERED — the suite is cheap (~2 min)
-# and serves as a "did this commit break anything" safety net on
-# every push and PR.  Docs-only / README-only changes still
-# trigger a run; that costs almost nothing and keeps the green-
-# build streak unambiguous (every commit shows a passing test
-# status, not a "did-not-run" one).
+# updater.  Triggers on any change that could plausibly affect a
+# test result: source code, ANY test subtree (unit, multi-node,
+# smoke, AND integration — tests that share helpers in
+# `tests/integration/` could shift unit-test imports), dependency
+# manifest, tsconfig.  Docs-only / README-only / ROADMAP / CHANGELOG
+# changes deliberately skip — they can't change test outcomes.
 
 on:
   push:
     branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'tsconfig.json'
+      - 'tsconfig.dev.json'
+      - '.github/workflows/test.yml'
   pull_request:
     branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'tsconfig.json'
+      - 'tsconfig.dev.json'
+      - '.github/workflows/test.yml'
   workflow_dispatch:
 
 jobs:
