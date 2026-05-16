@@ -7,6 +7,8 @@ export { MultiNodeSpec } from './MultiNodeSpec.js';
 export type { MultiNodeSpecSettings } from './MultiNodeSpec.js';
 export { MultiNodeClusterFixture } from './MultiNodeClusterFixture.js';
 export type { MultiNodeClusterFixture as MultiNodeClusterFixtureType } from './MultiNodeClusterFixture.js';
+export { MockCluster } from './MockCluster.js';
+export type { MockClusterSettings } from './MockCluster.js';
 export { ParallelMultiNodeSpec } from './ParallelMultiNodeSpec.js';
 export type { ParallelMultiNodeSpecSettings } from './ParallelMultiNodeSpec.js';
 export type {
