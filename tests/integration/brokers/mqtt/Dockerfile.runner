@@ -1,0 +1,26 @@
+# Runner image for the Mosquitto/MQTT live-integration suite (B.3 / #21).
+# Same shape as the S3 runner — slim bun:debian with the framework
+# deps plus the `mqtt` peer-dep installed explicitly.
+
+FROM oven/bun:debian
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY package.json bun.lock* tsconfig.json ./
+
+RUN bun install --no-progress --production --ignore-scripts
+
+# `mqtt` is an optional peer dep — pull it in explicitly so the
+# adapter's lazy `import('mqtt')` resolves at runtime.
+RUN bun add mqtt --no-save
+
+COPY src/ src/
+COPY tests/ tests/
+
+ENV NODE_ENV=production
+
+CMD ["bun", "tests/integration/brokers/mqtt/runner.ts"]

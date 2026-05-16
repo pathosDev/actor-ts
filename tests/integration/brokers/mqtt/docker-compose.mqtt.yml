@@ -1,0 +1,44 @@
+# Mosquitto live-integration suite (B.3 / #21).
+#
+# Brings up a Mosquitto broker + a runner that exercises MqttActor
+# against real MQTT 3.1.1 + 5.0 traffic.  Anonymous auth — the
+# broker is only reachable on the compose bridge, never published
+# to the host.
+#
+# Run locally:
+#   bun run test:integration:mqtt
+#   bun run test:integration:mqtt:teardown
+
+name: actor-ts-integration-mqtt
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    # Quick health probe — `mosquitto_sub` ships with the image and
+    # exits 0 once a subscription succeeds, so compose can wait for
+    # the broker to actually be accepting traffic.
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -h localhost -t 'healthcheck' -W 1 -E -i healthcheck-probe || true"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    networks:
+      mqttnet: {}
+
+  runner:
+    build:
+      context: ../../../..
+      dockerfile: tests/integration/brokers/mqtt/Dockerfile.runner
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    environment:
+      MQTT_BROKER_URL: mqtt://mosquitto:1883
+      MQTT_CLIENT_ID: actor-ts-runner
+    networks:
+      mqttnet: {}
+
+networks:
+  mqttnet: {}
