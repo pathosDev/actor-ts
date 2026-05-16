@@ -86,6 +86,7 @@
     "@types/node": "^25.8.0",
     "better-sqlite3": "^12.10.0",
     "express": "^5.2.1",
+    "fast-check": "^4.8.0",
     "hono": "^4.12.18",
     "typescript": "^6.0.3"
   },
