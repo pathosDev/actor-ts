@@ -92,11 +92,26 @@ interface NodeRecord {
 
 let nextPortBase = 30_000;
 
+/**
+ * Per-barrier state — every distinct barrier name gets one of these.
+ * Once `entered.size === expectedRoles`, every parked waiter resolves.
+ */
+interface BarrierEntry {
+  readonly expectedRoles: number;
+  readonly entered: Set<string>;
+  readonly waiters: Array<{
+    resolve(): void;
+    reject(err: Error): void;
+    timer: ReturnType<typeof setTimeout> | null;
+  }>;
+}
+
 export class MultiNodeSpec {
   private readonly settings: Required<Omit<MultiNodeSpecSettings, 'addresses' | 'failureDetector' | 'downing'>>
     & Pick<MultiNodeSpecSettings, 'addresses' | 'failureDetector' | 'downing'>;
   private readonly nodes = new Map<string, NodeRecord>();
   private started = false;
+  private readonly barriers = new Map<string, BarrierEntry>();
 
   constructor(settings: MultiNodeSpecSettings) {
     if (settings.roles.length === 0) {
@@ -318,6 +333,108 @@ export class MultiNodeSpec {
     }
     throw new Error(`MultiNodeSpec: timeout after ${timeoutMs} ms — ${description}`);
   }
+
+  /* --------------------------- enterBarrier (#198) ---------------------------- */
+
+  /**
+   * Akka-style cross-node test synchronisation.  Each role calls
+   * `await spec.enterBarrier(name, role)` at a point where every other
+   * role must also have reached the same point.  Resolves only when
+   * every role has called in; rejects on timeout if the deadline
+   * elapses before all expected entrants arrive.
+   *
+   * `expectedRoles` defaults to the full role set, but you can pin a
+   * subset when a barrier is only between a few of them
+   * (e.g. {@link partition(a, b)} testing — `enterBarrier('partitioned',
+   * 'a', { participants: ['a','b'] })`).
+   *
+   * Re-entering an already-completed barrier with the same name
+   * works — the barrier slot is reset once everyone has arrived, so
+   * subsequent rounds use the same name fresh.
+   *
+   * Use in tests:
+   *
+   *   const spec = new MultiNodeSpec({ roles: ['a','b','c'] });
+   *   await spec.start();
+   *   await Promise.all([
+   *     (async () => {
+   *       // Per-role setup work
+   *       await spec.enterBarrier('configured', 'a');
+   *       // Continue once b and c are also configured
+   *     })(),
+   *     (async () => { ... await spec.enterBarrier('configured', 'b'); })(),
+   *     (async () => { ... await spec.enterBarrier('configured', 'c'); })(),
+   *   ]);
+   */
+  async enterBarrier(
+    name: string,
+    role: string,
+    opts: { readonly participants?: ReadonlyArray<string>; readonly timeoutMs?: number } = {},
+  ): Promise<void> {
+    const participants = opts.participants ?? this.settings.roles;
+    if (!participants.includes(role)) {
+      throw new Error(
+        `MultiNodeSpec.enterBarrier: role '${role}' is not in the participants list ` +
+        `[${participants.join(', ')}]`,
+      );
+    }
+    const timeoutMs = opts.timeoutMs ?? this.settings.awaitTimeoutMs;
+    const expectedRoles = participants.length;
+    const key = `${name}::${participants.slice().sort().join(',')}`;
+    const existing = this.barriers.get(key);
+    const entry: BarrierEntry = existing ?? {
+      expectedRoles,
+      entered: new Set<string>(),
+      waiters: [],
+    };
+    if (!existing) this.barriers.set(key, entry);
+    if (entry.expectedRoles !== expectedRoles) {
+      throw new Error(
+        `MultiNodeSpec.enterBarrier('${name}'): participant-set changed mid-flight ` +
+        `(was ${entry.expectedRoles} roles, now ${expectedRoles})`,
+      );
+    }
+    if (entry.entered.has(role)) {
+      throw new Error(
+        `MultiNodeSpec.enterBarrier: role '${role}' already entered barrier '${name}'`,
+      );
+    }
+
+    entry.entered.add(role);
+
+    // Last entrant wakes everyone up.
+    if (entry.entered.size === expectedRoles) {
+      this.barriers.delete(key);
+      for (const w of entry.waiters) {
+        if (w.timer) clearTimeout(w.timer);
+        w.resolve();
+      }
+      return;
+    }
+
+    // Otherwise park here until the deadline or until the last
+    // entrant wakes us.
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const i = entry.waiters.findIndex((w) => w.resolve === resolve);
+        if (i >= 0) entry.waiters.splice(i, 1);
+        entry.entered.delete(role);
+        if (entry.entered.size === 0) this.barriers.delete(key);
+        reject(new Error(
+          `MultiNodeSpec.enterBarrier('${name}'): role '${role}' timed out after ${timeoutMs}ms — ` +
+          `entered=[${Array.from(entry.entered).join(', ')}], expected ${expectedRoles}`,
+        ));
+      }, timeoutMs);
+      entry.waiters.push({ resolve, reject, timer });
+    });
+  }
+
+  /**
+   * Number of currently-tracked barriers — diagnostic / test
+   * introspection hook.  Mostly there for tests that want to verify
+   * a barrier slot got cleaned up after every role entered.
+   */
+  get pendingBarrierCount(): number { return this.barriers.size; }
 
   private snapshotMemberCount(role: string): string {
     try {
