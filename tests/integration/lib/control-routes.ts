@@ -52,6 +52,8 @@ import {
   Subscribe as PubSubSubscribe,
 } from '../../../src/cluster/pubsub/Messages.js';
 import { CoordinatedShutdownId } from '../../../src/CoordinatedShutdown.js';
+import { exportPrometheus } from '../../../src/metrics/PrometheusExporter.js';
+import { metricsOf } from '../../../src/metrics/MetricsExtension.js';
 import { LWWRegister } from '../../../src/crdt/LWWRegister.js';
 import { GCounter } from '../../../src/crdt/GCounter.js';
 import type { WriteConsistency } from '../../../src/crdt/DistributedData.js';
@@ -150,6 +152,23 @@ class SnapshotCollector extends Actor<SubscriberSnapshot> {
  */
 class ExtraWorker extends Actor<unknown> {
   override onReceive(_m: unknown): void { /* noop */ }
+}
+
+/**
+ * Deliberately-slow actor used by scenario 14 to overflow its
+ * bounded mailbox.  `process` messages sleep N ms before
+ * completing — bombarding it with more messages than the default
+ * capacity (10 000) triggers the drop-head overflow policy,
+ * which increments `actor_mailbox_dropped_total` via the
+ * `onDrop` callback wired in `ActorCell` (#310).
+ */
+type SlowSinkMsg = { kind: 'process'; sleepMs: number };
+class SlowSink extends Actor<SlowSinkMsg> {
+  override async onReceive(msg: SlowSinkMsg): Promise<void> {
+    if (msg.sleepMs > 0) {
+      await new Promise<void>((r) => setTimeout(r, msg.sleepMs));
+    }
+  }
 }
 
 class SingletonReplyCollector extends Actor<SingletonWhoReply> {
@@ -281,6 +300,19 @@ export function makeControlRoutes(
     'events',
     pubsubReceiver as unknown as ActorRef,
   ));
+
+  // Lazy-spawned SlowSink registry for scenario 14.  Bombarding
+  // a SlowSink with > 10 000 messages triggers `drop-head`
+  // overflow on its bounded default mailbox (#310) and the
+  // `actor_mailbox_dropped_total` counter ticks.
+  let slowSinkRef: ActorRef<SlowSinkMsg> | null = null;
+  const ensureSlowSink = (): ActorRef<SlowSinkMsg> => {
+    if (slowSinkRef) return slowSinkRef;
+    slowSinkRef = system.spawnAnonymous(
+      Props.create<SlowSinkMsg>(() => new SlowSink()),
+    ) as ActorRef<SlowSinkMsg>;
+    return slowSinkRef;
+  };
 
   // Cross-node shutdown trace markers (scenario 13).  Each node's
   // pre-registered shutdown hook POSTs to a peer's /test/shutdown-
@@ -776,6 +808,50 @@ export function makeControlRoutes(
       } catch (e) {
         return completeJson(Status.InternalServerError, { error: (e as Error).message });
       }
+    }))),
+
+    // ============== Backpressure scenario (#313 — scenario 14) ==============
+
+    // POST /test/backpressure/bombard?n=N&sleepMs=D
+    // Spawns the SlowSink (idempotent) and tells it N messages
+    // synchronously in a tight loop.  Each message will sleep
+    // `sleepMs` ms inside `onReceive` so the queue fills up.
+    // With N > 10 000 (default mailbox capacity), the drop-head
+    // policy kicks in.  Returns the count of tells issued (the
+    // mailbox stage isn't observable to the caller — it just
+    // tells; drops happen inside enqueue).
+    path('backpressure', path('bombard', post(async (req) => {
+      const n = Number(queryParam(req, 'n') ?? '15000');
+      const sleepMs = Number(queryParam(req, 'sleepMs') ?? '50');
+      if (!Number.isInteger(n) || n < 1) return complete(Status.BadRequest, 'n must be positive integer');
+      if (!Number.isFinite(sleepMs) || sleepMs < 0) return complete(Status.BadRequest, 'sleepMs must be non-negative');
+      const sink = ensureSlowSink();
+      // Synchronous tight loop — no await between tells, so the
+      // entire burst hits the mailbox before the dispatcher has
+      // a chance to drain.
+      for (let i = 0; i < n; i++) sink.tell({ kind: 'process', sleepMs });
+      return completeJson(Status.OK, { sent: n, sleepMs });
+    }))),
+
+    // GET /test/backpressure/dropped
+    // Returns the current value of `actor_mailbox_dropped_total`
+    // across ALL classes from this node's metrics registry, as a
+    // parsed sum.  Scenarios verify this is non-zero after a
+    // bombard call.  We expose the parsed total (rather than the
+    // full Prometheus text) so scenarios stay terse.
+    path('backpressure', path('dropped', get(async () => {
+      const text = exportPrometheus(metricsOf(system));
+      // Match `actor_mailbox_dropped_total{...} <number>` lines.
+      const re = /^actor_mailbox_dropped_total\{[^}]*\}\s+(\d+(?:\.\d+)?)\s*$/gm;
+      let total = 0;
+      const lines: string[] = [];
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(text)) !== null) {
+        const v = Number(m[1]);
+        if (Number.isFinite(v)) total += v;
+        lines.push(m[0]);
+      }
+      return completeJson(Status.OK, { total, lines });
     }))),
 
     // ============== CoordinatedShutdown scenario (#313 — scenario 13) ==============
