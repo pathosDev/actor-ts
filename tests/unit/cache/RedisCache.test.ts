@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { RedisCache, type RedisClientLike } from '../../../src/cache/RedisCache.js';
+import { CacheError } from '../../../src/cache/Cache.js';
 
 /**
  * Mock ioredis client — captures the calls and lets the tests assert on
@@ -266,5 +267,168 @@ describe('RedisCache — mget / mset (#14)', () => {
     const got = await c.mget<unknown>(['a', 'b']);
     expect(got.has('a')).toBe(false);
     expect(got.get('b')).toBe('hello');
+  });
+});
+
+describe('RedisCache — TTL validation', () => {
+  test('set rejects negative TTL', async () => {
+    const c = new RedisCache({ client: new FakeRedis() });
+    await expect(c.set('k', 1, -1)).rejects.toBeInstanceOf(CacheError);
+  });
+
+  test('set rejects zero TTL', async () => {
+    const c = new RedisCache({ client: new FakeRedis() });
+    await expect(c.set('k', 1, 0)).rejects.toBeInstanceOf(CacheError);
+  });
+
+  test('set rejects NaN TTL', async () => {
+    const c = new RedisCache({ client: new FakeRedis() });
+    await expect(c.set('k', 1, Number.NaN)).rejects.toBeInstanceOf(CacheError);
+  });
+
+  test('set rejects Infinity TTL', async () => {
+    const c = new RedisCache({ client: new FakeRedis() });
+    await expect(c.set('k', 1, Number.POSITIVE_INFINITY)).rejects.toBeInstanceOf(CacheError);
+  });
+
+  test('incr rejects bad TTL identically', async () => {
+    const c = new RedisCache({ client: new FakeRedis() });
+    await expect(c.incr('k', -1)).rejects.toBeInstanceOf(CacheError);
+    await expect(c.incr('k', 0)).rejects.toBeInstanceOf(CacheError);
+    await expect(c.incr('k', Number.NaN)).rejects.toBeInstanceOf(CacheError);
+  });
+
+  test('setIfAbsent rejects bad TTL identically', async () => {
+    const c = new RedisCache({ client: new FakeRedis() });
+    await expect(c.setIfAbsent('k', 1, -1)).rejects.toBeInstanceOf(CacheError);
+    await expect(c.setIfAbsent('k', 1, 0)).rejects.toBeInstanceOf(CacheError);
+  });
+
+  test('mset rejects bad TTL identically', async () => {
+    const c = new RedisCache({ client: new FakeRedis() });
+    await expect(c.mset(new Map([['a', 1]] as const), -1))
+      .rejects.toBeInstanceOf(CacheError);
+  });
+});
+
+describe('RedisCache — close() semantics', () => {
+  test('close is idempotent (no double-quit)', async () => {
+    const fake = new FakeRedis();
+    const c = new RedisCache({ client: fake });
+    await c.set('k', 1); // forces client construction
+    await c.close();
+    await c.close(); // second close is a no-op
+    expect(fake.log.filter(l => l.op === 'quit')).toHaveLength(1);
+  });
+
+  test('close before any operation does NOT trigger quit (client never built)', async () => {
+    const fake = new FakeRedis();
+    const c = new RedisCache({ client: fake });
+    await c.close();
+    // The lazy client was never evaluated → quit not called.
+    expect(fake.log.filter(l => l.op === 'quit')).toHaveLength(0);
+  });
+
+  test('after close: get returns None silently', async () => {
+    const fake = new FakeRedis();
+    const c = new RedisCache({ client: fake });
+    await c.set('k', 1);
+    await c.close();
+    expect((await c.get('k')).isNone()).toBe(true);
+  });
+
+  test('after close: set / delete / mset / mget are no-ops', async () => {
+    const fake = new FakeRedis();
+    const c = new RedisCache({ client: fake });
+    await c.close();
+    // None of these should crash, and none should issue a wire-level call.
+    await c.set('k', 1);
+    await c.delete('k');
+    await c.mset(new Map([['a', 1]] as const));
+    const empty = await c.mget(['k']);
+    expect(empty.size).toBe(0);
+    // After close the only wire op is the initial quit-from-set above
+    // (which we didn't issue — there's no client at all).  But the
+    // first thing set() did was check `closed`, so no client construction.
+  });
+
+  test('after close: incr throws CacheError', async () => {
+    const c = new RedisCache({ client: new FakeRedis() });
+    await c.close();
+    await expect(c.incr('k')).rejects.toBeInstanceOf(CacheError);
+  });
+
+  test('after close: setIfAbsent throws CacheError', async () => {
+    const c = new RedisCache({ client: new FakeRedis() });
+    await c.close();
+    await expect(c.setIfAbsent('k', 1)).rejects.toBeInstanceOf(CacheError);
+  });
+});
+
+describe('RedisCache — additional edges', () => {
+  test('delete with no keys is a no-op (no DEL command issued)', async () => {
+    const fake = new FakeRedis();
+    const c = new RedisCache({ client: fake });
+    await c.delete();
+    expect(fake.log.filter(l => l.op === 'del')).toHaveLength(0);
+  });
+
+  test('mget with empty keys returns an empty Map without a wire call', async () => {
+    const fake = new FakeRedis();
+    const c = new RedisCache({ client: fake });
+    const got = await c.mget([]);
+    expect(got.size).toBe(0);
+    expect(fake.log.filter(l => l.op === 'mget')).toHaveLength(0);
+  });
+
+  test('get returns None when stored value is not valid JSON', async () => {
+    // Same defensive behaviour as transient backend failure.
+    const fake = new FakeRedis();
+    fake.store.set('bad', '{not json');
+    const c = new RedisCache({ client: fake });
+    expect((await c.get('bad')).isNone()).toBe(true);
+  });
+
+  test('setIfAbsent without TTL still uses the NX flag', async () => {
+    const fake = new FakeRedis();
+    const c = new RedisCache({ client: fake });
+    expect(await c.setIfAbsent('k', 'v')).toBe(true);
+    const setCall = fake.log.find(l => l.op === 'set');
+    expect(setCall?.args).toContain('NX');
+    expect(setCall?.args).not.toContain('PX');
+  });
+
+  test('setIfAbsent propagates non-collision errors as CacheError', async () => {
+    const broken: RedisClientLike = {
+      async get() { return null; },
+      async set() { throw new Error('connection refused'); },
+      async incr() { return 0; },
+      async pexpire() { return 0; },
+      async del() { return 0; },
+      async mget() { return []; },
+      async mset() { return 'OK'; },
+      async quit() { return 'OK'; },
+    };
+    const c = new RedisCache({ client: broken });
+    await expect(c.setIfAbsent('k', 1)).rejects.toBeInstanceOf(CacheError);
+  });
+
+  test('incr swallows pexpire errors silently after the counter increments', async () => {
+    // The first-increment TTL set is best-effort — if pexpire fails,
+    // the counter still returns successfully.  Pin that.
+    let pexpireCalls = 0;
+    const flaky: RedisClientLike = {
+      async get() { return null; },
+      async set() { return 'OK'; },
+      async incr() { return 1; }, // first call
+      async pexpire() { pexpireCalls++; throw new Error('boom'); },
+      async del() { return 0; },
+      async mget() { return []; },
+      async mset() { return 'OK'; },
+      async quit() { return 'OK'; },
+    };
+    const c = new RedisCache({ client: flaky });
+    expect(await c.incr('rate', 60_000)).toBe(1);
+    expect(pexpireCalls).toBe(1);
   });
 });

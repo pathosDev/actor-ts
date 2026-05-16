@@ -86,4 +86,50 @@ describe('eventDispatcher', () => {
       onEvent({ count: 0 }, { kind: 'mystery' as 'reset' });
     }).toThrow(/no handler registered/);
   });
+
+  test('build() can be called multiple times — each produces an independent dispatcher', () => {
+    const builder = eventDispatcher<State, Event>()
+      .on('incremented', (s, e) => ({ count: s.count + e.by }))
+      .on('decremented', (s, e) => ({ count: s.count - e.by }))
+      .on('reset',       () => ({ count: 0 }));
+    const d1 = builder.build();
+    const d2 = builder.build();
+    // Different function instances — each build snapshots the handlers.
+    expect(d1).not.toBe(d2);
+    // Both behave identically (same captured handlers).
+    expect(d1({ count: 0 }, { kind: 'incremented', by: 3 }).count).toBe(3);
+    expect(d2({ count: 0 }, { kind: 'incremented', by: 3 }).count).toBe(3);
+  });
+
+  test('long sequence of mixed kinds threads through correctly', () => {
+    // Mini smoke for the typical fold-over-events pattern that
+    // PersistentActor.onEvent enables — many events of mixed kinds,
+    // state must accumulate consistently.
+    const onEvent = eventDispatcher<State, Event>()
+      .on('incremented', (s, e) => ({ count: s.count + e.by }))
+      .on('decremented', (s, e) => ({ count: s.count - e.by }))
+      .on('reset',       () => ({ count: 0 }))
+      .build();
+    const events: Event[] = [
+      { kind: 'incremented', by: 10 },
+      { kind: 'incremented', by: 5 },
+      { kind: 'decremented', by: 3 },
+      { kind: 'reset' },
+      { kind: 'incremented', by: 7 },
+    ];
+    const final = events.reduce<State>(onEvent, { count: 0 });
+    expect(final.count).toBe(7);
+  });
+
+  test('intermediate .on() calls return new builders — chain is non-mutating', () => {
+    // Each .on() returns a NEW builder instance with its own handler
+    // map (the impl uses `new Map(this.handlers)`).  Pin this: the
+    // earlier builder reference must still see its own state, not
+    // mutate underneath the user.
+    const b1 = eventDispatcher<State, Event>()
+      .on('incremented', (s, e) => ({ count: s.count + e.by }));
+    const b2 = b1.on('decremented', (s, e) => ({ count: s.count - e.by }));
+    // b1 and b2 are different objects.
+    expect(b1).not.toBe(b2);
+  });
 });

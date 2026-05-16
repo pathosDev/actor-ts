@@ -7,7 +7,11 @@ import {
   concat,
   del,
   get,
+  head,
+  options,
+  patch,
   path,
+  pathPrefix,
   post,
   put,
   queryParam,
@@ -149,6 +153,84 @@ describe('compile — segment normalisation', () => {
   test('multiple segments with slashes flatten correctly', () => {
     const routes = compile(path('a/b', path('c/d', get(() => complete(Status.OK, '')))));
     expect(routes[0]!.pattern).toBe('/a/b/c/d');
+  });
+
+  test('empty path segment collapses to root', () => {
+    // path('') is degenerate but legal — the normalisation strips it
+    // and `buildPattern([''])` ends up with an empty cleaned list →
+    // '/'.  Pin this so a future refactor doesn't emit '//' instead.
+    const routes = compile(path('', get(() => complete(Status.OK, ''))));
+    expect(routes[0]!.pattern).toBe('/');
+  });
+
+  test('pathPrefix behaves identically to path (same impl)', () => {
+    // pathPrefix is shipped as a synonym today — pin the equivalence
+    // explicitly so a future divergence shows up here first.
+    const a = compile(path('api', get(() => complete(Status.OK, ''))));
+    const b = compile(pathPrefix('api', get(() => complete(Status.OK, ''))));
+    expect(b[0]!.pattern).toBe(a[0]!.pattern);
+  });
+});
+
+describe('method combinators — patch / head / options', () => {
+  test('patch creates a PATCH route', () => {
+    const r = compile(patch(() => complete(Status.OK, '')));
+    expect(r[0]!.method).toBe('PATCH');
+  });
+
+  test('head creates a HEAD route', () => {
+    const r = compile(head(() => complete(Status.OK, '')));
+    expect(r[0]!.method).toBe('HEAD');
+  });
+
+  test('options creates an OPTIONS route', () => {
+    const r = compile(options(() => complete(Status.OK, '')));
+    expect(r[0]!.method).toBe('OPTIONS');
+  });
+});
+
+describe('complete helpers — defaults + edge cases', () => {
+  test('complete() with no body returns body=null', () => {
+    expect(complete(Status.NoContent)).toEqual({
+      status: Status.NoContent, body: null, headers: undefined,
+    });
+  });
+
+  test('redirect with custom status overrides the default', () => {
+    const r = redirect('/x', Status.MovedPermanently);
+    expect(r.status).toBe(Status.MovedPermanently);
+    expect(r.headers?.location).toBe('/x');
+  });
+
+  test('reject carries the extra payload on the HttpError', () => {
+    try {
+      reject(Status.BadRequest, 'bad', { field: 'name' });
+    } catch (e) {
+      expect(e).toBeInstanceOf(HttpError);
+      const err = e as HttpError;
+      expect(err.status).toBe(Status.BadRequest);
+      expect(err.message).toBe('bad');
+      // The `extra` arg is preserved on the error for the global handler.
+      expect((err as unknown as { extra?: unknown }).extra).toEqual({ field: 'name' });
+    }
+  });
+});
+
+describe('param extraction — edge cases', () => {
+  test('queryParam returns undefined for an empty array value', () => {
+    // Most servers don't produce `[]` for a query key, but the typing
+    // allows it.  `[0]` on an empty array is undefined — pin that.
+    const req = { ...emptyReq, query: { x: [] as string[] } };
+    expect(queryParam(req as HttpRequest, 'x')).toBeUndefined();
+  });
+
+  test('pathParam HttpError carries status 500 for missing key', () => {
+    try { pathParam(emptyReq, 'id'); }
+    catch (e) {
+      const err = e as HttpError;
+      expect(err.status).toBe(500);
+      expect(err.message).toContain('id');
+    }
   });
 });
 
