@@ -1,4 +1,5 @@
 import type { ActorSystem } from '../ActorSystem.js';
+import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { HttpServerBackend, ServerBinding } from './backend/HttpServerBackend.js';
 import { FastifyBackend } from './backend/FastifyBackend.js';
@@ -63,7 +64,28 @@ export class HttpExtension implements Extension {
           };
           active.registerRoute(wrapped);
         }
-        const binding = await active.listen(host, port);
+        const raw = await active.listen(host, port);
+        // Wrap `unbind` so it's idempotent — both the auto-registered
+        // CoordinatedShutdown task and any manual caller can invoke it
+        // safely; subsequent calls return the in-flight/resolved promise
+        // from the first.
+        let unbindOnce: Promise<void> | null = null;
+        const binding: ServerBinding = {
+          host: raw.host,
+          port: raw.port,
+          unbind(gracePeriodMs?: number): Promise<void> {
+            if (!unbindOnce) unbindOnce = raw.unbind(gracePeriodMs);
+            return unbindOnce;
+          },
+        };
+        // Auto-register with CoordinatedShutdown's ServiceUnbind phase so
+        // operator-triggered shutdown (SIGTERM, cluster-leave, etc.) closes
+        // the server before the rest of the pipeline tears down the system.
+        system.extension(CoordinatedShutdownId).addTask(
+          Phases.ServiceUnbind,
+          `http-unbind-${binding.host}:${binding.port}`,
+          () => binding.unbind(),
+        );
         system.log.info(`HTTP server bound on ${binding.host}:${binding.port} (${active.name})`);
         system.log.debug(`[http] ${compiled.length} route(s) registered`);
         return binding;
