@@ -7,7 +7,14 @@
 # to simulate partitions inside the container without privileged-mode
 # tricks on the host — each container gets NET_ADMIN via the compose
 # file, scoped to its own network namespace.
-FROM oven/bun:1.3-debian
+#
+# Tag choice: `latest-debian` (not pinned to a specific minor like
+# `1.3-debian`).  Integration tests want to catch upstream Bun
+# regressions early — if a new Bun release breaks `Bun.serve` or
+# the TCP backend, this test surface is exactly where we want
+# that to surface, BEFORE end-users hit it.  Production users
+# can pin a specific version separately.
+FROM oven/bun:latest-debian
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \

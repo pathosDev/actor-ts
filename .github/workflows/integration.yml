@@ -25,8 +25,22 @@ name: integration
 on:
   push:
     branches: [main]
+    paths:
+      # Trigger only when something that could plausibly affect
+      # cluster behaviour over real TCP changes — source code, the
+      # integration setup itself, or the workflow.  Skips on docs-
+      # only / unit-test-only / README changes.
+      - 'src/**'
+      - 'tests/integration/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'tsconfig.json'
+      - '.github/workflows/integration.yml'
   workflow_dispatch:
   schedule:
+    # Nightly run catches transport-level flakes that wouldn't
+    # show up in fast unit-test PR runs.  Fires regardless of the
+    # `paths:` filter above (cron triggers ignore them).
     - cron: '0 3 * * *'
 
 jobs:

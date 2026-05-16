@@ -1,10 +1,29 @@
 name: build
 
+# Verifies `bun run build` produces a usable `dist/` (entry point +
+# type declarations).  Only needs to run when something in the
+# build inputs changes — source, tsconfig, dependency manifest, or
+# the workflow itself.  Skips on docs-only / test-only / README
+# changes so the actions queue stays focused.
+
 on:
   push:
     branches: [main]
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'tsconfig.json'
+      - '.github/workflows/build.yml'
   pull_request:
     branches: [main]
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'tsconfig.json'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
 
 jobs:
   build:
