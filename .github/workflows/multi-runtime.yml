@@ -1,11 +1,12 @@
 name: multi-runtime
 
 # Verifies actor-ts boots and the core actor + cluster paths work
-# identically across Bun, Node.js, and Deno.  The smoke test in
-# tests/smoke/smoke.mjs is intentionally runtime-neutral — same
-# script, three invocations.  Job matrix keeps the three runs
-# parallel so the wall clock is bounded by the slowest runtime
-# (Deno, ~30s including the build step).
+# identically across Bun, Node.js, and Deno.  The smoke harness at
+# tests/smoke/run-cases.mjs discovers cases under
+# tests/smoke/cases/*.mjs and runs every one on each runtime —
+# adding a new case is dropping a new file, no CI edits required.
+# Job matrix keeps the three runs parallel so the wall clock is
+# bounded by the slowest runtime (Deno, ~30s including the build step).
 #
 # Bun additionally runs the full `bun test` suite — the unit /
 # multi-node suite uses bun:test's APIs and isn't portable to

@@ -58,9 +58,9 @@
     "test:integration:k8s:teardown": "docker compose -f tests/integration/brokers/k8s/docker-compose.k8s.yml down -v --remove-orphans",
     "test:integration:brokers": "bun run test:integration:s3 && bun run test:integration:mqtt && bun run test:integration:kafka && bun run test:integration:amqp && bun run test:integration:nats && bun run test:integration:redis && bun run test:integration:grpc && bun run test:integration:k8s",
     "test:integration:brokers:teardown": "bun run test:integration:s3:teardown; bun run test:integration:mqtt:teardown; bun run test:integration:kafka:teardown; bun run test:integration:amqp:teardown; bun run test:integration:nats:teardown; bun run test:integration:redis:teardown; bun run test:integration:grpc:teardown; bun run test:integration:k8s:teardown",
-    "smoke:bun": "bun tests/smoke/smoke.mjs",
-    "smoke:node": "bun run build && ACTOR_TS_SMOKE_USE_DIST=1 node tests/smoke/smoke.mjs",
-    "smoke:deno": "bun run build && ACTOR_TS_SMOKE_USE_DIST=1 deno run --allow-read --allow-env tests/smoke/smoke.mjs",
+    "smoke:bun": "bun tests/smoke/run-cases.mjs",
+    "smoke:node": "bun run build && ACTOR_TS_SMOKE_USE_DIST=1 node tests/smoke/run-cases.mjs",
+    "smoke:deno": "bun run build && ACTOR_TS_SMOKE_USE_DIST=1 deno run --allow-read --allow-env tests/smoke/run-cases.mjs",
     "smoke": "bun run smoke:bun && bun run smoke:node && bun run smoke:deno",
     "bench": "bun run benchmarks/run-all.ts",
     "prepublishOnly": "bun run clean && bun run build && bun run typecheck && bun test"
