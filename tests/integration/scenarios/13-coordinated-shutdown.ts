@@ -100,11 +100,14 @@ export const scenario: Scenario = {
     }
     console.log(`[13] pipeline progressed through ${phases.length} hook phases in correct order`);
 
-    // Note: we deliberately don't assert the victim's HTTP server
-    // closes — the framework doesn't currently auto-register
-    // user-bound HTTP servers with CoordinatedShutdown's
-    // `ServiceUnbind` phase (a documented gap; see follow-up).
-    // The two-marker assertion is sufficient evidence the
-    // shutdown pipeline ran end-to-end.
+    // Note: we deliberately don't assert here that the victim's HTTP
+    // port stops accepting connections — the cluster harness keeps
+    // its OWN control-port server bound separately from the user's
+    // routes, so even after `ServiceUnbind` closes the auto-registered
+    // user server the control port may still respond.  The unit test
+    // in `tests/unit/http/HttpExtension.test.ts` covers the auto-
+    // registration behavior directly; here, the two-marker assertion
+    // (early + late phase) is sufficient evidence the shutdown
+    // pipeline ran end-to-end.
   },
 };
