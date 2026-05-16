@@ -1,0 +1,45 @@
+# NATS live-integration suite (B.6 / #24).
+#
+# NATS boots in well under a second — the fastest broker in the
+# suite.  No auth, no clustering — just the standalone server on
+# port 4222.
+#
+# Run locally:
+#   bun run test:integration:nats
+#   bun run test:integration:nats:teardown
+
+name: actor-ts-integration-nats
+
+services:
+  nats:
+    image: nats:2.11-alpine
+    # `--port 4222` is the default but make it explicit.  `-DV`
+    # enables debug + verbose logging — helpful when a scenario
+    # behaves unexpectedly.  Comment out for production-style runs.
+    command: ["-p", "4222"]
+    healthcheck:
+      # NATS doesn't ship a CLI in the image; use the monitoring
+      # endpoint on 8222 — but we didn't enable it.  Fall back to
+      # a TCP nc against the client port.  Most images include
+      # busybox `nc`.
+      test: ["CMD-SHELL", "echo PING | nc -w 1 localhost 4222 | grep -q PONG"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    networks:
+      natsnet: {}
+
+  runner:
+    build:
+      context: ../../../..
+      dockerfile: tests/integration/brokers/nats/Dockerfile.runner
+    depends_on:
+      nats:
+        condition: service_healthy
+    environment:
+      NATS_SERVERS: nats://nats:4222
+    networks:
+      natsnet: {}
+
+networks:
+  natsnet: {}

@@ -1,0 +1,23 @@
+# Runner image for the NATS live-integration suite (B.6 / #24).
+
+FROM oven/bun:debian
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY package.json bun.lock* tsconfig.json ./
+
+RUN bun install --no-progress --production --ignore-scripts
+
+# `nats` is an optional peer dep.
+RUN bun add nats --no-save
+
+COPY src/ src/
+COPY tests/ tests/
+
+ENV NODE_ENV=production
+
+CMD ["bun", "tests/integration/brokers/nats/runner.ts"]
