@@ -33,10 +33,8 @@ import {
 import { ServiceKey } from '../../../src/discovery/ServiceKey.js';
 import { DistributedDataId } from '../../../src/crdt/index.js';
 import {
-  SingletonInc,
-  SingletonWho,
-  SingletonWhoReply,
   type SingletonMsg,
+  type SingletonWhoReply,
 } from './singleton.js';
 import {
   ShardedWhoReply,
@@ -213,6 +211,18 @@ export function makeControlRoutes(
         status: m.status,
         roles: Array.from(m.roles),
       })),
+    }))),
+
+    // GET /test/leader — what does THIS node think the current
+    // cluster leader is?  Diagnostic endpoint used by scenarios
+    // to verify leader-election convergence (every node should
+    // agree on the leader within a few gossip ticks).
+    path('leader', get(async () => completeJson(Status.OK, {
+      self: cluster.selfAddress.toString(),
+      leader: cluster.leader().fold(
+        () => null as string | null,
+        (m) => m.address.toString(),
+      ),
     }))),
 
     // POST /test/partition?peer=<host> — drop every packet to/from
@@ -495,7 +505,7 @@ export function makeControlRoutes(
     // lives on the cluster leader.  The proxy buffers until the
     // leader is known, then forwards.
     path('singleton', path('inc', post(async () => {
-      deps.singletonProxy.tell(new SingletonInc());
+      deps.singletonProxy.tell({ kind: 'inc' });
       return completeJson(Status.OK, { sent: true });
     }))),
 
@@ -513,7 +523,7 @@ export function makeControlRoutes(
               resolve(r);
             }),
           )) as ActorRef<SingletonWhoReply>;
-          deps.singletonProxy.tell(new SingletonWho(collector));
+          deps.singletonProxy.tell({ kind: 'who', replyTo: collector });
         });
         return completeJson(Status.OK, {
           host: reply.nodeName,
