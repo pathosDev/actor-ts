@@ -1,4 +1,6 @@
 # Runner image for the Redpanda/Kafka live-integration suite (B.4 / #22).
+# See the S3 Dockerfile for the full explanation of the
+# promote-peer-dep-to-regular-dep trick.
 
 FROM oven/bun:debian
 
@@ -10,13 +12,12 @@ WORKDIR /app
 
 COPY package.json bun.lock* tsconfig.json ./
 
-RUN bun install --no-progress --production --ignore-scripts
+# `kafkajs` is an optional peer dep — promote it into regular
+# `dependencies` so `bun install --production` pulls it in.
+RUN bun -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.dependencies=p.dependencies||{};p.dependencies['kafkajs']=p.peerDependencies['kafkajs'];fs.writeFileSync('package.json',JSON.stringify(p,null,2));" \
+ && rm -f bun.lock
 
-# `kafkajs` is an optional peer dep — pull it in explicitly so the
-# adapter's lazy import resolves.  `--no-save` after `--production`
-# was unreliable (see S3 Dockerfile); the in-container lockfile
-# mutation is harmless — it's a build artifact.
-RUN bun add kafkajs
+RUN bun install --no-progress --production --ignore-scripts
 
 COPY src/ src/
 COPY tests/ tests/

@@ -1,5 +1,6 @@
 # Runner image for the Redis Streams live-integration suite
-# (B.7 / refs #296).
+# (B.7 / refs #296).  See the S3 Dockerfile for the full
+# explanation of the promote-peer-dep-to-regular-dep trick.
 
 FROM oven/bun:debian
 
@@ -11,13 +12,13 @@ WORKDIR /app
 
 COPY package.json bun.lock* tsconfig.json ./
 
-RUN bun install --no-progress --production --ignore-scripts
+# `ioredis` is an optional peer dep used by both RedisCache and
+# RedisStreamsActor — promote it into regular `dependencies` so
+# `bun install --production` pulls it in.
+RUN bun -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.dependencies=p.dependencies||{};p.dependencies['ioredis']=p.peerDependencies['ioredis'];fs.writeFileSync('package.json',JSON.stringify(p,null,2));" \
+ && rm -f bun.lock
 
-# `ioredis` is an optional peer dep — used by both RedisCache and
-# RedisStreamsActor.  `--no-save` after `--production` was unreliable
-# (see S3 Dockerfile); the in-container lockfile mutation is
-# harmless — it's a build artifact.
-RUN bun add ioredis
+RUN bun install --no-progress --production --ignore-scripts
 
 COPY src/ src/
 COPY tests/ tests/
