@@ -16,19 +16,14 @@ services:
     # upstream NATS regressions as soon as they ship.  Production
     # users pin a specific version themselves.
     image: nats:latest
-    # `--port 4222` is the default but make it explicit.  `-DV`
-    # enables debug + verbose logging — helpful when a scenario
-    # behaves unexpectedly.  Comment out for production-style runs.
+    # `-p 4222` for client traffic.  No healthcheck here: the
+    # NATS image is built on `scratch` and ships no shell / curl /
+    # wget / nc, so docker-compose has no way to probe readiness
+    # from inside the container.  Instead the runner's own
+    # `waitForPort` (lib/wait-for-port.ts) polls the client port
+    # until it accepts a TCP connection — same readiness shape,
+    # just from the OUTSIDE.
     command: ["-p", "4222"]
-    healthcheck:
-      # NATS doesn't ship a CLI in the image; use the monitoring
-      # endpoint on 8222 — but we didn't enable it.  Fall back to
-      # a TCP nc against the client port.  Most images include
-      # busybox `nc`.
-      test: ["CMD-SHELL", "echo PING | nc -w 1 localhost 4222 | grep -q PONG"]
-      interval: 2s
-      timeout: 2s
-      retries: 15
     networks:
       natsnet: {}
 
@@ -38,7 +33,10 @@ services:
       dockerfile: tests/integration/brokers/nats/Dockerfile.runner
     depends_on:
       nats:
-        condition: service_healthy
+        # `service_started` because the scratch image has no
+        # readiness probe — see the comment on the nats service
+        # above.  The runner's `waitForPort` is the actual gate.
+        condition: service_started
     environment:
       NATS_SERVERS: nats://nats:4222
     networks:

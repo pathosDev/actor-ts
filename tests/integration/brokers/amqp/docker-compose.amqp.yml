@@ -17,6 +17,11 @@ services:
     # whenever someone remembers to bump a pin.  Production users
     # pin a specific version themselves.
     image: rabbitmq:latest
+    volumes:
+      # Permit transient non-exclusive queues — see the conf file
+      # for the rationale; without it RabbitMQ 4.x rejects the
+      # test scenarios' ephemeral-queue declarations.
+      - ./rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
     # Default credentials are `guest:guest` which only accepts
     # connections from localhost on a non-Erlang-cookie setup.  The
     # alpine image relaxes the loopback-only restriction so any

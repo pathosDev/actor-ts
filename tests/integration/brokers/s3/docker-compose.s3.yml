@@ -33,6 +33,16 @@ services:
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+      # Built-in (test-only) KMS — required for the SSE-AES256
+      # scenario.  MinIO since ~2025-mid refuses Server-Side
+      # Encryption PUTs (even plain AES256) unless a KMS backend
+      # is configured.  Old MinIO releases accepted SSE without
+      # KMS; pinning :latest surfaces that policy change.
+      # Format: `<keyname>:<base64-secret>` where the secret is
+      # 32 bytes base64-encoded.  Same string every run so re-runs
+      # can read back previously-encrypted objects (test bucket
+      # is wiped between runs anyway, but the KMS state isn't).
+      MINIO_KMS_SECRET_KEY: "actor-ts-test-key:bnRH3F1Y5GMrXBpKBNZK0sxa3LqDOdSnLOULOGT5fXw="
     healthcheck:
       # MinIO's readiness URL.  We don't strictly need it (the runner
       # `waitForPort`s on 9000), but it gives docker compose visibility
