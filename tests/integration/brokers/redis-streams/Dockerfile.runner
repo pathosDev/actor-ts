@@ -1,6 +1,7 @@
 # Runner image for the Redis Streams live-integration suite
-# (B.7 / refs #296).  See the S3 Dockerfile for the full
-# explanation of the promote-peer-dep-to-regular-dep trick.
+# (B.7 / refs #296).  Identical shape across all eight broker
+# runners — see tests/integration/brokers/README.md for the full
+# rationale.
 
 FROM oven/bun:debian
 
@@ -10,16 +11,10 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY package.json bun.lock* tsconfig.json ./
+COPY tests/integration/brokers/package.json ./package.json
+RUN bun install --no-progress --ignore-scripts
 
-# `ioredis` is an optional peer dep used by both RedisCache and
-# RedisStreamsActor — promote it into regular `dependencies` so
-# `bun install --production` pulls it in.
-RUN bun -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.dependencies=p.dependencies||{};p.dependencies['ioredis']=p.peerDependencies['ioredis'];fs.writeFileSync('package.json',JSON.stringify(p,null,2));" \
- && rm -f bun.lock
-
-RUN bun install --no-progress --production --ignore-scripts
-
+COPY tsconfig.json ./
 COPY src/ src/
 COPY tests/ tests/
 

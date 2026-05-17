@@ -1,6 +1,6 @@
 # Runner image for the Redpanda/Kafka live-integration suite (B.4 / #22).
-# See the S3 Dockerfile for the full explanation of the
-# promote-peer-dep-to-regular-dep trick.
+# Identical shape across all eight broker runners — see
+# tests/integration/brokers/README.md for the full rationale.
 
 FROM oven/bun:debian
 
@@ -10,15 +10,10 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY package.json bun.lock* tsconfig.json ./
+COPY tests/integration/brokers/package.json ./package.json
+RUN bun install --no-progress --ignore-scripts
 
-# `kafkajs` is an optional peer dep — promote it into regular
-# `dependencies` so `bun install --production` pulls it in.
-RUN bun -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.dependencies=p.dependencies||{};p.dependencies['kafkajs']=p.peerDependencies['kafkajs'];fs.writeFileSync('package.json',JSON.stringify(p,null,2));" \
- && rm -f bun.lock
-
-RUN bun install --no-progress --production --ignore-scripts
-
+COPY tsconfig.json ./
 COPY src/ src/
 COPY tests/ tests/
 

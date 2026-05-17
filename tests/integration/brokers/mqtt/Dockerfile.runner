@@ -1,9 +1,6 @@
 # Runner image for the Mosquitto/MQTT live-integration suite (B.3 / #21).
-# Same shape as the S3 runner — slim bun:debian with the framework
-# deps plus the `mqtt` peer-dep installed explicitly via the
-# promote-peer-dep-to-regular-dep trick (see the S3 Dockerfile for
-# the full explanation of why `bun add` silently no-ops on the
-# already-declared peer-dep).
+# Identical shape across all eight broker runners — see
+# tests/integration/brokers/README.md for the full rationale.
 
 FROM oven/bun:debian
 
@@ -13,16 +10,10 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY package.json bun.lock* tsconfig.json ./
+COPY tests/integration/brokers/package.json ./package.json
+RUN bun install --no-progress --ignore-scripts
 
-# Promote the optional peer-dep into regular `dependencies` so
-# `bun install --production` actually pulls it in.  Drop the
-# lockfile because we just mutated package.json.
-RUN bun -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.dependencies=p.dependencies||{};p.dependencies['mqtt']=p.peerDependencies['mqtt'];fs.writeFileSync('package.json',JSON.stringify(p,null,2));" \
- && rm -f bun.lock
-
-RUN bun install --no-progress --production --ignore-scripts
-
+COPY tsconfig.json ./
 COPY src/ src/
 COPY tests/ tests/
 

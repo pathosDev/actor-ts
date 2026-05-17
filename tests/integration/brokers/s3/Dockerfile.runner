@@ -1,15 +1,9 @@
 # Runner image for the MinIO/S3 live-integration suite (B.2 / #20).
 #
-# Same base as the cluster integration image — `oven/bun:debian` —
-# but slimmer install set (no `tc`/`iptables` required: the broker
-# tests don't inject network faults).  The image bundles the SDK
-# (`@aws-sdk/client-s3`) on top of the framework deps, since the SDK
-# is an OPTIONAL peer dep in `package.json` and would otherwise be
-# absent.
-#
-# Build is local-by-default — the runner service in
-# docker-compose.s3.yml has `build:` pointed at this file, so
-# `bun run test:integration:s3` will rebuild as needed.
+# Identical shape across all eight broker runners — see
+# tests/integration/brokers/README.md for the full rationale on the
+# dedicated test-package.json.  The CMD is the only per-runner
+# diff.
 
 FROM oven/bun:debian
 
@@ -19,40 +13,17 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# Cache the install layer separately from source changes.
-COPY package.json bun.lock* tsconfig.json ./
+# Test-only package.json — declares every adapter peer-dep as a
+# regular `dependencies` entry.  Same shape an end-user has in
+# their own project, so `bun install` runs without any
+# --production or peer-dep-promotion gymnastics.
+COPY tests/integration/brokers/package.json ./package.json
+RUN bun install --no-progress --ignore-scripts
 
-# The S3 SDK is in package.json's `peerDependencies` with
-# `peerDependenciesMeta.optional=true`, so neither `bun install`
-# nor `bun add @aws-sdk/client-s3` pull it into node_modules:
-#   - `bun install --production` skips optional peer-deps.
-#   - `bun add <pkg>` sees the package is "already declared" via
-#     peerDeps and silently no-ops on it (the install side-effect
-#     then "completes" the graph by adding devDeps instead — which
-#     is what the runner-1 error log surfaced).
-#
-# Fix: promote the optional peer-dep into a regular `dependencies`
-# entry IN-CONTAINER before installing, and drop the bun.lock so
-# bun does fresh resolution rather than fail-fast on the lockfile
-# mismatch (bun has no `--no-frozen-lockfile` flag; the default is
-# frozen when a lockfile is present).  The in-container
-# package.json + lockfile are build artifacts that get thrown away
-# with the image layer, so mutating them is harmless.
-RUN bun -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.dependencies=p.dependencies||{};p.dependencies['@aws-sdk/client-s3']=p.peerDependencies['@aws-sdk/client-s3'];fs.writeFileSync('package.json',JSON.stringify(p,null,2));" \
- && rm -f bun.lock
-
-# Production-only install, no postinstall scripts — same constraint
-# as the cluster integration image (no native-build toolchain in
-# this image), since none of the dependencies that the broker tests
-# touch require one.
-RUN bun install --no-progress --production --ignore-scripts
-
-# Now the source tree + the suite.
+COPY tsconfig.json ./
 COPY src/ src/
 COPY tests/ tests/
 
 ENV NODE_ENV=production
 
-# The runner imports the scenarios and exits with 0/1 — that's the
-# signal the npm-script's `--exit-code-from runner` propagates.
 CMD ["bun", "tests/integration/brokers/s3/runner.ts"]

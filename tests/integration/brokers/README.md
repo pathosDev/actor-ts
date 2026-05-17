@@ -27,6 +27,7 @@ tests/integration/brokers/
 ├── lib/
 │   ├── wait-for-port.ts          # TCP/HTTP readiness probe
 │   └── scenario.ts               # tiny scenario runner + waitFor
+├── package.json                  # test-only dep manifest, see below
 ├── README.md                     # ← this file
 ├── s3/                           # B.2 — MinIO (Closes #20, refs #297)
 ├── mqtt/                         # B.3 — Mosquitto (Closes #21)
@@ -37,6 +38,40 @@ tests/integration/brokers/
 ├── grpc/                         # B.8 — gRPC (Closes #296)
 └── k8s/                          # B.9 — kind (Closes #298)
 ```
+
+## Why a separate `tests/integration/brokers/package.json`?
+
+The runner images don't install from the repo-root `package.json`.
+They install from the dedicated `tests/integration/brokers/package.json`
+that explicitly declares every adapter peer-dep — plus actor-ts's
+own runtime deps (`fastify`, `ts-pattern`) — as regular
+`dependencies`.
+
+Same shape an end-user has in their own project: in a fresh
+`bun init` directory, the user runs `bun add actor-ts` and then
+`bun add @aws-sdk/client-s3` — both are plain `dependencies`,
+not peer-deps.  The test image's `bun install` does exactly
+that pattern, no `--production`, no peer-dep machinery.
+
+This avoids two bun-specific traps that fire ONLY inside the
+actor-ts repo:
+
+1. `bun install --production` skips optional peer-deps entirely.
+2. `bun add <pkg>` no-ops when `<pkg>` is already listed in the
+   project's `peerDependencies` with `optional: true` — bun
+   treats it as "already declared", silently does nothing.
+
+End-users never hit either trap (their package.json doesn't have
+our peerDependencies block).  We had to engineer around both
+because the integration runners build INSIDE the actor-ts repo.
+The test-package.json side-steps the question entirely by being
+a fresh manifest with no peer-dep cross-reference.
+
+When a new adapter peer-dep is added to actor-ts (or an existing
+range bumps), the test-package.json needs the matching update.
+Failure mode is loud: the test runner's first `import` of the
+missing package throws "Cannot find module" before any scenario
+even starts.
 
 Every suite directory follows the same shape:
 

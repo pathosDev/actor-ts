@@ -4,6 +4,13 @@
 # Kubernetes distribution) over its admin kubeconfig.  k3s is the
 # right cost/coverage trade — full K8s API, single container, ~5s
 # boot, no need for nested Docker (unlike kind).
+#
+# Image shape is identical to the other seven runners — see
+# tests/integration/brokers/README.md for the full rationale.  The
+# K8s suite doesn't use any of the optional peer-deps declared in
+# tests/integration/brokers/package.json (it speaks to k3s via raw
+# node:https), but using the same package.json keeps the Dockerfile
+# pattern uniform across all eight suites.
 
 FROM oven/bun:debian
 
@@ -13,10 +20,10 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY package.json bun.lock* tsconfig.json ./
+COPY tests/integration/brokers/package.json ./package.json
+RUN bun install --no-progress --ignore-scripts
 
-RUN bun install --no-progress --production --ignore-scripts
-
+COPY tsconfig.json ./
 COPY src/ src/
 COPY tests/ tests/
 

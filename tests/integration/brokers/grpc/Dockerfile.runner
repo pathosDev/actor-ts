@@ -1,12 +1,12 @@
 # Runner image for the gRPC live-integration suite (B.8 / Closes #296).
 #
-# Different shape from the other broker suites — the "broker" here
-# IS the framework's GrpcServerActor.  We run server + client in
-# the same runner against a local proto file (echo.proto).  No
-# external broker container, hence the single-service compose.
+# Unlike the other broker suites the "broker" here IS the
+# framework's GrpcServerActor — server + client live in the same
+# runner against a local echo.proto.  No external broker
+# container, hence the single-service compose.
 #
-# See the S3 Dockerfile for the full explanation of the
-# promote-peer-dep-to-regular-dep trick.
+# Image shape is identical to the other seven runners — see
+# tests/integration/brokers/README.md for the full rationale.
 
 FROM oven/bun:debian
 
@@ -16,16 +16,10 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY package.json bun.lock* tsconfig.json ./
+COPY tests/integration/brokers/package.json ./package.json
+RUN bun install --no-progress --ignore-scripts
 
-# `@grpc/grpc-js` + `@grpc/proto-loader` are optional peer deps —
-# promote both into regular `dependencies` so `bun install
-# --production` pulls them in.
-RUN bun -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.dependencies=p.dependencies||{};for(const k of ['@grpc/grpc-js','@grpc/proto-loader'])p.dependencies[k]=p.peerDependencies[k];fs.writeFileSync('package.json',JSON.stringify(p,null,2));" \
- && rm -f bun.lock
-
-RUN bun install --no-progress --production --ignore-scripts
-
+COPY tsconfig.json ./
 COPY src/ src/
 COPY tests/ tests/
 

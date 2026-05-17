@@ -1,0 +1,18 @@
+{
+  "name": "actor-ts-broker-integration-tests",
+  "private": true,
+  "type": "module",
+  "description": "Dependency manifest for the live broker test runners. Mirrors what an end-user would install per the docs (actor-ts's own runtime deps + one regular `dependencies` entry per adapter peer-dep), so the Dockerfile.runner images need ZERO peer-dep tricks at install time. See ./README.md for the full rationale.",
+  "dependencies": {
+    "fastify": "^5.8.5",
+    "ts-pattern": "^5.9.0",
+    "@aws-sdk/client-s3": "^3.1048.0",
+    "mqtt": "^5.15.1",
+    "kafkajs": "^2.2.4",
+    "amqplib": "^0.10.9",
+    "nats": "^2.29.3",
+    "ioredis": "^5.10.1",
+    "@grpc/grpc-js": "^1.14.3",
+    "@grpc/proto-loader": "^0.7.15"
+  }
+}
