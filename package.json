@@ -93,7 +93,7 @@
   "peerDependencies": {
     "@aws-sdk/client-s3": "^3.1048.0",
     "@grpc/grpc-js": "^1.14.3",
-    "@grpc/proto-loader": "^0.7.15",
+    "@grpc/proto-loader": "^0.8.1",
     "@hono/node-server": "^2.0.0",
     "amqplib": "^2.0.1",
     "better-sqlite3": "^12.9.0",

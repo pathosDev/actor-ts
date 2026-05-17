@@ -13,6 +13,6 @@
     "nats": "^2.29.3",
     "ioredis": "^5.10.1",
     "@grpc/grpc-js": "^1.14.3",
-    "@grpc/proto-loader": "^0.7.15"
+    "@grpc/proto-loader": "^0.8.1"
   }
 }
