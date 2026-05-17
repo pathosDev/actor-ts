@@ -330,9 +330,21 @@ export class KafkaActor extends BrokerActor<KafkaActorSettings, KafkaCmd, KafkaP
     const value = typeof p.value === 'string' ? Buffer.from(p.value) : p.value;
     const key = p.key === undefined ? null
       : (typeof p.key === 'string' ? Buffer.from(p.key) : p.key);
+    // Header coercion: our `KafkaPublish.headers` API accepts
+    // `string | Uint8Array`, but kafkajs ≥ 2.0 only handles `string |
+    // Buffer` cleanly — a plain Uint8Array trips `Buffer.byteLength`
+    // internally and the produce silently never gets serialised.
+    // Buffer IS a Uint8Array subclass, so coercing here preserves
+    // the public contract while making the kafkajs path reliable.
+    // Surfaced by the b4-headers live-integration scenario against
+    // `redpandadata/redpanda:latest`.
+    const headers = p.headers
+      ? Object.fromEntries(Object.entries(p.headers).map(([k, v]) =>
+          [k, v instanceof Uint8Array && !Buffer.isBuffer(v) ? Buffer.from(v) : v]))
+      : undefined;
     await this.producer.send({
       topic: p.topic,
-      messages: [{ value, key, partition: p.partition, headers: p.headers as never }],
+      messages: [{ value, key, partition: p.partition, headers: headers as never }],
     });
   }
 

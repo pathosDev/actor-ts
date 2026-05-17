@@ -30,6 +30,19 @@ export interface AmqpQueueBinding {
   readonly exchange?: string;
   readonly routingKey?: string;
   readonly target: ActorRef<AmqpDelivery>;
+  /**
+   * Queue-assertion options applied at connect time.  Defaults to
+   * `{ durable: true }` for safety (matches amqplib's own defaults).
+   * Override when the queue was pre-declared with different
+   * properties — RabbitMQ rejects a re-assert with mismatched
+   * params (PRECONDITION_FAILED) and closes the channel, which
+   * masks every subsequent consume/publish as a silent timeout.
+   */
+  readonly queueOptions?: {
+    readonly durable?: boolean;
+    readonly autoDelete?: boolean;
+    readonly exclusive?: boolean;
+  };
 }
 
 export interface AmqpActorSettings extends BrokerCommonSettings {
@@ -92,7 +105,7 @@ export class AmqpActor extends BrokerActor<AmqpActorSettings, AmqpCmd, AmqpPubli
     this.connection.on('close', () => this.handleConnectionLost(new Error('amqp connection closed')));
 
     for (const b of this.settings.bindings ?? []) {
-      await this.channel.assertQueue(b.queue, { durable: true });
+      await this.channel.assertQueue(b.queue, b.queueOptions ?? { durable: true });
       if (b.exchange) {
         await this.channel.bindQueue(b.queue, b.exchange, b.routingKey ?? '');
       }
@@ -127,9 +140,17 @@ export class AmqpActor extends BrokerActor<AmqpActorSettings, AmqpCmd, AmqpPubli
   protected async dispatchOutgoing(env: OutboundEnvelope<AmqpPublish>): Promise<void> {
     if (!this.channel) throw new Error('AmqpActor: channel not open');
     const p = env.payload;
-    const content = p.content instanceof Uint8Array
-      ? p.content
-      : new TextEncoder().encode(p.content);
+    // amqplib's channel.publish needs a Buffer specifically — a
+    // plain Uint8Array (which our public `AmqpPublish.content`
+    // contract accepts) trips internal buffer-length checks and
+    // makes the publish fail SILENTLY: amqplib emits a `channel
+    // close` event (caught by handleConnectionLost → reconnect),
+    // but never throws back from `publish()`.  We surface that
+    // here by coercing to Buffer; Buffer IS a Uint8Array subclass
+    // so the public contract still holds.
+    const content = typeof p.content === 'string'
+      ? Buffer.from(p.content)
+      : Buffer.isBuffer(p.content) ? p.content : Buffer.from(p.content);
     const ok = this.channel.publish(p.exchange, p.routingKey, content, {
       persistent: p.persistent ?? true,
       headers: p.headers,
@@ -175,7 +196,7 @@ interface AmqpRawMessage {
 
 interface AmqpChannelLike {
   prefetch(count: number): Promise<void>;
-  assertQueue(queue: string, opts: { durable?: boolean }): Promise<unknown>;
+  assertQueue(queue: string, opts: { durable?: boolean; autoDelete?: boolean; exclusive?: boolean }): Promise<unknown>;
   bindQueue(queue: string, exchange: string, routingKey: string): Promise<unknown>;
   consume(
     queue: string, cb: (msg: AmqpRawMessage | null) => void,
