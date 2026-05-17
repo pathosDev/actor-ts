@@ -13,8 +13,10 @@ COPY package.json bun.lock* tsconfig.json ./
 RUN bun install --no-progress --production --ignore-scripts
 
 # `kafkajs` is an optional peer dep — pull it in explicitly so the
-# adapter's lazy import resolves.
-RUN bun add kafkajs --no-save
+# adapter's lazy import resolves.  `--no-save` after `--production`
+# was unreliable (see S3 Dockerfile); the in-container lockfile
+# mutation is harmless — it's a build artifact.
+RUN bun add kafkajs
 
 COPY src/ src/
 COPY tests/ tests/

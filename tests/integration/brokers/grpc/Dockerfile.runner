@@ -18,7 +18,9 @@ COPY package.json bun.lock* tsconfig.json ./
 RUN bun install --no-progress --production --ignore-scripts
 
 # gRPC peer deps.  The framework uses `@grpc/grpc-js` + `@grpc/proto-loader`.
-RUN bun add @grpc/grpc-js @grpc/proto-loader --no-save
+# `--no-save` after `--production` was unreliable (see S3 Dockerfile);
+# the in-container lockfile mutation is harmless — it's a build artifact.
+RUN bun add @grpc/grpc-js @grpc/proto-loader
 
 COPY src/ src/
 COPY tests/ tests/

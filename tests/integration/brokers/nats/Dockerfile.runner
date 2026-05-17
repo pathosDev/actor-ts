@@ -12,8 +12,10 @@ COPY package.json bun.lock* tsconfig.json ./
 
 RUN bun install --no-progress --production --ignore-scripts
 
-# `nats` is an optional peer dep.
-RUN bun add nats --no-save
+# `nats` is an optional peer dep.  `--no-save` after `--production`
+# was unreliable (see S3 Dockerfile); the in-container lockfile
+# mutation is harmless — it's a build artifact.
+RUN bun add nats
 
 COPY src/ src/
 COPY tests/ tests/

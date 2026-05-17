@@ -31,9 +31,12 @@ RUN bun install --no-progress --production --ignore-scripts
 # The S3 SDK is in peerDependencies/optional, so `bun install`
 # above won't pull it.  We add it explicitly into the image so the
 # adapter's lazy `import('@aws-sdk/client-s3')` resolves at runtime.
-# `--no-save` because we don't want to mutate the lockfile from
-# inside an image build.
-RUN bun add @aws-sdk/client-s3 --no-save
+# We DO let this mutate the in-container package.json + bun.lock —
+# they're build artifacts and get thrown away with the image.
+# `--no-save` after a `--production` install was unreliable: bun
+# accepted the command but the package didn't actually end up
+# importable from node_modules.
+RUN bun add @aws-sdk/client-s3
 
 # Now the source tree + the suite.
 COPY src/ src/
