@@ -68,38 +68,46 @@ describe('LeaseMajority — end-to-end split-brain', () => {
       // a/b/c/d.  Only one wins; that's the surviving authority.
       //
       // The lease holder's `decide()` returns the unreachable set
-      // (the OTHER side) and the wiring downs those two — its
-      // member map shrinks from 4 to 2.  The three losers each
-      // get acquire=false, decide that THEIR side has to go, and
-      // self-down via cluster.leave(); their views do not collapse
-      // to 2 (they remove their peer first, then mark self leaving,
-      // ending with a 3-member or fewer view briefly before their
-      // cluster shuts down).
+      // (the OTHER side) and the wiring downs those two — both of
+      // its nodes stay 'up' with a healthy upMembers view.  The
+      // two losers each get acquire=false, decide THEIR side has
+      // to go, and self-down via cluster.leave() — self transitions
+      // through 'leaving' → 'removed' and the upMembers count
+      // collapses to zero.
       //
-      // The defining invariant: AT LEAST ONE node ends with a
-      // 2-member view (the winner has converged).  AT MOST ONE
-      // partition side has both members at the 2-member state —
-      // that would be split-brain.
+      // What we assert: define "alive" as "self is still 'up' and
+      // upMembers >= 1" — the test for a healthy, post-arbitration
+      // member.  Polling on raw `getMembers().length === 2` was
+      // flaky because during the FD-detected-but-arbitration-not-
+      // yet-applied transient, ALL FOUR nodes briefly show 2
+      // members, producing a false-positive split-brain reading.
+      const isClusterAlive = (role: string): boolean => {
+        const cluster = spec.clusterFor(role);
+        const self = cluster.getMembers().find(
+          (m) => m.address.equals(cluster.selfAddress),
+        );
+        return self?.status === 'up' && cluster.upMembers().length >= 1;
+      };
+
+      // Settled state: exactly one partition side is fully dead.
+      // Poll for that — the other side's nodes are the winners.
       const deadline = Date.now() + 10_000;
-      let winnersOnLeftSide = 0;
-      let winnersOnRightSide = 0;
+      let leftAlive: string[] = [];
+      let rightAlive: string[] = [];
       while (Date.now() < deadline) {
-        winnersOnLeftSide = ['a', 'b']
-          .filter((r) => spec.clusterFor(r).getMembers().length === 2)
-          .length;
-        winnersOnRightSide = ['c', 'd']
-          .filter((r) => spec.clusterFor(r).getMembers().length === 2)
-          .length;
-        if (winnersOnLeftSide + winnersOnRightSide >= 1) break;
+        leftAlive = ['a', 'b'].filter(isClusterAlive);
+        rightAlive = ['c', 'd'].filter(isClusterAlive);
+        // One side fully self-downed → arbitration has converged.
+        if (leftAlive.length === 0 || rightAlive.length === 0) break;
         await Bun.sleep(50);
       }
-      // At least one node shrank to 2 members → the lease arbitration
-      // produced a winner.
-      expect(winnersOnLeftSide + winnersOnRightSide).toBeGreaterThanOrEqual(1);
-      // Critical anti-split-brain check: both sides cannot have both
-      // members converged to 2 — that's the failure we're guarding
-      // against.
-      expect(winnersOnLeftSide === 2 && winnersOnRightSide === 2).toBe(false);
+
+      // At least one node survived — the lease arbitration produced
+      // a winner.
+      expect(leftAlive.length + rightAlive.length).toBeGreaterThanOrEqual(1);
+      // Critical anti-split-brain check: NOT both sides have
+      // surviving nodes — that's the failure we're guarding against.
+      expect(leftAlive.length > 0 && rightAlive.length > 0).toBe(false);
     } finally {
       await spec.stop();
       MultiNodeTransport._resetRegistryForTest();
