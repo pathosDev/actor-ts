@@ -57,7 +57,11 @@ export const scenario: BrokerScenario<AmqpCtx> = {
     const inboxRef = ctx.system.spawnAnonymous(Props.create(() => handler));
     const amqp = spawnAmqp(ctx, {
       autoAck: false,
-      bindings: [{ queue, target: inboxRef as never }],
+      bindings: [{
+        queue,
+        target: inboxRef as never,
+        queueOptions: { durable: false, autoDelete: true },
+      }],
     });
     handler.kafka = amqp as unknown as ActorRef<AmqpCmd>;
     try {

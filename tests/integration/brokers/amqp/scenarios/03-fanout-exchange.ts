@@ -37,10 +37,18 @@ export const scenario: BrokerScenario<AmqpCtx> = {
     const { ref: inboxA, inbox: aInbox } = spawnInbox(ctx);
     const { ref: inboxB, inbox: bInbox } = spawnInbox(ctx);
     const consumerA = spawnAmqp(ctx, {
-      bindings: [{ queue: q1, target: inboxA as never }],
+      bindings: [{
+        queue: q1,
+        target: inboxA as never,
+        queueOptions: { durable: false, autoDelete: true },
+      }],
     });
     const consumerB = spawnAmqp(ctx, {
-      bindings: [{ queue: q2, target: inboxB as never }],
+      bindings: [{
+        queue: q2,
+        target: inboxB as never,
+        queueOptions: { durable: false, autoDelete: true },
+      }],
     });
     const publisher = spawnAmqp(ctx);
     try {

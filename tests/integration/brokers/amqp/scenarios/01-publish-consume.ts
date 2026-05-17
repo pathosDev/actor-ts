@@ -38,7 +38,14 @@ export const scenario: BrokerScenario<AmqpCtx> = {
 
     const { ref: inboxRef, inbox } = spawnInbox(ctx);
     const amqp = spawnAmqp(ctx, {
-      bindings: [{ queue, target: inboxRef as never }],
+      bindings: [{
+        queue,
+        target: inboxRef as never,
+        // Match the pre-declared queue's properties — without this
+        // the actor's assertQueue would conflict (PRECONDITION_FAILED)
+        // and silently close the channel.
+        queueOptions: { durable: false, autoDelete: true },
+      }],
     });
     try {
       // Give the actor time to connect + subscribe.
