@@ -138,7 +138,15 @@ export class ParallelMultiNodeSpec {
       roles: settings.roles,
       seedRoles: settings.seedRoles ?? [settings.roles[0]!],
       gossipIntervalMs: settings.gossipIntervalMs ?? 100,
-      awaitTimeoutMs: settings.awaitTimeoutMs ?? 15_000,
+      // 30s default (vs. 15s in MultiNodeSpec) — worker-thread
+      // bootstrap on Linux CI runners can take 5-10s before the
+      // first gossip tick lands, vs. ~200ms on a developer laptop.
+      // 15s was tight enough that any test approaching 4 nodes
+      // hit the budget on GHA ubuntu-latest while still passing
+      // locally; 30s gives the bootstrap room without inflating
+      // happy-path latency (the await polls every 50ms and breaks
+      // as soon as the condition holds).
+      awaitTimeoutMs: settings.awaitTimeoutMs ?? 30_000,
       logLevel: settings.logLevel ?? LogLevel.Off,
       addresses: settings.addresses,
       failureDetector: settings.failureDetector,
