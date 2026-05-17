@@ -9,7 +9,7 @@
     "@aws-sdk/client-s3": "^3.1048.0",
     "mqtt": "^5.15.1",
     "kafkajs": "^2.2.4",
-    "amqplib": "^0.10.9",
+    "amqplib": "^2.0.1",
     "nats": "^2.29.3",
     "ioredis": "^5.10.1",
     "@grpc/grpc-js": "^1.14.3",
