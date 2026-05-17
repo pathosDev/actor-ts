@@ -31,6 +31,23 @@ on:
       - '.github/workflows/test.yml'
   workflow_dispatch:
 
+# Serialise runs that share the same ref — without this, two main-
+# push runs that both reach the "Commit + push README" step race on
+# `git push`: the second fetches a base that's already moved and
+# fails with `non-fast-forward`.  Grouping by `github.ref`:
+#   - Main pushes (`refs/heads/main`) queue behind each other →
+#     README updates land in order, no force-push gymnastics.
+#   - PRs (`refs/pull/N/merge`) get their own group per PR →
+#     different PRs don't block each other.
+#   - Re-pushes to the same PR cancel the in-flight run → no
+#     wasted CI on stale commits.
+# `cancel-in-progress` evaluated per event type: cancel for PRs
+# (drop stale work), queue for main pushes (preserve every commit's
+# README state).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     # Single job — typecheck, run the suite once with `--coverage`,
