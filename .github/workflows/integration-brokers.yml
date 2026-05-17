@@ -1,0 +1,108 @@
+name: integration-brokers
+
+# Live broker integration suites — Phase B from the test-coverage
+# audit.  Each suite brings up a real broker in Docker (MinIO,
+# Mosquitto, Redpanda, RabbitMQ, NATS, Redis, gRPC echo, k3s) and
+# runs scenarios against the live socket.  Matrix-parallel so wall
+# clock ≈ wall clock of the slowest suite (Kafka, ~30s), not the
+# sum of all eight.
+#
+# Triggers identical in shape to the cluster `integration.yml`:
+#   - Pushes to `main`
+#   - PRs targeting `main`
+#   - Manual dispatch
+#   - Nightly cron at 03:30 UTC (offset from integration.yml's 03:00
+#     so the two don't fight for the same runner pool)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # Source-side: any adapter source change.  We could pin
+      # `src/io/broker/**` + `src/persistence/object-storage/**` etc.
+      # but `src/**` is simpler — the matrix only re-runs suites
+      # whose code might plausibly have shifted, and the cost is
+      # small (each suite is ~30s).
+      - 'src/**'
+      - 'tests/integration/brokers/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'tsconfig.json'
+      - '.github/workflows/integration-brokers.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/integration/brokers/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'tsconfig.json'
+      - '.github/workflows/integration-brokers.yml'
+  workflow_dispatch:
+  schedule:
+    # Nightly run catches upstream-image regressions (each suite
+    # tracks `:latest` for its broker — that's the whole point).
+    # 03:30 UTC, half-hour offset from integration.yml's 03:00.
+    - cron: '30 3 * * *'
+
+jobs:
+  broker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      # fail-fast=false so a single broker regression doesn't mask
+      # the status of the others.  Each suite gets its own green/red
+      # in the PR view.
+      fail-fast: false
+      matrix:
+        # `dir` is the directory under tests/integration/brokers/
+        # (also the docker-compose filename suffix).  `npm` is the
+        # `test:integration:<npm>` script name — usually the same
+        # as `dir`, except redis-streams uses the short `redis`
+        # script name.  `image` is just the display label.
+        broker:
+          - { dir: s3,            npm: s3,    image: "MinIO" }
+          - { dir: mqtt,          npm: mqtt,  image: "Mosquitto" }
+          - { dir: kafka,         npm: kafka, image: "Redpanda" }
+          - { dir: amqp,          npm: amqp,  image: "RabbitMQ" }
+          - { dir: nats,          npm: nats,  image: "NATS" }
+          - { dir: redis-streams, npm: redis, image: "Redis Streams" }
+          - { dir: grpc,          npm: grpc,  image: "gRPC echo" }
+          - { dir: k8s,           npm: k8s,   image: "k3s" }
+
+    name: ${{ matrix.broker.image }} (${{ matrix.broker.dir }})
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Bun
+        # Only needed to expose `bun run test:integration:<broker>`
+        # — the actual scenarios run INSIDE the Docker containers.
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # Docker is preinstalled on `ubuntu-latest`.  Surface the
+      # version in the log so a future Docker-on-Actions outage
+      # is debuggable.
+      - name: Show Docker version
+        run: docker version
+
+      - name: Run ${{ matrix.broker.image }} suite
+        # `--exit-code-from runner` propagates the runner's exit
+        # status from inside the container, so a failing scenario
+        # turns this step red.
+        run: bun run test:integration:${{ matrix.broker.npm }}
+
+      - name: Capture container logs on failure
+        if: failure()
+        run: |
+          # Dump every container's stdout/stderr so a flaky scenario
+          # is debuggable from the workflow logs alone — no need to
+          # re-run locally and pray for repro.  JSON-formatted by
+          # JsonLogger where applicable.
+          docker compose -f tests/integration/brokers/${{ matrix.broker.dir }}/docker-compose.${{ matrix.broker.dir }}.yml logs --no-color || true
+
+      - name: Tear down
+        if: always()
+        run: bun run test:integration:${{ matrix.broker.npm }}:teardown
