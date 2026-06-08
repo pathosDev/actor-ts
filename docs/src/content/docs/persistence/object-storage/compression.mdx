@@ -1,11 +1,11 @@
 ---
 title: Compression
-description: Compress objects at write time with gzip / brotli / deflate — trades CPU for storage and bandwidth. Configured at the store level (default for all keys) or per-actor (selective). Decompression is transparent on read.
+description: Compress object-storage bodies at write time with gzip or zstd — trades CPU for storage and bandwidth. Configured at the store level (default for all keys) or per-actor (selective). Decompression is transparent on read.
 ---
 
 Object storage supports **at-rest compression** — bodies are
-compressed before put, decompressed on get.  Four algorithms
-supported; trade CPU for storage / bandwidth.
+compressed before put, decompressed on get.  Three modes; pick
+the CPU-vs-size trade that fits the payload.
 
 ```ts
 import {
@@ -16,111 +16,153 @@ import {
 const store = new ObjectStorageDurableStateStore({
   backend: new S3ObjectStorageBackend({ /* ... */ }),
   compression: {
-    algorithm: 'gzip',
-    level:     6,        // 1 (fast) – 9 (best); default 6
+    algorithm: 'zstd',
+    level:     6,        // optional; zstd 1–22 (default 3)
   },
 });
 ```
 
-Now every persisted state is gzip-compressed before upload.
+Now every persisted state is zstd-compressed before upload.
 Reads transparently decompress.
 
 ## Algorithms
 
 | Algorithm | Compression ratio | CPU cost | When |
 | --- | --- | --- | --- |
-| **`gzip`** | Good (typical 50-70 %) | Moderate | Safe default — universal support, well-tuned. |
-| **`brotli`** | Better (typical 60-80 %) | Higher | When storage / bandwidth costs > CPU. |
-| **`deflate`** | Similar to gzip | Slightly less | Niche; `gzip` is the same algo + header. |
-| **`none`** | None | Zero | Default. |
+| **`zstd`** | Best | Low–moderate (decode very fast) | Large state blobs — best ratio at competitive speed. |
+| **`gzip`** | Good (typical 50-70 %) | Moderate | Universal default — `node:zlib`, works on every runtime. |
+| **`none`** | None | Zero | Already-compressed or tiny payloads (see caveat below). |
 
-For **text-heavy state** (JSON), gzip gives 70 % reduction
-easily.  For **already-compressed data** (encrypted bytes,
-image data), compression is nearly free of value and wastes
-CPU.
+The store default is **`gzip`** — it needs no native runtime
+support and no extra dependency.  For **text-heavy state**
+(JSON), both gzip and zstd reach ~70 % reduction; zstd gets there
+faster and decompresses quicker.  For **already-compressed data**
+(encrypted bytes, image data), compression is nearly free of
+value and wastes CPU — use `none`.
+
+> There is **no `brotli` or `deflate`** mode — only `none`, `gzip`, and `zstd`.
 
 ## Configuration
 
 ```ts
+type CompressionAlgo = 'none' | 'gzip' | 'zstd';
+
 interface CompressionConfig {
-  algorithm: 'gzip' | 'brotli' | 'deflate' | 'none';
-  level?:    number;       // algorithm-specific
+  algorithm: CompressionAlgo;
+  level?:    number;       // algorithm-specific; clamped; undefined = default
 }
 ```
 
-**Levels** are algorithm-specific:
+**Levels** are algorithm-specific.  Out-of-range values are
+clamped; omitting `level` uses the implementation default:
 
-- **gzip**: 1 (fastest, less compression) to 9 (slowest, best).
-  Default 6.
-- **brotli**: 0-11.  Default 4 (sweet spot for runtime).
-- **deflate**: 1-9.  Default 6.
+- **gzip**: 0 (no compression) – 9 (best).  Default 6.
+- **zstd**: 1 (fastest) – 22 (best).  Default 3.
+- **none**: ignored.
 
-For most workloads, **defaults are fine**.  Crank up only when
+For most workloads the **defaults are fine** — bump only when
 storage cost dominates.
+
+## Runtime support
+
+zstd support differs by **direction**:
+
+- **Compress (write)** — native only: **Bun** (`Bun.zstdCompressSync`)
+  or **Node ≥ 22.15** (`zlib.zstdCompressSync`).  There is no
+  pure-JS fallback for writing; the optional `fzstd` peer
+  dependency is **decompress-only**.  Selecting `zstd` on a runtime
+  without native support fails fast — eagerly at plugin
+  registration, not cryptically on first persist.
+- **Decompress (read)** — native first, then the optional `fzstd`
+  peer-dep, so a runtime without native zstd can still **read**
+  zstd bodies written elsewhere.
+
+`gzip` uses `node:zlib` and works everywhere (Bun, Node, Deno) with
+no extra dependency.
 
 ## How it works
 
 ```
 On put:
-  serialize value → bytes → gzip(bytes) → S3.put(compressed, contentEncoding: 'gzip')
+  serialize value → JSON bytes → compress(bytes) → [encrypt] →
+    frame with ATS1 manifest → backend.put(framed)
 
 On get:
-  S3.get → bytes + contentEncoding header → decompress → bytes → deserialize
+  backend.get → framed bytes → read ATS1 manifest → [decrypt] →
+    decompress per the manifest's algorithm flag → JSON → deserialize
 ```
 
-The framework writes `Content-Encoding: gzip` (or `br`, etc.)
-on the put, reads it back on the get, decompresses
-accordingly.  If a stored object has no Content-Encoding (was
-written by an old version without compression), it's read
-as-is.
+Every body carries a small **`ATS1` manifest header**; a 2-bit
+field in its flags byte records the compression algorithm
+(`none` / `gzip` / `zstd`).  Decompression is driven entirely by
+that flag — **not** by any HTTP header.  (On S3 the framework also
+sets `Content-Encoding` as a courtesy marker, but it is never the
+source of truth for decoding.)
 
-This means **mixing compressed + uncompressed objects in the
-same bucket** works — the framework handles each per the
-header.
+Because each body self-describes its algorithm, **mixing `none` /
+`gzip` / `zstd` bodies in the same bucket works** — every object
+decodes per its own manifest.
+
+## Changing the level
+
+The level is an **encoder-only** setting.  It is **not** stored on
+the wire (the manifest records the *algorithm*, not the level), and
+the decompressor never needs it — gzip and zstd frames are
+self-describing.
+
+So **changing the configured level requires no migration**: bodies
+written at the old level keep decoding, new bodies use the new
+level, and the two mix freely.  You can also raise or lower the
+level per-actor at any time without touching existing data.
+
+<aside>
+**zstd ultra levels (≥ 20) + the `fzstd` fallback.**  Ultra levels
+use large match windows.  The pure-JS `fzstd` decompress fallback
+caps the back-reference window at 2²⁵ (32 MB) and may be unable to
+read ultra-level frames.  If any **reader** in your fleet might run
+without native zstd (i.e. not Bun and not Node ≥ 22.15), keep the
+level **≤ 19**.  On native readers there is no such limit.
+</aside>
 
 ## Compression + serialization
 
 ```
-serialize → JSON bytes → gzip → S3
+serialize → JSON bytes → compress → [encrypt] → store
 ```
 
-Compression runs **after serialization**.  For maximum
-size reduction, combine **CBOR serialization + gzip
-compression** — CBOR shrinks the structure; gzip eliminates
-remaining redundancy.
-
-```ts
-new ObjectStorageDurableStateStore({
-  backend,
-  serializer:  new CborSerializer(),
-  compression: { algorithm: 'gzip', level: 6 },
-});
-```
+Compression runs **after serialization** and **before encryption**
+— compressing ciphertext is pointless (it's high-entropy), and the
+fixed order also avoids CRIME-style side channels.  For maximum
+size reduction on large text-heavy state, `zstd` at a higher level
+is usually the best single knob to turn.
 
 ## When to use each
 
 | Scenario | Algorithm |
 | --- | --- |
-| Text-heavy state (large JSON, long descriptions) | `gzip` or `brotli` |
-| Mixed text + numbers | `gzip` |
-| Already-encrypted bytes | `none` (no benefit) |
-| Storage-cost-bounded | `brotli` (level 6-8) |
-| CPU-bounded write path | `none` or `gzip` level 1 |
+| Large text-heavy state (big JSON, long descriptions) | `zstd` |
+| Mixed text + numbers | `zstd` or `gzip` |
+| Maximum portability, no native zstd guaranteed | `gzip` |
+| Already-encrypted / already-compressed bytes | `none` (no benefit) |
+| Storage-cost-bounded, write-once-read-many | `zstd` (level 15-19) |
+| CPU-bounded write path | `gzip` level 1 or `zstd` level 1 |
 
-## CPU cost
+## CPU cost (rough guidance)
 
-Per 100 KB blob, single thread:
+Single thread, ~100 KB blob — order-of-magnitude only; real numbers
+depend on payload and runtime:
 
 - **gzip level 6** — ~1-3 ms encode, ~0.5 ms decode.
-- **gzip level 1** — ~0.5 ms encode, ~0.3 ms decode.
-- **brotli level 4** — ~2-5 ms encode, ~1 ms decode.
-- **brotli level 11** — ~50-100 ms encode (!), ~1 ms decode.
+- **gzip level 1** — ~0.5 ms encode, fast decode.
+- **zstd level 3 (default)** — encode comparable to gzip, **better
+  ratio**, very fast decode.
+- **zstd level 19** — noticeably slower encode, decode still fast.
+- **zstd levels 20-22 (ultra)** — much slower encode for marginal
+  gains; reserve for write-once-read-many bulk data.
 
-Brotli level 11 is very slow on encode — useful for write-once
-read-many bulk archives, not for runtime persistence.
-
-For typical state-store workloads (small objects, modest
-write rate), the CPU cost is invisible.
+zstd's asymmetry (cheap decode at every level) makes it a strong
+default for read-heavy state.  For typical state-store workloads
+(small objects, modest write rate) the CPU cost is invisible.
 
 ## Per-actor override
 
@@ -130,7 +172,7 @@ class SmallStateActor extends DurableStateActor<...> {
 }
 
 class LogStateActor extends DurableStateActor<...> {
-  protected compression() { return { algorithm: 'brotli' as const, level: 8 }; }
+  protected compression() { return { algorithm: 'zstd' as const, level: 19 }; }
 }
 ```
 
@@ -145,29 +187,30 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Compression on tiny objects">
   ```ts
-  // Compressing a 50-byte state → output is 80 bytes (gzip overhead)
+  // Compressing a 50-byte state → output can be larger (framing overhead)
   ```
-  Below ~100 bytes, gzip headers exceed savings.  For
-  consistently-small states, skip compression.
+  Below ~100 bytes, the compressor's own headers exceed the
+  savings.  For consistently-small states, use `none`.
 </Aside>
 
-<Aside type="caution" title="Brotli level 11 in hot paths">
+<Aside type="caution" title="zstd ultra levels with the fzstd fallback">
   ```ts
-  { algorithm: 'brotli', level: 11 }   // 50-100ms per encode
+  { algorithm: 'zstd', level: 22 }   // large window — see "Changing the level"
   ```
-  Halves your write throughput on small objects.  Use level
-  4-6 for runtime; reserve 11 for batch operations.
+  Levels ≥ 20 may be unreadable on a runtime that only has the
+  pure-JS `fzstd` decompress fallback (32 MB window cap).  Keep
+  ≤ 19 unless every reader has native zstd.
 </Aside>
 
 <Aside type="caution" title="Already-encrypted blobs">
   ```ts
-  // Encrypt → gzip
-  // → gzip can't compress encrypted bytes (effectively random)
+  // compression runs BEFORE encryption, so this is handled for you:
+  // serialize → compress → encrypt → store
   ```
-  Encryption-then-compression yields ~0 % reduction at high
-  CPU cost.  Either compress first (if order doesn't matter
-  for your threat model) or skip compression entirely for
-  encrypted objects.
+  Compressing *after* encryption yields ~0 % reduction at high CPU
+  cost — which is exactly why the codec compresses first.  For
+  payloads that are already compressed/encrypted upstream, set
+  `none` to skip the wasted work.
 </Aside>
 
 ## Where to next

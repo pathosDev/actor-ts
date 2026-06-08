@@ -346,7 +346,7 @@ const PAGES = [
    'Filesystem + S3 backends — when blobs beat structured journals.'],
   ['persistence/object-storage/compression.md',
    'Object-storage compression',
-   'gzip, zstd, brotli, deflate, none — picking by blob shape.'],
+   'gzip, zstd, none — picking by blob shape.'],
   ['persistence/object-storage/encryption.md',
    'Object-storage encryption',
    'AES-GCM with MasterKeyRing — at-rest encryption that does not block writes.'],

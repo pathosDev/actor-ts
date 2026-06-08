@@ -8,7 +8,7 @@ compression + encryption.  But sometimes specific actors need
 **different settings**:
 
 - A sensitive actor needs encryption (others don't).
-- A large-state actor benefits from brotli (others use gzip).
+- A large-state actor benefits from high-level zstd (others use gzip).
 - A small-state actor opts out of compression.
 
 Override per-actor by implementing the `compression()` /
@@ -76,9 +76,9 @@ one keyRing doesn't expose the other.
 
 ```ts
 class ChatTranscriptActor extends DurableStateActor<...> {
-  // Large text state — brotli wins meaningfully
+  // Large text state — high-level zstd wins meaningfully
   protected compression() {
-    return { algorithm: 'brotli' as const, level: 8 };
+    return { algorithm: 'zstd' as const, level: 19 };
   }
 }
 
@@ -159,7 +159,7 @@ See [key rotation](/persistence/object-storage/key-rotation/).
 class Account extends PersistentActor<Cmd, Event, State> {
   // Per-actor compression for snapshots:
   protected compression() {
-    return { algorithm: 'brotli' as const };
+    return { algorithm: 'zstd' as const };
   }
 
   // Per-actor encryption for snapshots:
@@ -186,11 +186,12 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Heavy compression per-actor">
   ```ts
-  // Override to brotli level 11 for "important" actors
+  // Override to zstd level 22 (ultra) for "important" actors
   ```
-  Brotli 11 is slow.  If "important" actors persist frequently,
-  this adds 50-100 ms per persist.  Verify with profiling before
-  setting per-actor heavy-compression overrides.
+  zstd ultra levels (20-22) are slow to encode and may be unreadable
+  on a runtime that only has the pure-JS `fzstd` decompress fallback
+  (32 MB window).  If "important" actors persist frequently, profile
+  first — and keep ≤ 19 unless every reader has native zstd.
 </Aside>
 
 <Aside type="caution" title="Override returning new object each call">

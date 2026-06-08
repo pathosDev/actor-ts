@@ -113,7 +113,7 @@ Reduces redundant S3 GETs to sub-microsecond cache hits.
 
 ```ts
 class Account extends PersistentActor<...> {
-  protected compression() { return { algorithm: 'brotli' as const }; }
+  protected compression() { return { algorithm: 'zstd' as const }; }
   protected encryption()  { return { keyRing: accountKeyRing }; }
 }
 ```

@@ -53,7 +53,7 @@ interface DurableDistributedDataSettings {
 | `durableStateStore` | Any DurableStateStore implementation — in-memory, SQLite, object-storage. |
 | `keys` | The whitelist of key names that should be persisted.  Other keys stay in-memory only. |
 | `encryption` | Optional AES-GCM encryption at rest. |
-| `compression` | Optional gzip / brotli compression. |
+| `compression` | Optional gzip / zstd compression. |
 
 The `keys` whitelist is **mandatory** — without it, every key
 would persist, which defeats the "small, hot state" model

@@ -8,7 +8,7 @@ Kompression + Verschlüsselung haben.  Aber manchmal brauchen
 bestimmte Actors **andere Einstellungen**:
 
 - Ein sensibler Actor braucht Verschlüsselung (andere nicht).
-- Ein Actor mit großem State profitiert von Brotli (andere
+- Ein Actor mit großem State profitiert von hohem zstd-Level (andere
   verwenden gzip).
 - Ein Actor mit kleinem State verzichtet auf Kompression.
 
@@ -78,9 +78,9 @@ Kompromittierung eines keyRings exponiert den anderen nicht.
 
 ```ts
 class ChatTranscriptActor extends DurableStateActor<...> {
-  // Großer Text-State — Brotli gewinnt deutlich
+  // Großer Text-State — hohes zstd-Level gewinnt deutlich
   protected compression() {
-    return { algorithm: 'brotli' as const, level: 8 };
+    return { algorithm: 'zstd' as const, level: 19 };
   }
 }
 
@@ -163,7 +163,7 @@ Siehe [Schlüsselrotation](/de/persistence/object-storage/key-rotation/).
 class Account extends PersistentActor<Cmd, Event, State> {
   // Per-Actor-Kompression für Snapshots:
   protected compression() {
-    return { algorithm: 'brotli' as const };
+    return { algorithm: 'zstd' as const };
   }
 
   // Per-Actor-Verschlüsselung für Snapshots:
@@ -191,12 +191,13 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Schwere Kompression pro Actor">
   ```ts
-  // Override auf Brotli Level 11 für "wichtige" Actors
+  // Override auf zstd Level 22 (ultra) für "wichtige" Actors
   ```
-  Brotli 11 ist langsam.  Wenn "wichtige" Actors häufig
-  persistieren, fügt das 50-100 ms pro Persist hinzu.  Verifiziere
-  mit Profiling, bevor du Per-Actor-Heavy-Compression-Overrides
-  setzt.
+  zstd Ultra-Level (20-22) sind beim Encode langsam und auf einem
+  Runtime, das nur den Pure-JS-`fzstd`-Decompress-Fallback hat, evtl.
+  nicht lesbar (32-MB-Fenster).  Wenn "wichtige" Actors häufig
+  persistieren, profile zuerst — und halte ≤ 19, außer jeder Leser
+  hat natives zstd.
 </Aside>
 
 <Aside type="caution" title="Override gibt bei jedem Aufruf ein neues Objekt zurück">
