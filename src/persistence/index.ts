@@ -74,6 +74,29 @@ export type {
   PgClientLike,
 } from './journals/PostgresClient.js';
 
+// MariaDB / MySQL plug-in (journal + snapshot + durable-state).
+export { MariaDbJournal } from './journals/MariaDbJournal.js';
+export type { MariaDbJournalOptions } from './journals/MariaDbJournal.js';
+export { MariaDbSnapshotStore } from './snapshot-stores/MariaDbSnapshotStore.js';
+export type { MariaDbSnapshotStoreOptions } from './snapshot-stores/MariaDbSnapshotStore.js';
+export { MariaDbDurableStateStore } from './durable-state-stores/MariaDbDurableStateStore.js';
+export type { MariaDbDurableStateStoreOptions } from './durable-state-stores/MariaDbDurableStateStore.js';
+export {
+  registerMariaDbPlugins,
+  MARIADB_JOURNAL_PLUGIN_ID,
+  MARIADB_SNAPSHOT_PLUGIN_ID,
+  MARIADB_DURABLE_STATE_PLUGIN_ID,
+} from './journals/MariaDbPlugin.js';
+export type {
+  RegisterMariaDbPluginsOptions,
+  MariaDbPluginHandles,
+} from './journals/MariaDbPlugin.js';
+export type {
+  MariaDbConnection,
+  MariaDbPoolLike,
+  MariaDbConnectionLike,
+} from './journals/MariaDbClient.js';
+
 // Durable State (state-oriented alternative to Event Sourcing).
 export { DurableStateActor } from './DurableStateActor.js';
 export type { DurableStateSettings } from './DurableStateActor.js';
