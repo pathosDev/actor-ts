@@ -51,6 +51,29 @@ export {
 } from './journals/CassandraPlugin.js';
 export type { RegisterCassandraPluginsOptions } from './journals/CassandraPlugin.js';
 
+// PostgreSQL plug-in (journal + snapshot + durable-state).
+export { PostgresJournal } from './journals/PostgresJournal.js';
+export type { PostgresJournalOptions } from './journals/PostgresJournal.js';
+export { PostgresSnapshotStore } from './snapshot-stores/PostgresSnapshotStore.js';
+export type { PostgresSnapshotStoreOptions } from './snapshot-stores/PostgresSnapshotStore.js';
+export { PostgresDurableStateStore } from './durable-state-stores/PostgresDurableStateStore.js';
+export type { PostgresDurableStateStoreOptions } from './durable-state-stores/PostgresDurableStateStore.js';
+export {
+  registerPostgresPlugins,
+  POSTGRES_JOURNAL_PLUGIN_ID,
+  POSTGRES_SNAPSHOT_PLUGIN_ID,
+  POSTGRES_DURABLE_STATE_PLUGIN_ID,
+} from './journals/PostgresPlugin.js';
+export type {
+  RegisterPostgresPluginsOptions,
+  PostgresPluginHandles,
+} from './journals/PostgresPlugin.js';
+export type {
+  PostgresConnection,
+  PgPoolLike,
+  PgClientLike,
+} from './journals/PostgresClient.js';
+
 // Durable State (state-oriented alternative to Event Sourcing).
 export { DurableStateActor } from './DurableStateActor.js';
 export type { DurableStateSettings } from './DurableStateActor.js';
