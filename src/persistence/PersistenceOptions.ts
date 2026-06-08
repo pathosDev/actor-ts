@@ -23,6 +23,25 @@ export type CompressionAlgo = 'none' | 'gzip' | 'zstd';
 /** Compression directive — what algorithm a single write should use. */
 export interface CompressionConfig {
   readonly algorithm: CompressionAlgo;
+  /**
+   * Optional compression level — higher trades CPU for a smaller body.
+   * Algorithm-specific; out-of-range values are clamped, `undefined`
+   * uses the implementation default:
+   *   - `gzip`: 0–9 (default 6).
+   *   - `zstd`: 1–22 (default 3).  Levels ≥20 ("ultra") use large
+   *     windows the pure-JS `fzstd` decompress-fallback may be unable to
+   *     read (it caps at a 32 MB window) — keep ≤19 if any reader might
+   *     run on a runtime without native zstd (i.e. not Bun and not
+   *     Node ≥22.15).
+   *   - `none`: ignored.
+   *
+   * The level is an encoder-only setting: it is NOT recorded on the wire
+   * (the body manifest stores the algorithm, not the level) and
+   * decompression never needs it.  Changing the level therefore needs no
+   * migration — old bodies keep decoding, new bodies use the new level,
+   * and the two mix freely in one bucket.
+   */
+  readonly level?: number;
 }
 
 /**

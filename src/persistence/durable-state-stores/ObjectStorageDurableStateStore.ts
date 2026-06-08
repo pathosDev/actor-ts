@@ -179,6 +179,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     const stampVersion = active && isVersionedKeyShape(encryption);
     const body = await encodeBody(utf8.encode(json), {
       compression: compression.algorithm,
+      compressionLevel: compression.level,
       encryption: active
         ? {
             subKey: active.subKey,

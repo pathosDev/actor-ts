@@ -53,6 +53,13 @@ export const FLAG_INTEGRITY_HMAC = 0b10000;
 export interface EncodeOptions {
   readonly compression?: CompressionAlgo;
   /**
+   * Algorithm-specific compression level (gzip 0–9, zstd 1–22) passed
+   * through to the compressor.  Out-of-range values are clamped;
+   * `undefined` uses the impl default.  Not recorded on the wire — the
+   * manifest stores only the algorithm, and decode never needs the level.
+   */
+  readonly compressionLevel?: number;
+  /**
    * When set, the body is encrypted with AES-256-GCM using the supplied
    * 32-byte subkey (typically derived per-pid via HKDF — see
    * `Encryption.deriveSubkey`).  Compression runs first so encryption
@@ -132,7 +139,7 @@ export async function encodeBody(jsonBytes: Uint8Array, opts: EncodeOptions = {}
   // because compression-after-encryption would defeat compression
   // (ciphertext is high-entropy) AND it's the order that protects
   // against CRIME-style side channels.
-  const compressed = await compressorFor(algo).compress(jsonBytes);
+  const compressed = await compressorFor(algo).compress(jsonBytes, opts.compressionLevel);
 
   // Step 2: encrypt (if requested).  IV goes into the manifest.
   let bodyBeforeIntegrity: Uint8Array;
