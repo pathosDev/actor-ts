@@ -1,0 +1,47 @@
+# PostgreSQL live-integration suite (#323).
+#
+# Brings up postgres + a runner container that exercises the
+# Postgres journal / snapshot / durable-state backends against the live
+# server via the `pg` driver.
+#
+# Run locally:
+#   bun run test:integration:postgres
+#   bun run test:integration:postgres:teardown
+
+name: actor-ts-integration-postgres
+
+services:
+  postgres:
+    # `latest` deliberately — surface upstream Postgres regressions as
+    # soon as they ship.  Production users pin their own version.
+    image: postgres:latest
+    environment:
+      POSTGRES_USER: actor
+      POSTGRES_PASSWORD: actor
+      POSTGRES_DB: actor_ts_test
+    healthcheck:
+      # `pg_isready` only reports the server is up once the entrypoint has
+      # finished creating POSTGRES_DB / POSTGRES_USER and opened the TCP
+      # port — so `service_healthy` is a true "ready for the runner" gate.
+      test: ["CMD-SHELL", "pg_isready -U actor -d actor_ts_test"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    networks:
+      pgnet: {}
+
+  runner:
+    build:
+      context: ../../../..
+      dockerfile: tests/integration/brokers/postgres/Dockerfile.runner
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Inside the compose bridge Postgres is reachable by service name.
+      PG_URL: postgres://actor:actor@postgres:5432/actor_ts_test
+    networks:
+      pgnet: {}
+
+networks:
+  pgnet: {}

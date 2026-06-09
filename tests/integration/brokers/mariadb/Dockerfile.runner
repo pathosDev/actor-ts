@@ -1,0 +1,25 @@
+# Runner image for the MariaDB live-integration suite (#324).
+#
+# Identical shape to the other broker runners — installs deps from the
+# shared tests/integration/brokers/package.json (which lists `mariadb` as
+# a regular dependency), then runs the SQL persistence contract against
+# the live mariadb:latest service.
+
+FROM oven/bun:debian
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY tests/integration/brokers/package.json ./package.json
+RUN bun install --no-progress --ignore-scripts
+
+COPY tsconfig.json ./
+COPY src/ src/
+COPY tests/ tests/
+
+ENV NODE_ENV=production
+
+CMD ["bun", "tests/integration/brokers/mariadb/runner.ts"]

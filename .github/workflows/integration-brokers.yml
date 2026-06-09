@@ -69,6 +69,8 @@ jobs:
           - { dir: redis-streams, npm: redis, image: "Redis Streams" }
           - { dir: grpc,          npm: grpc,  image: "gRPC echo" }
           - { dir: k8s,           npm: k8s,   image: "k3s" }
+          - { dir: postgres,      npm: postgres, image: "PostgreSQL" }
+          - { dir: mariadb,       npm: mariadb,  image: "MariaDB" }
 
     name: ${{ matrix.broker.image }} (${{ matrix.broker.dir }})
 

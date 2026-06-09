@@ -1,0 +1,50 @@
+# MariaDB live-integration suite (#324).
+#
+# Brings up mariadb + a runner container that exercises the MariaDB
+# journal / snapshot / durable-state backends against the live server via
+# the `mariadb` connector.
+#
+# Run locally:
+#   bun run test:integration:mariadb
+#   bun run test:integration:mariadb:teardown
+
+name: actor-ts-integration-mariadb
+
+services:
+  mariadb:
+    # `latest` deliberately — surface upstream MariaDB regressions early.
+    image: mariadb:latest
+    environment:
+      MARIADB_ROOT_PASSWORD: root
+      MARIADB_DATABASE: actor_ts_test
+      MARIADB_USER: actor
+      MARIADB_PASSWORD: actor
+    healthcheck:
+      # Ships with the official image.  `--connect --innodb_initialized`
+      # only passes once the server accepts connections AND InnoDB has
+      # finished crash-recovery / init — a true readiness gate.
+      test: ["CMD-SHELL", "healthcheck.sh --connect --innodb_initialized"]
+      interval: 2s
+      timeout: 2s
+      retries: 40
+    networks:
+      mdbnet: {}
+
+  runner:
+    build:
+      context: ../../../..
+      dockerfile: tests/integration/brokers/mariadb/Dockerfile.runner
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment:
+      MARIADB_HOST: mariadb
+      MARIADB_PORT: "3306"
+      MARIADB_USER: actor
+      MARIADB_PASSWORD: actor
+      MARIADB_DATABASE: actor_ts_test
+    networks:
+      mdbnet: {}
+
+networks:
+  mdbnet: {}

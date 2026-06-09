@@ -1,0 +1,26 @@
+# Runner image for the PostgreSQL live-integration suite (#323).
+#
+# Identical shape to the other broker runners — installs deps from the
+# shared tests/integration/brokers/package.json (which lists `pg` as a
+# regular dependency, mirroring a real end-user install), then runs the
+# Postgres persistence contract against the live postgres:latest service.
+# See tests/integration/brokers/README.md for the package.json rationale.
+
+FROM oven/bun:debian
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY tests/integration/brokers/package.json ./package.json
+RUN bun install --no-progress --ignore-scripts
+
+COPY tsconfig.json ./
+COPY src/ src/
+COPY tests/ tests/
+
+ENV NODE_ENV=production
+
+CMD ["bun", "tests/integration/brokers/postgres/runner.ts"]
