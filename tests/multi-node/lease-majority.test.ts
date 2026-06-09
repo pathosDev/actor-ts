@@ -100,12 +100,27 @@ describe('LeaseMajority — end-to-end split-brain', () => {
       // running this inside the full suite, where it blew past a 10s
       // budget (the original flake).  The loop still breaks the instant
       // one side dies, so the happy path stays quick.
+      const startedAt = Date.now();
+      let lastLog = 0;
       const deadline = Date.now() + 25_000;
       let leftAlive: string[] = [];
       let rightAlive: string[] = [];
       while (Date.now() < deadline) {
         leftAlive = ['a', 'b'].filter(isClusterAlive);
         rightAlive = ['c', 'd'].filter(isClusterAlive);
+        // TEMP diagnostic (#flaky-ci): per-node view over time so a
+        // CI-only non-convergence is debuggable from the workflow log.
+        const now = Date.now();
+        if (now - lastLog > 3_000) {
+          const snap = ['a', 'b', 'c', 'd'].map((r) => {
+            const c = spec.clusterFor(r);
+            const self = c.getMembers().find((m) => m.address.equals(c.selfAddress));
+            return `${r}{tot=${c.getMembers().length} up=${c.upMembers().length} self=${self?.status ?? '?'}}`;
+          }).join(' ');
+          // eslint-disable-next-line no-console
+          console.error(`[LEASE-DEBUG] t=${now - startedAt}ms leftAlive=[${leftAlive}] rightAlive=[${rightAlive}] ${snap}`);
+          lastLog = now;
+        }
         // One side fully self-downed → arbitration has converged.
         if (leftAlive.length === 0 || rightAlive.length === 0) break;
         await Bun.sleep(50);

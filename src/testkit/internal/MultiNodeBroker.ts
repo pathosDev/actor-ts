@@ -32,6 +32,17 @@ export class MultiNodeBroker {
   private readonly blocked = new Set<string>();
   private stopped = false;
 
+  /**
+   * TEMP diagnostic counters (#flaky-ci) — frame flow through the broker.
+   * If `recv` stays ~0 the workers never gossip (worker→broker transport
+   * dead); if `recv` climbs but `delivered` lags, routing is dropping
+   * frames.  Read by ParallelMultiNodeSpec's awaitMembers debug log.
+   */
+  readonly stats = {
+    recv: 0, delivered: 0,
+    dropStopped: 0, dropSenderGone: 0, dropPartition: 0, dropNoTarget: 0,
+  };
+
   register(address: NodeAddress, port: PortLike): void {
     const key = address.toString();
     if (this.ports.has(key)) {
@@ -80,13 +91,15 @@ export class MultiNodeBroker {
   /* -------------------------------- internals ------------------------- */
 
   private onMessage(sourceKey: string, env: BrokeredMessage): void {
-    if (this.stopped) return;
-    if (!this.ports.has(sourceKey)) return;     // sender was unregistered
+    this.stats.recv++;
+    if (this.stopped) { this.stats.dropStopped++; return; }
+    if (!this.ports.has(sourceKey)) { this.stats.dropSenderGone++; return; }     // sender was unregistered
     const targetAddr = NodeAddressCtor.fromJSON(env.to);
     const targetKey = targetAddr.toString();
-    if (this.blocked.has(`${sourceKey}→${targetKey}`)) return;  // partition
+    if (this.blocked.has(`${sourceKey}→${targetKey}`)) { this.stats.dropPartition++; return; }  // partition
     const target = this.ports.get(targetKey);
-    if (!target) return;                        // unknown destination
+    if (!target) { this.stats.dropNoTarget++; return; }                        // unknown destination
+    this.stats.delivered++;
     target.postMessage(env);
   }
 }

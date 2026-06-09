@@ -281,10 +281,37 @@ export class ParallelMultiNodeSpec {
   async awaitMembers(
     role: string, expectedCount: number, timeoutMs: number = this.settings.awaitTimeoutMs,
   ): Promise<void> {
+    // TEMP diagnostic (#flaky-ci): log the observed member view + broker
+    // frame counters over time, so a CI-only non-convergence is fully
+    // debuggable from the workflow log.  Rate-limited (on-change + every
+    // 3s).  Remove once the GitHub-runner non-convergence is root-caused.
+    const startedAt = Date.now();
+    let lastLog = 0; let lastUp = -2; let polls = 0; let rpcErrs = 0;
     await this.awaitCondition(
       async () => {
-        const members = await this.getMembers(role);
-        return members.filter((m) => m.status === 'up').length === expectedCount;
+        polls++;
+        let up = -1; let statuses = '';
+        try {
+          const members = await this.getMembers(role);
+          up = members.filter((m) => m.status === 'up').length;
+          statuses = members.map((m) => `${m.address}=${m.status}`).join(' ');
+        } catch (e) {
+          rpcErrs++; statuses = `RPC-ERR:${(e as Error).message}`;
+        }
+        const now = Date.now();
+        if (up !== lastUp || now - lastLog > 3_000) {
+          const s = this.broker.stats;
+          // eslint-disable-next-line no-console
+          console.error(
+            `[MNS-DEBUG] awaitMembers(${role} want=${expectedCount}) `
+            + `t=${now - startedAt}ms up=${up} polls=${polls} rpcErr=${rpcErrs} `
+            + `broker{recv=${s.recv} deliv=${s.delivered} senderGone=${s.dropSenderGone} `
+            + `part=${s.dropPartition} noTgt=${s.dropNoTarget} stop=${s.dropStopped}} `
+            + `view[${statuses}]`,
+          );
+          lastLog = now; lastUp = up;
+        }
+        return up === expectedCount;
       },
       `awaitMembers(${role}, expected=${expectedCount})`,
       timeoutMs,
