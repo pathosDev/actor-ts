@@ -5,11 +5,16 @@ This document tracks the planned direction.  Nothing here is committed work — 
 ## Status
 
 - Post-v0.9.1 + production-readiness audit response (`[Unreleased]` window).
-- 1 838 unit tests green + 15 real-network multi-node integration scenarios green; bug-backlog at 0.
+- ~2 125 tests green (unit + multi-node + in-process integration) + 15 real-network multi-node integration scenarios green; bug-backlog at 0.
 - A full audit-catalog of ~175 follow-up items is tracked in the issue tracker — security findings, framework features, code-quality refactors.  Filter by label `security` + `severity: <tier>` or by title prefix `[Security] ` / `[Feature] `.
 
 ## Done since the last roadmap update
 
+- **SQL persistence backends + compression levels (`[Unreleased]` window):**
+  - PostgreSQL backend — journal + snapshot + durable-state (the first SQL-backed durable-state store), `registerPostgresPlugins`, optimistic concurrency, indexed tag queries, live `postgres:latest` CI suite (#323)
+  - MariaDB backend — same three components via the `mariadb` connector, MariaDB dialect, live `mariadb:latest` CI suite (#324)
+  - Configurable gzip/zstd compression `level` on the object-storage stores (#322)
+  - zstd compression fixed on non-native runtimes — compress is native-only (Bun / Node ≥22.15), `fzstd` is the decompress-only fallback (#321)
 - **Production-readiness audit response — 5 technical points, all landed in the `[Unreleased]` window:**
   - DurableState revision tampering — opt-in HMAC-SHA256 integrity (#116, CRITICAL)
   - ClusterClient askId predictability — `crypto.randomUUID()` (#120, HIGH)
