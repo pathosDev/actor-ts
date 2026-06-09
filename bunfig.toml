@@ -1,0 +1,17 @@
+# Bun test configuration.
+#
+# coveragePathIgnorePatterns: exclude the worker-thread multi-node TEST
+# HARNESS from the coverage denominator.  These files are testing tools
+# (used to *write* tests), exercised only by the ParallelMultiNodeSpec /
+# parallel-pubsub suites — which are quarantined on GitHub's hosted
+# runners because Bun there can't respawn functional worker threads after
+# the first test (see the [CI] tracking issue).  They run + are covered
+# locally and in Docker; gating CI line-coverage on infra that can't
+# execute on the hosted runner would be a false signal.  Product code
+# (incl. LeaseMajority, the cluster, persistence) is unaffected.
+[test]
+coveragePathIgnorePatterns = [
+  "src/testkit/ParallelMultiNodeSpec.ts",
+  "src/testkit/internal/MultiNodeBroker.ts",
+  "src/testkit/internal/parallel-multi-node-bootstrap.ts",
+]

@@ -16,13 +16,20 @@
 import { describe, expect, test } from 'bun:test';
 import { ParallelMultiNodeSpec } from '../../src/testkit/ParallelMultiNodeSpec.js';
 
+// Quarantined on GitHub's hosted runners (ACTOR_TS_SKIP_FLAKY_MNS=1) —
+// Bun there cannot respawn functional worker threads after the first
+// worker-thread test (workers spawn + handshake, then never run);
+// reproducible only on the hosted runners.  Runs locally + in Docker.
+// See the [CI] tracking issue.
+const describeMns = process.env.ACTOR_TS_SKIP_FLAKY_MNS === '1' ? describe.skip : describe;
+
 const TIGHT_FD = {
   heartbeatIntervalMs: 100,
   unreachableAfterMs: 500,
   downAfterMs: 5_000,
 } as const;
 
-describe('ParallelMultiNodeSpec — DistributedPubSub e2e', () => {
+describeMns('ParallelMultiNodeSpec — DistributedPubSub e2e', () => {
   test('publish from a reaches subscribers on b and c, across worker threads', async () => {
     const spec = new ParallelMultiNodeSpec({
       roles: ['a', 'b', 'c'],

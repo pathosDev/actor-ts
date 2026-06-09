@@ -138,21 +138,15 @@ export class ParallelMultiNodeSpec {
       roles: settings.roles,
       seedRoles: settings.seedRoles ?? [settings.roles[0]!],
       gossipIntervalMs: settings.gossipIntervalMs ?? 100,
-      // 90s default (vs. 15s in MultiNodeSpec).  Worker spawn itself
-      // is fine on CI (the handshake's own 10s budget never trips) —
-      // what's slow is GOSSIP CONVERGENCE.  Every member-view poll and
-      // every gossip frame is a postMessage round-trip through the
-      // main-thread MultiNodeBroker, and on a 2-vCPU GitHub-hosted
-      // runner the main thread + N worker threads contend for 2 cores,
-      // so convergence that takes ~4-5s on a dev box (even pinned to
-      // 2 cpus, even under the near-full suite — verified) stretches
-      // past 30s there.  It is NOT full-suite contention (load doesn't
-      // degrade it locally) and NOT worker-version specific (passes on
-      // bun 1.3.14) — it's the hosted runner's raw scheduling.  The
-      // await polls every 50ms and returns the instant the view
-      // converges, so a healthy run never spends anywhere near 90s;
-      // the ceiling only absorbs the slow-runner tail.
-      awaitTimeoutMs: settings.awaitTimeoutMs ?? 90_000,
+      // 30s default (vs. 15s in MultiNodeSpec) — worker-thread bootstrap
+      // is slower than the in-process variant.  NOTE: the worker-thread
+      // suites that use this harness are QUARANTINED on GitHub's hosted
+      // runners — Bun there cannot respawn functional workers after the
+      // first test (they spawn + handshake, then never run; reproducible
+      // only on the hosted runners, never locally or in Docker).  See the
+      // [CI] tracking issue.  They run locally + in Docker, where this
+      // budget is ample (convergence is ~4-5s).
+      awaitTimeoutMs: settings.awaitTimeoutMs ?? 30_000,
       logLevel: settings.logLevel ?? LogLevel.Off,
       addresses: settings.addresses,
       failureDetector: settings.failureDetector,
@@ -289,37 +283,10 @@ export class ParallelMultiNodeSpec {
   async awaitMembers(
     role: string, expectedCount: number, timeoutMs: number = this.settings.awaitTimeoutMs,
   ): Promise<void> {
-    // TEMP diagnostic (#flaky-ci): log the observed member view + broker
-    // frame counters over time, so a CI-only non-convergence is fully
-    // debuggable from the workflow log.  Rate-limited (on-change + every
-    // 3s).  Remove once the GitHub-runner non-convergence is root-caused.
-    const startedAt = Date.now();
-    let lastLog = 0; let lastUp = -2; let polls = 0; let rpcErrs = 0;
     await this.awaitCondition(
       async () => {
-        polls++;
-        let up = -1; let statuses = '';
-        try {
-          const members = await this.getMembers(role);
-          up = members.filter((m) => m.status === 'up').length;
-          statuses = members.map((m) => `${m.address}=${m.status}`).join(' ');
-        } catch (e) {
-          rpcErrs++; statuses = `RPC-ERR:${(e as Error).message}`;
-        }
-        const now = Date.now();
-        if (up !== lastUp || now - lastLog > 3_000) {
-          const s = this.broker.stats;
-          // eslint-disable-next-line no-console
-          console.error(
-            `[MNS-DEBUG] awaitMembers(${role} want=${expectedCount}) `
-            + `t=${now - startedAt}ms up=${up} polls=${polls} rpcErr=${rpcErrs} `
-            + `broker{recv=${s.recv} deliv=${s.delivered} senderGone=${s.dropSenderGone} `
-            + `part=${s.dropPartition} noTgt=${s.dropNoTarget} stop=${s.dropStopped}} `
-            + `view[${statuses}]`,
-          );
-          lastLog = now; lastUp = up;
-        }
-        return up === expectedCount;
+        const members = await this.getMembers(role);
+        return members.filter((m) => m.status === 'up').length === expectedCount;
       },
       `awaitMembers(${role}, expected=${expectedCount})`,
       timeoutMs,

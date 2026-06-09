@@ -17,6 +17,14 @@
 import { describe, expect, test } from 'bun:test';
 import { ParallelMultiNodeSpec } from '../../../src/testkit/ParallelMultiNodeSpec.js';
 
+// Quarantined on GitHub's hosted runners (ACTOR_TS_SKIP_FLAKY_MNS=1) —
+// Bun there can't respawn functional worker threads after the first test
+// (they spawn + handshake, then never run; reproducible only on the
+// hosted runners, never locally or in Docker).  Runs locally + in Docker.
+// See the [CI] tracking issue.  The `construction` describe spawns no
+// workers, so it stays un-gated.
+const describeMns = process.env.ACTOR_TS_SKIP_FLAKY_MNS === '1' ? describe.skip : describe;
+
 const TIGHT_FD = {
   heartbeatIntervalMs: 100,
   unreachableAfterMs: 500,
@@ -33,7 +41,7 @@ describe('ParallelMultiNodeSpec — construction', () => {
   });
 });
 
-describe('ParallelMultiNodeSpec — bootstrap', () => {
+describeMns('ParallelMultiNodeSpec — bootstrap', () => {
   test('three roles, all see each other Up via worker-side cluster', async () => {
     const spec = new ParallelMultiNodeSpec({
       roles: ['a', 'b', 'c'],
@@ -79,7 +87,7 @@ describe('ParallelMultiNodeSpec — bootstrap', () => {
   }, 150_000);
 });
 
-describe('ParallelMultiNodeSpec — failure simulation', () => {
+describeMns('ParallelMultiNodeSpec — failure simulation', () => {
   test('crash(role) drops the worker; other roles see only 2 members', async () => {
     const spec = new ParallelMultiNodeSpec({
       roles: ['a', 'b', 'c'],
@@ -161,7 +169,7 @@ describe('ParallelMultiNodeSpec — failure simulation', () => {
   }, 150_000);
 });
 
-describe('ParallelMultiNodeSpec — await* timeouts', () => {
+describeMns('ParallelMultiNodeSpec — await* timeouts', () => {
   test('awaitMembers throws when count never converges', async () => {
     const spec = new ParallelMultiNodeSpec({
       roles: ['solo'],

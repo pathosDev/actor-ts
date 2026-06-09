@@ -111,4 +111,10 @@ jobs:
           bun-version: latest
       - run: bun install
       - run: bun run typecheck
+      # Worker-thread multi-node suites + LeaseMajority e2e are quarantined
+      # on hosted runners (Bun can't respawn functional workers there) —
+      # they run locally + in Docker; `integration` is the CI gate.  See
+      # the [CI] tracking issue.
       - run: bun test
+        env:
+          ACTOR_TS_SKIP_FLAKY_MNS: '1'
