@@ -197,7 +197,13 @@ export class ParallelMultiNodeSpec {
     const errs: Error[] = [];
     for (const node of this.nodes.values()) {
       if (node.removed) continue;
-      try { node.worker?.terminate(); } catch (e) { errs.push(e as Error); }
+      // AWAIT termination.  On Bun `Worker.terminate()` returns a promise
+      // that resolves once the worker thread is actually gone; firing it
+      // without awaiting leaked live worker threads across tests.  On a
+      // 2-core CI runner those leaked workers (busy on a now-dead
+      // transport) starved every subsequent worker-thread test to zero
+      // CPU — control RPCs timed out and no gossip ever flowed (#flaky-ci).
+      try { await node.worker?.terminate(); } catch (e) { errs.push(e as Error); }
     }
     this.broker.close();
     this.nodes.clear();
@@ -233,8 +239,10 @@ export class ParallelMultiNodeSpec {
     catch { /* ignore — graceful leave is best-effort */ }
     // After cluster.leave returns, the worker has closed its
     // transport; we still have to terminate the worker process.
+    // AWAIT it — an un-awaited terminate leaks the worker thread (see
+    // the note in stop()).
     if (node.worker) {
-      try { node.worker.terminate(); } catch { /* ignore */ }
+      try { await node.worker.terminate(); } catch { /* ignore */ }
     }
     if (node.port) this.broker.unregister(node.address);
     node.worker = null; node.port = null;
