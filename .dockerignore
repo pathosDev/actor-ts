@@ -1,0 +1,33 @@
+# Every broker/DB integration Dockerfile.runner uses the repo root as its
+# build context (`context: ../../../..`) but only COPYs a handful of paths
+# (the broker test package.json, tsconfig.json, src/, tests/).  Without
+# this file Docker streams the ENTIRE working tree to the daemon —
+# node_modules, .git, the examples' bundled static assets, dist — which is
+# gigabytes and makes a local `docker compose build` appear to hang at
+# "transferring context".  CI checkouts have no node_modules so they were
+# already fast; this keeps local runs fast too.
+#
+# Keep this a denylist (not an allowlist) so a new top-level source dir
+# isn't silently excluded from the image.
+
+# Dependencies — reinstalled inside the image from the test package.json.
+node_modules
+**/node_modules
+
+# VCS + local tooling.
+.git
+.github
+.vscode
+.idea
+
+# Build output / coverage / logs.
+dist
+coverage
+*.log
+*.tsbuildinfo
+
+# Not needed to build or run the test images.
+examples
+docs
+benchmarks
+.claude
