@@ -1,0 +1,217 @@
+---
+title: PostgreSQL
+description: Event-Journal, Snapshot-Store und Durable-State-Store auf Basis von PostgreSQL über den `pg`-Treiber — ein relationales, cluster-geteiltes Backend für die Datenbank, die du vermutlich ohnehin schon betreibst. Optimistische Concurrency, indizierte Tag-Queries und der erste SQL-basierte Durable-State-Store.
+---
+
+Das Postgres-Backend liefert alle drei Persistence-Komponenten gegen eine
+einzige PostgreSQL-Datenbank, über den
+[`pg`](https://node-postgres.com)-Treiber:
+
+- **`PostgresJournal`** — das Event-Journal für `PersistentActor`s.
+- **`PostgresSnapshotStore`** — Snapshots, um die Recovery zu begrenzen.
+- **`PostgresDurableStateStore`** — Key-Value-Durable-State für
+  `DurableStateActor`s.  Das ist der **erste SQL-basierte
+  Durable-State-Store** (SQLite und Cassandra liefern nur Journal +
+  Snapshot).
+
+Wie Cassandra ist Postgres **über Cluster-Nodes geteilt** — jeder Node
+kann jede persistenceId lesen/schreiben — aber relational, transaktional
+und mit ziemlicher Sicherheit schon in deinem Stack.
+
+## Installation
+
+`pg` ist eine optionale Peer-Dependency — installiere sie neben actor-ts:
+
+```bash
+bun add pg
+```
+
+Das Framework lazy-importiert `pg` erst beim ersten Zugriff auf einen
+Postgres-Store, hält es also bis zum Opt-in aus deinem Bundle.
+
+## Einrichtung
+
+Registriere Journal + Snapshot-Store an der `PersistenceExtension` und
+erhalte einen einsatzbereiten Durable-State-Store.  Gib einen geteilten
+`pool` mit, damit alle drei Komponenten einen Connection-Pool nutzen:
+
+```ts
+import { Pool } from 'pg';
+import {
+  ActorSystem,
+  PersistenceExtensionId,
+  registerPostgresPlugins,
+} from 'actor-ts';
+
+const system = new ActorSystem({
+  name: 'my-app',
+  // Postgres-Plugins als aktives Journal + Snapshot-Store wählen.
+  config: `
+    actor-ts.persistence.journal.plugin = "actor-ts.persistence.journal.postgres"
+    actor-ts.persistence.snapshot-store.plugin = "actor-ts.persistence.snapshot-store.postgres"
+  `,
+});
+
+const ext = system.extension(PersistenceExtensionId);
+const { durableStateStore } = registerPostgresPlugins(ext, {
+  // Ein Pool, geteilt von Journal + Snapshot + Durable-State (empfohlen).
+  pool: new Pool({ connectionString: 'postgres://user:pass@host:5432/app' }),
+  journal:           { /* eventsTable, tagsTable, autoCreateTables */ },
+  snapshotStore:     { keepN: 3 },
+  durableStateStore: { /* table */ },
+});
+```
+
+`registerPostgresPlugins` registriert Journal + Snapshot-Store über die
+Extension (ausgewählt durch die Plugin-IDs oben) und **gibt** den
+Durable-State-Store **zurück**.  `PersistenceExtension` hat kein
+Durable-State-Registry — reiche `durableStateStore` direkt in die
+Settings deines `DurableStateActor` (gleiches Muster wie beim
+Object-Storage-Plugin).
+
+Ohne geteilten `pool` baut jede Komponente lazy ihren eigenen Pool aus
+`url` / `poolConfig`:
+
+```ts
+registerPostgresPlugins(ext, {
+  journal:           { url: 'postgres://user:pass@host:5432/app' },
+  snapshotStore:     { url: 'postgres://user:pass@host:5432/app', keepN: 3 },
+  durableStateStore: { url: 'postgres://user:pass@host:5432/app' },
+});
+```
+
+## Wann einsetzen
+
+- **Du betreibst ohnehin Postgres.** Ein bewegliches Teil weniger als ein
+  Cassandra-Aufbau — nutze deine bestehende Managed-Instanz (RDS, Cloud
+  SQL, Supabase, …).
+- **Cluster-geteilte Persistence.** Geshardete Entities, die zwischen
+  Nodes wandern, oder Cross-Node-Projektionen brauchen ein Journal, das
+  jeder Node lesen kann.
+- **Du willst Durable-State in SQL.** Der einzige SQL-Durable-State-Store
+  im Framework.
+
+Für Single-Node-Entwicklung ist [`SqliteJournal`](/de/persistence/journals/sqlite/)
+einfacher (eine Datei, kein Server).
+
+## Konfiguration
+
+```ts
+interface PostgresConnection {
+  url?:        string;                      // postgres://user:pass@host:5432/db
+  poolConfig?: Record<string, unknown>;     // weitere pg.Pool-Optionen (ssl, max, …)
+  pool?:       PgPoolLike;                   // vorgebauter / geteilter Pool
+}
+
+interface PostgresJournalOptions extends PostgresConnection {
+  eventsTable?:      string;   // Default 'events'
+  tagsTable?:        string;   // Default '<eventsTable>_tags'
+  autoCreateTables?: boolean;  // Default true
+}
+interface PostgresSnapshotStoreOptions extends PostgresConnection {
+  snapshotsTable?:   string;   // Default 'snapshots'
+  keepN?:            number;   // neueste N pro pid; Default 3, <=0 = alle behalten
+  autoCreateTables?: boolean;
+}
+interface PostgresDurableStateStoreOptions extends PostgresConnection {
+  table?:            string;   // Default 'durable_state'
+  autoCreateTables?: boolean;
+}
+```
+
+Tabellennamen stammen aus der Config (nicht aus User-Input) und werden
+gegen ein Safe-Identifier-Muster geprüft; alles andere — persistenceIds,
+Tags, Payloads — geht als Bind-Parameter (`$1, $2, …`), nie per
+String-Concat.
+
+## Schema
+
+Mit `autoCreateTables` (Default) führt das Backend beim ersten Zugriff
+`CREATE TABLE IF NOT EXISTS` aus:
+
+```sql
+CREATE TABLE events (
+  persistence_id TEXT NOT NULL,
+  sequence_nr    BIGINT NOT NULL,
+  payload        TEXT NOT NULL,    -- JSON
+  tags           TEXT,             -- CSV (auch in events_tags gespiegelt)
+  timestamp      BIGINT NOT NULL,
+  PRIMARY KEY (persistence_id, sequence_nr)
+);
+CREATE TABLE events_tags (         -- indizierte Tag-Lookups für Projektionen
+  persistence_id TEXT NOT NULL,
+  sequence_nr    BIGINT NOT NULL,
+  tag            TEXT NOT NULL,
+  timestamp      BIGINT NOT NULL,
+  PRIMARY KEY (tag, timestamp, persistence_id, sequence_nr)
+);
+CREATE TABLE snapshots (
+  persistence_id TEXT NOT NULL,
+  sequence_nr    BIGINT NOT NULL,
+  payload        TEXT NOT NULL,
+  timestamp      BIGINT NOT NULL,
+  PRIMARY KEY (persistence_id, sequence_nr)
+);
+CREATE TABLE durable_state (
+  persistence_id TEXT PRIMARY KEY,
+  revision       BIGINT NOT NULL,
+  payload        TEXT NOT NULL,
+  timestamp      BIGINT NOT NULL
+);
+```
+
+Lege die Tabellen vorab an (und vergib nur `INSERT/SELECT/UPDATE/DELETE`)
+und setze `autoCreateTables: false`, wenn deine DB-Rolle kein DDL darf.
+
+## Concurrency-Modell
+
+- **Journal-Append** führt `SELECT MAX(sequence_nr)` und die Inserts in
+  EINER Transaktion aus; das `expectedSeq` des Callers wird gegen den
+  aktuellen Head geprüft.  Ein durchrutschender konkurrierender Writer
+  verletzt den Primary-Key-Unique-Constraint (SQLSTATE `23505`), was als
+  Backstop in `JournalConcurrencyError` übersetzt wird.
+- **Durable-State-CAS** nutzt die `revision`-Spalte: Anlegen
+  (`expectedRevision === 0`) ist `INSERT … ON CONFLICT DO NOTHING`, ein
+  Update ist `UPDATE … WHERE revision = expected`.  Null betroffene
+  Zeilen ⇒ `DurableStateConcurrencyError`, mit der aktuellen Revision für
+  den Caller zurückgelesen.
+
+`BIGINT`-Spalten liefert `pg` als Strings; das Backend coerct
+`sequence_nr` / `revision` / `timestamp` an der Mapping-Grenze zu
+`number`.
+
+## Fallstricke
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Kein In-Process-Event-Bus">
+  Postgres ist ein Cross-Process-Backend (wie Cassandra) und
+  veröffentlicht daher KEINEN In-Process-Journal-Event-Bus.
+  `PersistenceQuery`-Live-Subscriber fallen auf Polling zurück.  (Ein
+  `LISTEN/NOTIFY`-basierter Bus ist ein mögliches künftiges Feature.)
+</Aside>
+
+<Aside type="caution" title="Compression- / Encryption-Optionen werden ignoriert">
+  Per-Call-`PersistenceOptions` (Compression, Encryption) gelten nur für
+  die Object-Storage-Stores.  Die SQL-Backends speichern JSON als `TEXT` —
+  die Optionen werden hier still ignoriert, genau wie bei SQLite und
+  Cassandra.
+</Aside>
+
+<Aside type="caution" title="TLS zu einer Managed-Instanz">
+  ```ts
+  poolConfig: { ssl: { rejectUnauthorized: true, ca: fs.readFileSync('rds-ca.pem') } }
+  ```
+  Reiche `ssl` über `poolConfig` durch, wenn dein Managed-Postgres TLS
+  verlangt.
+</Aside>
+
+## Wie geht's weiter
+
+- **[MariaDB](/de/persistence/journals/mariadb/)** — das Geschwister aus der MySQL-Familie.
+- **[Cassandra-Journal](/de/persistence/journals/cassandra/)** — verteilt,
+  für Skalierung jenseits einer einzelnen relationalen Instanz.
+- **[SQLite-Journal](/de/persistence/journals/sqlite/)** — Single-Node, kein Server.
+- **[Durable State](/de/persistence/durable-state/)** — die
+  State-orientierte Alternative zum Event Sourcing.
+- **[Snapshots](/de/persistence/snapshots/)** — den Recovery-Scan begrenzen.

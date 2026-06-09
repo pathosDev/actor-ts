@@ -1,0 +1,211 @@
+---
+title: PostgreSQL
+description: Event journal, snapshot store, and durable-state store backed by PostgreSQL via the `pg` driver — a relational, cluster-shared backend for the database you probably already run. Optimistic concurrency, indexed tag queries, and the first SQL-backed durable-state store.
+---
+
+The Postgres backend provides all three persistence components against a
+single PostgreSQL database, via the [`pg`](https://node-postgres.com)
+driver:
+
+- **`PostgresJournal`** — the event journal for `PersistentActor`s.
+- **`PostgresSnapshotStore`** — snapshots to bound recovery.
+- **`PostgresDurableStateStore`** — key-value durable state for
+  `DurableStateActor`s.  This is the **first SQL-backed durable-state
+  store** (SQLite and Cassandra ship journal + snapshot only).
+
+Like Cassandra, Postgres is **shared across cluster nodes** — any node
+can read or write any persistenceId — but it's relational, transactional,
+and almost certainly already in your stack.
+
+## Install
+
+`pg` is an optional peer dependency — install it alongside actor-ts:
+
+```bash
+bun add pg
+```
+
+The framework lazy-imports `pg` only when a Postgres store is first used,
+so it stays out of your bundle until you opt in.
+
+## Setup
+
+Register the journal + snapshot store against the `PersistenceExtension`
+and receive a ready-to-use durable-state store.  Pass a shared `pool` so
+all three components reuse one connection pool:
+
+```ts
+import { Pool } from 'pg';
+import {
+  ActorSystem,
+  PersistenceExtensionId,
+  registerPostgresPlugins,
+} from 'actor-ts';
+
+const system = new ActorSystem({
+  name: 'my-app',
+  // Select the Postgres plugins as the active journal + snapshot store.
+  config: `
+    actor-ts.persistence.journal.plugin = "actor-ts.persistence.journal.postgres"
+    actor-ts.persistence.snapshot-store.plugin = "actor-ts.persistence.snapshot-store.postgres"
+  `,
+});
+
+const ext = system.extension(PersistenceExtensionId);
+const { durableStateStore } = registerPostgresPlugins(ext, {
+  // One pool shared by journal + snapshot + durable-state (recommended).
+  pool: new Pool({ connectionString: 'postgres://user:pass@host:5432/app' }),
+  journal:           { /* eventsTable, tagsTable, autoCreateTables */ },
+  snapshotStore:     { keepN: 3 },
+  durableStateStore: { /* table */ },
+});
+```
+
+`registerPostgresPlugins` registers the journal + snapshot store via the
+extension (selected by the config plugin IDs above) and **returns** the
+durable-state store.  `PersistenceExtension` has no durable-state registry
+— hand `durableStateStore` to your `DurableStateActor` settings directly
+(same pattern as the object-storage plugin).
+
+Without a shared `pool`, each component lazily builds its own pool from
+its `url` / `poolConfig`:
+
+```ts
+registerPostgresPlugins(ext, {
+  journal:           { url: 'postgres://user:pass@host:5432/app' },
+  snapshotStore:     { url: 'postgres://user:pass@host:5432/app', keepN: 3 },
+  durableStateStore: { url: 'postgres://user:pass@host:5432/app' },
+});
+```
+
+## When to use it
+
+- **You already run Postgres.** One less moving part than standing up
+  Cassandra — reuse your existing managed instance (RDS, Cloud SQL,
+  Supabase, …).
+- **Cluster-shared persistence.** Sharded entities that move between
+  nodes, or cross-node projections, need a journal every node can read.
+- **You want durable state in SQL.** The only SQL durable-state store in
+  the framework.
+
+For single-node dev, [`SqliteJournal`](/persistence/journals/sqlite/) is
+simpler (one file, no server).
+
+## Configuration
+
+```ts
+interface PostgresConnection {
+  url?:        string;                      // postgres://user:pass@host:5432/db
+  poolConfig?: Record<string, unknown>;     // extra pg.Pool config (ssl, max, …)
+  pool?:       PgPoolLike;                   // pre-built / shared pool
+}
+
+interface PostgresJournalOptions extends PostgresConnection {
+  eventsTable?:      string;   // default 'events'
+  tagsTable?:        string;   // default '<eventsTable>_tags'
+  autoCreateTables?: boolean;  // default true
+}
+interface PostgresSnapshotStoreOptions extends PostgresConnection {
+  snapshotsTable?:   string;   // default 'snapshots'
+  keepN?:            number;   // keep newest N per pid; default 3, <=0 keeps all
+  autoCreateTables?: boolean;
+}
+interface PostgresDurableStateStoreOptions extends PostgresConnection {
+  table?:            string;   // default 'durable_state'
+  autoCreateTables?: boolean;
+}
+```
+
+Table names come from config (not user input) and are validated against a
+safe-identifier pattern; everything else — persistenceIds, tags, payloads
+— is passed as bind parameters (`$1, $2, …`), never string-concatenated.
+
+## Schema
+
+With `autoCreateTables` (the default), the backend runs
+`CREATE TABLE IF NOT EXISTS` on first use:
+
+```sql
+CREATE TABLE events (
+  persistence_id TEXT NOT NULL,
+  sequence_nr    BIGINT NOT NULL,
+  payload        TEXT NOT NULL,    -- JSON
+  tags           TEXT,             -- CSV (also mirrored into events_tags)
+  timestamp      BIGINT NOT NULL,
+  PRIMARY KEY (persistence_id, sequence_nr)
+);
+CREATE TABLE events_tags (         -- indexed tag lookups for projections
+  persistence_id TEXT NOT NULL,
+  sequence_nr    BIGINT NOT NULL,
+  tag            TEXT NOT NULL,
+  timestamp      BIGINT NOT NULL,
+  PRIMARY KEY (tag, timestamp, persistence_id, sequence_nr)
+);
+CREATE TABLE snapshots (
+  persistence_id TEXT NOT NULL,
+  sequence_nr    BIGINT NOT NULL,
+  payload        TEXT NOT NULL,
+  timestamp      BIGINT NOT NULL,
+  PRIMARY KEY (persistence_id, sequence_nr)
+);
+CREATE TABLE durable_state (
+  persistence_id TEXT PRIMARY KEY,
+  revision       BIGINT NOT NULL,
+  payload        TEXT NOT NULL,
+  timestamp      BIGINT NOT NULL
+);
+```
+
+Pre-provision these (and grant only `INSERT/SELECT/UPDATE/DELETE`) and set
+`autoCreateTables: false` if your DB role can't run DDL.
+
+## Concurrency model
+
+- **Journal append** runs `SELECT MAX(sequence_nr)` and the inserts inside
+  one transaction; the caller's `expectedSeq` is checked against the
+  current head.  A racing writer that slips through trips the primary-key
+  unique constraint (SQLSTATE `23505`), which is translated to
+  `JournalConcurrencyError` as a backstop.
+- **Durable-state CAS** uses the `revision` column: a create
+  (`expectedRevision === 0`) is `INSERT … ON CONFLICT DO NOTHING`, and an
+  update is `UPDATE … WHERE revision = expected`.  Zero rows affected ⇒
+  `DurableStateConcurrencyError`, with the current revision read back for
+  the caller.
+
+`BIGINT` columns come back from `pg` as strings; the backend coerces
+`sequence_nr` / `revision` / `timestamp` to `number` at the mapping
+boundary.
+
+## Pitfalls
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="No in-process event bus">
+  Postgres is a cross-process backend (like Cassandra), so it does NOT
+  publish an in-process journal event bus.  `PersistenceQuery` live
+  subscribers fall back to polling.  (A `LISTEN/NOTIFY`-based bus is a
+  possible future enhancement.)
+</Aside>
+
+<Aside type="caution" title="Compression / encryption options are ignored">
+  Per-call `PersistenceOptions` (compression, encryption) apply only to the
+  object-storage stores.  The SQL backends store JSON as `TEXT` — the
+  options are silently ignored here, same as SQLite and Cassandra.
+</Aside>
+
+<Aside type="caution" title="TLS to a managed instance">
+  ```ts
+  poolConfig: { ssl: { rejectUnauthorized: true, ca: fs.readFileSync('rds-ca.pem') } }
+  ```
+  Pass `ssl` through `poolConfig` for managed Postgres that requires TLS.
+</Aside>
+
+## Where to next
+
+- **[MariaDB](/persistence/journals/mariadb/)** — the MySQL-family sibling.
+- **[Cassandra journal](/persistence/journals/cassandra/)** — distributed,
+  for scale beyond a single relational instance.
+- **[SQLite journal](/persistence/journals/sqlite/)** — single-node, no server.
+- **[Durable state](/persistence/durable-state/)** — the state-oriented
+  alternative to event sourcing.
+- **[Snapshots](/persistence/snapshots/)** — bound the recovery scan.

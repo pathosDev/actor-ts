@@ -1,0 +1,153 @@
+---
+title: MariaDB
+description: Event-Journal, Snapshot-Store und Durable-State-Store auf Basis von MariaDB / MySQL über den `mariadb`-Connector. Das relationale Geschwister des Postgres-Backends — dieselben drei Komponenten, derselbe Optimistic-Concurrency-Vertrag, MariaDB-Dialekt darunter.
+---
+
+Das MariaDB-Backend ist das Geschwister des
+[Postgres-Backends](/de/persistence/journals/postgres/) für Teams auf
+MariaDB oder MySQL.  Es liefert dieselben drei Komponenten —
+**`MariaDbJournal`**, **`MariaDbSnapshotStore`** und
+**`MariaDbDurableStateStore`** — gegen eine einzige Datenbank, über den
+offiziellen
+[`mariadb`](https://github.com/mariadb-corporation/mariadb-connector-nodejs)-Connector
+(der sowohl MariaDB als auch MySQL spricht).
+
+Es ist eine **eigenständige Implementierung** (kein geteilter
+Dialekt-Layer), also ist das SQL idiomatisches MariaDB — der öffentliche
+Vertrag und das Verhalten sind aber identisch.
+
+## Installation
+
+`mariadb` ist eine optionale Peer-Dependency:
+
+```bash
+bun add mariadb
+```
+
+Beim ersten Zugriff lazy-importiert, wie jeder andere Adapter.
+
+## Einrichtung
+
+```ts
+import {
+  ActorSystem,
+  PersistenceExtensionId,
+  registerMariaDbPlugins,
+} from 'actor-ts';
+
+const system = new ActorSystem({
+  name: 'my-app',
+  config: `
+    actor-ts.persistence.journal.plugin = "actor-ts.persistence.journal.mariadb"
+    actor-ts.persistence.snapshot-store.plugin = "actor-ts.persistence.snapshot-store.mariadb"
+  `,
+});
+
+const ext = system.extension(PersistenceExtensionId);
+const { durableStateStore } = registerMariaDbPlugins(ext, {
+  journal:           { poolConfig: conn },
+  snapshotStore:     { poolConfig: conn, keepN: 3 },
+  durableStateStore: { poolConfig: conn },
+});
+
+// conn = { host, port: 3306, user, password, database } — oder gib oben
+// einen geteilten `pool` (aus mariadb.createPool) mit, um einen Pool über
+// alle drei zu nutzen, oder eine Connection-URL via `url`.
+```
+
+Wie bei Postgres werden Journal + Snapshot-Store über die Plugin-IDs
+ausgewählt, und der **Durable-State-Store wird zurückgegeben**, damit du
+ihn in die Settings deines `DurableStateActor` reichst.
+
+## Konfiguration
+
+```ts
+interface MariaDbConnection {
+  url?:        string;                    // mariadb://user:pass@host:3306/db
+  poolConfig?: Record<string, unknown>;   // { host, port, user, password, database, … }
+  pool?:       MariaDbPoolLike;           // vorgebauter / geteilter Pool
+}
+interface MariaDbJournalOptions extends MariaDbConnection {
+  eventsTable?: string; tagsTable?: string; autoCreateTables?: boolean;
+}
+interface MariaDbSnapshotStoreOptions extends MariaDbConnection {
+  snapshotsTable?: string; keepN?: number; autoCreateTables?: boolean;
+}
+interface MariaDbDurableStateStoreOptions extends MariaDbConnection {
+  table?: string; autoCreateTables?: boolean;
+}
+```
+
+Diskretes `poolConfig` (host/user/password/database) ist der portabelste
+Verbindungsweg; `url` und ein vorgebauter `pool` werden ebenfalls
+akzeptiert.
+
+## Schema
+
+Gleiche Form wie bei [Postgres](/de/persistence/journals/postgres/#schema),
+mit MariaDB-Typen — `VARCHAR(255)`-Ids, `BIGINT` für
+Sequence/Revision/Timestamp, `LONGTEXT`-Payloads — und Indizes **inline**
+im `CREATE TABLE` deklariert (portabel über MariaDB-/MySQL-Versionen,
+anders als `CREATE INDEX IF NOT EXISTS`):
+
+```sql
+CREATE TABLE events (
+  persistence_id VARCHAR(255) NOT NULL,
+  sequence_nr    BIGINT NOT NULL,
+  payload        LONGTEXT NOT NULL,
+  tags           TEXT,
+  timestamp      BIGINT NOT NULL,
+  PRIMARY KEY (persistence_id, sequence_nr),
+  INDEX idx_events_pid (persistence_id)
+);
+-- events_tags, snapshots, durable_state: wie bei Postgres, mit den Typen oben
+```
+
+## Dialekt-Unterschiede ggü. Postgres
+
+Das Verhalten ist identisch; das SQL unterscheidet sich:
+
+| Operation | Postgres | MariaDB |
+| --- | --- | --- |
+| Platzhalter | `$1, $2` | `?` |
+| Tag-Dedup-Insert | `ON CONFLICT DO NOTHING` | `INSERT IGNORE` |
+| Snapshot-Upsert | `ON CONFLICT … DO UPDATE` | `ON DUPLICATE KEY UPDATE` |
+| `keepN`-Prune | `NOT IN (SELECT … LIMIT)` | derived-table-gewrappte Subquery¹ |
+| Durable-Create-Konflikt | `ON CONFLICT DO NOTHING` → rowCount | reines `INSERT`, `ER_DUP_ENTRY` (1062) fangen |
+| Concurrency-Backstop | SQLSTATE `23505` | `ER_DUP_ENTRY` / 1062 |
+
+¹ MySQL/MariaDB lehnen `LIMIT` in einer nackten `IN (SELECT …)` gegen die
+zu löschende Tabelle ab, daher wrappt der Prune die Subquery in eine
+Derived Table.
+
+`BIGINT` kann der Connector als JS-`bigint` liefern; das Backend coerct
+Sequence/Revision/Timestamp an der Mapping-Grenze zu `number`.
+
+## Fallstricke
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Kein In-Process-Event-Bus">
+  Cross-Process-Backend — kein In-Process-Journal-Event-Bus;
+  `PersistenceQuery`-Live-Subscriber pollen.  Wie Postgres und Cassandra.
+</Aside>
+
+<Aside type="caution" title="Compression- / Encryption-Optionen werden ignoriert">
+  Die SQL-Backends speichern JSON als `LONGTEXT`; per-Call-`PersistenceOptions`
+  (Compression/Encryption) gelten nur für die Object-Storage-Stores.
+</Aside>
+
+<Aside type="caution" title="utf8mb4 + Key-Länge">
+  Der `events_tags`-Primary-Key umfasst zwei `VARCHAR(255)`-Spalten.  Bei
+  `utf8mb4` im Hinterkopf behalten, wenn du das Schema anpasst — sehr lange
+  eigene Identifier können an InnoDBs Index-Größen-Limit stoßen.
+</Aside>
+
+## Wie geht's weiter
+
+- **[PostgreSQL](/de/persistence/journals/postgres/)** — das Geschwister-Backend,
+  mit dem ausführlicheren Durchgang zu Registrierung + Concurrency.
+- **[Cassandra-Journal](/de/persistence/journals/cassandra/)** — verteilt,
+  für Scale-out.
+- **[Durable State](/de/persistence/durable-state/)** — die
+  State-orientierte Alternative zum Event Sourcing.

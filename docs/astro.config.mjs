@@ -551,6 +551,8 @@ export default defineConfig({
                 { label: 'In-memory', slug: 'persistence/journals/in-memory', translations: { de: 'In-Memory', es: 'En memoria', fr: 'En mémoire', ja: 'インメモリ', ko: '인메모리', 'pt-BR': 'Em memória', ru: 'In-memory', 'zh-CN': '内存' } },
                 { label: 'SQLite',    slug: 'persistence/journals/sqlite',    translations: { de: 'SQLite', es: 'SQLite', fr: 'SQLite', ja: 'SQLite', ko: 'SQLite', 'pt-BR': 'SQLite', ru: 'SQLite', 'zh-CN': 'SQLite' } },
                 { label: 'Cassandra', slug: 'persistence/journals/cassandra', translations: { de: 'Cassandra', es: 'Cassandra', fr: 'Cassandra', ja: 'Cassandra', ko: 'Cassandra', 'pt-BR': 'Cassandra', ru: 'Cassandra', 'zh-CN': 'Cassandra' } },
+                { label: 'PostgreSQL', slug: 'persistence/journals/postgres', translations: { de: 'PostgreSQL', es: 'PostgreSQL', fr: 'PostgreSQL', ja: 'PostgreSQL', ko: 'PostgreSQL', 'pt-BR': 'PostgreSQL', ru: 'PostgreSQL', 'zh-CN': 'PostgreSQL' } },
+                { label: 'MariaDB',    slug: 'persistence/journals/mariadb',   translations: { de: 'MariaDB', es: 'MariaDB', fr: 'MariaDB', ja: 'MariaDB', ko: 'MariaDB', 'pt-BR': 'MariaDB', ru: 'MariaDB', 'zh-CN': 'MariaDB' } },
               ],
             },
             {
