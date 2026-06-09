@@ -95,8 +95,20 @@ interface WorkerScope {
 /* ------------------------------- main loop --------------------------- */
 
 async function main(): Promise<void> {
+  const bootedAt = Date.now();
   const ctx = await WorkerNode.join<InitData>();
   const init = ctx.initData;
+
+  // TEMP diagnostic (#flaky-ci): worker-side milestones + heartbeat.
+  // Proves whether the worker's event loop is alive after `ready` (the
+  // harness sees dead workers on CI — is the loop running-but-isolated,
+  // or fully starved?).  Worker console output is forwarded to the
+  // parent process / CI log.
+  const wdbg = (m: string): void => {
+    // eslint-disable-next-line no-console
+    console.error(`[WORKER-DEBUG ${init.role}] t=${Date.now() - bootedAt}ms ${m}`);
+  };
+  wdbg('handshake joined; creating system + cluster');
 
   const system = ActorSystem.create(ctx.systemName, {
     logger: new NoopLogger(),
@@ -110,6 +122,7 @@ async function main(): Promise<void> {
     failureDetector: init.failureDetector,
     gossipIntervalMs: init.gossipIntervalMs,
   });
+  wdbg('cluster.join returned — gossip should be running now');
 
   const scenarioCtx: ScenarioContext = {
     role: init.role,
@@ -220,7 +233,19 @@ async function main(): Promise<void> {
     selfScope.addEventListener('message', (e) => { void onControl(e.data); });
   }
 
+  // Heartbeat: if these lines keep printing the worker loop is alive
+  // (so any RPC/gossip failure is transport-side); if they stop, the
+  // worker thread is dead/starved on the runner.
+  let hbTicks = 0;
+  setInterval(() => {
+    hbTicks += 1;
+    const mem = cluster.getMembers();
+    const up = mem.filter((m) => m.status === 'up').length;
+    wdbg(`hb#${hbTicks} members=${mem.length} up=${up} [${mem.map((m) => `${m.address.toString()}=${m.status}`).join(' ')}]`);
+  }, 2_000);
+
   ctx.ready();
+  wdbg('ready() sent — control channel wired');
 }
 
 void main().catch((err) => {

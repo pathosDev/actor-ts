@@ -203,7 +203,7 @@ export class ParallelMultiNodeSpec {
       // 2-core CI runner those leaked workers (busy on a now-dead
       // transport) starved every subsequent worker-thread test to zero
       // CPU — control RPCs timed out and no gossip ever flowed (#flaky-ci).
-      try { await node.worker?.terminate(); } catch (e) { errs.push(e as Error); }
+      try { if (node.worker) await this.terminateAndWait(node.worker); } catch (e) { errs.push(e as Error); }
     }
     this.broker.close();
     this.nodes.clear();
@@ -225,7 +225,7 @@ export class ParallelMultiNodeSpec {
     if (node.removed) return;
     node.removed = true;
     if (node.worker) {
-      try { await node.worker.terminate(); } catch { /* ignore */ }
+      try { await this.terminateAndWait(node.worker); } catch { /* ignore */ }
     }
     if (node.port) this.broker.unregister(node.address);
     node.worker = null; node.port = null;
@@ -242,7 +242,7 @@ export class ParallelMultiNodeSpec {
     // AWAIT it — an un-awaited terminate leaks the worker thread (see
     // the note in stop()).
     if (node.worker) {
-      try { await node.worker.terminate(); } catch { /* ignore */ }
+      try { await this.terminateAndWait(node.worker); } catch { /* ignore */ }
     }
     if (node.port) this.broker.unregister(node.address);
     node.worker = null; node.port = null;
@@ -361,6 +361,26 @@ export class ParallelMultiNodeSpec {
     const node = this.nodes.get(role);
     if (!node) throw new Error(`ParallelMultiNodeSpec: unknown role '${role}'`);
     return node;
+  }
+
+  /**
+   * Terminate a worker and WAIT until it has actually exited.  Bun's
+   * `Worker.terminate()` is fire-and-forget (returns void), so simply
+   * awaiting it does not guarantee the OS thread is gone before the next
+   * test spawns more — which on a 2-core CI runner left dead/starved
+   * workers piling up.  Here we kick `terminate()` and then await the
+   * worker's `close` event (bounded, so a runtime that emits no close
+   * event doesn't hang teardown).
+   */
+  private async terminateAndWait(worker: WorkerLike): Promise<void> {
+    const closed = new Promise<void>((resolve) => {
+      let done = false;
+      const fin = (): void => { if (!done) { done = true; resolve(); } };
+      try { worker.addEventListener('close', fin); } catch { /* ignore */ }
+      setTimeout(fin, 3_000);
+    });
+    try { await worker.terminate(); } catch { /* ignore */ }
+    await closed;
   }
 
   private async awaitCondition(
