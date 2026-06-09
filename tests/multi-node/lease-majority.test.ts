@@ -91,7 +91,16 @@ describe('LeaseMajority — end-to-end split-brain', () => {
 
       // Settled state: exactly one partition side is fully dead.
       // Poll for that — the other side's nodes are the winners.
-      const deadline = Date.now() + 10_000;
+      //
+      // 25s deadline (not 10s): the arbitration chain — FD marks the
+      // peer unreachable, the losing owners' `acquire()` times out
+      // (`acquireTimeoutMs: 2_000`), they `cluster.leave()`, and the
+      // `leaving → removed` transition gossips out — is fast on a dev
+      // box (<2s) but stretches badly on a loaded 2-vCPU CI runner
+      // running this inside the full suite, where it blew past a 10s
+      // budget (the original flake).  The loop still breaks the instant
+      // one side dies, so the happy path stays quick.
+      const deadline = Date.now() + 25_000;
       let leftAlive: string[] = [];
       let rightAlive: string[] = [];
       while (Date.now() < deadline) {
@@ -113,5 +122,5 @@ describe('LeaseMajority — end-to-end split-brain', () => {
       MultiNodeTransport._resetRegistryForTest();
       inMemoryLeaseStore._clear();
     }
-  }, 30_000);
+  }, 60_000);
 });

@@ -60,7 +60,7 @@ describe('ParallelMultiNodeSpec — bootstrap', () => {
     } finally {
       await spec.stop();
     }
-  }, 30_000);
+  }, 150_000);
 
   test('addressFor + allRoles work after start', async () => {
     const spec = new ParallelMultiNodeSpec({
@@ -76,7 +76,7 @@ describe('ParallelMultiNodeSpec — bootstrap', () => {
     } finally {
       await spec.stop();
     }
-  }, 30_000);
+  }, 150_000);
 });
 
 describe('ParallelMultiNodeSpec — failure simulation', () => {
@@ -98,13 +98,13 @@ describe('ParallelMultiNodeSpec — failure simulation', () => {
       // declares c down.  The TIGHT_FD's downAfterMs of 1 s gives a
       // generous-but-bounded wait window.
       await Promise.all([
-        spec.awaitMembers('a', 2, 8_000),
-        spec.awaitMembers('b', 2, 8_000),
+        spec.awaitMembers('a', 2, 30_000),
+        spec.awaitMembers('b', 2, 30_000),
       ]);
     } finally {
       await spec.stop();
     }
-  }, 30_000);
+  }, 150_000);
 
   test('leave(role) advertises a graceful exit to peers', async () => {
     const spec = new ParallelMultiNodeSpec({
@@ -123,13 +123,13 @@ describe('ParallelMultiNodeSpec — failure simulation', () => {
       // Graceful leave shrinks the survivors' view faster than the
       // failure detector would on its own.
       await Promise.all([
-        spec.awaitMembers('a', 2, 5_000),
-        spec.awaitMembers('c', 2, 5_000),
+        spec.awaitMembers('a', 2, 30_000),
+        spec.awaitMembers('c', 2, 30_000),
       ]);
     } finally {
       await spec.stop();
     }
-  }, 30_000);
+  }, 150_000);
 
   test('partition + heal flips reachability without dropping the workers', async () => {
     const spec = new ParallelMultiNodeSpec({
@@ -147,8 +147,8 @@ describe('ParallelMultiNodeSpec — failure simulation', () => {
       // Cut a from b only — c remains reachable from both.
       spec.partition('a', 'b');
       await Promise.all([
-        spec.awaitMemberStatus('a', 'b', 'unreachable', 5_000),
-        spec.awaitMemberStatus('b', 'a', 'unreachable', 5_000),
+        spec.awaitMemberStatus('a', 'b', 'unreachable', 30_000),
+        spec.awaitMemberStatus('b', 'a', 'unreachable', 30_000),
       ]);
       // Heal — both sides recover before downing kicks in (downAfterMs = 1 s,
       // total partition window above < 1 s in expectation).  In the rare
@@ -158,7 +158,7 @@ describe('ParallelMultiNodeSpec — failure simulation', () => {
     } finally {
       await spec.stop();
     }
-  }, 30_000);
+  }, 150_000);
 });
 
 describe('ParallelMultiNodeSpec — await* timeouts', () => {
@@ -177,5 +177,5 @@ describe('ParallelMultiNodeSpec — await* timeouts', () => {
     } finally {
       await spec.stop();
     }
-  }, 15_000);
+  }, 45_000);
 });

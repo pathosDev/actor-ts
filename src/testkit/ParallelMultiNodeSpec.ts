@@ -138,15 +138,21 @@ export class ParallelMultiNodeSpec {
       roles: settings.roles,
       seedRoles: settings.seedRoles ?? [settings.roles[0]!],
       gossipIntervalMs: settings.gossipIntervalMs ?? 100,
-      // 30s default (vs. 15s in MultiNodeSpec) — worker-thread
-      // bootstrap on Linux CI runners can take 5-10s before the
-      // first gossip tick lands, vs. ~200ms on a developer laptop.
-      // 15s was tight enough that any test approaching 4 nodes
-      // hit the budget on GHA ubuntu-latest while still passing
-      // locally; 30s gives the bootstrap room without inflating
-      // happy-path latency (the await polls every 50ms and breaks
-      // as soon as the condition holds).
-      awaitTimeoutMs: settings.awaitTimeoutMs ?? 30_000,
+      // 90s default (vs. 15s in MultiNodeSpec).  Worker spawn itself
+      // is fine on CI (the handshake's own 10s budget never trips) —
+      // what's slow is GOSSIP CONVERGENCE.  Every member-view poll and
+      // every gossip frame is a postMessage round-trip through the
+      // main-thread MultiNodeBroker, and on a 2-vCPU GitHub-hosted
+      // runner the main thread + N worker threads contend for 2 cores,
+      // so convergence that takes ~4-5s on a dev box (even pinned to
+      // 2 cpus, even under the near-full suite — verified) stretches
+      // past 30s there.  It is NOT full-suite contention (load doesn't
+      // degrade it locally) and NOT worker-version specific (passes on
+      // bun 1.3.14) — it's the hosted runner's raw scheduling.  The
+      // await polls every 50ms and returns the instant the view
+      // converges, so a healthy run never spends anywhere near 90s;
+      // the ceiling only absorbs the slow-runner tail.
+      awaitTimeoutMs: settings.awaitTimeoutMs ?? 90_000,
       logLevel: settings.logLevel ?? LogLevel.Off,
       addresses: settings.addresses,
       failureDetector: settings.failureDetector,
