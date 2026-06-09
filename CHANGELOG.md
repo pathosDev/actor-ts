@@ -51,6 +51,38 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **PostgreSQL persistence backend** (#323) — `PostgresJournal`,
+  `PostgresSnapshotStore`, and `PostgresDurableStateStore` (the first
+  SQL-backed durable-state store) on top of the `pg` driver, registered
+  via `registerPostgresPlugins(ext, …)` which selects the journal +
+  snapshot store by config plugin ID and returns the durable-state-store
+  handle (the object-storage-plugin pattern — `PersistenceExtension` has
+  no durable-state registry).  Optimistic concurrency (per-pid
+  `SELECT MAX(seq)` inside a transaction plus a primary-key
+  unique-violation `23505` backstop; revision CAS via
+  `ON CONFLICT`/`UPDATE … WHERE revision`), an indexed tags join table,
+  and auto-created schema (`autoCreateTables`, default on).  `pg` is an
+  optional peer-dependency, lazy-imported; the backend defines its own
+  minimal client shapes so the framework stays dependency-free.  Ships
+  with an in-process fake-pool unit suite and a live `postgres:latest`
+  Docker suite wired into the integration-brokers CI matrix.
+- **MariaDB persistence backend** (#324) — sibling of #323 for
+  MariaDB / MySQL via the official `mariadb` connector: `MariaDbJournal`,
+  `MariaDbSnapshotStore`, `MariaDbDurableStateStore`, and
+  `registerMariaDbPlugins`.  A separate implementation with the MariaDB
+  dialect (`?` placeholders, `INSERT IGNORE` for the tag dedup,
+  `ON DUPLICATE KEY UPDATE` snapshot upsert, a derived-table-wrapped
+  `keepN` prune, `ER_DUP_ENTRY`/1062 concurrency backstop, and
+  `LONGTEXT`/`VARCHAR(255)`/`BIGINT` columns).  Optional `mariadb`
+  peer-dep; in-process fake-pool suite + live `mariadb:latest` Docker
+  suite in CI.
+- **Configurable compression level** (#322) — `CompressionConfig` gains
+  an optional `level` (gzip 0–9, zstd 1–22) threaded through the codec to
+  the object-storage snapshot + durable-state stores.  Out-of-range values
+  are clamped; the level is encoder-only and is NOT written to the wire
+  (the ATS1 manifest records only the algorithm), so changing it needs no
+  migration — old bodies keep decoding, new bodies use the new level, and
+  the two mix freely in one bucket.
 - **Real-network multi-node integration tests** (#313) — new
   `tests/integration/` subtree with a Docker-compose setup that
   brings up 5 cluster-node containers + 1 controller container
@@ -186,6 +218,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   Counter (labels `class`, `path`, `reason`).  Opt back into unbounded
   per-actor via `Props.withMailbox(() => new Mailbox())`; keep the
   bounded shape but change the capacity via `Props.withMailboxCapacity(n)`.
+
+### Fixed
+
+- **zstd compression on runtimes without native zstd** (#321) — the
+  compression codec wired the `fzstd` peer-dependency as a compressor, but
+  `fzstd` is decompression-only (it has no `compress`), so
+  `compression: { algorithm: 'zstd' }` threw `fzstd.compress is not a
+  function` on any runtime without native zstd (i.e. not Bun and not
+  Node ≥22.15) — and the eager peer-dep probe passed anyway.  zstd
+  resolution is now split by direction: compress is native-only with a
+  clear "needs Bun / Node ≥22.15" error, decompress keeps the `fzstd`
+  fallback so a non-native runtime can still READ zstd bodies written
+  elsewhere, and `probeCompressionAvailability('zstd')` now checks the
+  compress path so the misconfig surfaces at plugin-init, not on first
+  persist.
+- **Object-storage compression docs were inaccurate** — the docs
+  described `gzip` / `brotli` / `deflate` with a `level` field and
+  `Content-Encoding`-header-driven decode, none of which matched the
+  implementation.  Corrected across EN + DE to the real `none` / `gzip` /
+  `zstd` set, the ATS1-manifest-driven decode, the now-real `level`
+  option, and the per-direction zstd runtime support.
 
 ## [0.9.1] — 2026-05-15
 
