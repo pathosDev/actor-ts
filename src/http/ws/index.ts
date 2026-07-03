@@ -9,8 +9,12 @@ export type { WebSocketRouteOptions } from './WebSocketRoute.js';
 
 export { WebSocketServerActor } from './WebSocketServerActor.js';
 
+export { WebSocketClientActor } from './WebSocketClientActor.js';
+export type { WebSocketClientSettings } from './WebSocketClientActor.js';
+
 export type { WsConnection } from './WsConnection.js';
-export type { WsServerMessage, WsServerRef } from './WsMessages.js';
+export { wsSend } from './WsMessages.js';
+export type { WsServerMessage, WsServerRef, WsClientMessage } from './WsMessages.js';
 
 export {
   jsonCodec,

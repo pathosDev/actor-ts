@@ -56,3 +56,45 @@ export type WsServerMessage<TOut, TIn, TSelf = never> = TSelf | WsServerSignal<T
 
 /** Convenience alias for a reference to a hub actor. */
 export type WsServerRef<TOut, TIn, TSelf = never> = ActorRef<WsServerMessage<TOut, TIn, TSelf>>;
+
+/* -------------------------- client-side signals -------------------------- */
+
+/** Outbound send pushed into a client actor's mailbox by another actor. */
+export class WsClientSend<TOut> {
+  readonly _wsClient = 'send' as const;
+  constructor(readonly msg: TOut) {}
+}
+/** A decoded inbound message from the server (delivered to the actor's mailbox). */
+export class WsClientInbound<TIn> {
+  readonly _wsClient = 'inbound' as const;
+  constructor(readonly msg: TIn) {}
+}
+/** An inbound frame that failed to decode. */
+export class WsClientInvalid {
+  readonly _wsClient = 'invalid' as const;
+  constructor(readonly error: WsDecodeError) {}
+}
+/** The connection (re)opened. */
+export class WsClientConnected {
+  readonly _wsClient = 'connected' as const;
+}
+/** The connection dropped (a reconnect cycle may follow). */
+export class WsClientDisconnected {
+  readonly _wsClient = 'disconnected' as const;
+  constructor(readonly cause?: Error) {}
+}
+
+export type WsClientSignal<TOut, TIn> =
+  | WsClientSend<TOut>
+  | WsClientInbound<TIn>
+  | WsClientInvalid
+  | WsClientConnected
+  | WsClientDisconnected;
+
+/** Full mailbox type of a client actor: internal signals + app messages. */
+export type WsClientMessage<TOut, TIn, TSelf = never> = TSelf | WsClientSignal<TOut, TIn>;
+
+/** Push a typed outbound message through a client actor's ref: `ref.tell(wsSend(m))`. */
+export function wsSend<TOut>(msg: TOut): WsClientSend<TOut> {
+  return new WsClientSend(msg);
+}
