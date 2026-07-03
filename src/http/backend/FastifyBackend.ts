@@ -4,7 +4,26 @@ import type {
   HttpServerBackend,
   RouteRegistration,
   ServerBinding,
+  WebSocketRouteRegistration,
 } from './HttpServerBackend.js';
+import { Lazy } from '../../util/Lazy.js';
+import { wsPackageAdapter, type WsPackageSocket } from '../ws/SocketAdapter.js';
+
+// `@fastify/websocket` is an optional peer dep — lazy-import it (cached),
+// so projects that never use websocket() routes don't pull it in.
+const fastifyWebsocketLazy: Lazy<Promise<unknown>> = Lazy.of(async () => {
+  try {
+    const name = '@fastify/websocket';
+    const mod = (await import(name)) as { default?: unknown };
+    return mod.default ?? mod;
+  } catch (e) {
+    throw new Error(
+      'websocket() routes on the Fastify backend require "@fastify/websocket".  '
+        + 'Install it with: bun add @fastify/websocket\nOriginal error: '
+        + (e instanceof Error ? e.message : String(e)),
+    );
+  }
+});
 
 // Fastify's generic type parameters have drifted between majors — treat the
 // instance as opaque here.  The DSL never leaks this type to users.
@@ -21,6 +40,7 @@ export class FastifyBackend implements HttpServerBackend {
   readonly name = 'fastify';
   private readonly app: FastifyLike;
   private readonly registered: RouteRegistration[] = [];
+  private readonly wsRegistered: WebSocketRouteRegistration[] = [];
 
   constructor(opts: object = { logger: false }) {
     this.app = (Fastify as (o?: object) => FastifyLike)(opts);
@@ -57,6 +77,13 @@ export class FastifyBackend implements HttpServerBackend {
     });
   }
 
+  registerWebSocket(reg: WebSocketRouteRegistration): void {
+    if (this.wsRegistered.some((r) => r.pattern === reg.pattern)) {
+      throw new Error(`FastifyBackend: duplicate websocket route for pattern "${reg.pattern}".`);
+    }
+    this.wsRegistered.push(reg);
+  }
+
   setNotFound(handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
     this.app.setNotFoundHandler(async (req: FastifyRequest, reply: FastifyReply) => {
       const adapted = this.adaptRequest(req);
@@ -74,6 +101,14 @@ export class FastifyBackend implements HttpServerBackend {
   }
 
   async listen(host: string, port: number): Promise<ServerBinding> {
+    if (this.wsRegistered.length > 0) {
+      const plugin = await fastifyWebsocketLazy.get();
+      // Await the register so the plugin's onRoute hook is installed
+      // before we add the ws routes below.  (Awaiting does NOT lock the
+      // route tree — routes can still be added after.)
+      await (this.app as { register: (p: unknown, o?: object) => Promise<unknown> }).register(plugin);
+      for (const reg of this.wsRegistered) this.attachWebSocketRoute(reg);
+    }
     const address = await this.app.listen({ host, port });
     // Fastify returns "http://<host>:<port>".
     const match = /:(\d+)$/.exec(address);
@@ -125,13 +160,48 @@ export class FastifyBackend implements HttpServerBackend {
             try { client.terminate?.(); } catch { /* best-effort */ }
           }
         }
-        await closing;
+        // The listening socket is already closed (close() stops accepting
+        // immediately); we've force-terminated remaining connections.  Wait
+        // for `close()` to settle, but bound it — on Bun `close()` can hang
+        // after WebSocket upgrades even once every socket is gone, which
+        // would otherwise make `unbind()` (and shutdown) never resolve.
+        await Promise.race([
+          closing,
+          new Promise<void>((resolve) => {
+            const t = setTimeout(resolve, 1000);
+            (t as { unref?: () => void }).unref?.();
+          }),
+        ]);
       },
     };
   }
 
   /** @internal — used by tests that inspect Fastify state. */
   get fastify(): FastifyLike { return this.app; }
+
+  private attachWebSocketRoute(reg: WebSocketRouteRegistration): void {
+    // Use the `.get(url, { websocket: true }, handler)` shorthand: it is
+    // the form @fastify/websocket wires reliably across runtimes (the
+    // route-object `wsHandler` variant is not picked up on Bun).  The
+    // handler receives the ws socket + request; preValidation replying
+    // cancels the upgrade (auth-at-upgrade).
+    (this.app as {
+      get: (url: string, opts: unknown, handler: (socket: WsPackageSocket, req: FastifyRequest) => void) => unknown;
+    }).get(
+      reg.pattern,
+      {
+        websocket: true,
+        preValidation: async (req: FastifyRequest, reply: FastifyReply) => {
+          const res = await reg.authorize(this.adaptRequest(req));
+          if (res) this.writeResponse(reply, res);
+        },
+      },
+      (socket: WsPackageSocket, req: FastifyRequest) => {
+        const adapted = this.adaptRequest(req);
+        reg.onConnection(adapted, wsPackageAdapter(socket, { remoteAddress: adapted.remoteAddress }));
+      },
+    );
+  }
 
   /* -------------------------------- Helpers ------------------------------- */
 

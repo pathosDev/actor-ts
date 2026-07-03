@@ -43,3 +43,75 @@ export interface WebSocketSocketAdapter {
   /** Negotiated `Sec-WebSocket-Protocol`, when known. */
   readonly protocol?: string;
 }
+
+/**
+ * The `ws` package socket surface (used by `@fastify/websocket`,
+ * plain `ws.WebSocketServer`, and `@hono/node-ws`).  Only the members
+ * we touch are declared — the peer dep is optional.
+ */
+export interface WsPackageSocket {
+  send(data: string | Uint8Array): void;
+  close(code?: number, reason?: string): void;
+  terminate?(): void;
+  on(event: 'message', cb: (data: unknown, isBinary: boolean) => void): void;
+  on(event: 'close', cb: (code: number, reason: unknown) => void): void;
+  on(event: 'error', cb: (err: unknown) => void): void;
+  readonly bufferedAmount?: number;
+  readonly readyState?: number;
+  readonly protocol?: string;
+}
+
+function coerceBinary(data: unknown): Uint8Array {
+  if (data instanceof Uint8Array) return data; // Node Buffer is a Uint8Array
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (Array.isArray(data)) {
+    const total = data.reduce<number>((n, b) => n + (b as { byteLength: number }).byteLength, 0);
+    const merged = new Uint8Array(total);
+    let off = 0;
+    for (const part of data) {
+      const u8 = new Uint8Array(part as ArrayBufferLike);
+      merged.set(u8, off);
+      off += u8.byteLength;
+    }
+    return merged;
+  }
+  return new Uint8Array(0);
+}
+
+function coerceText(data: unknown): string {
+  if (typeof data === 'string') return data;
+  const bytes = coerceBinary(data);
+  return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+}
+
+/**
+ * Adapt a `ws`-package socket (already upgraded) to a
+ * {@link WebSocketSocketAdapter}.  Listener attach is synchronous
+ * (`socket.on(...)`), satisfying the no-frame-before-setListeners
+ * contract.  `isBinary` from `ws` decides text-vs-binary delivery.
+ */
+export function wsPackageAdapter(
+  socket: WsPackageSocket,
+  opts: { readonly remoteAddress?: string; readonly protocol?: string } = {},
+): WebSocketSocketAdapter {
+  return {
+    send: (data) => socket.send(data),
+    close: (code, reason) => socket.close(code, reason),
+    terminate: socket.terminate ? () => socket.terminate!() : undefined,
+    setListeners: (l) => {
+      socket.on('message', (data, isBinary) => {
+        l.onMessage(isBinary ? coerceBinary(data) : coerceText(data));
+      });
+      socket.on('close', (code, reason) => {
+        l.onClose(typeof code === 'number' ? code : 1005, reason == null ? '' : String(reason));
+      });
+      socket.on('error', (err) => l.onError(err instanceof Error ? err : new Error(String(err))));
+    },
+    get readyState() {
+      return (socket.readyState ?? WsReadyState.OPEN) as 0 | 1 | 2 | 3;
+    },
+    bufferedAmount: () => socket.bufferedAmount ?? 0,
+    remoteAddress: opts.remoteAddress,
+    protocol: opts.protocol ?? socket.protocol,
+  };
+}
