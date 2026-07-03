@@ -92,8 +92,8 @@ For each row:
 | `JetStreamActor` | ✓ | ✓ | ⚠ |
 | `RedisStreamsActor` (`redis`) | ✓ | ✓ | ⚠ |
 | `GrpcServerActor` / `GrpcClientActor` | ✓ | ✓ | ⚠ |
-| `WebSocketActor` (client) | ✓ | ✓ | ✓ |
-| `ServerWebSocketActor` | ✓ (`Bun.serve`) | ✓ (`ws`) | ⚠ |
+| `WebSocketClientActor` | ✓ | ✓ | ✓ |
+| `websocket()` route (`WebSocketServerActor`) | ✓ (`Bun.serve`) | ✓ (`@fastify/websocket` / `ws`) | ⚠ |
 | `SseActor` | ✓ | ✓ | ✓ |
 | `TcpSocketActor` | ✓ | ✓ | ✓ |
 | `UdpSocketActor` | ✓ | ✓ | ✓ |

@@ -19,7 +19,7 @@ sind, wo die Unterstützung variiert.
 | Persistenz — Cassandra | ⚠ Ungetestet |
 | HTTP — Fastify | ✓ Funktioniert |
 | HTTP — Bun.serve | ✗ (Bun-only) |
-| WebSocket-Server (`ServerWebSocketActor`) | ⚠ Workaround nötig |
+| WebSocket-Server (`websocket()`-Route) | ⚠ Workaround nötig |
 | Broker-Actor (Kafka, MQTT usw.) | ⚠ Hängt von der Deno-Kompat des zugrundeliegenden npm-Pakets ab |
 
 Für **Produktion** empfehlen wir **Bun oder Node**, außer deine
@@ -81,8 +81,10 @@ Nicht unterstützt. Deno hat kein eingebautes SQLite, und weder
 
 ### WebSocket-Server
 
-`ServerWebSocketActor` setzt standardmäßig auf `ws` (Node) oder
-`Bun.serve`. Für Deno schreibe einen dünnen Adapter mit
+Die `websocket()`-Route (durch einen `WebSocketServerActor`
+gestützt) verlässt sich auf die Upgrade-Unterstützung des
+HTTP-Backends — `@fastify/websocket` oder `ws` auf Node,
+`Bun.serve` auf Bun. Für Deno schreibe einen dünnen Adapter mit
 `Deno.serveHttp` + `Deno.upgradeWebSocket`.
 
 ## Permissions-Modell
@@ -149,7 +151,7 @@ Wenn du erwägst, von Node / Bun auf Deno umzuziehen:
    (besonders mit komplexen nativen Bindings) versagen.
 2. **Ersetze SQLite**, falls du es nutzt — wechsle zu In-Memory
    (Tests) oder Cassandra (Produktion).
-3. **Ersetze `ServerWebSocketActor`**, falls genutzt — schreibe
+3. **Ersetze `websocket()`-Routen**, falls genutzt — schreibe
    einen Deno-Adapter oder nutze stattdessen SSE.
 4. **Teste Cluster-Formation** gründlich — Deno's TCP-Backend
    hat weniger Produktions-Stunden.

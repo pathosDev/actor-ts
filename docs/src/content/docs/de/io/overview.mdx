@@ -1,6 +1,6 @@
 ---
 title: I/O im Überblick
-description: Wie Actors mit der Außenwelt sprechen — Broker-Actors (Kafka, MQTT, AMQP, NATS, Redis Streams, gRPC, WebSocket, SSE, TCP, UDP) erben alle von `BrokerActor` und teilen sich ein gemeinsames Muster für Lifecycle + Reconnect + Buffer.
+description: Wie Actors mit der Außenwelt sprechen — Broker-Actors (Kafka, MQTT, AMQP, NATS, Redis Streams, gRPC, SSE, TCP, UDP) erben alle von `BrokerActor` und teilen sich ein gemeinsames Muster für Lifecycle + Reconnect + Buffer.
 ---
 
 Actors erledigen In-Process-Arbeit sauber; die **Außenwelt** ist
@@ -55,8 +55,8 @@ Subklassen implementieren drei Hooks (`connectImpl`, `disconnectImpl`,
 | `JetStreamActor` | NATS JetStream | Durables Streaming auf NATS. |
 | `RedisStreamsActor` | Redis XADD/XREAD | Leichtgewichtiges Streaming + Consumer Groups. |
 | `GrpcClientActor` / `GrpcServerActor` | gRPC | Typisierter RPC + Streaming. |
-| `WebSocketActor` (Client) | WebSocket | Ausgehende Verbindung. |
-| `ServerWebSocketActor` | WebSocket | Eingehende Verbindungen (Serverseite). |
+| `WebSocketClientActor` | WebSocket | Ausgehende Verbindung (Broker-basierter Client). |
+| `websocket()`-Route + `WebSocketServerActor` | WebSocket | Eingehende Verbindungen — über die HTTP-Route-DSL gebunden, kein Broker. |
 | `SseActor` | Server-Sent Events | Einweg-Streaming vom Server. |
 | `TcpSocketActor` | Raw TCP | Eigene Protokolle. |
 | `UdpSocketActor` | Raw UDP | Telemetrie, Multicast, niedrige Latenz. |

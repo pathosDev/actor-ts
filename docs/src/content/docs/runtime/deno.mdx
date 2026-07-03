@@ -19,7 +19,7 @@ support varies.
 | Persistence — Cassandra | ⚠ Untested |
 | HTTP — Fastify | ✓ Works |
 | HTTP — Bun.serve | ✗ (Bun-only) |
-| WebSocket server (`ServerWebSocketActor`) | ⚠ Workaround needed |
+| WebSocket server (`websocket()` route) | ⚠ Workaround needed |
 | Broker actors (Kafka, MQTT, etc.) | ⚠ Depends on Deno-compat of underlying npm package |
 
 For **production**, we recommend **Bun or Node** unless your
@@ -79,9 +79,10 @@ neither `bun:sqlite` nor `better-sqlite3` work natively.
 
 ### WebSocket server
 
-`ServerWebSocketActor` defaults to `ws` (Node) or `Bun.serve`.
-For Deno, write a thin adapter using `Deno.serveHttp` +
-`Deno.upgradeWebSocket`.
+The `websocket()` route (backed by a `WebSocketServerActor`) relies
+on the HTTP backend's upgrade support — `@fastify/websocket` or `ws`
+on Node, `Bun.serve` on Bun.  For Deno, write a thin adapter using
+`Deno.serveHttp` + `Deno.upgradeWebSocket`.
 
 ## Permissions model
 
@@ -146,7 +147,7 @@ If you're considering moving from Node / Bun to Deno:
    complex native bindings) fail.
 2. **Replace SQLite** if you use it — switch to in-memory
    (tests) or Cassandra (production).
-3. **Replace `ServerWebSocketActor`** if used — write a Deno
+3. **Replace `websocket()` routes** if used — write a Deno
    adapter or use SSE instead.
 4. **Test cluster formation** thoroughly — Deno's TCP backend
    has less production hours.

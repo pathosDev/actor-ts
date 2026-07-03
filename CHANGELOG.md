@@ -9,7 +9,47 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Added
+
+- **Typed WebSocket routing** (#1) — a `websocket(path, actorRef)` directive
+  in the HTTP routing DSL binds a `WebSocketServerActor<TOut, TIn>`.  The
+  hub receives codec-decoded messages (JSON by default; `rawCodec()` for
+  binary), replies to the sending connection with `this.reply(...)` or
+  fans out with `this.broadcast(...)`, and gets `onClientConnected` /
+  `onClientDisconnected` / `onInvalidMessage` hooks.  The framework spawns
+  an internal session actor per connection and solves the first-frame
+  race by construction (listeners attach synchronously at upgrade; the
+  mailbox is the buffer).  Works on all three HTTP backends — Fastify
+  (`@fastify/websocket`), Express (`ws` upgrade handling), and Hono
+  (per-runtime: Bun/Node/Deno).  `withMiddleware(...)` runs at upgrade
+  time, so `BearerTokenAuth` / `IpAllowlist` gate the handshake.
+- **`WebSocketClientActor<TOut, TIn>`** (#1) — the typed client half, built
+  on `BrokerActor`: reconnect-with-backoff, outbound buffering across
+  reconnects, circuit breaker, and HOCON settings.  Other actors push a
+  typed send with `ref.tell(wsSend(msg))`.
+- **`actor-ts.http.websocket` HOCON block** — server-side WebSocket
+  defaults (`maxFrameBytes`, `onOversizeFrame`, `onInvalidMessage`,
+  `maxBufferedBytes`, `onBackpressure`); route options override HOCON,
+  which overrides built-in defaults.
+
+### Removed
+
+- **BREAKING: the legacy frame-level WebSocket API** — `WebSocketActor`
+  (client), `ServerWebSocketActor` (server bridge), and the
+  `serverWebSocketActorOf` / `bunWebSocketHandlers` adapters are gone.
+  They worked at the raw text/binary frame level and needed ~150 lines of
+  backend-specific boilerplate to stand up a server.  Replace a
+  `WebSocketActor` with `WebSocketClientActor`, and a hand-rolled server
+  plugin with a `websocket(path, ref)` route + `WebSocketServerActor`.
+  The client HOCON key `actor-ts.io.broker.websocket` is unchanged.
+
 ### Security
+
+- **WebSocket DoS hardening carried into the new stack** (#1) — inbound
+  frames are size-capped (`maxFrameBytes`, default 1 MiB) *before* the
+  codec decodes them; oversize frames close 1009 (or drop) and
+  undecodable frames close 1003 (or drop / hook) per policy.  Slow-consumer
+  backpressure closes/drops past `maxBufferedBytes`.
 
 - **DurableState revision tampering** (#116) — `ObjectStorageDurableStateStore.load()`
   previously trusted the `revision` value inside the body JSON, so an

@@ -111,7 +111,9 @@ bun add hono @hono/node-server    # @hono/node-server ist Node-only
 | `amqplib` | `AmqpActor` — RabbitMQ + AMQP-kompatible Broker. |
 | `nats` | `NatsActor` — inklusive JetStream-Subjects. |
 | `@grpc/grpc-js` + `@grpc/proto-loader` | `GrpcClientActor` + `GrpcServerActor`. |
-| `ws` | `WebSocketActor` (ausgehende Client-Verbindungen). |
+| `ws` | `WebSocketClientActor` (ausgehender Client auf Node < 22) + serverseitige WebSocket-Upgrades auf dem Express-Backend. |
+| `@fastify/websocket` | `websocket()`-Routen auf dem Fastify-Backend. |
+| `@hono/node-ws` | `websocket()`-Routen auf dem Hono-Backend (nur Node — Bun/Deno liefern die Helper in `hono` mit). |
 
 ### Discovery + Koordination
 
@@ -206,10 +208,12 @@ aus.
 <Aside type="caution" title="Ältere Node-Versionen">
   actor-ts benötigt Node ≥ 20.0.  Auf Node 20.x funktioniert der
   Kern, aber einige optionale Features fallen auf
-  Peer-Dep-Implementierungen zurück: WebSocket braucht das
-  `ws`-Paket (Node 22+ hat es nativ), und zstd-Kompression braucht
-  `fzstd` (Node 22.15+ hat es nativ).  Node ≤ 19 wird nicht
-  unterstützt.
+  Peer-Dep-Implementierungen zurück: der `WebSocketClientActor`
+  braucht das `ws`-Paket (Node 22+ hat es nativ), und zstd-Kompression
+  braucht `fzstd` (Node 22.15+ hat es nativ).  Serverseitige
+  `websocket()`-Routen brauchen `@fastify/websocket` auf dem
+  Fastify-Backend oder `@hono/node-ws` auf dem Hono-Backend, wenn sie
+  auf Node laufen.  Node ≤ 19 wird nicht unterstützt.
 </Aside>
 
 <Aside type="caution" title="Fehlende Peer-Dependency zur Laufzeit">

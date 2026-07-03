@@ -114,6 +114,18 @@ Platziere das im Projekt-Root.  Das Framework lädt es bei
 | --- | --- | --- |
 | `http.backend` | `"fastify"` | Einer von `fastify` / `bun` / `express`. |
 | `http.shutdown-grace-period` | `5s` | Zeit, um in-flight Requests beim Shutdown leerlaufen zu lassen. |
+| `http.websocket` | *(siehe unten)* | Serverseitige WebSocket-Defaults für [`websocket()`](/de/io/server-websocket/)-Routen. |
+
+Serverseitige WebSocket-Routen (`websocket(path, actorRef)`) lesen
+ihre Defaults aus `actor-ts.http.websocket`:
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `http.websocket.max-frame-bytes` | `1M` | Größter akzeptierter eingehender Frame (Bytes). |
+| `http.websocket.on-oversize-frame` | `"close"` | Was passiert, wenn ein Frame das Limit überschreitet — `close` / `drop`. |
+| `http.websocket.on-invalid-message` | `"close"` | Was passiert, wenn eine Nachricht nicht dekodiert werden kann — `close` / `drop` / `hook`. |
+| `http.websocket.max-buffered-bytes` | `4M` | Outbound-Backpressure-Schwelle (Bytes). |
+| `http.websocket.on-backpressure` | `"drop"` | Was passiert, wenn der Buffer überschritten wird — `drop` / `close`. |
 
 ### `actor-ts.persistence`
 

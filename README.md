@@ -59,9 +59,13 @@ A short tour of what's in the box:
   compression and client-side AES-256-GCM encryption (per-tenant subkeys via
   HKDF).
 - **HTTP** — directive-style routing DSL with Fastify default, Express + Hono
-  backends, response caching, rate-limiting, idempotency-key dedup.
+  backends, response caching, rate-limiting, idempotency-key dedup.  Typed
+  **WebSocket** routes: `websocket(path, actorRef)` binds a
+  `WebSocketServerActor` (typed messages, `reply` / `broadcast`,
+  connect/disconnect hooks); `WebSocketClientActor` is the reconnecting
+  client half.
 - **Message brokers** — single `BrokerActor` base with Kafka, MQTT, AMQP,
-  NATS, Redis-Streams, gRPC, WebSocket, SSE, raw TCP/UDP integrations.
+  NATS, Redis-Streams, gRPC, SSE, raw TCP/UDP integrations.
   Reconnect-with-backoff, outbound buffer, subscriber fan-out are baked in.
 - **Caching** — pluggable Cache with in-memory, Redis, Memcached backends.
 - **Observability** — Prometheus exporter, OTel tracing + metrics, management

@@ -55,7 +55,9 @@ A couple of features unlock natively on **newer Node versions**
 
 - **Native `WebSocket`** — global `WebSocket` constructor is
   built in on Node 22+.  On Node 20, install the `ws` peer dep
-  for `ServerWebSocketActor` / `WebSocketActor`.
+  for `WebSocketClientActor`.  Server-side `websocket()` routes
+  additionally need `@fastify/websocket` (Fastify) or `@hono/node-ws`
+  (Hono) on Node.
 - **Native `zstd` compression** — `node:zlib` gained `zstdCompress`
   / `zstdDecompress` on Node 22.15.  On older Node, install the
   `fzstd` peer dep for object-storage zstd codecs.
@@ -70,7 +72,8 @@ Node setups need a few peer deps the framework doesn't bundle:
 | Subsystem | Peer dep |
 | --- | --- |
 | SQLite journal / snapshot store / state | `better-sqlite3` |
-| WebSocket server (`ServerWebSocketActor`) | `ws` |
+| WebSocket client (`WebSocketClientActor`) | `ws` |
+| WebSocket server (`websocket()` route) | `@fastify/websocket` (Fastify), `@hono/node-ws` (Hono), or `ws` (Express) |
 | Kafka | `kafkajs` |
 | MQTT | `mqtt` |
 | AMQP | `amqplib` |

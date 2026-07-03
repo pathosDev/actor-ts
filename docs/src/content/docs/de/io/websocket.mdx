@@ -1,95 +1,217 @@
 ---
-title: WebSocket (Client)
-description: Ausgehender WebSocket-Verbindungs-Actor — verbindet sich mit einem Remote-WS-Endpoint, leitet eingehende Nachrichten an Subscriber weiter, sendet ausgehende Nachrichten. Auto-Reconnect mit Backoff. Umschließt das native WebSocket der Runtime.
+title: WebSocketClientActor
+description: Ausgehender WebSocket-Verbindungs-Actor — verbindet sich mit einem Remote-WS-Endpoint, dekodiert eingehende Frames in typisierte Nachrichten und sendet typisierte ausgehende Nachrichten. Reconnect mit Backoff, Outbound-Buffering und Circuit-Breaker über den BrokerActor. Umschließt das native WebSocket der Runtime.
 ---
 
-`WebSocketActor` öffnet eine **clientseitige** WebSocket-Verbindung
-zu einem Remote-Endpoint.  Zum Annehmen **eingehender**
-WS-Verbindungen (Serverseite) siehe
-[ServerWebSocketActor](/de/io/server-websocket/).
+`WebSocketClientActor` öffnet eine **clientseitige**
+WebSocket-Verbindung zu einem Remote-Endpoint.  Eingehende Frames
+werden in typisierte Nachrichten dekodiert, die du in `onMessage`
+behandelst; ausgehende Nachrichten werden kodiert und gesendet
+(während der Trennung gepuffert, nach dem Reconnect erneut
+gesendet).  Zum Annehmen **eingehender** WS-Verbindungen
+(Serverseite) siehe [Server-WebSocket](/de/io/server-websocket/).
 
 ```ts
-import { ActorSystem, Props, WebSocketActor } from 'actor-ts';
+import { WebSocketClientActor, wsSend } from 'actor-ts';
 
-const ws = system.spawn(
-  Props.create(() => new WebSocketActor({
-    url: 'wss://realtime.example.com/feed',
-    protocols: ['my-proto-v1'],
-    headers: {
-      authorization: `Bearer ${process.env.API_TOKEN}`,
-    },
-  })),
-  'ws-client',
-);
+type ClientMsg = { kind: 'ping'; n: number };
+type ServerMsg = { kind: 'pong'; n: number } | { kind: 'event'; data: unknown };
 
-// Eingehende Nachrichten subscribieren:
-ws.tell({ kind: 'subscribe', subscriber: feedHandler });
+class Feed extends WebSocketClientActor<ClientMsg, ServerMsg> {
+  constructor() { super({ url: 'ws://localhost:8080/ws' }); }
 
-// Senden:
-ws.tell({ kind: 'send', payload: JSON.stringify({ subscribe: 'channel-1' }) });
+  override onConnected(): void {
+    this.send({ kind: 'ping', n: 1 });
+  }
+
+  onMessage(msg: ServerMsg): void {
+    // decoded server message
+    if (msg.kind === 'pong') this.log.info(`pong ${msg.n}`);
+  }
+}
+
+const feed = system.spawn(Props.create(() => new Feed()), 'feed');
 ```
+
+Die beiden Typparameter sind aus Sicht des Clients zu lesen:
+`TOut` = die Nachrichten, die **dieser Client sendet**, `TIn` =
+die **dekodierten Server-Nachrichten**, die er empfängt.
+
+`WebSocketClientActor` erweitert die gemeinsame
+[BrokerActor-Basis](/de/io/broker-actor-base/) und erbt damit
+Reconnect-mit-Backoff, den Outbound-Buffer über Reconnects hinweg
+und den Circuit-Breaker kostenlos.
 
 ## Settings
 
+Der Konstruktor nimmt `Partial<WebSocketClientSettings<TOut, TIn>>`.
+Nur `url` ist erforderlich; alles andere hat einen Default.
+
 ```ts
-interface WebSocketActorSettings extends BrokerCommonSettings {
-  url:        string;                        // ws:// oder wss://
-  protocols?: string | string[];             // Subprotokolle
-  headers?:   Record<string, string>;        // Header für den initialen Handshake
-  pingIntervalMs?: number;                   // Ping auf Anwendungsebene; Default aus
+interface WebSocketClientSettings<TOut, TIn> extends BrokerCommonSettings {
+  url:              string;                        // required — ws:// or wss://
+  protocols?:       string | string[];             // subprotocols
+  headers?:         Record<string, string>;        // Node / `ws` only
+  codec?:           WsCodec<TOut, TIn>;             // default jsonCodec()
+  maxFrameBytes?:   number;                         // default 1 MiB; oversize inbound dropped with a warning
+  onInvalidMessage?: 'drop' | 'hook' | 'disconnect'; // default 'drop'
+  pingIntervalMs?:  number;                         // application-level ping; default off
 }
 ```
 
-## Eingehende Nachrichten
+Da die Settings `BrokerCommonSettings` erweitern, gelten die
+Blöcke `reconnect` (`{ initialDelayMs, maxDelayMs, factor, maxAttempts }`),
+`outboundBuffer` und `circuitBreaker` allesamt — ihre Semantik
+steht in der [BrokerActor-Basis](/de/io/broker-actor-base/).
+
+## Senden und Empfangen
+
+Innerhalb des Actors kodiert `this.send(msg)` die Nachricht über
+den Codec und stellt sie in die Queue; während der Trennung wird
+die Nachricht gepuffert und nach dem Reconnect erneut gesendet.
+Eingehende Frames werden dekodiert und an `onMessage` zugestellt.
 
 ```ts
-import { match } from 'ts-pattern';
+class Chat extends WebSocketClientActor<ClientMsg, ServerMsg> {
+  constructor() { super({ url: 'wss://chat.example.com/ws' }); }
 
-class FeedHandler extends Actor<WsInbound> {
-  override onReceive(msg: WsInbound): void {
-    match(msg)
-      .with({ kind: 'text' },   (m) => this.handleEvent(JSON.parse(m.payload)))
-      .with({ kind: 'binary' }, (m) => this.handleBinary(m.payload))   // rohe Uint8Array
-      .exhaustive();
+  override onConnected(): void {
+    this.send({ kind: 'setName', name: 'alice' });   // encode + enqueue → true
+  }
+
+  onMessage(msg: ServerMsg): void {
+    // one call per decoded server frame, in frame order
   }
 }
 ```
 
-Zwei eingehende Arten — `text` und `binary` — passend zu den
-WebSocket-Frame-Typen.  Das Framework dispatched nicht nach
-Payload-Inhalt; das ist Sache des Subscribers.
+`send(msg: TOut): boolean` gibt zurück, ob die Nachricht
+angenommen wurde (sie kann abgelehnt werden, wenn der
+Outbound-Buffer voll ist).  Für einen rohen Frame — unter Umgehung
+des Codecs — nutze `sendRaw(frame: WsFrame): boolean`.
 
-## Auto-Reconnect
+### Von einem anderen Actor senden
 
-Der gemeinsame
-[BrokerActor-Lifecycle](/de/io/broker-actor-base/) übernimmt
-Reconnect mit Backoff.  Eine unerwartete Trennung:
+Andere Actors rufen `send` nicht direkt auf; sie pushen einen
+typisierten Send über die Ref mit dem `wsSend`-Helper:
 
-- Versetzt den Actor in `disconnected`.
-- Löst `BrokerDisconnected` auf dem Event-Stream aus.
-- Startet den Reconnect-Zyklus.
-- Nach jedem erfolgreichen Reconnect löst `BrokerConnected` aus.
+```ts
+import { wsSend } from 'actor-ts';
+
+feed.tell(wsSend({ kind: 'ping', n: 42 }));
+```
+
+## Hooks
+
+`onMessage(msg: TIn)` ist abstrakt — du musst es implementieren.
+Der Rest sind optionale Overrides:
+
+| Hook | Wann |
+| --- | --- |
+| `onConnected()` | Die Verbindung ist (wieder) aufgebaut.  Guter Ort für einen Handshake / Re-Subscribe. |
+| `onDisconnected(cause?: Error)` | Die Verbindung ist abgerissen; `cause` ist bei fehlergetriebenen Abbrüchen gesetzt. |
+| `onInvalidMessage(error: WsDecodeError)` | Ein Frame ließ sich nicht dekodieren (nur bei `onInvalidMessage: 'hook'`). |
+| `onSelfMessage(msg: TSelf)` | Behandelt den optionalen dritten Typparameter — Nachrichten, die der Actor an sich selbst sendet. |
+
+## Codecs
+
+Der Codec wandelt `TOut`-Nachrichten in Wire-Frames und
+Wire-Frames zurück in `TIn`-Nachrichten.  Der Default ist
+`jsonCodec()`:
+
+```ts
+import { jsonCodec } from 'actor-ts';
+
+new Feed(); // uses jsonCodec() — text frames <-> JSON
+
+// With runtime validation (zod etc.):
+class Validated extends WebSocketClientActor<ClientMsg, ServerMsg> {
+  constructor() {
+    super({
+      url: 'wss://...',
+      codec: jsonCodec<ClientMsg, ServerMsg>({
+        validate: (value: unknown): ServerMsg => ServerMsgSchema.parse(value),
+      }),
+    });
+  }
+  onMessage(msg: ServerMsg): void { /* already validated */ }
+}
+```
+
+Für Binärprotokolle ist `rawCodec()` die Ausweichluke —
+`TOut = TIn = WsFrame`, sodass du rohe Text-/Binär-Frames selbst
+behandelst:
+
+```ts
+import { rawCodec, type WsFrame } from 'actor-ts';
+
+class Binary extends WebSocketClientActor<WsFrame, WsFrame> {
+  constructor() { super({ url: 'wss://...', codec: rawCodec() }); }
+  onMessage(frame: WsFrame): void {
+    if (frame.kind === 'binary') this.handleBytes(frame.data);   // Uint8Array
+  }
+}
+```
+
+Ein `WsFrame` ist `{ kind: 'text'; data: string }` oder
+`{ kind: 'binary'; data: Uint8Array }`.  Dekodier-Fehler werfen
+einen `WsDecodeError`; das Frame-Größenlimit (`maxFrameBytes`)
+wird am **rohen Frame vor dem Dekodieren** durchgesetzt.
+
+## Reconnect und Buffering
+
+Eine unerwartete Trennung übernimmt der
+[BrokerActor-Lifecycle](/de/io/broker-actor-base/):
+
+- Der Actor wechselt in `disconnected` und löst
+  `BrokerDisconnected` auf dem Event-Stream aus.
+- Der Reconnect-Zyklus startet, mit exponentiellem Backoff gemäß
+  den `reconnect`-Settings (`initialDelayMs`, `maxDelayMs`,
+  `factor`, `maxAttempts`).
+- Nach einem erfolgreichen Reconnect läuft `onConnected()` und
+  `BrokerConnected` wird ausgelöst.
 
 **Ausgehende Nachrichten**, die während der Trennung gesendet
-werden, werden **gepuffert** (gemäß Outbound-Buffer-Policy).
-Eingehende Subscriber bleiben über Reconnects hinweg erhalten.
+werden, werden gemäß der Outbound-Buffer-Policy **gepuffert** und
+nach dem Reconnect erneut gesendet.  Der geerbte
+**Circuit-Breaker** löst nach wiederholten Verbindungsfehlern aus,
+damit ein toter Endpoint die Reconnect-Schleife nicht endlos
+drehen lässt.
 
 ## Ping / Keep-Alive
 
 ```ts
-new WebSocketActor({
-  url: 'wss://...',
-  pingIntervalMs: 30_000,   // alle 30s einen Ping senden
-});
+new Feed(); // ...
+new WebSocketClientActor({ url: 'wss://...', pingIntervalMs: 30_000 });
 ```
 
-Ein Ping auf Anwendungsebene verhindert, dass zwischengeschaltete
-Proxies / Load-Balancer Idle-Verbindungen schließen.  Die meisten
-produktiven WebSocket-Setups brauchen das.
+Ein Ping auf Anwendungsebene alle `pingIntervalMs` verhindert,
+dass zwischengeschaltete Proxies / Load-Balancer Idle-Verbindungen
+schließen — die meisten produktiven Setups wollen das.  Der
+WebSocket-Ping auf Protokollebene (Control-Frame) ist separat und
+wird von der Runtime übernommen; der Ping auf Anwendungsebene ist
+für **Proxies, die Payloads inspizieren, keine Frames**.
 
-Der WebSocket-Ping auf Protokollebene (Control-Frame) wird
-automatisch gesendet; der Ping auf Anwendungsebene ist für
-**Proxies, die Payloads inspizieren, keine Frames**.
+## HOCON-Config
+
+Client-Defaults lassen sich unter
+`actor-ts.io.broker.websocket` setzen:
+
+```hocon
+actor-ts.io.broker.websocket {
+  url             = "wss://realtime.example.com/feed"
+  protocols       = ["my-proto-v1"]
+  headers         { authorization = "Bearer ..." }
+  pingIntervalMs  = 30000
+  maxFrameBytes   = 1048576
+  reconnect       { initialDelayMs = 500, maxDelayMs = 30000, factor = 2.0, maxAttempts = -1 }
+  circuitBreaker  { /* ... */ }
+  outboundBuffer  { /* ... */ }
+}
+```
+
+Die Präzedenz folgt der Broker-Konvention: Konstruktor-Argument >
+HOCON > eingebaute Defaults.
 
 ## Wann einsetzen
 
@@ -98,39 +220,47 @@ Drei primäre Einsatzfälle:
 1. **Echtzeit-Datenfeeds subscribieren** — Aktien-Ticker,
    Krypto-Börsen, Social-Media-Streams.
 2. **Ausgehende WebSocket-Clients** zu Drittservices
-   (Slack RTM, OpenAI-Streaming, IoT-Vendor-APIs).
-3. **Eigene WS-basierte Protokolle**, die darauf aufsetzen.
+   (Slack RTM, Streaming-LLM-APIs, IoT-Vendor-APIs).
+3. **Eigene WS-basierte Protokolle**, die darauf aufsetzen — nutze
+   `rawCodec()` für binäre Wire-Formate.
 
-Für serverseitiges WebSocket (Client-Verbindungen annehmen) nimm
-[ServerWebSocketActor](/de/io/server-websocket/).
+Für serverseitiges WebSocket (Client-Verbindungen annehmen) siehe
+die [Server-WebSocket](/de/io/server-websocket/)-Seite.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="WebSocket im Browser ist etwas anderes">
-  ```ts
-  // Browser-App, die einen Server kontaktiert — nimm new WebSocket() direkt
-  ```
-  Dieser Actor ist für **serverseitig ausgehende** Verbindungen.
-  Browser-Clients verwenden die native WebSocket-API des Browsers.
+<Aside type="note" title="Umbenannt von WebSocketActor">
+  Dieser Actor hieß früher `WebSocketActor`.  Die
+  Command-Schnittstelle (`{ kind: 'subscribe' | 'send' }`) ist
+  weg: implementiere `onMessage`, rufe `this.send(msg)` auf und
+  pushe typisierte Sends aus anderen Actors mit
+  `ref.tell(wsSend(msg))`.
 </Aside>
 
-<Aside type="caution" title="Binary vs. text">
-  ```ts
-  ws.tell({ kind: 'send', payload: someUint8Array });   // binary
-  ws.tell({ kind: 'send', payload: 'hello' });           // text
+<Aside type="caution" title="`ws`-Peer-Dependency auf Node < 22">
+  ```bash
+  npm install ws        # Node < 22 only
   ```
-  Der Typ des Payloads bestimmt den Frame-Typ.  Gemischte Server
-  erwarten das eine oder das andere — pass dich an, was dein
-  Remote-Endpoint erwartet.
+  Bun, Deno und Node 22+ liefern ein natives `WebSocket`, dort ist
+  also keine Peer-Dependency nötig.  Auf älterem Node installiere
+  das `ws`-Paket.  Das `headers`-Setting wird nur auf dem Node- /
+  `ws`-Pfad berücksichtigt — Browser und das native
+  Runtime-`WebSocket` erlauben keine eigenen Handshake-Header.
+</Aside>
+
+<Aside type="caution" title="WebSocket im Browser ist etwas anderes">
+  Dieser Actor ist für **serverseitig ausgehende** Verbindungen.
+  Browser-Clients, die sich mit einem Server verbinden, nutzen die
+  native `WebSocket`-API des Browsers direkt.
 </Aside>
 
 ## Wohin als Nächstes
 
 - **[I/O-Übersicht](/de/io/overview/)** — das große
   Bild.
-- **[Server-WebSocket](/de/io/server-websocket/)** — zum
-  Annehmen eingehender WS-Verbindungen.
+- **[Server-WebSocket](/de/io/server-websocket/)** — die
+  `websocket()`-Direktive + `WebSocketServerActor`.
 - **[SSE](/de/io/sse/)** — Server-Sent Events als
   einseitige Streaming-Alternative.
 - **[BrokerActor-Basis](/de/io/broker-actor-base/)** — der
-  gemeinsame Lifecycle.
+  gemeinsame Reconnect-/Buffer-/Circuit-Breaker-Lifecycle.
