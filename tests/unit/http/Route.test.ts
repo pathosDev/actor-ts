@@ -19,10 +19,20 @@ import {
   redirect,
   reject,
   withMiddleware,
+  type CompiledEndpoint,
+  type CompiledRoute,
   type Middleware,
 } from '../../../src/http/Route.js';
 import { HttpError, Status } from '../../../src/http/types.js';
 import type { HttpRequest } from '../../../src/http/types.js';
+
+/** Narrow a compiled endpoint list to the HTTP routes (asserts none are WS). */
+function httpOnly(endpoints: CompiledEndpoint[]): CompiledRoute[] {
+  return endpoints.map((e) => {
+    if (e.kind !== 'http') throw new Error(`expected an http route, got ${e.kind}`);
+    return e;
+  });
+}
 
 const emptyReq: HttpRequest = {
   method: 'GET',
@@ -239,9 +249,9 @@ describe('compile — withMiddleware (#312)', () => {
   const block: Middleware = () => complete(Status.Unauthorized, 'denied');
 
   test('middleware wraps the single child handler', async () => {
-    const r = compile(
+    const r = httpOnly(compile(
       withMiddleware(passthrough, get(() => complete(Status.OK, 'ok'))),
-    );
+    ));
     expect(r).toHaveLength(1);
     const resp = await r[0]!.handler(emptyReq);
     expect(resp.status).toBe(Status.OK);
@@ -250,12 +260,12 @@ describe('compile — withMiddleware (#312)', () => {
 
   test('middleware can short-circuit before the handler runs', async () => {
     let handlerCalled = false;
-    const r = compile(
+    const r = httpOnly(compile(
       withMiddleware(block, get(() => {
         handlerCalled = true;
         return complete(Status.OK, 'should not reach');
       })),
-    );
+    ));
     const resp = await r[0]!.handler(emptyReq);
     expect(resp.status).toBe(Status.Unauthorized);
     expect(handlerCalled).toBe(false);
@@ -279,7 +289,7 @@ describe('compile — withMiddleware (#312)', () => {
       order.push('h');
       return complete(Status.OK, '');
     })));
-    const r = compile(route);
+    const r = httpOnly(compile(route));
     await r[0]!.handler(emptyReq);
     expect(order).toEqual(['a-in', 'b-in', 'h', 'b-out', 'a-out']);
   });
@@ -291,7 +301,7 @@ describe('compile — withMiddleware (#312)', () => {
       withMiddleware(counter, path('protected', get(() => complete(Status.OK, 'p')))),
       path('open', get(() => complete(Status.OK, 'o'))),
     );
-    const compiled = compile(route);
+    const compiled = httpOnly(compile(route));
     expect(compiled).toHaveLength(2);
     const protectedR = compiled.find((c) => c.pattern === '/protected')!;
     const openR = compiled.find((c) => c.pattern === '/open')!;
@@ -303,7 +313,7 @@ describe('compile — withMiddleware (#312)', () => {
 
   test('middleware errors propagate as HttpError to the caller', async () => {
     const bad: Middleware = () => { throw new HttpError(Status.Forbidden, 'no'); };
-    const r = compile(withMiddleware(bad, get(() => complete(Status.OK, ''))));
+    const r = httpOnly(compile(withMiddleware(bad, get(() => complete(Status.OK, '')))));
     await expect(r[0]!.handler(emptyReq)).rejects.toThrow(HttpError);
   });
 });

@@ -6,6 +6,7 @@ import { FastifyBackend } from './backend/FastifyBackend.js';
 import { HttpClient } from './HttpClient.js';
 import { compile, type Route } from './Route.js';
 import type { HttpRequest, HttpResponse } from './types.js';
+import { ConnectionTracker, trackSocket } from './ws/ConnectionWiring.js';
 
 export interface ServerBuilder {
   /** Override the default Fastify backend (or use BunServe / Express). */
@@ -36,15 +37,43 @@ export class HttpExtension implements Extension {
         return this;
       },
       async bind(routes: Route): Promise<ServerBinding> {
-        const active = backend ?? new FastifyBackend();
+        const active: HttpServerBackend = backend ?? new FastifyBackend();
         const compiled = compile(routes);
-        // Wrap each route's handler with a request log + timing.
+        const httpRoutes = compiled.filter((r) => r.kind === 'http');
+        const wsRoutes = compiled.filter((r) => r.kind === 'websocket');
+
+        if (wsRoutes.length > 0 && typeof active.registerWebSocket !== 'function') {
+          throw new Error(
+            `HTTP backend "${active.name}" does not support websocket() routes.`,
+          );
+        }
+
+        // Reject duplicate / conflicting patterns up front — clearer than
+        // the backend's own boot-time error, and it catches the WS-vs-GET
+        // collision (a WS route occupies the GET verb at its pattern).
+        const wsPatterns = new Set<string>();
+        for (const r of wsRoutes) {
+          if (wsPatterns.has(r.pattern)) {
+            throw new Error(`Duplicate websocket() route for pattern "${r.pattern}".`);
+          }
+          wsPatterns.add(r.pattern);
+        }
+        for (const r of httpRoutes) {
+          if (r.method === 'GET' && wsPatterns.has(r.pattern)) {
+            throw new Error(
+              `Route conflict: GET ${r.pattern} collides with a websocket() route on the same path.`,
+            );
+          }
+        }
+
+        // Wrap each HTTP route's handler with a request log + timing.
         // Done at the DSL level so backends don't need a Logger
         // reference — every backend gets the same per-request debug
         // line uniformly.
-        for (const r of compiled) {
-          const wrapped = {
-            ...r,
+        for (const r of httpRoutes) {
+          active.registerRoute({
+            method: r.method,
+            pattern: r.pattern,
             handler: async (req: HttpRequest): Promise<HttpResponse> => {
               const start = Date.now();
               system.log.debug(`[http] ${req.method} ${req.path}`);
@@ -61,20 +90,43 @@ export class HttpExtension implements Extension {
                 throw err;
               }
             },
-          };
-          active.registerRoute(wrapped);
+          });
         }
+
+        // WebSocket routes: every accepted socket flows through the
+        // shared ConnectionTracker so unbind() can close it — otherwise
+        // a long-lived socket keeps the server's close() pending forever.
+        const tracker = new ConnectionTracker();
+        for (const r of wsRoutes) {
+          active.registerWebSocket!({
+            pattern: r.pattern,
+            authorize: r.authorize,
+            onConnection: (req, socket) => {
+              system.log.debug(`[ws] upgrade ${req.path}`);
+              r.connect(system, req, trackSocket(tracker, socket));
+            },
+          });
+        }
+
         const raw = await active.listen(host, port);
         // Wrap `unbind` so it's idempotent — both the auto-registered
         // CoordinatedShutdown task and any manual caller can invoke it
         // safely; subsequent calls return the in-flight/resolved promise
-        // from the first.
+        // from the first.  On unbind we also close then hard-terminate
+        // live WebSocket sockets so the backend's close() can complete.
         let unbindOnce: Promise<void> | null = null;
         const binding: ServerBinding = {
           host: raw.host,
           port: raw.port,
           unbind(gracePeriodMs?: number): Promise<void> {
-            if (!unbindOnce) unbindOnce = raw.unbind(gracePeriodMs);
+            if (!unbindOnce) {
+              unbindOnce = (async () => {
+                const backendUnbind = raw.unbind(gracePeriodMs);
+                tracker.closeAll(1001, 'server shutting down');
+                tracker.terminateAll();
+                await backendUnbind;
+              })();
+            }
             return unbindOnce;
           },
         };
@@ -87,7 +139,9 @@ export class HttpExtension implements Extension {
           () => binding.unbind(),
         );
         system.log.info(`HTTP server bound on ${binding.host}:${binding.port} (${active.name})`);
-        system.log.debug(`[http] ${compiled.length} route(s) registered`);
+        system.log.debug(
+          `[http] ${httpRoutes.length} route(s) + ${wsRoutes.length} websocket route(s) registered`,
+        );
         return binding;
       },
     };

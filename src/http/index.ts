@@ -22,7 +22,14 @@ export {
   reject,
   withMiddleware,
 } from './Route.js';
-export type { CompiledRoute, Middleware, Route } from './Route.js';
+export type {
+  CompiledRoute,
+  CompiledWebSocketRoute,
+  CompiledEndpoint,
+  Middleware,
+  Route,
+  WebSocketConnectHandler,
+} from './Route.js';
 
 // Auth + IP-allowlist middleware (#312).  Exported from
 // `./middleware/index.js`; barrel re-exports both for convenience.
@@ -42,8 +49,10 @@ export type { HonoBackendOptions } from './backend/HonoBackend.js';
 export type {
   HttpServerBackend,
   RouteRegistration,
+  WebSocketRouteRegistration,
   ServerBinding,
 } from './backend/HttpServerBackend.js';
+export type { WebSocketSocketAdapter, WebSocketListeners } from './ws/SocketAdapter.js';
 
 export {
   HttpError,

@@ -1,15 +1,49 @@
 import { match } from 'ts-pattern';
+import type { ActorSystem } from '../ActorSystem.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse, Status } from './types.js';
+import type { WebSocketSocketAdapter } from './ws/SocketAdapter.js';
 
 /**
- * A compiled route — the Route-DSL reduces to a list of these, which the
- * HTTP backend registers in its native routing table.
+ * A compiled HTTP route — the Route-DSL reduces to a list of these
+ * (plus {@link CompiledWebSocketRoute}s), which the HTTP backend
+ * registers in its native routing table.
  */
 export interface CompiledRoute {
+  readonly kind: 'http';
   readonly method: HttpMethod;
   readonly pattern: string;
   readonly handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse;
 }
+
+/**
+ * Framework-owned entry point for one accepted WebSocket connection.
+ * The backend never sees actors — it only hands us the upgrade request
+ * and a normalised socket; the closure (built by the `websocket()`
+ * directive) owns the codec, target ref and per-route policy.
+ */
+export type WebSocketConnectHandler = (
+  system: ActorSystem,
+  req: HttpRequest,
+  socket: WebSocketSocketAdapter,
+) => void;
+
+/**
+ * A compiled WebSocket route.  Occupies the `GET` verb at its pattern
+ * (that's how the HTTP upgrade arrives).  `authorize` folds any
+ * enclosing `withMiddleware(...)` — it runs once, against the upgrade
+ * request, and returns `null` to accept or an {@link HttpResponse} to
+ * reject the upgrade with a plain HTTP response.
+ */
+export interface CompiledWebSocketRoute {
+  readonly kind: 'websocket';
+  readonly method: 'GET';
+  readonly pattern: string;
+  readonly connect: WebSocketConnectHandler;
+  readonly authorize: (req: HttpRequest) => Promise<HttpResponse | null>;
+}
+
+/** A compiled endpoint is either a plain HTTP route or a WebSocket route. */
+export type CompiledEndpoint = CompiledRoute | CompiledWebSocketRoute;
 
 /**
  * Per-request hook that runs around a handler.  Receives the request
@@ -40,7 +74,8 @@ export type Route =
   | { readonly kind: 'terminal'; readonly method: HttpMethod; readonly handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse }
   | { readonly kind: 'path'; readonly segment: string; readonly child: Route }
   | { readonly kind: 'concat'; readonly routes: ReadonlyArray<Route> }
-  | { readonly kind: 'middleware'; readonly middleware: Middleware; readonly child: Route };
+  | { readonly kind: 'middleware'; readonly middleware: Middleware; readonly child: Route }
+  | { readonly kind: 'websocket'; readonly connect: WebSocketConnectHandler };
 
 /** Compose several sibling routes (OR semantics — first matching wins). */
 export function concat(...routes: Route[]): Route {
@@ -129,25 +164,59 @@ export function reject(status: number, message: string, extra?: Record<string, u
 
 /* ------------------------------- Compilation ----------------------------- */
 
-/** Flatten a Route tree into the list of concrete route registrations. */
-export function compile(route: Route, prefix: string[] = []): CompiledRoute[] {
+/**
+ * Sentinel returned by a WS route's inner `authorize` to mean "proceed
+ * with the upgrade".  Middleware that calls `next()` and passes the
+ * result through untouched yields this exact frozen object (identity
+ * check) → accept; anything else → reject the upgrade with that response.
+ */
+const WS_ACCEPT: HttpResponse = Object.freeze({ status: 101, body: null });
+
+/** Flatten a Route tree into the list of concrete endpoint registrations. */
+export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[] {
   return match(route)
-    .with({ kind: 'terminal' }, (r) => [{
+    .with({ kind: 'terminal' }, (r): CompiledEndpoint[] => [{
+      kind: 'http',
       method: r.method,
       pattern: buildPattern(prefix),
       handler: r.handler,
     }])
+    .with({ kind: 'websocket' }, (r): CompiledEndpoint[] => [{
+      kind: 'websocket',
+      method: 'GET',
+      pattern: buildPattern(prefix),
+      connect: r.connect,
+      // Innermost default: accept unconditionally.  Enclosing
+      // withMiddleware() nodes fold their checks into this below.
+      authorize: async (): Promise<HttpResponse | null> => null,
+    }])
     .with({ kind: 'path' }, (r) => compile(r.child, [...prefix, r.segment]))
     .with({ kind: 'concat' }, (r) => r.routes.flatMap((child) => compile(child, prefix)))
-    .with({ kind: 'middleware' }, (r) => {
-      // Compile the subtree, then wrap each compiled handler with the
-      // middleware.  Nested middlewares stack: an outer-then-inner wrap
-      // builds a function that runs outer first, calls next() to run
-      // inner, and inner's next() runs the original handler.
-      return compile(r.child, prefix).map((c) => ({
-        ...c,
-        handler: wrapHandler(r.middleware, c.handler),
-      }));
+    .with({ kind: 'middleware' }, (r): CompiledEndpoint[] => {
+      // Compile the subtree, then fold the middleware in.  For HTTP
+      // children it wraps the handler (nested middlewares stack
+      // outside-in).  For WebSocket children it folds into `authorize`:
+      // the middleware runs once, against the upgrade request.
+      return compile(r.child, prefix).map((c): CompiledEndpoint => {
+        if (c.kind === 'http') {
+          return { ...c, handler: wrapHandler(r.middleware, c.handler) };
+        }
+        const inner = c.authorize;
+        const authorize = async (req: HttpRequest): Promise<HttpResponse | null> => {
+          try {
+            const res = await r.middleware(req, async () => (await inner(req)) ?? WS_ACCEPT);
+            // Identity: middleware passed the sentinel through → accept.
+            // Any other response (short-circuit or transform) → reject.
+            return res === WS_ACCEPT ? null : res;
+          } catch (err) {
+            if (err instanceof HttpError) {
+              return { status: err.status, body: { error: err.message, ...(err.extra ?? {}) } };
+            }
+            return { status: Status.InternalServerError, body: { error: 'Internal Server Error' } };
+          }
+        };
+        return { ...c, authorize };
+      });
     })
     .exhaustive();
 }
