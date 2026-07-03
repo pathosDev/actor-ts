@@ -44,26 +44,10 @@ export type {
   MqttSubscription,
   MqttCredentials,
 } from './MqttActor.js';
-export { WebSocketActor } from './WebSocketActor.js';
-export type {
-  WebSocketActorSettings,
-  WebSocketCmd,
-  WebSocketFrame,
-} from './WebSocketActor.js';
-export { ServerWebSocketActor } from './ServerWebSocketActor.js';
-export type {
-  ServerWebSocketActorOptions,
-  ServerWebSocketLike,
-} from './ServerWebSocketActor.js';
-export {
-  serverWebSocketActorOf,
-  bunWebSocketHandlers,
-} from './WebSocketServerAdapters.js';
-export type {
-  BunServerWebSocketLike,
-  BunWebSocketHandlerOptions,
-  BunWebSocketSlot,
-} from './WebSocketServerAdapters.js';
+// NOTE: the client-side WebSocket actor now lives in `src/http/ws/`
+// as the typed `WebSocketClientActor`; the server side is the
+// `websocket()` routing directive.  The old frame-level
+// `WebSocketActor` / `ServerWebSocketActor` were removed.
 
 // Phase 2 actors — enterprise / RPC.
 export { KafkaActor } from './KafkaActor.js';
