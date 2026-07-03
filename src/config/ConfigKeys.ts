@@ -63,6 +63,12 @@ export const ConfigKeys = {
     },
   },
 
+  /** HTTP subsystem config roots — `actor-ts.http.*`. */
+  http: {
+    /** Server-side WebSocket defaults for `websocket()` routes. */
+    websocket: 'actor-ts.http.websocket',
+  },
+
   /** Persistence plugin selection + config — `actor-ts.persistence.*`. */
   persistence: {
     journal: {

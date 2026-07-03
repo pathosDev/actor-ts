@@ -10,7 +10,16 @@
  *   - `wireConnection` — spawns the per-connection session actor and
  *     attaches listeners synchronously (added with the actor layer).
  */
+import type { ActorSystem } from '../../ActorSystem.js';
+import { Props } from '../../Props.js';
+import type { HttpRequest } from '../types.js';
 import type { WebSocketSocketAdapter } from './SocketAdapter.js';
+import { WsConnectionImpl, type WsConnection } from './WsConnection.js';
+import { WsConnectedSignal, WsDataSignal, WsDisconnectedSignal, WsInvalidSignal, type WsServerRef } from './WsMessages.js';
+import { WebSocketSessionActor } from './WebSocketSessionActor.js';
+import { WsDecodeError, type WsCodec } from './WsCodec.js';
+import type { ResolvedWsPolicy } from './WsPolicy.js';
+import { frameByteLength, normalizeInbound } from './types.js';
 
 /**
  * Tracks the live server-side sockets of one binding so `unbind()` can
@@ -94,4 +103,95 @@ export function trackSocket(
       return socket.protocol;
     },
   };
+}
+
+let connectionCounter = 0;
+
+/**
+ * Turn one accepted upgrade into a live actor-backed connection.  Called
+ * synchronously from the backend's upgrade callback (via the route's
+ * `connect` handler).  This is the single place that solves the
+ * first-frame race:
+ *
+ *   1. Spawn the per-connection session actor (returns synchronously).
+ *   2. Build the {@link WsConnection} and tell the hub `connected` —
+ *      queued in the hub's mailbox before any data.
+ *   3. Attach socket listeners **synchronously**.  Inbound frames are
+ *      size-checked, decoded, and told to the (already-alive) hub with
+ *      this connection as the sender.  Nothing can be lost between
+ *      upgrade and listener attach.
+ */
+export function wireConnection<TOut, TIn, TSelf = never>(
+  system: ActorSystem,
+  hub: WsServerRef<TOut, TIn, TSelf>,
+  req: HttpRequest,
+  socket: WebSocketSocketAdapter,
+  codec: WsCodec<TOut, TIn>,
+  policy: ResolvedWsPolicy,
+): WsConnection<TOut> {
+  const id = `ws-${++connectionCounter}`;
+  const upgrade = {
+    path: req.path,
+    params: req.params,
+    query: req.query,
+    headers: req.headers,
+    remoteAddress: req.remoteAddress ?? socket.remoteAddress,
+    subprotocol: socket.protocol,
+  };
+
+  const sessionRef = system.spawnAnonymous(
+    Props.create(() => new WebSocketSessionActor<TOut, TIn>(socket, codec, policy)),
+  );
+  const connection: WsConnection<TOut> = new WsConnectionImpl<TOut>(id, upgrade, socket, sessionRef, system.name);
+
+  // 'connected' before listeners → mailbox-ordered before any data.
+  hub.tell(new WsConnectedSignal<TOut>(connection), connection);
+
+  let closed = false;
+  socket.setListeners({
+    onMessage: (data) => {
+      const frame = normalizeInbound(data);
+      if (!frame) {
+        system.log.warn('websocket: unrecognised inbound frame type — dropped');
+        return;
+      }
+      if (frameByteLength(frame) > policy.maxFrameBytes) {
+        if (policy.onOversizeFrame === 'close') {
+          socket.close(1009, 'message too big');
+        } else {
+          system.log.warn(`websocket: dropped oversize inbound frame (> ${policy.maxFrameBytes} bytes)`);
+        }
+        return;
+      }
+      let decoded: TIn;
+      try {
+        decoded = codec.decode(frame);
+      } catch (err) {
+        const decodeErr = err instanceof WsDecodeError ? err : new WsDecodeError(String(err), frame);
+        if (policy.onInvalidMessage === 'close') {
+          socket.close(1003, 'unsupported data');
+        } else if (policy.onInvalidMessage === 'hook') {
+          hub.tell(new WsInvalidSignal<TOut>(connection, decodeErr), connection);
+        } else {
+          system.log.warn(`websocket: invalid inbound message — dropped: ${decodeErr.message}`);
+        }
+        return;
+      }
+      hub.tell(new WsDataSignal<TOut, TIn>(connection, decoded), connection);
+    },
+    onClose: (code, reason) => {
+      if (closed) return;
+      closed = true;
+      hub.tell(
+        new WsDisconnectedSignal<TOut>(connection, { code, reason, initiatedBy: 'client' }),
+        connection,
+      );
+      sessionRef.stop();
+    },
+    onError: (err) => {
+      system.log.warn(`websocket: socket error on ${id}: ${err.message}`);
+    },
+  });
+
+  return connection;
 }

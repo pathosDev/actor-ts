@@ -54,6 +54,9 @@ export type {
 } from './backend/HttpServerBackend.js';
 export type { WebSocketSocketAdapter, WebSocketListeners } from './ws/SocketAdapter.js';
 
+// Typed WebSocket stack — websocket() directive, server actor, codecs.
+export * from './ws/index.js';
+
 export {
   HttpError,
   Status,
