@@ -41,7 +41,6 @@ import {
   Actor,
   type ActorRef,
 } from '../../../../src/index.js';
-import type { ServerWebSocketLike } from '../../../../src/io/broker/ServerWebSocketActor.js';
 import { Publish, Subscribe, Unsubscribe } from '../../../../src/cluster/pubsub/Messages.js';
 import {
   Deregister,
@@ -115,6 +114,17 @@ export type InboundFrame =
 
 export interface SocketClosed { readonly kind: 'socket-closed' }
 
+/**
+ * The outbound surface this actor needs — text (JSON control frames)
+ * and binary (length-prefixed Opus envelopes), plus close.  The voice
+ * WebSocket ingress hub supplies one backed by the connection ref.
+ */
+export interface VoiceConnection {
+  sendText(text: string): void;
+  sendBinary(data: Uint8Array): void;
+  close(): void;
+}
+
 type SessionMsg =
   | InboundFrame
   | SocketClosed
@@ -126,7 +136,7 @@ type SessionMsg =
 /* ------------------------------ deps + helpers ----------------------------- */
 
 export interface VoiceSessionDeps {
-  readonly socket: ServerWebSocketLike;
+  readonly connection: VoiceConnection;
   readonly receptionist: ActorRef<unknown>;
   readonly mediator: ActorRef<Subscribe | Unsubscribe | Publish<unknown>>;
   readonly voicePresence: ActorRef<VoicePresenceCmd>;
@@ -212,7 +222,7 @@ export class VoiceSessionActor extends Actor<SessionMsg> {
     this.subscribedTopics.clear();
     this.joinedRooms.clear();
     this.activeIncoming.clear();
-    try { this.deps.socket.close(); } catch { /* already closed */ }
+    try { this.deps.connection.close(); } catch { /* already closed */ }
   }
 
   /* ------------------------------- mailbox -------------------------------- */
@@ -464,7 +474,7 @@ export class VoiceSessionActor extends Actor<SessionMsg> {
       });
     }
     const wire = encodeIncoming(frame.senderUsername, frame.opusChunk);
-    try { this.deps.socket.send(wire); } catch (e) {
+    try { this.deps.connection.sendBinary(wire); } catch (e) {
       this.log.warn(`VoiceSession: send failed: ${(e as Error).message}`);
     }
   }
@@ -593,7 +603,7 @@ export class VoiceSessionActor extends Actor<SessionMsg> {
 
   private sendServer(msg: ServerMessage): void {
     try {
-      this.deps.socket.send(encodeServer(msg));
+      this.deps.connection.sendText(encodeServer(msg));
     } catch (e) {
       this.log.warn(`VoiceSession: send failed: ${(e as Error).message}`);
     }

@@ -39,10 +39,7 @@ import type {
   Unsubscribe,
 } from '../../../../src/cluster/pubsub/Messages.js';
 import { registerStaticFiles } from '../plugins/staticFilesPlugin.js';
-import {
-  registerWebSocketSupport,
-  webSocketRoutePlugin,
-} from '../plugins/webSocketPlugin.js';
+import { WebSocketIngressActor } from './WebSocketIngressActor.js';
 import { buildRoutes } from '../routes.js';
 import type { ChatRoomCmd } from './ChatRoomActor.js';
 import type { ChatRoomDirectoryCmd } from './ChatRoomDirectoryActor.js';
@@ -124,20 +121,25 @@ export class HttpIngressActor extends Actor<never> {
       root: staticDir,
       prefix: '/static/',
     });
-    // Two-stage WS registration; see plugins/webSocketPlugin.ts.
-    await registerWebSocketSupport(backend);
-    await backend.withPlugin(webSocketRoutePlugin, {
-      system,
-      chatRoomRegion: this.deps.chatRoomRegion,
-      dmChannelRegion: this.deps.dmChannelRegion,
-      onlineUsers: this.deps.onlineUsers,
-      mediator: this.deps.mediator,
-      sessions: this.deps.sessions,
-      roomDirectory: this.deps.roomDirectory,
-      readReceipts: this.deps.readReceipts,
-    });
 
-    this.binding = await system.http(httpPort, { host, backend }).bind(buildRoutes());
+    // Spawn the WebSocket ingress hub — one actor for the whole `/ws`
+    // route; it spawns a UserSessionActor per connection.  The
+    // @fastify/websocket plugin is registered automatically by the
+    // backend when it sees a websocket() route.
+    const ingress = system.spawn(
+      Props.create(() => new WebSocketIngressActor({
+        chatRoomRegion: this.deps.chatRoomRegion,
+        dmChannelRegion: this.deps.dmChannelRegion,
+        onlineUsers: this.deps.onlineUsers,
+        mediator: this.deps.mediator,
+        sessions: this.deps.sessions,
+        roomDirectory: this.deps.roomDirectory,
+        readReceipts: this.deps.readReceipts,
+      })),
+      'ws-ingress',
+    );
+
+    this.binding = await system.http(httpPort, { host, backend }).bind(buildRoutes(ingress));
     this.log.info(
       `[ingress] HTTP server listening on ${scheme}://${this.binding.host}:${this.binding.port}/`,
     );

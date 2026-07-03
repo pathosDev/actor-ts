@@ -2,20 +2,29 @@
  * HTTP routes via the framework's directive DSL.
  *
  * The chat sample is "all WebSocket" — there are no REST endpoints.
- * The only HTTP route handled by the directive DSL is the landing
- * page at `/` that lists every frontend variant.  Static-file
- * delivery (`/static/*`) and the WebSocket upgrade (`/ws`) are
- * mounted as Fastify plugins via `backend.withPlugin(...)`; they
- * don't go through the DSL because the DSL doesn't have directives
- * for either today.  See `plugins/staticFilesPlugin.ts` and
- * `plugins/webSocketPlugin.ts`.
+ * The DSL serves the landing page at `/` and upgrades WebSocket
+ * clients at `/ws` via the `websocket()` directive.  Static-file
+ * delivery (`/static/*`) is still mounted as a Fastify plugin via
+ * `backend.withPlugin(...)` — the DSL has no directive for it today.
+ * See `plugins/staticFilesPlugin.ts` and `actors/WebSocketIngressActor.ts`.
  *
  * The selector HTML is inlined as a tagged template — small enough
  * (~3 KB) that splitting it into its own file would just add another
  * read.  Kept dependency-free + framework-free so it works the
  * moment a single node is up.
  */
-import { complete, get, Status, type Route } from '../../../src/http/index.js';
+import {
+  complete,
+  concat,
+  get,
+  rawCodec,
+  Status,
+  websocket,
+  type Route,
+} from '../../../src/http/index.js';
+import type { WsFrame } from '../../../src/http/index.js';
+import type { ActorRef } from '../../../src/index.js';
+import type { WsServerMessage } from '../../../src/http/index.js';
 
 const SELECTOR_HTML = /* html */ `<!doctype html>
 <html lang="en">
@@ -103,14 +112,18 @@ const SELECTOR_HTML = /* html */ `<!doctype html>
 `;
 
 /**
- * Single root route: `GET /` returns the selector HTML.
+ * Route tree: `GET /` returns the selector HTML, and `websocket('/ws',
+ * ingress)` upgrades WebSocket clients (rawCodec — the chat protocol is
+ * JSON-over-text that the session actor encodes/decodes itself).
  *
- * No `path(...)` wrapping — the DSL's `compile()` produces the
- * pattern `/` for an unwrapped terminal, which is exactly what the
- * landing page wants.
+ * Static-file delivery (`/static/*`) is still mounted as a Fastify
+ * plugin via `backend.withPlugin(...)`; the DSL has no directive for it.
  */
-export function buildRoutes(): Route {
-  return get(() =>
-    complete(Status.OK, SELECTOR_HTML, { 'content-type': 'text/html; charset=utf-8' }),
+export function buildRoutes(ingress: ActorRef<WsServerMessage<WsFrame, WsFrame>>): Route {
+  return concat(
+    get(() =>
+      complete(Status.OK, SELECTOR_HTML, { 'content-type': 'text/html; charset=utf-8' }),
+    ),
+    websocket('/ws', ingress, { codec: rawCodec() }),
   );
 }

@@ -29,10 +29,7 @@ import type {
   Unsubscribe,
 } from '../../../../src/cluster/pubsub/Messages.js';
 import { registerStaticFiles } from '../plugins/staticFilesPlugin.js';
-import {
-  registerWebSocketSupport,
-  webSocketRoutePlugin,
-} from '../plugins/webSocketPlugin.js';
+import { WebSocketIngressActor } from './WebSocketIngressActor.js';
 import { buildRoutes } from '../routes.js';
 import type { VoicePresenceCmd } from './VoicePresenceActor.js';
 import type { SessionStore } from '../auth/sessionStore.js';
@@ -64,16 +61,22 @@ export class HttpIngressActor extends Actor<never> {
       root: staticDir,
       prefix: '/static/',
     });
-    await registerWebSocketSupport(backend);
-    await backend.withPlugin(webSocketRoutePlugin, {
-      system,
-      receptionist: this.deps.receptionist,
-      mediator: this.deps.mediator,
-      voicePresence: this.deps.voicePresence,
-      sessions: this.deps.sessions,
-    });
 
-    this.binding = await system.http(httpPort, { host, backend }).bind(buildRoutes());
+    // Spawn the WebSocket ingress hub — one actor for the whole `/ws`
+    // route; it spawns a VoiceSessionActor per connection.  The
+    // @fastify/websocket plugin is registered automatically by the
+    // backend when it sees a websocket() route.
+    const ingress = system.spawn(
+      Props.create(() => new WebSocketIngressActor({
+        receptionist: this.deps.receptionist,
+        mediator: this.deps.mediator,
+        voicePresence: this.deps.voicePresence,
+        sessions: this.deps.sessions,
+      })),
+      'ws-ingress',
+    );
+
+    this.binding = await system.http(httpPort, { host, backend }).bind(buildRoutes(ingress));
     this.log.info(
       `[ingress] HTTP server listening on http://${this.binding.host}:${this.binding.port}/`,
     );

@@ -1,71 +1,68 @@
 /**
- * Server-side WebSocket integration demo (#1).
+ * Server-side WebSocket demo using the routing DSL (#1).
  *
  *   bun run examples/io/websocket-server.ts
- *   # then visit http://localhost:3000 and open the dev tools console:
+ *   # then open the dev-tools console and:
  *   #   const ws = new WebSocket('ws://localhost:3000/ws');
- *   #   ws.onmessage = (e) => console.log('server says:', e.data);
- *   #   ws.send('hello');
+ *   #   ws.onmessage = (e) => console.log(e.data);
+ *   #   ws.send(JSON.stringify({ kind: 'setName', name: 'alice' }));
+ *   #   ws.send(JSON.stringify({ kind: 'say', text: 'hello!' }));
  *
- * Pattern:
- *
- *   1. `bunWebSocketHandlers(system, ...)` builds the four
- *      `Bun.serve({ websocket: ... })` callbacks pre-wired to
- *      spawn a `ServerWebSocketActor` per connection.
- *
- *   2. The chat-room actor is the shared destination — every
- *      connection's actor is registered with it on `onOpen` and
- *      removed on `onClose`.
- *
- *   3. Each connection is a single actor; sends from the chatroom
- *      go through `connectionRef.tell({ kind: 'sendText', ... })`.
+ * The whole server is one actor bound to a route with `websocket('/ws', ref)`.
+ * The framework spawns an internal session actor per connection; the hub
+ * sees typed, JSON-decoded messages and replies to the sending connection
+ * with `this.reply(...)` or fans out with `this.broadcast(...)`.
  */
+import { match } from 'ts-pattern';
 import {
-  Actor,
   ActorSystem,
+  completeText,
+  concat,
+  get,
+  HttpExtensionId,
   Props,
-  bunWebSocketHandlers,
-  type WebSocketCmd,
-  type WebSocketFrame,
+  Status,
+  WebSocketServerActor,
+  websocket,
+  type WsConnection,
 } from '../../src/index.js';
-import type { ActorRef } from '../../src/index.js';
 
-type ChatCmd =
-  | { kind: 'join'; conn: ActorRef<WebSocketCmd> }
-  | { kind: 'leave'; conn: ActorRef<WebSocketCmd> }
-  | { kind: 'fromClient'; conn: ActorRef<WebSocketCmd>; frame: WebSocketFrame };
+type ClientMsg =
+  | { kind: 'setName'; name: string }
+  | { kind: 'say'; text: string };
 
-class ChatRoom extends Actor<ChatCmd> {
-  private readonly clients = new Set<ActorRef<WebSocketCmd>>();
+type ServerMsg =
+  | { kind: 'system'; text: string }
+  | { kind: 'chat'; from: string; text: string };
 
-  override onReceive(cmd: ChatCmd): void {
-    if (cmd.kind === 'join') {
-      this.clients.add(cmd.conn);
-      cmd.conn.tell({ kind: 'sendText', data: `welcome — ${this.clients.size} connected` });
-      this.broadcast(`* a new client joined (${this.clients.size} total)`);
-    } else if (cmd.kind === 'leave') {
-      this.clients.delete(cmd.conn);
-      this.broadcast(`* a client left (${this.clients.size} remaining)`);
-    } else if (cmd.frame.kind === 'text') {
-      this.broadcast(`peer: ${cmd.frame.data}`, cmd.conn);
-    }
+class ChatRoom extends WebSocketServerActor<ServerMsg, ClientMsg> {
+  private readonly names = new Map<string, string>();
+
+  override onMessage(msg: ClientMsg): void {
+    match(msg)
+      .with({ kind: 'setName' }, ({ name }) => {
+        this.names.set(this.connection.id, name);
+        this.reply({ kind: 'system', text: `you are now "${name}"` });
+        this.broadcast(
+          { kind: 'system', text: `${name} joined` },
+          (c) => c.id !== this.connection.id,
+        );
+      })
+      .with({ kind: 'say' }, ({ text }) => {
+        const from = this.names.get(this.connection.id) ?? 'anon';
+        this.broadcast({ kind: 'chat', from, text });
+      })
+      .exhaustive();
   }
 
-  private broadcast(msg: string, except?: ActorRef<WebSocketCmd>): void {
-    for (const c of this.clients) {
-      if (c === except) continue;
-      c.tell({ kind: 'sendText', data: msg });
-    }
+  protected override onClientConnected(c: WsConnection<ServerMsg>): void {
+    c.tell({ kind: 'system', text: `welcome — ${this.clients.size} online` });
   }
-}
 
-class PerClientForwarder extends Actor<WebSocketFrame> {
-  constructor(
-    private readonly chat: ActorRef<ChatCmd>,
-    private readonly self_: ActorRef<WebSocketCmd>,
-  ) { super(); }
-  override onReceive(frame: WebSocketFrame): void {
-    this.chat.tell({ kind: 'fromClient', conn: this.self_, frame });
+  protected override onClientDisconnected(c: WsConnection<ServerMsg>): void {
+    const name = this.names.get(c.id) ?? 'someone';
+    this.names.delete(c.id);
+    this.broadcast({ kind: 'system', text: `${name} left` });
   }
 }
 
@@ -73,45 +70,17 @@ async function main(): Promise<void> {
   const system = ActorSystem.create('ws-server-demo');
   const chat = system.spawn(Props.create(() => new ChatRoom()), 'chat');
 
-  const handlers = bunWebSocketHandlers(system, {
-    onOpen: (_ws, ref) => {
-      // Spin up a per-client forwarder that bridges inbound frames
-      // into the chat room.  Wire it AFTER the connection actor
-      // exists so it can pass `ref` along.
-      const forwarder = system.spawn(
-        Props.create(() => new PerClientForwarder(chat, ref)),
-      );
-      // Re-target the connection actor at the forwarder.  In a
-      // production app you'd typically pass `target: forwarder` via
-      // the handler options when the chat room itself doesn't need
-      // to know about per-connection identity.
-      void forwarder;
-      chat.tell({ kind: 'join', conn: ref });
-    },
-    onClose: (_ws, ref) => chat.tell({ kind: 'leave', conn: ref }),
-  });
+  const routes = concat(
+    websocket('/ws', chat),
+    get(() => completeText(Status.OK, 'actor-ts websocket demo — connect to ws://localhost:3000/ws')),
+  );
 
-  const server = Bun.serve({
-    port: 3000,
-    fetch(req, srv) {
-      const url = new URL(req.url);
-      if (url.pathname === '/ws') {
-        if (srv.upgrade(req)) return undefined;
-        return new Response('upgrade failed', { status: 400 });
-      }
-      return new Response(
-        '<h1>actor-ts websocket demo</h1><p>connect to <code>ws://localhost:3000/ws</code></p>',
-        { headers: { 'Content-Type': 'text/html' } },
-      );
-    },
-    websocket: handlers,
-  });
-
-  console.log(`websocket demo: http://localhost:${server.port}/  (ws path: /ws)`);
+  const binding = await system.extension(HttpExtensionId).newServerAt('0.0.0.0', 3000).bind(routes);
+  console.log(`websocket demo: http://${binding.host}:${binding.port}/  (ws path: /ws)`);
   console.log('press Ctrl+C to exit');
 
   await new Promise<void>((resolve) => process.on('SIGINT', () => resolve()));
-  server.stop();
+  await binding.unbind();
   await system.terminate();
 }
 

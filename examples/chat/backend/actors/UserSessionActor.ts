@@ -1,19 +1,9 @@
 /**
- * One actor per WebSocket connection.  Inbound frames are pushed
- * into the actor by a synchronous `socket.on('message', ...)`
- * listener that the route handler attaches immediately on accept —
- * see `plugins/webSocketPlugin.ts`.  Outbound is direct
- * `socket.send(...)` from the actor's `sendServer` helper.
- *
- * **Why not wrap the socket in a ServerWebSocketActor child?**
- * Because actor instantiation in this framework is async (the
- * actor's `preStart` runs on the actor mailbox, not synchronously
- * inside `spawn`).  In the small window between Fastify accepting
- * the upgrade and the wrapper actor's `preStart` actually adding
- * listeners, the client's first frame (typically `login`) is
- * delivered to the raw socket and dropped because no listener is
- * attached yet.  Attaching the `socket.on('message', ...)` listener
- * in the Fastify handler — synchronously — closes that race.
+ * One actor per WebSocket connection.  The `websocket('/ws', …)` route
+ * (via {@link WebSocketIngressActor}) spawns one of these per accepted
+ * connection and forwards decoded inbound frames to it; the actor writes
+ * back through the {@link SessionConnection} it was given (the framework
+ * already solved the first-frame race, so no manual listener dance).
  *
  * State machine: starts in `Unauthenticated` and stays there until
  * the client sends a `{ type: 'login', ... }` frame.  Anything else
@@ -43,7 +33,6 @@ import {
   Actor,
   type ActorRef,
 } from '../../../../src/index.js';
-import type { ServerWebSocketLike } from '../../../../src/io/broker/ServerWebSocketActor.js';
 import { DistributedPubSubId } from '../../../../src/cluster/pubsub/index.js';
 import { Publish, Subscribe, Unsubscribe } from '../../../../src/cluster/pubsub/Messages.js';
 import {
@@ -97,8 +86,18 @@ export type InboundFrame =
   | { readonly kind: 'text';   readonly data: string }
   | { readonly kind: 'binary'; readonly data: Uint8Array };
 
-/** Synthetic close signal sent by the route handler when the socket closes. */
+/** Synthetic close signal sent by the WebSocket hub when the socket closes. */
 export interface SocketClosed { readonly kind: 'socket-closed' }
+
+/**
+ * The minimal outbound surface this actor needs — a text-frame sink and
+ * a close.  The WebSocket ingress hub supplies one backed by the
+ * connection's `WsConnection` (see `WebSocketIngressActor`).
+ */
+export interface SessionConnection {
+  sendText(text: string): void;
+  close(): void;
+}
 
 type SessionMsg =
   | InboundFrame
@@ -117,7 +116,7 @@ type SessionMsg =
 /* --------------------------- public deps ---------------------------- */
 
 export interface UserSessionDeps {
-  readonly socket: ServerWebSocketLike;
+  readonly connection: SessionConnection;
   readonly chatRoomRegion: ActorRef<ChatRoomCmd>;
   readonly dmChannelRegion: ActorRef<DmChannelCmd>;
   readonly onlineUsers: ActorRef<OnlineUsersCmd>;
@@ -183,8 +182,8 @@ export class UserSessionActor extends Actor<SessionMsg> {
     }
     this.joinedRooms.clear();
     this.dmHistoryAskedRooms.clear();
-    // Idempotent close — the route handler may have already done it.
-    try { this.deps.socket.close(); } catch { /* already closed */ }
+    // Idempotent close — the hub / framework may have already done it.
+    try { this.deps.connection.close(); } catch { /* already closed */ }
   }
 
   override onReceive(msg: SessionMsg): void {
@@ -676,7 +675,7 @@ export class UserSessionActor extends Actor<SessionMsg> {
 
   private sendServer(msg: ServerMessage): void {
     try {
-      this.deps.socket.send(encodeServer(msg));
+      this.deps.connection.sendText(encodeServer(msg));
     } catch (e) {
       this.log.warn(`UserSession: send failed: ${(e as Error).message}`);
     }

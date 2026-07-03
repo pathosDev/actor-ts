@@ -11,7 +11,18 @@
  * also doubles as a brief "what this sample demonstrates" pitch
  * since voice differs from chat in primitive choice.
  */
-import { complete, get, Status, type Route } from '../../../src/http/index.js';
+import {
+  complete,
+  concat,
+  get,
+  rawCodec,
+  Status,
+  websocket,
+  type Route,
+  type WsFrame,
+  type WsServerMessage,
+} from '../../../src/http/index.js';
+import type { ActorRef } from '../../../src/index.js';
 
 const SELECTOR_HTML = /* html */ `<!doctype html>
 <html lang="en">
@@ -102,8 +113,11 @@ const SELECTOR_HTML = /* html */ `<!doctype html>
 </html>
 `;
 
-export function buildRoutes(): Route {
-  return get(() =>
-    complete(Status.OK, SELECTOR_HTML, { 'content-type': 'text/html; charset=utf-8' }),
+export function buildRoutes(ingress: ActorRef<WsServerMessage<WsFrame, WsFrame>>): Route {
+  return concat(
+    get(() =>
+      complete(Status.OK, SELECTOR_HTML, { 'content-type': 'text/html; charset=utf-8' }),
+    ),
+    websocket('/ws', ingress, { codec: rawCodec() }),
   );
 }

@@ -1,64 +1,58 @@
 /**
- * WebSocket broker actor — both server and client in one process for
- * a self-contained demo.  The server (raw `Bun.serve`) echoes everything
- * it receives; the actor sends JSON ticks and prints replies.
+ * Typed WebSocket client + server in one process (#1).  The server echoes
+ * each tick back as an ack; the client sends ticks and prints the acks.
  *
  *   bun run examples/io/websocket-feed.ts
+ *
+ * Shows both halves of the typed API: a `WebSocketServerActor` bound with
+ * `websocket('/ws', ref)`, and a `WebSocketClientActor` that dials it and
+ * inherits reconnect-with-backoff + outbound buffering from BrokerActor.
  */
 import {
-  Actor,
   ActorSystem,
+  HttpExtensionId,
   Props,
-  WebSocketActor,
-  type WebSocketFrame,
+  WebSocketClientActor,
+  WebSocketServerActor,
+  websocket,
+  wsSend,
 } from '../../src/index.js';
 
-class Printer extends Actor<WebSocketFrame> {
-  override onReceive(frame: WebSocketFrame): void {
-    if (frame.kind === 'text') {
-      console.log('[client] ←', frame.data);
-    } else {
-      console.log('[client] ← <binary>', frame.data.length, 'bytes');
-    }
+type Up = { kind: 'tick'; n: number };   // client → server
+type Down = { kind: 'ack'; n: number };  // server → client
+
+class EchoServer extends WebSocketServerActor<Down, Up> {
+  override onMessage(msg: Up): void {
+    this.reply({ kind: 'ack', n: msg.n });
   }
 }
 
+class Feed extends WebSocketClientActor<Up, Down> {
+  constructor(url: string) { super({ url }); }
+  override onConnected(): void { console.log('[client] connected'); }
+  override onMessage(msg: Down): void { console.log('[client] ← ack', msg.n); }
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
 async function main(): Promise<void> {
-  const server = Bun.serve({
-    port: 0,
-    fetch(req, srv) {
-      if (srv.upgrade(req)) return;
-      return new Response('upgrade only', { status: 400 });
-    },
-    websocket: {
-      message(ws, msg) {
-        // Echo with a wrapper so it's clearly the server speaking.
-        if (typeof msg === 'string') ws.send(`[server-echo] ${msg}`);
-        else ws.send(msg as never);
-      },
-    },
-  });
-  console.log(`[server] listening on ws://localhost:${server.port}`);
+  const system = ActorSystem.create('ws-feed-demo');
 
-  const sys = ActorSystem.create('ws-demo');
-  const printer = sys.spawn(Props.create(() => new Printer()), 'printer');
+  const server = system.spawn(Props.create(() => new EchoServer()), 'echo');
+  const binding = await system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).bind(websocket('/ws', server));
+  console.log(`[server] listening on ws://127.0.0.1:${binding.port}/ws`);
 
-  const ws = sys.spawn(Props.create(() => new WebSocketActor({
-    url: `ws://localhost:${server.port}`,
-    target: printer,
-    pingIntervalMs: 5_000,
-  })), 'ws');
+  const client = system.spawn(Props.create(() => new Feed(`ws://127.0.0.1:${binding.port}/ws`)), 'feed');
 
-  await Bun.sleep(100);
+  await sleep(200);
   for (let i = 0; i < 5; i++) {
-    const tick = JSON.stringify({ tick: i, ts: Date.now() });
-    ws.tell({ kind: 'sendText', data: tick });
-    await Bun.sleep(150);
+    client.tell(wsSend({ kind: 'tick', n: i }));
+    await sleep(150);
   }
 
-  await Bun.sleep(500);
-  await sys.terminate();
-  server.stop(true);
+  await sleep(400);
+  await binding.unbind();
+  await system.terminate();
 }
 
 void main();
