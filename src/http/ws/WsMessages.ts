@@ -8,9 +8,23 @@
  * disconnected.
  */
 import type { ActorRef } from '../../ActorRef.js';
+import type { Props } from '../../Props.js';
 import type { WsDecodeError } from './WsCodec.js';
 import type { WsConnection } from './WsConnection.js';
 import type { WsCloseInfo } from './types.js';
+
+/**
+ * Ask the hub to spawn a per-connection actor as its own child.  Sent by
+ * the wiring layer at upgrade time; the hub does `context.spawn(props,
+ * name)` so the connection actor is a genuine sub-actor of the server.
+ */
+export class WsAcceptSignal {
+  readonly _wsSignal = 'accept' as const;
+  constructor(
+    readonly props: Props<unknown>,
+    readonly name: string,
+  ) {}
+}
 
 export class WsConnectedSignal<TOut> {
   readonly _wsSignal = 'connected' as const;
@@ -42,6 +56,7 @@ export class WsInvalidSignal<TOut> {
 }
 
 export type WsServerSignal<TOut, TIn> =
+  | WsAcceptSignal
   | WsConnectedSignal<TOut>
   | WsDataSignal<TOut, TIn>
   | WsDisconnectedSignal<TOut>

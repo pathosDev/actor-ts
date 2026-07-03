@@ -173,10 +173,13 @@ nebenläufige Handler-Ausführung, keine Locks.
 
 <Aside type="caution" title="`onReceive` ist versiegelt">
   Überschreibe `onReceive` an einem `WebSocketServerActor` nicht —
-  es ist versiegelt.  Das Framework spawnt automatisch einen
-  **internen Session-Actor pro Verbindung**, der jeden Socket
-  besitzt; du verwaltest ihn nie.  Implementiere stattdessen
-  `onMessage` und die Hooks.
+  es ist versiegelt.  Für jede Verbindung spawnt das Framework einen
+  **internen Connection-Actor als Kind des Server-Actors** (der Baum
+  ist `server → conn-1, conn-2, …`); dieses Kind besitzt den Socket,
+  dekodiert eingehende Frames, schreibt ausgehende und wird beim
+  Schließen des Sockets automatisch gestoppt.  Du siehst oder
+  verwaltest ihn nie — implementiere stattdessen `onMessage` und die
+  Hooks.
 </Aside>
 
 ## `WsConnection`

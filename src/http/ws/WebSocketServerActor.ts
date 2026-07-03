@@ -24,9 +24,11 @@
  * `onClientDisconnected`, all serialised through this one actor.
  */
 import { Actor } from '../../Actor.js';
+import { stoppingStrategy, type SupervisorStrategy } from '../../Supervision.js';
 import type { WsDecodeError } from './WsCodec.js';
 import type { WsConnection } from './WsConnection.js';
 import {
+  WsAcceptSignal,
   WsConnectedSignal,
   WsDataSignal,
   WsDisconnectedSignal,
@@ -94,8 +96,24 @@ export abstract class WebSocketServerActor<TOut, TIn, TSelf = never>
 
   /* ----------------------- sealed dispatch ----------------------- */
 
+  /**
+   * Supervision for the per-connection child actors: stop a crashed
+   * connection (its `postStop` still reports the disconnect) rather than
+   * restart it into a dead socket.  Override on your subclass only if you
+   * really mean to change how connection failures are handled.
+   */
+  override supervisorStrategy(): SupervisorStrategy {
+    return stoppingStrategy;
+  }
+
   /** @internal Sealed — do not override; override `onMessage` + hooks instead. */
   override async onReceive(msg: WsServerMessage<TOut, TIn, TSelf>): Promise<void> {
+    if (msg instanceof WsAcceptSignal) {
+      // Spawn the per-connection actor as THIS actor's child, so the
+      // tree is server → conn-N and supervision/teardown are automatic.
+      this.context.spawn(msg.props, msg.name);
+      return;
+    }
     if (msg instanceof WsConnectedSignal) {
       this._clients.set(msg.connection.id, msg.connection);
       this._current = msg.connection;

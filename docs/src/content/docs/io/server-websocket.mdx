@@ -169,9 +169,12 @@ usual guarantee — no concurrent handler execution, no locks.
 
 <Aside type="caution" title="`onReceive` is sealed">
   Don't override `onReceive` on a `WebSocketServerActor` — it is
-  sealed.  The framework spawns an **internal per-connection
-  session actor** automatically to own each socket; you never
-  manage it.  Implement `onMessage` and the hooks instead.
+  sealed.  For every connection the framework spawns an **internal
+  connection actor as a child of the server actor** (the tree is
+  `server → conn-1, conn-2, …`); that child owns the socket, decodes
+  inbound frames, writes outbound, and is stopped automatically when
+  the socket closes.  You never see or manage it — implement
+  `onMessage` and the hooks instead.
 </Aside>
 
 ## `WsConnection`

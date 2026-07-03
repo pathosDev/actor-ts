@@ -12,8 +12,17 @@
 import { ActorPath } from '../../ActorPath.js';
 import { ActorRef } from '../../ActorRef.js';
 import { WsReadyState, type WebSocketSocketAdapter } from './SocketAdapter.js';
-import type { SessionCommand } from './WebSocketSessionActor.js';
 import type { WsFrame, WsUpgradeInfo } from './types.js';
+
+/**
+ * Outbound command a {@link WsConnection} enqueues to its per-connection
+ * actor.  Defined here (the producer) so the connection actor imports it
+ * from the connection module, not the other way round.
+ */
+export type WsOutboundCommand<TOut> =
+  | { readonly _cmd: 'out'; readonly msg: TOut }
+  | { readonly _cmd: 'out-raw'; readonly frame: WsFrame }
+  | { readonly _cmd: 'close'; readonly code: number; readonly reason: string };
 
 export interface WsConnection<TOut> extends ActorRef<TOut> {
   /** Stable id, unique within the process (e.g. `ws-7`). */
@@ -37,7 +46,7 @@ export class WsConnectionImpl<TOut> extends ActorRef<TOut> implements WsConnecti
     readonly id: string,
     readonly upgrade: WsUpgradeInfo,
     private readonly socket: WebSocketSocketAdapter,
-    private readonly sessionRef: ActorRef<SessionCommand<TOut>>,
+    private readonly connRef: ActorRef<WsOutboundCommand<TOut>>,
     systemName: string,
   ) {
     super();
@@ -53,14 +62,14 @@ export class WsConnectionImpl<TOut> extends ActorRef<TOut> implements WsConnecti
   }
 
   override tell(msg: TOut): void {
-    this.sessionRef.tell({ _cmd: 'out', msg });
+    this.connRef.tell({ _cmd: 'out', msg });
   }
 
   sendRaw(frame: WsFrame): void {
-    this.sessionRef.tell({ _cmd: 'out-raw', frame });
+    this.connRef.tell({ _cmd: 'out-raw', frame });
   }
 
   close(code = 1000, reason = ''): void {
-    this.sessionRef.tell({ _cmd: 'close', code, reason });
+    this.connRef.tell({ _cmd: 'close', code, reason });
   }
 }

@@ -84,28 +84,55 @@ function coerceText(data: unknown): string {
   return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
 }
 
+type BufferedEvent =
+  | { readonly t: 'message'; readonly data: string | Uint8Array }
+  | { readonly t: 'close'; readonly code: number; readonly reason: string }
+  | { readonly t: 'error'; readonly err: Error };
+
 /**
  * Adapt a `ws`-package socket (already upgraded) to a
- * {@link WebSocketSocketAdapter}.  Listener attach is synchronous
- * (`socket.on(...)`), satisfying the no-frame-before-setListeners
- * contract.  `isBinary` from `ws` decides text-vs-binary delivery.
+ * {@link WebSocketSocketAdapter}.  Native `socket.on(...)` listeners are
+ * attached **immediately** (synchronously at upgrade) and inbound events
+ * are BUFFERED until `setListeners` runs — because the per-connection
+ * actor attaches its listeners a mailbox-tick later, and `ws` would drop
+ * events that arrive with no `'message'` listener.  `isBinary` from `ws`
+ * decides text-vs-binary delivery.
  */
 export function wsPackageAdapter(
   socket: WsPackageSocket,
   opts: { readonly remoteAddress?: string; readonly protocol?: string } = {},
 ): WebSocketSocketAdapter {
+  let listeners: WebSocketListeners | null = null;
+  const pending: BufferedEvent[] = [];
+
+  socket.on('message', (data, isBinary) => {
+    const norm = isBinary ? coerceBinary(data) : coerceText(data);
+    if (listeners) listeners.onMessage(norm);
+    else pending.push({ t: 'message', data: norm });
+  });
+  socket.on('close', (code, reason) => {
+    const c = typeof code === 'number' ? code : 1005;
+    const r = reason == null ? '' : String(reason);
+    if (listeners) listeners.onClose(c, r);
+    else pending.push({ t: 'close', code: c, reason: r });
+  });
+  socket.on('error', (err) => {
+    const e = err instanceof Error ? err : new Error(String(err));
+    if (listeners) listeners.onError(e);
+    else pending.push({ t: 'error', err: e });
+  });
+
   return {
     send: (data) => socket.send(data),
     close: (code, reason) => socket.close(code, reason),
     terminate: socket.terminate ? () => socket.terminate!() : undefined,
     setListeners: (l) => {
-      socket.on('message', (data, isBinary) => {
-        l.onMessage(isBinary ? coerceBinary(data) : coerceText(data));
-      });
-      socket.on('close', (code, reason) => {
-        l.onClose(typeof code === 'number' ? code : 1005, reason == null ? '' : String(reason));
-      });
-      socket.on('error', (err) => l.onError(err instanceof Error ? err : new Error(String(err))));
+      listeners = l;
+      for (const ev of pending.splice(0)) {
+        if (ev.t === 'message') l.onMessage(ev.data);
+        else if (ev.t === 'close') l.onClose(ev.code, ev.reason);
+        else l.onError(ev.err);
+      }
     },
     get readyState() {
       return (socket.readyState ?? WsReadyState.OPEN) as 0 | 1 | 2 | 3;
