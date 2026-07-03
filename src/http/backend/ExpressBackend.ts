@@ -1,11 +1,49 @@
-import type { Server } from 'node:http';
+import type { IncomingMessage, Server } from 'node:http';
+import type { Duplex } from 'node:stream';
 import { match } from 'ts-pattern';
+import { Lazy } from '../../util/Lazy.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../types.js';
 import type {
   HttpServerBackend,
   RouteRegistration,
   ServerBinding,
+  WebSocketRouteRegistration,
 } from './HttpServerBackend.js';
+import { wsPackageAdapter, type WsPackageSocket } from '../ws/SocketAdapter.js';
+import { matchWsPattern } from '../ws/matchPattern.js';
+import { writeRawHttpResponse } from '../ws/rawResponse.js';
+
+/** Minimal shape of the `ws` package's WebSocketServer (noServer mode). */
+interface WsServerLike {
+  handleUpgrade(
+    req: IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+    cb: (ws: WsPackageSocket) => void,
+  ): void;
+  emit(event: 'connection', ws: WsPackageSocket, req: IncomingMessage): boolean;
+  readonly clients?: Iterable<{ terminate?: () => void; close?: () => void }>;
+}
+
+// `ws` is an optional peer dep — lazy-import its WebSocketServer (cached).
+const wsServerCtorLazy: Lazy<Promise<new (opts: { noServer: boolean }) => WsServerLike>> = Lazy.of(async () => {
+  try {
+    const name = 'ws';
+    const mod = (await import(name)) as {
+      WebSocketServer?: new (opts: { noServer: boolean }) => WsServerLike;
+      default?: { WebSocketServer?: new (opts: { noServer: boolean }) => WsServerLike };
+    };
+    const Ctor = mod.WebSocketServer ?? mod.default?.WebSocketServer;
+    if (!Ctor) throw new Error('ws: WebSocketServer not exported');
+    return Ctor;
+  } catch (e) {
+    throw new Error(
+      'websocket() routes on the Express backend require the "ws" package.  '
+        + 'Install it with: bun add ws\nOriginal error: '
+        + (e instanceof Error ? e.message : String(e)),
+    );
+  }
+});
 
 /*
  * We deliberately keep Express imports narrow + structural — the peer dep
@@ -86,6 +124,8 @@ export class ExpressBackend implements HttpServerBackend {
   private readonly ownsApp: boolean;
   private readonly maxBodyBytes: number;
   private readonly registered: RouteRegistration[] = [];
+  private readonly wsRegistered: WebSocketRouteRegistration[] = [];
+  private wss: WsServerLike | null = null;
   private notFoundHandler: ((req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
   private errorHandler: ((err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
 
@@ -103,6 +143,13 @@ export class ExpressBackend implements HttpServerBackend {
 
   registerRoute(route: RouteRegistration): void {
     this.registered.push(route);
+  }
+
+  registerWebSocket(reg: WebSocketRouteRegistration): void {
+    if (this.wsRegistered.some((r) => r.pattern === reg.pattern)) {
+      throw new Error(`ExpressBackend: duplicate websocket route for pattern "${reg.pattern}".`);
+    }
+    this.wsRegistered.push(reg);
   }
 
   setNotFound(handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
@@ -144,6 +191,10 @@ export class ExpressBackend implements HttpServerBackend {
       this.server = server;
     });
 
+    if (this.wsRegistered.length > 0 && this.server) {
+      await this.attachUpgradeHandling(this.server);
+    }
+
     return {
       host,
       port: actualPort,
@@ -151,13 +202,89 @@ export class ExpressBackend implements HttpServerBackend {
         const srv = this.server;
         if (!srv) return;
         this.server = null;
+        // Force-terminate live WebSocket connections first — otherwise
+        // server.close() waits on them forever (a long-lived socket never
+        // drains) and shutdown hangs.
+        if (this.wss?.clients) {
+          for (const c of this.wss.clients) {
+            try { c.terminate?.(); } catch { /* already gone */ }
+          }
+        }
         await new Promise<void>((resolve) => {
-          const timer = gracePeriodMs && gracePeriodMs > 0
-            ? setTimeout(() => { srv.closeAllConnections?.(); resolve(); }, gracePeriodMs)
-            : null;
-          srv.close(() => { if (timer) clearTimeout(timer); resolve(); });
+          let done = false;
+          const finish = (): void => { if (!done) { done = true; resolve(); } };
+          const grace = gracePeriodMs && gracePeriodMs > 0 ? gracePeriodMs : 1000;
+          // Bound the wait — on some runtimes (Bun) close() can hang after
+          // WS upgrades even once sockets are terminated.  This one-shot
+          // timer is intentionally NOT unref'd: it must fire to guarantee
+          // unbind resolves; it clears itself once close() or the deadline
+          // wins, so it never keeps the process alive afterwards.
+          const hard = setTimeout(() => { try { srv.closeAllConnections?.(); } catch { /* best-effort */ } finish(); }, grace);
+          srv.close(() => { clearTimeout(hard); finish(); });
         });
       },
+    };
+  }
+
+  private async attachUpgradeHandling(server: Server): Promise<void> {
+    const WebSocketServerCtor = await wsServerCtorLazy.get();
+    const wss = new WebSocketServerCtor({ noServer: true });
+    this.wss = wss;
+    server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+      void (async () => {
+        const url = new URL(req.url ?? '/', 'http://localhost');
+        let hit: { reg: WebSocketRouteRegistration; params: Record<string, string> } | null = null;
+        for (const reg of this.wsRegistered) {
+          const params = matchWsPattern(reg.pattern, url.pathname);
+          if (params) { hit = { reg, params }; break; }
+        }
+        if (!hit) {
+          writeRawHttpResponse(socket, { status: 404, body: 'Not Found' });
+          return;
+        }
+        const adapted = this.adaptUpgradeRequest(req, url, hit.params);
+        // Guard against the peer vanishing mid-authorize (unhandled
+        // 'error' on the raw socket would otherwise crash the process).
+        socket.on('error', () => { /* ignore */ });
+        let reject: HttpResponse | null;
+        try {
+          reject = await hit.reg.authorize(adapted);
+        } catch {
+          reject = { status: 500, body: 'Internal Server Error' };
+        }
+        if (reject) {
+          writeRawHttpResponse(socket, reject);
+          return;
+        }
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          // Keep wss.clients populated so the unbind terminate-walk works.
+          wss.emit('connection', ws, req);
+          hit!.reg.onConnection(adapted, wsPackageAdapter(ws, { remoteAddress: adapted.remoteAddress }));
+        });
+      })();
+    });
+  }
+
+  private adaptUpgradeRequest(req: IncomingMessage, url: URL, params: Record<string, string>): HttpRequest {
+    const headers: Record<string, string> = {};
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (typeof v === 'string') headers[k] = v;
+      else if (Array.isArray(v)) headers[k] = v.join(',');
+    }
+    const query: Record<string, string | string[] | undefined> = {};
+    for (const key of new Set(url.searchParams.keys())) {
+      const all = url.searchParams.getAll(key);
+      query[key] = all.length > 1 ? all : all[0];
+    }
+    const remoteAddress = req.socket?.remoteAddress;
+    return {
+      method: 'GET',
+      path: url.pathname,
+      headers,
+      query,
+      params,
+      body: null,
+      ...(remoteAddress ? { remoteAddress } : {}),
     };
   }
 
