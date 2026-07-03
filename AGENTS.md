@@ -1,0 +1,148 @@
+# AGENTS.md — working standards for actor-ts
+
+Standards for anyone (human or coding agent) making changes in this
+repo. Read this before you start. These are conventions the project
+already follows; keep them consistent.
+
+## Project snapshot
+
+`actor-ts` is a **pre-1.0** actor-model framework for TypeScript that
+runs on **Bun, Node.js (≥ 20), and Deno**. ESM throughout; **Bun** is
+the primary toolchain (`bun test`, `bunx tsc`). Runtime dependencies are
+deliberately tiny — `fastify` + `ts-pattern` — and everything else
+(Express, Hono, `ws`, brokers, SQL/Cassandra drivers, S3, …) is an
+**optional peer dependency**, lazy-loaded on demand.
+
+## Commit strategy
+
+- **Conventional Commits**: `type(scope): subject`. Types in use:
+  `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `ci`, `build`.
+  Scope is the module/area, e.g. `http`, `http/ws`, `io`,
+  `persistence/postgres`, `testkit`, `cluster`, `deps`, `deps-dev`,
+  `readme`, `changelog`, `roadmap`, `integration`.
+- **Small, focused commits.** Each commit should keep
+  `bun run typecheck` + `bun test` green — so a bisect never lands on a
+  broken tree.
+- The **body explains what + why** (and the mechanics for non-trivial
+  changes). Reference issues as `#NNN`; close them with `Closes #NNN`
+  (see *Issues & workflow*).
+- Commits that only touch CI-maintained artifacts (e.g. the README
+  test/coverage badges) use `[skip ci]`.
+
+## Branches & pushing
+
+- **Feature branches** (`feat/…`, `fix/…`, `chore/…`) for features and
+  anything non-trivial. Small fixes and follow-ups may go **directly on
+  `main`**.
+- Merge to `main` with a **merge commit (`git merge --no-ff`)** —
+  **never rebase**. Delete the branch after merging.
+- **Do not push.** The agent commits locally only; the human pushes
+  `main`. The single exception is cutting a release (below), where
+  creating the tag/GitHub Release is explicitly authorized.
+
+## Release strategy
+
+SemVer, and the project is **pre-1.0**:
+
+- **patch `0.x.Y`** — bug fixes only, no breaking changes.
+- **minor `0.X.0`** — new features; **may include breaking changes**.
+- **`1.0.0`** — the API-stability commitment.
+
+Tags are `vX.Y.Z`; 0.x GitHub Releases are flagged *pre-release*.
+
+**CHANGELOG** (`CHANGELOG.md`) follows *Keep a Changelog*: an
+`[Unreleased]` section with `Added` / `Changed` / `Fixed` / `Removed` /
+`Security` subsections. **Breaking changes are flagged prominently**
+(a `BREAKING` marker + a short migration note). Reference issues as
+`#NNN`.
+
+**Cutting a release** (only when explicitly asked):
+
+1. Bump `version` in `package.json`.
+2. Move `[Unreleased]` → `[X.Y.Z]` (dated) in `CHANGELOG.md`.
+3. `gh release create vX.Y.Z` with **emoji-sectioned notes**
+   (`## ✨ Added`, `## 🐛 Fixed`, `## 🔒 Security`, …) matching the
+   style of prior releases.
+
+Publishing the release triggers `.github/workflows/publish.yml`, which
+runs typecheck + test + build and then `npm publish --provenance` via
+**npm Trusted Publishing (OIDC)** — no long-lived token. It is
+version-guarded, so re-running is safe. Locally, `prepublishOnly` runs
+clean + build + typecheck + test.
+
+## Breaking changes
+
+**Pre-1.0, a hard cut is fine.** Remove or replace an API directly — no
+deprecation cycle is required. Flag it as **BREAKING** in the CHANGELOG
+with a one-line migration note, and update every in-repo caller
+(examples, tests, docs) in the same change. (Post-1.0 this tightens to
+conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
+
+## Documentation (all languages)
+
+- Docs are **Starlight MDX** under `docs/src/content/docs/` (English),
+  mirrored **1:1** under `docs/src/content/docs/de/` (German). **Every
+  content change updates BOTH languages** — code samples stay identical,
+  prose is translated. The `i18n` label tracks translation work.
+- Feature or behavior changes also update **`README.md`** and
+  **`CHANGELOG.md`**.
+- Adding a page: keep `docs/scripts/scaffold.mjs` and the Astro sidebar
+  (`docs/astro.config.mjs`) in sync — same path and label.
+
+## Verification gates (before every commit)
+
+- **`bun run typecheck`** (build tsconfig — excludes `examples/` and
+  `tests/`) passes. `bun run typecheck:dev` additionally checks those.
+- **`bun test`** is green. Line coverage floor is **≥ 80 %** —
+  `bun run test:coverage:gate`.
+- **Cross-runtime:** `bun run smoke` runs `tests/smoke/cases/*.mjs` on
+  Bun, Node, and Deno. Add a smoke case for anything runtime-sensitive.
+- **Don't hand-edit** the README test/coverage badges — CI updates them
+  on push to `main`.
+
+## Runtime portability
+
+- Code must run on **Bun, Node ≥ 20, and Deno**. Runtime-specific
+  primitives (HTTP serve, sockets, workers, SQLite, …) live behind small
+  abstractions in **`src/runtime/`** and auto-detect at startup.
+- **Optional peer dependencies:** `import()` them lazily with a clear
+  *"install it with `bun add …`"* error on failure. Declare them in
+  `peerDependencies` **and** `peerDependenciesMeta.<pkg>.optional = true`,
+  and add a matching `devDependency` so the test suite can exercise them.
+
+## Code style
+
+- **Strict TypeScript.** ESM with the **`.js` import suffix** on
+  relative imports (required by the build's module resolution).
+- Discriminated-union handling via **`ts-pattern`**
+  (`match(x).with(…).exhaustive()`).
+- HOCON config keys go through **`src/config/ConfigKeys.ts`** (typed,
+  single source of truth). Settings resolve with precedence:
+  **explicit options > HOCON > built-in defaults**.
+- **JSDoc explains the *why*** — constraints, rationale, non-obvious
+  trade-offs — not a restatement of the code. Match the surrounding
+  comment density; no narration or noise.
+
+## Issues & workflow
+
+- **Issue-first.** Before starting work, check for an existing issue
+  (`gh issue list`, or search the tracker). If one exists, work against
+  it and take its discussion into account. If none exists, **open one
+  first** — for traceability — using the matching template in
+  `.github/ISSUE_TEMPLATE/` (bug / feature / documentation / security).
+- **Close via the commit body:** when the work lands, close the issue
+  with a `Closes #NNN` (or `Fixes #NNN`) line in the commit body. (It
+  resolves once the commit reaches `main` on push.)
+- Open an issue before non-trivial work to align on the approach first.
+
+## Labels & security
+
+- Label taxonomy: `priority: {high,medium,low}`,
+  `severity: {critical,high,medium,low}`, `security`, `i18n`,
+  `infrastructure`, `dependencies`, plus the standard `bug` /
+  `enhancement` / `documentation`. Audit-catalog items use the title
+  prefixes `[Security] ` / `[Feature] `.
+- **Security-first posture:** cap untrusted input (e.g. WebSocket /
+  wire-frame size limits), never trust client-supplied integrity fields,
+  use crypto-grade randomness for wire identifiers. A security-relevant
+  change gets a `Security` CHANGELOG entry and a `severity:` label.

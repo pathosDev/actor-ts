@@ -92,16 +92,18 @@ survive), the docs say so explicitly on that feature's page.
 
 ## Deprecation policy
 
-When something is renamed or replaced:
+**Pre-1.0, there is no guaranteed deprecation cycle.** When something
+is renamed, replaced, or removed, it can be a **hard cut** at a minor
+version — the old API is gone in the same release that adds the new
+one. What you get instead is honesty: the **CHANGELOG flags every
+breaking change prominently** (a `BREAKING` marker + a one-line
+migration note), so reading it before a minor upgrade tells you exactly
+what moved. Examples and docs are updated to the new API in the same
+change.
 
-1. **One minor version with a deprecation warning** — the old
-   API works + logs a warning at startup or first use.
-2. **Removal in the next minor version**.
-
-This gives ~1-3 months of grace per deprecation cycle.
-
-Post-1.0, deprecation cycles will be longer (typically a full
-major version).
+**Post-1.0**, this tightens to a proper deprecation cycle: renamed or
+replaced APIs keep working for at least a full major version with a
+deprecation warning before removal.
 
 ## Specific roadmap items
 

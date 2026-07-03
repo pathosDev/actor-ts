@@ -95,17 +95,20 @@ Feature-Seite.
 
 ## Deprecation-Politik
 
-Wenn etwas umbenannt oder ersetzt wird:
+**Vor 1.0 gibt es keinen garantierten Deprecation-Zyklus.** Wenn etwas
+umbenannt, ersetzt oder entfernt wird, kann das ein **harter Schnitt**
+in einer Minor-Version sein — die alte API ist in genau der Version
+weg, die die neue einführt. Dafür gibt es Ehrlichkeit: das
+**CHANGELOG kennzeichnet jeden Breaking Change deutlich** (ein
+`BREAKING`-Marker + eine kurze Migrationsnotiz), sodass ein Blick
+hinein vor einem Minor-Upgrade genau zeigt, was sich geändert hat.
+Beispiele und Doku werden in derselben Änderung auf die neue API
+umgestellt.
 
-1. **Eine Minor-Version mit einer Deprecation-Warnung** — die
-   alte API funktioniert + loggt eine Warnung beim Start oder
-   bei der ersten Verwendung.
-2. **Entfernung in der nächsten Minor-Version**.
-
-Das gibt ~1-3 Monate Schonfrist pro Deprecation-Zyklus.
-
-Post-1.0 werden Deprecation-Zyklen länger sein (typischerweise
-eine ganze Major-Version).
+**Nach 1.0** wird das zu einem echten Deprecation-Zyklus verschärft:
+umbenannte oder ersetzte APIs funktionieren mindestens eine ganze
+Major-Version weiter — mit einer Deprecation-Warnung vor der
+Entfernung.
 
 ## Spezifische Roadmap-Items
 
