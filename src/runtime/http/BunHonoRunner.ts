@@ -1,4 +1,9 @@
-import type { FetchHandler, HonoServerHandle, HonoServerRunner } from './HonoServerRunner.js';
+import type {
+  FetchHandler,
+  HonoServerHandle,
+  HonoServerRunner,
+  HonoWebSocketBridge,
+} from './HonoServerRunner.js';
 
 /**
  * Bun implementation — `Bun.serve({ hostname, port, fetch })`.
@@ -6,9 +11,13 @@ import type { FetchHandler, HonoServerHandle, HonoServerRunner } from './HonoSer
  * Graceful stop calls `server.stop(false)` which lets in-flight requests
  * finish.  Non-graceful calls `server.stop(true)` which kicks active
  * connections immediately.
+ *
+ * WebSocket support uses `createBunWebSocket()` from `hono/bun`, whose
+ * `websocket` handler object must be passed to `Bun.serve` — so we fold
+ * it into `serveOptions`.
  */
 export class BunHonoRunner implements HonoServerRunner {
-  async serve(opts: { host: string; port: number; fetch: FetchHandler }): Promise<HonoServerHandle> {
+  async serve(opts: { host: string; port: number; fetch: FetchHandler; serveOptions?: object }): Promise<HonoServerHandle> {
     const bun = (globalThis as { Bun?: BunServeGlobal }).Bun;
     if (!bun || typeof bun.serve !== 'function') {
       throw new Error('BunHonoRunner requires the Bun runtime (globalThis.Bun.serve).');
@@ -17,11 +26,31 @@ export class BunHonoRunner implements HonoServerRunner {
       hostname: opts.host,
       port: opts.port,
       fetch: opts.fetch,
+      ...(opts.serveOptions ?? {}),
     });
     return {
       host: server.hostname ?? opts.host,
       port: server.port,
       async stop(graceful: boolean): Promise<void> { server.stop(!graceful); },
+    };
+  }
+
+  async webSocket(_app: unknown): Promise<HonoWebSocketBridge> {
+    let mod: { createBunWebSocket: () => { upgradeWebSocket: unknown; websocket: unknown } };
+    try {
+      const name = 'hono/bun';
+      mod = (await import(name)) as typeof mod;
+    } catch (e) {
+      throw new Error(
+        'websocket() routes on the Hono backend (Bun) require "hono".  '
+          + 'Install it with: bun add hono\nOriginal error: '
+          + (e instanceof Error ? e.message : String(e)),
+      );
+    }
+    const { upgradeWebSocket, websocket } = mod.createBunWebSocket();
+    return {
+      upgradeWebSocket: upgradeWebSocket as HonoWebSocketBridge['upgradeWebSocket'],
+      serveOptions: { websocket },
     };
   }
 }
@@ -33,5 +62,5 @@ interface BunServer {
 }
 
 interface BunServeGlobal {
-  serve(opts: { hostname: string; port: number; fetch: FetchHandler }): BunServer;
+  serve(opts: { hostname: string; port: number; fetch: FetchHandler; websocket?: unknown }): BunServer;
 }

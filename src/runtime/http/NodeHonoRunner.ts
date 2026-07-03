@@ -1,5 +1,10 @@
 import { Lazy } from '../../util/Lazy.js';
-import type { FetchHandler, HonoServerHandle, HonoServerRunner } from './HonoServerRunner.js';
+import type {
+  FetchHandler,
+  HonoServerHandle,
+  HonoServerRunner,
+  HonoWebSocketBridge,
+} from './HonoServerRunner.js';
 
 /**
  * Node.js implementation — `@hono/node-server`'s `serve()`, which wraps a
@@ -12,7 +17,7 @@ import type { FetchHandler, HonoServerHandle, HonoServerRunner } from './HonoSer
  * runtime (the factory dispatches elsewhere).
  */
 export class NodeHonoRunner implements HonoServerRunner {
-  async serve(opts: { host: string; port: number; fetch: FetchHandler }): Promise<HonoServerHandle> {
+  async serve(opts: { host: string; port: number; fetch: FetchHandler; serveOptions?: object }): Promise<HonoServerHandle> {
     const mod = await loadHonoNodeServer();
 
     // `serve()` returns a node:http Server; we wait for its 'listening'
@@ -38,6 +43,7 @@ export class NodeHonoRunner implements HonoServerRunner {
     return {
       host: opts.host,
       port: actualPort,
+      raw: server,
       stop(graceful: boolean): Promise<void> {
         return new Promise<void>((resolve) => {
           const timer = !graceful
@@ -51,6 +57,33 @@ export class NodeHonoRunner implements HonoServerRunner {
             resolve();
           });
         });
+      },
+    };
+  }
+
+  async webSocket(app: unknown): Promise<HonoWebSocketBridge> {
+    let mod: {
+      createNodeWebSocket: (opts: { app: unknown }) => {
+        upgradeWebSocket: unknown;
+        injectWebSocket: (server: unknown) => void;
+      };
+    };
+    try {
+      const name = '@hono/node-ws';
+      mod = (await import(name)) as typeof mod;
+    } catch (e) {
+      throw new Error(
+        'websocket() routes on the Hono backend (Node) require "@hono/node-ws".  '
+          + 'Install it with: npm install @hono/node-ws\nOriginal error: '
+          + (e instanceof Error ? e.message : String(e)),
+      );
+    }
+    const { upgradeWebSocket, injectWebSocket } = mod.createNodeWebSocket({ app });
+    return {
+      upgradeWebSocket: upgradeWebSocket as HonoWebSocketBridge['upgradeWebSocket'],
+      serveOptions: {},
+      attach: (handle: HonoServerHandle) => {
+        if (handle.raw) injectWebSocket(handle.raw);
       },
     };
   }

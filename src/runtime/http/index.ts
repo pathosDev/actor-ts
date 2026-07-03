@@ -1,7 +1,15 @@
 import { detectRuntime, type RuntimeKind } from '../detect.js';
 import type { HonoServerRunner } from './HonoServerRunner.js';
 
-export type { FetchHandler, HonoServerHandle, HonoServerRunner } from './HonoServerRunner.js';
+export type {
+  FetchHandler,
+  HonoServerHandle,
+  HonoServerRunner,
+  HonoWebSocketBridge,
+  UpgradeWebSocketFn,
+  WSContextLike,
+  WSEventsLike,
+} from './HonoServerRunner.js';
 export { BunHonoRunner } from './BunHonoRunner.js';
 export { NodeHonoRunner } from './NodeHonoRunner.js';
 export { DenoHonoRunner } from './DenoHonoRunner.js';
