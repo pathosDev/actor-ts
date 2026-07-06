@@ -5,7 +5,6 @@
  * cracking open the mqtt-packet types, so the assertion is "every
  * published message arrives exactly once" — pin the count.
  */
-import type { MqttMessage } from '../../../../../src/io/broker/MqttActor.js';
 import { spawnInbox, spawnMqtt, type MqttCtx } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
@@ -16,12 +15,7 @@ export const scenario: BrokerScenario<MqttCtx> = {
     const { ref: mqtt } = spawnMqtt(ctx);
     const { ref: inboxRef, inbox } = spawnInbox(ctx);
     try {
-      mqtt.tell({
-        kind: 'subscribe',
-        topic: tag,
-        target: inboxRef as unknown as { tell(_m: MqttMessage): void },
-        qos: 2,
-      });
+      mqtt.tell({ kind: 'subscribe', topic: tag, target: inboxRef, qos: 2 });
       await new Promise((r) => setTimeout(r, 200));
 
       // Three publishes — each must be observed exactly once.

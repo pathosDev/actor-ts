@@ -4,7 +4,6 @@
  * on subscribe.  Verifies the `retain` flag round-trips through the
  * adapter unchanged.
  */
-import type { MqttMessage } from '../../../../../src/io/broker/MqttActor.js';
 import { spawnInbox, spawnMqtt, type MqttCtx } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
@@ -31,19 +30,14 @@ export const scenario: BrokerScenario<MqttCtx> = {
       const { ref: subscriber } = spawnMqtt(ctx);
       const { ref: inboxRef, inbox } = spawnInbox(ctx);
       try {
-        subscriber.tell({
-          kind: 'subscribe',
-          topic: tag,
-          target: inboxRef as unknown as { tell(_m: MqttMessage): void },
-          qos: 1,
-        });
+        subscriber.tell({ kind: 'subscribe', topic: tag, target: inboxRef, qos: 1 });
         await waitFor(`retained message delivered on ${tag}`,
           () => inbox.received.some((m) => m.topic === tag),
           5_000,
         );
         const msg = inbox.received.find((m) => m.topic === tag)!;
-        if (new TextDecoder().decode(msg.payload) !== 'retained-value') {
-          throw new Error(`retained payload mismatch: got ${new TextDecoder().decode(msg.payload)}`);
+        if (msg.payload.text() !== 'retained-value') {
+          throw new Error(`retained payload mismatch: got ${msg.payload.text()}`);
         }
         // The retain flag must be true on inbound for retained.
         if (msg.retain !== true) {
