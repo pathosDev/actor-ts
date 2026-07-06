@@ -22,6 +22,7 @@ import {
   InMemoryLease,
   inMemoryLeaseStore,
 } from '../../src/coordination/leases/InMemoryLease.js';
+import { LeaseOptions } from '../../src/coordination/Lease.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 
@@ -55,7 +56,7 @@ describeMns('LeaseMajority — end-to-end split-brain', () => {
       // owners contend for the same record.
       downing: (role) => new LeaseMajority(
         LeaseMajorityOptions.create()
-          .withLease(new InMemoryLease({
+          .withLease(new InMemoryLease(
             // 60s TTL (not 10s): the CI logs showed both partition sides
             // surviving — each had acquired the lease — because under heavy
             // CPU starvation the winner's renewal timer (every 80ms) was
@@ -65,9 +66,9 @@ describeMns('LeaseMajority — end-to-end split-brain', () => {
             // one side holds the lease.  (The starvation root cause — leaked
             // worker threads — is fixed in ParallelMultiNodeSpec; this is
             // defence-in-depth so the split-brain assertion can't flake.)
-            name: 'lease-majority-test', owner: role, ttlMs: 60_000,
-            renewalIntervalMs: 80,
-          }))
+            LeaseOptions.create().withName('lease-majority-test').withOwner(role).withTtlMs(60_000)
+              .withRenewalIntervalMs(80),
+          ))
           .withAcquireTimeoutMs(2_000),
       ),
     });

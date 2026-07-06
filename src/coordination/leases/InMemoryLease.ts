@@ -1,4 +1,4 @@
-import type { Lease, LeaseSettings } from '../Lease.js';
+import { type Lease, LeaseOptions, type LeaseSettings } from '../Lease.js';
 
 interface LeaseRecord {
   readonly name: string;
@@ -60,8 +60,11 @@ export class InMemoryLease implements Lease {
   private held = false;
   private readonly onLostHandlers = new Set<(reason: string) => void>();
 
-  constructor(private readonly settings: LeaseSettings) {
-    this.renewalIntervalMs = settings.renewalIntervalMs ?? Math.max(100, Math.floor(settings.ttlMs / 3));
+  private readonly settings: LeaseSettings;
+
+  constructor(options: LeaseOptions) {
+    this.settings = options.build() as LeaseSettings;
+    this.renewalIntervalMs = this.settings.renewalIntervalMs ?? Math.max(100, Math.floor(this.settings.ttlMs / 3));
   }
 
   async acquire(): Promise<boolean> {

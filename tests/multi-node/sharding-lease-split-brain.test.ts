@@ -34,6 +34,7 @@ import {
   InMemoryLease,
   inMemoryLeaseStore,
 } from '../../src/coordination/leases/InMemoryLease.js';
+import { LeaseOptions } from '../../src/coordination/Lease.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import type { ActorRef } from '../../src/ActorRef.js';
@@ -104,10 +105,10 @@ describe('multi-node sharding lease — split-brain protection', () => {
             .withExtractEntityId((m) => m.id)
             .withNumShards(8)
             .withRebalanceIntervalMs(200)
-            .withLease(new InMemoryLease({
-              name: 'shard-coord-lease', owner: 'a', ttlMs: 10_000,
-              renewalIntervalMs: 80,
-            }))
+            .withLease(new InMemoryLease(
+              LeaseOptions.create().withName('shard-coord-lease').withOwner('a').withTtlMs(10_000)
+                .withRenewalIntervalMs(80),
+            ))
             .withAcquireRetryIntervalMs(100),
         ),
         b: spec.clusterFor('b').sharding.start<Cmd>(
@@ -117,10 +118,10 @@ describe('multi-node sharding lease — split-brain protection', () => {
             .withExtractEntityId((m) => m.id)
             .withNumShards(8)
             .withRebalanceIntervalMs(200)
-            .withLease(new InMemoryLease({
-              name: 'shard-coord-lease', owner: 'b', ttlMs: 10_000,
-              renewalIntervalMs: 80,
-            }))
+            .withLease(new InMemoryLease(
+              LeaseOptions.create().withName('shard-coord-lease').withOwner('b').withTtlMs(10_000)
+                .withRenewalIntervalMs(80),
+            ))
             .withAcquireRetryIntervalMs(100),
         ),
         c: spec.clusterFor('c').sharding.start<Cmd>(
@@ -130,10 +131,10 @@ describe('multi-node sharding lease — split-brain protection', () => {
             .withExtractEntityId((m) => m.id)
             .withNumShards(8)
             .withRebalanceIntervalMs(200)
-            .withLease(new InMemoryLease({
-              name: 'shard-coord-lease', owner: 'c', ttlMs: 10_000,
-              renewalIntervalMs: 80,
-            }))
+            .withLease(new InMemoryLease(
+              LeaseOptions.create().withName('shard-coord-lease').withOwner('c').withTtlMs(10_000)
+                .withRenewalIntervalMs(80),
+            ))
             .withAcquireRetryIntervalMs(100),
         ),
       };

@@ -39,7 +39,7 @@ import {
   StartShardingOptions,
   StartSingletonOptions,
 } from '../../../src/index.js';
-import { DistributedDataId } from '../../../src/crdt/index.js';
+import { DistributedDataId, DistributedDataOptions } from '../../../src/crdt/index.js';
 import { DistributedPubSubId, DistributedPubSubOptions } from '../../../src/cluster/pubsub/index.js';
 import {
   parseArgs,
@@ -153,9 +153,8 @@ async function main(): Promise<void> {
   });
 
   // -------- 5. DistributedData (presence + session tokens) + DistributedPubSub (broadcast) --------
-  const ddHandle = system.extension(DistributedDataId).start(cluster, {
-    gossipIntervalMs: 500,
-  });
+  const ddHandle = system.extension(DistributedDataId).start(cluster,
+    DistributedDataOptions.create().withGossipInterval(500));
   const mediator = system.extension(DistributedPubSubId).start(cluster,
     DistributedPubSubOptions.create().withGossipIntervalMs(500));
   const sessions = new SessionStore(ddHandle);

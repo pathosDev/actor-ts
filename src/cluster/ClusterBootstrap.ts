@@ -4,7 +4,7 @@ import {
   ReceptionistId,
   type SeedProvider,
 } from '../discovery/index.js';
-import { autoDiscovery, singleProviderDiscovery } from '../discovery/autoDiscovery.js';
+import { autoDiscovery, singleProviderDiscovery, AutoDiscoveryOptions } from '../discovery/autoDiscovery.js';
 import { AggregateSeedProvider } from '../discovery/AggregateSeedProvider.js';
 import { Cluster, ClusterOptions, type ClusterSettings } from './Cluster.js';
 import { SelfUp, type ClusterEvent } from './ClusterEvents.js';
@@ -371,9 +371,13 @@ function buildSeedProvider(
   spec: NonNullable<ClusterBootstrapSettings['discovery']>,
   base: { systemName: string; port: number; log: (msg: string, err?: unknown) => void },
 ): SeedProvider {
-  if (spec === 'auto') return autoDiscovery(base);
+  const discoveryOptions = AutoDiscoveryOptions.create()
+    .withSystemName(base.systemName)
+    .withPort(base.port)
+    .withLog(base.log);
+  if (spec === 'auto') return autoDiscovery(discoveryOptions);
   if (spec === 'config' || spec === 'dns' || spec === 'kubernetes') {
-    return singleProviderDiscovery(spec, base);
+    return singleProviderDiscovery(spec, discoveryOptions);
   }
   if ('providers' in spec) {
     return new AggregateSeedProvider([...spec.providers], base.log);

@@ -5,16 +5,16 @@
  *
  *   bun run examples/coordination/lease-hello.ts
  */
-import { InMemoryLease } from '../../src/index.js';
+import { InMemoryLease, LeaseOptions } from '../../src/index.js';
 
 async function main(): Promise<void> {
-  const primary = new InMemoryLease({
-    name: 'critical-section', owner: 'worker-A', ttlMs: 300, renewalIntervalMs: 100,
-  });
-  const backup = new InMemoryLease({
-    name: 'critical-section', owner: 'worker-B', ttlMs: 300,
-    acquireRetries: 5, acquireRetryDelayMs: 80,
-  });
+  const primary = new InMemoryLease(
+    LeaseOptions.create().withName('critical-section').withOwner('worker-A').withTtlMs(300).withRenewalIntervalMs(100),
+  );
+  const backup = new InMemoryLease(
+    LeaseOptions.create().withName('critical-section').withOwner('worker-B').withTtlMs(300)
+      .withAcquireRetries(5).withAcquireRetryDelayMs(80),
+  );
 
   const primaryWon = await primary.acquire();
   console.log(`worker-A acquired? ${primaryWon}`);

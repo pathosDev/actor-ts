@@ -23,7 +23,7 @@
  */
 import {
   Actor, ActorSystem, MetricsExtensionId, Props,
-  promClientRegistry,
+  promClientRegistry, PromClientAdapterOptions,
 } from '../../src/index.js';
 
 // `prom-client` is a peer dep; we resolve it lazily so the framework
@@ -60,7 +60,12 @@ const orders = new client.Counter({
 //    bridge-sourced families easy to spot in the exposition.
 const system = ActorSystem.create('metrics-shared');
 system.extension(MetricsExtensionId).useRegistry(
-  promClientRegistry({ client, registry, namePrefix: 'actor_ts_' }),
+  promClientRegistry(
+    PromClientAdapterOptions.create()
+      .withClient(client)
+      .withRegistry(registry)
+      .withNamePrefix('actor_ts_'),
+  ),
 );
 
 // 4. Drive a steady stream so the framework's stock counters tick.

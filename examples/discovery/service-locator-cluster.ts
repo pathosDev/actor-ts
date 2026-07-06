@@ -16,6 +16,7 @@ import {
   NodeAddress,
   Props,
   ReceptionistId,
+  ReceptionistOptions,
   ReceptionistSubscribe as Subscribe,
   Register,
   ServiceKey,
@@ -55,7 +56,7 @@ async function main(): Promise<void> {
   const key = ServiceKey.of<string>('workers');
 
   for (const { sys, cluster, name } of [a, b, c]) {
-    const r = sys.extension(ReceptionistId).start(cluster, { gossipIntervalMs: 80 });
+    const r = sys.extension(ReceptionistId).start(cluster, ReceptionistOptions.create().withGossipIntervalMs(80));
     const w = sys.spawn(Props.create(() => new Worker(name)), `worker-${name}`);
     r.tell(new Register(key, w));
   }

@@ -104,6 +104,7 @@ export {
   exportPrometheus,
   prometheusHandler,
   promClientRegistry,
+  PromClientAdapterOptions,
 } from './metrics/index.js';
 export type {
   MetricsRegistry,
@@ -122,7 +123,7 @@ export type {
   PromClientGauge,
   PromClientHistogram,
   PromClientLabelValues,
-  PromClientAdapterOptions,
+  PromClientAdapterSettings,
 } from './metrics/index.js';
 
 // Distributed tracing — minimal Tracer + NoopTracer + RecordingTracer (#10).
@@ -139,6 +140,7 @@ export {
   newSpanId,
   otelTracer,
   otelLogger,
+  OtelAdapterOptions,
 } from './tracing/index.js';
 export type {
   Tracer,
@@ -151,7 +153,7 @@ export type {
   TraceCarrier,
   RecordedSpan,
   RecordingTracerOptions,
-  OtelAdapterOptions,
+  OtelAdapterSettings,
   OtelApiLike,
   OtelContextApi,
   OtelContextLike,
@@ -455,6 +457,7 @@ export {
   ORSet,
   LWWRegister,
   DistributedData,
+  DistributedDataOptions,
   DistributedDataId,
 } from './crdt/index.js';
 export type {
@@ -502,6 +505,7 @@ export type {
 export {
   ReliableDelivery,
   ProducerController,
+  ProducerControllerOptions,
   ConsumerController,
 } from './delivery/index.js';
 export type {
@@ -555,7 +559,7 @@ export type {
 } from './management/index.js';
 
 // Coordination (Lease API + InMemoryLease reference + KubernetesLease stub).
-export { InMemoryLease, inMemoryLeaseStore, KubernetesLease } from './coordination/index.js';
+export { InMemoryLease, inMemoryLeaseStore, KubernetesLease, LeaseOptions, KubernetesLeaseOptions } from './coordination/index.js';
 export type { Lease, LeaseSettings, KubernetesLeaseSettings } from './coordination/index.js';
 
 // Discovery / Receptionist + seed providers.
@@ -572,12 +576,17 @@ export {
   Unsubscribe as ReceptionistUnsubscribe,
   Listing,
   ConfigSeedProvider,
+  ConfigSeedProviderOptions,
   seedsFromEnv,
   DnsSeedProvider,
+  DnsSeedProviderOptions,
   AggregateSeedProvider,
   KubernetesApiSeedProvider,
+  KubernetesApiSeedProviderOptions,
   autoDiscovery,
+  AutoDiscoveryOptions,
   singleProviderDiscovery,
+  ReceptionistOptions,
 } from './discovery/index.js';
 export type {
   ReceptionistSettings,
@@ -619,7 +628,7 @@ export type {
 } from './typed/index.js';
 
 // Worker-Cluster (multi-core via Bun/Web-Workers).
-export { WorkerCluster, WorkerBroker, WorkerNode } from './worker/index.js';
+export { WorkerCluster, WorkerClusterOptions, WorkerBroker, WorkerNode } from './worker/index.js';
 export type {
   WorkerClusterSettings,
   WorkerHandle,

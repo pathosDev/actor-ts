@@ -54,7 +54,7 @@ import {
 import { CoordinatedShutdownId } from '../../../src/CoordinatedShutdown.js';
 import { exportPrometheus } from '../../../src/metrics/PrometheusExporter.js';
 import { metricsOf } from '../../../src/metrics/MetricsExtension.js';
-import { DnsSeedProvider } from '../../../src/discovery/DnsSeedProvider.js';
+import { DnsSeedProvider, DnsSeedProviderOptions } from '../../../src/discovery/DnsSeedProvider.js';
 import { LWWRegister } from '../../../src/crdt/LWWRegister.js';
 import { GCounter } from '../../../src/crdt/GCounter.js';
 import type { WriteConsistency } from '../../../src/crdt/DistributedData.js';
@@ -824,12 +824,13 @@ export function makeControlRoutes(
       if (!hostname) return complete(Status.BadRequest, 'missing ?hostname=');
       if (!Number.isInteger(port) || port < 1) return complete(Status.BadRequest, 'port must be a positive integer');
       try {
-        const provider = new DnsSeedProvider({
-          hostname,
-          port,
-          systemName: 'integration',
-          cacheTtlMs: 0,  // disable cache so each call hits DNS fresh
-        });
+        const provider = new DnsSeedProvider(
+          DnsSeedProviderOptions.create()
+            .withHostname(hostname)
+            .withPort(port)
+            .withSystemName('integration')
+            .withCacheTtlMs(0),  // disable cache so each call hits DNS fresh
+        );
         const startedAt = Date.now();
         const addresses = await provider.lookup();
         return completeJson(Status.OK, {

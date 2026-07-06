@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { otelTracer, type OtelApiLike, type OtelSpanLike, type OtelSpanContextLike, type OtelContextLike } from '../../../src/tracing/OtelAdapter.js';
+import { otelTracer, OtelAdapterOptions, type OtelApiLike, type OtelSpanLike, type OtelSpanContextLike, type OtelContextLike } from '../../../src/tracing/OtelAdapter.js';
 import { decodeTraceparent, encodeTraceparent, newSpanId, newTraceId } from '../../../src/tracing/Tracer.js';
 
 /**
@@ -180,7 +180,7 @@ function makeFakeOtelApi(): FakeOtelApi {
 describe('otelTracer', () => {
   test('startSpan records name, kind, attributes; end propagates', () => {
     const api = makeFakeOtelApi();
-    const tracer = otelTracer({ api });
+    const tracer = otelTracer(OtelAdapterOptions.create().withApi(api));
 
     const s = tracer.startSpan('handle.message', {
       kind: 'consumer',
@@ -201,7 +201,7 @@ describe('otelTracer', () => {
 
   test('end() is idempotent and silences subsequent attribute writes', () => {
     const api = makeFakeOtelApi();
-    const tracer = otelTracer({ api });
+    const tracer = otelTracer(OtelAdapterOptions.create().withApi(api));
     const s = tracer.startSpan('once');
     s.end();
     s.setAttribute('after-end', 1);
@@ -213,7 +213,7 @@ describe('otelTracer', () => {
 
   test('withActiveSpan + activeSpan thread the OTel context', () => {
     const api = makeFakeOtelApi();
-    const tracer = otelTracer({ api });
+    const tracer = otelTracer(OtelAdapterOptions.create().withApi(api));
     const outer = tracer.startSpan('outer');
 
     const inner = tracer.withActiveSpan(outer, () => {
@@ -238,7 +238,7 @@ describe('otelTracer', () => {
 
   test('explicit parent: SpanContext carrier produces a child in the same trace', () => {
     const api = makeFakeOtelApi();
-    const tracer = otelTracer({ api });
+    const tracer = otelTracer(OtelAdapterOptions.create().withApi(api));
     const parentCtx = { traceId: '0123456789abcdef0123456789abcdef', spanId: '0123456789abcdef', traceFlags: 1 };
     const child = tracer.startSpan('child', { parent: parentCtx });
     const r = api.recorded[0]!;
@@ -249,7 +249,7 @@ describe('otelTracer', () => {
 
   test('explicit parent: null forces a fresh root', () => {
     const api = makeFakeOtelApi();
-    const tracer = otelTracer({ api });
+    const tracer = otelTracer(OtelAdapterOptions.create().withApi(api));
 
     const outer = tracer.startSpan('outer');
     tracer.withActiveSpan(outer, () => {
@@ -268,7 +268,7 @@ describe('otelTracer', () => {
 
   test('injectContext returns null when no active span; W3C traceparent when active', () => {
     const api = makeFakeOtelApi();
-    const tracer = otelTracer({ api });
+    const tracer = otelTracer(OtelAdapterOptions.create().withApi(api));
 
     expect(tracer.injectContext()).toBeNull();
     const s = tracer.startSpan('outer');
@@ -287,7 +287,7 @@ describe('otelTracer', () => {
 
   test('extractContext: round-trip a remote traceparent through the adapter', () => {
     const api = makeFakeOtelApi();
-    const tracer = otelTracer({ api });
+    const tracer = otelTracer(OtelAdapterOptions.create().withApi(api));
 
     const remoteTraceId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
     const remoteSpanId = 'bbbbbbbbbbbbbbbb';
@@ -307,14 +307,14 @@ describe('otelTracer', () => {
 
   test('extractContext: malformed input returns null', () => {
     const api = makeFakeOtelApi();
-    const tracer = otelTracer({ api });
+    const tracer = otelTracer(OtelAdapterOptions.create().withApi(api));
     expect(tracer.extractContext({ traceparent: 'garbage' })).toBeNull();
     expect(tracer.extractContext(null)).toBeNull();
   });
 
   test('span.recordException routes to OTel span', () => {
     const api = makeFakeOtelApi();
-    const tracer = otelTracer({ api });
+    const tracer = otelTracer(OtelAdapterOptions.create().withApi(api));
     const s = tracer.startSpan('boom');
     const err = new Error('fail');
     s.recordException(err);
@@ -324,7 +324,7 @@ describe('otelTracer', () => {
 
   test('cross-wire propagation chain: A injects, B extracts → child trace lines up', () => {
     const api = makeFakeOtelApi();
-    const tracer = otelTracer({ api });
+    const tracer = otelTracer(OtelAdapterOptions.create().withApi(api));
 
     // Side A: start span, inject.
     const aSpan = tracer.startSpan('a.send');
@@ -348,7 +348,7 @@ describe('otelTracer', () => {
 
   test('setStatus translates ok/error to OTel SpanStatusCode', () => {
     const api = makeFakeOtelApi();
-    const tracer = otelTracer({ api });
+    const tracer = otelTracer(OtelAdapterOptions.create().withApi(api));
     const okSpan = tracer.startSpan('ok-span');
     okSpan.setStatus('ok');
     okSpan.end();
@@ -364,7 +364,7 @@ describe('otelTracer', () => {
 
   test('setAttribute after end() is silently dropped', () => {
     const api = makeFakeOtelApi();
-    const tracer = otelTracer({ api });
+    const tracer = otelTracer(OtelAdapterOptions.create().withApi(api));
     const s = tracer.startSpan('x');
     s.setAttribute('before', 1);
     s.end();
@@ -374,7 +374,7 @@ describe('otelTracer', () => {
 
   test('setStatus after end() is silently dropped', () => {
     const api = makeFakeOtelApi();
-    const tracer = otelTracer({ api });
+    const tracer = otelTracer(OtelAdapterOptions.create().withApi(api));
     const s = tracer.startSpan('x');
     s.end();
     s.setStatus('error', 'too late');
@@ -383,7 +383,7 @@ describe('otelTracer', () => {
 
   test('recordException after end() is silently dropped', () => {
     const api = makeFakeOtelApi();
-    const tracer = otelTracer({ api });
+    const tracer = otelTracer(OtelAdapterOptions.create().withApi(api));
     const s = tracer.startSpan('x');
     s.end();
     s.recordException(new Error('after-end'));
@@ -392,7 +392,7 @@ describe('otelTracer', () => {
 
   test('startSpan startTime option is forwarded to OTel', () => {
     const api = makeFakeOtelApi();
-    const tracer = otelTracer({ api });
+    const tracer = otelTracer(OtelAdapterOptions.create().withApi(api));
     const t0 = Date.now() - 5000;
     const s = tracer.startSpan('back-dated', { startTimeMs: t0 });
     s.end();
@@ -401,7 +401,7 @@ describe('otelTracer', () => {
 
   test('end() with an explicit endTime forwards it to OTel', () => {
     const api = makeFakeOtelApi();
-    const tracer = otelTracer({ api });
+    const tracer = otelTracer(OtelAdapterOptions.create().withApi(api));
     const s = tracer.startSpan('x');
     const t1 = Date.now() + 5000;
     s.end(t1);
@@ -410,7 +410,7 @@ describe('otelTracer', () => {
 
   test('withActiveSpan on a foreign span (not produced by this tracer) degrades to running fn', () => {
     const api = makeFakeOtelApi();
-    const tracer = otelTracer({ api });
+    const tracer = otelTracer(OtelAdapterOptions.create().withApi(api));
     // Hand-craft a Span that the WeakMap will not find.
     const foreign = {
       context: () => ({ traceId: '0'.repeat(32), spanId: '0'.repeat(16), traceFlags: 0 }),
@@ -431,7 +431,7 @@ describe('otelTracer', () => {
 
   test('all SpanKinds map to OTel SpanKind correctly', () => {
     const api = makeFakeOtelApi();
-    const tracer = otelTracer({ api });
+    const tracer = otelTracer(OtelAdapterOptions.create().withApi(api));
     const kinds = ['internal', 'server', 'client', 'producer', 'consumer'] as const;
     for (const k of kinds) {
       const s = tracer.startSpan(`span-${k}`, { kind: k });
@@ -462,7 +462,7 @@ describe('otelTracer', () => {
         };
       },
     };
-    const tracer = otelTracer({ api, tracer: userTracer });
+    const tracer = otelTracer(OtelAdapterOptions.create().withApi(api).withTracer(userTracer));
     const s = tracer.startSpan('via-user-tracer');
     s.end();
     expect(userTracerCalls).toBe(1);

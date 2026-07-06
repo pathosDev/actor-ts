@@ -17,6 +17,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   DistributedDataId,
+  DistributedDataOptions,
   GCounter,
   LWWMap,
   ORMap,
@@ -69,11 +70,11 @@ describe('DistributedData — convergence', () => {
   test('GCounter from three nodes converges to the sum', async () => {
     await withSpec(async (spec) => {
       const ddA = spec.systemFor('a').extension(DistributedDataId)
-        .start(spec.clusterFor('a'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('a'), DistributedDataOptions.create().withGossipInterval(80));
       const ddB = spec.systemFor('b').extension(DistributedDataId)
-        .start(spec.clusterFor('b'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('b'), DistributedDataOptions.create().withGossipInterval(80));
       const ddC = spec.systemFor('c').extension(DistributedDataId)
-        .start(spec.clusterFor('c'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('c'), DistributedDataOptions.create().withGossipInterval(80));
 
       ddA.update<GCounter>('hits', GCounter.empty, (c) => c.increment(ddA.selfReplicaId(), 3));
       ddB.update<GCounter>('hits', GCounter.empty, (c) => c.increment(ddB.selfReplicaId(), 5));
@@ -91,11 +92,11 @@ describe('DistributedData — convergence', () => {
   test('PNCounter mixes increments + decrements across replicas', async () => {
     await withSpec(async (spec) => {
       const ddA = spec.systemFor('a').extension(DistributedDataId)
-        .start(spec.clusterFor('a'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('a'), DistributedDataOptions.create().withGossipInterval(80));
       const ddB = spec.systemFor('b').extension(DistributedDataId)
-        .start(spec.clusterFor('b'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('b'), DistributedDataOptions.create().withGossipInterval(80));
       const ddC = spec.systemFor('c').extension(DistributedDataId)
-        .start(spec.clusterFor('c'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('c'), DistributedDataOptions.create().withGossipInterval(80));
 
       ddA.update<PNCounter>('inventory', PNCounter.empty,
         (p) => p.increment(ddA.selfReplicaId(), 100));
@@ -116,11 +117,11 @@ describe('DistributedData — convergence', () => {
   test('ORSet — add wins on concurrent add + remove from different replicas', async () => {
     await withSpec(async (spec) => {
       const ddA = spec.systemFor('a').extension(DistributedDataId)
-        .start(spec.clusterFor('a'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('a'), DistributedDataOptions.create().withGossipInterval(80));
       const ddB = spec.systemFor('b').extension(DistributedDataId)
-        .start(spec.clusterFor('b'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('b'), DistributedDataOptions.create().withGossipInterval(80));
       const ddC = spec.systemFor('c').extension(DistributedDataId)
-        .start(spec.clusterFor('c'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('c'), DistributedDataOptions.create().withGossipInterval(80));
 
       // Stage 1: A adds 'apple'.  Wait for B + C to observe.
       ddA.update<ORSet<string>>('cart', () => ORSet.empty<string>(),
@@ -152,11 +153,11 @@ describe('DistributedData — convergence', () => {
   test('LWWMap — newer-timestamp put wins, replicas converge to same map', async () => {
     await withSpec(async (spec) => {
       const ddA = spec.systemFor('a').extension(DistributedDataId)
-        .start(spec.clusterFor('a'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('a'), DistributedDataOptions.create().withGossipInterval(80));
       const ddB = spec.systemFor('b').extension(DistributedDataId)
-        .start(spec.clusterFor('b'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('b'), DistributedDataOptions.create().withGossipInterval(80));
       const ddC = spec.systemFor('c').extension(DistributedDataId)
-        .start(spec.clusterFor('c'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('c'), DistributedDataOptions.create().withGossipInterval(80));
 
       // Three replicas, three different keys + one shared key with
       // different timestamps.  After convergence each node has the
@@ -184,11 +185,11 @@ describe('DistributedData — convergence', () => {
   test('ORMap with nested ORSet — per-key inner-CRDT merge across replicas', async () => {
     await withSpec(async (spec) => {
       const ddA = spec.systemFor('a').extension(DistributedDataId)
-        .start(spec.clusterFor('a'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('a'), DistributedDataOptions.create().withGossipInterval(80));
       const ddB = spec.systemFor('b').extension(DistributedDataId)
-        .start(spec.clusterFor('b'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('b'), DistributedDataOptions.create().withGossipInterval(80));
       const ddC = spec.systemFor('c').extension(DistributedDataId)
-        .start(spec.clusterFor('c'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('c'), DistributedDataOptions.create().withGossipInterval(80));
 
       // Each replica adds an item to a shared cart-key in an ORMap of
       // ORSets.  After gossip, every replica sees the full set.
@@ -223,9 +224,9 @@ describe('DistributedData — convergence', () => {
   test('subscribe fires on local + remote updates', async () => {
     await withSpec(async (spec) => {
       const ddA = spec.systemFor('a').extension(DistributedDataId)
-        .start(spec.clusterFor('a'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('a'), DistributedDataOptions.create().withGossipInterval(80));
       const ddB = spec.systemFor('b').extension(DistributedDataId)
-        .start(spec.clusterFor('b'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('b'), DistributedDataOptions.create().withGossipInterval(80));
 
       const valuesOnA: number[] = [];
       const unsubscribe = ddA.subscribe<GCounter>('counter', (c) => {

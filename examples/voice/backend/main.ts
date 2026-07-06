@@ -35,9 +35,9 @@ import {
   Props,
   StartSingletonOptions,
 } from '../../../src/index.js';
-import { DistributedDataId } from '../../../src/crdt/index.js';
+import { DistributedDataId, DistributedDataOptions } from '../../../src/crdt/index.js';
 import { DistributedPubSubId, DistributedPubSubOptions } from '../../../src/cluster/pubsub/index.js';
-import { ReceptionistId } from '../../../src/discovery/Receptionist.js';
+import { ReceptionistId, ReceptionistOptions } from '../../../src/discovery/Receptionist.js';
 import {
   parseArgs,
   BASE_CLUSTER_PORT,
@@ -110,14 +110,12 @@ async function main(): Promise<void> {
   // -------- 4. DistributedData + PubSub + Receptionist + SessionStore --------
   // Order matters: DD before SessionStore (it needs the handle); the
   // Receptionist before any actor that registers under it.
-  const ddHandle = system.extension(DistributedDataId).start(cluster, {
-    gossipIntervalMs: 500,
-  });
+  const ddHandle = system.extension(DistributedDataId).start(cluster,
+    DistributedDataOptions.create().withGossipInterval(500));
   const mediator = system.extension(DistributedPubSubId).start(cluster,
     DistributedPubSubOptions.create().withGossipIntervalMs(500));
-  const receptionist = system.extension(ReceptionistId).start(cluster, {
-    gossipIntervalMs: 1_000,
-  });
+  const receptionist = system.extension(ReceptionistId).start(cluster,
+    ReceptionistOptions.create().withGossipIntervalMs(1_000));
   const sessions = new SessionStore(ddHandle);
 
   // -------- 5. VoicePresenceActor (one per node) --------

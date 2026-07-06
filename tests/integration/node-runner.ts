@@ -25,9 +25,9 @@ import {
 } from '../../src/index.js';
 import { JsonLogger, LogLevel } from '../../src/Logger.js';
 import { managementRoutes } from '../../src/management/index.js';
-import { ReceptionistId } from '../../src/discovery/index.js';
+import { ReceptionistId, ReceptionistOptions } from '../../src/discovery/index.js';
 import { Register } from '../../src/discovery/ReceptionistMessages.js';
-import { DistributedDataId } from '../../src/crdt/index.js';
+import { DistributedDataId, DistributedDataOptions } from '../../src/crdt/index.js';
 import { ClusterSingletonId, StartSingletonOptions } from '../../src/cluster/singleton/ClusterSingleton.js';
 import { ClusterSharding, StartShardingOptions } from '../../src/cluster/sharding/ClusterSharding.js';
 import { ClusterClientReceptionistId } from '../../src/cluster/ClusterClientReceptionist.js';
@@ -110,7 +110,10 @@ async function main(): Promise<void> {
   // Receptionist + auto-registered IdleWorker.  Tighter gossip
   // interval than the default 1s so convergence in scenarios is
   // observable inside the test budget.
-  const receptionistRef = system.extension(ReceptionistId).start(cluster, { gossipIntervalMs: 250 });
+  const receptionistRef = system.extension(ReceptionistId).start(
+    cluster,
+    ReceptionistOptions.create().withGossipIntervalMs(250),
+  );
   class IdleWorker extends Actor<unknown> {
     override onReceive(_m: unknown): void { /* noop */ }
   }
@@ -119,7 +122,10 @@ async function main(): Promise<void> {
   logger.info('Receptionist started + worker registered', { key: WORKER_KEY.id });
 
   // DistributedData.  Same gossip-interval tightening.
-  system.extension(DistributedDataId).start(cluster, { gossipIntervalMs: 250 });
+  system.extension(DistributedDataId).start(
+    cluster,
+    DistributedDataOptions.create().withGossipInterval(250),
+  );
   logger.info('DistributedData started');
 
   // ClusterSingleton — every node spawns the manager; only the

@@ -6,14 +6,14 @@
  *
  *   bun run examples/coordination/lease-guarded-work.ts
  */
-import { InMemoryLease } from '../../src/index.js';
+import { InMemoryLease, LeaseOptions } from '../../src/index.js';
 
 const LEASE = 'daily-batch';
 
 async function worker(name: string, runtimeMs: number, durationMs: number): Promise<void> {
-  const lease = new InMemoryLease({
-    name: LEASE, owner: name, ttlMs: 300, renewalIntervalMs: 100,
-  });
+  const lease = new InMemoryLease(
+    LeaseOptions.create().withName(LEASE).withOwner(name).withTtlMs(300).withRenewalIntervalMs(100),
+  );
 
   const deadline = Date.now() + runtimeMs;
   while (Date.now() < deadline) {

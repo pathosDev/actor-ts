@@ -18,6 +18,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   DistributedDataId,
+  DistributedDataOptions,
   GCounter,
   ORSet,
 } from '../../src/crdt/index.js';
@@ -53,11 +54,11 @@ describe('DistributedData — WriteConsistency / ReadConsistency', () => {
   test('WriteMajority on 3-node cluster resolves after 2/3 replicas ack', async () => {
     await withSpec(['a', 'b', 'c'], async (spec) => {
       const ddA = spec.systemFor('a').extension(DistributedDataId)
-        .start(spec.clusterFor('a'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('a'), DistributedDataOptions.create().withGossipInterval(80));
       const ddB = spec.systemFor('b').extension(DistributedDataId)
-        .start(spec.clusterFor('b'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('b'), DistributedDataOptions.create().withGossipInterval(80));
       const ddC = spec.systemFor('c').extension(DistributedDataId)
-        .start(spec.clusterFor('c'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('c'), DistributedDataOptions.create().withGossipInterval(80));
 
       await ddA.updateAsync<GCounter>('hits', GCounter.empty,
         (c) => c.increment(ddA.selfReplicaId(), 10),
@@ -77,11 +78,11 @@ describe('DistributedData — WriteConsistency / ReadConsistency', () => {
   test('WriteAll blocks until every up-member acks', async () => {
     await withSpec(['a', 'b', 'c'], async (spec) => {
       const ddA = spec.systemFor('a').extension(DistributedDataId)
-        .start(spec.clusterFor('a'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('a'), DistributedDataOptions.create().withGossipInterval(80));
       const ddB = spec.systemFor('b').extension(DistributedDataId)
-        .start(spec.clusterFor('b'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('b'), DistributedDataOptions.create().withGossipInterval(80));
       const ddC = spec.systemFor('c').extension(DistributedDataId)
-        .start(spec.clusterFor('c'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('c'), DistributedDataOptions.create().withGossipInterval(80));
 
       await ddA.updateAsync<ORSet<string>>('cart', () => ORSet.empty<string>(),
         (s) => s.add(ddA.selfReplicaId(), 'apple'),
@@ -98,11 +99,11 @@ describe('DistributedData — WriteConsistency / ReadConsistency', () => {
   test('WriteAll times out when one peer is partitioned', async () => {
     await withSpec(['a', 'b', 'c'], async (spec) => {
       const ddA = spec.systemFor('a').extension(DistributedDataId)
-        .start(spec.clusterFor('a'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('a'), DistributedDataOptions.create().withGossipInterval(80));
       spec.systemFor('b').extension(DistributedDataId)
-        .start(spec.clusterFor('b'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('b'), DistributedDataOptions.create().withGossipInterval(80));
       spec.systemFor('c').extension(DistributedDataId)
-        .start(spec.clusterFor('c'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('c'), DistributedDataOptions.create().withGossipInterval(80));
 
       // Partition A from C so the write-request never reaches C and
       // C's ack never gets back.  A still has B reachable, so
@@ -131,11 +132,11 @@ describe('DistributedData — WriteConsistency / ReadConsistency', () => {
   test('ReadMajority merges responses from peers', async () => {
     await withSpec(['a', 'b', 'c'], async (spec) => {
       const ddA = spec.systemFor('a').extension(DistributedDataId)
-        .start(spec.clusterFor('a'), { gossipIntervalMs: 5_000 });
+        .start(spec.clusterFor('a'), DistributedDataOptions.create().withGossipInterval(5_000));
       const ddB = spec.systemFor('b').extension(DistributedDataId)
-        .start(spec.clusterFor('b'), { gossipIntervalMs: 5_000 });
+        .start(spec.clusterFor('b'), DistributedDataOptions.create().withGossipInterval(5_000));
       const ddC = spec.systemFor('c').extension(DistributedDataId)
-        .start(spec.clusterFor('c'), { gossipIntervalMs: 5_000 });
+        .start(spec.clusterFor('c'), DistributedDataOptions.create().withGossipInterval(5_000));
 
       // Tall gossip interval — local writes won't have flowed via
       // gossip yet when we issue the read.  Each replica writes a
@@ -169,7 +170,7 @@ describe('DistributedData — WriteConsistency / ReadConsistency', () => {
   test('single-node cluster — every consistency level resolves immediately', async () => {
     await withSpec(['solo'], async (spec) => {
       const dd = spec.systemFor('solo').extension(DistributedDataId)
-        .start(spec.clusterFor('solo'), { gossipIntervalMs: 1_000 });
+        .start(spec.clusterFor('solo'), DistributedDataOptions.create().withGossipInterval(1_000));
 
       const t0 = Date.now();
       await dd.updateAsync<GCounter>('k', GCounter.empty,
@@ -192,11 +193,11 @@ describe('DistributedData — WriteConsistency / ReadConsistency', () => {
   test('{ from: K } clamps to [1, N] and matches fixed count semantics', async () => {
     await withSpec(['a', 'b', 'c'], async (spec) => {
       const ddA = spec.systemFor('a').extension(DistributedDataId)
-        .start(spec.clusterFor('a'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('a'), DistributedDataOptions.create().withGossipInterval(80));
       spec.systemFor('b').extension(DistributedDataId)
-        .start(spec.clusterFor('b'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('b'), DistributedDataOptions.create().withGossipInterval(80));
       spec.systemFor('c').extension(DistributedDataId)
-        .start(spec.clusterFor('c'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('c'), DistributedDataOptions.create().withGossipInterval(80));
 
       // K=1 always satisfied by self.
       await ddA.updateAsync<GCounter>('k1', GCounter.empty,
@@ -228,9 +229,9 @@ describe('DistributedData — WriteConsistency / ReadConsistency', () => {
   test('local consistency — fire-and-forget, no waiting', async () => {
     await withSpec(['a', 'b'], async (spec) => {
       const ddA = spec.systemFor('a').extension(DistributedDataId)
-        .start(spec.clusterFor('a'), { gossipIntervalMs: 5_000 });
+        .start(spec.clusterFor('a'), DistributedDataOptions.create().withGossipInterval(5_000));
       spec.systemFor('b').extension(DistributedDataId)
-        .start(spec.clusterFor('b'), { gossipIntervalMs: 5_000 });
+        .start(spec.clusterFor('b'), DistributedDataOptions.create().withGossipInterval(5_000));
 
       const t0 = Date.now();
       await ddA.updateAsync<GCounter>('local-k', GCounter.empty,
@@ -248,11 +249,11 @@ describe('DistributedData — WriteConsistency / ReadConsistency', () => {
   test('concurrent WriteMajority on same key — both resolve, final state is merged', async () => {
     await withSpec(['a', 'b', 'c'], async (spec) => {
       const ddA = spec.systemFor('a').extension(DistributedDataId)
-        .start(spec.clusterFor('a'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('a'), DistributedDataOptions.create().withGossipInterval(80));
       const ddB = spec.systemFor('b').extension(DistributedDataId)
-        .start(spec.clusterFor('b'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('b'), DistributedDataOptions.create().withGossipInterval(80));
       const ddC = spec.systemFor('c').extension(DistributedDataId)
-        .start(spec.clusterFor('c'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('c'), DistributedDataOptions.create().withGossipInterval(80));
 
       const writes = await Promise.all([
         ddA.updateAsync<GCounter>('race', GCounter.empty,

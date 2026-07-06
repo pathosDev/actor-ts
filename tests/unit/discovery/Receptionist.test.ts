@@ -9,6 +9,7 @@ import {
   Listing,
   Receptionist,
   ReceptionistId,
+  ReceptionistOptions,
   Register,
   ServiceKey,
   Subscribe,
@@ -125,7 +126,10 @@ describe('Receptionist — cluster-wide', () => {
         .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
         .withGossipIntervalMs(80),
     );
-    const receptionist = kit.system.extension(ReceptionistId).start(cluster, { gossipIntervalMs: 80 });
+    const receptionist = kit.system.extension(ReceptionistId).start(
+      cluster,
+      ReceptionistOptions.create().withGossipIntervalMs(80),
+    );
     return { system: kit.system, cluster, kit, receptionist };
   }
 

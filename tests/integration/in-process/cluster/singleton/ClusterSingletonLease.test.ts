@@ -24,6 +24,7 @@ import {
   InMemoryLease,
   inMemoryLeaseStore,
 } from '../../../../../src/coordination/leases/InMemoryLease.js';
+import { LeaseOptions } from '../../../../../src/coordination/Lease.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import { TestKit } from '../../../../../src/testkit/TestKit.js';
@@ -68,7 +69,7 @@ describe('ClusterSingleton + Lease', () => {
       override preStart(): void { probe.tell('started'); }
       override onReceive(m: string): void { probe.tell(`got:${m}`); }
     }
-    const lease = new InMemoryLease({ name: 'sng-lease-1', owner: 'a', ttlMs: 5_000 });
+    const lease = new InMemoryLease(LeaseOptions.create().withName('sng-lease-1').withOwner('a').withTtlMs(5_000));
     const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster,
       StartSingletonOptions.create<string>()
         .withTypeName('echo')
@@ -90,7 +91,7 @@ describe('ClusterSingleton + Lease', () => {
     inMemoryLeaseStore._clear();
     // Simulate an external holder by acquiring the same lease name from
     // a different owner first.
-    const otherHolder = new InMemoryLease({ name: 'sng-lease-2', owner: 'someone-else', ttlMs: 5_000 });
+    const otherHolder = new InMemoryLease(LeaseOptions.create().withName('sng-lease-2').withOwner('someone-else').withTtlMs(5_000));
     expect(await otherHolder.acquire()).toBe(true);
 
     const a = await startNode('sng-lease-2', 'h', 60_002);
@@ -99,7 +100,7 @@ describe('ClusterSingleton + Lease', () => {
       override preStart(): void { probe.tell('started'); }
       override onReceive(): void {}
     }
-    const lease = new InMemoryLease({ name: 'sng-lease-2', owner: 'a', ttlMs: 5_000 });
+    const lease = new InMemoryLease(LeaseOptions.create().withName('sng-lease-2').withOwner('a').withTtlMs(5_000));
     const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster,
       StartSingletonOptions.create<string>()
         .withTypeName('echo')
@@ -130,11 +131,11 @@ describe('ClusterSingleton + Lease', () => {
       override postStop(): void { probe.tell('stopped'); }
       override onReceive(): void {}
     }
-    const lease = new InMemoryLease({
-      name: 'sng-lease-3', owner: 'a', ttlMs: 5_000,
-      // Tight renewal so the simulated "lost" path fires fast.
-      renewalIntervalMs: 60,
-    });
+    const lease = new InMemoryLease(
+      LeaseOptions.create().withName('sng-lease-3').withOwner('a').withTtlMs(5_000)
+        // Tight renewal so the simulated "lost" path fires fast.
+        .withRenewalIntervalMs(60),
+    );
     const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster,
       StartSingletonOptions.create<string>()
         .withTypeName('echo')
@@ -147,7 +148,7 @@ describe('ClusterSingleton + Lease', () => {
     // This makes the next renewal in the InMemoryLease fail, which fires
     // the onLost handler the manager subscribed to.
     inMemoryLeaseStore._clear();
-    const usurper = new InMemoryLease({ name: 'sng-lease-3', owner: 'usurper', ttlMs: 5_000 });
+    const usurper = new InMemoryLease(LeaseOptions.create().withName('sng-lease-3').withOwner('usurper').withTtlMs(5_000));
     expect(await usurper.acquire()).toBe(true);
 
     // The manager's renewal-failure path fires onLost → stops child.
@@ -171,7 +172,7 @@ describe('ClusterSingleton + Lease', () => {
       override preStart(): void { probe.tell('started'); }
       override onReceive(): void {}
     }
-    const lease = new InMemoryLease({ name: 'sng-lease-4', owner: 'a', ttlMs: 5_000 });
+    const lease = new InMemoryLease(LeaseOptions.create().withName('sng-lease-4').withOwner('a').withTtlMs(5_000));
     const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster,
       StartSingletonOptions.create<string>()
         .withTypeName('echo')

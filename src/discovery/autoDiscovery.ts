@@ -1,7 +1,8 @@
+import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { AggregateSeedProvider } from './AggregateSeedProvider.js';
-import { ConfigSeedProvider } from './ConfigSeedProvider.js';
-import { DnsSeedProvider } from './DnsSeedProvider.js';
-import { KubernetesApiSeedProvider } from './KubernetesApiSeedProvider.js';
+import { ConfigSeedProvider, ConfigSeedProviderOptions } from './ConfigSeedProvider.js';
+import { DnsSeedProvider, DnsSeedProviderOptions } from './DnsSeedProvider.js';
+import { KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from './KubernetesApiSeedProvider.js';
 import type { SeedProvider } from './SeedProvider.js';
 
 function parseSeedList(raw: string): string[] {
@@ -52,6 +53,41 @@ export interface AutoDiscoverySettings {
 }
 
 /**
+ * Fluent builder for {@link AutoDiscoverySettings} — the input to
+ * {@link autoDiscovery} and {@link singleProviderDiscovery}.
+ *
+ *     autoDiscovery(
+ *       AutoDiscoveryOptions.create().withSystemName('my-system').withPort(2552),
+ *     );
+ */
+export class AutoDiscoveryOptions extends OptionsBuilder<AutoDiscoverySettings> {
+  /** Start a fresh builder.  Equivalent to `new AutoDiscoveryOptions()`. */
+  static create(): AutoDiscoveryOptions {
+    return new AutoDiscoveryOptions();
+  }
+
+  /** ActorSystem name to stamp on discovered NodeAddresses. */
+  withSystemName(systemName: string): this {
+    return this.set('systemName', systemName);
+  }
+
+  /** Cluster remoting port to pair each discovered IP with. */
+  withPort(port: number): this {
+    return this.set('port', port);
+  }
+
+  /** Pre-mapped env lookup (defaults to `process.env` at call time). */
+  withEnv(env: Record<string, string | undefined>): this {
+    return this.set('env', env);
+  }
+
+  /** Logger for individual provider failures.  Default: no-op. */
+  withLog(log: (msg: string, err?: unknown) => void): this {
+    return this.set('log', log);
+  }
+}
+
+/**
  * Build an {@link AggregateSeedProvider} from environment variables —
  * the default discovery wiring used by `Cluster.bootstrap()` when the
  * caller doesn't pass `seeds` or `discovery:` explicitly.
@@ -60,7 +96,8 @@ export interface AutoDiscoverySettings {
  * always has a `SeedProvider` to invoke — the resulting `lookup()`
  * just resolves to `[]` for single-node dev.
  */
-export function autoDiscovery(settings: AutoDiscoverySettings): AggregateSeedProvider {
+export function autoDiscovery(options: AutoDiscoveryOptions): AggregateSeedProvider {
+  const settings = options.build() as AutoDiscoverySettings;
   const env = settings.env ?? process.env;
   const log = settings.log ?? (() => {});
   const providers: SeedProvider[] = [];
@@ -68,30 +105,33 @@ export function autoDiscovery(settings: AutoDiscoverySettings): AggregateSeedPro
   // 1. CLUSTER_SEEDS — explicit static list.
   const rawSeeds = (env.CLUSTER_SEEDS ?? '').trim();
   if (rawSeeds.length > 0) {
-    providers.push(new ConfigSeedProvider({
-      systemName: settings.systemName,
-      seeds: parseSeedList(rawSeeds),
-    }));
+    providers.push(new ConfigSeedProvider(
+      ConfigSeedProviderOptions.create()
+        .withSystemName(settings.systemName)
+        .withSeeds(parseSeedList(rawSeeds)),
+    ));
   }
 
   // 2. Kubernetes API — only inside a pod with a matching service name.
   const serviceName = (env.CLUSTER_SERVICE_NAME ?? '').trim();
   if (env.KUBERNETES_SERVICE_HOST && serviceName.length > 0) {
-    providers.push(new KubernetesApiSeedProvider({
-      systemName: settings.systemName,
-      namespace: env.CLUSTER_NAMESPACE ?? 'default',
-      serviceName,
-      port: settings.port,
-    }));
+    providers.push(new KubernetesApiSeedProvider(
+      KubernetesApiSeedProviderOptions.create()
+        .withSystemName(settings.systemName)
+        .withNamespace(env.CLUSTER_NAMESPACE ?? 'default')
+        .withServiceName(serviceName)
+        .withPort(settings.port),
+    ));
   }
 
   // 3. DNS — resolve the service hostname directly.
   if (serviceName.length > 0) {
-    providers.push(new DnsSeedProvider({
-      systemName: settings.systemName,
-      hostname: serviceName,
-      port: settings.port,
-    }));
+    providers.push(new DnsSeedProvider(
+      DnsSeedProviderOptions.create()
+        .withSystemName(settings.systemName)
+        .withHostname(serviceName)
+        .withPort(settings.port),
+    ));
   }
 
   return new AggregateSeedProvider(providers, log);
@@ -106,16 +146,18 @@ export function autoDiscovery(settings: AutoDiscoverySettings): AggregateSeedPro
  */
 export function singleProviderDiscovery(
   kind: 'config' | 'dns' | 'kubernetes',
-  settings: AutoDiscoverySettings,
+  options: AutoDiscoveryOptions,
 ): SeedProvider {
+  const settings = options.build() as AutoDiscoverySettings;
   const env = settings.env ?? process.env;
   switch (kind) {
     case 'config': {
       const rawSeeds = (env.CLUSTER_SEEDS ?? '').trim();
-      return new ConfigSeedProvider({
-        systemName: settings.systemName,
-        seeds: parseSeedList(rawSeeds),
-      });
+      return new ConfigSeedProvider(
+        ConfigSeedProviderOptions.create()
+          .withSystemName(settings.systemName)
+          .withSeeds(parseSeedList(rawSeeds)),
+      );
     }
     case 'dns': {
       const hostname = (env.CLUSTER_SERVICE_NAME ?? '').trim();
@@ -124,11 +166,12 @@ export function singleProviderDiscovery(
           "Cluster.bootstrap({ discovery: 'dns' }): CLUSTER_SERVICE_NAME must be set",
         );
       }
-      return new DnsSeedProvider({
-        systemName: settings.systemName,
-        hostname,
-        port: settings.port,
-      });
+      return new DnsSeedProvider(
+        DnsSeedProviderOptions.create()
+          .withSystemName(settings.systemName)
+          .withHostname(hostname)
+          .withPort(settings.port),
+      );
     }
     case 'kubernetes': {
       const serviceName = (env.CLUSTER_SERVICE_NAME ?? '').trim();
@@ -137,12 +180,13 @@ export function singleProviderDiscovery(
           "Cluster.bootstrap({ discovery: 'kubernetes' }): CLUSTER_SERVICE_NAME must be set",
         );
       }
-      return new KubernetesApiSeedProvider({
-        systemName: settings.systemName,
-        namespace: env.CLUSTER_NAMESPACE ?? 'default',
-        serviceName,
-        port: settings.port,
-      });
+      return new KubernetesApiSeedProvider(
+        KubernetesApiSeedProviderOptions.create()
+          .withSystemName(settings.systemName)
+          .withNamespace(env.CLUSTER_NAMESPACE ?? 'default')
+          .withServiceName(serviceName)
+          .withPort(settings.port),
+      );
     }
   }
 }

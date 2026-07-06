@@ -22,7 +22,7 @@ import {
 } from '../../../../../src/cluster/sharding/CoordinatorState.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
-import { DistributedDataId } from '../../../../../src/crdt/DistributedData.js';
+import { DistributedDataId, DistributedDataOptions } from '../../../../../src/crdt/DistributedData.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 
 const sample: CoordinatorStateData = {
@@ -85,7 +85,7 @@ describe('CoordinatorStateStore', () => {
       .withPort(71_001)
       .withTransport(new InMemoryTransport(new NodeAddress('coord-state', 'h', 71_001)))
       .withGossipIntervalMs(80));
-    const dd = sys.extension(DistributedDataId).start(cluster, { gossipIntervalMs: 80 });
+    const dd = sys.extension(DistributedDataId).start(cluster, DistributedDataOptions.create().withGossipInterval(80));
 
     const store = new DistributedDataCoordinatorStateStore(
       dd, cluster.selfAddress.toString(),

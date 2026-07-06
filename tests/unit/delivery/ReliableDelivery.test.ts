@@ -3,7 +3,7 @@ import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { Props } from '../../../src/Props.js';
-import { ReliableDelivery } from '../../../src/delivery/index.js';
+import { ReliableDelivery, ProducerControllerOptions } from '../../../src/delivery/index.js';
 import type { Delivery } from '../../../src/delivery/index.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 
@@ -17,10 +17,12 @@ describe('ReliableDelivery — happy path', () => {
     const consumer = ReliableDelivery.consumer<string>(kit.system, {
       handler: (m) => { received.push(m); },
     });
-    const producer = ReliableDelivery.producer<string>(kit.system, {
-      consumer: consumer.ref as never,
-      resendTimeoutMs: 200, windowSize: 4,
-    });
+    const producer = ReliableDelivery.producer<string>(kit.system,
+      ProducerControllerOptions.create<string>()
+        .withConsumer(consumer.ref as never)
+        .withResendTimeout(200)
+        .withWindowSize(4),
+    );
 
     for (const s of ['a', 'b', 'c']) producer.tell(s);
     await sleep(80);
@@ -34,9 +36,11 @@ describe('ReliableDelivery — happy path', () => {
     const kit = TestKit.create('rd-confirm', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const confirmed: Array<{ body: string; err: Error | null }> = [];
     const consumer = ReliableDelivery.consumer<string>(kit.system, { handler: () => {} });
-    const producer = ReliableDelivery.producer<string>(kit.system, {
-      consumer: consumer.ref as never, resendTimeoutMs: 200,
-    });
+    const producer = ReliableDelivery.producer<string>(kit.system,
+      ProducerControllerOptions.create<string>()
+        .withConsumer(consumer.ref as never)
+        .withResendTimeout(200),
+    );
 
     for (const s of ['x', 'y', 'z']) {
       producer.tell(s, (err) => confirmed.push({ body: s, err }));
@@ -100,10 +104,11 @@ describe('ReliableDelivery — resilience', () => {
     }
     const consumerRef = kit.system.spawn(Props.create(() => new Flaky()), 'flaky');
 
-    const producer = ReliableDelivery.producer<string>(kit.system, {
-      consumer: consumerRef,
-      resendTimeoutMs: 40,
-    });
+    const producer = ReliableDelivery.producer<string>(kit.system,
+      ProducerControllerOptions.create<string>()
+        .withConsumer(consumerRef)
+        .withResendTimeout(40),
+    );
     producer.tell('persistent-message');
 
     // Give the producer time to resend until the 3rd attempt succeeds.
@@ -125,9 +130,12 @@ describe('ReliableDelivery — flow control', () => {
         received.push(m);
       },
     });
-    const producer = ReliableDelivery.producer<string>(kit.system, {
-      consumer: consumer.ref as never, resendTimeoutMs: 500, windowSize: 2,
-    });
+    const producer = ReliableDelivery.producer<string>(kit.system,
+      ProducerControllerOptions.create<string>()
+        .withConsumer(consumer.ref as never)
+        .withResendTimeout(500)
+        .withWindowSize(2),
+    );
 
     const N = 6;
     for (let i = 0; i < N; i++) producer.tell(`m-${i}`);

@@ -8,7 +8,7 @@ import {
 import type { ConfirmationCallback, Delivery } from './Messages.js';
 import {
   ProducerController,
-  type ProducerControllerSettings,
+  ProducerControllerOptions,
   type ProducerSend,
 } from './ProducerController.js';
 
@@ -55,11 +55,11 @@ export class ReliableDelivery {
   /** Spawn a ProducerController aimed at `settings.consumer`. */
   static producer<T>(
     system: ActorSystem,
-    settings: ProducerControllerSettings<T>,
+    options: ProducerControllerOptions<T>,
     name?: string,
   ): ProducerHandle<T> {
     const ref = system.spawn(
-      Props.create(() => new ProducerController<T>(settings) as unknown as import('../Actor.js').Actor<ProducerSend<T>>),
+      Props.create(() => new ProducerController<T>(options) as unknown as import('../Actor.js').Actor<ProducerSend<T>>),
       name ?? `reliable-producer-${++counter}`,
     );
     return {

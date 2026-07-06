@@ -17,6 +17,7 @@ import {
   InMemoryLease,
   inMemoryLeaseStore,
 } from '../../../../../src/coordination/leases/InMemoryLease.js';
+import { LeaseOptions } from '../../../../../src/coordination/Lease.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
@@ -75,14 +76,14 @@ describe('ClusterSharding + Lease', () => {
   test('1. acquire blocked by another holder → coordinator does not respond to shard requests', async () => {
     inMemoryLeaseStore._clear();
     // Foreign holder owns the lease before the coordinator boots.
-    const foreign = new InMemoryLease({
-      name: 'sharding-lease-1', owner: 'someone-else', ttlMs: 10_000,
-    });
+    const foreign = new InMemoryLease(
+      LeaseOptions.create().withName('sharding-lease-1').withOwner('someone-else').withTtlMs(10_000),
+    );
     expect(await foreign.acquire()).toBe(true);
 
-    const lease = new InMemoryLease({
-      name: 'sharding-lease-1', owner: 'self', ttlMs: 10_000,
-    });
+    const lease = new InMemoryLease(
+      LeaseOptions.create().withName('sharding-lease-1').withOwner('self').withTtlMs(10_000),
+    );
     const a = await startNodeWithLease('shard-lease-1', 60_101, lease);
 
     // Coordinator can't acquire — region's GetShardHome ask never
@@ -106,10 +107,10 @@ describe('ClusterSharding + Lease', () => {
 
   test('2. lost lease stops coordinator activity (asks resume after re-acquire)', async () => {
     inMemoryLeaseStore._clear();
-    const lease = new InMemoryLease({
-      name: 'sharding-lease-2', owner: 'self', ttlMs: 10_000,
-      renewalIntervalMs: 60,
-    });
+    const lease = new InMemoryLease(
+      LeaseOptions.create().withName('sharding-lease-2').withOwner('self').withTtlMs(10_000)
+        .withRenewalIntervalMs(60),
+    );
     const a = await startNodeWithLease('shard-lease-2', 60_102, lease);
 
     // Initial ask succeeds — coordinator acquired the lease cleanly.
@@ -120,9 +121,9 @@ describe('ClusterSharding + Lease', () => {
     // take it.  The InMemoryLease's renewal loop will fail and fire
     // onLost, which the coordinator handles by stepping down.
     inMemoryLeaseStore._clear();
-    const usurper = new InMemoryLease({
-      name: 'sharding-lease-2', owner: 'usurper', ttlMs: 10_000,
-    });
+    const usurper = new InMemoryLease(
+      LeaseOptions.create().withName('sharding-lease-2').withOwner('usurper').withTtlMs(10_000),
+    );
     expect(await usurper.acquire()).toBe(true);
 
     // Wait for the local lease renewal to detect the loss + the
@@ -145,9 +146,9 @@ describe('ClusterSharding + Lease', () => {
 
   test('3. graceful coordinator stop releases the lease', async () => {
     inMemoryLeaseStore._clear();
-    const lease = new InMemoryLease({
-      name: 'sharding-lease-3', owner: 'self', ttlMs: 10_000,
-    });
+    const lease = new InMemoryLease(
+      LeaseOptions.create().withName('sharding-lease-3').withOwner('self').withTtlMs(10_000),
+    );
     const a = await startNodeWithLease('shard-lease-3', 60_103, lease);
 
     await waitFor(() => lease.checkAlive(), 2_000);

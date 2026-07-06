@@ -5,16 +5,17 @@
  *
  *   bun run examples/delivery/at-least-once-hello.ts
  */
-import { ActorSystem, ReliableDelivery } from '../../src/index.js';
+import { ActorSystem, ReliableDelivery, ProducerControllerOptions } from '../../src/index.js';
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('rd-hello');
   const consumer = ReliableDelivery.consumer<string>(system, {
     handler: (m) => console.log(`[consumer] received "${m}"`),
   });
-  const producer = ReliableDelivery.producer<string>(system, {
-    consumer: consumer.ref as never,
-  });
+  const producer = ReliableDelivery.producer<string>(system,
+    ProducerControllerOptions.create<string>()
+      .withConsumer(consumer.ref as never),
+  );
 
   for (const s of ['hello', 'world', 'reliable-delivery']) {
     producer.tell(s, (err) => {

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   AggregateSeedProvider,
+  AutoDiscoveryOptions,
   Cluster,
   ClusterBootstrapOptions,
   ConfigSeedProvider,
@@ -185,17 +186,20 @@ describe('Cluster.bootstrap', () => {
 
 describe('autoDiscovery', () => {
   test('empty env produces an empty aggregate (single-node mode)', async () => {
-    const provider = autoDiscovery({ systemName: 'app', port: 2552, env: {} });
+    const provider = autoDiscovery(
+      AutoDiscoveryOptions.create().withSystemName('app').withPort(2552).withEnv({}),
+    );
     const seeds = await provider.lookup();
     expect(seeds).toEqual([]);
   });
 
   test('CLUSTER_SEEDS produces a Config provider', async () => {
-    const provider = autoDiscovery({
-      systemName: 'app',
-      port: 2552,
-      env: { CLUSTER_SEEDS: '10.0.0.1:2552,10.0.0.2:2552' },
-    });
+    const provider = autoDiscovery(
+      AutoDiscoveryOptions.create()
+        .withSystemName('app')
+        .withPort(2552)
+        .withEnv({ CLUSTER_SEEDS: '10.0.0.1:2552,10.0.0.2:2552' }),
+    );
     const seeds = await provider.lookup();
     expect(seeds.map(s => s.toString()))
       .toEqual(['app@10.0.0.1:2552', 'app@10.0.0.2:2552']);
@@ -207,14 +211,15 @@ describe('autoDiscovery', () => {
     // K8s fails (no token in test env) and DNS picks up next.  We can
     // verify the aggregate is wired by checking that an unparsable DNS
     // host throws on lookup, proving DNS was reached.
-    const provider = autoDiscovery({
-      systemName: 'app',
-      port: 2552,
-      env: {
-        KUBERNETES_SERVICE_HOST: '10.0.0.1',
-        CLUSTER_SERVICE_NAME: 'definitely-not-a-real-host.invalid',
-      },
-    });
+    const provider = autoDiscovery(
+      AutoDiscoveryOptions.create()
+        .withSystemName('app')
+        .withPort(2552)
+        .withEnv({
+          KUBERNETES_SERVICE_HOST: '10.0.0.1',
+          CLUSTER_SERVICE_NAME: 'definitely-not-a-real-host.invalid',
+        }),
+    );
     // K8s throws (no ServiceAccount token) → DNS resolves an
     // invalid host → throws too → aggregate returns [].
     const seeds = await provider.lookup();
@@ -222,28 +227,25 @@ describe('autoDiscovery', () => {
   });
 
   test('CLUSTER_NAMESPACE defaults to "default"', () => {
-    const provider = singleProviderDiscovery('kubernetes', {
-      systemName: 'app',
-      port: 2552,
-      env: { CLUSTER_SERVICE_NAME: 'my-svc', KUBERNETES_SERVICE_HOST: '10.0.0.1' },
-    });
+    const provider = singleProviderDiscovery('kubernetes',
+      AutoDiscoveryOptions.create()
+        .withSystemName('app')
+        .withPort(2552)
+        .withEnv({ CLUSTER_SERVICE_NAME: 'my-svc', KUBERNETES_SERVICE_HOST: '10.0.0.1' }),
+    );
     expect(provider).toBeDefined();
   });
 
   test('singleProviderDiscovery throws when DNS env vars missing', () => {
-    expect(() => singleProviderDiscovery('dns', {
-      systemName: 'app',
-      port: 2552,
-      env: {},
-    })).toThrow(/CLUSTER_SERVICE_NAME/);
+    expect(() => singleProviderDiscovery('dns',
+      AutoDiscoveryOptions.create().withSystemName('app').withPort(2552).withEnv({}),
+    )).toThrow(/CLUSTER_SERVICE_NAME/);
   });
 
   test('singleProviderDiscovery throws when K8s env vars missing', () => {
-    expect(() => singleProviderDiscovery('kubernetes', {
-      systemName: 'app',
-      port: 2552,
-      env: {},
-    })).toThrow(/CLUSTER_SERVICE_NAME/);
+    expect(() => singleProviderDiscovery('kubernetes',
+      AutoDiscoveryOptions.create().withSystemName('app').withPort(2552).withEnv({}),
+    )).toThrow(/CLUSTER_SERVICE_NAME/);
   });
 });
 
