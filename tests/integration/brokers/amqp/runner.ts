@@ -8,7 +8,7 @@
  * Same shape used by the unit-test fakes.
  */
 import { Actor } from '../../../../src/Actor.js';
-import { ActorSystem } from '../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../src/ActorSystem.js';
 import { JsonLogger, LogLevel } from '../../../../src/Logger.js';
 import { Props } from '../../../../src/Props.js';
 import { AmqpActor, type AmqpDelivery, type AmqpQueueBinding } from '../../../../src/io/broker/AmqpActor.js';
@@ -42,9 +42,8 @@ async function main(): Promise<void> {
     description: 'RabbitMQ AMQP', deadlineMs: 60_000,
   });
 
-  const system = ActorSystem.create('amqp-runner', {
-    logger: new JsonLogger(), logLevel: LogLevel.Info,
-  });
+  const system = ActorSystem.create('amqp-runner', ActorSystemOptions.create()
+    .withLogger(new JsonLogger()).withLogLevel(LogLevel.Info));
   process.on('SIGTERM', () => { void system.terminate(); });
 
   const ctx: AmqpCtx = { env: process.env, url, system };

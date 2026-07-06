@@ -22,6 +22,7 @@
 import { match, P } from 'ts-pattern';
 import {
   ActorSystem,
+  ActorSystemOptions,
   ByTagProjectionOptions,
   everyNEvents,
   InMemoryJournal,
@@ -108,7 +109,7 @@ async function main(): Promise<void> {
   const journal = new InMemoryJournal();
   const ledger = new BankStatementLedger();
 
-  const sys = ActorSystem.create('bank', { persistence: { journal } });
+  const sys = ActorSystem.create('bank', ActorSystemOptions.create().withPersistence({ journal }));
 
   // Spawn the projection FIRST so it picks up every event from the
   // start of the run.  In production you'd persist the offset (see

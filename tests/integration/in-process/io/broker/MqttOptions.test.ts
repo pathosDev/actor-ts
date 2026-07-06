@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
 import { Props } from '../../../../../src/Props.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { MqttOptions } from '../../../../../src/io/broker/MqttOptions.js';
@@ -82,10 +82,10 @@ class ProbeActor extends MqttActor {
 
 describe('MqttOptions HOCON merge precedence', () => {
   test('constructor (builder) > HOCON > built-in defaults', async () => {
-    const sys = ActorSystem.create('mqtt-opts-merge', {
-      logger: new NoopLogger(),
-      logLevel: LogLevel.Off,
-      config: {
+    const sys = ActorSystem.create('mqtt-opts-merge', ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({
         'actor-ts': {
           io: { broker: { mqtt: {
             brokerUrl: 'mqtt://from-hocon:1883',
@@ -93,8 +93,7 @@ describe('MqttOptions HOCON merge precedence', () => {
             keepAliveSec: 30,
           } } },
         },
-      },
-    });
+      }));
     try {
       // Builder overrides clientId; HOCON supplies brokerUrl + keepAlive;
       // cleanSession falls through to the built-in default (true).

@@ -2,7 +2,7 @@
  * Redis Streams broker runner (B.7 / refs #296).
  */
 import { Actor } from '../../../../src/Actor.js';
-import { ActorSystem } from '../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../src/ActorSystem.js';
 import { JsonLogger, LogLevel } from '../../../../src/Logger.js';
 import { Props } from '../../../../src/Props.js';
 import { RedisStreamsActor, type RedisStreamEntry } from '../../../../src/io/broker/RedisStreamsActor.js';
@@ -36,9 +36,8 @@ async function main(): Promise<void> {
     description: 'Redis', deadlineMs: 15_000,
   });
 
-  const system = ActorSystem.create('redis-streams-runner', {
-    logger: new JsonLogger(), logLevel: LogLevel.Info,
-  });
+  const system = ActorSystem.create('redis-streams-runner', ActorSystemOptions.create()
+    .withLogger(new JsonLogger()).withLogLevel(LogLevel.Info));
   process.on('SIGTERM', () => { void system.terminate(); });
 
   const ctx: RedisCtx = { env: process.env, url, system };

@@ -8,13 +8,13 @@
  *
  *   bun run benchmarks/memory/queued-messages.ts
  */
-import { Actor, ActorSystem, LogLevel, NoopLogger, Props } from '../../src/index.js';
+import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props } from '../../src/index.js';
 import { memoryGroup } from '../lib/harness.js';
 
 type Msg = { payload: string };
 
 async function main(): Promise<void> {
-  const system = ActorSystem.create('bench-queued', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const system = ActorSystem.create('bench-queued', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const payload: Msg = { payload: 'x'.repeat(64) };
 
   const group = memoryGroup('memory · queued messages (64-byte payload)');

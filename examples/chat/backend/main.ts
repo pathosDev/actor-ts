@@ -23,6 +23,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
   ActorSystem,
+  ActorSystemOptions,
   Cluster,
   ClusterOptions,
   ClusterSingletonId,
@@ -105,7 +106,7 @@ async function main(): Promise<void> {
   const configFile = path.resolve(
     import.meta.dirname ?? __dirname, '..', 'application.conf',
   );
-  const system = ActorSystem.create(SYSTEM_NAME, { configFile });
+  const system = ActorSystem.create(SYSTEM_NAME, ActorSystemOptions.create().withConfigFile(configFile));
   const seedSummary = seeds.length > 0
     ? ` · seeds=[${seeds.join(',')}]`
     : ' · bootstrap (no seeds)';

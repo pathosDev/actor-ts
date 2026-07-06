@@ -13,6 +13,7 @@ import { spawnSync } from 'node:child_process';
 import {
   Actor,
   ActorSystem,
+  ActorSystemOptions,
   Cluster,
   ClusterOptions,
   ClusterSharding,
@@ -42,7 +43,7 @@ interface Node {
 }
 
 async function startNode(sysName: string, p: number, seeds: string[] = []): Promise<Node> {
-  const sys = ActorSystem.create(sysName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const sys = ActorSystem.create(sysName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const cluster = await Cluster.join(sys, ClusterOptions.create()
     .withHost('h')
     .withPort(p)

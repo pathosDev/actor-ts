@@ -1,4 +1,4 @@
-import { ActorSystem } from '../ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../ActorSystem.js';
 import { Cluster, ClusterOptions, type ClusterSettings } from '../cluster/Cluster.js';
 import type { DowningProvider } from '../cluster/downing/index.js';
 import { type Member } from '../cluster/Member.js';
@@ -163,10 +163,9 @@ export class MultiNodeSpec {
     for (const role of orderedRoles) {
       const address = addressByRole.get(role)!;
       const transport = new MultiNodeTransport(address);
-      const system = ActorSystem.create(role, {
-        logger: new NoopLogger(),
-        logLevel: this.settings.logLevel,
-      });
+      const system = ActorSystem.create(role, ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withLogLevel(this.settings.logLevel));
       const clusterOptions = ClusterOptions.create()
         .withHost(address.host)
         .withPort(address.port)

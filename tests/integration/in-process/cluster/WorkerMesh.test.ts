@@ -6,7 +6,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../src/Actor.js';
-import { ActorSystem } from '../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../src/ActorSystem.js';
 import { Cluster, ClusterOptions } from '../../../../src/cluster/Cluster.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import {
@@ -45,10 +45,7 @@ async function startNode(
   const workerPort = ch.port2 as unknown as PortLike;
   broker.register(addr, brokerPort);
 
-  const system = ActorSystem.create(systemName, {
-    logger: new NoopLogger(),
-    logLevel: LogLevel.Off,
-  });
+  const system = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const cluster = await Cluster.join(
     system,
     ClusterOptions.create()

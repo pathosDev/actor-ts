@@ -56,7 +56,7 @@ export { Actor } from './Actor.js';
 export { ActorRef, Nobody, NobodyRef } from './ActorRef.js';
 export { ActorPath } from './ActorPath.js';
 export { ActorSelection, parseSelectionPath } from './ActorSelection.js';
-export { ActorSystem } from './ActorSystem.js';
+export { ActorSystem, ActorSystemOptions } from './ActorSystem.js';
 export type { ActorSystemSettings } from './ActorSystem.js';
 export type { ActorContext, Receive, TimerScheduler } from './ActorContext.js';
 export { StashOverflowError, StashOutsideHandlerError } from './ActorContext.js';
@@ -264,8 +264,8 @@ export {
 export type { ShutdownTask, PhaseDefinition } from './CoordinatedShutdown.js';
 
 // TestKit (TestProbe, ManualScheduler).
-export { TestKit, TestProbe, ManualScheduler } from './testkit/index.js';
-export type { TestKitOptions, TestProbeOptions } from './testkit/index.js';
+export { TestKit, TestKitOptions, TestProbe, TestProbeOptions, ManualScheduler } from './testkit/index.js';
+export type { TestKitSettings, TestProbeSettings } from './testkit/index.js';
 
 // Persistence / Event Sourcing.
 export {

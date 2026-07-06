@@ -15,7 +15,7 @@ import type {
   ScenarioContext,
   ScenarioModule,
 } from '../../../src/testkit/internal/parallel-multi-node-bootstrap.js';
-import { TestProbe } from '../../../src/testkit/TestProbe.js';
+import { TestProbe, TestProbeOptions } from '../../../src/testkit/TestProbe.js';
 
 interface SubscribeArgs { readonly topic: string }
 interface PublishArgs { readonly topic: string; readonly message: unknown }
@@ -45,7 +45,7 @@ export const commands: ScenarioModule['commands'] = {
   subscribe(args, ctx): void {
     const { topic } = args as SubscribeArgs;
     const state = getState(ctx);
-    const probe = new TestProbe(ctx.system, { name: `probe-${topic}` });
+    const probe = new TestProbe(ctx.system, TestProbeOptions.create().withName(`probe-${topic}`));
     state.probesByTopic.set(topic, probe);
     state.mediator.tell(new Subscribe(topic, probe) as never);
   },

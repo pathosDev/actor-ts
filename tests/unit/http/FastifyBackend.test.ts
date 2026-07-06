@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../src/ActorSystem.js';
 import { FastifyBackend } from '../../../src/http/backend/FastifyBackend.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import {
@@ -23,7 +23,7 @@ afterEach(async () => {
 });
 
 async function startServer(routes: Parameters<ReturnType<ReturnType<typeof newHttp>['newServerAt']>['bind']>[0]): Promise<{ url: string; system: ActorSystem; binding: ServerBinding }> {
-  const system = ActorSystem.create('http-test', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const system = ActorSystem.create('http-test', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const ext = system.extension(HttpExtensionId);
   const backend = new FastifyBackend({ logger: false });
   const binding = await ext.newServerAt('127.0.0.1', 0).useBackend(backend).bind(routes);
@@ -162,10 +162,9 @@ describe('FastifyBackend — shutdown semantics', () => {
     // the process.  `unbind()` must force-terminate WS clients
     // (via `app.websocketServer.clients`) so the close resolves
     // instead of waiting forever.
-    const system = ActorSystem.create('http-ws-shutdown', {
-      logger: new NoopLogger(),
-      logLevel: LogLevel.Off,
-    });
+    const system = ActorSystem.create('http-ws-shutdown', ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off));
     const backend = new FastifyBackend({ logger: false });
     const wsMod = (await import('@fastify/websocket')) as {
       default?: unknown;

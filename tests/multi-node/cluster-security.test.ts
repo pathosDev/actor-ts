@@ -12,7 +12,7 @@
  * or an in-network attacker can still talk to it).
  */
 import { afterEach, describe, expect, test } from 'bun:test';
-import { ActorSystem } from '../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../src/ActorSystem.js';
 import { Cluster, ClusterOptions } from '../../src/cluster/Cluster.js';
 import { InMemoryTransport } from '../../src/cluster/Transport.js';
 import { NodeAddress } from '../../src/cluster/NodeAddress.js';
@@ -26,10 +26,7 @@ interface NodeHandle {
 }
 
 async function startNode(systemName: string, port: number, seeds: string[] = []): Promise<NodeHandle> {
-  const system = ActorSystem.create(systemName, {
-    logger: new NoopLogger(),
-    logLevel: LogLevel.Off,
-  });
+  const system = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const address = new NodeAddress(systemName, 'h', port);
   const cluster = await Cluster.join(
     system,

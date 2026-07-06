@@ -7,7 +7,7 @@ import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { ShardedDaemonProcess, ShardedDaemonProcessOptions } from '../../../../../src/cluster/sharding/ShardedDaemonProcess.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
-import { TestKit } from '../../../../../src/testkit/TestKit.js';
+import { TestKit, TestKitOptions } from '../../../../../src/testkit/TestKit.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 async function waitFor(pred: () => boolean, timeoutMs = 3_000, stepMs = 25): Promise<void> {
@@ -26,7 +26,7 @@ interface NodeSetup {
 }
 
 async function startNode(systemName: string, host: string, port: number, seeds: string[] = []): Promise<NodeSetup> {
-  const kit = TestKit.create(systemName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const kit = TestKit.create(systemName, TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const cluster = await Cluster.join(kit.system, ClusterOptions.create()
     .withHost(host)
     .withPort(port)

@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   Actor,
   ActorSystem,
+  ActorSystemOptions,
   Cluster,
   ClusterOptions,
   ClusterSharding,
@@ -46,10 +47,7 @@ async function startNode(
   port: number,
   seeds: string[] = [],
 ): Promise<NodeHandle> {
-  const system = ActorSystem.create(systemName, {
-    logger: new NoopLogger(),
-    logLevel: LogLevel.Off,
-  });
+  const system = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const cluster = await Cluster.join(
     system,
     ClusterOptions.create()
@@ -310,10 +308,7 @@ async function startNodeWithTombstoneCfg(
   systemName: string, host: string, port: number, seeds: string[],
   cfg: { tombstoneTtlMs: number; tombstonePruneIntervalMs: number; tombstoneMinRetentionMs: number },
 ): Promise<{ system: ActorSystem; cluster: Cluster }> {
-  const system = ActorSystem.create(systemName, {
-    logger: new NoopLogger(),
-    logLevel: LogLevel.Off,
-  });
+  const system = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const cluster = await Cluster.join(
     system,
     ClusterOptions.create()

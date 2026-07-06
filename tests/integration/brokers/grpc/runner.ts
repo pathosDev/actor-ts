@@ -6,7 +6,7 @@
  * scenario exercises one call class.
  */
 import { Actor } from '../../../../src/Actor.js';
-import { ActorSystem } from '../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../src/ActorSystem.js';
 import { JsonLogger, LogLevel } from '../../../../src/Logger.js';
 import { Props } from '../../../../src/Props.js';
 import { GrpcClientActor, type GrpcInbound } from '../../../../src/io/broker/GrpcClientActor.js';
@@ -79,9 +79,8 @@ async function main(): Promise<void> {
   const endpoint = requireEnv('GRPC_ENDPOINT');
   const protoPath = requireEnv('GRPC_PROTO_PATH');
 
-  const system = ActorSystem.create('grpc-runner', {
-    logger: new JsonLogger(), logLevel: LogLevel.Info,
-  });
+  const system = ActorSystem.create('grpc-runner', ActorSystemOptions.create()
+    .withLogger(new JsonLogger()).withLogLevel(LogLevel.Info));
   process.on('SIGTERM', () => { void system.terminate(); });
 
   // Spawn the server-side handlers and the server actor.

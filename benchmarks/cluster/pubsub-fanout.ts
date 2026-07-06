@@ -7,6 +7,7 @@
 import {
   Actor,
   ActorSystem,
+  ActorSystemOptions,
   Cluster,
   ClusterOptions,
   DistributedPubSubId,
@@ -24,7 +25,7 @@ let port = 42_000;
 
 async function fanout(nSubs: number): Promise<void> {
   const p = port++;
-  const sys = ActorSystem.create(`fan-${p}`, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const sys = ActorSystem.create(`fan-${p}`, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const cluster = await Cluster.join(sys, ClusterOptions.create()
     .withHost('h')
     .withPort(p)

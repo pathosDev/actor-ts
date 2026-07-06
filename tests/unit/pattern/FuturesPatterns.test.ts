@@ -4,13 +4,13 @@ import { ActorSystem } from '../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { Props } from '../../../src/Props.js';
 import { after, pipeTo, retry, Success, Failure } from '../../../src/pattern/index.js';
-import { TestKit } from '../../../src/testkit/TestKit.js';
+import { TestKit, TestKitOptions } from '../../../src/testkit/TestKit.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 describe('pipeTo', () => {
   test('resolves pipe the value as Success by default', async () => {
-    const kit = TestKit.create('pipe-s', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('pipe-s', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = kit.createTestProbe();
     const p = Promise.resolve(42);
     pipeTo(p, probe);
@@ -21,7 +21,7 @@ describe('pipeTo', () => {
   });
 
   test('rejections pipe as Failure', async () => {
-    const kit = TestKit.create('pipe-f', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('pipe-f', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = kit.createTestProbe();
     pipeTo(Promise.reject(new Error('boom')), probe);
     const got = await probe.receiveOne(200);
@@ -31,7 +31,7 @@ describe('pipeTo', () => {
   });
 
   test('wrap=false sends raw value, drops rejections', async () => {
-    const kit = TestKit.create('pipe-raw', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('pipe-raw', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = kit.createTestProbe<unknown>();
     pipeTo(Promise.resolve({ ok: 1 }), probe, { wrap: false });
     const got = await probe.receiveOne(200);
@@ -43,7 +43,7 @@ describe('pipeTo', () => {
   });
 
   test('delivers through an actor with sender attribution', async () => {
-    const kit = TestKit.create('pipe-sender', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('pipe-sender', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = kit.createTestProbe();
 
     class Holder extends Actor<Success<string>> {

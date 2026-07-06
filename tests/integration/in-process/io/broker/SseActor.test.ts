@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import { Actor } from '../../../../../src/Actor.js';
@@ -35,7 +35,7 @@ describe('SseActor — round-trip via Bun.serve', () => {
       },
     });
 
-    const sys = ActorSystem.create('sse-1', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('sse-1', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const collector = new CollectActor();
     const target = sys.spawnAnonymous(Props.create(() => collector));
     sys.spawnAnonymous(Props.create(() => new SseActor(

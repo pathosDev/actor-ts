@@ -2,7 +2,7 @@
  * NATS-Core broker runner (B.6 / #24).
  */
 import { Actor } from '../../../../src/Actor.js';
-import { ActorSystem } from '../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../src/ActorSystem.js';
 import { JsonLogger, LogLevel } from '../../../../src/Logger.js';
 import { Props } from '../../../../src/Props.js';
 import { NatsActor, type NatsMessage } from '../../../../src/io/broker/NatsActor.js';
@@ -37,9 +37,8 @@ async function main(): Promise<void> {
     description: 'NATS server', deadlineMs: 15_000,
   });
 
-  const system = ActorSystem.create('nats-runner', {
-    logger: new JsonLogger(), logLevel: LogLevel.Info,
-  });
+  const system = ActorSystem.create('nats-runner', ActorSystemOptions.create()
+    .withLogger(new JsonLogger()).withLogLevel(LogLevel.Info));
   process.on('SIGTERM', () => { void system.terminate(); });
 
   const ctx: NatsCtx = { env: process.env, servers, system };

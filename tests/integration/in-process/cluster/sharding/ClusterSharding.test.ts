@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
-import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
 import { Cluster, ClusterOptions } from '../../../../../src/cluster/Cluster.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
@@ -36,7 +36,7 @@ interface Node {
 }
 
 async function startNode(sysName: string, p: number, seeds: string[] = []): Promise<Node> {
-  const sys = ActorSystem.create(sysName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const sys = ActorSystem.create(sysName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const cluster = await Cluster.join(sys, ClusterOptions.create()
     .withHost('h')
     .withPort(p)
@@ -171,7 +171,7 @@ describe('cluster.sharding', () => {
 
   test('start() works through the property — round-trips a ping', async () => {
     const sysName = 'cs-facade-d';
-    const sys = ActorSystem.create(sysName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create(sysName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const cluster = await Cluster.join(sys, ClusterOptions.create()
       .withHost('h')
       .withPort(45_530)
@@ -214,7 +214,7 @@ interface LruNode extends Node {
 async function startLruNode(
   sysName: string, p: number, maxEntities: number,
 ): Promise<LruNode> {
-  const sys = ActorSystem.create(sysName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const sys = ActorSystem.create(sysName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const cluster = await Cluster.join(sys, ClusterOptions.create()
     .withHost('h')
     .withPort(p)

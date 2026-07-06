@@ -15,7 +15,7 @@
  *      key gone.
  */
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../src/ActorSystem.js';
 import { Cluster, ClusterOptions } from '../../../src/cluster/Cluster.js';
 import {
   DistributedDataId,
@@ -52,7 +52,7 @@ async function startNode(
     seeds?: string[];
   } = {},
 ): Promise<NodeSetup> {
-  const sys = ActorSystem.create(systemName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const sys = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const clusterOptions = ClusterOptions.create()
     .withHost('h')
     .withPort(port)

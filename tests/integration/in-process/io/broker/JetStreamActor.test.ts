@@ -8,7 +8,7 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
 import { ActorRef } from '../../../../../src/ActorRef.js';
-import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import {
@@ -236,7 +236,7 @@ function makeHandle(seq: number, subject = 'orders.new', payload = 'hi'): MockHa
 
 describe('JetStreamActor — stream + consumer lifecycle', () => {
   test('upserts the stream and consumer at connect time when create=true (default)', async () => {
-    const sys = ActorSystem.create('js-lifecycle', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('js-lifecycle', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { mock } = await bootActor(sys, JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
@@ -257,7 +257,7 @@ describe('JetStreamActor — stream + consumer lifecycle', () => {
   });
 
   test('skips upsert when create=false on stream / consumer', async () => {
-    const sys = ActorSystem.create('js-noupsert', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('js-noupsert', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { mock } = await bootActor(sys, JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
@@ -273,7 +273,7 @@ describe('JetStreamActor — stream + consumer lifecycle', () => {
   });
 
   test('byStartSeq deliverPolicy translates correctly', async () => {
-    const sys = ActorSystem.create('js-policy', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('js-policy', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { mock } = await bootActor(sys, JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
@@ -288,7 +288,7 @@ describe('JetStreamActor — stream + consumer lifecycle', () => {
 
 describe('JetStreamActor — ack/nak/term', () => {
   test('ack acknowledges the handle and resolves the pump', async () => {
-    const sys = ActorSystem.create('js-ack', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('js-ack', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { actor, mock, target } = await bootActor(sys, JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
@@ -309,7 +309,7 @@ describe('JetStreamActor — ack/nak/term', () => {
   });
 
   test('nak with delayMs forwards the delay to the handle', async () => {
-    const sys = ActorSystem.create('js-nak', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('js-nak', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { actor, mock } = await bootActor(sys, JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
@@ -329,7 +329,7 @@ describe('JetStreamActor — ack/nak/term', () => {
   });
 
   test('term marks the handle terminated (drop-forever)', async () => {
-    const sys = ActorSystem.create('js-term', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('js-term', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { actor, mock } = await bootActor(sys, JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
@@ -347,7 +347,7 @@ describe('JetStreamActor — ack/nak/term', () => {
   });
 
   test('inProgress calls handle.working() to extend the ack window', async () => {
-    const sys = ActorSystem.create('js-inprog', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('js-inprog', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { actor, mock } = await bootActor(sys, JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
@@ -371,7 +371,7 @@ describe('JetStreamActor — ack/nak/term', () => {
   });
 
   test('ack-timeout naks the handle automatically and the pump continues', async () => {
-    const sys = ActorSystem.create('js-timeout', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('js-timeout', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { mock, target } = await bootActor(sys, JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
@@ -394,7 +394,7 @@ describe('JetStreamActor — ack/nak/term', () => {
   });
 
   test('ackPolicy=none skips the handshake — every message is forwarded immediately', async () => {
-    const sys = ActorSystem.create('js-none', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('js-none', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { mock, target } = await bootActor(sys, JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
@@ -414,7 +414,7 @@ describe('JetStreamActor — ack/nak/term', () => {
   });
 
   test('ack for unknown streamSeq is a silent no-op', async () => {
-    const sys = ActorSystem.create('js-unknown', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('js-unknown', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { actor } = await bootActor(sys, JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
@@ -433,7 +433,7 @@ describe('JetStreamActor — ack/nak/term', () => {
 
 describe('JetStreamActor — publish', () => {
   test('publish forwards the message + dedupe id + expected-last-seq + headers', async () => {
-    const sys = ActorSystem.create('js-pub', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('js-pub', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { actor, mock } = await bootActor(sys, JetStreamOptions.create()
         .withServers(['nats://fake:4222']));
@@ -463,7 +463,7 @@ describe('JetStreamActor — publish', () => {
 
 describe('JetStreamActor — settings parsing', () => {
   test('subscription is wired with the configured stream + durable consumer', async () => {
-    const sys = ActorSystem.create('js-wiring', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('js-wiring', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { mock } = await bootActor(sys, JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
@@ -484,7 +484,7 @@ describe('JetStreamActor — settings parsing', () => {
 
 describe('JetStreamActor — pull-consumer mode (#62)', () => {
   test('mode=pull skips the subscription and grabs a pull-consumer handle', async () => {
-    const sys = ActorSystem.create('js-pull-setup', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('js-pull-setup', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { mock } = await bootActor(sys, JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
@@ -501,7 +501,7 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
   });
 
   test('fetch delivers messages and waits for ack before returning', async () => {
-    const sys = ActorSystem.create('js-pull-fetch', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('js-pull-fetch', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { actor, mock, target } = await bootActor(sys, JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
@@ -529,7 +529,7 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
   });
 
   test('expires-without-messages returns cleanly (empty batch is not an error)', async () => {
-    const sys = ActorSystem.create('js-pull-empty', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('js-pull-empty', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { actor, mock, target } = await bootActor(sys, JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
@@ -549,7 +549,7 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
   });
 
   test('subsequent fetch resumes from a fresh batch (durable offset is server-side)', async () => {
-    const sys = ActorSystem.create('js-pull-resume', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('js-pull-resume', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { actor, mock, target } = await bootActor(sys, JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
@@ -580,7 +580,7 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
   });
 
   test('fetch with batch <= 0 is silently dropped (no consumer call)', async () => {
-    const sys = ActorSystem.create('js-pull-bad-batch', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('js-pull-bad-batch', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { actor, mock } = await bootActor(sys, JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
@@ -597,7 +597,7 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
   });
 
   test('fetch on a push-mode actor is a silent no-op', async () => {
-    const sys = ActorSystem.create('js-pull-wrong-mode', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('js-pull-wrong-mode', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { actor, mock } = await bootActor(sys, JetStreamOptions.create()
         .withServers(['nats://fake:4222'])

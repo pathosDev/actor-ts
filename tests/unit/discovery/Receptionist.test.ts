@@ -17,7 +17,7 @@ import {
 } from '../../../src/discovery/index.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { Props } from '../../../src/Props.js';
-import { TestKit } from '../../../src/testkit/TestKit.js';
+import { TestKit, TestKitOptions } from '../../../src/testkit/TestKit.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
@@ -36,7 +36,7 @@ class Service extends Actor<string> {
 
 describe('Receptionist — local', () => {
   test('Register → Find returns the registered ref', async () => {
-    const kit = TestKit.create('recp-local', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('recp-local', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = kit.createTestProbe<Listing<string>>();
     const receptionist = kit.system.extension(ReceptionistId).start(null);
 
@@ -52,7 +52,7 @@ describe('Receptionist — local', () => {
   });
 
   test('Subscribe receives initial listing and future updates', async () => {
-    const kit = TestKit.create('recp-sub', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('recp-sub', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = kit.createTestProbe<Listing<string>>();
     const receptionist = kit.system.extension(ReceptionistId).start(null);
 
@@ -76,7 +76,7 @@ describe('Receptionist — local', () => {
   });
 
   test('Registered reply arrives when Register supplies replyTo', async () => {
-    const kit = TestKit.create('recp-ack', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('recp-ack', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = kit.createTestProbe();
     const receptionist = kit.system.extension(ReceptionistId).start(null);
 
@@ -91,7 +91,7 @@ describe('Receptionist — local', () => {
   });
 
   test('Deregister removes the ref and notifies subscribers', async () => {
-    const kit = TestKit.create('recp-dereg', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('recp-dereg', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = kit.createTestProbe<Listing<string>>();
     const receptionist = kit.system.extension(ReceptionistId).start(null);
 
@@ -115,7 +115,7 @@ describe('Receptionist — cluster-wide', () => {
   interface NodeCtx { system: ActorSystem; cluster: Cluster; kit: TestKit; receptionist: ActorRef<unknown>; }
 
   async function startNode(sys: string, host: string, port: number, seeds: string[] = []): Promise<NodeCtx> {
-    const kit = TestKit.create(sys, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create(sys, TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const cluster = await Cluster.join(
       kit.system,
       ClusterOptions.create()

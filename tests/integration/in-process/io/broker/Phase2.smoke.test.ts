@@ -9,7 +9,7 @@
  * in a separate, optional file (out of scope here).
  */
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import { Actor } from '../../../../../src/Actor.js';
@@ -26,7 +26,7 @@ import { BrokerSettingsError } from '../../../../../src/io/broker/BrokerSettings
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 function makeSys(name = 'phase2'): ActorSystem {
-  return ActorSystem.create(name, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  return ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
 }
 
 describe('Phase 2 actors — construction is lazy', () => {
@@ -99,12 +99,12 @@ describe('Phase 2 actors — settings validation', () => {
 
 describe('Phase 2 actors — settings precedence (constructor wins over HOCON)', () => {
   test('KafkaActor: constructor brokers override HOCON', async () => {
-    const sys = ActorSystem.create('kafka-prec', {
-      logger: new NoopLogger(), logLevel: LogLevel.Off,
-      config: {
+    const sys = ActorSystem.create('kafka-prec', ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({
         'actor-ts': { io: { broker: { kafka: { brokers: ['hocon:9092'], clientId: 'from-cfg' } } } },
-      },
-    });
+      }));
     let captured: KafkaActor | null = null;
     let resolve!: (a: KafkaActor) => void;
     const ready = new Promise<KafkaActor>((r) => { resolve = r; });

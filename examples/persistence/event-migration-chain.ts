@@ -11,6 +11,7 @@
  */
 import {
   ActorSystem,
+  ActorSystemOptions,
   InMemoryJournal,
   InMemorySnapshotStore,
   PersistentActor,
@@ -71,9 +72,8 @@ async function main(): Promise<void> {
     { _v: 3, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', cents: 99, currency: 'USD' } },
   ], 0);
 
-  const sys = ActorSystem.create('migration-chain', {
-    persistence: { journal, snapshotStore: snapshots },
-  });
+  const sys = ActorSystem.create('migration-chain', ActorSystemOptions.create()
+    .withPersistence({ journal, snapshotStore: snapshots }));
 
   const acct = sys.spawn(Props.create(() => new Account('alice')), 'alice');
   // v1 (1.5 USD = 150 cents) + v2 (2 EUR = 200 cents) + v3 (99 cents) = 449 cents.

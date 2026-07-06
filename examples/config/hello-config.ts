@@ -8,7 +8,7 @@
  *
  *   bun run examples/config/hello-config.ts
  */
-import { Actor, ActorSystem, Props } from '../../src/index.js';
+import { Actor, ActorSystem, ActorSystemOptions, Props } from '../../src/index.js';
 
 class DiagActor extends Actor<'report'> {
   override onReceive(_: 'report'): void {
@@ -23,14 +23,13 @@ class DiagActor extends Actor<'report'> {
 }
 
 async function main(): Promise<void> {
-  const system = ActorSystem.create('hello-config', {
-    config: {
+  const system = ActorSystem.create('hello-config', ActorSystemOptions.create()
+    .withConfig({
       'actor-ts': {
         cluster: { 'gossip-interval': '250ms' },
         sharding: { 'number-of-shards': 16 },
       },
-    },
-  });
+    }));
 
   const diag = system.spawn(Props.create(() => new DiagActor()), 'diag');
   diag.tell('report');

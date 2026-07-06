@@ -7,6 +7,7 @@
  */
 import {
   ActorSystem,
+  ActorSystemOptions,
   Cluster,
   ClusterOptions,
   InMemoryTransport,
@@ -22,7 +23,7 @@ async function formTriangle(): Promise<void> {
   const base = portSeed; portSeed += 3;
   const systemName = `form-${base}`;
   const mkNode = async (p: number, seeds: string[] = []): Promise<{ sys: ActorSystem; cluster: Cluster }> => {
-    const sys = ActorSystem.create(systemName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const cluster = await Cluster.join(sys, ClusterOptions.create()
       .withHost('h')
       .withPort(p)

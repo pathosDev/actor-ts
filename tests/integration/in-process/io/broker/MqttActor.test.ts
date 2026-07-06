@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
 import { Actor } from '../../../../../src/Actor.js';
 import { Props } from '../../../../../src/Props.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
@@ -155,10 +155,9 @@ class TestMqttActor<T = unknown, TSelf = never> extends MqttActor<T, TSelf> {
 
 let sysCounter = 0;
 function makeSystem(): ActorSystem {
-  return ActorSystem.create(`mqtt-unit-${++sysCounter}`, {
-    logger: new NoopLogger(),
-    logLevel: LogLevel.Off,
-  });
+  return ActorSystem.create(`mqtt-unit-${++sysCounter}`, ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off));
 }
 
 async function boot<T, TSelf>(

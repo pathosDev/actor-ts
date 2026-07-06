@@ -16,7 +16,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
-import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../src/ActorSystem.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { Props } from '../../../src/Props.js';
@@ -28,7 +28,7 @@ const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 describe('Actor tracing — auto-instrumentation', () => {
   test('actor.receive span has the caller\'s span as parent', async () => {
     const tracer = new RecordingTracer();
-    const sys = ActorSystem.create('tr-1', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('tr-1', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     sys.extension(TracingExtensionId).enable(tracer);
 
     class Recv extends Actor<string> {
@@ -60,7 +60,7 @@ describe('Actor tracing — auto-instrumentation', () => {
 
   test('chained actors: span tree A→B inside one trace', async () => {
     const tracer = new RecordingTracer();
-    const sys = ActorSystem.create('tr-chain', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('tr-chain', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     sys.extension(TracingExtensionId).enable(tracer);
 
     class B extends Actor<string> {
@@ -99,7 +99,7 @@ describe('Actor tracing — auto-instrumentation', () => {
 
   test('handler error propagates to span: setStatus(error) + recordException', async () => {
     const tracer = new RecordingTracer();
-    const sys = ActorSystem.create('tr-err', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('tr-err', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     sys.extension(TracingExtensionId).enable(tracer);
 
     class Bomb extends Actor<string> {
@@ -124,7 +124,7 @@ describe('Actor tracing — auto-instrumentation', () => {
   test('without enabling the tracer, no spans are recorded', async () => {
     const tracer = new RecordingTracer();
     // NOT enabling on the system — tracer stays as the noop default.
-    const sys = ActorSystem.create('tr-noop', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('tr-noop', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
 
     class R extends Actor<string> {
       override onReceive(): void { /* */ }

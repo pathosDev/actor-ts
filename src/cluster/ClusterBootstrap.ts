@@ -1,5 +1,5 @@
 import type { ActorRef } from '../ActorRef.js';
-import { ActorSystem, type ActorSystemSettings } from '../ActorSystem.js';
+import { ActorSystem, ActorSystemOptions, type ActorSystemSettings } from '../ActorSystem.js';
 import {
   ReceptionistId,
   type SeedProvider,
@@ -330,13 +330,13 @@ function resolvePort(opts: ClusterBootstrapSettings): number {
   return DEFAULT_PORT;
 }
 
-function extractSystemSettings(opts: ClusterBootstrapSettings): ActorSystemSettings {
-  const out: ActorSystemSettings = {};
-  if (opts.logger) (out as { logger?: typeof opts.logger }).logger = opts.logger;
-  if (opts.logLevel !== undefined) (out as { logLevel?: typeof opts.logLevel }).logLevel = opts.logLevel;
-  if (opts.config !== undefined) (out as { config?: typeof opts.config }).config = opts.config;
-  if (opts.configFile !== undefined) (out as { configFile?: typeof opts.configFile }).configFile = opts.configFile;
-  if (opts.persistence) (out as { persistence?: typeof opts.persistence }).persistence = opts.persistence;
+function extractSystemSettings(opts: ClusterBootstrapSettings): ActorSystemOptions {
+  const out = ActorSystemOptions.create();
+  if (opts.logger) out.withLogger(opts.logger);
+  if (opts.logLevel !== undefined) out.withLogLevel(opts.logLevel);
+  if (opts.config !== undefined) out.withConfig(opts.config);
+  if (opts.configFile !== undefined) out.withConfigFile(opts.configFile);
+  if (opts.persistence) out.withPersistence(opts.persistence);
   return out;
 }
 

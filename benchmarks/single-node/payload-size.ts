@@ -9,7 +9,7 @@
  *
  *   bun run benchmarks/single-node/payload-size.ts
  */
-import { Actor, ActorSystem, LogLevel, NoopLogger, Props, ask } from '../../src/index.js';
+import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props, ask } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
 class Echo extends Actor<Uint8Array> {
@@ -29,7 +29,7 @@ const SIZES = [
 ] as const;
 
 async function main(): Promise<void> {
-  const system = ActorSystem.create('bench-payload', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const system = ActorSystem.create('bench-payload', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const ref = system.spawnAnonymous(Props.create(() => new Echo()));
 
   console.log('\n  Payload-size sensitivity — ask round-trip for increasing body sizes\n');

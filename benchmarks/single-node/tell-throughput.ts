@@ -6,7 +6,7 @@
  *
  *   bun run benchmarks/single-node/tell-throughput.ts
  */
-import { Actor, ActorSystem, LogLevel, NoopLogger, Props, ask } from '../../src/index.js';
+import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props, ask } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
 type Msg = { kind: 'inc' } | { kind: 'get' };
@@ -27,7 +27,7 @@ async function drain(system: ActorSystem, batch: number): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const system = ActorSystem.create('bench-tell', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const system = ActorSystem.create('bench-tell', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
 
   await runGroup('single-node · tell-throughput', [
     { name: 'batch=100',  unit: 'msg', iterations: 200, opsPerIteration: 100,     run: () => drain(system, 100) },

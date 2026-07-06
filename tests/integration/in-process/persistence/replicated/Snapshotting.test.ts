@@ -20,7 +20,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
-import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
 import { Cluster, ClusterOptions } from '../../../../../src/cluster/Cluster.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
@@ -88,9 +88,7 @@ async function startActor(
   systemName: string, port: number,
   journal: InMemoryJournal, snapshotStore: InMemorySnapshotStore,
 ): Promise<Setup> {
-  const sys = ActorSystem.create(systemName, {
-    logger: new NoopLogger(), logLevel: LogLevel.Off,
-  });
+  const sys = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   sys.extension(PersistenceExtensionId).setJournal(journal);
   sys.extension(PersistenceExtensionId).setSnapshotStore(snapshotStore);
   const cluster = await Cluster.join(

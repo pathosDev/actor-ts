@@ -1,7 +1,7 @@
 /**
  * Worker-side script.  Bun spawns one instance of this file per core.
  */
-import { Actor, ActorSystem, Cluster, ClusterOptions, Props, WorkerNode } from '../../src/index.js';
+import { Actor, ActorSystem, ActorSystemOptions, Cluster, ClusterOptions, Props, WorkerNode } from '../../src/index.js';
 
 class HelloWorker extends Actor<'greet'> {
   constructor(private readonly workerId: number) { super(); }
@@ -11,9 +11,8 @@ class HelloWorker extends Actor<'greet'> {
 
 async function main(): Promise<void> {
   const ctx = await WorkerNode.join<{ workerId: number; seedAddr?: string }>();
-  const system = ActorSystem.create(ctx.systemName, {
-    config: { 'actor-ts': { logger: { level: 'info' } } },
-  });
+  const system = ActorSystem.create(ctx.systemName, ActorSystemOptions.create()
+    .withConfig({ 'actor-ts': { logger: { level: 'info' } } }));
   const cluster = await Cluster.join(system, ClusterOptions.create()
     .withHost(ctx.self.host)
     .withPort(ctx.self.port)

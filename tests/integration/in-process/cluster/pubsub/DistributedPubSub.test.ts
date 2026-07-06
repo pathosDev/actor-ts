@@ -12,7 +12,7 @@ import {
 } from '../../../../../src/cluster/pubsub/index.js';
 import { DistributedPubSubMediator, DistributedPubSubOptions } from '../../../../../src/cluster/pubsub/DistributedPubSubMediator.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { TestKit } from '../../../../../src/testkit/TestKit.js';
+import { TestKit, TestKitOptions } from '../../../../../src/testkit/TestKit.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -30,7 +30,7 @@ interface Node {
 }
 
 async function startNode(systemName: string, host: string, port: number, seeds: string[] = []): Promise<Node> {
-  const kit = TestKit.create(systemName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const kit = TestKit.create(systemName, TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const cluster = await Cluster.join(
     kit.system,
     ClusterOptions.create()

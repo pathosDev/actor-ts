@@ -7,7 +7,7 @@ import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
-import { TestKit } from '../../../../../src/testkit/TestKit.js';
+import { TestKit, TestKitOptions } from '../../../../../src/testkit/TestKit.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
@@ -28,7 +28,7 @@ interface Node {
 }
 
 async function startNode(systemName: string, host: string, port: number, seeds: string[] = []): Promise<Node> {
-  const kit = TestKit.create(systemName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const kit = TestKit.create(systemName, TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const cluster = await Cluster.join(kit.system, ClusterOptions.create()
     .withHost(host)
     .withPort(port)
@@ -303,7 +303,7 @@ describe('ClusterSingleton — role filter', () => {
 });
 
 async function startNodeWithRole(systemName: string, host: string, port: number, seeds: string[], roles: string[]): Promise<Node> {
-  const kit = TestKit.create(systemName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const kit = TestKit.create(systemName, TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const cluster = await Cluster.join(kit.system, ClusterOptions.create()
     .withHost(host)
     .withPort(port)

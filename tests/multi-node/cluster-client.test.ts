@@ -16,7 +16,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
-import { ActorSystem } from '../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../src/ActorSystem.js';
 import { Cluster, ClusterOptions } from '../../src/cluster/Cluster.js';
 import { ClusterClient, ClusterClientOptions } from '../../src/cluster/ClusterClient.js';
 import { ClusterClientReceptionistId } from '../../src/cluster/ClusterClientReceptionist.js';
@@ -56,10 +56,7 @@ let nextPort = PORT_BASE;
 function pickPort(): number { return nextPort++; }
 
 async function startNode(systemName: string, port: number, seeds: string[] = []): Promise<NodeHandle> {
-  const system = ActorSystem.create(systemName, {
-    logger: new NoopLogger(),
-    logLevel: LogLevel.Off,
-  });
+  const system = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const cluster = await Cluster.join(
     system,
     ClusterOptions.create()

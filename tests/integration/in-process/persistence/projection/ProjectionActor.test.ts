@@ -11,7 +11,7 @@
  *     offset store survives a restart so we can verify resumption.
  */
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { InMemoryJournal } from '../../../../../src/persistence/journals/InMemoryJournal.js';
 import {
@@ -30,7 +30,7 @@ import { InMemoryDurableStateStore } from '../../../../../src/persistence/durabl
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 function newSystem(name: string): ActorSystem {
-  return ActorSystem.create(name, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  return ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
 }
 
 async function waitFor(pred: () => boolean, timeoutMs = 3_000): Promise<void> {

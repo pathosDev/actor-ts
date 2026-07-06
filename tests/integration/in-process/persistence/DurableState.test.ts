@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem } from '../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import { Props } from '../../../../src/Props.js';
 import {
@@ -67,7 +67,7 @@ describe('InMemoryDurableStateStore', () => {
 
 describe('DurableStateActor', () => {
   const newSys = (): ActorSystem =>
-    ActorSystem.create('ds-test', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    ActorSystem.create('ds-test', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
 
   test('persisted state survives actor restart', async () => {
     const store = new InMemoryDurableStateStore();

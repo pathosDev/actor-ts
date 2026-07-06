@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../src/ActorSystem.js';
 import { Cluster, ClusterOptions } from '../../../src/cluster/Cluster.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
@@ -40,7 +40,7 @@ describe('HealthCheckRegistry', () => {
 describe('managementRoutes — cluster queries', () => {
   async function startNode(): Promise<{ sys: ActorSystem; cluster: Cluster; port: number }> {
     const port = 55200 + Math.floor(Math.random() * 300);
-    const sys = ActorSystem.create('mgmt', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('mgmt', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const cluster = await Cluster.join(
       sys,
       ClusterOptions.create()
@@ -247,8 +247,8 @@ describe('managementRoutes — cluster queries', () => {
     // Drive cluster.down via the public API rather than HTTP so the
     // event-emission contract is observable from the test directly —
     // the HTTP route is a thin wrapper around the same method.
-    const sysA = ActorSystem.create('mgmt', { logger: new NoopLogger(), logLevel: LogLevel.Off });
-    const sysB = ActorSystem.create('mgmt', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sysA = ActorSystem.create('mgmt', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysB = ActorSystem.create('mgmt', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const portA = 56_000 + Math.floor(Math.random() * 500);
     const portB = portA + 1;
     const clA = await Cluster.join(
@@ -292,7 +292,7 @@ describe('managementRoutes — cluster queries', () => {
 describe('managementRoutes — auth + IP allowlist (#312)', () => {
   async function startNode(): Promise<{ sys: ActorSystem; cluster: Cluster }> {
     const port = 55500 + Math.floor(Math.random() * 300);
-    const sys = ActorSystem.create('mgmt', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('mgmt', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const cluster = await Cluster.join(
       sys,
       ClusterOptions.create()

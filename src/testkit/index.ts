@@ -1,7 +1,7 @@
-export { TestKit } from './TestKit.js';
-export type { TestKitOptions } from './TestKit.js';
-export { TestProbe } from './TestProbe.js';
-export type { TestProbeOptions } from './TestProbe.js';
+export { TestKit, TestKitOptions } from './TestKit.js';
+export type { TestKitSettings } from './TestKit.js';
+export { TestProbe, TestProbeOptions } from './TestProbe.js';
+export type { TestProbeSettings } from './TestProbe.js';
 export { ManualScheduler } from './ManualScheduler.js';
 export { MultiNodeSpec } from './MultiNodeSpec.js';
 export type { MultiNodeSpecSettings } from './MultiNodeSpec.js';

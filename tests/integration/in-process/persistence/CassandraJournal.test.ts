@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem } from '../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import {
   CASSANDRA_JOURNAL_PLUGIN_ID,
@@ -176,17 +176,16 @@ describe('CassandraSnapshotStore', () => {
 describe('registerCassandraPlugins — config-driven selection', () => {
   test('extension picks up Cassandra plug-ins when the config path names them', async () => {
     const client = new FakeCassandraClient();
-    const sys = ActorSystem.create('cassandra-cfg', {
-      logger: new NoopLogger(), logLevel: LogLevel.Off,
-      config: {
+    const sys = ActorSystem.create('cassandra-cfg', ActorSystemOptions.create()
+      .withLogger(new NoopLogger()).withLogLevel(LogLevel.Off)
+      .withConfig({
         'actor-ts': {
           persistence: {
             journal: { plugin: CASSANDRA_JOURNAL_PLUGIN_ID },
             'snapshot-store': { plugin: CASSANDRA_SNAPSHOT_PLUGIN_ID },
           },
         },
-      },
-    });
+      }));
     const ext = sys.extension(PersistenceExtensionId);
     registerCassandraPlugins(ext, RegisterCassandraPluginsOptions.create()
       .withClient(client)

@@ -29,6 +29,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   ActorSystem,
+  ActorSystemOptions,
   InMemoryJournal,
   OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID,
   ObjectStoragePluginOptions,
@@ -134,16 +135,15 @@ async function main(): Promise<void> {
   const journal = new InMemoryJournal();
 
   // --- first incarnation: record events + snapshots ---
-  const sys1 = ActorSystem.create('bank-s3', {
-    config: {
+  const sys1 = ActorSystem.create('bank-s3', ActorSystemOptions.create()
+    .withConfig({
       'actor-ts': {
         persistence: {
           'snapshot-store': { plugin: OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID },
         },
       },
-    },
-    persistence: { journal },
-  });
+    })
+    .withPersistence({ journal }));
   await registerObjectStoragePlugins(sys1.extension(PersistenceExtensionId),
     ObjectStoragePluginOptions.create()
       .withBackend(spec)
@@ -166,16 +166,15 @@ async function main(): Promise<void> {
   await sys1.terminate();
 
   // --- second incarnation: recover from the same journal + snapshot bucket ---
-  const sys2 = ActorSystem.create('bank-s3-restart', {
-    config: {
+  const sys2 = ActorSystem.create('bank-s3-restart', ActorSystemOptions.create()
+    .withConfig({
       'actor-ts': {
         persistence: {
           'snapshot-store': { plugin: OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID },
         },
       },
-    },
-    persistence: { journal },
-  });
+    })
+    .withPersistence({ journal }));
   await registerObjectStoragePlugins(sys2.extension(PersistenceExtensionId),
     ObjectStoragePluginOptions.create()
       .withBackend(spec)

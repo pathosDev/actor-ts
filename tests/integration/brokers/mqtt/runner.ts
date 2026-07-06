@@ -6,7 +6,7 @@
  * isolated; connect costs ~50ms per actor.
  */
 import { Actor } from '../../../../src/Actor.js';
-import { ActorSystem } from '../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../src/ActorSystem.js';
 import { JsonLogger, LogLevel } from '../../../../src/Logger.js';
 import { Props } from '../../../../src/Props.js';
 import { MqttActor, type MqttMessage } from '../../../../src/io/broker/MqttActor.js';
@@ -59,10 +59,9 @@ async function main(): Promise<void> {
     description: 'Mosquitto MQTT', deadlineMs: 30_000,
   });
 
-  const system = ActorSystem.create('mqtt-runner', {
-    logger: new JsonLogger(),
-    logLevel: LogLevel.Info,
-  });
+  const system = ActorSystem.create('mqtt-runner', ActorSystemOptions.create()
+    .withLogger(new JsonLogger())
+    .withLogLevel(LogLevel.Info));
   process.on('SIGTERM', () => { void system.terminate(); });
 
   const ctx: MqttCtx = { env: process.env, brokerUrl, system };

@@ -24,7 +24,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { PersistenceExtensionId } from '../../../../../src/persistence/PersistenceExtension.js';
 import {
@@ -46,9 +46,7 @@ afterEach(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {
 
 describe('eager peer-dep validation (#18, #59)', () => {
   test('registration is now async and awaits the probe', async () => {
-    const sys = ActorSystem.create('peerdep-async', {
-      logger: new NoopLogger(), logLevel: LogLevel.Off,
-    });
+    const sys = ActorSystem.create('peerdep-async', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const ext = sys.extension(PersistenceExtensionId);
     const result = registerObjectStoragePlugins(ext,
       ObjectStoragePluginOptions.create().withBackend({ kind: 'filesystem', dir }));
@@ -59,9 +57,7 @@ describe('eager peer-dep validation (#18, #59)', () => {
   });
 
   test('gzip + none always probe-succeed (no peer-deps)', async () => {
-    const sys = ActorSystem.create('peerdep-gzip-none', {
-      logger: new NoopLogger(), logLevel: LogLevel.Off,
-    });
+    const sys = ActorSystem.create('peerdep-gzip-none', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const ext = sys.extension(PersistenceExtensionId);
     await expect(registerObjectStoragePlugins(ext,
       ObjectStoragePluginOptions.create()
@@ -75,9 +71,7 @@ describe('eager peer-dep validation (#18, #59)', () => {
   });
 
   test('zstd probe-succeeds on Bun (which ships native zstd)', async () => {
-    const sys = ActorSystem.create('peerdep-zstd', {
-      logger: new NoopLogger(), logLevel: LogLevel.Off,
-    });
+    const sys = ActorSystem.create('peerdep-zstd', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const ext = sys.extension(PersistenceExtensionId);
     await expect(registerObjectStoragePlugins(ext,
       ObjectStoragePluginOptions.create()
@@ -117,9 +111,7 @@ describe('eager peer-dep validation (#18, #59)', () => {
 
     // Should still register cleanly (the probe simply skips opaque
     // resolvers; first-use checks remain).
-    const sys = ActorSystem.create('peerdep-opaque', {
-      logger: new NoopLogger(), logLevel: LogLevel.Off,
-    });
+    const sys = ActorSystem.create('peerdep-opaque', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const ext = sys.extension(PersistenceExtensionId);
     await expect(registerObjectStoragePlugins(ext,
       ObjectStoragePluginOptions.create()
@@ -129,9 +121,7 @@ describe('eager peer-dep validation (#18, #59)', () => {
   });
 
   test('compressionByPrefix-built resolver: every algo it could return is probed at registration', async () => {
-    const sys = ActorSystem.create('peerdep-prefix', {
-      logger: new NoopLogger(), logLevel: LogLevel.Off,
-    });
+    const sys = ActorSystem.create('peerdep-prefix', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const ext = sys.extension(PersistenceExtensionId);
     // Multiple algos in the spec — the probe should accept all of them
     // (gzip, zstd, none all available on Bun).
@@ -175,9 +165,7 @@ describe('eager peer-dep validation (#18, #59)', () => {
   });
 
   test('encryption probe: only fires when client-aes256-gcm is configured', async () => {
-    const sys = ActorSystem.create('peerdep-enc-server-side', {
-      logger: new NoopLogger(), logLevel: LogLevel.Off,
-    });
+    const sys = ActorSystem.create('peerdep-enc-server-side', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const ext = sys.extension(PersistenceExtensionId);
     // sse-s3 / sse-kms are header-pass-throughs — they don't need
     // SubtleCrypto.  Even if we were running in a hypothetical no-

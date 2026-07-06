@@ -8,6 +8,7 @@
  */
 import {
   ActorSystem,
+  ActorSystemOptions,
   ExpressBackend,
   FastifyBackend,
   HonoBackend,
@@ -60,7 +61,7 @@ async function startServer(
   label: string,
   backendFactory: () => HttpServerBackend,
 ): Promise<Harness> {
-  const system = ActorSystem.create(`bench-rest-${label}`, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const system = ActorSystem.create(`bench-rest-${label}`, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const http = system.extension(HttpExtensionId);
   return {
     base: '',

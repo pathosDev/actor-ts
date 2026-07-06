@@ -22,7 +22,7 @@
  * or verbose output pass `{ logger, logLevel }` explicitly.
  */
 
-import { ActorSystem } from '../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../src/ActorSystem.js';
 import type { ActorSystemSettings } from '../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 
@@ -47,9 +47,18 @@ export interface TestActorSystemOptions extends Partial<ActorSystemSettings> {
  */
 export function createTestActorSystem(options: TestActorSystemOptions = {}): ActorSystem {
   const { name = 'test-system', ...rest } = options;
-  return ActorSystem.create(name, {
-    logger: new NoopLogger(),
-    logLevel: LogLevel.Off,
-    ...rest,
-  });
+  // Quiet defaults first; each explicit `rest` field then overrides its slot
+  // (the builder's setters overwrite by key), matching the old
+  // `{ logger, logLevel, ...rest }` spread precedence exactly.
+  const builder = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  if (rest.logger !== undefined) builder.withLogger(rest.logger);
+  if (rest.logLevel !== undefined) builder.withLogLevel(rest.logLevel);
+  if (rest.dispatcher !== undefined) builder.withDispatcher(rest.dispatcher);
+  if (rest.scheduler !== undefined) builder.withScheduler(rest.scheduler);
+  if (rest.config !== undefined) builder.withConfig(rest.config);
+  if (rest.configFile !== undefined) builder.withConfigFile(rest.configFile);
+  if (rest.persistence !== undefined) builder.withPersistence(rest.persistence);
+  return ActorSystem.create(name, builder);
 }

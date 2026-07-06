@@ -7,7 +7,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
-import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
 import { AskTimeoutError } from '../../../../../src/SystemMessages.js';
 import { Cluster, ClusterOptions } from '../../../../../src/cluster/Cluster.js';
 import { ClusterSharding, StartShardingOptions } from '../../../../../src/cluster/sharding/ClusterSharding.js';
@@ -50,7 +50,7 @@ interface Node {
 async function startNodeWithLease(
   systemName: string, port: number, lease: InMemoryLease,
 ): Promise<Node> {
-  const sys = ActorSystem.create(systemName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const sys = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const cluster = await Cluster.join(sys, ClusterOptions.create()
     .withHost('h')
     .withPort(port)

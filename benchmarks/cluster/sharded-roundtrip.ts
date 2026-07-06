@@ -8,6 +8,7 @@
 import {
   Actor,
   ActorSystem,
+  ActorSystemOptions,
   Cluster,
   ClusterOptions,
   ClusterSharding,
@@ -33,7 +34,7 @@ class Entity extends Actor<Cmd> {
 let port = 43_000;
 
 async function startNode(systemName: string, p: number, seeds: string[] = []): Promise<{ sys: ActorSystem; cluster: Cluster; region: ActorRef<Cmd> }> {
-  const sys = ActorSystem.create(systemName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const sys = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const cluster = await Cluster.join(sys, ClusterOptions.create()
     .withHost('h')
     .withPort(p)

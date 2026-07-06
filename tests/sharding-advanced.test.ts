@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test';
 import {
   Actor,
   ActorSystem,
+  ActorSystemOptions,
   Cluster,
   ClusterOptions,
   ClusterSharding,
@@ -47,10 +48,7 @@ async function startNode<TMsg>(opts: {
   roles?: string[];
   sharding: (sharding: ClusterSharding) => ActorRef<TMsg>;
 }): Promise<NodeCtx<TMsg>> {
-  const system = ActorSystem.create(opts.systemName, {
-    logger: new NoopLogger(),
-    logLevel: LogLevel.Off,
-  });
+  const system = ActorSystem.create(opts.systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const clusterOptions = ClusterOptions.create()
     .withHost(opts.host)
     .withPort(opts.port)
@@ -72,7 +70,7 @@ async function stopNode(n: NodeCtx<unknown>): Promise<void> {
 /* --------------------------------- Tests --------------------------------- */
 
 test('Self events fire when own member transitions to Up', async () => {
-  const system = ActorSystem.create('self-up', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const system = ActorSystem.create('self-up', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const cluster = await Cluster.join(
     system,
     ClusterOptions.create()
@@ -89,7 +87,7 @@ test('Self events fire when own member transitions to Up', async () => {
 });
 
 test('LeaderChanged fires when the oldest member leaves', async () => {
-  const sys1 = ActorSystem.create('leader-x', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const sys1 = ActorSystem.create('leader-x', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const c1 = await Cluster.join(
     sys1,
     ClusterOptions.create()
@@ -99,7 +97,7 @@ test('LeaderChanged fires when the oldest member leaves', async () => {
       .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
       .withGossipIntervalMs(80),
   );
-  const sys2 = ActorSystem.create('leader-x', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const sys2 = ActorSystem.create('leader-x', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const c2 = await Cluster.join(
     sys2,
     ClusterOptions.create()

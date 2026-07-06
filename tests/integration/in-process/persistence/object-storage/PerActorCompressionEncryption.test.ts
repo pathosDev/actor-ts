@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import {
@@ -78,7 +78,7 @@ describe('PersistentActor — actor-level compression hook', () => {
         .withBackend(wrapped)
         .withCompression({ algorithm: 'gzip' }),
     );
-    const sys = ActorSystem.create('per-actor-comp', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('per-actor-comp', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     sys.extension(PersistenceExtensionId).setJournal(new InMemoryJournal());
     sys.extension(PersistenceExtensionId).setSnapshotStore(snapshots);
 
@@ -99,7 +99,7 @@ describe('PersistentActor — actor-level compression hook', () => {
         .withBackend(wrapped)
         .withCompression({ algorithm: 'gzip' }),
     );
-    const sys = ActorSystem.create('per-actor-fallback', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('per-actor-fallback', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     sys.extension(PersistenceExtensionId).setJournal(new InMemoryJournal());
     sys.extension(PersistenceExtensionId).setSnapshotStore(snapshots);
 
@@ -121,7 +121,7 @@ describe('PersistentActor — actor-level encryption hook', () => {
     // Plugin has neither compression nor encryption set — purely actor-driven.
     const snapshots = new ObjectStorageSnapshotStore(ObjectStorageSnapshotStoreOptions.create().withBackend(backend));
 
-    const sys = ActorSystem.create('actor-aes', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('actor-aes', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     sys.extension(PersistenceExtensionId).setJournal(new InMemoryJournal());
     sys.extension(PersistenceExtensionId).setSnapshotStore(snapshots);
 
@@ -141,7 +141,7 @@ describe('PersistentActor — actor-level encryption hook', () => {
     expect(raw.includes('incremented')).toBe(false);
 
     // Restart with the same hook and verify recovery decrypts state correctly.
-    const sys2 = ActorSystem.create('actor-aes-2', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys2 = ActorSystem.create('actor-aes-2', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     sys2.extension(PersistenceExtensionId).setJournal(new InMemoryJournal());
     sys2.extension(PersistenceExtensionId).setSnapshotStore(snapshots);
     let recoveredState: State | null = null;
@@ -184,7 +184,7 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
         .withBackend(wrapped)
         .withCompression({ algorithm: 'gzip' }),
     );
-    const sys = ActorSystem.create('ds-comp', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('ds-comp', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = makeProbe(sys);
     const ref = sys.spawn(Props.create(() =>
       new Counter(
@@ -207,7 +207,7 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
     const enc: EncryptionConfig = { mode: 'client-aes256-gcm', masterKey };
     const store = new ObjectStorageDurableStateStore(ObjectStorageDurableStateStoreOptions.create().withBackend(backend));
 
-    const sys = ActorSystem.create('ds-aes', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('ds-aes', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = makeProbe(sys);
     const ref = sys.spawn(Props.create(() =>
       new Counter(
@@ -228,7 +228,7 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
     expect(raw.includes('12345')).toBe(false);
 
     // Restart on the same backend with the same hook → recovery decrypts.
-    const sys2 = ActorSystem.create('ds-aes-2', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys2 = ActorSystem.create('ds-aes-2', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe2 = makeProbe(sys2);
     const ref2 = sys2.spawn(Props.create(() =>
       new Counter(

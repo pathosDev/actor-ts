@@ -7,7 +7,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
-import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
 import { Cluster, ClusterOptions } from '../../../../../src/cluster/Cluster.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
@@ -44,9 +44,7 @@ class Counter extends ReplicatedEventSourcedActor<Cmd, Event, State> {
 describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
   test('spawning two actors with the same persistenceId on one node — second fails loudly', async () => {
     preStartFailures = 0;
-    const sys = ActorSystem.create('single-writer', {
-      logger: new NoopLogger(), logLevel: LogLevel.Off,
-    });
+    const sys = ActorSystem.create('single-writer', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const cluster = await Cluster.join(
       sys,
       ClusterOptions.create()
@@ -87,9 +85,7 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
 
   test('after a clean stop, a fresh actor with the same pid can be spawned', async () => {
     preStartFailures = 0;
-    const sys = ActorSystem.create('single-writer-restart', {
-      logger: new NoopLogger(), logLevel: LogLevel.Off,
-    });
+    const sys = ActorSystem.create('single-writer-restart', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const cluster = await Cluster.join(
       sys,
       ClusterOptions.create()
@@ -129,12 +125,8 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
     // other's registrations.  Pin this — a future bug that promotes
     // the registry to a module-level Set would break test isolation.
     preStartFailures = 0;
-    const sys1 = ActorSystem.create('sw-isolated-1', {
-      logger: new NoopLogger(), logLevel: LogLevel.Off,
-    });
-    const sys2 = ActorSystem.create('sw-isolated-2', {
-      logger: new NoopLogger(), logLevel: LogLevel.Off,
-    });
+    const sys1 = ActorSystem.create('sw-isolated-1', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sys2 = ActorSystem.create('sw-isolated-2', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const cluster1 = await Cluster.join(
       sys1,
       ClusterOptions.create()
@@ -193,9 +185,7 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
       }
     }
 
-    const sys = ActorSystem.create('sw-msg', {
-      logger: new NoopLogger(), logLevel: LogLevel.Off,
-    });
+    const sys = ActorSystem.create('sw-msg', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const cluster = await Cluster.join(
       sys,
       ClusterOptions.create()

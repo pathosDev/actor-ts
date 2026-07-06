@@ -13,7 +13,7 @@
  *      `DistributedDataHandle` correctly.
  */
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
 import { Cluster, ClusterOptions } from '../../../../../src/cluster/Cluster.js';
 import {
   DistributedDataCoordinatorStateStore,
@@ -77,9 +77,7 @@ describe('CoordinatorStateStore', () => {
   });
 
   test('3. DistributedDataCoordinatorStateStore round-trips through DD', async () => {
-    const sys = ActorSystem.create('coord-state', {
-      logger: new NoopLogger(), logLevel: LogLevel.Off,
-    });
+    const sys = ActorSystem.create('coord-state', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const cluster = await Cluster.join(sys, ClusterOptions.create()
       .withHost('h')
       .withPort(71_001)

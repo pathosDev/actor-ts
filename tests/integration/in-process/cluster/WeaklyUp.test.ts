@@ -4,13 +4,13 @@ import { MemberWeaklyUp } from '../../../../src/cluster/ClusterEvents.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
-import { ActorSystem } from '../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../src/ActorSystem.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 describe('Cluster — WeaklyUp', () => {
   test('joining member gets promoted to weakly-up after the timeout when no leader is present', async () => {
-    const sys = ActorSystem.create('wup', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('wup', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const events: string[] = [];
     // Seed an unknown peer so the cluster stays in "joining" — no leader elected.
     const transport = new InMemoryTransport(new NodeAddress('wup', 'h', 55001));
@@ -41,7 +41,7 @@ describe('Cluster — WeaklyUp', () => {
   test('weakly-up member becomes up once the leader converges', async () => {
     // Start A solo (will self-elect as leader), then start B with weaklyUp
     // enabled — B passes through joining → weakly-up → up.
-    const sysA = ActorSystem.create('wup-2', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sysA = ActorSystem.create('wup-2', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const a = await Cluster.join(
       sysA,
       ClusterOptions.create()
@@ -51,7 +51,7 @@ describe('Cluster — WeaklyUp', () => {
         .withGossipIntervalMs(60),
     );
 
-    const sysB = ActorSystem.create('wup-2', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sysB = ActorSystem.create('wup-2', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const eventsB: string[] = [];
 
     // Seed against A; weaklyUpAfterMs is big enough that normal joining→up

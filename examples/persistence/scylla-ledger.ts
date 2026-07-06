@@ -14,6 +14,7 @@
 import { match } from 'ts-pattern';
 import {
   ActorSystem,
+  ActorSystemOptions,
   CASSANDRA_JOURNAL_PLUGIN_ID,
   CASSANDRA_SNAPSHOT_PLUGIN_ID,
   CassandraJournalOptions,
@@ -83,16 +84,15 @@ async function main(): Promise<void> {
   }
   const contactPoints = raw.split(',').map((s) => s.trim());
 
-  const system = ActorSystem.create('ledger', {
-    config: {
+  const system = ActorSystem.create('ledger', ActorSystemOptions.create()
+    .withConfig({
       'actor-ts': {
         persistence: {
           journal: { plugin: CASSANDRA_JOURNAL_PLUGIN_ID },
           'snapshot-store': { plugin: CASSANDRA_SNAPSHOT_PLUGIN_ID },
         },
       },
-    },
-  });
+    }));
 
   const ext = system.extension(PersistenceExtensionId);
   registerCassandraPlugins(ext, RegisterCassandraPluginsOptions.create()

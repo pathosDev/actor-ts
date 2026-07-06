@@ -14,7 +14,7 @@
  * across nodes via `jq` / `vector` / standard log-aggregation tools.
  */
 
-import { ActorSystem } from '../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../src/ActorSystem.js';
 import { Cluster, ClusterOptions } from '../../src/cluster/Cluster.js';
 import {
   Actor,
@@ -74,7 +74,7 @@ async function main(): Promise<void> {
   const logger = new JsonLogger(parseLevel(LOG_LEVEL), '', { node: NODE_NAME });
   logger.info('node-runner starting', { host: HOST, clusterPort: CLUSTER_PORT, seeds: SEEDS });
 
-  const system = ActorSystem.create(SYSTEM_NAME, { logger });
+  const system = ActorSystem.create(SYSTEM_NAME, ActorSystemOptions.create().withLogger(logger));
   // Enable the metrics registry — defaults to NoopMetricsRegistry,
   // which would silently swallow every `counter.inc()` from
   // `actor_mailbox_dropped_total` (the hook scenario 14 verifies).

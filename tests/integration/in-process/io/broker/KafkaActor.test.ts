@@ -10,7 +10,7 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
 import { ActorRef } from '../../../../../src/ActorRef.js';
-import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import {
@@ -159,7 +159,7 @@ async function bootActor(
 
 describe('KafkaActor — auto-commit (default)', () => {
   test('eachMessage resolves immediately and no commitOffsets call is made', async () => {
-    const sys = ActorSystem.create('kafka-auto', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('kafka-auto', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { mock, target } = await bootActor(sys, KafkaOptions.create()
         .withBrokers(['fake:9092'])
@@ -183,7 +183,7 @@ describe('KafkaActor — auto-commit (default)', () => {
 
 describe('KafkaActor — manual commit (#2)', () => {
   test('eachMessage stays pending until a commit command arrives', async () => {
-    const sys = ActorSystem.create('kafka-manual', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('kafka-manual', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { actor, mock, target } = await bootActor(sys, KafkaOptions.create()
         .withBrokers(['fake:9092'])
@@ -211,7 +211,7 @@ describe('KafkaActor — manual commit (#2)', () => {
   });
 
   test('nack rejects the pending promise and skips the commit', async () => {
-    const sys = ActorSystem.create('kafka-nack', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('kafka-nack', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { actor, mock } = await bootActor(sys, KafkaOptions.create()
         .withBrokers(['fake:9092'])
@@ -230,7 +230,7 @@ describe('KafkaActor — manual commit (#2)', () => {
   });
 
   test('commit-timeout rejects the pending promise after commitTimeoutMs', async () => {
-    const sys = ActorSystem.create('kafka-timeout', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('kafka-timeout', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { mock } = await bootActor(sys, KafkaOptions.create()
         .withBrokers(['fake:9092'])
@@ -247,7 +247,7 @@ describe('KafkaActor — manual commit (#2)', () => {
   });
 
   test('commit for unknown / already-committed offset is a silent no-op', async () => {
-    const sys = ActorSystem.create('kafka-unknown', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('kafka-unknown', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { actor, mock } = await bootActor(sys, KafkaOptions.create()
         .withBrokers(['fake:9092'])
@@ -263,7 +263,7 @@ describe('KafkaActor — manual commit (#2)', () => {
   });
 
   test('multiple in-flight commits across partitions resolve independently', async () => {
-    const sys = ActorSystem.create('kafka-multi', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('kafka-multi', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { actor, mock } = await bootActor(sys, KafkaOptions.create()
         .withBrokers(['fake:9092'])
@@ -290,7 +290,7 @@ describe('KafkaActor — manual commit (#2)', () => {
   });
 
   test('actor.stop() rejects every pending commit so kafkajs disconnects cleanly', async () => {
-    const sys = ActorSystem.create('kafka-stop', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('kafka-stop', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { actor, mock } = await bootActor(sys, KafkaOptions.create()
         .withBrokers(['fake:9092'])
@@ -308,7 +308,7 @@ describe('KafkaActor — manual commit (#2)', () => {
   });
 
   test('large offset values stay exact via BigInt arithmetic', async () => {
-    const sys = ActorSystem.create('kafka-bigint', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('kafka-bigint', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { actor, mock } = await bootActor(sys, KafkaOptions.create()
         .withBrokers(['fake:9092'])
@@ -330,7 +330,7 @@ describe('KafkaActor — manual commit (#2)', () => {
 
 describe('KafkaActor — settings parsing', () => {
   test('commitMode + commitTimeoutMs flow through to the consumer pump', async () => {
-    const sys = ActorSystem.create('kafka-settings', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('kafka-settings', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { mock } = await bootActor(sys, KafkaOptions.create()
         .withBrokers(['x:9092'])
@@ -346,7 +346,7 @@ describe('KafkaActor — settings parsing', () => {
 
 describe('KafkaActor — heartbeat (#78)', () => {
   test('heartbeat command forwards to the captured kafkajs callback', async () => {
-    const sys = ActorSystem.create('kafka-hb-1', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('kafka-hb-1', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { actor, mock } = await bootActor(sys, KafkaOptions.create()
         .withBrokers(['fake:9092'])
@@ -374,7 +374,7 @@ describe('KafkaActor — heartbeat (#78)', () => {
   });
 
   test('heartbeat for an unknown / already-committed offset is a silent no-op', async () => {
-    const sys = ActorSystem.create('kafka-hb-2', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('kafka-hb-2', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { actor, mock } = await bootActor(sys, KafkaOptions.create()
         .withBrokers(['fake:9092'])
@@ -392,7 +392,7 @@ describe('KafkaActor — heartbeat (#78)', () => {
   });
 
   test('withAutoHeartbeat schedules periodic heartbeats and clears on completion', async () => {
-    const sys = ActorSystem.create('kafka-hb-3', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('kafka-hb-3', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { actor, mock } = await bootActor(sys, KafkaOptions.create()
         .withBrokers(['fake:9092'])
@@ -424,7 +424,7 @@ describe('KafkaActor — heartbeat (#78)', () => {
   });
 
   test('withAutoHeartbeat clears the timer when the body throws', async () => {
-    const sys = ActorSystem.create('kafka-hb-4', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('kafka-hb-4', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     try {
       const { actor, mock } = await bootActor(sys, KafkaOptions.create()
         .withBrokers(['fake:9092'])
