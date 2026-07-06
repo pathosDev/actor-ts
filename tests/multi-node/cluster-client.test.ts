@@ -16,9 +16,9 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
-import { ActorSystem } from '../../src/ActorSystem.js';
-import { Cluster } from '../../src/cluster/Cluster.js';
-import { ClusterClient } from '../../src/cluster/ClusterClient.js';
+import { ActorSystem, ActorSystemOptions } from '../../src/ActorSystem.js';
+import { Cluster, ClusterOptions } from '../../src/cluster/Cluster.js';
+import { ClusterClient, ClusterClientOptions } from '../../src/cluster/ClusterClient.js';
 import { ClusterClientReceptionistId } from '../../src/cluster/ClusterClientReceptionist.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { Props } from '../../src/Props.js';
@@ -56,17 +56,16 @@ let nextPort = PORT_BASE;
 function pickPort(): number { return nextPort++; }
 
 async function startNode(systemName: string, port: number, seeds: string[] = []): Promise<NodeHandle> {
-  const system = ActorSystem.create(systemName, {
-    logger: new NoopLogger(),
-    logLevel: LogLevel.Off,
-  });
-  const cluster = await Cluster.join(system, {
-    host: '127.0.0.1',
-    port,
-    seeds,
-    failureDetector: { heartbeatIntervalMs: 100, unreachableAfterMs: 600, downAfterMs: 1200 },
-    gossipIntervalMs: 200,
-  });
+  const system = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const cluster = await Cluster.join(
+    system,
+    ClusterOptions.create()
+      .withHost('127.0.0.1')
+      .withPort(port)
+      .withSeeds(seeds)
+      .withFailureDetector({ heartbeatIntervalMs: 100, unreachableAfterMs: 600, downAfterMs: 1200 })
+      .withGossipIntervalMs(200),
+  );
   const echoImpl = new EchoActor();
   const echo = system.spawn(
     Props.create(() => echoImpl), 'echo',
@@ -95,14 +94,14 @@ afterEach(async () => {
 describe('ClusterClient — outside-in connectivity', () => {
   test('ask returns the actor reply', async () => {
     node = await startNode('cc-test', pickPort());
-    client = new ClusterClient({ contactPoints: [node.contactPoint] });
+    client = new ClusterClient(ClusterClientOptions.create().withContactPoints([node.contactPoint]));
     const reply = await client.ask<{ x: number }>('echo', { kind: 'echo', payload: { x: 42 } });
     expect(reply).toEqual({ x: 42 });
   }, 10_000);
 
   test('send delivers a fire-and-forget message', async () => {
     node = await startNode('cc-test', pickPort());
-    client = new ClusterClient({ contactPoints: [node.contactPoint] });
+    client = new ClusterClient(ClusterClientOptions.create().withContactPoints([node.contactPoint]));
     await client.send('echo', { kind: 'ring' });
     // No reply path; wait a beat for the message to land on the mailbox.
     const deadline = Date.now() + 2_000;
@@ -115,7 +114,7 @@ describe('ClusterClient — outside-in connectivity', () => {
 
   test('ask to unknown path rejects with a clear error', async () => {
     node = await startNode('cc-test', pickPort());
-    client = new ClusterClient({ contactPoints: [node.contactPoint] });
+    client = new ClusterClient(ClusterClientOptions.create().withContactPoints([node.contactPoint]));
     let rejected = false;
     try {
       await client.ask('not/a/real/path', { hi: true });
@@ -132,20 +131,23 @@ describe('ClusterClient — outside-in connectivity', () => {
     const realPort = pickPort();
     const deadPort = pickPort();
     node = await startNode('cc-test', realPort);
-    client = new ClusterClient({
-      contactPoints: [
+    client = new ClusterClient(
+      ClusterClientOptions.create().withContactPoints([
         `cc-test@127.0.0.1:${deadPort}`,   // nobody listening here
         `cc-test@127.0.0.1:${realPort}`,
-      ],
-    });
+      ]),
+    );
     const reply = await client.ask<{ y: number }>('echo', { kind: 'echo', payload: { y: 7 } });
     expect(reply).toEqual({ y: 7 });
   }, 15_000);
 
   test('all contact-points unreachable → connect rejects', async () => {
-    client = new ClusterClient({
-      contactPoints: [`whatever@127.0.0.1:${pickPort()}`, `whatever@127.0.0.1:${pickPort()}`],
-    });
+    client = new ClusterClient(
+      ClusterClientOptions.create().withContactPoints([
+        `whatever@127.0.0.1:${pickPort()}`,
+        `whatever@127.0.0.1:${pickPort()}`,
+      ]),
+    );
     let rejected = false;
     try {
       await client.ask('user/foo', { ping: true }, 1_000);

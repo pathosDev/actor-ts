@@ -112,7 +112,7 @@ val region = ClusterSharding(system).start(
 )
 
 // actor-ts:
-const cluster = await Cluster.join(system, { host, port, seeds });
+const cluster = await Cluster.join(system, ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds));
 
 const region = cluster.sharding.start({
   typeName: 'Counter',

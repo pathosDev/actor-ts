@@ -92,17 +92,16 @@ DNS löst `actor-ts-1` usw. zu Container-IPs auf.
 Die App:
 
 ```ts
-import { ConfigSeedProvider } from 'actor-ts';
+import { ConfigSeedProvider, ConfigSeedProviderOptions, ClusterOptions } from 'actor-ts';
 
-const seeds = await new ConfigSeedProvider({
-  envVar: 'ACTOR_TS_SEEDS',
-}).lookup();
+const seeds = await new ConfigSeedProvider(ConfigSeedProviderOptions.create()
+  .withSeeds((process.env.ACTOR_TS_SEEDS ?? '').split(',').filter(Boolean))
+  .withSystemName(system.name)).lookup();
 
-await Cluster.join(system, {
-  host:  process.env.ACTOR_TS_HOSTNAME!,
-  port:  parseInt(process.env.ACTOR_TS_PORT!),
-  seeds,
-});
+await Cluster.join(system, ClusterOptions.create()
+  .withHost(process.env.ACTOR_TS_HOSTNAME!)
+  .withPort(parseInt(process.env.ACTOR_TS_PORT!))
+  .withSeeds(seeds));
 ```
 
 Für **dynamische Cluster-Größen** in Compose (Skalieren via `docker

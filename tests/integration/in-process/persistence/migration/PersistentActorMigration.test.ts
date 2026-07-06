@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import {
   everyNEvents,
@@ -11,7 +11,9 @@ import {
   PersistenceExtensionId,
   PersistentActor,
   SqliteJournal,
+  SqliteJournalOptions,
   SqliteSnapshotStore,
+  SqliteSnapshotStoreOptions,
 } from '../../../../../src/persistence/index.js';
 import {
   defaultsAdapter,
@@ -79,7 +81,7 @@ class Account extends PersistentActor<Cmd, Event, State> {
 }
 
 function makeSystem(name: string): { system: ActorSystem; journal: InMemoryJournal; snapshots: InMemorySnapshotStore } {
-  const system = ActorSystem.create(name, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const system = ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const journal = new InMemoryJournal();
   const snapshots = new InMemorySnapshotStore();
   const ext = system.extension(PersistenceExtensionId);
@@ -111,7 +113,7 @@ describe('PersistentActor — adapter round-trip', () => {
     await system.terminate();
 
     // Restart on the same journal — recovery up-casts envelopes through the adapter.
-    const sys2 = ActorSystem.create('rt2', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys2 = ActorSystem.create('rt2', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const ext2 = sys2.extension(PersistenceExtensionId);
     ext2.setJournal(journal);
     ext2.setSnapshotStore(new InMemorySnapshotStore());
@@ -208,7 +210,7 @@ describe('PersistentActor — snapshot adapter', () => {
     await system.terminate();
 
     // Restart — recovery loads the snapshot and continues from there.
-    const sys2 = ActorSystem.create('snap2', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys2 = ActorSystem.create('snap2', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const ext2 = sys2.extension(PersistenceExtensionId);
     ext2.setJournal(journal);
     ext2.setSnapshotStore(snapshots);
@@ -289,9 +291,9 @@ describe('PersistentActor — SQLite e2e with adapter', () => {
 
   test('JSON.stringify round-trip preserves envelope structure', async () => {
     const path = join(dir, 'mig.db');
-    const journal = new SqliteJournal({ path });
-    const snapshots = new SqliteSnapshotStore({ path });
-    const system = ActorSystem.create('sqlite-mig', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const journal = new SqliteJournal(SqliteJournalOptions.create().withPath(path));
+    const snapshots = new SqliteSnapshotStore(SqliteSnapshotStoreOptions.create().withPath(path));
+    const system = ActorSystem.create('sqlite-mig', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const ext = system.extension(PersistenceExtensionId);
     ext.setJournal(journal);
     ext.setSnapshotStore(snapshots);
@@ -306,9 +308,9 @@ describe('PersistentActor — SQLite e2e with adapter', () => {
     await snapshots.close();
 
     // Reopen on the SAME files — recovery must succeed.
-    const journal2 = new SqliteJournal({ path });
-    const snapshots2 = new SqliteSnapshotStore({ path });
-    const sys2 = ActorSystem.create('sqlite-mig-2', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const journal2 = new SqliteJournal(SqliteJournalOptions.create().withPath(path));
+    const snapshots2 = new SqliteSnapshotStore(SqliteSnapshotStoreOptions.create().withPath(path));
+    const sys2 = ActorSystem.create('sqlite-mig-2', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     sys2.extension(PersistenceExtensionId).setJournal(journal2);
     sys2.extension(PersistenceExtensionId).setSnapshotStore(snapshots2);
     const seen2: unknown[] = [];

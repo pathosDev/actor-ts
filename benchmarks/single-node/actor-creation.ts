@@ -4,13 +4,13 @@
  *
  *   bun run benchmarks/single-node/actor-creation.ts
  */
-import { Actor, ActorSystem, LogLevel, NoopLogger, Props } from '../../src/index.js';
+import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
 class Noop extends Actor<unknown> { override onReceive(): void {} }
 
 async function main(): Promise<void> {
-  const system = ActorSystem.create('bench-create', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const system = ActorSystem.create('bench-create', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const props = Props.create(() => new Noop());
 
   await runGroup('single-node · actor-creation', [

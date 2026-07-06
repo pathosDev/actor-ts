@@ -108,10 +108,10 @@ Clients use these to back off without retrying randomly.
 ## Cluster-aware rate limiting
 
 ```ts
-import { RedisCache } from 'actor-ts';
+import { RedisCache, RedisCacheOptions } from 'actor-ts';
 
 rateLimit({
-  cache:    new RedisCache({ url: 'redis://...' }),
+  cache:    new RedisCache(RedisCacheOptions.create().withUrl('redis://...')),
   windowMs: 60_000,
   max:      100,
   key:      (req) => req.headers['x-forwarded-for'] ?? 'unknown',

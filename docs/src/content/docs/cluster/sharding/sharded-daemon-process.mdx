@@ -20,8 +20,8 @@ respawned on failover.
 ## A minimal example
 
 ```ts
-import { ActorSystem, Cluster, Actor, Props } from 'actor-ts';
-import { ShardedDaemonProcess } from 'actor-ts';
+import { ActorSystem, Cluster, ClusterOptions, Actor, Props } from 'actor-ts';
+import { ShardedDaemonProcess, ShardedDaemonProcessOptions } from 'actor-ts';
 
 class Reconciler extends Actor<{ kind: 'check' }> {
   constructor(public readonly index: number) { super(); }
@@ -41,13 +41,13 @@ class Reconciler extends Actor<{ kind: 'check' }> {
 }
 
 const system  = ActorSystem.create('my-app');
-const cluster = await Cluster.join(system, { host, port, seeds });
+const cluster = await Cluster.join(system, ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds));
 
-const handle = ShardedDaemonProcess.init(system, cluster, {
-  name:        'reconciler',
-  numDaemons:  8,
-  behaviorFor: (i) => Props.create(() => new Reconciler(i)),
-});
+const handle = ShardedDaemonProcess.init(system, cluster,
+  ShardedDaemonProcessOptions.create()
+    .withName('reconciler')
+    .withNumDaemons(8)
+    .withBehaviorFor((i) => Props.create(() => new Reconciler(i))));
 
 // Each of the 8 daemons starts automatically.  No further setup needed.
 
@@ -112,12 +112,12 @@ yourself.  The wrapper exists to:
 ## Liveness heartbeat
 
 ```ts
-ShardedDaemonProcess.init(system, cluster, {
-  name:                  'reconciler',
-  numDaemons:            8,
-  behaviorFor:           (i) => Props.create(() => new Reconciler(i)),
-  livenessIntervalMs:    30_000,   // default — pings each index every 30s
-});
+ShardedDaemonProcess.init(system, cluster,
+  ShardedDaemonProcessOptions.create()
+    .withName('reconciler')
+    .withNumDaemons(8)
+    .withBehaviorFor((i) => Props.create(() => new Reconciler(i)))
+    .withLivenessIntervalMs(30_000));   // default — pings each index every 30s
 ```
 
 Periodically (default every 30 s), the wrapper sends a synthetic
@@ -172,7 +172,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="One daemon = use a singleton">
   ```ts
-  ShardedDaemonProcess.init(..., { numDaemons: 1, ... });   // ✗
+  ShardedDaemonProcess.init(..., ShardedDaemonProcessOptions.create().withNumDaemons(1)/* ... */);   // ✗
   ```
   For `numDaemons: 1`, use [ClusterSingleton](/cluster/singleton/overview/) —
   it has explicit semantics for "exactly one cluster-wide"
@@ -182,7 +182,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Many daemons = use sharding directly">
   ```ts
-  ShardedDaemonProcess.init(..., { numDaemons: 100_000, ... });   // ✗
+  ShardedDaemonProcess.init(..., ShardedDaemonProcessOptions.create().withNumDaemons(100_000)/* ... */);   // ✗
   ```
   Sharded daemon does eager startup of every index.  For
   large `N`, you'd be spawning thousands of actors at init time

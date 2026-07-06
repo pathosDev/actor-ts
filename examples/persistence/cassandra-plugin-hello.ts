@@ -10,11 +10,15 @@
 import { match } from 'ts-pattern';
 import {
   ActorSystem,
+  ActorSystemOptions,
   CASSANDRA_JOURNAL_PLUGIN_ID,
   CASSANDRA_SNAPSHOT_PLUGIN_ID,
+  CassandraJournalOptions,
+  CassandraSnapshotStoreOptions,
   PersistenceExtensionId,
   Props,
   PersistentActor,
+  RegisterCassandraPluginsOptions,
   registerCassandraPlugins,
 } from '../../src/index.js';
 import { FakeCassandraClient } from '../../tests/unit/persistence/FakeCassandraClient.js';
@@ -46,22 +50,23 @@ class Counter extends PersistentActor<Cmd, Event, number> {
 
 async function main(): Promise<void> {
   const client = new FakeCassandraClient();
-  const system = ActorSystem.create('cassandra-hello', {
-    config: {
+  const system = ActorSystem.create('cassandra-hello', ActorSystemOptions.create()
+    .withConfig({
       'actor-ts': {
         persistence: {
           journal: { plugin: CASSANDRA_JOURNAL_PLUGIN_ID },
           'snapshot-store': { plugin: CASSANDRA_SNAPSHOT_PLUGIN_ID },
         },
       },
-    },
-  });
+    }));
   const ext = system.extension(PersistenceExtensionId);
-  registerCassandraPlugins(ext, {
-    client,
-    journal: { contactPoints: ['fake'], keyspace: 'app', autoCreateKeyspace: true },
-    snapshotStore: { contactPoints: ['fake'], keyspace: 'app' },
-  });
+  registerCassandraPlugins(ext, RegisterCassandraPluginsOptions.create()
+    .withClient(client)
+    .withJournal(CassandraJournalOptions.create()
+      .withContactPoints(['fake']).withKeyspace('app').withAutoCreateKeyspace(true))
+    .withSnapshotStore(CassandraSnapshotStoreOptions.create()
+      .withContactPoints(['fake']).withKeyspace('app')),
+  );
 
   let counter = system.spawnAnonymous(Props.create(() => new Counter()));
   counter.tell({ kind: 'inc', amount: 10 });

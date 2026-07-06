@@ -6,6 +6,7 @@
  */
 import {
   ActorSystem,
+  ActorSystemOptions,
   InMemoryJournal,
   InMemorySnapshotStore,
   LogLevel,
@@ -37,7 +38,7 @@ async function prefill(journal: InMemoryJournal, pid: string, n: number): Promis
 }
 
 async function main(): Promise<void> {
-  const system = ActorSystem.create('bench-recovery', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const system = ActorSystem.create('bench-recovery', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const journal = new InMemoryJournal();
   const snapshots = new InMemorySnapshotStore();
   const ext = system.extension(PersistenceExtensionId);

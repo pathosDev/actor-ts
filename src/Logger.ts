@@ -137,7 +137,7 @@ const LEVEL_TAG: Record<LogLevel, string> = {
  *
  * Wire it in at system construction:
  *
- *     const system = ActorSystem.create('my-app', { logger: new JsonLogger() });
+ *     const system = ActorSystem.create('my-app', ActorSystemOptions.create().withLogger(new JsonLogger()));
  *
  * Output (one line, line-wrapped here for readability):
  *

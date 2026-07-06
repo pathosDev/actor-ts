@@ -228,15 +228,14 @@ Liefer den neuen Schlüssel als `active` aus, behalte den alten als
 ```ts
 import { ObjectStoragePluginOptions, registerObjectStoragePlugins } from 'actor-ts';
 
-const opts: ObjectStoragePluginOptions = {
-  // ... Backend, Kompression etc.
-  encryption: {
+const opts = ObjectStoragePluginOptions.create()
+  // ... .withBackend(...), .withCompression(...) etc.
+  .withEncryption({
     keys: {
       active:  { version: 2, key: NEW_32_BYTES },
       retired: [{ version: 1, key: OLD_32_BYTES }],
     },
-  },
-};
+  });
 ```
 
 Nach dieser Phase stempeln die Manifeste **neuer** Bodies

@@ -6,6 +6,7 @@
 import {
   Actor,
   ActorSystem,
+  ActorSystemOptions,
   LogLevel,
   NoopLogger,
   PriorityMailbox,
@@ -25,7 +26,7 @@ class Worker extends Actor<Msg> {
 }
 
 async function main(): Promise<void> {
-  const system = ActorSystem.create('bench-pri', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const system = ActorSystem.create('bench-pri', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const batch = 5_000;
 
   const defaultProps = Props.create(() => new Worker());

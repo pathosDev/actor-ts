@@ -56,14 +56,18 @@ defaults work fine.  They give:
 Override via the `failureDetector` field in the cluster settings:
 
 ```ts
-Cluster.join(system, {
-  host, port, seeds,
-  failureDetector: {
-    heartbeatIntervalMs: 1_000,
-    unreachableAfterMs:  5_000,
-    downAfterMs:         15_000,
-  },
-});
+Cluster.join(
+  system,
+  ClusterOptions.create()
+    .withHost(host)
+    .withPort(port)
+    .withSeeds(seeds)
+    .withFailureDetector({
+      heartbeatIntervalMs: 1_000,
+      unreachableAfterMs:  5_000,
+      downAfterMs:         15_000,
+    }),
+);
 ```
 
 When to tune:
@@ -171,7 +175,7 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Defaults are LAN defaults">
   ```ts
   // ✗ unreachable in 2s — too aggressive over 100ms-RTT WAN
-  Cluster.join(system, { host, port, seeds });   // uses defaults
+  Cluster.join(system, ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds));   // uses defaults
   ```
   Cross-region clusters need at least 5-10 seconds for
   `unreachableAfterMs`; a 100ms-RTT link with normal jitter

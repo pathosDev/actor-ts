@@ -2,6 +2,7 @@ import type { IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { match } from 'ts-pattern';
 import { Lazy } from '../../util/Lazy.js';
+import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../types.js';
 import type {
   HttpServerBackend,
@@ -96,7 +97,7 @@ interface ExpressAppLike {
   listen(port: number, hostname: string, cb: (err?: Error) => void): Server;
 }
 
-export interface ExpressBackendOptions {
+export interface ExpressBackendSettings {
   /**
    * Bring-your-own app — useful when you already attach custom middleware
    * (CORS, sessions, metrics, …) outside the DSL.  When omitted, a fresh
@@ -105,6 +106,28 @@ export interface ExpressBackendOptions {
   readonly app?: ExpressAppLike;
   /** Maximum allowed body size in bytes (default: 10 MiB).  Exceeding it returns 413. */
   readonly maxBodyBytes?: number;
+}
+
+/**
+ * Fluent builder for {@link ExpressBackendSettings}:
+ *
+ *     new ExpressBackend(ExpressBackendOptions.create().withMaxBodyBytes(1 << 20))
+ */
+export class ExpressBackendOptions extends OptionsBuilder<ExpressBackendSettings> {
+  /** Start a fresh builder.  Equivalent to `new ExpressBackendOptions()`. */
+  static create(): ExpressBackendOptions {
+    return new ExpressBackendOptions();
+  }
+
+  /** Bring-your-own Express app (skips the internal `express` import). */
+  withApp(app: ExpressAppLike): this {
+    return this.set('app', app);
+  }
+
+  /** Maximum request body size in bytes.  Default 10 MiB; exceeding it returns 413. */
+  withMaxBodyBytes(bytes: number): this {
+    return this.set('maxBodyBytes', bytes);
+  }
 }
 
 /**
@@ -129,10 +152,11 @@ export class ExpressBackend implements HttpServerBackend {
   private notFoundHandler: ((req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
   private errorHandler: ((err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
 
-  constructor(options: ExpressBackendOptions = {}) {
-    this.app = options.app ?? null;
-    this.ownsApp = options.app == null;
-    this.maxBodyBytes = options.maxBodyBytes ?? 10 * 1024 * 1024;
+  constructor(options: ExpressBackendOptions = ExpressBackendOptions.create()) {
+    const settings = options.build();
+    this.app = settings.app ?? null;
+    this.ownsApp = settings.app == null;
+    this.maxBodyBytes = settings.maxBodyBytes ?? 10 * 1024 * 1024;
   }
 
   /** Inject / access the underlying Express app — useful for native middleware. */

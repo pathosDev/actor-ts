@@ -7,6 +7,7 @@
  */
 import {
   ActorSystem,
+  ActorSystemOptions,
   FastifyBackend,
   HttpExtensionId,
   LogLevel,
@@ -21,7 +22,7 @@ import {
 import { runGroup } from '../lib/harness.js';
 
 async function main(): Promise<void> {
-  const sys = ActorSystem.create('bench-http-fastify', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const sys = ActorSystem.create('bench-http-fastify', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const http = sys.extension(HttpExtensionId);
   const routes = concat(
     path('ok',   get(() => complete(Status.OK, 'ok'))),

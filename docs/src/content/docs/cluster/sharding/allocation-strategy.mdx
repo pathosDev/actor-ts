@@ -22,14 +22,15 @@ The two built-in strategies trade simplicity for balance:
 ## HashAllocationStrategy
 
 ```ts
-import { HashAllocationStrategy } from 'actor-ts';
+import { HashAllocationStrategy, StartShardingOptions } from 'actor-ts';
 
-sharding.start({
-  typeName:           'cart',
-  entityProps:        Props.create(() => new CartActor()),
-  extractEntityId:    (msg) => msg.entityId,
-  allocationStrategy: new HashAllocationStrategy(),   // default
-});
+sharding.start(
+  StartShardingOptions.create()
+    .withTypeName('cart')
+    .withEntityProps(Props.create(() => new CartActor()))
+    .withExtractEntityId((msg) => msg.entityId)
+    .withAllocationStrategy(new HashAllocationStrategy()),   // default
+);
 ```
 
 The formula:
@@ -62,15 +63,16 @@ something smarter.
 ## LeastShardAllocationStrategy
 
 ```ts
-import { LeastShardAllocationStrategy } from 'actor-ts';
+import { LeastShardAllocationStrategy, StartShardingOptions } from 'actor-ts';
 
-sharding.start({
-  // ...
-  allocationStrategy: new LeastShardAllocationStrategy(
-    /* rebalanceThreshold */ 1,
-    /* maxSimultaneousRebalance */ 3,
-  ),
-});
+sharding.start(
+  StartShardingOptions.create()
+    // ...
+    .withAllocationStrategy(new LeastShardAllocationStrategy(
+      /* rebalanceThreshold */ 1,
+      /* maxSimultaneousRebalance */ 3,
+    )),
+);
 ```
 
 The formula:

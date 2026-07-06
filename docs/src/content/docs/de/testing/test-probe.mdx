@@ -28,10 +28,9 @@ und assertet die Form.
 ## Eine Probe erzeugen
 
 ```ts
-const probe = tk.createTestProbe({
-  defaultTimeoutMs: 5_000,    // Default-Wartezeit für expect/receive — Default 3s
-  name:             'order-probe',
-});
+const probe = tk.createTestProbe(TestProbeOptions.create()
+  .withDefaultTimeoutMs(5_000)    // Default-Wartezeit für expect/receive — Default 3s
+  .withName('order-probe'));
 ```
 
 Beide Optionen sind optional. Ohne `defaultTimeoutMs` wartet
@@ -216,8 +215,8 @@ Für Ask-artige Nachrichten — die Probe steht für den Fragenden.
 ### Mehrere Proben
 
 ```ts
-const a = tk.createTestProbe({ name: 'a-probe' });
-const b = tk.createTestProbe({ name: 'b-probe' });
+const a = tk.createTestProbe(TestProbeOptions.create().withName('a-probe'));
+const b = tk.createTestProbe(TestProbeOptions.create().withName('b-probe'));
 
 const router = tk.system.spawnAnonymous(...);
 router.tell({ kind: 'send', target: 'a', payload: 'hello' });

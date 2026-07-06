@@ -2,16 +2,20 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { PersistenceExtensionId } from '../../../../../src/persistence/PersistenceExtension.js';
 import {
   OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID,
+  ObjectStoragePluginOptions,
   registerObjectStoragePlugins,
 } from '../../../../../src/persistence/object-storage/ObjectStoragePlugin.js';
 import { ObjectStorageSnapshotStore } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStore.js';
 import { ObjectStorageDurableStateStore } from '../../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStore.js';
-import { FilesystemObjectStorageBackend } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
+import {
+  FilesystemObjectStorageBackend,
+  FilesystemObjectStorageOptions,
+} from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
 
 let dir: string;
 
@@ -23,21 +27,20 @@ afterEach(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {
 
 describe('registerObjectStoragePlugins — filesystem backend', () => {
   test('extension picks up the snapshot plugin when its id is in the config', async () => {
-    const sys = ActorSystem.create('obj-store-plugin', {
-      logger: new NoopLogger(), logLevel: LogLevel.Off,
-      config: {
+    const sys = ActorSystem.create('obj-store-plugin', ActorSystemOptions.create()
+      .withLogger(new NoopLogger()).withLogLevel(LogLevel.Off)
+      .withConfig({
         'actor-ts': {
           persistence: {
             'snapshot-store': { plugin: OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID },
           },
         },
-      },
-    });
+      }));
     const ext = sys.extension(PersistenceExtensionId);
-    const handles = await registerObjectStoragePlugins(ext, {
-      backend: { kind: 'filesystem', dir },
-      keepN: 2,
-    });
+    const handles = await registerObjectStoragePlugins(ext,
+      ObjectStoragePluginOptions.create()
+        .withBackend({ kind: 'filesystem', dir })
+        .withKeepN(2));
 
     expect(ext.snapshotStore).toBeInstanceOf(ObjectStorageSnapshotStore);
     expect(handles.durableStateStore).toBeInstanceOf(ObjectStorageDurableStateStore);
@@ -53,14 +56,12 @@ describe('registerObjectStoragePlugins — filesystem backend', () => {
   });
 
   test('shared backend: snapshot store and durable-state store see each others writes', async () => {
-    const sys = ActorSystem.create('obj-store-shared', {
-      logger: new NoopLogger(), logLevel: LogLevel.Off,
-    });
+    const sys = ActorSystem.create('obj-store-shared', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const ext = sys.extension(PersistenceExtensionId);
-    const { durableStateStore, backend } = await registerObjectStoragePlugins(ext, {
-      backend: { kind: 'filesystem', dir },
-      prefix: 'shared/',
-    });
+    const { durableStateStore, backend } = await registerObjectStoragePlugins(ext,
+      ObjectStoragePluginOptions.create()
+        .withBackend({ kind: 'filesystem', dir })
+        .withPrefix('shared/'));
 
     await durableStateStore.upsert('account-1', 0, { balance: 100 });
     // Backend list reveals the durable-state key under the same prefix.
@@ -70,14 +71,12 @@ describe('registerObjectStoragePlugins — filesystem backend', () => {
   });
 
   test('custom backend short-circuits the spec switch', async () => {
-    const sys = ActorSystem.create('obj-store-custom', {
-      logger: new NoopLogger(), logLevel: LogLevel.Off,
-    });
+    const sys = ActorSystem.create('obj-store-custom', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const ext = sys.extension(PersistenceExtensionId);
-    const fs = new FilesystemObjectStorageBackend({ dir });
-    const { backend } = await registerObjectStoragePlugins(ext, {
-      backend: { kind: 'custom', backend: fs },
-    });
+    const fs = new FilesystemObjectStorageBackend(FilesystemObjectStorageOptions.create().withDir(dir));
+    const { backend } = await registerObjectStoragePlugins(ext,
+      ObjectStoragePluginOptions.create()
+        .withBackend({ kind: 'custom', backend: fs }));
     expect(backend).toBe(fs);
     await sys.terminate();
   });

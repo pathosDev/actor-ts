@@ -104,9 +104,8 @@ export interface OtelLoggerAdapterOptions {
  * Build a `Logger` whose calls translate to OTel `LogRecord.emit({...})`.
  *
  *     import * as logsApi from '@opentelemetry/api-logs';
- *     const system = ActorSystem.create('my-app', {
- *       logger: otelLogger({ api: logsApi }),
- *     });
+ *     const system = ActorSystem.create('my-app',
+ *       ActorSystemOptions.create().withLogger(otelLogger({ api: logsApi })));
  *
  * After SDK wire-up (`LoggerProvider` + an OTLP-Logs exporter), every
  * `this.log.info(...)` inside an actor lands as a `LogRecord` with the

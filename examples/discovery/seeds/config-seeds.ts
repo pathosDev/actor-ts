@@ -4,14 +4,15 @@
  *
  *   bun run examples/discovery/seeds/config-seeds.ts
  */
-import { ConfigSeedProvider, seedsFromEnv } from '../../../src/index.js';
+import { ConfigSeedProvider, ConfigSeedProviderOptions, seedsFromEnv } from '../../../src/index.js';
 
 async function main(): Promise<void> {
   // From code.
-  const a = new ConfigSeedProvider({
-    seeds: ['seed1.cluster.local:2552', 'seed2.cluster.local:2552'],
-    systemName: 'my-app',
-  });
+  const a = new ConfigSeedProvider(
+    ConfigSeedProviderOptions.create()
+      .withSeeds(['seed1.cluster.local:2552', 'seed2.cluster.local:2552'])
+      .withSystemName('my-app'),
+  );
   console.log('from code:', (await a.lookup()).map(x => x.toString()));
 
   // From ENV.

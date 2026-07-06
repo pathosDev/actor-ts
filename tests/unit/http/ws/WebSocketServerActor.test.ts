@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { ActorSystem } from '../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../src/ActorSystem.js';
 import { Props } from '../../../../src/Props.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import type { HttpRequest } from '../../../../src/http/types.js';
@@ -104,7 +104,7 @@ const req = (overrides: Partial<HttpRequest> = {}): HttpRequest => ({
 
 const systems: ActorSystem[] = [];
 function newSystem(name: string): ActorSystem {
-  const s = ActorSystem.create(name, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const s = ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   systems.push(s);
   return s;
 }

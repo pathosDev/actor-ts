@@ -2,10 +2,11 @@
  * NATS-Core broker runner (B.6 / #24).
  */
 import { Actor } from '../../../../src/Actor.js';
-import { ActorSystem } from '../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../src/ActorSystem.js';
 import { JsonLogger, LogLevel } from '../../../../src/Logger.js';
 import { Props } from '../../../../src/Props.js';
 import { NatsActor, type NatsMessage } from '../../../../src/io/broker/NatsActor.js';
+import { NatsOptions } from '../../../../src/io/broker/NatsOptions.js';
 import { waitForPort } from '../lib/wait-for-port.js';
 import { runScenarios, type BrokerScenario, type BrokerScenarioCtx } from '../lib/scenario.js';
 import { scenario as pubsubScenario } from './scenarios/01-publish-subscribe.js';
@@ -36,9 +37,8 @@ async function main(): Promise<void> {
     description: 'NATS server', deadlineMs: 15_000,
   });
 
-  const system = ActorSystem.create('nats-runner', {
-    logger: new JsonLogger(), logLevel: LogLevel.Info,
-  });
+  const system = ActorSystem.create('nats-runner', ActorSystemOptions.create()
+    .withLogger(new JsonLogger()).withLogLevel(LogLevel.Info));
   process.on('SIGTERM', () => { void system.terminate(); });
 
   const ctx: NatsCtx = { env: process.env, servers, system };
@@ -56,10 +56,11 @@ async function main(): Promise<void> {
 }
 
 export function spawnNats(ctx: NatsCtx): ReturnType<ActorSystem['spawnAnonymous']> {
-  const actor = new NatsActor({
-    servers: [...ctx.servers],
-    name: `actor-ts-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-  });
+  const actor = new NatsActor(
+    NatsOptions.create()
+      .withServers([...ctx.servers])
+      .withName(`actor-ts-${Date.now()}-${Math.random().toString(36).slice(2)}`),
+  );
   return ctx.system.spawnAnonymous(Props.create(() => actor));
 }
 

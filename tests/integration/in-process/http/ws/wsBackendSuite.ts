@@ -4,7 +4,7 @@
  * Clients use the runtime's native `WebSocket` global (Bun provides one).
  */
 import { afterEach, describe, expect, test } from 'bun:test';
-import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
 import { Props } from '../../../../../src/Props.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { HttpExtensionId } from '../../../../../src/http/HttpExtension.js';
@@ -22,7 +22,7 @@ import {
 } from '../../../../../src/http/Route.js';
 import { Status } from '../../../../../src/http/types.js';
 import { WebSocketServerActor } from '../../../../../src/http/ws/WebSocketServerActor.js';
-import { websocket } from '../../../../../src/http/ws/WebSocketRoute.js';
+import { websocket, WebSocketRouteOptions } from '../../../../../src/http/ws/WebSocketRoute.js';
 import type { WsConnection } from '../../../../../src/http/ws/WsConnection.js';
 
 type SIn = { kind: 'ping'; n: number } | { kind: 'broadcast'; text: string };
@@ -126,7 +126,7 @@ export function runWsBackendSuite(label: string, makeBackend: () => HttpServerBa
 
     // Bind a route tree using a server actor spawned in a fresh system.
     async function bindServer(events: string[], makeRoutes: (server: ReturnType<ActorSystem['spawn']>) => Route): Promise<{ base: string; binding: ServerBinding }> {
-      const system = ActorSystem.create(`ws-${label}`, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+      const system = ActorSystem.create(`ws-${label}`, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
       systems.push(system);
       const server = system.spawn(Props.create(() => new TestServer(events)), 'ws-server');
       const binding = await system
@@ -171,7 +171,7 @@ export function runWsBackendSuite(label: string, makeBackend: () => HttpServerBa
     });
 
     test('oversize inbound frame closes the connection (1009)', async () => {
-      const { base } = await bindServer([], (s) => websocket('/ws', s, { maxFrameBytes: 64 * 1024 }));
+      const { base } = await bindServer([], (s) => websocket('/ws', s, WebSocketRouteOptions.create().withMaxFrameBytes(64 * 1024)));
       const ws = await wsOpen(`${base}/ws`);
       const closed = nextClose(ws);
       ws.send(JSON.stringify({ kind: 'broadcast', text: 'x'.repeat(80 * 1024) }));

@@ -16,7 +16,7 @@ Framework.  Die richtige Wahl, wenn:
 
 ```ts
 import { ActorSystem, HttpExtensionId } from 'actor-ts';
-import { ExpressBackend } from 'actor-ts/http';
+import { ExpressBackend, ExpressBackendOptions } from 'actor-ts/http';
 
 const http = system.extension(HttpExtensionId);
 
@@ -28,10 +28,12 @@ await http.newServerAt('0.0.0.0', 8080)
 ## Konfiguration
 
 ```ts
-new ExpressBackend({
-  bodyLimit: '1mb',   // body-parser-Limit
-  trustProxy: true,    // X-Forwarded-*-Header berücksichtigen
-});
+new ExpressBackend(
+  ExpressBackendOptions.create().withMaxBodyBytes(1 * 1024 * 1024),
+);
+// Das X-Forwarded-*-Handling wird auf einer eigenen Express-App
+// konfiguriert (`app.set('trust proxy', true)`) und via `.withApp(app)`
+// übergeben.
 ```
 
 Settings im Express-Stil.
@@ -63,14 +65,21 @@ schneller.
 ## TLS
 
 ```ts
+import express from 'express';
 import https from 'node:https';
 
-new ExpressBackend({
-  https: {
+// TLS wird auf einer eigenen Express-App eingerichtet, in Nodes
+// `https`-Server eingewickelt; die App via `.withApp(app)` übergeben.
+const app = express();
+https.createServer(
+  {
     cert: fs.readFileSync('./tls/cert.pem'),
     key:  fs.readFileSync('./tls/key.pem'),
   },
-});
+  app,
+);
+
+new ExpressBackend(ExpressBackendOptions.create().withApp(app));
 ```
 
 Gestützt auf das `https`-Modul von Node.  Dieselben Vorbehalte

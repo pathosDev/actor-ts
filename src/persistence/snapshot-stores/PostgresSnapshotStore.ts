@@ -1,3 +1,4 @@
+import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { JournalError, type Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
@@ -9,13 +10,58 @@ import {
   type PostgresConnection,
 } from '../journals/PostgresClient.js';
 
-export interface PostgresSnapshotStoreOptions extends PostgresConnection {
+export interface PostgresSnapshotStoreSettings extends PostgresConnection {
   /** Snapshots table name.  Default: `snapshots`. */
   readonly snapshotsTable?: string;
   /** Keep this many snapshots per persistenceId; older ones pruned on save.  Default: 3.  `<=0` keeps all. */
   readonly keepN?: number;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
   readonly autoCreateTables?: boolean;
+}
+
+/**
+ * Fluent builder for {@link PostgresSnapshotStoreSettings}:
+ *
+ *     new PostgresSnapshotStore(PostgresSnapshotStoreOptions.create().withUrl('postgres://…').withKeepN(5))
+ *
+ * The connection fields (`withUrl` / `withPoolConfig` / `withPool`) come
+ * from the shared {@link PostgresConnection} mixin.
+ */
+export class PostgresSnapshotStoreOptions extends OptionsBuilder<PostgresSnapshotStoreSettings> {
+  /** Start a fresh builder.  Equivalent to `new PostgresSnapshotStoreOptions()`. */
+  static create(): PostgresSnapshotStoreOptions {
+    return new PostgresSnapshotStoreOptions();
+  }
+
+  /** Connection string, e.g. `postgres://user:pass@host:5432/db`. */
+  withUrl(url: string): this {
+    return this.set('url', url);
+  }
+
+  /** Extra node-postgres `Pool` config, merged over `{ connectionString: url }`. */
+  withPoolConfig(poolConfig: Record<string, unknown>): this {
+    return this.set('poolConfig', poolConfig);
+  }
+
+  /** Pre-built pool — bypasses the lazy `pg` import; share it across stores. */
+  withPool(pool: PgPoolLike): this {
+    return this.set('pool', pool);
+  }
+
+  /** Snapshots table name.  Default: `snapshots`. */
+  withSnapshotsTable(snapshotsTable: string): this {
+    return this.set('snapshotsTable', snapshotsTable);
+  }
+
+  /** Keep this many snapshots per persistenceId; older ones pruned on save.  Default: 3.  `<=0` keeps all. */
+  withKeepN(keepN: number): this {
+    return this.set('keepN', keepN);
+  }
+
+  /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
+  withAutoCreateTables(autoCreateTables: boolean): this {
+    return this.set('autoCreateTables', autoCreateTables);
+  }
 }
 
 interface SnapRow {
@@ -33,7 +79,7 @@ interface SnapRow {
  * like the SQLite and Cassandra stores, payloads are stored as JSON text.
  */
 export class PostgresSnapshotStore implements SnapshotStore {
-  private readonly options: PostgresSnapshotStoreOptions;
+  private readonly settings: PostgresSnapshotStoreSettings;
   private readonly table: string;
   private readonly keepN: number;
   private readonly autoCreate: boolean;
@@ -42,11 +88,12 @@ export class PostgresSnapshotStore implements SnapshotStore {
   private initPromise: Promise<void> | null = null;
   private closed = false;
 
-  constructor(options: PostgresSnapshotStoreOptions = {}) {
-    this.options = options;
-    this.table = assertSafeIdentifier(options.snapshotsTable ?? 'snapshots', 'snapshots table');
-    this.keepN = options.keepN ?? 3;
-    this.autoCreate = options.autoCreateTables ?? true;
+  constructor(options: PostgresSnapshotStoreOptions = PostgresSnapshotStoreOptions.create()) {
+    const s = options.build();
+    this.settings = s;
+    this.table = assertSafeIdentifier(s.snapshotsTable ?? 'snapshots', 'snapshots table');
+    this.keepN = s.keepN ?? 3;
+    this.autoCreate = s.autoCreateTables ?? true;
   }
 
   async save<S>(pid: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
@@ -126,7 +173,7 @@ export class PostgresSnapshotStore implements SnapshotStore {
   }
 
   private async init(): Promise<void> {
-    const pool = await buildPgPool(this.options);
+    const pool = await buildPgPool(this.settings);
     if (this.autoCreate) {
       await pool.query(
         `CREATE TABLE IF NOT EXISTS ${this.table} (

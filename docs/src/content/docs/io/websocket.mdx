@@ -11,13 +11,15 @@ reconnect).  For accepting **incoming** WS connections (server
 side), see [server WebSocket](/io/server-websocket/).
 
 ```ts
-import { WebSocketClientActor, wsSend } from 'actor-ts';
+import { WebSocketClientActor, WebSocketClientOptions, wsSend } from 'actor-ts';
 
 type ClientMsg = { kind: 'ping'; n: number };
 type ServerMsg = { kind: 'pong'; n: number } | { kind: 'event'; data: unknown };
 
 class Feed extends WebSocketClientActor<ClientMsg, ServerMsg> {
-  constructor() { super({ url: 'ws://localhost:8080/ws' }); }
+  constructor() {
+    super(WebSocketClientOptions.create<ClientMsg, ServerMsg>().withUrl('ws://localhost:8080/ws'));
+  }
 
   override onConnected(): void {
     this.send({ kind: 'ping', n: 1 });
@@ -72,7 +74,9 @@ delivered to `onMessage`.
 
 ```ts
 class Chat extends WebSocketClientActor<ClientMsg, ServerMsg> {
-  constructor() { super({ url: 'wss://chat.example.com/ws' }); }
+  constructor() {
+    super(WebSocketClientOptions.create<ClientMsg, ServerMsg>().withUrl('wss://chat.example.com/ws'));
+  }
 
   override onConnected(): void {
     this.send({ kind: 'setName', name: 'alice' });   // encode + enqueue → true
@@ -125,12 +129,13 @@ new Feed(); // uses jsonCodec() — text frames <-> JSON
 // With runtime validation (zod etc.):
 class Validated extends WebSocketClientActor<ClientMsg, ServerMsg> {
   constructor() {
-    super({
-      url: 'wss://...',
-      codec: jsonCodec<ClientMsg, ServerMsg>({
-        validate: (value: unknown): ServerMsg => ServerMsgSchema.parse(value),
-      }),
-    });
+    super(
+      WebSocketClientOptions.create<ClientMsg, ServerMsg>()
+        .withUrl('wss://...')
+        .withCodec(jsonCodec<ClientMsg, ServerMsg>({
+          validate: (value: unknown): ServerMsg => ServerMsgSchema.parse(value),
+        })),
+    );
   }
   onMessage(msg: ServerMsg): void { /* already validated */ }
 }
@@ -144,7 +149,9 @@ yourself:
 import { rawCodec, type WsFrame } from 'actor-ts';
 
 class Binary extends WebSocketClientActor<WsFrame, WsFrame> {
-  constructor() { super({ url: 'wss://...', codec: rawCodec() }); }
+  constructor() {
+    super(WebSocketClientOptions.create<WsFrame, WsFrame>().withUrl('wss://...').withCodec(rawCodec()));
+  }
   onMessage(frame: WsFrame): void {
     if (frame.kind === 'binary') this.handleBytes(frame.data);   // Uint8Array
   }
@@ -179,7 +186,9 @@ forever.
 
 ```ts
 new Feed(); // ...
-new WebSocketClientActor({ url: 'wss://...', pingIntervalMs: 30_000 });
+new WebSocketClientActor(
+  WebSocketClientOptions.create().withUrl('wss://...').withPingIntervalMs(30_000),
+);
 ```
 
 An application-level ping every `pingIntervalMs` keeps

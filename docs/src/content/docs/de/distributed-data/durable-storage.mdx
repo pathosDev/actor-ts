@@ -13,18 +13,22 @@ Replicator mit **`DurableDistributedDataStore`**:
 ```ts
 import {
   DistributedDataId,
+  DistributedDataOptions,
   DurableDistributedDataStore,
   SqliteDurableStateStore,
 } from 'actor-ts';
 
 const stateStore = new SqliteDurableStateStore({ path: '/var/lib/dd.db' });
 
-const dd = system.extension(DistributedDataId).start(cluster, {
-  durable: new DurableDistributedDataStore({
-    durableStateStore: stateStore,
-    keys:              ['hits', 'config', 'sessions'],
-  }),
-});
+const dd = system.extension(DistributedDataId).start(
+  cluster,
+  DistributedDataOptions.create().withDurableStore(
+    new DurableDistributedDataStore({
+      durableStateStore: stateStore,
+      keys:              ['hits', 'config', 'sessions'],
+    }),
+  ),
+);
 ```
 
 Was du damit bekommst:
@@ -161,9 +165,12 @@ Overhead nicht.
 ## Startup-Ablauf
 
 ```ts
-const dd = system.extension(DistributedDataId).start(cluster, {
-  durable: new DurableDistributedDataStore({ ... }),
-});
+const dd = system.extension(DistributedDataId).start(
+  cluster,
+  DistributedDataOptions.create().withDurableStore(
+    new DurableDistributedDataStore({ ... }),
+  ),
+);
 
 // Bevor dieser Aufruf zurückkehrt:
 //   1. Den Durable Store öffnen.

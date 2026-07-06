@@ -1,6 +1,6 @@
-export { ClusterRouter } from './ClusterRouter.js';
+export { ClusterRouter, ClusterRouterOptions } from './ClusterRouter.js';
 export type {
-  ClusterRouterOptions,
+  ClusterRouterSettings,
   ClusterRouterType,
 } from './ClusterRouter.js';
 export { pickRendezvous } from './ConsistentHashing.js';

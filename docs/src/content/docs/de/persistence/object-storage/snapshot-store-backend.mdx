@@ -11,15 +11,16 @@ Backing-Schicht verwendet.
 ```ts
 import {
   ObjectStorageSnapshotStore,
+  ObjectStorageSnapshotStoreOptions,
   S3ObjectStorageBackend,
+  S3ObjectStorageOptions,
   PersistenceExtensionId,
 } from 'actor-ts';
 
-const snapshotStore = new ObjectStorageSnapshotStore({
-  backend:     new S3ObjectStorageBackend({ region, bucket }),
-  compression: { algorithm: 'gzip' },
-  encryption:  { keyRing },
-});
+const snapshotStore = new ObjectStorageSnapshotStore(ObjectStorageSnapshotStoreOptions.create()
+  .withBackend(new S3ObjectStorageBackend(S3ObjectStorageOptions.create().withRegion(region).withBucket(bucket)))
+  .withCompression({ algorithm: 'gzip' })
+  .withEncryption(encryption));
 
 system.extension(PersistenceExtensionId).configure({
   journal: someJournal,
@@ -103,10 +104,10 @@ es mit
 ein:
 
 ```ts
-const cached = new CachedSnapshotStore({
-  underlying: new ObjectStorageSnapshotStore({ backend, ... }),
-  maxEntries: 1_000,
-});
+const cached = new CachedSnapshotStore(
+  new ObjectStorageSnapshotStore(ObjectStorageSnapshotStoreOptions.create().withBackend(backend)),
+  CachedSnapshotStoreOptions.create().withCache(cache),
+);
 ```
 
 Reduziert redundante S3-GETs auf Sub-Mikrosekunden-Cache-Hits.
@@ -143,10 +144,9 @@ Layout; du setzt die Policy.
 ## Cleanup alter Snapshots
 
 ```ts
-new ObjectStorageSnapshotStore({
-  backend,
-  maxSnapshotsPerPid: 5,   // die 5 neuesten behalten; ältere löschen
-});
+new ObjectStorageSnapshotStore(ObjectStorageSnapshotStoreOptions.create()
+  .withBackend(backend)
+  .withKeepN(5));   // die 5 neuesten behalten; ältere löschen
 ```
 
 Ohne Cleanup akkumulieren alte Snapshots unbegrenzt.
@@ -160,8 +160,8 @@ kleines Fenster, in dem alte Snapshots mit neuen koexistieren.
 
 ```ts
 {
-  journal:       new SqliteJournal({ path: '...' }),
-  snapshotStore: new ObjectStorageSnapshotStore({ backend }),
+  journal:       new SqliteJournal(SqliteJournalOptions.create().withPath('...')),
+  snapshotStore: new ObjectStorageSnapshotStore(ObjectStorageSnapshotStoreOptions.create().withBackend(backend)),
 }
 ```
 

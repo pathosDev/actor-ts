@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test';
 import {
   Actor,
   ActorSystem,
+  ActorSystemOptions,
   AskTimeoutError,
   Broadcast,
   DeadLetter,
@@ -19,7 +20,7 @@ import {
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 function newSystem(name = 'test'): ActorSystem {
-  return ActorSystem.create(name, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  return ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
 }
 
 test('delivers messages in order, one at a time', async () => {

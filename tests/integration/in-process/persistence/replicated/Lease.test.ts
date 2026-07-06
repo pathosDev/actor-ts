@@ -9,15 +9,15 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
-import { ActorSystem } from '../../../../../src/ActorSystem.js';
-import { Cluster } from '../../../../../src/cluster/Cluster.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
+import { Cluster, ClusterOptions } from '../../../../../src/cluster/Cluster.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import { ReplicatedEventSourcedActor } from '../../../../../src/persistence/ReplicatedEventSourcedActor.js';
 import { InMemoryLease, inMemoryLeaseStore } from '../../../../../src/coordination/leases/InMemoryLease.js';
-import type { Lease } from '../../../../../src/coordination/Lease.js';
+import { LeaseOptions, type Lease } from '../../../../../src/coordination/Lease.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -68,12 +68,15 @@ class LeasedCounter extends ReplicatedEventSourcedActor<Cmd, Event, State> {
 async function bootCluster(name: string, port: number): Promise<{
   sys: ActorSystem; cluster: Cluster;
 }> {
-  const sys = ActorSystem.create(name, { logger: new NoopLogger(), logLevel: LogLevel.Off });
-  const cluster = await Cluster.join(sys, {
-    host: 'h', port,
-    transport: new InMemoryTransport(new NodeAddress(name, 'h', port)),
-    gossipIntervalMs: 30,
-  });
+  const sys = ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const cluster = await Cluster.join(
+    sys,
+    ClusterOptions.create()
+      .withHost('h')
+      .withPort(port)
+      .withTransport(new InMemoryTransport(new NodeAddress(name, 'h', port)))
+      .withGossipIntervalMs(30),
+  );
   return { sys, cluster };
 }
 
@@ -116,8 +119,8 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
     let a: LeasedCounter | null = null;
     let b: LeasedCounter | null = null;
     try {
-      const leaseA = new InMemoryLease({ name: 'shared-pid', owner: 'a', ttlMs: 30_000 });
-      const leaseB = new InMemoryLease({ name: 'shared-pid', owner: 'b', ttlMs: 30_000 });
+      const leaseA = new InMemoryLease(LeaseOptions.create().withName('shared-pid').withOwner('a').withTtlMs(30_000));
+      const leaseB = new InMemoryLease(LeaseOptions.create().withName('shared-pid').withOwner('b').withTtlMs(30_000));
       sys.spawn(
         Props.create(() => {
           a = new LeasedCounter(cluster, 'lease-a', 'r-a', leaseA);
@@ -163,7 +166,7 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
     try {
       // Short TTL so the renewal loop runs every ~70 ms — quick
       // enough for the test to observe loss without a long sleep.
-      const lease = new InMemoryLease({ name: 'losable', owner: 'a', ttlMs: 200 });
+      const lease = new InMemoryLease(LeaseOptions.create().withName('losable').withOwner('a').withTtlMs(200));
       sys.spawn(
         Props.create(() => {
           a = new LeasedCounter(cluster, 'lease-loss', 'r-a', lease);
@@ -199,7 +202,7 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
     inMemoryLeaseStore._clear();
     const { sys, cluster } = await bootCluster('lease-handover', 70_004);
     try {
-      const first = new InMemoryLease({ name: 'handover', owner: 'first', ttlMs: 30_000 });
+      const first = new InMemoryLease(LeaseOptions.create().withName('handover').withOwner('first').withTtlMs(30_000));
       let ref1: LeasedCounter | null = null;
       const a1 = sys.spawn(
         Props.create(() => {
@@ -217,7 +220,7 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
 
       // Fresh actor with a different owner can immediately acquire
       // the same lease name.
-      const second = new InMemoryLease({ name: 'handover', owner: 'second', ttlMs: 30_000 });
+      const second = new InMemoryLease(LeaseOptions.create().withName('handover').withOwner('second').withTtlMs(30_000));
       let ref2: LeasedCounter | null = null;
       sys.spawn(
         Props.create(() => {

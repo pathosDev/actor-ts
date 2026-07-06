@@ -14,14 +14,17 @@ SRV is the more flexible choice (service-discovery-style); A
 records work for simpler setups.
 
 ```ts
-import { Cluster, DnsSeedProvider } from 'actor-ts';
+import { Cluster, ClusterOptions, DnsSeedProvider, DnsSeedProviderOptions } from 'actor-ts';
 
-const provider = new DnsSeedProvider({
-  service:   '_actor-ts._tcp.example.com',
-});
+const provider = new DnsSeedProvider(
+  DnsSeedProviderOptions.create()
+    .withHostname('_actor-ts._tcp.example.com')
+    .withSystemName('my-app')
+    .withUseSrv(),
+);
 
 const seeds = await provider.lookup();
-await Cluster.join(system, { host, port, seeds });
+await Cluster.join(system, ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds));
 ```
 
 ## Configuration
@@ -37,7 +40,12 @@ interface DnsSeedProviderSettings {
 ### SRV mode (recommended)
 
 ```ts
-new DnsSeedProvider({ service: '_actor-ts._tcp.my-app.example.com' });
+new DnsSeedProvider(
+  DnsSeedProviderOptions.create()
+    .withHostname('_actor-ts._tcp.my-app.example.com')
+    .withSystemName('my-app')
+    .withUseSrv(),
+);
 ```
 
 SRV records carry **host, port, weight, priority** per entry.
@@ -59,10 +67,12 @@ publish SRV records automatically.
 ### A-record mode
 
 ```ts
-new DnsSeedProvider({
-  service: 'actor-ts.example.com',
-  port:    2552,
-});
+new DnsSeedProvider(
+  DnsSeedProviderOptions.create()
+    .withHostname('actor-ts.example.com')
+    .withSystemName('my-app')
+    .withPort(2552),
+);
 ```
 
 For setups without SRV — DNS only carries IPs.  The provider

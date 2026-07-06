@@ -12,8 +12,8 @@
  *   - both nodes see BROADCAST events
  *   - after B leaves, A's publishes no longer try to reach B
  */
-import { Actor, ActorSystem, Cluster, InMemoryTransport, NodeAddress, Props } from '../../src/index.js';
-import { DistributedPubSubId, Publish, Subscribe } from '../../src/cluster/pubsub/index.js';
+import { Actor, ActorSystem, Cluster, ClusterOptions, InMemoryTransport, NodeAddress, Props } from '../../src/index.js';
+import { DistributedPubSubId, DistributedPubSubOptions, Publish, Subscribe } from '../../src/cluster/pubsub/index.js';
 
 interface DomainEvent { readonly type: string; readonly payload: unknown; }
 
@@ -30,13 +30,15 @@ async function startNode(host: string, port: number, seeds: string[] = []): Prom
   mediator: import('../../src/ActorRef.js').ActorRef<Subscribe | Publish>;
 }> {
   const system = ActorSystem.create('events');
-  const cluster = await Cluster.join(system, {
-    host, port, seeds,
-    transport: new InMemoryTransport(new NodeAddress('events', host, port)),
-    failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
-    gossipIntervalMs: 80,
-  });
-  const mediator = system.extension(DistributedPubSubId).start(cluster, { gossipIntervalMs: 100 });
+  const cluster = await Cluster.join(system, ClusterOptions.create()
+    .withHost(host)
+    .withPort(port)
+    .withSeeds(seeds)
+    .withTransport(new InMemoryTransport(new NodeAddress('events', host, port)))
+    .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+    .withGossipIntervalMs(80));
+  const mediator = system.extension(DistributedPubSubId).start(cluster,
+    DistributedPubSubOptions.create().withGossipIntervalMs(100));
   return { system, cluster, mediator };
 }
 

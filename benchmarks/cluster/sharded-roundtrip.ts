@@ -8,13 +8,16 @@
 import {
   Actor,
   ActorSystem,
+  ActorSystemOptions,
   Cluster,
+  ClusterOptions,
   ClusterSharding,
   InMemoryTransport,
   LogLevel,
   NoopLogger,
   NodeAddress,
   Props,
+  StartShardingOptions,
   ask,
   type ActorRef,
 } from '../../src/index.js';
@@ -31,18 +34,18 @@ class Entity extends Actor<Cmd> {
 let port = 43_000;
 
 async function startNode(systemName: string, p: number, seeds: string[] = []): Promise<{ sys: ActorSystem; cluster: Cluster; region: ActorRef<Cmd> }> {
-  const sys = ActorSystem.create(systemName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
-  const cluster = await Cluster.join(sys, {
-    host: 'h', port: p, seeds,
-    transport: new InMemoryTransport(new NodeAddress(systemName, 'h', p)),
-    gossipIntervalMs: 30,
-  });
-  const region = ClusterSharding.get(sys, cluster).start<Cmd>({
-    typeName: 'entity',
-    entityProps: Props.create(() => new Entity()),
-    extractEntityId: (m) => m.id,
-    numShards: 16,
-  });
+  const sys = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const cluster = await Cluster.join(sys, ClusterOptions.create()
+    .withHost('h')
+    .withPort(p)
+    .withSeeds(seeds)
+    .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', p)))
+    .withGossipIntervalMs(30));
+  const region = ClusterSharding.get(sys, cluster).start<Cmd>(StartShardingOptions.create<Cmd>()
+    .withTypeName('entity')
+    .withEntityProps(Props.create(() => new Entity()))
+    .withExtractEntityId((m) => m.id)
+    .withNumShards(16));
   return { sys, cluster, region };
 }
 

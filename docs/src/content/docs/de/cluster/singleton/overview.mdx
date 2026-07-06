@@ -66,24 +66,25 @@ ein Singleton vermutlich das Richtige.
 ## Ein minimales Beispiel
 
 ```ts
-import { Actor, ActorSystem, Cluster, Props } from 'actor-ts';
-import { ClusterSingletonManager, ClusterSingletonProxy } from 'actor-ts';
+import { Actor, ActorSystem, Cluster, ClusterOptions, Props } from 'actor-ts';
+import { ClusterSingletonManager, ClusterSingletonManagerOptions, ClusterSingletonProxy } from 'actor-ts';
 
 class JobScheduler extends Actor<JobCmd> {
   override onReceive(msg: JobCmd): void { /* ... */ }
 }
 
 const system  = ActorSystem.create('my-app');
-const cluster = await Cluster.join(system, { host, port, seeds });
+const cluster = await Cluster.join(system, ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds));
 
 // Auf jedem Node: starte den Manager.
 system.spawn(
-  ClusterSingletonManager.props({
-    cluster,
-    typeName:        'job-scheduler',
-    singletonProps:  Props.create(() => new JobScheduler()),
-    role:            'control-plane',   // optional: nur diese Nodes können hosten
-  }),
+  ClusterSingletonManager.props(
+    ClusterSingletonManagerOptions.create<JobCmd>()
+      .withCluster(cluster)
+      .withTypeName('job-scheduler')
+      .withSingletonProps(Props.create(() => new JobScheduler()))
+      .withRole('control-plane'),   // optional: nur diese Nodes können hosten
+  ),
   'singleton-manager-job-scheduler',
 );
 
@@ -163,12 +164,13 @@ Drei Verteidigungen, in der Reihenfolge der Komplexität:
    [Downing-Strategien](/de/cluster/downing-strategies/).
 2. **Eine Lease**, die an den Manager übergeben wird:
    ```ts
-   ClusterSingletonManager.props({
-     cluster,
-     typeName: '...',
-     singletonProps: ...,
-     lease: someLeaseImpl,   // z. B. K8s-Lease oder In-Memory für Tests
-   });
+   ClusterSingletonManager.props(
+     ClusterSingletonManagerOptions.create()
+       .withCluster(cluster)
+       .withTypeName('...')
+       .withSingletonProps(...)
+       .withLease(someLeaseImpl),   // z. B. K8s-Lease oder In-Memory für Tests
+   );
    ```
    Der Manager muss die Lease erfolgreich erwerben, bevor er den
    Singleton spawnen darf. Nur eine Seite einer Partition kann die

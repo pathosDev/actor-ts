@@ -6,7 +6,10 @@
  * circuit breaker, and HOCON settings resolution for free.
  *
  *     class FeedClient extends WebSocketClientActor<ClientMsg, ServerMsg> {
- *       constructor() { super({ url: 'ws://localhost:8080/ws' }); }
+ *       constructor() {
+ *         super(WebSocketClientOptions.create<ClientMsg, ServerMsg>()
+ *           .withUrl('ws://localhost:8080/ws'));
+ *       }
  *       override onConnected(): void { this.send({ kind: 'ping', n: 1 }); }
  *       onMessage(msg: ServerMsg): void { this.log.info(`pong ${msg.n}`); }
  *     }
@@ -22,6 +25,7 @@ import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { BrokerActor, type OutboundEnvelope } from '../../io/broker/BrokerActor.js';
 import type { BrokerCommonSettings } from '../../io/broker/BrokerSettings.js';
 import { jsonCodec, WsDecodeError, type WsCodec } from './WsCodec.js';
+import { WebSocketClientOptions } from './WebSocketClientOptions.js';
 import {
   WsClientConnected,
   WsClientDisconnected,
@@ -61,8 +65,8 @@ export abstract class WebSocketClientActor<TOut, TIn, TSelf = never>
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private _codec: WsCodec<TOut, TIn> | null = null;
 
-  constructor(settings: Partial<WebSocketClientSettings<TOut, TIn>> = {}) {
-    super(settings);
+  constructor(options: WebSocketClientOptions<TOut, TIn> = WebSocketClientOptions.create<TOut, TIn>()) {
+    super(options.build());
   }
 
   /* ----------------------- user overrides ------------------------ */

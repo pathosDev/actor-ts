@@ -1,4 +1,5 @@
 import { match } from 'ts-pattern';
+import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import {
   getHonoRunner,
   type HonoServerHandle,
@@ -70,7 +71,7 @@ interface HonoAppLike {
   fetch(request: Request): Promise<Response> | Response;
 }
 
-export interface HonoBackendOptions {
+export interface HonoBackendSettings {
   /**
    * Bring-your-own Hono app — useful if you already registered middleware
    * (CORS, JWT, logger) before handing it off.  When omitted, we import
@@ -79,6 +80,28 @@ export interface HonoBackendOptions {
   readonly app?: HonoAppLike;
   /** Maximum allowed body size in bytes (default: 10 MiB).  Exceeding it returns 413. */
   readonly maxBodyBytes?: number;
+}
+
+/**
+ * Fluent builder for {@link HonoBackendSettings}:
+ *
+ *     new HonoBackend(HonoBackendOptions.create().withMaxBodyBytes(1 << 20))
+ */
+export class HonoBackendOptions extends OptionsBuilder<HonoBackendSettings> {
+  /** Start a fresh builder.  Equivalent to `new HonoBackendOptions()`. */
+  static create(): HonoBackendOptions {
+    return new HonoBackendOptions();
+  }
+
+  /** Bring-your-own Hono app (skips the internal `hono` import). */
+  withApp(app: HonoAppLike): this {
+    return this.set('app', app);
+  }
+
+  /** Maximum request body size in bytes.  Default 10 MiB; exceeding it returns 413. */
+  withMaxBodyBytes(bytes: number): this {
+    return this.set('maxBodyBytes', bytes);
+  }
 }
 
 /**
@@ -106,10 +129,11 @@ export class HonoBackend implements HttpServerBackend {
   // concrete implementation (Bun.serve / @hono/node-server / Deno.serve).
   private server: HonoServerHandle | null = null;
 
-  constructor(options: HonoBackendOptions = {}) {
-    this.app = options.app ?? null;
-    this.ownsApp = options.app == null;
-    this.maxBodyBytes = options.maxBodyBytes ?? 10 * 1024 * 1024;
+  constructor(options: HonoBackendOptions = HonoBackendOptions.create()) {
+    const settings = options.build();
+    this.app = settings.app ?? null;
+    this.ownsApp = settings.app == null;
+    this.maxBodyBytes = settings.maxBodyBytes ?? 10 * 1024 * 1024;
   }
 
   /** Inject / access the underlying Hono app — useful for native middleware. */

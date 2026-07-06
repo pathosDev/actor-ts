@@ -6,8 +6,8 @@ import type { Cluster } from '../Cluster.js';
 import type { EnvelopeMsg } from '../Protocol.js';
 import {
   DistributedPubSubMediator,
+  DistributedPubSubOptions,
   mediatorPath,
-  type DistributedPubSubSettings,
 } from './DistributedPubSubMediator.js';
 import type {
   GetTopics,
@@ -35,13 +35,15 @@ export class DistributedPubSub implements Extension {
    * re-binding to the same cluster is a no-op; re-binding to a different
    * cluster throws.
    */
-  start(cluster: Cluster, settings: Partial<Omit<DistributedPubSubSettings, 'cluster'>> = {}): ActorRef<MediatorMessage> {
+  start(cluster: Cluster, options: DistributedPubSubOptions = DistributedPubSubOptions.create()): ActorRef<MediatorMessage> {
     if (this._mediator && this._cluster === cluster) return this._mediator;
     if (this._mediator) throw new Error('DistributedPubSub is already bound to a different cluster');
     this._cluster = cluster;
 
+    // Cluster comes from the positional arg and is authoritative — inject it
+    // into the builder before constructing the (builder-only) mediator.
     const mediator = this.system.spawn(
-      Props.create(() => new DistributedPubSubMediator({ cluster, ...settings })),
+      Props.create(() => new DistributedPubSubMediator(options.withCluster(cluster))),
       'pubsub-mediator',
     );
     this._mediator = mediator as ActorRef<MediatorMessage>;

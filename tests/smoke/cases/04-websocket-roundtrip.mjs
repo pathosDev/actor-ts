@@ -16,15 +16,15 @@ export const description = 'client actor ↔ server actor via websocket() route'
 
 export async function run({ actorTs }) {
   const {
-    ActorSystem, Props, LogLevel, NoopLogger,
-    HttpExtensionId, WebSocketServerActor, WebSocketClientActor, websocket,
+    ActorSystem, ActorSystemOptions, Props, LogLevel, NoopLogger,
+    HttpExtensionId, WebSocketServerActor, WebSocketClientActor, WebSocketClientOptions, websocket,
   } = actorTs;
 
   class Echo extends WebSocketServerActor {
     onMessage(msg) { this.reply({ pong: msg.n }); }
   }
 
-  const sys = ActorSystem.create('smoke-ws', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const sys = ActorSystem.create('smoke-ws', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   let binding;
   try {
     const server = sys.spawn(Props.create(() => new Echo()), 'echo');
@@ -37,7 +37,11 @@ export async function run({ actorTs }) {
 
     const received = [];
     class Client extends WebSocketClientActor {
-      constructor(url) { super({ url, reconnect: { maxAttempts: 5, initialDelayMs: 50 } }); }
+      constructor(url) {
+        super(WebSocketClientOptions.create()
+          .withUrl(url)
+          .withReconnect({ maxAttempts: 5, initialDelayMs: 50 }));
+      }
       onConnected() { this.send({ n: 7 }); }
       onMessage(m) { received.push(m); }
     }

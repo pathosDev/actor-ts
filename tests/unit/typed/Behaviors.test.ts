@@ -1,17 +1,17 @@
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import {
   Behaviors,
   typedProps,
   type Behavior,
 } from '../../../src/typed/index.js';
-import { TestKit } from '../../../src/testkit/TestKit.js';
+import { TestKit, TestKitOptions } from '../../../src/testkit/TestKit.js';
 import { Directive, OneForOneStrategy } from '../../../src/Supervision.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 const newSys = (name = 'typed-unit'): ActorSystem =>
-  ActorSystem.create(name, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
 
 describe('Behaviors.receive — basic handler', () => {
   test('receives messages and keeps the same behavior via Behaviors.same', async () => {
@@ -41,7 +41,7 @@ describe('Behaviors.receive — basic handler', () => {
 
   test('state transition by returning a new Behavior', async () => {
     const sys = newSys();
-    const kit = TestKit.create('typed-transition', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('typed-transition', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = kit.createTestProbe<number>();
 
     const counter = (n: number): Behavior<'inc' | 'get'> =>
@@ -63,7 +63,7 @@ describe('Behaviors.stopped', () => {
   test('stops the actor when returned from a handler (observed via deathwatch)', async () => {
     const sys = newSys();
     const { Terminated } = await import('../../../src/SystemMessages.js');
-    const kit = TestKit.create('typed-stop', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('typed-stop', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = kit.createTestProbe();
 
     const b = Behaviors.receiveMessage<string>((m) => m === 'die' ? Behaviors.stopped : Behaviors.same);
@@ -82,7 +82,7 @@ describe('Behaviors.stopped', () => {
 describe('Behaviors.setup', () => {
   test('runs exactly once with the context before the first message', async () => {
     const sys = newSys();
-    const kit = TestKit.create('typed-setup', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('typed-setup', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = kit.createTestProbe<string>();
     let setupCalls = 0;
 
@@ -107,7 +107,7 @@ describe('Behaviors.setup', () => {
 describe('Behaviors.withTimers', () => {
   test('lets the behavior schedule timer messages at itself', async () => {
     const sys = newSys();
-    const kit = TestKit.create('typed-timers', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('typed-timers', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = kit.createTestProbe<string>();
 
     const b = Behaviors.withTimers<string>((timers) => {
@@ -128,7 +128,7 @@ describe('Behaviors.withTimers', () => {
 describe('Behaviors.withStash', () => {
   test('stashes messages until unstashAll replays them', async () => {
     const sys = newSys();
-    const kit = TestKit.create('typed-stash', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('typed-stash', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = kit.createTestProbe<string>();
 
     type Msg = { kind: 'ready' } | { kind: 'work'; id: number };
@@ -188,7 +188,7 @@ describe('Behaviors.withStash', () => {
 describe('Behaviors.supervise', () => {
   test('restart strategy re-resolves the inner behavior on error', async () => {
     const sys = newSys();
-    const kit = TestKit.create('typed-supervise', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('typed-supervise', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = kit.createTestProbe<string>();
     let initCount = 0;
 
@@ -221,7 +221,7 @@ describe('Behaviors.supervise', () => {
 
   test('resume directive swallows the error without reinitializing', async () => {
     const sys = newSys();
-    const kit = TestKit.create('typed-resume', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('typed-resume', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = kit.createTestProbe<string>();
     let initCount = 0;
 
@@ -265,7 +265,7 @@ describe('Behaviors.empty / Behaviors.ignore', () => {
 describe('typedProps — interop with OO Actor API', () => {
   test('typedProps works through system.spawn', async () => {
     const sys = newSys();
-    const kit = TestKit.create('typed-props', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('typed-props', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = kit.createTestProbe<number>();
 
     const b = Behaviors.receiveMessage<number>((m) => { probe.tell(m * 2); return Behaviors.same; });
@@ -280,7 +280,7 @@ describe('typedProps — interop with OO Actor API', () => {
 
 describe('Behaviors.unhandled', () => {
   test('unhandled messages route to dead letters', async () => {
-    const kit = TestKit.create('typed-unhandled', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('typed-unhandled', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = kit.createTestProbe();
     const { DeadLetter } = await import('../../../src/SystemMessages.js');
     kit.system.eventStream.subscribe(probe, DeadLetter);

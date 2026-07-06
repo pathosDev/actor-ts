@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { InMemoryCache } from '../../../../src/cache/InMemoryCache.js';
-import { CachedSnapshotStore } from '../../../../src/persistence/snapshot-stores/CachedSnapshotStore.js';
+import {
+  CachedSnapshotStore,
+  CachedSnapshotStoreOptions,
+} from '../../../../src/persistence/snapshot-stores/CachedSnapshotStore.js';
 import { InMemorySnapshotStore } from '../../../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
 import type { SnapshotStore } from '../../../../src/persistence/SnapshotStore.js';
 
@@ -35,7 +38,7 @@ describe('CachedSnapshotStore — read-through behaviour', () => {
   test('first loadLatest hits underlying store; second hits cache', async () => {
     const counting = new CountingStore(new InMemorySnapshotStore());
     const cache = new InMemoryCache();
-    const store = new CachedSnapshotStore(counting, { cache, ttlMs: 5_000 });
+    const store = new CachedSnapshotStore(counting, CachedSnapshotStoreOptions.create().withCache(cache).withTtlMs(5_000));
     await store.save('pid-1', 5, { x: 1 });
     expect(counting.saveCalls).toBe(1);
 
@@ -49,7 +52,7 @@ describe('CachedSnapshotStore — read-through behaviour', () => {
   test('cache miss returns None when there is no snapshot', async () => {
     const counting = new CountingStore(new InMemorySnapshotStore());
     const cache = new InMemoryCache();
-    const store = new CachedSnapshotStore(counting, { cache, ttlMs: 5_000 });
+    const store = new CachedSnapshotStore(counting, CachedSnapshotStoreOptions.create().withCache(cache).withTtlMs(5_000));
     expect((await store.loadLatest('absent')).isNone()).toBe(true);
     expect(counting.loadLatestCalls).toBe(1);
   });
@@ -57,7 +60,7 @@ describe('CachedSnapshotStore — read-through behaviour', () => {
   test('TTL: cache entry expires and the underlying store is queried again', async () => {
     const counting = new CountingStore(new InMemorySnapshotStore());
     const cache = new InMemoryCache();
-    const store = new CachedSnapshotStore(counting, { cache, ttlMs: 30 });
+    const store = new CachedSnapshotStore(counting, CachedSnapshotStoreOptions.create().withCache(cache).withTtlMs(30));
     await store.save('p', 1, { v: 1 });
     await store.loadLatest('p');
     expect(counting.loadLatestCalls).toBe(1);
@@ -71,7 +74,7 @@ describe('CachedSnapshotStore — invalidation on save / delete', () => {
   test('save invalidates the cache entry (next loadLatest re-fetches)', async () => {
     const counting = new CountingStore(new InMemorySnapshotStore());
     const cache = new InMemoryCache();
-    const store = new CachedSnapshotStore(counting, { cache, ttlMs: 60_000 });
+    const store = new CachedSnapshotStore(counting, CachedSnapshotStoreOptions.create().withCache(cache).withTtlMs(60_000));
     await store.save('p', 1, { v: 1 });
     await store.loadLatest('p');                // populate cache
     expect(counting.loadLatestCalls).toBe(1);
@@ -84,7 +87,7 @@ describe('CachedSnapshotStore — invalidation on save / delete', () => {
   test('delete also invalidates the cache', async () => {
     const counting = new CountingStore(new InMemorySnapshotStore());
     const cache = new InMemoryCache();
-    const store = new CachedSnapshotStore(counting, { cache, ttlMs: 60_000 });
+    const store = new CachedSnapshotStore(counting, CachedSnapshotStoreOptions.create().withCache(cache).withTtlMs(60_000));
     await store.save('p', 1, { v: 1 });
     await store.loadLatest('p');
     await store.delete('p', 1);
@@ -97,7 +100,7 @@ describe('CachedSnapshotStore — bypass paths', () => {
   test('loadBefore is NOT cached (always goes to underlying)', async () => {
     const counting = new CountingStore(new InMemorySnapshotStore());
     const cache = new InMemoryCache();
-    const store = new CachedSnapshotStore(counting, { cache, ttlMs: 60_000 });
+    const store = new CachedSnapshotStore(counting, CachedSnapshotStoreOptions.create().withCache(cache).withTtlMs(60_000));
     await store.save('p', 1, {});
     await store.save('p', 2, {});
     await store.save('p', 3, {});
@@ -111,14 +114,14 @@ describe('CachedSnapshotStore — config guards', () => {
   test('rejects invalid ttl', () => {
     const cache = new InMemoryCache();
     const inner = new InMemorySnapshotStore();
-    expect(() => new CachedSnapshotStore(inner, { cache, ttlMs: 0 })).toThrow();
-    expect(() => new CachedSnapshotStore(inner, { cache, ttlMs: -1 })).toThrow();
+    expect(() => new CachedSnapshotStore(inner, CachedSnapshotStoreOptions.create().withCache(cache).withTtlMs(0))).toThrow();
+    expect(() => new CachedSnapshotStore(inner, CachedSnapshotStoreOptions.create().withCache(cache).withTtlMs(-1))).toThrow();
   });
 
   test('keyPrefix is honoured', async () => {
     const cache = new InMemoryCache();
     const inner = new InMemorySnapshotStore();
-    const store = new CachedSnapshotStore(inner, { cache, ttlMs: 5_000, keyPrefix: 'env-prod:snap:' });
+    const store = new CachedSnapshotStore(inner, CachedSnapshotStoreOptions.create().withCache(cache).withTtlMs(5_000).withKeyPrefix('env-prod:snap:'));
     await store.save('p', 1, { v: 1 });
     await store.loadLatest('p');  // populate
     // Direct cache probe with the expected key:

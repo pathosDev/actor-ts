@@ -1,9 +1,9 @@
 // Cluster entry points.
-export { Cluster, inMemoryTransport } from './Cluster.js';
+export { Cluster, ClusterOptions, inMemoryTransport } from './Cluster.js';
 export type { ClusterSettings } from './Cluster.js';
-export { bootstrapCluster } from './ClusterBootstrap.js';
+export { bootstrapCluster, ClusterBootstrapOptions } from './ClusterBootstrap.js';
 export type {
-  ClusterBootstrapOptions,
+  ClusterBootstrapSettings,
   BootstrappedCluster,
 } from './ClusterBootstrap.js';
 
@@ -38,11 +38,13 @@ export type { PortLike, BrokeredMessage } from './transports/MessageChannelTrans
 
 export {
   FailureDetector,
+  FailureDetectorOptions,
   defaultFailureDetectorSettings,
 } from './FailureDetector.js';
 export type { FailureDetectorSettings, FailureDecision } from './FailureDetector.js';
 export {
   PhiAccrualFailureDetector,
+  PhiAccrualOptions,
   defaultPhiAccrualSettings,
 } from './PhiAccrualFailureDetector.js';
 export type { PhiAccrualSettings } from './PhiAccrualFailureDetector.js';
@@ -51,8 +53,11 @@ export type { PhiAccrualSettings } from './PhiAccrualFailureDetector.js';
 export {
   KeepMajority,
   KeepOldest,
+  KeepOldestOptions,
   StaticQuorum,
+  StaticQuorumOptions,
   KeepReferee,
+  KeepRefereeOptions,
 } from './downing/index.js';
 export type {
   DowningProvider,
@@ -70,6 +75,8 @@ export {
   ClusterSingletonId,
   ClusterSingletonManager,
   ClusterSingletonProxy,
+  ClusterSingletonManagerOptions,
+  StartSingletonOptions,
   singletonManagerPath,
 } from './singleton/index.js';
 export type {
@@ -84,6 +91,7 @@ export {
   DistributedPubSub,
   DistributedPubSubId,
   DistributedPubSubMediator,
+  DistributedPubSubOptions,
   mediatorPath,
   CurrentTopics,
   GetTopics,
@@ -97,16 +105,16 @@ export {
 export type { DistributedPubSubSettings } from './pubsub/index.js';
 
 // Sharding.
-export { ClusterSharding } from './sharding/ClusterSharding.js';
+export { ClusterSharding, StartShardingOptions } from './sharding/ClusterSharding.js';
 export type { StartSettings } from './sharding/ClusterSharding.js';
-export { ShardedDaemonProcess } from './sharding/ShardedDaemonProcess.js';
+export { ShardedDaemonProcess, ShardedDaemonProcessOptions } from './sharding/ShardedDaemonProcess.js';
 export type {
   ShardedDaemonProcessSettings,
   ShardedDaemonProcessHandle,
 } from './sharding/ShardedDaemonProcess.js';
-export { ShardRegion } from './sharding/ShardRegion.js';
+export { ShardRegion, ShardingOptions } from './sharding/ShardRegion.js';
 export type { ShardingSettings } from './sharding/ShardRegion.js';
-export { ShardCoordinator } from './sharding/ShardCoordinator.js';
+export { ShardCoordinator, ShardCoordinatorOptions } from './sharding/ShardCoordinator.js';
 export type { ShardCoordinatorSettings } from './sharding/ShardCoordinator.js';
 export { Passivate } from './sharding/Passivate.js';
 export {
@@ -118,10 +126,11 @@ export type {
 } from './sharding/RememberEntitiesStore.js';
 export {
   CassandraRememberEntitiesStore,
+  CassandraRememberEntitiesStoreOptions,
   rememberEntitiesDdl,
 } from './sharding/CassandraRememberEntitiesStore.js';
 export type {
-  CassandraRememberEntitiesStoreOptions,
+  CassandraRememberEntitiesStoreSettings,
 } from './sharding/CassandraRememberEntitiesStore.js';
 export {
   HashAllocationStrategy,
@@ -136,18 +145,19 @@ export {
 export type { ShardAllocator } from './sharding/ShardAllocator.js';
 
 // Cluster-aware routing.
-export { ClusterRouter, pickRendezvous } from './router/index.js';
+export { ClusterRouter, pickRendezvous, ClusterRouterOptions } from './router/index.js';
 export type {
-  ClusterRouterOptions,
+  ClusterRouterSettings,
   ClusterRouterType,
 } from './router/index.js';
 
 // Outside-in client (#86).
-export { ClusterClient } from './ClusterClient.js';
+export { ClusterClient, ClusterClientOptions } from './ClusterClient.js';
 export type { ClusterClientSettings } from './ClusterClient.js';
 export {
   ClusterClientReceptionist,
   ClusterClientReceptionistId,
+  ClusterClientReceptionistOptions,
 } from './ClusterClientReceptionist.js';
 export type {
   ClusterClientReceptionistSettings,

@@ -3,7 +3,7 @@
  *
  *   bun run benchmarks/single-node/become-unbecome.ts
  */
-import { Actor, ActorSystem, LogLevel, NoopLogger, Props, ask } from '../../src/index.js';
+import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props, ask } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
 type Msg = 'swap' | { kind: 'ping' };
@@ -26,7 +26,7 @@ class Swapper extends Actor<Msg> {
 }
 
 async function main(): Promise<void> {
-  const system = ActorSystem.create('bench-become', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const system = ActorSystem.create('bench-become', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const ref = system.spawnAnonymous(Props.create(() => new Swapper()));
 
   await runGroup('single-node · become/unbecome', [

@@ -1,4 +1,5 @@
 import { Lazy } from '../../util/Lazy.js';
+import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { none, some, type Option } from '../../util/Option.js';
 import { wrapError } from '../../util/WrapError.js';
 import {
@@ -44,7 +45,7 @@ export interface S3Credentials {
   readonly sessionToken?: string;
 }
 
-export interface S3ObjectStorageOptions {
+export interface S3ObjectStorageSettings {
   /** S3 bucket name. */
   readonly bucket: string;
   /** AWS region.  For Cloudflare R2 use `'auto'`. */
@@ -75,20 +76,68 @@ export interface S3ObjectStorageOptions {
   readonly client?: S3ClientLike;
 }
 
+/**
+ * Fluent builder for {@link S3ObjectStorageSettings}.  `bucket` + `region`
+ * are required by the backend, so build the two up front:
+ *
+ *     new S3ObjectStorageBackend(
+ *       S3ObjectStorageOptions.create().withBucket('my-app').withRegion('eu-central-1'),
+ *     )
+ */
+export class S3ObjectStorageOptions extends OptionsBuilder<S3ObjectStorageSettings> {
+  /** Start a fresh builder.  Equivalent to `new S3ObjectStorageOptions()`. */
+  static create(): S3ObjectStorageOptions {
+    return new S3ObjectStorageOptions();
+  }
+
+  /** S3 bucket name. */
+  withBucket(bucket: string): this {
+    return this.set('bucket', bucket);
+  }
+
+  /** AWS region.  For Cloudflare R2 use `'auto'`. */
+  withRegion(region: string): this {
+    return this.set('region', region);
+  }
+
+  /** Custom endpoint URL — MinIO / R2 / Backblaze / Spaces / Wasabi.  Omit for AWS S3. */
+  withEndpoint(endpoint: string): this {
+    return this.set('endpoint', endpoint);
+  }
+
+  /** Force path-style URLs instead of virtual-host style.  Required for MinIO. */
+  withForcePathStyle(forcePathStyle = true): this {
+    return this.set('forcePathStyle', forcePathStyle);
+  }
+
+  /** Static credentials.  Omit to fall back to the SDK's default chain. */
+  withCredentials(credentials: S3Credentials): this {
+    return this.set('credentials', credentials);
+  }
+
+  /** Inject a pre-built `S3Client` — all other connection options are then ignored. */
+  withClient(client: S3ClientLike): this {
+    return this.set('client', client);
+  }
+}
+
 export class S3ObjectStorageBackend implements ObjectStorageBackend {
   private readonly clientLazy: Lazy<Promise<S3ClientLike>>;
   private readonly bucket: string;
 
   constructor(options: S3ObjectStorageOptions) {
-    this.bucket = options.bucket;
+    const s = options.build();
+    if (s.bucket === undefined) throw new Error('S3ObjectStorageBackend: bucket is required (call withBucket()).');
+    if (s.region === undefined) throw new Error('S3ObjectStorageBackend: region is required (call withRegion()).');
+    this.bucket = s.bucket;
     this.clientLazy = Lazy.of(async () => {
-      if (options.client) return options.client;
+      if (s.client) return s.client;
       const sdk = await s3SdkLazy.get();
       return new sdk.S3Client({
-        region: options.region,
-        endpoint: options.endpoint,
-        forcePathStyle: options.forcePathStyle,
-        credentials: options.credentials,
+        region: s.region!,
+        endpoint: s.endpoint,
+        forcePathStyle: s.forcePathStyle,
+        credentials: s.credentials,
       });
     });
   }

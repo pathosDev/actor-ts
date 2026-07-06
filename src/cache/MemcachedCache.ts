@@ -1,5 +1,6 @@
 import { makeKeyValidator } from '../persistence/storage/KeyValidator.js';
 import { Lazy } from '../util/Lazy.js';
+import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { none, some, type Option } from '../util/Option.js';
 import { wrapError } from '../util/WrapError.js';
 import { CacheError, type Cache } from './Cache.js';
@@ -25,7 +26,7 @@ import { CacheError, type Cache } from './Cache.js';
  * detect lost atomicity.
  */
 
-export interface MemcachedCacheOptions {
+export interface MemcachedCacheSettings {
   /** Comma-separated server list, e.g. `'localhost:11211'`.  Default: `'localhost:11211'`. */
   readonly servers?: string;
   /** Optional username/password for SASL auth. */
@@ -35,6 +36,39 @@ export interface MemcachedCacheOptions {
   readonly keyPrefix?: string;
   /** Pre-built memjs client — bypass internal construction. */
   readonly client?: MemcachedClientLike;
+}
+
+/**
+ * Fluent builder for {@link MemcachedCacheSettings}:
+ *
+ *     new MemcachedCache(MemcachedCacheOptions.create().withServers('localhost:11211').withKeyPrefix('app:'))
+ */
+export class MemcachedCacheOptions extends OptionsBuilder<MemcachedCacheSettings> {
+  /** Start a fresh builder.  Equivalent to `new MemcachedCacheOptions()`. */
+  static create(): MemcachedCacheOptions {
+    return new MemcachedCacheOptions();
+  }
+
+  /** Comma-separated server list, e.g. `'localhost:11211'`.  Default: `'localhost:11211'`. */
+  withServers(servers: string): this {
+    return this.set('servers', servers);
+  }
+
+  /** Username / password for SASL auth. */
+  withCredentials(username: string, password: string): this {
+    this.set('username', username);
+    return this.set('password', password);
+  }
+
+  /** Key prefix applied server-side to every operation. */
+  withKeyPrefix(prefix: string): this {
+    return this.set('keyPrefix', prefix);
+  }
+
+  /** Pre-built memjs client — bypass internal construction. */
+  withClient(client: MemcachedClientLike): this {
+    return this.set('client', client);
+  }
 }
 
 /** Subset of `memjs.Client` we use.  memjs uses Buffer; we always pass strings. */
@@ -52,7 +86,8 @@ export class MemcachedCache implements Cache {
   private readonly keyPrefix: string;
   private closed = false;
 
-  constructor(opts: MemcachedCacheOptions = {}) {
+  constructor(options: MemcachedCacheOptions = MemcachedCacheOptions.create()) {
+    const opts = options.build();
     this.keyPrefix = opts.keyPrefix ?? '';
     this.clientLazy = Lazy.of(async () => {
       if (opts.client) return opts.client;

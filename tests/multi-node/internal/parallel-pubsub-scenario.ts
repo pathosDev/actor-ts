@@ -6,7 +6,7 @@
  * messages received on subscribed topics.  The harness drives the
  * scenario via the four commands defined below.
  */
-import { DistributedPubSubId } from '../../../src/cluster/pubsub/index.js';
+import { DistributedPubSubId, DistributedPubSubOptions } from '../../../src/cluster/pubsub/index.js';
 import {
   Publish, Subscribe,
 } from '../../../src/cluster/pubsub/Messages.js';
@@ -15,7 +15,7 @@ import type {
   ScenarioContext,
   ScenarioModule,
 } from '../../../src/testkit/internal/parallel-multi-node-bootstrap.js';
-import { TestProbe } from '../../../src/testkit/TestProbe.js';
+import { TestProbe, TestProbeOptions } from '../../../src/testkit/TestProbe.js';
 
 interface SubscribeArgs { readonly topic: string }
 interface PublishArgs { readonly topic: string; readonly message: unknown }
@@ -32,7 +32,7 @@ function getState(ctx: ScenarioContext): ScenarioState {
 
 export const setup: ScenarioModule['setup'] = async (ctx) => {
   const pubsub = ctx.system.extension(DistributedPubSubId);
-  const mediator = pubsub.start(ctx.cluster, { gossipIntervalMs: 100 });
+  const mediator = pubsub.start(ctx.cluster, DistributedPubSubOptions.create().withGossipIntervalMs(100));
   ctx.state.scenario = {
     mediator,
     probesByTopic: new Map<string, TestProbe>(),
@@ -45,7 +45,7 @@ export const commands: ScenarioModule['commands'] = {
   subscribe(args, ctx): void {
     const { topic } = args as SubscribeArgs;
     const state = getState(ctx);
-    const probe = new TestProbe(ctx.system, { name: `probe-${topic}` });
+    const probe = new TestProbe(ctx.system, TestProbeOptions.create().withName(`probe-${topic}`));
     state.probesByTopic.set(topic, probe);
     state.mediator.tell(new Subscribe(topic, probe) as never);
   },

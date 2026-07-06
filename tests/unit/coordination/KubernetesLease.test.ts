@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { KubernetesLease } from '../../../src/coordination/leases/KubernetesLease.js';
+import { KubernetesLease, KubernetesLeaseOptions, type KubernetesLeaseSettings } from '../../../src/coordination/leases/KubernetesLease.js';
 import type {
   K8sCredentials,
   K8sFetchClient,
@@ -125,18 +125,33 @@ let server: FakeK8sServer;
 beforeEach(() => { server = new FakeK8sServer(); });
 afterEach(() => { /* nothing global */ });
 
-const baseSettings = (overrides: Partial<ConstructorParameters<typeof KubernetesLease>[0]> = {}): ConstructorParameters<typeof KubernetesLease>[0] => ({
-  name: 'test-lease',
-  namespace: 'default',
-  owner: 'test-pod',
-  ttlMs: 5_000,
-  renewalIntervalMs: 50,
-  acquireRetries: 3,
-  acquireRetryDelayMs: 5,
-  ...TEST_CREDS,
-  client: server,
-  ...overrides,
-});
+const baseSettings = (overrides: Partial<KubernetesLeaseSettings> = {}): KubernetesLeaseOptions => {
+  const s: KubernetesLeaseSettings = {
+    name: 'test-lease',
+    namespace: 'default',
+    owner: 'test-pod',
+    ttlMs: 5_000,
+    renewalIntervalMs: 50,
+    acquireRetries: 3,
+    acquireRetryDelayMs: 5,
+    ...TEST_CREDS,
+    client: server,
+    ...overrides,
+  };
+  const o = KubernetesLeaseOptions.create()
+    .withName(s.name)
+    .withNamespace(s.namespace)
+    .withOwner(s.owner)
+    .withTtlMs(s.ttlMs);
+  if (s.renewalIntervalMs !== undefined) o.withRenewalIntervalMs(s.renewalIntervalMs);
+  if (s.acquireRetries !== undefined) o.withAcquireRetries(s.acquireRetries);
+  if (s.acquireRetryDelayMs !== undefined) o.withAcquireRetryDelayMs(s.acquireRetryDelayMs);
+  if (s.apiServerUrl !== undefined) o.withApiServerUrl(s.apiServerUrl);
+  if (s.authToken !== undefined) o.withAuthToken(s.authToken);
+  if (s.caCert !== undefined) o.withCaCert(s.caCert);
+  if (s.client !== undefined) o.withClient(s.client);
+  return o;
+};
 
 describe('KubernetesLease — acquire (no existing lease)', () => {
   test('creates the lease object and sets holderIdentity', async () => {
@@ -311,11 +326,12 @@ describeMaybe('KubernetesLease — live integration (set K8S_LEASE_LIVE=1)', () 
     if (!authToken || !caCert) {
       throw new Error('K8S_LEASE_LIVE requires K8S_TOKEN + K8S_CA_CERT env vars');
     }
-    const lease = new KubernetesLease({
-      name: 'actor-ts-live-test', namespace: 'default', owner: 'live-runner',
-      ttlMs: 5_000, renewalIntervalMs: 1_000,
-      apiServerUrl, authToken, caCert,
-    });
+    const lease = new KubernetesLease(
+      KubernetesLeaseOptions.create()
+        .withName('actor-ts-live-test').withNamespace('default').withOwner('live-runner')
+        .withTtlMs(5_000).withRenewalIntervalMs(1_000)
+        .withApiServerUrl(apiServerUrl).withAuthToken(authToken).withCaCert(caCert),
+    );
     expect(await lease.acquire()).toBe(true);
     await sleep(2_500);
     expect(lease.checkAlive()).toBe(true);

@@ -1,13 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
-import { ActorSystem } from '../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { Props } from '../../src/Props.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 function newSystem(name = 'actor-unit'): ActorSystem {
-  return ActorSystem.create(name, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  return ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
 }
 
 describe('Actor lifecycle', () => {

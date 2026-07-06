@@ -27,6 +27,7 @@ import {
   ActorSystem,
   Props,
   JetStreamActor,
+  JetStreamOptions,
   type JetStreamCmd,
   type JetStreamMessage,
 } from '../../src/index.js';
@@ -74,22 +75,23 @@ async function main(): Promise<void> {
   );
 
   js = system.spawn(
-    Props.create(() => new JetStreamActor({
-      servers: ['nats://localhost:4222'],
-      stream: {
-        name: 'ORDERS',
-        subjects: ['orders.>'],
-        retention: 'limits',
-        storage: 'file',
-      },
-      consumer: {
-        durable: 'order-proc',
-        ackPolicy: 'explicit',
-        ackWaitMs: 30_000,
-        deliverPolicy: 'all',
-      },
-      target: processor,
-    })),
+    Props.create(() => new JetStreamActor(
+      JetStreamOptions.create()
+        .withServers(['nats://localhost:4222'])
+        .withStream({
+          name: 'ORDERS',
+          subjects: ['orders.>'],
+          retention: 'limits',
+          storage: 'file',
+        })
+        .withConsumer({
+          durable: 'order-proc',
+          ackPolicy: 'explicit',
+          ackWaitMs: 30_000,
+          deliverPolicy: 'all',
+        })
+        .withTarget(processor),
+    )),
     'js',
   );
 

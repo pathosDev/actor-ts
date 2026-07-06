@@ -23,7 +23,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
   ActorSystem,
+  ActorSystemOptions,
   Cluster,
+  ClusterOptions,
   ClusterSingletonId,
   MemberDown,
   MemberRemoved,
@@ -32,10 +34,14 @@ import {
   PersistenceExtensionId,
   Props,
   SqliteJournal,
+  SqliteJournalOptions,
   SqliteSnapshotStore,
+  SqliteSnapshotStoreOptions,
+  StartShardingOptions,
+  StartSingletonOptions,
 } from '../../../src/index.js';
-import { DistributedDataId } from '../../../src/crdt/index.js';
-import { DistributedPubSubId } from '../../../src/cluster/pubsub/index.js';
+import { DistributedDataId, DistributedDataOptions } from '../../../src/crdt/index.js';
+import { DistributedPubSubId, DistributedPubSubOptions } from '../../../src/cluster/pubsub/index.js';
 import {
   parseArgs,
   BASE_CLUSTER_PORT,
@@ -100,7 +106,7 @@ async function main(): Promise<void> {
   const configFile = path.resolve(
     import.meta.dirname ?? __dirname, '..', 'application.conf',
   );
-  const system = ActorSystem.create(SYSTEM_NAME, { configFile });
+  const system = ActorSystem.create(SYSTEM_NAME, ActorSystemOptions.create().withConfigFile(configFile));
   const seedSummary = seeds.length > 0
     ? ` · seeds=[${seeds.join(',')}]`
     : ' · bootstrap (no seeds)';
@@ -117,8 +123,8 @@ async function main(): Promise<void> {
   fs.mkdirSync(cfg.dataDir, { recursive: true });
   const journalPath = path.join(cfg.dataDir, 'chat.db');
   const snapshotPath = path.join(cfg.dataDir, 'chat-snapshots.db');
-  const journal = new SqliteJournal({ path: journalPath, wal: true });
-  const snapshotStore = new SqliteSnapshotStore({ path: snapshotPath, keepN: 3 });
+  const journal = new SqliteJournal(SqliteJournalOptions.create().withPath(journalPath).withWal(true));
+  const snapshotStore = new SqliteSnapshotStore(SqliteSnapshotStoreOptions.create().withPath(snapshotPath).withKeepN(3));
   const persistence = system.extension(PersistenceExtensionId);
   persistence.setJournal(journal);
   persistence.setSnapshotStore(snapshotStore);
@@ -126,17 +132,16 @@ async function main(): Promise<void> {
   system.log.info(`SQLite snapshot store · ${snapshotPath} (keepN=3)`);
 
   // -------- 4. Cluster.join --------
-  const cluster = await Cluster.join(system, {
-    host: cfg.host,
-    port,
-    seeds,
-    failureDetector: {
+  const cluster = await Cluster.join(system, ClusterOptions.create()
+    .withHost(cfg.host)
+    .withPort(port)
+    .withSeeds(seeds)
+    .withFailureDetector({
       heartbeatIntervalMs: 300,
       unreachableAfterMs: 1500,
       downAfterMs: 4000,
-    },
-    gossipIntervalMs: 500,
-  });
+    })
+    .withGossipIntervalMs(500));
   cluster.subscribe((evt) => {
     if (evt instanceof MemberUp)
       system.log.info(`[+] ${evt.member.address} is UP`);
@@ -149,12 +154,10 @@ async function main(): Promise<void> {
   });
 
   // -------- 5. DistributedData (presence + session tokens) + DistributedPubSub (broadcast) --------
-  const ddHandle = system.extension(DistributedDataId).start(cluster, {
-    gossipIntervalMs: 500,
-  });
-  const mediator = system.extension(DistributedPubSubId).start(cluster, {
-    gossipIntervalMs: 500,
-  });
+  const ddHandle = system.extension(DistributedDataId).start(cluster,
+    DistributedDataOptions.create().withGossipInterval(500));
+  const mediator = system.extension(DistributedPubSubId).start(cluster,
+    DistributedPubSubOptions.create().withGossipIntervalMs(500));
   const sessions = new SessionStore(ddHandle);
   if (sessions.usingDemoSecret) {
     system.log.warn(
@@ -164,10 +167,10 @@ async function main(): Promise<void> {
 
   // -------- 6. ClusterSharding: one ChatRoomActor per room --------
   const sharding = cluster.sharding;
-  const chatRoomRegion = sharding.start('ChatRoom', ChatRoomActor, {
-    extractEntityId: (msg: ChatRoomCmd) => msg.room,
-    numShards: 16,
-  });
+  const chatRoomRegion = sharding.start('ChatRoom', ChatRoomActor,
+    StartShardingOptions.create<ChatRoomCmd>()
+      .withExtractEntityId((msg) => msg.room)
+      .withNumShards(16));
 
   // -------- 6b. ClusterSharding: one DmChannelActor per pair --------
   // Same sharding shape, separate typeName so the two entity sets
@@ -175,10 +178,10 @@ async function main(): Promise<void> {
   // `shared/dm.ts` for the canonicalization.  Sixteen shards matches
   // the chat-room region; the DM workload is similar (write-heavy,
   // small per-entity state) so a single tuning value covers both.
-  const dmChannelRegion = sharding.start('DmChannel', DmChannelActor, {
-    extractEntityId: (msg: DmChannelCmd) => msg.pairId,
-    numShards: 16,
-  });
+  const dmChannelRegion = sharding.start('DmChannel', DmChannelActor,
+    StartShardingOptions.create<DmChannelCmd>()
+      .withExtractEntityId((msg) => msg.pairId)
+      .withNumShards(16));
 
   // -------- 7. OnlineUsersActor (top-level, runs on every node) --------
   const onlineUsers = system.spawn(
@@ -236,9 +239,9 @@ async function main(): Promise<void> {
   // (~5–10 s with these failure-detector settings) — fine for a
   // demo; production would still front this with a real LB.
   const staticDir = path.join(import.meta.dirname ?? __dirname, '..', 'static');
-  system.extension(ClusterSingletonId).start(cluster, {
-    typeName: 'http-ingress',
-    props: httpIngressProps({
+  system.extension(ClusterSingletonId).start(cluster, StartSingletonOptions.create()
+    .withTypeName('http-ingress')
+    .withProps(httpIngressProps({
       host: cfg.host,
       httpPort: cfg.httpPort,
       staticDir,
@@ -251,8 +254,7 @@ async function main(): Promise<void> {
       roomDirectory,
       readReceipts,
       ...(tls ? { tls } : {}),
-    }),
-  });
+    })));
 
   // -------- 10. Graceful shutdown --------
   let shuttingDown = false;

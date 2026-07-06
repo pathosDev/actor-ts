@@ -3,7 +3,7 @@ import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import type { Cluster } from '../cluster/Cluster.js';
-import { DistributedPubSubId } from '../cluster/pubsub/index.js';
+import { DistributedPubSubId, DistributedPubSubOptions } from '../cluster/pubsub/index.js';
 import type { Lease } from '../coordination/Lease.js';
 import {
   Publish, Subscribe, type SubscribeAck,
@@ -330,7 +330,8 @@ export abstract class ReplicatedEventSourcedActor<Cmd, Event, State>
     //    construction reaches peer replicas.  Tests can dial this
     //    tighter; production should leave the default.
     const pubsub = this.system.extension(DistributedPubSubId).start(
-      this.cluster, { gossipIntervalMs: this.pubsubGossipIntervalMs() },
+      this.cluster,
+      DistributedPubSubOptions.create().withGossipIntervalMs(this.pubsubGossipIntervalMs()),
     );
     this._mediator = pubsub as unknown as ActorRef<Subscribe | Publish | unknown>;
     pubsub.tell(new Subscribe(topicFor(this.persistenceId), this.self));

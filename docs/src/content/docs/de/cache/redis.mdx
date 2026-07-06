@@ -8,11 +8,11 @@ Produktionsreif, Multi-Pod-sicher, mit Single-Round-Trip-Bulk-
 Operationen.
 
 ```ts
-import { RedisCache } from 'actor-ts';
+import { RedisCache, RedisCacheOptions } from 'actor-ts';
 
-const cache = new RedisCache({
-  url: 'redis://redis.example.com:6379',
-});
+const cache = new RedisCache(
+  RedisCacheOptions.create().withUrl('redis://redis.example.com:6379'),
+);
 ```
 
 ## Wann Redis
@@ -46,21 +46,22 @@ interface RedisCacheSettings {
 URL-Form:
 
 ```ts
-new RedisCache({ url: 'redis://localhost:6379/0' });
-new RedisCache({ url: 'rediss://redis.example.com:6380' });  // TLS
-new RedisCache({ url: 'redis://user:pass@host:6379' });
+new RedisCache(RedisCacheOptions.create().withUrl('redis://localhost:6379/0'));
+new RedisCache(RedisCacheOptions.create().withUrl('rediss://redis.example.com:6380'));  // TLS
+new RedisCache(RedisCacheOptions.create().withUrl('redis://user:pass@host:6379'));
 ```
 
 Feld-Form:
 
 ```ts
-new RedisCache({
-  host:    'redis.example.com',
-  port:    6379,
-  password: process.env.REDIS_PASS,
-  db:      1,
-  keyPrefix: 'my-app:',
-});
+new RedisCache(
+  RedisCacheOptions.create()
+    .withHost('redis.example.com')
+    .withPort(6379)
+    .withPassword(process.env.REDIS_PASS)
+    .withDb(1)
+    .withKeyPrefix('my-app:'),
+);
 ```
 
 `keyPrefix` wird auf **jeden** Key angewendet — nützlich, wenn
@@ -74,15 +75,17 @@ keyPrefix: 'my-app:cache:'
 ## Cluster-Modus
 
 ```ts
-new RedisCache({
-  cluster: {
-    nodes: [
+import { Cluster } from 'ioredis';
+
+new RedisCache(
+  RedisCacheOptions.create().withClient(
+    new Cluster([
       { host: 'redis-1', port: 6379 },
       { host: 'redis-2', port: 6379 },
       { host: 'redis-3', port: 6379 },
-    ],
-  },
-});
+    ]),
+  ),
+);
 ```
 
 `ioredis` übernimmt das Cluster-Protokoll (MOVED-/ASK-Redirects,
@@ -92,9 +95,9 @@ Slot-Tracking).  Nimm Redis Cluster für **horizontale Skalierung**
 ## TLS
 
 ```ts
-new RedisCache({ url: 'rediss://redis.example.com:6380' });
-// oder:
-new RedisCache({ host: '...', port: 6380, tls: true });
+new RedisCache(RedisCacheOptions.create().withUrl('rediss://redis.example.com:6380'));
+// TLS wird über das URL-Schema `rediss://` gewählt:
+new RedisCache(RedisCacheOptions.create().withUrl('rediss://redis.example.com:6380'));
 ```
 
 URL-Präfix `rediss://` oder explizit `tls: true`.  Cert-
@@ -161,9 +164,11 @@ RDB.
 ## TLS zu Managed-Redis
 
 ```ts
-new RedisCache({
-  url: 'rediss://default:password@my-cluster.cache.amazonaws.com:6380',
-});
+new RedisCache(
+  RedisCacheOptions.create().withUrl(
+    'rediss://default:password@my-cluster.cache.amazonaws.com:6380',
+  ),
+);
 ```
 
 AWS ElastiCache, GCP Memorystore, Azure Cache for Redis —
@@ -172,13 +177,16 @@ alle unterstützen `rediss://`-URLs.  Nutze sie.
 ## Cluster-Verbindungsverwaltung
 
 ```ts
-new RedisCache({
-  cluster: { nodes: [...] },
-  options: {
-    enableReadyCheck:    true,
-    maxRetriesPerRequest: 3,
-  },
-});
+import { Cluster } from 'ioredis';
+
+new RedisCache(
+  RedisCacheOptions.create().withClient(
+    new Cluster([...], {
+      enableReadyCheck:    true,
+      redisOptions: { maxRetriesPerRequest: 3 },
+    }),
+  ),
+);
 ```
 
 Defaultet auf vernünftige ioredis-Defaults.  Für sehr enge Latenz

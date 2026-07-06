@@ -10,11 +10,13 @@ import {
   Actor,
   ActorSystem,
   Cluster,
+  ClusterOptions,
   InMemoryTransport,
   Listing,
   NodeAddress,
   Props,
   ReceptionistId,
+  ReceptionistOptions,
   ReceptionistSubscribe as Subscribe,
   Register,
   ServiceKey,
@@ -34,12 +36,13 @@ class StreamClient extends Actor<Listing<string>> {
 
 async function startNode(host: string, port: number, seeds: string[] = []): Promise<{ sys: ActorSystem; cluster: Cluster; name: string }> {
   const sys = ActorSystem.create('service-locator');
-  const cluster = await Cluster.join(sys, {
-    host, port, seeds,
-    transport: new InMemoryTransport(new NodeAddress('service-locator', host, port)),
-    failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
-    gossipIntervalMs: 80,
-  });
+  const cluster = await Cluster.join(sys, ClusterOptions.create()
+    .withHost(host)
+    .withPort(port)
+    .withSeeds(seeds)
+    .withTransport(new InMemoryTransport(new NodeAddress('service-locator', host, port)))
+    .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+    .withGossipIntervalMs(80));
   return { sys, cluster, name: host };
 }
 
@@ -53,7 +56,7 @@ async function main(): Promise<void> {
   const key = ServiceKey.of<string>('workers');
 
   for (const { sys, cluster, name } of [a, b, c]) {
-    const r = sys.extension(ReceptionistId).start(cluster, { gossipIntervalMs: 80 });
+    const r = sys.extension(ReceptionistId).start(cluster, ReceptionistOptions.create().withGossipIntervalMs(80));
     const w = sys.spawn(Props.create(() => new Worker(name)), `worker-${name}`);
     r.tell(new Register(key, w));
   }

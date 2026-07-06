@@ -274,19 +274,21 @@ var host = Host.CreateDefaultBuilder()
 
 ```ts
 // actor-ts:
-import { KubernetesApiSeedProvider } from 'actor-ts';
+import { KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts';
 
-const seeds = await new KubernetesApiSeedProvider({
-  namespace: process.env.K8S_NAMESPACE!,
-  labelSelector: 'app=my-app',
-  containerPort: 2552,
-}).discover();
+const nodes = await new KubernetesApiSeedProvider(
+  KubernetesApiSeedProviderOptions.create()
+    .withNamespace(process.env.K8S_NAMESPACE!)
+    .withServiceName('my-app')
+    .withSystemName('my-system')
+    .withPort(2552),
+).lookup();
+const seeds = nodes.map(String);   // 'system@host:port'
 
-const cluster = await Cluster.join(system, {
-  host: process.env.POD_IP!,
-  port: 2552,
-  seeds,
-});
+const cluster = await Cluster.join(system, ClusterOptions.create()
+  .withHost(process.env.POD_IP!)
+  .withPort(2552)
+  .withSeeds(seeds));
 ```
 
 Andere API-Form, dieselbe Idee.  K8s-Pod-Discovery →

@@ -17,20 +17,39 @@ Ergebnis zurück.  Nützlich, wenn:
 ```ts
 import {
   Cluster,
+  ClusterOptions,
   AggregateSeedProvider,
   KubernetesApiSeedProvider,
+  KubernetesApiSeedProviderOptions,
   DnsSeedProvider,
+  DnsSeedProviderOptions,
   ConfigSeedProvider,
+  ConfigSeedProviderOptions,
 } from 'actor-ts';
 
 const provider = new AggregateSeedProvider([
-  new KubernetesApiSeedProvider({ namespace, labelSelector, containerPort: 2552 }),
-  new DnsSeedProvider({ service: '_actor-ts._tcp.example.com' }),
-  new ConfigSeedProvider({ seeds: ['fallback-1:2552', 'fallback-2:2552'] }),
+  new KubernetesApiSeedProvider(
+    KubernetesApiSeedProviderOptions.create()
+      .withNamespace(namespace)
+      .withServiceName(labelSelector)
+      .withSystemName('my-app')
+      .withPort(2552),
+  ),
+  new DnsSeedProvider(
+    DnsSeedProviderOptions.create()
+      .withHostname('_actor-ts._tcp.example.com')
+      .withSystemName('my-app')
+      .withUseSrv(),
+  ),
+  new ConfigSeedProvider(
+    ConfigSeedProviderOptions.create()
+      .withSeeds(['fallback-1:2552', 'fallback-2:2552'])
+      .withSystemName('my-app'),
+  ),
 ]);
 
 const seeds = await provider.lookup();
-await Cluster.join(system, { host, port, seeds });
+await Cluster.join(system, ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds));
 ```
 
 ## Wie die Verkettung funktioniert
@@ -75,12 +94,14 @@ seinen eigenen Settings).
 
 ```ts
 new AggregateSeedProvider([
-  new ConfigSeedProvider({ envVar: 'ACTOR_TS_SEEDS' }),     // 1.: Env-Var
-  new KubernetesApiSeedProvider({                            // 2.: K8s-API
-    namespace: process.env.K8S_NAMESPACE ?? '',
-    labelSelector: 'app=actor-ts',
-    containerPort: 2552,
-  }),
+  seedsFromEnv('ACTOR_TS_SEEDS', 'my-app'),                  // 1.: Env-Var
+  new KubernetesApiSeedProvider(                             // 2.: K8s-API
+    KubernetesApiSeedProviderOptions.create()
+      .withNamespace(process.env.K8S_NAMESPACE ?? '')
+      .withServiceName('actor-ts')
+      .withSystemName('my-app')
+      .withPort(2552),
+  ),
 ]);
 ```
 
@@ -92,10 +113,17 @@ K8s-API.
 
 ```ts
 new AggregateSeedProvider([
-  new DnsSeedProvider({ service: '_actor-ts._tcp.example.com' }),
-  new ConfigSeedProvider({
-    seeds: ['known-stable-node-1:2552', 'known-stable-node-2:2552'],
-  }),
+  new DnsSeedProvider(
+    DnsSeedProviderOptions.create()
+      .withHostname('_actor-ts._tcp.example.com')
+      .withSystemName('my-app')
+      .withUseSrv(),
+  ),
+  new ConfigSeedProvider(
+    ConfigSeedProviderOptions.create()
+      .withSeeds(['known-stable-node-1:2552', 'known-stable-node-2:2552'])
+      .withSystemName('my-app'),
+  ),
 ]);
 ```
 
@@ -107,8 +135,20 @@ IPs nutzen.
 
 ```ts
 new AggregateSeedProvider([
-  new KubernetesApiSeedProvider({ namespace: 'primary-region', ... }),
-  new KubernetesApiSeedProvider({ namespace: 'failover-region', ... }),
+  new KubernetesApiSeedProvider(
+    KubernetesApiSeedProviderOptions.create()
+      .withNamespace('primary-region')
+      .withServiceName('actor-ts')
+      .withSystemName('my-app')
+      .withPort(2552),
+  ),
+  new KubernetesApiSeedProvider(
+    KubernetesApiSeedProviderOptions.create()
+      .withNamespace('failover-region')
+      .withServiceName('actor-ts')
+      .withSystemName('my-app')
+      .withPort(2552),
+  ),
 ]);
 ```
 
@@ -121,8 +161,16 @@ Sinn, wenn die Regionen tatsächlich State teilen sollen.
 
 ```ts
 new AggregateSeedProvider([
-  new KubernetesApiSeedProvider({ ... }),   // wirft 403 außerhalb K8s
-  new ConfigSeedProvider({ seeds: ['10.0.0.1:2552'] }),
+  new KubernetesApiSeedProvider(
+    KubernetesApiSeedProviderOptions.create()
+      .withNamespace('my-app')
+      .withServiceName('actor-ts')
+      .withSystemName('my-app')
+      .withPort(2552),
+  ),   // wirft 403 außerhalb K8s
+  new ConfigSeedProvider(
+    ConfigSeedProviderOptions.create().withSeeds(['10.0.0.1:2552']).withSystemName('my-app'),
+  ),
 ]);
 ```
 
@@ -163,8 +211,12 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Latenzen stapeln sich">
   ```ts
   new AggregateSeedProvider([
-    new DnsSeedProvider({ service: 'slow-dns.example' }),   // 30s Timeout
-    new ConfigSeedProvider({ seeds: ['fallback:2552'] }),
+    new DnsSeedProvider(
+      DnsSeedProviderOptions.create().withHostname('slow-dns.example').withSystemName('my-app').withUseSrv(),
+    ),   // 30s Timeout
+    new ConfigSeedProvider(
+      ConfigSeedProviderOptions.create().withSeeds(['fallback:2552']).withSystemName('my-app'),
+    ),
   ]);
   ```
   Wenn der erste Provider in den Timeout läuft, wartest du auf

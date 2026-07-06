@@ -13,6 +13,7 @@ import {
   HttpExtensionId,
   Props,
   WebSocketClientActor,
+  WebSocketClientOptions,
   WebSocketServerActor,
   websocket,
   wsSend,
@@ -28,7 +29,7 @@ class EchoServer extends WebSocketServerActor<Down, Up> {
 }
 
 class Feed extends WebSocketClientActor<Up, Down> {
-  constructor(url: string) { super({ url }); }
+  constructor(url: string) { super(WebSocketClientOptions.create<Up, Down>().withUrl(url)); }
   override onConnected(): void { console.log('[client] connected'); }
   override onMessage(msg: Down): void { console.log('[client] ← ack', msg.n); }
 }

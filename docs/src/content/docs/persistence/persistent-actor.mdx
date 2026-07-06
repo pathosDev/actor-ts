@@ -19,7 +19,7 @@ this one resumes.
 ## A minimal example
 
 ```ts
-import { PersistentActor, ActorSystem, Props } from 'actor-ts';
+import { PersistentActor, ActorSystem, ActorSystemOptions, Props } from 'actor-ts';
 import { InMemoryJournal, InMemorySnapshotStore } from 'actor-ts';
 import { match } from 'ts-pattern';
 
@@ -71,12 +71,11 @@ class Account extends PersistentActor<Cmd, Event, State> {
 }
 
 // Setup — wire journal + snapshot store inline via the create option:
-const system = ActorSystem.create('demo', {
-  persistence: {
+const system = ActorSystem.create('demo', ActorSystemOptions.create()
+  .withPersistence({
     journal:       new InMemoryJournal(),
     snapshotStore: new InMemorySnapshotStore(),
-  },
-});
+  }));
 
 const account = system.spawn(Props.create(() => new Account()), 'account-42');
 account.tell({ kind: 'deposit',  amount: 100 });

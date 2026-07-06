@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import {
   CacheExtensionId,
@@ -10,7 +10,7 @@ import {
 
 describe('CacheExtension', () => {
   test('default cache is in-memory and works without configuration', async () => {
-    const sys = ActorSystem.create('cache-default', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('cache-default', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const ext = sys.extension(CacheExtensionId);
     const cache = ext.cache();
     await cache.set('k', 'v');
@@ -19,7 +19,7 @@ describe('CacheExtension', () => {
   });
 
   test('repeat lookups return the same instance per name', async () => {
-    const sys = ActorSystem.create('cache-same', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('cache-same', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const ext = sys.extension(CacheExtensionId);
     expect(ext.cache('foo')).toBe(ext.cache('foo'));
     expect(ext.cache('foo')).not.toBe(ext.cache('bar'));
@@ -27,10 +27,9 @@ describe('CacheExtension', () => {
   });
 
   test('config selects a registered plugin by name', async () => {
-    const sys = ActorSystem.create('cache-cfg', {
-      logger: new NoopLogger(), logLevel: LogLevel.Off,
-      config: { 'actor-ts': { cache: { custom: { plugin: 'my-plugin' } } } },
-    });
+    const sys = ActorSystem.create('cache-cfg', ActorSystemOptions.create()
+      .withLogger(new NoopLogger()).withLogLevel(LogLevel.Off)
+      .withConfig({ 'actor-ts': { cache: { custom: { plugin: 'my-plugin' } } } }));
     const ext = sys.extension(CacheExtensionId);
     let factoryCalls = 0;
     ext.registerCache('my-plugin', () => { factoryCalls++; return new InMemoryCache(); });
@@ -44,10 +43,9 @@ describe('CacheExtension', () => {
   });
 
   test('unknown plugin id falls back to in-memory plugin', async () => {
-    const sys = ActorSystem.create('cache-fallback', {
-      logger: new NoopLogger(), logLevel: LogLevel.Off,
-      config: { 'actor-ts': { cache: { weird: { plugin: 'no-such-plugin' } } } },
-    });
+    const sys = ActorSystem.create('cache-fallback', ActorSystemOptions.create()
+      .withLogger(new NoopLogger()).withLogLevel(LogLevel.Off)
+      .withConfig({ 'actor-ts': { cache: { weird: { plugin: 'no-such-plugin' } } } }));
     const ext = sys.extension(CacheExtensionId);
     const cache = ext.cache('weird');
     await cache.set('k', 'v');
@@ -56,7 +54,7 @@ describe('CacheExtension', () => {
   });
 
   test('setCache replaces the instance for a name (test hook)', async () => {
-    const sys = ActorSystem.create('cache-set', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('cache-set', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const ext = sys.extension(CacheExtensionId);
     const probe = new InMemoryCache();
     ext.setCache('default', probe);

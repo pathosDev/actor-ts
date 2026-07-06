@@ -1,3 +1,4 @@
+import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import {
   addrKey,
   type ClusterPartitionView,
@@ -17,13 +18,39 @@ export interface KeepOldestSettings {
 }
 
 /**
+ * Fluent builder for {@link KeepOldestSettings}:
+ *
+ *     new KeepOldest(KeepOldestOptions.create().withRole('backend'));
+ */
+export class KeepOldestOptions extends OptionsBuilder<KeepOldestSettings> {
+  /** Start a fresh builder. */
+  static create(): KeepOldestOptions {
+    return new KeepOldestOptions();
+  }
+
+  /** Only members with this role are eligible to be the "oldest". */
+  withRole(role: string): this {
+    return this.set('role', role);
+  }
+
+  /** When true, if the oldest member is unreachable the other side wins.  Default false. */
+  withDownIfAlone(downIfAlone = true): this {
+    return this.set('downIfAlone', downIfAlone);
+  }
+}
+
+/**
  * "Keep oldest" — whichever partition contains the oldest cluster member
  * survives; the other side is downed.  "Oldest" is the lowest address when
  * addresses are compared lexicographically — consistent with the leader
  * election in this project.
  */
 export class KeepOldest implements DowningProvider {
-  constructor(private readonly settings: KeepOldestSettings = {}) {}
+  private readonly settings: KeepOldestSettings;
+
+  constructor(options: KeepOldestOptions = KeepOldestOptions.create()) {
+    this.settings = options.build() as KeepOldestSettings;
+  }
 
   decide(view: ClusterPartitionView): DowningDecision {
     const candidates = view.allMembers.filter((m) =>

@@ -1,9 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import {
   DurableStateActor,
+  DurableStateOptions,
   InMemoryDurableStateStore,
   type DurableStateStore,
 } from '../../../../../src/persistence/index.js';
@@ -55,16 +56,19 @@ class StrictAccount extends Account {
 }
 
 const props = (store: DurableStateStore, id: string, ctor: typeof Account = Account): Props<Cmd> =>
-  Props.create(() => new ctor({
-    persistenceId: id, store, emptyState: (): State => ({ balance: 0, currency: 'USD' }),
-  }) as unknown as Actor<Cmd>);
+  Props.create(() => new ctor(
+    DurableStateOptions.create<State>()
+      .withPersistenceId(id)
+      .withStore(store)
+      .withEmptyState((): State => ({ balance: 0, currency: 'USD' })),
+  ) as unknown as Actor<Cmd>);
 
 /* ----------------------------- Tests ------------------------------------ */
 
 describe('DurableStateActor — adapter round-trip', () => {
   test('upsert wraps state in envelope; load unwraps it', async () => {
     const store = new InMemoryDurableStateStore();
-    const sys = ActorSystem.create('ds-rt', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('ds-rt', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = makeProbe(sys);
     const ref = sys.spawn(props(store, 'acct'), 'a');
     ref.tell({ kind: 'deposit', amount: 50, replyTo: probe.ref });
@@ -83,14 +87,14 @@ describe('DurableStateActor — adapter round-trip', () => {
 
   test('restart with adapter recovers current-version state', async () => {
     const store = new InMemoryDurableStateStore();
-    const sys = ActorSystem.create('ds-restart', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('ds-restart', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = makeProbe(sys);
     const ref = sys.spawn(props(store, 'acct'), 'a');
     ref.tell({ kind: 'deposit', amount: 100, replyTo: probe.ref });
     await sleep(30);
     await sys.terminate();
 
-    const sys2 = ActorSystem.create('ds-restart-2', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys2 = ActorSystem.create('ds-restart-2', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe2 = makeProbe(sys2);
     const ref2 = sys2.spawn(props(store, 'acct'), 'a');
     ref2.tell({ kind: 'state', replyTo: probe2.ref });
@@ -107,7 +111,7 @@ describe('DurableStateActor — v1 → v2 upcast', () => {
     await store.upsert<unknown>('acct', 0, {
       _v: 1, _t: 'KV.State', _e: { balance: 999 },
     });
-    const sys = ActorSystem.create('ds-upcast', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('ds-upcast', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = makeProbe(sys);
     const ref = sys.spawn(props(store, 'acct'), 'a');
     ref.tell({ kind: 'state', replyTo: probe.ref });
@@ -121,15 +125,18 @@ describe('DurableStateActor — strict mode', () => {
   test('adapter active + raw stored state throws MigrationError on preStart', async () => {
     const store = new InMemoryDurableStateStore();
     await store.upsert<unknown>('acct', 0, { balance: 1 } as StateV1);  // raw, no envelope
-    const sys = ActorSystem.create('ds-strict', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('ds-strict', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
 
     let captured: StrictAccount | null = null;
     const probe = makeProbe(sys);
     void probe;
     sys.spawn(Props.create(() => {
-      const a = new StrictAccount({
-        persistenceId: 'acct', store, emptyState: (): State => ({ balance: 0, currency: 'USD' }),
-      });
+      const a = new StrictAccount(
+        DurableStateOptions.create<State>()
+          .withPersistenceId('acct')
+          .withStore(store)
+          .withEmptyState((): State => ({ balance: 0, currency: 'USD' })),
+      );
       captured = a;
       return a as unknown as Actor<Cmd>;
     }), 'strict');
@@ -153,11 +160,14 @@ describe('DurableStateActor — no adapter regression', () => {
         }
       }
     }
-    const sys = ActorSystem.create('ds-raw', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('ds-raw', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = makeProbe(sys);
-    const ref = sys.spawn(Props.create(() => new RawAccount({
-      persistenceId: 'r', store, emptyState: (): StateV1 => ({ balance: 0 }),
-    }) as unknown as Actor<Cmd>), 'raw');
+    const ref = sys.spawn(Props.create(() => new RawAccount(
+      DurableStateOptions.create<StateV1>()
+        .withPersistenceId('r')
+        .withStore(store)
+        .withEmptyState((): StateV1 => ({ balance: 0 })),
+    ) as unknown as Actor<Cmd>), 'raw');
     ref.tell({ kind: 'deposit', amount: 7, replyTo: probe.ref });
     await sleep(30);
     const raw = await store.load<StateV1>('r');

@@ -1,6 +1,7 @@
 export {
   ClusterSingleton,
   ClusterSingletonId,
+  StartSingletonOptions,
 } from './ClusterSingleton.js';
 export type {
   StartSingletonSettings,
@@ -8,6 +9,7 @@ export type {
 } from './ClusterSingleton.js';
 export {
   ClusterSingletonManager,
+  ClusterSingletonManagerOptions,
   singletonManagerPath,
 } from './ClusterSingletonManager.js';
 export type {

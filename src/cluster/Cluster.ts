@@ -13,6 +13,7 @@ import {
   DEFAULT_TOMBSTONE_TTL_MS,
 } from '../util/Constants.js';
 import { none, some, type Option } from '../util/Option.js';
+import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import {
   LeaderChanged,
   MemberDown,
@@ -30,6 +31,7 @@ import {
 import {
   defaultFailureDetectorSettings,
   FailureDetector,
+  FailureDetectorOptions,
   type FailureDetectorSettings,
 } from './FailureDetector.js';
 import { Member } from './Member.js';
@@ -113,6 +115,93 @@ export interface ClusterSettings {
   readonly downing?: DowningProvider;
 }
 
+/**
+ * Fluent builder for {@link ClusterSettings} — the sole input to
+ * {@link Cluster.join}.  `host` + `port` are required; every other knob
+ * is optional.  Polymorphic / whole-value fields (`transport`,
+ * `downing`, `failureDetector`, `roles`, `seeds`) are passed as-is via a
+ * single `withX(value)` — no nested builders.
+ *
+ *     await Cluster.join(
+ *       system,
+ *       ClusterOptions.create()
+ *         .withHost('127.0.0.1')
+ *         .withPort(2552)
+ *         .withSeeds(['sys@127.0.0.1:2551']),
+ *     );
+ */
+export class ClusterOptions extends OptionsBuilder<ClusterSettings> {
+  /** Start a fresh builder.  Equivalent to `new ClusterOptions()`. */
+  static create(): ClusterOptions {
+    return new ClusterOptions();
+  }
+
+  /** Bind host. */
+  withHost(host: string): this {
+    return this.set('host', host);
+  }
+
+  /** Bind port. */
+  withPort(port: number): this {
+    return this.set('port', port);
+  }
+
+  /** Other nodes this node should try to contact on startup. */
+  withSeeds(seeds: string[]): this {
+    return this.set('seeds', seeds);
+  }
+
+  /** Role tags exposed to other members — constrain sharding placement. */
+  withRoles(roles: string[]): this {
+    return this.set('roles', roles);
+  }
+
+  /** Failure-detector thresholds (merged over the built-in defaults). */
+  withFailureDetector(failureDetector: Partial<FailureDetectorSettings>): this {
+    return this.set('failureDetector', failureDetector);
+  }
+
+  /** Override the transport (e.g. `InMemoryTransport` for tests). */
+  withTransport(transport: Transport): this {
+    return this.set('transport', transport);
+  }
+
+  /** How often gossip is pushed to a random reachable peer. */
+  withGossipIntervalMs(ms: number): this {
+    return this.set('gossipIntervalMs', ms);
+  }
+
+  /** How often to resend the initial join gossip to seeds until self is Up. */
+  withSeedRetryIntervalMs(ms: number): this {
+    return this.set('seedRetryIntervalMs', ms);
+  }
+
+  /** How long to keep a `removed` tombstone before pruning it.  Default 24 h. */
+  withTombstoneTtlMs(ms: number): this {
+    return this.set('tombstoneTtlMs', ms);
+  }
+
+  /** How often the tombstone-prune pass runs.  Default 5 min. */
+  withTombstonePruneIntervalMs(ms: number): this {
+    return this.set('tombstonePruneIntervalMs', ms);
+  }
+
+  /** Minimum age before a tombstone is eligible for pruning.  Default `6 × downAfterMs`. */
+  withTombstoneMinRetentionMs(ms: number): this {
+    return this.set('tombstoneMinRetentionMs', ms);
+  }
+
+  /** Auto-promote `joining` → `weakly-up` after this many ms.  0 disables (default). */
+  withWeaklyUpAfterMs(ms: number): this {
+    return this.set('weaklyUpAfterMs', ms);
+  }
+
+  /** Optional split-brain resolver (KeepMajority, KeepOldest, …). */
+  withDowning(downing: DowningProvider): this {
+    return this.set('downing', downing);
+  }
+}
+
 type EnvelopeHandler = (env: EnvelopeMsg, from: NodeAddress) => void;
 
 /**
@@ -181,7 +270,12 @@ export class Cluster {
       ...defaultFailureDetectorSettings,
       ...(settings.failureDetector ?? {}),
     };
-    this.failureDetector = new FailureDetector(fdSettings);
+    this.failureDetector = new FailureDetector(
+      FailureDetectorOptions.create()
+        .withHeartbeatIntervalMs(fdSettings.heartbeatIntervalMs)
+        .withUnreachableAfterMs(fdSettings.unreachableAfterMs)
+        .withDownAfterMs(fdSettings.downAfterMs),
+    );
     this.gossipIntervalMs = settings.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
     this.seedRetryIntervalMs = settings.seedRetryIntervalMs ?? DEFAULT_SEED_RETRY_INTERVAL_MS;
     this.weaklyUpAfterMs = settings.weaklyUpAfterMs ?? 0;
@@ -193,7 +287,8 @@ export class Cluster {
   }
 
   /** Entry point: start the cluster and attempt to contact seed nodes. */
-  static async join(system: ActorSystem, settings: ClusterSettings): Promise<Cluster> {
+  static async join(system: ActorSystem, options: ClusterOptions): Promise<Cluster> {
+    const settings = options.build() as ClusterSettings;
     const cluster = new Cluster(system, settings);
     await cluster._start(settings.seeds ?? []);
     return cluster;
@@ -209,7 +304,7 @@ export class Cluster {
    * const { system, cluster, shutdown } = await Cluster.bootstrap({ name: 'my-app' });
    * ```
    *
-   * For full configuration knobs see {@link ClusterBootstrapOptions}.
+   * Build the argument with `ClusterBootstrapOptions.create(name)`.
    * For the power-user path (own `ActorSystem.create`, own
    * `Cluster.join`, own signal wiring) keep using those directly —
    * this is purely additive sugar.
@@ -219,10 +314,10 @@ export class Cluster {
    * `Cluster.join`).
    */
   static async bootstrap(
-    opts: import('./ClusterBootstrap.js').ClusterBootstrapOptions,
+    options: import('./ClusterBootstrap.js').ClusterBootstrapOptions,
   ): Promise<import('./ClusterBootstrap.js').BootstrappedCluster> {
     const { bootstrapCluster } = await import('./ClusterBootstrap.js');
-    return bootstrapCluster(opts);
+    return bootstrapCluster(options);
   }
 
   /**

@@ -6,7 +6,9 @@
  */
 import {
   ActorSystem,
+  ActorSystemOptions,
   Cluster,
+  ClusterOptions,
   InMemoryTransport,
   LogLevel,
   NoopLogger,
@@ -18,12 +20,12 @@ let port = 40_000;
 
 async function bootstrap(): Promise<void> {
   const p = port++;
-  const sys = ActorSystem.create('bench', { logger: new NoopLogger(), logLevel: LogLevel.Off });
-  const cluster = await Cluster.join(sys, {
-    host: 'h', port: p,
-    transport: new InMemoryTransport(new NodeAddress('bench', 'h', p)),
-    gossipIntervalMs: 50,
-  });
+  const sys = ActorSystem.create('bench', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const cluster = await Cluster.join(sys, ClusterOptions.create()
+    .withHost('h')
+    .withPort(p)
+    .withTransport(new InMemoryTransport(new NodeAddress('bench', 'h', p)))
+    .withGossipIntervalMs(50));
   await cluster.leave();
   await sys.terminate();
 }

@@ -12,10 +12,12 @@ import {
   Actor,
   ActorSystem,
   Cluster,
+  ClusterBootstrapOptions,
   ClusterSingletonId,
   InMemoryTransport,
   NodeAddress,
   Props,
+  StartSingletonOptions,
 } from '../../src/index.js';
 
 class Echo extends Actor<string> {
@@ -31,14 +33,15 @@ class Echo extends Actor<string> {
 // talk without real TCP) and disable signal handlers (so the demo
 // shuts down on its own).
 async function startNode(host: string, port: number, seeds: string[] = []): Promise<{ sys: ActorSystem; cluster: Cluster; name: string }> {
-  const { system, cluster } = await Cluster.bootstrap({
-    name: 'cluster',
-    host, port, seeds,
-    transport: new InMemoryTransport(new NodeAddress('cluster', host, port)),
-    gossipIntervalMs: 80,
-    receptionist: false,
-    shutdownOnSignals: false,
-  });
+  const { system, cluster } = await Cluster.bootstrap(
+    ClusterBootstrapOptions.create('cluster')
+      .withHost(host)
+      .withPort(port)
+      .withSeeds(seeds)
+      .withTransport(new InMemoryTransport(new NodeAddress('cluster', host, port)))
+      .withGossipIntervalMs(80)
+      .withReceptionist(false)
+      .withShutdownOnSignals(false));
   return { sys: system, cluster, name: host };
 }
 
@@ -53,10 +56,9 @@ async function main(): Promise<void> {
   // Each node starts its own ClusterSingletonManager with the same typeName
   // and the same Props — but only the leader's manager actually constructs it.
   for (const { sys, cluster, name } of [a, b, c]) {
-    sys.extension(ClusterSingletonId).start(cluster, {
-      typeName: 'echo',
-      props: Props.create(() => new Echo(name)),
-    });
+    sys.extension(ClusterSingletonId).start(cluster, StartSingletonOptions.create<string>()
+      .withTypeName('echo')
+      .withProps(Props.create(() => new Echo(name))));
   }
 
   await Bun.sleep(100);

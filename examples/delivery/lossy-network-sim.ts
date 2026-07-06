@@ -11,6 +11,7 @@ import {
   ActorSystem,
   Props,
   ReliableDelivery,
+  ProducerControllerOptions,
   type Delivery,
 } from '../../src/index.js';
 
@@ -41,11 +42,12 @@ async function main(): Promise<void> {
     'lossy-relay',
   );
 
-  const producer = ReliableDelivery.producer<string>(system, {
-    consumer: relay as never,
-    resendTimeoutMs: 60,
-    windowSize: 4,
-  });
+  const producer = ReliableDelivery.producer<string>(system,
+    ProducerControllerOptions.create<string>()
+      .withConsumer(relay as never)
+      .withResendTimeout(60)
+      .withWindowSize(4),
+  );
 
   const N = 10;
   let confirmed = 0;

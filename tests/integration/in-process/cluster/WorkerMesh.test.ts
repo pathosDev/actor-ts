@@ -6,8 +6,8 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../src/Actor.js';
-import { ActorSystem } from '../../../../src/ActorSystem.js';
-import { Cluster } from '../../../../src/cluster/Cluster.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../src/ActorSystem.js';
+import { Cluster, ClusterOptions } from '../../../../src/cluster/Cluster.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import {
   MessageChannelTransport,
@@ -45,18 +45,17 @@ async function startNode(
   const workerPort = ch.port2 as unknown as PortLike;
   broker.register(addr, brokerPort);
 
-  const system = ActorSystem.create(systemName, {
-    logger: new NoopLogger(),
-    logLevel: LogLevel.Off,
-  });
-  const cluster = await Cluster.join(system, {
-    host: addr.host,
-    port: addr.port,
-    seeds,
-    transport: new MessageChannelTransport(addr, workerPort),
-    failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
-    gossipIntervalMs: 80,
-  });
+  const system = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const cluster = await Cluster.join(
+    system,
+    ClusterOptions.create()
+      .withHost(addr.host)
+      .withPort(addr.port)
+      .withSeeds(seeds)
+      .withTransport(new MessageChannelTransport(addr, workerPort))
+      .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+      .withGossipIntervalMs(80),
+  );
   return { system, cluster, address: addr };
 }
 

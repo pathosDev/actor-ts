@@ -36,10 +36,9 @@ eifrig erzeugt; User-Actors existieren noch nicht — du spawnst sie
 Argument:
 
 ```ts
-const system = ActorSystem.create('my-app', {
-  logLevel:   'info',
-  configFile: './application.conf',
-});
+const system = ActorSystem.create('my-app', ActorSystemOptions.create()
+  .withLogLevel('info')
+  .withConfigFile('./application.conf'));
 ```
 
 Die vollständige Settings-Form:
@@ -159,9 +158,9 @@ Extensions.  Du registrierst sie einmal auf System-Ebene und erreichst
 sie dann über `system.extension(...)`:
 
 ```ts
-import { Cluster, DistributedDataId } from 'actor-ts';
+import { Cluster, ClusterOptions, DistributedDataId } from 'actor-ts';
 
-const cluster = await Cluster.join(system, { /* ... */ });
+const cluster = await Cluster.join(system, ClusterOptions.create() /* ... */);
 const dd = system.extension(DistributedDataId).start(cluster);
 ```
 

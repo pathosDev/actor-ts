@@ -12,12 +12,12 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
-import { ActorSystem } from '../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../src/ActorSystem.js';
 import type { ActorRef } from '../../src/ActorRef.js';
-import { Cluster } from '../../src/cluster/Cluster.js';
+import { Cluster, ClusterOptions } from '../../src/cluster/Cluster.js';
 import { NodeAddress } from '../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../src/cluster/Transport.js';
-import { ClusterRouter } from '../../src/cluster/router/index.js';
+import { ClusterRouter, ClusterRouterOptions } from '../../src/cluster/router/index.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { Props } from '../../src/Props.js';
 import { Broadcast } from '../../src/Router.js';
@@ -86,14 +86,17 @@ interface Node {
 async function startNode(
   systemName: string, port: number, seeds: string[], roles: string[],
 ): Promise<Node> {
-  const sys = ActorSystem.create(systemName, {
-    logger: new NoopLogger(), logLevel: LogLevel.Off,
-  });
-  const cluster = await Cluster.join(sys, {
-    host: 'h', port, seeds, roles,
-    transport: new InMemoryTransport(new NodeAddress(systemName, 'h', port)),
-    gossipIntervalMs: 30,
-  });
+  const sys = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const cluster = await Cluster.join(
+    sys,
+    ClusterOptions.create()
+      .withHost('h')
+      .withPort(port)
+      .withSeeds(seeds)
+      .withRoles(roles)
+      .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
+      .withGossipIntervalMs(30),
+  );
   const received: string[] = [];
 
   class Worker extends Actor<{ kind: 'work'; id: string }> {
@@ -122,12 +125,13 @@ describe('ClusterRouter — multi-node', () => {
 
       // Router lives on node A; routees include all three nodes.
       const router = a.sys.spawn(
-        ClusterRouter.props<{ kind: 'work'; id: string }>({
-          cluster: a.cluster,
-          role: 'compute',
-          routerType: 'round-robin',
-          routeePath: '/user/worker',
-        }),
+        ClusterRouter.props<{ kind: 'work'; id: string }>(
+          ClusterRouterOptions.create<{ kind: 'work'; id: string }>()
+            .withCluster(a.cluster)
+            .withRole('compute')
+            .withRouterType('round-robin')
+            .withRouteePath('/user/worker'),
+        ),
         'rr-router',
       );
       // Wait one tick for the router's preStart to subscribe + rebuild.
@@ -168,12 +172,13 @@ describe('ClusterRouter — multi-node', () => {
       await waitFor(() => a.cluster.upMembers().length === 3);
 
       const router = a.sys.spawn(
-        ClusterRouter.props<{ kind: 'work'; id: string }>({
-          cluster: a.cluster,
-          routerType: 'consistent-hashing',
-          routeePath: '/user/worker',
-          extractKey: (m) => m.id,
-        }),
+        ClusterRouter.props<{ kind: 'work'; id: string }>(
+          ClusterRouterOptions.create<{ kind: 'work'; id: string }>()
+            .withCluster(a.cluster)
+            .withRouterType('consistent-hashing')
+            .withRouteePath('/user/worker')
+            .withExtractKey((m) => m.id),
+        ),
         'ch-router',
       );
       await sleep(50);
@@ -217,12 +222,13 @@ describe('ClusterRouter — multi-node', () => {
       await waitFor(() => a.cluster.upMembers().length === 3);
 
       const router = a.sys.spawn(
-        ClusterRouter.props<{ kind: 'work'; id: string }>({
-          cluster: a.cluster,
-          role: 'compute',
-          routerType: 'round-robin',
-          routeePath: '/user/worker',
-        }),
+        ClusterRouter.props<{ kind: 'work'; id: string }>(
+          ClusterRouterOptions.create<{ kind: 'work'; id: string }>()
+            .withCluster(a.cluster)
+            .withRole('compute')
+            .withRouterType('round-robin')
+            .withRouteePath('/user/worker'),
+        ),
         'role-router',
       );
       await sleep(50);
@@ -253,12 +259,13 @@ describe('ClusterRouter — multi-node', () => {
       await waitFor(() => a.cluster.upMembers().length === 3);
 
       const router = a.sys.spawn(
-        ClusterRouter.props<{ kind: 'work'; id: string }>({
-          cluster: a.cluster,
-          role: 'compute',
-          routerType: 'round-robin',
-          routeePath: '/user/worker',
-        }),
+        ClusterRouter.props<{ kind: 'work'; id: string }>(
+          ClusterRouterOptions.create<{ kind: 'work'; id: string }>()
+            .withCluster(a.cluster)
+            .withRole('compute')
+            .withRouterType('round-robin')
+            .withRouteePath('/user/worker'),
+        ),
         'leave-router',
       );
       await sleep(50);
@@ -317,11 +324,12 @@ describe('ClusterRouter — multi-node', () => {
       await waitFor(() => a.cluster.upMembers().length === 3);
 
       const router = a.sys.spawn(
-        ClusterRouter.props<{ kind: 'work'; id: string }>({
-          cluster: a.cluster,
-          routerType: 'round-robin',
-          routeePath: '/user/worker',
-        }),
+        ClusterRouter.props<{ kind: 'work'; id: string }>(
+          ClusterRouterOptions.create<{ kind: 'work'; id: string }>()
+            .withCluster(a.cluster)
+            .withRouterType('round-robin')
+            .withRouteePath('/user/worker'),
+        ),
         'bc-router',
       );
       await sleep(50);

@@ -6,6 +6,7 @@ import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import type { BrokerCommonSettings } from './BrokerSettings.js';
+import { JetStreamOptions } from './JetStreamOptions.js';
 
 /**
  * JetStream durable-streaming actor (#3).  Sister to {@link NatsActor}
@@ -45,12 +46,13 @@ import type { BrokerCommonSettings } from './BrokerSettings.js';
  *
  * **Example.**
  *
- *   const js = system.spawnAnonymous(Props.create(() => new JetStreamActor({
- *     servers: ['nats://localhost:4222'],
- *     stream:  { name: 'ORDERS', subjects: ['orders.*'] },
- *     consumer: { durable: 'order-processor', ackWaitMs: 30_000 },
- *     target:  orderProcessor,
- *   })));
+ *   const js = system.spawnAnonymous(Props.create(() => new JetStreamActor(
+ *     JetStreamOptions.create()
+ *       .withServers(['nats://localhost:4222'])
+ *       .withStream({ name: 'ORDERS', subjects: ['orders.*'] })
+ *       .withConsumer({ durable: 'order-processor', ackWaitMs: 30_000 })
+ *       .withTarget(orderProcessor),
+ *   )));
  *
  *   class OrderProcessor extends Actor<JetStreamMessage> {
  *     constructor(private readonly js: ActorRef<JetStreamCmd>) { super(); }
@@ -198,7 +200,7 @@ export class JetStreamActor extends BrokerActor<
   /** Map of streamSeq → in-flight ack handle for the manual-ack pump. */
   private readonly pending = new Map<number, PendingAck>();
 
-  constructor(settings: Partial<JetStreamActorSettings> = {}) { super(settings); }
+  constructor(options: JetStreamOptions = JetStreamOptions.create()) { super(options.build()); }
 
   protected configKey(): string { return ConfigKeys.io.broker.jetstream; }
   protected builtInDefaults(): Partial<JetStreamActorSettings> { return {}; }

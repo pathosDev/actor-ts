@@ -11,12 +11,13 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
-import { ActorSystem } from '../../../../../src/ActorSystem.js';
-import { Cluster } from '../../../../../src/cluster/Cluster.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
+import { Cluster, ClusterOptions } from '../../../../../src/cluster/Cluster.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import {
   ClusterRouter,
+  ClusterRouterOptions,
   pickRendezvous,
 } from '../../../../../src/cluster/router/index.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
@@ -40,12 +41,16 @@ async function startNode(
   port: number,
   roles: string[] = [],
 ): Promise<{ sys: ActorSystem; cluster: Cluster }> {
-  const sys = ActorSystem.create(systemName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
-  const cluster = await Cluster.join(sys, {
-    host: 'h', port, roles,
-    transport: new InMemoryTransport(new NodeAddress(systemName, 'h', port)),
-    gossipIntervalMs: 30,
-  });
+  const sys = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const cluster = await Cluster.join(
+    sys,
+    ClusterOptions.create()
+      .withHost('h')
+      .withPort(port)
+      .withRoles(roles)
+      .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
+      .withGossipIntervalMs(30),
+  );
   return { sys, cluster };
 }
 
@@ -57,12 +62,13 @@ describe('ClusterRouter — single node', () => {
       // Worker lives at /user/worker on every targeted node.
       sys.spawn(Props.create(() => new Worker()), 'worker');
       const router = sys.spawn(
-        ClusterRouter.props<ReceivedMsg>({
-          cluster,
-          role: 'compute',
-          routerType: 'round-robin',
-          routeePath: '/user/worker',
-        }),
+        ClusterRouter.props<ReceivedMsg>(
+          ClusterRouterOptions.create<ReceivedMsg>()
+            .withCluster(cluster)
+            .withRole('compute')
+            .withRouterType('round-robin')
+            .withRouteePath('/user/worker'),
+        ),
         'compute-router',
       );
       // Wait for the cluster to mark self as up.
@@ -84,12 +90,13 @@ describe('ClusterRouter — single node', () => {
     try {
       sys.spawn(Props.create(() => new Worker()), 'worker');
       const router = sys.spawn(
-        ClusterRouter.props<ReceivedMsg>({
-          cluster,
-          role: 'compute',                           // filters out 'frontend'-only node
-          routerType: 'round-robin',
-          routeePath: '/user/worker',
-        }),
+        ClusterRouter.props<ReceivedMsg>(
+          ClusterRouterOptions.create<ReceivedMsg>()
+            .withCluster(cluster)
+            .withRole('compute')                       // filters out 'frontend'-only node
+            .withRouterType('round-robin')
+            .withRouteePath('/user/worker'),
+        ),
         'role-router',
       );
       await sleep(50);
@@ -109,12 +116,13 @@ describe('ClusterRouter — single node', () => {
     try {
       sys.spawn(Props.create(() => new Worker()), 'worker');
       const router = sys.spawn(
-        ClusterRouter.props<ReceivedMsg>({
-          cluster,
-          routerType: 'consistent-hashing',
-          routeePath: '/user/worker',
-          extractKey: (m) => m.id,
-        }),
+        ClusterRouter.props<ReceivedMsg>(
+          ClusterRouterOptions.create<ReceivedMsg>()
+            .withCluster(cluster)
+            .withRouterType('consistent-hashing')
+            .withRouteePath('/user/worker')
+            .withExtractKey((m) => m.id),
+        ),
         'ch-router',
       );
       await sleep(50);
@@ -138,11 +146,12 @@ describe('ClusterRouter — single node', () => {
     try {
       sys.spawn(Props.create(() => new Worker()), 'worker');
       const router = sys.spawn(
-        ClusterRouter.props<ReceivedMsg>({
-          cluster,
-          routerType: 'broadcast',
-          routeePath: '/user/worker',
-        }),
+        ClusterRouter.props<ReceivedMsg>(
+          ClusterRouterOptions.create<ReceivedMsg>()
+            .withCluster(cluster)
+            .withRouterType('broadcast')
+            .withRouteePath('/user/worker'),
+        ),
         'bc-router',
       );
       await sleep(50);
@@ -161,11 +170,12 @@ describe('ClusterRouter — single node', () => {
     try {
       sys.spawn(Props.create(() => new Worker()), 'worker');
       const router = sys.spawn(
-        ClusterRouter.props<ReceivedMsg>({
-          cluster,
-          routerType: 'round-robin',                 // not broadcast type
-          routeePath: '/user/worker',
-        }),
+        ClusterRouter.props<ReceivedMsg>(
+          ClusterRouterOptions.create<ReceivedMsg>()
+            .withCluster(cluster)
+            .withRouterType('round-robin')             // not broadcast type
+            .withRouteePath('/user/worker'),
+        ),
         'bc-msg-router',
       );
       await sleep(50);
@@ -182,13 +192,14 @@ describe('ClusterRouter — single node', () => {
 
   test('rejects consistent-hashing without extractKey at construction', () => {
     expect(() => {
-      ClusterRouter.props<ReceivedMsg>({
-        // @ts-expect-error — exercising the runtime guard
-        cluster: undefined,
-        routerType: 'consistent-hashing',
-        routeePath: '/user/worker',
+      // The runtime guard fires on the missing extractKey before the
+      // (unset) cluster is ever touched.
+      ClusterRouter.props<ReceivedMsg>(
+        ClusterRouterOptions.create<ReceivedMsg>()
+          .withRouterType('consistent-hashing')
+          .withRouteePath('/user/worker'),
         // no extractKey
-      });
+      );
     }).toThrow(/extractKey/);
   });
 });

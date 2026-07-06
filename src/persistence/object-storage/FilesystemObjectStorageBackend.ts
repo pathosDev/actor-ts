@@ -1,4 +1,5 @@
 import { Lazy } from '../../util/Lazy.js';
+import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { none, some, type Option } from '../../util/Option.js';
 import { wrapError } from '../../util/WrapError.js';
 import { makeKeyValidator } from '../storage/KeyValidator.js';
@@ -54,7 +55,7 @@ import {
  *    the new body, never a truncated buffer.
  */
 
-export interface FilesystemObjectStorageOptions {
+export interface FilesystemObjectStorageSettings {
   /** Root directory.  Will be created (recursively) if it doesn't exist. */
   readonly dir: string;
   /**
@@ -71,6 +72,36 @@ export interface FilesystemObjectStorageOptions {
    * writers never get their lock yanked.
    */
   readonly staleLockMs?: number;
+}
+
+/**
+ * Fluent builder for {@link FilesystemObjectStorageSettings}.  `dir` is
+ * required by the backend:
+ *
+ *     new FilesystemObjectStorageBackend(
+ *       FilesystemObjectStorageOptions.create().withDir('/var/lib/actor-ts'),
+ *     )
+ */
+export class FilesystemObjectStorageOptions extends OptionsBuilder<FilesystemObjectStorageSettings> {
+  /** Start a fresh builder.  Equivalent to `new FilesystemObjectStorageOptions()`. */
+  static create(): FilesystemObjectStorageOptions {
+    return new FilesystemObjectStorageOptions();
+  }
+
+  /** Root directory.  Created recursively if it doesn't exist. */
+  withDir(dir: string): this {
+    return this.set('dir', dir);
+  }
+
+  /** How long to contend for a per-key write lock before giving up.  Default 5_000 ms. */
+  withLockTimeoutMs(lockTimeoutMs: number): this {
+    return this.set('lockTimeoutMs', lockTimeoutMs);
+  }
+
+  /** Lock files older than this are treated as stale and forcibly removed.  Default 30_000 ms. */
+  withStaleLockMs(staleLockMs: number): this {
+    return this.set('staleLockMs', staleLockMs);
+  }
 }
 
 const DEFAULT_LOCK_TIMEOUT_MS = 5_000;
@@ -129,19 +160,23 @@ function assertWithinRoot(
 }
 
 export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
+  private readonly dir: string;
   private readonly lockTimeoutMs: number;
   private readonly staleLockMs: number;
 
-  constructor(private readonly options: FilesystemObjectStorageOptions) {
-    this.lockTimeoutMs = options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
-    this.staleLockMs   = options.staleLockMs   ?? DEFAULT_STALE_LOCK_MS;
+  constructor(options: FilesystemObjectStorageOptions) {
+    const s = options.build();
+    if (s.dir === undefined) throw new Error('FilesystemObjectStorageBackend: dir is required (call withDir()).');
+    this.dir           = s.dir;
+    this.lockTimeoutMs = s.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
+    this.staleLockMs   = s.staleLockMs   ?? DEFAULT_STALE_LOCK_MS;
   }
 
   async put(key: string, body: Uint8Array, opts: PutOptions = {}): Promise<{ etag: string }> {
     assertSafeKey(key);
     const { fs, path } = await fsLazy.get();
-    const fullPath = path.join(this.options.dir, key);
-    assertWithinRoot(path, this.options.dir, fullPath);
+    const fullPath = path.join(this.dir, key);
+    assertWithinRoot(path, this.dir, fullPath);
     const lockPath = fullPath + '.lock';
 
     // Parent directory must exist before lock acquisition (the lock file
@@ -213,8 +248,8 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
   async get(key: string): Promise<Option<ObjectFetched>> {
     assertSafeKey(key);
     const { fs, path } = await fsLazy.get();
-    const fullPath = path.join(this.options.dir, key);
-    assertWithinRoot(path, this.options.dir, fullPath);
+    const fullPath = path.join(this.dir, key);
+    assertWithinRoot(path, this.dir, fullPath);
     let body: Uint8Array;
     let stat;
     try {
@@ -244,8 +279,8 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
   async delete(key: string): Promise<void> {
     assertSafeKey(key);
     const { fs, path } = await fsLazy.get();
-    const fullPath = path.join(this.options.dir, key);
-    assertWithinRoot(path, this.options.dir, fullPath);
+    const fullPath = path.join(this.dir, key);
+    assertWithinRoot(path, this.dir, fullPath);
     const lockPath = fullPath + '.lock';
 
     // Lock so a concurrent put doesn't see a half-deleted state mid-CAS.
@@ -272,7 +307,7 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
     // no NUL bytes) — list otherwise could enumerate outside the root.
     if (opts.prefix !== '') assertSafeKey(opts.prefix);
     const { fs, path } = await fsLazy.get();
-    const root = this.options.dir;
+    const root = this.dir;
     // Prefix may include a directory portion.  We walk from root and filter.
     const out: ObjectInfo[] = [];
     const walk = async (rel: string): Promise<void> => {

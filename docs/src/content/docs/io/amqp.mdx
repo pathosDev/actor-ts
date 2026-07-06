@@ -8,20 +8,21 @@ brokers).  Supports exchanges (direct / topic / fanout / headers),
 queues, routing keys, ack/nack semantics.
 
 ```ts
-import { ActorSystem, Props, AmqpActor } from 'actor-ts';
+import { ActorSystem, Props, AmqpActor, AmqpOptions } from 'actor-ts';
 
 const amqp = system.spawn(
-  Props.create(() => new AmqpActor({
-    url: 'amqp://guest:guest@rabbitmq:5672',
-    // Queue → consumer-actor wiring lives in `bindings` on the
-    // settings — declared once when the actor connects.  Runtime
-    // subscribe / unsubscribe isn't a v1 surface; if you need to
-    // attach a new consumer after start, restart the actor with
-    // updated bindings.
-    bindings: [
-      { queue: 'order-processor', exchange: 'orders', routingKey: 'placed.#', target: handler },
-    ],
-  })),
+  Props.create(() => new AmqpActor(
+    AmqpOptions.create()
+      .withUrl('amqp://guest:guest@rabbitmq:5672')
+      // Queue → consumer-actor wiring lives in `bindings` on the
+      // settings — declared once when the actor connects.  Runtime
+      // subscribe / unsubscribe isn't a v1 surface; if you need to
+      // attach a new consumer after start, restart the actor with
+      // updated bindings.
+      .withBindings([
+        { queue: 'order-processor', exchange: 'orders', routingKey: 'placed.#', target: handler },
+      ]),
+  )),
   'amqp',
 );
 

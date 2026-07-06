@@ -1,14 +1,14 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
 import { ActorSelection } from '../../src/ActorSelection.js';
-import { ActorSystem } from '../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { Props } from '../../src/Props.js';
-import { TestKit } from '../../src/testkit/TestKit.js';
+import { TestKit, TestKitOptions } from '../../src/testkit/TestKit.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 const newSys = (n = 'sel'): ActorSystem =>
-  ActorSystem.create(n, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  ActorSystem.create(n, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
 
 describe('ActorSelection — basics', () => {
   test('resolveOne returns a ref for an existing actor', async () => {
@@ -44,7 +44,7 @@ describe('ActorSelection — basics', () => {
   });
 
   test('tell delivers to a resolved actor', async () => {
-    const kit = TestKit.create('tell-sel', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('tell-sel', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = kit.createTestProbe<string>();
 
     class Echo extends Actor<string> { override onReceive(m: string): void { probe.tell(m); } }
@@ -56,7 +56,7 @@ describe('ActorSelection — basics', () => {
   });
 
   test('tell drops into dead letters when no match', async () => {
-    const kit = TestKit.create('dl-sel', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('dl-sel', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = kit.createTestProbe();
     const { DeadLetter } = await import('../../src/SystemMessages.js');
     kit.system.eventStream.subscribe(probe, DeadLetter);
@@ -70,7 +70,7 @@ describe('ActorSelection — basics', () => {
 
 describe('ActorSelection — nested paths', () => {
   test('resolves grandchildren through context.actorSelection', async () => {
-    const kit = TestKit.create('nested-sel', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('nested-sel', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const probe = kit.createTestProbe<string>();
 
     class Leaf extends Actor<string> { override onReceive(m: string): void { probe.tell(m); } }

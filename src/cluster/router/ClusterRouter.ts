@@ -2,6 +2,7 @@ import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Props } from '../../Props.js';
 import { Broadcast } from '../../Router.js';
+import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { Cluster } from '../Cluster.js';
 import { MemberRemoved, MemberUp } from '../ClusterEvents.js';
 import { RemoteActorRef } from '../RemoteActorRef.js';
@@ -16,13 +17,14 @@ import { pickRendezvous } from './ConsistentHashing.js';
  * extracted key to the same node.
  *
  *   const router = system.spawn(
- *     ClusterRouter.props({
- *       cluster,
- *       role: 'compute',                              // optional role filter
- *       routerType: 'consistent-hashing',
- *       routeePath: '/user/worker',
- *       extractKey: (msg) => (msg as { id: string }).id,
- *     }),
+ *     ClusterRouter.props(
+ *       ClusterRouterOptions.create<{ id: string }>()
+ *         .withCluster(cluster)
+ *         .withRole('compute')                          // optional role filter
+ *         .withRouterType('consistent-hashing')
+ *         .withRouteePath('/user/worker')
+ *         .withExtractKey((msg) => msg.id),
+ *     ),
  *     'compute-router',
  *   );
  *   router.tell({ id: 'order-42', op: 'price' });
@@ -63,7 +65,7 @@ export type ClusterRouterType =
   /** Every routee gets every message (equivalent to wrapping in `Broadcast`). */
   | 'broadcast';
 
-export interface ClusterRouterOptions<TMsg> {
+export interface ClusterRouterSettings<TMsg> {
   /** The cluster the router lives in.  Used for membership + transport. */
   readonly cluster: Cluster;
   /** Restrict routees to up-members carrying this role.  Omit for "any node". */
@@ -87,11 +89,56 @@ export interface ClusterRouterOptions<TMsg> {
 }
 
 /**
+ * Fluent builder for {@link ClusterRouterSettings}:
+ *
+ *     ClusterRouter.props(
+ *       ClusterRouterOptions.create<Cmd>()
+ *         .withCluster(cluster)
+ *         .withRouterType('consistent-hashing')
+ *         .withRouteePath('/user/worker')
+ *         .withExtractKey((m) => m.id),
+ *     );
+ */
+export class ClusterRouterOptions<TMsg> extends OptionsBuilder<ClusterRouterSettings<TMsg>> {
+  /** Start a fresh builder. */
+  static create<TMsg>(): ClusterRouterOptions<TMsg> {
+    return new ClusterRouterOptions<TMsg>();
+  }
+
+  /** The cluster the router lives in — drives membership + transport. */
+  withCluster(cluster: Cluster): this {
+    return this.set('cluster', cluster);
+  }
+
+  /** Restrict routees to up-members carrying this role.  Omit for "any node". */
+  withRole(role: string): this {
+    return this.set('role', role);
+  }
+
+  /** Routing strategy.  See {@link ClusterRouterType}. */
+  withRouterType(routerType: ClusterRouterType): this {
+    return this.set('routerType', routerType);
+  }
+
+  /** The path the routee actor lives under on each node — usually `/user/<name>`. */
+  withRouteePath(routeePath: string): this {
+    return this.set('routeePath', routeePath);
+  }
+
+  /** Key extractor — required for `consistent-hashing`, ignored otherwise. */
+  withExtractKey(extractKey: (message: TMsg) => string): this {
+    return this.set('extractKey', extractKey);
+  }
+}
+
+/**
  * `Props` factory for the cluster router.  See {@link ClusterRouterOptions}
- * for the configuration shape.
+ * for the configuration builder and {@link ClusterRouterSettings} for the
+ * resolved shape.
  */
 export const ClusterRouter = {
-  props<TMsg>(opts: ClusterRouterOptions<TMsg>): Props<TMsg | Broadcast<TMsg>> {
+  props<TMsg>(options: ClusterRouterOptions<TMsg>): Props<TMsg | Broadcast<TMsg>> {
+    const opts = options.build() as ClusterRouterSettings<TMsg>;
     if (opts.routerType === 'consistent-hashing' && !opts.extractKey) {
       throw new Error(
         'ClusterRouter: routerType=\'consistent-hashing\' requires extractKey',
@@ -122,7 +169,7 @@ class ClusterRouterActor<TMsg> extends Actor<TMsg | Broadcast<TMsg>> {
   private counter = 0;
   private unsubscribe: (() => void) | null = null;
 
-  constructor(private readonly opts: ClusterRouterOptions<TMsg>) {
+  constructor(private readonly opts: ClusterRouterSettings<TMsg>) {
     super();
   }
 

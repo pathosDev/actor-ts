@@ -1,4 +1,4 @@
-export { WorkerCluster } from './WorkerCluster.js';
+export { WorkerCluster, WorkerClusterOptions } from './WorkerCluster.js';
 export type {
   WorkerClusterSettings,
   WorkerHandle,

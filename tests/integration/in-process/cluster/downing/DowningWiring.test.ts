@@ -17,8 +17,8 @@
  * a hand-rolled deterministic stub provider.
  */
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem } from '../../../../../src/ActorSystem.js';
-import { Cluster } from '../../../../../src/cluster/Cluster.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
+import { Cluster, ClusterOptions } from '../../../../../src/cluster/Cluster.js';
 import { addrKey } from '../../../../../src/cluster/downing/index.js';
 import type {
   ClusterPartitionView,
@@ -50,15 +50,16 @@ async function startNode(
     downing?: DowningProvider;
   } = {},
 ): Promise<Node> {
-  const sys = ActorSystem.create(systemName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
-  const cluster = await Cluster.join(sys, {
-    host: 'h', port,
-    seeds: opts.seeds,
-    transport: new InMemoryTransport(new NodeAddress(systemName, 'h', port)),
-    failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 4_000 },
-    gossipIntervalMs: 80,
-    downing: opts.downing,
-  });
+  const sys = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  let clusterOptions = ClusterOptions.create()
+    .withHost('h')
+    .withPort(port)
+    .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
+    .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 4_000 })
+    .withGossipIntervalMs(80);
+  if (opts.seeds !== undefined) clusterOptions = clusterOptions.withSeeds(opts.seeds);
+  if (opts.downing !== undefined) clusterOptions = clusterOptions.withDowning(opts.downing);
+  const cluster = await Cluster.join(sys, clusterOptions);
   return { sys, cluster };
 }
 

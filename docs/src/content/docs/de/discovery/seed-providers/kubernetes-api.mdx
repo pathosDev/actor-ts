@@ -9,20 +9,24 @@ zurück.  Funktioniert ohne DNS, ohne SRV, ohne manuelle
 Seed-Listen-Pflege — der Selector ist dein Vertrag.
 
 ```ts
-import { Cluster, KubernetesApiSeedProvider } from 'actor-ts';
+import { Cluster, ClusterOptions, KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts';
 
-const provider = new KubernetesApiSeedProvider({
-  namespace:     process.env.K8S_NAMESPACE!,
-  labelSelector: 'app=actor-ts',
-  containerPort: 2552,
-});
+const provider = new KubernetesApiSeedProvider(
+  KubernetesApiSeedProviderOptions.create()
+    .withNamespace(process.env.K8S_NAMESPACE!)
+    .withServiceName('actor-ts')
+    .withSystemName('my-app')
+    .withPort(2552),
+);
 
 const seeds = await provider.lookup();
-await Cluster.join(system, {
-  host:  process.env.POD_IP!,
-  port:  2552,
-  seeds,
-});
+await Cluster.join(
+  system,
+  ClusterOptions.create()
+    .withHost(process.env.POD_IP!)
+    .withPort(2552)
+    .withSeeds(seeds),
+);
 ```
 
 Für jeden Pod, der `app=actor-ts` im Namespace matcht, gibt der

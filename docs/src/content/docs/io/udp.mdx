@@ -8,13 +8,14 @@ acks, no retries, packet-oriented.  Use when **best-effort
 delivery is fine** and latency matters more than reliability.
 
 ```ts
-import { ActorSystem, Props, UdpSocketActor } from 'actor-ts';
+import { ActorSystem, Props, UdpSocketActor, UdpSocketOptions } from 'actor-ts';
 
 const udp = system.spawn(
-  Props.create(() => new UdpSocketActor({
-    bindHost: '0.0.0.0',
-    bindPort: 8125,         // bind for receiving
-  })),
+  Props.create(() => new UdpSocketActor(
+    UdpSocketOptions.create()
+      .withBindHost('0.0.0.0')
+      .withBindPort(8125),         // bind for receiving
+  )),
   'udp',
 );
 
@@ -50,7 +51,7 @@ interface UdpSocketActorSettings extends BrokerCommonSettings {
 ## Send-only
 
 ```ts
-new UdpSocketActor({ bindHost: '', bindPort: undefined });   // ✓ send-only
+new UdpSocketActor(UdpSocketOptions.create().withBindHost(''));   // ✓ send-only (no bindPort → no receive)
 ```
 
 Without `bindPort`, the actor doesn't listen — it's a pure

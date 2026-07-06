@@ -25,6 +25,7 @@
  */
 import {
   ActorSystem,
+  ActorSystemOptions,
   MqttActor,
   MqttOptions,
   Props,
@@ -73,8 +74,8 @@ class TemperatureHub extends MqttActor<Reading, Tick> {
 async function main(): Promise<void> {
   // The broker URL lives in HOCON — typical for prod (per-environment),
   // while clientId + QoS are set per-instance via the builder.
-  const system = ActorSystem.create('mqtt-demo', {
-    config: {
+  const system = ActorSystem.create('mqtt-demo', ActorSystemOptions.create()
+    .withConfig({
       'actor-ts': {
         io: {
           broker: {
@@ -86,8 +87,7 @@ async function main(): Promise<void> {
           },
         },
       },
-    },
-  });
+    }));
 
   system.spawn(
     Props.create(() => new TemperatureHub(MqttOptions.create())),

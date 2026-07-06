@@ -17,7 +17,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { Agent, type RequestOptions, request } from 'node:https';
-import { KubernetesApiSeedProvider } from '../../../../src/discovery/KubernetesApiSeedProvider.js';
+import { KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from '../../../../src/discovery/KubernetesApiSeedProvider.js';
 import { runScenarios, type BrokerScenario, type BrokerScenarioCtx } from '../lib/scenario.js';
 import { scenario as basicLookupScenario } from './scenarios/01-basic-lookup.js';
 import { scenario as emptyEndpointsScenario } from './scenarios/02-empty-endpoints.js';
@@ -104,24 +104,25 @@ async function main(): Promise<void> {
 
   // Custom fetchEndpoints that talks to our k3s API with admin certs.
   const buildSeedProvider = (namespace: string, serviceName: string): KubernetesApiSeedProvider =>
-    new KubernetesApiSeedProvider({
-      namespace,
-      serviceName,
-      systemName: 'k8s-integration',
-      port: 9000,
-      fetchEndpoints: async (): Promise<string[]> => {
-        const res = await api('GET', `/api/v1/namespaces/${namespace}/endpoints/${serviceName}`);
-        if (res.status !== 200) throw new Error(`k8s API ${res.status}: ${res.body.slice(0, 200)}`);
-        const parsed = JSON.parse(res.body) as {
-          subsets?: Array<{ addresses?: Array<{ ip: string }> }>;
-        };
-        const ips: string[] = [];
-        for (const s of parsed.subsets ?? []) {
-          for (const a of s.addresses ?? []) ips.push(a.ip);
-        }
-        return ips;
-      },
-    });
+    new KubernetesApiSeedProvider(
+      KubernetesApiSeedProviderOptions.create()
+        .withNamespace(namespace)
+        .withServiceName(serviceName)
+        .withSystemName('k8s-integration')
+        .withPort(9000)
+        .withFetchEndpoints(async (): Promise<string[]> => {
+          const res = await api('GET', `/api/v1/namespaces/${namespace}/endpoints/${serviceName}`);
+          if (res.status !== 200) throw new Error(`k8s API ${res.status}: ${res.body.slice(0, 200)}`);
+          const parsed = JSON.parse(res.body) as {
+            subsets?: Array<{ addresses?: Array<{ ip: string }> }>;
+          };
+          const ips: string[] = [];
+          for (const s of parsed.subsets ?? []) {
+            for (const a of s.addresses ?? []) ips.push(a.ip);
+          }
+          return ips;
+        }),
+    );
 
   const ctx: K8sCtx = {
     env: process.env,

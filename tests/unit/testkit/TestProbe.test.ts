@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
 import { Props } from '../../../src/Props.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
+import { TestProbeOptions } from '../../../src/testkit/TestProbe.js';
 
 describe('TestProbe basics', () => {
   test('captures messages in FIFO order', async () => {
@@ -84,8 +85,8 @@ describe('TestProbe basics', () => {
 
   test('sender records the originator of the last message', async () => {
     const tk = TestKit.create();
-    const p = tk.createTestProbe({ name: 'from' });
-    const to = tk.createTestProbe({ name: 'to' });
+    const p = tk.createTestProbe(TestProbeOptions.create().withName('from'));
+    const to = tk.createTestProbe(TestProbeOptions.create().withName('to'));
     to.tell('msg', p);
     await to.receiveOne(100);
     expect(to.sender).toBe(p);
@@ -94,8 +95,8 @@ describe('TestProbe basics', () => {
 
   test('reply sends to the last sender', async () => {
     const tk = TestKit.create();
-    const sender = tk.createTestProbe({ name: 'sender' });
-    const replier = tk.createTestProbe({ name: 'replier' });
+    const sender = tk.createTestProbe(TestProbeOptions.create().withName('sender'));
+    const replier = tk.createTestProbe(TestProbeOptions.create().withName('replier'));
     replier.tell('ping', sender);
     await replier.receiveOne(100);
     replier.reply('pong');

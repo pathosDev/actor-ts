@@ -28,19 +28,19 @@ verdrahten würdest — das `ActorSystem` erstellen, Seeds auflösen,
 einzigen Aufruf:
 
 ```ts
-import { Cluster } from 'actor-ts';
+import { Cluster, ClusterBootstrapOptions } from 'actor-ts';
 
 // Lokale Entwicklung — keine Env-Variablen, keine Seeds: Single-Node-Cluster.
-const { system, cluster, shutdown } = await Cluster.bootstrap({ name: 'my-app' });
+const { system, cluster, shutdown } = await Cluster.bootstrap(ClusterBootstrapOptions.create('my-app'));
 
 // Mit expliziten Overrides:
-const { system, cluster } = await Cluster.bootstrap({
-  name:  'my-app',
-  host:  '0.0.0.0',
-  port:  2552,
-  seeds: ['node-a:2552', 'node-b:2552'],
-  roles: ['compute'],
-});
+const { system, cluster } = await Cluster.bootstrap(
+  ClusterBootstrapOptions.create('my-app')
+    .withHost('0.0.0.0')
+    .withPort(2552)
+    .withSeeds(['node-a:2552', 'node-b:2552'])
+    .withRoles(['compute']),
+);
 
 // Sobald beigetreten:
 cluster.upMembers();                 // → ReadonlyArray<Member> der Up-Nodes
@@ -52,14 +52,16 @@ eigene Discovery-Schleife) bleibt das Low-Level-Paar weiter
 verfügbar:
 
 ```ts
-import { ActorSystem, Cluster } from 'actor-ts';
+import { ActorSystem, Cluster, ClusterOptions } from 'actor-ts';
 
 const system  = ActorSystem.create('my-app');
-const cluster = await Cluster.join(system, {
-  host:  '0.0.0.0',
-  port:  2552,
-  seeds: ['node-a:2552', 'node-b:2552'],
-});
+const cluster = await Cluster.join(
+  system,
+  ClusterOptions.create()
+    .withHost('0.0.0.0')
+    .withPort(2552)
+    .withSeeds(['node-a:2552', 'node-b:2552']),
+);
 ```
 
 Drei Einstellungen leisten die meiste Arbeit:

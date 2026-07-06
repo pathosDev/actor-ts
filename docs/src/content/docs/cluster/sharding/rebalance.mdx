@@ -69,11 +69,12 @@ depending on how many entities are in the shard and how long their
 ## Configuration
 
 ```ts
-sharding.start({
-  // ...
-  rebalanceIntervalMs: 2_000,   // strategy-driven rebalance every 2s
-  handOffTimeoutMs:    10_000,  // give up + force-reallocate after 10s
-});
+sharding.start(
+  StartShardingOptions.create()
+    // ...
+    .withRebalanceIntervalMs(2_000)   // strategy-driven rebalance every 2s
+    .withHandOffTimeoutMs(10_000),    // give up + force-reallocate after 10s
+);
 ```
 
 | Knob | Default | What |

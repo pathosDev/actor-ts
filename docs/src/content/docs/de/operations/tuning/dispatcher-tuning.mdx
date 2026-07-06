@@ -131,9 +131,8 @@ Default. Das ist das **empfohlene Produktionsmuster**.
 ## Systemweiter Dispatcher
 
 ```ts
-const system = ActorSystem.create('my-app', {
-  dispatcher: new ThroughputDispatcher({ throughput: 100 }),
-});
+const system = ActorSystem.create('my-app', ActorSystemOptions.create()
+  .withDispatcher(new ThroughputDispatcher({ throughput: 100 })));
 ```
 
 Override den Default für **jeden Actor, der nichts anderes

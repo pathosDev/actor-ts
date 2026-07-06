@@ -123,10 +123,10 @@ Wichtig, wenn:
 ## Multi-Pod mit Redis
 
 ```ts
-import { RedisCache } from 'actor-ts';
+import { RedisCache, RedisCacheOptions } from 'actor-ts';
 
 idempotent({
-  cache:  new RedisCache({ url: 'redis://...' }),
+  cache:  new RedisCache(RedisCacheOptions.create().withUrl('redis://...')),
   ttlMs:  24 * 60 * 60_000,
 });
 ```

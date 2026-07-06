@@ -8,13 +8,14 @@ broker.  Core NATS is **fire-and-forget without durability**;
 for durable streams, see the [JetStream](#jetstream) variant.
 
 ```ts
-import { ActorSystem, Props, NatsActor } from 'actor-ts';
+import { ActorSystem, Props, NatsActor, NatsOptions } from 'actor-ts';
 
 const nats = system.spawn(
-  Props.create(() => new NatsActor({
-    servers: ['nats://nats-1:4222', 'nats://nats-2:4222'],
-    name:    'my-app',
-  })),
+  Props.create(() => new NatsActor(
+    NatsOptions.create()
+      .withServers(['nats://nats-1:4222', 'nats://nats-2:4222'])
+      .withName('my-app'),
+  )),
   'nats',
 );
 
@@ -120,20 +121,19 @@ JetStream below.  For **cluster-internal** pub/sub,
 For NATS with **durability**, use `JetStreamActor`:
 
 ```ts
-import { JetStreamActor } from 'actor-ts';
+import { JetStreamActor, JetStreamOptions } from 'actor-ts';
 
 const js = system.spawn(
-  Props.create(() => new JetStreamActor({
-    servers: ['nats://nats-1:4222'],
-    streams: [
-      {
+  Props.create(() => new JetStreamActor(
+    JetStreamOptions.create()
+      .withServers(['nats://nats-1:4222'])
+      .withStream({
         name:     'ORDERS',
         subjects: ['orders.>'],
         storage:  'file',
         maxAge:   86_400 * 7,   // 7 days retention
-      },
-    ],
-  })),
+      }),
+  )),
   'js',
 );
 ```

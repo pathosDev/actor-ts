@@ -7,7 +7,7 @@
  *   POD_IP=10.0.0.5 SEED_HOST_1=10.0.0.1 SEED_PORT=2552 \
  *     bun run examples/config/from-file.ts
  */
-import { Actor, ActorSystem, Props } from '../../src/index.js';
+import { Actor, ActorSystem, ActorSystemOptions, Props } from '../../src/index.js';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
@@ -31,11 +31,10 @@ class DiagActor extends Actor<'report'> {
 }
 
 async function main(): Promise<void> {
-  const system = ActorSystem.create('from-file', {
-    configFile: appConf,
+  const system = ActorSystem.create('from-file', ActorSystemOptions.create()
+    .withConfigFile(appConf)
     // A code override still wins over the file contents.
-    config: { 'actor-ts': { logger: { level: 'info' } } },
-  });
+    .withConfig({ 'actor-ts': { logger: { level: 'info' } } }));
   const diag = system.spawn(Props.create(() => new DiagActor()), 'diag');
   diag.tell('report');
   await new Promise(resolve => setTimeout(resolve, 50));

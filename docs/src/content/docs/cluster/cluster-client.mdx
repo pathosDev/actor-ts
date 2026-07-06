@@ -9,11 +9,12 @@ no gossip, no membership state — but it can `tell` and `ask`
 cluster-internal actors via known **receptionist contacts**.
 
 ```ts
-import { ClusterClient } from 'actor-ts';
+import { ClusterClient, ClusterClientOptions } from 'actor-ts';
 
-const client = ClusterClient.create({
-  contacts: ['actor-ts://my-app@10.0.0.5:2552/system/receptionist'],
-});
+const client = new ClusterClient(
+  ClusterClientOptions.create()
+    .withContactPoints(['actor-ts://my-app@10.0.0.5:2552/system/receptionist']),
+);
 
 // Send to a well-known cluster actor:
 client.send('/user/api/orders', { kind: 'place', ... });
@@ -113,7 +114,7 @@ const ref = await system.actorSelection('actor-ts://my-app@host:2552/user/api').
 ref.tell(...);
 
 // Outside the cluster — ClusterClient:
-const client = ClusterClient.create({ contacts: [...] });
+const client = new ClusterClient(ClusterClientOptions.create().withContactPoints([...]));
 client.send('/user/api', ...);
 ```
 

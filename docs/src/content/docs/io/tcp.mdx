@@ -9,13 +9,14 @@ framework's pattern is "spawn one client-actor per incoming
 connection from a listener actor."
 
 ```ts
-import { ActorSystem, Props, TcpSocketActor } from 'actor-ts';
+import { ActorSystem, Props, TcpSocketActor, TcpSocketOptions } from 'actor-ts';
 
 const tcp = system.spawn(
-  Props.create(() => new TcpSocketActor({
-    host: 'metrics-collector.example.com',
-    port: 8125,
-  })),
+  Props.create(() => new TcpSocketActor(
+    TcpSocketOptions.create()
+      .withHost('metrics-collector.example.com')
+      .withPort(8125),
+  )),
   'tcp-client',
 );
 
@@ -64,12 +65,13 @@ message.  TCP is a byte stream; framing is your job.
 ## Framing
 
 ```ts
-import { LengthPrefixedFramer } from 'actor-ts';
+import { TcpSocketActor, TcpSocketOptions } from 'actor-ts';
 
-new TcpSocketActor({
-  host, port,
-  framer: new LengthPrefixedFramer({ prefixSize: 4 }),
-});
+new TcpSocketActor(TcpSocketOptions.create()
+  .withHost(host)
+  .withPort(port)
+  .withFraming({ kind: 'length-prefixed' })
+  .withTarget(subscriber));
 ```
 
 Optional framer that parses byte stream into discrete messages.

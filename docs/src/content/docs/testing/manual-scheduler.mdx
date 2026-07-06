@@ -90,10 +90,10 @@ time controls *all* actor timers.
 ## Using it without TestKit
 
 ```ts
-import { ActorSystem, ManualScheduler } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions, ManualScheduler } from 'actor-ts';
 
 const scheduler = new ManualScheduler();
-const system = ActorSystem.create('my-spec', { scheduler });
+const system = ActorSystem.create('my-spec', ActorSystemOptions.create().withScheduler(scheduler));
 
 // ... test code ...
 

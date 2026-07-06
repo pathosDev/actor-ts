@@ -1,10 +1,10 @@
 export { CacheError } from './Cache.js';
 export type { Cache } from './Cache.js';
 export { InMemoryCache } from './InMemoryCache.js';
-export { RedisCache } from './RedisCache.js';
-export type { RedisCacheOptions, RedisClientLike } from './RedisCache.js';
-export { MemcachedCache } from './MemcachedCache.js';
-export type { MemcachedCacheOptions, MemcachedClientLike } from './MemcachedCache.js';
+export { RedisCache, RedisCacheOptions } from './RedisCache.js';
+export type { RedisCacheSettings, RedisClientLike } from './RedisCache.js';
+export { MemcachedCache, MemcachedCacheOptions } from './MemcachedCache.js';
+export type { MemcachedCacheSettings, MemcachedClientLike } from './MemcachedCache.js';
 export {
   CacheExtension,
   CacheExtensionId,

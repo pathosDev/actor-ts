@@ -1,13 +1,16 @@
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem } from '../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import {
   CASSANDRA_JOURNAL_PLUGIN_ID,
   CASSANDRA_SNAPSHOT_PLUGIN_ID,
   CassandraJournal,
+  CassandraJournalOptions,
   CassandraSnapshotStore,
+  CassandraSnapshotStoreOptions,
   JournalConcurrencyError,
   PersistenceExtensionId,
+  RegisterCassandraPluginsOptions,
   registerCassandraPlugins,
 } from '../../../../src/persistence/index.js';
 import { FakeCassandraClient } from './FakeCassandraClient.js';
@@ -15,10 +18,11 @@ import { FakeCassandraClient } from './FakeCassandraClient.js';
 describe('CassandraJournal — append / read', () => {
   test('happy path: append, then read all', async () => {
     const client = new FakeCassandraClient();
-    const journal = new CassandraJournal({
-      contactPoints: ['fake'], keyspace: 'ks', client,
-      autoCreateKeyspace: true,
-    });
+    const journal = new CassandraJournal(
+      CassandraJournalOptions.create()
+        .withContactPoints(['fake']).withKeyspace('ks').withClient(client)
+        .withAutoCreateKeyspace(true),
+    );
     const written = await journal.append('acc-1', ['created', 'deposited:10', 'deposited:20'], 0);
     expect(written.map((e) => e.sequenceNr)).toEqual([1, 2, 3]);
 
@@ -29,10 +33,11 @@ describe('CassandraJournal — append / read', () => {
   });
 
   test('optimistic concurrency fails when expectedSeq is stale', async () => {
-    const journal = new CassandraJournal({
-      contactPoints: ['fake'], keyspace: 'ks',
-      client: new FakeCassandraClient(), autoCreateKeyspace: true,
-    });
+    const journal = new CassandraJournal(
+      CassandraJournalOptions.create()
+        .withContactPoints(['fake']).withKeyspace('ks')
+        .withClient(new FakeCassandraClient()).withAutoCreateKeyspace(true),
+    );
     await journal.append('acc-2', ['a'], 0);
     let caught: unknown = null;
     try { await journal.append('acc-2', ['b'], 0); } catch (e) { caught = e; }
@@ -41,9 +46,10 @@ describe('CassandraJournal — append / read', () => {
   });
 
   test('highestSeq reflects the last append', async () => {
-    const journal = new CassandraJournal({
-      contactPoints: ['fake'], keyspace: 'ks', client: new FakeCassandraClient(),
-    });
+    const journal = new CassandraJournal(
+      CassandraJournalOptions.create()
+        .withContactPoints(['fake']).withKeyspace('ks').withClient(new FakeCassandraClient()),
+    );
     expect(await journal.highestSeq('nobody')).toBe(0);
     await journal.append('acc-3', ['a', 'b', 'c'], 0);
     expect(await journal.highestSeq('acc-3')).toBe(3);
@@ -53,9 +59,10 @@ describe('CassandraJournal — append / read', () => {
   });
 
   test('read range respects fromSeq + toSeq', async () => {
-    const journal = new CassandraJournal({
-      contactPoints: ['fake'], keyspace: 'ks', client: new FakeCassandraClient(),
-    });
+    const journal = new CassandraJournal(
+      CassandraJournalOptions.create()
+        .withContactPoints(['fake']).withKeyspace('ks').withClient(new FakeCassandraClient()),
+    );
     await journal.append('acc-4', [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 0);
     const slice = await journal.read<number>('acc-4', 3, 6);
     expect(slice.map((e) => e.event)).toEqual([3, 4, 5, 6]);
@@ -63,9 +70,10 @@ describe('CassandraJournal — append / read', () => {
   });
 
   test('delete prunes events up to toSeq', async () => {
-    const journal = new CassandraJournal({
-      contactPoints: ['fake'], keyspace: 'ks', client: new FakeCassandraClient(),
-    });
+    const journal = new CassandraJournal(
+      CassandraJournalOptions.create()
+        .withContactPoints(['fake']).withKeyspace('ks').withClient(new FakeCassandraClient()),
+    );
     await journal.append('acc-5', ['a', 'b', 'c', 'd'], 0);
     await journal.delete('acc-5', 2);
     const left = await journal.read<string>('acc-5', 1);
@@ -74,9 +82,10 @@ describe('CassandraJournal — append / read', () => {
   });
 
   test('persistenceIds enumerates writers seen so far', async () => {
-    const journal = new CassandraJournal({
-      contactPoints: ['fake'], keyspace: 'ks', client: new FakeCassandraClient(),
-    });
+    const journal = new CassandraJournal(
+      CassandraJournalOptions.create()
+        .withContactPoints(['fake']).withKeyspace('ks').withClient(new FakeCassandraClient()),
+    );
     await journal.append('one', ['x'], 0);
     await journal.append('two', ['y'], 0);
     await journal.append('three', ['z'], 0);
@@ -87,10 +96,11 @@ describe('CassandraJournal — append / read', () => {
 
   test('partition rollover: seq spans multiple Cassandra partitions', async () => {
     const client = new FakeCassandraClient();
-    const journal = new CassandraJournal({
-      contactPoints: ['fake'], keyspace: 'ks', client,
-      partitionSize: 3, // tiny so we force rollover
-    });
+    const journal = new CassandraJournal(
+      CassandraJournalOptions.create()
+        .withContactPoints(['fake']).withKeyspace('ks').withClient(client)
+        .withPartitionSize(3), // tiny so we force rollover
+    );
     await journal.append('pid', [1, 2, 3], 0);
     await journal.append('pid', [4, 5, 6, 7], 3);
     const all = await journal.read<number>('pid', 1);
@@ -101,9 +111,10 @@ describe('CassandraJournal — append / read', () => {
 
 describe('CassandraSnapshotStore', () => {
   test('save and loadLatest round-trip', async () => {
-    const store = new CassandraSnapshotStore({
-      contactPoints: ['fake'], keyspace: 'ks', client: new FakeCassandraClient(),
-    });
+    const store = new CassandraSnapshotStore(
+      CassandraSnapshotStoreOptions.create()
+        .withContactPoints(['fake']).withKeyspace('ks').withClient(new FakeCassandraClient()),
+    );
     await store.save('pid', 10, { counter: 42 });
     const snap = (await store.loadLatest<{ counter: number }>('pid')).toNullable();
     expect(snap).not.toBeNull();
@@ -113,10 +124,11 @@ describe('CassandraSnapshotStore', () => {
   });
 
   test('loadBefore returns the newest snapshot strictly less than seq', async () => {
-    const store = new CassandraSnapshotStore({
-      contactPoints: ['fake'], keyspace: 'ks', client: new FakeCassandraClient(),
-      keepN: 0,
-    });
+    const store = new CassandraSnapshotStore(
+      CassandraSnapshotStoreOptions.create()
+        .withContactPoints(['fake']).withKeyspace('ks').withClient(new FakeCassandraClient())
+        .withKeepN(0),
+    );
     await store.save('pid', 5, 'state-at-5');
     await store.save('pid', 10, 'state-at-10');
     await store.save('pid', 15, 'state-at-15');
@@ -131,10 +143,11 @@ describe('CassandraSnapshotStore', () => {
 
   test('delete prunes snapshots up to toSeq', async () => {
     const client = new FakeCassandraClient();
-    const store = new CassandraSnapshotStore({
-      contactPoints: ['fake'], keyspace: 'ks', client,
-      keepN: 0,
-    });
+    const store = new CassandraSnapshotStore(
+      CassandraSnapshotStoreOptions.create()
+        .withContactPoints(['fake']).withKeyspace('ks').withClient(client)
+        .withKeepN(0),
+    );
     await store.save('pid', 5, 'a');
     await store.save('pid', 10, 'b');
     await store.save('pid', 15, 'c');
@@ -146,10 +159,11 @@ describe('CassandraSnapshotStore', () => {
 
   test('keepN prunes old snapshots automatically', async () => {
     const client = new FakeCassandraClient();
-    const store = new CassandraSnapshotStore({
-      contactPoints: ['fake'], keyspace: 'ks', client,
-      keepN: 2,
-    });
+    const store = new CassandraSnapshotStore(
+      CassandraSnapshotStoreOptions.create()
+        .withContactPoints(['fake']).withKeyspace('ks').withClient(client)
+        .withKeepN(2),
+    );
     for (let i = 1; i <= 5; i++) await store.save('pid', i * 10, `s-${i}`);
     // Only the last 2 should remain.
     expect(client.countRows('ks.snapshots')).toBeLessThanOrEqual(2);
@@ -162,23 +176,22 @@ describe('CassandraSnapshotStore', () => {
 describe('registerCassandraPlugins — config-driven selection', () => {
   test('extension picks up Cassandra plug-ins when the config path names them', async () => {
     const client = new FakeCassandraClient();
-    const sys = ActorSystem.create('cassandra-cfg', {
-      logger: new NoopLogger(), logLevel: LogLevel.Off,
-      config: {
+    const sys = ActorSystem.create('cassandra-cfg', ActorSystemOptions.create()
+      .withLogger(new NoopLogger()).withLogLevel(LogLevel.Off)
+      .withConfig({
         'actor-ts': {
           persistence: {
             journal: { plugin: CASSANDRA_JOURNAL_PLUGIN_ID },
             'snapshot-store': { plugin: CASSANDRA_SNAPSHOT_PLUGIN_ID },
           },
         },
-      },
-    });
+      }));
     const ext = sys.extension(PersistenceExtensionId);
-    registerCassandraPlugins(ext, {
-      client,
-      journal: { contactPoints: ['fake'], keyspace: 'app' },
-      snapshotStore: { contactPoints: ['fake'], keyspace: 'app' },
-    });
+    registerCassandraPlugins(ext, RegisterCassandraPluginsOptions.create()
+      .withClient(client)
+      .withJournal(CassandraJournalOptions.create().withContactPoints(['fake']).withKeyspace('app'))
+      .withSnapshotStore(CassandraSnapshotStoreOptions.create().withContactPoints(['fake']).withKeyspace('app')),
+    );
 
     expect(ext.journal).toBeInstanceOf(CassandraJournal);
     expect(ext.snapshotStore).toBeInstanceOf(CassandraSnapshotStore);
@@ -197,12 +210,14 @@ describe('registerCassandraPlugins — config-driven selection', () => {
 describe('CassandraJournal + SnapshotStore — integration', () => {
   test('typical recovery path: snapshot + subsequent events', async () => {
     const client = new FakeCassandraClient();
-    const journal = new CassandraJournal({
-      contactPoints: ['fake'], keyspace: 'ks', client,
-    });
-    const snaps = new CassandraSnapshotStore({
-      contactPoints: ['fake'], keyspace: 'ks', client,
-    });
+    const journal = new CassandraJournal(
+      CassandraJournalOptions.create()
+        .withContactPoints(['fake']).withKeyspace('ks').withClient(client),
+    );
+    const snaps = new CassandraSnapshotStore(
+      CassandraSnapshotStoreOptions.create()
+        .withContactPoints(['fake']).withKeyspace('ks').withClient(client),
+    );
 
     await journal.append('acc', ['ev1', 'ev2', 'ev3'], 0);
     await snaps.save('acc', 3, { sum: 3 });

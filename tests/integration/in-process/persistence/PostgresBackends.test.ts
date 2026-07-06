@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { PostgresJournal } from '../../../../src/persistence/journals/PostgresJournal.js';
-import { PostgresSnapshotStore } from '../../../../src/persistence/snapshot-stores/PostgresSnapshotStore.js';
-import { PostgresDurableStateStore } from '../../../../src/persistence/durable-state-stores/PostgresDurableStateStore.js';
+import { PostgresJournal, PostgresJournalOptions } from '../../../../src/persistence/journals/PostgresJournal.js';
+import { PostgresSnapshotStore, PostgresSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/PostgresSnapshotStore.js';
+import { PostgresDurableStateStore, PostgresDurableStateStoreOptions } from '../../../../src/persistence/durable-state-stores/PostgresDurableStateStore.js';
 import { JournalConcurrencyError } from '../../../../src/persistence/JournalTypes.js';
 import { DurableStateConcurrencyError } from '../../../../src/persistence/DurableStateStore.js';
 import { FakePgPool } from './FakePgPool.js';
@@ -15,14 +15,14 @@ import { FakePgPool } from './FakePgPool.js';
 
 describe('PostgresJournal', () => {
   test('append assigns monotonic sequence numbers starting at 1', async () => {
-    const j = new PostgresJournal({ pool: new FakePgPool() });
+    const j = new PostgresJournal(PostgresJournalOptions.create().withPool(new FakePgPool()));
     const out = await j.append('acc-1', ['a', 'b', 'c'], 0);
     expect(out.map((e) => e.sequenceNr)).toEqual([1, 2, 3]);
     expect(out.map((e) => e.event)).toEqual(['a', 'b', 'c']);
   });
 
   test('read returns events in order with coerced numeric fields', async () => {
-    const j = new PostgresJournal({ pool: new FakePgPool() });
+    const j = new PostgresJournal(PostgresJournalOptions.create().withPool(new FakePgPool()));
     await j.append('acc-1', [{ n: 1 }, { n: 2 }], 0);
     const read = await j.read<{ n: number }>('acc-1', 1);
     expect(read.map((e) => e.event.n)).toEqual([1, 2]);
@@ -32,27 +32,27 @@ describe('PostgresJournal', () => {
   });
 
   test('read honours the inclusive toSeq upper bound', async () => {
-    const j = new PostgresJournal({ pool: new FakePgPool() });
+    const j = new PostgresJournal(PostgresJournalOptions.create().withPool(new FakePgPool()));
     await j.append('acc-1', ['a', 'b', 'c', 'd'], 0);
     const read = await j.read('acc-1', 2, 3);
     expect(read.map((e) => e.sequenceNr)).toEqual([2, 3]);
   });
 
   test('concurrency mismatch throws JournalConcurrencyError', async () => {
-    const j = new PostgresJournal({ pool: new FakePgPool() });
+    const j = new PostgresJournal(PostgresJournalOptions.create().withPool(new FakePgPool()));
     await j.append('acc-1', ['a'], 0);
     await expect(j.append('acc-1', ['b'], 0)).rejects.toBeInstanceOf(JournalConcurrencyError);
   });
 
   test('highestSeq reflects the latest append; 0 for unknown pid', async () => {
-    const j = new PostgresJournal({ pool: new FakePgPool() });
+    const j = new PostgresJournal(PostgresJournalOptions.create().withPool(new FakePgPool()));
     expect(await j.highestSeq('nope')).toBe(0);
     await j.append('acc-1', ['a', 'b'], 0);
     expect(await j.highestSeq('acc-1')).toBe(2);
   });
 
   test('tags round-trip and delete compacts up to toSeq', async () => {
-    const j = new PostgresJournal({ pool: new FakePgPool() });
+    const j = new PostgresJournal(PostgresJournalOptions.create().withPool(new FakePgPool()));
     await j.append('acc-1', ['a', 'b', 'c'], 0, ['t1', 't2']);
     const read = await j.read('acc-1', 1);
     expect(read[0]!.tags).toEqual(['t1', 't2']);
@@ -61,7 +61,7 @@ describe('PostgresJournal', () => {
   });
 
   test('persistenceIds enumerates distinct ids', async () => {
-    const j = new PostgresJournal({ pool: new FakePgPool() });
+    const j = new PostgresJournal(PostgresJournalOptions.create().withPool(new FakePgPool()));
     await j.append('acc-1', ['a'], 0);
     await j.append('acc-2', ['a'], 0);
     await j.append('acc-1', ['b'], 1);
@@ -71,7 +71,7 @@ describe('PostgresJournal', () => {
 
 describe('PostgresSnapshotStore', () => {
   test('save then loadLatest round-trips the newest snapshot', async () => {
-    const s = new PostgresSnapshotStore({ pool: new FakePgPool() });
+    const s = new PostgresSnapshotStore(PostgresSnapshotStoreOptions.create().withPool(new FakePgPool()));
     await s.save('acc-1', 5, { balance: 10 });
     await s.save('acc-1', 9, { balance: 42 });
     const latest = (await s.loadLatest<{ balance: number }>('acc-1')).toNullable();
@@ -80,7 +80,7 @@ describe('PostgresSnapshotStore', () => {
   });
 
   test('loadBefore returns the newest snapshot strictly below seq', async () => {
-    const s = new PostgresSnapshotStore({ pool: new FakePgPool() });
+    const s = new PostgresSnapshotStore(PostgresSnapshotStoreOptions.create().withPool(new FakePgPool()));
     await s.save('acc-1', 3, { v: 'a' });
     await s.save('acc-1', 7, { v: 'b' });
     const before = (await s.loadBefore<{ v: string }>('acc-1', 7)).toNullable();
@@ -88,21 +88,21 @@ describe('PostgresSnapshotStore', () => {
   });
 
   test('keepN prunes older snapshots on save', async () => {
-    const s = new PostgresSnapshotStore({ pool: new FakePgPool(), keepN: 2 });
+    const s = new PostgresSnapshotStore(PostgresSnapshotStoreOptions.create().withPool(new FakePgPool()).withKeepN(2));
     for (const seq of [1, 2, 3, 4]) await s.save('acc-1', seq, { seq });
     expect((await s.loadBefore('acc-1', 2)).toNullable()).toBeNull();   // 1 pruned
     expect((await s.loadLatest('acc-1')).toNullable()?.sequenceNr).toBe(4);
   });
 
   test('loadLatest is None for unknown pid', async () => {
-    const s = new PostgresSnapshotStore({ pool: new FakePgPool() });
+    const s = new PostgresSnapshotStore(PostgresSnapshotStoreOptions.create().withPool(new FakePgPool()));
     expect((await s.loadLatest('nope')).toNullable()).toBeNull();
   });
 });
 
 describe('PostgresDurableStateStore', () => {
   test('insert at revision 0 then load', async () => {
-    const d = new PostgresDurableStateStore({ pool: new FakePgPool() });
+    const d = new PostgresDurableStateStore(PostgresDurableStateStoreOptions.create().withPool(new FakePgPool()));
     const rec = await d.upsert('k1', 0, { count: 1 });
     expect(rec.revision).toBe(1);
     const loaded = (await d.load<{ count: number }>('k1')).toNullable();
@@ -111,7 +111,7 @@ describe('PostgresDurableStateStore', () => {
   });
 
   test('update bumps the revision', async () => {
-    const d = new PostgresDurableStateStore({ pool: new FakePgPool() });
+    const d = new PostgresDurableStateStore(PostgresDurableStateStoreOptions.create().withPool(new FakePgPool()));
     await d.upsert('k1', 0, { count: 1 });
     const rec = await d.upsert('k1', 1, { count: 2 });
     expect(rec.revision).toBe(2);
@@ -119,7 +119,7 @@ describe('PostgresDurableStateStore', () => {
   });
 
   test('stale expectedRevision throws DurableStateConcurrencyError with actual', async () => {
-    const d = new PostgresDurableStateStore({ pool: new FakePgPool() });
+    const d = new PostgresDurableStateStore(PostgresDurableStateStoreOptions.create().withPool(new FakePgPool()));
     await d.upsert('k1', 0, { v: 'a' });   // rev 1
     await d.upsert('k1', 1, { v: 'b' });   // rev 2
     await expect(d.upsert('k1', 1, { v: 'c' })).rejects.toMatchObject({
@@ -130,13 +130,13 @@ describe('PostgresDurableStateStore', () => {
   });
 
   test('re-insert at revision 0 on an existing key conflicts', async () => {
-    const d = new PostgresDurableStateStore({ pool: new FakePgPool() });
+    const d = new PostgresDurableStateStore(PostgresDurableStateStoreOptions.create().withPool(new FakePgPool()));
     await d.upsert('k1', 0, { v: 'a' });
     await expect(d.upsert('k1', 0, { v: 'dup' })).rejects.toBeInstanceOf(DurableStateConcurrencyError);
   });
 
   test('delete removes the record', async () => {
-    const d = new PostgresDurableStateStore({ pool: new FakePgPool() });
+    const d = new PostgresDurableStateStore(PostgresDurableStateStoreOptions.create().withPool(new FakePgPool()));
     await d.upsert('k1', 0, { v: 'a' });
     await d.delete('k1');
     expect((await d.load('k1')).toNullable()).toBeNull();

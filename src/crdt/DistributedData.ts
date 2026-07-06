@@ -6,6 +6,7 @@ import type { DurableStateStore } from '../persistence/DurableStateStore.js';
 import type { Cancellable } from '../Scheduler.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
+import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { Props } from '../Props.js';
 import type { Cluster } from '../cluster/Cluster.js';
 import { MemberRemoved, MemberUp } from '../cluster/ClusterEvents.js';
@@ -221,6 +222,33 @@ export interface DistributedDataSettings {
   readonly durableStore?: DurableStateStore;
 }
 
+/**
+ * Fluent builder for {@link DistributedDataSettings}.  Fed to
+ * `DistributedData.start(cluster, options)`; the `cluster` stays a
+ * positional argument (it's the identity the store binds to, not a
+ * tunable), while the tunables below are accumulated here.
+ *
+ *     dd.start(cluster, DistributedDataOptions.create()
+ *       .withGossipInterval(500)
+ *       .withDurableStore(store));
+ */
+export class DistributedDataOptions extends OptionsBuilder<DistributedDataSettings> {
+  /** Start a fresh builder.  Equivalent to `new DistributedDataOptions()`. */
+  static create(): DistributedDataOptions {
+    return new DistributedDataOptions();
+  }
+
+  /** Period between gossip pushes in milliseconds.  Default 1 s. */
+  withGossipInterval(ms: number): this {
+    return this.set('gossipIntervalMs', ms);
+  }
+
+  /** Durable per-replica backend — load on start, re-save after each mutation. */
+  withDurableStore(store: DurableStateStore): this {
+    return this.set('durableStore', store);
+  }
+}
+
 /* ============================== extension ============================== */
 
 const dataActorPath = (systemName: string): string =>
@@ -255,12 +283,16 @@ export class DistributedData implements Extension {
 
   constructor(private readonly system: ActorSystem) {}
 
-  start(cluster: Cluster, settings: DistributedDataSettings = {}): DistributedDataHandle {
+  start(
+    cluster: Cluster,
+    options: DistributedDataOptions = DistributedDataOptions.create(),
+  ): DistributedDataHandle {
     if (this._handle && this._cluster === cluster) return this._handle;
     if (this._handle) {
       throw new Error('DistributedData is already bound to a different cluster');
     }
     this._cluster = cluster;
+    const settings = options.build();
 
     // The extension exposes a synchronous API; the internal actor owns
     // the state and the gossip loop.  We hand the actor a setter for a

@@ -10,11 +10,12 @@ er kann cluster-interne Actors per bekannten
 **Receptionist-Kontakten** mit `tell` und `ask` ansprechen.
 
 ```ts
-import { ClusterClient } from 'actor-ts';
+import { ClusterClient, ClusterClientOptions } from 'actor-ts';
 
-const client = ClusterClient.create({
-  contacts: ['actor-ts://my-app@10.0.0.5:2552/system/receptionist'],
-});
+const client = new ClusterClient(
+  ClusterClientOptions.create()
+    .withContactPoints(['actor-ts://my-app@10.0.0.5:2552/system/receptionist']),
+);
 
 // Senden an einen bekannten Cluster-Actor:
 client.send('/user/api/orders', { kind: 'place', ... });
@@ -117,7 +118,7 @@ const ref = await system.actorSelection('actor-ts://my-app@host:2552/user/api').
 ref.tell(...);
 
 // Außerhalb des Clusters — ClusterClient:
-const client = ClusterClient.create({ contacts: [...] });
+const client = new ClusterClient(ClusterClientOptions.create().withContactPoints([...]));
 client.send('/user/api', ...);
 ```
 

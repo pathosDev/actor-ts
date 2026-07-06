@@ -27,6 +27,7 @@ export type {
   TcpFraming,
   TcpOutbound,
 } from './TcpSocketActor.js';
+export { TcpSocketOptions } from './TcpSocketOptions.js';
 export { UdpSocketActor } from './UdpSocketActor.js';
 export type {
   UdpSocketActorSettings,
@@ -34,6 +35,7 @@ export type {
   UdpDatagram,
   UdpOutbound,
 } from './UdpSocketActor.js';
+export { UdpSocketOptions } from './UdpSocketOptions.js';
 // Subclass-first typed MQTT actor.
 export { MqttActor, matchesMqttPattern, buildPublishProperties } from './MqttActor.js';
 export type {
@@ -79,6 +81,7 @@ export type {
   KafkaRecord,
   KafkaPublish,
 } from './KafkaActor.js';
+export { KafkaOptions } from './KafkaOptions.js';
 export { AmqpActor } from './AmqpActor.js';
 export type {
   AmqpActorSettings,
@@ -87,6 +90,7 @@ export type {
   AmqpPublish,
   AmqpQueueBinding,
 } from './AmqpActor.js';
+export { AmqpOptions } from './AmqpOptions.js';
 export { GrpcClientActor } from './GrpcClientActor.js';
 export type {
   GrpcClientActorSettings,
@@ -94,6 +98,7 @@ export type {
   GrpcInbound,
   GrpcCredentials,
 } from './GrpcClientActor.js';
+export { GrpcClientOptions } from './GrpcClientOptions.js';
 export { GrpcServerActor } from './GrpcServerActor.js';
 export type {
   GrpcServerSettings,
@@ -102,6 +107,7 @@ export type {
   GrpcServerStreamCall,
   GrpcBidiCall,
 } from './GrpcServerActor.js';
+export { GrpcServerOptions } from './GrpcServerOptions.js';
 
 // Phase 3 actors — cloud-native / niche.
 export { NatsActor } from './NatsActor.js';
@@ -111,6 +117,7 @@ export type {
   NatsMessage,
   NatsPublish,
 } from './NatsActor.js';
+export { NatsOptions } from './NatsOptions.js';
 export { JetStreamActor } from './JetStreamActor.js';
 export type {
   JetStreamActorSettings,
@@ -127,6 +134,7 @@ export type {
   JetStreamMsgInfoLike,
   JetStreamManagerLike,
 } from './JetStreamActor.js';
+export { JetStreamOptions } from './JetStreamOptions.js';
 export { RedisStreamsActor } from './RedisStreamsActor.js';
 export type {
   RedisStreamsActorSettings,
@@ -134,9 +142,11 @@ export type {
   RedisStreamEntry,
   RedisStreamPublish,
 } from './RedisStreamsActor.js';
+export { RedisStreamsOptions } from './RedisStreamsOptions.js';
 export { SseActor } from './SseActor.js';
 export type {
   SseActorSettings,
   SseCmd,
   SseEvent,
 } from './SseActor.js';
+export { SseOptions } from './SseOptions.js';

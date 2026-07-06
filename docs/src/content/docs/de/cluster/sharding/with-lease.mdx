@@ -16,19 +16,21 @@ möglicherweise auf beiden Seiten gespawnt.
 Die **Single-Writer-Lease** verhindert das:
 
 ```ts
-import { ClusterSharding, KubernetesLease } from 'actor-ts';
+import { ClusterSharding, KubernetesLease, KubernetesLeaseOptions, StartShardingOptions } from 'actor-ts';
 
-const sharding = cluster.sharding.start<Cmd>({
-  typeName:        'order',
-  entityProps:     Props.create(() => new OrderEntity()),
-  extractEntityId: (msg) => msg.id,
-  lease: new KubernetesLease({
-    name:        'order-sharding-coordinator',
-    owner:       process.env.POD_NAME!,
-    ttlMs:       30_000,
-    namespace:   process.env.K8S_NAMESPACE!,
-  }),
-});
+const sharding = cluster.sharding.start(
+  StartShardingOptions.create<Cmd>()
+    .withTypeName('order')
+    .withEntityProps(Props.create(() => new OrderEntity()))
+    .withExtractEntityId((msg) => msg.id)
+    .withLease(new KubernetesLease(
+      KubernetesLeaseOptions.create()
+        .withName('order-sharding-coordinator')
+        .withOwner(process.env.POD_NAME!)
+        .withTtlMs(30_000)
+        .withNamespace(process.env.K8S_NAMESPACE!),
+    )),
+);
 ```
 
 Selbst wenn zwei Nodes beide denken, sie seien Leader, **hält nur

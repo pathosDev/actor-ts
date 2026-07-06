@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { promClientRegistry } from '../../../src/metrics/PromClientAdapter.js';
+import { promClientRegistry, PromClientAdapterOptions } from '../../../src/metrics/PromClientAdapter.js';
 
 /**
  * The bridge is exercised against a hand-rolled `prom-client`-shaped
@@ -78,7 +78,9 @@ describe('promClientRegistry', () => {
   test('counter.inc lands on prom-client child', () => {
     const reg = makeFakeRegistry();
     const client = makeFakeClient(reg);
-    const adapted = promClientRegistry({ client: client as never, registry: reg });
+    const adapted = promClientRegistry(
+      PromClientAdapterOptions.create().withClient(client as never).withRegistry(reg),
+    );
 
     const c = adapted.counter('foo_total', { node: 'a' }, { help: 'hits' });
     c.inc();
@@ -97,7 +99,9 @@ describe('promClientRegistry', () => {
   test('gauge supports set + inc + dec', () => {
     const reg = makeFakeRegistry();
     const client = makeFakeClient(reg);
-    const adapted = promClientRegistry({ client: client as never, registry: reg });
+    const adapted = promClientRegistry(
+      PromClientAdapterOptions.create().withClient(client as never).withRegistry(reg),
+    );
 
     const g = adapted.gauge('mailbox_depth');
     g.set(10);
@@ -112,7 +116,9 @@ describe('promClientRegistry', () => {
   test('histogram observe + buckets', () => {
     const reg = makeFakeRegistry();
     const client = makeFakeClient(reg);
-    const adapted = promClientRegistry({ client: client as never, registry: reg });
+    const adapted = promClientRegistry(
+      PromClientAdapterOptions.create().withClient(client as never).withRegistry(reg),
+    );
 
     const h = adapted.histogram('lat_seconds', undefined, { buckets: [0.1, 0.5, 1] });
     h.observe(0.05);
@@ -131,9 +137,12 @@ describe('promClientRegistry', () => {
   test('namePrefix applies to every registered metric', () => {
     const reg = makeFakeRegistry();
     const client = makeFakeClient(reg);
-    const adapted = promClientRegistry({
-      client: client as never, registry: reg, namePrefix: 'actor_ts_',
-    });
+    const adapted = promClientRegistry(
+      PromClientAdapterOptions.create()
+        .withClient(client as never)
+        .withRegistry(reg)
+        .withNamePrefix('actor_ts_'),
+    );
 
     adapted.counter('messages_delivered_total');
     adapted.gauge('members_up');
@@ -150,7 +159,9 @@ describe('promClientRegistry', () => {
   test('registering the same name with two types throws', () => {
     const reg = makeFakeRegistry();
     const client = makeFakeClient(reg);
-    const adapted = promClientRegistry({ client: client as never, registry: reg });
+    const adapted = promClientRegistry(
+      PromClientAdapterOptions.create().withClient(client as never).withRegistry(reg),
+    );
 
     adapted.counter('busy');
     expect(() => adapted.gauge('busy')).toThrow(/already registered/);
@@ -159,7 +170,9 @@ describe('promClientRegistry', () => {
   test('counter family is reused across label-value variants (one prom-client metric, multiple series)', () => {
     const reg = makeFakeRegistry();
     const client = makeFakeClient(reg);
-    const adapted = promClientRegistry({ client: client as never, registry: reg });
+    const adapted = promClientRegistry(
+      PromClientAdapterOptions.create().withClient(client as never).withRegistry(reg),
+    );
 
     adapted.counter('hits', { node: 'a' }).inc();
     adapted.counter('hits', { node: 'b' }).inc(2);

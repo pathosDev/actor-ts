@@ -3,24 +3,26 @@ import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { Props } from '../../../src/Props.js';
-import { ReliableDelivery } from '../../../src/delivery/index.js';
+import { ReliableDelivery, ProducerControllerOptions } from '../../../src/delivery/index.js';
 import type { Delivery } from '../../../src/delivery/index.js';
-import { TestKit } from '../../../src/testkit/TestKit.js';
+import { TestKit, TestKitOptions } from '../../../src/testkit/TestKit.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 describe('ReliableDelivery — happy path', () => {
   test('producer → consumer delivers every message exactly once', async () => {
-    const kit = TestKit.create('rd-hp', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('rd-hp', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const received: string[] = [];
 
     const consumer = ReliableDelivery.consumer<string>(kit.system, {
       handler: (m) => { received.push(m); },
     });
-    const producer = ReliableDelivery.producer<string>(kit.system, {
-      consumer: consumer.ref as never,
-      resendTimeoutMs: 200, windowSize: 4,
-    });
+    const producer = ReliableDelivery.producer<string>(kit.system,
+      ProducerControllerOptions.create<string>()
+        .withConsumer(consumer.ref as never)
+        .withResendTimeout(200)
+        .withWindowSize(4),
+    );
 
     for (const s of ['a', 'b', 'c']) producer.tell(s);
     await sleep(80);
@@ -31,12 +33,14 @@ describe('ReliableDelivery — happy path', () => {
   });
 
   test('confirm callback fires once per message after the ack', async () => {
-    const kit = TestKit.create('rd-confirm', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('rd-confirm', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const confirmed: Array<{ body: string; err: Error | null }> = [];
     const consumer = ReliableDelivery.consumer<string>(kit.system, { handler: () => {} });
-    const producer = ReliableDelivery.producer<string>(kit.system, {
-      consumer: consumer.ref as never, resendTimeoutMs: 200,
-    });
+    const producer = ReliableDelivery.producer<string>(kit.system,
+      ProducerControllerOptions.create<string>()
+        .withConsumer(consumer.ref as never)
+        .withResendTimeout(200),
+    );
 
     for (const s of ['x', 'y', 'z']) {
       producer.tell(s, (err) => confirmed.push({ body: s, err }));
@@ -52,7 +56,7 @@ describe('ReliableDelivery — happy path', () => {
 
 describe('ReliableDelivery — resilience', () => {
   test('consumer dedups a redelivered (same-seq) message', async () => {
-    const kit = TestKit.create('rd-dedup', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('rd-dedup', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const received: string[] = [];
     const consumer = ReliableDelivery.consumer<string>(kit.system, {
       handler: (m) => { received.push(m); },
@@ -84,7 +88,7 @@ describe('ReliableDelivery — resilience', () => {
   });
 
   test('producer re-sends when no ack arrives', async () => {
-    const kit = TestKit.create('rd-resend', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('rd-resend', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
 
     // Flaky consumer that drops the first 2 deliveries.
     let seen = 0;
@@ -100,10 +104,11 @@ describe('ReliableDelivery — resilience', () => {
     }
     const consumerRef = kit.system.spawn(Props.create(() => new Flaky()), 'flaky');
 
-    const producer = ReliableDelivery.producer<string>(kit.system, {
-      consumer: consumerRef,
-      resendTimeoutMs: 40,
-    });
+    const producer = ReliableDelivery.producer<string>(kit.system,
+      ProducerControllerOptions.create<string>()
+        .withConsumer(consumerRef)
+        .withResendTimeout(40),
+    );
     producer.tell('persistent-message');
 
     // Give the producer time to resend until the 3rd attempt succeeds.
@@ -117,7 +122,7 @@ describe('ReliableDelivery — resilience', () => {
 
 describe('ReliableDelivery — flow control', () => {
   test('messages beyond windowSize queue and drain as acks arrive', async () => {
-    const kit = TestKit.create('rd-window', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const kit = TestKit.create('rd-window', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     const received: string[] = [];
     const consumer = ReliableDelivery.consumer<string>(kit.system, {
       handler: async (m) => {
@@ -125,9 +130,12 @@ describe('ReliableDelivery — flow control', () => {
         received.push(m);
       },
     });
-    const producer = ReliableDelivery.producer<string>(kit.system, {
-      consumer: consumer.ref as never, resendTimeoutMs: 500, windowSize: 2,
-    });
+    const producer = ReliableDelivery.producer<string>(kit.system,
+      ProducerControllerOptions.create<string>()
+        .withConsumer(consumer.ref as never)
+        .withResendTimeout(500)
+        .withWindowSize(2),
+    );
 
     const N = 6;
     for (let i = 0; i < N; i++) producer.tell(`m-${i}`);

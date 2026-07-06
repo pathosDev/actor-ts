@@ -9,10 +9,12 @@
 import {
   Actor,
   Cluster,
+  ClusterBootstrapOptions,
   InMemoryTransport,
   NodeAddress,
   Props,
   ShardedDaemonProcess,
+  ShardedDaemonProcessOptions,
 } from '../../src/index.js';
 
 class Worker extends Actor<string> {
@@ -26,19 +28,19 @@ async function main(): Promise<void> {
   // signal-based shutdown into one call.  For this single-node demo
   // we still hand it an `InMemoryTransport` and turn off the SIGTERM
   // wiring so the script can shut itself down at the end.
-  const { system, cluster, shutdown } = await Cluster.bootstrap({
-    name: 'daemon-hello',
-    host: 'local', port: 1,
-    transport: new InMemoryTransport(new NodeAddress('daemon-hello', 'local', 1)),
-    receptionist: false,
-    shutdownOnSignals: false,
-  });
+  const { system, cluster, shutdown } = await Cluster.bootstrap(
+    ClusterBootstrapOptions.create('daemon-hello')
+      .withHost('local')
+      .withPort(1)
+      .withTransport(new InMemoryTransport(new NodeAddress('daemon-hello', 'local', 1)))
+      .withReceptionist(false)
+      .withShutdownOnSignals(false));
 
-  const handle = ShardedDaemonProcess.init<string>(system, cluster, {
-    name: 'workers',
-    numDaemons: 6,
-    behaviorFor: (i) => Props.create(() => new Worker(i)),
-  });
+  const handle = ShardedDaemonProcess.init<string>(system, cluster,
+    ShardedDaemonProcessOptions.create<string>()
+      .withName('workers')
+      .withNumDaemons(6)
+      .withBehaviorFor((i) => Props.create(() => new Worker(i))));
   await Bun.sleep(100);
 
   handle.tell(0, 'job-A');

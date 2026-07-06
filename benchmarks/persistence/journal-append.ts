@@ -7,15 +7,16 @@
 import {
   InMemoryJournal,
   SqliteJournal,
+  SqliteJournalOptions,
   type Journal,
 } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
 async function main(): Promise<void> {
   const inMem = new InMemoryJournal();
-  const sqliteMem = new SqliteJournal({ path: ':memory:' });
+  const sqliteMem = new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:'));
   const tmpFile = `./.bench-journal-${Date.now()}.sqlite`;
-  const sqliteFile = new SqliteJournal({ path: tmpFile });
+  const sqliteFile = new SqliteJournal(SqliteJournalOptions.create().withPath(tmpFile));
 
   const appendOne = (j: Journal, pid: string, seq: { n: number }) => async (): Promise<void> => {
     await j.append(pid, [{ body: 'x'.repeat(32) }], seq.n);

@@ -63,13 +63,16 @@ Jeder Kindprozess führt das aus:
 
 ```ts
 // tests/cluster-node.ts
-import { ActorSystem, Cluster, MessageChannelTransport } from 'actor-ts';
+import { ActorSystem, Cluster, ClusterOptions, MessageChannelTransport } from 'actor-ts';
 
 const port = parseInt(process.env.ACTOR_TS_PORT!);
 const seeds = (process.env.ACTOR_TS_SEEDS ?? '').split(',').filter(Boolean);
 
 const system = ActorSystem.create('parallel-spec');
-const cluster = await Cluster.join(system, { host: 'localhost', port, seeds });
+const cluster = await Cluster.join(system, ClusterOptions.create()
+  .withHost('localhost')
+  .withPort(port)
+  .withSeeds(seeds));
 
 // Auf Anweisungen des Tests warten:
 process.on('message', (msg) => {

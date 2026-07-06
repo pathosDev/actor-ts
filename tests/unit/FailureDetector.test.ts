@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   FailureDetector,
+  FailureDetectorOptions,
   defaultFailureDetectorSettings,
   type FailureDetectorSettings,
 } from '../../src/cluster/FailureDetector.js';
@@ -10,12 +11,12 @@ const peer = new NodeAddress('demo', 'h', 1);
 const other = new NodeAddress('demo', 'h', 2);
 
 function fd(overrides: Partial<FailureDetectorSettings> = {}): FailureDetector {
-  return new FailureDetector({
-    heartbeatIntervalMs: 100,
-    unreachableAfterMs: 500,
-    downAfterMs: 1_000,
-    ...overrides,
-  });
+  return new FailureDetector(
+    FailureDetectorOptions.create()
+      .withHeartbeatIntervalMs(overrides.heartbeatIntervalMs ?? 100)
+      .withUnreachableAfterMs(overrides.unreachableAfterMs ?? 500)
+      .withDownAfterMs(overrides.downAfterMs ?? 1_000),
+  );
 }
 
 describe('FailureDetector', () => {

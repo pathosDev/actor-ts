@@ -25,15 +25,17 @@ seed-discovery layer on top.
 ## The simplest case — explicit seeds
 
 ```ts
-import { ActorSystem, Cluster } from 'actor-ts';
+import { ActorSystem, Cluster, ClusterOptions } from 'actor-ts';
 
 const system = ActorSystem.create('my-app');
 
-const cluster = await Cluster.join(system, {
-  host:  '10.0.0.5',
-  port:  2552,
-  seeds: ['10.0.0.5:2552', '10.0.0.6:2552', '10.0.0.7:2552'],
-});
+const cluster = await Cluster.join(
+  system,
+  ClusterOptions.create()
+    .withHost('10.0.0.5')
+    .withPort(2552)
+    .withSeeds(['10.0.0.5:2552', '10.0.0.6:2552', '10.0.0.7:2552']),
+);
 ```
 
 Three seeds.  The joiner contacts each in order until one
@@ -71,11 +73,13 @@ The seed-related knobs:
 ## The first node
 
 ```ts
-const cluster = await Cluster.join(system, {
-  host:  '0.0.0.0',
-  port:  2552,
-  seeds: [],
-});
+const cluster = await Cluster.join(
+  system,
+  ClusterOptions.create()
+    .withHost('0.0.0.0')
+    .withPort(2552)
+    .withSeeds([]),
+);
 ```
 
 An empty `seeds` list (or one that's all-unreachable) means **this
@@ -135,21 +139,24 @@ use a **seed provider**:
 | **[Aggregate](/discovery/seed-providers/aggregate/)** | Falls through multiple providers (e.g. K8s, then DNS). |
 
 ```ts
-import { KubernetesApiSeedProvider } from 'actor-ts/discovery';
+import { KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts/discovery';
 
-const seedProvider = new KubernetesApiSeedProvider({
-  namespace:     'default',
-  labelSelector: 'app=actor-ts',
-  containerPort: 2552,
-});
+const seedProvider = new KubernetesApiSeedProvider(
+  KubernetesApiSeedProviderOptions.create()
+    .withNamespace('default')
+    .withServiceName('actor-ts')
+    .withPort(2552),
+);
 
 const seeds = await seedProvider.discover();
 
-const cluster = await Cluster.join(system, {
-  host:  process.env.POD_IP!,
-  port:  2552,
-  seeds,
-});
+const cluster = await Cluster.join(
+  system,
+  ClusterOptions.create()
+    .withHost(process.env.POD_IP!)
+    .withPort(2552)
+    .withSeeds(seeds),
+);
 ```
 
 The provider returns a snapshot of seed addresses; the framework
@@ -189,7 +196,7 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Seeds unreachable, no self in list">
   ```ts
   // ✗ this node isn't a seed, no other seed responds
-  Cluster.join(system, { host: 'n4', port: 2552, seeds: ['n1', 'n2', 'n3'] });
+  Cluster.join(system, ClusterOptions.create().withHost('n4').withPort(2552).withSeeds(['n1', 'n2', 'n3']));
   ```
   The join retries forever (silent at default log level).  If
   the seed list is genuinely unreachable, the node never joins.

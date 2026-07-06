@@ -66,24 +66,25 @@ probably what you want.
 ## A minimal example
 
 ```ts
-import { Actor, ActorSystem, Cluster, Props } from 'actor-ts';
-import { ClusterSingletonManager, ClusterSingletonProxy } from 'actor-ts';
+import { Actor, ActorSystem, Cluster, ClusterOptions, Props } from 'actor-ts';
+import { ClusterSingletonManager, ClusterSingletonManagerOptions, ClusterSingletonProxy } from 'actor-ts';
 
 class JobScheduler extends Actor<JobCmd> {
   override onReceive(msg: JobCmd): void { /* ... */ }
 }
 
 const system  = ActorSystem.create('my-app');
-const cluster = await Cluster.join(system, { host, port, seeds });
+const cluster = await Cluster.join(system, ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds));
 
 // On every node: start the manager.
 system.spawn(
-  ClusterSingletonManager.props({
-    cluster,
-    typeName:        'job-scheduler',
-    singletonProps:  Props.create(() => new JobScheduler()),
-    role:            'control-plane',   // optional: only these nodes can host
-  }),
+  ClusterSingletonManager.props(
+    ClusterSingletonManagerOptions.create<JobCmd>()
+      .withCluster(cluster)
+      .withTypeName('job-scheduler')
+      .withSingletonProps(Props.create(() => new JobScheduler()))
+      .withRole('control-plane'),   // optional: only these nodes can host
+  ),
   'singleton-manager-job-scheduler',
 );
 
@@ -161,12 +162,13 @@ Three defenses, in order of complexity:
    [Downing strategies](/cluster/downing-strategies/).
 2. **A lease**, passed to the manager:
    ```ts
-   ClusterSingletonManager.props({
-     cluster,
-     typeName: '...',
-     singletonProps: ...,
-     lease: someLeaseImpl,   // e.g. K8s lease, or in-memory for tests
-   });
+   ClusterSingletonManager.props(
+     ClusterSingletonManagerOptions.create()
+       .withCluster(cluster)
+       .withTypeName('...')
+       .withSingletonProps(...)
+       .withLease(someLeaseImpl),   // e.g. K8s lease, or in-memory for tests
+   );
    ```
    The manager must successfully acquire the lease before spawning
    the singleton.  Only one side of a partition can hold the lease,

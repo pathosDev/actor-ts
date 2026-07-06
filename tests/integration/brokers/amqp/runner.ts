@@ -8,10 +8,11 @@
  * Same shape used by the unit-test fakes.
  */
 import { Actor } from '../../../../src/Actor.js';
-import { ActorSystem } from '../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../src/ActorSystem.js';
 import { JsonLogger, LogLevel } from '../../../../src/Logger.js';
 import { Props } from '../../../../src/Props.js';
 import { AmqpActor, type AmqpDelivery, type AmqpQueueBinding } from '../../../../src/io/broker/AmqpActor.js';
+import { AmqpOptions } from '../../../../src/io/broker/AmqpOptions.js';
 import { waitForPort } from '../lib/wait-for-port.js';
 import { runScenarios, type BrokerScenario, type BrokerScenarioCtx } from '../lib/scenario.js';
 import { scenario as pubsubScenario } from './scenarios/01-publish-consume.js';
@@ -41,9 +42,8 @@ async function main(): Promise<void> {
     description: 'RabbitMQ AMQP', deadlineMs: 60_000,
   });
 
-  const system = ActorSystem.create('amqp-runner', {
-    logger: new JsonLogger(), logLevel: LogLevel.Info,
-  });
+  const system = ActorSystem.create('amqp-runner', ActorSystemOptions.create()
+    .withLogger(new JsonLogger()).withLogLevel(LogLevel.Info));
   process.on('SIGTERM', () => { void system.terminate(); });
 
   const ctx: AmqpCtx = { env: process.env, url, system };
@@ -64,11 +64,11 @@ export function spawnAmqp(ctx: AmqpCtx, opts: {
   bindings?: ReadonlyArray<AmqpQueueBinding>;
   autoAck?: boolean;
 } = {}): ReturnType<ActorSystem['spawnAnonymous']> {
-  const actor = new AmqpActor({
-    url: ctx.url,
-    autoAck: opts.autoAck ?? true,
-    bindings: opts.bindings,
-  });
+  const builder = AmqpOptions.create()
+    .withUrl(ctx.url)
+    .withAutoAck(opts.autoAck ?? true);
+  if (opts.bindings) builder.withBindings(opts.bindings);
+  const actor = new AmqpActor(builder);
   return ctx.system.spawnAnonymous(Props.create(() => actor));
 }
 

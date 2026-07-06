@@ -6,7 +6,7 @@
  *
  * Expected output: each subscriber logs every message posted to "chat".
  */
-import { Actor, ActorSystem, Cluster, InMemoryTransport, NodeAddress, Props } from '../../src/index.js';
+import { Actor, ActorSystem, Cluster, ClusterOptions, InMemoryTransport, NodeAddress, Props } from '../../src/index.js';
 import { DistributedPubSubId, Publish, Subscribe } from '../../src/cluster/pubsub/index.js';
 
 interface ChatMessage { readonly from: string; readonly text: string; }
@@ -21,10 +21,10 @@ class Subscriber extends Actor<ChatMessage> {
 async function main(): Promise<void> {
   const system = ActorSystem.create('chat');
   // Single-node in-memory cluster — pub-sub also works cluster-wide (see event-bus-across-nodes.ts).
-  const cluster = await Cluster.join(system, {
-    host: 'local', port: 1,
-    transport: new InMemoryTransport(new NodeAddress('chat', 'local', 1)),
-  });
+  const cluster = await Cluster.join(system, ClusterOptions.create()
+    .withHost('local')
+    .withPort(1)
+    .withTransport(new InMemoryTransport(new NodeAddress('chat', 'local', 1))));
 
   const mediator = system.extension(DistributedPubSubId).start(cluster);
 

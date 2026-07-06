@@ -13,7 +13,9 @@ verwaltet.
 ```ts
 import {
   ObjectStorageDurableStateStore,
+  ObjectStorageDurableStateStoreOptions,
   S3ObjectStorageBackend,
+  S3ObjectStorageOptions,
   MasterKeyRing,
 } from 'actor-ts';
 
@@ -22,10 +24,9 @@ const keyRing = new MasterKeyRing({
   currentKeyId: 'k1',
 });
 
-const store = new ObjectStorageDurableStateStore({
-  backend: new S3ObjectStorageBackend({ /* ... */ }),
-  encryption: { keyRing },
-});
+const store = new ObjectStorageDurableStateStore(ObjectStorageDurableStateStoreOptions.create()
+  .withBackend(new S3ObjectStorageBackend(S3ObjectStorageOptions.create() /* .withRegion(...).withBucket(...) */))
+  .withEncryption({ keyRing }));
 ```
 
 Jetzt wird jeder persistierte State vor dem Upload mit AES-GCM

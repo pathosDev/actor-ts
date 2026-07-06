@@ -8,14 +8,15 @@ Der
 ein Peer `unreachable` oder `down` ist. Drei Knöpfe:
 
 ```ts
-Cluster.join(system, {
-  host, port, seeds,
-  failureDetector: {
+Cluster.join(system, ClusterOptions.create()
+  .withHost(host)
+  .withPort(port)
+  .withSeeds(seeds)
+  .withFailureDetector({
     heartbeatIntervalMs: 500,    // default
     unreachableAfterMs:  2_000,   // default
     downAfterMs:         5_000,   // default
-  },
-});
+  }));
 ```
 
 Diese Seite ist der **operative Tuning-Guide** — wann du diese

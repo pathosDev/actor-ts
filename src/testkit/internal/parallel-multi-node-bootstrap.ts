@@ -20,8 +20,8 @@
  * modules by URL is the cleanest way to thread test-specific code
  * into the worker without leaking it through `postMessage`.
  */
-import { ActorSystem } from '../../ActorSystem.js';
-import { Cluster } from '../../cluster/Cluster.js';
+import { ActorSystem, ActorSystemOptions } from '../../ActorSystem.js';
+import { Cluster, ClusterOptions } from '../../cluster/Cluster.js';
 import type { Member } from '../../cluster/Member.js';
 import type { FailureDetectorSettings } from '../../cluster/FailureDetector.js';
 import { LogLevel, NoopLogger } from '../../Logger.js';
@@ -98,18 +98,19 @@ async function main(): Promise<void> {
   const ctx = await WorkerNode.join<InitData>();
   const init = ctx.initData;
 
-  const system = ActorSystem.create(ctx.systemName, {
-    logger: new NoopLogger(),
-    logLevel: init.logLevel ?? LogLevel.Off,
-  });
-  const cluster = await Cluster.join(system, {
-    host: ctx.self.host,
-    port: ctx.self.port,
-    seeds: [...init.seeds],
-    transport: ctx.transport,
-    failureDetector: init.failureDetector,
-    gossipIntervalMs: init.gossipIntervalMs,
-  });
+  const system = ActorSystem.create(ctx.systemName, ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(init.logLevel ?? LogLevel.Off));
+  const clusterOptions = ClusterOptions.create()
+    .withHost(ctx.self.host)
+    .withPort(ctx.self.port)
+    .withSeeds([...init.seeds])
+    .withTransport(ctx.transport);
+  if (init.failureDetector) clusterOptions.withFailureDetector(init.failureDetector);
+  if (init.gossipIntervalMs !== undefined) {
+    clusterOptions.withGossipIntervalMs(init.gossipIntervalMs);
+  }
+  const cluster = await Cluster.join(system, clusterOptions);
 
   const scenarioCtx: ScenarioContext = {
     role: init.role,

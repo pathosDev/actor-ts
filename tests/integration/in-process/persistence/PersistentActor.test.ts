@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem } from '../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import {
   everyNEvents,
@@ -18,7 +18,7 @@ type Event = { kind: 'deposited'; amount: number } | { kind: 'withdrew'; amount:
 type State = { balance: number };
 
 function makeSystem(): { system: ActorSystem; journal: InMemoryJournal; snapshots: InMemorySnapshotStore } {
-  const system = ActorSystem.create('persist-unit', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const system = ActorSystem.create('persist-unit', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const journal = new InMemoryJournal();
   const snapshots = new InMemorySnapshotStore();
   const ext = system.extension(PersistenceExtensionId);

@@ -1,12 +1,31 @@
 import { ActorPath } from '../ActorPath.js';
 import { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
+import { OptionsBuilder } from '../util/OptionsBuilder.js';
 
-export interface TestProbeOptions {
+export interface TestProbeSettings {
   /** Default timeout used when a caller doesn't specify one. */
   readonly defaultTimeoutMs?: number;
   /** Visible name of the probe (default: auto-generated). */
   readonly name?: string;
+}
+
+/** Fluent builder for {@link TestProbeSettings}. */
+export class TestProbeOptions extends OptionsBuilder<TestProbeSettings> {
+  /** Start a fresh builder.  Equivalent to `new TestProbeOptions()`. */
+  static create(): TestProbeOptions {
+    return new TestProbeOptions();
+  }
+
+  /** Default timeout (ms) used when an expect/receive call omits one.  Default 3000. */
+  withDefaultTimeoutMs(defaultTimeoutMs: number): this {
+    return this.set('defaultTimeoutMs', defaultTimeoutMs);
+  }
+
+  /** Visible name of the probe (default: auto-generated). */
+  withName(name: string): this {
+    return this.set('name', name);
+  }
 }
 
 interface Pending {
@@ -35,8 +54,9 @@ export class TestProbe extends ActorRef<unknown> {
   private readonly defaultTimeoutMs: number;
   private _lastSender: ActorRef | null = null;
 
-  constructor(private readonly system: ActorSystem, opts: TestProbeOptions = {}) {
+  constructor(private readonly system: ActorSystem, options: TestProbeOptions = TestProbeOptions.create()) {
     super();
+    const opts = options.build();
     const n = opts.name ?? `test-probe-${++probeCounter}`;
     this.path = new ActorPath('', null, system.name).child(n);
     this.defaultTimeoutMs = opts.defaultTimeoutMs ?? 3_000;

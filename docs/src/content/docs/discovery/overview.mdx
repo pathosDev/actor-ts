@@ -20,17 +20,19 @@ Seed providers answer: **"Which addresses should I try as cluster
 seeds at join time?"**
 
 ```ts
-import { Cluster, KubernetesApiSeedProvider } from 'actor-ts';
+import { Cluster, ClusterOptions, KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts';
 
-const provider = new KubernetesApiSeedProvider({
-  namespace:     'my-app',
-  labelSelector: 'app=actor-ts',
-  containerPort: 2552,
-});
+const provider = new KubernetesApiSeedProvider(
+  KubernetesApiSeedProviderOptions.create()
+    .withNamespace('my-app')
+    .withServiceName('actor-ts')
+    .withSystemName('my-app')
+    .withPort(2552),
+);
 
 const seeds = await provider.lookup();
 
-await Cluster.join(system, { host, port, seeds });
+await Cluster.join(system, ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds));
 ```
 
 Four providers ship:
@@ -108,13 +110,15 @@ A typical K8s deployment:
 
 ```ts
 // 1. Seed discovery — how this pod finds peers at startup
-const seeds = await new KubernetesApiSeedProvider({
-  namespace:     process.env.K8S_NAMESPACE!,
-  labelSelector: 'app=actor-ts',
-  containerPort: 2552,
-}).lookup();
+const seeds = await new KubernetesApiSeedProvider(
+  KubernetesApiSeedProviderOptions.create()
+    .withNamespace(process.env.K8S_NAMESPACE!)
+    .withServiceName('actor-ts')
+    .withSystemName('my-app')
+    .withPort(2552),
+).lookup();
 
-await Cluster.join(system, { host, port, seeds });
+await Cluster.join(system, ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds));
 
 // 2. Receptionist — for runtime actor lookup
 const receptionist = system.extension(ReceptionistId).start(cluster);

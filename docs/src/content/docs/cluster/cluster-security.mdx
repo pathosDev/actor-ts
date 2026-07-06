@@ -24,7 +24,7 @@ For the operational context, see
 ## Enabling TLS
 
 ```ts
-import { TcpTransport, NodeAddress, Cluster } from 'actor-ts';
+import { TcpTransport, NodeAddress, Cluster, ClusterOptions } from 'actor-ts';
 
 const transport = new TcpTransport(
   NodeAddress.parse('actor-ts://my-app@10.0.0.5:2552'),
@@ -37,7 +37,10 @@ const transport = new TcpTransport(
   },
 );
 
-await Cluster.join(system, { host, port, seeds, transport });
+await Cluster.join(
+  system,
+  ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds).withTransport(transport),
+);
 ```
 
 TLS-wrapped TCP, all-or-nothing per cluster.  Every node uses

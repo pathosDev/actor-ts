@@ -13,6 +13,7 @@
 import {
   Actor,
   ActorSystem,
+  ActorSystemOptions,
   Directive,
   LogLevel,
   NoopLogger,
@@ -48,7 +49,7 @@ class Supervisor extends Actor<Cmd> {
 }
 
 async function main(): Promise<void> {
-  const system = ActorSystem.create('bench-supervise', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const system = ActorSystem.create('bench-supervise', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   const ref = system.spawnAnonymous(Props.create(() => new Supervisor()));
 
   await runGroup('single-node · supervisor-restart', [

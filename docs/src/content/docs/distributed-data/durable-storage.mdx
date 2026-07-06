@@ -13,18 +13,22 @@ with **`DurableDistributedDataStore`**:
 ```ts
 import {
   DistributedDataId,
+  DistributedDataOptions,
   DurableDistributedDataStore,
   SqliteDurableStateStore,
 } from 'actor-ts';
 
 const stateStore = new SqliteDurableStateStore({ path: '/var/lib/dd.db' });
 
-const dd = system.extension(DistributedDataId).start(cluster, {
-  durable: new DurableDistributedDataStore({
-    durableStateStore: stateStore,
-    keys:              ['hits', 'config', 'sessions'],
-  }),
-});
+const dd = system.extension(DistributedDataId).start(
+  cluster,
+  DistributedDataOptions.create().withDurableStore(
+    new DurableDistributedDataStore({
+      durableStateStore: stateStore,
+      keys:              ['hits', 'config', 'sessions'],
+    }),
+  ),
+);
 ```
 
 What this gives you:
@@ -156,9 +160,12 @@ counters, the overhead isn't worth it.
 ## Startup flow
 
 ```ts
-const dd = system.extension(DistributedDataId).start(cluster, {
-  durable: new DurableDistributedDataStore({ ... }),
-});
+const dd = system.extension(DistributedDataId).start(
+  cluster,
+  DistributedDataOptions.create().withDurableStore(
+    new DurableDistributedDataStore({ ... }),
+  ),
+);
 
 // Before this call returns:
 //   1. Open the durable store.

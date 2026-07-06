@@ -64,11 +64,11 @@ Drei Muster:
 ## Ein minimales Beispiel
 
 ```ts
-import { ActorSystem, Cluster } from 'actor-ts';
+import { ActorSystem, Cluster, ClusterOptions } from 'actor-ts';
 import { DistributedDataId, GCounter } from 'actor-ts';
 
 const system  = ActorSystem.create('my-app');
-const cluster = await Cluster.join(system, { host, port, seeds });
+const cluster = await Cluster.join(system, ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds));
 const dd      = system.extension(DistributedDataId).start(cluster);
 
 // Counter inkrementieren — keine Koordination, einfach in die lokale Replika mergen.
@@ -166,14 +166,17 @@ Cluster neu startet (Cold Start), beginnt jeder Key wieder leer.
 Für **Restart-überlebende** Semantik nutzt du die **durable**-Variante:
 
 ```ts
-import { DurableDistributedDataStore } from 'actor-ts';
+import { DistributedDataOptions, DurableDistributedDataStore } from 'actor-ts';
 
-const dd = system.extension(DistributedDataId).start(cluster, {
-  durable: new DurableDistributedDataStore({
-    durableStateStore: someStore,
-    keys: ['hits', 'config'],   // nur diese Keys werden persistiert
-  }),
-});
+const dd = system.extension(DistributedDataId).start(
+  cluster,
+  DistributedDataOptions.create().withDurableStore(
+    new DurableDistributedDataStore({
+      durableStateStore: someStore,
+      keys: ['hits', 'config'],   // nur diese Keys werden persistiert
+    }),
+  ),
+);
 ```
 
 Die Durable-Schicht persistiert Änderungen auf Disk (oder

@@ -40,7 +40,7 @@ Unterscheidung zwischen lokalen Pools und Cluster-Groups.
 ## Ein minimales Beispiel
 
 ```ts
-import { ActorSystem, Cluster, ClusterRouter, Props, Actor } from 'actor-ts';
+import { ActorSystem, Cluster, ClusterOptions, ClusterRouter, ClusterRouterOptions, Props, Actor } from 'actor-ts';
 
 class Worker extends Actor<{ payload: string }> {
   override onReceive(msg: { payload: string }): void {
@@ -49,19 +49,23 @@ class Worker extends Actor<{ payload: string }> {
 }
 
 const system  = ActorSystem.create('my-app');
-const cluster = await Cluster.join(system, { host, port, seeds, roles: ['compute'] });
+const cluster = await Cluster.join(
+  system,
+  ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds).withRoles(['compute']),
+);
 
 // 1. Jeder Node spawnt seinen eigenen Worker an /user/worker
 system.spawn(Props.create(() => new Worker()), 'worker');
 
 // 2. Jeder Node kann einen Cluster-Router bauen, der diese Worker anspricht
 const router = system.spawn(
-  ClusterRouter.props({
-    cluster,
-    routerType:  'round-robin',
-    routeePath:  '/user/worker',
-    role:        'compute',
-  }),
+  ClusterRouter.props(
+    ClusterRouterOptions.create()
+      .withCluster(cluster)
+      .withRouterType('round-robin')
+      .withRouteePath('/user/worker')
+      .withRole('compute'),
+  ),
   'compute-router',
 );
 
@@ -111,12 +115,13 @@ Pool-Mitglieder verteilt.
 ### Consistent-Hashing
 
 ```ts
-ClusterRouter.props({
-  cluster,
-  routerType:  'consistent-hashing',
-  routeePath:  '/user/cache',
-  extractKey:  (msg) => msg.userId,
-});
+ClusterRouter.props(
+  ClusterRouterOptions.create()
+    .withCluster(cluster)
+    .withRouterType('consistent-hashing')
+    .withRouteePath('/user/cache')
+    .withExtractKey((msg) => msg.userId),
+);
 ```
 
 Erforderlich für `'consistent-hashing'`. Die Funktion zieht einen
@@ -163,11 +168,12 @@ Zähler.
 ## Rollenfilterung
 
 ```ts
-ClusterRouter.props({
-  cluster,
-  role: 'compute',
-  // ...
-});
+ClusterRouter.props(
+  ClusterRouterOptions.create()
+    .withCluster(cluster)
+    .withRole('compute')
+    // ...
+);
 ```
 
 Nur Up-Mitglieder mit der Rolle `compute` sind Kandidaten.

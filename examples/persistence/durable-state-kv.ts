@@ -11,6 +11,7 @@ import {
   Actor,
   ActorSystem,
   DurableStateActor,
+  DurableStateOptions,
   InMemoryDurableStateStore,
   Props,
 } from '../../src/index.js';
@@ -43,9 +44,12 @@ async function main(): Promise<void> {
   const system = ActorSystem.create('durable-kv');
   const store = new InMemoryDurableStateStore();
 
-  let ref = system.spawnAnonymous(Props.create(() => new KVStore({
-    persistenceId: 'app-config', store, emptyState: () => ({ map: {} }),
-  }) as unknown as Actor<Cmd>));
+  let ref = system.spawnAnonymous(Props.create(() => new KVStore(
+    DurableStateOptions.create<KV>()
+      .withPersistenceId('app-config')
+      .withStore(store)
+      .withEmptyState(() => ({ map: {} })),
+  ) as unknown as Actor<Cmd>));
 
   ref.tell({ kind: 'set', key: 'env', value: 'production' });
   ref.tell({ kind: 'set', key: 'version', value: '1.2.3' });
@@ -56,9 +60,12 @@ async function main(): Promise<void> {
   ref.stop();
   await Bun.sleep(20);
   console.log('--- actor restarted ---');
-  ref = system.spawnAnonymous(Props.create(() => new KVStore({
-    persistenceId: 'app-config', store, emptyState: () => ({ map: {} }),
-  }) as unknown as Actor<Cmd>));
+  ref = system.spawnAnonymous(Props.create(() => new KVStore(
+    DurableStateOptions.create<KV>()
+      .withPersistenceId('app-config')
+      .withStore(store)
+      .withEmptyState(() => ({ map: {} })),
+  ) as unknown as Actor<Cmd>));
 
   ref.tell({ kind: 'dump' });
   await Bun.sleep(50);

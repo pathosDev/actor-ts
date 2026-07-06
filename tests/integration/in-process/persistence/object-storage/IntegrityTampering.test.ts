@@ -16,8 +16,14 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { FilesystemObjectStorageBackend } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
-import { ObjectStorageDurableStateStore } from '../../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStore.js';
+import {
+  FilesystemObjectStorageBackend,
+  FilesystemObjectStorageOptions,
+} from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
+import {
+  ObjectStorageDurableStateStore,
+  ObjectStorageDurableStateStoreOptions,
+} from '../../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStore.js';
 import { JournalError } from '../../../../../src/persistence/JournalTypes.js';
 import {
   ATS1_MAGIC,
@@ -34,7 +40,7 @@ const OTHER_KEY     = new Uint8Array(32).fill(8);
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'actor-ts-integrity-'));
-  backend = new FilesystemObjectStorageBackend({ dir });
+  backend = new FilesystemObjectStorageBackend(FilesystemObjectStorageOptions.create().withDir(dir));
 });
 afterEach(() => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });
 
@@ -50,7 +56,7 @@ function bodyFileFor(pid: string): string {
 
 describe('#116 — DurableState revision-tampering exploit (pre-fix demonstration)', () => {
   test('without integrity config a tampered revision is read as-is', async () => {
-    const store = new ObjectStorageDurableStateStore({ backend, compression: { algorithm: 'none' } });
+    const store = new ObjectStorageDurableStateStore(ObjectStorageDurableStateStoreOptions.create().withBackend(backend).withCompression({ algorithm: 'none' }));
     await store.upsert('a', 0, { balance: 100 });   // writes revision=1
     const path = bodyFileFor('a');
     const raw = readFileSync(path);
@@ -72,11 +78,12 @@ describe('#116 — DurableState revision-tampering exploit (pre-fix demonstratio
 
 describe('#116 — defense via opt-in HMAC integrity', () => {
   test('integrity-configured store rejects a tampered body', async () => {
-    const store = new ObjectStorageDurableStateStore({
-      backend,
-      compression: { algorithm: 'none' },
-      integrity: { mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY },
-    });
+    const store = new ObjectStorageDurableStateStore(
+      ObjectStorageDurableStateStoreOptions.create()
+        .withBackend(backend)
+        .withCompression({ algorithm: 'none' })
+        .withIntegrity({ mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY }),
+    );
     await store.upsert('a', 0, { balance: 100 });
 
     // Tamper the body by replacing every byte after the magic+flags
@@ -99,11 +106,12 @@ describe('#116 — defense via opt-in HMAC integrity', () => {
   test('integrity-configured store rejects a body signed with a different key', async () => {
     // Write with INTEGRITY_KEY, then re-write with OTHER_KEY to simulate
     // an attacker who has write access but doesn't know our key.
-    const writer = new ObjectStorageDurableStateStore({
-      backend,
-      compression: { algorithm: 'none' },
-      integrity: { mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY },
-    });
+    const writer = new ObjectStorageDurableStateStore(
+      ObjectStorageDurableStateStoreOptions.create()
+        .withBackend(backend)
+        .withCompression({ algorithm: 'none' })
+        .withIntegrity({ mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY }),
+    );
     await writer.upsert('a', 0, { balance: 100 });
     const path = bodyFileFor('a');
 
@@ -114,22 +122,24 @@ describe('#116 — defense via opt-in HMAC integrity', () => {
     );
     writeFileSync(path, forged);
 
-    const reader = new ObjectStorageDurableStateStore({
-      backend,
-      compression: { algorithm: 'none' },
-      integrity: { mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY },
-    });
+    const reader = new ObjectStorageDurableStateStore(
+      ObjectStorageDurableStateStoreOptions.create()
+        .withBackend(backend)
+        .withCompression({ algorithm: 'none' })
+        .withIntegrity({ mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY }),
+    );
     let err: Error | null = null;
     try { await reader.load('a'); } catch (e) { err = e as Error; }
     expect(err).toBeInstanceOf(JournalError);
   });
 
   test('legitimate write+read cycle works under integrity', async () => {
-    const store = new ObjectStorageDurableStateStore({
-      backend,
-      compression: { algorithm: 'none' },
-      integrity: { mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY },
-    });
+    const store = new ObjectStorageDurableStateStore(
+      ObjectStorageDurableStateStoreOptions.create()
+        .withBackend(backend)
+        .withCompression({ algorithm: 'none' })
+        .withIntegrity({ mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY }),
+    );
     await store.upsert('a', 0, { balance: 100 });
     await store.upsert('a', 1, { balance: 150 });
     const loaded = await store.load<{ balance: number }>('a');
@@ -138,11 +148,12 @@ describe('#116 — defense via opt-in HMAC integrity', () => {
   });
 
   test('body carries the FLAG_INTEGRITY_HMAC bit when integrity is configured', async () => {
-    const store = new ObjectStorageDurableStateStore({
-      backend,
-      compression: { algorithm: 'none' },
-      integrity: { mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY },
-    });
+    const store = new ObjectStorageDurableStateStore(
+      ObjectStorageDurableStateStoreOptions.create()
+        .withBackend(backend)
+        .withCompression({ algorithm: 'none' })
+        .withIntegrity({ mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY }),
+    );
     await store.upsert('a', 0, { balance: 100 });
     const raw = new Uint8Array(readFileSync(bodyFileFor('a')));
     // ATS1 magic at 0..3, flags at byte 4.
@@ -154,30 +165,32 @@ describe('#116 — defense via opt-in HMAC integrity', () => {
 describe('#116 — backward compatibility', () => {
   test('legacy body (no integrity flag) decodes when integrity is configured', async () => {
     // Write without integrity (simulates pre-#116 body on disk).
-    const writer = new ObjectStorageDurableStateStore({ backend, compression: { algorithm: 'none' } });
+    const writer = new ObjectStorageDurableStateStore(ObjectStorageDurableStateStoreOptions.create().withBackend(backend).withCompression({ algorithm: 'none' }));
     await writer.upsert('a', 0, { balance: 100 });
 
     // Read with integrity configured — legacy body has FLAG_INTEGRITY_HMAC
     // unset, so the integrity check is skipped.  Reads cleanly.
-    const reader = new ObjectStorageDurableStateStore({
-      backend,
-      compression: { algorithm: 'none' },
-      integrity: { mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY },
-    });
+    const reader = new ObjectStorageDurableStateStore(
+      ObjectStorageDurableStateStoreOptions.create()
+        .withBackend(backend)
+        .withCompression({ algorithm: 'none' })
+        .withIntegrity({ mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY }),
+    );
     const loaded = await reader.load<{ balance: number }>('a');
     expect(loaded.toNullable()?.state).toEqual({ balance: 100 });
   });
 
   test('requireIntegrity=true rejects a legacy body (downgrade protection)', async () => {
-    const writer = new ObjectStorageDurableStateStore({ backend, compression: { algorithm: 'none' } });
+    const writer = new ObjectStorageDurableStateStore(ObjectStorageDurableStateStoreOptions.create().withBackend(backend).withCompression({ algorithm: 'none' }));
     await writer.upsert('a', 0, { balance: 100 });
 
-    const reader = new ObjectStorageDurableStateStore({
-      backend,
-      compression: { algorithm: 'none' },
-      integrity: { mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY },
-      requireIntegrity: true,
-    });
+    const reader = new ObjectStorageDurableStateStore(
+      ObjectStorageDurableStateStoreOptions.create()
+        .withBackend(backend)
+        .withCompression({ algorithm: 'none' })
+        .withIntegrity({ mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY })
+        .withRequireIntegrity(true),
+    );
     let err: Error | null = null;
     try { await reader.load('a'); } catch (e) { err = e as Error; }
     expect(err).toBeInstanceOf(JournalError);
@@ -185,11 +198,12 @@ describe('#116 — backward compatibility', () => {
   });
 
   test('requireIntegrity=true without an integrity config is rejected up-front', async () => {
-    const store = new ObjectStorageDurableStateStore({
-      backend,
-      compression: { algorithm: 'none' },
-      requireIntegrity: true,
-    });
+    const store = new ObjectStorageDurableStateStore(
+      ObjectStorageDurableStateStoreOptions.create()
+        .withBackend(backend)
+        .withCompression({ algorithm: 'none' })
+        .withRequireIntegrity(true),
+    );
     let err: Error | null = null;
     try { await store.upsert('a', 0, { x: 1 }); await store.load('a'); }
     catch (e) { err = e as Error; }
@@ -201,11 +215,12 @@ describe('#116 — backward compatibility', () => {
 describe('#116 — encrypted body is already protected by AES-GCM', () => {
   test('tampering ciphertext on an encrypted body invalidates the auth tag', async () => {
     const masterKey = new Uint8Array(32).fill(9);
-    const store = new ObjectStorageDurableStateStore({
-      backend,
-      compression: { algorithm: 'none' },
-      encryption: { mode: 'client-aes256-gcm', masterKey },
-    });
+    const store = new ObjectStorageDurableStateStore(
+      ObjectStorageDurableStateStoreOptions.create()
+        .withBackend(backend)
+        .withCompression({ algorithm: 'none' })
+        .withEncryption({ mode: 'client-aes256-gcm', masterKey }),
+    );
     await store.upsert('a', 0, { balance: 100 });
 
     // Flip a byte in the ciphertext.

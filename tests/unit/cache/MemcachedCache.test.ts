@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { MemcachedCache, type MemcachedClientLike } from '../../../src/cache/MemcachedCache.js';
+import { MemcachedCache, MemcachedCacheOptions, type MemcachedClientLike } from '../../../src/cache/MemcachedCache.js';
 
 /**
  * Mock memjs client.  We don't actually run a memcached process —
@@ -65,7 +65,7 @@ function secondsAhead(seconds: number | undefined): number {
 describe('MemcachedCache — round-trip', () => {
   test('set with TTL converts ms → seconds (rounded up)', async () => {
     const fake = new FakeMemcached();
-    const c = new MemcachedCache({ client: fake });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(fake));
     await c.set('k', { x: 1 }, 1500);  // 1.5s → 2s
     const setCall = fake.log.find((l) => l.op === 'set');
     expect((setCall!.args[2] as { expires: number }).expires).toBe(2);
@@ -73,7 +73,7 @@ describe('MemcachedCache — round-trip', () => {
 
   test('set without TTL stores with no expires (memcached default = no expiry)', async () => {
     const fake = new FakeMemcached();
-    const c = new MemcachedCache({ client: fake });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(fake));
     await c.set('k', 'v');
     // memjs's default-arg `{}` may absorb our undefined, so we assert
     // the *behaviour* — `expires` is absent or 0, equivalent to "no TTL".
@@ -84,7 +84,7 @@ describe('MemcachedCache — round-trip', () => {
 
   test('get parses JSON; miss returns None', async () => {
     const fake = new FakeMemcached();
-    const c = new MemcachedCache({ client: fake });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(fake));
     await c.set('k', { hello: 'world' });
     expect((await c.get<{ hello: string }>('k')).toNullable()).toEqual({ hello: 'world' });
     expect((await c.get('absent')).isNone()).toBe(true);
@@ -92,7 +92,7 @@ describe('MemcachedCache — round-trip', () => {
 
   test('TTL of 0.5s rounds up to 1 second (memcached minimum)', async () => {
     const fake = new FakeMemcached();
-    const c = new MemcachedCache({ client: fake });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(fake));
     await c.set('k', 1, 500);
     const setCall = fake.log.find((l) => l.op === 'set');
     expect((setCall!.args[2] as { expires: number }).expires).toBe(1);
@@ -102,7 +102,7 @@ describe('MemcachedCache — round-trip', () => {
 describe('MemcachedCache — atomic ops', () => {
   test('setIfAbsent uses memcached ADD; second call returns false', async () => {
     const fake = new FakeMemcached();
-    const c = new MemcachedCache({ client: fake });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(fake));
     expect(await c.setIfAbsent('k', 'v1')).toBe(true);
     expect(await c.setIfAbsent('k', 'v2')).toBe(false);
     const addCalls = fake.log.filter((l) => l.op === 'add');
@@ -111,7 +111,7 @@ describe('MemcachedCache — atomic ops', () => {
 
   test('incr seeds counter at 1 on first call (initial: 1)', async () => {
     const fake = new FakeMemcached();
-    const c = new MemcachedCache({ client: fake });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(fake));
     expect(await c.incr('rate', 60_000)).toBe(1);
     expect(await c.incr('rate', 60_000)).toBe(2);
     const incCalls = fake.log.filter((l) => l.op === 'increment');
@@ -124,7 +124,7 @@ describe('MemcachedCache — atomic ops', () => {
 describe('MemcachedCache — keyPrefix', () => {
   test('prefix prepended to every key', async () => {
     const fake = new FakeMemcached();
-    const c = new MemcachedCache({ client: fake, keyPrefix: 'app:' });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(fake).withKeyPrefix('app:'));
     await c.set('user:42', { id: 42 });
     expect(fake.store.has('app:user:42')).toBe(true);
     expect((await c.get('user:42')).isSome()).toBe(true);
@@ -141,7 +141,7 @@ describe('MemcachedCache — failure tolerance', () => {
       async increment() { return { value: 0 }; },
       async quit() { /* no-op */ },
     };
-    const c = new MemcachedCache({ client: broken });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(broken));
     expect((await c.get('k')).isNone()).toBe(true);
   });
 
@@ -154,7 +154,7 @@ describe('MemcachedCache — failure tolerance', () => {
       async increment() { throw new Error('boom'); },
       async quit() { /* no-op */ },
     };
-    const c = new MemcachedCache({ client: broken });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(broken));
     await expect(c.incr('k')).rejects.toThrow();
   });
 });
@@ -162,7 +162,7 @@ describe('MemcachedCache — failure tolerance', () => {
 describe('MemcachedCache — close', () => {
   test('close calls quit on the client', async () => {
     const fake = new FakeMemcached();
-    const c = new MemcachedCache({ client: fake });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(fake));
     await c.set('k', 1);
     await c.close();
     expect(fake.log.some((l) => l.op === 'quit')).toBe(true);
@@ -172,7 +172,7 @@ describe('MemcachedCache — close', () => {
 describe('MemcachedCache — mget / mset (#14)', () => {
   test('mget falls back to parallel GETs (memjs has no native MGET)', async () => {
     const fake = new FakeMemcached();
-    const c = new MemcachedCache({ client: fake });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(fake));
     await c.set('a', 1);
     await c.set('b', 'two');
     const got = await c.mget<unknown>(['a', 'b', 'missing']);
@@ -186,7 +186,7 @@ describe('MemcachedCache — mget / mset (#14)', () => {
 
   test('mset falls back to parallel SETs with the shared TTL', async () => {
     const fake = new FakeMemcached();
-    const c = new MemcachedCache({ client: fake });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(fake));
     await c.mset(new Map([['a', 1], ['b', 2]] as const), 3_000);
     const sets = fake.log.filter((l) => l.op === 'set');
     expect(sets).toHaveLength(2);
@@ -199,7 +199,7 @@ describe('MemcachedCache — mget / mset (#14)', () => {
 
   test('mget honours the keyPrefix', async () => {
     const fake = new FakeMemcached();
-    const c = new MemcachedCache({ client: fake, keyPrefix: 'app:' });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(fake).withKeyPrefix('app:'));
     await c.set('a', 1);
     await c.mget(['a', 'b']);
     // Of the three gets (one from set's verification path? no — just
@@ -212,13 +212,13 @@ describe('MemcachedCache — mget / mset (#14)', () => {
 
   test('mset on empty Map is a no-op', async () => {
     const fake = new FakeMemcached();
-    const c = new MemcachedCache({ client: fake });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(fake));
     await c.mset(new Map());
     expect(fake.log.filter((l) => l.op === 'set')).toHaveLength(0);
   });
 
   test('mset rejects bogus ttlMs', async () => {
-    const c = new MemcachedCache({ client: new FakeMemcached() });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(new FakeMemcached()));
     await expect(c.mset(new Map([['a', 1]]), 0)).rejects.toThrow(/ttlMs/);
     await expect(c.mset(new Map([['a', 1]]), -5)).rejects.toThrow(/ttlMs/);
   });
@@ -252,7 +252,7 @@ describe('MemcachedCache — protocol-injection hardening', () => {
    */
   test('exploit: CRLF in key is rejected on get/set/delete', async () => {
     const fake = new FakeMemcached();
-    const c = new MemcachedCache({ client: fake });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(fake));
     const malicious = 'user-42\r\nFLUSHALL\r\n';
     await expect(c.get(malicious)).rejects.toThrow(/protocol injection|control character/);
     await expect(c.set(malicious, 'evil')).rejects.toThrow(/protocol injection|control character/);
@@ -263,58 +263,58 @@ describe('MemcachedCache — protocol-injection hardening', () => {
   });
 
   test('exploit: bare LF (\\n) in key is rejected', async () => {
-    const c = new MemcachedCache({ client: new FakeMemcached() });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(new FakeMemcached()));
     await expect(c.set('a\nb', 'x')).rejects.toThrow(/protocol injection|control character/);
   });
 
   test('exploit: bare CR (\\r) in key is rejected', async () => {
-    const c = new MemcachedCache({ client: new FakeMemcached() });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(new FakeMemcached()));
     await expect(c.set('a\rb', 'x')).rejects.toThrow(/protocol injection|control character/);
   });
 
   test('exploit: space in key is rejected (memcached treats space as delimiter)', async () => {
-    const c = new MemcachedCache({ client: new FakeMemcached() });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(new FakeMemcached()));
     await expect(c.set('a b', 'x')).rejects.toThrow(/protocol injection|control character/);
   });
 
   test('exploit: tab in key is rejected', async () => {
-    const c = new MemcachedCache({ client: new FakeMemcached() });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(new FakeMemcached()));
     await expect(c.set('a\tb', 'x')).rejects.toThrow(/protocol injection|control character/);
   });
 
   test('exploit: NUL byte in key is rejected', async () => {
-    const c = new MemcachedCache({ client: new FakeMemcached() });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(new FakeMemcached()));
     await expect(c.set('a\0b', 'x')).rejects.toThrow(/protocol injection|control character/);
   });
 
   test('exploit: 251-byte key rejected (memcached protocol limit is 250)', async () => {
-    const c = new MemcachedCache({ client: new FakeMemcached() });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(new FakeMemcached()));
     const tooLong = 'a'.repeat(251);
     await expect(c.set(tooLong, 'x')).rejects.toThrow(/250-byte limit/);
   });
 
   test('exploit: mget rejects malicious keys', async () => {
-    const c = new MemcachedCache({ client: new FakeMemcached() });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(new FakeMemcached()));
     await expect(c.mget(['a', 'b\r\nFLUSHALL\r\n', 'c']))
       .rejects.toThrow(/protocol injection|control character/);
   });
 
   test('exploit: mset rejects malicious keys', async () => {
-    const c = new MemcachedCache({ client: new FakeMemcached() });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(new FakeMemcached()));
     await expect(c.mset(new Map([['a\r\nDELETE\r\n', 1]])))
       .rejects.toThrow(/protocol injection|control character/);
   });
 
   test('regression: normal alphanumeric keys still work', async () => {
     const fake = new FakeMemcached();
-    const c = new MemcachedCache({ client: fake });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(fake));
     await c.set('user-42', 'safe');
     const v = await c.get<string>('user-42');
     expect(v.toNullable()).toBe('safe');
   });
 
   test('regression: 250-byte key is accepted (boundary)', async () => {
-    const c = new MemcachedCache({ client: new FakeMemcached() });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(new FakeMemcached()));
     const justRight = 'a'.repeat(250);
     await c.set(justRight, 'x');
     // No throw — pass.
@@ -322,13 +322,13 @@ describe('MemcachedCache — protocol-injection hardening', () => {
 
   test('regression: typical pid-like keys with dashes and colons work', async () => {
     const fake = new FakeMemcached();
-    const c = new MemcachedCache({ client: fake });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(fake));
     await c.set('actor:user:42:profile', 'safe');
     expect((await c.get<string>('actor:user:42:profile')).toNullable()).toBe('safe');
   });
 
   test('rejects empty-string key', async () => {
-    const c = new MemcachedCache({ client: new FakeMemcached() });
+    const c = new MemcachedCache(MemcachedCacheOptions.create().withClient(new FakeMemcached()));
     await expect(c.set('', 'x')).rejects.toThrow(/non-empty string/);
   });
 });

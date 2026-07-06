@@ -25,7 +25,7 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
 import { Props } from '../../src/Props.js';
-import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
+import { ClusterSharding, StartShardingOptions } from '../../src/cluster/sharding/ClusterSharding.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import type { ActorRef } from '../../src/ActorRef.js';
@@ -61,24 +61,27 @@ describe('multi-node sharding rebalance', () => {
       ]);
 
       const regions: Record<'a' | 'b' | 'c', ActorRef<Cmd>> = {
-        a: spec.clusterFor('a').sharding.start<Cmd>({
-          typeName: 'entity',
-          entityProps: Props.create(() => new Entity()),
-          extractEntityId: (m) => m.id,
-          numShards: 16,
-        }),
-        b: spec.clusterFor('b').sharding.start<Cmd>({
-          typeName: 'entity',
-          entityProps: Props.create(() => new Entity()),
-          extractEntityId: (m) => m.id,
-          numShards: 16,
-        }),
-        c: spec.clusterFor('c').sharding.start<Cmd>({
-          typeName: 'entity',
-          entityProps: Props.create(() => new Entity()),
-          extractEntityId: (m) => m.id,
-          numShards: 16,
-        }),
+        a: spec.clusterFor('a').sharding.start<Cmd>(
+          StartShardingOptions.create<Cmd>()
+            .withTypeName('entity')
+            .withEntityProps(Props.create(() => new Entity()))
+            .withExtractEntityId((m) => m.id)
+            .withNumShards(16),
+        ),
+        b: spec.clusterFor('b').sharding.start<Cmd>(
+          StartShardingOptions.create<Cmd>()
+            .withTypeName('entity')
+            .withEntityProps(Props.create(() => new Entity()))
+            .withExtractEntityId((m) => m.id)
+            .withNumShards(16),
+        ),
+        c: spec.clusterFor('c').sharding.start<Cmd>(
+          StartShardingOptions.create<Cmd>()
+            .withTypeName('entity')
+            .withEntityProps(Props.create(() => new Entity()))
+            .withExtractEntityId((m) => m.id)
+            .withNumShards(16),
+        ),
       };
 
       // Let the coordinator finish initial allocation.  A short sleep

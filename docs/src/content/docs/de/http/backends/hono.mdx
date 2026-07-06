@@ -10,7 +10,7 @@ actor-ts ein.
 
 ```ts
 import { ActorSystem, HttpExtensionId } from 'actor-ts';
-import { HonoBackend } from 'actor-ts/http';
+import { HonoBackend, HonoBackendOptions } from 'actor-ts/http';
 
 const http = system.extension(HttpExtensionId);
 
@@ -74,9 +74,9 @@ keine langlebigen Prozesse.
 ## Konfiguration
 
 ```ts
-new HonoBackend({
-  // Hono selbst hat minimale Konfiguration; die meisten Einstellungen kommen über Routen / Middleware
-});
+// Hono selbst hat minimale Konfiguration; die meisten Einstellungen kommen über Routen / Middleware.
+// Für ein größeres Request-Body-Limit nutze HonoBackendOptions:
+new HonoBackend(HonoBackendOptions.create().withMaxBodyBytes(1 * 1024 * 1024));
 ```
 
 ## Hono-Middleware

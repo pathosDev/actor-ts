@@ -129,9 +129,8 @@ dispatcher; HTTP handlers stay on the default.  This is the
 ## System-wide dispatcher
 
 ```ts
-const system = ActorSystem.create('my-app', {
-  dispatcher: new ThroughputDispatcher({ throughput: 100 }),
-});
+const system = ActorSystem.create('my-app', ActorSystemOptions.create()
+  .withDispatcher(new ThroughputDispatcher({ throughput: 100 })));
 ```
 
 Override the default for **every actor that doesn't specify

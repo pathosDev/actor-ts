@@ -25,17 +25,20 @@
 import * as path from 'node:path';
 import {
   ActorSystem,
+  ActorSystemOptions,
   Cluster,
+  ClusterOptions,
   ClusterSingletonId,
   MemberDown,
   MemberRemoved,
   MemberUnreachable,
   MemberUp,
   Props,
+  StartSingletonOptions,
 } from '../../../src/index.js';
-import { DistributedDataId } from '../../../src/crdt/index.js';
-import { DistributedPubSubId } from '../../../src/cluster/pubsub/index.js';
-import { ReceptionistId } from '../../../src/discovery/Receptionist.js';
+import { DistributedDataId, DistributedDataOptions } from '../../../src/crdt/index.js';
+import { DistributedPubSubId, DistributedPubSubOptions } from '../../../src/cluster/pubsub/index.js';
+import { ReceptionistId, ReceptionistOptions } from '../../../src/discovery/Receptionist.js';
 import {
   parseArgs,
   BASE_CLUSTER_PORT,
@@ -75,7 +78,7 @@ async function main(): Promise<void> {
   const configFile = path.resolve(
     import.meta.dirname ?? __dirname, '..', 'application.conf',
   );
-  const system = ActorSystem.create(SYSTEM_NAME, { configFile });
+  const system = ActorSystem.create(SYSTEM_NAME, ActorSystemOptions.create().withConfigFile(configFile));
   const seedSummary = seeds.length > 0
     ? ` · seeds=[${seeds.join(',')}]`
     : ' · bootstrap (no seeds)';
@@ -84,17 +87,16 @@ async function main(): Promise<void> {
   );
 
   // -------- 3. Cluster.join --------
-  const cluster = await Cluster.join(system, {
-    host: cfg.host,
-    port,
-    seeds,
-    failureDetector: {
+  const cluster = await Cluster.join(system, ClusterOptions.create()
+    .withHost(cfg.host)
+    .withPort(port)
+    .withSeeds(seeds)
+    .withFailureDetector({
       heartbeatIntervalMs: 300,
       unreachableAfterMs: 1500,
       downAfterMs: 4000,
-    },
-    gossipIntervalMs: 500,
-  });
+    })
+    .withGossipIntervalMs(500));
   cluster.subscribe((evt) => {
     if (evt instanceof MemberUp)
       system.log.info(`[+] ${evt.member.address} is UP`);
@@ -109,15 +111,12 @@ async function main(): Promise<void> {
   // -------- 4. DistributedData + PubSub + Receptionist + SessionStore --------
   // Order matters: DD before SessionStore (it needs the handle); the
   // Receptionist before any actor that registers under it.
-  const ddHandle = system.extension(DistributedDataId).start(cluster, {
-    gossipIntervalMs: 500,
-  });
-  const mediator = system.extension(DistributedPubSubId).start(cluster, {
-    gossipIntervalMs: 500,
-  });
-  const receptionist = system.extension(ReceptionistId).start(cluster, {
-    gossipIntervalMs: 1_000,
-  });
+  const ddHandle = system.extension(DistributedDataId).start(cluster,
+    DistributedDataOptions.create().withGossipInterval(500));
+  const mediator = system.extension(DistributedPubSubId).start(cluster,
+    DistributedPubSubOptions.create().withGossipIntervalMs(500));
+  const receptionist = system.extension(ReceptionistId).start(cluster,
+    ReceptionistOptions.create().withGossipIntervalMs(1_000));
   const sessions = new SessionStore(ddHandle);
 
   // -------- 5. VoicePresenceActor (one per node) --------
@@ -128,9 +127,9 @@ async function main(): Promise<void> {
 
   // -------- 6. HTTP front door — ClusterSingleton --------
   const staticDir = path.join(import.meta.dirname ?? __dirname, '..', 'static');
-  system.extension(ClusterSingletonId).start(cluster, {
-    typeName: 'http-ingress',
-    props: httpIngressProps({
+  system.extension(ClusterSingletonId).start(cluster, StartSingletonOptions.create()
+    .withTypeName('http-ingress')
+    .withProps(httpIngressProps({
       host: cfg.host,
       httpPort: cfg.httpPort,
       staticDir,
@@ -139,8 +138,7 @@ async function main(): Promise<void> {
       mediator,
       voicePresence,
       sessions,
-    }),
-  });
+    })));
 
   // -------- 7. Graceful shutdown --------
   let shuttingDown = false;

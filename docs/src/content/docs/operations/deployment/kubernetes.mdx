@@ -239,25 +239,24 @@ extension exposes these endpoints.
 ## App-side wiring
 
 ```ts
-import { ActorSystem, Cluster, CoordinatedShutdownId, HttpManagement } from 'actor-ts';
-import { KubernetesApiSeedProvider } from 'actor-ts/discovery';
+import { ActorSystem, Cluster, ClusterOptions, CoordinatedShutdownId, HttpManagement } from 'actor-ts';
+import { KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts/discovery';
 
 const system = ActorSystem.create('my-app');
 const cs     = system.extension(CoordinatedShutdownId);
 
 // 1. Cluster join with K8s API seed discovery
-const seeds = await new KubernetesApiSeedProvider({
-  namespace:     process.env.K8S_NAMESPACE!,
-  labelSelector: process.env.K8S_LABEL_SELECTOR!,
-  containerPort: 2552,
-}).discover();
+const seeds = await new KubernetesApiSeedProvider(KubernetesApiSeedProviderOptions.create()
+  .withNamespace(process.env.K8S_NAMESPACE!)
+  .withServiceName(process.env.K8S_SERVICE_NAME!)
+  .withSystemName(system.name)
+  .withPort(2552)).discover();
 
-const cluster = await Cluster.join(system, {
-  host:  process.env.ACTOR_TS_HOSTNAME!,
-  port:  parseInt(process.env.ACTOR_TS_PORT!),
-  seeds,
-  roles: ['compute'],
-});
+const cluster = await Cluster.join(system, ClusterOptions.create()
+  .withHost(process.env.ACTOR_TS_HOSTNAME!)
+  .withPort(parseInt(process.env.ACTOR_TS_PORT!))
+  .withSeeds(seeds)
+  .withRoles(['compute']));
 
 // 2. Management endpoints
 const management = await HttpManagement.start(system, {

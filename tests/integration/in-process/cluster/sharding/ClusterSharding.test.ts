@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
-import { ActorSystem } from '../../../../../src/ActorSystem.js';
-import { Cluster } from '../../../../../src/cluster/Cluster.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
+import { Cluster, ClusterOptions } from '../../../../../src/cluster/Cluster.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
-import { ClusterSharding } from '../../../../../src/cluster/sharding/ClusterSharding.js';
+import { ClusterSharding, StartShardingOptions } from '../../../../../src/cluster/sharding/ClusterSharding.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
@@ -36,18 +36,18 @@ interface Node {
 }
 
 async function startNode(sysName: string, p: number, seeds: string[] = []): Promise<Node> {
-  const sys = ActorSystem.create(sysName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
-  const cluster = await Cluster.join(sys, {
-    host: 'h', port: p, seeds,
-    transport: new InMemoryTransport(new NodeAddress(sysName, 'h', p)),
-    gossipIntervalMs: 30,
-  });
-  const region = cluster.sharding.start<Cmd>({
-    typeName: 'entity',
-    entityProps: Props.create(() => new Entity()),
-    extractEntityId: (m) => m.id,
-    numShards: 16,
-  });
+  const sys = ActorSystem.create(sysName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const cluster = await Cluster.join(sys, ClusterOptions.create()
+    .withHost('h')
+    .withPort(p)
+    .withSeeds(seeds)
+    .withTransport(new InMemoryTransport(new NodeAddress(sysName, 'h', p)))
+    .withGossipIntervalMs(30));
+  const region = cluster.sharding.start<Cmd>(StartShardingOptions.create<Cmd>()
+    .withTypeName('entity')
+    .withEntityProps(Props.create(() => new Entity()))
+    .withExtractEntityId((m) => m.id)
+    .withNumShards(16));
   return { sys, cluster, region };
 }
 
@@ -171,17 +171,16 @@ describe('cluster.sharding', () => {
 
   test('start() works through the property — round-trips a ping', async () => {
     const sysName = 'cs-facade-d';
-    const sys = ActorSystem.create(sysName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
-    const cluster = await Cluster.join(sys, {
-      host: 'h', port: 45_530,
-      transport: new InMemoryTransport(new NodeAddress(sysName, 'h', 45_530)),
-      gossipIntervalMs: 30,
-    });
+    const sys = ActorSystem.create(sysName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const cluster = await Cluster.join(sys, ClusterOptions.create()
+      .withHost('h')
+      .withPort(45_530)
+      .withTransport(new InMemoryTransport(new NodeAddress(sysName, 'h', 45_530)))
+      .withGossipIntervalMs(30));
     try {
-      const region = cluster.sharding.start('entity', Entity, {
-        extractEntityId: (m: Cmd) => m.id,
-        numShards: 4,
-      });
+      const region = cluster.sharding.start('entity', Entity, StartShardingOptions.create<Cmd>()
+        .withExtractEntityId((m: Cmd) => m.id)
+        .withNumShards(4));
       await waitFor(() => cluster.upMembers().length === 1);
       const reply = await region.ask<string>({ id: 'e-1', op: 'ping' }, 2_000);
       expect(reply).toBe('pong');
@@ -215,19 +214,20 @@ interface LruNode extends Node {
 async function startLruNode(
   sysName: string, p: number, maxEntities: number,
 ): Promise<LruNode> {
-  const sys = ActorSystem.create(sysName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
-  const cluster = await Cluster.join(sys, {
-    host: 'h', port: p, seeds: [],
-    transport: new InMemoryTransport(new NodeAddress(sysName, 'h', p)),
-    gossipIntervalMs: 30,
-  });
-  const region = cluster.sharding.start<{ id: string; op: 'ping' }>({
-    typeName: 'lru-entity',
-    entityProps: Props.create(() => new TaggedEntity()),
-    extractEntityId: (m) => m.id,
-    numShards: 16,
-    maxEntities,
-  });
+  const sys = ActorSystem.create(sysName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const cluster = await Cluster.join(sys, ClusterOptions.create()
+    .withHost('h')
+    .withPort(p)
+    .withSeeds([])
+    .withTransport(new InMemoryTransport(new NodeAddress(sysName, 'h', p)))
+    .withGossipIntervalMs(30));
+  const region = cluster.sharding.start<{ id: string; op: 'ping' }>(
+    StartShardingOptions.create<{ id: string; op: 'ping' }>()
+      .withTypeName('lru-entity')
+      .withEntityProps(Props.create(() => new TaggedEntity()))
+      .withExtractEntityId((m) => m.id)
+      .withNumShards(16)
+      .withMaxEntities(maxEntities));
   return { sys, cluster, region: region as ActorRef<{ id: string; op: 'ping' }> } as LruNode;
 }
 

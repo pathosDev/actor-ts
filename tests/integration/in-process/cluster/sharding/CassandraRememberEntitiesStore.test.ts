@@ -9,6 +9,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   CassandraRememberEntitiesStore,
+  CassandraRememberEntitiesStoreOptions,
   rememberEntitiesDdl,
   JournalRememberEntitiesStore,
   type RememberEvent,
@@ -21,12 +22,13 @@ function makeStore(): {
   client: FakeCassandraClient;
 } {
   const client = new FakeCassandraClient();
-  const store = new CassandraRememberEntitiesStore({
-    contactPoints: ['fake'],
-    keyspace: 'sharding',
-    autoCreateKeyspace: true,
-    client,
-  });
+  const store = new CassandraRememberEntitiesStore(
+    CassandraRememberEntitiesStoreOptions.create()
+      .withContactPoints(['fake'])
+      .withKeyspace('sharding')
+      .withAutoCreateKeyspace(true)
+      .withClient(client),
+  );
   return { store, client };
 }
 

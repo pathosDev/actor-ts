@@ -12,12 +12,14 @@
 import {
   Actor,
   Cluster,
+  ClusterBootstrapOptions,
   LogLevel,
   MemberDown,
   MemberRemoved,
   MemberUnreachable,
   MemberUp,
   ShardMapChanged,
+  StartShardingOptions,
 } from '../../src/index.js';
 
 type Command =
@@ -65,17 +67,16 @@ async function main(): Promise<void> {
   // SIGTERM/SIGINT-driven shutdown into one call.  We disable the
   // built-in signal wiring here because the example installs its
   // own shutdown handler (with `clearInterval` cleanup).
-  const { system, cluster, shutdown: clusterShutdown } = await Cluster.bootstrap({
-    name: 'counter-cluster',
-    logLevel: LogLevel.Info,
-    host,
-    port,
-    seeds,
-    receptionist: false,
-    shutdownOnSignals: false,
-    failureDetector: { heartbeatIntervalMs: 300, unreachableAfterMs: 1_500, downAfterMs: 3_500 },
-    gossipIntervalMs: 500,
-  });
+  const { system, cluster, shutdown: clusterShutdown } = await Cluster.bootstrap(
+    ClusterBootstrapOptions.create('counter-cluster')
+      .withLogLevel(LogLevel.Info)
+      .withHost(host)
+      .withPort(port)
+      .withSeeds(seeds)
+      .withReceptionist(false)
+      .withShutdownOnSignals(false)
+      .withFailureDetector({ heartbeatIntervalMs: 300, unreachableAfterMs: 1_500, downAfterMs: 3_500 })
+      .withGossipIntervalMs(500));
 
   cluster.subscribe(evt => {
     if (evt instanceof MemberUp) system.log.info(`[+] ${evt.member.address} is UP`);
@@ -90,10 +91,10 @@ async function main(): Promise<void> {
     }
   });
 
-  const region = cluster.sharding.start('counter', CounterEntity, {
-    extractEntityId: (msg: Command) => msg.id,
-    numShards: 16,
-  });
+  const region = cluster.sharding.start('counter', CounterEntity,
+    StartShardingOptions.create<Command>()
+      .withExtractEntityId((msg) => msg.id)
+      .withNumShards(16));
 
   // Self-driven traffic so the demo shows movement without a second client.
   // Each node sends to its OWN local region ref — the region routes

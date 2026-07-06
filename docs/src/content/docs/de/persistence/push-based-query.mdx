@@ -61,16 +61,15 @@ Push-basiertem, wenn:
 ## Wie aktivieren
 
 ```ts
-const projection = ProjectionActor.byTag<E>({
-  name:  'realtime-balance',
-  tag:   'account',
-  query: new SqliteQuery({ path: '...' }),
-  liveOptions: {
+const projection = ProjectionActor.byTag<E>(system, ByTagProjectionOptions.create<E>()
+  .withName('realtime-balance')
+  .withTag('account')
+  .withQuery(new SqliteQuery({ path: '...' }))
+  .withLiveOptions({
     push: true,                  // Bus-Subscription aktivieren
     pollIntervalMs: 5_000,       // Fallback-Poll-Kadenz — kann hoch sein
-  },
-  async handle(event) { /* ... */ },
-});
+  })
+  .withHandle(async (event) => { /* ... */ }));
 ```
 
 Mit `push: true`:

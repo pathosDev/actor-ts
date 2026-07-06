@@ -35,10 +35,9 @@ spawned eagerly; user actors don't exist yet — you spawn them via
 argument:
 
 ```ts
-const system = ActorSystem.create('my-app', {
-  logLevel:   'info',
-  configFile: './application.conf',
-});
+const system = ActorSystem.create('my-app', ActorSystemOptions.create()
+  .withLogLevel('info')
+  .withConfigFile('./application.conf'));
 ```
 
 The full settings shape:
@@ -157,9 +156,9 @@ You register them once at the system level, then reach them via
 `system.extension(...)`:
 
 ```ts
-import { Cluster, DistributedDataId } from 'actor-ts';
+import { Cluster, ClusterOptions, DistributedDataId } from 'actor-ts';
 
-const cluster = await Cluster.join(system, { /* ... */ });
+const cluster = await Cluster.join(system, ClusterOptions.create() /* ... */);
 const dd = system.extension(DistributedDataId).start(cluster);
 ```
 

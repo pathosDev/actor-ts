@@ -43,8 +43,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **`MqttOptions` fluent builder** (#345) — `MqttOptions.create()
   .withBrokerUrl(…).withClientId(…).withQos(…)…`; feeds the same
   three-layer settings merge (constructor > HOCON
-  `actor-ts.io.broker.mqtt` > built-in defaults).  The `MqttActor`
-  constructor also accepts a plain `Partial<MqttActorSettings>`.
+  `actor-ts.io.broker.mqtt` > built-in defaults).  (As of #346 the builder
+  is the *only* way to construct — see the builder-only note under
+  *Changed*.)
 - **Typed MQTT payloads** (#345) — inbound `MqttMessage<T>` carries a
   lazily-decoding `MqttPayload<T>` (`.bytes` / `.text()` / `.entity<U=T>()`,
   successes cached).  A pluggable `MqttCodec<T>` seam (default
@@ -56,6 +57,33 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING: options are builder-only, framework-wide** (#346) — every
+  configurable constructor and factory now takes a fluent options builder
+  instead of a plain settings object; the plain-object path is removed
+  (pre-1.0 hard cut).  Each builder is `XOptions.create().withField(…)…`;
+  a settings interface that was named `XOptions` is renamed to `XSettings`
+  and the builder takes the `XOptions` name.  HOCON resolution is
+  unchanged — a builder only supplies the highest-precedence explicit
+  layer, and unset fields still fall through to config then defaults.
+  Affected (non-exhaustive): `ActorSystem.create(name, ActorSystemOptions
+  .create()…)`; `TestKit.create` / `new TestProbe` (`TestKitOptions` /
+  `TestProbeOptions`); every broker actor (`MqttOptions`, `KafkaOptions`,
+  `AmqpOptions`, `NatsOptions`, `JetStreamOptions`, `RedisStreamsOptions`,
+  `SseOptions`, `TcpSocketOptions`, `UdpSocketOptions`, `GrpcClientOptions`,
+  `GrpcServerOptions`); HTTP/WS (`WebSocketClientOptions`,
+  `WebSocketRouteOptions`, `ExpressBackendOptions`, `HonoBackendOptions`);
+  cache (`RedisCacheOptions`, `MemcachedCacheOptions`); persistence
+  journals / snapshot stores / durable-state stores / object-storage
+  backends / projections / plugin registrations; cluster / sharding /
+  singleton / client / pub-sub / router / downing / failure detectors;
+  leases, seed providers + discovery, observability adapters
+  (`OtelAdapterOptions`, `PromClientAdapterOptions`), `WorkerClusterOptions`,
+  `DistributedDataOptions`, and `ProducerControllerOptions`.  Migration:
+  `new X({ a, b })` → `new X(XOptions.create().withA(a).withB(b))`; the
+  positional "context" args that were never settings (a system name, a
+  `Cluster`, a sharding entity + type name) stay positional.  Single-field
+  bags (e.g. `KeepMajority`, `ConsumerController`) and per-call option
+  args are intentionally left as plain objects.
 - **BREAKING: `MqttActor` is now abstract** (#345) — you subclass it and
   override `onMessage` instead of spawning it directly and driving it only
   with `tell`.  Migration: `class MyClient extends MqttActor<T> { … }` and

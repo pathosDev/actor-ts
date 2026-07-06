@@ -92,10 +92,10 @@ Virtuelle Zeit kontrolliert *alle* Actor-Timer.
 ## Ohne TestKit nutzen
 
 ```ts
-import { ActorSystem, ManualScheduler } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions, ManualScheduler } from 'actor-ts';
 
 const scheduler = new ManualScheduler();
-const system = ActorSystem.create('my-spec', { scheduler });
+const system = ActorSystem.create('my-spec', ActorSystemOptions.create().withScheduler(scheduler));
 
 // ... Test-Code ...
 

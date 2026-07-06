@@ -34,26 +34,24 @@ actor-ts-Anwendungen beide häufig vorkommen.
 ## Einen Dispatcher wählen
 
 ```ts
-import { ActorSystem, MicrotaskDispatcher } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions, MicrotaskDispatcher } from 'actor-ts';
 
 // Verwende Microtasks: maximaler Durchsatz, minimaler Scheduling-Overhead.
 // Wähle, wenn du gar kein I/O hast ODER I/O so selten ist, dass
 // Starvation keine Sorge ist.
-const system = ActorSystem.create('compute-heavy', {
-  dispatcher: new MicrotaskDispatcher(),
-});
+const system = ActorSystem.create('compute-heavy', ActorSystemOptions.create()
+  .withDispatcher(new MicrotaskDispatcher()));
 ```
 
 ```ts
-import { ActorSystem, ThroughputDispatcher } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions, ThroughputDispatcher } from 'actor-ts';
 
-const system = ActorSystem.create('mixed-workload', {
-  dispatcher: new ThroughputDispatcher(50),
+const system = ActorSystem.create('mixed-workload', ActorSystemOptions.create()
+  .withDispatcher(new ThroughputDispatcher(50)));
   // Laufe bis zu 50 Nachrichten pro Actor, bevor an I/O nachgegeben
   // wird.  Default ist ~5 im `ImmediateDispatcher`; es auf 50 zu
   // erhöhen, gewinnt beim Durchsatz auf Kosten der
   // HTTP-Response-Latenz.
-});
 ```
 
 ## Wann die Dispatcher-Wahl wichtig ist

@@ -13,7 +13,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
-import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import { defaultsAdapter } from '../../../../../src/persistence/migration/defaultsAdapter.js';
@@ -139,7 +139,7 @@ describe('migrateInMemoryJournal — bulk rewrite', () => {
       async onCommand(_s: { balance: number; currency: string }, _c: unknown) { /* read-only */ }
     }
 
-    const sys = ActorSystem.create('migrate-replay', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+    const sys = ActorSystem.create('migrate-replay', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
     sys.extension(PersistenceExtensionId).setJournal(journal);
     try {
       const ref = sys.spawn(Props.create(() => new Account()), 'acct');

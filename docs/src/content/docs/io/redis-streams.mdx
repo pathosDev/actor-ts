@@ -9,17 +9,18 @@ already in your infrastructure and you want streaming without
 deploying Kafka or NATS.
 
 ```ts
-import { ActorSystem, Props, RedisStreamsActor } from 'actor-ts';
+import { ActorSystem, Props, RedisStreamsActor, RedisStreamsOptions } from 'actor-ts';
 
 const redis = system.spawn(
-  Props.create(() => new RedisStreamsActor({
-    url:     'redis://localhost:6379',
-    streams: ['orders', 'payments'],
-    // Consumer-group wiring + consumer-actor target live in
-    // settings — there is no runtime `subscribe` surface.
-    consumerGroup: { group: 'order-processors', consumer: 'worker-1' },
-    target:        orderHandler,
-  })),
+  Props.create(() => new RedisStreamsActor(
+    RedisStreamsOptions.create()
+      .withUrl('redis://localhost:6379')
+      .withStreams(['orders', 'payments'])
+      // Consumer-group wiring + consumer-actor target live in
+      // settings — there is no runtime `subscribe` surface.
+      .withConsumerGroup({ group: 'order-processors', consumer: 'worker-1' })
+      .withTarget(orderHandler),
+  )),
   'redis',
 );
 
@@ -55,7 +56,9 @@ interface RedisStreamsActorSettings extends BrokerCommonSettings {
 
 ```ts
 // No consumerGroup → uses XREAD
-new RedisStreamsActor({ url, streams: ['events'], target: handler });
+new RedisStreamsActor(
+  RedisStreamsOptions.create().withUrl(url).withStreams(['events']).withTarget(handler),
+);
 ```
 
 Reads from the stream's **`$` (latest)** position by default —
@@ -68,12 +71,13 @@ should process every message.
 ### With consumer group — `XREADGROUP`
 
 ```ts
-new RedisStreamsActor({
-  url,
-  streams:       ['orders'],
-  consumerGroup: { group: 'workers', consumer: 'worker-1' },
-  target:        handler,
-});
+new RedisStreamsActor(
+  RedisStreamsOptions.create()
+    .withUrl(url)
+    .withStreams(['orders'])
+    .withConsumerGroup({ group: 'workers', consumer: 'worker-1' })
+    .withTarget(handler),
+);
 ```
 
 Consumer-group mode:

@@ -105,9 +105,8 @@ replica**, not just its own.
 ```ts
 {
   journal:       sharedJournal,
-  snapshotStore: new ObjectStorageSnapshotStore({
-    backend: new S3ObjectStorageBackend({ /* shared bucket */ }),
-  }),
+  snapshotStore: new ObjectStorageSnapshotStore(ObjectStorageSnapshotStoreOptions.create()
+    .withBackend(new S3ObjectStorageBackend(S3ObjectStorageOptions.create() /* shared bucket */))),
 }
 ```
 

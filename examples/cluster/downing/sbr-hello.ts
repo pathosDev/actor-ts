@@ -8,9 +8,11 @@ import {
   KeepMajority,
   KeepOldest,
   KeepReferee,
+  KeepRefereeOptions,
   Member,
   NodeAddress,
   StaticQuorum,
+  StaticQuorumOptions,
 } from '../../../src/index.js';
 
 function addr(port: number): NodeAddress { return new NodeAddress('sys', 'h', port); }
@@ -28,5 +30,5 @@ function show(name: string, decision: ReadonlySet<string>): void {
 
 show('KeepMajority        ', new KeepMajority().decide(view));
 show('KeepOldest          ', new KeepOldest().decide(view));
-show('StaticQuorum(n=3)   ', new StaticQuorum({ quorumSize: 3 }).decide(view));
-show('KeepReferee(port=1) ', new KeepReferee({ refereeAddress: addr(1).toString() }).decide(view));
+show('StaticQuorum(n=3)   ', new StaticQuorum(StaticQuorumOptions.create().withQuorumSize(3)).decide(view));
+show('KeepReferee(port=1) ', new KeepReferee(KeepRefereeOptions.create().withRefereeAddress(addr(1).toString())).decide(view));

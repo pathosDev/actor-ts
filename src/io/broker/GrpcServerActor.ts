@@ -4,6 +4,7 @@ import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { Actor } from '../../Actor.js';
 import { BrokerSettingsError, type BrokerCommonSettings } from './BrokerSettings.js';
+import { GrpcServerOptions } from './GrpcServerOptions.js';
 
 /**
  * gRPC handler descriptor — paired with a method name when the server
@@ -79,8 +80,12 @@ export class GrpcServerActor extends Actor<unknown> {
   private settings!: GrpcServerSettings;
   private server: GrpcServerLike | null = null;
   private bound = false;
+  private readonly _ctorSettings: Partial<GrpcServerSettings>;
 
-  constructor(private readonly _ctorSettings: Partial<GrpcServerSettings>) { super(); }
+  constructor(options: GrpcServerOptions = GrpcServerOptions.create()) {
+    super();
+    this._ctorSettings = options.build();
+  }
 
   override async preStart(): Promise<void> {
     this.settings = await this.resolveSettings();

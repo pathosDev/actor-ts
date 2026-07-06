@@ -7,18 +7,19 @@
  * cluster through the shared WorkerBroker in this process.  Each worker
  * prints a line when it registers itself.
  */
-import { WorkerCluster } from '../../src/index.js';
+import { WorkerCluster, WorkerClusterOptions } from '../../src/index.js';
 
 async function main(): Promise<void> {
-  const cluster = await WorkerCluster.spawn({
-    workers: 4,
-    bootstrap: new URL('./worker-node.ts', import.meta.url),
-    systemName: 'multi-core',
-    hostname: 'worker',
-    basePort: 2552,
-    initData: { workerId: 0, seedAddr: undefined },
-    readyTimeoutMs: 5_000,
-  });
+  const cluster = await WorkerCluster.spawn(
+    WorkerClusterOptions.create()
+      .withWorkers(4)
+      .withBootstrap(new URL('./worker-node.ts', import.meta.url))
+      .withSystemName('multi-core')
+      .withHostname('worker')
+      .withBasePort(2552)
+      .withInitData({ workerId: 0, seedAddr: undefined })
+      .withReadyTimeoutMs(5_000),
+  );
 
   console.log(`Spawned ${cluster.size} workers:`);
   for (const addr of cluster.addresses) console.log('  -', addr.toString());

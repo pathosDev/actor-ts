@@ -43,17 +43,18 @@ shift their target.
 ## Configuration
 
 ```ts
-import { ClusterSingletonManager, Props } from 'actor-ts';
+import { ClusterSingletonManager, ClusterSingletonManagerOptions, Props } from 'actor-ts';
 
 system.spawn(
-  ClusterSingletonManager.props({
-    cluster,
-    typeName:        'job-scheduler',
-    singletonProps:  Props.create(() => new JobScheduler()),
-    role:            'control-plane',           // optional
-    lease:           leaseImpl,                  // optional split-brain protection
-    acquireRetryIntervalMs: 5_000,                // when lease acquire fails
-  }),
+  ClusterSingletonManager.props(
+    ClusterSingletonManagerOptions.create()
+      .withCluster(cluster)
+      .withTypeName('job-scheduler')
+      .withSingletonProps(Props.create(() => new JobScheduler()))
+      .withRole('control-plane')            // optional
+      .withLease(leaseImpl)                  // optional split-brain protection
+      .withAcquireRetryIntervalMs(5_000),    // when lease acquire fails
+  ),
   'singleton-manager-job-scheduler',
 );
 ```
@@ -112,10 +113,11 @@ to prevent.
 ### With lease
 
 ```ts
-ClusterSingletonManager.props({
-  // ...
-  lease: someLeaseImpl,
-});
+ClusterSingletonManager.props(
+  ClusterSingletonManagerOptions.create()
+    // ...
+    .withLease(someLeaseImpl),
+);
 ```
 
 Adds an async gate on the lease.  The flow:
@@ -248,7 +250,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Manager name must match the convention">
   ```ts
-  system.spawn(ClusterSingletonManager.props({...}), 'whatever');
+  system.spawn(ClusterSingletonManager.props(ClusterSingletonManagerOptions.create()/* ... */), 'whatever');
   // ✗ proxy looks for `/user/singleton-manager-<typeName>`, not /user/whatever
   ```
   Use `singletonManagerPath(...)` or just spell out the

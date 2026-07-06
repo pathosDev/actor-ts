@@ -1,3 +1,4 @@
+import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { Journal } from '../Journal.js';
 import {
   JournalConcurrencyError,
@@ -11,13 +12,60 @@ import {
   type PostgresConnection,
 } from './PostgresClient.js';
 
-export interface PostgresJournalOptions extends PostgresConnection {
+export interface PostgresJournalSettings extends PostgresConnection {
   /** Events table name.  Default: `events`. */
   readonly eventsTable?: string;
   /** Tags join table name.  Default: `${eventsTable}_tags`. */
   readonly tagsTable?: string;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
   readonly autoCreateTables?: boolean;
+}
+
+/**
+ * Fluent builder for {@link PostgresJournalSettings}:
+ *
+ *     new PostgresJournal(PostgresJournalOptions.create().withUrl('postgres://…').withEventsTable('journal'))
+ *
+ * The connection fields (`withUrl` / `withPoolConfig` / `withPool`) come
+ * from the shared {@link PostgresConnection} mixin; pass a pre-built
+ * `withPool(...)` to share ONE pool across the journal, snapshot, and
+ * durable-state stores.
+ */
+export class PostgresJournalOptions extends OptionsBuilder<PostgresJournalSettings> {
+  /** Start a fresh builder.  Equivalent to `new PostgresJournalOptions()`. */
+  static create(): PostgresJournalOptions {
+    return new PostgresJournalOptions();
+  }
+
+  /** Connection string, e.g. `postgres://user:pass@host:5432/db`. */
+  withUrl(url: string): this {
+    return this.set('url', url);
+  }
+
+  /** Extra node-postgres `Pool` config, merged over `{ connectionString: url }`. */
+  withPoolConfig(poolConfig: Record<string, unknown>): this {
+    return this.set('poolConfig', poolConfig);
+  }
+
+  /** Pre-built pool — bypasses the lazy `pg` import; share it across stores. */
+  withPool(pool: PgPoolLike): this {
+    return this.set('pool', pool);
+  }
+
+  /** Events table name.  Default: `events`. */
+  withEventsTable(eventsTable: string): this {
+    return this.set('eventsTable', eventsTable);
+  }
+
+  /** Tags join table name.  Default: `${eventsTable}_tags`. */
+  withTagsTable(tagsTable: string): this {
+    return this.set('tagsTable', tagsTable);
+  }
+
+  /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
+  withAutoCreateTables(autoCreateTables: boolean): this {
+    return this.set('autoCreateTables', autoCreateTables);
+  }
 }
 
 interface EventRow {
@@ -48,7 +96,7 @@ interface EventRow {
  * enhancement.)
  */
 export class PostgresJournal implements Journal {
-  private readonly options: PostgresJournalOptions;
+  private readonly settings: PostgresJournalSettings;
   private readonly table: string;
   private readonly tagsTable: string;
   private readonly autoCreate: boolean;
@@ -57,13 +105,14 @@ export class PostgresJournal implements Journal {
   private initPromise: Promise<void> | null = null;
   private closed = false;
 
-  constructor(options: PostgresJournalOptions = {}) {
-    this.options = options;
-    this.table = assertSafeIdentifier(options.eventsTable ?? 'events', 'events table');
+  constructor(options: PostgresJournalOptions = PostgresJournalOptions.create()) {
+    const s = options.build();
+    this.settings = s;
+    this.table = assertSafeIdentifier(s.eventsTable ?? 'events', 'events table');
     this.tagsTable = assertSafeIdentifier(
-      options.tagsTable ?? `${this.table}_tags`, 'tags table',
+      s.tagsTable ?? `${this.table}_tags`, 'tags table',
     );
-    this.autoCreate = options.autoCreateTables ?? true;
+    this.autoCreate = s.autoCreateTables ?? true;
   }
 
   async append<E>(
@@ -203,7 +252,7 @@ export class PostgresJournal implements Journal {
   }
 
   private async init(): Promise<void> {
-    const pool = await buildPgPool(this.options);
+    const pool = await buildPgPool(this.settings);
     if (this.autoCreate) {
       await pool.query(
         `CREATE TABLE IF NOT EXISTS ${this.table} (

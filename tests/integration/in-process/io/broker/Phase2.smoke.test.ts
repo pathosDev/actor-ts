@@ -9,42 +9,48 @@
  * in a separate, optional file (out of scope here).
  */
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import { Actor } from '../../../../../src/Actor.js';
 import { KafkaActor } from '../../../../../src/io/broker/KafkaActor.js';
+import { KafkaOptions } from '../../../../../src/io/broker/KafkaOptions.js';
 import { AmqpActor } from '../../../../../src/io/broker/AmqpActor.js';
+import { AmqpOptions } from '../../../../../src/io/broker/AmqpOptions.js';
 import { GrpcClientActor } from '../../../../../src/io/broker/GrpcClientActor.js';
+import { GrpcClientOptions } from '../../../../../src/io/broker/GrpcClientOptions.js';
 import { GrpcServerActor } from '../../../../../src/io/broker/GrpcServerActor.js';
+import { GrpcServerOptions } from '../../../../../src/io/broker/GrpcServerOptions.js';
 import { BrokerSettingsError } from '../../../../../src/io/broker/BrokerSettings.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 function makeSys(name = 'phase2'): ActorSystem {
-  return ActorSystem.create(name, { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  return ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
 }
 
 describe('Phase 2 actors — construction is lazy', () => {
   test('KafkaActor constructs without loading kafkajs', () => {
-    const a = new KafkaActor({ brokers: ['localhost:9092'] });
+    const a = new KafkaActor(KafkaOptions.create().withBrokers(['localhost:9092']));
     expect(a).toBeInstanceOf(KafkaActor);
   });
   test('AmqpActor constructs without loading amqplib', () => {
-    const a = new AmqpActor({ url: 'amqp://localhost' });
+    const a = new AmqpActor(AmqpOptions.create().withUrl('amqp://localhost'));
     expect(a).toBeInstanceOf(AmqpActor);
   });
   test('GrpcClientActor constructs without loading @grpc/grpc-js', () => {
-    const a = new GrpcClientActor({
-      protoPath: 'x.proto', packageName: 'x', serviceName: 'X', endpoint: 'localhost:1',
-    });
+    const a = new GrpcClientActor(
+      GrpcClientOptions.create()
+        .withProtoPath('x.proto').withPackageName('x').withServiceName('X').withEndpoint('localhost:1'),
+    );
     expect(a).toBeInstanceOf(GrpcClientActor);
   });
   test('GrpcServerActor constructs without loading @grpc/grpc-js', () => {
-    const a = new GrpcServerActor({
-      protoPath: 'x.proto', packageName: 'x', serviceName: 'X',
-      bind: '0.0.0.0:0', handlers: {},
-    });
+    const a = new GrpcServerActor(
+      GrpcServerOptions.create()
+        .withProtoPath('x.proto').withPackageName('x').withServiceName('X')
+        .withBind('0.0.0.0:0').withHandlers({}),
+    );
     expect(a).toBeInstanceOf(GrpcServerActor);
   });
 });
@@ -54,7 +60,7 @@ describe('Phase 2 actors — settings validation', () => {
     const sys = makeSys('kafka-validate');
     let captured: Error | null = null;
     sys.spawnAnonymous(Props.create(() => {
-      const a = new KafkaActor({});
+      const a = new KafkaActor(KafkaOptions.create());
       const orig = a.preStart.bind(a);
       a.preStart = async (): Promise<void> => {
         try { await orig(); }
@@ -72,10 +78,11 @@ describe('Phase 2 actors — settings validation', () => {
     const sys = makeSys('grpc-validate');
     let captured: Error | null = null;
     sys.spawnAnonymous(Props.create(() => {
-      const a = new GrpcClientActor({
-        protoPath: 'x.proto', packageName: 'x', serviceName: 'X',
+      const a = new GrpcClientActor(
+        GrpcClientOptions.create()
+          .withProtoPath('x.proto').withPackageName('x').withServiceName('X'),
         // endpoint missing
-      });
+      );
       const orig = a.preStart.bind(a);
       a.preStart = async (): Promise<void> => {
         try { await orig(); }
@@ -92,17 +99,17 @@ describe('Phase 2 actors — settings validation', () => {
 
 describe('Phase 2 actors — settings precedence (constructor wins over HOCON)', () => {
   test('KafkaActor: constructor brokers override HOCON', async () => {
-    const sys = ActorSystem.create('kafka-prec', {
-      logger: new NoopLogger(), logLevel: LogLevel.Off,
-      config: {
+    const sys = ActorSystem.create('kafka-prec', ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({
         'actor-ts': { io: { broker: { kafka: { brokers: ['hocon:9092'], clientId: 'from-cfg' } } } },
-      },
-    });
+      }));
     let captured: KafkaActor | null = null;
     let resolve!: (a: KafkaActor) => void;
     const ready = new Promise<KafkaActor>((r) => { resolve = r; });
     sys.spawnAnonymous(Props.create(() => {
-      const a = new KafkaActor({ brokers: ['ctor:9092'] });  // ctor wins
+      const a = new KafkaActor(KafkaOptions.create().withBrokers(['ctor:9092']));  // ctor wins
       // We'll never actually try to connect — kafkajs isn't installed.
       // Override preStart to swallow the connect error after settings
       // resolution so the test can inspect them.

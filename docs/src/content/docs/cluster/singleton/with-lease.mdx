@@ -12,20 +12,22 @@ elect their own leader** → two singletons exist.
 The **single-writer lease** prevents this:
 
 ```ts
-import { ClusterSingletonManager, KubernetesLease } from 'actor-ts';
+import { ClusterSingletonManager, ClusterSingletonManagerOptions, KubernetesLease, KubernetesLeaseOptions } from 'actor-ts';
 
 system.spawn(
-  ClusterSingletonManager.props({
-    cluster,
-    typeName:        'job-scheduler',
-    singletonProps:  Props.create(() => new JobScheduler()),
-    lease:           new KubernetesLease({
-      name:        'job-scheduler-singleton',
-      owner:       process.env.POD_NAME!,
-      ttlMs:       30_000,
-      namespace:   process.env.K8S_NAMESPACE!,
-    }),
-  }),
+  ClusterSingletonManager.props(
+    ClusterSingletonManagerOptions.create()
+      .withCluster(cluster)
+      .withTypeName('job-scheduler')
+      .withSingletonProps(Props.create(() => new JobScheduler()))
+      .withLease(new KubernetesLease(
+        KubernetesLeaseOptions.create()
+          .withName('job-scheduler-singleton')
+          .withOwner(process.env.POD_NAME!)
+          .withTtlMs(30_000)
+          .withNamespace(process.env.K8S_NAMESPACE!),
+      )),
+  ),
   'singleton-manager-job-scheduler',
 );
 ```
@@ -60,13 +62,14 @@ eventual-consistency.
 ## Configuration
 
 ```ts
-ClusterSingletonManager.props({
-  cluster,
-  typeName,
-  singletonProps,
-  lease,                            // ← optional Lease
-  acquireRetryIntervalMs: 5_000,    // default — retry after failed acquire
-});
+ClusterSingletonManager.props(
+  ClusterSingletonManagerOptions.create()
+    .withCluster(cluster)
+    .withTypeName(typeName)
+    .withSingletonProps(singletonProps)
+    .withLease(lease)                        // ← optional Lease
+    .withAcquireRetryIntervalMs(5_000),      // default — retry after failed acquire
+);
 ```
 
 `Lease` is the same abstraction as
@@ -171,7 +174,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Lease in mTLS-only environments">
   ```ts
-  new KubernetesLease({ /* no auth config */ })
+  new KubernetesLease(KubernetesLeaseOptions.create()/* no auth config */)
   ```
   KubernetesLease uses the pod's service account token by
   default.  RBAC must grant Lease CRUD permissions:

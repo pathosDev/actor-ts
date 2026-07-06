@@ -39,27 +39,33 @@ erhalte einen einsatzbereiten Durable-State-Store.  Gib einen geteilten
 import { Pool } from 'pg';
 import {
   ActorSystem,
+  ActorSystemOptions,
   PersistenceExtensionId,
+  PostgresJournalOptions,
+  PostgresSnapshotStoreOptions,
+  PostgresDurableStateStoreOptions,
+  RegisterPostgresPluginsOptions,
   registerPostgresPlugins,
 } from 'actor-ts';
 
-const system = new ActorSystem({
-  name: 'my-app',
+const system = ActorSystem.create('my-app', ActorSystemOptions.create()
   // Postgres-Plugins als aktives Journal + Snapshot-Store wählen.
-  config: `
-    actor-ts.persistence.journal.plugin = "actor-ts.persistence.journal.postgres"
-    actor-ts.persistence.snapshot-store.plugin = "actor-ts.persistence.snapshot-store.postgres"
-  `,
-});
+  .withConfig({
+    'actor-ts': {
+      persistence: {
+        journal: { plugin: 'actor-ts.persistence.journal.postgres' },
+        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.postgres' },
+      },
+    },
+  }));
 
 const ext = system.extension(PersistenceExtensionId);
-const { durableStateStore } = registerPostgresPlugins(ext, {
+const { durableStateStore } = registerPostgresPlugins(ext, RegisterPostgresPluginsOptions.create()
   // Ein Pool, geteilt von Journal + Snapshot + Durable-State (empfohlen).
-  pool: new Pool({ connectionString: 'postgres://user:pass@host:5432/app' }),
-  journal:           { /* eventsTable, tagsTable, autoCreateTables */ },
-  snapshotStore:     { keepN: 3 },
-  durableStateStore: { /* table */ },
-});
+  .withPool(new Pool({ connectionString: 'postgres://user:pass@host:5432/app' }))
+  .withJournal(PostgresJournalOptions.create() /* .withEventsTable(...).withTagsTable(...).withAutoCreateTables(...) */)
+  .withSnapshotStore(PostgresSnapshotStoreOptions.create().withKeepN(3))
+  .withDurableStateStore(PostgresDurableStateStoreOptions.create() /* .withTable(...) */));
 ```
 
 `registerPostgresPlugins` registriert Journal + Snapshot-Store über die
@@ -73,11 +79,12 @@ Ohne geteilten `pool` baut jede Komponente lazy ihren eigenen Pool aus
 `url` / `poolConfig`:
 
 ```ts
-registerPostgresPlugins(ext, {
-  journal:           { url: 'postgres://user:pass@host:5432/app' },
-  snapshotStore:     { url: 'postgres://user:pass@host:5432/app', keepN: 3 },
-  durableStateStore: { url: 'postgres://user:pass@host:5432/app' },
-});
+registerPostgresPlugins(ext, RegisterPostgresPluginsOptions.create()
+  .withJournal(PostgresJournalOptions.create().withUrl('postgres://user:pass@host:5432/app'))
+  .withSnapshotStore(PostgresSnapshotStoreOptions.create()
+    .withUrl('postgres://user:pass@host:5432/app').withKeepN(3))
+  .withDurableStateStore(PostgresDurableStateStoreOptions.create()
+    .withUrl('postgres://user:pass@host:5432/app')));
 ```
 
 ## Wann einsetzen

@@ -6,10 +6,11 @@
  * isolated; connect costs ~50ms per actor.
  */
 import { Actor } from '../../../../src/Actor.js';
-import { ActorSystem } from '../../../../src/ActorSystem.js';
+import { ActorSystem, ActorSystemOptions } from '../../../../src/ActorSystem.js';
 import { JsonLogger, LogLevel } from '../../../../src/Logger.js';
 import { Props } from '../../../../src/Props.js';
 import { MqttActor, type MqttMessage } from '../../../../src/io/broker/MqttActor.js';
+import { MqttOptions } from '../../../../src/io/broker/MqttOptions.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
 import type { MqttRef } from '../../../../src/io/broker/MqttMessages.js';
 import { waitForPort } from '../lib/wait-for-port.js';
@@ -38,6 +39,7 @@ function requireEnv(name: string): string {
  * supplied on `subscribe` commands.  `onMessage` is never reached.
  */
 class RouterMqttActor extends MqttActor {
+  constructor(opts: MqttOptions) { super(opts); }
   override onMessage(_msg: MqttMessage): void { /* external-target routing only */ }
 }
 
@@ -57,10 +59,9 @@ async function main(): Promise<void> {
     description: 'Mosquitto MQTT', deadlineMs: 30_000,
   });
 
-  const system = ActorSystem.create('mqtt-runner', {
-    logger: new JsonLogger(),
-    logLevel: LogLevel.Info,
-  });
+  const system = ActorSystem.create('mqtt-runner', ActorSystemOptions.create()
+    .withLogger(new JsonLogger())
+    .withLogLevel(LogLevel.Info));
   process.on('SIGTERM', () => { void system.terminate(); });
 
   const ctx: MqttCtx = { env: process.env, brokerUrl, system };
@@ -85,12 +86,13 @@ export function spawnMqtt(ctx: MqttCtx, opts: {
   protocolVersion?: 4 | 5;
   clientId?: string;
 } = {}): { ref: MqttRef } {
-  const actor = new RouterMqttActor({
-    brokerUrl: ctx.brokerUrl,
-    clientId: opts.clientId ?? `actor-ts-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    protocolVersion: opts.protocolVersion ?? 4,
-    cleanSession: true,
-  });
+  const actor = new RouterMqttActor(
+    MqttOptions.create()
+      .withBrokerUrl(ctx.brokerUrl)
+      .withClientId(opts.clientId ?? `actor-ts-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+      .withProtocolVersion(opts.protocolVersion ?? 4)
+      .withCleanSession(true),
+  );
   const ref = ctx.system.spawnAnonymous(Props.create(() => actor));
   return { ref };
 }

@@ -6,7 +6,10 @@
  * `tests/integration/controller.ts` (#313) — small, dependency-free,
  * exit 0 / exit 1.
  */
-import { S3ObjectStorageBackend } from '../../../../src/persistence/object-storage/S3ObjectStorageBackend.js';
+import {
+  S3ObjectStorageBackend,
+  S3ObjectStorageOptions,
+} from '../../../../src/persistence/object-storage/S3ObjectStorageBackend.js';
 import { waitForPort } from '../lib/wait-for-port.js';
 import { runScenarios, type BrokerScenario, type BrokerScenarioCtx } from '../lib/scenario.js';
 import { scenario as putGetScenario } from './scenarios/01-put-get.js';
@@ -99,13 +102,14 @@ async function main(): Promise<void> {
 
 /** Build a fresh backend per scenario — scenario isolation. */
 export function backend(ctx: S3Ctx): S3ObjectStorageBackend {
-  return new S3ObjectStorageBackend({
-    bucket: ctx.bucket,
-    region: ctx.region,
-    endpoint: ctx.endpoint,
-    forcePathStyle: ctx.forcePathStyle,
-    credentials: { accessKeyId: ctx.accessKeyId, secretAccessKey: ctx.secretAccessKey },
-  });
+  return new S3ObjectStorageBackend(
+    S3ObjectStorageOptions.create()
+      .withBucket(ctx.bucket)
+      .withRegion(ctx.region)
+      .withEndpoint(ctx.endpoint)
+      .withForcePathStyle(ctx.forcePathStyle)
+      .withCredentials({ accessKeyId: ctx.accessKeyId, secretAccessKey: ctx.secretAccessKey }),
+  );
 }
 
 main().catch((e) => {

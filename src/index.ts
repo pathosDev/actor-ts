@@ -56,7 +56,7 @@ export { Actor } from './Actor.js';
 export { ActorRef, Nobody, NobodyRef } from './ActorRef.js';
 export { ActorPath } from './ActorPath.js';
 export { ActorSelection, parseSelectionPath } from './ActorSelection.js';
-export { ActorSystem } from './ActorSystem.js';
+export { ActorSystem, ActorSystemOptions } from './ActorSystem.js';
 export type { ActorSystemSettings } from './ActorSystem.js';
 export type { ActorContext, Receive, TimerScheduler } from './ActorContext.js';
 export { StashOverflowError, StashOutsideHandlerError } from './ActorContext.js';
@@ -104,6 +104,7 @@ export {
   exportPrometheus,
   prometheusHandler,
   promClientRegistry,
+  PromClientAdapterOptions,
 } from './metrics/index.js';
 export type {
   MetricsRegistry,
@@ -122,7 +123,7 @@ export type {
   PromClientGauge,
   PromClientHistogram,
   PromClientLabelValues,
-  PromClientAdapterOptions,
+  PromClientAdapterSettings,
 } from './metrics/index.js';
 
 // Distributed tracing — minimal Tracer + NoopTracer + RecordingTracer (#10).
@@ -139,6 +140,7 @@ export {
   newSpanId,
   otelTracer,
   otelLogger,
+  OtelAdapterOptions,
 } from './tracing/index.js';
 export type {
   Tracer,
@@ -151,7 +153,7 @@ export type {
   TraceCarrier,
   RecordedSpan,
   RecordingTracerOptions,
-  OtelAdapterOptions,
+  OtelAdapterSettings,
   OtelApiLike,
   OtelContextApi,
   OtelContextLike,
@@ -262,8 +264,8 @@ export {
 export type { ShutdownTask, PhaseDefinition } from './CoordinatedShutdown.js';
 
 // TestKit (TestProbe, ManualScheduler).
-export { TestKit, TestProbe, ManualScheduler } from './testkit/index.js';
-export type { TestKitOptions, TestProbeOptions } from './testkit/index.js';
+export { TestKit, TestKitOptions, TestProbe, TestProbeOptions, ManualScheduler } from './testkit/index.js';
+export type { TestKitSettings, TestProbeSettings } from './testkit/index.js';
 
 // Persistence / Event Sourcing.
 export {
@@ -339,6 +341,29 @@ export {
   ProjectionActor,
   InMemoryOffsetStore,
   DurableStateOffsetStore,
+  // Fluent options builders (builder-only construction).
+  SqliteJournalOptions,
+  SqliteSnapshotStoreOptions,
+  CassandraJournalOptions,
+  CassandraSnapshotStoreOptions,
+  RegisterCassandraPluginsOptions,
+  PostgresJournalOptions,
+  PostgresSnapshotStoreOptions,
+  PostgresDurableStateStoreOptions,
+  RegisterPostgresPluginsOptions,
+  MariaDbJournalOptions,
+  MariaDbSnapshotStoreOptions,
+  MariaDbDurableStateStoreOptions,
+  RegisterMariaDbPluginsOptions,
+  FilesystemObjectStorageOptions,
+  S3ObjectStorageOptions,
+  ObjectStorageSnapshotStoreOptions,
+  ObjectStorageDurableStateStoreOptions,
+  ObjectStoragePluginOptions,
+  ProjectionOptions,
+  ByPidProjectionOptions,
+  ByTagProjectionOptions,
+  DurableStateOptions,
   ReplicatedEventSourcedActor,
   VectorClock,
   LastWriterWinsResolver,
@@ -353,25 +378,25 @@ export type {
   DurableStateSettings,
   DurableStateStore,
   DurableStateRecord,
-  CassandraJournalOptions,
-  CassandraSnapshotStoreOptions,
+  CassandraJournalSettings,
+  CassandraSnapshotStoreSettings,
   CassandraClientLike,
   CassandraConnection,
   CassandraRowResult,
   CassandraBatchQuery,
-  RegisterCassandraPluginsOptions,
-  PostgresJournalOptions,
-  PostgresSnapshotStoreOptions,
-  PostgresDurableStateStoreOptions,
-  RegisterPostgresPluginsOptions,
+  RegisterCassandraPluginsSettings,
+  PostgresJournalSettings,
+  PostgresSnapshotStoreSettings,
+  PostgresDurableStateStoreSettings,
+  RegisterPostgresPluginsSettings,
   PostgresPluginHandles,
   PostgresConnection,
   PgPoolLike,
   PgClientLike,
-  MariaDbJournalOptions,
-  MariaDbSnapshotStoreOptions,
-  MariaDbDurableStateStoreOptions,
-  RegisterMariaDbPluginsOptions,
+  MariaDbJournalSettings,
+  MariaDbSnapshotStoreSettings,
+  MariaDbDurableStateStoreSettings,
+  RegisterMariaDbPluginsSettings,
   MariaDbPluginHandles,
   MariaDbConnection,
   MariaDbPoolLike,
@@ -380,13 +405,13 @@ export type {
   ObjectFetched,
   ObjectInfo,
   PutOptions,
-  FilesystemObjectStorageOptions,
-  S3ObjectStorageOptions,
+  FilesystemObjectStorageSettings,
+  S3ObjectStorageSettings,
   S3Credentials,
   S3ClientLike,
-  ObjectStorageSnapshotStoreOptions,
-  ObjectStorageDurableStateStoreOptions,
-  ObjectStoragePluginOptions,
+  ObjectStorageSnapshotStoreSettings,
+  ObjectStorageDurableStateStoreSettings,
+  ObjectStoragePluginSettings,
   ObjectStoragePluginHandles,
   ObjectStorageBackendSpec,
   CompressionConfig,
@@ -432,6 +457,7 @@ export {
   ORSet,
   LWWRegister,
   DistributedData,
+  DistributedDataOptions,
   DistributedDataId,
 } from './crdt/index.js';
 export type {
@@ -458,7 +484,9 @@ export {
   CacheError,
   InMemoryCache,
   RedisCache,
+  RedisCacheOptions,
   MemcachedCache,
+  MemcachedCacheOptions,
   CacheExtension,
   CacheExtensionId,
   IN_MEMORY_CACHE_PLUGIN_ID,
@@ -467,9 +495,9 @@ export {
 } from './cache/index.js';
 export type {
   Cache,
-  RedisCacheOptions,
+  RedisCacheSettings,
   RedisClientLike,
-  MemcachedCacheOptions,
+  MemcachedCacheSettings,
   MemcachedClientLike,
 } from './cache/index.js';
 
@@ -477,6 +505,7 @@ export type {
 export {
   ReliableDelivery,
   ProducerController,
+  ProducerControllerOptions,
   ConsumerController,
 } from './delivery/index.js';
 export type {
@@ -530,7 +559,7 @@ export type {
 } from './management/index.js';
 
 // Coordination (Lease API + InMemoryLease reference + KubernetesLease stub).
-export { InMemoryLease, inMemoryLeaseStore, KubernetesLease } from './coordination/index.js';
+export { InMemoryLease, inMemoryLeaseStore, KubernetesLease, LeaseOptions, KubernetesLeaseOptions } from './coordination/index.js';
 export type { Lease, LeaseSettings, KubernetesLeaseSettings } from './coordination/index.js';
 
 // Discovery / Receptionist + seed providers.
@@ -547,12 +576,17 @@ export {
   Unsubscribe as ReceptionistUnsubscribe,
   Listing,
   ConfigSeedProvider,
+  ConfigSeedProviderOptions,
   seedsFromEnv,
   DnsSeedProvider,
+  DnsSeedProviderOptions,
   AggregateSeedProvider,
   KubernetesApiSeedProvider,
+  KubernetesApiSeedProviderOptions,
   autoDiscovery,
+  AutoDiscoveryOptions,
   singleProviderDiscovery,
+  ReceptionistOptions,
 } from './discovery/index.js';
 export type {
   ReceptionistSettings,
@@ -594,7 +628,7 @@ export type {
 } from './typed/index.js';
 
 // Worker-Cluster (multi-core via Bun/Web-Workers).
-export { WorkerCluster, WorkerBroker, WorkerNode } from './worker/index.js';
+export { WorkerCluster, WorkerClusterOptions, WorkerBroker, WorkerNode } from './worker/index.js';
 export type {
   WorkerClusterSettings,
   WorkerHandle,

@@ -92,12 +92,11 @@ The Docker Compose spins up:
 ### Sharded sessions
 
 ```ts
-const sessionRegion = cluster.sharding.start<SessionMsg>({
-  typeName: 'session',
-  entityProps: Props.create(() => new UserSessionActor()),
-  extractEntityId: (msg) => msg.userId,
-  rememberEntities: true,
-});
+const sessionRegion = cluster.sharding.start(StartShardingOptions.create<SessionMsg>()
+  .withTypeName('session')
+  .withEntityProps(Props.create(() => new UserSessionActor()))
+  .withExtractEntityId((msg) => msg.userId)
+  .withRememberEntities(true));
 ```
 
 One actor per logged-in user, distributed across nodes.

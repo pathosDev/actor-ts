@@ -1,3 +1,4 @@
+import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import {
   DurableStateConcurrencyError,
   type DurableStateRecord,
@@ -13,11 +14,51 @@ import {
   type PostgresConnection,
 } from '../journals/PostgresClient.js';
 
-export interface PostgresDurableStateStoreOptions extends PostgresConnection {
+export interface PostgresDurableStateStoreSettings extends PostgresConnection {
   /** Table name.  Default: `durable_state`. */
   readonly table?: string;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
   readonly autoCreateTables?: boolean;
+}
+
+/**
+ * Fluent builder for {@link PostgresDurableStateStoreSettings}:
+ *
+ *     new PostgresDurableStateStore(PostgresDurableStateStoreOptions.create().withUrl('postgres://…').withTable('state'))
+ *
+ * The connection fields (`withUrl` / `withPoolConfig` / `withPool`) come
+ * from the shared {@link PostgresConnection} mixin.
+ */
+export class PostgresDurableStateStoreOptions extends OptionsBuilder<PostgresDurableStateStoreSettings> {
+  /** Start a fresh builder.  Equivalent to `new PostgresDurableStateStoreOptions()`. */
+  static create(): PostgresDurableStateStoreOptions {
+    return new PostgresDurableStateStoreOptions();
+  }
+
+  /** Connection string, e.g. `postgres://user:pass@host:5432/db`. */
+  withUrl(url: string): this {
+    return this.set('url', url);
+  }
+
+  /** Extra node-postgres `Pool` config, merged over `{ connectionString: url }`. */
+  withPoolConfig(poolConfig: Record<string, unknown>): this {
+    return this.set('poolConfig', poolConfig);
+  }
+
+  /** Pre-built pool — bypasses the lazy `pg` import; share it across stores. */
+  withPool(pool: PgPoolLike): this {
+    return this.set('pool', pool);
+  }
+
+  /** Table name.  Default: `durable_state`. */
+  withTable(table: string): this {
+    return this.set('table', table);
+  }
+
+  /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
+  withAutoCreateTables(autoCreateTables: boolean): this {
+    return this.set('autoCreateTables', autoCreateTables);
+  }
 }
 
 interface StateRow {
@@ -43,7 +84,7 @@ interface StateRow {
  * (JSON-text payload, like the other SQL stores).
  */
 export class PostgresDurableStateStore implements DurableStateStore {
-  private readonly options: PostgresDurableStateStoreOptions;
+  private readonly settings: PostgresDurableStateStoreSettings;
   private readonly table: string;
   private readonly autoCreate: boolean;
 
@@ -51,10 +92,11 @@ export class PostgresDurableStateStore implements DurableStateStore {
   private initPromise: Promise<void> | null = null;
   private closed = false;
 
-  constructor(options: PostgresDurableStateStoreOptions = {}) {
-    this.options = options;
-    this.table = assertSafeIdentifier(options.table ?? 'durable_state', 'durable-state table');
-    this.autoCreate = options.autoCreateTables ?? true;
+  constructor(options: PostgresDurableStateStoreOptions = PostgresDurableStateStoreOptions.create()) {
+    const s = options.build();
+    this.settings = s;
+    this.table = assertSafeIdentifier(s.table ?? 'durable_state', 'durable-state table');
+    this.autoCreate = s.autoCreateTables ?? true;
   }
 
   async upsert<S>(
@@ -151,7 +193,7 @@ export class PostgresDurableStateStore implements DurableStateStore {
   }
 
   private async init(): Promise<void> {
-    const pool = await buildPgPool(this.options);
+    const pool = await buildPgPool(this.settings);
     if (this.autoCreate) {
       await pool.query(
         `CREATE TABLE IF NOT EXISTS ${this.table} (

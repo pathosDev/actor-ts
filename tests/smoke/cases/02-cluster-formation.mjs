@@ -7,16 +7,17 @@ export const description = '2 nodes converge to Up via InMemoryTransport';
 
 export async function run({ actorTs }) {
   const {
-    ActorSystem, Cluster, InMemoryTransport, LogLevel, NoopLogger, NodeAddress,
+    ActorSystem, ActorSystemOptions, Cluster, ClusterOptions, InMemoryTransport, LogLevel, NoopLogger, NodeAddress,
   } = actorTs;
 
   async function buildNode(sysName, port, seeds) {
-    const sys = ActorSystem.create(sysName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
-    const cluster = await Cluster.join(sys, {
-      host: 'h', port, seeds,
-      transport: new InMemoryTransport(new NodeAddress(sysName, 'h', port)),
-      gossipIntervalMs: 30,
-    });
+    const sys = ActorSystem.create(sysName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const cluster = await Cluster.join(sys, ClusterOptions.create()
+      .withHost('h')
+      .withPort(port)
+      .withSeeds(seeds)
+      .withTransport(new InMemoryTransport(new NodeAddress(sysName, 'h', port)))
+      .withGossipIntervalMs(30));
     return { sys, cluster };
   }
 
