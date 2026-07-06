@@ -1,12 +1,27 @@
 import { describe, expect, test } from 'bun:test';
+import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { Actor } from '../../../../../src/Actor.js';
+import { Props } from '../../../../../src/Props.js';
+import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
+import type { ActorRef } from '../../../../../src/ActorRef.js';
 import {
   MqttActor,
   buildPublishProperties,
   matchesMqttPattern,
-  type MqttMessage,
+  type MqttActorSettings,
+  type MqttClientLike,
+  type MqttInboundPacketLike,
+  type MqttModuleLike,
   type MqttPublish,
 } from '../../../../../src/io/broker/MqttActor.js';
-import type { ActorRef } from '../../../../../src/ActorRef.js';
+import { MqttOptions } from '../../../../../src/io/broker/MqttOptions.js';
+import type { MqttDecodeError } from '../../../../../src/io/broker/MqttCodec.js';
+import type { MqttMessage, MqttQos, MqttRef } from '../../../../../src/io/broker/MqttMessages.js';
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+const enc = new TextEncoder();
+
+/* ----------------------- matchesMqttPattern ------------------------ */
 
 describe('matchesMqttPattern', () => {
   test('exact-match topics', () => {
@@ -24,62 +39,463 @@ describe('matchesMqttPattern', () => {
 
   test('# wildcard matches the remaining segments', () => {
     expect(matchesMqttPattern('a/#', 'a/b/c/d')).toBe(true);
-    // Per MQTT spec convention, `a/#` also matches the parent topic `a`
-    // (the multi-level wildcard accepts zero or more segments).
     expect(matchesMqttPattern('a/#', 'a')).toBe(true);
     expect(matchesMqttPattern('#', 'anything/at/all')).toBe(true);
   });
 });
 
-/* ----------- MqttActor wiring tests via FakeMqttClient -------------- */
+/* --------------------------- fake mqtt client ----------------------- */
 
-interface MqttClientLike {
-  on(event: string, cb: (...args: unknown[]) => void): void;
-  once(event: string, cb: (...args: unknown[]) => void): void;
-  removeAllListeners(event?: string): void;
-  publish(topic: string, payload: string | Uint8Array, opts: { qos: number; retain: boolean }, cb?: (err?: Error) => void): void;
-  subscribe(topic: string, opts: { qos: number }, cb?: (err?: Error) => void): void;
-  unsubscribe(topic: string, opts: undefined, cb?: (err?: Error) => void): void;
-  end(force?: boolean, opts?: object, cb?: () => void): void;
+class FakeMqttClient implements MqttClientLike {
+  readonly subscribes: Array<{ topic: string; qos: number }> = [];
+  readonly unsubscribes: string[] = [];
+  readonly publishes: Array<{ topic: string; payload: string | Uint8Array; qos: number; retain: boolean }> = [];
+
+  private msgCbs: Array<(t: string, p: Uint8Array, pk?: MqttInboundPacketLike) => void> = [];
+  private closeCbs: Array<() => void> = [];
+  private errCbs: Array<(e: Error) => void> = [];
+  private connectCbs: Array<() => void> = [];
+  private connectErrCbs: Array<(e: Error) => void> = [];
+
+  on(event: 'message' | 'error' | 'close', cb: (...args: never[]) => void): void {
+    if (event === 'message') this.msgCbs.push(cb as never);
+    else if (event === 'close') this.closeCbs.push(cb as never);
+    else this.errCbs.push(cb as never);
+  }
+  once(event: 'connect' | 'error', cb: (...args: never[]) => void): void {
+    if (event === 'connect') this.connectCbs.push(cb as never);
+    else this.connectErrCbs.push(cb as never);
+  }
+  removeAllListeners(event?: string): void {
+    if (event === 'error' || event === undefined) { this.errCbs = []; this.connectErrCbs = []; }
+    if (event === undefined) { this.msgCbs = []; this.closeCbs = []; this.connectCbs = []; }
+  }
+  publish(topic: string, payload: string | Uint8Array, opts: { qos: MqttQos; retain: boolean }, cb?: (err?: Error) => void): void {
+    this.publishes.push({ topic, payload, qos: opts.qos, retain: opts.retain });
+    cb?.();
+  }
+  subscribe(topic: string, opts: { qos: MqttQos }, cb?: (err?: Error) => void): void {
+    this.subscribes.push({ topic, qos: opts.qos });
+    cb?.();
+  }
+  unsubscribe(topic: string, _opts: undefined, cb?: (err?: Error) => void): void {
+    this.unsubscribes.push(topic);
+    cb?.();
+  }
+  end(_force?: boolean, _opts?: object, cb?: () => void): void { cb?.(); }
+
+  fireConnect(): void { for (const cb of [...this.connectCbs]) cb(); }
+  fireMessage(topic: string, payload: Uint8Array, packet?: MqttInboundPacketLike): void {
+    for (const cb of [...this.msgCbs]) cb(topic, payload, packet);
+  }
+  fireClose(): void { for (const cb of [...this.closeCbs]) cb(); }
 }
 
-/**
- * Even with a mock client we still pay for `await import('mqtt')`
- * inside `connectImpl` — the import would fail without the peer-dep
- * installed.  These tests exercise the topic-match helper directly,
- * which is the most error-prone bit.  Full e2e (against Mosquitto)
- * runs as an optional integration test.
- */
+class FakeMqttModule {
+  readonly clients: FakeMqttClient[] = [];
+  autoConnect = true;
+  connect(_url: string, _opts?: unknown): FakeMqttClient {
+    const c = new FakeMqttClient();
+    this.clients.push(c);
+    if (this.autoConnect) setTimeout(() => c.fireConnect(), 0);
+    return c;
+  }
+  last(): FakeMqttClient { return this.clients[this.clients.length - 1]!; }
+}
 
-describe('MqttActor (no peer-dep tests)', () => {
-  test('importing the module does not crash when mqtt is missing', async () => {
-    // The Lazy<> only runs when an instance tries to connect; constructing
-    // an actor object does not pull in the peer-dep.
-    const a = new MqttActor({ brokerUrl: 'mqtt://localhost' });
-    expect(a).toBeInstanceOf(MqttActor);
+/* --------------------------- test actor ----------------------------- */
+
+interface TestActorOpts<T> {
+  settings?: Partial<MqttActorSettings> | MqttOptions;
+  module?: FakeMqttModule;
+  ctorSubs?: Array<{ topic: string; qos?: MqttQos; target?: ActorRef<MqttMessage<T>> }>;
+}
+
+class TestMqttActor<T = unknown, TSelf = never> extends MqttActor<T, TSelf> {
+  readonly module: FakeMqttModule;
+  readonly inbound: MqttMessage<T>[] = [];
+  readonly selfMsgs: TSelf[] = [];
+  readonly decodeErrors: Array<{ error: MqttDecodeError; msg: MqttMessage<T> }> = [];
+  connectedCount = 0;
+  disconnectedCount = 0;
+
+  constructor(opts: TestActorOpts<T> = {}) {
+    super(opts.settings ?? {});
+    this.module = opts.module ?? new FakeMqttModule();
+    for (const s of opts.ctorSubs ?? []) this.subscribe(s.topic, { qos: s.qos, target: s.target });
+  }
+
+  protected override mqttModule(): Promise<MqttModuleLike> {
+    return Promise.resolve(this.module as unknown as MqttModuleLike);
+  }
+
+  override onMessage(msg: MqttMessage<T>): void {
+    // Touch entity() so a malformed payload surfaces to onDecodeError.
+    if (this.decodeOnReceive) msg.payload.entity();
+    this.inbound.push(msg);
+  }
+  decodeOnReceive = false;
+
+  protected override onConnected(): void { this.connectedCount++; }
+  protected override onDisconnected(): void { this.disconnectedCount++; }
+  protected override onDecodeError(error: MqttDecodeError, msg: MqttMessage<T>): void {
+    this.decodeErrors.push({ error, msg });
+  }
+  protected override onSelfMessage(msg: TSelf): void { this.selfMsgs.push(msg); }
+
+  // Public test wrappers for the protected API.
+  doSubscribe(topic: string, opts?: { qos?: MqttQos; target?: ActorRef<MqttMessage<T>> }): void { this.subscribe(topic, opts); }
+  doUnsubscribe(topic: string, opts?: { target?: ActorRef<MqttMessage<T>> }): void { this.unsubscribe(topic, opts); }
+  doPublish(topic: string, payload: unknown, opts?: { qos?: MqttQos; retain?: boolean }): boolean {
+    return (this.publish as (t: string, p: unknown, o?: unknown) => boolean)(topic, payload, opts);
+  }
+  encodeEntity(value: unknown): Uint8Array { return this.codec().encode(value); }
+  get resolvedSettings(): MqttActorSettings { return this.settings; }
+}
+
+let sysCounter = 0;
+function makeSystem(): ActorSystem {
+  return ActorSystem.create(`mqtt-unit-${++sysCounter}`, {
+    logger: new NoopLogger(),
+    logLevel: LogLevel.Off,
   });
+}
 
-  test('matchesMqttPattern is exported and reusable for tests', () => {
-    void matchesMqttPattern;  // type check
-    void ({} as MqttClientLike);
-    void ({} as MqttMessage);
-    void ({} as ActorRef);
-    expect(true).toBe(true);
+async function boot<T, TSelf>(
+  sys: ActorSystem,
+  actor: TestMqttActor<T, TSelf>,
+  name = 'mqtt',
+): Promise<MqttRef<T, TSelf>> {
+  const ref = sys.spawn(Props.create(() => actor), name);
+  await sleep(30); // let preStart connect (autoConnect fires on the next tick)
+  return ref as MqttRef<T, TSelf>;
+}
+
+/** Collects fanned-out MqttMessages for external-target assertions. */
+class InboxActor<T> extends Actor<MqttMessage<T>> {
+  readonly received: MqttMessage<T>[] = [];
+  override onReceive(m: MqttMessage<T>): void { this.received.push(m); }
+}
+
+/* --------------------------- construction --------------------------- */
+
+describe('MqttActor construction', () => {
+  test('constructing an actor does not pull in the mqtt peer-dep', () => {
+    const a = new TestMqttActor({ settings: { brokerUrl: 'mqtt://localhost' } });
+    expect(a).toBeInstanceOf(MqttActor);
   });
 });
 
-/* --------------- MQTT 5.0 publish-properties helper (#13) ---------------- */
+/* ------------------------ pending-sub flush ------------------------- */
+
+describe('MqttActor subscription flush + defaults', () => {
+  test('constructor subscribe is applied to the broker on connect with defaultQos', async () => {
+    const sys = makeSystem();
+    try {
+      const actor = new TestMqttActor({
+        settings: { brokerUrl: 'mqtt://x', defaultQos: 1 },
+        ctorSubs: [{ topic: 'a/+' }],
+      });
+      await boot(sys, actor);
+      expect(actor.module.last().subscribes).toEqual([{ topic: 'a/+', qos: 1 }]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('per-subscription qos overrides defaultQos', async () => {
+    const sys = makeSystem();
+    try {
+      const actor = new TestMqttActor({
+        settings: { brokerUrl: 'mqtt://x', defaultQos: 0 },
+        ctorSubs: [{ topic: 'a/#', qos: 2 }],
+      });
+      await boot(sys, actor);
+      expect(actor.module.last().subscribes).toEqual([{ topic: 'a/#', qos: 2 }]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+/* --------------------------- inbound routing ------------------------ */
+
+describe('MqttActor inbound routing', () => {
+  test('own subscription delivers a wrapped, decodable payload to onMessage', async () => {
+    const sys = makeSystem();
+    try {
+      const actor = new TestMqttActor<{ v: number }>({
+        settings: { brokerUrl: 'mqtt://x' },
+        ctorSubs: [{ topic: 'sensors/+/temp' }],
+      });
+      await boot(sys, actor);
+      actor.module.last().fireMessage('sensors/1/temp', enc.encode('{"v":21}'));
+      await sleep(20);
+      expect(actor.inbound).toHaveLength(1);
+      expect(actor.inbound[0]!.topic).toBe('sensors/1/temp');
+      const decoded = actor.inbound[0]!.payload.entity();
+      expect(decoded).toEqual({ v: 21 });
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('external target receives the message; overlapping patterns dedupe', async () => {
+    const sys = makeSystem();
+    try {
+      const inbox = new InboxActor<unknown>();
+      const inboxRef = sys.spawn(Props.create(() => inbox), 'inbox') as ActorRef<MqttMessage<unknown>>;
+      const actor = new TestMqttActor({
+        settings: { brokerUrl: 'mqtt://x' },
+        ctorSubs: [
+          { topic: 'a/#', target: inboxRef },
+          { topic: 'a/b', target: inboxRef }, // overlaps a/# for topic a/b
+        ],
+      });
+      await boot(sys, actor);
+      actor.module.last().fireMessage('a/b', enc.encode('hi'));
+      await sleep(20);
+      // Two matching patterns, one ref → delivered exactly once.
+      expect(inbox.received).toHaveLength(1);
+      expect(inbox.received[0]!.payload.text()).toBe('hi');
+      // No own-delivery was configured.
+      expect(actor.inbound).toHaveLength(0);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('external subscribe command with no target routes to onMessage', async () => {
+    const sys = makeSystem();
+    try {
+      const actor = new TestMqttActor({ settings: { brokerUrl: 'mqtt://x' } });
+      const ref = await boot(sys, actor);
+      ref.tell({ kind: 'subscribe', topic: 'x/#' });
+      await sleep(20);
+      expect(actor.module.last().subscribes.map((s) => s.topic)).toContain('x/#');
+      actor.module.last().fireMessage('x/y', enc.encode('yo'));
+      await sleep(20);
+      expect(actor.inbound.map((m) => m.topic)).toEqual(['x/y']);
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+/* ----------------------- reconnect / disconnected ------------------- */
+
+describe('MqttActor reconnect + subscription persistence', () => {
+  test('subscribe received while disconnected reaches the broker on reconnect (bug #2)', async () => {
+    const sys = makeSystem();
+    try {
+      const actor = new TestMqttActor({
+        settings: { brokerUrl: 'mqtt://x', reconnect: { initialDelayMs: 10 } },
+      });
+      const ref = await boot(sys, actor);
+      // Drop the connection → disconnected, reconnect scheduled.
+      actor.module.last().fireClose();
+      // Subscribe arrives while disconnected: recorded, not yet on the broker.
+      ref.tell({ kind: 'subscribe', topic: 'late/#', qos: 1 });
+      await sleep(60); // let the reconnect fire + apply the registry
+      const latest = actor.module.last();
+      expect(actor.module.clients.length).toBeGreaterThanOrEqual(2);
+      expect(latest.subscribes).toEqual([{ topic: 'late/#', qos: 1 }]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('runtime subscription is re-applied on the broker after a reconnect (bug #1)', async () => {
+    const sys = makeSystem();
+    try {
+      const actor = new TestMqttActor({
+        settings: { brokerUrl: 'mqtt://x', defaultQos: 1, reconnect: { initialDelayMs: 10 } },
+      });
+      const ref = await boot(sys, actor);
+      ref.tell({ kind: 'subscribe', topic: 'run/#' });
+      await sleep(20);
+      expect(actor.module.last().subscribes.map((s) => s.topic)).toContain('run/#');
+      // Reconnect → the new client must re-receive the runtime subscription.
+      actor.module.last().fireClose();
+      await sleep(60);
+      const latest = actor.module.last();
+      expect(actor.module.clients.length).toBeGreaterThanOrEqual(2);
+      expect(latest.subscribes.map((s) => s.topic)).toContain('run/#');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('onConnected / onDisconnected hooks fire across a reconnect', async () => {
+    const sys = makeSystem();
+    try {
+      const actor = new TestMqttActor({
+        settings: { brokerUrl: 'mqtt://x', reconnect: { initialDelayMs: 10 } },
+      });
+      await boot(sys, actor);
+      expect(actor.connectedCount).toBe(1);
+      actor.module.last().fireClose();
+      await sleep(60);
+      expect(actor.disconnectedCount).toBeGreaterThanOrEqual(1);
+      expect(actor.connectedCount).toBeGreaterThanOrEqual(2);
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+/* --------------------------- Terminated cleanup --------------------- */
+
+describe('MqttActor deathwatch cleanup (bug #3)', () => {
+  test('stopping an external target prunes it and unsubscribes when the pattern empties', async () => {
+    const sys = makeSystem();
+    try {
+      const inbox = new InboxActor<unknown>();
+      const inboxRef = sys.spawn(Props.create(() => inbox), 'inbox-term') as ActorRef<MqttMessage<unknown>>;
+      const actor = new TestMqttActor({
+        settings: { brokerUrl: 'mqtt://x' },
+        ctorSubs: [{ topic: 'watched/#', target: inboxRef }],
+      });
+      await boot(sys, actor);
+      expect(actor.module.last().subscribes.map((s) => s.topic)).toContain('watched/#');
+      // Stop the target → Terminated flows to the actor → registry pruned.
+      inboxRef.stop();
+      await sleep(40);
+      expect(actor.module.last().unsubscribes).toContain('watched/#');
+      // A subsequent message must not reach the stopped inbox.
+      actor.module.last().fireMessage('watched/x', enc.encode('gone'));
+      await sleep(20);
+      expect(inbox.received).toHaveLength(0);
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+/* --------------------------- decode errors -------------------------- */
+
+describe('MqttActor onDecodeError', () => {
+  test('malformed payload in onMessage routes to onDecodeError without restarting', async () => {
+    const sys = makeSystem();
+    try {
+      const actor = new TestMqttActor({
+        settings: { brokerUrl: 'mqtt://x' },
+        ctorSubs: [{ topic: 'j/#' }],
+      });
+      actor.decodeOnReceive = true;
+      await boot(sys, actor);
+      actor.module.last().fireMessage('j/1', enc.encode('{ broken'));
+      await sleep(20);
+      expect(actor.decodeErrors).toHaveLength(1);
+      expect(actor.decodeErrors[0]!.error.topic).toBe('j/1');
+      // Actor is still alive and processing: a valid message still lands.
+      actor.decodeOnReceive = false;
+      actor.module.last().fireMessage('j/2', enc.encode('"ok"'));
+      await sleep(20);
+      expect(actor.inbound.map((m) => m.topic)).toContain('j/2');
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+/* --------------------------- self messages -------------------------- */
+
+describe('MqttActor onSelfMessage', () => {
+  test('non-command app messages route to onSelfMessage; commands still dispatch', async () => {
+    const sys = makeSystem();
+    try {
+      const actor = new TestMqttActor<unknown, { kind: 'tick'; n: number }>({
+        settings: { brokerUrl: 'mqtt://x' },
+      });
+      const ref = await boot(sys, actor);
+      ref.tell({ kind: 'tick', n: 7 });
+      ref.tell({ kind: 'subscribe', topic: 's/#' });
+      await sleep(20);
+      expect(actor.selfMsgs).toEqual([{ kind: 'tick', n: 7 }]);
+      expect(actor.module.last().subscribes.map((s) => s.topic)).toContain('s/#');
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+/* --------------------------- publish matrix ------------------------- */
+
+describe('MqttActor publish', () => {
+  test('string + Uint8Array pass through raw; objects are codec-encoded', async () => {
+    const sys = makeSystem();
+    try {
+      const actor = new TestMqttActor({ settings: { brokerUrl: 'mqtt://x' } });
+      await boot(sys, actor);
+      actor.doPublish('t/str', 'hello');
+      actor.doPublish('t/bin', enc.encode('bin'));
+      actor.doPublish('t/obj', { a: 1 });
+      await sleep(20);
+      const byTopic = new Map(actor.module.last().publishes.map((p) => [p.topic, p.payload]));
+      expect(byTopic.get('t/str')).toBe('hello');
+      expect(new TextDecoder().decode(byTopic.get('t/bin') as Uint8Array)).toBe('bin');
+      expect(new TextDecoder().decode(byTopic.get('t/obj') as Uint8Array)).toBe('{"a":1}');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('escape hatch: encode a bare string as a JSON entity', async () => {
+    const sys = makeSystem();
+    try {
+      const actor = new TestMqttActor({ settings: { brokerUrl: 'mqtt://x' } });
+      await boot(sys, actor);
+      actor.doPublish('t/entity', actor.encodeEntity('pong'));
+      await sleep(20);
+      const p = actor.module.last().publishes.find((x) => x.topic === 't/entity')!;
+      expect(new TextDecoder().decode(p.payload as Uint8Array)).toBe('"pong"');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('encode failure drops the publish and returns false', async () => {
+    const sys = makeSystem();
+    try {
+      const actor = new TestMqttActor({ settings: { brokerUrl: 'mqtt://x' } });
+      await boot(sys, actor);
+      const circular: Record<string, unknown> = {};
+      circular.self = circular;
+      const ok = actor.doPublish('t/bad', circular);
+      await sleep(20);
+      expect(ok).toBe(false);
+      expect(actor.module.last().publishes.find((x) => x.topic === 't/bad')).toBeUndefined();
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('publishes while disconnected are buffered and flushed on reconnect in order', async () => {
+    const sys = makeSystem();
+    try {
+      const actor = new TestMqttActor({
+        settings: { brokerUrl: 'mqtt://x', reconnect: { initialDelayMs: 10 } },
+      });
+      const ref = await boot(sys, actor);
+      actor.module.last().fireClose();
+      // Buffered while disconnected.
+      ref.tell({ kind: 'publish', publish: { topic: 'buf/1', payload: 'one' } });
+      ref.tell({ kind: 'publish', publish: { topic: 'buf/2', payload: 'two' } });
+      await sleep(60);
+      const flushed = actor.module.last().publishes.filter((p) => p.topic.startsWith('buf/'));
+      expect(flushed.map((p) => p.topic)).toEqual(['buf/1', 'buf/2']);
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+/* ------------------- MQTT 5.0 publish-properties helper (#13) -------- */
 
 describe('buildPublishProperties (MQTT 5.0)', () => {
   test('returns undefined on protocolVersion=4 even with userProperties set', () => {
-    // The 3.1.1 wire format has no slot for user properties — we
-    // silently drop them rather than letting them leak into the
-    // publish callsite with no effect.
-    const p: MqttPublish = {
-      topic: 'sensor/1',
-      payload: 'x',
-      userProperties: { tenant: 't1' },
-    };
+    const p: MqttPublish = { topic: 'sensor/1', payload: 'x', userProperties: { tenant: 't1' } };
     expect(buildPublishProperties(p, 4)).toBeUndefined();
   });
 
@@ -90,14 +506,7 @@ describe('buildPublishProperties (MQTT 5.0)', () => {
   });
 
   test('returns undefined when userProperties is an empty object on v5', () => {
-    // An empty user-properties object is semantically "no properties"
-    // — collapse to undefined so mqtt.js doesn't emit an empty
-    // properties block on the wire.
-    const p: MqttPublish = {
-      topic: 'sensor/1',
-      payload: 'x',
-      userProperties: {},
-    };
+    const p: MqttPublish = { topic: 'sensor/1', payload: 'x', userProperties: {} };
     expect(buildPublishProperties(p, 5)).toBeUndefined();
   });
 
@@ -108,14 +517,7 @@ describe('buildPublishProperties (MQTT 5.0)', () => {
   });
 
   test('preserves multi-valued properties (string[]) verbatim', () => {
-    // MQTT 5.0 allows multiple values per key — the wire format
-    // emits the key + value pair for each entry in the array.  The
-    // helper passes the array through unchanged.
-    const p: MqttPublish = {
-      topic: 'sensor/1',
-      payload: 'x',
-      userProperties: { tag: ['alpha', 'beta', 'gamma'] },
-    };
+    const p: MqttPublish = { topic: 'sensor/1', payload: 'x', userProperties: { tag: ['alpha', 'beta', 'gamma'] } };
     const props = buildPublishProperties(p, 5);
     expect(props?.userProperties?.tag).toEqual(['alpha', 'beta', 'gamma']);
   });

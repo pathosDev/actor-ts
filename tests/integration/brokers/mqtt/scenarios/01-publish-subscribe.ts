@@ -2,9 +2,9 @@
  * Baseline: subscribe → publish → message reaches the subscriber.
  * QoS 0 (at-most-once) — the cheapest delivery class.  If this
  * fails, the entire MQTT integration is broken; everything else
- * downstream is moot.
+ * downstream is moot.  Exercises the external-target subscribe path
+ * (`{ kind: 'subscribe', target }`) that still fans out to a foreign ref.
  */
-import type { MqttMessage } from '../../../../../src/io/broker/MqttActor.js';
 import { spawnInbox, spawnMqtt, type MqttCtx } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
@@ -16,12 +16,7 @@ export const scenario: BrokerScenario<MqttCtx> = {
     const { ref: inboxRef, inbox } = spawnInbox(ctx);
     try {
       // Subscribe first so the broker has the route when the publish lands.
-      mqtt.tell({
-        kind: 'subscribe',
-        topic: tag,
-        target: inboxRef as unknown as Parameters<typeof inboxFor>[0],
-        qos: 0,
-      });
+      mqtt.tell({ kind: 'subscribe', topic: tag, target: inboxRef, qos: 0 });
       // Give the subscription time to land on the broker.
       await new Promise((r) => setTimeout(r, 200));
 
@@ -35,8 +30,8 @@ export const scenario: BrokerScenario<MqttCtx> = {
         5_000,
       );
       const msg = inbox.received.find((m) => m.topic === tag)!;
-      if (new TextDecoder().decode(msg.payload) !== 'hello') {
-        throw new Error(`payload mismatch: got ${new TextDecoder().decode(msg.payload)}`);
+      if (msg.payload.text() !== 'hello') {
+        throw new Error(`payload mismatch: got ${msg.payload.text()}`);
       }
       if (msg.qos !== 0) {
         throw new Error(`qos mismatch: got ${msg.qos}`);
@@ -47,7 +42,3 @@ export const scenario: BrokerScenario<MqttCtx> = {
     }
   },
 };
-
-// Compile-time helper to silence the unused-import lint on the
-// re-typed `target` field of the subscribe command.
-function inboxFor(_ref: { tell(_m: MqttMessage): void }): void { /* type-only */ }

@@ -5,7 +5,6 @@
  * must work together — broker accepts the wildcard subscribe and
  * actor matches concrete inbound topics against the pattern.
  */
-import type { MqttMessage } from '../../../../../src/io/broker/MqttActor.js';
 import { spawnInbox, spawnMqtt, type MqttCtx } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
@@ -19,16 +18,10 @@ export const scenario: BrokerScenario<MqttCtx> = {
     try {
       // `+` matches exactly one level.  `base/+/leaf` → matches
       // base/x/leaf, base/y/leaf, but NOT base/x/y/leaf or base/leaf.
-      mqtt.tell({
-        kind: 'subscribe', topic: `${base}/+/leaf`,
-        target: plusRef as unknown as { tell(_m: MqttMessage): void }, qos: 0,
-      });
+      mqtt.tell({ kind: 'subscribe', topic: `${base}/+/leaf`, target: plusRef, qos: 0 });
       // `#` matches one-or-more levels.  `base/sensor/#` → matches
       // base/sensor/temp, base/sensor/x/y, but NOT base/sensor.
-      mqtt.tell({
-        kind: 'subscribe', topic: `${base}/sensor/#`,
-        target: hashRef as unknown as { tell(_m: MqttMessage): void }, qos: 0,
-      });
+      mqtt.tell({ kind: 'subscribe', topic: `${base}/sensor/#`, target: hashRef, qos: 0 });
       await new Promise((r) => setTimeout(r, 200));
 
       const publishes = [

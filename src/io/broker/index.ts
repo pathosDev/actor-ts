@@ -34,16 +34,38 @@ export type {
   UdpDatagram,
   UdpOutbound,
 } from './UdpSocketActor.js';
-export { MqttActor, matchesMqttPattern } from './MqttActor.js';
+// Subclass-first typed MQTT actor.
+export { MqttActor, matchesMqttPattern, buildPublishProperties } from './MqttActor.js';
 export type {
   MqttActorSettings,
-  MqttCmd,
+  MqttPublishOptions,
+  MqttCredentials,
+  // Test seams (re-exported so subclasses can satisfy the mock shape).
+  MqttClientLike,
+  MqttModuleLike,
+  MqttInboundPacketLike,
+} from './MqttActor.js';
+export { MqttOptions } from './MqttOptions.js';
+// Message types, payload wrapper, and mailbox signals.
+export {
+  MqttPayload,
+  MqttInboundSignal,
+  MqttConnectedSignal,
+  MqttDisconnectedSignal,
+} from './MqttMessages.js';
+export type {
   MqttMessage,
   MqttPublish,
+  MqttCmd,
   MqttQos,
-  MqttSubscription,
-  MqttCredentials,
-} from './MqttActor.js';
+  MqttUserProperties,
+  MqttSignal,
+  MqttActorMessage,
+  MqttRef,
+} from './MqttMessages.js';
+// Payload codec seam.
+export { mqttJsonCodec, MqttDecodeError, MqttEncodeError } from './MqttCodec.js';
+export type { MqttCodec } from './MqttCodec.js';
 // NOTE: the client-side WebSocket actor now lives in `src/http/ws/`
 // as the typed `WebSocketClientActor`; the server side is the
 // `websocket()` routing directive.  The old frame-level
