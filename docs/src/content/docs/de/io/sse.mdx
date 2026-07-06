@@ -1,166 +1,193 @@
 ---
 title: SSE (Server-Sent Events)
-description: Einseitiges Streaming vom Server zum Client über HTTP — `text/event-stream`. Einfacher als WebSocket; Auto-Reconnect in die Browser-EventSource-API eingebaut; funktioniert durch HTTP-Infrastruktur.
+description: Einen Server-Sent-Events-Endpoint konsumieren — ein Nur-Lese-Client, der `text/event-stream` parst und jedes Event an einen Ziel-Actor weiterleitet.
 ---
 
-`SseActor` stellt einen Server-Sent-Events-Endpoint bereit.  SSE
-ist ein **einseitiges Push-Protokoll** vom Server zum Client über
-einfaches HTTP — einfacher als WebSocket, mit browsernativem
-Auto-Reconnect über die `EventSource`-API.
+`SseActor` **verbindet sich mit** einem Server-Sent-Events-Endpoint
+und **konsumiert** ihn.  Es ist ein **Nur-Lese-Client**, kein
+Server: Er öffnet ein langlebiges HTTP-`GET`, parst das
+`text/event-stream`-Wire-Format und leitet jedes geparste Event an
+einen Ziel-Actor weiter.  Es gibt keine Kommandos und keinen
+ausgehenden Pfad — SSE ist einseitig, vom Server zum Client.
 
 ```ts
-import { ActorSystem, Props, SseActor } from 'actor-ts';
+import { ActorSystem, Actor, Props } from 'actor-ts';
+import { SseActor, type SseEvent } from 'actor-ts';
+import { SseOptions } from 'actor-ts';
 
-const sse = system.spawn(
-  Props.create(() => new SseActor({
-    host: '0.0.0.0',
-    port: 8080,
-    path: '/events',
-  })),
-  'sse',
-);
+// A collector receives each parsed event.
+class Collector extends Actor<SseEvent> {
+  override onReceive(ev: SseEvent): void {
+    // ev.event — the `event:` field ('message' by default)
+    // ev.data  — the `data:` payload (multiline joined with '\n')
+    // ev.id    — the `id:` field, when the server sent one
+    console.log(ev.event, ev.data, ev.id);
+  }
+}
 
-// Irgendwo in der App — an alle verbundenen Clients pushen:
-sse.tell({
-  kind:  'broadcast',
-  event: 'order-placed',
-  data:  JSON.stringify({ orderId: 'o-1' }),
-});
+const target = sys.spawnAnonymous(Props.create(() => new Collector()));
 
-// An eine bestimmte Verbindung pushen:
-sse.tell({
-  kind:           'send',
-  connectionId:   'conn-42',
-  event:          'private',
-  data:           '...',
-});
+sys.spawnAnonymous(Props.create(() => new SseActor(
+  SseOptions.create()
+    .withUrl('https://example.com/events')
+    .withTarget(target)
+    .withHeaders({ authorization: 'Bearer …' }),
+)));
 ```
 
-Browser-Clients konsumieren über:
-
-```js
-const events = new EventSource('http://my-server/events');
-events.addEventListener('order-placed', (e) => {
-  console.log(JSON.parse(e.data));
-});
-```
+Der Actor nutzt das globale `fetch` (Bun, Node ≥ 18 und Deno bringen
+alle eines mit), es gibt also keine zusätzliche Abhängigkeit zu
+installieren.
 
 ## Settings
 
 ```ts
 interface SseActorSettings extends BrokerCommonSettings {
-  host:        string;
-  port:        number;
-  path?:       string;             // Default '/events'
-  keepaliveMs?: number;             // Default 30_000 — sendet Kommentare, um Verbindungen am Leben zu halten
+  url?:      string;                          // required — the SSE endpoint
+  headers?:  Readonly<Record<string, string>>; // optional custom request headers
+  target?:   ActorRef<SseEvent>;             // required — subscriber for inbound events
 }
 ```
 
-`keepaliveMs` steuert, wie oft der Server Kommentar-Frames
-(`: keepalive`) sendet, damit zwischengeschaltete Proxies Idle-
-Verbindungen nicht schließen.  30 Sekunden sind typisch.
+| Setting    | Erforderlich | Beschreibung                                                       |
+| ---------- | ------------ | ----------------------------------------------------------------- |
+| `url`      | ja           | Der SSE-Endpoint, mit dem der Actor sich verbindet (`GET`, `Accept: text/event-stream`). |
+| `target`   | ja           | Der Actor, der jedes geparste `SseEvent` empfängt.                |
+| `headers`  | nein         | Zusätzliche Request-Header — z. B. `authorization` für einen geschützten Feed. |
 
-## Event-Format
+`requiredSettings` ist `['url', 'target']`; beide müssen vorhanden
+sein, sonst schlägt der Actor beim Start sofort fehl.
 
-SSE hat ein spezifisches Wire-Format:
+## Events, die der Client parst
 
-```
-event: order-placed
-data: {"orderId":"o-1"}
-id: 42
-
-event: ping
-data:
-
-```
-
-Das Framework baut das für dich:
+Jedes geparste Event wird als `SseEvent` zugestellt:
 
 ```ts
-sse.tell({
-  kind:  'broadcast',
-  event: 'order-placed',     // Event-Name (Default 'message')
-  data:  JSON.stringify(o),  // Payload
-  id:    String(Date.now()),  // optional — vom Client für last-event-id-Reconnect genutzt
-});
-```
-
-`id` ist wichtig: Wenn ein Client die Verbindung verliert und
-wieder aufbaut (der Browser tut das automatisch), schickt er
-`Last-Event-ID` — dein Actor kann ab dort wieder aufnehmen.
-
-## Last-Event-ID für resumable Streams
-
-```ts
-class SseActor extends Actor<...> {
-  override onReceive(msg) {
-    if (msg.kind === 'connection-opened') {
-      const lastId = msg.lastEventId;
-      if (lastId) {
-        // Events neuer als lastId an diesen Client wiedergeben
-        this.replayFrom(msg.connectionId, lastId);
-      }
-    }
-  }
+interface SseEvent {
+  event: string;   // the `event:` field, or 'message' by default
+  data:  string;   // the `data:` payload
+  id?:   string;   // the `id:` field, when present
 }
 ```
 
-Entscheidend für **resumable Streams** — ohne das verliert der
-Client Events während der Trennung.  Kombiniert mit einem
-Event-Store (oder einer Journal-gestützten Projektion) kannst du
-At-least-once-Push-Zustellung bauen.
+Der Client parst das SSE-Wire-Format — Events durch eine Leerzeile
+(`\n\n`) getrennt, Felder als `field: value`:
+
+```
+data: hello
+
+event: tick
+data: {"n":1}
+id: 100
+
+data: line-1
+data: line-2
+
+```
+
+Parsing-Regeln, die der SSE-Spezifikation folgen:
+
+- **Default-Event-Name.**  Ein Block ohne `event:`-Feld kommt mit
+  `event: 'message'` an.
+- **Mehrzeilige Daten.**  Mehrere `data:`-Zeilen in einem Block
+  werden **mit `'\n'` verbunden** — der letzte Block oben ergibt
+  `data: 'line-1\nline-2'`.
+- **Kommentare ignoriert.**  Zeilen, die mit `:` beginnen
+  (Keepalive-Kommentare), werden übersprungen.
+- **`id`.**  Als `ev.id` zugestellt, wenn der Server eine sendet;
+  sonst `undefined`.
+
+Der obige Stream stellt somit vier Events zu: `{ event: 'message',
+data: 'hello' }`, zwei `tick`-Events mit `id` `'100'` / `'101'` und
+das mehrzeilige `{ event: 'message', data: 'line-1\nline-2' }`.
+
+## Reconnect und Circuit Breaker
+
+`SseActor` erweitert `BrokerActor`, daher werden
+Reconnect-mit-Backoff und der Circuit Breaker **geerbt** —
+konfiguriere sie am Builder:
+
+```ts
+SseOptions.create()
+  .withUrl('https://example.com/events')
+  .withTarget(target)
+  .withReconnect({ /* base delay, max delay, jitter … */ })
+  .withCircuitBreaker({ /* failure threshold, cooldown … */ });
+```
+
+Wenn der Stream endet oder die Verbindung abbricht, greift die
+Reconnect-Maschinerie der Basisklasse.  Übergib
+`.withReconnect(false)`, um nach dem Stream-Ende zu stoppen statt
+erneut zu versuchen — praktisch für endliche Feeds oder Tests:
+
+```ts
+SseOptions.create()
+  .withUrl(url)
+  .withTarget(target)
+  .withReconnect(false);   // stop when the stream closes
+```
+
+## Konfiguration über HOCON
+
+Settings lösen mit der üblichen Präzedenz auf — **explizite Options >
+HOCON > eingebaute Defaults**.  Der HOCON-Pfad ist
+`actor-ts.io.broker.sse`:
+
+```hocon
+actor-ts.io.broker.sse {
+  url = "https://example.com/events"
+  headers { authorization = "Bearer …" }
+}
+```
+
+`target` ist eine Actor-Referenz und kann daher nur im Code gesetzt
+werden, nicht in HOCON.
 
 ## Wann SSE
 
-Drei primäre Einsatzfälle:
+`SseActor` passt zum **Konsumieren eines externen SSE-Feeds** —
+überall dort, wo ein Server einen einseitigen Stream über einfaches
+HTTP pusht und du jedes Event ins Actor-System geroutet haben
+möchtest:
 
-1. **Einseitiges Push vom Server zum Browser** — Live-Feeds,
-   Benachrichtigungen, Echtzeit-Dashboards.
-2. **Wenn WebSocket Overkill ist** — einfacheres Protokoll,
-   einfacheres Debugging (es ist ja nur HTTP).
-3. **Freundlich zu HTTP-Infrastruktur** — funktioniert durch
-   Proxies, Load-Balancer, CDNs, die kein WS verstehen.
+1. **LLM-Token-Streams** — einen streamenden Completion-Endpoint
+   konsumieren und Tokens an einen Collector weiterleiten.
+2. **Marktdaten / Kurs-Ticks** — ein als Events gepushter
+   Live-Feed.
+3. **CI-/Build-Logs** — ein langlaufender Log-Stream, der beim
+   Entstehen mitgelesen wird.
 
-Für **bidirektionale** Kommunikation nimm WebSocket.  Für
-**Request/Response**-RPC nimm einfaches HTTP.
+Weil es einfach HTTP ist, funktioniert es durch Proxies,
+Load-Balancer und CDNs, die kein WebSocket verstehen.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Nur einseitig">
+<Aside type="caution" title="Nur-Lese — kein Ausgang">
   ```ts
-  // Der Client kann über die SSE-Verbindung selbst nichts senden
+  // dispatchOutgoing throws 'SseActor is read-only'
   ```
-  Nachrichten vom Client zum Server brauchen einen separaten
-  HTTP-POST.  Für die meisten "Feed"-Anwendungsfälle okay.  Für
-  Chat ist WebSocket besser.
+  `SseActor` konsumiert einen Stream; er sendet nie.  Es gibt keine
+  Kommandos (`SseCmd = never`) und kein `tell({ kind: 'broadcast' | 'send', … })`.
+  Um an einen Server zu senden, nimm einfaches HTTP oder einen
+  WebSocket-Client.
 </Aside>
 
-<Aside type="caution" title="Verbindungslimits">
+<Aside type="caution" title="target muss gesetzt sein">
   ```ts
-  // Browser erlauben ~6 SSE-Verbindungen pro Origin
+  // requiredSettings() === ['url', 'target']
   ```
-  Jede offene SSE ist eine persistente HTTP-Verbindung.  Browser
-  deckeln bei ~6 pro Origin.  Für Dashboards mit vielen Panels
-  multiplexe über eine Verbindung mit Filterung per Event-Name,
-  nicht viele Verbindungen.
-</Aside>
-
-<Aside type="caution" title="Reconnect ist automatisch, Replay nicht">
-  ```ts
-  // Browser reconnected automatisch, aber der Server defaultet zu "Stream ab jetzt"
-  ```
-  Nutze `id` + `Last-Event-ID` für resumable Streams.  Ohne das
-  gehen Nachrichten, die während der Trennung gesendet wurden,
-  aus Client-Sicht leise verloren.
+  Ohne `target` haben geparste Events kein Ziel, und der Actor
+  schlägt beim Start sofort fehl.  Spawne zuerst den Collector,
+  übergib dann seine Ref an `withTarget(…)`.
 </Aside>
 
 ## Wohin als Nächstes
 
 - **[I/O-Übersicht](/de/io/overview/)** — das große
   Bild.
-- **[Server-WebSocket](/de/io/server-websocket/)** — für
-  Bidirektionales.
+- **[WebSocket-Client](/de/io/websocket/)** — für
+  bidirektionales Konsumieren.
 - **[BrokerActor-Basis](/de/io/broker-actor-base/)** — der
-  gemeinsame Lifecycle.
+  gemeinsame Reconnect- + Circuit-Breaker-Lifecycle.
 - **[HTTP-Übersicht](/de/http/overview/)** — für
   einfaches Request/Response.

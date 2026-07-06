@@ -57,9 +57,9 @@ Subklassen implementieren drei Hooks (`connectImpl`, `disconnectImpl`,
 | `GrpcClientActor` / `GrpcServerActor` | gRPC | Typisierter RPC + Streaming. |
 | `WebSocketClientActor` | WebSocket | Ausgehende Verbindung (Broker-basierter Client). |
 | `websocket()`-Route + `WebSocketServerActor` | WebSocket | Eingehende Verbindungen — über die HTTP-Route-DSL gebunden, kein Broker. |
-| `SseActor` | Server-Sent Events | Einweg-Streaming vom Server. |
+| `SseActor` | Server-Sent Events | Client, der den Einweg-Event-Stream eines Servers konsumiert. |
 | `TcpSocketActor` | Raw TCP | Eigene Protokolle. |
-| `UdpSocketActor` | Raw UDP | Telemetrie, Multicast, niedrige Latenz. |
+| `UdpSocketActor` | Raw UDP | Telemetrie, Datagramme mit niedriger Latenz. |
 
 Jeder hat seine eigene Seite in diesem Abschnitt.  Diese Übersicht
 behandelt das **gemeinsame Muster**, das sie alle teilen.

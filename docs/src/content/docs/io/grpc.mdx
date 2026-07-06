@@ -14,62 +14,151 @@ Both wrap `@grpc/grpc-js`.  Useful when you have **Protobuf-typed
 contracts** and want the broker-actor lifecycle (reconnect,
 buffer, subscriber fan-out) for client-side calls.
 
+Both actors are configured with a **fluent options builder** —
+`GrpcServerOptions.create()…` / `GrpcClientOptions.create()…` —
+and spawned like any other actor.
+
 ## Server
 
+The server is a concrete actor: spawn it directly.  It loads the
+proto, registers the method handlers, and **binds in `preStart`** —
+the `spawn` call returns before the bind completes, so give it a
+moment before the first client call.
+
+Each method maps to a **handler actor** that receives the inbound
+call as a message.  Handlers are keyed by method name in the
+`handlers` map; any method absent from the map is reported as
+`UNIMPLEMENTED`.
+
 ```ts
-import { ActorSystem, Props, GrpcServerActor } from 'actor-ts';
+import {
+  Actor,
+  Props,
+  GrpcServerActor,
+  GrpcServerOptions,
+  type GrpcUnaryCall,
+  type GrpcServerStreamCall,
+} from 'actor-ts';
+
+// A unary handler: reply once via `respond`.
+class GetSensorHandler extends Actor<GrpcUnaryCall> {
+  override onReceive(call: GrpcUnaryCall): void {
+    const id = (call.request as { id: string }).id;
+    call.respond({ id, label: `sensor-${id}` });
+  }
+}
+
+// A server-stream handler: emit chunks via `send`, finish via `complete`.
+class WatchSensorHandler extends Actor<GrpcServerStreamCall> {
+  override onReceive(call: GrpcServerStreamCall): void {
+    const limit = (call.request as { limit?: number }).limit ?? 5;
+    for (let i = 0; i < limit; i++) {
+      call.send({ value: 20 + i, ts: Date.now() });
+    }
+    call.complete();
+  }
+}
+
+const getHandler = system.spawn(Props.create(() => new GetSensorHandler()), 'get');
+const watchHandler = system.spawn(Props.create(() => new WatchSensorHandler()), 'watch');
 
 const server = system.spawn(
-  Props.create(() => new GrpcServerActor({
-    host:    '0.0.0.0',
-    port:    50051,
-    services: [
-      {
-        protoPath:    './proto/orders.proto',
-        serviceName:  'orders.v1.OrderService',
-        handler:      orderHandlerRef,   // actor that processes incoming calls
-      },
-    ],
-  })),
+  Props.create(() => new GrpcServerActor(
+    GrpcServerOptions.create()
+      .withProtoPath(protoPath)
+      .withPackageName('sensor.v1')
+      .withServiceName('SensorService')
+      .withBind('127.0.0.1:50051')
+      .withHandlers({
+        GetSensor: { kind: 'unary', target: getHandler },
+        WatchSensor: { kind: 'serverStream', target: watchHandler },
+      }),
+  )),
   'grpc-server',
 );
 ```
 
-Inbound RPC calls are forwarded to `handler` as actor messages.
-The framework de-serializes the Protobuf payload and wraps it in
-an envelope.
+The bind address is a single `host:port` string via `withBind`;
+`packageName` and `serviceName` are set separately.  Each handler
+descriptor is `{ kind, target }` where `kind` is `'unary'`,
+`'serverStream'`, or `'bidi'`.
+
+### Handler call shapes
+
+The framework de-serializes the Protobuf payload and hands the
+handler a typed call object:
+
+| Handler kind | Call type | Reply API |
+| --- | --- | --- |
+| `unary` | `GrpcUnaryCall` | `respond(res)` / `respondError(msg, code?)` |
+| `serverStream` | `GrpcServerStreamCall` | `send(chunk)` / `complete()` / `fail(msg, code?)` |
+| `bidi` | `GrpcBidiCall` | `onData(target)` / `send(chunk)` / `complete()` |
+
+Every call carries `method`, the deserialized `request` (except the
+bidi call, which streams its requests), and a `metadata` record.
+`respondError` / `fail` take an optional numeric status code that
+defaults to `13` (INTERNAL).
 
 ## Client
 
 ```ts
-import { GrpcClientActor } from 'actor-ts';
+import {
+  Actor,
+  Props,
+  GrpcClientActor,
+  GrpcClientOptions,
+  type GrpcInbound,
+} from 'actor-ts';
 
 const client = system.spawn(
-  Props.create(() => new GrpcClientActor({
-    target:       'orders.svc:50051',
-    protoPath:    './proto/orders.proto',
-    serviceName:  'orders.v1.OrderService',
-  })),
-  'orders-client',
+  Props.create(() => new GrpcClientActor(
+    GrpcClientOptions.create()
+      .withProtoPath(protoPath)
+      .withPackageName('sensor.v1')
+      .withServiceName('SensorService')
+      .withEndpoint('127.0.0.1:50051'),
+  )),
+  'sensor-client',
 );
 
-// Make a unary call:
-client.tell({
-  kind:    'unary',
-  method:  'GetOrder',
-  request: { id: 'order-42' },
-  replyTo: this.self,
-});
-
-// Receive the response:
-override onReceive(msg: GrpcReply) {
-  if (msg.kind === 'reply')  handleOrder(msg.response);
-  if (msg.kind === 'error')  handleError(msg.error);
+// A collector actor receives every reply / stream frame as `GrpcInbound`.
+class ReplyCollector extends Actor<GrpcInbound> {
+  override onReceive(msg: GrpcInbound): void {
+    if (msg.kind === 'reply') {
+      console.log('unary reply:', msg.response);
+    } else if (msg.kind === 'stream-data') {
+      console.log('stream chunk:', msg.chunk);
+    } else if (msg.kind === 'stream-end') {
+      console.log('stream complete');
+    } else if (msg.kind === 'rpc-error' || msg.kind === 'stream-error') {
+      console.error('error:', msg.error.message);
+    }
+  }
 }
+
+const collector = system.spawn(Props.create(() => new ReplyCollector()), 'collector');
+
+// Make a unary call — the reply is delivered to `target`.
+client.tell({ kind: 'unary', method: 'GetSensor', request: { id: 'rt-7' }, target: collector });
 ```
 
-The actor handles connection management, retries, and routing the
-reply to whoever asked.
+The endpoint is a single `host:port` string via `withEndpoint`.
+Every call names a **`target`** actor; the actor routes the reply
+and any stream frames there.  A per-call deadline is configurable
+with `.withDeadlineMs(30000)` (the default).
+
+### Inbound frames
+
+Replies and stream frames arrive at the `target` actor as a
+`GrpcInbound` discriminated union:
+
+| `kind` | Fields | Meaning |
+| --- | --- | --- |
+| `reply` | `response` | Unary completion. |
+| `stream-data` | `streamId`, `chunk` | One stream chunk. |
+| `stream-end` | `streamId` | Stream closed cleanly. |
+| `stream-error` | `streamId`, `error` | Stream failed. |
+| `rpc-error` | `error` | Unary / call setup failed. |
 
 ## Streaming modes
 
@@ -82,51 +171,109 @@ gRPC supports four call types; the framework handles all:
 | **Client-streaming** | Stream of requests | One response |
 | **Bi-directional streaming** | Stream of requests | Stream of responses |
 
+Each client-side call is a command you `tell` the client actor.
+The `kind` selects the call type — exactly `unary`, `serverStream`,
+`bidiStart`, `bidiSend`, or `bidiClose`:
+
 ```ts
-// Server-streaming:
+// Server-streaming: one request, N chunks routed to `target`.
 client.tell({
-  kind:        'server-stream',
-  method:      'WatchOrders',
-  request:     { customerId: '42' },
-  subscriber:  streamHandler,   // gets each response
+  kind: 'serverStream',
+  method: 'WatchSensor',
+  request: { id: 'rt-7', limit: 5 },
+  target: collector,
 });
 
-// Bi-directional:
-client.tell({
-  kind:        'bidi-stream',
-  method:      'Chat',
-  subscriber:  chatHandler,
-});
-// Send messages into the stream:
-client.tell({ kind: 'stream-send', method: 'Chat', message: { text: 'hello' } });
+// Bi-directional: open a stream, then push chunks into it.
+client.tell({ kind: 'bidiStart', method: 'Chat', target: collector });
 ```
 
-Streams stay open until either side closes them or the actor stops.
+`bidiStart` returns nothing directly.  Instead the actor delivers a
+first `stream-data` frame to `target` whose chunk carries the
+generated stream id as `{ __streamId }`.  Read that id, then
+address subsequent sends and the close to it:
+
+```ts
+// Inside the collector, after receiving the streamId hint:
+const streamId = (msg.chunk as { __streamId: number }).__streamId;
+
+client.tell({ kind: 'bidiSend', streamId, chunk: { text: 'hello' } });
+client.tell({ kind: 'bidiClose', streamId });
+```
+
+Server-stream calls also carry a `streamId` on their `stream-data`
+/ `stream-end` frames, so a single collector can multiplex several
+concurrent streams.  Streams stay open until either side closes
+them or the actor stops.
 
 ## TLS
 
-```ts
-new GrpcServerActor({
-  host:  '0.0.0.0',
-  port:  50051,
-  tls: {
-    cert: fs.readFileSync('./server.crt'),
-    key:  fs.readFileSync('./server.key'),
-  },
-  services: [...],
-});
+TLS is opt-in via `withCredentials`.  When omitted, both actors
+default to **insecure** (`{ kind: 'insecure' }`).  Certificates are
+supplied as `Uint8Array` values, not file paths:
 
-new GrpcClientActor({
-  target: 'orders.svc:50051',
-  tls: {
-    ca: fs.readFileSync('./ca.crt'),
-  },
-  ...
-});
+```ts
+import { readFileSync } from 'node:fs';
+
+// Server: supply cert + key.  Add `rootCerts` to require client
+// certs (mTLS).
+new GrpcServerActor(
+  GrpcServerOptions.create()
+    .withProtoPath(protoPath)
+    .withPackageName('sensor.v1')
+    .withServiceName('SensorService')
+    .withBind('0.0.0.0:50051')
+    .withHandlers({ /* … */ })
+    .withCredentials({
+      kind: 'tls',
+      cert: readFileSync('./server.crt'),
+      key: readFileSync('./server.key'),
+    }),
+);
+
+// Client: pass `rootCerts` to verify the server; add cert + key for mTLS.
+new GrpcClientActor(
+  GrpcClientOptions.create()
+    .withProtoPath(protoPath)
+    .withPackageName('sensor.v1')
+    .withServiceName('SensorService')
+    .withEndpoint('sensor.svc:50051')
+    .withCredentials({
+      kind: 'tls',
+      rootCerts: readFileSync('./ca.crt'),
+    }),
+);
 ```
 
-Standard TLS configuration via `cert` / `key` / `ca`.  For
-mutual TLS (mTLS), provide the client's cert + key.
+For mutual TLS (mTLS), add the peer's `cert` + `key` to the
+credentials object.
+
+## Configuration
+
+Per-instance builder options take precedence over HOCON, which
+takes precedence over built-in defaults.  The HOCON keys live under
+`actor-ts.io.broker.grpc.server` and `actor-ts.io.broker.grpc.client`:
+
+```hocon
+actor-ts.io.broker.grpc {
+  server {
+    proto-path  = "./proto/sensor.proto"
+    package-name = "sensor.v1"
+    service-name = "SensorService"
+    bind = "0.0.0.0:50051"
+  }
+  client {
+    proto-path  = "./proto/sensor.proto"
+    package-name = "sensor.v1"
+    service-name = "SensorService"
+    endpoint = "sensor.svc:50051"
+    deadline-ms = 30s
+  }
+}
+```
+
+Handlers and TLS credentials are supplied through the builder, not
+HOCON.
 
 ## Peer dependency
 
@@ -165,17 +312,17 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Streaming has no buffering">
   ```ts
-  // Server-stream pushes messages; if subscriber is slow, it backs up in memory
+  // Server-stream pushes chunks; if the target is slow, they back up in memory
   ```
   Unlike the regular broker-actor outbound buffer, gRPC streams
   push as fast as the network allows.  For slow consumers,
-  implement backpressure inside the subscriber actor.
+  implement backpressure inside the target actor.
 </Aside>
 
 <Aside type="caution" title="Long-lived streams + reconnect">
   Streams **don't survive** a reconnect — the cycle re-establishes
   the underlying connection but doesn't restart in-flight
-  streams.  Re-subscribe after a `BrokerConnected` event.
+  streams.  Re-issue the call after a `BrokerConnected` event.
 </Aside>
 
 ## Where to next
