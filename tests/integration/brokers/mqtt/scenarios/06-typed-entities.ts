@@ -10,6 +10,7 @@
  */
 import { Props } from '../../../../../src/Props.js';
 import { MqttActor, type MqttMessage } from '../../../../../src/io/broker/MqttActor.js';
+import { MqttOptions } from '../../../../../src/io/broker/MqttOptions.js';
 import { spawnInbox, spawnMqtt, type MqttCtx } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
@@ -27,7 +28,7 @@ class ReadingActor extends MqttActor<Reading, ReadingSelf> {
   readonly received: MqttMessage<Reading>[] = [];
 
   constructor(brokerUrl: string, clientId: string, subTopic: string) {
-    super({ brokerUrl, clientId, cleanSession: true });
+    super(MqttOptions.create().withBrokerUrl(brokerUrl).withClientId(clientId).withCleanSession(true));
     this.subscribe(subTopic, { qos: 1 });
   }
 

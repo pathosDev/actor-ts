@@ -118,8 +118,8 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   /** Subscriptions requested in the constructor, flushed in `preStart`. */
   private pendingSubs: Array<{ topic: string; qos?: MqttQos; target?: ActorRef<MqttMessage<T>> }> = [];
 
-  constructor(options: MqttOptions | Partial<MqttActorSettings> = {}) {
-    super(options instanceof MqttOptions ? options.build() : options);
+  constructor(options: MqttOptions = MqttOptions.create()) {
+    super(options.build());
   }
 
   /* ----------------------- user overrides ------------------------ */
