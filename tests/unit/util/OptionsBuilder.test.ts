@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { OptionsBuilder } from '../../../src/util/OptionsBuilder.js';
+import { OptionsBuilder, resolveSettings } from '../../../src/util/OptionsBuilder.js';
 
 interface Foo {
   readonly a?: number;
@@ -63,5 +63,32 @@ describe('OptionsBuilder base', () => {
     const b = BazOptions.create().withA(1).withB('x');
     expect(b).toBeInstanceOf(BazOptions);
     expect(b.build()).toEqual({ a: 1, b: 'x' });
+  });
+});
+
+describe('resolveSettings — builder OR plain object', () => {
+  test('a builder is built', () => {
+    expect(resolveSettings(FooOptions.create().withA(1).withB('x'))).toEqual({ a: 1, b: 'x' });
+  });
+
+  test('a plain settings object is copied through', () => {
+    expect(resolveSettings<Foo>({ a: 1, b: 'x' })).toEqual({ a: 1, b: 'x' });
+  });
+
+  test('builder and equivalent plain object resolve identically', () => {
+    const fromBuilder = resolveSettings(FooOptions.create().withA(1).withB('x'));
+    const fromPlain = resolveSettings<Foo>({ a: 1, b: 'x' });
+    expect(fromBuilder).toEqual(fromPlain);
+  });
+
+  test('the result is an independent copy (not the same reference)', () => {
+    const plain: Foo = { a: 1 };
+    const resolved = resolveSettings<Foo>(plain);
+    expect(resolved).not.toBe(plain);
+    expect(resolved).toEqual({ a: 1 });
+  });
+
+  test('an empty plain object resolves to {}', () => {
+    expect(resolveSettings<Foo>({})).toEqual({});
   });
 });

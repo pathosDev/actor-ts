@@ -36,3 +36,16 @@ export abstract class OptionsBuilder<T extends object> {
     return { ...this.s };
   }
 }
+
+/**
+ * Normalize an options argument to a plain `Partial<T>`.  Every consumer that
+ * takes options accepts EITHER a fluent builder OR a plain settings object —
+ * `new MqttActor(MqttOptions.create().withClientId('x'))` and
+ * `new MqttActor({ clientId: 'x' })` are interchangeable.  This is the single
+ * seam that makes that work: a builder is `.build()`-ed, a plain object is
+ * copied.  The plain object uses the settings field names (which match each
+ * builder's `withX` method one-for-one).
+ */
+export function resolveSettings<T extends object>(options: OptionsBuilder<T> | Partial<T>): Partial<T> {
+  return options instanceof OptionsBuilder ? options.build() : { ...options };
+}
