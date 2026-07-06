@@ -8,7 +8,7 @@ export const name = 'typed dispatch';
 export const description = 'discriminated-union message dispatch via ts-pattern';
 
 export async function run({ actorTs }) {
-  const { Actor, ActorSystem, LogLevel, NoopLogger, Props } = actorTs;
+  const { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props } = actorTs;
 
   class Greeter extends Actor {
     constructor() { super(); this.last = null; }
@@ -21,7 +21,7 @@ export async function run({ actorTs }) {
     }
   }
 
-  const sys = ActorSystem.create('smoke-typed', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const sys = ActorSystem.create('smoke-typed', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   try {
     const ref = sys.spawnAnonymous(Props.create(() => new Greeter()));
     ref.tell({ kind: 'greet', name: 'World' });

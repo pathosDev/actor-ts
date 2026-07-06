@@ -16,7 +16,7 @@ export const description = 'client actor ↔ server actor via websocket() route'
 
 export async function run({ actorTs }) {
   const {
-    ActorSystem, Props, LogLevel, NoopLogger,
+    ActorSystem, ActorSystemOptions, Props, LogLevel, NoopLogger,
     HttpExtensionId, WebSocketServerActor, WebSocketClientActor, WebSocketClientOptions, websocket,
   } = actorTs;
 
@@ -24,7 +24,7 @@ export async function run({ actorTs }) {
     onMessage(msg) { this.reply({ pong: msg.n }); }
   }
 
-  const sys = ActorSystem.create('smoke-ws', { logger: new NoopLogger(), logLevel: LogLevel.Off });
+  const sys = ActorSystem.create('smoke-ws', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
   let binding;
   try {
     const server = sys.spawn(Props.create(() => new Echo()), 'echo');
