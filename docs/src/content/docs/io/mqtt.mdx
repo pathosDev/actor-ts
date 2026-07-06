@@ -1,73 +1,199 @@
 ---
 title: MQTT
-description: MQTT 3.1.1 / 5 broker actor — publishes to topics with configurable QoS, subscribes to topic filters (wildcards), retained messages. Right shape for IoT and telemetry. Wraps `mqtt` package.
+description: MQTT 3.1.1 / 5 broker actor — a subclass-first, typed API. Subscribe in the constructor, handle inbound messages in onMessage, publish typed entities through a codec. QoS 0/1/2, wildcards, retained messages, last-will. Wraps the `mqtt` package.
 ---
 
 `MqttActor` integrates with MQTT brokers (Mosquitto, EMQ X, HiveMQ,
 AWS IoT Core).  Supports both MQTT 3.1.1 and 5; topic wildcards
 (`+`, `#`); QoS 0/1/2; retained messages.
 
+It is the MQTT counterpart to
+[`WebSocketClientActor`](/io/websocket/): an **abstract base class you
+extend**.  Declare subscriptions in the constructor, handle inbound
+traffic in `onMessage`, and publish with `this.publish(...)`.  It is
+still controllable from the outside via `ref.tell(...)`.
+
 ```ts
-import { ActorSystem, Props, MqttActor } from 'actor-ts';
+import { ActorSystem, MqttActor, MqttOptions, Props, type MqttMessage } from 'actor-ts';
 
-const mqtt = system.spawn(
-  Props.create(() => new MqttActor({
-    url:        'mqtts://mqtt.example.com:8883',
-    clientId:   'my-app',
-    username:   process.env.MQTT_USER,
-    password:   process.env.MQTT_PASS,
-  })),
-  'mqtt',
-);
+type Reading = { sensor: string; celsius: number };
 
-// Subscribe to a topic (with optional wildcards):
-mqtt.tell({
-  kind:   'subscribe',
-  topic:  'sensors/+/temp',
-  qos:    1,
-  target: telemetryHandler,
+class TemperatureHub extends MqttActor<Reading> {
+  constructor(opts: MqttOptions) {
+    super(opts.withQos(1).withClientId('temperature-hub'));
+    this.subscribe('sensors/+/temp');
+    this.subscribe('alerts/#', { qos: 2 });
+  }
+
+  override onMessage(msg: MqttMessage<Reading>): void {
+    const { sensor, celsius } = msg.payload.entity();   // decoded via the codec
+    this.log.info(`${sensor}: ${celsius}°C`);
+    this.publish(`ack/${sensor}`, 'ok');                // raw string
+    this.publish('rollup', { sensor, celsius });        // encoded entity
+  }
+}
+
+const system = ActorSystem.create('demo', {
+  config: { 'actor-ts': { io: { broker: { mqtt: { brokerUrl: 'mqtt://localhost:1883' } } } } },
 });
 
-// Publish:
-mqtt.tell({
-  kind: 'publish',
-  publish: {
-    topic:   'commands/device-42',
-    payload: JSON.stringify({ action: 'reboot' }),
-    qos:     1,
-    retain:  false,
-  },
-});
+system.spawn(Props.create(() => new TemperatureHub(MqttOptions.create())), 'hub');
 ```
 
-## Settings
+`T` (here `Reading`) types the inbound payload — `msg.payload.entity()`
+returns a `T`.  A second generic, `TSelf`, types application messages
+other actors may `tell` the ref (see *External control* below); it
+defaults to `never`.
+
+## Hooks
+
+Override these on your subclass.  `onReceive` is **sealed** — the base
+class dispatches to the hooks below; do not override it.
+
+| Hook | When |
+| --- | --- |
+| `onMessage(msg)` | A message arrived on one of this actor's own subscriptions.  **Required.** |
+| `onConnected()` | The connection (re)opened; the subscription registry has been re-applied on the broker. |
+| `onDisconnected(cause?)` | The connection dropped; a reconnect cycle may follow (per settings). |
+| `onDecodeError(err, msg)` | `onMessage` threw an `MqttDecodeError` (a lazy `entity()` on a malformed payload).  Default: log + drop.  Rethrow to escalate. |
+| `onSelfMessage(msg)` | An application message (`TSelf`) was told to this ref. |
+
+Inbound and lifecycle events are delivered through the mailbox, so
+`onMessage` and the hooks always run on the actor thread (single-threaded,
+per-connection order preserved: connected → messages → disconnected).
+
+## Configuration
+
+Settings resolve with the usual precedence: **constructor / builder >
+HOCON (`actor-ts.io.broker.mqtt`) > built-in defaults.**  Use the fluent
+`MqttOptions` builder, or pass a plain `Partial<MqttActorSettings>`.
+
+```ts
+const opts = MqttOptions.create()
+  .withBrokerUrl('mqtts://mqtt.example.com:8883')
+  .withClientId('my-app')
+  .withCredentials(process.env.MQTT_USER, process.env.MQTT_PASS)
+  .withQos(1)                 // default QoS for publish/subscribe
+  .withProtocolVersion(5)     // opt in to MQTT 5.0
+  .withCleanSession(false)
+  .withKeepAlive(30);
+```
 
 ```ts
 interface MqttActorSettings extends BrokerCommonSettings {
-  url:        string;          // mqtt:// or mqtts://
-  clientId?:  string;
-  username?:  string;
-  password?:  string;
-  keepalive?: number;          // seconds; default 60
-  clean?:     boolean;          // default true
-  protocolVersion?: 3 | 4 | 5; // default 4 (= MQTT 3.1.1)
-  will?: {
-    topic:    string;
-    payload:  string | Uint8Array;
-    qos:      0 | 1 | 2;
-    retain:   boolean;
-  };
+  brokerUrl?:  string;          // mqtt:// mqtts:// ws:// wss://
+  clientId?:   string;
+  credentials?: { username?: string; password?: string };
+  defaultQos?: 0 | 1 | 2;       // used when a call omits qos
+  cleanSession?: boolean;       // default true
+  keepAliveSec?: number;        // default 60
+  protocolVersion?: 4 | 5;      // default 4 (= MQTT 3.1.1)
+  codec?: MqttCodec<unknown>;   // default mqttJsonCodec()
+  will?: { topic: string; payload: string | Uint8Array; qos?: 0 | 1 | 2; retain?: boolean };
 }
 ```
 
 Common patterns:
 
-- **`clean: false`** — session persists; broker delivers messages
-  missed during disconnection (subject to broker config).
-- **`will: { ... }`** — broker publishes this when the client
+- **`withCleanSession(false)`** — session persists; the broker delivers
+  messages missed during disconnection (subject to broker config).
+- **`withWill({ ... })`** — the broker publishes this when the client
   disconnects ungracefully.  Useful for presence ("device-42-offline").
-- **`protocolVersion: 5`** — enables MQTT 5 features (response
-  topics, message expiry).  Requires a v5-capable broker.
+- **`withProtocolVersion(5)`** — enables MQTT 5 features (user
+  properties, reason codes on `MqttMessage`).  Requires a v5-capable broker.
+
+## Typed payloads
+
+Inbound `MqttMessage<T>` carries a lazily-decoding `MqttPayload<T>`:
+
+```ts
+override onMessage(msg: MqttMessage<Reading>): void {
+  msg.payload.bytes;          // raw Uint8Array
+  msg.payload.text();         // UTF-8 string (cached)
+  msg.payload.entity();       // decoded T via the codec (cached)
+  msg.payload.entity<Ack>();  // decode as a different type on a specific topic
+}
+```
+
+Decoding is **lazy** — it only happens when you call `text()` / `entity()`.
+A malformed payload makes `entity()` throw an `MqttDecodeError`; because
+that happens inside `onMessage`, the base class catches it and routes it to
+`onDecodeError` (default: log + drop, no restart):
+
+```ts
+protected override onDecodeError(err: MqttDecodeError, msg: MqttMessage<Reading>): void {
+  this.log.warn(`bad payload on ${err.topic}: ${err.message}`);
+}
+```
+
+## Publishing
+
+`this.publish(topic, payload, opts?)` returns `false` if the message was
+dropped (encode failure or outbound-buffer overflow):
+
+- a `string` or `Uint8Array` payload is sent **raw**;
+- any other value is **encoded via the codec** (JSON by default).
+
+```ts
+this.publish('ack/1', 'ok');                    // raw bytes: ok
+this.publish('rollup', { sensor, celsius });    // JSON: {"sensor":...,"celsius":...}
+this.publish('cfg', data, { qos: 1, retain: true });
+```
+
+To publish a bare string *as a JSON entity* (the wire bytes `"pong"`
+rather than `pong`), encode it explicitly:
+
+```ts
+this.publish('topic', this.codec().encode('pong'));
+```
+
+## Codecs
+
+The codec turns entities into bytes and back.  The default is
+`mqttJsonCodec()` (plain JSON over UTF-8).  Supply your own via
+`withCodec(...)` — e.g. a JSON codec with runtime validation:
+
+```ts
+import { mqttJsonCodec, MqttOptions } from 'actor-ts';
+
+const codec = mqttJsonCodec<Reading>({
+  validate: (v) => ReadingSchema.parse(v),   // zod, etc.; throws → MqttDecodeError
+});
+
+MqttOptions.create().withBrokerUrl('mqtt://localhost:1883').withCodec(codec);
+```
+
+## External control
+
+Beyond the subclass API, any actor can drive an `MqttActor` by `tell`ing
+it an `MqttCmd`:
+
+```ts
+ref.tell({ kind: 'publish', publish: { topic: 't', payload: 'hi', qos: 1 } });
+
+// Subscribe and route to this actor's own onMessage (no target):
+ref.tell({ kind: 'subscribe', topic: 'x/#', qos: 1 });
+
+// Subscribe and fan out to another actor (external target):
+ref.tell({ kind: 'subscribe', topic: 'y/#', target: someHandler });
+
+ref.tell({ kind: 'unsubscribe', topic: 'y/#', target: someHandler });
+```
+
+- A `subscribe` with **no `target`** delivers matching messages to the
+  actor's own `onMessage`; with a `target`, it fans out to that actor.
+  Overlapping patterns deliver to each ref at most once.
+- An `unsubscribe` with a `target` removes that target.  With **no
+  `target`**, it removes all *foreign* targets but leaves the actor's own
+  subscription intact — an external controller can't silence the
+  subclass's constructor-declared subscription.
+- Fan-out targets are deathwatched: when a target actor stops, it is
+  pruned automatically (and a broker UNSUBSCRIBE fires once a pattern has
+  no consumers left).
+
+Since these commands are plain objects, keep any `TSelf` you define off
+the `kind` values `publish` / `subscribe` / `unsubscribe` — otherwise it
+would be dispatched as a command instead of reaching `onSelfMessage`.
 
 ## QoS levels
 
@@ -77,19 +203,15 @@ Common patterns:
 | **1** | At-least-once.  Broker stores until acked. | Default for most use cases.  Duplicates possible. |
 | **2** | Exactly-once.  Full handshake. | Slowest; rarely needed. |
 
-For IoT telemetry, **QoS 1** is the typical balance.  Commands
-to devices: also QoS 1 (or QoS 2 if duplicates would be harmful).
-Status updates that are quickly superseded (sensor readings):
-QoS 0 is fine.
+For IoT telemetry, **QoS 1** is the typical balance.  Commands to
+devices: also QoS 1 (or QoS 2 if duplicates would be harmful).  Status
+updates that are quickly superseded (sensor readings): QoS 0 is fine.
 
 ## Topic wildcards
 
 ```ts
-mqtt.tell({ kind: 'subscribe', topic: 'sensors/+/temp', qos: 1, target: handler });
-// matches: 'sensors/dev1/temp', 'sensors/dev2/temp', ...
-
-mqtt.tell({ kind: 'subscribe', topic: 'devices/#', qos: 1, target: handler });
-// matches: 'devices/anything/anywhere/...'
+this.subscribe('sensors/+/temp');   // matches sensors/dev1/temp, sensors/dev2/temp, ...
+this.subscribe('devices/#');        // matches devices/anything/anywhere/...
 ```
 
 | Wildcard | Matches |
@@ -100,46 +222,13 @@ mqtt.tell({ kind: 'subscribe', topic: 'devices/#', qos: 1, target: handler });
 ## Retained messages
 
 ```ts
-mqtt.tell({
-  kind: 'publish',
-  publish: {
-    topic:   'config/device-42',
-    payload: JSON.stringify({ ... }),
-    retain:  true,    // ← stored by the broker
-  },
-});
+this.publish('config/device-42', { mode: 'eco' }, { retain: true });
 ```
 
-A retained message is **stored by the broker** and delivered
-immediately to any new subscriber.  Use for:
-
-- **Configuration** — devices reading the latest config on
-  connect.
-- **Last-known-state** — a device's most-recent status visible
-  to fresh subscribers.
-
-Set retain `false` for normal pub-sub messages — otherwise the
-broker keeps every old message visible forever.
-
-## Inbound messages
-
-Subscribers receive `MqttMessage`:
-
-```ts
-interface MqttMessage {
-  readonly topic:   string;
-  readonly payload: Uint8Array;
-  readonly qos:     0 | 1 | 2;
-  readonly retain:  boolean;
-}
-
-class TelemetryHandler extends Actor<MqttMessage> {
-  override onReceive(msg: MqttMessage): void {
-    const data = JSON.parse(new TextDecoder().decode(msg.payload));
-    this.log.info(`${msg.topic}: ${data.value}`);
-  }
-}
-```
+A retained message is **stored by the broker** and delivered immediately
+to any new subscriber.  Use for configuration (devices reading the latest
+config on connect) or last-known-state.  Keep `retain` unset for normal
+pub/sub — otherwise the broker keeps every old message visible forever.
 
 ## Peer dependency
 
@@ -150,50 +239,46 @@ npm install mqtt
 
 ## When to use MQTT
 
-Three good fits:
-
-1. **IoT / telemetry** — devices publishing sensor data,
-   subscribing to commands.
-2. **Bridging from existing MQTT infrastructure** — when the
-   broker is already there.
-3. **Lightweight pub/sub** — when Kafka is overkill (small
-   payloads, no replay history needed).
+1. **IoT / telemetry** — devices publishing sensor data, subscribing to
+   commands.
+2. **Bridging from existing MQTT infrastructure** — when the broker is
+   already there.
+3. **Lightweight pub/sub** — when Kafka is overkill (small payloads, no
+   replay history needed).
 
 For cluster-internal pub/sub,
-[DistributedPubSub](/cluster/pubsub/) is simpler
-(no external broker).
+[DistributedPubSub](/cluster/pubsub/) is simpler (no external broker).
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Persistent session and `clean: false`">
-  ```ts
-  clean: false   // ✗ requires a stable clientId
-  ```
-  Persistent sessions need the **same clientId** across
-  reconnects — the broker tracks subscriptions + queued
-  messages per-clientId.  A random clientId each connect makes
-  `clean: false` useless.
+<Aside type="tip" title="Migrating from the old MqttActor">
+  `MqttActor` used to be a concrete class you spawned and drove only with
+  `tell`.  It is now **abstract** — extend it and override `onMessage`.
+
+  - `new MqttActor({...})` → `class X extends MqttActor<T> { onMessage(m) {…} }`.
+  - `msg.payload` (a `Uint8Array`) → `msg.payload.bytes`;
+    `new TextDecoder().decode(msg.payload)` → `msg.payload.text()`;
+    JSON → `msg.payload.entity()`.
+  - `settings.subscriptions: [{ topic, target }]` (removed) →
+    `this.subscribe(topic, { target })` in the constructor, or a
+    `subscribe` command.
 </Aside>
 
-<Aside type="caution" title="QoS 2 is expensive">
-  Don't use QoS 2 for telemetry-style traffic.  Most IoT use
-  cases accept QoS 1 duplicates over the latency cost of QoS 2.
+<Aside type="caution" title="Persistent session and `cleanSession: false`">
+  Persistent sessions need the **same clientId** across reconnects — the
+  broker tracks subscriptions + queued messages per-clientId.  A random
+  clientId each connect makes `cleanSession: false` useless.
 </Aside>
 
 <Aside type="caution" title="Wildcard subscriptions multiply traffic">
-  ```ts
-  topic: '#'   // ✗ subscribes to every message on the broker
-  ```
-  `#` at the root matches everything.  In a multi-tenant
-  broker, this is rarely what you want.  Scope wildcards
+  `#` at the root subscribes to every message on the broker.  In a
+  multi-tenant broker, this is rarely what you want.  Scope wildcards
   narrowly.
 </Aside>
 
 ## Where to next
 
-- **[I/O overview](/io/overview/)** — the bigger
-  picture.
-- **[BrokerActor base](/io/broker-actor-base/)** — the
-  shared lifecycle.
+- **[I/O overview](/io/overview/)** — the bigger picture.
+- **[BrokerActor base](/io/broker-actor-base/)** — the shared lifecycle.
+- **[WebSocket client](/io/websocket/)** — the same subclass-first shape.
 - **[Kafka](/io/kafka/)** — for durable streaming.
-- **[NATS](/io/nats/)** — for lightweight pub/sub.
