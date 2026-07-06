@@ -3,6 +3,7 @@ import {
   Actor,
   ActorSystem,
   Cluster,
+  ClusterOptions,
   ClusterSharding,
   InMemoryTransport,
   LogLevel,
@@ -12,6 +13,7 @@ import {
   NoopLogger,
   Props,
   NodeAddress,
+  StartShardingOptions,
   hashShardId,
   moduloAllocator,
   rendezvousAllocator,
@@ -48,14 +50,16 @@ async function startNode(
     logger: new NoopLogger(),
     logLevel: LogLevel.Off,
   });
-  const cluster = await Cluster.join(system, {
-    host,
-    port,
-    seeds,
-    transport: new InMemoryTransport(new NodeAddress(systemName, host, port)),
-    failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
-    gossipIntervalMs: 80,
-  });
+  const cluster = await Cluster.join(
+    system,
+    ClusterOptions.create()
+      .withHost(host)
+      .withPort(port)
+      .withSeeds(seeds)
+      .withTransport(new InMemoryTransport(new NodeAddress(systemName, host, port)))
+      .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+      .withGossipIntervalMs(80),
+  );
 
   const counts = new Map<string, number>();
 
@@ -66,12 +70,13 @@ async function startNode(
   }
 
   const sharding = cluster.sharding;
-  const region = sharding.start<Command>({
-    typeName: 'counter',
-    entityProps: Props.create(() => new CountEntity()),
-    extractEntityId: msg => msg.id,
-    numShards: 8,
-  });
+  const region = sharding.start<Command>(
+    StartShardingOptions.create<Command>()
+      .withTypeName('counter')
+      .withEntityProps(Props.create(() => new CountEntity()))
+      .withExtractEntityId(msg => msg.id)
+      .withNumShards(8),
+  );
 
   return { system, cluster, counts, region };
 }
@@ -309,13 +314,19 @@ async function startNodeWithTombstoneCfg(
     logger: new NoopLogger(),
     logLevel: LogLevel.Off,
   });
-  const cluster = await Cluster.join(system, {
-    host, port, seeds,
-    transport: new InMemoryTransport(new NodeAddress(systemName, host, port)),
-    failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
-    gossipIntervalMs: 80,
-    ...cfg,
-  });
+  const cluster = await Cluster.join(
+    system,
+    ClusterOptions.create()
+      .withHost(host)
+      .withPort(port)
+      .withSeeds(seeds)
+      .withTransport(new InMemoryTransport(new NodeAddress(systemName, host, port)))
+      .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+      .withGossipIntervalMs(80)
+      .withTombstoneTtlMs(cfg.tombstoneTtlMs)
+      .withTombstonePruneIntervalMs(cfg.tombstonePruneIntervalMs)
+      .withTombstoneMinRetentionMs(cfg.tombstoneMinRetentionMs),
+  );
   return { system, cluster };
 }
 

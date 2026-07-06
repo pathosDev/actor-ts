@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
-import { Cluster } from '../../../../../src/cluster/Cluster.js';
+import { Cluster, ClusterOptions } from '../../../../../src/cluster/Cluster.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
-import { ShardedDaemonProcess } from '../../../../../src/cluster/sharding/ShardedDaemonProcess.js';
+import { ShardedDaemonProcess, ShardedDaemonProcessOptions } from '../../../../../src/cluster/sharding/ShardedDaemonProcess.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import { TestKit } from '../../../../../src/testkit/TestKit.js';
@@ -27,12 +27,13 @@ interface NodeSetup {
 
 async function startNode(systemName: string, host: string, port: number, seeds: string[] = []): Promise<NodeSetup> {
   const kit = TestKit.create(systemName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
-  const cluster = await Cluster.join(kit.system, {
-    host, port, seeds,
-    transport: new InMemoryTransport(new NodeAddress(systemName, host, port)),
-    failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
-    gossipIntervalMs: 80,
-  });
+  const cluster = await Cluster.join(kit.system, ClusterOptions.create()
+    .withHost(host)
+    .withPort(port)
+    .withSeeds(seeds)
+    .withTransport(new InMemoryTransport(new NodeAddress(systemName, host, port)))
+    .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+    .withGossipIntervalMs(80));
   return { system: kit.system, cluster, kit };
 }
 
@@ -49,10 +50,11 @@ describe('ShardedDaemonProcess — single node', () => {
       override onReceive(m: string): void { probe.tell(`${this.index}:${m}`); }
     }
 
-    const handle = ShardedDaemonProcess.init<string>(a.system, a.cluster, {
-      name: 'workers', numDaemons: 4,
-      behaviorFor: (i) => Props.create(() => new Worker(i)),
-    });
+    const handle = ShardedDaemonProcess.init<string>(a.system, a.cluster,
+      ShardedDaemonProcessOptions.create<string>()
+        .withName('workers')
+        .withNumDaemons(4)
+        .withBehaviorFor((i) => Props.create(() => new Worker(i))));
     await sleep(150);
 
     const starts: string[] = [];
@@ -89,18 +91,21 @@ describe('ShardedDaemonProcess — multi-node', () => {
         override onReceive(): void {}
       });
 
-    ShardedDaemonProcess.init<string>(a.system, a.cluster, {
-      name: 'workers', numDaemons: 9,
-      behaviorFor: (i) => makeWorker(i, hostedByA),
-    });
-    ShardedDaemonProcess.init<string>(b.system, b.cluster, {
-      name: 'workers', numDaemons: 9,
-      behaviorFor: (i) => makeWorker(i, hostedByB),
-    });
-    ShardedDaemonProcess.init<string>(c.system, c.cluster, {
-      name: 'workers', numDaemons: 9,
-      behaviorFor: (i) => makeWorker(i, hostedByC),
-    });
+    ShardedDaemonProcess.init<string>(a.system, a.cluster,
+      ShardedDaemonProcessOptions.create<string>()
+        .withName('workers')
+        .withNumDaemons(9)
+        .withBehaviorFor((i) => makeWorker(i, hostedByA)));
+    ShardedDaemonProcess.init<string>(b.system, b.cluster,
+      ShardedDaemonProcessOptions.create<string>()
+        .withName('workers')
+        .withNumDaemons(9)
+        .withBehaviorFor((i) => makeWorker(i, hostedByB)));
+    ShardedDaemonProcess.init<string>(c.system, c.cluster,
+      ShardedDaemonProcessOptions.create<string>()
+        .withName('workers')
+        .withNumDaemons(9)
+        .withBehaviorFor((i) => makeWorker(i, hostedByC)));
 
     await waitFor(() => hostedByA.size + hostedByB.size + hostedByC.size === 9, 5_000);
 
@@ -132,16 +137,17 @@ describe('ShardedDaemonProcess — liveness heartbeat', () => {
       override onReceive(): void {}
     }
 
-    const handle = ShardedDaemonProcess.init<string>(a.system, a.cluster, {
-      name: 'workers', numDaemons: 2,
-      behaviorFor: (i) => Props.create(() => new W(i)),
-      // Tight livenessIntervalMs so the heartbeat would re-wake daemons
-      // every 80 ms while the test runs.  We're not asserting on
-      // additional preStart fires (rememberEntities prevents that), but
-      // we *are* asserting that handle.stop() cleanly cancels the timer
-      // instead of leaving a zombie that fires after teardown.
-      livenessIntervalMs: 80,
-    });
+    const handle = ShardedDaemonProcess.init<string>(a.system, a.cluster,
+      ShardedDaemonProcessOptions.create<string>()
+        .withName('workers')
+        .withNumDaemons(2)
+        .withBehaviorFor((i) => Props.create(() => new W(i)))
+        // Tight livenessIntervalMs so the heartbeat would re-wake daemons
+        // every 80 ms while the test runs.  We're not asserting on
+        // additional preStart fires (rememberEntities prevents that), but
+        // we *are* asserting that handle.stop() cleanly cancels the timer
+        // instead of leaving a zombie that fires after teardown.
+        .withLivenessIntervalMs(80));
 
     // Drain initial preStarts.
     for (let i = 0; i < 2; i++) await probe.receiveOne(1_000);
@@ -168,11 +174,12 @@ describe('ShardedDaemonProcess — liveness heartbeat', () => {
       override onReceive(): void {}
     }
 
-    const handle = ShardedDaemonProcess.init<string>(a.system, a.cluster, {
-      name: 'workers', numDaemons: 2,
-      behaviorFor: (i) => Props.create(() => new W(i)),
-      livenessIntervalMs: 0,
-    });
+    const handle = ShardedDaemonProcess.init<string>(a.system, a.cluster,
+      ShardedDaemonProcessOptions.create<string>()
+        .withName('workers')
+        .withNumDaemons(2)
+        .withBehaviorFor((i) => Props.create(() => new W(i)))
+        .withLivenessIntervalMs(0));
 
     for (let i = 0; i < 2; i++) await probe.receiveOne(1_000);
 

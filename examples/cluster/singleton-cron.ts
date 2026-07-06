@@ -14,10 +14,12 @@ import {
   Actor,
   ActorSystem,
   Cluster,
+  ClusterBootstrapOptions,
   ClusterSingletonId,
   InMemoryTransport,
   NodeAddress,
   Props,
+  StartSingletonOptions,
   type ActorRef,
 } from '../../src/index.js';
 
@@ -52,15 +54,16 @@ class CronClient extends Actor<CronEvent> {
 async function startNode(host: string, port: number, seeds: string[] = []): Promise<{
   sys: ActorSystem; cluster: Cluster; name: string;
 }> {
-  const { system, cluster } = await Cluster.bootstrap({
-    name: 'cron-cluster',
-    host, port, seeds,
-    transport: new InMemoryTransport(new NodeAddress('cron-cluster', host, port)),
-    failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
-    gossipIntervalMs: 80,
-    receptionist: false,
-    shutdownOnSignals: false,
-  });
+  const { system, cluster } = await Cluster.bootstrap(
+    ClusterBootstrapOptions.create('cron-cluster')
+      .withHost(host)
+      .withPort(port)
+      .withSeeds(seeds)
+      .withTransport(new InMemoryTransport(new NodeAddress('cron-cluster', host, port)))
+      .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+      .withGossipIntervalMs(80)
+      .withReceptionist(false)
+      .withShutdownOnSignals(false));
   return { sys: system, cluster, name: host };
 }
 
@@ -75,10 +78,9 @@ async function main(): Promise<void> {
   // Each node installs its own singleton manager — only the leader hosts
   // the Cron actor.
   for (const { sys, cluster, name } of [a, b, c]) {
-    sys.extension(ClusterSingletonId).start(cluster, {
-      typeName: 'cron',
-      props: Props.create(() => new Cron(name)),
-    });
+    sys.extension(ClusterSingletonId).start(cluster, StartSingletonOptions.create<CronCmd>()
+      .withTypeName('cron')
+      .withProps(Props.create(() => new Cron(name))));
   }
 
   // Spawn a client on each node and subscribe it via the proxy.

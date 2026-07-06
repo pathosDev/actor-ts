@@ -8,6 +8,7 @@ import {
   Actor,
   ActorSystem,
   Cluster,
+  ClusterOptions,
   DistributedPubSubId,
   InMemoryTransport,
   LogLevel,
@@ -24,10 +25,10 @@ let port = 42_000;
 async function fanout(nSubs: number): Promise<void> {
   const p = port++;
   const sys = ActorSystem.create(`fan-${p}`, { logger: new NoopLogger(), logLevel: LogLevel.Off });
-  const cluster = await Cluster.join(sys, {
-    host: 'h', port: p,
-    transport: new InMemoryTransport(new NodeAddress(`fan-${p}`, 'h', p)),
-  });
+  const cluster = await Cluster.join(sys, ClusterOptions.create()
+    .withHost('h')
+    .withPort(p)
+    .withTransport(new InMemoryTransport(new NodeAddress(`fan-${p}`, 'h', p))));
   const mediator = sys.extension(DistributedPubSubId).start(cluster);
 
   let remaining = nSubs;

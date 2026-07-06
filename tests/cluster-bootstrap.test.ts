@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   AggregateSeedProvider,
   Cluster,
+  ClusterBootstrapOptions,
   ConfigSeedProvider,
   InMemoryTransport,
   LogLevel,
@@ -20,18 +21,18 @@ import {
 describe('Cluster.bootstrap', () => {
   test('single-node: returns system + cluster + null receptionist when opted out', async () => {
     const transport = new InMemoryTransport(new NodeAddress('bootstrap-1', '127.0.0.1', 50100));
-    const { system, cluster, receptionist, shutdown } = await Cluster.bootstrap({
-      name: 'bootstrap-1',
-      host: '127.0.0.1',
-      port: 50100,
-      transport,
-      receptionist: false,
-      logger: new NoopLogger(),
-      logLevel: LogLevel.Off,
-      shutdownOnSignals: false,
-      gossipIntervalMs: 50,
-      failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
-    });
+    const { system, cluster, receptionist, shutdown } = await Cluster.bootstrap(
+      ClusterBootstrapOptions.create('bootstrap-1')
+        .withHost('127.0.0.1')
+        .withPort(50100)
+        .withTransport(transport)
+        .withReceptionist(false)
+        .withLogger(new NoopLogger())
+        .withLogLevel(LogLevel.Off)
+        .withShutdownOnSignals(false)
+        .withGossipIntervalMs(50)
+        .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 }),
+    );
     try {
       expect(system.name).toBe('bootstrap-1');
       expect(cluster.selfAddress.toString()).toBe('bootstrap-1@127.0.0.1:50100');
@@ -46,15 +47,15 @@ describe('Cluster.bootstrap', () => {
 
   test('starts the receptionist by default', async () => {
     const transport = new InMemoryTransport(new NodeAddress('bootstrap-2', '127.0.0.1', 50101));
-    const { receptionist, shutdown } = await Cluster.bootstrap({
-      name: 'bootstrap-2',
-      host: '127.0.0.1',
-      port: 50101,
-      transport,
-      logger: new NoopLogger(),
-      logLevel: LogLevel.Off,
-      shutdownOnSignals: false,
-    });
+    const { receptionist, shutdown } = await Cluster.bootstrap(
+      ClusterBootstrapOptions.create('bootstrap-2')
+        .withHost('127.0.0.1')
+        .withPort(50101)
+        .withTransport(transport)
+        .withLogger(new NoopLogger())
+        .withLogLevel(LogLevel.Off)
+        .withShutdownOnSignals(false),
+    );
     try {
       expect(receptionist).not.toBeNull();
       expect(receptionist!.path.name).toBe('receptionist');
@@ -68,31 +69,31 @@ describe('Cluster.bootstrap', () => {
     const aTransport = new InMemoryTransport(new NodeAddress('bootstrap-3', '127.0.0.1', 50102));
     const bTransport = new InMemoryTransport(new NodeAddress('bootstrap-3', '127.0.0.1', 50103));
 
-    const a = await Cluster.bootstrap({
-      name: 'bootstrap-3',
-      host: '127.0.0.1',
-      port: 50102,
-      transport: aTransport,
-      receptionist: false,
-      logger: new NoopLogger(),
-      logLevel: LogLevel.Off,
-      shutdownOnSignals: false,
-      gossipIntervalMs: 50,
-      failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
-    });
-    const b = await Cluster.bootstrap({
-      name: 'bootstrap-3',
-      host: '127.0.0.1',
-      port: 50103,
-      transport: bTransport,
-      seeds: ['127.0.0.1:50102'],
-      receptionist: false,
-      logger: new NoopLogger(),
-      logLevel: LogLevel.Off,
-      shutdownOnSignals: false,
-      gossipIntervalMs: 50,
-      failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
-    });
+    const a = await Cluster.bootstrap(
+      ClusterBootstrapOptions.create('bootstrap-3')
+        .withHost('127.0.0.1')
+        .withPort(50102)
+        .withTransport(aTransport)
+        .withReceptionist(false)
+        .withLogger(new NoopLogger())
+        .withLogLevel(LogLevel.Off)
+        .withShutdownOnSignals(false)
+        .withGossipIntervalMs(50)
+        .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 }),
+    );
+    const b = await Cluster.bootstrap(
+      ClusterBootstrapOptions.create('bootstrap-3')
+        .withHost('127.0.0.1')
+        .withPort(50103)
+        .withTransport(bTransport)
+        .withSeeds(['127.0.0.1:50102'])
+        .withReceptionist(false)
+        .withLogger(new NoopLogger())
+        .withLogLevel(LogLevel.Off)
+        .withShutdownOnSignals(false)
+        .withGossipIntervalMs(50)
+        .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 }),
+    );
     try {
       // Both nodes should converge — each sees two up members.
       const deadline = Date.now() + 2_000;
@@ -114,17 +115,17 @@ describe('Cluster.bootstrap', () => {
     // the bootstrap should not actively wait.  The cluster might still
     // be up by the time we check (joining is synchronous-ish), so we
     // just assert the call resolves without throwing.
-    const { shutdown } = await Cluster.bootstrap({
-      name: 'bootstrap-4',
-      host: '127.0.0.1',
-      port: 50104,
-      transport,
-      receptionist: false,
-      awaitReady: false,
-      logger: new NoopLogger(),
-      logLevel: LogLevel.Off,
-      shutdownOnSignals: false,
-    });
+    const { shutdown } = await Cluster.bootstrap(
+      ClusterBootstrapOptions.create('bootstrap-4')
+        .withHost('127.0.0.1')
+        .withPort(50104)
+        .withTransport(transport)
+        .withReceptionist(false)
+        .withAwaitReady(false)
+        .withLogger(new NoopLogger())
+        .withLogLevel(LogLevel.Off)
+        .withShutdownOnSignals(false),
+    );
     await shutdown();
   });
 
@@ -138,31 +139,31 @@ describe('Cluster.bootstrap', () => {
       },
     };
 
-    const a = await Cluster.bootstrap({
-      name: 'bootstrap-5',
-      host: '127.0.0.1',
-      port: 50105,
-      transport: aTransport,
-      receptionist: false,
-      logger: new NoopLogger(),
-      logLevel: LogLevel.Off,
-      shutdownOnSignals: false,
-      gossipIntervalMs: 50,
-      failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
-    });
-    const b = await Cluster.bootstrap({
-      name: 'bootstrap-5',
-      host: '127.0.0.1',
-      port: 50106,
-      transport: bTransport,
-      discovery: customProvider,
-      receptionist: false,
-      logger: new NoopLogger(),
-      logLevel: LogLevel.Off,
-      shutdownOnSignals: false,
-      gossipIntervalMs: 50,
-      failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
-    });
+    const a = await Cluster.bootstrap(
+      ClusterBootstrapOptions.create('bootstrap-5')
+        .withHost('127.0.0.1')
+        .withPort(50105)
+        .withTransport(aTransport)
+        .withReceptionist(false)
+        .withLogger(new NoopLogger())
+        .withLogLevel(LogLevel.Off)
+        .withShutdownOnSignals(false)
+        .withGossipIntervalMs(50)
+        .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 }),
+    );
+    const b = await Cluster.bootstrap(
+      ClusterBootstrapOptions.create('bootstrap-5')
+        .withHost('127.0.0.1')
+        .withPort(50106)
+        .withTransport(bTransport)
+        .withDiscovery(customProvider)
+        .withReceptionist(false)
+        .withLogger(new NoopLogger())
+        .withLogLevel(LogLevel.Off)
+        .withShutdownOnSignals(false)
+        .withGossipIntervalMs(50)
+        .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 }),
+    );
     try {
       const deadline = Date.now() + 2_000;
       while (Date.now() < deadline) {
@@ -253,16 +254,16 @@ describe('autoDiscovery', () => {
 describe('bootstrapCluster (free function)', () => {
   test('reachable as a top-level export', async () => {
     const transport = new InMemoryTransport(new NodeAddress('bootstrap-fn', '127.0.0.1', 50110));
-    const { shutdown, cluster } = await bootstrapCluster({
-      name: 'bootstrap-fn',
-      host: '127.0.0.1',
-      port: 50110,
-      transport,
-      receptionist: false,
-      logger: new NoopLogger(),
-      logLevel: LogLevel.Off,
-      shutdownOnSignals: false,
-    });
+    const { shutdown, cluster } = await bootstrapCluster(
+      ClusterBootstrapOptions.create('bootstrap-fn')
+        .withHost('127.0.0.1')
+        .withPort(50110)
+        .withTransport(transport)
+        .withReceptionist(false)
+        .withLogger(new NoopLogger())
+        .withLogLevel(LogLevel.Off)
+        .withShutdownOnSignals(false),
+    );
     try {
       expect(cluster.upMembers().length).toBe(1);
     } finally {

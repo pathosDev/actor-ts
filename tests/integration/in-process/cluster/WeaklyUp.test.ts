@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { Cluster } from '../../../../src/cluster/Cluster.js';
+import { Cluster, ClusterOptions } from '../../../../src/cluster/Cluster.js';
 import { MemberWeaklyUp } from '../../../../src/cluster/ClusterEvents.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
@@ -14,15 +14,18 @@ describe('Cluster — WeaklyUp', () => {
     const events: string[] = [];
     // Seed an unknown peer so the cluster stays in "joining" — no leader elected.
     const transport = new InMemoryTransport(new NodeAddress('wup', 'h', 55001));
-    const cluster = await Cluster.join(sys, {
-      host: 'h', port: 55001,
-      seeds: ['wup@h:55002'], // seed that's never brought up
-      transport,
-      weaklyUpAfterMs: 120,
-      gossipIntervalMs: 80,
-      failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
-      seedRetryIntervalMs: 100,
-    });
+    const cluster = await Cluster.join(
+      sys,
+      ClusterOptions.create()
+        .withHost('h')
+        .withPort(55001)
+        .withSeeds(['wup@h:55002']) // seed that's never brought up
+        .withTransport(transport)
+        .withWeaklyUpAfterMs(120)
+        .withGossipIntervalMs(80)
+        .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+        .withSeedRetryIntervalMs(100),
+    );
 
     cluster.subscribe((evt) => {
       if (evt instanceof MemberWeaklyUp) events.push(`weaklyUp:${evt.member.address}`);
@@ -39,24 +42,30 @@ describe('Cluster — WeaklyUp', () => {
     // Start A solo (will self-elect as leader), then start B with weaklyUp
     // enabled — B passes through joining → weakly-up → up.
     const sysA = ActorSystem.create('wup-2', { logger: new NoopLogger(), logLevel: LogLevel.Off });
-    const a = await Cluster.join(sysA, {
-      host: 'h', port: 55101,
-      transport: new InMemoryTransport(new NodeAddress('wup-2', 'h', 55101)),
-      gossipIntervalMs: 60,
-    });
+    const a = await Cluster.join(
+      sysA,
+      ClusterOptions.create()
+        .withHost('h')
+        .withPort(55101)
+        .withTransport(new InMemoryTransport(new NodeAddress('wup-2', 'h', 55101)))
+        .withGossipIntervalMs(60),
+    );
 
     const sysB = ActorSystem.create('wup-2', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const eventsB: string[] = [];
 
     // Seed against A; weaklyUpAfterMs is big enough that normal joining→up
     // via leader convergence wins first and weakly-up is never emitted.
-    const b = await Cluster.join(sysB, {
-      host: 'h', port: 55102,
-      seeds: ['wup-2@h:55101'],
-      transport: new InMemoryTransport(new NodeAddress('wup-2', 'h', 55102)),
-      weaklyUpAfterMs: 10_000,
-      gossipIntervalMs: 60,
-    });
+    const b = await Cluster.join(
+      sysB,
+      ClusterOptions.create()
+        .withHost('h')
+        .withPort(55102)
+        .withSeeds(['wup-2@h:55101'])
+        .withTransport(new InMemoryTransport(new NodeAddress('wup-2', 'h', 55102)))
+        .withWeaklyUpAfterMs(10_000)
+        .withGossipIntervalMs(60),
+    );
 
     b.subscribe((evt) => eventsB.push(evt.constructor.name));
 

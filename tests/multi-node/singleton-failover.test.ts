@@ -21,7 +21,7 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
 import { Props } from '../../src/Props.js';
-import { ClusterSingletonId } from '../../src/cluster/singleton/index.js';
+import { ClusterSingletonId, StartSingletonOptions } from '../../src/cluster/singleton/index.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 
@@ -56,10 +56,12 @@ describe('multi-node singleton failover', () => {
       // Start the singleton on every node — the manager on the leader is
       // the only one that actually spawns the child.
       for (const role of ['a', 'b', 'c'] as const) {
-        spec.systemFor(role).extension(ClusterSingletonId).start(spec.clusterFor(role), {
-          typeName: 'marker',
-          props: Props.create(() => new Marker(role)),
-        });
+        spec.systemFor(role).extension(ClusterSingletonId).start(
+          spec.clusterFor(role),
+          StartSingletonOptions.create()
+            .withTypeName('marker')
+            .withProps(Props.create(() => new Marker(role))),
+        );
       }
 
       // Wait for the first preStart to fire — that's our initial host.

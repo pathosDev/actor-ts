@@ -40,6 +40,7 @@
 import { getTcpBackend, type TcpSocketLike, type TlsTransportSettings } from '../runtime/tcp/index.js';
 import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
+import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
 import { encodeFrame, FrameDecoder, type WireMessage, type HelloMsg, type HelloAckMsg } from './Protocol.js';
 import type {
@@ -70,6 +71,52 @@ export interface ClusterClientSettings {
   readonly tls?: TlsTransportSettings;
   /** Custom logger; default: ConsoleLogger at WARN. */
   readonly log?: Logger;
+}
+
+/**
+ * Fluent builder for {@link ClusterClientSettings}:
+ *
+ *     new ClusterClient(
+ *       ClusterClientOptions.create()
+ *         .withContactPoints(['sys@127.0.0.1:2551'])
+ *         .withAskTimeoutMs(3_000),
+ *     );
+ */
+export class ClusterClientOptions extends OptionsBuilder<ClusterClientSettings> {
+  /** Start a fresh builder.  Equivalent to `new ClusterClientOptions()`. */
+  static create(): ClusterClientOptions {
+    return new ClusterClientOptions();
+  }
+
+  /** Cluster nodes to dial (`host:port` or `<system>@host:port`).  Tried in order. */
+  withContactPoints(contactPoints: ReadonlyArray<string>): this {
+    return this.set('contactPoints', contactPoints);
+  }
+
+  /** Synthetic system name embedded in the client's hello.  Default `cluster-client`. */
+  withSystemName(systemName: string): this {
+    return this.set('systemName', systemName);
+  }
+
+  /** Host + port the client claims as its identity for reply routing. */
+  withClientIdentity(host: string, port: number): this {
+    return this.set('clientIdentity', { host, port });
+  }
+
+  /** Default ask timeout in ms.  Default 5 s. */
+  withAskTimeoutMs(ms: number): this {
+    return this.set('askTimeoutMs', ms);
+  }
+
+  /** TLS config — must match the cluster's. */
+  withTls(tls: TlsTransportSettings): this {
+    return this.set('tls', tls);
+  }
+
+  /** Custom logger; default ConsoleLogger at WARN. */
+  withLogger(log: Logger): this {
+    return this.set('log', log);
+  }
 }
 
 interface PendingAsk {
@@ -120,7 +167,11 @@ export class ClusterClient {
   /** Filled by `hello-ack`; the contact-point's real address (post-handshake). */
   private contactPointPeer: NodeAddress | null = null;
 
-  constructor(private readonly settings: ClusterClientSettings) {
+  private readonly settings: ClusterClientSettings;
+
+  constructor(options: ClusterClientOptions) {
+    const settings = options.build() as ClusterClientSettings;
+    this.settings = settings;
     if (!settings.contactPoints || settings.contactPoints.length === 0) {
       throw new Error('ClusterClient: contactPoints must contain at least one entry');
     }

@@ -6,7 +6,7 @@
  * messages received on subscribed topics.  The harness drives the
  * scenario via the four commands defined below.
  */
-import { DistributedPubSubId } from '../../../src/cluster/pubsub/index.js';
+import { DistributedPubSubId, DistributedPubSubOptions } from '../../../src/cluster/pubsub/index.js';
 import {
   Publish, Subscribe,
 } from '../../../src/cluster/pubsub/Messages.js';
@@ -32,7 +32,7 @@ function getState(ctx: ScenarioContext): ScenarioState {
 
 export const setup: ScenarioModule['setup'] = async (ctx) => {
   const pubsub = ctx.system.extension(DistributedPubSubId);
-  const mediator = pubsub.start(ctx.cluster, { gossipIntervalMs: 100 });
+  const mediator = pubsub.start(ctx.cluster, DistributedPubSubOptions.create().withGossipIntervalMs(100));
   ctx.state.scenario = {
     mediator,
     probesByTopic: new Map<string, TestProbe>(),

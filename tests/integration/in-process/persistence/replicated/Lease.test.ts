@@ -10,7 +10,7 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
-import { Cluster } from '../../../../../src/cluster/Cluster.js';
+import { Cluster, ClusterOptions } from '../../../../../src/cluster/Cluster.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
@@ -69,11 +69,14 @@ async function bootCluster(name: string, port: number): Promise<{
   sys: ActorSystem; cluster: Cluster;
 }> {
   const sys = ActorSystem.create(name, { logger: new NoopLogger(), logLevel: LogLevel.Off });
-  const cluster = await Cluster.join(sys, {
-    host: 'h', port,
-    transport: new InMemoryTransport(new NodeAddress(name, 'h', port)),
-    gossipIntervalMs: 30,
-  });
+  const cluster = await Cluster.join(
+    sys,
+    ClusterOptions.create()
+      .withHost('h')
+      .withPort(port)
+      .withTransport(new InMemoryTransport(new NodeAddress(name, 'h', port)))
+      .withGossipIntervalMs(30),
+  );
   return { sys, cluster };
 }
 

@@ -27,7 +27,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
-import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
+import { ClusterSharding, StartShardingOptions } from '../../src/cluster/sharding/ClusterSharding.js';
 import { DistributedDataCoordinatorStateStore } from '../../src/cluster/sharding/CoordinatorState.js';
 import { ShardCoordinator } from '../../src/cluster/sharding/ShardCoordinator.js';
 import { DistributedDataId } from '../../src/crdt/DistributedData.js';
@@ -101,14 +101,15 @@ describe('ShardCoordinator state persistence — leader failover', () => {
         const store = new DistributedDataCoordinatorStateStore(
           dd, cluster.selfAddress.toString(),
         );
-        regions[role] = cluster.sharding.start<Cmd>({
-          typeName: 'entity',
-          entityProps: Props.create(() => new Entity()),
-          extractEntityId: (m) => m.id,
-          numShards: 8,
-          rebalanceIntervalMs: 200,
-          coordinatorStateStore: store,
-        });
+        regions[role] = cluster.sharding.start<Cmd>(
+          StartShardingOptions.create<Cmd>()
+            .withTypeName('entity')
+            .withEntityProps(Props.create(() => new Entity()))
+            .withExtractEntityId((m) => m.id)
+            .withNumShards(8)
+            .withRebalanceIntervalMs(200)
+            .withCoordinatorStateStore(store),
+        );
       }
 
       // Allocate the shards by asking 8 distinct entity ids.  Each

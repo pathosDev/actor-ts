@@ -13,7 +13,7 @@
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../src/ActorSystem.js';
-import { Cluster } from '../../src/cluster/Cluster.js';
+import { Cluster, ClusterOptions } from '../../src/cluster/Cluster.js';
 import { InMemoryTransport } from '../../src/cluster/Transport.js';
 import { NodeAddress } from '../../src/cluster/NodeAddress.js';
 import type { GossipMsg, MemberData } from '../../src/cluster/Protocol.js';
@@ -31,13 +31,16 @@ async function startNode(systemName: string, port: number, seeds: string[] = [])
     logLevel: LogLevel.Off,
   });
   const address = new NodeAddress(systemName, 'h', port);
-  const cluster = await Cluster.join(system, {
-    host: 'h', port,
-    seeds,
-    transport: new InMemoryTransport(address),
-    failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
-    gossipIntervalMs: 80,
-  });
+  const cluster = await Cluster.join(
+    system,
+    ClusterOptions.create()
+      .withHost('h')
+      .withPort(port)
+      .withSeeds(seeds)
+      .withTransport(new InMemoryTransport(address))
+      .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+      .withGossipIntervalMs(80),
+  );
   return { system, cluster, address };
 }
 

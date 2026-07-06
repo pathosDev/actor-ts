@@ -35,8 +35,8 @@
  * because it's standalone.
  */
 import {
-  Actor, ActorSystem, Cluster, ClusterSingletonId, InMemoryTransport,
-  NodeAddress, Props,
+  Actor, ActorSystem, Cluster, ClusterOptions, ClusterSingletonId, InMemoryTransport,
+  NodeAddress, Props, StartSingletonOptions,
 } from '../../src/index.js';
 import { KubernetesLease } from '../../src/coordination/leases/KubernetesLease.js';
 
@@ -69,10 +69,10 @@ async function main(): Promise<void> {
   // ties under split-brain.  In a real deploy you'd point seeds at
   // the other pods' addresses (resolved via K8s API or DNS SRV).
   const selfAddr = new NodeAddress('app', '127.0.0.1', 30_000);
-  const cluster = await Cluster.join(system, {
-    host: selfAddr.host, port: selfAddr.port,
-    transport: new InMemoryTransport(selfAddr),
-  });
+  const cluster = await Cluster.join(system, ClusterOptions.create()
+    .withHost(selfAddr.host)
+    .withPort(selfAddr.port)
+    .withTransport(new InMemoryTransport(selfAddr)));
 
   const lease = new KubernetesLease({
     name: 'app-cron-singleton',
@@ -88,12 +88,12 @@ async function main(): Promise<void> {
   // That's it.  The singleton manager handles every lifecycle
   // concern: acquire on becoming leader, retry on contention, stop
   // child on lease loss, release on graceful shutdown.
-  const handle = system.extension(ClusterSingletonId).start(cluster, {
-    typeName: 'cron',
-    props: Props.create(() => new CronActor()),
-    lease,
-    acquireRetryIntervalMs: 5_000,
-  });
+  const handle = system.extension(ClusterSingletonId).start(cluster,
+    StartSingletonOptions.create<{ kind: 'tick' }>()
+      .withTypeName('cron')
+      .withProps(Props.create(() => new CronActor()))
+      .withLease(lease)
+      .withAcquireRetryIntervalMs(5_000));
   void handle;   // we never tell the proxy in this example — the actor
                  // self-ticks via setInterval.
   console.log(`[${POD_NAME}] running guarded workload — stop with Ctrl-C`);

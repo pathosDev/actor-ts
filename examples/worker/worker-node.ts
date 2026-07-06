@@ -1,7 +1,7 @@
 /**
  * Worker-side script.  Bun spawns one instance of this file per core.
  */
-import { Actor, ActorSystem, Cluster, Props, WorkerNode } from '../../src/index.js';
+import { Actor, ActorSystem, Cluster, ClusterOptions, Props, WorkerNode } from '../../src/index.js';
 
 class HelloWorker extends Actor<'greet'> {
   constructor(private readonly workerId: number) { super(); }
@@ -14,14 +14,13 @@ async function main(): Promise<void> {
   const system = ActorSystem.create(ctx.systemName, {
     config: { 'actor-ts': { logger: { level: 'info' } } },
   });
-  const cluster = await Cluster.join(system, {
-    host: ctx.self.host,
-    port: ctx.self.port,
-    seeds: ctx.initData.seedAddr ? [ctx.initData.seedAddr] : [],
-    transport: ctx.transport,
-    failureDetector: { heartbeatIntervalMs: 100, unreachableAfterMs: 400, downAfterMs: 800 },
-    gossipIntervalMs: 120,
-  });
+  const cluster = await Cluster.join(system, ClusterOptions.create()
+    .withHost(ctx.self.host)
+    .withPort(ctx.self.port)
+    .withSeeds(ctx.initData.seedAddr ? [ctx.initData.seedAddr] : [])
+    .withTransport(ctx.transport)
+    .withFailureDetector({ heartbeatIntervalMs: 100, unreachableAfterMs: 400, downAfterMs: 800 })
+    .withGossipIntervalMs(120));
   system.spawn(Props.create(() => new HelloWorker(ctx.initData.workerId)), 'hello');
   ctx.ready();
   setTimeout(async () => {

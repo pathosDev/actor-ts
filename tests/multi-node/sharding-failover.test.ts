@@ -23,8 +23,8 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
 import { Props } from '../../src/Props.js';
-import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
-import { ShardedDaemonProcess } from '../../src/cluster/sharding/ShardedDaemonProcess.js';
+import { ClusterSharding, StartShardingOptions } from '../../src/cluster/sharding/ClusterSharding.js';
+import { ShardedDaemonProcess, ShardedDaemonProcessOptions } from '../../src/cluster/sharding/ShardedDaemonProcess.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import type { ActorRef } from '../../src/ActorRef.js';
@@ -47,14 +47,15 @@ const TIGHT_FD = {
 function startRegion(
   spec: MultiNodeSpec, role: string,
 ): ActorRef<Cmd> {
-  return spec.clusterFor(role).sharding.start<Cmd>({
-    typeName: 'entity',
-    entityProps: Props.create(() => new Entity()),
-    extractEntityId: (m) => m.id,
-    numShards: 16,
-    rebalanceIntervalMs: 200,
-    handOffTimeoutMs: 1_000,
-  });
+  return spec.clusterFor(role).sharding.start<Cmd>(
+    StartShardingOptions.create<Cmd>()
+      .withTypeName('entity')
+      .withEntityProps(Props.create(() => new Entity()))
+      .withExtractEntityId((m) => m.id)
+      .withNumShards(16)
+      .withRebalanceIntervalMs(200)
+      .withHandOffTimeoutMs(1_000),
+  );
 }
 
 describe('multi-node sharding failover', () => {
@@ -303,11 +304,10 @@ describe('multi-node sharding failover', () => {
       for (const role of ['a', 'b', 'c'] as const) {
         ShardedDaemonProcess.init(
           spec.systemFor(role), spec.clusterFor(role),
-          {
-            name: 'workers',
-            numDaemons: 6,
-            behaviorFor: (i) => Props.create(() => new Daemon(i, role)),
-          },
+          ShardedDaemonProcessOptions.create<{ kind: 'noop' }>()
+            .withName('workers')
+            .withNumDaemons(6)
+            .withBehaviorFor((i) => Props.create(() => new Daemon(i, role))),
         );
       }
 

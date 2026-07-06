@@ -14,7 +14,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
-import { Cluster } from '../../../../../src/cluster/Cluster.js';
+import { Cluster, ClusterOptions } from '../../../../../src/cluster/Cluster.js';
 import {
   DistributedDataCoordinatorStateStore,
   type CoordinatorStateData,
@@ -80,11 +80,11 @@ describe('CoordinatorStateStore', () => {
     const sys = ActorSystem.create('coord-state', {
       logger: new NoopLogger(), logLevel: LogLevel.Off,
     });
-    const cluster = await Cluster.join(sys, {
-      host: 'h', port: 71_001,
-      transport: new InMemoryTransport(new NodeAddress('coord-state', 'h', 71_001)),
-      gossipIntervalMs: 80,
-    });
+    const cluster = await Cluster.join(sys, ClusterOptions.create()
+      .withHost('h')
+      .withPort(71_001)
+      .withTransport(new InMemoryTransport(new NodeAddress('coord-state', 'h', 71_001)))
+      .withGossipIntervalMs(80));
     const dd = sys.extension(DistributedDataId).start(cluster, { gossipIntervalMs: 80 });
 
     const store = new DistributedDataCoordinatorStateStore(

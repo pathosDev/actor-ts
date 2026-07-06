@@ -15,7 +15,7 @@
  */
 
 import { ActorSystem } from '../../src/ActorSystem.js';
-import { Cluster } from '../../src/cluster/Cluster.js';
+import { Cluster, ClusterOptions } from '../../src/cluster/Cluster.js';
 import {
   Actor,
   BearerTokenAuth,
@@ -28,8 +28,8 @@ import { managementRoutes } from '../../src/management/index.js';
 import { ReceptionistId } from '../../src/discovery/index.js';
 import { Register } from '../../src/discovery/ReceptionistMessages.js';
 import { DistributedDataId } from '../../src/crdt/index.js';
-import { ClusterSingletonId } from '../../src/cluster/singleton/ClusterSingleton.js';
-import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
+import { ClusterSingletonId, StartSingletonOptions } from '../../src/cluster/singleton/ClusterSingleton.js';
+import { ClusterSharding, StartShardingOptions } from '../../src/cluster/sharding/ClusterSharding.js';
 import { ClusterClientReceptionistId } from '../../src/cluster/ClusterClientReceptionist.js';
 import { CoordinatedShutdownId, Phases } from '../../src/CoordinatedShutdown.js';
 import { PersistenceExtensionId } from '../../src/persistence/PersistenceExtension.js';
@@ -80,15 +80,17 @@ async function main(): Promise<void> {
   // `actor_mailbox_dropped_total` (the hook scenario 14 verifies).
   system.extension(MetricsExtensionId).enable();
   logger.info('MetricsExtension enabled');
-  const cluster = await Cluster.join(system, {
-    host: HOST,
-    port: CLUSTER_PORT,
-    seeds: SEEDS,
-    // Tighter failure detection than the default so scenarios don't
-    // wait forever for a partition to register.
-    failureDetector: { heartbeatIntervalMs: 200, unreachableAfterMs: 1_500, downAfterMs: 4_000 },
-    gossipIntervalMs: 250,
-  });
+  const cluster = await Cluster.join(
+    system,
+    ClusterOptions.create()
+      .withHost(HOST)
+      .withPort(CLUSTER_PORT)
+      .withSeeds(SEEDS)
+      // Tighter failure detection than the default so scenarios don't
+      // wait forever for a partition to register.
+      .withFailureDetector({ heartbeatIntervalMs: 200, unreachableAfterMs: 1_500, downAfterMs: 4_000 })
+      .withGossipIntervalMs(250),
+  );
 
   // ============================================================
   // Bootstrap cluster-wide gossip extensions BEFORE binding HTTP.
@@ -125,10 +127,12 @@ async function main(): Promise<void> {
   // The host-node identity is baked into the singleton at construction
   // time, so `SingletonWho` replies tell us which node currently
   // hosts the instance (used by scenario 05 to verify failover).
-  const singleton = system.extension(ClusterSingletonId).start(cluster, {
-    typeName: 'counter-singleton',
-    props: Props.create(() => new CounterSingleton(NODE_NAME)),
-  });
+  const singleton = system.extension(ClusterSingletonId).start(
+    cluster,
+    StartSingletonOptions.create()
+      .withTypeName('counter-singleton')
+      .withProps(Props.create(() => new CounterSingleton(NODE_NAME))),
+  );
   logger.info('ClusterSingleton manager started', { typeName: 'counter-singleton' });
 
   // ClusterSharding — every node hosts a ShardRegion for the
@@ -136,12 +140,13 @@ async function main(): Promise<void> {
   // shards to regions.  Each ShardedCounter entity is constructed
   // with NODE_NAME so the Who-query reveals the entity's host.
   // numShards=32 gives a reasonable spread across 5 nodes (~6 each).
-  const shardingRegion = ClusterSharding.get(system, cluster).start<ShardedCommand>({
-    typeName: SHARDING_TYPE_NAME,
-    entityProps: Props.create(() => new ShardedCounter(NODE_NAME)),
-    extractEntityId: (msg) => msg.entityId,
-    numShards: 32,
-  });
+  const shardingRegion = ClusterSharding.get(system, cluster).start<ShardedCommand>(
+    StartShardingOptions.create<ShardedCommand>()
+      .withTypeName(SHARDING_TYPE_NAME)
+      .withEntityProps(Props.create(() => new ShardedCounter(NODE_NAME)))
+      .withExtractEntityId((msg) => msg.entityId)
+      .withNumShards(32),
+  );
   logger.info('ClusterSharding region started', { typeName: SHARDING_TYPE_NAME, numShards: 32 });
 
   // Pre-register shutdown-trace hooks in TWO different phases so

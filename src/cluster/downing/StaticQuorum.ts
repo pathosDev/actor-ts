@@ -1,3 +1,4 @@
+import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import {
   addrKey,
   type ClusterPartitionView,
@@ -13,6 +14,28 @@ export interface StaticQuorumSettings {
 }
 
 /**
+ * Fluent builder for {@link StaticQuorumSettings}:
+ *
+ *     new StaticQuorum(StaticQuorumOptions.create().withQuorumSize(3));
+ */
+export class StaticQuorumOptions extends OptionsBuilder<StaticQuorumSettings> {
+  /** Start a fresh builder. */
+  static create(): StaticQuorumOptions {
+    return new StaticQuorumOptions();
+  }
+
+  /** Exact size of the quorum needed on the reachable side. */
+  withQuorumSize(quorumSize: number): this {
+    return this.set('quorumSize', quorumSize);
+  }
+
+  /** Only members carrying this role count toward quorum. */
+  withRole(role: string): this {
+    return this.set('role', role);
+  }
+}
+
+/**
  * "Static quorum" — as long as at least `quorumSize` reachable members are
  * up on this side, keep them and down the rest.  Otherwise, down ourselves.
  *
@@ -21,8 +44,11 @@ export interface StaticQuorumSettings {
  * shrink below the threshold.
  */
 export class StaticQuorum implements DowningProvider {
-  constructor(private readonly settings: StaticQuorumSettings) {
-    if (settings.quorumSize < 1) {
+  private readonly settings: StaticQuorumSettings;
+
+  constructor(options: StaticQuorumOptions) {
+    this.settings = options.build() as StaticQuorumSettings;
+    if (this.settings.quorumSize < 1) {
       throw new Error('StaticQuorum: quorumSize must be >= 1');
     }
   }

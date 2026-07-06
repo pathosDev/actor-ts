@@ -16,7 +16,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
-import { Cluster } from '../../../src/cluster/Cluster.js';
+import { Cluster, ClusterOptions } from '../../../src/cluster/Cluster.js';
 import {
   DistributedDataId,
   DurableDistributedDataStore,
@@ -52,13 +52,14 @@ async function startNode(
   } = {},
 ): Promise<NodeSetup> {
   const sys = ActorSystem.create(systemName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
-  const cluster = await Cluster.join(sys, {
-    host: 'h', port,
-    seeds: opts.seeds,
-    transport: new InMemoryTransport(new NodeAddress(systemName, 'h', port)),
-    failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
-    gossipIntervalMs: 80,
-  });
+  const clusterOptions = ClusterOptions.create()
+    .withHost('h')
+    .withPort(port)
+    .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
+    .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+    .withGossipIntervalMs(80);
+  if (opts.seeds !== undefined) clusterOptions.withSeeds(opts.seeds);
+  const cluster = await Cluster.join(sys, clusterOptions);
   return { sys, cluster };
 }
 

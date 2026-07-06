@@ -3,6 +3,7 @@ import {
   Actor,
   ActorSystem,
   Cluster,
+  ClusterOptions,
   ClusterSharding,
   HashAllocationStrategy,
   InMemoryTransport,
@@ -15,6 +16,7 @@ import {
   Props,
   SelfUp,
   SelfRemoved,
+  StartShardingOptions,
   LeaderChanged,
 } from '../src/index.js';
 import type { ActorRef } from '../src/index.js';
@@ -49,15 +51,15 @@ async function startNode<TMsg>(opts: {
     logger: new NoopLogger(),
     logLevel: LogLevel.Off,
   });
-  const cluster = await Cluster.join(system, {
-    host: opts.host,
-    port: opts.port,
-    seeds: opts.seeds ?? [],
-    roles: opts.roles,
-    transport: new InMemoryTransport(new NodeAddress(opts.systemName, opts.host, opts.port)),
-    failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
-    gossipIntervalMs: 80,
-  });
+  const clusterOptions = ClusterOptions.create()
+    .withHost(opts.host)
+    .withPort(opts.port)
+    .withSeeds(opts.seeds ?? [])
+    .withTransport(new InMemoryTransport(new NodeAddress(opts.systemName, opts.host, opts.port)))
+    .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+    .withGossipIntervalMs(80);
+  if (opts.roles !== undefined) clusterOptions.withRoles(opts.roles);
+  const cluster = await Cluster.join(system, clusterOptions);
   const region = opts.sharding(cluster.sharding);
   return { system, cluster, region };
 }
@@ -71,10 +73,13 @@ async function stopNode(n: NodeCtx<unknown>): Promise<void> {
 
 test('Self events fire when own member transitions to Up', async () => {
   const system = ActorSystem.create('self-up', { logger: new NoopLogger(), logLevel: LogLevel.Off });
-  const cluster = await Cluster.join(system, {
-    host: '10.10.0.1', port: 31000,
-    transport: new InMemoryTransport(new NodeAddress('self-up', '10.10.0.1', 31000)),
-  });
+  const cluster = await Cluster.join(
+    system,
+    ClusterOptions.create()
+      .withHost('10.10.0.1')
+      .withPort(31000)
+      .withTransport(new InMemoryTransport(new NodeAddress('self-up', '10.10.0.1', 31000))),
+  );
   let selfUp = 0;
   cluster.subscribe(e => { if (e instanceof SelfUp) selfUp++; });
   await sleep(100);
@@ -85,19 +90,26 @@ test('Self events fire when own member transitions to Up', async () => {
 
 test('LeaderChanged fires when the oldest member leaves', async () => {
   const sys1 = ActorSystem.create('leader-x', { logger: new NoopLogger(), logLevel: LogLevel.Off });
-  const c1 = await Cluster.join(sys1, {
-    host: '10.11.0.1', port: 32001,
-    transport: new InMemoryTransport(new NodeAddress('leader-x', '10.11.0.1', 32001)),
-    failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
-    gossipIntervalMs: 80,
-  });
+  const c1 = await Cluster.join(
+    sys1,
+    ClusterOptions.create()
+      .withHost('10.11.0.1')
+      .withPort(32001)
+      .withTransport(new InMemoryTransport(new NodeAddress('leader-x', '10.11.0.1', 32001)))
+      .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+      .withGossipIntervalMs(80),
+  );
   const sys2 = ActorSystem.create('leader-x', { logger: new NoopLogger(), logLevel: LogLevel.Off });
-  const c2 = await Cluster.join(sys2, {
-    host: '10.11.0.2', port: 32002, seeds: ['10.11.0.1:32001'],
-    transport: new InMemoryTransport(new NodeAddress('leader-x', '10.11.0.2', 32002)),
-    failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
-    gossipIntervalMs: 80,
-  });
+  const c2 = await Cluster.join(
+    sys2,
+    ClusterOptions.create()
+      .withHost('10.11.0.2')
+      .withPort(32002)
+      .withSeeds(['10.11.0.1:32001'])
+      .withTransport(new InMemoryTransport(new NodeAddress('leader-x', '10.11.0.2', 32002)))
+      .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+      .withGossipIntervalMs(80),
+  );
   await sleep(300);
 
   let leaderSeen: string | null = null;
@@ -125,13 +137,14 @@ test('Role filter: entities only land on members with the matching role', async 
   }
 
   const spawnRegion = (name: string) => (s: ClusterSharding): ActorRef<CounterCmd> =>
-    s.start<CounterCmd>({
-      typeName: 'counter',
-      entityProps: Props.create(() => new (countingEntity(name))()),
-      extractEntityId: msg => msg.id,
-      numShards: 8,
-      role: 'backend',
-    });
+    s.start<CounterCmd>(
+      StartShardingOptions.create<CounterCmd>()
+        .withTypeName('counter')
+        .withEntityProps(Props.create(() => new (countingEntity(name))()))
+        .withExtractEntityId(msg => msg.id)
+        .withNumShards(8)
+        .withRole('backend'),
+    );
 
   const n1 = await startNode<CounterCmd>({ systemName: 'rl', host: '10.12.0.1', port: 33001, roles: ['backend'], sharding: spawnRegion('n1') });
   const n2 = await startNode<CounterCmd>({ systemName: 'rl', host: '10.12.0.2', port: 33002, seeds: ['10.12.0.1:33001'], roles: [], sharding: spawnRegion('n2') });
@@ -162,21 +175,23 @@ test('Proxy region routes but never hosts entities', async () => {
 
   const host = await startNode<CounterCmd>({
     systemName: 'prx', host: '10.13.0.1', port: 34001,
-    sharding: s => s.start({
-      typeName: 'counter',
-      entityProps: Props.create(backendEntity),
-      extractEntityId: m => m.id,
-      numShards: 4,
-    }),
+    sharding: s => s.start(
+      StartShardingOptions.create<CounterCmd>()
+        .withTypeName('counter')
+        .withEntityProps(Props.create(backendEntity))
+        .withExtractEntityId(m => m.id)
+        .withNumShards(4),
+    ),
   });
   const proxy = await startNode<CounterCmd>({
     systemName: 'prx', host: '10.13.0.2', port: 34002, seeds: ['10.13.0.1:34001'],
-    sharding: s => s.startProxy({
-      typeName: 'counter',
-      entityProps: Props.create(backendEntity), // unused but required by types
-      extractEntityId: m => m.id,
-      numShards: 4,
-    }),
+    sharding: s => s.startProxy(
+      StartShardingOptions.create<CounterCmd>()
+        .withTypeName('counter')
+        .withEntityProps(Props.create(backendEntity)) // unused but required by types
+        .withExtractEntityId(m => m.id)
+        .withNumShards(4),
+    ),
   });
 
   await waitFor(() => host.cluster.upMembers().length === 2 && proxy.cluster.upMembers().length === 2, 2_000);
@@ -213,13 +228,14 @@ test('Passivation stops idle entity and buffers next message until re-create', a
 
   const node = await startNode<{ id: string; op: 'work' | 'sleep' }>({
     systemName: 'pas', host: '10.14.0.1', port: 35001,
-    sharding: s => s.start({
-      typeName: 'passiv',
-      entityProps: Props.create(() => new Entity()),
-      extractEntityId: m => m.id,
-      numShards: 4,
-      passivationIdleMs: 0, // passivation only via Passivate here
-    }),
+    sharding: s => s.start(
+      StartShardingOptions.create<{ id: string; op: 'work' | 'sleep' }>()
+        .withTypeName('passiv')
+        .withEntityProps(Props.create(() => new Entity()))
+        .withExtractEntityId(m => m.id)
+        .withNumShards(4)
+        .withPassivationIdleMs(0), // passivation only via Passivate here
+    ),
   });
   await sleep(100);
 
@@ -245,14 +261,15 @@ test('LeastShardAllocationStrategy balances shards across nodes', async () => {
   })();
 
   const mk = (name: string) => (s: ClusterSharding): ActorRef<CounterCmd> =>
-    s.start<CounterCmd>({
-      typeName: 'counter',
-      entityProps: Props.create(() => entity(name)),
-      extractEntityId: m => m.id,
-      numShards: 12,
-      allocationStrategy: new LeastShardAllocationStrategy(1, 3),
-      rebalanceIntervalMs: 300,
-    });
+    s.start<CounterCmd>(
+      StartShardingOptions.create<CounterCmd>()
+        .withTypeName('counter')
+        .withEntityProps(Props.create(() => entity(name)))
+        .withExtractEntityId(m => m.id)
+        .withNumShards(12)
+        .withAllocationStrategy(new LeastShardAllocationStrategy(1, 3))
+        .withRebalanceIntervalMs(300),
+    );
 
   const n1 = await startNode<CounterCmd>({ systemName: 'lsa', host: '10.15.0.1', port: 36001, sharding: mk('n1') });
   const n2 = await startNode<CounterCmd>({ systemName: 'lsa', host: '10.15.0.2', port: 36002, seeds: ['10.15.0.1:36001'], sharding: mk('n2') });
@@ -289,14 +306,15 @@ test('rememberEntities re-creates entities on the new owner after node death', a
   })();
 
   const mk = (name: string) => (s: ClusterSharding): ActorRef<CounterCmd> =>
-    s.start<CounterCmd>({
-      typeName: 'counter',
-      entityProps: Props.create(() => entity(name)),
-      extractEntityId: m => m.id,
-      numShards: 8,
-      rememberEntities: true,
-      rebalanceIntervalMs: 200,
-    });
+    s.start<CounterCmd>(
+      StartShardingOptions.create<CounterCmd>()
+        .withTypeName('counter')
+        .withEntityProps(Props.create(() => entity(name)))
+        .withExtractEntityId(m => m.id)
+        .withNumShards(8)
+        .withRememberEntities(true)
+        .withRebalanceIntervalMs(200),
+    );
 
   const n1 = await startNode<CounterCmd>({ systemName: 'rem', host: '10.16.0.1', port: 37001, sharding: mk('n1') });
   const n2 = await startNode<CounterCmd>({ systemName: 'rem', host: '10.16.0.2', port: 37002, seeds: ['10.16.0.1:37001'], sharding: mk('n2') });

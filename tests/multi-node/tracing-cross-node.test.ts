@@ -11,7 +11,7 @@ import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import type { ActorRef } from '../../src/ActorRef.js';
-import { Cluster } from '../../src/cluster/Cluster.js';
+import { Cluster, ClusterOptions } from '../../src/cluster/Cluster.js';
 import { NodeAddress } from '../../src/cluster/NodeAddress.js';
 import { RemoteActorRef } from '../../src/cluster/RemoteActorRef.js';
 import { InMemoryTransport } from '../../src/cluster/Transport.js';
@@ -41,11 +41,15 @@ async function startNode(systemName: string, port: number, seeds: string[]): Pro
   const sys = ActorSystem.create(systemName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
   const tracer = new RecordingTracer();
   sys.extension(TracingExtensionId).enable(tracer);
-  const cluster = await Cluster.join(sys, {
-    host: 'h', port, seeds,
-    transport: new InMemoryTransport(new NodeAddress(systemName, 'h', port)),
-    gossipIntervalMs: 30,
-  });
+  const cluster = await Cluster.join(
+    sys,
+    ClusterOptions.create()
+      .withHost('h')
+      .withPort(port)
+      .withSeeds(seeds)
+      .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
+      .withGossipIntervalMs(30),
+  );
   return { sys, cluster, tracer };
 }
 
@@ -112,11 +116,15 @@ describe('Distributed tracing — cross-node propagation', () => {
     const a = await startNode(sysName, 65_011, []);
     // Node B intentionally has the noop tracer (default).
     const sysB = ActorSystem.create(sysName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
-    const clusterB = await Cluster.join(sysB, {
-      host: 'h', port: 65_012, seeds: [`${sysName}@h:65011`],
-      transport: new InMemoryTransport(new NodeAddress(sysName, 'h', 65_012)),
-      gossipIntervalMs: 30,
-    });
+    const clusterB = await Cluster.join(
+      sysB,
+      ClusterOptions.create()
+        .withHost('h')
+        .withPort(65_012)
+        .withSeeds([`${sysName}@h:65011`])
+        .withTransport(new InMemoryTransport(new NodeAddress(sysName, 'h', 65_012)))
+        .withGossipIntervalMs(30),
+    );
     try {
       await waitFor(() => a.cluster.upMembers().length === 2);
 

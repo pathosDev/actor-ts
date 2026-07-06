@@ -1,5 +1,6 @@
 import { NodeAddress } from './NodeAddress.js';
 import { fromNullable, type Option } from '../util/Option.js';
+import { OptionsBuilder } from '../util/OptionsBuilder.js';
 
 export interface FailureDetectorSettings {
   /** How often the detector samples and decides membership health. */
@@ -8,6 +9,37 @@ export interface FailureDetectorSettings {
   readonly unreachableAfterMs: number;
   /** Additional time after which an unreachable peer is declared down. */
   readonly downAfterMs: number;
+}
+
+/**
+ * Fluent builder for {@link FailureDetectorSettings}.  Unset fields fall
+ * through to {@link defaultFailureDetectorSettings} in the consumer, so a
+ * bare `FailureDetectorOptions.create()` yields the defaults.
+ *
+ *     new FailureDetector(
+ *       FailureDetectorOptions.create().withUnreachableAfterMs(3_000),
+ *     )
+ */
+export class FailureDetectorOptions extends OptionsBuilder<FailureDetectorSettings> {
+  /** Start a fresh builder.  Equivalent to `new FailureDetectorOptions()`. */
+  static create(): FailureDetectorOptions {
+    return new FailureDetectorOptions();
+  }
+
+  /** How often the detector samples and decides membership health. */
+  withHeartbeatIntervalMs(ms: number): this {
+    return this.set('heartbeatIntervalMs', ms);
+  }
+
+  /** Time without heartbeat after which a peer is marked unreachable. */
+  withUnreachableAfterMs(ms: number): this {
+    return this.set('unreachableAfterMs', ms);
+  }
+
+  /** Additional time after which an unreachable peer is declared down. */
+  withDownAfterMs(ms: number): this {
+    return this.set('downAfterMs', ms);
+  }
 }
 
 export const defaultFailureDetectorSettings: FailureDetectorSettings = {
@@ -31,8 +63,12 @@ interface Sample {
  */
 export class FailureDetector {
   private samples = new Map<string, Sample>();
+  private readonly settings: FailureDetectorSettings;
 
-  constructor(private readonly settings: FailureDetectorSettings = defaultFailureDetectorSettings) {}
+  constructor(options: FailureDetectorOptions = FailureDetectorOptions.create()) {
+    // Unset builder fields fall through to the built-in defaults.
+    this.settings = { ...defaultFailureDetectorSettings, ...options.build() };
+  }
 
   /** Record that a message was received from `peer` (any message counts). */
   heartbeat(peer: NodeAddress, now: number = Date.now()): void {

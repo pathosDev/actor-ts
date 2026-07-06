@@ -17,7 +17,7 @@
  *      local stub.
  */
 
-import { ClusterClient } from '../../../src/cluster/ClusterClient.js';
+import { ClusterClient, ClusterClientOptions } from '../../../src/cluster/ClusterClient.js';
 import { NoopLogger } from '../../../src/Logger.js';
 import { clusterLiveNodes, sleep, type Scenario } from './types.js';
 
@@ -42,12 +42,13 @@ export const scenario: Scenario = {
     const contactPoints = live.map((h) => `integration@${h}:9000`);
     console.log(`[09] connecting ClusterClient via contact-points: ${contactPoints.join(', ')}`);
 
-    const client = new ClusterClient({
-      contactPoints,
-      systemName: 'integration',
-      askTimeoutMs: 5_000,
-      log: new NoopLogger(),
-    });
+    const client = new ClusterClient(
+      ClusterClientOptions.create()
+        .withContactPoints(contactPoints)
+        .withSystemName('integration')
+        .withAskTimeoutMs(5_000)
+        .withLogger(new NoopLogger()),
+    );
 
     try {
       // 1. Single ask — proves the connection / hello / envelope /

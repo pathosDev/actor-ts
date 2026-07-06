@@ -35,7 +35,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
-import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
+import { ClusterSharding, StartShardingOptions } from '../../src/cluster/sharding/ClusterSharding.js';
 import { JournalRememberEntitiesStore } from '../../src/cluster/sharding/RememberEntitiesStore.js';
 import { InMemoryJournal } from '../../src/persistence/journals/InMemoryJournal.js';
 import { PersistenceExtensionId } from '../../src/persistence/PersistenceExtension.js';
@@ -96,18 +96,19 @@ async function startSpec(
   }
 
   const start = (role: 'a' | 'b' | 'c'): ActorRef<Cmd> =>
-    spec.clusterFor(role).sharding.start<Cmd>({
-      typeName: 'entity',
-      entityProps: Props.create(() => new Entity()),
-      extractEntityId: (m) => m.id,
-      numShards: 1,                         // all entities on one shard
-      rememberEntities: true,
-      // Pass an explicit store using the shared journal; this also
-      // sidesteps any ordering between extension setup and
-      // resolveRememberEntitiesStore.
-      rememberEntitiesStore: new JournalRememberEntitiesStore(journal),
-      rebalanceIntervalMs: 200,
-    });
+    spec.clusterFor(role).sharding.start<Cmd>(
+      StartShardingOptions.create<Cmd>()
+        .withTypeName('entity')
+        .withEntityProps(Props.create(() => new Entity()))
+        .withExtractEntityId((m) => m.id)
+        .withNumShards(1)                         // all entities on one shard
+        .withRememberEntities(true)
+        // Pass an explicit store using the shared journal; this also
+        // sidesteps any ordering between extension setup and
+        // resolveRememberEntitiesStore.
+        .withRememberEntitiesStore(new JournalRememberEntitiesStore(journal))
+        .withRebalanceIntervalMs(200),
+    );
 
   const regions = { a: start('a'), b: start('b'), c: start('c') };
   return { spec, regions };

@@ -26,11 +26,13 @@ import {
   ActorSystem,
   CacheExtensionId,
   Cluster,
+  ClusterOptions,
   HttpError,
   InMemoryCache,
   Props,
   RedisCache,
   RedisCacheOptions,
+  StartShardingOptions,
   Status,
   cached,
   complete,
@@ -77,16 +79,18 @@ function pickCache(): Cache {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('rest-cache');
-  const cluster = await Cluster.join(system, { host: '127.0.0.1', port: 2552 });
+  const cluster = await Cluster.join(system, ClusterOptions.create()
+    .withHost('127.0.0.1')
+    .withPort(2552));
   // Wire the cache into the CacheExtension so other parts of the app
   // can grab the same instance via `system.extension(CacheExtensionId).cache()`.
   const cache = pickCache();
   system.extension(CacheExtensionId).setCache('default', cache);
 
-  const region = cluster.sharding.start('user', UserEntity, {
-    extractEntityId: (msg: UserCmd) => ('id' in msg ? msg.id : msg.user.id),
-    numShards: 16,
-  });
+  const region = cluster.sharding.start('user', UserEntity,
+    StartShardingOptions.create<UserCmd>()
+      .withExtractEntityId((msg) => ('id' in msg ? msg.id : msg.user.id))
+      .withNumShards(16));
   const askUser = (cmd: UserCmd): Promise<UserReply> => region.ask<UserReply>(cmd, 500);
 
   // Rate limit: 60 req/min per IP — applied to every endpoint below.

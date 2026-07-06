@@ -7,7 +7,7 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
-import { Cluster } from '../../../src/cluster/Cluster.js';
+import { Cluster, ClusterOptions } from '../../../src/cluster/Cluster.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
@@ -95,11 +95,14 @@ describe('Stock cluster metrics', () => {
   test('cluster_members_up gauge reflects the up-set; gossip rounds tick', async () => {
     const sys = ActorSystem.create('m-cluster', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const reg = sys.extension(MetricsExtensionId).enable();
-    const cluster = await Cluster.join(sys, {
-      host: 'h', port: 95_001,
-      transport: new InMemoryTransport(new NodeAddress('m-cluster', 'h', 95_001)),
-      gossipIntervalMs: 30,
-    });
+    const cluster = await Cluster.join(
+      sys,
+      ClusterOptions.create()
+        .withHost('h')
+        .withPort(95_001)
+        .withTransport(new InMemoryTransport(new NodeAddress('m-cluster', 'h', 95_001)))
+        .withGossipIntervalMs(30),
+    );
     try {
       // Single-node cluster — self is up, gauge = 1.
       await sleep(60);

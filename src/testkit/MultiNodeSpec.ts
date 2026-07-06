@@ -1,5 +1,5 @@
 import { ActorSystem } from '../ActorSystem.js';
-import { Cluster, type ClusterSettings } from '../cluster/Cluster.js';
+import { Cluster, ClusterOptions, type ClusterSettings } from '../cluster/Cluster.js';
 import type { DowningProvider } from '../cluster/downing/index.js';
 import { type Member } from '../cluster/Member.js';
 import { NodeAddress } from '../cluster/NodeAddress.js';
@@ -167,16 +167,19 @@ export class MultiNodeSpec {
         logger: new NoopLogger(),
         logLevel: this.settings.logLevel,
       });
-      const cluster = await Cluster.join(system, {
-        host: address.host,
-        port: address.port,
-        seeds,
-        transport,
-        gossipIntervalMs: this.settings.gossipIntervalMs,
-        seedRetryIntervalMs: 100,
-        failureDetector: this.settings.failureDetector,
-        downing: this.settings.downing?.(role),
-      });
+      const clusterOptions = ClusterOptions.create()
+        .withHost(address.host)
+        .withPort(address.port)
+        .withSeeds(seeds)
+        .withTransport(transport)
+        .withGossipIntervalMs(this.settings.gossipIntervalMs)
+        .withSeedRetryIntervalMs(100);
+      if (this.settings.failureDetector) {
+        clusterOptions.withFailureDetector(this.settings.failureDetector);
+      }
+      const downing = this.settings.downing?.(role);
+      if (downing) clusterOptions.withDowning(downing);
+      const cluster = await Cluster.join(system, clusterOptions);
       this.nodes.set(role, {
         role,
         address,

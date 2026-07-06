@@ -14,6 +14,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   DistributedPubSubId,
+  DistributedPubSubOptions,
   Publish,
   Subscribe,
 } from '../../src/cluster/pubsub/index.js';
@@ -45,11 +46,11 @@ describe('multi-node PubSub', () => {
 
       // Stand up a mediator on each node.  start() is idempotent per cluster.
       const medA = spec.systemFor('a').extension(DistributedPubSubId)
-        .start(spec.clusterFor('a'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('a'), DistributedPubSubOptions.create().withGossipIntervalMs(80));
       const medB = spec.systemFor('b').extension(DistributedPubSubId)
-        .start(spec.clusterFor('b'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('b'), DistributedPubSubOptions.create().withGossipIntervalMs(80));
       const medC = spec.systemFor('c').extension(DistributedPubSubId)
-        .start(spec.clusterFor('c'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('c'), DistributedPubSubOptions.create().withGossipIntervalMs(80));
 
       const probeB = new TestProbe(spec.systemFor('b'));
       const probeC = new TestProbe(spec.systemFor('c'));
@@ -85,13 +86,13 @@ describe('multi-node PubSub', () => {
       ]);
 
       const medA = spec.systemFor('a').extension(DistributedPubSubId)
-        .start(spec.clusterFor('a'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('a'), DistributedPubSubOptions.create().withGossipIntervalMs(80));
       const medB = spec.systemFor('b').extension(DistributedPubSubId)
-        .start(spec.clusterFor('b'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('b'), DistributedPubSubOptions.create().withGossipIntervalMs(80));
       // We deliberately don't start C's pubsub mediator subscribe — we just
       // want to assert that only the explicit subscriber on B fires.
       spec.systemFor('c').extension(DistributedPubSubId)
-        .start(spec.clusterFor('c'), { gossipIntervalMs: 80 });
+        .start(spec.clusterFor('c'), DistributedPubSubOptions.create().withGossipIntervalMs(80));
 
       const probeB = new TestProbe(spec.systemFor('b'));
       const probeC = new TestProbe(spec.systemFor('c'));

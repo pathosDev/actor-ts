@@ -9,8 +9,8 @@ import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { AskTimeoutError } from '../../../../../src/SystemMessages.js';
-import { Cluster } from '../../../../../src/cluster/Cluster.js';
-import { ClusterSharding } from '../../../../../src/cluster/sharding/ClusterSharding.js';
+import { Cluster, ClusterOptions } from '../../../../../src/cluster/Cluster.js';
+import { ClusterSharding, StartShardingOptions } from '../../../../../src/cluster/sharding/ClusterSharding.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import {
@@ -50,20 +50,19 @@ async function startNodeWithLease(
   systemName: string, port: number, lease: InMemoryLease,
 ): Promise<Node> {
   const sys = ActorSystem.create(systemName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
-  const cluster = await Cluster.join(sys, {
-    host: 'h', port,
-    transport: new InMemoryTransport(new NodeAddress(systemName, 'h', port)),
-    gossipIntervalMs: 30,
-  });
-  const region = cluster.sharding.start<Cmd>({
-    typeName: 'entity',
-    entityProps: Props.create(() => new Entity()),
-    extractEntityId: (m) => m.id,
-    numShards: 8,
-    rebalanceIntervalMs: 200,
-    lease,
-    acquireRetryIntervalMs: 100,
-  });
+  const cluster = await Cluster.join(sys, ClusterOptions.create()
+    .withHost('h')
+    .withPort(port)
+    .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
+    .withGossipIntervalMs(30));
+  const region = cluster.sharding.start<Cmd>(StartShardingOptions.create<Cmd>()
+    .withTypeName('entity')
+    .withEntityProps(Props.create(() => new Entity()))
+    .withExtractEntityId((m) => m.id)
+    .withNumShards(8)
+    .withRebalanceIntervalMs(200)
+    .withLease(lease)
+    .withAcquireRetryIntervalMs(100));
   return { sys, cluster, region };
 }
 

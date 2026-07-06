@@ -16,8 +16,8 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
-import { Cluster } from '../../../../../src/cluster/Cluster.js';
-import { ClusterSingletonId } from '../../../../../src/cluster/singleton/index.js';
+import { Cluster, ClusterOptions } from '../../../../../src/cluster/Cluster.js';
+import { ClusterSingletonId, StartSingletonOptions } from '../../../../../src/cluster/singleton/index.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import {
@@ -45,12 +45,12 @@ async function startNode(
   systemName: string, host: string, port: number,
 ): Promise<NodeSetup> {
   const kit = TestKit.create(systemName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
-  const cluster = await Cluster.join(kit.system, {
-    host, port,
-    transport: new InMemoryTransport(new NodeAddress(systemName, host, port)),
-    failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
-    gossipIntervalMs: 80,
-  });
+  const cluster = await Cluster.join(kit.system, ClusterOptions.create()
+    .withHost(host)
+    .withPort(port)
+    .withTransport(new InMemoryTransport(new NodeAddress(systemName, host, port)))
+    .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+    .withGossipIntervalMs(80));
   return { kit, cluster };
 }
 
@@ -69,11 +69,11 @@ describe('ClusterSingleton + Lease', () => {
       override onReceive(m: string): void { probe.tell(`got:${m}`); }
     }
     const lease = new InMemoryLease({ name: 'sng-lease-1', owner: 'a', ttlMs: 5_000 });
-    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster, {
-      typeName: 'echo',
-      props: Props.create(() => new Echo()),
-      lease,
-    });
+    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster,
+      StartSingletonOptions.create<string>()
+        .withTypeName('echo')
+        .withProps(Props.create(() => new Echo()))
+        .withLease(lease));
     await waitFor(() => a.cluster.leader().nonEmpty);
     // Child preStart fires once acquire resolves — give the mailbox
     // a few ticks for the acquire-result event.
@@ -100,12 +100,12 @@ describe('ClusterSingleton + Lease', () => {
       override onReceive(): void {}
     }
     const lease = new InMemoryLease({ name: 'sng-lease-2', owner: 'a', ttlMs: 5_000 });
-    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster, {
-      typeName: 'echo',
-      props: Props.create(() => new Echo()),
-      lease,
-      acquireRetryIntervalMs: 100,   // tighter so the test isn't slow
-    });
+    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster,
+      StartSingletonOptions.create<string>()
+        .withTypeName('echo')
+        .withProps(Props.create(() => new Echo()))
+        .withLease(lease)
+        .withAcquireRetryIntervalMs(100));   // tighter so the test isn't slow
     await waitFor(() => a.cluster.leader().nonEmpty);
 
     // Other holder still owns it — manager should be in retry loop, no
@@ -135,12 +135,12 @@ describe('ClusterSingleton + Lease', () => {
       // Tight renewal so the simulated "lost" path fires fast.
       renewalIntervalMs: 60,
     });
-    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster, {
-      typeName: 'echo',
-      props: Props.create(() => new Echo()),
-      lease,
-      acquireRetryIntervalMs: 100,
-    });
+    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster,
+      StartSingletonOptions.create<string>()
+        .withTypeName('echo')
+        .withProps(Props.create(() => new Echo()))
+        .withLease(lease)
+        .withAcquireRetryIntervalMs(100));
     await probe.expectMsg('started', 1_000);
 
     // Force a lost-lease scenario: another owner takes over from under us.
@@ -172,11 +172,11 @@ describe('ClusterSingleton + Lease', () => {
       override onReceive(): void {}
     }
     const lease = new InMemoryLease({ name: 'sng-lease-4', owner: 'a', ttlMs: 5_000 });
-    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster, {
-      typeName: 'echo',
-      props: Props.create(() => new Echo()),
-      lease,
-    });
+    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster,
+      StartSingletonOptions.create<string>()
+        .withTypeName('echo')
+        .withProps(Props.create(() => new Echo()))
+        .withLease(lease));
     await probe.expectMsg('started', 1_000);
     expect(lease.checkAlive()).toBe(true);
 
@@ -199,11 +199,11 @@ describe('ClusterSingleton + Lease', () => {
       override preStart(): void { probe.tell('started'); }
       override onReceive(m: string): void { probe.tell(`got:${m}`); }
     }
-    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster, {
-      typeName: 'echo',
-      props: Props.create(() => new Echo()),
-      // no lease!
-    });
+    // no lease!
+    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster,
+      StartSingletonOptions.create<string>()
+        .withTypeName('echo')
+        .withProps(Props.create(() => new Echo())));
     await waitFor(() => a.cluster.leader().nonEmpty);
     // No lease → child should be spawned synchronously the moment
     // SelfUp/LeaderChanged fires.  In single-node clusters that

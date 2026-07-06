@@ -4,6 +4,7 @@ export {
 } from './DistributedPubSubExtension.js';
 export {
   DistributedPubSubMediator,
+  DistributedPubSubOptions,
   mediatorPath,
 } from './DistributedPubSubMediator.js';
 export type { DistributedPubSubSettings } from './DistributedPubSubMediator.js';

@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
-import { Cluster } from '../../../../../src/cluster/Cluster.js';
-import { ClusterSingletonId } from '../../../../../src/cluster/singleton/index.js';
+import { Cluster, ClusterOptions } from '../../../../../src/cluster/Cluster.js';
+import { ClusterSingletonId, StartSingletonOptions } from '../../../../../src/cluster/singleton/index.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
@@ -29,12 +29,13 @@ interface Node {
 
 async function startNode(systemName: string, host: string, port: number, seeds: string[] = []): Promise<Node> {
   const kit = TestKit.create(systemName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
-  const cluster = await Cluster.join(kit.system, {
-    host, port, seeds,
-    transport: new InMemoryTransport(new NodeAddress(systemName, host, port)),
-    failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
-    gossipIntervalMs: 80,
-  });
+  const cluster = await Cluster.join(kit.system, ClusterOptions.create()
+    .withHost(host)
+    .withPort(port)
+    .withSeeds(seeds)
+    .withTransport(new InMemoryTransport(new NodeAddress(systemName, host, port)))
+    .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+    .withGossipIntervalMs(80));
   return { system: kit.system, cluster, kit };
 }
 
@@ -53,10 +54,10 @@ describe('ClusterSingleton — single node', () => {
       override onReceive(m: string): void { probe.tell(`got:${m}`); }
     }
 
-    const handle = kit.system.extension(ClusterSingletonId).start(a.cluster, {
-      typeName: 'echo',
-      props: Props.create(() => new Echo()),
-    });
+    const handle = kit.system.extension(ClusterSingletonId).start(a.cluster,
+      StartSingletonOptions.create<string>()
+        .withTypeName('echo')
+        .withProps(Props.create(() => new Echo())));
     // Wait until the proxy can locate the leader.
     await waitFor(() => a.cluster.leader().nonEmpty);
 
@@ -80,10 +81,10 @@ describe('ClusterSingleton — single node', () => {
     class Echo extends Actor<string> {
       override onReceive(m: string): void { probe.tell(m); }
     }
-    const handle = kit.system.extension(ClusterSingletonId).start(a.cluster, {
-      typeName: 'echo2',
-      props: Props.create(() => new Echo()),
-    });
+    const handle = kit.system.extension(ClusterSingletonId).start(a.cluster,
+      StartSingletonOptions.create<string>()
+        .withTypeName('echo2')
+        .withProps(Props.create(() => new Echo())));
 
     for (const msg of ['a', 'b', 'c']) handle.proxy.tell(msg);
     expect(await probe.expectMsg('a', 500)).toBe('a');
@@ -110,14 +111,14 @@ describe('ClusterSingleton — two nodes', () => {
       override onReceive(m: string): void { received.push({ where: this.where, msg: m }); }
     }
 
-    const aHandle = a.system.extension(ClusterSingletonId).start(a.cluster, {
-      typeName: 'echo',
-      props: Props.create(() => new Echo('a')),
-    });
-    const bHandle = b.system.extension(ClusterSingletonId).start(b.cluster, {
-      typeName: 'echo',
-      props: Props.create(() => new Echo('b')),
-    });
+    const aHandle = a.system.extension(ClusterSingletonId).start(a.cluster,
+      StartSingletonOptions.create<string>()
+        .withTypeName('echo')
+        .withProps(Props.create(() => new Echo('a'))));
+    const bHandle = b.system.extension(ClusterSingletonId).start(b.cluster,
+      StartSingletonOptions.create<string>()
+        .withTypeName('echo')
+        .withProps(Props.create(() => new Echo('b'))));
 
     await sleep(150);
 
@@ -156,14 +157,14 @@ describe('ClusterSingleton — two nodes', () => {
       override onReceive(): void {}
     }
 
-    a.system.extension(ClusterSingletonId).start(a.cluster, {
-      typeName: 'marker',
-      props: Props.create(() => new Marker('a')),
-    });
-    b.system.extension(ClusterSingletonId).start(b.cluster, {
-      typeName: 'marker',
-      props: Props.create(() => new Marker('b')),
-    });
+    a.system.extension(ClusterSingletonId).start(a.cluster,
+      StartSingletonOptions.create<string>()
+        .withTypeName('marker')
+        .withProps(Props.create(() => new Marker('a'))));
+    b.system.extension(ClusterSingletonId).start(b.cluster,
+      StartSingletonOptions.create<string>()
+        .withTypeName('marker')
+        .withProps(Props.create(() => new Marker('b'))));
 
     // Wait for one of the nodes to host the marker child (preStart fires).
     await waitFor(() => hosts.length >= 1, 2_000);
@@ -226,10 +227,10 @@ describe('ClusterSingleton — two nodes', () => {
       origWarn(msg, err);
     }) as typeof b.system.log.warn;
 
-    b.system.extension(ClusterSingletonId).start(b.cluster, {
-      typeName: 'marker',
-      props: Props.create(() => new Marker('b')),
-    });
+    b.system.extension(ClusterSingletonId).start(b.cluster,
+      StartSingletonOptions.create<string>()
+        .withTypeName('marker')
+        .withProps(Props.create(() => new Marker('b'))));
     await waitFor(() => hosts.includes('b'), 1_500);
     expect(hosts).toEqual(['b']);
 
@@ -237,10 +238,10 @@ describe('ClusterSingleton — two nodes', () => {
     // singleton manager calls stopChild (Marker's postStop sleeps
     // 200 ms before the cell finishes terminating).
     const a = await startNode(SYS, 'h', 52401, [`${SYS}@h:52402`]);
-    a.system.extension(ClusterSingletonId).start(a.cluster, {
-      typeName: 'marker',
-      props: Props.create(() => new Marker('a')),
-    });
+    a.system.extension(ClusterSingletonId).start(a.cluster,
+      StartSingletonOptions.create<string>()
+        .withTypeName('marker')
+        .withProps(Props.create(() => new Marker('a'))));
     await waitFor(() =>
       a.cluster.upMembers().length === 2 && b.cluster.upMembers().length === 2,
       2_000,
@@ -278,14 +279,16 @@ describe('ClusterSingleton — role filter', () => {
       override onReceive(): void {}
     }
 
-    a.system.extension(ClusterSingletonId).start(a.cluster, {
-      typeName: 'only-worker', role: 'worker',
-      props: Props.create(() => new Marker('a')),
-    });
-    b.system.extension(ClusterSingletonId).start(b.cluster, {
-      typeName: 'only-worker', role: 'worker',
-      props: Props.create(() => new Marker('b')),
-    });
+    a.system.extension(ClusterSingletonId).start(a.cluster,
+      StartSingletonOptions.create<string>()
+        .withTypeName('only-worker')
+        .withRole('worker')
+        .withProps(Props.create(() => new Marker('a'))));
+    b.system.extension(ClusterSingletonId).start(b.cluster,
+      StartSingletonOptions.create<string>()
+        .withTypeName('only-worker')
+        .withRole('worker')
+        .withProps(Props.create(() => new Marker('b'))));
 
     // Allow time: if the leader is B (no role), it shouldn't spawn; wait a
     // long beat to confirm no unwanted host appears.
@@ -301,12 +304,14 @@ describe('ClusterSingleton — role filter', () => {
 
 async function startNodeWithRole(systemName: string, host: string, port: number, seeds: string[], roles: string[]): Promise<Node> {
   const kit = TestKit.create(systemName, { logger: new NoopLogger(), logLevel: LogLevel.Off });
-  const cluster = await Cluster.join(kit.system, {
-    host, port, seeds, roles,
-    transport: new InMemoryTransport(new NodeAddress(systemName, host, port)),
-    failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
-    gossipIntervalMs: 80,
-  });
+  const cluster = await Cluster.join(kit.system, ClusterOptions.create()
+    .withHost(host)
+    .withPort(port)
+    .withSeeds(seeds)
+    .withRoles(roles)
+    .withTransport(new InMemoryTransport(new NodeAddress(systemName, host, port)))
+    .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+    .withGossipIntervalMs(80));
   return { system: kit.system, cluster, kit };
 }
 

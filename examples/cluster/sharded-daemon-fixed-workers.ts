@@ -13,10 +13,12 @@ import {
   Actor,
   ActorSystem,
   Cluster,
+  ClusterBootstrapOptions,
   InMemoryTransport,
   NodeAddress,
   Props,
   ShardedDaemonProcess,
+  ShardedDaemonProcessOptions,
 } from '../../src/index.js';
 
 class PartitionWorker extends Actor<string> {
@@ -34,15 +36,16 @@ class PartitionWorker extends Actor<string> {
 async function startNode(host: string, port: number, seeds: string[] = []): Promise<{
   sys: ActorSystem; cluster: Cluster; name: string;
 }> {
-  const { system, cluster } = await Cluster.bootstrap({
-    name: 'fixed-workers',
-    host, port, seeds,
-    transport: new InMemoryTransport(new NodeAddress('fixed-workers', host, port)),
-    failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
-    gossipIntervalMs: 80,
-    receptionist: false,
-    shutdownOnSignals: false,
-  });
+  const { system, cluster } = await Cluster.bootstrap(
+    ClusterBootstrapOptions.create('fixed-workers')
+      .withHost(host)
+      .withPort(port)
+      .withSeeds(seeds)
+      .withTransport(new InMemoryTransport(new NodeAddress('fixed-workers', host, port)))
+      .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+      .withGossipIntervalMs(80)
+      .withReceptionist(false)
+      .withShutdownOnSignals(false));
   return { sys: system, cluster, name: host };
 }
 
@@ -55,11 +58,11 @@ async function main(): Promise<void> {
   // Each node calls init — the coordinator (on the leader) places each
   // daemon on exactly one node.
   for (const { sys, cluster, name } of [a, b, c]) {
-    ShardedDaemonProcess.init<string>(sys, cluster, {
-      name: 'partitions',
-      numDaemons: 9,
-      behaviorFor: (i) => Props.create(() => new PartitionWorker(i, name)),
-    });
+    ShardedDaemonProcess.init<string>(sys, cluster,
+      ShardedDaemonProcessOptions.create<string>()
+        .withName('partitions')
+        .withNumDaemons(9)
+        .withBehaviorFor((i) => Props.create(() => new PartitionWorker(i, name))));
   }
 
   // Let the daemons poll for a while so the distribution is observable.
