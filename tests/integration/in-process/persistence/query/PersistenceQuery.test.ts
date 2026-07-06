@@ -11,7 +11,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { InMemoryJournal } from '../../../../../src/persistence/journals/InMemoryJournal.js';
-import { SqliteJournal } from '../../../../../src/persistence/journals/SqliteJournal.js';
+import { SqliteJournal, SqliteJournalOptions } from '../../../../../src/persistence/journals/SqliteJournal.js';
 import { InMemoryQuery } from '../../../../../src/persistence/query/InMemoryQuery.js';
 import { SqliteQuery } from '../../../../../src/persistence/query/SqliteQuery.js';
 import {
@@ -141,7 +141,7 @@ describe('InMemoryQuery — eventsByPersistenceId (live)', () => {
 
 describe('SqliteQuery — currentEventsByTag uses SQL filter', () => {
   test('filters comma-separated tags without false positives', async () => {
-    const j = new SqliteJournal({ path: ':memory:' });
+    const j = new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:'));
     await j.append('a', [{ x: 1 }], 0, ['foo']);
     await sleep(2);
     await j.append('b', [{ x: 2 }], 0, ['foobar']);  // must NOT match 'foo'
@@ -159,7 +159,7 @@ describe('SqliteQuery — currentEventsByTag uses SQL filter', () => {
   });
 
   test('per-pid path delegates to journal.read', async () => {
-    const j = new SqliteJournal({ path: ':memory:' });
+    const j = new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:'));
     await j.append('z', [{ k: 1 }, { k: 2 }, { k: 3 }], 0);
     const q = new SqliteQuery(j);
 
@@ -299,7 +299,7 @@ describe('Multi-tag filter — operator semantics (InMemoryQuery)', () => {
 
 describe('Multi-tag filter — SqliteQuery parity', () => {
   test('all: intersection uses indexed pre-filter + JS refine', async () => {
-    const j = new SqliteJournal({ path: ':memory:' });
+    const j = new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:'));
     await seedFilterCorpus(j);
     const q = new SqliteQuery(j);
 
@@ -312,7 +312,7 @@ describe('Multi-tag filter — SqliteQuery parity', () => {
   });
 
   test('any: union via t.tag IN (?, ?, …) with DISTINCT', async () => {
-    const j = new SqliteJournal({ path: ':memory:' });
+    const j = new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:'));
     await seedFilterCorpus(j);
     const q = new SqliteQuery(j);
 
@@ -329,7 +329,7 @@ describe('Multi-tag filter — SqliteQuery parity', () => {
   });
 
   test('not-only: falls back to the journal scan and applies exclusion', async () => {
-    const j = new SqliteJournal({ path: ':memory:' });
+    const j = new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:'));
     await seedFilterCorpus(j);
     const q = new SqliteQuery(j);
 
@@ -342,7 +342,7 @@ describe('Multi-tag filter — SqliteQuery parity', () => {
   });
 
   test('combined all+not on SQLite matches the InMemory result exactly', async () => {
-    const j = new SqliteJournal({ path: ':memory:' });
+    const j = new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:'));
     await seedFilterCorpus(j);
     const q = new SqliteQuery(j);
 
@@ -359,7 +359,7 @@ describe('Multi-tag filter — SqliteQuery parity', () => {
     // under 100 ms on SQLite.  We assert a generous 1 s ceiling to
     // avoid CI flakes — the index path should beat that by an order
     // of magnitude on a development machine.
-    const j = new SqliteJournal({ path: ':memory:' });
+    const j = new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:'));
     const N = 10_000;
     const batch: { id: number }[] = [];
     const tags: string[] = [];
@@ -405,7 +405,7 @@ describe('Multi-tag filter — SqliteQuery parity', () => {
     // fail and must produce identical results.  (Direct cache-hit
     // counting would couple tests to internals; result equality is a
     // robust proxy.)
-    const j = new SqliteJournal({ path: ':memory:' });
+    const j = new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:'));
     await seedFilterCorpus(j);
     const q = new SqliteQuery(j);
 

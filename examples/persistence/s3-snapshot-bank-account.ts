@@ -31,6 +31,7 @@ import {
   ActorSystem,
   InMemoryJournal,
   OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID,
+  ObjectStoragePluginOptions,
   PersistenceExtensionId,
   PersistentActor,
   Props,
@@ -143,17 +144,18 @@ async function main(): Promise<void> {
     },
     persistence: { journal },
   });
-  await registerObjectStoragePlugins(sys1.extension(PersistenceExtensionId), {
-    backend: spec,
-    prefix: 'env-prod/snapshots/',
-    keepN: 2,
-    compression: compressionByPrefix({
-      default: { algorithm: 'gzip' },
-      'large/': { algorithm: 'zstd' },
-    }),
-    // To enable client-side encryption uncomment + supply a 32-byte key:
-    // encryption: { mode: 'client-aes256-gcm', masterKey: new Uint8Array(32).fill(0xab) },
-  });
+  await registerObjectStoragePlugins(sys1.extension(PersistenceExtensionId),
+    ObjectStoragePluginOptions.create()
+      .withBackend(spec)
+      .withPrefix('env-prod/snapshots/')
+      .withKeepN(2)
+      .withCompression(compressionByPrefix({
+        default: { algorithm: 'gzip' },
+        'large/': { algorithm: 'zstd' },
+      })),
+      // To enable client-side encryption chain:
+      // .withEncryption({ mode: 'client-aes256-gcm', masterKey: new Uint8Array(32).fill(0xab) })
+  );
 
   const acct1 = sys1.spawn(Props.create(() => new Account('alice')), 'alice');
   for (const amount of [100, 50, 20, 30, 10, 5, 100]) {
@@ -174,10 +176,11 @@ async function main(): Promise<void> {
     },
     persistence: { journal },
   });
-  await registerObjectStoragePlugins(sys2.extension(PersistenceExtensionId), {
-    backend: spec,
-    prefix: 'env-prod/snapshots/',
-  });
+  await registerObjectStoragePlugins(sys2.extension(PersistenceExtensionId),
+    ObjectStoragePluginOptions.create()
+      .withBackend(spec)
+      .withPrefix('env-prod/snapshots/'),
+  );
   const acct2 = sys2.spawn(Props.create(() => new Account('alice')), 'alice');
   console.log('after restart, balance →', await acct2.ask({ kind: 'balance' }, 500));
   await sys2.terminate();

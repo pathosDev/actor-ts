@@ -5,6 +5,7 @@ import { Props } from '../../../../src/Props.js';
 import {
   DurableStateActor,
   DurableStateConcurrencyError,
+  DurableStateOptions,
   InMemoryDurableStateStore,
   type DurableStateStore,
 } from '../../../../src/persistence/index.js';
@@ -29,9 +30,12 @@ class KVActor extends DurableStateActor<Cmd, KV> {
 }
 
 const kvProps = (store: DurableStateStore, id: string): Props<Cmd> =>
-  Props.create(() => new KVActor({
-    persistenceId: id, store, emptyState: () => ({ map: {} }),
-  }) as unknown as import('../../../../src/Actor.js').Actor<Cmd>);
+  Props.create(() => new KVActor(
+    DurableStateOptions.create<KV>()
+      .withPersistenceId(id)
+      .withStore(store)
+      .withEmptyState(() => ({ map: {} })),
+  ) as unknown as import('../../../../src/Actor.js').Actor<Cmd>);
 
 describe('InMemoryDurableStateStore', () => {
   test('upsert + load round-trip with monotonic revisions', async () => {

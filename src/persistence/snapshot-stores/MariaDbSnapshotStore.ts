@@ -1,3 +1,4 @@
+import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { JournalError, type Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
@@ -10,13 +11,58 @@ import {
   type MariaDbConnection,
 } from '../journals/MariaDbClient.js';
 
-export interface MariaDbSnapshotStoreOptions extends MariaDbConnection {
+export interface MariaDbSnapshotStoreSettings extends MariaDbConnection {
   /** Snapshots table name.  Default: `snapshots`. */
   readonly snapshotsTable?: string;
   /** Keep this many snapshots per persistenceId; older ones pruned on save.  Default: 3.  `<=0` keeps all. */
   readonly keepN?: number;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
   readonly autoCreateTables?: boolean;
+}
+
+/**
+ * Fluent builder for {@link MariaDbSnapshotStoreSettings}:
+ *
+ *     new MariaDbSnapshotStore(MariaDbSnapshotStoreOptions.create().withPoolConfig({ … }).withKeepN(2))
+ *
+ * The connection fields (`withUrl` / `withPoolConfig` / `withPool`) come
+ * from the shared {@link MariaDbConnection} mixin.
+ */
+export class MariaDbSnapshotStoreOptions extends OptionsBuilder<MariaDbSnapshotStoreSettings> {
+  /** Start a fresh builder.  Equivalent to `new MariaDbSnapshotStoreOptions()`. */
+  static create(): MariaDbSnapshotStoreOptions {
+    return new MariaDbSnapshotStoreOptions();
+  }
+
+  /** Connection URI passed straight to `createPool`, e.g. `mariadb://user:pass@host:3306/db`. */
+  withUrl(url: string): this {
+    return this.set('url', url);
+  }
+
+  /** `createPool` config object (host/user/password/database/…); takes precedence over `url`. */
+  withPoolConfig(poolConfig: Record<string, unknown>): this {
+    return this.set('poolConfig', poolConfig);
+  }
+
+  /** Pre-built pool — shares one pool across the three stores, or injects a fake in tests. */
+  withPool(pool: MariaDbPoolLike): this {
+    return this.set('pool', pool);
+  }
+
+  /** Snapshots table name.  Default: `snapshots`. */
+  withSnapshotsTable(snapshotsTable: string): this {
+    return this.set('snapshotsTable', snapshotsTable);
+  }
+
+  /** Keep this many snapshots per persistenceId; older ones pruned on save.  Default: 3.  `<=0` keeps all. */
+  withKeepN(keepN: number): this {
+    return this.set('keepN', keepN);
+  }
+
+  /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
+  withAutoCreateTables(autoCreateTables: boolean): this {
+    return this.set('autoCreateTables', autoCreateTables);
+  }
 }
 
 interface SnapRow {
@@ -33,7 +79,7 @@ interface SnapRow {
  * reject `LIMIT` inside a bare `IN (SELECT …)` against the same table).
  */
 export class MariaDbSnapshotStore implements SnapshotStore {
-  private readonly options: MariaDbSnapshotStoreOptions;
+  private readonly settings: MariaDbSnapshotStoreSettings;
   private readonly table: string;
   private readonly keepN: number;
   private readonly autoCreate: boolean;
@@ -42,11 +88,12 @@ export class MariaDbSnapshotStore implements SnapshotStore {
   private initPromise: Promise<void> | null = null;
   private closed = false;
 
-  constructor(options: MariaDbSnapshotStoreOptions = {}) {
-    this.options = options;
-    this.table = assertSafeIdentifier(options.snapshotsTable ?? 'snapshots', 'snapshots table');
-    this.keepN = options.keepN ?? 3;
-    this.autoCreate = options.autoCreateTables ?? true;
+  constructor(options: MariaDbSnapshotStoreOptions = MariaDbSnapshotStoreOptions.create()) {
+    const s = options.build();
+    this.settings = s;
+    this.table = assertSafeIdentifier(s.snapshotsTable ?? 'snapshots', 'snapshots table');
+    this.keepN = s.keepN ?? 3;
+    this.autoCreate = s.autoCreateTables ?? true;
   }
 
   async save<S>(pid: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
@@ -128,7 +175,7 @@ export class MariaDbSnapshotStore implements SnapshotStore {
   }
 
   private async init(): Promise<void> {
-    const pool = await buildMariaDbPool(this.options);
+    const pool = await buildMariaDbPool(this.settings);
     if (this.autoCreate) {
       await pool.query(
         `CREATE TABLE IF NOT EXISTS ${this.table} (

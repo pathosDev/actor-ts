@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { SqliteJournal } from '../../../../src/persistence/journals/SqliteJournal.js';
+import { SqliteJournal, SqliteJournalOptions } from '../../../../src/persistence/journals/SqliteJournal.js';
 import { JournalConcurrencyError } from '../../../../src/persistence/JournalTypes.js';
-import { SqliteSnapshotStore } from '../../../../src/persistence/snapshot-stores/SqliteSnapshotStore.js';
+import { SqliteSnapshotStore, SqliteSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/SqliteSnapshotStore.js';
 
 /** Journals and snapshot stores we create per test, auto-closed after. */
 const cleanups: Array<() => Promise<void>> = [];
@@ -11,13 +11,13 @@ afterEach(async () => {
 });
 
 function newJournal(): SqliteJournal {
-  const j = new SqliteJournal({ path: ':memory:' });
+  const j = new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:'));
   cleanups.push(() => j.close());
   return j;
 }
 
 function newSnapshots(): SqliteSnapshotStore {
-  const s = new SqliteSnapshotStore({ path: ':memory:' });
+  const s = new SqliteSnapshotStore(SqliteSnapshotStoreOptions.create().withPath(':memory:'));
   cleanups.push(() => s.close());
   return s;
 }
@@ -79,7 +79,7 @@ describe('SqliteJournal', () => {
   });
 
   test('survives close with clear error afterwards', async () => {
-    const j = new SqliteJournal({ path: ':memory:' });
+    const j = new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:'));
     await j.append('p', ['x'], 0);
     await j.close();
     await expect(j.highestSeq('p')).rejects.toThrow(/closed/);
@@ -103,7 +103,7 @@ describe('SqliteSnapshotStore', () => {
   });
 
   test('keepN prunes older snapshots automatically', async () => {
-    const s = new SqliteSnapshotStore({ path: ':memory:', keepN: 2 });
+    const s = new SqliteSnapshotStore(SqliteSnapshotStoreOptions.create().withPath(':memory:').withKeepN(2));
     cleanups.push(() => s.close());
     await s.save('p', 1, {}); await s.save('p', 2, {}); await s.save('p', 3, {});
     const before4 = await s.loadBefore('p', 4);

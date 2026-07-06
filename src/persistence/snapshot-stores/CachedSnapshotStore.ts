@@ -2,6 +2,7 @@ import type { Cache } from '../../cache/Cache.js';
 import type { Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
+import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { none, some, type Option } from '../../util/Option.js';
 
 /**
@@ -31,20 +32,54 @@ import { none, some, type Option } from '../../util/Option.js';
  * min) — short enough that stale reads after a missed invalidation
  * never matter, long enough to absorb cold-start storms.
  *
- *   const cassandra = new CassandraSnapshotStore({...});
- *   const cached    = new CachedSnapshotStore(cassandra, { cache, ttlMs: 5 * 60_000 });
+ *   const cassandra = new CassandraSnapshotStore(...);
+ *   const cached    = new CachedSnapshotStore(
+ *     cassandra,
+ *     CachedSnapshotStoreOptions.create().withCache(cache).withTtlMs(5 * 60_000),
+ *   );
  *   ext.setSnapshotStore(cached);
  */
 
 const DEFAULT_TTL_MS = 5 * 60_000;
 
-export interface CachedSnapshotStoreOptions {
+export interface CachedSnapshotStoreSettings {
   /** Backing cache — typically Redis in production. */
   readonly cache: Cache;
   /** Cache TTL in milliseconds.  Default: 5 minutes. */
   readonly ttlMs?: number;
   /** Key prefix (default: `'snap:'`) prevents collisions in shared caches. */
   readonly keyPrefix?: string;
+}
+
+/**
+ * Fluent builder for {@link CachedSnapshotStoreSettings}.  The `cache` is
+ * required:
+ *
+ *     new CachedSnapshotStore(
+ *       underlying,
+ *       CachedSnapshotStoreOptions.create().withCache(cache).withTtlMs(5 * 60_000),
+ *     )
+ */
+export class CachedSnapshotStoreOptions extends OptionsBuilder<CachedSnapshotStoreSettings> {
+  /** Start a fresh builder.  Equivalent to `new CachedSnapshotStoreOptions()`. */
+  static create(): CachedSnapshotStoreOptions {
+    return new CachedSnapshotStoreOptions();
+  }
+
+  /** Backing cache — typically Redis in production. */
+  withCache(cache: Cache): this {
+    return this.set('cache', cache);
+  }
+
+  /** Cache TTL in milliseconds.  Default: 5 minutes. */
+  withTtlMs(ttlMs: number): this {
+    return this.set('ttlMs', ttlMs);
+  }
+
+  /** Key prefix (default: `'snap:'`) — prevents collisions in shared caches. */
+  withKeyPrefix(keyPrefix: string): this {
+    return this.set('keyPrefix', keyPrefix);
+  }
 }
 
 interface CachedSnapshot<S> {
@@ -61,14 +96,16 @@ export class CachedSnapshotStore implements SnapshotStore {
 
   constructor(
     private readonly underlying: SnapshotStore,
-    opts: CachedSnapshotStoreOptions,
+    options: CachedSnapshotStoreOptions,
   ) {
-    this.cache = opts.cache;
-    this.ttlMs = opts.ttlMs ?? DEFAULT_TTL_MS;
+    const s = options.build();
+    if (s.cache === undefined) throw new Error('CachedSnapshotStore: cache is required (call withCache()).');
+    this.cache = s.cache;
+    this.ttlMs = s.ttlMs ?? DEFAULT_TTL_MS;
     if (!Number.isFinite(this.ttlMs) || this.ttlMs <= 0) {
       throw new Error(`CachedSnapshotStore: ttlMs must be a positive finite number, got ${this.ttlMs}`);
     }
-    this.keyPrefix = opts.keyPrefix ?? 'snap:';
+    this.keyPrefix = s.keyPrefix ?? 'snap:';
   }
 
   async save<S>(pid: string, seq: number, state: S, options?: PersistenceOptions): Promise<Snapshot<S>> {

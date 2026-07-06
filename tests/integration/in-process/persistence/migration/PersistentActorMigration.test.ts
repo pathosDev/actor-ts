@@ -11,7 +11,9 @@ import {
   PersistenceExtensionId,
   PersistentActor,
   SqliteJournal,
+  SqliteJournalOptions,
   SqliteSnapshotStore,
+  SqliteSnapshotStoreOptions,
 } from '../../../../../src/persistence/index.js';
 import {
   defaultsAdapter,
@@ -289,8 +291,8 @@ describe('PersistentActor — SQLite e2e with adapter', () => {
 
   test('JSON.stringify round-trip preserves envelope structure', async () => {
     const path = join(dir, 'mig.db');
-    const journal = new SqliteJournal({ path });
-    const snapshots = new SqliteSnapshotStore({ path });
+    const journal = new SqliteJournal(SqliteJournalOptions.create().withPath(path));
+    const snapshots = new SqliteSnapshotStore(SqliteSnapshotStoreOptions.create().withPath(path));
     const system = ActorSystem.create('sqlite-mig', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const ext = system.extension(PersistenceExtensionId);
     ext.setJournal(journal);
@@ -306,8 +308,8 @@ describe('PersistentActor — SQLite e2e with adapter', () => {
     await snapshots.close();
 
     // Reopen on the SAME files — recovery must succeed.
-    const journal2 = new SqliteJournal({ path });
-    const snapshots2 = new SqliteSnapshotStore({ path });
+    const journal2 = new SqliteJournal(SqliteJournalOptions.create().withPath(path));
+    const snapshots2 = new SqliteSnapshotStore(SqliteSnapshotStoreOptions.create().withPath(path));
     const sys2 = ActorSystem.create('sqlite-mig-2', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     sys2.extension(PersistenceExtensionId).setJournal(journal2);
     sys2.extension(PersistenceExtensionId).setSnapshotStore(snapshots2);

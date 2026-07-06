@@ -12,9 +12,12 @@ import {
   ActorSystem,
   CASSANDRA_JOURNAL_PLUGIN_ID,
   CASSANDRA_SNAPSHOT_PLUGIN_ID,
+  CassandraJournalOptions,
+  CassandraSnapshotStoreOptions,
   PersistenceExtensionId,
   Props,
   PersistentActor,
+  RegisterCassandraPluginsOptions,
   registerCassandraPlugins,
 } from '../../src/index.js';
 import { FakeCassandraClient } from '../../tests/unit/persistence/FakeCassandraClient.js';
@@ -57,11 +60,13 @@ async function main(): Promise<void> {
     },
   });
   const ext = system.extension(PersistenceExtensionId);
-  registerCassandraPlugins(ext, {
-    client,
-    journal: { contactPoints: ['fake'], keyspace: 'app', autoCreateKeyspace: true },
-    snapshotStore: { contactPoints: ['fake'], keyspace: 'app' },
-  });
+  registerCassandraPlugins(ext, RegisterCassandraPluginsOptions.create()
+    .withClient(client)
+    .withJournal(CassandraJournalOptions.create()
+      .withContactPoints(['fake']).withKeyspace('app').withAutoCreateKeyspace(true))
+    .withSnapshotStore(CassandraSnapshotStoreOptions.create()
+      .withContactPoints(['fake']).withKeyspace('app')),
+  );
 
   let counter = system.spawnAnonymous(Props.create(() => new Counter()));
   counter.tell({ kind: 'inc', amount: 10 });

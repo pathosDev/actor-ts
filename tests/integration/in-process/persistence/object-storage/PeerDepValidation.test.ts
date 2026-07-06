@@ -28,6 +28,7 @@ import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { PersistenceExtensionId } from '../../../../../src/persistence/PersistenceExtension.js';
 import {
+  ObjectStoragePluginOptions,
   registerObjectStoragePlugins,
   validateObjectStoragePeerDeps,
 } from '../../../../../src/persistence/object-storage/ObjectStoragePlugin.js';
@@ -49,9 +50,8 @@ describe('eager peer-dep validation (#18, #59)', () => {
       logger: new NoopLogger(), logLevel: LogLevel.Off,
     });
     const ext = sys.extension(PersistenceExtensionId);
-    const result = registerObjectStoragePlugins(ext, {
-      backend: { kind: 'filesystem', dir },
-    });
+    const result = registerObjectStoragePlugins(ext,
+      ObjectStoragePluginOptions.create().withBackend({ kind: 'filesystem', dir }));
     // Should be a Promise — the new contract.
     expect(result).toBeInstanceOf(Promise);
     await result;
@@ -63,14 +63,14 @@ describe('eager peer-dep validation (#18, #59)', () => {
       logger: new NoopLogger(), logLevel: LogLevel.Off,
     });
     const ext = sys.extension(PersistenceExtensionId);
-    await expect(registerObjectStoragePlugins(ext, {
-      backend: { kind: 'filesystem', dir },
-      compression: { algorithm: 'gzip' },
-    })).resolves.toBeDefined();
-    await expect(registerObjectStoragePlugins(ext, {
-      backend: { kind: 'filesystem', dir },
-      compression: { algorithm: 'none' },
-    })).resolves.toBeDefined();
+    await expect(registerObjectStoragePlugins(ext,
+      ObjectStoragePluginOptions.create()
+        .withBackend({ kind: 'filesystem', dir })
+        .withCompression({ algorithm: 'gzip' }))).resolves.toBeDefined();
+    await expect(registerObjectStoragePlugins(ext,
+      ObjectStoragePluginOptions.create()
+        .withBackend({ kind: 'filesystem', dir })
+        .withCompression({ algorithm: 'none' }))).resolves.toBeDefined();
     await sys.terminate();
   });
 
@@ -79,10 +79,10 @@ describe('eager peer-dep validation (#18, #59)', () => {
       logger: new NoopLogger(), logLevel: LogLevel.Off,
     });
     const ext = sys.extension(PersistenceExtensionId);
-    await expect(registerObjectStoragePlugins(ext, {
-      backend: { kind: 'filesystem', dir },
-      compression: { algorithm: 'zstd' },
-    })).resolves.toBeDefined();
+    await expect(registerObjectStoragePlugins(ext,
+      ObjectStoragePluginOptions.create()
+        .withBackend({ kind: 'filesystem', dir })
+        .withCompression({ algorithm: 'zstd' }))).resolves.toBeDefined();
     await sys.terminate();
   });
 
@@ -121,10 +121,10 @@ describe('eager peer-dep validation (#18, #59)', () => {
       logger: new NoopLogger(), logLevel: LogLevel.Off,
     });
     const ext = sys.extension(PersistenceExtensionId);
-    await expect(registerObjectStoragePlugins(ext, {
-      backend: { kind: 'filesystem', dir },
-      compression: opaque,
-    })).resolves.toBeDefined();
+    await expect(registerObjectStoragePlugins(ext,
+      ObjectStoragePluginOptions.create()
+        .withBackend({ kind: 'filesystem', dir })
+        .withCompression(opaque))).resolves.toBeDefined();
     await sys.terminate();
   });
 
@@ -135,22 +135,22 @@ describe('eager peer-dep validation (#18, #59)', () => {
     const ext = sys.extension(PersistenceExtensionId);
     // Multiple algos in the spec — the probe should accept all of them
     // (gzip, zstd, none all available on Bun).
-    await expect(registerObjectStoragePlugins(ext, {
-      backend: { kind: 'filesystem', dir },
-      compression: compressionByPrefix({
-        default: { algorithm: 'gzip' },
-        'big/':   { algorithm: 'zstd' },
-        'tiny/':  { algorithm: 'none' },
-      }),
-    })).resolves.toBeDefined();
+    await expect(registerObjectStoragePlugins(ext,
+      ObjectStoragePluginOptions.create()
+        .withBackend({ kind: 'filesystem', dir })
+        .withCompression(compressionByPrefix({
+          default: { algorithm: 'gzip' },
+          'big/':   { algorithm: 'zstd' },
+          'tiny/':  { algorithm: 'none' },
+        })))).resolves.toBeDefined();
     await sys.terminate();
   });
 
   test('validateObjectStoragePeerDeps is exported as a stand-alone pre-flight', async () => {
-    await expect(validateObjectStoragePeerDeps({
-      backend: { kind: 'filesystem', dir },
-      compression: { algorithm: 'gzip' },
-    })).resolves.toBeUndefined();
+    await expect(validateObjectStoragePeerDeps(
+      ObjectStoragePluginOptions.create()
+        .withBackend({ kind: 'filesystem', dir })
+        .withCompression({ algorithm: 'gzip' }))).resolves.toBeUndefined();
   });
 
   test('encryption probe: throws clear "WebCrypto not available" when SubtleCrypto missing', async () => {
@@ -185,14 +185,14 @@ describe('eager peer-dep validation (#18, #59)', () => {
     // We can't easily simulate "no SubtleCrypto" while keeping the rest
     // of the system alive, so we just check the happy path: server-side
     // modes register cleanly.
-    await expect(registerObjectStoragePlugins(ext, {
-      backend: { kind: 'filesystem', dir },
-      encryption: { mode: 'sse-s3' },
-    })).resolves.toBeDefined();
-    await expect(registerObjectStoragePlugins(ext, {
-      backend: { kind: 'filesystem', dir },
-      encryption: { mode: 'sse-kms', kmsKeyId: 'k1' },
-    })).resolves.toBeDefined();
+    await expect(registerObjectStoragePlugins(ext,
+      ObjectStoragePluginOptions.create()
+        .withBackend({ kind: 'filesystem', dir })
+        .withEncryption({ mode: 'sse-s3' }))).resolves.toBeDefined();
+    await expect(registerObjectStoragePlugins(ext,
+      ObjectStoragePluginOptions.create()
+        .withBackend({ kind: 'filesystem', dir })
+        .withEncryption({ mode: 'sse-kms', kmsKeyId: 'k1' }))).resolves.toBeDefined();
     await sys.terminate();
   });
 });

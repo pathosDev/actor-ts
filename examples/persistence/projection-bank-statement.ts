@@ -22,6 +22,7 @@
 import { match, P } from 'ts-pattern';
 import {
   ActorSystem,
+  ByTagProjectionOptions,
   everyNEvents,
   InMemoryJournal,
   InMemoryOffsetStore,
@@ -112,16 +113,15 @@ async function main(): Promise<void> {
   // Spawn the projection FIRST so it picks up every event from the
   // start of the run.  In production you'd persist the offset (see
   // DurableStateOffsetStore) so a fresh restart resumes mid-stream.
-  const projectionRef = ProjectionActor.byTag<AccountEvent>(sys, {
-    name: 'bank-statement',
-    query: new InMemoryQuery(journal),
-    offsetStore: new InMemoryOffsetStore(),
-    tag: 'account',
-    handle: (ev) => {
+  const projectionRef = ProjectionActor.byTag<AccountEvent>(sys, ByTagProjectionOptions.create<AccountEvent>()
+    .withName('bank-statement')
+    .withQuery(new InMemoryQuery(journal))
+    .withOffsetStore(new InMemoryOffsetStore())
+    .withTag('account')
+    .withHandle((ev) => {
       ledger.record(ev.persistenceId, ev.sequenceNr, ev.event);
-    },
-    liveOptions: { pollIntervalMs: 100 },
-  });
+    })
+    .withLiveOptions({ pollIntervalMs: 100 }));
 
   // Drive a couple of accounts.
   const alice = sys.spawn(Props.create(() => new Account('alice')), 'alice');

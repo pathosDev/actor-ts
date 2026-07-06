@@ -1,4 +1,5 @@
 import { getSqliteDriver, type SqliteDb, type SqliteDriver, type SqliteStatement } from '../../runtime/sqlite/index.js';
+import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { InProcessJournalEventBus, type JournalEventBus } from '../JournalEventBus.js';
 import type { Journal } from '../Journal.js';
 import {
@@ -7,7 +8,7 @@ import {
   type PersistentEvent,
 } from '../JournalTypes.js';
 
-export interface SqliteJournalOptions {
+export interface SqliteJournalSettings {
   /** File path (absolute or relative) or ":memory:" for an ephemeral DB. */
   readonly path?: string;
   /** Table name for events.  Default: `events`. */
@@ -20,6 +21,38 @@ export interface SqliteJournalOptions {
    * (Bun → `bun:sqlite`, Node → `better-sqlite3`).
    */
   readonly driver?: SqliteDriver;
+}
+
+/**
+ * Fluent builder for {@link SqliteJournalSettings}:
+ *
+ *     new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:').withWal(true))
+ */
+export class SqliteJournalOptions extends OptionsBuilder<SqliteJournalSettings> {
+  /** Start a fresh builder.  Equivalent to `new SqliteJournalOptions()`. */
+  static create(): SqliteJournalOptions {
+    return new SqliteJournalOptions();
+  }
+
+  /** File path (absolute or relative) or ":memory:" for an ephemeral DB. */
+  withPath(path: string): this {
+    return this.set('path', path);
+  }
+
+  /** Table name for events.  Default: `events`. */
+  withEventsTable(eventsTable: string): this {
+    return this.set('eventsTable', eventsTable);
+  }
+
+  /** If true, opens the DB with WAL mode enabled. */
+  withWal(wal = true): this {
+    return this.set('wal', wal);
+  }
+
+  /** Explicit driver — pin a specific SQLite backend (defaults to auto-detect). */
+  withDriver(driver: SqliteDriver): this {
+    return this.set('driver', driver);
+  }
 }
 
 interface Stmts {
@@ -47,12 +80,12 @@ interface Stmts {
  *
  * Construction is lazy: the native DB is opened on the first `append` /
  * `read` / `highestSeq` / `delete` / `persistenceIds` call.  This keeps
- * `new SqliteJournal({ path })` sync-friendly (matches the pre-abstraction
- * shape) while still supporting the async driver-resolution flow Node
- * requires.
+ * `new SqliteJournal(SqliteJournalOptions.create().withPath(path))`
+ * sync-friendly (matches the pre-abstraction shape) while still
+ * supporting the async driver-resolution flow Node requires.
  */
 export class SqliteJournal implements Journal {
-  private readonly options: SqliteJournalOptions;
+  private readonly settings: SqliteJournalSettings;
   private readonly table: string;
   private readonly closed = { value: false };
   /**
@@ -68,9 +101,10 @@ export class SqliteJournal implements Journal {
   private stmts: Stmts | null = null;
   private initPromise: Promise<void> | null = null;
 
-  constructor(options: SqliteJournalOptions = {}) {
-    this.options = options;
-    this.table = options.eventsTable ?? 'events';
+  constructor(options: SqliteJournalOptions = SqliteJournalOptions.create()) {
+    const settings = options.build();
+    this.settings = settings;
+    this.table = settings.eventsTable ?? 'events';
   }
 
   async append<E>(
@@ -201,8 +235,8 @@ export class SqliteJournal implements Journal {
   }
 
   private async init(): Promise<void> {
-    const driver = this.options.driver ?? await getSqliteDriver();
-    const db = driver.open(this.options.path ?? ':memory:');
+    const driver = this.settings.driver ?? await getSqliteDriver();
+    const db = driver.open(this.settings.path ?? ':memory:');
     const tagsTable = `${this.table}_tags`;
     db.exec(`
       CREATE TABLE IF NOT EXISTS ${this.table} (
@@ -223,7 +257,7 @@ export class SqliteJournal implements Journal {
       );
       CREATE INDEX IF NOT EXISTS idx_${tagsTable}_pid_seq ON ${tagsTable}(persistence_id, sequence_nr);
     `);
-    if (this.options.wal) db.exec('PRAGMA journal_mode = WAL;');
+    if (this.settings.wal) db.exec('PRAGMA journal_mode = WAL;');
 
     this.stmts = {
       insert: db.prepare(

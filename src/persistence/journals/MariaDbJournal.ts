@@ -1,3 +1,4 @@
+import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { Journal } from '../Journal.js';
 import {
   JournalConcurrencyError,
@@ -13,13 +14,59 @@ import {
   type MariaDbConnection,
 } from './MariaDbClient.js';
 
-export interface MariaDbJournalOptions extends MariaDbConnection {
+export interface MariaDbJournalSettings extends MariaDbConnection {
   /** Events table name.  Default: `events`. */
   readonly eventsTable?: string;
   /** Tags join table name.  Default: `${eventsTable}_tags`. */
   readonly tagsTable?: string;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
   readonly autoCreateTables?: boolean;
+}
+
+/**
+ * Fluent builder for {@link MariaDbJournalSettings}:
+ *
+ *     new MariaDbJournal(MariaDbJournalOptions.create().withUrl('mariadb://…').withEventsTable('journal'))
+ *
+ * The connection fields (`withUrl` / `withPoolConfig` / `withPool`) come
+ * from the shared {@link MariaDbConnection} mixin; the rest are journal
+ * specific.
+ */
+export class MariaDbJournalOptions extends OptionsBuilder<MariaDbJournalSettings> {
+  /** Start a fresh builder.  Equivalent to `new MariaDbJournalOptions()`. */
+  static create(): MariaDbJournalOptions {
+    return new MariaDbJournalOptions();
+  }
+
+  /** Connection URI passed straight to `createPool`, e.g. `mariadb://user:pass@host:3306/db`. */
+  withUrl(url: string): this {
+    return this.set('url', url);
+  }
+
+  /** `createPool` config object (host/user/password/database/…); takes precedence over `url`. */
+  withPoolConfig(poolConfig: Record<string, unknown>): this {
+    return this.set('poolConfig', poolConfig);
+  }
+
+  /** Pre-built pool — shares one pool across the three stores, or injects a fake in tests. */
+  withPool(pool: MariaDbPoolLike): this {
+    return this.set('pool', pool);
+  }
+
+  /** Events table name.  Default: `events`. */
+  withEventsTable(eventsTable: string): this {
+    return this.set('eventsTable', eventsTable);
+  }
+
+  /** Tags join table name.  Default: `${eventsTable}_tags`. */
+  withTagsTable(tagsTable: string): this {
+    return this.set('tagsTable', tagsTable);
+  }
+
+  /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
+  withAutoCreateTables(autoCreateTables: boolean): this {
+    return this.set('autoCreateTables', autoCreateTables);
+  }
 }
 
 interface EventRow {
@@ -38,7 +85,7 @@ interface EventRow {
  * Cross-process backend → no in-process event bus.
  */
 export class MariaDbJournal implements Journal {
-  private readonly options: MariaDbJournalOptions;
+  private readonly settings: MariaDbJournalSettings;
   private readonly table: string;
   private readonly tagsTable: string;
   private readonly autoCreate: boolean;
@@ -47,13 +94,14 @@ export class MariaDbJournal implements Journal {
   private initPromise: Promise<void> | null = null;
   private closed = false;
 
-  constructor(options: MariaDbJournalOptions = {}) {
-    this.options = options;
-    this.table = assertSafeIdentifier(options.eventsTable ?? 'events', 'events table');
+  constructor(options: MariaDbJournalOptions = MariaDbJournalOptions.create()) {
+    const s = options.build();
+    this.settings = s;
+    this.table = assertSafeIdentifier(s.eventsTable ?? 'events', 'events table');
     this.tagsTable = assertSafeIdentifier(
-      options.tagsTable ?? `${this.table}_tags`, 'tags table',
+      s.tagsTable ?? `${this.table}_tags`, 'tags table',
     );
-    this.autoCreate = options.autoCreateTables ?? true;
+    this.autoCreate = s.autoCreateTables ?? true;
   }
 
   async append<E>(
@@ -187,7 +235,7 @@ export class MariaDbJournal implements Journal {
   }
 
   private async init(): Promise<void> {
-    const pool = await buildMariaDbPool(this.options);
+    const pool = await buildMariaDbPool(this.settings);
     if (this.autoCreate) {
       // Indexes declared inline — `CREATE INDEX IF NOT EXISTS` isn't
       // portable across MariaDB/MySQL versions, but inline INDEX in

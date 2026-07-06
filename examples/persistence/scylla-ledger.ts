@@ -16,9 +16,12 @@ import {
   ActorSystem,
   CASSANDRA_JOURNAL_PLUGIN_ID,
   CASSANDRA_SNAPSHOT_PLUGIN_ID,
+  CassandraJournalOptions,
+  CassandraSnapshotStoreOptions,
   PersistenceExtensionId,
   PersistentActor,
   Props,
+  RegisterCassandraPluginsOptions,
   everyNEvents,
   registerCassandraPlugins,
 } from '../../src/index.js';
@@ -92,22 +95,20 @@ async function main(): Promise<void> {
   });
 
   const ext = system.extension(PersistenceExtensionId);
-  registerCassandraPlugins(ext, {
-    journal: {
-      contactPoints,
-      keyspace: 'actor_ts',
-      autoCreateKeyspace: true,
-      autoCreateTables: true,
-      localDataCenter: process.env.SCYLLA_DC ?? 'datacenter1',
-    },
-    snapshotStore: {
-      contactPoints,
-      keyspace: 'actor_ts',
-      autoCreateTables: true,
-      localDataCenter: process.env.SCYLLA_DC ?? 'datacenter1',
-      keepN: 5,
-    },
-  });
+  registerCassandraPlugins(ext, RegisterCassandraPluginsOptions.create()
+    .withJournal(CassandraJournalOptions.create()
+      .withContactPoints(contactPoints)
+      .withKeyspace('actor_ts')
+      .withAutoCreateKeyspace(true)
+      .withAutoCreateTables(true)
+      .withLocalDataCenter(process.env.SCYLLA_DC ?? 'datacenter1'))
+    .withSnapshotStore(CassandraSnapshotStoreOptions.create()
+      .withContactPoints(contactPoints)
+      .withKeyspace('actor_ts')
+      .withAutoCreateTables(true)
+      .withLocalDataCenter(process.env.SCYLLA_DC ?? 'datacenter1')
+      .withKeepN(5)),
+  );
 
   const alice = system.spawnAnonymous(Props.create(() => new Account('alice')));
 

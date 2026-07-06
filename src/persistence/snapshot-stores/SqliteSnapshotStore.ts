@@ -1,10 +1,11 @@
 import { getSqliteDriver, type SqliteDb, type SqliteDriver, type SqliteStatement } from '../../runtime/sqlite/index.js';
+import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { JournalError, type Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import { none, some, type Option } from '../../util/Option.js';
 
-export interface SqliteSnapshotStoreOptions {
+export interface SqliteSnapshotStoreSettings {
   /** Path or ":memory:". Defaults to ":memory:". */
   readonly path?: string;
   /** Table name; default `snapshots`. */
@@ -16,6 +17,38 @@ export interface SqliteSnapshotStoreOptions {
    * specific SQLite backend.  Default: auto-detect via `getSqliteDriver()`.
    */
   readonly driver?: SqliteDriver;
+}
+
+/**
+ * Fluent builder for {@link SqliteSnapshotStoreSettings}:
+ *
+ *     new SqliteSnapshotStore(SqliteSnapshotStoreOptions.create().withPath(':memory:').withKeepN(2))
+ */
+export class SqliteSnapshotStoreOptions extends OptionsBuilder<SqliteSnapshotStoreSettings> {
+  /** Start a fresh builder.  Equivalent to `new SqliteSnapshotStoreOptions()`. */
+  static create(): SqliteSnapshotStoreOptions {
+    return new SqliteSnapshotStoreOptions();
+  }
+
+  /** Path or ":memory:". Defaults to ":memory:". */
+  withPath(path: string): this {
+    return this.set('path', path);
+  }
+
+  /** Table name; default `snapshots`. */
+  withSnapshotsTable(snapshotsTable: string): this {
+    return this.set('snapshotsTable', snapshotsTable);
+  }
+
+  /** Maximum snapshots retained per persistenceId.  Older ones are pruned on save. */
+  withKeepN(keepN: number): this {
+    return this.set('keepN', keepN);
+  }
+
+  /** Explicit driver — pin a specific SQLite backend (defaults to auto-detect). */
+  withDriver(driver: SqliteDriver): this {
+    return this.set('driver', driver);
+  }
 }
 
 interface Stmts {
@@ -33,7 +66,7 @@ interface Stmts {
  * `SqliteJournal`): the DB is opened on the first save / load call.
  */
 export class SqliteSnapshotStore implements SnapshotStore {
-  private readonly options: SqliteSnapshotStoreOptions;
+  private readonly settings: SqliteSnapshotStoreSettings;
   private readonly table: string;
   private readonly keepN: number;
   private closed = false;
@@ -42,10 +75,11 @@ export class SqliteSnapshotStore implements SnapshotStore {
   private stmts: Stmts | null = null;
   private initPromise: Promise<void> | null = null;
 
-  constructor(options: SqliteSnapshotStoreOptions = {}) {
-    this.options = options;
-    this.table = options.snapshotsTable ?? 'snapshots';
-    this.keepN = options.keepN ?? 3;
+  constructor(options: SqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create()) {
+    const settings = options.build();
+    this.settings = settings;
+    this.table = settings.snapshotsTable ?? 'snapshots';
+    this.keepN = settings.keepN ?? 3;
   }
 
   async save<S>(pid: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
@@ -119,8 +153,8 @@ export class SqliteSnapshotStore implements SnapshotStore {
   }
 
   private async init(): Promise<void> {
-    const driver = this.options.driver ?? await getSqliteDriver();
-    const db = driver.open(this.options.path ?? ':memory:');
+    const driver = this.settings.driver ?? await getSqliteDriver();
+    const db = driver.open(this.settings.path ?? ':memory:');
     db.exec(`
       CREATE TABLE IF NOT EXISTS ${this.table} (
         persistence_id TEXT NOT NULL,

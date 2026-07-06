@@ -32,7 +32,9 @@ import {
   PersistenceExtensionId,
   Props,
   SqliteJournal,
+  SqliteJournalOptions,
   SqliteSnapshotStore,
+  SqliteSnapshotStoreOptions,
 } from '../../../src/index.js';
 import { DistributedDataId } from '../../../src/crdt/index.js';
 import { DistributedPubSubId } from '../../../src/cluster/pubsub/index.js';
@@ -117,8 +119,8 @@ async function main(): Promise<void> {
   fs.mkdirSync(cfg.dataDir, { recursive: true });
   const journalPath = path.join(cfg.dataDir, 'chat.db');
   const snapshotPath = path.join(cfg.dataDir, 'chat-snapshots.db');
-  const journal = new SqliteJournal({ path: journalPath, wal: true });
-  const snapshotStore = new SqliteSnapshotStore({ path: snapshotPath, keepN: 3 });
+  const journal = new SqliteJournal(SqliteJournalOptions.create().withPath(journalPath).withWal(true));
+  const snapshotStore = new SqliteSnapshotStore(SqliteSnapshotStoreOptions.create().withPath(snapshotPath).withKeepN(3));
   const persistence = system.extension(PersistenceExtensionId);
   persistence.setJournal(journal);
   persistence.setSnapshotStore(snapshotStore);

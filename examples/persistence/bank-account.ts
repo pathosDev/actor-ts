@@ -14,7 +14,9 @@ import {
   PersistentActor,
   Props,
   SqliteJournal,
+  SqliteJournalOptions,
   SqliteSnapshotStore,
+  SqliteSnapshotStoreOptions,
   everyNEvents,
 } from '../../src/index.js';
 
@@ -57,8 +59,8 @@ class Account extends PersistentActor<Cmd, Event, State> {
 }
 
 async function main(): Promise<void> {
-  const journal = new SqliteJournal({ path: ':memory:' });
-  const snapshots = new SqliteSnapshotStore({ path: ':memory:', keepN: 2 });
+  const journal = new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:'));
+  const snapshots = new SqliteSnapshotStore(SqliteSnapshotStoreOptions.create().withPath(':memory:').withKeepN(2));
 
   // --- first incarnation: record events ---
   const sys1 = ActorSystem.create('bank', { persistence: { journal, snapshotStore: snapshots } });

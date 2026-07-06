@@ -26,6 +26,7 @@ import {
   type DurableStateStore,
 } from '../DurableStateStore.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
+import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { none, some, type Option } from '../../util/Option.js';
 
 /**
@@ -49,7 +50,7 @@ import { none, some, type Option } from '../../util/Option.js';
 const utf8 = new TextEncoder();
 const utf8Decoder = new TextDecoder();
 
-export interface ObjectStorageDurableStateStoreOptions {
+export interface ObjectStorageDurableStateStoreSettings {
   readonly backend: ObjectStorageBackend;
   readonly prefix?: string;
   readonly compression?: CompressionConfig | CompressionResolver;
@@ -76,6 +77,51 @@ export interface ObjectStorageDurableStateStoreOptions {
   readonly requireIntegrity?: boolean;
 }
 
+/**
+ * Fluent builder for {@link ObjectStorageDurableStateStoreSettings}.  The
+ * `backend` is required:
+ *
+ *     new ObjectStorageDurableStateStore(
+ *       ObjectStorageDurableStateStoreOptions.create().withBackend(backend).withPrefix('prod/'),
+ *     )
+ */
+export class ObjectStorageDurableStateStoreOptions extends OptionsBuilder<ObjectStorageDurableStateStoreSettings> {
+  /** Start a fresh builder.  Equivalent to `new ObjectStorageDurableStateStoreOptions()`. */
+  static create(): ObjectStorageDurableStateStoreOptions {
+    return new ObjectStorageDurableStateStoreOptions();
+  }
+
+  /** The underlying storage layer (S3 / Filesystem / …). */
+  withBackend(backend: ObjectStorageBackend): this {
+    return this.set('backend', backend);
+  }
+
+  /** Key prefix prepended before the persistenceId.  Default: ''. */
+  withPrefix(prefix: string): this {
+    return this.set('prefix', prefix);
+  }
+
+  /** Compression — flat config or per-pid resolver.  Default: gzip. */
+  withCompression(compression: CompressionConfig | CompressionResolver): this {
+    return this.set('compression', compression);
+  }
+
+  /** Encryption — flat config or per-pid resolver.  Default: none. */
+  withEncryption(encryption: EncryptionConfig | EncryptionResolver): this {
+    return this.set('encryption', encryption);
+  }
+
+  /** Opt-in HMAC-SHA256 integrity protection over each body (#116).  Default: none. */
+  withIntegrity(integrity: IntegrityConfig | IntegrityResolver): this {
+    return this.set('integrity', integrity);
+  }
+
+  /** Reject reads of bodies lacking an integrity tag — post-migration downgrade protection. */
+  withRequireIntegrity(requireIntegrity = true): this {
+    return this.set('requireIntegrity', requireIntegrity);
+  }
+}
+
 interface CachedEntry {
   readonly etag: string;
   readonly revision: number;
@@ -90,13 +136,15 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
   private readonly requireIntegrity: boolean;
   private readonly etagCache = new Map<string, CachedEntry>();
 
-  constructor(opts: ObjectStorageDurableStateStoreOptions) {
-    this.backend = opts.backend;
-    this.prefix = opts.prefix ?? '';
-    this.compression = opts.compression;
-    this.encryption = opts.encryption;
-    this.integrity = opts.integrity;
-    this.requireIntegrity = opts.requireIntegrity ?? false;
+  constructor(options: ObjectStorageDurableStateStoreOptions) {
+    const s = options.build();
+    if (s.backend === undefined) throw new Error('ObjectStorageDurableStateStore: backend is required (call withBackend()).');
+    this.backend = s.backend;
+    this.prefix = s.prefix ?? '';
+    this.compression = s.compression;
+    this.encryption = s.encryption;
+    this.integrity = s.integrity;
+    this.requireIntegrity = s.requireIntegrity ?? false;
   }
 
   async load<S>(pid: string, options?: PersistenceOptions): Promise<Option<DurableStateRecord<S>>> {

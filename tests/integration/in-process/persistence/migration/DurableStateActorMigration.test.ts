@@ -4,6 +4,7 @@ import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import {
   DurableStateActor,
+  DurableStateOptions,
   InMemoryDurableStateStore,
   type DurableStateStore,
 } from '../../../../../src/persistence/index.js';
@@ -55,9 +56,12 @@ class StrictAccount extends Account {
 }
 
 const props = (store: DurableStateStore, id: string, ctor: typeof Account = Account): Props<Cmd> =>
-  Props.create(() => new ctor({
-    persistenceId: id, store, emptyState: (): State => ({ balance: 0, currency: 'USD' }),
-  }) as unknown as Actor<Cmd>);
+  Props.create(() => new ctor(
+    DurableStateOptions.create<State>()
+      .withPersistenceId(id)
+      .withStore(store)
+      .withEmptyState((): State => ({ balance: 0, currency: 'USD' })),
+  ) as unknown as Actor<Cmd>);
 
 /* ----------------------------- Tests ------------------------------------ */
 
@@ -127,9 +131,12 @@ describe('DurableStateActor — strict mode', () => {
     const probe = makeProbe(sys);
     void probe;
     sys.spawn(Props.create(() => {
-      const a = new StrictAccount({
-        persistenceId: 'acct', store, emptyState: (): State => ({ balance: 0, currency: 'USD' }),
-      });
+      const a = new StrictAccount(
+        DurableStateOptions.create<State>()
+          .withPersistenceId('acct')
+          .withStore(store)
+          .withEmptyState((): State => ({ balance: 0, currency: 'USD' })),
+      );
       captured = a;
       return a as unknown as Actor<Cmd>;
     }), 'strict');
@@ -155,9 +162,12 @@ describe('DurableStateActor — no adapter regression', () => {
     }
     const sys = ActorSystem.create('ds-raw', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const probe = makeProbe(sys);
-    const ref = sys.spawn(Props.create(() => new RawAccount({
-      persistenceId: 'r', store, emptyState: (): StateV1 => ({ balance: 0 }),
-    }) as unknown as Actor<Cmd>), 'raw');
+    const ref = sys.spawn(Props.create(() => new RawAccount(
+      DurableStateOptions.create<StateV1>()
+        .withPersistenceId('r')
+        .withStore(store)
+        .withEmptyState((): StateV1 => ({ balance: 0 })),
+    ) as unknown as Actor<Cmd>), 'raw');
     ref.tell({ kind: 'deposit', amount: 7, replyTo: probe.ref });
     await sleep(30);
     const raw = await store.load<StateV1>('r');

@@ -1,12 +1,23 @@
 import type { ActorSystem } from '../../ActorSystem.js';
+import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { PersistenceExtension } from '../PersistenceExtension.js';
-import { ObjectStorageDurableStateStore } from '../durable-state-stores/ObjectStorageDurableStateStore.js';
-import { ObjectStorageSnapshotStore } from '../snapshot-stores/ObjectStorageSnapshotStore.js';
+import {
+  ObjectStorageDurableStateStore,
+  ObjectStorageDurableStateStoreOptions,
+} from '../durable-state-stores/ObjectStorageDurableStateStore.js';
+import {
+  ObjectStorageSnapshotStore,
+  ObjectStorageSnapshotStoreOptions,
+} from '../snapshot-stores/ObjectStorageSnapshotStore.js';
 import { probeCompressionAvailability } from './Compression.js';
 import { probeEncryptionAvailability } from './Encryption.js';
-import { FilesystemObjectStorageBackend } from './FilesystemObjectStorageBackend.js';
+import {
+  FilesystemObjectStorageBackend,
+  FilesystemObjectStorageOptions,
+} from './FilesystemObjectStorageBackend.js';
 import {
   S3ObjectStorageBackend,
+  S3ObjectStorageOptions,
   type S3Credentials,
 } from './S3ObjectStorageBackend.js';
 import type { ObjectStorageBackend } from './ObjectStorageBackend.js';
@@ -40,7 +51,7 @@ export type ObjectStorageBackendSpec =
     }
   | { readonly kind: 'custom'; readonly backend: ObjectStorageBackend };
 
-export interface ObjectStoragePluginOptions {
+export interface ObjectStoragePluginSettings {
   /** Plugin ID under which the snapshot store is registered. */
   readonly snapshotPluginId?: string;
   /** Plugin ID for the durable-state store. */
@@ -55,6 +66,62 @@ export interface ObjectStoragePluginOptions {
   readonly compression?: CompressionConfig | CompressionResolver;
   /** Encryption config or per-pid resolver.  Default: none. */
   readonly encryption?: EncryptionConfig | EncryptionResolver;
+}
+
+/**
+ * Fluent builder for {@link ObjectStoragePluginSettings}.  The `backend`
+ * spec is required:
+ *
+ *     registerObjectStoragePlugins(ext,
+ *       ObjectStoragePluginOptions.create()
+ *         .withBackend({ kind: 's3', bucket: 'my-app', region: 'eu-central-1' })
+ *         .withCompression({ algorithm: 'zstd' }))
+ *
+ * The `backend` spec ({@link ObjectStorageBackendSpec}) and the
+ * compression / encryption config-or-resolver unions are passed WHOLE
+ * into their respective `withX(...)` — they are polymorphic sub-configs,
+ * not further nested builders.
+ */
+export class ObjectStoragePluginOptions extends OptionsBuilder<ObjectStoragePluginSettings> {
+  /** Start a fresh builder.  Equivalent to `new ObjectStoragePluginOptions()`. */
+  static create(): ObjectStoragePluginOptions {
+    return new ObjectStoragePluginOptions();
+  }
+
+  /** Backend definition — filesystem, S3, or custom.  Required. */
+  withBackend(backend: ObjectStorageBackendSpec): this {
+    return this.set('backend', backend);
+  }
+
+  /** Key prefix prepended to every object — e.g. `'env-prod/'`. */
+  withPrefix(prefix: string): this {
+    return this.set('prefix', prefix);
+  }
+
+  /** Snapshot history retention; `0` disables pruning.  Default: 3. */
+  withKeepN(keepN: number): this {
+    return this.set('keepN', keepN);
+  }
+
+  /** Compression config or per-pid resolver (passed whole).  Default: gzip. */
+  withCompression(compression: CompressionConfig | CompressionResolver): this {
+    return this.set('compression', compression);
+  }
+
+  /** Encryption config or per-pid resolver (passed whole).  Default: none. */
+  withEncryption(encryption: EncryptionConfig | EncryptionResolver): this {
+    return this.set('encryption', encryption);
+  }
+
+  /** Plugin ID under which the snapshot store is registered. */
+  withSnapshotPluginId(snapshotPluginId: string): this {
+    return this.set('snapshotPluginId', snapshotPluginId);
+  }
+
+  /** Plugin ID for the durable-state store. */
+  withDurableStatePluginId(durableStatePluginId: string): this {
+    return this.set('durableStatePluginId', durableStatePluginId);
+  }
 }
 
 export interface ObjectStoragePluginHandles {
@@ -91,11 +158,11 @@ export interface ObjectStoragePluginHandles {
  * Example:
  *
  *   const ext = system.extension(PersistenceExtensionId);
- *   const { durableStateStore } = await registerObjectStoragePlugins(ext, {
- *     backend: { kind: 's3', bucket: 'my-app', region: 'eu-central-1' },
- *     compression: { algorithm: 'zstd' },
- *     encryption:  encryptionByPrefix({ default: { mode: 'sse-s3' } }),
- *   });
+ *   const { durableStateStore } = await registerObjectStoragePlugins(ext,
+ *     ObjectStoragePluginOptions.create()
+ *       .withBackend({ kind: 's3', bucket: 'my-app', region: 'eu-central-1' })
+ *       .withCompression({ algorithm: 'zstd' })
+ *       .withEncryption(encryptionByPrefix({ default: { mode: 'sse-s3' } })));
  *   // ... and to make the snapshot plugin active:
  *   //   actor-ts.persistence.snapshot-store.plugin = "actor-ts.persistence.snapshot-store.object-storage"
  */
@@ -103,27 +170,27 @@ export async function registerObjectStoragePlugins(
   ext: PersistenceExtension,
   options: ObjectStoragePluginOptions,
 ): Promise<ObjectStoragePluginHandles> {
+  const s = options.build();
+  if (s.backend === undefined) throw new Error('registerObjectStoragePlugins: backend is required (call withBackend()).');
   await validateObjectStoragePeerDeps(options);
 
-  const backend = buildBackend(options.backend);
-  const snapshotId = options.snapshotPluginId ?? OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID;
+  const backend = buildBackend(s.backend);
+  const snapshotId = s.snapshotPluginId ?? OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID;
 
-  ext.registerSnapshotStore(snapshotId, (_system: ActorSystem) =>
-    new ObjectStorageSnapshotStore({
-      backend,
-      prefix: options.prefix,
-      keepN: options.keepN,
-      compression: options.compression,
-      encryption: options.encryption,
-    }),
-  );
-
-  const durableStateStore = new ObjectStorageDurableStateStore({
-    backend,
-    prefix: options.prefix,
-    compression: options.compression,
-    encryption: options.encryption,
+  ext.registerSnapshotStore(snapshotId, (_system: ActorSystem) => {
+    const snapOpts = ObjectStorageSnapshotStoreOptions.create().withBackend(backend);
+    if (s.prefix !== undefined) snapOpts.withPrefix(s.prefix);
+    if (s.keepN !== undefined) snapOpts.withKeepN(s.keepN);
+    if (s.compression !== undefined) snapOpts.withCompression(s.compression);
+    if (s.encryption !== undefined) snapOpts.withEncryption(s.encryption);
+    return new ObjectStorageSnapshotStore(snapOpts);
   });
+
+  const dsOpts = ObjectStorageDurableStateStoreOptions.create().withBackend(backend);
+  if (s.prefix !== undefined) dsOpts.withPrefix(s.prefix);
+  if (s.compression !== undefined) dsOpts.withCompression(s.compression);
+  if (s.encryption !== undefined) dsOpts.withEncryption(s.encryption);
+  const durableStateStore = new ObjectStorageDurableStateStore(dsOpts);
 
   return { backend, durableStateStore };
 }
@@ -136,9 +203,10 @@ export async function registerObjectStoragePlugins(
 export async function validateObjectStoragePeerDeps(
   options: ObjectStoragePluginOptions,
 ): Promise<void> {
+  const s = options.build();
   // Compression: probe each algorithm at most once.
   const algos = new Set<CompressionConfig['algorithm']>();
-  for (const cfg of collectCompressionConfigs(options.compression)) {
+  for (const cfg of collectCompressionConfigs(s.compression)) {
     algos.add(cfg.algorithm);
   }
   for (const algo of algos) {
@@ -148,7 +216,7 @@ export async function validateObjectStoragePeerDeps(
   // Encryption: WebCrypto is needed for the client-aes256-gcm mode
   // (HKDF + AES-GCM go through SubtleCrypto).  The server-side modes
   // — sse-s3, sse-kms — are header pass-throughs and need nothing.
-  const encConfigs = collectEncryptionConfigs(options.encryption);
+  const encConfigs = collectEncryptionConfigs(s.encryption);
   if (encConfigs.some((c) => c.mode === 'client-aes256-gcm')) {
     await probeEncryptionAvailability();
   }
@@ -177,14 +245,17 @@ function collectEncryptionConfigs(
 
 function buildBackend(spec: ObjectStorageBackendSpec): ObjectStorageBackend {
   switch (spec.kind) {
-    case 'filesystem': return new FilesystemObjectStorageBackend({ dir: spec.dir });
-    case 's3': return new S3ObjectStorageBackend({
-      bucket: spec.bucket,
-      region: spec.region,
-      endpoint: spec.endpoint,
-      forcePathStyle: spec.forcePathStyle,
-      credentials: spec.credentials,
-    });
+    case 'filesystem':
+      return new FilesystemObjectStorageBackend(
+        FilesystemObjectStorageOptions.create().withDir(spec.dir),
+      );
+    case 's3': {
+      const opts = S3ObjectStorageOptions.create().withBucket(spec.bucket).withRegion(spec.region);
+      if (spec.endpoint !== undefined) opts.withEndpoint(spec.endpoint);
+      if (spec.forcePathStyle !== undefined) opts.withForcePathStyle(spec.forcePathStyle);
+      if (spec.credentials !== undefined) opts.withCredentials(spec.credentials);
+      return new S3ObjectStorageBackend(opts);
+    }
     case 'custom': return spec.backend;
   }
 }
