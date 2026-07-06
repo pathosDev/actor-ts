@@ -6,6 +6,7 @@ import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import type { BrokerCommonSettings } from './BrokerSettings.js';
+import { KafkaOptions } from './KafkaOptions.js';
 
 /** Inbound Kafka record delivered to subscribers. */
 export interface KafkaRecord {
@@ -142,12 +143,13 @@ export type KafkaCmd =
  *     successfully passed through `commit` is committed; a crash or
  *     `nack` re-delivers.
  *
- *   const kafka = system.spawnAnonymous(Props.create(() => new KafkaActor({
- *     brokers: ['kafka:9092'],
- *     consumer: { groupId: 'orders', commitMode: 'manual' },
- *     topics: ['orders'],
- *     target: orderProcessor,
- *   })));
+ *   const kafka = system.spawnAnonymous(Props.create(() => new KafkaActor(
+ *     KafkaOptions.create()
+ *       .withBrokers(['kafka:9092'])
+ *       .withConsumer({ groupId: 'orders', commitMode: 'manual' })
+ *       .withTopics(['orders'])
+ *       .withTarget(orderProcessor),
+ *   )));
  *
  *   class OrderProcessor extends Actor<KafkaRecord> {
  *     constructor(private readonly kafka: ActorRef<KafkaCmd>) { super(); }
@@ -175,7 +177,7 @@ export class KafkaActor extends BrokerActor<KafkaActorSettings, KafkaCmd, KafkaP
    */
   private readonly pendingCommits = new Map<string, PendingCommit>();
 
-  constructor(settings: Partial<KafkaActorSettings> = {}) { super(settings); }
+  constructor(options: KafkaOptions = KafkaOptions.create()) { super(options.build()); }
 
   protected configKey(): string { return ConfigKeys.io.broker.kafka; }
   protected builtInDefaults(): Partial<KafkaActorSettings> {

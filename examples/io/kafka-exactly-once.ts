@@ -27,6 +27,7 @@ import {
   ActorSystem,
   Props,
   KafkaActor,
+  KafkaOptions,
   type KafkaCmd,
   type KafkaRecord,
 } from '../../src/index.js';
@@ -91,21 +92,22 @@ async function main(): Promise<void> {
   );
 
   kafka = system.spawn(
-    Props.create(() => new KafkaActor({
-      brokers: ['localhost:9092'],
-      clientId: 'eo-demo',
-      consumer: {
-        groupId: 'orders-eo',
-        commitMode: 'manual',
-        commitTimeoutMs: 30_000,
-        fromBeginning: false,
-      },
-      topics: ['orders'],
-      target: processor,
-      // Idempotent producer keeps any downstream emits exactly-once
-      // on the producer side too.
-      producer: { idempotent: true, allowAutoTopicCreation: false },
-    })),
+    Props.create(() => new KafkaActor(
+      KafkaOptions.create()
+        .withBrokers(['localhost:9092'])
+        .withClientId('eo-demo')
+        .withConsumer({
+          groupId: 'orders-eo',
+          commitMode: 'manual',
+          commitTimeoutMs: 30_000,
+          fromBeginning: false,
+        })
+        .withTopics(['orders'])
+        .withTarget(processor)
+        // Idempotent producer keeps any downstream emits exactly-once
+        // on the producer side too.
+        .withProducer({ idempotent: true, allowAutoTopicCreation: false }),
+    )),
     'kafka',
   );
 

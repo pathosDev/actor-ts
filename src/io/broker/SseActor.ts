@@ -4,6 +4,7 @@ import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import type { BrokerCommonSettings } from './BrokerSettings.js';
+import { SseOptions } from './SseOptions.js';
 
 /** Inbound SSE event delivered to subscribers. */
 export interface SseEvent {
@@ -37,7 +38,7 @@ export class SseActor extends BrokerActor<SseActorSettings, SseCmd, never> {
   private aborter: AbortController | null = null;
   private streamRunning = false;
 
-  constructor(settings: Partial<SseActorSettings> = {}) { super(settings); }
+  constructor(options: SseOptions = SseOptions.create()) { super(options.build()); }
 
   protected configKey(): string { return ConfigKeys.io.broker.sse; }
   protected builtInDefaults(): Partial<SseActorSettings> { return {}; }

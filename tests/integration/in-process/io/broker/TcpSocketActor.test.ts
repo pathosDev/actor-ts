@@ -5,6 +5,7 @@ import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import { Actor } from '../../../../../src/Actor.js';
 import { TcpSocketActor } from '../../../../../src/io/broker/TcpSocketActor.js';
+import { TcpSocketOptions } from '../../../../../src/io/broker/TcpSocketOptions.js';
 import { BrokerConnected } from '../../../../../src/io/broker/BrokerEvents.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
@@ -54,9 +55,9 @@ describe('TcpSocketActor — bytes framing (default)', () => {
       BrokerConnected,
     );
 
-    const ref = sys.spawnAnonymous(Props.create(() => new TcpSocketActor({
-      host: '127.0.0.1', port: server.port, target,
-    })));
+    const ref = sys.spawnAnonymous(Props.create(() => new TcpSocketActor(
+      TcpSocketOptions.create().withHost('127.0.0.1').withPort(server.port).withTarget(target),
+    )));
     await sleep(40);
     expect(connected).toBe(true);
 
@@ -76,10 +77,10 @@ describe('TcpSocketActor — line framing', () => {
     const collector = new CollectActor();
     const target = sys.spawnAnonymous(Props.create(() => collector));
 
-    const ref = sys.spawnAnonymous(Props.create(() => new TcpSocketActor({
-      host: '127.0.0.1', port: server.port, target,
-      framing: { kind: 'lines' },
-    })));
+    const ref = sys.spawnAnonymous(Props.create(() => new TcpSocketActor(
+      TcpSocketOptions.create().withHost('127.0.0.1').withPort(server.port).withTarget(target)
+        .withFraming({ kind: 'lines' }),
+    )));
     await sleep(30);
 
     // Send three lines in one chunk; echo returns them.  The framing
@@ -98,10 +99,10 @@ describe('TcpSocketActor — line framing', () => {
     const sys = ActorSystem.create('tcp-3', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const collector = new CollectActor();
     const target = sys.spawnAnonymous(Props.create(() => collector));
-    const ref = sys.spawnAnonymous(Props.create(() => new TcpSocketActor({
-      host: '127.0.0.1', port: server.port, target,
-      framing: { kind: 'lines' },
-    })));
+    const ref = sys.spawnAnonymous(Props.create(() => new TcpSocketActor(
+      TcpSocketOptions.create().withHost('127.0.0.1').withPort(server.port).withTarget(target)
+        .withFraming({ kind: 'lines' }),
+    )));
     await sleep(30);
     ref.tell({ kind: 'send', payload: 'partial-' });
     await sleep(20);
@@ -117,10 +118,10 @@ describe('TcpSocketActor — length-prefixed framing', () => {
     const sys = ActorSystem.create('tcp-4', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const collector = new CollectActor();
     const target = sys.spawnAnonymous(Props.create(() => collector));
-    const ref = sys.spawnAnonymous(Props.create(() => new TcpSocketActor({
-      host: '127.0.0.1', port: server.port, target,
-      framing: { kind: 'length-prefixed' },
-    })));
+    const ref = sys.spawnAnonymous(Props.create(() => new TcpSocketActor(
+      TcpSocketOptions.create().withHost('127.0.0.1').withPort(server.port).withTarget(target)
+        .withFraming({ kind: 'length-prefixed' }),
+    )));
     await sleep(30);
 
     // Build a 5-byte frame with a 4-byte length prefix.
@@ -144,7 +145,7 @@ describe('TcpSocketActor — settings validation', () => {
     const target = sys.spawnAnonymous(Props.create(() => collector));
     let captured: Error | null = null;
     sys.spawnAnonymous(Props.create(() => {
-      const a = new TcpSocketActor({ target });  // host, port missing
+      const a = new TcpSocketActor(TcpSocketOptions.create().withTarget(target));  // host, port missing
       const orig = a.preStart.bind(a);
       a.preStart = async () => { try { await orig(); } catch (e) { captured = e as Error; } };
       return a as unknown as Actor<unknown>;

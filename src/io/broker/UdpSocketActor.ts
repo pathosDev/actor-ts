@@ -4,6 +4,7 @@ import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import type { BrokerCommonSettings } from './BrokerSettings.js';
+import { UdpSocketOptions } from './UdpSocketOptions.js';
 
 /** Inbound datagram delivered to the target actor. */
 export interface UdpDatagram {
@@ -44,7 +45,7 @@ export class UdpSocketActor
   private socket: DgramSocket | null = null;
   private actualPort = 0;
 
-  constructor(settings: Partial<UdpSocketActorSettings> = {}) { super(settings); }
+  constructor(options: UdpSocketOptions = UdpSocketOptions.create()) { super(options.build()); }
 
   protected configKey(): string { return ConfigKeys.io.broker.udp; }
   protected builtInDefaults(): Partial<UdpSocketActorSettings> {

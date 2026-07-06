@@ -5,6 +5,7 @@ import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import type { BrokerCommonSettings } from './BrokerSettings.js';
+import { NatsOptions } from './NatsOptions.js';
 
 /** Inbound NATS message handed to subscribers. */
 export interface NatsMessage {
@@ -49,7 +50,7 @@ export class NatsActor extends BrokerActor<NatsActorSettings, NatsCmd, NatsPubli
   private nc: NatsConnectionLike | null = null;
   private readonly subs = new Map<string, NatsSubscriptionLike>();
 
-  constructor(settings: Partial<NatsActorSettings> = {}) { super(settings); }
+  constructor(options: NatsOptions = NatsOptions.create()) { super(options.build()); }
 
   protected configKey(): string { return ConfigKeys.io.broker.nats; }
   protected builtInDefaults(): Partial<NatsActorSettings> { return {}; }

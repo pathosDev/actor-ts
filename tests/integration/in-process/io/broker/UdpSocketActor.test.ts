@@ -5,6 +5,7 @@ import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import { Actor } from '../../../../../src/Actor.js';
 import { UdpSocketActor, type UdpDatagram } from '../../../../../src/io/broker/UdpSocketActor.js';
+import { UdpSocketOptions } from '../../../../../src/io/broker/UdpSocketOptions.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -46,7 +47,7 @@ describe('UdpSocketActor', () => {
     const collector = new CollectActor();
     const target = sys.spawnAnonymous(Props.create(() => collector));
 
-    const ref = sys.spawnAnonymous(Props.create(() => new UdpSocketActor({ target })));
+    const ref = sys.spawnAnonymous(Props.create(() => new UdpSocketActor(UdpSocketOptions.create().withTarget(target))));
     await sleep(30);
 
     ref.tell({
@@ -69,7 +70,7 @@ describe('UdpSocketActor', () => {
     const echo2 = await startUdpEcho();
     const collector = new CollectActor();
     const target = sys.spawnAnonymous(Props.create(() => collector));
-    const ref = sys.spawnAnonymous(Props.create(() => new UdpSocketActor({ target })));
+    const ref = sys.spawnAnonymous(Props.create(() => new UdpSocketActor(UdpSocketOptions.create().withTarget(target))));
     await sleep(30);
 
     ref.tell({ kind: 'send', datagram: { payload: 'a', host: '127.0.0.1', port: echo.port } });
@@ -87,7 +88,7 @@ describe('UdpSocketActor', () => {
     const sys = ActorSystem.create('udp-3', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const collector = new CollectActor();
     const target = sys.spawnAnonymous(Props.create(() => collector));
-    const ref = sys.spawnAnonymous(Props.create(() => new UdpSocketActor({ target })));
+    const ref = sys.spawnAnonymous(Props.create(() => new UdpSocketActor(UdpSocketOptions.create().withTarget(target))));
     await sleep(30);
     const bytes = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
     ref.tell({ kind: 'send', datagram: { payload: bytes, host: '127.0.0.1', port: echo.port } });

@@ -5,6 +5,7 @@ import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import type { BrokerCommonSettings } from './BrokerSettings.js';
+import { RedisStreamsOptions } from './RedisStreamsOptions.js';
 
 /** Inbound entry from a Redis stream. */
 export interface RedisStreamEntry {
@@ -59,7 +60,7 @@ export class RedisStreamsActor
   private redisProducer: IoredisClientLike | null = null;
   private consumerLoopRunning = false;
 
-  constructor(settings: Partial<RedisStreamsActorSettings> = {}) { super(settings); }
+  constructor(options: RedisStreamsOptions = RedisStreamsOptions.create()) { super(options.build()); }
 
   protected configKey(): string { return ConfigKeys.io.broker.redisStreams; }
   protected builtInDefaults(): Partial<RedisStreamsActorSettings> {

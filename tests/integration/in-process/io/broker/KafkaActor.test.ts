@@ -16,13 +16,13 @@ import { Props } from '../../../../../src/Props.js';
 import {
   KafkaActor,
   withAutoHeartbeat,
-  type KafkaActorSettings,
   type KafkaCmd,
   type KafkaConsumerLike,
   type KafkaInstanceLike,
   type KafkaProducerLike,
   type KafkaRecord,
 } from '../../../../../src/io/broker/KafkaActor.js';
+import { KafkaOptions } from '../../../../../src/io/broker/KafkaOptions.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -135,14 +135,14 @@ class CapturingTarget extends Actor<KafkaRecord> {
 }
 
 async function bootActor(
-  sys: ActorSystem, settings: Partial<KafkaActorSettings>,
+  sys: ActorSystem, options: KafkaOptions,
 ): Promise<{ actor: ActorRef<KafkaCmd>; mock: MockKafka; target: CapturingTarget }> {
   const target = new CapturingTarget();
   const targetRef = sys.spawn(Props.create(() => target), 'target');
   const ref = { current: null as MockKafkaActor | null };
   const actor = sys.spawn(
     Props.create(() => {
-      const a = new MockKafkaActor({ ...settings, target: targetRef });
+      const a = new MockKafkaActor(options.withTarget(targetRef));
       ref.current = a;
       return a;
     }),
@@ -161,11 +161,10 @@ describe('KafkaActor — auto-commit (default)', () => {
   test('eachMessage resolves immediately and no commitOffsets call is made', async () => {
     const sys = ActorSystem.create('kafka-auto', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
-      const { mock, target } = await bootActor(sys, {
-        brokers: ['fake:9092'],
-        consumer: { groupId: 'g1' /* commitMode default = 'auto' */ },
-        topics: ['orders'],
-      });
+      const { mock, target } = await bootActor(sys, KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g1' /* commitMode default = 'auto' */ })
+        .withTopics(['orders']));
       expect(mock.consumer_.manualCommitConfigured).toBe(false);
       const tracker = mock.consumer_.push('orders', 0, '42');
       await tracker.promise;
@@ -186,11 +185,10 @@ describe('KafkaActor — manual commit (#2)', () => {
   test('eachMessage stays pending until a commit command arrives', async () => {
     const sys = ActorSystem.create('kafka-manual', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
-      const { actor, mock, target } = await bootActor(sys, {
-        brokers: ['fake:9092'],
-        consumer: { groupId: 'g1', commitMode: 'manual' },
-        topics: ['orders'],
-      });
+      const { actor, mock, target } = await bootActor(sys, KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g1', commitMode: 'manual' })
+        .withTopics(['orders']));
       expect(mock.consumer_.manualCommitConfigured).toBe(true);
 
       const tracker = mock.consumer_.push('orders', 0, '42');
@@ -215,11 +213,10 @@ describe('KafkaActor — manual commit (#2)', () => {
   test('nack rejects the pending promise and skips the commit', async () => {
     const sys = ActorSystem.create('kafka-nack', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
-      const { actor, mock } = await bootActor(sys, {
-        brokers: ['fake:9092'],
-        consumer: { groupId: 'g1', commitMode: 'manual' },
-        topics: ['orders'],
-      });
+      const { actor, mock } = await bootActor(sys, KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g1', commitMode: 'manual' })
+        .withTopics(['orders']));
       const tracker = mock.consumer_.push('orders', 1, '7');
       await sleep(20);
       actor.tell({ kind: 'nack', topic: 'orders', partition: 1, offset: '7', reason: 'bad data' });
@@ -235,11 +232,10 @@ describe('KafkaActor — manual commit (#2)', () => {
   test('commit-timeout rejects the pending promise after commitTimeoutMs', async () => {
     const sys = ActorSystem.create('kafka-timeout', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
-      const { mock } = await bootActor(sys, {
-        brokers: ['fake:9092'],
-        consumer: { groupId: 'g1', commitMode: 'manual', commitTimeoutMs: 60 },
-        topics: ['orders'],
-      });
+      const { mock } = await bootActor(sys, KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g1', commitMode: 'manual', commitTimeoutMs: 60 })
+        .withTopics(['orders']));
       const tracker = mock.consumer_.push('orders', 0, '99');
       await tracker.promise;   // wait for the timeout to fire
       expect(tracker.rejected).toBe(true);
@@ -253,11 +249,10 @@ describe('KafkaActor — manual commit (#2)', () => {
   test('commit for unknown / already-committed offset is a silent no-op', async () => {
     const sys = ActorSystem.create('kafka-unknown', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
-      const { actor, mock } = await bootActor(sys, {
-        brokers: ['fake:9092'],
-        consumer: { groupId: 'g1', commitMode: 'manual' },
-        topics: ['orders'],
-      });
+      const { actor, mock } = await bootActor(sys, KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g1', commitMode: 'manual' })
+        .withTopics(['orders']));
       // No push — no pending entry.  Commit shouldn't throw.
       actor.tell({ kind: 'commit', topic: 'orders', partition: 0, offset: '0' });
       await sleep(30);
@@ -270,11 +265,10 @@ describe('KafkaActor — manual commit (#2)', () => {
   test('multiple in-flight commits across partitions resolve independently', async () => {
     const sys = ActorSystem.create('kafka-multi', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
-      const { actor, mock } = await bootActor(sys, {
-        brokers: ['fake:9092'],
-        consumer: { groupId: 'g1', commitMode: 'manual' },
-        topics: ['orders'],
-      });
+      const { actor, mock } = await bootActor(sys, KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g1', commitMode: 'manual' })
+        .withTopics(['orders']));
       const t1 = mock.consumer_.push('orders', 0, '10');
       const t2 = mock.consumer_.push('orders', 1, '20');
       const t3 = mock.consumer_.push('orders', 2, '30');
@@ -298,11 +292,10 @@ describe('KafkaActor — manual commit (#2)', () => {
   test('actor.stop() rejects every pending commit so kafkajs disconnects cleanly', async () => {
     const sys = ActorSystem.create('kafka-stop', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
-      const { actor, mock } = await bootActor(sys, {
-        brokers: ['fake:9092'],
-        consumer: { groupId: 'g1', commitMode: 'manual' },
-        topics: ['orders'],
-      });
+      const { actor, mock } = await bootActor(sys, KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g1', commitMode: 'manual' })
+        .withTopics(['orders']));
       const t = mock.consumer_.push('orders', 0, '5');
       await sleep(20);
       actor.stop();
@@ -317,11 +310,10 @@ describe('KafkaActor — manual commit (#2)', () => {
   test('large offset values stay exact via BigInt arithmetic', async () => {
     const sys = ActorSystem.create('kafka-bigint', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
-      const { actor, mock } = await bootActor(sys, {
-        brokers: ['fake:9092'],
-        consumer: { groupId: 'g1', commitMode: 'manual' },
-        topics: ['orders'],
-      });
+      const { actor, mock } = await bootActor(sys, KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g1', commitMode: 'manual' })
+        .withTopics(['orders']));
       // Offset close to Number.MAX_SAFE_INTEGER + a few — Number arithmetic
       // would lose precision; BigInt arithmetic stays exact.
       const big = '9007199254740993';   // 2^53 + 1
@@ -340,11 +332,10 @@ describe('KafkaActor — settings parsing', () => {
   test('commitMode + commitTimeoutMs flow through to the consumer pump', async () => {
     const sys = ActorSystem.create('kafka-settings', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
-      const { mock } = await bootActor(sys, {
-        brokers: ['x:9092'],
-        consumer: { groupId: 'g', commitMode: 'manual', commitTimeoutMs: 100 },
-        topics: ['t'],
-      });
+      const { mock } = await bootActor(sys, KafkaOptions.create()
+        .withBrokers(['x:9092'])
+        .withConsumer({ groupId: 'g', commitMode: 'manual', commitTimeoutMs: 100 })
+        .withTopics(['t']));
       // run() must have been called with autoCommit: false.
       expect(mock.consumer_.manualCommitConfigured).toBe(true);
     } finally {
@@ -357,11 +348,10 @@ describe('KafkaActor — heartbeat (#78)', () => {
   test('heartbeat command forwards to the captured kafkajs callback', async () => {
     const sys = ActorSystem.create('kafka-hb-1', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
-      const { actor, mock } = await bootActor(sys, {
-        brokers: ['fake:9092'],
-        consumer: { groupId: 'g1', commitMode: 'manual', commitTimeoutMs: 1_000 },
-        topics: ['orders'],
-      });
+      const { actor, mock } = await bootActor(sys, KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g1', commitMode: 'manual', commitTimeoutMs: 1_000 })
+        .withTopics(['orders']));
       const tracker = mock.consumer_.push('orders', 0, '7');
       await sleep(20);
 
@@ -386,11 +376,10 @@ describe('KafkaActor — heartbeat (#78)', () => {
   test('heartbeat for an unknown / already-committed offset is a silent no-op', async () => {
     const sys = ActorSystem.create('kafka-hb-2', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
-      const { actor, mock } = await bootActor(sys, {
-        brokers: ['fake:9092'],
-        consumer: { groupId: 'g1', commitMode: 'manual' },
-        topics: ['orders'],
-      });
+      const { actor, mock } = await bootActor(sys, KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g1', commitMode: 'manual' })
+        .withTopics(['orders']));
       // No push — pendingCommits is empty.  Stray heartbeats from a
       // racing handler must not crash the actor.
       actor.tell({ kind: 'heartbeat', topic: 'orders', partition: 0, offset: '999' });
@@ -405,11 +394,10 @@ describe('KafkaActor — heartbeat (#78)', () => {
   test('withAutoHeartbeat schedules periodic heartbeats and clears on completion', async () => {
     const sys = ActorSystem.create('kafka-hb-3', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
-      const { actor, mock } = await bootActor(sys, {
-        brokers: ['fake:9092'],
-        consumer: { groupId: 'g1', commitMode: 'manual', commitTimeoutMs: 1_000 },
-        topics: ['orders'],
-      });
+      const { actor, mock } = await bootActor(sys, KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g1', commitMode: 'manual', commitTimeoutMs: 1_000 })
+        .withTopics(['orders']));
       const tracker = mock.consumer_.push('orders', 0, '11');
       await sleep(20);
 
@@ -438,11 +426,10 @@ describe('KafkaActor — heartbeat (#78)', () => {
   test('withAutoHeartbeat clears the timer when the body throws', async () => {
     const sys = ActorSystem.create('kafka-hb-4', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     try {
-      const { actor, mock } = await bootActor(sys, {
-        brokers: ['fake:9092'],
-        consumer: { groupId: 'g1', commitMode: 'manual' },
-        topics: ['orders'],
-      });
+      const { actor, mock } = await bootActor(sys, KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g1', commitMode: 'manual' })
+        .withTopics(['orders']));
       const tracker = mock.consumer_.push('orders', 0, '13');
       await sleep(20);
 

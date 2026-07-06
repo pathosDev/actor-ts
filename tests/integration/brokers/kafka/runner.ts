@@ -6,6 +6,7 @@ import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { JsonLogger, LogLevel } from '../../../../src/Logger.js';
 import { Props } from '../../../../src/Props.js';
 import { KafkaActor, type KafkaRecord } from '../../../../src/io/broker/KafkaActor.js';
+import { KafkaOptions } from '../../../../src/io/broker/KafkaOptions.js';
 import { waitForPort } from '../lib/wait-for-port.js';
 import { runScenarios, type BrokerScenario, type BrokerScenarioCtx } from '../lib/scenario.js';
 import { scenario as pubsubScenario } from './scenarios/01-publish-consume.js';
@@ -75,18 +76,20 @@ export interface KafkaSpawnOpts {
 
 /** Fresh KafkaActor per scenario.  groupId default ensures isolation. */
 export function spawnKafka(ctx: KafkaCtx, opts: KafkaSpawnOpts = {}): ReturnType<ActorSystem['spawnAnonymous']> {
-  const actor = new KafkaActor({
-    brokers: [...ctx.brokers],
-    clientId: `actor-ts-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    consumer: opts.groupId ? {
+  const builder = KafkaOptions.create()
+    .withBrokers([...ctx.brokers])
+    .withClientId(`actor-ts-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    .withProducer({ allowAutoTopicCreation: true, idempotent: false });
+  if (opts.groupId) {
+    builder.withConsumer({
       groupId: opts.groupId,
       fromBeginning: opts.fromBeginning ?? true,
       commitMode: opts.commitMode ?? 'auto',
-    } : undefined,
-    topics: opts.topics,
-    target: opts.target as unknown as undefined,
-    producer: { allowAutoTopicCreation: true, idempotent: false },
-  });
+    });
+  }
+  if (opts.topics) builder.withTopics(opts.topics);
+  if (opts.target) builder.withTarget(opts.target as unknown as Parameters<KafkaOptions['withTarget']>[0]);
+  const actor = new KafkaActor(builder);
   return ctx.system.spawnAnonymous(Props.create(() => actor));
 }
 

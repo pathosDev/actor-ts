@@ -10,12 +10,14 @@ import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { JsonLogger, LogLevel } from '../../../../src/Logger.js';
 import { Props } from '../../../../src/Props.js';
 import { GrpcClientActor, type GrpcInbound } from '../../../../src/io/broker/GrpcClientActor.js';
+import { GrpcClientOptions } from '../../../../src/io/broker/GrpcClientOptions.js';
 import {
   GrpcServerActor,
   type GrpcUnaryCall,
   type GrpcServerStreamCall,
   type GrpcBidiCall,
 } from '../../../../src/io/broker/GrpcServerActor.js';
+import { GrpcServerOptions } from '../../../../src/io/broker/GrpcServerOptions.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
 import { runScenarios, type BrokerScenario, type BrokerScenarioCtx } from '../lib/scenario.js';
 import { scenario as unaryScenario } from './scenarios/01-unary.js';
@@ -88,17 +90,18 @@ async function main(): Promise<void> {
   const bidiHandler = system.spawnAnonymous(Props.create(() => new BidiHandler()));
 
   const server = system.spawnAnonymous(
-    Props.create(() => new GrpcServerActor({
-      protoPath,
-      packageName: 'echo.v1',
-      serviceName: 'EchoService',
-      bind,
-      handlers: {
-        Unary: { kind: 'unary', target: unaryHandler as unknown as ActorRef<GrpcUnaryCall> },
-        ServerStream: { kind: 'serverStream', target: streamHandler as unknown as ActorRef<GrpcServerStreamCall> },
-        Bidi: { kind: 'bidi', target: bidiHandler as unknown as ActorRef<GrpcBidiCall> },
-      },
-    })),
+    Props.create(() => new GrpcServerActor(
+      GrpcServerOptions.create()
+        .withProtoPath(protoPath)
+        .withPackageName('echo.v1')
+        .withServiceName('EchoService')
+        .withBind(bind)
+        .withHandlers({
+          Unary: { kind: 'unary', target: unaryHandler as unknown as ActorRef<GrpcUnaryCall> },
+          ServerStream: { kind: 'serverStream', target: streamHandler as unknown as ActorRef<GrpcServerStreamCall> },
+          Bidi: { kind: 'bidi', target: bidiHandler as unknown as ActorRef<GrpcBidiCall> },
+        }),
+    )),
   );
 
   // Give the server a moment to bind.  GrpcServerActor's preStart
@@ -108,13 +111,14 @@ async function main(): Promise<void> {
 
   // Spawn the client actor.
   const client = system.spawnAnonymous(
-    Props.create(() => new GrpcClientActor({
-      protoPath,
-      packageName: 'echo.v1',
-      serviceName: 'EchoService',
-      endpoint,
-      credentials: { kind: 'insecure' },
-    })),
+    Props.create(() => new GrpcClientActor(
+      GrpcClientOptions.create()
+        .withProtoPath(protoPath)
+        .withPackageName('echo.v1')
+        .withServiceName('EchoService')
+        .withEndpoint(endpoint)
+        .withCredentials({ kind: 'insecure' }),
+    )),
   );
   await new Promise((r) => setTimeout(r, 500));
 

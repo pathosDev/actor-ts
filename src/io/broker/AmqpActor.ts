@@ -5,6 +5,7 @@ import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import type { BrokerCommonSettings } from './BrokerSettings.js';
+import { AmqpOptions } from './AmqpOptions.js';
 
 /** Inbound AMQP delivery handed to subscribers. */
 export interface AmqpDelivery {
@@ -80,7 +81,7 @@ export class AmqpActor extends BrokerActor<AmqpActorSettings, AmqpCmd, AmqpPubli
   private readonly pendingAcks = new Map<number, AmqpRawMessage>();
   private nextAckToken = 1;
 
-  constructor(settings: Partial<AmqpActorSettings> = {}) { super(settings); }
+  constructor(options: AmqpOptions = AmqpOptions.create()) { super(options.build()); }
 
   protected configKey(): string { return ConfigKeys.io.broker.amqp; }
   protected builtInDefaults(): Partial<AmqpActorSettings> {

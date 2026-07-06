@@ -4,6 +4,7 @@ import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import type { BrokerCommonSettings } from './BrokerSettings.js';
+import { TcpSocketOptions } from './TcpSocketOptions.js';
 
 /**
  * Frame extraction strategy on the inbound stream.
@@ -55,7 +56,7 @@ export class TcpSocketActor extends BrokerActor<TcpSocketActorSettings, TcpSocke
   /** Buffer for partial frames not yet matched by the framing strategy. */
   private inboundBuffer: Uint8Array = new Uint8Array(0);
 
-  constructor(settings: Partial<TcpSocketActorSettings> = {}) { super(settings); }
+  constructor(options: TcpSocketOptions = TcpSocketOptions.create()) { super(options.build()); }
 
   protected configKey(): string { return ConfigKeys.io.broker.tcp; }
   protected builtInDefaults(): Partial<TcpSocketActorSettings> {
