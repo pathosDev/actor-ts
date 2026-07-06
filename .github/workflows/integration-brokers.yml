@@ -75,7 +75,7 @@ jobs:
     name: ${{ matrix.broker.image }} (${{ matrix.broker.dir }})
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Bun
         # Only needed to expose `bun run test:integration:<broker>`

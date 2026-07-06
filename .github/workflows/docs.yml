@@ -57,7 +57,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # Starlight's `lastUpdated` feature reads Git history to show
           # the per-page last-modified date.  Full history (`0`) lets
