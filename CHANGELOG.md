@@ -31,6 +31,65 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   defaults (`maxFrameBytes`, `onOversizeFrame`, `onInvalidMessage`,
   `maxBufferedBytes`, `onBackpressure`); route options override HOCON,
   which overrides built-in defaults.
+- **Subclass-first, typed `MqttActor<T, TSelf>`** (#345) — the MQTT
+  counterpart to `WebSocketClientActor`.  Extend it, declare
+  subscriptions in the constructor with `this.subscribe(topic, { qos })`,
+  handle inbound traffic in `onMessage(msg)`, and publish with
+  `this.publish(topic, payload)`.  Lifecycle events (inbound / connected /
+  disconnected) run on the actor thread via the mailbox.  Hooks:
+  `onMessage`, `onConnected`, `onDisconnected`, `onDecodeError`,
+  `onSelfMessage`.  Still externally controllable via
+  `ref.tell({ kind: 'publish' | 'subscribe' | 'unsubscribe', … })`.
+- **`MqttOptions` fluent builder** (#345) — `MqttOptions.create()
+  .withBrokerUrl(…).withClientId(…).withQos(…)…`; feeds the same
+  three-layer settings merge (constructor > HOCON
+  `actor-ts.io.broker.mqtt` > built-in defaults).  The `MqttActor`
+  constructor also accepts a plain `Partial<MqttActorSettings>`.
+- **Typed MQTT payloads** (#345) — inbound `MqttMessage<T>` carries a
+  lazily-decoding `MqttPayload<T>` (`.bytes` / `.text()` / `.entity<U=T>()`,
+  successes cached).  A pluggable `MqttCodec<T>` seam (default
+  `mqttJsonCodec()`) decodes `entity()` and encodes non-string publishes;
+  `publish(topic, { … })` encodes an entity, `publish(topic, string |
+  Uint8Array)` sends raw bytes.  Decode failures surface via
+  `onDecodeError`.  `MqttClientLike` / `MqttModuleLike` are exported as
+  test seams for the `mqttModule()` override.
+
+### Changed
+
+- **BREAKING: `MqttActor` is now abstract** (#345) — you subclass it and
+  override `onMessage` instead of spawning it directly and driving it only
+  with `tell`.  Migration: `class MyClient extends MqttActor<T> { … }` and
+  spawn the subclass.  A pure external-router setup needs a trivial
+  subclass with an empty `onMessage`.
+- **BREAKING: `MqttMessage.payload` is a `MqttPayload<T>` wrapper**, no
+  longer a raw `Uint8Array` (#345).  Migration: `msg.payload` →
+  `msg.payload.bytes`; `new TextDecoder().decode(msg.payload)` →
+  `msg.payload.text()`; JSON reads → `msg.payload.entity()`.
+- **BREAKING: `MqttActorSettings.subscriptions` and the `MqttSubscription`
+  type are removed** (#345) — they were never HOCON-expressible (targets
+  are actor refs).  Migration: move `subscriptions: [{ topic, target }]`
+  into the subclass constructor as `this.subscribe(topic, { target })`, or
+  send `ref.tell({ kind: 'subscribe', topic, target })`.
+- **BREAKING: `subscribe`/`unsubscribe` command `target` semantics**
+  (#345) — a `subscribe` command with no `target` now delivers to the
+  actor's own `onMessage` (previously `target` was required).  An
+  `unsubscribe` command with no `target` now removes only the *foreign*
+  targets and leaves the actor's own subscription intact (previously it
+  dropped the whole topic).
+
+### Fixed
+
+- **MQTT runtime subscriptions are re-applied after a reconnect** (#345) —
+  previously only the (now-removed) `settings.subscriptions` were
+  re-subscribed on reconnect, so subscriptions added at runtime silently
+  stopped receiving after a drop.  The unified registry is now re-applied
+  on every (re)connect.
+- **MQTT `subscribe` while disconnected reaches the broker on connect**
+  (#345) — previously it updated only the local routing map and never
+  issued the broker SUBSCRIBE.
+- **MQTT terminated fan-out targets are cleaned up** (#345) — subscriber
+  refs are deathwatched; when one stops it is pruned from the registry and
+  a broker UNSUBSCRIBE fires once the pattern has no consumers left.
 
 ### Removed
 

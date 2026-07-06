@@ -1,13 +1,19 @@
 /**
- * MQTT broker actor — sensors publish temperature, an aggregator
- * subscribes to all of them via wildcards and prints a running average.
+ * MQTT broker actor — a typed subclass that subscribes to all sensors
+ * via a wildcard, decodes each reading, and prints a running average.
  *
- * Demonstrates **all three settings layers** documented in the plan:
+ * Demonstrates the subclass-first API:
  *
- *   1. Constructor settings — per-instance overrides (e.g. clientId).
- *   2. HOCON config under `actor-ts.io.broker.mqtt.*` — system-wide
- *      defaults (e.g. brokerUrl, credentials).
- *   3. Built-in defaults — kick in when neither of the above fired.
+ *   - extend `MqttActor<Reading>` and declare subscriptions in the ctor
+ *   - handle inbound traffic in `onMessage` with `payload.entity()`
+ *   - configure with the fluent `MqttOptions` builder
+ *   - publish typed entities and raw payloads with `publish(...)`
+ *
+ * ...and **all three settings layers**:
+ *
+ *   1. Constructor / builder — per-instance overrides (e.g. clientId).
+ *   2. HOCON under `actor-ts.io.broker.mqtt.*` — system-wide defaults.
+ *   3. Built-in defaults — when neither of the above fired.
  *
  * Requires a running MQTT broker on localhost:1883.  Quick start:
  *
@@ -18,30 +24,55 @@
  *     mosquitto -c /mosquitto-no-auth.conf
  */
 import {
-  Actor,
   ActorSystem,
   MqttActor,
+  MqttOptions,
   Props,
   type MqttMessage,
 } from '../../src/index.js';
 
-class Aggregator extends Actor<MqttMessage> {
+type Reading = { sensor: string; celsius: number };
+
+/** A self-tick that drives fake sensor publishes from inside the actor. */
+type Tick = { kind: 'tick'; i: number };
+
+class TemperatureHub extends MqttActor<Reading, Tick> {
   private readings: Record<string, number[]> = {};
-  override onReceive(msg: MqttMessage): void {
-    const sensorId = msg.topic.split('/')[1] ?? 'unknown';
-    const value = Number(new TextDecoder().decode(msg.payload));
-    if (!Number.isFinite(value)) return;
-    const arr = (this.readings[sensorId] ??= []);
-    arr.push(value);
+
+  constructor(opts: MqttOptions) {
+    // Builder-supplied clientId + QoS layer on top of the HOCON brokerUrl.
+    super(opts.withClientId('temperature-demo').withQos(1));
+    this.subscribe('sensors/+/temp');
+  }
+
+  override onMessage(msg: MqttMessage<Reading>): void {
+    const { sensor, celsius } = msg.payload.entity();
+    const arr = (this.readings[sensor] ??= []);
+    arr.push(celsius);
     if (arr.length > 5) arr.shift();
     const avg = arr.reduce((a, b) => a + b, 0) / arr.length;
-    console.log(`[aggregator] ${sensorId}: ${value.toFixed(1)}°C  (avg over ${arr.length}: ${avg.toFixed(2)}°C)`);
+    console.log(`[hub] ${sensor}: ${celsius.toFixed(1)}°C  (avg over ${arr.length}: ${avg.toFixed(2)}°C)`);
+  }
+
+  protected override onConnected(): void {
+    this.log.info('MQTT connected — starting fake sensors');
+    // Kick off a self-driven publish loop.
+    this.self.tell({ kind: 'tick', i: 0 });
+  }
+
+  protected override onSelfMessage(msg: Tick): void {
+    if (msg.i >= 10) return;
+    const sensor = ['kitchen', 'living-room', 'bedroom'][msg.i % 3]!;
+    const celsius = 20 + Math.sin(msg.i / 2) * 3 + Math.random();
+    // Typed entity → encoded via the actor's codec (JSON by default).
+    this.publish(`sensors/${sensor}/temp`, { sensor, celsius } satisfies Reading, { qos: 1 });
+    this.context.timers.startSingleTimer(`tick-${msg.i}`, { kind: 'tick', i: msg.i + 1 }, 200);
   }
 }
 
 async function main(): Promise<void> {
-  // The broker URL and credentials live in HOCON — typical for prod
-  // (different per environment), while clientId is per-instance.
+  // The broker URL lives in HOCON — typical for prod (per-environment),
+  // while clientId + QoS are set per-instance via the builder.
   const system = ActorSystem.create('mqtt-demo', {
     config: {
       'actor-ts': {
@@ -50,7 +81,6 @@ async function main(): Promise<void> {
             mqtt: {
               brokerUrl: 'mqtt://localhost:1883',
               // credentials: { username: "iot", password: ${MQTT_PASSWORD} }
-              defaultQos: 1,
               keepAliveSec: 30,
             },
           },
@@ -59,28 +89,12 @@ async function main(): Promise<void> {
     },
   });
 
-  const aggregatorRef = system.spawn(Props.create(() => new Aggregator()), 'agg');
+  system.spawn(
+    Props.create(() => new TemperatureHub(MqttOptions.create())),
+    'temperature-hub',
+  );
 
-  // Constructor settings = per-instance.  brokerUrl comes from HOCON.
-  const mqttRef = system.spawn(Props.create(() => new MqttActor({
-    clientId: 'temperature-demo',
-    subscriptions: [
-      { topic: 'sensors/+/temp', target: aggregatorRef },
-    ],
-  })), 'mqtt');
-
-  // Wait for connection, then start "sensors" — fake by self-publishing.
-  await Bun.sleep(500);
-  for (let i = 0; i < 10; i++) {
-    const sensorId = ['kitchen', 'living-room', 'bedroom'][i % 3]!;
-    const temp = (20 + Math.sin(i / 2) * 3 + Math.random()).toFixed(1);
-    mqttRef.tell({
-      kind: 'publish',
-      publish: { topic: `sensors/${sensorId}/temp`, payload: temp, qos: 1 },
-    });
-    await Bun.sleep(200);
-  }
-  await Bun.sleep(500);
+  await Bun.sleep(3_000);
   await system.terminate();
 }
 
