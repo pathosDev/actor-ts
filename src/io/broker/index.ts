@@ -44,6 +44,10 @@ export type {
   MqttSubscription,
   MqttCredentials,
 } from './MqttActor.js';
+// Payload codec seam + lazily-decoding payload wrapper (new typed API).
+export { MqttPayload } from './MqttMessages.js';
+export { mqttJsonCodec, MqttDecodeError, MqttEncodeError } from './MqttCodec.js';
+export type { MqttCodec } from './MqttCodec.js';
 // NOTE: the client-side WebSocket actor now lives in `src/http/ws/`
 // as the typed `WebSocketClientActor`; the server side is the
 // `websocket()` routing directive.  The old frame-level
