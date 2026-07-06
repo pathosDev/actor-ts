@@ -17,6 +17,7 @@
 import {
   ActorSystem,
   HonoBackend,
+  HonoBackendOptions,
   Status,
   complete,
   completeJson,
@@ -51,7 +52,7 @@ async function main(): Promise<void> {
     )),
   );
 
-  const backend = new HonoBackend({ maxBodyBytes: 1 * 1024 * 1024 });
+  const backend = new HonoBackend(HonoBackendOptions.create().withMaxBodyBytes(1 * 1024 * 1024));
   // Optional: reach through to the raw Hono app to attach native middleware.
   //   const app = backend.getApp();
   //   app.use('/*', cors());

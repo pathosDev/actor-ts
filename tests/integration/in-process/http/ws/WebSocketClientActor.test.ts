@@ -9,6 +9,7 @@ import type { Route } from '../../../../../src/http/Route.js';
 import { websocket } from '../../../../../src/http/ws/WebSocketRoute.js';
 import { WebSocketServerActor } from '../../../../../src/http/ws/WebSocketServerActor.js';
 import { WebSocketClientActor } from '../../../../../src/http/ws/WebSocketClientActor.js';
+import { WebSocketClientOptions } from '../../../../../src/http/ws/WebSocketClientOptions.js';
 import { wsSend, type WsClientMessage } from '../../../../../src/http/ws/WsMessages.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 
@@ -23,7 +24,9 @@ interface Rec { events: string[]; msgs: SMsg[] }
 
 class RecordingClient extends WebSocketClientActor<CMsg, SMsg> {
   constructor(url: string, private readonly rec: Rec) {
-    super({ url, reconnect: { initialDelayMs: 50, maxDelayMs: 200, factor: 2, maxAttempts: 40 } });
+    super(WebSocketClientOptions.create<CMsg, SMsg>()
+      .withUrl(url)
+      .withReconnect({ initialDelayMs: 50, maxDelayMs: 200, factor: 2, maxAttempts: 40 }));
   }
   onMessage(m: SMsg): void { this.rec.msgs.push(m); }
   protected override onConnected(): void {

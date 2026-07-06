@@ -17,7 +17,7 @@ export const description = 'client actor ↔ server actor via websocket() route'
 export async function run({ actorTs }) {
   const {
     ActorSystem, Props, LogLevel, NoopLogger,
-    HttpExtensionId, WebSocketServerActor, WebSocketClientActor, websocket,
+    HttpExtensionId, WebSocketServerActor, WebSocketClientActor, WebSocketClientOptions, websocket,
   } = actorTs;
 
   class Echo extends WebSocketServerActor {
@@ -37,7 +37,11 @@ export async function run({ actorTs }) {
 
     const received = [];
     class Client extends WebSocketClientActor {
-      constructor(url) { super({ url, reconnect: { maxAttempts: 5, initialDelayMs: 50 } }); }
+      constructor(url) {
+        super(WebSocketClientOptions.create()
+          .withUrl(url)
+          .withReconnect({ maxAttempts: 5, initialDelayMs: 50 }));
+      }
       onConnected() { this.send({ n: 7 }); }
       onMessage(m) { received.push(m); }
     }

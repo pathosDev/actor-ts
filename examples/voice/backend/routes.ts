@@ -18,6 +18,7 @@ import {
   rawCodec,
   Status,
   websocket,
+  WebSocketRouteOptions,
   type Route,
   type WsFrame,
   type WsServerMessage,
@@ -118,6 +119,6 @@ export function buildRoutes(ingress: ActorRef<WsServerMessage<WsFrame, WsFrame>>
     get(() =>
       complete(Status.OK, SELECTOR_HTML, { 'content-type': 'text/html; charset=utf-8' }),
     ),
-    websocket('/ws', ingress, { codec: rawCodec() }),
+    websocket('/ws', ingress, WebSocketRouteOptions.create().withCodec(rawCodec())),
   );
 }

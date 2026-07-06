@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
-import { ExpressBackend } from '../../../src/http/backend/ExpressBackend.js';
+import { ExpressBackend, ExpressBackendOptions } from '../../../src/http/backend/ExpressBackend.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import {
   complete,
@@ -211,7 +211,7 @@ describe('ExpressBackend — body size limit', () => {
   test('413 when payload exceeds maxBodyBytes', async () => {
     const system = ActorSystem.create('http-express-413', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const ext = system.extension(HttpExtensionId);
-    const backend = new ExpressBackend({ maxBodyBytes: 16 });
+    const backend = new ExpressBackend(ExpressBackendOptions.create().withMaxBodyBytes(16));
     const binding = await ext.newServerAt('127.0.0.1', 0)
       .useBackend(backend)
       .bind(path('up', post(() => complete(Status.OK, 'ok'))));

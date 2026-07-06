@@ -42,10 +42,10 @@ export { HttpClient } from './HttpClient.js';
 export type { HttpClientRequest, HttpClientResponse } from './HttpClient.js';
 
 export { FastifyBackend } from './backend/FastifyBackend.js';
-export { ExpressBackend } from './backend/ExpressBackend.js';
-export type { ExpressBackendOptions } from './backend/ExpressBackend.js';
-export { HonoBackend } from './backend/HonoBackend.js';
-export type { HonoBackendOptions } from './backend/HonoBackend.js';
+export { ExpressBackend, ExpressBackendOptions } from './backend/ExpressBackend.js';
+export type { ExpressBackendSettings } from './backend/ExpressBackend.js';
+export { HonoBackend, HonoBackendOptions } from './backend/HonoBackend.js';
+export type { HonoBackendSettings } from './backend/HonoBackend.js';
 export type {
   HttpServerBackend,
   RouteRegistration,

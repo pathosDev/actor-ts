@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
-import { HonoBackend } from '../../../src/http/backend/HonoBackend.js';
+import { HonoBackend, HonoBackendOptions } from '../../../src/http/backend/HonoBackend.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import {
   complete,
@@ -221,7 +221,7 @@ describe('HonoBackend — body size limit', () => {
   test('413 when payload exceeds maxBodyBytes', async () => {
     const system = ActorSystem.create('http-hono-413', { logger: new NoopLogger(), logLevel: LogLevel.Off });
     const ext = system.extension(HttpExtensionId);
-    const backend = new HonoBackend({ maxBodyBytes: 16 });
+    const backend = new HonoBackend(HonoBackendOptions.create().withMaxBodyBytes(16));
     const binding = await ext.newServerAt('127.0.0.1', 0)
       .useBackend(backend)
       .bind(path('up', post(() => complete(Status.OK, 'ok'))));
