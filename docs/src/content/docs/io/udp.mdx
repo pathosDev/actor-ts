@@ -1,100 +1,137 @@
 ---
 title: UDP
-description: Datagram socket actor — `UdpSocketActor` for sending + receiving UDP packets. Connectionless; no delivery guarantee; no ordering. Right tool for telemetry, multicast, low-latency, "fire-and-forget at the network level."
+description: Datagram socket actor — `UdpSocketActor` for sending + receiving UDP packets. Connectionless; no delivery guarantee; no ordering. Right tool for telemetry, low-latency, "fire-and-forget at the network level."
 ---
 
 `UdpSocketActor` wraps a UDP socket — connectionless, no
 acks, no retries, packet-oriented.  Use when **best-effort
 delivery is fine** and latency matters more than reliability.
 
+Inbound datagrams are pushed to a **target actor** you wire in
+through the builder — there is no subscribe command.  Sending is a
+`{ kind: 'send', datagram }` message with an explicit destination
+(UDP is connectionless, so every packet carries its own address).
+
 ```ts
 import { ActorSystem, Props, UdpSocketActor, UdpSocketOptions } from 'actor-ts';
+import type { UdpDatagram } from 'actor-ts';
 
-const udp = system.spawn(
+const system = ActorSystem.create('udp-demo');
+
+// Inbound datagrams land here, one message per packet:
+class PacketHandler extends Actor<UdpDatagram> {
+  override onReceive(d: UdpDatagram): void {
+    // d.payload    — Uint8Array
+    // d.remoteHost — sender's address
+    // d.remotePort — sender's port
+    console.log(new TextDecoder().decode(d.payload), 'from', d.remoteHost);
+  }
+}
+
+const target = system.spawnAnonymous(Props.create(() => new PacketHandler()));
+
+const udp = system.spawnAnonymous(
   Props.create(() => new UdpSocketActor(
     UdpSocketOptions.create()
-      .withBindHost('0.0.0.0')
-      .withBindPort(8125),         // bind for receiving
+      .withBindPort(41234)   // bind for receiving; 0 lets the OS pick
+      .withTarget(target),   // required: where inbound packets go
   )),
-  'udp',
 );
 
 // Send to a remote endpoint:
 udp.tell({
-  kind:    'send',
-  host:    'collector.example.com',
-  port:    8125,
-  payload: new TextEncoder().encode('cpu.usage:0.42|g'),
+  kind: 'send',
+  datagram: { payload: 'ping', host: '127.0.0.1', port: 41234 },
 });
-
-// Subscribe to inbound packets:
-udp.tell({ kind: 'subscribe', subscriber: packetHandler });
 ```
 
 ## Settings
 
+`UdpSocketActorSettings` extends `BrokerCommonSettings` (which
+carries the shared reconnect / circuit-breaker / outbound-buffer
+fields) and adds:
+
 ```ts
 interface UdpSocketActorSettings extends BrokerCommonSettings {
-  bindHost?: string;             // default '0.0.0.0'; '' to disable receive
-  bindPort?: number;             // 0 = random; omit to disable receive
-  reuseAddr?: boolean;           // default false
-  ipv6Only?: boolean;            // default false
-  multicast?: {
-    address:   string;
-    interface?: string;
-    ttl?:      number;
-    loopback?: boolean;
-  };
+  bindHost?: string;                 // default '0.0.0.0'
+  bindPort?: number;                 // default 0 = OS-assigned
+  type?: 'udp4' | 'udp6';            // default 'udp4'
+  target?: ActorRef<UdpDatagram>;    // required: inbound subscriber
 }
+```
+
+`target` is the only required field — inbound datagrams have
+nowhere to go without it.  All four are set through the builder:
+
+```ts
+UdpSocketOptions.create()
+  .withBindHost('0.0.0.0')
+  .withBindPort(41234)
+  .withType('udp4')
+  .withTarget(target);
+```
+
+## Receiving
+
+Inbound packets are delivered straight to the `target` actor — one
+`UdpDatagram` message per packet.  There is no `subscribe`
+handshake; wiring the target through `.withTarget(..)` is the whole
+subscription:
+
+```ts
+class PacketHandler extends Actor<UdpDatagram> {
+  override onReceive(d: UdpDatagram): void {
+    // d.payload    — Uint8Array (packet bytes)
+    // d.remoteHost — sender's IP address
+    // d.remotePort — sender's port
+    this.handleDatagram(d.payload, d.remoteHost, d.remotePort);
+  }
+}
+
+const target = system.spawnAnonymous(Props.create(() => new PacketHandler()));
+
+const udp = system.spawnAnonymous(
+  Props.create(() => new UdpSocketActor(
+    UdpSocketOptions.create().withBindPort(41234).withTarget(target),
+  )),
+);
+```
+
+Each packet is **one logical message** — UDP preserves packet
+boundaries (unlike TCP's byte stream), so one datagram in maps to
+exactly one `UdpDatagram` out.
+
+## Sending
+
+Send with a `{ kind: 'send', datagram }` message.  The datagram
+carries its own destination — `host` and `port` — plus the
+`payload`, which may be a `string` (UTF-8 encoded for you) or a raw
+`Uint8Array` (sent verbatim):
+
+```ts
+udp.tell({
+  kind: 'send',
+  datagram: { payload: 'ping', host: '127.0.0.1', port: 41234 },
+});
+
+udp.tell({
+  kind: 'send',
+  datagram: { payload: new Uint8Array([0xde, 0xad]), host: '10.0.0.5', port: 8125 },
+});
 ```
 
 ## Send-only
 
-```ts
-new UdpSocketActor(UdpSocketOptions.create().withBindHost(''));   // ✓ send-only (no bindPort → no receive)
-```
-
-Without `bindPort`, the actor doesn't listen — it's a pure
-**sender**.  Useful for one-way telemetry (statsd, syslog).
-
-## Inbound packets
+A `target` is required, but if the actor only ever sends you can
+still leave binding to the OS.  Omit `withBindPort` (or pass `0`)
+and the socket binds to an ephemeral port — a pure **sender** for
+one-way telemetry (statsd, syslog):
 
 ```ts
-class PacketHandler extends Actor<UdpInbound> {
-  override onReceive(msg: UdpInbound): void {
-    if (msg.kind === 'packet') {
-      // msg.payload — Uint8Array
-      // msg.from   — { host, port } of the sender
-      this.handleDatagram(msg.payload, msg.from);
-    }
-  }
-}
+new UdpSocketActor(
+  UdpSocketOptions.create().withTarget(target),   // OS-assigned port, send-only in practice
+);
 ```
-
-Each packet is **one logical message** — UDP preserves packet
-boundaries (unlike TCP's byte stream).
-
-## Multicast
-
-```ts
-new UdpSocketActor({
-  bindPort: 5353,
-  multicast: {
-    address: '224.0.0.251',     // mDNS
-    interface: '0.0.0.0',
-    ttl: 1,
-    loopback: false,
-  },
-});
-```
-
-Joins the multicast group on the specified interface.  Useful
-for **service discovery** (mDNS, SSDP), **status broadcasting**
-on a LAN.
-
-For routable multicast across cluster nodes, the network must
-permit multicast (most cloud networks block it; many on-prem
-networks do too).
 
 ## When to use UDP
 
@@ -117,11 +154,25 @@ Not the right shape for:
 - **Anything larger than MTU** — packets >1500 bytes
   fragment + can drop more easily.
 
+## HOCON
+
+Settings resolve with the usual precedence — explicit builder
+options override HOCON, which overrides the built-in defaults.  The
+config namespace is `actor-ts.io.broker.udp`:
+
+```hocon
+actor-ts.io.broker.udp {
+  bindHost = "0.0.0.0"
+  bindPort = 41234
+  type     = "udp4"
+}
+```
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="No delivery guarantee">
   ```ts
-  udp.tell({ kind: 'send', ... });
+  udp.tell({ kind: 'send', datagram: { payload: 'ping', host, port } });
   // ↑ the framework sends; whether the network delivers is unknowable
   ```
   UDP is fire-and-forget.  If the application needs to know the
@@ -131,21 +182,12 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="MTU is around 1500 bytes typical">
   ```ts
-  udp.tell({ kind: 'send', payload: new Uint8Array(10_000) });   // ✗ fragments
+  udp.tell({ kind: 'send', datagram: { payload: new Uint8Array(10_000), host, port } });   // ✗ fragments
   ```
   Packets larger than the path MTU fragment at the IP layer.
   Fragmented packets are more likely to be lost (any fragment
   loss = whole packet lost).  Keep payloads ≤1400 bytes for
   safety.
-</Aside>
-
-<Aside type="caution" title="Multicast in cloud environments">
-  ```ts
-  // AWS, GCP, Azure: multicast generally not supported
-  ```
-  Most cloud providers block multicast.  For cloud-internal
-  discovery, use a [seed provider](/discovery/overview/)
-  instead.
 </Aside>
 
 ## Where to next
