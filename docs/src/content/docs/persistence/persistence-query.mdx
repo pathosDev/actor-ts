@@ -184,7 +184,7 @@ for await (const [event, offset] of query.eventsByTag(...)) {
 }
 
 // ProjectionActor — supervised, restartable, offset-managed:
-ProjectionActor.byTag({ ... });
+ProjectionActor.byTag(system, ByTagProjectionOptions.create() /* .withName(...).withTag(...).withQuery(...).withHandle(...) */);
 ```
 
 `ProjectionActor` wraps the query API with:

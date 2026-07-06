@@ -14,7 +14,7 @@ traffic in `onMessage`, and publish with `this.publish(...)`.  It is
 still controllable from the outside via `ref.tell(...)`.
 
 ```ts
-import { ActorSystem, MqttActor, MqttOptions, Props, type MqttMessage } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions, MqttActor, MqttOptions, Props, type MqttMessage } from 'actor-ts';
 
 type Reading = { sensor: string; celsius: number };
 
@@ -33,9 +33,9 @@ class TemperatureHub extends MqttActor<Reading> {
   }
 }
 
-const system = ActorSystem.create('demo', {
-  config: { 'actor-ts': { io: { broker: { mqtt: { brokerUrl: 'mqtt://localhost:1883' } } } } },
-});
+const system = ActorSystem.create('demo', ActorSystemOptions.create().withConfig({
+  'actor-ts': { io: { broker: { mqtt: { brokerUrl: 'mqtt://localhost:1883' } } } },
+}));
 
 system.spawn(Props.create(() => new TemperatureHub(MqttOptions.create())), 'hub');
 ```

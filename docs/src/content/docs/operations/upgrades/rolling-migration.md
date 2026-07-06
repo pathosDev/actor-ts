@@ -219,15 +219,14 @@ Ship the new key as `active`, keep the old as `retired`.
 ```ts
 import { ObjectStoragePluginOptions, registerObjectStoragePlugins } from 'actor-ts';
 
-const opts: ObjectStoragePluginOptions = {
-  // ... backend, compression, etc.
-  encryption: {
+const opts = ObjectStoragePluginOptions.create()
+  // ... .withBackend(...), .withCompression(...), etc.
+  .withEncryption({
     keys: {
       active:  { version: 2, key: NEW_32_BYTES },
       retired: [{ version: 1, key: OLD_32_BYTES }],
     },
-  },
-};
+  });
 ```
 
 After this phase, **new** bodies' manifests stamp `keyVersion = 2`;

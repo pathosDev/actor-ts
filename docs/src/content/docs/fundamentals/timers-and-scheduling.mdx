@@ -198,11 +198,11 @@ implements the same `Scheduler` interface but only advances time
 when you call `advance(ms)`:
 
 ```ts
-import { ActorSystem } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
 import { ManualScheduler } from 'actor-ts/testkit';
 
 const clock = new ManualScheduler();
-const system = ActorSystem.create('test', { scheduler: clock });
+const system = ActorSystem.create('test', ActorSystemOptions.create().withScheduler(clock));
 
 system.scheduler.scheduleOnce(1_000, someActor, { kind: 'tick' });
 

@@ -8,11 +8,11 @@ implementation.  Distributed cache across pods, shared across
 processes.
 
 ```ts
-import { MemcachedCache } from 'actor-ts';
+import { MemcachedCache, MemcachedCacheOptions } from 'actor-ts';
 
-const cache = new MemcachedCache({
-  servers: ['memcached-1:11211', 'memcached-2:11211'],
-});
+const cache = new MemcachedCache(
+  MemcachedCacheOptions.create().withServers('memcached-1:11211,memcached-2:11211'),
+);
 ```
 
 ## When to use Memcached

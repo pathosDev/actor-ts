@@ -66,10 +66,9 @@ The transcripts appear live in the UI as audio chunks process.
 
 ```ts
 const kafka = system.spawn(
-  Props.create(() => new KafkaActor({
-    brokers: ['kafka:9092'],
-    consumer: { groupId: 'voice-processor', topics: ['audio-chunks'] },
-  })),
+  Props.create(() => new KafkaActor(KafkaOptions.create()
+    .withBrokers(['kafka:9092'])
+    .withConsumer({ groupId: 'voice-processor', topics: ['audio-chunks'] }))),
 );
 
 kafka.tell({ kind: 'subscribe', subscriber: dispatchActor });
@@ -117,12 +116,12 @@ Notice:
 ### Projection for search
 
 ```ts
-const projection = ProjectionActor.byTag<SessionEvent>({
-  name: 'transcript-search',
-  tag:  'transcript',
-  query: new CassandraQuery({ /* ... */ }),
-  offsetStore: new SqliteOffsetStore({ path: '/var/lib/offsets.db' }),
-  async handle(event) {
+const projection = ProjectionActor.byTag<SessionEvent>(system, ByTagProjectionOptions.create<SessionEvent>()
+  .withName('transcript-search')
+  .withTag('transcript')
+  .withQuery(new CassandraQuery({ /* ... */ }))
+  .withOffsetStore(new SqliteOffsetStore({ path: '/var/lib/offsets.db' }))
+  .withHandle(async (event) => {
     if (event.event.kind === 'chunk-transcribed') {
       await searchDb.execute(
         `INSERT INTO transcripts (sessionId, text, ts) VALUES (?, ?, ?)
@@ -130,8 +129,7 @@ const projection = ProjectionActor.byTag<SessionEvent>({
         [event.persistenceId, event.event.text, event.event.ts],
       );
     }
-  },
-});
+  }));
 
 system.spawnAnonymous(Props.create(() => projection));
 ```

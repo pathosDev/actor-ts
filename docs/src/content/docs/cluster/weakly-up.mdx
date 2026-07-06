@@ -50,10 +50,14 @@ appears).
 ## Enabling weakly-up
 
 ```ts
-await Cluster.join(system, {
-  host, port, seeds,
-  weaklyUpAfterMs: 3_000,   // auto-promote after 3s in joining
-});
+await Cluster.join(
+  system,
+  ClusterOptions.create()
+    .withHost(host)
+    .withPort(port)
+    .withSeeds(seeds)
+    .withWeaklyUpAfterMs(3_000),   // auto-promote after 3s in joining
+);
 ```
 
 The default is `0` (disabled).  Pick a value high enough that

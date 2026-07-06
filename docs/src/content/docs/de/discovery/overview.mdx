@@ -20,17 +20,19 @@ Seed Provider beantworten: **"Welche Adressen soll ich beim
 Join-Zeitpunkt als Cluster-Seeds probieren?"**
 
 ```ts
-import { Cluster, KubernetesApiSeedProvider } from 'actor-ts';
+import { Cluster, ClusterOptions, KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts';
 
-const provider = new KubernetesApiSeedProvider({
-  namespace:     'my-app',
-  labelSelector: 'app=actor-ts',
-  containerPort: 2552,
-});
+const provider = new KubernetesApiSeedProvider(
+  KubernetesApiSeedProviderOptions.create()
+    .withNamespace('my-app')
+    .withServiceName('actor-ts')
+    .withSystemName('my-app')
+    .withPort(2552),
+);
 
 const seeds = await provider.lookup();
 
-await Cluster.join(system, { host, port, seeds });
+await Cluster.join(system, ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds));
 ```
 
 Vier Provider werden mitgeliefert:
@@ -109,13 +111,15 @@ Ein typisches K8s-Deployment:
 
 ```ts
 // 1. Seed Discovery — wie dieser Pod beim Start Peers findet
-const seeds = await new KubernetesApiSeedProvider({
-  namespace:     process.env.K8S_NAMESPACE!,
-  labelSelector: 'app=actor-ts',
-  containerPort: 2552,
-}).lookup();
+const seeds = await new KubernetesApiSeedProvider(
+  KubernetesApiSeedProviderOptions.create()
+    .withNamespace(process.env.K8S_NAMESPACE!)
+    .withServiceName('actor-ts')
+    .withSystemName('my-app')
+    .withPort(2552),
+).lookup();
 
-await Cluster.join(system, { host, port, seeds });
+await Cluster.join(system, ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds));
 
 // 2. Receptionist — für Runtime-Actor-Lookup
 const receptionist = system.extension(ReceptionistId).start(cluster);

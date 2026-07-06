@@ -11,17 +11,22 @@ for single-node production**: on Bun the driver is built in
 workloads.
 
 ```ts
-import { SqliteJournal, SqliteSnapshotStore, PersistenceExtensionId, ActorSystem } from 'actor-ts';
+import {
+  SqliteJournal,
+  SqliteJournalOptions,
+  SqliteSnapshotStore,
+  SqliteSnapshotStoreOptions,
+  PersistenceExtensionId,
+  ActorSystem,
+} from 'actor-ts';
 
 const system = ActorSystem.create('my-app');
 system.extension(PersistenceExtensionId).configure({
-  journal: new SqliteJournal({
-    path: '/var/lib/my-app/events.db',
-    wal:  true,
-  }),
-  snapshotStore: new SqliteSnapshotStore({
-    path: '/var/lib/my-app/snapshots.db',
-  }),
+  journal: new SqliteJournal(SqliteJournalOptions.create()
+    .withPath('/var/lib/my-app/events.db')
+    .withWal(true)),
+  snapshotStore: new SqliteSnapshotStore(SqliteSnapshotStoreOptions.create()
+    .withPath('/var/lib/my-app/snapshots.db')),
 });
 ```
 
@@ -42,7 +47,7 @@ interface SqliteJournalOptions {
 ### `path`
 
 ```ts
-new SqliteJournal({ path: '/var/lib/my-app/events.db' })
+new SqliteJournal(SqliteJournalOptions.create().withPath('/var/lib/my-app/events.db'))
 ```
 
 The database file.  Absolute paths are best — relative paths are
@@ -55,7 +60,7 @@ behaves exactly like the file version but goes away with the
 process:
 
 ```ts
-new SqliteJournal({ path: ':memory:' })
+new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:'))
 ```
 
 ### `eventsTable`
@@ -64,7 +69,7 @@ Default `'events'`.  Override if you want multiple systems sharing
 one DB file (e.g. dev rig):
 
 ```ts
-new SqliteJournal({ path: 'shared.db', eventsTable: 'orders_events' })
+new SqliteJournal(SqliteJournalOptions.create().withPath('shared.db').withEventsTable('orders_events'))
 ```
 
 The framework creates the table automatically on first use, with
@@ -97,7 +102,7 @@ an index instead of scanning CSV.
 ### `wal`
 
 ```ts
-new SqliteJournal({ path: '...', wal: true })
+new SqliteJournal(SqliteJournalOptions.create().withPath('...').withWal(true))
 ```
 
 Enables Write-Ahead Logging mode.  **Recommended for production.**
@@ -116,8 +121,8 @@ explicitly when you go to production.
 ```ts
 import { bunSqliteDriver, betterSqlite3Driver } from 'actor-ts/runtime/sqlite';
 
-new SqliteJournal({ path: '...', driver: bunSqliteDriver() })
-new SqliteJournal({ path: '...', driver: betterSqlite3Driver() })
+new SqliteJournal(SqliteJournalOptions.create().withPath('...').withDriver(bunSqliteDriver()))
+new SqliteJournal(SqliteJournalOptions.create().withPath('...').withDriver(betterSqlite3Driver()))
 ```
 
 The framework auto-detects the right driver based on the runtime:

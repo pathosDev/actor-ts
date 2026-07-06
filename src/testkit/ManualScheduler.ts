@@ -12,7 +12,8 @@ interface Task {
 
 /**
  * Scheduler implementation driven entirely by `advance(ms)` — the wall
- * clock is ignored.  Swap this into `ActorSystem.create(name, { scheduler })`
+ * clock is ignored.  Swap this into
+ * `ActorSystem.create(name, ActorSystemOptions.create().withScheduler(scheduler))`
  * in tests to get deterministic timer behaviour.
  */
 export class ManualScheduler extends Scheduler {

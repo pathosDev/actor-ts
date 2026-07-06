@@ -48,7 +48,7 @@ für den In-Process-Fall.
 ```ts
 // main.ts — Hauptthread
 import { Worker } from 'node:worker_threads';
-import { ActorSystem, Cluster, MessageChannelTransport } from 'actor-ts';
+import { ActorSystem, Cluster, ClusterOptions, MessageChannelTransport } from 'actor-ts';
 
 const channel = new MessageChannel();
 
@@ -63,16 +63,18 @@ const transport = new MessageChannelTransport({
 });
 
 const system = ActorSystem.create('main');
-await Cluster.join(system, {
-  host:      'main',
-  port:      0,
-  seeds:     ['main'],
-  transport,
-});
+await Cluster.join(
+  system,
+  ClusterOptions.create()
+    .withHost('main')
+    .withPort(0)
+    .withSeeds(['main'])
+    .withTransport(transport),
+);
 
 // worker.js — läuft im Worker-Thread
 import { parentPort, workerData } from 'node:worker_threads';
-import { ActorSystem, Cluster, MessageChannelTransport } from 'actor-ts';
+import { ActorSystem, Cluster, ClusterOptions, MessageChannelTransport } from 'actor-ts';
 
 const transport = new MessageChannelTransport({
   self:  'w1',
@@ -80,12 +82,14 @@ const transport = new MessageChannelTransport({
 });
 
 const system = ActorSystem.create('w1');
-await Cluster.join(system, {
-  host:      'w1',
-  port:      0,
-  seeds:     ['main'],
-  transport,
-});
+await Cluster.join(
+  system,
+  ClusterOptions.create()
+    .withHost('w1')
+    .withPort(0)
+    .withSeeds(['main'])
+    .withTransport(transport),
+);
 
 // Ab hier ist w1 einfach ein weiterer Cluster-Node
 ```
@@ -136,12 +140,13 @@ Typen (Map, Set, Date etc.).
 
 ```ts
 // 4-Worker-Mesh; Sharding verteilt Entities über sie:
-sharding.start({
-  typeName: 'order',
-  entityProps: ...,
-  extractEntityId: (msg) => msg.id,
-  numShards: 16,
-});
+sharding.start(
+  StartShardingOptions.create()
+    .withTypeName('order')
+    .withEntityProps(...)
+    .withExtractEntityId((msg) => msg.id)
+    .withNumShards(16),
+);
 ```
 
 Der Koordinator (auf main) allokiert Shards auf die 4 Worker.

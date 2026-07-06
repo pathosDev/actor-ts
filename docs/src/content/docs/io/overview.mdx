@@ -163,10 +163,11 @@ registered as interested:
 
 ```ts
 const kafka = system.spawn(
-  Props.create(() => new KafkaActor({
-    bootstrapServers: 'localhost:9092',
-    consumer: { groupId: 'my-app', topics: ['orders'] },
-  })),
+  Props.create(() => new KafkaActor(
+    KafkaOptions.create()
+      .withBrokers('localhost:9092')
+      .withConsumer({ groupId: 'my-app', topics: ['orders'] }),
+  )),
 );
 
 const handler = system.spawnAnonymous(Props.create(() => new OrderHandler()));

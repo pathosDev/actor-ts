@@ -37,29 +37,26 @@ Write-Durchsatz (durable, append-only) von Read-Durchsatz
 ## Ein minimales Beispiel
 
 ```ts
-import { ProjectionActor, type ByTagSettings } from 'actor-ts';
+import { ProjectionActor, ByTagProjectionOptions } from 'actor-ts';
 import { SqliteQuery } from 'actor-ts';
 
 type AccountEvent =
   | { kind: 'deposited'; amount: number }
   | { kind: 'withdrawn'; amount: number };
 
-const projection = ProjectionActor.byTag<AccountEvent>({
-  name: 'account-balance-view',
-  tag:  'account',
-  query: new SqliteQuery({ path: '/var/lib/events.db' }),
-  offsetStore: new SqliteOffsetStore({ path: '/var/lib/offsets.db' }),
-  async handle(event) {
+const projection = ProjectionActor.byTag<AccountEvent>(system, ByTagProjectionOptions.create<AccountEvent>()
+  .withName('account-balance-view')
+  .withTag('account')
+  .withQuery(new SqliteQuery({ path: '/var/lib/events.db' }))
+  .withOffsetStore(new SqliteOffsetStore({ path: '/var/lib/offsets.db' }))
+  .withHandle(async (event) => {
     if (event.event.kind === 'deposited') {
       await viewDb.execute(
         'UPDATE balances SET balance = balance + ? WHERE pid = ?',
         [event.event.amount, event.persistenceId],
       );
     }
-  },
-});
-
-system.spawn(Props.create(() => projection), 'balance-projection');
+  }));
 ```
 
 Der Actor:
@@ -141,14 +138,13 @@ das Re-Processing-Fenster.
 ## Polling
 
 ```ts
-new ProjectionActor.byTag({
-  name: '...',
-  tag:  '...',
-  liveOptions: {
+ProjectionActor.byTag(system, ByTagProjectionOptions.create()
+  .withName('...')
+  .withTag('...')
+  .withLiveOptions({
     pollIntervalMs: 500,    // Default 1000 ms
-  },
-  ...
-});
+  })
+  /* .withQuery(...).withOffsetStore(...).withHandle(...) */);
 ```
 
 Die Projektion pollt.  Im Idle sind die Poll-Kosten eine
@@ -165,15 +161,14 @@ Sub-Poll-Intervall-Delivery über den In-Process-Event-Bus erhält.
 ## Per-pid-Projektionen
 
 ```ts
-const projection = ProjectionActor.byPersistenceId<AccountEvent>({
-  name:           'account-42-view',
-  persistenceId:  'account-42',
-  query,
-  offsetStore,
-  async handle(event) {
+const projection = ProjectionActor.byPersistenceId<AccountEvent>(system, ByPidProjectionOptions.create<AccountEvent>()
+  .withName('account-42-view')
+  .withPersistenceId('account-42')
+  .withQuery(query)
+  .withOffsetStore(offsetStore)
+  .withHandle(async (event) => {
     // ... nur die Events dieses Accounts behandeln
-  },
-});
+  }));
 ```
 
 Ein Actor pro persistenceId.  Nützlich für **Per-Entity-Views**:
@@ -190,9 +185,9 @@ die nach pid hasht.
 
 ```ts
 // Drei Projektionen, drei Offset-Cursors, drei unabhängige Views:
-system.spawnAnonymous(Props.create(() => ProjectionActor.byTag<E>({ name: 'balance', ... })));
-system.spawnAnonymous(Props.create(() => ProjectionActor.byTag<E>({ name: 'audit-log', ... })));
-system.spawnAnonymous(Props.create(() => ProjectionActor.byTag<E>({ name: 'monthly-stats', ... })));
+ProjectionActor.byTag<E>(system, ByTagProjectionOptions.create<E>().withName('balance') /* .withTag(...).withQuery(...).withHandle(...) */);
+ProjectionActor.byTag<E>(system, ByTagProjectionOptions.create<E>().withName('audit-log') /* .withTag(...).withQuery(...).withHandle(...) */);
+ProjectionActor.byTag<E>(system, ByTagProjectionOptions.create<E>().withName('monthly-stats') /* .withTag(...).withQuery(...).withHandle(...) */);
 ```
 
 Jede hat ihren eigenen Offset-Cursor; sie lesen unabhängig vom

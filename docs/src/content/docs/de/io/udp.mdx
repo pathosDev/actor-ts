@@ -9,13 +9,14 @@ Zustellung in Ordnung ist** und Latenz wichtiger ist als
 Zuverlässigkeit.
 
 ```ts
-import { ActorSystem, Props, UdpSocketActor } from 'actor-ts';
+import { ActorSystem, Props, UdpSocketActor, UdpSocketOptions } from 'actor-ts';
 
 const udp = system.spawn(
-  Props.create(() => new UdpSocketActor({
-    bindHost: '0.0.0.0',
-    bindPort: 8125,         // bind zum Empfangen
-  })),
+  Props.create(() => new UdpSocketActor(
+    UdpSocketOptions.create()
+      .withBindHost('0.0.0.0')
+      .withBindPort(8125),         // bind zum Empfangen
+  )),
   'udp',
 );
 
@@ -51,7 +52,7 @@ interface UdpSocketActorSettings extends BrokerCommonSettings {
 ## Nur Senden
 
 ```ts
-new UdpSocketActor({ bindHost: '', bindPort: undefined });   // ✓ nur senden
+new UdpSocketActor(UdpSocketOptions.create().withBindHost(''));   // ✓ nur senden (kein bindPort → kein Empfang)
 ```
 
 Ohne `bindPort` lauscht der Actor nicht — er ist ein reiner

@@ -114,10 +114,10 @@ mit `delete` invalidieren.  Nützlich für Muster wie "Write nach
 ## Geteilter Cache über Pods
 
 ```ts
-import { RedisCache } from 'actor-ts';
+import { RedisCache, RedisCacheOptions } from 'actor-ts';
 
 cached({
-  cache:  new RedisCache({ url: 'redis://...' }),
+  cache:  new RedisCache(RedisCacheOptions.create().withUrl('redis://...')),
   ttlMs:  30_000,
 })(...)
 ```

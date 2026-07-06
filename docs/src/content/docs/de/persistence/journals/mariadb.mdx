@@ -31,28 +31,35 @@ Beim ersten Zugriff lazy-importiert, wie jeder andere Adapter.
 ```ts
 import {
   ActorSystem,
+  ActorSystemOptions,
   PersistenceExtensionId,
+  MariaDbJournalOptions,
+  MariaDbSnapshotStoreOptions,
+  MariaDbDurableStateStoreOptions,
+  RegisterMariaDbPluginsOptions,
   registerMariaDbPlugins,
 } from 'actor-ts';
 
-const system = new ActorSystem({
-  name: 'my-app',
-  config: `
-    actor-ts.persistence.journal.plugin = "actor-ts.persistence.journal.mariadb"
-    actor-ts.persistence.snapshot-store.plugin = "actor-ts.persistence.snapshot-store.mariadb"
-  `,
-});
+const system = ActorSystem.create('my-app', ActorSystemOptions.create()
+  .withConfig({
+    'actor-ts': {
+      persistence: {
+        journal: { plugin: 'actor-ts.persistence.journal.mariadb' },
+        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.mariadb' },
+      },
+    },
+  }));
 
 const ext = system.extension(PersistenceExtensionId);
-const { durableStateStore } = registerMariaDbPlugins(ext, {
-  journal:           { poolConfig: conn },
-  snapshotStore:     { poolConfig: conn, keepN: 3 },
-  durableStateStore: { poolConfig: conn },
-});
+const { durableStateStore } = registerMariaDbPlugins(ext, RegisterMariaDbPluginsOptions.create()
+  .withJournal(MariaDbJournalOptions.create().withPoolConfig(conn))
+  .withSnapshotStore(MariaDbSnapshotStoreOptions.create().withPoolConfig(conn).withKeepN(3))
+  .withDurableStateStore(MariaDbDurableStateStoreOptions.create().withPoolConfig(conn)));
 
 // conn = { host, port: 3306, user, password, database } — oder gib oben
-// einen geteilten `pool` (aus mariadb.createPool) mit, um einen Pool über
-// alle drei zu nutzen, oder eine Connection-URL via `url`.
+// einen geteilten `pool` (aus mariadb.createPool) via `.withPool(pool)`
+// mit, um einen Pool über alle drei zu nutzen, oder eine Connection-URL
+// via `.withUrl(...)`.
 ```
 
 Wie bei Postgres werden Journal + Snapshot-Store über die Plugin-IDs

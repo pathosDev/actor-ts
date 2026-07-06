@@ -9,18 +9,22 @@ durable, null Dependency auf Bun, Peer-Dep auf Node.  Paare es mit
 **Standard-Single-Node-Produktions-Setup**.
 
 ```ts
-import { SqliteJournal, SqliteSnapshotStore, PersistenceExtensionId, ActorSystem } from 'actor-ts';
+import {
+  SqliteJournal,
+  SqliteJournalOptions,
+  SqliteSnapshotStore,
+  SqliteSnapshotStoreOptions,
+  PersistenceExtensionId,
+  ActorSystem,
+} from 'actor-ts';
 
 const system = ActorSystem.create('my-app');
 system.extension(PersistenceExtensionId).configure({
-  journal: new SqliteJournal({
-    path: '/var/lib/my-app/events.db',
-    wal:  true,
-  }),
-  snapshotStore: new SqliteSnapshotStore({
-    path: '/var/lib/my-app/snapshots.db',
-    wal:  true,
-  }),
+  journal: new SqliteJournal(SqliteJournalOptions.create()
+    .withPath('/var/lib/my-app/events.db')
+    .withWal(true)),
+  snapshotStore: new SqliteSnapshotStore(SqliteSnapshotStoreOptions.create()
+    .withPath('/var/lib/my-app/snapshots.db')),
 });
 ```
 
@@ -60,8 +64,8 @@ Das Framework liest die **höchste seq** für eine gegebene pid bei
 ```ts
 // Produktion:
 {
-  journal:       new SqliteJournal({ path: '/var/lib/events.db' }),
-  snapshotStore: new SqliteSnapshotStore({ path: '/var/lib/snapshots.db' }),
+  journal:       new SqliteJournal(SqliteJournalOptions.create().withPath('/var/lib/events.db')),
+  snapshotStore: new SqliteSnapshotStore(SqliteSnapshotStoreOptions.create().withPath('/var/lib/snapshots.db')),
 }
 ```
 

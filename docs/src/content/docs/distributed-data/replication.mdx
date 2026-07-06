@@ -32,9 +32,10 @@ Local writes are **immediate**.  Gossip is for **propagation**.
 ## Configuration
 
 ```ts
-const dd = system.extension(DistributedDataId).start(cluster, {
-  gossipIntervalMs: 1_000,   // default 1s
-});
+const dd = system.extension(DistributedDataId).start(
+  cluster,
+  DistributedDataOptions.create().withGossipInterval(1_000),   // default 1s
+);
 ```
 
 The default `gossipIntervalMs` is 1 second — chosen as a balance

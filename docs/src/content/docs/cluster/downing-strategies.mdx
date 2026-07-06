@@ -54,12 +54,16 @@ the picking section below).
 ## Configuration
 
 ```ts
-import { Cluster, KeepMajority } from 'actor-ts';
+import { Cluster, ClusterOptions, KeepMajority } from 'actor-ts';
 
-const cluster = await Cluster.join(system, {
-  host, port, seeds,
-  downingProvider: new KeepMajority(),
-});
+const cluster = await Cluster.join(
+  system,
+  ClusterOptions.create()
+    .withHost(host)
+    .withPort(port)
+    .withSeeds(seeds)
+    .withDowning(new KeepMajority()),
+);
 ```
 
 Pass the provider as `downingProvider`.  Every cluster event
@@ -96,9 +100,9 @@ special-purpose deployments.
 ## KeepOldest
 
 ```ts
-import { KeepOldest } from 'actor-ts';
+import { KeepOldest, KeepOldestOptions } from 'actor-ts';
 
-new KeepOldest({ downIfAlone: true });
+new KeepOldest(KeepOldestOptions.create().withDownIfAlone(true));
 ```
 
 The side containing the **oldest member** (longest in the cluster)
@@ -117,12 +121,13 @@ declaring itself the cluster after a total split.
 ## KeepReferee
 
 ```ts
-import { KeepReferee, NodeAddress } from 'actor-ts';
+import { KeepReferee, KeepRefereeOptions } from 'actor-ts';
 
-new KeepReferee({
-  refereeAddress: NodeAddress.parse('actor-ts://my-app@10.0.0.1:2552'),
-  downAllIfLessThanNodes: 3,
-});
+new KeepReferee(
+  KeepRefereeOptions.create()
+    .withRefereeAddress('actor-ts://my-app@10.0.0.1:2552')
+    .withDownAllIfBelowQuorum(3),
+);
 ```
 
 A designated **referee node** is the deciding member.  The side
@@ -147,9 +152,9 @@ neutral location (a third DC, a control-plane K8s namespace).
 ## StaticQuorum
 
 ```ts
-import { StaticQuorum } from 'actor-ts';
+import { StaticQuorum, StaticQuorumOptions } from 'actor-ts';
 
-new StaticQuorum({ quorumSize: 3 });
+new StaticQuorum(StaticQuorumOptions.create().withQuorumSize(3));
 ```
 
 A side wins only if it has at least `quorumSize` reachable members.
@@ -172,12 +177,12 @@ survival.
 ## LeaseMajority
 
 ```ts
-import { LeaseMajority } from 'actor-ts';
+import { LeaseMajority, LeaseMajorityOptions } from 'actor-ts';
 
-new LeaseMajority({
-  underlying:  new KeepMajority(),
-  lease:       someLeaseImpl,
-});
+new LeaseMajority(
+  LeaseMajorityOptions.create()
+    .withLease(someLeaseImpl),
+);
 ```
 
 Majority **plus** a coordination lease.  Wrap any other strategy:
@@ -262,7 +267,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`StaticQuorum` blocks scale-up">
   ```ts
-  new StaticQuorum({ quorumSize: 5 });
+  new StaticQuorum(StaticQuorumOptions.create().withQuorumSize(5));
   // Starting up with 3 nodes → cluster downs itself (no quorum)
   ```
   Quorum is checked at every membership change, including the

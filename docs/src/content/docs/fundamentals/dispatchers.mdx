@@ -33,25 +33,23 @@ common in actor-ts applications.
 ## Picking a dispatcher
 
 ```ts
-import { ActorSystem, MicrotaskDispatcher } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions, MicrotaskDispatcher } from 'actor-ts';
 
 // Use microtasks: maximum throughput, minimum scheduling overhead.
 // Pick when you have no I/O at all OR I/O is so rare that starvation
 // isn't a concern.
-const system = ActorSystem.create('compute-heavy', {
-  dispatcher: new MicrotaskDispatcher(),
-});
+const system = ActorSystem.create('compute-heavy', ActorSystemOptions.create()
+  .withDispatcher(new MicrotaskDispatcher()));
 ```
 
 ```ts
-import { ActorSystem, ThroughputDispatcher } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions, ThroughputDispatcher } from 'actor-ts';
 
-const system = ActorSystem.create('mixed-workload', {
-  dispatcher: new ThroughputDispatcher(50),
+const system = ActorSystem.create('mixed-workload', ActorSystemOptions.create()
+  .withDispatcher(new ThroughputDispatcher(50)));
   // run up to 50 messages per actor before yielding to I/O.  Default
   // is ~5 in `ImmediateDispatcher`; bumping it to 50 wins on
   // throughput at the cost of HTTP-response latency.
-});
 ```
 
 ## When the dispatcher choice matters

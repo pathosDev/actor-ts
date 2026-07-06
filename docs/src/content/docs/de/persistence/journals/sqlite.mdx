@@ -11,17 +11,22 @@ Node ist es eine einzelne Peer-Dep (`better-sqlite3`).  Überlebt
 Neustarts, schnell genug für die meisten Workloads.
 
 ```ts
-import { SqliteJournal, SqliteSnapshotStore, PersistenceExtensionId, ActorSystem } from 'actor-ts';
+import {
+  SqliteJournal,
+  SqliteJournalOptions,
+  SqliteSnapshotStore,
+  SqliteSnapshotStoreOptions,
+  PersistenceExtensionId,
+  ActorSystem,
+} from 'actor-ts';
 
 const system = ActorSystem.create('my-app');
 system.extension(PersistenceExtensionId).configure({
-  journal: new SqliteJournal({
-    path: '/var/lib/my-app/events.db',
-    wal:  true,
-  }),
-  snapshotStore: new SqliteSnapshotStore({
-    path: '/var/lib/my-app/snapshots.db',
-  }),
+  journal: new SqliteJournal(SqliteJournalOptions.create()
+    .withPath('/var/lib/my-app/events.db')
+    .withWal(true)),
+  snapshotStore: new SqliteSnapshotStore(SqliteSnapshotStoreOptions.create()
+    .withPath('/var/lib/my-app/snapshots.db')),
 });
 ```
 
@@ -42,7 +47,7 @@ interface SqliteJournalOptions {
 ### `path`
 
 ```ts
-new SqliteJournal({ path: '/var/lib/my-app/events.db' })
+new SqliteJournal(SqliteJournalOptions.create().withPath('/var/lib/my-app/events.db'))
 ```
 
 Die Datenbank-Datei.  Absolute Pfade sind am besten — relative
@@ -56,7 +61,7 @@ In-Memory-DB, die sich genau wie die Datei-Version verhält, aber
 mit dem Prozess verschwindet:
 
 ```ts
-new SqliteJournal({ path: ':memory:' })
+new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:'))
 ```
 
 ### `eventsTable`
@@ -65,7 +70,7 @@ Default `'events'`.  Überschreibe das, wenn du willst, dass mehrere
 Systeme sich eine DB-Datei teilen (z. B. Dev-Rig):
 
 ```ts
-new SqliteJournal({ path: 'shared.db', eventsTable: 'orders_events' })
+new SqliteJournal(SqliteJournalOptions.create().withPath('shared.db').withEventsTable('orders_events'))
 ```
 
 Das Framework erstellt die Tabelle automatisch bei der ersten
@@ -98,7 +103,7 @@ einen Index treffen, statt CSV zu scannen.
 ### `wal`
 
 ```ts
-new SqliteJournal({ path: '...', wal: true })
+new SqliteJournal(SqliteJournalOptions.create().withPath('...').withWal(true))
 ```
 
 Aktiviert den Write-Ahead-Logging-Modus.  **Empfohlen für Produktion.**
@@ -118,8 +123,8 @@ aktiviere es explizit, wenn du in Produktion gehst.
 ```ts
 import { bunSqliteDriver, betterSqlite3Driver } from 'actor-ts/runtime/sqlite';
 
-new SqliteJournal({ path: '...', driver: bunSqliteDriver() })
-new SqliteJournal({ path: '...', driver: betterSqlite3Driver() })
+new SqliteJournal(SqliteJournalOptions.create().withPath('...').withDriver(bunSqliteDriver()))
+new SqliteJournal(SqliteJournalOptions.create().withPath('...').withDriver(betterSqlite3Driver()))
 ```
 
 Das Framework erkennt den richtigen Treiber basierend auf der

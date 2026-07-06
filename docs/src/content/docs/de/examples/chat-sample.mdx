@@ -92,12 +92,11 @@ Das Docker-Compose-Setup startet:
 ### Sharded Sessions
 
 ```ts
-const sessionRegion = cluster.sharding.start<SessionMsg>({
-  typeName: 'session',
-  entityProps: Props.create(() => new UserSessionActor()),
-  extractEntityId: (msg) => msg.userId,
-  rememberEntities: true,
-});
+const sessionRegion = cluster.sharding.start(StartShardingOptions.create<SessionMsg>()
+  .withTypeName('session')
+  .withEntityProps(Props.create(() => new UserSessionActor()))
+  .withExtractEntityId((msg) => msg.userId)
+  .withRememberEntities(true));
 ```
 
 Ein Actor pro eingeloggtem User, verteilt über die Nodes.

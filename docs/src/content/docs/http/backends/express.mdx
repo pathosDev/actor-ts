@@ -15,7 +15,7 @@ choice when:
 
 ```ts
 import { ActorSystem, HttpExtensionId } from 'actor-ts';
-import { ExpressBackend } from 'actor-ts/http';
+import { ExpressBackend, ExpressBackendOptions } from 'actor-ts/http';
 
 const http = system.extension(HttpExtensionId);
 
@@ -24,13 +24,15 @@ await http.newServerAt('0.0.0.0', 8080)
   .bind(routes);
 ```
 
+
 ## Configuration
 
 ```ts
-new ExpressBackend({
-  bodyLimit: '1mb',   // body-parser limit
-  trustProxy: true,    // honor X-Forwarded-* headers
-});
+new ExpressBackend(
+  ExpressBackendOptions.create().withMaxBodyBytes(1 * 1024 * 1024),
+);
+// X-Forwarded-* handling is configured on a bring-your-own Express app
+// (`app.set('trust proxy', true)`), passed via `.withApp(app)`.
 ```
 
 Express-style settings.
@@ -62,14 +64,21 @@ middleware ecosystem.  If you don't need it, Fastify is faster.
 ## TLS
 
 ```ts
+import express from 'express';
 import https from 'node:https';
 
-new ExpressBackend({
-  https: {
+// TLS is set up on a bring-your-own Express app, wrapped in Node's
+// `https` server; pass the app to the backend via `.withApp(app)`.
+const app = express();
+https.createServer(
+  {
     cert: fs.readFileSync('./tls/cert.pem'),
     key:  fs.readFileSync('./tls/key.pem'),
   },
-});
+  app,
+);
+
+new ExpressBackend(ExpressBackendOptions.create().withApp(app));
 ```
 
 Backed by Node's `https` module.  Same caveats as the Fastify

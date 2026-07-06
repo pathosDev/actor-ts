@@ -7,21 +7,22 @@ description: Apache Kafka broker actor — publishes records to a topic, consume
 internally; you don't import it directly.
 
 ```ts
-import { ActorSystem, Props, KafkaActor } from 'actor-ts';
+import { ActorSystem, Props, KafkaActor, KafkaOptions } from 'actor-ts';
 
 const system = ActorSystem.create('my-app');
 
 const kafka = system.spawn(
-  Props.create(() => new KafkaActor({
-    brokers:   ['kafka-1:9092', 'kafka-2:9092'],
-    clientId:  'my-app',
-    // Consumer-actor target is configured here, once.
-    consumer:  {
-      groupId: 'my-app-orders',
-      topics:  ['orders', 'payments'],
-      target:  orderHandler,
-    },
-  })),
+  Props.create(() => new KafkaActor(
+    KafkaOptions.create()
+      .withBrokers(['kafka-1:9092', 'kafka-2:9092'])
+      .withClientId('my-app')
+      // Consumer-actor target is configured here, once.
+      .withConsumer({
+        groupId: 'my-app-orders',
+        topics:  ['orders', 'payments'],
+        target:  orderHandler,
+      }),
+  )),
   'kafka',
 );
 
@@ -138,15 +139,16 @@ a rebalance.
 ## Auth + TLS
 
 ```ts
-new KafkaActor({
-  brokers: ['kafka-1:9093'],
-  ssl:     true,
-  sasl: {
-    mechanism: 'scram-sha-512',
-    username:  process.env.KAFKA_USER!,
-    password:  process.env.KAFKA_PASS!,
-  },
-});
+new KafkaActor(
+  KafkaOptions.create()
+    .withBrokers(['kafka-1:9093'])
+    .withSsl(true)
+    .withSasl({
+      mechanism: 'scram-sha-512',
+      username:  process.env.KAFKA_USER!,
+      password:  process.env.KAFKA_PASS!,
+    }),
+);
 ```
 
 Both TLS (`ssl: true`) and SASL credentials pass through to

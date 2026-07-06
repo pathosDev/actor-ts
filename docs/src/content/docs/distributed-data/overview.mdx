@@ -62,11 +62,11 @@ Three patterns:
 ## A minimal example
 
 ```ts
-import { ActorSystem, Cluster } from 'actor-ts';
+import { ActorSystem, Cluster, ClusterOptions } from 'actor-ts';
 import { DistributedDataId, GCounter } from 'actor-ts';
 
 const system  = ActorSystem.create('my-app');
-const cluster = await Cluster.join(system, { host, port, seeds });
+const cluster = await Cluster.join(system, ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds));
 const dd      = system.extension(DistributedDataId).start(cluster);
 
 // Increment a counter — no coordination, just merge into the local replica.
@@ -161,14 +161,17 @@ cluster restarts (cold start), every key starts empty again.
 For **survive-restart** semantics, use the **durable** variant:
 
 ```ts
-import { DurableDistributedDataStore } from 'actor-ts';
+import { DistributedDataOptions, DurableDistributedDataStore } from 'actor-ts';
 
-const dd = system.extension(DistributedDataId).start(cluster, {
-  durable: new DurableDistributedDataStore({
-    durableStateStore: someStore,
-    keys: ['hits', 'config'],   // only these keys are persisted
-  }),
-});
+const dd = system.extension(DistributedDataId).start(
+  cluster,
+  DistributedDataOptions.create().withDurableStore(
+    new DurableDistributedDataStore({
+      durableStateStore: someStore,
+      keys: ['hits', 'config'],   // only these keys are persisted
+    }),
+  ),
+);
 ```
 
 The durable layer persists changes to disk (or wherever the

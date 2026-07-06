@@ -38,27 +38,33 @@ all three components reuse one connection pool:
 import { Pool } from 'pg';
 import {
   ActorSystem,
+  ActorSystemOptions,
   PersistenceExtensionId,
+  PostgresJournalOptions,
+  PostgresSnapshotStoreOptions,
+  PostgresDurableStateStoreOptions,
+  RegisterPostgresPluginsOptions,
   registerPostgresPlugins,
 } from 'actor-ts';
 
-const system = new ActorSystem({
-  name: 'my-app',
+const system = ActorSystem.create('my-app', ActorSystemOptions.create()
   // Select the Postgres plugins as the active journal + snapshot store.
-  config: `
-    actor-ts.persistence.journal.plugin = "actor-ts.persistence.journal.postgres"
-    actor-ts.persistence.snapshot-store.plugin = "actor-ts.persistence.snapshot-store.postgres"
-  `,
-});
+  .withConfig({
+    'actor-ts': {
+      persistence: {
+        journal: { plugin: 'actor-ts.persistence.journal.postgres' },
+        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.postgres' },
+      },
+    },
+  }));
 
 const ext = system.extension(PersistenceExtensionId);
-const { durableStateStore } = registerPostgresPlugins(ext, {
+const { durableStateStore } = registerPostgresPlugins(ext, RegisterPostgresPluginsOptions.create()
   // One pool shared by journal + snapshot + durable-state (recommended).
-  pool: new Pool({ connectionString: 'postgres://user:pass@host:5432/app' }),
-  journal:           { /* eventsTable, tagsTable, autoCreateTables */ },
-  snapshotStore:     { keepN: 3 },
-  durableStateStore: { /* table */ },
-});
+  .withPool(new Pool({ connectionString: 'postgres://user:pass@host:5432/app' }))
+  .withJournal(PostgresJournalOptions.create() /* .withEventsTable(...).withTagsTable(...).withAutoCreateTables(...) */)
+  .withSnapshotStore(PostgresSnapshotStoreOptions.create().withKeepN(3))
+  .withDurableStateStore(PostgresDurableStateStoreOptions.create() /* .withTable(...) */));
 ```
 
 `registerPostgresPlugins` registers the journal + snapshot store via the
@@ -71,11 +77,12 @@ Without a shared `pool`, each component lazily builds its own pool from
 its `url` / `poolConfig`:
 
 ```ts
-registerPostgresPlugins(ext, {
-  journal:           { url: 'postgres://user:pass@host:5432/app' },
-  snapshotStore:     { url: 'postgres://user:pass@host:5432/app', keepN: 3 },
-  durableStateStore: { url: 'postgres://user:pass@host:5432/app' },
-});
+registerPostgresPlugins(ext, RegisterPostgresPluginsOptions.create()
+  .withJournal(PostgresJournalOptions.create().withUrl('postgres://user:pass@host:5432/app'))
+  .withSnapshotStore(PostgresSnapshotStoreOptions.create()
+    .withUrl('postgres://user:pass@host:5432/app').withKeepN(3))
+  .withDurableStateStore(PostgresDurableStateStoreOptions.create()
+    .withUrl('postgres://user:pass@host:5432/app')));
 ```
 
 ## When to use it

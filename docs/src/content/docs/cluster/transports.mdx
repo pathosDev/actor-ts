@@ -37,14 +37,16 @@ their sender address.
 ## TcpTransport (default)
 
 ```ts
-import { Cluster, TcpTransport } from 'actor-ts';
+import { Cluster, ClusterOptions, TcpTransport } from 'actor-ts';
 
-const cluster = await Cluster.join(system, {
-  host:  '0.0.0.0',
-  port:  2552,
-  seeds: ['...'],
+const cluster = await Cluster.join(
+  system,
+  ClusterOptions.create()
+    .withHost('0.0.0.0')
+    .withPort(2552)
+    .withSeeds(['...']),
   // transport defaults to TcpTransport — no need to pass explicitly
-});
+);
 ```
 
 What it does:
@@ -74,7 +76,7 @@ this — same `TcpTransport` works on every runtime.
 ### Optional TLS
 
 ```ts
-import { Cluster, TcpTransport } from 'actor-ts';
+import { Cluster, ClusterOptions, TcpTransport } from 'actor-ts';
 
 const transport = new TcpTransport(
   NodeAddress.parse('actor-ts://my-app@10.0.0.5:2552'),
@@ -87,7 +89,10 @@ const transport = new TcpTransport(
   },
 );
 
-await Cluster.join(system, { host, port, seeds, transport });
+await Cluster.join(
+  system,
+  ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds).withTransport(transport),
+);
 ```
 
 TLS-wrapped TCP, all-or-nothing per cluster.  See
@@ -108,7 +113,7 @@ matter for individual large messages.
 ## InMemoryTransport (tests)
 
 ```ts
-import { InMemoryTransport, Cluster } from 'actor-ts';
+import { InMemoryTransport, Cluster, ClusterOptions } from 'actor-ts';
 import { TestKit } from 'actor-ts/testkit';
 
 // Shared global bus — every transport with the same bus can talk to each other
@@ -117,17 +122,23 @@ const bus = InMemoryTransport.newBus();
 const tk1 = TestKit.create('node-1');
 const tk2 = TestKit.create('node-2');
 
-await Cluster.join(tk1.system, {
-  host: '1', port: 0,
-  seeds: ['1:0'],
-  transport: new InMemoryTransport({ self: 'actor-ts://node-1@1:0', bus, log: tk1.system.log }),
-});
+await Cluster.join(
+  tk1.system,
+  ClusterOptions.create()
+    .withHost('1')
+    .withPort(0)
+    .withSeeds(['1:0'])
+    .withTransport(new InMemoryTransport({ self: 'actor-ts://node-1@1:0', bus, log: tk1.system.log })),
+);
 
-await Cluster.join(tk2.system, {
-  host: '2', port: 0,
-  seeds: ['1:0'],
-  transport: new InMemoryTransport({ self: 'actor-ts://node-2@2:0', bus, log: tk2.system.log }),
-});
+await Cluster.join(
+  tk2.system,
+  ClusterOptions.create()
+    .withHost('2')
+    .withPort(0)
+    .withSeeds(['1:0'])
+    .withTransport(new InMemoryTransport({ self: 'actor-ts://node-2@2:0', bus, log: tk2.system.log })),
+);
 ```
 
 How it works:
@@ -179,7 +190,7 @@ For lower-level inspection (specific frame contents), enable
 debug logging on the system:
 
 ```ts
-const system = ActorSystem.create('my-app', { logLevel: 'debug' });
+const system = ActorSystem.create('my-app', ActorSystemOptions.create().withLogLevel(LogLevel.Debug));
 // Look for [tcp-transport] log lines
 ```
 

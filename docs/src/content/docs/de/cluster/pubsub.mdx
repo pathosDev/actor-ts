@@ -35,7 +35,7 @@ Topic hat.
 ## Ein minimales Beispiel
 
 ```ts
-import { ActorSystem, Cluster, Props, Actor } from 'actor-ts';
+import { ActorSystem, Cluster, ClusterOptions, Props, Actor } from 'actor-ts';
 import { DistributedPubSub, type DistributedPubSubMediator, Publish, Subscribe } from 'actor-ts/cluster/pubsub';
 
 class ChatMessage {
@@ -49,8 +49,8 @@ class ChatRoom extends Actor<ChatMessage> {
 }
 
 const system  = ActorSystem.create('my-app');
-const cluster = await Cluster.join(system, { host, port, seeds });
-const ps      = DistributedPubSub.start(system, { cluster });
+const cluster = await Cluster.join(system, ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds));
+const ps      = DistributedPubSub.start(cluster);
 
 // Subscribe (typischerweise im preStart eines Actors):
 const room = system.spawnAnonymous(Props.create(() => new ChatRoom()));
@@ -120,7 +120,7 @@ Standard-Gossip-Intervall ist `gossipIntervalMs` des Clusters
 (1 Sekunde). Überschreibe pro Mediator:
 
 ```ts
-DistributedPubSub.start(system, { cluster, gossipIntervalMs: 500 });
+DistributedPubSub.start(cluster, DistributedPubSubOptions.create().withGossipIntervalMs(500));
 ```
 
 Niedrigere Intervalle → schnellere Konvergenz nach Subscribe /

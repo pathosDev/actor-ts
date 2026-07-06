@@ -46,7 +46,7 @@ trail.
 ## A minimal example
 
 ```ts
-import { DurableStateActor, type DurableStateSettings, ActorSystem, Props } from 'actor-ts';
+import { DurableStateActor, DurableStateOptions, ActorSystem, Props } from 'actor-ts';
 import { InMemoryDurableStateStore } from 'actor-ts';
 import { match } from 'ts-pattern';
 
@@ -58,7 +58,7 @@ type CartCmd =
 interface State { items: string[]; }
 
 class Cart extends DurableStateActor<CartCmd, State> {
-  constructor(settings: DurableStateSettings<State>) { super(settings); }
+  constructor(options: DurableStateOptions<State>) { super(options); }
 
   override async onReceive(cmd: CartCmd): Promise<void> {
     await match(cmd)
@@ -74,11 +74,10 @@ const system = ActorSystem.create('demo');
 const store  = new InMemoryDurableStateStore();
 
 const cart = system.spawn(
-  Props.create(() => new Cart({
-    persistenceId: 'cart-user-42',
-    store,
-    emptyState:    () => ({ items: [] }),
-  })),
+  Props.create(() => new Cart(DurableStateOptions.create<State>()
+    .withPersistenceId('cart-user-42')
+    .withStore(store)
+    .withEmptyState(() => ({ items: [] })))),
   'cart',
 );
 

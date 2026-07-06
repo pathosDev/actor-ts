@@ -9,19 +9,22 @@ description: A decorator that wraps any `SnapshotStore` with an LRU read-through
 ```ts
 import {
   CachedSnapshotStore,
+  CachedSnapshotStoreOptions,
   ObjectStorageSnapshotStore,
+  ObjectStorageSnapshotStoreOptions,
   PersistenceExtensionId,
 } from 'actor-ts';
 
-const underlying = new ObjectStorageSnapshotStore({
-  /* S3 bucket config */
-});
+const underlying = new ObjectStorageSnapshotStore(
+  ObjectStorageSnapshotStoreOptions.create().withBackend(backend), // S3 / filesystem backend
+);
 
-const cached = new CachedSnapshotStore({
+const cached = new CachedSnapshotStore(
   underlying,
-  maxEntries: 1_000,         // LRU size
-  ttlMs:      60_000,         // optional TTL
-});
+  CachedSnapshotStoreOptions.create()
+    .withCache(cache)          // backing cache (typically Redis)
+    .withTtlMs(60_000),        // optional TTL
+);
 
 system.extension(PersistenceExtensionId).configure({
   journal:       myJournal,

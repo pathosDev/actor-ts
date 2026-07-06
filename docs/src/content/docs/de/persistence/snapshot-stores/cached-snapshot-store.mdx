@@ -10,19 +10,22 @@ hinzuzufügen.
 ```ts
 import {
   CachedSnapshotStore,
+  CachedSnapshotStoreOptions,
   ObjectStorageSnapshotStore,
+  ObjectStorageSnapshotStoreOptions,
   PersistenceExtensionId,
 } from 'actor-ts';
 
-const underlying = new ObjectStorageSnapshotStore({
-  /* S3-Bucket-Config */
-});
+const underlying = new ObjectStorageSnapshotStore(
+  ObjectStorageSnapshotStoreOptions.create().withBackend(backend), // S3-/Filesystem-Backend
+);
 
-const cached = new CachedSnapshotStore({
+const cached = new CachedSnapshotStore(
   underlying,
-  maxEntries: 1_000,         // LRU-Größe
-  ttlMs:      60_000,         // optionale TTL
-});
+  CachedSnapshotStoreOptions.create()
+    .withCache(cache)          // Backing-Cache (typischerweise Redis)
+    .withTtlMs(60_000),        // optionale TTL
+);
 
 system.extension(PersistenceExtensionId).configure({
   journal:       myJournal,

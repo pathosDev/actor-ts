@@ -130,12 +130,12 @@ the full surface.
 ## Durable state in five minutes
 
 ```ts
-import { DurableStateActor } from 'actor-ts';
+import { DurableStateActor, DurableStateOptions } from 'actor-ts';
 
 interface State { items: string[]; }
 
 class Cart extends DurableStateActor<CartCmd, State> {
-  constructor(settings: DurableStateSettings<State>) { super(settings); }
+  constructor(options: DurableStateOptions<State>) { super(options); }
 
   override async onReceive(cmd: CartCmd): Promise<void> {
     if (cmd.kind === 'add') {

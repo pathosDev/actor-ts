@@ -25,7 +25,7 @@ cluster.
 ## Enabling TLS
 
 ```ts
-import { TcpTransport, NodeAddress, Cluster } from 'actor-ts';
+import { TcpTransport, NodeAddress, Cluster, ClusterOptions } from 'actor-ts';
 import fs from 'node:fs';
 
 const transport = new TcpTransport(
@@ -39,12 +39,11 @@ const transport = new TcpTransport(
   },
 );
 
-await Cluster.join(system, {
-  host:      '10.0.0.5',
-  port:      2552,
-  seeds:     [...],
-  transport,
-});
+await Cluster.join(system, ClusterOptions.create()
+  .withHost('10.0.0.5')
+  .withPort(2552)
+  .withSeeds([...])
+  .withTransport(transport));
 ```
 
 The TLS settings:
@@ -183,7 +182,7 @@ transport is **trusted within itself**.
 
 ```ts
 // production.ts
-import { TcpTransport, Cluster } from 'actor-ts';
+import { TcpTransport, Cluster, ClusterOptions } from 'actor-ts';
 
 const tlsSettings = {
   cert: fs.readFileSync(process.env.TLS_CERT_PATH!),
@@ -194,12 +193,11 @@ const tlsSettings = {
 
 const transport = new TcpTransport(self, log, tlsSettings);
 
-await Cluster.join(system, {
-  host,
-  port,
-  seeds,
-  transport,
-});
+await Cluster.join(system, ClusterOptions.create()
+  .withHost(host)
+  .withPort(port)
+  .withSeeds(seeds)
+  .withTransport(transport));
 ```
 
 Env vars carry paths; the cert-manager / vault mounts the

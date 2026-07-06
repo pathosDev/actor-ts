@@ -51,7 +51,7 @@ elsewhere and the entities re-spawn there.
 ## A minimal example
 
 ```ts
-import { Actor, Cluster } from 'actor-ts';
+import { Actor, Cluster, ClusterBootstrapOptions, StartShardingOptions } from 'actor-ts';
 
 type CartCmd =
   | { entityId: string; kind: 'add';   sku: string }
@@ -67,11 +67,11 @@ class CartActor extends Actor<CartCmd> {
 }
 
 // Setup — one-line cluster + sharding entry point:
-const { system, cluster } = await Cluster.bootstrap({ name: 'my-app' });
+const { system, cluster } = await Cluster.bootstrap(ClusterBootstrapOptions.create('my-app'));
 
-const cartRegion = cluster.sharding.start('cart', CartActor, {
-  extractEntityId: (msg: CartCmd) => msg.entityId,
-});
+const cartRegion = cluster.sharding.start('cart', CartActor,
+  StartShardingOptions.create<CartCmd>()
+    .withExtractEntityId((msg) => msg.entityId));
 
 // Usage — `tell` to the region, with entity ID inside the message:
 cartRegion.tell({ entityId: 'user-42', kind: 'add', sku: 'book-1' });
@@ -85,21 +85,22 @@ whichever fits the entity:
 
 ```ts
 // 1. Class shorthand (most common):
-cluster.sharding.start('cart', CartActor, { extractEntityId: (m: CartCmd) => m.entityId });
+cluster.sharding.start('cart', CartActor, StartShardingOptions.create<CartCmd>().withExtractEntityId((m) => m.entityId));
 
 // 2. Factory shorthand — when the entity needs constructor args:
-cluster.sharding.start('cart', () => new CartActor(deps), {
-  extractEntityId: (m: CartCmd) => m.entityId,
-});
+cluster.sharding.start('cart', () => new CartActor(deps),
+  StartShardingOptions.create<CartCmd>()
+    .withExtractEntityId((m) => m.entityId));
 
 // 3. Full-form — explicit Props + every setting:
-cluster.sharding.start<CartCmd>({
-  typeName:        'cart',
-  entityProps:     Props.create(() => new CartActor()),
-  extractEntityId: (m) => m.entityId,
-  numShards:       16,
-  role:            'cart-host',
-});
+cluster.sharding.start(
+  StartShardingOptions.create<CartCmd>()
+    .withTypeName('cart')
+    .withEntityProps(Props.create(() => new CartActor()))
+    .withExtractEntityId((m) => m.entityId)
+    .withNumShards(16)
+    .withRole('cart-host'),
+);
 ```
 
 `cluster.sharding` is a memoised facade — repeated reads return the

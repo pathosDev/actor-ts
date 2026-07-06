@@ -10,13 +10,14 @@ die denselben `name` teilen, schließen sich also korrekt aus,
 aber nur innerhalb eines Prozesses.
 
 ```ts
-import { InMemoryLease } from 'actor-ts/coordination';
+import { InMemoryLease, LeaseOptions } from 'actor-ts/coordination';
 
-const lease = new InMemoryLease({
-  name:  'my-singleton',
-  owner: 'instance-1',
-  ttlMs: 30_000,
-});
+const lease = new InMemoryLease(
+  LeaseOptions.create()
+    .withName('my-singleton')
+    .withOwner('instance-1')
+    .withTtlMs(30_000),
+);
 
 await lease.acquire();   // → true (erstes Acquire)
 ```
@@ -61,19 +62,19 @@ import { InMemoryLeaseRegistry } from 'actor-ts/coordination';
 
 const registry = new InMemoryLeaseRegistry();
 
-const leaseA = new InMemoryLease({
-  name:     'singleton-x',
-  owner:    'node-a',
-  ttlMs:    30_000,
-  registry,
-});
+const leaseA = new InMemoryLease(
+  LeaseOptions.create()
+    .withName('singleton-x')
+    .withOwner('node-a')
+    .withTtlMs(30_000),
+);
 
-const leaseB = new InMemoryLease({
-  name:     'singleton-x',  // gleicher Name
-  owner:    'node-b',
-  ttlMs:    30_000,
-  registry, // gleiches Registry → schließen sich aus
-});
+const leaseB = new InMemoryLease(
+  LeaseOptions.create()
+    .withName('singleton-x')  // gleicher Name
+    .withOwner('node-b')
+    .withTtlMs(30_000),
+);
 
 await leaseA.acquire();   // → true
 await leaseB.acquire();   // → false (leaseA hält ihn)
@@ -115,21 +116,20 @@ Registry direkt.
 
 ```ts
 import { describe, it, expect } from 'bun:test';
-import { TestKit, InMemoryLease, InMemoryLeaseRegistry } from 'actor-ts/testkit';
+import { TestKit, InMemoryLease, LeaseOptions } from 'actor-ts/testkit';
 import { ClusterSingletonManager, Props } from 'actor-ts';
 
 describe('SingletonManager mit Lease', () => {
   it('nur ein Halter spawnt den Singleton', async () => {
     const tk1 = TestKit.create('node-1');
     const tk2 = TestKit.create('node-2');
-    const registry = new InMemoryLeaseRegistry();
 
-    const lease1 = new InMemoryLease({
-      name: 'singleton', owner: 'n1', ttlMs: 30_000, registry,
-    });
-    const lease2 = new InMemoryLease({
-      name: 'singleton', owner: 'n2', ttlMs: 30_000, registry,
-    });
+    const lease1 = new InMemoryLease(
+      LeaseOptions.create().withName('singleton').withOwner('n1').withTtlMs(30_000),
+    );
+    const lease2 = new InMemoryLease(
+      LeaseOptions.create().withName('singleton').withOwner('n2').withTtlMs(30_000),
+    );
 
     // (Cluster-Verdrahtung ausgelassen)
 

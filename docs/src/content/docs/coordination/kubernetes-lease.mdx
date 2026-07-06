@@ -10,15 +10,16 @@ API).  Production-grade: backed by etcd, strongly consistent,
 RBAC-controlled.
 
 ```ts
-import { KubernetesLease } from 'actor-ts/coordination';
+import { KubernetesLease, KubernetesLeaseOptions } from 'actor-ts/coordination';
 
-const lease = new KubernetesLease({
-  name:              'my-singleton-lease',
-  owner:             process.env.POD_NAME!,
-  ttlMs:             30_000,
-  renewalIntervalMs: 10_000,
-  namespace:         process.env.K8S_NAMESPACE!,
-});
+const lease = new KubernetesLease(
+  KubernetesLeaseOptions.create()
+    .withName('my-singleton-lease')
+    .withOwner(process.env.POD_NAME!)
+    .withTtlMs(30_000)
+    .withRenewalIntervalMs(10_000)
+    .withNamespace(process.env.K8S_NAMESPACE!),
+);
 ```
 
 The K8s API server's etcd-backed store provides the
@@ -228,14 +229,15 @@ For integration tests with a real K8s API (kind, minikube,
 ephemeral CI clusters):
 
 ```ts
-const lease = new KubernetesLease({
-  name:                'test-lease-' + crypto.randomUUID(),
-  owner:               'test-runner',
-  ttlMs:               5_000,
-  apiBaseUrl:          'https://localhost:8443',
-  serviceAccountToken: fs.readFileSync('./test-token', 'utf-8'),
-  namespace:           'test',
-});
+const lease = new KubernetesLease(
+  KubernetesLeaseOptions.create()
+    .withName('test-lease-' + crypto.randomUUID())
+    .withOwner('test-runner')
+    .withTtlMs(5_000)
+    .withApiServerUrl('https://localhost:8443')
+    .withAuthToken(fs.readFileSync('./test-token', 'utf-8'))
+    .withNamespace('test'),
+);
 
 await lease.acquire();
 expect(lease.checkAlive()).toBe(true);

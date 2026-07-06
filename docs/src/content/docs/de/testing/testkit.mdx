@@ -56,11 +56,10 @@ Baut ein Kit mit frischem System. Der `name` ist der System-Name
 haben dürfen. Default ist `'test-kit'`.
 
 ```ts
-const tk = TestKit.create('my-spec', {
-  quiet:    false,            // Logging einschalten
-  logLevel: LogLevel.Debug,
-  config:   { /* HOCON-Overrides */ },
-});
+const tk = TestKit.create('my-spec', TestKitOptions.create()
+  .withQuiet(false)                   // Logging einschalten
+  .withLogLevel(LogLevel.Debug)
+  .withConfig({ /* HOCON-Overrides */ }));
 ```
 
 Mit `quiet: false` bekommst du Konsolen-Logs — nützlich beim
@@ -70,10 +69,9 @@ Log-Aufrufe No-Ops, was deine Test-Ausgabe sauber hält.
 ### `tk.createTestProbe(options?)`
 
 ```ts
-const probe = tk.createTestProbe({
-  defaultTimeoutMs: 5_000,    // Default-Wartezeit für expect/receive
-  name: 'order-probe',         // sichtbar in Logs
-});
+const probe = tk.createTestProbe(TestProbeOptions.create()
+  .withDefaultTimeoutMs(5_000)        // Default-Wartezeit für expect/receive
+  .withName('order-probe'));           // sichtbar in Logs
 
 ref.tell({ kind: 'do', replyTo: probe });
 await probe.expectMsg({ kind: 'done' });

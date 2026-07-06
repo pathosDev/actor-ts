@@ -11,7 +11,7 @@ material each needs.
 ## Cluster transport
 
 ```ts
-import { TcpTransport, Cluster } from 'actor-ts';
+import { TcpTransport, Cluster, ClusterOptions } from 'actor-ts';
 
 const transport = new TcpTransport(self, log, {
   cert: fs.readFileSync('./tls/cluster.crt'),
@@ -20,7 +20,11 @@ const transport = new TcpTransport(self, log, {
   rejectUnauthorized: true,
 });
 
-await Cluster.join(system, { host, port, seeds, transport });
+await Cluster.join(system, ClusterOptions.create()
+  .withHost(host)
+  .withPort(port)
+  .withSeeds(seeds)
+  .withTransport(transport));
 ```
 
 Mutually-authenticated TLS between cluster nodes.  See
@@ -79,25 +83,22 @@ Each broker actor has its own TLS knobs:
 ### Kafka
 
 ```ts
-new KafkaActor({
-  brokers: ['kafka-1:9093'],
-  ssl:     true,
-  sasl: {
+new KafkaActor(KafkaOptions.create()
+  .withBrokers(['kafka-1:9093'])
+  .withSsl(true)
+  .withSasl({
     mechanism: 'scram-sha-512',
     username: process.env.KAFKA_USER!,
     password: process.env.KAFKA_PASS!,
-  },
-});
+  }));
 ```
 
 ### MQTT
 
 ```ts
-new MqttActor({
-  url:      'mqtts://mqtt.example.com:8883',
-  username: process.env.MQTT_USER,
-  password: process.env.MQTT_PASS,
-});
+new MqttActor(MqttOptions.create()
+  .withBrokerUrl('mqtts://mqtt.example.com:8883')
+  .withCredentials(process.env.MQTT_USER, process.env.MQTT_PASS));
 ```
 
 `mqtts://` URL scheme.  Cert verification follows the
@@ -106,10 +107,9 @@ underlying `mqtt` package's defaults.
 ### AMQP
 
 ```ts
-new AmqpActor({
-  url: 'amqps://rabbitmq.example.com:5671',
+new AmqpActor(AmqpOptions.create()
+  .withUrl('amqps://rabbitmq.example.com:5671'));
   // amqplib uses URL params for TLS configuration
-});
 ```
 
 `amqps://` URL scheme.
@@ -117,14 +117,10 @@ new AmqpActor({
 ### NATS
 
 ```ts
-new NatsActor({
-  servers: ['nats://nats.example.com:4222'],
-  tls: {
-    ca:   fs.readFileSync('./tls/nats-ca.crt'),
-    cert: fs.readFileSync('./tls/nats-client.crt'),
-    key:  fs.readFileSync('./tls/nats-client.key'),
-  },
-});
+new NatsActor(NatsOptions.create()
+  .withServers(['nats://nats.example.com:4222']));
+  // mTLS cert material (ca / cert / key) is supplied to the underlying
+  // nats connection — e.g. via the driver's connect options / URL.
 ```
 
 mTLS via the `tls` object — common for production NATS.
@@ -132,10 +128,9 @@ mTLS via the `tls` object — common for production NATS.
 ### Redis Streams
 
 ```ts
-new RedisStreamsActor({
-  url: 'rediss://redis.example.com:6380',
-  tls: true,
-});
+new RedisStreamsActor(RedisStreamsOptions.create()
+  .withUrl('rediss://redis.example.com:6380'));
+  // the `rediss://` scheme enables TLS on the connection
 ```
 
 `rediss://` URL scheme (note the double-s).
@@ -143,12 +138,12 @@ new RedisStreamsActor({
 ### gRPC
 
 ```ts
-new GrpcClientActor({
-  target: 'orders.example.com:50051',
-  tls: {
-    ca: fs.readFileSync('./tls/ca.crt'),
-  },
-});
+new GrpcClientActor(GrpcClientOptions.create()
+  .withEndpoint('orders.example.com:50051')
+  .withCredentials({
+    kind: 'tls',
+    rootCerts: fs.readFileSync('./tls/ca.crt'),
+  }));
 ```
 
 For mutual TLS, add `cert` + `key`.
@@ -156,9 +151,8 @@ For mutual TLS, add `cert` + `key`.
 ### WebSocket
 
 ```ts
-new WebSocketClientActor({
-  url: 'wss://realtime.example.com/feed',
-});
+new WebSocketClientActor(WebSocketClientOptions.create()
+  .withUrl('wss://realtime.example.com/feed'));
 ```
 
 `wss://` URL scheme.  Cert verification follows the runtime's
@@ -175,14 +169,11 @@ N/A — local-file access.  TLS not applicable.
 ### Cassandra
 
 ```ts
-new CassandraJournal({
-  contactPoints: ['cass-1.example.com:9042'],
-  ssl: {
-    cert: fs.readFileSync('./tls/cass-client.crt'),
-    key:  fs.readFileSync('./tls/cass-client.key'),
-    ca:   fs.readFileSync('./tls/cass-ca.crt'),
-  },
-});
+new CassandraJournal(CassandraJournalOptions.create()
+  .withContactPoints(['cass-1.example.com:9042'])
+  .withClient(clientWithMtls));
+  // mTLS cert material (cert / key / ca) is configured on the
+  // cassandra-driver client passed via withClient()
 ```
 
 Cassandra clusters typically run with mTLS in production.
@@ -190,12 +181,10 @@ Cassandra clusters typically run with mTLS in production.
 ### Object storage
 
 ```ts
-new ObjectStorageDurableStateStore({
-  backend: new S3Backend({
-    region: 'eu-west-1',
+new ObjectStorageDurableStateStore(ObjectStorageDurableStateStoreOptions.create()
+  .withBackend(new S3ObjectStorageBackend(S3ObjectStorageOptions.create()
+    .withRegion('eu-west-1'))));
     // S3 uses HTTPS by default
-  }),
-});
 ```
 
 Cloud object storage (S3, GCS, Azure Blob) **always uses

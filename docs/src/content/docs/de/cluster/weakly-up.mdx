@@ -52,10 +52,14 @@ auftaucht).
 ## Weakly-up aktivieren
 
 ```ts
-await Cluster.join(system, {
-  host, port, seeds,
-  weaklyUpAfterMs: 3_000,   // nach 3s in joining automatisch befördern
-});
+await Cluster.join(
+  system,
+  ClusterOptions.create()
+    .withHost(host)
+    .withPort(port)
+    .withSeeds(seeds)
+    .withWeaklyUpAfterMs(3_000),   // nach 3s in joining automatisch befördern
+);
 ```
 
 Der Default ist `0` (deaktiviert). Wähle einen Wert hoch genug,

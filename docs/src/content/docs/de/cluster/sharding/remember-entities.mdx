@@ -25,12 +25,13 @@ dass Entities **eager neu erstellt** werden:
 ## Aktivieren
 
 ```ts
-sharding.start({
-  typeName:           'session',
-  entityProps:        Props.create(() => new SessionActor()),
-  extractEntityId:    (msg) => msg.userId,
-  rememberEntities:   true,
-});
+sharding.start(
+  StartShardingOptions.create()
+    .withTypeName('session')
+    .withEntityProps(Props.create(() => new SessionActor()))
+    .withExtractEntityId((msg) => msg.userId)
+    .withRememberEntities(true),
+);
 ```
 
 Was es tut:
@@ -83,13 +84,14 @@ Wenn du `rememberEntities: true` verwendest, aber kein Journal
 konfiguriert hast:
 
 ```ts
-sharding.start({
-  typeName: '...',
-  entityProps: ...,
-  extractEntityId: ...,
-  rememberEntities: true,
-  rememberEntitiesStore: null,   // explizites Opt-Out aus Persistenz
-});
+sharding.start(
+  StartShardingOptions.create()
+    .withTypeName('...')
+    .withEntityProps(...)
+    .withExtractEntityId(...)
+    .withRememberEntities(true)
+    .withRememberEntitiesStore(null),   // explizites Opt-Out aus Persistenz
+);
 ```
 
 `null` zu übergeben fällt zurück auf das v1-In-Memory-Only-Verhalten —
@@ -115,11 +117,12 @@ class RedisRememberEntitiesStore implements RememberEntitiesStore {
   async listEntities(typeName: string): Promise<ReadonlyArray<string>> { /* SMEMBERS */ }
 }
 
-sharding.start({
-  // ...
-  rememberEntities:        true,
-  rememberEntitiesStore:   new RedisRememberEntitiesStore(),
-});
+sharding.start(
+  StartShardingOptions.create()
+    // ...
+    .withRememberEntities(true)
+    .withRememberEntitiesStore(new RedisRememberEntitiesStore()),
+);
 ```
 
 Die Schnittstelle ist klein. Nützlich, wenn du die Entity-Registry
