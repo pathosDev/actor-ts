@@ -30,6 +30,7 @@ import {
   InMemoryCache,
   Props,
   RedisCache,
+  RedisCacheOptions,
   Status,
   cached,
   complete,
@@ -69,7 +70,7 @@ class UserEntity extends Actor<UserCmd> {
 
 function pickCache(): Cache {
   if (process.env.ACTOR_TS_CACHE === 'redis') {
-    return new RedisCache({ url: process.env.REDIS_URL ?? 'redis://localhost:6379', keyPrefix: 'rest:' });
+    return new RedisCache(RedisCacheOptions.create().withUrl(process.env.REDIS_URL ?? 'redis://localhost:6379').withKeyPrefix('rest:'));
   }
   return new InMemoryCache();
 }

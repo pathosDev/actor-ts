@@ -458,7 +458,9 @@ export {
   CacheError,
   InMemoryCache,
   RedisCache,
+  RedisCacheOptions,
   MemcachedCache,
+  MemcachedCacheOptions,
   CacheExtension,
   CacheExtensionId,
   IN_MEMORY_CACHE_PLUGIN_ID,
@@ -467,9 +469,9 @@ export {
 } from './cache/index.js';
 export type {
   Cache,
-  RedisCacheOptions,
+  RedisCacheSettings,
   RedisClientLike,
-  MemcachedCacheOptions,
+  MemcachedCacheSettings,
   MemcachedClientLike,
 } from './cache/index.js';
 
