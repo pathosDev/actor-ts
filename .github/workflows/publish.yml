@@ -22,6 +22,15 @@ jobs:
       contents: read
       id-token: write     # Required for both npm provenance AND OIDC trusted publishing.
 
+    # Quarantine the worker-thread multi-node suites (ParallelMultiNodeSpec +
+    # LeaseMajority e2e) on GitHub's hosted runners, exactly as test.yml does —
+    # Bun there can't respawn worker threads after the first test.  Set at JOB
+    # level so BOTH the `Test` step AND `npm publish`'s `prepublishOnly` re-run
+    # of `bun test` inherit it.  They run locally + in Docker; the `integration`
+    # workflow is the real multi-node gate.
+    env:
+      ACTOR_TS_SKIP_FLAKY_MNS: '1'
+
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -44,13 +53,6 @@ jobs:
         run: bun run typecheck
 
       - name: Test
-        # Quarantine the worker-thread multi-node suites (ParallelMultiNodeSpec
-        # + in-process LeaseMajority e2e) on GitHub's hosted runners, exactly as
-        # test.yml does — Bun there can't respawn worker threads after the first
-        # test, starving lease arbitration into a false split-brain.  They run
-        # locally + in Docker; the `integration` workflow is the multi-node gate.
-        env:
-          ACTOR_TS_SKIP_FLAKY_MNS: '1'
         run: bun test
 
       - name: Build
