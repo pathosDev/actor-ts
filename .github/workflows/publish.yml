@@ -44,6 +44,13 @@ jobs:
         run: bun run typecheck
 
       - name: Test
+        # Quarantine the worker-thread multi-node suites (ParallelMultiNodeSpec
+        # + in-process LeaseMajority e2e) on GitHub's hosted runners, exactly as
+        # test.yml does — Bun there can't respawn worker threads after the first
+        # test, starving lease arbitration into a false split-brain.  They run
+        # locally + in Docker; the `integration` workflow is the multi-node gate.
+        env:
+          ACTOR_TS_SKIP_FLAKY_MNS: '1'
         run: bun test
 
       - name: Build
