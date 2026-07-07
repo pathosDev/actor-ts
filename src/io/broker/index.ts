@@ -39,15 +39,14 @@ export { UdpSocketOptions } from './UdpSocketOptions.js';
 // Subclass-first typed MQTT actor.
 export { MqttActor, matchesMqttPattern, buildPublishProperties } from './MqttActor.js';
 export type {
-  MqttActorSettings,
   MqttPublishOptions,
-  MqttCredentials,
   // Test seams (re-exported so subclasses can satisfy the mock shape).
   MqttClientLike,
   MqttModuleLike,
   MqttInboundPacketLike,
 } from './MqttActor.js';
-export { MqttOptions } from './MqttOptions.js';
+export { MqttOptions, MqttOptionsBuilder } from './MqttOptions.js';
+export type { MqttOptionsType, MqttCredentials } from './MqttOptions.js';
 // Message types, payload wrapper, and mailbox signals.
 export {
   MqttPayload,

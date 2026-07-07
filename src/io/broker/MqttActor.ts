@@ -6,9 +6,8 @@ import { Terminated } from '../../SystemMessages.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
-import type { BrokerCommonSettings } from './BrokerSettings.js';
 import { mqttJsonCodec, MqttDecodeError, type MqttCodec } from './MqttCodec.js';
-import type { MqttOptions } from './MqttOptions.js';
+import type { MqttOptions, MqttOptionsType } from './MqttOptions.js';
 import {
   MqttConnectedSignal,
   MqttDisconnectedSignal,
@@ -23,40 +22,6 @@ import {
 } from './MqttMessages.js';
 
 export type { MqttQos, MqttUserProperties, MqttMessage, MqttPublish, MqttCmd } from './MqttMessages.js';
-
-export interface MqttCredentials {
-  readonly username?: string;
-  readonly password?: string;
-}
-
-export interface MqttActorSettings extends BrokerCommonSettings {
-  /** Broker URL — `mqtt://`, `mqtts://`, `ws://`, `wss://`. */
-  readonly brokerUrl?: string;
-  /** Stable client id.  When omitted the broker assigns one. */
-  readonly clientId?: string;
-  readonly credentials?: MqttCredentials;
-  /** Default QoS used by `publish` / `subscribe` when not overridden per call. */
-  readonly qos?: MqttQos;
-  /** Last-will-and-testament published by the broker if the actor disconnects ungracefully. */
-  readonly will?: { readonly topic: string; readonly payload: Uint8Array | string; readonly qos?: MqttQos; readonly retain?: boolean };
-  /** Clean-session flag.  Default `true`. */
-  readonly cleanSession?: boolean;
-  /** Keep-alive interval in seconds.  Default 60. */
-  readonly keepAlive?: number;
-  /**
-   * MQTT protocol version negotiated with the broker.  Default `4`
-   * (MQTT 3.1.1); set to `5` to opt in to MQTT 5.0 features (user
-   * properties + reason codes — see {@link MqttPublish.userProperties}
-   * + {@link MqttMessage.reasonCode}).
-   */
-  readonly protocolVersion?: 4 | 5;
-  /**
-   * Payload codec used by {@link MqttPayload.entity} (inbound decode) and
-   * by `publish` when handed a non-string/non-`Uint8Array` entity.
-   * Default: {@link mqttJsonCodec}.  One codec per actor.
-   */
-  readonly codec?: MqttCodec<unknown>;
-}
 
 /** Per-publish overrides. */
 export interface MqttPublishOptions {
@@ -104,7 +69,7 @@ interface SubscriptionEntry<T> {
  * actor thread (single-threaded, per-connection order preserved).
  */
 export abstract class MqttActor<T = unknown, TSelf = never>
-  extends BrokerActor<MqttActorSettings, MqttActorMessage<T, TSelf>, MqttPublish> {
+  extends BrokerActor<MqttOptionsType, MqttActorMessage<T, TSelf>, MqttPublish> {
 
   private client: MqttClientLike | null = null;
   private _codec: MqttCodec<unknown> | null = null;
@@ -118,7 +83,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   /** Subscriptions requested in the constructor, flushed in `preStart`. */
   private pendingSubs: Array<{ topic: string; qos?: MqttQos; target?: ActorRef<MqttMessage<T>> }> = [];
 
-  constructor(options: MqttOptions | Partial<MqttActorSettings> = {}) {
+  constructor(options: MqttOptions = {}) {
     super(options);
   }
 
@@ -397,12 +362,12 @@ export abstract class MqttActor<T = unknown, TSelf = never>
 
   protected configKey(): string { return ConfigKeys.io.broker.mqtt; }
 
-  protected builtInDefaults(): Partial<MqttActorSettings> {
+  protected builtInDefaults(): Partial<MqttOptionsType> {
     return { qos: 0, cleanSession: true, keepAlive: 60 };
   }
 
-  protected readSettingsFromConfig(c: Config): Partial<MqttActorSettings> {
-    const out: { -readonly [K in keyof MqttActorSettings]?: MqttActorSettings[K] } = {};
+  protected readSettingsFromConfig(c: Config): Partial<MqttOptionsType> {
+    const out: { -readonly [K in keyof MqttOptionsType]?: MqttOptionsType[K] } = {};
     if (c.hasPath('brokerUrl')) out.brokerUrl = c.getString('brokerUrl');
     if (c.hasPath('clientId')) out.clientId = c.getString('clientId');
     if (c.hasPath('credentials')) {
@@ -425,7 +390,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     return out;
   }
 
-  protected requiredSettings(): ReadonlyArray<keyof MqttActorSettings> { return ['brokerUrl']; }
+  protected requiredSettings(): ReadonlyArray<keyof MqttOptionsType> { return ['brokerUrl']; }
   protected endpointLabel(): string { return this.settings.brokerUrl ?? '<unknown>'; }
 
   /** @internal Test seam — override to inject a fake mqtt module. */
