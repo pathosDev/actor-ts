@@ -2,7 +2,6 @@ import { Actor } from '../Actor.js';
 import {
   DurableStateConcurrencyError,
   type DurableStateRecord,
-  type DurableStateStore,
 } from './DurableStateStore.js';
 import type {
   CompressionConfig,
@@ -11,14 +10,7 @@ import type {
 } from './PersistenceOptions.js';
 import type { StateAdapter } from './migration/Adapter.js';
 import { decodeState, encodeState } from './migration/Envelope.js';
-import type { DurableStateOptions } from './DurableStateOptions.js';
-
-export interface DurableStateSettings<S> {
-  readonly persistenceId: string;
-  readonly store: DurableStateStore;
-  /** Factory invoked when no record exists yet. */
-  readonly emptyState: () => S;
-}
+import type { DurableStateOptions, DurableStateOptionsType } from './DurableStateOptions.js';
 
 /**
  * Base class for actors that persist a single state value per
@@ -33,11 +25,11 @@ export interface DurableStateSettings<S> {
 export abstract class DurableStateActor<Cmd, S> extends Actor<Cmd> {
   private _record: DurableStateRecord<S> | null = null;
   private _persisting: Promise<void> | null = null;
-  public readonly settings: DurableStateSettings<S>;
+  public readonly settings: DurableStateOptionsType<S>;
 
-  constructor(options: DurableStateOptions<S> | Partial<DurableStateSettings<S>>) {
+  constructor(options: DurableStateOptions<S>) {
     super();
-    this.settings = options as DurableStateSettings<S>;
+    this.settings = options as DurableStateOptionsType<S>;
   }
 
   /** Current state snapshot — safe to read inside a handler. */

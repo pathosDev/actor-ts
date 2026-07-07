@@ -25,7 +25,8 @@ export {
   prometheusHandler,
 } from './PrometheusExporter.js';
 export { promClientRegistry } from './PromClientAdapter.js';
-export { PromClientAdapterOptions } from './PromClientAdapterOptions.js';
+export { PromClientAdapterOptions, PromClientAdapterOptionsBuilder } from './PromClientAdapterOptions.js';
+export type { PromClientAdapterOptionsType } from './PromClientAdapterOptions.js';
 export type {
   PromClientLike,
   PromClientRegistryLike,
@@ -33,5 +34,4 @@ export type {
   PromClientGauge,
   PromClientHistogram,
   PromClientLabelValues,
-  PromClientAdapterSettings,
 } from './PromClientAdapter.js';

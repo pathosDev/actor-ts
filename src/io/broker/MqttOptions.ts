@@ -22,10 +22,10 @@
  * reads/spreads exactly like a plain object; the same three-layer merge applies
  * (constructor > HOCON under `actor-ts.io.broker.mqtt` > built-in defaults).
  * The common broker fields (`withReconnect` / `withCircuitBreaker` /
- * `withOutboundBuffer`) come from {@link BrokerOptions}.
+ * `withOutboundBuffer`) come from {@link BrokerOptionsBuilder}.
  */
-import { BrokerOptions } from './BrokerOptions.js';
-import type { BrokerCommonSettings } from './BrokerSettings.js';
+import { BrokerOptionsBuilder } from './BrokerOptions.js';
+import type { BrokerCommonOptionsType } from './BrokerSettings.js';
 import type { MqttCodec } from './MqttCodec.js';
 import type { MqttQos } from './MqttMessages.js';
 
@@ -36,7 +36,7 @@ export interface MqttCredentials {
 }
 
 /** Plain settings-object shape accepted by an {@link MqttActor}. */
-export interface MqttOptionsType extends BrokerCommonSettings {
+export interface MqttOptionsType extends BrokerCommonOptionsType {
   /** Broker URL — `mqtt://`, `mqtts://`, `ws://`, `wss://`. */
   readonly brokerUrl?: string;
   /** Stable client id.  When omitted the broker assigns one. */
@@ -66,7 +66,7 @@ export interface MqttOptionsType extends BrokerCommonSettings {
 }
 
 /** Fluent builder for {@link MqttOptionsType}. */
-export class MqttOptionsBuilder extends BrokerOptions<MqttOptionsType> {
+export class MqttOptionsBuilder extends BrokerOptionsBuilder<MqttOptionsType> {
   /** Start a fresh builder.  Equivalent to `new MqttOptionsBuilder()`. */
   static create(): MqttOptionsBuilder {
     return new MqttOptionsBuilder();
@@ -122,6 +122,6 @@ export class MqttOptionsBuilder extends BrokerOptions<MqttOptionsType> {
  * Accepted input for any MQTT-configurable constructor: the fluent
  * {@link MqttOptionsBuilder} OR a plain {@link MqttOptionsType} object.
  */
-export type MqttOptions = MqttOptionsBuilder | MqttOptionsType;
+export type MqttOptions = MqttOptionsBuilder | Partial<MqttOptionsType>;
 /** Value alias so `MqttOptions.create()` / `new MqttOptions()` resolve to the builder. */
 export const MqttOptions = MqttOptionsBuilder;

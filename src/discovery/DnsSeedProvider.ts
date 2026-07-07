@@ -1,29 +1,6 @@
 import { NodeAddress } from '../cluster/NodeAddress.js';
-import type { DnsSeedProviderOptions } from './DnsSeedProviderOptions.js';
+import type { DnsSeedProviderOptions, DnsSeedProviderOptionsType } from './DnsSeedProviderOptions.js';
 import type { SeedProvider } from './SeedProvider.js';
-
-export interface DnsSeedProviderSettings {
-  /** Hostname to resolve (e.g. `my-cluster.default.svc.cluster.local`). */
-  readonly hostname: string;
-  /** System name to stamp on discovered NodeAddresses. */
-  readonly systemName: string;
-  /** Port each discovered IP should be paired with. */
-  readonly port: number;
-  /** Override the DNS-resolve function — defaults to `node:dns/promises`. */
-  readonly resolve?: (hostname: string) => Promise<string[]>;
-  /** When using SRV records, override `resolveSrv` similarly. */
-  readonly resolveSrv?: (hostname: string) => Promise<Array<{ name: string; port: number }>>;
-  /** If true, prefer SRV records (which carry a port) over A. */
-  readonly useSrv?: boolean;
-  /**
-   * In-process TTL cache for DNS lookups.  Deliberately *not* a
-   * distributed cache — DNS resolution is a per-process concern, and a
-   * Redis hop here would cost more than the lookup itself.  Default:
-   * 60_000 ms.  Set `0` to disable.  Failures are NOT cached: a query
-   * that throws will retry on the next call.
-   */
-  readonly cacheTtlMs?: number;
-}
 
 /**
  * Seed provider backed by DNS.  Default mode resolves A records and pairs
@@ -40,10 +17,10 @@ export class DnsSeedProvider implements SeedProvider {
   private cached: { value: NodeAddress[]; expiresAt: number } | null = null;
   private readonly cacheTtlMs: number;
 
-  private readonly settings: DnsSeedProviderSettings;
+  private readonly settings: DnsSeedProviderOptionsType;
 
-  constructor(options: DnsSeedProviderOptions | Partial<DnsSeedProviderSettings> = {}) {
-    this.settings = options as DnsSeedProviderSettings;
+  constructor(options: DnsSeedProviderOptions = {}) {
+    this.settings = options as DnsSeedProviderOptionsType;
     this.cacheTtlMs = this.settings.cacheTtlMs ?? 60_000;
     if (!Number.isFinite(this.cacheTtlMs) || this.cacheTtlMs < 0) {
       throw new Error(`DnsSeedProvider: cacheTtlMs must be a non-negative finite number, got ${this.cacheTtlMs}`);

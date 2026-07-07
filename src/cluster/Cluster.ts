@@ -13,7 +13,7 @@ import {
   DEFAULT_TOMBSTONE_TTL_MS,
 } from '../util/Constants.js';
 import { none, some, type Option } from '../util/Option.js';
-import type { ClusterOptions } from './ClusterOptions.js';
+import type { ClusterOptions, ClusterOptionsType } from './ClusterOptions.js';
 import {
   LeaderChanged,
   MemberDown,
@@ -31,9 +31,8 @@ import {
 import {
   defaultFailureDetectorSettings,
   FailureDetector,
-  type FailureDetectorSettings,
 } from './FailureDetector.js';
-import { FailureDetectorOptions } from './FailureDetectorOptions.js';
+import { FailureDetectorOptions, type FailureDetectorOptionsType } from './FailureDetectorOptions.js';
 import { Member } from './Member.js';
 import { NodeAddress } from './NodeAddress.js';
 // `ClusterSharding` only imports `Cluster` as a type (erased at runtime),
@@ -55,65 +54,6 @@ import type {
   ClusterPartitionView,
   DowningProvider,
 } from './downing/DowningProvider.js';
-
-export interface ClusterSettings {
-  readonly host: string;
-  readonly port: number;
-  /** Other nodes this node should try to contact on startup. */
-  readonly seeds?: string[];
-  /** Role tags exposed to other members — used to constrain sharding placement. */
-  readonly roles?: string[];
-  /** Failure detector thresholds. */
-  readonly failureDetector?: Partial<FailureDetectorSettings>;
-  /** Override the transport (e.g. InMemoryTransport for tests). */
-  readonly transport?: Transport;
-  /** How often gossip is pushed to a random reachable peer. */
-  readonly gossipIntervalMs?: number;
-  /** How often to resend the initial join gossip to seeds until self is Up. */
-  readonly seedRetryIntervalMs?: number;
-  /**
-   * How long to keep a `removed` tombstone in the local members map
-   * before pruning it.  Tombstones exist so stale gossip from a slow
-   * peer can't resurrect a definitively-removed address; the TTL
-   * caps their accumulation in long-running clusters with frequent
-   * node churn (#75).  Default 24 h — comfortably above any
-   * realistic gossip-propagation lag.
-   */
-  readonly tombstoneTtlMs?: number;
-  /**
-   * How often the tombstone-prune pass runs.  Default 5 min — small
-   * enough that a freshly-expired tombstone disappears within one
-   * pruning window, large enough to be negligible CPU.
-   */
-  readonly tombstonePruneIntervalMs?: number;
-  /**
-   * Minimum age before a tombstone is eligible for pruning, regardless
-   * of {@link tombstoneTtlMs}.  Defaults to `6 × downAfterMs`, which
-   * gives a few failure-detector rounds of breathing room so peers
-   * that haven't fully converged still see the tombstone before it
-   * vanishes.  Mostly relevant for tests that set a very low TTL.
-   */
-  readonly tombstoneMinRetentionMs?: number;
-  /**
-   * Auto-promote a `joining` member to `weakly-up` after this many ms if
-   * convergence (leader + `up` transition) hasn't happened yet.  Set to 0
-   * to disable.  Default: 0 (disabled — opt-in only).
-   */
-  readonly weaklyUpAfterMs?: number;
-  /**
-   * Optional split-brain resolver.  When provided, the cluster invokes
-   * `provider.decide(view)` whenever a member transitions to / from
-   * `unreachable`, and force-downs every address in the returned set
-   * (regardless of failure-detector state).  Without a provider, the
-   * cluster relies solely on the failure detector's elapsed-time
-   * `unreachable → down → removed` cascade — fine for unilateral
-   * crashes, weak under network partitions.
-   *
-   * See `src/cluster/downing/` for the bundled strategies (KeepMajority,
-   * KeepOldest, KeepReferee, StaticQuorum, LeaseMajority).
-   */
-  readonly downing?: DowningProvider;
-}
 
 type EnvelopeHandler = (env: EnvelopeMsg, from: NodeAddress) => void;
 
@@ -173,13 +113,13 @@ export class Cluster {
    */
   private lastDownedView: string | null = null;
 
-  private constructor(system: ActorSystem, settings: ClusterSettings) {
+  private constructor(system: ActorSystem, settings: ClusterOptionsType) {
     this.system = system;
     this.selfAddress = new NodeAddress(system.name, settings.host, settings.port);
     this.selfRoles = new Set(settings.roles ?? []);
     this.log = system.log.withSource(`cluster@${this.selfAddress}`);
     this.transport = settings.transport ?? new TcpTransport(this.selfAddress, this.log);
-    const fdSettings: FailureDetectorSettings = {
+    const fdSettings: FailureDetectorOptionsType = {
       ...defaultFailureDetectorSettings,
       ...(settings.failureDetector ?? {}),
     };
@@ -202,9 +142,9 @@ export class Cluster {
   /** Entry point: start the cluster and attempt to contact seed nodes. */
   static async join(
     system: ActorSystem,
-    options: ClusterOptions | Partial<ClusterSettings>,
+    options: ClusterOptions,
   ): Promise<Cluster> {
-    const settings = options as ClusterSettings;
+    const settings = options as ClusterOptionsType;
     const cluster = new Cluster(system, settings);
     await cluster._start(settings.seeds ?? []);
     return cluster;
@@ -230,9 +170,7 @@ export class Cluster {
    * `Cluster.join`).
    */
   static async bootstrap(
-    options:
-      | import('./ClusterBootstrapOptions.js').ClusterBootstrapOptions
-      | Partial<import('./ClusterBootstrap.js').ClusterBootstrapSettings>,
+    options: import('./ClusterBootstrapOptions.js').ClusterBootstrapOptions,
   ): Promise<import('./ClusterBootstrap.js').BootstrappedCluster> {
     const { bootstrapCluster } = await import('./ClusterBootstrap.js');
     return bootstrapCluster(options);

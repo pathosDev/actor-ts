@@ -3,6 +3,7 @@ import { Actor } from '../../Actor.js';
 import { ActorRef } from '../../ActorRef.js';
 import { ActorPath } from '../../ActorPath.js';
 import type { Props } from '../../Props.js';
+import type { ShardingOptionsType } from './ShardingOptions.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { Terminated } from '../../SystemMessages.js';
 import type { Cluster } from '../Cluster.js';
@@ -32,39 +33,6 @@ import {
   type EntityStarted,
   type EntityStopped,
 } from './ShardingProtocol.js';
-
-export interface ShardingSettings<TMsg> {
-  readonly typeName: string;
-  readonly entityProps: Props<TMsg>;
-  readonly extractEntityId: (message: TMsg) => string;
-  readonly extractEntityMessage?: (message: TMsg) => unknown;
-  readonly numShards?: number;
-  /** Members must carry this role to be candidates for hosting shards. */
-  readonly role?: string;
-  /** Run as a proxy — route messages but never host entities locally. */
-  readonly proxy?: boolean;
-  /** Track entity lifecycle so entities can be re-created on the new owner. */
-  readonly rememberEntities?: boolean;
-  /** Notify the region after an entity has been idle this many ms.  */
-  readonly passivationIdleMs?: number;
-  /**
-   * Cap the number of locally-hosted entities (#82).  When the region
-   * is about to spawn a new entity and the existing count is already
-   * `maxEntities`, the entity with the oldest `lastActivity` is
-   * passivated — same code path users invoke manually via
-   * {@link Passivate}.  Useful for unbounded entity sets (per-user
-   * sessions, IoT devices, …) where a memory cap per node matters
-   * more than keeping every cold entity resident.
-   *
-   * Default: `0` (no cap).  Eviction runs only when `> 0`.
-   *
-   * Note: passivation is asynchronous, so during the brief window
-   * between "stop the LRU" and "Terminated arrives" the region may
-   * hold `maxEntities + 1` entities; the cap is a steady-state
-   * upper bound rather than a strict instantaneous one.
-   */
-  readonly maxEntities?: number;
-}
 
 export interface ShardRegionConfig<TMsg> {
   readonly typeName: string;
@@ -128,7 +96,7 @@ export class ShardRegion<TMsg = unknown> extends Actor<TMsg | ShardingMessage | 
   constructor(public readonly cfg: ShardRegionConfig<TMsg>) { super(); }
 
   static settingsToConfig<TMsg>(
-    s: ShardingSettings<TMsg>,
+    s: ShardingOptionsType<TMsg>,
     cluster: Cluster,
     localResolver: (path: string) => ActorRef | null,
   ): ShardRegionConfig<TMsg> {

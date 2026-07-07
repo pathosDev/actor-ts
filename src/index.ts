@@ -58,8 +58,8 @@ export { ActorRef, Nobody, NobodyRef } from './ActorRef.js';
 export { ActorPath } from './ActorPath.js';
 export { ActorSelection, parseSelectionPath } from './ActorSelection.js';
 export { ActorSystem } from './ActorSystem.js';
-export { ActorSystemOptions } from './ActorSystemOptions.js';
-export type { ActorSystemSettings } from './ActorSystem.js';
+export { ActorSystemOptions, ActorSystemOptionsBuilder } from './ActorSystemOptions.js';
+export type { ActorSystemOptionsType } from './ActorSystemOptions.js';
 export type { ActorContext, Receive, TimerScheduler } from './ActorContext.js';
 export { StashOverflowError, StashOutsideHandlerError } from './ActorContext.js';
 export { Props } from './Props.js';
@@ -125,7 +125,7 @@ export type {
   PromClientGauge,
   PromClientHistogram,
   PromClientLabelValues,
-  PromClientAdapterSettings,
+  PromClientAdapterOptionsType,
 } from './metrics/index.js';
 
 // Distributed tracing — minimal Tracer + NoopTracer + RecordingTracer (#10).
@@ -155,7 +155,7 @@ export type {
   TraceCarrier,
   RecordedSpan,
   RecordingTracerOptions,
-  OtelAdapterSettings,
+  OtelAdapterOptionsType,
   OtelApiLike,
   OtelContextApi,
   OtelContextLike,
@@ -267,7 +267,7 @@ export type { ShutdownTask, PhaseDefinition } from './CoordinatedShutdown.js';
 
 // TestKit (TestProbe, ManualScheduler).
 export { TestKit, TestKitOptions, TestProbe, TestProbeOptions, ManualScheduler } from './testkit/index.js';
-export type { TestKitSettings, TestProbeSettings } from './testkit/index.js';
+export type { TestKitOptionsType, TestProbeOptionsType } from './testkit/index.js';
 
 // Persistence / Event Sourcing.
 export {
@@ -377,28 +377,28 @@ export type {
   PersistentEvent,
   Snapshot,
   SnapshotPolicy,
-  DurableStateSettings,
+  DurableStateOptionsType,
   DurableStateStore,
   DurableStateRecord,
-  CassandraJournalSettings,
-  CassandraSnapshotStoreSettings,
+  CassandraJournalOptionsType,
+  CassandraSnapshotStoreOptionsType,
   CassandraClientLike,
   CassandraConnection,
   CassandraRowResult,
   CassandraBatchQuery,
-  RegisterCassandraPluginsSettings,
-  PostgresJournalSettings,
-  PostgresSnapshotStoreSettings,
-  PostgresDurableStateStoreSettings,
-  RegisterPostgresPluginsSettings,
+  RegisterCassandraPluginsOptionsType,
+  PostgresJournalOptionsType,
+  PostgresSnapshotStoreOptionsType,
+  PostgresDurableStateStoreOptionsType,
+  RegisterPostgresPluginsOptionsType,
   PostgresPluginHandles,
   PostgresConnection,
   PgPoolLike,
   PgClientLike,
-  MariaDbJournalSettings,
-  MariaDbSnapshotStoreSettings,
-  MariaDbDurableStateStoreSettings,
-  RegisterMariaDbPluginsSettings,
+  MariaDbJournalOptionsType,
+  MariaDbSnapshotStoreOptionsType,
+  MariaDbDurableStateStoreOptionsType,
+  RegisterMariaDbPluginsOptionsType,
   MariaDbPluginHandles,
   MariaDbConnection,
   MariaDbPoolLike,
@@ -407,13 +407,13 @@ export type {
   ObjectFetched,
   ObjectInfo,
   PutOptions,
-  FilesystemObjectStorageSettings,
-  S3ObjectStorageSettings,
+  FilesystemObjectStorageOptionsType,
+  S3ObjectStorageOptionsType,
   S3Credentials,
   S3ClientLike,
-  ObjectStorageSnapshotStoreSettings,
-  ObjectStorageDurableStateStoreSettings,
-  ObjectStoragePluginSettings,
+  ObjectStorageSnapshotStoreOptionsType,
+  ObjectStorageDurableStateStoreOptionsType,
+  ObjectStoragePluginOptionsType,
   ObjectStoragePluginHandles,
   ObjectStorageBackendSpec,
   CompressionConfig,
@@ -440,9 +440,9 @@ export type {
   TaggedEvent,
   TagFilter,
   TagFilterSpec,
-  ProjectionSettings,
-  ByPidSettings,
-  ByTagSettings,
+  ProjectionOptionsType,
+  ByPidProjectionOptionsType,
+  ByTagProjectionOptionsType,
   OffsetStore,
   ReplicatedEventEnvelope,
   VectorClockData,
@@ -470,7 +470,7 @@ export type {
   GSetJson,
   ORSetJson,
   LWWRegisterJson,
-  DistributedDataSettings,
+  DistributedDataOptionsType,
   CrdtFactory,
   CrdtJson,
 } from './crdt/index.js';
@@ -497,9 +497,9 @@ export {
 } from './cache/index.js';
 export type {
   Cache,
-  RedisCacheSettings,
+  RedisCacheOptionsType,
   RedisClientLike,
-  MemcachedCacheSettings,
+  MemcachedCacheOptionsType,
   MemcachedClientLike,
 } from './cache/index.js';
 
@@ -511,7 +511,7 @@ export {
   ConsumerController,
 } from './delivery/index.js';
 export type {
-  ProducerControllerSettings,
+  ProducerControllerOptionsType,
   ProducerSend,
   ConsumerControllerSettings,
   ProducerHandle,
@@ -562,7 +562,7 @@ export type {
 
 // Coordination (Lease API + InMemoryLease reference + KubernetesLease stub).
 export { InMemoryLease, inMemoryLeaseStore, KubernetesLease, LeaseOptions, KubernetesLeaseOptions } from './coordination/index.js';
-export type { Lease, LeaseSettings, KubernetesLeaseSettings } from './coordination/index.js';
+export type { Lease, LeaseOptionsType, KubernetesLeaseOptionsType } from './coordination/index.js';
 
 // Discovery / Receptionist + seed providers.
 export {
@@ -591,13 +591,13 @@ export {
   ReceptionistOptions,
 } from './discovery/index.js';
 export type {
-  ReceptionistSettings,
+  ReceptionistOptionsType,
   ReceptionistGossipMsg,
   SeedProvider,
-  ConfigSeedProviderSettings,
-  DnsSeedProviderSettings,
-  KubernetesApiSeedProviderSettings,
-  AutoDiscoverySettings,
+  ConfigSeedProviderOptionsType,
+  DnsSeedProviderOptionsType,
+  KubernetesApiSeedProviderOptionsType,
+  AutoDiscoveryOptionsType,
 } from './discovery/index.js';
 
 // Typed Behaviors DSL (functional facade over the OO Actor API).
@@ -632,7 +632,7 @@ export type {
 // Worker-Cluster (multi-core via Bun/Web-Workers).
 export { WorkerCluster, WorkerClusterOptions, WorkerBroker, WorkerNode } from './worker/index.js';
 export type {
-  WorkerClusterSettings,
+  WorkerClusterOptionsType,
   WorkerHandle,
   WorkerInitMessage,
   WorkerReadyMessage,

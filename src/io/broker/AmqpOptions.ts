@@ -1,18 +1,30 @@
 /**
- * Fluent builder for {@link AmqpActorSettings}.  Protocol-specific
+ * Fluent builder for {@link AmqpOptionsType}.  Protocol-specific
  * methods only; the common broker fields (`withReconnect` /
  * `withCircuitBreaker` / `withOutboundBuffer`) come from
- * {@link BrokerOptions}.  `build()` snapshots the accumulated partial
+ * {@link BrokerOptionsBuilder}.  `build()` snapshots the accumulated partial
  * and feeds the same three-layer merge (constructor > HOCON under
  * `actor-ts.io.broker.amqp` > built-in defaults).
  */
-import { BrokerOptions } from './BrokerOptions.js';
-import type { AmqpActorSettings, AmqpQueueBinding } from './AmqpActor.js';
+import { BrokerOptionsBuilder } from './BrokerOptions.js';
+import type { BrokerCommonOptionsType } from './BrokerSettings.js';
+import type { AmqpQueueBinding } from './AmqpActor.js';
 
-export class AmqpOptions extends BrokerOptions<AmqpActorSettings> {
-  /** Start a fresh builder.  Equivalent to `new AmqpOptions()`. */
-  static create(): AmqpOptions {
-    return new AmqpOptions();
+export interface AmqpOptionsType extends BrokerCommonOptionsType {
+  /** AMQP URL (`amqp://user:pass@host:5672/vhost`). */
+  readonly url?: string;
+  /** Number of unacked messages a consumer holds at once.  Default: 1. */
+  readonly prefetch?: number;
+  /** Queues + bindings + targets to set up after connect. */
+  readonly bindings?: ReadonlyArray<AmqpQueueBinding>;
+  /** Whether to auto-ack consumed deliveries.  Default: true. */
+  readonly autoAck?: boolean;
+}
+
+export class AmqpOptionsBuilder extends BrokerOptionsBuilder<AmqpOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new AmqpOptionsBuilder()`. */
+  static create(): AmqpOptionsBuilder {
+    return new AmqpOptionsBuilder();
   }
 
   /** AMQP URL (`amqp://user:pass@host:5672/vhost`). */
@@ -35,3 +47,11 @@ export class AmqpOptions extends BrokerOptions<AmqpActorSettings> {
     return this.set('autoAck', on);
   }
 }
+
+/**
+ * Accepted input for any AMQP-configurable constructor: the fluent
+ * {@link AmqpOptionsBuilder} OR a plain {@link AmqpOptionsType} object.
+ */
+export type AmqpOptions = AmqpOptionsBuilder | Partial<AmqpOptionsType>;
+/** Value alias so `AmqpOptions.create()` / `new AmqpOptions()` resolve to the builder. */
+export const AmqpOptions = AmqpOptionsBuilder;

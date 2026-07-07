@@ -1,27 +1,9 @@
 import { NodeAddress } from './NodeAddress.js';
 import type { FailureDecision } from './FailureDetector.js';
 import { fromNullable, type Option } from '../util/Option.js';
-import type { PhiAccrualOptions } from './PhiAccrualOptions.js';
+import type { PhiAccrualOptions, PhiAccrualOptionsType } from './PhiAccrualOptions.js';
 
-export interface PhiAccrualSettings {
-  /** Intended heartbeat cadence.  Used to keep `interval` compatible with FailureDetector. */
-  readonly heartbeatIntervalMs: number;
-  /** Phi value above which the peer is flagged unreachable.  Typical 8–12. */
-  readonly unreachableThreshold: number;
-  /** Phi value above which the peer is flagged down.  Must be > unreachableThreshold. */
-  readonly downThreshold: number;
-  /** How many recent intervals to keep in the sliding window. */
-  readonly maxSampleSize: number;
-  /** Minimum stddev floor — avoids over-eager flagging for very stable peers. */
-  readonly minStdDeviationMs: number;
-  /**
-   * Grace period added to the most recent heartbeat — heartbeats that
-   * arrive up to `acceptableHeartbeatPauseMs` late do not raise phi.
-   */
-  readonly acceptableHeartbeatPauseMs: number;
-}
-
-export const defaultPhiAccrualSettings: PhiAccrualSettings = {
+export const defaultPhiAccrualSettings: PhiAccrualOptionsType = {
   heartbeatIntervalMs: 500,
   unreachableThreshold: 8,
   downThreshold: 12,
@@ -51,10 +33,10 @@ interface PeerState {
  */
 export class PhiAccrualFailureDetector {
   private readonly peers = new Map<string, PeerState>();
-  private readonly settings: PhiAccrualSettings;
+  private readonly settings: PhiAccrualOptionsType;
 
-  constructor(options: PhiAccrualOptions | Partial<PhiAccrualSettings> = {}) {
-    this.settings = { ...defaultPhiAccrualSettings, ...(options as Partial<PhiAccrualSettings>) };
+  constructor(options: PhiAccrualOptions = {}) {
+    this.settings = { ...defaultPhiAccrualSettings, ...(options as Partial<PhiAccrualOptionsType>) };
     if (this.settings.downThreshold <= this.settings.unreachableThreshold) {
       throw new Error('PhiAccrualFailureDetector: downThreshold must exceed unreachableThreshold');
     }

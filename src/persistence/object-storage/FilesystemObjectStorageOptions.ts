@@ -1,18 +1,36 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
-import type { FilesystemObjectStorageSettings } from './FilesystemObjectStorageBackend.js';
+
+export interface FilesystemObjectStorageOptionsType {
+  /** Root directory.  Will be created (recursively) if it doesn't exist. */
+  readonly dir: string;
+  /**
+   * How long to wait when contending for a per-key write lock before
+   * giving up with `ObjectStorageBackendError`.  Default 5_000 ms — long
+   * enough that legitimate contenders complete first, short enough that
+   * a stuck holder gets surfaced quickly.
+   */
+  readonly lockTimeoutMs?: number;
+  /**
+   * Lock files older than this are assumed stale (left behind by a
+   * crashed writer) and forcibly removed.  Default 30_000 ms — well
+   * above the expected duration of any single `put`, so legitimate
+   * writers never get their lock yanked.
+   */
+  readonly staleLockMs?: number;
+}
 
 /**
- * Fluent builder for {@link FilesystemObjectStorageSettings}.  `dir` is
+ * Fluent builder for {@link FilesystemObjectStorageOptionsType}.  `dir` is
  * required by the backend:
  *
  *     new FilesystemObjectStorageBackend(
  *       FilesystemObjectStorageOptions.create().withDir('/var/lib/actor-ts'),
  *     )
  */
-export class FilesystemObjectStorageOptions extends OptionsBuilder<FilesystemObjectStorageSettings> {
-  /** Start a fresh builder.  Equivalent to `new FilesystemObjectStorageOptions()`. */
-  static create(): FilesystemObjectStorageOptions {
-    return new FilesystemObjectStorageOptions();
+export class FilesystemObjectStorageOptionsBuilder extends OptionsBuilder<FilesystemObjectStorageOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new FilesystemObjectStorageOptionsBuilder()`. */
+  static create(): FilesystemObjectStorageOptionsBuilder {
+    return new FilesystemObjectStorageOptionsBuilder();
   }
 
   /** Root directory.  Created recursively if it doesn't exist. */
@@ -30,3 +48,11 @@ export class FilesystemObjectStorageOptions extends OptionsBuilder<FilesystemObj
     return this.set('staleLockMs', staleLockMs);
   }
 }
+
+/**
+ * Accepted input for the filesystem object-storage backend constructor: the fluent
+ * {@link FilesystemObjectStorageOptionsBuilder} OR a plain {@link FilesystemObjectStorageOptionsType} object.
+ */
+export type FilesystemObjectStorageOptions = FilesystemObjectStorageOptionsBuilder | Partial<FilesystemObjectStorageOptionsType>;
+/** Value alias so `FilesystemObjectStorageOptions.create()` / `new FilesystemObjectStorageOptions()` resolve to the builder. */
+export const FilesystemObjectStorageOptions = FilesystemObjectStorageOptionsBuilder;

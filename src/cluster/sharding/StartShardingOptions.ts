@@ -1,13 +1,65 @@
 import type { Lease } from '../../coordination/Lease.js';
 import type { AllocationStrategy } from './AllocationStrategy.js';
-import type { StartSettings } from './ClusterSharding.js';
 import type { CoordinatorStateStore } from './CoordinatorState.js';
 import type { RememberEntitiesStore } from './RememberEntitiesStore.js';
-import { ShardingOptions } from './ShardingOptions.js';
+import { ShardingOptionsBuilder } from './ShardingOptions.js';
+import type { ShardingOptionsType } from './ShardingOptions.js';
 
 /**
- * Fluent builder for {@link StartSettings} — the argument to
- * {@link ClusterSharding.start}.  Extends {@link ShardingOptions} so it
+ * Plain settings-object shape accepted by {@link ClusterSharding.start} —
+ * the region-side {@link ShardingOptionsType} plus the coordinator-side
+ * fields (allocation, rebalance, lease, persistence backends).
+ */
+export interface StartShardingOptionsType<TMsg> extends ShardingOptionsType<TMsg> {
+  /** Strategy the coordinator uses to allocate and rebalance shards. */
+  readonly allocationStrategy?: AllocationStrategy;
+  /** Gap between coordinator-driven rebalance passes. */
+  readonly rebalanceIntervalMs?: number;
+  /** Time to wait for HandOffComplete before force-reallocating. */
+  readonly handOffTimeoutMs?: number;
+  /**
+   * Optional split-brain protection for the coordinator.  When set,
+   * the elected leader's coordinator must hold the lease before it
+   * processes shard messages — under a network partition that
+   * produces two leader views, only the side that successfully
+   * acquires the lease ever issues `AllocateShard` / `HandOff`
+   * directives.  See `ShardCoordinatorOptionsType.lease`.
+   */
+  readonly lease?: Lease;
+  /** Retry interval for `lease.acquire()` after a failed attempt.  Default: 5 s. */
+  readonly acquireRetryIntervalMs?: number;
+  /**
+   * Optional persistence backend for the entity registry — relevant
+   * only when `rememberEntities: true`.  When omitted (and
+   * `rememberEntities: true`), the default
+   * `JournalRememberEntitiesStore` is auto-instantiated using the
+   * Journal from the system's `PersistenceExtension`, so a full
+   * cluster cold-start no longer loses the registry.  Set to a
+   * custom impl to plug in a separate store.
+   *
+   * Pass `null` to opt out of persistence entirely (registry stays
+   * in-memory only — the v1 behaviour).
+   */
+  readonly rememberEntitiesStore?: RememberEntitiesStore | null;
+  /**
+   * Optional persistence backend for the coordinator's allocation
+   * state (`regions` + `shardHome`).  When set, a new leader
+   * elected after the previous leader's failure can seed its
+   * coordinator from the snapshot instead of running
+   * `tryAllocate` from scratch — saves a brief reallocation storm
+   * at thousands-of-shards scale.
+   *
+   * Unlike `rememberEntitiesStore`, ClusterSharding does NOT
+   * auto-instantiate this — the user must explicitly pass a store
+   * (typically `new DistributedDataCoordinatorStateStore(dd, ...)`).
+   * Without it, the v1 rebuild-from-Register behaviour is preserved.
+   */
+  readonly coordinatorStateStore?: CoordinatorStateStore;
+}
+
+/**
+ * Fluent builder for {@link StartShardingOptionsType} — the argument to
+ * {@link ClusterSharding.start}.  Extends {@link ShardingOptionsBuilder} so it
  * carries every region-side `withX` (typeName, entityProps, extractors,
  * numShards, role, proxy, rememberEntities, …) and adds the
  * coordinator-side fields on top.
@@ -16,10 +68,10 @@ import { ShardingOptions } from './ShardingOptions.js';
  * `allocationStrategy` ({@link AllocationStrategy}), `lease`
  * ({@link Lease}), `rememberEntitiesStore`, and `coordinatorStateStore`.
  */
-export class StartShardingOptions<TMsg> extends ShardingOptions<TMsg, StartSettings<TMsg>> {
-  /** Start a fresh builder.  Equivalent to `new StartShardingOptions<TMsg>()`. */
-  static create<TMsg>(): StartShardingOptions<TMsg> {
-    return new StartShardingOptions<TMsg>();
+export class StartShardingOptionsBuilder<TMsg> extends ShardingOptionsBuilder<TMsg, StartShardingOptionsType<TMsg>> {
+  /** Start a fresh builder.  Equivalent to `new StartShardingOptionsBuilder<TMsg>()`. */
+  static create<TMsg>(): StartShardingOptionsBuilder<TMsg> {
+    return new StartShardingOptionsBuilder<TMsg>();
   }
 
   /** Strategy the coordinator uses to allocate and rebalance shards. */
@@ -60,3 +112,14 @@ export class StartShardingOptions<TMsg> extends ShardingOptions<TMsg, StartSetti
     return this.set('coordinatorStateStore', coordinatorStateStore);
   }
 }
+
+/**
+ * Accepted input for {@link ClusterSharding.start}: the fluent
+ * {@link StartShardingOptionsBuilder} OR a plain (partial)
+ * {@link StartShardingOptionsType} object.
+ */
+export type StartShardingOptions<TMsg> =
+  | StartShardingOptionsBuilder<TMsg>
+  | Partial<StartShardingOptionsType<TMsg>>;
+/** Value alias so `StartShardingOptions.create()` / `new StartShardingOptions()` resolve to the builder. */
+export const StartShardingOptions = StartShardingOptionsBuilder;

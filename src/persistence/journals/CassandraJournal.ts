@@ -10,55 +10,7 @@ import {
   type CassandraClientLike,
   type CassandraConnection,
 } from './CassandraClient.js';
-import type { CassandraJournalOptions } from './CassandraJournalOptions.js';
-
-export interface CassandraJournalSettings extends CassandraConnection {
-  /** Table name for events.  Default: `events`. */
-  readonly eventsTable?: string;
-  /** Table tracking the highest sequence number per pid.  Default: `metadata`. */
-  readonly metadataTable?: string;
-  /** Lookup table for `persistenceIds()`.  Default: `all_persistence_ids`. */
-  readonly allIdsTable?: string;
-  /** Tag-index side table populated when `useTagIndex` is set.  Default: `events_by_tag`. */
-  readonly tagIndexTable?: string;
-  /**
-   * Rows per partition before rolling over to a new one.  Keeps Cassandra
-   * partitions bounded.  Default: 500_000 — a good balance between write
-   * amplification and read-scan cost for long-lived streams.
-   */
-  readonly partitionSize?: number;
-  /** Auto-create the events/metadata/all-ids tables on first connect. */
-  readonly autoCreateTables?: boolean;
-  /**
-   * Opt in to maintaining an `events_by_tag` side table for indexed
-   * `eventsByTag` queries (#44).  When set, every `append` writes one
-   * extra row per `(event, tag)` pair to the side table inside the same
-   * batch as the primary `events` insert; `CassandraQuery.currentEventsBy
-   * Tag` then walks a single tag-partition instead of scanning the
-   * whole journal client-side.
-   *
-   * Off by default to keep existing schemas compatible — operators
-   * opting in must run the side-table DDL on their cluster (the journal
-   * issues `CREATE TABLE IF NOT EXISTS` when `autoCreateTables` is also
-   * true; otherwise the DDL in {@link CassandraClient.tagIndexDdl} can
-   * be applied manually).
-   *
-   * **Caveat:** `delete(toSeq)` does NOT propagate to the side table —
-   * deleting from `events_by_tag` would require either a secondary
-   * index on `persistence_id` or pre-reading the event's tags (extra
-   * round-trips on the hot path).  Operators with delete-heavy
-   * workloads should rely on Cassandra TTLs or accept stale tag
-   * entries (queries dedupe via the primary key, so they're harmless
-   * — just storage overhead).
-   */
-  readonly useTagIndex?: boolean;
-  /**
-   * Inject a pre-built client instead of letting the journal instantiate
-   * `cassandra-driver` itself — useful for tests and when the host already
-   * owns the client lifecycle.
-   */
-  readonly client?: CassandraClientLike;
-}
+import type { CassandraJournalOptions, CassandraJournalOptionsType } from './CassandraJournalOptions.js';
 
 interface EventRow {
   persistence_id: string;
@@ -84,7 +36,7 @@ interface EventRow {
  * safety, wrap the metadata update in an LWT (`IF max_sequence_nr = ?`).
  */
 export class CassandraJournal implements Journal {
-  private readonly options: Partial<CassandraJournalSettings>;
+  private readonly options: Partial<CassandraJournalOptionsType>;
   private client: CassandraClientLike;
   /** True once `ensureStarted()` has run keyspace + table DDL. */
   private started = false;
@@ -93,8 +45,8 @@ export class CassandraJournal implements Journal {
   /** Only shut down the client if WE created it — don't close someone else's. */
   private ownsClient: boolean;
 
-  constructor(options: CassandraJournalOptions | Partial<CassandraJournalSettings>) {
-    this.options = (options as Partial<CassandraJournalSettings>);
+  constructor(options: CassandraJournalOptions) {
+    this.options = (options as CassandraJournalOptionsType);
     this.client = this.options.client ?? (undefined as unknown as CassandraClientLike);
     this.ownsClient = !this.options.client;
   }

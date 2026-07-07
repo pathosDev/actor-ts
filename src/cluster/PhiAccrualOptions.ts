@@ -1,8 +1,26 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
-import type { PhiAccrualSettings } from './PhiAccrualFailureDetector.js';
+
+/** Plain settings-object shape accepted by a {@link PhiAccrualFailureDetector}. */
+export interface PhiAccrualOptionsType {
+  /** Intended heartbeat cadence.  Used to keep `interval` compatible with FailureDetector. */
+  readonly heartbeatIntervalMs: number;
+  /** Phi value above which the peer is flagged unreachable.  Typical 8–12. */
+  readonly unreachableThreshold: number;
+  /** Phi value above which the peer is flagged down.  Must be > unreachableThreshold. */
+  readonly downThreshold: number;
+  /** How many recent intervals to keep in the sliding window. */
+  readonly maxSampleSize: number;
+  /** Minimum stddev floor — avoids over-eager flagging for very stable peers. */
+  readonly minStdDeviationMs: number;
+  /**
+   * Grace period added to the most recent heartbeat — heartbeats that
+   * arrive up to `acceptableHeartbeatPauseMs` late do not raise phi.
+   */
+  readonly acceptableHeartbeatPauseMs: number;
+}
 
 /**
- * Fluent builder for {@link PhiAccrualSettings}.  Unset fields fall
+ * Fluent builder for {@link PhiAccrualOptionsType}.  Unset fields fall
  * through to {@link defaultPhiAccrualSettings} in the constructor, so a
  * bare `PhiAccrualOptions.create()` yields the defaults.
  *
@@ -10,10 +28,10 @@ import type { PhiAccrualSettings } from './PhiAccrualFailureDetector.js';
  *       PhiAccrualOptions.create().withUnreachableThreshold(10).withDownThreshold(16),
  *     )
  */
-export class PhiAccrualOptions extends OptionsBuilder<PhiAccrualSettings> {
-  /** Start a fresh builder.  Equivalent to `new PhiAccrualOptions()`. */
-  static create(): PhiAccrualOptions {
-    return new PhiAccrualOptions();
+export class PhiAccrualOptionsBuilder extends OptionsBuilder<PhiAccrualOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new PhiAccrualOptionsBuilder()`. */
+  static create(): PhiAccrualOptionsBuilder {
+    return new PhiAccrualOptionsBuilder();
   }
 
   /** Intended heartbeat cadence — keeps `interval` compatible with FailureDetector. */
@@ -46,3 +64,12 @@ export class PhiAccrualOptions extends OptionsBuilder<PhiAccrualSettings> {
     return this.set('acceptableHeartbeatPauseMs', ms);
   }
 }
+
+/**
+ * Accepted input for any PhiAccrual-configurable constructor: the fluent
+ * {@link PhiAccrualOptionsBuilder} OR a plain {@link PhiAccrualOptionsType}
+ * object.
+ */
+export type PhiAccrualOptions = PhiAccrualOptionsBuilder | Partial<PhiAccrualOptionsType>;
+/** Value alias so `PhiAccrualOptions.create()` / `new PhiAccrualOptions()` resolve to the builder. */
+export const PhiAccrualOptions = PhiAccrualOptionsBuilder;

@@ -7,18 +7,8 @@ import {
   buildMariaDbPool,
   rowsOf,
   type MariaDbPoolLike,
-  type MariaDbConnection,
 } from '../journals/MariaDbClient.js';
-import type { MariaDbSnapshotStoreOptions } from './MariaDbSnapshotStoreOptions.js';
-
-export interface MariaDbSnapshotStoreSettings extends MariaDbConnection {
-  /** Snapshots table name.  Default: `snapshots`. */
-  readonly snapshotsTable?: string;
-  /** Keep this many snapshots per persistenceId; older ones pruned on save.  Default: 3.  `<=0` keeps all. */
-  readonly keepN?: number;
-  /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
-  readonly autoCreateTables?: boolean;
-}
+import type { MariaDbSnapshotStoreOptions, MariaDbSnapshotStoreOptionsType } from './MariaDbSnapshotStoreOptions.js';
 
 interface SnapRow {
   persistence_id: string;
@@ -34,7 +24,7 @@ interface SnapRow {
  * reject `LIMIT` inside a bare `IN (SELECT …)` against the same table).
  */
 export class MariaDbSnapshotStore implements SnapshotStore {
-  private readonly settings: MariaDbSnapshotStoreSettings;
+  private readonly settings: MariaDbSnapshotStoreOptionsType;
   private readonly table: string;
   private readonly keepN: number;
   private readonly autoCreate: boolean;
@@ -43,8 +33,8 @@ export class MariaDbSnapshotStore implements SnapshotStore {
   private initPromise: Promise<void> | null = null;
   private closed = false;
 
-  constructor(options: MariaDbSnapshotStoreOptions | Partial<MariaDbSnapshotStoreSettings> = {}) {
-    const s = (options as Partial<MariaDbSnapshotStoreSettings>);
+  constructor(options: MariaDbSnapshotStoreOptions = {}) {
+    const s = (options as MariaDbSnapshotStoreOptionsType);
     this.settings = s;
     this.table = assertSafeIdentifier(s.snapshotsTable ?? 'snapshots', 'snapshots table');
     this.keepN = s.keepN ?? 3;

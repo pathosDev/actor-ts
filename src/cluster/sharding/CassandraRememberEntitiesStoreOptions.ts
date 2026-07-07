@@ -1,19 +1,38 @@
 import type { CassandraClientLike, CassandraConnection } from '../../persistence/journals/CassandraClient.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
-import type { CassandraRememberEntitiesStoreSettings } from './CassandraRememberEntitiesStore.js';
 
 /**
- * Fluent builder for {@link CassandraRememberEntitiesStoreSettings}.
+ * Plain settings-object shape consumed by {@link CassandraRememberEntitiesStore}
+ * — the shared {@link CassandraConnection} fields plus the store-specific
+ * `table` / `autoCreateTables` / `client`.
+ */
+export interface CassandraRememberEntitiesStoreOptionsType extends CassandraConnection {
+  /** Table for the remember-entities state.  Default: `remember_entities`. */
+  readonly table?: string;
+  /** Auto-create the table on first use.  Default: `true`. */
+  readonly autoCreateTables?: boolean;
+  /**
+   * Inject a pre-built CQL client.  When omitted, the store
+   * instantiates its own (via `cassandra-driver`) — but typical
+   * deployments share one client across journal + snapshot store +
+   * remember-entities, so passing the existing one in is the
+   * recommended pattern.
+   */
+  readonly client?: CassandraClientLike;
+}
+
+/**
+ * Fluent builder for {@link CassandraRememberEntitiesStoreOptionsType}.
  * Carries `withX` methods for the shared {@link CassandraConnection}
  * fields too — the connection mixin is not built on its own; the store
  * exposes its connection surface directly (same pattern as
  * `CassandraJournalOptions`).
  */
-export class CassandraRememberEntitiesStoreOptions
-  extends OptionsBuilder<CassandraRememberEntitiesStoreSettings> {
-  /** Start a fresh builder.  Equivalent to `new CassandraRememberEntitiesStoreOptions()`. */
-  static create(): CassandraRememberEntitiesStoreOptions {
-    return new CassandraRememberEntitiesStoreOptions();
+export class CassandraRememberEntitiesStoreOptionsBuilder
+  extends OptionsBuilder<CassandraRememberEntitiesStoreOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new CassandraRememberEntitiesStoreOptionsBuilder()`. */
+  static create(): CassandraRememberEntitiesStoreOptionsBuilder {
+    return new CassandraRememberEntitiesStoreOptionsBuilder();
   }
 
   /* --- shared CassandraConnection fields --- */
@@ -75,3 +94,14 @@ export class CassandraRememberEntitiesStoreOptions
     return this.set('client', client);
   }
 }
+
+/**
+ * Accepted input for a {@link CassandraRememberEntitiesStore}: the fluent
+ * {@link CassandraRememberEntitiesStoreOptionsBuilder} OR a plain (partial)
+ * {@link CassandraRememberEntitiesStoreOptionsType} object.
+ */
+export type CassandraRememberEntitiesStoreOptions =
+  | CassandraRememberEntitiesStoreOptionsBuilder
+  | Partial<CassandraRememberEntitiesStoreOptionsType>;
+/** Value alias so `CassandraRememberEntitiesStoreOptions.create()` resolves to the builder. */
+export const CassandraRememberEntitiesStoreOptions = CassandraRememberEntitiesStoreOptionsBuilder;

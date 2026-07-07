@@ -1,12 +1,9 @@
 import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
-import type { Lease } from '../../coordination/Lease.js';
-import type { Props } from '../../Props.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { Terminated } from '../../SystemMessages.js';
-import type { ClusterSingletonManagerOptions } from './ClusterSingletonManagerOptions.js';
-import type { Cluster } from '../Cluster.js';
+import type { ClusterSingletonManagerOptions, ClusterSingletonManagerOptionsType } from './ClusterSingletonManagerOptions.js';
 import { LeaderChanged, MemberRemoved, SelfUp } from '../ClusterEvents.js';
 
 /**
@@ -38,20 +35,6 @@ type ManagerEvent =
   | { t: 'acquire-retry' };
 
 type Inbox = SingletonDeliver | ManagerEvent | Terminated;
-
-export interface ClusterSingletonManagerSettings<T> {
-  readonly cluster: Cluster;
-  /** Logical name for this singleton; also used as the child-actor name. */
-  readonly typeName: string;
-  /** How to construct the singleton actor.  Only instantiated on the leader. */
-  readonly singletonProps: Props<T>;
-  /** Optional role — only nodes with this role will host the singleton. */
-  readonly role?: string;
-  /** Optional split-brain protection — see {@link StartSingletonSettings.lease}. */
-  readonly lease?: Lease;
-  /** Retry interval for `lease.acquire()` after a failed attempt.  Default: 5 s. */
-  readonly acquireRetryIntervalMs?: number;
-}
 
 /**
  * Runs on every node.  Watches cluster events and (re)spawns the singleton
@@ -97,11 +80,11 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   /** Callback the extension hands us so we can release the envelope path on stop. */
   _envelopeUnsub: (() => void) | null = null;
 
-  readonly settings: ClusterSingletonManagerSettings<T>;
+  readonly settings: ClusterSingletonManagerOptionsType<T>;
 
-  constructor(options: ClusterSingletonManagerOptions<T> | Partial<ClusterSingletonManagerSettings<T>>) {
+  constructor(options: ClusterSingletonManagerOptions<T>) {
     super();
-    this.settings = options as ClusterSingletonManagerSettings<T>;
+    this.settings = options as ClusterSingletonManagerOptionsType<T>;
   }
 
   override preStart(): void {

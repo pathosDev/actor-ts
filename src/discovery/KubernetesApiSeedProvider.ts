@@ -1,19 +1,6 @@
 import { NodeAddress } from '../cluster/NodeAddress.js';
-import type { KubernetesApiSeedProviderOptions } from './KubernetesApiSeedProviderOptions.js';
+import type { KubernetesApiSeedProviderOptions, KubernetesApiSeedProviderOptionsType } from './KubernetesApiSeedProviderOptions.js';
 import type { SeedProvider } from './SeedProvider.js';
-
-export interface KubernetesApiSeedProviderSettings {
-  /** Target namespace to look up endpoints in. */
-  readonly namespace: string;
-  /** Service or Endpoints name whose backing pods provide the cluster. */
-  readonly serviceName: string;
-  /** System name stamped on the discovered NodeAddresses. */
-  readonly systemName: string;
-  /** Port for the cluster remoting endpoint on each pod. */
-  readonly port: number;
-  /** Override the Endpoints-fetch function — defaults to the in-cluster API. */
-  readonly fetchEndpoints?: () => Promise<string[]>;
-}
 
 /**
  * Seed provider driven by the Kubernetes API.  Reads the Endpoints object
@@ -26,10 +13,10 @@ export interface KubernetesApiSeedProviderSettings {
  * ServiceAccount token mount.
  */
 export class KubernetesApiSeedProvider implements SeedProvider {
-  private readonly settings: KubernetesApiSeedProviderSettings;
+  private readonly settings: KubernetesApiSeedProviderOptionsType;
 
-  constructor(options: KubernetesApiSeedProviderOptions | Partial<KubernetesApiSeedProviderSettings> = {}) {
-    this.settings = options as KubernetesApiSeedProviderSettings;
+  constructor(options: KubernetesApiSeedProviderOptions = {}) {
+    this.settings = options as KubernetesApiSeedProviderOptionsType;
   }
 
   async lookup(): Promise<NodeAddress[]> {
@@ -44,7 +31,7 @@ export class KubernetesApiSeedProvider implements SeedProvider {
  * credentials and calls the core API.  Keeps the code path small — real
  * production deployments often swap this for the canonical K8s client.
  */
-function defaultFetchEndpoints(settings: KubernetesApiSeedProviderSettings): () => Promise<string[]> {
+function defaultFetchEndpoints(settings: KubernetesApiSeedProviderOptionsType): () => Promise<string[]> {
   return async (): Promise<string[]> => {
     const fs = await import('node:fs/promises');
     const https = await import('node:https');

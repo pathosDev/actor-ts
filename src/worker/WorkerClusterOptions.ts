@@ -1,8 +1,20 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
-import type { RestartPolicy, WorkerClusterSettings } from './WorkerCluster.js';
+import type { RestartPolicy } from './WorkerCluster.js';
+
+/** Plain settings-object shape accepted by {@link WorkerCluster.spawn}. */
+export interface WorkerClusterOptionsType {
+  readonly bootstrap: URL | string;
+  readonly workers?: number | 'auto';
+  readonly systemName?: string;
+  readonly hostname?: string;
+  readonly basePort?: number;
+  readonly initData?: unknown;
+  readonly restartPolicy?: RestartPolicy;
+  readonly readyTimeoutMs?: number;
+}
 
 /**
- * Fluent builder for {@link WorkerClusterSettings}:
+ * Fluent builder for {@link WorkerClusterOptionsType}:
  *
  *     WorkerCluster.spawn(
  *       WorkerClusterOptions.create()
@@ -14,10 +26,10 @@ import type { RestartPolicy, WorkerClusterSettings } from './WorkerCluster.js';
  * without it.  Every other field falls back to its built-in default
  * inside the constructor.
  */
-export class WorkerClusterOptions extends OptionsBuilder<WorkerClusterSettings> {
-  /** Start a fresh builder.  Equivalent to `new WorkerClusterOptions()`. */
-  static create(): WorkerClusterOptions {
-    return new WorkerClusterOptions();
+export class WorkerClusterOptionsBuilder extends OptionsBuilder<WorkerClusterOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new WorkerClusterOptionsBuilder()`. */
+  static create(): WorkerClusterOptionsBuilder {
+    return new WorkerClusterOptionsBuilder();
   }
 
   /** Module URL (or string) of the worker entrypoint each worker runs. */
@@ -60,3 +72,12 @@ export class WorkerClusterOptions extends OptionsBuilder<WorkerClusterSettings> 
     return this.set('readyTimeoutMs', readyTimeoutMs);
   }
 }
+
+/**
+ * Accepted input for {@link WorkerCluster.spawn}: the fluent
+ * {@link WorkerClusterOptionsBuilder} OR a plain
+ * {@link WorkerClusterOptionsType} object.
+ */
+export type WorkerClusterOptions = WorkerClusterOptionsBuilder | Partial<WorkerClusterOptionsType>;
+/** Value alias so `WorkerClusterOptions.create()` / `new WorkerClusterOptions()` resolve to the builder. */
+export const WorkerClusterOptions = WorkerClusterOptionsBuilder;

@@ -4,7 +4,6 @@ import { ActorSelection, parseSelectionPath } from './ActorSelection.js';
 import { Config } from './config/Config.js';
 import { ConfigKeys } from './config/ConfigKeys.js';
 import { none, some, type Option } from './util/Option.js';
-import type { ConfigObject } from './config/HoconParser.js';
 import { Extensions, type Extension, type ExtensionId } from './Extension.js';
 import {
   Dispatcher,
@@ -16,52 +15,16 @@ import { EventStream } from './EventStream.js';
 import { ConsoleLogger, Logger, LogLevel } from './Logger.js';
 import { Props } from './Props.js';
 import { Scheduler } from './Scheduler.js';
-import type { ActorSystemOptions } from './ActorSystemOptions.js';
+import type { ActorSystemOptions, ActorSystemOptionsType } from './ActorSystemOptions.js';
 import { ActorCell } from './internal/ActorCell.js';
 import { DeadLetterRef } from './internal/DeadLetterRef.js';
 import { Guardian, systemGuardianStrategy, userGuardianStrategy } from './internal/Guardian.js';
 import { LocalActorRef } from './internal/LocalActorRef.js';
-import type { Journal } from './persistence/Journal.js';
-import type { SnapshotStore } from './persistence/SnapshotStore.js';
 import { PersistenceExtensionId } from './persistence/PersistenceExtension.js';
 import type { HttpServerBackend } from './http/backend/HttpServerBackend.js';
 import { HttpExtensionId, type ServerBuilder } from './http/HttpExtension.js';
 import type { Behavior } from './typed/Behavior.js';
 import { typedProps } from './typed/spawn.js';
-
-export interface ActorSystemSettings {
-  readonly logger?: Logger;
-  readonly logLevel?: LogLevel;
-  readonly dispatcher?: Dispatcher;
-  /** Inject a custom scheduler — typically a ManualScheduler in tests. */
-  readonly scheduler?: Scheduler;
-  /**
-   * Application config.  Accepts:
-   *   - a prebuilt `Config` (highest precedence layered on top of reference);
-   *   - a plain JS object of overrides (converted via Config.fromObject);
-   *   - omitted — reference defaults + `application.conf` in CWD are used.
-   * Constructor settings (`logger`, `logLevel`, `dispatcher`) still win
-   * over anything in config — they are explicit code overrides.
-   */
-  readonly config?: Config | ConfigObject;
-  /** Explicit path to `application.conf`; overrides `ACTOR_TS_CONFIG` + CWD lookup. */
-  readonly configFile?: string;
-  /**
-   * Persistence overrides — wire a real journal / snapshot store at
-   * system creation time instead of reaching into the extension after
-   * the fact.  Either field is independent; omit one to keep the
-   * in-memory default for that slot.
-   *
-   * Equivalent to:
-   *   const sys = ActorSystem.create(name);
-   *   sys.extension(PersistenceExtensionId).setJournal(journal);
-   *   sys.extension(PersistenceExtensionId).setSnapshotStore(snapshotStore);
-   */
-  readonly persistence?: {
-    readonly journal?: Journal;
-    readonly snapshotStore?: SnapshotStore;
-  };
-}
 
 /**
  * The ActorSystem is the top-level container for actors.  It owns the root
@@ -88,7 +51,7 @@ export class ActorSystem {
   private _terminated = false;
   private _terminationResolvers: Array<() => void> = [];
 
-  private constructor(name: string, settings: ActorSystemSettings) {
+  private constructor(name: string, settings: ActorSystemOptionsType) {
     this.name = name;
     this.config = buildConfig(settings);
     this.dispatcher = settings.dispatcher ?? dispatcherFromConfig(this.config);
@@ -136,9 +99,9 @@ export class ActorSystem {
   /** Create a new actor system. */
   static create(
     name: string = 'default',
-    options: ActorSystemOptions | Partial<ActorSystemSettings> = {},
+    options: ActorSystemOptions = {},
   ): ActorSystem {
-    return new ActorSystem(name, (options as Partial<ActorSystemSettings>));
+    return new ActorSystem(name, (options as Partial<ActorSystemOptionsType>));
   }
 
   /**
@@ -288,7 +251,7 @@ export class ActorSystem {
 
 /* ----------------------------- Config helpers ----------------------------- */
 
-function buildConfig(settings: ActorSystemSettings): Config {
+function buildConfig(settings: ActorSystemOptionsType): Config {
   const userLayer =
     settings.config === undefined
       ? Config.empty()

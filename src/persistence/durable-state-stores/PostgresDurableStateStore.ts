@@ -10,16 +10,8 @@ import {
   assertSafeIdentifier,
   buildPgPool,
   type PgPoolLike,
-  type PostgresConnection,
 } from '../journals/PostgresClient.js';
-import type { PostgresDurableStateStoreOptions } from './PostgresDurableStateStoreOptions.js';
-
-export interface PostgresDurableStateStoreSettings extends PostgresConnection {
-  /** Table name.  Default: `durable_state`. */
-  readonly table?: string;
-  /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
-  readonly autoCreateTables?: boolean;
-}
+import type { PostgresDurableStateStoreOptions, PostgresDurableStateStoreOptionsType } from './PostgresDurableStateStoreOptions.js';
 
 interface StateRow {
   revision: string | number;
@@ -44,7 +36,7 @@ interface StateRow {
  * (JSON-text payload, like the other SQL stores).
  */
 export class PostgresDurableStateStore implements DurableStateStore {
-  private readonly settings: PostgresDurableStateStoreSettings;
+  private readonly settings: PostgresDurableStateStoreOptionsType;
   private readonly table: string;
   private readonly autoCreate: boolean;
 
@@ -52,8 +44,8 @@ export class PostgresDurableStateStore implements DurableStateStore {
   private initPromise: Promise<void> | null = null;
   private closed = false;
 
-  constructor(options: PostgresDurableStateStoreOptions | Partial<PostgresDurableStateStoreSettings> = {}) {
-    const s = (options as Partial<PostgresDurableStateStoreSettings>);
+  constructor(options: PostgresDurableStateStoreOptions = {}) {
+    const s = (options as PostgresDurableStateStoreOptionsType);
     this.settings = s;
     this.table = assertSafeIdentifier(s.table ?? 'durable_state', 'durable-state table');
     this.autoCreate = s.autoCreateTables ?? true;

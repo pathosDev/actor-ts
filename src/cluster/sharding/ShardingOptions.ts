@@ -1,26 +1,64 @@
 import type { Props } from '../../Props.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
-import type { ShardingSettings } from './ShardRegion.js';
 
 /**
- * Fluent builder for {@link ShardingSettings}.  Base of the builder
- * inheritance chain: {@link StartShardingOptions} (in `ClusterSharding`)
- * extends this and adds the coordinator-side fields.  Each concrete
- * `withX` records exactly one field so unset fields fall through to
- * HOCON / built-in defaults when the settings are normalised by
- * {@link ShardRegion.settingsToConfig}.
+ * Plain settings-object shape for a sharded region.  Consumed by
+ * {@link ShardRegion.settingsToConfig} and extended by
+ * {@link StartShardingOptionsType} — the coordinator-side superset that
+ * {@link ClusterSharding.start} accepts.
+ */
+export interface ShardingOptionsType<TMsg> {
+  readonly typeName: string;
+  readonly entityProps: Props<TMsg>;
+  readonly extractEntityId: (message: TMsg) => string;
+  readonly extractEntityMessage?: (message: TMsg) => unknown;
+  readonly numShards?: number;
+  /** Members must carry this role to be candidates for hosting shards. */
+  readonly role?: string;
+  /** Run as a proxy — route messages but never host entities locally. */
+  readonly proxy?: boolean;
+  /** Track entity lifecycle so entities can be re-created on the new owner. */
+  readonly rememberEntities?: boolean;
+  /** Notify the region after an entity has been idle this many ms.  */
+  readonly passivationIdleMs?: number;
+  /**
+   * Cap the number of locally-hosted entities (#82).  When the region
+   * is about to spawn a new entity and the existing count is already
+   * `maxEntities`, the entity with the oldest `lastActivity` is
+   * passivated — same code path users invoke manually via
+   * {@link Passivate}.  Useful for unbounded entity sets (per-user
+   * sessions, IoT devices, …) where a memory cap per node matters
+   * more than keeping every cold entity resident.
+   *
+   * Default: `0` (no cap).  Eviction runs only when `> 0`.
+   *
+   * Note: passivation is asynchronous, so during the brief window
+   * between "stop the LRU" and "Terminated arrives" the region may
+   * hold `maxEntities + 1` entities; the cap is a steady-state
+   * upper bound rather than a strict instantaneous one.
+   */
+  readonly maxEntities?: number;
+}
+
+/**
+ * Fluent builder for {@link ShardingOptionsType}.  Base of the builder
+ * inheritance chain: {@link StartShardingOptionsBuilder} (in
+ * `StartShardingOptions`) extends this and adds the coordinator-side
+ * fields.  Each concrete `withX` records exactly one field so unset
+ * fields fall through to HOCON / built-in defaults when the settings are
+ * normalised by {@link ShardRegion.settingsToConfig}.
  *
  * The whole-object fields — `entityProps` (a {@link Props}), and the
  * `extractEntityId` / `extractEntityMessage` extractors — are passed
  * as-is via a single `withX(value)`; no nested builders.
  */
-export class ShardingOptions<
+export class ShardingOptionsBuilder<
   TMsg,
-  S extends ShardingSettings<TMsg> = ShardingSettings<TMsg>,
+  S extends ShardingOptionsType<TMsg> = ShardingOptionsType<TMsg>,
 > extends OptionsBuilder<S> {
-  /** Start a fresh builder.  Equivalent to `new ShardingOptions<TMsg>()`. */
-  static create<TMsg>(): ShardingOptions<TMsg> {
-    return new ShardingOptions<TMsg>();
+  /** Start a fresh builder.  Equivalent to `new ShardingOptionsBuilder<TMsg>()`. */
+  static create<TMsg>(): ShardingOptionsBuilder<TMsg> {
+    return new ShardingOptionsBuilder<TMsg>();
   }
 
   /** Logical name of the sharded type. */
@@ -73,3 +111,14 @@ export class ShardingOptions<
     return this.set('maxEntities', maxEntities);
   }
 }
+
+/**
+ * Accepted input for a sharded-region-configurable API: the fluent
+ * {@link ShardingOptionsBuilder} OR a plain {@link ShardingOptionsType} object.
+ */
+export type ShardingOptions<
+  TMsg,
+  S extends ShardingOptionsType<TMsg> = ShardingOptionsType<TMsg>,
+> = ShardingOptionsBuilder<TMsg, S> | S;
+/** Value alias so `ShardingOptions.create()` / `new ShardingOptions()` resolve to the builder. */
+export const ShardingOptions = ShardingOptionsBuilder;

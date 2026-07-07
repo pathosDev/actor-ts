@@ -5,8 +5,7 @@ import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
-import type { BrokerCommonSettings } from './BrokerSettings.js';
-import type { KafkaOptions } from './KafkaOptions.js';
+import type { KafkaOptions, KafkaOptionsType } from './KafkaOptions.js';
 
 /** Inbound Kafka record delivered to subscribers. */
 export interface KafkaRecord {
@@ -42,49 +41,6 @@ export interface KafkaPublish {
  *     this gives "exactly-once-with-processing" semantics.
  */
 export type KafkaCommitMode = 'auto' | 'manual';
-
-export interface KafkaActorSettings extends BrokerCommonSettings {
-  /** Bootstrap servers (`'kafka-1:9092,kafka-2:9092'` or array). */
-  readonly brokers?: ReadonlyArray<string> | string;
-  /** Stable client id reported to the broker. */
-  readonly clientId?: string;
-  /** Optional SASL credentials. */
-  readonly sasl?: {
-    readonly mechanism: 'plain' | 'scram-sha-256' | 'scram-sha-512';
-    readonly username: string;
-    readonly password: string;
-  };
-  /** Enable TLS. */
-  readonly ssl?: boolean;
-  /** Producer settings. */
-  readonly producer?: {
-    readonly idempotent?: boolean;
-    readonly allowAutoTopicCreation?: boolean;
-  };
-  /** Consumer settings.  `groupId` is required to start a consumer. */
-  readonly consumer?: {
-    readonly groupId?: string;
-    readonly fromBeginning?: boolean;
-    /**
-     * Offset-commit policy.  Default `'auto'` — kafkajs auto-commits
-     * after the handler returns (at-least-once).  See
-     * {@link KafkaCommitMode} for the `'manual'` (exactly-once-with-
-     * processing) shape.
-     */
-    readonly commitMode?: KafkaCommitMode;
-    /**
-     * Max time in ms the manual-commit pump waits for an external
-     * `commit` / `nack` before giving up on a message and letting
-     * kafkajs reject it (which triggers a rebalance and re-delivery).
-     * Only used when `commitMode === 'manual'`.  Default 30s.
-     */
-    readonly commitTimeoutMs?: number;
-  };
-  /** Subscriber that receives every consumed record. */
-  readonly target?: ActorRef<KafkaRecord>;
-  /** Topics the consumer subscribes to at connect time. */
-  readonly topics?: ReadonlyArray<string>;
-}
 
 export type KafkaCmd =
   | { readonly kind: 'publish'; readonly publish: KafkaPublish }
@@ -165,7 +121,7 @@ export type KafkaCmd =
  *     }
  *   }
  */
-export class KafkaActor extends BrokerActor<KafkaActorSettings, KafkaCmd, KafkaPublish> {
+export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCmd, KafkaPublish> {
   private kafka: KafkaInstanceLike | null = null;
   private producer: KafkaProducerLike | null = null;
   private consumer: KafkaConsumerLike | null = null;
@@ -177,14 +133,14 @@ export class KafkaActor extends BrokerActor<KafkaActorSettings, KafkaCmd, KafkaP
    */
   private readonly pendingCommits = new Map<string, PendingCommit>();
 
-  constructor(options: KafkaOptions | Partial<KafkaActorSettings> = {}) { super(options); }
+  constructor(options: KafkaOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.kafka; }
-  protected builtInDefaults(): Partial<KafkaActorSettings> {
+  protected builtInDefaults(): Partial<KafkaOptionsType> {
     return { ssl: false, producer: { idempotent: false, allowAutoTopicCreation: false } };
   }
-  protected readSettingsFromConfig(c: Config): Partial<KafkaActorSettings> {
-    const out: { -readonly [K in keyof KafkaActorSettings]?: KafkaActorSettings[K] } = {};
+  protected readSettingsFromConfig(c: Config): Partial<KafkaOptionsType> {
+    const out: { -readonly [K in keyof KafkaOptionsType]?: KafkaOptionsType[K] } = {};
     if (c.hasPath('brokers')) out.brokers = c.getStringList('brokers');
     if (c.hasPath('clientId')) out.clientId = c.getString('clientId');
     if (c.hasPath('ssl')) out.ssl = c.getBoolean('ssl');
@@ -210,7 +166,7 @@ export class KafkaActor extends BrokerActor<KafkaActorSettings, KafkaCmd, KafkaP
     if (c.hasPath('topics')) out.topics = c.getStringList('topics');
     return out;
   }
-  protected requiredSettings(): ReadonlyArray<keyof KafkaActorSettings> { return ['brokers']; }
+  protected requiredSettings(): ReadonlyArray<keyof KafkaOptionsType> { return ['brokers']; }
   protected endpointLabel(): string {
     const brokers = this.settings.brokers;
     return Array.isArray(brokers) ? `kafka://${brokers.join(',')}` : `kafka://${brokers ?? ''}`;

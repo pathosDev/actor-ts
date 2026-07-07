@@ -7,7 +7,7 @@ import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { JsonLogger, LogLevel } from '../../../../src/Logger.js';
 import { Props } from '../../../../src/Props.js';
 import { RedisStreamsActor, type RedisStreamEntry } from '../../../../src/io/broker/RedisStreamsActor.js';
-import { RedisStreamsOptions } from '../../../../src/io/broker/RedisStreamsOptions.js';
+import { RedisStreamsOptions, RedisStreamsOptionsBuilder } from '../../../../src/io/broker/RedisStreamsOptions.js';
 import { waitForPort } from '../lib/wait-for-port.js';
 import { runScenarios, type BrokerScenario, type BrokerScenarioCtx } from '../lib/scenario.js';
 import { scenario as produceScenario } from './scenarios/01-produce.js';
@@ -67,7 +67,7 @@ export function spawnRedis(ctx: RedisCtx, opts: RedisSpawnOpts = {}): ReturnType
     .withBlockMs(500);
   if (opts.streams) builder.withStreams(opts.streams);
   if (opts.consumerGroup) builder.withConsumerGroup({ ...opts.consumerGroup, createIfMissing: true });
-  if (opts.target) builder.withTarget(opts.target as unknown as Parameters<RedisStreamsOptions['withTarget']>[0]);
+  if (opts.target) builder.withTarget(opts.target as unknown as Parameters<RedisStreamsOptionsBuilder['withTarget']>[0]);
   const actor = new RedisStreamsActor(builder);
   return ctx.system.spawnAnonymous(Props.create(() => actor));
 }

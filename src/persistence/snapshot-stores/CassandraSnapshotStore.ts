@@ -8,18 +8,7 @@ import {
   type CassandraClientLike,
   type CassandraConnection,
 } from '../journals/CassandraClient.js';
-import type { CassandraSnapshotStoreOptions } from './CassandraSnapshotStoreOptions.js';
-
-export interface CassandraSnapshotStoreSettings extends CassandraConnection {
-  /** Table name; default `snapshots`. */
-  readonly snapshotsTable?: string;
-  /** Maximum number of snapshots kept per pid.  `<= 0` = keep all.  Default: 3. */
-  readonly keepN?: number;
-  /** Auto-create the snapshots table on first connect. */
-  readonly autoCreateTables?: boolean;
-  /** Pre-built client — bypass internal construction (share with journal). */
-  readonly client?: CassandraClientLike;
-}
+import type { CassandraSnapshotStoreOptions, CassandraSnapshotStoreOptionsType } from './CassandraSnapshotStoreOptions.js';
 
 interface SnapshotRow {
   persistence_id: string;
@@ -34,15 +23,15 @@ interface SnapshotRow {
  * When `keepN > 0`, excess snapshots are pruned on each `save`.
  */
 export class CassandraSnapshotStore implements SnapshotStore {
-  private readonly options: Partial<CassandraSnapshotStoreSettings>;
+  private readonly options: Partial<CassandraSnapshotStoreOptionsType>;
   private client: CassandraClientLike;
   private started = false;
   private stopped = false;
   private readonly ownsClient: boolean;
   private readonly keepN: number;
 
-  constructor(options: CassandraSnapshotStoreOptions | Partial<CassandraSnapshotStoreSettings>) {
-    this.options = (options as Partial<CassandraSnapshotStoreSettings>);
+  constructor(options: CassandraSnapshotStoreOptions) {
+    this.options = (options as CassandraSnapshotStoreOptionsType);
     this.client = this.options.client ?? (undefined as unknown as CassandraClientLike);
     this.ownsClient = !this.options.client;
     this.keepN = this.options.keepN ?? 3;

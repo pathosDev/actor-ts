@@ -1,30 +1,10 @@
-import type { Lease } from '../../coordination/Lease.js';
 import {
   addrKey,
   type ClusterPartitionView,
   type DowningDecision,
   type DowningProvider,
 } from './DowningProvider.js';
-import type { LeaseMajorityOptions } from './LeaseMajorityOptions.js';
-
-export interface LeaseMajoritySettings {
-  /**
-   * External arbiter — typically a `KubernetesLease` so both sides
-   * of a partition reach the same K8s API and only one acquires.
-   * Each replica owns its own `Lease` instance with a distinct
-   * `owner` (its node address); the underlying lease record is
-   * shared (same `name`).
-   */
-  readonly lease: Lease;
-  /**
-   * Hard ceiling on a single `acquire()` attempt.  After this we
-   * return no decision and let the next failure-detection tick
-   * trigger a fresh attempt.  Default: 5 s.
-   */
-  readonly acquireTimeoutMs?: number;
-  /** If set, only members carrying this role count toward the majority. */
-  readonly role?: string;
-}
+import type { LeaseMajorityOptions, LeaseMajorityOptionsType } from './LeaseMajorityOptions.js';
 
 /**
  * Split-brain resolver that uses an external `Lease` to break ties
@@ -120,10 +100,10 @@ export class LeaseMajority implements DowningProvider {
    */
   private failSafe = false;
 
-  private readonly settings: LeaseMajoritySettings;
+  private readonly settings: LeaseMajorityOptionsType;
 
-  constructor(options: LeaseMajorityOptions | Partial<LeaseMajoritySettings>) {
-    this.settings = options as LeaseMajoritySettings;
+  constructor(options: LeaseMajorityOptions) {
+    this.settings = options as LeaseMajorityOptionsType;
   }
 
   decide(view: ClusterPartitionView): DowningDecision {

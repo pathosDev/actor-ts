@@ -1,19 +1,25 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
-import type { PgPoolLike } from '../journals/PostgresClient.js';
-import type { PostgresDurableStateStoreSettings } from './PostgresDurableStateStore.js';
+import type { PgPoolLike, PostgresConnection } from '../journals/PostgresClient.js';
+
+export interface PostgresDurableStateStoreOptionsType extends PostgresConnection {
+  /** Table name.  Default: `durable_state`. */
+  readonly table?: string;
+  /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
+  readonly autoCreateTables?: boolean;
+}
 
 /**
- * Fluent builder for {@link PostgresDurableStateStoreSettings}:
+ * Fluent builder for {@link PostgresDurableStateStoreOptionsType}:
  *
  *     new PostgresDurableStateStore(PostgresDurableStateStoreOptions.create().withUrl('postgres://…').withTable('state'))
  *
  * The connection fields (`withUrl` / `withPoolConfig` / `withPool`) come
  * from the shared {@link PostgresConnection} mixin.
  */
-export class PostgresDurableStateStoreOptions extends OptionsBuilder<PostgresDurableStateStoreSettings> {
-  /** Start a fresh builder.  Equivalent to `new PostgresDurableStateStoreOptions()`. */
-  static create(): PostgresDurableStateStoreOptions {
-    return new PostgresDurableStateStoreOptions();
+export class PostgresDurableStateStoreOptionsBuilder extends OptionsBuilder<PostgresDurableStateStoreOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new PostgresDurableStateStoreOptionsBuilder()`. */
+  static create(): PostgresDurableStateStoreOptionsBuilder {
+    return new PostgresDurableStateStoreOptionsBuilder();
   }
 
   /** Connection string, e.g. `postgres://user:pass@host:5432/db`. */
@@ -41,3 +47,11 @@ export class PostgresDurableStateStoreOptions extends OptionsBuilder<PostgresDur
     return this.set('autoCreateTables', autoCreateTables);
   }
 }
+
+/**
+ * Accepted input for the Postgres durable-state-store constructor: the fluent
+ * {@link PostgresDurableStateStoreOptionsBuilder} OR a plain {@link PostgresDurableStateStoreOptionsType} object.
+ */
+export type PostgresDurableStateStoreOptions = PostgresDurableStateStoreOptionsBuilder | Partial<PostgresDurableStateStoreOptionsType>;
+/** Value alias so `PostgresDurableStateStoreOptions.create()` / `new PostgresDurableStateStoreOptions()` resolve to the builder. */
+export const PostgresDurableStateStoreOptions = PostgresDurableStateStoreOptionsBuilder;

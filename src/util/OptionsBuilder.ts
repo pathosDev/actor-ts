@@ -11,9 +11,9 @@
  *     `Self` generic needed — `this` already IS the subclass).
  *   - **A builder *is* its settings.** {@link set} writes each field as an
  *     own enumerable property of the builder instance, so a builder is
- *     structurally a bag of the fields you set. Consumers accept
- *     `XOptions | Partial<XSettings>` and read / spread the argument
- *     directly — there is no separate "resolve" step to call. The `withX`
+ *     structurally a bag of the fields you set. Consumers accept the
+ *     `XOptions` union (`XOptionsBuilder | Partial<XOptionsType>`) and read /
+ *     spread the argument directly — no separate "resolve" step. The `withX`
  *     / `build` methods live on the prototype, so they never surface when
  *     the settings are spread (`{ ...options }`), enumerated
  *     (`Object.keys`), or serialized (`JSON.stringify`): only the set
@@ -21,7 +21,7 @@
  *     builder — a methods-only type — is not assignable to a bare
  *     `Partial<T>`: TypeScript's weak-type check would reject it. Reading
  *     the settings out of the argument is a plain cast: `options as
- *     XSettings` / `{ ...(options as Partial<XSettings>) }`.)
+ *     XOptionsType` / `{ ...(options as Partial<XOptionsType>) }`.)
  *   - **`build()` snapshots.** It returns an independent `Partial<T>` (a
  *     copy of the own fields) for the rare caller that wants to freeze a
  *     builder it intends to keep mutating; ordinary consumers don't need

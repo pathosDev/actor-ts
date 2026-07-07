@@ -1,10 +1,31 @@
-import { LeaseOptions } from '../LeaseOptions.js';
+import { LeaseOptionsBuilder } from '../LeaseOptions.js';
+import type { LeaseOptionsType } from '../LeaseOptions.js';
 import type { K8sFetchClient } from './k8sApi.js';
-import type { KubernetesLeaseSettings } from './KubernetesLease.js';
 
 /**
- * Fluent builder for {@link KubernetesLeaseSettings}.  Extends
- * {@link LeaseOptions} so the six common lease setters (`withName`,
+ * K8s-specific additions to the common lease settings.  When `apiServerUrl`,
+ * `authToken`, or `caCert` are omitted the adapter probes the standard
+ * ServiceAccount mount points (`/var/run/secrets/kubernetes.io/...`).
+ *
+ * `client` is a test seam — pass a fake `K8sFetchClient` to drive the
+ * lease without a real API server.
+ */
+export interface KubernetesLeaseOptionsType extends LeaseOptionsType {
+  /** Kubernetes namespace that owns the `coordination.k8s.io/v1/Lease` object. */
+  readonly namespace: string;
+  /** API-server URL.  Defaults to the in-cluster service or `https://kubernetes.default.svc`. */
+  readonly apiServerUrl?: string;
+  /** Bearer token for the ServiceAccount.  Reads `/var/run/...` if omitted. */
+  readonly authToken?: string;
+  /** PEM-encoded CA cert for the API server.  Reads `/var/run/...` if omitted. */
+  readonly caCert?: string;
+  /** Test seam — inject a fake fetch client. */
+  readonly client?: K8sFetchClient;
+}
+
+/**
+ * Fluent builder for {@link KubernetesLeaseOptionsType}.  Extends
+ * {@link LeaseOptionsBuilder} so the six common lease setters (`withName`,
  * `withOwner`, `withTtlMs`, …) are inherited; adds the K8s-specific
  * connection + credential setters on top.
  *
@@ -14,10 +35,10 @@ import type { KubernetesLeaseSettings } from './KubernetesLease.js';
  *         .withNamespace('actors'),
  *     );
  */
-export class KubernetesLeaseOptions extends LeaseOptions<KubernetesLeaseSettings> {
-  /** Start a fresh builder.  Equivalent to `new KubernetesLeaseOptions()`. */
-  static override create(): KubernetesLeaseOptions {
-    return new KubernetesLeaseOptions();
+export class KubernetesLeaseOptionsBuilder extends LeaseOptionsBuilder<KubernetesLeaseOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new KubernetesLeaseOptionsBuilder()`. */
+  static override create(): KubernetesLeaseOptionsBuilder {
+    return new KubernetesLeaseOptionsBuilder();
   }
 
   /** Kubernetes namespace that owns the `coordination.k8s.io/v1/Lease` object. */
@@ -45,3 +66,12 @@ export class KubernetesLeaseOptions extends LeaseOptions<KubernetesLeaseSettings
     return this.set('client', client);
   }
 }
+
+/**
+ * Accepted input for the {@link KubernetesLease} constructor: the fluent
+ * {@link KubernetesLeaseOptionsBuilder} OR a plain
+ * {@link KubernetesLeaseOptionsType} object.
+ */
+export type KubernetesLeaseOptions = KubernetesLeaseOptionsBuilder | Partial<KubernetesLeaseOptionsType>;
+/** Value alias so `KubernetesLeaseOptions.create()` / `new KubernetesLeaseOptions()` resolve to the builder. */
+export const KubernetesLeaseOptions = KubernetesLeaseOptionsBuilder;

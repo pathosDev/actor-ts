@@ -27,7 +27,7 @@ import {
 } from '../DurableStateStore.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import { none, some, type Option } from '../../util/Option.js';
-import type { ObjectStorageDurableStateStoreOptions } from './ObjectStorageDurableStateStoreOptions.js';
+import type { ObjectStorageDurableStateStoreOptions, ObjectStorageDurableStateStoreOptionsType } from './ObjectStorageDurableStateStoreOptions.js';
 
 /**
  * DurableState backed by any `ObjectStorageBackend`.  Each
@@ -50,33 +50,6 @@ import type { ObjectStorageDurableStateStoreOptions } from './ObjectStorageDurab
 const utf8 = new TextEncoder();
 const utf8Decoder = new TextDecoder();
 
-export interface ObjectStorageDurableStateStoreSettings {
-  readonly backend: ObjectStorageBackend;
-  readonly prefix?: string;
-  readonly compression?: CompressionConfig | CompressionResolver;
-  readonly encryption?: EncryptionConfig | EncryptionResolver;
-  /**
-   * Opt-in HMAC-SHA256 integrity protection over each body (#116).
-   * Closes a tamper-in-place gap on unencrypted bodies: without this,
-   * an attacker with write access to the backend bucket can flip the
-   * `revision` field in the JSON and bypass CAS.  Default `{ mode: 'none' }`
-   * is back-compat (no integrity tag); set `{ mode: 'hmac-sha256',
-   * integrityKey }` to protect new writes and verify reads.
-   *
-   * Legacy bodies without the integrity flag still decode cleanly —
-   * tag is opt-in.  Migrate by reading-then-writing once integrity is
-   * enabled.
-   */
-  readonly integrity?: IntegrityConfig | IntegrityResolver;
-  /**
-   * When set with an `integrity` config, decode rejects bodies that
-   * DON'T carry an integrity tag.  Use after a deployment has been
-   * fully migrated so an attacker can't downgrade by re-writing a
-   * body without the tag.
-   */
-  readonly requireIntegrity?: boolean;
-}
-
 interface CachedEntry {
   readonly etag: string;
   readonly revision: number;
@@ -91,8 +64,8 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
   private readonly requireIntegrity: boolean;
   private readonly etagCache = new Map<string, CachedEntry>();
 
-  constructor(options: ObjectStorageDurableStateStoreOptions | Partial<ObjectStorageDurableStateStoreSettings>) {
-    const s = (options as Partial<ObjectStorageDurableStateStoreSettings>);
+  constructor(options: ObjectStorageDurableStateStoreOptions) {
+    const s = (options as ObjectStorageDurableStateStoreOptionsType);
     if (s.backend === undefined) throw new Error('ObjectStorageDurableStateStore: backend is required (call withBackend()).');
     this.backend = s.backend;
     this.prefix = s.prefix ?? '';

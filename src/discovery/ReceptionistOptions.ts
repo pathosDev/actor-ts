@@ -1,17 +1,22 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import type { Cluster } from '../cluster/Cluster.js';
-import type { ReceptionistSettings } from './Receptionist.js';
+
+/** Plain settings-object shape accepted by a {@link Receptionist}. */
+export interface ReceptionistOptionsType {
+  readonly cluster?: Cluster | null;
+  readonly gossipIntervalMs?: number;
+}
 
 /**
- * Fluent builder for {@link ReceptionistSettings}.  Normally you don't
+ * Fluent builder for {@link ReceptionistOptionsType}.  Normally you don't
  * touch this directly — `system.extension(ReceptionistId).start(cluster,
  * options)` supplies the `cluster` positionally and only the tunables
  * (`withGossipIntervalMs`) come through the builder.
  */
-export class ReceptionistOptions extends OptionsBuilder<ReceptionistSettings> {
-  /** Start a fresh builder.  Equivalent to `new ReceptionistOptions()`. */
-  static create(): ReceptionistOptions {
-    return new ReceptionistOptions();
+export class ReceptionistOptionsBuilder extends OptionsBuilder<ReceptionistOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new ReceptionistOptionsBuilder()`. */
+  static create(): ReceptionistOptionsBuilder {
+    return new ReceptionistOptionsBuilder();
   }
 
   /** The cluster this receptionist gossips over.  `null` = single-node (no gossip). */
@@ -24,3 +29,12 @@ export class ReceptionistOptions extends OptionsBuilder<ReceptionistSettings> {
     return this.set('gossipIntervalMs', gossipIntervalMs);
   }
 }
+
+/**
+ * Accepted input for the {@link Receptionist} constructor: the fluent
+ * {@link ReceptionistOptionsBuilder} OR a plain {@link ReceptionistOptionsType}
+ * object.
+ */
+export type ReceptionistOptions = ReceptionistOptionsBuilder | Partial<ReceptionistOptionsType>;
+/** Value alias so `ReceptionistOptions.create()` / `new ReceptionistOptions()` resolve to the builder. */
+export const ReceptionistOptions = ReceptionistOptionsBuilder;

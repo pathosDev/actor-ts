@@ -51,16 +51,16 @@ import {
   S3ObjectStorageBackend,
   type S3ClientLike,
 } from '../../../../src/persistence/object-storage/S3ObjectStorageBackend.js';
-import { S3ObjectStorageOptions } from '../../../../src/persistence/object-storage/S3ObjectStorageOptions.js';
+import { S3ObjectStorageOptions, S3ObjectStorageOptionsBuilder } from '../../../../src/persistence/object-storage/S3ObjectStorageOptions.js';
 import {
   ObjectStorageBackendError,
   ObjectStorageConcurrencyError,
 } from '../../../../src/persistence/object-storage/ObjectStorageBackend.js';
 
 /** Terse builder helpers so these many constructions stay readable. */
-const s3Opts = (): S3ObjectStorageOptions =>
+const s3Opts = (): S3ObjectStorageOptionsBuilder =>
   S3ObjectStorageOptions.create().withBucket('b').withRegion('us-east-1');
-const s3OptsWithClient = (client: S3ClientLike): S3ObjectStorageOptions =>
+const s3OptsWithClient = (client: S3ClientLike): S3ObjectStorageOptionsBuilder =>
   s3Opts().withClient(client);
 
 beforeEach(() => { fakeClientsConstructed.length = 0; });

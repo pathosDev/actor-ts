@@ -1,18 +1,33 @@
 /**
- * Fluent builder for {@link NatsActorSettings}.  Protocol-specific
+ * Fluent builder for {@link NatsOptionsType}.  Protocol-specific
  * methods only; the common broker fields (`withReconnect` /
  * `withCircuitBreaker` / `withOutboundBuffer`) come from
- * {@link BrokerOptions}.  `build()` snapshots the accumulated partial
+ * {@link BrokerOptionsBuilder}.  `build()` snapshots the accumulated partial
  * and feeds the same three-layer merge (constructor > HOCON under
  * `actor-ts.io.broker.nats` > built-in defaults).
  */
-import { BrokerOptions } from './BrokerOptions.js';
-import type { NatsActorSettings } from './NatsActor.js';
+import { BrokerOptionsBuilder } from './BrokerOptions.js';
+import type { BrokerCommonOptionsType } from './BrokerSettings.js';
+import type { ActorRef } from '../../ActorRef.js';
+import type { NatsMessage } from './NatsActor.js';
 
-export class NatsOptions extends BrokerOptions<NatsActorSettings> {
-  /** Start a fresh builder.  Equivalent to `new NatsOptions()`. */
-  static create(): NatsOptions {
-    return new NatsOptions();
+export interface NatsOptionsType extends BrokerCommonOptionsType {
+  /** NATS server URLs (`'nats://localhost:4222'`). */
+  readonly servers?: ReadonlyArray<string> | string;
+  /** Optional credentials (token / user-password). */
+  readonly token?: string;
+  readonly user?: string;
+  readonly password?: string;
+  /** Subscriptions wired up at connect time.  Subjects support `*` and `>` wildcards (NATS-side). */
+  readonly subscriptions?: ReadonlyArray<{ readonly subject: string; readonly target: ActorRef<NatsMessage> }>;
+  /** Optional client name reported to the server. */
+  readonly name?: string;
+}
+
+export class NatsOptionsBuilder extends BrokerOptionsBuilder<NatsOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new NatsOptionsBuilder()`. */
+  static create(): NatsOptionsBuilder {
+    return new NatsOptionsBuilder();
   }
 
   /** NATS server URLs (`'nats://localhost:4222'` or array). */
@@ -36,7 +51,7 @@ export class NatsOptions extends BrokerOptions<NatsActorSettings> {
   }
 
   /** Subscriptions wired up at connect time. */
-  withSubscriptions(subscriptions: NonNullable<NatsActorSettings['subscriptions']>): this {
+  withSubscriptions(subscriptions: NonNullable<NatsOptionsType['subscriptions']>): this {
     return this.set('subscriptions', subscriptions);
   }
 
@@ -45,3 +60,11 @@ export class NatsOptions extends BrokerOptions<NatsActorSettings> {
     return this.set('name', name);
   }
 }
+
+/**
+ * Accepted input for any NATS-configurable constructor: the fluent
+ * {@link NatsOptionsBuilder} OR a plain {@link NatsOptionsType} object.
+ */
+export type NatsOptions = NatsOptionsBuilder | Partial<NatsOptionsType>;
+/** Value alias so `NatsOptions.create()` / `new NatsOptions()` resolve to the builder. */
+export const NatsOptions = NatsOptionsBuilder;

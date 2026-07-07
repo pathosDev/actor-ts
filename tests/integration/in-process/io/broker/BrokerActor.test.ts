@@ -12,7 +12,7 @@ import {
 } from '../../../../../src/io/broker/BrokerEvents.js';
 import {
   BrokerSettingsError,
-  type BrokerCommonSettings,
+  type BrokerCommonOptionsType,
 } from '../../../../../src/io/broker/BrokerSettings.js';
 import type { Config } from '../../../../../src/config/Config.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
@@ -20,7 +20,7 @@ import { Actor } from '../../../../../src/Actor.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
-interface FakeSettings extends BrokerCommonSettings {
+interface FakeSettings extends BrokerCommonOptionsType {
   readonly endpoint?: string;
   readonly tag?: string;
 }

@@ -4,17 +4,7 @@ import {
   type DowningDecision,
   type DowningProvider,
 } from './DowningProvider.js';
-import type { KeepRefereeOptions } from './KeepRefereeOptions.js';
-
-export interface KeepRefereeSettings {
-  /**
-   * Fixed "referee" address; whichever partition contains it survives.
-   * Must match the address format returned by `NodeAddress.toString()`.
-   */
-  readonly refereeAddress: string;
-  /** Additional quorum a.k.a. down-all-if-referee-reachable-but-too-few. */
-  readonly downAllIfBelowQuorum?: number;
-}
+import type { KeepRefereeOptions, KeepRefereeOptionsType } from './KeepRefereeOptions.js';
 
 /**
  * "Keep referee" — the partition containing the designated referee node
@@ -24,10 +14,10 @@ export interface KeepRefereeSettings {
  * referee, shut everyone down rather than run with a shaky majority.
  */
 export class KeepReferee implements DowningProvider {
-  private readonly settings: KeepRefereeSettings;
+  private readonly settings: KeepRefereeOptionsType;
 
-  constructor(options: KeepRefereeOptions | Partial<KeepRefereeSettings>) {
-    this.settings = options as KeepRefereeSettings;
+  constructor(options: KeepRefereeOptions) {
+    this.settings = options as KeepRefereeOptionsType;
     if (!this.settings.refereeAddress) throw new Error('KeepReferee: refereeAddress required');
   }
 

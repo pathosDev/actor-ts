@@ -1,9 +1,15 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import type { DurableStateStore } from './DurableStateStore.js';
-import type { DurableStateSettings } from './DurableStateActor.js';
+
+export interface DurableStateOptionsType<S> {
+  readonly persistenceId: string;
+  readonly store: DurableStateStore;
+  /** Factory invoked when no record exists yet. */
+  readonly emptyState: () => S;
+}
 
 /**
- * Fluent builder for {@link DurableStateSettings}.  A concrete
+ * Fluent builder for {@link DurableStateOptionsType}.  A concrete
  * `DurableStateActor` subclass takes a `DurableStateOptions<S>` and hands
  * it to `super(...)`:
  *
@@ -16,10 +22,10 @@ import type { DurableStateSettings } from './DurableStateActor.js';
  *       }
  *     }
  */
-export class DurableStateOptions<S> extends OptionsBuilder<DurableStateSettings<S>> {
-  /** Start a fresh builder.  Equivalent to `new DurableStateOptions<S>()`. */
-  static create<S>(): DurableStateOptions<S> {
-    return new DurableStateOptions<S>();
+export class DurableStateOptionsBuilder<S> extends OptionsBuilder<DurableStateOptionsType<S>> {
+  /** Start a fresh builder.  Equivalent to `new DurableStateOptionsBuilder<S>()`. */
+  static create<S>(): DurableStateOptionsBuilder<S> {
+    return new DurableStateOptionsBuilder<S>();
   }
 
   /** Stable identity of the state record. */
@@ -37,3 +43,11 @@ export class DurableStateOptions<S> extends OptionsBuilder<DurableStateSettings<
     return this.set('emptyState', emptyState);
   }
 }
+
+/**
+ * Accepted input for a `DurableStateActor` subclass constructor: the fluent
+ * {@link DurableStateOptionsBuilder} OR a plain {@link DurableStateOptionsType} object.
+ */
+export type DurableStateOptions<S> = DurableStateOptionsBuilder<S> | Partial<DurableStateOptionsType<S>>;
+/** Value alias so `DurableStateOptions.create()` / `new DurableStateOptions()` resolve to the builder. */
+export const DurableStateOptions = DurableStateOptionsBuilder;

@@ -1,19 +1,25 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
-import type { MariaDbPoolLike } from '../journals/MariaDbClient.js';
-import type { MariaDbDurableStateStoreSettings } from './MariaDbDurableStateStore.js';
+import type { MariaDbPoolLike, MariaDbConnection } from '../journals/MariaDbClient.js';
+
+export interface MariaDbDurableStateStoreOptionsType extends MariaDbConnection {
+  /** Table name.  Default: `durable_state`. */
+  readonly table?: string;
+  /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
+  readonly autoCreateTables?: boolean;
+}
 
 /**
- * Fluent builder for {@link MariaDbDurableStateStoreSettings}:
+ * Fluent builder for {@link MariaDbDurableStateStoreOptionsType}:
  *
  *     new MariaDbDurableStateStore(MariaDbDurableStateStoreOptions.create().withPoolConfig({ … }).withTable('state'))
  *
  * The connection fields (`withUrl` / `withPoolConfig` / `withPool`) come
  * from the shared {@link MariaDbConnection} mixin.
  */
-export class MariaDbDurableStateStoreOptions extends OptionsBuilder<MariaDbDurableStateStoreSettings> {
-  /** Start a fresh builder.  Equivalent to `new MariaDbDurableStateStoreOptions()`. */
-  static create(): MariaDbDurableStateStoreOptions {
-    return new MariaDbDurableStateStoreOptions();
+export class MariaDbDurableStateStoreOptionsBuilder extends OptionsBuilder<MariaDbDurableStateStoreOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new MariaDbDurableStateStoreOptionsBuilder()`. */
+  static create(): MariaDbDurableStateStoreOptionsBuilder {
+    return new MariaDbDurableStateStoreOptionsBuilder();
   }
 
   /** Connection URI passed straight to `createPool`, e.g. `mariadb://user:pass@host:3306/db`. */
@@ -41,3 +47,11 @@ export class MariaDbDurableStateStoreOptions extends OptionsBuilder<MariaDbDurab
     return this.set('autoCreateTables', autoCreateTables);
   }
 }
+
+/**
+ * Accepted input for the MariaDB durable-state-store constructor: the fluent
+ * {@link MariaDbDurableStateStoreOptionsBuilder} OR a plain {@link MariaDbDurableStateStoreOptionsType} object.
+ */
+export type MariaDbDurableStateStoreOptions = MariaDbDurableStateStoreOptionsBuilder | Partial<MariaDbDurableStateStoreOptionsType>;
+/** Value alias so `MariaDbDurableStateStoreOptions.create()` / `new MariaDbDurableStateStoreOptions()` resolve to the builder. */
+export const MariaDbDurableStateStoreOptions = MariaDbDurableStateStoreOptionsBuilder;

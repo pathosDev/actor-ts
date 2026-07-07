@@ -8,18 +8,8 @@ import {
   assertSafeIdentifier,
   buildPgPool,
   type PgPoolLike,
-  type PostgresConnection,
 } from './PostgresClient.js';
-import type { PostgresJournalOptions } from './PostgresJournalOptions.js';
-
-export interface PostgresJournalSettings extends PostgresConnection {
-  /** Events table name.  Default: `events`. */
-  readonly eventsTable?: string;
-  /** Tags join table name.  Default: `${eventsTable}_tags`. */
-  readonly tagsTable?: string;
-  /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
-  readonly autoCreateTables?: boolean;
-}
+import type { PostgresJournalOptions, PostgresJournalOptionsType } from './PostgresJournalOptions.js';
 
 interface EventRow {
   persistence_id: string;
@@ -49,7 +39,7 @@ interface EventRow {
  * enhancement.)
  */
 export class PostgresJournal implements Journal {
-  private readonly settings: PostgresJournalSettings;
+  private readonly settings: PostgresJournalOptionsType;
   private readonly table: string;
   private readonly tagsTable: string;
   private readonly autoCreate: boolean;
@@ -58,8 +48,8 @@ export class PostgresJournal implements Journal {
   private initPromise: Promise<void> | null = null;
   private closed = false;
 
-  constructor(options: PostgresJournalOptions | Partial<PostgresJournalSettings> = {}) {
-    const s = (options as Partial<PostgresJournalSettings>);
+  constructor(options: PostgresJournalOptions = {}) {
+    const s = (options as PostgresJournalOptionsType);
     this.settings = s;
     this.table = assertSafeIdentifier(s.eventsTable ?? 'events', 'events table');
     this.tagsTable = assertSafeIdentifier(

@@ -1,11 +1,70 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
-import type { ClusterSettings } from './Cluster.js';
-import type { FailureDetectorSettings } from './FailureDetector.js';
+import type { FailureDetectorOptionsType } from './FailureDetectorOptions.js';
 import type { Transport } from './Transport.js';
 import type { DowningProvider } from './downing/DowningProvider.js';
 
+/** Plain settings-object shape accepted by {@link Cluster.join}. */
+export interface ClusterOptionsType {
+  readonly host: string;
+  readonly port: number;
+  /** Other nodes this node should try to contact on startup. */
+  readonly seeds?: string[];
+  /** Role tags exposed to other members — used to constrain sharding placement. */
+  readonly roles?: string[];
+  /** Failure detector thresholds. */
+  readonly failureDetector?: Partial<FailureDetectorOptionsType>;
+  /** Override the transport (e.g. InMemoryTransport for tests). */
+  readonly transport?: Transport;
+  /** How often gossip is pushed to a random reachable peer. */
+  readonly gossipIntervalMs?: number;
+  /** How often to resend the initial join gossip to seeds until self is Up. */
+  readonly seedRetryIntervalMs?: number;
+  /**
+   * How long to keep a `removed` tombstone in the local members map
+   * before pruning it.  Tombstones exist so stale gossip from a slow
+   * peer can't resurrect a definitively-removed address; the TTL
+   * caps their accumulation in long-running clusters with frequent
+   * node churn (#75).  Default 24 h — comfortably above any
+   * realistic gossip-propagation lag.
+   */
+  readonly tombstoneTtlMs?: number;
+  /**
+   * How often the tombstone-prune pass runs.  Default 5 min — small
+   * enough that a freshly-expired tombstone disappears within one
+   * pruning window, large enough to be negligible CPU.
+   */
+  readonly tombstonePruneIntervalMs?: number;
+  /**
+   * Minimum age before a tombstone is eligible for pruning, regardless
+   * of {@link tombstoneTtlMs}.  Defaults to `6 × downAfterMs`, which
+   * gives a few failure-detector rounds of breathing room so peers
+   * that haven't fully converged still see the tombstone before it
+   * vanishes.  Mostly relevant for tests that set a very low TTL.
+   */
+  readonly tombstoneMinRetentionMs?: number;
+  /**
+   * Auto-promote a `joining` member to `weakly-up` after this many ms if
+   * convergence (leader + `up` transition) hasn't happened yet.  Set to 0
+   * to disable.  Default: 0 (disabled — opt-in only).
+   */
+  readonly weaklyUpAfterMs?: number;
+  /**
+   * Optional split-brain resolver.  When provided, the cluster invokes
+   * `provider.decide(view)` whenever a member transitions to / from
+   * `unreachable`, and force-downs every address in the returned set
+   * (regardless of failure-detector state).  Without a provider, the
+   * cluster relies solely on the failure detector's elapsed-time
+   * `unreachable → down → removed` cascade — fine for unilateral
+   * crashes, weak under network partitions.
+   *
+   * See `src/cluster/downing/` for the bundled strategies (KeepMajority,
+   * KeepOldest, KeepReferee, StaticQuorum, LeaseMajority).
+   */
+  readonly downing?: DowningProvider;
+}
+
 /**
- * Fluent builder for {@link ClusterSettings} — the sole input to
+ * Fluent builder for {@link ClusterOptionsType} — the sole input to
  * {@link Cluster.join}.  `host` + `port` are required; every other knob
  * is optional.  Polymorphic / whole-value fields (`transport`,
  * `downing`, `failureDetector`, `roles`, `seeds`) are passed as-is via a
@@ -19,10 +78,10 @@ import type { DowningProvider } from './downing/DowningProvider.js';
  *         .withSeeds(['sys@127.0.0.1:2551']),
  *     );
  */
-export class ClusterOptions extends OptionsBuilder<ClusterSettings> {
-  /** Start a fresh builder.  Equivalent to `new ClusterOptions()`. */
-  static create(): ClusterOptions {
-    return new ClusterOptions();
+export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new ClusterOptionsBuilder()`. */
+  static create(): ClusterOptionsBuilder {
+    return new ClusterOptionsBuilder();
   }
 
   /** Bind host. */
@@ -46,7 +105,7 @@ export class ClusterOptions extends OptionsBuilder<ClusterSettings> {
   }
 
   /** Failure-detector thresholds (merged over the built-in defaults). */
-  withFailureDetector(failureDetector: Partial<FailureDetectorSettings>): this {
+  withFailureDetector(failureDetector: Partial<FailureDetectorOptionsType>): this {
     return this.set('failureDetector', failureDetector);
   }
 
@@ -90,3 +149,11 @@ export class ClusterOptions extends OptionsBuilder<ClusterSettings> {
     return this.set('downing', downing);
   }
 }
+
+/**
+ * Accepted input for {@link Cluster.join}: the fluent
+ * {@link ClusterOptionsBuilder} OR a plain {@link ClusterOptionsType} object.
+ */
+export type ClusterOptions = ClusterOptionsBuilder | Partial<ClusterOptionsType>;
+/** Value alias so `ClusterOptions.create()` / `new ClusterOptions()` resolve to the builder. */
+export const ClusterOptions = ClusterOptionsBuilder;

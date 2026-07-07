@@ -1,12 +1,10 @@
 import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
-import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
-import type { BrokerCommonSettings } from './BrokerSettings.js';
-import type { JetStreamOptions } from './JetStreamOptions.js';
+import type { JetStreamOptions, JetStreamOptionsType } from './JetStreamOptions.js';
 
 /**
  * JetStream durable-streaming actor (#3).  Sister to {@link NatsActor}
@@ -147,29 +145,6 @@ export interface JetStreamConsumerConfig {
   readonly create?: boolean;
 }
 
-export interface JetStreamActorSettings extends BrokerCommonSettings {
-  /** NATS server URLs. */
-  readonly servers?: ReadonlyArray<string> | string;
-  /** Optional credentials. */
-  readonly token?: string;
-  readonly user?: string;
-  readonly password?: string;
-  /** Optional client name. */
-  readonly name?: string;
-  /** Stream lifecycle config — set when this actor owns the stream. */
-  readonly stream?: JetStreamStreamConfig;
-  /** Consumer config — required to start a subscription. */
-  readonly consumer?: JetStreamConsumerConfig;
-  /** Actor receiving every consumed message. */
-  readonly target?: ActorRef<JetStreamMessage>;
-  /**
-   * Max time the manual-ack pump waits for a `ack`/`nak`/`term`
-   * before giving up on a message and rejecting internally
-   * (kafkajs-style failure).  Default = `consumer.ackWaitMs ?? 30s`.
-   */
-  readonly ackTimeout?: number;
-}
-
 export type JetStreamCmd =
   | { readonly kind: 'publish'; readonly publish: JetStreamPublish }
   /** Acknowledge a delivered message — server marks consumed. */
@@ -190,7 +165,7 @@ export type JetStreamCmd =
   | { readonly kind: 'fetch'; readonly batch: number; readonly expiresMs?: number };
 
 export class JetStreamActor extends BrokerActor<
-  JetStreamActorSettings, JetStreamCmd, JetStreamPublish
+  JetStreamOptionsType, JetStreamCmd, JetStreamPublish
 > {
   private nc: NatsConnectionLike | null = null;
   private js: JetStreamClientLike | null = null;
@@ -200,12 +175,12 @@ export class JetStreamActor extends BrokerActor<
   /** Map of streamSeq → in-flight ack handle for the manual-ack pump. */
   private readonly pending = new Map<number, PendingAck>();
 
-  constructor(options: JetStreamOptions | Partial<JetStreamActorSettings> = {}) { super(options); }
+  constructor(options: JetStreamOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.jetstream; }
-  protected builtInDefaults(): Partial<JetStreamActorSettings> { return {}; }
-  protected readSettingsFromConfig(c: Config): Partial<JetStreamActorSettings> {
-    const out: { -readonly [K in keyof JetStreamActorSettings]?: JetStreamActorSettings[K] } = {};
+  protected builtInDefaults(): Partial<JetStreamOptionsType> { return {}; }
+  protected readSettingsFromConfig(c: Config): Partial<JetStreamOptionsType> {
+    const out: { -readonly [K in keyof JetStreamOptionsType]?: JetStreamOptionsType[K] } = {};
     if (c.hasPath('servers')) out.servers = c.getStringList('servers');
     if (c.hasPath('token')) out.token = c.getString('token');
     if (c.hasPath('user')) out.user = c.getString('user');
@@ -213,7 +188,7 @@ export class JetStreamActor extends BrokerActor<
     if (c.hasPath('name')) out.name = c.getString('name');
     return out;
   }
-  protected requiredSettings(): ReadonlyArray<keyof JetStreamActorSettings> { return ['servers']; }
+  protected requiredSettings(): ReadonlyArray<keyof JetStreamOptionsType> { return ['servers']; }
   protected endpointLabel(): string {
     const s = this.settings.servers;
     if (Array.isArray(s)) return `nats://${s.join(',')}`;

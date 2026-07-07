@@ -1,26 +1,46 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
-import type { LeaseSettings } from './Lease.js';
 
 /**
- * Fluent builder for {@link LeaseSettings} — the common construction-time
+ * Plain settings-object shape shared by every {@link Lease} backend — the
+ * common construction-time settings.  A plain object of these fields is an
+ * accepted alternative to the {@link LeaseOptionsBuilder}; concrete backends
+ * extend it (e.g. `KubernetesLeaseOptionsType`).
+ */
+export interface LeaseOptionsType {
+  /** Lease name — unique identifier within the namespace. */
+  readonly name: string;
+  /** Identifier of the holder (pod name / host name / uuid). */
+  readonly owner: string;
+  /** Time-to-live in ms — the backend auto-expires if we fail to renew. */
+  readonly ttlMs: number;
+  /** How often to renew (< ttlMs — typically ttl/3). */
+  readonly renewalIntervalMs?: number;
+  /** Max attempts for a single `acquire()` before returning false. */
+  readonly acquireRetries?: number;
+  /** Delay between acquire retries. */
+  readonly acquireRetryDelayMs?: number;
+}
+
+/**
+ * Fluent builder for {@link LeaseOptionsType} — the common construction-time
  * settings every {@link Lease} backend shares.  The concrete
- * `KubernetesLeaseOptions` subclass extends this with the K8s-specific
+ * `KubernetesLeaseOptionsBuilder` subclass extends this with the K8s-specific
  * `withX(...)` methods.
  *
  *     new InMemoryLease(
  *       LeaseOptions.create().withName('singleton').withOwner(nodeId).withTtlMs(10_000),
  *     );
  *
- * Generic over `T extends LeaseSettings` so `KubernetesLeaseOptions` can
- * inherit these six setters while adding its own — same shape as the
- * broker `BrokerOptions<T>` base.  The `as keyof T` casts pay for writing
- * the shared setters once against the generic; concrete subclasses stay
- * type-safe because their extra methods target concrete field types.
+ * Generic over `T extends LeaseOptionsType` so `KubernetesLeaseOptionsBuilder`
+ * can inherit these six setters while adding its own — same shape as the
+ * broker `BrokerOptionsBuilder<T>` base.  The `as keyof T` casts pay for
+ * writing the shared setters once against the generic; concrete subclasses
+ * stay type-safe because their extra methods target concrete field types.
  */
-export class LeaseOptions<T extends LeaseSettings = LeaseSettings> extends OptionsBuilder<T> {
-  /** Start a fresh builder.  Equivalent to `new LeaseOptions()`. */
-  static create(): LeaseOptions {
-    return new LeaseOptions();
+export class LeaseOptionsBuilder<T extends LeaseOptionsType = LeaseOptionsType> extends OptionsBuilder<T> {
+  /** Start a fresh builder.  Equivalent to `new LeaseOptionsBuilder()`. */
+  static create(): LeaseOptionsBuilder {
+    return new LeaseOptionsBuilder();
   }
 
   /** Lease name — unique identifier within the namespace. */
@@ -53,3 +73,11 @@ export class LeaseOptions<T extends LeaseSettings = LeaseSettings> extends Optio
     return this.set('acquireRetryDelayMs' as keyof T, acquireRetryDelayMs as T[keyof T]);
   }
 }
+
+/**
+ * Accepted input for any lease constructor: the fluent
+ * {@link LeaseOptionsBuilder} OR a plain {@link LeaseOptionsType} object.
+ */
+export type LeaseOptions = LeaseOptionsBuilder | Partial<LeaseOptionsType>;
+/** Value alias so `LeaseOptions.create()` / `new LeaseOptions()` resolve to the builder. */
+export const LeaseOptions = LeaseOptionsBuilder;

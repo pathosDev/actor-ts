@@ -22,9 +22,9 @@ export {
   DistributedDataId,
   decodeCrdt,
 } from './DistributedData.js';
-export { DistributedDataOptions } from './DistributedDataOptions.js';
+export { DistributedDataOptions, DistributedDataOptionsBuilder } from './DistributedDataOptions.js';
+export type { DistributedDataOptionsType } from './DistributedDataOptions.js';
 export type {
-  DistributedDataSettings,
   CrdtFactory,
   CrdtJson,
   WriteConsistency,

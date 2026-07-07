@@ -2,15 +2,14 @@ import { describe, expect, test } from 'bun:test';
 import {
   FailureDetector,
   defaultFailureDetectorSettings,
-  type FailureDetectorSettings,
 } from '../../src/cluster/FailureDetector.js';
-import { FailureDetectorOptions } from '../../src/cluster/FailureDetectorOptions.js';
+import { FailureDetectorOptions, type FailureDetectorOptionsType } from '../../src/cluster/FailureDetectorOptions.js';
 import { NodeAddress } from '../../src/cluster/NodeAddress.js';
 
 const peer = new NodeAddress('demo', 'h', 1);
 const other = new NodeAddress('demo', 'h', 2);
 
-function fd(overrides: Partial<FailureDetectorSettings> = {}): FailureDetector {
+function fd(overrides: Partial<FailureDetectorOptionsType> = {}): FailureDetector {
   const fdOptions = FailureDetectorOptions.create()
     .withHeartbeatIntervalMs(overrides.heartbeatIntervalMs ?? 100)
     .withUnreachableAfterMs(overrides.unreachableAfterMs ?? 500)

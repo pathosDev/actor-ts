@@ -1,8 +1,31 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
-import type { DnsSeedProviderSettings } from './DnsSeedProvider.js';
+
+/** Plain settings-object shape accepted by a {@link DnsSeedProvider}. */
+export interface DnsSeedProviderOptionsType {
+  /** Hostname to resolve (e.g. `my-cluster.default.svc.cluster.local`). */
+  readonly hostname: string;
+  /** System name to stamp on discovered NodeAddresses. */
+  readonly systemName: string;
+  /** Port each discovered IP should be paired with. */
+  readonly port: number;
+  /** Override the DNS-resolve function — defaults to `node:dns/promises`. */
+  readonly resolve?: (hostname: string) => Promise<string[]>;
+  /** When using SRV records, override `resolveSrv` similarly. */
+  readonly resolveSrv?: (hostname: string) => Promise<Array<{ name: string; port: number }>>;
+  /** If true, prefer SRV records (which carry a port) over A. */
+  readonly useSrv?: boolean;
+  /**
+   * In-process TTL cache for DNS lookups.  Deliberately *not* a
+   * distributed cache — DNS resolution is a per-process concern, and a
+   * Redis hop here would cost more than the lookup itself.  Default:
+   * 60_000 ms.  Set `0` to disable.  Failures are NOT cached: a query
+   * that throws will retry on the next call.
+   */
+  readonly cacheTtlMs?: number;
+}
 
 /**
- * Fluent builder for {@link DnsSeedProviderSettings}.
+ * Fluent builder for {@link DnsSeedProviderOptionsType}.
  *
  *     new DnsSeedProvider(
  *       DnsSeedProviderOptions.create()
@@ -11,10 +34,10 @@ import type { DnsSeedProviderSettings } from './DnsSeedProvider.js';
  *         .withPort(2552),
  *     );
  */
-export class DnsSeedProviderOptions extends OptionsBuilder<DnsSeedProviderSettings> {
-  /** Start a fresh builder.  Equivalent to `new DnsSeedProviderOptions()`. */
-  static create(): DnsSeedProviderOptions {
-    return new DnsSeedProviderOptions();
+export class DnsSeedProviderOptionsBuilder extends OptionsBuilder<DnsSeedProviderOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new DnsSeedProviderOptionsBuilder()`. */
+  static create(): DnsSeedProviderOptionsBuilder {
+    return new DnsSeedProviderOptionsBuilder();
   }
 
   /** Hostname to resolve (e.g. `my-cluster.default.svc.cluster.local`). */
@@ -52,3 +75,12 @@ export class DnsSeedProviderOptions extends OptionsBuilder<DnsSeedProviderSettin
     return this.set('cacheTtlMs', cacheTtlMs);
   }
 }
+
+/**
+ * Accepted input for the {@link DnsSeedProvider} constructor: the fluent
+ * {@link DnsSeedProviderOptionsBuilder} OR a plain
+ * {@link DnsSeedProviderOptionsType} object.
+ */
+export type DnsSeedProviderOptions = DnsSeedProviderOptionsBuilder | Partial<DnsSeedProviderOptionsType>;
+/** Value alias so `DnsSeedProviderOptions.create()` / `new DnsSeedProviderOptions()` resolve to the builder. */
+export const DnsSeedProviderOptions = DnsSeedProviderOptionsBuilder;

@@ -1,18 +1,33 @@
 /**
- * Fluent builder for {@link GrpcClientActorSettings}.  Protocol-specific
+ * Fluent builder for {@link GrpcClientOptionsType}.  Protocol-specific
  * methods only; the common broker fields (`withReconnect` /
  * `withCircuitBreaker` / `withOutboundBuffer`) come from
- * {@link BrokerOptions}.  `build()` snapshots the accumulated partial
+ * {@link BrokerOptionsBuilder}.  `build()` snapshots the accumulated partial
  * and feeds the same three-layer merge (constructor > HOCON under
  * `actor-ts.io.broker.grpc.client` > built-in defaults).
  */
-import { BrokerOptions } from './BrokerOptions.js';
-import type { GrpcClientActorSettings, GrpcCredentials } from './GrpcClientActor.js';
+import { BrokerOptionsBuilder } from './BrokerOptions.js';
+import type { BrokerCommonOptionsType } from './BrokerSettings.js';
+import type { GrpcCredentials } from './GrpcClientActor.js';
 
-export class GrpcClientOptions extends BrokerOptions<GrpcClientActorSettings> {
-  /** Start a fresh builder.  Equivalent to `new GrpcClientOptions()`. */
-  static create(): GrpcClientOptions {
-    return new GrpcClientOptions();
+export interface GrpcClientOptionsType extends BrokerCommonOptionsType {
+  /** Path to the `.proto` file (or array of paths). */
+  readonly protoPath?: string | ReadonlyArray<string>;
+  /** gRPC package name (`'sensor.v1'`). */
+  readonly packageName?: string;
+  /** Service name (`'SensorService'`). */
+  readonly serviceName?: string;
+  /** Server endpoint (`'host:port'`). */
+  readonly endpoint?: string;
+  readonly credentials?: GrpcCredentials;
+  /** Per-call deadline in ms.  Default 30_000. */
+  readonly deadlineMs?: number;
+}
+
+export class GrpcClientOptionsBuilder extends BrokerOptionsBuilder<GrpcClientOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new GrpcClientOptionsBuilder()`. */
+  static create(): GrpcClientOptionsBuilder {
+    return new GrpcClientOptionsBuilder();
   }
 
   /** Path to the `.proto` file (or array of paths). */
@@ -45,3 +60,11 @@ export class GrpcClientOptions extends BrokerOptions<GrpcClientActorSettings> {
     return this.set('deadlineMs', ms);
   }
 }
+
+/**
+ * Accepted input for any gRPC-client-configurable constructor: the fluent
+ * {@link GrpcClientOptionsBuilder} OR a plain {@link GrpcClientOptionsType} object.
+ */
+export type GrpcClientOptions = GrpcClientOptionsBuilder | Partial<GrpcClientOptionsType>;
+/** Value alias so `GrpcClientOptions.create()` / `new GrpcClientOptions()` resolve to the builder. */
+export const GrpcClientOptions = GrpcClientOptionsBuilder;

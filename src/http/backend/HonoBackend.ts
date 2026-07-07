@@ -14,7 +14,7 @@ import type {
   WebSocketRouteRegistration,
 } from './HttpServerBackend.js';
 import type { WebSocketListeners, WebSocketSocketAdapter } from '../ws/SocketAdapter.js';
-import type { HonoBackendOptions } from './HonoBackendOptions.js';
+import type { HonoBackendOptions, HonoBackendOptionsType } from './HonoBackendOptions.js';
 
 /** Hono delivers text as a string and binary as ArrayBuffer/Uint8Array. */
 function coerceWsData(data: unknown): string | Uint8Array {
@@ -71,17 +71,6 @@ export interface HonoAppLike {
   fetch(request: Request): Promise<Response> | Response;
 }
 
-export interface HonoBackendSettings {
-  /**
-   * Bring-your-own Hono app — useful if you already registered middleware
-   * (CORS, JWT, logger) before handing it off.  When omitted, we import
-   * `hono` dynamically and build a fresh app on `listen()`.
-   */
-  readonly app?: HonoAppLike;
-  /** Maximum allowed body size in bytes (default: 10 MiB).  Exceeding it returns 413. */
-  readonly maxBodyBytes?: number;
-}
-
 /**
  * Hono-backed HTTP backend — a thin adapter that compiles the actor-ts
  * routing DSL onto a Hono app and serves it with `Bun.serve`.  Hono is a
@@ -107,8 +96,8 @@ export class HonoBackend implements HttpServerBackend {
   // concrete implementation (Bun.serve / @hono/node-server / Deno.serve).
   private server: HonoServerHandle | null = null;
 
-  constructor(options: HonoBackendOptions | Partial<HonoBackendSettings> = {}) {
-    const settings = (options as Partial<HonoBackendSettings>);
+  constructor(options: HonoBackendOptions = {}) {
+    const settings = (options as HonoBackendOptionsType);
     this.app = settings.app ?? null;
     this.ownsApp = settings.app == null;
     this.maxBodyBytes = settings.maxBodyBytes ?? 10 * 1024 * 1024;

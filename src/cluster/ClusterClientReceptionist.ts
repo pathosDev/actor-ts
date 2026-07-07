@@ -46,7 +46,7 @@ import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
 import type { WireMessage } from './Protocol.js';
 import type { Cluster } from './Cluster.js';
-import type { ClusterClientReceptionistOptions } from './ClusterClientReceptionistOptions.js';
+import type { ClusterClientReceptionistOptions, ClusterClientReceptionistOptionsType } from './ClusterClientReceptionistOptions.js';
 
 /* ============================ wire shapes =========================== */
 
@@ -69,14 +69,6 @@ export interface ClusterClientReplyMsg {
 
 /* ============================= extension ============================ */
 
-export interface ClusterClientReceptionistSettings {
-  /**
-   * Default ask timeout (ms) when a client envelope carries an `askId`.
-   * Default: 5_000.
-   */
-  readonly askTimeoutMs?: number;
-}
-
 /**
  * Per-system extension that runs once `start(cluster)` is called.
  * Registers a wire handler on the cluster transport; calling `stop()`
@@ -92,14 +84,14 @@ export class ClusterClientReceptionist implements Extension {
 
   start(
     cluster: Cluster,
-    options: ClusterClientReceptionistOptions | Partial<ClusterClientReceptionistSettings> = {},
+    options: ClusterClientReceptionistOptions = {},
   ): void {
     if (this._started && this._cluster === cluster) return;
     if (this._started) {
       throw new Error('ClusterClientReceptionist is already bound to a different cluster');
     }
     this._cluster = cluster;
-    const settings = (options as Partial<ClusterClientReceptionistSettings>);
+    const settings = (options as ClusterClientReceptionistOptionsType);
     const askTimeoutMs = settings.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
     const log = this.system.log.withSource(`cluster-client-receptionist@${cluster.selfAddress}`);
 

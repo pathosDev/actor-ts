@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { KubernetesLease, type KubernetesLeaseSettings } from '../../../src/coordination/leases/KubernetesLease.js';
-import { KubernetesLeaseOptions } from '../../../src/coordination/leases/KubernetesLeaseOptions.js';
+import { KubernetesLease } from '../../../src/coordination/leases/KubernetesLease.js';
+import { KubernetesLeaseOptions, type KubernetesLeaseOptionsType } from '../../../src/coordination/leases/KubernetesLeaseOptions.js';
 import type {
   K8sCredentials,
   K8sFetchClient,
@@ -126,8 +126,8 @@ let server: FakeK8sServer;
 beforeEach(() => { server = new FakeK8sServer(); });
 afterEach(() => { /* nothing global */ });
 
-const baseSettings = (overrides: Partial<KubernetesLeaseSettings> = {}): KubernetesLeaseOptions => {
-  const s: KubernetesLeaseSettings = {
+const baseSettings = (overrides: Partial<KubernetesLeaseOptionsType> = {}): KubernetesLeaseOptions => {
+  const s: KubernetesLeaseOptionsType = {
     name: 'test-lease',
     namespace: 'default',
     owner: 'test-pod',

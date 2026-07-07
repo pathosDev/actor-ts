@@ -1,5 +1,5 @@
 import type { ActorRef } from '../ActorRef.js';
-import { ActorSystem, type ActorSystemSettings } from '../ActorSystem.js';
+import { ActorSystem } from '../ActorSystem.js';
 import { ActorSystemOptions } from '../ActorSystemOptions.js';
 import {
   ReceptionistId,
@@ -8,108 +8,11 @@ import {
 import { autoDiscovery, singleProviderDiscovery } from '../discovery/autoDiscovery.js';
 import { AutoDiscoveryOptions } from '../discovery/AutoDiscoveryOptions.js';
 import { AggregateSeedProvider } from '../discovery/AggregateSeedProvider.js';
-import { Cluster, type ClusterSettings } from './Cluster.js';
+import { Cluster } from './Cluster.js';
 import { ClusterOptions } from './ClusterOptions.js';
 import { SelfUp, type ClusterEvent } from './ClusterEvents.js';
 import { NodeAddress } from './NodeAddress.js';
-import type { ClusterBootstrapOptions } from './ClusterBootstrapOptions.js';
-
-/**
- * Settings accepted by {@link Cluster.bootstrap}.  Everything is
- * optional except `name`; sensible defaults turn the call into a
- * single-line hello-cluster.  Build one with {@link ClusterBootstrapOptions}.
- */
-export interface ClusterBootstrapSettings {
-  /* ----------------------------- System -------------------------------- */
-
-  /** ActorSystem name. */
-  readonly name: string;
-
-  /** Optional logger / log level / config overrides — forwarded to `ActorSystem.create`. */
-  readonly logger?: ActorSystemSettings['logger'];
-  readonly logLevel?: ActorSystemSettings['logLevel'];
-  readonly config?: ActorSystemSettings['config'];
-  readonly configFile?: ActorSystemSettings['configFile'];
-  readonly persistence?: ActorSystemSettings['persistence'];
-
-  /**
-   * Whether the bootstrap helper installs `SIGTERM` + `SIGINT`
-   * handlers that call the returned `shutdown()` once.  Set
-   * to a list of signals to customise, or to `false` to disable.
-   * Default: `['SIGTERM', 'SIGINT']`.
-   */
-  readonly shutdownOnSignals?: boolean | ReadonlyArray<NodeJS.Signals>;
-
-  /* ----------------------------- Cluster ------------------------------- */
-
-  /**
-   * Bind host.  Default resolution order:
-   *   1. `opts.host`
-   *   2. `process.env.POD_IP` (Kubernetes)
-   *   3. `process.env.HOSTNAME`
-   *   4. `'0.0.0.0'`
-   */
-  readonly host?: string;
-
-  /**
-   * Bind port.  Default: `process.env.CLUSTER_PORT` (when present and
-   * a finite integer), otherwise `2552`.
-   */
-  readonly port?: number;
-
-  /** Transport override.  Default: `TcpTransport`. */
-  readonly transport?: ClusterSettings['transport'];
-
-  /**
-   * Explicit seed list.  When set, `discovery` is ignored and the
-   * cluster contacts exactly these addresses.
-   */
-  readonly seeds?: ReadonlyArray<string>;
-
-  /**
-   * Discovery strategy.  Values:
-   *
-   *   - `'auto'` (default) — env-driven {@link autoDiscovery} chain.
-   *   - `'kubernetes' | 'dns' | 'config'` — pin to a single provider,
-   *     still configured from env vars.
-   *   - a `SeedProvider` instance — use as-is.
-   *   - `{ providers: [...] }` — assemble a custom aggregate chain.
-   *
-   * Ignored when `seeds` is set.
-   */
-  readonly discovery?:
-    | 'auto'
-    | 'kubernetes'
-    | 'dns'
-    | 'config'
-    | SeedProvider
-    | { readonly providers: ReadonlyArray<SeedProvider> };
-
-  readonly roles?: ClusterSettings['roles'];
-  readonly failureDetector?: ClusterSettings['failureDetector'];
-  readonly gossipIntervalMs?: ClusterSettings['gossipIntervalMs'];
-  readonly downing?: ClusterSettings['downing'];
-
-  /**
-   * Auto-start the {@link Receptionist} extension so service-key
-   * lookups (`Find`, `Subscribe`) work without explicit wiring.
-   * Default: `true`.
-   */
-  readonly receptionist?: boolean;
-
-  /**
-   * Wait for this node's `SelfUp` event before resolving.
-   *
-   *   - `true` (default) — wait up to 5 000 ms.
-   *   - `false` / `0`    — return immediately.
-   *   - a number         — wait at most that many ms.
-   *
-   * On timeout the returned promise still resolves — the cluster
-   * keeps trying in the background.  Set a custom value when seed
-   * contact is slow (e.g. K8s pod start lag).
-   */
-  readonly awaitReady?: boolean | number;
-}
+import type { ClusterBootstrapOptions, ClusterBootstrapOptionsType } from './ClusterBootstrapOptions.js';
 
 /** Return value of {@link Cluster.bootstrap}. */
 export interface BootstrappedCluster {
@@ -120,7 +23,7 @@ export interface BootstrappedCluster {
   /**
    * Graceful shutdown — leaves the cluster, then terminates the
    * system.  Idempotent; safe to call multiple times.  Bound to
-   * SIGTERM/SIGINT by default (see {@link ClusterBootstrapSettings.shutdownOnSignals}).
+   * SIGTERM/SIGINT by default (see {@link ClusterBootstrapOptionsType.shutdownOnSignals}).
    */
   readonly shutdown: () => Promise<void>;
 }
@@ -135,13 +38,13 @@ const DEFAULT_PORT = 2552;
  * Power users keep `ActorSystem.create()` + `Cluster.join()` for
  * full control.
  *
- * See the {@link ClusterBootstrapSettings} doc for what each field
+ * See the {@link ClusterBootstrapOptionsType} doc for what each field
  * controls and which env vars steer the defaults.
  */
 export async function bootstrapCluster(
-  options: ClusterBootstrapOptions | Partial<ClusterBootstrapSettings>,
+  options: ClusterBootstrapOptions,
 ): Promise<BootstrappedCluster> {
-  const opts = options as ClusterBootstrapSettings;
+  const opts = options as ClusterBootstrapOptionsType;
   const host = resolveHost(opts);
   const port = resolvePort(opts);
 
@@ -195,7 +98,7 @@ export async function bootstrapCluster(
 /* Internal helpers                                                            */
 /* -------------------------------------------------------------------------- */
 
-function resolveHost(opts: ClusterBootstrapSettings): string {
+function resolveHost(opts: ClusterBootstrapOptionsType): string {
   if (opts.host) return opts.host;
   const podIp = (process.env.POD_IP ?? '').trim();
   if (podIp) return podIp;
@@ -204,7 +107,7 @@ function resolveHost(opts: ClusterBootstrapSettings): string {
   return '0.0.0.0';
 }
 
-function resolvePort(opts: ClusterBootstrapSettings): number {
+function resolvePort(opts: ClusterBootstrapOptionsType): number {
   if (typeof opts.port === 'number' && Number.isFinite(opts.port)) return opts.port;
   const raw = (process.env.CLUSTER_PORT ?? '').trim();
   if (raw.length > 0) {
@@ -214,7 +117,7 @@ function resolvePort(opts: ClusterBootstrapSettings): number {
   return DEFAULT_PORT;
 }
 
-function extractSystemSettings(opts: ClusterBootstrapSettings): ActorSystemOptions {
+function extractSystemSettings(opts: ClusterBootstrapOptionsType): ActorSystemOptions {
   const out = ActorSystemOptions.create();
   if (opts.logger) out.withLogger(opts.logger);
   if (opts.logLevel !== undefined) out.withLogLevel(opts.logLevel);
@@ -225,8 +128,8 @@ function extractSystemSettings(opts: ClusterBootstrapSettings): ActorSystemOptio
 }
 
 async function resolveSeeds(args: {
-  explicit: ClusterBootstrapSettings['seeds'];
-  discovery: ClusterBootstrapSettings['discovery'];
+  explicit: ClusterBootstrapOptionsType['seeds'];
+  discovery: ClusterBootstrapOptionsType['discovery'];
   systemName: string;
   port: number;
   selfHost: string;
@@ -252,7 +155,7 @@ async function resolveSeeds(args: {
 }
 
 function buildSeedProvider(
-  spec: NonNullable<ClusterBootstrapSettings['discovery']>,
+  spec: NonNullable<ClusterBootstrapOptionsType['discovery']>,
   base: { systemName: string; port: number; log: (msg: string, err?: unknown) => void },
 ): SeedProvider {
   const discoveryOptions = AutoDiscoveryOptions.create()

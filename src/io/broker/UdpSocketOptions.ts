@@ -1,19 +1,31 @@
 /**
- * Fluent builder for {@link UdpSocketActorSettings}.  Protocol-specific
+ * Fluent builder for {@link UdpSocketOptionsType}.  Protocol-specific
  * methods only; the common broker fields (`withReconnect` /
  * `withCircuitBreaker` / `withOutboundBuffer`) come from
- * {@link BrokerOptions}.  `build()` snapshots the accumulated partial
+ * {@link BrokerOptionsBuilder}.  `build()` snapshots the accumulated partial
  * and feeds the same three-layer merge (constructor > HOCON under
  * `actor-ts.io.broker.udp` > built-in defaults).
  */
-import { BrokerOptions } from './BrokerOptions.js';
+import { BrokerOptionsBuilder } from './BrokerOptions.js';
+import type { BrokerCommonOptionsType } from './BrokerSettings.js';
 import type { ActorRef } from '../../ActorRef.js';
-import type { UdpSocketActorSettings, UdpDatagram } from './UdpSocketActor.js';
+import type { UdpDatagram } from './UdpSocketActor.js';
 
-export class UdpSocketOptions extends BrokerOptions<UdpSocketActorSettings> {
-  /** Start a fresh builder.  Equivalent to `new UdpSocketOptions()`. */
-  static create(): UdpSocketOptions {
-    return new UdpSocketOptions();
+export interface UdpSocketOptionsType extends BrokerCommonOptionsType {
+  /** Local bind address.  Default: `'0.0.0.0'`. */
+  readonly bindHost?: string;
+  /** Local port.  `0` (default) lets the OS pick. */
+  readonly bindPort?: number;
+  /** IPv4 (`'udp4'`) or IPv6 (`'udp6'`).  Default: `'udp4'`. */
+  readonly type?: 'udp4' | 'udp6';
+  /** Subscriber for inbound datagrams.  Required. */
+  readonly target?: ActorRef<UdpDatagram>;
+}
+
+export class UdpSocketOptionsBuilder extends BrokerOptionsBuilder<UdpSocketOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new UdpSocketOptionsBuilder()`. */
+  static create(): UdpSocketOptionsBuilder {
+    return new UdpSocketOptionsBuilder();
   }
 
   /** Local bind address.  Default `'0.0.0.0'`. */
@@ -36,3 +48,11 @@ export class UdpSocketOptions extends BrokerOptions<UdpSocketActorSettings> {
     return this.set('target', target);
   }
 }
+
+/**
+ * Accepted input for any UDP-socket-configurable constructor: the fluent
+ * {@link UdpSocketOptionsBuilder} OR a plain {@link UdpSocketOptionsType} object.
+ */
+export type UdpSocketOptions = UdpSocketOptionsBuilder | Partial<UdpSocketOptionsType>;
+/** Value alias so `UdpSocketOptions.create()` / `new UdpSocketOptions()` resolve to the builder. */
+export const UdpSocketOptions = UdpSocketOptionsBuilder;

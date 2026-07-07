@@ -8,7 +8,7 @@ import {
   DistributedPubSubMediator,
   mediatorPath,
 } from './DistributedPubSubMediator.js';
-import { DistributedPubSubOptions } from './DistributedPubSubOptions.js';
+import { DistributedPubSubOptions, type DistributedPubSubOptionsType } from './DistributedPubSubOptions.js';
 import type {
   GetTopics,
   Publish,
@@ -41,9 +41,9 @@ export class DistributedPubSub implements Extension {
     this._cluster = cluster;
 
     // Cluster comes from the positional arg and is authoritative — inject it
-    // into the builder before constructing the (builder-only) mediator.
+    // into the options (builder or plain object) before constructing the mediator.
     const mediator = this.system.spawn(
-      Props.create(() => new DistributedPubSubMediator(options.withCluster(cluster))),
+      Props.create(() => new DistributedPubSubMediator({ ...(options as Partial<DistributedPubSubOptionsType>), cluster })),
       'pubsub-mediator',
     );
     this._mediator = mediator as ActorRef<MediatorMessage>;

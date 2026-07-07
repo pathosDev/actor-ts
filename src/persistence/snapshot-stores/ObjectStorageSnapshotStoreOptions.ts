@@ -6,20 +6,32 @@ import type {
   EncryptionResolver,
 } from '../object-storage/PluginConfig.js';
 import type { ObjectStorageBackend } from '../object-storage/ObjectStorageBackend.js';
-import type { ObjectStorageSnapshotStoreSettings } from './ObjectStorageSnapshotStore.js';
+
+export interface ObjectStorageSnapshotStoreOptionsType {
+  /** The underlying storage layer (S3 / Filesystem / …). */
+  readonly backend: ObjectStorageBackend;
+  /** Prepended to every key before the persistenceId.  Default: ''. */
+  readonly prefix?: string;
+  /** Keep this many snapshots per persistenceId; older ones are deleted on save.  Default: 3. */
+  readonly keepN?: number;
+  /** Compression — flat config or per-pid resolver.  Default: `{ algorithm: 'gzip' }`. */
+  readonly compression?: CompressionConfig | CompressionResolver;
+  /** Encryption — flat config or per-pid resolver.  Default: `{ mode: 'none' }`. */
+  readonly encryption?: EncryptionConfig | EncryptionResolver;
+}
 
 /**
- * Fluent builder for {@link ObjectStorageSnapshotStoreSettings}.  The
+ * Fluent builder for {@link ObjectStorageSnapshotStoreOptionsType}.  The
  * `backend` is required:
  *
  *     new ObjectStorageSnapshotStore(
  *       ObjectStorageSnapshotStoreOptions.create().withBackend(backend).withKeepN(2),
  *     )
  */
-export class ObjectStorageSnapshotStoreOptions extends OptionsBuilder<ObjectStorageSnapshotStoreSettings> {
-  /** Start a fresh builder.  Equivalent to `new ObjectStorageSnapshotStoreOptions()`. */
-  static create(): ObjectStorageSnapshotStoreOptions {
-    return new ObjectStorageSnapshotStoreOptions();
+export class ObjectStorageSnapshotStoreOptionsBuilder extends OptionsBuilder<ObjectStorageSnapshotStoreOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new ObjectStorageSnapshotStoreOptionsBuilder()`. */
+  static create(): ObjectStorageSnapshotStoreOptionsBuilder {
+    return new ObjectStorageSnapshotStoreOptionsBuilder();
   }
 
   /** The underlying storage layer (S3 / Filesystem / …). */
@@ -47,3 +59,11 @@ export class ObjectStorageSnapshotStoreOptions extends OptionsBuilder<ObjectStor
     return this.set('encryption', encryption);
   }
 }
+
+/**
+ * Accepted input for the object-storage snapshot-store constructor: the fluent
+ * {@link ObjectStorageSnapshotStoreOptionsBuilder} OR a plain {@link ObjectStorageSnapshotStoreOptionsType} object.
+ */
+export type ObjectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptionsBuilder | Partial<ObjectStorageSnapshotStoreOptionsType>;
+/** Value alias so `ObjectStorageSnapshotStoreOptions.create()` / `new ObjectStorageSnapshotStoreOptions()` resolve to the builder. */
+export const ObjectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptionsBuilder;

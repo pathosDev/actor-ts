@@ -1,10 +1,8 @@
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
-import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
-import type { BrokerCommonSettings } from './BrokerSettings.js';
-import type { UdpSocketOptions } from './UdpSocketOptions.js';
+import type { UdpSocketOptions, UdpSocketOptionsType } from './UdpSocketOptions.js';
 
 /** Inbound datagram delivered to the target actor. */
 export interface UdpDatagram {
@@ -20,17 +18,6 @@ export interface UdpOutbound {
   readonly port: number;
 }
 
-export interface UdpSocketActorSettings extends BrokerCommonSettings {
-  /** Local bind address.  Default: `'0.0.0.0'`. */
-  readonly bindHost?: string;
-  /** Local port.  `0` (default) lets the OS pick. */
-  readonly bindPort?: number;
-  /** IPv4 (`'udp4'`) or IPv6 (`'udp6'`).  Default: `'udp4'`. */
-  readonly type?: 'udp4' | 'udp6';
-  /** Subscriber for inbound datagrams.  Required. */
-  readonly target?: ActorRef<UdpDatagram>;
-}
-
 export type UdpSocketCmd = { readonly kind: 'send'; readonly datagram: UdpOutbound };
 
 /**
@@ -41,24 +28,24 @@ export type UdpSocketCmd = { readonly kind: 'send'; readonly datagram: UdpOutbou
  * socket is bound).
  */
 export class UdpSocketActor
-  extends BrokerActor<UdpSocketActorSettings, UdpSocketCmd, UdpOutbound> {
+  extends BrokerActor<UdpSocketOptionsType, UdpSocketCmd, UdpOutbound> {
   private socket: DgramSocket | null = null;
   private actualPort = 0;
 
-  constructor(options: UdpSocketOptions | Partial<UdpSocketActorSettings> = {}) { super(options); }
+  constructor(options: UdpSocketOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.udp; }
-  protected builtInDefaults(): Partial<UdpSocketActorSettings> {
+  protected builtInDefaults(): Partial<UdpSocketOptionsType> {
     return { bindHost: '0.0.0.0', bindPort: 0, type: 'udp4' };
   }
-  protected readSettingsFromConfig(c: Config): Partial<UdpSocketActorSettings> {
-    const out: { -readonly [K in keyof UdpSocketActorSettings]?: UdpSocketActorSettings[K] } = {};
+  protected readSettingsFromConfig(c: Config): Partial<UdpSocketOptionsType> {
+    const out: { -readonly [K in keyof UdpSocketOptionsType]?: UdpSocketOptionsType[K] } = {};
     if (c.hasPath('bindHost')) out.bindHost = c.getString('bindHost');
     if (c.hasPath('bindPort')) out.bindPort = c.getInt('bindPort');
     if (c.hasPath('type')) out.type = c.getString('type') as 'udp4' | 'udp6';
     return out;
   }
-  protected requiredSettings(): ReadonlyArray<keyof UdpSocketActorSettings> {
+  protected requiredSettings(): ReadonlyArray<keyof UdpSocketOptionsType> {
     return ['target'];
   }
   protected endpointLabel(): string {

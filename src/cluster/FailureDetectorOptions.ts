@@ -1,8 +1,17 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
-import type { FailureDetectorSettings } from './FailureDetector.js';
+
+/** Plain settings-object shape accepted by a {@link FailureDetector}. */
+export interface FailureDetectorOptionsType {
+  /** How often the detector samples and decides membership health. */
+  readonly heartbeatIntervalMs: number;
+  /** Time without heartbeat after which a peer is marked unreachable. */
+  readonly unreachableAfterMs: number;
+  /** Additional time after which an unreachable peer is declared down. */
+  readonly downAfterMs: number;
+}
 
 /**
- * Fluent builder for {@link FailureDetectorSettings}.  Unset fields fall
+ * Fluent builder for {@link FailureDetectorOptionsType}.  Unset fields fall
  * through to {@link defaultFailureDetectorSettings} in the consumer, so a
  * bare `FailureDetectorOptions.create()` yields the defaults.
  *
@@ -10,10 +19,10 @@ import type { FailureDetectorSettings } from './FailureDetector.js';
  *       FailureDetectorOptions.create().withUnreachableAfterMs(3_000),
  *     )
  */
-export class FailureDetectorOptions extends OptionsBuilder<FailureDetectorSettings> {
-  /** Start a fresh builder.  Equivalent to `new FailureDetectorOptions()`. */
-  static create(): FailureDetectorOptions {
-    return new FailureDetectorOptions();
+export class FailureDetectorOptionsBuilder extends OptionsBuilder<FailureDetectorOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new FailureDetectorOptionsBuilder()`. */
+  static create(): FailureDetectorOptionsBuilder {
+    return new FailureDetectorOptionsBuilder();
   }
 
   /** How often the detector samples and decides membership health. */
@@ -31,3 +40,12 @@ export class FailureDetectorOptions extends OptionsBuilder<FailureDetectorSettin
     return this.set('downAfterMs', ms);
   }
 }
+
+/**
+ * Accepted input for any FailureDetector-configurable constructor: the
+ * fluent {@link FailureDetectorOptionsBuilder} OR a plain
+ * {@link FailureDetectorOptionsType} object.
+ */
+export type FailureDetectorOptions = FailureDetectorOptionsBuilder | Partial<FailureDetectorOptionsType>;
+/** Value alias so `FailureDetectorOptions.create()` / `new FailureDetectorOptions()` resolve to the builder. */
+export const FailureDetectorOptions = FailureDetectorOptionsBuilder;

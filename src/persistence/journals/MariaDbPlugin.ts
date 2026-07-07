@@ -1,36 +1,17 @@
 import type { ActorSystem } from '../../ActorSystem.js';
 import type { PersistenceExtension } from '../PersistenceExtension.js';
 import { MariaDbJournal } from './MariaDbJournal.js';
-import type { MariaDbJournalOptions } from './MariaDbJournalOptions.js';
-import type { MariaDbJournalSettings } from './MariaDbJournal.js';
+import type { MariaDbJournalOptionsType } from './MariaDbJournalOptions.js';
 import { MariaDbSnapshotStore } from '../snapshot-stores/MariaDbSnapshotStore.js';
-import type { MariaDbSnapshotStoreOptions } from '../snapshot-stores/MariaDbSnapshotStoreOptions.js';
-import type { MariaDbSnapshotStoreSettings } from '../snapshot-stores/MariaDbSnapshotStore.js';
+import type { MariaDbSnapshotStoreOptionsType } from '../snapshot-stores/MariaDbSnapshotStoreOptions.js';
 import { MariaDbDurableStateStore } from '../durable-state-stores/MariaDbDurableStateStore.js';
-import type { MariaDbDurableStateStoreOptions } from '../durable-state-stores/MariaDbDurableStateStoreOptions.js';
-import type { MariaDbDurableStateStoreSettings } from '../durable-state-stores/MariaDbDurableStateStore.js';
-import type { MariaDbPoolLike } from './MariaDbClient.js';
-import type { RegisterMariaDbPluginsOptions } from './MariaDbPluginOptions.js';
+import type { MariaDbDurableStateStoreOptionsType } from '../durable-state-stores/MariaDbDurableStateStoreOptions.js';
+import type { RegisterMariaDbPluginsOptions, RegisterMariaDbPluginsOptionsType } from './MariaDbPluginOptions.js';
 
 /** Canonical plug-in IDs for the MariaDB journal, snapshot, and durable-state stores. */
 export const MARIADB_JOURNAL_PLUGIN_ID = 'actor-ts.persistence.journal.mariadb';
 export const MARIADB_SNAPSHOT_PLUGIN_ID = 'actor-ts.persistence.snapshot-store.mariadb';
 export const MARIADB_DURABLE_STATE_PLUGIN_ID = 'actor-ts.persistence.durable-state.mariadb';
-
-export interface RegisterMariaDbPluginsSettings {
-  /**
-   * Shared connection pool injected into all three stores.  When provided,
-   * the journal + snapshot + durable-state stores reuse ONE pool.  When
-   * omitted, each store lazily builds its own from its `url` / `poolConfig`.
-   */
-  readonly pool?: MariaDbPoolLike;
-  /** Journal builder — its `pool` is overridden by the shared `pool` when set. */
-  readonly journal?: MariaDbJournalOptions | Partial<MariaDbJournalSettings>;
-  /** Snapshot-store builder — its `pool` is overridden by the shared `pool` when set. */
-  readonly snapshotStore?: MariaDbSnapshotStoreOptions | Partial<MariaDbSnapshotStoreSettings>;
-  /** Durable-state-store builder — its `pool` is overridden by the shared `pool` when set. */
-  readonly durableStateStore?: MariaDbDurableStateStoreOptions | Partial<MariaDbDurableStateStoreSettings>;
-}
 
 export interface MariaDbPluginHandles {
   /**
@@ -53,15 +34,15 @@ export interface MariaDbPluginHandles {
  */
 export function registerMariaDbPlugins(
   ext: PersistenceExtension,
-  options: RegisterMariaDbPluginsOptions | Partial<RegisterMariaDbPluginsSettings>,
+  options: RegisterMariaDbPluginsOptions,
 ): MariaDbPluginHandles {
-  const s = (options as Partial<RegisterMariaDbPluginsSettings>);
+  const s = (options as RegisterMariaDbPluginsOptionsType);
   // Resolve each leaf to a plain object and merge the shared pool (when set)
   // onto it.  A missing leaf falls back to an empty object so the shared
   // pool still reaches every store.
-  const journal = { ...((s.journal ?? {}) as Partial<MariaDbJournalSettings>), ...(s.pool ? { pool: s.pool } : {}) };
-  const snapshotStore = { ...((s.snapshotStore ?? {}) as Partial<MariaDbSnapshotStoreSettings>), ...(s.pool ? { pool: s.pool } : {}) };
-  const durableState = { ...((s.durableStateStore ?? {}) as Partial<MariaDbDurableStateStoreSettings>), ...(s.pool ? { pool: s.pool } : {}) };
+  const journal = { ...((s.journal ?? {}) as Partial<MariaDbJournalOptionsType>), ...(s.pool ? { pool: s.pool } : {}) };
+  const snapshotStore = { ...((s.snapshotStore ?? {}) as Partial<MariaDbSnapshotStoreOptionsType>), ...(s.pool ? { pool: s.pool } : {}) };
+  const durableState = { ...((s.durableStateStore ?? {}) as Partial<MariaDbDurableStateStoreOptionsType>), ...(s.pool ? { pool: s.pool } : {}) };
   ext.registerJournal(
     MARIADB_JOURNAL_PLUGIN_ID,
     (_system: ActorSystem) => new MariaDbJournal(journal),

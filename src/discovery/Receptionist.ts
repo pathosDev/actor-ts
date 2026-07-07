@@ -1,7 +1,7 @@
 import { match, P } from 'ts-pattern';
 import { Actor } from '../Actor.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
-import type { ReceptionistOptions } from './ReceptionistOptions.js';
+import type { ReceptionistOptions, ReceptionistOptionsType } from './ReceptionistOptions.js';
 import { fromNullable, type Option } from '../util/Option.js';
 import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
@@ -40,11 +40,6 @@ interface KeyEntry {
   readonly subscribers: Set<ActorRef<Listing>>;
 }
 
-export interface ReceptionistSettings {
-  readonly cluster?: Cluster | null;
-  readonly gossipIntervalMs?: number;
-}
-
 /**
  * Cluster-wide service registry.  Each node hosts one Receptionist actor.
  * Register/Deregister are authoritative locally; peers learn about
@@ -63,9 +58,9 @@ export class Receptionist extends Actor<Msg> {
   private unsubWire: (() => void) | null = null;
   private unsubCluster: (() => void) | null = null;
 
-  constructor(options: ReceptionistOptions | Partial<ReceptionistSettings> = {}) {
+  constructor(options: ReceptionistOptions = {}) {
     super();
-    const settings = (options as Partial<ReceptionistSettings>);
+    const settings = options as ReceptionistOptionsType;
     this.clusterRef = settings.cluster ?? null;
     this.gossipIntervalMs = settings.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
   }
@@ -248,13 +243,13 @@ export class ReceptionistExtension {
 
   start(
     cluster?: Cluster | null,
-    options: ReceptionistOptions | Partial<ReceptionistSettings> = {},
+    options: ReceptionistOptions = {},
   ): ActorRef<Msg> {
     if (this.started) return this.started;
     // `cluster` stays a positional arg (it's identity/wiring, not a tunable);
     // fold it onto the resolved settings so the actor sees a single object.
-    const settings: Partial<ReceptionistSettings> = {
-      ...(options as Partial<ReceptionistSettings>),
+    const settings: Partial<ReceptionistOptionsType> = {
+      ...(options as Partial<ReceptionistOptionsType>),
       cluster: cluster ?? null,
     };
     const ref = this.system.spawn(

@@ -2,7 +2,7 @@ import { Lazy } from '../util/Lazy.js';
 import { none, some, type Option } from '../util/Option.js';
 import { wrapError } from '../util/WrapError.js';
 import { CacheError, type Cache } from './Cache.js';
-import type { RedisCacheOptions } from './RedisCacheOptions.js';
+import type { RedisCacheOptions, RedisCacheOptionsType } from './RedisCacheOptions.js';
 
 /**
  * Redis-backed `Cache` — wraps `ioredis`.  We pick ioredis over the
@@ -25,28 +25,6 @@ import type { RedisCacheOptions } from './RedisCacheOptions.js';
  * relies on their atomic semantics for correctness (rate-limit,
  * idempotency-key).
  */
-
-export interface RedisCacheSettings {
-  /**
-   * Redis URL (e.g. `redis://localhost:6379`) — passed straight to the
-   * ioredis constructor.  Mutually exclusive with `host`/`port`.
-   */
-  readonly url?: string;
-  readonly host?: string;
-  readonly port?: number;
-  readonly password?: string;
-  readonly db?: number;
-  /**
-   * Optional key prefix prepended to every key.  Useful when a single
-   * Redis instance is shared by multiple actor systems / environments.
-   */
-  readonly keyPrefix?: string;
-  /**
-   * Pre-built ioredis client — bypass internal construction (advanced
-   * usage: connection sharing, custom retry strategies, Redis Cluster).
-   */
-  readonly client?: RedisClientLike;
-}
 
 /**
  * Minimal subset of the ioredis client surface we depend on.  Defined
@@ -74,8 +52,8 @@ export class RedisCache implements Cache {
   private readonly keyPrefix: string;
   private closed = false;
 
-  constructor(options: RedisCacheOptions | Partial<RedisCacheSettings> = {}) {
-    const opts = (options as Partial<RedisCacheSettings>);
+  constructor(options: RedisCacheOptions = {}) {
+    const opts = options as RedisCacheOptionsType;
     this.keyPrefix = opts.keyPrefix ?? '';
     this.clientLazy = Lazy.of(async () => {
       if (opts.client) return opts.client;

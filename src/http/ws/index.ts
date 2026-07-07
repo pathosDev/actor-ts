@@ -5,14 +5,14 @@
  * `WebSocketServerActor`, the `WsConnection` handle, and the codecs.
  */
 export { websocket } from './WebSocketRoute.js';
-export { WebSocketRouteOptions } from './WebSocketRouteOptions.js';
-export type { WebSocketRouteSettings } from './WebSocketRoute.js';
+export { WebSocketRouteOptions, WebSocketRouteOptionsBuilder } from './WebSocketRouteOptions.js';
+export type { WebSocketRouteOptionsType } from './WebSocketRouteOptions.js';
 
 export { WebSocketServerActor } from './WebSocketServerActor.js';
 
 export { WebSocketClientActor } from './WebSocketClientActor.js';
-export { WebSocketClientOptions } from './WebSocketClientOptions.js';
-export type { WebSocketClientSettings } from './WebSocketClientActor.js';
+export { WebSocketClientOptions, WebSocketClientOptionsBuilder } from './WebSocketClientOptions.js';
+export type { WebSocketClientOptionsType } from './WebSocketClientOptions.js';
 
 export type { WsConnection } from './WsConnection.js';
 export { wsSend } from './WsMessages.js';

@@ -3,8 +3,8 @@ import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { Actor } from '../../Actor.js';
-import { BrokerSettingsError, type BrokerCommonSettings } from './BrokerSettings.js';
-import type { GrpcServerOptions } from './GrpcServerOptions.js';
+import { BrokerSettingsError } from './BrokerSettings.js';
+import type { GrpcServerOptions, GrpcServerOptionsType } from './GrpcServerOptions.js';
 
 /**
  * gRPC handler descriptor — paired with a method name when the server
@@ -48,23 +48,6 @@ export interface GrpcBidiCall {
   fail(message: string, code?: number): void;
 }
 
-export interface GrpcServerSettings extends BrokerCommonSettings {
-  readonly protoPath?: string | ReadonlyArray<string>;
-  readonly packageName?: string;
-  readonly serviceName?: string;
-  /** Bind address (`'0.0.0.0:50051'`). */
-  readonly bind?: string;
-  /** Method-name → handler mapping.  Methods absent from this map are unimplemented (UNIMPLEMENTED status). */
-  readonly handlers?: Readonly<Record<string, GrpcHandler>>;
-  /**
-   * TLS — when omitted, the server binds insecurely.  For mTLS supply
-   * cert + key + (optionally) `rootCerts` for client auth.
-   */
-  readonly credentials?:
-    | { readonly kind: 'insecure' }
-    | { readonly kind: 'tls'; readonly cert: Uint8Array; readonly key: Uint8Array; readonly rootCerts?: Uint8Array };
-}
-
 /**
  * gRPC server actor.  Differs from the `BrokerActor` base shape — a
  * server is *bound*, not connected; there are no outbound messages
@@ -77,14 +60,14 @@ export interface GrpcServerSettings extends BrokerCommonSettings {
  *     short grace period.
  */
 export class GrpcServerActor extends Actor<unknown> {
-  private settings!: GrpcServerSettings;
+  private settings!: GrpcServerOptionsType;
   private server: GrpcServerLike | null = null;
   private bound = false;
-  private readonly _ctorSettings: Partial<GrpcServerSettings>;
+  private readonly _ctorSettings: Partial<GrpcServerOptionsType>;
 
-  constructor(options: GrpcServerOptions | Partial<GrpcServerSettings> = {}) {
+  constructor(options: GrpcServerOptions = {}) {
     super();
-    this._ctorSettings = { ...(options as Partial<GrpcServerSettings>) };
+    this._ctorSettings = { ...(options as Partial<GrpcServerOptionsType>) };
   }
 
   override async preStart(): Promise<void> {
@@ -122,15 +105,15 @@ export class GrpcServerActor extends Actor<unknown> {
 
   /* ----------------------------- internals ----------------------------- */
 
-  private async resolveSettings(): Promise<GrpcServerSettings> {
-    const defaults: Partial<GrpcServerSettings> = {
+  private async resolveSettings(): Promise<GrpcServerOptionsType> {
+    const defaults: Partial<GrpcServerOptionsType> = {
       credentials: { kind: 'insecure' },
     };
     const cfgPath = ConfigKeys.io.broker.grpc.server;
     const cfg = this.system.config.hasPath(cfgPath)
       ? this.system.config.getConfig(cfgPath)
       : null;
-    const fromCfg: { -readonly [K in keyof GrpcServerSettings]?: GrpcServerSettings[K] } = {};
+    const fromCfg: { -readonly [K in keyof GrpcServerOptionsType]?: GrpcServerOptionsType[K] } = {};
     if (cfg) {
       if (cfg.hasPath('protoPath')) {
         const v = cfg.getList('protoPath');
@@ -141,11 +124,11 @@ export class GrpcServerActor extends Actor<unknown> {
       if (cfg.hasPath('serviceName')) fromCfg.serviceName = cfg.getString('serviceName');
       if (cfg.hasPath('bind')) fromCfg.bind = cfg.getString('bind');
     }
-    return { ...defaults, ...fromCfg, ...this._ctorSettings } as GrpcServerSettings;
+    return { ...defaults, ...fromCfg, ...this._ctorSettings } as GrpcServerOptionsType;
   }
 
   private validateRequired(): void {
-    const required: ReadonlyArray<keyof GrpcServerSettings> =
+    const required: ReadonlyArray<keyof GrpcServerOptionsType> =
       ['protoPath', 'packageName', 'serviceName', 'bind', 'handlers'];
     const missing = required.filter((k) => this.settings[k] === undefined);
     if (missing.length > 0) {

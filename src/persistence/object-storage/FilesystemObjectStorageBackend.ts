@@ -10,7 +10,7 @@ import {
   type ObjectStorageBackend,
   type PutOptions,
 } from './ObjectStorageBackend.js';
-import type { FilesystemObjectStorageOptions } from './FilesystemObjectStorageOptions.js';
+import type { FilesystemObjectStorageOptions, FilesystemObjectStorageOptionsType } from './FilesystemObjectStorageOptions.js';
 
 /**
  * Filesystem-backed `ObjectStorageBackend` — stores each object as a file
@@ -54,25 +54,6 @@ import type { FilesystemObjectStorageOptions } from './FilesystemObjectStorageOp
  *    behaviour.  Concurrent readers always see either the old body or
  *    the new body, never a truncated buffer.
  */
-
-export interface FilesystemObjectStorageSettings {
-  /** Root directory.  Will be created (recursively) if it doesn't exist. */
-  readonly dir: string;
-  /**
-   * How long to wait when contending for a per-key write lock before
-   * giving up with `ObjectStorageBackendError`.  Default 5_000 ms — long
-   * enough that legitimate contenders complete first, short enough that
-   * a stuck holder gets surfaced quickly.
-   */
-  readonly lockTimeoutMs?: number;
-  /**
-   * Lock files older than this are assumed stale (left behind by a
-   * crashed writer) and forcibly removed.  Default 30_000 ms — well
-   * above the expected duration of any single `put`, so legitimate
-   * writers never get their lock yanked.
-   */
-  readonly staleLockMs?: number;
-}
 
 const DEFAULT_LOCK_TIMEOUT_MS = 5_000;
 const DEFAULT_STALE_LOCK_MS = 30_000;
@@ -134,8 +115,8 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
   private readonly lockTimeoutMs: number;
   private readonly staleLockMs: number;
 
-  constructor(options: FilesystemObjectStorageOptions | Partial<FilesystemObjectStorageSettings>) {
-    const s = (options as Partial<FilesystemObjectStorageSettings>);
+  constructor(options: FilesystemObjectStorageOptions) {
+    const s = (options as FilesystemObjectStorageOptionsType);
     if (s.dir === undefined) throw new Error('FilesystemObjectStorageBackend: dir is required (call withDir()).');
     this.dir           = s.dir;
     this.lockTimeoutMs = s.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;

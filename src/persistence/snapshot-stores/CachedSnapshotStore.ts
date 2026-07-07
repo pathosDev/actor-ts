@@ -3,7 +3,7 @@ import type { Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import { none, some, type Option } from '../../util/Option.js';
-import type { CachedSnapshotStoreOptions } from './CachedSnapshotStoreOptions.js';
+import type { CachedSnapshotStoreOptions, CachedSnapshotStoreOptionsType } from './CachedSnapshotStoreOptions.js';
 
 /**
  * Read-through cache decorator for any `SnapshotStore`.  Targets the hot
@@ -42,15 +42,6 @@ import type { CachedSnapshotStoreOptions } from './CachedSnapshotStoreOptions.js
 
 const DEFAULT_TTL_MS = 5 * 60_000;
 
-export interface CachedSnapshotStoreSettings {
-  /** Backing cache — typically Redis in production. */
-  readonly cache: Cache;
-  /** Cache TTL in milliseconds.  Default: 5 minutes. */
-  readonly ttlMs?: number;
-  /** Key prefix (default: `'snap:'`) prevents collisions in shared caches. */
-  readonly keyPrefix?: string;
-}
-
 interface CachedSnapshot<S> {
   readonly persistenceId: string;
   readonly sequenceNr: number;
@@ -65,9 +56,9 @@ export class CachedSnapshotStore implements SnapshotStore {
 
   constructor(
     private readonly underlying: SnapshotStore,
-    options: CachedSnapshotStoreOptions | Partial<CachedSnapshotStoreSettings>,
+    options: CachedSnapshotStoreOptions,
   ) {
-    const s = (options as Partial<CachedSnapshotStoreSettings>);
+    const s = (options as CachedSnapshotStoreOptionsType);
     if (s.cache === undefined) throw new Error('CachedSnapshotStore: cache is required (call withCache()).');
     this.cache = s.cache;
     this.ttlMs = s.ttlMs ?? DEFAULT_TTL_MS;

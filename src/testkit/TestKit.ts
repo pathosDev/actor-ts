@@ -1,15 +1,9 @@
-import { ActorSystem, type ActorSystemSettings } from '../ActorSystem.js';
+import { ActorSystem } from '../ActorSystem.js';
 import { LogLevel, NoopLogger } from '../Logger.js';
 import { ManualScheduler } from './ManualScheduler.js';
 import { TestProbe } from './TestProbe.js';
-import type { TestKitOptions } from './TestKitOptions.js';
+import type { TestKitOptions, TestKitOptionsType } from './TestKitOptions.js';
 import type { TestProbeOptions } from './TestProbeOptions.js';
-import type { TestProbeSettings } from './TestProbe.js';
-
-export interface TestKitSettings extends ActorSystemSettings {
-  /** When true, install a NoopLogger if the caller didn't provide one. */
-  readonly quiet?: boolean;
-}
 
 /**
  * Convenience fassade to create an ActorSystem pre-wired for deterministic
@@ -33,9 +27,9 @@ export class TestKit {
 
   static create(
     name: string = 'test-kit',
-    options: TestKitOptions | Partial<TestKitSettings> = {},
+    options: TestKitOptions = {},
   ): TestKit {
-    const s = (options as Partial<TestKitSettings>);
+    const s = (options as Partial<TestKitOptionsType>);
     const quiet = s.quiet ?? true;
     // Quiet default: install a NoopLogger + LogLevel.Off unless the caller
     // already set a logger / level.  The extra `quiet` field is ignored by
@@ -49,7 +43,7 @@ export class TestKit {
   }
 
   /** Create a TestProbe scoped to this kit's system. */
-  createTestProbe(options: TestProbeOptions | Partial<TestProbeSettings> = {}): TestProbe {
+  createTestProbe(options: TestProbeOptions = {}): TestProbe {
     return new TestProbe(this.system, options);
   }
 
@@ -75,10 +69,10 @@ export class TestKit {
    */
   static withManualScheduler(
     name: string = 'test-kit-manual',
-    options: TestKitOptions | Partial<TestKitSettings> = {},
+    options: TestKitOptions = {},
   ): { kit: TestKit; scheduler: ManualScheduler } {
     const scheduler = new ManualScheduler();
-    const kit = TestKit.create(name, { ...(options as Partial<TestKitSettings>), scheduler });
+    const kit = TestKit.create(name, { ...(options as Partial<TestKitOptionsType>), scheduler });
     return { kit, scheduler };
   }
 }
