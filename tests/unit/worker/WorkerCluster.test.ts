@@ -24,7 +24,8 @@ mock.module('../../../src/runtime/worker/index.js', () => ({
   resetWorkerBackendCache: () => { /* no-op for tests */ },
 }));
 
-import { WorkerCluster, WorkerClusterOptions } from '../../../src/worker/WorkerCluster.js';
+import { WorkerCluster } from '../../../src/worker/WorkerCluster.js';
+import { WorkerClusterOptions } from '../../../src/worker/WorkerClusterOptions.js';
 
 beforeEach(() => {
   activeBackend = new FakeWorkerBackend();

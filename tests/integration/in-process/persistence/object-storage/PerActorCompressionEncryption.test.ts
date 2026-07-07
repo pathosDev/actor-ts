@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
+import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import {
@@ -15,18 +16,12 @@ import {
   type CompressionConfig,
   type EncryptionConfig,
 } from '../../../../../src/persistence/index.js';
-import {
-  FilesystemObjectStorageBackend,
-  FilesystemObjectStorageOptions,
-} from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
-import {
-  ObjectStorageSnapshotStore,
-  ObjectStorageSnapshotStoreOptions,
-} from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStore.js';
-import {
-  ObjectStorageDurableStateStore,
-  ObjectStorageDurableStateStoreOptions,
-} from '../../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStore.js';
+import { FilesystemObjectStorageBackend } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
+import { FilesystemObjectStorageOptions } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
+import { ObjectStorageSnapshotStore } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStore.js';
+import { ObjectStorageSnapshotStoreOptions } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
+import { ObjectStorageDurableStateStore } from '../../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStore.js';
+import { ObjectStorageDurableStateStoreOptions } from '../../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import type { Actor as ActorBase } from '../../../../../src/Actor.js';
 

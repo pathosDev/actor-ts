@@ -21,14 +21,10 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  FilesystemObjectStorageBackend,
-  FilesystemObjectStorageOptions,
-} from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
-import {
-  ObjectStorageSnapshotStore,
-  ObjectStorageSnapshotStoreOptions,
-} from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStore.js';
+import { FilesystemObjectStorageBackend } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
+import { FilesystemObjectStorageOptions } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
+import { ObjectStorageSnapshotStore } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStore.js';
+import { ObjectStorageSnapshotStoreOptions } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
 import { reEncryptObjectStorage } from '../../../../../src/persistence/object-storage/reEncryptionSweep.js';
 import type { EncryptionConfig } from '../../../../../src/persistence/PersistenceOptions.js';
 

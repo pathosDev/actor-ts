@@ -8,9 +8,12 @@
  * connector.  Discrete pool config (host/port/user/password/database)
  * rather than a URL — bulletproof across connector versions.
  */
-import { MariaDbJournal, MariaDbJournalOptions } from '../../../../src/persistence/journals/MariaDbJournal.js';
-import { MariaDbSnapshotStore, MariaDbSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/MariaDbSnapshotStore.js';
-import { MariaDbDurableStateStore, MariaDbDurableStateStoreOptions } from '../../../../src/persistence/durable-state-stores/MariaDbDurableStateStore.js';
+import { MariaDbJournal } from '../../../../src/persistence/journals/MariaDbJournal.js';
+import { MariaDbJournalOptions } from '../../../../src/persistence/journals/MariaDbJournalOptions.js';
+import { MariaDbSnapshotStore } from '../../../../src/persistence/snapshot-stores/MariaDbSnapshotStore.js';
+import { MariaDbSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/MariaDbSnapshotStoreOptions.js';
+import { MariaDbDurableStateStore } from '../../../../src/persistence/durable-state-stores/MariaDbDurableStateStore.js';
+import { MariaDbDurableStateStoreOptions } from '../../../../src/persistence/durable-state-stores/MariaDbDurableStateStoreOptions.js';
 import { waitForPort } from '../lib/wait-for-port.js';
 import { runScenarios } from '../lib/scenario.js';
 import { sqlPersistenceScenarios, type SqlPersistenceCtx } from '../lib/persistence-contract.js';

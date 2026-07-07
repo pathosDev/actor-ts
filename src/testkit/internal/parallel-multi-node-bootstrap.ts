@@ -20,8 +20,10 @@
  * modules by URL is the cleanest way to thread test-specific code
  * into the worker without leaking it through `postMessage`.
  */
-import { ActorSystem, ActorSystemOptions } from '../../ActorSystem.js';
-import { Cluster, ClusterOptions } from '../../cluster/Cluster.js';
+import { ActorSystem } from '../../ActorSystem.js';
+import { ActorSystemOptions } from '../../ActorSystemOptions.js';
+import { Cluster } from '../../cluster/Cluster.js';
+import { ClusterOptions } from '../../cluster/ClusterOptions.js';
 import type { Member } from '../../cluster/Member.js';
 import type { FailureDetectorSettings } from '../../cluster/FailureDetector.js';
 import { LogLevel, NoopLogger } from '../../Logger.js';

@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { MariaDbJournal, MariaDbJournalOptions } from '../../../../src/persistence/journals/MariaDbJournal.js';
-import { MariaDbSnapshotStore, MariaDbSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/MariaDbSnapshotStore.js';
-import { MariaDbDurableStateStore, MariaDbDurableStateStoreOptions } from '../../../../src/persistence/durable-state-stores/MariaDbDurableStateStore.js';
+import { MariaDbJournal } from '../../../../src/persistence/journals/MariaDbJournal.js';
+import { MariaDbJournalOptions } from '../../../../src/persistence/journals/MariaDbJournalOptions.js';
+import { MariaDbSnapshotStore } from '../../../../src/persistence/snapshot-stores/MariaDbSnapshotStore.js';
+import { MariaDbSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/MariaDbSnapshotStoreOptions.js';
+import { MariaDbDurableStateStore } from '../../../../src/persistence/durable-state-stores/MariaDbDurableStateStore.js';
+import { MariaDbDurableStateStoreOptions } from '../../../../src/persistence/durable-state-stores/MariaDbDurableStateStoreOptions.js';
 import { JournalConcurrencyError } from '../../../../src/persistence/JournalTypes.js';
 import { DurableStateConcurrencyError } from '../../../../src/persistence/DurableStateStore.js';
 import { FakeMariaDbPool } from './FakeMariaDbPool.js';

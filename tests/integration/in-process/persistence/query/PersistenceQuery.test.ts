@@ -11,7 +11,8 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { InMemoryJournal } from '../../../../../src/persistence/journals/InMemoryJournal.js';
-import { SqliteJournal, SqliteJournalOptions } from '../../../../../src/persistence/journals/SqliteJournal.js';
+import { SqliteJournal } from '../../../../../src/persistence/journals/SqliteJournal.js';
+import { SqliteJournalOptions } from '../../../../../src/persistence/journals/SqliteJournalOptions.js';
 import { InMemoryQuery } from '../../../../../src/persistence/query/InMemoryQuery.js';
 import { SqliteQuery } from '../../../../../src/persistence/query/SqliteQuery.js';
 import {

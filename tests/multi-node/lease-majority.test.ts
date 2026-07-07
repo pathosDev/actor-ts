@@ -22,7 +22,7 @@ import {
   InMemoryLease,
   inMemoryLeaseStore,
 } from '../../src/coordination/leases/InMemoryLease.js';
-import { LeaseOptions } from '../../src/coordination/Lease.js';
+import { LeaseOptions } from '../../src/coordination/LeaseOptions.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 

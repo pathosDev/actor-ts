@@ -1,8 +1,12 @@
-import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { resolveSettings } from '../util/OptionsBuilder.js';
 import { AggregateSeedProvider } from './AggregateSeedProvider.js';
-import { ConfigSeedProvider, ConfigSeedProviderOptions } from './ConfigSeedProvider.js';
-import { DnsSeedProvider, DnsSeedProviderOptions } from './DnsSeedProvider.js';
-import { KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from './KubernetesApiSeedProvider.js';
+import type { AutoDiscoveryOptions } from './AutoDiscoveryOptions.js';
+import { ConfigSeedProvider } from './ConfigSeedProvider.js';
+import { ConfigSeedProviderOptions } from './ConfigSeedProviderOptions.js';
+import { DnsSeedProvider } from './DnsSeedProvider.js';
+import { DnsSeedProviderOptions } from './DnsSeedProviderOptions.js';
+import { KubernetesApiSeedProvider } from './KubernetesApiSeedProvider.js';
+import { KubernetesApiSeedProviderOptions } from './KubernetesApiSeedProviderOptions.js';
 import type { SeedProvider } from './SeedProvider.js';
 
 function parseSeedList(raw: string): string[] {
@@ -53,41 +57,6 @@ export interface AutoDiscoverySettings {
 }
 
 /**
- * Fluent builder for {@link AutoDiscoverySettings} — the input to
- * {@link autoDiscovery} and {@link singleProviderDiscovery}.
- *
- *     autoDiscovery(
- *       AutoDiscoveryOptions.create().withSystemName('my-system').withPort(2552),
- *     );
- */
-export class AutoDiscoveryOptions extends OptionsBuilder<AutoDiscoverySettings> {
-  /** Start a fresh builder.  Equivalent to `new AutoDiscoveryOptions()`. */
-  static create(): AutoDiscoveryOptions {
-    return new AutoDiscoveryOptions();
-  }
-
-  /** ActorSystem name to stamp on discovered NodeAddresses. */
-  withSystemName(systemName: string): this {
-    return this.set('systemName', systemName);
-  }
-
-  /** Cluster remoting port to pair each discovered IP with. */
-  withPort(port: number): this {
-    return this.set('port', port);
-  }
-
-  /** Pre-mapped env lookup (defaults to `process.env` at call time). */
-  withEnv(env: Record<string, string | undefined>): this {
-    return this.set('env', env);
-  }
-
-  /** Logger for individual provider failures.  Default: no-op. */
-  withLog(log: (msg: string, err?: unknown) => void): this {
-    return this.set('log', log);
-  }
-}
-
-/**
  * Build an {@link AggregateSeedProvider} from environment variables —
  * the default discovery wiring used by `Cluster.bootstrap()` when the
  * caller doesn't pass `seeds` or `discovery:` explicitly.
@@ -96,8 +65,8 @@ export class AutoDiscoveryOptions extends OptionsBuilder<AutoDiscoverySettings> 
  * always has a `SeedProvider` to invoke — the resulting `lookup()`
  * just resolves to `[]` for single-node dev.
  */
-export function autoDiscovery(options: AutoDiscoveryOptions): AggregateSeedProvider {
-  const settings = options.build() as AutoDiscoverySettings;
+export function autoDiscovery(options: AutoDiscoveryOptions | Partial<AutoDiscoverySettings>): AggregateSeedProvider {
+  const settings = resolveSettings(options) as AutoDiscoverySettings;
   const env = settings.env ?? process.env;
   const log = settings.log ?? (() => {});
   const providers: SeedProvider[] = [];
@@ -146,9 +115,9 @@ export function autoDiscovery(options: AutoDiscoveryOptions): AggregateSeedProvi
  */
 export function singleProviderDiscovery(
   kind: 'config' | 'dns' | 'kubernetes',
-  options: AutoDiscoveryOptions,
+  options: AutoDiscoveryOptions | Partial<AutoDiscoverySettings>,
 ): SeedProvider {
-  const settings = options.build() as AutoDiscoverySettings;
+  const settings = resolveSettings(options) as AutoDiscoverySettings;
   const env = settings.env ?? process.env;
   switch (kind) {
     case 'config': {

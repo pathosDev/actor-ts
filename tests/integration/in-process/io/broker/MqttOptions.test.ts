@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
+import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { Props } from '../../../../../src/Props.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { MqttOptions } from '../../../../../src/io/broker/MqttOptions.js';
@@ -34,10 +35,10 @@ describe('MqttOptions builder', () => {
     expect(s.brokerUrl).toBe('mqtt://host:1883');
     expect(s.clientId).toBe('cid');
     expect(s.credentials).toEqual({ username: 'user', password: 'pass' });
-    expect(s.defaultQos).toBe(2);
+    expect(s.qos).toBe(2);
     expect(s.will).toEqual({ topic: 'down', payload: 'bye' });
     expect(s.cleanSession).toBe(false);
-    expect(s.keepAliveSec).toBe(45);
+    expect(s.keepAlive).toBe(45);
     expect(s.protocolVersion).toBe(5);
     expect(s.codec).toBe(codec);
     expect(s.reconnect).toEqual({ initialDelayMs: 5 });
@@ -90,7 +91,7 @@ describe('MqttOptions HOCON merge precedence', () => {
           io: { broker: { mqtt: {
             brokerUrl: 'mqtt://from-hocon:1883',
             clientId: 'hocon-client',
-            keepAliveSec: 30,
+            keepAlive: 30,
           } } },
         },
       }));
@@ -103,7 +104,7 @@ describe('MqttOptions HOCON merge precedence', () => {
       const s = actor.resolved;
       expect(s.clientId).toBe('ctor-client');            // builder wins
       expect(s.brokerUrl).toBe('mqtt://from-hocon:1883'); // HOCON supplies
-      expect(s.keepAliveSec).toBe(30);                    // HOCON supplies
+      expect(s.keepAlive).toBe(30);                       // HOCON supplies
       expect(s.cleanSession).toBe(true);                  // built-in default
     } finally {
       await sys.terminate();

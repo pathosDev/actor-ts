@@ -15,10 +15,8 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import {
-  S3ObjectStorageBackend,
-  S3ObjectStorageOptions,
-} from '../../../../../src/persistence/object-storage/S3ObjectStorageBackend.js';
+import { S3ObjectStorageBackend } from '../../../../../src/persistence/object-storage/S3ObjectStorageBackend.js';
+import { S3ObjectStorageOptions } from '../../../../../src/persistence/object-storage/S3ObjectStorageOptions.js';
 import { ObjectStorageConcurrencyError } from '../../../../../src/persistence/object-storage/ObjectStorageBackend.js';
 
 const endpoint = process.env.S3_ENDPOINT;

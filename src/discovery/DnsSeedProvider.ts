@@ -1,5 +1,6 @@
 import { NodeAddress } from '../cluster/NodeAddress.js';
-import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { resolveSettings } from '../util/OptionsBuilder.js';
+import type { DnsSeedProviderOptions } from './DnsSeedProviderOptions.js';
 import type { SeedProvider } from './SeedProvider.js';
 
 export interface DnsSeedProviderSettings {
@@ -26,58 +27,6 @@ export interface DnsSeedProviderSettings {
 }
 
 /**
- * Fluent builder for {@link DnsSeedProviderSettings}.
- *
- *     new DnsSeedProvider(
- *       DnsSeedProviderOptions.create()
- *         .withHostname('svc.default.svc.cluster.local')
- *         .withSystemName('my-system')
- *         .withPort(2552),
- *     );
- */
-export class DnsSeedProviderOptions extends OptionsBuilder<DnsSeedProviderSettings> {
-  /** Start a fresh builder.  Equivalent to `new DnsSeedProviderOptions()`. */
-  static create(): DnsSeedProviderOptions {
-    return new DnsSeedProviderOptions();
-  }
-
-  /** Hostname to resolve (e.g. `my-cluster.default.svc.cluster.local`). */
-  withHostname(hostname: string): this {
-    return this.set('hostname', hostname);
-  }
-
-  /** System name to stamp on discovered NodeAddresses. */
-  withSystemName(systemName: string): this {
-    return this.set('systemName', systemName);
-  }
-
-  /** Port each discovered IP should be paired with. */
-  withPort(port: number): this {
-    return this.set('port', port);
-  }
-
-  /** Override the DNS-resolve function — defaults to `node:dns/promises`. */
-  withResolve(resolve: (hostname: string) => Promise<string[]>): this {
-    return this.set('resolve', resolve);
-  }
-
-  /** When using SRV records, override `resolveSrv` similarly. */
-  withResolveSrv(resolveSrv: (hostname: string) => Promise<Array<{ name: string; port: number }>>): this {
-    return this.set('resolveSrv', resolveSrv);
-  }
-
-  /** If true, prefer SRV records (which carry a port) over A. */
-  withUseSrv(useSrv = true): this {
-    return this.set('useSrv', useSrv);
-  }
-
-  /** In-process TTL cache for DNS lookups.  Default 60_000 ms; `0` disables. */
-  withCacheTtlMs(cacheTtlMs: number): this {
-    return this.set('cacheTtlMs', cacheTtlMs);
-  }
-}
-
-/**
  * Seed provider backed by DNS.  Default mode resolves A records and pairs
  * each IP with the configured port; SRV mode picks up `name:port` directly.
  *
@@ -94,8 +43,8 @@ export class DnsSeedProvider implements SeedProvider {
 
   private readonly settings: DnsSeedProviderSettings;
 
-  constructor(options: DnsSeedProviderOptions) {
-    this.settings = options.build() as DnsSeedProviderSettings;
+  constructor(options: DnsSeedProviderOptions | Partial<DnsSeedProviderSettings> = {}) {
+    this.settings = resolveSettings(options) as DnsSeedProviderSettings;
     this.cacheTtlMs = this.settings.cacheTtlMs ?? 60_000;
     if (!Number.isFinite(this.cacheTtlMs) || this.cacheTtlMs < 0) {
       throw new Error(`DnsSeedProvider: cacheTtlMs must be a non-negative finite number, got ${this.cacheTtlMs}`);

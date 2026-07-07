@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import {
   FailureDetector,
-  FailureDetectorOptions,
   defaultFailureDetectorSettings,
   type FailureDetectorSettings,
 } from '../../src/cluster/FailureDetector.js';
+import { FailureDetectorOptions } from '../../src/cluster/FailureDetectorOptions.js';
 import { NodeAddress } from '../../src/cluster/NodeAddress.js';
 
 const peer = new NodeAddress('demo', 'h', 1);

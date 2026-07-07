@@ -3,6 +3,7 @@ import type { ActorSystem } from '../../ActorSystem.js';
 import type { Lease } from '../../coordination/Lease.js';
 import { PersistenceExtensionId } from '../../persistence/PersistenceExtension.js';
 import { Props } from '../../Props.js';
+import { resolveSettings } from '../../util/OptionsBuilder.js';
 import type { Cluster } from '../Cluster.js';
 import type { EnvelopeMsg } from '../Protocol.js';
 import { AllocationStrategy, HashAllocationStrategy } from './AllocationStrategy.js';
@@ -13,11 +14,12 @@ import {
 } from './RememberEntitiesStore.js';
 import {
   ShardRegion,
-  ShardingOptions,
   coordinatorPath,
   type ShardingSettings,
 } from './ShardRegion.js';
-import { ShardCoordinator, ShardCoordinatorOptions } from './ShardCoordinator.js';
+import { ShardCoordinator } from './ShardCoordinator.js';
+import { ShardCoordinatorOptions } from './ShardCoordinatorOptions.js';
+import { StartShardingOptions } from './StartShardingOptions.js';
 import { isShardingMessage } from './ShardingProtocol.js';
 
 export interface StartSettings<TMsg> extends ShardingSettings<TMsg> {
@@ -65,62 +67,6 @@ export interface StartSettings<TMsg> extends ShardingSettings<TMsg> {
    * Without it, the v1 rebuild-from-Register behaviour is preserved.
    */
   readonly coordinatorStateStore?: CoordinatorStateStore;
-}
-
-/**
- * Fluent builder for {@link StartSettings} — the argument to
- * {@link ClusterSharding.start}.  Extends {@link ShardingOptions} so it
- * carries every region-side `withX` (typeName, entityProps, extractors,
- * numShards, role, proxy, rememberEntities, …) and adds the
- * coordinator-side fields on top.
- *
- * The polymorphic fields are passed whole via a single `withX(value)`:
- * `allocationStrategy` ({@link AllocationStrategy}), `lease`
- * ({@link Lease}), `rememberEntitiesStore`, and `coordinatorStateStore`.
- */
-export class StartShardingOptions<TMsg> extends ShardingOptions<TMsg, StartSettings<TMsg>> {
-  /** Start a fresh builder.  Equivalent to `new StartShardingOptions<TMsg>()`. */
-  static create<TMsg>(): StartShardingOptions<TMsg> {
-    return new StartShardingOptions<TMsg>();
-  }
-
-  /** Strategy the coordinator uses to allocate and rebalance shards. */
-  withAllocationStrategy(allocationStrategy: AllocationStrategy): this {
-    return this.set('allocationStrategy', allocationStrategy);
-  }
-
-  /** Gap between coordinator-driven rebalance passes. */
-  withRebalanceIntervalMs(rebalanceIntervalMs: number): this {
-    return this.set('rebalanceIntervalMs', rebalanceIntervalMs);
-  }
-
-  /** Time to wait for HandOffComplete before force-reallocating. */
-  withHandOffTimeoutMs(handOffTimeoutMs: number): this {
-    return this.set('handOffTimeoutMs', handOffTimeoutMs);
-  }
-
-  /** Optional split-brain protection for the coordinator (a {@link Lease}). */
-  withLease(lease: Lease): this {
-    return this.set('lease', lease);
-  }
-
-  /** Retry interval for `lease.acquire()` after a failed attempt.  Default: 5 s. */
-  withAcquireRetryIntervalMs(acquireRetryIntervalMs: number): this {
-    return this.set('acquireRetryIntervalMs', acquireRetryIntervalMs);
-  }
-
-  /**
-   * Persistence backend for the entity registry (only when `rememberEntities`).
-   * Pass `null` to keep the registry in-memory only (opt out of persistence).
-   */
-  withRememberEntitiesStore(rememberEntitiesStore: RememberEntitiesStore | null): this {
-    return this.set('rememberEntitiesStore', rememberEntitiesStore);
-  }
-
-  /** Persistence backend for the coordinator's allocation state. */
-  withCoordinatorStateStore(coordinatorStateStore: CoordinatorStateStore): this {
-    return this.set('coordinatorStateStore', coordinatorStateStore);
-  }
 }
 
 /**
@@ -172,20 +118,20 @@ export class ClusterSharding {
    * );
    * ```
    */
-  start<TMsg>(options: StartShardingOptions<TMsg>): ActorRef<TMsg>;
+  start<TMsg>(options: StartShardingOptions<TMsg> | Partial<StartSettings<TMsg>>): ActorRef<TMsg>;
   start<TMsg>(
     typeName: string,
     entity: (new () => import('../../Actor.js').Actor<TMsg>) | (() => import('../../Actor.js').Actor<TMsg>),
-    options?: StartShardingOptions<TMsg>,
+    options?: StartShardingOptions<TMsg> | Partial<StartSettings<TMsg>>,
   ): ActorRef<TMsg>;
   start<TMsg>(
-    arg1: string | StartShardingOptions<TMsg>,
+    arg1: string | StartShardingOptions<TMsg> | Partial<StartSettings<TMsg>>,
     arg2?: (new () => import('../../Actor.js').Actor<TMsg>) | (() => import('../../Actor.js').Actor<TMsg>),
-    arg3?: StartShardingOptions<TMsg>,
+    arg3?: StartShardingOptions<TMsg> | Partial<StartSettings<TMsg>>,
   ): ActorRef<TMsg> {
     const settings = typeof arg1 === 'string'
-      ? this.buildSettingsFromShorthand(arg1, arg2!, arg3 ?? StartShardingOptions.create<TMsg>())
-      : arg1.build() as StartSettings<TMsg>;
+      ? this.buildSettingsFromShorthand(arg1, arg2!, arg3 ?? {})
+      : resolveSettings(arg1) as StartSettings<TMsg>;
 
     this.ensureCoordinator(settings as StartSettings<unknown>);
     const existing = this.findRegionByType(settings.typeName);
@@ -210,9 +156,9 @@ export class ClusterSharding {
   private buildSettingsFromShorthand<TMsg>(
     typeName: string,
     entity: (new () => import('../../Actor.js').Actor<TMsg>) | (() => import('../../Actor.js').Actor<TMsg>),
-    options: StartShardingOptions<TMsg>,
+    options: StartShardingOptions<TMsg> | Partial<StartSettings<TMsg>>,
   ): StartSettings<TMsg> {
-    const opts = options.build();
+    const opts = resolveSettings(options);
     // Classes have a `.prototype` whose `constructor` === the class itself.
     // Arrow functions don't have `prototype`; regular non-class functions do
     // (with `.prototype.constructor === fn`), so we treat anything that's
@@ -237,8 +183,12 @@ export class ClusterSharding {
    * Takes the same builder as {@link start}; `proxy` is forced on internally,
    * so any `withProxy(...)` on the passed builder is overridden.
    */
-  startProxy<TMsg>(options: StartShardingOptions<TMsg>): ActorRef<TMsg> {
-    return this.start(options.withProxy(true));
+  startProxy<TMsg>(options: StartShardingOptions<TMsg> | Partial<StartSettings<TMsg>>): ActorRef<TMsg> {
+    // Force `proxy: true` regardless of what the caller passed.  Resolve to a
+    // plain settings object first so both builder and plain-object inputs are
+    // handled uniformly (a `Partial<StartSettings>` has no `.withProxy`).
+    const settings: Partial<StartSettings<TMsg>> = { ...resolveSettings(options), proxy: true };
+    return this.start(settings);
   }
 
   /* ------------------------------- Internal -------------------------------- */

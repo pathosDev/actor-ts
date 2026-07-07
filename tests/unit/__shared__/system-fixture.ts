@@ -22,9 +22,11 @@
  *   });
  */
 import { afterAll, beforeAll } from 'bun:test';
-import { ActorSystem, ActorSystemOptions } from '../../../src/ActorSystem.js';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger, type Logger } from '../../../src/Logger.js';
-import { TestKit, TestKitOptions } from '../../../src/testkit/TestKit.js';
+import { TestKit } from '../../../src/testkit/TestKit.js';
+import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 
 export interface SystemFixtureOptions {
   readonly logger?: Logger;

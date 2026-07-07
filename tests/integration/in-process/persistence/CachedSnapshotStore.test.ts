@@ -1,9 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { InMemoryCache } from '../../../../src/cache/InMemoryCache.js';
-import {
-  CachedSnapshotStore,
-  CachedSnapshotStoreOptions,
-} from '../../../../src/persistence/snapshot-stores/CachedSnapshotStore.js';
+import { CachedSnapshotStore } from '../../../../src/persistence/snapshot-stores/CachedSnapshotStore.js';
+import { CachedSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/CachedSnapshotStoreOptions.js';
 import { InMemorySnapshotStore } from '../../../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
 import type { SnapshotStore } from '../../../../src/persistence/SnapshotStore.js';
 

@@ -35,7 +35,8 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
-import { ClusterSharding, StartShardingOptions } from '../../src/cluster/sharding/ClusterSharding.js';
+import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
+import { StartShardingOptions } from '../../src/cluster/sharding/StartShardingOptions.js';
 import { JournalRememberEntitiesStore } from '../../src/cluster/sharding/RememberEntitiesStore.js';
 import { InMemoryJournal } from '../../src/persistence/journals/InMemoryJournal.js';
 import { PersistenceExtensionId } from '../../src/persistence/PersistenceExtension.js';

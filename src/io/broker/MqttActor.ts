@@ -7,8 +7,9 @@ import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import type { BrokerCommonSettings } from './BrokerSettings.js';
+import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { mqttJsonCodec, MqttDecodeError, type MqttCodec } from './MqttCodec.js';
-import { MqttOptions } from './MqttOptions.js';
+import type { MqttOptions } from './MqttOptions.js';
 import {
   MqttConnectedSignal,
   MqttDisconnectedSignal,
@@ -36,13 +37,13 @@ export interface MqttActorSettings extends BrokerCommonSettings {
   readonly clientId?: string;
   readonly credentials?: MqttCredentials;
   /** Default QoS used by `publish` / `subscribe` when not overridden per call. */
-  readonly defaultQos?: MqttQos;
+  readonly qos?: MqttQos;
   /** Last-will-and-testament published by the broker if the actor disconnects ungracefully. */
   readonly will?: { readonly topic: string; readonly payload: Uint8Array | string; readonly qos?: MqttQos; readonly retain?: boolean };
   /** Clean-session flag.  Default `true`. */
   readonly cleanSession?: boolean;
   /** Keep-alive interval in seconds.  Default 60. */
-  readonly keepAliveSec?: number;
+  readonly keepAlive?: number;
   /**
    * MQTT protocol version negotiated with the broker.  Default `4`
    * (MQTT 3.1.1); set to `5` to opt in to MQTT 5.0 features (user
@@ -67,7 +68,7 @@ export interface MqttPublishOptions {
 
 /** One subscription pattern's routing state. */
 interface SubscriptionEntry<T> {
-  /** Requested QoS, or undefined → resolve to `defaultQos` at SUBSCRIBE time. */
+  /** Requested QoS, or undefined → resolve to `qos` at SUBSCRIBE time. */
   qos?: MqttQos;
   /** Deliver matching messages to this actor's own `onMessage`. */
   deliverToSelf: boolean;
@@ -118,8 +119,8 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   /** Subscriptions requested in the constructor, flushed in `preStart`. */
   private pendingSubs: Array<{ topic: string; qos?: MqttQos; target?: ActorRef<MqttMessage<T>> }> = [];
 
-  constructor(options: MqttOptions = MqttOptions.create()) {
-    super(options.build());
+  constructor(options: MqttOptions | Partial<MqttActorSettings> = {}) {
+    super(resolveSettings(options));
   }
 
   /* ----------------------- user overrides ------------------------ */
@@ -370,7 +371,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   }
 
   private brokerSubscribe(topic: string, qos?: MqttQos): void {
-    this.client?.subscribe(topic, { qos: qos ?? this.settings.defaultQos ?? 0 }, (err) => {
+    this.client?.subscribe(topic, { qos: qos ?? this.settings.qos ?? 0 }, (err) => {
       if (err) this.log.warn(`MqttActor: subscribe '${topic}' failed: ${err.message}`);
     });
   }
@@ -398,7 +399,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   protected configKey(): string { return ConfigKeys.io.broker.mqtt; }
 
   protected builtInDefaults(): Partial<MqttActorSettings> {
-    return { defaultQos: 0, cleanSession: true, keepAliveSec: 60 };
+    return { qos: 0, cleanSession: true, keepAlive: 60 };
   }
 
   protected readSettingsFromConfig(c: Config): Partial<MqttActorSettings> {
@@ -412,9 +413,9 @@ export abstract class MqttActor<T = unknown, TSelf = never>
         password: cc.hasPath('password') ? cc.getString('password') : undefined,
       };
     }
-    if (c.hasPath('defaultQos')) out.defaultQos = c.getInt('defaultQos') as MqttQos;
+    if (c.hasPath('qos')) out.qos = c.getInt('qos') as MqttQos;
     if (c.hasPath('cleanSession')) out.cleanSession = c.getBoolean('cleanSession');
-    if (c.hasPath('keepAliveSec')) out.keepAliveSec = c.getInt('keepAliveSec');
+    if (c.hasPath('keepAlive')) out.keepAlive = c.getInt('keepAlive');
     if (c.hasPath('protocolVersion')) {
       const v = c.getInt('protocolVersion');
       if (v !== 4 && v !== 5) {
@@ -438,7 +439,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
       username: this.settings.credentials?.username,
       password: this.settings.credentials?.password,
       clean: this.settings.cleanSession,
-      keepalive: this.settings.keepAliveSec,
+      keepalive: this.settings.keepAlive,
       protocolVersion: this.settings.protocolVersion ?? 4,
     };
     if (this.settings.will) {
@@ -511,7 +512,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   protected async dispatchOutgoing(env: OutboundEnvelope<MqttPublish>): Promise<void> {
     if (!this.client) throw new Error('MqttActor: not connected');
     const p = env.payload;
-    const qos = p.qos ?? this.settings.defaultQos ?? 0;
+    const qos = p.qos ?? this.settings.qos ?? 0;
     const retain = p.retain ?? false;
     const protocolVersion = this.settings.protocolVersion ?? 4;
     const opts: MqttPubOpts = { qos, retain };

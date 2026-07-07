@@ -1,7 +1,7 @@
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { resolveSettings } from '../../util/OptionsBuilder.js';
 import type { PersistentEvent } from '../JournalTypes.js';
 import {
   type LiveQueryOptions,
@@ -11,6 +11,7 @@ import {
   offsetStart,
 } from '../query/PersistenceQuery.js';
 import { InMemoryOffsetStore, type OffsetStore } from './OffsetStore.js';
+import type { ByPidProjectionOptions, ByTagProjectionOptions } from './ProjectionOptions.js';
 
 /**
  * Actor wrapper around a projection.  Owns the polling loop, the
@@ -63,128 +64,6 @@ export interface ByPidSettings<E> extends ProjectionSettings<E> {
 
 export interface ByTagSettings<E> extends ProjectionSettings<E> {
   readonly tag: string;
-}
-
-/* ============================ builders ================================ */
-
-/**
- * Fluent builder for the fields shared by every projection.  The
- * concrete {@link ByPidProjectionOptions} / {@link ByTagProjectionOptions}
- * subclasses add the discriminating cursor field (`persistenceId` / `tag`)
- * on top of these.
- */
-export class ProjectionOptions<E> extends OptionsBuilder<ProjectionSettings<E>> {
-  /** Start a fresh builder.  Equivalent to `new ProjectionOptions<E>()`. */
-  static create<E>(): ProjectionOptions<E> {
-    return new ProjectionOptions<E>();
-  }
-
-  /** Logical name — used as the offset-store key prefix. */
-  withName(name: string): this {
-    return this.set('name', name);
-  }
-
-  /** The query layer (one of `InMemoryQuery`, `SqliteQuery`, …). */
-  withQuery(query: PersistenceQuery): this {
-    return this.set('query', query);
-  }
-
-  /** Where to persist the cursor.  Default: in-memory (lost on restart). */
-  withOffsetStore(offsetStore: OffsetStore): this {
-    return this.set('offsetStore', offsetStore);
-  }
-
-  /** User handler — runs once per event.  Must be idempotent. */
-  withHandle(handle: (event: PersistentEvent<E>) => void | Promise<void>): this {
-    return this.set('handle', handle);
-  }
-
-  /** Tunables passed to the underlying live query. */
-  withLiveOptions(liveOptions: LiveQueryOptions): this {
-    return this.set('liveOptions', liveOptions);
-  }
-}
-
-/**
- * Fluent builder for {@link ByPidSettings} — a per-persistenceId
- * projection.  Adds `withPersistenceId` to the shared projection fields.
- */
-export class ByPidProjectionOptions<E> extends OptionsBuilder<ByPidSettings<E>> {
-  /** Start a fresh builder.  Equivalent to `new ByPidProjectionOptions<E>()`. */
-  static create<E>(): ByPidProjectionOptions<E> {
-    return new ByPidProjectionOptions<E>();
-  }
-
-  /** Logical name — used as the offset-store key prefix. */
-  withName(name: string): this {
-    return this.set('name', name);
-  }
-
-  /** The query layer (one of `InMemoryQuery`, `SqliteQuery`, …). */
-  withQuery(query: PersistenceQuery): this {
-    return this.set('query', query);
-  }
-
-  /** Where to persist the cursor.  Default: in-memory (lost on restart). */
-  withOffsetStore(offsetStore: OffsetStore): this {
-    return this.set('offsetStore', offsetStore);
-  }
-
-  /** User handler — runs once per event.  Must be idempotent. */
-  withHandle(handle: (event: PersistentEvent<E>) => void | Promise<void>): this {
-    return this.set('handle', handle);
-  }
-
-  /** Tunables passed to the underlying live query. */
-  withLiveOptions(liveOptions: LiveQueryOptions): this {
-    return this.set('liveOptions', liveOptions);
-  }
-
-  /** The entity whose event log this projection follows.  One cursor per pid. */
-  withPersistenceId(persistenceId: string): this {
-    return this.set('persistenceId', persistenceId);
-  }
-}
-
-/**
- * Fluent builder for {@link ByTagSettings} — a per-tag projection.  Adds
- * `withTag` to the shared projection fields.
- */
-export class ByTagProjectionOptions<E> extends OptionsBuilder<ByTagSettings<E>> {
-  /** Start a fresh builder.  Equivalent to `new ByTagProjectionOptions<E>()`. */
-  static create<E>(): ByTagProjectionOptions<E> {
-    return new ByTagProjectionOptions<E>();
-  }
-
-  /** Logical name — used as the offset-store key prefix. */
-  withName(name: string): this {
-    return this.set('name', name);
-  }
-
-  /** The query layer (one of `InMemoryQuery`, `SqliteQuery`, …). */
-  withQuery(query: PersistenceQuery): this {
-    return this.set('query', query);
-  }
-
-  /** Where to persist the cursor.  Default: in-memory (lost on restart). */
-  withOffsetStore(offsetStore: OffsetStore): this {
-    return this.set('offsetStore', offsetStore);
-  }
-
-  /** User handler — runs once per event.  Must be idempotent. */
-  withHandle(handle: (event: PersistentEvent<E>) => void | Promise<void>): this {
-    return this.set('handle', handle);
-  }
-
-  /** Tunables passed to the underlying live query. */
-  withLiveOptions(liveOptions: LiveQueryOptions): this {
-    return this.set('liveOptions', liveOptions);
-  }
-
-  /** The tag this projection follows across the whole journal.  One cursor per tag. */
-  withTag(tag: string): this {
-    return this.set('tag', tag);
-  }
 }
 
 /* ============================ implementation ========================== */
@@ -307,9 +186,9 @@ export class ProjectionActor {
   /** Spawn a per-persistenceId projection.  Returns the actor ref. */
   static byPersistenceId<E>(
     system: ActorSystem,
-    options: ByPidProjectionOptions<E>,
+    options: ByPidProjectionOptions<E> | Partial<ByPidSettings<E>>,
   ): ActorRef<unknown> {
-    const settings = options.build() as ByPidSettings<E>;
+    const settings = resolveSettings(options) as ByPidSettings<E>;
     return system.spawn(
       Props.create(() => new ByPidProjectionActor<E>(settings) as unknown as Actor<unknown>),
       `projection-${settings.name}-${sanitize(settings.persistenceId)}`,
@@ -319,9 +198,9 @@ export class ProjectionActor {
   /** Spawn a per-tag projection.  Returns the actor ref. */
   static byTag<E>(
     system: ActorSystem,
-    options: ByTagProjectionOptions<E>,
+    options: ByTagProjectionOptions<E> | Partial<ByTagSettings<E>>,
   ): ActorRef<unknown> {
-    const settings = options.build() as ByTagSettings<E>;
+    const settings = resolveSettings(options) as ByTagSettings<E>;
     return system.spawn(
       Props.create(() => new ByTagProjectionActor<E>(settings) as unknown as Actor<unknown>),
       `projection-${settings.name}-tag-${sanitize(settings.tag)}`,

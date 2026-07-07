@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { ActorSystem, ActorSystemOptions } from '../../../src/ActorSystem.js';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { FastifyBackend } from '../../../src/http/backend/FastifyBackend.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import {

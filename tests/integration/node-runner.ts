@@ -14,8 +14,10 @@
  * across nodes via `jq` / `vector` / standard log-aggregation tools.
  */
 
-import { ActorSystem, ActorSystemOptions } from '../../src/ActorSystem.js';
-import { Cluster, ClusterOptions } from '../../src/cluster/Cluster.js';
+import { ActorSystem } from '../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
+import { Cluster } from '../../src/cluster/Cluster.js';
+import { ClusterOptions } from '../../src/cluster/ClusterOptions.js';
 import {
   Actor,
   BearerTokenAuth,
@@ -28,8 +30,10 @@ import { managementRoutes } from '../../src/management/index.js';
 import { ReceptionistId, ReceptionistOptions } from '../../src/discovery/index.js';
 import { Register } from '../../src/discovery/ReceptionistMessages.js';
 import { DistributedDataId, DistributedDataOptions } from '../../src/crdt/index.js';
-import { ClusterSingletonId, StartSingletonOptions } from '../../src/cluster/singleton/ClusterSingleton.js';
-import { ClusterSharding, StartShardingOptions } from '../../src/cluster/sharding/ClusterSharding.js';
+import { ClusterSingletonId } from '../../src/cluster/singleton/ClusterSingleton.js';
+import { StartSingletonOptions } from '../../src/cluster/singleton/StartSingletonOptions.js';
+import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
+import { StartShardingOptions } from '../../src/cluster/sharding/StartShardingOptions.js';
 import { ClusterClientReceptionistId } from '../../src/cluster/ClusterClientReceptionist.js';
 import { CoordinatedShutdownId, Phases } from '../../src/CoordinatedShutdown.js';
 import { PersistenceExtensionId } from '../../src/persistence/PersistenceExtension.js';

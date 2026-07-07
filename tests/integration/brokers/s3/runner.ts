@@ -6,10 +6,8 @@
  * `tests/integration/controller.ts` (#313) — small, dependency-free,
  * exit 0 / exit 1.
  */
-import {
-  S3ObjectStorageBackend,
-  S3ObjectStorageOptions,
-} from '../../../../src/persistence/object-storage/S3ObjectStorageBackend.js';
+import { S3ObjectStorageBackend } from '../../../../src/persistence/object-storage/S3ObjectStorageBackend.js';
+import { S3ObjectStorageOptions } from '../../../../src/persistence/object-storage/S3ObjectStorageOptions.js';
 import { waitForPort } from '../lib/wait-for-port.js';
 import { runScenarios, type BrokerScenario, type BrokerScenarioCtx } from '../lib/scenario.js';
 import { scenario as putGetScenario } from './scenarios/01-put-get.js';

@@ -4,7 +4,8 @@
  * re-exported — users interact only through `websocket()`,
  * `WebSocketServerActor`, the `WsConnection` handle, and the codecs.
  */
-export { websocket, WebSocketRouteOptions } from './WebSocketRoute.js';
+export { websocket } from './WebSocketRoute.js';
+export { WebSocketRouteOptions } from './WebSocketRouteOptions.js';
 export type { WebSocketRouteSettings } from './WebSocketRoute.js';
 
 export { WebSocketServerActor } from './WebSocketServerActor.js';

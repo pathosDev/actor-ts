@@ -20,9 +20,9 @@ export type { ORMapJson, ORMapOptions } from './ORMap.js';
 export {
   DistributedData,
   DistributedDataId,
-  DistributedDataOptions,
   decodeCrdt,
 } from './DistributedData.js';
+export { DistributedDataOptions } from './DistributedDataOptions.js';
 export type {
   DistributedDataSettings,
   CrdtFactory,

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { ActorSystem, ActorSystemOptions } from '../../../src/ActorSystem.js';
-import { HonoBackend, HonoBackendOptions } from '../../../src/http/backend/HonoBackend.js';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
+import { HonoBackend } from '../../../src/http/backend/HonoBackend.js';
+import { HonoBackendOptions } from '../../../src/http/backend/HonoBackendOptions.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import {
   complete,

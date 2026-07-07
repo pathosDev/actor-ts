@@ -38,7 +38,8 @@ import {
 } from '../../../src/index.js';
 import { DistributedDataId, DistributedDataOptions } from '../../../src/crdt/index.js';
 import { DistributedPubSubId, DistributedPubSubOptions } from '../../../src/cluster/pubsub/index.js';
-import { ReceptionistId, ReceptionistOptions } from '../../../src/discovery/Receptionist.js';
+import { ReceptionistId } from '../../../src/discovery/Receptionist.js';
+import { ReceptionistOptions } from '../../../src/discovery/ReceptionistOptions.js';
 import {
   parseArgs,
   BASE_CLUSTER_PORT,

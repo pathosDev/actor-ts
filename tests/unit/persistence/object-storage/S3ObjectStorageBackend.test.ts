@@ -49,9 +49,9 @@ mock.module('@aws-sdk/client-s3', () => ({
 // inside the backend's s3SdkLazy resolves to the fake.
 import {
   S3ObjectStorageBackend,
-  S3ObjectStorageOptions,
   type S3ClientLike,
 } from '../../../../src/persistence/object-storage/S3ObjectStorageBackend.js';
+import { S3ObjectStorageOptions } from '../../../../src/persistence/object-storage/S3ObjectStorageOptions.js';
 import {
   ObjectStorageBackendError,
   ObjectStorageConcurrencyError,

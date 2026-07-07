@@ -1,9 +1,11 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
-import { ActorSystem, ActorSystemOptions } from '../../../../src/ActorSystem.js';
+import { ActorSystem } from '../../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { Actor } from '../../../../src/Actor.js';
 import { Props } from '../../../../src/Props.js';
 import { Nobody } from '../../../../src/ActorRef.js';
-import { Cluster, ClusterOptions } from '../../../../src/cluster/Cluster.js';
+import { Cluster } from '../../../../src/cluster/Cluster.js';
+import { ClusterOptions } from '../../../../src/cluster/ClusterOptions.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
 import { RemoteActorRef } from '../../../../src/cluster/RemoteActorRef.js';

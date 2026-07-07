@@ -1,12 +1,14 @@
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem, ActorSystemOptions } from '../../../src/ActorSystem.js';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import {
   Behaviors,
   typedProps,
   type Behavior,
 } from '../../../src/typed/index.js';
-import { TestKit, TestKitOptions } from '../../../src/testkit/TestKit.js';
+import { TestKit } from '../../../src/testkit/TestKit.js';
+import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 import { Directive, OneForOneStrategy } from '../../../src/Supervision.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);

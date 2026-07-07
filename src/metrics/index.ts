@@ -24,7 +24,8 @@ export {
   exportPrometheus,
   prometheusHandler,
 } from './PrometheusExporter.js';
-export { promClientRegistry, PromClientAdapterOptions } from './PromClientAdapter.js';
+export { promClientRegistry } from './PromClientAdapter.js';
+export { PromClientAdapterOptions } from './PromClientAdapterOptions.js';
 export type {
   PromClientLike,
   PromClientRegistryLike,

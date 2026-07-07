@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem, ActorSystemOptions } from '../../../src/ActorSystem.js';
-import { Cluster, ClusterOptions } from '../../../src/cluster/Cluster.js';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
+import { Cluster } from '../../../src/cluster/Cluster.js';
+import { ClusterOptions } from '../../../src/cluster/ClusterOptions.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';

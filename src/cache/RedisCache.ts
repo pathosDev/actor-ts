@@ -1,8 +1,9 @@
 import { Lazy } from '../util/Lazy.js';
-import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { resolveSettings } from '../util/OptionsBuilder.js';
 import { none, some, type Option } from '../util/Option.js';
 import { wrapError } from '../util/WrapError.js';
 import { CacheError, type Cache } from './Cache.js';
+import type { RedisCacheOptions } from './RedisCacheOptions.js';
 
 /**
  * Redis-backed `Cache` — wraps `ioredis`.  We pick ioredis over the
@@ -49,53 +50,6 @@ export interface RedisCacheSettings {
 }
 
 /**
- * Fluent builder for {@link RedisCacheSettings}:
- *
- *     new RedisCache(RedisCacheOptions.create().withUrl('redis://localhost:6379').withKeyPrefix('app:'))
- */
-export class RedisCacheOptions extends OptionsBuilder<RedisCacheSettings> {
-  /** Start a fresh builder.  Equivalent to `new RedisCacheOptions()`. */
-  static create(): RedisCacheOptions {
-    return new RedisCacheOptions();
-  }
-
-  /** Redis URL (e.g. `redis://localhost:6379`).  Mutually exclusive with `host`/`port`. */
-  withUrl(url: string): this {
-    return this.set('url', url);
-  }
-
-  /** Redis host — used with `withPort` when no `withUrl` is given. */
-  withHost(host: string): this {
-    return this.set('host', host);
-  }
-
-  /** Redis port — used with `withHost` when no `withUrl` is given. */
-  withPort(port: number): this {
-    return this.set('port', port);
-  }
-
-  /** Redis password (AUTH). */
-  withPassword(password: string): this {
-    return this.set('password', password);
-  }
-
-  /** Redis logical database index. */
-  withDb(db: number): this {
-    return this.set('db', db);
-  }
-
-  /** Key prefix prepended to every key — isolates shared instances by system/env. */
-  withKeyPrefix(prefix: string): this {
-    return this.set('keyPrefix', prefix);
-  }
-
-  /** Pre-built ioredis client — bypass internal construction (connection sharing, Cluster). */
-  withClient(client: RedisClientLike): this {
-    return this.set('client', client);
-  }
-}
-
-/**
  * Minimal subset of the ioredis client surface we depend on.  Defined
  * here so a custom client (mock, wrapper, Cluster) can satisfy the
  * contract without pulling in the full ioredis types.
@@ -121,8 +75,8 @@ export class RedisCache implements Cache {
   private readonly keyPrefix: string;
   private closed = false;
 
-  constructor(options: RedisCacheOptions = RedisCacheOptions.create()) {
-    const opts = options.build();
+  constructor(options: RedisCacheOptions | Partial<RedisCacheSettings> = {}) {
+    const opts = resolveSettings(options);
     this.keyPrefix = opts.keyPrefix ?? '';
     this.clientLazy = Lazy.of(async () => {
       if (opts.client) return opts.client;

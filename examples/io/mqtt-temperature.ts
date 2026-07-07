@@ -82,7 +82,7 @@ async function main(): Promise<void> {
             mqtt: {
               brokerUrl: 'mqtt://localhost:1883',
               // credentials: { username: "iot", password: ${MQTT_PASSWORD} }
-              keepAliveSec: 30,
+              keepAlive: 30,
             },
           },
         },

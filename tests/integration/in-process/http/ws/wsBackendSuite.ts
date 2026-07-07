@@ -4,7 +4,8 @@
  * Clients use the runtime's native `WebSocket` global (Bun provides one).
  */
 import { afterEach, describe, expect, test } from 'bun:test';
-import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
+import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { Props } from '../../../../../src/Props.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { HttpExtensionId } from '../../../../../src/http/HttpExtension.js';
@@ -22,7 +23,8 @@ import {
 } from '../../../../../src/http/Route.js';
 import { Status } from '../../../../../src/http/types.js';
 import { WebSocketServerActor } from '../../../../../src/http/ws/WebSocketServerActor.js';
-import { websocket, WebSocketRouteOptions } from '../../../../../src/http/ws/WebSocketRoute.js';
+import { websocket } from '../../../../../src/http/ws/WebSocketRoute.js';
+import { WebSocketRouteOptions } from '../../../../../src/http/ws/WebSocketRouteOptions.js';
 import type { WsConnection } from '../../../../../src/http/ws/WsConnection.js';
 
 type SIn = { kind: 'ping'; n: number } | { kind: 'broadcast'; text: string };

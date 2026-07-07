@@ -18,7 +18,8 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { getSqliteDriver, type SqliteDriver } from '../../../../../src/runtime/sqlite/index.js';
-import { SqliteJournal, SqliteJournalOptions } from '../../../../../src/persistence/journals/SqliteJournal.js';
+import { SqliteJournal } from '../../../../../src/persistence/journals/SqliteJournal.js';
+import { SqliteJournalOptions } from '../../../../../src/persistence/journals/SqliteJournalOptions.js';
 
 interface TagRow {
   persistence_id: string;

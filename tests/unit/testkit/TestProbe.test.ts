@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
 import { Props } from '../../../src/Props.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
-import { TestProbeOptions } from '../../../src/testkit/TestProbe.js';
+import { TestProbeOptions } from '../../../src/testkit/TestProbeOptions.js';
 
 describe('TestProbe basics', () => {
   test('captures messages in FIFO order', async () => {

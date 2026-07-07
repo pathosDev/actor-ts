@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { KubernetesLease, KubernetesLeaseOptions, type KubernetesLeaseSettings } from '../../../src/coordination/leases/KubernetesLease.js';
+import { KubernetesLease, type KubernetesLeaseSettings } from '../../../src/coordination/leases/KubernetesLease.js';
+import { KubernetesLeaseOptions } from '../../../src/coordination/leases/KubernetesLeaseOptions.js';
 import type {
   K8sCredentials,
   K8sFetchClient,

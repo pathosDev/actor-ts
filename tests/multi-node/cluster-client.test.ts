@@ -16,9 +16,12 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
-import { ActorSystem, ActorSystemOptions } from '../../src/ActorSystem.js';
-import { Cluster, ClusterOptions } from '../../src/cluster/Cluster.js';
-import { ClusterClient, ClusterClientOptions } from '../../src/cluster/ClusterClient.js';
+import { ActorSystem } from '../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
+import { Cluster } from '../../src/cluster/Cluster.js';
+import { ClusterOptions } from '../../src/cluster/ClusterOptions.js';
+import { ClusterClient } from '../../src/cluster/ClusterClient.js';
+import { ClusterClientOptions } from '../../src/cluster/ClusterClientOptions.js';
 import { ClusterClientReceptionistId } from '../../src/cluster/ClusterClientReceptionist.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { Props } from '../../src/Props.js';

@@ -2,8 +2,9 @@ import type { Cache } from '../../cache/Cache.js';
 import type { Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { none, some, type Option } from '../../util/Option.js';
+import type { CachedSnapshotStoreOptions } from './CachedSnapshotStoreOptions.js';
 
 /**
  * Read-through cache decorator for any `SnapshotStore`.  Targets the hot
@@ -51,37 +52,6 @@ export interface CachedSnapshotStoreSettings {
   readonly keyPrefix?: string;
 }
 
-/**
- * Fluent builder for {@link CachedSnapshotStoreSettings}.  The `cache` is
- * required:
- *
- *     new CachedSnapshotStore(
- *       underlying,
- *       CachedSnapshotStoreOptions.create().withCache(cache).withTtlMs(5 * 60_000),
- *     )
- */
-export class CachedSnapshotStoreOptions extends OptionsBuilder<CachedSnapshotStoreSettings> {
-  /** Start a fresh builder.  Equivalent to `new CachedSnapshotStoreOptions()`. */
-  static create(): CachedSnapshotStoreOptions {
-    return new CachedSnapshotStoreOptions();
-  }
-
-  /** Backing cache — typically Redis in production. */
-  withCache(cache: Cache): this {
-    return this.set('cache', cache);
-  }
-
-  /** Cache TTL in milliseconds.  Default: 5 minutes. */
-  withTtlMs(ttlMs: number): this {
-    return this.set('ttlMs', ttlMs);
-  }
-
-  /** Key prefix (default: `'snap:'`) — prevents collisions in shared caches. */
-  withKeyPrefix(keyPrefix: string): this {
-    return this.set('keyPrefix', keyPrefix);
-  }
-}
-
 interface CachedSnapshot<S> {
   readonly persistenceId: string;
   readonly sequenceNr: number;
@@ -96,9 +66,9 @@ export class CachedSnapshotStore implements SnapshotStore {
 
   constructor(
     private readonly underlying: SnapshotStore,
-    options: CachedSnapshotStoreOptions,
+    options: CachedSnapshotStoreOptions | Partial<CachedSnapshotStoreSettings>,
   ) {
-    const s = options.build();
+    const s = resolveSettings(options);
     if (s.cache === undefined) throw new Error('CachedSnapshotStore: cache is required (call withCache()).');
     this.cache = s.cache;
     this.ttlMs = s.ttlMs ?? DEFAULT_TTL_MS;

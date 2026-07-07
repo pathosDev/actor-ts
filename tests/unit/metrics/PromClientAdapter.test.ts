@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { promClientRegistry, PromClientAdapterOptions } from '../../../src/metrics/PromClientAdapter.js';
+import { promClientRegistry } from '../../../src/metrics/PromClientAdapter.js';
+import { PromClientAdapterOptions } from '../../../src/metrics/PromClientAdapterOptions.js';
 
 /**
  * The bridge is exercised against a hand-rolled `prom-client`-shaped

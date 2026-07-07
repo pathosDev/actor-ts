@@ -1,11 +1,12 @@
 import type { Lease } from '../../coordination/Lease.js';
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { resolveSettings } from '../../util/OptionsBuilder.js';
 import {
   addrKey,
   type ClusterPartitionView,
   type DowningDecision,
   type DowningProvider,
 } from './DowningProvider.js';
+import type { LeaseMajorityOptions } from './LeaseMajorityOptions.js';
 
 export interface LeaseMajoritySettings {
   /**
@@ -24,37 +25,6 @@ export interface LeaseMajoritySettings {
   readonly acquireTimeoutMs?: number;
   /** If set, only members carrying this role count toward the majority. */
   readonly role?: string;
-}
-
-/**
- * Fluent builder for {@link LeaseMajoritySettings}:
- *
- *     new LeaseMajority(
- *       LeaseMajorityOptions.create()
- *         .withLease(kubernetesLease)
- *         .withAcquireTimeoutMs(5_000),
- *     );
- */
-export class LeaseMajorityOptions extends OptionsBuilder<LeaseMajoritySettings> {
-  /** Start a fresh builder. */
-  static create(): LeaseMajorityOptions {
-    return new LeaseMajorityOptions();
-  }
-
-  /** External arbiter lease — both sides of a partition contend for it. */
-  withLease(lease: Lease): this {
-    return this.set('lease', lease);
-  }
-
-  /** Hard ceiling on a single `acquire()` attempt in ms.  Default 5 s. */
-  withAcquireTimeoutMs(ms: number): this {
-    return this.set('acquireTimeoutMs', ms);
-  }
-
-  /** Only members carrying this role count toward the majority. */
-  withRole(role: string): this {
-    return this.set('role', role);
-  }
 }
 
 /**
@@ -153,8 +123,8 @@ export class LeaseMajority implements DowningProvider {
 
   private readonly settings: LeaseMajoritySettings;
 
-  constructor(options: LeaseMajorityOptions) {
-    this.settings = options.build() as LeaseMajoritySettings;
+  constructor(options: LeaseMajorityOptions | Partial<LeaseMajoritySettings>) {
+    this.settings = resolveSettings(options) as LeaseMajoritySettings;
   }
 
   decide(view: ClusterPartitionView): DowningDecision {

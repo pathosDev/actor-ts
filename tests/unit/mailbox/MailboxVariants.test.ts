@@ -8,7 +8,8 @@ import {
   MailboxFullError,
   PriorityMailbox,
 } from '../../../src/mailbox/index.js';
-import { TestKit, TestKitOptions } from '../../../src/testkit/TestKit.js';
+import { TestKit } from '../../../src/testkit/TestKit.js';
+import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 

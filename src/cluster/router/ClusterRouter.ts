@@ -2,8 +2,9 @@ import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Props } from '../../Props.js';
 import { Broadcast } from '../../Router.js';
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { resolveSettings } from '../../util/OptionsBuilder.js';
 import type { Cluster } from '../Cluster.js';
+import type { ClusterRouterOptions } from './ClusterRouterOptions.js';
 import { MemberRemoved, MemberUp } from '../ClusterEvents.js';
 import { RemoteActorRef } from '../RemoteActorRef.js';
 import { pickRendezvous } from './ConsistentHashing.js';
@@ -89,56 +90,15 @@ export interface ClusterRouterSettings<TMsg> {
 }
 
 /**
- * Fluent builder for {@link ClusterRouterSettings}:
- *
- *     ClusterRouter.props(
- *       ClusterRouterOptions.create<Cmd>()
- *         .withCluster(cluster)
- *         .withRouterType('consistent-hashing')
- *         .withRouteePath('/user/worker')
- *         .withExtractKey((m) => m.id),
- *     );
- */
-export class ClusterRouterOptions<TMsg> extends OptionsBuilder<ClusterRouterSettings<TMsg>> {
-  /** Start a fresh builder. */
-  static create<TMsg>(): ClusterRouterOptions<TMsg> {
-    return new ClusterRouterOptions<TMsg>();
-  }
-
-  /** The cluster the router lives in — drives membership + transport. */
-  withCluster(cluster: Cluster): this {
-    return this.set('cluster', cluster);
-  }
-
-  /** Restrict routees to up-members carrying this role.  Omit for "any node". */
-  withRole(role: string): this {
-    return this.set('role', role);
-  }
-
-  /** Routing strategy.  See {@link ClusterRouterType}. */
-  withRouterType(routerType: ClusterRouterType): this {
-    return this.set('routerType', routerType);
-  }
-
-  /** The path the routee actor lives under on each node — usually `/user/<name>`. */
-  withRouteePath(routeePath: string): this {
-    return this.set('routeePath', routeePath);
-  }
-
-  /** Key extractor — required for `consistent-hashing`, ignored otherwise. */
-  withExtractKey(extractKey: (message: TMsg) => string): this {
-    return this.set('extractKey', extractKey);
-  }
-}
-
-/**
  * `Props` factory for the cluster router.  See {@link ClusterRouterOptions}
  * for the configuration builder and {@link ClusterRouterSettings} for the
  * resolved shape.
  */
 export const ClusterRouter = {
-  props<TMsg>(options: ClusterRouterOptions<TMsg>): Props<TMsg | Broadcast<TMsg>> {
-    const opts = options.build() as ClusterRouterSettings<TMsg>;
+  props<TMsg>(
+    options: ClusterRouterOptions<TMsg> | Partial<ClusterRouterSettings<TMsg>>,
+  ): Props<TMsg | Broadcast<TMsg>> {
+    const opts = resolveSettings(options) as ClusterRouterSettings<TMsg>;
     if (opts.routerType === 'consistent-hashing' && !opts.extractKey) {
       throw new Error(
         'ClusterRouter: routerType=\'consistent-hashing\' requires extractKey',

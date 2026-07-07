@@ -15,7 +15,8 @@ import type {
   ScenarioContext,
   ScenarioModule,
 } from '../../../src/testkit/internal/parallel-multi-node-bootstrap.js';
-import { TestProbe, TestProbeOptions } from '../../../src/testkit/TestProbe.js';
+import { TestProbe } from '../../../src/testkit/TestProbe.js';
+import { TestProbeOptions } from '../../../src/testkit/TestProbeOptions.js';
 
 interface SubscribeArgs { readonly topic: string }
 interface PublishArgs { readonly topic: string; readonly message: unknown }

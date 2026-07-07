@@ -38,7 +38,8 @@ import {
   Actor, ActorSystem, Cluster, ClusterOptions, ClusterSingletonId, InMemoryTransport,
   NodeAddress, Props, StartSingletonOptions,
 } from '../../src/index.js';
-import { KubernetesLease, KubernetesLeaseOptions } from '../../src/coordination/leases/KubernetesLease.js';
+import { KubernetesLease } from '../../src/coordination/leases/KubernetesLease.js';
+import { KubernetesLeaseOptions } from '../../src/coordination/leases/KubernetesLeaseOptions.js';
 
 const NAMESPACE = process.env.K8S_NAMESPACE ?? 'default';
 const POD_NAME = process.env.HOSTNAME ?? `local-${process.pid}`;

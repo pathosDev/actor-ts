@@ -6,7 +6,8 @@
  * isolated; connect costs ~50ms per actor.
  */
 import { Actor } from '../../../../src/Actor.js';
-import { ActorSystem, ActorSystemOptions } from '../../../../src/ActorSystem.js';
+import { ActorSystem } from '../../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { JsonLogger, LogLevel } from '../../../../src/Logger.js';
 import { Props } from '../../../../src/Props.js';
 import { MqttActor, type MqttMessage } from '../../../../src/io/broker/MqttActor.js';

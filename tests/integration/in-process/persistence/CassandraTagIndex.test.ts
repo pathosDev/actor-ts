@@ -7,7 +7,8 @@
  * walking baseline (oracle pattern).
  */
 import { describe, expect, test } from 'bun:test';
-import { CassandraJournal, CassandraJournalOptions } from '../../../../src/persistence/journals/CassandraJournal.js';
+import { CassandraJournal } from '../../../../src/persistence/journals/CassandraJournal.js';
+import { CassandraJournalOptions } from '../../../../src/persistence/journals/CassandraJournalOptions.js';
 import { CassandraQuery } from '../../../../src/persistence/query/CassandraQuery.js';
 import { offsetStart } from '../../../../src/persistence/query/PersistenceQuery.js';
 import { tagIndexDdl } from '../../../../src/persistence/journals/CassandraClient.js';

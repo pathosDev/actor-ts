@@ -2,9 +2,10 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
+import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import type { BrokerCommonSettings } from './BrokerSettings.js';
-import { GrpcClientOptions } from './GrpcClientOptions.js';
+import type { GrpcClientOptions } from './GrpcClientOptions.js';
 
 /**
  * Inbound gRPC reply / stream frame delivered to subscribers.  The
@@ -66,7 +67,7 @@ export class GrpcClientActor
   private nextStreamId = 1;
   private readonly bidiStreams = new Map<number, { call: GrpcDuplexCall; target: ActorRef<unknown> }>();
 
-  constructor(options: GrpcClientOptions = GrpcClientOptions.create()) { super(options.build()); }
+  constructor(options: GrpcClientOptions | Partial<GrpcClientActorSettings> = {}) { super(resolveSettings(options)); }
 
   protected configKey(): string { return ConfigKeys.io.broker.grpc.client; }
   protected builtInDefaults(): Partial<GrpcClientActorSettings> {

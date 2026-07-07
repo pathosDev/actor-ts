@@ -4,9 +4,10 @@ import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
+import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import type { BrokerCommonSettings } from './BrokerSettings.js';
-import { JetStreamOptions } from './JetStreamOptions.js';
+import type { JetStreamOptions } from './JetStreamOptions.js';
 
 /**
  * JetStream durable-streaming actor (#3).  Sister to {@link NatsActor}
@@ -167,7 +168,7 @@ export interface JetStreamActorSettings extends BrokerCommonSettings {
    * before giving up on a message and rejecting internally
    * (kafkajs-style failure).  Default = `consumer.ackWaitMs ?? 30s`.
    */
-  readonly ackTimeoutMs?: number;
+  readonly ackTimeout?: number;
 }
 
 export type JetStreamCmd =
@@ -200,7 +201,7 @@ export class JetStreamActor extends BrokerActor<
   /** Map of streamSeq → in-flight ack handle for the manual-ack pump. */
   private readonly pending = new Map<number, PendingAck>();
 
-  constructor(options: JetStreamOptions = JetStreamOptions.create()) { super(options.build()); }
+  constructor(options: JetStreamOptions | Partial<JetStreamActorSettings> = {}) { super(resolveSettings(options)); }
 
   protected configKey(): string { return ConfigKeys.io.broker.jetstream; }
   protected builtInDefaults(): Partial<JetStreamActorSettings> { return {}; }
@@ -392,7 +393,7 @@ export class JetStreamActor extends BrokerActor<
    */
   private async deliverAndAwaitAck(m: JetStreamMsgHandleLike): Promise<void> {
     const target = this.settings.target;
-    const ackTimeoutMs = this.settings.ackTimeoutMs
+    const ackTimeoutMs = this.settings.ackTimeout
       ?? this.settings.consumer?.ackWaitMs
       ?? 30_000;
     const handle: JetStreamMsgHandleLike = m;

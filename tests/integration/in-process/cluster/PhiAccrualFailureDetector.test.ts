@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
-import { PhiAccrualFailureDetector, PhiAccrualOptions } from '../../../../src/cluster/PhiAccrualFailureDetector.js';
+import { PhiAccrualFailureDetector } from '../../../../src/cluster/PhiAccrualFailureDetector.js';
+import { PhiAccrualOptions } from '../../../../src/cluster/PhiAccrualOptions.js';
 
 const addr = (port: number): NodeAddress => new NodeAddress('sys', 'h', port);
 

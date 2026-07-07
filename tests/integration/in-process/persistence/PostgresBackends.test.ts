@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { PostgresJournal, PostgresJournalOptions } from '../../../../src/persistence/journals/PostgresJournal.js';
-import { PostgresSnapshotStore, PostgresSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/PostgresSnapshotStore.js';
-import { PostgresDurableStateStore, PostgresDurableStateStoreOptions } from '../../../../src/persistence/durable-state-stores/PostgresDurableStateStore.js';
+import { PostgresJournal } from '../../../../src/persistence/journals/PostgresJournal.js';
+import { PostgresJournalOptions } from '../../../../src/persistence/journals/PostgresJournalOptions.js';
+import { PostgresSnapshotStore } from '../../../../src/persistence/snapshot-stores/PostgresSnapshotStore.js';
+import { PostgresSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/PostgresSnapshotStoreOptions.js';
+import { PostgresDurableStateStore } from '../../../../src/persistence/durable-state-stores/PostgresDurableStateStore.js';
+import { PostgresDurableStateStoreOptions } from '../../../../src/persistence/durable-state-stores/PostgresDurableStateStoreOptions.js';
 import { JournalConcurrencyError } from '../../../../src/persistence/JournalTypes.js';
 import { DurableStateConcurrencyError } from '../../../../src/persistence/DurableStateStore.js';
 import { FakePgPool } from './FakePgPool.js';

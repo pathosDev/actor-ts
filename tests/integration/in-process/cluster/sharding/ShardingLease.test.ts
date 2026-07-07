@@ -7,17 +7,20 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
-import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
+import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { AskTimeoutError } from '../../../../../src/SystemMessages.js';
-import { Cluster, ClusterOptions } from '../../../../../src/cluster/Cluster.js';
-import { ClusterSharding, StartShardingOptions } from '../../../../../src/cluster/sharding/ClusterSharding.js';
+import { Cluster } from '../../../../../src/cluster/Cluster.js';
+import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
+import { ClusterSharding } from '../../../../../src/cluster/sharding/ClusterSharding.js';
+import { StartShardingOptions } from '../../../../../src/cluster/sharding/StartShardingOptions.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import {
   InMemoryLease,
   inMemoryLeaseStore,
 } from '../../../../../src/coordination/leases/InMemoryLease.js';
-import { LeaseOptions } from '../../../../../src/coordination/Lease.js';
+import { LeaseOptions } from '../../../../../src/coordination/LeaseOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';

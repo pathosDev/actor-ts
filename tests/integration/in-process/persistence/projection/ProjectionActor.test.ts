@@ -11,14 +11,15 @@
  *     offset store survives a restart so we can verify resumption.
  */
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
+import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { InMemoryJournal } from '../../../../../src/persistence/journals/InMemoryJournal.js';
+import { ProjectionActor } from '../../../../../src/persistence/projection/ProjectionActor.js';
 import {
   ByPidProjectionOptions,
   ByTagProjectionOptions,
-  ProjectionActor,
-} from '../../../../../src/persistence/projection/ProjectionActor.js';
+} from '../../../../../src/persistence/projection/ProjectionOptions.js';
 import {
   DurableStateOffsetStore,
   InMemoryOffsetStore,

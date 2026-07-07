@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { SqliteJournal, SqliteJournalOptions } from '../../../../src/persistence/journals/SqliteJournal.js';
+import { SqliteJournal } from '../../../../src/persistence/journals/SqliteJournal.js';
+import { SqliteJournalOptions } from '../../../../src/persistence/journals/SqliteJournalOptions.js';
 import { JournalConcurrencyError } from '../../../../src/persistence/JournalTypes.js';
-import { SqliteSnapshotStore, SqliteSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/SqliteSnapshotStore.js';
+import { SqliteSnapshotStore } from '../../../../src/persistence/snapshot-stores/SqliteSnapshotStore.js';
+import { SqliteSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/SqliteSnapshotStoreOptions.js';
 
 /** Journals and snapshot stores we create per test, auto-closed after. */
 const cleanups: Array<() => Promise<void>> = [];

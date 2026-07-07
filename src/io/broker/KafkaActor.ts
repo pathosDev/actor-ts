@@ -4,9 +4,10 @@ import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
+import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import type { BrokerCommonSettings } from './BrokerSettings.js';
-import { KafkaOptions } from './KafkaOptions.js';
+import type { KafkaOptions } from './KafkaOptions.js';
 
 /** Inbound Kafka record delivered to subscribers. */
 export interface KafkaRecord {
@@ -177,7 +178,7 @@ export class KafkaActor extends BrokerActor<KafkaActorSettings, KafkaCmd, KafkaP
    */
   private readonly pendingCommits = new Map<string, PendingCommit>();
 
-  constructor(options: KafkaOptions = KafkaOptions.create()) { super(options.build()); }
+  constructor(options: KafkaOptions | Partial<KafkaActorSettings> = {}) { super(resolveSettings(options)); }
 
   protected configKey(): string { return ConfigKeys.io.broker.kafka; }
   protected builtInDefaults(): Partial<KafkaActorSettings> {

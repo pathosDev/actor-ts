@@ -1,5 +1,7 @@
-import { ActorSystem, ActorSystemOptions } from '../ActorSystem.js';
-import { Cluster, ClusterOptions, type ClusterSettings } from '../cluster/Cluster.js';
+import { ActorSystem } from '../ActorSystem.js';
+import { ActorSystemOptions } from '../ActorSystemOptions.js';
+import { Cluster, type ClusterSettings } from '../cluster/Cluster.js';
+import { ClusterOptions } from '../cluster/ClusterOptions.js';
 import type { DowningProvider } from '../cluster/downing/index.js';
 import { type Member } from '../cluster/Member.js';
 import { NodeAddress } from '../cluster/NodeAddress.js';

@@ -25,7 +25,8 @@
  * in works at runtime and TypeScript narrows down to our shape.
  */
 
-import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { resolveSettings } from '../util/OptionsBuilder.js';
+import type { PromClientAdapterOptions } from './PromClientAdapterOptions.js';
 import type {
   Counter, CounterOptions, Gauge, GaugeOptions, Histogram, HistogramOptions,
   Labels, LabelValue, MetricSample, MetricsRegistry,
@@ -100,41 +101,6 @@ export interface PromClientAdapterSettings {
   readonly namePrefix?: string;
 }
 
-/**
- * Fluent builder for {@link PromClientAdapterSettings}:
- *
- *     promClientRegistry(
- *       PromClientAdapterOptions.create()
- *         .withClient(client)
- *         .withRegistry(client.register)
- *         .withNamePrefix('actor_ts_'),
- *     )
- *
- * `withClient` + `withRegistry` are mandatory — the bridge has nothing to
- * publish into without them.
- */
-export class PromClientAdapterOptions extends OptionsBuilder<PromClientAdapterSettings> {
-  /** Start a fresh builder.  Equivalent to `new PromClientAdapterOptions()`. */
-  static create(): PromClientAdapterOptions {
-    return new PromClientAdapterOptions();
-  }
-
-  /** The prom-client API namespace (`import client from 'prom-client'`). */
-  withClient(client: PromClientLike): this {
-    return this.set('client', client);
-  }
-
-  /** The prom-client `Registry` to publish into.  Typically `client.register`. */
-  withRegistry(registry: PromClientRegistryLike): this {
-    return this.set('registry', registry);
-  }
-
-  /** Name prefix, e.g. `'actor_ts_'`, applied to every registered metric name.  Default: empty. */
-  withNamePrefix(namePrefix: string): this {
-    return this.set('namePrefix', namePrefix);
-  }
-}
-
 /* --------------------------- adapter --------------------------- */
 
 interface CounterEntry {
@@ -170,8 +136,10 @@ type Entry = CounterEntry | GaugeEntry | HistogramEntry;
  * for parity; in practice users read via `prom-client.register.metrics()`
  * directly and only call `collect()` from tests.
  */
-export function promClientRegistry(options: PromClientAdapterOptions): MetricsRegistry {
-  const { client, registry, namePrefix = '' } = options.build() as PromClientAdapterSettings;
+export function promClientRegistry(
+  options: PromClientAdapterOptions | Partial<PromClientAdapterSettings>,
+): MetricsRegistry {
+  const { client, registry, namePrefix = '' } = resolveSettings(options) as PromClientAdapterSettings;
   const families = new Map<string, Entry>();
 
   function fullName(name: string): string {

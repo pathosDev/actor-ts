@@ -1,16 +1,17 @@
 import type { ActorSystem } from '../../ActorSystem.js';
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { resolveSettings } from '../../util/OptionsBuilder.js';
 import type { PersistenceExtension } from '../PersistenceExtension.js';
-import { PostgresJournal, PostgresJournalOptions } from './PostgresJournal.js';
-import {
-  PostgresSnapshotStore,
-  PostgresSnapshotStoreOptions,
-} from '../snapshot-stores/PostgresSnapshotStore.js';
-import {
-  PostgresDurableStateStore,
-  PostgresDurableStateStoreOptions,
-} from '../durable-state-stores/PostgresDurableStateStore.js';
+import { PostgresJournal } from './PostgresJournal.js';
+import type { PostgresJournalOptions } from './PostgresJournalOptions.js';
+import type { PostgresJournalSettings } from './PostgresJournal.js';
+import { PostgresSnapshotStore } from '../snapshot-stores/PostgresSnapshotStore.js';
+import type { PostgresSnapshotStoreOptions } from '../snapshot-stores/PostgresSnapshotStoreOptions.js';
+import type { PostgresSnapshotStoreSettings } from '../snapshot-stores/PostgresSnapshotStore.js';
+import { PostgresDurableStateStore } from '../durable-state-stores/PostgresDurableStateStore.js';
+import type { PostgresDurableStateStoreOptions } from '../durable-state-stores/PostgresDurableStateStoreOptions.js';
+import type { PostgresDurableStateStoreSettings } from '../durable-state-stores/PostgresDurableStateStore.js';
 import type { PgPoolLike } from './PostgresClient.js';
+import type { RegisterPostgresPluginsOptions } from './PostgresPluginOptions.js';
 
 /** Canonical plug-in IDs for the Postgres journal, snapshot, and durable-state stores. */
 export const POSTGRES_JOURNAL_PLUGIN_ID = 'actor-ts.persistence.journal.postgres';
@@ -26,50 +27,11 @@ export interface RegisterPostgresPluginsSettings {
    */
   readonly pool?: PgPoolLike;
   /** Journal-specific options (table names, autoCreate, and connection if no shared `pool`). */
-  readonly journal?: PostgresJournalOptions;
+  readonly journal?: PostgresJournalOptions | Partial<PostgresJournalSettings>;
   /** Snapshot-store-specific options. */
-  readonly snapshotStore?: PostgresSnapshotStoreOptions;
+  readonly snapshotStore?: PostgresSnapshotStoreOptions | Partial<PostgresSnapshotStoreSettings>;
   /** Durable-state-store-specific options.  Defaults to a fresh builder (uses the shared `pool`). */
-  readonly durableStateStore?: PostgresDurableStateStoreOptions;
-}
-
-/**
- * Fluent builder for {@link RegisterPostgresPluginsSettings}:
- *
- *     registerPostgresPlugins(ext, RegisterPostgresPluginsOptions.create()
- *       .withPool(pool)
- *       .withJournal(PostgresJournalOptions.create().withEventsTable('journal'))
- *       .withSnapshotStore(PostgresSnapshotStoreOptions.create().withKeepN(5)))
- *
- * The shared `withPool(...)` is threaded onto each store's builder by
- * {@link registerPostgresPlugins}, so leaf builders carry only their
- * store-specific fields.
- */
-export class RegisterPostgresPluginsOptions extends OptionsBuilder<RegisterPostgresPluginsSettings> {
-  /** Start a fresh builder.  Equivalent to `new RegisterPostgresPluginsOptions()`. */
-  static create(): RegisterPostgresPluginsOptions {
-    return new RegisterPostgresPluginsOptions();
-  }
-
-  /** Shared connection pool injected into all three stores. */
-  withPool(pool: PgPoolLike): this {
-    return this.set('pool', pool);
-  }
-
-  /** Journal-specific options (table names, autoCreate, and connection if no shared pool). */
-  withJournal(journal: PostgresJournalOptions): this {
-    return this.set('journal', journal);
-  }
-
-  /** Snapshot-store-specific options. */
-  withSnapshotStore(snapshotStore: PostgresSnapshotStoreOptions): this {
-    return this.set('snapshotStore', snapshotStore);
-  }
-
-  /** Durable-state-store-specific options.  Defaults to a fresh builder (uses the shared pool). */
-  withDurableStateStore(durableStateStore: PostgresDurableStateStoreOptions): this {
-    return this.set('durableStateStore', durableStateStore);
-  }
+  readonly durableStateStore?: PostgresDurableStateStoreOptions | Partial<PostgresDurableStateStoreSettings>;
 }
 
 export interface PostgresPluginHandles {
@@ -98,20 +60,16 @@ export interface PostgresPluginHandles {
  */
 export function registerPostgresPlugins(
   ext: PersistenceExtension,
-  options: RegisterPostgresPluginsOptions = RegisterPostgresPluginsOptions.create(),
+  options: RegisterPostgresPluginsOptions | Partial<RegisterPostgresPluginsSettings> = {},
 ): PostgresPluginHandles {
-  const s = options.build();
+  const s = resolveSettings(options);
 
-  // Thread the shared pool onto each store's builder (fresh if the caller
-  // didn't supply one).  Builders are mutable, so mutate-then-construct.
-  const journal = s.journal ?? PostgresJournalOptions.create();
-  const snapshotStore = s.snapshotStore ?? PostgresSnapshotStoreOptions.create();
-  const durableState = s.durableStateStore ?? PostgresDurableStateStoreOptions.create();
-  if (s.pool) {
-    journal.withPool(s.pool);
-    snapshotStore.withPool(s.pool);
-    durableState.withPool(s.pool);
-  }
+  // Resolve each leaf to a plain object and merge the shared pool (when
+  // set) onto it — no more mutating nested builders.  A missing leaf falls
+  // back to an empty object so the shared pool still reaches every store.
+  const journal = { ...resolveSettings(s.journal ?? {}), ...(s.pool ? { pool: s.pool } : {}) };
+  const snapshotStore = { ...resolveSettings(s.snapshotStore ?? {}), ...(s.pool ? { pool: s.pool } : {}) };
+  const durableState = { ...resolveSettings(s.durableStateStore ?? {}), ...(s.pool ? { pool: s.pool } : {}) };
 
   ext.registerJournal(
     POSTGRES_JOURNAL_PLUGIN_ID,

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { ActorSystem, ActorSystemOptions } from '../../../src/ActorSystem.js';
-import { ExpressBackend, ExpressBackendOptions } from '../../../src/http/backend/ExpressBackend.js';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
+import { ExpressBackend } from '../../../src/http/backend/ExpressBackend.js';
+import { ExpressBackendOptions } from '../../../src/http/backend/ExpressBackendOptions.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import {
   complete,

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { RedisCache, RedisCacheOptions, type RedisClientLike } from '../../../src/cache/RedisCache.js';
+import { RedisCache, type RedisClientLike } from '../../../src/cache/RedisCache.js';
+import { RedisCacheOptions } from '../../../src/cache/RedisCacheOptions.js';
 import { CacheError } from '../../../src/cache/Cache.js';
 
 /**

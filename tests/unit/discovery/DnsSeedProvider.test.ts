@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { DnsSeedProvider, DnsSeedProviderOptions } from '../../../src/discovery/DnsSeedProvider.js';
+import { DnsSeedProvider } from '../../../src/discovery/DnsSeedProvider.js';
+import { DnsSeedProviderOptions } from '../../../src/discovery/DnsSeedProviderOptions.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 

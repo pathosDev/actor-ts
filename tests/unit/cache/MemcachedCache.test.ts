@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { MemcachedCache, MemcachedCacheOptions, type MemcachedClientLike } from '../../../src/cache/MemcachedCache.js';
+import { MemcachedCache, type MemcachedClientLike } from '../../../src/cache/MemcachedCache.js';
+import { MemcachedCacheOptions } from '../../../src/cache/MemcachedCacheOptions.js';
 
 /**
  * Mock memjs client.  We don't actually run a memcached process —

@@ -2,9 +2,10 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
+import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import type { BrokerCommonSettings } from './BrokerSettings.js';
-import { UdpSocketOptions } from './UdpSocketOptions.js';
+import type { UdpSocketOptions } from './UdpSocketOptions.js';
 
 /** Inbound datagram delivered to the target actor. */
 export interface UdpDatagram {
@@ -45,7 +46,7 @@ export class UdpSocketActor
   private socket: DgramSocket | null = null;
   private actualPort = 0;
 
-  constructor(options: UdpSocketOptions = UdpSocketOptions.create()) { super(options.build()); }
+  constructor(options: UdpSocketOptions | Partial<UdpSocketActorSettings> = {}) { super(resolveSettings(options)); }
 
   protected configKey(): string { return ConfigKeys.io.broker.udp; }
   protected builtInDefaults(): Partial<UdpSocketActorSettings> {

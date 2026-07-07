@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { otelTracer, OtelAdapterOptions, type OtelApiLike, type OtelSpanLike, type OtelSpanContextLike, type OtelContextLike } from '../../../src/tracing/OtelAdapter.js';
+import { otelTracer, type OtelApiLike, type OtelSpanLike, type OtelSpanContextLike, type OtelContextLike } from '../../../src/tracing/OtelAdapter.js';
+import { OtelAdapterOptions } from '../../../src/tracing/OtelAdapterOptions.js';
 import { decodeTraceparent, encodeTraceparent, newSpanId, newTraceId } from '../../../src/tracing/Tracer.js';
 
 /**

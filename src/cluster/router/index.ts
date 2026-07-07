@@ -1,4 +1,5 @@
-export { ClusterRouter, ClusterRouterOptions } from './ClusterRouter.js';
+export { ClusterRouter } from './ClusterRouter.js';
+export { ClusterRouterOptions } from './ClusterRouterOptions.js';
 export type {
   ClusterRouterSettings,
   ClusterRouterType,

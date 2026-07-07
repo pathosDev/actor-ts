@@ -7,9 +7,12 @@
  * `PostgresSnapshotStore` / `PostgresDurableStateStore` via the `pg`
  * driver.  Exit 0 / 1 like the other broker runners.
  */
-import { PostgresJournal, PostgresJournalOptions } from '../../../../src/persistence/journals/PostgresJournal.js';
-import { PostgresSnapshotStore, PostgresSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/PostgresSnapshotStore.js';
-import { PostgresDurableStateStore, PostgresDurableStateStoreOptions } from '../../../../src/persistence/durable-state-stores/PostgresDurableStateStore.js';
+import { PostgresJournal } from '../../../../src/persistence/journals/PostgresJournal.js';
+import { PostgresJournalOptions } from '../../../../src/persistence/journals/PostgresJournalOptions.js';
+import { PostgresSnapshotStore } from '../../../../src/persistence/snapshot-stores/PostgresSnapshotStore.js';
+import { PostgresSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/PostgresSnapshotStoreOptions.js';
+import { PostgresDurableStateStore } from '../../../../src/persistence/durable-state-stores/PostgresDurableStateStore.js';
+import { PostgresDurableStateStoreOptions } from '../../../../src/persistence/durable-state-stores/PostgresDurableStateStoreOptions.js';
 import { waitForPort } from '../lib/wait-for-port.js';
 import { runScenarios } from '../lib/scenario.js';
 import { sqlPersistenceScenarios, type SqlPersistenceCtx } from '../lib/persistence-contract.js';

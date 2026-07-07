@@ -18,18 +18,12 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  FilesystemObjectStorageBackend,
-  FilesystemObjectStorageOptions,
-} from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
-import {
-  ObjectStorageDurableStateStore,
-  ObjectStorageDurableStateStoreOptions,
-} from '../../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStore.js';
-import {
-  ObjectStorageSnapshotStore,
-  ObjectStorageSnapshotStoreOptions,
-} from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStore.js';
+import { FilesystemObjectStorageBackend } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
+import { FilesystemObjectStorageOptions } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
+import { ObjectStorageDurableStateStore } from '../../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStore.js';
+import { ObjectStorageDurableStateStoreOptions } from '../../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
+import { ObjectStorageSnapshotStore } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStore.js';
+import { ObjectStorageSnapshotStoreOptions } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
 import type { EncryptionConfig } from '../../../../../src/persistence/PersistenceOptions.js';
 
 let dir: string;
