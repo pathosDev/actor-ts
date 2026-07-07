@@ -1,5 +1,4 @@
 import { Actor } from '../Actor.js';
-import { resolveSettings } from '../util/OptionsBuilder.js';
 import {
   DurableStateConcurrencyError,
   type DurableStateRecord,
@@ -38,7 +37,7 @@ export abstract class DurableStateActor<Cmd, S> extends Actor<Cmd> {
 
   constructor(options: DurableStateOptions<S> | Partial<DurableStateSettings<S>>) {
     super();
-    this.settings = resolveSettings(options) as DurableStateSettings<S>;
+    this.settings = options as DurableStateSettings<S>;
   }
 
   /** Current state snapshot — safe to read inside a handler. */

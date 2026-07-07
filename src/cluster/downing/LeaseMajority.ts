@@ -1,5 +1,4 @@
 import type { Lease } from '../../coordination/Lease.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import {
   addrKey,
   type ClusterPartitionView,
@@ -124,7 +123,7 @@ export class LeaseMajority implements DowningProvider {
   private readonly settings: LeaseMajoritySettings;
 
   constructor(options: LeaseMajorityOptions | Partial<LeaseMajoritySettings>) {
-    this.settings = resolveSettings(options) as LeaseMajoritySettings;
+    this.settings = options as LeaseMajoritySettings;
   }
 
   decide(view: ClusterPartitionView): DowningDecision {

@@ -1,5 +1,4 @@
 import { getSqliteDriver, type SqliteDb, type SqliteDriver, type SqliteStatement } from '../../runtime/sqlite/index.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { JournalError, type Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
@@ -45,7 +44,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
   private initPromise: Promise<void> | null = null;
 
   constructor(options: SqliteSnapshotStoreOptions | Partial<SqliteSnapshotStoreSettings> = {}) {
-    const settings = resolveSettings(options);
+    const settings = (options as Partial<SqliteSnapshotStoreSettings>);
     this.settings = settings;
     this.table = settings.snapshotsTable ?? 'snapshots';
     this.keepN = settings.keepN ?? 3;

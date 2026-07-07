@@ -3,7 +3,6 @@ import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import type { BrokerCommonSettings } from './BrokerSettings.js';
 import type { NatsOptions } from './NatsOptions.js';
@@ -51,7 +50,7 @@ export class NatsActor extends BrokerActor<NatsActorSettings, NatsCmd, NatsPubli
   private nc: NatsConnectionLike | null = null;
   private readonly subs = new Map<string, NatsSubscriptionLike>();
 
-  constructor(options: NatsOptions | Partial<NatsActorSettings> = {}) { super(resolveSettings(options)); }
+  constructor(options: NatsOptions | Partial<NatsActorSettings> = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.nats; }
   protected builtInDefaults(): Partial<NatsActorSettings> { return {}; }

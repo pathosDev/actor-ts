@@ -2,7 +2,6 @@ import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Props } from '../../Props.js';
 import { Broadcast } from '../../Router.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import type { Cluster } from '../Cluster.js';
 import type { ClusterRouterOptions } from './ClusterRouterOptions.js';
 import { MemberRemoved, MemberUp } from '../ClusterEvents.js';
@@ -98,7 +97,7 @@ export const ClusterRouter = {
   props<TMsg>(
     options: ClusterRouterOptions<TMsg> | Partial<ClusterRouterSettings<TMsg>>,
   ): Props<TMsg | Broadcast<TMsg>> {
-    const opts = resolveSettings(options) as ClusterRouterSettings<TMsg>;
+    const opts = options as ClusterRouterSettings<TMsg>;
     if (opts.routerType === 'consistent-hashing' && !opts.extractKey) {
       throw new Error(
         'ClusterRouter: routerType=\'consistent-hashing\' requires extractKey',

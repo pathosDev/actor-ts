@@ -1,4 +1,3 @@
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { JournalError, type Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
@@ -45,7 +44,7 @@ export class PostgresSnapshotStore implements SnapshotStore {
   private closed = false;
 
   constructor(options: PostgresSnapshotStoreOptions | Partial<PostgresSnapshotStoreSettings> = {}) {
-    const s = resolveSettings(options);
+    const s = (options as Partial<PostgresSnapshotStoreSettings>);
     this.settings = s;
     this.table = assertSafeIdentifier(s.snapshotsTable ?? 'snapshots', 'snapshots table');
     this.keepN = s.keepN ?? 3;

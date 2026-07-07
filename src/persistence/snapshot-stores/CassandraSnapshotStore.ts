@@ -2,7 +2,6 @@ import { JournalError, type Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import { none, some, type Option } from '../../util/Option.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import {
   createCassandraClient,
   keyspaceDdl,
@@ -43,7 +42,7 @@ export class CassandraSnapshotStore implements SnapshotStore {
   private readonly keepN: number;
 
   constructor(options: CassandraSnapshotStoreOptions | Partial<CassandraSnapshotStoreSettings>) {
-    this.options = resolveSettings(options);
+    this.options = (options as Partial<CassandraSnapshotStoreSettings>);
     this.client = this.options.client ?? (undefined as unknown as CassandraClientLike);
     this.ownsClient = !this.options.client;
     this.keepN = this.options.keepN ?? 3;

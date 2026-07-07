@@ -1,5 +1,4 @@
 import { Lazy } from '../util/Lazy.js';
-import { resolveSettings } from '../util/OptionsBuilder.js';
 import { none, some, type Option } from '../util/Option.js';
 import { wrapError } from '../util/WrapError.js';
 import { CacheError, type Cache } from './Cache.js';
@@ -76,7 +75,7 @@ export class RedisCache implements Cache {
   private closed = false;
 
   constructor(options: RedisCacheOptions | Partial<RedisCacheSettings> = {}) {
-    const opts = resolveSettings(options);
+    const opts = (options as Partial<RedisCacheSettings>);
     this.keyPrefix = opts.keyPrefix ?? '';
     this.clientLazy = Lazy.of(async () => {
       if (opts.client) return opts.client;

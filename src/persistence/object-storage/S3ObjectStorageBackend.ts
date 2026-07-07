@@ -1,5 +1,4 @@
 import { Lazy } from '../../util/Lazy.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { none, some, type Option } from '../../util/Option.js';
 import { wrapError } from '../../util/WrapError.js';
 import {
@@ -82,7 +81,7 @@ export class S3ObjectStorageBackend implements ObjectStorageBackend {
   private readonly bucket: string;
 
   constructor(options: S3ObjectStorageOptions | Partial<S3ObjectStorageSettings>) {
-    const s = resolveSettings(options);
+    const s = (options as Partial<S3ObjectStorageSettings>);
     if (s.bucket === undefined) throw new Error('S3ObjectStorageBackend: bucket is required (call withBucket()).');
     if (s.region === undefined) throw new Error('S3ObjectStorageBackend: region is required (call withRegion()).');
     this.bucket = s.bucket;

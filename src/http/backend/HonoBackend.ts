@@ -1,5 +1,4 @@
 import { match } from 'ts-pattern';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import {
   getHonoRunner,
   type HonoServerHandle,
@@ -109,7 +108,7 @@ export class HonoBackend implements HttpServerBackend {
   private server: HonoServerHandle | null = null;
 
   constructor(options: HonoBackendOptions | Partial<HonoBackendSettings> = {}) {
-    const settings = resolveSettings(options);
+    const settings = (options as Partial<HonoBackendSettings>);
     this.app = settings.app ?? null;
     this.ownsApp = settings.app == null;
     this.maxBodyBytes = settings.maxBodyBytes ?? 10 * 1024 * 1024;

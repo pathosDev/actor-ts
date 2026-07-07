@@ -1,7 +1,6 @@
 import { NodeAddress } from './NodeAddress.js';
 import type { FailureDecision } from './FailureDetector.js';
 import { fromNullable, type Option } from '../util/Option.js';
-import { resolveSettings } from '../util/OptionsBuilder.js';
 import type { PhiAccrualOptions } from './PhiAccrualOptions.js';
 
 export interface PhiAccrualSettings {
@@ -55,7 +54,7 @@ export class PhiAccrualFailureDetector {
   private readonly settings: PhiAccrualSettings;
 
   constructor(options: PhiAccrualOptions | Partial<PhiAccrualSettings> = {}) {
-    this.settings = { ...defaultPhiAccrualSettings, ...resolveSettings(options) };
+    this.settings = { ...defaultPhiAccrualSettings, ...(options as Partial<PhiAccrualSettings>) };
     if (this.settings.downThreshold <= this.settings.unreachableThreshold) {
       throw new Error('PhiAccrualFailureDetector: downThreshold must exceed unreachableThreshold');
     }

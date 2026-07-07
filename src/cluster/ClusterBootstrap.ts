@@ -12,7 +12,6 @@ import { Cluster, type ClusterSettings } from './Cluster.js';
 import { ClusterOptions } from './ClusterOptions.js';
 import { SelfUp, type ClusterEvent } from './ClusterEvents.js';
 import { NodeAddress } from './NodeAddress.js';
-import { resolveSettings } from '../util/OptionsBuilder.js';
 import type { ClusterBootstrapOptions } from './ClusterBootstrapOptions.js';
 
 /**
@@ -142,7 +141,7 @@ const DEFAULT_PORT = 2552;
 export async function bootstrapCluster(
   options: ClusterBootstrapOptions | Partial<ClusterBootstrapSettings>,
 ): Promise<BootstrappedCluster> {
-  const opts = resolveSettings(options) as ClusterBootstrapSettings;
+  const opts = options as ClusterBootstrapSettings;
   const host = resolveHost(opts);
   const port = resolvePort(opts);
 

@@ -1,4 +1,3 @@
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import {
   DurableStateConcurrencyError,
   type DurableStateRecord,
@@ -54,7 +53,7 @@ export class PostgresDurableStateStore implements DurableStateStore {
   private closed = false;
 
   constructor(options: PostgresDurableStateStoreOptions | Partial<PostgresDurableStateStoreSettings> = {}) {
-    const s = resolveSettings(options);
+    const s = (options as Partial<PostgresDurableStateStoreSettings>);
     this.settings = s;
     this.table = assertSafeIdentifier(s.table ?? 'durable_state', 'durable-state table');
     this.autoCreate = s.autoCreateTables ?? true;

@@ -40,7 +40,6 @@
 import { getTcpBackend, type TcpSocketLike, type TlsTransportSettings } from '../runtime/tcp/index.js';
 import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
-import { resolveSettings } from '../util/OptionsBuilder.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
 import { encodeFrame, FrameDecoder, type WireMessage, type HelloMsg, type HelloAckMsg } from './Protocol.js';
 import type {
@@ -125,7 +124,7 @@ export class ClusterClient {
   private readonly settings: ClusterClientSettings;
 
   constructor(options: ClusterClientOptions | Partial<ClusterClientSettings>) {
-    const settings = resolveSettings(options) as ClusterClientSettings;
+    const settings = options as ClusterClientSettings;
     this.settings = settings;
     if (!settings.contactPoints || settings.contactPoints.length === 0) {
       throw new Error('ClusterClient: contactPoints must contain at least one entry');

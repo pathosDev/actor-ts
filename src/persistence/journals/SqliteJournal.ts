@@ -1,5 +1,4 @@
 import { getSqliteDriver, type SqliteDb, type SqliteDriver, type SqliteStatement } from '../../runtime/sqlite/index.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { InProcessJournalEventBus, type JournalEventBus } from '../JournalEventBus.js';
 import type { Journal } from '../Journal.js';
 import {
@@ -71,7 +70,7 @@ export class SqliteJournal implements Journal {
   private initPromise: Promise<void> | null = null;
 
   constructor(options: SqliteJournalOptions | Partial<SqliteJournalSettings> = {}) {
-    const settings = resolveSettings(options);
+    const settings = (options as Partial<SqliteJournalSettings>);
     this.settings = settings;
     this.table = settings.eventsTable ?? 'events';
   }

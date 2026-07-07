@@ -3,7 +3,6 @@ import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { Lease } from '../../coordination/Lease.js';
 import type { Cancellable } from '../../Scheduler.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import type { ShardCoordinatorOptions } from './ShardCoordinatorOptions.js';
 import type { Cluster } from '../Cluster.js';
 import { LeaderChanged, MemberRemoved } from '../ClusterEvents.js';
@@ -188,7 +187,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
 
   constructor(options: ShardCoordinatorOptions | Partial<ShardCoordinatorSettings>) {
     super();
-    this.settings = resolveSettings(options) as ShardCoordinatorSettings;
+    this.settings = options as ShardCoordinatorSettings;
   }
 
   /** Path used by ClusterSharding to locate the coordinator on any node. */

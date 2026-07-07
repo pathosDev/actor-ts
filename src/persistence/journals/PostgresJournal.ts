@@ -1,4 +1,3 @@
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import type { Journal } from '../Journal.js';
 import {
   JournalConcurrencyError,
@@ -60,7 +59,7 @@ export class PostgresJournal implements Journal {
   private closed = false;
 
   constructor(options: PostgresJournalOptions | Partial<PostgresJournalSettings> = {}) {
-    const s = resolveSettings(options);
+    const s = (options as Partial<PostgresJournalSettings>);
     this.settings = s;
     this.table = assertSafeIdentifier(s.eventsTable ?? 'events', 'events table');
     this.tagsTable = assertSafeIdentifier(

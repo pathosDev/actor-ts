@@ -1,5 +1,4 @@
 import type { ActorSystem } from '../../ActorSystem.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import type { PersistenceExtension } from '../PersistenceExtension.js';
 import { ObjectStorageDurableStateStore } from '../durable-state-stores/ObjectStorageDurableStateStore.js';
 import { ObjectStorageSnapshotStore } from '../snapshot-stores/ObjectStorageSnapshotStore.js';
@@ -105,7 +104,7 @@ export async function registerObjectStoragePlugins(
   ext: PersistenceExtension,
   options: ObjectStoragePluginOptions | Partial<ObjectStoragePluginSettings>,
 ): Promise<ObjectStoragePluginHandles> {
-  const s = resolveSettings(options);
+  const s = (options as Partial<ObjectStoragePluginSettings>);
   if (s.backend === undefined) throw new Error('registerObjectStoragePlugins: backend is required (call withBackend()).');
   await validateObjectStoragePeerDeps(s);
 
@@ -140,7 +139,7 @@ export async function registerObjectStoragePlugins(
 export async function validateObjectStoragePeerDeps(
   options: ObjectStoragePluginOptions | Partial<ObjectStoragePluginSettings>,
 ): Promise<void> {
-  const s = resolveSettings(options);
+  const s = (options as Partial<ObjectStoragePluginSettings>);
   // Compression: probe each algorithm at most once.
   const algos = new Set<CompressionConfig['algorithm']>();
   for (const cfg of collectCompressionConfigs(s.compression)) {

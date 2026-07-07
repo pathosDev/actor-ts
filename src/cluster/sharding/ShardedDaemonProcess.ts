@@ -4,7 +4,6 @@ import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
 import { Props } from '../../Props.js';
 import type { Cancellable } from '../../Scheduler.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import type { Cluster } from '../Cluster.js';
 import { LeaderChanged, MemberRemoved } from '../ClusterEvents.js';
 import { LeastShardAllocationStrategy } from './AllocationStrategy.js';
@@ -75,7 +74,7 @@ export class ShardedDaemonProcess {
     cluster: Cluster,
     options: ShardedDaemonProcessOptions<T> | Partial<ShardedDaemonProcessSettings<T>>,
   ): ShardedDaemonProcessHandle<T> {
-    const settings = resolveSettings(options) as ShardedDaemonProcessSettings<T>;
+    const settings = options as ShardedDaemonProcessSettings<T>;
     const sharding = ClusterSharding.get(system, cluster);
 
     const startOptions = StartShardingOptions.create<DaemonEnvelope<T>>()

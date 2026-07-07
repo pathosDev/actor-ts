@@ -7,7 +7,6 @@ import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import type { BrokerCommonSettings } from './BrokerSettings.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { mqttJsonCodec, MqttDecodeError, type MqttCodec } from './MqttCodec.js';
 import type { MqttOptions } from './MqttOptions.js';
 import {
@@ -120,7 +119,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   private pendingSubs: Array<{ topic: string; qos?: MqttQos; target?: ActorRef<MqttMessage<T>> }> = [];
 
   constructor(options: MqttOptions | Partial<MqttActorSettings> = {}) {
-    super(resolveSettings(options));
+    super(options);
   }
 
   /* ----------------------- user overrides ------------------------ */

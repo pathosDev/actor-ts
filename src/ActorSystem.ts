@@ -16,7 +16,6 @@ import { EventStream } from './EventStream.js';
 import { ConsoleLogger, Logger, LogLevel } from './Logger.js';
 import { Props } from './Props.js';
 import { Scheduler } from './Scheduler.js';
-import { resolveSettings } from './util/OptionsBuilder.js';
 import type { ActorSystemOptions } from './ActorSystemOptions.js';
 import { ActorCell } from './internal/ActorCell.js';
 import { DeadLetterRef } from './internal/DeadLetterRef.js';
@@ -139,7 +138,7 @@ export class ActorSystem {
     name: string = 'default',
     options: ActorSystemOptions | Partial<ActorSystemSettings> = {},
   ): ActorSystem {
-    return new ActorSystem(name, resolveSettings(options));
+    return new ActorSystem(name, (options as Partial<ActorSystemSettings>));
   }
 
   /**

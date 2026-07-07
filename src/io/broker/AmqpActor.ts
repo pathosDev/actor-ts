@@ -3,7 +3,6 @@ import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import type { BrokerCommonSettings } from './BrokerSettings.js';
 import type { AmqpOptions } from './AmqpOptions.js';
@@ -82,7 +81,7 @@ export class AmqpActor extends BrokerActor<AmqpActorSettings, AmqpCmd, AmqpPubli
   private readonly pendingAcks = new Map<number, AmqpRawMessage>();
   private nextAckToken = 1;
 
-  constructor(options: AmqpOptions | Partial<AmqpActorSettings> = {}) { super(resolveSettings(options)); }
+  constructor(options: AmqpOptions | Partial<AmqpActorSettings> = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.amqp; }
   protected builtInDefaults(): Partial<AmqpActorSettings> {

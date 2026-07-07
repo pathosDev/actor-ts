@@ -5,7 +5,6 @@ import type { Lease } from '../../coordination/Lease.js';
 import type { Props } from '../../Props.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { Terminated } from '../../SystemMessages.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import type { ClusterSingletonManagerOptions } from './ClusterSingletonManagerOptions.js';
 import type { Cluster } from '../Cluster.js';
 import { LeaderChanged, MemberRemoved, SelfUp } from '../ClusterEvents.js';
@@ -102,7 +101,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
 
   constructor(options: ClusterSingletonManagerOptions<T> | Partial<ClusterSingletonManagerSettings<T>>) {
     super();
-    this.settings = resolveSettings(options) as ClusterSingletonManagerSettings<T>;
+    this.settings = options as ClusterSingletonManagerSettings<T>;
   }
 
   override preStart(): void {

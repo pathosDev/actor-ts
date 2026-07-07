@@ -26,7 +26,6 @@
  * means we never `import '@opentelemetry/api'` ourselves.
  */
 
-import { resolveSettings } from '../util/OptionsBuilder.js';
 import type { OtelAdapterOptions } from './OtelAdapterOptions.js';
 import type {
   AttributeValue, Span, SpanContext, SpanKind, SpanOptions, TraceCarrier, Tracer,
@@ -121,7 +120,7 @@ export interface OtelAdapterSettings {
 /* ------------------------------- adapter ------------------------------- */
 
 export function otelTracer(options: OtelAdapterOptions | Partial<OtelAdapterSettings>): Tracer {
-  const opts = resolveSettings(options) as OtelAdapterSettings;
+  const opts = options as OtelAdapterSettings;
   const { api } = opts;
   const otelTracerInstance = opts.tracer ?? api.trace.getTracer(opts.tracerName ?? 'actor-ts', opts.tracerVersion);
 
