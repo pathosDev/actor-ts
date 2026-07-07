@@ -28,6 +28,8 @@ jobs:
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
 
       - name: Setup Node + npm registry
         uses: actions/setup-node@v6
