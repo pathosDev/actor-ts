@@ -123,6 +123,35 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   trade-offs — not a restatement of the code. Match the surrounding
   comment density; no narration or noise.
 
+### Options & settings
+
+- **Every configurable thing has a fluent options builder** —
+  `XOptions.create().withField(…)`, extending `OptionsBuilder<T>` (broker
+  actors via `BrokerOptions<T>`). Naming lockstep with **no divergence**:
+  builder method `withX` ⇔ settings field `x` ⇔ HOCON leaf `x` (e.g.
+  `withQos` ⇔ `qos`, never `defaultQos`). Multi-arg sugar is fine when the
+  field still matches the stem (`withCredentials(u, p)` → field
+  `credentials`; `withCircuitBreaker(f, r)` → field `circuitBreaker`).
+- **Builder classes live in their own `XOptions.ts` file**, next to (never
+  inside) the functional class they configure. The settings interface
+  `XSettings` stays with the functional class (it's the config contract
+  read by `readSettingsFromConfig`); `XOptions.ts` imports it type-only.
+- **Consumers accept `XOptions | Partial<XSettings>`** and normalize with
+  `resolveSettings(...)` from `src/util/OptionsBuilder.ts`. A plain settings
+  object is fully interchangeable with the builder (it uses the settings
+  field names).
+- **Builder-first is the documented/primary style** — docs and examples
+  show the builder; the plain object is the shorthand alternative (mention
+  it once per page, don't lead with it).
+- **Never nest a builder into a call** — always assign it to its own
+  contextual local variable first (`const mqttOptions = MqttOptions
+  .create()…; new MqttActor(mqttOptions)`), then pass the variable.
+- **Write builder chains multi-line** — one `.withX()` per line (never a
+  single-line chain), even short ones.
+- **HOCON precedence is unchanged** — the builder / plain object feeds only
+  the highest-precedence explicit layer; unset fields fall through to
+  HOCON, then built-in defaults.
+
 ## Issues & workflow
 
 - **Issue-first.** Before starting work, check for an existing issue
