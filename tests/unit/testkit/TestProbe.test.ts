@@ -85,8 +85,12 @@ describe('TestProbe basics', () => {
 
   test('sender records the originator of the last message', async () => {
     const tk = TestKit.create();
-    const p = tk.createTestProbe(TestProbeOptions.create().withName('from'));
-    const to = tk.createTestProbe(TestProbeOptions.create().withName('to'));
+    const probeOptions = TestProbeOptions.create()
+      .withName('from');
+    const p = tk.createTestProbe(probeOptions);
+    const probeOptions2 = TestProbeOptions.create()
+      .withName('to');
+    const to = tk.createTestProbe(probeOptions2);
     to.tell('msg', p);
     await to.receiveOne(100);
     expect(to.sender).toBe(p);
@@ -95,8 +99,12 @@ describe('TestProbe basics', () => {
 
   test('reply sends to the last sender', async () => {
     const tk = TestKit.create();
-    const sender = tk.createTestProbe(TestProbeOptions.create().withName('sender'));
-    const replier = tk.createTestProbe(TestProbeOptions.create().withName('replier'));
+    const probeOptions = TestProbeOptions.create()
+      .withName('sender');
+    const sender = tk.createTestProbe(probeOptions);
+    const probeOptions2 = TestProbeOptions.create()
+      .withName('replier');
+    const replier = tk.createTestProbe(probeOptions2);
     replier.tell('ping', sender);
     await replier.receiveOne(100);
     replier.reply('pong');

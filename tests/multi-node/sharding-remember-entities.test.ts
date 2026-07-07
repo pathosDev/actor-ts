@@ -96,20 +96,19 @@ async function startSpec(
     spec.systemFor(role).extension(PersistenceExtensionId).setJournal(journal);
   }
 
+  const shardingOptions = StartShardingOptions.create<Cmd>()
+    .withTypeName('entity')
+    .withEntityProps(Props.create(() => new Entity()))
+    .withExtractEntityId((m) => m.id)
+    .withNumShards(1)                         // all entities on one shard
+    .withRememberEntities(true)
+    // Pass an explicit store using the shared journal; this also
+    // sidesteps any ordering between extension setup and
+    // resolveRememberEntitiesStore.
+    .withRememberEntitiesStore(new JournalRememberEntitiesStore(journal))
+    .withRebalanceIntervalMs(200);
   const start = (role: 'a' | 'b' | 'c'): ActorRef<Cmd> =>
-    spec.clusterFor(role).sharding.start<Cmd>(
-      StartShardingOptions.create<Cmd>()
-        .withTypeName('entity')
-        .withEntityProps(Props.create(() => new Entity()))
-        .withExtractEntityId((m) => m.id)
-        .withNumShards(1)                         // all entities on one shard
-        .withRememberEntities(true)
-        // Pass an explicit store using the shared journal; this also
-        // sidesteps any ordering between extension setup and
-        // resolveRememberEntitiesStore.
-        .withRememberEntitiesStore(new JournalRememberEntitiesStore(journal))
-        .withRebalanceIntervalMs(200),
-    );
+    spec.clusterFor(role).sharding.start<Cmd>(shardingOptions);
 
   const regions = { a: start('a'), b: start('b'), c: start('c') };
   return { spec, regions };

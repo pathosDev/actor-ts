@@ -19,10 +19,11 @@ import {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('mgmt-hello');
-  const cluster = await Cluster.join(system, ClusterOptions.create()
+  const clusterOptions = ClusterOptions.create()
     .withHost('local')
     .withPort(1)
-    .withTransport(new InMemoryTransport(new NodeAddress('mgmt-hello', 'local', 1))));
+    .withTransport(new InMemoryTransport(new NodeAddress('mgmt-hello', 'local', 1)));
+  const cluster = await Cluster.join(system, clusterOptions);
 
   const { routes, health } = managementRoutes(system, cluster);
   // Register a trivial readiness check.

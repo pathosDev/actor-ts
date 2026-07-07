@@ -141,13 +141,14 @@ Glue.
 ```ts
 import { ClusterSingletonManager, KubernetesLease, KubernetesLeaseOptions, Props } from 'actor-ts';
 
+const kubernetesLeaseOptions = KubernetesLeaseOptions.create()
+  .withName('my-app-singleton-lease')
+  .withOwner(process.env.POD_NAME!)
+  .withTtlMs(30_000)
+  .withRenewalIntervalMs(10_000)
+  .withNamespace(process.env.K8S_NAMESPACE!);
 const lease = new KubernetesLease(
-  KubernetesLeaseOptions.create()
-    .withName('my-app-singleton-lease')
-    .withOwner(process.env.POD_NAME!)
-    .withTtlMs(30_000)
-    .withRenewalIntervalMs(10_000)
-    .withNamespace(process.env.K8S_NAMESPACE!),
+  kubernetesLeaseOptions,
 );
 
 system.spawn(

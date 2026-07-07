@@ -29,7 +29,9 @@ if (!dir || !key || body === undefined || !mode) {
   process.exit(64);
 }
 
-const backend = new FilesystemObjectStorageBackend(FilesystemObjectStorageOptions.create().withDir(dir));
+const backendOptions = FilesystemObjectStorageOptions.create()
+  .withDir(dir);
+const backend = new FilesystemObjectStorageBackend(backendOptions);
 const opts = mode === 'create-only' ? { ifNoneMatch: '*' as const } : {};
 
 try {

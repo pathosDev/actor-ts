@@ -210,7 +210,9 @@ import { ActorSystem, ActorSystemOptions } from 'actor-ts';
 import { ManualScheduler } from 'actor-ts/testkit';
 
 const clock = new ManualScheduler();
-const system = ActorSystem.create('test', ActorSystemOptions.create().withScheduler(clock));
+const actorSystemOptions = ActorSystemOptions.create()
+  .withScheduler(clock);
+const system = ActorSystem.create('test', actorSystemOptions);
 
 system.scheduler.scheduleOnce(1_000, someActor, { kind: 'tick' });
 

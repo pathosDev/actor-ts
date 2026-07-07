@@ -96,30 +96,28 @@ async function main(): Promise<void> {
     // Server side.
     const getHandler = sys.spawn(Props.create(() => new GetSensorHandler()), 'get');
     const watchHandler = sys.spawn(Props.create(() => new WatchSensorHandler()), 'watch');
-    const server = sys.spawn(Props.create(() => new GrpcServerActor(
-      GrpcServerOptions.create()
-        .withProtoPath(protoPath)
-        .withPackageName('sensor.v1')
-        .withServiceName('SensorService')
-        .withBind('127.0.0.1:50051')
-        .withHandlers({
-          GetSensor: { kind: 'unary', target: getHandler },
-          WatchSensor: { kind: 'serverStream', target: watchHandler },
-        }),
-    )), 'server');
+    const serverOptions = GrpcServerOptions.create()
+      .withProtoPath(protoPath)
+      .withPackageName('sensor.v1')
+      .withServiceName('SensorService')
+      .withBind('127.0.0.1:50051')
+      .withHandlers({
+        GetSensor: { kind: 'unary', target: getHandler },
+        WatchSensor: { kind: 'serverStream', target: watchHandler },
+      });
+    const server = sys.spawn(Props.create(() => new GrpcServerActor(serverOptions)), 'server');
     void server;
 
     await Bun.sleep(300);  // let the server bind
 
     // Client side.
     const collector = sys.spawn(Props.create(() => new ReplyCollector()), 'collector');
-    const client = sys.spawn(Props.create(() => new GrpcClientActor(
-      GrpcClientOptions.create()
-        .withProtoPath(protoPath)
-        .withPackageName('sensor.v1')
-        .withServiceName('SensorService')
-        .withEndpoint('127.0.0.1:50051'),
-    )), 'client');
+    const clientOptions = GrpcClientOptions.create()
+      .withProtoPath(protoPath)
+      .withPackageName('sensor.v1')
+      .withServiceName('SensorService')
+      .withEndpoint('127.0.0.1:50051');
+    const client = sys.spawn(Props.create(() => new GrpcClientActor(clientOptions)), 'client');
 
     await Bun.sleep(300);
 

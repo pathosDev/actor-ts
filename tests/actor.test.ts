@@ -20,7 +20,10 @@ import {
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 function newSystem(name = 'test'): ActorSystem {
-  return ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  return ActorSystem.create(name, sysOptions);
 }
 
 test('delivers messages in order, one at a time', async () => {

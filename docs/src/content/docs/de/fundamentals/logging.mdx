@@ -41,7 +41,9 @@ zuerst).
 Systemweit über die Settings:
 
 ```ts
-const system = ActorSystem.create('my-app', ActorSystemOptions.create().withLogLevel('debug'));
+const actorSystemOptions = ActorSystemOptions.create()
+  .withLogLevel('debug');
+const system = ActorSystem.create('my-app', actorSystemOptions);
 ```
 
 Oder über die Env- / Config-Datei (`actor-ts.log-level = "debug"` in
@@ -58,8 +60,9 @@ menschenlesbaren Text, den der Default-`ConsoleLogger` ausgibt.
 ```ts
 import { ActorSystem, ActorSystemOptions, JsonLogger } from 'actor-ts';
 
-const system = ActorSystem.create('my-app', ActorSystemOptions.create()
-  .withLogger(new JsonLogger()));
+const actorSystemOptions = ActorSystemOptions.create()
+  .withLogger(new JsonLogger());
+const system = ActorSystem.create('my-app', actorSystemOptions);
 ```
 
 Output (ein `\n`-terminiertes JSON-Objekt pro Record):
@@ -107,8 +110,9 @@ import { ActorSystem, ActorSystemOptions, otelLogger } from 'actor-ts';
 
 // (SDK-Setup: LoggerProvider + OTLP-Exporter registrieren — außerhalb des Scope.)
 
-const system = ActorSystem.create('my-app', ActorSystemOptions.create()
-  .withLogger(otelLogger({ api: logsApi })));
+const actorSystemOptions = ActorSystemOptions.create()
+  .withLogger(otelLogger({ api: logsApi }));
+const system = ActorSystem.create('my-app', actorSystemOptions);
 ```
 
 `@opentelemetry/api-logs` ist eine **optionale Peer-Dep** — das

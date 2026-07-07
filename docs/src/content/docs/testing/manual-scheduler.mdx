@@ -93,7 +93,9 @@ time controls *all* actor timers.
 import { ActorSystem, ActorSystemOptions, ManualScheduler } from 'actor-ts';
 
 const scheduler = new ManualScheduler();
-const system = ActorSystem.create('my-spec', ActorSystemOptions.create().withScheduler(scheduler));
+const actorSystemOptions = ActorSystemOptions.create()
+  .withScheduler(scheduler);
+const system = ActorSystem.create('my-spec', actorSystemOptions);
 
 // ... test code ...
 

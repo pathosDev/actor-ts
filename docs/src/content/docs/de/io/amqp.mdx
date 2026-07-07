@@ -10,18 +10,19 @@ headers), Queues, Routing-Keys, ACK/NACK-Semantik.
 ```ts
 import { ActorSystem, Props, AmqpActor, AmqpOptions } from 'actor-ts';
 
+const amqpOptions = AmqpOptions.create()
+  .withUrl('amqp://guest:guest@rabbitmq:5672')
+  // Queue → Consumer-Actor-Verdrahtung läuft über `bindings` in
+  // den Settings — einmal beim Connect deklariert.  Ein
+  // Runtime-Subscribe/Unsubscribe ist kein v1-Surface; wenn Du
+  // nach dem Start einen neuen Consumer anhängen musst, starte
+  // den Actor mit aktualisierten Bindings neu.
+  .withBindings([
+    { queue: 'order-processor', exchange: 'orders', routingKey: 'placed.#', target: handler },
+  ]);
 const amqp = system.spawn(
   Props.create(() => new AmqpActor(
-    AmqpOptions.create()
-      .withUrl('amqp://guest:guest@rabbitmq:5672')
-      // Queue → Consumer-Actor-Verdrahtung läuft über `bindings` in
-      // den Settings — einmal beim Connect deklariert.  Ein
-      // Runtime-Subscribe/Unsubscribe ist kein v1-Surface; wenn Du
-      // nach dem Start einen neuen Consumer anhängen musst, starte
-      // den Actor mit aktualisierten Bindings neu.
-      .withBindings([
-        { queue: 'order-processor', exchange: 'orders', routingKey: 'placed.#', target: handler },
-      ]),
+    amqpOptions,
   )),
   'amqp',
 );

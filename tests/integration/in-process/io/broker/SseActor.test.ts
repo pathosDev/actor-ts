@@ -36,15 +36,17 @@ describe('SseActor — round-trip via Bun.serve', () => {
       },
     });
 
-    const sys = ActorSystem.create('sse-1', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('sse-1', sysOptions);
     const collector = new CollectActor();
     const target = sys.spawnAnonymous(Props.create(() => collector));
-    sys.spawnAnonymous(Props.create(() => new SseActor(
-      SseOptions.create()
-        .withUrl(`http://localhost:${server.port}/`)
-        .withTarget(target)
-        .withReconnect(false),  // disable so the test ends predictably
-    )));
+    const sseOptions = SseOptions.create()
+      .withUrl(`http://localhost:${server.port}/`)
+      .withTarget(target)
+      .withReconnect(false);  // disable so the test ends predictably
+    sys.spawnAnonymous(Props.create(() => new SseActor(sseOptions)));
     await sleep(150);
 
     expect(collector.received.length).toBe(4);

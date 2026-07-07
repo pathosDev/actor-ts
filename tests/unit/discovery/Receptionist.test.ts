@@ -38,7 +38,10 @@ class Service extends Actor<string> {
 
 describe('Receptionist — local', () => {
   test('Register → Find returns the registered ref', async () => {
-    const kit = TestKit.create('recp-local', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('recp-local', kitOptions);
     const probe = kit.createTestProbe<Listing<string>>();
     const receptionist = kit.system.extension(ReceptionistId).start(null);
 
@@ -54,7 +57,10 @@ describe('Receptionist — local', () => {
   });
 
   test('Subscribe receives initial listing and future updates', async () => {
-    const kit = TestKit.create('recp-sub', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('recp-sub', kitOptions);
     const probe = kit.createTestProbe<Listing<string>>();
     const receptionist = kit.system.extension(ReceptionistId).start(null);
 
@@ -78,7 +84,10 @@ describe('Receptionist — local', () => {
   });
 
   test('Registered reply arrives when Register supplies replyTo', async () => {
-    const kit = TestKit.create('recp-ack', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('recp-ack', kitOptions);
     const probe = kit.createTestProbe();
     const receptionist = kit.system.extension(ReceptionistId).start(null);
 
@@ -93,7 +102,10 @@ describe('Receptionist — local', () => {
   });
 
   test('Deregister removes the ref and notifies subscribers', async () => {
-    const kit = TestKit.create('recp-dereg', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('recp-dereg', kitOptions);
     const probe = kit.createTestProbe<Listing<string>>();
     const receptionist = kit.system.extension(ReceptionistId).start(null);
 
@@ -117,20 +129,26 @@ describe('Receptionist — cluster-wide', () => {
   interface NodeCtx { system: ActorSystem; cluster: Cluster; kit: TestKit; receptionist: ActorRef<unknown>; }
 
   async function startNode(sys: string, host: string, port: number, seeds: string[] = []): Promise<NodeCtx> {
-    const kit = TestKit.create(sys, TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create(sys, kitOptions);
+    const clusterOptions = ClusterOptions.create()
+      .withHost(host)
+      .withPort(port)
+      .withSeeds(seeds)
+      .withTransport(new InMemoryTransport(new NodeAddress(sys, host, port)))
+      .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+      .withGossipIntervalMs(80);
     const cluster = await Cluster.join(
       kit.system,
-      ClusterOptions.create()
-        .withHost(host)
-        .withPort(port)
-        .withSeeds(seeds)
-        .withTransport(new InMemoryTransport(new NodeAddress(sys, host, port)))
-        .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
-        .withGossipIntervalMs(80),
+      clusterOptions,
     );
+    const receptionistOptions = ReceptionistOptions.create()
+      .withGossipIntervalMs(80);
     const receptionist = kit.system.extension(ReceptionistId).start(
       cluster,
-      ReceptionistOptions.create().withGossipIntervalMs(80),
+      receptionistOptions,
     );
     return { system: kit.system, cluster, kit, receptionist };
   }

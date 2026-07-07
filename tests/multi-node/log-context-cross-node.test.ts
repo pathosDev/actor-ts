@@ -43,16 +43,17 @@ interface Node {
 }
 
 async function startNode(systemName: string, port: number, seeds: string[]): Promise<Node> {
-  const sys = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
-  const cluster = await Cluster.join(
-    sys,
-    ClusterOptions.create()
-      .withHost('h')
-      .withPort(port)
-      .withSeeds(seeds)
-      .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
-      .withGossipIntervalMs(30),
-  );
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const sys = ActorSystem.create(systemName, sysOptions);
+  const clusterOptions = ClusterOptions.create()
+    .withHost('h')
+    .withPort(port)
+    .withSeeds(seeds)
+    .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
+    .withGossipIntervalMs(30);
+  const cluster = await Cluster.join(sys, clusterOptions);
   return { sys, cluster };
 }
 

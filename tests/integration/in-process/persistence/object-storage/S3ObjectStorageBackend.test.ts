@@ -34,14 +34,13 @@ describeMaybe('S3ObjectStorageBackend (integration — MinIO)', () => {
   const runPrefix = `actor-ts-test/${Date.now()}-${Math.random().toString(36).slice(2)}/`;
 
   beforeAll(() => {
-    backend = new S3ObjectStorageBackend(
-      S3ObjectStorageOptions.create()
-        .withBucket(bucket!)
-        .withRegion('us-east-1')
-        .withEndpoint(endpoint!)
-        .withForcePathStyle(true)
-        .withCredentials({ accessKeyId: accessKeyId!, secretAccessKey: secretAccessKey! }),
-    );
+    const backendOptions = S3ObjectStorageOptions.create()
+      .withBucket(bucket!)
+      .withRegion('us-east-1')
+      .withEndpoint(endpoint!)
+      .withForcePathStyle(true)
+      .withCredentials({ accessKeyId: accessKeyId!, secretAccessKey: secretAccessKey! });
+    backend = new S3ObjectStorageBackend(backendOptions);
   });
 
   afterAll(async () => {

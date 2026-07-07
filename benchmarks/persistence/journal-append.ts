@@ -14,9 +14,13 @@ import { runGroup } from '../lib/harness.js';
 
 async function main(): Promise<void> {
   const inMem = new InMemoryJournal();
-  const sqliteMem = new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:'));
+  const sqliteMemOptions = SqliteJournalOptions.create()
+    .withPath(':memory:');
+  const sqliteMem = new SqliteJournal(sqliteMemOptions);
   const tmpFile = `./.bench-journal-${Date.now()}.sqlite`;
-  const sqliteFile = new SqliteJournal(SqliteJournalOptions.create().withPath(tmpFile));
+  const sqliteFileOptions = SqliteJournalOptions.create()
+    .withPath(tmpFile);
+  const sqliteFile = new SqliteJournal(sqliteFileOptions);
 
   const appendOne = (j: Journal, pid: string, seq: { n: number }) => async (): Promise<void> => {
     await j.append(pid, [{ body: 'x'.repeat(32) }], seq.n);

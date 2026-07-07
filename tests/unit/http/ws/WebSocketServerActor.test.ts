@@ -105,7 +105,10 @@ const req = (overrides: Partial<HttpRequest> = {}): HttpRequest => ({
 
 const systems: ActorSystem[] = [];
 function newSystem(name: string): ActorSystem {
-  const s = ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const s = ActorSystem.create(name, sysOptions);
   systems.push(s);
   return s;
 }

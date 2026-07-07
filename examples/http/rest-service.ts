@@ -52,13 +52,14 @@ class UserEntity extends Actor<UserCmd> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('rest-service');
-  const cluster = await Cluster.join(system, ClusterOptions.create()
+  const clusterOptions = ClusterOptions.create()
     .withHost('127.0.0.1')
-    .withPort(2552));
-  const region = cluster.sharding.start('user', UserEntity,
-    StartShardingOptions.create<UserCmd>()
-      .withExtractEntityId((msg) => ('id' in msg ? msg.id : msg.user.id))
-      .withNumShards(16));
+    .withPort(2552);
+  const cluster = await Cluster.join(system, clusterOptions);
+  const shardingOptions = StartShardingOptions.create<UserCmd>()
+    .withExtractEntityId((msg) => ('id' in msg ? msg.id : msg.user.id))
+    .withNumShards(16);
+  const region = cluster.sharding.start('user', UserEntity, shardingOptions);
 
   const askUser = (cmd: UserCmd): Promise<UserReply> => region.ask<UserReply>(cmd, 500);
 

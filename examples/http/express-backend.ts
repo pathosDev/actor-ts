@@ -51,7 +51,9 @@ async function main(): Promise<void> {
     )),
   );
 
-  const backend = new ExpressBackend(ExpressBackendOptions.create().withMaxBodyBytes(1 * 1024 * 1024));
+  const backendOptions = ExpressBackendOptions.create()
+    .withMaxBodyBytes(1 * 1024 * 1024);
+  const backend = new ExpressBackend(backendOptions);
   // Optional: reach through to the raw Express app to attach native middleware.
   //   const app = backend.getApp();
   //   app.use(cors());

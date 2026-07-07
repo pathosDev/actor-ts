@@ -11,11 +11,12 @@ const peer = new NodeAddress('demo', 'h', 1);
 const other = new NodeAddress('demo', 'h', 2);
 
 function fd(overrides: Partial<FailureDetectorSettings> = {}): FailureDetector {
+  const fdOptions = FailureDetectorOptions.create()
+    .withHeartbeatIntervalMs(overrides.heartbeatIntervalMs ?? 100)
+    .withUnreachableAfterMs(overrides.unreachableAfterMs ?? 500)
+    .withDownAfterMs(overrides.downAfterMs ?? 1_000);
   return new FailureDetector(
-    FailureDetectorOptions.create()
-      .withHeartbeatIntervalMs(overrides.heartbeatIntervalMs ?? 100)
-      .withUnreachableAfterMs(overrides.unreachableAfterMs ?? 500)
-      .withDownAfterMs(overrides.downAfterMs ?? 1_000),
+    fdOptions,
   );
 }
 

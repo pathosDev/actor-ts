@@ -327,11 +327,17 @@ describeMaybe('KubernetesLease — live integration (set K8S_LEASE_LIVE=1)', () 
     if (!authToken || !caCert) {
       throw new Error('K8S_LEASE_LIVE requires K8S_TOKEN + K8S_CA_CERT env vars');
     }
+    const k8sLeaseOptions = KubernetesLeaseOptions.create()
+      .withName('actor-ts-live-test')
+      .withNamespace('default')
+      .withOwner('live-runner')
+      .withTtlMs(5_000)
+      .withRenewalIntervalMs(1_000)
+      .withApiServerUrl(apiServerUrl)
+      .withAuthToken(authToken)
+      .withCaCert(caCert);
     const lease = new KubernetesLease(
-      KubernetesLeaseOptions.create()
-        .withName('actor-ts-live-test').withNamespace('default').withOwner('live-runner')
-        .withTtlMs(5_000).withRenewalIntervalMs(1_000)
-        .withApiServerUrl(apiServerUrl).withAuthToken(authToken).withCaCert(caCert),
+      k8sLeaseOptions,
     );
     expect(await lease.acquire()).toBe(true);
     await sleep(2_500);

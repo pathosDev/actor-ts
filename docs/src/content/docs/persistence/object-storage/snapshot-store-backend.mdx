@@ -17,10 +17,14 @@ import {
   PersistenceExtensionId,
 } from 'actor-ts';
 
-const snapshotStore = new ObjectStorageSnapshotStore(ObjectStorageSnapshotStoreOptions.create()
-  .withBackend(new S3ObjectStorageBackend(S3ObjectStorageOptions.create().withRegion(region).withBucket(bucket)))
+const s3ObjectStorageOptions = S3ObjectStorageOptions.create()
+  .withRegion(region)
+  .withBucket(bucket);
+const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.create()
+  .withBackend(new S3ObjectStorageBackend(s3ObjectStorageOptions))
   .withCompression({ algorithm: 'gzip' })
-  .withEncryption(encryption));
+  .withEncryption(encryption);
+const snapshotStore = new ObjectStorageSnapshotStore(objectStorageSnapshotStoreOptions);
 
 system.extension(PersistenceExtensionId).configure({
   journal: someJournal,
@@ -102,9 +106,13 @@ wrap with
 [CachedSnapshotStore](/persistence/snapshot-stores/cached-snapshot-store/):
 
 ```ts
+const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.create()
+  .withBackend(backend);
+const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create()
+  .withCache(cache);
 const cached = new CachedSnapshotStore(
-  new ObjectStorageSnapshotStore(ObjectStorageSnapshotStoreOptions.create().withBackend(backend)),
-  CachedSnapshotStoreOptions.create().withCache(cache),
+  new ObjectStorageSnapshotStore(objectStorageSnapshotStoreOptions),
+  cachedSnapshotStoreOptions,
 );
 ```
 
@@ -142,9 +150,10 @@ you set the policy.
 ## Cleanup of old snapshots
 
 ```ts
-new ObjectStorageSnapshotStore(ObjectStorageSnapshotStoreOptions.create()
+const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.create()
   .withBackend(backend)
-  .withKeepN(5));   // keep 5 most recent; delete older
+  .withKeepN(5);
+new ObjectStorageSnapshotStore(objectStorageSnapshotStoreOptions);   // keep 5 most recent; delete older
 ```
 
 Without cleanup, old snapshots accumulate indefinitely.
@@ -158,8 +167,12 @@ small window where old snapshots co-exist with new ones.
 
 ```ts
 {
-  journal:       new SqliteJournal(SqliteJournalOptions.create().withPath('...')),
-  snapshotStore: new ObjectStorageSnapshotStore(ObjectStorageSnapshotStoreOptions.create().withBackend(backend)),
+  const sqliteJournalOptions = SqliteJournalOptions.create()
+    .withPath('...');
+  const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.create()
+    .withBackend(backend);
+  journal:       new SqliteJournal(sqliteJournalOptions),
+  snapshotStore: new ObjectStorageSnapshotStore(objectStorageSnapshotStoreOptions),
 }
 ```
 

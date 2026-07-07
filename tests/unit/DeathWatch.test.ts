@@ -8,8 +8,12 @@ import { Props } from '../../src/Props.js';
 import { Terminated } from '../../src/SystemMessages.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-const newSystem = (name = 'watch-unit'): ActorSystem =>
-  ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+const newSystem = (name = 'watch-unit'): ActorSystem => {
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  return ActorSystem.create(name, sysOptions);
+};
 
 describe('watch / unwatch', () => {
   test('watch delivers Terminated when the target stops', async () => {

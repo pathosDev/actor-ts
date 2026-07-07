@@ -25,12 +25,13 @@ Balance:
 ```ts
 import { HashAllocationStrategy, StartShardingOptions } from 'actor-ts';
 
+const startShardingOptions = StartShardingOptions.create()
+  .withTypeName('cart')
+  .withEntityProps(Props.create(() => new CartActor()))
+  .withExtractEntityId((msg) => msg.entityId)
+  .withAllocationStrategy(new HashAllocationStrategy());
 sharding.start(
-  StartShardingOptions.create()
-    .withTypeName('cart')
-    .withEntityProps(Props.create(() => new CartActor()))
-    .withExtractEntityId((msg) => msg.entityId)
-    .withAllocationStrategy(new HashAllocationStrategy()),   // Default
+  startShardingOptions,   // Default
 );
 ```
 
@@ -67,14 +68,13 @@ ob du etwas Schlaueres brauchst.
 ```ts
 import { LeastShardAllocationStrategy, StartShardingOptions } from 'actor-ts';
 
-sharding.start(
-  StartShardingOptions.create()
-    // ...
-    .withAllocationStrategy(new LeastShardAllocationStrategy(
-      /* rebalanceThreshold */ 1,
-      /* maxSimultaneousRebalance */ 3,
-    )),
-);
+const shardingOptions = StartShardingOptions.create()
+  // ...
+  .withAllocationStrategy(new LeastShardAllocationStrategy(
+    /* rebalanceThreshold */ 1,
+    /* maxSimultaneousRebalance */ 3,
+  ));
+sharding.start(shardingOptions);
 ```
 
 Die Formel:

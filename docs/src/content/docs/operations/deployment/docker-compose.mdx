@@ -94,14 +94,16 @@ The app:
 ```ts
 import { ConfigSeedProvider, ConfigSeedProviderOptions, ClusterOptions } from 'actor-ts';
 
-const seeds = await new ConfigSeedProvider(ConfigSeedProviderOptions.create()
+const configSeedProviderOptions = ConfigSeedProviderOptions.create()
   .withSeeds((process.env.ACTOR_TS_SEEDS ?? '').split(',').filter(Boolean))
-  .withSystemName(system.name)).lookup();
+  .withSystemName(system.name);
+const seeds = await new ConfigSeedProvider(configSeedProviderOptions).lookup();
 
-await Cluster.join(system, ClusterOptions.create()
+const clusterOptions = ClusterOptions.create()
   .withHost(process.env.ACTOR_TS_HOSTNAME!)
   .withPort(parseInt(process.env.ACTOR_TS_PORT!))
-  .withSeeds(seeds));
+  .withSeeds(seeds);
+await Cluster.join(system, clusterOptions);
 ```
 
 For **dynamic-size clusters** in compose (scaling via `docker

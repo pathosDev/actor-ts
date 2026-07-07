@@ -33,7 +33,9 @@ function getState(ctx: ScenarioContext): ScenarioState {
 
 export const setup: ScenarioModule['setup'] = async (ctx) => {
   const pubsub = ctx.system.extension(DistributedPubSubId);
-  const mediator = pubsub.start(ctx.cluster, DistributedPubSubOptions.create().withGossipIntervalMs(100));
+  const pubsubOptions = DistributedPubSubOptions.create()
+    .withGossipIntervalMs(100);
+  const mediator = pubsub.start(ctx.cluster, pubsubOptions);
   ctx.state.scenario = {
     mediator,
     probesByTopic: new Map<string, TestProbe>(),
@@ -46,7 +48,9 @@ export const commands: ScenarioModule['commands'] = {
   subscribe(args, ctx): void {
     const { topic } = args as SubscribeArgs;
     const state = getState(ctx);
-    const probe = new TestProbe(ctx.system, TestProbeOptions.create().withName(`probe-${topic}`));
+    const probeOptions = TestProbeOptions.create()
+      .withName(`probe-${topic}`);
+    const probe = new TestProbe(ctx.system, probeOptions);
     state.probesByTopic.set(topic, probe);
     state.mediator.tell(new Subscribe(topic, probe) as never);
   },

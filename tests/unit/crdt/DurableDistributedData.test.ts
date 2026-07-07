@@ -54,7 +54,10 @@ async function startNode(
     seeds?: string[];
   } = {},
 ): Promise<NodeSetup> {
-  const sys = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const sys = ActorSystem.create(systemName, sysOptions);
   const clusterOptions = ClusterOptions.create()
     .withHost('h')
     .withPort(port)
@@ -103,9 +106,10 @@ describe('DurableDistributedData — actor integration', () => {
     const durable = new InMemoryDurableStateStore();
 
     const a1 = await startNode('ddata-1', 75_001);
-    const dd1 = a1.sys.extension(DistributedDataId).start(a1.cluster, DistributedDataOptions.create()
+    const ddOptions = DistributedDataOptions.create()
       .withGossipInterval(80)
-      .withDurableStore(durable));
+      .withDurableStore(durable);
+    const dd1 = a1.sys.extension(DistributedDataId).start(a1.cluster, ddOptions);
     dd1.update<GCounter>('counter', GCounter.empty,
       (c) => c.increment(dd1.selfReplicaId(), 7));
     dd1.update<ORSet<string>>('cart', () => ORSet.empty<string>(),
@@ -116,9 +120,10 @@ describe('DurableDistributedData — actor integration', () => {
 
     // Restart — fresh ActorSystem + Cluster + DD instance, same durable store.
     const a2 = await startNode('ddata-1', 75_001);
-    const dd2 = a2.sys.extension(DistributedDataId).start(a2.cluster, DistributedDataOptions.create()
+    const ddOptions2 = DistributedDataOptions.create()
       .withGossipInterval(80)
-      .withDurableStore(durable));
+      .withDurableStore(durable);
+    const dd2 = a2.sys.extension(DistributedDataId).start(a2.cluster, ddOptions2);
     // Wait for preStart's load() to populate the view.
     await waitFor(() => dd2.get<GCounter>('counter') !== undefined);
 
@@ -137,10 +142,14 @@ describe('DurableDistributedData — actor integration', () => {
     const b1 = await startNode('ddata-2', 75_012, { seeds: ['ddata-2@h:75011'] });
     await waitFor(() => a1.cluster.upMembers().length === 2 && b1.cluster.upMembers().length === 2);
 
-    const ddA1 = a1.sys.extension(DistributedDataId).start(a1.cluster, DistributedDataOptions.create()
-      .withGossipInterval(80).withDurableStore(storeA));
-    const ddB1 = b1.sys.extension(DistributedDataId).start(b1.cluster, DistributedDataOptions.create()
-      .withGossipInterval(80).withDurableStore(storeB));
+    const ddOptions = DistributedDataOptions.create()
+      .withGossipInterval(80)
+      .withDurableStore(storeA);
+    const ddA1 = a1.sys.extension(DistributedDataId).start(a1.cluster, ddOptions);
+    const ddOptions2 = DistributedDataOptions.create()
+      .withGossipInterval(80)
+      .withDurableStore(storeB);
+    const ddB1 = b1.sys.extension(DistributedDataId).start(b1.cluster, ddOptions2);
     ddA1.update<GCounter>('shared', GCounter.empty,
       (c) => c.increment(ddA1.selfReplicaId(), 5));
     ddB1.update<GCounter>('shared', GCounter.empty,
@@ -166,10 +175,14 @@ describe('DurableDistributedData — actor integration', () => {
     const b2 = await startNode('ddata-2', 75_012, { seeds: ['ddata-2@h:75011'] });
     await waitFor(() => a2.cluster.upMembers().length === 2 && b2.cluster.upMembers().length === 2);
 
-    const ddA2 = a2.sys.extension(DistributedDataId).start(a2.cluster, DistributedDataOptions.create()
-      .withGossipInterval(80).withDurableStore(storeA));
-    const ddB2 = b2.sys.extension(DistributedDataId).start(b2.cluster, DistributedDataOptions.create()
-      .withGossipInterval(80).withDurableStore(storeB));
+    const ddOptions3 = DistributedDataOptions.create()
+      .withGossipInterval(80)
+      .withDurableStore(storeA);
+    const ddA2 = a2.sys.extension(DistributedDataId).start(a2.cluster, ddOptions3);
+    const ddOptions4 = DistributedDataOptions.create()
+      .withGossipInterval(80)
+      .withDurableStore(storeB);
+    const ddB2 = b2.sys.extension(DistributedDataId).start(b2.cluster, ddOptions4);
 
     // Each replica recovered its own contribution from disk; gossip
     // re-merges them across the cluster.  Result: 8 everywhere again.
@@ -186,8 +199,10 @@ describe('DurableDistributedData — actor integration', () => {
   test('4. delete propagates to the durable store', async () => {
     const durable = new InMemoryDurableStateStore();
     const a1 = await startNode('ddata-3', 75_021);
-    const dd1 = a1.sys.extension(DistributedDataId).start(a1.cluster, DistributedDataOptions.create()
-      .withGossipInterval(80).withDurableStore(durable));
+    const ddOptions = DistributedDataOptions.create()
+      .withGossipInterval(80)
+      .withDurableStore(durable);
+    const dd1 = a1.sys.extension(DistributedDataId).start(a1.cluster, ddOptions);
     dd1.update<GCounter>('to-keep', GCounter.empty,
       (c) => c.increment(dd1.selfReplicaId(), 1));
     dd1.update<GCounter>('to-delete', GCounter.empty,
@@ -199,8 +214,10 @@ describe('DurableDistributedData — actor integration', () => {
 
     // Restart — only `to-keep` should be present.
     const a2 = await startNode('ddata-3', 75_021);
-    const dd2 = a2.sys.extension(DistributedDataId).start(a2.cluster, DistributedDataOptions.create()
-      .withGossipInterval(80).withDurableStore(durable));
+    const ddOptions2 = DistributedDataOptions.create()
+      .withGossipInterval(80)
+      .withDurableStore(durable);
+    const dd2 = a2.sys.extension(DistributedDataId).start(a2.cluster, ddOptions2);
     await waitFor(() => dd2.get<GCounter>('to-keep') !== undefined);
 
     expect(dd2.get<GCounter>('to-keep')!.value()).toBe(1);

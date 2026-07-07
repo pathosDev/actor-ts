@@ -34,10 +34,11 @@ die zurückgegebene Config an.
 
 ```ts
 // Store-Level-Config — gilt für jeden Actor, sofern nicht überschrieben:
-const store = new ObjectStorageDurableStateStore(ObjectStorageDurableStateStoreOptions.create()
+const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
   .withBackend(backend)
   .withCompression({ algorithm: 'gzip', level: 6 })
-  .withEncryption({ keyRing: defaultKeyRing }));
+  .withEncryption({ keyRing: defaultKeyRing });
+const store = new ObjectStorageDurableStateStore(objectStorageDurableStateStoreOptions);
 
 // Per-Actor: Override
 class MyActor extends DurableStateActor<...> {

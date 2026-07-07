@@ -31,10 +31,11 @@ class DiagActor extends Actor<'report'> {
 }
 
 async function main(): Promise<void> {
-  const system = ActorSystem.create('from-file', ActorSystemOptions.create()
+  const systemOptions = ActorSystemOptions.create()
     .withConfigFile(appConf)
     // A code override still wins over the file contents.
-    .withConfig({ 'actor-ts': { logger: { level: 'info' } } }));
+    .withConfig({ 'actor-ts': { logger: { level: 'info' } } });
+  const system = ActorSystem.create('from-file', systemOptions);
   const diag = system.spawn(Props.create(() => new DiagActor()), 'diag');
   diag.tell('report');
   await new Promise(resolve => setTimeout(resolve, 50));

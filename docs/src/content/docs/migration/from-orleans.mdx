@@ -274,19 +274,21 @@ var host = Host.CreateDefaultBuilder()
 // actor-ts:
 import { KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts';
 
+const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create()
+  .withNamespace(process.env.K8S_NAMESPACE!)
+  .withServiceName('my-app')
+  .withSystemName('my-system')
+  .withPort(2552);
 const nodes = await new KubernetesApiSeedProvider(
-  KubernetesApiSeedProviderOptions.create()
-    .withNamespace(process.env.K8S_NAMESPACE!)
-    .withServiceName('my-app')
-    .withSystemName('my-system')
-    .withPort(2552),
+  kubernetesApiSeedProviderOptions,
 ).lookup();
 const seeds = nodes.map(String);   // 'system@host:port'
 
-const cluster = await Cluster.join(system, ClusterOptions.create()
+const clusterOptions = ClusterOptions.create()
   .withHost(process.env.POD_IP!)
   .withPort(2552)
-  .withSeeds(seeds));
+  .withSeeds(seeds);
+const cluster = await Cluster.join(system, clusterOptions);
 ```
 
 Different API shape, same idea.  K8s pod discovery →

@@ -99,19 +99,20 @@ describe('ShardCoordinator state persistence — leader failover', () => {
       for (const role of ['a', 'b', 'c'] as const) {
         const sys = spec.systemFor(role);
         const cluster = spec.clusterFor(role);
-        const dd = sys.extension(DistributedDataId).start(cluster, DistributedDataOptions.create().withGossipInterval(80));
+        const ddOptions = DistributedDataOptions.create()
+          .withGossipInterval(80);
+        const dd = sys.extension(DistributedDataId).start(cluster, ddOptions);
         const store = new DistributedDataCoordinatorStateStore(
           dd, cluster.selfAddress.toString(),
         );
-        regions[role] = cluster.sharding.start<Cmd>(
-          StartShardingOptions.create<Cmd>()
-            .withTypeName('entity')
-            .withEntityProps(Props.create(() => new Entity()))
-            .withExtractEntityId((m) => m.id)
-            .withNumShards(8)
-            .withRebalanceIntervalMs(200)
-            .withCoordinatorStateStore(store),
-        );
+        const shardingOptions = StartShardingOptions.create<Cmd>()
+          .withTypeName('entity')
+          .withEntityProps(Props.create(() => new Entity()))
+          .withExtractEntityId((m) => m.id)
+          .withNumShards(8)
+          .withRebalanceIntervalMs(200)
+          .withCoordinatorStateStore(store);
+        regions[role] = cluster.sharding.start<Cmd>(shardingOptions);
       }
 
       // Allocate the shards by asking 8 distinct entity ids.  Each

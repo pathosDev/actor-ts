@@ -31,7 +31,10 @@ function valueFor(reg: MetricsRegistry, name: string): number | undefined {
 
 describe('Stock actor metrics', () => {
   test('actor_created_total ticks once per spawn (incl. system guardians)', async () => {
-    const sys = ActorSystem.create('m-actors', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('m-actors', sysOptions);
     const reg = sys.extension(MetricsExtensionId).enable();
     try {
       // Capture the baseline AFTER the system has booted — the
@@ -51,7 +54,10 @@ describe('Stock actor metrics', () => {
   });
 
   test('actor_messages_delivered_total ticks per onReceive call', async () => {
-    const sys = ActorSystem.create('m-msgs', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('m-msgs', sysOptions);
     const reg = sys.extension(MetricsExtensionId).enable();
     try {
       const a = sys.spawn(Props.create(() => new Echo()), 'a');
@@ -64,7 +70,10 @@ describe('Stock actor metrics', () => {
   });
 
   test('actor_terminated_total ticks on stop', async () => {
-    const sys = ActorSystem.create('m-term', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('m-term', sysOptions);
     const reg = sys.extension(MetricsExtensionId).enable();
     try {
       const a = sys.spawn(Props.create(() => new Echo()), 'a');
@@ -77,7 +86,10 @@ describe('Stock actor metrics', () => {
   });
 
   test('actor_message_handler_seconds histogram observes durations', async () => {
-    const sys = ActorSystem.create('m-hist', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('m-hist', sysOptions);
     const reg = sys.extension(MetricsExtensionId).enable();
     try {
       const a = sys.spawn(Props.create(() => new Echo()), 'a');
@@ -95,15 +107,19 @@ describe('Stock actor metrics', () => {
 
 describe('Stock cluster metrics', () => {
   test('cluster_members_up gauge reflects the up-set; gossip rounds tick', async () => {
-    const sys = ActorSystem.create('m-cluster', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('m-cluster', sysOptions);
     const reg = sys.extension(MetricsExtensionId).enable();
+    const clusterOptions = ClusterOptions.create()
+      .withHost('h')
+      .withPort(95_001)
+      .withTransport(new InMemoryTransport(new NodeAddress('m-cluster', 'h', 95_001)))
+      .withGossipIntervalMs(30);
     const cluster = await Cluster.join(
       sys,
-      ClusterOptions.create()
-        .withHost('h')
-        .withPort(95_001)
-        .withTransport(new InMemoryTransport(new NodeAddress('m-cluster', 'h', 95_001)))
-        .withGossipIntervalMs(30),
+      clusterOptions,
     );
     try {
       // Single-node cluster — self is up, gauge = 1.
@@ -124,7 +140,10 @@ describe('Stock cluster metrics', () => {
 
 describe('MetricsExtension — opt-in', () => {
   test('without enable(), the registry is the noop and stock metrics produce no samples', async () => {
-    const sys = ActorSystem.create('m-noop', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('m-noop', sysOptions);
     try {
       sys.spawn(Props.create(() => new Echo()), 'a');
       await sleep(20);

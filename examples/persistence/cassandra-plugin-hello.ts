@@ -50,7 +50,7 @@ class Counter extends PersistentActor<Cmd, Event, number> {
 
 async function main(): Promise<void> {
   const client = new FakeCassandraClient();
-  const system = ActorSystem.create('cassandra-hello', ActorSystemOptions.create()
+  const systemOptions = ActorSystemOptions.create()
     .withConfig({
       'actor-ts': {
         persistence: {
@@ -58,15 +58,18 @@ async function main(): Promise<void> {
           'snapshot-store': { plugin: CASSANDRA_SNAPSHOT_PLUGIN_ID },
         },
       },
-    }));
+    });
+  const system = ActorSystem.create('cassandra-hello', systemOptions);
   const ext = system.extension(PersistenceExtensionId);
-  registerCassandraPlugins(ext, RegisterCassandraPluginsOptions.create()
+  const journalOptions = CassandraJournalOptions.create()
+    .withContactPoints(['fake']).withKeyspace('app').withAutoCreateKeyspace(true);
+  const snapshotOptions = CassandraSnapshotStoreOptions.create()
+    .withContactPoints(['fake']).withKeyspace('app');
+  const cassandraPluginsOptions = RegisterCassandraPluginsOptions.create()
     .withClient(client)
-    .withJournal(CassandraJournalOptions.create()
-      .withContactPoints(['fake']).withKeyspace('app').withAutoCreateKeyspace(true))
-    .withSnapshotStore(CassandraSnapshotStoreOptions.create()
-      .withContactPoints(['fake']).withKeyspace('app')),
-  );
+    .withJournal(journalOptions)
+    .withSnapshotStore(snapshotOptions);
+  registerCassandraPlugins(ext, cassandraPluginsOptions);
 
   let counter = system.spawnAnonymous(Props.create(() => new Counter()));
   counter.tell({ kind: 'inc', amount: 10 });

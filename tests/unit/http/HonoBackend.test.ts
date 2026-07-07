@@ -31,7 +31,10 @@ afterEach(async () => {
 });
 
 async function startServer(routes: Route): Promise<{ url: string; system: ActorSystem; binding: ServerBinding }> {
-  const system = ActorSystem.create('http-hono-test', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const system = ActorSystem.create('http-hono-test', sysOptions);
   const ext = system.extension(HttpExtensionId);
   const backend = new HonoBackend();
   const binding = await ext.newServerAt('127.0.0.1', 0).useBackend(backend).bind(routes);
@@ -186,7 +189,10 @@ describe('HonoBackend — remoteAddress wiring (#312)', () => {
 
 describe('HonoBackend — custom handlers', () => {
   test('setNotFound delivers a custom 404 body', async () => {
-    const system = ActorSystem.create('http-hono-custom', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const system = ActorSystem.create('http-hono-custom', sysOptions);
     const ext = system.extension(HttpExtensionId);
     const backend = new HonoBackend();
     backend.setNotFound(() => completeJson(Status.NotFound, { oops: true }));
@@ -201,7 +207,10 @@ describe('HonoBackend — custom handlers', () => {
   });
 
   test('setErrorHandler overrides the default 500 shape', async () => {
-    const system = ActorSystem.create('http-hono-err', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const system = ActorSystem.create('http-hono-err', sysOptions);
     const ext = system.extension(HttpExtensionId);
     const backend = new HonoBackend();
     backend.setErrorHandler((err) =>
@@ -221,9 +230,14 @@ describe('HonoBackend — custom handlers', () => {
 
 describe('HonoBackend — body size limit', () => {
   test('413 when payload exceeds maxBodyBytes', async () => {
-    const system = ActorSystem.create('http-hono-413', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const system = ActorSystem.create('http-hono-413', sysOptions);
     const ext = system.extension(HttpExtensionId);
-    const backend = new HonoBackend(HonoBackendOptions.create().withMaxBodyBytes(16));
+    const honoOptions = HonoBackendOptions.create()
+      .withMaxBodyBytes(16);
+    const backend = new HonoBackend(honoOptions);
     const binding = await ext.newServerAt('127.0.0.1', 0)
       .useBackend(backend)
       .bind(path('up', post(() => complete(Status.OK, 'ok'))));

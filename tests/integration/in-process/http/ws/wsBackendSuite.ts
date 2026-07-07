@@ -128,7 +128,10 @@ export function runWsBackendSuite(label: string, makeBackend: () => HttpServerBa
 
     // Bind a route tree using a server actor spawned in a fresh system.
     async function bindServer(events: string[], makeRoutes: (server: ReturnType<ActorSystem['spawn']>) => Route): Promise<{ base: string; binding: ServerBinding }> {
-      const system = ActorSystem.create(`ws-${label}`, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+      const sysOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withLogLevel(LogLevel.Off);
+      const system = ActorSystem.create(`ws-${label}`, sysOptions);
       systems.push(system);
       const server = system.spawn(Props.create(() => new TestServer(events)), 'ws-server');
       const binding = await system
@@ -173,7 +176,11 @@ export function runWsBackendSuite(label: string, makeBackend: () => HttpServerBa
     });
 
     test('oversize inbound frame closes the connection (1009)', async () => {
-      const { base } = await bindServer([], (s) => websocket('/ws', s, WebSocketRouteOptions.create().withMaxFrameBytes(64 * 1024)));
+      const { base } = await bindServer([], (s) => {
+        const routeOptions = WebSocketRouteOptions.create()
+          .withMaxFrameBytes(64 * 1024);
+        return websocket('/ws', s, routeOptions);
+      });
       const ws = await wsOpen(`${base}/ws`);
       const closed = nextClose(ws);
       ws.send(JSON.stringify({ kind: 'broadcast', text: 'x'.repeat(80 * 1024) }));

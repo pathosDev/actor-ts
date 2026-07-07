@@ -46,15 +46,16 @@ class Counter extends ReplicatedEventSourcedActor<Cmd, Event, State> {
 describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
   test('spawning two actors with the same persistenceId on one node — second fails loudly', async () => {
     preStartFailures = 0;
-    const sys = ActorSystem.create('single-writer', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
-    const cluster = await Cluster.join(
-      sys,
-      ClusterOptions.create()
-        .withHost('h')
-        .withPort(80_001)
-        .withTransport(new InMemoryTransport(new NodeAddress('single-writer', 'h', 80_001)))
-        .withGossipIntervalMs(30),
-    );
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('single-writer', sysOptions);
+    const clusterOptions = ClusterOptions.create()
+      .withHost('h')
+      .withPort(80_001)
+      .withTransport(new InMemoryTransport(new NodeAddress('single-writer', 'h', 80_001)))
+      .withGossipIntervalMs(30);
+    const cluster = await Cluster.join(sys, clusterOptions);
     try {
       // First actor — succeeds.
       const a1 = sys.spawn(
@@ -87,15 +88,16 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
 
   test('after a clean stop, a fresh actor with the same pid can be spawned', async () => {
     preStartFailures = 0;
-    const sys = ActorSystem.create('single-writer-restart', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
-    const cluster = await Cluster.join(
-      sys,
-      ClusterOptions.create()
-        .withHost('h')
-        .withPort(80_002)
-        .withTransport(new InMemoryTransport(new NodeAddress('single-writer-restart', 'h', 80_002)))
-        .withGossipIntervalMs(30),
-    );
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('single-writer-restart', sysOptions);
+    const clusterOptions = ClusterOptions.create()
+      .withHost('h')
+      .withPort(80_002)
+      .withTransport(new InMemoryTransport(new NodeAddress('single-writer-restart', 'h', 80_002)))
+      .withGossipIntervalMs(30);
+    const cluster = await Cluster.join(sys, clusterOptions);
     try {
       const a1 = sys.spawn(
         Props.create(() => new Counter(cluster) as unknown as Actor<unknown>),
@@ -127,24 +129,26 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
     // other's registrations.  Pin this — a future bug that promotes
     // the registry to a module-level Set would break test isolation.
     preStartFailures = 0;
-    const sys1 = ActorSystem.create('sw-isolated-1', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
-    const sys2 = ActorSystem.create('sw-isolated-2', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
-    const cluster1 = await Cluster.join(
-      sys1,
-      ClusterOptions.create()
-        .withHost('h')
-        .withPort(80_010)
-        .withTransport(new InMemoryTransport(new NodeAddress('sw-isolated-1', 'h', 80_010)))
-        .withGossipIntervalMs(30),
-    );
-    const cluster2 = await Cluster.join(
-      sys2,
-      ClusterOptions.create()
-        .withHost('h')
-        .withPort(80_011)
-        .withTransport(new InMemoryTransport(new NodeAddress('sw-isolated-2', 'h', 80_011)))
-        .withGossipIntervalMs(30),
-    );
+    const sys1Options = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys1 = ActorSystem.create('sw-isolated-1', sys1Options);
+    const sys2Options = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys2 = ActorSystem.create('sw-isolated-2', sys2Options);
+    const cluster1Options = ClusterOptions.create()
+      .withHost('h')
+      .withPort(80_010)
+      .withTransport(new InMemoryTransport(new NodeAddress('sw-isolated-1', 'h', 80_010)))
+      .withGossipIntervalMs(30);
+    const cluster1 = await Cluster.join(sys1, cluster1Options);
+    const cluster2Options = ClusterOptions.create()
+      .withHost('h')
+      .withPort(80_011)
+      .withTransport(new InMemoryTransport(new NodeAddress('sw-isolated-2', 'h', 80_011)))
+      .withGossipIntervalMs(30);
+    const cluster2 = await Cluster.join(sys2, cluster2Options);
     try {
       // Both spawn with persistenceId='shared-counter' — different systems.
       const a1 = sys1.spawn(
@@ -187,15 +191,16 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
       }
     }
 
-    const sys = ActorSystem.create('sw-msg', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
-    const cluster = await Cluster.join(
-      sys,
-      ClusterOptions.create()
-        .withHost('h')
-        .withPort(80_020)
-        .withTransport(new InMemoryTransport(new NodeAddress('sw-msg', 'h', 80_020)))
-        .withGossipIntervalMs(30),
-    );
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('sw-msg', sysOptions);
+    const clusterOptions = ClusterOptions.create()
+      .withHost('h')
+      .withPort(80_020)
+      .withTransport(new InMemoryTransport(new NodeAddress('sw-msg', 'h', 80_020)))
+      .withGossipIntervalMs(30);
+    const cluster = await Cluster.join(sys, clusterOptions);
     try {
       const a1 = sys.spawn(
         Props.create(() => new CapturingCounter(cluster) as unknown as Actor<unknown>),

@@ -54,23 +54,26 @@ describeMns('LeaseMajority — end-to-end split-brain', () => {
       // `owner` — exactly the production shape for K8s leases.
       // The InMemoryLease store is process-global so all four
       // owners contend for the same record.
-      downing: (role) => new LeaseMajority(
-        LeaseMajorityOptions.create()
-          .withLease(new InMemoryLease(
-            // 60s TTL (not 10s): the CI logs showed both partition sides
-            // surviving — each had acquired the lease — because under heavy
-            // CPU starvation the winner's renewal timer (every 80ms) was
-            // delayed past a 10s TTL, the lease lapsed, and the other side
-            // grabbed it.  A 60s TTL can't lapse within the test's 25s
-            // arbitration window even under extreme timer jitter, so exactly
-            // one side holds the lease.  (The starvation root cause — leaked
-            // worker threads — is fixed in ParallelMultiNodeSpec; this is
-            // defence-in-depth so the split-brain assertion can't flake.)
-            LeaseOptions.create().withName('lease-majority-test').withOwner(role).withTtlMs(60_000)
-              .withRenewalIntervalMs(80),
-          ))
-          .withAcquireTimeoutMs(2_000),
-      ),
+      downing: (role) => {
+        // 60s TTL (not 10s): the CI logs showed both partition sides
+        // surviving — each had acquired the lease — because under heavy
+        // CPU starvation the winner's renewal timer (every 80ms) was
+        // delayed past a 10s TTL, the lease lapsed, and the other side
+        // grabbed it.  A 60s TTL can't lapse within the test's 25s
+        // arbitration window even under extreme timer jitter, so exactly
+        // one side holds the lease.  (The starvation root cause — leaked
+        // worker threads — is fixed in ParallelMultiNodeSpec; this is
+        // defence-in-depth so the split-brain assertion can't flake.)
+        const leaseOptions = LeaseOptions.create()
+          .withName('lease-majority-test')
+          .withOwner(role)
+          .withTtlMs(60_000)
+          .withRenewalIntervalMs(80);
+        const leaseMajorityOptions = LeaseMajorityOptions.create()
+          .withLease(new InMemoryLease(leaseOptions))
+          .withAcquireTimeoutMs(2_000);
+        return new LeaseMajority(leaseMajorityOptions);
+      },
     });
     try {
       await spec.start();

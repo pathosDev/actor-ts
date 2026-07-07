@@ -14,8 +14,12 @@ let store: ObjectStorageDurableStateStore;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'actor-ts-ds-'));
-  backend = new FilesystemObjectStorageBackend(FilesystemObjectStorageOptions.create().withDir(dir));
-  store = new ObjectStorageDurableStateStore(ObjectStorageDurableStateStoreOptions.create().withBackend(backend));
+  const backendOptions = FilesystemObjectStorageOptions.create()
+    .withDir(dir);
+  backend = new FilesystemObjectStorageBackend(backendOptions);
+  const storeOptions = ObjectStorageDurableStateStoreOptions.create()
+    .withBackend(backend);
+  store = new ObjectStorageDurableStateStore(storeOptions);
 });
 
 afterEach(() => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });
@@ -105,7 +109,10 @@ describe('ObjectStorageDurableStateStore — input validation', () => {
 
 describe('ObjectStorageDurableStateStore — prefix and resolvers', () => {
   test('prefix is honoured for both upsert and load', async () => {
-    const s = new ObjectStorageDurableStateStore(ObjectStorageDurableStateStoreOptions.create().withBackend(backend).withPrefix('prod/'));
+    const storeOptions = ObjectStorageDurableStateStoreOptions.create()
+      .withBackend(backend)
+      .withPrefix('prod/');
+    const s = new ObjectStorageDurableStateStore(storeOptions);
     await s.upsert('a', 0, { x: 1 });
     expect((await s.load('a')).toNullable()?.state).toEqual({ x: 1 });
     const items = await backend.list({ prefix: 'prod/' });
@@ -119,11 +126,10 @@ describe('ObjectStorageDurableStateStore — prefix and resolvers', () => {
       seen.set(key, opts?.contentEncoding);
       return backend.put(key, body, opts);
     };
-    const s = new ObjectStorageDurableStateStore(
-      ObjectStorageDurableStateStoreOptions.create()
-        .withBackend(wrapping)
-        .withCompression((pid) => pid.startsWith('big-') ? { algorithm: 'zstd' } : { algorithm: 'gzip' }),
-    );
+    const storeOptions = ObjectStorageDurableStateStoreOptions.create()
+      .withBackend(wrapping)
+      .withCompression((pid) => pid.startsWith('big-') ? { algorithm: 'zstd' } : { algorithm: 'gzip' });
+    const s = new ObjectStorageDurableStateStore(storeOptions);
     await s.upsert('big-payload', 0, { x: 'x'.repeat(200) });
     await s.upsert('small',       0, { x: 'tiny' });
     expect(seen.get('big-payload/state.json')).toBe('zstd');

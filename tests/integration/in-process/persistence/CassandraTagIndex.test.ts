@@ -54,14 +54,13 @@ const ids = (events: ReadonlyArray<{ event: { event: CorpusEvent } }>): number[]
 
 function makeJournal(useTagIndex: boolean): { journal: CassandraJournal; client: FakeCassandraClient } {
   const client = new FakeCassandraClient();
-  const journal = new CassandraJournal(
-    CassandraJournalOptions.create()
-      .withContactPoints(['fake'])
-      .withKeyspace('ks')
-      .withAutoCreateKeyspace(true)
-      .withClient(client)
-      .withUseTagIndex(useTagIndex),
-  );
+  const journalOptions = CassandraJournalOptions.create()
+    .withContactPoints(['fake'])
+    .withKeyspace('ks')
+    .withAutoCreateKeyspace(true)
+    .withClient(client)
+    .withUseTagIndex(useTagIndex);
+  const journal = new CassandraJournal(journalOptions);
   return { journal, client };
 }
 

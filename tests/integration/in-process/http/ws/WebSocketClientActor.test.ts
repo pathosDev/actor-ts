@@ -25,9 +25,10 @@ interface Rec { events: string[]; msgs: SMsg[] }
 
 class RecordingClient extends WebSocketClientActor<CMsg, SMsg> {
   constructor(url: string, private readonly rec: Rec) {
-    super(WebSocketClientOptions.create<CMsg, SMsg>()
+    const clientOptions = WebSocketClientOptions.create<CMsg, SMsg>()
       .withUrl(url)
-      .withReconnect({ initialDelayMs: 50, maxDelayMs: 200, factor: 2, maxAttempts: 40 }));
+      .withReconnect({ initialDelayMs: 50, maxDelayMs: 200, factor: 2, maxAttempts: 40 });
+    super(clientOptions);
   }
   onMessage(m: SMsg): void { this.rec.msgs.push(m); }
   protected override onConnected(): void {
@@ -50,7 +51,10 @@ describe('WebSocketClientActor', () => {
   const systems: ActorSystem[] = [];
   const bindings: ServerBinding[] = [];
   function mkSystem(name: string): ActorSystem {
-    const s = ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const s = ActorSystem.create(name, sysOptions);
     systems.push(s);
     return s;
   }

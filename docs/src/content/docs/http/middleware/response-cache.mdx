@@ -112,7 +112,9 @@ directly when a write should invalidate it.
 import { RedisCache, RedisCacheOptions } from 'actor-ts';
 
 const productCache = cached({
-  cache: new RedisCache(RedisCacheOptions.create().withUrl('redis://...')),
+  const redisCacheOptions = RedisCacheOptions.create()
+    .withUrl('redis://...');
+  cache: new RedisCache(redisCacheOptions),
   ttlMs: 30_000,
   key:   (req) => `products:${pathParam(req, 'id')}`,
 });

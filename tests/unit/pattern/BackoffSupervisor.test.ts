@@ -81,7 +81,10 @@ class FailingPreStart extends Actor<{ kind: 'echo'; value: number }> {
 /* ---------------------- Helpers --------------------- */
 
 function newSystem(name: string): ActorSystem {
-  return ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  return ActorSystem.create(name, sysOptions);
 }
 
 function withDefaults<T>(over: Partial<BackoffOptions<T>>): BackoffOptions<T> {

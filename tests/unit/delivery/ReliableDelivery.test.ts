@@ -12,17 +12,21 @@ const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 describe('ReliableDelivery — happy path', () => {
   test('producer → consumer delivers every message exactly once', async () => {
-    const kit = TestKit.create('rd-hp', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('rd-hp', kitOptions);
     const received: string[] = [];
 
     const consumer = ReliableDelivery.consumer<string>(kit.system, {
       handler: (m) => { received.push(m); },
     });
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(consumer.ref as never)
+      .withResendTimeout(200)
+      .withWindowSize(4);
     const producer = ReliableDelivery.producer<string>(kit.system,
-      ProducerControllerOptions.create<string>()
-        .withConsumer(consumer.ref as never)
-        .withResendTimeout(200)
-        .withWindowSize(4),
+      producerOptions,
     );
 
     for (const s of ['a', 'b', 'c']) producer.tell(s);
@@ -34,13 +38,17 @@ describe('ReliableDelivery — happy path', () => {
   });
 
   test('confirm callback fires once per message after the ack', async () => {
-    const kit = TestKit.create('rd-confirm', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('rd-confirm', kitOptions);
     const confirmed: Array<{ body: string; err: Error | null }> = [];
     const consumer = ReliableDelivery.consumer<string>(kit.system, { handler: () => {} });
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(consumer.ref as never)
+      .withResendTimeout(200);
     const producer = ReliableDelivery.producer<string>(kit.system,
-      ProducerControllerOptions.create<string>()
-        .withConsumer(consumer.ref as never)
-        .withResendTimeout(200),
+      producerOptions,
     );
 
     for (const s of ['x', 'y', 'z']) {
@@ -57,7 +65,10 @@ describe('ReliableDelivery — happy path', () => {
 
 describe('ReliableDelivery — resilience', () => {
   test('consumer dedups a redelivered (same-seq) message', async () => {
-    const kit = TestKit.create('rd-dedup', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('rd-dedup', kitOptions);
     const received: string[] = [];
     const consumer = ReliableDelivery.consumer<string>(kit.system, {
       handler: (m) => { received.push(m); },
@@ -89,7 +100,10 @@ describe('ReliableDelivery — resilience', () => {
   });
 
   test('producer re-sends when no ack arrives', async () => {
-    const kit = TestKit.create('rd-resend', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('rd-resend', kitOptions);
 
     // Flaky consumer that drops the first 2 deliveries.
     let seen = 0;
@@ -105,10 +119,11 @@ describe('ReliableDelivery — resilience', () => {
     }
     const consumerRef = kit.system.spawn(Props.create(() => new Flaky()), 'flaky');
 
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(consumerRef)
+      .withResendTimeout(40);
     const producer = ReliableDelivery.producer<string>(kit.system,
-      ProducerControllerOptions.create<string>()
-        .withConsumer(consumerRef)
-        .withResendTimeout(40),
+      producerOptions,
     );
     producer.tell('persistent-message');
 
@@ -123,7 +138,10 @@ describe('ReliableDelivery — resilience', () => {
 
 describe('ReliableDelivery — flow control', () => {
   test('messages beyond windowSize queue and drain as acks arrive', async () => {
-    const kit = TestKit.create('rd-window', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('rd-window', kitOptions);
     const received: string[] = [];
     const consumer = ReliableDelivery.consumer<string>(kit.system, {
       handler: async (m) => {
@@ -131,11 +149,12 @@ describe('ReliableDelivery — flow control', () => {
         received.push(m);
       },
     });
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(consumer.ref as never)
+      .withResendTimeout(500)
+      .withWindowSize(2);
     const producer = ReliableDelivery.producer<string>(kit.system,
-      ProducerControllerOptions.create<string>()
-        .withConsumer(consumer.ref as never)
-        .withResendTimeout(500)
-        .withWindowSize(2),
+      producerOptions,
     );
 
     const N = 6;

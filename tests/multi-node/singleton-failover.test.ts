@@ -56,11 +56,12 @@ describe('multi-node singleton failover', () => {
       // Start the singleton on every node — the manager on the leader is
       // the only one that actually spawns the child.
       for (const role of ['a', 'b', 'c'] as const) {
+        const singletonOptions = StartSingletonOptions.create()
+          .withTypeName('marker')
+          .withProps(Props.create(() => new Marker(role)));
         spec.systemFor(role).extension(ClusterSingletonId).start(
           spec.clusterFor(role),
-          StartSingletonOptions.create()
-            .withTypeName('marker')
-            .withProps(Props.create(() => new Marker(role))),
+          singletonOptions,
         );
       }
 

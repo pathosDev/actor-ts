@@ -10,16 +10,15 @@
 import { WorkerCluster, WorkerClusterOptions } from '../../src/index.js';
 
 async function main(): Promise<void> {
-  const cluster = await WorkerCluster.spawn(
-    WorkerClusterOptions.create()
-      .withWorkers(4)
-      .withBootstrap(new URL('./worker-node.ts', import.meta.url))
-      .withSystemName('multi-core')
-      .withHostname('worker')
-      .withBasePort(2552)
-      .withInitData({ workerId: 0, seedAddr: undefined })
-      .withReadyTimeoutMs(5_000),
-  );
+  const workerClusterOptions = WorkerClusterOptions.create()
+    .withWorkers(4)
+    .withBootstrap(new URL('./worker-node.ts', import.meta.url))
+    .withSystemName('multi-core')
+    .withHostname('worker')
+    .withBasePort(2552)
+    .withInitData({ workerId: 0, seedAddr: undefined })
+    .withReadyTimeoutMs(5_000);
+  const cluster = await WorkerCluster.spawn(workerClusterOptions);
 
   console.log(`Spawned ${cluster.size} workers:`);
   for (const addr of cluster.addresses) console.log('  -', addr.toString());

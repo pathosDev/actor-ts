@@ -80,13 +80,16 @@ describe('CoordinatorStateStore', () => {
   });
 
   test('3. DistributedDataCoordinatorStateStore round-trips through DD', async () => {
-    const sys = ActorSystem.create('coord-state', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
-    const cluster = await Cluster.join(sys, ClusterOptions.create()
+    const sysOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('coord-state', sysOptions);
+    const clusterOptions = ClusterOptions.create()
       .withHost('h')
       .withPort(71_001)
       .withTransport(new InMemoryTransport(new NodeAddress('coord-state', 'h', 71_001)))
-      .withGossipIntervalMs(80));
-    const dd = sys.extension(DistributedDataId).start(cluster, DistributedDataOptions.create().withGossipInterval(80));
+      .withGossipIntervalMs(80);
+    const cluster = await Cluster.join(sys, clusterOptions);
+    const ddOptions = DistributedDataOptions.create().withGossipInterval(80);
+    const dd = sys.extension(DistributedDataId).start(cluster, ddOptions);
 
     const store = new DistributedDataCoordinatorStateStore(
       dd, cluster.selfAddress.toString(),

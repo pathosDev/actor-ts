@@ -90,17 +90,18 @@ async function startActor(
   systemName: string, port: number,
   journal: InMemoryJournal, snapshotStore: InMemorySnapshotStore,
 ): Promise<Setup> {
-  const sys = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const sys = ActorSystem.create(systemName, sysOptions);
   sys.extension(PersistenceExtensionId).setJournal(journal);
   sys.extension(PersistenceExtensionId).setSnapshotStore(snapshotStore);
-  const cluster = await Cluster.join(
-    sys,
-    ClusterOptions.create()
-      .withHost('h')
-      .withPort(port)
-      .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
-      .withGossipIntervalMs(30),
-  );
+  const clusterOptions = ClusterOptions.create()
+    .withHost('h')
+    .withPort(port)
+    .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
+    .withGossipIntervalMs(30);
+  const cluster = await Cluster.join(sys, clusterOptions);
   let instance!: CountingCounter;
   const ref = sys.spawn(
     Props.create<Cmd>(() => {

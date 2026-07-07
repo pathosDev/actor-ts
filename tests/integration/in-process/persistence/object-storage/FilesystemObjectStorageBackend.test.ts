@@ -11,7 +11,9 @@ let backend: FilesystemObjectStorageBackend;
 
 beforeEach(() => {
   tmpRoot = mkdtempSync(join(tmpdir(), 'actor-ts-objstore-'));
-  backend = new FilesystemObjectStorageBackend(FilesystemObjectStorageOptions.create().withDir(tmpRoot));
+  const backendOptions = FilesystemObjectStorageOptions.create()
+    .withDir(tmpRoot);
+  backend = new FilesystemObjectStorageBackend(backendOptions);
 });
 
 afterEach(() => {
@@ -111,7 +113,9 @@ describe('FilesystemObjectStorageBackend — CAS', () => {
     const { etag: e1 } = await backend.put('stable', bytes('hello'));
     await backend.close();
 
-    const fresh = new FilesystemObjectStorageBackend(FilesystemObjectStorageOptions.create().withDir(tmpRoot));
+    const backendOptions = FilesystemObjectStorageOptions.create()
+      .withDir(tmpRoot);
+    const fresh = new FilesystemObjectStorageBackend(backendOptions);
     const fetched = await fresh.get('stable');
     expect(fetched.isSome()).toBe(true);
     if (fetched.isSome()) {

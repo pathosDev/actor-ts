@@ -43,18 +43,23 @@ interface Node {
 }
 
 async function startNode(sysName: string, p: number, seeds: string[] = []): Promise<Node> {
-  const sys = ActorSystem.create(sysName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
-  const cluster = await Cluster.join(sys, ClusterOptions.create()
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const sys = ActorSystem.create(sysName, sysOptions);
+  const clusterOptions = ClusterOptions.create()
     .withHost('h')
     .withPort(p)
     .withSeeds(seeds)
     .withTransport(new InMemoryTransport(new NodeAddress(sysName, 'h', p)))
-    .withGossipIntervalMs(30));
-  const region = ClusterSharding.get(sys, cluster).start<Cmd>(StartShardingOptions.create<Cmd>()
+    .withGossipIntervalMs(30);
+  const cluster = await Cluster.join(sys, clusterOptions);
+  const shardingOptions = StartShardingOptions.create<Cmd>()
     .withTypeName('entity')
     .withEntityProps(Props.create(() => new Entity()))
     .withExtractEntityId((m) => m.id)
-    .withNumShards(16));
+    .withNumShards(16);
+  const region = ClusterSharding.get(sys, cluster).start<Cmd>(shardingOptions);
   return { sys, cluster, region };
 }
 

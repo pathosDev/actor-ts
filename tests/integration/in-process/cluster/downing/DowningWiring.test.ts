@@ -52,7 +52,8 @@ async function startNode(
     downing?: DowningProvider;
   } = {},
 ): Promise<Node> {
-  const sys = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+  const sys = ActorSystem.create(systemName, sysOptions);
   let clusterOptions = ClusterOptions.create()
     .withHost('h')
     .withPort(port)

@@ -117,7 +117,9 @@ mit `delete` invalidieren.  Nützlich für Muster wie "Write nach
 import { RedisCache, RedisCacheOptions } from 'actor-ts';
 
 cached({
-  cache:  new RedisCache(RedisCacheOptions.create().withUrl('redis://...')),
+  const redisCacheOptions = RedisCacheOptions.create()
+    .withUrl('redis://...');
+  cache:  new RedisCache(redisCacheOptions),
   ttlMs:  30_000,
 })(...)
 ```

@@ -34,18 +34,23 @@ class Entity extends Actor<Cmd> {
 let port = 43_000;
 
 async function startNode(systemName: string, p: number, seeds: string[] = []): Promise<{ sys: ActorSystem; cluster: Cluster; region: ActorRef<Cmd> }> {
-  const sys = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
-  const cluster = await Cluster.join(sys, ClusterOptions.create()
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const sys = ActorSystem.create(systemName, sysOptions);
+  const clusterOptions = ClusterOptions.create()
     .withHost('h')
     .withPort(p)
     .withSeeds(seeds)
     .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', p)))
-    .withGossipIntervalMs(30));
-  const region = ClusterSharding.get(sys, cluster).start<Cmd>(StartShardingOptions.create<Cmd>()
+    .withGossipIntervalMs(30);
+  const cluster = await Cluster.join(sys, clusterOptions);
+  const shardingOptions = StartShardingOptions.create<Cmd>()
     .withTypeName('entity')
     .withEntityProps(Props.create(() => new Entity()))
     .withExtractEntityId((m) => m.id)
-    .withNumShards(16));
+    .withNumShards(16);
+  const region = ClusterSharding.get(sys, cluster).start<Cmd>(shardingOptions);
   return { sys, cluster, region };
 }
 

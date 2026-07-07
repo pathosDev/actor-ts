@@ -49,7 +49,11 @@ class ChatRoom extends Actor<ChatMessage> {
 }
 
 const system  = ActorSystem.create('my-app');
-const cluster = await Cluster.join(system, ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds));
+const clusterOptions = ClusterOptions.create()
+  .withHost(host)
+  .withPort(port)
+  .withSeeds(seeds);
+const cluster = await Cluster.join(system, clusterOptions);
 const ps      = DistributedPubSub.start(cluster);
 
 // Subscribe (typischerweise im preStart eines Actors):
@@ -120,7 +124,9 @@ Standard-Gossip-Intervall ist `gossipIntervalMs` des Clusters
 (1 Sekunde). Überschreibe pro Mediator:
 
 ```ts
-DistributedPubSub.start(cluster, DistributedPubSubOptions.create().withGossipIntervalMs(500));
+const distributedPubSubOptions = DistributedPubSubOptions.create()
+  .withGossipIntervalMs(500);
+DistributedPubSub.start(cluster, distributedPubSubOptions);
 ```
 
 Niedrigere Intervalle → schnellere Konvergenz nach Subscribe /

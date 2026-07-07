@@ -32,7 +32,9 @@ let backend: FilesystemObjectStorageBackend;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'actor-ts-per-actor-'));
-  backend = new FilesystemObjectStorageBackend(FilesystemObjectStorageOptions.create().withDir(dir));
+  const backendOptions = FilesystemObjectStorageOptions.create()
+    .withDir(dir);
+  backend = new FilesystemObjectStorageBackend(backendOptions);
 });
 
 afterEach(() => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });
@@ -68,12 +70,14 @@ describe('PersistentActor — actor-level compression hook', () => {
     const wrapped = wrapPut(backend, (key, opts) => seen.push(opts?.contentEncoding ?? 'none'));
 
     // Plugin default = gzip; actor sets zstd → save MUST land as zstd.
-    const snapshots = new ObjectStorageSnapshotStore(
-      ObjectStorageSnapshotStoreOptions.create()
-        .withBackend(wrapped)
-        .withCompression({ algorithm: 'gzip' }),
-    );
-    const sys = ActorSystem.create('per-actor-comp', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const storeOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(wrapped)
+      .withCompression({ algorithm: 'gzip' });
+    const snapshots = new ObjectStorageSnapshotStore(storeOptions);
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('per-actor-comp', sysOptions);
     sys.extension(PersistenceExtensionId).setJournal(new InMemoryJournal());
     sys.extension(PersistenceExtensionId).setSnapshotStore(snapshots);
 
@@ -89,12 +93,14 @@ describe('PersistentActor — actor-level compression hook', () => {
   test('without actor hook, plugin compression default is used', async () => {
     const seen: string[] = [];
     const wrapped = wrapPut(backend, (key, opts) => seen.push(opts?.contentEncoding ?? 'none'));
-    const snapshots = new ObjectStorageSnapshotStore(
-      ObjectStorageSnapshotStoreOptions.create()
-        .withBackend(wrapped)
-        .withCompression({ algorithm: 'gzip' }),
-    );
-    const sys = ActorSystem.create('per-actor-fallback', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const storeOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(wrapped)
+      .withCompression({ algorithm: 'gzip' });
+    const snapshots = new ObjectStorageSnapshotStore(storeOptions);
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('per-actor-fallback', sysOptions);
     sys.extension(PersistenceExtensionId).setJournal(new InMemoryJournal());
     sys.extension(PersistenceExtensionId).setSnapshotStore(snapshots);
 
@@ -114,9 +120,14 @@ describe('PersistentActor — actor-level encryption hook', () => {
     const masterKey = new Uint8Array(32).fill(0xab);
     const enc: EncryptionConfig = { mode: 'client-aes256-gcm', masterKey };
     // Plugin has neither compression nor encryption set — purely actor-driven.
-    const snapshots = new ObjectStorageSnapshotStore(ObjectStorageSnapshotStoreOptions.create().withBackend(backend));
+    const storeOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend);
+    const snapshots = new ObjectStorageSnapshotStore(storeOptions);
 
-    const sys = ActorSystem.create('actor-aes', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('actor-aes', sysOptions);
     sys.extension(PersistenceExtensionId).setJournal(new InMemoryJournal());
     sys.extension(PersistenceExtensionId).setSnapshotStore(snapshots);
 
@@ -136,7 +147,10 @@ describe('PersistentActor — actor-level encryption hook', () => {
     expect(raw.includes('incremented')).toBe(false);
 
     // Restart with the same hook and verify recovery decrypts state correctly.
-    const sys2 = ActorSystem.create('actor-aes-2', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sys2Options = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys2 = ActorSystem.create('actor-aes-2', sys2Options);
     sys2.extension(PersistenceExtensionId).setJournal(new InMemoryJournal());
     sys2.extension(PersistenceExtensionId).setSnapshotStore(snapshots);
     let recoveredState: State | null = null;
@@ -174,22 +188,25 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
   test('compression hook flips contentEncoding on the underlying put', async () => {
     const seen: string[] = [];
     const wrapped = wrapPut(backend, (_k, opts) => seen.push(opts?.contentEncoding ?? 'none'));
-    const store = new ObjectStorageDurableStateStore(
-      ObjectStorageDurableStateStoreOptions.create()
-        .withBackend(wrapped)
-        .withCompression({ algorithm: 'gzip' }),
-    );
-    const sys = ActorSystem.create('ds-comp', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const storeOptions = ObjectStorageDurableStateStoreOptions.create()
+      .withBackend(wrapped)
+      .withCompression({ algorithm: 'gzip' });
+    const store = new ObjectStorageDurableStateStore(storeOptions);
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('ds-comp', sysOptions);
     const probe = makeProbe(sys);
-    const ref = sys.spawn(Props.create(() =>
-      new Counter(
-        DurableStateOptions.create<{ v: number }>()
-          .withPersistenceId('a')
-          .withStore(store)
-          .withEmptyState(() => ({ v: 0 })),
+    const ref = sys.spawn(Props.create(() => {
+      const durableStateOptions = DurableStateOptions.create<{ v: number }>()
+        .withPersistenceId('a')
+        .withStore(store)
+        .withEmptyState(() => ({ v: 0 }));
+      return new Counter(
+        durableStateOptions,
         { algorithm: 'zstd' },
-      ) as unknown as ActorBase<DsCmd>,
-    ), 'a');
+      ) as unknown as ActorBase<DsCmd>;
+    }), 'a');
     ref.tell({ kind: 'set', v: 7, replyTo: probe.ref });
     await sleep(40);
     expect(seen.length).toBeGreaterThan(0);
@@ -200,18 +217,24 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
   test('encryption hook round-trips state without leaking plaintext', async () => {
     const masterKey = new Uint8Array(32).fill(0xcd);
     const enc: EncryptionConfig = { mode: 'client-aes256-gcm', masterKey };
-    const store = new ObjectStorageDurableStateStore(ObjectStorageDurableStateStoreOptions.create().withBackend(backend));
+    const storeOptions = ObjectStorageDurableStateStoreOptions.create()
+      .withBackend(backend);
+    const store = new ObjectStorageDurableStateStore(storeOptions);
 
-    const sys = ActorSystem.create('ds-aes', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('ds-aes', sysOptions);
     const probe = makeProbe(sys);
-    const ref = sys.spawn(Props.create(() =>
-      new Counter(
-        DurableStateOptions.create<{ v: number }>()
-          .withPersistenceId('b')
-          .withStore(store)
-          .withEmptyState(() => ({ v: 0 })),
-        { algorithm: 'none' }, enc) as unknown as ActorBase<DsCmd>,
-    ), 'b');
+    const ref = sys.spawn(Props.create(() => {
+      const durableStateOptions = DurableStateOptions.create<{ v: number }>()
+        .withPersistenceId('b')
+        .withStore(store)
+        .withEmptyState(() => ({ v: 0 }));
+      return new Counter(
+        durableStateOptions,
+        { algorithm: 'none' }, enc) as unknown as ActorBase<DsCmd>;
+    }), 'b');
     ref.tell({ kind: 'set', v: 12345, replyTo: probe.ref });
     await sleep(40);
     await sys.terminate();
@@ -223,16 +246,20 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
     expect(raw.includes('12345')).toBe(false);
 
     // Restart on the same backend with the same hook → recovery decrypts.
-    const sys2 = ActorSystem.create('ds-aes-2', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sys2Options = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys2 = ActorSystem.create('ds-aes-2', sys2Options);
     const probe2 = makeProbe(sys2);
-    const ref2 = sys2.spawn(Props.create(() =>
-      new Counter(
-        DurableStateOptions.create<{ v: number }>()
-          .withPersistenceId('b')
-          .withStore(store)
-          .withEmptyState(() => ({ v: 0 })),
-        { algorithm: 'none' }, enc) as unknown as ActorBase<DsCmd>,
-    ), 'b');
+    const ref2 = sys2.spawn(Props.create(() => {
+      const durableStateOptions = DurableStateOptions.create<{ v: number }>()
+        .withPersistenceId('b')
+        .withStore(store)
+        .withEmptyState(() => ({ v: 0 }));
+      return new Counter(
+        durableStateOptions,
+        { algorithm: 'none' }, enc) as unknown as ActorBase<DsCmd>;
+    }), 'b');
     ref2.tell({ kind: 'get', replyTo: probe2.ref });
     await sleep(40);
     expect(probe2.received).toContainEqual({ v: 12345 });

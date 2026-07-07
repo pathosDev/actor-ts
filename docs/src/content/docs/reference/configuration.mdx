@@ -234,11 +234,12 @@ Loads `shared-cluster.conf` and overlays your local section on top.
 ## Reading config in code
 
 ```ts
+const actorSystemOptions = ActorSystemOptions.create().withConfig({
+    'actor-ts.cluster.gossip-interval': '500ms',
+  });
 const system = ActorSystem.create(
   'my-app',
-  ActorSystemOptions.create().withConfig({
-    'actor-ts.cluster.gossip-interval': '500ms',
-  }),
+  actorSystemOptions,
 );
 
 // Inside an actor / extension:

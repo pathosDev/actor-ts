@@ -75,12 +75,11 @@ wie lang ihre `postStop`-Arbeit dauert.
 ## Konfiguration
 
 ```ts
-sharding.start(
-  StartShardingOptions.create()
-    // ...
-    .withRebalanceIntervalMs(2_000)   // Strategie-getriebenes Rebalance alle 2s
-    .withHandOffTimeoutMs(10_000),    // nach 10s aufgeben + zwangsweise neu allokieren
-);
+const shardingOptions = StartShardingOptions.create()
+  // ...
+  .withRebalanceIntervalMs(2_000)   // Strategie-getriebenes Rebalance alle 2s
+  .withHandOffTimeoutMs(10_000);    // nach 10s aufgeben + zwangsweise neu allokieren
+sharding.start(shardingOptions);
 ```
 
 | Knopf | Default | Was |

@@ -19,7 +19,10 @@ type Event = { kind: 'deposited'; amount: number } | { kind: 'withdrew'; amount:
 type State = { balance: number };
 
 function makeSystem(): { system: ActorSystem; journal: InMemoryJournal; snapshots: InMemorySnapshotStore } {
-  const system = ActorSystem.create('persist-unit', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const systemOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const system = ActorSystem.create('persist-unit', systemOptions);
   const journal = new InMemoryJournal();
   const snapshots = new InMemorySnapshotStore();
   const ext = system.extension(PersistenceExtensionId);

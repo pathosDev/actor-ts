@@ -17,7 +17,10 @@ const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 let sys: ActorSystem;
 beforeEach(() => {
-  sys = ActorSystem.create('throttle-test', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  sys = ActorSystem.create('throttle-test', sysOptions);
 });
 afterEach(async () => { await sys.terminate(); });
 

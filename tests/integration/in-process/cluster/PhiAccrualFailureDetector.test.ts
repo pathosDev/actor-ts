@@ -7,9 +7,13 @@ const addr = (port: number): NodeAddress => new NodeAddress('sys', 'h', port);
 
 describe('PhiAccrualFailureDetector', () => {
   test('settings validation rejects bad thresholds', () => {
-    expect(() => new PhiAccrualFailureDetector(PhiAccrualOptions.create().withUnreachableThreshold(8).withDownThreshold(8)))
+    const badThresholdOptions = PhiAccrualOptions.create()
+      .withUnreachableThreshold(8)
+      .withDownThreshold(8);
+    expect(() => new PhiAccrualFailureDetector(badThresholdOptions))
       .toThrow(/downThreshold must exceed/);
-    expect(() => new PhiAccrualFailureDetector(PhiAccrualOptions.create().withMaxSampleSize(0)))
+    const badSampleSizeOptions = PhiAccrualOptions.create().withMaxSampleSize(0);
+    expect(() => new PhiAccrualFailureDetector(badSampleSizeOptions))
       .toThrow(/maxSampleSize/);
   });
 
@@ -19,7 +23,8 @@ describe('PhiAccrualFailureDetector', () => {
   });
 
   test('steady heartbeats keep phi near zero', () => {
-    const fd = new PhiAccrualFailureDetector(PhiAccrualOptions.create().withHeartbeatIntervalMs(100));
+    const detectorOptions = PhiAccrualOptions.create().withHeartbeatIntervalMs(100);
+    const fd = new PhiAccrualFailureDetector(detectorOptions);
     const p = addr(2);
     fd.register(p, 0);
     for (let i = 1; i <= 50; i++) fd.heartbeat(p, i * 100);
@@ -29,14 +34,13 @@ describe('PhiAccrualFailureDetector', () => {
   });
 
   test('silence accumulates phi, eventually crossing thresholds', () => {
-    const fd = new PhiAccrualFailureDetector(
-      PhiAccrualOptions.create()
-        .withHeartbeatIntervalMs(100)
-        .withMinStdDeviationMs(10)
-        .withUnreachableThreshold(5)
-        .withDownThreshold(12)
-        .withAcceptableHeartbeatPauseMs(0),
-    );
+    const detectorOptions = PhiAccrualOptions.create()
+      .withHeartbeatIntervalMs(100)
+      .withMinStdDeviationMs(10)
+      .withUnreachableThreshold(5)
+      .withDownThreshold(12)
+      .withAcceptableHeartbeatPauseMs(0);
+    const fd = new PhiAccrualFailureDetector(detectorOptions);
     const p = addr(3);
     fd.register(p, 0);
     const last = 50 * 100;
@@ -55,13 +59,12 @@ describe('PhiAccrualFailureDetector', () => {
   });
 
   test('acceptableHeartbeatPauseMs gives leeway before phi rises', () => {
-    const lenient = new PhiAccrualFailureDetector(
-      PhiAccrualOptions.create()
-        .withHeartbeatIntervalMs(100)
-        .withMinStdDeviationMs(10)
-        .withAcceptableHeartbeatPauseMs(500)
-        .withUnreachableThreshold(5),
-    );
+    const lenientOptions = PhiAccrualOptions.create()
+      .withHeartbeatIntervalMs(100)
+      .withMinStdDeviationMs(10)
+      .withAcceptableHeartbeatPauseMs(500)
+      .withUnreachableThreshold(5);
+    const lenient = new PhiAccrualFailureDetector(lenientOptions);
     const p = addr(4);
     lenient.register(p, 0);
     for (let i = 1; i <= 50; i++) lenient.heartbeat(p, i * 100);

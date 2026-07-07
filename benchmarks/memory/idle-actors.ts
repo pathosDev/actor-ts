@@ -11,7 +11,10 @@ import { memoryGroup } from '../lib/harness.js';
 class Noop extends Actor<unknown> { override onReceive(): void {} }
 
 async function main(): Promise<void> {
-  const system = ActorSystem.create('bench-mem', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const systemOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const system = ActorSystem.create('bench-mem', systemOptions);
   const props = Props.create(() => new Noop());
 
   const group = memoryGroup('memory · idle actors');

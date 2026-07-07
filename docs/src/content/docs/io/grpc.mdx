@@ -62,17 +62,18 @@ class WatchSensorHandler extends Actor<GrpcServerStreamCall> {
 const getHandler = system.spawn(Props.create(() => new GetSensorHandler()), 'get');
 const watchHandler = system.spawn(Props.create(() => new WatchSensorHandler()), 'watch');
 
+const grpcServerOptions = GrpcServerOptions.create()
+  .withProtoPath(protoPath)
+  .withPackageName('sensor.v1')
+  .withServiceName('SensorService')
+  .withBind('127.0.0.1:50051')
+  .withHandlers({
+    GetSensor: { kind: 'unary', target: getHandler },
+    WatchSensor: { kind: 'serverStream', target: watchHandler },
+  });
 const server = system.spawn(
   Props.create(() => new GrpcServerActor(
-    GrpcServerOptions.create()
-      .withProtoPath(protoPath)
-      .withPackageName('sensor.v1')
-      .withServiceName('SensorService')
-      .withBind('127.0.0.1:50051')
-      .withHandlers({
-        GetSensor: { kind: 'unary', target: getHandler },
-        WatchSensor: { kind: 'serverStream', target: watchHandler },
-      }),
+    grpcServerOptions,
   )),
   'grpc-server',
 );
@@ -110,13 +111,14 @@ import {
   type GrpcInbound,
 } from 'actor-ts';
 
+const grpcClientOptions = GrpcClientOptions.create()
+  .withProtoPath(protoPath)
+  .withPackageName('sensor.v1')
+  .withServiceName('SensorService')
+  .withEndpoint('127.0.0.1:50051');
 const client = system.spawn(
   Props.create(() => new GrpcClientActor(
-    GrpcClientOptions.create()
-      .withProtoPath(protoPath)
-      .withPackageName('sensor.v1')
-      .withServiceName('SensorService')
-      .withEndpoint('127.0.0.1:50051'),
+    grpcClientOptions,
   )),
   'sensor-client',
 );
@@ -217,31 +219,33 @@ import { readFileSync } from 'node:fs';
 
 // Server: supply cert + key.  Add `rootCerts` to require client
 // certs (mTLS).
+const grpcServerOptions = GrpcServerOptions.create()
+  .withProtoPath(protoPath)
+  .withPackageName('sensor.v1')
+  .withServiceName('SensorService')
+  .withBind('0.0.0.0:50051')
+  .withHandlers({ /* … */ })
+  .withCredentials({
+    kind: 'tls',
+    cert: readFileSync('./server.crt'),
+    key: readFileSync('./server.key'),
+  });
 new GrpcServerActor(
-  GrpcServerOptions.create()
-    .withProtoPath(protoPath)
-    .withPackageName('sensor.v1')
-    .withServiceName('SensorService')
-    .withBind('0.0.0.0:50051')
-    .withHandlers({ /* … */ })
-    .withCredentials({
-      kind: 'tls',
-      cert: readFileSync('./server.crt'),
-      key: readFileSync('./server.key'),
-    }),
+  grpcServerOptions,
 );
 
 // Client: pass `rootCerts` to verify the server; add cert + key for mTLS.
+const grpcClientOptions = GrpcClientOptions.create()
+  .withProtoPath(protoPath)
+  .withPackageName('sensor.v1')
+  .withServiceName('SensorService')
+  .withEndpoint('sensor.svc:50051')
+  .withCredentials({
+    kind: 'tls',
+    rootCerts: readFileSync('./ca.crt'),
+  });
 new GrpcClientActor(
-  GrpcClientOptions.create()
-    .withProtoPath(protoPath)
-    .withPackageName('sensor.v1')
-    .withServiceName('SensorService')
-    .withEndpoint('sensor.svc:50051')
-    .withCredentials({
-      kind: 'tls',
-      rootCerts: readFileSync('./ca.crt'),
-    }),
+  grpcClientOptions,
 );
 ```
 

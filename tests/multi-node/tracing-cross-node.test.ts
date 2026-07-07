@@ -40,18 +40,19 @@ interface Node {
 }
 
 async function startNode(systemName: string, port: number, seeds: string[]): Promise<Node> {
-  const sys = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const sys = ActorSystem.create(systemName, sysOptions);
   const tracer = new RecordingTracer();
   sys.extension(TracingExtensionId).enable(tracer);
-  const cluster = await Cluster.join(
-    sys,
-    ClusterOptions.create()
-      .withHost('h')
-      .withPort(port)
-      .withSeeds(seeds)
-      .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
-      .withGossipIntervalMs(30),
-  );
+  const clusterOptions = ClusterOptions.create()
+    .withHost('h')
+    .withPort(port)
+    .withSeeds(seeds)
+    .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
+    .withGossipIntervalMs(30);
+  const cluster = await Cluster.join(sys, clusterOptions);
   return { sys, cluster, tracer };
 }
 
@@ -117,16 +118,17 @@ describe('Distributed tracing — cross-node propagation', () => {
     const sysName = 'tr-xnode-noop';
     const a = await startNode(sysName, 65_011, []);
     // Node B intentionally has the noop tracer (default).
-    const sysB = ActorSystem.create(sysName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
-    const clusterB = await Cluster.join(
-      sysB,
-      ClusterOptions.create()
-        .withHost('h')
-        .withPort(65_012)
-        .withSeeds([`${sysName}@h:65011`])
-        .withTransport(new InMemoryTransport(new NodeAddress(sysName, 'h', 65_012)))
-        .withGossipIntervalMs(30),
-    );
+    const sysBOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sysB = ActorSystem.create(sysName, sysBOptions);
+    const clusterBOptions = ClusterOptions.create()
+      .withHost('h')
+      .withPort(65_012)
+      .withSeeds([`${sysName}@h:65011`])
+      .withTransport(new InMemoryTransport(new NodeAddress(sysName, 'h', 65_012)))
+      .withGossipIntervalMs(30);
+    const clusterB = await Cluster.join(sysB, clusterBOptions);
     try {
       await waitFor(() => a.cluster.upMembers().length === 2);
 

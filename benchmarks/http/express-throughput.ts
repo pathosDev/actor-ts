@@ -21,7 +21,10 @@ import {
 import { runGroup } from '../lib/harness.js';
 
 async function main(): Promise<void> {
-  const sys = ActorSystem.create('bench-http-express', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const sys = ActorSystem.create('bench-http-express', sysOptions);
   const http = sys.extension(HttpExtensionId);
   const routes = concat(
     path('ok',   get(() => complete(Status.OK, 'ok'))),

@@ -162,11 +162,12 @@ topic), the broker actor publishes to **subscribers** — actor refs
 registered as interested:
 
 ```ts
+const kafkaOptions = KafkaOptions.create()
+  .withBrokers('localhost:9092')
+  .withConsumer({ groupId: 'my-app', topics: ['orders'] });
 const kafka = system.spawn(
   Props.create(() => new KafkaActor(
-    KafkaOptions.create()
-      .withBrokers('localhost:9092')
-      .withConsumer({ groupId: 'my-app', topics: ['orders'] }),
+    kafkaOptions,
   )),
 );
 

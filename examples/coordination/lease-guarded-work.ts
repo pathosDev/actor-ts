@@ -11,9 +11,12 @@ import { InMemoryLease, LeaseOptions } from '../../src/index.js';
 const LEASE = 'daily-batch';
 
 async function worker(name: string, runtimeMs: number, durationMs: number): Promise<void> {
-  const lease = new InMemoryLease(
-    LeaseOptions.create().withName(LEASE).withOwner(name).withTtlMs(300).withRenewalIntervalMs(100),
-  );
+  const leaseOptions = LeaseOptions.create()
+    .withName(LEASE)
+    .withOwner(name)
+    .withTtlMs(300)
+    .withRenewalIntervalMs(100);
+  const lease = new InMemoryLease(leaseOptions);
 
   const deadline = Date.now() + runtimeMs;
   while (Date.now() < deadline) {

@@ -61,7 +61,7 @@ Push-basiertem, wenn:
 ## Wie aktivieren
 
 ```ts
-const projection = ProjectionActor.byTag<E>(system, ByTagProjectionOptions.create<E>()
+const byTagProjectionOptions = ByTagProjectionOptions.create<E>()
   .withName('realtime-balance')
   .withTag('account')
   .withQuery(new SqliteQuery({ path: '...' }))
@@ -69,7 +69,8 @@ const projection = ProjectionActor.byTag<E>(system, ByTagProjectionOptions.creat
     push: true,                  // Bus-Subscription aktivieren
     pollIntervalMs: 5_000,       // Fallback-Poll-Kadenz — kann hoch sein
   })
-  .withHandle(async (event) => { /* ... */ }));
+  .withHandle(async (event) => { /* ... */ });
+const projection = ProjectionActor.byTag<E>(system, byTagProjectionOptions);
 ```
 
 Mit `push: true`:

@@ -46,18 +46,22 @@ import {
   S3ObjectStorageOptions,
 } from 'actor-ts';
 
-const backend = new S3ObjectStorageBackend(S3ObjectStorageOptions.create()
+const s3ObjectStorageOptions = S3ObjectStorageOptions.create()
   .withRegion('eu-west-1')
-  .withBucket('my-app-state'));
+  .withBucket('my-app-state');
+const backend = new S3ObjectStorageBackend(s3ObjectStorageOptions);
 
+const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
+  .withBackend(backend);
 const stateStore = new ObjectStorageDurableStateStore(
-  ObjectStorageDurableStateStoreOptions.create().withBackend(backend),
+  objectStorageDurableStateStoreOptions,
 );
 
-const cart = system.spawnAnonymous(Props.create(() => new Cart(DurableStateOptions.create<State>()
+const durableStateOptions = DurableStateOptions.create<State>()
   .withPersistenceId(`cart-${userId}`)
   .withStore(stateStore)
-  .withEmptyState(() => ({ items: [] })))));
+  .withEmptyState(() => ({ items: [] }));
+const cart = system.spawnAnonymous(Props.create(() => new Cart(durableStateOptions)));
 ```
 
 Der State von `Cart` lebt in S3 unter `cart-<userId>` als
@@ -127,8 +131,10 @@ verlässt.
 ```ts
 import { FilesystemObjectStorageBackend, FilesystemObjectStorageOptions } from 'actor-ts';
 
+const filesystemObjectStorageOptions = FilesystemObjectStorageOptions.create()
+  .withDir('/var/lib/actor-ts');
 const backend = new FilesystemObjectStorageBackend(
-  FilesystemObjectStorageOptions.create().withDir('/var/lib/actor-ts'),
+  filesystemObjectStorageOptions,
 );
 ```
 
@@ -146,37 +152,41 @@ keine S3-Kosten.  Richtig für:
 ```ts
 import { S3ObjectStorageBackend, S3ObjectStorageOptions } from 'actor-ts';
 
-const backend = new S3ObjectStorageBackend(S3ObjectStorageOptions.create()
+const s3ObjectStorageOptions = S3ObjectStorageOptions.create()
   .withRegion('eu-west-1')
   .withBucket('my-app-state')
   .withEndpoint('https://s3.eu-west-1.amazonaws.com')   // optionaler Override
   .withCredentials({
     accessKeyId:     process.env.AWS_ACCESS_KEY_ID!,
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
-  }));
+  });
+const backend = new S3ObjectStorageBackend(s3ObjectStorageOptions);
 ```
 
 Funktioniert mit jedem S3-kompatiblen Service.  Für Nicht-AWS:
 
 ```ts
 // MinIO:
-new S3ObjectStorageBackend(S3ObjectStorageOptions.create()
+const s3ObjectStorageOptions = S3ObjectStorageOptions.create()
   .withRegion('us-east-1')
   .withBucket('my-bucket')
   .withEndpoint('http://minio:9000')
-  .withForcePathStyle(true));
+  .withForcePathStyle(true);
+new S3ObjectStorageBackend(s3ObjectStorageOptions);
 
 // Cloudflare R2:
-new S3ObjectStorageBackend(S3ObjectStorageOptions.create()
+const s3ObjectStorage2Options = S3ObjectStorageOptions.create()
   .withRegion('auto')
   .withBucket('my-bucket')
-  .withEndpoint('https://<account-id>.r2.cloudflarestorage.com'));
+  .withEndpoint('https://<account-id>.r2.cloudflarestorage.com');
+new S3ObjectStorageBackend(s3ObjectStorage2Options);
 
 // Backblaze B2:
-new S3ObjectStorageBackend(S3ObjectStorageOptions.create()
+const s3ObjectStorage3Options = S3ObjectStorageOptions.create()
   .withRegion('us-west-002')
   .withBucket('my-bucket')
-  .withEndpoint('https://s3.us-west-002.backblazeb2.com'));
+  .withEndpoint('https://s3.us-west-002.backblazeb2.com');
+new S3ObjectStorageBackend(s3ObjectStorage3Options);
 ```
 
 ## Optionale Features

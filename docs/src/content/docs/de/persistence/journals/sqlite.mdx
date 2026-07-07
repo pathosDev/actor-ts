@@ -22,11 +22,13 @@ import {
 
 const system = ActorSystem.create('my-app');
 system.extension(PersistenceExtensionId).configure({
-  journal: new SqliteJournal(SqliteJournalOptions.create()
+  const sqliteJournalOptions = SqliteJournalOptions.create()
     .withPath('/var/lib/my-app/events.db')
-    .withWal(true)),
-  snapshotStore: new SqliteSnapshotStore(SqliteSnapshotStoreOptions.create()
-    .withPath('/var/lib/my-app/snapshots.db')),
+    .withWal(true);
+  const sqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create()
+    .withPath('/var/lib/my-app/snapshots.db');
+  journal: new SqliteJournal(sqliteJournalOptions),
+  snapshotStore: new SqliteSnapshotStore(sqliteSnapshotStoreOptions),
 });
 ```
 
@@ -47,7 +49,9 @@ interface SqliteJournalOptions {
 ### `path`
 
 ```ts
-new SqliteJournal(SqliteJournalOptions.create().withPath('/var/lib/my-app/events.db'))
+const sqliteJournalOptions = SqliteJournalOptions.create()
+  .withPath('/var/lib/my-app/events.db');
+new SqliteJournal(sqliteJournalOptions)
 ```
 
 Die Datenbank-Datei.  Absolute Pfade sind am besten — relative
@@ -61,7 +65,9 @@ In-Memory-DB, die sich genau wie die Datei-Version verhält, aber
 mit dem Prozess verschwindet:
 
 ```ts
-new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:'))
+const sqliteJournalOptions = SqliteJournalOptions.create()
+  .withPath(':memory:');
+new SqliteJournal(sqliteJournalOptions)
 ```
 
 ### `eventsTable`
@@ -70,7 +76,10 @@ Default `'events'`.  Überschreibe das, wenn du willst, dass mehrere
 Systeme sich eine DB-Datei teilen (z. B. Dev-Rig):
 
 ```ts
-new SqliteJournal(SqliteJournalOptions.create().withPath('shared.db').withEventsTable('orders_events'))
+const sqliteJournalOptions = SqliteJournalOptions.create()
+  .withPath('shared.db')
+  .withEventsTable('orders_events');
+new SqliteJournal(sqliteJournalOptions)
 ```
 
 Das Framework erstellt die Tabelle automatisch bei der ersten
@@ -103,7 +112,10 @@ einen Index treffen, statt CSV zu scannen.
 ### `wal`
 
 ```ts
-new SqliteJournal(SqliteJournalOptions.create().withPath('...').withWal(true))
+const sqliteJournalOptions = SqliteJournalOptions.create()
+  .withPath('...')
+  .withWal(true);
+new SqliteJournal(sqliteJournalOptions)
 ```
 
 Aktiviert den Write-Ahead-Logging-Modus.  **Empfohlen für Produktion.**
@@ -123,8 +135,14 @@ aktiviere es explizit, wenn du in Produktion gehst.
 ```ts
 import { bunSqliteDriver, betterSqlite3Driver } from 'actor-ts/runtime/sqlite';
 
-new SqliteJournal(SqliteJournalOptions.create().withPath('...').withDriver(bunSqliteDriver()))
-new SqliteJournal(SqliteJournalOptions.create().withPath('...').withDriver(betterSqlite3Driver()))
+const sqliteJournalOptions = SqliteJournalOptions.create()
+  .withPath('...')
+  .withDriver(bunSqliteDriver());
+const sqliteJournal2Options = SqliteJournalOptions.create()
+  .withPath('...')
+  .withDriver(betterSqlite3Driver());
+new SqliteJournal(sqliteJournalOptions)
+new SqliteJournal(sqliteJournal2Options)
 ```
 
 Das Framework erkennt den richtigen Treiber basierend auf der

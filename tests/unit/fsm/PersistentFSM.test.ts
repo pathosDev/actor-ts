@@ -118,7 +118,10 @@ function buildSystem(name: string): {
   journal: InMemoryJournal;
   snaps: InMemorySnapshotStore;
 } {
-  const sys = ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const sys = ActorSystem.create(name, sysOptions);
   const journal = new InMemoryJournal();
   const snaps = new InMemorySnapshotStore();
   const ext = sys.extension(PersistenceExtensionId);
@@ -163,8 +166,11 @@ describe('PersistentFSM — happy path', () => {
       await sys1.terminate();
     }
 
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
     // Fresh system, same journal + snapshot store.
-    const sys2 = ActorSystem.create('fsm-recover-2', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sys2 = ActorSystem.create('fsm-recover-2', sysOptions);
     sys2.extension(PersistenceExtensionId).setJournal(journal);
     sys2.extension(PersistenceExtensionId).setSnapshotStore(snaps);
     try {
@@ -461,7 +467,10 @@ describe('PersistentFSM — stateTimeout (#65)', () => {
       await sys1.terminate();
     }
 
-    const sys2 = ActorSystem.create('fsm-recovery-2', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys2 = ActorSystem.create('fsm-recovery-2', sysOptions);
     sys2.extension(PersistenceExtensionId).setJournal(journal);
     sys2.extension(PersistenceExtensionId).setSnapshotStore(snaps);
     try {
@@ -646,7 +655,10 @@ describe('PersistentFSM — multiple events per command (#66)', () => {
       await sys1.terminate();
     }
 
-    const sys2 = ActorSystem.create('fsm-multi-recover-2', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys2 = ActorSystem.create('fsm-multi-recover-2', sysOptions);
     sys2.extension(PersistenceExtensionId).setJournal(journal);
     sys2.extension(PersistenceExtensionId).setSnapshotStore(snaps);
     try {

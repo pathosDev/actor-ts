@@ -12,11 +12,12 @@ only within a single process.
 ```ts
 import { InMemoryLease, LeaseOptions } from 'actor-ts/coordination';
 
+const leaseOptions = LeaseOptions.create()
+  .withName('my-singleton')
+  .withOwner('instance-1')
+  .withTtlMs(30_000);
 const lease = new InMemoryLease(
-  LeaseOptions.create()
-    .withName('my-singleton')
-    .withOwner('instance-1')
-    .withTtlMs(30_000),
+  leaseOptions,
 );
 
 await lease.acquire();   // → true (first acquire)
@@ -61,18 +62,20 @@ import { InMemoryLeaseRegistry } from 'actor-ts/coordination';
 
 const registry = new InMemoryLeaseRegistry();
 
+const leaseOptions = LeaseOptions.create()
+  .withName('singleton-x')
+  .withOwner('node-a')
+  .withTtlMs(30_000);
 const leaseA = new InMemoryLease(
-  LeaseOptions.create()
-    .withName('singleton-x')
-    .withOwner('node-a')
-    .withTtlMs(30_000),
+  leaseOptions,
 );
 
+const lease2Options = LeaseOptions.create()
+  .withName('singleton-x')  // same name
+  .withOwner('node-b')
+  .withTtlMs(30_000);
 const leaseB = new InMemoryLease(
-  LeaseOptions.create()
-    .withName('singleton-x')  // same name
-    .withOwner('node-b')
-    .withTtlMs(30_000),
+  lease2Options,
 );
 
 await leaseA.acquire();   // → true
@@ -118,11 +121,19 @@ describe('SingletonManager with lease', () => {
     const tk1 = TestKit.create('node-1');
     const tk2 = TestKit.create('node-2');
 
+    const leaseOptions = LeaseOptions.create()
+      .withName('singleton')
+      .withOwner('n1')
+      .withTtlMs(30_000);
     const lease1 = new InMemoryLease(
-      LeaseOptions.create().withName('singleton').withOwner('n1').withTtlMs(30_000),
+      leaseOptions,
     );
+    const lease2Options = LeaseOptions.create()
+      .withName('singleton')
+      .withOwner('n2')
+      .withTtlMs(30_000);
     const lease2 = new InMemoryLease(
-      LeaseOptions.create().withName('singleton').withOwner('n2').withTtlMs(30_000),
+      lease2Options,
     );
 
     // (cluster wiring elided)

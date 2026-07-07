@@ -61,7 +61,10 @@ async function startServer(
   label: string,
   backendFactory: () => HttpServerBackend,
 ): Promise<Harness> {
-  const system = ActorSystem.create(`bench-rest-${label}`, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const systemOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const system = ActorSystem.create(`bench-rest-${label}`, systemOptions);
   const http = system.extension(HttpExtensionId);
   return {
     base: '',

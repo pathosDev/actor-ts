@@ -65,7 +65,10 @@ async function main(): Promise<void> {
   );
 
   for (const pol of POLICIES) {
-    const system = ActorSystem.create(`bench-snap-${pol.unit}`, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const system = ActorSystem.create(`bench-snap-${pol.unit}`, systemOptions);
     const ext = system.extension(PersistenceExtensionId);
     const journal = new InMemoryJournal();
     const snapshots = new InMemorySnapshotStore();

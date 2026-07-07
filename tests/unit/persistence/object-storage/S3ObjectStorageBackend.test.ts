@@ -74,7 +74,10 @@ describe('S3ObjectStorageBackend — SDK lazy-load', () => {
   });
 
   test('first operation triggers S3Client construction', async () => {
-    const backend = new S3ObjectStorageBackend(S3ObjectStorageOptions.create().withBucket('b').withRegion('eu-central-1'));
+    const s3Options = S3ObjectStorageOptions.create()
+      .withBucket('b')
+      .withRegion('eu-central-1');
+    const backend = new S3ObjectStorageBackend(s3Options);
     // Fake send returns {} by default which makes put fail the
     // "no ETag" assertion — we don't care here, only that the
     // S3Client was constructed.
@@ -98,10 +101,11 @@ describe('S3ObjectStorageBackend — SDK lazy-load', () => {
 describe('S3ObjectStorageBackend — endpoint + region + credentials pass-through', () => {
   test('forwards endpoint, forcePathStyle, region, credentials to the S3Client', async () => {
     const creds = { accessKeyId: 'AKIA...', secretAccessKey: 'shhh', sessionToken: 'tok' };
+    const s3Options = S3ObjectStorageOptions.create()
+      .withBucket('b')
+      .withRegion('auto');
     const backend = new S3ObjectStorageBackend(
-      S3ObjectStorageOptions.create()
-        .withBucket('b')
-        .withRegion('auto') // R2 sentinel
+      s3Options // R2 sentinel
         .withEndpoint('https://acct.r2.cloudflarestorage.com')
         .withForcePathStyle(true)
         .withCredentials(creds),
@@ -116,7 +120,10 @@ describe('S3ObjectStorageBackend — endpoint + region + credentials pass-throug
   });
 
   test('omitting endpoint / credentials passes undefined (SDK default chain)', async () => {
-    const backend = new S3ObjectStorageBackend(S3ObjectStorageOptions.create().withBucket('b').withRegion('us-west-2'));
+    const s3Options = S3ObjectStorageOptions.create()
+      .withBucket('b')
+      .withRegion('us-west-2');
+    const backend = new S3ObjectStorageBackend(s3Options);
     await backend.list({ prefix: '' });
     const cfg = fakeClientsConstructed[0]!.config as Record<string, unknown>;
     expect(cfg.region).toBe('us-west-2');

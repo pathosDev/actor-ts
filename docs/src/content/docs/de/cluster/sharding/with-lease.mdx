@@ -18,18 +18,20 @@ Die **Single-Writer-Lease** verhindert das:
 ```ts
 import { ClusterSharding, KubernetesLease, KubernetesLeaseOptions, StartShardingOptions } from 'actor-ts';
 
+const kubernetesLeaseOptions = KubernetesLeaseOptions.create()
+  .withName('order-sharding-coordinator')
+  .withOwner(process.env.POD_NAME!)
+  .withTtlMs(30_000)
+  .withNamespace(process.env.K8S_NAMESPACE!);
+const startShardingOptions = StartShardingOptions.create<Cmd>()
+  .withTypeName('order')
+  .withEntityProps(Props.create(() => new OrderEntity()))
+  .withExtractEntityId((msg) => msg.id)
+  .withLease(new KubernetesLease(
+    kubernetesLeaseOptions,
+  ));
 const sharding = cluster.sharding.start(
-  StartShardingOptions.create<Cmd>()
-    .withTypeName('order')
-    .withEntityProps(Props.create(() => new OrderEntity()))
-    .withExtractEntityId((msg) => msg.id)
-    .withLease(new KubernetesLease(
-      KubernetesLeaseOptions.create()
-        .withName('order-sharding-coordinator')
-        .withOwner(process.env.POD_NAME!)
-        .withTtlMs(30_000)
-        .withNamespace(process.env.K8S_NAMESPACE!),
-    )),
+  startShardingOptions,
 );
 ```
 

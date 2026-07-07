@@ -61,28 +61,15 @@ describe('multi-node sharding rebalance', () => {
         spec.awaitMembers('c', 3),
       ]);
 
+      const shardingOptions = StartShardingOptions.create<Cmd>()
+        .withTypeName('entity')
+        .withEntityProps(Props.create(() => new Entity()))
+        .withExtractEntityId((m) => m.id)
+        .withNumShards(16);
       const regions: Record<'a' | 'b' | 'c', ActorRef<Cmd>> = {
-        a: spec.clusterFor('a').sharding.start<Cmd>(
-          StartShardingOptions.create<Cmd>()
-            .withTypeName('entity')
-            .withEntityProps(Props.create(() => new Entity()))
-            .withExtractEntityId((m) => m.id)
-            .withNumShards(16),
-        ),
-        b: spec.clusterFor('b').sharding.start<Cmd>(
-          StartShardingOptions.create<Cmd>()
-            .withTypeName('entity')
-            .withEntityProps(Props.create(() => new Entity()))
-            .withExtractEntityId((m) => m.id)
-            .withNumShards(16),
-        ),
-        c: spec.clusterFor('c').sharding.start<Cmd>(
-          StartShardingOptions.create<Cmd>()
-            .withTypeName('entity')
-            .withEntityProps(Props.create(() => new Entity()))
-            .withExtractEntityId((m) => m.id)
-            .withNumShards(16),
-        ),
+        a: spec.clusterFor('a').sharding.start<Cmd>(shardingOptions),
+        b: spec.clusterFor('b').sharding.start<Cmd>(shardingOptions),
+        c: spec.clusterFor('c').sharding.start<Cmd>(shardingOptions),
       };
 
       // Let the coordinator finish initial allocation.  A short sleep

@@ -24,7 +24,10 @@ afterEach(async () => {
 });
 
 async function startServer(routes: Parameters<ReturnType<ReturnType<typeof newHttp>['newServerAt']>['bind']>[0]): Promise<{ url: string; system: ActorSystem; binding: ServerBinding }> {
-  const system = ActorSystem.create('http-test', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const system = ActorSystem.create('http-test', sysOptions);
   const ext = system.extension(HttpExtensionId);
   const backend = new FastifyBackend({ logger: false });
   const binding = await ext.newServerAt('127.0.0.1', 0).useBackend(backend).bind(routes);
@@ -156,6 +159,9 @@ describe('FastifyBackend — remoteAddress wiring (#312)', () => {
 
 describe('FastifyBackend — shutdown semantics', () => {
   test('unbind returns promptly even when WebSocket clients are connected', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
     // Regression: `app.close()` waits for every long-lived
     // connection to drain.  Upgraded WebSocket sockets never drain
     // on their own, so the chat sample's SIGINT path used to hang
@@ -163,9 +169,7 @@ describe('FastifyBackend — shutdown semantics', () => {
     // the process.  `unbind()` must force-terminate WS clients
     // (via `app.websocketServer.clients`) so the close resolves
     // instead of waiting forever.
-    const system = ActorSystem.create('http-ws-shutdown', ActorSystemOptions.create()
-      .withLogger(new NoopLogger())
-      .withLogLevel(LogLevel.Off));
+    const system = ActorSystem.create('http-ws-shutdown', sysOptions);
     const backend = new FastifyBackend({ logger: false });
     const wsMod = (await import('@fastify/websocket')) as {
       default?: unknown;

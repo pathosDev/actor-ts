@@ -14,7 +14,10 @@ import { memoryGroup } from '../lib/harness.js';
 type Msg = { payload: string };
 
 async function main(): Promise<void> {
-  const system = ActorSystem.create('bench-queued', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const systemOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const system = ActorSystem.create('bench-queued', systemOptions);
   const payload: Msg = { payload: 'x'.repeat(64) };
 
   const group = memoryGroup('memory · queued messages (64-byte payload)');

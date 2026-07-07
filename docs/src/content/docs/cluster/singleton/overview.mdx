@@ -74,16 +74,21 @@ class JobScheduler extends Actor<JobCmd> {
 }
 
 const system  = ActorSystem.create('my-app');
-const cluster = await Cluster.join(system, ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds));
+const clusterOptions = ClusterOptions.create()
+  .withHost(host)
+  .withPort(port)
+  .withSeeds(seeds);
+const cluster = await Cluster.join(system, clusterOptions);
 
 // On every node: start the manager.
+const clusterSingletonManagerOptions = ClusterSingletonManagerOptions.create<JobCmd>()
+  .withCluster(cluster)
+  .withTypeName('job-scheduler')
+  .withSingletonProps(Props.create(() => new JobScheduler()))
+  .withRole('control-plane');
 system.spawn(
   ClusterSingletonManager.props(
-    ClusterSingletonManagerOptions.create<JobCmd>()
-      .withCluster(cluster)
-      .withTypeName('job-scheduler')
-      .withSingletonProps(Props.create(() => new JobScheduler()))
-      .withRole('control-plane'),   // optional: only these nodes can host
+    clusterSingletonManagerOptions,   // optional: only these nodes can host
   ),
   'singleton-manager-job-scheduler',
 );
@@ -162,13 +167,12 @@ Three defenses, in order of complexity:
    [Downing strategies](/cluster/downing-strategies/).
 2. **A lease**, passed to the manager:
    ```ts
-   ClusterSingletonManager.props(
-     ClusterSingletonManagerOptions.create()
-       .withCluster(cluster)
-       .withTypeName('...')
-       .withSingletonProps(...)
-       .withLease(someLeaseImpl),   // e.g. K8s lease, or in-memory for tests
-   );
+   const managerOptions = ClusterSingletonManagerOptions.create()
+     .withCluster(cluster)
+     .withTypeName('...')
+     .withSingletonProps(...)
+     .withLease(someLeaseImpl);   // e.g. K8s lease, or in-memory for tests
+   ClusterSingletonManager.props(managerOptions);
    ```
    The manager must successfully acquire the lease before spawning
    the singleton.  Only one side of a partition can hold the lease,

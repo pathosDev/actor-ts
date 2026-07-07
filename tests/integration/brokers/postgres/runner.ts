@@ -31,12 +31,19 @@ async function main(): Promise<void> {
     deadlineMs: 60_000,
   });
 
+  const journalOptions = PostgresJournalOptions.create()
+    .withUrl(url);
+  const snapshotStoreOptions = PostgresSnapshotStoreOptions.create()
+    .withUrl(url)
+    .withKeepN(2);
+  const durableStateOptions = PostgresDurableStateStoreOptions.create()
+    .withUrl(url);
   const ctx: SqlPersistenceCtx = {
     env: process.env,
     label: 'pg',
-    journal: new PostgresJournal(PostgresJournalOptions.create().withUrl(url)),
-    snapshotStore: new PostgresSnapshotStore(PostgresSnapshotStoreOptions.create().withUrl(url).withKeepN(2)),
-    durableState: new PostgresDurableStateStore(PostgresDurableStateStoreOptions.create().withUrl(url)),
+    journal: new PostgresJournal(journalOptions),
+    snapshotStore: new PostgresSnapshotStore(snapshotStoreOptions),
+    durableState: new PostgresDurableStateStore(durableStateOptions),
   };
 
   await runScenarios(sqlPersistenceScenarios(), ctx);

@@ -38,12 +38,19 @@ async function main(): Promise<void> {
     connectionLimit: 5,
   };
 
+  const journalOptions = MariaDbJournalOptions.create()
+    .withPoolConfig(poolConfig);
+  const snapshotStoreOptions = MariaDbSnapshotStoreOptions.create()
+    .withPoolConfig(poolConfig)
+    .withKeepN(2);
+  const durableStateOptions = MariaDbDurableStateStoreOptions.create()
+    .withPoolConfig(poolConfig);
   const ctx: SqlPersistenceCtx = {
     env: process.env,
     label: 'mariadb',
-    journal: new MariaDbJournal(MariaDbJournalOptions.create().withPoolConfig(poolConfig)),
-    snapshotStore: new MariaDbSnapshotStore(MariaDbSnapshotStoreOptions.create().withPoolConfig(poolConfig).withKeepN(2)),
-    durableState: new MariaDbDurableStateStore(MariaDbDurableStateStoreOptions.create().withPoolConfig(poolConfig)),
+    journal: new MariaDbJournal(journalOptions),
+    snapshotStore: new MariaDbSnapshotStore(snapshotStoreOptions),
+    durableState: new MariaDbDurableStateStore(durableStateOptions),
   };
 
   await runScenarios(sqlPersistenceScenarios(), ctx);

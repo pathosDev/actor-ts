@@ -22,13 +22,12 @@ function makeStore(): {
   client: FakeCassandraClient;
 } {
   const client = new FakeCassandraClient();
-  const store = new CassandraRememberEntitiesStore(
-    CassandraRememberEntitiesStoreOptions.create()
-      .withContactPoints(['fake'])
-      .withKeyspace('sharding')
-      .withAutoCreateKeyspace(true)
-      .withClient(client),
-  );
+  const storeOptions = CassandraRememberEntitiesStoreOptions.create()
+    .withContactPoints(['fake'])
+    .withKeyspace('sharding')
+    .withAutoCreateKeyspace(true)
+    .withClient(client);
+  const store = new CassandraRememberEntitiesStore(storeOptions);
   return { store, client };
 }
 

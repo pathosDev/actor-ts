@@ -8,7 +8,10 @@ import { Props } from '../../src/Props.js';
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 function newSystem(name = 'actor-unit'): ActorSystem {
-  return ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  return ActorSystem.create(name, sysOptions);
 }
 
 describe('Actor lifecycle', () => {

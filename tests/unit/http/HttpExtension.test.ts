@@ -9,8 +9,12 @@ import { complete, get } from '../../../src/http/Route.js';
 import { Status } from '../../../src/http/types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 
-const newSystem = (name = 'http-ext-unit'): ActorSystem =>
-  ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+const newSystem = (name = 'http-ext-unit'): ActorSystem => {
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  return ActorSystem.create(name, sysOptions);
+};
 
 async function bindOk(system: ActorSystem): Promise<ServerBinding> {
   return system.extension(HttpExtensionId)

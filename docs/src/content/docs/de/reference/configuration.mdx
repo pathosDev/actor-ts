@@ -236,11 +236,12 @@ darüber.
 ## Config im Code lesen
 
 ```ts
+const actorSystemOptions = ActorSystemOptions.create().withConfig({
+    'actor-ts.cluster.gossip-interval': '500ms',
+  });
 const system = ActorSystem.create(
   'my-app',
-  ActorSystemOptions.create().withConfig({
-    'actor-ts.cluster.gossip-interval': '500ms',
-  }),
+  actorSystemOptions,
 );
 
 // Innerhalb eines Actors / einer Extension:

@@ -105,9 +105,10 @@ Replica** laden kann, nicht nur von ihrem eigenen.
 
 ```ts
 {
+  const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.create()
+    .withBackend(new S3ObjectStorageBackend(S3ObjectStorageOptions.create() /* geteilter Bucket */));
   journal:       sharedJournal,
-  snapshotStore: new ObjectStorageSnapshotStore(ObjectStorageSnapshotStoreOptions.create()
-    .withBackend(new S3ObjectStorageBackend(S3ObjectStorageOptions.create() /* geteilter Bucket */))),
+  snapshotStore: new ObjectStorageSnapshotStore(objectStorageSnapshotStoreOptions),
 }
 ```
 

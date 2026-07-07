@@ -20,11 +20,13 @@ import {
 
 const system = ActorSystem.create('my-app');
 system.extension(PersistenceExtensionId).configure({
-  journal: new SqliteJournal(SqliteJournalOptions.create()
+  const sqliteJournalOptions = SqliteJournalOptions.create()
     .withPath('/var/lib/my-app/events.db')
-    .withWal(true)),
-  snapshotStore: new SqliteSnapshotStore(SqliteSnapshotStoreOptions.create()
-    .withPath('/var/lib/my-app/snapshots.db')),
+    .withWal(true);
+  const sqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create()
+    .withPath('/var/lib/my-app/snapshots.db');
+  journal: new SqliteJournal(sqliteJournalOptions),
+  snapshotStore: new SqliteSnapshotStore(sqliteSnapshotStoreOptions),
 });
 ```
 
@@ -63,8 +65,12 @@ framework reads the **highest seq** for a given pid on `loadLatest`.
 ```ts
 // Production:
 {
-  journal:       new SqliteJournal(SqliteJournalOptions.create().withPath('/var/lib/events.db')),
-  snapshotStore: new SqliteSnapshotStore(SqliteSnapshotStoreOptions.create().withPath('/var/lib/snapshots.db')),
+  const sqliteJournalOptions = SqliteJournalOptions.create()
+    .withPath('/var/lib/events.db');
+  const sqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create()
+    .withPath('/var/lib/snapshots.db');
+  journal:       new SqliteJournal(sqliteJournalOptions),
+  snapshotStore: new SqliteSnapshotStore(sqliteSnapshotStoreOptions),
 }
 ```
 

@@ -30,7 +30,9 @@ interface TagRow {
 
 describe('SqliteJournal — event_tags migration', () => {
   test('1. append populates event_tags alongside events', async () => {
-    const journal = new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:'));
+    const journalOptions = SqliteJournalOptions.create()
+      .withPath(':memory:');
+    const journal = new SqliteJournal(journalOptions);
     await journal.append('alice', [{ msg: 'a1' }], 0, ['orders', 'vip']);
     await journal.append('alice', [{ msg: 'a2' }], 1, ['orders']);
     await journal.append('bob', [{ msg: 'b1' }], 0, ['internal']);
@@ -104,7 +106,9 @@ describe('SqliteJournal — event_tags migration', () => {
       open(): typeof db { return db; },
     } as unknown as SqliteDriver;
 
-    const journal = new SqliteJournal(SqliteJournalOptions.create().withDriver(wrapper));
+    const journalOptions = SqliteJournalOptions.create()
+      .withDriver(wrapper);
+    const journal = new SqliteJournal(journalOptions);
     // Force init() to run + the backfill alongside.
     await journal.persistenceIds();
 
@@ -126,7 +130,9 @@ describe('SqliteJournal — event_tags migration', () => {
   });
 
   test('3. backfill is idempotent — second init is a no-op', async () => {
-    const journal1 = new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:'));
+    const journalOptions = SqliteJournalOptions.create()
+      .withPath(':memory:');
+    const journal1 = new SqliteJournal(journalOptions);
     await journal1.append('a', [{}], 0, ['t1', 't2']);
 
     const internal = journal1 as unknown as {
@@ -152,7 +158,9 @@ describe('SqliteJournal — event_tags migration', () => {
   });
 
   test('4. delete(pid, toSeq) cleans up event_tags', async () => {
-    const journal = new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:'));
+    const journalOptions = SqliteJournalOptions.create()
+      .withPath(':memory:');
+    const journal = new SqliteJournal(journalOptions);
     await journal.append('alice', [{ msg: 'keep-1' }], 0, ['orders']);
     await journal.append('alice', [{ msg: 'drop-2' }], 1, ['orders']);
     await journal.append('alice', [{ msg: 'drop-3' }], 2, ['vip']);

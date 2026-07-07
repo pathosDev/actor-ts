@@ -31,7 +31,10 @@ import { InMemoryDurableStateStore } from '../../../../../src/persistence/durabl
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 function newSystem(name: string): ActorSystem {
-  return ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  return ActorSystem.create(name, sysOptions);
 }
 
 async function waitFor(pred: () => boolean, timeoutMs = 3_000): Promise<void> {
@@ -50,14 +53,13 @@ describe('ProjectionActor — by persistence id', () => {
 
     const seen: number[] = [];
     const sys = newSystem('proj-rt');
-    const ref = ProjectionActor.byPersistenceId<{ n: number }>(sys,
-      ByPidProjectionOptions.create<{ n: number }>()
-        .withName('sum')
-        .withQuery(new InMemoryQuery(journal))
-        .withPersistenceId('alice')
-        .withHandle((ev) => { seen.push(ev.event.n); })
-        .withLiveOptions({ pollIntervalMs: 30 }),
-    );
+    const projectionOptions = ByPidProjectionOptions.create<{ n: number }>()
+      .withName('sum')
+      .withQuery(new InMemoryQuery(journal))
+      .withPersistenceId('alice')
+      .withHandle((ev) => { seen.push(ev.event.n); })
+      .withLiveOptions({ pollIntervalMs: 30 });
+    const ref = ProjectionActor.byPersistenceId<{ n: number }>(sys, projectionOptions);
 
     await waitFor(() => seen.length === 3);
 
@@ -80,15 +82,14 @@ describe('ProjectionActor — by persistence id', () => {
     // First instance — process events, then stop.
     const sys1 = newSystem('proj-resume-1');
     const seen1: number[] = [];
-    const ref1 = ProjectionActor.byPersistenceId<{ n: number }>(sys1,
-      ByPidProjectionOptions.create<{ n: number }>()
-        .withName('counter-proj')
-        .withQuery(query)
-        .withOffsetStore(offsetStore)
-        .withPersistenceId('counter')
-        .withHandle((ev) => { seen1.push(ev.event.n); })
-        .withLiveOptions({ pollIntervalMs: 30 }),
-    );
+    const projectionOptions = ByPidProjectionOptions.create<{ n: number }>()
+      .withName('counter-proj')
+      .withQuery(query)
+      .withOffsetStore(offsetStore)
+      .withPersistenceId('counter')
+      .withHandle((ev) => { seen1.push(ev.event.n); })
+      .withLiveOptions({ pollIntervalMs: 30 });
+    const ref1 = ProjectionActor.byPersistenceId<{ n: number }>(sys1, projectionOptions);
     await waitFor(() => seen1.length === 3);
     ref1.stop();
     await sleep(80);   // give postStop time to flush
@@ -99,15 +100,14 @@ describe('ProjectionActor — by persistence id', () => {
     // Second instance — same projection name + same offsetStore.
     const sys2 = newSystem('proj-resume-2');
     const seen2: number[] = [];
-    const ref2 = ProjectionActor.byPersistenceId<{ n: number }>(sys2,
-      ByPidProjectionOptions.create<{ n: number }>()
-        .withName('counter-proj')
-        .withQuery(query)
-        .withOffsetStore(offsetStore)
-        .withPersistenceId('counter')
-        .withHandle((ev) => { seen2.push(ev.event.n); })
-        .withLiveOptions({ pollIntervalMs: 30 }),
-    );
+    const projection2Options = ByPidProjectionOptions.create<{ n: number }>()
+      .withName('counter-proj')
+      .withQuery(query)
+      .withOffsetStore(offsetStore)
+      .withPersistenceId('counter')
+      .withHandle((ev) => { seen2.push(ev.event.n); })
+      .withLiveOptions({ pollIntervalMs: 30 });
+    const ref2 = ProjectionActor.byPersistenceId<{ n: number }>(sys2, projection2Options);
     await waitFor(() => seen2.length === 2);
 
     expect(seen2).toEqual([4, 5]);   // NOT [1, 2, 3, 4, 5]
@@ -125,21 +125,20 @@ describe('ProjectionActor — by persistence id', () => {
     let firstAttemptThrowOnce = true;
     const seen: number[] = [];
     const sys = newSystem('proj-idem');
-    const ref = ProjectionActor.byPersistenceId<{ n: number }>(sys,
-      ByPidProjectionOptions.create<{ n: number }>()
-        .withName('flaky-proj')
-        .withQuery(new InMemoryQuery(journal))
-        .withOffsetStore(offsetStore)
-        .withPersistenceId('flaky')
-        .withHandle((ev) => {
-          if (ev.event.n === 2 && firstAttemptThrowOnce) {
-            firstAttemptThrowOnce = false;
-            throw new Error('simulated transient failure on n=2');
-          }
-          seen.push(ev.event.n);
-        })
-        .withLiveOptions({ pollIntervalMs: 30 }),
-    );
+    const projectionOptions = ByPidProjectionOptions.create<{ n: number }>()
+      .withName('flaky-proj')
+      .withQuery(new InMemoryQuery(journal))
+      .withOffsetStore(offsetStore)
+      .withPersistenceId('flaky')
+      .withHandle((ev) => {
+        if (ev.event.n === 2 && firstAttemptThrowOnce) {
+          firstAttemptThrowOnce = false;
+          throw new Error('simulated transient failure on n=2');
+        }
+        seen.push(ev.event.n);
+      })
+      .withLiveOptions({ pollIntervalMs: 30 });
+    const ref = ProjectionActor.byPersistenceId<{ n: number }>(sys, projectionOptions);
 
     // n=1 lands; n=2 throws → cursor stays at 1; n=2 retried; n=3 lands.
     // Handler is called twice for n=2 — that's the at-least-once contract.
@@ -165,14 +164,13 @@ describe('ProjectionActor — by tag', () => {
 
     const sys = newSystem('proj-tag');
     const seen: string[] = [];
-    const ref = ProjectionActor.byTag<{ s: string }>(sys,
-      ByTagProjectionOptions.create<{ s: string }>()
-        .withName('orders-proj')
-        .withQuery(new InMemoryQuery(journal))
-        .withTag('orders')
-        .withHandle((ev) => { seen.push(ev.event.s); })
-        .withLiveOptions({ pollIntervalMs: 30 }),
-    );
+    const projectionOptions = ByTagProjectionOptions.create<{ s: string }>()
+      .withName('orders-proj')
+      .withQuery(new InMemoryQuery(journal))
+      .withTag('orders')
+      .withHandle((ev) => { seen.push(ev.event.s); })
+      .withLiveOptions({ pollIntervalMs: 30 });
+    const ref = ProjectionActor.byTag<{ s: string }>(sys, projectionOptions);
 
     await waitFor(() => seen.length === 3);
     expect(seen).toEqual(['a1', 'b1', 'b2']);
@@ -191,15 +189,14 @@ describe('ProjectionActor — by tag', () => {
 
     const sys1 = newSystem('proj-tag-resume-1');
     const seen1: string[] = [];
-    const ref1 = ProjectionActor.byTag<{ s: string }>(sys1,
-      ByTagProjectionOptions.create<{ s: string }>()
-        .withName('tag-resume')
-        .withQuery(new InMemoryQuery(journal))
-        .withOffsetStore(offsetStore)
-        .withTag('t')
-        .withHandle((ev) => { seen1.push(ev.event.s); })
-        .withLiveOptions({ pollIntervalMs: 30 }),
-    );
+    const projectionOptions = ByTagProjectionOptions.create<{ s: string }>()
+      .withName('tag-resume')
+      .withQuery(new InMemoryQuery(journal))
+      .withOffsetStore(offsetStore)
+      .withTag('t')
+      .withHandle((ev) => { seen1.push(ev.event.s); })
+      .withLiveOptions({ pollIntervalMs: 30 });
+    const ref1 = ProjectionActor.byTag<{ s: string }>(sys1, projectionOptions);
     await waitFor(() => seen1.length === 2);
     ref1.stop();
     await sleep(80);
@@ -212,15 +209,14 @@ describe('ProjectionActor — by tag', () => {
     // Restart the projection — should NOT replay a1/b1.
     const sys2 = newSystem('proj-tag-resume-2');
     const seen2: string[] = [];
-    const ref2 = ProjectionActor.byTag<{ s: string }>(sys2,
-      ByTagProjectionOptions.create<{ s: string }>()
-        .withName('tag-resume')
-        .withQuery(new InMemoryQuery(journal))
-        .withOffsetStore(offsetStore)
-        .withTag('t')
-        .withHandle((ev) => { seen2.push(ev.event.s); })
-        .withLiveOptions({ pollIntervalMs: 30 }),
-    );
+    const projection2Options = ByTagProjectionOptions.create<{ s: string }>()
+      .withName('tag-resume')
+      .withQuery(new InMemoryQuery(journal))
+      .withOffsetStore(offsetStore)
+      .withTag('t')
+      .withHandle((ev) => { seen2.push(ev.event.s); })
+      .withLiveOptions({ pollIntervalMs: 30 });
+    const ref2 = ProjectionActor.byTag<{ s: string }>(sys2, projection2Options);
     await waitFor(() => seen2.length === 1);
     expect(seen2).toEqual(['a2']);
 
@@ -239,15 +235,14 @@ describe('ProjectionActor — by tag', () => {
 
     const sys = newSystem('proj-replay');
     const seen: string[] = [];
-    const ref = ProjectionActor.byTag<{ s: string }>(sys,
-      ByTagProjectionOptions.create<{ s: string }>()
-        .withName('replay-proj')
-        .withQuery(new InMemoryQuery(journal))
-        .withOffsetStore(offsetStore)
-        .withTag('t')
-        .withHandle((ev) => { seen.push(ev.event.s); })
-        .withLiveOptions({ pollIntervalMs: 30 }),
-    );
+    const projectionOptions = ByTagProjectionOptions.create<{ s: string }>()
+      .withName('replay-proj')
+      .withQuery(new InMemoryQuery(journal))
+      .withOffsetStore(offsetStore)
+      .withTag('t')
+      .withHandle((ev) => { seen.push(ev.event.s); })
+      .withLiveOptions({ pollIntervalMs: 30 });
+    const ref = ProjectionActor.byTag<{ s: string }>(sys, projectionOptions);
     await waitFor(() => seen.length === 2);
     expect(seen).toEqual(['a1', 'a2']);
 
@@ -263,14 +258,13 @@ describe('ProjectionActor — concurrent writers', () => {
     const sys = newSystem('proj-concurrent');
 
     // We project by tag so a single projection sees both pids.
-    const ref = ProjectionActor.byTag<{ pid: string; n: number }>(sys,
-      ByTagProjectionOptions.create<{ pid: string; n: number }>()
-        .withName('concurrent-proj')
-        .withQuery(new InMemoryQuery(journal))
-        .withTag('shared')
-        .withHandle((ev) => { seen.push(`${ev.persistenceId}:${ev.event.n}`); })
-        .withLiveOptions({ pollIntervalMs: 20 }),
-    );
+    const projectionOptions = ByTagProjectionOptions.create<{ pid: string; n: number }>()
+      .withName('concurrent-proj')
+      .withQuery(new InMemoryQuery(journal))
+      .withTag('shared')
+      .withHandle((ev) => { seen.push(`${ev.persistenceId}:${ev.event.n}`); })
+      .withLiveOptions({ pollIntervalMs: 20 });
+    const ref = ProjectionActor.byTag<{ pid: string; n: number }>(sys, projectionOptions);
 
     // Two concurrent writer loops.
     const target = 5;

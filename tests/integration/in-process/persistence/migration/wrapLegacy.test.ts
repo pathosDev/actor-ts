@@ -140,7 +140,10 @@ describe('migrateInMemoryJournal — bulk rewrite', () => {
       async onCommand(_s: { balance: number; currency: string }, _c: unknown) { /* read-only */ }
     }
 
-    const sys = ActorSystem.create('migrate-replay', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('migrate-replay', sysOptions);
     sys.extension(PersistenceExtensionId).setJournal(journal);
     try {
       const ref = sys.spawn(Props.create(() => new Account()), 'acct');

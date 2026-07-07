@@ -26,7 +26,10 @@ const SpyId: ExtensionId<Counter> = extensionId(
 );
 
 function newSystem(name = 'ext-test'): ActorSystem {
-  return ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  return ActorSystem.create(name, sysOptions);
 }
 
 describe('extensionId', () => {

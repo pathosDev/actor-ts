@@ -50,13 +50,14 @@ appears).
 ## Enabling weakly-up
 
 ```ts
+const clusterOptions = ClusterOptions.create()
+  .withHost(host)
+  .withPort(port)
+  .withSeeds(seeds)
+  .withWeaklyUpAfterMs(3_000);
 await Cluster.join(
   system,
-  ClusterOptions.create()
-    .withHost(host)
-    .withPort(port)
-    .withSeeds(seeds)
-    .withWeaklyUpAfterMs(3_000),   // auto-promote after 3s in joining
+  clusterOptions,   // auto-promote after 3s in joining
 );
 ```
 

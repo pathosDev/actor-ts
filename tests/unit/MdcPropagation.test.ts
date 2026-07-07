@@ -32,7 +32,10 @@ describe('LogContext — actor-to-actor propagation', () => {
       }
     }
 
-    const sys = ActorSystem.create('mdc-1', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('mdc-1', sysOptions);
     try {
       const r = sys.spawn(Props.create(() => new Receiver()), 'r');
       LogContext.run({ correlationId: 'abc-123' }, () => {
@@ -63,7 +66,10 @@ describe('LogContext — actor-to-actor propagation', () => {
       }
     }
 
-    const sys = ActorSystem.create('mdc-chain', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('mdc-chain', sysOptions);
     try {
       const bottom = sys.spawn(Props.create(() => new Bottom()), 'b');
       const middle = sys.spawn(Props.create(() => new Middle()), 'm');
@@ -85,7 +91,10 @@ describe('LogContext — actor-to-actor propagation', () => {
     class R extends Actor<string> {
       override onReceive(): void { observed.push({ ...LogContext.get() }); }
     }
-    const sys = ActorSystem.create('mdc-none', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('mdc-none', sysOptions);
     try {
       const r = sys.spawn(Props.create(() => new R()), 'r');
       r.tell('plain');
@@ -103,7 +112,10 @@ describe('LogContext — actor-to-actor propagation', () => {
         observed.set(m.id, { ...LogContext.get() });
       }
     }
-    const sys = ActorSystem.create('mdc-parallel', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('mdc-parallel', sysOptions);
     try {
       const r = sys.spawn(Props.create(() => new R()), 'r');
       LogContext.run({ branch: 'A' }, () => r.tell({ id: 'a' }));

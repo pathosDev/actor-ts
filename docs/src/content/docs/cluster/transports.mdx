@@ -39,12 +39,13 @@ their sender address.
 ```ts
 import { Cluster, ClusterOptions, TcpTransport } from 'actor-ts';
 
+const clusterOptions = ClusterOptions.create()
+  .withHost('0.0.0.0')
+  .withPort(2552)
+  .withSeeds(['...']);
 const cluster = await Cluster.join(
   system,
-  ClusterOptions.create()
-    .withHost('0.0.0.0')
-    .withPort(2552)
-    .withSeeds(['...']),
+  clusterOptions,
   // transport defaults to TcpTransport — no need to pass explicitly
 );
 ```
@@ -89,9 +90,14 @@ const transport = new TcpTransport(
   },
 );
 
+const clusterOptions = ClusterOptions.create()
+  .withHost(host)
+  .withPort(port)
+  .withSeeds(seeds)
+  .withTransport(transport);
 await Cluster.join(
   system,
-  ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds).withTransport(transport),
+  clusterOptions,
 );
 ```
 
@@ -122,22 +128,24 @@ const bus = InMemoryTransport.newBus();
 const tk1 = TestKit.create('node-1');
 const tk2 = TestKit.create('node-2');
 
+const clusterOptions = ClusterOptions.create()
+  .withHost('1')
+  .withPort(0)
+  .withSeeds(['1:0'])
+  .withTransport(new InMemoryTransport({ self: 'actor-ts://node-1@1:0', bus, log: tk1.system.log }));
 await Cluster.join(
   tk1.system,
-  ClusterOptions.create()
-    .withHost('1')
-    .withPort(0)
-    .withSeeds(['1:0'])
-    .withTransport(new InMemoryTransport({ self: 'actor-ts://node-1@1:0', bus, log: tk1.system.log })),
+  clusterOptions,
 );
 
+const cluster2Options = ClusterOptions.create()
+  .withHost('2')
+  .withPort(0)
+  .withSeeds(['1:0'])
+  .withTransport(new InMemoryTransport({ self: 'actor-ts://node-2@2:0', bus, log: tk2.system.log }));
 await Cluster.join(
   tk2.system,
-  ClusterOptions.create()
-    .withHost('2')
-    .withPort(0)
-    .withSeeds(['1:0'])
-    .withTransport(new InMemoryTransport({ self: 'actor-ts://node-2@2:0', bus, log: tk2.system.log })),
+  cluster2Options,
 );
 ```
 
@@ -190,7 +198,9 @@ For lower-level inspection (specific frame contents), enable
 debug logging on the system:
 
 ```ts
-const system = ActorSystem.create('my-app', ActorSystemOptions.create().withLogLevel(LogLevel.Debug));
+const actorSystemOptions = ActorSystemOptions.create()
+  .withLogLevel(LogLevel.Debug);
+const system = ActorSystem.create('my-app', actorSystemOptions);
 // Look for [tcp-transport] log lines
 ```
 

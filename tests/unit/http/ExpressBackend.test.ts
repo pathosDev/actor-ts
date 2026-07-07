@@ -31,7 +31,10 @@ afterEach(async () => {
 });
 
 async function startServer(routes: Route): Promise<{ url: string; system: ActorSystem; binding: ServerBinding }> {
-  const system = ActorSystem.create('http-express-test', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const system = ActorSystem.create('http-express-test', sysOptions);
   const ext = system.extension(HttpExtensionId);
   const backend = new ExpressBackend();
   const binding = await ext.newServerAt('127.0.0.1', 0).useBackend(backend).bind(routes);
@@ -176,7 +179,10 @@ describe('ExpressBackend — remoteAddress wiring (#312)', () => {
 
 describe('ExpressBackend — custom handlers', () => {
   test('setNotFound delivers a custom 404 body', async () => {
-    const system = ActorSystem.create('http-express-custom', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const system = ActorSystem.create('http-express-custom', sysOptions);
     const ext = system.extension(HttpExtensionId);
     const backend = new ExpressBackend();
     backend.setNotFound(() => completeJson(Status.NotFound, { oops: true }));
@@ -191,7 +197,10 @@ describe('ExpressBackend — custom handlers', () => {
   });
 
   test('setErrorHandler overrides the default 500 shape', async () => {
-    const system = ActorSystem.create('http-express-err', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const system = ActorSystem.create('http-express-err', sysOptions);
     const ext = system.extension(HttpExtensionId);
     const backend = new ExpressBackend();
     backend.setErrorHandler((err) =>
@@ -211,9 +220,14 @@ describe('ExpressBackend — custom handlers', () => {
 
 describe('ExpressBackend — body size limit', () => {
   test('413 when payload exceeds maxBodyBytes', async () => {
-    const system = ActorSystem.create('http-express-413', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const system = ActorSystem.create('http-express-413', sysOptions);
     const ext = system.extension(HttpExtensionId);
-    const backend = new ExpressBackend(ExpressBackendOptions.create().withMaxBodyBytes(16));
+    const expressOptions = ExpressBackendOptions.create()
+      .withMaxBodyBytes(16);
+    const backend = new ExpressBackend(expressOptions);
     const binding = await ext.newServerAt('127.0.0.1', 0)
       .useBackend(backend)
       .bind(path('up', post(() => complete(Status.OK, 'ok'))));

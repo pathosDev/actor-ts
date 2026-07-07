@@ -27,29 +27,36 @@ import {
   ConfigSeedProviderOptions,
 } from 'actor-ts';
 
+const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create()
+  .withNamespace(namespace)
+  .withServiceName(labelSelector)
+  .withSystemName('my-app')
+  .withPort(2552);
+const dnsSeedProviderOptions = DnsSeedProviderOptions.create()
+  .withHostname('_actor-ts._tcp.example.com')
+  .withSystemName('my-app')
+  .withUseSrv();
+const configSeedProviderOptions = ConfigSeedProviderOptions.create()
+  .withSeeds(['fallback-1:2552', 'fallback-2:2552'])
+  .withSystemName('my-app');
 const provider = new AggregateSeedProvider([
   new KubernetesApiSeedProvider(
-    KubernetesApiSeedProviderOptions.create()
-      .withNamespace(namespace)
-      .withServiceName(labelSelector)
-      .withSystemName('my-app')
-      .withPort(2552),
+    kubernetesApiSeedProviderOptions,
   ),
   new DnsSeedProvider(
-    DnsSeedProviderOptions.create()
-      .withHostname('_actor-ts._tcp.example.com')
-      .withSystemName('my-app')
-      .withUseSrv(),
+    dnsSeedProviderOptions,
   ),
   new ConfigSeedProvider(
-    ConfigSeedProviderOptions.create()
-      .withSeeds(['fallback-1:2552', 'fallback-2:2552'])
-      .withSystemName('my-app'),
+    configSeedProviderOptions,
   ),
 ]);
 
 const seeds = await provider.lookup();
-await Cluster.join(system, ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds));
+const clusterOptions = ClusterOptions.create()
+  .withHost(host)
+  .withPort(port)
+  .withSeeds(seeds);
+await Cluster.join(system, clusterOptions);
 ```
 
 ## Wie die Verkettung funktioniert
@@ -93,15 +100,14 @@ seinen eigenen Settings).
 ### Lokales Dev → Prod K8s
 
 ```ts
+const k8sSeedProviderOptions = KubernetesApiSeedProviderOptions.create()
+  .withNamespace(process.env.K8S_NAMESPACE ?? '')
+  .withServiceName('actor-ts')
+  .withSystemName('my-app')
+  .withPort(2552);
 new AggregateSeedProvider([
   seedsFromEnv('ACTOR_TS_SEEDS', 'my-app'),                  // 1.: Env-Var
-  new KubernetesApiSeedProvider(                             // 2.: K8s-API
-    KubernetesApiSeedProviderOptions.create()
-      .withNamespace(process.env.K8S_NAMESPACE ?? '')
-      .withServiceName('actor-ts')
-      .withSystemName('my-app')
-      .withPort(2552),
-  ),
+  new KubernetesApiSeedProvider(k8sSeedProviderOptions),     // 2.: K8s-API
 ]);
 ```
 
@@ -112,17 +118,19 @@ K8s-API.
 ### DNS-first mit statischem Fallback
 
 ```ts
+const dnsSeedProviderOptions = DnsSeedProviderOptions.create()
+  .withHostname('_actor-ts._tcp.example.com')
+  .withSystemName('my-app')
+  .withUseSrv();
+const configSeedProviderOptions = ConfigSeedProviderOptions.create()
+  .withSeeds(['known-stable-node-1:2552', 'known-stable-node-2:2552'])
+  .withSystemName('my-app');
 new AggregateSeedProvider([
   new DnsSeedProvider(
-    DnsSeedProviderOptions.create()
-      .withHostname('_actor-ts._tcp.example.com')
-      .withSystemName('my-app')
-      .withUseSrv(),
+    dnsSeedProviderOptions,
   ),
   new ConfigSeedProvider(
-    ConfigSeedProviderOptions.create()
-      .withSeeds(['known-stable-node-1:2552', 'known-stable-node-2:2552'])
-      .withSystemName('my-app'),
+    configSeedProviderOptions,
   ),
 ]);
 ```
@@ -134,20 +142,22 @@ IPs nutzen.
 ### Multi-Region Disaster Recovery
 
 ```ts
+const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create()
+  .withNamespace('primary-region')
+  .withServiceName('actor-ts')
+  .withSystemName('my-app')
+  .withPort(2552);
+const kubernetesApiSeedProvider2Options = KubernetesApiSeedProviderOptions.create()
+  .withNamespace('failover-region')
+  .withServiceName('actor-ts')
+  .withSystemName('my-app')
+  .withPort(2552);
 new AggregateSeedProvider([
   new KubernetesApiSeedProvider(
-    KubernetesApiSeedProviderOptions.create()
-      .withNamespace('primary-region')
-      .withServiceName('actor-ts')
-      .withSystemName('my-app')
-      .withPort(2552),
+    kubernetesApiSeedProviderOptions,
   ),
   new KubernetesApiSeedProvider(
-    KubernetesApiSeedProviderOptions.create()
-      .withNamespace('failover-region')
-      .withServiceName('actor-ts')
-      .withSystemName('my-app')
-      .withPort(2552),
+    kubernetesApiSeedProvider2Options,
   ),
 ]);
 ```
@@ -160,16 +170,20 @@ Sinn, wenn die Regionen tatsächlich State teilen sollen.
 ## Fehlerbehandlung
 
 ```ts
+const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create()
+  .withNamespace('my-app')
+  .withServiceName('actor-ts')
+  .withSystemName('my-app')
+  .withPort(2552);
+const configSeedProviderOptions = ConfigSeedProviderOptions.create()
+  .withSeeds(['10.0.0.1:2552'])
+  .withSystemName('my-app');
 new AggregateSeedProvider([
   new KubernetesApiSeedProvider(
-    KubernetesApiSeedProviderOptions.create()
-      .withNamespace('my-app')
-      .withServiceName('actor-ts')
-      .withSystemName('my-app')
-      .withPort(2552),
+    kubernetesApiSeedProviderOptions,
   ),   // wirft 403 außerhalb K8s
   new ConfigSeedProvider(
-    ConfigSeedProviderOptions.create().withSeeds(['10.0.0.1:2552']).withSystemName('my-app'),
+    configSeedProviderOptions,
   ),
 ]);
 ```
@@ -210,13 +224,16 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Latenzen stapeln sich">
   ```ts
+  const dnsOptions = DnsSeedProviderOptions.create()
+    .withHostname('slow-dns.example')
+    .withSystemName('my-app')
+    .withUseSrv();
+  const configOptions = ConfigSeedProviderOptions.create()
+    .withSeeds(['fallback:2552'])
+    .withSystemName('my-app');
   new AggregateSeedProvider([
-    new DnsSeedProvider(
-      DnsSeedProviderOptions.create().withHostname('slow-dns.example').withSystemName('my-app').withUseSrv(),
-    ),   // 30s Timeout
-    new ConfigSeedProvider(
-      ConfigSeedProviderOptions.create().withSeeds(['fallback:2552']).withSystemName('my-app'),
-    ),
+    new DnsSeedProvider(dnsOptions),   // 30s Timeout
+    new ConfigSeedProvider(configOptions),
   ]);
   ```
   Wenn der erste Provider in den Timeout läuft, wartest du auf

@@ -18,7 +18,9 @@ type ServerMsg = { kind: 'pong'; n: number } | { kind: 'event'; data: unknown };
 
 class Feed extends WebSocketClientActor<ClientMsg, ServerMsg> {
   constructor() {
-    super(WebSocketClientOptions.create<ClientMsg, ServerMsg>().withUrl('ws://localhost:8080/ws'));
+    const webSocketClientOptions = WebSocketClientOptions.create<ClientMsg, ServerMsg>()
+      .withUrl('ws://localhost:8080/ws');
+    super(webSocketClientOptions);
   }
 
   override onConnected(): void {
@@ -75,7 +77,9 @@ delivered to `onMessage`.
 ```ts
 class Chat extends WebSocketClientActor<ClientMsg, ServerMsg> {
   constructor() {
-    super(WebSocketClientOptions.create<ClientMsg, ServerMsg>().withUrl('wss://chat.example.com/ws'));
+    const webSocketClientOptions = WebSocketClientOptions.create<ClientMsg, ServerMsg>()
+      .withUrl('wss://chat.example.com/ws');
+    super(webSocketClientOptions);
   }
 
   override onConnected(): void {
@@ -129,12 +133,13 @@ new Feed(); // uses jsonCodec() — text frames <-> JSON
 // With runtime validation (zod etc.):
 class Validated extends WebSocketClientActor<ClientMsg, ServerMsg> {
   constructor() {
+    const webSocketClientOptions = WebSocketClientOptions.create<ClientMsg, ServerMsg>()
+      .withUrl('wss://...')
+      .withCodec(jsonCodec<ClientMsg, ServerMsg>({
+        validate: (value: unknown): ServerMsg => ServerMsgSchema.parse(value),
+      }));
     super(
-      WebSocketClientOptions.create<ClientMsg, ServerMsg>()
-        .withUrl('wss://...')
-        .withCodec(jsonCodec<ClientMsg, ServerMsg>({
-          validate: (value: unknown): ServerMsg => ServerMsgSchema.parse(value),
-        })),
+      webSocketClientOptions,
     );
   }
   onMessage(msg: ServerMsg): void { /* already validated */ }
@@ -150,7 +155,10 @@ import { rawCodec, type WsFrame } from 'actor-ts';
 
 class Binary extends WebSocketClientActor<WsFrame, WsFrame> {
   constructor() {
-    super(WebSocketClientOptions.create<WsFrame, WsFrame>().withUrl('wss://...').withCodec(rawCodec()));
+    const webSocketClientOptions = WebSocketClientOptions.create<WsFrame, WsFrame>()
+      .withUrl('wss://...')
+      .withCodec(rawCodec());
+    super(webSocketClientOptions);
   }
   onMessage(frame: WsFrame): void {
     if (frame.kind === 'binary') this.handleBytes(frame.data);   // Uint8Array
@@ -186,8 +194,11 @@ forever.
 
 ```ts
 new Feed(); // ...
+const webSocketClientOptions = WebSocketClientOptions.create()
+  .withUrl('wss://...')
+  .withPingIntervalMs(30_000);
 new WebSocketClientActor(
-  WebSocketClientOptions.create().withUrl('wss://...').withPingIntervalMs(30_000),
+  webSocketClientOptions,
 );
 ```
 

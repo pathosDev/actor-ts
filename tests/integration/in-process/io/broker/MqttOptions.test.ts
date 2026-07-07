@@ -83,7 +83,7 @@ class ProbeActor extends MqttActor {
 
 describe('MqttOptions HOCON merge precedence', () => {
   test('constructor (builder) > HOCON > built-in defaults', async () => {
-    const sys = ActorSystem.create('mqtt-opts-merge', ActorSystemOptions.create()
+    const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off)
       .withConfig({
@@ -94,11 +94,14 @@ describe('MqttOptions HOCON merge precedence', () => {
             keepAlive: 30,
           } } },
         },
-      }));
+      });
+    const sys = ActorSystem.create('mqtt-opts-merge', sysOptions);
     try {
       // Builder overrides clientId; HOCON supplies brokerUrl + keepAlive;
       // cleanSession falls through to the built-in default (true).
-      const actor = new ProbeActor(MqttOptions.create().withClientId('ctor-client'));
+      const mqttOptions = MqttOptions.create()
+        .withClientId('ctor-client');
+      const actor = new ProbeActor(mqttOptions);
       sys.spawn(Props.create(() => actor), 'probe');
       await sleep(30);
       const s = actor.resolved;

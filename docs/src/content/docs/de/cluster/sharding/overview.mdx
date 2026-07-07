@@ -70,9 +70,10 @@ class CartActor extends Actor<CartCmd> {
 // Setup — einzeiliger Cluster- + Sharding-Einstieg:
 const { system, cluster } = await Cluster.bootstrap(ClusterBootstrapOptions.create('my-app'));
 
+const startShardingOptions = StartShardingOptions.create<CartCmd>()
+  .withExtractEntityId((msg) => msg.entityId);
 const cartRegion = cluster.sharding.start('cart', CartActor,
-  StartShardingOptions.create<CartCmd>()
-    .withExtractEntityId((msg) => msg.entityId));
+  startShardingOptions);
 
 // Verwendung — `tell` an die Region, mit Entity-ID in der Nachricht:
 cartRegion.tell({ entityId: 'user-42', kind: 'add', sku: 'book-1' });
@@ -86,21 +87,25 @@ die zur Entity passt:
 
 ```ts
 // 1. Klassen-Kurzform (am häufigsten):
-cluster.sharding.start('cart', CartActor, StartShardingOptions.create<CartCmd>().withExtractEntityId((m) => m.entityId));
+const startShardingOptions = StartShardingOptions.create<CartCmd>()
+  .withExtractEntityId((m) => m.entityId);
+cluster.sharding.start('cart', CartActor, startShardingOptions);
 
 // 2. Factory-Kurzform — wenn die Entity Konstruktor-Argumente braucht:
+const startSharding2Options = StartShardingOptions.create<CartCmd>()
+  .withExtractEntityId((m) => m.entityId);
 cluster.sharding.start('cart', () => new CartActor(deps),
-  StartShardingOptions.create<CartCmd>()
-    .withExtractEntityId((m) => m.entityId));
+  startSharding2Options);
 
 // 3. Vollform — explizite Props + alle Settings:
+const startSharding3Options = StartShardingOptions.create<CartCmd>()
+  .withTypeName('cart')
+  .withEntityProps(Props.create(() => new CartActor()))
+  .withExtractEntityId((m) => m.entityId)
+  .withNumShards(16)
+  .withRole('cart-host');
 cluster.sharding.start(
-  StartShardingOptions.create<CartCmd>()
-    .withTypeName('cart')
-    .withEntityProps(Props.create(() => new CartActor()))
-    .withExtractEntityId((m) => m.entityId)
-    .withNumShards(16)
-    .withRole('cart-host'),
+  startSharding3Options,
 );
 ```
 

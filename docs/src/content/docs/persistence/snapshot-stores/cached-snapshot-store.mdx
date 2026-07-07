@@ -15,15 +15,18 @@ import {
   PersistenceExtensionId,
 } from 'actor-ts';
 
+const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.create()
+  .withBackend(backend);
 const underlying = new ObjectStorageSnapshotStore(
-  ObjectStorageSnapshotStoreOptions.create().withBackend(backend), // S3 / filesystem backend
+  objectStorageSnapshotStoreOptions, // S3 / filesystem backend
 );
 
+const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create()
+  .withCache(cache)          // backing cache (typically Redis)
+  .withTtlMs(60_000);
 const cached = new CachedSnapshotStore(
   underlying,
-  CachedSnapshotStoreOptions.create()
-    .withCache(cache)          // backing cache (typically Redis)
-    .withTtlMs(60_000),        // optional TTL
+  cachedSnapshotStoreOptions,        // optional TTL
 );
 
 system.extension(PersistenceExtensionId).configure({

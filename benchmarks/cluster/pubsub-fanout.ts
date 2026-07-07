@@ -25,11 +25,15 @@ let port = 42_000;
 
 async function fanout(nSubs: number): Promise<void> {
   const p = port++;
-  const sys = ActorSystem.create(`fan-${p}`, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
-  const cluster = await Cluster.join(sys, ClusterOptions.create()
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const sys = ActorSystem.create(`fan-${p}`, sysOptions);
+  const clusterOptions = ClusterOptions.create()
     .withHost('h')
     .withPort(p)
-    .withTransport(new InMemoryTransport(new NodeAddress(`fan-${p}`, 'h', p))));
+    .withTransport(new InMemoryTransport(new NodeAddress(`fan-${p}`, 'h', p)));
+  const cluster = await Cluster.join(sys, clusterOptions);
   const mediator = sys.extension(DistributedPubSubId).start(cluster);
 
   let remaining = nSubs;

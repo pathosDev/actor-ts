@@ -30,15 +30,17 @@ async function startNode(host: string, port: number, seeds: string[] = []): Prom
   mediator: import('../../src/ActorRef.js').ActorRef<Subscribe | Publish>;
 }> {
   const system = ActorSystem.create('events');
-  const cluster = await Cluster.join(system, ClusterOptions.create()
+  const clusterOptions = ClusterOptions.create()
     .withHost(host)
     .withPort(port)
     .withSeeds(seeds)
     .withTransport(new InMemoryTransport(new NodeAddress('events', host, port)))
     .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
-    .withGossipIntervalMs(80));
-  const mediator = system.extension(DistributedPubSubId).start(cluster,
-    DistributedPubSubOptions.create().withGossipIntervalMs(100));
+    .withGossipIntervalMs(80);
+  const cluster = await Cluster.join(system, clusterOptions);
+  const pubSubOptions = DistributedPubSubOptions.create()
+    .withGossipIntervalMs(100);
+  const mediator = system.extension(DistributedPubSubId).start(cluster, pubSubOptions);
   return { system, cluster, mediator };
 }
 

@@ -13,13 +13,17 @@ afterEach(async () => {
 });
 
 function newJournal(): SqliteJournal {
-  const j = new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:'));
+  const sqliteJournalOptions = SqliteJournalOptions.create()
+    .withPath(':memory:');
+  const j = new SqliteJournal(sqliteJournalOptions);
   cleanups.push(() => j.close());
   return j;
 }
 
 function newSnapshots(): SqliteSnapshotStore {
-  const s = new SqliteSnapshotStore(SqliteSnapshotStoreOptions.create().withPath(':memory:'));
+  const sqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create()
+    .withPath(':memory:');
+  const s = new SqliteSnapshotStore(sqliteSnapshotStoreOptions);
   cleanups.push(() => s.close());
   return s;
 }
@@ -81,7 +85,9 @@ describe('SqliteJournal', () => {
   });
 
   test('survives close with clear error afterwards', async () => {
-    const j = new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:'));
+    const sqliteJournalOptions = SqliteJournalOptions.create()
+      .withPath(':memory:');
+    const j = new SqliteJournal(sqliteJournalOptions);
     await j.append('p', ['x'], 0);
     await j.close();
     await expect(j.highestSeq('p')).rejects.toThrow(/closed/);
@@ -105,7 +111,10 @@ describe('SqliteSnapshotStore', () => {
   });
 
   test('keepN prunes older snapshots automatically', async () => {
-    const s = new SqliteSnapshotStore(SqliteSnapshotStoreOptions.create().withPath(':memory:').withKeepN(2));
+    const sqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create()
+      .withPath(':memory:')
+      .withKeepN(2);
+    const s = new SqliteSnapshotStore(sqliteSnapshotStoreOptions);
     cleanups.push(() => s.close());
     await s.save('p', 1, {}); await s.save('p', 2, {}); await s.save('p', 3, {});
     const before4 = await s.loadBefore('p', 4);

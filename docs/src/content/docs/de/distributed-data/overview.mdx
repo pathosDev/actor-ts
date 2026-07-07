@@ -68,7 +68,11 @@ import { ActorSystem, Cluster, ClusterOptions } from 'actor-ts';
 import { DistributedDataId, GCounter } from 'actor-ts';
 
 const system  = ActorSystem.create('my-app');
-const cluster = await Cluster.join(system, ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds));
+const clusterOptions = ClusterOptions.create()
+  .withHost(host)
+  .withPort(port)
+  .withSeeds(seeds);
+const cluster = await Cluster.join(system, clusterOptions);
 const dd      = system.extension(DistributedDataId).start(cluster);
 
 // Counter inkrementieren — keine Koordination, einfach in die lokale Replika mergen.
@@ -168,14 +172,15 @@ Für **Restart-überlebende** Semantik nutzt du die **durable**-Variante:
 ```ts
 import { DistributedDataOptions, DurableDistributedDataStore } from 'actor-ts';
 
-const dd = system.extension(DistributedDataId).start(
-  cluster,
-  DistributedDataOptions.create().withDurableStore(
+const distributedDataOptions = DistributedDataOptions.create().withDurableStore(
     new DurableDistributedDataStore({
       durableStateStore: someStore,
       keys: ['hits', 'config'],   // nur diese Keys werden persistiert
     }),
-  ),
+  );
+const dd = system.extension(DistributedDataId).start(
+  cluster,
+  distributedDataOptions,
 );
 ```
 

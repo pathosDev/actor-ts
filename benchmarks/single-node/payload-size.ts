@@ -29,7 +29,10 @@ const SIZES = [
 ] as const;
 
 async function main(): Promise<void> {
-  const system = ActorSystem.create('bench-payload', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const systemOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const system = ActorSystem.create('bench-payload', systemOptions);
   const ref = system.spawnAnonymous(Props.create(() => new Echo()));
 
   console.log('\n  Payload-size sensitivity — ask round-trip for increasing body sizes\n');

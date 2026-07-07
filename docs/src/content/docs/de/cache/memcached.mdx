@@ -10,8 +10,10 @@ Prozesse hinweg.
 ```ts
 import { MemcachedCache, MemcachedCacheOptions } from 'actor-ts';
 
+const memcachedCacheOptions = MemcachedCacheOptions.create()
+  .withServers('memcached-1:11211,memcached-2:11211');
 const cache = new MemcachedCache(
-  MemcachedCacheOptions.create().withServers('memcached-1:11211,memcached-2:11211'),
+  memcachedCacheOptions,
 );
 ```
 

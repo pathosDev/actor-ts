@@ -47,7 +47,7 @@ import {
   registerPostgresPlugins,
 } from 'actor-ts';
 
-const system = ActorSystem.create('my-app', ActorSystemOptions.create()
+const systemOptions = ActorSystemOptions.create()
   // Select the Postgres plugins as the active journal + snapshot store.
   .withConfig({
     'actor-ts': {
@@ -56,15 +56,19 @@ const system = ActorSystem.create('my-app', ActorSystemOptions.create()
         'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.postgres' },
       },
     },
-  }));
+  });
+const system = ActorSystem.create('my-app', systemOptions);
 
 const ext = system.extension(PersistenceExtensionId);
-const { durableStateStore } = registerPostgresPlugins(ext, RegisterPostgresPluginsOptions.create()
+const postgresSnapshotStoreOptions = PostgresSnapshotStoreOptions.create()
+  .withKeepN(3);
+const registerOptions = RegisterPostgresPluginsOptions.create()
   // One pool shared by journal + snapshot + durable-state (recommended).
   .withPool(new Pool({ connectionString: 'postgres://user:pass@host:5432/app' }))
   .withJournal(PostgresJournalOptions.create() /* .withEventsTable(...).withTagsTable(...).withAutoCreateTables(...) */)
-  .withSnapshotStore(PostgresSnapshotStoreOptions.create().withKeepN(3))
-  .withDurableStateStore(PostgresDurableStateStoreOptions.create() /* .withTable(...) */));
+  .withSnapshotStore(postgresSnapshotStoreOptions)
+  .withDurableStateStore(PostgresDurableStateStoreOptions.create() /* .withTable(...) */);
+const { durableStateStore } = registerPostgresPlugins(ext, registerOptions);
 ```
 
 `registerPostgresPlugins` registers the journal + snapshot store via the
@@ -77,12 +81,17 @@ Without a shared `pool`, each component lazily builds its own pool from
 its `url` / `poolConfig`:
 
 ```ts
-registerPostgresPlugins(ext, RegisterPostgresPluginsOptions.create()
-  .withJournal(PostgresJournalOptions.create().withUrl('postgres://user:pass@host:5432/app'))
-  .withSnapshotStore(PostgresSnapshotStoreOptions.create()
-    .withUrl('postgres://user:pass@host:5432/app').withKeepN(3))
-  .withDurableStateStore(PostgresDurableStateStoreOptions.create()
-    .withUrl('postgres://user:pass@host:5432/app')));
+const postgresJournalOptions = PostgresJournalOptions.create()
+  .withUrl('postgres://user:pass@host:5432/app');
+const postgresSnapshotStoreOptions = PostgresSnapshotStoreOptions.create()
+  .withUrl('postgres://user:pass@host:5432/app').withKeepN(3);
+const postgresDurableStateStoreOptions = PostgresDurableStateStoreOptions.create()
+  .withUrl('postgres://user:pass@host:5432/app');
+const registerPostgresPluginsOptions = RegisterPostgresPluginsOptions.create()
+  .withJournal(postgresJournalOptions)
+  .withSnapshotStore(postgresSnapshotStoreOptions)
+  .withDurableStateStore(postgresDurableStateStoreOptions);
+registerPostgresPlugins(ext, registerPostgresPluginsOptions);
 ```
 
 ## When to use it
