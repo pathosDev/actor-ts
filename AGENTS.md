@@ -136,10 +136,19 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   inside) the functional class they configure. The settings interface
   `XSettings` stays with the functional class (it's the config contract
   read by `readSettingsFromConfig`); `XOptions.ts` imports it type-only.
-- **Consumers accept `XOptions | Partial<XSettings>`** and normalize with
-  `resolveSettings(...)` from `src/util/OptionsBuilder.ts`. A plain settings
-  object is fully interchangeable with the builder (it uses the settings
-  field names).
+- **A builder *is* its settings.** `OptionsBuilder.set` writes each field as
+  an own enumerable property, so a builder instance is structurally a bag of
+  the fields you set (the `withX` / `build` methods stay on the prototype and
+  never surface when it's spread or serialized). Consumers therefore accept
+  `XOptions | Partial<XSettings>` and read the argument **directly** — there
+  is no `resolve` helper to call: `const s = options as XSettings` (or, to
+  snapshot / merge, `{ ...defaults, ...(options as Partial<XSettings>) }`).
+  A plain settings object and a builder are fully interchangeable (both use
+  the settings field names). Keep the **union** in the signature — a
+  methods-only builder is not assignable to a bare `Partial<XSettings>` (TS
+  weak-type check), and the union is what advertises the builder to callers.
+  Broker actors need nothing: `BrokerActor`'s constructor takes the union and
+  snapshots it, so subclasses just `super(options)`.
 - **Builder-first is the documented/primary style** — docs and examples
   show the builder; the plain object is the shorthand alternative (mention
   it once per page, don't lead with it).
