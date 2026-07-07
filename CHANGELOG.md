@@ -9,7 +9,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
-### Added
+## [0.10.0] — 2026-07-08
+
+### Added — Typed WebSocket & MQTT
 
 - **Typed WebSocket routing** (#1) — a `websocket(path, actorRef)` directive
   in the HTTP routing DSL binds a `WebSocketServerActor<TOut, TIn>`.  The
@@ -44,8 +46,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   .withBrokerUrl(…).withClientId(…).withQos(…)…`; feeds the same
   three-layer settings merge (constructor > HOCON
   `actor-ts.io.broker.mqtt` > built-in defaults).  (As of #346/#348 this is
-  the primary way to construct; a plain `Partial<MqttActorSettings>` object
-  works too — see the options note under *Changed*.)
+  the primary way to construct; a plain `MqttOptionsType` object works too —
+  see the options note under *Changed*.)
 - **Typed MQTT payloads** (#345) — inbound `MqttMessage<T>` carries a
   lazily-decoding `MqttPayload<T>` (`.bytes` / `.text()` / `.entity<U=T>()`,
   successes cached).  A pluggable `MqttCodec<T>` seam (default
@@ -55,7 +57,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `onDecodeError`.  `MqttClientLike` / `MqttModuleLike` are exported as
   test seams for the `mqttModule()` override.
 
-### Changed
+### Changed — Options overhaul & MQTT
 
 - **Fluent options, framework-wide** (#346, #348) — every configurable
   constructor and factory takes a fluent options builder **or** a plain
@@ -115,7 +117,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   longer a raw `Uint8Array` (#345).  Migration: `msg.payload` →
   `msg.payload.bytes`; `new TextDecoder().decode(msg.payload)` →
   `msg.payload.text()`; JSON reads → `msg.payload.entity()`.
-- **BREAKING: `MqttActorSettings.subscriptions` and the `MqttSubscription`
+- **BREAKING: `MqttOptionsType.subscriptions` and the `MqttSubscription`
   type are removed** (#345) — they were never HOCON-expressible (targets
   are actor refs).  Migration: move `subscriptions: [{ topic, target }]`
   into the subclass constructor as `this.subscribe(topic, { target })`, or
@@ -127,7 +129,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   targets and leaves the actor's own subscription intact (previously it
   dropped the whole topic).
 
-### Fixed
+### Fixed — MQTT
 
 - **MQTT runtime subscriptions are re-applied after a reconnect** (#345) —
   previously only the (now-removed) `settings.subscriptions` were
@@ -141,7 +143,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   refs are deathwatched; when one stops it is pruned from the registry and
   a broker UNSUBSCRIBE fires once the pattern has no consumers left.
 
-### Removed
+### Removed — legacy frame-level WebSocket API
 
 - **BREAKING: the legacy frame-level WebSocket API** — `WebSocketActor`
   (client), `ServerWebSocketActor` (server bridge), and the
@@ -198,7 +200,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   returning `<resourceVersion>/<leaseTransitions>` and
   `InMemoryLease` a monotonic per-name version stamp.
 
-### Added
+### Added — Persistence, HTTP & observability
 
 - **PostgreSQL persistence backend** (#323) — `PostgresJournal`,
   `PostgresSnapshotStore`, and `PostgresDurableStateStore` (the first
@@ -353,7 +355,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `attributes`, and the SDK auto-links the active span's
   `traceId`/`spanId` when tracing is enabled in the same process.
 
-### Changed
+### Changed — Bounded mailbox default
 
 - **Bounded mailbox is now the default** (#310) — every actor spawned
   without an explicit `Props.withMailbox(...)` gets a
@@ -368,7 +370,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   per-actor via `Props.withMailbox(() => new Mailbox())`; keep the
   bounded shape but change the capacity via `Props.withMailboxCapacity(n)`.
 
-### Fixed
+### Fixed — Compression
 
 - **zstd compression on runtimes without native zstd** (#321) — the
   compression codec wired the `fzstd` peer-dependency as a compressor, but
