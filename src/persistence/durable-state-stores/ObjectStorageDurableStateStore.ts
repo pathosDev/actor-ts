@@ -26,7 +26,6 @@ import {
   type DurableStateStore,
 } from '../DurableStateStore.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { none, some, type Option } from '../../util/Option.js';
 import type { ObjectStorageDurableStateStoreOptions } from './ObjectStorageDurableStateStoreOptions.js';
 
@@ -93,7 +92,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
   private readonly etagCache = new Map<string, CachedEntry>();
 
   constructor(options: ObjectStorageDurableStateStoreOptions | Partial<ObjectStorageDurableStateStoreSettings>) {
-    const s = resolveSettings(options);
+    const s = (options as Partial<ObjectStorageDurableStateStoreSettings>);
     if (s.backend === undefined) throw new Error('ObjectStorageDurableStateStore: backend is required (call withBackend()).');
     this.backend = s.backend;
     this.prefix = s.prefix ?? '';

@@ -1,5 +1,4 @@
 import type { ActorSystem } from '../../ActorSystem.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import type { PersistenceExtension } from '../PersistenceExtension.js';
 import { CassandraJournal } from './CassandraJournal.js';
 import type { CassandraJournalOptions } from './CassandraJournalOptions.js';
@@ -40,11 +39,11 @@ export function registerCassandraPlugins(
   ext: PersistenceExtension,
   options: RegisterCassandraPluginsOptions | Partial<RegisterCassandraPluginsSettings>,
 ): void {
-  const s = resolveSettings(options);
+  const s = (options as Partial<RegisterCassandraPluginsSettings>);
   // Resolve each leaf to a plain object and merge the shared client (when
   // set) onto it, so both plug-ins reuse one connection tree.
-  const journal = { ...resolveSettings(s.journal ?? {}), ...(s.client ? { client: s.client } : {}) };
-  const snapshotStore = { ...resolveSettings(s.snapshotStore ?? {}), ...(s.client ? { client: s.client } : {}) };
+  const journal = { ...((s.journal ?? {}) as Partial<CassandraJournalSettings>), ...(s.client ? { client: s.client } : {}) };
+  const snapshotStore = { ...((s.snapshotStore ?? {}) as Partial<CassandraSnapshotStoreSettings>), ...(s.client ? { client: s.client } : {}) };
   ext.registerJournal(
     CASSANDRA_JOURNAL_PLUGIN_ID,
     (_system: ActorSystem) => new CassandraJournal(journal),

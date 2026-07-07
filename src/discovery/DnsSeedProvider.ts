@@ -1,5 +1,4 @@
 import { NodeAddress } from '../cluster/NodeAddress.js';
-import { resolveSettings } from '../util/OptionsBuilder.js';
 import type { DnsSeedProviderOptions } from './DnsSeedProviderOptions.js';
 import type { SeedProvider } from './SeedProvider.js';
 
@@ -44,7 +43,7 @@ export class DnsSeedProvider implements SeedProvider {
   private readonly settings: DnsSeedProviderSettings;
 
   constructor(options: DnsSeedProviderOptions | Partial<DnsSeedProviderSettings> = {}) {
-    this.settings = resolveSettings(options) as DnsSeedProviderSettings;
+    this.settings = options as DnsSeedProviderSettings;
     this.cacheTtlMs = this.settings.cacheTtlMs ?? 60_000;
     if (!Number.isFinite(this.cacheTtlMs) || this.cacheTtlMs < 0) {
       throw new Error(`DnsSeedProvider: cacheTtlMs must be a non-negative finite number, got ${this.cacheTtlMs}`);

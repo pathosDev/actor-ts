@@ -3,7 +3,6 @@ import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import type { BrokerCommonSettings } from './BrokerSettings.js';
 import type { RedisStreamsOptions } from './RedisStreamsOptions.js';
@@ -61,7 +60,7 @@ export class RedisStreamsActor
   private redisProducer: IoredisClientLike | null = null;
   private consumerLoopRunning = false;
 
-  constructor(options: RedisStreamsOptions | Partial<RedisStreamsActorSettings> = {}) { super(resolveSettings(options)); }
+  constructor(options: RedisStreamsOptions | Partial<RedisStreamsActorSettings> = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.redisStreams; }
   protected builtInDefaults(): Partial<RedisStreamsActorSettings> {

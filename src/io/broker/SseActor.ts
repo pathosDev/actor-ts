@@ -2,7 +2,6 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import type { BrokerCommonSettings } from './BrokerSettings.js';
 import type { SseOptions } from './SseOptions.js';
@@ -39,7 +38,7 @@ export class SseActor extends BrokerActor<SseActorSettings, SseCmd, never> {
   private aborter: AbortController | null = null;
   private streamRunning = false;
 
-  constructor(options: SseOptions | Partial<SseActorSettings> = {}) { super(resolveSettings(options)); }
+  constructor(options: SseOptions | Partial<SseActorSettings> = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.sse; }
   protected builtInDefaults(): Partial<SseActorSettings> { return {}; }

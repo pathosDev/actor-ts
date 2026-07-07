@@ -1,6 +1,5 @@
 import type { CassandraClientLike, CassandraConnection } from '../../persistence/journals/CassandraClient.js';
 import { createCassandraClient, keyspaceDdl } from '../../persistence/journals/CassandraClient.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import type { CassandraRememberEntitiesStoreOptions } from './CassandraRememberEntitiesStoreOptions.js';
 import type { RememberEntitiesStore, RememberEvent } from './RememberEntitiesStore.js';
 
@@ -67,7 +66,7 @@ export class CassandraRememberEntitiesStore implements RememberEntitiesStore {
   private stopped = false;
 
   constructor(options: CassandraRememberEntitiesStoreOptions | Partial<CassandraRememberEntitiesStoreSettings>) {
-    this.options = resolveSettings(options);
+    this.options = (options as Partial<CassandraRememberEntitiesStoreSettings>);
     this.client = this.options.client ?? (undefined as unknown as CassandraClientLike);
     this.ownsClient = !this.options.client;
   }

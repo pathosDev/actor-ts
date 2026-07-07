@@ -2,7 +2,6 @@ import type { Cache } from '../../cache/Cache.js';
 import type { Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { none, some, type Option } from '../../util/Option.js';
 import type { CachedSnapshotStoreOptions } from './CachedSnapshotStoreOptions.js';
 
@@ -68,7 +67,7 @@ export class CachedSnapshotStore implements SnapshotStore {
     private readonly underlying: SnapshotStore,
     options: CachedSnapshotStoreOptions | Partial<CachedSnapshotStoreSettings>,
   ) {
-    const s = resolveSettings(options);
+    const s = (options as Partial<CachedSnapshotStoreSettings>);
     if (s.cache === undefined) throw new Error('CachedSnapshotStore: cache is required (call withCache()).');
     this.cache = s.cache;
     this.ttlMs = s.ttlMs ?? DEFAULT_TTL_MS;

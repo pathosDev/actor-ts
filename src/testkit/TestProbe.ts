@@ -1,7 +1,6 @@
 import { ActorPath } from '../ActorPath.js';
 import { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
-import { resolveSettings } from '../util/OptionsBuilder.js';
 import type { TestProbeOptions } from './TestProbeOptions.js';
 
 export interface TestProbeSettings {
@@ -42,7 +41,7 @@ export class TestProbe extends ActorRef<unknown> {
     options: TestProbeOptions | Partial<TestProbeSettings> = {},
   ) {
     super();
-    const opts = resolveSettings(options);
+    const opts = (options as Partial<TestProbeSettings>);
     const n = opts.name ?? `test-probe-${++probeCounter}`;
     this.path = new ActorPath('', null, system.name).child(n);
     this.defaultTimeoutMs = opts.defaultTimeoutMs ?? 3_000;

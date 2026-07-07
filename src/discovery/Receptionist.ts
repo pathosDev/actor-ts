@@ -1,7 +1,6 @@
 import { match, P } from 'ts-pattern';
 import { Actor } from '../Actor.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
-import { resolveSettings } from '../util/OptionsBuilder.js';
 import type { ReceptionistOptions } from './ReceptionistOptions.js';
 import { fromNullable, type Option } from '../util/Option.js';
 import type { ActorRef } from '../ActorRef.js';
@@ -66,7 +65,7 @@ export class Receptionist extends Actor<Msg> {
 
   constructor(options: ReceptionistOptions | Partial<ReceptionistSettings> = {}) {
     super();
-    const settings = resolveSettings(options);
+    const settings = (options as Partial<ReceptionistSettings>);
     this.clusterRef = settings.cluster ?? null;
     this.gossipIntervalMs = settings.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
   }
@@ -255,7 +254,7 @@ export class ReceptionistExtension {
     // `cluster` stays a positional arg (it's identity/wiring, not a tunable);
     // fold it onto the resolved settings so the actor sees a single object.
     const settings: Partial<ReceptionistSettings> = {
-      ...resolveSettings(options),
+      ...(options as Partial<ReceptionistSettings>),
       cluster: cluster ?? null,
     };
     const ref = this.system.spawn(

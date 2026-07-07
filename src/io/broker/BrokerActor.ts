@@ -2,6 +2,7 @@ import { match } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { Config } from '../../config/Config.js';
+import type { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import {
   BrokerBufferOverflow,
   BrokerConnected,
@@ -81,9 +82,11 @@ export abstract class BrokerActor<S extends BrokerCommonSettings, Cmd = unknown,
   private _consecutiveFailures = 0;
   private _breakerOpenUntil = 0;
 
-  protected constructor(settings: Partial<S>) {
+  protected constructor(options: OptionsBuilder<S> | Partial<S> = {}) {
     super();
-    this._ctorSettings = settings;
+    // A builder instance carries its set fields as own enumerable props, so
+    // spreading normalizes builder OR plain object to a `Partial<S>` snapshot.
+    this._ctorSettings = { ...(options as Partial<S>) };
   }
 
   /* ------------------------------- Settings ------------------------------- */

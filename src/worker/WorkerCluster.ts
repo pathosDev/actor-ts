@@ -4,7 +4,6 @@ import type {
   PortLike,
 } from '../cluster/transports/MessageChannelTransport.js';
 import { getWorkerBackend, type WorkerLike } from '../runtime/worker/index.js';
-import { resolveSettings } from '../util/OptionsBuilder.js';
 import type { WorkerClusterOptions } from './WorkerClusterOptions.js';
 import { WorkerBroker } from './WorkerBroker.js';
 
@@ -89,7 +88,7 @@ export class WorkerCluster {
   static async spawn(
     options: WorkerClusterOptions | Partial<WorkerClusterSettings>,
   ): Promise<WorkerCluster> {
-    const settings = resolveSettings(options) as WorkerClusterSettings;
+    const settings = options as WorkerClusterSettings;
     const workers = resolveWorkerCount(settings.workers);
     const broker = new WorkerBroker();
     const cluster = new WorkerCluster(broker, settings, workers);

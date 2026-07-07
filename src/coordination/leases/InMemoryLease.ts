@@ -1,6 +1,5 @@
 import { type Lease, type LeaseSettings } from '../Lease.js';
 import type { LeaseOptions } from '../LeaseOptions.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 
 interface LeaseRecord {
   readonly name: string;
@@ -65,7 +64,7 @@ export class InMemoryLease implements Lease {
   private readonly settings: LeaseSettings;
 
   constructor(options: LeaseOptions | Partial<LeaseSettings> = {}) {
-    this.settings = resolveSettings(options) as LeaseSettings;
+    this.settings = options as LeaseSettings;
     this.renewalIntervalMs = this.settings.renewalIntervalMs ?? Math.max(100, Math.floor(this.settings.ttlMs / 3));
   }
 

@@ -1,6 +1,5 @@
 import { ActorSystem, type ActorSystemSettings } from '../ActorSystem.js';
 import { LogLevel, NoopLogger } from '../Logger.js';
-import { resolveSettings } from '../util/OptionsBuilder.js';
 import { ManualScheduler } from './ManualScheduler.js';
 import { TestProbe } from './TestProbe.js';
 import type { TestKitOptions } from './TestKitOptions.js';
@@ -36,7 +35,7 @@ export class TestKit {
     name: string = 'test-kit',
     options: TestKitOptions | Partial<TestKitSettings> = {},
   ): TestKit {
-    const s = resolveSettings(options);
+    const s = (options as Partial<TestKitSettings>);
     const quiet = s.quiet ?? true;
     // Quiet default: install a NoopLogger + LogLevel.Off unless the caller
     // already set a logger / level.  The extra `quiet` field is ignored by
@@ -79,7 +78,7 @@ export class TestKit {
     options: TestKitOptions | Partial<TestKitSettings> = {},
   ): { kit: TestKit; scheduler: ManualScheduler } {
     const scheduler = new ManualScheduler();
-    const kit = TestKit.create(name, { ...resolveSettings(options), scheduler });
+    const kit = TestKit.create(name, { ...(options as Partial<TestKitSettings>), scheduler });
     return { kit, scheduler };
   }
 }

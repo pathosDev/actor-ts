@@ -3,7 +3,6 @@ import {
   type DurableStateRecord,
   type DurableStateStore,
 } from '../DurableStateStore.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { JournalError } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import { none, some, type Option } from '../../util/Option.js';
@@ -52,7 +51,7 @@ export class MariaDbDurableStateStore implements DurableStateStore {
   private closed = false;
 
   constructor(options: MariaDbDurableStateStoreOptions | Partial<MariaDbDurableStateStoreSettings> = {}) {
-    const s = resolveSettings(options);
+    const s = (options as Partial<MariaDbDurableStateStoreSettings>);
     this.settings = s;
     this.table = assertSafeIdentifier(s.table ?? 'durable_state', 'durable-state table');
     this.autoCreate = s.autoCreateTables ?? true;

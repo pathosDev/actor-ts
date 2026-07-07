@@ -1,4 +1,3 @@
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import {
   addrKey,
   type ClusterPartitionView,
@@ -28,7 +27,7 @@ export class KeepReferee implements DowningProvider {
   private readonly settings: KeepRefereeSettings;
 
   constructor(options: KeepRefereeOptions | Partial<KeepRefereeSettings>) {
-    this.settings = resolveSettings(options) as KeepRefereeSettings;
+    this.settings = options as KeepRefereeSettings;
     if (!this.settings.refereeAddress) throw new Error('KeepReferee: refereeAddress required');
   }
 

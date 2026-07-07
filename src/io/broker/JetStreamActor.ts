@@ -4,7 +4,6 @@ import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import type { BrokerCommonSettings } from './BrokerSettings.js';
 import type { JetStreamOptions } from './JetStreamOptions.js';
@@ -201,7 +200,7 @@ export class JetStreamActor extends BrokerActor<
   /** Map of streamSeq → in-flight ack handle for the manual-ack pump. */
   private readonly pending = new Map<number, PendingAck>();
 
-  constructor(options: JetStreamOptions | Partial<JetStreamActorSettings> = {}) { super(resolveSettings(options)); }
+  constructor(options: JetStreamOptions | Partial<JetStreamActorSettings> = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.jetstream; }
   protected builtInDefaults(): Partial<JetStreamActorSettings> { return {}; }

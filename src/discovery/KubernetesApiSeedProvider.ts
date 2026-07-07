@@ -1,5 +1,4 @@
 import { NodeAddress } from '../cluster/NodeAddress.js';
-import { resolveSettings } from '../util/OptionsBuilder.js';
 import type { KubernetesApiSeedProviderOptions } from './KubernetesApiSeedProviderOptions.js';
 import type { SeedProvider } from './SeedProvider.js';
 
@@ -30,7 +29,7 @@ export class KubernetesApiSeedProvider implements SeedProvider {
   private readonly settings: KubernetesApiSeedProviderSettings;
 
   constructor(options: KubernetesApiSeedProviderOptions | Partial<KubernetesApiSeedProviderSettings> = {}) {
-    this.settings = resolveSettings(options) as KubernetesApiSeedProviderSettings;
+    this.settings = options as KubernetesApiSeedProviderSettings;
   }
 
   async lookup(): Promise<NodeAddress[]> {

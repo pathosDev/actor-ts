@@ -1,5 +1,4 @@
 import { type Lease, type LeaseSettings } from '../Lease.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import type { KubernetesLeaseOptions } from './KubernetesLeaseOptions.js';
 import {
   createLease,
@@ -77,7 +76,7 @@ export class KubernetesLease implements Lease {
   private readonly settings: KubernetesLeaseSettings;
 
   constructor(options: KubernetesLeaseOptions | Partial<KubernetesLeaseSettings> = {}) {
-    this.settings = resolveSettings(options) as KubernetesLeaseSettings;
+    this.settings = options as KubernetesLeaseSettings;
     this.renewalIntervalMs = this.settings.renewalIntervalMs
       ?? Math.max(500, Math.floor(this.settings.ttlMs / 3));
   }

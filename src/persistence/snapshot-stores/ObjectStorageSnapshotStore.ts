@@ -15,7 +15,6 @@ import { resolveCompression, resolveEncryption } from '../object-storage/PluginC
 import type { ObjectStorageBackend } from '../object-storage/ObjectStorageBackend.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { none, some, type Option } from '../../util/Option.js';
 import type { ObjectStorageSnapshotStoreOptions } from './ObjectStorageSnapshotStoreOptions.js';
 
@@ -56,7 +55,7 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
   private readonly encryption: EncryptionConfig | EncryptionResolver | undefined;
 
   constructor(options: ObjectStorageSnapshotStoreOptions | Partial<ObjectStorageSnapshotStoreSettings>) {
-    const s = resolveSettings(options);
+    const s = (options as Partial<ObjectStorageSnapshotStoreSettings>);
     if (s.backend === undefined) throw new Error('ObjectStorageSnapshotStore: backend is required (call withBackend()).');
     this.backend = s.backend;
     this.prefix = s.prefix ?? '';

@@ -3,7 +3,6 @@ import type { ActorSystem } from '../../ActorSystem.js';
 import type { Lease } from '../../coordination/Lease.js';
 import { PersistenceExtensionId } from '../../persistence/PersistenceExtension.js';
 import { Props } from '../../Props.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import type { Cluster } from '../Cluster.js';
 import type { EnvelopeMsg } from '../Protocol.js';
 import { AllocationStrategy, HashAllocationStrategy } from './AllocationStrategy.js';
@@ -131,7 +130,7 @@ export class ClusterSharding {
   ): ActorRef<TMsg> {
     const settings = typeof arg1 === 'string'
       ? this.buildSettingsFromShorthand(arg1, arg2!, arg3 ?? {})
-      : resolveSettings(arg1) as StartSettings<TMsg>;
+      : arg1 as StartSettings<TMsg>;
 
     this.ensureCoordinator(settings as StartSettings<unknown>);
     const existing = this.findRegionByType(settings.typeName);
@@ -158,7 +157,7 @@ export class ClusterSharding {
     entity: (new () => import('../../Actor.js').Actor<TMsg>) | (() => import('../../Actor.js').Actor<TMsg>),
     options: StartShardingOptions<TMsg> | Partial<StartSettings<TMsg>>,
   ): StartSettings<TMsg> {
-    const opts = resolveSettings(options);
+    const opts = (options as Partial<StartSettings<TMsg>>);
     // Classes have a `.prototype` whose `constructor` === the class itself.
     // Arrow functions don't have `prototype`; regular non-class functions do
     // (with `.prototype.constructor === fn`), so we treat anything that's
@@ -187,7 +186,7 @@ export class ClusterSharding {
     // Force `proxy: true` regardless of what the caller passed.  Resolve to a
     // plain settings object first so both builder and plain-object inputs are
     // handled uniformly (a `Partial<StartSettings>` has no `.withProxy`).
-    const settings: Partial<StartSettings<TMsg>> = { ...resolveSettings(options), proxy: true };
+    const settings: Partial<StartSettings<TMsg>> = { ...(options as Partial<StartSettings<TMsg>>), proxy: true };
     return this.start(settings);
   }
 

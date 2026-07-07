@@ -3,7 +3,6 @@ import type { ActorSystem } from '../../ActorSystem.js';
 import type { Lease } from '../../coordination/Lease.js';
 import { extensionId, type ExtensionId } from '../../Extension.js';
 import { Props } from '../../Props.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import type { Cluster } from '../Cluster.js';
 import { fromNullable, type Option } from '../../util/Option.js';
 import {
@@ -66,7 +65,7 @@ export class ClusterSingleton {
     cluster: Cluster,
     options: StartSingletonOptions<T> | Partial<StartSingletonSettings<T>>,
   ): SingletonHandle<T> {
-    const settings = resolveSettings(options) as StartSingletonSettings<T>;
+    const settings = options as StartSingletonSettings<T>;
     const existing = this.handles.get(settings.typeName);
     if (existing) return existing as SingletonHandle<T>;
 

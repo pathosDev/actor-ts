@@ -13,7 +13,6 @@ import {
   DEFAULT_TOMBSTONE_TTL_MS,
 } from '../util/Constants.js';
 import { none, some, type Option } from '../util/Option.js';
-import { resolveSettings } from '../util/OptionsBuilder.js';
 import type { ClusterOptions } from './ClusterOptions.js';
 import {
   LeaderChanged,
@@ -205,7 +204,7 @@ export class Cluster {
     system: ActorSystem,
     options: ClusterOptions | Partial<ClusterSettings>,
   ): Promise<Cluster> {
-    const settings = resolveSettings(options) as ClusterSettings;
+    const settings = options as ClusterSettings;
     const cluster = new Cluster(system, settings);
     await cluster._start(settings.seeds ?? []);
     return cluster;

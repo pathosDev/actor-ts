@@ -24,7 +24,6 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { BrokerActor, type OutboundEnvelope } from '../../io/broker/BrokerActor.js';
 import type { BrokerCommonSettings } from '../../io/broker/BrokerSettings.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { jsonCodec, WsDecodeError, type WsCodec } from './WsCodec.js';
 import type { WebSocketClientOptions } from './WebSocketClientOptions.js';
 import {
@@ -67,7 +66,7 @@ export abstract class WebSocketClientActor<TOut, TIn, TSelf = never>
   private _codec: WsCodec<TOut, TIn> | null = null;
 
   constructor(options: WebSocketClientOptions<TOut, TIn> | Partial<WebSocketClientSettings<TOut, TIn>> = {}) {
-    super(resolveSettings(options));
+    super(options);
   }
 
   /* ----------------------- user overrides ------------------------ */

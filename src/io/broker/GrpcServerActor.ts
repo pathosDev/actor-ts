@@ -3,7 +3,6 @@ import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { Actor } from '../../Actor.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { BrokerSettingsError, type BrokerCommonSettings } from './BrokerSettings.js';
 import type { GrpcServerOptions } from './GrpcServerOptions.js';
 
@@ -85,7 +84,7 @@ export class GrpcServerActor extends Actor<unknown> {
 
   constructor(options: GrpcServerOptions | Partial<GrpcServerSettings> = {}) {
     super();
-    this._ctorSettings = resolveSettings(options);
+    this._ctorSettings = { ...(options as Partial<GrpcServerSettings>) };
   }
 
   override async preStart(): Promise<void> {

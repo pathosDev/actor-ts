@@ -1,4 +1,3 @@
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import {
   addrKey,
   type ClusterPartitionView,
@@ -28,7 +27,7 @@ export class KeepOldest implements DowningProvider {
   private readonly settings: KeepOldestSettings;
 
   constructor(options: KeepOldestOptions | Partial<KeepOldestSettings> = {}) {
-    this.settings = resolveSettings(options) as KeepOldestSettings;
+    this.settings = options as KeepOldestSettings;
   }
 
   decide(view: ClusterPartitionView): DowningDecision {

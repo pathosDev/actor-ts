@@ -1,7 +1,6 @@
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import type { PersistentEvent } from '../JournalTypes.js';
 import {
   type LiveQueryOptions,
@@ -188,7 +187,7 @@ export class ProjectionActor {
     system: ActorSystem,
     options: ByPidProjectionOptions<E> | Partial<ByPidSettings<E>>,
   ): ActorRef<unknown> {
-    const settings = resolveSettings(options) as ByPidSettings<E>;
+    const settings = options as ByPidSettings<E>;
     return system.spawn(
       Props.create(() => new ByPidProjectionActor<E>(settings) as unknown as Actor<unknown>),
       `projection-${settings.name}-${sanitize(settings.persistenceId)}`,
@@ -200,7 +199,7 @@ export class ProjectionActor {
     system: ActorSystem,
     options: ByTagProjectionOptions<E> | Partial<ByTagSettings<E>>,
   ): ActorRef<unknown> {
-    const settings = resolveSettings(options) as ByTagSettings<E>;
+    const settings = options as ByTagSettings<E>;
     return system.spawn(
       Props.create(() => new ByTagProjectionActor<E>(settings) as unknown as Actor<unknown>),
       `projection-${settings.name}-tag-${sanitize(settings.tag)}`,

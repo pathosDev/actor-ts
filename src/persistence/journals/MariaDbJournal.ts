@@ -1,4 +1,3 @@
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import type { Journal } from '../Journal.js';
 import {
   JournalConcurrencyError,
@@ -50,7 +49,7 @@ export class MariaDbJournal implements Journal {
   private closed = false;
 
   constructor(options: MariaDbJournalOptions | Partial<MariaDbJournalSettings> = {}) {
-    const s = resolveSettings(options);
+    const s = (options as Partial<MariaDbJournalSettings>);
     this.settings = s;
     this.table = assertSafeIdentifier(s.eventsTable ?? 'events', 'events table');
     this.tagsTable = assertSafeIdentifier(

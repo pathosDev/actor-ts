@@ -1,5 +1,4 @@
 import { NodeAddress } from '../cluster/NodeAddress.js';
-import { resolveSettings } from '../util/OptionsBuilder.js';
 import { ConfigSeedProviderOptions } from './ConfigSeedProviderOptions.js';
 import type { SeedProvider } from './SeedProvider.js';
 
@@ -18,7 +17,7 @@ export class ConfigSeedProvider implements SeedProvider {
   private readonly settings: ConfigSeedProviderSettings;
 
   constructor(options: ConfigSeedProviderOptions | Partial<ConfigSeedProviderSettings> = {}) {
-    this.settings = resolveSettings(options) as ConfigSeedProviderSettings;
+    this.settings = options as ConfigSeedProviderSettings;
   }
 
   async lookup(): Promise<NodeAddress[]> {

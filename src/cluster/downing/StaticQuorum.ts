@@ -1,4 +1,3 @@
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import {
   addrKey,
   type ClusterPartitionView,
@@ -26,7 +25,7 @@ export class StaticQuorum implements DowningProvider {
   private readonly settings: StaticQuorumSettings;
 
   constructor(options: StaticQuorumOptions | Partial<StaticQuorumSettings>) {
-    this.settings = resolveSettings(options) as StaticQuorumSettings;
+    this.settings = options as StaticQuorumSettings;
     if (this.settings.quorumSize < 1) {
       throw new Error('StaticQuorum: quorumSize must be >= 1');
     }

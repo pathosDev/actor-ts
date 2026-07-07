@@ -50,7 +50,7 @@ export {
   eitherSequence,
 } from './util/Either.js';
 export type { Either } from './util/Either.js';
-export { OptionsBuilder, resolveSettings } from './util/OptionsBuilder.js';
+export { OptionsBuilder } from './util/OptionsBuilder.js';
 
 // Core API
 export { Actor } from './Actor.js';

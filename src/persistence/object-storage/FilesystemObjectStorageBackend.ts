@@ -1,5 +1,4 @@
 import { Lazy } from '../../util/Lazy.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { none, some, type Option } from '../../util/Option.js';
 import { wrapError } from '../../util/WrapError.js';
 import { makeKeyValidator } from '../storage/KeyValidator.js';
@@ -136,7 +135,7 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
   private readonly staleLockMs: number;
 
   constructor(options: FilesystemObjectStorageOptions | Partial<FilesystemObjectStorageSettings>) {
-    const s = resolveSettings(options);
+    const s = (options as Partial<FilesystemObjectStorageSettings>);
     if (s.dir === undefined) throw new Error('FilesystemObjectStorageBackend: dir is required (call withDir()).');
     this.dir           = s.dir;
     this.lockTimeoutMs = s.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;

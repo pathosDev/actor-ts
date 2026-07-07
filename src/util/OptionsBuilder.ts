@@ -9,43 +9,45 @@
  *     protected {@link set} and returns `this`, so chaining stays typed
  *     as the concrete subclass across inheritance levels (no F-bounded
  *     `Self` generic needed — `this` already IS the subclass).
- *   - **`build()` snapshots.** It returns an independent `Partial<T>`;
- *     the accumulated `s` is never handed out by reference, so a built
- *     partial won't mutate if the builder is used further.
- *   - **`build()` feeds the existing resolution.** For brokers it is the
+ *   - **A builder *is* its settings.** {@link set} writes each field as an
+ *     own enumerable property of the builder instance, so a builder is
+ *     structurally a bag of the fields you set. Consumers accept
+ *     `XOptions | Partial<XSettings>` and read / spread the argument
+ *     directly — there is no separate "resolve" step to call. The `withX`
+ *     / `build` methods live on the prototype, so they never surface when
+ *     the settings are spread (`{ ...options }`), enumerated
+ *     (`Object.keys`), or serialized (`JSON.stringify`): only the set
+ *     fields do. (The consumer keeps the union in its signature because a
+ *     builder — a methods-only type — is not assignable to a bare
+ *     `Partial<T>`: TypeScript's weak-type check would reject it. Reading
+ *     the settings out of the argument is a plain cast: `options as
+ *     XSettings` / `{ ...(options as Partial<XSettings>) }`.)
+ *   - **`build()` snapshots.** It returns an independent `Partial<T>` (a
+ *     copy of the own fields) for the rare caller that wants to freeze a
+ *     builder it intends to keep mutating; ordinary consumers don't need
+ *     it because they already read/spread the argument.
+ *   - **Feeds the existing resolution.** For brokers the settings are the
  *     highest-precedence layer of `mergeSettings(defaults, HOCON, ctor)`;
- *     because a builder records ONLY the fields you set, unset fields
- *     fall through to HOCON — the builder never competes with config.
+ *     because a builder records ONLY the fields you set, unset fields fall
+ *     through to HOCON — the builder never competes with config.
  *
- * A builder instance is a throwaway construction helper: methods mutate
- * in place, so a single instance is not a branch point (two chains off
- * the same instance share state). Call `build()` to freeze.
+ * A builder instance is a throwaway construction helper: methods mutate in
+ * place, so a single instance is not a branch point (two chains off the
+ * same instance share state).
  */
 export abstract class OptionsBuilder<T extends object> {
-  /** Accumulated settings.  `-readonly` so `set` can write the (readonly) target fields. */
-  protected readonly s: { -readonly [K in keyof T]?: T[K] } = {};
-
-  /** Set one field and return `this` for chaining. */
+  /**
+   * Set one field and return `this` for chaining.  The value is written as
+   * an own enumerable property of the builder so the instance reads as a
+   * plain bag of settings (see the class doc); methods stay on the prototype.
+   */
   protected set<K extends keyof T>(key: K, value: T[K]): this {
-    this.s[key] = value;
+    (this as unknown as { [P in keyof T]?: T[P] })[key] = value;
     return this;
   }
 
-  /** Snapshot the accumulated settings as an independent `Partial<T>`. */
+  /** Snapshot the set fields as an independent `Partial<T>` (own props only). */
   build(): Partial<T> {
-    return { ...this.s };
+    return { ...(this as unknown as Partial<T>) };
   }
-}
-
-/**
- * Normalize an options argument to a plain `Partial<T>`.  Every consumer that
- * takes options accepts EITHER a fluent builder OR a plain settings object —
- * `new MqttActor(MqttOptions.create().withClientId('x'))` and
- * `new MqttActor({ clientId: 'x' })` are interchangeable.  This is the single
- * seam that makes that work: a builder is `.build()`-ed, a plain object is
- * copied.  The plain object uses the settings field names (which match each
- * builder's `withX` method one-for-one).
- */
-export function resolveSettings<T extends object>(options: OptionsBuilder<T> | Partial<T>): Partial<T> {
-  return options instanceof OptionsBuilder ? options.build() : { ...options };
 }

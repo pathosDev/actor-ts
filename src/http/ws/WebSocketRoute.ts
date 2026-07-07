@@ -11,7 +11,6 @@
  * request, so `BearerTokenAuth` / `IpAllowlist` gate the handshake.
  */
 import { path, type Route, type WebSocketConnectHandler } from '../Route.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { jsonCodec, type WsCodec } from './WsCodec.js';
 import { wireConnection } from './ConnectionWiring.js';
 import type { WsServerRef } from './WsMessages.js';
@@ -56,7 +55,7 @@ export function websocket<TOut, TIn, TSelf = never>(
     target = a;
     builder = b as WebSocketRouteOptions<TOut, TIn> | Partial<WebSocketRouteSettings<TOut, TIn>> | undefined;
   }
-  const options: Partial<WebSocketRouteSettings<TOut, TIn>> = resolveSettings(builder ?? {});
+  const options: Partial<WebSocketRouteSettings<TOut, TIn>> = ((builder ?? {}) as Partial<WebSocketRouteSettings<TOut, TIn>>);
 
   const codec: WsCodec<TOut, TIn> = options.codec ?? jsonCodec<TOut, TIn>();
   // Policy needs the ActorSystem's config, only available at connect

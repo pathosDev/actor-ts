@@ -1,6 +1,5 @@
 import { NodeAddress } from './NodeAddress.js';
 import { fromNullable, type Option } from '../util/Option.js';
-import { resolveSettings } from '../util/OptionsBuilder.js';
 import type { FailureDetectorOptions } from './FailureDetectorOptions.js';
 
 export interface FailureDetectorSettings {
@@ -37,7 +36,7 @@ export class FailureDetector {
 
   constructor(options: FailureDetectorOptions | Partial<FailureDetectorSettings> = {}) {
     // Unset builder fields fall through to the built-in defaults.
-    this.settings = { ...defaultFailureDetectorSettings, ...resolveSettings(options) };
+    this.settings = { ...defaultFailureDetectorSettings, ...(options as Partial<FailureDetectorSettings>) };
   }
 
   /** Record that a message was received from `peer` (any message counts). */

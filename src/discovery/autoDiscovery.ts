@@ -1,4 +1,3 @@
-import { resolveSettings } from '../util/OptionsBuilder.js';
 import { AggregateSeedProvider } from './AggregateSeedProvider.js';
 import type { AutoDiscoveryOptions } from './AutoDiscoveryOptions.js';
 import { ConfigSeedProvider } from './ConfigSeedProvider.js';
@@ -66,7 +65,7 @@ export interface AutoDiscoverySettings {
  * just resolves to `[]` for single-node dev.
  */
 export function autoDiscovery(options: AutoDiscoveryOptions | Partial<AutoDiscoverySettings>): AggregateSeedProvider {
-  const settings = resolveSettings(options) as AutoDiscoverySettings;
+  const settings = options as AutoDiscoverySettings;
   const env = settings.env ?? process.env;
   const log = settings.log ?? (() => {});
   const providers: SeedProvider[] = [];
@@ -117,7 +116,7 @@ export function singleProviderDiscovery(
   kind: 'config' | 'dns' | 'kubernetes',
   options: AutoDiscoveryOptions | Partial<AutoDiscoverySettings>,
 ): SeedProvider {
-  const settings = resolveSettings(options) as AutoDiscoverySettings;
+  const settings = options as AutoDiscoverySettings;
   const env = settings.env ?? process.env;
   switch (kind) {
     case 'config': {

@@ -1,4 +1,3 @@
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import type { Journal } from '../Journal.js';
 import {
   JournalConcurrencyError,
@@ -95,7 +94,7 @@ export class CassandraJournal implements Journal {
   private ownsClient: boolean;
 
   constructor(options: CassandraJournalOptions | Partial<CassandraJournalSettings>) {
-    this.options = resolveSettings(options);
+    this.options = (options as Partial<CassandraJournalSettings>);
     this.client = this.options.client ?? (undefined as unknown as CassandraClientLike);
     this.ownsClient = !this.options.client;
   }

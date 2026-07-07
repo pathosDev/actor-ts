@@ -2,7 +2,6 @@ import type { IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { match } from 'ts-pattern';
 import { Lazy } from '../../util/Lazy.js';
-import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../types.js';
 import type { ExpressBackendOptions } from './ExpressBackendOptions.js';
 import type {
@@ -132,7 +131,7 @@ export class ExpressBackend implements HttpServerBackend {
   private errorHandler: ((err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
 
   constructor(options: ExpressBackendOptions | Partial<ExpressBackendSettings> = {}) {
-    const settings = resolveSettings(options);
+    const settings = (options as Partial<ExpressBackendSettings>);
     this.app = settings.app ?? null;
     this.ownsApp = settings.app == null;
     this.maxBodyBytes = settings.maxBodyBytes ?? 10 * 1024 * 1024;

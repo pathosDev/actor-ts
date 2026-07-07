@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { OptionsBuilder, resolveSettings } from '../../../src/util/OptionsBuilder.js';
+import { OptionsBuilder } from '../../../src/util/OptionsBuilder.js';
 
 interface Foo {
   readonly a?: number;
@@ -66,29 +66,39 @@ describe('OptionsBuilder base', () => {
   });
 });
 
-describe('resolveSettings — builder OR plain object', () => {
-  test('a builder is built', () => {
-    expect(resolveSettings(FooOptions.create().withA(1).withB('x'))).toEqual({ a: 1, b: 'x' });
+describe('a builder IS a settings object (structural)', () => {
+  // A consumer accepts `XOptions | Partial<XSettings>` and reads the argument
+  // directly — a builder and a plain object are interchangeable, no resolve step.
+  function readSettings(options: FooOptions | Partial<Foo>): Partial<Foo> {
+    return { ...(options as Partial<Foo>) };
+  }
+
+  test('spreading a builder yields ONLY the set fields (methods stay on the prototype)', () => {
+    const spread = { ...(FooOptions.create().withA(1).withB('x') as Partial<Foo>) };
+    expect(spread).toEqual({ a: 1, b: 'x' });
+    expect(Object.keys(spread).sort()).toEqual(['a', 'b']);
   });
 
-  test('a plain settings object is copied through', () => {
-    expect(resolveSettings<Foo>({ a: 1, b: 'x' })).toEqual({ a: 1, b: 'x' });
-  });
-
-  test('builder and equivalent plain object resolve identically', () => {
-    const fromBuilder = resolveSettings(FooOptions.create().withA(1).withB('x'));
-    const fromPlain = resolveSettings<Foo>({ a: 1, b: 'x' });
+  test('a builder and the equivalent plain object are read identically by a consumer', () => {
+    const fromBuilder = readSettings(FooOptions.create().withA(1).withB('x'));
+    const fromPlain = readSettings({ a: 1, b: 'x' });
     expect(fromBuilder).toEqual(fromPlain);
+    expect(fromBuilder).toEqual({ a: 1, b: 'x' });
   });
 
-  test('the result is an independent copy (not the same reference)', () => {
-    const plain: Foo = { a: 1 };
-    const resolved = resolveSettings<Foo>(plain);
-    expect(resolved).not.toBe(plain);
-    expect(resolved).toEqual({ a: 1 });
+  test('a builder serializes to just its fields (no withX/build leakage)', () => {
+    const b = FooOptions.create().withA(1).withB('x');
+    expect(JSON.parse(JSON.stringify(b))).toEqual({ a: 1, b: 'x' });
   });
 
-  test('an empty plain object resolves to {}', () => {
-    expect(resolveSettings<Foo>({})).toEqual({});
+  test('an empty builder reads as {}', () => {
+    expect(readSettings(FooOptions.create())).toEqual({});
+    expect(readSettings({})).toEqual({});
+  });
+
+  test('reading does not require the fields to exist (unset fields are absent)', () => {
+    const b = FooOptions.create().withA(1);
+    expect(readSettings(b)).toEqual({ a: 1 });
+    expect('b' in readSettings(b)).toBe(false);
   });
 });

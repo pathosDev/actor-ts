@@ -61,8 +61,10 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   constructor and factory takes a fluent options builder **or** a plain
   settings object, interchangeably: `new MqttActor(MqttOptions.create()
   .withClientId('x'))` behaves identically to `new MqttActor({ clientId:
-  'x' })`, normalized through the new `resolveSettings` helper.  Each
-  builder is `XOptions.create().withField(…)…` and lives in its own
+  'x' })`.  A builder *is* its settings — `OptionsBuilder` stores each field
+  as an own property, so a builder instance reads and spreads exactly like a
+  plain settings object (no separate resolve step; consumers just read the
+  argument).  Each builder is `XOptions.create().withField(…)…` and lives in its own
   `XOptions.ts` file next to (never inside) the class it configures; a
   settings interface that was named `XOptions` is renamed to `XSettings`
   and the builder takes the `XOptions` name.  HOCON resolution is

@@ -25,7 +25,6 @@
  * in works at runtime and TypeScript narrows down to our shape.
  */
 
-import { resolveSettings } from '../util/OptionsBuilder.js';
 import type { PromClientAdapterOptions } from './PromClientAdapterOptions.js';
 import type {
   Counter, CounterOptions, Gauge, GaugeOptions, Histogram, HistogramOptions,
@@ -139,7 +138,7 @@ type Entry = CounterEntry | GaugeEntry | HistogramEntry;
 export function promClientRegistry(
   options: PromClientAdapterOptions | Partial<PromClientAdapterSettings>,
 ): MetricsRegistry {
-  const { client, registry, namePrefix = '' } = resolveSettings(options) as PromClientAdapterSettings;
+  const { client, registry, namePrefix = '' } = options as PromClientAdapterSettings;
   const families = new Map<string, Entry>();
 
   function fullName(name: string): string {
