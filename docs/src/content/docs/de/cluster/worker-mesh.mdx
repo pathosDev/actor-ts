@@ -63,13 +63,14 @@ const transport = new MessageChannelTransport({
 });
 
 const system = ActorSystem.create('main');
+const clusterOptions = ClusterOptions.create()
+  .withHost('main')
+  .withPort(0)
+  .withSeeds(['main'])
+  .withTransport(transport);
 await Cluster.join(
   system,
-  ClusterOptions.create()
-    .withHost('main')
-    .withPort(0)
-    .withSeeds(['main'])
-    .withTransport(transport),
+  clusterOptions,
 );
 
 // worker.js — läuft im Worker-Thread
@@ -82,13 +83,14 @@ const transport = new MessageChannelTransport({
 });
 
 const system = ActorSystem.create('w1');
+const cluster2Options = ClusterOptions.create()
+  .withHost('w1')
+  .withPort(0)
+  .withSeeds(['main'])
+  .withTransport(transport);
 await Cluster.join(
   system,
-  ClusterOptions.create()
-    .withHost('w1')
-    .withPort(0)
-    .withSeeds(['main'])
-    .withTransport(transport),
+  cluster2Options,
 );
 
 // Ab hier ist w1 einfach ein weiterer Cluster-Node
@@ -140,12 +142,13 @@ Typen (Map, Set, Date etc.).
 
 ```ts
 // 4-Worker-Mesh; Sharding verteilt Entities über sie:
+const startShardingOptions = StartShardingOptions.create()
+  .withTypeName('order')
+  .withEntityProps(...)
+  .withExtractEntityId((msg) => msg.id)
+  .withNumShards(16);
 sharding.start(
-  StartShardingOptions.create()
-    .withTypeName('order')
-    .withEntityProps(...)
-    .withExtractEntityId((msg) => msg.id)
-    .withNumShards(16),
+  startShardingOptions,
 );
 ```
 

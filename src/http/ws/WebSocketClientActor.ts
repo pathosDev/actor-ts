@@ -24,8 +24,9 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { BrokerActor, type OutboundEnvelope } from '../../io/broker/BrokerActor.js';
 import type { BrokerCommonSettings } from '../../io/broker/BrokerSettings.js';
+import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { jsonCodec, WsDecodeError, type WsCodec } from './WsCodec.js';
-import { WebSocketClientOptions } from './WebSocketClientOptions.js';
+import type { WebSocketClientOptions } from './WebSocketClientOptions.js';
 import {
   WsClientConnected,
   WsClientDisconnected,
@@ -65,8 +66,8 @@ export abstract class WebSocketClientActor<TOut, TIn, TSelf = never>
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private _codec: WsCodec<TOut, TIn> | null = null;
 
-  constructor(options: WebSocketClientOptions<TOut, TIn> = WebSocketClientOptions.create<TOut, TIn>()) {
-    super(options.build());
+  constructor(options: WebSocketClientOptions<TOut, TIn> | Partial<WebSocketClientSettings<TOut, TIn>> = {}) {
+    super(resolveSettings(options));
   }
 
   /* ----------------------- user overrides ------------------------ */

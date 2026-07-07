@@ -1,10 +1,11 @@
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { resolveSettings } from '../../util/OptionsBuilder.js';
 import {
   addrKey,
   type ClusterPartitionView,
   type DowningDecision,
   type DowningProvider,
 } from './DowningProvider.js';
+import type { KeepRefereeOptions } from './KeepRefereeOptions.js';
 
 export interface KeepRefereeSettings {
   /**
@@ -17,30 +18,6 @@ export interface KeepRefereeSettings {
 }
 
 /**
- * Fluent builder for {@link KeepRefereeSettings}:
- *
- *     new KeepReferee(
- *       KeepRefereeOptions.create().withRefereeAddress('sys@10.0.0.1:2551'),
- *     );
- */
-export class KeepRefereeOptions extends OptionsBuilder<KeepRefereeSettings> {
-  /** Start a fresh builder. */
-  static create(): KeepRefereeOptions {
-    return new KeepRefereeOptions();
-  }
-
-  /** Fixed referee address; the partition containing it survives. */
-  withRefereeAddress(refereeAddress: string): this {
-    return this.set('refereeAddress', refereeAddress);
-  }
-
-  /** Down everyone if the referee side has fewer than this many members. */
-  withDownAllIfBelowQuorum(count: number): this {
-    return this.set('downAllIfBelowQuorum', count);
-  }
-}
-
-/**
  * "Keep referee" — the partition containing the designated referee node
  * wins.  If the referee is unreachable, this side downs itself.  Optionally
  * enforce a minimum-quorum rule even when the referee is reachable: if the
@@ -50,8 +27,8 @@ export class KeepRefereeOptions extends OptionsBuilder<KeepRefereeSettings> {
 export class KeepReferee implements DowningProvider {
   private readonly settings: KeepRefereeSettings;
 
-  constructor(options: KeepRefereeOptions) {
-    this.settings = options.build() as KeepRefereeSettings;
+  constructor(options: KeepRefereeOptions | Partial<KeepRefereeSettings>) {
+    this.settings = resolveSettings(options) as KeepRefereeSettings;
     if (!this.settings.refereeAddress) throw new Error('KeepReferee: refereeAddress required');
   }
 

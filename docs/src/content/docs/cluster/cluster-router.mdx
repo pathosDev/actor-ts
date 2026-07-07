@@ -48,22 +48,28 @@ class Worker extends Actor<{ payload: string }> {
 }
 
 const system  = ActorSystem.create('my-app');
+const clusterOptions = ClusterOptions.create()
+  .withHost(host)
+  .withPort(port)
+  .withSeeds(seeds)
+  .withRoles(['compute']);
 const cluster = await Cluster.join(
   system,
-  ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds).withRoles(['compute']),
+  clusterOptions,
 );
 
 // 1. Every node spawns its own worker at /user/worker
 system.spawn(Props.create(() => new Worker()), 'worker');
 
 // 2. Any node can build a cluster router targeting these workers
+const clusterRouterOptions = ClusterRouterOptions.create()
+  .withCluster(cluster)
+  .withRouterType('round-robin')
+  .withRouteePath('/user/worker')
+  .withRole('compute');
 const router = system.spawn(
   ClusterRouter.props(
-    ClusterRouterOptions.create()
-      .withCluster(cluster)
-      .withRouterType('round-robin')
-      .withRouteePath('/user/worker')
-      .withRole('compute'),
+    clusterRouterOptions,
   ),
   'compute-router',
 );
@@ -113,12 +119,13 @@ instead of pool members.
 ### Consistent-hashing
 
 ```ts
+const clusterRouterOptions = ClusterRouterOptions.create()
+  .withCluster(cluster)
+  .withRouterType('consistent-hashing')
+  .withRouteePath('/user/cache')
+  .withExtractKey((msg) => msg.userId);
 ClusterRouter.props(
-  ClusterRouterOptions.create()
-    .withCluster(cluster)
-    .withRouterType('consistent-hashing')
-    .withRouteePath('/user/cache')
-    .withExtractKey((msg) => msg.userId),
+  clusterRouterOptions,
 );
 ```
 
@@ -163,10 +170,11 @@ subscribe to `MemberUp` and gate request handling on a counter.
 ## Role-filtering
 
 ```ts
+const clusterRouterOptions = ClusterRouterOptions.create()
+  .withCluster(cluster)
+  .withRole('compute');
 ClusterRouter.props(
-  ClusterRouterOptions.create()
-    .withCluster(cluster)
-    .withRole('compute')
+  clusterRouterOptions
     // ...
 );
 ```

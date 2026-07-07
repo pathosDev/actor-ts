@@ -35,9 +35,10 @@ spawned eagerly; user actors don't exist yet — you spawn them via
 argument:
 
 ```ts
-const system = ActorSystem.create('my-app', ActorSystemOptions.create()
+const actorSystemOptions = ActorSystemOptions.create()
   .withLogLevel('info')
-  .withConfigFile('./application.conf'));
+  .withConfigFile('./application.conf');
+const system = ActorSystem.create('my-app', actorSystemOptions);
 ```
 
 The full settings shape:

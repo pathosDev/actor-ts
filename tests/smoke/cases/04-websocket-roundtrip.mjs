@@ -24,7 +24,10 @@ export async function run({ actorTs }) {
     onMessage(msg) { this.reply({ pong: msg.n }); }
   }
 
-  const sys = ActorSystem.create('smoke-ws', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const sys = ActorSystem.create('smoke-ws', sysOptions);
   let binding;
   try {
     const server = sys.spawn(Props.create(() => new Echo()), 'echo');

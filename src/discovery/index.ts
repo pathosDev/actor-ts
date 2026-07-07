@@ -1,20 +1,24 @@
 export type { SeedProvider } from './SeedProvider.js';
-export { ConfigSeedProvider, ConfigSeedProviderOptions, seedsFromEnv } from './ConfigSeedProvider.js';
+export { ConfigSeedProvider, seedsFromEnv } from './ConfigSeedProvider.js';
+export { ConfigSeedProviderOptions } from './ConfigSeedProviderOptions.js';
 export type { ConfigSeedProviderSettings } from './ConfigSeedProvider.js';
-export { DnsSeedProvider, DnsSeedProviderOptions } from './DnsSeedProvider.js';
+export { DnsSeedProvider } from './DnsSeedProvider.js';
+export { DnsSeedProviderOptions } from './DnsSeedProviderOptions.js';
 export type { DnsSeedProviderSettings } from './DnsSeedProvider.js';
 export { AggregateSeedProvider } from './AggregateSeedProvider.js';
-export { KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from './KubernetesApiSeedProvider.js';
+export { KubernetesApiSeedProvider } from './KubernetesApiSeedProvider.js';
+export { KubernetesApiSeedProviderOptions } from './KubernetesApiSeedProviderOptions.js';
 export type { KubernetesApiSeedProviderSettings } from './KubernetesApiSeedProvider.js';
-export { autoDiscovery, singleProviderDiscovery, AutoDiscoveryOptions } from './autoDiscovery.js';
+export { autoDiscovery, singleProviderDiscovery } from './autoDiscovery.js';
+export { AutoDiscoveryOptions } from './AutoDiscoveryOptions.js';
 export type { AutoDiscoverySettings } from './autoDiscovery.js';
 export { ServiceKey } from './ServiceKey.js';
 export {
   Receptionist,
-  ReceptionistOptions,
   ReceptionistExtension,
   ReceptionistId,
 } from './Receptionist.js';
+export { ReceptionistOptions } from './ReceptionistOptions.js';
 export type { ReceptionistSettings } from './Receptionist.js';
 export {
   Register,

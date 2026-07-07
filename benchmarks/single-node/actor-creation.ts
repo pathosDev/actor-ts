@@ -10,7 +10,10 @@ import { runGroup } from '../lib/harness.js';
 class Noop extends Actor<unknown> { override onReceive(): void {} }
 
 async function main(): Promise<void> {
-  const system = ActorSystem.create('bench-create', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const systemOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const system = ActorSystem.create('bench-create', systemOptions);
   const props = Props.create(() => new Noop());
 
   await runGroup('single-node · actor-creation', [

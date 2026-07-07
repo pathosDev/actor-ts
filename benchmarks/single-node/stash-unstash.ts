@@ -29,7 +29,10 @@ class Staller extends Actor<Msg> {
 }
 
 async function main(): Promise<void> {
-  const system = ActorSystem.create('bench-stash', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const systemOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const system = ActorSystem.create('bench-stash', systemOptions);
 
   const run = async (batch: number): Promise<void> => {
     const ref = system.spawnAnonymous(Props.create(() => new Staller()));

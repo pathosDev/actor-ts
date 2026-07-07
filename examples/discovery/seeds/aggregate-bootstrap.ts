@@ -18,33 +18,30 @@ import {
 async function main(): Promise<void> {
   // Simulate a K8s provider that would return pod IPs in production; here we
   // fake `fetchEndpoints` to show the shape.
-  const k8s = new KubernetesApiSeedProvider(
-    KubernetesApiSeedProviderOptions.create()
-      .withNamespace('default').withServiceName('cluster-app')
-      .withSystemName('my-app').withPort(2552)
-      .withFetchEndpoints(async () => {
-        // In real life this hits the API.  For the demo we pretend nothing
-        // is running yet — empty list forces fallback.
-        return [];
-      }),
-  );
+  const k8sOptions = KubernetesApiSeedProviderOptions.create()
+    .withNamespace('default').withServiceName('cluster-app')
+    .withSystemName('my-app').withPort(2552)
+    .withFetchEndpoints(async () => {
+      // In real life this hits the API.  For the demo we pretend nothing
+      // is running yet — empty list forces fallback.
+      return [];
+    });
+  const k8s = new KubernetesApiSeedProvider(k8sOptions);
 
   // DNS provider with an injected resolve — pretend 2 pods are visible.
-  const dns = new DnsSeedProvider(
-    DnsSeedProviderOptions.create()
-      .withHostname('cluster-app.default.svc.cluster.local')
-      .withSystemName('my-app')
-      .withPort(2552)
-      .withResolve(async () => ['10.244.0.1', '10.244.0.2']),
-  );
+  const dnsOptions = DnsSeedProviderOptions.create()
+    .withHostname('cluster-app.default.svc.cluster.local')
+    .withSystemName('my-app')
+    .withPort(2552)
+    .withResolve(async () => ['10.244.0.1', '10.244.0.2']);
+  const dns = new DnsSeedProvider(dnsOptions);
 
   // Static ENV list used only if everything else fails.
   process.env.LOCAL_SEEDS = 'localhost:2552';
-  const env = new ConfigSeedProvider(
-    ConfigSeedProviderOptions.create()
-      .withSeeds((process.env.LOCAL_SEEDS ?? '').split(','))
-      .withSystemName('my-app'),
-  );
+  const envSeedOptions = ConfigSeedProviderOptions.create()
+    .withSeeds((process.env.LOCAL_SEEDS ?? '').split(','))
+    .withSystemName('my-app');
+  const env = new ConfigSeedProvider(envSeedOptions);
 
   const chain = new AggregateSeedProvider([k8s, dns, env], (m, e) => {
     console.warn(`[seeds] ${m}`, e);

@@ -40,7 +40,7 @@ import {
   registerMariaDbPlugins,
 } from 'actor-ts';
 
-const system = ActorSystem.create('my-app', ActorSystemOptions.create()
+const actorSystemOptions = ActorSystemOptions.create()
   .withConfig({
     'actor-ts': {
       persistence: {
@@ -48,13 +48,22 @@ const system = ActorSystem.create('my-app', ActorSystemOptions.create()
         'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.mariadb' },
       },
     },
-  }));
+  });
+const system = ActorSystem.create('my-app', actorSystemOptions);
 
 const ext = system.extension(PersistenceExtensionId);
-const { durableStateStore } = registerMariaDbPlugins(ext, RegisterMariaDbPluginsOptions.create()
-  .withJournal(MariaDbJournalOptions.create().withPoolConfig(conn))
-  .withSnapshotStore(MariaDbSnapshotStoreOptions.create().withPoolConfig(conn).withKeepN(3))
-  .withDurableStateStore(MariaDbDurableStateStoreOptions.create().withPoolConfig(conn)));
+const mariaDbJournalOptions = MariaDbJournalOptions.create()
+  .withPoolConfig(conn);
+const mariaDbSnapshotStoreOptions = MariaDbSnapshotStoreOptions.create()
+  .withPoolConfig(conn)
+  .withKeepN(3);
+const mariaDbDurableStateStoreOptions = MariaDbDurableStateStoreOptions.create()
+  .withPoolConfig(conn);
+const registerMariaDbPluginsOptions = RegisterMariaDbPluginsOptions.create()
+  .withJournal(mariaDbJournalOptions)
+  .withSnapshotStore(mariaDbSnapshotStoreOptions)
+  .withDurableStateStore(mariaDbDurableStateStoreOptions);
+const { durableStateStore } = registerMariaDbPlugins(ext, registerMariaDbPluginsOptions);
 
 // conn = { host, port: 3306, user, password, database } — oder gib oben
 // einen geteilten `pool` (aus mariadb.createPool) via `.withPool(pool)`

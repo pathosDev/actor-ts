@@ -20,11 +20,12 @@ const transport = new TcpTransport(self, log, {
   rejectUnauthorized: true,
 });
 
-await Cluster.join(system, ClusterOptions.create()
+const clusterOptions = ClusterOptions.create()
   .withHost(host)
   .withPort(port)
   .withSeeds(seeds)
-  .withTransport(transport));
+  .withTransport(transport);
+await Cluster.join(system, clusterOptions);
 ```
 
 Mutually authenticated TLS zwischen Cluster-Nodes. Siehe
@@ -83,22 +84,24 @@ Jeder Broker-Actor hat seine eigenen TLS-Knöpfe:
 ### Kafka
 
 ```ts
-new KafkaActor(KafkaOptions.create()
+const kafkaOptions = KafkaOptions.create()
   .withBrokers(['kafka-1:9093'])
   .withSsl(true)
   .withSasl({
     mechanism: 'scram-sha-512',
     username: process.env.KAFKA_USER!,
     password: process.env.KAFKA_PASS!,
-  }));
+  });
+new KafkaActor(kafkaOptions);
 ```
 
 ### MQTT
 
 ```ts
-new MqttActor(MqttOptions.create()
+const mqttOptions = MqttOptions.create()
   .withBrokerUrl('mqtts://mqtt.example.com:8883')
-  .withCredentials(process.env.MQTT_USER, process.env.MQTT_PASS));
+  .withCredentials(process.env.MQTT_USER, process.env.MQTT_PASS);
+new MqttActor(mqttOptions);
 ```
 
 `mqtts://`-URL-Schema. Cert-Verifizierung folgt den Defaults des
@@ -107,8 +110,9 @@ zugrundeliegenden `mqtt`-Pakets.
 ### AMQP
 
 ```ts
-new AmqpActor(AmqpOptions.create()
-  .withUrl('amqps://rabbitmq.example.com:5671'));
+const amqpOptions = AmqpOptions.create()
+  .withUrl('amqps://rabbitmq.example.com:5671');
+new AmqpActor(amqpOptions);
   // amqplib nutzt URL-Parameter für die TLS-Konfiguration
 ```
 
@@ -117,8 +121,9 @@ new AmqpActor(AmqpOptions.create()
 ### NATS
 
 ```ts
-new NatsActor(NatsOptions.create()
-  .withServers(['nats://nats.example.com:4222']));
+const natsOptions = NatsOptions.create()
+  .withServers(['nats://nats.example.com:4222']);
+new NatsActor(natsOptions);
   // mTLS-Cert-Material (ca / cert / key) wird an die zugrundeliegende
   // nats-Verbindung übergeben — z. B. via Connect-Optionen / URL des Treibers.
 ```
@@ -128,8 +133,9 @@ mTLS via das `tls`-Objekt — üblich für Produktions-NATS.
 ### Redis Streams
 
 ```ts
-new RedisStreamsActor(RedisStreamsOptions.create()
-  .withUrl('rediss://redis.example.com:6380'));
+const redisStreamsOptions = RedisStreamsOptions.create()
+  .withUrl('rediss://redis.example.com:6380');
+new RedisStreamsActor(redisStreamsOptions);
   // das `rediss://`-Schema aktiviert TLS auf der Verbindung
 ```
 
@@ -138,12 +144,13 @@ new RedisStreamsActor(RedisStreamsOptions.create()
 ### gRPC
 
 ```ts
-new GrpcClientActor(GrpcClientOptions.create()
+const grpcClientOptions = GrpcClientOptions.create()
   .withEndpoint('orders.example.com:50051')
   .withCredentials({
     kind: 'tls',
     rootCerts: fs.readFileSync('./tls/ca.crt'),
-  }));
+  });
+new GrpcClientActor(grpcClientOptions);
 ```
 
 Für Mutual TLS `cert` + `key` ergänzen.
@@ -151,8 +158,9 @@ Für Mutual TLS `cert` + `key` ergänzen.
 ### WebSocket
 
 ```ts
-new WebSocketClientActor(WebSocketClientOptions.create()
-  .withUrl('wss://realtime.example.com/feed'));
+const webSocketClientOptions = WebSocketClientOptions.create()
+  .withUrl('wss://realtime.example.com/feed');
+new WebSocketClientActor(webSocketClientOptions);
 ```
 
 `wss://`-URL-Schema. Cert-Verifizierung folgt den TLS-Defaults der
@@ -169,9 +177,10 @@ Nicht zutreffend — lokaler Datei-Zugriff. TLS nicht anwendbar.
 ### Cassandra
 
 ```ts
-new CassandraJournal(CassandraJournalOptions.create()
+const cassandraJournalOptions = CassandraJournalOptions.create()
   .withContactPoints(['cass-1.example.com:9042'])
-  .withClient(clientWithMtls));
+  .withClient(clientWithMtls);
+new CassandraJournal(cassandraJournalOptions);
   // mTLS-Cert-Material (cert / key / ca) wird auf dem via withClient()
   // übergebenen cassandra-driver-Client konfiguriert
 ```
@@ -181,9 +190,11 @@ Cassandra-Cluster laufen in Produktion typischerweise mit mTLS.
 ### Object Storage
 
 ```ts
-new ObjectStorageDurableStateStore(ObjectStorageDurableStateStoreOptions.create()
-  .withBackend(new S3ObjectStorageBackend(S3ObjectStorageOptions.create()
-    .withRegion('eu-west-1'))));
+const s3ObjectStorageOptions = S3ObjectStorageOptions.create()
+  .withRegion('eu-west-1');
+const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
+  .withBackend(new S3ObjectStorageBackend(s3ObjectStorageOptions));
+new ObjectStorageDurableStateStore(objectStorageDurableStateStoreOptions);
     // S3 nutzt per Default HTTPS
 ```
 

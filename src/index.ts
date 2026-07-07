@@ -50,13 +50,15 @@ export {
   eitherSequence,
 } from './util/Either.js';
 export type { Either } from './util/Either.js';
+export { OptionsBuilder, resolveSettings } from './util/OptionsBuilder.js';
 
 // Core API
 export { Actor } from './Actor.js';
 export { ActorRef, Nobody, NobodyRef } from './ActorRef.js';
 export { ActorPath } from './ActorPath.js';
 export { ActorSelection, parseSelectionPath } from './ActorSelection.js';
-export { ActorSystem, ActorSystemOptions } from './ActorSystem.js';
+export { ActorSystem } from './ActorSystem.js';
+export { ActorSystemOptions } from './ActorSystemOptions.js';
 export type { ActorSystemSettings } from './ActorSystem.js';
 export type { ActorContext, Receive, TimerScheduler } from './ActorContext.js';
 export { StashOverflowError, StashOutsideHandlerError } from './ActorContext.js';

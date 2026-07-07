@@ -10,8 +10,10 @@ operations.
 ```ts
 import { RedisCache, RedisCacheOptions } from 'actor-ts';
 
+const redisCacheOptions = RedisCacheOptions.create()
+  .withUrl('redis://redis.example.com:6379');
 const cache = new RedisCache(
-  RedisCacheOptions.create().withUrl('redis://redis.example.com:6379'),
+  redisCacheOptions,
 );
 ```
 
@@ -46,21 +48,28 @@ interface RedisCacheSettings {
 URL form:
 
 ```ts
-new RedisCache(RedisCacheOptions.create().withUrl('redis://localhost:6379/0'));
-new RedisCache(RedisCacheOptions.create().withUrl('rediss://redis.example.com:6380'));  // TLS
-new RedisCache(RedisCacheOptions.create().withUrl('redis://user:pass@host:6379'));
+const redisCacheOptions = RedisCacheOptions.create()
+  .withUrl('redis://localhost:6379/0');
+new RedisCache(redisCacheOptions);
+const redisCache2Options = RedisCacheOptions.create()
+  .withUrl('rediss://redis.example.com:6380');
+new RedisCache(redisCache2Options);  // TLS
+const redisCache3Options = RedisCacheOptions.create()
+  .withUrl('redis://user:pass@host:6379');
+new RedisCache(redisCache3Options);
 ```
 
 Field form:
 
 ```ts
+const redisCacheOptions = RedisCacheOptions.create()
+  .withHost('redis.example.com')
+  .withPort(6379)
+  .withPassword(process.env.REDIS_PASS)
+  .withDb(1)
+  .withKeyPrefix('my-app:');
 new RedisCache(
-  RedisCacheOptions.create()
-    .withHost('redis.example.com')
-    .withPort(6379)
-    .withPassword(process.env.REDIS_PASS)
-    .withDb(1)
-    .withKeyPrefix('my-app:'),
+  redisCacheOptions,
 );
 ```
 
@@ -77,14 +86,15 @@ keyPrefix: 'my-app:cache:'
 ```ts
 import { Cluster } from 'ioredis';
 
-new RedisCache(
-  RedisCacheOptions.create().withClient(
+const redisCacheOptions = RedisCacheOptions.create().withClient(
     new Cluster([
       { host: 'redis-1', port: 6379 },
       { host: 'redis-2', port: 6379 },
       { host: 'redis-3', port: 6379 },
     ]),
-  ),
+  );
+new RedisCache(
+  redisCacheOptions,
 );
 ```
 
@@ -95,9 +105,13 @@ beyond a single Redis server's memory.
 ## TLS
 
 ```ts
-new RedisCache(RedisCacheOptions.create().withUrl('rediss://redis.example.com:6380'));
+const redisCacheOptions = RedisCacheOptions.create()
+  .withUrl('rediss://redis.example.com:6380');
+new RedisCache(redisCacheOptions);
 // TLS is selected by the `rediss://` URL scheme:
-new RedisCache(RedisCacheOptions.create().withUrl('rediss://redis.example.com:6380'));
+const redisCache2Options = RedisCacheOptions.create()
+  .withUrl('rediss://redis.example.com:6380');
+new RedisCache(redisCache2Options);
 ```
 
 `rediss://` URL prefix or explicit `tls: true`.  Cert
@@ -162,10 +176,11 @@ across Redis restarts**, enable RDB at minimum.
 ## TLS to managed Redis
 
 ```ts
-new RedisCache(
-  RedisCacheOptions.create().withUrl(
+const redisCacheOptions = RedisCacheOptions.create().withUrl(
     'rediss://default:password@my-cluster.cache.amazonaws.com:6380',
-  ),
+  );
+new RedisCache(
+  redisCacheOptions,
 );
 ```
 
@@ -177,13 +192,14 @@ support `rediss://` URLs.  Use them.
 ```ts
 import { Cluster } from 'ioredis';
 
-new RedisCache(
-  RedisCacheOptions.create().withClient(
+const redisCacheOptions = RedisCacheOptions.create().withClient(
     new Cluster([...], {
       enableReadyCheck:    true,
       redisOptions: { maxRetriesPerRequest: 3 },
     }),
-  ),
+  );
+new RedisCache(
+  redisCacheOptions,
 );
 ```
 

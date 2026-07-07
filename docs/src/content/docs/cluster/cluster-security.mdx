@@ -37,9 +37,14 @@ const transport = new TcpTransport(
   },
 );
 
+const clusterOptions = ClusterOptions.create()
+  .withHost(host)
+  .withPort(port)
+  .withSeeds(seeds)
+  .withTransport(transport);
 await Cluster.join(
   system,
-  ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds).withTransport(transport),
+  clusterOptions,
 );
 ```
 

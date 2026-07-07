@@ -27,7 +27,10 @@ async function drain(system: ActorSystem, batch: number): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const system = ActorSystem.create('bench-tell', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const systemOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const system = ActorSystem.create('bench-tell', systemOptions);
 
   await runGroup('single-node · tell-throughput', [
     { name: 'batch=100',  unit: 'msg', iterations: 200, opsPerIteration: 100,     run: () => drain(system, 100) },

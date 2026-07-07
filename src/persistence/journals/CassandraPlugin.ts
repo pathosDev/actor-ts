@@ -1,15 +1,14 @@
 import type { ActorSystem } from '../../ActorSystem.js';
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { resolveSettings } from '../../util/OptionsBuilder.js';
 import type { PersistenceExtension } from '../PersistenceExtension.js';
-import {
-  CassandraJournal,
-  CassandraJournalOptions,
-} from './CassandraJournal.js';
-import {
-  CassandraSnapshotStore,
-  CassandraSnapshotStoreOptions,
-} from '../snapshot-stores/CassandraSnapshotStore.js';
+import { CassandraJournal } from './CassandraJournal.js';
+import type { CassandraJournalOptions } from './CassandraJournalOptions.js';
+import type { CassandraJournalSettings } from './CassandraJournal.js';
+import { CassandraSnapshotStore } from '../snapshot-stores/CassandraSnapshotStore.js';
+import type { CassandraSnapshotStoreOptions } from '../snapshot-stores/CassandraSnapshotStoreOptions.js';
+import type { CassandraSnapshotStoreSettings } from '../snapshot-stores/CassandraSnapshotStore.js';
 import type { CassandraClientLike } from './CassandraClient.js';
+import type { RegisterCassandraPluginsOptions } from './CassandraPluginOptions.js';
 
 /** Canonical plug-in IDs for the Cassandra journal and snapshot store. */
 export const CASSANDRA_JOURNAL_PLUGIN_ID = 'actor-ts.persistence.journal.cassandra';
@@ -24,45 +23,9 @@ export interface RegisterCassandraPluginsSettings {
    */
   readonly client?: CassandraClientLike;
   /** Journal-specific overrides. */
-  readonly journal: CassandraJournalOptions;
+  readonly journal: CassandraJournalOptions | Partial<CassandraJournalSettings>;
   /** Snapshot-store-specific overrides.  Usually shares keyspace with the journal. */
-  readonly snapshotStore: CassandraSnapshotStoreOptions;
-}
-
-/**
- * Fluent builder for {@link RegisterCassandraPluginsSettings}.  Each store
- * takes its own leaf builder; the shared {@link CassandraClientLike} is
- * threaded onto both leaves at registration time so a single connection
- * tree serves the journal and snapshot store:
- *
- *     registerCassandraPlugins(
- *       ext,
- *       RegisterCassandraPluginsOptions.create()
- *         .withClient(client)
- *         .withJournal(CassandraJournalOptions.create().withContactPoints(['fake']).withKeyspace('app'))
- *         .withSnapshotStore(CassandraSnapshotStoreOptions.create().withContactPoints(['fake']).withKeyspace('app')),
- *     )
- */
-export class RegisterCassandraPluginsOptions extends OptionsBuilder<RegisterCassandraPluginsSettings> {
-  /** Start a fresh builder.  Equivalent to `new RegisterCassandraPluginsOptions()`. */
-  static create(): RegisterCassandraPluginsOptions {
-    return new RegisterCassandraPluginsOptions();
-  }
-
-  /** Shared CQL client reused by both plug-ins.  When omitted, each constructs its own. */
-  withClient(client: CassandraClientLike): this {
-    return this.set('client', client);
-  }
-
-  /** Journal-specific options builder. */
-  withJournal(journal: CassandraJournalOptions): this {
-    return this.set('journal', journal);
-  }
-
-  /** Snapshot-store-specific options builder. */
-  withSnapshotStore(snapshotStore: CassandraSnapshotStoreOptions): this {
-    return this.set('snapshotStore', snapshotStore);
-  }
+  readonly snapshotStore: CassandraSnapshotStoreOptions | Partial<CassandraSnapshotStoreSettings>;
 }
 
 /**
@@ -75,22 +38,19 @@ export class RegisterCassandraPluginsOptions extends OptionsBuilder<RegisterCass
  */
 export function registerCassandraPlugins(
   ext: PersistenceExtension,
-  options: RegisterCassandraPluginsOptions,
+  options: RegisterCassandraPluginsOptions | Partial<RegisterCassandraPluginsSettings>,
 ): void {
-  const s = options.build();
-  const journalBuilder = s.journal ?? CassandraJournalOptions.create();
-  const snapshotBuilder = s.snapshotStore ?? CassandraSnapshotStoreOptions.create();
-  // Thread the shared client onto both leaves so they reuse one connection tree.
-  if (s.client) {
-    journalBuilder.withClient(s.client);
-    snapshotBuilder.withClient(s.client);
-  }
+  const s = resolveSettings(options);
+  // Resolve each leaf to a plain object and merge the shared client (when
+  // set) onto it, so both plug-ins reuse one connection tree.
+  const journal = { ...resolveSettings(s.journal ?? {}), ...(s.client ? { client: s.client } : {}) };
+  const snapshotStore = { ...resolveSettings(s.snapshotStore ?? {}), ...(s.client ? { client: s.client } : {}) };
   ext.registerJournal(
     CASSANDRA_JOURNAL_PLUGIN_ID,
-    (_system: ActorSystem) => new CassandraJournal(journalBuilder),
+    (_system: ActorSystem) => new CassandraJournal(journal),
   );
   ext.registerSnapshotStore(
     CASSANDRA_SNAPSHOT_PLUGIN_ID,
-    (_system: ActorSystem) => new CassandraSnapshotStore(snapshotBuilder),
+    (_system: ActorSystem) => new CassandraSnapshotStore(snapshotStore),
   );
 }

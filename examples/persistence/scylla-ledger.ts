@@ -84,7 +84,7 @@ async function main(): Promise<void> {
   }
   const contactPoints = raw.split(',').map((s) => s.trim());
 
-  const system = ActorSystem.create('ledger', ActorSystemOptions.create()
+  const systemOptions = ActorSystemOptions.create()
     .withConfig({
       'actor-ts': {
         persistence: {
@@ -92,23 +92,26 @@ async function main(): Promise<void> {
           'snapshot-store': { plugin: CASSANDRA_SNAPSHOT_PLUGIN_ID },
         },
       },
-    }));
+    });
+  const system = ActorSystem.create('ledger', systemOptions);
 
   const ext = system.extension(PersistenceExtensionId);
-  registerCassandraPlugins(ext, RegisterCassandraPluginsOptions.create()
-    .withJournal(CassandraJournalOptions.create()
-      .withContactPoints(contactPoints)
-      .withKeyspace('actor_ts')
-      .withAutoCreateKeyspace(true)
-      .withAutoCreateTables(true)
-      .withLocalDataCenter(process.env.SCYLLA_DC ?? 'datacenter1'))
-    .withSnapshotStore(CassandraSnapshotStoreOptions.create()
-      .withContactPoints(contactPoints)
-      .withKeyspace('actor_ts')
-      .withAutoCreateTables(true)
-      .withLocalDataCenter(process.env.SCYLLA_DC ?? 'datacenter1')
-      .withKeepN(5)),
-  );
+  const journalOptions = CassandraJournalOptions.create()
+    .withContactPoints(contactPoints)
+    .withKeyspace('actor_ts')
+    .withAutoCreateKeyspace(true)
+    .withAutoCreateTables(true)
+    .withLocalDataCenter(process.env.SCYLLA_DC ?? 'datacenter1');
+  const snapshotOptions = CassandraSnapshotStoreOptions.create()
+    .withContactPoints(contactPoints)
+    .withKeyspace('actor_ts')
+    .withAutoCreateTables(true)
+    .withLocalDataCenter(process.env.SCYLLA_DC ?? 'datacenter1')
+    .withKeepN(5);
+  const cassandraPluginsOptions = RegisterCassandraPluginsOptions.create()
+    .withJournal(journalOptions)
+    .withSnapshotStore(snapshotOptions);
+  registerCassandraPlugins(ext, cassandraPluginsOptions);
 
   const alice = system.spawnAnonymous(Props.create(() => new Account('alice')));
 

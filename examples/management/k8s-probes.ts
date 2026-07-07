@@ -23,10 +23,11 @@ import {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('k8s-probes');
-  const cluster = await Cluster.join(system, ClusterOptions.create()
+  const clusterOptions = ClusterOptions.create()
     .withHost('pod')
     .withPort(2552)
-    .withTransport(new InMemoryTransport(new NodeAddress('k8s-probes', 'pod', 2552))));
+    .withTransport(new InMemoryTransport(new NodeAddress('k8s-probes', 'pod', 2552)));
+  const cluster = await Cluster.join(system, clusterOptions);
 
   const { routes, health } = managementRoutes(system, cluster, {
     enableLeaveEndpoint: true,

@@ -19,7 +19,10 @@ export async function run({ actorTs }) {
       else this.sender.forEach((s) => s.tell(this.n));
     }
   }
-  const sys = ActorSystem.create('smoke-core', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const sys = ActorSystem.create('smoke-core', sysOptions);
   try {
     const ref = sys.spawnAnonymous(Props.create(() => new Counter()));
     const N = 1_000;

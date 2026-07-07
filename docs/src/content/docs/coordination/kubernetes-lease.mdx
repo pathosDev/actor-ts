@@ -12,13 +12,14 @@ RBAC-controlled.
 ```ts
 import { KubernetesLease, KubernetesLeaseOptions } from 'actor-ts/coordination';
 
+const kubernetesLeaseOptions = KubernetesLeaseOptions.create()
+  .withName('my-singleton-lease')
+  .withOwner(process.env.POD_NAME!)
+  .withTtlMs(30_000)
+  .withRenewalIntervalMs(10_000)
+  .withNamespace(process.env.K8S_NAMESPACE!);
 const lease = new KubernetesLease(
-  KubernetesLeaseOptions.create()
-    .withName('my-singleton-lease')
-    .withOwner(process.env.POD_NAME!)
-    .withTtlMs(30_000)
-    .withRenewalIntervalMs(10_000)
-    .withNamespace(process.env.K8S_NAMESPACE!),
+  kubernetesLeaseOptions,
 );
 ```
 
@@ -229,14 +230,15 @@ For integration tests with a real K8s API (kind, minikube,
 ephemeral CI clusters):
 
 ```ts
+const kubernetesLeaseOptions = KubernetesLeaseOptions.create()
+  .withName('test-lease-' + crypto.randomUUID())
+  .withOwner('test-runner')
+  .withTtlMs(5_000)
+  .withApiServerUrl('https://localhost:8443')
+  .withAuthToken(fs.readFileSync('./test-token', 'utf-8'))
+  .withNamespace('test');
 const lease = new KubernetesLease(
-  KubernetesLeaseOptions.create()
-    .withName('test-lease-' + crypto.randomUUID())
-    .withOwner('test-runner')
-    .withTtlMs(5_000)
-    .withApiServerUrl('https://localhost:8443')
-    .withAuthToken(fs.readFileSync('./test-token', 'utf-8'))
-    .withNamespace('test'),
+  kubernetesLeaseOptions,
 );
 
 await lease.acquire();

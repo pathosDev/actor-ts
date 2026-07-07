@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem, ActorSystemOptions } from '../../../src/ActorSystem.js';
-import { Cluster, ClusterOptions } from '../../../src/cluster/Cluster.js';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
+import { Cluster } from '../../../src/cluster/Cluster.js';
+import { ClusterOptions } from '../../../src/cluster/ClusterOptions.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
@@ -40,14 +42,18 @@ describe('HealthCheckRegistry', () => {
 describe('managementRoutes — cluster queries', () => {
   async function startNode(): Promise<{ sys: ActorSystem; cluster: Cluster; port: number }> {
     const port = 55200 + Math.floor(Math.random() * 300);
-    const sys = ActorSystem.create('mgmt', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('mgmt', sysOptions);
+    const clusterOptions = ClusterOptions.create()
+      .withHost('h')
+      .withPort(port)
+      .withTransport(new InMemoryTransport(new NodeAddress('mgmt', 'h', port)))
+      .withGossipIntervalMs(80);
     const cluster = await Cluster.join(
       sys,
-      ClusterOptions.create()
-        .withHost('h')
-        .withPort(port)
-        .withTransport(new InMemoryTransport(new NodeAddress('mgmt', 'h', port)))
-        .withGossipIntervalMs(80),
+      clusterOptions,
     );
     return { sys, cluster, port };
   }
@@ -244,29 +250,37 @@ describe('managementRoutes — cluster queries', () => {
   });
 
   test('cluster.down() force-downs a known peer and emits MemberDown/Removed', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
     // Drive cluster.down via the public API rather than HTTP so the
     // event-emission contract is observable from the test directly —
     // the HTTP route is a thin wrapper around the same method.
-    const sysA = ActorSystem.create('mgmt', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
-    const sysB = ActorSystem.create('mgmt', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysA = ActorSystem.create('mgmt', sysOptions);
+    const sysOptions2 = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sysB = ActorSystem.create('mgmt', sysOptions2);
     const portA = 56_000 + Math.floor(Math.random() * 500);
     const portB = portA + 1;
+    const clusterOptions = ClusterOptions.create()
+      .withHost('h')
+      .withPort(portA)
+      .withTransport(new InMemoryTransport(new NodeAddress('mgmt', 'h', portA)))
+      .withGossipIntervalMs(50);
     const clA = await Cluster.join(
       sysA,
-      ClusterOptions.create()
-        .withHost('h')
-        .withPort(portA)
-        .withTransport(new InMemoryTransport(new NodeAddress('mgmt', 'h', portA)))
-        .withGossipIntervalMs(50),
+      clusterOptions,
     );
+    const clusterOptions2 = ClusterOptions.create()
+      .withHost('h')
+      .withPort(portB)
+      .withSeeds([`mgmt@h:${portA}`])
+      .withTransport(new InMemoryTransport(new NodeAddress('mgmt', 'h', portB)))
+      .withGossipIntervalMs(50);
     const clB = await Cluster.join(
       sysB,
-      ClusterOptions.create()
-        .withHost('h')
-        .withPort(portB)
-        .withSeeds([`mgmt@h:${portA}`])
-        .withTransport(new InMemoryTransport(new NodeAddress('mgmt', 'h', portB)))
-        .withGossipIntervalMs(50),
+      clusterOptions2,
     );
     // Wait for B to be up on both sides.
     const deadline = Date.now() + 2_000;
@@ -292,14 +306,18 @@ describe('managementRoutes — cluster queries', () => {
 describe('managementRoutes — auth + IP allowlist (#312)', () => {
   async function startNode(): Promise<{ sys: ActorSystem; cluster: Cluster }> {
     const port = 55500 + Math.floor(Math.random() * 300);
-    const sys = ActorSystem.create('mgmt', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('mgmt', sysOptions);
+    const clusterOptions = ClusterOptions.create()
+      .withHost('h')
+      .withPort(port)
+      .withTransport(new InMemoryTransport(new NodeAddress('mgmt', 'h', port)))
+      .withGossipIntervalMs(80);
     const cluster = await Cluster.join(
       sys,
-      ClusterOptions.create()
-        .withHost('h')
-        .withPort(port)
-        .withTransport(new InMemoryTransport(new NodeAddress('mgmt', 'h', port)))
-        .withGossipIntervalMs(80),
+      clusterOptions,
     );
     return { sys, cluster };
   }

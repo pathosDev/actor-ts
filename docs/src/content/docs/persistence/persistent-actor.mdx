@@ -31,6 +31,11 @@ type Event =
   | { kind: 'deposited'; amount: number; ts: number }
   | { kind: 'withdrawn'; amount: number; ts: number };
 
+const actorSystemOptions = ActorSystemOptions.create()
+  .withPersistence({
+    journal:       new InMemoryJournal(),
+    snapshotStore: new InMemorySnapshotStore(),
+  });
 interface State { balance: number; }
 
 class Account extends PersistentActor<Cmd, Event, State> {
@@ -71,11 +76,7 @@ class Account extends PersistentActor<Cmd, Event, State> {
 }
 
 // Setup — wire journal + snapshot store inline via the create option:
-const system = ActorSystem.create('demo', ActorSystemOptions.create()
-  .withPersistence({
-    journal:       new InMemoryJournal(),
-    snapshotStore: new InMemorySnapshotStore(),
-  }));
+const system = ActorSystem.create('demo', actorSystemOptions);
 
 const account = system.spawn(Props.create(() => new Account()), 'account-42');
 account.tell({ kind: 'deposit',  amount: 100 });

@@ -1,7 +1,8 @@
 import { match, P } from 'ts-pattern';
 import { Actor } from '../Actor.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
-import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { resolveSettings } from '../util/OptionsBuilder.js';
+import type { ReceptionistOptions } from './ReceptionistOptions.js';
 import { fromNullable, type Option } from '../util/Option.js';
 import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
@@ -46,29 +47,6 @@ export interface ReceptionistSettings {
 }
 
 /**
- * Fluent builder for {@link ReceptionistSettings}.  Normally you don't
- * touch this directly — `system.extension(ReceptionistId).start(cluster,
- * options)` supplies the `cluster` positionally and only the tunables
- * (`withGossipIntervalMs`) come through the builder.
- */
-export class ReceptionistOptions extends OptionsBuilder<ReceptionistSettings> {
-  /** Start a fresh builder.  Equivalent to `new ReceptionistOptions()`. */
-  static create(): ReceptionistOptions {
-    return new ReceptionistOptions();
-  }
-
-  /** The cluster this receptionist gossips over.  `null` = single-node (no gossip). */
-  withCluster(cluster: Cluster | null): this {
-    return this.set('cluster', cluster);
-  }
-
-  /** Interval between gossip pushes in milliseconds.  Default: cluster gossip interval. */
-  withGossipIntervalMs(gossipIntervalMs: number): this {
-    return this.set('gossipIntervalMs', gossipIntervalMs);
-  }
-}
-
-/**
  * Cluster-wide service registry.  Each node hosts one Receptionist actor.
  * Register/Deregister are authoritative locally; peers learn about
  * registrations through periodic gossip carrying a delta of local keys.
@@ -86,9 +64,9 @@ export class Receptionist extends Actor<Msg> {
   private unsubWire: (() => void) | null = null;
   private unsubCluster: (() => void) | null = null;
 
-  constructor(options: ReceptionistOptions) {
+  constructor(options: ReceptionistOptions | Partial<ReceptionistSettings> = {}) {
     super();
-    const settings = options.build();
+    const settings = resolveSettings(options);
     this.clusterRef = settings.cluster ?? null;
     this.gossipIntervalMs = settings.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
   }
@@ -269,13 +247,19 @@ export class ReceptionistExtension {
   private started: ActorRef<Msg> | null = null;
   constructor(private readonly system: ActorSystem) {}
 
-  start(cluster?: Cluster | null, options: ReceptionistOptions = ReceptionistOptions.create()): ActorRef<Msg> {
+  start(
+    cluster?: Cluster | null,
+    options: ReceptionistOptions | Partial<ReceptionistSettings> = {},
+  ): ActorRef<Msg> {
     if (this.started) return this.started;
     // `cluster` stays a positional arg (it's identity/wiring, not a tunable);
-    // stamp it onto the builder so the actor sees a single settings object.
-    const built = options.withCluster(cluster ?? null);
+    // fold it onto the resolved settings so the actor sees a single object.
+    const settings: Partial<ReceptionistSettings> = {
+      ...resolveSettings(options),
+      cluster: cluster ?? null,
+    };
     const ref = this.system.spawn(
-      Props.create<Msg>(() => new Receptionist(built)),
+      Props.create<Msg>(() => new Receptionist(settings)),
       'receptionist',
     );
     this.started = ref;

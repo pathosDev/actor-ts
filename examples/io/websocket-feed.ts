@@ -29,7 +29,11 @@ class EchoServer extends WebSocketServerActor<Down, Up> {
 }
 
 class Feed extends WebSocketClientActor<Up, Down> {
-  constructor(url: string) { super(WebSocketClientOptions.create<Up, Down>().withUrl(url)); }
+  constructor(url: string) {
+    const clientOptions = WebSocketClientOptions.create<Up, Down>()
+      .withUrl(url);
+    super(clientOptions);
+  }
   override onConnected(): void { console.log('[client] connected'); }
   override onMessage(msg: Down): void { console.log('[client] ← ack', msg.n); }
 }

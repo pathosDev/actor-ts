@@ -7,7 +7,8 @@
  * walking baseline (oracle pattern).
  */
 import { describe, expect, test } from 'bun:test';
-import { CassandraJournal, CassandraJournalOptions } from '../../../../src/persistence/journals/CassandraJournal.js';
+import { CassandraJournal } from '../../../../src/persistence/journals/CassandraJournal.js';
+import { CassandraJournalOptions } from '../../../../src/persistence/journals/CassandraJournalOptions.js';
 import { CassandraQuery } from '../../../../src/persistence/query/CassandraQuery.js';
 import { offsetStart } from '../../../../src/persistence/query/PersistenceQuery.js';
 import { tagIndexDdl } from '../../../../src/persistence/journals/CassandraClient.js';
@@ -53,14 +54,13 @@ const ids = (events: ReadonlyArray<{ event: { event: CorpusEvent } }>): number[]
 
 function makeJournal(useTagIndex: boolean): { journal: CassandraJournal; client: FakeCassandraClient } {
   const client = new FakeCassandraClient();
-  const journal = new CassandraJournal(
-    CassandraJournalOptions.create()
-      .withContactPoints(['fake'])
-      .withKeyspace('ks')
-      .withAutoCreateKeyspace(true)
-      .withClient(client)
-      .withUseTagIndex(useTagIndex),
-  );
+  const journalOptions = CassandraJournalOptions.create()
+    .withContactPoints(['fake'])
+    .withKeyspace('ks')
+    .withAutoCreateKeyspace(true)
+    .withClient(client)
+    .withUseTagIndex(useTagIndex);
+  const journal = new CassandraJournal(journalOptions);
   return { journal, client };
 }
 

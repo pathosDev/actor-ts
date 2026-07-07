@@ -1,9 +1,10 @@
 import { getSqliteDriver, type SqliteDb, type SqliteDriver, type SqliteStatement } from '../../runtime/sqlite/index.js';
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { JournalError, type Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import { none, some, type Option } from '../../util/Option.js';
+import type { SqliteSnapshotStoreOptions } from './SqliteSnapshotStoreOptions.js';
 
 export interface SqliteSnapshotStoreSettings {
   /** Path or ":memory:". Defaults to ":memory:". */
@@ -17,38 +18,6 @@ export interface SqliteSnapshotStoreSettings {
    * specific SQLite backend.  Default: auto-detect via `getSqliteDriver()`.
    */
   readonly driver?: SqliteDriver;
-}
-
-/**
- * Fluent builder for {@link SqliteSnapshotStoreSettings}:
- *
- *     new SqliteSnapshotStore(SqliteSnapshotStoreOptions.create().withPath(':memory:').withKeepN(2))
- */
-export class SqliteSnapshotStoreOptions extends OptionsBuilder<SqliteSnapshotStoreSettings> {
-  /** Start a fresh builder.  Equivalent to `new SqliteSnapshotStoreOptions()`. */
-  static create(): SqliteSnapshotStoreOptions {
-    return new SqliteSnapshotStoreOptions();
-  }
-
-  /** Path or ":memory:". Defaults to ":memory:". */
-  withPath(path: string): this {
-    return this.set('path', path);
-  }
-
-  /** Table name; default `snapshots`. */
-  withSnapshotsTable(snapshotsTable: string): this {
-    return this.set('snapshotsTable', snapshotsTable);
-  }
-
-  /** Maximum snapshots retained per persistenceId.  Older ones are pruned on save. */
-  withKeepN(keepN: number): this {
-    return this.set('keepN', keepN);
-  }
-
-  /** Explicit driver — pin a specific SQLite backend (defaults to auto-detect). */
-  withDriver(driver: SqliteDriver): this {
-    return this.set('driver', driver);
-  }
 }
 
 interface Stmts {
@@ -75,8 +44,8 @@ export class SqliteSnapshotStore implements SnapshotStore {
   private stmts: Stmts | null = null;
   private initPromise: Promise<void> | null = null;
 
-  constructor(options: SqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create()) {
-    const settings = options.build();
+  constructor(options: SqliteSnapshotStoreOptions | Partial<SqliteSnapshotStoreSettings> = {}) {
+    const settings = resolveSettings(options);
     this.settings = settings;
     this.table = settings.snapshotsTable ?? 'snapshots';
     this.keepN = settings.keepN ?? 3;

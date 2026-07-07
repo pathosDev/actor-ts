@@ -1,5 +1,5 @@
 import { Lazy } from '../../util/Lazy.js';
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { none, some, type Option } from '../../util/Option.js';
 import { wrapError } from '../../util/WrapError.js';
 import { makeKeyValidator } from '../storage/KeyValidator.js';
@@ -11,6 +11,7 @@ import {
   type ObjectStorageBackend,
   type PutOptions,
 } from './ObjectStorageBackend.js';
+import type { FilesystemObjectStorageOptions } from './FilesystemObjectStorageOptions.js';
 
 /**
  * Filesystem-backed `ObjectStorageBackend` — stores each object as a file
@@ -74,36 +75,6 @@ export interface FilesystemObjectStorageSettings {
   readonly staleLockMs?: number;
 }
 
-/**
- * Fluent builder for {@link FilesystemObjectStorageSettings}.  `dir` is
- * required by the backend:
- *
- *     new FilesystemObjectStorageBackend(
- *       FilesystemObjectStorageOptions.create().withDir('/var/lib/actor-ts'),
- *     )
- */
-export class FilesystemObjectStorageOptions extends OptionsBuilder<FilesystemObjectStorageSettings> {
-  /** Start a fresh builder.  Equivalent to `new FilesystemObjectStorageOptions()`. */
-  static create(): FilesystemObjectStorageOptions {
-    return new FilesystemObjectStorageOptions();
-  }
-
-  /** Root directory.  Created recursively if it doesn't exist. */
-  withDir(dir: string): this {
-    return this.set('dir', dir);
-  }
-
-  /** How long to contend for a per-key write lock before giving up.  Default 5_000 ms. */
-  withLockTimeoutMs(lockTimeoutMs: number): this {
-    return this.set('lockTimeoutMs', lockTimeoutMs);
-  }
-
-  /** Lock files older than this are treated as stale and forcibly removed.  Default 30_000 ms. */
-  withStaleLockMs(staleLockMs: number): this {
-    return this.set('staleLockMs', staleLockMs);
-  }
-}
-
 const DEFAULT_LOCK_TIMEOUT_MS = 5_000;
 const DEFAULT_STALE_LOCK_MS = 30_000;
 
@@ -164,8 +135,8 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
   private readonly lockTimeoutMs: number;
   private readonly staleLockMs: number;
 
-  constructor(options: FilesystemObjectStorageOptions) {
-    const s = options.build();
+  constructor(options: FilesystemObjectStorageOptions | Partial<FilesystemObjectStorageSettings>) {
+    const s = resolveSettings(options);
     if (s.dir === undefined) throw new Error('FilesystemObjectStorageBackend: dir is required (call withDir()).');
     this.dir           = s.dir;
     this.lockTimeoutMs = s.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;

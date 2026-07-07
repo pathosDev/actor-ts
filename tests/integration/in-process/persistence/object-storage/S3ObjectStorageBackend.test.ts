@@ -15,10 +15,8 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import {
-  S3ObjectStorageBackend,
-  S3ObjectStorageOptions,
-} from '../../../../../src/persistence/object-storage/S3ObjectStorageBackend.js';
+import { S3ObjectStorageBackend } from '../../../../../src/persistence/object-storage/S3ObjectStorageBackend.js';
+import { S3ObjectStorageOptions } from '../../../../../src/persistence/object-storage/S3ObjectStorageOptions.js';
 import { ObjectStorageConcurrencyError } from '../../../../../src/persistence/object-storage/ObjectStorageBackend.js';
 
 const endpoint = process.env.S3_ENDPOINT;
@@ -36,14 +34,13 @@ describeMaybe('S3ObjectStorageBackend (integration — MinIO)', () => {
   const runPrefix = `actor-ts-test/${Date.now()}-${Math.random().toString(36).slice(2)}/`;
 
   beforeAll(() => {
-    backend = new S3ObjectStorageBackend(
-      S3ObjectStorageOptions.create()
-        .withBucket(bucket!)
-        .withRegion('us-east-1')
-        .withEndpoint(endpoint!)
-        .withForcePathStyle(true)
-        .withCredentials({ accessKeyId: accessKeyId!, secretAccessKey: secretAccessKey! }),
-    );
+    const backendOptions = S3ObjectStorageOptions.create()
+      .withBucket(bucket!)
+      .withRegion('us-east-1')
+      .withEndpoint(endpoint!)
+      .withForcePathStyle(true)
+      .withCredentials({ accessKeyId: accessKeyId!, secretAccessKey: secretAccessKey! });
+    backend = new S3ObjectStorageBackend(backendOptions);
   });
 
   afterAll(async () => {

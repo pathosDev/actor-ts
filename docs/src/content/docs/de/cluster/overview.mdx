@@ -55,12 +55,13 @@ verfügbar:
 import { ActorSystem, Cluster, ClusterOptions } from 'actor-ts';
 
 const system  = ActorSystem.create('my-app');
+const clusterOptions = ClusterOptions.create()
+  .withHost('0.0.0.0')
+  .withPort(2552)
+  .withSeeds(['node-a:2552', 'node-b:2552']);
 const cluster = await Cluster.join(
   system,
-  ClusterOptions.create()
-    .withHost('0.0.0.0')
-    .withPort(2552)
-    .withSeeds(['node-a:2552', 'node-b:2552']),
+  clusterOptions,
 );
 ```
 

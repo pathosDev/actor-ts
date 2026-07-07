@@ -1,5 +1,5 @@
 import { Actor } from '../Actor.js';
-import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { resolveSettings } from '../util/OptionsBuilder.js';
 import {
   DurableStateConcurrencyError,
   type DurableStateRecord,
@@ -12,48 +12,13 @@ import type {
 } from './PersistenceOptions.js';
 import type { StateAdapter } from './migration/Adapter.js';
 import { decodeState, encodeState } from './migration/Envelope.js';
+import type { DurableStateOptions } from './DurableStateOptions.js';
 
 export interface DurableStateSettings<S> {
   readonly persistenceId: string;
   readonly store: DurableStateStore;
   /** Factory invoked when no record exists yet. */
   readonly emptyState: () => S;
-}
-
-/**
- * Fluent builder for {@link DurableStateSettings}.  A concrete
- * `DurableStateActor` subclass takes a `DurableStateOptions<S>` and hands
- * it to `super(...)`:
- *
- *     class KVActor extends DurableStateActor<Cmd, KV> {
- *       constructor(store: DurableStateStore) {
- *         super(DurableStateOptions.create<KV>()
- *           .withPersistenceId('kv-1')
- *           .withStore(store)
- *           .withEmptyState(() => ({ map: {} })));
- *       }
- *     }
- */
-export class DurableStateOptions<S> extends OptionsBuilder<DurableStateSettings<S>> {
-  /** Start a fresh builder.  Equivalent to `new DurableStateOptions<S>()`. */
-  static create<S>(): DurableStateOptions<S> {
-    return new DurableStateOptions<S>();
-  }
-
-  /** Stable identity of the state record. */
-  withPersistenceId(persistenceId: string): this {
-    return this.set('persistenceId', persistenceId);
-  }
-
-  /** The backing store the state is persisted to / loaded from. */
-  withStore(store: DurableStateStore): this {
-    return this.set('store', store);
-  }
-
-  /** Factory invoked when no record exists yet. */
-  withEmptyState(emptyState: () => S): this {
-    return this.set('emptyState', emptyState);
-  }
 }
 
 /**
@@ -71,9 +36,9 @@ export abstract class DurableStateActor<Cmd, S> extends Actor<Cmd> {
   private _persisting: Promise<void> | null = null;
   public readonly settings: DurableStateSettings<S>;
 
-  constructor(options: DurableStateOptions<S>) {
+  constructor(options: DurableStateOptions<S> | Partial<DurableStateSettings<S>>) {
     super();
-    this.settings = options.build() as DurableStateSettings<S>;
+    this.settings = resolveSettings(options) as DurableStateSettings<S>;
   }
 
   /** Current state snapshot — safe to read inside a handler. */

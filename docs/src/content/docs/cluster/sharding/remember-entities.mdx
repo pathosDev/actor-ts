@@ -24,12 +24,13 @@ entities to be **eagerly recreated**:
 ## Enabling
 
 ```ts
+const startShardingOptions = StartShardingOptions.create()
+  .withTypeName('session')
+  .withEntityProps(Props.create(() => new SessionActor()))
+  .withExtractEntityId((msg) => msg.userId)
+  .withRememberEntities(true);
 sharding.start(
-  StartShardingOptions.create()
-    .withTypeName('session')
-    .withEntityProps(Props.create(() => new SessionActor()))
-    .withExtractEntityId((msg) => msg.userId)
-    .withRememberEntities(true),
+  startShardingOptions,
 );
 ```
 
@@ -82,13 +83,14 @@ If you use `rememberEntities: true` but haven't configured a
 journal:
 
 ```ts
+const startShardingOptions = StartShardingOptions.create()
+  .withTypeName('...')
+  .withEntityProps(...)
+  .withExtractEntityId(...)
+  .withRememberEntities(true)
+  .withRememberEntitiesStore(null);
 sharding.start(
-  StartShardingOptions.create()
-    .withTypeName('...')
-    .withEntityProps(...)
-    .withExtractEntityId(...)
-    .withRememberEntities(true)
-    .withRememberEntitiesStore(null),   // explicit opt-out of persistence
+  startShardingOptions,   // explicit opt-out of persistence
 );
 ```
 
@@ -113,12 +115,11 @@ class RedisRememberEntitiesStore implements RememberEntitiesStore {
   async listEntities(typeName: string): Promise<ReadonlyArray<string>> { /* SMEMBERS */ }
 }
 
-sharding.start(
-  StartShardingOptions.create()
-    // ...
-    .withRememberEntities(true)
-    .withRememberEntitiesStore(new RedisRememberEntitiesStore()),
-);
+const shardingOptions = StartShardingOptions.create()
+  // ...
+  .withRememberEntities(true)
+  .withRememberEntitiesStore(new RedisRememberEntitiesStore());
+sharding.start(shardingOptions);
 ```
 
 The interface is small.  Useful if you want the entity registry on

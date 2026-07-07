@@ -6,9 +6,9 @@ import type { Cluster } from '../Cluster.js';
 import type { EnvelopeMsg } from '../Protocol.js';
 import {
   DistributedPubSubMediator,
-  DistributedPubSubOptions,
   mediatorPath,
 } from './DistributedPubSubMediator.js';
+import { DistributedPubSubOptions } from './DistributedPubSubOptions.js';
 import type {
   GetTopics,
   Publish,

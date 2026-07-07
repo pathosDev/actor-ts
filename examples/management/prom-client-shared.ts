@@ -59,13 +59,12 @@ const orders = new client.Counter({
 //    the same prom-client registry.  `actor_ts_` namespace makes the
 //    bridge-sourced families easy to spot in the exposition.
 const system = ActorSystem.create('metrics-shared');
+const promAdapterOptions = PromClientAdapterOptions.create()
+  .withClient(client)
+  .withRegistry(registry)
+  .withNamePrefix('actor_ts_');
 system.extension(MetricsExtensionId).useRegistry(
-  promClientRegistry(
-    PromClientAdapterOptions.create()
-      .withClient(client)
-      .withRegistry(registry)
-      .withNamePrefix('actor_ts_'),
-  ),
+  promClientRegistry(promAdapterOptions),
 );
 
 // 4. Drive a steady stream so the framework's stock counters tick.

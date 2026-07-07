@@ -12,8 +12,10 @@
  * or an in-network attacker can still talk to it).
  */
 import { afterEach, describe, expect, test } from 'bun:test';
-import { ActorSystem, ActorSystemOptions } from '../../src/ActorSystem.js';
-import { Cluster, ClusterOptions } from '../../src/cluster/Cluster.js';
+import { ActorSystem } from '../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
+import { Cluster } from '../../src/cluster/Cluster.js';
+import { ClusterOptions } from '../../src/cluster/ClusterOptions.js';
 import { InMemoryTransport } from '../../src/cluster/Transport.js';
 import { NodeAddress } from '../../src/cluster/NodeAddress.js';
 import type { GossipMsg, MemberData } from '../../src/cluster/Protocol.js';
@@ -26,18 +28,19 @@ interface NodeHandle {
 }
 
 async function startNode(systemName: string, port: number, seeds: string[] = []): Promise<NodeHandle> {
-  const system = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const system = ActorSystem.create(systemName, sysOptions);
   const address = new NodeAddress(systemName, 'h', port);
-  const cluster = await Cluster.join(
-    system,
-    ClusterOptions.create()
-      .withHost('h')
-      .withPort(port)
-      .withSeeds(seeds)
-      .withTransport(new InMemoryTransport(address))
-      .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
-      .withGossipIntervalMs(80),
-  );
+  const clusterOptions = ClusterOptions.create()
+    .withHost('h')
+    .withPort(port)
+    .withSeeds(seeds)
+    .withTransport(new InMemoryTransport(address))
+    .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+    .withGossipIntervalMs(80);
+  const cluster = await Cluster.join(system, clusterOptions);
   return { system, cluster, address };
 }
 

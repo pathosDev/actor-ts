@@ -1,5 +1,5 @@
 import { match } from 'ts-pattern';
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { resolveSettings } from '../../util/OptionsBuilder.js';
 import {
   getHonoRunner,
   type HonoServerHandle,
@@ -15,6 +15,7 @@ import type {
   WebSocketRouteRegistration,
 } from './HttpServerBackend.js';
 import type { WebSocketListeners, WebSocketSocketAdapter } from '../ws/SocketAdapter.js';
+import type { HonoBackendOptions } from './HonoBackendOptions.js';
 
 /** Hono delivers text as a string and binary as ArrayBuffer/Uint8Array. */
 function coerceWsData(data: unknown): string | Uint8Array {
@@ -58,7 +59,7 @@ type HonoErrorHandler = (err: unknown, c: HonoContextLike) => Promise<Response> 
 type HonoNotFoundHandler = (c: HonoContextLike) => Promise<Response> | Response;
 
 /** Structural subset of the Hono app we consume. */
-interface HonoAppLike {
+export interface HonoAppLike {
   get(path: string, ...handlers: unknown[]): unknown;
   post(path: string, handler: HonoHandler): unknown;
   put(path: string, handler: HonoHandler): unknown;
@@ -80,28 +81,6 @@ export interface HonoBackendSettings {
   readonly app?: HonoAppLike;
   /** Maximum allowed body size in bytes (default: 10 MiB).  Exceeding it returns 413. */
   readonly maxBodyBytes?: number;
-}
-
-/**
- * Fluent builder for {@link HonoBackendSettings}:
- *
- *     new HonoBackend(HonoBackendOptions.create().withMaxBodyBytes(1 << 20))
- */
-export class HonoBackendOptions extends OptionsBuilder<HonoBackendSettings> {
-  /** Start a fresh builder.  Equivalent to `new HonoBackendOptions()`. */
-  static create(): HonoBackendOptions {
-    return new HonoBackendOptions();
-  }
-
-  /** Bring-your-own Hono app (skips the internal `hono` import). */
-  withApp(app: HonoAppLike): this {
-    return this.set('app', app);
-  }
-
-  /** Maximum request body size in bytes.  Default 10 MiB; exceeding it returns 413. */
-  withMaxBodyBytes(bytes: number): this {
-    return this.set('maxBodyBytes', bytes);
-  }
 }
 
 /**
@@ -129,8 +108,8 @@ export class HonoBackend implements HttpServerBackend {
   // concrete implementation (Bun.serve / @hono/node-server / Deno.serve).
   private server: HonoServerHandle | null = null;
 
-  constructor(options: HonoBackendOptions = HonoBackendOptions.create()) {
-    const settings = options.build();
+  constructor(options: HonoBackendOptions | Partial<HonoBackendSettings> = {}) {
+    const settings = resolveSettings(options);
     this.app = settings.app ?? null;
     this.ownsApp = settings.app == null;
     this.maxBodyBytes = settings.maxBodyBytes ?? 10 * 1024 * 1024;

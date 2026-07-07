@@ -39,11 +39,12 @@ const transport = new TcpTransport(
   },
 );
 
-await Cluster.join(system, ClusterOptions.create()
+const clusterOptions = ClusterOptions.create()
   .withHost('10.0.0.5')
   .withPort(2552)
   .withSeeds([...])
-  .withTransport(transport));
+  .withTransport(transport);
+await Cluster.join(system, clusterOptions);
 ```
 
 Die TLS-Einstellungen:
@@ -195,11 +196,12 @@ const tlsSettings = {
 
 const transport = new TcpTransport(self, log, tlsSettings);
 
-await Cluster.join(system, ClusterOptions.create()
+const clusterOptions = ClusterOptions.create()
   .withHost(host)
   .withPort(port)
   .withSeeds(seeds)
-  .withTransport(transport));
+  .withTransport(transport);
+await Cluster.join(system, clusterOptions);
 ```
 
 Env-Vars tragen Pfade; cert-manager / Vault mounten die Files.

@@ -1,4 +1,4 @@
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { JournalError, type Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
@@ -9,6 +9,7 @@ import {
   type PgPoolLike,
   type PostgresConnection,
 } from '../journals/PostgresClient.js';
+import type { PostgresSnapshotStoreOptions } from './PostgresSnapshotStoreOptions.js';
 
 export interface PostgresSnapshotStoreSettings extends PostgresConnection {
   /** Snapshots table name.  Default: `snapshots`. */
@@ -17,51 +18,6 @@ export interface PostgresSnapshotStoreSettings extends PostgresConnection {
   readonly keepN?: number;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
   readonly autoCreateTables?: boolean;
-}
-
-/**
- * Fluent builder for {@link PostgresSnapshotStoreSettings}:
- *
- *     new PostgresSnapshotStore(PostgresSnapshotStoreOptions.create().withUrl('postgres://…').withKeepN(5))
- *
- * The connection fields (`withUrl` / `withPoolConfig` / `withPool`) come
- * from the shared {@link PostgresConnection} mixin.
- */
-export class PostgresSnapshotStoreOptions extends OptionsBuilder<PostgresSnapshotStoreSettings> {
-  /** Start a fresh builder.  Equivalent to `new PostgresSnapshotStoreOptions()`. */
-  static create(): PostgresSnapshotStoreOptions {
-    return new PostgresSnapshotStoreOptions();
-  }
-
-  /** Connection string, e.g. `postgres://user:pass@host:5432/db`. */
-  withUrl(url: string): this {
-    return this.set('url', url);
-  }
-
-  /** Extra node-postgres `Pool` config, merged over `{ connectionString: url }`. */
-  withPoolConfig(poolConfig: Record<string, unknown>): this {
-    return this.set('poolConfig', poolConfig);
-  }
-
-  /** Pre-built pool — bypasses the lazy `pg` import; share it across stores. */
-  withPool(pool: PgPoolLike): this {
-    return this.set('pool', pool);
-  }
-
-  /** Snapshots table name.  Default: `snapshots`. */
-  withSnapshotsTable(snapshotsTable: string): this {
-    return this.set('snapshotsTable', snapshotsTable);
-  }
-
-  /** Keep this many snapshots per persistenceId; older ones pruned on save.  Default: 3.  `<=0` keeps all. */
-  withKeepN(keepN: number): this {
-    return this.set('keepN', keepN);
-  }
-
-  /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
-  withAutoCreateTables(autoCreateTables: boolean): this {
-    return this.set('autoCreateTables', autoCreateTables);
-  }
 }
 
 interface SnapRow {
@@ -88,8 +44,8 @@ export class PostgresSnapshotStore implements SnapshotStore {
   private initPromise: Promise<void> | null = null;
   private closed = false;
 
-  constructor(options: PostgresSnapshotStoreOptions = PostgresSnapshotStoreOptions.create()) {
-    const s = options.build();
+  constructor(options: PostgresSnapshotStoreOptions | Partial<PostgresSnapshotStoreSettings> = {}) {
+    const s = resolveSettings(options);
     this.settings = s;
     this.table = assertSafeIdentifier(s.snapshotsTable ?? 'snapshots', 'snapshots table');
     this.keepN = s.keepN ?? 3;

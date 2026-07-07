@@ -9,11 +9,12 @@ and exchanges its membership view.  After a few rounds, the
 cluster converges.
 
 ```ts
-Cluster.join(system, ClusterOptions.create()
+const clusterOptions = ClusterOptions.create()
   .withHost(host)
   .withPort(port)
   .withSeeds(seeds)
-  .withGossipIntervalMs(1_000));    // default
+  .withGossipIntervalMs(1_000);
+Cluster.join(system, clusterOptions);    // default
 ```
 
 The default is **1 second**.  Most clusters never need to

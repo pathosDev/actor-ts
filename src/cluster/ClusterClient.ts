@@ -40,13 +40,14 @@
 import { getTcpBackend, type TcpSocketLike, type TlsTransportSettings } from '../runtime/tcp/index.js';
 import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
-import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { resolveSettings } from '../util/OptionsBuilder.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
 import { encodeFrame, FrameDecoder, type WireMessage, type HelloMsg, type HelloAckMsg } from './Protocol.js';
 import type {
   ClusterClientEnvelopeMsg,
   ClusterClientReplyMsg,
 } from './ClusterClientReceptionist.js';
+import type { ClusterClientOptions } from './ClusterClientOptions.js';
 
 export interface ClusterClientSettings {
   /**
@@ -70,53 +71,7 @@ export interface ClusterClientSettings {
   /** Optional TLS config — must match the cluster's. */
   readonly tls?: TlsTransportSettings;
   /** Custom logger; default: ConsoleLogger at WARN. */
-  readonly log?: Logger;
-}
-
-/**
- * Fluent builder for {@link ClusterClientSettings}:
- *
- *     new ClusterClient(
- *       ClusterClientOptions.create()
- *         .withContactPoints(['sys@127.0.0.1:2551'])
- *         .withAskTimeoutMs(3_000),
- *     );
- */
-export class ClusterClientOptions extends OptionsBuilder<ClusterClientSettings> {
-  /** Start a fresh builder.  Equivalent to `new ClusterClientOptions()`. */
-  static create(): ClusterClientOptions {
-    return new ClusterClientOptions();
-  }
-
-  /** Cluster nodes to dial (`host:port` or `<system>@host:port`).  Tried in order. */
-  withContactPoints(contactPoints: ReadonlyArray<string>): this {
-    return this.set('contactPoints', contactPoints);
-  }
-
-  /** Synthetic system name embedded in the client's hello.  Default `cluster-client`. */
-  withSystemName(systemName: string): this {
-    return this.set('systemName', systemName);
-  }
-
-  /** Host + port the client claims as its identity for reply routing. */
-  withClientIdentity(host: string, port: number): this {
-    return this.set('clientIdentity', { host, port });
-  }
-
-  /** Default ask timeout in ms.  Default 5 s. */
-  withAskTimeoutMs(ms: number): this {
-    return this.set('askTimeoutMs', ms);
-  }
-
-  /** TLS config — must match the cluster's. */
-  withTls(tls: TlsTransportSettings): this {
-    return this.set('tls', tls);
-  }
-
-  /** Custom logger; default ConsoleLogger at WARN. */
-  withLogger(log: Logger): this {
-    return this.set('log', log);
-  }
+  readonly logger?: Logger;
 }
 
 interface PendingAsk {
@@ -169,8 +124,8 @@ export class ClusterClient {
 
   private readonly settings: ClusterClientSettings;
 
-  constructor(options: ClusterClientOptions) {
-    const settings = options.build() as ClusterClientSettings;
+  constructor(options: ClusterClientOptions | Partial<ClusterClientSettings>) {
+    const settings = resolveSettings(options) as ClusterClientSettings;
     this.settings = settings;
     if (!settings.contactPoints || settings.contactPoints.length === 0) {
       throw new Error('ClusterClient: contactPoints must contain at least one entry');
@@ -190,7 +145,7 @@ export class ClusterClient {
     this.identity = new NodeAddress(sysName, id.host, id.port);
     this.tls = settings.tls ?? null;
     this.askTimeoutMs = settings.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
-    this.log = settings.log ?? new ConsoleLogger(LogLevel.Warn, 'cluster-client');
+    this.log = settings.logger ?? new ConsoleLogger(LogLevel.Warn, 'cluster-client');
   }
 
   /** The synthetic identity this client uses in its `hello` handshake. */

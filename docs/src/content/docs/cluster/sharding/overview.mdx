@@ -69,9 +69,10 @@ class CartActor extends Actor<CartCmd> {
 // Setup — one-line cluster + sharding entry point:
 const { system, cluster } = await Cluster.bootstrap(ClusterBootstrapOptions.create('my-app'));
 
+const startShardingOptions = StartShardingOptions.create<CartCmd>()
+  .withExtractEntityId((msg) => msg.entityId);
 const cartRegion = cluster.sharding.start('cart', CartActor,
-  StartShardingOptions.create<CartCmd>()
-    .withExtractEntityId((msg) => msg.entityId));
+  startShardingOptions);
 
 // Usage — `tell` to the region, with entity ID inside the message:
 cartRegion.tell({ entityId: 'user-42', kind: 'add', sku: 'book-1' });
@@ -85,21 +86,25 @@ whichever fits the entity:
 
 ```ts
 // 1. Class shorthand (most common):
-cluster.sharding.start('cart', CartActor, StartShardingOptions.create<CartCmd>().withExtractEntityId((m) => m.entityId));
+const startShardingOptions = StartShardingOptions.create<CartCmd>()
+  .withExtractEntityId((m) => m.entityId);
+cluster.sharding.start('cart', CartActor, startShardingOptions);
 
 // 2. Factory shorthand — when the entity needs constructor args:
+const startSharding2Options = StartShardingOptions.create<CartCmd>()
+  .withExtractEntityId((m) => m.entityId);
 cluster.sharding.start('cart', () => new CartActor(deps),
-  StartShardingOptions.create<CartCmd>()
-    .withExtractEntityId((m) => m.entityId));
+  startSharding2Options);
 
 // 3. Full-form — explicit Props + every setting:
+const startSharding3Options = StartShardingOptions.create<CartCmd>()
+  .withTypeName('cart')
+  .withEntityProps(Props.create(() => new CartActor()))
+  .withExtractEntityId((m) => m.entityId)
+  .withNumShards(16)
+  .withRole('cart-host');
 cluster.sharding.start(
-  StartShardingOptions.create<CartCmd>()
-    .withTypeName('cart')
-    .withEntityProps(Props.create(() => new CartActor()))
-    .withExtractEntityId((m) => m.entityId)
-    .withNumShards(16)
-    .withRole('cart-host'),
+  startSharding3Options,
 );
 ```
 

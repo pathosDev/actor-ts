@@ -13,8 +13,10 @@
  *      `DistributedDataHandle` correctly.
  */
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
-import { Cluster, ClusterOptions } from '../../../../../src/cluster/Cluster.js';
+import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
+import { Cluster } from '../../../../../src/cluster/Cluster.js';
+import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
 import {
   DistributedDataCoordinatorStateStore,
   type CoordinatorStateData,
@@ -22,7 +24,8 @@ import {
 } from '../../../../../src/cluster/sharding/CoordinatorState.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
-import { DistributedDataId, DistributedDataOptions } from '../../../../../src/crdt/DistributedData.js';
+import { DistributedDataId } from '../../../../../src/crdt/DistributedData.js';
+import { DistributedDataOptions } from '../../../../../src/crdt/DistributedDataOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 
 const sample: CoordinatorStateData = {
@@ -77,13 +80,16 @@ describe('CoordinatorStateStore', () => {
   });
 
   test('3. DistributedDataCoordinatorStateStore round-trips through DD', async () => {
-    const sys = ActorSystem.create('coord-state', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
-    const cluster = await Cluster.join(sys, ClusterOptions.create()
+    const sysOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('coord-state', sysOptions);
+    const clusterOptions = ClusterOptions.create()
       .withHost('h')
       .withPort(71_001)
       .withTransport(new InMemoryTransport(new NodeAddress('coord-state', 'h', 71_001)))
-      .withGossipIntervalMs(80));
-    const dd = sys.extension(DistributedDataId).start(cluster, DistributedDataOptions.create().withGossipInterval(80));
+      .withGossipIntervalMs(80);
+    const cluster = await Cluster.join(sys, clusterOptions);
+    const ddOptions = DistributedDataOptions.create().withGossipInterval(80);
+    const dd = sys.extension(DistributedDataId).start(cluster, ddOptions);
 
     const store = new DistributedDataCoordinatorStateStore(
       dd, cluster.selfAddress.toString(),

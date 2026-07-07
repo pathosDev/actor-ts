@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { createServer, type Server } from 'node:net';
-import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
+import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import { Actor } from '../../../../../src/Actor.js';
@@ -43,7 +44,10 @@ afterEach(async () => { await server.close(); });
 
 describe('TcpSocketActor — bytes framing (default)', () => {
   test('connects, sends bytes, receives echo', async () => {
-    const sys = ActorSystem.create('tcp-1', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('tcp-1', sysOptions);
     const collector = new CollectActor();
     const target = sys.spawnAnonymous(Props.create(() => collector));
 
@@ -55,9 +59,11 @@ describe('TcpSocketActor — bytes framing (default)', () => {
       BrokerConnected,
     );
 
-    const ref = sys.spawnAnonymous(Props.create(() => new TcpSocketActor(
-      TcpSocketOptions.create().withHost('127.0.0.1').withPort(server.port).withTarget(target),
-    )));
+    const tcpOptions = TcpSocketOptions.create()
+      .withHost('127.0.0.1')
+      .withPort(server.port)
+      .withTarget(target);
+    const ref = sys.spawnAnonymous(Props.create(() => new TcpSocketActor(tcpOptions)));
     await sleep(40);
     expect(connected).toBe(true);
 
@@ -73,14 +79,19 @@ describe('TcpSocketActor — bytes framing (default)', () => {
 
 describe('TcpSocketActor — line framing', () => {
   test('extracts newline-delimited frames', async () => {
-    const sys = ActorSystem.create('tcp-2', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('tcp-2', sysOptions);
     const collector = new CollectActor();
     const target = sys.spawnAnonymous(Props.create(() => collector));
 
-    const ref = sys.spawnAnonymous(Props.create(() => new TcpSocketActor(
-      TcpSocketOptions.create().withHost('127.0.0.1').withPort(server.port).withTarget(target)
-        .withFraming({ kind: 'lines' }),
-    )));
+    const tcpOptions = TcpSocketOptions.create()
+      .withHost('127.0.0.1')
+      .withPort(server.port)
+      .withTarget(target)
+      .withFraming({ kind: 'lines' });
+    const ref = sys.spawnAnonymous(Props.create(() => new TcpSocketActor(tcpOptions)));
     await sleep(30);
 
     // Send three lines in one chunk; echo returns them.  The framing
@@ -96,13 +107,18 @@ describe('TcpSocketActor — line framing', () => {
     // line crosses chunk boundaries.
     await server.close();
     server = await startEchoServer((chunk) => chunk);  // identity echo
-    const sys = ActorSystem.create('tcp-3', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('tcp-3', sysOptions);
     const collector = new CollectActor();
     const target = sys.spawnAnonymous(Props.create(() => collector));
-    const ref = sys.spawnAnonymous(Props.create(() => new TcpSocketActor(
-      TcpSocketOptions.create().withHost('127.0.0.1').withPort(server.port).withTarget(target)
-        .withFraming({ kind: 'lines' }),
-    )));
+    const tcpOptions = TcpSocketOptions.create()
+      .withHost('127.0.0.1')
+      .withPort(server.port)
+      .withTarget(target)
+      .withFraming({ kind: 'lines' });
+    const ref = sys.spawnAnonymous(Props.create(() => new TcpSocketActor(tcpOptions)));
     await sleep(30);
     ref.tell({ kind: 'send', payload: 'partial-' });
     await sleep(20);
@@ -115,13 +131,18 @@ describe('TcpSocketActor — line framing', () => {
 
 describe('TcpSocketActor — length-prefixed framing', () => {
   test('extracts u32-prefixed frames', async () => {
-    const sys = ActorSystem.create('tcp-4', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('tcp-4', sysOptions);
     const collector = new CollectActor();
     const target = sys.spawnAnonymous(Props.create(() => collector));
-    const ref = sys.spawnAnonymous(Props.create(() => new TcpSocketActor(
-      TcpSocketOptions.create().withHost('127.0.0.1').withPort(server.port).withTarget(target)
-        .withFraming({ kind: 'length-prefixed' }),
-    )));
+    const tcpOptions = TcpSocketOptions.create()
+      .withHost('127.0.0.1')
+      .withPort(server.port)
+      .withTarget(target)
+      .withFraming({ kind: 'length-prefixed' });
+    const ref = sys.spawnAnonymous(Props.create(() => new TcpSocketActor(tcpOptions)));
     await sleep(30);
 
     // Build a 5-byte frame with a 4-byte length prefix.
@@ -140,12 +161,17 @@ describe('TcpSocketActor — length-prefixed framing', () => {
 
 describe('TcpSocketActor — settings validation', () => {
   test('missing host/port throws BrokerSettingsError', async () => {
-    const sys = ActorSystem.create('tcp-5', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('tcp-5', sysOptions);
     const collector = new CollectActor();
     const target = sys.spawnAnonymous(Props.create(() => collector));
     let captured: Error | null = null;
+    const tcpOptions = TcpSocketOptions.create()
+      .withTarget(target);  // host, port missing
     sys.spawnAnonymous(Props.create(() => {
-      const a = new TcpSocketActor(TcpSocketOptions.create().withTarget(target));  // host, port missing
+      const a = new TcpSocketActor(tcpOptions);
       const orig = a.preStart.bind(a);
       a.preStart = async () => { try { await orig(); } catch (e) { captured = e as Error; } };
       return a as unknown as Actor<unknown>;

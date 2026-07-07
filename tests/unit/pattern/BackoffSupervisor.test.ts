@@ -21,7 +21,8 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
-import { ActorSystem, ActorSystemOptions } from '../../../src/ActorSystem.js';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { Props } from '../../../src/Props.js';
 import {
@@ -80,7 +81,10 @@ class FailingPreStart extends Actor<{ kind: 'echo'; value: number }> {
 /* ---------------------- Helpers --------------------- */
 
 function newSystem(name: string): ActorSystem {
-  return ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  return ActorSystem.create(name, sysOptions);
 }
 
 function withDefaults<T>(over: Partial<BackoffOptions<T>>): BackoffOptions<T> {

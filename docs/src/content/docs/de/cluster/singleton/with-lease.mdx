@@ -13,19 +13,21 @@ Die **Single-Writer-Lease** verhindert das:
 ```ts
 import { ClusterSingletonManager, ClusterSingletonManagerOptions, KubernetesLease, KubernetesLeaseOptions } from 'actor-ts';
 
+const kubernetesLeaseOptions = KubernetesLeaseOptions.create()
+  .withName('job-scheduler-singleton')
+  .withOwner(process.env.POD_NAME!)
+  .withTtlMs(30_000)
+  .withNamespace(process.env.K8S_NAMESPACE!);
+const clusterSingletonManagerOptions = ClusterSingletonManagerOptions.create()
+  .withCluster(cluster)
+  .withTypeName('job-scheduler')
+  .withSingletonProps(Props.create(() => new JobScheduler()))
+  .withLease(new KubernetesLease(
+    kubernetesLeaseOptions,
+  ));
 system.spawn(
   ClusterSingletonManager.props(
-    ClusterSingletonManagerOptions.create()
-      .withCluster(cluster)
-      .withTypeName('job-scheduler')
-      .withSingletonProps(Props.create(() => new JobScheduler()))
-      .withLease(new KubernetesLease(
-        KubernetesLeaseOptions.create()
-          .withName('job-scheduler-singleton')
-          .withOwner(process.env.POD_NAME!)
-          .withTtlMs(30_000)
-          .withNamespace(process.env.K8S_NAMESPACE!),
-      )),
+    clusterSingletonManagerOptions,
   ),
   'singleton-manager-job-scheduler',
 );
@@ -61,13 +63,14 @@ Konsistenz von Gossip.
 ## Konfiguration
 
 ```ts
+const clusterSingletonManagerOptions = ClusterSingletonManagerOptions.create()
+  .withCluster(cluster)
+  .withTypeName(typeName)
+  .withSingletonProps(singletonProps)
+  .withLease(lease)                        // ← optionale Lease
+  .withAcquireRetryIntervalMs(5_000);
 ClusterSingletonManager.props(
-  ClusterSingletonManagerOptions.create()
-    .withCluster(cluster)
-    .withTypeName(typeName)
-    .withSingletonProps(singletonProps)
-    .withLease(lease)                        // ← optionale Lease
-    .withAcquireRetryIntervalMs(5_000),      // Default — Retry nach fehlgeschlagenem Acquire
+  clusterSingletonManagerOptions,      // Default — Retry nach fehlgeschlagenem Acquire
 );
 ```
 

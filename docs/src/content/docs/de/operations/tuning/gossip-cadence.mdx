@@ -9,11 +9,12 @@ Peer und tauscht seine Membership-Sicht aus. Nach ein paar Runden
 konvergiert der Cluster.
 
 ```ts
-Cluster.join(system, ClusterOptions.create()
+const clusterOptions = ClusterOptions.create()
   .withHost(host)
   .withPort(port)
   .withSeeds(seeds)
-  .withGossipIntervalMs(1_000));    // default
+  .withGossipIntervalMs(1_000);
+Cluster.join(system, clusterOptions);    // default
 ```
 
 Der Default ist **1 Sekunde**. Die meisten Cluster müssen ihn nie

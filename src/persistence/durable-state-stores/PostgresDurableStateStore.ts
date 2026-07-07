@@ -1,4 +1,4 @@
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { resolveSettings } from '../../util/OptionsBuilder.js';
 import {
   DurableStateConcurrencyError,
   type DurableStateRecord,
@@ -13,52 +13,13 @@ import {
   type PgPoolLike,
   type PostgresConnection,
 } from '../journals/PostgresClient.js';
+import type { PostgresDurableStateStoreOptions } from './PostgresDurableStateStoreOptions.js';
 
 export interface PostgresDurableStateStoreSettings extends PostgresConnection {
   /** Table name.  Default: `durable_state`. */
   readonly table?: string;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
   readonly autoCreateTables?: boolean;
-}
-
-/**
- * Fluent builder for {@link PostgresDurableStateStoreSettings}:
- *
- *     new PostgresDurableStateStore(PostgresDurableStateStoreOptions.create().withUrl('postgres://…').withTable('state'))
- *
- * The connection fields (`withUrl` / `withPoolConfig` / `withPool`) come
- * from the shared {@link PostgresConnection} mixin.
- */
-export class PostgresDurableStateStoreOptions extends OptionsBuilder<PostgresDurableStateStoreSettings> {
-  /** Start a fresh builder.  Equivalent to `new PostgresDurableStateStoreOptions()`. */
-  static create(): PostgresDurableStateStoreOptions {
-    return new PostgresDurableStateStoreOptions();
-  }
-
-  /** Connection string, e.g. `postgres://user:pass@host:5432/db`. */
-  withUrl(url: string): this {
-    return this.set('url', url);
-  }
-
-  /** Extra node-postgres `Pool` config, merged over `{ connectionString: url }`. */
-  withPoolConfig(poolConfig: Record<string, unknown>): this {
-    return this.set('poolConfig', poolConfig);
-  }
-
-  /** Pre-built pool — bypasses the lazy `pg` import; share it across stores. */
-  withPool(pool: PgPoolLike): this {
-    return this.set('pool', pool);
-  }
-
-  /** Table name.  Default: `durable_state`. */
-  withTable(table: string): this {
-    return this.set('table', table);
-  }
-
-  /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
-  withAutoCreateTables(autoCreateTables: boolean): this {
-    return this.set('autoCreateTables', autoCreateTables);
-  }
 }
 
 interface StateRow {
@@ -92,8 +53,8 @@ export class PostgresDurableStateStore implements DurableStateStore {
   private initPromise: Promise<void> | null = null;
   private closed = false;
 
-  constructor(options: PostgresDurableStateStoreOptions = PostgresDurableStateStoreOptions.create()) {
-    const s = options.build();
+  constructor(options: PostgresDurableStateStoreOptions | Partial<PostgresDurableStateStoreSettings> = {}) {
+    const s = resolveSettings(options);
     this.settings = s;
     this.table = assertSafeIdentifier(s.table ?? 'durable_state', 'durable-state table');
     this.autoCreate = s.autoCreateTables ?? true;

@@ -46,15 +46,16 @@ die Proxies verschieben ihr Ziel.
 ```ts
 import { ClusterSingletonManager, ClusterSingletonManagerOptions, Props } from 'actor-ts';
 
+const clusterSingletonManagerOptions = ClusterSingletonManagerOptions.create()
+  .withCluster(cluster)
+  .withTypeName('job-scheduler')
+  .withSingletonProps(Props.create(() => new JobScheduler()))
+  .withRole('control-plane')            // optional
+  .withLease(leaseImpl)                  // optionaler Split-Brain-Schutz
+  .withAcquireRetryIntervalMs(5_000);
 system.spawn(
   ClusterSingletonManager.props(
-    ClusterSingletonManagerOptions.create()
-      .withCluster(cluster)
-      .withTypeName('job-scheduler')
-      .withSingletonProps(Props.create(() => new JobScheduler()))
-      .withRole('control-plane')            // optional
-      .withLease(leaseImpl)                  // optionaler Split-Brain-Schutz
-      .withAcquireRetryIntervalMs(5_000),    // wenn Lease-Acquire scheitert
+    clusterSingletonManagerOptions,    // wenn Lease-Acquire scheitert
   ),
   'singleton-manager-job-scheduler',
 );
@@ -117,11 +118,10 @@ schützen soll.
 ### Mit Lease
 
 ```ts
-ClusterSingletonManager.props(
-  ClusterSingletonManagerOptions.create()
-    // ...
-    .withLease(someLeaseImpl),
-);
+const managerOptions = ClusterSingletonManagerOptions.create()
+  // ...
+  .withLease(someLeaseImpl);
+ClusterSingletonManager.props(managerOptions);
 ```
 
 Fügt ein asynchrones Gate über die Lease hinzu. Der Ablauf:

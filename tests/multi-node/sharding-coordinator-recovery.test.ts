@@ -27,10 +27,12 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
-import { ClusterSharding, StartShardingOptions } from '../../src/cluster/sharding/ClusterSharding.js';
+import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
+import { StartShardingOptions } from '../../src/cluster/sharding/StartShardingOptions.js';
 import { DistributedDataCoordinatorStateStore } from '../../src/cluster/sharding/CoordinatorState.js';
 import { ShardCoordinator } from '../../src/cluster/sharding/ShardCoordinator.js';
-import { DistributedDataId, DistributedDataOptions } from '../../src/crdt/DistributedData.js';
+import { DistributedDataId } from '../../src/crdt/DistributedData.js';
+import { DistributedDataOptions } from '../../src/crdt/DistributedDataOptions.js';
 import { Props } from '../../src/Props.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
@@ -97,19 +99,20 @@ describe('ShardCoordinator state persistence — leader failover', () => {
       for (const role of ['a', 'b', 'c'] as const) {
         const sys = spec.systemFor(role);
         const cluster = spec.clusterFor(role);
-        const dd = sys.extension(DistributedDataId).start(cluster, DistributedDataOptions.create().withGossipInterval(80));
+        const ddOptions = DistributedDataOptions.create()
+          .withGossipInterval(80);
+        const dd = sys.extension(DistributedDataId).start(cluster, ddOptions);
         const store = new DistributedDataCoordinatorStateStore(
           dd, cluster.selfAddress.toString(),
         );
-        regions[role] = cluster.sharding.start<Cmd>(
-          StartShardingOptions.create<Cmd>()
-            .withTypeName('entity')
-            .withEntityProps(Props.create(() => new Entity()))
-            .withExtractEntityId((m) => m.id)
-            .withNumShards(8)
-            .withRebalanceIntervalMs(200)
-            .withCoordinatorStateStore(store),
-        );
+        const shardingOptions = StartShardingOptions.create<Cmd>()
+          .withTypeName('entity')
+          .withEntityProps(Props.create(() => new Entity()))
+          .withExtractEntityId((m) => m.id)
+          .withNumShards(8)
+          .withRebalanceIntervalMs(200)
+          .withCoordinatorStateStore(store);
+        regions[role] = cluster.sharding.start<Cmd>(shardingOptions);
       }
 
       // Allocate the shards by asking 8 distinct entity ids.  Each

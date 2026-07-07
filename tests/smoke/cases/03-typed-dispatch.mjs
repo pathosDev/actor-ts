@@ -21,7 +21,10 @@ export async function run({ actorTs }) {
     }
   }
 
-  const sys = ActorSystem.create('smoke-typed', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const sys = ActorSystem.create('smoke-typed', sysOptions);
   try {
     const ref = sys.spawnAnonymous(Props.create(() => new Greeter()));
     ref.tell({ kind: 'greet', name: 'World' });

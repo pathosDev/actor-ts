@@ -20,18 +20,23 @@ export type {
 } from './PersistenceOptions.js';
 
 export { InMemoryJournal } from './journals/InMemoryJournal.js';
-export { SqliteJournal, SqliteJournalOptions } from './journals/SqliteJournal.js';
+export { SqliteJournal } from './journals/SqliteJournal.js';
+export { SqliteJournalOptions } from './journals/SqliteJournalOptions.js';
 export type { SqliteJournalSettings } from './journals/SqliteJournal.js';
 export { InMemorySnapshotStore } from './snapshot-stores/InMemorySnapshotStore.js';
-export { SqliteSnapshotStore, SqliteSnapshotStoreOptions } from './snapshot-stores/SqliteSnapshotStore.js';
+export { SqliteSnapshotStore } from './snapshot-stores/SqliteSnapshotStore.js';
+export { SqliteSnapshotStoreOptions } from './snapshot-stores/SqliteSnapshotStoreOptions.js';
 export type { SqliteSnapshotStoreSettings } from './snapshot-stores/SqliteSnapshotStore.js';
-export { CachedSnapshotStore, CachedSnapshotStoreOptions } from './snapshot-stores/CachedSnapshotStore.js';
+export { CachedSnapshotStore } from './snapshot-stores/CachedSnapshotStore.js';
+export { CachedSnapshotStoreOptions } from './snapshot-stores/CachedSnapshotStoreOptions.js';
 export type { CachedSnapshotStoreSettings } from './snapshot-stores/CachedSnapshotStore.js';
 
 // Cassandra / ScyllaDB plug-in (same CQL protocol — one plug-in).
-export { CassandraJournal, CassandraJournalOptions } from './journals/CassandraJournal.js';
+export { CassandraJournal } from './journals/CassandraJournal.js';
+export { CassandraJournalOptions } from './journals/CassandraJournalOptions.js';
 export type { CassandraJournalSettings } from './journals/CassandraJournal.js';
-export { CassandraSnapshotStore, CassandraSnapshotStoreOptions } from './snapshot-stores/CassandraSnapshotStore.js';
+export { CassandraSnapshotStore } from './snapshot-stores/CassandraSnapshotStore.js';
+export { CassandraSnapshotStoreOptions } from './snapshot-stores/CassandraSnapshotStoreOptions.js';
 export type { CassandraSnapshotStoreSettings } from './snapshot-stores/CassandraSnapshotStore.js';
 export {
   createCassandraClient,
@@ -46,26 +51,29 @@ export type {
 } from './journals/CassandraClient.js';
 export {
   registerCassandraPlugins,
-  RegisterCassandraPluginsOptions,
   CASSANDRA_JOURNAL_PLUGIN_ID,
   CASSANDRA_SNAPSHOT_PLUGIN_ID,
 } from './journals/CassandraPlugin.js';
+export { RegisterCassandraPluginsOptions } from './journals/CassandraPluginOptions.js';
 export type { RegisterCassandraPluginsSettings } from './journals/CassandraPlugin.js';
 
 // PostgreSQL plug-in (journal + snapshot + durable-state).
-export { PostgresJournal, PostgresJournalOptions } from './journals/PostgresJournal.js';
+export { PostgresJournal } from './journals/PostgresJournal.js';
+export { PostgresJournalOptions } from './journals/PostgresJournalOptions.js';
 export type { PostgresJournalSettings } from './journals/PostgresJournal.js';
-export { PostgresSnapshotStore, PostgresSnapshotStoreOptions } from './snapshot-stores/PostgresSnapshotStore.js';
+export { PostgresSnapshotStore } from './snapshot-stores/PostgresSnapshotStore.js';
+export { PostgresSnapshotStoreOptions } from './snapshot-stores/PostgresSnapshotStoreOptions.js';
 export type { PostgresSnapshotStoreSettings } from './snapshot-stores/PostgresSnapshotStore.js';
-export { PostgresDurableStateStore, PostgresDurableStateStoreOptions } from './durable-state-stores/PostgresDurableStateStore.js';
+export { PostgresDurableStateStore } from './durable-state-stores/PostgresDurableStateStore.js';
+export { PostgresDurableStateStoreOptions } from './durable-state-stores/PostgresDurableStateStoreOptions.js';
 export type { PostgresDurableStateStoreSettings } from './durable-state-stores/PostgresDurableStateStore.js';
 export {
   registerPostgresPlugins,
-  RegisterPostgresPluginsOptions,
   POSTGRES_JOURNAL_PLUGIN_ID,
   POSTGRES_SNAPSHOT_PLUGIN_ID,
   POSTGRES_DURABLE_STATE_PLUGIN_ID,
 } from './journals/PostgresPlugin.js';
+export { RegisterPostgresPluginsOptions } from './journals/PostgresPluginOptions.js';
 export type {
   RegisterPostgresPluginsSettings,
   PostgresPluginHandles,
@@ -77,19 +85,22 @@ export type {
 } from './journals/PostgresClient.js';
 
 // MariaDB / MySQL plug-in (journal + snapshot + durable-state).
-export { MariaDbJournal, MariaDbJournalOptions } from './journals/MariaDbJournal.js';
+export { MariaDbJournal } from './journals/MariaDbJournal.js';
+export { MariaDbJournalOptions } from './journals/MariaDbJournalOptions.js';
 export type { MariaDbJournalSettings } from './journals/MariaDbJournal.js';
-export { MariaDbSnapshotStore, MariaDbSnapshotStoreOptions } from './snapshot-stores/MariaDbSnapshotStore.js';
+export { MariaDbSnapshotStore } from './snapshot-stores/MariaDbSnapshotStore.js';
+export { MariaDbSnapshotStoreOptions } from './snapshot-stores/MariaDbSnapshotStoreOptions.js';
 export type { MariaDbSnapshotStoreSettings } from './snapshot-stores/MariaDbSnapshotStore.js';
-export { MariaDbDurableStateStore, MariaDbDurableStateStoreOptions } from './durable-state-stores/MariaDbDurableStateStore.js';
+export { MariaDbDurableStateStore } from './durable-state-stores/MariaDbDurableStateStore.js';
+export { MariaDbDurableStateStoreOptions } from './durable-state-stores/MariaDbDurableStateStoreOptions.js';
 export type { MariaDbDurableStateStoreSettings } from './durable-state-stores/MariaDbDurableStateStore.js';
 export {
   registerMariaDbPlugins,
-  RegisterMariaDbPluginsOptions,
   MARIADB_JOURNAL_PLUGIN_ID,
   MARIADB_SNAPSHOT_PLUGIN_ID,
   MARIADB_DURABLE_STATE_PLUGIN_ID,
 } from './journals/MariaDbPlugin.js';
+export { RegisterMariaDbPluginsOptions } from './journals/MariaDbPluginOptions.js';
 export type {
   RegisterMariaDbPluginsSettings,
   MariaDbPluginHandles,
@@ -101,7 +112,8 @@ export type {
 } from './journals/MariaDbClient.js';
 
 // Durable State (state-oriented alternative to Event Sourcing).
-export { DurableStateActor, DurableStateOptions } from './DurableStateActor.js';
+export { DurableStateActor } from './DurableStateActor.js';
+export { DurableStateOptions } from './DurableStateOptions.js';
 export type { DurableStateSettings } from './DurableStateActor.js';
 export {
   DurableStateConcurrencyError,
@@ -208,10 +220,12 @@ export type {
 // Projections — actor wrapper with at-least-once delivery + offset persistence.
 export {
   ProjectionActor,
+} from './projection/ProjectionActor.js';
+export {
   ProjectionOptions,
   ByPidProjectionOptions,
   ByTagProjectionOptions,
-} from './projection/ProjectionActor.js';
+} from './projection/ProjectionOptions.js';
 export type {
   ProjectionSettings,
   ByPidSettings,
@@ -234,9 +248,11 @@ export type {
   ObjectInfo,
   PutOptions,
 } from './object-storage/ObjectStorageBackend.js';
-export { FilesystemObjectStorageBackend, FilesystemObjectStorageOptions } from './object-storage/FilesystemObjectStorageBackend.js';
+export { FilesystemObjectStorageBackend } from './object-storage/FilesystemObjectStorageBackend.js';
+export { FilesystemObjectStorageOptions } from './object-storage/FilesystemObjectStorageOptions.js';
 export type { FilesystemObjectStorageSettings } from './object-storage/FilesystemObjectStorageBackend.js';
-export { S3ObjectStorageBackend, S3ObjectStorageOptions } from './object-storage/S3ObjectStorageBackend.js';
+export { S3ObjectStorageBackend } from './object-storage/S3ObjectStorageBackend.js';
+export { S3ObjectStorageOptions } from './object-storage/S3ObjectStorageOptions.js';
 export type {
   S3ObjectStorageSettings,
   S3Credentials,
@@ -244,19 +260,20 @@ export type {
 } from './object-storage/S3ObjectStorageBackend.js';
 export {
   ObjectStorageSnapshotStore,
-  ObjectStorageSnapshotStoreOptions,
 } from './snapshot-stores/ObjectStorageSnapshotStore.js';
+export { ObjectStorageSnapshotStoreOptions } from './snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
 export type {
   ObjectStorageSnapshotStoreSettings,
 } from './snapshot-stores/ObjectStorageSnapshotStore.js';
-export { ObjectStorageDurableStateStore, ObjectStorageDurableStateStoreOptions } from './durable-state-stores/ObjectStorageDurableStateStore.js';
+export { ObjectStorageDurableStateStore } from './durable-state-stores/ObjectStorageDurableStateStore.js';
+export { ObjectStorageDurableStateStoreOptions } from './durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
 export type { ObjectStorageDurableStateStoreSettings } from './durable-state-stores/ObjectStorageDurableStateStore.js';
 export {
   registerObjectStoragePlugins,
-  ObjectStoragePluginOptions,
   OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID,
   OBJECT_STORAGE_DURABLE_STATE_PLUGIN_ID,
 } from './object-storage/ObjectStoragePlugin.js';
+export { ObjectStoragePluginOptions } from './object-storage/ObjectStoragePluginOptions.js';
 export type {
   ObjectStoragePluginSettings,
   ObjectStoragePluginHandles,

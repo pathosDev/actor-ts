@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
-import { ActorSystem, ActorSystemOptions } from '../../src/ActorSystem.js';
+import { ActorSystem } from '../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { Props } from '../../src/Props.js';
 import {
@@ -12,8 +13,12 @@ import {
 } from '../../src/Router.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-const newSystem = (name = 'router-unit'): ActorSystem =>
-  ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+const newSystem = (name = 'router-unit'): ActorSystem => {
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  return ActorSystem.create(name, sysOptions);
+};
 
 /** Simple recording routee used across the tests. */
 function countingWorker(hits: Map<string, number>) {

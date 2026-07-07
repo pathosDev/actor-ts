@@ -30,11 +30,12 @@ class PacketHandler extends Actor<UdpDatagram> {
 
 const target = system.spawnAnonymous(Props.create(() => new PacketHandler()));
 
+const udpSocketOptions = UdpSocketOptions.create()
+  .withBindPort(41234)   // bind for receiving; 0 lets the OS pick
+  .withTarget(target);
 const udp = system.spawnAnonymous(
   Props.create(() => new UdpSocketActor(
-    UdpSocketOptions.create()
-      .withBindPort(41234)   // bind for receiving; 0 lets the OS pick
-      .withTarget(target),   // required: where inbound packets go
+    udpSocketOptions,   // required: where inbound packets go
   )),
 );
 
@@ -90,9 +91,12 @@ class PacketHandler extends Actor<UdpDatagram> {
 
 const target = system.spawnAnonymous(Props.create(() => new PacketHandler()));
 
+const udpSocketOptions = UdpSocketOptions.create()
+  .withBindPort(41234)
+  .withTarget(target);
 const udp = system.spawnAnonymous(
   Props.create(() => new UdpSocketActor(
-    UdpSocketOptions.create().withBindPort(41234).withTarget(target),
+    udpSocketOptions,
   )),
 );
 ```
@@ -128,8 +132,10 @@ and the socket binds to an ephemeral port — a pure **sender** for
 one-way telemetry (statsd, syslog):
 
 ```ts
+const udpSocketOptions = UdpSocketOptions.create()
+  .withTarget(target);
 new UdpSocketActor(
-  UdpSocketOptions.create().withTarget(target),   // OS-assigned port, send-only in practice
+  udpSocketOptions,   // OS-assigned port, send-only in practice
 );
 ```
 

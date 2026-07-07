@@ -78,7 +78,10 @@ async function runPooled(system: ActorSystem, routees: number): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const system = ActorSystem.create('bench-router', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const systemOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const system = ActorSystem.create('bench-router', systemOptions);
 
   console.log(
     `\n  Router pool scaling — ${JOBS_PER_ITERATION} async jobs per iteration,\n`

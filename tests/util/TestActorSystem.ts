@@ -22,7 +22,8 @@
  * or verbose output pass `{ logger, logLevel }` explicitly.
  */
 
-import { ActorSystem, ActorSystemOptions } from '../../src/ActorSystem.js';
+import { ActorSystem } from '../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import type { ActorSystemSettings } from '../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 

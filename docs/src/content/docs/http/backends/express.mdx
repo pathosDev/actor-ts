@@ -28,8 +28,10 @@ await http.newServerAt('0.0.0.0', 8080)
 ## Configuration
 
 ```ts
+const expressBackendOptions = ExpressBackendOptions.create()
+  .withMaxBodyBytes(1 * 1024 * 1024);
 new ExpressBackend(
-  ExpressBackendOptions.create().withMaxBodyBytes(1 * 1024 * 1024),
+  expressBackendOptions,
 );
 // X-Forwarded-* handling is configured on a bring-your-own Express app
 // (`app.set('trust proxy', true)`), passed via `.withApp(app)`.
@@ -78,7 +80,9 @@ https.createServer(
   app,
 );
 
-new ExpressBackend(ExpressBackendOptions.create().withApp(app));
+const expressBackendOptions = ExpressBackendOptions.create()
+  .withApp(app);
+new ExpressBackend(expressBackendOptions);
 ```
 
 Backed by Node's `https` module.  Same caveats as the Fastify

@@ -3,15 +3,16 @@ import type { ActorSystem } from '../../ActorSystem.js';
 import type { Lease } from '../../coordination/Lease.js';
 import { extensionId, type ExtensionId } from '../../Extension.js';
 import { Props } from '../../Props.js';
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { resolveSettings } from '../../util/OptionsBuilder.js';
 import type { Cluster } from '../Cluster.js';
 import { fromNullable, type Option } from '../../util/Option.js';
 import {
   ClusterSingletonManager,
-  ClusterSingletonManagerOptions,
   singletonManagerPath,
   type SingletonDeliver,
 } from './ClusterSingletonManager.js';
+import { ClusterSingletonManagerOptions } from './ClusterSingletonManagerOptions.js';
+import type { StartSingletonOptions } from './StartSingletonOptions.js';
 import { ClusterSingletonProxy } from './ClusterSingletonProxy.js';
 
 export interface StartSingletonSettings<T> {
@@ -42,48 +43,6 @@ export interface StartSingletonSettings<T> {
   readonly acquireRetryIntervalMs?: number;
 }
 
-/**
- * Fluent builder for {@link StartSingletonSettings}:
- *
- *     system.extension(ClusterSingletonId).start(
- *       cluster,
- *       StartSingletonOptions.create<Cmd>()
- *         .withTypeName('counter')
- *         .withProps(Props.create(() => new CounterActor())),
- *     );
- */
-export class StartSingletonOptions<T> extends OptionsBuilder<StartSingletonSettings<T>> {
-  /** Start a fresh builder. */
-  static create<T>(): StartSingletonOptions<T> {
-    return new StartSingletonOptions<T>();
-  }
-
-  /** Logical name for this singleton — used in the manager/child actor path. */
-  withTypeName(typeName: string): this {
-    return this.set('typeName', typeName);
-  }
-
-  /** Props used to construct the singleton on the leader. */
-  withProps(props: Props<T>): this {
-    return this.set('props', props);
-  }
-
-  /** Only nodes carrying this role tag will host the singleton. */
-  withRole(role: string): this {
-    return this.set('role', role);
-  }
-
-  /** Split-brain protection — the leader acquires this lease before spawning. */
-  withLease(lease: Lease): this {
-    return this.set('lease', lease);
-  }
-
-  /** Retry interval (ms) for `lease.acquire()` after a failed attempt.  Default 5 s. */
-  withAcquireRetryIntervalMs(ms: number): this {
-    return this.set('acquireRetryIntervalMs', ms);
-  }
-}
-
 export interface SingletonHandle<T> {
   /** Location-transparent ActorRef — tell here, the leader's instance receives. */
   readonly proxy: ClusterSingletonProxy<T>;
@@ -103,8 +62,11 @@ export class ClusterSingleton {
   private handles = new Map<string, SingletonHandle<unknown>>();
   constructor(private readonly system: ActorSystem) {}
 
-  start<T>(cluster: Cluster, options: StartSingletonOptions<T>): SingletonHandle<T> {
-    const settings = options.build() as StartSingletonSettings<T>;
+  start<T>(
+    cluster: Cluster,
+    options: StartSingletonOptions<T> | Partial<StartSingletonSettings<T>>,
+  ): SingletonHandle<T> {
+    const settings = resolveSettings(options) as StartSingletonSettings<T>;
     const existing = this.handles.get(settings.typeName);
     if (existing) return existing as SingletonHandle<T>;
 

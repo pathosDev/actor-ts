@@ -28,8 +28,10 @@ await http.newServerAt('0.0.0.0', 8080)
 ## Konfiguration
 
 ```ts
+const expressBackendOptions = ExpressBackendOptions.create()
+  .withMaxBodyBytes(1 * 1024 * 1024);
 new ExpressBackend(
-  ExpressBackendOptions.create().withMaxBodyBytes(1 * 1024 * 1024),
+  expressBackendOptions,
 );
 // Das X-Forwarded-*-Handling wird auf einer eigenen Express-App
 // konfiguriert (`app.set('trust proxy', true)`) und via `.withApp(app)`
@@ -79,7 +81,9 @@ https.createServer(
   app,
 );
 
-new ExpressBackend(ExpressBackendOptions.create().withApp(app));
+const expressBackendOptions = ExpressBackendOptions.create()
+  .withApp(app);
+new ExpressBackend(expressBackendOptions);
 ```
 
 Gestützt auf das `https`-Modul von Node.  Dieselben Vorbehalte

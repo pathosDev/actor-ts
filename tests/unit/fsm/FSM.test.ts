@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem, ActorSystemOptions } from '../../../src/ActorSystem.js';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { FSM, type FsmResult } from '../../../src/fsm/index.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { Props } from '../../../src/Props.js';
-import { TestKit, TestKitOptions } from '../../../src/testkit/TestKit.js';
+import { TestKit } from '../../../src/testkit/TestKit.js';
+import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 
 type DoorState = 'closed' | 'open';
 interface DoorData { readonly openedAt: number | null; readonly opens: number; }
@@ -30,7 +32,10 @@ class Door extends FSM<DoorState, DoorData, DoorCmd> {
 describe('FSM', () => {
   test('initial state handles messages', async () => {
     const events: string[] = [];
-    const sys = ActorSystem.create('fsm', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('fsm', sysOptions);
     const ref = sys.spawnAnonymous(Props.create(() => new Door((e) => events.push(e))));
 
     ref.tell('open');
@@ -48,7 +53,10 @@ describe('FSM', () => {
 
   test('data mutation via stay / goto', async () => {
     const events: string[] = [];
-    const sys = ActorSystem.create('fsm-2', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('fsm-2', sysOptions);
     const ref = sys.spawnAnonymous(Props.create(() => new Door((e) => events.push(e))));
 
     ref.tell('open');
@@ -66,7 +74,10 @@ describe('FSM', () => {
     class Broken extends FSM<'a' | 'b', null, string> {
       constructor() { super('a', null); /* no handlers registered */ }
     }
-    const kit = TestKit.create('fsm-missing', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('fsm-missing', kitOptions);
     const ref = kit.system.spawnAnonymous(Props.create(() => new Broken()));
     ref.tell('anything');
     await Bun.sleep(20);

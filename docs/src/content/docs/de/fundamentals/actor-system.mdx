@@ -36,9 +36,10 @@ eifrig erzeugt; User-Actors existieren noch nicht — du spawnst sie
 Argument:
 
 ```ts
-const system = ActorSystem.create('my-app', ActorSystemOptions.create()
+const actorSystemOptions = ActorSystemOptions.create()
   .withLogLevel('info')
-  .withConfigFile('./application.conf'));
+  .withConfigFile('./application.conf');
+const system = ActorSystem.create('my-app', actorSystemOptions);
 ```
 
 Die vollständige Settings-Form:

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
-import { Cluster, ClusterOptions } from '../../../../../src/cluster/Cluster.js';
+import { Cluster } from '../../../../../src/cluster/Cluster.js';
+import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { Props } from '../../../../../src/Props.js';
@@ -10,9 +11,11 @@ import {
   Subscribe,
   Unsubscribe,
 } from '../../../../../src/cluster/pubsub/index.js';
-import { DistributedPubSubMediator, DistributedPubSubOptions } from '../../../../../src/cluster/pubsub/DistributedPubSubMediator.js';
+import { DistributedPubSubMediator } from '../../../../../src/cluster/pubsub/DistributedPubSubMediator.js';
+import { DistributedPubSubOptions } from '../../../../../src/cluster/pubsub/DistributedPubSubOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { TestKit, TestKitOptions } from '../../../../../src/testkit/TestKit.js';
+import { TestKit } from '../../../../../src/testkit/TestKit.js';
+import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -30,19 +33,19 @@ interface Node {
 }
 
 async function startNode(systemName: string, host: string, port: number, seeds: string[] = []): Promise<Node> {
-  const kit = TestKit.create(systemName, TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
-  const cluster = await Cluster.join(
-    kit.system,
-    ClusterOptions.create()
-      .withHost(host)
-      .withPort(port)
-      .withSeeds(seeds)
-      .withTransport(new InMemoryTransport(new NodeAddress(systemName, host, port)))
-      .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
-      .withGossipIntervalMs(80),
-  );
+  const kitOptions = TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+  const kit = TestKit.create(systemName, kitOptions);
+  const clusterOptions = ClusterOptions.create()
+    .withHost(host)
+    .withPort(port)
+    .withSeeds(seeds)
+    .withTransport(new InMemoryTransport(new NodeAddress(systemName, host, port)))
+    .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+    .withGossipIntervalMs(80);
+  const cluster = await Cluster.join(kit.system, clusterOptions);
   const pubsub = kit.system.extension(DistributedPubSubId);
-  const mediator = pubsub.start(cluster, DistributedPubSubOptions.create().withGossipIntervalMs(100));
+  const pubsubOptions = DistributedPubSubOptions.create().withGossipIntervalMs(100);
+  const mediator = pubsub.start(cluster, pubsubOptions);
   return { system: kit.system, cluster, mediator, kit };
 }
 
@@ -165,9 +168,10 @@ describe('DistributedPubSub — gossip-payload audit (#80)', () => {
     const a = await startNode('ps-audit-cycles', 'h', 51301);
 
     let captured: DistributedPubSubMediator | null = null;
+    const mediatorOptions = DistributedPubSubOptions.create().withCluster(a.cluster).withGossipIntervalMs(100);
     const auditMediator = a.system.spawn(
       Props.create(() => {
-        captured = new DistributedPubSubMediator(DistributedPubSubOptions.create().withCluster(a.cluster).withGossipIntervalMs(100));
+        captured = new DistributedPubSubMediator(mediatorOptions);
         return captured;
       }),
       'audit-mediator',
@@ -210,9 +214,10 @@ describe('DistributedPubSub — gossip-payload audit (#80)', () => {
     const a = await startNode('ps-audit-bytes', 'h', 51302);
 
     let captured: DistributedPubSubMediator | null = null;
+    const mediatorOptions = DistributedPubSubOptions.create().withCluster(a.cluster).withGossipIntervalMs(100);
     const auditMediator = a.system.spawn(
       Props.create(() => {
-        captured = new DistributedPubSubMediator(DistributedPubSubOptions.create().withCluster(a.cluster).withGossipIntervalMs(100));
+        captured = new DistributedPubSubMediator(mediatorOptions);
         return captured;
       }),
       'audit-mediator-bytes',
@@ -251,9 +256,10 @@ describe('DistributedPubSub — gossip-payload audit (#80)', () => {
     const a = await startNode('ps-audit-schema', 'h', 51303);
 
     let captured: DistributedPubSubMediator | null = null;
+    const mediatorOptions = DistributedPubSubOptions.create().withCluster(a.cluster).withGossipIntervalMs(100);
     const auditMediator = a.system.spawn(
       Props.create(() => {
-        captured = new DistributedPubSubMediator(DistributedPubSubOptions.create().withCluster(a.cluster).withGossipIntervalMs(100));
+        captured = new DistributedPubSubMediator(mediatorOptions);
         return captured;
       }),
       'audit-mediator-schema',

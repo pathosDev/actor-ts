@@ -17,8 +17,10 @@
  * a hand-rolled deterministic stub provider.
  */
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
-import { Cluster, ClusterOptions } from '../../../../../src/cluster/Cluster.js';
+import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
+import { Cluster } from '../../../../../src/cluster/Cluster.js';
+import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
 import { addrKey } from '../../../../../src/cluster/downing/index.js';
 import type {
   ClusterPartitionView,
@@ -50,7 +52,8 @@ async function startNode(
     downing?: DowningProvider;
   } = {},
 ): Promise<Node> {
-  const sys = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+  const sys = ActorSystem.create(systemName, sysOptions);
   let clusterOptions = ClusterOptions.create()
     .withHost('h')
     .withPort(port)

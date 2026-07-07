@@ -8,13 +8,19 @@
 import { InMemoryLease, LeaseOptions } from '../../src/index.js';
 
 async function main(): Promise<void> {
-  const primary = new InMemoryLease(
-    LeaseOptions.create().withName('critical-section').withOwner('worker-A').withTtlMs(300).withRenewalIntervalMs(100),
-  );
-  const backup = new InMemoryLease(
-    LeaseOptions.create().withName('critical-section').withOwner('worker-B').withTtlMs(300)
-      .withAcquireRetries(5).withAcquireRetryDelayMs(80),
-  );
+  const primaryLeaseOptions = LeaseOptions.create()
+    .withName('critical-section')
+    .withOwner('worker-A')
+    .withTtlMs(300)
+    .withRenewalIntervalMs(100);
+  const primary = new InMemoryLease(primaryLeaseOptions);
+  const backupLeaseOptions = LeaseOptions.create()
+    .withName('critical-section')
+    .withOwner('worker-B')
+    .withTtlMs(300)
+    .withAcquireRetries(5)
+    .withAcquireRetryDelayMs(80);
+  const backup = new InMemoryLease(backupLeaseOptions);
 
   const primaryWon = await primary.acquire();
   console.log(`worker-A acquired? ${primaryWon}`);

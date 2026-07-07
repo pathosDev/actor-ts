@@ -47,16 +47,20 @@ async function startNode(
   port: number,
   seeds: string[] = [],
 ): Promise<NodeHandle> {
-  const system = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const system = ActorSystem.create(systemName, sysOptions);
+  const clusterOptions = ClusterOptions.create()
+    .withHost(host)
+    .withPort(port)
+    .withSeeds(seeds)
+    .withTransport(new InMemoryTransport(new NodeAddress(systemName, host, port)))
+    .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+    .withGossipIntervalMs(80);
   const cluster = await Cluster.join(
     system,
-    ClusterOptions.create()
-      .withHost(host)
-      .withPort(port)
-      .withSeeds(seeds)
-      .withTransport(new InMemoryTransport(new NodeAddress(systemName, host, port)))
-      .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
-      .withGossipIntervalMs(80),
+    clusterOptions,
   );
 
   const counts = new Map<string, number>();
@@ -68,12 +72,13 @@ async function startNode(
   }
 
   const sharding = cluster.sharding;
+  const startShardingOptions = StartShardingOptions.create<Command>()
+    .withTypeName('counter')
+    .withEntityProps(Props.create(() => new CountEntity()))
+    .withExtractEntityId(msg => msg.id)
+    .withNumShards(8);
   const region = sharding.start<Command>(
-    StartShardingOptions.create<Command>()
-      .withTypeName('counter')
-      .withEntityProps(Props.create(() => new CountEntity()))
-      .withExtractEntityId(msg => msg.id)
-      .withNumShards(8),
+    startShardingOptions,
   );
 
   return { system, cluster, counts, region };
@@ -308,19 +313,23 @@ async function startNodeWithTombstoneCfg(
   systemName: string, host: string, port: number, seeds: string[],
   cfg: { tombstoneTtlMs: number; tombstonePruneIntervalMs: number; tombstoneMinRetentionMs: number },
 ): Promise<{ system: ActorSystem; cluster: Cluster }> {
-  const system = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const system = ActorSystem.create(systemName, sysOptions);
+  const clusterOptions = ClusterOptions.create()
+    .withHost(host)
+    .withPort(port)
+    .withSeeds(seeds)
+    .withTransport(new InMemoryTransport(new NodeAddress(systemName, host, port)))
+    .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+    .withGossipIntervalMs(80)
+    .withTombstoneTtlMs(cfg.tombstoneTtlMs)
+    .withTombstonePruneIntervalMs(cfg.tombstonePruneIntervalMs)
+    .withTombstoneMinRetentionMs(cfg.tombstoneMinRetentionMs);
   const cluster = await Cluster.join(
     system,
-    ClusterOptions.create()
-      .withHost(host)
-      .withPort(port)
-      .withSeeds(seeds)
-      .withTransport(new InMemoryTransport(new NodeAddress(systemName, host, port)))
-      .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
-      .withGossipIntervalMs(80)
-      .withTombstoneTtlMs(cfg.tombstoneTtlMs)
-      .withTombstonePruneIntervalMs(cfg.tombstonePruneIntervalMs)
-      .withTombstoneMinRetentionMs(cfg.tombstoneMinRetentionMs),
+    clusterOptions,
   );
   return { system, cluster };
 }

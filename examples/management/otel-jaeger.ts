@@ -42,12 +42,11 @@ const { api, shutdown } = await initOtel();
 
 // 2. Wire the framework's tracing extension to the OTel API namespace.
 const system = ActorSystem.create('actor-ts-voice-demo');
-system.extension(TracingExtensionId).enable(otelTracer(
-  OtelAdapterOptions.create()
-    .withApi(api)
-    .withTracerName('actor-ts')
-    .withTracerVersion('0.2.0'),
-));
+const otelAdapterOptions = OtelAdapterOptions.create()
+  .withApi(api)
+  .withTracerName('actor-ts')
+  .withTracerVersion('0.2.0');
+system.extension(TracingExtensionId).enable(otelTracer(otelAdapterOptions));
 
 // 3. A toy actor that does some work — every `onReceive` becomes a span.
 class Worker extends Actor<{ id: number }> {

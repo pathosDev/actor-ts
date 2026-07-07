@@ -54,7 +54,8 @@ import {
 import { CoordinatedShutdownId } from '../../../src/CoordinatedShutdown.js';
 import { exportPrometheus } from '../../../src/metrics/PrometheusExporter.js';
 import { metricsOf } from '../../../src/metrics/MetricsExtension.js';
-import { DnsSeedProvider, DnsSeedProviderOptions } from '../../../src/discovery/DnsSeedProvider.js';
+import { DnsSeedProvider } from '../../../src/discovery/DnsSeedProvider.js';
+import { DnsSeedProviderOptions } from '../../../src/discovery/DnsSeedProviderOptions.js';
 import { LWWRegister } from '../../../src/crdt/LWWRegister.js';
 import { GCounter } from '../../../src/crdt/GCounter.js';
 import type { WriteConsistency } from '../../../src/crdt/DistributedData.js';

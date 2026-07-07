@@ -3,8 +3,9 @@ import { Actor } from '../../Actor.js';
 import { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../util/Constants.js';
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { resolveSettings } from '../../util/OptionsBuilder.js';
 import type { Cluster } from '../Cluster.js';
+import type { DistributedPubSubOptions } from './DistributedPubSubOptions.js';
 import { MemberRemoved, MemberUp } from '../ClusterEvents.js';
 import { NodeAddress } from '../NodeAddress.js';
 import type { WireMessage } from '../Protocol.js';
@@ -45,28 +46,6 @@ export interface DistributedPubSubSettings {
 }
 
 /**
- * Fluent builder for {@link DistributedPubSubSettings}.  The mediator is
- * normally spawned by the {@link DistributedPubSub} extension, which
- * injects the cluster and forwards the operator's gossip-interval choice.
- */
-export class DistributedPubSubOptions extends OptionsBuilder<DistributedPubSubSettings> {
-  /** Start a fresh builder. */
-  static create(): DistributedPubSubOptions {
-    return new DistributedPubSubOptions();
-  }
-
-  /** The cluster this mediator lives in — drives membership + gossip peers. */
-  withCluster(cluster: Cluster): this {
-    return this.set('cluster', cluster);
-  }
-
-  /** Gossip interval in ms between anti-entropy pushes.  Default gossip interval. */
-  withGossipIntervalMs(ms: number): this {
-    return this.set('gossipIntervalMs', ms);
-  }
-}
-
-/**
  * Cluster-wide publish/subscribe bus.  Every node hosts one mediator
  * which keeps a local Map<topic, subscribers> and gossip-replicates
  * the topic→node set so Publish can reach every subscriber with at
@@ -86,9 +65,9 @@ export class DistributedPubSubMediator extends Actor<
 
   readonly settings: DistributedPubSubSettings;
 
-  constructor(options: DistributedPubSubOptions) {
+  constructor(options: DistributedPubSubOptions | Partial<DistributedPubSubSettings>) {
     super();
-    this.settings = options.build() as DistributedPubSubSettings;
+    this.settings = resolveSettings(options) as DistributedPubSubSettings;
   }
 
   override preStart(): void {

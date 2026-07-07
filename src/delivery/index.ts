@@ -1,4 +1,5 @@
-export { ProducerController, ProducerControllerOptions } from './ProducerController.js';
+export { ProducerController } from './ProducerController.js';
+export { ProducerControllerOptions } from './ProducerControllerOptions.js';
 export type {
   ProducerControllerSettings,
   ProducerSend,

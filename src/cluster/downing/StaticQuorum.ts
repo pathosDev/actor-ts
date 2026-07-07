@@ -1,38 +1,17 @@
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { resolveSettings } from '../../util/OptionsBuilder.js';
 import {
   addrKey,
   type ClusterPartitionView,
   type DowningDecision,
   type DowningProvider,
 } from './DowningProvider.js';
+import type { StaticQuorumOptions } from './StaticQuorumOptions.js';
 
 export interface StaticQuorumSettings {
   /** Exact size of the quorum needed on the reachable side. */
   readonly quorumSize: number;
   /** If set, only members carrying this role count toward quorum. */
   readonly role?: string;
-}
-
-/**
- * Fluent builder for {@link StaticQuorumSettings}:
- *
- *     new StaticQuorum(StaticQuorumOptions.create().withQuorumSize(3));
- */
-export class StaticQuorumOptions extends OptionsBuilder<StaticQuorumSettings> {
-  /** Start a fresh builder. */
-  static create(): StaticQuorumOptions {
-    return new StaticQuorumOptions();
-  }
-
-  /** Exact size of the quorum needed on the reachable side. */
-  withQuorumSize(quorumSize: number): this {
-    return this.set('quorumSize', quorumSize);
-  }
-
-  /** Only members carrying this role count toward quorum. */
-  withRole(role: string): this {
-    return this.set('role', role);
-  }
 }
 
 /**
@@ -46,8 +25,8 @@ export class StaticQuorumOptions extends OptionsBuilder<StaticQuorumSettings> {
 export class StaticQuorum implements DowningProvider {
   private readonly settings: StaticQuorumSettings;
 
-  constructor(options: StaticQuorumOptions) {
-    this.settings = options.build() as StaticQuorumSettings;
+  constructor(options: StaticQuorumOptions | Partial<StaticQuorumSettings>) {
+    this.settings = resolveSettings(options) as StaticQuorumSettings;
     if (this.settings.quorumSize < 1) {
       throw new Error('StaticQuorum: quorumSize must be >= 1');
     }

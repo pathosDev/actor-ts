@@ -1,10 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../src/Actor.js';
-import { ActorSystem, ActorSystemOptions } from '../../../../src/ActorSystem.js';
+import { ActorSystem } from '../../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { Nobody } from '../../../../src/ActorRef.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
-import { Cluster, ClusterOptions } from '../../../../src/cluster/Cluster.js';
-import { ClusterSharding, StartShardingOptions } from '../../../../src/cluster/sharding/ClusterSharding.js';
+import { Cluster } from '../../../../src/cluster/Cluster.js';
+import { ClusterOptions } from '../../../../src/cluster/ClusterOptions.js';
+import { ClusterSharding } from '../../../../src/cluster/sharding/ClusterSharding.js';
+import { StartShardingOptions } from '../../../../src/cluster/sharding/StartShardingOptions.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
 import { RemoteActorRef } from '../../../../src/cluster/RemoteActorRef.js';
@@ -33,17 +36,16 @@ async function startNode(
   seeds: string[] = [],
   roles: string[] = [],
 ): Promise<Node> {
-  const sys = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
-  const cluster = await Cluster.join(
-    sys,
-    ClusterOptions.create()
-      .withHost('h')
-      .withPort(port)
-      .withSeeds(seeds)
-      .withRoles(roles)
-      .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
-      .withGossipIntervalMs(30),
-  );
+  const sysOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+  const sys = ActorSystem.create(systemName, sysOptions);
+  const clusterOptions = ClusterOptions.create()
+    .withHost('h')
+    .withPort(port)
+    .withSeeds(seeds)
+    .withRoles(roles)
+    .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
+    .withGossipIntervalMs(30);
+  const cluster = await Cluster.join(sys, clusterOptions);
   return { sys, cluster };
 }
 
@@ -87,22 +89,20 @@ describe('ActorRef serialisation across cluster nodes', () => {
 
     // Both nodes register the sharded type with `role: 'hoster'` so shards
     // can ONLY be allocated to node A (which carries that role).
-    a.cluster.sharding.start<Cmd>(
-      StartShardingOptions.create<Cmd>()
-        .withTypeName('echo')
-        .withRole('hoster')
-        .withEntityProps(Props.create(() => new Echo()))
-        .withExtractEntityId((m) => m.id)
-        .withNumShards(16),
-    );
-    const bRegion = b.cluster.sharding.start<Cmd>(
-      StartShardingOptions.create<Cmd>()
-        .withTypeName('echo')
-        .withRole('hoster')
-        .withEntityProps(Props.create(() => new Echo()))
-        .withExtractEntityId((m) => m.id)
-        .withNumShards(16),
-    );
+    const aShardingOptions = StartShardingOptions.create<Cmd>()
+      .withTypeName('echo')
+      .withRole('hoster')
+      .withEntityProps(Props.create(() => new Echo()))
+      .withExtractEntityId((m) => m.id)
+      .withNumShards(16);
+    a.cluster.sharding.start<Cmd>(aShardingOptions);
+    const bShardingOptions = StartShardingOptions.create<Cmd>()
+      .withTypeName('echo')
+      .withRole('hoster')
+      .withEntityProps(Props.create(() => new Echo()))
+      .withExtractEntityId((m) => m.id)
+      .withNumShards(16);
+    const bRegion = b.cluster.sharding.start<Cmd>(bShardingOptions);
 
     // Probe lives on node B — its LocalActorRef is therefore OWNED by B.
     const probeOnB = b.sys.spawn(Props.create(() => new Probe()), 'probe');
@@ -147,22 +147,20 @@ describe('ActorRef serialisation across cluster nodes', () => {
 
     await waitFor(() => a.cluster.upMembers().length === 2);
 
-    a.cluster.sharding.start<Cmd>(
-      StartShardingOptions.create<Cmd>()
-        .withTypeName('cap')
-        .withRole('hoster')
-        .withEntityProps(Props.create(() => new Capturer()))
-        .withExtractEntityId(() => 'only')
-        .withNumShards(4),
-    );
-    const bRegion = b.cluster.sharding.start<Cmd>(
-      StartShardingOptions.create<Cmd>()
-        .withTypeName('cap')
-        .withRole('hoster')
-        .withEntityProps(Props.create(() => new Capturer()))
-        .withExtractEntityId(() => 'only')
-        .withNumShards(4),
-    );
+    const aShardingOptions = StartShardingOptions.create<Cmd>()
+      .withTypeName('cap')
+      .withRole('hoster')
+      .withEntityProps(Props.create(() => new Capturer()))
+      .withExtractEntityId(() => 'only')
+      .withNumShards(4);
+    a.cluster.sharding.start<Cmd>(aShardingOptions);
+    const bShardingOptions = StartShardingOptions.create<Cmd>()
+      .withTypeName('cap')
+      .withRole('hoster')
+      .withEntityProps(Props.create(() => new Capturer()))
+      .withExtractEntityId(() => 'only')
+      .withNumShards(4);
+    const bRegion = b.cluster.sharding.start<Cmd>(bShardingOptions);
 
     await sleep(300);
 
@@ -204,22 +202,20 @@ describe('ActorRef serialisation across cluster nodes', () => {
 
     await waitFor(() => a.cluster.upMembers().length === 2);
 
-    a.cluster.sharding.start<Cmd>(
-      StartShardingOptions.create<Cmd>()
-        .withTypeName('checker')
-        .withRole('hoster')
-        .withEntityProps(Props.create(() => new Checker()))
-        .withExtractEntityId(() => 'only')
-        .withNumShards(4),
-    );
-    const bRegion = b.cluster.sharding.start<Cmd>(
-      StartShardingOptions.create<Cmd>()
-        .withTypeName('checker')
-        .withRole('hoster')
-        .withEntityProps(Props.create(() => new Checker()))
-        .withExtractEntityId(() => 'only')
-        .withNumShards(4),
-    );
+    const aShardingOptions = StartShardingOptions.create<Cmd>()
+      .withTypeName('checker')
+      .withRole('hoster')
+      .withEntityProps(Props.create(() => new Checker()))
+      .withExtractEntityId(() => 'only')
+      .withNumShards(4);
+    a.cluster.sharding.start<Cmd>(aShardingOptions);
+    const bShardingOptions = StartShardingOptions.create<Cmd>()
+      .withTypeName('checker')
+      .withRole('hoster')
+      .withEntityProps(Props.create(() => new Checker()))
+      .withExtractEntityId(() => 'only')
+      .withNumShards(4);
+    const bRegion = b.cluster.sharding.start<Cmd>(bShardingOptions);
 
     await sleep(300);
     bRegion.tell({ attempt: Nobody });

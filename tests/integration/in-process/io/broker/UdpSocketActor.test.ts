@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { createSocket, type Socket } from 'node:dgram';
-import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
+import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import { Actor } from '../../../../../src/Actor.js';
@@ -43,11 +44,16 @@ afterEach(async () => { await echo.close(); });
 
 describe('UdpSocketActor', () => {
   test('binds, sends datagram, receives echo', async () => {
-    const sys = ActorSystem.create('udp-1', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('udp-1', sysOptions);
     const collector = new CollectActor();
     const target = sys.spawnAnonymous(Props.create(() => collector));
 
-    const ref = sys.spawnAnonymous(Props.create(() => new UdpSocketActor(UdpSocketOptions.create().withTarget(target))));
+    const udpOptions = UdpSocketOptions.create()
+      .withTarget(target);
+    const ref = sys.spawnAnonymous(Props.create(() => new UdpSocketActor(udpOptions)));
     await sleep(30);
 
     ref.tell({
@@ -65,12 +71,17 @@ describe('UdpSocketActor', () => {
   });
 
   test('multiple datagrams to different destinations', async () => {
-    const sys = ActorSystem.create('udp-2', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('udp-2', sysOptions);
     // Spin up a second echo that prefixes the response.
     const echo2 = await startUdpEcho();
     const collector = new CollectActor();
     const target = sys.spawnAnonymous(Props.create(() => collector));
-    const ref = sys.spawnAnonymous(Props.create(() => new UdpSocketActor(UdpSocketOptions.create().withTarget(target))));
+    const udpOptions = UdpSocketOptions.create()
+      .withTarget(target);
+    const ref = sys.spawnAnonymous(Props.create(() => new UdpSocketActor(udpOptions)));
     await sleep(30);
 
     ref.tell({ kind: 'send', datagram: { payload: 'a', host: '127.0.0.1', port: echo.port } });
@@ -85,10 +96,15 @@ describe('UdpSocketActor', () => {
   });
 
   test('Uint8Array payload is sent verbatim', async () => {
-    const sys = ActorSystem.create('udp-3', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('udp-3', sysOptions);
     const collector = new CollectActor();
     const target = sys.spawnAnonymous(Props.create(() => collector));
-    const ref = sys.spawnAnonymous(Props.create(() => new UdpSocketActor(UdpSocketOptions.create().withTarget(target))));
+    const udpOptions = UdpSocketOptions.create()
+      .withTarget(target);
+    const ref = sys.spawnAnonymous(Props.create(() => new UdpSocketActor(udpOptions)));
     await sleep(30);
     const bytes = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
     ref.tell({ kind: 'send', datagram: { payload: bytes, host: '127.0.0.1', port: echo.port } });

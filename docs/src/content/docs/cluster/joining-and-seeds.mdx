@@ -29,12 +29,13 @@ import { ActorSystem, Cluster, ClusterOptions } from 'actor-ts';
 
 const system = ActorSystem.create('my-app');
 
+const clusterOptions = ClusterOptions.create()
+  .withHost('10.0.0.5')
+  .withPort(2552)
+  .withSeeds(['10.0.0.5:2552', '10.0.0.6:2552', '10.0.0.7:2552']);
 const cluster = await Cluster.join(
   system,
-  ClusterOptions.create()
-    .withHost('10.0.0.5')
-    .withPort(2552)
-    .withSeeds(['10.0.0.5:2552', '10.0.0.6:2552', '10.0.0.7:2552']),
+  clusterOptions,
 );
 ```
 
@@ -73,12 +74,13 @@ The seed-related knobs:
 ## The first node
 
 ```ts
+const clusterOptions = ClusterOptions.create()
+  .withHost('0.0.0.0')
+  .withPort(2552)
+  .withSeeds([]);
 const cluster = await Cluster.join(
   system,
-  ClusterOptions.create()
-    .withHost('0.0.0.0')
-    .withPort(2552)
-    .withSeeds([]),
+  clusterOptions,
 );
 ```
 
@@ -141,21 +143,23 @@ use a **seed provider**:
 ```ts
 import { KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts/discovery';
 
+const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create()
+  .withNamespace('default')
+  .withServiceName('actor-ts')
+  .withPort(2552);
 const seedProvider = new KubernetesApiSeedProvider(
-  KubernetesApiSeedProviderOptions.create()
-    .withNamespace('default')
-    .withServiceName('actor-ts')
-    .withPort(2552),
+  kubernetesApiSeedProviderOptions,
 );
 
 const seeds = await seedProvider.discover();
 
+const clusterOptions = ClusterOptions.create()
+  .withHost(process.env.POD_IP!)
+  .withPort(2552)
+  .withSeeds(seeds);
 const cluster = await Cluster.join(
   system,
-  ClusterOptions.create()
-    .withHost(process.env.POD_IP!)
-    .withPort(2552)
-    .withSeeds(seeds),
+  clusterOptions,
 );
 ```
 
@@ -196,7 +200,11 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Seeds unreachable, no self in list">
   ```ts
   // ✗ this node isn't a seed, no other seed responds
-  Cluster.join(system, ClusterOptions.create().withHost('n4').withPort(2552).withSeeds(['n1', 'n2', 'n3']));
+  const clusterOptions = ClusterOptions.create()
+    .withHost('n4')
+    .withPort(2552)
+    .withSeeds(['n1', 'n2', 'n3']);
+  Cluster.join(system, clusterOptions);
   ```
   The join retries forever (silent at default log level).  If
   the seed list is genuinely unreachable, the node never joins.

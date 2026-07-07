@@ -11,17 +11,18 @@ import { ActorSystem, Props, KafkaActor, KafkaOptions } from 'actor-ts';
 
 const system = ActorSystem.create('my-app');
 
+const kafkaOptions = KafkaOptions.create()
+  .withBrokers(['kafka-1:9092', 'kafka-2:9092'])
+  .withClientId('my-app')
+  // Consumer-actor target is configured here, once.
+  .withConsumer({
+    groupId: 'my-app-orders',
+    topics:  ['orders', 'payments'],
+    target:  orderHandler,
+  });
 const kafka = system.spawn(
   Props.create(() => new KafkaActor(
-    KafkaOptions.create()
-      .withBrokers(['kafka-1:9092', 'kafka-2:9092'])
-      .withClientId('my-app')
-      // Consumer-actor target is configured here, once.
-      .withConsumer({
-        groupId: 'my-app-orders',
-        topics:  ['orders', 'payments'],
-        target:  orderHandler,
-      }),
+    kafkaOptions,
   )),
   'kafka',
 );
@@ -139,15 +140,16 @@ a rebalance.
 ## Auth + TLS
 
 ```ts
+const kafkaOptions = KafkaOptions.create()
+  .withBrokers(['kafka-1:9093'])
+  .withSsl(true)
+  .withSasl({
+    mechanism: 'scram-sha-512',
+    username:  process.env.KAFKA_USER!,
+    password:  process.env.KAFKA_PASS!,
+  });
 new KafkaActor(
-  KafkaOptions.create()
-    .withBrokers(['kafka-1:9093'])
-    .withSsl(true)
-    .withSasl({
-      mechanism: 'scram-sha-512',
-      username:  process.env.KAFKA_USER!,
-      password:  process.env.KAFKA_PASS!,
-    }),
+  kafkaOptions,
 );
 ```
 

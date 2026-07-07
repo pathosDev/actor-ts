@@ -21,10 +21,11 @@ class Subscriber extends Actor<ChatMessage> {
 async function main(): Promise<void> {
   const system = ActorSystem.create('chat');
   // Single-node in-memory cluster — pub-sub also works cluster-wide (see event-bus-across-nodes.ts).
-  const cluster = await Cluster.join(system, ClusterOptions.create()
+  const clusterOptions = ClusterOptions.create()
     .withHost('local')
     .withPort(1)
-    .withTransport(new InMemoryTransport(new NodeAddress('chat', 'local', 1))));
+    .withTransport(new InMemoryTransport(new NodeAddress('chat', 'local', 1)));
+  const cluster = await Cluster.join(system, clusterOptions);
 
   const mediator = system.extension(DistributedPubSubId).start(cluster);
 

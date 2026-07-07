@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem, ActorSystemOptions } from '../../src/ActorSystem.js';
+import { ActorSystem } from '../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import {
   ActorSystemTerminateReason,
   CoordinatedShutdown,
@@ -11,8 +12,12 @@ import {
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-const newSystem = (name = 'cs-unit'): ActorSystem =>
-  ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+const newSystem = (name = 'cs-unit'): ActorSystem => {
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  return ActorSystem.create(name, sysOptions);
+};
 
 describe('CoordinatedShutdown basics', () => {
   test('is an Extension with a dedicated id', async () => {

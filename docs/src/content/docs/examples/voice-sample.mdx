@@ -65,10 +65,11 @@ The transcripts appear live in the UI as audio chunks process.
 ### Broker integration
 
 ```ts
+const kafkaOptions = KafkaOptions.create()
+  .withBrokers(['kafka:9092'])
+  .withConsumer({ groupId: 'voice-processor', topics: ['audio-chunks'] });
 const kafka = system.spawn(
-  Props.create(() => new KafkaActor(KafkaOptions.create()
-    .withBrokers(['kafka:9092'])
-    .withConsumer({ groupId: 'voice-processor', topics: ['audio-chunks'] }))),
+  Props.create(() => new KafkaActor(kafkaOptions)),
 );
 
 kafka.tell({ kind: 'subscribe', subscriber: dispatchActor });
@@ -116,7 +117,7 @@ Notice:
 ### Projection for search
 
 ```ts
-const projection = ProjectionActor.byTag<SessionEvent>(system, ByTagProjectionOptions.create<SessionEvent>()
+const byTagProjectionOptions = ByTagProjectionOptions.create<SessionEvent>()
   .withName('transcript-search')
   .withTag('transcript')
   .withQuery(new CassandraQuery({ /* ... */ }))
@@ -129,7 +130,8 @@ const projection = ProjectionActor.byTag<SessionEvent>(system, ByTagProjectionOp
         [event.persistenceId, event.event.text, event.event.ts],
       );
     }
-  }));
+  });
+const projection = ProjectionActor.byTag<SessionEvent>(system, byTagProjectionOptions);
 
 system.spawnAnonymous(Props.create(() => projection));
 ```

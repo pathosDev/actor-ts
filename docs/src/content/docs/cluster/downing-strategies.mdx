@@ -56,13 +56,14 @@ the picking section below).
 ```ts
 import { Cluster, ClusterOptions, KeepMajority } from 'actor-ts';
 
+const clusterOptions = ClusterOptions.create()
+  .withHost(host)
+  .withPort(port)
+  .withSeeds(seeds)
+  .withDowning(new KeepMajority());
 const cluster = await Cluster.join(
   system,
-  ClusterOptions.create()
-    .withHost(host)
-    .withPort(port)
-    .withSeeds(seeds)
-    .withDowning(new KeepMajority()),
+  clusterOptions,
 );
 ```
 
@@ -102,7 +103,9 @@ special-purpose deployments.
 ```ts
 import { KeepOldest, KeepOldestOptions } from 'actor-ts';
 
-new KeepOldest(KeepOldestOptions.create().withDownIfAlone(true));
+const keepOldestOptions = KeepOldestOptions.create()
+  .withDownIfAlone(true);
+new KeepOldest(keepOldestOptions);
 ```
 
 The side containing the **oldest member** (longest in the cluster)
@@ -123,10 +126,11 @@ declaring itself the cluster after a total split.
 ```ts
 import { KeepReferee, KeepRefereeOptions } from 'actor-ts';
 
+const keepRefereeOptions = KeepRefereeOptions.create()
+  .withRefereeAddress('actor-ts://my-app@10.0.0.1:2552')
+  .withDownAllIfBelowQuorum(3);
 new KeepReferee(
-  KeepRefereeOptions.create()
-    .withRefereeAddress('actor-ts://my-app@10.0.0.1:2552')
-    .withDownAllIfBelowQuorum(3),
+  keepRefereeOptions,
 );
 ```
 
@@ -154,7 +158,9 @@ neutral location (a third DC, a control-plane K8s namespace).
 ```ts
 import { StaticQuorum, StaticQuorumOptions } from 'actor-ts';
 
-new StaticQuorum(StaticQuorumOptions.create().withQuorumSize(3));
+const staticQuorumOptions = StaticQuorumOptions.create()
+  .withQuorumSize(3);
+new StaticQuorum(staticQuorumOptions);
 ```
 
 A side wins only if it has at least `quorumSize` reachable members.
@@ -179,9 +185,10 @@ survival.
 ```ts
 import { LeaseMajority, LeaseMajorityOptions } from 'actor-ts';
 
+const leaseMajorityOptions = LeaseMajorityOptions.create()
+  .withLease(someLeaseImpl);
 new LeaseMajority(
-  LeaseMajorityOptions.create()
-    .withLease(someLeaseImpl),
+  leaseMajorityOptions,
 );
 ```
 
@@ -267,7 +274,9 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`StaticQuorum` blocks scale-up">
   ```ts
-  new StaticQuorum(StaticQuorumOptions.create().withQuorumSize(5));
+  const quorumOptions = StaticQuorumOptions.create()
+    .withQuorumSize(5);
+  new StaticQuorum(quorumOptions);
   // Starting up with 3 nodes → cluster downs itself (no quorum)
   ```
   Quorum is checked at every membership change, including the

@@ -24,9 +24,10 @@ const keyRing = new MasterKeyRing({
   currentKeyId: 'k1',
 });
 
-const store = new ObjectStorageDurableStateStore(ObjectStorageDurableStateStoreOptions.create()
+const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
   .withBackend(new S3ObjectStorageBackend(S3ObjectStorageOptions.create() /* .withRegion(...).withBucket(...) */))
-  .withEncryption({ keyRing }));
+  .withEncryption({ keyRing });
+const store = new ObjectStorageDurableStateStore(objectStorageDurableStateStoreOptions);
 ```
 
 Jetzt wird jeder persistierte State vor dem Upload mit AES-GCM

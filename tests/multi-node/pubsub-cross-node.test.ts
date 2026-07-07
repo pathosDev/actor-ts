@@ -45,12 +45,14 @@ describe('multi-node PubSub', () => {
       ]);
 
       // Stand up a mediator on each node.  start() is idempotent per cluster.
+      const pubsubOptions = DistributedPubSubOptions.create()
+        .withGossipIntervalMs(80);
       const medA = spec.systemFor('a').extension(DistributedPubSubId)
-        .start(spec.clusterFor('a'), DistributedPubSubOptions.create().withGossipIntervalMs(80));
+        .start(spec.clusterFor('a'), pubsubOptions);
       const medB = spec.systemFor('b').extension(DistributedPubSubId)
-        .start(spec.clusterFor('b'), DistributedPubSubOptions.create().withGossipIntervalMs(80));
+        .start(spec.clusterFor('b'), pubsubOptions);
       const medC = spec.systemFor('c').extension(DistributedPubSubId)
-        .start(spec.clusterFor('c'), DistributedPubSubOptions.create().withGossipIntervalMs(80));
+        .start(spec.clusterFor('c'), pubsubOptions);
 
       const probeB = new TestProbe(spec.systemFor('b'));
       const probeC = new TestProbe(spec.systemFor('c'));
@@ -85,14 +87,16 @@ describe('multi-node PubSub', () => {
         spec.awaitMembers('c', 3),
       ]);
 
+      const pubsubOptions = DistributedPubSubOptions.create()
+        .withGossipIntervalMs(80);
       const medA = spec.systemFor('a').extension(DistributedPubSubId)
-        .start(spec.clusterFor('a'), DistributedPubSubOptions.create().withGossipIntervalMs(80));
+        .start(spec.clusterFor('a'), pubsubOptions);
       const medB = spec.systemFor('b').extension(DistributedPubSubId)
-        .start(spec.clusterFor('b'), DistributedPubSubOptions.create().withGossipIntervalMs(80));
+        .start(spec.clusterFor('b'), pubsubOptions);
       // We deliberately don't start C's pubsub mediator subscribe — we just
       // want to assert that only the explicit subscriber on B fires.
       spec.systemFor('c').extension(DistributedPubSubId)
-        .start(spec.clusterFor('c'), DistributedPubSubOptions.create().withGossipIntervalMs(80));
+        .start(spec.clusterFor('c'), pubsubOptions);
 
       const probeB = new TestProbe(spec.systemFor('b'));
       const probeC = new TestProbe(spec.systemFor('c'));

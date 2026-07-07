@@ -1,7 +1,9 @@
 // Cluster entry points.
-export { Cluster, ClusterOptions, inMemoryTransport } from './Cluster.js';
+export { Cluster, inMemoryTransport } from './Cluster.js';
+export { ClusterOptions } from './ClusterOptions.js';
 export type { ClusterSettings } from './Cluster.js';
-export { bootstrapCluster, ClusterBootstrapOptions } from './ClusterBootstrap.js';
+export { bootstrapCluster } from './ClusterBootstrap.js';
+export { ClusterBootstrapOptions } from './ClusterBootstrapOptions.js';
 export type {
   ClusterBootstrapSettings,
   BootstrappedCluster,
@@ -38,15 +40,15 @@ export type { PortLike, BrokeredMessage } from './transports/MessageChannelTrans
 
 export {
   FailureDetector,
-  FailureDetectorOptions,
   defaultFailureDetectorSettings,
 } from './FailureDetector.js';
+export { FailureDetectorOptions } from './FailureDetectorOptions.js';
 export type { FailureDetectorSettings, FailureDecision } from './FailureDetector.js';
 export {
   PhiAccrualFailureDetector,
-  PhiAccrualOptions,
   defaultPhiAccrualSettings,
 } from './PhiAccrualFailureDetector.js';
+export { PhiAccrualOptions } from './PhiAccrualOptions.js';
 export type { PhiAccrualSettings } from './PhiAccrualFailureDetector.js';
 
 // Split-Brain Resolver strategies.
@@ -105,16 +107,20 @@ export {
 export type { DistributedPubSubSettings } from './pubsub/index.js';
 
 // Sharding.
-export { ClusterSharding, StartShardingOptions } from './sharding/ClusterSharding.js';
+export { ClusterSharding } from './sharding/ClusterSharding.js';
+export { StartShardingOptions } from './sharding/StartShardingOptions.js';
 export type { StartSettings } from './sharding/ClusterSharding.js';
-export { ShardedDaemonProcess, ShardedDaemonProcessOptions } from './sharding/ShardedDaemonProcess.js';
+export { ShardedDaemonProcess } from './sharding/ShardedDaemonProcess.js';
+export { ShardedDaemonProcessOptions } from './sharding/ShardedDaemonProcessOptions.js';
 export type {
   ShardedDaemonProcessSettings,
   ShardedDaemonProcessHandle,
 } from './sharding/ShardedDaemonProcess.js';
-export { ShardRegion, ShardingOptions } from './sharding/ShardRegion.js';
+export { ShardRegion } from './sharding/ShardRegion.js';
+export { ShardingOptions } from './sharding/ShardingOptions.js';
 export type { ShardingSettings } from './sharding/ShardRegion.js';
-export { ShardCoordinator, ShardCoordinatorOptions } from './sharding/ShardCoordinator.js';
+export { ShardCoordinator } from './sharding/ShardCoordinator.js';
+export { ShardCoordinatorOptions } from './sharding/ShardCoordinatorOptions.js';
 export type { ShardCoordinatorSettings } from './sharding/ShardCoordinator.js';
 export { Passivate } from './sharding/Passivate.js';
 export {
@@ -126,9 +132,9 @@ export type {
 } from './sharding/RememberEntitiesStore.js';
 export {
   CassandraRememberEntitiesStore,
-  CassandraRememberEntitiesStoreOptions,
   rememberEntitiesDdl,
 } from './sharding/CassandraRememberEntitiesStore.js';
+export { CassandraRememberEntitiesStoreOptions } from './sharding/CassandraRememberEntitiesStoreOptions.js';
 export type {
   CassandraRememberEntitiesStoreSettings,
 } from './sharding/CassandraRememberEntitiesStore.js';
@@ -152,13 +158,14 @@ export type {
 } from './router/index.js';
 
 // Outside-in client (#86).
-export { ClusterClient, ClusterClientOptions } from './ClusterClient.js';
+export { ClusterClient } from './ClusterClient.js';
+export { ClusterClientOptions } from './ClusterClientOptions.js';
 export type { ClusterClientSettings } from './ClusterClient.js';
 export {
   ClusterClientReceptionist,
   ClusterClientReceptionistId,
-  ClusterClientReceptionistOptions,
 } from './ClusterClientReceptionist.js';
+export { ClusterClientReceptionistOptions } from './ClusterClientReceptionistOptions.js';
 export type {
   ClusterClientReceptionistSettings,
   ClusterClientEnvelopeMsg,

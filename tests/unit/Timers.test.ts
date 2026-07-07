@@ -1,12 +1,17 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
-import { ActorSystem, ActorSystemOptions } from '../../src/ActorSystem.js';
+import { ActorSystem } from '../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { Props } from '../../src/Props.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-const newSystem = (name = 'timers-unit'): ActorSystem =>
-  ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+const newSystem = (name = 'timers-unit'): ActorSystem => {
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  return ActorSystem.create(name, sysOptions);
+};
 
 describe('context.timers.startSingleTimer', () => {
   test('delivers the message once after the delay', async () => {

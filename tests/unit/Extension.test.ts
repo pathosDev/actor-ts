@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem, ActorSystemOptions } from '../../src/ActorSystem.js';
+import { ActorSystem } from '../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { extensionId, Extensions, type Extension, type ExtensionId } from '../../src/Extension.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import {
@@ -25,7 +26,10 @@ const SpyId: ExtensionId<Counter> = extensionId(
 );
 
 function newSystem(name = 'ext-test'): ActorSystem {
-  return ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  return ActorSystem.create(name, sysOptions);
 }
 
 describe('extensionId', () => {

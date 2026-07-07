@@ -20,14 +20,15 @@ import {
 
 const stateStore = new SqliteDurableStateStore({ path: '/var/lib/dd.db' });
 
-const dd = system.extension(DistributedDataId).start(
-  cluster,
-  DistributedDataOptions.create().withDurableStore(
+const distributedDataOptions = DistributedDataOptions.create().withDurableStore(
     new DurableDistributedDataStore({
       durableStateStore: stateStore,
       keys:              ['hits', 'config', 'sessions'],
     }),
-  ),
+  );
+const dd = system.extension(DistributedDataId).start(
+  cluster,
+  distributedDataOptions,
 );
 ```
 
@@ -160,11 +161,12 @@ counters, the overhead isn't worth it.
 ## Startup flow
 
 ```ts
+const distributedDataOptions = DistributedDataOptions.create().withDurableStore(
+    new DurableDistributedDataStore({ ... }),
+  );
 const dd = system.extension(DistributedDataId).start(
   cluster,
-  DistributedDataOptions.create().withDurableStore(
-    new DurableDistributedDataStore({ ... }),
-  ),
+  distributedDataOptions,
 );
 
 // Before this call returns:

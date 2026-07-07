@@ -15,12 +15,13 @@ import {
   S3ObjectStorageOptions,
 } from 'actor-ts';
 
-const store = new ObjectStorageDurableStateStore(ObjectStorageDurableStateStoreOptions.create()
+const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
   .withBackend(new S3ObjectStorageBackend(S3ObjectStorageOptions.create() /* .withRegion(...).withBucket(...) */))
   .withCompression({
     algorithm: 'zstd',
     level:     6,        // optional; zstd 1–22 (Default 3)
-  }));
+  });
+const store = new ObjectStorageDurableStateStore(objectStorageDurableStateStoreOptions);
 ```
 
 Jetzt wird jeder persistierte State vor dem Upload zstd-komprimiert.

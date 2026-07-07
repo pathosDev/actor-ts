@@ -109,12 +109,14 @@ async function main(): Promise<void> {
   const journal = new InMemoryJournal();
   const ledger = new BankStatementLedger();
 
-  const sys = ActorSystem.create('bank', ActorSystemOptions.create().withPersistence({ journal }));
+  const sysOptions = ActorSystemOptions.create()
+    .withPersistence({ journal });
+  const sys = ActorSystem.create('bank', sysOptions);
 
   // Spawn the projection FIRST so it picks up every event from the
   // start of the run.  In production you'd persist the offset (see
   // DurableStateOffsetStore) so a fresh restart resumes mid-stream.
-  const projectionRef = ProjectionActor.byTag<AccountEvent>(sys, ByTagProjectionOptions.create<AccountEvent>()
+  const projectionOptions = ByTagProjectionOptions.create<AccountEvent>()
     .withName('bank-statement')
     .withQuery(new InMemoryQuery(journal))
     .withOffsetStore(new InMemoryOffsetStore())
@@ -122,7 +124,8 @@ async function main(): Promise<void> {
     .withHandle((ev) => {
       ledger.record(ev.persistenceId, ev.sequenceNr, ev.event);
     })
-    .withLiveOptions({ pollIntervalMs: 100 }));
+    .withLiveOptions({ pollIntervalMs: 100 });
+  const projectionRef = ProjectionActor.byTag<AccountEvent>(sys, projectionOptions);
 
   // Drive a couple of accounts.
   const alice = sys.spawn(Props.create(() => new Account('alice')), 'alice');

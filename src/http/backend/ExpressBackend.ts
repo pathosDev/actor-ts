@@ -2,8 +2,9 @@ import type { IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { match } from 'ts-pattern';
 import { Lazy } from '../../util/Lazy.js';
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../types.js';
+import type { ExpressBackendOptions } from './ExpressBackendOptions.js';
 import type {
   HttpServerBackend,
   RouteRegistration,
@@ -85,7 +86,7 @@ type ExpressHandler = (req: ExpressRequestLike, res: ExpressResponseLike, next: 
 type ExpressErrorHandler = (err: unknown, req: ExpressRequestLike, res: ExpressResponseLike, next: ExpressNext) => void | Promise<void>;
 
 /** Subset of the Express app API we touch.  Covers v4 and v5. */
-interface ExpressAppLike {
+export interface ExpressAppLike {
   get(path: string, handler: ExpressHandler): void;
   post(path: string, handler: ExpressHandler): void;
   put(path: string, handler: ExpressHandler): void;
@@ -106,28 +107,6 @@ export interface ExpressBackendSettings {
   readonly app?: ExpressAppLike;
   /** Maximum allowed body size in bytes (default: 10 MiB).  Exceeding it returns 413. */
   readonly maxBodyBytes?: number;
-}
-
-/**
- * Fluent builder for {@link ExpressBackendSettings}:
- *
- *     new ExpressBackend(ExpressBackendOptions.create().withMaxBodyBytes(1 << 20))
- */
-export class ExpressBackendOptions extends OptionsBuilder<ExpressBackendSettings> {
-  /** Start a fresh builder.  Equivalent to `new ExpressBackendOptions()`. */
-  static create(): ExpressBackendOptions {
-    return new ExpressBackendOptions();
-  }
-
-  /** Bring-your-own Express app (skips the internal `express` import). */
-  withApp(app: ExpressAppLike): this {
-    return this.set('app', app);
-  }
-
-  /** Maximum request body size in bytes.  Default 10 MiB; exceeding it returns 413. */
-  withMaxBodyBytes(bytes: number): this {
-    return this.set('maxBodyBytes', bytes);
-  }
 }
 
 /**
@@ -152,8 +131,8 @@ export class ExpressBackend implements HttpServerBackend {
   private notFoundHandler: ((req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
   private errorHandler: ((err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
 
-  constructor(options: ExpressBackendOptions = ExpressBackendOptions.create()) {
-    const settings = options.build();
+  constructor(options: ExpressBackendOptions | Partial<ExpressBackendSettings> = {}) {
+    const settings = resolveSettings(options);
     this.app = settings.app ?? null;
     this.ownsApp = settings.app == null;
     this.maxBodyBytes = settings.maxBodyBytes ?? 10 * 1024 * 1024;

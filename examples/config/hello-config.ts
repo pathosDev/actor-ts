@@ -23,13 +23,14 @@ class DiagActor extends Actor<'report'> {
 }
 
 async function main(): Promise<void> {
-  const system = ActorSystem.create('hello-config', ActorSystemOptions.create()
+  const systemOptions = ActorSystemOptions.create()
     .withConfig({
       'actor-ts': {
         cluster: { 'gossip-interval': '250ms' },
         sharding: { 'number-of-shards': 16 },
       },
-    }));
+    });
+  const system = ActorSystem.create('hello-config', systemOptions);
 
   const diag = system.spawn(Props.create(() => new DiagActor()), 'diag');
   diag.tell('report');

@@ -27,11 +27,12 @@ class Collector extends Actor<SseEvent> {
 
 const target = sys.spawnAnonymous(Props.create(() => new Collector()));
 
+const sseOptions = SseOptions.create()
+  .withUrl('https://example.com/events')
+  .withTarget(target)
+  .withHeaders({ authorization: 'Bearer …' });
 sys.spawnAnonymous(Props.create(() => new SseActor(
-  SseOptions.create()
-    .withUrl('https://example.com/events')
-    .withTarget(target)
-    .withHeaders({ authorization: 'Bearer …' }),
+  sseOptions,
 )));
 ```
 

@@ -59,17 +59,18 @@ funktionieren diese Defaults gut. Sie ergeben:
 Cluster-Settings:
 
 ```ts
+const clusterOptions = ClusterOptions.create()
+  .withHost(host)
+  .withPort(port)
+  .withSeeds(seeds)
+  .withFailureDetector({
+    heartbeatIntervalMs: 1_000,
+    unreachableAfterMs:  5_000,
+    downAfterMs:         15_000,
+  });
 Cluster.join(
   system,
-  ClusterOptions.create()
-    .withHost(host)
-    .withPort(port)
-    .withSeeds(seeds)
-    .withFailureDetector({
-      heartbeatIntervalMs: 1_000,
-      unreachableAfterMs:  5_000,
-      downAfterMs:         15_000,
-    }),
+  clusterOptions,
 );
 ```
 
@@ -180,7 +181,11 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Defaults sind LAN-Defaults">
   ```ts
   // ✗ unreachable in 2s — zu aggressiv für ein WAN mit 100ms RTT
-  Cluster.join(system, ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds));   // nutzt Defaults
+  const clusterOptions = ClusterOptions.create()
+    .withHost(host)
+    .withPort(port)
+    .withSeeds(seeds);
+  Cluster.join(system, clusterOptions);   // nutzt Defaults
   ```
   Cluster über Regionen hinweg brauchen mindestens 5-10 Sekunden für
   `unreachableAfterMs`; eine 100ms-RTT-Strecke mit normalem Jitter

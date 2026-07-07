@@ -63,6 +63,6 @@ export class JetStreamOptions extends BrokerOptions<JetStreamActorSettings> {
 
   /** Max time the manual-ack pump waits for ack/nak/term before giving up. */
   withAckTimeout(ms: number): this {
-    return this.set('ackTimeoutMs', ms);
+    return this.set('ackTimeout', ms);
   }
 }

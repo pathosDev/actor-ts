@@ -43,9 +43,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **`MqttOptions` fluent builder** (#345) — `MqttOptions.create()
   .withBrokerUrl(…).withClientId(…).withQos(…)…`; feeds the same
   three-layer settings merge (constructor > HOCON
-  `actor-ts.io.broker.mqtt` > built-in defaults).  (As of #346 the builder
-  is the *only* way to construct — see the builder-only note under
-  *Changed*.)
+  `actor-ts.io.broker.mqtt` > built-in defaults).  (As of #346/#348 this is
+  the primary way to construct; a plain `Partial<MqttActorSettings>` object
+  works too — see the options note under *Changed*.)
 - **Typed MQTT payloads** (#345) — inbound `MqttMessage<T>` carries a
   lazily-decoding `MqttPayload<T>` (`.bytes` / `.text()` / `.entity<U=T>()`,
   successes cached).  A pluggable `MqttCodec<T>` seam (default
@@ -57,15 +57,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
-- **BREAKING: options are builder-only, framework-wide** (#346) — every
-  configurable constructor and factory now takes a fluent options builder
-  instead of a plain settings object; the plain-object path is removed
-  (pre-1.0 hard cut).  Each builder is `XOptions.create().withField(…)…`;
-  a settings interface that was named `XOptions` is renamed to `XSettings`
+- **Fluent options, framework-wide** (#346, #348) — every configurable
+  constructor and factory takes a fluent options builder **or** a plain
+  settings object, interchangeably: `new MqttActor(MqttOptions.create()
+  .withClientId('x'))` behaves identically to `new MqttActor({ clientId:
+  'x' })`, normalized through the new `resolveSettings` helper.  Each
+  builder is `XOptions.create().withField(…)…` and lives in its own
+  `XOptions.ts` file next to (never inside) the class it configures; a
+  settings interface that was named `XOptions` is renamed to `XSettings`
   and the builder takes the `XOptions` name.  HOCON resolution is
-  unchanged — a builder only supplies the highest-precedence explicit
-  layer, and unset fields still fall through to config then defaults.
-  Affected (non-exhaustive): `ActorSystem.create(name, ActorSystemOptions
+  unchanged — the builder / plain object only supplies the
+  highest-precedence explicit layer, and unset fields still fall through
+  to config then defaults.  Naming lockstep with no divergence: builder
+  method `withX` ⇔ settings field `x` ⇔ HOCON leaf `x`.  Affected
+  (non-exhaustive): `ActorSystem.create(name, ActorSystemOptions
   .create()…)`; `TestKit.create` / `new TestProbe` (`TestKitOptions` /
   `TestProbeOptions`); every broker actor (`MqttOptions`, `KafkaOptions`,
   `AmqpOptions`, `NatsOptions`, `JetStreamOptions`, `RedisStreamsOptions`,
@@ -79,11 +84,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   leases, seed providers + discovery, observability adapters
   (`OtelAdapterOptions`, `PromClientAdapterOptions`), `WorkerClusterOptions`,
   `DistributedDataOptions`, and `ProducerControllerOptions`.  Migration:
-  `new X({ a, b })` → `new X(XOptions.create().withA(a).withB(b))`; the
-  positional "context" args that were never settings (a system name, a
-  `Cluster`, a sharding entity + type name) stay positional.  Single-field
-  bags (e.g. `KeepMajority`, `ConsumerController`) and per-call option
-  args are intentionally left as plain objects.
+  `new X({ a, b })` still works, or use `new X(XOptions.create()
+  .withA(a).withB(b))`; the positional "context" args that were never
+  settings (a system name, a `Cluster`, a sharding entity + type name)
+  stay positional.
+- **BREAKING: renamed settings fields + HOCON keys** (#348) — to keep the
+  builder-method ⇔ settings-field ⇔ HOCON-leaf names in lockstep, six
+  fields were renamed: MQTT `defaultQos` → `qos` (`withQos`) and
+  `keepAliveSec` → `keepAlive` (`withKeepAlive`); JetStream `ackTimeoutMs`
+  → `ackTimeout`; ClusterClient `log` → `logger`; DistributedData
+  `gossipIntervalMs` → `gossipInterval`; ProducerController
+  `resendTimeoutMs` → `resendTimeout`.  Update any plain settings objects
+  and HOCON keys using the old names.
 - **BREAKING: `MqttActor` is now abstract** (#345) — you subclass it and
   override `onMessage` instead of spawning it directly and driving it only
   with `tell`.  Migration: `class MyClient extends MqttActor<T> { … }` and

@@ -23,8 +23,10 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
 import { Props } from '../../src/Props.js';
-import { ClusterSharding, StartShardingOptions } from '../../src/cluster/sharding/ClusterSharding.js';
-import { ShardedDaemonProcess, ShardedDaemonProcessOptions } from '../../src/cluster/sharding/ShardedDaemonProcess.js';
+import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
+import { StartShardingOptions } from '../../src/cluster/sharding/StartShardingOptions.js';
+import { ShardedDaemonProcess } from '../../src/cluster/sharding/ShardedDaemonProcess.js';
+import { ShardedDaemonProcessOptions } from '../../src/cluster/sharding/ShardedDaemonProcessOptions.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import type { ActorRef } from '../../src/ActorRef.js';
@@ -47,15 +49,14 @@ const TIGHT_FD = {
 function startRegion(
   spec: MultiNodeSpec, role: string,
 ): ActorRef<Cmd> {
-  return spec.clusterFor(role).sharding.start<Cmd>(
-    StartShardingOptions.create<Cmd>()
-      .withTypeName('entity')
-      .withEntityProps(Props.create(() => new Entity()))
-      .withExtractEntityId((m) => m.id)
-      .withNumShards(16)
-      .withRebalanceIntervalMs(200)
-      .withHandOffTimeoutMs(1_000),
-  );
+  const shardingOptions = StartShardingOptions.create<Cmd>()
+    .withTypeName('entity')
+    .withEntityProps(Props.create(() => new Entity()))
+    .withExtractEntityId((m) => m.id)
+    .withNumShards(16)
+    .withRebalanceIntervalMs(200)
+    .withHandOffTimeoutMs(1_000);
+  return spec.clusterFor(role).sharding.start<Cmd>(shardingOptions);
 }
 
 describe('multi-node sharding failover', () => {
@@ -302,12 +303,13 @@ describe('multi-node sharding failover', () => {
 
       // 6 daemons across 3 nodes — at least 2 per node by LeastShard.
       for (const role of ['a', 'b', 'c'] as const) {
+        const daemonOptions = ShardedDaemonProcessOptions.create<{ kind: 'noop' }>()
+          .withName('workers')
+          .withNumDaemons(6)
+          .withBehaviorFor((i) => Props.create(() => new Daemon(i, role)));
         ShardedDaemonProcess.init(
           spec.systemFor(role), spec.clusterFor(role),
-          ShardedDaemonProcessOptions.create<{ kind: 'noop' }>()
-            .withName('workers')
-            .withNumDaemons(6)
-            .withBehaviorFor((i) => Props.create(() => new Daemon(i, role))),
+          daemonOptions,
         );
       }
 

@@ -1,14 +1,19 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
 import { ActorRef } from '../../src/ActorRef.js';
-import { ActorSystem, ActorSystemOptions } from '../../src/ActorSystem.js';
+import { ActorSystem } from '../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { Props } from '../../src/Props.js';
 import { Terminated } from '../../src/SystemMessages.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-const newSystem = (name = 'watch-unit'): ActorSystem =>
-  ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+const newSystem = (name = 'watch-unit'): ActorSystem => {
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  return ActorSystem.create(name, sysOptions);
+};
 
 describe('watch / unwatch', () => {
   test('watch delivers Terminated when the target stops', async () => {

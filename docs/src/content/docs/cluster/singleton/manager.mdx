@@ -45,15 +45,16 @@ shift their target.
 ```ts
 import { ClusterSingletonManager, ClusterSingletonManagerOptions, Props } from 'actor-ts';
 
+const clusterSingletonManagerOptions = ClusterSingletonManagerOptions.create()
+  .withCluster(cluster)
+  .withTypeName('job-scheduler')
+  .withSingletonProps(Props.create(() => new JobScheduler()))
+  .withRole('control-plane')            // optional
+  .withLease(leaseImpl)                  // optional split-brain protection
+  .withAcquireRetryIntervalMs(5_000);
 system.spawn(
   ClusterSingletonManager.props(
-    ClusterSingletonManagerOptions.create()
-      .withCluster(cluster)
-      .withTypeName('job-scheduler')
-      .withSingletonProps(Props.create(() => new JobScheduler()))
-      .withRole('control-plane')            // optional
-      .withLease(leaseImpl)                  // optional split-brain protection
-      .withAcquireRetryIntervalMs(5_000),    // when lease acquire fails
+    clusterSingletonManagerOptions,    // when lease acquire fails
   ),
   'singleton-manager-job-scheduler',
 );
@@ -113,11 +114,10 @@ to prevent.
 ### With lease
 
 ```ts
-ClusterSingletonManager.props(
-  ClusterSingletonManagerOptions.create()
-    // ...
-    .withLease(someLeaseImpl),
-);
+const managerOptions = ClusterSingletonManagerOptions.create()
+  // ...
+  .withLease(someLeaseImpl);
+ClusterSingletonManager.props(managerOptions);
 ```
 
 Adds an async gate on the lease.  The flow:

@@ -2,10 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  FilesystemObjectStorageBackend,
-  FilesystemObjectStorageOptions,
-} from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
+import { FilesystemObjectStorageBackend } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
+import { FilesystemObjectStorageOptions } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
 import { ObjectStorageConcurrencyError } from '../../../../../src/persistence/object-storage/ObjectStorageBackend.js';
 
 let tmpRoot: string;
@@ -13,7 +11,9 @@ let backend: FilesystemObjectStorageBackend;
 
 beforeEach(() => {
   tmpRoot = mkdtempSync(join(tmpdir(), 'actor-ts-objstore-'));
-  backend = new FilesystemObjectStorageBackend(FilesystemObjectStorageOptions.create().withDir(tmpRoot));
+  const backendOptions = FilesystemObjectStorageOptions.create()
+    .withDir(tmpRoot);
+  backend = new FilesystemObjectStorageBackend(backendOptions);
 });
 
 afterEach(() => {
@@ -113,7 +113,9 @@ describe('FilesystemObjectStorageBackend — CAS', () => {
     const { etag: e1 } = await backend.put('stable', bytes('hello'));
     await backend.close();
 
-    const fresh = new FilesystemObjectStorageBackend(FilesystemObjectStorageOptions.create().withDir(tmpRoot));
+    const backendOptions = FilesystemObjectStorageOptions.create()
+      .withDir(tmpRoot);
+    const fresh = new FilesystemObjectStorageBackend(backendOptions);
     const fetched = await fresh.get('stable');
     expect(fetched.isSome()).toBe(true);
     if (fetched.isSome()) {

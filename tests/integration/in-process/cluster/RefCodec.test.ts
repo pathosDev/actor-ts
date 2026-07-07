@@ -1,9 +1,11 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
-import { ActorSystem, ActorSystemOptions } from '../../../../src/ActorSystem.js';
+import { ActorSystem } from '../../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { Actor } from '../../../../src/Actor.js';
 import { Props } from '../../../../src/Props.js';
 import { Nobody } from '../../../../src/ActorRef.js';
-import { Cluster, ClusterOptions } from '../../../../src/cluster/Cluster.js';
+import { Cluster } from '../../../../src/cluster/Cluster.js';
+import { ClusterOptions } from '../../../../src/cluster/ClusterOptions.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
 import { RemoteActorRef } from '../../../../src/cluster/RemoteActorRef.js';
@@ -21,15 +23,14 @@ async function buildCluster(
   sysName: string,
   port: number,
 ): Promise<{ system: ActorSystem; cluster: Cluster }> {
-  const system = ActorSystem.create(sysName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
-  const cluster = await Cluster.join(
-    system,
-    ClusterOptions.create()
-      .withHost('h')
-      .withPort(port)
-      .withTransport(new InMemoryTransport(new NodeAddress(sysName, 'h', port)))
-      .withGossipIntervalMs(50),
-  );
+  const sysOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+  const system = ActorSystem.create(sysName, sysOptions);
+  const clusterOptions = ClusterOptions.create()
+    .withHost('h')
+    .withPort(port)
+    .withTransport(new InMemoryTransport(new NodeAddress(sysName, 'h', port)))
+    .withGossipIntervalMs(50);
+  const cluster = await Cluster.join(system, clusterOptions);
   return { system, cluster };
 }
 
@@ -58,7 +59,8 @@ describe('RefCodec — encodeRefs', () => {
   });
 
   test('local refs carry the sender node address', async () => {
-    const sys = ActorSystem.create('enc-local', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('enc-local', sysOptions);
     try {
       const ref = sys.spawn(Props.create(() => new Noop()), 'foo');
       const encoded = encodeRefs(ref, from) as WireActorRef;
@@ -92,7 +94,8 @@ describe('RefCodec — encodeRefs', () => {
   });
 
   test('nested refs inside arrays and objects all get encoded', async () => {
-    const sys = ActorSystem.create('enc-nested', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const sysOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('enc-nested', sysOptions);
     try {
       const a = sys.spawn(Props.create(() => new Noop()), 'a');
       const b = sys.spawn(Props.create(() => new Noop()), 'b');

@@ -87,10 +87,11 @@ interface WebSocketRouteOptions<TOut, TIn> {
 ```
 
 ```ts
-websocket('/ws', chat, WebSocketRouteOptions.create()
+const webSocketRouteOptions = WebSocketRouteOptions.create()
   .withMaxFrameBytes(256 * 1024)
   .withOnOversizeFrame('close')       // close with 1009 Message Too Big
-  .withOnInvalidMessage('close'));    // close with 1003 Unsupported Data
+  .withOnInvalidMessage('close');
+websocket('/ws', chat, webSocketRouteOptions);    // close with 1003 Unsupported Data
 ```
 
 Das Frame-Größenlimit wird am **rohen Frame vor dem Dekodieren**
@@ -229,10 +230,11 @@ Der Route-Codec dekodiert eingehende Frames in `TIn` und kodiert
 ```ts
 import { jsonCodec, WebSocketRouteOptions } from 'actor-ts';
 
-websocket('/ws', chat, WebSocketRouteOptions.create()
+const webSocketRouteOptions = WebSocketRouteOptions.create()
   .withCodec(jsonCodec<ServerMsg, ClientMsg>({
     validate: (v: unknown): ClientMsg => ClientMsgSchema.parse(v),
-  })));
+  }));
+websocket('/ws', chat, webSocketRouteOptions);
 ```
 
 Für Binärprotokolle liefert `rawCodec()` rohe Frames
@@ -241,13 +243,15 @@ Für Binärprotokolle liefert `rawCodec()` rohe Frames
 ```ts
 import { rawCodec, WebSocketRouteOptions, WebSocketServerActor, type WsFrame } from 'actor-ts';
 
+const webSocketRouteOptions = WebSocketRouteOptions.create()
+  .withCodec(rawCodec());
 class BinaryHub extends WebSocketServerActor<WsFrame, WsFrame> {
   onMessage(frame: WsFrame): void {
     if (frame.kind === 'binary') this.reply({ kind: 'binary', data: process(frame.data) });
   }
 }
 
-websocket('/stream', binaryHub, WebSocketRouteOptions.create().withCodec(rawCodec()));
+websocket('/stream', binaryHub, webSocketRouteOptions);
 ```
 
 Dekodier-Fehler werfen `WsDecodeError` und folgen der
@@ -310,9 +314,10 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Backpressure bei langsamen Clients">
   ```ts
-  websocket('/ws', chat, WebSocketRouteOptions.create()
+  const routeOptions = WebSocketRouteOptions.create()
     .withMaxBufferedBytes(4 * 1024 * 1024)
-    .withOnBackpressure('drop'));
+    .withOnBackpressure('drop');
+  websocket('/ws', chat, routeOptions);
   ```
   Wenn ein Client nicht mithält, wächst sein Sende-Buffer.  Ab
   `maxBufferedBytes` verwirft die Verbindung entweder Frames

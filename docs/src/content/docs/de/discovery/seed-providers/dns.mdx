@@ -16,15 +16,20 @@ funktionieren für einfachere Setups.
 ```ts
 import { Cluster, ClusterOptions, DnsSeedProvider, DnsSeedProviderOptions } from 'actor-ts';
 
+const dnsSeedProviderOptions = DnsSeedProviderOptions.create()
+  .withHostname('_actor-ts._tcp.example.com')
+  .withSystemName('my-app')
+  .withUseSrv();
 const provider = new DnsSeedProvider(
-  DnsSeedProviderOptions.create()
-    .withHostname('_actor-ts._tcp.example.com')
-    .withSystemName('my-app')
-    .withUseSrv(),
+  dnsSeedProviderOptions,
 );
 
 const seeds = await provider.lookup();
-await Cluster.join(system, ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds));
+const clusterOptions = ClusterOptions.create()
+  .withHost(host)
+  .withPort(port)
+  .withSeeds(seeds);
+await Cluster.join(system, clusterOptions);
 ```
 
 ## Konfiguration
@@ -40,11 +45,12 @@ interface DnsSeedProviderSettings {
 ### SRV-Modus (empfohlen)
 
 ```ts
+const dnsSeedProviderOptions = DnsSeedProviderOptions.create()
+  .withHostname('_actor-ts._tcp.my-app.example.com')
+  .withSystemName('my-app')
+  .withUseSrv();
 new DnsSeedProvider(
-  DnsSeedProviderOptions.create()
-    .withHostname('_actor-ts._tcp.my-app.example.com')
-    .withSystemName('my-app')
-    .withUseSrv(),
+  dnsSeedProviderOptions,
 );
 ```
 
@@ -67,11 +73,12 @@ DNS-Plugin) publizieren SRV-Records automatisch.
 ### A-Record-Modus
 
 ```ts
+const dnsSeedProviderOptions = DnsSeedProviderOptions.create()
+  .withHostname('actor-ts.example.com')
+  .withSystemName('my-app')
+  .withPort(2552);
 new DnsSeedProvider(
-  DnsSeedProviderOptions.create()
-    .withHostname('actor-ts.example.com')
-    .withSystemName('my-app')
-    .withPort(2552),
+  dnsSeedProviderOptions,
 );
 ```
 

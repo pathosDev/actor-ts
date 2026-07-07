@@ -16,7 +16,8 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
-import { Cluster, ClusterOptions } from '../../../../../src/cluster/Cluster.js';
+import { Cluster } from '../../../../../src/cluster/Cluster.js';
+import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
 import { ClusterSingletonId, StartSingletonOptions } from '../../../../../src/cluster/singleton/index.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
@@ -24,10 +25,11 @@ import {
   InMemoryLease,
   inMemoryLeaseStore,
 } from '../../../../../src/coordination/leases/InMemoryLease.js';
-import { LeaseOptions } from '../../../../../src/coordination/Lease.js';
+import { LeaseOptions } from '../../../../../src/coordination/LeaseOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
-import { TestKit, TestKitOptions } from '../../../../../src/testkit/TestKit.js';
+import { TestKit } from '../../../../../src/testkit/TestKit.js';
+import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -45,13 +47,15 @@ interface NodeSetup { kit: TestKit; cluster: Cluster }
 async function startNode(
   systemName: string, host: string, port: number,
 ): Promise<NodeSetup> {
-  const kit = TestKit.create(systemName, TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
-  const cluster = await Cluster.join(kit.system, ClusterOptions.create()
+  const kitOptions = TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+  const kit = TestKit.create(systemName, kitOptions);
+  const clusterOptions = ClusterOptions.create()
     .withHost(host)
     .withPort(port)
     .withTransport(new InMemoryTransport(new NodeAddress(systemName, host, port)))
     .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
-    .withGossipIntervalMs(80));
+    .withGossipIntervalMs(80);
+  const cluster = await Cluster.join(kit.system, clusterOptions);
   return { kit, cluster };
 }
 
@@ -69,12 +73,13 @@ describe('ClusterSingleton + Lease', () => {
       override preStart(): void { probe.tell('started'); }
       override onReceive(m: string): void { probe.tell(`got:${m}`); }
     }
-    const lease = new InMemoryLease(LeaseOptions.create().withName('sng-lease-1').withOwner('a').withTtlMs(5_000));
-    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster,
-      StartSingletonOptions.create<string>()
-        .withTypeName('echo')
-        .withProps(Props.create(() => new Echo()))
-        .withLease(lease));
+    const leaseOptions = LeaseOptions.create().withName('sng-lease-1').withOwner('a').withTtlMs(5_000);
+    const lease = new InMemoryLease(leaseOptions);
+    const singletonOptions = StartSingletonOptions.create<string>()
+      .withTypeName('echo')
+      .withProps(Props.create(() => new Echo()))
+      .withLease(lease);
+    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster, singletonOptions);
     await waitFor(() => a.cluster.leader().nonEmpty);
     // Child preStart fires once acquire resolves — give the mailbox
     // a few ticks for the acquire-result event.
@@ -91,7 +96,8 @@ describe('ClusterSingleton + Lease', () => {
     inMemoryLeaseStore._clear();
     // Simulate an external holder by acquiring the same lease name from
     // a different owner first.
-    const otherHolder = new InMemoryLease(LeaseOptions.create().withName('sng-lease-2').withOwner('someone-else').withTtlMs(5_000));
+    const otherHolderOptions = LeaseOptions.create().withName('sng-lease-2').withOwner('someone-else').withTtlMs(5_000);
+    const otherHolder = new InMemoryLease(otherHolderOptions);
     expect(await otherHolder.acquire()).toBe(true);
 
     const a = await startNode('sng-lease-2', 'h', 60_002);
@@ -100,13 +106,14 @@ describe('ClusterSingleton + Lease', () => {
       override preStart(): void { probe.tell('started'); }
       override onReceive(): void {}
     }
-    const lease = new InMemoryLease(LeaseOptions.create().withName('sng-lease-2').withOwner('a').withTtlMs(5_000));
-    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster,
-      StartSingletonOptions.create<string>()
-        .withTypeName('echo')
-        .withProps(Props.create(() => new Echo()))
-        .withLease(lease)
-        .withAcquireRetryIntervalMs(100));   // tighter so the test isn't slow
+    const leaseOptions = LeaseOptions.create().withName('sng-lease-2').withOwner('a').withTtlMs(5_000);
+    const lease = new InMemoryLease(leaseOptions);
+    const singletonOptions = StartSingletonOptions.create<string>()
+      .withTypeName('echo')
+      .withProps(Props.create(() => new Echo()))
+      .withLease(lease)
+      .withAcquireRetryIntervalMs(100);   // tighter so the test isn't slow
+    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster, singletonOptions);
     await waitFor(() => a.cluster.leader().nonEmpty);
 
     // Other holder still owns it — manager should be in retry loop, no
@@ -131,24 +138,24 @@ describe('ClusterSingleton + Lease', () => {
       override postStop(): void { probe.tell('stopped'); }
       override onReceive(): void {}
     }
-    const lease = new InMemoryLease(
-      LeaseOptions.create().withName('sng-lease-3').withOwner('a').withTtlMs(5_000)
-        // Tight renewal so the simulated "lost" path fires fast.
-        .withRenewalIntervalMs(60),
-    );
-    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster,
-      StartSingletonOptions.create<string>()
-        .withTypeName('echo')
-        .withProps(Props.create(() => new Echo()))
-        .withLease(lease)
-        .withAcquireRetryIntervalMs(100));
+    const leaseOptions = LeaseOptions.create().withName('sng-lease-3').withOwner('a').withTtlMs(5_000)
+      // Tight renewal so the simulated "lost" path fires fast.
+      .withRenewalIntervalMs(60);
+    const lease = new InMemoryLease(leaseOptions);
+    const singletonOptions = StartSingletonOptions.create<string>()
+      .withTypeName('echo')
+      .withProps(Props.create(() => new Echo()))
+      .withLease(lease)
+      .withAcquireRetryIntervalMs(100);
+    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster, singletonOptions);
     await probe.expectMsg('started', 1_000);
 
     // Force a lost-lease scenario: another owner takes over from under us.
     // This makes the next renewal in the InMemoryLease fail, which fires
     // the onLost handler the manager subscribed to.
     inMemoryLeaseStore._clear();
-    const usurper = new InMemoryLease(LeaseOptions.create().withName('sng-lease-3').withOwner('usurper').withTtlMs(5_000));
+    const usurperOptions = LeaseOptions.create().withName('sng-lease-3').withOwner('usurper').withTtlMs(5_000);
+    const usurper = new InMemoryLease(usurperOptions);
     expect(await usurper.acquire()).toBe(true);
 
     // The manager's renewal-failure path fires onLost → stops child.
@@ -172,12 +179,13 @@ describe('ClusterSingleton + Lease', () => {
       override preStart(): void { probe.tell('started'); }
       override onReceive(): void {}
     }
-    const lease = new InMemoryLease(LeaseOptions.create().withName('sng-lease-4').withOwner('a').withTtlMs(5_000));
-    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster,
-      StartSingletonOptions.create<string>()
-        .withTypeName('echo')
-        .withProps(Props.create(() => new Echo()))
-        .withLease(lease));
+    const leaseOptions = LeaseOptions.create().withName('sng-lease-4').withOwner('a').withTtlMs(5_000);
+    const lease = new InMemoryLease(leaseOptions);
+    const singletonOptions = StartSingletonOptions.create<string>()
+      .withTypeName('echo')
+      .withProps(Props.create(() => new Echo()))
+      .withLease(lease);
+    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster, singletonOptions);
     await probe.expectMsg('started', 1_000);
     expect(lease.checkAlive()).toBe(true);
 
@@ -201,10 +209,10 @@ describe('ClusterSingleton + Lease', () => {
       override onReceive(m: string): void { probe.tell(`got:${m}`); }
     }
     // no lease!
-    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster,
-      StartSingletonOptions.create<string>()
-        .withTypeName('echo')
-        .withProps(Props.create(() => new Echo())));
+    const singletonOptions = StartSingletonOptions.create<string>()
+      .withTypeName('echo')
+      .withProps(Props.create(() => new Echo()));
+    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster, singletonOptions);
     await waitFor(() => a.cluster.leader().nonEmpty);
     // No lease → child should be spawned synchronously the moment
     // SelfUp/LeaderChanged fires.  In single-node clusters that

@@ -10,14 +10,19 @@ discovery logic; what you configure is what you get.
 ```ts
 import { Cluster, ClusterOptions, ConfigSeedProvider, ConfigSeedProviderOptions } from 'actor-ts';
 
+const configSeedProviderOptions = ConfigSeedProviderOptions.create()
+  .withSeeds(['10.0.0.5:2552', '10.0.0.6:2552', '10.0.0.7:2552'])
+  .withSystemName('my-app');
 const provider = new ConfigSeedProvider(
-  ConfigSeedProviderOptions.create()
-    .withSeeds(['10.0.0.5:2552', '10.0.0.6:2552', '10.0.0.7:2552'])
-    .withSystemName('my-app'),
+  configSeedProviderOptions,
 );
 
 const seeds = await provider.lookup();
-await Cluster.join(system, ClusterOptions.create().withHost(host).withPort(port).withSeeds(seeds));
+const clusterOptions = ClusterOptions.create()
+  .withHost(host)
+  .withPort(port)
+  .withSeeds(seeds);
+await Cluster.join(system, clusterOptions);
 ```
 
 The simplest provider for the simplest case.
@@ -35,10 +40,11 @@ Two ways to specify:
 
 ```ts
 // Explicit:
+const configSeedProviderOptions = ConfigSeedProviderOptions.create()
+  .withSeeds(['10.0.0.5:2552', '10.0.0.6:2552'])
+  .withSystemName('my-app');
 new ConfigSeedProvider(
-  ConfigSeedProviderOptions.create()
-    .withSeeds(['10.0.0.5:2552', '10.0.0.6:2552'])
-    .withSystemName('my-app'),
+  configSeedProviderOptions,
 );
 
 // From env (CSV):
@@ -67,9 +73,10 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Dynamic environments">
   ```ts
   // K8s pods have ephemeral IPs:
-  new ConfigSeedProvider(
-    ConfigSeedProviderOptions.create().withSeeds(['10.244.1.5:2552']).withSystemName('my-app'),
-  );   // ✗ breaks on pod recreation
+  const seedProviderOptions = ConfigSeedProviderOptions.create()
+    .withSeeds(['10.244.1.5:2552'])
+    .withSystemName('my-app');
+  new ConfigSeedProvider(seedProviderOptions);   // ✗ breaks on pod recreation
   ```
   Pod IPs change on every recreation.  Use
   [`KubernetesApiSeedProvider`](/discovery/seed-providers/kubernetes-api/)
@@ -85,9 +92,10 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Hostnames vs IPs">
   ```ts
-  new ConfigSeedProvider(
-    ConfigSeedProviderOptions.create().withSeeds(['my-pod.svc.cluster.local:2552']).withSystemName('my-app'),
-  );
+  const seedProviderOptions = ConfigSeedProviderOptions.create()
+    .withSeeds(['my-pod.svc.cluster.local:2552'])
+    .withSystemName('my-app');
+  new ConfigSeedProvider(seedProviderOptions);
   ```
   Hostnames are resolved at lookup time.  If your DNS lags pod
   startup, lookup fails and `Cluster.join` retries.  Usually

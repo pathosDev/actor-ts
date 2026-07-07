@@ -42,7 +42,7 @@ type AccountEvent =
   | { kind: 'deposited'; amount: number }
   | { kind: 'withdrawn'; amount: number };
 
-const projection = ProjectionActor.byTag<AccountEvent>(system, ByTagProjectionOptions.create<AccountEvent>()
+const byTagProjectionOptions = ByTagProjectionOptions.create<AccountEvent>()
   .withName('account-balance-view')
   .withTag('account')
   .withQuery(new SqliteQuery({ path: '/var/lib/events.db' }))
@@ -54,7 +54,8 @@ const projection = ProjectionActor.byTag<AccountEvent>(system, ByTagProjectionOp
         [event.event.amount, event.persistenceId],
       );
     }
-  }));
+  });
+const projection = ProjectionActor.byTag<AccountEvent>(system, byTagProjectionOptions);
 ```
 
 The actor:
@@ -133,12 +134,13 @@ re-processing window.
 ## Polling
 
 ```ts
-ProjectionActor.byTag(system, ByTagProjectionOptions.create()
+const byTagProjectionOptions = ByTagProjectionOptions.create()
   .withName('...')
   .withTag('...')
   .withLiveOptions({
     pollIntervalMs: 500,    // default 1000 ms
-  })
+  });
+ProjectionActor.byTag(system, byTagProjectionOptions
   /* .withQuery(...).withOffsetStore(...).withHandle(...) */);
 ```
 
@@ -156,14 +158,15 @@ gets sub-poll-interval delivery via the in-process event bus.
 ## Per-pid projections
 
 ```ts
-const projection = ProjectionActor.byPersistenceId<AccountEvent>(system, ByPidProjectionOptions.create<AccountEvent>()
+const byPidProjectionOptions = ByPidProjectionOptions.create<AccountEvent>()
   .withName('account-42-view')
   .withPersistenceId('account-42')
   .withQuery(query)
   .withOffsetStore(offsetStore)
   .withHandle(async (event) => {
     // ... handle just this account's events
-  }));
+  });
+const projection = ProjectionActor.byPersistenceId<AccountEvent>(system, byPidProjectionOptions);
 ```
 
 One actor per persistenceId.  Useful for **per-entity views**:
@@ -179,9 +182,15 @@ For that, use a single tag-based projection that hashes by pid.
 
 ```ts
 // Three projections, three offset cursors, three independent views:
-ProjectionActor.byTag<E>(system, ByTagProjectionOptions.create<E>().withName('balance') /* .withTag(...).withQuery(...).withHandle(...) */);
-ProjectionActor.byTag<E>(system, ByTagProjectionOptions.create<E>().withName('audit-log') /* .withTag(...).withQuery(...).withHandle(...) */);
-ProjectionActor.byTag<E>(system, ByTagProjectionOptions.create<E>().withName('monthly-stats') /* .withTag(...).withQuery(...).withHandle(...) */);
+const byTagProjectionOptions = ByTagProjectionOptions.create<E>()
+  .withName('balance');
+ProjectionActor.byTag<E>(system, byTagProjectionOptions /* .withTag(...).withQuery(...).withHandle(...) */);
+const byTagProjection2Options = ByTagProjectionOptions.create<E>()
+  .withName('audit-log');
+ProjectionActor.byTag<E>(system, byTagProjection2Options /* .withTag(...).withQuery(...).withHandle(...) */);
+const byTagProjection3Options = ByTagProjectionOptions.create<E>()
+  .withName('monthly-stats');
+ProjectionActor.byTag<E>(system, byTagProjection3Options /* .withTag(...).withQuery(...).withHandle(...) */);
 ```
 
 Each has its own offset cursor; they read independently from the

@@ -248,17 +248,19 @@ const system = ActorSystem.create('my-app');
 const cs     = system.extension(CoordinatedShutdownId);
 
 // 1. Cluster-Join mit K8s-API-Seed-Discovery
-const seeds = await new KubernetesApiSeedProvider(KubernetesApiSeedProviderOptions.create()
+const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create()
   .withNamespace(process.env.K8S_NAMESPACE!)
   .withServiceName(process.env.K8S_SERVICE_NAME!)
   .withSystemName(system.name)
-  .withPort(2552)).discover();
+  .withPort(2552);
+const seeds = await new KubernetesApiSeedProvider(kubernetesApiSeedProviderOptions).discover();
 
-const cluster = await Cluster.join(system, ClusterOptions.create()
+const clusterOptions = ClusterOptions.create()
   .withHost(process.env.ACTOR_TS_HOSTNAME!)
   .withPort(parseInt(process.env.ACTOR_TS_PORT!))
   .withSeeds(seeds)
-  .withRoles(['compute']));
+  .withRoles(['compute']);
+const cluster = await Cluster.join(system, clusterOptions);
 
 // 2. Management-Endpunkte
 const management = await HttpManagement.start(system, {

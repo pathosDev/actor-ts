@@ -11,13 +11,17 @@ export async function run({ actorTs }) {
   } = actorTs;
 
   async function buildNode(sysName, port, seeds) {
-    const sys = ActorSystem.create(sysName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
-    const cluster = await Cluster.join(sys, ClusterOptions.create()
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create(sysName, sysOptions);
+    const clusterOptions = ClusterOptions.create()
       .withHost('h')
       .withPort(port)
       .withSeeds(seeds)
       .withTransport(new InMemoryTransport(new NodeAddress(sysName, 'h', port)))
-      .withGossipIntervalMs(30));
+      .withGossipIntervalMs(30);
+    const cluster = await Cluster.join(sys, clusterOptions);
     return { sys, cluster };
   }
 

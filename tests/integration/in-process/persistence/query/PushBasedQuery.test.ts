@@ -14,7 +14,8 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { InMemoryJournal } from '../../../../../src/persistence/journals/InMemoryJournal.js';
-import { SqliteJournal, SqliteJournalOptions } from '../../../../../src/persistence/journals/SqliteJournal.js';
+import { SqliteJournal } from '../../../../../src/persistence/journals/SqliteJournal.js';
+import { SqliteJournalOptions } from '../../../../../src/persistence/journals/SqliteJournalOptions.js';
 import { InMemoryQuery } from '../../../../../src/persistence/query/InMemoryQuery.js';
 import { offsetStart } from '../../../../../src/persistence/query/PersistenceQuery.js';
 import type { Journal } from '../../../../../src/persistence/Journal.js';
@@ -119,7 +120,9 @@ describe('Push-based PersistenceQuery — InMemoryJournal', () => {
 
 describe('Push-based PersistenceQuery — SqliteJournal', () => {
   test('5. delivers a freshly-appended event in well under 100ms', async () => {
-    const journal = new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:'));
+    const journalOptions = SqliteJournalOptions.create()
+      .withPath(':memory:');
+    const journal = new SqliteJournal(journalOptions);
     // Force-init the DB so the bus + statements are wired up.
     await journal.persistenceIds();
     const query = new InMemoryQuery(journal);

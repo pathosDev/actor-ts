@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { ActorSystem, ActorSystemOptions } from '../../../src/ActorSystem.js';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { CoordinatedShutdownId, Phases } from '../../../src/CoordinatedShutdown.js';
 import { FastifyBackend } from '../../../src/http/backend/FastifyBackend.js';
 import type { ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
@@ -8,8 +9,12 @@ import { complete, get } from '../../../src/http/Route.js';
 import { Status } from '../../../src/http/types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 
-const newSystem = (name = 'http-ext-unit'): ActorSystem =>
-  ActorSystem.create(name, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+const newSystem = (name = 'http-ext-unit'): ActorSystem => {
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  return ActorSystem.create(name, sysOptions);
+};
 
 async function bindOk(system: ActorSystem): Promise<ServerBinding> {
   return system.extension(HttpExtensionId)

@@ -11,11 +11,12 @@ Verbindung von einem Listener-Actor genau einen Client-Actor".
 ```ts
 import { ActorSystem, Props, TcpSocketActor, TcpSocketOptions } from 'actor-ts';
 
+const tcpSocketOptions = TcpSocketOptions.create()
+  .withHost('metrics-collector.example.com')
+  .withPort(8125);
 const tcp = system.spawn(
   Props.create(() => new TcpSocketActor(
-    TcpSocketOptions.create()
-      .withHost('metrics-collector.example.com')
-      .withPort(8125),
+    tcpSocketOptions,
   )),
   'tcp-client',
 );
@@ -67,11 +68,12 @@ Nachricht.  TCP ist ein Byte-Stream; Framing ist dein Job.
 ```ts
 import { TcpSocketActor, TcpSocketOptions } from 'actor-ts';
 
-new TcpSocketActor(TcpSocketOptions.create()
+const tcpSocketOptions = TcpSocketOptions.create()
   .withHost(host)
   .withPort(port)
   .withFraming({ kind: 'length-prefixed' })
-  .withTarget(subscriber));
+  .withTarget(subscriber);
+new TcpSocketActor(tcpSocketOptions);
 ```
 
 Optionaler Framer, der den Byte-Stream in diskrete Nachrichten

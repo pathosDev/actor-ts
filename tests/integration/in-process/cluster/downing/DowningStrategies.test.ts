@@ -86,33 +86,38 @@ describe('KeepOldest', () => {
 describe('StaticQuorum', () => {
   test('reachable meets quorum → down unreachable', () => {
     const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
-    const decision = new StaticQuorum(StaticQuorumOptions.create().withQuorumSize(2)).decide(v);
+    const quorumOptions = StaticQuorumOptions.create().withQuorumSize(2);
+    const decision = new StaticQuorum(quorumOptions).decide(v);
     expect(decision.has(addr(3).toString())).toBe(true);
     expect(decision.has(addr(4).toString())).toBe(true);
   });
 
   test('reachable below quorum → down ourselves', () => {
     const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [2, 3, 4]);
-    const decision = new StaticQuorum(StaticQuorumOptions.create().withQuorumSize(2)).decide(v);
+    const quorumOptions = StaticQuorumOptions.create().withQuorumSize(2);
+    const decision = new StaticQuorum(quorumOptions).decide(v);
     // Only port 1 is reachable; we're under quorum → down self.
     expect(decision.has(addr(1).toString())).toBe(true);
   });
 
   test('quorumSize < 1 throws', () => {
-    expect(() => new StaticQuorum(StaticQuorumOptions.create().withQuorumSize(0))).toThrow(/quorumSize/);
+    const quorumOptions = StaticQuorumOptions.create().withQuorumSize(0);
+    expect(() => new StaticQuorum(quorumOptions)).toThrow(/quorumSize/);
   });
 });
 
 describe('KeepReferee', () => {
   test('referee reachable on this side → down the other', () => {
     const v = view([{ port: 1 }, { port: 2 }, { port: 3 }], [3]);
-    const decision = new KeepReferee(KeepRefereeOptions.create().withRefereeAddress(addr(1).toString())).decide(v);
+    const refereeOptions = KeepRefereeOptions.create().withRefereeAddress(addr(1).toString());
+    const decision = new KeepReferee(refereeOptions).decide(v);
     expect(decision.has(addr(3).toString())).toBe(true);
   });
 
   test('referee unreachable → down this side', () => {
     const v = view([{ port: 1 }, { port: 2 }, { port: 3 }], [1]);
-    const decision = new KeepReferee(KeepRefereeOptions.create().withRefereeAddress(addr(1).toString())).decide(v);
+    const refereeOptions = KeepRefereeOptions.create().withRefereeAddress(addr(1).toString());
+    const decision = new KeepReferee(refereeOptions).decide(v);
     // Ports 2 & 3 are reachable but referee is on other side → down self.
     expect(decision.has(addr(2).toString())).toBe(true);
     expect(decision.has(addr(3).toString())).toBe(true);
@@ -120,11 +125,10 @@ describe('KeepReferee', () => {
 
   test('downAllIfBelowQuorum downs everyone when referee-side too small', () => {
     const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [2, 3, 4]);
-    const decision = new KeepReferee(
-      KeepRefereeOptions.create()
-        .withRefereeAddress(addr(1).toString())
-        .withDownAllIfBelowQuorum(3),
-    ).decide(v);
+    const refereeOptions = KeepRefereeOptions.create()
+      .withRefereeAddress(addr(1).toString())
+      .withDownAllIfBelowQuorum(3);
+    const decision = new KeepReferee(refereeOptions).decide(v);
     // Only port 1 is reachable (referee side) — below quorum of 3 → down all.
     expect(decision.size).toBe(4);
   });
@@ -177,7 +181,8 @@ const flushMicrotasks = (): Promise<void> =>
 describe('LeaseMajority', () => {
   test('strict majority: returns the unreachable side without touching the lease', () => {
     const lease = new FakeLease();
-    const strat = new LeaseMajority(LeaseMajorityOptions.create().withLease(lease));
+    const leaseOptions = LeaseMajorityOptions.create().withLease(lease);
+    const strat = new LeaseMajority(leaseOptions);
     // 5 members, 3 reachable (1,2,3) vs 2 unreachable (4,5).
     const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }, { port: 5 }], [4, 5]);
     const decision = strat.decide(v);
@@ -189,7 +194,8 @@ describe('LeaseMajority', () => {
 
   test('strict minority: downs our own side without touching the lease', () => {
     const lease = new FakeLease();
-    const strat = new LeaseMajority(LeaseMajorityOptions.create().withLease(lease));
+    const leaseOptions = LeaseMajorityOptions.create().withLease(lease);
+    const strat = new LeaseMajority(leaseOptions);
     // 5 members, but from this perspective unreachable=[1,2,3], reachable=[4,5].
     const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }, { port: 5 }], [1, 2, 3], 4);
     const decision = strat.decide(v);
@@ -201,7 +207,8 @@ describe('LeaseMajority', () => {
 
   test('equal-size split: starts acquire, returns no decision until it resolves', async () => {
     const lease = new FakeLease();
-    const strat = new LeaseMajority(LeaseMajorityOptions.create().withLease(lease));
+    const leaseOptions = LeaseMajorityOptions.create().withLease(lease);
+    const strat = new LeaseMajority(leaseOptions);
     // 4 members, 2/2 split.
     const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
     const decision = strat.decide(v);
@@ -225,7 +232,8 @@ describe('LeaseMajority', () => {
 
   test('equal-size split + acquire returns false: down our own side', async () => {
     const lease = new FakeLease();
-    const strat = new LeaseMajority(LeaseMajorityOptions.create().withLease(lease));
+    const leaseOptions = LeaseMajorityOptions.create().withLease(lease);
+    const strat = new LeaseMajority(leaseOptions);
     const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
     expect(strat.decide(v).size).toBe(0);
     lease.resolveAcquire(false);
@@ -239,7 +247,8 @@ describe('LeaseMajority', () => {
 
   test('lease unreachable (acquire rejects): pending stays pending; next tick retries', async () => {
     const lease = new FakeLease();
-    const strat = new LeaseMajority(LeaseMajorityOptions.create().withLease(lease));
+    const leaseOptions = LeaseMajorityOptions.create().withLease(lease);
+    const strat = new LeaseMajority(leaseOptions);
     const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
     expect(strat.decide(v).size).toBe(0);
     lease.rejectAcquire('K8s API unreachable');
@@ -252,7 +261,8 @@ describe('LeaseMajority', () => {
 
   test('partition view changes between ticks: state resets, fresh acquire kicks off', async () => {
     const lease = new FakeLease();
-    const strat = new LeaseMajority(LeaseMajorityOptions.create().withLease(lease));
+    const leaseOptions = LeaseMajorityOptions.create().withLease(lease);
+    const strat = new LeaseMajority(leaseOptions);
     // First view: 2/2 split.  Acquire kicks off.
     const v1 = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
     expect(strat.decide(v1).size).toBe(0);
@@ -270,7 +280,8 @@ describe('LeaseMajority', () => {
 
   test('role filter: only role-tagged members count toward majority calculation', () => {
     const lease = new FakeLease();
-    const strat = new LeaseMajority(LeaseMajorityOptions.create().withLease(lease).withRole('worker'));
+    const leaseOptions = LeaseMajorityOptions.create().withLease(lease).withRole('worker');
+    const strat = new LeaseMajority(leaseOptions);
     // 3 workers (1,2,3) + 1 idle (9).  Unreachable=[3].  Workers
     // alone: 2 reachable vs 1 unreachable → strict majority → no Lease.
     const v = view([
@@ -287,7 +298,8 @@ describe('LeaseMajority', () => {
 
   test('no partition (everyone reachable): empty decision, no lease activity', () => {
     const lease = new FakeLease();
-    const strat = new LeaseMajority(LeaseMajorityOptions.create().withLease(lease));
+    const leaseOptions = LeaseMajorityOptions.create().withLease(lease);
+    const strat = new LeaseMajority(leaseOptions);
     const v = view([{ port: 1 }, { port: 2 }, { port: 3 }], []);
     expect(strat.decide(v).size).toBe(0);
     expect(lease.acquireCalls).toBe(0);
@@ -375,7 +387,8 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
    */
   test('late-arriving acquire result with stale epoch is dropped', async () => {
     const lease = new FencedFakeLease();
-    const strat = new LeaseMajority(LeaseMajorityOptions.create().withLease(lease).withAcquireTimeoutMs(50));
+    const leaseOptions = LeaseMajorityOptions.create().withLease(lease).withAcquireTimeoutMs(50);
+    const strat = new LeaseMajority(leaseOptions);
     const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
 
     // 1. Initial decide() kicks off acquire #1 (epoch 1).
@@ -415,7 +428,8 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
 
   test('timeout proactively releases the lease to undo a may-have-succeeded acquire on the wire', async () => {
     const lease = new FencedFakeLease();
-    const strat = new LeaseMajority(LeaseMajorityOptions.create().withLease(lease).withAcquireTimeoutMs(30));
+    const leaseOptions = LeaseMajorityOptions.create().withLease(lease).withAcquireTimeoutMs(30);
+    const strat = new LeaseMajority(leaseOptions);
     const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
 
     expect(strat.decide(v).size).toBe(0);
@@ -434,7 +448,8 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
   test('release rejection puts the strategy in fail-safe until the partition heals', async () => {
     const lease = new FencedFakeLease();
     lease.releaseShouldReject = true;
-    const strat = new LeaseMajority(LeaseMajorityOptions.create().withLease(lease).withAcquireTimeoutMs(30));
+    const leaseOptions = LeaseMajorityOptions.create().withLease(lease).withAcquireTimeoutMs(30);
+    const strat = new LeaseMajority(leaseOptions);
     const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
 
     expect(strat.decide(v).size).toBe(0);
@@ -466,7 +481,8 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
 
   test('uses acquireWithToken when the backend implements it', async () => {
     const lease = new FencedFakeLease();
-    const strat = new LeaseMajority(LeaseMajorityOptions.create().withLease(lease));
+    const leaseOptions = LeaseMajorityOptions.create().withLease(lease);
+    const strat = new LeaseMajority(leaseOptions);
     const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
 
     expect(strat.decide(v).size).toBe(0);
@@ -487,7 +503,8 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
 
   test('reset (partition heal) drops in-flight acquire results via epoch bump', async () => {
     const lease = new FencedFakeLease();
-    const strat = new LeaseMajority(LeaseMajorityOptions.create().withLease(lease));
+    const leaseOptions = LeaseMajorityOptions.create().withLease(lease);
+    const strat = new LeaseMajority(leaseOptions);
     const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
 
     expect(strat.decide(v).size).toBe(0);

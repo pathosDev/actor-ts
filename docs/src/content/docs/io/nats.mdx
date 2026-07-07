@@ -10,11 +10,12 @@ for durable streams, see the [JetStream](#jetstream) variant.
 ```ts
 import { ActorSystem, Props, NatsActor, NatsOptions } from 'actor-ts';
 
+const natsOptions = NatsOptions.create()
+  .withServers(['nats://nats-1:4222', 'nats://nats-2:4222'])
+  .withName('my-app');
 const nats = system.spawn(
   Props.create(() => new NatsActor(
-    NatsOptions.create()
-      .withServers(['nats://nats-1:4222', 'nats://nats-2:4222'])
-      .withName('my-app'),
+    natsOptions,
   )),
   'nats',
 );
@@ -123,16 +124,17 @@ For NATS with **durability**, use `JetStreamActor`:
 ```ts
 import { JetStreamActor, JetStreamOptions } from 'actor-ts';
 
+const jetStreamOptions = JetStreamOptions.create()
+  .withServers(['nats://nats-1:4222'])
+  .withStream({
+    name:     'ORDERS',
+    subjects: ['orders.>'],
+    storage:  'file',
+    maxAge:   86_400 * 7,   // 7 days retention
+  });
 const js = system.spawn(
   Props.create(() => new JetStreamActor(
-    JetStreamOptions.create()
-      .withServers(['nats://nats-1:4222'])
-      .withStream({
-        name:     'ORDERS',
-        subjects: ['orders.>'],
-        storage:  'file',
-        maxAge:   86_400 * 7,   // 7 days retention
-      }),
+    jetStreamOptions,
   )),
   'js',
 );

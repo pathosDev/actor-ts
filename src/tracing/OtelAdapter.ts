@@ -26,7 +26,8 @@
  * means we never `import '@opentelemetry/api'` ourselves.
  */
 
-import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { resolveSettings } from '../util/OptionsBuilder.js';
+import type { OtelAdapterOptions } from './OtelAdapterOptions.js';
 import type {
   AttributeValue, Span, SpanContext, SpanKind, SpanOptions, TraceCarrier, Tracer,
 } from './Tracer.js';
@@ -117,45 +118,10 @@ export interface OtelAdapterSettings {
   readonly tracerVersion?: string;
 }
 
-/**
- * Fluent builder for {@link OtelAdapterSettings}:
- *
- *     otelTracer(OtelAdapterOptions.create().withApi(otel).withTracerName('my-svc'))
- *
- * `withApi` is mandatory — the adapter has nothing to delegate to without
- * the `@opentelemetry/api` namespace.
- */
-export class OtelAdapterOptions extends OptionsBuilder<OtelAdapterSettings> {
-  /** Start a fresh builder.  Equivalent to `new OtelAdapterOptions()`. */
-  static create(): OtelAdapterOptions {
-    return new OtelAdapterOptions();
-  }
-
-  /** The `@opentelemetry/api` namespace (`import * as otel from '@opentelemetry/api'`). */
-  withApi(api: OtelApiLike): this {
-    return this.set('api', api);
-  }
-
-  /** Optional pre-built tracer; defaults to `api.trace.getTracer(tracerName, tracerVersion)`. */
-  withTracer(tracer: OtelTracerLike): this {
-    return this.set('tracer', tracer);
-  }
-
-  /** Tracer name passed to `getTracer`.  Default: `'actor-ts'`. */
-  withTracerName(tracerName: string): this {
-    return this.set('tracerName', tracerName);
-  }
-
-  /** Tracer version passed to `getTracer`. */
-  withTracerVersion(tracerVersion: string): this {
-    return this.set('tracerVersion', tracerVersion);
-  }
-}
-
 /* ------------------------------- adapter ------------------------------- */
 
-export function otelTracer(options: OtelAdapterOptions): Tracer {
-  const opts = options.build() as OtelAdapterSettings;
+export function otelTracer(options: OtelAdapterOptions | Partial<OtelAdapterSettings>): Tracer {
+  const opts = resolveSettings(options) as OtelAdapterSettings;
   const { api } = opts;
   const otelTracerInstance = opts.tracer ?? api.trace.getTracer(opts.tracerName ?? 'actor-ts', opts.tracerVersion);
 

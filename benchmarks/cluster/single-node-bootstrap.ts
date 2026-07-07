@@ -20,12 +20,16 @@ let port = 40_000;
 
 async function bootstrap(): Promise<void> {
   const p = port++;
-  const sys = ActorSystem.create('bench', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
-  const cluster = await Cluster.join(sys, ClusterOptions.create()
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const sys = ActorSystem.create('bench', sysOptions);
+  const clusterOptions = ClusterOptions.create()
     .withHost('h')
     .withPort(p)
     .withTransport(new InMemoryTransport(new NodeAddress('bench', 'h', p)))
-    .withGossipIntervalMs(50));
+    .withGossipIntervalMs(50);
+  const cluster = await Cluster.join(sys, clusterOptions);
   await cluster.leave();
   await sys.terminate();
 }

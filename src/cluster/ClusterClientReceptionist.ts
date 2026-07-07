@@ -43,10 +43,11 @@ import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
-import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { resolveSettings } from '../util/OptionsBuilder.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
 import type { WireMessage } from './Protocol.js';
 import type { Cluster } from './Cluster.js';
+import type { ClusterClientReceptionistOptions } from './ClusterClientReceptionistOptions.js';
 
 /* ============================ wire shapes =========================== */
 
@@ -78,26 +79,6 @@ export interface ClusterClientReceptionistSettings {
 }
 
 /**
- * Fluent builder for {@link ClusterClientReceptionistSettings}:
- *
- *     receptionist.start(
- *       cluster,
- *       ClusterClientReceptionistOptions.create().withAskTimeoutMs(3_000),
- *     );
- */
-export class ClusterClientReceptionistOptions extends OptionsBuilder<ClusterClientReceptionistSettings> {
-  /** Start a fresh builder. */
-  static create(): ClusterClientReceptionistOptions {
-    return new ClusterClientReceptionistOptions();
-  }
-
-  /** Default ask timeout (ms) for client envelopes carrying an `askId`.  Default 5 s. */
-  withAskTimeoutMs(ms: number): this {
-    return this.set('askTimeoutMs', ms);
-  }
-}
-
-/**
  * Per-system extension that runs once `start(cluster)` is called.
  * Registers a wire handler on the cluster transport; calling `stop()`
  * unregisters it.  Re-callable: a second `start(cluster)` on the same
@@ -110,13 +91,16 @@ export class ClusterClientReceptionist implements Extension {
 
   constructor(private readonly system: ActorSystem) {}
 
-  start(cluster: Cluster, options: ClusterClientReceptionistOptions = ClusterClientReceptionistOptions.create()): void {
+  start(
+    cluster: Cluster,
+    options: ClusterClientReceptionistOptions | Partial<ClusterClientReceptionistSettings> = {},
+  ): void {
     if (this._started && this._cluster === cluster) return;
     if (this._started) {
       throw new Error('ClusterClientReceptionist is already bound to a different cluster');
     }
     this._cluster = cluster;
-    const settings = options.build();
+    const settings = resolveSettings(options);
     const askTimeoutMs = settings.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
     const log = this.system.log.withSource(`cluster-client-receptionist@${cluster.selfAddress}`);
 

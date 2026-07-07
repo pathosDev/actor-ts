@@ -28,7 +28,11 @@ class ReadingActor extends MqttActor<Reading, ReadingSelf> {
   readonly received: MqttMessage<Reading>[] = [];
 
   constructor(brokerUrl: string, clientId: string, subTopic: string) {
-    super(MqttOptions.create().withBrokerUrl(brokerUrl).withClientId(clientId).withCleanSession(true));
+    const mqttOptions = MqttOptions.create()
+      .withBrokerUrl(brokerUrl)
+      .withClientId(clientId)
+      .withCleanSession(true);
+    super(mqttOptions);
     this.subscribe(subTopic, { qos: 1 });
   }
 

@@ -45,7 +45,7 @@ export class MqttOptions extends BrokerOptions<MqttActorSettings> {
 
   /** Default QoS used by `publish` / `subscribe` when not overridden per call. */
   withQos(qos: MqttQos): this {
-    return this.set('defaultQos', qos);
+    return this.set('qos', qos);
   }
 
   /** Last-will-and-testament published by the broker on ungraceful disconnect. */
@@ -60,7 +60,7 @@ export class MqttOptions extends BrokerOptions<MqttActorSettings> {
 
   /** Keep-alive interval in seconds.  Default 60. */
   withKeepAlive(seconds: number): this {
-    return this.set('keepAliveSec', seconds);
+    return this.set('keepAlive', seconds);
   }
 
   /** MQTT protocol version — 4 (3.1.1, default) or 5. */

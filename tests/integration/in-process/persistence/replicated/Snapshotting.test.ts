@@ -20,8 +20,10 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
-import { ActorSystem, ActorSystemOptions } from '../../../../../src/ActorSystem.js';
-import { Cluster, ClusterOptions } from '../../../../../src/cluster/Cluster.js';
+import { ActorSystem } from '../../../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
+import { Cluster } from '../../../../../src/cluster/Cluster.js';
+import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
@@ -88,17 +90,18 @@ async function startActor(
   systemName: string, port: number,
   journal: InMemoryJournal, snapshotStore: InMemorySnapshotStore,
 ): Promise<Setup> {
-  const sys = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const sys = ActorSystem.create(systemName, sysOptions);
   sys.extension(PersistenceExtensionId).setJournal(journal);
   sys.extension(PersistenceExtensionId).setSnapshotStore(snapshotStore);
-  const cluster = await Cluster.join(
-    sys,
-    ClusterOptions.create()
-      .withHost('h')
-      .withPort(port)
-      .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
-      .withGossipIntervalMs(30),
-  );
+  const clusterOptions = ClusterOptions.create()
+    .withHost('h')
+    .withPort(port)
+    .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
+    .withGossipIntervalMs(30);
+  const cluster = await Cluster.join(sys, clusterOptions);
   let instance!: CountingCounter;
   const ref = sys.spawn(
     Props.create<Cmd>(() => {

@@ -4,9 +4,9 @@ export {
 } from './DistributedPubSubExtension.js';
 export {
   DistributedPubSubMediator,
-  DistributedPubSubOptions,
   mediatorPath,
 } from './DistributedPubSubMediator.js';
+export { DistributedPubSubOptions } from './DistributedPubSubOptions.js';
 export type { DistributedPubSubSettings } from './DistributedPubSubMediator.js';
 export {
   CurrentTopics,

@@ -28,13 +28,14 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
 import { Props } from '../../src/Props.js';
-import { ClusterSharding, StartShardingOptions } from '../../src/cluster/sharding/ClusterSharding.js';
+import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
+import { StartShardingOptions } from '../../src/cluster/sharding/StartShardingOptions.js';
 import { ShardCoordinator } from '../../src/cluster/sharding/ShardCoordinator.js';
 import {
   InMemoryLease,
   inMemoryLeaseStore,
 } from '../../src/coordination/leases/InMemoryLease.js';
-import { LeaseOptions } from '../../src/coordination/Lease.js';
+import { LeaseOptions } from '../../src/coordination/LeaseOptions.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import type { ActorRef } from '../../src/ActorRef.js';
@@ -97,46 +98,49 @@ describe('multi-node sharding lease — split-brain protection', () => {
       // share the same underlying store (`inMemoryLeaseStore`),
       // which is what makes this a meaningful arbiter — only one
       // owner can hold it across the three coordinators at once.
+      const leaseOptionsA = LeaseOptions.create()
+        .withName('shard-coord-lease')
+        .withOwner('a')
+        .withTtlMs(10_000)
+        .withRenewalIntervalMs(80);
+      const shardingOptionsA = StartShardingOptions.create<Cmd>()
+        .withTypeName('entity')
+        .withEntityProps(Props.create(() => new Entity()))
+        .withExtractEntityId((m) => m.id)
+        .withNumShards(8)
+        .withRebalanceIntervalMs(200)
+        .withLease(new InMemoryLease(leaseOptionsA))
+        .withAcquireRetryIntervalMs(100);
+      const leaseOptionsB = LeaseOptions.create()
+        .withName('shard-coord-lease')
+        .withOwner('b')
+        .withTtlMs(10_000)
+        .withRenewalIntervalMs(80);
+      const shardingOptionsB = StartShardingOptions.create<Cmd>()
+        .withTypeName('entity')
+        .withEntityProps(Props.create(() => new Entity()))
+        .withExtractEntityId((m) => m.id)
+        .withNumShards(8)
+        .withRebalanceIntervalMs(200)
+        .withLease(new InMemoryLease(leaseOptionsB))
+        .withAcquireRetryIntervalMs(100);
+      const leaseOptionsC = LeaseOptions.create()
+        .withName('shard-coord-lease')
+        .withOwner('c')
+        .withTtlMs(10_000)
+        .withRenewalIntervalMs(80);
+      const shardingOptionsC = StartShardingOptions.create<Cmd>()
+        .withTypeName('entity')
+        .withEntityProps(Props.create(() => new Entity()))
+        .withExtractEntityId((m) => m.id)
+        .withNumShards(8)
+        .withRebalanceIntervalMs(200)
+        .withLease(new InMemoryLease(leaseOptionsC))
+        .withAcquireRetryIntervalMs(100);
       const regions: Record<'a' | 'b' | 'c', ActorRef<Cmd>> = {
-        a: spec.clusterFor('a').sharding.start<Cmd>(
-          StartShardingOptions.create<Cmd>()
-            .withTypeName('entity')
-            .withEntityProps(Props.create(() => new Entity()))
-            .withExtractEntityId((m) => m.id)
-            .withNumShards(8)
-            .withRebalanceIntervalMs(200)
-            .withLease(new InMemoryLease(
-              LeaseOptions.create().withName('shard-coord-lease').withOwner('a').withTtlMs(10_000)
-                .withRenewalIntervalMs(80),
-            ))
-            .withAcquireRetryIntervalMs(100),
-        ),
-        b: spec.clusterFor('b').sharding.start<Cmd>(
-          StartShardingOptions.create<Cmd>()
-            .withTypeName('entity')
-            .withEntityProps(Props.create(() => new Entity()))
-            .withExtractEntityId((m) => m.id)
-            .withNumShards(8)
-            .withRebalanceIntervalMs(200)
-            .withLease(new InMemoryLease(
-              LeaseOptions.create().withName('shard-coord-lease').withOwner('b').withTtlMs(10_000)
-                .withRenewalIntervalMs(80),
-            ))
-            .withAcquireRetryIntervalMs(100),
-        ),
-        c: spec.clusterFor('c').sharding.start<Cmd>(
-          StartShardingOptions.create<Cmd>()
-            .withTypeName('entity')
-            .withEntityProps(Props.create(() => new Entity()))
-            .withExtractEntityId((m) => m.id)
-            .withNumShards(8)
-            .withRebalanceIntervalMs(200)
-            .withLease(new InMemoryLease(
-              LeaseOptions.create().withName('shard-coord-lease').withOwner('c').withTtlMs(10_000)
-                .withRenewalIntervalMs(80),
-            ))
-            .withAcquireRetryIntervalMs(100),
-        ),
+        a: spec.clusterFor('a').sharding.start<Cmd>(shardingOptionsA),
+        b: spec.clusterFor('b').sharding.start<Cmd>(shardingOptionsB),
+        c: spec.clusterFor('c').sharding.start<Cmd>(shardingOptionsC),
       };
       void regions;
 

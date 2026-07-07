@@ -11,15 +11,16 @@ deploying Kafka or NATS.
 ```ts
 import { ActorSystem, Props, RedisStreamsActor, RedisStreamsOptions } from 'actor-ts';
 
+const redisStreamsOptions = RedisStreamsOptions.create()
+  .withUrl('redis://localhost:6379')
+  .withStreams(['orders', 'payments'])
+  // Consumer-group wiring + consumer-actor target live in
+  // settings — there is no runtime `subscribe` surface.
+  .withConsumerGroup({ group: 'order-processors', consumer: 'worker-1' })
+  .withTarget(orderHandler);
 const redis = system.spawn(
   Props.create(() => new RedisStreamsActor(
-    RedisStreamsOptions.create()
-      .withUrl('redis://localhost:6379')
-      .withStreams(['orders', 'payments'])
-      // Consumer-group wiring + consumer-actor target live in
-      // settings — there is no runtime `subscribe` surface.
-      .withConsumerGroup({ group: 'order-processors', consumer: 'worker-1' })
-      .withTarget(orderHandler),
+    redisStreamsOptions,
   )),
   'redis',
 );
@@ -56,8 +57,12 @@ interface RedisStreamsActorSettings extends BrokerCommonSettings {
 
 ```ts
 // No consumerGroup → uses XREAD
+const redisStreamsOptions = RedisStreamsOptions.create()
+  .withUrl(url)
+  .withStreams(['events'])
+  .withTarget(handler);
 new RedisStreamsActor(
-  RedisStreamsOptions.create().withUrl(url).withStreams(['events']).withTarget(handler),
+  redisStreamsOptions,
 );
 ```
 
@@ -71,12 +76,13 @@ should process every message.
 ### With consumer group — `XREADGROUP`
 
 ```ts
+const redisStreamsOptions = RedisStreamsOptions.create()
+  .withUrl(url)
+  .withStreams(['orders'])
+  .withConsumerGroup({ group: 'workers', consumer: 'worker-1' })
+  .withTarget(handler);
 new RedisStreamsActor(
-  RedisStreamsOptions.create()
-    .withUrl(url)
-    .withStreams(['orders'])
-    .withConsumerGroup({ group: 'workers', consumer: 'worker-1' })
-    .withTarget(handler),
+  redisStreamsOptions,
 );
 ```
 

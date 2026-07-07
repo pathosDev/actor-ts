@@ -8,7 +8,8 @@ import {
   MailboxFullError,
   PriorityMailbox,
 } from '../../../src/mailbox/index.js';
-import { TestKit, TestKitOptions } from '../../../src/testkit/TestKit.js';
+import { TestKit } from '../../../src/testkit/TestKit.js';
+import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -139,7 +140,10 @@ describe('PriorityMailbox', () => {
 
 describe('Props.withMailbox — end-to-end via actor', () => {
   test('actor uses the custom priority mailbox', async () => {
-    const kit = TestKit.create('mbox-pri', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('mbox-pri', kitOptions);
     const probe = kit.createTestProbe<string>();
 
     class Worker extends Actor<{ label: string; pri: number }> {
@@ -173,7 +177,10 @@ describe('Props.withMailbox — end-to-end via actor', () => {
   });
 
   test('default actor mailbox is bounded (10_000, drop-head) — #310', async () => {
-    const kit = TestKit.create('mbox-default', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('mbox-default', kitOptions);
 
     class Worker extends Actor<number> {
       override onReceive(_m: number): void {
@@ -200,7 +207,10 @@ describe('Props.withMailbox — end-to-end via actor', () => {
 
   test('default mailbox can be opted out per-actor via Props.withMailbox(() => new Mailbox())', async () => {
     const { Mailbox } = await import('../../../src/internal/Mailbox.js');
-    const kit = TestKit.create('mbox-optout', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('mbox-optout', kitOptions);
 
     class Worker extends Actor<number> {
       override onReceive(_m: number): void { /* noop */ }
@@ -218,7 +228,10 @@ describe('Props.withMailbox — end-to-end via actor', () => {
   });
 
   test('bounded mailbox with drop-new tolerates a burst without throwing', async () => {
-    const kit = TestKit.create('mbox-bnd', TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('mbox-bnd', kitOptions);
     const received: number[] = [];
 
     class Slow extends Actor<number> {

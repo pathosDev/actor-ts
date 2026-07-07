@@ -26,7 +26,10 @@ class Worker extends Actor<Msg> {
 }
 
 async function main(): Promise<void> {
-  const system = ActorSystem.create('bench-pri', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const systemOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const system = ActorSystem.create('bench-pri', systemOptions);
   const batch = 5_000;
 
   const defaultProps = Props.create(() => new Worker());

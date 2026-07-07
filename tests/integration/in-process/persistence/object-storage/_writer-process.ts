@@ -18,10 +18,8 @@
  * where `<mode>` is either `create-only` (use `ifNoneMatch: '*'`) or
  * `unconditional`.
  */
-import {
-  FilesystemObjectStorageBackend,
-  FilesystemObjectStorageOptions,
-} from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
+import { FilesystemObjectStorageBackend } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
+import { FilesystemObjectStorageOptions } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
 import { ObjectStorageConcurrencyError } from '../../../../../src/persistence/object-storage/ObjectStorageBackend.js';
 
 const [, , dir, key, body, mode] = process.argv;
@@ -31,7 +29,9 @@ if (!dir || !key || body === undefined || !mode) {
   process.exit(64);
 }
 
-const backend = new FilesystemObjectStorageBackend(FilesystemObjectStorageOptions.create().withDir(dir));
+const backendOptions = FilesystemObjectStorageOptions.create()
+  .withDir(dir);
+const backend = new FilesystemObjectStorageBackend(backendOptions);
 const opts = mode === 'create-only' ? { ifNoneMatch: '*' as const } : {};
 
 try {

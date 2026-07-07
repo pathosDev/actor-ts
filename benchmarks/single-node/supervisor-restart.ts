@@ -49,7 +49,10 @@ class Supervisor extends Actor<Cmd> {
 }
 
 async function main(): Promise<void> {
-  const system = ActorSystem.create('bench-supervise', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+  const systemOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const system = ActorSystem.create('bench-supervise', systemOptions);
   const ref = system.spawnAnonymous(Props.create(() => new Supervisor()));
 
   await runGroup('single-node · supervisor-restart', [

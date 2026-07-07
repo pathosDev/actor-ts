@@ -60,7 +60,7 @@ projection lag is rarely a problem.  Reach for push-based when:
 ## How to enable it
 
 ```ts
-const projection = ProjectionActor.byTag<E>(system, ByTagProjectionOptions.create<E>()
+const byTagProjectionOptions = ByTagProjectionOptions.create<E>()
   .withName('realtime-balance')
   .withTag('account')
   .withQuery(new SqliteQuery({ path: '...' }))
@@ -68,7 +68,8 @@ const projection = ProjectionActor.byTag<E>(system, ByTagProjectionOptions.creat
     push: true,                  // enable bus subscription
     pollIntervalMs: 5_000,       // fallback poll cadence — can be high
   })
-  .withHandle(async (event) => { /* ... */ }));
+  .withHandle(async (event) => { /* ... */ });
+const projection = ProjectionActor.byTag<E>(system, byTagProjectionOptions);
 ```
 
 With `push: true`:

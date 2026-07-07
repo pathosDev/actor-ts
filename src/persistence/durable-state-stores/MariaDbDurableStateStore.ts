@@ -3,7 +3,7 @@ import {
   type DurableStateRecord,
   type DurableStateStore,
 } from '../DurableStateStore.js';
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { resolveSettings } from '../../util/OptionsBuilder.js';
 import { JournalError } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import { none, some, type Option } from '../../util/Option.js';
@@ -16,52 +16,13 @@ import {
   type MariaDbPoolLike,
   type MariaDbConnection,
 } from '../journals/MariaDbClient.js';
+import type { MariaDbDurableStateStoreOptions } from './MariaDbDurableStateStoreOptions.js';
 
 export interface MariaDbDurableStateStoreSettings extends MariaDbConnection {
   /** Table name.  Default: `durable_state`. */
   readonly table?: string;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
   readonly autoCreateTables?: boolean;
-}
-
-/**
- * Fluent builder for {@link MariaDbDurableStateStoreSettings}:
- *
- *     new MariaDbDurableStateStore(MariaDbDurableStateStoreOptions.create().withPoolConfig({ … }).withTable('state'))
- *
- * The connection fields (`withUrl` / `withPoolConfig` / `withPool`) come
- * from the shared {@link MariaDbConnection} mixin.
- */
-export class MariaDbDurableStateStoreOptions extends OptionsBuilder<MariaDbDurableStateStoreSettings> {
-  /** Start a fresh builder.  Equivalent to `new MariaDbDurableStateStoreOptions()`. */
-  static create(): MariaDbDurableStateStoreOptions {
-    return new MariaDbDurableStateStoreOptions();
-  }
-
-  /** Connection URI passed straight to `createPool`, e.g. `mariadb://user:pass@host:3306/db`. */
-  withUrl(url: string): this {
-    return this.set('url', url);
-  }
-
-  /** `createPool` config object (host/user/password/database/…); takes precedence over `url`. */
-  withPoolConfig(poolConfig: Record<string, unknown>): this {
-    return this.set('poolConfig', poolConfig);
-  }
-
-  /** Pre-built pool — shares one pool across the three stores, or injects a fake in tests. */
-  withPool(pool: MariaDbPoolLike): this {
-    return this.set('pool', pool);
-  }
-
-  /** Table name.  Default: `durable_state`. */
-  withTable(table: string): this {
-    return this.set('table', table);
-  }
-
-  /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
-  withAutoCreateTables(autoCreateTables: boolean): this {
-    return this.set('autoCreateTables', autoCreateTables);
-  }
 }
 
 interface StateRow {
@@ -90,8 +51,8 @@ export class MariaDbDurableStateStore implements DurableStateStore {
   private initPromise: Promise<void> | null = null;
   private closed = false;
 
-  constructor(options: MariaDbDurableStateStoreOptions = MariaDbDurableStateStoreOptions.create()) {
-    const s = options.build();
+  constructor(options: MariaDbDurableStateStoreOptions | Partial<MariaDbDurableStateStoreSettings> = {}) {
+    const s = resolveSettings(options);
     this.settings = s;
     this.table = assertSafeIdentifier(s.table ?? 'durable_state', 'durable-state table');
     this.autoCreate = s.autoCreateTables ?? true;

@@ -22,9 +22,11 @@
  *   });
  */
 import { afterAll, beforeAll } from 'bun:test';
-import { ActorSystem, ActorSystemOptions } from '../../../src/ActorSystem.js';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger, type Logger } from '../../../src/Logger.js';
-import { TestKit, TestKitOptions } from '../../../src/testkit/TestKit.js';
+import { TestKit } from '../../../src/testkit/TestKit.js';
+import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 
 export interface SystemFixtureOptions {
   readonly logger?: Logger;
@@ -42,9 +44,10 @@ export function systemFixture(
 ): () => ActorSystem {
   let sys: ActorSystem | null = null;
   beforeAll(() => {
-    sys = ActorSystem.create(systemName, ActorSystemOptions.create()
+    const sysOptions = ActorSystemOptions.create()
       .withLogger(opts.logger ?? new NoopLogger())
-      .withLogLevel(opts.logLevel ?? LogLevel.Off));
+      .withLogLevel(opts.logLevel ?? LogLevel.Off);
+    sys = ActorSystem.create(systemName, sysOptions);
   });
   afterAll(async () => {
     if (sys) await sys.terminate();
@@ -69,9 +72,10 @@ export function testKitFixture(
 ): () => TestKit {
   let kit: TestKit | null = null;
   beforeAll(() => {
-    kit = TestKit.create(systemName, TestKitOptions.create()
+    const kitOptions = TestKitOptions.create()
       .withLogger(opts.logger ?? new NoopLogger())
-      .withLogLevel(opts.logLevel ?? LogLevel.Off));
+      .withLogLevel(opts.logLevel ?? LogLevel.Off);
+    kit = TestKit.create(systemName, kitOptions);
   });
   afterAll(async () => {
     if (kit) await kit.system.terminate();

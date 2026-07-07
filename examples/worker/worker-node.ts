@@ -11,15 +11,17 @@ class HelloWorker extends Actor<'greet'> {
 
 async function main(): Promise<void> {
   const ctx = await WorkerNode.join<{ workerId: number; seedAddr?: string }>();
-  const system = ActorSystem.create(ctx.systemName, ActorSystemOptions.create()
-    .withConfig({ 'actor-ts': { logger: { level: 'info' } } }));
-  const cluster = await Cluster.join(system, ClusterOptions.create()
+  const systemOptions = ActorSystemOptions.create()
+    .withConfig({ 'actor-ts': { logger: { level: 'info' } } });
+  const system = ActorSystem.create(ctx.systemName, systemOptions);
+  const clusterOptions = ClusterOptions.create()
     .withHost(ctx.self.host)
     .withPort(ctx.self.port)
     .withSeeds(ctx.initData.seedAddr ? [ctx.initData.seedAddr] : [])
     .withTransport(ctx.transport)
     .withFailureDetector({ heartbeatIntervalMs: 100, unreachableAfterMs: 400, downAfterMs: 800 })
-    .withGossipIntervalMs(120));
+    .withGossipIntervalMs(120);
+  const cluster = await Cluster.join(system, clusterOptions);
   system.spawn(Props.create(() => new HelloWorker(ctx.initData.workerId)), 'hello');
   ctx.ready();
   setTimeout(async () => {

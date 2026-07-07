@@ -23,14 +23,18 @@ async function formTriangle(): Promise<void> {
   const base = portSeed; portSeed += 3;
   const systemName = `form-${base}`;
   const mkNode = async (p: number, seeds: string[] = []): Promise<{ sys: ActorSystem; cluster: Cluster }> => {
-    const sys = ActorSystem.create(systemName, ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
-    const cluster = await Cluster.join(sys, ClusterOptions.create()
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create(systemName, sysOptions);
+    const clusterOptions = ClusterOptions.create()
       .withHost('h')
       .withPort(p)
       .withSeeds(seeds)
       .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', p)))
       .withFailureDetector({ heartbeatIntervalMs: 20, unreachableAfterMs: 200, downAfterMs: 400 })
-      .withGossipIntervalMs(30));
+      .withGossipIntervalMs(30);
+    const cluster = await Cluster.join(sys, clusterOptions);
     return { sys, cluster };
   };
 

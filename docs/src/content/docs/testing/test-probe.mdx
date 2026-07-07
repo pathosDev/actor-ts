@@ -27,9 +27,10 @@ asserts the shape.
 ## Creating a probe
 
 ```ts
-const probe = tk.createTestProbe(TestProbeOptions.create()
+const testProbeOptions = TestProbeOptions.create()
   .withDefaultTimeoutMs(5_000)    // default wait for expect/receive — default 3s
-  .withName('order-probe'));
+  .withName('order-probe');
+const probe = tk.createTestProbe(testProbeOptions);
 ```
 
 Both options are optional.  Without `defaultTimeoutMs`, every
@@ -206,8 +207,12 @@ For ask-style messages — the probe stands in for the asker.
 ### Multiple probes
 
 ```ts
-const a = tk.createTestProbe(TestProbeOptions.create().withName('a-probe'));
-const b = tk.createTestProbe(TestProbeOptions.create().withName('b-probe'));
+const testProbeOptions = TestProbeOptions.create()
+  .withName('a-probe');
+const a = tk.createTestProbe(testProbeOptions);
+const testProbe2Options = TestProbeOptions.create()
+  .withName('b-probe');
+const b = tk.createTestProbe(testProbe2Options);
 
 const router = tk.system.spawnAnonymous(...);
 router.tell({ kind: 'send', target: 'a', payload: 'hello' });
