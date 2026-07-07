@@ -1,9 +1,17 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
-import type { PgPoolLike } from './PostgresClient.js';
-import type { PostgresJournalSettings } from './PostgresJournal.js';
+import type { PgPoolLike, PostgresConnection } from './PostgresClient.js';
+
+export interface PostgresJournalOptionsType extends PostgresConnection {
+  /** Events table name.  Default: `events`. */
+  readonly eventsTable?: string;
+  /** Tags join table name.  Default: `${eventsTable}_tags`. */
+  readonly tagsTable?: string;
+  /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
+  readonly autoCreateTables?: boolean;
+}
 
 /**
- * Fluent builder for {@link PostgresJournalSettings}:
+ * Fluent builder for {@link PostgresJournalOptionsType}:
  *
  *     new PostgresJournal(PostgresJournalOptions.create().withUrl('postgres://…').withEventsTable('journal'))
  *
@@ -12,10 +20,10 @@ import type { PostgresJournalSettings } from './PostgresJournal.js';
  * `withPool(...)` to share ONE pool across the journal, snapshot, and
  * durable-state stores.
  */
-export class PostgresJournalOptions extends OptionsBuilder<PostgresJournalSettings> {
-  /** Start a fresh builder.  Equivalent to `new PostgresJournalOptions()`. */
-  static create(): PostgresJournalOptions {
-    return new PostgresJournalOptions();
+export class PostgresJournalOptionsBuilder extends OptionsBuilder<PostgresJournalOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new PostgresJournalOptionsBuilder()`. */
+  static create(): PostgresJournalOptionsBuilder {
+    return new PostgresJournalOptionsBuilder();
   }
 
   /** Connection string, e.g. `postgres://user:pass@host:5432/db`. */
@@ -48,3 +56,11 @@ export class PostgresJournalOptions extends OptionsBuilder<PostgresJournalSettin
     return this.set('autoCreateTables', autoCreateTables);
   }
 }
+
+/**
+ * Accepted input for any Postgres-journal constructor: the fluent
+ * {@link PostgresJournalOptionsBuilder} OR a plain {@link PostgresJournalOptionsType} object.
+ */
+export type PostgresJournalOptions = PostgresJournalOptionsBuilder | Partial<PostgresJournalOptionsType>;
+/** Value alias so `PostgresJournalOptions.create()` / `new PostgresJournalOptions()` resolve to the builder. */
+export const PostgresJournalOptions = PostgresJournalOptionsBuilder;

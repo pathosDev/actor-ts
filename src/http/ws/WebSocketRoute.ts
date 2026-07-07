@@ -17,35 +17,28 @@ import type { WsServerRef } from './WsMessages.js';
 import {
   resolveWsPolicy,
   type ResolvedWsPolicy,
-  type WebSocketPolicyOptions,
 } from './WsPolicy.js';
-import type { WebSocketRouteOptions } from './WebSocketRouteOptions.js';
-
-/** The settings a `websocket()` route may carry — codec + per-connection policy. */
-export interface WebSocketRouteSettings<TOut, TIn> extends WebSocketPolicyOptions {
-  /** Wire codec.  Default: `jsonCodec<TOut, TIn>()`. */
-  readonly codec?: WsCodec<TOut, TIn>;
-}
+import type { WebSocketRouteOptions, WebSocketRouteOptionsType } from './WebSocketRouteOptions.js';
 
 /** `websocket(target)` — mount at the enclosing path. */
 export function websocket<TOut, TIn, TSelf = never>(
   target: WsServerRef<TOut, TIn, TSelf>,
-  options?: WebSocketRouteOptions<TOut, TIn> | Partial<WebSocketRouteSettings<TOut, TIn>>,
+  options?: WebSocketRouteOptions<TOut, TIn>,
 ): Route;
 /** `websocket('/ws', target)` — sugar for `path('/ws', websocket(target))`. */
 export function websocket<TOut, TIn, TSelf = never>(
   routePath: string,
   target: WsServerRef<TOut, TIn, TSelf>,
-  options?: WebSocketRouteOptions<TOut, TIn> | Partial<WebSocketRouteSettings<TOut, TIn>>,
+  options?: WebSocketRouteOptions<TOut, TIn>,
 ): Route;
 export function websocket<TOut, TIn, TSelf = never>(
   a: string | WsServerRef<TOut, TIn, TSelf>,
-  b?: WsServerRef<TOut, TIn, TSelf> | WebSocketRouteOptions<TOut, TIn> | Partial<WebSocketRouteSettings<TOut, TIn>>,
-  c?: WebSocketRouteOptions<TOut, TIn> | Partial<WebSocketRouteSettings<TOut, TIn>>,
+  b?: WsServerRef<TOut, TIn, TSelf> | WebSocketRouteOptions<TOut, TIn>,
+  c?: WebSocketRouteOptions<TOut, TIn>,
 ): Route {
   let segment: string | null;
   let target: WsServerRef<TOut, TIn, TSelf>;
-  let builder: WebSocketRouteOptions<TOut, TIn> | Partial<WebSocketRouteSettings<TOut, TIn>> | undefined;
+  let builder: WebSocketRouteOptions<TOut, TIn> | undefined;
   if (typeof a === 'string') {
     segment = a;
     target = b as WsServerRef<TOut, TIn, TSelf>;
@@ -53,9 +46,9 @@ export function websocket<TOut, TIn, TSelf = never>(
   } else {
     segment = null;
     target = a;
-    builder = b as WebSocketRouteOptions<TOut, TIn> | Partial<WebSocketRouteSettings<TOut, TIn>> | undefined;
+    builder = b as WebSocketRouteOptions<TOut, TIn> | undefined;
   }
-  const options: Partial<WebSocketRouteSettings<TOut, TIn>> = ((builder ?? {}) as Partial<WebSocketRouteSettings<TOut, TIn>>);
+  const options: WebSocketRouteOptionsType<TOut, TIn> = ((builder ?? {}) as WebSocketRouteOptionsType<TOut, TIn>);
 
   const codec: WsCodec<TOut, TIn> = options.codec ?? jsonCodec<TOut, TIn>();
   // Policy needs the ActorSystem's config, only available at connect

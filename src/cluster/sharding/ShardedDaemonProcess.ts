@@ -9,7 +9,7 @@ import { LeaderChanged, MemberRemoved } from '../ClusterEvents.js';
 import { LeastShardAllocationStrategy } from './AllocationStrategy.js';
 import { ClusterSharding } from './ClusterSharding.js';
 import { StartShardingOptions } from './StartShardingOptions.js';
-import type { ShardedDaemonProcessOptions } from './ShardedDaemonProcessOptions.js';
+import type { ShardedDaemonProcessOptions, ShardedDaemonProcessOptionsType } from './ShardedDaemonProcessOptions.js';
 
 /** Envelope the sharded region routes to daemon #index. */
 interface DaemonEnvelope<T> { readonly index: number; readonly body: T | Wakeup; }
@@ -17,27 +17,6 @@ interface DaemonEnvelope<T> { readonly index: number; readonly body: T | Wakeup;
 /** Internal no-op message used to materialize a daemon on startup. */
 interface Wakeup { readonly t: 'sharded-daemon.wakeup'; }
 const WAKEUP: Wakeup = { t: 'sharded-daemon.wakeup' };
-
-export interface ShardedDaemonProcessSettings<T> {
-  /** Logical name used for the shard type; must be unique per daemon set. */
-  readonly name: string;
-  /** Total number of daemons to keep running cluster-wide. */
-  readonly numDaemons: number;
-  /** Props factory — gets the daemon's stable index (0..numDaemons-1). */
-  readonly behaviorFor: (daemonIndex: number) => Props<T>;
-  /** Optional role — only members carrying the role host daemons. */
-  readonly role?: string;
-  /**
-   * Period (ms) at which a "liveness ping" wakes every daemon index even
-   * when no cluster topology event has fired.  Acts as a safety net for
-   * the event-driven path (`LeaderChanged` / `MemberRemoved`) — if a wake
-   * was missed (e.g. brief partition right at the failover moment), the
-   * heartbeat ensures the daemons still get re-materialized.
-   *
-   * Default: `30_000` (30 s).  Set to `0` to disable.
-   */
-  readonly livenessIntervalMs?: number;
-}
 
 export interface ShardedDaemonProcessHandle<T> {
   /**
@@ -72,9 +51,9 @@ export class ShardedDaemonProcess {
   static init<T>(
     system: ActorSystem,
     cluster: Cluster,
-    options: ShardedDaemonProcessOptions<T> | Partial<ShardedDaemonProcessSettings<T>>,
+    options: ShardedDaemonProcessOptions<T>,
   ): ShardedDaemonProcessHandle<T> {
-    const settings = options as ShardedDaemonProcessSettings<T>;
+    const settings = options as ShardedDaemonProcessOptionsType<T>;
     const sharding = ClusterSharding.get(system, cluster);
 
     const startOptions = StartShardingOptions.create<DaemonEnvelope<T>>()

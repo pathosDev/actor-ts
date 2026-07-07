@@ -1,13 +1,11 @@
 // Cluster entry points.
 export { Cluster, inMemoryTransport } from './Cluster.js';
-export { ClusterOptions } from './ClusterOptions.js';
-export type { ClusterSettings } from './Cluster.js';
+export { ClusterOptions, ClusterOptionsBuilder } from './ClusterOptions.js';
+export type { ClusterOptionsType } from './ClusterOptions.js';
 export { bootstrapCluster } from './ClusterBootstrap.js';
-export { ClusterBootstrapOptions } from './ClusterBootstrapOptions.js';
-export type {
-  ClusterBootstrapSettings,
-  BootstrappedCluster,
-} from './ClusterBootstrap.js';
+export { ClusterBootstrapOptions, ClusterBootstrapOptionsBuilder } from './ClusterBootstrapOptions.js';
+export type { ClusterBootstrapOptionsType } from './ClusterBootstrapOptions.js';
+export type { BootstrappedCluster } from './ClusterBootstrap.js';
 
 export { NodeAddress } from './NodeAddress.js';
 export type { NodeAddressData } from './NodeAddress.js';
@@ -42,33 +40,37 @@ export {
   FailureDetector,
   defaultFailureDetectorSettings,
 } from './FailureDetector.js';
-export { FailureDetectorOptions } from './FailureDetectorOptions.js';
-export type { FailureDetectorSettings, FailureDecision } from './FailureDetector.js';
+export { FailureDetectorOptions, FailureDetectorOptionsBuilder } from './FailureDetectorOptions.js';
+export type { FailureDetectorOptionsType } from './FailureDetectorOptions.js';
+export type { FailureDecision } from './FailureDetector.js';
 export {
   PhiAccrualFailureDetector,
   defaultPhiAccrualSettings,
 } from './PhiAccrualFailureDetector.js';
-export { PhiAccrualOptions } from './PhiAccrualOptions.js';
-export type { PhiAccrualSettings } from './PhiAccrualFailureDetector.js';
+export { PhiAccrualOptions, PhiAccrualOptionsBuilder } from './PhiAccrualOptions.js';
+export type { PhiAccrualOptionsType } from './PhiAccrualOptions.js';
 
 // Split-Brain Resolver strategies.
 export {
   KeepMajority,
   KeepOldest,
   KeepOldestOptions,
+  KeepOldestOptionsBuilder,
   StaticQuorum,
   StaticQuorumOptions,
+  StaticQuorumOptionsBuilder,
   KeepReferee,
   KeepRefereeOptions,
+  KeepRefereeOptionsBuilder,
 } from './downing/index.js';
 export type {
   DowningProvider,
   DowningDecision,
   ClusterPartitionView,
   KeepMajoritySettings,
-  KeepOldestSettings,
-  StaticQuorumSettings,
-  KeepRefereeSettings,
+  KeepOldestOptionsType,
+  StaticQuorumOptionsType,
+  KeepRefereeOptionsType,
 } from './downing/index.js';
 
 // Cluster Singleton.
@@ -78,13 +80,15 @@ export {
   ClusterSingletonManager,
   ClusterSingletonProxy,
   ClusterSingletonManagerOptions,
+  ClusterSingletonManagerOptionsBuilder,
   StartSingletonOptions,
+  StartSingletonOptionsBuilder,
   singletonManagerPath,
 } from './singleton/index.js';
 export type {
-  StartSingletonSettings,
+  StartSingletonOptionsType,
   SingletonHandle,
-  ClusterSingletonManagerSettings,
+  ClusterSingletonManagerOptionsType,
   SingletonDeliver,
 } from './singleton/index.js';
 
@@ -94,6 +98,7 @@ export {
   DistributedPubSubId,
   DistributedPubSubMediator,
   DistributedPubSubOptions,
+  DistributedPubSubOptionsBuilder,
   mediatorPath,
   CurrentTopics,
   GetTopics,
@@ -104,24 +109,22 @@ export {
   UnsubscribeAck,
   UnsubscribeAll,
 } from './pubsub/index.js';
-export type { DistributedPubSubSettings } from './pubsub/index.js';
+export type { DistributedPubSubOptionsType } from './pubsub/index.js';
 
 // Sharding.
 export { ClusterSharding } from './sharding/ClusterSharding.js';
-export { StartShardingOptions } from './sharding/StartShardingOptions.js';
-export type { StartSettings } from './sharding/ClusterSharding.js';
+export { StartShardingOptions, StartShardingOptionsBuilder } from './sharding/StartShardingOptions.js';
+export type { StartShardingOptionsType } from './sharding/StartShardingOptions.js';
 export { ShardedDaemonProcess } from './sharding/ShardedDaemonProcess.js';
-export { ShardedDaemonProcessOptions } from './sharding/ShardedDaemonProcessOptions.js';
-export type {
-  ShardedDaemonProcessSettings,
-  ShardedDaemonProcessHandle,
-} from './sharding/ShardedDaemonProcess.js';
+export { ShardedDaemonProcessOptions, ShardedDaemonProcessOptionsBuilder } from './sharding/ShardedDaemonProcessOptions.js';
+export type { ShardedDaemonProcessOptionsType } from './sharding/ShardedDaemonProcessOptions.js';
+export type { ShardedDaemonProcessHandle } from './sharding/ShardedDaemonProcess.js';
 export { ShardRegion } from './sharding/ShardRegion.js';
-export { ShardingOptions } from './sharding/ShardingOptions.js';
-export type { ShardingSettings } from './sharding/ShardRegion.js';
+export { ShardingOptions, ShardingOptionsBuilder } from './sharding/ShardingOptions.js';
+export type { ShardingOptionsType } from './sharding/ShardingOptions.js';
 export { ShardCoordinator } from './sharding/ShardCoordinator.js';
-export { ShardCoordinatorOptions } from './sharding/ShardCoordinatorOptions.js';
-export type { ShardCoordinatorSettings } from './sharding/ShardCoordinator.js';
+export { ShardCoordinatorOptions, ShardCoordinatorOptionsBuilder } from './sharding/ShardCoordinatorOptions.js';
+export type { ShardCoordinatorOptionsType } from './sharding/ShardCoordinatorOptions.js';
 export { Passivate } from './sharding/Passivate.js';
 export {
   JournalRememberEntitiesStore,
@@ -134,10 +137,10 @@ export {
   CassandraRememberEntitiesStore,
   rememberEntitiesDdl,
 } from './sharding/CassandraRememberEntitiesStore.js';
-export { CassandraRememberEntitiesStoreOptions } from './sharding/CassandraRememberEntitiesStoreOptions.js';
+export { CassandraRememberEntitiesStoreOptions, CassandraRememberEntitiesStoreOptionsBuilder } from './sharding/CassandraRememberEntitiesStoreOptions.js';
 export type {
-  CassandraRememberEntitiesStoreSettings,
-} from './sharding/CassandraRememberEntitiesStore.js';
+  CassandraRememberEntitiesStoreOptionsType,
+} from './sharding/CassandraRememberEntitiesStoreOptions.js';
 export {
   HashAllocationStrategy,
   LeastShardAllocationStrategy,
@@ -151,23 +154,23 @@ export {
 export type { ShardAllocator } from './sharding/ShardAllocator.js';
 
 // Cluster-aware routing.
-export { ClusterRouter, pickRendezvous, ClusterRouterOptions } from './router/index.js';
+export { ClusterRouter, pickRendezvous, ClusterRouterOptions, ClusterRouterOptionsBuilder } from './router/index.js';
 export type {
-  ClusterRouterSettings,
+  ClusterRouterOptionsType,
   ClusterRouterType,
 } from './router/index.js';
 
 // Outside-in client (#86).
 export { ClusterClient } from './ClusterClient.js';
-export { ClusterClientOptions } from './ClusterClientOptions.js';
-export type { ClusterClientSettings } from './ClusterClient.js';
+export { ClusterClientOptions, ClusterClientOptionsBuilder } from './ClusterClientOptions.js';
+export type { ClusterClientOptionsType } from './ClusterClientOptions.js';
 export {
   ClusterClientReceptionist,
   ClusterClientReceptionistId,
 } from './ClusterClientReceptionist.js';
-export { ClusterClientReceptionistOptions } from './ClusterClientReceptionistOptions.js';
+export { ClusterClientReceptionistOptions, ClusterClientReceptionistOptionsBuilder } from './ClusterClientReceptionistOptions.js';
+export type { ClusterClientReceptionistOptionsType } from './ClusterClientReceptionistOptions.js';
 export type {
-  ClusterClientReceptionistSettings,
   ClusterClientEnvelopeMsg,
   ClusterClientReplyMsg,
 } from './ClusterClientReceptionist.js';

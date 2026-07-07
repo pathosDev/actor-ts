@@ -57,18 +57,3 @@ export interface Lease {
   /** Register a handler fired when ownership is lost unexpectedly. */
   onLost(handler: (reason: string) => void): () => void;
 }
-
-export interface LeaseSettings {
-  /** Lease name — unique identifier within the namespace. */
-  readonly name: string;
-  /** Identifier of the holder (pod name / host name / uuid). */
-  readonly owner: string;
-  /** Time-to-live in ms — the backend auto-expires if we fail to renew. */
-  readonly ttlMs: number;
-  /** How often to renew (< ttlMs — typically ttl/3). */
-  readonly renewalIntervalMs?: number;
-  /** Max attempts for a single `acquire()` before returning false. */
-  readonly acquireRetries?: number;
-  /** Delay between acquire retries. */
-  readonly acquireRetryDelayMs?: number;
-}

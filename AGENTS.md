@@ -125,30 +125,39 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
 
 ### Options & settings
 
-- **Every configurable thing has a fluent options builder** —
-  `XOptions.create().withField(…)`, extending `OptionsBuilder<T>` (broker
-  actors via `BrokerOptions<T>`). Naming lockstep with **no divergence**:
-  builder method `withX` ⇔ settings field `x` ⇔ HOCON leaf `x` (e.g.
-  `withQos` ⇔ `qos`, never `defaultQos`). Multi-arg sugar is fine when the
-  field still matches the stem (`withCredentials(u, p)` → field
+- **Every configurable thing has one `XOptions.ts` file with three exports**,
+  all in the "Options" family — there is no separate "Settings" concept:
+  - `XOptionsType` — the plain settings-object shape (a bare `{ … }` you can
+    pass directly).
+  - `XOptionsBuilder` — the fluent builder, `extends OptionsBuilder<XOptionsType>`
+    (broker actors via `BrokerOptionsBuilder<XOptionsType>`).
+  - `XOptions` — **both** `type XOptions = XOptionsBuilder | XOptionsType` (the
+    accepted-input union used in every consumer signature) **and** `const XOptions
+    = XOptionsBuilder` (value alias, so `XOptions.create()` / `new XOptions()`
+    resolve to the builder).
+
+  Naming lockstep with **no divergence**: builder method `withX` ⇔ field `x` ⇔
+  HOCON leaf `x` (e.g. `withQos` ⇔ `qos`, never `defaultQos`). Multi-arg sugar
+  is fine when the field still matches the stem (`withCredentials(u, p)` → field
   `credentials`; `withCircuitBreaker(f, r)` → field `circuitBreaker`).
-- **Builder classes live in their own `XOptions.ts` file**, next to (never
-  inside) the functional class they configure. The settings interface
-  `XSettings` stays with the functional class (it's the config contract
-  read by `readSettingsFromConfig`); `XOptions.ts` imports it type-only.
-- **A builder *is* its settings.** `OptionsBuilder.set` writes each field as
-  an own enumerable property, so a builder instance is structurally a bag of
-  the fields you set (the `withX` / `build` methods stay on the prototype and
-  never surface when it's spread or serialized). Consumers therefore accept
-  `XOptions | Partial<XSettings>` and read the argument **directly** — there
-  is no `resolve` helper to call: `const s = options as XSettings` (or, to
-  snapshot / merge, `{ ...defaults, ...(options as Partial<XSettings>) }`).
-  A plain settings object and a builder are fully interchangeable (both use
-  the settings field names). Keep the **union** in the signature — a
-  methods-only builder is not assignable to a bare `Partial<XSettings>` (TS
-  weak-type check), and the union is what advertises the builder to callers.
-  Broker actors need nothing: `BrokerActor`'s constructor takes the union and
-  snapshots it, so subclasses just `super(options)`.
+- **All option-relevant types are co-located in `XOptions.ts`** — including the
+  `XOptionsType` interface (the config contract read by `readSettingsFromConfig`).
+  The functional file (actor/store/factory) imports `XOptions` + `XOptionsType`
+  **type-only** from `./XOptions.js`; both directions are `import type`, so there
+  is no runtime cycle.
+- **A builder *is* its settings.** `OptionsBuilder.set` writes each field as an
+  own enumerable property, so a builder instance is structurally a bag of the
+  fields you set (the `withX` / `build` methods stay on the prototype and never
+  surface when it's spread or serialized). Consumers take the `XOptions` union
+  and read the argument **directly** — there is no `resolve` helper: `const s =
+  options as XOptionsType` (or, to snapshot / merge, `{ ...defaults, ...(options
+  as Partial<XOptionsType>) }`). A plain object and a builder are fully
+  interchangeable. Keep the **union** (`XOptions`) in the signature — a
+  methods-only builder is not assignable to a bare `XOptionsType` (TS weak-type
+  check). Broker actors need nothing: `BrokerActor`'s constructor takes the union
+  and snapshots it, so subclasses just `super(options)`. A subclass/consumer that
+  *chains* builder methods on its parameter must type that parameter
+  `XOptionsBuilder` (the union has no methods).
 - **Builder-first is the documented/primary style** — docs and examples
   show the builder; the plain object is the shorthand alternative (mention
   it once per page, don't lead with it).

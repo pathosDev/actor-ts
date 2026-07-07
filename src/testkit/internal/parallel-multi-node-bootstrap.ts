@@ -25,7 +25,7 @@ import { ActorSystemOptions } from '../../ActorSystemOptions.js';
 import { Cluster } from '../../cluster/Cluster.js';
 import { ClusterOptions } from '../../cluster/ClusterOptions.js';
 import type { Member } from '../../cluster/Member.js';
-import type { FailureDetectorSettings } from '../../cluster/FailureDetector.js';
+import type { FailureDetectorOptionsType } from '../../cluster/FailureDetectorOptions.js';
 import { LogLevel, NoopLogger } from '../../Logger.js';
 import { WorkerNode } from '../../worker/WorkerNode.js';
 
@@ -60,7 +60,7 @@ export interface ScenarioModule {
 interface InitData {
   readonly role: string;
   readonly seeds: ReadonlyArray<string>;
-  readonly failureDetector?: Partial<FailureDetectorSettings>;
+  readonly failureDetector?: Partial<FailureDetectorOptionsType>;
   readonly gossipIntervalMs?: number;
   readonly logLevel?: LogLevel;
   readonly scenarioModule?: string;       // serialised URL string

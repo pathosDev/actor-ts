@@ -1,10 +1,8 @@
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
-import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
-import type { BrokerCommonSettings } from './BrokerSettings.js';
-import type { TcpSocketOptions } from './TcpSocketOptions.js';
+import type { TcpSocketOptions, TcpSocketOptionsType } from './TcpSocketOptions.js';
 
 /**
  * Frame extraction strategy on the inbound stream.
@@ -21,21 +19,6 @@ export type TcpFraming =
   | { readonly kind: 'lines'; readonly delimiter?: string; readonly maxLineLen?: number }
   | { readonly kind: 'length-prefixed'; readonly maxFrameLen?: number };
 
-export interface TcpSocketActorSettings extends BrokerCommonSettings {
-  /** Remote host. */
-  readonly host?: string;
-  /** Remote port. */
-  readonly port?: number;
-  /** Frame extraction.  Default: `{ kind: 'bytes' }`. */
-  readonly framing?: TcpFraming;
-  /**
-   * Subscriber that receives every inbound frame.  Required — the actor
-   * has no useful behaviour without one.  Receives `Uint8Array` for
-   * `bytes` / `length-prefixed`, `string` for `lines`.
-   */
-  readonly target?: ActorRef<unknown>;
-}
-
 /** Outbound payload — bytes or string (auto-encoded as UTF-8). */
 export type TcpOutbound = Uint8Array | string;
 
@@ -51,19 +34,19 @@ export type TcpOutbound = Uint8Array | string;
 export type TcpSocketCmd =
   | { readonly kind: 'send'; readonly payload: TcpOutbound };
 
-export class TcpSocketActor extends BrokerActor<TcpSocketActorSettings, TcpSocketCmd, TcpOutbound> {
+export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketCmd, TcpOutbound> {
   private socket: NetSocket | null = null;
   /** Buffer for partial frames not yet matched by the framing strategy. */
   private inboundBuffer: Uint8Array = new Uint8Array(0);
 
-  constructor(options: TcpSocketOptions | Partial<TcpSocketActorSettings> = {}) { super(options); }
+  constructor(options: TcpSocketOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.tcp; }
-  protected builtInDefaults(): Partial<TcpSocketActorSettings> {
+  protected builtInDefaults(): Partial<TcpSocketOptionsType> {
     return { framing: { kind: 'bytes' } };
   }
-  protected readSettingsFromConfig(c: Config): Partial<TcpSocketActorSettings> {
-    const out: { -readonly [K in keyof TcpSocketActorSettings]?: TcpSocketActorSettings[K] } = {};
+  protected readSettingsFromConfig(c: Config): Partial<TcpSocketOptionsType> {
+    const out: { -readonly [K in keyof TcpSocketOptionsType]?: TcpSocketOptionsType[K] } = {};
     if (c.hasPath('host')) out.host = c.getString('host');
     if (c.hasPath('port')) out.port = c.getInt('port');
     if (c.hasPath('framing')) {
@@ -84,7 +67,7 @@ export class TcpSocketActor extends BrokerActor<TcpSocketActorSettings, TcpSocke
     }
     return out;
   }
-  protected requiredSettings(): ReadonlyArray<keyof TcpSocketActorSettings> {
+  protected requiredSettings(): ReadonlyArray<keyof TcpSocketOptionsType> {
     return ['host', 'port', 'target'];
   }
   protected endpointLabel(): string { return `tcp://${this.settings.host}:${this.settings.port}`; }

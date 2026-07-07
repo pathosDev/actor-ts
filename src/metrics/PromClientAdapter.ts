@@ -25,7 +25,7 @@
  * in works at runtime and TypeScript narrows down to our shape.
  */
 
-import type { PromClientAdapterOptions } from './PromClientAdapterOptions.js';
+import type { PromClientAdapterOptions, PromClientAdapterOptionsType } from './PromClientAdapterOptions.js';
 import type {
   Counter, CounterOptions, Gauge, GaugeOptions, Histogram, HistogramOptions,
   Labels, LabelValue, MetricSample, MetricsRegistry,
@@ -88,18 +88,6 @@ interface PromConstructorOpts {
   buckets?: number[];
 }
 
-export interface PromClientAdapterSettings {
-  /** The prom-client API namespace (`import client from 'prom-client'`). */
-  readonly client: PromClientLike;
-  /** The prom-client `Registry` to publish into.  Typically `client.register`. */
-  readonly registry: PromClientRegistryLike;
-  /**
-   * Optional name prefix, e.g. `'actor_ts_'`.  Applied to every metric
-   * name registered through the adapter.  Default: empty.
-   */
-  readonly namePrefix?: string;
-}
-
 /* --------------------------- adapter --------------------------- */
 
 interface CounterEntry {
@@ -136,9 +124,9 @@ type Entry = CounterEntry | GaugeEntry | HistogramEntry;
  * directly and only call `collect()` from tests.
  */
 export function promClientRegistry(
-  options: PromClientAdapterOptions | Partial<PromClientAdapterSettings>,
+  options: PromClientAdapterOptions,
 ): MetricsRegistry {
-  const { client, registry, namePrefix = '' } = options as PromClientAdapterSettings;
+  const { client, registry, namePrefix = '' } = options as PromClientAdapterOptionsType;
   const families = new Map<string, Entry>();
 
   function fullName(name: string): string {

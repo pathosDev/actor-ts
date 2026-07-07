@@ -26,7 +26,7 @@
  * means we never `import '@opentelemetry/api'` ourselves.
  */
 
-import type { OtelAdapterOptions } from './OtelAdapterOptions.js';
+import type { OtelAdapterOptions, OtelAdapterOptionsType } from './OtelAdapterOptions.js';
 import type {
   AttributeValue, Span, SpanContext, SpanKind, SpanOptions, TraceCarrier, Tracer,
 } from './Tracer.js';
@@ -106,21 +106,10 @@ export interface OtelApiLike {
   readonly ROOT_CONTEXT?: OtelContextLike;
 }
 
-export interface OtelAdapterSettings {
-  /** The `@opentelemetry/api` namespace (`import * as otel from '@opentelemetry/api'`). */
-  readonly api: OtelApiLike;
-  /** Optional pre-built tracer; defaults to `api.trace.getTracer(tracerName, tracerVersion)`. */
-  readonly tracer?: OtelTracerLike;
-  /** Tracer name passed to `getTracer`.  Default: `'actor-ts'`. */
-  readonly tracerName?: string;
-  /** Tracer version passed to `getTracer`. */
-  readonly tracerVersion?: string;
-}
-
 /* ------------------------------- adapter ------------------------------- */
 
-export function otelTracer(options: OtelAdapterOptions | Partial<OtelAdapterSettings>): Tracer {
-  const opts = options as OtelAdapterSettings;
+export function otelTracer(options: OtelAdapterOptions): Tracer {
+  const opts = options as OtelAdapterOptionsType;
   const { api } = opts;
   const otelTracerInstance = opts.tracer ?? api.trace.getTracer(opts.tracerName ?? 'actor-ts', opts.tracerVersion);
 

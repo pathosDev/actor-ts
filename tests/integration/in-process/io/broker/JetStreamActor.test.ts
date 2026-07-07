@@ -22,7 +22,7 @@ import {
   type JetStreamSubscriptionLike,
   type NatsConnectionLike,
 } from '../../../../../src/io/broker/JetStreamActor.js';
-import { JetStreamOptions } from '../../../../../src/io/broker/JetStreamOptions.js';
+import { JetStreamOptions, JetStreamOptionsBuilder } from '../../../../../src/io/broker/JetStreamOptions.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -203,7 +203,7 @@ class CapturingTarget extends Actor<JetStreamMessage> {
 }
 
 async function bootActor(
-  sys: ActorSystem, options: JetStreamOptions,
+  sys: ActorSystem, options: JetStreamOptionsBuilder,
 ): Promise<{ actor: ActorRef<JetStreamCmd>; mock: MockJetStreamActor; target: CapturingTarget }> {
   const target = new CapturingTarget();
   const targetRef = sys.spawn(Props.create(() => target), 'target');

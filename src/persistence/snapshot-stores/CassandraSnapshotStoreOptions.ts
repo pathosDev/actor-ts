@@ -1,9 +1,19 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
-import type { CassandraClientLike } from '../journals/CassandraClient.js';
-import type { CassandraSnapshotStoreSettings } from './CassandraSnapshotStore.js';
+import type { CassandraClientLike, CassandraConnection } from '../journals/CassandraClient.js';
+
+export interface CassandraSnapshotStoreOptionsType extends CassandraConnection {
+  /** Table name; default `snapshots`. */
+  readonly snapshotsTable?: string;
+  /** Maximum number of snapshots kept per pid.  `<= 0` = keep all.  Default: 3. */
+  readonly keepN?: number;
+  /** Auto-create the snapshots table on first connect. */
+  readonly autoCreateTables?: boolean;
+  /** Pre-built client — bypass internal construction (share with journal). */
+  readonly client?: CassandraClientLike;
+}
 
 /**
- * Fluent builder for {@link CassandraSnapshotStoreSettings}:
+ * Fluent builder for {@link CassandraSnapshotStoreOptionsType}:
  *
  *     new CassandraSnapshotStore(
  *       CassandraSnapshotStoreOptions.create()
@@ -15,10 +25,10 @@ import type { CassandraSnapshotStoreSettings } from './CassandraSnapshotStore.js
  * Carries `withX` methods for the shared {@link CassandraConnection}
  * fields too — the connection mixin is not built on its own.
  */
-export class CassandraSnapshotStoreOptions extends OptionsBuilder<CassandraSnapshotStoreSettings> {
-  /** Start a fresh builder.  Equivalent to `new CassandraSnapshotStoreOptions()`. */
-  static create(): CassandraSnapshotStoreOptions {
-    return new CassandraSnapshotStoreOptions();
+export class CassandraSnapshotStoreOptionsBuilder extends OptionsBuilder<CassandraSnapshotStoreOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new CassandraSnapshotStoreOptionsBuilder()`. */
+  static create(): CassandraSnapshotStoreOptionsBuilder {
+    return new CassandraSnapshotStoreOptionsBuilder();
   }
 
   /* --- shared CassandraConnection fields --- */
@@ -54,7 +64,7 @@ export class CassandraSnapshotStoreOptions extends OptionsBuilder<CassandraSnaps
   }
 
   /** Replication settings used by autoCreateKeyspace.  Ignored otherwise. */
-  withReplication(replication: NonNullable<CassandraSnapshotStoreSettings['replication']>): this {
+  withReplication(replication: NonNullable<CassandraSnapshotStoreOptionsType['replication']>): this {
     return this.set('replication', replication);
   }
 
@@ -85,3 +95,11 @@ export class CassandraSnapshotStoreOptions extends OptionsBuilder<CassandraSnaps
     return this.set('client', client);
   }
 }
+
+/**
+ * Accepted input for the Cassandra snapshot-store constructor: the fluent
+ * {@link CassandraSnapshotStoreOptionsBuilder} OR a plain {@link CassandraSnapshotStoreOptionsType} object.
+ */
+export type CassandraSnapshotStoreOptions = CassandraSnapshotStoreOptionsBuilder | Partial<CassandraSnapshotStoreOptionsType>;
+/** Value alias so `CassandraSnapshotStoreOptions.create()` / `new CassandraSnapshotStoreOptions()` resolve to the builder. */
+export const CassandraSnapshotStoreOptions = CassandraSnapshotStoreOptionsBuilder;

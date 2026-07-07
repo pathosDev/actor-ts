@@ -1,7 +1,7 @@
 import { ActorSystem } from '../ActorSystem.js';
 import { ActorSystemOptions } from '../ActorSystemOptions.js';
-import { Cluster, type ClusterSettings } from '../cluster/Cluster.js';
-import { ClusterOptions } from '../cluster/ClusterOptions.js';
+import { Cluster } from '../cluster/Cluster.js';
+import { ClusterOptions, type ClusterOptionsType } from '../cluster/ClusterOptions.js';
 import type { DowningProvider } from '../cluster/downing/index.js';
 import { type Member } from '../cluster/Member.js';
 import { NodeAddress } from '../cluster/NodeAddress.js';
@@ -64,7 +64,7 @@ export interface MultiNodeSpecSettings {
    * detector tightened so dead nodes are noticed within seconds rather
    * than the production default.  See `Cluster.ts` for the field set.
    */
-  readonly failureDetector?: ClusterSettings['failureDetector'];
+  readonly failureDetector?: ClusterOptionsType['failureDetector'];
   /** Gossip interval, default 100 ms (vs production 1 s). */
   readonly gossipIntervalMs?: number;
   /** How long synchronous `await*` helpers wait before throwing.  Default 10 s. */
@@ -74,7 +74,7 @@ export interface MultiNodeSpecSettings {
   /**
    * Per-role split-brain resolver factory.  Called once per role at
    * `start()` time; the returned provider is wired into that role's
-   * cluster via `ClusterSettings.downing`.  Each role typically gets
+   * cluster via `ClusterOptionsType.downing`.  Each role typically gets
    * its OWN provider instance (some strategies are stateful — e.g.
    * `LeaseMajority` holds a per-replica acquire result).  Pass
    * `undefined` for a role that should run without downing.

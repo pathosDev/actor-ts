@@ -28,6 +28,7 @@ import {
   ActorSystemOptions,
   MqttActor,
   MqttOptions,
+  MqttOptionsBuilder,
   Props,
   type MqttMessage,
 } from '../../src/index.js';
@@ -40,7 +41,7 @@ type Tick = { kind: 'tick'; i: number };
 class TemperatureHub extends MqttActor<Reading, Tick> {
   private readings: Record<string, number[]> = {};
 
-  constructor(opts: MqttOptions) {
+  constructor(opts: MqttOptionsBuilder) {
     // Builder-supplied clientId + QoS layer on top of the HOCON brokerUrl.
     super(opts.withClientId('temperature-demo').withQos(1));
     this.subscribe('sensors/+/temp');

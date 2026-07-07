@@ -1,11 +1,22 @@
 /**
- * Fluent builder for a `websocket()` route's options:
+ * All `websocket()`-route option-relevant types live here:
  *
- *     websocket('/ws', ingress, WebSocketRouteOptions.create().withCodec(rawCodec()))
+ *   - {@link WebSocketRouteOptionsType} — the plain settings-object shape
+ *     (what you may also pass as a bare `{ … }` object).
+ *   - {@link WebSocketRouteOptionsBuilder} — the fluent builder
+ *     (`WebSocketRouteOptions.create()…`).
+ *   - {@link WebSocketRouteOptions} — the accepted-input **union**
+ *     (`WebSocketRouteOptionsBuilder | WebSocketRouteOptionsType`), plus a
+ *     value alias to the builder so `WebSocketRouteOptions.create()` /
+ *     `new WebSocketRouteOptions()` keep working.
  *
- * `build()` yields a `Partial<WebSocketRouteSettings>` that feeds the same
- * per-route resolution (route options > HOCON `actor-ts.http.websocket` >
- * defaults); unset fields fall through to HOCON.
+ *     const wsOptions = WebSocketRouteOptions.create().withCodec(rawCodec());
+ *     websocket('/ws', ingress, wsOptions);
+ *
+ * The builder records only the fields you set (as own enumerable props), so it
+ * reads/spreads exactly like a plain object; it feeds the same per-route
+ * resolution (route options > HOCON `actor-ts.http.websocket` > defaults) —
+ * unset fields fall through to HOCON.
  */
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { WsCodec } from './WsCodec.js';
@@ -13,14 +24,21 @@ import type {
   BackpressurePolicy,
   InvalidMessagePolicy,
   OversizeFramePolicy,
+  WebSocketPolicyOptions,
 } from './WsPolicy.js';
-import type { WebSocketRouteSettings } from './WebSocketRoute.js';
 
-export class WebSocketRouteOptions<TOut = unknown, TIn = unknown>
-  extends OptionsBuilder<WebSocketRouteSettings<TOut, TIn>> {
-  /** Start a fresh builder.  Equivalent to `new WebSocketRouteOptions()`. */
-  static create<TOut = unknown, TIn = unknown>(): WebSocketRouteOptions<TOut, TIn> {
-    return new WebSocketRouteOptions<TOut, TIn>();
+/** The settings a `websocket()` route may carry — codec + per-connection policy. */
+export interface WebSocketRouteOptionsType<TOut, TIn> extends WebSocketPolicyOptions {
+  /** Wire codec.  Default: `jsonCodec<TOut, TIn>()`. */
+  readonly codec?: WsCodec<TOut, TIn>;
+}
+
+/** Fluent builder for {@link WebSocketRouteOptionsType}. */
+export class WebSocketRouteOptionsBuilder<TOut = unknown, TIn = unknown>
+  extends OptionsBuilder<WebSocketRouteOptionsType<TOut, TIn>> {
+  /** Start a fresh builder.  Equivalent to `new WebSocketRouteOptionsBuilder()`. */
+  static create<TOut = unknown, TIn = unknown>(): WebSocketRouteOptionsBuilder<TOut, TIn> {
+    return new WebSocketRouteOptionsBuilder<TOut, TIn>();
   }
 
   /** Wire codec.  Default: `jsonCodec<TOut, TIn>()`. */
@@ -53,3 +71,14 @@ export class WebSocketRouteOptions<TOut = unknown, TIn = unknown>
     return this.set('onBackpressure', policy);
   }
 }
+
+/**
+ * Accepted input for a `websocket()` route's options: the fluent
+ * {@link WebSocketRouteOptionsBuilder} OR a plain
+ * {@link WebSocketRouteOptionsType} object.
+ */
+export type WebSocketRouteOptions<TOut = unknown, TIn = unknown> =
+  | WebSocketRouteOptionsBuilder<TOut, TIn>
+  | Partial<WebSocketRouteOptionsType<TOut, TIn>>;
+/** Value alias so `WebSocketRouteOptions.create()` / `new WebSocketRouteOptions()` resolve to the builder. */
+export const WebSocketRouteOptions = WebSocketRouteOptionsBuilder;

@@ -4,8 +4,7 @@ import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
-import type { BrokerCommonSettings } from './BrokerSettings.js';
-import type { NatsOptions } from './NatsOptions.js';
+import type { NatsOptions, NatsOptionsType } from './NatsOptions.js';
 
 /** Inbound NATS message handed to subscribers. */
 export interface NatsMessage {
@@ -22,19 +21,6 @@ export interface NatsPublish {
   readonly replyTo?: string;
 }
 
-export interface NatsActorSettings extends BrokerCommonSettings {
-  /** NATS server URLs (`'nats://localhost:4222'`). */
-  readonly servers?: ReadonlyArray<string> | string;
-  /** Optional credentials (token / user-password). */
-  readonly token?: string;
-  readonly user?: string;
-  readonly password?: string;
-  /** Subscriptions wired up at connect time.  Subjects support `*` and `>` wildcards (NATS-side). */
-  readonly subscriptions?: ReadonlyArray<{ readonly subject: string; readonly target: ActorRef<NatsMessage> }>;
-  /** Optional client name reported to the server. */
-  readonly name?: string;
-}
-
 export type NatsCmd =
   | { readonly kind: 'publish'; readonly publish: NatsPublish }
   | { readonly kind: 'subscribe'; readonly subject: string; readonly target: ActorRef<NatsMessage> }
@@ -46,16 +32,16 @@ export type NatsCmd =
  * (durable streams + consumers) is out-of-scope for v1 — would warrant
  * its own actor with very different semantics.
  */
-export class NatsActor extends BrokerActor<NatsActorSettings, NatsCmd, NatsPublish> {
+export class NatsActor extends BrokerActor<NatsOptionsType, NatsCmd, NatsPublish> {
   private nc: NatsConnectionLike | null = null;
   private readonly subs = new Map<string, NatsSubscriptionLike>();
 
-  constructor(options: NatsOptions | Partial<NatsActorSettings> = {}) { super(options); }
+  constructor(options: NatsOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.nats; }
-  protected builtInDefaults(): Partial<NatsActorSettings> { return {}; }
-  protected readSettingsFromConfig(c: Config): Partial<NatsActorSettings> {
-    const out: { -readonly [K in keyof NatsActorSettings]?: NatsActorSettings[K] } = {};
+  protected builtInDefaults(): Partial<NatsOptionsType> { return {}; }
+  protected readSettingsFromConfig(c: Config): Partial<NatsOptionsType> {
+    const out: { -readonly [K in keyof NatsOptionsType]?: NatsOptionsType[K] } = {};
     if (c.hasPath('servers')) out.servers = c.getStringList('servers');
     if (c.hasPath('token')) out.token = c.getString('token');
     if (c.hasPath('user')) out.user = c.getString('user');
@@ -63,7 +49,7 @@ export class NatsActor extends BrokerActor<NatsActorSettings, NatsCmd, NatsPubli
     if (c.hasPath('name')) out.name = c.getString('name');
     return out;
   }
-  protected requiredSettings(): ReadonlyArray<keyof NatsActorSettings> { return ['servers']; }
+  protected requiredSettings(): ReadonlyArray<keyof NatsOptionsType> { return ['servers']; }
   protected endpointLabel(): string {
     const s = this.settings.servers;
     if (Array.isArray(s)) return s.join(',');

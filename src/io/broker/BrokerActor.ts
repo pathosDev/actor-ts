@@ -17,7 +17,7 @@ import {
   DEFAULT_RECONNECT,
   mergeSettings,
   readCommonSettings,
-  type BrokerCommonSettings,
+  type BrokerCommonOptionsType,
 } from './BrokerSettings.js';
 
 /**
@@ -60,7 +60,7 @@ export interface OutboundEnvelope<P = unknown> {
  * and `requiredSettings()` so the base class can resolve and validate
  * the effective settings before `connectImpl()` runs.
  */
-export abstract class BrokerActor<S extends BrokerCommonSettings, Cmd = unknown, P = unknown>
+export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unknown, P = unknown>
   extends Actor<Cmd> {
   /** Constructor settings — partial; merged with HOCON + defaults in preStart. */
   private readonly _ctorSettings: Partial<S>;

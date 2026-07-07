@@ -13,16 +13,8 @@ import {
   isDuplicateKeyError,
   rowsOf,
   type MariaDbPoolLike,
-  type MariaDbConnection,
 } from '../journals/MariaDbClient.js';
-import type { MariaDbDurableStateStoreOptions } from './MariaDbDurableStateStoreOptions.js';
-
-export interface MariaDbDurableStateStoreSettings extends MariaDbConnection {
-  /** Table name.  Default: `durable_state`. */
-  readonly table?: string;
-  /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
-  readonly autoCreateTables?: boolean;
-}
+import type { MariaDbDurableStateStoreOptions, MariaDbDurableStateStoreOptionsType } from './MariaDbDurableStateStoreOptions.js';
 
 interface StateRow {
   revision: string | number | bigint;
@@ -42,7 +34,7 @@ interface StateRow {
  *     (revision always changes, so a matched row always reports 1.)
  */
 export class MariaDbDurableStateStore implements DurableStateStore {
-  private readonly settings: MariaDbDurableStateStoreSettings;
+  private readonly settings: MariaDbDurableStateStoreOptionsType;
   private readonly table: string;
   private readonly autoCreate: boolean;
 
@@ -50,8 +42,8 @@ export class MariaDbDurableStateStore implements DurableStateStore {
   private initPromise: Promise<void> | null = null;
   private closed = false;
 
-  constructor(options: MariaDbDurableStateStoreOptions | Partial<MariaDbDurableStateStoreSettings> = {}) {
-    const s = (options as Partial<MariaDbDurableStateStoreSettings>);
+  constructor(options: MariaDbDurableStateStoreOptions = {}) {
+    const s = (options as MariaDbDurableStateStoreOptionsType);
     this.settings = s;
     this.table = assertSafeIdentifier(s.table ?? 'durable_state', 'durable-state table');
     this.autoCreate = s.autoCreateTables ?? true;

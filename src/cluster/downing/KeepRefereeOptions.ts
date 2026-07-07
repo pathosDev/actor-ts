@@ -1,17 +1,27 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
-import type { KeepRefereeSettings } from './KeepReferee.js';
+
+/** Plain settings-object shape accepted by {@link KeepReferee}. */
+export interface KeepRefereeOptionsType {
+  /**
+   * Fixed "referee" address; whichever partition contains it survives.
+   * Must match the address format returned by `NodeAddress.toString()`.
+   */
+  readonly refereeAddress: string;
+  /** Additional quorum a.k.a. down-all-if-referee-reachable-but-too-few. */
+  readonly downAllIfBelowQuorum?: number;
+}
 
 /**
- * Fluent builder for {@link KeepRefereeSettings}:
+ * Fluent builder for {@link KeepRefereeOptionsType}:
  *
  *     new KeepReferee(
  *       KeepRefereeOptions.create().withRefereeAddress('sys@10.0.0.1:2551'),
  *     );
  */
-export class KeepRefereeOptions extends OptionsBuilder<KeepRefereeSettings> {
+export class KeepRefereeOptionsBuilder extends OptionsBuilder<KeepRefereeOptionsType> {
   /** Start a fresh builder. */
-  static create(): KeepRefereeOptions {
-    return new KeepRefereeOptions();
+  static create(): KeepRefereeOptionsBuilder {
+    return new KeepRefereeOptionsBuilder();
   }
 
   /** Fixed referee address; the partition containing it survives. */
@@ -24,3 +34,12 @@ export class KeepRefereeOptions extends OptionsBuilder<KeepRefereeSettings> {
     return this.set('downAllIfBelowQuorum', count);
   }
 }
+
+/**
+ * Accepted input for the {@link KeepReferee} constructor: the fluent
+ * {@link KeepRefereeOptionsBuilder} OR a plain {@link KeepRefereeOptionsType}
+ * object.
+ */
+export type KeepRefereeOptions = KeepRefereeOptionsBuilder | Partial<KeepRefereeOptionsType>;
+/** Value alias so `KeepRefereeOptions.create()` / `new KeepRefereeOptions()` resolve to the builder. */
+export const KeepRefereeOptions = KeepRefereeOptionsBuilder;

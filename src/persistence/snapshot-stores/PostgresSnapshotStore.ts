@@ -6,18 +6,8 @@ import {
   assertSafeIdentifier,
   buildPgPool,
   type PgPoolLike,
-  type PostgresConnection,
 } from '../journals/PostgresClient.js';
-import type { PostgresSnapshotStoreOptions } from './PostgresSnapshotStoreOptions.js';
-
-export interface PostgresSnapshotStoreSettings extends PostgresConnection {
-  /** Snapshots table name.  Default: `snapshots`. */
-  readonly snapshotsTable?: string;
-  /** Keep this many snapshots per persistenceId; older ones pruned on save.  Default: 3.  `<=0` keeps all. */
-  readonly keepN?: number;
-  /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
-  readonly autoCreateTables?: boolean;
-}
+import type { PostgresSnapshotStoreOptions, PostgresSnapshotStoreOptionsType } from './PostgresSnapshotStoreOptions.js';
 
 interface SnapRow {
   persistence_id: string;
@@ -34,7 +24,7 @@ interface SnapRow {
  * like the SQLite and Cassandra stores, payloads are stored as JSON text.
  */
 export class PostgresSnapshotStore implements SnapshotStore {
-  private readonly settings: PostgresSnapshotStoreSettings;
+  private readonly settings: PostgresSnapshotStoreOptionsType;
   private readonly table: string;
   private readonly keepN: number;
   private readonly autoCreate: boolean;
@@ -43,8 +33,8 @@ export class PostgresSnapshotStore implements SnapshotStore {
   private initPromise: Promise<void> | null = null;
   private closed = false;
 
-  constructor(options: PostgresSnapshotStoreOptions | Partial<PostgresSnapshotStoreSettings> = {}) {
-    const s = (options as Partial<PostgresSnapshotStoreSettings>);
+  constructor(options: PostgresSnapshotStoreOptions = {}) {
+    const s = (options as PostgresSnapshotStoreOptionsType);
     this.settings = s;
     this.table = assertSafeIdentifier(s.snapshotsTable ?? 'snapshots', 'snapshots table');
     this.keepN = s.keepN ?? 3;

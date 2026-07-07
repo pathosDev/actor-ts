@@ -1,7 +1,14 @@
 import type { CassandraClientLike, CassandraConnection } from '../../persistence/journals/CassandraClient.js';
 import { createCassandraClient, keyspaceDdl } from '../../persistence/journals/CassandraClient.js';
-import type { CassandraRememberEntitiesStoreOptions } from './CassandraRememberEntitiesStoreOptions.js';
+import type { CassandraRememberEntitiesStoreOptions, CassandraRememberEntitiesStoreOptionsType } from './CassandraRememberEntitiesStoreOptions.js';
 import type { RememberEntitiesStore, RememberEvent } from './RememberEntitiesStore.js';
+
+interface RememberRow {
+  type_name: string;
+  shard_id: string | number;
+  entity_id: string;
+  started_at: string | number;
+}
 
 /**
  * Cassandra-backed `RememberEntitiesStore` for `ClusterSharding` (#84)
@@ -36,37 +43,15 @@ import type { RememberEntitiesStore, RememberEvent } from './RememberEntitiesSto
  * arrives at the same `entitiesPerShard` view the event-replay
  * variant produces.
  */
-export interface CassandraRememberEntitiesStoreSettings extends CassandraConnection {
-  /** Table for the remember-entities state.  Default: `remember_entities`. */
-  readonly table?: string;
-  /** Auto-create the table on first use.  Default: `true`. */
-  readonly autoCreateTables?: boolean;
-  /**
-   * Inject a pre-built CQL client.  When omitted, the store
-   * instantiates its own (via `cassandra-driver`) — but typical
-   * deployments share one client across journal + snapshot store +
-   * remember-entities, so passing the existing one in is the
-   * recommended pattern.
-   */
-  readonly client?: CassandraClientLike;
-}
-
-interface RememberRow {
-  type_name: string;
-  shard_id: string | number;
-  entity_id: string;
-  started_at: string | number;
-}
-
 export class CassandraRememberEntitiesStore implements RememberEntitiesStore {
-  private readonly options: Partial<CassandraRememberEntitiesStoreSettings>;
+  private readonly options: Partial<CassandraRememberEntitiesStoreOptionsType>;
   private client: CassandraClientLike;
   private readonly ownsClient: boolean;
   private started = false;
   private stopped = false;
 
-  constructor(options: CassandraRememberEntitiesStoreOptions | Partial<CassandraRememberEntitiesStoreSettings>) {
-    this.options = (options as Partial<CassandraRememberEntitiesStoreSettings>);
+  constructor(options: CassandraRememberEntitiesStoreOptions) {
+    this.options = (options as Partial<CassandraRememberEntitiesStoreOptionsType>);
     this.client = this.options.client ?? (undefined as unknown as CassandraClientLike);
     this.ownsClient = !this.options.client;
   }

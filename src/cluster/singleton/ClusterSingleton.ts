@@ -1,6 +1,5 @@
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
-import type { Lease } from '../../coordination/Lease.js';
 import { extensionId, type ExtensionId } from '../../Extension.js';
 import { Props } from '../../Props.js';
 import type { Cluster } from '../Cluster.js';
@@ -11,36 +10,8 @@ import {
   type SingletonDeliver,
 } from './ClusterSingletonManager.js';
 import { ClusterSingletonManagerOptions } from './ClusterSingletonManagerOptions.js';
-import type { StartSingletonOptions } from './StartSingletonOptions.js';
+import type { StartSingletonOptions, StartSingletonOptionsType } from './StartSingletonOptions.js';
 import { ClusterSingletonProxy } from './ClusterSingletonProxy.js';
-
-export interface StartSingletonSettings<T> {
-  /** Logical name for this singleton — used in the manager/child actor path. */
-  readonly typeName: string;
-  /** Props used to construct the singleton on the leader. */
-  readonly props: Props<T>;
-  /** If set, only nodes carrying this role tag will host the singleton. */
-  readonly role?: string;
-  /**
-   * Optional split-brain protection.  When provided, the elected
-   * leader's manager calls `lease.acquire()` before spawning the
-   * singleton — so a partition that produces two oldest views still
-   * only ever spawns the singleton on the side that holds the lease.
-   * The manager subscribes to `lease.onLost(reason)` and stops the
-   * child if ownership is revoked mid-flight.
-   *
-   * Without a lease the manager keeps its current sync behaviour:
-   * spawn the moment cluster gossip says we're leader, no external
-   * arbitration.
-   */
-  readonly lease?: Lease;
-  /**
-   * How often to retry `lease.acquire()` after a failed attempt
-   * (another holder owns it, transient backend error, etc.).
-   * Default: `5_000` ms.  Ignored if no lease is provided.
-   */
-  readonly acquireRetryIntervalMs?: number;
-}
 
 export interface SingletonHandle<T> {
   /** Location-transparent ActorRef — tell here, the leader's instance receives. */
@@ -63,9 +34,9 @@ export class ClusterSingleton {
 
   start<T>(
     cluster: Cluster,
-    options: StartSingletonOptions<T> | Partial<StartSingletonSettings<T>>,
+    options: StartSingletonOptions<T>,
   ): SingletonHandle<T> {
-    const settings = options as StartSingletonSettings<T>;
+    const settings = options as StartSingletonOptionsType<T>;
     const existing = this.handles.get(settings.typeName);
     if (existing) return existing as SingletonHandle<T>;
 

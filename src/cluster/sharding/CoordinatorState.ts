@@ -75,7 +75,7 @@ export interface CoordinatorStateStore {
  * tick.  In a 3-node cluster, the previous leader's last write
  * reaches the new leader within ~2 gossip rounds in expectation.
  * For sub-second failover the user can tighten
- * `DistributedDataSettings.gossipIntervalMs`.
+ * `DistributedDataOptionsType.gossipInterval`.
  */
 export class DistributedDataCoordinatorStateStore implements CoordinatorStateStore {
   constructor(

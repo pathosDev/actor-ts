@@ -1,20 +1,16 @@
 import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
-import type { Lease } from '../../coordination/Lease.js';
 import type { Cancellable } from '../../Scheduler.js';
-import type { ShardCoordinatorOptions } from './ShardCoordinatorOptions.js';
-import type { Cluster } from '../Cluster.js';
+import type { ShardCoordinatorOptions, ShardCoordinatorOptionsType } from './ShardCoordinatorOptions.js';
 import { LeaderChanged, MemberRemoved } from '../ClusterEvents.js';
 import { NodeAddress, type NodeAddressData } from '../NodeAddress.js';
 import { RemoteActorRef } from '../RemoteActorRef.js';
-import { type AllocationStrategy, HashAllocationStrategy } from './AllocationStrategy.js';
+import { HashAllocationStrategy } from './AllocationStrategy.js';
 import type {
   CoordinatorStateData,
-  CoordinatorStateStore,
   RegionInfoData,
 } from './CoordinatorState.js';
-import type { RememberEntitiesStore } from './RememberEntitiesStore.js';
 import type {
   BeginHandOffAck,
   EntityStarted,
@@ -58,62 +54,6 @@ interface RegionInfo {
 
 function regionKey(node: NodeAddress, path: string): string {
   return `${node}|${path}`;
-}
-
-export interface ShardCoordinatorSettings {
-  readonly typeName: string;
-  readonly cluster: Cluster;
-  readonly allocationStrategy: AllocationStrategy;
-  readonly role?: string;
-  readonly rebalanceIntervalMs?: number;
-  readonly handOffTimeoutMs?: number;
-  readonly rememberEntities?: boolean;
-  /** Resolver for local actor paths — used when coordinator lives on the same node as a region. */
-  readonly localResolver: (path: string) => ActorRef | null;
-  /**
-   * Optional split-brain protection.  When set, the elected leader's
-   * coordinator must hold the lease before it processes shard
-   * messages.  Under a network partition where two nodes converge to
-   * "I am the leader" gossip views, only the side that successfully
-   * acquires the lease ever issues `AllocateShard` / `HandOff`
-   * directives — the other side stays passive and drops messages
-   * (regions retry naturally on their next cache miss).
-   *
-   * Without a lease the coordinator gates only on `isLeader()` —
-   * v1 behaviour, no extra coordination.
-   */
-  readonly lease?: Lease;
-  /** Retry interval for `lease.acquire()` after a failed attempt.  Default: 5 s. */
-  readonly acquireRetryIntervalMs?: number;
-  /**
-   * Optional persistence backend for the entity registry.  Only used
-   * when `rememberEntities: true`.  Without it, `entitiesPerShard`
-   * stays in-memory only and a full cluster restart loses the
-   * registry — until messages re-arrive and trigger fresh
-   * EntityStarted notifications.  Set to a `JournalRememberEntitiesStore`
-   * (or any custom impl) to make the registry survive cold-starts.
-   *
-   * The `ClusterSharding` extension auto-instantiates the default
-   * `JournalRememberEntitiesStore` (using the active Journal) when
-   * `rememberEntities: true` and no explicit store is provided —
-   * so most users don't need to touch this field.
-   */
-  readonly rememberEntitiesStore?: RememberEntitiesStore;
-  /**
-   * Optional persistence backend for the allocation state itself
-   * (`regions` + `shardHome`).  Without it, `LeaderChanged` triggers
-   * a full rebuild from `Register` gossip — fine for a few hundred
-   * shards, painful at thousands.  With it, the new leader loads
-   * the last-known snapshot from the store (e.g. `DistributedData`)
-   * and skips the reallocation storm.
-   *
-   * `ClusterSharding` does NOT auto-instantiate this — the user
-   * must explicitly start a DistributedData extension first and
-   * pass `new DistributedDataCoordinatorStateStore(...)`.  Without
-   * that opt-in, `ShardCoordinator` keeps the v1 rebuild-from-
-   * Register behaviour (backwards-compat).
-   */
-  readonly coordinatorStateStore?: CoordinatorStateStore;
 }
 
 /**
@@ -183,11 +123,11 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private coordinatorStateInFlight = false;
   private coordinatorStateDirty = false;
 
-  public readonly settings: ShardCoordinatorSettings;
+  public readonly settings: ShardCoordinatorOptionsType;
 
-  constructor(options: ShardCoordinatorOptions | Partial<ShardCoordinatorSettings>) {
+  constructor(options: ShardCoordinatorOptions) {
     super();
-    this.settings = options as ShardCoordinatorSettings;
+    this.settings = options as ShardCoordinatorOptionsType;
   }
 
   /** Path used by ClusterSharding to locate the coordinator on any node. */

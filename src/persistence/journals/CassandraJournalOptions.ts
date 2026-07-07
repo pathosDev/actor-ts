@@ -1,9 +1,56 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
-import type { CassandraClientLike } from './CassandraClient.js';
-import type { CassandraJournalSettings } from './CassandraJournal.js';
+import type { CassandraClientLike, CassandraConnection } from './CassandraClient.js';
+
+export interface CassandraJournalOptionsType extends CassandraConnection {
+  /** Table name for events.  Default: `events`. */
+  readonly eventsTable?: string;
+  /** Table tracking the highest sequence number per pid.  Default: `metadata`. */
+  readonly metadataTable?: string;
+  /** Lookup table for `persistenceIds()`.  Default: `all_persistence_ids`. */
+  readonly allIdsTable?: string;
+  /** Tag-index side table populated when `useTagIndex` is set.  Default: `events_by_tag`. */
+  readonly tagIndexTable?: string;
+  /**
+   * Rows per partition before rolling over to a new one.  Keeps Cassandra
+   * partitions bounded.  Default: 500_000 — a good balance between write
+   * amplification and read-scan cost for long-lived streams.
+   */
+  readonly partitionSize?: number;
+  /** Auto-create the events/metadata/all-ids tables on first connect. */
+  readonly autoCreateTables?: boolean;
+  /**
+   * Opt in to maintaining an `events_by_tag` side table for indexed
+   * `eventsByTag` queries (#44).  When set, every `append` writes one
+   * extra row per `(event, tag)` pair to the side table inside the same
+   * batch as the primary `events` insert; `CassandraQuery.currentEventsBy
+   * Tag` then walks a single tag-partition instead of scanning the
+   * whole journal client-side.
+   *
+   * Off by default to keep existing schemas compatible — operators
+   * opting in must run the side-table DDL on their cluster (the journal
+   * issues `CREATE TABLE IF NOT EXISTS` when `autoCreateTables` is also
+   * true; otherwise the DDL in {@link CassandraClient.tagIndexDdl} can
+   * be applied manually).
+   *
+   * **Caveat:** `delete(toSeq)` does NOT propagate to the side table —
+   * deleting from `events_by_tag` would require either a secondary
+   * index on `persistence_id` or pre-reading the event's tags (extra
+   * round-trips on the hot path).  Operators with delete-heavy
+   * workloads should rely on Cassandra TTLs or accept stale tag
+   * entries (queries dedupe via the primary key, so they're harmless
+   * — just storage overhead).
+   */
+  readonly useTagIndex?: boolean;
+  /**
+   * Inject a pre-built client instead of letting the journal instantiate
+   * `cassandra-driver` itself — useful for tests and when the host already
+   * owns the client lifecycle.
+   */
+  readonly client?: CassandraClientLike;
+}
 
 /**
- * Fluent builder for {@link CassandraJournalSettings}:
+ * Fluent builder for {@link CassandraJournalOptionsType}:
  *
  *     new CassandraJournal(
  *       CassandraJournalOptions.create()
@@ -16,10 +63,10 @@ import type { CassandraJournalSettings } from './CassandraJournal.js';
  * fields too — the connection mixin is not built on its own; each
  * concrete store exposes its connection surface directly.
  */
-export class CassandraJournalOptions extends OptionsBuilder<CassandraJournalSettings> {
-  /** Start a fresh builder.  Equivalent to `new CassandraJournalOptions()`. */
-  static create(): CassandraJournalOptions {
-    return new CassandraJournalOptions();
+export class CassandraJournalOptionsBuilder extends OptionsBuilder<CassandraJournalOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new CassandraJournalOptionsBuilder()`. */
+  static create(): CassandraJournalOptionsBuilder {
+    return new CassandraJournalOptionsBuilder();
   }
 
   /* --- shared CassandraConnection fields --- */
@@ -55,7 +102,7 @@ export class CassandraJournalOptions extends OptionsBuilder<CassandraJournalSett
   }
 
   /** Replication settings used by autoCreateKeyspace.  Ignored otherwise. */
-  withReplication(replication: NonNullable<CassandraJournalSettings['replication']>): this {
+  withReplication(replication: NonNullable<CassandraJournalOptionsType['replication']>): this {
     return this.set('replication', replication);
   }
 
@@ -106,3 +153,11 @@ export class CassandraJournalOptions extends OptionsBuilder<CassandraJournalSett
     return this.set('client', client);
   }
 }
+
+/**
+ * Accepted input for any Cassandra-journal constructor: the fluent
+ * {@link CassandraJournalOptionsBuilder} OR a plain {@link CassandraJournalOptionsType} object.
+ */
+export type CassandraJournalOptions = CassandraJournalOptionsBuilder | Partial<CassandraJournalOptionsType>;
+/** Value alias so `CassandraJournalOptions.create()` / `new CassandraJournalOptions()` resolve to the builder. */
+export const CassandraJournalOptions = CassandraJournalOptionsBuilder;

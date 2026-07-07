@@ -1,23 +1,9 @@
-import { getSqliteDriver, type SqliteDb, type SqliteDriver, type SqliteStatement } from '../../runtime/sqlite/index.js';
+import { getSqliteDriver, type SqliteDb, type SqliteStatement } from '../../runtime/sqlite/index.js';
 import { JournalError, type Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import { none, some, type Option } from '../../util/Option.js';
-import type { SqliteSnapshotStoreOptions } from './SqliteSnapshotStoreOptions.js';
-
-export interface SqliteSnapshotStoreSettings {
-  /** Path or ":memory:". Defaults to ":memory:". */
-  readonly path?: string;
-  /** Table name; default `snapshots`. */
-  readonly snapshotsTable?: string;
-  /** Maximum snapshots retained per persistenceId.  Older ones are pruned on save. */
-  readonly keepN?: number;
-  /**
-   * Explicit driver — useful for tests or when you want to pin a
-   * specific SQLite backend.  Default: auto-detect via `getSqliteDriver()`.
-   */
-  readonly driver?: SqliteDriver;
-}
+import type { SqliteSnapshotStoreOptions, SqliteSnapshotStoreOptionsType } from './SqliteSnapshotStoreOptions.js';
 
 interface Stmts {
   insert: SqliteStatement;
@@ -34,7 +20,7 @@ interface Stmts {
  * `SqliteJournal`): the DB is opened on the first save / load call.
  */
 export class SqliteSnapshotStore implements SnapshotStore {
-  private readonly settings: SqliteSnapshotStoreSettings;
+  private readonly settings: SqliteSnapshotStoreOptionsType;
   private readonly table: string;
   private readonly keepN: number;
   private closed = false;
@@ -43,8 +29,8 @@ export class SqliteSnapshotStore implements SnapshotStore {
   private stmts: Stmts | null = null;
   private initPromise: Promise<void> | null = null;
 
-  constructor(options: SqliteSnapshotStoreOptions | Partial<SqliteSnapshotStoreSettings> = {}) {
-    const settings = (options as Partial<SqliteSnapshotStoreSettings>);
+  constructor(options: SqliteSnapshotStoreOptions = {}) {
+    const settings = (options as SqliteSnapshotStoreOptionsType);
     this.settings = settings;
     this.table = settings.snapshotsTable ?? 'snapshots';
     this.keepN = settings.keepN ?? 3;

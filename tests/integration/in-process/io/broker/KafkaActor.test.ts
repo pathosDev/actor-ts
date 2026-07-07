@@ -23,7 +23,7 @@ import {
   type KafkaProducerLike,
   type KafkaRecord,
 } from '../../../../../src/io/broker/KafkaActor.js';
-import { KafkaOptions } from '../../../../../src/io/broker/KafkaOptions.js';
+import { KafkaOptions, KafkaOptionsBuilder } from '../../../../../src/io/broker/KafkaOptions.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -136,7 +136,7 @@ class CapturingTarget extends Actor<KafkaRecord> {
 }
 
 async function bootActor(
-  sys: ActorSystem, options: KafkaOptions,
+  sys: ActorSystem, options: KafkaOptionsBuilder,
 ): Promise<{ actor: ActorRef<KafkaCmd>; mock: MockKafka; target: CapturingTarget }> {
   const target = new CapturingTarget();
   const targetRef = sys.spawn(Props.create(() => target), 'target');

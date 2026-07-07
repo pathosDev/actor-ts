@@ -9,7 +9,7 @@ import {
   type ObjectStorageBackend,
   type PutOptions,
 } from './ObjectStorageBackend.js';
-import type { S3ObjectStorageOptions } from './S3ObjectStorageOptions.js';
+import type { S3ObjectStorageOptions, S3ObjectStorageOptionsType } from './S3ObjectStorageOptions.js';
 
 /**
  * S3-compatible `ObjectStorageBackend` — wraps AWS SDK v3
@@ -45,43 +45,12 @@ export interface S3Credentials {
   readonly sessionToken?: string;
 }
 
-export interface S3ObjectStorageSettings {
-  /** S3 bucket name. */
-  readonly bucket: string;
-  /** AWS region.  For Cloudflare R2 use `'auto'`. */
-  readonly region: string;
-  /**
-   * Custom endpoint URL.  Use this for MinIO (`http://localhost:9000`),
-   * Cloudflare R2 (`https://<account>.r2.cloudflarestorage.com`),
-   * Backblaze B2, DigitalOcean Spaces, Wasabi.  Omit for AWS S3.
-   */
-  readonly endpoint?: string;
-  /**
-   * Force path-style URLs (`<endpoint>/<bucket>/<key>`) instead of
-   * virtual-host style (`<bucket>.<endpoint>/<key>`).  Required for
-   * MinIO and most non-AWS S3-compatible stores.
-   */
-  readonly forcePathStyle?: boolean;
-  /**
-   * Static credentials.  Omit to fall back to the SDK's default chain
-   * (env vars `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, EC2 instance
-   * profile, IAM role for service accounts, …).
-   */
-  readonly credentials?: S3Credentials;
-  /**
-   * Allow injecting a pre-built `S3Client` — useful for tests, custom
-   * middleware, or sharing one client across multiple backends.  When
-   * provided, all other connection options are ignored.
-   */
-  readonly client?: S3ClientLike;
-}
-
 export class S3ObjectStorageBackend implements ObjectStorageBackend {
   private readonly clientLazy: Lazy<Promise<S3ClientLike>>;
   private readonly bucket: string;
 
-  constructor(options: S3ObjectStorageOptions | Partial<S3ObjectStorageSettings>) {
-    const s = (options as Partial<S3ObjectStorageSettings>);
+  constructor(options: S3ObjectStorageOptions) {
+    const s = (options as S3ObjectStorageOptionsType);
     if (s.bucket === undefined) throw new Error('S3ObjectStorageBackend: bucket is required (call withBucket()).');
     if (s.region === undefined) throw new Error('S3ObjectStorageBackend: region is required (call withRegion()).');
     this.bucket = s.bucket;

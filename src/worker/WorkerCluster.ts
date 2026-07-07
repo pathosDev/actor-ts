@@ -4,21 +4,10 @@ import type {
   PortLike,
 } from '../cluster/transports/MessageChannelTransport.js';
 import { getWorkerBackend, type WorkerLike } from '../runtime/worker/index.js';
-import type { WorkerClusterOptions } from './WorkerClusterOptions.js';
+import type { WorkerClusterOptions, WorkerClusterOptionsType } from './WorkerClusterOptions.js';
 import { WorkerBroker } from './WorkerBroker.js';
 
 export type RestartPolicy = 'always' | 'on-failure' | 'never';
-
-export interface WorkerClusterSettings {
-  readonly bootstrap: URL | string;
-  readonly workers?: number | 'auto';
-  readonly systemName?: string;
-  readonly hostname?: string;
-  readonly basePort?: number;
-  readonly initData?: unknown;
-  readonly restartPolicy?: RestartPolicy;
-  readonly readyTimeoutMs?: number;
-}
 
 export interface WorkerHandle {
   readonly id: number;
@@ -63,13 +52,13 @@ export class WorkerCluster {
   readonly broker: WorkerBroker;
   private readonly handles: WorkerHandle[] = [];
   private readonly settings: Required<
-    Pick<WorkerClusterSettings, 'systemName' | 'hostname' | 'basePort' | 'readyTimeoutMs' | 'restartPolicy'>
+    Pick<WorkerClusterOptionsType, 'systemName' | 'hostname' | 'basePort' | 'readyTimeoutMs' | 'restartPolicy'>
   > & { bootstrap: URL | string; workers: number | 'auto'; initData: unknown };
   private closed = false;
 
   private constructor(
     broker: WorkerBroker,
-    settings: WorkerClusterSettings,
+    settings: WorkerClusterOptionsType,
     resolvedWorkers: number,
   ) {
     this.broker = broker;
@@ -86,9 +75,9 @@ export class WorkerCluster {
   }
 
   static async spawn(
-    options: WorkerClusterOptions | Partial<WorkerClusterSettings>,
+    options: WorkerClusterOptions,
   ): Promise<WorkerCluster> {
-    const settings = options as WorkerClusterSettings;
+    const settings = options as WorkerClusterOptionsType;
     const workers = resolveWorkerCount(settings.workers);
     const broker = new WorkerBroker();
     const cluster = new WorkerCluster(broker, settings, workers);

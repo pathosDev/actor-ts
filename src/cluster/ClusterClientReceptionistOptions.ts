@@ -1,18 +1,26 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
-import type { ClusterClientReceptionistSettings } from './ClusterClientReceptionist.js';
+
+/** Plain settings-object shape accepted by {@link ClusterClientReceptionist.start}. */
+export interface ClusterClientReceptionistOptionsType {
+  /**
+   * Default ask timeout (ms) when a client envelope carries an `askId`.
+   * Default: 5_000.
+   */
+  readonly askTimeoutMs?: number;
+}
 
 /**
- * Fluent builder for {@link ClusterClientReceptionistSettings}:
+ * Fluent builder for {@link ClusterClientReceptionistOptionsType}:
  *
  *     receptionist.start(
  *       cluster,
  *       ClusterClientReceptionistOptions.create().withAskTimeoutMs(3_000),
  *     );
  */
-export class ClusterClientReceptionistOptions extends OptionsBuilder<ClusterClientReceptionistSettings> {
+export class ClusterClientReceptionistOptionsBuilder extends OptionsBuilder<ClusterClientReceptionistOptionsType> {
   /** Start a fresh builder. */
-  static create(): ClusterClientReceptionistOptions {
-    return new ClusterClientReceptionistOptions();
+  static create(): ClusterClientReceptionistOptionsBuilder {
+    return new ClusterClientReceptionistOptionsBuilder();
   }
 
   /** Default ask timeout (ms) for client envelopes carrying an `askId`.  Default 5 s. */
@@ -20,3 +28,14 @@ export class ClusterClientReceptionistOptions extends OptionsBuilder<ClusterClie
     return this.set('askTimeoutMs', ms);
   }
 }
+
+/**
+ * Accepted input for {@link ClusterClientReceptionist.start}: the fluent
+ * {@link ClusterClientReceptionistOptionsBuilder} OR a plain
+ * {@link ClusterClientReceptionistOptionsType} object.
+ */
+export type ClusterClientReceptionistOptions =
+  | ClusterClientReceptionistOptionsBuilder
+  | Partial<ClusterClientReceptionistOptionsType>;
+/** Value alias so `ClusterClientReceptionistOptions.create()` / `new ClusterClientReceptionistOptions()` resolve to the builder. */
+export const ClusterClientReceptionistOptions = ClusterClientReceptionistOptionsBuilder;

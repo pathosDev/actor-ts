@@ -4,18 +4,7 @@ import {
   type DowningDecision,
   type DowningProvider,
 } from './DowningProvider.js';
-import type { KeepOldestOptions } from './KeepOldestOptions.js';
-
-export interface KeepOldestSettings {
-  /** If set, only members with this role are eligible "oldest". */
-  readonly role?: string;
-  /**
-   * When true, if the oldest member is unreachable the *other* side wins
-   * (this flips the rule for paranoid setups where the oldest might be
-   * the one that failed).  Default: false.
-   */
-  readonly downIfAlone?: boolean;
-}
+import type { KeepOldestOptions, KeepOldestOptionsType } from './KeepOldestOptions.js';
 
 /**
  * "Keep oldest" — whichever partition contains the oldest cluster member
@@ -24,10 +13,10 @@ export interface KeepOldestSettings {
  * election in this project.
  */
 export class KeepOldest implements DowningProvider {
-  private readonly settings: KeepOldestSettings;
+  private readonly settings: KeepOldestOptionsType;
 
-  constructor(options: KeepOldestOptions | Partial<KeepOldestSettings> = {}) {
-    this.settings = options as KeepOldestSettings;
+  constructor(options: KeepOldestOptions = {}) {
+    this.settings = options as KeepOldestOptionsType;
   }
 
   decide(view: ClusterPartitionView): DowningDecision {

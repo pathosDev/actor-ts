@@ -3,7 +3,7 @@ import type { Duplex } from 'node:stream';
 import { match } from 'ts-pattern';
 import { Lazy } from '../../util/Lazy.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../types.js';
-import type { ExpressBackendOptions } from './ExpressBackendOptions.js';
+import type { ExpressBackendOptions, ExpressBackendOptionsType } from './ExpressBackendOptions.js';
 import type {
   HttpServerBackend,
   RouteRegistration,
@@ -97,17 +97,6 @@ export interface ExpressAppLike {
   listen(port: number, hostname: string, cb: (err?: Error) => void): Server;
 }
 
-export interface ExpressBackendSettings {
-  /**
-   * Bring-your-own app — useful when you already attach custom middleware
-   * (CORS, sessions, metrics, …) outside the DSL.  When omitted, a fresh
-   * Express app is created via the installed `express` package.
-   */
-  readonly app?: ExpressAppLike;
-  /** Maximum allowed body size in bytes (default: 10 MiB).  Exceeding it returns 413. */
-  readonly maxBodyBytes?: number;
-}
-
 /**
  * Express-backed HTTP backend — drop-in alternative to the Fastify
  * default.  Intended for teams that already have an Express-based plugin
@@ -130,8 +119,8 @@ export class ExpressBackend implements HttpServerBackend {
   private notFoundHandler: ((req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
   private errorHandler: ((err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
 
-  constructor(options: ExpressBackendOptions | Partial<ExpressBackendSettings> = {}) {
-    const settings = (options as Partial<ExpressBackendSettings>);
+  constructor(options: ExpressBackendOptions = {}) {
+    const settings = (options as ExpressBackendOptionsType);
     this.app = settings.app ?? null;
     this.ownsApp = settings.app == null;
     this.maxBodyBytes = settings.maxBodyBytes ?? 10 * 1024 * 1024;

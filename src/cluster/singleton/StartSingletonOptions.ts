@@ -1,10 +1,38 @@
 import type { Lease } from '../../coordination/Lease.js';
 import type { Props } from '../../Props.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
-import type { StartSingletonSettings } from './ClusterSingleton.js';
+
+/** Plain settings-object shape accepted by {@link ClusterSingleton.start}. */
+export interface StartSingletonOptionsType<T> {
+  /** Logical name for this singleton — used in the manager/child actor path. */
+  readonly typeName: string;
+  /** Props used to construct the singleton on the leader. */
+  readonly props: Props<T>;
+  /** If set, only nodes carrying this role tag will host the singleton. */
+  readonly role?: string;
+  /**
+   * Optional split-brain protection.  When provided, the elected
+   * leader's manager calls `lease.acquire()` before spawning the
+   * singleton — so a partition that produces two oldest views still
+   * only ever spawns the singleton on the side that holds the lease.
+   * The manager subscribes to `lease.onLost(reason)` and stops the
+   * child if ownership is revoked mid-flight.
+   *
+   * Without a lease the manager keeps its current sync behaviour:
+   * spawn the moment cluster gossip says we're leader, no external
+   * arbitration.
+   */
+  readonly lease?: Lease;
+  /**
+   * How often to retry `lease.acquire()` after a failed attempt
+   * (another holder owns it, transient backend error, etc.).
+   * Default: `5_000` ms.  Ignored if no lease is provided.
+   */
+  readonly acquireRetryIntervalMs?: number;
+}
 
 /**
- * Fluent builder for {@link StartSingletonSettings}:
+ * Fluent builder for {@link StartSingletonOptionsType}:
  *
  *     system.extension(ClusterSingletonId).start(
  *       cluster,
@@ -13,10 +41,10 @@ import type { StartSingletonSettings } from './ClusterSingleton.js';
  *         .withProps(Props.create(() => new CounterActor())),
  *     );
  */
-export class StartSingletonOptions<T> extends OptionsBuilder<StartSingletonSettings<T>> {
+export class StartSingletonOptionsBuilder<T> extends OptionsBuilder<StartSingletonOptionsType<T>> {
   /** Start a fresh builder. */
-  static create<T>(): StartSingletonOptions<T> {
-    return new StartSingletonOptions<T>();
+  static create<T>(): StartSingletonOptionsBuilder<T> {
+    return new StartSingletonOptionsBuilder<T>();
   }
 
   /** Logical name for this singleton — used in the manager/child actor path. */
@@ -44,3 +72,14 @@ export class StartSingletonOptions<T> extends OptionsBuilder<StartSingletonSetti
     return this.set('acquireRetryIntervalMs', ms);
   }
 }
+
+/**
+ * Accepted input for {@link ClusterSingleton.start}: the fluent
+ * {@link StartSingletonOptionsBuilder} OR a plain (partial)
+ * {@link StartSingletonOptionsType} object.
+ */
+export type StartSingletonOptions<T> =
+  | StartSingletonOptionsBuilder<T>
+  | Partial<StartSingletonOptionsType<T>>;
+/** Value alias so `StartSingletonOptions.create()` / `new StartSingletonOptions()` resolve to the builder. */
+export const StartSingletonOptions = StartSingletonOptionsBuilder;

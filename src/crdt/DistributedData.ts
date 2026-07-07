@@ -2,11 +2,10 @@ import { match, P } from 'ts-pattern';
 import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
-import type { DurableStateStore } from '../persistence/DurableStateStore.js';
 import type { Cancellable } from '../Scheduler.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
-import type { DistributedDataOptions } from './DistributedDataOptions.js';
+import type { DistributedDataOptions, DistributedDataOptionsType } from './DistributedDataOptions.js';
 import { Props } from '../Props.js';
 import type { Cluster } from '../cluster/Cluster.js';
 import { MemberRemoved, MemberUp } from '../cluster/ClusterEvents.js';
@@ -199,29 +198,6 @@ export type WriteConsistency =
 
 export type ReadConsistency = WriteConsistency;
 
-/* ============================== settings ============================== */
-
-export interface DistributedDataSettings {
-  /** Period between gossip pushes.  Default: 1 s. */
-  readonly gossipInterval?: number;
-  /**
-   * Optional durable backend.  When provided, the local CRDT view
-   * is loaded from the store on `preStart` and re-saved after every
-   * mutation (local update, gossip merge, delete).  Without this,
-   * `DistributedData` is purely in-memory — a full cluster restart
-   * (deploy / outage) starts every replica empty.
-   *
-   * The store is keyed by replica id, so each cluster member owns
-   * its own durable record.  CRDT semantics handle convergence
-   * across replicas via gossip — durability is per-replica.
-   *
-   * Plug in any of the existing `DurableStateStore` implementations:
-   * `InMemoryDurableStateStore` for tests, the SQLite / Cassandra /
-   * S3 / filesystem backends for production.
-   */
-  readonly durableStore?: DurableStateStore;
-}
-
 /* ============================== extension ============================== */
 
 const dataActorPath = (systemName: string): string =>
@@ -258,14 +234,14 @@ export class DistributedData implements Extension {
 
   start(
     cluster: Cluster,
-    options: DistributedDataOptions | Partial<DistributedDataSettings> = {},
+    options: DistributedDataOptions = {},
   ): DistributedDataHandle {
     if (this._handle && this._cluster === cluster) return this._handle;
     if (this._handle) {
       throw new Error('DistributedData is already bound to a different cluster');
     }
     this._cluster = cluster;
-    const settings = (options as Partial<DistributedDataSettings>);
+    const settings = (options as Partial<DistributedDataOptionsType>);
 
     // The extension exposes a synchronous API; the internal actor owns
     // the state and the gossip loop.  We hand the actor a setter for a
@@ -581,7 +557,7 @@ class DistributedDataActor extends Actor<ActorMsg> {
 
   constructor(public readonly settings: {
     cluster: Cluster;
-    settings: DistributedDataSettings;
+    settings: DistributedDataOptionsType;
     view: SharedView;
   }) {
     super();

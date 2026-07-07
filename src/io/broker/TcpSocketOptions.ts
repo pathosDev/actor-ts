@@ -1,19 +1,35 @@
 /**
- * Fluent builder for {@link TcpSocketActorSettings}.  Protocol-specific
+ * Fluent builder for {@link TcpSocketOptionsType}.  Protocol-specific
  * methods only; the common broker fields (`withReconnect` /
  * `withCircuitBreaker` / `withOutboundBuffer`) come from
- * {@link BrokerOptions}.  `build()` snapshots the accumulated partial
+ * {@link BrokerOptionsBuilder}.  `build()` snapshots the accumulated partial
  * and feeds the same three-layer merge (constructor > HOCON under
  * `actor-ts.io.broker.tcp` > built-in defaults).
  */
-import { BrokerOptions } from './BrokerOptions.js';
+import { BrokerOptionsBuilder } from './BrokerOptions.js';
+import type { BrokerCommonOptionsType } from './BrokerSettings.js';
 import type { ActorRef } from '../../ActorRef.js';
-import type { TcpSocketActorSettings, TcpFraming } from './TcpSocketActor.js';
+import type { TcpFraming } from './TcpSocketActor.js';
 
-export class TcpSocketOptions extends BrokerOptions<TcpSocketActorSettings> {
-  /** Start a fresh builder.  Equivalent to `new TcpSocketOptions()`. */
-  static create(): TcpSocketOptions {
-    return new TcpSocketOptions();
+export interface TcpSocketOptionsType extends BrokerCommonOptionsType {
+  /** Remote host. */
+  readonly host?: string;
+  /** Remote port. */
+  readonly port?: number;
+  /** Frame extraction.  Default: `{ kind: 'bytes' }`. */
+  readonly framing?: TcpFraming;
+  /**
+   * Subscriber that receives every inbound frame.  Required — the actor
+   * has no useful behaviour without one.  Receives `Uint8Array` for
+   * `bytes` / `length-prefixed`, `string` for `lines`.
+   */
+  readonly target?: ActorRef<unknown>;
+}
+
+export class TcpSocketOptionsBuilder extends BrokerOptionsBuilder<TcpSocketOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new TcpSocketOptionsBuilder()`. */
+  static create(): TcpSocketOptionsBuilder {
+    return new TcpSocketOptionsBuilder();
   }
 
   /** Remote host. */
@@ -36,3 +52,11 @@ export class TcpSocketOptions extends BrokerOptions<TcpSocketActorSettings> {
     return this.set('target', target);
   }
 }
+
+/**
+ * Accepted input for any TCP-socket-configurable constructor: the fluent
+ * {@link TcpSocketOptionsBuilder} OR a plain {@link TcpSocketOptionsType} object.
+ */
+export type TcpSocketOptions = TcpSocketOptionsBuilder | Partial<TcpSocketOptionsType>;
+/** Value alias so `TcpSocketOptions.create()` / `new TcpSocketOptions()` resolve to the builder. */
+export const TcpSocketOptions = TcpSocketOptionsBuilder;

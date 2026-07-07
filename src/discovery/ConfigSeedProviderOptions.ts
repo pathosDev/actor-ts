@@ -1,8 +1,15 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
-import type { ConfigSeedProviderSettings } from './ConfigSeedProvider.js';
+
+/** Plain settings-object shape accepted by a {@link ConfigSeedProvider}. */
+export interface ConfigSeedProviderOptionsType {
+  /** Static list of "system@host:port" or "host:port" strings. */
+  readonly seeds: string[];
+  /** Default system name used when a seed string omits it. */
+  readonly systemName: string;
+}
 
 /**
- * Fluent builder for {@link ConfigSeedProviderSettings}.
+ * Fluent builder for {@link ConfigSeedProviderOptionsType}.
  *
  *     new ConfigSeedProvider(
  *       ConfigSeedProviderOptions.create()
@@ -10,10 +17,10 @@ import type { ConfigSeedProviderSettings } from './ConfigSeedProvider.js';
  *         .withSystemName('my-system'),
  *     );
  */
-export class ConfigSeedProviderOptions extends OptionsBuilder<ConfigSeedProviderSettings> {
-  /** Start a fresh builder.  Equivalent to `new ConfigSeedProviderOptions()`. */
-  static create(): ConfigSeedProviderOptions {
-    return new ConfigSeedProviderOptions();
+export class ConfigSeedProviderOptionsBuilder extends OptionsBuilder<ConfigSeedProviderOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new ConfigSeedProviderOptionsBuilder()`. */
+  static create(): ConfigSeedProviderOptionsBuilder {
+    return new ConfigSeedProviderOptionsBuilder();
   }
 
   /** Static list of "system@host:port" or "host:port" strings. */
@@ -26,3 +33,12 @@ export class ConfigSeedProviderOptions extends OptionsBuilder<ConfigSeedProvider
     return this.set('systemName', systemName);
   }
 }
+
+/**
+ * Accepted input for the {@link ConfigSeedProvider} constructor: the fluent
+ * {@link ConfigSeedProviderOptionsBuilder} OR a plain
+ * {@link ConfigSeedProviderOptionsType} object.
+ */
+export type ConfigSeedProviderOptions = ConfigSeedProviderOptionsBuilder | Partial<ConfigSeedProviderOptionsType>;
+/** Value alias so `ConfigSeedProviderOptions.create()` / `new ConfigSeedProviderOptions()` resolve to the builder. */
+export const ConfigSeedProviderOptions = ConfigSeedProviderOptionsBuilder;

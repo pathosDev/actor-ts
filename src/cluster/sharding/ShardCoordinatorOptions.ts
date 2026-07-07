@@ -5,10 +5,66 @@ import type { Cluster } from '../Cluster.js';
 import type { AllocationStrategy } from './AllocationStrategy.js';
 import type { CoordinatorStateStore } from './CoordinatorState.js';
 import type { RememberEntitiesStore } from './RememberEntitiesStore.js';
-import type { ShardCoordinatorSettings } from './ShardCoordinator.js';
+
+/** Plain settings-object shape consumed by a {@link ShardCoordinator}. */
+export interface ShardCoordinatorOptionsType {
+  readonly typeName: string;
+  readonly cluster: Cluster;
+  readonly allocationStrategy: AllocationStrategy;
+  readonly role?: string;
+  readonly rebalanceIntervalMs?: number;
+  readonly handOffTimeoutMs?: number;
+  readonly rememberEntities?: boolean;
+  /** Resolver for local actor paths — used when coordinator lives on the same node as a region. */
+  readonly localResolver: (path: string) => ActorRef | null;
+  /**
+   * Optional split-brain protection.  When set, the elected leader's
+   * coordinator must hold the lease before it processes shard
+   * messages.  Under a network partition where two nodes converge to
+   * "I am the leader" gossip views, only the side that successfully
+   * acquires the lease ever issues `AllocateShard` / `HandOff`
+   * directives — the other side stays passive and drops messages
+   * (regions retry naturally on their next cache miss).
+   *
+   * Without a lease the coordinator gates only on `isLeader()` —
+   * v1 behaviour, no extra coordination.
+   */
+  readonly lease?: Lease;
+  /** Retry interval for `lease.acquire()` after a failed attempt.  Default: 5 s. */
+  readonly acquireRetryIntervalMs?: number;
+  /**
+   * Optional persistence backend for the entity registry.  Only used
+   * when `rememberEntities: true`.  Without it, `entitiesPerShard`
+   * stays in-memory only and a full cluster restart loses the
+   * registry — until messages re-arrive and trigger fresh
+   * EntityStarted notifications.  Set to a `JournalRememberEntitiesStore`
+   * (or any custom impl) to make the registry survive cold-starts.
+   *
+   * The `ClusterSharding` extension auto-instantiates the default
+   * `JournalRememberEntitiesStore` (using the active Journal) when
+   * `rememberEntities: true` and no explicit store is provided —
+   * so most users don't need to touch this field.
+   */
+  readonly rememberEntitiesStore?: RememberEntitiesStore;
+  /**
+   * Optional persistence backend for the allocation state itself
+   * (`regions` + `shardHome`).  Without it, `LeaderChanged` triggers
+   * a full rebuild from `Register` gossip — fine for a few hundred
+   * shards, painful at thousands.  With it, the new leader loads
+   * the last-known snapshot from the store (e.g. `DistributedData`)
+   * and skips the reallocation storm.
+   *
+   * `ClusterSharding` does NOT auto-instantiate this — the user
+   * must explicitly start a DistributedData extension first and
+   * pass `new DistributedDataCoordinatorStateStore(...)`.  Without
+   * that opt-in, `ShardCoordinator` keeps the v1 rebuild-from-
+   * Register behaviour (backwards-compat).
+   */
+  readonly coordinatorStateStore?: CoordinatorStateStore;
+}
 
 /**
- * Fluent builder for {@link ShardCoordinatorSettings}.  Consumed by
+ * Fluent builder for {@link ShardCoordinatorOptionsType}.  Consumed by
  * {@link ClusterSharding} when it spawns the per-type coordinator; the
  * `cluster` / `localResolver` wiring fields are supplied by the
  * extension, the rest surface the user-tunable coordinator settings.
@@ -18,10 +74,10 @@ import type { ShardCoordinatorSettings } from './ShardCoordinator.js';
  * and the `cluster` / `localResolver` wiring — are passed whole via a
  * single `withX(value)`.
  */
-export class ShardCoordinatorOptions extends OptionsBuilder<ShardCoordinatorSettings> {
-  /** Start a fresh builder.  Equivalent to `new ShardCoordinatorOptions()`. */
-  static create(): ShardCoordinatorOptions {
-    return new ShardCoordinatorOptions();
+export class ShardCoordinatorOptionsBuilder extends OptionsBuilder<ShardCoordinatorOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new ShardCoordinatorOptionsBuilder()`. */
+  static create(): ShardCoordinatorOptionsBuilder {
+    return new ShardCoordinatorOptionsBuilder();
   }
 
   /** Logical name of the sharded type this coordinator governs. */
@@ -84,3 +140,12 @@ export class ShardCoordinatorOptions extends OptionsBuilder<ShardCoordinatorSett
     return this.set('coordinatorStateStore', coordinatorStateStore);
   }
 }
+
+/**
+ * Accepted input for a {@link ShardCoordinator}: the fluent
+ * {@link ShardCoordinatorOptionsBuilder} OR a plain (partial)
+ * {@link ShardCoordinatorOptionsType} object.
+ */
+export type ShardCoordinatorOptions = ShardCoordinatorOptionsBuilder | Partial<ShardCoordinatorOptionsType>;
+/** Value alias so `ShardCoordinatorOptions.create()` / `new ShardCoordinatorOptions()` resolve to the builder. */
+export const ShardCoordinatorOptions = ShardCoordinatorOptionsBuilder;

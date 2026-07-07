@@ -1,7 +1,7 @@
 export { WorkerCluster } from './WorkerCluster.js';
-export { WorkerClusterOptions } from './WorkerClusterOptions.js';
+export { WorkerClusterOptions, WorkerClusterOptionsBuilder } from './WorkerClusterOptions.js';
+export type { WorkerClusterOptionsType } from './WorkerClusterOptions.js';
 export type {
-  WorkerClusterSettings,
   WorkerHandle,
   WorkerHelloMessage,
   WorkerInitMessage,

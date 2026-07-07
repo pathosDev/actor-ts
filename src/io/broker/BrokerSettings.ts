@@ -5,7 +5,7 @@ import type { Config } from '../../config/Config.js';
  * specific options.  Subclasses extend this interface with their own
  * required fields (e.g. `brokerUrl`, `topics`).
  */
-export interface BrokerCommonSettings {
+export interface BrokerCommonOptionsType {
   /**
    * Reconnect strategy applied when the underlying connection drops or
    * `connectImpl` throws.  Default: exponential backoff starting at
@@ -59,8 +59,8 @@ export const DEFAULT_OUTBOUND_BUFFER = 1000;
  * `reconnect.maxAttempts = 1` (one connect attempt, no retry).  The
  * boolean `false` form is only supported via the constructor argument.
  */
-export function readCommonSettings(config: Config): BrokerCommonSettings {
-  const out: { -readonly [K in keyof BrokerCommonSettings]: BrokerCommonSettings[K] } = {};
+export function readCommonSettings(config: Config): BrokerCommonOptionsType {
+  const out: { -readonly [K in keyof BrokerCommonOptionsType]: BrokerCommonOptionsType[K] } = {};
 
   if (config.hasPath('reconnect')) {
     const sub = config.getConfig('reconnect');

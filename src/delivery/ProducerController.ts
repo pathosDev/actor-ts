@@ -1,7 +1,7 @@
 import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
 import type { Cancellable } from '../Scheduler.js';
-import type { ProducerControllerOptions } from './ProducerControllerOptions.js';
+import type { ProducerControllerOptions, ProducerControllerOptionsType } from './ProducerControllerOptions.js';
 import type { Ack, ConfirmationCallback, Delivery } from './Messages.js';
 
 let producerSeed = 0;
@@ -12,22 +12,6 @@ export interface ProducerSend<T> {
   readonly kind: 'reliable-delivery.send';
   readonly body: T;
   readonly confirm?: ConfirmationCallback;
-}
-
-export interface ProducerControllerSettings<T> {
-  readonly consumer: ActorRef<Delivery<T>>;
-  /**
-   * How long to wait for an Ack before re-sending.  Default 500ms.
-   */
-  readonly resendTimeout?: number;
-  /**
-   * Flow-control window: at most `windowSize` messages may be in-flight
-   * (un-acked) at any moment.  Additional Sends queue until room opens up.
-   * Default: 16.
-   */
-  readonly windowSize?: number;
-  /** Stable identifier used by consumers to dedup across restarts. */
-  readonly producerId?: string;
 }
 
 interface InFlight<T> {
@@ -51,11 +35,11 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Ack> {
   private readonly resendTimeoutMs: number;
   private readonly windowSize: number;
 
-  public readonly settings: ProducerControllerSettings<T>;
+  public readonly settings: ProducerControllerOptionsType<T>;
 
-  constructor(options: ProducerControllerOptions<T> | Partial<ProducerControllerSettings<T>>) {
+  constructor(options: ProducerControllerOptions<T>) {
     super();
-    const settings = options as ProducerControllerSettings<T>;
+    const settings = options as ProducerControllerOptionsType<T>;
     this.settings = settings;
     this.id = settings.producerId ?? nextProducerId();
     this.resendTimeoutMs = settings.resendTimeout ?? 500;

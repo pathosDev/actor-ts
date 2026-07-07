@@ -23,9 +23,8 @@
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { BrokerActor, type OutboundEnvelope } from '../../io/broker/BrokerActor.js';
-import type { BrokerCommonSettings } from '../../io/broker/BrokerSettings.js';
 import { jsonCodec, WsDecodeError, type WsCodec } from './WsCodec.js';
-import type { WebSocketClientOptions } from './WebSocketClientOptions.js';
+import type { WebSocketClientOptions, WebSocketClientOptionsType } from './WebSocketClientOptions.js';
 import {
   WsClientConnected,
   WsClientDisconnected,
@@ -42,30 +41,14 @@ import {
   type WsFrame,
 } from './types.js';
 
-export interface WebSocketClientSettings<TOut = unknown, TIn = unknown> extends BrokerCommonSettings {
-  /** WebSocket URL (`ws://…` or `wss://…`).  Required (ctor or HOCON). */
-  readonly url?: string;
-  readonly protocols?: string | ReadonlyArray<string>;
-  /** Custom request headers — Node/`ws` only; native/browsers ignore them. */
-  readonly headers?: Readonly<Record<string, string>>;
-  /** Wire codec.  Default: `jsonCodec<TOut, TIn>()`. */
-  readonly codec?: WsCodec<TOut, TIn>;
-  /** Inbound frame size cap; oversize frames are dropped with a warning.  Default 1 MiB. */
-  readonly maxFrameBytes?: number;
-  /** What to do with an inbound frame the codec can't decode.  Default 'drop'. */
-  readonly onInvalidMessage?: 'drop' | 'hook' | 'disconnect';
-  /** Send a ping every `pingIntervalMs` to keep the connection alive.  Default: disabled. */
-  readonly pingIntervalMs?: number;
-}
-
 export abstract class WebSocketClientActor<TOut, TIn, TSelf = never>
-  extends BrokerActor<WebSocketClientSettings<TOut, TIn>, WsClientMessage<TOut, TIn, TSelf>, WsFrame> {
+  extends BrokerActor<WebSocketClientOptionsType<TOut, TIn>, WsClientMessage<TOut, TIn, TSelf>, WsFrame> {
 
   private socket: WebSocketLike | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private _codec: WsCodec<TOut, TIn> | null = null;
 
-  constructor(options: WebSocketClientOptions<TOut, TIn> | Partial<WebSocketClientSettings<TOut, TIn>> = {}) {
+  constructor(options: WebSocketClientOptions<TOut, TIn> = {}) {
     super(options);
   }
 
@@ -127,12 +110,12 @@ export abstract class WebSocketClientActor<TOut, TIn, TSelf = never>
   /* ----------------------- BrokerActor plumbing ------------------ */
 
   protected configKey(): string { return ConfigKeys.io.broker.websocket; }
-  protected builtInDefaults(): Partial<WebSocketClientSettings<TOut, TIn>> { return {}; }
-  protected requiredSettings(): ReadonlyArray<keyof WebSocketClientSettings<TOut, TIn>> { return ['url']; }
+  protected builtInDefaults(): Partial<WebSocketClientOptionsType<TOut, TIn>> { return {}; }
+  protected requiredSettings(): ReadonlyArray<keyof WebSocketClientOptionsType<TOut, TIn>> { return ['url']; }
   protected endpointLabel(): string { return this.settings.url ?? '<unknown>'; }
 
-  protected readSettingsFromConfig(c: Config): Partial<WebSocketClientSettings<TOut, TIn>> {
-    const out: { -readonly [K in keyof WebSocketClientSettings<TOut, TIn>]?: WebSocketClientSettings<TOut, TIn>[K] } = {};
+  protected readSettingsFromConfig(c: Config): Partial<WebSocketClientOptionsType<TOut, TIn>> {
+    const out: { -readonly [K in keyof WebSocketClientOptionsType<TOut, TIn>]?: WebSocketClientOptionsType<TOut, TIn>[K] } = {};
     if (c.hasPath('url')) out.url = c.getString('url');
     if (c.hasPath('protocols')) out.protocols = c.getStringList('protocols');
     if (c.hasPath('pingIntervalMs')) out.pingIntervalMs = c.getDuration('pingIntervalMs');

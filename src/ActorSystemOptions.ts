@@ -1,5 +1,5 @@
 /**
- * Fluent builder for {@link ActorSystemSettings}, passed to
+ * Fluent builder for {@link ActorSystemOptionsType}, passed to
  * {@link ActorSystem.create}:
  *
  *     const sys = ActorSystem.create('my-app', ActorSystemOptions.create()
@@ -7,7 +7,7 @@
  *       .withLogLevel(LogLevel.Off));
  *
  * The system name stays a positional argument to `create`; everything else
- * is set here.  `build()` yields a `Partial<ActorSystemSettings>` that feeds
+ * is set here.  `build()` yields a `Partial<ActorSystemOptionsType>` that feeds
  * the same resolution as before (explicit code overrides > HOCON >
  * reference defaults).
  */
@@ -16,20 +16,56 @@ import type { ConfigObject } from './config/HoconParser.js';
 import type { Dispatcher } from './Dispatcher.js';
 import type { Logger, LogLevel } from './Logger.js';
 import type { Scheduler } from './Scheduler.js';
+import type { Journal } from './persistence/Journal.js';
+import type { SnapshotStore } from './persistence/SnapshotStore.js';
 import { OptionsBuilder } from './util/OptionsBuilder.js';
-import type { ActorSystemSettings } from './ActorSystem.js';
 
-export class ActorSystemOptions<T extends ActorSystemSettings = ActorSystemSettings> extends OptionsBuilder<T> {
-  /** Start a fresh builder.  Equivalent to `new ActorSystemOptions()`. */
-  static create(): ActorSystemOptions {
-    return new ActorSystemOptions();
+/** Plain settings-object shape accepted by {@link ActorSystem.create}. */
+export interface ActorSystemOptionsType {
+  readonly logger?: Logger;
+  readonly logLevel?: LogLevel;
+  readonly dispatcher?: Dispatcher;
+  /** Inject a custom scheduler — typically a ManualScheduler in tests. */
+  readonly scheduler?: Scheduler;
+  /**
+   * Application config.  Accepts:
+   *   - a prebuilt `Config` (highest precedence layered on top of reference);
+   *   - a plain JS object of overrides (converted via Config.fromObject);
+   *   - omitted — reference defaults + `application.conf` in CWD are used.
+   * Constructor settings (`logger`, `logLevel`, `dispatcher`) still win
+   * over anything in config — they are explicit code overrides.
+   */
+  readonly config?: Config | ConfigObject;
+  /** Explicit path to `application.conf`; overrides `ACTOR_TS_CONFIG` + CWD lookup. */
+  readonly configFile?: string;
+  /**
+   * Persistence overrides — wire a real journal / snapshot store at
+   * system creation time instead of reaching into the extension after
+   * the fact.  Either field is independent; omit one to keep the
+   * in-memory default for that slot.
+   *
+   * Equivalent to:
+   *   const sys = ActorSystem.create(name);
+   *   sys.extension(PersistenceExtensionId).setJournal(journal);
+   *   sys.extension(PersistenceExtensionId).setSnapshotStore(snapshotStore);
+   */
+  readonly persistence?: {
+    readonly journal?: Journal;
+    readonly snapshotStore?: SnapshotStore;
+  };
+}
+
+export class ActorSystemOptionsBuilder<T extends ActorSystemOptionsType = ActorSystemOptionsType> extends OptionsBuilder<T> {
+  /** Start a fresh builder.  Equivalent to `new ActorSystemOptionsBuilder()`. */
+  static create(): ActorSystemOptionsBuilder {
+    return new ActorSystemOptionsBuilder();
   }
 
   /**
    * The `as keyof T` / `as T[keyof T]` casts keep these setters writable once
-   * against the generic `T extends ActorSystemSettings`, so a subclass builder
-   * (e.g. `TestKitOptions`) inherits them for its own settings type — the same
-   * pattern as `BrokerOptions<T>` / `LeaseOptions<T>`.  Concrete callers stay
+   * against the generic `T extends ActorSystemOptionsType`, so a subclass builder
+   * (e.g. `TestKitOptionsBuilder`) inherits them for its own settings type — the same
+   * pattern as `BrokerOptionsBuilder<T>` / `LeaseOptions<T>`.  Concrete callers stay
    * type-safe because each method's argument type is concrete.
    */
 
@@ -64,7 +100,18 @@ export class ActorSystemOptions<T extends ActorSystemSettings = ActorSystemSetti
   }
 
   /** Wire a real journal / snapshot store at system creation time. */
-  withPersistence(persistence: NonNullable<ActorSystemSettings['persistence']>): this {
+  withPersistence(persistence: NonNullable<ActorSystemOptionsType['persistence']>): this {
     return this.set('persistence' as keyof T, persistence as T[keyof T]);
   }
 }
+
+/**
+ * Accepted input for {@link ActorSystem.create}: the fluent
+ * {@link ActorSystemOptionsBuilder} OR a plain {@link ActorSystemOptionsType}
+ * object.  The union is the default (non-generic) instantiation; subclass
+ * builders (e.g. `TestKitOptionsBuilder`) still parametrize
+ * {@link ActorSystemOptionsBuilder} with their own settings type.
+ */
+export type ActorSystemOptions = ActorSystemOptionsBuilder<ActorSystemOptionsType> | Partial<ActorSystemOptionsType>;
+/** Value alias so `ActorSystemOptions.create()` / `new ActorSystemOptions()` resolve to the builder. */
+export const ActorSystemOptions = ActorSystemOptionsBuilder;

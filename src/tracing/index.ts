@@ -26,9 +26,9 @@ export {
   tracerOf,
 } from './TracingExtension.js';
 export { otelTracer } from './OtelAdapter.js';
-export { OtelAdapterOptions } from './OtelAdapterOptions.js';
+export { OtelAdapterOptions, OtelAdapterOptionsBuilder } from './OtelAdapterOptions.js';
+export type { OtelAdapterOptionsType } from './OtelAdapterOptions.js';
 export type {
-  OtelAdapterSettings,
   OtelApiLike,
   OtelContextApi,
   OtelContextLike,

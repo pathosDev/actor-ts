@@ -5,13 +5,27 @@ import type {
   EncryptionConfig,
   EncryptionResolver,
 } from './PluginConfig.js';
-import type {
-  ObjectStorageBackendSpec,
-  ObjectStoragePluginSettings,
-} from './ObjectStoragePlugin.js';
+import type { ObjectStorageBackendSpec } from './ObjectStoragePlugin.js';
+
+export interface ObjectStoragePluginOptionsType {
+  /** Plugin ID under which the snapshot store is registered. */
+  readonly snapshotPluginId?: string;
+  /** Plugin ID for the durable-state store. */
+  readonly durableStatePluginId?: string;
+  /** Backend definition — filesystem, S3, or custom. */
+  readonly backend: ObjectStorageBackendSpec;
+  /** Key prefix prepended to every object — e.g. `'env-prod/'`. */
+  readonly prefix?: string;
+  /** Snapshot history retention; `0` disables pruning.  Default: 3. */
+  readonly keepN?: number;
+  /** Compression config or per-pid resolver.  Default: gzip. */
+  readonly compression?: CompressionConfig | CompressionResolver;
+  /** Encryption config or per-pid resolver.  Default: none. */
+  readonly encryption?: EncryptionConfig | EncryptionResolver;
+}
 
 /**
- * Fluent builder for {@link ObjectStoragePluginSettings}.  The `backend`
+ * Fluent builder for {@link ObjectStoragePluginOptionsType}.  The `backend`
  * spec is required:
  *
  *     registerObjectStoragePlugins(ext,
@@ -24,10 +38,10 @@ import type {
  * into their respective `withX(...)` — they are polymorphic sub-configs,
  * not further nested builders.
  */
-export class ObjectStoragePluginOptions extends OptionsBuilder<ObjectStoragePluginSettings> {
-  /** Start a fresh builder.  Equivalent to `new ObjectStoragePluginOptions()`. */
-  static create(): ObjectStoragePluginOptions {
-    return new ObjectStoragePluginOptions();
+export class ObjectStoragePluginOptionsBuilder extends OptionsBuilder<ObjectStoragePluginOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new ObjectStoragePluginOptionsBuilder()`. */
+  static create(): ObjectStoragePluginOptionsBuilder {
+    return new ObjectStoragePluginOptionsBuilder();
   }
 
   /** Backend definition — filesystem, S3, or custom.  Required. */
@@ -65,3 +79,14 @@ export class ObjectStoragePluginOptions extends OptionsBuilder<ObjectStoragePlug
     return this.set('durableStatePluginId', durableStatePluginId);
   }
 }
+
+/**
+ * Accepted input for {@link registerObjectStoragePlugins}: the fluent
+ * {@link ObjectStoragePluginOptionsBuilder} OR a plain
+ * {@link ObjectStoragePluginOptionsType} object.
+ */
+export type ObjectStoragePluginOptions =
+  | ObjectStoragePluginOptionsBuilder
+  | Partial<ObjectStoragePluginOptionsType>;
+/** Value alias so `ObjectStoragePluginOptions.create()` / `new ObjectStoragePluginOptions()` resolve to the builder. */
+export const ObjectStoragePluginOptions = ObjectStoragePluginOptionsBuilder;

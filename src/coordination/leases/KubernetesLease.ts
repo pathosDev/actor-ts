@@ -1,5 +1,5 @@
-import { type Lease, type LeaseSettings } from '../Lease.js';
-import type { KubernetesLeaseOptions } from './KubernetesLeaseOptions.js';
+import type { Lease } from '../Lease.js';
+import type { KubernetesLeaseOptions, KubernetesLeaseOptionsType } from './KubernetesLeaseOptions.js';
 import {
   createLease,
   deleteLease,
@@ -8,30 +8,8 @@ import {
   loadInClusterCredentials,
   updateLease,
   type K8sCredentials,
-  type K8sFetchClient,
   type K8sLeaseObject,
 } from './k8sApi.js';
-
-/**
- * K8s-specific additions to the common lease settings.  When `apiServerUrl`,
- * `authToken`, or `caCert` are omitted the adapter probes the standard
- * ServiceAccount mount points (`/var/run/secrets/kubernetes.io/...`).
- *
- * `client` is a test seam — pass a fake `K8sFetchClient` to drive the
- * lease without a real API server.
- */
-export interface KubernetesLeaseSettings extends LeaseSettings {
-  /** Kubernetes namespace that owns the `coordination.k8s.io/v1/Lease` object. */
-  readonly namespace: string;
-  /** API-server URL.  Defaults to the in-cluster service or `https://kubernetes.default.svc`. */
-  readonly apiServerUrl?: string;
-  /** Bearer token for the ServiceAccount.  Reads `/var/run/...` if omitted. */
-  readonly authToken?: string;
-  /** PEM-encoded CA cert for the API server.  Reads `/var/run/...` if omitted. */
-  readonly caCert?: string;
-  /** Test seam — inject a fake fetch client. */
-  readonly client?: K8sFetchClient;
-}
 
 /**
  * Lease backed by a Kubernetes `coordination.k8s.io/v1/Lease` object.
@@ -73,10 +51,10 @@ export class KubernetesLease implements Lease {
   private readonly onLostHandlers = new Set<(reason: string) => void>();
   private creds: K8sCredentials | null = null;
 
-  private readonly settings: KubernetesLeaseSettings;
+  private readonly settings: KubernetesLeaseOptionsType;
 
-  constructor(options: KubernetesLeaseOptions | Partial<KubernetesLeaseSettings> = {}) {
-    this.settings = options as KubernetesLeaseSettings;
+  constructor(options: KubernetesLeaseOptions = {}) {
+    this.settings = options as KubernetesLeaseOptionsType;
     this.renewalIntervalMs = this.settings.renewalIntervalMs
       ?? Math.max(500, Math.floor(this.settings.ttlMs / 3));
   }

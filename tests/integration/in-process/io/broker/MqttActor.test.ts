@@ -9,13 +9,12 @@ import {
   MqttActor,
   buildPublishProperties,
   matchesMqttPattern,
-  type MqttActorSettings,
   type MqttClientLike,
   type MqttInboundPacketLike,
   type MqttModuleLike,
   type MqttPublish,
 } from '../../../../../src/io/broker/MqttActor.js';
-import { MqttOptions } from '../../../../../src/io/broker/MqttOptions.js';
+import { MqttOptions, type MqttOptionsType } from '../../../../../src/io/broker/MqttOptions.js';
 import type { MqttDecodeError } from '../../../../../src/io/broker/MqttCodec.js';
 import type { MqttMessage, MqttQos, MqttRef } from '../../../../../src/io/broker/MqttMessages.js';
 
@@ -151,7 +150,7 @@ class TestMqttActor<T = unknown, TSelf = never> extends MqttActor<T, TSelf> {
     return (this.publish as (t: string, p: unknown, o?: unknown) => boolean)(topic, payload, opts);
   }
   encodeEntity(value: unknown): Uint8Array { return this.codec().encode(value); }
-  get resolvedSettings(): MqttActorSettings { return this.settings; }
+  get resolvedSettings(): MqttOptionsType { return this.settings; }
 }
 
 let sysCounter = 0;

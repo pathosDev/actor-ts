@@ -7,7 +7,7 @@ import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { JsonLogger, LogLevel } from '../../../../src/Logger.js';
 import { Props } from '../../../../src/Props.js';
 import { KafkaActor, type KafkaRecord } from '../../../../src/io/broker/KafkaActor.js';
-import { KafkaOptions } from '../../../../src/io/broker/KafkaOptions.js';
+import { KafkaOptions, KafkaOptionsBuilder } from '../../../../src/io/broker/KafkaOptions.js';
 import { waitForPort } from '../lib/wait-for-port.js';
 import { runScenarios, type BrokerScenario, type BrokerScenarioCtx } from '../lib/scenario.js';
 import { scenario as pubsubScenario } from './scenarios/01-publish-consume.js';
@@ -88,7 +88,7 @@ export function spawnKafka(ctx: KafkaCtx, opts: KafkaSpawnOpts = {}): ReturnType
     });
   }
   if (opts.topics) builder.withTopics(opts.topics);
-  if (opts.target) builder.withTarget(opts.target as unknown as Parameters<KafkaOptions['withTarget']>[0]);
+  if (opts.target) builder.withTarget(opts.target as unknown as Parameters<KafkaOptionsBuilder['withTarget']>[0]);
   const actor = new KafkaActor(builder);
   return ctx.system.spawnAnonymous(Props.create(() => actor));
 }

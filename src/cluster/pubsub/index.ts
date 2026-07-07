@@ -6,8 +6,8 @@ export {
   DistributedPubSubMediator,
   mediatorPath,
 } from './DistributedPubSubMediator.js';
-export { DistributedPubSubOptions } from './DistributedPubSubOptions.js';
-export type { DistributedPubSubSettings } from './DistributedPubSubMediator.js';
+export { DistributedPubSubOptions, DistributedPubSubOptionsBuilder } from './DistributedPubSubOptions.js';
+export type { DistributedPubSubOptionsType } from './DistributedPubSubOptions.js';
 export {
   CurrentTopics,
   GetTopics,

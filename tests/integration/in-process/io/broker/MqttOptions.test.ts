@@ -3,11 +3,10 @@ import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { Props } from '../../../../../src/Props.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { MqttOptions } from '../../../../../src/io/broker/MqttOptions.js';
+import { MqttOptions, type MqttOptionsType } from '../../../../../src/io/broker/MqttOptions.js';
 import { mqttJsonCodec } from '../../../../../src/io/broker/MqttCodec.js';
 import {
   MqttActor,
-  type MqttActorSettings,
   type MqttModuleLike,
 } from '../../../../../src/io/broker/MqttActor.js';
 import type { MqttMessage } from '../../../../../src/io/broker/MqttMessages.js';
@@ -78,7 +77,7 @@ class ProbeActor extends MqttActor {
     return Promise.resolve({ connect: () => client } as unknown as MqttModuleLike);
   }
   override onMessage(_msg: MqttMessage): void {}
-  get resolved(): MqttActorSettings { return this.settings; }
+  get resolved(): MqttOptionsType { return this.settings; }
 }
 
 describe('MqttOptions HOCON merge precedence', () => {

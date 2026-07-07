@@ -1,15 +1,27 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { PgPoolLike } from './PostgresClient.js';
-import type { RegisterPostgresPluginsSettings } from './PostgresPlugin.js';
 import type { PostgresJournalOptions } from './PostgresJournalOptions.js';
-import type { PostgresJournalSettings } from './PostgresJournal.js';
 import type { PostgresSnapshotStoreOptions } from '../snapshot-stores/PostgresSnapshotStoreOptions.js';
-import type { PostgresSnapshotStoreSettings } from '../snapshot-stores/PostgresSnapshotStore.js';
 import type { PostgresDurableStateStoreOptions } from '../durable-state-stores/PostgresDurableStateStoreOptions.js';
-import type { PostgresDurableStateStoreSettings } from '../durable-state-stores/PostgresDurableStateStore.js';
+
+export interface RegisterPostgresPluginsOptionsType {
+  /**
+   * Shared connection pool injected into all three stores.  When provided,
+   * the journal + snapshot + durable-state stores reuse ONE pool (the
+   * usual case — they target the same database).  When omitted, each store
+   * lazily builds its own pool from its `url` / `poolConfig`.
+   */
+  readonly pool?: PgPoolLike;
+  /** Journal-specific options (table names, autoCreate, and connection if no shared `pool`). */
+  readonly journal?: PostgresJournalOptions;
+  /** Snapshot-store-specific options. */
+  readonly snapshotStore?: PostgresSnapshotStoreOptions;
+  /** Durable-state-store-specific options.  Defaults to a fresh builder (uses the shared `pool`). */
+  readonly durableStateStore?: PostgresDurableStateStoreOptions;
+}
 
 /**
- * Fluent builder for {@link RegisterPostgresPluginsSettings}:
+ * Fluent builder for {@link RegisterPostgresPluginsOptionsType}:
  *
  *     registerPostgresPlugins(ext, RegisterPostgresPluginsOptions.create()
  *       .withPool(pool)
@@ -19,12 +31,12 @@ import type { PostgresDurableStateStoreSettings } from '../durable-state-stores/
  * The shared `withPool(...)` is merged onto each store's resolved settings
  * by {@link registerPostgresPlugins}, so a leaf builder carries only its
  * store-specific fields.  Each leaf setter accepts EITHER the leaf builder
- * OR a plain partial of the leaf's settings.
+ * OR a plain object of the leaf's settings.
  */
-export class RegisterPostgresPluginsOptions extends OptionsBuilder<RegisterPostgresPluginsSettings> {
-  /** Start a fresh builder.  Equivalent to `new RegisterPostgresPluginsOptions()`. */
-  static create(): RegisterPostgresPluginsOptions {
-    return new RegisterPostgresPluginsOptions();
+export class RegisterPostgresPluginsOptionsBuilder extends OptionsBuilder<RegisterPostgresPluginsOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new RegisterPostgresPluginsOptionsBuilder()`. */
+  static create(): RegisterPostgresPluginsOptionsBuilder {
+    return new RegisterPostgresPluginsOptionsBuilder();
   }
 
   /** Shared connection pool injected into all three stores. */
@@ -33,17 +45,28 @@ export class RegisterPostgresPluginsOptions extends OptionsBuilder<RegisterPostg
   }
 
   /** Journal-specific options (table names, autoCreate, and connection if no shared pool). */
-  withJournal(journal: PostgresJournalOptions | Partial<PostgresJournalSettings>): this {
+  withJournal(journal: PostgresJournalOptions): this {
     return this.set('journal', journal);
   }
 
   /** Snapshot-store-specific options. */
-  withSnapshotStore(snapshotStore: PostgresSnapshotStoreOptions | Partial<PostgresSnapshotStoreSettings>): this {
+  withSnapshotStore(snapshotStore: PostgresSnapshotStoreOptions): this {
     return this.set('snapshotStore', snapshotStore);
   }
 
   /** Durable-state-store-specific options.  Defaults to a fresh builder (uses the shared pool). */
-  withDurableStateStore(durableStateStore: PostgresDurableStateStoreOptions | Partial<PostgresDurableStateStoreSettings>): this {
+  withDurableStateStore(durableStateStore: PostgresDurableStateStoreOptions): this {
     return this.set('durableStateStore', durableStateStore);
   }
 }
+
+/**
+ * Accepted input for {@link registerPostgresPlugins}: the fluent
+ * {@link RegisterPostgresPluginsOptionsBuilder} OR a plain
+ * {@link RegisterPostgresPluginsOptionsType} object.
+ */
+export type RegisterPostgresPluginsOptions =
+  | RegisterPostgresPluginsOptionsBuilder
+  | Partial<RegisterPostgresPluginsOptionsType>;
+/** Value alias so `RegisterPostgresPluginsOptions.create()` / `new RegisterPostgresPluginsOptions()` resolve to the builder. */
+export const RegisterPostgresPluginsOptions = RegisterPostgresPluginsOptionsBuilder;

@@ -1,10 +1,8 @@
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
-import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
-import type { BrokerCommonSettings } from './BrokerSettings.js';
-import type { SseOptions } from './SseOptions.js';
+import type { SseOptions, SseOptionsType } from './SseOptions.js';
 
 /** Inbound SSE event delivered to subscribers. */
 export interface SseEvent {
@@ -16,15 +14,6 @@ export interface SseEvent {
   readonly id?: string;
 }
 
-export interface SseActorSettings extends BrokerCommonSettings {
-  /** SSE endpoint URL. */
-  readonly url?: string;
-  /** Custom request headers. */
-  readonly headers?: Readonly<Record<string, string>>;
-  /** Subscriber for inbound events.  Required. */
-  readonly target?: ActorRef<SseEvent>;
-}
-
 export type SseCmd = never;  // SSE is read-only
 
 /**
@@ -34,16 +23,16 @@ export type SseCmd = never;  // SSE is read-only
  *
  * The base class' reconnect machinery applies on stream close.
  */
-export class SseActor extends BrokerActor<SseActorSettings, SseCmd, never> {
+export class SseActor extends BrokerActor<SseOptionsType, SseCmd, never> {
   private aborter: AbortController | null = null;
   private streamRunning = false;
 
-  constructor(options: SseOptions | Partial<SseActorSettings> = {}) { super(options); }
+  constructor(options: SseOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.sse; }
-  protected builtInDefaults(): Partial<SseActorSettings> { return {}; }
-  protected readSettingsFromConfig(c: Config): Partial<SseActorSettings> {
-    const out: { -readonly [K in keyof SseActorSettings]?: SseActorSettings[K] } = {};
+  protected builtInDefaults(): Partial<SseOptionsType> { return {}; }
+  protected readSettingsFromConfig(c: Config): Partial<SseOptionsType> {
+    const out: { -readonly [K in keyof SseOptionsType]?: SseOptionsType[K] } = {};
     if (c.hasPath('url')) out.url = c.getString('url');
     if (c.hasPath('headers')) {
       const h: Record<string, string> = {};
@@ -54,7 +43,7 @@ export class SseActor extends BrokerActor<SseActorSettings, SseCmd, never> {
     }
     return out;
   }
-  protected requiredSettings(): ReadonlyArray<keyof SseActorSettings> { return ['url', 'target']; }
+  protected requiredSettings(): ReadonlyArray<keyof SseOptionsType> { return ['url', 'target']; }
   protected endpointLabel(): string { return this.settings.url ?? '<unknown>'; }
 
   protected async connectImpl(): Promise<void> {

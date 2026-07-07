@@ -1,16 +1,21 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { Cluster } from '../Cluster.js';
-import type { DistributedPubSubSettings } from './DistributedPubSubMediator.js';
+
+/** Plain settings-object shape consumed by a {@link DistributedPubSubMediator}. */
+export interface DistributedPubSubOptionsType {
+  readonly cluster: Cluster;
+  readonly gossipIntervalMs?: number;
+}
 
 /**
- * Fluent builder for {@link DistributedPubSubSettings}.  The mediator is
+ * Fluent builder for {@link DistributedPubSubOptionsType}.  The mediator is
  * normally spawned by the {@link DistributedPubSub} extension, which
  * injects the cluster and forwards the operator's gossip-interval choice.
  */
-export class DistributedPubSubOptions extends OptionsBuilder<DistributedPubSubSettings> {
+export class DistributedPubSubOptionsBuilder extends OptionsBuilder<DistributedPubSubOptionsType> {
   /** Start a fresh builder. */
-  static create(): DistributedPubSubOptions {
-    return new DistributedPubSubOptions();
+  static create(): DistributedPubSubOptionsBuilder {
+    return new DistributedPubSubOptionsBuilder();
   }
 
   /** The cluster this mediator lives in — drives membership + gossip peers. */
@@ -23,3 +28,12 @@ export class DistributedPubSubOptions extends OptionsBuilder<DistributedPubSubSe
     return this.set('gossipIntervalMs', ms);
   }
 }
+
+/**
+ * Accepted input for a {@link DistributedPubSubMediator}: the fluent
+ * {@link DistributedPubSubOptionsBuilder} OR a plain (partial)
+ * {@link DistributedPubSubOptionsType} object.
+ */
+export type DistributedPubSubOptions = DistributedPubSubOptionsBuilder | Partial<DistributedPubSubOptionsType>;
+/** Value alias so `DistributedPubSubOptions.create()` resolves to the builder. */
+export const DistributedPubSubOptions = DistributedPubSubOptionsBuilder;

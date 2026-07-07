@@ -1,14 +1,7 @@
 import { ActorPath } from '../ActorPath.js';
 import { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
-import type { TestProbeOptions } from './TestProbeOptions.js';
-
-export interface TestProbeSettings {
-  /** Default timeout used when a caller doesn't specify one. */
-  readonly defaultTimeoutMs?: number;
-  /** Visible name of the probe (default: auto-generated). */
-  readonly name?: string;
-}
+import type { TestProbeOptions, TestProbeOptionsType } from './TestProbeOptions.js';
 
 interface Pending {
   readonly message: unknown;
@@ -38,10 +31,10 @@ export class TestProbe extends ActorRef<unknown> {
 
   constructor(
     private readonly system: ActorSystem,
-    options: TestProbeOptions | Partial<TestProbeSettings> = {},
+    options: TestProbeOptions = {},
   ) {
     super();
-    const opts = (options as Partial<TestProbeSettings>);
+    const opts = (options as Partial<TestProbeOptionsType>);
     const n = opts.name ?? `test-probe-${++probeCounter}`;
     this.path = new ActorPath('', null, system.name).child(n);
     this.defaultTimeoutMs = opts.defaultTimeoutMs ?? 3_000;

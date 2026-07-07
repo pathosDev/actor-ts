@@ -1,11 +1,18 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
-import type { TestProbeSettings } from './TestProbe.js';
 
-/** Fluent builder for {@link TestProbeSettings}. */
-export class TestProbeOptions extends OptionsBuilder<TestProbeSettings> {
-  /** Start a fresh builder.  Equivalent to `new TestProbeOptions()`. */
-  static create(): TestProbeOptions {
-    return new TestProbeOptions();
+/** Plain settings-object shape accepted by a {@link TestProbe}. */
+export interface TestProbeOptionsType {
+  /** Default timeout used when a caller doesn't specify one. */
+  readonly defaultTimeoutMs?: number;
+  /** Visible name of the probe (default: auto-generated). */
+  readonly name?: string;
+}
+
+/** Fluent builder for {@link TestProbeOptionsType}. */
+export class TestProbeOptionsBuilder extends OptionsBuilder<TestProbeOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new TestProbeOptionsBuilder()`. */
+  static create(): TestProbeOptionsBuilder {
+    return new TestProbeOptionsBuilder();
   }
 
   /** Default timeout (ms) used when an expect/receive call omits one.  Default 3000. */
@@ -18,3 +25,12 @@ export class TestProbeOptions extends OptionsBuilder<TestProbeSettings> {
     return this.set('name', name);
   }
 }
+
+/**
+ * Accepted input for a {@link TestProbe}: the fluent
+ * {@link TestProbeOptionsBuilder} OR a plain {@link TestProbeOptionsType}
+ * object.
+ */
+export type TestProbeOptions = TestProbeOptionsBuilder | Partial<TestProbeOptionsType>;
+/** Value alias so `TestProbeOptions.create()` / `new TestProbeOptions()` resolve to the builder. */
+export const TestProbeOptions = TestProbeOptionsBuilder;

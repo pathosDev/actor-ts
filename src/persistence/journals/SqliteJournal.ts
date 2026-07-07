@@ -1,4 +1,4 @@
-import { getSqliteDriver, type SqliteDb, type SqliteDriver, type SqliteStatement } from '../../runtime/sqlite/index.js';
+import { getSqliteDriver, type SqliteDb, type SqliteStatement } from '../../runtime/sqlite/index.js';
 import { InProcessJournalEventBus, type JournalEventBus } from '../JournalEventBus.js';
 import type { Journal } from '../Journal.js';
 import {
@@ -6,22 +6,7 @@ import {
   JournalError,
   type PersistentEvent,
 } from '../JournalTypes.js';
-import type { SqliteJournalOptions } from './SqliteJournalOptions.js';
-
-export interface SqliteJournalSettings {
-  /** File path (absolute or relative) or ":memory:" for an ephemeral DB. */
-  readonly path?: string;
-  /** Table name for events.  Default: `events`. */
-  readonly eventsTable?: string;
-  /** If true, opens the DB with WAL mode enabled. */
-  readonly wal?: boolean;
-  /**
-   * Explicit driver — useful for tests or when you want to pin a
-   * specific SQLite backend.  Default: auto-detect via `getSqliteDriver()`
-   * (Bun → `bun:sqlite`, Node → `better-sqlite3`).
-   */
-  readonly driver?: SqliteDriver;
-}
+import type { SqliteJournalOptions, SqliteJournalOptionsType } from './SqliteJournalOptions.js';
 
 interface Stmts {
   insert: SqliteStatement;
@@ -53,7 +38,7 @@ interface Stmts {
  * supporting the async driver-resolution flow Node requires.
  */
 export class SqliteJournal implements Journal {
-  private readonly settings: SqliteJournalSettings;
+  private readonly settings: SqliteJournalOptionsType;
   private readonly table: string;
   private readonly closed = { value: false };
   /**
@@ -69,8 +54,8 @@ export class SqliteJournal implements Journal {
   private stmts: Stmts | null = null;
   private initPromise: Promise<void> | null = null;
 
-  constructor(options: SqliteJournalOptions | Partial<SqliteJournalSettings> = {}) {
-    const settings = (options as Partial<SqliteJournalSettings>);
+  constructor(options: SqliteJournalOptions = {}) {
+    const settings = (options as SqliteJournalOptionsType);
     this.settings = settings;
     this.table = settings.eventsTable ?? 'events';
   }

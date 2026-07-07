@@ -1,24 +1,47 @@
 /**
- * Fluent builder for {@link JetStreamActorSettings}.  Protocol-specific
+ * Fluent builder for {@link JetStreamOptionsType}.  Protocol-specific
  * methods only; the common broker fields (`withReconnect` /
  * `withCircuitBreaker` / `withOutboundBuffer`) come from
- * {@link BrokerOptions}.  `build()` snapshots the accumulated partial
+ * {@link BrokerOptionsBuilder}.  `build()` snapshots the accumulated partial
  * and feeds the same three-layer merge (constructor > HOCON under
  * `actor-ts.io.broker.jetstream` > built-in defaults).
  */
-import { BrokerOptions } from './BrokerOptions.js';
+import { BrokerOptionsBuilder } from './BrokerOptions.js';
+import type { BrokerCommonOptionsType } from './BrokerSettings.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type {
-  JetStreamActorSettings,
   JetStreamConsumerConfig,
   JetStreamMessage,
   JetStreamStreamConfig,
 } from './JetStreamActor.js';
 
-export class JetStreamOptions extends BrokerOptions<JetStreamActorSettings> {
-  /** Start a fresh builder.  Equivalent to `new JetStreamOptions()`. */
-  static create(): JetStreamOptions {
-    return new JetStreamOptions();
+export interface JetStreamOptionsType extends BrokerCommonOptionsType {
+  /** NATS server URLs. */
+  readonly servers?: ReadonlyArray<string> | string;
+  /** Optional credentials. */
+  readonly token?: string;
+  readonly user?: string;
+  readonly password?: string;
+  /** Optional client name. */
+  readonly name?: string;
+  /** Stream lifecycle config — set when this actor owns the stream. */
+  readonly stream?: JetStreamStreamConfig;
+  /** Consumer config — required to start a subscription. */
+  readonly consumer?: JetStreamConsumerConfig;
+  /** Actor receiving every consumed message. */
+  readonly target?: ActorRef<JetStreamMessage>;
+  /**
+   * Max time the manual-ack pump waits for a `ack`/`nak`/`term`
+   * before giving up on a message and rejecting internally
+   * (kafkajs-style failure).  Default = `consumer.ackWaitMs ?? 30s`.
+   */
+  readonly ackTimeout?: number;
+}
+
+export class JetStreamOptionsBuilder extends BrokerOptionsBuilder<JetStreamOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new JetStreamOptionsBuilder()`. */
+  static create(): JetStreamOptionsBuilder {
+    return new JetStreamOptionsBuilder();
   }
 
   /** NATS server URLs (`'nats://localhost:4222'` or array). */
@@ -66,3 +89,11 @@ export class JetStreamOptions extends BrokerOptions<JetStreamActorSettings> {
     return this.set('ackTimeout', ms);
   }
 }
+
+/**
+ * Accepted input for any JetStream-configurable constructor: the fluent
+ * {@link JetStreamOptionsBuilder} OR a plain {@link JetStreamOptionsType} object.
+ */
+export type JetStreamOptions = JetStreamOptionsBuilder | Partial<JetStreamOptionsType>;
+/** Value alias so `JetStreamOptions.create()` / `new JetStreamOptions()` resolve to the builder. */
+export const JetStreamOptions = JetStreamOptionsBuilder;

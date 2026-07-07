@@ -1,16 +1,37 @@
 import type { Props } from '../../Props.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
-import type { ShardedDaemonProcessSettings } from './ShardedDaemonProcess.js';
+
+/** Plain settings-object shape consumed by {@link ShardedDaemonProcess.init}. */
+export interface ShardedDaemonProcessOptionsType<T> {
+  /** Logical name used for the shard type; must be unique per daemon set. */
+  readonly name: string;
+  /** Total number of daemons to keep running cluster-wide. */
+  readonly numDaemons: number;
+  /** Props factory — gets the daemon's stable index (0..numDaemons-1). */
+  readonly behaviorFor: (daemonIndex: number) => Props<T>;
+  /** Optional role — only members carrying the role host daemons. */
+  readonly role?: string;
+  /**
+   * Period (ms) at which a "liveness ping" wakes every daemon index even
+   * when no cluster topology event has fired.  Acts as a safety net for
+   * the event-driven path (`LeaderChanged` / `MemberRemoved`) — if a wake
+   * was missed (e.g. brief partition right at the failover moment), the
+   * heartbeat ensures the daemons still get re-materialized.
+   *
+   * Default: `30_000` (30 s).  Set to `0` to disable.
+   */
+  readonly livenessIntervalMs?: number;
+}
 
 /**
- * Fluent builder for {@link ShardedDaemonProcessSettings}.  The
+ * Fluent builder for {@link ShardedDaemonProcessOptionsType}.  The
  * `behaviorFor` factory is a whole-object field passed via a single
  * `withBehaviorFor(fn)`.
  */
-export class ShardedDaemonProcessOptions<T> extends OptionsBuilder<ShardedDaemonProcessSettings<T>> {
-  /** Start a fresh builder.  Equivalent to `new ShardedDaemonProcessOptions<T>()`. */
-  static create<T>(): ShardedDaemonProcessOptions<T> {
-    return new ShardedDaemonProcessOptions<T>();
+export class ShardedDaemonProcessOptionsBuilder<T> extends OptionsBuilder<ShardedDaemonProcessOptionsType<T>> {
+  /** Start a fresh builder.  Equivalent to `new ShardedDaemonProcessOptionsBuilder<T>()`. */
+  static create<T>(): ShardedDaemonProcessOptionsBuilder<T> {
+    return new ShardedDaemonProcessOptionsBuilder<T>();
   }
 
   /** Logical name used for the shard type; must be unique per daemon set. */
@@ -38,3 +59,14 @@ export class ShardedDaemonProcessOptions<T> extends OptionsBuilder<ShardedDaemon
     return this.set('livenessIntervalMs', livenessIntervalMs);
   }
 }
+
+/**
+ * Accepted input for {@link ShardedDaemonProcess.init}: the fluent
+ * {@link ShardedDaemonProcessOptionsBuilder} OR a plain (partial)
+ * {@link ShardedDaemonProcessOptionsType} object.
+ */
+export type ShardedDaemonProcessOptions<T> =
+  | ShardedDaemonProcessOptionsBuilder<T>
+  | Partial<ShardedDaemonProcessOptionsType<T>>;
+/** Value alias so `ShardedDaemonProcessOptions.create()` / `new ShardedDaemonProcessOptions()` resolve to the builder. */
+export const ShardedDaemonProcessOptions = ShardedDaemonProcessOptionsBuilder;

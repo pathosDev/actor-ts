@@ -1,19 +1,27 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
-import type { MariaDbPoolLike } from '../journals/MariaDbClient.js';
-import type { MariaDbSnapshotStoreSettings } from './MariaDbSnapshotStore.js';
+import type { MariaDbPoolLike, MariaDbConnection } from '../journals/MariaDbClient.js';
+
+export interface MariaDbSnapshotStoreOptionsType extends MariaDbConnection {
+  /** Snapshots table name.  Default: `snapshots`. */
+  readonly snapshotsTable?: string;
+  /** Keep this many snapshots per persistenceId; older ones pruned on save.  Default: 3.  `<=0` keeps all. */
+  readonly keepN?: number;
+  /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
+  readonly autoCreateTables?: boolean;
+}
 
 /**
- * Fluent builder for {@link MariaDbSnapshotStoreSettings}:
+ * Fluent builder for {@link MariaDbSnapshotStoreOptionsType}:
  *
  *     new MariaDbSnapshotStore(MariaDbSnapshotStoreOptions.create().withPoolConfig({ … }).withKeepN(2))
  *
  * The connection fields (`withUrl` / `withPoolConfig` / `withPool`) come
  * from the shared {@link MariaDbConnection} mixin.
  */
-export class MariaDbSnapshotStoreOptions extends OptionsBuilder<MariaDbSnapshotStoreSettings> {
-  /** Start a fresh builder.  Equivalent to `new MariaDbSnapshotStoreOptions()`. */
-  static create(): MariaDbSnapshotStoreOptions {
-    return new MariaDbSnapshotStoreOptions();
+export class MariaDbSnapshotStoreOptionsBuilder extends OptionsBuilder<MariaDbSnapshotStoreOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new MariaDbSnapshotStoreOptionsBuilder()`. */
+  static create(): MariaDbSnapshotStoreOptionsBuilder {
+    return new MariaDbSnapshotStoreOptionsBuilder();
   }
 
   /** Connection URI passed straight to `createPool`, e.g. `mariadb://user:pass@host:3306/db`. */
@@ -46,3 +54,11 @@ export class MariaDbSnapshotStoreOptions extends OptionsBuilder<MariaDbSnapshotS
     return this.set('autoCreateTables', autoCreateTables);
   }
 }
+
+/**
+ * Accepted input for the MariaDB snapshot-store constructor: the fluent
+ * {@link MariaDbSnapshotStoreOptionsBuilder} OR a plain {@link MariaDbSnapshotStoreOptionsType} object.
+ */
+export type MariaDbSnapshotStoreOptions = MariaDbSnapshotStoreOptionsBuilder | Partial<MariaDbSnapshotStoreOptionsType>;
+/** Value alias so `MariaDbSnapshotStoreOptions.create()` / `new MariaDbSnapshotStoreOptions()` resolve to the builder. */
+export const MariaDbSnapshotStoreOptions = MariaDbSnapshotStoreOptionsBuilder;

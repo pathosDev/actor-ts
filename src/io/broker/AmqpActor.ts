@@ -4,8 +4,7 @@ import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
-import type { BrokerCommonSettings } from './BrokerSettings.js';
-import type { AmqpOptions } from './AmqpOptions.js';
+import type { AmqpOptions, AmqpOptionsType } from './AmqpOptions.js';
 
 /** Inbound AMQP delivery handed to subscribers. */
 export interface AmqpDelivery {
@@ -46,17 +45,6 @@ export interface AmqpQueueBinding {
   };
 }
 
-export interface AmqpActorSettings extends BrokerCommonSettings {
-  /** AMQP URL (`amqp://user:pass@host:5672/vhost`). */
-  readonly url?: string;
-  /** Number of unacked messages a consumer holds at once.  Default: 1. */
-  readonly prefetch?: number;
-  /** Queues + bindings + targets to set up after connect. */
-  readonly bindings?: ReadonlyArray<AmqpQueueBinding>;
-  /** Whether to auto-ack consumed deliveries.  Default: true. */
-  readonly autoAck?: boolean;
-}
-
 export type AmqpCmd =
   | { readonly kind: 'publish'; readonly publish: AmqpPublish }
   | { readonly kind: 'ack'; readonly delivery: AmqpDelivery }
@@ -74,27 +62,27 @@ export type AmqpCmd =
  * processing.  For at-least-once-with-processing, set autoAck=false
  * and have your handler tell back `{ kind: 'ack' / 'nack', delivery }`.
  */
-export class AmqpActor extends BrokerActor<AmqpActorSettings, AmqpCmd, AmqpPublish> {
+export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCmd, AmqpPublish> {
   private connection: AmqpConnectionLike | null = null;
   private channel: AmqpChannelLike | null = null;
   /** Map ackToken → underlying amqplib message object (we never expose amqplib types upward). */
   private readonly pendingAcks = new Map<number, AmqpRawMessage>();
   private nextAckToken = 1;
 
-  constructor(options: AmqpOptions | Partial<AmqpActorSettings> = {}) { super(options); }
+  constructor(options: AmqpOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.amqp; }
-  protected builtInDefaults(): Partial<AmqpActorSettings> {
+  protected builtInDefaults(): Partial<AmqpOptionsType> {
     return { prefetch: 1, autoAck: true };
   }
-  protected readSettingsFromConfig(c: Config): Partial<AmqpActorSettings> {
-    const out: { -readonly [K in keyof AmqpActorSettings]?: AmqpActorSettings[K] } = {};
+  protected readSettingsFromConfig(c: Config): Partial<AmqpOptionsType> {
+    const out: { -readonly [K in keyof AmqpOptionsType]?: AmqpOptionsType[K] } = {};
     if (c.hasPath('url')) out.url = c.getString('url');
     if (c.hasPath('prefetch')) out.prefetch = c.getInt('prefetch');
     if (c.hasPath('autoAck')) out.autoAck = c.getBoolean('autoAck');
     return out;
   }
-  protected requiredSettings(): ReadonlyArray<keyof AmqpActorSettings> { return ['url']; }
+  protected requiredSettings(): ReadonlyArray<keyof AmqpOptionsType> { return ['url']; }
   protected endpointLabel(): string { return this.settings.url ?? '<unknown>'; }
 
   protected async connectImpl(): Promise<void> {

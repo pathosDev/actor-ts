@@ -8,20 +8,46 @@ import type {
   IntegrityConfig,
   IntegrityResolver,
 } from '../object-storage/PluginConfig.js';
-import type { ObjectStorageDurableStateStoreSettings } from './ObjectStorageDurableStateStore.js';
+
+export interface ObjectStorageDurableStateStoreOptionsType {
+  readonly backend: ObjectStorageBackend;
+  readonly prefix?: string;
+  readonly compression?: CompressionConfig | CompressionResolver;
+  readonly encryption?: EncryptionConfig | EncryptionResolver;
+  /**
+   * Opt-in HMAC-SHA256 integrity protection over each body (#116).
+   * Closes a tamper-in-place gap on unencrypted bodies: without this,
+   * an attacker with write access to the backend bucket can flip the
+   * `revision` field in the JSON and bypass CAS.  Default `{ mode: 'none' }`
+   * is back-compat (no integrity tag); set `{ mode: 'hmac-sha256',
+   * integrityKey }` to protect new writes and verify reads.
+   *
+   * Legacy bodies without the integrity flag still decode cleanly —
+   * tag is opt-in.  Migrate by reading-then-writing once integrity is
+   * enabled.
+   */
+  readonly integrity?: IntegrityConfig | IntegrityResolver;
+  /**
+   * When set with an `integrity` config, decode rejects bodies that
+   * DON'T carry an integrity tag.  Use after a deployment has been
+   * fully migrated so an attacker can't downgrade by re-writing a
+   * body without the tag.
+   */
+  readonly requireIntegrity?: boolean;
+}
 
 /**
- * Fluent builder for {@link ObjectStorageDurableStateStoreSettings}.  The
+ * Fluent builder for {@link ObjectStorageDurableStateStoreOptionsType}.  The
  * `backend` is required:
  *
  *     new ObjectStorageDurableStateStore(
  *       ObjectStorageDurableStateStoreOptions.create().withBackend(backend).withPrefix('prod/'),
  *     )
  */
-export class ObjectStorageDurableStateStoreOptions extends OptionsBuilder<ObjectStorageDurableStateStoreSettings> {
-  /** Start a fresh builder.  Equivalent to `new ObjectStorageDurableStateStoreOptions()`. */
-  static create(): ObjectStorageDurableStateStoreOptions {
-    return new ObjectStorageDurableStateStoreOptions();
+export class ObjectStorageDurableStateStoreOptionsBuilder extends OptionsBuilder<ObjectStorageDurableStateStoreOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new ObjectStorageDurableStateStoreOptionsBuilder()`. */
+  static create(): ObjectStorageDurableStateStoreOptionsBuilder {
+    return new ObjectStorageDurableStateStoreOptionsBuilder();
   }
 
   /** The underlying storage layer (S3 / Filesystem / …). */
@@ -54,3 +80,11 @@ export class ObjectStorageDurableStateStoreOptions extends OptionsBuilder<Object
     return this.set('requireIntegrity', requireIntegrity);
   }
 }
+
+/**
+ * Accepted input for the object-storage durable-state-store constructor: the fluent
+ * {@link ObjectStorageDurableStateStoreOptionsBuilder} OR a plain {@link ObjectStorageDurableStateStoreOptionsType} object.
+ */
+export type ObjectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptionsBuilder | Partial<ObjectStorageDurableStateStoreOptionsType>;
+/** Value alias so `ObjectStorageDurableStateStoreOptions.create()` / `new ObjectStorageDurableStateStoreOptions()` resolve to the builder. */
+export const ObjectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptionsBuilder;

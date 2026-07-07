@@ -3,7 +3,7 @@ import { Lazy } from '../util/Lazy.js';
 import { none, some, type Option } from '../util/Option.js';
 import { wrapError } from '../util/WrapError.js';
 import { CacheError, type Cache } from './Cache.js';
-import type { MemcachedCacheOptions } from './MemcachedCacheOptions.js';
+import type { MemcachedCacheOptions, MemcachedCacheOptionsType } from './MemcachedCacheOptions.js';
 
 /**
  * Memcached-backed `Cache` — wraps `memjs` (pure-JS memcached client,
@@ -26,18 +26,6 @@ import type { MemcachedCacheOptions } from './MemcachedCacheOptions.js';
  * detect lost atomicity.
  */
 
-export interface MemcachedCacheSettings {
-  /** Comma-separated server list, e.g. `'localhost:11211'`.  Default: `'localhost:11211'`. */
-  readonly servers?: string;
-  /** Optional username/password for SASL auth. */
-  readonly username?: string;
-  readonly password?: string;
-  /** Optional key prefix (server-side, applied to every operation). */
-  readonly keyPrefix?: string;
-  /** Pre-built memjs client — bypass internal construction. */
-  readonly client?: MemcachedClientLike;
-}
-
 /** Subset of `memjs.Client` we use.  memjs uses Buffer; we always pass strings. */
 export interface MemcachedClientLike {
   get(key: string): Promise<{ value: Buffer | null; flags?: Buffer | null }>;
@@ -53,8 +41,8 @@ export class MemcachedCache implements Cache {
   private readonly keyPrefix: string;
   private closed = false;
 
-  constructor(options: MemcachedCacheOptions | Partial<MemcachedCacheSettings> = {}) {
-    const opts = (options as Partial<MemcachedCacheSettings>);
+  constructor(options: MemcachedCacheOptions = {}) {
+    const opts = options as MemcachedCacheOptionsType;
     this.keyPrefix = opts.keyPrefix ?? '';
     this.clientLazy = Lazy.of(async () => {
       if (opts.client) return opts.client;

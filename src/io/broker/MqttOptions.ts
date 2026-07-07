@@ -1,31 +1,75 @@
 /**
- * Fluent builder for {@link MqttActorSettings}.  A subclass takes an
- * `MqttOptions` in its constructor and tacks on per-instance settings
- * before calling `super(...)`:
+ * All MQTT option-relevant types live here:
+ *
+ *   - {@link MqttOptionsType} — the plain settings-object shape (what you may
+ *     also pass as a bare `{ … }` object).
+ *   - {@link MqttOptionsBuilder} — the fluent builder (`MqttOptions.create()…`).
+ *   - {@link MqttOptions} — the accepted-input **union**
+ *     (`MqttOptionsBuilder | MqttOptionsType`), plus a value alias to the
+ *     builder so `MqttOptions.create()` / `new MqttOptions()` keep working.
+ *
+ * A subclass takes `MqttOptions` in its constructor and tacks on per-instance
+ * settings before calling `super(...)`:
  *
  *     class MyClient extends MqttActor {
- *       constructor(opts: MqttOptions) {
- *         super(opts.withQos(1).withClientId('my-client'));
+ *       constructor(options: MqttOptions = {}) {
+ *         super(options);
  *         this.subscribe('some/topic/#');
  *       }
  *     }
  *
- * The builder accumulates a `Partial<MqttActorSettings>`; `build()` (from
- * {@link OptionsBuilder}) snapshots it and feeds the exact same
- * three-layer merge (constructor > HOCON under `actor-ts.io.broker.mqtt`
- * > built-in defaults).  The common broker fields (`withReconnect` /
- * `withCircuitBreaker` / `withOutboundBuffer`) come from
- * {@link BrokerOptions}.
+ * The builder records only the fields you set (as own enumerable props), so it
+ * reads/spreads exactly like a plain object; the same three-layer merge applies
+ * (constructor > HOCON under `actor-ts.io.broker.mqtt` > built-in defaults).
+ * The common broker fields (`withReconnect` / `withCircuitBreaker` /
+ * `withOutboundBuffer`) come from {@link BrokerOptionsBuilder}.
  */
-import { BrokerOptions } from './BrokerOptions.js';
+import { BrokerOptionsBuilder } from './BrokerOptions.js';
+import type { BrokerCommonOptionsType } from './BrokerSettings.js';
 import type { MqttCodec } from './MqttCodec.js';
 import type { MqttQos } from './MqttMessages.js';
-import type { MqttActorSettings, MqttCredentials } from './MqttActor.js';
 
-export class MqttOptions extends BrokerOptions<MqttActorSettings> {
-  /** Start a fresh builder.  Equivalent to `new MqttOptions()`. */
-  static create(): MqttOptions {
-    return new MqttOptions();
+/** Username / password credentials. */
+export interface MqttCredentials {
+  readonly username?: string;
+  readonly password?: string;
+}
+
+/** Plain settings-object shape accepted by an {@link MqttActor}. */
+export interface MqttOptionsType extends BrokerCommonOptionsType {
+  /** Broker URL — `mqtt://`, `mqtts://`, `ws://`, `wss://`. */
+  readonly brokerUrl?: string;
+  /** Stable client id.  When omitted the broker assigns one. */
+  readonly clientId?: string;
+  readonly credentials?: MqttCredentials;
+  /** Default QoS used by `publish` / `subscribe` when not overridden per call. */
+  readonly qos?: MqttQos;
+  /** Last-will-and-testament published by the broker if the actor disconnects ungracefully. */
+  readonly will?: { readonly topic: string; readonly payload: Uint8Array | string; readonly qos?: MqttQos; readonly retain?: boolean };
+  /** Clean-session flag.  Default `true`. */
+  readonly cleanSession?: boolean;
+  /** Keep-alive interval in seconds.  Default 60. */
+  readonly keepAlive?: number;
+  /**
+   * MQTT protocol version negotiated with the broker.  Default `4`
+   * (MQTT 3.1.1); set to `5` to opt in to MQTT 5.0 features (user
+   * properties + reason codes — see {@link MqttPublish.userProperties}
+   * + {@link MqttMessage.reasonCode}).
+   */
+  readonly protocolVersion?: 4 | 5;
+  /**
+   * Payload codec used by {@link MqttPayload.entity} (inbound decode) and
+   * by `publish` when handed a non-string/non-`Uint8Array` entity.
+   * Default: {@link mqttJsonCodec}.  One codec per actor.
+   */
+  readonly codec?: MqttCodec<unknown>;
+}
+
+/** Fluent builder for {@link MqttOptionsType}. */
+export class MqttOptionsBuilder extends BrokerOptionsBuilder<MqttOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new MqttOptionsBuilder()`. */
+  static create(): MqttOptionsBuilder {
+    return new MqttOptionsBuilder();
   }
 
   /** Broker URL — `mqtt://`, `mqtts://`, `ws://`, `wss://`. */
@@ -49,7 +93,7 @@ export class MqttOptions extends BrokerOptions<MqttActorSettings> {
   }
 
   /** Last-will-and-testament published by the broker on ungraceful disconnect. */
-  withWill(will: NonNullable<MqttActorSettings['will']>): this {
+  withWill(will: NonNullable<MqttOptionsType['will']>): this {
     return this.set('will', will);
   }
 
@@ -74,5 +118,10 @@ export class MqttOptions extends BrokerOptions<MqttActorSettings> {
   }
 }
 
-// Re-export for callers that build credentials inline.
-export type { MqttCredentials };
+/**
+ * Accepted input for any MQTT-configurable constructor: the fluent
+ * {@link MqttOptionsBuilder} OR a plain {@link MqttOptionsType} object.
+ */
+export type MqttOptions = MqttOptionsBuilder | Partial<MqttOptionsType>;
+/** Value alias so `MqttOptions.create()` / `new MqttOptions()` resolve to the builder. */
+export const MqttOptions = MqttOptionsBuilder;

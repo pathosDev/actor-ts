@@ -46,32 +46,7 @@ import type {
   ClusterClientEnvelopeMsg,
   ClusterClientReplyMsg,
 } from './ClusterClientReceptionist.js';
-import type { ClusterClientOptions } from './ClusterClientOptions.js';
-
-export interface ClusterClientSettings {
-  /**
-   * Cluster nodes to dial.  Each is a `host:port` or `<system>@host:port`
-   * string — the same shape `Cluster.join` accepts for seeds.  Tried in
-   * order; on dial failure the next is attempted.
-   */
-  readonly contactPoints: ReadonlyArray<string>;
-  /** Synthetic system name embedded in the client's hello.  Default: 'cluster-client'. */
-  readonly systemName?: string;
-  /**
-   * Host + port the client claims as its identity.  The cluster uses this
-   * to route `cluster-client-reply` frames back over the right connection.
-   * Use a host:port that uniquely identifies this client instance — random
-   * defaults are fine because the cluster only needs it for connection
-   * routing, not for actual networking back to the client.
-   */
-  readonly clientIdentity?: { readonly host: string; readonly port: number };
-  /** Default ask timeout (ms).  Default: 5_000. */
-  readonly askTimeoutMs?: number;
-  /** Optional TLS config — must match the cluster's. */
-  readonly tls?: TlsTransportSettings;
-  /** Custom logger; default: ConsoleLogger at WARN. */
-  readonly logger?: Logger;
-}
+import type { ClusterClientOptions, ClusterClientOptionsType } from './ClusterClientOptions.js';
 
 interface PendingAsk {
   readonly resolve: (value: unknown) => void;
@@ -121,10 +96,10 @@ export class ClusterClient {
   /** Filled by `hello-ack`; the contact-point's real address (post-handshake). */
   private contactPointPeer: NodeAddress | null = null;
 
-  private readonly settings: ClusterClientSettings;
+  private readonly settings: ClusterClientOptionsType;
 
-  constructor(options: ClusterClientOptions | Partial<ClusterClientSettings>) {
-    const settings = options as ClusterClientSettings;
+  constructor(options: ClusterClientOptions) {
+    const settings = options as ClusterClientOptionsType;
     this.settings = settings;
     if (!settings.contactPoints || settings.contactPoints.length === 0) {
       throw new Error('ClusterClient: contactPoints must contain at least one entry');

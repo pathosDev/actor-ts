@@ -1,23 +1,17 @@
 import { NodeAddress } from '../cluster/NodeAddress.js';
 import { ConfigSeedProviderOptions } from './ConfigSeedProviderOptions.js';
+import type { ConfigSeedProviderOptionsType } from './ConfigSeedProviderOptions.js';
 import type { SeedProvider } from './SeedProvider.js';
-
-export interface ConfigSeedProviderSettings {
-  /** Static list of "system@host:port" or "host:port" strings. */
-  readonly seeds: string[];
-  /** Default system name used when a seed string omits it. */
-  readonly systemName: string;
-}
 
 /**
  * Simplest `SeedProvider`: returns a fixed list of addresses passed at
  * construction time (typically sourced from config or ENV).
  */
 export class ConfigSeedProvider implements SeedProvider {
-  private readonly settings: ConfigSeedProviderSettings;
+  private readonly settings: ConfigSeedProviderOptionsType;
 
-  constructor(options: ConfigSeedProviderOptions | Partial<ConfigSeedProviderSettings> = {}) {
-    this.settings = options as ConfigSeedProviderSettings;
+  constructor(options: ConfigSeedProviderOptions = {}) {
+    this.settings = options as ConfigSeedProviderOptionsType;
   }
 
   async lookup(): Promise<NodeAddress[]> {

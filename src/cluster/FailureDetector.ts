@@ -1,17 +1,8 @@
 import { NodeAddress } from './NodeAddress.js';
 import { fromNullable, type Option } from '../util/Option.js';
-import type { FailureDetectorOptions } from './FailureDetectorOptions.js';
+import type { FailureDetectorOptions, FailureDetectorOptionsType } from './FailureDetectorOptions.js';
 
-export interface FailureDetectorSettings {
-  /** How often the detector samples and decides membership health. */
-  readonly heartbeatIntervalMs: number;
-  /** Time without heartbeat after which a peer is marked unreachable. */
-  readonly unreachableAfterMs: number;
-  /** Additional time after which an unreachable peer is declared down. */
-  readonly downAfterMs: number;
-}
-
-export const defaultFailureDetectorSettings: FailureDetectorSettings = {
+export const defaultFailureDetectorSettings: FailureDetectorOptionsType = {
   heartbeatIntervalMs: 500,
   unreachableAfterMs: 2_000,
   downAfterMs: 5_000,
@@ -32,11 +23,11 @@ interface Sample {
  */
 export class FailureDetector {
   private samples = new Map<string, Sample>();
-  private readonly settings: FailureDetectorSettings;
+  private readonly settings: FailureDetectorOptionsType;
 
-  constructor(options: FailureDetectorOptions | Partial<FailureDetectorSettings> = {}) {
+  constructor(options: FailureDetectorOptions = {}) {
     // Unset builder fields fall through to the built-in defaults.
-    this.settings = { ...defaultFailureDetectorSettings, ...(options as Partial<FailureDetectorSettings>) };
+    this.settings = { ...defaultFailureDetectorSettings, ...(options as Partial<FailureDetectorOptionsType>) };
   }
 
   /** Record that a message was received from `peer` (any message counts). */

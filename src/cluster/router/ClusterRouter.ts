@@ -2,8 +2,7 @@ import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Props } from '../../Props.js';
 import { Broadcast } from '../../Router.js';
-import type { Cluster } from '../Cluster.js';
-import type { ClusterRouterOptions } from './ClusterRouterOptions.js';
+import type { ClusterRouterOptions, ClusterRouterOptionsType } from './ClusterRouterOptions.js';
 import { MemberRemoved, MemberUp } from '../ClusterEvents.js';
 import { RemoteActorRef } from '../RemoteActorRef.js';
 import { pickRendezvous } from './ConsistentHashing.js';
@@ -65,39 +64,16 @@ export type ClusterRouterType =
   /** Every routee gets every message (equivalent to wrapping in `Broadcast`). */
   | 'broadcast';
 
-export interface ClusterRouterSettings<TMsg> {
-  /** The cluster the router lives in.  Used for membership + transport. */
-  readonly cluster: Cluster;
-  /** Restrict routees to up-members carrying this role.  Omit for "any node". */
-  readonly role?: string;
-  /** Strategy.  See {@link ClusterRouterType}. */
-  readonly routerType: ClusterRouterType;
-  /**
-   * The path the routee actor lives under on each routee node — usually
-   * `/user/<actorName>`.  The same path must exist on every targeted
-   * node; the router doesn't probe for liveness beyond the cluster
-   * membership state.
-   */
-  readonly routeePath: string;
-  /**
-   * Required for `routerType: 'consistent-hashing'`, ignored otherwise.
-   * Returns the string key used to pin a message to a routee.  Two
-   * messages with the same key always land on the same node (subject
-   * to the cluster topology not changing).
-   */
-  readonly extractKey?: (message: TMsg) => string;
-}
-
 /**
  * `Props` factory for the cluster router.  See {@link ClusterRouterOptions}
- * for the configuration builder and {@link ClusterRouterSettings} for the
+ * for the configuration builder and {@link ClusterRouterOptionsType} for the
  * resolved shape.
  */
 export const ClusterRouter = {
   props<TMsg>(
-    options: ClusterRouterOptions<TMsg> | Partial<ClusterRouterSettings<TMsg>>,
+    options: ClusterRouterOptions<TMsg>,
   ): Props<TMsg | Broadcast<TMsg>> {
-    const opts = options as ClusterRouterSettings<TMsg>;
+    const opts = options as ClusterRouterOptionsType<TMsg>;
     if (opts.routerType === 'consistent-hashing' && !opts.extractKey) {
       throw new Error(
         'ClusterRouter: routerType=\'consistent-hashing\' requires extractKey',
@@ -128,7 +104,7 @@ class ClusterRouterActor<TMsg> extends Actor<TMsg | Broadcast<TMsg>> {
   private counter = 0;
   private unsubscribe: (() => void) | null = null;
 
-  constructor(private readonly opts: ClusterRouterSettings<TMsg>) {
+  constructor(private readonly opts: ClusterRouterOptionsType<TMsg>) {
     super();
   }
 

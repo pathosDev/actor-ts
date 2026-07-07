@@ -2,21 +2,51 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type {
   S3ClientLike,
   S3Credentials,
-  S3ObjectStorageSettings,
 } from './S3ObjectStorageBackend.js';
 
+export interface S3ObjectStorageOptionsType {
+  /** S3 bucket name. */
+  readonly bucket: string;
+  /** AWS region.  For Cloudflare R2 use `'auto'`. */
+  readonly region: string;
+  /**
+   * Custom endpoint URL.  Use this for MinIO (`http://localhost:9000`),
+   * Cloudflare R2 (`https://<account>.r2.cloudflarestorage.com`),
+   * Backblaze B2, DigitalOcean Spaces, Wasabi.  Omit for AWS S3.
+   */
+  readonly endpoint?: string;
+  /**
+   * Force path-style URLs (`<endpoint>/<bucket>/<key>`) instead of
+   * virtual-host style (`<bucket>.<endpoint>/<key>`).  Required for
+   * MinIO and most non-AWS S3-compatible stores.
+   */
+  readonly forcePathStyle?: boolean;
+  /**
+   * Static credentials.  Omit to fall back to the SDK's default chain
+   * (env vars `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, EC2 instance
+   * profile, IAM role for service accounts, …).
+   */
+  readonly credentials?: S3Credentials;
+  /**
+   * Allow injecting a pre-built `S3Client` — useful for tests, custom
+   * middleware, or sharing one client across multiple backends.  When
+   * provided, all other connection options are ignored.
+   */
+  readonly client?: S3ClientLike;
+}
+
 /**
- * Fluent builder for {@link S3ObjectStorageSettings}.  `bucket` + `region`
+ * Fluent builder for {@link S3ObjectStorageOptionsType}.  `bucket` + `region`
  * are required by the backend, so build the two up front:
  *
  *     new S3ObjectStorageBackend(
  *       S3ObjectStorageOptions.create().withBucket('my-app').withRegion('eu-central-1'),
  *     )
  */
-export class S3ObjectStorageOptions extends OptionsBuilder<S3ObjectStorageSettings> {
-  /** Start a fresh builder.  Equivalent to `new S3ObjectStorageOptions()`. */
-  static create(): S3ObjectStorageOptions {
-    return new S3ObjectStorageOptions();
+export class S3ObjectStorageOptionsBuilder extends OptionsBuilder<S3ObjectStorageOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new S3ObjectStorageOptionsBuilder()`. */
+  static create(): S3ObjectStorageOptionsBuilder {
+    return new S3ObjectStorageOptionsBuilder();
   }
 
   /** S3 bucket name. */
@@ -49,3 +79,11 @@ export class S3ObjectStorageOptions extends OptionsBuilder<S3ObjectStorageSettin
     return this.set('client', client);
   }
 }
+
+/**
+ * Accepted input for the S3 object-storage backend constructor: the fluent
+ * {@link S3ObjectStorageOptionsBuilder} OR a plain {@link S3ObjectStorageOptionsType} object.
+ */
+export type S3ObjectStorageOptions = S3ObjectStorageOptionsBuilder | Partial<S3ObjectStorageOptionsType>;
+/** Value alias so `S3ObjectStorageOptions.create()` / `new S3ObjectStorageOptions()` resolve to the builder. */
+export const S3ObjectStorageOptions = S3ObjectStorageOptionsBuilder;

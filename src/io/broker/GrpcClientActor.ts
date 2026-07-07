@@ -3,8 +3,7 @@ import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
-import type { BrokerCommonSettings } from './BrokerSettings.js';
-import type { GrpcClientOptions } from './GrpcClientOptions.js';
+import type { GrpcClientOptions, GrpcClientOptionsType } from './GrpcClientOptions.js';
 
 /**
  * Inbound gRPC reply / stream frame delivered to subscribers.  The
@@ -22,20 +21,6 @@ export type GrpcInbound =
 export type GrpcCredentials =
   | { readonly kind: 'insecure' }
   | { readonly kind: 'tls'; readonly rootCerts?: Uint8Array; readonly cert?: Uint8Array; readonly key?: Uint8Array };
-
-export interface GrpcClientActorSettings extends BrokerCommonSettings {
-  /** Path to the `.proto` file (or array of paths). */
-  readonly protoPath?: string | ReadonlyArray<string>;
-  /** gRPC package name (`'sensor.v1'`). */
-  readonly packageName?: string;
-  /** Service name (`'SensorService'`). */
-  readonly serviceName?: string;
-  /** Server endpoint (`'host:port'`). */
-  readonly endpoint?: string;
-  readonly credentials?: GrpcCredentials;
-  /** Per-call deadline in ms.  Default 30_000. */
-  readonly deadlineMs?: number;
-}
 
 /** Outbound command — what the actor accepts to fire RPC calls. */
 export type GrpcClientCmd =
@@ -61,19 +46,19 @@ interface OutboundOp {
  * the server closes its side, a `'stream-end'` is delivered.
  */
 export class GrpcClientActor
-  extends BrokerActor<GrpcClientActorSettings, GrpcClientCmd, OutboundOp> {
+  extends BrokerActor<GrpcClientOptionsType, GrpcClientCmd, OutboundOp> {
   private serviceClient: GrpcServiceClient | null = null;
   private nextStreamId = 1;
   private readonly bidiStreams = new Map<number, { call: GrpcDuplexCall; target: ActorRef<unknown> }>();
 
-  constructor(options: GrpcClientOptions | Partial<GrpcClientActorSettings> = {}) { super(options); }
+  constructor(options: GrpcClientOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.grpc.client; }
-  protected builtInDefaults(): Partial<GrpcClientActorSettings> {
+  protected builtInDefaults(): Partial<GrpcClientOptionsType> {
     return { credentials: { kind: 'insecure' }, deadlineMs: 30_000 };
   }
-  protected readSettingsFromConfig(c: Config): Partial<GrpcClientActorSettings> {
-    const out: { -readonly [K in keyof GrpcClientActorSettings]?: GrpcClientActorSettings[K] } = {};
+  protected readSettingsFromConfig(c: Config): Partial<GrpcClientOptionsType> {
+    const out: { -readonly [K in keyof GrpcClientOptionsType]?: GrpcClientOptionsType[K] } = {};
     if (c.hasPath('protoPath')) {
       const v = c.getList('protoPath');
       if (v.length === 1 && typeof v[0] === 'string') out.protoPath = v[0];
@@ -85,7 +70,7 @@ export class GrpcClientActor
     if (c.hasPath('deadlineMs')) out.deadlineMs = c.getDuration('deadlineMs');
     return out;
   }
-  protected requiredSettings(): ReadonlyArray<keyof GrpcClientActorSettings> {
+  protected requiredSettings(): ReadonlyArray<keyof GrpcClientOptionsType> {
     return ['protoPath', 'packageName', 'serviceName', 'endpoint'];
   }
   protected endpointLabel(): string { return `grpc://${this.settings.endpoint}`; }

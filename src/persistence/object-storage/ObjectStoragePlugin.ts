@@ -10,7 +10,7 @@ import {
   type S3Credentials,
 } from './S3ObjectStorageBackend.js';
 import type { ObjectStorageBackend } from './ObjectStorageBackend.js';
-import type { ObjectStoragePluginOptions } from './ObjectStoragePluginOptions.js';
+import type { ObjectStoragePluginOptions, ObjectStoragePluginOptionsType } from './ObjectStoragePluginOptions.js';
 import {
   knownConfigsOf,
   type CompressionConfig,
@@ -40,23 +40,6 @@ export type ObjectStorageBackendSpec =
       readonly credentials?: S3Credentials;
     }
   | { readonly kind: 'custom'; readonly backend: ObjectStorageBackend };
-
-export interface ObjectStoragePluginSettings {
-  /** Plugin ID under which the snapshot store is registered. */
-  readonly snapshotPluginId?: string;
-  /** Plugin ID for the durable-state store. */
-  readonly durableStatePluginId?: string;
-  /** Backend definition — filesystem, S3, or custom. */
-  readonly backend: ObjectStorageBackendSpec;
-  /** Key prefix prepended to every object — e.g. `'env-prod/'`. */
-  readonly prefix?: string;
-  /** Snapshot history retention; `0` disables pruning.  Default: 3. */
-  readonly keepN?: number;
-  /** Compression config or per-pid resolver.  Default: gzip. */
-  readonly compression?: CompressionConfig | CompressionResolver;
-  /** Encryption config or per-pid resolver.  Default: none. */
-  readonly encryption?: EncryptionConfig | EncryptionResolver;
-}
 
 export interface ObjectStoragePluginHandles {
   /** The shared backend — both stores write through this. */
@@ -102,9 +85,9 @@ export interface ObjectStoragePluginHandles {
  */
 export async function registerObjectStoragePlugins(
   ext: PersistenceExtension,
-  options: ObjectStoragePluginOptions | Partial<ObjectStoragePluginSettings>,
+  options: ObjectStoragePluginOptions,
 ): Promise<ObjectStoragePluginHandles> {
-  const s = (options as Partial<ObjectStoragePluginSettings>);
+  const s = (options as ObjectStoragePluginOptionsType);
   if (s.backend === undefined) throw new Error('registerObjectStoragePlugins: backend is required (call withBackend()).');
   await validateObjectStoragePeerDeps(s);
 
@@ -137,9 +120,9 @@ export async function registerObjectStoragePlugins(
  * actually registering the plugin.
  */
 export async function validateObjectStoragePeerDeps(
-  options: ObjectStoragePluginOptions | Partial<ObjectStoragePluginSettings>,
+  options: ObjectStoragePluginOptions,
 ): Promise<void> {
-  const s = (options as Partial<ObjectStoragePluginSettings>);
+  const s = (options as ObjectStoragePluginOptionsType);
   // Compression: probe each algorithm at most once.
   const algos = new Set<CompressionConfig['algorithm']>();
   for (const cfg of collectCompressionConfigs(s.compression)) {

@@ -16,26 +16,13 @@ import type { ObjectStorageBackend } from '../object-storage/ObjectStorageBacken
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import { none, some, type Option } from '../../util/Option.js';
-import type { ObjectStorageSnapshotStoreOptions } from './ObjectStorageSnapshotStoreOptions.js';
+import type { ObjectStorageSnapshotStoreOptions, ObjectStorageSnapshotStoreOptionsType } from './ObjectStorageSnapshotStoreOptions.js';
 
 /** Sequence-number padding — matches `Number.MAX_SAFE_INTEGER`'s 16 digits with headroom. */
 const SEQ_PADDING = 20;
 
 const utf8 = new TextEncoder();
 const utf8Decoder = new TextDecoder();
-
-export interface ObjectStorageSnapshotStoreSettings {
-  /** The underlying storage layer (S3 / Filesystem / …). */
-  readonly backend: ObjectStorageBackend;
-  /** Prepended to every key before the persistenceId.  Default: ''. */
-  readonly prefix?: string;
-  /** Keep this many snapshots per persistenceId; older ones are deleted on save.  Default: 3. */
-  readonly keepN?: number;
-  /** Compression — flat config or per-pid resolver.  Default: `{ algorithm: 'gzip' }`. */
-  readonly compression?: CompressionConfig | CompressionResolver;
-  /** Encryption — flat config or per-pid resolver.  Default: `{ mode: 'none' }`. */
-  readonly encryption?: EncryptionConfig | EncryptionResolver;
-}
 
 /**
  * SnapshotStore backed by any `ObjectStorageBackend`.  Each snapshot
@@ -54,8 +41,8 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
   private readonly compression: CompressionConfig | CompressionResolver | undefined;
   private readonly encryption: EncryptionConfig | EncryptionResolver | undefined;
 
-  constructor(options: ObjectStorageSnapshotStoreOptions | Partial<ObjectStorageSnapshotStoreSettings>) {
-    const s = (options as Partial<ObjectStorageSnapshotStoreSettings>);
+  constructor(options: ObjectStorageSnapshotStoreOptions) {
+    const s = (options as ObjectStorageSnapshotStoreOptionsType);
     if (s.backend === undefined) throw new Error('ObjectStorageSnapshotStore: backend is required (call withBackend()).');
     this.backend = s.backend;
     this.prefix = s.prefix ?? '';

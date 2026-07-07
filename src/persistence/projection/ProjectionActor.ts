@@ -1,69 +1,20 @@
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
-import type { PersistentEvent } from '../JournalTypes.js';
 import {
-  type LiveQueryOptions,
   type Offset,
   type PersistenceQuery,
   type TaggedEvent,
   offsetStart,
 } from '../query/PersistenceQuery.js';
 import { InMemoryOffsetStore, type OffsetStore } from './OffsetStore.js';
-import type { ByPidProjectionOptions, ByTagProjectionOptions } from './ProjectionOptions.js';
-
-/**
- * Actor wrapper around a projection.  Owns the polling loop, the
- * offset cursor, and the at-least-once delivery contract:
- *
- *   1. **preStart** — load the cursor from {@link OffsetStore}.
- *   2. **loop** — poll the {@link PersistenceQuery} for new events
- *      from the cursor onwards.
- *   3. **handle** — call the user `handler` on each event.  The
- *      handler MUST be idempotent — see at-least-once below.
- *   4. **commit** — save the cursor to the offset store.
- *   5. **repeat**.
- *
- * **At-least-once.**  If the projection crashes between step 3 and
- * step 4, the next start replays from the saved cursor and the
- * just-handled event will be re-handled.  Handlers must therefore
- * either:
- *   - be idempotent (e.g. UPSERT into the read model);
- *   - or do their own dedup via some unique key on the event.
- *
- * **Two query shapes are supported via the static factories:**
- *
- *   - `ProjectionActor.byPersistenceId(...)` — one cursor per pid.
- *     Use this for "give me everything an entity ever did".  The
- *     cursor is the entity's `sequenceNr`.
- *   - `ProjectionActor.byTag(...)` — one cursor per tag.  Use this
- *     for "give me every event labelled X across the whole journal".
- *     The cursor is an `Offset` (timestamp + tiebreakers).
- *
- * **Stopping**: the standard `actorRef.stop()` triggers `postStop`
- * which cancels the polling timer; the in-flight handler call (if
- * any) is awaited before the actor exits.
- */
-export interface ProjectionSettings<E> {
-  /** Logical name — used as the offset-store key prefix. */
-  readonly name: string;
-  /** The query layer (one of `InMemoryQuery`, `SqliteQuery`, …). */
-  readonly query: PersistenceQuery;
-  /** Where to persist the cursor.  Default: in-memory (lost on restart). */
-  readonly offsetStore?: OffsetStore;
-  /** User handler — runs once per event.  Must be idempotent. */
-  readonly handle: (event: PersistentEvent<E>) => void | Promise<void>;
-  /** Tunables passed to the underlying live query. */
-  readonly liveOptions?: LiveQueryOptions;
-}
-
-export interface ByPidSettings<E> extends ProjectionSettings<E> {
-  readonly persistenceId: string;
-}
-
-export interface ByTagSettings<E> extends ProjectionSettings<E> {
-  readonly tag: string;
-}
+import type {
+  ByPidProjectionOptions,
+  ByTagProjectionOptions,
+  ProjectionOptionsType,
+  ByPidProjectionOptionsType,
+  ByTagProjectionOptionsType,
+} from './ProjectionOptions.js';
 
 /* ============================ implementation ========================== */
 
@@ -77,7 +28,7 @@ abstract class BaseProjectionActor<E> extends Actor<InternalTickMsg> {
   /** Resolves when the in-flight handler completes — preserved across stop. */
   protected currentHandle: Promise<void> = Promise.resolve();
 
-  constructor(protected readonly settings: ProjectionSettings<E>) {
+  constructor(protected readonly settings: ProjectionOptionsType<E>) {
     super();
     this.offsetStore = settings.offsetStore ?? new InMemoryOffsetStore();
   }
@@ -126,7 +77,7 @@ abstract class BaseProjectionActor<E> extends Actor<InternalTickMsg> {
 
 class ByPidProjectionActor<E> extends BaseProjectionActor<E> {
   private cursor = 0;
-  constructor(private readonly cfg: ByPidSettings<E>) { super(cfg); }
+  constructor(private readonly cfg: ByPidProjectionOptionsType<E>) { super(cfg); }
 
   protected async loadCursor(): Promise<void> {
     this.cursor = await this.offsetStore.loadSequence(this.cfg.name, this.cfg.persistenceId);
@@ -150,7 +101,7 @@ class ByPidProjectionActor<E> extends BaseProjectionActor<E> {
 
 class ByTagProjectionActor<E> extends BaseProjectionActor<E> {
   private cursor: Offset = offsetStart;
-  constructor(private readonly cfg: ByTagSettings<E>) { super(cfg); }
+  constructor(private readonly cfg: ByTagProjectionOptionsType<E>) { super(cfg); }
 
   protected async loadCursor(): Promise<void> {
     this.cursor = await this.offsetStore.loadOffset(this.cfg.name, this.cfg.tag);
@@ -181,13 +132,45 @@ class ByTagProjectionActor<E> extends BaseProjectionActor<E> {
 import { Props } from '../../Props.js';
 import type { ActorSystem } from '../../ActorSystem.js';
 
+/**
+ * Actor wrapper around a projection.  Owns the polling loop, the
+ * offset cursor, and the at-least-once delivery contract:
+ *
+ *   1. **preStart** — load the cursor from {@link OffsetStore}.
+ *   2. **loop** — poll the {@link PersistenceQuery} for new events
+ *      from the cursor onwards.
+ *   3. **handle** — call the user `handler` on each event.  The
+ *      handler MUST be idempotent — see at-least-once below.
+ *   4. **commit** — save the cursor to the offset store.
+ *   5. **repeat**.
+ *
+ * **At-least-once.**  If the projection crashes between step 3 and
+ * step 4, the next start replays from the saved cursor and the
+ * just-handled event will be re-handled.  Handlers must therefore
+ * either:
+ *   - be idempotent (e.g. UPSERT into the read model);
+ *   - or do their own dedup via some unique key on the event.
+ *
+ * **Two query shapes are supported via the static factories:**
+ *
+ *   - `ProjectionActor.byPersistenceId(...)` — one cursor per pid.
+ *     Use this for "give me everything an entity ever did".  The
+ *     cursor is the entity's `sequenceNr`.
+ *   - `ProjectionActor.byTag(...)` — one cursor per tag.  Use this
+ *     for "give me every event labelled X across the whole journal".
+ *     The cursor is an `Offset` (timestamp + tiebreakers).
+ *
+ * **Stopping**: the standard `actorRef.stop()` triggers `postStop`
+ * which cancels the polling timer; the in-flight handler call (if
+ * any) is awaited before the actor exits.
+ */
 export class ProjectionActor {
   /** Spawn a per-persistenceId projection.  Returns the actor ref. */
   static byPersistenceId<E>(
     system: ActorSystem,
-    options: ByPidProjectionOptions<E> | Partial<ByPidSettings<E>>,
+    options: ByPidProjectionOptions<E>,
   ): ActorRef<unknown> {
-    const settings = options as ByPidSettings<E>;
+    const settings = options as ByPidProjectionOptionsType<E>;
     return system.spawn(
       Props.create(() => new ByPidProjectionActor<E>(settings) as unknown as Actor<unknown>),
       `projection-${settings.name}-${sanitize(settings.persistenceId)}`,
@@ -197,9 +180,9 @@ export class ProjectionActor {
   /** Spawn a per-tag projection.  Returns the actor ref. */
   static byTag<E>(
     system: ActorSystem,
-    options: ByTagProjectionOptions<E> | Partial<ByTagSettings<E>>,
+    options: ByTagProjectionOptions<E>,
   ): ActorRef<unknown> {
-    const settings = options as ByTagSettings<E>;
+    const settings = options as ByTagProjectionOptionsType<E>;
     return system.spawn(
       Props.create(() => new ByTagProjectionActor<E>(settings) as unknown as Actor<unknown>),
       `projection-${settings.name}-tag-${sanitize(settings.tag)}`,

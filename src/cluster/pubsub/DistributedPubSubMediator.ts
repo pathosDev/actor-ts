@@ -3,8 +3,7 @@ import { Actor } from '../../Actor.js';
 import { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../util/Constants.js';
-import type { Cluster } from '../Cluster.js';
-import type { DistributedPubSubOptions } from './DistributedPubSubOptions.js';
+import type { DistributedPubSubOptions, DistributedPubSubOptionsType } from './DistributedPubSubOptions.js';
 import { MemberRemoved, MemberUp } from '../ClusterEvents.js';
 import { NodeAddress } from '../NodeAddress.js';
 import type { WireMessage } from '../Protocol.js';
@@ -39,11 +38,6 @@ interface SubscriberSet {
   readonly remoteNodes: Set<string>;
 }
 
-export interface DistributedPubSubSettings {
-  readonly cluster: Cluster;
-  readonly gossipIntervalMs?: number;
-}
-
 /**
  * Cluster-wide publish/subscribe bus.  Every node hosts one mediator
  * which keeps a local Map<topic, subscribers> and gossip-replicates
@@ -62,11 +56,11 @@ export class DistributedPubSubMediator extends Actor<
   private unsubscribeCluster: (() => void) | null = null;
   private version = 0;
 
-  readonly settings: DistributedPubSubSettings;
+  readonly settings: DistributedPubSubOptionsType;
 
-  constructor(options: DistributedPubSubOptions | Partial<DistributedPubSubSettings>) {
+  constructor(options: DistributedPubSubOptions) {
     super();
-    this.settings = options as DistributedPubSubSettings;
+    this.settings = options as DistributedPubSubOptionsType;
   }
 
   override preStart(): void {

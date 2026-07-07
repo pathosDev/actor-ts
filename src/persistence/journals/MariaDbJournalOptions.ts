@@ -1,9 +1,17 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
-import type { MariaDbPoolLike } from './MariaDbClient.js';
-import type { MariaDbJournalSettings } from './MariaDbJournal.js';
+import type { MariaDbPoolLike, MariaDbConnection } from './MariaDbClient.js';
+
+export interface MariaDbJournalOptionsType extends MariaDbConnection {
+  /** Events table name.  Default: `events`. */
+  readonly eventsTable?: string;
+  /** Tags join table name.  Default: `${eventsTable}_tags`. */
+  readonly tagsTable?: string;
+  /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
+  readonly autoCreateTables?: boolean;
+}
 
 /**
- * Fluent builder for {@link MariaDbJournalSettings}:
+ * Fluent builder for {@link MariaDbJournalOptionsType}:
  *
  *     new MariaDbJournal(MariaDbJournalOptions.create().withUrl('mariadb://…').withEventsTable('journal'))
  *
@@ -11,10 +19,10 @@ import type { MariaDbJournalSettings } from './MariaDbJournal.js';
  * from the shared {@link MariaDbConnection} mixin; the rest are journal
  * specific.
  */
-export class MariaDbJournalOptions extends OptionsBuilder<MariaDbJournalSettings> {
-  /** Start a fresh builder.  Equivalent to `new MariaDbJournalOptions()`. */
-  static create(): MariaDbJournalOptions {
-    return new MariaDbJournalOptions();
+export class MariaDbJournalOptionsBuilder extends OptionsBuilder<MariaDbJournalOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new MariaDbJournalOptionsBuilder()`. */
+  static create(): MariaDbJournalOptionsBuilder {
+    return new MariaDbJournalOptionsBuilder();
   }
 
   /** Connection URI passed straight to `createPool`, e.g. `mariadb://user:pass@host:3306/db`. */
@@ -47,3 +55,11 @@ export class MariaDbJournalOptions extends OptionsBuilder<MariaDbJournalSettings
     return this.set('autoCreateTables', autoCreateTables);
   }
 }
+
+/**
+ * Accepted input for any MariaDB-journal constructor: the fluent
+ * {@link MariaDbJournalOptionsBuilder} OR a plain {@link MariaDbJournalOptionsType} object.
+ */
+export type MariaDbJournalOptions = MariaDbJournalOptionsBuilder | Partial<MariaDbJournalOptionsType>;
+/** Value alias so `MariaDbJournalOptions.create()` / `new MariaDbJournalOptions()` resolve to the builder. */
+export const MariaDbJournalOptions = MariaDbJournalOptionsBuilder;

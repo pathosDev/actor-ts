@@ -1,19 +1,29 @@
 /**
- * Fluent builder for {@link SseActorSettings}.  Protocol-specific
+ * Fluent builder for {@link SseOptionsType}.  Protocol-specific
  * methods only; the common broker fields (`withReconnect` /
  * `withCircuitBreaker` / `withOutboundBuffer`) come from
- * {@link BrokerOptions}.  `build()` snapshots the accumulated partial
+ * {@link BrokerOptionsBuilder}.  `build()` snapshots the accumulated partial
  * and feeds the same three-layer merge (constructor > HOCON under
  * `actor-ts.io.broker.sse` > built-in defaults).
  */
-import { BrokerOptions } from './BrokerOptions.js';
+import { BrokerOptionsBuilder } from './BrokerOptions.js';
+import type { BrokerCommonOptionsType } from './BrokerSettings.js';
 import type { ActorRef } from '../../ActorRef.js';
-import type { SseActorSettings, SseEvent } from './SseActor.js';
+import type { SseEvent } from './SseActor.js';
 
-export class SseOptions extends BrokerOptions<SseActorSettings> {
-  /** Start a fresh builder.  Equivalent to `new SseOptions()`. */
-  static create(): SseOptions {
-    return new SseOptions();
+export interface SseOptionsType extends BrokerCommonOptionsType {
+  /** SSE endpoint URL. */
+  readonly url?: string;
+  /** Custom request headers. */
+  readonly headers?: Readonly<Record<string, string>>;
+  /** Subscriber for inbound events.  Required. */
+  readonly target?: ActorRef<SseEvent>;
+}
+
+export class SseOptionsBuilder extends BrokerOptionsBuilder<SseOptionsType> {
+  /** Start a fresh builder.  Equivalent to `new SseOptionsBuilder()`. */
+  static create(): SseOptionsBuilder {
+    return new SseOptionsBuilder();
   }
 
   /** SSE endpoint URL. */
@@ -31,3 +41,11 @@ export class SseOptions extends BrokerOptions<SseActorSettings> {
     return this.set('target', target);
   }
 }
+
+/**
+ * Accepted input for any SSE-configurable constructor: the fluent
+ * {@link SseOptionsBuilder} OR a plain {@link SseOptionsType} object.
+ */
+export type SseOptions = SseOptionsBuilder | Partial<SseOptionsType>;
+/** Value alias so `SseOptions.create()` / `new SseOptions()` resolve to the builder. */
+export const SseOptions = SseOptionsBuilder;

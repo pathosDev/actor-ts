@@ -1,11 +1,9 @@
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
-import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
-import type { BrokerCommonSettings } from './BrokerSettings.js';
-import type { RedisStreamsOptions } from './RedisStreamsOptions.js';
+import type { RedisStreamsOptions, RedisStreamsOptionsType } from './RedisStreamsOptions.js';
 
 /** Inbound entry from a Redis stream. */
 export interface RedisStreamEntry {
@@ -20,24 +18,6 @@ export interface RedisStreamPublish {
   readonly fields: Readonly<Record<string, string>>;
   /** Optional `MAXLEN ~ N` cap.  Drops oldest when set. */
   readonly maxLenApprox?: number;
-}
-
-export interface RedisStreamsActorSettings extends BrokerCommonSettings {
-  /** Redis URL (`'redis://host:6379'`). */
-  readonly url?: string;
-  /** Streams to consume. */
-  readonly streams?: ReadonlyArray<string>;
-  /** Consumer-group settings — required to consume.  When omitted only producing works. */
-  readonly consumerGroup?: {
-    readonly group: string;
-    readonly consumer: string;
-    /** Auto-create the group if missing.  Default: true. */
-    readonly createIfMissing?: boolean;
-  };
-  /** Block timeout per XREADGROUP call in ms.  Default: 5_000. */
-  readonly blockMs?: number;
-  /** Subscriber for inbound entries.  Required to consume. */
-  readonly target?: ActorRef<RedisStreamEntry>;
 }
 
 export type RedisStreamsCmd =
@@ -55,19 +35,19 @@ export type RedisStreamsCmd =
  * immediately on delivery.
  */
 export class RedisStreamsActor
-  extends BrokerActor<RedisStreamsActorSettings, RedisStreamsCmd, RedisStreamPublish> {
+  extends BrokerActor<RedisStreamsOptionsType, RedisStreamsCmd, RedisStreamPublish> {
   private redis: IoredisClientLike | null = null;
   private redisProducer: IoredisClientLike | null = null;
   private consumerLoopRunning = false;
 
-  constructor(options: RedisStreamsOptions | Partial<RedisStreamsActorSettings> = {}) { super(options); }
+  constructor(options: RedisStreamsOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.redisStreams; }
-  protected builtInDefaults(): Partial<RedisStreamsActorSettings> {
+  protected builtInDefaults(): Partial<RedisStreamsOptionsType> {
     return { blockMs: 5_000 };
   }
-  protected readSettingsFromConfig(c: Config): Partial<RedisStreamsActorSettings> {
-    const out: { -readonly [K in keyof RedisStreamsActorSettings]?: RedisStreamsActorSettings[K] } = {};
+  protected readSettingsFromConfig(c: Config): Partial<RedisStreamsOptionsType> {
+    const out: { -readonly [K in keyof RedisStreamsOptionsType]?: RedisStreamsOptionsType[K] } = {};
     if (c.hasPath('url')) out.url = c.getString('url');
     if (c.hasPath('streams')) out.streams = c.getStringList('streams');
     if (c.hasPath('blockMs')) out.blockMs = c.getDuration('blockMs');
@@ -81,7 +61,7 @@ export class RedisStreamsActor
     }
     return out;
   }
-  protected requiredSettings(): ReadonlyArray<keyof RedisStreamsActorSettings> { return ['url']; }
+  protected requiredSettings(): ReadonlyArray<keyof RedisStreamsOptionsType> { return ['url']; }
   protected endpointLabel(): string { return this.settings.url ?? '<unknown>'; }
 
   protected async connectImpl(): Promise<void> {

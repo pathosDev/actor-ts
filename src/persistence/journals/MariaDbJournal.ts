@@ -10,18 +10,8 @@ import {
   isDuplicateKeyError,
   rowsOf,
   type MariaDbPoolLike,
-  type MariaDbConnection,
 } from './MariaDbClient.js';
-import type { MariaDbJournalOptions } from './MariaDbJournalOptions.js';
-
-export interface MariaDbJournalSettings extends MariaDbConnection {
-  /** Events table name.  Default: `events`. */
-  readonly eventsTable?: string;
-  /** Tags join table name.  Default: `${eventsTable}_tags`. */
-  readonly tagsTable?: string;
-  /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
-  readonly autoCreateTables?: boolean;
-}
+import type { MariaDbJournalOptions, MariaDbJournalOptionsType } from './MariaDbJournalOptions.js';
 
 interface EventRow {
   persistence_id: string;
@@ -39,7 +29,7 @@ interface EventRow {
  * Cross-process backend → no in-process event bus.
  */
 export class MariaDbJournal implements Journal {
-  private readonly settings: MariaDbJournalSettings;
+  private readonly settings: MariaDbJournalOptionsType;
   private readonly table: string;
   private readonly tagsTable: string;
   private readonly autoCreate: boolean;
@@ -48,8 +38,8 @@ export class MariaDbJournal implements Journal {
   private initPromise: Promise<void> | null = null;
   private closed = false;
 
-  constructor(options: MariaDbJournalOptions | Partial<MariaDbJournalSettings> = {}) {
-    const s = (options as Partial<MariaDbJournalSettings>);
+  constructor(options: MariaDbJournalOptions = {}) {
+    const s = (options as MariaDbJournalOptionsType);
     this.settings = s;
     this.table = assertSafeIdentifier(s.eventsTable ?? 'events', 'events table');
     this.tagsTable = assertSafeIdentifier(

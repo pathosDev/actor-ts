@@ -43,11 +43,11 @@ export type { HttpClientRequest, HttpClientResponse } from './HttpClient.js';
 
 export { FastifyBackend } from './backend/FastifyBackend.js';
 export { ExpressBackend } from './backend/ExpressBackend.js';
-export { ExpressBackendOptions } from './backend/ExpressBackendOptions.js';
-export type { ExpressBackendSettings } from './backend/ExpressBackend.js';
+export { ExpressBackendOptions, ExpressBackendOptionsBuilder } from './backend/ExpressBackendOptions.js';
+export type { ExpressBackendOptionsType } from './backend/ExpressBackendOptions.js';
 export { HonoBackend } from './backend/HonoBackend.js';
-export { HonoBackendOptions } from './backend/HonoBackendOptions.js';
-export type { HonoBackendSettings } from './backend/HonoBackend.js';
+export { HonoBackendOptions, HonoBackendOptionsBuilder } from './backend/HonoBackendOptions.js';
+export type { HonoBackendOptionsType } from './backend/HonoBackendOptions.js';
 export type {
   HttpServerBackend,
   RouteRegistration,

@@ -2,18 +2,14 @@ export {
   ClusterSingleton,
   ClusterSingletonId,
 } from './ClusterSingleton.js';
-export { StartSingletonOptions } from './StartSingletonOptions.js';
-export type {
-  StartSingletonSettings,
-  SingletonHandle,
-} from './ClusterSingleton.js';
+export { StartSingletonOptions, StartSingletonOptionsBuilder } from './StartSingletonOptions.js';
+export type { StartSingletonOptionsType } from './StartSingletonOptions.js';
+export type { SingletonHandle } from './ClusterSingleton.js';
 export {
   ClusterSingletonManager,
   singletonManagerPath,
 } from './ClusterSingletonManager.js';
-export { ClusterSingletonManagerOptions } from './ClusterSingletonManagerOptions.js';
-export type {
-  ClusterSingletonManagerSettings,
-  SingletonDeliver,
-} from './ClusterSingletonManager.js';
+export { ClusterSingletonManagerOptions, ClusterSingletonManagerOptionsBuilder } from './ClusterSingletonManagerOptions.js';
+export type { ClusterSingletonManagerOptionsType } from './ClusterSingletonManagerOptions.js';
+export type { SingletonDeliver } from './ClusterSingletonManager.js';
 export { ClusterSingletonProxy } from './ClusterSingletonProxy.js';

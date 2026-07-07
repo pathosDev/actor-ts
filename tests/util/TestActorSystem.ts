@@ -24,10 +24,10 @@
 
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
-import type { ActorSystemSettings } from '../../src/ActorSystem.js';
+import type { ActorSystemOptionsType } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 
-export interface TestActorSystemOptions extends Partial<ActorSystemSettings> {
+export interface TestActorSystemOptions extends Partial<ActorSystemOptionsType> {
   /** Override the default test-name.  Default: `'test-system'`. */
   readonly name?: string;
 }

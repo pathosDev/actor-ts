@@ -2,7 +2,7 @@ import type {
   BrokeredMessage,
   PortLike,
 } from '../cluster/transports/MessageChannelTransport.js';
-import type { FailureDetectorSettings } from '../cluster/FailureDetector.js';
+import type { FailureDetectorOptionsType } from '../cluster/FailureDetectorOptions.js';
 import type { Member } from '../cluster/Member.js';
 import { NodeAddress } from '../cluster/NodeAddress.js';
 import { LogLevel } from '../Logger.js';
@@ -69,7 +69,7 @@ export interface ParallelMultiNodeSpecSettings {
   /** Per-role data passed to the scenario module's `setup(ctx)`. */
   readonly scenarioInitDataFor?: (role: string) => unknown;
   readonly addresses?: Readonly<Record<string, { host: string; port: number }>>;
-  readonly failureDetector?: Partial<FailureDetectorSettings>;
+  readonly failureDetector?: Partial<FailureDetectorOptionsType>;
   readonly gossipIntervalMs?: number;
   readonly awaitTimeoutMs?: number;
   readonly logLevel?: LogLevel;

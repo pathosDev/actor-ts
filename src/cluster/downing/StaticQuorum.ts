@@ -4,14 +4,7 @@ import {
   type DowningDecision,
   type DowningProvider,
 } from './DowningProvider.js';
-import type { StaticQuorumOptions } from './StaticQuorumOptions.js';
-
-export interface StaticQuorumSettings {
-  /** Exact size of the quorum needed on the reachable side. */
-  readonly quorumSize: number;
-  /** If set, only members carrying this role count toward quorum. */
-  readonly role?: string;
-}
+import type { StaticQuorumOptions, StaticQuorumOptionsType } from './StaticQuorumOptions.js';
 
 /**
  * "Static quorum" — as long as at least `quorumSize` reachable members are
@@ -22,10 +15,10 @@ export interface StaticQuorumSettings {
  * shrink below the threshold.
  */
 export class StaticQuorum implements DowningProvider {
-  private readonly settings: StaticQuorumSettings;
+  private readonly settings: StaticQuorumOptionsType;
 
-  constructor(options: StaticQuorumOptions | Partial<StaticQuorumSettings>) {
-    this.settings = options as StaticQuorumSettings;
+  constructor(options: StaticQuorumOptions) {
+    this.settings = options as StaticQuorumOptionsType;
     if (this.settings.quorumSize < 1) {
       throw new Error('StaticQuorum: quorumSize must be >= 1');
     }

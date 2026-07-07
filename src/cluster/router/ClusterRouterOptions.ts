@@ -1,9 +1,33 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { Cluster } from '../Cluster.js';
-import type { ClusterRouterSettings, ClusterRouterType } from './ClusterRouter.js';
+import type { ClusterRouterType } from './ClusterRouter.js';
+
+/** Plain settings-object shape consumed by {@link ClusterRouter.props}. */
+export interface ClusterRouterOptionsType<TMsg> {
+  /** The cluster the router lives in.  Used for membership + transport. */
+  readonly cluster: Cluster;
+  /** Restrict routees to up-members carrying this role.  Omit for "any node". */
+  readonly role?: string;
+  /** Strategy.  See {@link ClusterRouterType}. */
+  readonly routerType: ClusterRouterType;
+  /**
+   * The path the routee actor lives under on each routee node — usually
+   * `/user/<actorName>`.  The same path must exist on every targeted
+   * node; the router doesn't probe for liveness beyond the cluster
+   * membership state.
+   */
+  readonly routeePath: string;
+  /**
+   * Required for `routerType: 'consistent-hashing'`, ignored otherwise.
+   * Returns the string key used to pin a message to a routee.  Two
+   * messages with the same key always land on the same node (subject
+   * to the cluster topology not changing).
+   */
+  readonly extractKey?: (message: TMsg) => string;
+}
 
 /**
- * Fluent builder for {@link ClusterRouterSettings}:
+ * Fluent builder for {@link ClusterRouterOptionsType}:
  *
  *     ClusterRouter.props(
  *       ClusterRouterOptions.create<Cmd>()
@@ -13,10 +37,10 @@ import type { ClusterRouterSettings, ClusterRouterType } from './ClusterRouter.j
  *         .withExtractKey((m) => m.id),
  *     );
  */
-export class ClusterRouterOptions<TMsg> extends OptionsBuilder<ClusterRouterSettings<TMsg>> {
+export class ClusterRouterOptionsBuilder<TMsg> extends OptionsBuilder<ClusterRouterOptionsType<TMsg>> {
   /** Start a fresh builder. */
-  static create<TMsg>(): ClusterRouterOptions<TMsg> {
-    return new ClusterRouterOptions<TMsg>();
+  static create<TMsg>(): ClusterRouterOptionsBuilder<TMsg> {
+    return new ClusterRouterOptionsBuilder<TMsg>();
   }
 
   /** The cluster the router lives in — drives membership + transport. */
@@ -44,3 +68,14 @@ export class ClusterRouterOptions<TMsg> extends OptionsBuilder<ClusterRouterSett
     return this.set('extractKey', extractKey);
   }
 }
+
+/**
+ * Accepted input for {@link ClusterRouter.props}: the fluent
+ * {@link ClusterRouterOptionsBuilder} OR a plain (partial)
+ * {@link ClusterRouterOptionsType} object.
+ */
+export type ClusterRouterOptions<TMsg> =
+  | ClusterRouterOptionsBuilder<TMsg>
+  | Partial<ClusterRouterOptionsType<TMsg>>;
+/** Value alias so `ClusterRouterOptions.create()` / `new ClusterRouterOptions()` resolve to the builder. */
+export const ClusterRouterOptions = ClusterRouterOptionsBuilder;
