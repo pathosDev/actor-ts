@@ -64,10 +64,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   'x' })`.  A builder *is* its settings — `OptionsBuilder` stores each field
   as an own property, so a builder instance reads and spreads exactly like a
   plain settings object (no separate resolve step; consumers just read the
-  argument).  Each builder is `XOptions.create().withField(…)…` and lives in its own
-  `XOptions.ts` file next to (never inside) the class it configures; a
-  settings interface that was named `XOptions` is renamed to `XSettings`
-  and the builder takes the `XOptions` name.  HOCON resolution is
+  argument).  Each configurable type exposes **three names from one
+  `XOptions.ts` file**: `XOptionsType` (the plain object), `XOptionsBuilder`
+  (the fluent builder, `XOptions.create().withField(…)`), and `XOptions` — the
+  **union** of the two that every consumer signature accepts (`options:
+  XOptions`), plus a value alias so `XOptions.create()` keeps working.  There
+  is no separate "Settings" concept (the former `XSettings` interface is now
+  `XOptionsType`, co-located in `XOptions.ts`).  HOCON resolution is
   unchanged — the builder / plain object only supplies the
   highest-precedence explicit layer, and unset fields still fall through
   to config then defaults.  Naming lockstep with no divergence: builder
@@ -89,7 +92,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `new X({ a, b })` still works, or use `new X(XOptions.create()
   .withA(a).withB(b))`; the positional "context" args that were never
   settings (a system name, a `Cluster`, a sharding entity + type name)
-  stay positional.
+  stay positional.  **BREAKING** (pre-1.0 hard cut): the builder class
+  `XOptions` is renamed `XOptionsBuilder` and the settings interface
+  `XSettings` is renamed `XOptionsType`; `XOptions` is now the accepted-input
+  union.  Everyday call sites — `XOptions.create()…` and plain objects — are
+  unaffected; only code that referenced the old `XSettings` type name or the
+  builder *class* by name needs updating.
 - **BREAKING: renamed settings fields + HOCON keys** (#348) — to keep the
   builder-method ⇔ settings-field ⇔ HOCON-leaf names in lockstep, six
   fields were renamed: MQTT `defaultQos` → `qos` (`withQos`) and
