@@ -129,6 +129,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`DecodeOptions.maxOutputBytes`; `Infinity` opts out): gzip enforces it at
   allocation time via zlib's `maxOutputLength`, and every path asserts the
   decoded size as a portable backstop.
+- **HTTP-4 (MEDIUM) — idempotency responses can be scoped per caller** (see
+  `SECURITY_AUDIT.md`).  The idempotency cache keyed only on the
+  `Idempotency-Key` header plus a method/path/body fingerprint, so two callers
+  reusing the same key for the same request shape shared one cached response —
+  a cross-user disclosure when the response is identity-specific (e.g. carries
+  `Set-Cookie` or the first caller's data).  New opt-in `identity: (req) =>
+  string` folds the authenticated principal into the cache key so responses are
+  partitioned per caller.  (Same-key-different-body poisoning was already
+  rejected with 422.)
 
 ## [0.10.0] — 2026-07-08
 

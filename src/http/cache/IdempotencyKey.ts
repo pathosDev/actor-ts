@@ -46,6 +46,17 @@ export interface IdempotencyOptions {
    * to break the others.
    */
   readonly missingHeader?: 'reject' | 'pass-through';
+  /**
+   * Derive a per-caller scope folded into the cache key so a cached response
+   * is NEVER replayed to a different caller (SECURITY_AUDIT.md HTTP-4).
+   * Without it, two callers sending the same method + path + body under the
+   * same `Idempotency-Key` share one cache entry — fine for a public
+   * endpoint, unsafe when the response is identity-specific (the second
+   * caller would get the first caller's data / `Set-Cookie`).  Return the
+   * authenticated principal (user / tenant / API-key id), e.g.
+   * `identity: (req) => req.headers['x-account-id'] ?? 'anon'`.
+   */
+  readonly identity?: (req: HttpRequest) => string | Promise<string>;
 }
 
 interface CachedResponse {
@@ -77,6 +88,7 @@ export function idempotent(opts: IdempotencyOptions) {
   const header = (opts.headerName ?? 'idempotency-key').toLowerCase();
   const prefix = opts.keyPrefix ?? 'idem:';
   const missing = opts.missingHeader ?? 'reject';
+  const identity = opts.identity;
 
   return function wrap(handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse) {
     return async function deduped(req: HttpRequest): Promise<HttpResponse> {
@@ -87,7 +99,11 @@ export function idempotent(opts: IdempotencyOptions) {
           error: `missing required '${header}' header`,
         });
       }
-      const cacheKey = `${prefix}${userKey}`;
+      // Fold the caller scope into the key so a cached response can't be
+      // replayed to a different caller (HTTP-4).  Empty when no `identity`
+      // is configured — identical key space to before.
+      const scope = identity ? await identity(req) : '';
+      const cacheKey = `${prefix}${scope}${scope ? ':' : ''}${userKey}`;
       const fingerprint = await computeRequestFingerprint(req);
 
       // Probe — if the key already holds a completed response, replay.
