@@ -61,6 +61,15 @@ export {
   CsrfOptionsBuilder,
   SameOriginOptions,
   SameOriginOptionsBuilder,
+  requestId,
+  RequestIdOptions,
+  RequestIdOptionsBuilder,
+  BasicAuth,
+  BasicAuthOptions,
+  BasicAuthOptionsBuilder,
+  requestTimeout,
+  TimeoutOptions,
+  TimeoutOptionsBuilder,
 } from './middleware/index.js';
 export type {
   BearerTokenAuthOptions,
@@ -74,6 +83,9 @@ export type {
   CsrfOptionsType,
   CsrfCookieOptions,
   SameOriginOptionsType,
+  RequestIdOptionsType,
+  BasicAuthOptionsType,
+  TimeoutOptionsType,
 } from './middleware/index.js';
 
 export { entity, marshal, pickRequestSerializer, pickResponseSerializer } from './Marshalling.js';

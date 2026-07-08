@@ -24,3 +24,14 @@ export type { CorsOptionsType, CorsOrigin } from './CorsOptions.js';
 export { csrfProtection, requireSameOrigin, readCsrfToken } from './Csrf.js';
 export { CsrfOptions, CsrfOptionsBuilder, SameOriginOptions, SameOriginOptionsBuilder } from './CsrfOptions.js';
 export type { CsrfOptionsType, CsrfCookieOptions, SameOriginOptionsType } from './CsrfOptions.js';
+
+// Request id, HTTP Basic auth, request timeout.
+export { requestId } from './RequestId.js';
+export { RequestIdOptions, RequestIdOptionsBuilder } from './RequestIdOptions.js';
+export type { RequestIdOptionsType } from './RequestIdOptions.js';
+export { BasicAuth } from './BasicAuth.js';
+export { BasicAuthOptions, BasicAuthOptionsBuilder } from './BasicAuthOptions.js';
+export type { BasicAuthOptionsType } from './BasicAuthOptions.js';
+export { requestTimeout } from './Timeout.js';
+export { TimeoutOptions, TimeoutOptionsBuilder } from './TimeoutOptions.js';
+export type { TimeoutOptionsType } from './TimeoutOptions.js';
