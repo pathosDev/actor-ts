@@ -1,5 +1,5 @@
 export { ProducerController } from './ProducerController.js';
-export { ProducerControllerOptions, ProducerControllerOptionsBuilder } from './ProducerControllerOptions.js';
+export { ProducerControllerOptions, ProducerControllerOptionsBuilder, ProducerControllerOptionsValidator } from './ProducerControllerOptions.js';
 export type { ProducerControllerOptionsType } from './ProducerControllerOptions.js';
 export type { ProducerSend } from './ProducerController.js';
 export { ConsumerController } from './ConsumerController.js';

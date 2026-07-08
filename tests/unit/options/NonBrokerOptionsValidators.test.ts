@@ -19,6 +19,10 @@ import {
   type ShardedDaemonProcessOptionsType,
 } from '../../../src/cluster/sharding/ShardedDaemonProcessOptions.js';
 import { WorkerClusterOptionsValidator, type WorkerClusterOptionsType } from '../../../src/worker/WorkerClusterOptions.js';
+import {
+  ProducerControllerOptionsValidator,
+  type ProducerControllerOptionsType,
+} from '../../../src/delivery/ProducerControllerOptions.js';
 
 // Direct validator tests for the non-broker options. Each consumer calls the
 // same validator in its constructor / start method after merging defaults.
@@ -164,5 +168,19 @@ describe('WorkerClusterOptionsValidator', () => {
   test('rejects an out-of-range basePort and non-positive readyTimeoutMs', () => {
     expect(() => check({ basePort: 70_000 })).toThrow(OptionsError);
     expect(() => check({ readyTimeoutMs: 0 })).toThrow(OptionsError);
+  });
+});
+
+describe('ProducerControllerOptionsValidator', () => {
+  const check = (s: Partial<ProducerControllerOptionsType<unknown>>): void =>
+    new ProducerControllerOptionsValidator<unknown>().validate(s);
+
+  test('rejects a non-positive resendTimeout / windowSize', () => {
+    expect(() => check({ resendTimeout: 0 })).toThrow(OptionsError);
+    expect(() => check({ windowSize: 0 })).toThrow(OptionsError);
+  });
+
+  test('accepts sensible flow-control values', () => {
+    expect(() => check({ resendTimeout: 500, windowSize: 16 })).not.toThrow();
   });
 });
