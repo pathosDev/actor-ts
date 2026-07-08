@@ -5,6 +5,11 @@ import {
   ClusterClientReceptionistOptionsValidator,
   type ClusterClientReceptionistOptionsType,
 } from '../../../src/cluster/ClusterClientReceptionistOptions.js';
+import { ClusterOptionsValidator, type ClusterOptionsType } from '../../../src/cluster/ClusterOptions.js';
+import {
+  ClusterBootstrapOptionsValidator,
+  type ClusterBootstrapOptionsType,
+} from '../../../src/cluster/ClusterBootstrapOptions.js';
 import { WebSocketClientOptionsValidator, type WebSocketClientOptionsType } from '../../../src/http/ws/WebSocketClientOptions.js';
 import { ExpressBackendOptionsValidator, type ExpressBackendOptionsType } from '../../../src/http/backend/ExpressBackendOptions.js';
 import { HonoBackendOptionsValidator, type HonoBackendOptionsType } from '../../../src/http/backend/HonoBackendOptions.js';
@@ -54,6 +59,48 @@ describe('ClusterClientReceptionistOptionsValidator', () => {
   test('accepts an unset or positive askTimeoutMs', () => {
     expect(() => check({})).not.toThrow();
     expect(() => check({ askTimeoutMs: 3_000 })).not.toThrow();
+  });
+});
+
+describe('ClusterOptionsValidator', () => {
+  const check = (s: Partial<ClusterOptionsType>): void => new ClusterOptionsValidator().validate(s);
+
+  test('rejects a non-positive/fractional port and empty host', () => {
+    expect(() => check({ host: 'h', port: 0 })).toThrow(OptionsError);
+    expect(() => check({ host: 'h', port: 1.5 })).toThrow(OptionsError);
+    expect(() => check({ host: '', port: 2552 })).toThrow(OptionsError);
+  });
+
+  test('accepts a synthetic (out-of-TCP-range) port for InMemoryTransport', () => {
+    // The port doubles as an InMemoryTransport node id, so > 65535 is allowed.
+    expect(() => check({ host: 'sys', port: 89_001 })).not.toThrow();
+  });
+
+  test('rejects non-positive gossip/seed/tombstone durations', () => {
+    expect(() => check({ gossipIntervalMs: 0 })).toThrow(/gossipIntervalMs/);
+    expect(() => check({ seedRetryIntervalMs: -1 })).toThrow(OptionsError);
+    expect(() => check({ tombstoneTtlMs: 0 })).toThrow(OptionsError);
+  });
+
+  test('accepts weaklyUpAfterMs 0 (disabled) and a valid config', () => {
+    expect(() => check({ host: '127.0.0.1', port: 2552, weaklyUpAfterMs: 0 })).not.toThrow();
+  });
+});
+
+describe('ClusterBootstrapOptionsValidator', () => {
+  const check = (s: Partial<ClusterBootstrapOptionsType>): void =>
+    new ClusterBootstrapOptionsValidator().validate(s);
+
+  test('rejects an empty name and a non-positive port', () => {
+    expect(() => check({ name: '' })).toThrow(OptionsError);
+    expect(() => check({ name: 'app', port: 0 })).toThrow(OptionsError);
+  });
+
+  test('awaitReady accepts booleans and non-negative numbers, rejects negatives', () => {
+    expect(() => check({ name: 'app', awaitReady: true })).not.toThrow();
+    expect(() => check({ name: 'app', awaitReady: 0 })).not.toThrow();
+    expect(() => check({ name: 'app', awaitReady: 5_000 })).not.toThrow();
+    expect(() => check({ name: 'app', awaitReady: -1 })).toThrow(/awaitReady/);
   });
 });
 
