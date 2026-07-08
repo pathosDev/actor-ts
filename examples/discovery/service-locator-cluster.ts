@@ -57,8 +57,7 @@ async function main(): Promise<void> {
   const key = ServiceKey.of<string>('workers');
 
   for (const { sys, cluster, name } of [a, b, c]) {
-    const receptionistOptions = ReceptionistOptions.create()
-      .withGossipIntervalMs(80);
+    const receptionistOptions = ReceptionistOptions.create().withGossipIntervalMs(80);
     const r = sys.extension(ReceptionistId).start(cluster, receptionistOptions);
     const w = sys.spawn(Props.create(() => new Worker(name)), `worker-${name}`);
     r.tell(new Register(key, w));

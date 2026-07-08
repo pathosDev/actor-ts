@@ -38,8 +38,7 @@ async function startNode(host: string, port: number, seeds: string[] = []): Prom
     .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
     .withGossipIntervalMs(80);
   const cluster = await Cluster.join(system, clusterOptions);
-  const pubSubOptions = DistributedPubSubOptions.create()
-    .withGossipIntervalMs(100);
+  const pubSubOptions = DistributedPubSubOptions.create().withGossipIntervalMs(100);
   const mediator = system.extension(DistributedPubSubId).start(cluster, pubSubOptions);
   return { system, cluster, mediator };
 }

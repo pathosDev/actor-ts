@@ -60,8 +60,7 @@ class Account extends PersistentActor<Cmd, Event, State> {
 }
 
 async function main(): Promise<void> {
-  const journalOptions = SqliteJournalOptions.create()
-    .withPath(':memory:');
+  const journalOptions = SqliteJournalOptions.create().withPath(':memory:');
   const journal = new SqliteJournal(journalOptions);
   const snapshotOptions = SqliteSnapshotStoreOptions.create()
     .withPath(':memory:')
@@ -69,8 +68,7 @@ async function main(): Promise<void> {
   const snapshots = new SqliteSnapshotStore(snapshotOptions);
 
   // --- first incarnation: record events ---
-  const sys1Options = ActorSystemOptions.create()
-    .withPersistence({ journal, snapshotStore: snapshots });
+  const sys1Options = ActorSystemOptions.create().withPersistence({ journal, snapshotStore: snapshots });
   const sys1 = ActorSystem.create('bank', sys1Options);
 
   const acct1 = sys1.spawn(Props.create(() => new Account('alice')), 'alice');
@@ -82,8 +80,7 @@ async function main(): Promise<void> {
   await sys1.terminate();
 
   // --- second incarnation: recover from the same journal ---
-  const sys2Options = ActorSystemOptions.create()
-    .withPersistence({ journal, snapshotStore: snapshots });
+  const sys2Options = ActorSystemOptions.create().withPersistence({ journal, snapshotStore: snapshots });
   const sys2 = ActorSystem.create('bank-restart', sys2Options);
 
   const acct2 = sys2.spawn(Props.create(() => new Account('alice')), 'alice');

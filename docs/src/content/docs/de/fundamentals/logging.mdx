@@ -41,8 +41,7 @@ zuerst).
 Systemweit über die Settings:
 
 ```ts
-const actorSystemOptions = ActorSystemOptions.create()
-  .withLogLevel('debug');
+const actorSystemOptions = ActorSystemOptions.create().withLogLevel('debug');
 const system = ActorSystem.create('my-app', actorSystemOptions);
 ```
 
@@ -60,8 +59,7 @@ menschenlesbaren Text, den der Default-`ConsoleLogger` ausgibt.
 ```ts
 import { ActorSystem, ActorSystemOptions, JsonLogger } from 'actor-ts';
 
-const actorSystemOptions = ActorSystemOptions.create()
-  .withLogger(new JsonLogger());
+const actorSystemOptions = ActorSystemOptions.create().withLogger(new JsonLogger());
 const system = ActorSystem.create('my-app', actorSystemOptions);
 ```
 
@@ -110,8 +108,7 @@ import { ActorSystem, ActorSystemOptions, otelLogger } from 'actor-ts';
 
 // (SDK-Setup: LoggerProvider + OTLP-Exporter registrieren — außerhalb des Scope.)
 
-const actorSystemOptions = ActorSystemOptions.create()
-  .withLogger(otelLogger({ api: logsApi }));
+const actorSystemOptions = ActorSystemOptions.create().withLogger(otelLogger({ api: logsApi }));
 const system = ActorSystem.create('my-app', actorSystemOptions);
 ```
 

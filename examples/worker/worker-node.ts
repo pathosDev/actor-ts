@@ -11,8 +11,7 @@ class HelloWorker extends Actor<'greet'> {
 
 async function main(): Promise<void> {
   const ctx = await WorkerNode.join<{ workerId: number; seedAddr?: string }>();
-  const systemOptions = ActorSystemOptions.create()
-    .withConfig({ 'actor-ts': { logger: { level: 'info' } } });
+  const systemOptions = ActorSystemOptions.create().withConfig({ 'actor-ts': { logger: { level: 'info' } } });
   const system = ActorSystem.create(ctx.systemName, systemOptions);
   const clusterOptions = ClusterOptions.create()
     .withHost(ctx.self.host)

@@ -106,8 +106,7 @@ async function main(): Promise<void> {
   const configFile = path.resolve(
     import.meta.dirname ?? __dirname, '..', 'application.conf',
   );
-  const systemOptions = ActorSystemOptions.create()
-    .withConfigFile(configFile);
+  const systemOptions = ActorSystemOptions.create().withConfigFile(configFile);
   const system = ActorSystem.create(SYSTEM_NAME, systemOptions);
   const seedSummary = seeds.length > 0
     ? ` · seeds=[${seeds.join(',')}]`
@@ -163,11 +162,9 @@ async function main(): Promise<void> {
   });
 
   // -------- 5. DistributedData (presence + session tokens) + DistributedPubSub (broadcast) --------
-  const ddOptions = DistributedDataOptions.create()
-    .withGossipInterval(500);
+  const ddOptions = DistributedDataOptions.create().withGossipInterval(500);
   const ddHandle = system.extension(DistributedDataId).start(cluster, ddOptions);
-  const pubSubOptions = DistributedPubSubOptions.create()
-    .withGossipIntervalMs(500);
+  const pubSubOptions = DistributedPubSubOptions.create().withGossipIntervalMs(500);
   const mediator = system.extension(DistributedPubSubId).start(cluster, pubSubOptions);
   const sessions = new SessionStore(ddHandle);
   if (sessions.usingDemoSecret) {

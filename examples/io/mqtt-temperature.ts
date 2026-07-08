@@ -75,8 +75,7 @@ class TemperatureHub extends MqttActor<Reading, Tick> {
 async function main(): Promise<void> {
   // The broker URL lives in HOCON — typical for prod (per-environment),
   // while clientId + QoS are set per-instance via the builder.
-  const systemOptions = ActorSystemOptions.create()
-    .withConfig({
+  const systemOptions = ActorSystemOptions.create().withConfig({
       'actor-ts': {
         io: {
           broker: {

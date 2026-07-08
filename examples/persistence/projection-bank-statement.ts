@@ -109,8 +109,7 @@ async function main(): Promise<void> {
   const journal = new InMemoryJournal();
   const ledger = new BankStatementLedger();
 
-  const sysOptions = ActorSystemOptions.create()
-    .withPersistence({ journal });
+  const sysOptions = ActorSystemOptions.create().withPersistence({ journal });
   const sys = ActorSystem.create('bank', sysOptions);
 
   // Spawn the projection FIRST so it picks up every event from the

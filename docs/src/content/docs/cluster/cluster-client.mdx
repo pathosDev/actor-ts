@@ -11,8 +11,7 @@ cluster-internal actors via known **receptionist contacts**.
 ```ts
 import { ClusterClient, ClusterClientOptions } from 'actor-ts';
 
-const clusterClientOptions = ClusterClientOptions.create()
-  .withContactPoints(['actor-ts://my-app@10.0.0.5:2552/system/receptionist']);
+const clusterClientOptions = ClusterClientOptions.create().withContactPoints(['actor-ts://my-app@10.0.0.5:2552/system/receptionist']);
 const client = new ClusterClient(
   clusterClientOptions,
 );
@@ -115,8 +114,7 @@ const ref = await system.actorSelection('actor-ts://my-app@host:2552/user/api').
 ref.tell(...);
 
 // Outside the cluster — ClusterClient:
-const clusterClientOptions = ClusterClientOptions.create()
-  .withContactPoints([...]);
+const clusterClientOptions = ClusterClientOptions.create().withContactPoints([...]);
 const client = new ClusterClient(clusterClientOptions);
 client.send('/user/api', ...);
 ```

@@ -114,8 +114,7 @@ Clients nutzen die, um zu backoffen, statt zufällig zu retrien.
 import { RedisCache, RedisCacheOptions } from 'actor-ts';
 
 rateLimit({
-  const redisCacheOptions = RedisCacheOptions.create()
-    .withUrl('redis://...');
+  const redisCacheOptions = RedisCacheOptions.create().withUrl('redis://...');
   cache:       new RedisCache(redisCacheOptions),
   windowMs:    60_000,
   max: 100,

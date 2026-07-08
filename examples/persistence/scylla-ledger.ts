@@ -84,8 +84,7 @@ async function main(): Promise<void> {
   }
   const contactPoints = raw.split(',').map((s) => s.trim());
 
-  const systemOptions = ActorSystemOptions.create()
-    .withConfig({
+  const systemOptions = ActorSystemOptions.create().withConfig({
       'actor-ts': {
         persistence: {
           journal: { plugin: CASSANDRA_JOURNAL_PLUGIN_ID },

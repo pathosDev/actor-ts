@@ -124,8 +124,7 @@ Standard-Gossip-Intervall ist `gossipIntervalMs` des Clusters
 (1 Sekunde). Überschreibe pro Mediator:
 
 ```ts
-const distributedPubSubOptions = DistributedPubSubOptions.create()
-  .withGossipIntervalMs(500);
+const distributedPubSubOptions = DistributedPubSubOptions.create().withGossipIntervalMs(500);
 DistributedPubSub.start(cluster, distributedPubSubOptions);
 ```
 

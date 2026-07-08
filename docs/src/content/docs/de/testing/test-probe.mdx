@@ -216,11 +216,9 @@ Für Ask-artige Nachrichten — die Probe steht für den Fragenden.
 ### Mehrere Proben
 
 ```ts
-const testProbeOptions = TestProbeOptions.create()
-  .withName('a-probe');
+const testProbeOptions = TestProbeOptions.create().withName('a-probe');
 const a = tk.createTestProbe(testProbeOptions);
-const testProbe2Options = TestProbeOptions.create()
-  .withName('b-probe');
+const testProbe2Options = TestProbeOptions.create().withName('b-probe');
 const b = tk.createTestProbe(testProbe2Options);
 
 const router = tk.system.spawnAnonymous(...);

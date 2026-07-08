@@ -95,8 +95,7 @@ Virtuelle Zeit kontrolliert *alle* Actor-Timer.
 import { ActorSystem, ActorSystemOptions, ManualScheduler } from 'actor-ts';
 
 const scheduler = new ManualScheduler();
-const actorSystemOptions = ActorSystemOptions.create()
-  .withScheduler(scheduler);
+const actorSystemOptions = ActorSystemOptions.create().withScheduler(scheduler);
 const system = ActorSystem.create('my-spec', actorSystemOptions);
 
 // ... Test-Code ...

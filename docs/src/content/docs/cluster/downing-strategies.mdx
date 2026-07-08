@@ -103,8 +103,7 @@ special-purpose deployments.
 ```ts
 import { KeepOldest, KeepOldestOptions } from 'actor-ts';
 
-const keepOldestOptions = KeepOldestOptions.create()
-  .withDownIfAlone(true);
+const keepOldestOptions = KeepOldestOptions.create().withDownIfAlone(true);
 new KeepOldest(keepOldestOptions);
 ```
 
@@ -158,8 +157,7 @@ neutral location (a third DC, a control-plane K8s namespace).
 ```ts
 import { StaticQuorum, StaticQuorumOptions } from 'actor-ts';
 
-const staticQuorumOptions = StaticQuorumOptions.create()
-  .withQuorumSize(3);
+const staticQuorumOptions = StaticQuorumOptions.create().withQuorumSize(3);
 new StaticQuorum(staticQuorumOptions);
 ```
 
@@ -185,8 +183,7 @@ survival.
 ```ts
 import { LeaseMajority, LeaseMajorityOptions } from 'actor-ts';
 
-const leaseMajorityOptions = LeaseMajorityOptions.create()
-  .withLease(someLeaseImpl);
+const leaseMajorityOptions = LeaseMajorityOptions.create().withLease(someLeaseImpl);
 new LeaseMajority(
   leaseMajorityOptions,
 );
@@ -274,8 +271,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`StaticQuorum` blocks scale-up">
   ```ts
-  const quorumOptions = StaticQuorumOptions.create()
-    .withQuorumSize(5);
+  const quorumOptions = StaticQuorumOptions.create().withQuorumSize(5);
   new StaticQuorum(quorumOptions);
   // Starting up with 3 nodes → cluster downs itself (no quorum)
   ```

@@ -106,10 +106,8 @@ wrap with
 [CachedSnapshotStore](/persistence/snapshot-stores/cached-snapshot-store/):
 
 ```ts
-const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.create()
-  .withBackend(backend);
-const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create()
-  .withCache(cache);
+const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.create().withBackend(backend);
+const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create().withCache(cache);
 const cached = new CachedSnapshotStore(
   new ObjectStorageSnapshotStore(objectStorageSnapshotStoreOptions),
   cachedSnapshotStoreOptions,
@@ -167,10 +165,8 @@ small window where old snapshots co-exist with new ones.
 
 ```ts
 {
-  const sqliteJournalOptions = SqliteJournalOptions.create()
-    .withPath('...');
-  const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.create()
-    .withBackend(backend);
+  const sqliteJournalOptions = SqliteJournalOptions.create().withPath('...');
+  const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.create().withBackend(backend);
   journal:       new SqliteJournal(sqliteJournalOptions),
   snapshotStore: new ObjectStorageSnapshotStore(objectStorageSnapshotStoreOptions),
 }

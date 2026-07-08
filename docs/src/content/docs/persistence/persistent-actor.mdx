@@ -31,8 +31,7 @@ type Event =
   | { kind: 'deposited'; amount: number; ts: number }
   | { kind: 'withdrawn'; amount: number; ts: number };
 
-const actorSystemOptions = ActorSystemOptions.create()
-  .withPersistence({
+const actorSystemOptions = ActorSystemOptions.create().withPersistence({
     journal:       new InMemoryJournal(),
     snapshotStore: new InMemorySnapshotStore(),
   });

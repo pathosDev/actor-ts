@@ -52,8 +52,7 @@ async function main(): Promise<void> {
     )),
   );
 
-  const backendOptions = HonoBackendOptions.create()
-    .withMaxBodyBytes(1 * 1024 * 1024);
+  const backendOptions = HonoBackendOptions.create().withMaxBodyBytes(1 * 1024 * 1024);
   const backend = new HonoBackend(backendOptions);
   // Optional: reach through to the raw Hono app to attach native middleware.
   //   const app = backend.getApp();

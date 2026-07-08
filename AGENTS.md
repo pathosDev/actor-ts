@@ -182,8 +182,11 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
 - **Never nest a builder into a call** — always assign it to its own
   contextual local variable first (`const mqttOptions = MqttOptions
   .create()…; new MqttActor(mqttOptions)`), then pass the variable.
-- **Write builder chains multi-line** — one `.withX()` per line (never a
-  single-line chain), even short ones.
+- **Write builder chains multi-line — one `.withX()` per line — when there
+  are two or more.** A chain with a *single* `.withX()` stays on one line
+  (`const mqttOptions = MqttOptions.create().withClientId('x')`) — forcing a
+  lone call onto its own line reads worse. Two or more calls always go
+  one-per-line (never a single-line multi-call chain).
 - **HOCON precedence is unchanged** — the builder / plain object feeds only
   the highest-precedence explicit layer; unset fields fall through to
   HOCON, then built-in defaults.
