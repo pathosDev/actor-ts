@@ -49,7 +49,17 @@ export function writeRawHttpResponse(socket: RawUpgradeSocket, res: HttpResponse
     'connection: close',
   ];
   if (res.headers) {
-    for (const [k, v] of Object.entries(res.headers)) lines.push(`${k}: ${v}`);
+    for (const [k, v] of Object.entries(res.headers)) {
+      // Strip CR/LF from the header name and value before writing them to
+      // the raw upgrade socket.  Without this, an `authorize` guard that
+      // returns a reject response carrying an attacker-influenced header
+      // value could inject extra header lines or a body (HTTP response
+      // splitting) — see SECURITY_AUDIT.md WS-6.
+      const name = String(k).replace(/[\r\n]/g, '');
+      const value = String(v).replace(/[\r\n]/g, '');
+      if (name.length === 0) continue;
+      lines.push(`${name}: ${value}`);
+    }
   }
   try {
     socket.write(lines.join('\r\n') + '\r\n\r\n' + body);

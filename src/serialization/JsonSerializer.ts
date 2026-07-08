@@ -83,7 +83,20 @@ function decodeTree(value: unknown): unknown {
   if (SET_TAG in obj) return new Set((obj[SET_TAG] as unknown[]).map(decodeTree));
   if (BIGINT_TAG in obj) return BigInt(obj[BIGINT_TAG] as string);
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(obj)) out[k] = decodeTree(v);
+  for (const [k, v] of Object.entries(obj)) {
+    // `out.__proto__ = …` would invoke the prototype setter rather than
+    // create a data property, letting a hostile `{"__proto__": …}` payload
+    // change the decoded object's prototype.  Define it explicitly so the
+    // key round-trips as plain data and the prototype stays untouched
+    // (SECURITY_AUDIT.md #9).
+    if (k === '__proto__') {
+      Object.defineProperty(out, k, {
+        value: decodeTree(v), enumerable: true, writable: true, configurable: true,
+      });
+    } else {
+      out[k] = decodeTree(v);
+    }
+  }
   return out;
 }
 

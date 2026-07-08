@@ -81,6 +81,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   already-documented `InMemoryCacheSettings`.  *Behaviour change:* the default
   is now bounded — pass `maxEntries: Infinity` for the previous unbounded
   behaviour (documented OOM risk).
+- **WS-6 (LOW) — CRLF stripped from raw upgrade-reject headers** (see
+  `SECURITY_AUDIT.md`).  `writeRawHttpResponse` (the Express pre-handshake
+  reject path) wrote app-supplied header names/values verbatim onto the raw
+  socket, so an `authorize` guard echoing attacker-influenced data into a
+  header could split the response.  CR/LF are now stripped from header names
+  and values.
+- **#9 (hardening) — JSON deserialization ignores the `__proto__` setter**
+  (see `SECURITY_AUDIT.md`).  `JsonSerializer` and the cluster ref decoder
+  now define a decoded `"__proto__"` key as an own data property instead of
+  assigning through the prototype setter, so a hostile payload can't change
+  the decoded object's prototype.
 
 ## [0.10.0] — 2026-07-08
 
