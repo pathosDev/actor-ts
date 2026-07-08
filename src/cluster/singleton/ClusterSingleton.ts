@@ -10,6 +10,7 @@ import {
   type SingletonDeliver,
 } from './ClusterSingletonManager.js';
 import { ClusterSingletonManagerOptions } from './ClusterSingletonManagerOptions.js';
+import { StartSingletonOptionsValidator } from './StartSingletonOptions.js';
 import type { StartSingletonOptions, StartSingletonOptionsType } from './StartSingletonOptions.js';
 import { ClusterSingletonProxy } from './ClusterSingletonProxy.js';
 
@@ -37,6 +38,7 @@ export class ClusterSingleton {
     options: StartSingletonOptions<T>,
   ): SingletonHandle<T> {
     const settings = options as StartSingletonOptionsType<T>;
+    new StartSingletonOptionsValidator<T>().validate(settings);
     const existing = this.handles.get(settings.typeName);
     if (existing) return existing as SingletonHandle<T>;
 

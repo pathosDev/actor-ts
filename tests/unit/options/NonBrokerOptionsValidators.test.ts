@@ -23,6 +23,14 @@ import {
   ShardedDaemonProcessOptionsValidator,
   type ShardedDaemonProcessOptionsType,
 } from '../../../src/cluster/sharding/ShardedDaemonProcessOptions.js';
+import {
+  StartShardingOptionsValidator,
+  type StartShardingOptionsType,
+} from '../../../src/cluster/sharding/StartShardingOptions.js';
+import {
+  StartSingletonOptionsValidator,
+  type StartSingletonOptionsType,
+} from '../../../src/cluster/singleton/StartSingletonOptions.js';
 import { WorkerClusterOptionsValidator, type WorkerClusterOptionsType } from '../../../src/worker/WorkerClusterOptions.js';
 import {
   ProducerControllerOptionsValidator,
@@ -199,6 +207,37 @@ describe('ShardedDaemonProcessOptionsValidator', () => {
 
   test('accepts numDaemons >= 1 and livenessIntervalMs 0 (disabled)', () => {
     expect(() => check({ name: 'workers', numDaemons: 4, livenessIntervalMs: 0 })).not.toThrow();
+  });
+});
+
+describe('StartShardingOptionsValidator', () => {
+  const check = (s: Partial<StartShardingOptionsType<unknown>>): void =>
+    new StartShardingOptionsValidator<unknown>().validate(s);
+
+  test('inherits the region rules (numShards) and adds coordinator intervals', () => {
+    expect(() => check({ numShards: 0 })).toThrow(/numShards/);
+    expect(() => check({ rebalanceIntervalMs: 0 })).toThrow(/rebalanceIntervalMs/);
+    expect(() => check({ handOffTimeoutMs: -1 })).toThrow(OptionsError);
+    expect(() => check({ acquireRetryIntervalMs: 0 })).toThrow(OptionsError);
+  });
+
+  test('accepts a valid coordinator config', () => {
+    expect(() => check({ numShards: 64, rebalanceIntervalMs: 10_000, handOffTimeoutMs: 5_000, acquireRetryIntervalMs: 5_000 }))
+      .not.toThrow();
+  });
+});
+
+describe('StartSingletonOptionsValidator', () => {
+  const check = (s: Partial<StartSingletonOptionsType<unknown>>): void =>
+    new StartSingletonOptionsValidator<unknown>().validate(s);
+
+  test('rejects empty typeName and non-positive acquireRetryIntervalMs', () => {
+    expect(() => check({ typeName: '' })).toThrow(OptionsError);
+    expect(() => check({ acquireRetryIntervalMs: 0 })).toThrow(/acquireRetryIntervalMs/);
+  });
+
+  test('accepts a valid singleton config', () => {
+    expect(() => check({ typeName: 'counter', acquireRetryIntervalMs: 5_000 })).not.toThrow();
   });
 });
 
