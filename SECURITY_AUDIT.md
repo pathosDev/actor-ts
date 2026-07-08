@@ -82,8 +82,17 @@ angreiferdefinierten Adresse.
 
 **PoC:** Envelope mit `body.replyTo = { $ref:'actor', host:'169.254.169.254', port:80, system:'x',
 path:'…' }` → Antwort öffnet TCP zu `169.254.169.254:80` (Cloud-Metadata) → SSRF / interner
-Port-Scan / Reflection. **Remediation:** decodierte Remote-Ziele gegen den Membership-View
-allowlisten. **Status:** P1.
+Port-Scan / Reflection.
+
+**Remediation & Status — akzeptiert unter dem Netzmodell (nicht separat gefixt).** Ein
+Membership-Allowlist-Guard im Decoder wurde umgesetzt, dann aber **verworfen**: er bricht den
+Location-Transparency-Vertrag — ein Ref auf einen *dritten* Knoten muss originalgetreu relayen
+(belegt durch `tests/integration/in-process/cluster/RefAcrossNodes.test.ts`), und „ist Member"
+ist kein verlässliches Signal für „legitimes Ziel". SSRF-via-Ref ist nur durch einen
+**bösartigen/kompromittierten Peer** auslösbar — im gewählten „vertrauenswürdiges Privatnetz"-
+Modell ausgeschlossen. Die reale Gegenmaßnahme ist dieselbe wie für #1/#4: **Netz-Isolation +
+opt-in Cluster-Auth + mTLS**. #2 ist damit ein Symptom von #1 (fehlende Auth), nicht unabhängig
+behebbar, ohne Ref-Relaying zu brechen.
 
 ### #4 — MITTEL: Klartext-Transport per Default
 
@@ -268,7 +277,8 @@ leader|shards` sind ohne `auth`/`ipAllowlist` offen → Topologie-Leak. **Remedi
 
 - **P0 (exponierter Rand, dieser Zweig):** WS-1, WS-2, HTTP-1, HTTP-2 — je mit
   „Exploit greift → nach Fix abgewiesen"-Test.
-- **P1:** #2 (SSRF-Allowlist), #3 (Decompress-Cap), WS-3/4/5, HTTP-3/4.
+- **P1:** #3 (Decompress-Cap), WS-3/4/5, HTTP-3/4.  (#2 SSRF: akzeptiert unter dem
+  Netzmodell — Gegenmaßnahme = #1/#4; kein separater Fix, siehe #2.)
 - **P2:** #5, #6, #7, WS-6, BRK-1/2, #8/#9, BRK-3/4/5.
 - **Netzmodell:** #1 (opt-in Auth) + #4 (mTLS) als Betriebsanforderung + Doku.
 

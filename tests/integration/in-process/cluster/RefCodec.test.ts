@@ -181,11 +181,7 @@ describe('RefCodec — decodeRefs', () => {
     expect(decodeRefs(wire, cluster)).toBe(Nobody);
   });
 
-  test('marker pointing back at the sending peer yields a RemoteActorRef (reply-to-sender)', () => {
-    // The realistic path: the envelope arrived FROM `elsewhere`, and carries
-    // a reply-to ref back to `elsewhere`.  Replying to the sender is never
-    // SSRF, so it decodes to a live RemoteActorRef (SECURITY_AUDIT.md #2).
-    const from = new NodeAddress('elsewhere', 'other-host', 9999);
+  test('marker pointing at a different node yields a RemoteActorRef', () => {
     const wire: WireActorRef = {
       $ref: 'actor',
       path: 'actor-ts://elsewhere/user/remote-actor',
@@ -193,25 +189,12 @@ describe('RefCodec — decodeRefs', () => {
       port: 9999,
       system: 'elsewhere',
     };
-    const decoded = decodeRefs(wire, cluster, from);
+    const decoded = decodeRefs(wire, cluster);
     expect(decoded).toBeInstanceOf(RemoteActorRef);
     const r = decoded as RemoteActorRef;
     expect(r.targetNode.host).toBe('other-host');
     expect(r.targetNode.port).toBe(9999);
     expect(r.targetPath).toBe('actor-ts://elsewhere/user/remote-actor');
-  });
-
-  test('marker to an address that is neither a member nor the sender is dropped (SSRF, #2)', () => {
-    const wire: WireActorRef = {
-      $ref: 'actor',
-      path: 'actor-ts://elsewhere/user/remote-actor',
-      host: '169.254.169.254',
-      port: 80,
-      system: 'elsewhere',
-    };
-    // No `from`, and this address is not a cluster member — the would-be
-    // SSRF target is dropped rather than reconstructed into a dialable ref.
-    expect(decodeRefs(wire, cluster)).toBe(Nobody);
   });
 
   test('nested markers inside arrays and objects are all restored', () => {

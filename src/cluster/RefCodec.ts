@@ -48,8 +48,8 @@ export function encodeRefs(value: unknown, fromAddress: NodeAddress): unknown {
  * at this cluster's own `selfAddress`, a `RemoteActorRef` otherwise.
  * Missing or malformed markers fall back to `Nobody`.
  */
-export function decodeRefs(value: unknown, cluster: Cluster, from?: NodeAddress): unknown {
-  return walkDecode(value, cluster, new WeakSet(), from);
+export function decodeRefs(value: unknown, cluster: Cluster): unknown {
+  return walkDecode(value, cluster, new WeakSet());
 }
 
 /* ------------------------------ internals -------------------------------- */
@@ -78,7 +78,7 @@ function encodeSingleRef(ref: ActorRef, fromAddress: NodeAddress): WireActorRef 
   };
 }
 
-function decodeSingleRef(wire: WireActorRef, cluster: Cluster, from?: NodeAddress): ActorRef {
+function decodeSingleRef(wire: WireActorRef, cluster: Cluster): ActorRef {
   if (wire.path === 'nobody' || !wire.host || !wire.port || !wire.system) {
     return Nobody;
   }
@@ -91,14 +91,6 @@ function decodeSingleRef(wire: WireActorRef, cluster: Cluster, from?: NodeAddres
     return cluster.system._resolvePath(segs).getOrElse(Nobody);
   }
   const targetNode = new NodeAddress(wire.system, wire.host, wire.port);
-  // SSRF guard (SECURITY_AUDIT.md #2): only reconstruct a remote ref to (a)
-  // the peer that sent this envelope (`from`) — we already hold a connection
-  // to them, so replying is never SSRF — or (b) a known cluster member.  Any
-  // other address (an attacker-embedded metadata / internal endpoint) is
-  // dropped, so a local `reply` can't coerce this node into dialing it.
-  const allowed = (from !== undefined && from.equals(targetNode))
-    || cluster._isKnownMemberAddress(targetNode);
-  if (!allowed) return Nobody;
   return new RemoteActorRef(targetNode, wire.path, cluster);
 }
 
@@ -144,18 +136,18 @@ function walk(value: unknown, encodeRef: RefEncoder, seen: WeakSet<object>): unk
   return out;
 }
 
-function walkDecode(value: unknown, cluster: Cluster, seen: WeakSet<object>, from?: NodeAddress): unknown {
+function walkDecode(value: unknown, cluster: Cluster, seen: WeakSet<object>): unknown {
   if (value === null || value === undefined) return value;
   if (typeof value !== 'object') return value;
 
-  if (isWireActorRef(value)) return decodeSingleRef(value, cluster, from);
+  if (isWireActorRef(value)) return decodeSingleRef(value, cluster);
   if (value instanceof Date || value instanceof Uint8Array) return value;
 
   if (seen.has(value as object)) return null;
   seen.add(value as object);
 
   if (Array.isArray(value)) {
-    return value.map((v) => walkDecode(v, cluster, seen, from));
+    return value.map((v) => walkDecode(v, cluster, seen));
   }
 
   const out: Record<string, unknown> = {};
@@ -165,10 +157,10 @@ function walkDecode(value: unknown, cluster: Cluster, seen: WeakSet<object>, fro
     // decoded object's prototype (SECURITY_AUDIT.md #9).
     if (k === '__proto__') {
       Object.defineProperty(out, k, {
-        value: walkDecode(v, cluster, seen, from), enumerable: true, writable: true, configurable: true,
+        value: walkDecode(v, cluster, seen), enumerable: true, writable: true, configurable: true,
       });
     } else {
-      out[k] = walkDecode(v, cluster, seen, from);
+      out[k] = walkDecode(v, cluster, seen);
     }
   }
   return out;
