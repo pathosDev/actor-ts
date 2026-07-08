@@ -5,6 +5,7 @@ import type { ActorSystem } from '../ActorSystem.js';
 import type { Cancellable } from '../Scheduler.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
+import { DistributedDataOptionsValidator } from './DistributedDataOptions.js';
 import type { DistributedDataOptions, DistributedDataOptionsType } from './DistributedDataOptions.js';
 import { Props } from '../Props.js';
 import type { Cluster } from '../cluster/Cluster.js';
@@ -242,6 +243,7 @@ export class DistributedData implements Extension {
     }
     this._cluster = cluster;
     const settings = (options as Partial<DistributedDataOptionsType>);
+    new DistributedDataOptionsValidator().validate(settings);
 
     // The extension exposes a synchronous API; the internal actor owns
     // the state and the gossip loop.  We hand the actor a setter for a

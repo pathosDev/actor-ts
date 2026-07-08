@@ -33,7 +33,7 @@ export type { CachedSnapshotStoreOptionsType } from './snapshot-stores/CachedSna
 
 // Cassandra / ScyllaDB plug-in (same CQL protocol — one plug-in).
 export { CassandraJournal } from './journals/CassandraJournal.js';
-export { CassandraJournalOptions, CassandraJournalOptionsBuilder } from './journals/CassandraJournalOptions.js';
+export { CassandraJournalOptions, CassandraJournalOptionsBuilder, CassandraJournalOptionsValidator } from './journals/CassandraJournalOptions.js';
 export type { CassandraJournalOptionsType } from './journals/CassandraJournalOptions.js';
 export { CassandraSnapshotStore } from './snapshot-stores/CassandraSnapshotStore.js';
 export { CassandraSnapshotStoreOptions, CassandraSnapshotStoreOptionsBuilder } from './snapshot-stores/CassandraSnapshotStoreOptions.js';

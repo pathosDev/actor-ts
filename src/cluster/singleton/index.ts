@@ -2,7 +2,7 @@ export {
   ClusterSingleton,
   ClusterSingletonId,
 } from './ClusterSingleton.js';
-export { StartSingletonOptions, StartSingletonOptionsBuilder } from './StartSingletonOptions.js';
+export { StartSingletonOptions, StartSingletonOptionsBuilder, StartSingletonOptionsValidator } from './StartSingletonOptions.js';
 export type { StartSingletonOptionsType } from './StartSingletonOptions.js';
 export type { SingletonHandle } from './ClusterSingleton.js';
 export {

@@ -24,12 +24,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   required-field check), non-broker consumers via one
   `new XOptionsValidator().validate(settings)` call in their constructor.
 - **Validators shipped for**: every broker (MQTT, Kafka, AMQP, Redis Streams,
-  NATS, JetStream, SSE, TCP, UDP, gRPC client) and the WebSocket client; plus
-  cluster failure detectors (`PhiAccrual`, `FailureDetector`), `ClusterClient`,
-  `ClusterClientReceptionist`, `StaticQuorum`, sharding (`Sharding`,
-  `ShardedDaemonProcess`), leases (`Lease`, `KubernetesLease`), caches
-  (`RedisCache`, `CachedSnapshotStore`), `DnsSeedProvider`, the Express/Hono HTTP
-  backends, `WorkerCluster`, and delivery `ProducerController`.
+  NATS, JetStream, SSE, TCP, UDP, gRPC client) and the WebSocket client; the
+  cluster core (`Cluster`, `ClusterBootstrap`, `FailureDetector`, `PhiAccrual`,
+  `ClusterClient`, `ClusterClientReceptionist`, `StaticQuorum`), sharding
+  (`Sharding`, `StartSharding`, `ShardedDaemonProcess`) and singleton
+  (`StartSingleton`); discovery (`AutoDiscovery`, `ConfigSeedProvider`,
+  `DnsSeedProvider`, `KubernetesApiSeedProvider`, `Receptionist`) and gossip
+  intervals (`DistributedPubSub`, `DistributedData`); leases (`Lease`,
+  `KubernetesLease`); caches (`RedisCache`, `MemcachedCache`,
+  `CachedSnapshotStore`); the `CassandraJournal`; the Express/Hono HTTP backends;
+  `WorkerCluster`; and delivery `ProducerController`.  Options whose fields carry
+  no real constraint (all-boolean/string/callback, or degrade-gracefully knobs
+  like snapshot `keepN` where `<= 0` means "keep all") intentionally get no
+  validator.
 
 ### Changed
 

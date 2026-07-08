@@ -1,9 +1,9 @@
 // Cluster entry points.
 export { Cluster, inMemoryTransport } from './Cluster.js';
-export { ClusterOptions, ClusterOptionsBuilder } from './ClusterOptions.js';
+export { ClusterOptions, ClusterOptionsBuilder, ClusterOptionsValidator } from './ClusterOptions.js';
 export type { ClusterOptionsType } from './ClusterOptions.js';
 export { bootstrapCluster } from './ClusterBootstrap.js';
-export { ClusterBootstrapOptions, ClusterBootstrapOptionsBuilder } from './ClusterBootstrapOptions.js';
+export { ClusterBootstrapOptions, ClusterBootstrapOptionsBuilder, ClusterBootstrapOptionsValidator } from './ClusterBootstrapOptions.js';
 export type { ClusterBootstrapOptionsType } from './ClusterBootstrapOptions.js';
 export type { BootstrappedCluster } from './ClusterBootstrap.js';
 
@@ -113,7 +113,7 @@ export type { DistributedPubSubOptionsType } from './pubsub/index.js';
 
 // Sharding.
 export { ClusterSharding } from './sharding/ClusterSharding.js';
-export { StartShardingOptions, StartShardingOptionsBuilder } from './sharding/StartShardingOptions.js';
+export { StartShardingOptions, StartShardingOptionsBuilder, StartShardingOptionsValidator } from './sharding/StartShardingOptions.js';
 export type { StartShardingOptionsType } from './sharding/StartShardingOptions.js';
 export { ShardedDaemonProcess } from './sharding/ShardedDaemonProcess.js';
 export { ShardedDaemonProcessOptions, ShardedDaemonProcessOptionsBuilder, ShardedDaemonProcessOptionsValidator } from './sharding/ShardedDaemonProcessOptions.js';
