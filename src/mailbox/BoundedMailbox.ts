@@ -43,12 +43,12 @@ export class BoundedMailbox<T = unknown> extends Mailbox<T> {
   /** Number of messages dropped by the overflow policy — useful for metrics. */
   droppedCount = 0;
 
-  constructor(settings: BoundedMailboxOptionsType) {
+  constructor(options: BoundedMailboxOptionsType) {
     super();
-    if (settings.capacity < 1) throw new Error('BoundedMailbox: capacity must be >= 1');
-    this.capacity = settings.capacity;
-    this.overflow = settings.overflow ?? 'reject';
-    this.onDrop = settings.onDrop;
+    if (options.capacity < 1) throw new Error('BoundedMailbox: capacity must be >= 1');
+    this.capacity = options.capacity;
+    this.overflow = options.overflow ?? 'reject';
+    this.onDrop = options.onDrop;
   }
 
   override enqueue(env: Envelope<T>): void {

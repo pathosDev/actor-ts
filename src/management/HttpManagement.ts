@@ -88,7 +88,7 @@ export interface ManagementRoutesOptionsType {
 export function managementRoutes(
   system: ActorSystem,
   cluster: Cluster | null,
-  settings: ManagementRoutesOptionsType = {},
+  options: ManagementRoutesOptionsType = {},
 ): { routes: Route; health: HealthCheckRegistry } {
   const health = new HealthCheckRegistry();
 
@@ -136,7 +136,7 @@ export function managementRoutes(
     });
   });
 
-  const leaveRoute: Route = settings.enableLeaveEndpoint && cluster
+  const leaveRoute: Route = options.enableLeaveEndpoint && cluster
     ? post(async () => {
       // Fire-and-forget leave — the caller typically uses this as a PreStop
       // hook and doesn't wait for completion in-request.  We do await one
@@ -200,7 +200,7 @@ export function managementRoutes(
    * already terminal.  Disabled by default; flip `enableDownEndpoint`
    * after auth has been wired up at the proxy/ingress layer.
    */
-  const downRoute: Route = settings.enableDownEndpoint && cluster
+  const downRoute: Route = options.enableDownEndpoint && cluster
     ? post(async (req) => {
       if (!req.body) return complete(Status.BadRequest, 'missing JSON body');
       let parsed: { address?: string };
@@ -220,7 +220,7 @@ export function managementRoutes(
     : get(async () => complete(Status.NotFound, 'down endpoint disabled'));
 
   /** GET /metrics — Prometheus text format. */
-  const metricsRoute: Route = settings.enableMetricsEndpoint
+  const metricsRoute: Route = options.enableMetricsEndpoint
     ? get(async () => ({
       status: Status.OK,
       body: exportPrometheus(metricsOf(system)),
@@ -240,16 +240,16 @@ export function managementRoutes(
   // configured.  Health/ready stay anonymous by default (Kubernetes
   // probes can't attach credentials); `authProtectHealth: true`
   // flips that for deployments where probes do present a token.
-  if (settings.auth) {
-    clusterSubtree = withMiddleware(settings.auth, clusterSubtree);
+  if (options.auth) {
+    clusterSubtree = withMiddleware(options.auth, clusterSubtree);
   }
 
   let healthSubtree: Route = concat(
     path('health', liveness),
     path('ready', readiness),
   );
-  if (settings.auth && settings.authProtectHealth === true) {
-    healthSubtree = withMiddleware(settings.auth, healthSubtree);
+  if (options.auth && options.authProtectHealth === true) {
+    healthSubtree = withMiddleware(options.auth, healthSubtree);
   }
 
   // Compose with the top-level health endpoints.  Metrics endpoint
@@ -257,8 +257,8 @@ export function managementRoutes(
   // auth wrap only when explicitly configured (no policy distinction
   // between metrics and cluster routes).
   let metricsSubtree: Route = path('metrics', metricsRoute);
-  if (settings.auth) {
-    metricsSubtree = withMiddleware(settings.auth, metricsSubtree);
+  if (options.auth) {
+    metricsSubtree = withMiddleware(options.auth, metricsSubtree);
   }
 
   let all: Route = concat(clusterSubtree, healthSubtree, metricsSubtree);
@@ -268,8 +268,8 @@ export function managementRoutes(
   // to authenticate.  Probes that should reach the endpoint despite
   // the allowlist must come from an allowed network or the operator
   // must override `getClientIp` to inspect a trusted header.
-  if (settings.ipAllowlist) {
-    all = withMiddleware(settings.ipAllowlist, all);
+  if (options.ipAllowlist) {
+    all = withMiddleware(options.ipAllowlist, all);
   }
 
   // Suppress unused warning in case the caller doesn't use the system reference.

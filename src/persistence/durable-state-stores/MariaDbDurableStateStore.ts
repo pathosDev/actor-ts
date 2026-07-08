@@ -34,7 +34,7 @@ interface StateRow {
  *     (revision always changes, so a matched row always reports 1.)
  */
 export class MariaDbDurableStateStore implements DurableStateStore {
-  private readonly settings: MariaDbDurableStateStoreOptionsType;
+  private readonly options: MariaDbDurableStateStoreOptionsType;
   private readonly table: string;
   private readonly autoCreate: boolean;
 
@@ -44,7 +44,7 @@ export class MariaDbDurableStateStore implements DurableStateStore {
 
   constructor(options: MariaDbDurableStateStoreOptions = {}) {
     const s = (options as MariaDbDurableStateStoreOptionsType);
-    this.settings = s;
+    this.options = s;
     this.table = assertSafeIdentifier(s.table ?? 'durable_state', 'durable-state table');
     this.autoCreate = s.autoCreateTables ?? true;
   }
@@ -145,7 +145,7 @@ export class MariaDbDurableStateStore implements DurableStateStore {
   }
 
   private async init(): Promise<void> {
-    const pool = await buildMariaDbPool(this.settings);
+    const pool = await buildMariaDbPool(this.options);
     if (this.autoCreate) {
       await pool.query(
         `CREATE TABLE IF NOT EXISTS ${this.table} (

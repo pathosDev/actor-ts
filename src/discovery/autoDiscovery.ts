@@ -22,9 +22,9 @@ function parseSeedList(raw: string): string[] {
  * just resolves to `[]` for single-node dev.
  */
 export function autoDiscovery(options: AutoDiscoveryOptions): AggregateSeedProvider {
-  const settings = options as AutoDiscoveryOptionsType;
-  const env = settings.env ?? process.env;
-  const log = settings.log ?? (() => {});
+  const resolvedOptions = options as AutoDiscoveryOptionsType;
+  const env = resolvedOptions.env ?? process.env;
+  const log = resolvedOptions.log ?? (() => {});
   const providers: SeedProvider[] = [];
 
   // 1. CLUSTER_SEEDS — explicit static list.
@@ -32,7 +32,7 @@ export function autoDiscovery(options: AutoDiscoveryOptions): AggregateSeedProvi
   if (rawSeeds.length > 0) {
     providers.push(new ConfigSeedProvider(
       ConfigSeedProviderOptions.create()
-        .withSystemName(settings.systemName)
+        .withSystemName(resolvedOptions.systemName)
         .withSeeds(parseSeedList(rawSeeds)),
     ));
   }
@@ -42,10 +42,10 @@ export function autoDiscovery(options: AutoDiscoveryOptions): AggregateSeedProvi
   if (env.KUBERNETES_SERVICE_HOST && serviceName.length > 0) {
     providers.push(new KubernetesApiSeedProvider(
       KubernetesApiSeedProviderOptions.create()
-        .withSystemName(settings.systemName)
+        .withSystemName(resolvedOptions.systemName)
         .withNamespace(env.CLUSTER_NAMESPACE ?? 'default')
         .withServiceName(serviceName)
-        .withPort(settings.port),
+        .withPort(resolvedOptions.port),
     ));
   }
 
@@ -53,9 +53,9 @@ export function autoDiscovery(options: AutoDiscoveryOptions): AggregateSeedProvi
   if (serviceName.length > 0) {
     providers.push(new DnsSeedProvider(
       DnsSeedProviderOptions.create()
-        .withSystemName(settings.systemName)
+        .withSystemName(resolvedOptions.systemName)
         .withHostname(serviceName)
-        .withPort(settings.port),
+        .withPort(resolvedOptions.port),
     ));
   }
 
@@ -73,14 +73,14 @@ export function singleProviderDiscovery(
   kind: 'config' | 'dns' | 'kubernetes',
   options: AutoDiscoveryOptions,
 ): SeedProvider {
-  const settings = options as AutoDiscoveryOptionsType;
-  const env = settings.env ?? process.env;
+  const resolvedOptions = options as AutoDiscoveryOptionsType;
+  const env = resolvedOptions.env ?? process.env;
   switch (kind) {
     case 'config': {
       const rawSeeds = (env.CLUSTER_SEEDS ?? '').trim();
       return new ConfigSeedProvider(
         ConfigSeedProviderOptions.create()
-          .withSystemName(settings.systemName)
+          .withSystemName(resolvedOptions.systemName)
           .withSeeds(parseSeedList(rawSeeds)),
       );
     }
@@ -93,9 +93,9 @@ export function singleProviderDiscovery(
       }
       return new DnsSeedProvider(
         DnsSeedProviderOptions.create()
-          .withSystemName(settings.systemName)
+          .withSystemName(resolvedOptions.systemName)
           .withHostname(hostname)
-          .withPort(settings.port),
+          .withPort(resolvedOptions.port),
       );
     }
     case 'kubernetes': {
@@ -107,10 +107,10 @@ export function singleProviderDiscovery(
       }
       return new KubernetesApiSeedProvider(
         KubernetesApiSeedProviderOptions.create()
-          .withSystemName(settings.systemName)
+          .withSystemName(resolvedOptions.systemName)
           .withNamespace(env.CLUSTER_NAMESPACE ?? 'default')
           .withServiceName(serviceName)
-          .withPort(settings.port),
+          .withPort(resolvedOptions.port),
       );
     }
   }

@@ -58,7 +58,7 @@ export class ClusterSharding {
    * sharding.start('cart', () => new CartEntity(deps),
    *   StartShardingOptions.create<CartMsg>().withExtractEntityId((msg) => msg.entityId));
    *
-   * // Full-form: explicit Props + all settings via the builder.
+   * // Full-form: explicit Props + all options via the builder.
    * sharding.start(
    *   StartShardingOptions.create<CounterMsg>()
    *     .withTypeName('counter')
@@ -78,16 +78,16 @@ export class ClusterSharding {
     arg2?: (new () => import('../../Actor.js').Actor<TMsg>) | (() => import('../../Actor.js').Actor<TMsg>),
     arg3?: StartShardingOptions<TMsg>,
   ): ActorRef<TMsg> {
-    const settings = typeof arg1 === 'string'
-      ? this.buildSettingsFromShorthand(arg1, arg2!, arg3 ?? {})
+    const options = typeof arg1 === 'string'
+      ? this.buildOptionsFromShorthand(arg1, arg2!, arg3 ?? {})
       : arg1 as StartShardingOptionsType<TMsg>;
 
-    this.ensureCoordinator(settings as StartShardingOptionsType<unknown>);
-    const existing = this.findRegionByType(settings.typeName);
+    this.ensureCoordinator(options as StartShardingOptionsType<unknown>);
+    const existing = this.findRegionByType(options.typeName);
     if (existing) return existing as ActorRef<TMsg>;
 
     const cfg = ShardRegion.settingsToConfig(
-      settings,
+      options,
       this.cluster,
       (path: string) => this.regionsByPath.get(path) ?? null,
     );
@@ -95,14 +95,14 @@ export class ClusterSharding {
       // ShardRegion internally handles extra envelope types; cast to Actor<TMsg>
       // so the returned ref presents the user-facing signature.
       Props.create<TMsg>(() => new ShardRegion<TMsg>(cfg) as unknown as import('../../Actor.js').Actor<TMsg>),
-      `sharding-${settings.typeName}`,
+      `sharding-${options.typeName}`,
     );
     this.regionsByPath.set(ref.path.toString(), ref as ActorRef<unknown>);
     return ref;
   }
 
-  /** @internal — wrap the shorthand entity arg into a Props + assemble full settings. */
-  private buildSettingsFromShorthand<TMsg>(
+  /** @internal — wrap the shorthand entity arg into a Props + assemble full options. */
+  private buildOptionsFromShorthand<TMsg>(
     typeName: string,
     entity: (new () => import('../../Actor.js').Actor<TMsg>) | (() => import('../../Actor.js').Actor<TMsg>),
     options: StartShardingOptions<TMsg>,
@@ -134,40 +134,40 @@ export class ClusterSharding {
    */
   startProxy<TMsg>(options: StartShardingOptions<TMsg>): ActorRef<TMsg> {
     // Force `proxy: true` regardless of what the caller passed.  Resolve to a
-    // plain settings object first so both builder and plain-object inputs are
+    // plain options object first so both builder and plain-object inputs are
     // handled uniformly (a `Partial<StartShardingOptionsType>` has no `.withProxy`).
-    const settings: Partial<StartShardingOptionsType<TMsg>> = { ...(options as Partial<StartShardingOptionsType<TMsg>>), proxy: true };
-    return this.start(settings);
+    const resolvedOptions: Partial<StartShardingOptionsType<TMsg>> = { ...(options as Partial<StartShardingOptionsType<TMsg>>), proxy: true };
+    return this.start(resolvedOptions);
   }
 
   /* ------------------------------- Internal -------------------------------- */
 
-  private ensureCoordinator(settings: StartShardingOptionsType<unknown>): void {
-    if (this.coordinators.has(settings.typeName)) return;
+  private ensureCoordinator(options: StartShardingOptionsType<unknown>): void {
+    if (this.coordinators.has(options.typeName)) return;
     const coordinatorOptions = ShardCoordinatorOptions.create()
-      .withTypeName(settings.typeName)
+      .withTypeName(options.typeName)
       .withCluster(this.cluster)
-      .withAllocationStrategy(settings.allocationStrategy ?? new HashAllocationStrategy())
+      .withAllocationStrategy(options.allocationStrategy ?? new HashAllocationStrategy())
       .withLocalResolver((path) =>
         this.regionsByPath.get(path)
         ?? this.coordinators.get(this.typeNameFromCoordinatorPath(path) ?? '')
         ?? null);
-    if (settings.role !== undefined) coordinatorOptions.withRole(settings.role);
-    if (settings.rebalanceIntervalMs !== undefined) coordinatorOptions.withRebalanceIntervalMs(settings.rebalanceIntervalMs);
-    if (settings.handOffTimeoutMs !== undefined) coordinatorOptions.withHandOffTimeoutMs(settings.handOffTimeoutMs);
-    if (settings.rememberEntities !== undefined) coordinatorOptions.withRememberEntities(settings.rememberEntities);
-    const store = this.resolveRememberEntitiesStore(settings);
+    if (options.role !== undefined) coordinatorOptions.withRole(options.role);
+    if (options.rebalanceIntervalMs !== undefined) coordinatorOptions.withRebalanceIntervalMs(options.rebalanceIntervalMs);
+    if (options.handOffTimeoutMs !== undefined) coordinatorOptions.withHandOffTimeoutMs(options.handOffTimeoutMs);
+    if (options.rememberEntities !== undefined) coordinatorOptions.withRememberEntities(options.rememberEntities);
+    const store = this.resolveRememberEntitiesStore(options);
     if (store !== undefined) coordinatorOptions.withRememberEntitiesStore(store);
-    if (settings.coordinatorStateStore !== undefined) coordinatorOptions.withCoordinatorStateStore(settings.coordinatorStateStore);
-    if (settings.lease !== undefined) coordinatorOptions.withLease(settings.lease);
-    if (settings.acquireRetryIntervalMs !== undefined) coordinatorOptions.withAcquireRetryIntervalMs(settings.acquireRetryIntervalMs);
+    if (options.coordinatorStateStore !== undefined) coordinatorOptions.withCoordinatorStateStore(options.coordinatorStateStore);
+    if (options.lease !== undefined) coordinatorOptions.withLease(options.lease);
+    if (options.acquireRetryIntervalMs !== undefined) coordinatorOptions.withAcquireRetryIntervalMs(options.acquireRetryIntervalMs);
     const ref = this.system.spawn(
       Props.create(() => new ShardCoordinator(coordinatorOptions)),
-      `sharding-coordinator-${settings.typeName}`,
+      `sharding-coordinator-${options.typeName}`,
     );
-    this.coordinators.set(settings.typeName, ref as ActorRef<unknown>);
+    this.coordinators.set(options.typeName, ref as ActorRef<unknown>);
     this.regionsByPath.set(
-      coordinatorPath(this.system.name, settings.typeName),
+      coordinatorPath(this.system.name, options.typeName),
       ref as ActorRef<unknown>,
     );
   }
@@ -184,11 +184,11 @@ export class ClusterSharding {
    *     without the user wiring anything up.
    */
   private resolveRememberEntitiesStore(
-    settings: StartShardingOptionsType<unknown>,
+    options: StartShardingOptionsType<unknown>,
   ): RememberEntitiesStore | undefined {
-    if (!settings.rememberEntities) return undefined;
-    if (settings.rememberEntitiesStore === null) return undefined;
-    if (settings.rememberEntitiesStore) return settings.rememberEntitiesStore;
+    if (!options.rememberEntities) return undefined;
+    if (options.rememberEntitiesStore === null) return undefined;
+    if (options.rememberEntitiesStore) return options.rememberEntitiesStore;
     const journal = this.system.extension(PersistenceExtensionId).journal;
     return new JournalRememberEntitiesStore(journal);
   }

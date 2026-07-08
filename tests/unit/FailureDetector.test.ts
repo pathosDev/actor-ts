@@ -90,7 +90,7 @@ describe('FailureDetector', () => {
     expect(det.decide(other, 950)).toBe('healthy');
   });
 
-  test('interval getter reflects settings', () => {
+  test('interval getter reflects options', () => {
     expect(fd({ heartbeatIntervalMs: 250 }).interval).toBe(250);
   });
 

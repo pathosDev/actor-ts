@@ -96,20 +96,20 @@ export class ClusterClient {
   /** Filled by `hello-ack`; the contact-point's real address (post-handshake). */
   private contactPointPeer: NodeAddress | null = null;
 
-  private readonly settings: ClusterClientOptionsType;
+  private readonly options: ClusterClientOptionsType;
 
   constructor(options: ClusterClientOptions) {
-    const settings = options as ClusterClientOptionsType;
-    this.settings = settings;
-    if (!settings.contactPoints || settings.contactPoints.length === 0) {
+    const resolvedOptions = options as ClusterClientOptionsType;
+    this.options = resolvedOptions;
+    if (!resolvedOptions.contactPoints || resolvedOptions.contactPoints.length === 0) {
       throw new Error('ClusterClient: contactPoints must contain at least one entry');
     }
-    const sysName = settings.systemName ?? 'cluster-client';
-    this.contactPoints = settings.contactPoints.map((s) => {
+    const sysName = resolvedOptions.systemName ?? 'cluster-client';
+    this.contactPoints = resolvedOptions.contactPoints.map((s) => {
       const withSys = s.includes('@') ? s : `${sysName}@${s}`;
       return NodeAddress.parse(withSys);
     });
-    const id = settings.clientIdentity ?? {
+    const id = resolvedOptions.clientIdentity ?? {
       host: '127.0.0.1',
       // Synthetic port — must be unique per ClusterClient instance in the
       // same process so the cluster's byPeer map doesn't collide.  Use
@@ -117,9 +117,9 @@ export class ClusterClient {
       port: 50_000 + Math.floor(Math.random() * 15_000),
     };
     this.identity = new NodeAddress(sysName, id.host, id.port);
-    this.tls = settings.tls ?? null;
-    this.askTimeoutMs = settings.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
-    this.log = settings.logger ?? new ConsoleLogger(LogLevel.Warn, 'cluster-client');
+    this.tls = resolvedOptions.tls ?? null;
+    this.askTimeoutMs = resolvedOptions.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
+    this.log = resolvedOptions.logger ?? new ConsoleLogger(LogLevel.Warn, 'cluster-client');
   }
 
   /** The synthetic identity this client uses in its `hello` handshake. */

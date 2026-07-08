@@ -38,7 +38,7 @@ interface Stmts {
  * supporting the async driver-resolution flow Node requires.
  */
 export class SqliteJournal implements Journal {
-  private readonly settings: SqliteJournalOptionsType;
+  private readonly options: SqliteJournalOptionsType;
   private readonly table: string;
   private readonly closed = { value: false };
   /**
@@ -55,9 +55,9 @@ export class SqliteJournal implements Journal {
   private initPromise: Promise<void> | null = null;
 
   constructor(options: SqliteJournalOptions = {}) {
-    const settings = (options as SqliteJournalOptionsType);
-    this.settings = settings;
-    this.table = settings.eventsTable ?? 'events';
+    const resolvedOptions = (options as SqliteJournalOptionsType);
+    this.options = resolvedOptions;
+    this.table = resolvedOptions.eventsTable ?? 'events';
   }
 
   async append<E>(
@@ -188,8 +188,8 @@ export class SqliteJournal implements Journal {
   }
 
   private async init(): Promise<void> {
-    const driver = this.settings.driver ?? await getSqliteDriver();
-    const db = driver.open(this.settings.path ?? ':memory:');
+    const driver = this.options.driver ?? await getSqliteDriver();
+    const db = driver.open(this.options.path ?? ':memory:');
     const tagsTable = `${this.table}_tags`;
     db.exec(`
       CREATE TABLE IF NOT EXISTS ${this.table} (
@@ -210,7 +210,7 @@ export class SqliteJournal implements Journal {
       );
       CREATE INDEX IF NOT EXISTS idx_${tagsTable}_pid_seq ON ${tagsTable}(persistence_id, sequence_nr);
     `);
-    if (this.settings.wal) db.exec('PRAGMA journal_mode = WAL;');
+    if (this.options.wal) db.exec('PRAGMA journal_mode = WAL;');
 
     this.stmts = {
       insert: db.prepare(

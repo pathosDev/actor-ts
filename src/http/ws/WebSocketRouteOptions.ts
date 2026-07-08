@@ -1,7 +1,7 @@
 /**
  * All `websocket()`-route option-relevant types live here:
  *
- *   - {@link WebSocketRouteOptionsType} — the plain settings-object shape
+ *   - {@link WebSocketRouteOptionsType} — the plain options-object shape
  *     (what you may also pass as a bare `{ … }` object).
  *   - {@link WebSocketRouteOptionsBuilder} — the fluent builder
  *     (`WebSocketRouteOptions.create()…`).
@@ -27,7 +27,7 @@ import type {
   WebSocketPolicyOptions,
 } from './WsPolicy.js';
 
-/** The settings a `websocket()` route may carry — codec + per-connection policy. */
+/** The options a `websocket()` route may carry — codec + per-connection policy. */
 export interface WebSocketRouteOptionsType<TOut, TIn> extends WebSocketPolicyOptions {
   /** Wire codec.  Default: `jsonCodec<TOut, TIn>()`. */
   readonly codec?: WsCodec<TOut, TIn>;

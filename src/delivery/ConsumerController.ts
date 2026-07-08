@@ -31,7 +31,7 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
   /** producerId → dedup state. */
   private readonly dedup = new Map<string, DedupState>();
 
-  constructor(public readonly settings: ConsumerControllerOptionsType<T>) { super(); }
+  constructor(public readonly options: ConsumerControllerOptionsType<T>) { super(); }
 
   override onReceive(msg: Delivery<T>): void {
     if (msg.kind !== 'reliable-delivery.delivery') return;
@@ -47,7 +47,7 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
       return;
     }
     try {
-      await this.settings.handler(msg.body);
+      await this.options.handler(msg.body);
     } catch (err) {
       this.log.warn(`consumer handler threw on seq=${msg.seq}`, err);
       // Do NOT ack — let the producer retry.

@@ -1,7 +1,7 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import type { Cluster } from '../cluster/Cluster.js';
 
-/** Plain settings-object shape accepted by a {@link Receptionist}. */
+/** Plain options-object shape accepted by a {@link Receptionist}. */
 export interface ReceptionistOptionsType {
   readonly cluster?: Cluster | null;
   readonly gossipIntervalMs?: number;

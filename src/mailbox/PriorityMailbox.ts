@@ -23,9 +23,9 @@ export class PriorityMailbox<T = unknown> extends Mailbox<T> {
   private seq = 0;
   private readonly ordered: Array<{ env: Envelope<T>; priority: number; seq: number }> = [];
 
-  constructor(settings: PriorityMailboxOptionsType<T>) {
+  constructor(options: PriorityMailboxOptionsType<T>) {
     super();
-    this.priorityFor = settings.priorityFor;
+    this.priorityFor = options.priorityFor;
   }
 
   override enqueue(env: Envelope<T>): void {

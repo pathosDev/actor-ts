@@ -81,7 +81,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private acquireRetryTimer: Cancellable | null = null;
 
   /**
-   * Lease lifecycle (only used when `settings.lease` is set).
+   * Lease lifecycle (only used when `options.lease` is set).
    * Drives the `isActive()` predicate — coordinator only processes
    * shard messages while `isLeader() && leaseState === 'held'`.
    */
@@ -123,11 +123,11 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private coordinatorStateInFlight = false;
   private coordinatorStateDirty = false;
 
-  public readonly settings: ShardCoordinatorOptionsType;
+  public readonly options: ShardCoordinatorOptionsType;
 
   constructor(options: ShardCoordinatorOptions) {
     super();
-    this.settings = options as ShardCoordinatorOptionsType;
+    this.options = options as ShardCoordinatorOptionsType;
   }
 
   /** Path used by ClusterSharding to locate the coordinator on any node. */
@@ -141,27 +141,27 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     //    Without this, a fresh-cluster start would treat every
     //    rememberEntities=true sharded type as empty and only
     //    re-register entities lazily as messages arrive.
-    if (this.settings.rememberEntities && this.settings.rememberEntitiesStore) {
+    if (this.options.rememberEntities && this.options.rememberEntitiesStore) {
       try {
-        const events = await this.settings.rememberEntitiesStore
-          .load(this.settings.typeName);
+        const events = await this.options.rememberEntitiesStore
+          .load(this.options.typeName);
         for (const ev of events) this.applyRememberEvent(ev);
       } catch (err) {
         this.system.log.warn(
-          `[sharding] failed to load remembered entities for '${this.settings.typeName}'`,
+          `[sharding] failed to load remembered entities for '${this.options.typeName}'`,
           err,
         );
       }
     }
 
-    this.unsubscribeCluster = this.settings.cluster.subscribe(evt =>
+    this.unsubscribeCluster = this.options.cluster.subscribe(evt =>
       match(evt)
         .with(P.instanceOf(MemberRemoved), (e) => this.onMemberRemoved(e.member.address))
         .with(P.instanceOf(LeaderChanged), () => this.onLeaderChanged())
         .otherwise(() => { /* other events are not observed here */ }),
     );
-    if (this.settings.lease) {
-      this.unsubscribeLeaseLost = this.settings.lease.onLost((reason) => {
+    if (this.options.lease) {
+      this.unsubscribeLeaseLost = this.options.lease.onLost((reason) => {
         this.self.tell({ t: 'lease-lost', reason } satisfies CoordinatorEvent);
       });
       // Kick the initial reconcile through the mailbox so the lease
@@ -169,8 +169,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       this.self.tell({ t: 'reconcile' } satisfies CoordinatorEvent);
     }
     this.rebalanceTimer = this.system.scheduler.scheduleAtFixedRateFn(
-      this.settings.rebalanceIntervalMs ?? 2_000,
-      this.settings.rebalanceIntervalMs ?? 2_000,
+      this.options.rebalanceIntervalMs ?? 2_000,
+      this.options.rebalanceIntervalMs ?? 2_000,
       () => { if (this.isActive()) this.rebalanceTick(); },
     );
   }
@@ -200,8 +200,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.rebalanceTimer?.cancel();
     this.acquireRetryTimer?.cancel();
     for (const r of this.rebalanceInProgress.values()) r.timer.cancel();
-    if (this.settings.lease && this.leaseState === 'held') {
-      try { await this.settings.lease.release(); } catch { /* best-effort */ }
+    if (this.options.lease && this.leaseState === 'held') {
+      try { await this.options.lease.release(); } catch { /* best-effort */ }
       this.leaseState = 'none';
     }
   }
@@ -215,7 +215,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       return;
     }
     if (!this.isLeader()) return;
-    if (this.settings.lease && this.leaseState !== 'held') {
+    if (this.options.lease && this.leaseState !== 'held') {
       // Leader, but lease not yet held — buffer instead of drop so
       // regions don't need to retry on the next cluster event.
       if (this.acquireBuffer.length < ShardCoordinator.ACQUIRE_BUFFER_CAP) {
@@ -238,7 +238,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       .otherwise(() => { /* other ShardingMessage variants are region-side */ });
   }
 
-  private isLeader(): boolean { return this.settings.cluster.isLeader(); }
+  private isLeader(): boolean { return this.options.cluster.isLeader(); }
 
   /**
    * True iff this coordinator is the authoritative one — i.e. should
@@ -247,7 +247,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * lease be currently held by this replica.
    */
   private isActive(): boolean {
-    if (!this.settings.lease) return this.isLeader();
+    if (!this.options.lease) return this.isLeader();
     return this.isLeader() && this.leaseState === 'held';
   }
 
@@ -263,7 +263,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   }
 
   private reconcileLease(): void {
-    if (!this.settings.lease) return;
+    if (!this.options.lease) return;
     const wantActive = this.isLeader();
     if (wantActive) {
       if (this.leaseState === 'held') return;        // already active
@@ -276,7 +276,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       if (this.leaseState === 'held') {
         // Stepped down — release so a follower can pick up faster
         // than waiting for the TTL to expire.
-        void this.settings.lease.release().catch((e) =>
+        void this.options.lease.release().catch((e) =>
           this.system.log.warn(`[sharding] lease release failed`, e));
         this.leaseState = 'none';
         // Falling out of `held` already triggers our standard
@@ -294,7 +294,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
 
   private async runAcquire(): Promise<void> {
     try {
-      const got = await this.settings.lease!.acquire();
+      const got = await this.options.lease!.acquire();
       this.self.tell({ t: 'lease-acquire-result', got } satisfies CoordinatorEvent);
     } catch (error) {
       this.self.tell({
@@ -306,7 +306,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private handleAcquireResult(msg: { got: boolean; error?: Error }): void {
     if (this.leaseState !== 'acquiring') {
       // Spurious result — release if we somehow got it.
-      if (msg.got) void this.settings.lease!.release().catch(() => { /* ignore */ });
+      if (msg.got) void this.options.lease!.release().catch(() => { /* ignore */ });
       return;
     }
     if (!msg.got) {
@@ -318,13 +318,13 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (!this.isLeader()) {
       // Lost leadership during the acquire — release and let the
       // new leader (if any) take over.
-      void this.settings.lease!.release().catch(() => { /* ignore */ });
+      void this.options.lease!.release().catch(() => { /* ignore */ });
       this.leaseState = 'none';
       return;
     }
     this.leaseState = 'held';
     this.system.log.info(
-      `[sharding] coordinator '${this.settings.typeName}' became active (lease acquired)`,
+      `[sharding] coordinator '${this.options.typeName}' became active (lease acquired)`,
     );
     // Drain any messages that arrived while we were acquiring.
     // Regions don't retry on a timer — they only re-ask on cluster
@@ -340,7 +340,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private handleLeaseLost(msg: { reason: string }): void {
     if (this.leaseState !== 'held') return;
     this.system.log.warn(
-      `[sharding] coordinator '${this.settings.typeName}' lost lease — ${msg.reason}; stepping down`,
+      `[sharding] coordinator '${this.options.typeName}' lost lease — ${msg.reason}; stepping down`,
     );
     this.leaseState = 'none';
     // Cancel any in-flight rebalance handoff timers — those would
@@ -364,7 +364,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   }
 
   private scheduleAcquireRetry(): void {
-    const interval = this.settings.acquireRetryIntervalMs ?? 5_000;
+    const interval = this.options.acquireRetryIntervalMs ?? 5_000;
     this.acquireRetryTimer?.cancel();
     this.acquireRetryTimer = this.system.scheduler.scheduleOnceFn(interval, () => {
       this.self.tell({ t: 'acquire-retry' } satisfies CoordinatorEvent);
@@ -372,12 +372,12 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   }
 
   private candidates(): NodeAddress[] {
-    const role = this.settings.role;
+    const role = this.options.role;
     const activeRegions = Array.from(this.regions.values()).filter(r => !r.proxy);
     const addrs = activeRegions.map(r => r.node);
     if (!role) return addrs;
     return addrs.filter(a => {
-      const m = this.settings.cluster.getMembers().find(x => x.address.equals(a));
+      const m = this.options.cluster.getMembers().find(x => x.address.equals(a));
       return m?.hasRole(role) ?? false;
     });
   }
@@ -418,7 +418,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
 
     for (const shardId of msg.hostedShards) this.flushPending(shardId);
 
-    if (this.settings.rememberEntities) {
+    if (this.options.rememberEntities) {
       for (const shardId of msg.hostedShards) this.shipRememberedEntities(shardId);
     }
     this.scheduleCoordinatorStateSave();
@@ -447,7 +447,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private tryAllocate(shardId: number): void {
     const cs = this.candidates();
     if (cs.length === 0) return;
-    const owner = this.settings.allocationStrategy.allocate(
+    const owner = this.options.allocationStrategy.allocate(
       shardId, cs, this.currentShardCounts(),
     );
     const key = this.findRegionKey(owner);
@@ -465,7 +465,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       node: info.node.toJSON(),
     });
     this.flushPending(shardId);
-    if (this.settings.rememberEntities) this.shipRememberedEntities(shardId);
+    if (this.options.rememberEntities) this.shipRememberedEntities(shardId);
     this.scheduleCoordinatorStateSave();
   }
 
@@ -489,13 +489,13 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   }
 
   private handleEntityStarted(msg: EntityStarted): void {
-    if (!this.settings.rememberEntities) return;
+    if (!this.options.rememberEntities) return;
     this.applyRememberEvent({ kind: 'started', shardId: msg.shardId, entityId: msg.entityId });
     this.persistRememberEvent({ kind: 'started', shardId: msg.shardId, entityId: msg.entityId });
   }
 
   private handleEntityStopped(msg: EntityStopped): void {
-    if (!this.settings.rememberEntities) {
+    if (!this.options.rememberEntities) {
       // Existing behaviour: tidy the in-memory map even when we're
       // not remembering entities, so an unwise external trigger
       // doesn't leave stale data in the map.
@@ -518,11 +518,11 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private persistRememberEvent(
     event: { kind: 'started' | 'stopped'; shardId: number; entityId: string },
   ): void {
-    const store = this.settings.rememberEntitiesStore;
+    const store = this.options.rememberEntitiesStore;
     if (!store) return;
     this.rememberWriteChain = this.rememberWriteChain
       .catch(() => { /* prior failure already logged */ })
-      .then(() => store.append(this.settings.typeName, event))
+      .then(() => store.append(this.options.typeName, event))
       .catch((err) => {
         this.system.log.warn(
           `[sharding] failed to persist remembered-entity event ${event.kind}/${event.shardId}/${event.entityId}`,
@@ -580,7 +580,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       // tryAllocate call.  Failure is tolerated: we fall back to
       // the v1 rebuild-from-Register path when the load fails or
       // returns nothing.
-      if (this.settings.coordinatorStateStore) {
+      if (this.options.coordinatorStateStore) {
         void this.loadCoordinatorState();
       }
     }
@@ -588,7 +588,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     // any time the leader role flips — see `reconcileLease()`.  We
     // route through the mailbox so the state machine serialises with
     // any in-flight acquire result.
-    if (this.settings.lease) {
+    if (this.options.lease) {
       this.self.tell({ t: 'reconcile' } satisfies CoordinatorEvent);
     }
   }
@@ -604,14 +604,14 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * onMessage flow.
    */
   private async loadCoordinatorState(): Promise<void> {
-    const store = this.settings.coordinatorStateStore;
+    const store = this.options.coordinatorStateStore;
     if (!store) return;
     let data: CoordinatorStateData | null;
     try {
-      data = await store.load(this.settings.typeName);
+      data = await store.load(this.options.typeName);
     } catch (err) {
       this.system.log.warn(
-        `[sharding] coordinator-state load failed for '${this.settings.typeName}'`,
+        `[sharding] coordinator-state load failed for '${this.options.typeName}'`,
         err,
       );
       return;
@@ -623,7 +623,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     // the snapshot says.  The snapshot's `regions` may be stale (a
     // node may have died), so we filter by current cluster membership.
     const livingNodes = new Set(
-      this.settings.cluster.upMembers().map((m) => m.address.toString()),
+      this.options.cluster.upMembers().map((m) => m.address.toString()),
     );
 
     for (const r of data.regions) {
@@ -654,7 +654,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * `inFlight + dirty` flag pair.
    */
   private scheduleCoordinatorStateSave(): void {
-    const store = this.settings.coordinatorStateStore;
+    const store = this.options.coordinatorStateStore;
     if (!store) return;
     if (!this.isLeader()) return;
     if (this.coordinatorStateInFlight) {
@@ -663,10 +663,10 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     }
     this.coordinatorStateInFlight = true;
     const snapshot = this.snapshotCoordinatorState();
-    void store.save(this.settings.typeName, snapshot)
+    void store.save(this.options.typeName, snapshot)
       .catch((err) => {
         this.system.log.warn(
-          `[sharding] coordinator-state save failed for '${this.settings.typeName}'`,
+          `[sharding] coordinator-state save failed for '${this.options.typeName}'`,
           err,
         );
       })
@@ -695,7 +695,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       shardHome.push([shardId, regionKey]);
     }
     return {
-      leader: this.settings.cluster.selfAddress.toString(),
+      leader: this.options.cluster.selfAddress.toString(),
       takenAt: Date.now(),
       regions,
       shardHome,
@@ -705,7 +705,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   /* ------------------------------- Rebalance ------------------------------- */
 
   private rebalanceTick(): void {
-    const shardsToMove = this.settings.allocationStrategy.rebalance(
+    const shardsToMove = this.options.allocationStrategy.rebalance(
       this.currentShardCounts(),
       this.candidates(),
       new Set(this.rebalanceInProgress.keys()),
@@ -719,7 +719,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     const owner = this.regions.get(ownerKey);
     if (!owner) return;
 
-    const timeout = this.settings.handOffTimeoutMs ?? 10_000;
+    const timeout = this.options.handOffTimeoutMs ?? 10_000;
     const timer = this.system.scheduler.scheduleOnceFn(timeout, () => {
       if (this.rebalanceInProgress.delete(shardId)) {
         this.system.log.warn(`[sharding] handoff timeout for shard ${shardId}; forcing reallocate`);
@@ -778,12 +778,12 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
 
   private replyTo(path: string, nodeData: NodeAddressData, msg: ShardingMessage): void {
     const node = NodeAddress.fromJSON(nodeData);
-    if (node.equals(this.settings.cluster.selfAddress)) {
-      const ref = this.settings.localResolver(path) as ActorRef<ShardingMessage> | null;
+    if (node.equals(this.options.cluster.selfAddress)) {
+      const ref = this.options.localResolver(path) as ActorRef<ShardingMessage> | null;
       if (ref) ref.tell(msg);
       return;
     }
-    const remote = new RemoteActorRef<ShardingMessage>(node, path, this.settings.cluster);
+    const remote = new RemoteActorRef<ShardingMessage>(node, path, this.options.cluster);
     remote.tell(msg);
   }
 }

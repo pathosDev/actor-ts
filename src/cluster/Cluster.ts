@@ -113,15 +113,15 @@ export class Cluster {
    */
   private lastDownedView: string | null = null;
 
-  private constructor(system: ActorSystem, settings: ClusterOptionsType) {
+  private constructor(system: ActorSystem, options: ClusterOptionsType) {
     this.system = system;
-    this.selfAddress = new NodeAddress(system.name, settings.host, settings.port);
-    this.selfRoles = new Set(settings.roles ?? []);
+    this.selfAddress = new NodeAddress(system.name, options.host, options.port);
+    this.selfRoles = new Set(options.roles ?? []);
     this.log = system.log.withSource(`cluster@${this.selfAddress}`);
-    this.transport = settings.transport ?? new TcpTransport(this.selfAddress, this.log);
+    this.transport = options.transport ?? new TcpTransport(this.selfAddress, this.log);
     const fdOptions: FailureDetectorOptionsType = {
       ...defaultFailureDetectorOptions,
-      ...(settings.failureDetector ?? {}),
+      ...(options.failureDetector ?? {}),
     };
     this.failureDetector = new FailureDetector(
       FailureDetectorOptions.create()
@@ -129,14 +129,14 @@ export class Cluster {
         .withUnreachableAfterMs(fdOptions.unreachableAfterMs)
         .withDownAfterMs(fdOptions.downAfterMs),
     );
-    this.gossipIntervalMs = settings.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
-    this.seedRetryIntervalMs = settings.seedRetryIntervalMs ?? DEFAULT_SEED_RETRY_INTERVAL_MS;
-    this.weaklyUpAfterMs = settings.weaklyUpAfterMs ?? 0;
-    this.downing = settings.downing ?? null;
-    this.tombstoneTtlMs = settings.tombstoneTtlMs ?? DEFAULT_TOMBSTONE_TTL_MS;
-    this.tombstonePruneIntervalMs = settings.tombstonePruneIntervalMs ?? DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS;
+    this.gossipIntervalMs = options.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
+    this.seedRetryIntervalMs = options.seedRetryIntervalMs ?? DEFAULT_SEED_RETRY_INTERVAL_MS;
+    this.weaklyUpAfterMs = options.weaklyUpAfterMs ?? 0;
+    this.downing = options.downing ?? null;
+    this.tombstoneTtlMs = options.tombstoneTtlMs ?? DEFAULT_TOMBSTONE_TTL_MS;
+    this.tombstonePruneIntervalMs = options.tombstonePruneIntervalMs ?? DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS;
     this.tombstoneMinRetentionMs =
-      settings.tombstoneMinRetentionMs ?? 6 * fdOptions.downAfterMs;
+      options.tombstoneMinRetentionMs ?? 6 * fdOptions.downAfterMs;
   }
 
   /** Entry point: start the cluster and attempt to contact seed nodes. */
@@ -144,9 +144,9 @@ export class Cluster {
     system: ActorSystem,
     options: ClusterOptions,
   ): Promise<Cluster> {
-    const settings = options as ClusterOptionsType;
-    const cluster = new Cluster(system, settings);
-    await cluster._start(settings.seeds ?? []);
+    const resolvedOptions = options as ClusterOptionsType;
+    const cluster = new Cluster(system, resolvedOptions);
+    await cluster._start(resolvedOptions.seeds ?? []);
     return cluster;
   }
 

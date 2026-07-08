@@ -3,7 +3,7 @@ import type { PersistentEvent } from '../JournalTypes.js';
 import type { LiveQueryOptions, PersistenceQuery } from '../query/PersistenceQuery.js';
 import type { OffsetStore } from './OffsetStore.js';
 
-/** Plain settings-object shape shared by every projection. */
+/** Plain options-object shape shared by every projection. */
 export interface ProjectionOptionsType<E> {
   /** Logical name — used as the offset-store key prefix. */
   readonly name: string;
@@ -17,12 +17,12 @@ export interface ProjectionOptionsType<E> {
   readonly liveOptions?: LiveQueryOptions;
 }
 
-/** Settings for a per-persistenceId projection.  One cursor per pid. */
+/** Options for a per-persistenceId projection.  One cursor per pid. */
 export interface ByPidProjectionOptionsType<E> extends ProjectionOptionsType<E> {
   readonly persistenceId: string;
 }
 
-/** Settings for a per-tag projection.  One cursor per tag. */
+/** Options for a per-tag projection.  One cursor per tag. */
 export interface ByTagProjectionOptionsType<E> extends ProjectionOptionsType<E> {
   readonly tag: string;
 }

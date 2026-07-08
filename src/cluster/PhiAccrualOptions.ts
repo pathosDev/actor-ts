@@ -1,6 +1,6 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 
-/** Plain settings-object shape accepted by a {@link PhiAccrualFailureDetector}. */
+/** Plain options-object shape accepted by a {@link PhiAccrualFailureDetector}. */
 export interface PhiAccrualOptionsType {
   /** Intended heartbeat cadence.  Used to keep `interval` compatible with FailureDetector. */
   readonly heartbeatIntervalMs: number;

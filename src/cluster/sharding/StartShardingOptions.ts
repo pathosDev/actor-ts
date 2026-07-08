@@ -6,7 +6,7 @@ import { ShardingOptionsBuilder } from './ShardingOptions.js';
 import type { ShardingOptionsType } from './ShardingOptions.js';
 
 /**
- * Plain settings-object shape accepted by {@link ClusterSharding.start} —
+ * Plain options-object shape accepted by {@link ClusterSharding.start} —
  * the region-side {@link ShardingOptionsType} plus the coordinator-side
  * fields (allocation, rebalance, lease, persistence backends).
  */

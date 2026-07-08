@@ -1,7 +1,7 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import type { MemcachedClientLike } from './MemcachedCache.js';
 
-/** Plain settings-object shape accepted by a {@link MemcachedCache}. */
+/** Plain options-object shape accepted by a {@link MemcachedCache}. */
 export interface MemcachedCacheOptionsType {
   /** Comma-separated server list, e.g. `'localhost:11211'`.  Default: `'localhost:11211'`. */
   readonly servers?: string;

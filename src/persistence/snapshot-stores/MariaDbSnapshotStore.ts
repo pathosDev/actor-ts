@@ -24,7 +24,7 @@ interface SnapRow {
  * reject `LIMIT` inside a bare `IN (SELECT …)` against the same table).
  */
 export class MariaDbSnapshotStore implements SnapshotStore {
-  private readonly settings: MariaDbSnapshotStoreOptionsType;
+  private readonly options: MariaDbSnapshotStoreOptionsType;
   private readonly table: string;
   private readonly keepN: number;
   private readonly autoCreate: boolean;
@@ -35,7 +35,7 @@ export class MariaDbSnapshotStore implements SnapshotStore {
 
   constructor(options: MariaDbSnapshotStoreOptions = {}) {
     const s = (options as MariaDbSnapshotStoreOptionsType);
-    this.settings = s;
+    this.options = s;
     this.table = assertSafeIdentifier(s.snapshotsTable ?? 'snapshots', 'snapshots table');
     this.keepN = s.keepN ?? 3;
     this.autoCreate = s.autoCreateTables ?? true;
@@ -120,7 +120,7 @@ export class MariaDbSnapshotStore implements SnapshotStore {
   }
 
   private async init(): Promise<void> {
-    const pool = await buildMariaDbPool(this.settings);
+    const pool = await buildMariaDbPool(this.options);
     if (this.autoCreate) {
       await pool.query(
         `CREATE TABLE IF NOT EXISTS ${this.table} (

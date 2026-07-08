@@ -51,14 +51,14 @@ export class ActorSystem {
   private _terminated = false;
   private _terminationResolvers: Array<() => void> = [];
 
-  private constructor(name: string, settings: ActorSystemOptionsType) {
+  private constructor(name: string, options: ActorSystemOptionsType) {
     this.name = name;
-    this.config = buildConfig(settings);
-    this.dispatcher = settings.dispatcher ?? dispatcherFromConfig(this.config);
-    this.scheduler = settings.scheduler ?? new Scheduler();
+    this.config = buildConfig(options);
+    this.dispatcher = options.dispatcher ?? dispatcherFromConfig(this.config);
+    this.scheduler = options.scheduler ?? new Scheduler();
     this.eventStream = new EventStream();
-    this.log = settings.logger
-      ?? new ConsoleLogger(settings.logLevel ?? logLevelFromConfig(this.config));
+    this.log = options.logger
+      ?? new ConsoleLogger(options.logLevel ?? logLevelFromConfig(this.config));
     // Wire the system logger into the bus so a throwing subscriber
     // predicate (#85) gets surfaced rather than silently dropped.
     this.eventStream.log = this.log;
@@ -89,10 +89,10 @@ export class ActorSystem {
     // extension registry exists.  Either field is independent — omitted
     // slots keep the auto-default in-memory plugin
     // (see PersistenceExtension.journal / snapshotStore getters).
-    if (settings.persistence) {
+    if (options.persistence) {
       const ext = this.extensions.get(PersistenceExtensionId);
-      if (settings.persistence.journal) ext.setJournal(settings.persistence.journal);
-      if (settings.persistence.snapshotStore) ext.setSnapshotStore(settings.persistence.snapshotStore);
+      if (options.persistence.journal) ext.setJournal(options.persistence.journal);
+      if (options.persistence.snapshotStore) ext.setSnapshotStore(options.persistence.snapshotStore);
     }
   }
 
@@ -251,15 +251,15 @@ export class ActorSystem {
 
 /* ----------------------------- Config helpers ----------------------------- */
 
-function buildConfig(settings: ActorSystemOptionsType): Config {
+function buildConfig(options: ActorSystemOptionsType): Config {
   const userLayer =
-    settings.config === undefined
+    options.config === undefined
       ? Config.empty()
-      : settings.config instanceof Config
-        ? settings.config
-        : Config.fromObject(settings.config);
+      : options.config instanceof Config
+        ? options.config
+        : Config.fromObject(options.config);
   return Config.load({
-    appConfPath: settings.configFile,
+    appConfPath: options.configFile,
     overrides: userLayer,
   });
 }

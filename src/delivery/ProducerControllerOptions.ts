@@ -2,7 +2,7 @@ import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import type { ActorRef } from '../ActorRef.js';
 import type { Delivery } from './Messages.js';
 
-/** Plain settings-object shape accepted by a {@link ProducerController}. */
+/** Plain options-object shape accepted by a {@link ProducerController}. */
 export interface ProducerControllerOptionsType<T> {
   readonly consumer: ActorRef<Delivery<T>>;
   /**

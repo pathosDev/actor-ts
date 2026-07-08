@@ -2,7 +2,7 @@ import type { Props } from '../../Props.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 
 /**
- * Plain settings-object shape for a sharded region.  Consumed by
+ * Plain options-object shape for a sharded region.  Consumed by
  * {@link ShardRegion.settingsToConfig} and extended by
  * {@link StartShardingOptionsType} — the coordinator-side superset that
  * {@link ClusterSharding.start} accepts.
@@ -45,7 +45,7 @@ export interface ShardingOptionsType<TMsg> {
  * inheritance chain: {@link StartShardingOptionsBuilder} (in
  * `StartShardingOptions`) extends this and adds the coordinator-side
  * fields.  Each concrete `withX` records exactly one field so unset
- * fields fall through to HOCON / built-in defaults when the settings are
+ * fields fall through to HOCON / built-in defaults when the options are
  * normalised by {@link ShardRegion.settingsToConfig}.
  *
  * The whole-object fields — `entityProps` (a {@link Props}), and the

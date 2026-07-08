@@ -48,7 +48,7 @@ export interface ObjectStoragePluginHandles {
    * The DurableState store instance.  `PersistenceExtension` doesn't
    * carry a DurableState registry today, so callers that want
    * DurableState pass this directly into `DurableStateActor`'s
-   * settings.
+   * options.
    */
   readonly durableStateStore: ObjectStorageDurableStateStore;
 }
@@ -59,7 +59,7 @@ export interface ObjectStoragePluginHandles {
  * Cassandra plugin's one-call wiring while accepting that DurableState
  * isn't extension-managed today — callers who want DurableState read
  * `handles.durableStateStore` from the return value and pass it into
- * their `DurableStateActor` settings.
+ * their `DurableStateActor` options.
  *
  * **Eager peer-dep validation (#18, #59).**  Before returning, this
  * function probes any optional peer-dependency the configured codecs

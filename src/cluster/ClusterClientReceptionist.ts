@@ -91,8 +91,8 @@ export class ClusterClientReceptionist implements Extension {
       throw new Error('ClusterClientReceptionist is already bound to a different cluster');
     }
     this._cluster = cluster;
-    const settings = (options as ClusterClientReceptionistOptionsType);
-    const askTimeoutMs = settings.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
+    const resolvedOptions = (options as ClusterClientReceptionistOptionsType);
+    const askTimeoutMs = resolvedOptions.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
     const log = this.system.log.withSource(`cluster-client-receptionist@${cluster.selfAddress}`);
 
     this._unsubscribe = cluster._onWire('cluster-client-envelope', (msg) => {

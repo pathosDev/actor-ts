@@ -172,10 +172,10 @@ type DsCmd =
 
 class Counter extends DurableStateActor<DsCmd, { v: number }> {
   constructor(
-    settings: ConstructorParameters<typeof DurableStateActor<DsCmd, { v: number }>>[0],
+    options: ConstructorParameters<typeof DurableStateActor<DsCmd, { v: number }>>[0],
     private readonly _compression?: CompressionConfig,
     private readonly _encryption?: EncryptionConfig,
-  ) { super(settings); }
+  ) { super(options); }
   protected override compression(): CompressionConfig | undefined { return this._compression; }
   protected override encryption(): EncryptionConfig | undefined { return this._encryption; }
   override async onCommand(cmd: DsCmd): Promise<void> {

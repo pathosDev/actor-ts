@@ -49,15 +49,15 @@ export class MockCluster {
   private leader: Option<Member>;
   private readonly listeners: Array<(e: ClusterEvent) => void> = [];
 
-  constructor(settings: MockClusterOptionsType) {
-    this.selfAddress = settings.selfAddress;
+  constructor(options: MockClusterOptionsType) {
+    this.selfAddress = options.selfAddress;
     // Self always present.
-    const selfMember = new Member(settings.selfAddress, 'up', 1, []);
-    this.members.set(settings.selfAddress.toString(), selfMember);
-    for (const m of settings.initialMembers ?? []) {
+    const selfMember = new Member(options.selfAddress, 'up', 1, []);
+    this.members.set(options.selfAddress.toString(), selfMember);
+    for (const m of options.initialMembers ?? []) {
       this.members.set(m.address.toString(), m);
     }
-    this.leader = settings.initialLeader ?? this.computeLeader();
+    this.leader = options.initialLeader ?? this.computeLeader();
   }
 
   /** Match the Cluster API: replays current state on subscribe. */

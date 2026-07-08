@@ -6,7 +6,7 @@ import { PhiAccrualOptions } from '../../../../src/cluster/PhiAccrualOptions.js'
 const addr = (port: number): NodeAddress => new NodeAddress('sys', 'h', port);
 
 describe('PhiAccrualFailureDetector', () => {
-  test('settings validation rejects bad thresholds', () => {
+  test('options validation rejects bad thresholds', () => {
     const badThresholdOptions = PhiAccrualOptions.create()
       .withUnreachableThreshold(8)
       .withDownThreshold(8);

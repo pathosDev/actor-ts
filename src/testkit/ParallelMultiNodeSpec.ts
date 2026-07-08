@@ -109,7 +109,7 @@ type ControlResponse =
   | LeaveResponse | RunCommandResponse;
 
 export class ParallelMultiNodeSpec {
-  private readonly settings: Required<Omit<
+  private readonly options: Required<Omit<
     ParallelMultiNodeSpecOptionsType,
     'addresses' | 'failureDetector' | 'scenarioModule' | 'scenarioInitDataFor' | 'bootstrapModule'
   >> & Pick<
@@ -127,17 +127,17 @@ export class ParallelMultiNodeSpec {
     timer: ReturnType<typeof setTimeout>;
   }>();
 
-  constructor(settings: ParallelMultiNodeSpecOptionsType) {
-    if (settings.roles.length === 0) {
+  constructor(options: ParallelMultiNodeSpecOptionsType) {
+    if (options.roles.length === 0) {
       throw new Error('ParallelMultiNodeSpec: at least one role is required');
     }
-    if (new Set(settings.roles).size !== settings.roles.length) {
+    if (new Set(options.roles).size !== options.roles.length) {
       throw new Error('ParallelMultiNodeSpec: roles must be unique');
     }
-    this.settings = {
-      roles: settings.roles,
-      seedRoles: settings.seedRoles ?? [settings.roles[0]!],
-      gossipIntervalMs: settings.gossipIntervalMs ?? 100,
+    this.options = {
+      roles: options.roles,
+      seedRoles: options.seedRoles ?? [options.roles[0]!],
+      gossipIntervalMs: options.gossipIntervalMs ?? 100,
       // 30s default (vs. 15s in MultiNodeSpec) — worker-thread bootstrap
       // is slower than the in-process variant.  NOTE: the worker-thread
       // suites that use this harness are QUARANTINED on GitHub's hosted
@@ -146,13 +146,13 @@ export class ParallelMultiNodeSpec {
       // only on the hosted runners, never locally or in Docker).  See the
       // [CI] tracking issue.  They run locally + in Docker, where this
       // budget is ample (convergence is ~4-5s).
-      awaitTimeoutMs: settings.awaitTimeoutMs ?? 30_000,
-      logLevel: settings.logLevel ?? LogLevel.Off,
-      addresses: settings.addresses,
-      failureDetector: settings.failureDetector,
-      scenarioModule: settings.scenarioModule,
-      scenarioInitDataFor: settings.scenarioInitDataFor,
-      bootstrapModule: settings.bootstrapModule,
+      awaitTimeoutMs: options.awaitTimeoutMs ?? 30_000,
+      logLevel: options.logLevel ?? LogLevel.Off,
+      addresses: options.addresses,
+      failureDetector: options.failureDetector,
+      scenarioModule: options.scenarioModule,
+      scenarioInitDataFor: options.scenarioInitDataFor,
+      bootstrapModule: options.bootstrapModule,
     };
   }
 
@@ -163,22 +163,22 @@ export class ParallelMultiNodeSpec {
     this.started = true;
 
     const portBase = nextPortBase;
-    nextPortBase += this.settings.roles.length + 1;
+    nextPortBase += this.options.roles.length + 1;
 
     const addressByRole = new Map<string, NodeAddress>();
-    this.settings.roles.forEach((role, idx) => {
-      const explicit = this.settings.addresses?.[role];
+    this.options.roles.forEach((role, idx) => {
+      const explicit = this.options.addresses?.[role];
       const host = explicit?.host ?? '127.0.0.1';
       const port = explicit?.port ?? (portBase + idx);
       addressByRole.set(role, new NodeAddress(role, host, port));
     });
 
-    const seeds = this.settings.seedRoles
+    const seeds = this.options.seedRoles
       .map((r) => addressByRole.get(r)!.toString());
 
     const orderedRoles = [
-      ...this.settings.seedRoles,
-      ...this.settings.roles.filter((r) => !this.settings.seedRoles.includes(r)),
+      ...this.options.seedRoles,
+      ...this.options.roles.filter((r) => !this.options.seedRoles.includes(r)),
     ];
     for (const role of orderedRoles) {
       const address = addressByRole.get(role)!;
@@ -281,7 +281,7 @@ export class ParallelMultiNodeSpec {
   /* ---------------------------- await helpers --------------------------- */
 
   async awaitMembers(
-    role: string, expectedCount: number, timeoutMs: number = this.settings.awaitTimeoutMs,
+    role: string, expectedCount: number, timeoutMs: number = this.options.awaitTimeoutMs,
   ): Promise<void> {
     await this.awaitCondition(
       async () => {
@@ -295,7 +295,7 @@ export class ParallelMultiNodeSpec {
 
   async awaitMemberStatus(
     role: string, targetRole: string, status: Member['status'],
-    timeoutMs: number = this.settings.awaitTimeoutMs,
+    timeoutMs: number = this.options.awaitTimeoutMs,
   ): Promise<void> {
     const targetAddr = this.requireNode(targetRole).address.toString();
     await this.awaitCondition(
@@ -310,7 +310,7 @@ export class ParallelMultiNodeSpec {
 
   async awaitLeader(
     role: string, expectedLeaderRole: string | null,
-    timeoutMs: number = this.settings.awaitTimeoutMs,
+    timeoutMs: number = this.options.awaitTimeoutMs,
   ): Promise<void> {
     const expectedAddr = expectedLeaderRole
       ? this.requireNode(expectedLeaderRole).address.toString()
@@ -370,18 +370,18 @@ export class ParallelMultiNodeSpec {
     role: string, address: NodeAddress, seeds: string[],
   ): Promise<NodeRecord> {
     const backend = await getWorkerBackend();
-    const bootstrap = this.settings.bootstrapModule
+    const bootstrap = this.options.bootstrapModule
       ?? new URL('./internal/parallel-multi-node-bootstrap.js', import.meta.url);
     const worker = backend.spawn(bootstrap, { name: `parallel-mns-${role}` });
 
     const initData = {
       role,
       seeds,
-      failureDetector: this.settings.failureDetector,
-      gossipIntervalMs: this.settings.gossipIntervalMs,
-      logLevel: this.settings.logLevel,
-      scenarioModule: this.settings.scenarioModule?.toString(),
-      scenarioInitData: this.settings.scenarioInitDataFor?.(role),
+      failureDetector: this.options.failureDetector,
+      gossipIntervalMs: this.options.gossipIntervalMs,
+      logLevel: this.options.logLevel,
+      scenarioModule: this.options.scenarioModule?.toString(),
+      scenarioInitData: this.options.scenarioInitDataFor?.(role),
     };
     const init: WorkerInitMessage = {
       kind: 'worker-init',

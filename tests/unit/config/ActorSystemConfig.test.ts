@@ -74,7 +74,7 @@ describe('ActorSystem — config integration', () => {
     await sys.terminate();
   });
 
-  test('explicit dispatcher/logger in settings win over config', async () => {
+  test('explicit dispatcher/logger in options win over config', async () => {
     const customLogger = new NoopLogger();
     const customDispatcher = new MicrotaskDispatcher();
     const sysOptions = ActorSystemOptions.create()

@@ -1,6 +1,6 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 
-/** Plain settings-object shape accepted by a {@link KubernetesApiSeedProvider}. */
+/** Plain options-object shape accepted by a {@link KubernetesApiSeedProvider}. */
 export interface KubernetesApiSeedProviderOptionsType {
   /** Target namespace to look up endpoints in. */
   readonly namespace: string;

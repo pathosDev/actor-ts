@@ -6,8 +6,8 @@ import { ORSet, type ORSetJson } from './ORSet.js';
  * follow OR-Set add-wins semantics; values merge per-key via their
  * own `merge`.  The natural fit when you want a logical map and each
  * cell needs its own conflict-free type — e.g. carts where every
- * cart is itself an `ORSet` of items, or per-tenant settings where
- * each tenant's settings is an `LWWMap`.
+ * cart is itself an `ORSet` of items, or per-tenant options where
+ * each tenant's options is an `LWWMap`.
  *
  *   const empty = ORMap.empty<string, ORSet<string>>();
  *   const a = empty.update('alice', 'cart-1', () => ORSet.empty<string>(),

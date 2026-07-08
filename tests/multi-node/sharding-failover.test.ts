@@ -177,7 +177,7 @@ describe('multi-node sharding failover', () => {
       await Bun.sleep(300);
 
       // Cut 'c' from both 'a' and 'b' — c becomes unreachable, then with
-      // tight FD settings (downAfterMs = 400) the cluster declares c
+      // tight FD options (downAfterMs = 400) the cluster declares c
       // down + removed within ~half a second.  At *that* point — not at
       // first unreachable — the coordinator moves c's shards.  Waiting
       // for a 2-member view is the right signal here.

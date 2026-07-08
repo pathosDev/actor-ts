@@ -241,7 +241,7 @@ export class DistributedData implements Extension {
       throw new Error('DistributedData is already bound to a different cluster');
     }
     this._cluster = cluster;
-    const settings = (options as Partial<DistributedDataOptionsType>);
+    const resolvedOptions = (options as Partial<DistributedDataOptionsType>);
 
     // The extension exposes a synchronous API; the internal actor owns
     // the state and the gossip loop.  We hand the actor a setter for a
@@ -249,7 +249,7 @@ export class DistributedData implements Extension {
     // ask().
     const view: SharedView = { state: new Map(), listeners: new Map() };
     const ref = this.system.spawn(
-      Props.create(() => new DistributedDataActor({ cluster, settings, view })),
+      Props.create(() => new DistributedDataActor({ cluster, options: resolvedOptions, view })),
       'distributed-data',
     );
     // Register wire handlers SYNCHRONOUSLY here — `spawn` returns
@@ -310,7 +310,7 @@ interface UpdateMsg {
   readonly factory: CrdtFactory<Crdt<any>>;
   readonly fn: (c: Crdt<any>) => Crdt<any>;
   /**
-   * Optional quorum settings.  When present, the update runs as a
+   * Optional quorum options.  When present, the update runs as a
    * quorum write — the actor broadcasts the merged value to peers,
    * collects acks, and only then resolves the user's promise.  When
    * absent, behaves like the legacy sync path (apply locally + let
@@ -555,18 +555,18 @@ class DistributedDataActor extends Actor<ActorMsg> {
   /** Outstanding quorum-read requests, keyed by pendingId. */
   private readonly pendingReads = new Map<string, PendingRead>();
 
-  constructor(public readonly settings: {
+  constructor(public readonly options: {
     cluster: Cluster;
-    settings: DistributedDataOptionsType;
+    options: DistributedDataOptionsType;
     view: SharedView;
   }) {
     super();
-    this.cluster = settings.cluster;
-    this.view = settings.view;
-    this.gossipIntervalMs = settings.settings.gossipInterval ?? 1_000;
-    this.durable = settings.settings.durableStore
+    this.cluster = options.cluster;
+    this.view = options.view;
+    this.gossipIntervalMs = options.options.gossipInterval ?? 1_000;
+    this.durable = options.options.durableStore
       ? new DurableDistributedDataStore(
-          settings.settings.durableStore,
+          options.options.durableStore,
           this.cluster.selfAddress.toString(),
         )
       : null;

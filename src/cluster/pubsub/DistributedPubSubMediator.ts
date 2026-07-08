@@ -56,15 +56,15 @@ export class DistributedPubSubMediator extends Actor<
   private unsubscribeCluster: (() => void) | null = null;
   private version = 0;
 
-  readonly settings: DistributedPubSubOptionsType;
+  readonly options: DistributedPubSubOptionsType;
 
   constructor(options: DistributedPubSubOptions) {
     super();
-    this.settings = options as DistributedPubSubOptionsType;
+    this.options = options as DistributedPubSubOptionsType;
   }
 
   override preStart(): void {
-    const cluster = this.settings.cluster;
+    const cluster = this.options.cluster;
     this.unsubscribeWire = cluster._onWire('pubsub-gossip', (msg) =>
       this.handleGossip(msg as unknown as PubSubGossipMsg),
     );
@@ -75,7 +75,7 @@ export class DistributedPubSubMediator extends Actor<
         .with(P.instanceOf(MemberUp), () => { this.version++; })
         .otherwise(() => { /* other events ignored */ }),
     );
-    const interval = this.settings.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
+    const interval = this.options.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
     this.gossipTimer = this.system.scheduler.scheduleAtFixedRateFn(
       interval, interval, () => this.gossipTick(),
     );
@@ -164,7 +164,7 @@ export class DistributedPubSubMediator extends Actor<
     const payload: PubSubPublishMsg = { t: 'pubsub-publish', topic: msg.topic, body: msg.message };
     for (const nodeStr of set.remoteNodes) {
       const node = NodeAddress.parse(nodeStr);
-      if (node.equals(this.settings.cluster.selfAddress)) continue;
+      if (node.equals(this.options.cluster.selfAddress)) continue;
       this.sendWire(node, payload);
     }
   }
@@ -182,8 +182,8 @@ export class DistributedPubSubMediator extends Actor<
   /* --------------------------------- Gossip ---------------------------------- */
 
   private gossipTick(): void {
-    const peers = this.settings.cluster.upMembers()
-      .filter(m => !m.address.equals(this.settings.cluster.selfAddress));
+    const peers = this.options.cluster.upMembers()
+      .filter(m => !m.address.equals(this.options.cluster.selfAddress));
     if (peers.length === 0) return;
     const gossip = this.buildGossip();
     // Push to one random peer — epidemic dissemination.
@@ -200,8 +200,8 @@ export class DistributedPubSubMediator extends Actor<
    * anti-entropy.
    */
   private eagerGossip(): void {
-    const peers = this.settings.cluster.upMembers()
-      .filter(m => !m.address.equals(this.settings.cluster.selfAddress));
+    const peers = this.options.cluster.upMembers()
+      .filter(m => !m.address.equals(this.options.cluster.selfAddress));
     if (peers.length === 0) return;
     const gossip = this.buildGossip();
     for (const peer of peers) {
@@ -222,7 +222,7 @@ export class DistributedPubSubMediator extends Actor<
     }
     return {
       t: 'pubsub-gossip',
-      from: this.settings.cluster.selfAddress.toJSON(),
+      from: this.options.cluster.selfAddress.toJSON(),
       entries,
       version: this.version,
     };
@@ -265,16 +265,16 @@ export class DistributedPubSubMediator extends Actor<
     if (msg.t === 'pubsub-publish') {
       // Wrap in envelope so the receiver's Cluster routes it into the
       // mediator actor.  Publishes are "user" messages from the wire POV.
-      this.settings.cluster._sendEnvelope(to, {
+      this.options.cluster._sendEnvelope(to, {
         t: 'envelope',
-        to: mediatorPath(this.settings.cluster.system.name),
+        to: mediatorPath(this.options.cluster.system.name),
         from: null,
         body: msg,
         tag: 'PubSubPublish',
       });
     } else {
       // Gossip frames ride on the raw transport — they're system traffic.
-      this.settings.cluster.transport.send(to, msg as unknown as WireMessage);
+      this.options.cluster.transport.send(to, msg as unknown as WireMessage);
     }
   }
 }

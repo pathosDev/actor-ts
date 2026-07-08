@@ -23,11 +23,11 @@ interface Sample {
  */
 export class FailureDetector {
   private samples = new Map<string, Sample>();
-  private readonly settings: FailureDetectorOptionsType;
+  private readonly options: FailureDetectorOptionsType;
 
   constructor(options: FailureDetectorOptions = {}) {
     // Unset builder fields fall through to the built-in defaults.
-    this.settings = { ...defaultFailureDetectorOptions, ...(options as Partial<FailureDetectorOptionsType>) };
+    this.options = { ...defaultFailureDetectorOptions, ...(options as Partial<FailureDetectorOptionsType>) };
   }
 
   /** Record that a message was received from `peer` (any message counts). */
@@ -51,8 +51,8 @@ export class FailureDetector {
     const sample = this.samples.get(peer.toString());
     if (!sample) return 'healthy';
     const elapsed = now - sample.lastSeen;
-    if (elapsed >= this.settings.downAfterMs) return 'down';
-    if (elapsed >= this.settings.unreachableAfterMs) return 'unreachable';
+    if (elapsed >= this.options.downAfterMs) return 'down';
+    if (elapsed >= this.options.unreachableAfterMs) return 'unreachable';
     return 'healthy';
   }
 
@@ -60,5 +60,5 @@ export class FailureDetector {
     return fromNullable(this.samples.get(peer.toString())?.lastSeen);
   }
 
-  get interval(): number { return this.settings.heartbeatIntervalMs; }
+  get interval(): number { return this.options.heartbeatIntervalMs; }
 }

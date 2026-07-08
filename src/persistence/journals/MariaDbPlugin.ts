@@ -18,7 +18,7 @@ export interface MariaDbPluginHandles {
    * The DurableState store instance.  `PersistenceExtension` carries no
    * DurableState registry (same as the object-storage / Postgres plugins),
    * so callers who want DurableState read this from the return value and
-   * pass it into their `DurableStateActor` settings.
+   * pass it into their `DurableStateActor` options.
    */
   readonly durableStateStore: MariaDbDurableStateStore;
 }

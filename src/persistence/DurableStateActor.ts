@@ -25,18 +25,18 @@ import type { DurableStateOptions, DurableStateOptionsType } from './DurableStat
 export abstract class DurableStateActor<Cmd, S> extends Actor<Cmd> {
   private _record: DurableStateRecord<S> | null = null;
   private _persisting: Promise<void> | null = null;
-  public readonly settings: DurableStateOptionsType<S>;
+  public readonly options: DurableStateOptionsType<S>;
 
   constructor(options: DurableStateOptions<S>) {
     super();
-    this.settings = options as DurableStateOptionsType<S>;
+    this.options = options as DurableStateOptionsType<S>;
   }
 
   /** Current state snapshot — safe to read inside a handler. */
   protected get state(): S {
     if (!this._record) {
       // emptyState served as the first value before any persist() completed.
-      return this.settings.emptyState();
+      return this.options.emptyState();
     }
     return this._record.state;
   }
@@ -69,8 +69,8 @@ export abstract class DurableStateActor<Cmd, S> extends Actor<Cmd> {
 
   override async preStart(): Promise<void> {
     const adapter = this.stateAdapter();
-    const loaded = await this.settings.store.load<unknown>(
-      this.settings.persistenceId, this.persistenceOptions(),
+    const loaded = await this.options.store.load<unknown>(
+      this.options.persistenceId, this.persistenceOptions(),
     );
     const opt = loaded.toNullable();
     if (!opt) { this._record = null; return; }
@@ -99,8 +99,8 @@ export abstract class DurableStateActor<Cmd, S> extends Actor<Cmd> {
     // Store sees an envelope (or raw value when no adapter).  We re-stamp
     // the local record with the original `next` so callers see the
     // current-version domain shape.
-    const p = this.settings.store.upsert<unknown>(
-      this.settings.persistenceId,
+    const p = this.options.store.upsert<unknown>(
+      this.options.persistenceId,
       expected,
       wire,
       this.persistenceOptions(),
@@ -126,7 +126,7 @@ export abstract class DurableStateActor<Cmd, S> extends Actor<Cmd> {
 
   /** Delete the underlying record and reset to emptyState in memory. */
   protected async deleteRecord(): Promise<void> {
-    await this.settings.store.delete(this.settings.persistenceId);
+    await this.options.store.delete(this.options.persistenceId);
     this._record = null;
   }
 

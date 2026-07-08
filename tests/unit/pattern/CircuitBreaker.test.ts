@@ -88,7 +88,7 @@ describe('CircuitBreaker — filtering', () => {
   });
 });
 
-describe('CircuitBreaker — settings validation', () => {
+describe('CircuitBreaker — options validation', () => {
   test('maxFailures < 1 throws', () => {
     expect(() => new CircuitBreaker({ maxFailures: 0, resetTimeoutMs: 10 })).toThrow(/maxFailures/);
   });

@@ -97,10 +97,10 @@ export class HonoBackend implements HttpServerBackend {
   private server: HonoServerHandle | null = null;
 
   constructor(options: HonoBackendOptions = {}) {
-    const settings = (options as HonoBackendOptionsType);
-    this.app = settings.app ?? null;
-    this.ownsApp = settings.app == null;
-    this.maxBodyBytes = settings.maxBodyBytes ?? 10 * 1024 * 1024;
+    const resolvedOptions = (options as HonoBackendOptionsType);
+    this.app = resolvedOptions.app ?? null;
+    this.ownsApp = resolvedOptions.app == null;
+    this.maxBodyBytes = resolvedOptions.maxBodyBytes ?? 10 * 1024 * 1024;
   }
 
   /** Inject / access the underlying Hono app — useful for native middleware. */

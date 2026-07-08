@@ -1,6 +1,6 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 
-/** Plain settings-object shape accepted by a {@link FailureDetector}. */
+/** Plain options-object shape accepted by a {@link FailureDetector}. */
 export interface FailureDetectorOptionsType {
   /** How often the detector samples and decides membership health. */
   readonly heartbeatIntervalMs: number;

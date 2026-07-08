@@ -60,7 +60,7 @@ describe('exponentialBackoff', () => {
     expect(p.delayFor(-3)).toBe(100);
   });
 
-  test('rejects nonsensical settings', () => {
+  test('rejects nonsensical options', () => {
     expect(() => exponentialBackoff({ minMs: -1, maxMs: 1000 })).toThrow(/minMs/);
     expect(() => exponentialBackoff({ minMs: 100, maxMs: 50 })).toThrow(/maxMs/);
     expect(() => exponentialBackoff({ minMs: 100, maxMs: 1000, randomFactor: 1.5 })).toThrow(/randomFactor/);

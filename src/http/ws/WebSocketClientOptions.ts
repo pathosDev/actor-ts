@@ -1,7 +1,7 @@
 /**
  * All WebSocket-client option-relevant types live here:
  *
- *   - {@link WebSocketClientOptionsType} — the plain settings-object shape
+ *   - {@link WebSocketClientOptionsType} — the plain options-object shape
  *     (what you may also pass as a bare `{ … }` object).
  *   - {@link WebSocketClientOptionsBuilder} — the fluent builder
  *     (`WebSocketClientOptions.create()…`).
@@ -32,7 +32,7 @@ import { BrokerOptionsBuilder } from '../../io/broker/BrokerOptions.js';
 import type { BrokerCommonOptionsType } from '../../io/broker/BrokerOptions.js';
 import type { WsCodec } from './WsCodec.js';
 
-/** Plain settings-object shape accepted by a {@link WebSocketClientActor}. */
+/** Plain options-object shape accepted by a {@link WebSocketClientActor}. */
 export interface WebSocketClientOptionsType<TOut = unknown, TIn = unknown> extends BrokerCommonOptionsType {
   /** WebSocket URL (`ws://…` or `wss://…`).  Required (ctor or HOCON). */
   readonly url?: string;

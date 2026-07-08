@@ -7,7 +7,7 @@ import { LWWRegister, type LWWRegisterJson } from './LWWRegister.js';
  * resolution is identical to {@link LWWRegister}: higher timestamp
  * wins, ties broken by replica id.
  *
- * Pattern fits: per-key feature flags, per-user settings, profile
+ * Pattern fits: per-key feature flags, per-user options, profile
  * fields where one writer at a time is normal but eventual
  * consistency across replicas matters.
  *

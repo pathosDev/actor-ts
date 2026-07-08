@@ -43,11 +43,11 @@ export class CircuitBreaker {
   private nextProbeAt = 0;
   private readonly listeners = new Set<StateListener>();
 
-  constructor(public readonly settings: CircuitBreakerOptionsType) {
-    if (settings.maxFailures < 1) {
+  constructor(public readonly options: CircuitBreakerOptionsType) {
+    if (options.maxFailures < 1) {
       throw new Error('CircuitBreaker: maxFailures must be >= 1');
     }
-    if (settings.resetTimeoutMs < 0) {
+    if (options.resetTimeoutMs < 0) {
       throw new Error('CircuitBreaker: resetTimeoutMs must be >= 0');
     }
   }
@@ -59,8 +59,8 @@ export class CircuitBreaker {
     this.maybeTransitionToHalfOpen();
     if (this._state === 'open') throw new CircuitBreakerOpenError();
 
-    const promise = this.settings.callTimeoutMs && this.settings.callTimeoutMs > 0
-      ? this.applyTimeout(factory(), this.settings.callTimeoutMs)
+    const promise = this.options.callTimeoutMs && this.options.callTimeoutMs > 0
+      ? this.applyTimeout(factory(), this.options.callTimeoutMs)
       : factory();
 
     try {
@@ -69,7 +69,7 @@ export class CircuitBreaker {
       return value;
     } catch (err) {
       const asErr = err instanceof Error ? err : new Error(String(err));
-      const isFailure = this.settings.isFailure?.(asErr) ?? true;
+      const isFailure = this.options.isFailure?.(asErr) ?? true;
       if (isFailure) this.onFailure();
       throw asErr;
     }
@@ -86,7 +86,7 @@ export class CircuitBreaker {
     if (this._state === next) return;
     this._state = next;
     this.failureCount = 0;
-    if (next === 'open') this.nextProbeAt = Date.now() + this.settings.resetTimeoutMs;
+    if (next === 'open') this.nextProbeAt = Date.now() + this.options.resetTimeoutMs;
     for (const l of this.listeners) { try { l(next); } catch { /* ignore */ } }
   }
 
@@ -104,7 +104,7 @@ export class CircuitBreaker {
       return;
     }
     this.failureCount++;
-    if (this.failureCount >= this.settings.maxFailures) {
+    if (this.failureCount >= this.options.maxFailures) {
       this.setState('open');
     }
   }

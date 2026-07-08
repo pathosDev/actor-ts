@@ -35,15 +35,15 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Ack> {
   private readonly resendTimeoutMs: number;
   private readonly windowSize: number;
 
-  public readonly settings: ProducerControllerOptionsType<T>;
+  public readonly options: ProducerControllerOptionsType<T>;
 
   constructor(options: ProducerControllerOptions<T>) {
     super();
-    const settings = options as ProducerControllerOptionsType<T>;
-    this.settings = settings;
-    this.id = settings.producerId ?? nextProducerId();
-    this.resendTimeoutMs = settings.resendTimeout ?? 500;
-    this.windowSize = settings.windowSize ?? 16;
+    const resolvedOptions = options as ProducerControllerOptionsType<T>;
+    this.options = resolvedOptions;
+    this.id = resolvedOptions.producerId ?? nextProducerId();
+    this.resendTimeoutMs = resolvedOptions.resendTimeout ?? 500;
+    this.windowSize = resolvedOptions.windowSize ?? 16;
   }
 
   override postStop(): void {
@@ -82,7 +82,7 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Ack> {
       body: f.body,
       replyTo: this.self as unknown as ActorRef<Ack>,
     };
-    this.settings.consumer.tell(delivery);
+    this.options.consumer.tell(delivery);
     f.timer = this.system.scheduler.scheduleOnceFn(
       this.resendTimeoutMs,
       () => {

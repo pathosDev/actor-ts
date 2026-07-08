@@ -2,7 +2,7 @@ import type { Lease } from '../../coordination/Lease.js';
 import type { Props } from '../../Props.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 
-/** Plain settings-object shape accepted by {@link ClusterSingleton.start}. */
+/** Plain options-object shape accepted by {@link ClusterSingleton.start}. */
 export interface StartSingletonOptionsType<T> {
   /** Logical name for this singleton — used in the manager/child actor path. */
   readonly typeName: string;

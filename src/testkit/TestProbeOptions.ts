@@ -1,6 +1,6 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 
-/** Plain settings-object shape accepted by a {@link TestProbe}. */
+/** Plain options-object shape accepted by a {@link TestProbe}. */
 export interface TestProbeOptionsType {
   /** Default timeout used when a caller doesn't specify one. */
   readonly defaultTimeoutMs?: number;

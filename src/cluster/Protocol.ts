@@ -157,7 +157,7 @@ export function encodeFrame(msg: WireMessage): Uint8Array {
  * rest of the bytes (DoS).  Capping at a sensible default closes
  * that vector; callers that genuinely send larger frames can raise
  * the cap via the `FrameDecoder` constructor or
- * `TcpTransport`'s settings.
+ * `TcpTransport`'s options.
  */
 export const DEFAULT_MAX_FRAME_BYTES = 16 * 1024 * 1024;
 

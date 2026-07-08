@@ -2,7 +2,7 @@ import type { TlsTransportOptionsType } from '../runtime/tcp/index.js';
 import type { Logger } from '../Logger.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 
-/** Plain settings-object shape accepted by a {@link ClusterClient}. */
+/** Plain options-object shape accepted by a {@link ClusterClient}. */
 export interface ClusterClientOptionsType {
   /**
    * Cluster nodes to dial.  Each is a `host:port` or `<system>@host:port`

@@ -109,28 +109,28 @@ interface BarrierEntry {
 }
 
 export class MultiNodeSpec {
-  private readonly settings: Required<Omit<MultiNodeSpecOptionsType, 'addresses' | 'failureDetector' | 'downing'>>
+  private readonly options: Required<Omit<MultiNodeSpecOptionsType, 'addresses' | 'failureDetector' | 'downing'>>
     & Pick<MultiNodeSpecOptionsType, 'addresses' | 'failureDetector' | 'downing'>;
   private readonly nodes = new Map<string, NodeRecord>();
   private started = false;
   private readonly barriers = new Map<string, BarrierEntry>();
 
-  constructor(settings: MultiNodeSpecOptionsType) {
-    if (settings.roles.length === 0) {
+  constructor(options: MultiNodeSpecOptionsType) {
+    if (options.roles.length === 0) {
       throw new Error('MultiNodeSpec: at least one role is required');
     }
-    if (new Set(settings.roles).size !== settings.roles.length) {
+    if (new Set(options.roles).size !== options.roles.length) {
       throw new Error('MultiNodeSpec: roles must be unique');
     }
-    this.settings = {
-      roles: settings.roles,
-      seedRoles: settings.seedRoles ?? [settings.roles[0]!],
-      gossipIntervalMs: settings.gossipIntervalMs ?? 100,
-      awaitTimeoutMs: settings.awaitTimeoutMs ?? 10_000,
-      logLevel: settings.logLevel ?? LogLevel.Off,
-      addresses: settings.addresses,
-      failureDetector: settings.failureDetector,
-      downing: settings.downing,
+    this.options = {
+      roles: options.roles,
+      seedRoles: options.seedRoles ?? [options.roles[0]!],
+      gossipIntervalMs: options.gossipIntervalMs ?? 100,
+      awaitTimeoutMs: options.awaitTimeoutMs ?? 10_000,
+      logLevel: options.logLevel ?? LogLevel.Off,
+      addresses: options.addresses,
+      failureDetector: options.failureDetector,
+      downing: options.downing,
     };
   }
 
@@ -140,18 +140,18 @@ export class MultiNodeSpec {
     this.started = true;
 
     const portBase = nextPortBase;
-    nextPortBase += this.settings.roles.length + 1;
+    nextPortBase += this.options.roles.length + 1;
 
     // Step 1: build the address book up front so seeds can name peers.
     const addressByRole = new Map<string, NodeAddress>();
-    this.settings.roles.forEach((role, idx) => {
-      const explicit = this.settings.addresses?.[role];
+    this.options.roles.forEach((role, idx) => {
+      const explicit = this.options.addresses?.[role];
       const host = explicit?.host ?? '127.0.0.1';
       const port = explicit?.port ?? (portBase + idx);
       addressByRole.set(role, new NodeAddress(role, host, port));
     });
 
-    const seeds = this.settings.seedRoles
+    const seeds = this.options.seedRoles
       .map((r) => addressByRole.get(r))
       .filter((a): a is NodeAddress => a !== undefined)
       .map((a) => a.toString());
@@ -159,26 +159,26 @@ export class MultiNodeSpec {
     // Step 2: spin up systems + clusters.  Seed role is started first
     // so the others can hit it with their initial join gossip.
     const orderedRoles = [
-      ...this.settings.seedRoles,
-      ...this.settings.roles.filter((r) => !this.settings.seedRoles.includes(r)),
+      ...this.options.seedRoles,
+      ...this.options.roles.filter((r) => !this.options.seedRoles.includes(r)),
     ];
     for (const role of orderedRoles) {
       const address = addressByRole.get(role)!;
       const transport = new MultiNodeTransport(address);
       const system = ActorSystem.create(role, ActorSystemOptions.create()
         .withLogger(new NoopLogger())
-        .withLogLevel(this.settings.logLevel));
+        .withLogLevel(this.options.logLevel));
       const clusterOptions = ClusterOptions.create()
         .withHost(address.host)
         .withPort(address.port)
         .withSeeds(seeds)
         .withTransport(transport)
-        .withGossipIntervalMs(this.settings.gossipIntervalMs)
+        .withGossipIntervalMs(this.options.gossipIntervalMs)
         .withSeedRetryIntervalMs(100);
-      if (this.settings.failureDetector) {
-        clusterOptions.withFailureDetector(this.settings.failureDetector);
+      if (this.options.failureDetector) {
+        clusterOptions.withFailureDetector(this.options.failureDetector);
       }
-      const downing = this.settings.downing?.(role);
+      const downing = this.options.downing?.(role);
       if (downing) clusterOptions.withDowning(downing);
       const cluster = await Cluster.join(system, clusterOptions);
       this.nodes.set(role, {
@@ -264,7 +264,7 @@ export class MultiNodeSpec {
    * `expectedCount` members in `up`-or-better state.  Throws on timeout.
    */
   async awaitMembers(
-    role: string, expectedCount: number, timeoutMs: number = this.settings.awaitTimeoutMs,
+    role: string, expectedCount: number, timeoutMs: number = this.options.awaitTimeoutMs,
   ): Promise<void> {
     await this.awaitCondition(
       () => {
@@ -283,7 +283,7 @@ export class MultiNodeSpec {
    */
   async awaitMemberStatus(
     role: string, targetRole: string, status: Member['status'],
-    timeoutMs: number = this.settings.awaitTimeoutMs,
+    timeoutMs: number = this.options.awaitTimeoutMs,
   ): Promise<void> {
     const targetAddr = this.requireNode(targetRole).address.toString();
     await this.awaitCondition(
@@ -303,7 +303,7 @@ export class MultiNodeSpec {
    */
   async awaitLeader(
     role: string, expectedLeaderRole: string | null,
-    timeoutMs: number = this.settings.awaitTimeoutMs,
+    timeoutMs: number = this.options.awaitTimeoutMs,
   ): Promise<void> {
     const expectedAddr = expectedLeaderRole
       ? this.requireNode(expectedLeaderRole).address.toString()
@@ -375,14 +375,14 @@ export class MultiNodeSpec {
     role: string,
     opts: { readonly participants?: ReadonlyArray<string>; readonly timeoutMs?: number } = {},
   ): Promise<void> {
-    const participants = opts.participants ?? this.settings.roles;
+    const participants = opts.participants ?? this.options.roles;
     if (!participants.includes(role)) {
       throw new Error(
         `MultiNodeSpec.enterBarrier: role '${role}' is not in the participants list ` +
         `[${participants.join(', ')}]`,
       );
     }
-    const timeoutMs = opts.timeoutMs ?? this.settings.awaitTimeoutMs;
+    const timeoutMs = opts.timeoutMs ?? this.options.awaitTimeoutMs;
     const expectedRoles = participants.length;
     const key = `${name}::${participants.slice().sort().join(',')}`;
     const existing = this.barriers.get(key);

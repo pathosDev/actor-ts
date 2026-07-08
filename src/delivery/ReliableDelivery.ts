@@ -42,17 +42,17 @@ export class ReliableDelivery {
   /** Spawn a ConsumerController — pass the returned ref to a ProducerController. */
   static consumer<T>(
     system: ActorSystem,
-    settings: ConsumerControllerOptionsType<T>,
+    options: ConsumerControllerOptionsType<T>,
     name?: string,
   ): ConsumerHandle {
     const ref = system.spawn(
-      Props.create(() => new ConsumerController<T>(settings) as unknown as import('../Actor.js').Actor<Delivery<unknown>>),
+      Props.create(() => new ConsumerController<T>(options) as unknown as import('../Actor.js').Actor<Delivery<unknown>>),
       name ?? `reliable-consumer-${++counter}`,
     );
     return { ref, stop(): void { ref.stop(); } };
   }
 
-  /** Spawn a ProducerController aimed at `settings.consumer`. */
+  /** Spawn a ProducerController aimed at `options.consumer`. */
   static producer<T>(
     system: ActorSystem,
     options: ProducerControllerOptions<T>,

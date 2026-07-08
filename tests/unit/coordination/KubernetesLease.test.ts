@@ -126,7 +126,7 @@ let server: FakeK8sServer;
 beforeEach(() => { server = new FakeK8sServer(); });
 afterEach(() => { /* nothing global */ });
 
-const baseSettings = (overrides: Partial<KubernetesLeaseOptionsType> = {}): KubernetesLeaseOptions => {
+const baseOptions = (overrides: Partial<KubernetesLeaseOptionsType> = {}): KubernetesLeaseOptions => {
   const s: KubernetesLeaseOptionsType = {
     name: 'test-lease',
     namespace: 'default',
@@ -156,7 +156,7 @@ const baseSettings = (overrides: Partial<KubernetesLeaseOptionsType> = {}): Kube
 
 describe('KubernetesLease — acquire (no existing lease)', () => {
   test('creates the lease object and sets holderIdentity', async () => {
-    const lease = new KubernetesLease(baseSettings());
+    const lease = new KubernetesLease(baseOptions());
     expect(await lease.acquire()).toBe(true);
     expect(lease.checkAlive()).toBe(true);
     const stored = server.peek('default', 'test-lease');
@@ -166,7 +166,7 @@ describe('KubernetesLease — acquire (no existing lease)', () => {
   });
 
   test('release deletes the lease object', async () => {
-    const lease = new KubernetesLease(baseSettings());
+    const lease = new KubernetesLease(baseOptions());
     await lease.acquire();
     await lease.release();
     expect(lease.checkAlive()).toBe(false);
@@ -187,7 +187,7 @@ describe('KubernetesLease — contention with another holder', () => {
         leaseTransitions: 1,
       },
     });
-    const lease = new KubernetesLease(baseSettings());
+    const lease = new KubernetesLease(baseOptions());
     expect(await lease.acquire()).toBe(false);
     expect(lease.checkAlive()).toBe(false);
   });
@@ -205,7 +205,7 @@ describe('KubernetesLease — contention with another holder', () => {
         leaseTransitions: 1,
       },
     });
-    const lease = new KubernetesLease(baseSettings());
+    const lease = new KubernetesLease(baseOptions());
     expect(await lease.acquire()).toBe(true);
     const stored = server.peek('default', 'test-lease');
     expect(stored?.spec.holderIdentity).toBe('test-pod');
@@ -217,7 +217,7 @@ describe('KubernetesLease — contention with another holder', () => {
 describe('KubernetesLease — race / retry', () => {
   test('CREATE 409 retries up to acquireRetries', async () => {
     server.forceConflictNext = true;  // first POST will 409
-    const lease = new KubernetesLease(baseSettings({ acquireRetries: 3 }));
+    const lease = new KubernetesLease(baseOptions({ acquireRetries: 3 }));
     expect(await lease.acquire()).toBe(true);
     // Second POST attempt found "no existing lease" again, succeeded.
     const posts = server.log.filter((l) => l.method === 'POST');
@@ -237,14 +237,14 @@ describe('KubernetesLease — race / retry', () => {
         leaseTransitions: 1,
       },
     });
-    const lease = new KubernetesLease(baseSettings({ acquireRetries: 2 }));
+    const lease = new KubernetesLease(baseOptions({ acquireRetries: 2 }));
     expect(await lease.acquire()).toBe(false);
   });
 });
 
 describe('KubernetesLease — renewal loop', () => {
   test('renewal updates renewTime regularly', async () => {
-    const lease = new KubernetesLease(baseSettings({ renewalIntervalMs: 30 }));
+    const lease = new KubernetesLease(baseOptions({ renewalIntervalMs: 30 }));
     await lease.acquire();
     const t1 = server.peek('default', 'test-lease')!.spec.renewTime!;
     await sleep(120);
@@ -254,7 +254,7 @@ describe('KubernetesLease — renewal loop', () => {
   });
 
   test('renewal 409 fires onLost(reason) and stops the loop', async () => {
-    const lease = new KubernetesLease(baseSettings({ renewalIntervalMs: 30 }));
+    const lease = new KubernetesLease(baseOptions({ renewalIntervalMs: 30 }));
     let lostReason: string | null = null;
     lease.onLost((reason) => { lostReason = reason; });
     await lease.acquire();
@@ -266,7 +266,7 @@ describe('KubernetesLease — renewal loop', () => {
   });
 
   test('renewal 404 (lease deleted out from under us) fires onLost', async () => {
-    const lease = new KubernetesLease(baseSettings({ renewalIntervalMs: 30 }));
+    const lease = new KubernetesLease(baseOptions({ renewalIntervalMs: 30 }));
     let lostReason: string | null = null;
     lease.onLost((reason) => { lostReason = reason; });
     await lease.acquire();
@@ -281,7 +281,7 @@ describe('KubernetesLease — renewal loop', () => {
   });
 
   test('onLost handler can be unregistered', async () => {
-    const lease = new KubernetesLease(baseSettings({ renewalIntervalMs: 30 }));
+    const lease = new KubernetesLease(baseOptions({ renewalIntervalMs: 30 }));
     let calls = 0;
     const unregister = lease.onLost(() => { calls++; });
     await lease.acquire();
@@ -295,8 +295,8 @@ describe('KubernetesLease — renewal loop', () => {
 
 describe('KubernetesLease — multi-process arbitration', () => {
   test('two leases against the same key — only one wins', async () => {
-    const a = new KubernetesLease(baseSettings({ owner: 'pod-A' }));
-    const b = new KubernetesLease(baseSettings({ owner: 'pod-B' }));
+    const a = new KubernetesLease(baseOptions({ owner: 'pod-A' }));
+    const b = new KubernetesLease(baseOptions({ owner: 'pod-B' }));
     const [aOk, bOk] = await Promise.all([a.acquire(), b.acquire()]);
     expect(aOk !== bOk).toBe(true);  // exactly one is true
     await a.release();
@@ -304,8 +304,8 @@ describe('KubernetesLease — multi-process arbitration', () => {
   });
 
   test('after release, the other holder can acquire', async () => {
-    const a = new KubernetesLease(baseSettings({ owner: 'pod-A' }));
-    const b = new KubernetesLease(baseSettings({ owner: 'pod-B' }));
+    const a = new KubernetesLease(baseOptions({ owner: 'pod-A' }));
+    const b = new KubernetesLease(baseOptions({ owner: 'pod-B' }));
     expect(await a.acquire()).toBe(true);
     await a.release();
     expect(await b.acquire()).toBe(true);

@@ -21,8 +21,8 @@ import {
 /* =============================== LWWMap =============================== */
 
 describe('LWWMap — typical workload', () => {
-  test('per-user settings: independent keys merge without contention', () => {
-    // Two replicas write disjoint user settings; merge sees the union.
+  test('per-user options: independent keys merge without contention', () => {
+    // Two replicas write disjoint user options; merge sees the union.
     const a = LWWMap.empty<string, string>()
       .put('node-a', 'alice/theme', 'dark', 100)
       .put('node-a', 'alice/lang', 'en', 100);

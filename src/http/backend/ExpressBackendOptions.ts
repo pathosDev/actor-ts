@@ -1,7 +1,7 @@
 /**
  * All Express-backend option-relevant types live here:
  *
- *   - {@link ExpressBackendOptionsType} — the plain settings-object shape
+ *   - {@link ExpressBackendOptionsType} — the plain options-object shape
  *     (what you may also pass as a bare `{ … }` object).
  *   - {@link ExpressBackendOptionsBuilder} — the fluent builder
  *     (`ExpressBackendOptions.create()…`).
@@ -17,7 +17,7 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { ExpressAppLike } from './ExpressBackend.js';
 
-/** Plain settings-object shape accepted by an {@link ExpressBackend}. */
+/** Plain options-object shape accepted by an {@link ExpressBackend}. */
 export interface ExpressBackendOptionsType {
   /**
    * Bring-your-own app — useful when you already attach custom middleware

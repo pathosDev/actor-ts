@@ -120,10 +120,10 @@ export class ExpressBackend implements HttpServerBackend {
   private errorHandler: ((err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
 
   constructor(options: ExpressBackendOptions = {}) {
-    const settings = (options as ExpressBackendOptionsType);
-    this.app = settings.app ?? null;
-    this.ownsApp = settings.app == null;
-    this.maxBodyBytes = settings.maxBodyBytes ?? 10 * 1024 * 1024;
+    const resolvedOptions = (options as ExpressBackendOptionsType);
+    this.app = resolvedOptions.app ?? null;
+    this.ownsApp = resolvedOptions.app == null;
+    this.maxBodyBytes = resolvedOptions.maxBodyBytes ?? 10 * 1024 * 1024;
   }
 
   /** Inject / access the underlying Express app — useful for native middleware. */

@@ -170,16 +170,16 @@ describe('DistributedData — convergence', () => {
       // Three replicas, three different keys + one shared key with
       // different timestamps.  After convergence each node has the
       // full set, with the shared key resolved to the newest write.
-      ddA.update<LWWMap<string, string>>('settings', () => LWWMap.empty<string, string>(),
+      ddA.update<LWWMap<string, string>>('options', () => LWWMap.empty<string, string>(),
         (m) => m.put(ddA.selfReplicaId(), 'theme', 'dark', 100));
-      ddB.update<LWWMap<string, string>>('settings', () => LWWMap.empty<string, string>(),
+      ddB.update<LWWMap<string, string>>('options', () => LWWMap.empty<string, string>(),
         (m) => m.put(ddB.selfReplicaId(), 'lang',  'de',   100));
-      ddC.update<LWWMap<string, string>>('settings', () => LWWMap.empty<string, string>(),
+      ddC.update<LWWMap<string, string>>('options', () => LWWMap.empty<string, string>(),
         (m) => m.put(ddC.selfReplicaId(), 'theme', 'light', 200));   // newer
 
       await awaitConvergence(() => {
         for (const dd of [ddA, ddB, ddC]) {
-          const m = dd.get<LWWMap<string, string>>('settings');
+          const m = dd.get<LWWMap<string, string>>('options');
           if (!m) return false;
           if (m.get('theme') !== 'light') return false;   // newer ts wins
           if (m.get('lang')  !== 'de')    return false;

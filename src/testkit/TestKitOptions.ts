@@ -1,7 +1,7 @@
 import { ActorSystemOptionsBuilder } from '../ActorSystemOptions.js';
 import type { ActorSystemOptionsType } from '../ActorSystemOptions.js';
 
-/** Plain settings-object shape accepted by {@link TestKit.create}. */
+/** Plain options-object shape accepted by {@link TestKit.create}. */
 export interface TestKitOptionsType extends ActorSystemOptionsType {
   /** When true, install a NoopLogger if the caller didn't provide one. */
   readonly quiet?: boolean;

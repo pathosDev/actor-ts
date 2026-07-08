@@ -53,7 +53,7 @@ export const MultiNodeClusterFixture = {
    * block.  Returns a handle whose `.spec()` is callable inside any
    * `test()` in the same block.
    *
-   * The implementation captures `settings` lazily — start happens
+   * The implementation captures `options` lazily — start happens
    * inside the registered `beforeAll`, not at `create()` time.
    * Bun's TestKit also hadn't started any actor systems yet at
    * describe-registration time, so any side effects of MultiNodeSpec
@@ -61,14 +61,14 @@ export const MultiNodeClusterFixture = {
    * skipped this block.
    */
   create(
-    settings: MultiNodeSpecOptionsType,
+    options: MultiNodeSpecOptionsType,
     hooks: TestRunnerHooks,
   ): MultiNodeClusterFixture {
     let spec: MultiNodeSpec | null = null;
     let started = false;
 
     hooks.beforeAll(async () => {
-      spec = new MultiNodeSpec(settings);
+      spec = new MultiNodeSpec(options);
       await spec.start();
       started = true;
     });

@@ -2,7 +2,7 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { Cluster } from '../Cluster.js';
 import type { ClusterRouterType } from './ClusterRouter.js';
 
-/** Plain settings-object shape consumed by {@link ClusterRouter.props}. */
+/** Plain options-object shape consumed by {@link ClusterRouter.props}. */
 export interface ClusterRouterOptionsType<TMsg> {
   /** The cluster the router lives in.  Used for membership + transport. */
   readonly cluster: Cluster;

@@ -33,19 +33,19 @@ interface PeerState {
  */
 export class PhiAccrualFailureDetector {
   private readonly peers = new Map<string, PeerState>();
-  private readonly settings: PhiAccrualOptionsType;
+  private readonly options: PhiAccrualOptionsType;
 
   constructor(options: PhiAccrualOptions = {}) {
-    this.settings = { ...defaultPhiAccrualOptions, ...(options as Partial<PhiAccrualOptionsType>) };
-    if (this.settings.downThreshold <= this.settings.unreachableThreshold) {
+    this.options = { ...defaultPhiAccrualOptions, ...(options as Partial<PhiAccrualOptionsType>) };
+    if (this.options.downThreshold <= this.options.unreachableThreshold) {
       throw new Error('PhiAccrualFailureDetector: downThreshold must exceed unreachableThreshold');
     }
-    if (this.settings.maxSampleSize < 1) {
+    if (this.options.maxSampleSize < 1) {
       throw new Error('PhiAccrualFailureDetector: maxSampleSize must be >= 1');
     }
   }
 
-  get interval(): number { return this.settings.heartbeatIntervalMs; }
+  get interval(): number { return this.options.heartbeatIntervalMs; }
 
   /** Peer is now known.  No sample added until the first heartbeat. */
   register(peer: NodeAddress, _now: number = Date.now()): void {
@@ -54,7 +54,7 @@ export class PhiAccrualFailureDetector {
       this.peers.set(key, {
         lastHeartbeat: 0,
         everSeen: false,
-        intervals: new Array(this.settings.maxSampleSize).fill(0),
+        intervals: new Array(this.options.maxSampleSize).fill(0),
         intervalsHead: 0,
         intervalsCount: 0,
       });
@@ -68,7 +68,7 @@ export class PhiAccrualFailureDetector {
     if (!s) {
       s = {
         lastHeartbeat: now, everSeen: true,
-        intervals: new Array(this.settings.maxSampleSize).fill(0),
+        intervals: new Array(this.options.maxSampleSize).fill(0),
         intervalsHead: 0, intervalsCount: 0,
       };
       this.peers.set(key, s);
@@ -77,8 +77,8 @@ export class PhiAccrualFailureDetector {
     if (s.lastHeartbeat > 0) {
       const delta = now - s.lastHeartbeat;
       s.intervals[s.intervalsHead] = delta;
-      s.intervalsHead = (s.intervalsHead + 1) % this.settings.maxSampleSize;
-      if (s.intervalsCount < this.settings.maxSampleSize) s.intervalsCount++;
+      s.intervalsHead = (s.intervalsHead + 1) % this.options.maxSampleSize;
+      if (s.intervalsCount < this.options.maxSampleSize) s.intervalsCount++;
     }
     s.lastHeartbeat = now;
     s.everSeen = true;
@@ -88,12 +88,12 @@ export class PhiAccrualFailureDetector {
   phi(peer: NodeAddress, now: number = Date.now()): number {
     const s = this.peers.get(peer.toString());
     if (!s || !s.everSeen) return 0;
-    const effectiveElapsed = Math.max(0, now - s.lastHeartbeat - this.settings.acceptableHeartbeatPauseMs);
+    const effectiveElapsed = Math.max(0, now - s.lastHeartbeat - this.options.acceptableHeartbeatPauseMs);
 
     // Before enough samples are collected, fall back to the intended
     // cadence so very new peers don't immediately look unreachable.
-    const mean = s.intervalsCount > 0 ? this.mean(s) : this.settings.heartbeatIntervalMs;
-    const stddev = Math.max(this.settings.minStdDeviationMs, this.stddev(s, mean));
+    const mean = s.intervalsCount > 0 ? this.mean(s) : this.options.heartbeatIntervalMs;
+    const stddev = Math.max(this.options.minStdDeviationMs, this.stddev(s, mean));
     // Use the classic Hayashibara formulation with a normal distribution.
     // phi = -log10(P(delay > elapsed))
     // Where P(delay > x) ≈ 1 - Φ((x - mean) / stddev).
@@ -106,8 +106,8 @@ export class PhiAccrualFailureDetector {
 
   decide(peer: NodeAddress, now: number = Date.now()): FailureDecision {
     const phi = this.phi(peer, now);
-    if (phi >= this.settings.downThreshold) return 'down';
-    if (phi >= this.settings.unreachableThreshold) return 'unreachable';
+    if (phi >= this.options.downThreshold) return 'down';
+    if (phi >= this.options.unreachableThreshold) return 'unreachable';
     return 'healthy';
   }
 

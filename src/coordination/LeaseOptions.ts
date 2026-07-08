@@ -1,8 +1,8 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 
 /**
- * Plain settings-object shape shared by every {@link Lease} backend — the
- * common construction-time settings.  A plain object of these fields is an
+ * Plain options-object shape shared by every {@link Lease} backend — the
+ * common construction-time options.  A plain object of these fields is an
  * accepted alternative to the {@link LeaseOptionsBuilder}; concrete backends
  * extend it (e.g. `KubernetesLeaseOptionsType`).
  */
@@ -23,7 +23,7 @@ export interface LeaseOptionsType {
 
 /**
  * Fluent builder for {@link LeaseOptionsType} — the common construction-time
- * settings every {@link Lease} backend shares.  The concrete
+ * options every {@link Lease} backend shares.  The concrete
  * `KubernetesLeaseOptionsBuilder` subclass extends this with the K8s-specific
  * `withX(...)` methods.
  *

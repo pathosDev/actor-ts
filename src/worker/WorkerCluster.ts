@@ -51,36 +51,36 @@ export interface WorkerTransportMessage {
 export class WorkerCluster {
   readonly broker: WorkerBroker;
   private readonly handles: WorkerHandle[] = [];
-  private readonly settings: Required<
+  private readonly options: Required<
     Pick<WorkerClusterOptionsType, 'systemName' | 'hostname' | 'basePort' | 'readyTimeoutMs' | 'restartPolicy'>
   > & { bootstrap: URL | string; workers: number | 'auto'; initData: unknown };
   private closed = false;
 
   private constructor(
     broker: WorkerBroker,
-    settings: WorkerClusterOptionsType,
+    options: WorkerClusterOptionsType,
     resolvedWorkers: number,
   ) {
     this.broker = broker;
-    this.settings = {
-      bootstrap: settings.bootstrap,
+    this.options = {
+      bootstrap: options.bootstrap,
       workers: resolvedWorkers,
-      systemName: settings.systemName ?? 'worker-cluster',
-      hostname: settings.hostname ?? 'worker',
-      basePort: settings.basePort ?? 1,
-      initData: settings.initData ?? null,
-      readyTimeoutMs: settings.readyTimeoutMs ?? 10_000,
-      restartPolicy: settings.restartPolicy ?? 'on-failure',
+      systemName: options.systemName ?? 'worker-cluster',
+      hostname: options.hostname ?? 'worker',
+      basePort: options.basePort ?? 1,
+      initData: options.initData ?? null,
+      readyTimeoutMs: options.readyTimeoutMs ?? 10_000,
+      restartPolicy: options.restartPolicy ?? 'on-failure',
     };
   }
 
   static async spawn(
     options: WorkerClusterOptions,
   ): Promise<WorkerCluster> {
-    const settings = options as WorkerClusterOptionsType;
-    const workers = resolveWorkerCount(settings.workers);
+    const resolvedOptions = options as WorkerClusterOptionsType;
+    const workers = resolveWorkerCount(resolvedOptions.workers);
     const broker = new WorkerBroker();
-    const cluster = new WorkerCluster(broker, settings, workers);
+    const cluster = new WorkerCluster(broker, resolvedOptions, workers);
     await cluster._start();
     return cluster;
   }
@@ -97,9 +97,9 @@ export class WorkerCluster {
   }
 
   private async _start(): Promise<void> {
-    const total = this.settings.workers === 'auto'
+    const total = this.options.workers === 'auto'
       ? resolveWorkerCount('auto')
-      : (this.settings.workers as number);
+      : (this.options.workers as number);
     const ready: Array<Promise<void>> = [];
     for (let i = 0; i < total; i++) ready.push(this.spawnOne(i));
     await Promise.all(ready);
@@ -107,23 +107,23 @@ export class WorkerCluster {
 
   private async spawnOne(index: number): Promise<void> {
     const addr = new NodeAddress(
-      this.settings.systemName,
-      this.settings.hostname,
-      this.settings.basePort + index,
+      this.options.systemName,
+      this.options.hostname,
+      this.options.basePort + index,
     );
 
     const backend = await getWorkerBackend();
-    const url = this.settings.bootstrap instanceof URL
-      ? this.settings.bootstrap
-      : new URL(this.settings.bootstrap);
+    const url = this.options.bootstrap instanceof URL
+      ? this.options.bootstrap
+      : new URL(this.options.bootstrap);
     const worker = backend.spawn(url, { name: `worker-${index}` });
     const handle: WorkerHandle = { id: index, address: addr, worker };
 
     const init: WorkerInitMessage = {
       kind: 'worker-init',
       self: addr.toJSON(),
-      systemName: this.settings.systemName,
-      data: this.settings.initData,
+      systemName: this.options.systemName,
+      data: this.options.initData,
     };
     // Handshake first (so only one 'message' listener is live during hello/ready),
     // then wire up the broker — otherwise Bun's multiple-listener path is finicky.
@@ -162,8 +162,8 @@ export class WorkerCluster {
     return new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
         worker.removeEventListener('message', onMessage);
-        reject(new Error(`Worker ${addr} did not become ready within ${this.settings.readyTimeoutMs}ms`));
-      }, this.settings.readyTimeoutMs);
+        reject(new Error(`Worker ${addr} did not become ready within ${this.options.readyTimeoutMs}ms`));
+      }, this.options.readyTimeoutMs);
       const onMessage = (e: { data?: unknown }): void => {
         const msg = (e.data ?? undefined) as { kind?: string } | undefined;
         if (!msg) return;
@@ -184,8 +184,8 @@ export class WorkerCluster {
       if (this.closed) return;
       const crashed = typeof e?.code === 'number' ? e.code !== 0 : true;
       const should =
-        this.settings.restartPolicy === 'always' ||
-        (this.settings.restartPolicy === 'on-failure' && crashed);
+        this.options.restartPolicy === 'always' ||
+        (this.options.restartPolicy === 'on-failure' && crashed);
       if (!should) return;
       const i = this.handles.findIndex(h => h.address.equals(addr));
       if (i >= 0) {

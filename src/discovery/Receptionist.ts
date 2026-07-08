@@ -60,9 +60,9 @@ export class Receptionist extends Actor<Msg> {
 
   constructor(options: ReceptionistOptions = {}) {
     super();
-    const settings = options as ReceptionistOptionsType;
-    this.clusterRef = settings.cluster ?? null;
-    this.gossipIntervalMs = settings.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
+    const resolvedOptions = options as ReceptionistOptionsType;
+    this.clusterRef = resolvedOptions.cluster ?? null;
+    this.gossipIntervalMs = resolvedOptions.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
   }
 
   override preStart(): void {
@@ -247,13 +247,13 @@ export class ReceptionistExtension {
   ): ActorRef<Msg> {
     if (this.started) return this.started;
     // `cluster` stays a positional arg (it's identity/wiring, not a tunable);
-    // fold it onto the resolved settings so the actor sees a single object.
-    const settings: Partial<ReceptionistOptionsType> = {
+    // fold it onto the resolved options so the actor sees a single object.
+    const resolvedOptions: Partial<ReceptionistOptionsType> = {
       ...(options as Partial<ReceptionistOptionsType>),
       cluster: cluster ?? null,
     };
     const ref = this.system.spawn(
-      Props.create<Msg>(() => new Receptionist(settings)),
+      Props.create<Msg>(() => new Receptionist(resolvedOptions)),
       'receptionist',
     );
     this.started = ref;

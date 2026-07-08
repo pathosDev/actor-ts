@@ -14,18 +14,18 @@ import type { KeepRefereeOptions, KeepRefereeOptionsType } from './KeepRefereeOp
  * referee, shut everyone down rather than run with a shaky majority.
  */
 export class KeepReferee implements DowningProvider {
-  private readonly settings: KeepRefereeOptionsType;
+  private readonly options: KeepRefereeOptionsType;
 
   constructor(options: KeepRefereeOptions) {
-    this.settings = options as KeepRefereeOptionsType;
-    if (!this.settings.refereeAddress) throw new Error('KeepReferee: refereeAddress required');
+    this.options = options as KeepRefereeOptionsType;
+    if (!this.options.refereeAddress) throw new Error('KeepReferee: refereeAddress required');
   }
 
   decide(view: ClusterPartitionView): DowningDecision {
     const candidates = view.allMembers.filter((m) =>
       m.status === 'up' || m.status === 'leaving' || m.status === 'unreachable'
     );
-    const referee = candidates.find((m) => addrKey(m) === this.settings.refereeAddress);
+    const referee = candidates.find((m) => addrKey(m) === this.options.refereeAddress);
     if (!referee) return new Set(); // unknown referee — wait
     const refereeReachable = !view.unreachable.has(addrKey(referee));
 
@@ -33,7 +33,7 @@ export class KeepReferee implements DowningProvider {
     const unreachable = candidates.filter((m) => view.unreachable.has(addrKey(m)));
 
     if (refereeReachable) {
-      if (this.settings.downAllIfBelowQuorum && reachable.length < this.settings.downAllIfBelowQuorum) {
+      if (this.options.downAllIfBelowQuorum && reachable.length < this.options.downAllIfBelowQuorum) {
         // Even the referee side doesn't meet the quorum — down everyone.
         return new Set(reachable.concat(unreachable).map(addrKey));
       }

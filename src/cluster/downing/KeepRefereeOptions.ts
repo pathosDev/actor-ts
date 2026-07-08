@@ -1,6 +1,6 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 
-/** Plain settings-object shape accepted by {@link KeepReferee}. */
+/** Plain options-object shape accepted by {@link KeepReferee}. */
 export interface KeepRefereeOptionsType {
   /**
    * Fixed "referee" address; whichever partition contains it survives.

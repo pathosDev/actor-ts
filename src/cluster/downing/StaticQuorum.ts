@@ -15,11 +15,11 @@ import type { StaticQuorumOptions, StaticQuorumOptionsType } from './StaticQuoru
  * shrink below the threshold.
  */
 export class StaticQuorum implements DowningProvider {
-  private readonly settings: StaticQuorumOptionsType;
+  private readonly options: StaticQuorumOptionsType;
 
   constructor(options: StaticQuorumOptions) {
-    this.settings = options as StaticQuorumOptionsType;
-    if (this.settings.quorumSize < 1) {
+    this.options = options as StaticQuorumOptionsType;
+    if (this.options.quorumSize < 1) {
       throw new Error('StaticQuorum: quorumSize must be >= 1');
     }
   }
@@ -27,13 +27,13 @@ export class StaticQuorum implements DowningProvider {
   decide(view: ClusterPartitionView): DowningDecision {
     const candidates = view.allMembers.filter((m) =>
       (m.status === 'up' || m.status === 'leaving' || m.status === 'unreachable') &&
-      (!this.settings.role || m.hasRole(this.settings.role))
+      (!this.options.role || m.hasRole(this.options.role))
     );
 
     const reachable = candidates.filter((m) => !view.unreachable.has(addrKey(m)));
     const unreachable = candidates.filter((m) => view.unreachable.has(addrKey(m)));
 
-    if (reachable.length >= this.settings.quorumSize) {
+    if (reachable.length >= this.options.quorumSize) {
       return new Set(unreachable.map(addrKey));
     }
     // Not enough reachable — we're below quorum, down ourselves.

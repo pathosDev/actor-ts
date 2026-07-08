@@ -21,12 +21,12 @@ export interface KeepMajorityOptionsType {
  * when you run stateful and stateless nodes in the same cluster.
  */
 export class KeepMajority implements DowningProvider {
-  constructor(private readonly settings: KeepMajorityOptionsType = {}) {}
+  constructor(private readonly options: KeepMajorityOptionsType = {}) {}
 
   decide(view: ClusterPartitionView): DowningDecision {
     const candidates = view.allMembers.filter((m) =>
       (m.status === 'up' || m.status === 'leaving' || m.status === 'unreachable') &&
-      (!this.settings.role || m.hasRole(this.settings.role))
+      (!this.options.role || m.hasRole(this.options.role))
     );
     if (candidates.length === 0) return new Set();
 

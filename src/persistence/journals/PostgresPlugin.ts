@@ -18,7 +18,7 @@ export interface PostgresPluginHandles {
    * The DurableState store instance.  `PersistenceExtension` carries no
    * DurableState registry (same as the object-storage plugin), so callers
    * who want DurableState read this from the return value and pass it into
-   * their `DurableStateActor` settings.
+   * their `DurableStateActor` options.
    */
   readonly durableStateStore: PostgresDurableStateStore;
 }
