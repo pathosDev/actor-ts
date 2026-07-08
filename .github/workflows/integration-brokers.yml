@@ -16,7 +16,7 @@ name: integration-brokers
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
     paths:
       # Source-side: any adapter source change.  We could pin
       # `src/io/broker/**` + `src/persistence/object-storage/**` etc.
@@ -30,7 +30,7 @@ on:
       - 'tsconfig.json'
       - '.github/workflows/integration-brokers.yml'
   pull_request:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - 'src/**'
       - 'tests/integration/brokers/**'

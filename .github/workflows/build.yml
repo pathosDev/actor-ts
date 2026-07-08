@@ -8,7 +8,7 @@ name: build
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - 'src/**'
       - 'package.json'
@@ -16,7 +16,7 @@ on:
       - 'tsconfig.json'
       - '.github/workflows/build.yml'
   pull_request:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - 'src/**'
       - 'package.json'

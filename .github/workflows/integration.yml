@@ -22,7 +22,7 @@ name: integration
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
     paths:
       # Trigger only when something that could plausibly affect
       # cluster behaviour over real TCP changes — source code, the
@@ -35,7 +35,7 @@ on:
       - 'tsconfig.json'
       - '.github/workflows/integration.yml'
   pull_request:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - 'src/**'
       - 'tests/integration/**'

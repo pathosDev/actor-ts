@@ -31,14 +31,17 @@ deliberately tiny — `fastify` + `ts-pattern` — and everything else
 
 ## Branches & pushing
 
-- **Feature branches** (`feat/…`, `fix/…`, `chore/…`) for features and
-  anything non-trivial. Small fixes and follow-ups may go **directly on
-  `main`**.
-- Merge to `main` with a **merge commit (`git merge --no-ff`)** —
-  **never rebase**. Delete the branch after merging.
-- **Do not push.** The agent commits locally only; the human pushes
-  `main`. The single exception is cutting a release (below), where
-  creating the tag/GitHub Release is explicitly authorized.
+- **`develop` is the integration branch** — all ongoing development lands
+  there. **`main` holds releases only**: it moves only when a release is cut
+  (a `--no-ff` merge from `develop`, see *Release strategy*), never via direct
+  feature work.
+- **Feature branches** (`feat/…`, `fix/…`, `chore/…`) branch off `develop`
+  and merge back into `develop` with a **merge commit (`git merge --no-ff`)** —
+  **never rebase**; delete the branch after merging. Small fixes and follow-ups
+  may go **directly on `develop`**.
+- **Do not push.** The agent commits locally only; the human pushes `develop`.
+  The single exception is cutting a release (below) — merging `develop` → `main`
+  and creating the tag/GitHub Release is explicitly authorized.
 
 ## Release strategy
 
@@ -57,12 +60,14 @@ Tags are `vX.Y.Z`; GitHub Releases are cut as normal **Latest** releases
 (a `BREAKING` marker + a short migration note). Reference issues as
 `#NNN`.
 
-**Cutting a release** (only when explicitly asked):
+**Cutting a release** (only when explicitly asked) — promotes `develop` to `main`:
 
-1. Bump `version` in `package.json`.
-2. Move `[Unreleased]` → `[X.Y.Z]` (dated) in `CHANGELOG.md`.
-3. `gh release create vX.Y.Z` with **emoji-sectioned notes**
-   (`## ✨ Added`, `## 🐛 Fixed`, `## 🔒 Security`, …) matching the
+1. On `develop`: bump `version` in `package.json` and move `[Unreleased]` →
+   `[X.Y.Z]` (dated) in `CHANGELOG.md`; commit (`chore(release): vX.Y.Z`).
+2. Merge `develop` → `main` with `git merge --no-ff`, then push `main`.
+3. `gh release create vX.Y.Z --target main` (a normal **Latest** release, no
+   `--prerelease`) with **emoji-sectioned notes** (`## 🚀 New features`,
+   `## ⚠️ Breaking changes`, `## 🔒 Security`, `## 🐛 Fixed`, …) matching the
    style of prior releases.
 
 Publishing the release triggers `.github/workflows/publish.yml`, which

@@ -10,7 +10,7 @@ name: tests
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - 'src/**'
       - 'tests/**'
@@ -20,7 +20,7 @@ on:
       - 'tsconfig.dev.json'
       - '.github/workflows/test.yml'
   pull_request:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - 'src/**'
       - 'tests/**'
@@ -186,7 +186,7 @@ jobs:
           steps.stats.outputs.pass != '' &&
           steps.stats.outputs.lines != '' &&
           github.event_name == 'push' &&
-          github.ref == 'refs/heads/main'
+          (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
         run: |
           PASS="${{ steps.stats.outputs.pass }}"
           TOTAL="${{ steps.stats.outputs.total }}"
@@ -236,7 +236,7 @@ jobs:
           !cancelled() &&
           steps.stats.outputs.pass != '' &&
           github.event_name == 'push' &&
-          github.ref == 'refs/heads/main'
+          (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
         run: |
           if [[ -n "$(git status --porcelain README.md)" ]]; then
             git config user.name "github-actions[bot]"

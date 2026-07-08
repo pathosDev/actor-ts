@@ -19,7 +19,7 @@ name: multi-runtime
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - 'src/**'
       - 'tests/**'
@@ -29,7 +29,7 @@ on:
       - 'tsconfig.dev.json'
       - '.github/workflows/multi-runtime.yml'
   pull_request:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - 'src/**'
       - 'tests/**'
