@@ -11,11 +11,11 @@ persistenceId anhängen, lesen oder abfragen.
 ```ts
 import { CassandraJournal, CassandraJournalOptions, PersistenceExtensionId } from 'actor-ts';
 
+const cassandraJournalOptions = CassandraJournalOptions.create()
+  .withContactPoints(['cassandra-1:9042', 'cassandra-2:9042'])
+  .withKeyspace('my_app_events')
+  .withEventsTable('events');
 system.extension(PersistenceExtensionId).configure({
-  const cassandraJournalOptions = CassandraJournalOptions.create()
-    .withContactPoints(['cassandra-1:9042', 'cassandra-2:9042'])
-    .withKeyspace('my_app_events')
-    .withEventsTable('events');
   journal: new CassandraJournal(cassandraJournalOptions),
 });
 ```
