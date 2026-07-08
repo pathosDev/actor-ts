@@ -11,8 +11,8 @@ import {
   encodeFrame,
   FrameDecoder,
   DEFAULT_MAX_FRAME_BYTES,
-  type HelloMsg,
-  type HelloAckMsg,
+  type HelloMessage,
+  type HelloAcknowledgmentMessage,
   type WireMessage,
 } from './Protocol.js';
 
@@ -173,7 +173,7 @@ export class TcpTransport implements Transport {
           handlers: {
             onOpen: (s) => {
               // Send hello; remote will ack and we'll flush `pending` then.
-              const hello: HelloMsg = { t: 'hello', self: this.self.toJSON() };
+              const hello: HelloMessage = { t: 'hello', self: this.self.toJSON() };
               s.write(encodeFrame(hello));
             },
             onData: (s, chunk) => this.onData(s, chunk),
@@ -245,7 +245,7 @@ export class TcpTransport implements Transport {
       }
       conn.peer = peer;
       this.byPeer.set(peerKey, conn);
-      const ack: HelloAckMsg = { t: 'hello-ack', self: this.self.toJSON() };
+      const ack: HelloAcknowledgmentMessage = { t: 'hello-ack', self: this.self.toJSON() };
       conn.socket?.write(encodeFrame(ack));
       return;
     }

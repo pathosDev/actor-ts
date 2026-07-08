@@ -39,7 +39,7 @@ export interface WebsocketConnection<TOut> extends ActorRef<TOut> {
   readonly isOpen: boolean;
 }
 
-export class WebsocketConnectionImpl<TOut> extends ActorRef<TOut> implements WebsocketConnection<TOut> {
+export class WebsocketConnectionImplementation<TOut> extends ActorRef<TOut> implements WebsocketConnection<TOut> {
   readonly path: ActorPath;
 
   constructor(

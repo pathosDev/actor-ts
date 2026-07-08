@@ -7,4 +7,4 @@ export { ConsumerControllerOptions, ConsumerControllerOptionsBuilder } from './C
 export type { ConsumerControllerOptionsType } from './ConsumerControllerOptions.js';
 export { ReliableDelivery } from './ReliableDelivery.js';
 export type { ProducerHandle, ConsumerHandle } from './ReliableDelivery.js';
-export type { Delivery, Ack, ConfirmationCallback } from './Messages.js';
+export type { Delivery, Acknowledgment, ConfirmationCallback } from './Messages.js';

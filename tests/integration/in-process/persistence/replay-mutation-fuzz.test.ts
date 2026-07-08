@@ -32,14 +32,14 @@ import * as fc from 'fast-check';
 
 /* --------------------------- counter model --------------------------- */
 
-type CounterCmd =
+type CounterCommand =
   | { kind: 'inc'; by: number }
   | { kind: 'dec'; by: number }
   | { kind: 'reset' };
 
 interface CounterState { readonly value: number; readonly resets: number }
 
-const counterReducer = (s: CounterState, e: CounterCmd): CounterState => {
+const counterReducer = (s: CounterState, e: CounterCommand): CounterState => {
   switch (e.kind) {
     case 'inc':   return { value: s.value + e.by, resets: s.resets };
     case 'dec':   return { value: s.value - e.by, resets: s.resets };
@@ -49,23 +49,23 @@ const counterReducer = (s: CounterState, e: CounterCmd): CounterState => {
 
 const counterInitial: CounterState = { value: 0, resets: 0 };
 
-const counterEvent: fc.Arbitrary<CounterCmd> = fc.oneof(
+const counterEvent: fc.Arbitrary<CounterCommand> = fc.oneof(
   fc.record({ kind: fc.constant('inc' as const), by: fc.integer({ min: 1, max: 100 }) }),
   fc.record({ kind: fc.constant('dec' as const), by: fc.integer({ min: 1, max: 100 }) }),
   fc.record({ kind: fc.constant('reset' as const) }),
 );
 
-const counterEvents: fc.Arbitrary<CounterCmd[]> = fc.array(counterEvent, { maxLength: 50 });
+const counterEvents: fc.Arbitrary<CounterCommand[]> = fc.array(counterEvent, { maxLength: 50 });
 
 /* ----------------------------- list model ----------------------------- */
 
-type ListCmd =
+type ListCommand =
   | { kind: 'append'; v: string }
   | { kind: 'remove'; index: number };
 
 interface ListState { readonly items: ReadonlyArray<string> }
 
-const listReducer = (s: ListState, e: ListCmd): ListState => {
+const listReducer = (s: ListState, e: ListCommand): ListState => {
   switch (e.kind) {
     case 'append': return { items: [...s.items, e.v] };
     case 'remove': {
@@ -79,7 +79,7 @@ const listReducer = (s: ListState, e: ListCmd): ListState => {
 
 const listInitial: ListState = { items: [] };
 
-const listEvent: fc.Arbitrary<ListCmd> = fc.oneof(
+const listEvent: fc.Arbitrary<ListCommand> = fc.oneof(
   fc.record({
     kind: fc.constant('append' as const),
     v: fc.constantFrom('a', 'b', 'c', 'd', 'e'),
@@ -90,7 +90,7 @@ const listEvent: fc.Arbitrary<ListCmd> = fc.oneof(
   }),
 );
 
-const listEvents: fc.Arbitrary<ListCmd[]> = fc.array(listEvent, { maxLength: 50 });
+const listEvents: fc.Arbitrary<ListCommand[]> = fc.array(listEvent, { maxLength: 50 });
 
 /* --------------------------- helpers --------------------------- */
 
@@ -177,7 +177,7 @@ describe('replay-mutation fuzz — corruption handling', () => {
    * fold path (which is what recovery uses) propagates an
    * exception from the reducer.
    */
-  const strictReducer = (s: CounterState, e: CounterCmd | { kind: 'corrupted' }): CounterState => {
+  const strictReducer = (s: CounterState, e: CounterCommand | { kind: 'corrupted' }): CounterState => {
     if (e.kind === 'corrupted') throw new Error('reducer: unknown event kind');
     return counterReducer(s, e);
   };

@@ -45,7 +45,7 @@ export interface OutboundEnvelope<P = unknown> {
 /**
  * Base class for actors that bridge external messaging systems
  * (MQTT, WebSocket, Kafka, …) into the actor system.  Subclasses
- * implement three protocol hooks (`connectImpl`, `disconnectImpl`,
+ * implement three protocol hooks (`connectImplementation`, `disconnectImplementation`,
  * `dispatchOutgoing`); the base class owns the lifecycle, reconnect-
  * backoff, outbound buffer, subscriber fan-out, and lifecycle-event
  * publishing.
@@ -58,7 +58,7 @@ export interface OutboundEnvelope<P = unknown> {
  * Subclasses pass their constructor options via `super(options)` and
  * implement `configKey()`, `builtInDefaultOptions()`, `readOptionsFromConfig()`,
  * and `requiredOptions()` so the base class can resolve and validate
- * the effective options before `connectImpl()` runs.
+ * the effective options before `connectImplementation()` runs.
  */
 export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unknown, P = unknown>
   extends Actor<Cmd> {
@@ -121,10 +121,10 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
    * reconnect; throwing during steady-state operation is also fine
    * (the base class will start a reconnect cycle).
    */
-  protected abstract connectImpl(): Promise<void>;
+  protected abstract connectImplementation(): Promise<void>;
 
   /** Close it.  Best-effort — exceptions are logged and swallowed. */
-  protected abstract disconnectImpl(): Promise<void>;
+  protected abstract disconnectImplementation(): Promise<void>;
 
   /**
    * Send a single outbound envelope.  Only invoked when state is
@@ -246,8 +246,8 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
     this._scheduledReconnectCancel = null;
     if (this._state !== 'disconnected') {
       this._state = 'disconnecting';
-      try { await this.disconnectImpl(); }
-      catch (e) { this.log.warn(`broker disconnectImpl threw: ${(e as Error).message}`); }
+      try { await this.disconnectImplementation(); }
+      catch (e) { this.log.warn(`broker disconnectImplementation threw: ${(e as Error).message}`); }
     }
     this._state = 'disconnected';
     this._outboundBuffer = [];
@@ -301,7 +301,7 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
 
     this._state = 'connecting';
     try {
-      await this.connectImpl();
+      await this.connectImplementation();
       this._state = 'connected';
       this._reconnectAttempt = 0;
       this._consecutiveFailures = 0;

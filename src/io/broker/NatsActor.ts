@@ -21,7 +21,7 @@ export interface NatsPublish {
   readonly replyTo?: string;
 }
 
-export type NatsCmd =
+export type NatsCommand =
   | { readonly kind: 'publish'; readonly publish: NatsPublish }
   | { readonly kind: 'subscribe'; readonly subject: string; readonly target: ActorRef<NatsMessage> }
   | { readonly kind: 'unsubscribe'; readonly subject: string };
@@ -32,7 +32,7 @@ export type NatsCmd =
  * (durable streams + consumers) is out-of-scope for v1 — would warrant
  * its own actor with very different semantics.
  */
-export class NatsActor extends BrokerActor<NatsOptionsType, NatsCmd, NatsPublish> {
+export class NatsActor extends BrokerActor<NatsOptionsType, NatsCommand, NatsPublish> {
   private nc: NatsConnectionLike | null = null;
   private readonly subs = new Map<string, NatsSubscriptionLike>();
 
@@ -56,7 +56,7 @@ export class NatsActor extends BrokerActor<NatsOptionsType, NatsCmd, NatsPublish
     return typeof s === 'string' ? s : '';
   }
 
-  protected async connectImpl(): Promise<void> {
+  protected async connectImplementation(): Promise<void> {
     const nats = await natsLazy.get();
     const servers = Array.isArray(this.options.servers)
       ? [...this.options.servers]
@@ -79,7 +79,7 @@ export class NatsActor extends BrokerActor<NatsOptionsType, NatsCmd, NatsPublish
     });
   }
 
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     for (const sub of this.subs.values()) {
       try { sub.unsubscribe(); } catch { /* ignore */ }
     }
@@ -99,7 +99,7 @@ export class NatsActor extends BrokerActor<NatsOptionsType, NatsCmd, NatsPublish
     this.nc.publish(p.subject, bytes, p.replyTo ? { reply: p.replyTo } : undefined);
   }
 
-  override onReceive(cmd: NatsCmd): void {
+  override onReceive(cmd: NatsCommand): void {
     if (cmd.kind === 'publish') {
       this.enqueueOutbound(cmd.publish);
     } else if (cmd.kind === 'subscribe') {

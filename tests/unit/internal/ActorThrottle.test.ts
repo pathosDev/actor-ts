@@ -24,11 +24,11 @@ beforeEach(() => {
 });
 afterEach(async () => { await sys.terminate(); });
 
-interface CountMsg { kind: 'tick' | 'configure-throttle' | 'cancel-throttle' }
+interface CountMessage { kind: 'tick' | 'configure-throttle' | 'cancel-throttle' }
 
-class Counter extends Actor<CountMsg> {
+class Counter extends Actor<CountMessage> {
   count = 0;
-  override onReceive(m: CountMsg): void {
+  override onReceive(m: CountMessage): void {
     if (m.kind === 'tick') {
       this.count += 1;
       return;
@@ -72,12 +72,12 @@ describe('ActorContext.throttle (#83)', () => {
   }, 5_000);
 
   test('drop mode — bucket-empty messages are silently discarded', async () => {
-    class DropCounter extends Actor<CountMsg> {
+    class DropCounter extends Actor<CountMessage> {
       count = 0;
       override preStart(): void {
         this.context.throttle({ qps: 5, burst: 2, onExcess: 'drop' });
       }
-      override onReceive(m: CountMsg): void {
+      override onReceive(m: CountMessage): void {
         if (m.kind === 'tick') this.count += 1;
       }
     }
@@ -136,11 +136,11 @@ describe('ActorContext.throttle (#83)', () => {
     // The actor sets a tight throttle, then we kill it.  The
     // system-side `terminate` command must NOT be gated by the
     // throttle — the actor stops promptly, no token-wait.
-    class Strict extends Actor<CountMsg> {
+    class Strict extends Actor<CountMessage> {
       override preStart(): void {
         this.context.throttle({ qps: 1, burst: 1 });
       }
-      override onReceive(_m: CountMsg): void { /* noop */ }
+      override onReceive(_m: CountMessage): void { /* noop */ }
     }
     const ref = sys.spawn(Props.create(() => new Strict()), 'strict');
     await sleep(20);

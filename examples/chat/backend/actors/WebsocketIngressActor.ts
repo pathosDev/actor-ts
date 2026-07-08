@@ -26,21 +26,21 @@ import {
   type InboundFrame,
   type SocketClosed,
 } from './UserSessionActor.js';
-import type { ChatRoomCmd } from './ChatRoomActor.js';
-import type { ChatRoomDirectoryCmd } from './ChatRoomDirectoryActor.js';
-import type { DmChannelCmd } from './DmChannelActor.js';
-import type { OnlineUsersCmd } from './OnlineUsersActor.js';
-import type { ReadReceiptsCmd } from './ReadReceiptsActor.js';
+import type { ChatRoomCommand } from './ChatRoomActor.js';
+import type { ChatRoomDirectoryCommand } from './ChatRoomDirectoryActor.js';
+import type { DmChannelCommand } from './DmChannelActor.js';
+import type { OnlineUsersCommand } from './OnlineUsersActor.js';
+import type { ReadReceiptsCommand } from './ReadReceiptsActor.js';
 import type { SessionStore } from '../auth/sessionStore.js';
 
 export interface WebsocketIngressDeps {
-  readonly chatRoomRegion: ActorRef<ChatRoomCmd>;
-  readonly dmChannelRegion: ActorRef<DmChannelCmd>;
-  readonly onlineUsers: ActorRef<OnlineUsersCmd>;
+  readonly chatRoomRegion: ActorRef<ChatRoomCommand>;
+  readonly dmChannelRegion: ActorRef<DmChannelCommand>;
+  readonly onlineUsers: ActorRef<OnlineUsersCommand>;
   readonly mediator: ActorRef<Subscribe | Unsubscribe>;
   readonly sessions: SessionStore;
-  readonly roomDirectory: ActorRef<ChatRoomDirectoryCmd>;
-  readonly readReceipts: ActorRef<ReadReceiptsCmd>;
+  readonly roomDirectory: ActorRef<ChatRoomDirectoryCommand>;
+  readonly readReceipts: ActorRef<ReadReceiptsCommand>;
 }
 
 type SessionRef = ActorRef<InboundFrame | SocketClosed>;

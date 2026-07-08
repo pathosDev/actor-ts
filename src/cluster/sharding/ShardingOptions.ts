@@ -7,11 +7,11 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
  * {@link StartShardingOptionsType} — the coordinator-side superset that
  * {@link ClusterSharding.start} accepts.
  */
-export interface ShardingOptionsType<TMsg> {
+export interface ShardingOptionsType<TMessage> {
   readonly typeName: string;
-  readonly entityProps: Props<TMsg>;
-  readonly extractEntityId: (message: TMsg) => string;
-  readonly extractEntityMessage?: (message: TMsg) => unknown;
+  readonly entityProps: Props<TMessage>;
+  readonly extractEntityId: (message: TMessage) => string;
+  readonly extractEntityMessage?: (message: TMessage) => unknown;
   readonly numShards?: number;
   /** Members must carry this role to be candidates for hosting shards. */
   readonly role?: string;
@@ -53,12 +53,12 @@ export interface ShardingOptionsType<TMsg> {
  * as-is via a single `withX(value)`; no nested builders.
  */
 export class ShardingOptionsBuilder<
-  TMsg,
-  S extends ShardingOptionsType<TMsg> = ShardingOptionsType<TMsg>,
+  TMessage,
+  S extends ShardingOptionsType<TMessage> = ShardingOptionsType<TMessage>,
 > extends OptionsBuilder<S> {
-  /** Start a fresh builder.  Equivalent to `new ShardingOptionsBuilder<TMsg>()`. */
-  static create<TMsg>(): ShardingOptionsBuilder<TMsg> {
-    return new ShardingOptionsBuilder<TMsg>();
+  /** Start a fresh builder.  Equivalent to `new ShardingOptionsBuilder<TMessage>()`. */
+  static create<TMessage>(): ShardingOptionsBuilder<TMessage> {
+    return new ShardingOptionsBuilder<TMessage>();
   }
 
   /** Logical name of the sharded type. */
@@ -67,17 +67,17 @@ export class ShardingOptionsBuilder<
   }
 
   /** Props used to spawn each entity instance. */
-  withEntityProps(entityProps: Props<TMsg>): this {
+  withEntityProps(entityProps: Props<TMessage>): this {
     return this.set('entityProps', entityProps);
   }
 
   /** Derive the stable entity id from an incoming message. */
-  withExtractEntityId(extractEntityId: (message: TMsg) => string): this {
+  withExtractEntityId(extractEntityId: (message: TMessage) => string): this {
     return this.set('extractEntityId', extractEntityId);
   }
 
   /** Unwrap the payload actually delivered to the entity.  Default: identity. */
-  withExtractEntityMessage(extractEntityMessage: (message: TMsg) => unknown): this {
+  withExtractEntityMessage(extractEntityMessage: (message: TMessage) => unknown): this {
     return this.set('extractEntityMessage', extractEntityMessage);
   }
 
@@ -117,8 +117,8 @@ export class ShardingOptionsBuilder<
  * {@link ShardingOptionsBuilder} OR a plain {@link ShardingOptionsType} object.
  */
 export type ShardingOptions<
-  TMsg,
-  S extends ShardingOptionsType<TMsg> = ShardingOptionsType<TMsg>,
-> = ShardingOptionsBuilder<TMsg, S> | S;
+  TMessage,
+  S extends ShardingOptionsType<TMessage> = ShardingOptionsType<TMessage>,
+> = ShardingOptionsBuilder<TMessage, S> | S;
 /** Value alias so `ShardingOptions.create()` / `new ShardingOptions()` resolve to the builder. */
 export const ShardingOptions = ShardingOptionsBuilder;

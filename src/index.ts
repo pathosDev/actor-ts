@@ -363,7 +363,7 @@ export {
   ObjectStorageDurableStateStoreOptions,
   ObjectStoragePluginOptions,
   ProjectionOptions,
-  ByPidProjectionOptions,
+  ByPersistenceIdProjectionOptions,
   ByTagProjectionOptions,
   DurableStateOptions,
   ReplicatedEventSourcedActor,
@@ -441,7 +441,7 @@ export type {
   TagFilter,
   TagFilterSpec,
   ProjectionOptionsType,
-  ByPidProjectionOptionsType,
+  ByPersistenceIdProjectionOptionsType,
   ByTagProjectionOptionsType,
   OffsetStore,
   ReplicatedEventEnvelope,
@@ -519,7 +519,7 @@ export type {
   ProducerHandle,
   ConsumerHandle,
   Delivery,
-  Ack,
+  Acknowledgment,
   ConfirmationCallback,
 } from './delivery/index.js';
 
@@ -594,7 +594,7 @@ export {
 } from './discovery/index.js';
 export type {
   ReceptionistOptionsType,
-  ReceptionistGossipMsg,
+  ReceptionistGossipMessage,
   SeedProvider,
   ConfigSeedProviderOptionsType,
   DnsSeedProviderOptionsType,

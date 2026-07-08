@@ -15,7 +15,7 @@ import { Props } from '../../../../../src/Props.js';
 import {
   JetStreamActor,
   type JetStreamClientLike,
-  type JetStreamCmd,
+  type JetStreamCommand,
   type JetStreamManagerLike,
   type JetStreamMessage,
   type JetStreamMsgHandleLike,
@@ -204,7 +204,7 @@ class CapturingTarget extends Actor<JetStreamMessage> {
 
 async function bootActor(
   sys: ActorSystem, options: JetStreamOptionsBuilder,
-): Promise<{ actor: ActorRef<JetStreamCmd>; mock: MockJetStreamActor; target: CapturingTarget }> {
+): Promise<{ actor: ActorRef<JetStreamCommand>; mock: MockJetStreamActor; target: CapturingTarget }> {
   const target = new CapturingTarget();
   const targetRef = sys.spawn(Props.create(() => target), 'target');
   const ref = { current: null as MockJetStreamActor | null };
@@ -218,7 +218,7 @@ async function bootActor(
   );
   // Allow preStart + connect to complete and the pump to enter `for await`.
   await sleep(60);
-  return { actor: actor as ActorRef<JetStreamCmd>, mock: ref.current!, target };
+  return { actor: actor as ActorRef<JetStreamCommand>, mock: ref.current!, target };
 }
 
 function makeHandle(seq: number, subject = 'orders.new', payload = 'hi'): MockHandle {
@@ -575,7 +575,7 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
       // Fetch was called with the requested parameters.
       expect(pc.fetchCalls).toEqual([{ max_messages: 3, expires: 1_000 }]);
 
-      // Ack them all so the pending-map drains.
+      // Acknowledgment them all so the pending-map drains.
       actor.tell({ kind: 'ack', streamSeq: 1 });
       actor.tell({ kind: 'ack', streamSeq: 2 });
       actor.tell({ kind: 'ack', streamSeq: 3 });

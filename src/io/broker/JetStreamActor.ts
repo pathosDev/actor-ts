@@ -53,7 +53,7 @@ import type { JetStreamOptions, JetStreamOptionsType } from './JetStreamOptions.
  *   )));
  *
  *   class OrderProcessor extends Actor<JetStreamMessage> {
- *     constructor(private readonly js: ActorRef<JetStreamCmd>) { super(); }
+ *     constructor(private readonly js: ActorRef<JetStreamCommand>) { super(); }
  *     async onReceive(m: JetStreamMessage) {
  *       try {
  *         await db.insertOrder(JSON.parse(new TextDecoder().decode(m.payload)));
@@ -145,7 +145,7 @@ export interface JetStreamConsumerConfig {
   readonly create?: boolean;
 }
 
-export type JetStreamCmd =
+export type JetStreamCommand =
   | { readonly kind: 'publish'; readonly publish: JetStreamPublish }
   /** Acknowledge a delivered message — server marks consumed. */
   | { readonly kind: 'ack'; readonly streamSeq: number }
@@ -165,7 +165,7 @@ export type JetStreamCmd =
   | { readonly kind: 'fetch'; readonly batch: number; readonly expiresMs?: number };
 
 export class JetStreamActor extends BrokerActor<
-  JetStreamOptionsType, JetStreamCmd, JetStreamPublish
+  JetStreamOptionsType, JetStreamCommand, JetStreamPublish
 > {
   private nc: NatsConnectionLike | null = null;
   private js: JetStreamClientLike | null = null;
@@ -173,7 +173,7 @@ export class JetStreamActor extends BrokerActor<
   /** Pull-consumer handle (#62).  Non-null when consumer.mode === 'pull'. */
   private pullConsumer: PullConsumerLike | null = null;
   /** Map of streamSeq → in-flight ack handle for the manual-ack pump. */
-  private readonly pending = new Map<number, PendingAck>();
+  private readonly pending = new Map<number, PendingAcknowledgment>();
 
   constructor(options: JetStreamOptions = {}) { super(options); }
 
@@ -214,7 +214,7 @@ export class JetStreamActor extends BrokerActor<
     });
   }
 
-  protected async connectImpl(): Promise<void> {
+  protected async connectImplementation(): Promise<void> {
     this.nc = await this.createNatsConnection();
     this.js = this.nc.jetstream();
 
@@ -261,7 +261,7 @@ export class JetStreamActor extends BrokerActor<
     });
   }
 
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     // Reject every still-pending ack so the consumer pump unwinds.
     if (this.pending.size > 0) {
       for (const p of this.pending.values()) {
@@ -298,12 +298,12 @@ export class JetStreamActor extends BrokerActor<
     });
   }
 
-  override onReceive(cmd: JetStreamCmd): void {
-    // Compile-time exhaustiveness: adding a new JetStreamCmd variant
+  override onReceive(cmd: JetStreamCommand): void {
+    // Compile-time exhaustiveness: adding a new JetStreamCommand variant
     // forces this site to handle it explicitly (TS error otherwise).
     match(cmd)
       .with({ kind: 'publish' },    (c) => { this.enqueueOutbound(c.publish); })
-      .with({ kind: 'ack' },        (c) => this.handleAck(c.streamSeq))
+      .with({ kind: 'ack' },        (c) => this.handleAcknowledgment(c.streamSeq))
       .with({ kind: 'nak' },        (c) => this.handleNak(c.streamSeq, c.delayMs))
       .with({ kind: 'term' },       (c) => this.handleTerm(c.streamSeq, c.reason))
       .with({ kind: 'inProgress' }, (c) => this.handleInProgress(c.streamSeq))
@@ -316,14 +316,14 @@ export class JetStreamActor extends BrokerActor<
   private async runPump(): Promise<void> {
     if (!this.subscription) return;
     for await (const m of this.subscription) {
-      await this.deliverAndAwaitAck(m);
+      await this.deliverAndAwaitAcknowledgment(m);
     }
   }
 
   /**
    * Pull-mode fetch (#62) — request up to `batch` messages, fan them
    * to `target`, and wait per-message for ack/nak/term using the same
-   * `deliverAndAwaitAck` helper as the push pump.  Returns once every
+   * `deliverAndAwaitAcknowledgment` helper as the push pump.  Returns once every
    * message in the batch has been acked or its ack-timeout has
    * fired; subsequent `fetch` cmds are processed serially by the
    * mailbox.
@@ -357,7 +357,7 @@ export class JetStreamActor extends BrokerActor<
     // wait in parallel for the per-message acks.  Serial-await within
     // a batch would deadlock if the target processes them out of
     // order, which is the natural actor pattern.
-    await Promise.all(handles.map((h) => this.deliverAndAwaitAck(h)));
+    await Promise.all(handles.map((h) => this.deliverAndAwaitAcknowledgment(h)));
   }
 
   /**
@@ -365,7 +365,7 @@ export class JetStreamActor extends BrokerActor<
    * `handleFetch`.  Tells the message to `target`, then awaits an
    * external ack / nak / term (unless `ackPolicy === 'none'`).
    */
-  private async deliverAndAwaitAck(m: JetStreamMsgHandleLike): Promise<void> {
+  private async deliverAndAwaitAcknowledgment(m: JetStreamMsgHandleLike): Promise<void> {
     const target = this.options.target;
     const ackTimeoutMs = this.options.ackTimeout
       ?? this.options.consumer?.ackWaitMs
@@ -409,7 +409,7 @@ export class JetStreamActor extends BrokerActor<
     }
   }
 
-  private handleAck(streamSeq: number): void {
+  private handleAcknowledgment(streamSeq: number): void {
     const p = this.pending.get(streamSeq);
     if (!p) {
       this.log.debug(`JetStreamActor: ack for unknown streamSeq=${streamSeq} — ignored`);
@@ -460,7 +460,7 @@ export class JetStreamActor extends BrokerActor<
 
 /* ----------------------------- internals -------------------------------- */
 
-interface PendingAck {
+interface PendingAcknowledgment {
   readonly streamSeq: number;
   readonly handle: JetStreamMsgHandleLike;
   readonly done: () => void;

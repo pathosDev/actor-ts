@@ -37,7 +37,7 @@ import { LWWMap } from '../../../../src/crdt/LWWMap.js';
 
 /* --------------------------- public messages --------------------------- */
 
-export type ReadReceiptsCmd =
+export type ReadReceiptsCommand =
   | { readonly kind: 'Update';      readonly room: string; readonly username: string; readonly ts: number }
   | { readonly kind: 'Subscribe';   readonly room: string; readonly ref: ActorRef<ReceiptsChanged> }
   | { readonly kind: 'Unsubscribe'; readonly room: string; readonly ref: ActorRef<ReceiptsChanged> };
@@ -68,7 +68,7 @@ interface RoomState {
 
 /* ------------------------------- actor --------------------------------- */
 
-export class ReadReceiptsActor extends Actor<ReadReceiptsCmd> {
+export class ReadReceiptsActor extends Actor<ReadReceiptsCommand> {
   private dd!: DistributedDataHandle;
   private replicaId!: string;
   private readonly rooms = new Map<string, RoomState>();
@@ -83,7 +83,7 @@ export class ReadReceiptsActor extends Actor<ReadReceiptsCmd> {
     this.rooms.clear();
   }
 
-  override onReceive(cmd: ReadReceiptsCmd): void {
+  override onReceive(cmd: ReadReceiptsCommand): void {
     match(cmd)
       .with({ kind: 'Update' },      (m) => this.update(m.room, m.username, m.ts))
       .with({ kind: 'Subscribe' },   (m) => this.subscribe(m.room, m.ref))

@@ -17,7 +17,7 @@ import { Props } from '../../../../../src/Props.js';
 import {
   KafkaActor,
   withAutoHeartbeat,
-  type KafkaCmd,
+  type KafkaCommand,
   type KafkaConsumerLike,
   type KafkaInstanceLike,
   type KafkaProducerLike,
@@ -137,7 +137,7 @@ class CapturingTarget extends Actor<KafkaRecord> {
 
 async function bootActor(
   sys: ActorSystem, options: KafkaOptionsBuilder,
-): Promise<{ actor: ActorRef<KafkaCmd>; mock: MockKafka; target: CapturingTarget }> {
+): Promise<{ actor: ActorRef<KafkaCommand>; mock: MockKafka; target: CapturingTarget }> {
   const target = new CapturingTarget();
   const targetRef = sys.spawn(Props.create(() => target), 'target');
   const ref = { current: null as MockKafkaActor | null };
@@ -149,9 +149,9 @@ async function bootActor(
     }),
     'kafka',
   );
-  // Wait until preStart has fired connectImpl + run() registration.
+  // Wait until preStart has fired connectImplementation + run() registration.
   await sleep(60);
-  return { actor: actor as ActorRef<KafkaCmd>, mock: ref.current!.mock, target };
+  return { actor: actor as ActorRef<KafkaCommand>, mock: ref.current!.mock, target };
 }
 
 /* ============================================================== */

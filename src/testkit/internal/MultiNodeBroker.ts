@@ -1,5 +1,5 @@
 import type { NodeAddress } from '../../cluster/NodeAddress.js';
-import { NodeAddress as NodeAddressCtor } from '../../cluster/NodeAddress.js';
+import { NodeAddress as NodeAddressConstructor } from '../../cluster/NodeAddress.js';
 import type {
   BrokeredMessage,
   PortLike,
@@ -74,7 +74,7 @@ export class MultiNodeBroker {
   }
 
   registered(): NodeAddress[] {
-    return Array.from(this.ports.keys()).map((k) => NodeAddressCtor.parse(k));
+    return Array.from(this.ports.keys()).map((k) => NodeAddressConstructor.parse(k));
   }
 
   /* -------------------------------- internals ------------------------- */
@@ -82,7 +82,7 @@ export class MultiNodeBroker {
   private onMessage(sourceKey: string, env: BrokeredMessage): void {
     if (this.stopped) return;
     if (!this.ports.has(sourceKey)) return;     // sender was unregistered
-    const targetAddr = NodeAddressCtor.fromJSON(env.to);
+    const targetAddr = NodeAddressConstructor.fromJSON(env.to);
     const targetKey = targetAddr.toString();
     if (this.blocked.has(`${sourceKey}→${targetKey}`)) return;  // partition
     const target = this.ports.get(targetKey);

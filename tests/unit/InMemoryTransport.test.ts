@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { InMemoryTransport } from '../../src/cluster/Transport.js';
 import { NodeAddress } from '../../src/cluster/NodeAddress.js';
-import type { HelloMsg, WireMessage } from '../../src/cluster/Protocol.js';
+import type { HelloMessage, WireMessage } from '../../src/cluster/Protocol.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -9,7 +9,7 @@ function newTransport(port: number): InMemoryTransport {
   return new InMemoryTransport(new NodeAddress('imt', 'localhost', port));
 }
 
-function helloFrom(port: number): HelloMsg {
+function helloFrom(port: number): HelloMessage {
   return { t: 'hello', self: new NodeAddress('imt', 'localhost', port).toJSON() };
 }
 

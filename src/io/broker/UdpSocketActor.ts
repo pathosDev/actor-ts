@@ -18,7 +18,7 @@ export interface UdpOutbound {
   readonly port: number;
 }
 
-export type UdpSocketCmd = { readonly kind: 'send'; readonly datagram: UdpOutbound };
+export type UdpSocketCommand = { readonly kind: 'send'; readonly datagram: UdpOutbound };
 
 /**
  * UDP-socket actor.  Uses `node:dgram` (built-in everywhere).  No
@@ -28,7 +28,7 @@ export type UdpSocketCmd = { readonly kind: 'send'; readonly datagram: UdpOutbou
  * socket is bound).
  */
 export class UdpSocketActor
-  extends BrokerActor<UdpSocketOptionsType, UdpSocketCmd, UdpOutbound> {
+  extends BrokerActor<UdpSocketOptionsType, UdpSocketCommand, UdpOutbound> {
   private socket: DgramSocket | null = null;
   private actualPort = 0;
 
@@ -55,7 +55,7 @@ export class UdpSocketActor
   /** OS-assigned port after `bind` (0 before, real number after). */
   get boundPort(): number { return this.actualPort; }
 
-  protected async connectImpl(): Promise<void> {
+  protected async connectImplementation(): Promise<void> {
     const dgram = await dgramLazy.get();
     const sock = dgram.createSocket(this.options.type ?? 'udp4');
     return new Promise<void>((resolve, reject) => {
@@ -84,7 +84,7 @@ export class UdpSocketActor
     });
   }
 
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     if (!this.socket) return;
     const sock = this.socket;
     this.socket = null;
@@ -108,7 +108,7 @@ export class UdpSocketActor
     });
   }
 
-  override onReceive(cmd: UdpSocketCmd): void {
+  override onReceive(cmd: UdpSocketCommand): void {
     if (cmd.kind === 'send') this.enqueueOutbound(cmd.datagram);
   }
 }

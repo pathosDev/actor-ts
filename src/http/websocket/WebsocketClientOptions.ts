@@ -13,9 +13,9 @@
  * A `WebsocketClientActor` subclass takes a `WebsocketClientOptions` (or builds
  * one inline) and passes it to `super(...)`:
  *
- *     class FeedClient extends WebsocketClientActor<ClientMsg, ServerMsg> {
+ *     class FeedClient extends WebsocketClientActor<ClientMessage, ServerMessage> {
  *       constructor() {
- *         super(WebsocketClientOptions.create<ClientMsg, ServerMsg>()
+ *         super(WebsocketClientOptions.create<ClientMessage, ServerMessage>()
  *           .withUrl('ws://localhost:8080/ws'));
  *       }
  *     }

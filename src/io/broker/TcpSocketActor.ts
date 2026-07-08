@@ -31,10 +31,10 @@ export type TcpOutbound = Uint8Array | string;
  * via the standard `enqueueOutbound` path — the actor exposes a small
  * command surface (`send`) so user code can `tell({ kind: 'send', payload })`.
  */
-export type TcpSocketCmd =
+export type TcpSocketCommand =
   | { readonly kind: 'send'; readonly payload: TcpOutbound };
 
-export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketCmd, TcpOutbound> {
+export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketCommand, TcpOutbound> {
   private socket: NetSocket | null = null;
   /** Buffer for partial frames not yet matched by the framing strategy. */
   private inboundBuffer: Uint8Array = new Uint8Array(0);
@@ -72,7 +72,7 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
   }
   protected endpointLabel(): string { return `tcp://${this.options.host}:${this.options.port}`; }
 
-  protected async connectImpl(): Promise<void> {
+  protected async connectImplementation(): Promise<void> {
     const net = await netLazy.get();
     return new Promise<void>((resolve, reject) => {
       const sock = net.createConnection({ host: this.options.host!, port: this.options.port! });
@@ -95,7 +95,7 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
     });
   }
 
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     if (!this.socket) return;
     const sock = this.socket;
     this.socket = null;
@@ -117,7 +117,7 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
     });
   }
 
-  override onReceive(cmd: TcpSocketCmd): void {
+  override onReceive(cmd: TcpSocketCommand): void {
     if (cmd.kind === 'send') this.enqueueOutbound(cmd.payload);
   }
 

@@ -15,7 +15,7 @@
  *      same id is idempotent at the stream level.
  *
  *   3. Consumer (OrderProcessor) handles each delivery and acks /
- *      naks / terms.  Ack on success, nak with delay on transient
+ *      naks / terms.  Acknowledgment on success, nak with delay on transient
  *      failures (DB hiccup), term on permanent failures (malformed
  *      JSON).
  *
@@ -28,7 +28,7 @@ import {
   Props,
   JetStreamActor,
   JetStreamOptions,
-  type JetStreamCmd,
+  type JetStreamCommand,
   type JetStreamMessage,
 } from '../../src/index.js';
 import type { ActorRef } from '../../src/index.js';
@@ -36,7 +36,7 @@ import type { ActorRef } from '../../src/index.js';
 interface Order { orderId: string; amount: number }
 
 class OrderProcessor extends Actor<JetStreamMessage> {
-  constructor(private readonly js: ActorRef<JetStreamCmd>) { super(); }
+  constructor(private readonly js: ActorRef<JetStreamCommand>) { super(); }
 
   override async onReceive(m: JetStreamMessage): Promise<void> {
     const text = new TextDecoder().decode(m.payload);
@@ -67,7 +67,7 @@ async function db_insertOrder(o: Order): Promise<void> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('js-orders-demo');
-  let js!: ActorRef<JetStreamCmd>;
+  let js!: ActorRef<JetStreamCommand>;
 
   const processor = system.spawn(
     Props.create(() => new OrderProcessor(js)),

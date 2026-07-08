@@ -27,18 +27,18 @@ import {
   type ShardHome,
   type HandOff,
   type HandOffComplete,
-  type BeginHandOffAck,
+  type BeginHandOffAcknowledgment,
   type RememberedEntities,
-  type RegisterAck,
+  type RegisterAcknowledgment,
   type EntityStarted,
   type EntityStopped,
 } from './ShardingProtocol.js';
 
-export interface ShardRegionConfig<TMsg> {
+export interface ShardRegionConfig<TMessage> {
   readonly typeName: string;
-  readonly entityProps: Props<TMsg>;
-  readonly extractEntityId: (message: TMsg) => string;
-  readonly extractEntityMessage: (message: TMsg) => unknown;
+  readonly entityProps: Props<TMessage>;
+  readonly extractEntityId: (message: TMessage) => string;
+  readonly extractEntityMessage: (message: TMessage) => unknown;
   readonly numShards: number;
   readonly role?: string;
   readonly proxy: boolean;
@@ -65,7 +65,7 @@ type ShardState = 'owned' | 'handing-off';
  * region that owns the target shard.  Messages whose shard home is unknown
  * or in handoff are buffered until the coordinator answers.
  */
-export class ShardRegion<TMsg = unknown> extends Actor<TMsg | ShardingMessage | Terminated | Passivate> {
+export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMessage | Terminated | Passivate> {
   private readonly shardHomes = new Map<number, string>(); // shardId → region path
   private readonly shardHomeNodes = new Map<number, NodeAddress>();
   private readonly localShards = new Set<number>();
@@ -74,7 +74,7 @@ export class ShardRegion<TMsg = unknown> extends Actor<TMsg | ShardingMessage | 
   private readonly entityShard = new Map<string, number>(); // entityId → shardId
   private readonly shardEntities = new Map<number, Set<string>>(); // shardId → entityIds
   /** Messages buffered while their shard home is unknown or in transition. */
-  private readonly buffer = new Map<number, Array<{ msg: TMsg; sender: ActorRef | null }>>();
+  private readonly buffer = new Map<number, Array<{ msg: TMessage; sender: ActorRef | null }>>();
 
   private coordinatorRef: ActorRef<ShardingMessage> | null = null;
   private unsubscribe: (() => void) | null = null;
@@ -93,18 +93,18 @@ export class ShardRegion<TMsg = unknown> extends Actor<TMsg | ShardingMessage | 
   /** How long an unsettled ask entry is kept before being GC'd. */
   private readonly asksTtlMs = 60_000;
 
-  constructor(public readonly cfg: ShardRegionConfig<TMsg>) { super(); }
+  constructor(public readonly cfg: ShardRegionConfig<TMessage>) { super(); }
 
-  static settingsToConfig<TMsg>(
-    s: ShardingOptionsType<TMsg>,
+  static settingsToConfig<TMessage>(
+    s: ShardingOptionsType<TMessage>,
     cluster: Cluster,
     localResolver: (path: string) => ActorRef | null,
-  ): ShardRegionConfig<TMsg> {
+  ): ShardRegionConfig<TMessage> {
     return {
       typeName: s.typeName,
       entityProps: s.entityProps,
       extractEntityId: s.extractEntityId,
-      extractEntityMessage: s.extractEntityMessage ?? ((m: TMsg) => m as unknown),
+      extractEntityMessage: s.extractEntityMessage ?? ((m: TMessage) => m as unknown),
       numShards: s.numShards ?? 64,
       role: s.role,
       proxy: s.proxy ?? false,
@@ -150,7 +150,7 @@ export class ShardRegion<TMsg = unknown> extends Actor<TMsg | ShardingMessage | 
     this.asksSweepTimer?.cancel();
   }
 
-  override onReceive(message: TMsg | ShardingMessage | Terminated | Passivate): void {
+  override onReceive(message: TMessage | ShardingMessage | Terminated | Passivate): void {
     if (isShardingMessage(message)) {
       this.handleShardingMessage(message);
       return;
@@ -163,15 +163,15 @@ export class ShardRegion<TMsg = unknown> extends Actor<TMsg | ShardingMessage | 
       this.handlePassivate(message);
       return;
     }
-    this.routeUserMessage(message as TMsg, this.sender.toNullable());
+    this.routeUserMessage(message as TMessage, this.sender.toNullable());
   }
 
   /* ----------------------------- Routing -------------------------------- */
 
-  private routeUserMessage(message: TMsg, sender: ActorRef | null): void {
+  private routeUserMessage(message: TMessage, sender: ActorRef | null): void {
     const entityId = this.cfg.extractEntityId(message);
     const shardId = hashShardId(entityId, this.cfg.numShards);
-    const entityMsg = this.cfg.extractEntityMessage(message) as TMsg;
+    const entityMsg = this.cfg.extractEntityMessage(message) as TMessage;
 
     const state = this.shardState.get(shardId);
     if (state === 'handing-off') {
@@ -195,7 +195,7 @@ export class ShardRegion<TMsg = unknown> extends Actor<TMsg | ShardingMessage | 
     }
   }
 
-  private deliverLocal(shardId: number, entityId: string, message: TMsg, sender: ActorRef | null): void {
+  private deliverLocal(shardId: number, entityId: string, message: TMessage, sender: ActorRef | null): void {
     if (this.cfg.proxy) {
       // Proxy regions should not own shards; this is a routing bug.
       this.log.warn(`proxy region got shard ${shardId} unexpectedly`);
@@ -254,10 +254,10 @@ export class ShardRegion<TMsg = unknown> extends Actor<TMsg | ShardingMessage | 
     victim.ref.stop();
   }
 
-  private deliverRemote(node: NodeAddress, path: string, message: TMsg, sender: ActorRef | null): void {
+  private deliverRemote(node: NodeAddress, path: string, message: TMessage, sender: ActorRef | null): void {
     if (sender === null) {
       // Nothing to reply to — skip the envelope wrapping.
-      new RemoteActorRef<TMsg>(node, path, this.cfg.cluster).tell(message);
+      new RemoteActorRef<TMessage>(node, path, this.cfg.cluster).tell(message);
       return;
     }
 
@@ -374,7 +374,7 @@ export class ShardRegion<TMsg = unknown> extends Actor<TMsg | ShardingMessage | 
 
   private handleShardingMessage(msg: ShardingMessage): void {
     match(msg)
-      .with({ $t: 'sharding.RegisterAck' }, (m) => this.onRegisterAck(m))
+      .with({ $t: 'sharding.RegisterAcknowledgment' }, (m) => this.onRegisterAcknowledgment(m))
       .with({ $t: 'sharding.ShardHome' }, (m) => this.onShardHome(m))
       .with({ $t: 'sharding.HandOff' }, (m) => this.onHandOff(m))
       .with({ $t: 'sharding.RememberedEntities' }, (m) => this.onRememberedEntities(m))
@@ -395,7 +395,7 @@ export class ShardRegion<TMsg = unknown> extends Actor<TMsg | ShardingMessage | 
             (path) => this.cfg.localResolver(path),
           )
         : null;
-    this.routeUserMessage(msg.message as TMsg, senderRef);
+    this.routeUserMessage(msg.message as TMessage, senderRef);
   }
 
   private onShardReply(msg: ShardReply): void {
@@ -405,7 +405,7 @@ export class ShardRegion<TMsg = unknown> extends Actor<TMsg | ShardingMessage | 
     entry.sender.tell(msg.message as never);
   }
 
-  private onRegisterAck(_msg: RegisterAck): void {
+  private onRegisterAcknowledgment(_msg: RegisterAcknowledgment): void {
     this.log.debug(`[sharding] region '${this.cfg.typeName}' registered with coordinator`);
     this.registered = true;
     this.registerTimer?.cancel();
@@ -435,7 +435,7 @@ export class ShardRegion<TMsg = unknown> extends Actor<TMsg | ShardingMessage | 
       `[sharding] handing off shard ${msg.shardId} of '${this.cfg.typeName}' (stopping ${this.shardEntities.get(msg.shardId)?.size ?? 0} entit(ies))`,
     );
     this.shardState.set(msg.shardId, 'handing-off');
-    const ack: BeginHandOffAck = { $t: 'sharding.BeginHandOffAck', shardId: msg.shardId };
+    const ack: BeginHandOffAcknowledgment = { $t: 'sharding.BeginHandOffAcknowledgment', shardId: msg.shardId };
     this.tellCoordinator(ack);
 
     const entityIds = Array.from(this.shardEntities.get(msg.shardId) ?? []);
@@ -501,7 +501,7 @@ export class ShardRegion<TMsg = unknown> extends Actor<TMsg | ShardingMessage | 
           this.tellCoordinator({ $t: 'sharding.EntityStopped', shardId, entityId: id });
         }
         // Flush buffered messages by replaying through the normal route.
-        for (const m of buffered) this.routeUserMessage(m as TMsg, null);
+        for (const m of buffered) this.routeUserMessage(m as TMessage, null);
         return;
       }
     }
@@ -520,7 +520,7 @@ export class ShardRegion<TMsg = unknown> extends Actor<TMsg | ShardingMessage | 
 
   /* -------------------------------- Buffer ----------------------------- */
 
-  private bufferShard(shardId: number, msg: TMsg, sender: ActorRef | null): void {
+  private bufferShard(shardId: number, msg: TMessage, sender: ActorRef | null): void {
     let q = this.buffer.get(shardId);
     if (!q) { q = []; this.buffer.set(shardId, q); }
     q.push({ msg, sender });

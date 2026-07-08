@@ -142,7 +142,7 @@ export interface MqttPublish {
  * to the actor's own `onMessage`; pass a `target` to fan out to another
  * actor (the classic external-router shape).
  */
-export type MqttCmd<T = unknown> =
+export type MqttCommand<T = unknown> =
   | { readonly kind: 'publish'; readonly publish: MqttPublish }
   | {
       readonly kind: 'subscribe';
@@ -158,7 +158,7 @@ export type MqttCmd<T = unknown> =
 
 /* --------------------- internal mailbox signals --------------------- */
 /*
- * Delivered to the actor's own mailbox by `connectImpl` so that inbound
+ * Delivered to the actor's own mailbox by `connectImplementation` so that inbound
  * messages and lifecycle transitions run on the actor thread (single-
  * threaded guarantee, per-connection order preserved).  Classes →
  * `instanceof` dispatch in the sealed `onReceive`.  Users never
@@ -193,7 +193,7 @@ export type MqttSignal<T = unknown> =
  * internal signals.  `TSelf` defaults to `never`.
  */
 export type MqttActorMessage<T = unknown, TSelf = never> =
-  | MqttCmd<T>
+  | MqttCommand<T>
   | TSelf
   | MqttSignal<T>;
 

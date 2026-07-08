@@ -3,7 +3,7 @@ import { CborSerializer } from './CborSerializer.js';
 import { JsonSerializer } from './JsonSerializer.js';
 import { SerializationError, type SerializedValue, type Serializer } from './Serializer.js';
 
-type ClassCtor = abstract new (...args: any[]) => unknown;
+type ClassConstructor = abstract new (...args: any[]) => unknown;
 
 /**
  * Registry that resolves serializers by ID (at decode time) and by message
@@ -17,7 +17,7 @@ type ClassCtor = abstract new (...args: any[]) => unknown;
  */
 export class SerializationExtension implements Extension {
   private readonly byId = new Map<number, Serializer>();
-  private readonly byClass = new Map<ClassCtor, Serializer>();
+  private readonly byClass = new Map<ClassConstructor, Serializer>();
   private _default: Serializer;
 
   constructor() {
@@ -45,7 +45,7 @@ export class SerializationExtension implements Extension {
   }
 
   /** Bind a message class to a specific serializer (by ID). */
-  bind(cls: ClassCtor, serializerId: number): void {
+  bind(cls: ClassConstructor, serializerId: number): void {
     const ser = this.byId.get(serializerId);
     if (!ser) throw new SerializationError(`No serializer registered with id ${serializerId}`);
     this.byClass.set(cls, ser);
@@ -72,16 +72,16 @@ export class SerializationExtension implements Extension {
   findFor(value: unknown): Serializer {
     if (value === null || value === undefined) return this._default;
     const proto = Object.getPrototypeOf(value) as object | null;
-    const ctor = (proto as { constructor?: ClassCtor })?.constructor;
+    const ctor = (proto as { constructor?: ClassConstructor })?.constructor;
     if (ctor) {
       const direct = this.byClass.get(ctor);
       if (direct) return direct;
       // Walk prototype chain.
-      let walker: ClassCtor | undefined = ctor;
+      let walker: ClassConstructor | undefined = ctor;
       while (walker) {
         const found = this.byClass.get(walker);
         if (found) return found;
-        const parent = Object.getPrototypeOf(walker) as ClassCtor | null;
+        const parent = Object.getPrototypeOf(walker) as ClassConstructor | null;
         walker = parent && parent !== Function.prototype ? parent : undefined;
       }
     }

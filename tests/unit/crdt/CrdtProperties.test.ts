@@ -32,20 +32,20 @@ function pickReplica(): string {
 }
 
 function eq<C extends Crdt<C>>(
-  a: C, b: C, equalsImpl?: (x: C, y: C) => boolean,
+  a: C, b: C, equalsImplementation?: (x: C, y: C) => boolean,
 ): boolean {
-  if (equalsImpl) return equalsImpl(a, b);
+  if (equalsImplementation) return equalsImplementation(a, b);
   return JSON.stringify(a.toJSON()) === JSON.stringify(b.toJSON());
 }
 
 function checkLaws<C extends Crdt<C>>(
-  gen: () => C, equalsImpl?: (a: C, b: C) => boolean,
+  gen: () => C, equalsImplementation?: (a: C, b: C) => boolean,
 ): void {
   for (let i = 0; i < SAMPLES; i++) {
     const a = gen(), b = gen(), c = gen();
-    expect(eq(a.merge(a), a, equalsImpl)).toBe(true);                       // idempotent
-    expect(eq(a.merge(b), b.merge(a), equalsImpl)).toBe(true);              // commutative
-    expect(eq(a.merge(b).merge(c), a.merge(b.merge(c)), equalsImpl))        // associative
+    expect(eq(a.merge(a), a, equalsImplementation)).toBe(true);                       // idempotent
+    expect(eq(a.merge(b), b.merge(a), equalsImplementation)).toBe(true);              // commutative
+    expect(eq(a.merge(b).merge(c), a.merge(b.merge(c)), equalsImplementation))        // associative
       .toBe(true);
   }
 }

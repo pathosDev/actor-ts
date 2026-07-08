@@ -27,18 +27,18 @@ import {
   type WebsocketConnection,
 } from '../../src/index.js';
 
-type ClientMsg =
+type ClientMessage =
   | { kind: 'setName'; name: string }
   | { kind: 'say'; text: string };
 
-type ServerMsg =
+type ServerMessage =
   | { kind: 'system'; text: string }
   | { kind: 'chat'; from: string; text: string };
 
-class ChatRoom extends WebsocketServerActor<ServerMsg, ClientMsg> {
+class ChatRoom extends WebsocketServerActor<ServerMessage, ClientMessage> {
   private readonly names = new Map<string, string>();
 
-  override onMessage(msg: ClientMsg): void {
+  override onMessage(msg: ClientMessage): void {
     match(msg)
       .with({ kind: 'setName' }, ({ name }) => {
         this.names.set(this.connection.id, name);
@@ -55,11 +55,11 @@ class ChatRoom extends WebsocketServerActor<ServerMsg, ClientMsg> {
       .exhaustive();
   }
 
-  protected override onClientConnected(c: WebsocketConnection<ServerMsg>): void {
+  protected override onClientConnected(c: WebsocketConnection<ServerMessage>): void {
     c.tell({ kind: 'system', text: `welcome — ${this.clients.size} online` });
   }
 
-  protected override onClientDisconnected(c: WebsocketConnection<ServerMsg>): void {
+  protected override onClientDisconnected(c: WebsocketConnection<ServerMessage>): void {
     const name = this.names.get(c.id) ?? 'someone';
     this.names.delete(c.id);
     this.broadcast({ kind: 'system', text: `${name} left` });

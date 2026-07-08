@@ -18,13 +18,13 @@ import {
   type InboundFrame,
   type SocketClosed,
 } from './VoiceSessionActor.js';
-import type { VoicePresenceCmd } from './VoicePresenceActor.js';
+import type { VoicePresenceCommand } from './VoicePresenceActor.js';
 import type { SessionStore } from '../auth/sessionStore.js';
 
 export interface VoiceWebsocketIngressDeps {
   readonly receptionist: ActorRef<unknown>;
   readonly mediator: ActorRef<Subscribe | Unsubscribe | Publish<unknown>>;
-  readonly voicePresence: ActorRef<VoicePresenceCmd>;
+  readonly voicePresence: ActorRef<VoicePresenceCommand>;
   readonly sessions: SessionStore;
 }
 

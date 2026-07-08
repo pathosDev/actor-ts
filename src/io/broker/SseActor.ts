@@ -14,7 +14,7 @@ export interface SseEvent {
   readonly id?: string;
 }
 
-export type SseCmd = never;  // SSE is read-only
+export type SseCommand = never;  // SSE is read-only
 
 /**
  * Server-Sent Events client actor.  Pure built-ins — uses `fetch`
@@ -23,7 +23,7 @@ export type SseCmd = never;  // SSE is read-only
  *
  * The base class' reconnect machinery applies on stream close.
  */
-export class SseActor extends BrokerActor<SseOptionsType, SseCmd, never> {
+export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
   private aborter: AbortController | null = null;
   private streamRunning = false;
 
@@ -46,7 +46,7 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCmd, never> {
   protected requiredOptions(): ReadonlyArray<keyof SseOptionsType> { return ['url', 'target']; }
   protected endpointLabel(): string { return this.options.url ?? '<unknown>'; }
 
-  protected async connectImpl(): Promise<void> {
+  protected async connectImplementation(): Promise<void> {
     this.aborter = new AbortController();
     const fetchFn = await fetchLazy.get();
     const res = await fetchFn(this.options.url!, {
@@ -61,7 +61,7 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCmd, never> {
     void this.consume(res.body);
   }
 
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     this.streamRunning = false;
     try { this.aborter?.abort(); } catch { /* ignore */ }
     this.aborter = null;
@@ -71,7 +71,7 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCmd, never> {
     throw new Error('SseActor is read-only');
   }
 
-  override onReceive(_cmd: SseCmd): void { /* no commands */ }
+  override onReceive(_cmd: SseCommand): void { /* no commands */ }
 
   /* ----------------------------- internals ----------------------------- */
 

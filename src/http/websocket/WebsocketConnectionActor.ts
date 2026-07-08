@@ -21,7 +21,7 @@
 import { Actor } from '../../Actor.js';
 import { WebsocketReadyState, type WebsocketSocketAdapter } from './SocketAdapter.js';
 import { WebsocketDecodeError, type WebsocketCodec } from './WebsocketCodec.js';
-import { WebsocketConnectionImpl, type WebsocketConnection, type WebsocketOutboundCommand } from './WebsocketConnection.js';
+import { WebsocketConnectionImplementation, type WebsocketConnection, type WebsocketOutboundCommand } from './WebsocketConnection.js';
 import {
   WebsocketConnectedSignal,
   WebsocketDataSignal,
@@ -62,7 +62,7 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
   }
 
   override preStart(): void {
-    const conn = new WebsocketConnectionImpl<TOut>(this.d.id, this.d.upgrade, this.d.socket, this.self, this.system.name);
+    const conn = new WebsocketConnectionImplementation<TOut>(this.d.id, this.d.upgrade, this.d.socket, this.self, this.system.name);
     this.connection = conn;
     // Tell the hub 'connected' BEFORE attaching listeners, so it is
     // mailbox-ordered before any inbound data flushed by setListeners.

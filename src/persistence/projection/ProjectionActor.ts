@@ -9,19 +9,19 @@ import {
 } from '../query/PersistenceQuery.js';
 import { InMemoryOffsetStore, type OffsetStore } from './OffsetStore.js';
 import type {
-  ByPidProjectionOptions,
+  ByPersistenceIdProjectionOptions,
   ByTagProjectionOptions,
   ProjectionOptionsType,
-  ByPidProjectionOptionsType,
+  ByPersistenceIdProjectionOptionsType,
   ByTagProjectionOptionsType,
 } from './ProjectionOptions.js';
 
 /* ============================ implementation ========================== */
 
-interface InternalTickMsg { readonly _: 'projection-tick' }
-const TICK: InternalTickMsg = { _: 'projection-tick' };
+interface InternalTickMessage { readonly _: 'projection-tick' }
+const TICK: InternalTickMessage = { _: 'projection-tick' };
 
-abstract class BaseProjectionActor<E> extends Actor<InternalTickMsg> {
+abstract class BaseProjectionActor<E> extends Actor<InternalTickMessage> {
   protected readonly offsetStore: OffsetStore;
   protected pollTimer: Cancellable | null = null;
   protected stopped = false;
@@ -48,7 +48,7 @@ abstract class BaseProjectionActor<E> extends Actor<InternalTickMsg> {
     await this.currentHandle;
   }
 
-  override async onReceive(_msg: InternalTickMsg): Promise<void> {
+  override async onReceive(_msg: InternalTickMessage): Promise<void> {
     if (this.stopped) return;
     try {
       await this.runOnce();
@@ -75,9 +75,9 @@ abstract class BaseProjectionActor<E> extends Actor<InternalTickMsg> {
 
 /* ------------------------------ by pid -------------------------------- */
 
-class ByPidProjectionActor<E> extends BaseProjectionActor<E> {
+class ByPersistenceIdProjectionActor<E> extends BaseProjectionActor<E> {
   private cursor = 0;
-  constructor(private readonly cfg: ByPidProjectionOptionsType<E>) { super(cfg); }
+  constructor(private readonly cfg: ByPersistenceIdProjectionOptionsType<E>) { super(cfg); }
 
   protected async loadCursor(): Promise<void> {
     this.cursor = await this.offsetStore.loadSequence(this.cfg.name, this.cfg.persistenceId);
@@ -168,11 +168,11 @@ export class ProjectionActor {
   /** Spawn a per-persistenceId projection.  Returns the actor ref. */
   static byPersistenceId<E>(
     system: ActorSystem,
-    options: ByPidProjectionOptions<E>,
+    options: ByPersistenceIdProjectionOptions<E>,
   ): ActorRef<unknown> {
-    const resolvedOptions = options as ByPidProjectionOptionsType<E>;
+    const resolvedOptions = options as ByPersistenceIdProjectionOptionsType<E>;
     return system.spawn(
-      Props.create(() => new ByPidProjectionActor<E>(resolvedOptions) as unknown as Actor<unknown>),
+      Props.create(() => new ByPersistenceIdProjectionActor<E>(resolvedOptions) as unknown as Actor<unknown>),
       `projection-${resolvedOptions.name}-${sanitize(resolvedOptions.persistenceId)}`,
     );
   }

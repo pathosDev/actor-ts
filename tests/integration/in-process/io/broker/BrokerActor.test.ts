@@ -25,7 +25,7 @@ interface FakeOptions extends BrokerCommonOptionsType {
   readonly tag?: string;
 }
 
-interface FakeCmd {
+interface FakeCommand {
   kind: 'send' | 'subscribe' | 'unsubscribe' | 'fanOut' | 'simulate-loss';
   topic?: string;
   ref?: ActorRef<unknown>;
@@ -33,10 +33,10 @@ interface FakeCmd {
 }
 
 /**
- * Concrete subclass for tests — `connectImpl` and `dispatchOutgoing`
+ * Concrete subclass for tests — `connectImplementation` and `dispatchOutgoing`
  * are wired to mutable flags so the test can simulate failures.
  */
-class FakeBroker extends BrokerActor<FakeOptions, FakeCmd, string> {
+class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string> {
   connectAttempts = 0;
   disconnects = 0;
   dispatched: string[] = [];
@@ -56,14 +56,14 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCmd, string> {
   protected requiredOptions(): ReadonlyArray<keyof FakeOptions> { return ['endpoint']; }
   protected endpointLabel(): string { return this.options.endpoint ?? '<none>'; }
 
-  protected async connectImpl(): Promise<void> {
+  protected async connectImplementation(): Promise<void> {
     this.connectAttempts++;
     if (this.failNextConnects > 0) {
       this.failNextConnects--;
       throw new Error(`simulated connect failure (${this.connectAttempts})`);
     }
   }
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     this.disconnects++;
   }
   protected async dispatchOutgoing(env: OutboundEnvelope<string>): Promise<void> {
@@ -84,7 +84,7 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCmd, string> {
   publicBufferSize(): number { return this.outboundBufferSize; }
   publicSubscriberCount(topic: string): number { return this.subscriberCountForTopic(topic); }
 
-  override onReceive(_cmd: FakeCmd): void { /* no-op — direct manipulation in tests */ }
+  override onReceive(_cmd: FakeCommand): void { /* no-op — direct manipulation in tests */ }
 }
 
 class ProbeActor extends Actor<unknown> {
@@ -104,15 +104,15 @@ function makeSystem(name = 'broker-test', config?: Record<string, unknown>): Act
 function spawnFake(
   sys: ActorSystem,
   options: Partial<FakeOptions> = {},
-): { ref: ActorRef<FakeCmd>; brokerReady: Promise<FakeBroker> } {
+): { ref: ActorRef<FakeCommand>; brokerReady: Promise<FakeBroker> } {
   let resolve!: (b: FakeBroker) => void;
   const brokerReady = new Promise<FakeBroker>((r) => { resolve = r; });
   const ref = sys.spawnAnonymous(Props.create(() => {
     const b = new FakeBroker(options);
     resolve(b);
-    return b as unknown as Actor<FakeCmd>;
+    return b as unknown as Actor<FakeCommand>;
   }));
-  return { ref: ref as ActorRef<FakeCmd>, brokerReady };
+  return { ref: ref as ActorRef<FakeCommand>, brokerReady };
 }
 
 /* ---------------------------- Options tests ---------------------------- */
@@ -166,7 +166,7 @@ describe('BrokerActor — options resolution', () => {
         try { await orig(); }
         catch (e) { captured = e as Error; }
       };
-      return b as unknown as Actor<FakeCmd>;
+      return b as unknown as Actor<FakeCommand>;
     }));
     await sleep(20);
     expect(captured).toBeInstanceOf(BrokerOptionsError);
@@ -197,7 +197,7 @@ describe('BrokerActor — lifecycle', () => {
     await sys.terminate();
   });
 
-  test('postStop calls disconnectImpl and clears state', async () => {
+  test('postStop calls disconnectImplementation and clears state', async () => {
     const sys = makeSystem('lc-2');
     let disconnectedCount = 0;
     sys.eventStream.subscribe(
@@ -221,7 +221,7 @@ describe('BrokerActor — lifecycle', () => {
 /* ---------------------------- Reconnect tests --------------------------- */
 
 describe('BrokerActor — reconnect', () => {
-  test('failed connectImpl triggers backoff and a follow-up attempt', async () => {
+  test('failed connectImplementation triggers backoff and a follow-up attempt', async () => {
     const sys = makeSystem('rc-1');
     const { brokerReady } = spawnFake(sys, {
       endpoint: 'host:1',

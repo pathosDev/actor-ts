@@ -27,16 +27,16 @@ interface WebsocketServerLike {
 }
 
 // `ws` is an optional peer dep — lazy-import its WebSocketServer (cached).
-const wsServerCtorLazy: Lazy<Promise<new (opts: { noServer: boolean }) => WebsocketServerLike>> = Lazy.of(async () => {
+const wsServerConstructorLazy: Lazy<Promise<new (opts: { noServer: boolean }) => WebsocketServerLike>> = Lazy.of(async () => {
   try {
     const name = 'ws';
     const mod = (await import(name)) as {
       WebSocketServer?: new (opts: { noServer: boolean }) => WebsocketServerLike;
       default?: { WebSocketServer?: new (opts: { noServer: boolean }) => WebsocketServerLike };
     };
-    const Ctor = mod.WebSocketServer ?? mod.default?.WebSocketServer;
-    if (!Ctor) throw new Error('ws: WebSocketServer not exported');
-    return Ctor;
+    const Constructor = mod.WebSocketServer ?? mod.default?.WebSocketServer;
+    if (!Constructor) throw new Error('ws: WebSocketServer not exported');
+    return Constructor;
   } catch (e) {
     throw new Error(
       'websocket() routes on the Express backend require the "ws" package.  '
@@ -218,8 +218,8 @@ export class ExpressBackend implements HttpServerBackend {
   }
 
   private async attachUpgradeHandling(server: Server): Promise<void> {
-    const WebsocketServerCtor = await wsServerCtorLazy.get();
-    const wss = new WebsocketServerCtor({ noServer: true });
+    const WebsocketServerConstructor = await wsServerConstructorLazy.get();
+    const wss = new WebsocketServerConstructor({ noServer: true });
     this.wss = wss;
     server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
       void (async () => {

@@ -45,7 +45,7 @@ export interface AmqpQueueBinding {
   };
 }
 
-export type AmqpCmd =
+export type AmqpCommand =
   | { readonly kind: 'publish'; readonly publish: AmqpPublish }
   | { readonly kind: 'ack'; readonly delivery: AmqpDelivery }
   | { readonly kind: 'nack'; readonly delivery: AmqpDelivery; readonly requeue?: boolean };
@@ -62,7 +62,7 @@ export type AmqpCmd =
  * processing.  For at-least-once-with-processing, set autoAck=false
  * and have your handler tell back `{ kind: 'ack' / 'nack', delivery }`.
  */
-export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCmd, AmqpPublish> {
+export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPublish> {
   private connection: AmqpConnectionLike | null = null;
   private channel: AmqpChannelLike | null = null;
   /** Map ackToken → underlying amqplib message object (we never expose amqplib types upward). */
@@ -85,7 +85,7 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCmd, AmqpPublish
   protected requiredOptions(): ReadonlyArray<keyof AmqpOptionsType> { return ['url']; }
   protected endpointLabel(): string { return this.options.url ?? '<unknown>'; }
 
-  protected async connectImpl(): Promise<void> {
+  protected async connectImplementation(): Promise<void> {
     const amqp = await amqpLazy.get();
     this.connection = await amqp.connect(this.options.url!);
     this.channel = await this.connection.createChannel();
@@ -118,7 +118,7 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCmd, AmqpPublish
     }
   }
 
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     this.pendingAcks.clear();
     try { await this.channel?.close(); } catch { /* ignore */ }
     this.channel = null;
@@ -154,7 +154,7 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCmd, AmqpPublish
     }
   }
 
-  override onReceive(cmd: AmqpCmd): void {
+  override onReceive(cmd: AmqpCommand): void {
     if (cmd.kind === 'publish') {
       this.enqueueOutbound(cmd.publish);
       return;

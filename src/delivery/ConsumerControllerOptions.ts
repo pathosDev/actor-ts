@@ -5,7 +5,7 @@ export interface ConsumerControllerOptionsType<T> {
   /**
    * Invoked for every successfully delivered (un-duplicated) message.  The
    * controller Acks AFTER the handler returns — if the handler returns a
-   * Promise, the Ack is delayed until it settles.
+   * Promise, the Acknowledgment is delayed until it settles.
    */
   readonly handler: (body: T) => void | Promise<void>;
 }

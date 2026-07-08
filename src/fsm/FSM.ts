@@ -34,7 +34,7 @@ export type TransitionCallback<SName extends string, SData> =
  * protocols with a small, named state set.
  *
  * Usage:
- *   class Door extends FSM<'closed'|'open', { openedAt?: number }, DoorCmd> {
+ *   class Door extends FSM<'closed'|'open', { openedAt?: number }, DoorCommand> {
  *     constructor() {
  *       super('closed', { });
  *       this.when('closed', (d, m) => m === 'open'

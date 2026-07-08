@@ -12,9 +12,9 @@ export type Receive<T> = (message: T) => void | Promise<void>;
  * Runtime API given to every Actor.  Access through `this.context` inside
  * an Actor subclass.
  */
-export interface ActorContext<TMsg = unknown> {
+export interface ActorContext<TMessage = unknown> {
   /** A reference to this actor. */
-  readonly self: ActorRef<TMsg>;
+  readonly self: ActorRef<TMessage>;
 
   /** The ActorPath of this actor. */
   readonly path: ActorPath;
@@ -89,7 +89,7 @@ export interface ActorContext<TMsg = unknown> {
    * Replace the current behaviour.  When `discardOld` is false, the previous
    * behaviour is pushed onto a stack and can be restored via unbecome().
    */
-  become(behavior: Receive<TMsg>, discardOld?: boolean): void;
+  become(behavior: Receive<TMessage>, discardOld?: boolean): void;
 
   /** Pop the behaviour stack, restoring the previous behaviour. */
   unbecome(): void;
@@ -127,7 +127,7 @@ export interface ActorContext<TMsg = unknown> {
    * Per-actor scheduling facade.  Timers are identified by user-supplied
    * string keys and are automatically cancelled when the actor stops.
    */
-  readonly timers: TimerScheduler<TMsg>;
+  readonly timers: TimerScheduler<TMessage>;
 
   /* --------------------------- Rate limiting ---------------------------- */
 
@@ -185,14 +185,14 @@ export interface ThrottleOptions {
  * Actor-scoped scheduler.  A fresh `startSingleTimer`/`startTimerWithFixedDelay`
  * call with the same key replaces any existing timer under that key.
  */
-export interface TimerScheduler<TMsg = unknown> {
+export interface TimerScheduler<TMessage = unknown> {
   /** Fire `message` once after `delayMs`. */
-  startSingleTimer(key: string, message: TMsg, delayMs: number): void;
+  startSingleTimer(key: string, message: TMessage, delayMs: number): void;
 
   /** Fire `message` every `intervalMs`, optionally preceded by `initialDelayMs`. */
   startTimerWithFixedDelay(
     key: string,
-    message: TMsg,
+    message: TMessage,
     intervalMs: number,
     initialDelayMs?: number,
   ): void;

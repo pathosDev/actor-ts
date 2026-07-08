@@ -45,14 +45,14 @@ class RecordingPolicy implements BackoffPolicy {
 
 /* ---------------------- Test child actors --------------------- */
 
-type FlakyMsg =
+type FlakyMessage =
   | { kind: 'crash' }
   | { kind: 'echo'; value: number };
 
 let crashesObserved = 0;
 
-class Flaky extends Actor<FlakyMsg> {
-  override onReceive(message: FlakyMsg): void {
+class Flaky extends Actor<FlakyMessage> {
+  override onReceive(message: FlakyMessage): void {
     if (message.kind === 'crash') {
       crashesObserved += 1;
       throw new Error('flaky boom');
@@ -305,14 +305,14 @@ describe('BackoffSupervisor — lifecycle', () => {
 /* ============================================================== */
 
 /** Child that stops itself cleanly the first time it gets a `stop` cmd. */
-type SelfStopMsg = { kind: 'stop' } | { kind: 'crash' } | { kind: 'echo'; value: number };
+type SelfStopMessage = { kind: 'stop' } | { kind: 'crash' } | { kind: 'echo'; value: number };
 
 let lifecycleStops = 0;
 let lifecycleSpawns = 0;
 
-class SelfStopChild extends Actor<SelfStopMsg> {
+class SelfStopChild extends Actor<SelfStopMessage> {
   constructor() { super(); lifecycleSpawns += 1; }
-  override onReceive(m: SelfStopMsg): void {
+  override onReceive(m: SelfStopMessage): void {
     if (m.kind === 'stop') {
       lifecycleStops += 1;
       // Clean self-stop — parent (the BackoffSupervisor) sees this as

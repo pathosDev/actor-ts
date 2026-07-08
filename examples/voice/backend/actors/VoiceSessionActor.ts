@@ -76,7 +76,7 @@ import {
   ONLINE_USERS_KEY,
   roomUsersKey,
   type PresenceChanged,
-  type VoicePresenceCmd,
+  type VoicePresenceCommand,
 } from './VoicePresenceActor.js';
 
 /* ------------------------ pubsub topic helpers ------------------------ */
@@ -125,7 +125,7 @@ export interface VoiceConnection {
   close(): void;
 }
 
-type SessionMsg =
+type SessionMessage =
   | InboundFrame
   | SocketClosed
   | BinaryFrame
@@ -139,7 +139,7 @@ export interface VoiceSessionDeps {
   readonly connection: VoiceConnection;
   readonly receptionist: ActorRef<unknown>;
   readonly mediator: ActorRef<Subscribe | Unsubscribe | Publish<unknown>>;
-  readonly voicePresence: ActorRef<VoicePresenceCmd>;
+  readonly voicePresence: ActorRef<VoicePresenceCommand>;
   readonly sessions: SessionStore;
 }
 
@@ -167,7 +167,7 @@ type CurrentTarget =
 
 /* ------------------------------- actor ---------------------------------- */
 
-export class VoiceSessionActor extends Actor<SessionMsg> {
+export class VoiceSessionActor extends Actor<SessionMessage> {
   private phase: Phase = 'Unauthenticated';
   private username: string | null = null;
   private token: string | null = null;
@@ -227,7 +227,7 @@ export class VoiceSessionActor extends Actor<SessionMsg> {
 
   /* ------------------------------- mailbox -------------------------------- */
 
-  override onReceive(msg: SessionMsg): void {
+  override onReceive(msg: SessionMessage): void {
     if (msg instanceof Listing) {
       this.onReceptionistListing(msg);
       return;

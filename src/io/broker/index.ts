@@ -22,7 +22,7 @@ export {
 // Phase 1 actors
 export { TcpSocketActor } from './TcpSocketActor.js';
 export type {
-  TcpSocketCmd,
+  TcpSocketCommand,
   TcpFraming,
   TcpOutbound,
 } from './TcpSocketActor.js';
@@ -30,7 +30,7 @@ export { TcpSocketOptions, TcpSocketOptionsBuilder } from './TcpSocketOptions.js
 export type { TcpSocketOptionsType } from './TcpSocketOptions.js';
 export { UdpSocketActor } from './UdpSocketActor.js';
 export type {
-  UdpSocketCmd,
+  UdpSocketCommand,
   UdpDatagram,
   UdpOutbound,
 } from './UdpSocketActor.js';
@@ -57,7 +57,7 @@ export {
 export type {
   MqttMessage,
   MqttPublish,
-  MqttCmd,
+  MqttCommand,
   MqttQos,
   MqttUserProperties,
   MqttSignal,
@@ -75,7 +75,7 @@ export type { MqttCodec } from './MqttCodec.js';
 // Phase 2 actors — enterprise / RPC.
 export { KafkaActor } from './KafkaActor.js';
 export type {
-  KafkaCmd,
+  KafkaCommand,
   KafkaRecord,
   KafkaPublish,
 } from './KafkaActor.js';
@@ -83,7 +83,7 @@ export { KafkaOptions, KafkaOptionsBuilder } from './KafkaOptions.js';
 export type { KafkaOptionsType } from './KafkaOptions.js';
 export { AmqpActor } from './AmqpActor.js';
 export type {
-  AmqpCmd,
+  AmqpCommand,
   AmqpDelivery,
   AmqpPublish,
   AmqpQueueBinding,
@@ -92,7 +92,7 @@ export { AmqpOptions, AmqpOptionsBuilder } from './AmqpOptions.js';
 export type { AmqpOptionsType } from './AmqpOptions.js';
 export { GrpcClientActor } from './GrpcClientActor.js';
 export type {
-  GrpcClientCmd,
+  GrpcClientCommand,
   GrpcInbound,
   GrpcCredentials,
 } from './GrpcClientActor.js';
@@ -111,7 +111,7 @@ export type { GrpcServerOptionsType } from './GrpcServerOptions.js';
 // Phase 3 actors — cloud-native / niche.
 export { NatsActor } from './NatsActor.js';
 export type {
-  NatsCmd,
+  NatsCommand,
   NatsMessage,
   NatsPublish,
 } from './NatsActor.js';
@@ -119,7 +119,7 @@ export { NatsOptions, NatsOptionsBuilder } from './NatsOptions.js';
 export type { NatsOptionsType } from './NatsOptions.js';
 export { JetStreamActor } from './JetStreamActor.js';
 export type {
-  JetStreamCmd,
+  JetStreamCommand,
   JetStreamMessage,
   JetStreamPublish,
   JetStreamStreamConfig,
@@ -136,7 +136,7 @@ export { JetStreamOptions, JetStreamOptionsBuilder } from './JetStreamOptions.js
 export type { JetStreamOptionsType } from './JetStreamOptions.js';
 export { RedisStreamsActor } from './RedisStreamsActor.js';
 export type {
-  RedisStreamsCmd,
+  RedisStreamsCommand,
   RedisStreamEntry,
   RedisStreamPublish,
 } from './RedisStreamsActor.js';
@@ -144,7 +144,7 @@ export { RedisStreamsOptions, RedisStreamsOptionsBuilder } from './RedisStreamsO
 export type { RedisStreamsOptionsType } from './RedisStreamsOptions.js';
 export { SseActor } from './SseActor.js';
 export type {
-  SseCmd,
+  SseCommand,
   SseEvent,
 } from './SseActor.js';
 export { SseOptions, SseOptionsBuilder } from './SseOptions.js';

@@ -95,19 +95,19 @@ export class ChatService {
 
   /** Open a WS and authenticate with credentials. */
   connect(username: string, password: string): void {
-    this.connectImpl((ws) =>
+    this.connectImplementation((ws) =>
       ws.send(JSON.stringify({ type: 'login', username, password } satisfies ClientMessage)),
     );
   }
 
   /** Open a WS and authenticate with a stored session token. */
   private connectWithResume(token: string): void {
-    this.connectImpl((ws) =>
+    this.connectImplementation((ws) =>
       ws.send(JSON.stringify({ type: 'resume', token } satisfies ClientMessage)),
     );
   }
 
-  private connectImpl(onOpen: (ws: WebSocket) => void): void {
+  private connectImplementation(onOpen: (ws: WebSocket) => void): void {
     this.loginError.set('');
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${proto}//${location.host}${WS_PATH}`);

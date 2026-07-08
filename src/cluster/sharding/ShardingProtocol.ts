@@ -3,7 +3,7 @@ import type { NodeAddressData } from '../NodeAddress.js';
 /**
  * Message types exchanged between ShardRegions and the ShardCoordinator.
  * They travel as plain actor messages (delivered locally or over the wire
- * as EnvelopeMsg.body) so the discriminator is a string `$t` property.
+ * as EnvelopeMessage.body) so the discriminator is a string `$t` property.
  */
 
 export interface RegisterRegion {
@@ -14,8 +14,8 @@ export interface RegisterRegion {
   readonly hostedShards: number[]; // shards this region already hosts
 }
 
-export interface RegisterAck {
-  readonly $t: 'sharding.RegisterAck';
+export interface RegisterAcknowledgment {
+  readonly $t: 'sharding.RegisterAcknowledgment';
   readonly coordinator: string;
 }
 
@@ -38,8 +38,8 @@ export interface BeginHandOff {
   readonly shardId: number;
 }
 
-export interface BeginHandOffAck {
-  readonly $t: 'sharding.BeginHandOffAck';
+export interface BeginHandOffAcknowledgment {
+  readonly $t: 'sharding.BeginHandOffAcknowledgment';
   readonly shardId: number;
 }
 
@@ -105,11 +105,11 @@ export interface ShardReply {
 
 export type ShardingMessage =
   | RegisterRegion
-  | RegisterAck
+  | RegisterAcknowledgment
   | GetShardHome
   | ShardHome
   | BeginHandOff
-  | BeginHandOffAck
+  | BeginHandOffAcknowledgment
   | HandOff
   | HandOffComplete
   | RegionTerminated

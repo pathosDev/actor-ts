@@ -18,28 +18,28 @@ export interface WebsocketLike {
   ping?(): void;
 }
 
-export interface WebsocketClientCtorOptions {
+export interface WebsocketClientConstructorOptions {
   readonly protocols?: string | ReadonlyArray<string>;
   /** Custom request headers — Node/`ws` only; browsers/native ignore them. */
   readonly headers?: Readonly<Record<string, string>>;
 }
 
-export interface WebsocketClientCtor {
-  create(url: string, opts?: WebsocketClientCtorOptions): WebsocketLike;
+export interface WebsocketClientConstructor {
+  create(url: string, opts?: WebsocketClientConstructorOptions): WebsocketLike;
 }
 
 /**
  * Lazy ctor — resolves once, caches the resolved factory.  Native
  * `WebSocket` first; `ws` peer-dep fallback with a clear install hint.
  */
-export const websocketClientCtor: Lazy<Promise<WebsocketClientCtor>> = Lazy.of(async () => {
+export const websocketClientConstructor: Lazy<Promise<WebsocketClientConstructor>> = Lazy.of(async () => {
   if (typeof globalThis.WebSocket === 'function') {
     const NativeWS = globalThis.WebSocket as unknown as new (
       url: string,
       protocols?: string | ReadonlyArray<string>,
     ) => WebsocketLike;
     return {
-      create: (url: string, opts?: WebsocketClientCtorOptions): WebsocketLike =>
+      create: (url: string, opts?: WebsocketClientConstructorOptions): WebsocketLike =>
         new NativeWS(url, opts?.protocols),
     };
   }
@@ -49,11 +49,11 @@ export const websocketClientCtor: Lazy<Promise<WebsocketClientCtor>> = Lazy.of(a
       default?: new (url: string, protocols?: string | ReadonlyArray<string>, opts?: object) => WebsocketLike;
       WebSocket?: new (url: string, protocols?: string | ReadonlyArray<string>, opts?: object) => WebsocketLike;
     };
-    const Ctor = mod.WebSocket ?? mod.default;
-    if (!Ctor) throw new Error('ws: no constructor exported');
+    const Constructor = mod.WebSocket ?? mod.default;
+    if (!Constructor) throw new Error('ws: no constructor exported');
     return {
-      create: (url: string, opts?: WebsocketClientCtorOptions): WebsocketLike =>
-        new Ctor(url, opts?.protocols, { headers: opts?.headers }),
+      create: (url: string, opts?: WebsocketClientConstructorOptions): WebsocketLike =>
+        new Constructor(url, opts?.protocols, { headers: opts?.headers }),
     };
   } catch (e) {
     throw new Error(

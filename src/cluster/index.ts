@@ -106,9 +106,9 @@ export {
   GetTopics,
   Publish,
   Subscribe,
-  SubscribeAck,
+  SubscribeAcknowledgment,
   Unsubscribe,
-  UnsubscribeAck,
+  UnsubscribeAcknowledgment,
   UnsubscribeAll,
 } from './pubsub/index.js';
 export type { DistributedPubSubOptionsType } from './pubsub/index.js';
@@ -173,6 +173,6 @@ export {
 export { ClusterClientReceptionistOptions, ClusterClientReceptionistOptionsBuilder } from './ClusterClientReceptionistOptions.js';
 export type { ClusterClientReceptionistOptionsType } from './ClusterClientReceptionistOptions.js';
 export type {
-  ClusterClientEnvelopeMsg,
-  ClusterClientReplyMsg,
+  ClusterClientEnvelopeMessage,
+  ClusterClientReplyMessage,
 } from './ClusterClientReceptionist.js';

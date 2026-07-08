@@ -1,7 +1,7 @@
 /**
  * Server-stream — single request → N stream-data + 1 stream-end.
  */
-import type { GrpcClientCmd } from '../../../../../src/io/broker/GrpcClientActor.js';
+import type { GrpcClientCommand } from '../../../../../src/io/broker/GrpcClientActor.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import { spawnCollector, type GrpcCtx } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
@@ -12,7 +12,7 @@ export const scenario: BrokerScenario<GrpcCtx> = {
     const { ref: collectorRef, collector } = spawnCollector(ctx);
     try {
       const N = 5;
-      const client = ctx.client as unknown as ActorRef<GrpcClientCmd>;
+      const client = ctx.client as unknown as ActorRef<GrpcClientCommand>;
       client.tell({
         kind: 'serverStream',
         method: 'ServerStream',

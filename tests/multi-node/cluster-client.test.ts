@@ -50,7 +50,7 @@ interface NodeHandle {
   readonly host: string;
   readonly port: number;
   readonly contactPoint: string;
-  readonly echo: import('../../src/index.js').ActorRef<Cmd> & { actorImpl: EchoActor };
+  readonly echo: import('../../src/index.js').ActorRef<Cmd> & { actorImplementation: EchoActor };
 }
 
 // Per-test-file jitter to avoid clashing with concurrent CI runs.
@@ -70,11 +70,11 @@ async function startNode(systemName: string, port: number, seeds: string[] = [])
     .withFailureDetector({ heartbeatIntervalMs: 100, unreachableAfterMs: 600, downAfterMs: 1200 })
     .withGossipIntervalMs(200);
   const cluster = await Cluster.join(system, clusterOptions);
-  const echoImpl = new EchoActor();
+  const echoImplementation = new EchoActor();
   const echo = system.spawn(
-    Props.create(() => echoImpl), 'echo',
+    Props.create(() => echoImplementation), 'echo',
   ) as unknown as NodeHandle['echo'];
-  echo.actorImpl = echoImpl;
+  echo.actorImplementation = echoImplementation;
   // Start the receptionist — the cluster-side endpoint for outside-in.
   system.extension(ClusterClientReceptionistId).start(cluster);
   return { system, cluster, host: '127.0.0.1', port, contactPoint: `${systemName}@127.0.0.1:${port}`, echo };
@@ -114,10 +114,10 @@ describe('ClusterClient — outside-in connectivity', () => {
     // No reply path; wait a beat for the message to land on the mailbox.
     const deadline = Date.now() + 2_000;
     while (Date.now() < deadline) {
-      if (node.echo.actorImpl.rings === 1) break;
+      if (node.echo.actorImplementation.rings === 1) break;
       await Bun.sleep(20);
     }
-    expect(node.echo.actorImpl.rings).toBe(1);
+    expect(node.echo.actorImplementation.rings).toBe(1);
   }, 10_000);
 
   test('ask to unknown path rejects with a clear error', async () => {

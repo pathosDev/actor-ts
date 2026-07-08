@@ -23,7 +23,7 @@ export type GrpcCredentials =
   | { readonly kind: 'tls'; readonly rootCerts?: Uint8Array; readonly cert?: Uint8Array; readonly key?: Uint8Array };
 
 /** Outbound command — what the actor accepts to fire RPC calls. */
-export type GrpcClientCmd =
+export type GrpcClientCommand =
   | { readonly kind: 'unary'; readonly method: string; readonly request: unknown; readonly target: ActorRef<unknown> }
   | { readonly kind: 'serverStream'; readonly method: string; readonly request: unknown; readonly target: ActorRef<unknown> }
   | { readonly kind: 'bidiStart'; readonly method: string; readonly target: ActorRef<unknown> }
@@ -31,7 +31,7 @@ export type GrpcClientCmd =
   | { readonly kind: 'bidiClose'; readonly streamId: number };
 
 interface OutboundOp {
-  readonly op: GrpcClientCmd;
+  readonly op: GrpcClientCommand;
 }
 
 /**
@@ -46,7 +46,7 @@ interface OutboundOp {
  * the server closes its side, a `'stream-end'` is delivered.
  */
 export class GrpcClientActor
-  extends BrokerActor<GrpcClientOptionsType, GrpcClientCmd, OutboundOp> {
+  extends BrokerActor<GrpcClientOptionsType, GrpcClientCommand, OutboundOp> {
   private serviceClient: GrpcServiceClient | null = null;
   private nextStreamId = 1;
   private readonly bidiStreams = new Map<number, { call: GrpcDuplexCall; target: ActorRef<unknown> }>();
@@ -75,7 +75,7 @@ export class GrpcClientActor
   }
   protected endpointLabel(): string { return `grpc://${this.options.endpoint}`; }
 
-  protected async connectImpl(): Promise<void> {
+  protected async connectImplementation(): Promise<void> {
     const grpc = await grpcLazy.get();
     const protoLoader = await protoLoaderLazy.get();
 
@@ -96,16 +96,16 @@ export class GrpcClientActor
       }
       pkg = next as Record<string, unknown>;
     }
-    const ServiceCtor = pkg[this.options.serviceName!] as GrpcServiceCtor | undefined;
-    if (!ServiceCtor) {
+    const ServiceConstructor = pkg[this.options.serviceName!] as GrpcServiceConstructor | undefined;
+    if (!ServiceConstructor) {
       throw new Error(`grpc: service '${this.options.serviceName}' not found in package '${this.options.packageName}'`);
     }
 
     const creds = this.buildCredentials(grpc);
-    this.serviceClient = new ServiceCtor(this.options.endpoint!, creds);
+    this.serviceClient = new ServiceConstructor(this.options.endpoint!, creds);
   }
 
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     for (const [, s] of this.bidiStreams) {
       try { s.call.end(); } catch { /* ignore */ }
     }
@@ -137,7 +137,7 @@ export class GrpcClientActor
     }
   }
 
-  override onReceive(cmd: GrpcClientCmd): void {
+  override onReceive(cmd: GrpcClientCommand): void {
     this.enqueueOutbound({ op: cmd });
   }
 
@@ -217,7 +217,7 @@ export class GrpcClientActor
 
 /* --------------------------- shared internals -------------------------- */
 
-interface GrpcServiceCtor {
+interface GrpcServiceConstructor {
   new (endpoint: string, credentials: GrpcCredentialsLike): GrpcServiceClient;
 }
 

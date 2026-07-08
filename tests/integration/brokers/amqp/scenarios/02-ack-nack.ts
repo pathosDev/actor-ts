@@ -7,7 +7,7 @@
  */
 import { Actor } from '../../../../../src/Actor.js';
 import { Props } from '../../../../../src/Props.js';
-import type { AmqpCmd, AmqpDelivery } from '../../../../../src/io/broker/AmqpActor.js';
+import type { AmqpCommand, AmqpDelivery } from '../../../../../src/io/broker/AmqpActor.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import { spawnAmqp, type AmqpCtx } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
@@ -31,7 +31,7 @@ class AckOnSecondTry extends Actor<AmqpDelivery> {
   readonly seen: AmqpDelivery[] = [];
   ackCount = 0;
   nackCount = 0;
-  kafka: ActorRef<AmqpCmd> | null = null;
+  kafka: ActorRef<AmqpCommand> | null = null;
   override onReceive(d: AmqpDelivery): void {
     this.seen.push(d);
     if (this.seen.length === 1) {
@@ -63,7 +63,7 @@ export const scenario: BrokerScenario<AmqpCtx> = {
         queueOptions: { durable: false, autoDelete: true },
       }],
     });
-    handler.kafka = amqp as unknown as ActorRef<AmqpCmd>;
+    handler.kafka = amqp as unknown as ActorRef<AmqpCommand>;
     try {
       await new Promise((r) => setTimeout(r, 1_000));
 

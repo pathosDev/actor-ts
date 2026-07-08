@@ -9,9 +9,9 @@ import { AskTimeoutError, PoisonPill, Kill } from './SystemMessages.js';
  * supply the `replyTo` field — the framework synthesises and injects
  * one on every call.
  */
-export type OmitReplyTo<TMsg> = TMsg extends { replyTo: ActorRef<unknown> }
-  ? Omit<TMsg, 'replyTo'>
-  : TMsg;
+export type OmitReplyTo<TMessage> = TMessage extends { replyTo: ActorRef<unknown> }
+  ? Omit<TMessage, 'replyTo'>
+  : TMessage;
 
 let askCounter = 0;
 
@@ -20,14 +20,14 @@ let askCounter = 0;
  * hold a direct reference to the Actor instance itself.  tell() is fire-and-
  * forget; ask() provides a request/response Promise.
  */
-export abstract class ActorRef<TMsg = unknown> {
+export abstract class ActorRef<TMessage = unknown> {
   abstract readonly path: ActorPath;
 
   /** Send a message to this actor. `sender` is surfaced as context.sender in the recipient. */
-  abstract tell(message: TMsg, sender?: ActorRef | null): void;
+  abstract tell(message: TMessage, sender?: ActorRef | null): void;
 
   /** Alias for tell — useful if you want to pipe something. */
-  send(message: TMsg): void { this.tell(message, null); }
+  send(message: TMessage): void { this.tell(message, null); }
 
   /**
    * Request/response — send `message` and await the recipient's reply.
@@ -40,7 +40,7 @@ export abstract class ActorRef<TMsg = unknown> {
    *
    *     const value = await counter.ask<number>({ kind: 'get' });
    */
-  ask<TRes = unknown>(message: OmitReplyTo<TMsg>, timeoutMs: number = 5_000): Promise<TRes> {
+  ask<TRes = unknown>(message: OmitReplyTo<TMessage>, timeoutMs: number = 5_000): Promise<TRes> {
     const name = `askResp-${++askCounter}`;
     const systemName = this.path.systemName;
     const ref = new AskResponseRef<TRes>(systemName, name, timeoutMs, this.path.toString());
@@ -50,17 +50,17 @@ export abstract class ActorRef<TMsg = unknown> {
     // second arg).
     const enriched =
       typeof message === 'object' && message !== null
-        ? ({ ...(message as object), replyTo: ref } as unknown as TMsg)
-        : (message as unknown as TMsg);
+        ? ({ ...(message as object), replyTo: ref } as unknown as TMessage)
+        : (message as unknown as TMessage);
     this.tell(enriched, ref as unknown as ActorRef);
     return ref.promise;
   }
 
   /** Gracefully stop this actor after it drains its mailbox. */
-  stop(): void { this.tell(PoisonPill.instance as unknown as TMsg, null); }
+  stop(): void { this.tell(PoisonPill.instance as unknown as TMessage, null); }
 
   /** Kill this actor — raises ActorKilledError through the normal supervision path. */
-  kill(): void { this.tell(Kill.instance as unknown as TMsg, null); }
+  kill(): void { this.tell(Kill.instance as unknown as TMessage, null); }
 
   toString(): string { return this.path.toString(); }
 

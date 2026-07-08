@@ -166,19 +166,19 @@ describe('PersistentActor — actor-level encryption hook', () => {
 
 /* ----------------------- DurableStateActor hooks ------------------------- */
 
-type DsCmd =
+type DsCommand =
   | { kind: 'set'; v: number; replyTo: ActorRef }
   | { kind: 'get'; replyTo: ActorRef };
 
-class Counter extends DurableStateActor<DsCmd, { v: number }> {
+class Counter extends DurableStateActor<DsCommand, { v: number }> {
   constructor(
-    options: ConstructorParameters<typeof DurableStateActor<DsCmd, { v: number }>>[0],
+    options: ConstructorParameters<typeof DurableStateActor<DsCommand, { v: number }>>[0],
     private readonly _compression?: CompressionConfig,
     private readonly _encryption?: EncryptionConfig,
   ) { super(options); }
   protected override compression(): CompressionConfig | undefined { return this._compression; }
   protected override encryption(): EncryptionConfig | undefined { return this._encryption; }
-  override async onCommand(cmd: DsCmd): Promise<void> {
+  override async onCommand(cmd: DsCommand): Promise<void> {
     if (cmd.kind === 'set') { await this.persist({ v: cmd.v }); cmd.replyTo.tell({ ok: true } as never); }
     else cmd.replyTo.tell({ v: this.state.v } as never);
   }
@@ -205,7 +205,7 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
       return new Counter(
         durableStateOptions,
         { algorithm: 'zstd' },
-      ) as unknown as ActorBase<DsCmd>;
+      ) as unknown as ActorBase<DsCommand>;
     }), 'a');
     ref.tell({ kind: 'set', v: 7, replyTo: probe.ref });
     await sleep(40);
@@ -233,7 +233,7 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
         .withEmptyState(() => ({ v: 0 }));
       return new Counter(
         durableStateOptions,
-        { algorithm: 'none' }, enc) as unknown as ActorBase<DsCmd>;
+        { algorithm: 'none' }, enc) as unknown as ActorBase<DsCommand>;
     }), 'b');
     ref.tell({ kind: 'set', v: 12345, replyTo: probe.ref });
     await sleep(40);
@@ -258,7 +258,7 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
         .withEmptyState(() => ({ v: 0 }));
       return new Counter(
         durableStateOptions,
-        { algorithm: 'none' }, enc) as unknown as ActorBase<DsCmd>;
+        { algorithm: 'none' }, enc) as unknown as ActorBase<DsCommand>;
     }), 'b');
     ref2.tell({ kind: 'get', replyTo: probe2.ref });
     await sleep(40);

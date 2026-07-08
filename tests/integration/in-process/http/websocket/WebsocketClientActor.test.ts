@@ -14,23 +14,23 @@ import { WebsocketClientOptions } from '../../../../../src/http/websocket/Websoc
 import { websocketSend, type WebsocketClientMessage } from '../../../../../src/http/websocket/WebsocketMessages.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 
-type CMsg = { kind: 'ping'; n: number };
-type SMsg = { kind: 'pong'; n: number };
+type CMessage = { kind: 'ping'; n: number };
+type SMessage = { kind: 'pong'; n: number };
 
-class PingServer extends WebsocketServerActor<SMsg, CMsg> {
-  onMessage(m: CMsg): void { this.reply({ kind: 'pong', n: m.n }); }
+class PingServer extends WebsocketServerActor<SMessage, CMessage> {
+  onMessage(m: CMessage): void { this.reply({ kind: 'pong', n: m.n }); }
 }
 
-interface Rec { events: string[]; msgs: SMsg[] }
+interface Rec { events: string[]; msgs: SMessage[] }
 
-class RecordingClient extends WebsocketClientActor<CMsg, SMsg> {
+class RecordingClient extends WebsocketClientActor<CMessage, SMessage> {
   constructor(url: string, private readonly rec: Rec) {
-    const clientOptions = WebsocketClientOptions.create<CMsg, SMsg>()
+    const clientOptions = WebsocketClientOptions.create<CMessage, SMessage>()
       .withUrl(url)
       .withReconnect({ initialDelayMs: 50, maxDelayMs: 200, factor: 2, maxAttempts: 40 });
     super(clientOptions);
   }
-  onMessage(m: SMsg): void { this.rec.msgs.push(m); }
+  onMessage(m: SMessage): void { this.rec.msgs.push(m); }
   protected override onConnected(): void {
     this.rec.events.push('connected');
     this.send({ kind: 'ping', n: this.rec.events.filter((e) => e === 'connected').length });
@@ -89,7 +89,7 @@ describe('WebsocketClientActor', () => {
 
     const rec: Rec = { events: [], msgs: [] };
     const cliSys = mkSystem('cli2');
-    const clientRef: ActorRef<WebsocketClientMessage<CMsg, SMsg>> =
+    const clientRef: ActorRef<WebsocketClientMessage<CMessage, SMessage>> =
       cliSys.spawn(Props.create(() => new RecordingClient(`ws://127.0.0.1:${binding.port}/ws`, rec)), 'client');
 
     await waitUntil(() => rec.events.includes('connected'));

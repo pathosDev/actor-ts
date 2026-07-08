@@ -29,4 +29,4 @@ export {
   Unsubscribe,
   Listing,
 } from './ReceptionistMessages.js';
-export type { ReceptionistGossipMsg } from './ReceptionistMessages.js';
+export type { ReceptionistGossipMessage } from './ReceptionistMessages.js';

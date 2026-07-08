@@ -1,6 +1,6 @@
 import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
-import type { Ack, Delivery } from './Messages.js';
+import type { Acknowledgment, Delivery } from './Messages.js';
 import type { ConsumerControllerOptions, ConsumerControllerOptionsType } from './ConsumerControllerOptions.js';
 
 interface DedupState {
@@ -40,7 +40,7 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
     if (msg.seq <= state.contiguous || state.above.has(msg.seq)) {
       // Duplicate — re-ack so the producer can release its slot, but don't
       // re-run the user handler.
-      this.sendAck(msg);
+      this.sendAcknowledgment(msg);
       return;
     }
     try {
@@ -51,7 +51,7 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
       return;
     }
     this.markDelivered(state, msg.seq);
-    this.sendAck(msg);
+    this.sendAcknowledgment(msg);
   }
 
   private dedupStateFor(producerId: string): DedupState {
@@ -70,8 +70,8 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
     }
   }
 
-  private sendAck(msg: Delivery<T>): void {
-    const ack: Ack = { kind: 'reliable-delivery.ack', producerId: msg.producerId, seq: msg.seq };
-    (msg.replyTo as ActorRef<Ack>).tell(ack);
+  private sendAcknowledgment(msg: Delivery<T>): void {
+    const ack: Acknowledgment = { kind: 'reliable-delivery.ack', producerId: msg.producerId, seq: msg.seq };
+    (msg.replyTo as ActorRef<Acknowledgment>).tell(ack);
   }
 }

@@ -50,7 +50,7 @@ export class InMemoryQuery implements PersistenceQuery {
     const journal = this.journal;
     const bus = journal.events;
     if (bus) {
-      return pushStreamByPid<E>(journal, pid, fromSeq, bus);
+      return pushStreamByPersistenceId<E>(journal, pid, fromSeq, bus);
     }
     const pollIntervalMs = options.pollIntervalMs ?? 1_000;
     return liveStream<PersistentEvent<E>>(pollIntervalMs, async (lastEmitted) => {
@@ -120,7 +120,7 @@ export class InMemoryQuery implements PersistenceQuery {
  * This dance is what makes the contract "every event with seq >=
  * fromSeq, exactly once" hold in the face of concurrent appends.
  */
-function pushStreamByPid<E>(
+function pushStreamByPersistenceId<E>(
   journal: Journal, pid: string, fromSeq: number, bus: JournalEventBus,
 ): AsyncIterable<PersistentEvent<E>> {
   return {
@@ -156,7 +156,7 @@ function pushStreamByPid<E>(
         for (const ev of events) emit(ev);
       }).catch((err) => {
         // eslint-disable-next-line no-console
-        console.warn('pushStreamByPid: catch-up read failed', err);
+        console.warn('pushStreamByPersistenceId: catch-up read failed', err);
       });
 
       return {
@@ -185,7 +185,7 @@ function pushStreamByPid<E>(
 }
 
 /**
- * Push-driven stream by tag-filter.  Same shape as `pushStreamByPid`
+ * Push-driven stream by tag-filter.  Same shape as `pushStreamByPersistenceId`
  * but dedup is on the composite `Offset` instead of a single sequence
  * number, and the catch-up scans every persistenceId for events
  * satisfying the filter.

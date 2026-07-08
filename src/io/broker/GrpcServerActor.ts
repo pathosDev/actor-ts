@@ -153,17 +153,17 @@ export class GrpcServerActor extends Actor<unknown> {
     for (const seg of (this.options.packageName as string).split('.')) {
       pkg = pkg[seg] as Record<string, unknown>;
     }
-    const serviceCtor = pkg[this.options.serviceName as string] as { service: unknown } | undefined;
-    if (!serviceCtor?.service) {
+    const serviceConstructor = pkg[this.options.serviceName as string] as { service: unknown } | undefined;
+    if (!serviceConstructor?.service) {
       throw new Error(`grpc-server: service '${this.options.serviceName}' not found`);
     }
 
     this.server = new grpc.Server();
     const impl: Record<string, unknown> = {};
     for (const [methodName, handler] of Object.entries(this.options.handlers ?? {})) {
-      impl[methodName] = this.buildMethodImpl(methodName, handler);
+      impl[methodName] = this.buildMethodImplementation(methodName, handler);
     }
-    this.server.addService(serviceCtor.service, impl);
+    this.server.addService(serviceConstructor.service, impl);
 
     const creds = this.options.credentials?.kind === 'tls'
       ? grpc.ServerCredentials.createSsl(
@@ -184,7 +184,7 @@ export class GrpcServerActor extends Actor<unknown> {
     });
   }
 
-  private buildMethodImpl(methodName: string, handler: GrpcHandler): unknown {
+  private buildMethodImplementation(methodName: string, handler: GrpcHandler): unknown {
     if (handler.kind === 'unary') {
       return (call: GrpcServerUnaryRequest, cb: GrpcUnaryCb): void => {
         const userCall: GrpcUnaryCall = {

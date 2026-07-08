@@ -41,10 +41,10 @@ import { getTcpBackend, type TcpSocketLike, type TlsTransportOptionsType } from 
 import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
-import { encodeFrame, FrameDecoder, type WireMessage, type HelloMsg, type HelloAckMsg } from './Protocol.js';
+import { encodeFrame, FrameDecoder, type WireMessage, type HelloMessage, type HelloAcknowledgmentMessage } from './Protocol.js';
 import type {
-  ClusterClientEnvelopeMsg,
-  ClusterClientReplyMsg,
+  ClusterClientEnvelopeMessage,
+  ClusterClientReplyMessage,
 } from './ClusterClientReceptionist.js';
 import type { ClusterClientOptions, ClusterClientOptionsType } from './ClusterClientOptions.js';
 
@@ -132,7 +132,7 @@ export class ClusterClient {
    */
   async send(targetPath: string, message: unknown): Promise<void> {
     await this.ensureConnected();
-    const env: ClusterClientEnvelopeMsg = {
+    const env: ClusterClientEnvelopeMessage = {
       t: 'cluster-client-envelope',
       from: this.identity.toJSON(),
       to: targetPath,
@@ -153,7 +153,7 @@ export class ClusterClient {
   ): Promise<R> {
     await this.ensureConnected();
     const askId = nextAskId();
-    const env: ClusterClientEnvelopeMsg = {
+    const env: ClusterClientEnvelopeMessage = {
       t: 'cluster-client-envelope',
       from: this.identity.toJSON(),
       to: targetPath,
@@ -226,7 +226,7 @@ export class ClusterClient {
               onOpen: (s) => {
                 openSock = s;
                 // Send hello.
-                const hello: HelloMsg = { t: 'hello', self: this.identity.toJSON() };
+                const hello: HelloMessage = { t: 'hello', self: this.identity.toJSON() };
                 try { s.write(encodeFrame(hello)); } catch (e) {
                   clearTimeout(timer);
                   reject(e as Error);
@@ -270,18 +270,18 @@ export class ClusterClient {
   private onData(
     sock: TcpSocketLike,
     chunk: Uint8Array,
-    onHelloAck: (peer: NodeAddress) => void,
+    onHelloAcknowledgment: (peer: NodeAddress) => void,
   ): void {
     const frames = this.decoder.push(chunk);
     for (const frame of frames) {
       if (frame.t === 'hello-ack') {
-        const ack = frame as HelloAckMsg;
-        onHelloAck(NodeAddress.fromJSON(ack.self));
+        const ack = frame as HelloAcknowledgmentMessage;
+        onHelloAcknowledgment(NodeAddress.fromJSON(ack.self));
         continue;
       }
       const t = (frame as { t: string }).t;
       if (t === 'cluster-client-reply') {
-        this.handleReply(frame as unknown as ClusterClientReplyMsg);
+        this.handleReply(frame as unknown as ClusterClientReplyMessage);
         continue;
       }
       this.log.debug(`ClusterClient: ignoring unsolicited frame type "${t}"`);
@@ -289,7 +289,7 @@ export class ClusterClient {
     void sock;
   }
 
-  private handleReply(reply: ClusterClientReplyMsg): void {
+  private handleReply(reply: ClusterClientReplyMessage): void {
     const pending = this.pending.get(reply.askId);
     if (!pending) return;
     this.pending.delete(reply.askId);

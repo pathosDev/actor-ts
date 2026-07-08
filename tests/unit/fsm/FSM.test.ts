@@ -9,9 +9,9 @@ import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 
 type DoorState = 'closed' | 'open';
 interface DoorData { readonly openedAt: number | null; readonly opens: number; }
-type DoorCmd = 'open' | 'close' | 'count';
+type DoorCommand = 'open' | 'close' | 'count';
 
-class Door extends FSM<DoorState, DoorData, DoorCmd> {
+class Door extends FSM<DoorState, DoorData, DoorCommand> {
   constructor(private readonly onEv: (evt: string) => void) {
     super('closed', { openedAt: null, opens: 0 });
     this.when('closed', (d, m) => {

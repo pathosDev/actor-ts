@@ -12,13 +12,13 @@ import type {
   RegionInfoData,
 } from './CoordinatorState.js';
 import type {
-  BeginHandOffAck,
+  BeginHandOffAcknowledgment,
   EntityStarted,
   EntityStopped,
   GetShardHome,
   HandOffComplete,
   RegionTerminated,
-  RegisterAck,
+  RegisterAcknowledgment,
   RegisterRegion,
   ShardingMessage,
 } from './ShardingProtocol.js';
@@ -231,7 +231,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       .with({ $t: 'sharding.Register' }, (m) => this.handleRegister(m))
       .with({ $t: 'sharding.GetShardHome' }, (m) => this.handleGetShardHome(m))
       .with({ $t: 'sharding.HandOffComplete' }, (m) => this.handleHandOffComplete(m))
-      .with({ $t: 'sharding.BeginHandOffAck' }, () => { /* informational only */ })
+      .with({ $t: 'sharding.BeginHandOffAcknowledgment' }, () => { /* informational only */ })
       .with({ $t: 'sharding.RegionTerminated' }, (m) => this.onRegionTerminated(m))
       .with({ $t: 'sharding.EntityStarted' }, (m) => this.handleEntityStarted(m))
       .with({ $t: 'sharding.EntityStopped' }, (m) => this.handleEntityStopped(m))
@@ -410,8 +410,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     for (const shardId of msg.hostedShards) {
       this.shardHome.set(shardId, key);
     }
-    const ack: RegisterAck = {
-      $t: 'sharding.RegisterAck',
+    const ack: RegisterAcknowledgment = {
+      $t: 'sharding.RegisterAcknowledgment',
       coordinator: this.self.path.toString(),
     };
     this.replyTo(msg.region, msg.node, ack);

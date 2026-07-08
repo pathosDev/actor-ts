@@ -40,10 +40,10 @@ import { NodeAddress } from './NodeAddress.js';
 // sharding file uses `import type { Cluster }`.
 import { ClusterSharding } from './sharding/ClusterSharding.js';
 import type {
-  EnvelopeMsg,
-  GossipMsg,
-  HeartbeatMsg,
-  LeaveMsg,
+  EnvelopeMessage,
+  GossipMessage,
+  HeartbeatMessage,
+  LeaveMessage,
   MemberData,
   MemberStatus,
   WireMessage,
@@ -55,7 +55,7 @@ import type {
   DowningProvider,
 } from './downing/DowningProvider.js';
 
-type EnvelopeHandler = (env: EnvelopeMsg, from: NodeAddress) => void;
+type EnvelopeHandler = (env: EnvelopeMessage, from: NodeAddress) => void;
 
 /**
  * Maximum allowed deviation between an incoming gossip version and the
@@ -285,8 +285,8 @@ export class Cluster {
    * the encode step once covers all paths (sharding, pub-sub, singleton,
    * direct remote-ref).  Receiving nodes decode in `handleEnvelope`.
    */
-  _sendEnvelope(to: NodeAddress, env: EnvelopeMsg): void {
-    const encoded: EnvelopeMsg = { ...env, body: encodeRefs(env.body, this.selfAddress) };
+  _sendEnvelope(to: NodeAddress, env: EnvelopeMessage): void {
+    const encoded: EnvelopeMessage = { ...env, body: encodeRefs(env.body, this.selfAddress) };
     this.transport.send(to, encoded);
   }
 
@@ -339,7 +339,7 @@ export class Cluster {
     if (me) {
       this.updateMember(me.withStatus('leaving'));
     }
-    const leaveMsg: LeaveMsg = { t: 'leave', node: this.selfAddress.toJSON() };
+    const leaveMsg: LeaveMessage = { t: 'leave', node: this.selfAddress.toJSON() };
     const peers = this.reachableMembers().filter((m) => !m.address.equals(this.selfAddress));
     this.log.debug(`leaving — sending leave to ${peers.length} reachable peer(s)`);
     for (const m of peers) this.transport.send(m.address, leaveMsg);
@@ -436,7 +436,7 @@ export class Cluster {
     if (!me) return;
     for (const seed of this.seedAddrs) {
       this.failureDetector.register(seed);
-      const initialGossip: GossipMsg = {
+      const initialGossip: GossipMessage = {
         t: 'gossip',
         from: this.selfAddress.toJSON(),
         members: [me.toData()],
@@ -462,7 +462,7 @@ export class Cluster {
       });
   }
 
-  private handleHeartbeat(_from: NodeAddress, msg: HeartbeatMsg): void {
+  private handleHeartbeat(_from: NodeAddress, msg: HeartbeatMessage): void {
     const peer = NodeAddress.fromJSON(msg.from);
     this.failureDetector.heartbeat(peer);
     // Reply isn't strictly needed because send() also bumps the detector,
@@ -477,7 +477,7 @@ export class Cluster {
     }
   }
 
-  private handleGossip(msg: GossipMsg): void {
+  private handleGossip(msg: GossipMessage): void {
     const sender = NodeAddress.fromJSON(msg.from);
     this.failureDetector.heartbeat(sender);
     this.log.debug(`gossip from ${sender}: ${msg.members.length} member(s)`);
@@ -504,7 +504,7 @@ export class Cluster {
     }
   }
 
-  private handleEnvelope(from: NodeAddress, msg: EnvelopeMsg): void {
+  private handleEnvelope(from: NodeAddress, msg: EnvelopeMessage): void {
     // Re-install the originating MDC + active trace context for the
     // duration of dispatch (#53, #10).  Local refs that the
     // dispatcher subsequently `tell`s capture this same context onto
@@ -546,11 +546,11 @@ export class Cluster {
     }
   }
 
-  private dispatchEnvelope(from: NodeAddress, msg: EnvelopeMsg): void {
+  private dispatchEnvelope(from: NodeAddress, msg: EnvelopeMessage): void {
     // Rehydrate any ActorRef markers embedded in the user payload before
     // handing it off — downstream handlers (sharding, pubsub, …) just
     // forward `env.body` and shouldn't each duplicate the decode step.
-    const decoded: EnvelopeMsg = { ...msg, body: decodeRefs(msg.body, this) };
+    const decoded: EnvelopeMessage = { ...msg, body: decodeRefs(msg.body, this) };
 
     // 1. Explicit per-path handler (pub-sub mediator, singleton manager,
     //    sharding coordinator, …).
@@ -579,7 +579,7 @@ export class Cluster {
     }
   }
 
-  private handleLeave(msg: LeaveMsg): void {
+  private handleLeave(msg: LeaveMessage): void {
     const peer = NodeAddress.fromJSON(msg.node);
     const existing = this.members.get(peer.toString());
     if (!existing) return;
@@ -605,7 +605,7 @@ export class Cluster {
     if (targets.length === 0) return;
     // Push to one random reachable peer each tick — epidemic style.
     const target = targets[Math.floor(Math.random() * targets.length)]!;
-    const gossip: GossipMsg = {
+    const gossip: GossipMessage = {
       t: 'gossip',
       from: this.selfAddress.toJSON(),
       members: Array.from(this.members.values()).map(m => m.toData()),
@@ -620,7 +620,7 @@ export class Cluster {
 
   private heartbeatTick(): void {
     this.heartbeatSeq++;
-    const hb: HeartbeatMsg = {
+    const hb: HeartbeatMessage = {
       t: 'heartbeat',
       from: this.selfAddress.toJSON(),
       seq: this.heartbeatSeq,

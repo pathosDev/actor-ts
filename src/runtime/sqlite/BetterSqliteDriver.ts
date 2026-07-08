@@ -28,10 +28,10 @@ export class BetterSqliteDriver implements SqliteDriver {
     if (ctorLazy.isEvaluated) return;
     try {
       const name = 'better-sqlite3';
-      const mod = (await import(name)) as { default?: BetterSqliteCtor } | BetterSqliteCtor;
-      const ctor: BetterSqliteCtor =
-        typeof mod === 'function' ? (mod as BetterSqliteCtor)
-        : (mod as { default: BetterSqliteCtor }).default;
+      const mod = (await import(name)) as { default?: BetterSqliteConstructor } | BetterSqliteConstructor;
+      const ctor: BetterSqliteConstructor =
+        typeof mod === 'function' ? (mod as BetterSqliteConstructor)
+        : (mod as { default: BetterSqliteConstructor }).default;
       ctorLazy.setOverride(ctor);
     } catch (e) {
       throw new Error(
@@ -58,12 +58,12 @@ interface BetterSqliteNative {
   close(): void;
 }
 
-type BetterSqliteCtor = new (path: string) => BetterSqliteNative;
+type BetterSqliteConstructor = new (path: string) => BetterSqliteNative;
 
 // Real ctor is installed by `preload()`; the thunk is only reached if
 // the user forgets to call it — the open() guard catches that first,
 // so in practice this error is defensive.
-const ctorLazy: Lazy<BetterSqliteCtor> = Lazy.of<BetterSqliteCtor>(() => {
+const ctorLazy: Lazy<BetterSqliteConstructor> = Lazy.of<BetterSqliteConstructor>(() => {
   throw new Error(
     'BetterSqliteDriver: call `await BetterSqliteDriver.preload()` before opening a database.',
   );

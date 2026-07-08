@@ -20,7 +20,7 @@ import {
   Registered,
   Subscribe,
   Unsubscribe,
-  type ReceptionistGossipMsg,
+  type ReceptionistGossipMessage,
 } from './ReceptionistMessages.js';
 import { ServiceKey } from './ServiceKey.js';
 
@@ -68,7 +68,7 @@ export class Receptionist extends Actor<Msg> {
   override preStart(): void {
     if (this.clusterRef) {
       this.unsubWire = this.clusterRef._onWire('receptionist-gossip', (msg) =>
-        this.handleGossip(msg as unknown as ReceptionistGossipMsg),
+        this.handleGossip(msg as unknown as ReceptionistGossipMessage),
       );
       this.unsubCluster = this.clusterRef.subscribe((evt) =>
         match(evt)
@@ -153,7 +153,7 @@ export class Receptionist extends Actor<Msg> {
       if (entry.local.size === 0) continue;
       entries[id] = Array.from(entry.local.keys());
     }
-    const gossip: ReceptionistGossipMsg = {
+    const gossip: ReceptionistGossipMessage = {
       t: 'receptionist-gossip',
       from: this.clusterRef.selfAddress.toJSON(),
       entries,
@@ -163,7 +163,7 @@ export class Receptionist extends Actor<Msg> {
     this.clusterRef.transport.send(target.address, gossip as unknown as never);
   }
 
-  private handleGossip(msg: ReceptionistGossipMsg): void {
+  private handleGossip(msg: ReceptionistGossipMessage): void {
     if (!this.clusterRef) return;
     const senderAddr = NodeAddress.fromJSON(msg.from).toString();
     // Replace this sender's remote contribution wholesale so diff-to-notify

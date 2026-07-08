@@ -59,9 +59,9 @@ export class RedisCache implements Cache {
       if (opts.client) return opts.client;
       const ioredis = await ioredisLazy.get();
       // ioredis.default is the constructor when imported from ESM consumers.
-      const Ctor = (ioredis as { default?: RedisCtor }).default ?? (ioredis as unknown as RedisCtor);
-      if (opts.url) return new Ctor(opts.url) as RedisClientLike;
-      return new Ctor({
+      const Constructor = (ioredis as { default?: RedisConstructor }).default ?? (ioredis as unknown as RedisConstructor);
+      if (opts.url) return new Constructor(opts.url) as RedisClientLike;
+      return new Constructor({
         host: opts.host,
         port: opts.port,
         password: opts.password,
@@ -214,7 +214,7 @@ export class RedisCache implements Cache {
 
 /* ---------------------------- internals --------------------------------- */
 
-interface RedisCtor {
+interface RedisConstructor {
   new (url: string): RedisClientLike;
   new (opts: { host?: string; port?: number; password?: string; db?: number }): RedisClientLike;
 }

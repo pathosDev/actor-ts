@@ -26,7 +26,7 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 export interface BrokerCommonOptionsType {
   /**
    * Reconnect strategy applied when the underlying connection drops or
-   * `connectImpl` throws.  Default: exponential backoff starting at
+   * `connectImplementation` throws.  Default: exponential backoff starting at
    * `200ms`, doubling, capped at `30s`, infinite attempts.  Set to
    * `false` to disable auto-reconnect (one-shot connections).
    */
@@ -39,7 +39,7 @@ export interface BrokerCommonOptionsType {
   };
 
   /**
-   * Optional circuit-breaker around `connectImpl`.  After
+   * Optional circuit-breaker around `connectImplementation`.  After
    * `failureThreshold` consecutive failed connect attempts the breaker
    * opens for `resetMs` and rejects new attempts immediately.
    */

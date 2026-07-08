@@ -20,7 +20,7 @@ export interface RedisStreamPublish {
   readonly maxLenApprox?: number;
 }
 
-export type RedisStreamsCmd =
+export type RedisStreamsCommand =
   | { readonly kind: 'publish'; readonly publish: RedisStreamPublish }
   | { readonly kind: 'ack'; readonly stream: string; readonly id: string };
 
@@ -35,7 +35,7 @@ export type RedisStreamsCmd =
  * immediately on delivery.
  */
 export class RedisStreamsActor
-  extends BrokerActor<RedisStreamsOptionsType, RedisStreamsCmd, RedisStreamPublish> {
+  extends BrokerActor<RedisStreamsOptionsType, RedisStreamsCommand, RedisStreamPublish> {
   private redis: IoredisClientLike | null = null;
   private redisProducer: IoredisClientLike | null = null;
   private consumerLoopRunning = false;
@@ -64,12 +64,12 @@ export class RedisStreamsActor
   protected requiredOptions(): ReadonlyArray<keyof RedisStreamsOptionsType> { return ['url']; }
   protected endpointLabel(): string { return this.options.url ?? '<unknown>'; }
 
-  protected async connectImpl(): Promise<void> {
+  protected async connectImplementation(): Promise<void> {
     const ioredis = await ioredisLazy.get();
-    const Ctor = ioredis.default ?? (ioredis as unknown as IoredisCtor);
-    this.redisProducer = new Ctor(this.options.url!);
+    const Constructor = ioredis.default ?? (ioredis as unknown as IoredisConstructor);
+    this.redisProducer = new Constructor(this.options.url!);
     if (this.options.consumerGroup && this.options.streams && this.options.target) {
-      this.redis = new Ctor(this.options.url!);
+      this.redis = new Constructor(this.options.url!);
       const cg = this.options.consumerGroup;
       if (cg.createIfMissing ?? true) {
         for (const stream of this.options.streams) {
@@ -87,7 +87,7 @@ export class RedisStreamsActor
     }
   }
 
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     this.consumerLoopRunning = false;
     try { await this.redisProducer?.quit(); } catch { /* ignore */ }
     try { await this.redis?.quit(); } catch { /* ignore */ }
@@ -107,7 +107,7 @@ export class RedisStreamsActor
     await this.redisProducer.xadd(...args);
   }
 
-  override onReceive(cmd: RedisStreamsCmd): void {
+  override onReceive(cmd: RedisStreamsCommand): void {
     if (cmd.kind === 'publish') {
       this.enqueueOutbound(cmd.publish);
     } else if (cmd.kind === 'ack') {
@@ -162,11 +162,11 @@ interface IoredisClientLike {
   quit(): Promise<unknown>;
 }
 
-interface IoredisCtor {
+interface IoredisConstructor {
   new (url: string): IoredisClientLike;
 }
 
-interface IoredisModule { default?: IoredisCtor; }
+interface IoredisModule { default?: IoredisConstructor; }
 
 const ioredisLazy: Lazy<Promise<IoredisModule>> = Lazy.of(
   () => lazyImportModule<IoredisModule>('ioredis', { context: 'RedisStreamsActor' }),

@@ -5,13 +5,13 @@
  * reconnect-with-backoff, an outbound buffer that survives reconnects, a
  * circuit breaker, and HOCON options resolution for free.
  *
- *     class FeedClient extends WebsocketClientActor<ClientMsg, ServerMsg> {
+ *     class FeedClient extends WebsocketClientActor<ClientMessage, ServerMessage> {
  *       constructor() {
- *         super(WebsocketClientOptions.create<ClientMsg, ServerMsg>()
+ *         super(WebsocketClientOptions.create<ClientMessage, ServerMessage>()
  *           .withUrl('ws://localhost:8080/ws'));
  *       }
  *       override onConnected(): void { this.send({ kind: 'ping', n: 1 }); }
- *       onMessage(msg: ServerMsg): void { this.log.info(`pong ${msg.n}`); }
+ *       onMessage(msg: ServerMessage): void { this.log.info(`pong ${msg.n}`); }
  *     }
  *
  * `TOut` (what the client sends) comes first, then `TIn` (decoded server
@@ -33,7 +33,7 @@ import {
   WebsocketClientSend,
   type WebsocketClientMessage,
 } from './WebsocketMessages.js';
-import { websocketClientCtor, type WebsocketLike } from './websocketCtor.js';
+import { websocketClientConstructor, type WebsocketLike } from './websocketConstructor.js';
 import {
   DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
   frameByteLength,
@@ -129,8 +129,8 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     return out;
   }
 
-  protected async connectImpl(): Promise<void> {
-    const ctor = await websocketClientCtor.get();
+  protected async connectImplementation(): Promise<void> {
+    const ctor = await websocketClientConstructor.get();
     const ws = ctor.create(this.options.url!, {
       protocols: this.options.protocols,
       headers: this.options.headers,
@@ -160,7 +160,7 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     });
   }
 
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
     const sock = this.socket;
     this.socket = null;

@@ -9,7 +9,7 @@
  */
 import { Actor } from '../../../../../src/Actor.js';
 import { Props } from '../../../../../src/Props.js';
-import type { KafkaCmd, KafkaRecord } from '../../../../../src/io/broker/KafkaActor.js';
+import type { KafkaCommand, KafkaRecord } from '../../../../../src/io/broker/KafkaActor.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import { spawnKafka, type KafkaCtx } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
@@ -17,7 +17,7 @@ import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 class ManualCommitter extends Actor<KafkaRecord> {
   readonly seen: KafkaRecord[] = [];
   /** Late-bound — set after the kafka actor is spawned. */
-  kafka: ActorRef<KafkaCmd> | null = null;
+  kafka: ActorRef<KafkaCommand> | null = null;
   override onReceive(r: KafkaRecord): void {
     this.seen.push(r);
     this.kafka?.tell({
@@ -42,7 +42,7 @@ export const scenario: BrokerScenario<KafkaCtx> = {
       groupId, topics: [topic], commitMode: 'manual',
       target: inboxRef,
     });
-    committer.kafka = consumer as unknown as ActorRef<KafkaCmd>;
+    committer.kafka = consumer as unknown as ActorRef<KafkaCommand>;
     const producer = spawnKafka(ctx);
     try {
       await new Promise((r) => setTimeout(r, 2_000));

@@ -6,7 +6,7 @@ import type { Cluster } from '../cluster/Cluster.js';
 import { DistributedPubSubId, DistributedPubSubOptions } from '../cluster/pubsub/index.js';
 import type { Lease } from '../coordination/Lease.js';
 import {
-  Publish, Subscribe, type SubscribeAck,
+  Publish, Subscribe, type SubscribeAcknowledgment,
 } from '../cluster/pubsub/Messages.js';
 import type { ReplicaId } from '../crdt/Crdt.js';
 import type { Journal } from './Journal.js';
@@ -360,7 +360,7 @@ export abstract class ReplicatedEventSourcedActor<Cmd, Event, State>
     this._lease = null;
   }
 
-  override async onReceive(msg: Cmd | ReplicatedEventEnvelope<Event> | SubscribeAck): Promise<void> {
+  override async onReceive(msg: Cmd | ReplicatedEventEnvelope<Event> | SubscribeAcknowledgment): Promise<void> {
     // Ignore PubSub ack frames — they're informational.
     if (msg && typeof msg === 'object' && (msg as { subscribe?: unknown }).subscribe instanceof Subscribe) {
       return;

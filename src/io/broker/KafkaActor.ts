@@ -42,7 +42,7 @@ export interface KafkaPublish {
  */
 export type KafkaCommitMode = 'auto' | 'manual';
 
-export type KafkaCmd =
+export type KafkaCommand =
   | { readonly kind: 'publish'; readonly publish: KafkaPublish }
   | { readonly kind: 'subscribe'; readonly topic: string }
   /**
@@ -80,7 +80,7 @@ export type KafkaCmd =
 
 /**
  * Kafka producer + consumer in one actor, backed by `kafkajs`.  When
- * `consumer.groupId` is set, a consumer is started after `connectImpl`
+ * `consumer.groupId` is set, a consumer is started after `connectImplementation`
  * and consumed records are delivered to `target`.  When a producer is
  * the only goal, leave `consumer` and `topics` empty.
  *
@@ -108,7 +108,7 @@ export type KafkaCmd =
  *   )));
  *
  *   class OrderProcessor extends Actor<KafkaRecord> {
- *     constructor(private readonly kafka: ActorRef<KafkaCmd>) { super(); }
+ *     constructor(private readonly kafka: ActorRef<KafkaCommand>) { super(); }
  *     async onReceive(rec: KafkaRecord) {
  *       try {
  *         await db.insertOrder(JSON.parse(rec.value!.toString()));
@@ -121,7 +121,7 @@ export type KafkaCmd =
  *     }
  *   }
  */
-export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCmd, KafkaPublish> {
+export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, KafkaPublish> {
   private kafka: KafkaInstanceLike | null = null;
   private producer: KafkaProducerLike | null = null;
   private consumer: KafkaConsumerLike | null = null;
@@ -180,13 +180,13 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCmd, KafkaPub
    */
   protected async createKafkaInstance(): Promise<KafkaInstanceLike> {
     const kafkajs = await kafkaLazy.get();
-    const Ctor = kafkajs.Kafka ?? (kafkajs as unknown as { default: { Kafka: KafkaCtor } }).default.Kafka;
+    const Constructor = kafkajs.Kafka ?? (kafkajs as unknown as { default: { Kafka: KafkaConstructor } }).default.Kafka;
     const brokersRaw = this.options.brokers;
     const brokers: ReadonlyArray<string> = Array.isArray(brokersRaw)
       ? brokersRaw
       : (typeof brokersRaw === 'string' ? brokersRaw : '')
           .split(',').map((s: string) => s.trim()).filter(Boolean);
-    return new Ctor({
+    return new Constructor({
       clientId: this.options.clientId,
       brokers: [...brokers],
       ssl: this.options.ssl,
@@ -194,7 +194,7 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCmd, KafkaPub
     });
   }
 
-  protected async connectImpl(): Promise<void> {
+  protected async connectImplementation(): Promise<void> {
     this.kafka = await this.createKafkaInstance();
     this.producer = this.kafka.producer({
       idempotent: this.options.producer?.idempotent,
@@ -257,7 +257,7 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCmd, KafkaPub
     }
   }
 
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     // Reject every still-pending commit so the kafkajs eachMessage
     // pump unwinds cleanly — otherwise consumer.disconnect would
     // hang waiting for the in-flight handler to resolve.
@@ -306,8 +306,8 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCmd, KafkaPub
     });
   }
 
-  override onReceive(cmd: KafkaCmd): void {
-    // Compile-time exhaustiveness: adding a new KafkaCmd variant
+  override onReceive(cmd: KafkaCommand): void {
+    // Compile-time exhaustiveness: adding a new KafkaCommand variant
     // forces this site to handle it explicitly.
     match(cmd)
       .with({ kind: 'publish' }, (c) => {
@@ -422,7 +422,7 @@ function pendingKey(topic: string, partition: number, offset: string): string {
   return `${topic}|${partition}|${offset}`;
 }
 
-interface KafkaCtor {
+interface KafkaConstructor {
   new (config: {
     clientId?: string;
     brokers: string[];
@@ -487,7 +487,7 @@ export interface KafkaConsumerLike {
 }
 
 interface KafkajsModule {
-  Kafka?: KafkaCtor;
+  Kafka?: KafkaConstructor;
 }
 
 const kafkaLazy: Lazy<Promise<KafkajsModule>> = Lazy.of(
@@ -498,7 +498,7 @@ const kafkaLazy: Lazy<Promise<KafkajsModule>> = Lazy.of(
 
 /**
  * Reference to a Kafka record for use with {@link withAutoHeartbeat} —
- * exactly the (topic, partition, offset) triple a `KafkaCmd.heartbeat`
+ * exactly the (topic, partition, offset) triple a `KafkaCommand.heartbeat`
  * command needs.  `KafkaRecord` itself satisfies this shape, so the
  * `eachMessage` payload from the consumer pump can be passed directly.
  */
@@ -530,7 +530,7 @@ export interface KafkaRecordRef {
  */
 export async function withAutoHeartbeat<T>(
   args: {
-    readonly kafka: ActorRef<KafkaCmd>;
+    readonly kafka: ActorRef<KafkaCommand>;
     readonly record: KafkaRecordRef;
     readonly everyMs?: number;
   },

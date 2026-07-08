@@ -14,14 +14,14 @@ import {
   MqttInboundSignal,
   MqttPayload,
   type MqttActorMessage,
-  type MqttCmd,
+  type MqttCommand,
   type MqttMessage,
   type MqttPublish,
   type MqttQos,
   type MqttUserProperties,
 } from './MqttMessages.js';
 
-export type { MqttQos, MqttUserProperties, MqttMessage, MqttPublish, MqttCmd } from './MqttMessages.js';
+export type { MqttQos, MqttUserProperties, MqttMessage, MqttPublish, MqttCommand } from './MqttMessages.js';
 
 /** Per-publish overrides. */
 export interface MqttPublishOptions {
@@ -60,7 +60,7 @@ interface SubscriptionEntry<T> {
  * `T` types the inbound payload (`msg.payload.entity(): T`); `TSelf`
  * types application messages other actors may `tell` this ref (defaults
  * to `never`).  It is still externally controllable: `ref.tell(cmd)`
- * with a {@link MqttCmd} publishes / subscribes / unsubscribes; a
+ * with a {@link MqttCommand} publishes / subscribes / unsubscribes; a
  * `subscribe` command with no `target` routes to this actor's own
  * `onMessage`, with a `target` fans out to that actor.
  *
@@ -200,13 +200,13 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     }
     const kind = (cmd as { readonly kind?: unknown }).kind;
     if (kind === 'publish' || kind === 'subscribe' || kind === 'unsubscribe') {
-      return this.handleCommand(cmd as MqttCmd<T>);
+      return this.handleCommand(cmd as MqttCommand<T>);
     }
     return this.onSelfMessage(cmd as TSelf);
   }
 
-  private handleCommand(cmd: MqttCmd<T>): void {
-    // Exhaustive over MqttCmd — a new command variant forces a handler here.
+  private handleCommand(cmd: MqttCommand<T>): void {
+    // Exhaustive over MqttCommand — a new command variant forces a handler here.
     match(cmd)
       .with({ kind: 'publish' }, (c) => { this.enqueueOutbound(c.publish); })
       .with({ kind: 'subscribe' }, (c) => {
@@ -352,7 +352,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   override async preStart(): Promise<void> {
     // Context is attached before preStart; options resolve inside
     // super.preStart().  Flush constructor subscriptions into the
-    // registry (idempotent) so connectImpl applies them on connect.
+    // registry (idempotent) so connectImplementation applies them on connect.
     for (const p of this.pendingSubs) {
       this.registerSubscription(p.topic, { qos: p.qos, target: p.target });
     }
@@ -396,7 +396,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   /** @internal Test seam — override to inject a fake mqtt module. */
   protected mqttModule(): Promise<MqttModuleLike> { return mqttLazy.get(); }
 
-  protected async connectImpl(): Promise<void> {
+  protected async connectImplementation(): Promise<void> {
     const mqtt = await this.mqttModule();
     const opts: MqttConnectOptions = {
       clientId: this.options.clientId,
@@ -462,7 +462,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     });
   }
 
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     if (!this.client) return;
     const c = this.client;
     this.client = null;

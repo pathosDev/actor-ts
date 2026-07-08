@@ -9,10 +9,10 @@
  */
 import { ActorSystem, Behaviors, type Behavior } from '../../src/index.js';
 
-type CounterCmd = { kind: 'inc' } | { kind: 'get' };
+type CounterCommand = { kind: 'inc' } | { kind: 'get' };
 
 /** Behavior holds its state by currying — `n` is captured in the closure. */
-const counter = (n: number, limit: number): Behavior<CounterCmd> =>
+const counter = (n: number, limit: number): Behavior<CounterCommand> =>
   Behaviors.receive((ctx, cmd) => {
     if (cmd.kind === 'inc') {
       const next = n + 1;

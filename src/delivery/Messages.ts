@@ -11,11 +11,11 @@ export interface Delivery<T> {
   readonly seq: number;
   readonly body: T;
   /** Reply address — the consumer Acks back here. */
-  readonly replyTo: ActorRef<Ack>;
+  readonly replyTo: ActorRef<Acknowledgment>;
 }
 
 /** Sent from Consumer back to Producer after successful handling. */
-export interface Ack {
+export interface Acknowledgment {
   readonly kind: 'reliable-delivery.ack';
   readonly producerId: string;
   readonly seq: number;

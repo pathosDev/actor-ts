@@ -18,7 +18,7 @@ import { Cluster } from '../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../src/cluster/ClusterOptions.js';
 import { InMemoryTransport } from '../../src/cluster/Transport.js';
 import { NodeAddress } from '../../src/cluster/NodeAddress.js';
-import type { GossipMsg, MemberData } from '../../src/cluster/Protocol.js';
+import type { GossipMessage, MemberData } from '../../src/cluster/Protocol.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 
 interface NodeHandle {
@@ -64,7 +64,7 @@ interface ClusterPrivate {
   handleWire(from: NodeAddress, msg: { t: 'gossip'; from: ReturnType<NodeAddress['toJSON']>; members: MemberData[] }): void;
 }
 
-function inject(cluster: Cluster, from: NodeAddress, msg: GossipMsg): void {
+function inject(cluster: Cluster, from: NodeAddress, msg: GossipMessage): void {
   (cluster as unknown as ClusterPrivate).handleWire(from, msg);
 }
 
@@ -112,7 +112,7 @@ describe('Cluster — gossip exploit defenses', () => {
     // Forge a malicious gossip from an "attacker" address (no real
     // node — just a synthetic NodeAddress to source the frame).
     const attacker = new NodeAddress('csec', 'h', 65_535);
-    const evil: GossipMsg = {
+    const evil: GossipMessage = {
       t: 'gossip',
       from: attacker.toJSON(),
       members: [{
@@ -142,7 +142,7 @@ describe('Cluster — gossip exploit defenses', () => {
     });
 
     const attacker = new NodeAddress('csec', 'h', 65_534);
-    const evil: GossipMsg = {
+    const evil: GossipMessage = {
       t: 'gossip',
       from: attacker.toJSON(),
       members: [{
@@ -165,7 +165,7 @@ describe('Cluster — gossip exploit defenses', () => {
     // No B needed — inject an attempted-creation of a fake member.
     const ghost = new NodeAddress('csec', 'h', 60_000);
     const attacker = new NodeAddress('csec', 'h', 65_533);
-    const evil: GossipMsg = {
+    const evil: GossipMessage = {
       t: 'gossip',
       from: attacker.toJSON(),
       members: [{
@@ -200,7 +200,7 @@ describe('Cluster — gossip exploit defenses', () => {
     // This should be accepted (within the 24-h skew tolerance) and
     // can legitimately bump the member's recorded version.
     const futureVersion = Date.now() + 5 * 60 * 1000;
-    const evil: GossipMsg = {
+    const evil: GossipMessage = {
       t: 'gossip',
       from: b.address.toJSON(),
       members: [{

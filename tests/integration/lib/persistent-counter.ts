@@ -24,7 +24,7 @@ export interface CounterGetState {
   readonly kind: 'get-state';
   readonly replyTo: ActorRef<CounterStateReply>;
 }
-export type CounterCmd = CounterInc | CounterGetState;
+export type CounterCommand = CounterInc | CounterGetState;
 
 export interface CounterIncremented { readonly kind: 'incremented' }
 export type CounterEvent = CounterIncremented;
@@ -43,7 +43,7 @@ export interface CounterStateReply {
  * respawn), the framework loads the most recent snapshot and
  * replays subsequent events to rebuild state.
  */
-export class PersistentCounter extends PersistentActor<CounterCmd, CounterEvent, CounterState> {
+export class PersistentCounter extends PersistentActor<CounterCommand, CounterEvent, CounterState> {
   constructor(public readonly persistenceId: string) { super(); }
 
   override initialState(): CounterState {
@@ -55,7 +55,7 @@ export class PersistentCounter extends PersistentActor<CounterCmd, CounterEvent,
     return state;
   }
 
-  override onCommand(state: CounterState, cmd: CounterCmd): void {
+  override onCommand(state: CounterState, cmd: CounterCommand): void {
     if (cmd.kind === 'inc') {
       this.persist({ kind: 'incremented' }, () => {
         // No reply on inc — fire-and-forget.

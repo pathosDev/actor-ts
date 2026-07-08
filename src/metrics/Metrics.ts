@@ -66,7 +66,7 @@ export interface Counter {
   readonly value: number;
 }
 
-class CounterImpl implements Counter {
+class CounterImplementation implements Counter {
   private _v = 0;
   inc(delta = 1): void {
     if (delta < 0) throw new Error('Counter.inc requires delta >= 0');
@@ -85,7 +85,7 @@ export interface Gauge {
   readonly value: number;
 }
 
-class GaugeImpl implements Gauge {
+class GaugeImplementation implements Gauge {
   private _v = 0;
   set(v: number): void {
     if (!Number.isFinite(v)) throw new Error('Gauge.set requires a finite value');
@@ -124,7 +124,7 @@ export interface Histogram {
   readonly count: number;
 }
 
-class HistogramImpl implements Histogram {
+class HistogramImplementation implements Histogram {
   private readonly _buckets: ReadonlyArray<number>;
   private readonly _counts: number[];
   private _sum = 0;
@@ -172,18 +172,18 @@ class HistogramImpl implements Histogram {
 interface CounterFamily {
   readonly kind: 'counter';
   readonly help: string;
-  readonly children: Map<string, { labels: Labels; metric: CounterImpl }>;
+  readonly children: Map<string, { labels: Labels; metric: CounterImplementation }>;
 }
 interface GaugeFamily {
   readonly kind: 'gauge';
   readonly help: string;
-  readonly children: Map<string, { labels: Labels; metric: GaugeImpl }>;
+  readonly children: Map<string, { labels: Labels; metric: GaugeImplementation }>;
 }
 interface HistogramFamily {
   readonly kind: 'histogram';
   readonly help: string;
   readonly buckets: ReadonlyArray<number>;
-  readonly children: Map<string, { labels: Labels; metric: HistogramImpl }>;
+  readonly children: Map<string, { labels: Labels; metric: HistogramImplementation }>;
 }
 
 type Family = CounterFamily | GaugeFamily | HistogramFamily;
@@ -229,18 +229,18 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
 
   counter(name: string, labels: Labels = {}, opts: CounterOptions = {}): Counter {
     const family = this.familyOf(name, 'counter', opts.help);
-    return this.childOf<CounterImpl>(family, labels, () => new CounterImpl());
+    return this.childOf<CounterImplementation>(family, labels, () => new CounterImplementation());
   }
 
   gauge(name: string, labels: Labels = {}, opts: GaugeOptions = {}): Gauge {
     const family = this.familyOf(name, 'gauge', opts.help);
-    return this.childOf<GaugeImpl>(family, labels, () => new GaugeImpl());
+    return this.childOf<GaugeImplementation>(family, labels, () => new GaugeImplementation());
   }
 
   histogram(name: string, labels: Labels = {}, opts: HistogramOptions = {}): Histogram {
     const family = this.familyOf(name, 'histogram', opts.help, opts.buckets);
-    return this.childOf<HistogramImpl>(family, labels,
-      () => new HistogramImpl((family as HistogramFamily).buckets));
+    return this.childOf<HistogramImplementation>(family, labels,
+      () => new HistogramImplementation((family as HistogramFamily).buckets));
   }
 
   collect(): ReadonlyArray<MetricSample> {
@@ -250,16 +250,16 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
         if (family.kind === 'counter') {
           out.push({
             name, help: family.help, kind: 'counter',
-            labels: child.labels, value: (child.metric as CounterImpl).value,
+            labels: child.labels, value: (child.metric as CounterImplementation).value,
           });
         } else if (family.kind === 'gauge') {
           out.push({
             name, help: family.help, kind: 'gauge',
-            labels: child.labels, value: (child.metric as GaugeImpl).value,
+            labels: child.labels, value: (child.metric as GaugeImplementation).value,
           });
         } else {
           // Histogram: emit cumulative bucket samples + sum + count.
-          const h = child.metric as HistogramImpl;
+          const h = child.metric as HistogramImplementation;
           let cumulative = 0;
           for (let i = 0; i < h.buckets.length; i++) {
             cumulative = h.counts[i]!;       // counts are already cumulative inside observe()
