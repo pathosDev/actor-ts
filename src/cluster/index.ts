@@ -62,6 +62,8 @@ export {
   KeepReferee,
   KeepRefereeOptions,
   KeepRefereeOptionsBuilder,
+  KeepMajorityOptions,
+  KeepMajorityOptionsBuilder,
 } from './downing/index.js';
 export type {
   DowningProvider,

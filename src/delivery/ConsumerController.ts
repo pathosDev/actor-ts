@@ -1,15 +1,7 @@
 import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
 import type { Ack, Delivery } from './Messages.js';
-
-export interface ConsumerControllerOptionsType<T> {
-  /**
-   * Invoked for every successfully delivered (un-duplicated) message.  The
-   * controller Acks AFTER the handler returns — if the handler returns a
-   * Promise, the Ack is delayed until it settles.
-   */
-  readonly handler: (body: T) => void | Promise<void>;
-}
+import type { ConsumerControllerOptions, ConsumerControllerOptionsType } from './ConsumerControllerOptions.js';
 
 interface DedupState {
   /**
@@ -31,7 +23,12 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
   /** producerId → dedup state. */
   private readonly dedup = new Map<string, DedupState>();
 
-  constructor(public readonly options: ConsumerControllerOptionsType<T>) { super(); }
+  public readonly options: ConsumerControllerOptionsType<T>;
+
+  constructor(options: ConsumerControllerOptions<T>) {
+    super();
+    this.options = options as ConsumerControllerOptionsType<T>;
+  }
 
   override onReceive(msg: Delivery<T>): void {
     if (msg.kind !== 'reliable-delivery.delivery') return;

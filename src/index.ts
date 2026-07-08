@@ -509,6 +509,8 @@ export {
   ProducerController,
   ProducerControllerOptions,
   ConsumerController,
+  ConsumerControllerOptions,
+  ConsumerControllerOptionsBuilder,
 } from './delivery/index.js';
 export type {
   ProducerControllerOptionsType,

@@ -1,10 +1,8 @@
 import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import { Props } from '../Props.js';
-import {
-  ConsumerController,
-  type ConsumerControllerOptionsType,
-} from './ConsumerController.js';
+import { ConsumerController } from './ConsumerController.js';
+import type { ConsumerControllerOptionsType } from './ConsumerControllerOptions.js';
 import type { ConfirmationCallback, Delivery } from './Messages.js';
 import {
   ProducerController,
