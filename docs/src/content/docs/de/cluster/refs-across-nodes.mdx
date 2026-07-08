@@ -9,7 +9,7 @@ auf einen Actor auf **jedem** Node zeigen — und derselbe `tell`
 funktioniert auf gleiche Weise:
 
 ```ts
-const remote: ActorRef<Msg> = /* Ref auf einen Actor auf einem anderen Node */;
+const remote: ActorRef<Message> = /* Ref auf einen Actor auf einem anderen Node */;
 remote.tell({ kind: 'do-it' });
 // → serialisiert, über den Cluster-Transport gesendet, in die Remote-Mailbox zugestellt
 ```
@@ -62,7 +62,7 @@ der Deserializer einen `RemoteActorRef`, der zurück auf den
 Originalknoten zeigt:
 
 ```ts
-type GetMsg = {
+type GetMessage = {
   kind: 'get';
   replyTo: ActorRef<number>;   // ← serialisiert als Pfad-String
 };

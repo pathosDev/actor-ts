@@ -36,14 +36,14 @@ Drei Eigenschaften definieren einen Actor in actor-ts:
 ```ts
 import { Actor, ActorSystem, Props } from 'actor-ts';
 
-type Cmd =
+type Command =
   | { kind: 'inc' }
   | { kind: 'reset' };
 
-class Counter extends Actor<Cmd> {
+class Counter extends Actor<Command> {
   private count = 0;
 
-  override onReceive(cmd: Cmd): void {
+  override onReceive(cmd: Command): void {
     if (cmd.kind === 'inc')   this.count++;
     else if (cmd.kind === 'reset') this.count = 0;
     this.log.info(`count is now ${this.count}`);
@@ -53,12 +53,12 @@ class Counter extends Actor<Cmd> {
 
 Drei Dinge, die auffallen:
 
-- **Der Typparameter `<Cmd>`** schränkt ein, welche Nachrichten dieser
+- **Der Typparameter `<Command>`** schränkt ein, welche Nachrichten dieser
   Actor akzeptiert.  `ref.tell({ kind: 'bogus' })` ist ein
   TypeScript-Fehler an der Aufrufstelle.  Siehe
   [Nachrichten](/de/fundamentals/messages/) für die
   Discriminated-Union-Konvention, die diese Codebasis überall verwendet.
-- **`override onReceive(cmd: Cmd): void`** ist der einzige Pflicht-Override.
+- **`override onReceive(cmd: Command): void`** ist der einzige Pflicht-Override.
   Die Basisklasse deklariert ihn `abstract`, der Compiler kompiliert
   also nicht, wenn du ihn vergisst.
 - **`this.log`, `this.count`** — du hast vollen Zugriff auf

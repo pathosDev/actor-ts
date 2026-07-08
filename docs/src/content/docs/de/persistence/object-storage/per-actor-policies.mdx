@@ -16,7 +16,7 @@ bestimmte Actors **andere Einstellungen**:
 `encryption()` implementierst:
 
 ```ts
-class SensitiveActor extends DurableStateActor<Cmd, State> {
+class SensitiveActor extends DurableStateActor<Command, State> {
   protected encryption() {
     return { keyRing: sensitiveKeyRing };
   }
@@ -160,7 +160,7 @@ Siehe [Schlüsselrotation](/de/persistence/object-storage/key-rotation/).
 ## Mit dem Snapshot-Store arbeiten
 
 ```ts
-class Account extends PersistentActor<Cmd, Event, State> {
+class Account extends PersistentActor<Command, Event, State> {
   // Per-Actor-Kompression für Snapshots:
   protected compression() {
     return { algorithm: 'zstd' as const };

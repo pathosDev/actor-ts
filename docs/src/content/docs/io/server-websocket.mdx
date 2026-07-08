@@ -1,28 +1,28 @@
 ---
 title: Server WebSocket
-description: The `websocket()` route directive plus `WebSocketServerActor` — accepts client connections through the HTTP route DSL, decodes inbound frames into typed messages, and serializes every connection's events through one hub actor. Runs on Fastify, Express, and Hono.
+description: The `websocket()` route directive plus `WebsocketServerActor` — accepts client connections through the HTTP route DSL, decodes inbound frames into typed messages, and serializes every connection's events through one hub actor. Runs on Fastify, Express, and Hono.
 ---
 
 Server-side WebSocket is **part of the HTTP route DSL**.  The
 `websocket()` directive upgrades matching requests and wires every
-connection to a single `WebSocketServerActor` — the hub — which
+connection to a single `WebsocketServerActor` — the hub — which
 you implement.  For **outbound** client connections, see
-[WebSocketClientActor](/io/websocket/).
+[WebsocketClientActor](/io/websocket/).
 
 ```ts
 import {
   ActorSystem, Props, HttpExtensionId,
-  WebSocketServerActor, websocket, type WsConnection,
+  WebsocketServerActor, websocket, type WebsocketConnection,
 } from 'actor-ts';
 import { match } from 'ts-pattern';
 
-type ClientMsg = { kind: 'setName'; name: string } | { kind: 'say'; text: string };
-type ServerMsg = { kind: 'system'; text: string } | { kind: 'chat'; from: string; text: string };
+type ClientMessage = { kind: 'setName'; name: string } | { kind: 'say'; text: string };
+type ServerMessage = { kind: 'system'; text: string } | { kind: 'chat'; from: string; text: string };
 
-class ChatRoom extends WebSocketServerActor<ServerMsg, ClientMsg> {
+class ChatRoom extends WebsocketServerActor<ServerMessage, ClientMessage> {
   private readonly names = new Map<string, string>();
 
-  onMessage(msg: ClientMsg): void {
+  onMessage(msg: ClientMessage): void {
     match(msg)
       .with({ kind: 'setName' }, ({ name }) => {
         this.names.set(this.connection.id, name);
@@ -34,7 +34,7 @@ class ChatRoom extends WebSocketServerActor<ServerMsg, ClientMsg> {
       .exhaustive();
   }
 
-  override onClientDisconnected(c: WsConnection<ServerMsg>): void {
+  override onClientDisconnected(c: WebsocketConnection<ServerMessage>): void {
     this.names.delete(c.id);
   }
 }
@@ -76,8 +76,8 @@ concat(
 ### Options
 
 ```ts
-interface WebSocketRouteOptions<TOut, TIn> {
-  codec?:            WsCodec<TOut, TIn>;             // default jsonCodec()
+interface WebsocketRouteOptions<TOut, TIn> {
+  codec?:            WebsocketCodec<TOut, TIn>;             // default jsonCodec()
   maxFrameBytes?:    number;                          // default 1 MiB
   onOversizeFrame?:  'close' | 'drop';                // default 'close' (1009)
   onInvalidMessage?: 'close' | 'drop' | 'hook';       // default 'close' (1003)
@@ -87,7 +87,7 @@ interface WebSocketRouteOptions<TOut, TIn> {
 ```
 
 ```ts
-const webSocketRouteOptions = WebSocketRouteOptions.create()
+const webSocketRouteOptions = WebsocketRouteOptions.create()
   .withMaxFrameBytes(256 * 1024)
   .withOnOversizeFrame('close')       // close with 1009 Message Too Big
   .withOnInvalidMessage('close');
@@ -115,20 +115,20 @@ withMiddleware(BearerTokenAuth({ /* ... */ }), websocket('/ws', chat));
 
 See the [HTTP overview](/http/overview/) for the middleware set.
 
-## `WebSocketServerActor`
+## `WebsocketServerActor`
 
 One actor per route — the **hub**.  It sees every connection's
 events, serialized:
 
 ```ts
-abstract class WebSocketServerActor<TOut, TIn, TSelf = never> {
+abstract class WebsocketServerActor<TOut, TIn, TSelf = never> {
   // You implement:
   abstract onMessage(msg: TIn): void | Promise<void>;
 
   // Optional overrides:
-  protected onClientConnected(client: WsConnection<TOut>): void;
-  protected onClientDisconnected(client: WsConnection<TOut>, info: WsCloseInfo): void;
-  protected onInvalidMessage(client: WsConnection<TOut>, error: WsDecodeError): void;
+  protected onClientConnected(client: WebsocketConnection<TOut>): void;
+  protected onClientDisconnected(client: WebsocketConnection<TOut>, info: WebsocketCloseInfo): void;
+  protected onInvalidMessage(client: WebsocketConnection<TOut>, error: WebsocketDecodeError): void;
   protected onSelfMessage(msg: TSelf): void;
 }
 ```
@@ -139,14 +139,14 @@ Inside `onMessage` and the hooks, these are available:
 
 | Member | What it does |
 | --- | --- |
-| `this.connection` | The `WsConnection<TOut>` whose event is being processed. |
+| `this.connection` | The `WebsocketConnection<TOut>` whose event is being processed. |
 | `this.reply(msg)` | Send `msg` to the current connection. |
 | `this.broadcast(msg, filter?)` | Send to every connection (optionally filtered by predicate). |
-| `this.clients` | `ReadonlyMap<string, WsConnection<TOut>>` of all live connections. |
+| `this.clients` | `ReadonlyMap<string, WebsocketConnection<TOut>>` of all live connections. |
 | `this.closeAll(code?, reason?)` | Close every connection. |
 
 ```ts
-onMessage(msg: ClientMsg): void {
+onMessage(msg: ClientMessage): void {
   this.reply({ kind: 'system', text: 'got it' });         // → the sender
   this.broadcast({ kind: 'chat', from: 'x', text: 'hi' }); // → everyone
   this.broadcast(notice, (c) => c.id !== this.connection.id); // → everyone else
@@ -168,7 +168,7 @@ Because it all runs on a single actor, you get the actor model's
 usual guarantee — no concurrent handler execution, no locks.
 
 <Aside type="caution" title="`onReceive` is sealed">
-  Don't override `onReceive` on a `WebSocketServerActor` — it is
+  Don't override `onReceive` on a `WebsocketServerActor` — it is
   sealed.  For every connection the framework spawns an **internal
   connection actor as a child of the server actor** (the tree is
   `server → conn-1, conn-2, …`); that child owns the socket, decodes
@@ -177,19 +177,19 @@ usual guarantee — no concurrent handler execution, no locks.
   `onMessage` and the hooks instead.
 </Aside>
 
-## `WsConnection`
+## `WebsocketConnection`
 
-Each connection is a `WsConnection<TOut>`, which extends
+Each connection is a `WebsocketConnection<TOut>`, which extends
 `ActorRef<TOut>`:
 
 ```ts
-interface WsConnection<TOut> extends ActorRef<TOut> {
+interface WebsocketConnection<TOut> extends ActorRef<TOut> {
   readonly id: string;
   readonly remoteAddress?: string;
-  readonly upgrade: WsUpgradeInfo;
+  readonly upgrade: WebsocketUpgradeInfo;
   readonly isOpen: boolean;
   tell(msg: TOut): void;         // encode via codec + send
-  sendRaw(frame: WsFrame): void; // bypass the codec
+  sendRaw(frame: WebsocketFrame): void; // bypass the codec
   close(code?: number, reason?: string): void;
 }
 ```
@@ -197,7 +197,7 @@ interface WsConnection<TOut> extends ActorRef<TOut> {
 `upgrade` carries the handshake context:
 
 ```ts
-type WsUpgradeInfo = {
+type WebsocketUpgradeInfo = {
   path: string;
   params: Record<string, string>;
   query: Record<string, string>;
@@ -207,11 +207,11 @@ type WsUpgradeInfo = {
 };
 ```
 
-`WsCloseInfo` (passed to `onClientDisconnected`) is
+`WebsocketCloseInfo` (passed to `onClientDisconnected`) is
 `{ code: number; reason: string; initiatedBy: 'client' | 'server' | 'error' }`.
 
 <Aside type="caution" title="No deathwatch on connections">
-  `WsConnection` is a ref, but you **cannot** deathwatch it.  To
+  `WebsocketConnection` is a ref, but you **cannot** deathwatch it.  To
   learn when a client goes away, override `onClientDisconnected`
   — it's the single, ordered end-of-life signal per connection.
 </Aside>
@@ -222,23 +222,23 @@ The route codec decodes inbound frames into `TIn` and encodes
 `TOut` replies.  Default is `jsonCodec()`:
 
 ```ts
-import { jsonCodec, WebSocketRouteOptions } from 'actor-ts';
+import { jsonCodec, WebsocketRouteOptions } from 'actor-ts';
 
-const webSocketRouteOptions = WebSocketRouteOptions.create().withCodec(jsonCodec<ServerMsg, ClientMsg>({
-    validate: (v: unknown): ClientMsg => ClientMsgSchema.parse(v),
+const webSocketRouteOptions = WebsocketRouteOptions.create().withCodec(jsonCodec<ServerMessage, ClientMessage>({
+    validate: (v: unknown): ClientMessage => ClientMsgSchema.parse(v),
   }));
 websocket('/ws', chat, webSocketRouteOptions);
 ```
 
 For binary protocols, `rawCodec()` gives you raw frames
-(`TOut = TIn = WsFrame`):
+(`TOut = TIn = WebsocketFrame`):
 
 ```ts
-import { rawCodec, WebSocketRouteOptions, WebSocketServerActor, type WsFrame } from 'actor-ts';
+import { rawCodec, WebsocketRouteOptions, WebsocketServerActor, type WebsocketFrame } from 'actor-ts';
 
-const webSocketRouteOptions = WebSocketRouteOptions.create().withCodec(rawCodec());
-class BinaryHub extends WebSocketServerActor<WsFrame, WsFrame> {
-  onMessage(frame: WsFrame): void {
+const webSocketRouteOptions = WebsocketRouteOptions.create().withCodec(rawCodec());
+class BinaryHub extends WebsocketServerActor<WebsocketFrame, WebsocketFrame> {
+  onMessage(frame: WebsocketFrame): void {
     if (frame.kind === 'binary') this.reply({ kind: 'binary', data: process(frame.data) });
   }
 }
@@ -246,7 +246,7 @@ class BinaryHub extends WebSocketServerActor<WsFrame, WsFrame> {
 websocket('/stream', binaryHub, webSocketRouteOptions);
 ```
 
-Decode failures throw `WsDecodeError` and follow the route's
+Decode failures throw `WebsocketDecodeError` and follow the route's
 `onInvalidMessage` policy.
 
 ## Backends and runtimes
@@ -296,9 +296,9 @@ the norm.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="note" title="Renamed from ServerWebSocketActor">
-  This replaces the old `ServerWebSocketActor` and its
-  `serverWebSocketActorOf` / `bunWebSocketHandlers` helpers.
+<Aside type="note" title="Renamed from ServerWebsocketActor">
+  This replaces the old `ServerWebsocketActor` and its
+  `serverWebsocketActorOf` / `bunWebsocketHandlers` helpers.
   Connections are no longer per-connection *child* actors you
   spawn — the hub sees every connection through one actor, and the
   framework manages an internal session actor per socket.
@@ -306,7 +306,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Backpressure on slow clients">
   ```ts
-  const routeOptions = WebSocketRouteOptions.create()
+  const routeOptions = WebsocketRouteOptions.create()
     .withMaxBufferedBytes(4 * 1024 * 1024)
     .withOnBackpressure('drop');
   websocket('/ws', chat, routeOptions);
@@ -322,7 +322,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 - **[I/O overview](/io/overview/)** — the bigger
   picture.
-- **[WebSocketClientActor](/io/websocket/)** — the
+- **[WebsocketClientActor](/io/websocket/)** — the
   outbound client half.
 - **[Route DSL](/http/route-dsl/)** — `path`, `concat`,
   and how `websocket()` composes.

@@ -55,7 +55,7 @@ Migrations-Chain wie neue, in Envelopes eingewickelte Events.
 ## Konfiguration
 
 ```ts
-interface WrapLegacySettings<E> {
+interface WrapLegacyOptionsType<E> {
   legacyVersion: number;        // Version, die rohen Events zugewiesen wird
   baseAdapter:   EventAdapter<E>;
 }

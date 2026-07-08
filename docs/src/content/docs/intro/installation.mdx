@@ -109,7 +109,7 @@ bun add hono @hono/node-server    # @hono/node-server is Node-only
 | `amqplib` | `AmqpActor` — RabbitMQ + AMQP-compatible brokers. |
 | `nats` | `NatsActor` — including JetStream subjects. |
 | `@grpc/grpc-js` + `@grpc/proto-loader` | `GrpcClientActor` + `GrpcServerActor`. |
-| `ws` | `WebSocketClientActor` (outbound client on Node < 22) + server-side WebSocket upgrades on the Express backend. |
+| `ws` | `WebsocketClientActor` (outbound client on Node < 22) + server-side WebSocket upgrades on the Express backend. |
 | `@fastify/websocket` | `websocket()` routes on the Fastify backend. |
 | `@hono/node-ws` | `websocket()` routes on the Hono backend (Node only — Bun/Deno ship the helpers inside `hono`). |
 
@@ -203,7 +203,7 @@ this page) — bump it and re-run.
 <Aside type="caution" title="Older Node versions">
   Actor-ts requires Node ≥ 20.0.  On Node 20.x the core works, but
   some optional features fall back to peer-dep implementations:
-  the `WebSocketClientActor` needs the `ws` package (Node 22+ has it
+  the `WebsocketClientActor` needs the `ws` package (Node 22+ has it
   natively), and zstd compression needs `fzstd` (Node 22.15+ has it
   natively).  Server-side `websocket()` routes need `@fastify/websocket`
   on the Fastify backend or `@hono/node-ws` on the Hono backend when

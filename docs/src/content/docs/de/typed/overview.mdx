@@ -7,7 +7,7 @@ actor-ts liefert **zwei Schichten** für dasselbe Actor-Modell aus:
 
 | API | Stil | Source of Truth |
 | --- | --- | --- |
-| **Untyped** (die [Fundamentals](/de/fundamentals/overview/)) | Subklasse `Actor<TMsg>`, override `onReceive`, mutiere `this.state`. | Das ist die niedrigere, flexiblere API. |
+| **Untyped** (die [Fundamentals](/de/fundamentals/overview/)) | Subklasse `Actor<TMessage>`, override `onReceive`, mutiere `this.state`. | Das ist die niedrigere, flexiblere API. |
 | **Typed** (dieser Bereich) | Komponiere `Behavior<T>`-Werte via `Behaviors.receive(...)`, gib das nächste Behavior aus Handlern zurück. | Eine funktionale Fassade auf der untyped-Engine. |
 
 Das Framework lässt beide auf demselben Dispatcher, derselben
@@ -23,11 +23,11 @@ Derselbe Counter, zwei Wege:
 ```ts
 import { Actor, Props, ActorSystem } from 'actor-ts';
 
-type Cmd = { kind: 'inc' } | { kind: 'dec' };
+type Command = { kind: 'inc' } | { kind: 'dec' };
 
-class Counter extends Actor<Cmd> {
+class Counter extends Actor<Command> {
   private count = 0;
-  override onReceive(cmd: Cmd): void {
+  override onReceive(cmd: Command): void {
     if (cmd.kind === 'inc') this.count++;
     else this.count--;
   }
@@ -42,9 +42,9 @@ const counter = system.spawnAnonymous(Props.create(() => new Counter()));
 ```ts
 import { ActorSystem, Behaviors } from 'actor-ts';
 
-type Cmd = { kind: 'inc' } | { kind: 'dec' };
+type Command = { kind: 'inc' } | { kind: 'dec' };
 
-const counter = (n: number) => Behaviors.receive<Cmd>((_ctx, cmd) =>
+const counter = (n: number) => Behaviors.receive<Command>((_ctx, cmd) =>
   cmd.kind === 'inc' ? counter(n + 1) : counter(n - 1)
 );
 

@@ -158,7 +158,7 @@ gets sub-poll-interval delivery via the in-process event bus.
 ## Per-pid projections
 
 ```ts
-const byPidProjectionOptions = ByPidProjectionOptions.create<AccountEvent>()
+const byPidProjectionOptions = ByPersistenceIdProjectionOptions.create<AccountEvent>()
   .withName('account-42-view')
   .withPersistenceId('account-42')
   .withQuery(query)

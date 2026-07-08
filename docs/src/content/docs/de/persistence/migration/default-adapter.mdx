@@ -13,7 +13,7 @@ import { DefaultAdapter } from 'actor-ts';
 type EventV1 = { kind: 'deposited'; amount: number };
 type EventV2 = { kind: 'deposited'; amount: number; currency: string };
 
-class Account extends PersistentActor<Cmd, EventV2, State> {
+class Account extends PersistentActor<Command, EventV2, State> {
   override eventAdapter() {
     return new DefaultAdapter<EventV2>({
       currentVersion: 2,
@@ -46,7 +46,7 @@ passt, greif zu
 ## Konfiguration
 
 ```ts
-interface DefaultAdapterSettings<E> {
+interface DefaultAdapterOptionsType<E> {
   currentVersion: number;
   defaults:       Partial<E>;
 }

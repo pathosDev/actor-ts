@@ -22,15 +22,15 @@ timer to outlive the actor.
 ```ts
 import { Actor, ActorSystem, Props } from 'actor-ts';
 
-type Msg = { readonly kind: 'tick' } | { readonly kind: 'set'; readonly intervalMs: number };
+type Message = { readonly kind: 'tick' } | { readonly kind: 'set'; readonly intervalMs: number };
 
-class Heartbeat extends Actor<Msg> {
+class Heartbeat extends Actor<Message> {
   override preStart(): void {
     // Fire { kind: 'tick' } every 5 s, starting immediately.
     this.context.timers.startTimerWithFixedDelay('hb', { kind: 'tick' }, 5_000);
   }
 
-  override onReceive(msg: Msg): void {
+  override onReceive(msg: Message): void {
     if (msg.kind === 'tick') {
       this.log.info('heartbeat');
     } else if (msg.kind === 'set') {
@@ -57,10 +57,10 @@ Two key observations:
 The full surface:
 
 ```ts
-interface TimerScheduler<TMsg = unknown> {
-  startSingleTimer(key: string, message: TMsg, delayMs: number): void;
+interface TimerScheduler<TMessage = unknown> {
+  startSingleTimer(key: string, message: TMessage, delayMs: number): void;
   startTimerWithFixedDelay(
-    key: string, message: TMsg, intervalMs: number, initialDelayMs?: number,
+    key: string, message: TMessage, intervalMs: number, initialDelayMs?: number,
   ): void;
   cancel(key: string): boolean;
   cancelAll(): void;

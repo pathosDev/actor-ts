@@ -163,7 +163,7 @@ Sub-Poll-Intervall-Delivery über den In-Process-Event-Bus erhält.
 ## Per-pid-Projektionen
 
 ```ts
-const byPidProjectionOptions = ByPidProjectionOptions.create<AccountEvent>()
+const byPidProjectionOptions = ByPersistenceIdProjectionOptions.create<AccountEvent>()
   .withName('account-42-view')
   .withPersistenceId('account-42')
   .withQuery(query)

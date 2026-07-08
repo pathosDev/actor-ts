@@ -29,7 +29,7 @@ The actor declares **when** to snapshot via `snapshotPolicy()`:
 ```ts
 import { PersistentActor, everyNEvents } from 'actor-ts';
 
-class Account extends PersistentActor<Cmd, Event, State> {
+class Account extends PersistentActor<Command, Event, State> {
   // ...
   override snapshotPolicy() {
     return everyNEvents(100);   // snapshot every 100 events

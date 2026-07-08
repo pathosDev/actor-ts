@@ -55,8 +55,8 @@ Subklassen implementieren drei Hooks (`connectImpl`, `disconnectImpl`,
 | `JetStreamActor` | NATS JetStream | Durables Streaming auf NATS. |
 | `RedisStreamsActor` | Redis XADD/XREAD | Leichtgewichtiges Streaming + Consumer Groups. |
 | `GrpcClientActor` / `GrpcServerActor` | gRPC | Typisierter RPC + Streaming. |
-| `WebSocketClientActor` | WebSocket | Ausgehende Verbindung (Broker-basierter Client). |
-| `websocket()`-Route + `WebSocketServerActor` | WebSocket | Eingehende Verbindungen — über die HTTP-Route-DSL gebunden, kein Broker. |
+| `WebsocketClientActor` | WebSocket | Ausgehende Verbindung (Broker-basierter Client). |
+| `websocket()`-Route + `WebsocketServerActor` | WebSocket | Eingehende Verbindungen — über die HTTP-Route-DSL gebunden, kein Broker. |
 | `SseActor` | Server-Sent Events | Client, der den Einweg-Event-Stream eines Servers konsumiert. |
 | `TcpSocketActor` | Raw TCP | Eigene Protokolle. |
 | `UdpSocketActor` | Raw UDP | Telemetrie, Datagramme mit niedriger Latenz. |
@@ -249,9 +249,9 @@ import { BrokerActor, type BrokerCommonOptionsType } from 'actor-ts';
 
 class MyProtocolActor extends BrokerActor<MyOutbound> {
   protected configKey() { return 'actor-ts.io.my-protocol'; }
-  protected builtInDefaults(): BrokerCommonOptionsType { return { /* Defaults */ }; }
-  protected readSettingsFromConfig(c) { /* HOCON parsen */ }
-  protected requiredSettings() { return ['url']; }
+  protected builtInDefaultOptions(): BrokerCommonOptionsType { return { /* Defaults */ }; }
+  protected readOptionsFromConfig(c) { /* HOCON parsen */ }
+  protected requiredOptions() { return ['url']; }
 
   protected async connectImpl(): Promise<void> {
     // Verbindung aufbauen.  Bei Fehler werfen.

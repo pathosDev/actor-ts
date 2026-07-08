@@ -71,7 +71,7 @@ const chain = MigrationChain
 // 2. writeVersion in dieser Phase auf der ALTEN Version pinnen.
 const adapter = migratingAdapter(chain, { writeVersion: 1 });
 
-class Order extends PersistentActor<OrderCmd, OrderEvent, OrderState> {
+class Order extends PersistentActor<OrderCommand, OrderEvent, OrderState> {
   override eventAdapter() { return adapter; }
   // ...
 }

@@ -39,7 +39,7 @@ W3C-`traceparent`-Kontext über Cluster-Nodes hinweg.
 ## Konfiguration
 
 ```ts
-interface OtelTracerAdapterSettings {
+interface OtelTracerAdapterOptionsType {
   tracer:   OtelTracer;           // aus @opentelemetry/api
   sampler?: Sampler;              // optional — meist auf SDK-Ebene konfiguriert
 }

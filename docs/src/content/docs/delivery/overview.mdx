@@ -50,7 +50,7 @@ consumer restarts, persist your own processed-seq alongside
 the business state in the handler:
 
 ```ts
-new ConsumerController<DeliveryMsg>({
+new ConsumerController<DeliveryMessage>({
   handler: async (body) => {
     if (await alreadyProcessed(body.id)) return;   // your idempotency check
     await this.handle(body);

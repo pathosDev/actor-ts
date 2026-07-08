@@ -52,7 +52,7 @@ Consumer-Restarts überlebt, persistiere Deine eigene
 processed-Seq zusammen mit dem Business-State im Handler:
 
 ```ts
-new ConsumerController<DeliveryMsg>({
+new ConsumerController<DeliveryMessage>({
   handler: async (body) => {
     if (await alreadyProcessed(body.id)) return;   // dein Idempotenz-Check
     await this.handle(body);

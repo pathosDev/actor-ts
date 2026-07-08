@@ -26,7 +26,7 @@ const onEvent = eventDispatcher<State, Event>()
   .on('reset',       () => ({ count: 0 }))
   .build();
 
-class Counter extends PersistentActor<Cmd, Event, State> {
+class Counter extends PersistentActor<Command, Event, State> {
   override onEvent = onEvent;
   // ... rest of the actor
 }
@@ -114,7 +114,7 @@ const onAccountEvent = eventDispatcher<AccountState, AccountEvent>()
   .build();
 
 // Use it in the actor:
-class Account extends PersistentActor<Cmd, AccountEvent, AccountState> {
+class Account extends PersistentActor<Command, AccountEvent, AccountState> {
   override onEvent = onAccountEvent;
   // ... onCommand etc.
 }

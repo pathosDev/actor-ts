@@ -31,7 +31,7 @@ Der Actor deklariert **wann** gesnappshottet werden soll, per
 ```ts
 import { PersistentActor, everyNEvents } from 'actor-ts';
 
-class Account extends PersistentActor<Cmd, Event, State> {
+class Account extends PersistentActor<Command, Event, State> {
   // ...
   override snapshotPolicy() {
     return everyNEvents(100);   // Snapshot alle 100 Events

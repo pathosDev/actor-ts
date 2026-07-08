@@ -57,7 +57,7 @@ queue.  Or:
 ### After
 
 ```ts
-class OrderActor extends PersistentActor<PlaceCmd, OrderPlaced, OrderState> {
+class OrderActor extends PersistentActor<PlaceCommand, OrderPlaced, OrderState> {
   readonly persistenceId = 'order-registry';
 
   initialState() { return { orders: {} as Record<string, Order> }; }
@@ -65,14 +65,14 @@ class OrderActor extends PersistentActor<PlaceCmd, OrderPlaced, OrderState> {
     if (e.kind === 'placed') return { orders: { ...state.orders, [e.order.id]: e.order } };
     return state;
   }
-  onCommand(state, cmd: PlaceCmd) {
+  onCommand(state, cmd: PlaceCommand) {
     if (state.orders[cmd.order.id]) return;   // already placed
     this.persist({ kind: 'placed', order: cmd.order }, () => {});
   }
 }
 ```
 
-The actor processes commands **one at a time**.  Two `PlaceCmd`s
+The actor processes commands **one at a time**.  Two `PlaceCommand`s
 for the same ID are serialized; the second one sees the state
 updated by the first and skips persisting.  No locks, no
 in-flight sets, no race.
@@ -177,11 +177,11 @@ Issues:
 ### After
 
 ```ts
-type Msg =
+type Message =
   | { kind: 'tick' }
   | { kind: 'get-status'; svc: string; replyTo: ActorRef<'up' | 'down'> };
 
-class HealthMonitor extends Actor<Msg> {
+class HealthMonitor extends Actor<Message> {
   private status = new Map<string, 'up' | 'down'>();
 
   constructor(private readonly services: string[]) { super(); }
@@ -190,7 +190,7 @@ class HealthMonitor extends Actor<Msg> {
     this.context.timers.startTimerWithFixedDelay('tick', { kind: 'tick' }, 10_000);
   }
 
-  override async onReceive(msg: Msg): Promise<void> {
+  override async onReceive(msg: Message): Promise<void> {
     if (msg.kind === 'tick') {
       for (const svc of this.services) {
         const ok = await this.ping(svc);
@@ -239,14 +239,14 @@ fails?).
 ### After (event-sourced saga)
 
 ```ts
-type Cmd = { kind: 'place'; order: NewOrder };
+type Command = { kind: 'place'; order: NewOrder };
 type Event =
   | { kind: 'inventory-reserved'; resId: string }
   | { kind: 'payment-charged';     chargeId: string }
   | { kind: 'shipping-scheduled';  shippingId: string }
   | { kind: 'compensating-...' };
 
-class OrderSaga extends PersistentActor<Cmd, Event, OrderSagaState> {
+class OrderSaga extends PersistentActor<Command, Event, OrderSagaState> {
   // ...
   async onCommand(state, cmd) {
     if (cmd.kind === 'place') {

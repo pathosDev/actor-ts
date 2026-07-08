@@ -45,7 +45,7 @@ registry as usual.
 ## Configuration
 
 ```ts
-interface OtelMetricsAdapterSettings {
+interface OtelMetricsAdapterOptionsType {
   source:           MetricsRegistry;
   meter:            Meter;                 // from @opentelemetry/api
   syncIntervalMs?:  number;                // default 5000

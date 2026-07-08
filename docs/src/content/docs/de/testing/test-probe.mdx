@@ -181,9 +181,9 @@ Nächstes kommt.
 ### Probe als Stellvertreter für einen Downstream-Actor
 
 ```ts
-class OrderHandler extends Actor<OrderCmd> {
-  constructor(private readonly db: ActorRef<DbCmd>) { super(); }
-  override onReceive(cmd: OrderCmd): void {
+class OrderHandler extends Actor<OrderCommand> {
+  constructor(private readonly db: ActorRef<DbCommand>) { super(); }
+  override onReceive(cmd: OrderCommand): void {
     this.db.tell({ kind: 'insert', orderId: cmd.id });
   }
 }
@@ -191,7 +191,7 @@ class OrderHandler extends Actor<OrderCmd> {
 it('leitet Orders an db weiter', async () => {
   const dbProbe = tk.createTestProbe();
   const handler = tk.system.spawnAnonymous(Props.create(() =>
-    new OrderHandler(dbProbe as ActorRef<DbCmd>)));
+    new OrderHandler(dbProbe as ActorRef<DbCommand>)));
 
   handler.tell({ kind: 'place-order', id: 'o-1' });
   await dbProbe.expectMsg({ kind: 'insert', orderId: 'o-1' });

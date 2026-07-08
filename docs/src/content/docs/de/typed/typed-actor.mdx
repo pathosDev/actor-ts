@@ -20,7 +20,7 @@ bedeutet.
 ```ts
 import { ActorSystem, Behaviors } from 'actor-ts';
 
-const myBehavior = Behaviors.receive<Msg>((ctx, msg) => {
+const myBehavior = Behaviors.receive<Message>((ctx, msg) => {
   // ... msg behandeln
   return Behaviors.same;
 });
@@ -81,7 +81,7 @@ ewig zu drehen.
 ## Übergänge
 
 ```ts
-Behaviors.receive<Msg>((ctx, msg) => {
+Behaviors.receive<Message>((ctx, msg) => {
   if (msg.kind === 'start') return runningBehavior;
   if (msg.kind === 'stop')  return Behaviors.stopped;
   return Behaviors.same;
@@ -104,7 +104,7 @@ Drei Ergebnisse:
 ## Lifecycle-Signale
 
 ```ts
-Behaviors.receiveWithSignal<Msg>(
+Behaviors.receiveWithSignal<Message>(
   (ctx, msg) => Behaviors.same,
   (ctx, signal) => {
     if (signal.kind === 'post-stop') ctx.log.info('cleaning up');
@@ -167,7 +167,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`TypedActor` nicht direkt instanziieren">
   ```ts
-  const actor = new TypedActor<Msg>(behavior);   // ← nicht die Spawn-API
+  const actor = new TypedActor<Message>(behavior);   // ← nicht die Spawn-API
   system.spawnAnonymous(Props.create(() => actor));      // ← verhält sich nicht wie ein frischer Actor
   ```
   Wie jeder `Actor` braucht die typed-Runtime bei jedem Restart

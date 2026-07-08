@@ -1,23 +1,23 @@
 ---
 title: FSM
-description: The in-memory finite-state machine — extend `FSM<StateName, StateData, Msg>`, register `when(...)` handlers + `onEnter` / `onExit` callbacks. State lives only in memory; lost on restart.
+description: The in-memory finite-state machine — extend `FSM<StateName, StateData, Message>`, register `when(...)` handlers + `onEnter` / `onExit` callbacks. State lives only in memory; lost on restart.
 ---
 
-`FSM<SName, SData, Msg>` is the base class for in-memory state
+`FSM<SName, SData, Message>` is the base class for in-memory state
 machines.  Three type parameters:
 
 - **`SName`** — string-union of state names: `'closed' | 'open'`.
 - **`SData`** — the state's associated data: `{ openedAt?: number }`.
-- **`Msg`** — the actor's message type.
+- **`Message`** — the actor's message type.
 
 ```ts
 import { FSM } from 'actor-ts';
 
 type DoorState = 'closed' | 'open';
 type DoorData  = { openedAt?: number };
-type DoorMsg   = 'open' | 'close' | 'status';
+type DoorMessage   = 'open' | 'close' | 'status';
 
-class Door extends FSM<DoorState, DoorData, DoorMsg> {
+class Door extends FSM<DoorState, DoorData, DoorMessage> {
   constructor() {
     super('closed', {});
 
@@ -40,9 +40,9 @@ class Door extends FSM<DoorState, DoorData, DoorMsg> {
 ## The DSL
 
 ```ts
-class FSM<SName, SData, Msg> extends Actor<Msg> {
+class FSM<SName, SData, Message> extends Actor<Message> {
   // In subclass constructor:
-  protected when(state: SName, handler: StateHandler<SName, SData, Msg>): void;
+  protected when(state: SName, handler: StateHandler<SName, SData, Message>): void;
   protected onEnter(state: SName, fn: (data: SData) => void | Promise<void>): void;
   protected onExit(state: SName, fn: (data: SData) => void | Promise<void>): void;
   protected onTransition(fn: TransitionCallback<SName, SData>): void;

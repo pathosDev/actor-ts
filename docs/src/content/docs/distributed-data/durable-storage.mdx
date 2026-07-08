@@ -45,7 +45,7 @@ After a cold start, `dd.get(key)` returns the last-persisted value
 ## Configuration
 
 ```ts
-interface DurableDistributedDataSettings {
+interface DurableDistributedDataOptionsType {
   durableStateStore: DurableStateStore;
   keys: string[];               // which keys are durable
   encryption?: EncryptionConfig;

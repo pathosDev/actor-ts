@@ -41,7 +41,7 @@ You'll see paths in three places:
 ```ts
 import { Actor } from 'actor-ts';
 
-class Logger extends Actor<Msg> {
+class Logger extends Actor<Message> {
   override preStart(): void {
     this.log.info(`starting; my path is ${this.context.path}`);
     // → "starting; my path is actor-ts://my-app/user/logger"
@@ -186,7 +186,7 @@ class Worker extends Actor<...> {
 
 // ✓ direct
 class Worker extends Actor<...> {
-  constructor(private readonly cache: ActorRef<CacheMsg>) { super(); }
+  constructor(private readonly cache: ActorRef<CacheMessage>) { super(); }
   override onReceive(msg) {
     this.cache.tell({ kind: 'put', ... });
   }

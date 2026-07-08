@@ -27,7 +27,7 @@ underneath.
 ```ts
 import { ReplicatedEventSourcedActor, KubernetesLease } from 'actor-ts';
 
-class Account extends ReplicatedEventSourcedActor<Cmd, Event, State> {
+class Account extends ReplicatedEventSourcedActor<Command, Event, State> {
   readonly persistenceId = `account-${this.userId}`;
   readonly replicaId     = process.env.REPLICA_ID!;
   readonly conflictResolver = ...;
@@ -66,7 +66,7 @@ lease, conflicts simply don't arise.
 ## How read-only replicas behave
 
 ```ts
-override async onCommand(state: State, cmd: Cmd): Promise<void> {
+override async onCommand(state: State, cmd: Command): Promise<void> {
   if (!this.lease.checkAlive()) {
     // I'm not the writer — reject or forward
     cmd.replyTo.tell({ kind: 'not-writer', currentWriter: ... });

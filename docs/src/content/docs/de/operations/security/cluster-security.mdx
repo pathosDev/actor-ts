@@ -187,14 +187,14 @@ ist **in sich selbst vertrauenswürdig**.
 // production.ts
 import { TcpTransport, Cluster, ClusterOptions } from 'actor-ts';
 
-const tlsSettings = {
+const tlsOptionsType = {
   cert: fs.readFileSync(process.env.TLS_CERT_PATH!),
   key:  fs.readFileSync(process.env.TLS_KEY_PATH!),
   ca:   fs.readFileSync(process.env.TLS_CA_PATH!),
   rejectUnauthorized: true,
 };
 
-const transport = new TcpTransport(self, log, tlsSettings);
+const transport = new TcpTransport(self, log, tlsOptionsType);
 
 const clusterOptions = ClusterOptions.create()
   .withHost(host)

@@ -54,14 +54,14 @@ woandershin und die Entities werden dort neu gespawnt.
 ```ts
 import { Actor, Cluster, ClusterBootstrapOptions, StartShardingOptions } from 'actor-ts';
 
-type CartCmd =
+type CartCommand =
   | { entityId: string; kind: 'add';   sku: string }
   | { entityId: string; kind: 'view';  replyTo: ActorRef<Cart> };
 
-class CartActor extends Actor<CartCmd> {
+class CartActor extends Actor<CartCommand> {
   private items: string[] = [];
 
-  override onReceive(cmd: CartCmd): void {
+  override onReceive(cmd: CartCommand): void {
     if (cmd.kind === 'add')  this.items.push(cmd.sku);
     if (cmd.kind === 'view') cmd.replyTo.tell({ items: this.items });
   }
@@ -70,7 +70,7 @@ class CartActor extends Actor<CartCmd> {
 // Setup — einzeiliger Cluster- + Sharding-Einstieg:
 const { system, cluster } = await Cluster.bootstrap(ClusterBootstrapOptions.create('my-app'));
 
-const startShardingOptions = StartShardingOptions.create<CartCmd>().withExtractEntityId((msg) => msg.entityId);
+const startShardingOptions = StartShardingOptions.create<CartCommand>().withExtractEntityId((msg) => msg.entityId);
 const cartRegion = cluster.sharding.start('cart', CartActor,
   startShardingOptions);
 
@@ -86,16 +86,16 @@ die zur Entity passt:
 
 ```ts
 // 1. Klassen-Kurzform (am häufigsten):
-const startShardingOptions = StartShardingOptions.create<CartCmd>().withExtractEntityId((m) => m.entityId);
+const startShardingOptions = StartShardingOptions.create<CartCommand>().withExtractEntityId((m) => m.entityId);
 cluster.sharding.start('cart', CartActor, startShardingOptions);
 
 // 2. Factory-Kurzform — wenn die Entity Konstruktor-Argumente braucht:
-const startSharding2Options = StartShardingOptions.create<CartCmd>().withExtractEntityId((m) => m.entityId);
+const startSharding2Options = StartShardingOptions.create<CartCommand>().withExtractEntityId((m) => m.entityId);
 cluster.sharding.start('cart', () => new CartActor(deps),
   startSharding2Options);
 
 // 3. Vollform — explizite Props + alle Settings:
-const startSharding3Options = StartShardingOptions.create<CartCmd>()
+const startSharding3Options = StartShardingOptions.create<CartCommand>()
   .withTypeName('cart')
   .withEntityProps(Props.create(() => new CartActor()))
   .withExtractEntityId((m) => m.entityId)
@@ -139,14 +139,14 @@ Mechanik.
 
 ## Konfiguration
 
-`ShardingOptionsType<TMsg>` — die Felder, die du am häufigsten anfasst:
+`ShardingOptionsType<TMessage>` — die Felder, die du am häufigsten anfasst:
 
 ```ts
-interface ShardingOptionsType<TMsg> {
+interface ShardingOptionsType<TMessage> {
   typeName:               string;
-  entityProps:            Props<TMsg>;
-  extractEntityId:        (message: TMsg) => string;
-  extractEntityMessage?:  (message: TMsg) => unknown;
+  entityProps:            Props<TMessage>;
+  extractEntityId:        (message: TMessage) => string;
+  extractEntityMessage?:  (message: TMessage) => unknown;
   numShards?:             number;             // Default 100
   role?:                  string;             // auf Nodes mit dieser Rolle beschränken
   proxy?:                 boolean;            // nur Routing, keine lokalen Entities
@@ -177,7 +177,7 @@ willst du meistens `rememberEntities: true` und ein
 ```ts
 import { Passivate, Actor } from 'actor-ts';
 
-class CartActor extends Actor<CartCmd | Passivate> {
+class CartActor extends Actor<CartCommand | Passivate> {
   override onReceive(msg): void {
     if (msg instanceof Passivate) {
       // Optional Shutdown-Arbeit erledigen, dann das Passivate-Ack senden.

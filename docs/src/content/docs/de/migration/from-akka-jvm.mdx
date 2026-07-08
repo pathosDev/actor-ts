@@ -12,9 +12,9 @@ sind identisch benannt.  Dieser Guide führt durch die
 
 | Akka (JVM) | actor-ts |
 | --- | --- |
-| `akka.actor.Actor` | `Actor<TMsg>` |
+| `akka.actor.Actor` | `Actor<TMessage>` |
 | `akka.actor.ActorRef` | `ActorRef<T>` |
-| `akka.actor.Props` | `Props<TMsg>` |
+| `akka.actor.Props` | `Props<TMessage>` |
 | `tell(msg)` / `!` | `tell(msg)` |
 | `ask(msg).mapTo[T]` | `ref.ask<TRes>(msg, timeoutMs)` |
 | `context.spawnAnonymous(props)` | `context.spawnAnonymous(props)` |
@@ -55,11 +55,11 @@ class Counter extends Actor {
 // actor-ts:
 import { Actor, type ActorRef } from 'actor-ts';
 
-type Cmd = { kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> };
+type Command = { kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> };
 
-class Counter extends Actor<Cmd> {
+class Counter extends Actor<Command> {
   private count = 0;
-  override onReceive(cmd: Cmd): void {
+  override onReceive(cmd: Command): void {
     if (cmd.kind === 'inc') this.count++;
     else cmd.replyTo.tell(this.count);
   }
@@ -68,7 +68,7 @@ class Counter extends Actor<Cmd> {
 
 Unterschiede:
 
-- TypeScript braucht **explizite Nachrichten-Typen** (`Cmd`) -
+- TypeScript braucht **explizite Nachrichten-Typen** (`Command`) -
   Akkas `Any` lässt sich nicht übersetzen.
 - `sender()` wird zu einer **expliziten `replyTo`-Ref** in der
   Nachricht oder zu `this.sender` (Option).
@@ -106,7 +106,7 @@ cluster.join(Address("akka", "MySystem", "host", port))
 val region = ClusterSharding(system).start(
   typeName = "Counter",
   entityProps = Props[Counter],
-  settings = ClusterShardingSettings(system),
+  settings = ClusterShardingOptionsType(system),
   extractEntityId = ...,
   extractShardId  = ...,
 )
@@ -132,7 +132,7 @@ Größtenteils Drop-in.  Unterschiede:
   `extractEntityId + numShards` **abgeleitet**
   (`shardId = hash(entityId) % numShards`).  Keine separate
   Funktion.
-- `ClusterShardingSettings` steht inline als Optionen von
+- `ClusterShardingOptionsType` steht inline als Optionen von
   `start()`.
 
 ### PersistentActor
@@ -154,7 +154,7 @@ class Account(val id: String) extends PersistentActor {
 }
 
 // actor-ts:
-class Account extends PersistentActor<Cmd, Event, State> {
+class Account extends PersistentActor<Command, Event, State> {
   constructor(public readonly id: string) { super(); }
   readonly persistenceId = `account-${this.id}`;
 
@@ -165,7 +165,7 @@ class Account extends PersistentActor<Cmd, Event, State> {
     return state;
   }
 
-  onCommand(state: State, cmd: Cmd): void {
+  onCommand(state: State, cmd: Command): void {
     if (cmd.kind === 'deposit') {
       this.persist({ kind: 'deposited', amount: cmd.amount }, () => {});
     }

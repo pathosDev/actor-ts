@@ -54,7 +54,7 @@ new envelope-wrapped events.
 ## Configuration
 
 ```ts
-interface WrapLegacySettings<E> {
+interface WrapLegacyOptionsType<E> {
   legacyVersion: number;        // version to assign to raw events
   baseAdapter:   EventAdapter<E>;
 }

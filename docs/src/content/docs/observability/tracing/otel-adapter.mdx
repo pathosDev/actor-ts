@@ -39,7 +39,7 @@ message) flow to your tracing backend, joined with W3C
 ## Configuration
 
 ```ts
-interface OtelTracerAdapterSettings {
+interface OtelTracerAdapterOptionsType {
   tracer:   OtelTracer;           // from @opentelemetry/api
   sampler?: Sampler;              // optional — usually configured at SDK level
 }

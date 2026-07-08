@@ -67,7 +67,7 @@ reads better at the call site.
 Inside an `onReceive`, the actor can request its own termination:
 
 ```ts
-override onReceive(msg: Msg): void {
+override onReceive(msg: Message): void {
   if (msg.kind === 'done') {
     this.log.info('completed — winding down');
     this.context.stopSelf();
