@@ -62,7 +62,7 @@ describe('BearerTokenAuth', () => {
     } catch (e) {
       const err = e as HttpError;
       expect(err.status).toBe(Status.Unauthorized);
-      expect(err.extra?.['wwwAuthenticate']).toBe('Bearer realm="mgmt"');
+      expect(err.headers?.['www-authenticate']).toBe('Bearer realm="mgmt"');
     }
   });
 

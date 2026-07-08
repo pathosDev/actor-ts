@@ -216,7 +216,7 @@ export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[]
             return res === WS_ACCEPT ? null : res;
           } catch (err) {
             if (err instanceof HttpError) {
-              return { status: err.status, body: { error: err.message, ...(err.extra ?? {}) } };
+              return { status: err.status, headers: err.headers, body: { error: err.message, ...(err.extra ?? {}) } };
             }
             return { status: Status.InternalServerError, body: { error: 'Internal Server Error' } };
           }

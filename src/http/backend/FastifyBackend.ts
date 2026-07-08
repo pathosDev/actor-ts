@@ -266,7 +266,9 @@ export class FastifyBackend implements HttpServerBackend {
 
   private writeError(reply: FastifyReply, err: unknown): void {
     if (err instanceof HttpError) {
-      reply.status(err.status).send({ error: err.message, ...err.extra });
+      reply.status(err.status);
+      if (err.headers) for (const [k, v] of Object.entries(err.headers)) reply.header(k, v);
+      reply.send({ error: err.message, ...err.extra });
       return;
     }
     reply.status(500).send({ error: 'Internal Server Error', message: (err as Error)?.message });

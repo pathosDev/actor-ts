@@ -154,7 +154,7 @@ export class HonoBackend implements HttpServerBackend {
       if (err instanceof HttpError) {
         return new Response(JSON.stringify({ error: err.message, ...err.extra }), {
           status: err.status,
-          headers: { 'content-type': 'application/json; charset=utf-8' },
+          headers: { 'content-type': 'application/json; charset=utf-8', ...(err.headers ?? {}) },
         });
       }
       return new Response(

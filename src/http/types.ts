@@ -65,6 +65,14 @@ export class HttpError extends Error {
     public readonly status: number,
     message: string,
     public readonly extra?: Readonly<Record<string, unknown>>,
+    /**
+     * Response headers to emit alongside the error — e.g.
+     * `WWW-Authenticate` on a 401 or `Retry-After` on a 429.  Without
+     * this the value could only reach the body (`extra`), never the
+     * wire as a real header.  Names SHOULD be lower-case; backends emit
+     * them verbatim after the status and before the body.
+     */
+    public readonly headers?: Readonly<Record<string, string>>,
   ) {
     super(message);
     this.name = 'HttpError';

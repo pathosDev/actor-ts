@@ -351,6 +351,7 @@ export class ExpressBackend implements HttpServerBackend {
       }
       if (err instanceof HttpError) {
         res.status(err.status).setHeader('content-type', 'application/json; charset=utf-8');
+        if (err.headers) for (const [k, v] of Object.entries(err.headers)) res.setHeader(k, v);
         res.end(JSON.stringify({ error: err.message, ...err.extra }));
         return;
       }
