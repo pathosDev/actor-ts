@@ -54,10 +54,10 @@ export class GrpcClientActor
   constructor(options: GrpcClientOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.grpc.client; }
-  protected builtInDefaults(): Partial<GrpcClientOptionsType> {
+  protected builtInDefaultOptions(): Partial<GrpcClientOptionsType> {
     return { credentials: { kind: 'insecure' }, deadlineMs: 30_000 };
   }
-  protected readSettingsFromConfig(c: Config): Partial<GrpcClientOptionsType> {
+  protected readOptionsFromConfig(c: Config): Partial<GrpcClientOptionsType> {
     const out: { -readonly [K in keyof GrpcClientOptionsType]?: GrpcClientOptionsType[K] } = {};
     if (c.hasPath('protoPath')) {
       const v = c.getList('protoPath');
@@ -70,18 +70,18 @@ export class GrpcClientActor
     if (c.hasPath('deadlineMs')) out.deadlineMs = c.getDuration('deadlineMs');
     return out;
   }
-  protected requiredSettings(): ReadonlyArray<keyof GrpcClientOptionsType> {
+  protected requiredOptions(): ReadonlyArray<keyof GrpcClientOptionsType> {
     return ['protoPath', 'packageName', 'serviceName', 'endpoint'];
   }
-  protected endpointLabel(): string { return `grpc://${this.settings.endpoint}`; }
+  protected endpointLabel(): string { return `grpc://${this.options.endpoint}`; }
 
   protected async connectImpl(): Promise<void> {
     const grpc = await grpcLazy.get();
     const protoLoader = await protoLoaderLazy.get();
 
-    const protoPaths = Array.isArray(this.settings.protoPath)
-      ? [...this.settings.protoPath]
-      : [this.settings.protoPath!];
+    const protoPaths = Array.isArray(this.options.protoPath)
+      ? [...this.options.protoPath]
+      : [this.options.protoPath!];
     const packageDefinition = protoLoader.loadSync(protoPaths, {
       keepCase: true, longs: String, enums: String, defaults: true, oneofs: true,
     });
@@ -89,20 +89,20 @@ export class GrpcClientActor
 
     // Walk the dotted package name.
     let pkg: Record<string, unknown> = loaded;
-    for (const seg of this.settings.packageName!.split('.')) {
+    for (const seg of this.options.packageName!.split('.')) {
       const next = pkg[seg];
       if (!next || typeof next !== 'object') {
-        throw new Error(`grpc: package '${this.settings.packageName}' not found in proto`);
+        throw new Error(`grpc: package '${this.options.packageName}' not found in proto`);
       }
       pkg = next as Record<string, unknown>;
     }
-    const ServiceCtor = pkg[this.settings.serviceName!] as GrpcServiceCtor | undefined;
+    const ServiceCtor = pkg[this.options.serviceName!] as GrpcServiceCtor | undefined;
     if (!ServiceCtor) {
-      throw new Error(`grpc: service '${this.settings.serviceName}' not found in package '${this.settings.packageName}'`);
+      throw new Error(`grpc: service '${this.options.serviceName}' not found in package '${this.options.packageName}'`);
     }
 
     const creds = this.buildCredentials(grpc);
-    this.serviceClient = new ServiceCtor(this.settings.endpoint!, creds);
+    this.serviceClient = new ServiceCtor(this.options.endpoint!, creds);
   }
 
   protected async disconnectImpl(): Promise<void> {
@@ -205,7 +205,7 @@ export class GrpcClientActor
   }
 
   private buildCredentials(grpc: GrpcModule): GrpcCredentialsLike {
-    const c = this.settings.credentials ?? { kind: 'insecure' };
+    const c = this.options.credentials ?? { kind: 'insecure' };
     if (c.kind === 'insecure') return grpc.credentials.createInsecure();
     return grpc.credentials.createSsl(
       c.rootCerts ? Buffer.from(c.rootCerts) : null,

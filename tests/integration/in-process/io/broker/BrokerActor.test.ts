@@ -20,7 +20,7 @@ import { Actor } from '../../../../../src/Actor.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
-interface FakeSettings extends BrokerCommonOptionsType {
+interface FakeOptions extends BrokerCommonOptionsType {
   readonly endpoint?: string;
   readonly tag?: string;
 }
@@ -36,25 +36,25 @@ interface FakeCmd {
  * Concrete subclass for tests — `connectImpl` and `dispatchOutgoing`
  * are wired to mutable flags so the test can simulate failures.
  */
-class FakeBroker extends BrokerActor<FakeSettings, FakeCmd, string> {
+class FakeBroker extends BrokerActor<FakeOptions, FakeCmd, string> {
   connectAttempts = 0;
   disconnects = 0;
   dispatched: string[] = [];
   failNextConnects = 0;
   failNextDispatches = 0;
 
-  constructor(settings: Partial<FakeSettings> = {}) { super(settings); }
+  constructor(options: Partial<FakeOptions> = {}) { super(options); }
 
   protected configKey(): string { return 'actor-ts.io.broker.fake'; }
-  protected builtInDefaults(): Partial<FakeSettings> { return { tag: 'default' }; }
-  protected readSettingsFromConfig(c: Config): Partial<FakeSettings> {
+  protected builtInDefaultOptions(): Partial<FakeOptions> { return { tag: 'default' }; }
+  protected readOptionsFromConfig(c: Config): Partial<FakeOptions> {
     return {
       endpoint: c.hasPath('endpoint') ? c.getString('endpoint') : undefined,
       tag: c.hasPath('tag') ? c.getString('tag') : undefined,
     };
   }
-  protected requiredSettings(): ReadonlyArray<keyof FakeSettings> { return ['endpoint']; }
-  protected endpointLabel(): string { return this.settings.endpoint ?? '<none>'; }
+  protected requiredOptions(): ReadonlyArray<keyof FakeOptions> { return ['endpoint']; }
+  protected endpointLabel(): string { return this.options.endpoint ?? '<none>'; }
 
   protected async connectImpl(): Promise<void> {
     this.connectAttempts++;
@@ -103,22 +103,22 @@ function makeSystem(name = 'broker-test', config?: Record<string, unknown>): Act
 /** Bypass `Props` to keep direct access to a captured FakeBroker. */
 function spawnFake(
   sys: ActorSystem,
-  settings: Partial<FakeSettings> = {},
+  options: Partial<FakeOptions> = {},
 ): { ref: ActorRef<FakeCmd>; brokerReady: Promise<FakeBroker> } {
   let resolve!: (b: FakeBroker) => void;
   const brokerReady = new Promise<FakeBroker>((r) => { resolve = r; });
   const ref = sys.spawnAnonymous(Props.create(() => {
-    const b = new FakeBroker(settings);
+    const b = new FakeBroker(options);
     resolve(b);
     return b as unknown as Actor<FakeCmd>;
   }));
   return { ref: ref as ActorRef<FakeCmd>, brokerReady };
 }
 
-/* ---------------------------- Settings tests ---------------------------- */
+/* ---------------------------- Options tests ---------------------------- */
 
-describe('BrokerActor — settings resolution', () => {
-  test('constructor settings win over HOCON config', async () => {
+describe('BrokerActor — options resolution', () => {
+  test('constructor options win over HOCON config', async () => {
     const sys = makeSystem('cfg-1', {
       'actor-ts': { io: { broker: { fake: { endpoint: 'cfg.local' } } } },
     });
@@ -126,7 +126,7 @@ describe('BrokerActor — settings resolution', () => {
     const broker = await brokerReady;
     await sleep(20);
     expect(broker.connectAttempts).toBe(1);
-    expect((broker as unknown as { settings: FakeSettings }).settings.endpoint).toBe('ctor.local');
+    expect((broker as unknown as { options: FakeOptions }).options.endpoint).toBe('ctor.local');
     await sys.terminate();
   });
 
@@ -137,9 +137,9 @@ describe('BrokerActor — settings resolution', () => {
     const { brokerReady } = spawnFake(sys);
     const broker = await brokerReady;
     await sleep(20);
-    const settings = (broker as unknown as { settings: FakeSettings }).settings;
-    expect(settings.endpoint).toBe('cfg.local');
-    expect(settings.tag).toBe('from-config');
+    const options = (broker as unknown as { options: FakeOptions }).options;
+    expect(options.endpoint).toBe('cfg.local');
+    expect(options.tag).toBe('from-config');
     await sys.terminate();
   });
 
@@ -150,8 +150,8 @@ describe('BrokerActor — settings resolution', () => {
     const { brokerReady } = spawnFake(sys);
     const broker = await brokerReady;
     await sleep(20);
-    const settings = (broker as unknown as { settings: FakeSettings }).settings;
-    expect(settings.tag).toBe('default');  // from builtInDefaults
+    const options = (broker as unknown as { options: FakeOptions }).options;
+    expect(options.tag).toBe('default');  // from builtInDefaultOptions
     await sys.terminate();
   });
 
@@ -170,7 +170,7 @@ describe('BrokerActor — settings resolution', () => {
     }));
     await sleep(20);
     expect(captured).toBeInstanceOf(BrokerOptionsError);
-    expect((captured as unknown as Error).message).toContain('missing required settings');
+    expect((captured as unknown as Error).message).toContain('missing required options');
     expect((captured as unknown as Error).message).toContain('endpoint');
     await sys.terminate();
   });

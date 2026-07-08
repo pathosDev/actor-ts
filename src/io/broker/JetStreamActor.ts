@@ -178,8 +178,8 @@ export class JetStreamActor extends BrokerActor<
   constructor(options: JetStreamOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.jetstream; }
-  protected builtInDefaults(): Partial<JetStreamOptionsType> { return {}; }
-  protected readSettingsFromConfig(c: Config): Partial<JetStreamOptionsType> {
+  protected builtInDefaultOptions(): Partial<JetStreamOptionsType> { return {}; }
+  protected readOptionsFromConfig(c: Config): Partial<JetStreamOptionsType> {
     const out: { -readonly [K in keyof JetStreamOptionsType]?: JetStreamOptionsType[K] } = {};
     if (c.hasPath('servers')) out.servers = c.getStringList('servers');
     if (c.hasPath('token')) out.token = c.getString('token');
@@ -188,9 +188,9 @@ export class JetStreamActor extends BrokerActor<
     if (c.hasPath('name')) out.name = c.getString('name');
     return out;
   }
-  protected requiredSettings(): ReadonlyArray<keyof JetStreamOptionsType> { return ['servers']; }
+  protected requiredOptions(): ReadonlyArray<keyof JetStreamOptionsType> { return ['servers']; }
   protected endpointLabel(): string {
-    const s = this.settings.servers;
+    const s = this.options.servers;
     if (Array.isArray(s)) return `nats://${s.join(',')}`;
     return `nats://${typeof s === 'string' ? s : ''}`;
   }
@@ -202,15 +202,15 @@ export class JetStreamActor extends BrokerActor<
    */
   protected async createNatsConnection(): Promise<NatsConnectionLike> {
     const nats = await natsLazy.get();
-    const servers = Array.isArray(this.settings.servers)
-      ? [...this.settings.servers]
-      : [this.settings.servers as string];
+    const servers = Array.isArray(this.options.servers)
+      ? [...this.options.servers]
+      : [this.options.servers as string];
     return nats.connect({
       servers,
-      token: this.settings.token,
-      user: this.settings.user,
-      pass: this.settings.password,
-      name: this.settings.name,
+      token: this.options.token,
+      user: this.options.user,
+      pass: this.options.password,
+      name: this.options.name,
     });
   }
 
@@ -219,30 +219,30 @@ export class JetStreamActor extends BrokerActor<
     this.js = this.nc.jetstream();
 
     // Stream lifecycle: create-or-update if asked.
-    if (this.settings.stream && (this.settings.stream.create ?? true)) {
+    if (this.options.stream && (this.options.stream.create ?? true)) {
       const jsm = await this.nc.jetstreamManager();
-      await upsertStream(jsm, this.settings.stream);
+      await upsertStream(jsm, this.options.stream);
     }
 
     // Consumer + subscription (push) or pull handle.
-    if (this.settings.consumer) {
-      if (this.settings.consumer.create ?? true) {
-        if (!this.settings.stream?.name) {
+    if (this.options.consumer) {
+      if (this.options.consumer.create ?? true) {
+        if (!this.options.stream?.name) {
           throw new Error('JetStreamActor: consumer.create requires stream.name');
         }
         const jsm = await this.nc.jetstreamManager();
-        await upsertConsumer(jsm, this.settings.stream.name, this.settings.consumer);
+        await upsertConsumer(jsm, this.options.stream.name, this.options.consumer);
       }
-      if (!this.settings.stream?.name) {
+      if (!this.options.stream?.name) {
         throw new Error('JetStreamActor: consumer requires stream.name');
       }
-      const mode = this.settings.consumer.mode ?? 'push';
+      const mode = this.options.consumer.mode ?? 'push';
       if (mode === 'push') {
         this.subscription = await this.js.subscribe(
-          this.settings.consumer.filterSubject ?? `${this.settings.stream.name}.>`,
+          this.options.consumer.filterSubject ?? `${this.options.stream.name}.>`,
           {
-            stream: this.settings.stream.name,
-            consumer: this.settings.consumer.durable,
+            stream: this.options.stream.name,
+            consumer: this.options.consumer.durable,
           },
         );
         void this.runPump();
@@ -250,8 +250,8 @@ export class JetStreamActor extends BrokerActor<
         // Pull mode (#62) — grab the consumer handle but DON'T start
         // a pump.  Messages flow only when the caller sends `fetch`.
         this.pullConsumer = await this.js.consumers.get(
-          this.settings.stream.name,
-          this.settings.consumer.durable,
+          this.options.stream.name,
+          this.options.consumer.durable,
         );
       }
     }
@@ -366,9 +366,9 @@ export class JetStreamActor extends BrokerActor<
    * external ack / nak / term (unless `ackPolicy === 'none'`).
    */
   private async deliverAndAwaitAck(m: JetStreamMsgHandleLike): Promise<void> {
-    const target = this.settings.target;
-    const ackTimeoutMs = this.settings.ackTimeout
-      ?? this.settings.consumer?.ackWaitMs
+    const target = this.options.target;
+    const ackTimeoutMs = this.options.ackTimeout
+      ?? this.options.consumer?.ackWaitMs
       ?? 30_000;
     const handle: JetStreamMsgHandleLike = m;
     const info = handle.info;
@@ -387,7 +387,7 @@ export class JetStreamActor extends BrokerActor<
       });
     }
 
-    if (this.settings.consumer?.ackPolicy === 'none') return;
+    if (this.options.consumer?.ackPolicy === 'none') return;
 
     const seq = info.streamSequence;
     try {

@@ -506,7 +506,7 @@ describe('JetStreamActor — publish', () => {
   });
 });
 
-describe('JetStreamActor — settings parsing', () => {
+describe('JetStreamActor — options parsing', () => {
   test('subscription is wired with the configured stream + durable consumer', async () => {
     const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())

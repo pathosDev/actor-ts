@@ -106,7 +106,7 @@ class FakeMqttModule {
 /* --------------------------- test actor ----------------------------- */
 
 interface TestActorOpts<T> {
-  settings?: MqttOptions;
+  options?: MqttOptions;
   module?: FakeMqttModule;
   ctorSubs?: Array<{ topic: string; qos?: MqttQos; target?: ActorRef<MqttMessage<T>> }>;
 }
@@ -120,7 +120,7 @@ class TestMqttActor<T = unknown, TSelf = never> extends MqttActor<T, TSelf> {
   disconnectedCount = 0;
 
   constructor(opts: TestActorOpts<T> = {}) {
-    super(opts.settings ?? MqttOptions.create());
+    super(opts.options ?? MqttOptions.create());
     this.module = opts.module ?? new FakeMqttModule();
     for (const s of opts.ctorSubs ?? []) this.subscribe(s.topic, { qos: s.qos, target: s.target });
   }
@@ -150,7 +150,7 @@ class TestMqttActor<T = unknown, TSelf = never> extends MqttActor<T, TSelf> {
     return (this.publish as (t: string, p: unknown, o?: unknown) => boolean)(topic, payload, opts);
   }
   encodeEntity(value: unknown): Uint8Array { return this.codec().encode(value); }
-  get resolvedSettings(): MqttOptionsType { return this.settings; }
+  get resolvedOptions(): MqttOptionsType { return this.options; }
 }
 
 let sysCounter = 0;
@@ -183,7 +183,7 @@ describe('MqttActor construction', () => {
   test('constructing an actor does not pull in the mqtt peer-dep', () => {
     const mqttOptions = MqttOptions.create()
       .withBrokerUrl('mqtt://localhost');
-    const a = new TestMqttActor({ settings: mqttOptions });
+    const a = new TestMqttActor({ options: mqttOptions });
     expect(a).toBeInstanceOf(MqttActor);
   });
 });
@@ -198,7 +198,7 @@ describe('MqttActor subscription flush + defaults', () => {
         .withBrokerUrl('mqtt://x')
         .withQos(1);
       const actor = new TestMqttActor({
-        settings: mqttOptions,
+        options: mqttOptions,
         ctorSubs: [{ topic: 'a/+' }],
       });
       await boot(sys, actor);
@@ -215,7 +215,7 @@ describe('MqttActor subscription flush + defaults', () => {
         .withBrokerUrl('mqtt://x')
         .withQos(0);
       const actor = new TestMqttActor({
-        settings: mqttOptions,
+        options: mqttOptions,
         ctorSubs: [{ topic: 'a/#', qos: 2 }],
       });
       await boot(sys, actor);
@@ -235,7 +235,7 @@ describe('MqttActor inbound routing', () => {
       const mqttOptions = MqttOptions.create()
         .withBrokerUrl('mqtt://x');
       const actor = new TestMqttActor<{ v: number }>({
-        settings: mqttOptions,
+        options: mqttOptions,
         ctorSubs: [{ topic: 'sensors/+/temp' }],
       });
       await boot(sys, actor);
@@ -258,7 +258,7 @@ describe('MqttActor inbound routing', () => {
       const mqttOptions = MqttOptions.create()
         .withBrokerUrl('mqtt://x');
       const actor = new TestMqttActor({
-        settings: mqttOptions,
+        options: mqttOptions,
         ctorSubs: [
           { topic: 'a/#', target: inboxRef },
           { topic: 'a/b', target: inboxRef }, // overlaps a/# for topic a/b
@@ -282,7 +282,7 @@ describe('MqttActor inbound routing', () => {
     try {
       const mqttOptions = MqttOptions.create()
         .withBrokerUrl('mqtt://x');
-      const actor = new TestMqttActor({ settings: mqttOptions });
+      const actor = new TestMqttActor({ options: mqttOptions });
       const ref = await boot(sys, actor);
       ref.tell({ kind: 'subscribe', topic: 'x/#' });
       await sleep(20);
@@ -306,7 +306,7 @@ describe('MqttActor reconnect + subscription persistence', () => {
         .withBrokerUrl('mqtt://x')
         .withReconnect({ initialDelayMs: 10 });
       const actor = new TestMqttActor({
-        settings: mqttOptions,
+        options: mqttOptions,
       });
       const ref = await boot(sys, actor);
       // Drop the connection → disconnected, reconnect scheduled.
@@ -330,7 +330,7 @@ describe('MqttActor reconnect + subscription persistence', () => {
         .withQos(1)
         .withReconnect({ initialDelayMs: 10 });
       const actor = new TestMqttActor({
-        settings: mqttOptions,
+        options: mqttOptions,
       });
       const ref = await boot(sys, actor);
       ref.tell({ kind: 'subscribe', topic: 'run/#' });
@@ -354,7 +354,7 @@ describe('MqttActor reconnect + subscription persistence', () => {
         .withBrokerUrl('mqtt://x')
         .withReconnect({ initialDelayMs: 10 });
       const actor = new TestMqttActor({
-        settings: mqttOptions,
+        options: mqttOptions,
       });
       await boot(sys, actor);
       expect(actor.connectedCount).toBe(1);
@@ -379,7 +379,7 @@ describe('MqttActor deathwatch cleanup (bug #3)', () => {
       const mqttOptions = MqttOptions.create()
         .withBrokerUrl('mqtt://x');
       const actor = new TestMqttActor({
-        settings: mqttOptions,
+        options: mqttOptions,
         ctorSubs: [{ topic: 'watched/#', target: inboxRef }],
       });
       await boot(sys, actor);
@@ -407,7 +407,7 @@ describe('MqttActor onDecodeError', () => {
       const mqttOptions = MqttOptions.create()
         .withBrokerUrl('mqtt://x');
       const actor = new TestMqttActor({
-        settings: mqttOptions,
+        options: mqttOptions,
         ctorSubs: [{ topic: 'j/#' }],
       });
       actor.decodeOnReceive = true;
@@ -436,7 +436,7 @@ describe('MqttActor onSelfMessage', () => {
       const mqttOptions = MqttOptions.create()
         .withBrokerUrl('mqtt://x');
       const actor = new TestMqttActor<unknown, { kind: 'tick'; n: number }>({
-        settings: mqttOptions,
+        options: mqttOptions,
       });
       const ref = await boot(sys, actor);
       ref.tell({ kind: 'tick', n: 7 });
@@ -458,7 +458,7 @@ describe('MqttActor publish', () => {
     try {
       const mqttOptions = MqttOptions.create()
         .withBrokerUrl('mqtt://x');
-      const actor = new TestMqttActor({ settings: mqttOptions });
+      const actor = new TestMqttActor({ options: mqttOptions });
       await boot(sys, actor);
       actor.doPublish('t/str', 'hello');
       actor.doPublish('t/bin', enc.encode('bin'));
@@ -478,7 +478,7 @@ describe('MqttActor publish', () => {
     try {
       const mqttOptions = MqttOptions.create()
         .withBrokerUrl('mqtt://x');
-      const actor = new TestMqttActor({ settings: mqttOptions });
+      const actor = new TestMqttActor({ options: mqttOptions });
       await boot(sys, actor);
       actor.doPublish('t/entity', actor.encodeEntity('pong'));
       await sleep(20);
@@ -494,7 +494,7 @@ describe('MqttActor publish', () => {
     try {
       const mqttOptions = MqttOptions.create()
         .withBrokerUrl('mqtt://x');
-      const actor = new TestMqttActor({ settings: mqttOptions });
+      const actor = new TestMqttActor({ options: mqttOptions });
       await boot(sys, actor);
       const circular: Record<string, unknown> = {};
       circular.self = circular;
@@ -514,7 +514,7 @@ describe('MqttActor publish', () => {
         .withBrokerUrl('mqtt://x')
         .withReconnect({ initialDelayMs: 10 });
       const actor = new TestMqttActor({
-        settings: mqttOptions,
+        options: mqttOptions,
       });
       const ref = await boot(sys, actor);
       actor.module.last().fireClose();

@@ -43,10 +43,10 @@ export class RedisStreamsActor
   constructor(options: RedisStreamsOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.redisStreams; }
-  protected builtInDefaults(): Partial<RedisStreamsOptionsType> {
+  protected builtInDefaultOptions(): Partial<RedisStreamsOptionsType> {
     return { blockMs: 5_000 };
   }
-  protected readSettingsFromConfig(c: Config): Partial<RedisStreamsOptionsType> {
+  protected readOptionsFromConfig(c: Config): Partial<RedisStreamsOptionsType> {
     const out: { -readonly [K in keyof RedisStreamsOptionsType]?: RedisStreamsOptionsType[K] } = {};
     if (c.hasPath('url')) out.url = c.getString('url');
     if (c.hasPath('streams')) out.streams = c.getStringList('streams');
@@ -61,18 +61,18 @@ export class RedisStreamsActor
     }
     return out;
   }
-  protected requiredSettings(): ReadonlyArray<keyof RedisStreamsOptionsType> { return ['url']; }
-  protected endpointLabel(): string { return this.settings.url ?? '<unknown>'; }
+  protected requiredOptions(): ReadonlyArray<keyof RedisStreamsOptionsType> { return ['url']; }
+  protected endpointLabel(): string { return this.options.url ?? '<unknown>'; }
 
   protected async connectImpl(): Promise<void> {
     const ioredis = await ioredisLazy.get();
     const Ctor = ioredis.default ?? (ioredis as unknown as IoredisCtor);
-    this.redisProducer = new Ctor(this.settings.url!);
-    if (this.settings.consumerGroup && this.settings.streams && this.settings.target) {
-      this.redis = new Ctor(this.settings.url!);
-      const cg = this.settings.consumerGroup;
+    this.redisProducer = new Ctor(this.options.url!);
+    if (this.options.consumerGroup && this.options.streams && this.options.target) {
+      this.redis = new Ctor(this.options.url!);
+      const cg = this.options.consumerGroup;
       if (cg.createIfMissing ?? true) {
-        for (const stream of this.settings.streams) {
+        for (const stream of this.options.streams) {
           try { await this.redis.xgroup('CREATE', stream, cg.group, '$', 'MKSTREAM'); }
           catch (e) {
             // BUSYGROUP = group already exists; ignore.  Anything else → log.
@@ -111,8 +111,8 @@ export class RedisStreamsActor
     if (cmd.kind === 'publish') {
       this.enqueueOutbound(cmd.publish);
     } else if (cmd.kind === 'ack') {
-      if (this.redis && this.settings.consumerGroup) {
-        void this.redis.xack(cmd.stream, this.settings.consumerGroup.group, cmd.id)
+      if (this.redis && this.options.consumerGroup) {
+        void this.redis.xack(cmd.stream, this.options.consumerGroup.group, cmd.id)
           .catch((e: Error) => this.log.warn(`xack failed: ${e.message}`));
       }
     }
@@ -121,14 +121,14 @@ export class RedisStreamsActor
   /* ----------------------------- internals ----------------------------- */
 
   private async consumerLoop(): Promise<void> {
-    const cg = this.settings.consumerGroup!;
-    const blockMs = this.settings.blockMs ?? 5_000;
+    const cg = this.options.consumerGroup!;
+    const blockMs = this.options.blockMs ?? 5_000;
     while (this.consumerLoopRunning && this.redis) {
       try {
         const args: string[] = ['GROUP', cg.group, cg.consumer,
           'BLOCK', String(blockMs), 'COUNT', '32',
-          'STREAMS', ...(this.settings.streams ?? []),
-          ...(this.settings.streams ?? []).map(() => '>'),
+          'STREAMS', ...(this.options.streams ?? []),
+          ...(this.options.streams ?? []).map(() => '>'),
         ];
         const result = await this.redis.xreadgroup(...args) as XReadResult | null;
         if (!result) continue;
@@ -138,7 +138,7 @@ export class RedisStreamsActor
             for (let i = 0; i + 1 < fields.length; i += 2) {
               obj[fields[i]!] = fields[i + 1]!;
             }
-            this.settings.target?.tell({ stream, id, fields: obj });
+            this.options.target?.tell({ stream, id, fields: obj });
           }
         }
       } catch (e) {

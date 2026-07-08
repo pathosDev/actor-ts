@@ -53,7 +53,7 @@ export type AmqpCmd =
 /**
  * AMQP 0.9.1 actor backed by `amqplib`.  One connection, one channel
  * shared by producer + consumers.  Bindings (queue↔exchange↔routingKey)
- * are configured up-front in settings; runtime additions go through
+ * are configured up-front in options; runtime additions go through
  * `tell({ kind: 'subscribe', ... })` (currently out-of-scope — add when
  * needed).
  *
@@ -72,28 +72,28 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCmd, AmqpPublish
   constructor(options: AmqpOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.amqp; }
-  protected builtInDefaults(): Partial<AmqpOptionsType> {
+  protected builtInDefaultOptions(): Partial<AmqpOptionsType> {
     return { prefetch: 1, autoAck: true };
   }
-  protected readSettingsFromConfig(c: Config): Partial<AmqpOptionsType> {
+  protected readOptionsFromConfig(c: Config): Partial<AmqpOptionsType> {
     const out: { -readonly [K in keyof AmqpOptionsType]?: AmqpOptionsType[K] } = {};
     if (c.hasPath('url')) out.url = c.getString('url');
     if (c.hasPath('prefetch')) out.prefetch = c.getInt('prefetch');
     if (c.hasPath('autoAck')) out.autoAck = c.getBoolean('autoAck');
     return out;
   }
-  protected requiredSettings(): ReadonlyArray<keyof AmqpOptionsType> { return ['url']; }
-  protected endpointLabel(): string { return this.settings.url ?? '<unknown>'; }
+  protected requiredOptions(): ReadonlyArray<keyof AmqpOptionsType> { return ['url']; }
+  protected endpointLabel(): string { return this.options.url ?? '<unknown>'; }
 
   protected async connectImpl(): Promise<void> {
     const amqp = await amqpLazy.get();
-    this.connection = await amqp.connect(this.settings.url!);
+    this.connection = await amqp.connect(this.options.url!);
     this.channel = await this.connection.createChannel();
-    await this.channel.prefetch(this.settings.prefetch ?? 1);
+    await this.channel.prefetch(this.options.prefetch ?? 1);
     this.connection.on('error', (e: Error) => this.handleConnectionLost(e));
     this.connection.on('close', () => this.handleConnectionLost(new Error('amqp connection closed')));
 
-    for (const b of this.settings.bindings ?? []) {
+    for (const b of this.options.bindings ?? []) {
       await this.channel.assertQueue(b.queue, b.queueOptions ?? { durable: true });
       if (b.exchange) {
         await this.channel.bindQueue(b.queue, b.exchange, b.routingKey ?? '');
@@ -103,7 +103,7 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCmd, AmqpPublish
       await this.channel.consume(queueName, (msg) => {
         if (!msg) return;
         const ackToken = this.nextAckToken++;
-        if (this.settings.autoAck) {
+        if (this.options.autoAck) {
           try { this.channel?.ack(msg); } catch { /* ignore */ }
         } else {
           this.pendingAcks.set(ackToken, msg);

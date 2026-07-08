@@ -35,21 +35,21 @@ export class UdpSocketActor
   constructor(options: UdpSocketOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.udp; }
-  protected builtInDefaults(): Partial<UdpSocketOptionsType> {
+  protected builtInDefaultOptions(): Partial<UdpSocketOptionsType> {
     return { bindHost: '0.0.0.0', bindPort: 0, type: 'udp4' };
   }
-  protected readSettingsFromConfig(c: Config): Partial<UdpSocketOptionsType> {
+  protected readOptionsFromConfig(c: Config): Partial<UdpSocketOptionsType> {
     const out: { -readonly [K in keyof UdpSocketOptionsType]?: UdpSocketOptionsType[K] } = {};
     if (c.hasPath('bindHost')) out.bindHost = c.getString('bindHost');
     if (c.hasPath('bindPort')) out.bindPort = c.getInt('bindPort');
     if (c.hasPath('type')) out.type = c.getString('type') as 'udp4' | 'udp6';
     return out;
   }
-  protected requiredSettings(): ReadonlyArray<keyof UdpSocketOptionsType> {
+  protected requiredOptions(): ReadonlyArray<keyof UdpSocketOptionsType> {
     return ['target'];
   }
   protected endpointLabel(): string {
-    return `${this.settings.type}://${this.settings.bindHost}:${this.actualPort || this.settings.bindPort}`;
+    return `${this.options.type}://${this.options.bindHost}:${this.actualPort || this.options.bindPort}`;
   }
 
   /** OS-assigned port after `bind` (0 before, real number after). */
@@ -57,7 +57,7 @@ export class UdpSocketActor
 
   protected async connectImpl(): Promise<void> {
     const dgram = await dgramLazy.get();
-    const sock = dgram.createSocket(this.settings.type ?? 'udp4');
+    const sock = dgram.createSocket(this.options.type ?? 'udp4');
     return new Promise<void>((resolve, reject) => {
       let done = false;
       sock.once('listening', () => {
@@ -68,7 +68,7 @@ export class UdpSocketActor
         const addr = sock.address();
         this.actualPort = addr.port;
         sock.on('message', (msg, rinfo) => {
-          this.settings.target?.tell({
+          this.options.target?.tell({
             payload: msg, remoteHost: rinfo.address, remotePort: rinfo.port,
           });
         });
@@ -80,7 +80,7 @@ export class UdpSocketActor
         done = true;
         reject(e);
       });
-      sock.bind(this.settings.bindPort ?? 0, this.settings.bindHost);
+      sock.bind(this.options.bindPort ?? 0, this.options.bindHost);
     });
   }
 

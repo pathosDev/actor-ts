@@ -95,7 +95,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   /** The connection (re)opened; the registry has been re-applied on the broker. */
   protected onConnected(): void | Promise<void> {}
 
-  /** The connection dropped; a reconnect cycle may follow (per settings). */
+  /** The connection dropped; a reconnect cycle may follow (per options). */
   protected onDisconnected(_cause?: Error): void | Promise<void> {}
 
   /**
@@ -119,7 +119,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
 
   /**
    * Register a subscription.  Constructor-safe: before start it is only
-   * recorded (no context/settings access) and flushed on first connect.
+   * recorded (no context/options access) and flushed on first connect.
    * At runtime it also issues a broker SUBSCRIBE when connected;
    * otherwise the registry entry is applied on the next connect.  Omit
    * `target` to deliver to this actor's own `onMessage`.
@@ -182,7 +182,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
    * string as a JSON entity.  Only valid after `preStart`.
    */
   protected codec(): MqttCodec<unknown> {
-    return (this._codec ??= this.settings.codec ?? mqttJsonCodec());
+    return (this._codec ??= this.options.codec ?? mqttJsonCodec());
   }
 
   /* ----------------------- sealed dispatch ----------------------- */
@@ -335,7 +335,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   }
 
   private brokerSubscribe(topic: string, qos?: MqttQos): void {
-    this.client?.subscribe(topic, { qos: qos ?? this.settings.qos ?? 0 }, (err) => {
+    this.client?.subscribe(topic, { qos: qos ?? this.options.qos ?? 0 }, (err) => {
       if (err) this.log.warn(`MqttActor: subscribe '${topic}' failed: ${err.message}`);
     });
   }
@@ -350,7 +350,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   /* ----------------------- BrokerActor plumbing ------------------ */
 
   override async preStart(): Promise<void> {
-    // Context is attached before preStart; settings resolve inside
+    // Context is attached before preStart; options resolve inside
     // super.preStart().  Flush constructor subscriptions into the
     // registry (idempotent) so connectImpl applies them on connect.
     for (const p of this.pendingSubs) {
@@ -362,11 +362,11 @@ export abstract class MqttActor<T = unknown, TSelf = never>
 
   protected configKey(): string { return ConfigKeys.io.broker.mqtt; }
 
-  protected builtInDefaults(): Partial<MqttOptionsType> {
+  protected builtInDefaultOptions(): Partial<MqttOptionsType> {
     return { qos: 0, cleanSession: true, keepAlive: 60 };
   }
 
-  protected readSettingsFromConfig(c: Config): Partial<MqttOptionsType> {
+  protected readOptionsFromConfig(c: Config): Partial<MqttOptionsType> {
     const out: { -readonly [K in keyof MqttOptionsType]?: MqttOptionsType[K] } = {};
     if (c.hasPath('brokerUrl')) out.brokerUrl = c.getString('brokerUrl');
     if (c.hasPath('clientId')) out.clientId = c.getString('clientId');
@@ -390,8 +390,8 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     return out;
   }
 
-  protected requiredSettings(): ReadonlyArray<keyof MqttOptionsType> { return ['brokerUrl']; }
-  protected endpointLabel(): string { return this.settings.brokerUrl ?? '<unknown>'; }
+  protected requiredOptions(): ReadonlyArray<keyof MqttOptionsType> { return ['brokerUrl']; }
+  protected endpointLabel(): string { return this.options.brokerUrl ?? '<unknown>'; }
 
   /** @internal Test seam — override to inject a fake mqtt module. */
   protected mqttModule(): Promise<MqttModuleLike> { return mqttLazy.get(); }
@@ -399,23 +399,23 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   protected async connectImpl(): Promise<void> {
     const mqtt = await this.mqttModule();
     const opts: MqttConnectOptions = {
-      clientId: this.settings.clientId,
-      username: this.settings.credentials?.username,
-      password: this.settings.credentials?.password,
-      clean: this.settings.cleanSession,
-      keepalive: this.settings.keepAlive,
-      protocolVersion: this.settings.protocolVersion ?? 4,
+      clientId: this.options.clientId,
+      username: this.options.credentials?.username,
+      password: this.options.credentials?.password,
+      clean: this.options.cleanSession,
+      keepalive: this.options.keepAlive,
+      protocolVersion: this.options.protocolVersion ?? 4,
     };
-    if (this.settings.will) {
+    if (this.options.will) {
       opts.will = {
-        topic: this.settings.will.topic,
-        payload: this.settings.will.payload,
-        qos: this.settings.will.qos ?? 0,
-        retain: this.settings.will.retain ?? false,
+        topic: this.options.will.topic,
+        payload: this.options.will.payload,
+        qos: this.options.will.qos ?? 0,
+        retain: this.options.will.retain ?? false,
       };
     }
     return new Promise<void>((resolve, reject) => {
-      const client = mqtt.connect(this.settings.brokerUrl!, opts);
+      const client = mqtt.connect(this.options.brokerUrl!, opts);
       let done = false;
       let down = false;
       // mqtt.js can fire 'error' then 'close' for one drop — collapse them.
@@ -476,9 +476,9 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   protected async dispatchOutgoing(env: OutboundEnvelope<MqttPublish>): Promise<void> {
     if (!this.client) throw new Error('MqttActor: not connected');
     const p = env.payload;
-    const qos = p.qos ?? this.settings.qos ?? 0;
+    const qos = p.qos ?? this.options.qos ?? 0;
     const retain = p.retain ?? false;
-    const protocolVersion = this.settings.protocolVersion ?? 4;
+    const protocolVersion = this.options.protocolVersion ?? 4;
     const opts: MqttPubOpts = { qos, retain };
     const properties = buildPublishProperties(p, protocolVersion);
     if (properties) opts.properties = properties;

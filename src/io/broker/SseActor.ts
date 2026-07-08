@@ -30,8 +30,8 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCmd, never> {
   constructor(options: SseOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.sse; }
-  protected builtInDefaults(): Partial<SseOptionsType> { return {}; }
-  protected readSettingsFromConfig(c: Config): Partial<SseOptionsType> {
+  protected builtInDefaultOptions(): Partial<SseOptionsType> { return {}; }
+  protected readOptionsFromConfig(c: Config): Partial<SseOptionsType> {
     const out: { -readonly [K in keyof SseOptionsType]?: SseOptionsType[K] } = {};
     if (c.hasPath('url')) out.url = c.getString('url');
     if (c.hasPath('headers')) {
@@ -43,15 +43,15 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCmd, never> {
     }
     return out;
   }
-  protected requiredSettings(): ReadonlyArray<keyof SseOptionsType> { return ['url', 'target']; }
-  protected endpointLabel(): string { return this.settings.url ?? '<unknown>'; }
+  protected requiredOptions(): ReadonlyArray<keyof SseOptionsType> { return ['url', 'target']; }
+  protected endpointLabel(): string { return this.options.url ?? '<unknown>'; }
 
   protected async connectImpl(): Promise<void> {
     this.aborter = new AbortController();
     const fetchFn = await fetchLazy.get();
-    const res = await fetchFn(this.settings.url!, {
+    const res = await fetchFn(this.options.url!, {
       method: 'GET',
-      headers: { Accept: 'text/event-stream', ...(this.settings.headers ?? {}) },
+      headers: { Accept: 'text/event-stream', ...(this.options.headers ?? {}) },
       signal: this.aborter.signal,
     });
     if (!res.ok) throw new Error(`SSE connect failed: HTTP ${res.status}`);
@@ -89,7 +89,7 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCmd, never> {
           const block = buffer.slice(0, idx);
           buffer = buffer.slice(idx + 2);
           const ev = parseEventBlock(block);
-          if (ev && this.settings.target) this.settings.target.tell(ev);
+          if (ev && this.options.target) this.options.target.tell(ev);
           idx = buffer.indexOf('\n\n');
         }
       }

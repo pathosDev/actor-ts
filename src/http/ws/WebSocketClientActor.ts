@@ -3,7 +3,7 @@
  * {@link WebSocketServerActor}: it dials a URL and speaks the same typed,
  * codec-encoded protocol.  Built on {@link BrokerActor}, so it inherits
  * reconnect-with-backoff, an outbound buffer that survives reconnects, a
- * circuit breaker, and HOCON settings resolution for free.
+ * circuit breaker, and HOCON options resolution for free.
  *
  *     class FeedClient extends WebSocketClientActor<ClientMsg, ServerMsg> {
  *       constructor() {
@@ -59,7 +59,7 @@ export abstract class WebSocketClientActor<TOut, TIn, TSelf = never>
 
   /** The connection (re)opened.  A good place to send an initial handshake. */
   protected onConnected(): void | Promise<void> {}
-  /** The connection dropped; a reconnect cycle may follow (per settings). */
+  /** The connection dropped; a reconnect cycle may follow (per options). */
   protected onDisconnected(_cause?: Error): void | Promise<void> {}
   /** An inbound frame failed to decode.  Only called when onInvalidMessage is 'hook'. */
   protected onInvalidMessage(_error: WsDecodeError): void | Promise<void> {}
@@ -92,7 +92,7 @@ export abstract class WebSocketClientActor<TOut, TIn, TSelf = never>
   }
 
   private codec(): WsCodec<TOut, TIn> {
-    return (this._codec ??= this.settings.codec ?? jsonCodec<TOut, TIn>());
+    return (this._codec ??= this.options.codec ?? jsonCodec<TOut, TIn>());
   }
 
   /* ----------------------- sealed dispatch ----------------------- */
@@ -110,11 +110,11 @@ export abstract class WebSocketClientActor<TOut, TIn, TSelf = never>
   /* ----------------------- BrokerActor plumbing ------------------ */
 
   protected configKey(): string { return ConfigKeys.io.broker.websocket; }
-  protected builtInDefaults(): Partial<WebSocketClientOptionsType<TOut, TIn>> { return {}; }
-  protected requiredSettings(): ReadonlyArray<keyof WebSocketClientOptionsType<TOut, TIn>> { return ['url']; }
-  protected endpointLabel(): string { return this.settings.url ?? '<unknown>'; }
+  protected builtInDefaultOptions(): Partial<WebSocketClientOptionsType<TOut, TIn>> { return {}; }
+  protected requiredOptions(): ReadonlyArray<keyof WebSocketClientOptionsType<TOut, TIn>> { return ['url']; }
+  protected endpointLabel(): string { return this.options.url ?? '<unknown>'; }
 
-  protected readSettingsFromConfig(c: Config): Partial<WebSocketClientOptionsType<TOut, TIn>> {
+  protected readOptionsFromConfig(c: Config): Partial<WebSocketClientOptionsType<TOut, TIn>> {
     const out: { -readonly [K in keyof WebSocketClientOptionsType<TOut, TIn>]?: WebSocketClientOptionsType<TOut, TIn>[K] } = {};
     if (c.hasPath('url')) out.url = c.getString('url');
     if (c.hasPath('protocols')) out.protocols = c.getStringList('protocols');
@@ -131,9 +131,9 @@ export abstract class WebSocketClientActor<TOut, TIn, TSelf = never>
 
   protected async connectImpl(): Promise<void> {
     const ctor = await wsClientCtor.get();
-    const ws = ctor.create(this.settings.url!, {
-      protocols: this.settings.protocols,
-      headers: this.settings.headers,
+    const ws = ctor.create(this.options.url!, {
+      protocols: this.options.protocols,
+      headers: this.options.headers,
     });
     return new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -144,7 +144,7 @@ export abstract class WebSocketClientActor<TOut, TIn, TSelf = never>
         ws.addEventListener('message', (ev: { data: unknown }) => this.handleInbound(ev.data));
         ws.addEventListener('close', () => this.onSocketDown(new Error('websocket closed')));
         ws.addEventListener('error', () => this.onSocketDown(new Error('websocket error')));
-        const ping = this.settings.pingIntervalMs;
+        const ping = this.options.pingIntervalMs;
         if (ping && ping > 0) {
           this.pingTimer = setInterval(() => { try { ws.ping?.(); } catch { /* ignore */ } }, ping);
         }
@@ -189,9 +189,9 @@ export abstract class WebSocketClientActor<TOut, TIn, TSelf = never>
       this.log.warn('WebSocketClientActor: unrecognised inbound frame type — dropped');
       return;
     }
-    const cap = this.settings.maxFrameBytes ?? DEFAULT_WS_MAX_FRAME_BYTES;
+    const cap = this.options.maxFrameBytes ?? DEFAULT_WS_MAX_FRAME_BYTES;
     if (frameByteLength(frame) > cap) {
-      this.log.warn(`WebSocketClientActor: dropped oversize inbound frame (> ${cap} bytes) from ${this.settings.url}`);
+      this.log.warn(`WebSocketClientActor: dropped oversize inbound frame (> ${cap} bytes) from ${this.options.url}`);
       return;
     }
     let decoded: TIn;
@@ -199,7 +199,7 @@ export abstract class WebSocketClientActor<TOut, TIn, TSelf = never>
       decoded = this.codec().decode(frame);
     } catch (err) {
       const e = err instanceof WsDecodeError ? err : new WsDecodeError(String(err), frame);
-      const policy = this.settings.onInvalidMessage ?? 'drop';
+      const policy = this.options.onInvalidMessage ?? 'drop';
       if (policy === 'hook') {
         this.self.tell(new WsClientInvalid(e));
       } else if (policy === 'disconnect') {

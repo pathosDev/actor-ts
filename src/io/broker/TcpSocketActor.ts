@@ -42,10 +42,10 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
   constructor(options: TcpSocketOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.tcp; }
-  protected builtInDefaults(): Partial<TcpSocketOptionsType> {
+  protected builtInDefaultOptions(): Partial<TcpSocketOptionsType> {
     return { framing: { kind: 'bytes' } };
   }
-  protected readSettingsFromConfig(c: Config): Partial<TcpSocketOptionsType> {
+  protected readOptionsFromConfig(c: Config): Partial<TcpSocketOptionsType> {
     const out: { -readonly [K in keyof TcpSocketOptionsType]?: TcpSocketOptionsType[K] } = {};
     if (c.hasPath('host')) out.host = c.getString('host');
     if (c.hasPath('port')) out.port = c.getInt('port');
@@ -67,15 +67,15 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
     }
     return out;
   }
-  protected requiredSettings(): ReadonlyArray<keyof TcpSocketOptionsType> {
+  protected requiredOptions(): ReadonlyArray<keyof TcpSocketOptionsType> {
     return ['host', 'port', 'target'];
   }
-  protected endpointLabel(): string { return `tcp://${this.settings.host}:${this.settings.port}`; }
+  protected endpointLabel(): string { return `tcp://${this.options.host}:${this.options.port}`; }
 
   protected async connectImpl(): Promise<void> {
     const net = await netLazy.get();
     return new Promise<void>((resolve, reject) => {
-      const sock = net.createConnection({ host: this.settings.host!, port: this.settings.port! });
+      const sock = net.createConnection({ host: this.options.host!, port: this.options.port! });
       let done = false;
       sock.once('connect', () => {
         if (done) return;
@@ -133,7 +133,7 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
       merged.set(chunk, this.inboundBuffer.length);
       this.inboundBuffer = merged;
     }
-    const f = this.settings.framing ?? { kind: 'bytes' };
+    const f = this.options.framing ?? { kind: 'bytes' };
     if (f.kind === 'bytes') {
       this.deliver(this.inboundBuffer);
       this.inboundBuffer = new Uint8Array(0);
@@ -182,7 +182,7 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
   }
 
   private deliver(frame: Uint8Array | string): void {
-    const target = this.settings.target;
+    const target = this.options.target;
     if (target) target.tell(frame as never);
   }
 }

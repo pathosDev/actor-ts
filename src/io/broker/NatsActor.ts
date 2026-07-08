@@ -39,8 +39,8 @@ export class NatsActor extends BrokerActor<NatsOptionsType, NatsCmd, NatsPublish
   constructor(options: NatsOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.nats; }
-  protected builtInDefaults(): Partial<NatsOptionsType> { return {}; }
-  protected readSettingsFromConfig(c: Config): Partial<NatsOptionsType> {
+  protected builtInDefaultOptions(): Partial<NatsOptionsType> { return {}; }
+  protected readOptionsFromConfig(c: Config): Partial<NatsOptionsType> {
     const out: { -readonly [K in keyof NatsOptionsType]?: NatsOptionsType[K] } = {};
     if (c.hasPath('servers')) out.servers = c.getStringList('servers');
     if (c.hasPath('token')) out.token = c.getString('token');
@@ -49,27 +49,27 @@ export class NatsActor extends BrokerActor<NatsOptionsType, NatsCmd, NatsPublish
     if (c.hasPath('name')) out.name = c.getString('name');
     return out;
   }
-  protected requiredSettings(): ReadonlyArray<keyof NatsOptionsType> { return ['servers']; }
+  protected requiredOptions(): ReadonlyArray<keyof NatsOptionsType> { return ['servers']; }
   protected endpointLabel(): string {
-    const s = this.settings.servers;
+    const s = this.options.servers;
     if (Array.isArray(s)) return s.join(',');
     return typeof s === 'string' ? s : '';
   }
 
   protected async connectImpl(): Promise<void> {
     const nats = await natsLazy.get();
-    const servers = Array.isArray(this.settings.servers)
-      ? [...this.settings.servers]
-      : [this.settings.servers as string];
+    const servers = Array.isArray(this.options.servers)
+      ? [...this.options.servers]
+      : [this.options.servers as string];
     this.nc = await nats.connect({
       servers,
-      token: this.settings.token,
-      user: this.settings.user,
-      pass: this.settings.password,
-      name: this.settings.name,
+      token: this.options.token,
+      user: this.options.user,
+      pass: this.options.password,
+      name: this.options.name,
     });
 
-    for (const s of this.settings.subscriptions ?? []) {
+    for (const s of this.options.subscriptions ?? []) {
       this.subscribeOnConnection(s.subject, s.target);
     }
 

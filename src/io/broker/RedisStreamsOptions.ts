@@ -16,7 +16,7 @@ export interface RedisStreamsOptionsType extends BrokerCommonOptionsType {
   readonly url?: string;
   /** Streams to consume. */
   readonly streams?: ReadonlyArray<string>;
-  /** Consumer-group settings — required to consume.  When omitted only producing works. */
+  /** Consumer-group options — required to consume.  When omitted only producing works. */
   readonly consumerGroup?: {
     readonly group: string;
     readonly consumer: string;
@@ -45,7 +45,7 @@ export class RedisStreamsOptionsBuilder extends BrokerOptionsBuilder<RedisStream
     return this.set('streams', streams);
   }
 
-  /** Consumer-group settings — required to consume. */
+  /** Consumer-group options — required to consume. */
   withConsumerGroup(group: NonNullable<RedisStreamsOptionsType['consumerGroup']>): this {
     return this.set('consumerGroup', group);
   }

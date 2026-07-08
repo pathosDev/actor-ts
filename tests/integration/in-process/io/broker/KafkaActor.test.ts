@@ -361,12 +361,12 @@ describe('KafkaActor — manual commit (#2)', () => {
   });
 });
 
-describe('KafkaActor — settings parsing', () => {
+describe('KafkaActor — options parsing', () => {
   test('commitMode + commitTimeoutMs flow through to the consumer pump', async () => {
     const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
-    const sys = ActorSystem.create('kafka-settings', sysOptions);
+    const sys = ActorSystem.create('kafka-options', sysOptions);
     try {
       const kafkaOptions = KafkaOptions.create()
         .withBrokers(['x:9092'])

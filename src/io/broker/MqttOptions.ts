@@ -1,7 +1,7 @@
 /**
  * All MQTT option-relevant types live here:
  *
- *   - {@link MqttOptionsType} — the plain settings-object shape (what you may
+ *   - {@link MqttOptionsType} — the plain options-object shape (what you may
  *     also pass as a bare `{ … }` object).
  *   - {@link MqttOptionsBuilder} — the fluent builder (`MqttOptions.create()…`).
  *   - {@link MqttOptions} — the accepted-input **union**
@@ -9,7 +9,7 @@
  *     builder so `MqttOptions.create()` / `new MqttOptions()` keep working.
  *
  * A subclass takes `MqttOptions` in its constructor and tacks on per-instance
- * settings before calling `super(...)`:
+ * options before calling `super(...)`:
  *
  *     class MyClient extends MqttActor {
  *       constructor(options: MqttOptions = {}) {
@@ -35,7 +35,7 @@ export interface MqttCredentials {
   readonly password?: string;
 }
 
-/** Plain settings-object shape accepted by an {@link MqttActor}. */
+/** Plain options-object shape accepted by an {@link MqttActor}. */
 export interface MqttOptionsType extends BrokerCommonOptionsType {
   /** Broker URL — `mqtt://`, `mqtts://`, `ws://`, `wss://`. */
   readonly brokerUrl?: string;

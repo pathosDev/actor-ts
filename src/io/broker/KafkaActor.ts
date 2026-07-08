@@ -136,10 +136,10 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCmd, KafkaPub
   constructor(options: KafkaOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.kafka; }
-  protected builtInDefaults(): Partial<KafkaOptionsType> {
+  protected builtInDefaultOptions(): Partial<KafkaOptionsType> {
     return { ssl: false, producer: { idempotent: false, allowAutoTopicCreation: false } };
   }
-  protected readSettingsFromConfig(c: Config): Partial<KafkaOptionsType> {
+  protected readOptionsFromConfig(c: Config): Partial<KafkaOptionsType> {
     const out: { -readonly [K in keyof KafkaOptionsType]?: KafkaOptionsType[K] } = {};
     if (c.hasPath('brokers')) out.brokers = c.getStringList('brokers');
     if (c.hasPath('clientId')) out.clientId = c.getString('clientId');
@@ -166,14 +166,14 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCmd, KafkaPub
     if (c.hasPath('topics')) out.topics = c.getStringList('topics');
     return out;
   }
-  protected requiredSettings(): ReadonlyArray<keyof KafkaOptionsType> { return ['brokers']; }
+  protected requiredOptions(): ReadonlyArray<keyof KafkaOptionsType> { return ['brokers']; }
   protected endpointLabel(): string {
-    const brokers = this.settings.brokers;
+    const brokers = this.options.brokers;
     return Array.isArray(brokers) ? `kafka://${brokers.join(',')}` : `kafka://${brokers ?? ''}`;
   }
 
   /**
-   * Build a `KafkaInstanceLike` from the configured settings.  Override
+   * Build a `KafkaInstanceLike` from the configured options.  Override
    * in a subclass for tests that want to inject mock producers /
    * consumers without going through the kafkajs peer dep — that's the
    * test seam used by `tests/unit/io/broker/KafkaActor.test.ts`.
@@ -181,38 +181,38 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCmd, KafkaPub
   protected async createKafkaInstance(): Promise<KafkaInstanceLike> {
     const kafkajs = await kafkaLazy.get();
     const Ctor = kafkajs.Kafka ?? (kafkajs as unknown as { default: { Kafka: KafkaCtor } }).default.Kafka;
-    const brokersRaw = this.settings.brokers;
+    const brokersRaw = this.options.brokers;
     const brokers: ReadonlyArray<string> = Array.isArray(brokersRaw)
       ? brokersRaw
       : (typeof brokersRaw === 'string' ? brokersRaw : '')
           .split(',').map((s: string) => s.trim()).filter(Boolean);
     return new Ctor({
-      clientId: this.settings.clientId,
+      clientId: this.options.clientId,
       brokers: [...brokers],
-      ssl: this.settings.ssl,
-      sasl: this.settings.sasl,
+      ssl: this.options.ssl,
+      sasl: this.options.sasl,
     });
   }
 
   protected async connectImpl(): Promise<void> {
     this.kafka = await this.createKafkaInstance();
     this.producer = this.kafka.producer({
-      idempotent: this.settings.producer?.idempotent,
-      allowAutoTopicCreation: this.settings.producer?.allowAutoTopicCreation,
+      idempotent: this.options.producer?.idempotent,
+      allowAutoTopicCreation: this.options.producer?.allowAutoTopicCreation,
     });
     await this.producer.connect();
 
-    if (this.settings.consumer?.groupId) {
-      this.consumer = this.kafka.consumer({ groupId: this.settings.consumer.groupId });
+    if (this.options.consumer?.groupId) {
+      this.consumer = this.kafka.consumer({ groupId: this.options.consumer.groupId });
       await this.consumer.connect();
-      for (const topic of this.settings.topics ?? []) {
+      for (const topic of this.options.topics ?? []) {
         await this.consumer.subscribe({
-          topic, fromBeginning: this.settings.consumer.fromBeginning ?? false,
+          topic, fromBeginning: this.options.consumer.fromBeginning ?? false,
         });
       }
-      const target = this.settings.target;
-      const manualCommit = this.settings.consumer.commitMode === 'manual';
-      const commitTimeoutMs = this.settings.consumer.commitTimeoutMs ?? 30_000;
+      const target = this.options.target;
+      const manualCommit = this.options.consumer.commitMode === 'manual';
+      const commitTimeoutMs = this.options.consumer.commitTimeoutMs ?? 30_000;
 
       // We deliberately don't await `run` — it's a long-running pump.
       void this.consumer.run({

@@ -14,7 +14,7 @@ import type { MqttMessage } from '../../../../../src/io/broker/MqttMessages.js';
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 describe('MqttOptions builder', () => {
-  test('each withX sets the right settings key', () => {
+  test('each withX sets the right options key', () => {
     const codec = mqttJsonCodec();
     const s = MqttOptions.create()
       .withBrokerUrl('mqtt://host:1883')
@@ -67,7 +67,7 @@ describe('MqttOptions builder', () => {
 /* ------------------- merge precedence (builder > HOCON > defaults) --- */
 
 class ProbeActor extends MqttActor {
-  constructor(settings: MqttOptions) { super(settings); }
+  constructor(options: MqttOptions) { super(options); }
   protected override mqttModule(): Promise<MqttModuleLike> {
     // Minimal fake module that connects immediately.
     const client = {
@@ -77,7 +77,7 @@ class ProbeActor extends MqttActor {
     return Promise.resolve({ connect: () => client } as unknown as MqttModuleLike);
   }
   override onMessage(_msg: MqttMessage): void {}
-  get resolved(): MqttOptionsType { return this.settings; }
+  get resolved(): MqttOptionsType { return this.options; }
 }
 
 describe('MqttOptions HOCON merge precedence', () => {

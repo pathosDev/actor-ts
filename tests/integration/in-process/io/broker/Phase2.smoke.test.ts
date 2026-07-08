@@ -3,7 +3,7 @@
  * peer deps installed.  We verify:
  *   1. Importing the modules doesn't crash.
  *   2. Constructing actors stays sync (peer-dep loaded lazily).
- *   3. Settings resolution + required-field validation works.
+ *   3. Options resolution + required-field validation works.
  *
  * Live integration tests against real brokers / a real gRPC loop run
  * in a separate, optional file (out of scope here).
@@ -61,7 +61,7 @@ describe('Phase 2 actors — construction is lazy', () => {
   });
 });
 
-describe('Phase 2 actors — settings validation', () => {
+describe('Phase 2 actors — options validation', () => {
   test('KafkaActor without `brokers` raises BrokerOptionsError', async () => {
     const sys = makeSys('kafka-validate');
     let captured: Error | null = null;
@@ -102,7 +102,7 @@ describe('Phase 2 actors — settings validation', () => {
   });
 });
 
-describe('Phase 2 actors — settings precedence (constructor wins over HOCON)', () => {
+describe('Phase 2 actors — options precedence (constructor wins over HOCON)', () => {
   test('KafkaActor: constructor brokers override HOCON', async () => {
     const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
@@ -119,7 +119,7 @@ describe('Phase 2 actors — settings precedence (constructor wins over HOCON)',
     sys.spawnAnonymous(Props.create(() => {
       const a = new KafkaActor(kafkaOptions);
       // We'll never actually try to connect — kafkajs isn't installed.
-      // Override preStart to swallow the connect error after settings
+      // Override preStart to swallow the connect error after options
       // resolution so the test can inspect them.
       const orig = a.preStart.bind(a);
       a.preStart = async (): Promise<void> => {
@@ -132,11 +132,11 @@ describe('Phase 2 actors — settings precedence (constructor wins over HOCON)',
     await ready;
     await sleep(20);
     expect(captured).not.toBeNull();
-    const settings = (captured as unknown as { settings: { brokers: string[]; clientId?: string } }).settings;
+    const options = (captured as unknown as { options: { brokers: string[]; clientId?: string } }).options;
     // Constructor `brokers` override takes precedence.
-    expect(settings.brokers).toEqual(['ctor:9092']);
+    expect(options.brokers).toEqual(['ctor:9092']);
     // `clientId` only set in HOCON, so it propagates.
-    expect(settings.clientId).toBe('from-cfg');
+    expect(options.clientId).toBe('from-cfg');
     await sys.terminate();
   });
 });
