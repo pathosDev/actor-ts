@@ -1,116 +1,127 @@
 ---
 title: In-Memory-Cache
-description: Der Default-`Cache` — eine In-Process-Map mit LRU-Eviction + TTL pro Eintrag. Nur Single-Pod; geht bei Neustart verloren. Richtig für Tests, Dev und Single-Node-Produktions-Setups.
+description: Der Default-`Cache` — eine schlichte In-Process-`Map` mit fauler TTL pro Eintrag. Keine Größenschranke, kein Hintergrund-Sweep, nur Single-Process; geht bei Neustart verloren. Richtig für Tests, Dev und Single-Node-Setups.
 ---
 
-`InMemoryCache` ist die **Default**-Cache-Implementierung.
-In-Process, LRU-Eviction, TTL pro Eintrag — schnell und keine
-Abhängigkeiten.
+`InMemoryCache` ist die **Default**-`Cache`-Implementierung.  Sie
+ist ein dünner Wrapper über einer schlichten `Map` — In-Process,
+keine Abhängigkeiten, faule Expiry pro Eintrag.  Es gibt keine
+Eviction-Policy und keinen Hintergrund-Sweeper: sie tut, was eine
+`Map` tut, plus TTL.
 
 ```ts
 import { InMemoryCache } from 'actor-ts';
 
-const cache = new InMemoryCache({
-  maxEntries: 10_000,
-});
+const cache = new InMemoryCache();
 ```
+
+Der Konstruktor nimmt **keine Optionen** — es gibt nichts zu
+tunen.  Eine TTL wird pro Aufruf übergeben (siehe
+[TTL-Behandlung](#ttl-behandlung)), nicht beim Konstruieren.
 
 ## Wann einsetzen
 
 Drei Szenarien:
 
-1. **Tests** — schnell, kein I/O, sauberes Teardown.
-2. **Single-Pod-Produktion** — kein Bedarf, Cache-State zu teilen.
+1. **Tests** — schnell, kein I/O, sauberes Teardown via `close()`.
+2. **Single-Process-Produktion** — ein Prozess, kein Bedarf,
+   Cache-State über Pods zu teilen.
 3. **Dev / lokal** — derselbe Code ohne Redis auf dem Laptop.
 
-Für **Multi-Pod**-Produktion nimm stattdessen
-[Redis](/de/cache/redis/) oder
-[Memcached](/de/cache/memcached/) — sonst hätten die Pods je
-eine eigene Kopie.
+Für **Multi-Process**-Deployments nimm stattdessen
+[Redis](/de/cache/redis/) oder [Memcached](/de/cache/memcached/) —
+sonst hielte jeder Prozess seine eigene, unabhängige Kopie.
 
-## Konfiguration
+## Die Operationen
+
+`InMemoryCache` implementiert die vollständige
+[`Cache`](/de/cache/overview/)-Fläche:
 
 ```ts
-interface InMemoryCacheSettings {
-  maxEntries?:   number;     // LRU-Cap; Default 10_000
-  cleanupMs?:    number;     // Sweep-Rhythmus für abgelaufene Einträge; Default 60_000
-}
+await cache.set('user:1', user, 60_000);            // value + optional TTL (ms)
+const hit = await cache.get<User>('user:1');        // Option<User> — None on miss/expiry
+
+await cache.setIfAbsent('lock:job', '1', 30_000);   // true iff it was stored
+await cache.incr('ratelimit:1.2.3.4', 60_000);      // atomic ++, returns the new count
+
+const many = await cache.mget<User>(['user:1', 'user:2']);  // Map<string, User>
+await cache.mset(new Map([['a', user1], ['b', user2]]), 60_000);
+
+await cache.delete('user:1', 'user:2');             // one or many keys
+await cache.close();                                // clears the Map
 ```
 
-| Feld | Zweck |
-| --- | --- |
-| `maxEntries` | Obergrenze für die Cache-Größe.  LRU-Eviction darüber hinaus. |
-| `cleanupMs` | Wie oft abgelaufene Einträge gesweept werden.  Ohne das verweilen abgelaufene Einträge bis zum Zugriff. |
-
-Für die meisten Apps reichen die Defaults.
-
-## LRU-Eviction
-
-```
-maxEntries: 1000
-
-→ 1001. eindeutiger Key eingefügt → der am längsten nicht genutzte Eintrag wird evicted
-```
-
-LRU heißt **häufig genutzte Einträge bleiben**; selten genutzte
-fliegen raus.  Gut für leseintensive Caches, bei denen das Hot-Set
-in den Speicher passt, der Long-Tail aber nicht.
+`get` gibt ein `Option<V>` zurück — `None` bei einem Miss oder
+nach Ablauf.
 
 ## TTL-Behandlung
 
 ```ts
-await cache.set('key', value, 60_000);   // läuft ab bei now + 60s
+await cache.set('key', value, 60_000);   // expires at now + 60s
+await cache.set('key', value);           // no TTL — lives until deleted
 ```
 
-Zwei Cleanup-Pfade:
+Expiry ist **faul**: die Deadline eines Eintrags wird bei jedem
+`get`, `mget`, `incr` und `setIfAbsent` geprüft, und ein
+abgelaufener Eintrag wird an dieser Stelle verworfen.  Es gibt
+**keinen Hintergrund-Sweeper** — ein abgelaufener Eintrag, der nie
+wieder angefasst wird, bleibt in der `Map`, bis du ihn mit
+`delete` entfernst oder den Cache mit `close()` schließt.
 
-1. **Lazy** — beim `get` geben abgelaufene Einträge None zurück
-   (und werden entfernt).
-2. **Periodisches Sweep** — alle `cleanupMs` läuft der Cache
-   über abgelaufene Einträge und entfernt sie.  Reduziert
-   Speicher für Keys, die geschrieben, aber nie gelesen werden.
+`incr` setzt die TTL nur, wenn es den Zähler **erzeugt** (der Wert
+wird 1); spätere Inkremente erneuern sie nicht — die richtige
+Semantik für einen Fixed-Window-Rate-Limiter.
+
+## Keine Eviction
+
+`InMemoryCache` hat **keine Größenschranke und kein LRU** — er hält
+alles, was du hineinlegst, bis der Eintrag (faul) abläuft oder du
+ihn entfernst.  Für ein beschränktes Working-Set, das in den
+Speicher passt, ist genau das gewünscht.  Für einen Workload, der
+viele eindeutige, nie erneut gelesene Keys schreibt, gib jedem
+Eintrag eine TTL (oder `delete` ihn), damit die `Map` nicht
+unbegrenzt wächst.
 
 ## Über das System teilen
 
 ```ts
-import { CacheExtensionId } from 'actor-ts';
+import { CacheExtensionId, InMemoryCache } from 'actor-ts';
 
-system.extension(CacheExtensionId).configure({
-  defaultCache: new InMemoryCache({ maxEntries: 50_000 }),
-});
+// The extension's `default` cache is an InMemoryCache out of the box:
+const cache = system.extension(CacheExtensionId).cache();
 
-// Zugriff über:
-const cache = system.extension(CacheExtensionId).cache;
+// Override the default, or register a separate named cache:
+system.extension(CacheExtensionId).setCache('default', new InMemoryCache());
+const sessions = system.extension(CacheExtensionId).cache('sessions');
 ```
 
-Ein **systemweiter Cache**, den mehrere Konsumenten (HTTP-
-Middleware, Projection-Actors, eigener Code) teilen.  Nützlich,
-wenn:
+`system.extension(CacheExtensionId).cache(name)` löst einen Cache
+über seinen Namen auf — der Name `default` ist ein `InMemoryCache`,
+solange du ihn nicht ersetzt (via `setCache`, `registerCache` oder
+den HOCON-Pfad `actor-ts.cache.<name>.plugin`).  HTTP-Middleware,
+Projection-Actors und dein eigener Code teilen sich dann eine
+konfigurierte Instanz, statt dass jeder seine eigene baut.
 
-- Du eine konfigurierte Cache-Instanz willst, nicht eine pro
-  Konsument.
-- Cache-Statistiken sich systemweit ansammeln.
-
-Für Per-Route-Caches instanziiere `new InMemoryCache()` direkt,
-ohne über die Extension zu gehen.
+Für einen Wegwerf-Cache konstruiere einfach direkt
+`new InMemoryCache()` — keine Extension nötig.
 
 ## Wann er für Produktion falsch ist
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="State-Divergenz über Pods">
+<Aside type="caution" title="State-Divergenz über Prozesse">
   ```ts
-  // 4 Pods, jeder mit eigenem InMemoryCache → 4 unabhängige Caches
+  // 4 pods, each with its own InMemoryCache → 4 independent caches
   ```
-  Derselbe Request kann auf verschiedenen Pods gecachte Responses
-  von einem Pod bekommen und auf einem anderen verfehlen.  Nimm
-  Redis für geteilten Multi-Pod-State.
+  Derselbe Request kann auf verschiedenen Pods eine gecachte
+  Response von einem bekommen und auf einem anderen verfehlen.
+  Nimm Redis für geteilten Multi-Process-State.
 </Aside>
 
 <Aside type="caution" title="Neustart verliert alles">
   ```bash
   # kubectl delete pod my-app-1
-  # → der gesamte Cache des Pods weg
+  # → the entire pod's cache is gone
   ```
   In-Memory-Caches überleben keinen Neustart.  Für Caches, bei
   denen Kaltstart-Kosten erheblich sind (Wiederaufbau dauert
@@ -118,20 +129,22 @@ import { Aside } from '@astrojs/starlight/components';
   Kaltstart.
 </Aside>
 
-<Aside type="caution" title="Unbegrenztes Wachstum ohne maxEntries">
+<Aside type="caution" title="Keine Schranke — TTLs setzen, um Wachstum zu begrenzen">
   ```ts
-  new InMemoryCache();   // defaultet zu 10_000 — okay
-  new InMemoryCache({ maxEntries: Infinity });   // ✗ fliegt mit OOM
+  // No maxEntries, no LRU, no sweeper: a Map that only grows.
+  await cache.set(key, value);              // ✗ lives forever until deleted
+  await cache.set(key, value, 300_000);     // ✓ reclaimed lazily after 5 min
   ```
-  Setze (oder akzeptiere) immer eine Schranke.  Ein unbegrenzter
-  Cache füllt irgendwann den Speicher.
+  Gib Einträgen bei schreibintensiven Workloads mit geringer
+  Wiederverwendung eine TTL (oder `delete` sie) — nichts evictet
+  sie für dich.
 </Aside>
 
 ## Wohin als Nächstes
 
 - **[Cache-Übersicht](/de/cache/overview/)** — das große
   Bild.
-- **[Redis-Cache](/de/cache/redis/)** — Multi-Pod-
+- **[Redis-Cache](/de/cache/redis/)** — Multi-Process-
   Alternative.
 - **[Memcached-Cache](/de/cache/memcached/)** —
   Alternative.

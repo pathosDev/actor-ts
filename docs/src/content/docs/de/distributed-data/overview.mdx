@@ -170,24 +170,21 @@ Cluster neu startet (Cold Start), beginnt jeder Key wieder leer.
 Für **Restart-überlebende** Semantik nutzt du die **durable**-Variante:
 
 ```ts
-import { DistributedDataOptions, DurableDistributedDataStore } from 'actor-ts';
+import { DistributedDataOptions, InMemoryDurableStateStore } from 'actor-ts';
 
-const distributedDataOptions = DistributedDataOptions.create().withDurableStore(
-    new DurableDistributedDataStore({
-      durableStateStore: someStore,
-      keys: ['hits', 'config'],   // nur diese Keys werden persistiert
-    }),
-  );
+const store = new InMemoryDurableStateStore();
+const distributedDataOptions = DistributedDataOptions.create().withDurableStore(store);
 const dd = system.extension(DistributedDataId).start(
   cluster,
   distributedDataOptions,
 );
 ```
 
-Die Durable-Schicht persistiert Änderungen auf Disk (oder
-wohin auch immer der Durable-State-Store schreibt); beim Neustart
-wird der Stand der Replika wiederhergestellt, bevor sie Gossip
-beitritt.
+`withDurableStore` nimmt jeden [`DurableStateStore`](/de/persistence/durable-state/)
+(hier InMemory; ein SQL- oder Object-Storage-Backend in Produktion).
+Die Durable-Schicht persistiert die **gesamte Sicht** der Replika in
+den Store; beim Neustart wird der Stand wiederhergestellt, bevor sie
+Gossip beitritt.
 
 Siehe [Durable Storage](/de/distributed-data/durable-storage/)
 für die Konfigurationsdetails.
