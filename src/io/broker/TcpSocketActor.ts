@@ -160,6 +160,15 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
       this.deliver(line);
       cursor = idx + delimiter.length;
     }
+    // Pending (un-terminated) remainder: bytes after the last delimiter, or
+    // the whole buffer when no delimiter has arrived.  If it already exceeds
+    // maxLineLen it can never become a valid line, so a hostile / MITM'd peer
+    // streaming delimiter-free bytes can't grow inboundBuffer without bound
+    // (SECURITY_AUDIT.md BRK-1).
+    if (text.length - cursor > maxLineLen) {
+      this.handleConnectionLost(new Error(`unterminated line exceeds maxLineLen=${maxLineLen}`));
+      return;
+    }
     if (cursor === 0) return;
     // Re-encode the leftover suffix as bytes.
     this.inboundBuffer = new TextEncoder().encode(text.slice(cursor));

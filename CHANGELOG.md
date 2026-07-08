@@ -92,6 +92,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   now define a decoded `"__proto__"` key as an own data property instead of
   assigning through the prototype setter, so a hostile payload can't change
   the decoded object's prototype.
+- **BRK-1 / BRK-2 (MEDIUM) — inbound buffer caps for TCP `lines` + SSE** (see
+  `SECURITY_AUDIT.md`).  A hostile / MITM'd upstream could stream bytes with no
+  frame delimiter, growing the inbound buffer without bound.  The TCP `lines`
+  framer now rejects an un-terminated remainder that already exceeds
+  `maxLineLen` (matching the existing terminated-line check), and the SSE
+  client caps its pending event buffer at 1 MiB — both drop the connection
+  instead of buffering forever.  (`length-prefixed` TCP framing was already
+  bounded.)
 
 ## [0.10.0] — 2026-07-08
 

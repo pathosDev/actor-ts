@@ -18,6 +18,14 @@ export interface SseEvent {
 export type SseCmd = never;  // SSE is read-only
 
 /**
+ * Safety cap on the pending event buffer (chars).  A well-behaved server
+ * delimits events with `\n\n` frequently; this bounds the damage from one
+ * that never does (SECURITY_AUDIT.md BRK-2).  1 MiB is far above any real
+ * single SSE event.
+ */
+const SSE_MAX_BUFFER_CHARS = 1_048_576;
+
+/**
  * Server-Sent Events client actor.  Pure built-ins — uses `fetch`
  * (Bun + Node 18+ + Deno all have it) and parses the wire format
  * inline.  No outbound — SSE is unidirectional from server.
@@ -86,6 +94,17 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCmd, never> {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
+        // Cap the pending buffer: a hostile / MITM'd endpoint that streams
+        // bytes without an event delimiter (`\n\n`) would otherwise grow it
+        // without bound (SECURITY_AUDIT.md BRK-2).
+        if (buffer.length > SSE_MAX_BUFFER_CHARS) {
+          this.streamRunning = false;
+          try { this.aborter?.abort(); } catch { /* ignore */ }
+          this.handleConnectionLost(
+            new Error(`SSE event buffer exceeded ${SSE_MAX_BUFFER_CHARS} chars without a delimiter`),
+          );
+          return;
+        }
         let idx = buffer.indexOf('\n\n');
         while (idx >= 0) {
           const block = buffer.slice(0, idx);
