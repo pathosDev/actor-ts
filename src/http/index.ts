@@ -93,6 +93,16 @@ export { entity, marshal, pickRequestSerializer, pickResponseSerializer } from '
 // MIME-type registry — extension → content-type for static-file responses.
 export { contentTypeFor, DEFAULT_MIME_TYPES } from './MimeTypes.js';
 
+// Static file serving — getFromFile / getFromDirectory / directory browsing.
+export {
+  getFromFile,
+  getFromDirectory,
+  getFromBrowseableDirectory,
+  StaticFilesOptions,
+  StaticFilesOptionsBuilder,
+} from './static/index.js';
+export type { StaticFilesOptionsType } from './static/index.js';
+
 // HTML response helpers — escaping + the `html` tagged template (#352).
 export { escapeHtml, html, rawHtml, completeHtml, SafeHtml } from './Html.js';
 
