@@ -31,6 +31,20 @@ import type {
 export interface WebSocketRouteOptionsType<TOut, TIn> extends WebSocketPolicyOptions {
   /** Wire codec.  Default: `jsonCodec<TOut, TIn>()`. */
   readonly codec?: WsCodec<TOut, TIn>;
+  /**
+   * Allowed browser `Origin`s for the upgrade handshake — the defence
+   * against Cross-Site WebSocket Hijacking (CSWSH).  When set, an upgrade
+   * whose `Origin` header is present but not in this list is rejected with
+   * 403.  A **missing** `Origin` (non-browser client: native WebSocket,
+   * server-to-server) is allowed — CSWSH rides a victim browser's ambient
+   * cookie/session credentials, so a request without an Origin can't be
+   * that attack.  Comparison is case-insensitive.  Unset → no origin check.
+   *
+   * Bearer-token auth is already resistant (browsers can't set the
+   * `Authorization` header on a WS handshake); set this when the route's
+   * auth is ambient (cookie / `IpAllowlist`).
+   */
+  readonly allowedOrigins?: ReadonlyArray<string>;
 }
 
 /** Fluent builder for {@link WebSocketRouteOptionsType}. */
@@ -44,6 +58,15 @@ export class WebSocketRouteOptionsBuilder<TOut = unknown, TIn = unknown>
   /** Wire codec.  Default: `jsonCodec<TOut, TIn>()`. */
   withCodec(codec: WsCodec<TOut, TIn>): this {
     return this.set('codec', codec);
+  }
+
+  /**
+   * Restrict the upgrade to these browser origins (CSWSH defence).  A
+   * present-but-unlisted `Origin` gets 403; a missing `Origin` (non-browser
+   * client) is allowed.  Case-insensitive.
+   */
+  withAllowedOrigins(origins: ReadonlyArray<string>): this {
+    return this.set('allowedOrigins', origins);
   }
 
   /** Inbound frame size cap in bytes.  Default 1 MiB. */

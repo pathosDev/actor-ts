@@ -11,6 +11,7 @@
  * request, so `BearerTokenAuth` / `IpAllowlist` gate the handshake.
  */
 import { path, type Route, type WebSocketConnectHandler } from '../Route.js';
+import { Status, type HttpRequest, type HttpResponse } from '../types.js';
 import { jsonCodec, type WsCodec } from './WsCodec.js';
 import { wireConnection } from './ConnectionWiring.js';
 import type { WsServerRef } from './WsMessages.js';
@@ -60,6 +61,32 @@ export function websocket<TOut, TIn, TSelf = never>(
     wireConnection<TOut, TIn, TSelf>(system, target, req, socket, codec, policy);
   };
 
-  const node: Route = { kind: 'websocket', connect };
+  // CSWSH defence — an Origin allowlist folds into the route's innermost
+  // upgrade `authorize`, which every backend runs before the handshake.
+  const originGuard = makeOriginGuard(options.allowedOrigins);
+
+  const node: Route = originGuard
+    ? { kind: 'websocket', connect, authorize: originGuard }
+    : { kind: 'websocket', connect };
   return segment === null ? node : path(segment, node);
+}
+
+/**
+ * Build an Origin-allowlist guard for the upgrade handshake, or `undefined`
+ * when no origins are configured.  See
+ * {@link WebSocketRouteOptionsType.allowedOrigins} and SECURITY_AUDIT.md WS-2.
+ */
+function makeOriginGuard(
+  allowedOrigins: ReadonlyArray<string> | undefined,
+): ((req: HttpRequest) => HttpResponse | null) | undefined {
+  if (!allowedOrigins || allowedOrigins.length === 0) return undefined;
+  const allow = new Set(allowedOrigins.map((o) => o.toLowerCase()));
+  return (req: HttpRequest): HttpResponse | null => {
+    const origin = req.headers['origin'];
+    // Missing Origin → non-browser client (native WS / server-to-server);
+    // CSWSH can't apply, so allow.  Present-but-unlisted → reject.
+    if (origin === undefined) return null;
+    if (allow.has(origin.toLowerCase())) return null;
+    return { status: Status.Forbidden, body: { error: `websocket origin not allowed: ${origin}` } };
+  };
 }

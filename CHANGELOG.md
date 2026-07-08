@@ -53,6 +53,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   a non-match (→ 404), and the Express upgrade handler attaches its socket
   error-guard before any async work and wraps the handler in a last-resort
   `.catch` that closes the socket.  Fastify/Hono were not affected.
+- **WS-2 (HIGH) — Cross-Site WebSocket Hijacking (CSWSH) defence** (see
+  `SECURITY_AUDIT.md`).  No upgrade handler validated the `Origin` header, so a
+  malicious web page could open an authenticated WebSocket riding a victim
+  browser's ambient cookie/IP auth.  New **`allowedOrigins`** option on
+  `websocket()` routes (`.withAllowedOrigins([...])` on the builder): an upgrade
+  whose `Origin` is present but not listed is rejected with 403 before the
+  handshake on all three backends; a missing `Origin` (non-browser client) is
+  allowed.  Bearer-token auth was already resistant (browsers can't set
+  `Authorization` on a WS handshake).
 
 ## [0.10.0] — 2026-07-08
 
