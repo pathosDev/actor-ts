@@ -7,6 +7,7 @@ import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import { mqttJsonCodec, MqttDecodeError, type MqttCodec } from './MqttCodec.js';
+import { MqttOptionsValidator } from './MqttOptions.js';
 import type { MqttOptions, MqttOptionsType } from './MqttOptions.js';
 import {
   MqttConnectedSignal,
@@ -380,17 +381,14 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     if (c.hasPath('qos')) out.qos = c.getInt('qos') as MqttQos;
     if (c.hasPath('cleanSession')) out.cleanSession = c.getBoolean('cleanSession');
     if (c.hasPath('keepAlive')) out.keepAlive = c.getInt('keepAlive');
-    if (c.hasPath('protocolVersion')) {
-      const v = c.getInt('protocolVersion');
-      if (v !== 4 && v !== 5) {
-        throw new Error(`MqttActor: protocolVersion must be 4 or 5, got ${v}`);
-      }
-      out.protocolVersion = v;
-    }
+    // Value validation (protocolVersion ∈ {4,5}, etc.) is enforced uniformly
+    // by optionsValidator() on the merged settings — see MqttOptionsValidator.
+    if (c.hasPath('protocolVersion')) out.protocolVersion = c.getInt('protocolVersion') as 4 | 5;
     return out;
   }
 
   protected requiredSettings(): ReadonlyArray<keyof MqttOptionsType> { return ['brokerUrl']; }
+  protected override optionsValidator(): MqttOptionsValidator { return new MqttOptionsValidator(); }
   protected endpointLabel(): string { return this.settings.brokerUrl ?? '<unknown>'; }
 
   /** @internal Test seam — override to inject a fake mqtt module. */

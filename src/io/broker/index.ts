@@ -45,7 +45,7 @@ export type {
   MqttModuleLike,
   MqttInboundPacketLike,
 } from './MqttActor.js';
-export { MqttOptions, MqttOptionsBuilder } from './MqttOptions.js';
+export { MqttOptions, MqttOptionsBuilder, MqttOptionsValidator } from './MqttOptions.js';
 export type { MqttOptionsType, MqttCredentials } from './MqttOptions.js';
 // Message types, payload wrapper, and mailbox signals.
 export {
