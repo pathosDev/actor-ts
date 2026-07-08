@@ -18,6 +18,7 @@ import {
   ShardedDaemonProcessOptionsValidator,
   type ShardedDaemonProcessOptionsType,
 } from '../../../src/cluster/sharding/ShardedDaemonProcessOptions.js';
+import { WorkerClusterOptionsValidator, type WorkerClusterOptionsType } from '../../../src/worker/WorkerClusterOptions.js';
 
 // Direct validator tests for the non-broker options. Each consumer calls the
 // same validator in its constructor / start method after merging defaults.
@@ -147,5 +148,21 @@ describe('ShardedDaemonProcessOptionsValidator', () => {
 
   test('accepts numDaemons >= 1 and livenessIntervalMs 0 (disabled)', () => {
     expect(() => check({ name: 'workers', numDaemons: 4, livenessIntervalMs: 0 })).not.toThrow();
+  });
+});
+
+describe('WorkerClusterOptionsValidator', () => {
+  const check = (s: Partial<WorkerClusterOptionsType>): void =>
+    new WorkerClusterOptionsValidator().validate(s);
+
+  test("accepts a positive integer or 'auto' for workers", () => {
+    expect(() => check({ workers: 4 })).not.toThrow();
+    expect(() => check({ workers: 'auto' })).not.toThrow();
+    expect(() => check({ workers: 0 })).toThrow(OptionsError);
+  });
+
+  test('rejects an out-of-range basePort and non-positive readyTimeoutMs', () => {
+    expect(() => check({ basePort: 70_000 })).toThrow(OptionsError);
+    expect(() => check({ readyTimeoutMs: 0 })).toThrow(OptionsError);
   });
 });

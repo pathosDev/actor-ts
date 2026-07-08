@@ -1,5 +1,5 @@
 export { WorkerCluster } from './WorkerCluster.js';
-export { WorkerClusterOptions, WorkerClusterOptionsBuilder } from './WorkerClusterOptions.js';
+export { WorkerClusterOptions, WorkerClusterOptionsBuilder, WorkerClusterOptionsValidator } from './WorkerClusterOptions.js';
 export type { WorkerClusterOptionsType } from './WorkerClusterOptions.js';
 export type {
   WorkerHandle,

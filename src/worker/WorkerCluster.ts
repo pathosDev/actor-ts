@@ -4,6 +4,7 @@ import type {
   PortLike,
 } from '../cluster/transports/MessageChannelTransport.js';
 import { getWorkerBackend, type WorkerLike } from '../runtime/worker/index.js';
+import { WorkerClusterOptionsValidator } from './WorkerClusterOptions.js';
 import type { WorkerClusterOptions, WorkerClusterOptionsType } from './WorkerClusterOptions.js';
 import { WorkerBroker } from './WorkerBroker.js';
 
@@ -78,6 +79,7 @@ export class WorkerCluster {
     options: WorkerClusterOptions,
   ): Promise<WorkerCluster> {
     const settings = options as WorkerClusterOptionsType;
+    new WorkerClusterOptionsValidator().validate(settings);
     const workers = resolveWorkerCount(settings.workers);
     const broker = new WorkerBroker();
     const cluster = new WorkerCluster(broker, settings, workers);
