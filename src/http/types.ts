@@ -29,8 +29,13 @@ export interface HttpRequest {
 export interface HttpResponse {
   readonly status: number;
   readonly headers?: Readonly<Record<string, string>>;
-  /** Body — if string or JSON object, the marshaller adds Content-Type. */
-  readonly body?: string | Uint8Array | object | null;
+  /**
+   * Body.  A string or plain object is marshalled (JSON) with a
+   * Content-Type; a `Uint8Array` or web `ReadableStream` is sent as raw
+   * bytes (default `application/octet-stream`).  Streams are one-shot, so
+   * the caching middleware must not wrap a streaming response.
+   */
+  readonly body?: string | Uint8Array | ReadableStream<Uint8Array> | object | null;
   /** Forced content-type.  Overrides whatever the marshaller picks. */
   readonly contentType?: string;
 }

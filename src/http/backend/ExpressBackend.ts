@@ -1,5 +1,6 @@
 import type { IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
+import { Readable } from 'node:stream';
 import { match } from 'ts-pattern';
 import { Lazy } from '../../util/Lazy.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../types.js';
@@ -411,6 +412,11 @@ export class ExpressBackend implements HttpServerBackend {
     if (body instanceof Uint8Array) {
       if (!response.contentType) res.setHeader('content-type', 'application/octet-stream');
       res.end(body);
+      return;
+    }
+    if (typeof ReadableStream !== 'undefined' && body instanceof ReadableStream) {
+      if (!response.contentType && !response.headers?.['content-type']) res.setHeader('content-type', 'application/octet-stream');
+      Readable.fromWeb(body as unknown as Parameters<typeof Readable.fromWeb>[0]).pipe(res as unknown as NodeJS.WritableStream);
       return;
     }
     // Plain object → JSON.

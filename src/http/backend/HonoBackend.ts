@@ -378,6 +378,10 @@ export class HonoBackend implements HttpServerBackend {
       // (yet) parameterised that way, so the direct assignment errors.
       return new Response(body as unknown as BodyInit, { status: res.status, headers });
     }
+    if (typeof ReadableStream !== 'undefined' && body instanceof ReadableStream) {
+      if (!headers.has('content-type')) headers.set('content-type', 'application/octet-stream');
+      return new Response(body as unknown as BodyInit, { status: res.status, headers });
+    }
     if (!headers.has('content-type')) headers.set('content-type', 'application/json; charset=utf-8');
     return new Response(JSON.stringify(body), { status: res.status, headers });
   }

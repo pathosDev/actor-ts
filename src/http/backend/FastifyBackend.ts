@@ -265,6 +265,11 @@ export class FastifyBackend implements HttpServerBackend {
       reply.send(Buffer.from(res.body));
       return;
     }
+    if (typeof ReadableStream !== 'undefined' && res.body instanceof ReadableStream) {
+      if (!res.contentType && !res.headers?.['content-type']) reply.header('content-type', 'application/octet-stream');
+      reply.send(res.body);
+      return;
+    }
     // Plain object → JSON.
     if (!res.contentType) reply.header('content-type', 'application/json; charset=utf-8');
     reply.send(JSON.stringify(res.body));
