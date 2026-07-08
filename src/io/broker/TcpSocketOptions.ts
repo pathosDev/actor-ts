@@ -6,7 +6,7 @@
  * and feeds the same three-layer merge (constructor > HOCON under
  * `actor-ts.io.broker.tcp` > built-in defaults).
  */
-import { BrokerOptionsBuilder } from './BrokerOptions.js';
+import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
 import type { BrokerCommonOptionsType } from './BrokerSettings.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { TcpFraming } from './TcpSocketActor.js';
@@ -50,6 +50,18 @@ export class TcpSocketOptionsBuilder extends BrokerOptionsBuilder<TcpSocketOptio
   /** Subscriber that receives every inbound frame.  Required. */
   withTarget(target: ActorRef<unknown>): this {
     return this.set('target', target);
+  }
+}
+
+/** Validates resolved {@link TcpSocketOptionsType} settings. */
+export class TcpSocketOptionsValidator extends BrokerOptionsValidator<TcpSocketOptionsType> {
+  constructor() {
+    super('TcpSocketOptions');
+  }
+  protected rules(_s: Partial<TcpSocketOptionsType>): void {
+    this.commonRules(_s);
+    this.nonEmptyString('host');
+    this.port('port');
   }
 }
 

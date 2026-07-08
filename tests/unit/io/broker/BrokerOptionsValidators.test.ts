@@ -6,6 +6,9 @@ import { RedisStreamsOptionsValidator, type RedisStreamsOptionsType } from '../.
 import { NatsOptionsValidator, type NatsOptionsType } from '../../../../src/io/broker/NatsOptions.js';
 import { JetStreamOptionsValidator, type JetStreamOptionsType } from '../../../../src/io/broker/JetStreamOptions.js';
 import { SseOptionsValidator, type SseOptionsType } from '../../../../src/io/broker/SseOptions.js';
+import { TcpSocketOptionsValidator, type TcpSocketOptionsType } from '../../../../src/io/broker/TcpSocketOptions.js';
+import { UdpSocketOptionsValidator, type UdpSocketOptionsType } from '../../../../src/io/broker/UdpSocketOptions.js';
+import { GrpcClientOptionsValidator, type GrpcClientOptionsType } from '../../../../src/io/broker/GrpcClientOptions.js';
 
 // Direct validator tests. The optionsValidator() hook is proven to fire in
 // preStart end-to-end by the MqttOptions integration test; here we exercise
@@ -132,5 +135,43 @@ describe('SseOptionsValidator', () => {
 
   test('rejects a non-http url', () => {
     expect(() => check({ url: 'ws://host/events' })).toThrow(OptionsError);
+  });
+});
+
+describe('TcpSocketOptionsValidator', () => {
+  const check = (s: Partial<TcpSocketOptionsType>): void => new TcpSocketOptionsValidator().validate(s);
+
+  test('rejects an out-of-range port and empty host', () => {
+    expect(() => check({ host: 'h', port: 70_000 })).toThrow(OptionsError);
+    expect(() => check({ host: '', port: 5000 })).toThrow(OptionsError);
+  });
+
+  test('accepts a valid host/port', () => {
+    expect(() => check({ host: 'localhost', port: 9000 })).not.toThrow();
+  });
+});
+
+describe('UdpSocketOptionsValidator', () => {
+  const check = (s: Partial<UdpSocketOptionsType>): void => new UdpSocketOptionsValidator().validate(s);
+
+  test('accepts bindPort 0 (OS-assigned) and rejects out-of-range', () => {
+    expect(() => check({ bindPort: 0 })).not.toThrow();
+    expect(() => check({ bindPort: 70_000 })).toThrow(OptionsError);
+  });
+
+  test('rejects an unknown socket type', () => {
+    expect(() => check({ type: 'udp7' as unknown as 'udp4' })).toThrow(/type/);
+  });
+});
+
+describe('GrpcClientOptionsValidator', () => {
+  const check = (s: Partial<GrpcClientOptionsType>): void => new GrpcClientOptionsValidator().validate(s);
+
+  test('rejects a non-positive deadlineMs', () => {
+    expect(() => check({ deadlineMs: 0 })).toThrow(OptionsError);
+  });
+
+  test('accepts a positive deadlineMs', () => {
+    expect(() => check({ deadlineMs: 30_000 })).not.toThrow();
   });
 });

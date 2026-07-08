@@ -26,7 +26,7 @@ export type {
   TcpFraming,
   TcpOutbound,
 } from './TcpSocketActor.js';
-export { TcpSocketOptions, TcpSocketOptionsBuilder } from './TcpSocketOptions.js';
+export { TcpSocketOptions, TcpSocketOptionsBuilder, TcpSocketOptionsValidator } from './TcpSocketOptions.js';
 export type { TcpSocketOptionsType } from './TcpSocketOptions.js';
 export { UdpSocketActor } from './UdpSocketActor.js';
 export type {
@@ -34,7 +34,7 @@ export type {
   UdpDatagram,
   UdpOutbound,
 } from './UdpSocketActor.js';
-export { UdpSocketOptions, UdpSocketOptionsBuilder } from './UdpSocketOptions.js';
+export { UdpSocketOptions, UdpSocketOptionsBuilder, UdpSocketOptionsValidator } from './UdpSocketOptions.js';
 export type { UdpSocketOptionsType } from './UdpSocketOptions.js';
 // Subclass-first typed MQTT actor.
 export { MqttActor, matchesMqttPattern, buildPublishProperties } from './MqttActor.js';
@@ -96,7 +96,7 @@ export type {
   GrpcInbound,
   GrpcCredentials,
 } from './GrpcClientActor.js';
-export { GrpcClientOptions, GrpcClientOptionsBuilder } from './GrpcClientOptions.js';
+export { GrpcClientOptions, GrpcClientOptionsBuilder, GrpcClientOptionsValidator } from './GrpcClientOptions.js';
 export type { GrpcClientOptionsType } from './GrpcClientOptions.js';
 export { GrpcServerActor } from './GrpcServerActor.js';
 export type {

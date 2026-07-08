@@ -2,6 +2,7 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
+import { UdpSocketOptionsValidator } from './UdpSocketOptions.js';
 import type { UdpSocketOptions, UdpSocketOptionsType } from './UdpSocketOptions.js';
 
 /** Inbound datagram delivered to the target actor. */
@@ -48,6 +49,7 @@ export class UdpSocketActor
   protected requiredSettings(): ReadonlyArray<keyof UdpSocketOptionsType> {
     return ['target'];
   }
+  protected override optionsValidator(): UdpSocketOptionsValidator { return new UdpSocketOptionsValidator(); }
   protected endpointLabel(): string {
     return `${this.settings.type}://${this.settings.bindHost}:${this.actualPort || this.settings.bindPort}`;
   }
