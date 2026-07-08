@@ -3,6 +3,7 @@ import type { Duplex } from 'node:stream';
 import { match } from 'ts-pattern';
 import { Lazy } from '../../util/Lazy.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../types.js';
+import { ExpressBackendOptionsValidator } from './ExpressBackendOptions.js';
 import type { ExpressBackendOptions, ExpressBackendOptionsType } from './ExpressBackendOptions.js';
 import type {
   HttpServerBackend,
@@ -121,6 +122,7 @@ export class ExpressBackend implements HttpServerBackend {
 
   constructor(options: ExpressBackendOptions = {}) {
     const settings = (options as ExpressBackendOptionsType);
+    new ExpressBackendOptionsValidator().validate(settings);
     this.app = settings.app ?? null;
     this.ownsApp = settings.app == null;
     this.maxBodyBytes = settings.maxBodyBytes ?? 10 * 1024 * 1024;

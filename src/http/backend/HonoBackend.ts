@@ -14,6 +14,7 @@ import type {
   WebSocketRouteRegistration,
 } from './HttpServerBackend.js';
 import type { WebSocketListeners, WebSocketSocketAdapter } from '../ws/SocketAdapter.js';
+import { HonoBackendOptionsValidator } from './HonoBackendOptions.js';
 import type { HonoBackendOptions, HonoBackendOptionsType } from './HonoBackendOptions.js';
 
 /** Hono delivers text as a string and binary as ArrayBuffer/Uint8Array. */
@@ -98,6 +99,7 @@ export class HonoBackend implements HttpServerBackend {
 
   constructor(options: HonoBackendOptions = {}) {
     const settings = (options as HonoBackendOptionsType);
+    new HonoBackendOptionsValidator().validate(settings);
     this.app = settings.app ?? null;
     this.ownsApp = settings.app == null;
     this.maxBodyBytes = settings.maxBodyBytes ?? 10 * 1024 * 1024;
