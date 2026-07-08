@@ -1,0 +1,34 @@
+---
+title: Request ID
+description: requestId() assigns a request id (accepting a well-formed incoming one, else generating a UUID), forwards it to the handler, and echoes it on the response for correlation.
+---
+
+`requestId()` gives every request a stable id — for log correlation and to
+pass downstream. It forwards the id to the handler (via the enriched
+request) and echoes it on the response.
+
+```ts
+import { requestId, withMiddleware } from 'actor-ts/http';
+
+const routes = withMiddleware(requestId(), appRoutes);
+
+// in a handler:
+get((req) => completeJson(Status.OK, { id: req.headers['x-request-id'] }));
+```
+
+An incoming id is accepted only if it is well-formed
+(`^[A-Za-z0-9._-]{1,64}$`) — a hostile value never reaches a response
+header; otherwise a fresh `crypto.randomUUID()` is generated.
+
+## Configuration
+
+| Builder method | Field | Default |
+| --- | --- | --- |
+| `withHeaderName(n)` | `headerName` | `'x-request-id'` |
+| `withTrustIncoming(flag?)` | `trustIncoming` | `true` |
+| `withGenerate(fn)` | `generate` | `crypto.randomUUID()` |
+
+## Where to next
+
+- **[Security](/http/security/)** — put `requestId` at the top of the stack.
+- **[Error handling](/http/error-handling/)** — log the id in your `withErrorHandler`.

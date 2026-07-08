@@ -1,0 +1,46 @@
+---
+title: Request timeout
+description: requestTimeout() races a handler against a deadline and returns 503 when it wins. Bounds client-observed latency; the handler is not cancelled.
+---
+
+`requestTimeout(ms)` races the handler against a deadline and returns `503`
+if the deadline wins.
+
+```ts
+import { requestTimeout, withMiddleware } from 'actor-ts/http';
+
+const routes = withMiddleware(requestTimeout(5000), appRoutes);
+```
+
+Pass options for a custom response:
+
+```ts
+import { TimeoutOptions } from 'actor-ts/http';
+
+requestTimeout(
+  TimeoutOptions.create()
+    .withMs(5000)
+    .withOnTimeout((req) => completeJson(Status.ServiceUnavailable, { error: 'slow', path: req.path })),
+);
+```
+
+## Configuration
+
+| Builder method | Field | Default |
+| --- | --- | --- |
+| `withMs(ms)` | `ms` | `30000` |
+| `withOnTimeout(fn)` | `onTimeout` | `503 { error: 'request timed out' }` |
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="The handler keeps running">
+  A timeout does **not** cancel the handler — it keeps running and its late
+  result is discarded. This bounds client-observed latency and how long a
+  response is held open, nothing more. For true cancellation, thread an
+  `AbortSignal` through your own async work.
+</Aside>
+
+## Where to next
+
+- **[Rate limit](/http/middleware/rate-limit/)** — cap request *rate*, not duration.
+- **[Security](/http/security/)** — the recommended stack.

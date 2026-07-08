@@ -1,0 +1,71 @@
+---
+title: Security headers
+description: securityHeaders() is a small helmet-style bundle (nosniff, X-Frame-Options, Referrer-Policy, COOP/CORP, …), each header overridable or disable-able. strictTransportSecurity() emits HSTS.
+---
+
+`securityHeaders()` adds a sensible set of security response headers. Every
+header is individually overridable, `false` disables one, and a header the
+handler already set always wins.
+
+```ts
+import { securityHeaders, withMiddleware } from 'actor-ts/http';
+
+const routes = withMiddleware(securityHeaders(), appRoutes);
+```
+
+Defaults: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+`Referrer-Policy: no-referrer`, `Cross-Origin-Opener-Policy: same-origin`,
+`Cross-Origin-Resource-Policy: same-origin`, and `X-XSS-Protection: 0` (the
+legacy filter is buggy — off is safest). COEP, Permissions-Policy, and HSTS
+are opt-in.
+
+## Configuration
+
+| Builder method | Default |
+| --- | --- |
+| `withContentTypeOptions(flag?)` | `nosniff` on |
+| `withFrameOptions('DENY' \| 'SAMEORIGIN' \| false)` | `'DENY'` |
+| `withReferrerPolicy(value \| false)` | `'no-referrer'` |
+| `withCrossOriginOpenerPolicy(v \| false)` | `'same-origin'` |
+| `withCrossOriginResourcePolicy(v \| false)` | `'same-origin'` |
+| `withCrossOriginEmbedderPolicy(v \| false)` | `false` (breaks embeds; opt-in) |
+| `withPermissionsPolicy(map \| false)` | `false` |
+| `withHsts(opts \| false)` | `false` (opt-in) |
+
+```ts
+const opts = SecurityHeadersOptions.create()
+  .withFrameOptions('SAMEORIGIN')
+  .withHsts({ maxAge: 31_536_000, preload: true });
+```
+
+CSP is deliberately **not** part of the bundle — it is too app-specific;
+configure it with [`contentSecurityPolicy`](/http/middleware/csp/).
+
+## HSTS on its own — `strictTransportSecurity`
+
+```ts
+import { strictTransportSecurity, HstsOptions, withMiddleware } from 'actor-ts/http';
+
+const hsts = strictTransportSecurity(
+  HstsOptions.create().withMaxAge(31_536_000).withIncludeSubDomains().withPreload(),
+);
+```
+
+Defaults: `max-age` 180 days + `includeSubDomains`. The header is set
+unconditionally — a browser ignores it over plain HTTP, so a dev server is
+a harmless no-op, and framework servers usually sit behind a TLS-terminating
+proxy anyway.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="preload is a commitment">
+  `withPreload()` requires `maxAge ≥ 1 year` + `includeSubDomains` (the
+  hstspreload.org rules — enforced at construction). Submitting to the
+  preload list is hard to undo; be sure every subdomain serves HTTPS first.
+</Aside>
+
+## Where to next
+
+- **[CSP](/http/middleware/csp/)** — Content-Security-Policy.
+- **[CORS](/http/middleware/cors/)** — cross-origin requests.
+- **[Security](/http/security/)** — the full recommended stack.

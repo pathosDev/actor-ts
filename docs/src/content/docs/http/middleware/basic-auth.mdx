@@ -1,0 +1,48 @@
+---
+title: Basic auth
+description: BasicAuth() gates routes with HTTP Basic authentication — a constant-time users map or a custom validate function, and a real WWW-Authenticate challenge on 401.
+---
+
+`BasicAuth` is the `Authorization: Basic` peer of `BearerTokenAuth`.
+Credentials are compared in constant time, and a `401` advertises a real
+`WWW-Authenticate: Basic realm="…"` challenge.
+
+```ts
+import { BasicAuth, BasicAuthOptions, withMiddleware } from 'actor-ts/http';
+
+const auth = BasicAuth(
+  BasicAuthOptions.create()
+    .withUsers({ alice: process.env.ALICE_PW! })
+    .withRealm('admin'),
+);
+
+const routes = withMiddleware(auth, adminRoutes);
+```
+
+Provide a `users` map (username → password) or a custom `validate` function
+for checking against a store:
+
+```ts
+BasicAuth({ validate: (user, pass) => checkAgainstDb(user, pass) });
+```
+
+## Configuration
+
+| Builder method | Field | Purpose |
+| --- | --- | --- |
+| `withUsers(map)` | `users` | username → password, constant-time compared |
+| `withValidate(fn)` | `validate` | custom async/sync credential check |
+| `withRealm(name)` | `realm` | advertised realm (default `'actor-ts'`) |
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Basic auth needs TLS">
+  Basic credentials are base64, not encrypted. Only use `BasicAuth` over
+  HTTPS (a TLS-terminating proxy counts). For anything richer than a shared
+  operator credential, prefer a real auth flow.
+</Aside>
+
+## Where to next
+
+- **[Security](/http/security/)** — where auth sits in the stack.
+- **[CSRF](/http/middleware/csrf/)** — pair with a CSRF guard for browser forms.
