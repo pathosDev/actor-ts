@@ -38,9 +38,10 @@ deliberately tiny — `fastify` + `ts-pattern` — and everything else
 - **All work happens on a feature branch under `features/…`** — one branch per
   unit of work, branched off `develop` (e.g. `features/ws-backpressure`,
   `features/fix-mqtt-reconnect`; even fixes and chores use the `features/`
-  prefix). **No direct commits to `develop`**, not even small fixes or
-  follow-ups — everything lands through a branch. Delete the branch after it
-  merges.
+  prefix). The sole exception is cutting a release, which uses a
+  `release/vX.Y.Z` branch (see *Release strategy*). **No direct commits to
+  `develop`**, not even small fixes or follow-ups — everything lands through a
+  branch. Delete the branch after it merges.
 - **Always integrate with a merge commit (`git merge --no-ff`) — never rebase,
   never fast-forward.** This holds in both directions: `features/…` → `develop`
   and, at release time, `develop` → `main`. History stays a true graph; it is
@@ -71,7 +72,7 @@ Tags are `vX.Y.Z`; GitHub Releases are cut as normal **Latest** releases
 
 **Cutting a release** (only when explicitly asked) — promotes `develop` to `main`:
 
-1. On a `features/release-vX.Y.Z` branch off `develop`: bump `version` in
+1. On a `release/vX.Y.Z` branch off `develop`: bump `version` in
    `package.json` and move `[Unreleased]` → `[X.Y.Z]` (dated) in `CHANGELOG.md`;
    commit (`chore(release): vX.Y.Z`). Merge it into `develop` (`--no-ff`) and
    push `develop`.
