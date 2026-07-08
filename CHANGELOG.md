@@ -107,6 +107,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   now reconstructs a `RemoteActorRef` only when the target is the peer that sent
   the envelope (reply-to-sender is never SSRF) or a known cluster member; any
   other address decodes to `Nobody`.
+- **#6 (LOW) — consistent SQL/CQL identifier validation** (see
+  `SECURITY_AUDIT.md`).  Postgres/MariaDB already validated table identifiers,
+  but SQLite (journal + snapshot store) and Cassandra (keyspace + table names,
+  interpolated into CQL) did not.  A shared `assertSafeIdentifier`
+  (`/^[A-Za-z_][A-Za-z0-9_]*$/`) is now applied across all four, so a
+  config-sourced identifier can't inject SQL/CQL.  Data values were, and
+  remain, bound parameters.
 
 ## [0.10.0] — 2026-07-08
 
