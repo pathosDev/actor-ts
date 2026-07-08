@@ -70,6 +70,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   an oversized `Content-Length` with 413 *before* buffering; the post-buffer
   check remains a backstop for chunked bodies that omit Content-Length.
   Express (streaming cap) and Fastify (framework default) were unaffected.
+- **HTTP-2 (MEDIUM-HIGH) — `InMemoryCache` is now bounded (LRU)** (see
+  `SECURITY_AUDIT.md`).  The default in-process cache was an unbounded `Map`
+  with lazy expiry only, so a flood of distinct attacker-chosen keys
+  (`Idempotency-Key`; rate-limit keys — idempotency additionally stores the
+  full response body for 24 h) grew it without limit → RAM exhaustion.  It now
+  accepts `{ maxEntries?, cleanupMs? }` (defaults `10_000` / `60_000`): a new
+  key beyond the cap evicts the least-recently-used entry, and a background
+  sweep reclaims expired entries.  This aligns the implementation with the
+  already-documented `InMemoryCacheSettings`.  *Behaviour change:* the default
+  is now bounded — pass `maxEntries: Infinity` for the previous unbounded
+  behaviour (documented OOM risk).
 
 ## [0.10.0] — 2026-07-08
 
