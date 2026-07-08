@@ -6,10 +6,10 @@ export {
 } from './BrokerActor.js';
 export {
   type BrokerCommonOptionsType,
-  BrokerSettingsError,
+  BrokerOptionsError,
   DEFAULT_RECONNECT,
   DEFAULT_OUTBOUND_BUFFER,
-} from './BrokerSettings.js';
+} from './BrokerOptions.js';
 export {
   BrokerConnected,
   BrokerDisconnected,

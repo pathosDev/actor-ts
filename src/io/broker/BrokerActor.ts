@@ -12,13 +12,13 @@ import {
   BrokerReconnectFailed,
 } from './BrokerEvents.js';
 import {
-  BrokerSettingsError,
+  BrokerOptionsError,
   DEFAULT_OUTBOUND_BUFFER,
   DEFAULT_RECONNECT,
-  mergeSettings,
-  readCommonSettings,
+  mergeOptions,
+  readCommonOptions,
   type BrokerCommonOptionsType,
-} from './BrokerSettings.js';
+} from './BrokerOptions.js';
 
 /**
  * Connection-lifecycle state machine.  Transitions are linear:
@@ -262,9 +262,9 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
       ? this.system.config.getConfig(this.configKey())
       : null;
     const fromConfig = cfg
-      ? { ...readCommonSettings(cfg), ...this.readSettingsFromConfig(cfg) } as Partial<S>
+      ? { ...readCommonOptions(cfg), ...this.readSettingsFromConfig(cfg) } as Partial<S>
       : ({} as Partial<S>);
-    return mergeSettings<S>(defaults, fromConfig, this._ctorSettings);
+    return mergeOptions<S>(defaults, fromConfig, this._ctorSettings);
   }
 
   private async _validateRequired(): Promise<void> {
@@ -276,7 +276,7 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
       }
     }
     if (missing.length > 0) {
-      throw new BrokerSettingsError(
+      throw new BrokerOptionsError(
         `${this.constructor.name} missing required settings: ${missing.join(', ')}.  `
         + `Pass them in the constructor or under HOCON path '${this.configKey()}'.`,
         this.configKey(),

@@ -3,7 +3,7 @@ import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { Actor } from '../../Actor.js';
-import { BrokerSettingsError } from './BrokerSettings.js';
+import { BrokerOptionsError } from './BrokerOptions.js';
 import type { GrpcServerOptions, GrpcServerOptionsType } from './GrpcServerOptions.js';
 
 /**
@@ -132,7 +132,7 @@ export class GrpcServerActor extends Actor<unknown> {
       ['protoPath', 'packageName', 'serviceName', 'bind', 'handlers'];
     const missing = required.filter((k) => this.settings[k] === undefined);
     if (missing.length > 0) {
-      throw new BrokerSettingsError(
+      throw new BrokerOptionsError(
         `GrpcServerActor missing required settings: ${missing.join(', ')}`,
         ConfigKeys.io.broker.grpc.server,
       );

@@ -9,7 +9,7 @@
  * > built-in defaults).
  */
 import { BrokerOptionsBuilder } from './BrokerOptions.js';
-import type { BrokerCommonOptionsType } from './BrokerSettings.js';
+import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { GrpcHandler } from './GrpcServerActor.js';
 
 export interface GrpcServerOptionsType extends BrokerCommonOptionsType {

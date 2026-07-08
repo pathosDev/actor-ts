@@ -160,7 +160,7 @@ describe('TcpSocketActor — length-prefixed framing', () => {
 });
 
 describe('TcpSocketActor — settings validation', () => {
-  test('missing host/port throws BrokerSettingsError', async () => {
+  test('missing host/port throws BrokerOptionsError', async () => {
     const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);

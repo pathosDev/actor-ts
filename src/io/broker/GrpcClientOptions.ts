@@ -7,7 +7,7 @@
  * `actor-ts.io.broker.grpc.client` > built-in defaults).
  */
 import { BrokerOptionsBuilder } from './BrokerOptions.js';
-import type { BrokerCommonOptionsType } from './BrokerSettings.js';
+import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { GrpcCredentials } from './GrpcClientActor.js';
 
 export interface GrpcClientOptionsType extends BrokerCommonOptionsType {

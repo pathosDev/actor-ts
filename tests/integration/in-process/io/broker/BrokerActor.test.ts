@@ -11,9 +11,9 @@ import {
   BrokerReconnectAttempt,
 } from '../../../../../src/io/broker/BrokerEvents.js';
 import {
-  BrokerSettingsError,
+  BrokerOptionsError,
   type BrokerCommonOptionsType,
-} from '../../../../../src/io/broker/BrokerSettings.js';
+} from '../../../../../src/io/broker/BrokerOptions.js';
 import type { Config } from '../../../../../src/config/Config.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import { Actor } from '../../../../../src/Actor.js';
@@ -155,7 +155,7 @@ describe('BrokerActor — settings resolution', () => {
     await sys.terminate();
   });
 
-  test('missing required setting raises BrokerSettingsError', async () => {
+  test('missing required setting raises BrokerOptionsError', async () => {
     const sys = makeSystem('cfg-4');
     let captured: Error | null = null;
     sys.spawnAnonymous(Props.create(() => {
@@ -169,7 +169,7 @@ describe('BrokerActor — settings resolution', () => {
       return b as unknown as Actor<FakeCmd>;
     }));
     await sleep(20);
-    expect(captured).toBeInstanceOf(BrokerSettingsError);
+    expect(captured).toBeInstanceOf(BrokerOptionsError);
     expect((captured as unknown as Error).message).toContain('missing required settings');
     expect((captured as unknown as Error).message).toContain('endpoint');
     await sys.terminate();

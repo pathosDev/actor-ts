@@ -22,7 +22,7 @@ import { GrpcClientActor } from '../../../../../src/io/broker/GrpcClientActor.js
 import { GrpcClientOptions } from '../../../../../src/io/broker/GrpcClientOptions.js';
 import { GrpcServerActor } from '../../../../../src/io/broker/GrpcServerActor.js';
 import { GrpcServerOptions } from '../../../../../src/io/broker/GrpcServerOptions.js';
-import { BrokerSettingsError } from '../../../../../src/io/broker/BrokerSettings.js';
+import { BrokerOptionsError } from '../../../../../src/io/broker/BrokerOptions.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -62,7 +62,7 @@ describe('Phase 2 actors — construction is lazy', () => {
 });
 
 describe('Phase 2 actors — settings validation', () => {
-  test('KafkaActor without `brokers` raises BrokerSettingsError', async () => {
+  test('KafkaActor without `brokers` raises BrokerOptionsError', async () => {
     const sys = makeSys('kafka-validate');
     let captured: Error | null = null;
     sys.spawnAnonymous(Props.create(() => {
@@ -75,12 +75,12 @@ describe('Phase 2 actors — settings validation', () => {
       return a as unknown as Actor<unknown>;
     }));
     await sleep(30);
-    expect(captured).toBeInstanceOf(BrokerSettingsError);
+    expect(captured).toBeInstanceOf(BrokerOptionsError);
     expect((captured as unknown as Error).message).toContain('brokers');
     await sys.terminate();
   });
 
-  test('GrpcClientActor without endpoint raises BrokerSettingsError', async () => {
+  test('GrpcClientActor without endpoint raises BrokerOptionsError', async () => {
     const sys = makeSys('grpc-validate');
     let captured: Error | null = null;
     const grpcClientOptions = GrpcClientOptions.create()
@@ -96,7 +96,7 @@ describe('Phase 2 actors — settings validation', () => {
       return a as unknown as Actor<unknown>;
     }));
     await sleep(30);
-    expect(captured).toBeInstanceOf(BrokerSettingsError);
+    expect(captured).toBeInstanceOf(BrokerOptionsError);
     expect((captured as unknown as Error).message).toContain('endpoint');
     await sys.terminate();
   });

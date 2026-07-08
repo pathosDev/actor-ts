@@ -27,7 +27,7 @@
  *     builder it intends to keep mutating; ordinary consumers don't need
  *     it because they already read/spread the argument.
  *   - **Feeds the existing resolution.** For brokers the settings are the
- *     highest-precedence layer of `mergeSettings(defaults, HOCON, ctor)`;
+ *     highest-precedence layer of `mergeOptions(defaults, HOCON, ctor)`;
  *     because a builder records ONLY the fields you set, unset fields fall
  *     through to HOCON — the builder never competes with config.
  *

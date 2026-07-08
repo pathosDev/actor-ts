@@ -29,7 +29,7 @@
  * falls through to HOCON.
  */
 import { BrokerOptionsBuilder } from '../../io/broker/BrokerOptions.js';
-import type { BrokerCommonOptionsType } from '../../io/broker/BrokerSettings.js';
+import type { BrokerCommonOptionsType } from '../../io/broker/BrokerOptions.js';
 import type { WsCodec } from './WsCodec.js';
 
 /** Plain settings-object shape accepted by a {@link WebSocketClientActor}. */

@@ -25,7 +25,7 @@
  * `withOutboundBuffer`) come from {@link BrokerOptionsBuilder}.
  */
 import { BrokerOptionsBuilder } from './BrokerOptions.js';
-import type { BrokerCommonOptionsType } from './BrokerSettings.js';
+import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { MqttCodec } from './MqttCodec.js';
 import type { MqttQos } from './MqttMessages.js';
 

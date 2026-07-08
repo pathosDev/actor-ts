@@ -7,7 +7,7 @@
  * `actor-ts.io.broker.kafka` > built-in defaults).
  */
 import { BrokerOptionsBuilder } from './BrokerOptions.js';
-import type { BrokerCommonOptionsType } from './BrokerSettings.js';
+import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { KafkaCommitMode, KafkaRecord } from './KafkaActor.js';
 
