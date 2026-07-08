@@ -30,9 +30,7 @@ function show(name: string, decision: ReadonlySet<string>): void {
 
 show('KeepMajority        ', new KeepMajority().decide(view));
 show('KeepOldest          ', new KeepOldest().decide(view));
-const staticQuorumOptions = StaticQuorumOptions.create()
-  .withQuorumSize(3);
+const staticQuorumOptions = StaticQuorumOptions.create().withQuorumSize(3);
 show('StaticQuorum(n=3)   ', new StaticQuorum(staticQuorumOptions).decide(view));
-const keepRefereeOptions = KeepRefereeOptions.create()
-  .withRefereeAddress(addr(1).toString());
+const keepRefereeOptions = KeepRefereeOptions.create().withRefereeAddress(addr(1).toString());
 show('KeepReferee(port=1) ', new KeepReferee(keepRefereeOptions).decide(view));

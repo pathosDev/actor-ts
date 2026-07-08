@@ -132,8 +132,7 @@ and the socket binds to an ephemeral port — a pure **sender** for
 one-way telemetry (statsd, syslog):
 
 ```ts
-const udpSocketOptions = UdpSocketOptions.create()
-  .withTarget(target);
+const udpSocketOptions = UdpSocketOptions.create().withTarget(target);
 new UdpSocketActor(
   udpSocketOptions,   // OS-assigned port, send-only in practice
 );

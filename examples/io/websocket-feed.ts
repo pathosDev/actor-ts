@@ -30,8 +30,7 @@ class EchoServer extends WebSocketServerActor<Down, Up> {
 
 class Feed extends WebSocketClientActor<Up, Down> {
   constructor(url: string) {
-    const clientOptions = WebSocketClientOptions.create<Up, Down>()
-      .withUrl(url);
+    const clientOptions = WebSocketClientOptions.create<Up, Down>().withUrl(url);
     super(clientOptions);
   }
   override onConnected(): void { console.log('[client] connected'); }

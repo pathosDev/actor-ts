@@ -50,8 +50,7 @@ class Counter extends PersistentActor<Cmd, Event, number> {
 
 async function main(): Promise<void> {
   const client = new FakeCassandraClient();
-  const systemOptions = ActorSystemOptions.create()
-    .withConfig({
+  const systemOptions = ActorSystemOptions.create().withConfig({
       'actor-ts': {
         persistence: {
           journal: { plugin: CASSANDRA_JOURNAL_PLUGIN_ID },

@@ -81,6 +81,7 @@ link is 1:1 per stream).
 import {
   Props,
   ProducerController,
+  ProducerControllerOptions,
   ConsumerController,
 } from 'actor-ts';
 
@@ -94,12 +95,12 @@ const consumer = system.spawn(
 );
 
 // Producer side — wraps outgoing messages in seq + ack tracking:
+const producerControllerOptions = ProducerControllerOptions.create<OrderEvent>()
+  .withProducerId('order-producer-1')
+  .withConsumer(consumer)
+  .withWindowSize(16);
 const producer = system.spawn(
-  Props.create(() => new ProducerController<OrderEvent>({
-    producerId: 'order-producer-1',
-    consumer,
-    windowSize: 16,
-  })),
+  Props.create(() => new ProducerController<OrderEvent>(producerControllerOptions)),
 );
 
 producer.tell({

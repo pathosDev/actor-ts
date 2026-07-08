@@ -76,8 +76,7 @@ keine langlebigen Prozesse.
 ```ts
 // Hono selbst hat minimale Konfiguration; die meisten Einstellungen kommen über Routen / Middleware.
 // Für ein größeres Request-Body-Limit nutze HonoBackendOptions:
-const honoBackendOptions = HonoBackendOptions.create()
-  .withMaxBodyBytes(1 * 1024 * 1024);
+const honoBackendOptions = HonoBackendOptions.create().withMaxBodyBytes(1 * 1024 * 1024);
 new HonoBackend(honoBackendOptions);
 ```
 

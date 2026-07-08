@@ -83,6 +83,7 @@ Routing, aber der Link ist 1:1 pro Stream).
 import {
   Props,
   ProducerController,
+  ProducerControllerOptions,
   ConsumerController,
 } from 'actor-ts';
 
@@ -96,12 +97,12 @@ const consumer = system.spawn(
 );
 
 // Producer-Seite — umwickelt ausgehende Nachrichten mit Seq- + ACK-Tracking:
+const producerControllerOptions = ProducerControllerOptions.create<OrderEvent>()
+  .withProducerId('order-producer-1')
+  .withConsumer(consumer)
+  .withWindowSize(16);
 const producer = system.spawn(
-  Props.create(() => new ProducerController<OrderEvent>({
-    producerId: 'order-producer-1',
-    consumer,
-    windowSize: 16,
-  })),
+  Props.create(() => new ProducerController<OrderEvent>(producerControllerOptions)),
 );
 
 producer.tell({

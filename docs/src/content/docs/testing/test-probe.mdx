@@ -207,11 +207,9 @@ For ask-style messages — the probe stands in for the asker.
 ### Multiple probes
 
 ```ts
-const testProbeOptions = TestProbeOptions.create()
-  .withName('a-probe');
+const testProbeOptions = TestProbeOptions.create().withName('a-probe');
 const a = tk.createTestProbe(testProbeOptions);
-const testProbe2Options = TestProbeOptions.create()
-  .withName('b-probe');
+const testProbe2Options = TestProbeOptions.create().withName('b-probe');
 const b = tk.createTestProbe(testProbe2Options);
 
 const router = tk.system.spawnAnonymous(...);

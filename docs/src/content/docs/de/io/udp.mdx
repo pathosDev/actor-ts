@@ -134,8 +134,7 @@ kannst du das Binden dem OS überlassen.  Lass `withBindPort` weg (oder
 reiner **Sender** für einseitige Telemetrie (statsd, syslog):
 
 ```ts
-const udpSocketOptions = UdpSocketOptions.create()
-  .withTarget(target);
+const udpSocketOptions = UdpSocketOptions.create().withTarget(target);
 new UdpSocketActor(
   udpSocketOptions,   // OS-assigned port, send-only in practice
 );

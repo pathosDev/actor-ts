@@ -40,8 +40,7 @@ arguments (the level check happens first).
 System-wide via the settings:
 
 ```ts
-const actorSystemOptions = ActorSystemOptions.create()
-  .withLogLevel('debug');
+const actorSystemOptions = ActorSystemOptions.create().withLogLevel('debug');
 const system = ActorSystem.create('my-app', actorSystemOptions);
 ```
 
@@ -59,8 +58,7 @@ human-readable text the default `ConsoleLogger` emits.
 ```ts
 import { ActorSystem, ActorSystemOptions, JsonLogger } from 'actor-ts';
 
-const actorSystemOptions = ActorSystemOptions.create()
-  .withLogger(new JsonLogger());
+const actorSystemOptions = ActorSystemOptions.create().withLogger(new JsonLogger());
 const system = ActorSystem.create('my-app', actorSystemOptions);
 ```
 
@@ -109,8 +107,7 @@ import { ActorSystem, ActorSystemOptions, otelLogger } from 'actor-ts';
 
 // (SDK setup: register a LoggerProvider + OTLP exporter — out of scope here.)
 
-const actorSystemOptions = ActorSystemOptions.create()
-  .withLogger(otelLogger({ api: logsApi }));
+const actorSystemOptions = ActorSystemOptions.create().withLogger(otelLogger({ api: logsApi }));
 const system = ActorSystem.create('my-app', actorSystemOptions);
 ```
 

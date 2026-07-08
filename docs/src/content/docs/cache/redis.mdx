@@ -10,8 +10,7 @@ operations.
 ```ts
 import { RedisCache, RedisCacheOptions } from 'actor-ts';
 
-const redisCacheOptions = RedisCacheOptions.create()
-  .withUrl('redis://redis.example.com:6379');
+const redisCacheOptions = RedisCacheOptions.create().withUrl('redis://redis.example.com:6379');
 const cache = new RedisCache(
   redisCacheOptions,
 );
@@ -48,14 +47,11 @@ interface RedisCacheOptionsType {
 URL form:
 
 ```ts
-const redisCacheOptions = RedisCacheOptions.create()
-  .withUrl('redis://localhost:6379/0');
+const redisCacheOptions = RedisCacheOptions.create().withUrl('redis://localhost:6379/0');
 new RedisCache(redisCacheOptions);
-const redisCache2Options = RedisCacheOptions.create()
-  .withUrl('rediss://redis.example.com:6380');
+const redisCache2Options = RedisCacheOptions.create().withUrl('rediss://redis.example.com:6380');
 new RedisCache(redisCache2Options);  // TLS
-const redisCache3Options = RedisCacheOptions.create()
-  .withUrl('redis://user:pass@host:6379');
+const redisCache3Options = RedisCacheOptions.create().withUrl('redis://user:pass@host:6379');
 new RedisCache(redisCache3Options);
 ```
 
@@ -105,12 +101,10 @@ beyond a single Redis server's memory.
 ## TLS
 
 ```ts
-const redisCacheOptions = RedisCacheOptions.create()
-  .withUrl('rediss://redis.example.com:6380');
+const redisCacheOptions = RedisCacheOptions.create().withUrl('rediss://redis.example.com:6380');
 new RedisCache(redisCacheOptions);
 // TLS is selected by the `rediss://` URL scheme:
-const redisCache2Options = RedisCacheOptions.create()
-  .withUrl('rediss://redis.example.com:6380');
+const redisCache2Options = RedisCacheOptions.create().withUrl('rediss://redis.example.com:6380');
 new RedisCache(redisCache2Options);
 ```
 

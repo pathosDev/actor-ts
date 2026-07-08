@@ -122,8 +122,7 @@ Default gossip interval is the cluster's `gossipIntervalMs` (1
 second).  Override per-mediator:
 
 ```ts
-const distributedPubSubOptions = DistributedPubSubOptions.create()
-  .withGossipIntervalMs(500);
+const distributedPubSubOptions = DistributedPubSubOptions.create().withGossipIntervalMs(500);
 DistributedPubSub.start(cluster, distributedPubSubOptions);
 ```
 

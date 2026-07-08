@@ -121,8 +121,7 @@ const SELECTOR_HTML = /* html */ `<!doctype html>
  * plugin via `backend.withPlugin(...)`; the DSL has no directive for it.
  */
 export function buildRoutes(ingress: ActorRef<WsServerMessage<WsFrame, WsFrame>>): Route {
-  const wsRouteOptions = WebSocketRouteOptions.create()
-    .withCodec(rawCodec());
+  const wsRouteOptions = WebSocketRouteOptions.create().withCodec(rawCodec());
   return concat(
     get(() =>
       complete(Status.OK, SELECTOR_HTML, { 'content-type': 'text/html; charset=utf-8' }),

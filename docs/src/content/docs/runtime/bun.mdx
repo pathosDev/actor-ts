@@ -90,10 +90,11 @@ For Bun-specific test features, see the [Bun docs](https://bun.sh/docs/cli/test)
 ## SQLite on Bun
 
 ```ts
-import { SqliteJournal } from 'actor-ts';
+import { SqliteJournal, SqliteJournalOptions } from 'actor-ts';
 
 // Bun auto-detects bun:sqlite — no driver setup needed.
-new SqliteJournal({ path: '/var/lib/events.db' });
+const sqliteJournalOptions = SqliteJournalOptions.create().withPath('/var/lib/events.db');
+new SqliteJournal(sqliteJournalOptions);
 ```
 
 `bun:sqlite` is a built-in.  No `better-sqlite3` install

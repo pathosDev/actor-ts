@@ -178,8 +178,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="One daemon = use a singleton">
   ```ts
-  const daemonOptions = ShardedDaemonProcessOptions.create()
-    .withNumDaemons(1)/* ... */;
+  const daemonOptions = ShardedDaemonProcessOptions.create().withNumDaemons(1)/* ... */;
   ShardedDaemonProcess.init(..., daemonOptions);   // ✗
   ```
   For `numDaemons: 1`, use [ClusterSingleton](/cluster/singleton/overview/) —
@@ -190,8 +189,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Many daemons = use sharding directly">
   ```ts
-  const daemonOptions = ShardedDaemonProcessOptions.create()
-    .withNumDaemons(100_000)/* ... */;
+  const daemonOptions = ShardedDaemonProcessOptions.create().withNumDaemons(100_000)/* ... */;
   ShardedDaemonProcess.init(..., daemonOptions);   // ✗
   ```
   Sharded daemon does eager startup of every index.  For

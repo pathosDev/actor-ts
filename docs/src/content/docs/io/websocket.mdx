@@ -18,8 +18,7 @@ type ServerMsg = { kind: 'pong'; n: number } | { kind: 'event'; data: unknown };
 
 class Feed extends WebSocketClientActor<ClientMsg, ServerMsg> {
   constructor() {
-    const webSocketClientOptions = WebSocketClientOptions.create<ClientMsg, ServerMsg>()
-      .withUrl('ws://localhost:8080/ws');
+    const webSocketClientOptions = WebSocketClientOptions.create<ClientMsg, ServerMsg>().withUrl('ws://localhost:8080/ws');
     super(webSocketClientOptions);
   }
 
@@ -77,8 +76,7 @@ delivered to `onMessage`.
 ```ts
 class Chat extends WebSocketClientActor<ClientMsg, ServerMsg> {
   constructor() {
-    const webSocketClientOptions = WebSocketClientOptions.create<ClientMsg, ServerMsg>()
-      .withUrl('wss://chat.example.com/ws');
+    const webSocketClientOptions = WebSocketClientOptions.create<ClientMsg, ServerMsg>().withUrl('wss://chat.example.com/ws');
     super(webSocketClientOptions);
   }
 

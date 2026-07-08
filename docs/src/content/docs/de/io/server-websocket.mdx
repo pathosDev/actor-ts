@@ -230,8 +230,7 @@ Der Route-Codec dekodiert eingehende Frames in `TIn` und kodiert
 ```ts
 import { jsonCodec, WebSocketRouteOptions } from 'actor-ts';
 
-const webSocketRouteOptions = WebSocketRouteOptions.create()
-  .withCodec(jsonCodec<ServerMsg, ClientMsg>({
+const webSocketRouteOptions = WebSocketRouteOptions.create().withCodec(jsonCodec<ServerMsg, ClientMsg>({
     validate: (v: unknown): ClientMsg => ClientMsgSchema.parse(v),
   }));
 websocket('/ws', chat, webSocketRouteOptions);
@@ -243,8 +242,7 @@ Für Binärprotokolle liefert `rawCodec()` rohe Frames
 ```ts
 import { rawCodec, WebSocketRouteOptions, WebSocketServerActor, type WsFrame } from 'actor-ts';
 
-const webSocketRouteOptions = WebSocketRouteOptions.create()
-  .withCodec(rawCodec());
+const webSocketRouteOptions = WebSocketRouteOptions.create().withCodec(rawCodec());
 class BinaryHub extends WebSocketServerActor<WsFrame, WsFrame> {
   onMessage(frame: WsFrame): void {
     if (frame.kind === 'binary') this.reply({ kind: 'binary', data: process(frame.data) });
