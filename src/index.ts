@@ -51,6 +51,7 @@ export {
 } from './util/Either.js';
 export type { Either } from './util/Either.js';
 export { OptionsBuilder } from './util/OptionsBuilder.js';
+export { OptionsValidator, OptionsError } from './util/OptionsValidator.js';
 
 // Core API
 export { Actor } from './Actor.js';
