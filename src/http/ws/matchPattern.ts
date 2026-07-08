@@ -18,7 +18,20 @@ export function matchWsPattern(pattern: string, pathname: string): Record<string
     const p = pSegs[i]!;
     const u = uSegs[i]!;
     if (p.startsWith(':')) {
-      params[p.slice(1)] = decodeURIComponent(u);
+      // `decodeURIComponent` throws `URIError` on a malformed escape
+      // (e.g. "%ZZ" or a truncated "%E0%A4%A").  A thrown error here
+      // previously propagated out of the Express upgrade handler's
+      // fire-and-forget IIFE as an unhandled rejection — process-fatal
+      // under Node's default, and reachable pre-auth by any unauthenticated
+      // client (SECURITY_AUDIT.md WS-1).  Treat a bad escape as a
+      // non-match instead: the request matches no route and gets a 404.
+      let decoded: string;
+      try {
+        decoded = decodeURIComponent(u);
+      } catch {
+        return null;
+      }
+      params[p.slice(1)] = decoded;
     } else if (p !== u) {
       return null;
     }

@@ -224,6 +224,11 @@ export class ExpressBackend implements HttpServerBackend {
     const wss = new WebSocketServerCtor({ noServer: true });
     this.wss = wss;
     server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+      // Attach the raw-socket error guard BEFORE any async work: a peer
+      // that vanishes mid-handshake (or a malformed upgrade) must never
+      // surface as an unhandled 'error' event, which would crash the
+      // process (SECURITY_AUDIT.md WS-1).
+      socket.on('error', () => { /* ignore */ });
       void (async () => {
         const url = new URL(req.url ?? '/', 'http://localhost');
         let hit: { reg: WebSocketRouteRegistration; params: Record<string, string> } | null = null;
@@ -236,9 +241,6 @@ export class ExpressBackend implements HttpServerBackend {
           return;
         }
         const adapted = this.adaptUpgradeRequest(req, url, hit.params);
-        // Guard against the peer vanishing mid-authorize (unhandled
-        // 'error' on the raw socket would otherwise crash the process).
-        socket.on('error', () => { /* ignore */ });
         let reject: HttpResponse | null;
         try {
           reject = await hit.reg.authorize(adapted);
@@ -254,7 +256,12 @@ export class ExpressBackend implements HttpServerBackend {
           wss.emit('connection', ws, req);
           hit!.reg.onConnection(adapted, wsPackageAdapter(ws, { remoteAddress: adapted.remoteAddress }));
         });
-      })();
+      })().catch(() => {
+        // Last-resort guard: an upgrade handler must never reject into an
+        // unhandled rejection (process-fatal under Node's default).  Any
+        // unexpected throw closes the raw socket instead (WS-1).
+        try { socket.destroy(); } catch { /* already gone */ }
+      });
     });
   }
 

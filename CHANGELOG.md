@@ -42,6 +42,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the ad-hoc `Error` message.  Missing **required** broker settings still throw
   `BrokerSettingsError`; malformed HOCON still throws `ConfigError`.
 
+### Security
+
+- **WS-1 (HIGH) — WebSocket upgrade crash hardened** (see `SECURITY_AUDIT.md`).
+  A malformed percent-escape in the upgrade path (e.g. `GET /room/%ZZ` against a
+  `websocket('/room/:id', …)` route) made `decodeURIComponent` throw inside the
+  Express backend's fire-and-forget upgrade handler, surfacing as an *unhandled
+  rejection* — process-fatal under Node's default and reachable **pre-auth** by
+  an unauthenticated client.  `matchWsPattern` now treats a malformed escape as
+  a non-match (→ 404), and the Express upgrade handler attaches its socket
+  error-guard before any async work and wraps the handler in a last-resort
+  `.catch` that closes the socket.  Fastify/Hono were not affected.
+
 ## [0.10.0] — 2026-07-08
 
 ### Added — Typed WebSocket & MQTT
