@@ -122,6 +122,50 @@ export function withMiddleware(middleware: Middleware, child: Route): Route {
   return { kind: 'middleware', middleware, child };
 }
 
+/**
+ * Handler for {@link handleErrors}.  Receives the thrown value (an
+ * {@link HttpError} or anything else) plus the request; return an
+ * {@link HttpResponse} to handle it, or `null`/`undefined` to decline —
+ * declining re-throws so an outer `handleErrors` (or, failing that, the
+ * backend's default mapping) takes over.
+ */
+export type ExceptionHandler = (
+  err: unknown,
+  req: HttpRequest,
+) => Promise<HttpResponse | null | undefined> | HttpResponse | null | undefined;
+
+/**
+ * Scope an exception handler over `child`'s subtree — the akka-http
+ * `ExceptionHandler` analogue, implemented as sugar over a `middleware`
+ * node so it inherits handler-wrapping (and the WebSocket authorize fold)
+ * for free.
+ *
+ * The handler sees the ORIGINAL thrown value — e.g. the `HttpError`
+ * instance with its `status` / `extra` / `headers` — because DSL-level
+ * wrappers run strictly before any backend's default error mapping.
+ * Handlers nest outside-in like {@link withMiddleware}: the innermost
+ * `handleErrors` gets first refusal, and returning `null` delegates
+ * outward.  Placed around a `withMiddleware(...)` node it also catches
+ * that middleware's throws (e.g. an auth 401).
+ *
+ *     handleErrors(
+ *       (err) => err instanceof NotFoundError ? complete(Status.NotFound, ...) : null,
+ *       path('users', concat(...)),
+ *     )
+ */
+export function handleErrors(handler: ExceptionHandler, child: Route): Route {
+  const middleware: Middleware = async (req, next) => {
+    try {
+      return await next();
+    } catch (err) {
+      const recovered = await handler(err, req);
+      if (recovered !== null && recovered !== undefined) return recovered;
+      throw err; // declined → escalate to the next enclosing handler / default
+    }
+  };
+  return { kind: 'middleware', middleware, child };
+}
+
 function normalizeSegment(s: string): string {
   const trimmed = s.replace(/^\/+|\/+$/g, '');
   return trimmed;
@@ -166,6 +210,20 @@ export function redirect(url: string, status: number = Status.Found): HttpRespon
 /** Rejection — throw to short-circuit to a 4xx/5xx. */
 export function reject(status: number, message: string, extra?: Record<string, unknown>): never {
   throw new HttpError(status, message, extra);
+}
+
+/**
+ * The framework's default error→response mapping: an {@link HttpError}
+ * becomes its status + `{ error, ...extra }` JSON (carrying any custom
+ * `headers`); anything else becomes a generic 500 that deliberately does
+ * NOT echo the thrown message.  Kept in one place so the WebSocket
+ * upgrade-reject path and the `fallback()` wrapper map errors identically.
+ */
+export function defaultErrorResponse(err: unknown): HttpResponse {
+  if (err instanceof HttpError) {
+    return { status: err.status, headers: err.headers, body: { error: err.message, ...(err.extra ?? {}) } };
+  }
+  return { status: Status.InternalServerError, body: { error: 'Internal Server Error' } };
 }
 
 /* ------------------------------- Compilation ----------------------------- */
@@ -215,10 +273,7 @@ export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[]
             // Any other response (short-circuit or transform) → reject.
             return res === WS_ACCEPT ? null : res;
           } catch (err) {
-            if (err instanceof HttpError) {
-              return { status: err.status, headers: err.headers, body: { error: err.message, ...(err.extra ?? {}) } };
-            }
-            return { status: Status.InternalServerError, body: { error: 'Internal Server Error' } };
+            return defaultErrorResponse(err);
           }
         };
         return { ...c, authorize };
