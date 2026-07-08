@@ -8,6 +8,11 @@ import {
 import { WebSocketClientOptionsValidator, type WebSocketClientOptionsType } from '../../../src/http/ws/WebSocketClientOptions.js';
 import { ExpressBackendOptionsValidator, type ExpressBackendOptionsType } from '../../../src/http/backend/ExpressBackendOptions.js';
 import { HonoBackendOptionsValidator, type HonoBackendOptionsType } from '../../../src/http/backend/HonoBackendOptions.js';
+import { LeaseOptionsValidator, type LeaseOptionsType } from '../../../src/coordination/LeaseOptions.js';
+import {
+  KubernetesLeaseOptionsValidator,
+  type KubernetesLeaseOptionsType,
+} from '../../../src/coordination/leases/KubernetesLeaseOptions.js';
 
 // Direct validator tests for the non-broker options. Each consumer calls the
 // same validator in its constructor / start method after merging defaults.
@@ -74,5 +79,41 @@ describe('HTTP backend option validators', () => {
     const check = (s: Partial<HonoBackendOptionsType>): void =>
       new HonoBackendOptionsValidator().validate(s);
     expect(() => check({ maxBodyBytes: -5 })).toThrow(OptionsError);
+  });
+});
+
+describe('LeaseOptionsValidator', () => {
+  const check = (s: Partial<LeaseOptionsType>): void => new LeaseOptionsValidator().validate(s);
+
+  test('rejects a non-positive ttlMs and empty name/owner', () => {
+    expect(() => check({ ttlMs: 0 })).toThrow(OptionsError);
+    expect(() => check({ name: '' })).toThrow(OptionsError);
+    expect(() => check({ owner: '' })).toThrow(OptionsError);
+  });
+
+  test('rejects a negative acquireRetries', () => {
+    expect(() => check({ acquireRetries: -1 })).toThrow(/acquireRetries/);
+  });
+
+  test('accepts a valid lease config', () => {
+    expect(() => check({ name: 'singleton', owner: 'node-1', ttlMs: 10_000 })).not.toThrow();
+  });
+});
+
+describe('KubernetesLeaseOptionsValidator', () => {
+  const check = (s: Partial<KubernetesLeaseOptionsType>): void =>
+    new KubernetesLeaseOptionsValidator().validate(s);
+
+  test('inherits the common lease rules', () => {
+    expect(() => check({ ttlMs: -1 })).toThrow(/ttlMs/);
+  });
+
+  test('rejects a non-http apiServerUrl', () => {
+    expect(() => check({ apiServerUrl: 'ftp://k8s' })).toThrow(OptionsError);
+  });
+
+  test('accepts a valid k8s lease config', () => {
+    expect(() => check({ name: 's', owner: 'o', ttlMs: 15_000, namespace: 'actors', apiServerUrl: 'https://k8s.default.svc' }))
+      .not.toThrow();
   });
 });
