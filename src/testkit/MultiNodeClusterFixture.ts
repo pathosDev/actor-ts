@@ -1,4 +1,5 @@
-import { MultiNodeSpec, type MultiNodeSpecOptionsType } from './MultiNodeSpec.js';
+import { MultiNodeSpec } from './MultiNodeSpec.js';
+import type { MultiNodeSpecOptionsType } from './MultiNodeSpecOptions.js';
 
 /**
  * Test fixture that boots a {@link MultiNodeSpec} ONCE per describe-

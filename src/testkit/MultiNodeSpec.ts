@@ -1,3 +1,4 @@
+import type { MultiNodeSpecOptions, MultiNodeSpecOptionsType } from './MultiNodeSpecOptions.js';
 import { ActorSystem } from '../ActorSystem.js';
 import { ActorSystemOptions } from '../ActorSystemOptions.js';
 import { Cluster } from '../cluster/Cluster.js';
@@ -43,44 +44,6 @@ import { MultiNodeTransport } from './internal/MultiNodeTransport.js';
  *
  *   await spec.stop();
  */
-export interface MultiNodeSpecOptionsType {
-  /** Role names — also act as system names; must be unique within the spec. */
-  readonly roles: ReadonlyArray<string>;
-  /**
-   * Roles that act as bootstrap seeds.  Defaults to `[roles[0]]` — the
-   * first role is the lone seed.  All other roles try to join via the
-   * seed list.
-   */
-  readonly seedRoles?: ReadonlyArray<string>;
-  /**
-   * Per-role address overrides.  Useful if a test wants pinned
-   * host:port pairs (e.g. for log readability).  If omitted, addresses
-   * are auto-allocated as `127.0.0.1:<base + index>` with a fresh base
-   * per spec.
-   */
-  readonly addresses?: Readonly<Record<string, { host: string; port: number }>>;
-  /**
-   * Failure-detector overrides.  Multi-node tests typically want the
-   * detector tightened so dead nodes are noticed within seconds rather
-   * than the production default.  See `Cluster.ts` for the field set.
-   */
-  readonly failureDetector?: ClusterOptionsType['failureDetector'];
-  /** Gossip interval, default 100 ms (vs production 1 s). */
-  readonly gossipIntervalMs?: number;
-  /** How long synchronous `await*` helpers wait before throwing.  Default 10 s. */
-  readonly awaitTimeoutMs?: number;
-  /** Logger — defaults to NoopLogger so tests stay quiet. */
-  readonly logLevel?: LogLevel;
-  /**
-   * Per-role split-brain resolver factory.  Called once per role at
-   * `start()` time; the returned provider is wired into that role's
-   * cluster via `ClusterOptionsType.downing`.  Each role typically gets
-   * its OWN provider instance (some strategies are stateful — e.g.
-   * `LeaseMajority` holds a per-replica acquire result).  Pass
-   * `undefined` for a role that should run without downing.
-   */
-  readonly downing?: (role: string) => DowningProvider | undefined;
-}
 
 interface NodeRecord {
   readonly role: string;
@@ -115,7 +78,8 @@ export class MultiNodeSpec {
   private started = false;
   private readonly barriers = new Map<string, BarrierEntry>();
 
-  constructor(options: MultiNodeSpecOptionsType) {
+  constructor(optionsInput: MultiNodeSpecOptions) {
+    const options = optionsInput as MultiNodeSpecOptionsType;
     if (options.roles.length === 0) {
       throw new Error('MultiNodeSpec: at least one role is required');
     }

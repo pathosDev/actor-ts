@@ -1,3 +1,4 @@
+import type { ManagementRoutesOptions, ManagementRoutesOptionsType } from './ManagementRoutesOptions.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import type { Cluster } from '../cluster/Cluster.js';
 import { DistributedDataId } from '../crdt/DistributedData.js';
@@ -19,56 +20,6 @@ import { metricsOf } from '../metrics/MetricsExtension.js';
 import type { HealthCheckResult } from './HealthCheck.js';
 import { HealthCheckRegistry } from './HealthCheck.js';
 
-export interface ManagementRoutesOptionsType {
-  /** Set to true to allow POST /cluster/leave (requires cluster). */
-  readonly enableLeaveEndpoint?: boolean;
-  /**
-   * Set to true to allow POST /cluster/down (#56).  Operator-initiated
-   * force-down of a remote member by address.  Off by default —
-   * production deployments typically gate this behind an auth proxy
-   * because it's a destructive action.
-   */
-  readonly enableDownEndpoint?: boolean;
-  /**
-   * Set to true to expose `GET /metrics` in Prometheus text format
-   * (#56).  Reads from the system's `MetricsRegistry`.  Off by default
-   * because most deployments scrape metrics from a separate port.
-   */
-  readonly enableMetricsEndpoint?: boolean;
-  /**
-   * Optional authentication middleware applied to the privileged
-   * subset of management routes (#312).  When set, every privileged
-   * endpoint requires the auth — typically `BearerTokenAuth({...})`
-   * or a stack composed via nested `withMiddleware`.
-   *
-   * Privileged = `/cluster/leave`, `/cluster/down`.  The membership
-   * read-only routes (`/cluster/members`, `/cluster/leader`,
-   * `/cluster/shards`) are also covered.  Health-check probes
-   * (`/health`, `/ready`) are deliberately exempt — Kubernetes
-   * liveness/readiness probes cannot easily attach an
-   * Authorization header.
-   *
-   *     auth: BearerTokenAuth({ tokens: [process.env.MGMT_TOKEN!] })
-   */
-  readonly auth?: Middleware;
-  /**
-   * Optional IP-allowlist middleware applied to every management
-   * endpoint INCLUDING `/health` and `/ready` (#312).  Use this for
-   * network-level isolation: only allow probes from inside the
-   * cluster's pod CIDR or from the operator's bastion.
-   *
-   *     ipAllowlist: IpAllowlist({ allow: ['10.0.0.0/8', '127.0.0.1/32'] })
-   */
-  readonly ipAllowlist?: Middleware;
-  /**
-   * Set to true to apply the `auth` middleware to `/health` and
-   * `/ready` as well (#312).  Default: false — those endpoints are
-   * standard liveness/readiness probes and should answer anonymously.
-   * Flip this only when the deployment guarantees the probes can
-   * present credentials.
-   */
-  readonly authProtectHealth?: boolean;
-}
 
 /**
  * Build a Route tree exposing cluster-management HTTP endpoints.  The
@@ -88,8 +39,9 @@ export interface ManagementRoutesOptionsType {
 export function managementRoutes(
   system: ActorSystem,
   cluster: Cluster | null,
-  options: ManagementRoutesOptionsType = {},
+  optionsInput: ManagementRoutesOptions = {},
 ): { routes: Route; health: HealthCheckRegistry } {
+  const options = optionsInput as ManagementRoutesOptionsType;
   const health = new HealthCheckRegistry();
 
   const clusterMembers = get(async () => {

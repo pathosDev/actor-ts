@@ -1,3 +1,4 @@
+import type { MockClusterOptions, MockClusterOptionsType } from './MockClusterOptions.js';
 import type { ActorRef } from '../ActorRef.js';
 import { Member } from '../cluster/Member.js';
 import { NodeAddress } from '../cluster/NodeAddress.js';
@@ -34,14 +35,6 @@ import { none, some, type Option } from '../util/Option.js';
  * (Receptionist, Sharding, DowningProvider impls) without paying
  * the spin-up cost of a real Cluster instance.
  */
-export interface MockClusterOptionsType {
-  /** Self address — what `selfAddress` returns. */
-  readonly selfAddress: NodeAddress;
-  /** Initial members.  Self is added automatically if not present. */
-  readonly initialMembers?: ReadonlyArray<Member>;
-  /** Initial leader.  Defaults to the lowest address. */
-  readonly initialLeader?: Option<Member>;
-}
 
 export class MockCluster {
   readonly selfAddress: NodeAddress;
@@ -49,7 +42,8 @@ export class MockCluster {
   private leader: Option<Member>;
   private readonly listeners: Array<(e: ClusterEvent) => void> = [];
 
-  constructor(options: MockClusterOptionsType) {
+  constructor(optionsInput: MockClusterOptions) {
+    const options = optionsInput as MockClusterOptionsType;
     this.selfAddress = options.selfAddress;
     // Self always present.
     const selfMember = new Member(options.selfAddress, 'up', 1, []);

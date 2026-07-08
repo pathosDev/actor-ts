@@ -1,3 +1,4 @@
+import type { ParallelMultiNodeSpecOptions, ParallelMultiNodeSpecOptionsType } from './ParallelMultiNodeSpecOptions.js';
 import type {
   BrokeredMessage,
   PortLike,
@@ -57,30 +58,6 @@ import type { MemberSnapshot } from './internal/parallel-multi-node-bootstrap.js
  * `src/testkit/internal/parallel-multi-node-bootstrap.ts` for the
  * `ScenarioModule` interface.
  */
-export interface ParallelMultiNodeSpecOptionsType {
-  readonly roles: ReadonlyArray<string>;
-  readonly seedRoles?: ReadonlyArray<string>;
-  /**
-   * URL of the scenario module to load in each worker.  Optional —
-   * tests that only exercise the cluster lifecycle (no actor logic)
-   * don't need one.
-   */
-  readonly scenarioModule?: URL;
-  /** Per-role data passed to the scenario module's `setup(ctx)`. */
-  readonly scenarioInitDataFor?: (role: string) => unknown;
-  readonly addresses?: Readonly<Record<string, { host: string; port: number }>>;
-  readonly failureDetector?: Partial<FailureDetectorOptionsType>;
-  readonly gossipIntervalMs?: number;
-  readonly awaitTimeoutMs?: number;
-  readonly logLevel?: LogLevel;
-  /**
-   * URL of the bootstrap script.  Defaults to the bundled
-   * `parallel-multi-node-bootstrap.js`.  Tests rarely override —
-   * setting your own bootstrap means you have to re-implement the
-   * control-channel protocol, which is internal-only.
-   */
-  readonly bootstrapModule?: URL;
-}
 
 interface NodeRecord {
   readonly role: string;
@@ -127,7 +104,8 @@ export class ParallelMultiNodeSpec {
     timer: ReturnType<typeof setTimeout>;
   }>();
 
-  constructor(options: ParallelMultiNodeSpecOptionsType) {
+  constructor(optionsInput: ParallelMultiNodeSpecOptions) {
+    const options = optionsInput as ParallelMultiNodeSpecOptionsType;
     if (options.roles.length === 0) {
       throw new Error('ParallelMultiNodeSpec: at least one role is required');
     }
