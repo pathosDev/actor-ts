@@ -67,7 +67,7 @@ per-connection order preserved: connected → messages → disconnected).
 
 Settings resolve with the usual precedence: **constructor / builder >
 HOCON (`actor-ts.io.broker.mqtt`) > built-in defaults.**  Use the fluent
-`MqttOptions` builder, or pass a plain `Partial<MqttActorSettings>`.
+`MqttOptions` builder, or pass a plain `Partial<MqttOptionsType>`.
 
 ```ts
 const opts = MqttOptions.create()
@@ -81,7 +81,7 @@ const opts = MqttOptions.create()
 ```
 
 ```ts
-interface MqttActorSettings extends BrokerCommonSettings {
+interface MqttOptionsType extends BrokerCommonOptionsType {
   brokerUrl?:  string;          // mqtt:// mqtts:// ws:// wss://
   clientId?:   string;
   credentials?: { username?: string; password?: string };

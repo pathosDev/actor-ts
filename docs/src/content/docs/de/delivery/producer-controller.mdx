@@ -33,7 +33,7 @@ Intern:
 ## Konfiguration
 
 ```ts
-interface ProducerControllerSettings<T> {
+interface ProducerControllerOptionsType<T> {
   consumer:          ActorRef<Delivery<T>>;
   resendTimeoutMs?:  number;       // Default 500
   windowSize?:       number;       // Default 16

@@ -102,7 +102,7 @@ contenders can then acquire.
 ## Settings
 
 ```ts
-interface LeaseSettings {
+interface LeaseOptionsType {
   name:                  string;       // unique lease identifier
   owner:                 string;       // this holder's identifier (pod name / UUID)
   ttlMs:                 number;       // auto-expire after this many ms of no-renewal

@@ -142,7 +142,7 @@ cluster events deterministically.
 ## Configuration
 
 ```ts
-interface ShardedDaemonProcessSettings<T> {
+interface ShardedDaemonProcessOptionsType<T> {
   name:                 string;          // unique daemon-set identifier
   numDaemons:           number;          // total daemons across the cluster
   behaviorFor:          (i: number) => Props<T>;

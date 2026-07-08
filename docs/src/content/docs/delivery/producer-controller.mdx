@@ -33,7 +33,7 @@ Internally:
 ## Configuration
 
 ```ts
-interface ProducerControllerSettings<T> {
+interface ProducerControllerOptionsType<T> {
   consumer:          ActorRef<Delivery<T>>;
   resendTimeoutMs?:  number;       // default 500
   windowSize?:       number;       // default 16

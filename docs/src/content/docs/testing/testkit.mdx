@@ -44,7 +44,7 @@ class TestKit {
   shutdown(): Promise<void>;
 }
 
-interface TestKitOptions extends ActorSystemSettings {
+interface TestKitOptions extends ActorSystemOptionsType {
   quiet?: boolean;   // default true — use NoopLogger
 }
 ```

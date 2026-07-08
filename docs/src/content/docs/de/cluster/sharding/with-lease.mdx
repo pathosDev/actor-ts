@@ -65,7 +65,7 @@ von Gossip.
 ## Konfiguration
 
 ```ts
-interface StartSettings<TMsg> {
+interface StartShardingOptionsType<TMsg> {
   // ... Basis-Sharding-Settings ...
   lease?:                   Lease;
   acquireRetryIntervalMs?:  number;     // Default 5000

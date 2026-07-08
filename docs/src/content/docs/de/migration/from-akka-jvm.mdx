@@ -191,7 +191,7 @@ val singleton = system.spawn(
   ClusterSingletonManager.props(
     singletonProps = Props[MyActor],
     terminationMessage = PoisonPill,
-    settings = ClusterSingletonManagerSettings(system),
+    settings = ClusterSingletonManagerOptionsType(system),
   ),
   name = "singletonManager",
 )

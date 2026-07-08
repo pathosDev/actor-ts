@@ -71,7 +71,7 @@ Nachrichten → disconnected).
 Settings lösen mit der üblichen Präzedenz auf: **Konstruktor / Builder >
 HOCON (`actor-ts.io.broker.mqtt`) > eingebaute Defaults.**  Nutze den
 Fluent-Builder `MqttOptions` oder übergib ein einfaches
-`Partial<MqttActorSettings>`.
+`Partial<MqttOptionsType>`.
 
 ```ts
 const opts = MqttOptions.create()
@@ -85,7 +85,7 @@ const opts = MqttOptions.create()
 ```
 
 ```ts
-interface MqttActorSettings extends BrokerCommonSettings {
+interface MqttOptionsType extends BrokerCommonOptionsType {
   brokerUrl?:  string;          // mqtt:// mqtts:// ws:// wss://
   clientId?:   string;
   credentials?: { username?: string; password?: string };

@@ -31,8 +31,8 @@ scheduling, network partition between pods, etc.
 ## Configuration
 
 ```ts
-interface KubernetesLeaseSettings {
-  // From LeaseSettings:
+interface KubernetesLeaseOptionsType {
+  // From LeaseOptionsType:
   name:                  string;
   owner:                 string;
   ttlMs:                 number;
@@ -54,7 +54,7 @@ interface KubernetesLeaseSettings {
 | `serviceAccountToken` | in-cluster | The pod's service account token — defaults to `/var/run/secrets/kubernetes.io/serviceaccount/token`. |
 
 For pods running in-cluster, you only need `namespace` and `name`
-(+ the standard `LeaseSettings` fields).  The framework reads the
+(+ the standard `LeaseOptionsType` fields).  The framework reads the
 API URL and token from the standard locations.
 
 For tests / dev pointing at a local K8s API (kind, minikube),

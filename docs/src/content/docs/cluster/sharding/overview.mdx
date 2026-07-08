@@ -141,10 +141,10 @@ mechanics.
 
 ## Configuration
 
-`ShardingSettings<TMsg>` — the fields you'll most often touch:
+`ShardingOptionsType<TMsg>` — the fields you'll most often touch:
 
 ```ts
-interface ShardingSettings<TMsg> {
+interface ShardingOptionsType<TMsg> {
   typeName:               string;
   entityProps:            Props<TMsg>;
   extractEntityId:        (message: TMsg) => string;

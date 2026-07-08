@@ -118,7 +118,7 @@ System beobachten kann.
 
 Wenn ein verbundener Broker unerwartet die Verbindung verliert,
 plant die Basisklasse einen Reconnect mit exponentiellem Backoff.
-Konfigurierbar über `BrokerCommonSettings`:
+Konfigurierbar über `BrokerCommonOptionsType`:
 
 ```ts
 {
@@ -245,11 +245,11 @@ Implementiere die drei abstrakten Methoden und verdrahte die
 Settings:
 
 ```ts
-import { BrokerActor, type BrokerCommonSettings } from 'actor-ts';
+import { BrokerActor, type BrokerCommonOptionsType } from 'actor-ts';
 
 class MyProtocolActor extends BrokerActor<MyOutbound> {
   protected configKey() { return 'actor-ts.io.my-protocol'; }
-  protected builtInDefaults(): BrokerCommonSettings { return { /* Defaults */ }; }
+  protected builtInDefaults(): BrokerCommonOptionsType { return { /* Defaults */ }; }
   protected readSettingsFromConfig(c) { /* HOCON parsen */ }
   protected requiredSettings() { return ['url']; }
 

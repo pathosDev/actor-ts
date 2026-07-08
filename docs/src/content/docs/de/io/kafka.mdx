@@ -39,7 +39,7 @@ kafka.tell({ kind: 'publish', publish: { topic: 'audit', value: 'something' } })
 ## Settings
 
 ```ts
-interface KafkaActorSettings extends BrokerCommonSettings {
+interface KafkaOptionsType extends BrokerCommonOptionsType {
   brokers:    string[] | string;           // Bootstrap-Server
   clientId?:  string;
   sasl?:      {
@@ -63,7 +63,7 @@ interface KafkaActorSettings extends BrokerCommonSettings {
 }
 ```
 
-Der Parent `BrokerCommonSettings` gibt dir Reconnect, Buffer,
+Der Parent `BrokerCommonOptionsType` gibt dir Reconnect, Buffer,
 Breaker — siehe [BrokerActor-Basis](/de/io/broker-actor-base/).
 
 ## Producen

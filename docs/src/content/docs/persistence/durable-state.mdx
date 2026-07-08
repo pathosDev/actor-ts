@@ -90,7 +90,7 @@ cart.tell({ kind: 'add', sku: 'book-2' });
 ## The settings
 
 ```ts
-interface DurableStateSettings<S> {
+interface DurableStateOptionsType<S> {
   persistenceId: string;
   store:         DurableStateStore;
   emptyState:    () => S;

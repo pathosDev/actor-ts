@@ -58,7 +58,7 @@ wenn der zugrunde liegende Store messbare Read-Latenz hat.**
 ## Konfiguration
 
 ```ts
-interface CachedSnapshotStoreSettings {
+interface CachedSnapshotStoreOptionsType {
   underlying: SnapshotStore;
   maxEntries: number;     // LRU-Kapazität
   ttlMs?:     number;     // optionale Expiration

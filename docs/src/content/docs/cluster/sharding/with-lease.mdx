@@ -65,7 +65,7 @@ beyond gossip.
 ## Configuration
 
 ```ts
-interface StartSettings<TMsg> {
+interface StartShardingOptionsType<TMsg> {
   // ... base sharding settings ...
   lease?:                   Lease;
   acquireRetryIntervalMs?:  number;     // default 5000
