@@ -19,7 +19,7 @@ name: multi-runtime
 
 on:
   push:
-    branches: [main, develop]
+    branches: [develop]
     paths:
       - 'src/**'
       - 'tests/**'

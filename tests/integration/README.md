@@ -83,11 +83,12 @@ injection uses `tc qdisc add ... netem delay`.
 ## CI
 
 `.github/workflows/integration.yml` runs the same `bun run
-test:integration` command on every push to `main` and on a
-nightly schedule.  PRs do NOT run integration tests
-automatically — it's expensive and the fast unit suite catches
-most regressions.  Manually re-run via the GitHub Actions UI
-when a PR touches transport / cluster / downing code.
+test:integration` command on pull requests targeting `main`
+(i.e. the release PR) and on a nightly schedule.  Routine
+`develop` pushes and feature PRs do NOT run it automatically —
+it's expensive and the fast unit suite catches most
+regressions.  Manually re-run via the GitHub Actions UI when a
+change touches transport / cluster / downing code.
 
 ## Adding a scenario
 

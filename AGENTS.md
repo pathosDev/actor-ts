@@ -35,13 +35,20 @@ deliberately tiny — `fastify` + `ts-pattern` — and everything else
   there. **`main` holds releases only**: it moves only when a release is cut
   (a `--no-ff` merge from `develop`, see *Release strategy*), never via direct
   feature work.
-- **Feature branches** (`feat/…`, `fix/…`, `chore/…`) branch off `develop`
-  and merge back into `develop` with a **merge commit (`git merge --no-ff`)** —
-  **never rebase**; delete the branch after merging. Small fixes and follow-ups
-  may go **directly on `develop`**.
-- **Do not push.** The agent commits locally only; the human pushes `develop`.
-  The single exception is cutting a release (below) — merging `develop` → `main`
-  and creating the tag/GitHub Release is explicitly authorized.
+- **All work happens on a feature branch under `features/…`** — one branch per
+  unit of work, branched off `develop` (e.g. `features/ws-backpressure`,
+  `features/fix-mqtt-reconnect`; even fixes and chores use the `features/`
+  prefix). **No direct commits to `develop`**, not even small fixes or
+  follow-ups — everything lands through a branch. Delete the branch after it
+  merges.
+- **Always integrate with a merge commit (`git merge --no-ff`) — never rebase,
+  never fast-forward.** This holds in both directions: `features/…` → `develop`
+  and, at release time, `develop` → `main`. History stays a true graph; it is
+  never rewritten or flattened.
+- **Do not push.** The agent commits locally only — on its `features/…` branch
+  and when merging into `develop`; the human pushes `develop`. The single
+  exception is cutting a release (below) — merging `develop` → `main` and
+  creating the tag/GitHub Release is explicitly authorized.
 - **`main` is branch-protected** — merges require a pull request and the `test`
   status check; the maintainer (admin) may bypass for the release merge.
 
@@ -64,8 +71,10 @@ Tags are `vX.Y.Z`; GitHub Releases are cut as normal **Latest** releases
 
 **Cutting a release** (only when explicitly asked) — promotes `develop` to `main`:
 
-1. On `develop`: bump `version` in `package.json` and move `[Unreleased]` →
-   `[X.Y.Z]` (dated) in `CHANGELOG.md`; commit (`chore(release): vX.Y.Z`).
+1. On a `features/release-vX.Y.Z` branch off `develop`: bump `version` in
+   `package.json` and move `[Unreleased]` → `[X.Y.Z]` (dated) in `CHANGELOG.md`;
+   commit (`chore(release): vX.Y.Z`). Merge it into `develop` (`--no-ff`) and
+   push `develop`.
 2. Merge `develop` → `main` with `git merge --no-ff`, then push `main`.
 3. `gh release create vX.Y.Z --target main` (a normal **Latest** release, no
    `--prerelease`) with **emoji-sectioned notes** (`## 🚀 New features`,
@@ -106,7 +115,7 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
 - **Cross-runtime:** `bun run smoke` runs `tests/smoke/cases/*.mjs` on
   Bun, Node, and Deno. Add a smoke case for anything runtime-sensitive.
 - **Don't hand-edit** the README test/coverage badges — CI updates them
-  on push to `main`.
+  on push to `develop`.
 
 ## Runtime portability
 

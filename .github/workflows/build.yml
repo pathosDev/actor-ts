@@ -8,7 +8,7 @@ name: build
 
 on:
   push:
-    branches: [main, develop]
+    branches: [develop]
     paths:
       - 'src/**'
       - 'package.json'
