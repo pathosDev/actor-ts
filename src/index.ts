@@ -191,6 +191,8 @@ export {
   CircuitBreaker,
   CircuitBreakerOpenError,
   CircuitBreakerTimeoutError,
+  CircuitBreakerOptions,
+  CircuitBreakerOptionsBuilder,
   exponentialBackoff,
   linearBackoff,
   BackoffSupervisor,
@@ -542,6 +544,10 @@ export {
   BoundedMailbox,
   MailboxFullError,
   PriorityMailbox,
+  BoundedMailboxOptions,
+  BoundedMailboxOptionsBuilder,
+  PriorityMailboxOptions,
+  PriorityMailboxOptionsBuilder,
 } from './mailbox/index.js';
 export type {
   BoundedMailboxOptionsType,

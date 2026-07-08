@@ -1,15 +1,6 @@
-export type CircuitState = 'closed' | 'open' | 'half-open';
+import type { CircuitBreakerOptions, CircuitBreakerOptionsType } from './CircuitBreakerOptions.js';
 
-export interface CircuitBreakerOptionsType {
-  /** Consecutive failures before the breaker opens.  Must be >= 1. */
-  readonly maxFailures: number;
-  /** How long the breaker stays open before letting a probe through.  ms. */
-  readonly resetTimeoutMs: number;
-  /** Per-call timeout; exceeding this counts as a failure. */
-  readonly callTimeoutMs?: number;
-  /** Optional: classify errors as non-failures to bypass breaker counting. */
-  readonly isFailure?: (err: Error) => boolean;
-}
+export type CircuitState = 'closed' | 'open' | 'half-open';
 
 export class CircuitBreakerOpenError extends Error {
   constructor(message = 'circuit breaker is open') {
@@ -43,13 +34,17 @@ export class CircuitBreaker {
   private nextProbeAt = 0;
   private readonly listeners = new Set<StateListener>();
 
-  constructor(public readonly options: CircuitBreakerOptionsType) {
-    if (options.maxFailures < 1) {
+  public readonly options: CircuitBreakerOptionsType;
+
+  constructor(options: CircuitBreakerOptions) {
+    const resolvedOptions = options as CircuitBreakerOptionsType;
+    if (resolvedOptions.maxFailures < 1) {
       throw new Error('CircuitBreaker: maxFailures must be >= 1');
     }
-    if (options.resetTimeoutMs < 0) {
+    if (resolvedOptions.resetTimeoutMs < 0) {
       throw new Error('CircuitBreaker: resetTimeoutMs must be >= 0');
     }
+    this.options = resolvedOptions;
   }
 
   get state(): CircuitState { return this._state; }

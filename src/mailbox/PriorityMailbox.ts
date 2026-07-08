@@ -1,4 +1,5 @@
 import { Mailbox, type Envelope } from '../internal/Mailbox.js';
+import type { PriorityMailboxOptions, PriorityMailboxOptionsType } from './PriorityMailboxOptions.js';
 
 /**
  * Priority order for user messages.  Lower numeric priority values are
@@ -6,10 +7,6 @@ import { Mailbox, type Envelope } from '../internal/Mailbox.js';
  * insertion order.
  */
 export type PriorityFunction<T> = (message: T) => number;
-
-export interface PriorityMailboxOptionsType<T> {
-  readonly priorityFor: PriorityFunction<T>;
-}
 
 /**
  * User messages are dequeued in priority order (ascending priority value,
@@ -23,9 +20,9 @@ export class PriorityMailbox<T = unknown> extends Mailbox<T> {
   private seq = 0;
   private readonly ordered: Array<{ env: Envelope<T>; priority: number; seq: number }> = [];
 
-  constructor(options: PriorityMailboxOptionsType<T>) {
+  constructor(options: PriorityMailboxOptions<T>) {
     super();
-    this.priorityFor = options.priorityFor;
+    this.priorityFor = (options as PriorityMailboxOptionsType<T>).priorityFor;
   }
 
   override enqueue(env: Envelope<T>): void {
