@@ -3,6 +3,7 @@ import { Actor } from '../../Actor.js';
 import { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../util/Constants.js';
+import { DistributedPubSubOptionsValidator } from './DistributedPubSubOptions.js';
 import type { DistributedPubSubOptions, DistributedPubSubOptionsType } from './DistributedPubSubOptions.js';
 import { MemberRemoved, MemberUp } from '../ClusterEvents.js';
 import { NodeAddress } from '../NodeAddress.js';
@@ -61,6 +62,7 @@ export class DistributedPubSubMediator extends Actor<
   constructor(options: DistributedPubSubOptions) {
     super();
     this.settings = options as DistributedPubSubOptionsType;
+    new DistributedPubSubOptionsValidator().validate(this.settings);
   }
 
   override preStart(): void {

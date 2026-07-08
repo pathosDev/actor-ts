@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { Cluster } from '../Cluster.js';
 
 /** Plain settings-object shape consumed by a {@link DistributedPubSubMediator}. */
@@ -26,6 +27,16 @@ export class DistributedPubSubOptionsBuilder extends OptionsBuilder<DistributedP
   /** Gossip interval in ms between anti-entropy pushes.  Default gossip interval. */
   withGossipIntervalMs(ms: number): this {
     return this.set('gossipIntervalMs', ms);
+  }
+}
+
+/** Validates resolved {@link DistributedPubSubOptionsType} settings. */
+export class DistributedPubSubOptionsValidator extends OptionsValidator<DistributedPubSubOptionsType> {
+  constructor() {
+    super('DistributedPubSubOptions');
+  }
+  protected rules(_s: Partial<DistributedPubSubOptionsType>): void {
+    this.positiveNumber('gossipIntervalMs');
   }
 }
 

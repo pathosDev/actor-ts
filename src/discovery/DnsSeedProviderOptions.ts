@@ -86,7 +86,12 @@ export class DnsSeedProviderOptionsValidator extends OptionsValidator<DnsSeedPro
   constructor() {
     super('DnsSeedProviderOptions');
   }
-  protected rules(_s: Partial<DnsSeedProviderOptionsType>): void {
+  protected rules(s: Partial<DnsSeedProviderOptionsType>): void {
+    this.nonEmptyString('hostname');
+    this.nonEmptyString('systemName');
+    // `port` is only used in A-record mode; SRV records carry their own ports,
+    // so the field is ignored (0 is the conventional placeholder) when useSrv.
+    if (!s.useSrv) this.positiveInt('port');
     this.nonNegativeNumber('cacheTtlMs');
   }
 }

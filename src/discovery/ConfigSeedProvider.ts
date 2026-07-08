@@ -1,5 +1,5 @@
 import { NodeAddress } from '../cluster/NodeAddress.js';
-import { ConfigSeedProviderOptions } from './ConfigSeedProviderOptions.js';
+import { ConfigSeedProviderOptions, ConfigSeedProviderOptionsValidator } from './ConfigSeedProviderOptions.js';
 import type { ConfigSeedProviderOptionsType } from './ConfigSeedProviderOptions.js';
 import type { SeedProvider } from './SeedProvider.js';
 
@@ -12,6 +12,7 @@ export class ConfigSeedProvider implements SeedProvider {
 
   constructor(options: ConfigSeedProviderOptions = {}) {
     this.settings = options as ConfigSeedProviderOptionsType;
+    new ConfigSeedProviderOptionsValidator().validate(this.settings);
   }
 
   async lookup(): Promise<NodeAddress[]> {

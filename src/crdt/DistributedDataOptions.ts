@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { DurableStateStore } from '../persistence/DurableStateStore.js';
 
 /** Plain settings-object shape accepted by {@link DistributedData.start}. */
@@ -47,6 +48,16 @@ export class DistributedDataOptionsBuilder extends OptionsBuilder<DistributedDat
   /** Durable per-replica backend — load on start, re-save after each mutation. */
   withDurableStore(store: DurableStateStore): this {
     return this.set('durableStore', store);
+  }
+}
+
+/** Validates resolved {@link DistributedDataOptionsType} settings. */
+export class DistributedDataOptionsValidator extends OptionsValidator<DistributedDataOptionsType> {
+  constructor() {
+    super('DistributedDataOptions');
+  }
+  protected rules(_s: Partial<DistributedDataOptionsType>): void {
+    this.positiveNumber('gossipInterval');
   }
 }
 

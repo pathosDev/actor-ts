@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { OptionsValidator } from '../util/OptionsValidator.js';
 
 /** Plain settings-object shape accepted by a {@link KubernetesApiSeedProvider}. */
 export interface KubernetesApiSeedProviderOptionsType {
@@ -52,6 +53,19 @@ export class KubernetesApiSeedProviderOptionsBuilder extends OptionsBuilder<Kube
   /** Override the Endpoints-fetch function — defaults to the in-cluster API. */
   withFetchEndpoints(fetchEndpoints: () => Promise<string[]>): this {
     return this.set('fetchEndpoints', fetchEndpoints);
+  }
+}
+
+/** Validates resolved {@link KubernetesApiSeedProviderOptionsType} settings. */
+export class KubernetesApiSeedProviderOptionsValidator extends OptionsValidator<KubernetesApiSeedProviderOptionsType> {
+  constructor() {
+    super('KubernetesApiSeedProviderOptions');
+  }
+  protected rules(_s: Partial<KubernetesApiSeedProviderOptionsType>): void {
+    this.nonEmptyString('namespace');
+    this.nonEmptyString('serviceName');
+    this.nonEmptyString('systemName');
+    this.positiveInt('port'); // node-address port (transport-agnostic — see ClusterOptions.port)
   }
 }
 

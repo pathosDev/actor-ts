@@ -36,6 +36,21 @@ import {
   ProducerControllerOptionsValidator,
   type ProducerControllerOptionsType,
 } from '../../../src/delivery/ProducerControllerOptions.js';
+import { AutoDiscoveryOptionsValidator, type AutoDiscoveryOptionsType } from '../../../src/discovery/AutoDiscoveryOptions.js';
+import {
+  ConfigSeedProviderOptionsValidator,
+  type ConfigSeedProviderOptionsType,
+} from '../../../src/discovery/ConfigSeedProviderOptions.js';
+import {
+  KubernetesApiSeedProviderOptionsValidator,
+  type KubernetesApiSeedProviderOptionsType,
+} from '../../../src/discovery/KubernetesApiSeedProviderOptions.js';
+import { ReceptionistOptionsValidator, type ReceptionistOptionsType } from '../../../src/discovery/ReceptionistOptions.js';
+import {
+  DistributedPubSubOptionsValidator,
+  type DistributedPubSubOptionsType,
+} from '../../../src/cluster/pubsub/DistributedPubSubOptions.js';
+import { DistributedDataOptionsValidator, type DistributedDataOptionsType } from '../../../src/crdt/DistributedDataOptions.js';
 
 // Direct validator tests for the non-broker options. Each consumer calls the
 // same validator in its constructor / start method after merging defaults.
@@ -268,5 +283,52 @@ describe('ProducerControllerOptionsValidator', () => {
 
   test('accepts sensible flow-control values', () => {
     expect(() => check({ resendTimeout: 500, windowSize: 16 })).not.toThrow();
+  });
+});
+
+describe('discovery option validators', () => {
+  test('AutoDiscovery: empty systemName / non-positive port', () => {
+    const check = (s: Partial<AutoDiscoveryOptionsType>): void =>
+      new AutoDiscoveryOptionsValidator().validate(s);
+    expect(() => check({ systemName: '', port: 2552 })).toThrow(OptionsError);
+    expect(() => check({ systemName: 'sys', port: 0 })).toThrow(OptionsError);
+    expect(() => check({ systemName: 'sys', port: 2552 })).not.toThrow();
+  });
+
+  test('ConfigSeedProvider: empty seeds / systemName', () => {
+    const check = (s: Partial<ConfigSeedProviderOptionsType>): void =>
+      new ConfigSeedProviderOptionsValidator().validate(s);
+    expect(() => check({ seeds: [], systemName: 'sys' })).toThrow(/seeds/);
+    expect(() => check({ seeds: ['a@h:1'], systemName: '' })).toThrow(OptionsError);
+    expect(() => check({ seeds: ['a@h:1'], systemName: 'sys' })).not.toThrow();
+  });
+
+  test('KubernetesApiSeedProvider: required names + positive port', () => {
+    const check = (s: Partial<KubernetesApiSeedProviderOptionsType>): void =>
+      new KubernetesApiSeedProviderOptionsValidator().validate(s);
+    expect(() => check({ namespace: '', serviceName: 'svc', systemName: 'sys', port: 2552 })).toThrow(OptionsError);
+    expect(() => check({ namespace: 'ns', serviceName: 'svc', systemName: 'sys', port: 0 })).toThrow(OptionsError);
+  });
+
+  test('Receptionist: non-positive gossipIntervalMs', () => {
+    const check = (s: Partial<ReceptionistOptionsType>): void =>
+      new ReceptionistOptionsValidator().validate(s);
+    expect(() => check({ gossipIntervalMs: 0 })).toThrow(/gossipIntervalMs/);
+    expect(() => check({ gossipIntervalMs: 1_000 })).not.toThrow();
+  });
+});
+
+describe('gossip-interval validators', () => {
+  test('DistributedPubSub: non-positive gossipIntervalMs', () => {
+    const check = (s: Partial<DistributedPubSubOptionsType>): void =>
+      new DistributedPubSubOptionsValidator().validate(s);
+    expect(() => check({ gossipIntervalMs: 0 })).toThrow(OptionsError);
+  });
+
+  test('DistributedData: non-positive gossipInterval', () => {
+    const check = (s: Partial<DistributedDataOptionsType>): void =>
+      new DistributedDataOptionsValidator().validate(s);
+    expect(() => check({ gossipInterval: -1 })).toThrow(/gossipInterval/);
+    expect(() => check({ gossipInterval: 1_000 })).not.toThrow();
   });
 });
