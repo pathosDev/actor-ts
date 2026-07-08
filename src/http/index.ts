@@ -36,10 +36,30 @@ export type {
   WebSocketConnectHandler,
 } from './Route.js';
 
-// Auth + IP-allowlist middleware (#312).  Exported from
-// `./middleware/index.js`; barrel re-exports both for convenience.
-export { BearerTokenAuth, IpAllowlist } from './middleware/index.js';
-export type { BearerTokenAuthOptions, IpAllowlistOptions } from './middleware/index.js';
+// Auth + IP-allowlist middleware (#312) and the security-header suite
+// (#353).  Exported from `./middleware/index.js`; the barrel re-exports.
+export {
+  BearerTokenAuth,
+  IpAllowlist,
+  strictTransportSecurity,
+  hsts,
+  HstsOptions,
+  HstsOptionsBuilder,
+  contentSecurityPolicy,
+  CspOptions,
+  CspOptionsBuilder,
+  securityHeaders,
+  SecurityHeadersOptions,
+  SecurityHeadersOptionsBuilder,
+} from './middleware/index.js';
+export type {
+  BearerTokenAuthOptions,
+  IpAllowlistOptions,
+  HstsOptionsType,
+  CspOptionsType,
+  CspDirectives,
+  SecurityHeadersOptionsType,
+} from './middleware/index.js';
 
 export { entity, marshal, pickRequestSerializer, pickResponseSerializer } from './Marshalling.js';
 
