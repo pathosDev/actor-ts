@@ -17,15 +17,18 @@ const limited = rateLimit({
   cache:    new InMemoryCache(),
   windowMs: 60_000,                       // 1-Minuten-Fenster
   max:      100,                          // 100 Requests pro Key pro Minute
-  key:      (req) => req.headers['x-forwarded-for'] ?? 'unknown',
+  key:      (req) => req.remoteAddress ?? 'unknown',   // Socket-Peer — kein spoofbarer Header
 });
 
 const routes = path('api', post(limited(apiHandler)));
 ```
 
-Jede eindeutige IP bekommt ein Budget von 100/Minute.
-Überschüssige Requests bekommen 429 mit einem `Retry-After`-
-Header.
+Jede eindeutige IP (hier: der Socket-Peer `req.remoteAddress`) bekommt ein
+Budget von 100/Minute.  Überschüssige Requests bekommen 429 mit einem
+`Retry-After`-Header.  **Nutze als Key einen Wert, den der Client nicht
+fälschen kann** — nicht `x-forwarded-for`, außer ein vertrauenswürdiger
+Proxy setzt ihn (siehe Sicherheitshinweis unten), sonst rotiert ein
+Angreifer den Header pro Request und umgeht das Limit.
 
 ## Konfiguration
 

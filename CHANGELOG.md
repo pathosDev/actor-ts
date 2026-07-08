@@ -114,6 +114,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`/^[A-Za-z_][A-Za-z0-9_]*$/`) is now applied across all four, so a
   config-sourced identifier can't inject SQL/CQL.  Data values were, and
   remain, bound parameters.
+- **HTTP-3 (docs) — rate-limit examples key on the socket peer, not
+  `x-forwarded-for`** (see `SECURITY_AUDIT.md`).  The shipped `rateLimit`
+  examples taught keying on the client-settable `x-forwarded-for` header, which
+  an attacker rotates per request to bypass the limit (and which collapses all
+  header-less clients into one shared bucket).  The JSDoc and the bilingual
+  docs now use `req.remoteAddress` and state the trusted-proxy caveat.  No
+  behaviour change — `key` was always caller-supplied.
 
 ## [0.10.0] — 2026-07-08
 
