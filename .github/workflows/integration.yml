@@ -9,33 +9,22 @@ name: integration
 # no CI-only drift.
 #
 # Triggers:
-#   - Pushes to `main`
-#   - PRs targeting `main` — the suite proved fast enough in
-#     practice (~25 s scenarios + ~10 s container startup + cached
-#     build) that the action-minute budget isn't a concern.  PRs
-#     touching cluster / transport / persistence code should
-#     surface regressions BEFORE merge.
+#   - PRs targeting `main` (the release PR) — the suite proved fast
+#     enough in practice (~25 s scenarios + ~10 s container startup +
+#     cached build) that the action-minute budget isn't a concern.
+#     Gating the promotion into `main` surfaces cluster / transport /
+#     persistence regressions BEFORE they ship.
 #   - Manual dispatch (workflow_dispatch) — re-run on demand from
 #     the GitHub Actions UI for any branch.
-#   - Nightly at 03:00 UTC — catches transport-level flakes that
-#     wouldn't show up in fast unit-test PR runs.
+#   - Nightly at 03:00 UTC on `develop` (the default branch) — catches
+#     transport-level flakes that wouldn't show up in fast PR runs.
 
 on:
-  push:
-    branches: [main, develop]
-    paths:
-      # Trigger only when something that could plausibly affect
-      # cluster behaviour over real TCP changes — source code, the
-      # integration setup itself, or the workflow.  Skips on docs-
-      # only / unit-test-only / README changes.
-      - 'src/**'
-      - 'tests/integration/**'
-      - 'package.json'
-      - 'bun.lock'
-      - 'tsconfig.json'
-      - '.github/workflows/integration.yml'
+  # Heavy real-network multi-node suite — gates the release PR into `main`,
+  # runs nightly on `develop` (the default branch, via the schedule below),
+  # and on manual dispatch.  Deliberately NOT on every develop push/PR.
   pull_request:
-    branches: [main, develop]
+    branches: [main]
     paths:
       - 'src/**'
       - 'tests/integration/**'

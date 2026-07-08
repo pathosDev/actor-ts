@@ -1,11 +1,11 @@
 # Build + deploy the Astro Starlight documentation site under `docs/`
 # to GitHub Pages.
 #
-# Strategy: every push to `main` builds the site and deploys it to
-# Pages.  PRs build only — they run as a status-check so a broken
-# config gets caught before it lands on main.  Build output is never
-# committed; Pages consumes the workflow artifact directly via the
-# `actions/deploy-pages` action.
+# Strategy: build + deploy on every push to `main` — i.e. at release time
+# (releases are the protected merge into `main`), so the published docs match
+# the released version.  Not built on develop pushes/PRs (the build is slow).
+# Build output is never committed; Pages consumes the workflow artifact
+# directly via the `actions/deploy-pages` action.
 #
 # **Prerequisite — manual one-time setup**:
 #   Settings → Pages → Source: GitHub Actions
@@ -17,26 +17,13 @@
 name: docs
 
 on:
+  # Build + deploy only at release time.  A release is the (protected) merge
+  # into `main`, so the published docs always match the released version.
+  # Docs are deliberately NOT built on `develop` pushes/PRs — the build is slow
+  # (TypeDoc + Astro + headless-Chromium Mermaid SSR).  Use workflow_dispatch
+  # for an out-of-band rebuild.
   push:
-    branches: [main, develop]
-    paths:
-      # Run on changes to the docs site itself, AND on changes to
-      # `src/` (because TypeDoc regenerates the API reference from
-      # JSDoc on every build).
-      - 'docs/**'
-      - 'src/**'
-      - '.github/workflows/docs.yml'
-      # Also run when the README changes — it gets pulled into the
-      # landing page indirectly via Starlight's edit-link.
-      - 'README.md'
-  pull_request:
-    branches: [main, develop]
-    paths:
-      - 'docs/**'
-      - 'src/**'
-      - '.github/workflows/docs.yml'
-      - 'README.md'
-  # Allow manual triggering from the Actions tab for emergency rebuilds.
+    branches: [main]
   workflow_dispatch:
 
 # Avoid in-flight workflow conflicts: cancel any older run on the same
