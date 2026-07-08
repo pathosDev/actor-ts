@@ -100,6 +100,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   client caps its pending event buffer at 1 MiB — both drop the connection
   instead of buffering forever.  (`length-prefixed` TCP framing was already
   bounded.)
+- **#2 (HIGH) — SSRF guard on decoded reply-to refs** (see `SECURITY_AUDIT.md`).
+  A hostile envelope could embed a `WireActorRef` with an arbitrary `host:port`
+  (e.g. a cloud-metadata endpoint); when a local actor replied to it, the node
+  dialed that address — SSRF / internal port-scan / reflection.  The ref decoder
+  now reconstructs a `RemoteActorRef` only when the target is the peer that sent
+  the envelope (reply-to-sender is never SSRF) or a known cluster member; any
+  other address decodes to `Nobody`.
 
 ## [0.10.0] — 2026-07-08
 

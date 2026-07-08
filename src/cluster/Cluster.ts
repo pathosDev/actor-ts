@@ -290,6 +290,21 @@ export class Cluster {
     this.transport.send(to, encoded);
   }
 
+  /**
+   * True if `addr` is part of the known cluster topology (self, or a
+   * non-removed member).  SSRF guard for the ref decoder: a decoded
+   * `RemoteActorRef` may only target an address the cluster actually knows,
+   * so a hostile envelope can't embed an arbitrary `host:port` (e.g. a
+   * cloud-metadata endpoint) as a reply-to ref and coerce this node into
+   * dialing it (SECURITY_AUDIT.md #2).
+   */
+  _isKnownMemberAddress(addr: NodeAddress): boolean {
+    const key = addr.toString();
+    if (key === this.selfAddress.toString()) return true;
+    const m = this.members.get(key);
+    return m !== undefined && m.status !== 'removed';
+  }
+
   /** Register a handler for a specific wire-message discriminator. */
   _onWire(kind: string, handler: (msg: WireMessage, from: NodeAddress) => void): () => void {
     this.wireHandlers.set(kind, handler);
@@ -550,7 +565,10 @@ export class Cluster {
     // Rehydrate any ActorRef markers embedded in the user payload before
     // handing it off — downstream handlers (sharding, pubsub, …) just
     // forward `env.body` and shouldn't each duplicate the decode step.
-    const decoded: EnvelopeMsg = { ...msg, body: decodeRefs(msg.body, this) };
+    // `from` (the peer that sent this envelope) is passed to the decoder so
+    // a reply-to ref pointing back at the sender is always allowed, while an
+    // attacker-embedded arbitrary address is dropped (SECURITY_AUDIT.md #2).
+    const decoded: EnvelopeMsg = { ...msg, body: decodeRefs(msg.body, this, from) };
 
     // 1. Explicit per-path handler (pub-sub mediator, singleton manager,
     //    sharding coordinator, …).
