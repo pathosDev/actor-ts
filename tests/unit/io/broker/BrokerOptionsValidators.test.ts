@@ -3,6 +3,9 @@ import { OptionsError } from '../../../../src/util/OptionsValidator.js';
 import { KafkaOptionsValidator, type KafkaOptionsType } from '../../../../src/io/broker/KafkaOptions.js';
 import { AmqpOptionsValidator, type AmqpOptionsType } from '../../../../src/io/broker/AmqpOptions.js';
 import { RedisStreamsOptionsValidator, type RedisStreamsOptionsType } from '../../../../src/io/broker/RedisStreamsOptions.js';
+import { NatsOptionsValidator, type NatsOptionsType } from '../../../../src/io/broker/NatsOptions.js';
+import { JetStreamOptionsValidator, type JetStreamOptionsType } from '../../../../src/io/broker/JetStreamOptions.js';
+import { SseOptionsValidator, type SseOptionsType } from '../../../../src/io/broker/SseOptions.js';
 
 // Direct validator tests. The optionsValidator() hook is proven to fire in
 // preStart end-to-end by the MqttOptions integration test; here we exercise
@@ -86,5 +89,48 @@ describe('RedisStreamsOptionsValidator', () => {
   test('rejects a negative blockMs but accepts 0 (block indefinitely)', () => {
     expect(() => check({ blockMs: -1 })).toThrow(OptionsError);
     expect(() => check({ blockMs: 0 })).not.toThrow();
+  });
+});
+
+describe('NatsOptionsValidator', () => {
+  const check = (s: Partial<NatsOptionsType>): void => new NatsOptionsValidator().validate(s);
+
+  test('rejects empty servers', () => {
+    expect(() => check({ servers: [] })).toThrow(OptionsError);
+    expect(() => check({ servers: '' })).toThrow(OptionsError);
+  });
+
+  test('accepts non-empty servers', () => {
+    expect(() => check({ servers: 'nats://localhost:4222' })).not.toThrow();
+    expect(() => check({ servers: ['nats://a:4222', 'nats://b:4222'] })).not.toThrow();
+  });
+});
+
+describe('JetStreamOptionsValidator', () => {
+  const check = (s: Partial<JetStreamOptionsType>): void => new JetStreamOptionsValidator().validate(s);
+
+  test('rejects empty servers', () => {
+    expect(() => check({ servers: [] })).toThrow(OptionsError);
+  });
+
+  test('rejects a non-positive ackTimeout', () => {
+    expect(() => check({ servers: 'nats://h:4222', ackTimeout: 0 })).toThrow(/ackTimeout/);
+  });
+
+  test('accepts a valid configuration', () => {
+    expect(() => check({ servers: 'nats://h:4222', ackTimeout: 30_000 })).not.toThrow();
+  });
+});
+
+describe('SseOptionsValidator', () => {
+  const check = (s: Partial<SseOptionsType>): void => new SseOptionsValidator().validate(s);
+
+  test('accepts http / https urls', () => {
+    expect(() => check({ url: 'http://host/events' })).not.toThrow();
+    expect(() => check({ url: 'https://host/events' })).not.toThrow();
+  });
+
+  test('rejects a non-http url', () => {
+    expect(() => check({ url: 'ws://host/events' })).toThrow(OptionsError);
   });
 });

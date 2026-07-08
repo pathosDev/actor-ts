@@ -6,7 +6,7 @@
  * and feeds the same three-layer merge (constructor > HOCON under
  * `actor-ts.io.broker.jetstream` > built-in defaults).
  */
-import { BrokerOptionsBuilder } from './BrokerOptions.js';
+import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
 import type { BrokerCommonOptionsType } from './BrokerSettings.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type {
@@ -87,6 +87,18 @@ export class JetStreamOptionsBuilder extends BrokerOptionsBuilder<JetStreamOptio
   /** Max time the manual-ack pump waits for ack/nak/term before giving up. */
   withAckTimeout(ms: number): this {
     return this.set('ackTimeout', ms);
+  }
+}
+
+/** Validates resolved {@link JetStreamOptionsType} settings. */
+export class JetStreamOptionsValidator extends BrokerOptionsValidator<JetStreamOptionsType> {
+  constructor() {
+    super('JetStreamOptions');
+  }
+  protected rules(s: Partial<JetStreamOptionsType>): void {
+    this.commonRules(s);
+    this.nonEmptyStringOrArray('servers', s.servers);
+    this.positiveNumber('ackTimeout');
   }
 }
 

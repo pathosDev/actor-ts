@@ -115,7 +115,7 @@ export type {
   NatsMessage,
   NatsPublish,
 } from './NatsActor.js';
-export { NatsOptions, NatsOptionsBuilder } from './NatsOptions.js';
+export { NatsOptions, NatsOptionsBuilder, NatsOptionsValidator } from './NatsOptions.js';
 export type { NatsOptionsType } from './NatsOptions.js';
 export { JetStreamActor } from './JetStreamActor.js';
 export type {
@@ -132,7 +132,7 @@ export type {
   JetStreamMsgInfoLike,
   JetStreamManagerLike,
 } from './JetStreamActor.js';
-export { JetStreamOptions, JetStreamOptionsBuilder } from './JetStreamOptions.js';
+export { JetStreamOptions, JetStreamOptionsBuilder, JetStreamOptionsValidator } from './JetStreamOptions.js';
 export type { JetStreamOptionsType } from './JetStreamOptions.js';
 export { RedisStreamsActor } from './RedisStreamsActor.js';
 export type {
@@ -147,5 +147,5 @@ export type {
   SseCmd,
   SseEvent,
 } from './SseActor.js';
-export { SseOptions, SseOptionsBuilder } from './SseOptions.js';
+export { SseOptions, SseOptionsBuilder, SseOptionsValidator } from './SseOptions.js';
 export type { SseOptionsType } from './SseOptions.js';

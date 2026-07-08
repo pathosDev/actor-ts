@@ -6,7 +6,7 @@
  * and feeds the same three-layer merge (constructor > HOCON under
  * `actor-ts.io.broker.nats` > built-in defaults).
  */
-import { BrokerOptionsBuilder } from './BrokerOptions.js';
+import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
 import type { BrokerCommonOptionsType } from './BrokerSettings.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { NatsMessage } from './NatsActor.js';
@@ -58,6 +58,17 @@ export class NatsOptionsBuilder extends BrokerOptionsBuilder<NatsOptionsType> {
   /** Client name reported to the server. */
   withName(name: string): this {
     return this.set('name', name);
+  }
+}
+
+/** Validates resolved {@link NatsOptionsType} settings. */
+export class NatsOptionsValidator extends BrokerOptionsValidator<NatsOptionsType> {
+  constructor() {
+    super('NatsOptions');
+  }
+  protected rules(s: Partial<NatsOptionsType>): void {
+    this.commonRules(s);
+    this.nonEmptyStringOrArray('servers', s.servers);
   }
 }
 
