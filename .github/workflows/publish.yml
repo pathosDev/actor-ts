@@ -25,9 +25,9 @@ jobs:
     # Quarantine the worker-thread multi-node suites (ParallelMultiNodeSpec +
     # LeaseMajority e2e) on GitHub's hosted runners, exactly as test.yml does —
     # Bun there can't respawn worker threads after the first test.  Set at JOB
-    # level so BOTH the `Test` step AND `npm publish`'s `prepublishOnly` re-run
-    # of `bun test` inherit it.  They run locally + in Docker; the `integration`
-    # workflow is the real multi-node gate.
+    # level so the `bun test` inside `npm publish`'s `prepublishOnly` inherits
+    # it.  Those suites run locally + in Docker; the `integration` workflow is
+    # the real multi-node gate.
     env:
       ACTOR_TS_SKIP_FLAKY_MNS: '1'
 
@@ -40,23 +40,19 @@ jobs:
         with:
           bun-version: latest
 
-      # Install + typecheck + test + build run in a Bun-only environment (no
-      # Node on PATH).  This matches the green `test.yml`: better-sqlite3's
-      # postinstall resolves a prebuilt binary for Bun's Node ABI instead of
-      # falling back to a `node-gyp` source build (which breaks on the runner's
-      # Node 20 via a node-gyp/undici incompatibility).  Node + npm are set up
-      # afterwards, only for the publish step.
+      # Install deps in a Bun-only environment (no Node on PATH).  This matches
+      # the green `test.yml`: better-sqlite3's postinstall resolves a prebuilt
+      # binary for Bun's Node ABI instead of falling back to a `node-gyp`
+      # source build (which breaks on the runner's Node 20 via a
+      # node-gyp/undici incompatibility).  Node + npm are set up afterwards,
+      # only for the publish step.
+      #
+      # Typecheck / test / build are deliberately NOT separate steps: `npm
+      # publish` runs `prepublishOnly` (`clean && build && typecheck && test`)
+      # on this same Bun toolchain immediately before it publishes, so adding
+      # explicit steps here would run the whole suite twice.
       - name: Install dependencies
         run: bun install --frozen-lockfile
-
-      - name: Typecheck
-        run: bun run typecheck
-
-      - name: Test
-        run: bun test
-
-      - name: Build
-        run: bun run build
 
       - name: Setup Node + npm registry
         uses: actions/setup-node@v6
