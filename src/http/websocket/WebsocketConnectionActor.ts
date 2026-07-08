@@ -23,10 +23,10 @@ import { WebsocketReadyState, type WebsocketSocketAdapter } from './SocketAdapte
 import { WebsocketDecodeError, type WebsocketCodec } from './WebsocketCodec.js';
 import { WebsocketConnectionImplementation, type WebsocketConnection, type WebsocketOutboundCommand } from './WebsocketConnection.js';
 import {
-  WebsocketConnectedSignal,
-  WebsocketDataSignal,
-  WebsocketDisconnectedSignal,
-  WebsocketInvalidSignal,
+  websocketConnectedSignal,
+  websocketDataSignal,
+  websocketDisconnectedSignal,
+  websocketInvalidSignal,
   type WebsocketServerRef,
 } from './WebsocketMessages.js';
 import type { ResolvedWebsocketPolicy } from './WebsocketPolicy.js';
@@ -66,7 +66,7 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
     this.connection = conn;
     // Tell the hub 'connected' BEFORE attaching listeners, so it is
     // mailbox-ordered before any inbound data flushed by setListeners.
-    this.d.hub.tell(new WebsocketConnectedSignal<TOut>(conn), conn);
+    this.d.hub.tell(websocketConnectedSignal<TOut>(conn), conn);
     this.d.socket.setListeners({
       onMessage: (data) => this.handleInbound(data),
       onClose: (code, reason) => this.handleClose(code, reason),
@@ -107,7 +107,7 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
     if (this.connection && !this.disconnectReported) {
       this.disconnectReported = true;
       const info: WebsocketCloseInfo = this.closeInfo ?? { code: 1011, reason: '', initiatedBy: 'error' };
-      this.d.hub.tell(new WebsocketDisconnectedSignal<TOut>(this.connection, info), this.connection);
+      this.d.hub.tell(websocketDisconnectedSignal<TOut>(this.connection, info), this.connection);
     }
     if (!this.closed) {
       this.closed = true;
@@ -139,13 +139,13 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
       if (this.d.policy.onInvalidMessage === 'close') {
         this.closeSocket(1003, 'unsupported data');
       } else if (this.d.policy.onInvalidMessage === 'hook') {
-        this.d.hub.tell(new WebsocketInvalidSignal<TOut>(this.connection!, decodeErr), this.connection!);
+        this.d.hub.tell(websocketInvalidSignal<TOut>(this.connection!, decodeErr), this.connection!);
       } else {
         this.log.warn(`WebsocketConnectionActor ${this.d.id}: invalid inbound message — dropped: ${decodeErr.message}`);
       }
       return;
     }
-    this.d.hub.tell(new WebsocketDataSignal<TOut, TIn>(this.connection!, decoded), this.connection!);
+    this.d.hub.tell(websocketDataSignal<TOut, TIn>(this.connection!, decoded), this.connection!);
   }
 
   private handleClose(code: number, reason: string): void {

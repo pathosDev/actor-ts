@@ -26,11 +26,14 @@ import { BrokerActor, type OutboundEnvelope } from '../../io/broker/BrokerActor.
 import { jsonCodec, WebsocketDecodeError, type WebsocketCodec } from './WebsocketCodec.js';
 import type { WebsocketClientOptions, WebsocketClientOptionsType } from './WebsocketClientOptions.js';
 import {
-  WebsocketClientConnected,
-  WebsocketClientDisconnected,
-  WebsocketClientInbound,
-  WebsocketClientInvalid,
-  WebsocketClientSend,
+  websocketClientConnected,
+  websocketClientDisconnected,
+  websocketClientInbound,
+  websocketClientInvalid,
+  type WebsocketClientDisconnected,
+  type WebsocketClientInbound,
+  type WebsocketClientInvalid,
+  type WebsocketClientSend,
   type WebsocketClientMessage,
 } from './WebsocketMessages.js';
 import { websocketClientConstructor, type WebsocketLike } from './websocketConstructor.js';
@@ -99,12 +102,14 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
 
   /** @internal Sealed — override onMessage + hooks instead. */
   override onReceive(cmd: WebsocketClientMessage<TOut, TIn, TSelf>): void | Promise<void> {
-    if (cmd instanceof WebsocketClientSend) return void this.send(cmd.msg as TOut);
-    if (cmd instanceof WebsocketClientInbound) return this.onMessage(cmd.msg as TIn);
-    if (cmd instanceof WebsocketClientInvalid) return this.onInvalidMessage(cmd.error);
-    if (cmd instanceof WebsocketClientConnected) return this.onConnected();
-    if (cmd instanceof WebsocketClientDisconnected) return this.onDisconnected(cmd.cause);
-    return this.onSelfMessage(cmd as TSelf);
+    switch ((cmd as { readonly kind?: unknown }).kind) {
+      case 'websocket-client-send': return void this.send((cmd as WebsocketClientSend<TOut>).message);
+      case 'websocket-client-inbound': return this.onMessage((cmd as WebsocketClientInbound<TIn>).message);
+      case 'websocket-client-invalid': return this.onInvalidMessage((cmd as WebsocketClientInvalid).error);
+      case 'websocket-client-connected': return this.onConnected();
+      case 'websocket-client-disconnected': return this.onDisconnected((cmd as WebsocketClientDisconnected).cause);
+      default: return this.onSelfMessage(cmd as TSelf);
+    }
   }
 
   /* ----------------------- BrokerActor plumbing ------------------ */
@@ -148,7 +153,7 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
         if (ping && ping > 0) {
           this.pingTimer = setInterval(() => { try { ws.ping?.(); } catch { /* ignore */ } }, ping);
         }
-        this.self.tell(new WebsocketClientConnected());
+        this.self.tell(websocketClientConnected());
         resolve();
       });
       ws.addEventListener('error', () => {
@@ -178,7 +183,7 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     if (!this.socket) return; // already handled this connection's drop
     this.socket = null;
     if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
-    this.self.tell(new WebsocketClientDisconnected(cause));
+    this.self.tell(websocketClientDisconnected(cause));
     // Trigger BrokerActor's reconnect cycle.
     this.handleConnectionLost(cause);
   }
@@ -201,7 +206,7 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
       const e = err instanceof WebsocketDecodeError ? err : new WebsocketDecodeError(String(err), frame);
       const policy = this.options.onInvalidMessage ?? 'drop';
       if (policy === 'hook') {
-        this.self.tell(new WebsocketClientInvalid(e));
+        this.self.tell(websocketClientInvalid(e));
       } else if (policy === 'disconnect') {
         this.log.warn(`WebsocketClientActor: invalid inbound message — disconnecting: ${e.message}`);
         try { this.socket?.close(1003, 'unsupported data'); } catch { /* ignore */ }
@@ -210,6 +215,6 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
       }
       return;
     }
-    this.self.tell(new WebsocketClientInbound(decoded));
+    this.self.tell(websocketClientInbound(decoded));
   }
 }

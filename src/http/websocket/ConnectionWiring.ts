@@ -14,7 +14,7 @@ import type { ActorSystem } from '../../ActorSystem.js';
 import { Props } from '../../Props.js';
 import type { HttpRequest } from '../types.js';
 import type { WebsocketSocketAdapter } from './SocketAdapter.js';
-import { WebsocketAcceptSignal, type WebsocketServerRef } from './WebsocketMessages.js';
+import { websocketAcceptCommand, type WebsocketServerRef } from './WebsocketMessages.js';
 import { WebsocketConnectionActor } from './WebsocketConnectionActor.js';
 import type { WebsocketCodec } from './WebsocketCodec.js';
 import type { ResolvedWebsocketPolicy } from './WebsocketPolicy.js';
@@ -112,7 +112,7 @@ let connectionCounter = 0;
  * `connect` handler).
  *
  * It does NOT spawn or attach anything itself — instead it tells the hub
- * a {@link WebsocketAcceptSignal} carrying the per-connection actor's `Props`, so
+ * a {@link WebsocketAcceptCommand} carrying the per-connection actor's `Props`, so
  * the hub spawns that actor as its OWN child (`server → conn-N`).  The
  * child then creates the {@link WebsocketConnection}, reports `connected`, and
  * attaches the socket listeners in its `preStart`.
@@ -143,5 +143,5 @@ export function wireConnection<TOut, TIn, TSelf = never>(
   const props = Props.create(
     () => new WebsocketConnectionActor<TOut, TIn, TSelf>({ socket, codec, policy, hub, id, upgrade }),
   );
-  hub.tell(new WebsocketAcceptSignal(props as unknown as Props<unknown>, id), null);
+  hub.tell(websocketAcceptCommand(props as unknown as Props<unknown>, id), null);
 }

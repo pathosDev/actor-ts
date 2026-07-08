@@ -27,13 +27,13 @@ import { Actor } from '../../Actor.js';
 import { stoppingStrategy, type SupervisorStrategy } from '../../Supervision.js';
 import type { WebsocketDecodeError } from './WebsocketCodec.js';
 import type { WebsocketConnection } from './WebsocketConnection.js';
-import {
-  WebsocketAcceptSignal,
+import type {
+  WebsocketAcceptCommand,
   WebsocketConnectedSignal,
   WebsocketDataSignal,
   WebsocketDisconnectedSignal,
   WebsocketInvalidSignal,
-  type WebsocketServerMessage,
+  WebsocketServerMessage,
 } from './WebsocketMessages.js';
 import type { WebsocketCloseInfo } from './types.js';
 
@@ -108,50 +108,59 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
 
   /** @internal Sealed — do not override; override `onMessage` + hooks instead. */
   override async onReceive(msg: WebsocketServerMessage<TOut, TIn, TSelf>): Promise<void> {
-    if (msg instanceof WebsocketAcceptSignal) {
-      // Spawn the per-connection actor as THIS actor's child, so the
-      // tree is server → conn-N and supervision/teardown are automatic.
-      this.context.spawn(msg.props, msg.name);
-      return;
-    }
-    if (msg instanceof WebsocketConnectedSignal) {
-      this._clients.set(msg.connection.id, msg.connection);
-      this._current = msg.connection;
-      try {
-        await this.onClientConnected(msg.connection);
-      } finally {
-        this._current = null;
+    // Uniform `kind` dispatch over the accept command + lifecycle signals.
+    switch ((msg as { readonly kind?: unknown }).kind) {
+      case 'websocket-accept': {
+        // Spawn the per-connection actor as THIS actor's child, so the
+        // tree is server → conn-N and supervision/teardown are automatic.
+        const command = msg as WebsocketAcceptCommand;
+        this.context.spawn(command.props, command.name);
+        return;
       }
-      return;
-    }
-    if (msg instanceof WebsocketDataSignal) {
-      this._current = msg.connection;
-      try {
-        await this.onMessage(msg.message as TIn);
-      } finally {
-        this._current = null;
+      case 'websocket-connected': {
+        const signal = msg as WebsocketConnectedSignal<TOut>;
+        this._clients.set(signal.connection.id, signal.connection);
+        this._current = signal.connection;
+        try {
+          await this.onClientConnected(signal.connection);
+        } finally {
+          this._current = null;
+        }
+        return;
       }
-      return;
-    }
-    if (msg instanceof WebsocketDisconnectedSignal) {
-      this._current = msg.connection;
-      try {
-        await this.onClientDisconnected(msg.connection, msg.info);
-      } finally {
-        this._current = null;
-        this._clients.delete(msg.connection.id);
+      case 'websocket-data': {
+        const signal = msg as WebsocketDataSignal<TOut, TIn>;
+        this._current = signal.connection;
+        try {
+          await this.onMessage(signal.message);
+        } finally {
+          this._current = null;
+        }
+        return;
       }
-      return;
-    }
-    if (msg instanceof WebsocketInvalidSignal) {
-      this._current = msg.connection;
-      try {
-        await this.onInvalidMessage(msg.connection, msg.error);
-      } finally {
-        this._current = null;
+      case 'websocket-disconnected': {
+        const signal = msg as WebsocketDisconnectedSignal<TOut>;
+        this._current = signal.connection;
+        try {
+          await this.onClientDisconnected(signal.connection, signal.info);
+        } finally {
+          this._current = null;
+          this._clients.delete(signal.connection.id);
+        }
+        return;
       }
-      return;
+      case 'websocket-invalid': {
+        const signal = msg as WebsocketInvalidSignal<TOut>;
+        this._current = signal.connection;
+        try {
+          await this.onInvalidMessage(signal.connection, signal.error);
+        } finally {
+          this._current = null;
+        }
+        return;
+      }
+      default:
+        await this.onSelfMessage(msg as TSelf);
     }
-    await this.onSelfMessage(msg as TSelf);
   }
 }
