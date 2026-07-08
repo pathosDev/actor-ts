@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import { PhiAccrualFailureDetector } from '../../../../src/cluster/PhiAccrualFailureDetector.js';
 import { PhiAccrualOptions } from '../../../../src/cluster/PhiAccrualOptions.js';
+import { OptionsError } from '../../../../src/util/OptionsValidator.js';
 
 const addr = (port: number): NodeAddress => new NodeAddress('sys', 'h', port);
 
@@ -10,6 +11,8 @@ describe('PhiAccrualFailureDetector', () => {
     const badThresholdOptions = PhiAccrualOptions.create()
       .withUnreachableThreshold(8)
       .withDownThreshold(8);
+    expect(() => new PhiAccrualFailureDetector(badThresholdOptions))
+      .toThrow(OptionsError);
     expect(() => new PhiAccrualFailureDetector(badThresholdOptions))
       .toThrow(/downThreshold must exceed/);
     const badSampleSizeOptions = PhiAccrualOptions.create().withMaxSampleSize(0);

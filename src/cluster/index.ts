@@ -47,7 +47,7 @@ export {
   PhiAccrualFailureDetector,
   defaultPhiAccrualSettings,
 } from './PhiAccrualFailureDetector.js';
-export { PhiAccrualOptions, PhiAccrualOptionsBuilder } from './PhiAccrualOptions.js';
+export { PhiAccrualOptions, PhiAccrualOptionsBuilder, PhiAccrualOptionsValidator } from './PhiAccrualOptions.js';
 export type { PhiAccrualOptionsType } from './PhiAccrualOptions.js';
 
 // Split-Brain Resolver strategies.
@@ -162,7 +162,7 @@ export type {
 
 // Outside-in client (#86).
 export { ClusterClient } from './ClusterClient.js';
-export { ClusterClientOptions, ClusterClientOptionsBuilder } from './ClusterClientOptions.js';
+export { ClusterClientOptions, ClusterClientOptionsBuilder, ClusterClientOptionsValidator } from './ClusterClientOptions.js';
 export type { ClusterClientOptionsType } from './ClusterClientOptions.js';
 export {
   ClusterClientReceptionist,
