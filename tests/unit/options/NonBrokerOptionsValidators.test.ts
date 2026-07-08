@@ -51,6 +51,11 @@ import {
   type DistributedPubSubOptionsType,
 } from '../../../src/cluster/pubsub/DistributedPubSubOptions.js';
 import { DistributedDataOptionsValidator, type DistributedDataOptionsType } from '../../../src/crdt/DistributedDataOptions.js';
+import { MemcachedCacheOptionsValidator, type MemcachedCacheOptionsType } from '../../../src/cache/MemcachedCacheOptions.js';
+import {
+  CassandraJournalOptionsValidator,
+  type CassandraJournalOptionsType,
+} from '../../../src/persistence/journals/CassandraJournalOptions.js';
 
 // Direct validator tests for the non-broker options. Each consumer calls the
 // same validator in its constructor / start method after merging defaults.
@@ -330,5 +335,22 @@ describe('gossip-interval validators', () => {
       new DistributedDataOptionsValidator().validate(s);
     expect(() => check({ gossipInterval: -1 })).toThrow(/gossipInterval/);
     expect(() => check({ gossipInterval: 1_000 })).not.toThrow();
+  });
+});
+
+describe('persistence + memcached validators', () => {
+  test('MemcachedCache: empty servers', () => {
+    const check = (s: Partial<MemcachedCacheOptionsType>): void =>
+      new MemcachedCacheOptionsValidator().validate(s);
+    expect(() => check({ servers: '' })).toThrow(OptionsError);
+    expect(() => check({ servers: 'localhost:11211' })).not.toThrow();
+  });
+
+  test('CassandraJournal: out-of-range port / non-positive partitionSize', () => {
+    const check = (s: Partial<CassandraJournalOptionsType>): void =>
+      new CassandraJournalOptionsValidator().validate(s);
+    expect(() => check({ port: 70_000 })).toThrow(OptionsError);
+    expect(() => check({ partitionSize: 0 })).toThrow(/partitionSize/);
+    expect(() => check({ port: 9042, partitionSize: 500_000 })).not.toThrow();
   });
 });
