@@ -43,6 +43,9 @@ export type { BearerTokenAuthOptions, IpAllowlistOptions } from './middleware/in
 
 export { entity, marshal, pickRequestSerializer, pickResponseSerializer } from './Marshalling.js';
 
+// HTML response helpers — escaping + the `html` tagged template (#352).
+export { escapeHtml, html, rawHtml, completeHtml, SafeHtml } from './Html.js';
+
 export { HttpClient } from './HttpClient.js';
 export type { HttpClientRequest, HttpClientResponse } from './HttpClient.js';
 
