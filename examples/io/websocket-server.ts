@@ -22,9 +22,9 @@ import {
   HttpExtensionId,
   Props,
   Status,
-  WebSocketServerActor,
+  WebsocketServerActor,
   websocket,
-  type WsConnection,
+  type WebsocketConnection,
 } from '../../src/index.js';
 
 type ClientMsg =
@@ -35,7 +35,7 @@ type ServerMsg =
   | { kind: 'system'; text: string }
   | { kind: 'chat'; from: string; text: string };
 
-class ChatRoom extends WebSocketServerActor<ServerMsg, ClientMsg> {
+class ChatRoom extends WebsocketServerActor<ServerMsg, ClientMsg> {
   private readonly names = new Map<string, string>();
 
   override onMessage(msg: ClientMsg): void {
@@ -55,11 +55,11 @@ class ChatRoom extends WebSocketServerActor<ServerMsg, ClientMsg> {
       .exhaustive();
   }
 
-  protected override onClientConnected(c: WsConnection<ServerMsg>): void {
+  protected override onClientConnected(c: WebsocketConnection<ServerMsg>): void {
     c.tell({ kind: 'system', text: `welcome — ${this.clients.size} online` });
   }
 
-  protected override onClientDisconnected(c: WsConnection<ServerMsg>): void {
+  protected override onClientDisconnected(c: WebsocketConnection<ServerMsg>): void {
     const name = this.names.get(c.id) ?? 'someone';
     this.names.delete(c.id);
     this.broadcast({ kind: 'system', text: `${name} left` });

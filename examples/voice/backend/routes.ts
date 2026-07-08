@@ -18,10 +18,10 @@ import {
   rawCodec,
   Status,
   websocket,
-  WebSocketRouteOptions,
+  WebsocketRouteOptions,
   type Route,
-  type WsFrame,
-  type WsServerMessage,
+  type WebsocketFrame,
+  type WebsocketServerMessage,
 } from '../../../src/http/index.js';
 import type { ActorRef } from '../../../src/index.js';
 
@@ -114,8 +114,8 @@ const SELECTOR_HTML = /* html */ `<!doctype html>
 </html>
 `;
 
-export function buildRoutes(ingress: ActorRef<WsServerMessage<WsFrame, WsFrame>>): Route {
-  const wsRouteOptions = WebSocketRouteOptions.create().withCodec(rawCodec());
+export function buildRoutes(ingress: ActorRef<WebsocketServerMessage<WebsocketFrame, WebsocketFrame>>): Route {
+  const wsRouteOptions = WebsocketRouteOptions.create().withCodec(rawCodec());
   return concat(
     get(() =>
       complete(Status.OK, SELECTOR_HTML, { 'content-type': 'text/html; charset=utf-8' }),

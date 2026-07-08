@@ -6,7 +6,7 @@
  */
 import type { ActorSystem } from '../../ActorSystem.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
-import { DEFAULT_WS_MAX_FRAME_BYTES } from './types.js';
+import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from './types.js';
 
 /** What to do with an inbound frame that exceeds `maxFrameBytes`. */
 export type OversizeFramePolicy = 'close' | 'drop';
@@ -15,7 +15,7 @@ export type InvalidMessagePolicy = 'close' | 'drop' | 'hook';
 /** What to do when a slow consumer's send buffer exceeds `maxBufferedBytes`. */
 export type BackpressurePolicy = 'drop' | 'close';
 
-export interface ResolvedWsPolicy {
+export interface ResolvedWebsocketPolicy {
   readonly maxFrameBytes: number;
   readonly onOversizeFrame: OversizeFramePolicy;
   readonly onInvalidMessage: InvalidMessagePolicy;
@@ -24,7 +24,7 @@ export interface ResolvedWsPolicy {
 }
 
 /** Fields a `websocket()` route may override; everything else falls back. */
-export interface WebSocketPolicyOptions {
+export interface WebsocketPolicyOptions {
   readonly maxFrameBytes?: number;
   readonly onOversizeFrame?: OversizeFramePolicy;
   readonly onInvalidMessage?: InvalidMessagePolicy;
@@ -32,8 +32,8 @@ export interface WebSocketPolicyOptions {
   readonly onBackpressure?: BackpressurePolicy;
 }
 
-export const DEFAULT_WS_POLICY: ResolvedWsPolicy = {
-  maxFrameBytes: DEFAULT_WS_MAX_FRAME_BYTES,
+export const DEFAULT_WEBSOCKET_POLICY: ResolvedWebsocketPolicy = {
+  maxFrameBytes: DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
   onOversizeFrame: 'close',
   onInvalidMessage: 'close',
   maxBufferedBytes: 4 * 1024 * 1024,
@@ -48,8 +48,8 @@ function oneOf<T extends string>(value: string, allowed: readonly T[], key: stri
 }
 
 /** Merge built-in defaults, HOCON server defaults, and per-route options. */
-export function resolveWsPolicy(system: ActorSystem, options: WebSocketPolicyOptions): ResolvedWsPolicy {
-  let base = DEFAULT_WS_POLICY;
+export function resolveWebsocketPolicy(system: ActorSystem, options: WebsocketPolicyOptions): ResolvedWebsocketPolicy {
+  let base = DEFAULT_WEBSOCKET_POLICY;
   const key = ConfigKeys.http.websocket;
   if (system.config.hasPath(key)) {
     const c = system.config.getConfig(key);

@@ -4,17 +4,17 @@ import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { Props } from '../../../../src/Props.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import type { HttpRequest } from '../../../../src/http/types.js';
-import { WebSocketServerActor } from '../../../../src/http/ws/WebSocketServerActor.js';
-import { wireConnection } from '../../../../src/http/ws/ConnectionWiring.js';
-import { DEFAULT_WS_POLICY, type ResolvedWsPolicy } from '../../../../src/http/ws/WsPolicy.js';
-import { jsonCodec, WsDecodeError } from '../../../../src/http/ws/WsCodec.js';
-import { DEFAULT_WS_MAX_FRAME_BYTES } from '../../../../src/http/ws/types.js';
+import { WebsocketServerActor } from '../../../../src/http/websocket/WebsocketServerActor.js';
+import { wireConnection } from '../../../../src/http/websocket/ConnectionWiring.js';
+import { DEFAULT_WEBSOCKET_POLICY, type ResolvedWebsocketPolicy } from '../../../../src/http/websocket/WebsocketPolicy.js';
+import { jsonCodec, WebsocketDecodeError } from '../../../../src/http/websocket/WebsocketCodec.js';
+import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../../../../src/http/websocket/types.js';
 import type {
-  WebSocketListeners,
-  WebSocketSocketAdapter,
-} from '../../../../src/http/ws/SocketAdapter.js';
-import type { WsConnection } from '../../../../src/http/ws/WsConnection.js';
-import type { WsServerRef } from '../../../../src/http/ws/WsMessages.js';
+  WebsocketListeners,
+  WebsocketSocketAdapter,
+} from '../../../../src/http/websocket/SocketAdapter.js';
+import type { WebsocketConnection } from '../../../../src/http/websocket/WebsocketConnection.js';
+import type { WebsocketServerRef } from '../../../../src/http/websocket/WebsocketMessages.js';
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -23,13 +23,13 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  * BUFFERS inbound events until `setListeners` runs — the per-connection
  * actor attaches its listeners a mailbox-tick after `wireConnection`.
  */
-class MockSocket implements WebSocketSocketAdapter {
+class MockSocket implements WebsocketSocketAdapter {
   readyState: 0 | 1 | 2 | 3 = 1;
   readonly sent: Array<string | Uint8Array> = [];
   readonly closeCalls: Array<{ code?: number; reason?: string }> = [];
   remoteAddress = '127.0.0.1';
-  private listeners: WebSocketListeners | null = null;
-  private readonly pending: Array<(l: WebSocketListeners) => void> = [];
+  private listeners: WebsocketListeners | null = null;
+  private readonly pending: Array<(l: WebsocketListeners) => void> = [];
 
   send(data: string | Uint8Array): void {
     this.sent.push(data);
@@ -40,7 +40,7 @@ class MockSocket implements WebSocketSocketAdapter {
     this.closeCalls.push({ code, reason });
     this.deliver((l) => l.onClose(code ?? 1000, reason ?? ''));
   }
-  setListeners(l: WebSocketListeners): void {
+  setListeners(l: WebsocketListeners): void {
     this.listeners = l;
     for (const fn of this.pending.splice(0)) fn(l);
   }
@@ -49,7 +49,7 @@ class MockSocket implements WebSocketSocketAdapter {
   emit(data: string | Uint8Array): void {
     this.deliver((l) => l.onMessage(data));
   }
-  private deliver(fn: (l: WebSocketListeners) => void): void {
+  private deliver(fn: (l: WebsocketListeners) => void): void {
     if (this.listeners) fn(this.listeners);
     else this.pending.push(fn);
   }
@@ -63,12 +63,12 @@ type Out = { kind: 'pong'; n: number } | { kind: 'msg'; text: string };
 
 interface Rec {
   readonly events: string[];
-  readonly conns: WsConnection<Out>[];
+  readonly conns: WebsocketConnection<Out>[];
   /** Number of child actors the hub had right after each connect/disconnect. */
   readonly childCounts: number[];
 }
 
-class RecordingServer extends WebSocketServerActor<Out, In> {
+class RecordingServer extends WebsocketServerActor<Out, In> {
   constructor(private readonly rec: Rec) {
     super();
   }
@@ -81,13 +81,13 @@ class RecordingServer extends WebSocketServerActor<Out, In> {
       this.broadcast({ kind: 'msg', text: msg.text });
     }
   }
-  protected override onClientConnected(c: WsConnection<Out>): void {
+  protected override onClientConnected(c: WebsocketConnection<Out>): void {
     this.rec.conns.push(c);
     this.rec.events.push(`connect:${c.id}`);
     // The per-connection actor is spawned as THIS hub's child.
     this.rec.childCounts.push(this.context.children.length);
   }
-  protected override onClientDisconnected(c: WsConnection<Out>): void {
+  protected override onClientDisconnected(c: WebsocketConnection<Out>): void {
     this.rec.events.push(`disconnect:${c.id}`);
     this.rec.childCounts.push(this.context.children.length);
   }
@@ -117,18 +117,18 @@ afterEach(async () => {
 });
 
 /** Spawn a recording hub and wire a mock connection to it. */
-function setup(name: string): { rec: Rec; hub: WsServerRef<Out, In>; system: ActorSystem } {
+function setup(name: string): { rec: Rec; hub: WebsocketServerRef<Out, In>; system: ActorSystem } {
   const system = newSystem(name);
   const rec: Rec = { events: [], conns: [], childCounts: [] };
-  const hub = system.spawn(Props.create(() => new RecordingServer(rec)), 'hub') as WsServerRef<Out, In>;
+  const hub = system.spawn(Props.create(() => new RecordingServer(rec)), 'hub') as WebsocketServerRef<Out, In>;
   return { rec, hub, system };
 }
 
-function wire(system: ActorSystem, hub: WsServerRef<Out, In>, sock: MockSocket, r: HttpRequest = req(), policy: ResolvedWsPolicy = DEFAULT_WS_POLICY): void {
+function wire(system: ActorSystem, hub: WebsocketServerRef<Out, In>, sock: MockSocket, r: HttpRequest = req(), policy: ResolvedWebsocketPolicy = DEFAULT_WEBSOCKET_POLICY): void {
   wireConnection(system, hub, r, sock, jsonCodec<Out, In>(), policy);
 }
 
-describe('WebSocketServerActor via wireConnection (child-per-connection)', () => {
+describe('WebsocketServerActor via wireConnection (child-per-connection)', () => {
   test('connected fires, onMessage receives decoded msg, reply reaches the socket', async () => {
     const { rec, hub, system } = setup('ws-hub-1');
     const sock = new MockSocket();
@@ -201,7 +201,7 @@ describe('WebSocketServerActor via wireConnection (child-per-connection)', () =>
     wire(system, hub, sock);
     await sleep(40);
 
-    const big = 'x'.repeat(DEFAULT_WS_MAX_FRAME_BYTES + 16);
+    const big = 'x'.repeat(DEFAULT_WEBSOCKET_MAX_FRAME_BYTES + 16);
     sock.emit(JSON.stringify({ kind: 'shout', text: big }));
     await sleep(60);
 
@@ -235,21 +235,21 @@ describe('WebSocketServerActor via wireConnection (child-per-connection)', () =>
   test("invalid JSON with 'hook' policy invokes onInvalidMessage and keeps the socket open", async () => {
     const system = newSystem('ws-hub-hook');
     const invalids: string[] = [];
-    class HookServer extends WebSocketServerActor<Out, In> {
+    class HookServer extends WebsocketServerActor<Out, In> {
       onMessage(): void {}
-      protected override onInvalidMessage(c: WsConnection<Out>, e: WsDecodeError): void {
+      protected override onInvalidMessage(c: WebsocketConnection<Out>, e: WebsocketDecodeError): void {
         invalids.push(`${c.id}:${e.name}`);
       }
     }
-    const hub = system.spawn(Props.create(() => new HookServer()), 'hub') as WsServerRef<Out, In>;
+    const hub = system.spawn(Props.create(() => new HookServer()), 'hub') as WebsocketServerRef<Out, In>;
     const sock = new MockSocket();
-    const policy: ResolvedWsPolicy = { ...DEFAULT_WS_POLICY, onInvalidMessage: 'hook' };
+    const policy: ResolvedWebsocketPolicy = { ...DEFAULT_WEBSOCKET_POLICY, onInvalidMessage: 'hook' };
     wireConnection(system, hub, req(), sock, jsonCodec<Out, In>(), policy);
     await sleep(40);
 
     sock.emit('garbage{');
     await sleep(60);
-    expect(invalids.some((s) => s.endsWith(':WsDecodeError'))).toBe(true);
+    expect(invalids.some((s) => s.endsWith(':WebsocketDecodeError'))).toBe(true);
     expect(sock.closeCalls).toHaveLength(0);
   });
 

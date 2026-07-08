@@ -1,7 +1,7 @@
 /**
  * Backend-agnostic socket surface.  Each HTTP backend maps its native
  * WebSocket (the `ws` package's socket for Fastify/Express, Hono's
- * `WSContext`) onto a {@link WebSocketSocketAdapter}, and the shared
+ * `WSContext`) onto a {@link WebsocketSocketAdapter}, and the shared
  * connection-wiring layer drives everything through this one shape — so
  * frame decoding, size caps, codec handling and lifecycle live in ONE
  * place regardless of backend.
@@ -10,11 +10,11 @@
 /**
  * Listeners the framework attaches to a socket.  The backend adapter
  * must guarantee that no inbound frame is delivered before
- * {@link WebSocketSocketAdapter.setListeners} returns (attach natively
+ * {@link WebsocketSocketAdapter.setListeners} returns (attach natively
  * in the same synchronous tick, or buffer until then) — this is what
  * closes the "first frame lost" race by construction.
  */
-export interface WebSocketListeners {
+export interface WebsocketListeners {
   /** One inbound frame, already normalised to text (`string`) or binary (`Uint8Array`). */
   onMessage(data: string | Uint8Array): void;
   onClose(code: number, reason: string): void;
@@ -22,20 +22,20 @@ export interface WebSocketListeners {
 }
 
 /** W3C-style readyState values. */
-export const WsReadyState = {
+export const WebsocketReadyState = {
   CONNECTING: 0,
   OPEN: 1,
   CLOSING: 2,
   CLOSED: 3,
 } as const;
 
-export interface WebSocketSocketAdapter {
+export interface WebsocketSocketAdapter {
   send(data: string | Uint8Array): void;
   close(code?: number, reason?: string): void;
   /** Hard-kill without a close handshake (shutdown).  Falls back to `close()` if absent. */
   terminate?(): void;
-  /** Single-shot listener attach — see {@link WebSocketListeners}. */
-  setListeners(l: WebSocketListeners): void;
+  /** Single-shot listener attach — see {@link WebsocketListeners}. */
+  setListeners(l: WebsocketListeners): void;
   readonly readyState: 0 | 1 | 2 | 3;
   /** Bytes queued in the peer send buffer, when the backend can report it. */
   bufferedAmount?(): number;
@@ -49,7 +49,7 @@ export interface WebSocketSocketAdapter {
  * plain `ws.WebSocketServer`, and `@hono/node-ws`).  Only the members
  * we touch are declared — the peer dep is optional.
  */
-export interface WsPackageSocket {
+export interface WebsocketPackageSocket {
   send(data: string | Uint8Array): void;
   close(code?: number, reason?: string): void;
   terminate?(): void;
@@ -91,18 +91,18 @@ type BufferedEvent =
 
 /**
  * Adapt a `ws`-package socket (already upgraded) to a
- * {@link WebSocketSocketAdapter}.  Native `socket.on(...)` listeners are
+ * {@link WebsocketSocketAdapter}.  Native `socket.on(...)` listeners are
  * attached **immediately** (synchronously at upgrade) and inbound events
  * are BUFFERED until `setListeners` runs — because the per-connection
  * actor attaches its listeners a mailbox-tick later, and `ws` would drop
  * events that arrive with no `'message'` listener.  `isBinary` from `ws`
  * decides text-vs-binary delivery.
  */
-export function wsPackageAdapter(
-  socket: WsPackageSocket,
+export function websocketPackageAdapter(
+  socket: WebsocketPackageSocket,
   opts: { readonly remoteAddress?: string; readonly protocol?: string } = {},
-): WebSocketSocketAdapter {
-  let listeners: WebSocketListeners | null = null;
+): WebsocketSocketAdapter {
+  let listeners: WebsocketListeners | null = null;
   const pending: BufferedEvent[] = [];
 
   socket.on('message', (data, isBinary) => {
@@ -135,7 +135,7 @@ export function wsPackageAdapter(
       }
     },
     get readyState() {
-      return (socket.readyState ?? WsReadyState.OPEN) as 0 | 1 | 2 | 3;
+      return (socket.readyState ?? WebsocketReadyState.OPEN) as 0 | 1 | 2 | 3;
     },
     bufferedAmount: () => socket.bufferedAmount ?? 0,
     remoteAddress: opts.remoteAddress,

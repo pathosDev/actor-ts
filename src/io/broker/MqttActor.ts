@@ -42,7 +42,7 @@ interface SubscriptionEntry<T> {
 
 /**
  * Typed, subclass-first MQTT 3.1.1 / 5.0 actor backed by the `mqtt`
- * peer-dep — the MQTT counterpart to `WebSocketClientActor`.  Extend it,
+ * peer-dep — the MQTT counterpart to `WebsocketClientActor`.  Extend it,
  * declare subscriptions in the constructor, and handle inbound traffic
  * in `onMessage`:
  *

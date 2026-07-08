@@ -11,42 +11,42 @@
  */
 import { ActorPath } from '../../ActorPath.js';
 import { ActorRef } from '../../ActorRef.js';
-import { WsReadyState, type WebSocketSocketAdapter } from './SocketAdapter.js';
-import type { WsFrame, WsUpgradeInfo } from './types.js';
+import { WebsocketReadyState, type WebsocketSocketAdapter } from './SocketAdapter.js';
+import type { WebsocketFrame, WebsocketUpgradeInfo } from './types.js';
 
 /**
- * Outbound command a {@link WsConnection} enqueues to its per-connection
+ * Outbound command a {@link WebsocketConnection} enqueues to its per-connection
  * actor.  Defined here (the producer) so the connection actor imports it
  * from the connection module, not the other way round.
  */
-export type WsOutboundCommand<TOut> =
+export type WebsocketOutboundCommand<TOut> =
   | { readonly _cmd: 'out'; readonly msg: TOut }
-  | { readonly _cmd: 'out-raw'; readonly frame: WsFrame }
+  | { readonly _cmd: 'out-raw'; readonly frame: WebsocketFrame }
   | { readonly _cmd: 'close'; readonly code: number; readonly reason: string };
 
-export interface WsConnection<TOut> extends ActorRef<TOut> {
+export interface WebsocketConnection<TOut> extends ActorRef<TOut> {
   /** Stable id, unique within the process (e.g. `ws-7`). */
   readonly id: string;
   /** Remote peer address, if the backend reported one. */
   readonly remoteAddress?: string;
   /** Snapshot of the HTTP upgrade request (path, params, query, headers). */
-  readonly upgrade: WsUpgradeInfo;
+  readonly upgrade: WebsocketUpgradeInfo;
   /** Send a raw frame, bypassing the codec. */
-  sendRaw(frame: WsFrame): void;
+  sendRaw(frame: WebsocketFrame): void;
   /** Close this connection (1000 by default). */
   close(code?: number, reason?: string): void;
   /** `true` while the underlying socket is open. */
   readonly isOpen: boolean;
 }
 
-export class WsConnectionImpl<TOut> extends ActorRef<TOut> implements WsConnection<TOut> {
+export class WebsocketConnectionImpl<TOut> extends ActorRef<TOut> implements WebsocketConnection<TOut> {
   readonly path: ActorPath;
 
   constructor(
     readonly id: string,
-    readonly upgrade: WsUpgradeInfo,
-    private readonly socket: WebSocketSocketAdapter,
-    private readonly connRef: ActorRef<WsOutboundCommand<TOut>>,
+    readonly upgrade: WebsocketUpgradeInfo,
+    private readonly socket: WebsocketSocketAdapter,
+    private readonly connRef: ActorRef<WebsocketOutboundCommand<TOut>>,
     systemName: string,
   ) {
     super();
@@ -58,14 +58,14 @@ export class WsConnectionImpl<TOut> extends ActorRef<TOut> implements WsConnecti
   }
 
   get isOpen(): boolean {
-    return this.socket.readyState === WsReadyState.OPEN;
+    return this.socket.readyState === WebsocketReadyState.OPEN;
   }
 
   override tell(msg: TOut): void {
     this.connRef.tell({ _cmd: 'out', msg });
   }
 
-  sendRaw(frame: WsFrame): void {
+  sendRaw(frame: WebsocketFrame): void {
     this.connRef.tell({ _cmd: 'out-raw', frame });
   }
 

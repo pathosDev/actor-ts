@@ -8,31 +8,31 @@ import type {
   HttpServerBackend,
   RouteRegistration,
   ServerBinding,
-  WebSocketRouteRegistration,
+  WebsocketRouteRegistration,
 } from './HttpServerBackend.js';
-import { wsPackageAdapter, type WsPackageSocket } from '../ws/SocketAdapter.js';
-import { matchWsPattern } from '../ws/matchPattern.js';
-import { writeRawHttpResponse } from '../ws/rawResponse.js';
+import { websocketPackageAdapter, type WebsocketPackageSocket } from '../websocket/SocketAdapter.js';
+import { matchWebsocketPattern } from '../websocket/matchPattern.js';
+import { writeRawHttpResponse } from '../websocket/rawResponse.js';
 
 /** Minimal shape of the `ws` package's WebSocketServer (noServer mode). */
-interface WsServerLike {
+interface WebsocketServerLike {
   handleUpgrade(
     req: IncomingMessage,
     socket: Duplex,
     head: Buffer,
-    cb: (ws: WsPackageSocket) => void,
+    cb: (ws: WebsocketPackageSocket) => void,
   ): void;
-  emit(event: 'connection', ws: WsPackageSocket, req: IncomingMessage): boolean;
+  emit(event: 'connection', ws: WebsocketPackageSocket, req: IncomingMessage): boolean;
   readonly clients?: Iterable<{ terminate?: () => void; close?: () => void }>;
 }
 
 // `ws` is an optional peer dep — lazy-import its WebSocketServer (cached).
-const wsServerCtorLazy: Lazy<Promise<new (opts: { noServer: boolean }) => WsServerLike>> = Lazy.of(async () => {
+const wsServerCtorLazy: Lazy<Promise<new (opts: { noServer: boolean }) => WebsocketServerLike>> = Lazy.of(async () => {
   try {
     const name = 'ws';
     const mod = (await import(name)) as {
-      WebSocketServer?: new (opts: { noServer: boolean }) => WsServerLike;
-      default?: { WebSocketServer?: new (opts: { noServer: boolean }) => WsServerLike };
+      WebSocketServer?: new (opts: { noServer: boolean }) => WebsocketServerLike;
+      default?: { WebSocketServer?: new (opts: { noServer: boolean }) => WebsocketServerLike };
     };
     const Ctor = mod.WebSocketServer ?? mod.default?.WebSocketServer;
     if (!Ctor) throw new Error('ws: WebSocketServer not exported');
@@ -114,8 +114,8 @@ export class ExpressBackend implements HttpServerBackend {
   private readonly ownsApp: boolean;
   private readonly maxBodyBytes: number;
   private readonly registered: RouteRegistration[] = [];
-  private readonly wsRegistered: WebSocketRouteRegistration[] = [];
-  private wss: WsServerLike | null = null;
+  private readonly wsRegistered: WebsocketRouteRegistration[] = [];
+  private wss: WebsocketServerLike | null = null;
   private notFoundHandler: ((req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
   private errorHandler: ((err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
 
@@ -136,7 +136,7 @@ export class ExpressBackend implements HttpServerBackend {
     this.registered.push(route);
   }
 
-  registerWebSocket(reg: WebSocketRouteRegistration): void {
+  registerWebSocket(reg: WebsocketRouteRegistration): void {
     if (this.wsRegistered.some((r) => r.pattern === reg.pattern)) {
       throw new Error(`ExpressBackend: duplicate websocket route for pattern "${reg.pattern}".`);
     }
@@ -218,15 +218,15 @@ export class ExpressBackend implements HttpServerBackend {
   }
 
   private async attachUpgradeHandling(server: Server): Promise<void> {
-    const WebSocketServerCtor = await wsServerCtorLazy.get();
-    const wss = new WebSocketServerCtor({ noServer: true });
+    const WebsocketServerCtor = await wsServerCtorLazy.get();
+    const wss = new WebsocketServerCtor({ noServer: true });
     this.wss = wss;
     server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
       void (async () => {
         const url = new URL(req.url ?? '/', 'http://localhost');
-        let hit: { reg: WebSocketRouteRegistration; params: Record<string, string> } | null = null;
+        let hit: { reg: WebsocketRouteRegistration; params: Record<string, string> } | null = null;
         for (const reg of this.wsRegistered) {
-          const params = matchWsPattern(reg.pattern, url.pathname);
+          const params = matchWebsocketPattern(reg.pattern, url.pathname);
           if (params) { hit = { reg, params }; break; }
         }
         if (!hit) {
@@ -250,7 +250,7 @@ export class ExpressBackend implements HttpServerBackend {
         wss.handleUpgrade(req, socket, head, (ws) => {
           // Keep wss.clients populated so the unbind terminate-walk works.
           wss.emit('connection', ws, req);
-          hit!.reg.onConnection(adapted, wsPackageAdapter(ws, { remoteAddress: adapted.remoteAddress }));
+          hit!.reg.onConnection(adapted, websocketPackageAdapter(ws, { remoteAddress: adapted.remoteAddress }));
         });
       })();
     });

@@ -9,9 +9,9 @@ import {
   Props,
   type ActorRef,
 } from '../../../../src/index.js';
-import { WebSocketServerActor } from '../../../../src/http/ws/WebSocketServerActor.js';
-import type { WsConnection } from '../../../../src/http/ws/WsConnection.js';
-import type { WsFrame } from '../../../../src/http/ws/types.js';
+import { WebsocketServerActor } from '../../../../src/http/websocket/WebsocketServerActor.js';
+import type { WebsocketConnection } from '../../../../src/http/websocket/WebsocketConnection.js';
+import type { WebsocketFrame } from '../../../../src/http/websocket/types.js';
 import type { Publish, Subscribe, Unsubscribe } from '../../../../src/cluster/pubsub/Messages.js';
 import {
   VoiceSessionActor,
@@ -21,7 +21,7 @@ import {
 import type { VoicePresenceCmd } from './VoicePresenceActor.js';
 import type { SessionStore } from '../auth/sessionStore.js';
 
-export interface VoiceWebSocketIngressDeps {
+export interface VoiceWebsocketIngressDeps {
   readonly receptionist: ActorRef<unknown>;
   readonly mediator: ActorRef<Subscribe | Unsubscribe | Publish<unknown>>;
   readonly voicePresence: ActorRef<VoicePresenceCmd>;
@@ -30,18 +30,18 @@ export interface VoiceWebSocketIngressDeps {
 
 type SessionRef = ActorRef<InboundFrame | SocketClosed>;
 
-export class WebSocketIngressActor extends WebSocketServerActor<WsFrame, WsFrame> {
+export class WebsocketIngressActor extends WebsocketServerActor<WebsocketFrame, WebsocketFrame> {
   private readonly sessions = new Map<string, SessionRef>();
 
-  constructor(private readonly deps: VoiceWebSocketIngressDeps) {
+  constructor(private readonly deps: VoiceWebsocketIngressDeps) {
     super();
   }
 
-  override onMessage(frame: WsFrame): void {
+  override onMessage(frame: WebsocketFrame): void {
     this.sessions.get(this.connection.id)?.tell(frame);
   }
 
-  protected override onClientConnected(c: WsConnection<WsFrame>): void {
+  protected override onClientConnected(c: WebsocketConnection<WebsocketFrame>): void {
     const connection = {
       sendText: (text: string) => c.sendRaw({ kind: 'text', data: text }),
       sendBinary: (data: Uint8Array) => c.sendRaw({ kind: 'binary', data }),
@@ -54,7 +54,7 @@ export class WebSocketIngressActor extends WebSocketServerActor<WsFrame, WsFrame
     this.sessions.set(c.id, session);
   }
 
-  protected override onClientDisconnected(c: WsConnection<WsFrame>): void {
+  protected override onClientDisconnected(c: WebsocketConnection<WebsocketFrame>): void {
     const session = this.sessions.get(c.id);
     if (session) {
       session.tell({ kind: 'socket-closed' });

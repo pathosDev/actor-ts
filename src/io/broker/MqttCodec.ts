@@ -7,7 +7,7 @@
  *   - `decode(bytes: Uint8Array): T`       — inbound (`payload.entity()`)
  *
  * The default is {@link mqttJsonCodec}.  Unlike the WebSocket stack's
- * {@link WsCodec} there is no text/binary frame distinction — MQTT
+ * {@link WebsocketCodec} there is no text/binary frame distinction — MQTT
  * payloads are raw byte strings, so the codec works in `Uint8Array`
  * directly.
  *

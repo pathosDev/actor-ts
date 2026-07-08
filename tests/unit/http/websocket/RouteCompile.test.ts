@@ -7,23 +7,23 @@ import {
   path,
   withMiddleware,
   type CompiledEndpoint,
-  type CompiledWebSocketRoute,
+  type CompiledWebsocketRoute,
   type Middleware,
   type Route,
-  type WebSocketConnectHandler,
+  type WebsocketConnectHandler,
 } from '../../../../src/http/Route.js';
 import { HttpError, Status } from '../../../../src/http/types.js';
 import type { HttpRequest } from '../../../../src/http/types.js';
 
-const noopConnect: WebSocketConnectHandler = () => {};
+const noopConnect: WebsocketConnectHandler = () => {};
 
 /** Build a raw websocket Route node (the public `websocket()` directive lands later). */
-function ws(connect: WebSocketConnectHandler = noopConnect): Route {
+function ws(connect: WebsocketConnectHandler = noopConnect): Route {
   return { kind: 'websocket', connect };
 }
 
-function wsOnly(endpoints: CompiledEndpoint[]): CompiledWebSocketRoute[] {
-  return endpoints.filter((e): e is CompiledWebSocketRoute => e.kind === 'websocket');
+function wsOnly(endpoints: CompiledEndpoint[]): CompiledWebsocketRoute[] {
+  return endpoints.filter((e): e is CompiledWebsocketRoute => e.kind === 'websocket');
 }
 
 const req = (overrides: Partial<HttpRequest> = {}): HttpRequest => ({
@@ -44,7 +44,7 @@ describe('compile — websocket routes', () => {
     expect(e.kind).toBe('websocket');
     expect(e.method).toBe('GET');
     expect(e.pattern).toBe('/');
-    const ws0 = e as CompiledWebSocketRoute;
+    const ws0 = e as CompiledWebsocketRoute;
     expect(ws0.connect).toBe(noopConnect);
     // Default authorize accepts (null).
     expect(await ws0.authorize(req())).toBeNull();

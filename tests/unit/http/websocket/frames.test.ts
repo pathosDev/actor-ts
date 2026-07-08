@@ -1,11 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  DEFAULT_WS_MAX_FRAME_BYTES,
+  DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
   frameByteLength,
   normalizeInbound,
   utf8ByteLength,
-  type WsFrame,
-} from '../../../../src/http/ws/types.js';
+  type WebsocketFrame,
+} from '../../../../src/http/websocket/types.js';
 
 describe('utf8ByteLength', () => {
   test('ASCII is one byte per char', () => {
@@ -56,21 +56,21 @@ describe('normalizeInbound', () => {
 
   test('ArrayBuffer → binary frame', () => {
     const buf = new Uint8Array([1, 2, 3]).buffer;
-    const f = normalizeInbound(buf) as Extract<WsFrame, { kind: 'binary' }>;
+    const f = normalizeInbound(buf) as Extract<WebsocketFrame, { kind: 'binary' }>;
     expect(f.kind).toBe('binary');
     expect([...f.data]).toEqual([1, 2, 3]);
   });
 
   test('Uint8Array passes through', () => {
     const u8 = new Uint8Array([9, 8]);
-    const f = normalizeInbound(u8) as Extract<WsFrame, { kind: 'binary' }>;
+    const f = normalizeInbound(u8) as Extract<WebsocketFrame, { kind: 'binary' }>;
     expect(f.kind).toBe('binary');
     expect(f.data).toBe(u8);
   });
 
   test('fragmented Array<Uint8Array> merges into one binary frame', () => {
     const parts = [new Uint8Array([1, 2]), new Uint8Array([3, 4, 5])];
-    const f = normalizeInbound(parts) as Extract<WsFrame, { kind: 'binary' }>;
+    const f = normalizeInbound(parts) as Extract<WebsocketFrame, { kind: 'binary' }>;
     expect(f.kind).toBe('binary');
     expect([...f.data]).toEqual([1, 2, 3, 4, 5]);
   });
@@ -83,5 +83,5 @@ describe('normalizeInbound', () => {
 });
 
 test('default frame cap is 1 MiB', () => {
-  expect(DEFAULT_WS_MAX_FRAME_BYTES).toBe(1024 * 1024);
+  expect(DEFAULT_WEBSOCKET_MAX_FRAME_BYTES).toBe(1024 * 1024);
 });

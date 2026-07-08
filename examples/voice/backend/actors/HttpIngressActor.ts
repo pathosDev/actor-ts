@@ -29,7 +29,7 @@ import type {
   Unsubscribe,
 } from '../../../../src/cluster/pubsub/Messages.js';
 import { registerStaticFiles } from '../plugins/staticFilesPlugin.js';
-import { WebSocketIngressActor } from './WebSocketIngressActor.js';
+import { WebsocketIngressActor } from './WebsocketIngressActor.js';
 import { buildRoutes } from '../routes.js';
 import type { VoicePresenceCmd } from './VoicePresenceActor.js';
 import type { SessionStore } from '../auth/sessionStore.js';
@@ -67,7 +67,7 @@ export class HttpIngressActor extends Actor<never> {
     // @fastify/websocket plugin is registered automatically by the
     // backend when it sees a websocket() route.
     const ingress = system.spawn(
-      Props.create(() => new WebSocketIngressActor({
+      Props.create(() => new WebsocketIngressActor({
         receptionist: this.deps.receptionist,
         mediator: this.deps.mediator,
         voicePresence: this.deps.voicePresence,

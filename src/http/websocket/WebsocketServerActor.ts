@@ -7,7 +7,7 @@
  *     type In  = { kind: 'ping'; n: number };
  *     type Out = { kind: 'pong'; n: number };
  *
- *     class PingServer extends WebSocketServerActor<Out, In> {
+ *     class PingServer extends WebsocketServerActor<Out, In> {
  *       onMessage(msg: In): void {
  *         this.reply({ kind: 'pong', n: msg.n });   // → the sending connection
  *       }
@@ -25,23 +25,23 @@
  */
 import { Actor } from '../../Actor.js';
 import { stoppingStrategy, type SupervisorStrategy } from '../../Supervision.js';
-import type { WsDecodeError } from './WsCodec.js';
-import type { WsConnection } from './WsConnection.js';
+import type { WebsocketDecodeError } from './WebsocketCodec.js';
+import type { WebsocketConnection } from './WebsocketConnection.js';
 import {
-  WsAcceptSignal,
-  WsConnectedSignal,
-  WsDataSignal,
-  WsDisconnectedSignal,
-  WsInvalidSignal,
-  type WsServerMessage,
-} from './WsMessages.js';
-import type { WsCloseInfo } from './types.js';
+  WebsocketAcceptSignal,
+  WebsocketConnectedSignal,
+  WebsocketDataSignal,
+  WebsocketDisconnectedSignal,
+  WebsocketInvalidSignal,
+  type WebsocketServerMessage,
+} from './WebsocketMessages.js';
+import type { WebsocketCloseInfo } from './types.js';
 
-export abstract class WebSocketServerActor<TOut, TIn, TSelf = never>
-  extends Actor<WsServerMessage<TOut, TIn, TSelf>> {
+export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
+  extends Actor<WebsocketServerMessage<TOut, TIn, TSelf>> {
 
-  private readonly _clients = new Map<string, WsConnection<TOut>>();
-  private _current: WsConnection<TOut> | null = null;
+  private readonly _clients = new Map<string, WebsocketConnection<TOut>>();
+  private _current: WebsocketConnection<TOut> | null = null;
 
   /* ----------------------- user overrides ------------------------ */
 
@@ -49,23 +49,23 @@ export abstract class WebSocketServerActor<TOut, TIn, TSelf = never>
   abstract onMessage(msg: TIn): void | Promise<void>;
 
   /** A client completed the upgrade.  Ordered before its first `onMessage`. */
-  protected onClientConnected(_client: WsConnection<TOut>): void | Promise<void> {}
+  protected onClientConnected(_client: WebsocketConnection<TOut>): void | Promise<void> {}
 
   /** A client went away.  Ordered after its last `onMessage`; then it leaves `clients`. */
-  protected onClientDisconnected(_client: WsConnection<TOut>, _info: WsCloseInfo): void | Promise<void> {}
+  protected onClientDisconnected(_client: WebsocketConnection<TOut>, _info: WebsocketCloseInfo): void | Promise<void> {}
 
   /** A frame failed to decode.  Only called when the route policy is `'hook'`. */
-  protected onInvalidMessage(_client: WsConnection<TOut>, _error: WsDecodeError): void | Promise<void> {}
+  protected onInvalidMessage(_client: WebsocketConnection<TOut>, _error: WebsocketDecodeError): void | Promise<void> {}
 
   /** App-level message told to this hub's ref (reachable only when `TSelf` ≠ `never`). */
   protected onSelfMessage(msg: TSelf): void | Promise<void> {
-    this.log.warn(`WebSocketServerActor: unhandled self message: ${String(msg)}`);
+    this.log.warn(`WebsocketServerActor: unhandled self message: ${String(msg)}`);
   }
 
   /* ----------------------- helpers ------------------------------- */
 
   /** The connection whose event is being processed.  Throws outside a hook / onMessage. */
-  protected get connection(): WsConnection<TOut> {
+  protected get connection(): WebsocketConnection<TOut> {
     if (this._current === null) {
       throw new Error('this.connection is only valid inside onMessage / onClient* hooks');
     }
@@ -78,14 +78,14 @@ export abstract class WebSocketServerActor<TOut, TIn, TSelf = never>
   }
 
   /** Send to every open connection (optionally filtered). */
-  protected broadcast(msg: TOut, filter?: (c: WsConnection<TOut>) => boolean): void {
+  protected broadcast(msg: TOut, filter?: (c: WebsocketConnection<TOut>) => boolean): void {
     for (const c of this._clients.values()) {
       if (c.isOpen && (!filter || filter(c))) c.tell(msg);
     }
   }
 
   /** Live connections, keyed by connection id. */
-  protected get clients(): ReadonlyMap<string, WsConnection<TOut>> {
+  protected get clients(): ReadonlyMap<string, WebsocketConnection<TOut>> {
     return this._clients;
   }
 
@@ -107,14 +107,14 @@ export abstract class WebSocketServerActor<TOut, TIn, TSelf = never>
   }
 
   /** @internal Sealed — do not override; override `onMessage` + hooks instead. */
-  override async onReceive(msg: WsServerMessage<TOut, TIn, TSelf>): Promise<void> {
-    if (msg instanceof WsAcceptSignal) {
+  override async onReceive(msg: WebsocketServerMessage<TOut, TIn, TSelf>): Promise<void> {
+    if (msg instanceof WebsocketAcceptSignal) {
       // Spawn the per-connection actor as THIS actor's child, so the
       // tree is server → conn-N and supervision/teardown are automatic.
       this.context.spawn(msg.props, msg.name);
       return;
     }
-    if (msg instanceof WsConnectedSignal) {
+    if (msg instanceof WebsocketConnectedSignal) {
       this._clients.set(msg.connection.id, msg.connection);
       this._current = msg.connection;
       try {
@@ -124,7 +124,7 @@ export abstract class WebSocketServerActor<TOut, TIn, TSelf = never>
       }
       return;
     }
-    if (msg instanceof WsDataSignal) {
+    if (msg instanceof WebsocketDataSignal) {
       this._current = msg.connection;
       try {
         await this.onMessage(msg.message as TIn);
@@ -133,7 +133,7 @@ export abstract class WebSocketServerActor<TOut, TIn, TSelf = never>
       }
       return;
     }
-    if (msg instanceof WsDisconnectedSignal) {
+    if (msg instanceof WebsocketDisconnectedSignal) {
       this._current = msg.connection;
       try {
         await this.onClientDisconnected(msg.connection, msg.info);
@@ -143,7 +143,7 @@ export abstract class WebSocketServerActor<TOut, TIn, TSelf = never>
       }
       return;
     }
-    if (msg instanceof WsInvalidSignal) {
+    if (msg instanceof WebsocketInvalidSignal) {
       this._current = msg.connection;
       try {
         await this.onInvalidMessage(msg.connection, msg.error);

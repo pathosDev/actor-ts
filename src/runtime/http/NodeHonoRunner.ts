@@ -3,7 +3,7 @@ import type {
   FetchHandler,
   HonoServerHandle,
   HonoServerRunner,
-  HonoWebSocketBridge,
+  HonoWebsocketBridge,
 } from './HonoServerRunner.js';
 
 /**
@@ -61,7 +61,7 @@ export class NodeHonoRunner implements HonoServerRunner {
     };
   }
 
-  async webSocket(app: unknown): Promise<HonoWebSocketBridge> {
+  async webSocket(app: unknown): Promise<HonoWebsocketBridge> {
     let mod: {
       createNodeWebSocket: (opts: { app: unknown }) => {
         upgradeWebSocket: unknown;
@@ -80,7 +80,7 @@ export class NodeHonoRunner implements HonoServerRunner {
     }
     const { upgradeWebSocket, injectWebSocket } = mod.createNodeWebSocket({ app });
     return {
-      upgradeWebSocket: upgradeWebSocket as HonoWebSocketBridge['upgradeWebSocket'],
+      upgradeWebSocket: upgradeWebSocket as HonoWebsocketBridge['upgradeWebSocket'],
       serveOptions: {},
       attach: (handle: HonoServerHandle) => {
         if (handle.raw) injectWebSocket(handle.raw);

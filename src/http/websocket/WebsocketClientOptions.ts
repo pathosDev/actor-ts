@@ -1,21 +1,21 @@
 /**
  * All WebSocket-client option-relevant types live here:
  *
- *   - {@link WebSocketClientOptionsType} — the plain options-object shape
+ *   - {@link WebsocketClientOptionsType} — the plain options-object shape
  *     (what you may also pass as a bare `{ … }` object).
- *   - {@link WebSocketClientOptionsBuilder} — the fluent builder
- *     (`WebSocketClientOptions.create()…`).
- *   - {@link WebSocketClientOptions} — the accepted-input **union**
- *     (`WebSocketClientOptionsBuilder | WebSocketClientOptionsType`), plus a
- *     value alias to the builder so `WebSocketClientOptions.create()` /
- *     `new WebSocketClientOptions()` keep working.
+ *   - {@link WebsocketClientOptionsBuilder} — the fluent builder
+ *     (`WebsocketClientOptions.create()…`).
+ *   - {@link WebsocketClientOptions} — the accepted-input **union**
+ *     (`WebsocketClientOptionsBuilder | WebsocketClientOptionsType`), plus a
+ *     value alias to the builder so `WebsocketClientOptions.create()` /
+ *     `new WebsocketClientOptions()` keep working.
  *
- * A `WebSocketClientActor` subclass takes a `WebSocketClientOptions` (or builds
+ * A `WebsocketClientActor` subclass takes a `WebsocketClientOptions` (or builds
  * one inline) and passes it to `super(...)`:
  *
- *     class FeedClient extends WebSocketClientActor<ClientMsg, ServerMsg> {
+ *     class FeedClient extends WebsocketClientActor<ClientMsg, ServerMsg> {
  *       constructor() {
- *         super(WebSocketClientOptions.create<ClientMsg, ServerMsg>()
+ *         super(WebsocketClientOptions.create<ClientMsg, ServerMsg>()
  *           .withUrl('ws://localhost:8080/ws'));
  *       }
  *     }
@@ -30,17 +30,17 @@
  */
 import { BrokerOptionsBuilder } from '../../io/broker/BrokerOptions.js';
 import type { BrokerCommonOptionsType } from '../../io/broker/BrokerOptions.js';
-import type { WsCodec } from './WsCodec.js';
+import type { WebsocketCodec } from './WebsocketCodec.js';
 
-/** Plain options-object shape accepted by a {@link WebSocketClientActor}. */
-export interface WebSocketClientOptionsType<TOut = unknown, TIn = unknown> extends BrokerCommonOptionsType {
+/** Plain options-object shape accepted by a {@link WebsocketClientActor}. */
+export interface WebsocketClientOptionsType<TOut = unknown, TIn = unknown> extends BrokerCommonOptionsType {
   /** WebSocket URL (`ws://…` or `wss://…`).  Required (ctor or HOCON). */
   readonly url?: string;
   readonly protocols?: string | ReadonlyArray<string>;
   /** Custom request headers — Node/`ws` only; native/browsers ignore them. */
   readonly headers?: Readonly<Record<string, string>>;
   /** Wire codec.  Default: `jsonCodec<TOut, TIn>()`. */
-  readonly codec?: WsCodec<TOut, TIn>;
+  readonly codec?: WebsocketCodec<TOut, TIn>;
   /** Inbound frame size cap; oversize frames are dropped with a warning.  Default 1 MiB. */
   readonly maxFrameBytes?: number;
   /** What to do with an inbound frame the codec can't decode.  Default 'drop'. */
@@ -49,12 +49,12 @@ export interface WebSocketClientOptionsType<TOut = unknown, TIn = unknown> exten
   readonly pingIntervalMs?: number;
 }
 
-/** Fluent builder for {@link WebSocketClientOptionsType}. */
-export class WebSocketClientOptionsBuilder<TOut = unknown, TIn = unknown>
-  extends BrokerOptionsBuilder<WebSocketClientOptionsType<TOut, TIn>> {
-  /** Start a fresh builder.  Equivalent to `new WebSocketClientOptionsBuilder()`. */
-  static create<TOut = unknown, TIn = unknown>(): WebSocketClientOptionsBuilder<TOut, TIn> {
-    return new WebSocketClientOptionsBuilder<TOut, TIn>();
+/** Fluent builder for {@link WebsocketClientOptionsType}. */
+export class WebsocketClientOptionsBuilder<TOut = unknown, TIn = unknown>
+  extends BrokerOptionsBuilder<WebsocketClientOptionsType<TOut, TIn>> {
+  /** Start a fresh builder.  Equivalent to `new WebsocketClientOptionsBuilder()`. */
+  static create<TOut = unknown, TIn = unknown>(): WebsocketClientOptionsBuilder<TOut, TIn> {
+    return new WebsocketClientOptionsBuilder<TOut, TIn>();
   }
 
   /** WebSocket URL (`ws://…` or `wss://…`).  Required (here or via HOCON). */
@@ -73,7 +73,7 @@ export class WebSocketClientOptionsBuilder<TOut = unknown, TIn = unknown>
   }
 
   /** Wire codec.  Default: `jsonCodec<TOut, TIn>()`. */
-  withCodec(codec: WsCodec<TOut, TIn>): this {
+  withCodec(codec: WebsocketCodec<TOut, TIn>): this {
     return this.set('codec', codec);
   }
 
@@ -95,11 +95,11 @@ export class WebSocketClientOptionsBuilder<TOut = unknown, TIn = unknown>
 
 /**
  * Accepted input for any WebSocket-client-configurable constructor: the fluent
- * {@link WebSocketClientOptionsBuilder} OR a plain
- * {@link WebSocketClientOptionsType} object.
+ * {@link WebsocketClientOptionsBuilder} OR a plain
+ * {@link WebsocketClientOptionsType} object.
  */
-export type WebSocketClientOptions<TOut = unknown, TIn = unknown> =
-  | WebSocketClientOptionsBuilder<TOut, TIn>
-  | Partial<WebSocketClientOptionsType<TOut, TIn>>;
-/** Value alias so `WebSocketClientOptions.create()` / `new WebSocketClientOptions()` resolve to the builder. */
-export const WebSocketClientOptions = WebSocketClientOptionsBuilder;
+export type WebsocketClientOptions<TOut = unknown, TIn = unknown> =
+  | WebsocketClientOptionsBuilder<TOut, TIn>
+  | Partial<WebsocketClientOptionsType<TOut, TIn>>;
+/** Value alias so `WebsocketClientOptions.create()` / `new WebsocketClientOptions()` resolve to the builder. */
+export const WebsocketClientOptions = WebsocketClientOptionsBuilder;

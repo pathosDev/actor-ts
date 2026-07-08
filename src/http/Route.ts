@@ -1,11 +1,11 @@
 import { match } from 'ts-pattern';
 import type { ActorSystem } from '../ActorSystem.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse, Status } from './types.js';
-import type { WebSocketSocketAdapter } from './ws/SocketAdapter.js';
+import type { WebsocketSocketAdapter } from './websocket/SocketAdapter.js';
 
 /**
  * A compiled HTTP route — the Route-DSL reduces to a list of these
- * (plus {@link CompiledWebSocketRoute}s), which the HTTP backend
+ * (plus {@link CompiledWebsocketRoute}s), which the HTTP backend
  * registers in its native routing table.
  */
 export interface CompiledRoute {
@@ -21,10 +21,10 @@ export interface CompiledRoute {
  * and a normalised socket; the closure (built by the `websocket()`
  * directive) owns the codec, target ref and per-route policy.
  */
-export type WebSocketConnectHandler = (
+export type WebsocketConnectHandler = (
   system: ActorSystem,
   req: HttpRequest,
-  socket: WebSocketSocketAdapter,
+  socket: WebsocketSocketAdapter,
 ) => void;
 
 /**
@@ -34,16 +34,16 @@ export type WebSocketConnectHandler = (
  * request, and returns `null` to accept or an {@link HttpResponse} to
  * reject the upgrade with a plain HTTP response.
  */
-export interface CompiledWebSocketRoute {
+export interface CompiledWebsocketRoute {
   readonly kind: 'websocket';
   readonly method: 'GET';
   readonly pattern: string;
-  readonly connect: WebSocketConnectHandler;
+  readonly connect: WebsocketConnectHandler;
   readonly authorize: (req: HttpRequest) => Promise<HttpResponse | null>;
 }
 
 /** A compiled endpoint is either a plain HTTP route or a WebSocket route. */
-export type CompiledEndpoint = CompiledRoute | CompiledWebSocketRoute;
+export type CompiledEndpoint = CompiledRoute | CompiledWebsocketRoute;
 
 /**
  * Per-request hook that runs around a handler.  Receives the request
@@ -75,7 +75,7 @@ export type Route =
   | { readonly kind: 'path'; readonly segment: string; readonly child: Route }
   | { readonly kind: 'concat'; readonly routes: ReadonlyArray<Route> }
   | { readonly kind: 'middleware'; readonly middleware: Middleware; readonly child: Route }
-  | { readonly kind: 'websocket'; readonly connect: WebSocketConnectHandler };
+  | { readonly kind: 'websocket'; readonly connect: WebsocketConnectHandler };
 
 /** Compose several sibling routes (OR semantics — first matching wins). */
 export function concat(...routes: Route[]): Route {

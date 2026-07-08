@@ -1,7 +1,7 @@
 /**
  * Smoke case: WebSocket round-trip through the HTTP backend.
  *
- * A WebSocketClientActor dials a WebSocketServerActor bound with
+ * A WebsocketClientActor dials a WebsocketServerActor bound with
  * `websocket('/ws', ref)` on the default (Fastify) backend, exchanges one
  * typed JSON message, and checks the reply.  This is the only coverage of
  * the WS server-upgrade + client path on Node/Deno (Bun runs the full
@@ -17,10 +17,10 @@ export const description = 'client actor ↔ server actor via websocket() route'
 export async function run({ actorTs }) {
   const {
     ActorSystem, ActorSystemOptions, Props, LogLevel, NoopLogger,
-    HttpExtensionId, WebSocketServerActor, WebSocketClientActor, WebSocketClientOptions, websocket,
+    HttpExtensionId, WebsocketServerActor, WebsocketClientActor, WebsocketClientOptions, websocket,
   } = actorTs;
 
-  class Echo extends WebSocketServerActor {
+  class Echo extends WebsocketServerActor {
     onMessage(msg) { this.reply({ pong: msg.n }); }
   }
 
@@ -39,9 +39,9 @@ export async function run({ actorTs }) {
     }
 
     const received = [];
-    class Client extends WebSocketClientActor {
+    class Client extends WebsocketClientActor {
       constructor(url) {
-        super(WebSocketClientOptions.create()
+        super(WebsocketClientOptions.create()
           .withUrl(url)
           .withReconnect({ maxAttempts: 5, initialDelayMs: 50 }));
       }

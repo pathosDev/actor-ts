@@ -1,13 +1,13 @@
 /**
  * Typed WebSocket **client** actor.  The counterpart to
- * {@link WebSocketServerActor}: it dials a URL and speaks the same typed,
+ * {@link WebsocketServerActor}: it dials a URL and speaks the same typed,
  * codec-encoded protocol.  Built on {@link BrokerActor}, so it inherits
  * reconnect-with-backoff, an outbound buffer that survives reconnects, a
  * circuit breaker, and HOCON options resolution for free.
  *
- *     class FeedClient extends WebSocketClientActor<ClientMsg, ServerMsg> {
+ *     class FeedClient extends WebsocketClientActor<ClientMsg, ServerMsg> {
  *       constructor() {
- *         super(WebSocketClientOptions.create<ClientMsg, ServerMsg>()
+ *         super(WebsocketClientOptions.create<ClientMsg, ServerMsg>()
  *           .withUrl('ws://localhost:8080/ws'));
  *       }
  *       override onConnected(): void { this.send({ kind: 'ping', n: 1 }); }
@@ -18,37 +18,37 @@
  * messages).  Lifecycle events (connected / disconnected / inbound) are
  * delivered through the mailbox, so `onMessage` and the hooks always run
  * on the actor thread.  Other actors can push a typed send with
- * `ref.tell(wsSend(msg))`.
+ * `ref.tell(websocketSend(msg))`.
  */
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { BrokerActor, type OutboundEnvelope } from '../../io/broker/BrokerActor.js';
-import { jsonCodec, WsDecodeError, type WsCodec } from './WsCodec.js';
-import type { WebSocketClientOptions, WebSocketClientOptionsType } from './WebSocketClientOptions.js';
+import { jsonCodec, WebsocketDecodeError, type WebsocketCodec } from './WebsocketCodec.js';
+import type { WebsocketClientOptions, WebsocketClientOptionsType } from './WebsocketClientOptions.js';
 import {
-  WsClientConnected,
-  WsClientDisconnected,
-  WsClientInbound,
-  WsClientInvalid,
-  WsClientSend,
-  type WsClientMessage,
-} from './WsMessages.js';
-import { wsClientCtor, type WebSocketLike } from './wsCtor.js';
+  WebsocketClientConnected,
+  WebsocketClientDisconnected,
+  WebsocketClientInbound,
+  WebsocketClientInvalid,
+  WebsocketClientSend,
+  type WebsocketClientMessage,
+} from './WebsocketMessages.js';
+import { websocketClientCtor, type WebsocketLike } from './websocketCtor.js';
 import {
-  DEFAULT_WS_MAX_FRAME_BYTES,
+  DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
   frameByteLength,
   normalizeInbound,
-  type WsFrame,
+  type WebsocketFrame,
 } from './types.js';
 
-export abstract class WebSocketClientActor<TOut, TIn, TSelf = never>
-  extends BrokerActor<WebSocketClientOptionsType<TOut, TIn>, WsClientMessage<TOut, TIn, TSelf>, WsFrame> {
+export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
+  extends BrokerActor<WebsocketClientOptionsType<TOut, TIn>, WebsocketClientMessage<TOut, TIn, TSelf>, WebsocketFrame> {
 
-  private socket: WebSocketLike | null = null;
+  private socket: WebsocketLike | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
-  private _codec: WsCodec<TOut, TIn> | null = null;
+  private _codec: WebsocketCodec<TOut, TIn> | null = null;
 
-  constructor(options: WebSocketClientOptions<TOut, TIn> = {}) {
+  constructor(options: WebsocketClientOptions<TOut, TIn> = {}) {
     super(options);
   }
 
@@ -62,10 +62,10 @@ export abstract class WebSocketClientActor<TOut, TIn, TSelf = never>
   /** The connection dropped; a reconnect cycle may follow (per options). */
   protected onDisconnected(_cause?: Error): void | Promise<void> {}
   /** An inbound frame failed to decode.  Only called when onInvalidMessage is 'hook'. */
-  protected onInvalidMessage(_error: WsDecodeError): void | Promise<void> {}
+  protected onInvalidMessage(_error: WebsocketDecodeError): void | Promise<void> {}
   /** App-level message told to this actor's ref (reachable only when TSelf ≠ never). */
   protected onSelfMessage(msg: TSelf): void | Promise<void> {
-    this.log.warn(`WebSocketClientActor: unhandled self message: ${String(msg)}`);
+    this.log.warn(`WebsocketClientActor: unhandled self message: ${String(msg)}`);
   }
 
   /* ----------------------- helpers ------------------------------- */
@@ -76,46 +76,46 @@ export abstract class WebSocketClientActor<TOut, TIn, TSelf = never>
    * message was dropped (encode failure or buffer overflow).
    */
   protected send(msg: TOut): boolean {
-    let frame: WsFrame;
+    let frame: WebsocketFrame;
     try {
       frame = this.codec().encode(msg);
     } catch (err) {
-      this.log.error(`WebSocketClientActor: encode failed, dropping message: ${(err as Error).message}`);
+      this.log.error(`WebsocketClientActor: encode failed, dropping message: ${(err as Error).message}`);
       return false;
     }
     return this.enqueueOutbound(frame);
   }
 
   /** Send a raw frame, bypassing the codec. */
-  protected sendRaw(frame: WsFrame): boolean {
+  protected sendRaw(frame: WebsocketFrame): boolean {
     return this.enqueueOutbound(frame);
   }
 
-  private codec(): WsCodec<TOut, TIn> {
+  private codec(): WebsocketCodec<TOut, TIn> {
     return (this._codec ??= this.options.codec ?? jsonCodec<TOut, TIn>());
   }
 
   /* ----------------------- sealed dispatch ----------------------- */
 
   /** @internal Sealed — override onMessage + hooks instead. */
-  override onReceive(cmd: WsClientMessage<TOut, TIn, TSelf>): void | Promise<void> {
-    if (cmd instanceof WsClientSend) return void this.send(cmd.msg as TOut);
-    if (cmd instanceof WsClientInbound) return this.onMessage(cmd.msg as TIn);
-    if (cmd instanceof WsClientInvalid) return this.onInvalidMessage(cmd.error);
-    if (cmd instanceof WsClientConnected) return this.onConnected();
-    if (cmd instanceof WsClientDisconnected) return this.onDisconnected(cmd.cause);
+  override onReceive(cmd: WebsocketClientMessage<TOut, TIn, TSelf>): void | Promise<void> {
+    if (cmd instanceof WebsocketClientSend) return void this.send(cmd.msg as TOut);
+    if (cmd instanceof WebsocketClientInbound) return this.onMessage(cmd.msg as TIn);
+    if (cmd instanceof WebsocketClientInvalid) return this.onInvalidMessage(cmd.error);
+    if (cmd instanceof WebsocketClientConnected) return this.onConnected();
+    if (cmd instanceof WebsocketClientDisconnected) return this.onDisconnected(cmd.cause);
     return this.onSelfMessage(cmd as TSelf);
   }
 
   /* ----------------------- BrokerActor plumbing ------------------ */
 
   protected configKey(): string { return ConfigKeys.io.broker.websocket; }
-  protected builtInDefaultOptions(): Partial<WebSocketClientOptionsType<TOut, TIn>> { return {}; }
-  protected requiredOptions(): ReadonlyArray<keyof WebSocketClientOptionsType<TOut, TIn>> { return ['url']; }
+  protected builtInDefaultOptions(): Partial<WebsocketClientOptionsType<TOut, TIn>> { return {}; }
+  protected requiredOptions(): ReadonlyArray<keyof WebsocketClientOptionsType<TOut, TIn>> { return ['url']; }
   protected endpointLabel(): string { return this.options.url ?? '<unknown>'; }
 
-  protected readOptionsFromConfig(c: Config): Partial<WebSocketClientOptionsType<TOut, TIn>> {
-    const out: { -readonly [K in keyof WebSocketClientOptionsType<TOut, TIn>]?: WebSocketClientOptionsType<TOut, TIn>[K] } = {};
+  protected readOptionsFromConfig(c: Config): Partial<WebsocketClientOptionsType<TOut, TIn>> {
+    const out: { -readonly [K in keyof WebsocketClientOptionsType<TOut, TIn>]?: WebsocketClientOptionsType<TOut, TIn>[K] } = {};
     if (c.hasPath('url')) out.url = c.getString('url');
     if (c.hasPath('protocols')) out.protocols = c.getStringList('protocols');
     if (c.hasPath('pingIntervalMs')) out.pingIntervalMs = c.getDuration('pingIntervalMs');
@@ -130,7 +130,7 @@ export abstract class WebSocketClientActor<TOut, TIn, TSelf = never>
   }
 
   protected async connectImpl(): Promise<void> {
-    const ctor = await wsClientCtor.get();
+    const ctor = await websocketClientCtor.get();
     const ws = ctor.create(this.options.url!, {
       protocols: this.options.protocols,
       headers: this.options.headers,
@@ -148,7 +148,7 @@ export abstract class WebSocketClientActor<TOut, TIn, TSelf = never>
         if (ping && ping > 0) {
           this.pingTimer = setInterval(() => { try { ws.ping?.(); } catch { /* ignore */ } }, ping);
         }
-        this.self.tell(new WsClientConnected());
+        this.self.tell(new WebsocketClientConnected());
         resolve();
       });
       ws.addEventListener('error', () => {
@@ -167,8 +167,8 @@ export abstract class WebSocketClientActor<TOut, TIn, TSelf = never>
     if (sock) { try { sock.close(); } catch { /* ignore */ } }
   }
 
-  protected async dispatchOutgoing(env: OutboundEnvelope<WsFrame>): Promise<void> {
-    if (!this.socket) throw new Error('WebSocketClientActor: not open');
+  protected async dispatchOutgoing(env: OutboundEnvelope<WebsocketFrame>): Promise<void> {
+    if (!this.socket) throw new Error('WebsocketClientActor: not open');
     this.socket.send(env.payload.data);
   }
 
@@ -178,7 +178,7 @@ export abstract class WebSocketClientActor<TOut, TIn, TSelf = never>
     if (!this.socket) return; // already handled this connection's drop
     this.socket = null;
     if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
-    this.self.tell(new WsClientDisconnected(cause));
+    this.self.tell(new WebsocketClientDisconnected(cause));
     // Trigger BrokerActor's reconnect cycle.
     this.handleConnectionLost(cause);
   }
@@ -186,30 +186,30 @@ export abstract class WebSocketClientActor<TOut, TIn, TSelf = never>
   private handleInbound(data: unknown): void {
     const frame = normalizeInbound(data);
     if (!frame) {
-      this.log.warn('WebSocketClientActor: unrecognised inbound frame type — dropped');
+      this.log.warn('WebsocketClientActor: unrecognised inbound frame type — dropped');
       return;
     }
-    const cap = this.options.maxFrameBytes ?? DEFAULT_WS_MAX_FRAME_BYTES;
+    const cap = this.options.maxFrameBytes ?? DEFAULT_WEBSOCKET_MAX_FRAME_BYTES;
     if (frameByteLength(frame) > cap) {
-      this.log.warn(`WebSocketClientActor: dropped oversize inbound frame (> ${cap} bytes) from ${this.options.url}`);
+      this.log.warn(`WebsocketClientActor: dropped oversize inbound frame (> ${cap} bytes) from ${this.options.url}`);
       return;
     }
     let decoded: TIn;
     try {
       decoded = this.codec().decode(frame);
     } catch (err) {
-      const e = err instanceof WsDecodeError ? err : new WsDecodeError(String(err), frame);
+      const e = err instanceof WebsocketDecodeError ? err : new WebsocketDecodeError(String(err), frame);
       const policy = this.options.onInvalidMessage ?? 'drop';
       if (policy === 'hook') {
-        this.self.tell(new WsClientInvalid(e));
+        this.self.tell(new WebsocketClientInvalid(e));
       } else if (policy === 'disconnect') {
-        this.log.warn(`WebSocketClientActor: invalid inbound message — disconnecting: ${e.message}`);
+        this.log.warn(`WebsocketClientActor: invalid inbound message — disconnecting: ${e.message}`);
         try { this.socket?.close(1003, 'unsupported data'); } catch { /* ignore */ }
       } else {
-        this.log.warn(`WebSocketClientActor: invalid inbound message — dropped: ${e.message}`);
+        this.log.warn(`WebsocketClientActor: invalid inbound message — dropped: ${e.message}`);
       }
       return;
     }
-    this.self.tell(new WsClientInbound(decoded));
+    this.self.tell(new WebsocketClientInbound(decoded));
   }
 }

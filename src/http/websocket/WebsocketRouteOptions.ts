@@ -1,17 +1,17 @@
 /**
  * All `websocket()`-route option-relevant types live here:
  *
- *   - {@link WebSocketRouteOptionsType} — the plain options-object shape
+ *   - {@link WebsocketRouteOptionsType} — the plain options-object shape
  *     (what you may also pass as a bare `{ … }` object).
- *   - {@link WebSocketRouteOptionsBuilder} — the fluent builder
- *     (`WebSocketRouteOptions.create()…`).
- *   - {@link WebSocketRouteOptions} — the accepted-input **union**
- *     (`WebSocketRouteOptionsBuilder | WebSocketRouteOptionsType`), plus a
- *     value alias to the builder so `WebSocketRouteOptions.create()` /
- *     `new WebSocketRouteOptions()` keep working.
+ *   - {@link WebsocketRouteOptionsBuilder} — the fluent builder
+ *     (`WebsocketRouteOptions.create()…`).
+ *   - {@link WebsocketRouteOptions} — the accepted-input **union**
+ *     (`WebsocketRouteOptionsBuilder | WebsocketRouteOptionsType`), plus a
+ *     value alias to the builder so `WebsocketRouteOptions.create()` /
+ *     `new WebsocketRouteOptions()` keep working.
  *
- *     const wsOptions = WebSocketRouteOptions.create().withCodec(rawCodec());
- *     websocket('/ws', ingress, wsOptions);
+ *     const websocketOptions = WebsocketRouteOptions.create().withCodec(rawCodec());
+ *     websocket('/ws', ingress, websocketOptions);
  *
  * The builder records only the fields you set (as own enumerable props), so it
  * reads/spreads exactly like a plain object; it feeds the same per-route
@@ -19,30 +19,30 @@
  * unset fields fall through to HOCON.
  */
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
-import type { WsCodec } from './WsCodec.js';
+import type { WebsocketCodec } from './WebsocketCodec.js';
 import type {
   BackpressurePolicy,
   InvalidMessagePolicy,
   OversizeFramePolicy,
-  WebSocketPolicyOptions,
-} from './WsPolicy.js';
+  WebsocketPolicyOptions,
+} from './WebsocketPolicy.js';
 
 /** The options a `websocket()` route may carry — codec + per-connection policy. */
-export interface WebSocketRouteOptionsType<TOut, TIn> extends WebSocketPolicyOptions {
+export interface WebsocketRouteOptionsType<TOut, TIn> extends WebsocketPolicyOptions {
   /** Wire codec.  Default: `jsonCodec<TOut, TIn>()`. */
-  readonly codec?: WsCodec<TOut, TIn>;
+  readonly codec?: WebsocketCodec<TOut, TIn>;
 }
 
-/** Fluent builder for {@link WebSocketRouteOptionsType}. */
-export class WebSocketRouteOptionsBuilder<TOut = unknown, TIn = unknown>
-  extends OptionsBuilder<WebSocketRouteOptionsType<TOut, TIn>> {
-  /** Start a fresh builder.  Equivalent to `new WebSocketRouteOptionsBuilder()`. */
-  static create<TOut = unknown, TIn = unknown>(): WebSocketRouteOptionsBuilder<TOut, TIn> {
-    return new WebSocketRouteOptionsBuilder<TOut, TIn>();
+/** Fluent builder for {@link WebsocketRouteOptionsType}. */
+export class WebsocketRouteOptionsBuilder<TOut = unknown, TIn = unknown>
+  extends OptionsBuilder<WebsocketRouteOptionsType<TOut, TIn>> {
+  /** Start a fresh builder.  Equivalent to `new WebsocketRouteOptionsBuilder()`. */
+  static create<TOut = unknown, TIn = unknown>(): WebsocketRouteOptionsBuilder<TOut, TIn> {
+    return new WebsocketRouteOptionsBuilder<TOut, TIn>();
   }
 
   /** Wire codec.  Default: `jsonCodec<TOut, TIn>()`. */
-  withCodec(codec: WsCodec<TOut, TIn>): this {
+  withCodec(codec: WebsocketCodec<TOut, TIn>): this {
     return this.set('codec', codec);
   }
 
@@ -74,11 +74,11 @@ export class WebSocketRouteOptionsBuilder<TOut = unknown, TIn = unknown>
 
 /**
  * Accepted input for a `websocket()` route's options: the fluent
- * {@link WebSocketRouteOptionsBuilder} OR a plain
- * {@link WebSocketRouteOptionsType} object.
+ * {@link WebsocketRouteOptionsBuilder} OR a plain
+ * {@link WebsocketRouteOptionsType} object.
  */
-export type WebSocketRouteOptions<TOut = unknown, TIn = unknown> =
-  | WebSocketRouteOptionsBuilder<TOut, TIn>
-  | Partial<WebSocketRouteOptionsType<TOut, TIn>>;
-/** Value alias so `WebSocketRouteOptions.create()` / `new WebSocketRouteOptions()` resolve to the builder. */
-export const WebSocketRouteOptions = WebSocketRouteOptionsBuilder;
+export type WebsocketRouteOptions<TOut = unknown, TIn = unknown> =
+  | WebsocketRouteOptionsBuilder<TOut, TIn>
+  | Partial<WebsocketRouteOptionsType<TOut, TIn>>;
+/** Value alias so `WebsocketRouteOptions.create()` / `new WebsocketRouteOptions()` resolve to the builder. */
+export const WebsocketRouteOptions = WebsocketRouteOptionsBuilder;

@@ -6,7 +6,7 @@
  * clients at `/ws` via the `websocket()` directive.  Static-file
  * delivery (`/static/*`) is still mounted as a Fastify plugin via
  * `backend.withPlugin(...)` — the DSL has no directive for it today.
- * See `plugins/staticFilesPlugin.ts` and `actors/WebSocketIngressActor.ts`.
+ * See `plugins/staticFilesPlugin.ts` and `actors/WebsocketIngressActor.ts`.
  *
  * The selector HTML is inlined as a tagged template — small enough
  * (~3 KB) that splitting it into its own file would just add another
@@ -20,12 +20,12 @@ import {
   rawCodec,
   Status,
   websocket,
-  WebSocketRouteOptions,
+  WebsocketRouteOptions,
   type Route,
 } from '../../../src/http/index.js';
-import type { WsFrame } from '../../../src/http/index.js';
+import type { WebsocketFrame } from '../../../src/http/index.js';
 import type { ActorRef } from '../../../src/index.js';
-import type { WsServerMessage } from '../../../src/http/index.js';
+import type { WebsocketServerMessage } from '../../../src/http/index.js';
 
 const SELECTOR_HTML = /* html */ `<!doctype html>
 <html lang="en">
@@ -120,8 +120,8 @@ const SELECTOR_HTML = /* html */ `<!doctype html>
  * Static-file delivery (`/static/*`) is still mounted as a Fastify
  * plugin via `backend.withPlugin(...)`; the DSL has no directive for it.
  */
-export function buildRoutes(ingress: ActorRef<WsServerMessage<WsFrame, WsFrame>>): Route {
-  const wsRouteOptions = WebSocketRouteOptions.create().withCodec(rawCodec());
+export function buildRoutes(ingress: ActorRef<WebsocketServerMessage<WebsocketFrame, WebsocketFrame>>): Route {
+  const wsRouteOptions = WebsocketRouteOptions.create().withCodec(rawCodec());
   return concat(
     get(() =>
       complete(Status.OK, SELECTOR_HTML, { 'content-type': 'text/html; charset=utf-8' }),

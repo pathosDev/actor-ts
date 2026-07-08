@@ -1,5 +1,5 @@
 import type { HttpMethod, HttpRequest, HttpResponse } from '../types.js';
-import type { WebSocketSocketAdapter } from '../ws/SocketAdapter.js';
+import type { WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
 
 /** One route registration — supplied by the DSL after compilation. */
 export interface RouteRegistration {
@@ -18,13 +18,13 @@ export interface RouteRegistration {
  * Everything actor-related lives behind `onConnection`; the backend
  * never sees the framework's actors.
  */
-export interface WebSocketRouteRegistration {
+export interface WebsocketRouteRegistration {
   /** ':param'-style pattern, same dialect as {@link RouteRegistration.pattern}. */
   readonly pattern: string;
   /** Pre-upgrade guard.  `null` → proceed; `HttpResponse` → reject with it. */
   readonly authorize: (req: HttpRequest) => Promise<HttpResponse | null>;
   /** Called once per accepted connection, synchronously in the upgrade callback. */
-  readonly onConnection: (req: HttpRequest, socket: WebSocketSocketAdapter) => void;
+  readonly onConnection: (req: HttpRequest, socket: WebsocketSocketAdapter) => void;
 }
 
 export interface ServerBinding {
@@ -59,5 +59,5 @@ export interface HttpServerBackend {
    * implement this support `websocket()` routes; absence is detected by
    * `HttpExtension.bind` and reported as a clear error.
    */
-  registerWebSocket?(reg: WebSocketRouteRegistration): void;
+  registerWebSocket?(reg: WebsocketRouteRegistration): void;
 }

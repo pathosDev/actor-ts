@@ -68,9 +68,9 @@ export type {
 export { mqttJsonCodec, MqttDecodeError, MqttEncodeError } from './MqttCodec.js';
 export type { MqttCodec } from './MqttCodec.js';
 // NOTE: the client-side WebSocket actor now lives in `src/http/ws/`
-// as the typed `WebSocketClientActor`; the server side is the
+// as the typed `WebsocketClientActor`; the server side is the
 // `websocket()` routing directive.  The old frame-level
-// `WebSocketActor` / `ServerWebSocketActor` were removed.
+// `WebsocketActor` / `ServerWebsocketActor` were removed.
 
 // Phase 2 actors — enterprise / RPC.
 export { KafkaActor } from './KafkaActor.js';

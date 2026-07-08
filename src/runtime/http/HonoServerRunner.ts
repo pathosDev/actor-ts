@@ -42,7 +42,7 @@ export interface WSEventsLike {
 }
 
 /** Hono `upgradeWebSocket` middleware factory. */
-export type UpgradeWebSocketFn = (createEvents: (c: unknown) => WSEventsLike) => unknown;
+export type UpgradeWebsocketFn = (createEvents: (c: unknown) => WSEventsLike) => unknown;
 
 /**
  * Per-runtime WebSocket bridge.  `upgradeWebSocket` is Hono's middleware
@@ -50,8 +50,8 @@ export type UpgradeWebSocketFn = (createEvents: (c: unknown) => WSEventsLike) =>
  * needs `{ websocket }`); `attach` runs post-listen wiring (Node needs
  * `injectWebSocket(server)`).
  */
-export interface HonoWebSocketBridge {
-  readonly upgradeWebSocket: UpgradeWebSocketFn;
+export interface HonoWebsocketBridge {
+  readonly upgradeWebSocket: UpgradeWebsocketFn;
   readonly serveOptions: object;
   readonly attach?: (handle: HonoServerHandle) => void;
 }
@@ -59,5 +59,5 @@ export interface HonoWebSocketBridge {
 export interface HonoServerRunner {
   serve(opts: { host: string; port: number; fetch: FetchHandler; serveOptions?: object }): Promise<HonoServerHandle>;
   /** Optional capability — all three built-in runners implement it. */
-  webSocket?(app: unknown): Promise<HonoWebSocketBridge>;
+  webSocket?(app: unknown): Promise<HonoWebsocketBridge>;
 }

@@ -9,7 +9,7 @@
  */
 
 /** Returns captured params if `pathname` matches `pattern`, else `null`. */
-export function matchWsPattern(pattern: string, pathname: string): Record<string, string> | null {
+export function matchWebsocketPattern(pattern: string, pathname: string): Record<string, string> | null {
   const pSegs = pattern.split('/').filter((s) => s.length > 0);
   const uSegs = pathname.split('/').filter((s) => s.length > 0);
   if (pSegs.length !== uSegs.length) return null;

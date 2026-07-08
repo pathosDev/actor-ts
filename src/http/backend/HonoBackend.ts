@@ -2,7 +2,7 @@ import { match } from 'ts-pattern';
 import {
   getHonoRunner,
   type HonoServerHandle,
-  type HonoWebSocketBridge,
+  type HonoWebsocketBridge,
   type WSContextLike,
   type WSEventsLike,
 } from '../../runtime/http/index.js';
@@ -11,13 +11,13 @@ import type {
   HttpServerBackend,
   RouteRegistration,
   ServerBinding,
-  WebSocketRouteRegistration,
+  WebsocketRouteRegistration,
 } from './HttpServerBackend.js';
-import type { WebSocketListeners, WebSocketSocketAdapter } from '../ws/SocketAdapter.js';
+import type { WebsocketListeners, WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
 import type { HonoBackendOptions, HonoBackendOptionsType } from './HonoBackendOptions.js';
 
 /** Hono delivers text as a string and binary as ArrayBuffer/Uint8Array. */
-function coerceWsData(data: unknown): string | Uint8Array {
+function coerceWebsocketData(data: unknown): string | Uint8Array {
   if (typeof data === 'string') return data;
   if (data instanceof Uint8Array) return data;
   if (data instanceof ArrayBuffer) return new Uint8Array(data);
@@ -88,7 +88,7 @@ export class HonoBackend implements HttpServerBackend {
   private readonly ownsApp: boolean;
   private readonly maxBodyBytes: number;
   private readonly registered: RouteRegistration[] = [];
-  private readonly wsRegistered: WebSocketRouteRegistration[] = [];
+  private readonly wsRegistered: WebsocketRouteRegistration[] = [];
   private notFoundHandler: ((req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
   private errorHandler: ((err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
 
@@ -113,7 +113,7 @@ export class HonoBackend implements HttpServerBackend {
     this.registered.push(route);
   }
 
-  registerWebSocket(reg: WebSocketRouteRegistration): void {
+  registerWebSocket(reg: WebsocketRouteRegistration): void {
     if (this.wsRegistered.some((r) => r.pattern === reg.pattern)) {
       throw new Error(`HonoBackend: duplicate websocket route for pattern "${reg.pattern}".`);
     }
@@ -168,13 +168,13 @@ export class HonoBackend implements HttpServerBackend {
     // WebSocket routes: obtain the per-runtime bridge, register each route
     // as a GET carrying the authorize guard + Hono's upgrade middleware,
     // and fold the bridge's serve options in (Bun needs `{ websocket }`).
-    let bridge: HonoWebSocketBridge | null = null;
+    let bridge: HonoWebsocketBridge | null = null;
     if (this.wsRegistered.length > 0) {
       if (!runner.webSocket) {
         throw new Error('HonoBackend: this runtime\'s Hono runner does not support websocket() routes.');
       }
       bridge = await runner.webSocket(app);
-      for (const reg of this.wsRegistered) this.attachWebSocketRoute(app, bridge, reg);
+      for (const reg of this.wsRegistered) this.attachWebsocketRoute(app, bridge, reg);
     }
 
     // Forward ALL args to app.fetch — Bun invokes fetch(request, server)
@@ -243,7 +243,7 @@ export class HonoBackend implements HttpServerBackend {
       .exhaustive();
   }
 
-  private attachWebSocketRoute(app: HonoAppLike, bridge: HonoWebSocketBridge, reg: WebSocketRouteRegistration): void {
+  private attachWebsocketRoute(app: HonoAppLike, bridge: HonoWebsocketBridge, reg: WebsocketRouteRegistration): void {
     // Guard middleware runs the authorize check against the upgrade
     // request; returning a Response short-circuits (no upgrade).
     const guard = async (c: HonoContextLike, next: () => Promise<void>): Promise<Response | void> => {
@@ -256,12 +256,12 @@ export class HonoBackend implements HttpServerBackend {
       const c = raw as HonoContextLike;
       const adapted = this.adaptUpgradeContext(c);
       let ws: WSContextLike | null = null;
-      let listeners: WebSocketListeners | null = null;
+      let listeners: WebsocketListeners | null = null;
       // Frames that arrive before setListeners runs (defensive — Hono
       // dispatches onOpen before onMessage, but the buffer makes it
       // unconditional).
       const pending: Array<string | Uint8Array> = [];
-      const adapter: WebSocketSocketAdapter = {
+      const adapter: WebsocketSocketAdapter = {
         send: (data) => ws?.send(data),
         close: (code, reason) => ws?.close(code, reason),
         setListeners: (l) => {
@@ -284,7 +284,7 @@ export class HonoBackend implements HttpServerBackend {
         },
         onMessage: (evt, wsCtx) => {
           ws = wsCtx;
-          const d = coerceWsData(evt.data);
+          const d = coerceWebsocketData(evt.data);
           if (listeners) listeners.onMessage(d);
           else pending.push(d);
         },

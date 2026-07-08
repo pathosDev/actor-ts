@@ -1,6 +1,6 @@
 /**
  * Shared WebSocket integration suite, parameterised per HTTP backend.
- * Each backend's *.test.ts calls `runWsBackendSuite(label, makeBackend)`.
+ * Each backend's *.test.ts calls `runWebsocketBackendSuite(label, makeBackend)`.
  * Clients use the runtime's native `WebSocket` global (Bun provides one).
  */
 import { afterEach, describe, expect, test } from 'bun:test';
@@ -22,15 +22,15 @@ import {
   type Route,
 } from '../../../../../src/http/Route.js';
 import { Status } from '../../../../../src/http/types.js';
-import { WebSocketServerActor } from '../../../../../src/http/ws/WebSocketServerActor.js';
-import { websocket } from '../../../../../src/http/ws/WebSocketRoute.js';
-import { WebSocketRouteOptions } from '../../../../../src/http/ws/WebSocketRouteOptions.js';
-import type { WsConnection } from '../../../../../src/http/ws/WsConnection.js';
+import { WebsocketServerActor } from '../../../../../src/http/websocket/WebsocketServerActor.js';
+import { websocket } from '../../../../../src/http/websocket/WebsocketRoute.js';
+import { WebsocketRouteOptions } from '../../../../../src/http/websocket/WebsocketRouteOptions.js';
+import type { WebsocketConnection } from '../../../../../src/http/websocket/WebsocketConnection.js';
 
 type SIn = { kind: 'ping'; n: number } | { kind: 'broadcast'; text: string };
 type SOut = { kind: 'pong'; n: number } | { kind: 'bcast'; text: string };
 
-class TestServer extends WebSocketServerActor<SOut, SIn> {
+class TestServer extends WebsocketServerActor<SOut, SIn> {
   constructor(private readonly events: string[]) {
     super();
   }
@@ -38,10 +38,10 @@ class TestServer extends WebSocketServerActor<SOut, SIn> {
     if (msg.kind === 'ping') this.reply({ kind: 'pong', n: msg.n });
     else this.broadcast({ kind: 'bcast', text: msg.text });
   }
-  override onClientConnected(c: WsConnection<SOut>): void {
+  override onClientConnected(c: WebsocketConnection<SOut>): void {
     this.events.push(`connect:${c.id}`);
   }
-  override onClientDisconnected(c: WsConnection<SOut>): void {
+  override onClientDisconnected(c: WebsocketConnection<SOut>): void {
     this.events.push(`disconnect:${c.id}`);
   }
 }
@@ -114,7 +114,7 @@ function expectUpgradeRejected(url: string, timeoutMs = 3000): Promise<void> {
   });
 }
 
-export function runWsBackendSuite(label: string, makeBackend: () => HttpServerBackend): void {
+export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpServerBackend): void {
   describe(`WebSocket integration — ${label}`, () => {
     const systems: ActorSystem[] = [];
     const bindings: ServerBinding[] = [];
@@ -177,7 +177,7 @@ export function runWsBackendSuite(label: string, makeBackend: () => HttpServerBa
 
     test('oversize inbound frame closes the connection (1009)', async () => {
       const { base } = await bindServer([], (s) => {
-        const routeOptions = WebSocketRouteOptions.create()
+        const routeOptions = WebsocketRouteOptions.create()
           .withMaxFrameBytes(64 * 1024);
         return websocket('/ws', s, routeOptions);
       });

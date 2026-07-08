@@ -6,7 +6,7 @@ import { FastifyBackend } from './backend/FastifyBackend.js';
 import { HttpClient } from './HttpClient.js';
 import { compile, type Route } from './Route.js';
 import type { HttpRequest, HttpResponse } from './types.js';
-import { ConnectionTracker, trackSocket } from './ws/ConnectionWiring.js';
+import { ConnectionTracker, trackSocket } from './websocket/ConnectionWiring.js';
 
 export interface ServerBuilder {
   /** Override the default Fastify backend (or use BunServe / Express). */

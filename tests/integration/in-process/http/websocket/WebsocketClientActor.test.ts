@@ -7,25 +7,25 @@ import { HttpExtensionId } from '../../../../../src/http/HttpExtension.js';
 import { FastifyBackend } from '../../../../../src/http/backend/FastifyBackend.js';
 import type { ServerBinding } from '../../../../../src/http/backend/HttpServerBackend.js';
 import type { Route } from '../../../../../src/http/Route.js';
-import { websocket } from '../../../../../src/http/ws/WebSocketRoute.js';
-import { WebSocketServerActor } from '../../../../../src/http/ws/WebSocketServerActor.js';
-import { WebSocketClientActor } from '../../../../../src/http/ws/WebSocketClientActor.js';
-import { WebSocketClientOptions } from '../../../../../src/http/ws/WebSocketClientOptions.js';
-import { wsSend, type WsClientMessage } from '../../../../../src/http/ws/WsMessages.js';
+import { websocket } from '../../../../../src/http/websocket/WebsocketRoute.js';
+import { WebsocketServerActor } from '../../../../../src/http/websocket/WebsocketServerActor.js';
+import { WebsocketClientActor } from '../../../../../src/http/websocket/WebsocketClientActor.js';
+import { WebsocketClientOptions } from '../../../../../src/http/websocket/WebsocketClientOptions.js';
+import { websocketSend, type WebsocketClientMessage } from '../../../../../src/http/websocket/WebsocketMessages.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 
 type CMsg = { kind: 'ping'; n: number };
 type SMsg = { kind: 'pong'; n: number };
 
-class PingServer extends WebSocketServerActor<SMsg, CMsg> {
+class PingServer extends WebsocketServerActor<SMsg, CMsg> {
   onMessage(m: CMsg): void { this.reply({ kind: 'pong', n: m.n }); }
 }
 
 interface Rec { events: string[]; msgs: SMsg[] }
 
-class RecordingClient extends WebSocketClientActor<CMsg, SMsg> {
+class RecordingClient extends WebsocketClientActor<CMsg, SMsg> {
   constructor(url: string, private readonly rec: Rec) {
-    const clientOptions = WebSocketClientOptions.create<CMsg, SMsg>()
+    const clientOptions = WebsocketClientOptions.create<CMsg, SMsg>()
       .withUrl(url)
       .withReconnect({ initialDelayMs: 50, maxDelayMs: 200, factor: 2, maxAttempts: 40 });
     super(clientOptions);
@@ -47,7 +47,7 @@ async function waitUntil(cond: () => boolean, timeoutMs = 4000): Promise<void> {
   }
 }
 
-describe('WebSocketClientActor', () => {
+describe('WebsocketClientActor', () => {
   const systems: ActorSystem[] = [];
   const bindings: ServerBinding[] = [];
   function mkSystem(name: string): ActorSystem {
@@ -82,18 +82,18 @@ describe('WebSocketClientActor', () => {
     expect(rec.msgs[0]).toEqual({ kind: 'pong', n: 1 });
   });
 
-  test('another actor can push a typed send via wsSend(ref)', async () => {
+  test('another actor can push a typed send via websocketSend(ref)', async () => {
     const srvSys = mkSystem('cli-srv2');
     const server = srvSys.spawn(Props.create(() => new PingServer()), 'srv');
     const binding = await bindServer(srvSys, websocket('/ws', server));
 
     const rec: Rec = { events: [], msgs: [] };
     const cliSys = mkSystem('cli2');
-    const clientRef: ActorRef<WsClientMessage<CMsg, SMsg>> =
+    const clientRef: ActorRef<WebsocketClientMessage<CMsg, SMsg>> =
       cliSys.spawn(Props.create(() => new RecordingClient(`ws://127.0.0.1:${binding.port}/ws`, rec)), 'client');
 
     await waitUntil(() => rec.events.includes('connected'));
-    clientRef.tell(wsSend({ kind: 'ping', n: 99 }));
+    clientRef.tell(websocketSend({ kind: 'ping', n: 99 }));
     await waitUntil(() => rec.msgs.some((m) => m.n === 99));
     expect(rec.msgs.some((m) => m.n === 99)).toBe(true);
   });

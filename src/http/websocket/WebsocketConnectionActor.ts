@@ -1,6 +1,6 @@
 /**
  * Internal per-connection actor — a genuine child of the
- * {@link WebSocketServerActor} hub (spawned via the hub's context, so
+ * {@link WebsocketServerActor} hub (spawned via the hub's context, so
  * the actor tree is `server → conn-1, conn-2, …`).  Users never see or
  * manage it.
  *
@@ -9,7 +9,7 @@
  *     decodes each frame, and forwards the decoded message to the hub
  *     with this connection as the sender;
  *   - outbound: its mailbox is the connection's write queue — a
- *     {@link WsConnection}'s `tell` / `sendRaw` / `close` enqueue here,
+ *     {@link WebsocketConnection}'s `tell` / `sendRaw` / `close` enqueue here,
  *     and it encodes + writes to the socket (with a backpressure check);
  *   - lifecycle: on socket close it stops itself; `postStop` reports the
  *     disconnect to the hub exactly once and closes the socket.
@@ -19,73 +19,73 @@
  * than restarting into a dead socket.
  */
 import { Actor } from '../../Actor.js';
-import { WsReadyState, type WebSocketSocketAdapter } from './SocketAdapter.js';
-import { WsDecodeError, type WsCodec } from './WsCodec.js';
-import { WsConnectionImpl, type WsConnection, type WsOutboundCommand } from './WsConnection.js';
+import { WebsocketReadyState, type WebsocketSocketAdapter } from './SocketAdapter.js';
+import { WebsocketDecodeError, type WebsocketCodec } from './WebsocketCodec.js';
+import { WebsocketConnectionImpl, type WebsocketConnection, type WebsocketOutboundCommand } from './WebsocketConnection.js';
 import {
-  WsConnectedSignal,
-  WsDataSignal,
-  WsDisconnectedSignal,
-  WsInvalidSignal,
-  type WsServerRef,
-} from './WsMessages.js';
-import type { ResolvedWsPolicy } from './WsPolicy.js';
+  WebsocketConnectedSignal,
+  WebsocketDataSignal,
+  WebsocketDisconnectedSignal,
+  WebsocketInvalidSignal,
+  type WebsocketServerRef,
+} from './WebsocketMessages.js';
+import type { ResolvedWebsocketPolicy } from './WebsocketPolicy.js';
 import {
   frameByteLength,
   normalizeInbound,
-  type WsCloseInfo,
-  type WsFrame,
-  type WsUpgradeInfo,
+  type WebsocketCloseInfo,
+  type WebsocketFrame,
+  type WebsocketUpgradeInfo,
 } from './types.js';
 
-export interface WebSocketConnectionDeps<TOut, TIn, TSelf> {
-  readonly socket: WebSocketSocketAdapter;
-  readonly codec: WsCodec<TOut, TIn>;
-  readonly policy: ResolvedWsPolicy;
-  readonly hub: WsServerRef<TOut, TIn, TSelf>;
+export interface WebsocketConnectionDeps<TOut, TIn, TSelf> {
+  readonly socket: WebsocketSocketAdapter;
+  readonly codec: WebsocketCodec<TOut, TIn>;
+  readonly policy: ResolvedWebsocketPolicy;
+  readonly hub: WebsocketServerRef<TOut, TIn, TSelf>;
   readonly id: string;
-  readonly upgrade: WsUpgradeInfo;
+  readonly upgrade: WebsocketUpgradeInfo;
 }
 
-export class WebSocketConnectionActor<TOut, TIn, TSelf = never>
-  extends Actor<WsOutboundCommand<TOut>> {
+export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
+  extends Actor<WebsocketOutboundCommand<TOut>> {
 
-  private readonly d: WebSocketConnectionDeps<TOut, TIn, TSelf>;
-  private connection: WsConnection<TOut> | null = null;
+  private readonly d: WebsocketConnectionDeps<TOut, TIn, TSelf>;
+  private connection: WebsocketConnection<TOut> | null = null;
   private closed = false;
   private disconnectReported = false;
-  private closeInfo: WsCloseInfo | null = null;
+  private closeInfo: WebsocketCloseInfo | null = null;
 
-  constructor(deps: WebSocketConnectionDeps<TOut, TIn, TSelf>) {
+  constructor(deps: WebsocketConnectionDeps<TOut, TIn, TSelf>) {
     super();
     this.d = deps;
   }
 
   override preStart(): void {
-    const conn = new WsConnectionImpl<TOut>(this.d.id, this.d.upgrade, this.d.socket, this.self, this.system.name);
+    const conn = new WebsocketConnectionImpl<TOut>(this.d.id, this.d.upgrade, this.d.socket, this.self, this.system.name);
     this.connection = conn;
     // Tell the hub 'connected' BEFORE attaching listeners, so it is
     // mailbox-ordered before any inbound data flushed by setListeners.
-    this.d.hub.tell(new WsConnectedSignal<TOut>(conn), conn);
+    this.d.hub.tell(new WebsocketConnectedSignal<TOut>(conn), conn);
     this.d.socket.setListeners({
       onMessage: (data) => this.handleInbound(data),
       onClose: (code, reason) => this.handleClose(code, reason),
-      onError: (err) => this.log.warn(`WebSocketConnectionActor ${this.d.id}: socket error: ${err.message}`),
+      onError: (err) => this.log.warn(`WebsocketConnectionActor ${this.d.id}: socket error: ${err.message}`),
     });
   }
 
-  override onReceive(cmd: WsOutboundCommand<TOut>): void {
+  override onReceive(cmd: WebsocketOutboundCommand<TOut>): void {
     if (this.closed) {
-      this.log.debug(`WebSocketConnectionActor ${this.d.id}: command after close — ignored`);
+      this.log.debug(`WebsocketConnectionActor ${this.d.id}: command after close — ignored`);
       return;
     }
     switch (cmd._cmd) {
       case 'out': {
-        let frame: WsFrame;
+        let frame: WebsocketFrame;
         try {
           frame = this.d.codec.encode(cmd.msg);
         } catch (err) {
-          this.log.error(`WebSocketConnectionActor ${this.d.id}: encode failed, dropping message: ${(err as Error).message}`);
+          this.log.error(`WebsocketConnectionActor ${this.d.id}: encode failed, dropping message: ${(err as Error).message}`);
           return;
         }
         this.write(frame);
@@ -106,8 +106,8 @@ export class WebSocketConnectionActor<TOut, TIn, TSelf = never>
     // (framework stops the actor → postStop runs → synthetic info).
     if (this.connection && !this.disconnectReported) {
       this.disconnectReported = true;
-      const info: WsCloseInfo = this.closeInfo ?? { code: 1011, reason: '', initiatedBy: 'error' };
-      this.d.hub.tell(new WsDisconnectedSignal<TOut>(this.connection, info), this.connection);
+      const info: WebsocketCloseInfo = this.closeInfo ?? { code: 1011, reason: '', initiatedBy: 'error' };
+      this.d.hub.tell(new WebsocketDisconnectedSignal<TOut>(this.connection, info), this.connection);
     }
     if (!this.closed) {
       this.closed = true;
@@ -120,14 +120,14 @@ export class WebSocketConnectionActor<TOut, TIn, TSelf = never>
   private handleInbound(data: string | Uint8Array): void {
     const frame = normalizeInbound(data);
     if (!frame) {
-      this.log.warn(`WebSocketConnectionActor ${this.d.id}: unrecognised inbound frame type — dropped`);
+      this.log.warn(`WebsocketConnectionActor ${this.d.id}: unrecognised inbound frame type — dropped`);
       return;
     }
     if (frameByteLength(frame) > this.d.policy.maxFrameBytes) {
       if (this.d.policy.onOversizeFrame === 'close') {
         this.closeSocket(1009, 'message too big');
       } else {
-        this.log.warn(`WebSocketConnectionActor ${this.d.id}: dropped oversize inbound frame (> ${this.d.policy.maxFrameBytes} bytes)`);
+        this.log.warn(`WebsocketConnectionActor ${this.d.id}: dropped oversize inbound frame (> ${this.d.policy.maxFrameBytes} bytes)`);
       }
       return;
     }
@@ -135,17 +135,17 @@ export class WebSocketConnectionActor<TOut, TIn, TSelf = never>
     try {
       decoded = this.d.codec.decode(frame);
     } catch (err) {
-      const decodeErr = err instanceof WsDecodeError ? err : new WsDecodeError(String(err), frame);
+      const decodeErr = err instanceof WebsocketDecodeError ? err : new WebsocketDecodeError(String(err), frame);
       if (this.d.policy.onInvalidMessage === 'close') {
         this.closeSocket(1003, 'unsupported data');
       } else if (this.d.policy.onInvalidMessage === 'hook') {
-        this.d.hub.tell(new WsInvalidSignal<TOut>(this.connection!, decodeErr), this.connection!);
+        this.d.hub.tell(new WebsocketInvalidSignal<TOut>(this.connection!, decodeErr), this.connection!);
       } else {
-        this.log.warn(`WebSocketConnectionActor ${this.d.id}: invalid inbound message — dropped: ${decodeErr.message}`);
+        this.log.warn(`WebsocketConnectionActor ${this.d.id}: invalid inbound message — dropped: ${decodeErr.message}`);
       }
       return;
     }
-    this.d.hub.tell(new WsDataSignal<TOut, TIn>(this.connection!, decoded), this.connection!);
+    this.d.hub.tell(new WebsocketDataSignal<TOut, TIn>(this.connection!, decoded), this.connection!);
   }
 
   private handleClose(code: number, reason: string): void {
@@ -156,25 +156,25 @@ export class WebSocketConnectionActor<TOut, TIn, TSelf = never>
 
   /* ------------------------------ outbound ------------------------------ */
 
-  private write(frame: WsFrame): void {
-    if (this.d.socket.readyState !== WsReadyState.OPEN) {
-      this.log.debug(`WebSocketConnectionActor ${this.d.id}: write on non-open socket — dropped`);
+  private write(frame: WebsocketFrame): void {
+    if (this.d.socket.readyState !== WebsocketReadyState.OPEN) {
+      this.log.debug(`WebsocketConnectionActor ${this.d.id}: write on non-open socket — dropped`);
       return;
     }
     const buffered = this.d.socket.bufferedAmount?.();
     if (buffered !== undefined && buffered > this.d.policy.maxBufferedBytes) {
       if (this.d.policy.onBackpressure === 'close') {
-        this.log.warn(`WebSocketConnectionActor ${this.d.id}: send buffer ${buffered} > ${this.d.policy.maxBufferedBytes} — closing`);
+        this.log.warn(`WebsocketConnectionActor ${this.d.id}: send buffer ${buffered} > ${this.d.policy.maxBufferedBytes} — closing`);
         this.closeSocket(1013, 'try again later');
       } else {
-        this.log.warn(`WebSocketConnectionActor ${this.d.id}: send buffer ${buffered} > ${this.d.policy.maxBufferedBytes} — dropping frame`);
+        this.log.warn(`WebsocketConnectionActor ${this.d.id}: send buffer ${buffered} > ${this.d.policy.maxBufferedBytes} — dropping frame`);
       }
       return;
     }
     try {
       this.d.socket.send(frame.data);
     } catch (err) {
-      this.log.warn(`WebSocketConnectionActor ${this.d.id}: send failed: ${(err as Error).message}`);
+      this.log.warn(`WebsocketConnectionActor ${this.d.id}: send failed: ${(err as Error).message}`);
     }
   }
 

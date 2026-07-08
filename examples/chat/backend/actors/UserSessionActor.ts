@@ -1,6 +1,6 @@
 /**
  * One actor per WebSocket connection.  The `websocket('/ws', …)` route
- * (via {@link WebSocketIngressActor}) spawns one of these per accepted
+ * (via {@link WebsocketIngressActor}) spawns one of these per accepted
  * connection and forwards decoded inbound frames to it; the actor writes
  * back through the {@link SessionConnection} it was given (the framework
  * already solved the first-frame race, so no manual listener dance).
@@ -92,7 +92,7 @@ export interface SocketClosed { readonly kind: 'socket-closed' }
 /**
  * The minimal outbound surface this actor needs — a text-frame sink and
  * a close.  The WebSocket ingress hub supplies one backed by the
- * connection's `WsConnection` (see `WebSocketIngressActor`).
+ * connection's `WebsocketConnection` (see `WebsocketIngressActor`).
  */
 export interface SessionConnection {
   sendText(text: string): void;

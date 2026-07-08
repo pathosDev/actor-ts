@@ -39,7 +39,7 @@ import type {
   Unsubscribe,
 } from '../../../../src/cluster/pubsub/Messages.js';
 import { registerStaticFiles } from '../plugins/staticFilesPlugin.js';
-import { WebSocketIngressActor } from './WebSocketIngressActor.js';
+import { WebsocketIngressActor } from './WebsocketIngressActor.js';
 import { buildRoutes } from '../routes.js';
 import type { ChatRoomCmd } from './ChatRoomActor.js';
 import type { ChatRoomDirectoryCmd } from './ChatRoomDirectoryActor.js';
@@ -127,7 +127,7 @@ export class HttpIngressActor extends Actor<never> {
     // @fastify/websocket plugin is registered automatically by the
     // backend when it sees a websocket() route.
     const ingress = system.spawn(
-      Props.create(() => new WebSocketIngressActor({
+      Props.create(() => new WebsocketIngressActor({
         chatRoomRegion: this.deps.chatRoomRegion,
         dmChannelRegion: this.deps.dmChannelRegion,
         onlineUsers: this.deps.onlineUsers,

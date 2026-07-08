@@ -1,14 +1,14 @@
 /**
  * Core WebSocket wire types + frame helpers, shared by the server-side
  * routing directive (`websocket()`), the internal per-connection session
- * actor, and the client-side `WebSocketClientActor`.
+ * actor, and the client-side `WebsocketClientActor`.
  *
  * Kept dependency-free (no actor / http imports) so every layer can pull
  * it in without a cycle.
  */
 
 /** A single WebSocket frame — either a UTF-8 text frame or a binary frame. */
-export type WsFrame =
+export type WebsocketFrame =
   | { readonly kind: 'text'; readonly data: string }
   | { readonly kind: 'binary'; readonly data: Uint8Array };
 
@@ -17,7 +17,7 @@ export type WsFrame =
  * handlers can read the path, params, query, headers and negotiated
  * subprotocol without holding a backend-specific request object.
  */
-export interface WsUpgradeInfo {
+export interface WebsocketUpgradeInfo {
   readonly path: string;
   /** Path parameters extracted from `/room/:id`-style patterns. */
   readonly params: Readonly<Record<string, string>>;
@@ -30,7 +30,7 @@ export interface WsUpgradeInfo {
 }
 
 /** Why/how a connection closed — delivered to disconnect hooks. */
-export interface WsCloseInfo {
+export interface WebsocketCloseInfo {
   readonly code: number;
   readonly reason: string;
   readonly initiatedBy: 'client' | 'server' | 'error';
@@ -44,7 +44,7 @@ export interface WsCloseInfo {
  * consumer plus one 100-MiB frame exhausts the process.  The cap is
  * enforced on the raw frame *before* the codec decodes it.
  */
-export const DEFAULT_WS_MAX_FRAME_BYTES = 1 * 1024 * 1024;
+export const DEFAULT_WEBSOCKET_MAX_FRAME_BYTES = 1 * 1024 * 1024;
 
 /**
  * UTF-8 byte length of a string without allocating a `Uint8Array`.
@@ -68,13 +68,13 @@ export function utf8ByteLength(s: string): number {
 }
 
 /** Payload size of a frame in bytes (UTF-8 length for text). */
-export function frameByteLength(frame: WsFrame): number {
+export function frameByteLength(frame: WebsocketFrame): number {
   return frame.kind === 'text' ? utf8ByteLength(frame.data) : frame.data.byteLength;
 }
 
 /**
  * Normalise a raw inbound payload from any backend socket into a
- * {@link WsFrame}.  Handles every shape the supported backends deliver:
+ * {@link WebsocketFrame}.  Handles every shape the supported backends deliver:
  *
  *   - `string`                      → text frame
  *   - `ArrayBuffer`                 → binary frame
@@ -84,7 +84,7 @@ export function frameByteLength(frame: WsFrame): number {
  *
  * Returns `null` for shapes we don't recognise (caller logs + drops).
  */
-export function normalizeInbound(data: unknown): WsFrame | null {
+export function normalizeInbound(data: unknown): WebsocketFrame | null {
   if (typeof data === 'string') return { kind: 'text', data };
   if (data instanceof ArrayBuffer) return { kind: 'binary', data: new Uint8Array(data) };
   if (data instanceof Uint8Array) return { kind: 'binary', data };
