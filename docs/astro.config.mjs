@@ -647,7 +647,6 @@ export default defineConfig({
                 { label: 'gRPC',             slug: 'io/grpc',              translations: { de: 'gRPC', es: 'gRPC', fr: 'gRPC', ja: 'gRPC', ko: 'gRPC', 'pt-BR': 'gRPC', ru: 'gRPC', 'zh-CN': 'gRPC' } },
                 { label: 'SSE',              slug: 'io/sse',               translations: { de: 'SSE', es: 'SSE', fr: 'SSE', ja: 'SSE', ko: 'SSE', 'pt-BR': 'SSE', ru: 'SSE', 'zh-CN': 'SSE' } },
                 { label: 'WebSocket client', slug: 'io/websocket',         translations: { de: 'WebSocket-Client', es: 'Cliente WebSocket', fr: 'Client WebSocket', ja: 'WebSocket クライアント', ko: 'WebSocket 클라이언트', 'pt-BR': 'Cliente WebSocket', ru: 'WebSocket-клиент', 'zh-CN': 'WebSocket 客户端' } },
-                { label: 'WebSocket server', slug: 'io/server-websocket',  translations: { de: 'WebSocket-Server', es: 'Servidor WebSocket', fr: 'Serveur WebSocket', ja: 'WebSocket サーバ', ko: 'WebSocket 서버', 'pt-BR': 'Servidor WebSocket', ru: 'WebSocket-сервер', 'zh-CN': 'WebSocket 服务端' } },
                 { label: 'TCP',              slug: 'io/tcp',               translations: { de: 'TCP', es: 'TCP', fr: 'TCP', ja: 'TCP', ko: 'TCP', 'pt-BR': 'TCP', ru: 'TCP', 'zh-CN': 'TCP' } },
                 { label: 'UDP',              slug: 'io/udp',               translations: { de: 'UDP', es: 'UDP', fr: 'UDP', ja: 'UDP', ko: 'UDP', 'pt-BR': 'UDP', ru: 'UDP', 'zh-CN': 'UDP' } },
               ],
@@ -659,6 +658,7 @@ export default defineConfig({
               items: [
                 { label: 'Overview',    slug: 'http/overview',    translations: { de: 'Überblick', es: 'Visión general', fr: 'Vue d’ensemble', ja: '概要', ko: '개요', 'pt-BR': 'Visão geral', ru: 'Обзор', 'zh-CN': '概览' } },
                 { label: 'Route DSL',   slug: 'http/route-dsl',   translations: { de: 'Route-DSL', es: 'DSL de rutas', fr: 'DSL de routes', ja: 'ルート DSL', ko: '라우트 DSL', 'pt-BR': 'DSL de rotas', ru: 'DSL маршрутов', 'zh-CN': '路由 DSL' } },
+                { label: 'WebSocket server', slug: 'http/websocket', translations: { de: 'WebSocket-Server', es: 'Servidor WebSocket', fr: 'Serveur WebSocket', ja: 'WebSocket サーバ', ko: 'WebSocket 서버', 'pt-BR': 'Servidor WebSocket', ru: 'WebSocket-сервер', 'zh-CN': 'WebSocket 服务端' } },
                 { label: 'Marshalling', slug: 'http/marshalling', translations: { de: 'Marshalling', es: 'Marshalling', fr: 'Marshalling', ja: 'マーシャリング', ko: '마샬링', 'pt-BR': 'Marshalling', ru: 'Маршалинг', 'zh-CN': '编解码' } },
                 {
                   label: 'Backends',

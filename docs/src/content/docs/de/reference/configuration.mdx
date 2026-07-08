@@ -114,7 +114,7 @@ Platziere das im Projekt-Root.  Das Framework lädt es bei
 | --- | --- | --- |
 | `http.backend` | `"fastify"` | Einer von `fastify` / `bun` / `express`. |
 | `http.shutdown-grace-period` | `5s` | Zeit, um in-flight Requests beim Shutdown leerlaufen zu lassen. |
-| `http.websocket` | *(siehe unten)* | Serverseitige WebSocket-Defaults für [`websocket()`](/de/io/server-websocket/)-Routen. |
+| `http.websocket` | *(siehe unten)* | Serverseitige WebSocket-Defaults für [`websocket()`](/de/http/websocket/)-Routen. |
 
 Serverseitige WebSocket-Routen (`websocket(path, actorRef)`) lesen
 ihre Defaults aus `actor-ts.http.websocket`:
