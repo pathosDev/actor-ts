@@ -46,6 +46,10 @@ export { entity, marshal, pickRequestSerializer, pickResponseSerializer } from '
 // HTML response helpers — escaping + the `html` tagged template (#352).
 export { escapeHtml, html, rawHtml, completeHtml, SafeHtml } from './Html.js';
 
+// Cookie parse/serialise helpers — used by CSRF, handy for handlers too.
+export { parseCookies, serializeCookie } from './cookies.js';
+export type { CookieAttributes } from './cookies.js';
+
 export { HttpClient } from './HttpClient.js';
 export type { HttpClientRequest, HttpClientResponse } from './HttpClient.js';
 
