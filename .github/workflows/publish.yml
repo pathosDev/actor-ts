@@ -81,9 +81,9 @@ jobs:
 
       - name: Publish to npm
         if: steps.version-check.outputs.already_published == 'false'
-        # Auth via a granular npm automation token in the NPM_TOKEN secret.
-        # `--provenance` still works — it signs using the workflow's OIDC
-        # id-token (`id-token: write`), independent of the publish auth.
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # Tokenless — npm Trusted Publishing via GitHub OIDC.  With
+        # `id-token: write` + a Trusted Publisher configured on npmjs.com
+        # (repo pathosDev/actor-ts, workflow publish.yml, no environment),
+        # npm ≥ 11.5.1 auto-detects the OIDC path — no NODE_AUTH_TOKEN.
+        # `--provenance` signs via the same id-token.
         run: npm publish --provenance --access public
