@@ -9,6 +9,7 @@ export {
   compile,
   defaultErrorResponse,
   del,
+  fallback,
   get,
   handleErrors,
   head,
@@ -27,6 +28,7 @@ export {
 export type {
   CompiledRoute,
   CompiledWebSocketRoute,
+  CompiledFallback,
   CompiledEndpoint,
   ExceptionHandler,
   Middleware,

@@ -42,8 +42,18 @@ export interface CompiledWebSocketRoute {
   readonly authorize: (req: HttpRequest) => Promise<HttpResponse | null>;
 }
 
-/** A compiled endpoint is either a plain HTTP route or a WebSocket route. */
-export type CompiledEndpoint = CompiledRoute | CompiledWebSocketRoute;
+/**
+ * A compiled fallback — answers any request that matched no other route.
+ * Wired to the backend's not-found hook at bind time (exactly one per
+ * server), so unlike {@link CompiledRoute} it carries no method or pattern.
+ */
+export interface CompiledFallback {
+  readonly kind: 'fallback';
+  readonly handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse;
+}
+
+/** A compiled endpoint: a plain HTTP route, a WebSocket route, or the fallback. */
+export type CompiledEndpoint = CompiledRoute | CompiledWebSocketRoute | CompiledFallback;
 
 /**
  * Per-request hook that runs around a handler.  Receives the request
@@ -81,7 +91,8 @@ export type Route =
   | { readonly kind: 'path'; readonly segment: string; readonly child: Route }
   | { readonly kind: 'concat'; readonly routes: ReadonlyArray<Route> }
   | { readonly kind: 'middleware'; readonly middleware: Middleware; readonly child: Route }
-  | { readonly kind: 'websocket'; readonly connect: WebSocketConnectHandler };
+  | { readonly kind: 'websocket'; readonly connect: WebSocketConnectHandler }
+  | { readonly kind: 'fallback'; readonly handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse };
 
 /** Compose several sibling routes (OR semantics — first matching wins). */
 export function concat(...routes: Route[]): Route {
@@ -164,6 +175,26 @@ export function handleErrors(handler: ExceptionHandler, child: Route): Route {
     }
   };
   return { kind: 'middleware', middleware, child };
+}
+
+/**
+ * Answer any request that matched no other route — the server-global
+ * not-found handler expressed in the DSL.  Wired to the backend's
+ * not-found hook at bind time, so it is method-agnostic (it also answers
+ * unmatched OPTIONS/HEAD) and MUST sit at the root of the tree: a fallback
+ * scoped under `path()` / `pathPrefix()` is rejected at compile time,
+ * because a server has exactly one not-found handler.  At most one
+ * `fallback()` per server.  It still composes with
+ * `withMiddleware()` / `handleErrors()`, which wrap its handler like any
+ * other, so a fallback can carry security headers or its own recovery.
+ *
+ *     concat(
+ *       path('api', apiRoutes),
+ *       fallback((req) => completeJson(Status.NotFound, { error: 'no route', path: req.path })),
+ *     )
+ */
+export function fallback(handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route {
+  return { kind: 'fallback', handler };
 }
 
 function normalizeSegment(s: string): string {
@@ -256,6 +287,16 @@ export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[]
     }])
     .with({ kind: 'path' }, (r) => compile(r.child, [...prefix, r.segment]))
     .with({ kind: 'concat' }, (r) => r.routes.flatMap((child) => compile(child, prefix)))
+    .with({ kind: 'fallback' }, (r): CompiledEndpoint[] => {
+      if (prefix.length > 0) {
+        throw new Error(
+          'fallback() must sit at the root of the route tree — the not-found '
+          + 'handler is server-global, so a fallback scoped under path()/'
+          + 'pathPrefix() is not supported.',
+        );
+      }
+      return [{ kind: 'fallback', handler: r.handler }];
+    })
     .with({ kind: 'middleware' }, (r): CompiledEndpoint[] => {
       // Compile the subtree, then fold the middleware in.  For HTTP
       // children it wraps the handler (nested middlewares stack
@@ -263,6 +304,12 @@ export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[]
       // the middleware runs once, against the upgrade request.
       return compile(r.child, prefix).map((c): CompiledEndpoint => {
         if (c.kind === 'http') {
+          return { ...c, handler: wrapHandler(r.middleware, c.handler) };
+        }
+        if (c.kind === 'fallback') {
+          // A fallback under middleware: wrap its handler the same way
+          // (the fallback stays root-scoped — middleware doesn't add a
+          // path prefix, so the compile-time root guard still holds).
           return { ...c, handler: wrapHandler(r.middleware, c.handler) };
         }
         const inner = c.authorize;

@@ -48,10 +48,20 @@ export interface HttpServerBackend {
   /** Start listening.  Returns a ServerBinding with the actual bound port. */
   listen(host: string, port: number): Promise<ServerBinding>;
 
-  /** Optionally register a catch-all not-found handler. */
+  /**
+   * Optional: register a method-agnostic not-found handler, invoked for
+   * any request that matched no route (including unmatched OPTIONS/HEAD).
+   * `HttpExtension` wires `fallback()` here.  If the handler throws, the
+   * backend applies its default error mapping.
+   */
   setNotFound?(handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse): void;
 
-  /** Optionally register a global error handler. */
+  /**
+   * Optional: register a last-resort error handler.  It MUST see both
+   * errors thrown by route handlers AND backend-internal errors (body
+   * parsing, etc.); if it throws, the backend falls back to its default
+   * error mapping.  `HttpExtension` wires `withErrorHandler` here.
+   */
   setErrorHandler?(handler: (err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse): void;
 
   /**

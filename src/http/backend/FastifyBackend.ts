@@ -41,6 +41,9 @@ export class FastifyBackend implements HttpServerBackend {
   private readonly app: FastifyLike;
   private readonly registered: RouteRegistration[] = [];
   private readonly wsRegistered: WebSocketRouteRegistration[] = [];
+  private userErrorHandler:
+    | ((err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse)
+    | null = null;
 
   constructor(opts: object = { logger: false }) {
     this.app = (Fastify as (o?: object) => FastifyLike)(opts);
@@ -71,7 +74,7 @@ export class FastifyBackend implements HttpServerBackend {
           const out = await route.handler(adapted);
           this.writeResponse(reply, out);
         } catch (err) {
-          this.writeError(reply, err);
+          await this.emitError(reply, adapted, err);
         }
       },
     });
@@ -93,10 +96,13 @@ export class FastifyBackend implements HttpServerBackend {
   }
 
   setErrorHandler(handler: (err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
+    // Record the handler so errors thrown by our route handlers — caught
+    // in registerRoute's try/catch, which never reaches Fastify core —
+    // route through it too.  The app-level hook still covers
+    // framework-internal errors (body-parse failures, etc.).
+    this.userErrorHandler = handler;
     this.app.setErrorHandler(async (err: unknown, req: FastifyRequest, reply: FastifyReply) => {
-      const adapted = this.adaptRequest(req);
-      const res = await handler(err, adapted);
-      this.writeResponse(reply, res);
+      await this.emitError(reply, this.adaptRequest(req), err);
     });
   }
 
@@ -262,6 +268,26 @@ export class FastifyBackend implements HttpServerBackend {
     // Plain object → JSON.
     if (!res.contentType) reply.header('content-type', 'application/json; charset=utf-8');
     reply.send(JSON.stringify(res.body));
+  }
+
+  /**
+   * Route a thrown error through the user's error handler when one is set
+   * (falling back to the default mapping if that handler itself throws),
+   * otherwise the default mapping.  Unifies the per-route catch with
+   * Fastify's framework-level hook so both honour `withErrorHandler` —
+   * matching how the Express and Hono backends already behave.
+   */
+  private async emitError(reply: FastifyReply, req: HttpRequest, err: unknown): Promise<void> {
+    if (this.userErrorHandler) {
+      try {
+        this.writeResponse(reply, await this.userErrorHandler(err, req));
+        return;
+      } catch (inner) {
+        this.writeError(reply, inner);
+        return;
+      }
+    }
+    this.writeError(reply, err);
   }
 
   private writeError(reply: FastifyReply, err: unknown): void {

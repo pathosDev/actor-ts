@@ -4,13 +4,21 @@ import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { HttpServerBackend, ServerBinding } from './backend/HttpServerBackend.js';
 import { FastifyBackend } from './backend/FastifyBackend.js';
 import { HttpClient } from './HttpClient.js';
-import { compile, type Route } from './Route.js';
+import { compile, defaultErrorResponse, type Route } from './Route.js';
 import type { HttpRequest, HttpResponse } from './types.js';
 import { ConnectionTracker, trackSocket } from './ws/ConnectionWiring.js';
 
 export interface ServerBuilder {
   /** Override the default Fastify backend (or use BunServe / Express). */
   useBackend(backend: HttpServerBackend): ServerBuilder;
+  /**
+   * Last-resort handler for errors that escape every route-level
+   * `handleErrors(...)`, plus backend-internal errors (body-parse
+   * failures, etc.).  Overrides the framework's default 500 mapping; if
+   * it throws, the default mapping still applies.  Requires a backend
+   * that supports `setErrorHandler` (all shipped backends do).
+   */
+  withErrorHandler(handler: (err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse): ServerBuilder;
   /** Register the full route tree and bind.  Returns the ServerBinding. */
   bind(routes: Route): Promise<ServerBinding>;
 }
@@ -30,10 +38,15 @@ export class HttpExtension implements Extension {
   /** Start building a new server scope.  Call `bind(routes)` to start it. */
   newServerAt(host: string, port: number): ServerBuilder {
     let backend: HttpServerBackend | null = null;
+    let errorHandler: ((err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
     const system = this.system;
     return {
       useBackend(b: HttpServerBackend): ServerBuilder {
         backend = b;
+        return this;
+      },
+      withErrorHandler(handler: (err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse): ServerBuilder {
+        errorHandler = handler;
         return this;
       },
       async bind(routes: Route): Promise<ServerBinding> {
@@ -41,6 +54,7 @@ export class HttpExtension implements Extension {
         const compiled = compile(routes);
         const httpRoutes = compiled.filter((r) => r.kind === 'http');
         const wsRoutes = compiled.filter((r) => r.kind === 'websocket');
+        const fallbacks = compiled.filter((r) => r.kind === 'fallback');
 
         if (wsRoutes.length > 0 && typeof active.registerWebSocket !== 'function') {
           throw new Error(
@@ -106,6 +120,42 @@ export class HttpExtension implements Extension {
               r.connect(system, req, trackSocket(tracker, socket));
             },
           });
+        }
+
+        // Fallback (not-found) route — at most one, wired to the backend's
+        // method-agnostic not-found hook.  Wrap it like the per-route
+        // handlers (debug log + default error mapping on throw).
+        if (fallbacks.length > 1) {
+          throw new Error(
+            'Multiple fallback() routes registered — a server has exactly one not-found handler.',
+          );
+        }
+        if (fallbacks.length === 1) {
+          if (typeof active.setNotFound !== 'function') {
+            throw new Error(
+              `HTTP backend "${active.name}" does not support fallback() routes (no setNotFound hook).`,
+            );
+          }
+          const fb = fallbacks[0]!;
+          active.setNotFound(async (req: HttpRequest): Promise<HttpResponse> => {
+            system.log.debug(`[http] (fallback) ${req.method} ${req.path}`);
+            try {
+              return await fb.handler(req);
+            } catch (err) {
+              return defaultErrorResponse(err);
+            }
+          });
+        }
+
+        // Server-wide error handler.  Backends consult it before their
+        // default mapping and fall back to that mapping if it throws.
+        if (errorHandler) {
+          if (typeof active.setErrorHandler !== 'function') {
+            throw new Error(
+              `HTTP backend "${active.name}" does not support withErrorHandler (no setErrorHandler hook).`,
+            );
+          }
+          active.setErrorHandler(errorHandler);
         }
 
         const raw = await active.listen(host, port);
