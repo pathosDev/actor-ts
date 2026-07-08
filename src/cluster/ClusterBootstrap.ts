@@ -48,7 +48,7 @@ export async function bootstrapCluster(
   const host = resolveHost(opts);
   const port = resolvePort(opts);
 
-  const system = ActorSystem.create(opts.name, extractSystemSettings(opts));
+  const system = ActorSystem.create(opts.name, extractSystemOptions(opts));
 
   const seeds = await resolveSeeds({
     explicit: opts.seeds,
@@ -117,7 +117,7 @@ function resolvePort(opts: ClusterBootstrapOptionsType): number {
   return DEFAULT_PORT;
 }
 
-function extractSystemSettings(opts: ClusterBootstrapOptionsType): ActorSystemOptions {
+function extractSystemOptions(opts: ClusterBootstrapOptionsType): ActorSystemOptions {
   const out = ActorSystemOptions.create();
   if (opts.logger) out.withLogger(opts.logger);
   if (opts.logLevel !== undefined) out.withLogLevel(opts.logLevel);

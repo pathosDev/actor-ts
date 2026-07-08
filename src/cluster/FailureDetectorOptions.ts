@@ -12,7 +12,7 @@ export interface FailureDetectorOptionsType {
 
 /**
  * Fluent builder for {@link FailureDetectorOptionsType}.  Unset fields fall
- * through to {@link defaultFailureDetectorSettings} in the consumer, so a
+ * through to {@link defaultFailureDetectorOptions} in the consumer, so a
  * bare `FailureDetectorOptions.create()` yields the defaults.
  *
  *     new FailureDetector(

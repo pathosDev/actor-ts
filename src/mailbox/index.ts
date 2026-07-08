@@ -1,10 +1,10 @@
 export { BoundedMailbox, MailboxFullError } from './BoundedMailbox.js';
 export type {
-  BoundedMailboxSettings,
+  BoundedMailboxOptionsType,
   BoundedMailboxOverflow,
 } from './BoundedMailbox.js';
 export { PriorityMailbox } from './PriorityMailbox.js';
 export type {
-  PriorityMailboxSettings,
+  PriorityMailboxOptionsType,
   PriorityFunction,
 } from './PriorityMailbox.js';

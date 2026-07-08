@@ -21,7 +21,7 @@ export interface PhiAccrualOptionsType {
 
 /**
  * Fluent builder for {@link PhiAccrualOptionsType}.  Unset fields fall
- * through to {@link defaultPhiAccrualSettings} in the constructor, so a
+ * through to {@link defaultPhiAccrualOptions} in the constructor, so a
  * bare `PhiAccrualOptions.create()` yields the defaults.
  *
  *     new PhiAccrualFailureDetector(

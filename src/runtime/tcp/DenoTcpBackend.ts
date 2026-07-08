@@ -3,7 +3,7 @@ import type {
   TcpListener,
   TcpSocketHandlers,
   TcpSocketLike,
-  TlsTransportSettings,
+  TlsTransportOptionsType,
 } from './TcpBackend.js';
 
 /**
@@ -20,7 +20,7 @@ import type {
  */
 export class DenoTcpBackend implements TcpBackend {
   async listen(opts: {
-    host: string; port: number; tls?: TlsTransportSettings; handlers: TcpSocketHandlers;
+    host: string; port: number; tls?: TlsTransportOptionsType; handlers: TcpSocketHandlers;
   }): Promise<TcpListener> {
     const deno = (globalThis as { Deno?: DenoGlobal }).Deno;
     if (!deno) throw new Error('DenoTcpBackend: globalThis.Deno is not defined');
@@ -58,7 +58,7 @@ export class DenoTcpBackend implements TcpBackend {
   }
 
   async connect(opts: {
-    host: string; port: number; tls?: TlsTransportSettings; handlers: TcpSocketHandlers;
+    host: string; port: number; tls?: TlsTransportOptionsType; handlers: TcpSocketHandlers;
   }): Promise<TcpSocketLike> {
     const deno = (globalThis as { Deno?: DenoGlobal }).Deno;
     if (!deno) throw new Error('DenoTcpBackend: globalThis.Deno is not defined');

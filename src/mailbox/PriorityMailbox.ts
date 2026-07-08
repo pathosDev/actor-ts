@@ -7,7 +7,7 @@ import { Mailbox, type Envelope } from '../internal/Mailbox.js';
  */
 export type PriorityFunction<T> = (message: T) => number;
 
-export interface PriorityMailboxSettings<T> {
+export interface PriorityMailboxOptionsType<T> {
   readonly priorityFor: PriorityFunction<T>;
 }
 
@@ -23,7 +23,7 @@ export class PriorityMailbox<T = unknown> extends Mailbox<T> {
   private seq = 0;
   private readonly ordered: Array<{ env: Envelope<T>; priority: number; seq: number }> = [];
 
-  constructor(settings: PriorityMailboxSettings<T>) {
+  constructor(settings: PriorityMailboxOptionsType<T>) {
     super();
     this.priorityFor = settings.priorityFor;
   }

@@ -57,7 +57,7 @@ import type { MemberSnapshot } from './internal/parallel-multi-node-bootstrap.js
  * `src/testkit/internal/parallel-multi-node-bootstrap.ts` for the
  * `ScenarioModule` interface.
  */
-export interface ParallelMultiNodeSpecSettings {
+export interface ParallelMultiNodeSpecOptionsType {
   readonly roles: ReadonlyArray<string>;
   readonly seedRoles?: ReadonlyArray<string>;
   /**
@@ -110,10 +110,10 @@ type ControlResponse =
 
 export class ParallelMultiNodeSpec {
   private readonly settings: Required<Omit<
-    ParallelMultiNodeSpecSettings,
+    ParallelMultiNodeSpecOptionsType,
     'addresses' | 'failureDetector' | 'scenarioModule' | 'scenarioInitDataFor' | 'bootstrapModule'
   >> & Pick<
-    ParallelMultiNodeSpecSettings,
+    ParallelMultiNodeSpecOptionsType,
     'addresses' | 'failureDetector' | 'scenarioModule' | 'scenarioInitDataFor' | 'bootstrapModule'
   >;
   private readonly nodes = new Map<string, NodeRecord>();
@@ -127,7 +127,7 @@ export class ParallelMultiNodeSpec {
     timer: ReturnType<typeof setTimeout>;
   }>();
 
-  constructor(settings: ParallelMultiNodeSpecSettings) {
+  constructor(settings: ParallelMultiNodeSpecOptionsType) {
     if (settings.roles.length === 0) {
       throw new Error('ParallelMultiNodeSpec: at least one role is required');
     }

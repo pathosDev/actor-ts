@@ -19,7 +19,7 @@ import { metricsOf } from '../metrics/MetricsExtension.js';
 import type { HealthCheckResult } from './HealthCheck.js';
 import { HealthCheckRegistry } from './HealthCheck.js';
 
-export interface ManagementRoutesSettings {
+export interface ManagementRoutesOptionsType {
   /** Set to true to allow POST /cluster/leave (requires cluster). */
   readonly enableLeaveEndpoint?: boolean;
   /**
@@ -88,7 +88,7 @@ export interface ManagementRoutesSettings {
 export function managementRoutes(
   system: ActorSystem,
   cluster: Cluster | null,
-  settings: ManagementRoutesSettings = {},
+  settings: ManagementRoutesOptionsType = {},
 ): { routes: Route; health: HealthCheckRegistry } {
   const health = new HealthCheckRegistry();
 

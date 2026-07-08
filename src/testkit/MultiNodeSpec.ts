@@ -43,7 +43,7 @@ import { MultiNodeTransport } from './internal/MultiNodeTransport.js';
  *
  *   await spec.stop();
  */
-export interface MultiNodeSpecSettings {
+export interface MultiNodeSpecOptionsType {
   /** Role names — also act as system names; must be unique within the spec. */
   readonly roles: ReadonlyArray<string>;
   /**
@@ -109,13 +109,13 @@ interface BarrierEntry {
 }
 
 export class MultiNodeSpec {
-  private readonly settings: Required<Omit<MultiNodeSpecSettings, 'addresses' | 'failureDetector' | 'downing'>>
-    & Pick<MultiNodeSpecSettings, 'addresses' | 'failureDetector' | 'downing'>;
+  private readonly settings: Required<Omit<MultiNodeSpecOptionsType, 'addresses' | 'failureDetector' | 'downing'>>
+    & Pick<MultiNodeSpecOptionsType, 'addresses' | 'failureDetector' | 'downing'>;
   private readonly nodes = new Map<string, NodeRecord>();
   private started = false;
   private readonly barriers = new Map<string, BarrierEntry>();
 
-  constructor(settings: MultiNodeSpecSettings) {
+  constructor(settings: MultiNodeSpecOptionsType) {
     if (settings.roles.length === 0) {
       throw new Error('MultiNodeSpec: at least one role is required');
     }

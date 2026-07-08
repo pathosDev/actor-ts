@@ -3,7 +3,7 @@ export {
   CircuitBreakerOpenError,
   CircuitBreakerTimeoutError,
 } from './CircuitBreaker.js';
-export type { CircuitBreakerSettings, CircuitState } from './CircuitBreaker.js';
+export type { CircuitBreakerOptionsType, CircuitState } from './CircuitBreaker.js';
 export { pipeTo } from './pipeTo.js';
 export type { PipeToOptions } from './pipeTo.js';
 export { after } from './after.js';

@@ -2,7 +2,7 @@ import { NodeAddress } from './NodeAddress.js';
 import { fromNullable, type Option } from '../util/Option.js';
 import type { FailureDetectorOptions, FailureDetectorOptionsType } from './FailureDetectorOptions.js';
 
-export const defaultFailureDetectorSettings: FailureDetectorOptionsType = {
+export const defaultFailureDetectorOptions: FailureDetectorOptionsType = {
   heartbeatIntervalMs: 500,
   unreachableAfterMs: 2_000,
   downAfterMs: 5_000,
@@ -27,7 +27,7 @@ export class FailureDetector {
 
   constructor(options: FailureDetectorOptions = {}) {
     // Unset builder fields fall through to the built-in defaults.
-    this.settings = { ...defaultFailureDetectorSettings, ...(options as Partial<FailureDetectorOptionsType>) };
+    this.settings = { ...defaultFailureDetectorOptions, ...(options as Partial<FailureDetectorOptionsType>) };
   }
 
   /** Record that a message was received from `peer` (any message counts). */

@@ -2,7 +2,7 @@ import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
 import type { Ack, Delivery } from './Messages.js';
 
-export interface ConsumerControllerSettings<T> {
+export interface ConsumerControllerOptionsType<T> {
   /**
    * Invoked for every successfully delivered (un-duplicated) message.  The
    * controller Acks AFTER the handler returns — if the handler returns a
@@ -31,7 +31,7 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
   /** producerId → dedup state. */
   private readonly dedup = new Map<string, DedupState>();
 
-  constructor(public readonly settings: ConsumerControllerSettings<T>) { super(); }
+  constructor(public readonly settings: ConsumerControllerOptionsType<T>) { super(); }
 
   override onReceive(msg: Delivery<T>): void {
     if (msg.kind !== 'reliable-delivery.delivery') return;

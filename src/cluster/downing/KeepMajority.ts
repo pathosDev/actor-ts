@@ -5,7 +5,7 @@ import {
   type DowningProvider,
 } from './DowningProvider.js';
 
-export interface KeepMajoritySettings {
+export interface KeepMajorityOptionsType {
   /** If set, only members carrying this role count toward the majority. */
   readonly role?: string;
 }
@@ -21,7 +21,7 @@ export interface KeepMajoritySettings {
  * when you run stateful and stateless nodes in the same cluster.
  */
 export class KeepMajority implements DowningProvider {
-  constructor(private readonly settings: KeepMajoritySettings = {}) {}
+  constructor(private readonly settings: KeepMajorityOptionsType = {}) {}
 
   decide(view: ClusterPartitionView): DowningDecision {
     const candidates = view.allMembers.filter((m) =>

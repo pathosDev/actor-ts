@@ -9,7 +9,7 @@ export type BoundedMailboxOverflow =
   /** Throw a MailboxFullError — caller can surface it. */
   | 'reject';
 
-export interface BoundedMailboxSettings {
+export interface BoundedMailboxOptionsType {
   readonly capacity: number;
   readonly overflow?: BoundedMailboxOverflow;
   /**
@@ -43,7 +43,7 @@ export class BoundedMailbox<T = unknown> extends Mailbox<T> {
   /** Number of messages dropped by the overflow policy — useful for metrics. */
   droppedCount = 0;
 
-  constructor(settings: BoundedMailboxSettings) {
+  constructor(settings: BoundedMailboxOptionsType) {
     super();
     if (settings.capacity < 1) throw new Error('BoundedMailbox: capacity must be >= 1');
     this.capacity = settings.capacity;

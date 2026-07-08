@@ -32,20 +32,20 @@ export type { ClusterEvent } from './ClusterEvents.js';
 export { RemoteActorRef } from './RemoteActorRef.js';
 
 export { InMemoryTransport, TcpTransport } from './Transport.js';
-export type { Transport, WireHandler, TlsTransportSettings } from './Transport.js';
+export type { Transport, WireHandler, TlsTransportOptionsType } from './Transport.js';
 export { MessageChannelTransport } from './transports/MessageChannelTransport.js';
 export type { PortLike, BrokeredMessage } from './transports/MessageChannelTransport.js';
 
 export {
   FailureDetector,
-  defaultFailureDetectorSettings,
+  defaultFailureDetectorOptions,
 } from './FailureDetector.js';
 export { FailureDetectorOptions, FailureDetectorOptionsBuilder } from './FailureDetectorOptions.js';
 export type { FailureDetectorOptionsType } from './FailureDetectorOptions.js';
 export type { FailureDecision } from './FailureDetector.js';
 export {
   PhiAccrualFailureDetector,
-  defaultPhiAccrualSettings,
+  defaultPhiAccrualOptions,
 } from './PhiAccrualFailureDetector.js';
 export { PhiAccrualOptions, PhiAccrualOptionsBuilder } from './PhiAccrualOptions.js';
 export type { PhiAccrualOptionsType } from './PhiAccrualOptions.js';
@@ -67,7 +67,7 @@ export type {
   DowningProvider,
   DowningDecision,
   ClusterPartitionView,
-  KeepMajoritySettings,
+  KeepMajorityOptionsType,
   KeepOldestOptionsType,
   StaticQuorumOptionsType,
   KeepRefereeOptionsType,

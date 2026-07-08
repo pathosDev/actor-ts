@@ -3,7 +3,7 @@ import type { ActorSystem } from '../ActorSystem.js';
 import { Props } from '../Props.js';
 import {
   ConsumerController,
-  type ConsumerControllerSettings,
+  type ConsumerControllerOptionsType,
 } from './ConsumerController.js';
 import type { ConfirmationCallback, Delivery } from './Messages.js';
 import {
@@ -42,7 +42,7 @@ export class ReliableDelivery {
   /** Spawn a ConsumerController — pass the returned ref to a ProducerController. */
   static consumer<T>(
     system: ActorSystem,
-    settings: ConsumerControllerSettings<T>,
+    settings: ConsumerControllerOptionsType<T>,
     name?: string,
   ): ConsumerHandle {
     const ref = system.spawn(

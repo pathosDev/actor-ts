@@ -1,4 +1,4 @@
-import { MultiNodeSpec, type MultiNodeSpecSettings } from './MultiNodeSpec.js';
+import { MultiNodeSpec, type MultiNodeSpecOptionsType } from './MultiNodeSpec.js';
 
 /**
  * Test fixture that boots a {@link MultiNodeSpec} ONCE per describe-
@@ -61,7 +61,7 @@ export const MultiNodeClusterFixture = {
    * skipped this block.
    */
   create(
-    settings: MultiNodeSpecSettings,
+    settings: MultiNodeSpecOptionsType,
     hooks: TestRunnerHooks,
   ): MultiNodeClusterFixture {
     let spec: MultiNodeSpec | null = null;

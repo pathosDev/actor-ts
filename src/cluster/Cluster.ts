@@ -29,7 +29,7 @@ import {
   type ClusterEvent,
 } from './ClusterEvents.js';
 import {
-  defaultFailureDetectorSettings,
+  defaultFailureDetectorOptions,
   FailureDetector,
 } from './FailureDetector.js';
 import { FailureDetectorOptions, type FailureDetectorOptionsType } from './FailureDetectorOptions.js';
@@ -119,15 +119,15 @@ export class Cluster {
     this.selfRoles = new Set(settings.roles ?? []);
     this.log = system.log.withSource(`cluster@${this.selfAddress}`);
     this.transport = settings.transport ?? new TcpTransport(this.selfAddress, this.log);
-    const fdSettings: FailureDetectorOptionsType = {
-      ...defaultFailureDetectorSettings,
+    const fdOptions: FailureDetectorOptionsType = {
+      ...defaultFailureDetectorOptions,
       ...(settings.failureDetector ?? {}),
     };
     this.failureDetector = new FailureDetector(
       FailureDetectorOptions.create()
-        .withHeartbeatIntervalMs(fdSettings.heartbeatIntervalMs)
-        .withUnreachableAfterMs(fdSettings.unreachableAfterMs)
-        .withDownAfterMs(fdSettings.downAfterMs),
+        .withHeartbeatIntervalMs(fdOptions.heartbeatIntervalMs)
+        .withUnreachableAfterMs(fdOptions.unreachableAfterMs)
+        .withDownAfterMs(fdOptions.downAfterMs),
     );
     this.gossipIntervalMs = settings.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
     this.seedRetryIntervalMs = settings.seedRetryIntervalMs ?? DEFAULT_SEED_RETRY_INTERVAL_MS;
@@ -136,7 +136,7 @@ export class Cluster {
     this.tombstoneTtlMs = settings.tombstoneTtlMs ?? DEFAULT_TOMBSTONE_TTL_MS;
     this.tombstonePruneIntervalMs = settings.tombstonePruneIntervalMs ?? DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS;
     this.tombstoneMinRetentionMs =
-      settings.tombstoneMinRetentionMs ?? 6 * fdSettings.downAfterMs;
+      settings.tombstoneMinRetentionMs ?? 6 * fdOptions.downAfterMs;
   }
 
   /** Entry point: start the cluster and attempt to contact seed nodes. */

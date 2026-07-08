@@ -199,7 +199,7 @@ export type {
   PipeToOptions,
   CancellablePromise,
   RetryOptions,
-  CircuitBreakerSettings,
+  CircuitBreakerOptionsType,
   CircuitState,
   BackoffPolicy,
   ExponentialBackoffOptions,
@@ -513,7 +513,7 @@ export {
 export type {
   ProducerControllerOptionsType,
   ProducerSend,
-  ConsumerControllerSettings,
+  ConsumerControllerOptionsType,
   ProducerHandle,
   ConsumerHandle,
   Delivery,
@@ -542,9 +542,9 @@ export {
   PriorityMailbox,
 } from './mailbox/index.js';
 export type {
-  BoundedMailboxSettings,
+  BoundedMailboxOptionsType,
   BoundedMailboxOverflow,
-  PriorityMailboxSettings,
+  PriorityMailboxOptionsType,
   PriorityFunction,
 } from './mailbox/index.js';
 
@@ -555,7 +555,7 @@ export {
   HealthCheckRegistry,
 } from './management/index.js';
 export type {
-  ManagementRoutesSettings,
+  ManagementRoutesOptionsType,
   HealthCheckFn,
   HealthCheckResult,
 } from './management/index.js';

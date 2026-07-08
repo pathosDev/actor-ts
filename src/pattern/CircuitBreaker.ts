@@ -1,6 +1,6 @@
 export type CircuitState = 'closed' | 'open' | 'half-open';
 
-export interface CircuitBreakerSettings {
+export interface CircuitBreakerOptionsType {
   /** Consecutive failures before the breaker opens.  Must be >= 1. */
   readonly maxFailures: number;
   /** How long the breaker stays open before letting a probe through.  ms. */
@@ -43,7 +43,7 @@ export class CircuitBreaker {
   private nextProbeAt = 0;
   private readonly listeners = new Set<StateListener>();
 
-  constructor(public readonly settings: CircuitBreakerSettings) {
+  constructor(public readonly settings: CircuitBreakerOptionsType) {
     if (settings.maxFailures < 1) {
       throw new Error('CircuitBreaker: maxFailures must be >= 1');
     }

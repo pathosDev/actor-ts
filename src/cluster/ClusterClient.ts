@@ -37,7 +37,7 @@
  * inherit framing, ordering, and TLS for free.
  */
 
-import { getTcpBackend, type TcpSocketLike, type TlsTransportSettings } from '../runtime/tcp/index.js';
+import { getTcpBackend, type TcpSocketLike, type TlsTransportOptionsType } from '../runtime/tcp/index.js';
 import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
@@ -84,7 +84,7 @@ export const _nextAskIdForTest = nextAskId;
 export class ClusterClient {
   private readonly contactPoints: ReadonlyArray<NodeAddress>;
   private readonly identity: NodeAddress;
-  private readonly tls: TlsTransportSettings | null;
+  private readonly tls: TlsTransportOptionsType | null;
   private readonly askTimeoutMs: number;
   private readonly log: Logger;
   private socket: TcpSocketLike | null = null;

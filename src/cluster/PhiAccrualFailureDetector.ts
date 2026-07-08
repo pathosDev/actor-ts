@@ -3,7 +3,7 @@ import type { FailureDecision } from './FailureDetector.js';
 import { fromNullable, type Option } from '../util/Option.js';
 import type { PhiAccrualOptions, PhiAccrualOptionsType } from './PhiAccrualOptions.js';
 
-export const defaultPhiAccrualSettings: PhiAccrualOptionsType = {
+export const defaultPhiAccrualOptions: PhiAccrualOptionsType = {
   heartbeatIntervalMs: 500,
   unreachableThreshold: 8,
   downThreshold: 12,
@@ -36,7 +36,7 @@ export class PhiAccrualFailureDetector {
   private readonly settings: PhiAccrualOptionsType;
 
   constructor(options: PhiAccrualOptions = {}) {
-    this.settings = { ...defaultPhiAccrualSettings, ...(options as Partial<PhiAccrualOptionsType>) };
+    this.settings = { ...defaultPhiAccrualOptions, ...(options as Partial<PhiAccrualOptionsType>) };
     if (this.settings.downThreshold <= this.settings.unreachableThreshold) {
       throw new Error('PhiAccrualFailureDetector: downThreshold must exceed unreachableThreshold');
     }

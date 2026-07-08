@@ -1,5 +1,5 @@
 export { KeepMajority } from './KeepMajority.js';
-export type { KeepMajoritySettings } from './KeepMajority.js';
+export type { KeepMajorityOptionsType } from './KeepMajority.js';
 export { KeepOldest } from './KeepOldest.js';
 export { KeepOldestOptions, KeepOldestOptionsBuilder } from './KeepOldestOptions.js';
 export type { KeepOldestOptionsType } from './KeepOldestOptions.js';

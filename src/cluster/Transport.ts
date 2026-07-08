@@ -4,7 +4,7 @@ import {
   type TcpBackend,
   type TcpListener,
   type TcpSocketLike,
-  type TlsTransportSettings,
+  type TlsTransportOptionsType,
 } from '../runtime/tcp/index.js';
 import { NodeAddress } from './NodeAddress.js';
 import {
@@ -17,7 +17,7 @@ import {
 } from './Protocol.js';
 
 export type WireHandler = (from: NodeAddress, msg: WireMessage) => void;
-export type { TlsTransportSettings };
+export type { TlsTransportOptionsType };
 
 /**
  * Lower-level networking interface consumed by the Cluster.  The TCP
@@ -70,7 +70,7 @@ export class TcpTransport implements Transport {
     readonly self: NodeAddress,
     private readonly log: Logger,
     /** Optional TLS configuration — when set, both listener and dialer use TLS. */
-    private readonly tls: TlsTransportSettings | null = null,
+    private readonly tls: TlsTransportOptionsType | null = null,
     /**
      * Per-frame size cap (security).  Frames whose length-prefix
      * exceeds this are rejected before any payload bytes are
