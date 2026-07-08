@@ -51,6 +51,12 @@ export type CompiledEndpoint = CompiledRoute | CompiledWebSocketRoute;
  * response, or call `next()` and pass its result through (optionally
  * wrapped, decorated, or re-thrown).
  *
+ * `next()` optionally takes a **replacement request** — pass one to
+ * enrich what the handler (and any inner middleware) sees, e.g. to inject
+ * a generated request id or a verified CSRF token as a header.  Omit the
+ * argument to forward the request unchanged; the two forms are otherwise
+ * identical, so existing `next()` call sites keep working.
+ *
  * Examples (all shipped in `src/http/middleware/`):
  *   - `BearerTokenAuth({ tokens })` — checks `Authorization: Bearer`,
  *     short-circuits with 401 on mismatch.
@@ -63,7 +69,7 @@ export type CompiledEndpoint = CompiledRoute | CompiledWebSocketRoute;
  */
 export type Middleware = (
   req: HttpRequest,
-  next: () => Promise<HttpResponse>,
+  next: (req?: HttpRequest) => Promise<HttpResponse>,
 ) => Promise<HttpResponse> | HttpResponse;
 
 /**
@@ -204,7 +210,7 @@ export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[]
         const inner = c.authorize;
         const authorize = async (req: HttpRequest): Promise<HttpResponse | null> => {
           try {
-            const res = await r.middleware(req, async () => (await inner(req)) ?? WS_ACCEPT);
+            const res = await r.middleware(req, async (override?: HttpRequest) => (await inner(override ?? req)) ?? WS_ACCEPT);
             // Identity: middleware passed the sentinel through → accept.
             // Any other response (short-circuit or transform) → reject.
             return res === WS_ACCEPT ? null : res;
@@ -226,7 +232,11 @@ function wrapHandler(
   handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse,
 ): (req: HttpRequest) => Promise<HttpResponse> {
   return async (req: HttpRequest): Promise<HttpResponse> => {
-    const next = async (): Promise<HttpResponse> => Promise.resolve(handler(req));
+    // `next(override?)` lets a middleware replace the request the handler
+    // (and any inner middleware) sees — the override threads through the
+    // stacked wraps because each wrap's `handler` is the next-inner one.
+    const next = async (override?: HttpRequest): Promise<HttpResponse> =>
+      Promise.resolve(handler(override ?? req));
     return Promise.resolve(middleware(req, next));
   };
 }
