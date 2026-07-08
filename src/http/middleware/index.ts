@@ -19,3 +19,8 @@ export { cors } from './Cors.js';
 export type { CorsRouteSettings } from './Cors.js';
 export { CorsOptions, CorsOptionsBuilder } from './CorsOptions.js';
 export type { CorsOptionsType, CorsOrigin } from './CorsOptions.js';
+
+// CSRF — stateless double-submit + the lightweight same-origin check.
+export { csrfProtection, requireSameOrigin, readCsrfToken } from './Csrf.js';
+export { CsrfOptions, CsrfOptionsBuilder, SameOriginOptions, SameOriginOptionsBuilder } from './CsrfOptions.js';
+export type { CsrfOptionsType, CsrfCookieOptions, SameOriginOptionsType } from './CsrfOptions.js';

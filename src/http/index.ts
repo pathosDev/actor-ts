@@ -54,6 +54,13 @@ export {
   cors,
   CorsOptions,
   CorsOptionsBuilder,
+  csrfProtection,
+  requireSameOrigin,
+  readCsrfToken,
+  CsrfOptions,
+  CsrfOptionsBuilder,
+  SameOriginOptions,
+  SameOriginOptionsBuilder,
 } from './middleware/index.js';
 export type {
   BearerTokenAuthOptions,
@@ -64,6 +71,9 @@ export type {
   SecurityHeadersOptionsType,
   CorsOptionsType,
   CorsOrigin,
+  CsrfOptionsType,
+  CsrfCookieOptions,
+  SameOriginOptionsType,
 } from './middleware/index.js';
 
 export { entity, marshal, pickRequestSerializer, pickResponseSerializer } from './Marshalling.js';
