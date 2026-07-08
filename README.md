@@ -63,7 +63,12 @@ A short tour of what's in the box:
   **WebSocket** routes: `websocket(path, actorRef)` binds a
   `WebSocketServerActor` (typed messages, `reply` / `broadcast`,
   connect/disconnect hooks); `WebSocketClientActor` is the reconnecting
-  client half.
+  client half.  Scoped error handling (`handleErrors`) + `fallback` routes;
+  a security-middleware suite (CORS, CSRF, HSTS, CSP, security headers,
+  Basic auth, request-id, timeout); HTML-escaping helpers; and
+  backend-agnostic **static file serving** (`getFromFile` /
+  `getFromDirectory` — MIME detection, conditional requests, Range,
+  directory browsing).
 - **Message brokers** — single `BrokerActor` base with Kafka, MQTT, AMQP,
   NATS, Redis-Streams, gRPC, SSE, raw TCP/UDP integrations.
   Reconnect-with-backoff, outbound buffer, subscriber fan-out are baked in.
