@@ -3,7 +3,12 @@ import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { Props } from '../../../../../src/Props.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { MqttOptions, type MqttOptionsType } from '../../../../../src/io/broker/MqttOptions.js';
+import {
+  MqttOptions,
+  MqttOptionsValidator,
+  type MqttOptionsType,
+} from '../../../../../src/io/broker/MqttOptions.js';
+import { OptionsError } from '../../../../../src/util/OptionsValidator.js';
 import { mqttJsonCodec } from '../../../../../src/io/broker/MqttCodec.js';
 import {
   MqttActor,
@@ -111,5 +116,101 @@ describe('MqttOptions HOCON merge precedence', () => {
     } finally {
       await sys.terminate();
     }
+  });
+});
+
+/* ---------------------------- value validation ----------------------- */
+
+describe('MqttOptionsValidator (direct)', () => {
+  const validate = (s: Partial<MqttOptionsType>): void => new MqttOptionsValidator().validate(s);
+
+  test('accepts valid boundary values', () => {
+    expect(() => validate({ brokerUrl: 'mqtts://h:8883', qos: 0, protocolVersion: 4, keepAlive: 0 })).not.toThrow();
+    expect(() => validate({ brokerUrl: 'ws://h/mqtt', qos: 2, protocolVersion: 5, keepAlive: 60 })).not.toThrow();
+  });
+
+  test('rejects an out-of-range qos', () => {
+    expect(() => validate({ qos: 7 as unknown as 0 })).toThrow(OptionsError);
+  });
+
+  test('rejects an unsupported protocolVersion', () => {
+    expect(() => validate({ protocolVersion: 6 as unknown as 4 })).toThrow(
+      'MqttOptions: protocolVersion must be one of 4, 5 (got 6)',
+    );
+  });
+
+  test('rejects a negative keepAlive', () => {
+    expect(() => validate({ keepAlive: -1 })).toThrow(OptionsError);
+  });
+
+  test('rejects a brokerUrl with the wrong protocol', () => {
+    expect(() => validate({ brokerUrl: 'http://h:1883' })).toThrow(OptionsError);
+  });
+
+  test('rejects a negative outboundBuffer (common broker field)', () => {
+    expect(() => validate({ outboundBuffer: -1 })).toThrow(/outboundBuffer/);
+  });
+
+  test('an unset field passes', () => {
+    expect(() => validate({ brokerUrl: 'mqtt://h:1883' })).not.toThrow();
+  });
+});
+
+describe('MqttOptions validation fires at actor start (all input paths)', () => {
+  // preStart throws are caught by supervision; wrap preStart to observe them.
+  async function captureStart(settings: MqttOptions, hocon?: object): Promise<Error | null> {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig(hocon ?? {});
+    const sys = ActorSystem.create('mqtt-opts-validate', sysOptions);
+    let captured: Error | null = null;
+    try {
+      const actor = new ProbeActor(settings);
+      const orig = actor.preStart.bind(actor);
+      actor.preStart = async (): Promise<void> => {
+        try { await orig(); }
+        catch (e) { captured = e as Error; }
+      };
+      sys.spawn(Props.create(() => actor), 'probe');
+      await sleep(30);
+    } finally {
+      await sys.terminate();
+    }
+    return captured;
+  }
+
+  test('plain-object path: invalid qos throws OptionsError', async () => {
+    const err = await captureStart({ brokerUrl: 'mqtt://h:1883', qos: 7 as unknown as 0 });
+    expect(err).toBeInstanceOf(OptionsError);
+    expect((err as OptionsError).field).toBe('qos');
+  });
+
+  test('builder path: negative keepAlive throws OptionsError', async () => {
+    const mqttOptions = MqttOptions.create()
+      .withBrokerUrl('mqtt://h:1883')
+      .withKeepAlive(-1);
+    const err = await captureStart(mqttOptions);
+    expect(err).toBeInstanceOf(OptionsError);
+    expect((err as OptionsError).field).toBe('keepAlive');
+  });
+
+  test('HOCON path: invalid protocolVersion throws OptionsError', async () => {
+    const err = await captureStart({}, {
+      'actor-ts': {
+        io: { broker: { mqtt: { brokerUrl: 'mqtt://h:1883', protocolVersion: 6 } } },
+      },
+    });
+    expect(err).toBeInstanceOf(OptionsError);
+    expect((err as OptionsError).field).toBe('protocolVersion');
+  });
+
+  test('a valid configuration starts without error', async () => {
+    const mqttOptions = MqttOptions.create()
+      .withBrokerUrl('mqtt://h:1883')
+      .withQos(1)
+      .withProtocolVersion(5);
+    const err = await captureStart(mqttOptions);
+    expect(err).toBeNull();
   });
 });

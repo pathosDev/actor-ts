@@ -28,7 +28,7 @@
  * `actor-ts.io.broker.websocket` > built-in defaults), so any field left unset
  * falls through to HOCON.
  */
-import { BrokerOptionsBuilder } from '../../io/broker/BrokerOptions.js';
+import { BrokerOptionsBuilder, BrokerOptionsValidator } from '../../io/broker/BrokerOptions.js';
 import type { BrokerCommonOptionsType } from '../../io/broker/BrokerSettings.js';
 import type { WsCodec } from './WsCodec.js';
 
@@ -90,6 +90,21 @@ export class WebSocketClientOptionsBuilder<TOut = unknown, TIn = unknown>
   /** Send a ping every `ms` to keep the connection alive.  Default: disabled. */
   withPingIntervalMs(ms: number): this {
     return this.set('pingIntervalMs', ms);
+  }
+}
+
+/** Validates resolved {@link WebSocketClientOptionsType} settings. */
+export class WebSocketClientOptionsValidator<TOut = unknown, TIn = unknown>
+  extends BrokerOptionsValidator<WebSocketClientOptionsType<TOut, TIn>> {
+  constructor() {
+    super('WebSocketClientOptions');
+  }
+  protected rules(s: Partial<WebSocketClientOptionsType<TOut, TIn>>): void {
+    this.commonRules(s);
+    this.url('url', ['ws', 'wss']);
+    this.positiveInt('maxFrameBytes');
+    this.positiveNumber('pingIntervalMs');
+    this.oneOf('onInvalidMessage', ['drop', 'hook', 'disconnect']);
   }
 }
 

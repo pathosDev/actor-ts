@@ -4,6 +4,7 @@ import {
   type DowningDecision,
   type DowningProvider,
 } from './DowningProvider.js';
+import { StaticQuorumOptionsValidator } from './StaticQuorumOptions.js';
 import type { StaticQuorumOptions, StaticQuorumOptionsType } from './StaticQuorumOptions.js';
 
 /**
@@ -19,9 +20,7 @@ export class StaticQuorum implements DowningProvider {
 
   constructor(options: StaticQuorumOptions) {
     this.settings = options as StaticQuorumOptionsType;
-    if (this.settings.quorumSize < 1) {
-      throw new Error('StaticQuorum: quorumSize must be >= 1');
-    }
+    new StaticQuorumOptionsValidator().validate(this.settings);
   }
 
   decide(view: ClusterPartitionView): DowningDecision {

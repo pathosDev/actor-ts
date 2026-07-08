@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { OptionsValidator } from '../util/OptionsValidator.js';
 
 /** Plain settings-object shape accepted by a {@link DnsSeedProvider}. */
 export interface DnsSeedProviderOptionsType {
@@ -73,6 +74,20 @@ export class DnsSeedProviderOptionsBuilder extends OptionsBuilder<DnsSeedProvide
   /** In-process TTL cache for DNS lookups.  Default 60_000 ms; `0` disables. */
   withCacheTtlMs(cacheTtlMs: number): this {
     return this.set('cacheTtlMs', cacheTtlMs);
+  }
+}
+
+/**
+ * Validates resolved {@link DnsSeedProviderOptionsType} settings.  `cacheTtlMs`
+ * must be non-negative (0 disables caching); failures here are a
+ * misconfiguration, not a transient DNS problem.
+ */
+export class DnsSeedProviderOptionsValidator extends OptionsValidator<DnsSeedProviderOptionsType> {
+  constructor() {
+    super('DnsSeedProviderOptions');
+  }
+  protected rules(_s: Partial<DnsSeedProviderOptionsType>): void {
+    this.nonNegativeNumber('cacheTtlMs');
   }
 }
 

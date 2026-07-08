@@ -3,6 +3,7 @@ import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { Config } from '../../config/Config.js';
 import type { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import type { OptionsValidator } from '../../util/OptionsValidator.js';
 import {
   BrokerBufferOverflow,
   BrokerConnected,
@@ -110,6 +111,17 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
 
   /** Subclass: list of fields that MUST be present in the resolved settings. */
   protected abstract requiredSettings(): ReadonlyArray<keyof S>;
+
+  /**
+   * Subclass: validator for the resolved settings, run once at `preStart`
+   * (after the required-field check).  Default: no value validation.  Return
+   * a `new XOptionsValidator()` to enforce field/cross-field rules on the
+   * merged settings, regardless of whether they came from the builder, a
+   * plain object, or HOCON.
+   */
+  protected optionsValidator(): OptionsValidator<S> | undefined {
+    return undefined;
+  }
 
   /** Subclass: human-readable label for the connection (used in events). */
   protected abstract endpointLabel(): string;
@@ -238,6 +250,9 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
   override async preStart(): Promise<void> {
     this._settings = this._resolveSettings();
     await this._validateRequired();
+    // Value validation runs after the required-field check so a missing
+    // field still surfaces as BrokerSettingsError, not a rule failure.
+    this.optionsValidator()?.validate(this._settings!);
     await this._beginConnect();
   }
 

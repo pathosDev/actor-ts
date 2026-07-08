@@ -3,7 +3,7 @@ export { ConfigSeedProvider, seedsFromEnv } from './ConfigSeedProvider.js';
 export { ConfigSeedProviderOptions, ConfigSeedProviderOptionsBuilder } from './ConfigSeedProviderOptions.js';
 export type { ConfigSeedProviderOptionsType } from './ConfigSeedProviderOptions.js';
 export { DnsSeedProvider } from './DnsSeedProvider.js';
-export { DnsSeedProviderOptions, DnsSeedProviderOptionsBuilder } from './DnsSeedProviderOptions.js';
+export { DnsSeedProviderOptions, DnsSeedProviderOptionsBuilder, DnsSeedProviderOptionsValidator } from './DnsSeedProviderOptions.js';
 export type { DnsSeedProviderOptionsType } from './DnsSeedProviderOptions.js';
 export { AggregateSeedProvider } from './AggregateSeedProvider.js';
 export { KubernetesApiSeedProvider } from './KubernetesApiSeedProvider.js';

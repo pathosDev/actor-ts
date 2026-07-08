@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { RedisClientLike } from './RedisCache.js';
 
 /** Plain settings-object shape accepted by a {@link RedisCache}. */
@@ -68,6 +69,25 @@ export class RedisCacheOptionsBuilder extends OptionsBuilder<RedisCacheOptionsTy
   /** Pre-built ioredis client — bypass internal construction (connection sharing, Cluster). */
   withClient(client: RedisClientLike): this {
     return this.set('client', client);
+  }
+}
+
+/**
+ * Validates resolved {@link RedisCacheOptionsType} settings: a valid Redis
+ * `url`, a well-ranged `port` / logical `db`, and the documented
+ * mutual-exclusivity of `url` with `host`/`port`.
+ */
+export class RedisCacheOptionsValidator extends OptionsValidator<RedisCacheOptionsType> {
+  constructor() {
+    super('RedisCacheOptions');
+  }
+  protected rules(s: Partial<RedisCacheOptionsType>): void {
+    this.url('url', ['redis', 'rediss']);
+    this.port('port');
+    this.nonNegativeInt('db');
+    if (s.url !== undefined && (s.host !== undefined || s.port !== undefined)) {
+      this.fail('url', 'is mutually exclusive with host/port');
+    }
   }
 }
 

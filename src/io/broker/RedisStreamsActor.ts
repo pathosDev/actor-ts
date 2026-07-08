@@ -3,6 +3,7 @@ import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
+import { RedisStreamsOptionsValidator } from './RedisStreamsOptions.js';
 import type { RedisStreamsOptions, RedisStreamsOptionsType } from './RedisStreamsOptions.js';
 
 /** Inbound entry from a Redis stream. */
@@ -62,6 +63,7 @@ export class RedisStreamsActor
     return out;
   }
   protected requiredSettings(): ReadonlyArray<keyof RedisStreamsOptionsType> { return ['url']; }
+  protected override optionsValidator(): RedisStreamsOptionsValidator { return new RedisStreamsOptionsValidator(); }
   protected endpointLabel(): string { return this.settings.url ?? '<unknown>'; }
 
   protected async connectImpl(): Promise<void> {

@@ -9,6 +9,39 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Added — Options validation
+
+- **`OptionsValidator` + `OptionsError`** (#274) — a declarative-but-code
+  validator layer for the `XOptions` pattern.  Each options file with
+  constrained fields exports an `XOptionsValidator` (`extends
+  OptionsValidator<XOptionsType>`, brokers via `BrokerOptionsValidator`) whose
+  `rules(s)` uses typo-checked, no-op-on-`undefined` helpers (`port`,
+  `positiveNumber`, `positiveInt`, `nonNegativeInt`, `oneOf`, `nonEmptyString`,
+  `url`, …) plus `fail(field, reason, value)` for cross-field rules.  Validation
+  runs **once at consume time on the merged settings**, so builder, plain-object,
+  and HOCON inputs are all checked and cross-field rules see the final values —
+  broker actors via the `optionsValidator()` hook (in `preStart`, after the
+  required-field check), non-broker consumers via one
+  `new XOptionsValidator().validate(settings)` call in their constructor.
+- **Validators shipped for**: every broker (MQTT, Kafka, AMQP, Redis Streams,
+  NATS, JetStream, SSE, TCP, UDP, gRPC client) and the WebSocket client; plus
+  cluster failure detectors (`PhiAccrual`, `FailureDetector`), `ClusterClient`,
+  `ClusterClientReceptionist`, `StaticQuorum`, sharding (`Sharding`,
+  `ShardedDaemonProcess`), leases (`Lease`, `KubernetesLease`), caches
+  (`RedisCache`, `CachedSnapshotStore`), `DnsSeedProvider`, the Express/Hono HTTP
+  backends, `WorkerCluster`, and delivery `ProducerController`.
+
+### Changed
+
+- **BREAKING** (#274) — invalid **option values** now throw `OptionsError` at
+  construction / actor start instead of a bare `Error` (or, previously, going
+  unchecked on the builder/plain-object path).  Notably MQTT `protocolVersion`
+  outside `{4, 5}` now throws `OptionsError` on **all** input paths (previously
+  only the HOCON path threw, as a bare `Error`).  *Migration:* catch
+  `OptionsError` (exported from the package root) where you previously matched
+  the ad-hoc `Error` message.  Missing **required** broker settings still throw
+  `BrokerSettingsError`; malformed HOCON still throws `ConfigError`.
+
 ## [0.10.0] — 2026-07-08
 
 ### Added — Typed WebSocket & MQTT

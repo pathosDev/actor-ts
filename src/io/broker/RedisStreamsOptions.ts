@@ -6,7 +6,7 @@
  * and feeds the same three-layer merge (constructor > HOCON under
  * `actor-ts.io.broker.redisStreams` > built-in defaults).
  */
-import { BrokerOptionsBuilder } from './BrokerOptions.js';
+import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
 import type { BrokerCommonOptionsType } from './BrokerSettings.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { RedisStreamEntry } from './RedisStreamsActor.js';
@@ -58,6 +58,18 @@ export class RedisStreamsOptionsBuilder extends BrokerOptionsBuilder<RedisStream
   /** Subscriber for inbound entries.  Required to consume. */
   withTarget(target: ActorRef<RedisStreamEntry>): this {
     return this.set('target', target);
+  }
+}
+
+/** Validates resolved {@link RedisStreamsOptionsType} settings. */
+export class RedisStreamsOptionsValidator extends BrokerOptionsValidator<RedisStreamsOptionsType> {
+  constructor() {
+    super('RedisStreamsOptions');
+  }
+  protected rules(s: Partial<RedisStreamsOptionsType>): void {
+    this.commonRules(s);
+    this.url('url', ['redis', 'rediss']);
+    this.nonNegativeInt('blockMs'); // 0 = block indefinitely (Redis XREAD semantics)
   }
 }
 

@@ -4,7 +4,7 @@ export { KeepOldest } from './KeepOldest.js';
 export { KeepOldestOptions, KeepOldestOptionsBuilder } from './KeepOldestOptions.js';
 export type { KeepOldestOptionsType } from './KeepOldestOptions.js';
 export { StaticQuorum } from './StaticQuorum.js';
-export { StaticQuorumOptions, StaticQuorumOptionsBuilder } from './StaticQuorumOptions.js';
+export { StaticQuorumOptions, StaticQuorumOptionsBuilder, StaticQuorumOptionsValidator } from './StaticQuorumOptions.js';
 export type { StaticQuorumOptionsType } from './StaticQuorumOptions.js';
 export { KeepReferee } from './KeepReferee.js';
 export { KeepRefereeOptions, KeepRefereeOptionsBuilder } from './KeepRefereeOptions.js';

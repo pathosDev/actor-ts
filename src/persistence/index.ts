@@ -28,7 +28,7 @@ export { SqliteSnapshotStore } from './snapshot-stores/SqliteSnapshotStore.js';
 export { SqliteSnapshotStoreOptions, SqliteSnapshotStoreOptionsBuilder } from './snapshot-stores/SqliteSnapshotStoreOptions.js';
 export type { SqliteSnapshotStoreOptionsType } from './snapshot-stores/SqliteSnapshotStoreOptions.js';
 export { CachedSnapshotStore } from './snapshot-stores/CachedSnapshotStore.js';
-export { CachedSnapshotStoreOptions, CachedSnapshotStoreOptionsBuilder } from './snapshot-stores/CachedSnapshotStoreOptions.js';
+export { CachedSnapshotStoreOptions, CachedSnapshotStoreOptionsBuilder, CachedSnapshotStoreOptionsValidator } from './snapshot-stores/CachedSnapshotStoreOptions.js';
 export type { CachedSnapshotStoreOptionsType } from './snapshot-stores/CachedSnapshotStoreOptions.js';
 
 // Cassandra / ScyllaDB plug-in (same CQL protocol — one plug-in).

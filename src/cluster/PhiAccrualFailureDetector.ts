@@ -1,6 +1,7 @@
 import { NodeAddress } from './NodeAddress.js';
 import type { FailureDecision } from './FailureDetector.js';
 import { fromNullable, type Option } from '../util/Option.js';
+import { PhiAccrualOptionsValidator } from './PhiAccrualOptions.js';
 import type { PhiAccrualOptions, PhiAccrualOptionsType } from './PhiAccrualOptions.js';
 
 export const defaultPhiAccrualSettings: PhiAccrualOptionsType = {
@@ -37,12 +38,7 @@ export class PhiAccrualFailureDetector {
 
   constructor(options: PhiAccrualOptions = {}) {
     this.settings = { ...defaultPhiAccrualSettings, ...(options as Partial<PhiAccrualOptionsType>) };
-    if (this.settings.downThreshold <= this.settings.unreachableThreshold) {
-      throw new Error('PhiAccrualFailureDetector: downThreshold must exceed unreachableThreshold');
-    }
-    if (this.settings.maxSampleSize < 1) {
-      throw new Error('PhiAccrualFailureDetector: maxSampleSize must be >= 1');
-    }
+    new PhiAccrualOptionsValidator().validate(this.settings);
   }
 
   get interval(): number { return this.settings.heartbeatIntervalMs; }

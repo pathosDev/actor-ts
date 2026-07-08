@@ -40,14 +40,14 @@ export {
   FailureDetector,
   defaultFailureDetectorSettings,
 } from './FailureDetector.js';
-export { FailureDetectorOptions, FailureDetectorOptionsBuilder } from './FailureDetectorOptions.js';
+export { FailureDetectorOptions, FailureDetectorOptionsBuilder, FailureDetectorOptionsValidator } from './FailureDetectorOptions.js';
 export type { FailureDetectorOptionsType } from './FailureDetectorOptions.js';
 export type { FailureDecision } from './FailureDetector.js';
 export {
   PhiAccrualFailureDetector,
   defaultPhiAccrualSettings,
 } from './PhiAccrualFailureDetector.js';
-export { PhiAccrualOptions, PhiAccrualOptionsBuilder } from './PhiAccrualOptions.js';
+export { PhiAccrualOptions, PhiAccrualOptionsBuilder, PhiAccrualOptionsValidator } from './PhiAccrualOptions.js';
 export type { PhiAccrualOptionsType } from './PhiAccrualOptions.js';
 
 // Split-Brain Resolver strategies.
@@ -116,11 +116,11 @@ export { ClusterSharding } from './sharding/ClusterSharding.js';
 export { StartShardingOptions, StartShardingOptionsBuilder } from './sharding/StartShardingOptions.js';
 export type { StartShardingOptionsType } from './sharding/StartShardingOptions.js';
 export { ShardedDaemonProcess } from './sharding/ShardedDaemonProcess.js';
-export { ShardedDaemonProcessOptions, ShardedDaemonProcessOptionsBuilder } from './sharding/ShardedDaemonProcessOptions.js';
+export { ShardedDaemonProcessOptions, ShardedDaemonProcessOptionsBuilder, ShardedDaemonProcessOptionsValidator } from './sharding/ShardedDaemonProcessOptions.js';
 export type { ShardedDaemonProcessOptionsType } from './sharding/ShardedDaemonProcessOptions.js';
 export type { ShardedDaemonProcessHandle } from './sharding/ShardedDaemonProcess.js';
 export { ShardRegion } from './sharding/ShardRegion.js';
-export { ShardingOptions, ShardingOptionsBuilder } from './sharding/ShardingOptions.js';
+export { ShardingOptions, ShardingOptionsBuilder, ShardingOptionsValidator } from './sharding/ShardingOptions.js';
 export type { ShardingOptionsType } from './sharding/ShardingOptions.js';
 export { ShardCoordinator } from './sharding/ShardCoordinator.js';
 export { ShardCoordinatorOptions, ShardCoordinatorOptionsBuilder } from './sharding/ShardCoordinatorOptions.js';
@@ -162,13 +162,13 @@ export type {
 
 // Outside-in client (#86).
 export { ClusterClient } from './ClusterClient.js';
-export { ClusterClientOptions, ClusterClientOptionsBuilder } from './ClusterClientOptions.js';
+export { ClusterClientOptions, ClusterClientOptionsBuilder, ClusterClientOptionsValidator } from './ClusterClientOptions.js';
 export type { ClusterClientOptionsType } from './ClusterClientOptions.js';
 export {
   ClusterClientReceptionist,
   ClusterClientReceptionistId,
 } from './ClusterClientReceptionist.js';
-export { ClusterClientReceptionistOptions, ClusterClientReceptionistOptionsBuilder } from './ClusterClientReceptionistOptions.js';
+export { ClusterClientReceptionistOptions, ClusterClientReceptionistOptionsBuilder, ClusterClientReceptionistOptionsValidator } from './ClusterClientReceptionistOptions.js';
 export type { ClusterClientReceptionistOptionsType } from './ClusterClientReceptionistOptions.js';
 export type {
   ClusterClientEnvelopeMsg,

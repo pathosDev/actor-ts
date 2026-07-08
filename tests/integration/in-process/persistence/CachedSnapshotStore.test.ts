@@ -4,6 +4,7 @@ import { CachedSnapshotStore } from '../../../../src/persistence/snapshot-stores
 import { CachedSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/CachedSnapshotStoreOptions.js';
 import { InMemorySnapshotStore } from '../../../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
 import type { SnapshotStore } from '../../../../src/persistence/SnapshotStore.js';
+import { OptionsError } from '../../../../src/util/OptionsValidator.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -133,11 +134,19 @@ describe('CachedSnapshotStore — config guards', () => {
     const ttlZeroOptions = CachedSnapshotStoreOptions.create()
       .withCache(cache)
       .withTtlMs(0);
-    expect(() => new CachedSnapshotStore(inner, ttlZeroOptions)).toThrow();
+    expect(() => new CachedSnapshotStore(inner, ttlZeroOptions)).toThrow(OptionsError);
     const ttlNegativeOptions = CachedSnapshotStoreOptions.create()
       .withCache(cache)
       .withTtlMs(-1);
-    expect(() => new CachedSnapshotStore(inner, ttlNegativeOptions)).toThrow();
+    expect(() => new CachedSnapshotStore(inner, ttlNegativeOptions)).toThrow(OptionsError);
+  });
+
+  test('rejects a missing cache', () => {
+    const inner = new InMemorySnapshotStore();
+    // No withCache() — the backing cache is required.
+    const noCacheOptions = CachedSnapshotStoreOptions.create().withTtlMs(1000);
+    expect(() => new CachedSnapshotStore(inner, noCacheOptions)).toThrow(OptionsError);
+    expect(() => new CachedSnapshotStore(inner, noCacheOptions)).toThrow(/cache is required/);
   });
 
   test('keyPrefix is honoured', async () => {

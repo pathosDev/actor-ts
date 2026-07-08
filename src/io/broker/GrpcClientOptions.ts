@@ -6,7 +6,7 @@
  * and feeds the same three-layer merge (constructor > HOCON under
  * `actor-ts.io.broker.grpc.client` > built-in defaults).
  */
-import { BrokerOptionsBuilder } from './BrokerOptions.js';
+import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
 import type { BrokerCommonOptionsType } from './BrokerSettings.js';
 import type { GrpcCredentials } from './GrpcClientActor.js';
 
@@ -58,6 +58,17 @@ export class GrpcClientOptionsBuilder extends BrokerOptionsBuilder<GrpcClientOpt
   /** Per-call deadline in ms.  Default 30000. */
   withDeadlineMs(ms: number): this {
     return this.set('deadlineMs', ms);
+  }
+}
+
+/** Validates resolved {@link GrpcClientOptionsType} settings. */
+export class GrpcClientOptionsValidator extends BrokerOptionsValidator<GrpcClientOptionsType> {
+  constructor() {
+    super('GrpcClientOptions');
+  }
+  protected rules(_s: Partial<GrpcClientOptionsType>): void {
+    this.commonRules(_s);
+    this.positiveNumber('deadlineMs');
   }
 }
 

@@ -46,6 +46,7 @@ import type {
   ClusterClientEnvelopeMsg,
   ClusterClientReplyMsg,
 } from './ClusterClientReceptionist.js';
+import { ClusterClientOptionsValidator } from './ClusterClientOptions.js';
 import type { ClusterClientOptions, ClusterClientOptionsType } from './ClusterClientOptions.js';
 
 interface PendingAsk {
@@ -101,9 +102,7 @@ export class ClusterClient {
   constructor(options: ClusterClientOptions) {
     const settings = options as ClusterClientOptionsType;
     this.settings = settings;
-    if (!settings.contactPoints || settings.contactPoints.length === 0) {
-      throw new Error('ClusterClient: contactPoints must contain at least one entry');
-    }
+    new ClusterClientOptionsValidator().validate(settings);
     const sysName = settings.systemName ?? 'cluster-client';
     this.contactPoints = settings.contactPoints.map((s) => {
       const withSys = s.includes('@') ? s : `${sysName}@${s}`;

@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { OptionsValidator } from '../util/OptionsValidator.js';
 
 /**
  * Plain settings-object shape shared by every {@link Lease} backend — the
@@ -71,6 +72,49 @@ export class LeaseOptionsBuilder<T extends LeaseOptionsType = LeaseOptionsType> 
   /** Delay between acquire retries. */
   withAcquireRetryDelayMs(acquireRetryDelayMs: number): this {
     return this.set('acquireRetryDelayMs' as keyof T, acquireRetryDelayMs as T[keyof T]);
+  }
+}
+
+/**
+ * Validates resolved lease settings.  Generic over `T extends LeaseOptionsType`
+ * so `KubernetesLeaseOptionsValidator` can extend it; the shared fields are
+ * checked imperatively in {@link commonRules} (a cast to `LeaseOptionsType`
+ * sidesteps the generic-key friction, mirroring `BrokerOptionsValidator`).
+ * Only present values are checked — an unset optional passes.
+ */
+export class LeaseOptionsValidator<T extends LeaseOptionsType = LeaseOptionsType> extends OptionsValidator<T> {
+  constructor(optionsName = 'LeaseOptions') {
+    super(optionsName);
+  }
+  protected rules(s: Partial<T>): void {
+    this.commonRules(s);
+  }
+  protected commonRules(s: Partial<T>): void {
+    const c = s as Partial<LeaseOptionsType>;
+    if (c.name !== undefined && (typeof c.name !== 'string' || c.name.length === 0)) {
+      this.fail('name', 'must be a non-empty string', c.name);
+    }
+    if (c.owner !== undefined && (typeof c.owner !== 'string' || c.owner.length === 0)) {
+      this.fail('owner', 'must be a non-empty string', c.owner);
+    }
+    if (c.ttlMs !== undefined && (typeof c.ttlMs !== 'number' || !Number.isFinite(c.ttlMs) || c.ttlMs <= 0)) {
+      this.fail('ttlMs', 'must be a positive finite number', c.ttlMs);
+    }
+    if (
+      c.renewalIntervalMs !== undefined &&
+      (typeof c.renewalIntervalMs !== 'number' || !Number.isFinite(c.renewalIntervalMs) || c.renewalIntervalMs <= 0)
+    ) {
+      this.fail('renewalIntervalMs', 'must be a positive finite number', c.renewalIntervalMs);
+    }
+    if (c.acquireRetries !== undefined && (!Number.isInteger(c.acquireRetries) || c.acquireRetries < 0)) {
+      this.fail('acquireRetries', 'must be an integer >= 0', c.acquireRetries);
+    }
+    if (
+      c.acquireRetryDelayMs !== undefined &&
+      (typeof c.acquireRetryDelayMs !== 'number' || !Number.isFinite(c.acquireRetryDelayMs) || c.acquireRetryDelayMs < 0)
+    ) {
+      this.fail('acquireRetryDelayMs', 'must be a non-negative finite number', c.acquireRetryDelayMs);
+    }
   }
 }
 

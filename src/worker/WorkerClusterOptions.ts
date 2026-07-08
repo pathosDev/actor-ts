@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { RestartPolicy } from './WorkerCluster.js';
 
 /** Plain settings-object shape accepted by {@link WorkerCluster.spawn}. */
@@ -70,6 +71,21 @@ export class WorkerClusterOptionsBuilder extends OptionsBuilder<WorkerClusterOpt
   /** How long to wait for a worker's ready handshake before failing.  Default: 10000ms. */
   withReadyTimeoutMs(readyTimeoutMs: number): this {
     return this.set('readyTimeoutMs', readyTimeoutMs);
+  }
+}
+
+/** Validates resolved {@link WorkerClusterOptionsType} settings. */
+export class WorkerClusterOptionsValidator extends OptionsValidator<WorkerClusterOptionsType> {
+  constructor() {
+    super('WorkerClusterOptions');
+  }
+  protected rules(s: Partial<WorkerClusterOptionsType>): void {
+    // workers is `number | 'auto'`, so the field-name helpers can't address it.
+    if (s.workers !== undefined && s.workers !== 'auto' && (!Number.isInteger(s.workers) || s.workers < 1)) {
+      this.fail('workers', "must be a positive integer or 'auto'", s.workers);
+    }
+    this.port('basePort');
+    this.positiveNumber('readyTimeoutMs');
   }
 }
 

@@ -158,11 +158,35 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   HOCON leaf `x` (e.g. `withQos` ⇔ `qos`, never `defaultQos`). Multi-arg sugar
   is fine when the field still matches the stem (`withCredentials(u, p)` → field
   `credentials`; `withCircuitBreaker(f, r)` → field `circuitBreaker`).
+- **An optional fourth export, `XOptionsValidator`**, when the options have
+  fields with real constraints (ports, positive durations/counts, byte sizes,
+  enums, non-empty strings/arrays, URLs, cross-field rules). It `extends
+  OptionsValidator<XOptionsType>` (broker actors via
+  `BrokerOptionsValidator<XOptionsType>`) and implements `rules(s)` with the
+  protected check helpers (`port`, `positiveNumber`, `positiveInt`,
+  `nonNegativeInt`, `oneOf`, `nonEmptyString`, `url`, …) plus `fail(field,
+  reason, value)` for cross-field/bespoke rules. Helpers take **only the field
+  name** (typo-checked against `XOptionsType`) and are a **no-op on `undefined`**
+  — an unset optional always passes; required-ness stays where it was
+  (`BrokerActor.requiredSettings()` / an explicit guard). Options that are all
+  booleans / strings / callbacks get no validator. Rejections throw
+  `OptionsError` (source-agnostic — distinct from `BrokerSettingsError` for
+  missing required fields and `ConfigError` for malformed HOCON).
+  - **Validation runs once, at consume time, on the merged settings**, so the
+    builder, a plain object, and HOCON are all covered and cross-field rules see
+    the final values. Broker actors return `new XOptionsValidator()` from the
+    `optionsValidator()` hook (run in `preStart` after the required-field check);
+    non-broker consumers call `new XOptionsValidator().validate(settings)` once in
+    their constructor, right after the defaults spread. This is not a `resolve`
+    helper — the merge stays a plain spread; validation is a separate void
+    assertion. `OptionsBuilder` has no set-time validation.
 - **All option-relevant types are co-located in `XOptions.ts`** — including the
-  `XOptionsType` interface (the config contract read by `readSettingsFromConfig`).
-  The functional file (actor/store/factory) imports `XOptions` + `XOptionsType`
-  **type-only** from `./XOptions.js`; both directions are `import type`, so there
-  is no runtime cycle.
+  `XOptionsType` interface (the config contract read by `readSettingsFromConfig`)
+  and, when present, the `XOptionsValidator` class. The functional file
+  (actor/store/factory) imports the type contracts (`XOptions` + `XOptionsType`)
+  **type-only** from `./XOptions.js`, and — when it validates — additionally
+  **value-imports** `XOptionsValidator`. There is no runtime cycle: `XOptions.ts`
+  never imports the functional file, so the value edge only runs one way.
 - **A builder *is* its settings.** `OptionsBuilder.set` writes each field as an
   own enumerable property, so a builder instance is structurally a bag of the
   fields you set (the `withX` / `build` methods stay on the prototype and never

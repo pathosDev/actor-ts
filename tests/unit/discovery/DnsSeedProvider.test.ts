@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { DnsSeedProvider } from '../../../src/discovery/DnsSeedProvider.js';
 import { DnsSeedProviderOptions } from '../../../src/discovery/DnsSeedProviderOptions.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -117,7 +118,7 @@ describe('DnsSeedProvider — TTL cache', () => {
       return new DnsSeedProvider(
       dnsOptions,
     );
-    }).toThrow();
+    }).toThrow(OptionsError);
   });
 
   test('invalidateCacheForTest() forces re-lookup', async () => {

@@ -6,7 +6,7 @@
  * and feeds the same three-layer merge (constructor > HOCON under
  * `actor-ts.io.broker.sse` > built-in defaults).
  */
-import { BrokerOptionsBuilder } from './BrokerOptions.js';
+import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
 import type { BrokerCommonOptionsType } from './BrokerSettings.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { SseEvent } from './SseActor.js';
@@ -39,6 +39,17 @@ export class SseOptionsBuilder extends BrokerOptionsBuilder<SseOptionsType> {
   /** Subscriber for inbound events.  Required. */
   withTarget(target: ActorRef<SseEvent>): this {
     return this.set('target', target);
+  }
+}
+
+/** Validates resolved {@link SseOptionsType} settings. */
+export class SseOptionsValidator extends BrokerOptionsValidator<SseOptionsType> {
+  constructor() {
+    super('SseOptions');
+  }
+  protected rules(s: Partial<SseOptionsType>): void {
+    this.commonRules(s);
+    this.url('url', ['http', 'https']);
   }
 }
 

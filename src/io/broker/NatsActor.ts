@@ -4,6 +4,7 @@ import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
+import { NatsOptionsValidator } from './NatsOptions.js';
 import type { NatsOptions, NatsOptionsType } from './NatsOptions.js';
 
 /** Inbound NATS message handed to subscribers. */
@@ -50,6 +51,7 @@ export class NatsActor extends BrokerActor<NatsOptionsType, NatsCmd, NatsPublish
     return out;
   }
   protected requiredSettings(): ReadonlyArray<keyof NatsOptionsType> { return ['servers']; }
+  protected override optionsValidator(): NatsOptionsValidator { return new NatsOptionsValidator(); }
   protected endpointLabel(): string {
     const s = this.settings.servers;
     if (Array.isArray(s)) return s.join(',');

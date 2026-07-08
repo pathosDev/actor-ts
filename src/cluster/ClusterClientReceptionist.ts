@@ -46,6 +46,7 @@ import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
 import type { WireMessage } from './Protocol.js';
 import type { Cluster } from './Cluster.js';
+import { ClusterClientReceptionistOptionsValidator } from './ClusterClientReceptionistOptions.js';
 import type { ClusterClientReceptionistOptions, ClusterClientReceptionistOptionsType } from './ClusterClientReceptionistOptions.js';
 
 /* ============================ wire shapes =========================== */
@@ -92,6 +93,7 @@ export class ClusterClientReceptionist implements Extension {
     }
     this._cluster = cluster;
     const settings = (options as ClusterClientReceptionistOptionsType);
+    new ClusterClientReceptionistOptionsValidator().validate(settings);
     const askTimeoutMs = settings.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
     const log = this.system.log.withSource(`cluster-client-receptionist@${cluster.selfAddress}`);
 

@@ -24,6 +24,7 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { BrokerActor, type OutboundEnvelope } from '../../io/broker/BrokerActor.js';
 import { jsonCodec, WsDecodeError, type WsCodec } from './WsCodec.js';
+import { WebSocketClientOptionsValidator } from './WebSocketClientOptions.js';
 import type { WebSocketClientOptions, WebSocketClientOptionsType } from './WebSocketClientOptions.js';
 import {
   WsClientConnected,
@@ -112,6 +113,9 @@ export abstract class WebSocketClientActor<TOut, TIn, TSelf = never>
   protected configKey(): string { return ConfigKeys.io.broker.websocket; }
   protected builtInDefaults(): Partial<WebSocketClientOptionsType<TOut, TIn>> { return {}; }
   protected requiredSettings(): ReadonlyArray<keyof WebSocketClientOptionsType<TOut, TIn>> { return ['url']; }
+  protected override optionsValidator(): WebSocketClientOptionsValidator<TOut, TIn> {
+    return new WebSocketClientOptionsValidator<TOut, TIn>();
+  }
   protected endpointLabel(): string { return this.settings.url ?? '<unknown>'; }
 
   protected readSettingsFromConfig(c: Config): Partial<WebSocketClientOptionsType<TOut, TIn>> {
