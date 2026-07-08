@@ -25,6 +25,33 @@ function coerceWsData(data: unknown): string | Uint8Array {
   return new Uint8Array(0);
 }
 
+/**
+ * True when a declared `Content-Length` exceeds `cap`.  Extracted as a pure
+ * function so the fast-path body-size guard (SECURITY_AUDIT.md HTTP-1) can be
+ * unit-tested directly.  A missing/non-numeric header returns `false` — those
+ * fall through to the post-buffer backstop.
+ * @internal
+ */
+export function contentLengthExceeds(header: string | undefined, cap: number): boolean {
+  if (header === undefined) return false;
+  const n = Number(header);
+  return Number.isFinite(n) && n > cap;
+}
+
+/** Standard 413 response used by the body-size guards. */
+function payloadTooLarge(): Response {
+  return new Response('Payload Too Large', {
+    status: 413,
+    headers: { 'content-type': 'text/plain; charset=utf-8' },
+  });
+}
+
+/** Read the `Content-Length` header off a Hono context as a string, if present. */
+function contentLengthHeader(c: { req: { header(name?: string): unknown } }): string | undefined {
+  const cl = c.req.header('content-length');
+  return typeof cl === 'string' ? cl : undefined;
+}
+
 /*
  * Hono is an optional peer dependency — the structural types below describe
  * only the narrow slice of its API we touch, so projects that never touch
@@ -139,6 +166,7 @@ export class HonoBackend implements HttpServerBackend {
     if (this.notFoundHandler) {
       const handler = this.notFoundHandler;
       app.notFound(async (c) => {
+        if (contentLengthExceeds(contentLengthHeader(c), this.maxBodyBytes)) return payloadTooLarge();
         const req = await this.adaptRequest(c);
         const res = await handler(req);
         return this.writeResponse(res);
@@ -223,13 +251,15 @@ export class HonoBackend implements HttpServerBackend {
   private attachRoute(route: RouteRegistration): void {
     const app = this.app!;
     const handler: HonoHandler = async (c) => {
+      // Reject an oversized Content-Length BEFORE buffering the body.  The
+      // post-buffer check below is a backstop for chunked bodies that omit
+      // Content-Length (SECURITY_AUDIT.md HTTP-1) — previously the whole
+      // body was materialised via arrayBuffer() before any size check,
+      // making the 10 MiB cap cosmetic against the runtime's much larger
+      // native default.
+      if (contentLengthExceeds(contentLengthHeader(c), this.maxBodyBytes)) return payloadTooLarge();
       const req = await this.adaptRequest(c);
-      if (req.body && req.body.byteLength > this.maxBodyBytes) {
-        return new Response('Payload Too Large', {
-          status: 413,
-          headers: { 'content-type': 'text/plain; charset=utf-8' },
-        });
-      }
+      if (req.body && req.body.byteLength > this.maxBodyBytes) return payloadTooLarge();
       const out = await route.handler(req);
       return this.writeResponse(out);
     };

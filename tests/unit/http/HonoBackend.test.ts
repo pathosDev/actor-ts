@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
-import { HonoBackend } from '../../../src/http/backend/HonoBackend.js';
+import { HonoBackend, contentLengthExceeds } from '../../../src/http/backend/HonoBackend.js';
 import { HonoBackendOptions } from '../../../src/http/backend/HonoBackendOptions.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import {
@@ -250,6 +250,62 @@ describe('HonoBackend — body size limit', () => {
       body: big,
     });
     expect(res.status).toBe(413);
+  });
+
+  // SECURITY_AUDIT.md HTTP-1: the oversize request must be rejected before
+  // the handler runs (previously the whole body was buffered first).
+  test('oversize request never reaches the handler', async () => {
+    let called = false;
+    const sysOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+    const system = ActorSystem.create('http-hono-413-guard', sysOptions);
+    const ext = system.extension(HttpExtensionId);
+    const backend = new HonoBackend(HonoBackendOptions.create().withMaxBodyBytes(16));
+    const binding = await ext.newServerAt('127.0.0.1', 0).useBackend(backend)
+      .bind(path('up', post(() => { called = true; return complete(Status.OK, 'ok'); })));
+    bindings.push({ binding, system });
+
+    const res = await fetch(`http://127.0.0.1:${binding.port}/up`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: new Uint8Array(64),
+    });
+    expect(res.status).toBe(413);
+    expect(called).toBe(false);
+  });
+
+  test('a body at/under the cap still reaches the handler', async () => {
+    const sysOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+    const system = ActorSystem.create('http-hono-under-cap', sysOptions);
+    const ext = system.extension(HttpExtensionId);
+    const backend = new HonoBackend(HonoBackendOptions.create().withMaxBodyBytes(16));
+    const binding = await ext.newServerAt('127.0.0.1', 0).useBackend(backend)
+      .bind(path('up', post((req) => completeJson(Status.OK, { len: req.body?.byteLength ?? 0 }))));
+    bindings.push({ binding, system });
+
+    const res = await fetch(`http://127.0.0.1:${binding.port}/up`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: new Uint8Array(8),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ len: 8 });
+  });
+});
+
+describe('HonoBackend — contentLengthExceeds (HTTP-1 fast-path predicate)', () => {
+  test('true when the declared length is over the cap', () => {
+    expect(contentLengthExceeds('64', 16)).toBe(true);
+    expect(contentLengthExceeds('17', 16)).toBe(true);
+  });
+
+  test('false at or under the cap', () => {
+    expect(contentLengthExceeds('16', 16)).toBe(false);
+    expect(contentLengthExceeds('0', 16)).toBe(false);
+  });
+
+  test('false for missing/non-numeric header (backstop handles those)', () => {
+    expect(contentLengthExceeds(undefined, 16)).toBe(false);
+    expect(contentLengthExceeds('not-a-number', 16)).toBe(false);
   });
 });
 

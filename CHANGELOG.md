@@ -62,6 +62,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   handshake on all three backends; a missing `Origin` (non-browser client) is
   allowed.  Bearer-token auth was already resistant (browsers can't set
   `Authorization` on a WS handshake).
+- **HTTP-1 (MEDIUM-HIGH) — Hono body-size cap enforced before buffering** (see
+  `SECURITY_AUDIT.md`).  The Hono backend read the whole request body via
+  `arrayBuffer()` and only then compared it against `maxBodyBytes`, so the cap
+  was cosmetic — the real ceiling was the runtime's native default (128 MiB on
+  Bun, effectively unbounded on Node via `@hono/node-server`).  It now rejects
+  an oversized `Content-Length` with 413 *before* buffering; the post-buffer
+  check remains a backstop for chunked bodies that omit Content-Length.
+  Express (streaming cap) and Fastify (framework default) were unaffected.
 
 ## [0.10.0] — 2026-07-08
 
