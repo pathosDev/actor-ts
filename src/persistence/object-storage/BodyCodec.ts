@@ -50,6 +50,14 @@ export const FLAG_KEY_VERSIONED = 0b1000;
 /** When set, the last {@link HMAC_TAG_LENGTH} bytes are an HMAC-SHA256 over the rest. */
 export const FLAG_INTEGRITY_HMAC = 0b10000;
 
+/**
+ * Default cap on the decompressed size of a stored body (512 MiB).  Bounds a
+ * decompression bomb on read (SECURITY_AUDIT.md #3) — a real snapshot /
+ * durable-state blob is far smaller.  Override per-decode via
+ * {@link DecodeOptions.maxOutputBytes} (`Infinity` opts out).
+ */
+export const DEFAULT_MAX_DECOMPRESSED_BYTES = 512 * 1024 * 1024;
+
 export interface EncodeOptions {
   readonly compression?: CompressionAlgo;
   /**
@@ -115,6 +123,13 @@ export interface DecodeOptions {
     readonly integrityKey: Uint8Array;
     readonly requireIntegrity?: boolean;
   };
+  /**
+   * Cap on the decompressed payload size in bytes.  Defaults to
+   * {@link DEFAULT_MAX_DECOMPRESSED_BYTES}; pass `Infinity` to disable.
+   * Guards against a decompression bomb in a tampered / hostile stored body
+   * (SECURITY_AUDIT.md #3).
+   */
+  readonly maxOutputBytes?: number;
 }
 
 export interface DecodedBody {
@@ -229,6 +244,7 @@ export async function decodeBody(framed: Uint8Array, opts: DecodeOptions = {}): 
     );
   }
 
+  const maxOut = opts.maxOutputBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES;
   let payload: Uint8Array;
   let keyVersion: number | undefined;
   if (encrypted) {
@@ -270,10 +286,10 @@ export async function decodeBody(framed: Uint8Array, opts: DecodeOptions = {}): 
     }
 
     const compressedPlaintext = await aesGcmDecrypt(subKey, iv, ciphertext);
-    payload = await compressorFor(compression).decompress(compressedPlaintext);
+    payload = await compressorFor(compression).decompress(compressedPlaintext, maxOut);
   } else {
     const compressedSlice = bodyForRest.subarray(5);
-    payload = await compressorFor(compression).decompress(compressedSlice);
+    payload = await compressorFor(compression).decompress(compressedSlice, maxOut);
   }
 
   return {

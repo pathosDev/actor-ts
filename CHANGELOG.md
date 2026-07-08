@@ -121,6 +121,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   header-less clients into one shared bucket).  The JSDoc and the bilingual
   docs now use `req.remoteAddress` and state the trusted-proxy caveat.  No
   behaviour change — `key` was always caller-supplied.
+- **#3 (MEDIUM) — decompression-bomb cap on stored bodies** (see
+  `SECURITY_AUDIT.md`).  Reading a snapshot / durable-state / object body
+  decompressed it with no output bound, so a tampered or hostile compressed
+  blob (a few KB expanding to many GB) could OOM the process on recovery.
+  `decodeBody` now caps the decompressed size at **512 MiB** by default
+  (`DecodeOptions.maxOutputBytes`; `Infinity` opts out): gzip enforces it at
+  allocation time via zlib's `maxOutputLength`, and every path asserts the
+  decoded size as a portable backstop.
 
 ## [0.10.0] — 2026-07-08
 
