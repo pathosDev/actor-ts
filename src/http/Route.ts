@@ -2,6 +2,7 @@ import { match } from 'ts-pattern';
 import type { ActorSystem } from '../ActorSystem.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse, Status } from './types.js';
 import type { WebSocketSocketAdapter } from './ws/SocketAdapter.js';
+import { expandCors, type CorsRouteSettings } from './middleware/Cors.js';
 
 /**
  * A compiled HTTP route — the Route-DSL reduces to a list of these
@@ -92,7 +93,8 @@ export type Route =
   | { readonly kind: 'concat'; readonly routes: ReadonlyArray<Route> }
   | { readonly kind: 'middleware'; readonly middleware: Middleware; readonly child: Route }
   | { readonly kind: 'websocket'; readonly connect: WebSocketConnectHandler }
-  | { readonly kind: 'fallback'; readonly handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse };
+  | { readonly kind: 'fallback'; readonly handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse }
+  | { readonly kind: 'cors'; readonly settings: CorsRouteSettings; readonly child: Route };
 
 /** Compose several sibling routes (OR semantics — first matching wins). */
 export function concat(...routes: Route[]): Route {
@@ -326,6 +328,7 @@ export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[]
         return { ...c, authorize };
       });
     })
+    .with({ kind: 'cors' }, (r) => expandCors(compile(r.child, prefix), r.settings))
     .exhaustive();
 }
 
