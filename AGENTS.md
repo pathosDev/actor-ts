@@ -42,6 +42,8 @@ deliberately tiny — `fastify` + `ts-pattern` — and everything else
 - **Do not push.** The agent commits locally only; the human pushes `develop`.
   The single exception is cutting a release (below) — merging `develop` → `main`
   and creating the tag/GitHub Release is explicitly authorized.
+- **`main` is branch-protected** — merges require a pull request and the `test`
+  status check; the maintainer (admin) may bypass for the release merge.
 
 ## Release strategy
 
