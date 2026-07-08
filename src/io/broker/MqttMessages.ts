@@ -158,34 +158,49 @@ export type MqttCommand<T = unknown> =
 
 /* --------------------- internal mailbox signals --------------------- */
 /*
- * Delivered to the actor's own mailbox by `connectImplementation` so that inbound
- * messages and lifecycle transitions run on the actor thread (single-
- * threaded guarantee, per-connection order preserved).  Classes →
- * `instanceof` dispatch in the sealed `onReceive`.  Users never
- * construct or match these.
+ * Delivered to the actor's own mailbox by `connectImplementation` so that
+ * inbound messages and lifecycle transitions run on the actor thread
+ * (single-threaded guarantee, per-connection order preserved).  Like the
+ * external commands and the typed-actor `Signal`, these are `kind`-tagged
+ * plain objects — dispatch is a single uniform `kind` switch, never
+ * `instanceof`.  Users never construct or match these; the base class
+ * fans them out to `onMessage` / `onConnected` / `onDisconnected`.
  */
 
 /** A message arrived on a subscribed topic. */
-export class MqttInboundSignal<T = unknown> {
-  readonly _mqtt = 'inbound' as const;
-  constructor(readonly message: MqttMessage<T>) {}
+export interface MqttInboundSignal<T = unknown> {
+  readonly kind: 'mqtt-inbound';
+  readonly message: MqttMessage<T>;
 }
 
 /** The connection (re)opened; the registry has been re-applied on the broker. */
-export class MqttConnectedSignal {
-  readonly _mqtt = 'connected' as const;
+export interface MqttConnectedSignal {
+  readonly kind: 'mqtt-connected';
 }
 
 /** The connection dropped (a reconnect cycle may follow). */
-export class MqttDisconnectedSignal {
-  readonly _mqtt = 'disconnected' as const;
-  constructor(readonly cause?: Error) {}
+export interface MqttDisconnectedSignal {
+  readonly kind: 'mqtt-disconnected';
+  readonly cause?: Error;
 }
 
 export type MqttSignal<T = unknown> =
   | MqttInboundSignal<T>
   | MqttConnectedSignal
   | MqttDisconnectedSignal;
+
+/** @internal Construct the inbound signal (delivered to the actor's own mailbox). */
+export function mqttInboundSignal<T = unknown>(message: MqttMessage<T>): MqttInboundSignal<T> {
+  return { kind: 'mqtt-inbound', message };
+}
+/** @internal Construct the connected signal. */
+export function mqttConnectedSignal(): MqttConnectedSignal {
+  return { kind: 'mqtt-connected' };
+}
+/** @internal Construct the disconnected signal. */
+export function mqttDisconnectedSignal(cause?: Error): MqttDisconnectedSignal {
+  return { kind: 'mqtt-disconnected', cause };
+}
 
 /**
  * Full mailbox type of an {@link MqttActor}: external commands, any

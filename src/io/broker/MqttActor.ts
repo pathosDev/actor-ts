@@ -9,12 +9,14 @@ import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import { mqttJsonCodec, MqttDecodeError, type MqttCodec } from './MqttCodec.js';
 import type { MqttOptions, MqttOptionsType } from './MqttOptions.js';
 import {
-  MqttConnectedSignal,
-  MqttDisconnectedSignal,
-  MqttInboundSignal,
   MqttPayload,
+  mqttConnectedSignal,
+  mqttDisconnectedSignal,
+  mqttInboundSignal,
   type MqttActorMessage,
   type MqttCommand,
+  type MqttDisconnectedSignal,
+  type MqttInboundSignal,
   type MqttMessage,
   type MqttPublish,
   type MqttQos,
@@ -104,7 +106,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
    * wire data shouldn't restart the actor).  Rethrow to escalate to the
    * supervisor.
    */
-  protected onDecodeError(error: MqttDecodeError, _msg: MqttMessage<T>): void | Promise<void> {
+  protected onInvalidMessage(error: MqttDecodeError, _msg: MqttMessage<T>): void | Promise<void> {
     this.log.warn(
       `MqttActor: dropping undecodable payload on '${error.topic ?? '<unknown>'}': ${error.message}`,
     );
@@ -189,20 +191,25 @@ export abstract class MqttActor<T = unknown, TSelf = never>
 
   /** @internal Sealed — override onMessage + hooks instead. */
   override onReceive(cmd: MqttActorMessage<T, TSelf>): void | Promise<void> {
-    if (cmd instanceof MqttInboundSignal) return this.routeInbound(cmd.message);
-    if (cmd instanceof MqttConnectedSignal) return this.onConnected();
-    if (cmd instanceof MqttDisconnectedSignal) return this.onDisconnected(cmd.cause);
     // Terminated is delivered through onReceive (ActorCell) but isn't part
     // of the typed mailbox union — narrow via a guard.
     if (isTerminated(cmd)) {
       this.removeTerminatedTarget(cmd.actor);
       return;
     }
+    // Uniform `kind` dispatch over internal signals + external commands.
     const kind = (cmd as { readonly kind?: unknown }).kind;
-    if (kind === 'publish' || kind === 'subscribe' || kind === 'unsubscribe') {
-      return this.handleCommand(cmd as MqttCommand<T>);
+    switch (kind) {
+      case 'mqtt-inbound': return this.routeInbound((cmd as MqttInboundSignal<T>).message);
+      case 'mqtt-connected': return this.onConnected();
+      case 'mqtt-disconnected': return this.onDisconnected((cmd as MqttDisconnectedSignal).cause);
+      case 'publish':
+      case 'subscribe':
+      case 'unsubscribe':
+        return this.handleCommand(cmd as MqttCommand<T>);
+      default:
+        return this.onSelfMessage(cmd as TSelf);
     }
-    return this.onSelfMessage(cmd as TSelf);
   }
 
   private handleCommand(cmd: MqttCommand<T>): void {
@@ -234,7 +241,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     try {
       await this.onMessage(msg);
     } catch (err) {
-      if (err instanceof MqttDecodeError) return this.onDecodeError(err, msg);
+      if (err instanceof MqttDecodeError) return this.onInvalidMessage(err, msg);
       throw err;  // ordinary supervision
     }
   }
@@ -422,7 +429,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
       const onDown = (cause: Error): void => {
         if (down) return;
         down = true;
-        this.self.tell(new MqttDisconnectedSignal(cause));
+        this.self.tell(mqttDisconnectedSignal(cause));
         this.handleConnectionLost(cause);
       };
       client.once('connect', () => {
@@ -433,7 +440,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
         client.on('message', (topic, payload, packet) => {
           // No user code on the mqtt.js loop: wrap into a lazily-decoding
           // payload and hand the message to our own mailbox.
-          this.self.tell(new MqttInboundSignal<T>({
+          this.self.tell(mqttInboundSignal<T>({
             topic,
             payload: new MqttPayload<T>(payload, this.codec(), topic),
             qos: (packet?.qos ?? 0) as MqttQos,
@@ -450,7 +457,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
         for (const [pattern, entry] of this.registry) {
           this.brokerSubscribe(pattern, entry.qos);
         }
-        this.self.tell(new MqttConnectedSignal());
+        this.self.tell(mqttConnectedSignal());
         resolve();
       });
       client.once('error', (e: Error) => {

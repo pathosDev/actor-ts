@@ -47,19 +47,17 @@ export type {
 } from './MqttActor.js';
 export { MqttOptions, MqttOptionsBuilder } from './MqttOptions.js';
 export type { MqttOptionsType, MqttCredentials } from './MqttOptions.js';
-// Message types, payload wrapper, and mailbox signals.
-export {
-  MqttPayload,
-  MqttInboundSignal,
-  MqttConnectedSignal,
-  MqttDisconnectedSignal,
-} from './MqttMessages.js';
+// Message types, payload wrapper, and mailbox signals (kind-tagged).
+export { MqttPayload } from './MqttMessages.js';
 export type {
   MqttMessage,
   MqttPublish,
   MqttCommand,
   MqttQos,
   MqttUserProperties,
+  MqttInboundSignal,
+  MqttConnectedSignal,
+  MqttDisconnectedSignal,
   MqttSignal,
   MqttActorMessage,
   MqttRef,

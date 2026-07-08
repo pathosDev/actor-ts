@@ -20,7 +20,7 @@
  * Error contract: `decode` throws {@link MqttDecodeError} on malformed
  * input.  Because decoding is lazy (`payload.entity()` is called by user
  * code inside `onMessage`), that error surfaces there and is routed to
- * the actor's `onDecodeError` hook.  `encode` throws
+ * the actor's `onInvalidMessage` hook.  `encode` throws
  * {@link MqttEncodeError}; since publishes are fire-and-forget the
  * message is logged and dropped rather than surfaced to the caller.
  */

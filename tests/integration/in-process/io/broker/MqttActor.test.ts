@@ -130,7 +130,7 @@ class TestMqttActor<T = unknown, TSelf = never> extends MqttActor<T, TSelf> {
   }
 
   override onMessage(msg: MqttMessage<T>): void {
-    // Touch entity() so a malformed payload surfaces to onDecodeError.
+    // Touch entity() so a malformed payload surfaces to onInvalidMessage.
     if (this.decodeOnReceive) msg.payload.entity();
     this.inbound.push(msg);
   }
@@ -138,7 +138,7 @@ class TestMqttActor<T = unknown, TSelf = never> extends MqttActor<T, TSelf> {
 
   protected override onConnected(): void { this.connectedCount++; }
   protected override onDisconnected(): void { this.disconnectedCount++; }
-  protected override onDecodeError(error: MqttDecodeError, msg: MqttMessage<T>): void {
+  protected override onInvalidMessage(error: MqttDecodeError, msg: MqttMessage<T>): void {
     this.decodeErrors.push({ error, msg });
   }
   protected override onSelfMessage(msg: TSelf): void { this.selfMsgs.push(msg); }
@@ -400,8 +400,8 @@ describe('MqttActor deathwatch cleanup (bug #3)', () => {
 
 /* --------------------------- decode errors -------------------------- */
 
-describe('MqttActor onDecodeError', () => {
-  test('malformed payload in onMessage routes to onDecodeError without restarting', async () => {
+describe('MqttActor onInvalidMessage', () => {
+  test('malformed payload in onMessage routes to onInvalidMessage without restarting', async () => {
     const sys = makeSystem();
     try {
       const mqttOptions = MqttOptions.create()
