@@ -92,10 +92,22 @@ for (const f of caseFiles) {
   }
 }
 
+// Best-effort: close Node's global fetch (undici) keep-alive pool before
+// process.exit, so a still-closing socket handle doesn't race the exit
+// (a libuv assertion on Windows).  No-op on Bun/Deno.
+try {
+  const dispatcher = globalThis[Symbol.for('undici.globalDispatcher.1')];
+  if (dispatcher && typeof dispatcher.close === 'function') await dispatcher.close();
+} catch { /* no undici global dispatcher on this runtime */ }
+
 console.log('');
 if (failed === 0) {
   console.log(`✓ all ${caseFiles.length} smoke case(s) passed on ${runtime}`);
-  process.exit(0);
+  // Exit naturally (don't force process.exit) so Node closes its remaining
+  // handles cleanly instead of racing a mid-close socket at teardown — a
+  // libuv assertion on Windows.  All cases release their handles, so the
+  // event loop drains promptly.
+  process.exitCode = 0;
 } else {
   console.error(`✗ ${failed} of ${caseFiles.length} smoke case(s) failed on ${runtime}`);
   process.exit(1);
