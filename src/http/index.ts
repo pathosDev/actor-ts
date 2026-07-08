@@ -90,6 +90,9 @@ export type {
 
 export { entity, marshal, pickRequestSerializer, pickResponseSerializer } from './Marshalling.js';
 
+// MIME-type registry — extension → content-type for static-file responses.
+export { contentTypeFor, DEFAULT_MIME_TYPES } from './MimeTypes.js';
+
 // HTML response helpers — escaping + the `html` tagged template (#352).
 export { escapeHtml, html, rawHtml, completeHtml, SafeHtml } from './Html.js';
 
