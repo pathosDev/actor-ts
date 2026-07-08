@@ -81,7 +81,9 @@ jobs:
 
       - name: Publish to npm
         if: steps.version-check.outputs.already_published == 'false'
-        # No NODE_AUTH_TOKEN env — npm auto-detects the OIDC scenario
-        # via `id-token: write` permission + the npm Trusted Publisher
-        # config on registry.npmjs.org and uses that path instead.
+        # Auth via a granular npm automation token in the NPM_TOKEN secret.
+        # `--provenance` still works — it signs using the workflow's OIDC
+        # id-token (`id-token: write`), independent of the publish auth.
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --provenance --access public
