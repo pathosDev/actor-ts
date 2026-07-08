@@ -4,6 +4,7 @@ import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
+import { AmqpOptionsValidator } from './AmqpOptions.js';
 import type { AmqpOptions, AmqpOptionsType } from './AmqpOptions.js';
 
 /** Inbound AMQP delivery handed to subscribers. */
@@ -83,6 +84,7 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCmd, AmqpPublish
     return out;
   }
   protected requiredSettings(): ReadonlyArray<keyof AmqpOptionsType> { return ['url']; }
+  protected override optionsValidator(): AmqpOptionsValidator { return new AmqpOptionsValidator(); }
   protected endpointLabel(): string { return this.settings.url ?? '<unknown>'; }
 
   protected async connectImpl(): Promise<void> {

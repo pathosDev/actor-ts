@@ -1,0 +1,90 @@
+import { describe, expect, test } from 'bun:test';
+import { OptionsError } from '../../../../src/util/OptionsValidator.js';
+import { KafkaOptionsValidator, type KafkaOptionsType } from '../../../../src/io/broker/KafkaOptions.js';
+import { AmqpOptionsValidator, type AmqpOptionsType } from '../../../../src/io/broker/AmqpOptions.js';
+import { RedisStreamsOptionsValidator, type RedisStreamsOptionsType } from '../../../../src/io/broker/RedisStreamsOptions.js';
+
+// Direct validator tests. The optionsValidator() hook is proven to fire in
+// preStart end-to-end by the MqttOptions integration test; here we exercise
+// each broker's rules (and the shared commonRules) without the actor infra.
+
+describe('BrokerOptionsValidator — common broker fields (via Kafka)', () => {
+  const check = (s: Partial<KafkaOptionsType>): void => new KafkaOptionsValidator().validate(s);
+  const ok: Partial<KafkaOptionsType> = { brokers: ['k:9092'] };
+
+  test('rejects a negative outboundBuffer', () => {
+    expect(() => check({ ...ok, outboundBuffer: -1 })).toThrow(OptionsError);
+  });
+
+  test('accepts reconnect: false', () => {
+    expect(() => check({ ...ok, reconnect: false })).not.toThrow();
+  });
+
+  test('rejects reconnect.factor < 1', () => {
+    expect(() => check({ ...ok, reconnect: { factor: 0.5 } })).toThrow(/reconnect\.factor/);
+  });
+
+  test('allows reconnect.maxAttempts = Infinity (retry forever)', () => {
+    expect(() => check({ ...ok, reconnect: { maxAttempts: Infinity } })).not.toThrow();
+  });
+
+  test('rejects circuitBreaker.failureThreshold < 1', () => {
+    expect(() => check({ ...ok, circuitBreaker: { failureThreshold: 0, resetMs: 100 } }))
+      .toThrow(/circuitBreaker\.failureThreshold/);
+  });
+});
+
+describe('KafkaOptionsValidator', () => {
+  const check = (s: Partial<KafkaOptionsType>): void => new KafkaOptionsValidator().validate(s);
+
+  test('rejects empty brokers (array and string)', () => {
+    expect(() => check({ brokers: [] })).toThrow(OptionsError);
+    expect(() => check({ brokers: '' })).toThrow(OptionsError);
+  });
+
+  test('accepts brokers as a non-empty string or array', () => {
+    expect(() => check({ brokers: 'k1:9092,k2:9092' })).not.toThrow();
+    expect(() => check({ brokers: ['k1:9092'] })).not.toThrow();
+  });
+
+  test('rejects a non-positive consumer.commitTimeoutMs', () => {
+    expect(() => check({ brokers: ['k:9092'], consumer: { commitTimeoutMs: 0 } }))
+      .toThrow(/consumer\.commitTimeoutMs/);
+  });
+});
+
+describe('AmqpOptionsValidator', () => {
+  const check = (s: Partial<AmqpOptionsType>): void => new AmqpOptionsValidator().validate(s);
+
+  test('accepts amqp / amqps urls', () => {
+    expect(() => check({ url: 'amqp://user:pass@host:5672/vhost' })).not.toThrow();
+    expect(() => check({ url: 'amqps://host:5671' })).not.toThrow();
+  });
+
+  test('rejects a non-amqp url', () => {
+    expect(() => check({ url: 'http://host:5672' })).toThrow(OptionsError);
+  });
+
+  test('rejects a negative prefetch but accepts 0 (unlimited)', () => {
+    expect(() => check({ prefetch: -1 })).toThrow(OptionsError);
+    expect(() => check({ prefetch: 0 })).not.toThrow();
+  });
+});
+
+describe('RedisStreamsOptionsValidator', () => {
+  const check = (s: Partial<RedisStreamsOptionsType>): void => new RedisStreamsOptionsValidator().validate(s);
+
+  test('accepts redis / rediss urls', () => {
+    expect(() => check({ url: 'redis://host:6379' })).not.toThrow();
+    expect(() => check({ url: 'rediss://host:6379' })).not.toThrow();
+  });
+
+  test('rejects a non-redis url', () => {
+    expect(() => check({ url: 'amqp://host' })).toThrow(OptionsError);
+  });
+
+  test('rejects a negative blockMs but accepts 0 (block indefinitely)', () => {
+    expect(() => check({ blockMs: -1 })).toThrow(OptionsError);
+    expect(() => check({ blockMs: 0 })).not.toThrow();
+  });
+});

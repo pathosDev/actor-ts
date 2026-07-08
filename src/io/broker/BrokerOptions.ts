@@ -80,10 +80,24 @@ export abstract class BrokerOptionsValidator<T extends BrokerCommonOptionsType> 
     }
   }
 
-  /** Positive-finite check for a nested (non-top-level) numeric leaf. No-op if unset. */
-  private nestedPositive(field: string, v: number | undefined): void {
+  /**
+   * Positive-finite check for a nested or union-typed numeric leaf that the
+   * field-name helpers can't address (e.g. `circuitBreaker.resetMs`,
+   * `consumer.commitTimeoutMs`).  No-op if unset.
+   */
+  protected nestedPositive(field: string, v: number | undefined): void {
     if (v !== undefined && (typeof v !== 'number' || !Number.isFinite(v) || v <= 0)) {
       this.fail(field, 'must be a positive finite number', v);
     }
+  }
+
+  /**
+   * Non-empty check for a `string | string[]` field (Kafka `brokers`, NATS
+   * `servers`) — a union the typed helpers can't address.  No-op if unset.
+   */
+  protected nonEmptyStringOrArray(field: string, v: string | ReadonlyArray<string> | undefined): void {
+    if (v === undefined) return;
+    const empty = typeof v === 'string' ? v.length === 0 : !Array.isArray(v) || v.length === 0;
+    if (empty) this.fail(field, 'must not be empty', v);
   }
 }

@@ -79,7 +79,7 @@ export type {
   KafkaRecord,
   KafkaPublish,
 } from './KafkaActor.js';
-export { KafkaOptions, KafkaOptionsBuilder } from './KafkaOptions.js';
+export { KafkaOptions, KafkaOptionsBuilder, KafkaOptionsValidator } from './KafkaOptions.js';
 export type { KafkaOptionsType } from './KafkaOptions.js';
 export { AmqpActor } from './AmqpActor.js';
 export type {
@@ -88,7 +88,7 @@ export type {
   AmqpPublish,
   AmqpQueueBinding,
 } from './AmqpActor.js';
-export { AmqpOptions, AmqpOptionsBuilder } from './AmqpOptions.js';
+export { AmqpOptions, AmqpOptionsBuilder, AmqpOptionsValidator } from './AmqpOptions.js';
 export type { AmqpOptionsType } from './AmqpOptions.js';
 export { GrpcClientActor } from './GrpcClientActor.js';
 export type {
@@ -140,7 +140,7 @@ export type {
   RedisStreamEntry,
   RedisStreamPublish,
 } from './RedisStreamsActor.js';
-export { RedisStreamsOptions, RedisStreamsOptionsBuilder } from './RedisStreamsOptions.js';
+export { RedisStreamsOptions, RedisStreamsOptionsBuilder, RedisStreamsOptionsValidator } from './RedisStreamsOptions.js';
 export type { RedisStreamsOptionsType } from './RedisStreamsOptions.js';
 export { SseActor } from './SseActor.js';
 export type {

@@ -6,7 +6,7 @@
  * and feeds the same three-layer merge (constructor > HOCON under
  * `actor-ts.io.broker.kafka` > built-in defaults).
  */
-import { BrokerOptionsBuilder } from './BrokerOptions.js';
+import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
 import type { BrokerCommonOptionsType } from './BrokerSettings.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { KafkaCommitMode, KafkaRecord } from './KafkaActor.js';
@@ -98,6 +98,18 @@ export class KafkaOptionsBuilder extends BrokerOptionsBuilder<KafkaOptionsType> 
   /** Topics the consumer subscribes to at connect time. */
   withTopics(topics: ReadonlyArray<string>): this {
     return this.set('topics', topics);
+  }
+}
+
+/** Validates resolved {@link KafkaOptionsType} settings. */
+export class KafkaOptionsValidator extends BrokerOptionsValidator<KafkaOptionsType> {
+  constructor() {
+    super('KafkaOptions');
+  }
+  protected rules(s: Partial<KafkaOptionsType>): void {
+    this.commonRules(s);
+    this.nonEmptyStringOrArray('brokers', s.brokers);
+    this.nestedPositive('consumer.commitTimeoutMs', s.consumer?.commitTimeoutMs);
   }
 }
 
