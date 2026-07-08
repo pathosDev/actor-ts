@@ -48,7 +48,8 @@ SemVer, and the project is **pre-1.0**:
 - **minor `0.X.0`** — new features; **may include breaking changes**.
 - **`1.0.0`** — the API-stability commitment.
 
-Tags are `vX.Y.Z`; 0.x GitHub Releases are flagged *pre-release*.
+Tags are `vX.Y.Z`; GitHub Releases are cut as normal **Latest** releases
+(not flagged pre-release) — `gh release create` without `--prerelease`.
 
 **CHANGELOG** (`CHANGELOG.md`) follows *Keep a Changelog*: an
 `[Unreleased]` section with `Added` / `Changed` / `Fixed` / `Removed` /
