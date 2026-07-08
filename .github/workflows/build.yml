@@ -7,8 +7,10 @@ name: build
 # changes so the actions queue stays focused.
 
 on:
+  # Run on every branch push (feature work merges locally, so a branch push
+  # is often the only pre-merge signal), not just `develop`.
   push:
-    branches: [develop]
+    branches: ['**']
     paths:
       - 'src/**'
       - 'package.json'

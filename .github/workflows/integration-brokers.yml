@@ -8,18 +8,27 @@ name: integration-brokers
 # sum of all eight.
 #
 # Triggers identical in shape to the cluster `integration.yml`:
-#   - PRs targeting `main` (the release PR)
+#   - Pushes to `develop` + PRs (into `develop`, or `main` for the release)
 #   - Manual dispatch
 #   - Nightly cron at 03:30 UTC on `develop` (the default branch),
 #     offset from integration.yml's 03:00 so the two don't fight for
 #     the same runner pool
 
 on:
-  # Heavy live-broker Docker matrix — gates the release PR into `main`,
-  # runs nightly on `develop` (the default branch, via the schedule below),
-  # and on manual dispatch.  Deliberately NOT on every develop push/PR.
+  # Heavy live-broker Docker matrix.  Runs on `develop` pushes and on PRs
+  # (into `develop`, or into `main` for the release), nightly on `develop`
+  # (the default branch, via the schedule below), and on dispatch.
+  push:
+    branches: [develop]
+    paths:
+      - 'src/**'
+      - 'tests/integration/brokers/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'tsconfig.json'
+      - '.github/workflows/integration-brokers.yml'
   pull_request:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - 'src/**'
       - 'tests/integration/brokers/**'
