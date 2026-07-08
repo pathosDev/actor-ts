@@ -132,7 +132,10 @@ export class HonoBackend implements HttpServerBackend {
     if (!this.app) this.app = await this.createHonoApp();
     const app = this.app;
 
-    for (const r of this.registered) this.attachRoute(r);
+    const explicitHead = new Set(this.registered.filter((r) => r.method === 'HEAD').map((r) => r.pattern));
+    for (const r of this.registered) {
+      this.attachRoute(r, r.method === 'GET' && !explicitHead.has(r.pattern));
+    }
 
     if (this.notFoundHandler) {
       const handler = this.notFoundHandler;
@@ -218,8 +221,10 @@ export class HonoBackend implements HttpServerBackend {
 
   /* ============================ internals ============================ */
 
-  private attachRoute(route: RouteRegistration): void {
+  private attachRoute(route: RouteRegistration, addHeadTwin = false): void {
     const app = this.app!;
+    const wildcard = route.pattern.endsWith('/*');
+    const prefix = wildcard ? route.pattern.slice(0, -2) : '';
     const handler: HonoHandler = async (c) => {
       const req = await this.adaptRequest(c);
       if (req.body && req.body.byteLength > this.maxBodyBytes) {
@@ -228,12 +233,27 @@ export class HonoBackend implements HttpServerBackend {
           headers: { 'content-type': 'text/plain; charset=utf-8' },
         });
       }
-      const out = await route.handler(req);
+      // Wildcard contract: expose the matched remainder as params['*'].
+      const finalReq = wildcard
+        ? { ...req, params: { ...req.params, '*': honoWildcardRest(c.req.path ?? new URL(c.req.url).pathname, prefix) } }
+        : req;
+      const out = await route.handler(finalReq);
       return this.writeResponse(out);
     };
     const method = route.method.toLowerCase() as Lowercase<HttpMethod>;
     match(method)
-      .with('get',     () => app.get(route.pattern, handler))
+      .with('get', () => {
+        app.get(route.pattern, handler);
+        // Hono doesn't auto-dispatch HEAD to a GET route (Fastify/Express
+        // do), so mirror GET as HEAD (body stripped) unless an explicit
+        // HEAD route already covers this pattern.
+        if (addHeadTwin) {
+          app.on('HEAD', route.pattern, async (c) => {
+            const full = await handler(c);
+            return new Response(null, { status: full.status, headers: full.headers });
+          });
+        }
+      })
       .with('post',    () => app.post(route.pattern, handler))
       .with('put',     () => app.put(route.pattern, handler))
       .with('delete',  () => app.delete(route.pattern, handler))
@@ -400,6 +420,14 @@ export class HonoBackend implements HttpServerBackend {
       );
     }
   }
+}
+
+/** The path remainder a `/prefix/*` route matched (still URL-encoded — the caller decodes). */
+function honoWildcardRest(path: string, prefix: string): string {
+  const withSlash = `${prefix}/`;
+  if (path.startsWith(withSlash)) return path.slice(withSlash.length);
+  if (path === prefix) return '';
+  return path.replace(/^\/+/, '');
 }
 
 /**

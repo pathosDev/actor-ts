@@ -85,15 +85,25 @@ type ExpressNext = (err?: unknown) => void;
 type ExpressHandler = (req: ExpressRequestLike, res: ExpressResponseLike, next: ExpressNext) => void | Promise<void>;
 type ExpressErrorHandler = (err: unknown, req: ExpressRequestLike, res: ExpressResponseLike, next: ExpressNext) => void | Promise<void>;
 
-/** Subset of the Express app API we touch.  Covers v4 and v5. */
+/** Escape a literal string for safe embedding in a RegExp source. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Subset of the Express app API we touch.  Covers v4 and v5.  Paths accept
+ * a RegExp as well as a string: a trailing-`*` wildcard route registers as
+ * a RegExp so it works identically on Express 4 and 5 (v5's path-to-regexp
+ * rejects a bare string `*`).
+ */
 export interface ExpressAppLike {
-  get(path: string, handler: ExpressHandler): void;
-  post(path: string, handler: ExpressHandler): void;
-  put(path: string, handler: ExpressHandler): void;
-  delete(path: string, handler: ExpressHandler): void;
-  patch(path: string, handler: ExpressHandler): void;
-  head(path: string, handler: ExpressHandler): void;
-  options(path: string, handler: ExpressHandler): void;
+  get(path: string | RegExp, handler: ExpressHandler): void;
+  post(path: string | RegExp, handler: ExpressHandler): void;
+  put(path: string | RegExp, handler: ExpressHandler): void;
+  delete(path: string | RegExp, handler: ExpressHandler): void;
+  patch(path: string | RegExp, handler: ExpressHandler): void;
+  head(path: string | RegExp, handler: ExpressHandler): void;
+  options(path: string | RegExp, handler: ExpressHandler): void;
   use(mw: ExpressHandler | ExpressErrorHandler): void;
   listen(port: number, hostname: string, cb: (err?: Error) => void): Server;
 }
@@ -284,22 +294,31 @@ export class ExpressBackend implements HttpServerBackend {
 
   private attachRoute(route: RouteRegistration): void {
     const method = route.method.toLowerCase() as Lowercase<HttpMethod>;
+    // A trailing-`*` pattern registers as a RegExp (v4/v5-safe) and the
+    // captured remainder is exposed as params['*'] — the wildcard contract.
+    const wildcard = route.pattern.endsWith('/*');
+    const registerPath: string | RegExp = wildcard
+      ? new RegExp('^' + escapeRegExp(route.pattern.slice(0, -2)) + '/(.*)$')
+      : route.pattern;
     const handler: ExpressHandler = async (req, res, next) => {
       try {
         const adapted = this.adaptRequest(req);
-        const out = await route.handler(adapted);
+        const finalReq = wildcard
+          ? { ...adapted, params: { ...adapted.params, '*': (req.params as Record<string, string>)['0'] ?? '' } }
+          : adapted;
+        const out = await route.handler(finalReq);
         this.writeResponse(res, out);
       } catch (err) { next(err); }
     };
     const app = this.app!;
     match(method)
-      .with('get',     () => app.get(route.pattern, handler))
-      .with('post',    () => app.post(route.pattern, handler))
-      .with('put',     () => app.put(route.pattern, handler))
-      .with('delete',  () => app.delete(route.pattern, handler))
-      .with('patch',   () => app.patch(route.pattern, handler))
-      .with('head',    () => app.head(route.pattern, handler))
-      .with('options', () => app.options(route.pattern, handler))
+      .with('get',     () => app.get(registerPath, handler))
+      .with('post',    () => app.post(registerPath, handler))
+      .with('put',     () => app.put(registerPath, handler))
+      .with('delete',  () => app.delete(registerPath, handler))
+      .with('patch',   () => app.patch(registerPath, handler))
+      .with('head',    () => app.head(registerPath, handler))
+      .with('options', () => app.options(registerPath, handler))
       .exhaustive();
   }
 
