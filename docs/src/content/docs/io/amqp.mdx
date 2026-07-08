@@ -41,7 +41,7 @@ amqp.tell({
 ## Settings
 
 ```ts
-interface AmqpActorSettings extends BrokerCommonSettings {
+interface AmqpOptionsType extends BrokerCommonOptionsType {
   url:        string;                          // amqp:// or amqps://
   prefetch?:  number;                          // unacked messages per consumer; default 1
   autoAck?:   boolean;                         // ack on delivery vs after processing; default true

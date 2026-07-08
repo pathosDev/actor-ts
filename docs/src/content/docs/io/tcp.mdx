@@ -34,7 +34,7 @@ tcp.tell({ kind: 'subscribe', subscriber: protocolHandler });
 ## Settings
 
 ```ts
-interface TcpSocketActorSettings extends BrokerCommonSettings {
+interface TcpSocketOptionsType extends BrokerCommonOptionsType {
   host:           string;
   port:           number;
   keepAlive?:     boolean;

@@ -35,7 +35,7 @@ await Cluster.join(system, clusterOptions);
 ## Konfiguration
 
 ```ts
-interface DnsSeedProviderSettings {
+interface DnsSeedProviderOptionsType {
   service:    string;     // SRV-Record (oder Hostname für A-Record)
   port?:      number;     // erforderlich für A-Record-Modus
   resolver?:  DnsResolver; // Default-Node-DNS überschreiben

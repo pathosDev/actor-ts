@@ -197,13 +197,13 @@ path before it ever attempts to connect.
 ## Writing a custom protocol actor
 
 ```ts
-import { BrokerActor, type OutboundEnvelope, type BrokerCommonSettings } from 'actor-ts';
+import { BrokerActor, type OutboundEnvelope, type BrokerCommonOptionsType } from 'actor-ts';
 
-interface MyProtocolSettings extends BrokerCommonSettings {
+interface MyProtocolOptionsType extends BrokerCommonOptionsType {
   readonly url: string;
 }
 
-class MyProtocolActor extends BrokerActor<MyProtocolSettings, Cmd, MyPayload> {
+class MyProtocolActor extends BrokerActor<MyProtocolOptionsType, Cmd, MyPayload> {
   private conn: MyClient | null = null;
 
   protected configKey() { return 'actor-ts.io.broker.my-protocol'; }

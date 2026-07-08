@@ -50,12 +50,12 @@ udp.tell({
 
 ## Settings
 
-`UdpSocketActorSettings` erweitert `BrokerCommonSettings` (das die
+`UdpSocketOptionsType` erweitert `BrokerCommonOptionsType` (das die
 gemeinsamen Felder für Reconnect / Circuit-Breaker / Outbound-Buffer
 mitbringt) und ergänzt:
 
 ```ts
-interface UdpSocketActorSettings extends BrokerCommonSettings {
+interface UdpSocketOptionsType extends BrokerCommonOptionsType {
   bindHost?: string;                 // default '0.0.0.0'
   bindPort?: number;                 // default 0 = OS-assigned
   type?: 'udp4' | 'udp6';            // default 'udp4'

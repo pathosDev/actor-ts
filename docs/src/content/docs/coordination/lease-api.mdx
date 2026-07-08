@@ -158,14 +158,14 @@ Same pattern for sharding coordinator:
 ## Writing a custom backend
 
 ```ts
-import type { Lease, LeaseSettings } from 'actor-ts';
+import type { Lease, LeaseOptionsType } from 'actor-ts';
 
 class EtcdLease implements Lease {
   private alive = false;
   private onLostHandlers = new Set<(reason: string) => void>();
   private renewTimer: NodeJS.Timeout | null = null;
 
-  constructor(private readonly settings: LeaseSettings & { /* etcd-specific */ }) {}
+  constructor(private readonly settings: LeaseOptionsType & { /* etcd-specific */ }) {}
 
   async acquire(): Promise<boolean> {
     // Try to atomically CAS the etcd key from empty to this owner.

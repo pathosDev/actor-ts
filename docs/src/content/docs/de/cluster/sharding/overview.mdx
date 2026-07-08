@@ -142,10 +142,10 @@ Mechanik.
 
 ## Konfiguration
 
-`ShardingSettings<TMsg>` — die Felder, die du am häufigsten anfasst:
+`ShardingOptionsType<TMsg>` — die Felder, die du am häufigsten anfasst:
 
 ```ts
-interface ShardingSettings<TMsg> {
+interface ShardingOptionsType<TMsg> {
   typeName:               string;
   entityProps:            Props<TMsg>;
   extractEntityId:        (message: TMsg) => string;

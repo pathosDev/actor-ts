@@ -48,11 +48,11 @@ und den Circuit-Breaker kostenlos.
 
 ## Settings
 
-Der Konstruktor nimmt `Partial<WebSocketClientSettings<TOut, TIn>>`.
+Der Konstruktor nimmt `Partial<WebSocketClientOptionsType<TOut, TIn>>`.
 Nur `url` ist erforderlich; alles andere hat einen Default.
 
 ```ts
-interface WebSocketClientSettings<TOut, TIn> extends BrokerCommonSettings {
+interface WebSocketClientOptionsType<TOut, TIn> extends BrokerCommonOptionsType {
   url:              string;                        // required — ws:// or wss://
   protocols?:       string | string[];             // subprotocols
   headers?:         Record<string, string>;        // Node / `ws` only
@@ -63,7 +63,7 @@ interface WebSocketClientSettings<TOut, TIn> extends BrokerCommonSettings {
 }
 ```
 
-Da die Settings `BrokerCommonSettings` erweitern, gelten die
+Da die Settings `BrokerCommonOptionsType` erweitern, gelten die
 Blöcke `reconnect` (`{ initialDelayMs, maxDelayMs, factor, maxAttempts }`),
 `outboundBuffer` und `circuitBreaker` allesamt — ihre Semantik
 steht in der [BrokerActor-Basis](/de/io/broker-actor-base/).

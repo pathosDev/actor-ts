@@ -117,7 +117,7 @@ system.
 
 When a connected broker disconnects unexpectedly, the base class
 schedules a reconnect with exponential backoff.  Configurable via
-`BrokerCommonSettings`:
+`BrokerCommonOptionsType`:
 
 ```ts
 {
@@ -236,11 +236,11 @@ import { Aside } from '@astrojs/starlight/components';
 Implement the three abstract methods and wire up settings:
 
 ```ts
-import { BrokerActor, type BrokerCommonSettings } from 'actor-ts';
+import { BrokerActor, type BrokerCommonOptionsType } from 'actor-ts';
 
 class MyProtocolActor extends BrokerActor<MyOutbound> {
   protected configKey() { return 'actor-ts.io.my-protocol'; }
-  protected builtInDefaults(): BrokerCommonSettings { return { /* defaults */ }; }
+  protected builtInDefaults(): BrokerCommonOptionsType { return { /* defaults */ }; }
   protected readSettingsFromConfig(c) { /* parse HOCON */ }
   protected requiredSettings() { return ['url']; }
 

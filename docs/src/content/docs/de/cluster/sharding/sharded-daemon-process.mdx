@@ -146,7 +146,7 @@ Cluster-Events deterministisch kontrollierst.
 ## Konfiguration
 
 ```ts
-interface ShardedDaemonProcessSettings<T> {
+interface ShardedDaemonProcessOptionsType<T> {
   name:                 string;          // eindeutiger Daemon-Set-Identifier
   numDaemons:           number;          // Gesamtdaemons über den Cluster
   behaviorFor:          (i: number) => Props<T>;

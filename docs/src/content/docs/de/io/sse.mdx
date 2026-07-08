@@ -43,7 +43,7 @@ installieren.
 ## Settings
 
 ```ts
-interface SseActorSettings extends BrokerCommonSettings {
+interface SseOptionsType extends BrokerCommonOptionsType {
   url?:      string;                          // required — the SSE endpoint
   headers?:  Readonly<Record<string, string>>; // optional custom request headers
   target?:   ActorRef<SseEvent>;             // required — subscriber for inbound events
