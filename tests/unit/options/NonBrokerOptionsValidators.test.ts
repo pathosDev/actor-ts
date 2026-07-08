@@ -13,6 +13,11 @@ import {
   KubernetesLeaseOptionsValidator,
   type KubernetesLeaseOptionsType,
 } from '../../../src/coordination/leases/KubernetesLeaseOptions.js';
+import { ShardingOptionsValidator, type ShardingOptionsType } from '../../../src/cluster/sharding/ShardingOptions.js';
+import {
+  ShardedDaemonProcessOptionsValidator,
+  type ShardedDaemonProcessOptionsType,
+} from '../../../src/cluster/sharding/ShardedDaemonProcessOptions.js';
 
 // Direct validator tests for the non-broker options. Each consumer calls the
 // same validator in its constructor / start method after merging defaults.
@@ -115,5 +120,32 @@ describe('KubernetesLeaseOptionsValidator', () => {
   test('accepts a valid k8s lease config', () => {
     expect(() => check({ name: 's', owner: 'o', ttlMs: 15_000, namespace: 'actors', apiServerUrl: 'https://k8s.default.svc' }))
       .not.toThrow();
+  });
+});
+
+describe('ShardingOptionsValidator', () => {
+  const check = (s: Partial<ShardingOptionsType<unknown>>): void =>
+    new ShardingOptionsValidator<unknown>().validate(s);
+
+  test('rejects numShards < 1 and negative maxEntities', () => {
+    expect(() => check({ numShards: 0 })).toThrow(OptionsError);
+    expect(() => check({ maxEntities: -1 })).toThrow(OptionsError);
+  });
+
+  test('accepts sensible sharding values (0 maxEntities = no cap)', () => {
+    expect(() => check({ numShards: 64, maxEntities: 0, passivationIdleMs: 0 })).not.toThrow();
+  });
+});
+
+describe('ShardedDaemonProcessOptionsValidator', () => {
+  const check = (s: Partial<ShardedDaemonProcessOptionsType<unknown>>): void =>
+    new ShardedDaemonProcessOptionsValidator<unknown>().validate(s);
+
+  test('rejects numDaemons < 1', () => {
+    expect(() => check({ numDaemons: 0 })).toThrow(/numDaemons/);
+  });
+
+  test('accepts numDaemons >= 1 and livenessIntervalMs 0 (disabled)', () => {
+    expect(() => check({ name: 'workers', numDaemons: 4, livenessIntervalMs: 0 })).not.toThrow();
   });
 });

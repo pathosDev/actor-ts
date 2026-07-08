@@ -9,6 +9,7 @@ import { LeaderChanged, MemberRemoved } from '../ClusterEvents.js';
 import { LeastShardAllocationStrategy } from './AllocationStrategy.js';
 import { ClusterSharding } from './ClusterSharding.js';
 import { StartShardingOptions } from './StartShardingOptions.js';
+import { ShardedDaemonProcessOptionsValidator } from './ShardedDaemonProcessOptions.js';
 import type { ShardedDaemonProcessOptions, ShardedDaemonProcessOptionsType } from './ShardedDaemonProcessOptions.js';
 
 /** Envelope the sharded region routes to daemon #index. */
@@ -54,6 +55,7 @@ export class ShardedDaemonProcess {
     options: ShardedDaemonProcessOptions<T>,
   ): ShardedDaemonProcessHandle<T> {
     const settings = options as ShardedDaemonProcessOptionsType<T>;
+    new ShardedDaemonProcessOptionsValidator<T>().validate(settings);
     const sharding = ClusterSharding.get(system, cluster);
 
     const startOptions = StartShardingOptions.create<DaemonEnvelope<T>>()
