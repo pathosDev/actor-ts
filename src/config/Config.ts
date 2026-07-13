@@ -91,56 +91,56 @@ export class Config {
   }
 
   getString(path: string): string {
-    const v = this.requireValue(path);
-    if (typeof v === 'string') return v;
-    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-    throw typeError(path, 'string', v);
+    const value = this.requireValue(path);
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    throw typeError(path, 'string', value);
   }
 
   getInt(path: string): number {
-    const n = this.getNumber(path);
-    if (!Number.isInteger(n)) throw typeError(path, 'integer', n);
-    return n;
+    const numberValue = this.getNumber(path);
+    if (!Number.isInteger(numberValue)) throw typeError(path, 'integer', numberValue);
+    return numberValue;
   }
 
   getNumber(path: string): number {
-    const v = this.requireValue(path);
-    if (typeof v === 'number') return v;
-    if (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v)) return Number(v);
-    throw typeError(path, 'number', v);
+    const value = this.requireValue(path);
+    if (typeof value === 'number') return value;
+    if (typeof value === 'string' && /^-?\d+(\.\d+)?$/.test(value)) return Number(value);
+    throw typeError(path, 'number', value);
   }
 
   getBoolean(path: string): boolean {
-    const v = this.requireValue(path);
-    if (typeof v === 'boolean') return v;
-    if (typeof v === 'string') {
-      const s = v.toLowerCase();
-      if (s === 'true' || s === 'yes' || s === 'on') return true;
-      if (s === 'false' || s === 'no' || s === 'off') return false;
+    const value = this.requireValue(path);
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'string') {
+      const normalized = value.toLowerCase();
+      if (normalized === 'true' || normalized === 'yes' || normalized === 'on') return true;
+      if (normalized === 'false' || normalized === 'no' || normalized === 'off') return false;
     }
-    throw typeError(path, 'boolean', v);
+    throw typeError(path, 'boolean', value);
   }
 
   /** Duration in milliseconds. */
   getDuration(path: string): number {
-    const v = this.requireValue(path);
-    if (typeof v === 'number') return v;
-    if (typeof v === 'string') return parseDuration(v);
-    throw typeError(path, 'duration', v);
+    const value = this.requireValue(path);
+    if (typeof value === 'number') return value;
+    if (typeof value === 'string') return parseDuration(value);
+    throw typeError(path, 'duration', value);
   }
 
   /** Byte count. */
   getBytes(path: string): number {
-    const v = this.requireValue(path);
-    if (typeof v === 'number') return v;
-    if (typeof v === 'string') return parseSize(v);
-    throw typeError(path, 'size', v);
+    const value = this.requireValue(path);
+    if (typeof value === 'number') return value;
+    if (typeof value === 'string') return parseSize(value);
+    throw typeError(path, 'size', value);
   }
 
   getStringList(path: string): string[] {
-    const v = this.requireValue(path);
-    if (!Array.isArray(v)) throw typeError(path, 'list', v);
-    return v.map((x, i) => {
+    const value = this.requireValue(path);
+    if (!Array.isArray(value)) throw typeError(path, 'list', value);
+    return value.map((x, i) => {
       if (typeof x === 'string') return x;
       if (typeof x === 'number' || typeof x === 'boolean') return String(x);
       throw new ConfigError(`${path}[${i}] is not a string (got ${typeof x})`);
@@ -148,15 +148,15 @@ export class Config {
   }
 
   getList(path: string): ConfigValue[] {
-    const v = this.requireValue(path);
-    if (!Array.isArray(v)) throw typeError(path, 'list', v);
-    return v as ConfigValue[];
+    const value = this.requireValue(path);
+    if (!Array.isArray(value)) throw typeError(path, 'list', value);
+    return value as ConfigValue[];
   }
 
   getObject(path: string): ConfigObject {
-    const v = this.requireValue(path);
-    if (!isPlainObject(v)) throw typeError(path, 'object', v);
-    return v as ConfigObject;
+    const value = this.requireValue(path);
+    if (!isPlainObject(value)) throw typeError(path, 'object', value);
+    return value as ConfigObject;
   }
 
   getConfig(path: string): Config {
@@ -183,8 +183,8 @@ export class Config {
     const parts = path.split('.').filter(Boolean);
     let cur: ConfigObject = this.tree;
     for (let i = parts.length - 1; i >= 0; i--) {
-      const k = parts[i]!;
-      cur = { [k]: cur };
+      const key = parts[i]!;
+      cur = { [key]: cur };
     }
     return new Config(cur);
   }
@@ -199,18 +199,18 @@ export class Config {
   private lookup(path: string): ConfigValue | undefined {
     const parts = path.split('.');
     let cur: ConfigValue | undefined = this.tree;
-    for (const p of parts) {
+    for (const part of parts) {
       if (!isPlainObject(cur)) return undefined;
-      cur = (cur as ConfigObject)[p];
+      cur = (cur as ConfigObject)[part];
       if (cur === undefined) return undefined;
     }
     return cur;
   }
 
   private requireValue(path: string): ConfigValue {
-    const v = this.lookup(path);
-    if (v === undefined) throw new ConfigError(`Missing config value at path "${path}"`);
-    return v;
+    const value = this.lookup(path);
+    if (value === undefined) throw new ConfigError(`Missing config value at path "${path}"`);
+    return value;
   }
 }
 
@@ -234,13 +234,13 @@ function typeError(path: string, expected: string, actual: unknown): ConfigError
 
 function cloneTree(obj: ConfigObject): ConfigObject {
   const out: ConfigObject = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (Array.isArray(v)) {
-      out[k] = v.map(x => (isPlainObject(x) ? cloneTree(x as ConfigObject) : x)) as ConfigValue[];
-    } else if (isPlainObject(v)) {
-      out[k] = cloneTree(v as ConfigObject);
+  for (const [key, value] of Object.entries(obj)) {
+    if (Array.isArray(value)) {
+      out[key] = value.map(x => (isPlainObject(x) ? cloneTree(x as ConfigObject) : x)) as ConfigValue[];
+    } else if (isPlainObject(value)) {
+      out[key] = cloneTree(value as ConfigObject);
     } else {
-      out[k] = v;
+      out[key] = value;
     }
   }
   return out;
