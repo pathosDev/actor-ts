@@ -70,8 +70,8 @@ export const scenario: Scenario = {
     console.log(`[06] warming up ${NUM_ENTITIES} entities...`);
     const idToHost = new Map<string, string>();
     for (const id of ENTITY_IDS) {
-      const w = await whoFromAny(live, ctx.controlPort, id);
-      idToHost.set(id, w.host);
+      const owner = await whoFromAny(live, ctx.controlPort, id);
+      idToHost.set(id, owner.host);
     }
 
     // 2. Distribution check — every live node should host at least
@@ -118,12 +118,12 @@ export const scenario: Scenario = {
     let relocated = 0;
     const newHosts = new Set<string>();
     for (const id of entitiesOnVictim) {
-      const w = await whoFromAny(stillLive, ctx.controlPort, id);
-      if (w.host === victim) {
+      const owner = await whoFromAny(stillLive, ctx.controlPort, id);
+      if (owner.host === victim) {
         stillOnVictim++;
       } else {
         relocated++;
-        newHosts.add(w.host);
+        newHosts.add(owner.host);
       }
     }
     if (stillOnVictim > 0) {
