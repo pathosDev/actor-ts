@@ -48,7 +48,7 @@ let caseFiles;
 try {
   const entries = await readdir(casesDir);
   caseFiles = entries
-    .filter((f) => f.endsWith('.mjs'))
+    .filter((caseFile) => caseFile.endsWith('.mjs'))
     .sort();
 } catch (e) {
   console.error(`✗ failed to read cases directory: ${e.message}`);
@@ -62,22 +62,22 @@ if (caseFiles.length === 0) {
 console.log(`→ discovered ${caseFiles.length} case(s): ${caseFiles.join(', ')}\n`);
 
 let failed = 0;
-for (const f of caseFiles) {
-  const fileUrl = pathToFileURL(join(casesDir, f)).href;
+for (const caseFile of caseFiles) {
+  const fileUrl = pathToFileURL(join(casesDir, caseFile)).href;
   let mod;
   try {
     mod = await import(fileUrl);
   } catch (e) {
-    console.error(`✗ ${f}: failed to import — ${e.message}`);
+    console.error(`✗ ${caseFile}: failed to import — ${e.message}`);
     failed++;
     continue;
   }
   if (typeof mod.run !== 'function') {
-    console.error(`✗ ${f}: missing exported run(ctx) function`);
+    console.error(`✗ ${caseFile}: missing exported run(ctx) function`);
     failed++;
     continue;
   }
-  const name = mod.name ?? f;
+  const name = mod.name ?? caseFile;
   const description = mod.description ?? '(no description)';
   const startedAt = Date.now();
   try {

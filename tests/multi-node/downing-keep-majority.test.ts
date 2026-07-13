@@ -46,8 +46,8 @@ describe('KeepMajority — wired into cluster', () => {
     });
     try {
       await spec.start();
-      await Promise.all(['a', 'b', 'c', 'd', 'e'].map((r) =>
-        spec.awaitMembers(r, 5)));
+      await Promise.all(['a', 'b', 'c', 'd', 'e'].map((role) =>
+        spec.awaitMembers(role, 5)));
 
       // Partition: (a,b,c) ⇕ (d,e).
       for (const left of ['a', 'b', 'c']) {
@@ -58,12 +58,12 @@ describe('KeepMajority — wired into cluster', () => {
 
       // Majority side (a, b, c) converges to a 3-member view well
       // before downAfterMs would let the FD do this on its own.
-      await Promise.all(['a', 'b', 'c'].map((r) =>
-        spec.awaitMembers(r, 3, 4_000)));
+      await Promise.all(['a', 'b', 'c'].map((role) =>
+        spec.awaitMembers(role, 3, 4_000)));
 
       // Verify the majority side genuinely sees only 3 active members.
-      for (const r of ['a', 'b', 'c']) {
-        expect(spec.clusterFor(r).upMembers().length).toBe(3);
+      for (const role of ['a', 'b', 'c']) {
+        expect(spec.clusterFor(role).upMembers().length).toBe(3);
       }
     } finally {
       await spec.stop();
