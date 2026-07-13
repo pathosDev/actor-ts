@@ -156,7 +156,7 @@ export class ExpressBackend implements HttpServerBackend {
     // Register our raw-body middleware first so routes see req.rawBody.
     this.app.use(this.rawBodyMiddleware());
     // Apply routes.  Express treats patterns like "/users/:id" natively.
-    for (const r of this.registered) this.attachRoute(r);
+    for (const route of this.registered) this.attachRoute(route);
     // 404 + error middlewares MUST come last.
     if (this.notFoundHandler) {
       const handler = this.notFoundHandler;
@@ -197,8 +197,8 @@ export class ExpressBackend implements HttpServerBackend {
         // server.close() waits on them forever (a long-lived socket never
         // drains) and shutdown hangs.
         if (this.wss?.clients) {
-          for (const c of this.wss.clients) {
-            try { c.terminate?.(); } catch { /* already gone */ }
+          for (const client of this.wss.clients) {
+            try { client.terminate?.(); } catch { /* already gone */ }
           }
         }
         await new Promise<void>((resolve) => {
@@ -258,9 +258,9 @@ export class ExpressBackend implements HttpServerBackend {
 
   private adaptUpgradeRequest(req: IncomingMessage, url: URL, params: Record<string, string>): HttpRequest {
     const headers: Record<string, string> = {};
-    for (const [k, v] of Object.entries(req.headers)) {
-      if (typeof v === 'string') headers[k] = v;
-      else if (Array.isArray(v)) headers[k] = v.join(',');
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (typeof value === 'string') headers[key] = value;
+      else if (Array.isArray(value)) headers[key] = value.join(',');
     }
     const query: Record<string, string | string[] | undefined> = {};
     for (const key of new Set(url.searchParams.keys())) {
@@ -317,8 +317,8 @@ export class ExpressBackend implements HttpServerBackend {
       try {
         const chunks: Buffer[] = [];
         let total = 0;
-        const r = req as unknown as NodeJS.ReadableStream;
-        for await (const chunk of r) {
+        const readable = req as unknown as NodeJS.ReadableStream;
+        for await (const chunk of readable) {
           const buf = chunk as Buffer;
           total += buf.length;
           if (total > cap) {
@@ -361,9 +361,9 @@ export class ExpressBackend implements HttpServerBackend {
 
   private adaptRequest(req: ExpressRequestLike): HttpRequest {
     const headers: Record<string, string> = {};
-    for (const [k, v] of Object.entries(req.headers)) {
-      if (typeof v === 'string') headers[k] = v;
-      else if (Array.isArray(v)) headers[k] = v.join(',');
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (typeof value === 'string') headers[key] = value;
+      else if (Array.isArray(value)) headers[key] = value.join(',');
     }
     const body = req.rawBody ?? null;
     // Express's `req.ip` is the standard accessor — also honours
@@ -384,18 +384,18 @@ export class ExpressBackend implements HttpServerBackend {
 
   private normaliseQuery(raw: Record<string, unknown>): Record<string, string | string[] | undefined> {
     const out: Record<string, string | string[] | undefined> = {};
-    for (const [k, v] of Object.entries(raw)) {
-      if (v === undefined || v === null) continue;
-      if (typeof v === 'string') out[k] = v;
-      else if (Array.isArray(v)) out[k] = v.map((x) => String(x));
-      else out[k] = String(v);
+    for (const [key, value] of Object.entries(raw)) {
+      if (value === undefined || value === null) continue;
+      if (typeof value === 'string') out[key] = value;
+      else if (Array.isArray(value)) out[key] = value.map((x) => String(x));
+      else out[key] = String(value);
     }
     return out;
   }
 
   private writeResponse(res: ExpressResponseLike, response: HttpResponse): void {
     res.status(response.status);
-    if (response.headers) for (const [k, v] of Object.entries(response.headers)) res.setHeader(k, v);
+    if (response.headers) for (const [key, value] of Object.entries(response.headers)) res.setHeader(key, value);
     if (response.contentType) res.setHeader('content-type', response.contentType);
 
     const body = response.body;

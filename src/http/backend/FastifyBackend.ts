@@ -48,7 +48,7 @@ export class FastifyBackend implements HttpServerBackend {
     // bytes to reach the DSL unparsed so user code picks the decoder via
     // pickRequestSerializer.  Fastify's built-in JSON parser would steal
     // `application/json` bodies otherwise.
-    const rawParser = (_req: unknown, body: unknown, done: (err: Error | null, v: unknown) => void) => done(null, body);
+    const rawParser = (_req: unknown, body: unknown, done: (err: Error | null, value: unknown) => void) => done(null, body);
     this.app.removeContentTypeParser(['application/json', 'text/plain']);
     this.app.addContentTypeParser('*', { parseAs: 'buffer' }, rawParser);
     this.app.addContentTypeParser('application/json', { parseAs: 'buffer' }, rawParser);
@@ -168,8 +168,8 @@ export class FastifyBackend implements HttpServerBackend {
         await Promise.race([
           closing,
           new Promise<void>((resolve) => {
-            const t = setTimeout(resolve, 1000);
-            (t as { unref?: () => void }).unref?.();
+            const timer = setTimeout(resolve, 1000);
+            (timer as { unref?: () => void }).unref?.();
           }),
         ]);
       },
@@ -207,9 +207,9 @@ export class FastifyBackend implements HttpServerBackend {
 
   private adaptRequest(req: FastifyRequest): HttpRequest {
     const headers: Record<string, string> = {};
-    for (const [k, v] of Object.entries(req.headers)) {
-      if (typeof v === 'string') headers[k] = v;
-      else if (Array.isArray(v)) headers[k] = v.join(',');
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (typeof value === 'string') headers[key] = value;
+      else if (Array.isArray(value)) headers[key] = value.join(',');
     }
     const body = this.asBytes(req.body);
     // Fastify exposes the connecting peer as `req.ip` — that's the
@@ -243,7 +243,7 @@ export class FastifyBackend implements HttpServerBackend {
 
   private writeResponse(reply: FastifyReply, res: HttpResponse): void {
     reply.status(res.status);
-    if (res.headers) for (const [k, v] of Object.entries(res.headers)) reply.header(k, v);
+    if (res.headers) for (const [key, value] of Object.entries(res.headers)) reply.header(key, value);
     if (res.contentType) reply.header('content-type', res.contentType);
     if (res.body === undefined || res.body === null) {
       reply.send();
