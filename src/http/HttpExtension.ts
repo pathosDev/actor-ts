@@ -39,8 +39,8 @@ export class HttpExtension implements Extension {
       async bind(routes: Route): Promise<ServerBinding> {
         const active: HttpServerBackend = backend ?? new FastifyBackend();
         const compiled = compile(routes);
-        const httpRoutes = compiled.filter((r) => r.kind === 'http');
-        const wsRoutes = compiled.filter((r) => r.kind === 'websocket');
+        const httpRoutes = compiled.filter((route) => route.kind === 'http');
+        const wsRoutes = compiled.filter((route) => route.kind === 'websocket');
 
         if (wsRoutes.length > 0 && typeof active.registerWebSocket !== 'function') {
           throw new Error(
@@ -52,16 +52,16 @@ export class HttpExtension implements Extension {
         // the backend's own boot-time error, and it catches the WS-vs-GET
         // collision (a WS route occupies the GET verb at its pattern).
         const wsPatterns = new Set<string>();
-        for (const r of wsRoutes) {
-          if (wsPatterns.has(r.pattern)) {
-            throw new Error(`Duplicate websocket() route for pattern "${r.pattern}".`);
+        for (const route of wsRoutes) {
+          if (wsPatterns.has(route.pattern)) {
+            throw new Error(`Duplicate websocket() route for pattern "${route.pattern}".`);
           }
-          wsPatterns.add(r.pattern);
+          wsPatterns.add(route.pattern);
         }
-        for (const r of httpRoutes) {
-          if (r.method === 'GET' && wsPatterns.has(r.pattern)) {
+        for (const route of httpRoutes) {
+          if (route.method === 'GET' && wsPatterns.has(route.pattern)) {
             throw new Error(
-              `Route conflict: GET ${r.pattern} collides with a websocket() route on the same path.`,
+              `Route conflict: GET ${route.pattern} collides with a websocket() route on the same path.`,
             );
           }
         }
@@ -70,15 +70,15 @@ export class HttpExtension implements Extension {
         // Done at the DSL level so backends don't need a Logger
         // reference — every backend gets the same per-request debug
         // line uniformly.
-        for (const r of httpRoutes) {
+        for (const route of httpRoutes) {
           active.registerRoute({
-            method: r.method,
-            pattern: r.pattern,
+            method: route.method,
+            pattern: route.pattern,
             handler: async (req: HttpRequest): Promise<HttpResponse> => {
               const start = Date.now();
               system.log.debug(`[http] ${req.method} ${req.path}`);
               try {
-                const out = await r.handler(req);
+                const out = await route.handler(req);
                 system.log.debug(
                   `[http] ${req.method} ${req.path} → ${out.status} (${Date.now() - start} ms)`,
                 );
@@ -97,13 +97,13 @@ export class HttpExtension implements Extension {
         // shared ConnectionTracker so unbind() can close it — otherwise
         // a long-lived socket keeps the server's close() pending forever.
         const tracker = new ConnectionTracker();
-        for (const r of wsRoutes) {
+        for (const route of wsRoutes) {
           active.registerWebSocket!({
-            pattern: r.pattern,
-            authorize: r.authorize,
+            pattern: route.pattern,
+            authorize: route.authorize,
             onConnection: (req, socket) => {
               system.log.debug(`[ws] upgrade ${req.path}`);
-              r.connect(system, req, trackSocket(tracker, socket));
+              route.connect(system, req, trackSocket(tracker, socket));
             },
           });
         }

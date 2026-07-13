@@ -259,20 +259,20 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
           });
         } else {
           // Histogram: emit cumulative bucket samples + sum + count.
-          const h = child.metric as HistogramImplementation;
+          const histogram = child.metric as HistogramImplementation;
           let cumulative = 0;
-          for (let i = 0; i < h.buckets.length; i++) {
-            cumulative = h.counts[i]!;       // counts are already cumulative inside observe()
+          for (let i = 0; i < histogram.buckets.length; i++) {
+            cumulative = histogram.counts[i]!;       // counts are already cumulative inside observe()
             out.push({
               name, help: family.help, kind: 'histogram',
               labels: child.labels, value: cumulative,
-              bucket: h.buckets[i]!,
+              bucket: histogram.buckets[i]!,
             });
           }
           out.push({
             name, help: family.help, kind: 'histogram',
             labels: child.labels, value: 0,  // unused for sum/count rows
-            sum: h.sum, count: h.count,
+            sum: histogram.sum, count: histogram.count,
           });
         }
       }

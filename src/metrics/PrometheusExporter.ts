@@ -22,10 +22,10 @@ export function exportPrometheus(registry: MetricsRegistry): string {
   const samples = registry.collect();
   // Group by family name so we emit `# HELP` / `# TYPE` once per family.
   const byName = new Map<string, MetricSample[]>();
-  for (const s of samples) {
-    let arr = byName.get(s.name);
-    if (!arr) { arr = []; byName.set(s.name, arr); }
-    arr.push(s);
+  for (const sample of samples) {
+    let arr = byName.get(sample.name);
+    if (!arr) { arr = []; byName.set(sample.name, arr); }
+    arr.push(sample);
   }
   const out: string[] = [];
   for (const [name, group] of byName) {
@@ -38,26 +38,26 @@ export function exportPrometheus(registry: MetricsRegistry): string {
       // Layout per series: all bucket rows for one label set, then _sum + _count
       // for that label set.  We separate by labelKey first.
       const byLabel = new Map<string, MetricSample[]>();
-      for (const s of group) {
-        const k = labelKey(s.labels);
-        let arr = byLabel.get(k);
-        if (!arr) { arr = []; byLabel.set(k, arr); }
-        arr.push(s);
+      for (const sample of group) {
+        const key = labelKey(sample.labels);
+        let arr = byLabel.get(key);
+        if (!arr) { arr = []; byLabel.set(key, arr); }
+        arr.push(sample);
       }
       for (const groupSamples of byLabel.values()) {
-        for (const s of groupSamples) {
-          if (s.bucket !== undefined) {
-            const le = s.bucket === Number.POSITIVE_INFINITY ? '+Inf' : String(s.bucket);
-            const labels = renderLabels({ ...s.labels, le });
-            out.push(`${name}_bucket${labels} ${formatNumber(s.value)}`);
+        for (const sample of groupSamples) {
+          if (sample.bucket !== undefined) {
+            const le = sample.bucket === Number.POSITIVE_INFINITY ? '+Inf' : String(sample.bucket);
+            const labels = renderLabels({ ...sample.labels, le });
+            out.push(`${name}_bucket${labels} ${formatNumber(sample.value)}`);
           }
         }
         // sum + count come after the buckets.
-        for (const s of groupSamples) {
-          if (s.sum !== undefined && s.count !== undefined) {
-            const labels = renderLabels(s.labels);
-            out.push(`${name}_sum${labels} ${formatNumber(s.sum)}`);
-            out.push(`${name}_count${labels} ${formatNumber(s.count)}`);
+        for (const sample of groupSamples) {
+          if (sample.sum !== undefined && sample.count !== undefined) {
+            const labels = renderLabels(sample.labels);
+            out.push(`${name}_sum${labels} ${formatNumber(sample.sum)}`);
+            out.push(`${name}_count${labels} ${formatNumber(sample.count)}`);
           }
         }
       }
@@ -65,8 +65,8 @@ export function exportPrometheus(registry: MetricsRegistry): string {
       // Counter / Gauge — one row per labeled series.  Counter family
       // names traditionally end in `_total`; the user is responsible
       // for that naming convention.
-      for (const s of group) {
-        out.push(`${name}${renderLabels(s.labels)} ${formatNumber(s.value)}`);
+      for (const sample of group) {
+        out.push(`${name}${renderLabels(sample.labels)} ${formatNumber(sample.value)}`);
       }
     }
   }
@@ -99,14 +99,14 @@ function renderLabels(labels: Labels): string {
   const keys = Object.keys(labels).sort();
   if (keys.length === 0) return '';
   const inner = keys
-    .map((k) => `${k}="${escapeLabelValue(String(labels[k]))}"`)
+    .map((key) => `${key}="${escapeLabelValue(String(labels[key]))}"`)
     .join(',');
   return `{${inner}}`;
 }
 
 function labelKey(labels: Labels): string {
   return Object.keys(labels).sort()
-    .map((k) => `${k}=${String(labels[k])}`).join('\x1f');
+    .map((key) => `${key}=${String(labels[key])}`).join('\x1f');
 }
 
 function escapeLabelValue(v: string): string {

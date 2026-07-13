@@ -127,9 +127,9 @@ function decodeResponse(c: CachedResponse): HttpResponse {
 
 function bytesToBase64(bytes: Uint8Array): string {
   if (typeof Buffer !== 'undefined') return Buffer.from(bytes).toString('base64');
-  let s = '';
-  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]!);
-  return btoa(s);
+  let binaryString = '';
+  for (let i = 0; i < bytes.length; i++) binaryString += String.fromCharCode(bytes[i]!);
+  return btoa(binaryString);
 }
 
 function base64ToBytes(b64: string): Uint8Array {

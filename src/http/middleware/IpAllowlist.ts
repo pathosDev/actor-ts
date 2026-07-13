@@ -136,15 +136,15 @@ function ipToBigInt(ip: string, isV6: boolean): bigint {
 function ipv4ToBigInt(ip: string): bigint {
   const parts = ip.split('.');
   if (parts.length !== 4) throw new Error(`IpAllowlist: invalid IPv4 "${ip}"`);
-  let n = BigInt(0);
-  for (const p of parts) {
-    const v = Number(p);
-    if (!Number.isInteger(v) || v < 0 || v > 255) {
+  let value = BigInt(0);
+  for (const part of parts) {
+    const octet = Number(part);
+    if (!Number.isInteger(octet) || octet < 0 || octet > 255) {
       throw new Error(`IpAllowlist: invalid IPv4 octet in "${ip}"`);
     }
-    n = (n << BigInt(8)) | BigInt(v);
+    value = (value << BigInt(8)) | BigInt(octet);
   }
-  return n;
+  return value;
 }
 
 function ipv6ToBigInt(ip: string): bigint {
@@ -168,12 +168,12 @@ function ipv6ToBigInt(ip: string): bigint {
   if (groups.length !== 8) {
     throw new Error(`IpAllowlist: IPv6 "${ip}" did not expand to 8 groups (got ${groups.length})`);
   }
-  let n = BigInt(0);
-  for (const g of groups) {
-    if (!/^[0-9a-fA-F]{1,4}$/.test(g)) {
-      throw new Error(`IpAllowlist: invalid IPv6 group "${g}" in "${ip}"`);
+  let value = BigInt(0);
+  for (const group of groups) {
+    if (!/^[0-9a-fA-F]{1,4}$/.test(group)) {
+      throw new Error(`IpAllowlist: invalid IPv6 group "${group}" in "${ip}"`);
     }
-    n = (n << BigInt(16)) | BigInt(parseInt(g, 16));
+    value = (value << BigInt(16)) | BigInt(parseInt(group, 16));
   }
-  return n;
+  return value;
 }
