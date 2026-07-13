@@ -75,8 +75,8 @@ interface EventAdapter<E> {
 - Wenn es älter ist, `stored` in die aktuelle Form transformieren,
   dann zurückgeben.
 
-Die eingebauten Adapter des Frameworks (DefaultAdapter,
-MigratingAdapter) kapseln dieses Pattern.  Benutzerdefinierte
+Die eingebauten Adapter des Frameworks (defaultsAdapter,
+migratingAdapter) kapseln dieses Pattern.  Benutzerdefinierte
 Adapter implementieren dasselbe.
 
 ## Versionierung deiner Events
@@ -86,12 +86,9 @@ Wenn du die Version hochziehen willst:
 ```ts
 class Account extends PersistentActor<...> {
   override eventAdapter() {
-    return new MigratingAdapter<EventV2>({
-      currentVersion: 2,
-      chain: [
-        { from: 1, to: 2, fn: v1ToV2 },
-      ],
-    });
+    const chain = MigrationChain.for<EventV2>('deposited', 2)
+      .add({ fromVersion: 1, toVersion: 2, upcast: v1ToV2 });
+    return migratingAdapter(chain);
   }
 }
 ```
@@ -111,23 +108,17 @@ Wenn du einen Adapter zu einem existierenden Journal hinzufügst,
 das bereits persistierte rohe Events hat:
 
 ```ts
-class Account extends PersistentActor<...> {
-  override eventAdapter() {
-    return wrapLegacy<EventV2>({
-      legacyVersion: 1,
-      baseAdapter: new MigratingAdapter<EventV2>({
-        currentVersion: 2,
-        chain: [{ from: 1, to: 2, fn: v1ToV2 }],
-      }),
-    });
-  }
-}
+import { migrateInMemoryJournal } from 'actor-ts';
+
+// One-shot: wrap every raw event as a v1 envelope before recovery.
+await migrateInMemoryJournal(journal, (e) => `${e.kind}`);
 ```
 
-`wrapLegacy` behandelt jedes Nicht-Envelope-Event als
-**Version 1** und füttert es durch den Rest der Chain.  Siehe
-[WrapLegacy](/de/persistence/migration/wrap-legacy/) für
-Details.
+Das schreibt die rohen Events in v1-Envelopes um; von da an
+upcasted dein normaler Adapter sie wie jedes andere v1-Event.
+Siehe [Legacy wrappen](/de/persistence/migration/wrap-legacy/) für
+Details (und das Per-Row-Primitiv `wrapEventAsEnvelope` für
+Nicht-In-Memory-Backends).
 
 ## Persistenz-Formate
 
@@ -153,11 +144,12 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Einen Adapter zu einem existierenden Journal hinzufügen">
   ```ts
   // Journal hat 10K rohe Events; du fügst einen Adapter hinzu.
-  override eventAdapter() { return new MigratingAdapter(...); }
+  override eventAdapter() { return migratingAdapter(chain); }
   ```
-  Ohne `wrapLegacy` wirft die Recovery beim ersten rohen Event.
-  Verwende immer `wrapLegacy`, wenn du Adapter zu existierenden
-  Daten einführst.
+  Ohne vorherige Einmal-Migration wirft die Recovery beim ersten
+  rohen Event.  Führe `migrateInMemoryJournal` (oder das
+  `wrapEventAsEnvelope`-Primitiv) aus, bevor du Adapter zu
+  existierenden Daten einführst.
 </Aside>
 
 <Aside type="caution" title="Einen Adapter entfernen">
@@ -185,9 +177,9 @@ import { Aside } from '@astrojs/starlight/components';
 
 - **[Migration im Überblick](/de/persistence/migration/overview/)** —
   das größere Bild.
-- **[DefaultAdapter](/de/persistence/migration/default-adapter/)** —
+- **[defaultsAdapter](/de/persistence/migration/default-adapter/)** —
   Zero-Config-Additive-Migrationen.
-- **[MigratingAdapter](/de/persistence/migration/migrating-adapter/)** —
+- **[migratingAdapter](/de/persistence/migration/migrating-adapter/)** —
   verkettete Transformationen.
-- **[WrapLegacy](/de/persistence/migration/wrap-legacy/)** —
+- **[Legacy wrappen](/de/persistence/migration/wrap-legacy/)** —
   zum Mischen mit Nicht-Envelope-Legacy-Events.

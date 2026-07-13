@@ -1,6 +1,6 @@
 ---
-title: WrapLegacy
-description: Pre-Envelope-Events auf versionierte Envelopes hochrüsten — beim Einführen von Adaptern in ein existierendes Journal behandelt `wrapLegacy(...)` rohe Events als Version 1 und füttert sie in die Migrations-Chain. Die Brücke, um Migration in einer Brownfield-Codebase zu adoptieren.
+title: Legacy wrappen
+description: Ein Pre-Envelope-Journal nachrüsten — eine Einmal-Bulk-Migration, die jedes rohe Event in einen Version-1-Envelope wickelt, damit ein frisch hinzugefügter EventAdapter es replayen kann. `migrateInMemoryJournal` für das In-Memory-Journal; das `wrapEventAsEnvelope`-Primitiv für SQL / Cassandra / S3.
 ---
 
 Das [Envelope-Format](/de/persistence/migration/envelope-format/)
@@ -12,190 +12,183 @@ gespeichert:
 { "kind": "deposited", "amount": 100 }
 ```
 
-Nachdem du einen gesetzt hast, werden neue Events eingewickelt:
+Sobald ein Adapter da ist, werden neue Events in einen Envelope
+gewickelt:
 
 ```json
-{ "_v": 1, "_t": "deposited", "_e": { "kind": "deposited", "amount": 100 } }
+{ "_v": 1, "_t": "BankAccount.deposited", "_e": { "kind": "deposited", "amount": 100 } }
 ```
 
-Das schafft ein Problem, wenn Adapter in ein **existierendes
-Journal** eingeführt werden: alten rohen Events fehlt der
-Envelope, aber der Adapter erwartet Envelopes.  Das Lesen eines
-rohen Events wirft `MigrationError`.
+Das erzeugt ein Problem, wenn du einen Adapter zu einem
+**existierenden Journal** hinzufügst: die alten rohen Events haben
+keinen Envelope, aber der Adapter erwartet einen.  Das Lesen des
+ersten rohen Events wirft `MigrationError`.
 
-**`wrapLegacy`** überbrückt:
+Der Fix ist eine **Einmal-Bulk-Migration**: einmal durch das
+Journal laufen, jedes rohe Event als Version-1-Envelope wickeln,
+zurückschreiben.  Von da an replayt dein normaler
+[defaultsAdapter](/de/persistence/migration/default-adapter/) /
+[migratingAdapter](/de/persistence/migration/migrating-adapter/)
+sie wie jedes andere v1-Event.  Das ist ein echtes Umschreiben der
+gespeicherten Daten, kein Read-Time-Shim.
+
+## In-Memory-Journal
+
+Für das In-Memory-Journal erledigt `migrateInMemoryJournal` den
+gesamten Lauf-und-Umschreib-Vorgang.  Du lieferst ein
+`manifestFor`, das den stabilen `_t`-Diskriminator aus jedem Event
+ableitet:
 
 ```ts
-import { wrapLegacy, MigratingAdapter } from 'actor-ts';
+import { migrateInMemoryJournal, formatMigrationResult } from 'actor-ts';
 
-class Account extends PersistentActor<...> {
-  override eventAdapter() {
-    return wrapLegacy<EventV2>({
-      legacyVersion: 1,
-      baseAdapter:   new MigratingAdapter<EventV2>({
-        currentVersion: 2,
-        chain: [{ from: 1, to: 2, fn: v1ToV2 }],
-      }),
+const result = await migrateInMemoryJournal(
+  journal,
+  (e: { kind: string }) => `BankAccount.${e.kind}`,
+);
+
+console.log(formatMigrationResult('events', result));
+// → "events: 3 wrapped, 0 already enveloped, 3 inspected"
+```
+
+Sequenznummern, Timestamps und Tags bleiben erhalten — nur das
+Event-Payload wird gewickelt.  Führe das aus, **bevor** der Actor
+mit dem neuen Adapter recovert.
+
+## Andere Backends
+
+`migrateInMemoryJournal` verlässt sich auf einen internen
+`_remapForMigration`-Hook, den nur das In-Memory-Journal
+exponiert.  Cassandra- / SQLite- / Postgres- / S3-Journale
+brauchen je einen backend-spezifischen Umschreib-Pfad (SQL
+`UPDATE`, CQL `UPDATE`, S3 `PUT`).  Nutze das reine Per-Row-
+Primitiv `wrapEventAsEnvelope` als Baustein:
+
+```ts
+import { wrapEventAsEnvelope } from 'actor-ts';
+
+// Inside your own per-row rewrite loop:
+for (const row of rows) {
+  const enveloped = wrapEventAsEnvelope(
+    row.event,
+    (e) => `BankAccount.${e.kind}`,
+  );
+  await backend.rewrite(row.id, enveloped);
+  // enveloped === { _v: 1, _t: 'BankAccount.deposited', _e: row.event }
+}
+```
+
+`wrapEventAsEnvelope(event, manifestFor, version?)` ist pur und
+**idempotent** — ein Event, das schon wie ein Envelope aussieht,
+wird unverändert zurückgegeben, ein erneuter Lauf der Migration ist
+also sicher.
+
+## Snapshots
+
+Rohe Legacy-Snapshots haben dasselbe Problem.
+`migrateSnapshotStore` wickelt den neuesten Snapshot pro
+Persistence-ID (aus dem Journal bezogen) und nutzt intern
+`wrapStateAsEnvelope`:
+
+```ts
+import { migrateSnapshotStore } from 'actor-ts';
+
+const pids   = await journal.persistenceIds();
+const result = await migrateSnapshotStore(store, pids, (s) => 'BankAccount.State');
+```
+
+## Nach der Migration
+
+Sobald das Journal migriert ist, sind die rohen Events
+v1-Envelopes.  Der Actor nutzt einen **normalen Adapter** — es gibt
+keinen speziellen „Legacy-Wrapping"-Adapter zur Read-Time:
+
+```ts
+class Account extends PersistentActor<Cmd, EventV2, State> {
+  override eventAdapter(): EventAdapter<EventV2> {
+    return defaultsAdapter<EventV2>({
+      manifest:       'BankAccount.deposited',
+      currentVersion: 2,
+      defaults:       { 1: { currency: 'USD' } },
     });
   }
 }
 ```
 
-Was das tut:
+Das `manifest` hier muss dem `_t` entsprechen, das dein
+`manifestFor` während der Migration erzeugt hat.
 
-- Bei einem **rohen Event** (keine `_v` / `_t` / `_e`-Keys):
-  als `version: 1` behandeln.  Das rohe Event als v1-Payload an
-  den inneren Adapter weitergeben.
-- Bei einem **Envelope-Event**: unverändert an den inneren
-  Adapter weiterleiten.
-
-So fließen existierende rohe Events durch dieselbe
-Migrations-Chain wie neue, in Envelopes eingewickelte Events.
-
-## Konfiguration
+## Signaturen
 
 ```ts
-interface WrapLegacySettings<E> {
-  legacyVersion: number;        // Version, die rohen Events zugewiesen wird
-  baseAdapter:   EventAdapter<E>;
+function wrapEventAsEnvelope<E>(
+  event: E, manifestFor: (e: E) => string, version?: number,   // version default 1
+): JournalEnvelope<E>;
+
+function wrapStateAsEnvelope<S>(
+  state: S, manifestFor: (s: S) => string, version?: number,
+): JournalEnvelope<S>;
+
+function migrateInMemoryJournal<E>(
+  journal: Journal, manifestFor: (e: E) => string, opts?: { version?: number },
+): Promise<MigrationResult>;
+
+function migrateSnapshotStore<S>(
+  store: SnapshotStore, pids: ReadonlyArray<string>,
+  manifestFor: (s: S) => string, opts?: { version?: number },
+): Promise<MigrationResult>;
+
+interface MigrationResult {
+  inspected: number;   // entries examined
+  wrapped:   number;   // raw → envelope
+  skipped:   number;   // already enveloped, left untouched
 }
 ```
 
-| Feld | Was |
-| --- | --- |
-| `legacyVersion` | Die Version, als die rohe Events behandelt werden.  Typischerweise `1`. |
-| `baseAdapter` | Der "echte" Adapter, der den Rest handhabt. |
-
-Die Legacy-Version sollte **die Version sein, unter der dein Code
-rohe Events geschrieben hat** — normalerweise `1`, aber wenn du
-eine Weile auf v1 warst und die Envelope-Adoption bis v3
-übersprungen hast, verwende `legacyVersion: 1` und verkette
-`1→2`, `2→3`.
-
-## Wann verwenden
-
-Drei Szenarien:
-
-1. **Adapter zu einem existierenden Journal hinzufügen** — der
-   häufigste Fall.  Einmal einwickeln; ab diesem Punkt sind neue
-   Events Envelopes, alte Events fließen durch Legacy-Wrapping.
-2. **Aus einem anderen Framework migrieren** — alte Events, die
-   von einem vorherigen System geschrieben wurden, sind jetzt in
-   diesem Journal.  Als `legacyVersion` behandeln und hochmigrieren.
-3. **Gemischte Umgebungen während eines schrittweisen Rollouts** —
-   einige Events wurden von einer alten Version deines Codes
-   geschrieben (roh); einige von einer neuen Version (Envelope).
-   Einwickeln, um beides zu handhaben.
-
-Nachdem **alle** rohen Events gelesen wurden (oder durch
-Snapshots ersetzt sind, die den migrierten State enthalten),
-könntest du im Prinzip den `wrapLegacy`-Wrapper droppen.  In der
-Praxis lass ihn drauf — die Kosten sind vernachlässigbar, und
-das Sicherheitsnetz ist wertvoll.
-
-## Was als "Legacy" betrachtet wird
-
-Die Erkennung ist einfach: eine gespeicherte Payload **ohne alle
-von `_v`, `_t`, `_e`** ist Legacy.  Das ist in der Praxis
-eindeutig — echte Events haben praktisch nie zufällig alle drei
-mit Unterstrich präfixierten Felder.
-
-## Mehrere Legacy-Versionen
-
-Wenn dein Journal rohe Events aus **mehreren Legacy-Versionen**
-enthält, reicht `wrapLegacy` allein nicht — es gibt eine
-`legacyVersion` für alle rohen Events.
-
-Für Multi-Legacy-Szenarien würdest du einen benutzerdefinierten
-Adapter schreiben, der die Form des rohen Events inspiziert, um
-seine Version zu entscheiden:
-
-```ts
-class MultiLegacyAdapter implements EventAdapter<EventV3> {
-  upcast(stored: unknown, version: number): EventV3 {
-    if (version > 0) {
-      // Envelope-Event mit bekannter Version — Chain handhabt es
-      return innerChain.upcast(stored, version);
-    }
-    // Legacy-Event — Form schnüffeln, um die Version zu bestimmen
-    const e = stored as any;
-    if ('cents' in e) return innerChain.upcast(e, 2);   // sieht aus wie v2-Form
-    if ('amount' in e) return innerChain.upcast(e, 1);   // sieht aus wie v1-Form
-    throw new Error('unknown legacy event shape');
-  }
-}
-```
-
-Das ist selten; die meisten Projekte haben eine einzige
-Pre-Envelope-Form, und `wrapLegacy` ist ausreichend.
-
-## Snapshot-Kompatibilität
-
-Snapshots haben ihren eigenen Adapter (`stateAdapter()`),
-unabhängig von `eventAdapter()`.  Wenn du Legacy-Roh-Snapshots
-(Pre-Envelope) hast, wickle sie ähnlich ein:
-
-```ts
-class Account extends PersistentActor<...> {
-  override snapshotAdapter() {
-    return wrapLegacy<StateV2>({
-      legacyVersion: 1,
-      baseAdapter: new MigratingAdapter<StateV2>({ ... }),
-    });
-  }
-}
-```
-
-Für die meisten Setups werden Snapshots seltener als Events
-geschrieben und waren bereits in Envelopes, als Adapter
-eingeführt wurden — aber doppelte Prüfung, bevor du es annimmst.
-
-## Stolperfallen
+## Fallstricke
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Falsche `legacyVersion`">
+<Aside type="caution" title="Die Migration vor der Recovery ausführen">
   ```ts
-  wrapLegacy<EventV3>({ legacyVersion: 2, ... });
-  // ✗ rohe Events werden in den v2→v3-Schritt gefüttert, aber sie sind eigentlich v1
+  // Deploy the adapter without migrating first → first raw event throws
+  override eventAdapter() { return defaultsAdapter({ ... }); }
   ```
-  Die `legacyVersion` muss zur Form deiner existierenden rohen
-  Events passen.  Wenn du das falsch hast, erhält die
-  Migrations-Chain malformed Input.
+  Die Bulk-Migration muss gegen das Journal laufen, **bevor** ein
+  Actor mit dem neuen Adapter recovert — sonst wirft das erste rohe
+  Event `MigrationError`.
 </Aside>
 
-<Aside type="caution" title="Envelope/Nicht-Envelope gemischt ohne Wrap">
+<Aside type="caution" title="`manifestFor` muss stabil sein und zum Adapter passen">
   ```ts
-  // Adapter gesetzt ohne wrapLegacy — erstes rohes Event wirft
-  override eventAdapter() { return new MigratingAdapter(...); }
+  // migration wrote _t: 'BankAccount.deposited'
+  // but the adapter's manifest is 'Deposited' → MigrationError on read
   ```
-  Verwende `wrapLegacy` immer, wenn das Journal rohe Events
-  enthalten könnte — selbst wenn du denkst, sie sind alle in
-  Envelopes, das Sicherheitsnetz ist billig.
+  Das `_t`, das dein `manifestFor` erzeugt, wird in den
+  gespeicherten Envelope eingebacken.  Es muss dem `manifest`
+  entsprechen, das dein Adapter deklariert, und deterministisch aus
+  dem Event abgeleitet sein.
 </Aside>
 
-<Aside type="caution" title="Nicht mit einem einmaligen Backfill verwechseln">
+<Aside type="caution" title="Eigene Backends brauchen ihr eigenes Umschreiben">
   ```ts
-  // Ein Skript laufen lassen, das jedes existierende Event in einen Envelope wickelt?
+  await migrateInMemoryJournal(cassandraJournal, manifestFor);
+  // ✗ throws: journal does not expose _remapForMigration
   ```
-  Möglich, aber invasiv: erfordert Journal-Schreibzugriff +
-  riskiert Datenschaden.  `wrapLegacy` macht das Wrapping **zur
-  Lesezeit** — keine Journal-Modifikation nötig.  Bleib dabei,
-  außer du hast einen spezifischen Grund, das Journal neu zu
-  schreiben.
+  Nur das In-Memory-Journal unterstützt `migrateInMemoryJournal`.
+  Für andere Backends schreib ein paar Zeilen Glue um
+  `wrapEventAsEnvelope` und den nativen Update-Pfad deines Stores.
 </Aside>
 
-## Wie geht's weiter
+## Wohin als Nächstes
 
 - **[Migration im Überblick](/de/persistence/migration/overview/)** —
-  das größere Bild.
+  das Gesamtbild.
 - **[Envelope-Format](/de/persistence/migration/envelope-format/)** —
   wie ein Envelope aussieht.
-- **[DefaultAdapter](/de/persistence/migration/default-adapter/)** —
-  für additive Migrationen.
-- **[MigratingAdapter](/de/persistence/migration/migrating-adapter/)** —
-  für verkettete Transformationen (häufig von `wrapLegacy`
-  eingewickelt).
-- **[Rezepte](/de/persistence/migration/recipes/)** — das
-  Rezept für "Ich führe Adapter in ein existierendes System
-  ein."
+- **[defaultsAdapter](/de/persistence/migration/default-adapter/)** —
+  für additive Migrationen, sobald Events envelopet sind.
+- **[migratingAdapter](/de/persistence/migration/migrating-adapter/)** —
+  für verkettete Transformationen, sobald Events envelopet sind.
+- **[Recipes](/de/persistence/migration/recipes/)** — das Rezept
+  für „Ich führe Adapter in ein existierendes System ein".

@@ -1,65 +1,75 @@
 ---
-title: DefaultAdapter
-description: Zero-effort migration for additive changes — declare default values for fields added in newer versions; older payloads read back with the defaults filled in. The right tool when "I just added a field" describes the change.
+title: defaultsAdapter
+description: Zero-effort migration for purely additive changes — declare the fields added at each version step and older payloads read back with those defaults filled in. The right tool when "I just added a field" describes the change.
 ---
 
-`DefaultAdapter` handles the **simplest migration shape**: a new
-version added fields, all of which have sensible defaults.
+`defaultsAdapter` handles the **simplest migration shape**: each
+version added fields, all of which have sensible constant defaults.
+It's a function that returns an `EventAdapter` — plug it into an
+actor's `eventAdapter()`:
 
 ```ts
-import { DefaultAdapter } from 'actor-ts';
+import { defaultsAdapter, type EventAdapter } from 'actor-ts';
 
-type EventV1 = { kind: 'deposited'; amount: number };
-type EventV2 = { kind: 'deposited'; amount: number; currency: string };
+type DepositedV1 = { kind: 'deposited'; amount: number };
+type DepositedV2 = { kind: 'deposited'; amount: number; currency: 'USD' | 'EUR' };
 
-class Account extends PersistentActor<Cmd, EventV2, State> {
-  override eventAdapter() {
-    return new DefaultAdapter<EventV2>({
+class Account extends PersistentActor<Cmd, DepositedV2, State> {
+  override eventAdapter(): EventAdapter<DepositedV2> {
+    return defaultsAdapter<DepositedV2>({
+      manifest:       'BankAccount.Deposited',
       currentVersion: 2,
-      defaults:       { currency: 'USD' },
+      defaults:       { 1: { currency: 'USD' } },   // fields added going v1 → v2
     });
   }
 }
 ```
 
-V1 events `{ kind: 'deposited', amount: 100 }` read back as
-`{ kind: 'deposited', amount: 100, currency: 'USD' }` — defaults
-fill in.  V2 events read unchanged.
+A stored v1 event `{ kind: 'deposited', amount: 100 }` reads back
+as `{ kind: 'deposited', amount: 100, currency: 'USD' }` — the
+default is merged in.  V2 events read unchanged.
 
 ## When this is enough
 
-`DefaultAdapter` is the right tool when:
+`defaultsAdapter` is the right tool when:
 
 - **Pure addition** — new fields are added; old ones unchanged.
-- **Defaults are stable** — the default value is the same forever
-  (or at least until the next version bump).
-- **Order doesn't matter** — adding multiple fields across
-  versions all collapse to "fill in whatever's missing."
+- **Defaults are constant** — the default value is the same for
+  every event at that version.
+- **No renames or type changes** — it only *adds* missing fields.
 
-This covers ~50 % of real-world migrations.  When it doesn't fit,
-reach for [MigratingAdapter](/persistence/migration/migrating-adapter/).
+This covers a large share of real-world migrations.  When it
+doesn't fit, reach for
+[migratingAdapter](/persistence/migration/migrating-adapter/).
 
 ## Configuration
 
+The argument is a `DefaultsAdapterSpec<E>`:
+
 ```ts
-interface DefaultAdapterSettings<E> {
-  currentVersion: number;
-  defaults:       Partial<E>;
+interface DefaultsAdapterSpec<E> {
+  manifest:       string;                                 // stable type identity, e.g. 'BankAccount.Deposited'
+  currentVersion: number;                                 // version this code revision emits
+  defaults:       { [fromVersion: number]: Partial<E> };  // fields added at each step
+  writeVersion?:  number;                                 // emit an older version (rolling deploys)
 }
 ```
 
 | Field | What |
 | --- | --- |
+| `manifest` | The stable discriminator stored with every event; must match the on-disk manifest. |
 | `currentVersion` | The version newly-written events carry. |
-| `defaults` | Field-name → default-value mapping for fields possibly missing in older events. |
+| `defaults` | Keyed **by from-version**: `defaults[v]` is the set of fields added going from `v` to `v+1`. |
+| `writeVersion` | Optional — emit events at an older version during a rolling deploy (fields added after it are stripped on write). |
 
-The adapter applies defaults by spreading `defaults` first, then
-the stored event:
+Reading a stored payload runs one merge per step from its version
+up to `currentVersion`; each step spreads that step's defaults
+first, then the payload:
 
 ```ts
 {
-  ...defaults,           // fallback values
-  ...storedPayload,      // actual values overwrite defaults
+  ...defaults[v],       // fields added at step v
+  ...storedPayload,     // actual values win
 }
 ```
 
@@ -69,73 +79,89 @@ fill gaps.
 ## Multiple version bumps
 
 ```ts
-// v1 → v2: added `currency`
-// v2 → v3: added `metadata`
-class Account extends PersistentActor<...> {
-  override eventAdapter() {
-    return new DefaultAdapter<EventV3>({
+// v1 → v2 added `currency`; v2 → v3 added `metadata`
+class Account extends PersistentActor<Cmd, EventV3, State> {
+  override eventAdapter(): EventAdapter<EventV3> {
+    return defaultsAdapter<EventV3>({
+      manifest:       'BankAccount.Deposited',
       currentVersion: 3,
       defaults: {
-        currency: 'USD',
-        metadata: {},
+        1: { currency: 'USD' },   // merged when reading a v1 payload
+        2: { metadata: {} },      // merged when reading a v1 or v2 payload
       },
     });
   }
 }
 ```
 
-The adapter doesn't care about version transitions individually
-— it just makes sure all `defaults` fields are present.  Works
-for V1 (missing both), V2 (missing only metadata), V3 (has both).
+Each `defaults[v]` key must be **strictly less than**
+`currentVersion` — the adapter validates this and throws otherwise.
+Reading a v1 payload applies steps 1 and 2; a v2 payload applies
+step 2 only.
 
-## When the default isn't right
+## Snapshots and durable state
 
-Consider `currency: 'USD'` for an account opened in Germany in
-2015 — the default is wrong (should be EUR).  Two options:
-
-### Use MigratingAdapter for context-aware migration
+For the same additive shape on a snapshot / durable-state record,
+use `defaultsSnapshotAdapter` — identical spec, returns a
+`SnapshotAdapter`:
 
 ```ts
-new MigratingAdapter<EventV2>({
+import { defaultsSnapshotAdapter } from 'actor-ts';
+
+const adapter = defaultsSnapshotAdapter<StateV2>({
+  manifest:       'BankAccount.State',
   currentVersion: 2,
-  chain: [
-    { from: 1, to: 2, fn: (v1) => ({
-      ...v1,
-      currency: lookupCurrencyByTimestamp(v1.ts),
-    })},
-  ],
+  defaults:       { 1: { currency: 'USD' } },
 });
 ```
 
-The chain function has access to the full V1 event, so it can
-derive a per-event default from context.
+## When the default isn't right
+
+Consider `currency: 'USD'` for an account opened in Germany — the
+constant default is wrong (should be EUR).  Two options:
+
+### Use migratingAdapter for context-aware migration
+
+```ts
+import { migratingAdapter, MigrationChain } from 'actor-ts';
+
+const chain = MigrationChain.for<DepositedV2>('BankAccount.Deposited', 2)
+  .add({ fromVersion: 1, toVersion: 2,
+         upcast: (v1: DepositedV1): DepositedV2 => ({
+           ...v1,
+           currency: lookupCurrencyByTimestamp(v1.ts),
+         }) });
+const adapter = migratingAdapter(chain);
+```
+
+The upcaster has access to the full v1 event, so it can derive a
+per-event value from context.
 
 ### Backfill instead of default
 
-If the historical events should be **rewritten** to have correct
-currency, run a one-off migration script that reads each event,
-rewrites it with the correct currency, and writes it back to a
-fresh pid (or updates the journal in place if you have write
-access).
-
-This is rare — usually keeping old events as-is + using a
-context-aware adapter is fine.
+If the historical events should be **rewritten** to the correct
+currency, run a one-off script that reads each event, rewrites it,
+and writes it back.  This is rare — usually keeping old events
+as-is plus a context-aware adapter is fine.
 
 ## Type safety
 
 ```ts
-new DefaultAdapter<EventV2>({
+defaultsAdapter<EventV2>({
+  manifest:       'BankAccount.Deposited',
   currentVersion: 2,
   defaults: {
-    currency: 'USD',
-    nonExistentField: 'oops',   // ✓ compiles — but never used
+    1: {
+      currency:         'USD',
+      nonExistentField: 'oops',   // ✓ compiles — but never used
+    },
   },
 });
 ```
 
-TypeScript allows extra fields in `Partial<E>` — they just don't
-do anything if the event type doesn't include them.  Watch for
-typos in field names; they fail silently.
+Each `defaults[v]` is a `Partial<E>`, so TypeScript allows extra
+fields — they just do nothing if the event type doesn't include
+them.  Watch for typos in field names; they fail silently.
 
 ## Pitfalls
 
@@ -143,32 +169,28 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Wrong default for an old event">
   ```ts
-  // V1 events from 2015 → currency: 'USD' default → wrong for non-US tenants
+  // v1 events from 2015 → currency: 'USD' default → wrong for non-US tenants
   ```
-  Defaults are static.  If "the right default depends on the
-  event" applies, use MigratingAdapter with a per-event function
-  instead.
+  Defaults are constant.  If "the right value depends on the event"
+  applies, use `migratingAdapter` with a per-event upcaster instead.
 </Aside>
 
 <Aside type="caution" title="Renaming fields">
   ```ts
-  // V1: { amount: number }
-  // V2: { value: number }   ← renamed
+  // v1: { amount: number }
+  // v2: { value: number }   ← renamed
   ```
-  DefaultAdapter doesn't handle renames — old events still have
-  `amount`, new events expect `value`.  Use a MigratingAdapter
-  that explicitly transforms `{ amount } → { value }`.
+  `defaultsAdapter` doesn't handle renames — old events still have
+  `amount`, new events expect `value`.  Use a `migratingAdapter`
+  whose upcaster maps `{ amount } → { value }`.
 </Aside>
 
-<Aside type="caution" title="Required fields without defaults">
+<Aside type="caution" title="Manifest must match on disk">
   ```ts
-  // V2 adds `currency`, no default provided
-  new DefaultAdapter<EventV2>({ currentVersion: 2, defaults: {} });
+  // stored manifest 'BankAccount.Deposited' ≠ adapter manifest 'Deposited'
   ```
-  V1 events come out missing `currency`.  TypeScript still
-  thinks the type is satisfied (the adapter erases to `E`), but
-  `event.currency` is `undefined` at runtime.  Always provide
-  defaults for fields that are not optional in the new type.
+  The `manifest` in the spec must equal the manifest stored with
+  the events — a mismatch throws `MigrationError` on read.
 </Aside>
 
 ## Where to next
@@ -177,7 +199,7 @@ import { Aside } from '@astrojs/starlight/components';
   the bigger picture.
 - **[Envelope format](/persistence/migration/envelope-format/)** —
   how versioning works on disk.
-- **[MigratingAdapter](/persistence/migration/migrating-adapter/)** —
+- **[migratingAdapter](/persistence/migration/migrating-adapter/)** —
   for non-additive transformations.
 - **[Recipes](/persistence/migration/recipes/)** — the
   per-pattern cookbook.
