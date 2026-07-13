@@ -27,7 +27,7 @@ For a non-trivial actor system going to production:
 □ Cluster wired up (if multi-node) with concrete seed strategy
 □ Downing strategy configured (split-brain protection)
 □ Coordinated shutdown configured with SIGTERM hooks
-□ Health checks exposed via HttpManagement
+□ Health checks exposed via managementRoutes
 □ Metrics exposed via Prometheus or OTel
 □ Log aggregation hooked up (structured logging via withFields/MDC)
 □ TLS enabled on the cluster transport

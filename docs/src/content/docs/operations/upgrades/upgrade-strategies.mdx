@@ -69,9 +69,10 @@ type DepositedV2 = { kind: 'deposited'; amount: number; currency: string };
 ```ts
 class Account extends PersistentActor<...> {
   override eventAdapter() {
-    return new DefaultAdapter<DepositedV2>({
+    return defaultsAdapter<DepositedV2>({
+      manifest:       'Deposited',
       currentVersion: 2,
-      defaults:       { currency: 'USD' },
+      defaults:       { 1: { currency: 'USD' } },
     });
   }
 }
@@ -86,7 +87,7 @@ This step:
 
 Roll this out via standard rolling deployment.
 
-**Step 2 (optional later)** — drop the `DefaultAdapter` once
+**Step 2 (optional later)** — drop the `defaultsAdapter` once
 all old events are aged out or snapshotted.  Usually keep it
 indefinitely for safety.
 
@@ -99,7 +100,7 @@ For **renames**, **restructures**, **removed fields**, the
 mechanics need more steps:
 
 ```
-1. Deploy code that READS old + writes NEW.  (`MigratingAdapter`)
+1. Deploy code that READS old + writes NEW.  (`migratingAdapter`)
 2. Roll out fully.  All new events are now in the new shape.
 3. Deploy code that READS NEW only (no longer supports old).
    Drops the migrating step.
@@ -108,7 +109,7 @@ mechanics need more steps:
 ```
 
 See
-[MigratingAdapter](/persistence/migration/migrating-adapter/)
+[migratingAdapter](/persistence/migration/migrating-adapter/)
 for the implementation.
 
 ## Inter-actor message changes

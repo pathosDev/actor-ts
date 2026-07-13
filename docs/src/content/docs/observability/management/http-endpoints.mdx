@@ -17,15 +17,15 @@ Liveness — is this process fundamentally healthy?
 GET /health
 → 200 OK
 {
-  "ok": true,
-  "checks": {
-    "actor-system-alive": { "ok": true }
-  }
+  "status": "UP",
+  "checks": [
+    { "name": "event-loop", "status": true }
+  ]
 }
 ```
 
-503 with `{ ok: false }` if a check fails.  See
-[Health checks](/observability/management/health-checks/).
+503 with `{ "status": "DOWN", ... }` if any liveness check fails.
+See [Health checks](/observability/management/health-checks/).
 
 ### `GET /ready`
 
@@ -35,20 +35,21 @@ Readiness — should this pod receive traffic?
 GET /ready
 → 200 OK
 {
-  "ok": true,
-  "checks": {
-    "actor-system-alive":   { "ok": true },
-    "cluster-up":           { "ok": true }
-  }
+  "status": "UP",
+  "clusterReady": true,
+  "checks": [
+    { "name": "database", "status": true }
+  ]
 }
 ```
 
-The `cluster-up` check fails until `SelfUp` fires.  Custom
-checks contribute to the response.  503 if any fails.
+`clusterReady` is `false` until the local node reaches `Up`; the
+readiness checks you register contribute the `checks` array.  503
+if the cluster isn't ready or any check fails.
 
 ## Cluster info
 
-Available when `cluster` is passed to `HttpManagement.start`.
+Available when a `cluster` is passed to `managementRoutes`.
 
 ### `GET /cluster/members`
 
@@ -197,7 +198,7 @@ const customRoutes = concat(
   ),
 );
 
-await http.newServerAt(host, port).bind(customRoutes);
+await system.http(port, { host }).bind(customRoutes);
 ```
 
 `managementRoutes(system, cluster, opts)` returns the base

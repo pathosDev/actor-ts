@@ -16,8 +16,9 @@ features:
   every registered version; writers emit a chosen one.
 - **`MasterKeyRing`** (#8) — `active` + `retired[]` keys; every
   encrypted body's manifest names the key version it used.
-- **`wrapLegacy` helpers** (#9) — one-shot rewrite of pre-envelope
-  events into the current schema envelope.
+- **`wrapEventAsEnvelope` + `migrateInMemoryJournal`** (#9) —
+  one-shot rewrite of pre-envelope events into the current schema
+  envelope.
 - **`SchemaRegistry`** (#6) — multi-version codec + compatibility
   checks.
 

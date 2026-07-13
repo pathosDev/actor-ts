@@ -1,186 +1,159 @@
 ---
 title: Durable storage
-description: Persist DistributedData replicas to disk so they survive full-cluster restarts. Wrap a `DurableStateStore` (in-memory / SQLite / object-storage) around the replicator; configure which keys are durable, transparently restored on startup.
+description: Persist DistributedData replicas to disk so they survive full-cluster restarts. Give the replicator a `DurableStateStore` (in-memory / Postgres / object-storage) via `withDurableStore`; each replica's whole view is loaded on start and re-saved after every mutation.
 ---
 
 By default, DistributedData replicas live **only in memory**.  A
 full-cluster restart (every node down at once) loses all the
 state — every key starts from `empty` again.
 
-For state that **must survive a cold start**, wrap the replicator
-with **`DurableDistributedDataStore`**:
+For state that **must survive a cold start**, hand
+DistributedData a durable backend with
+`DistributedDataOptions.withDurableStore(...)`:
 
 ```ts
 import {
   DistributedDataId,
   DistributedDataOptions,
-  DurableDistributedDataStore,
-  SqliteDurableStateStore,
+  InMemoryDurableStateStore,
 } from 'actor-ts';
 
-const stateStore = new SqliteDurableStateStore({ path: '/var/lib/dd.db' });
+// Any DurableStateStore works — InMemory here; a SQL / object-storage
+// backend in production (see "Store choices" below).
+const store = new InMemoryDurableStateStore();
 
-const distributedDataOptions = DistributedDataOptions.create().withDurableStore(
-    new DurableDistributedDataStore({
-      durableStateStore: stateStore,
-      keys:              ['hits', 'config', 'sessions'],
-    }),
-  );
+const distributedDataOptions = DistributedDataOptions.create()
+  .withGossipInterval(1_000)
+  .withDurableStore(store);
+
 const dd = system.extension(DistributedDataId).start(
   cluster,
   distributedDataOptions,
 );
 ```
 
+`withDurableStore` takes a **`DurableStateStore`** directly — not a
+wrapper.  Internally, DistributedData wraps it in a
+`DurableDistributedDataStore` keyed by this node's own replica id,
+so **durability is per-replica**: each cluster member owns one
+durable record.
+
 What this gives you:
 
-- **On `update`** — the local replica writes through to the
-  `durableStateStore`, durably storing the merged value.
-- **On startup** — before joining gossip, the local replica
-  loads its persisted state from the store.
+- **On `preStart`** — before the replica joins gossip, it loads
+  its persisted view from the store.
+- **After every mutation** — local `update`, incoming gossip
+  merge, and `delete` all re-save the view.
 
 After a cold start, `dd.get(key)` returns the last-persisted value
-— not `undefined`.
-
-## Configuration
-
-```ts
-interface DurableDistributedDataSettings {
-  durableStateStore: DurableStateStore;
-  keys: string[];               // which keys are durable
-  encryption?: EncryptionConfig;
-  compression?: CompressionConfig;
-}
-```
-
-| Field | Purpose |
-| --- | --- |
-| `durableStateStore` | Any DurableStateStore implementation — in-memory, SQLite, object-storage. |
-| `keys` | The whitelist of key names that should be persisted.  Other keys stay in-memory only. |
-| `encryption` | Optional AES-GCM encryption at rest. |
-| `compression` | Optional gzip / zstd compression. |
-
-The `keys` whitelist is **mandatory** — without it, every key
-would persist, which defeats the "small, hot state" model
-DistributedData is designed for.
-
-## Store choices
-
-| Store | Use |
-| --- | --- |
-| `InMemoryDurableStateStore` | Tests (durable per-process but lost on process exit — odd but useful for unit tests). |
-| `SqliteDurableStateStore` | Single-node deployment, or per-node durable state in a cluster. |
-| `ObjectStorageDurableStateStore` | Filesystem or S3-backed — multi-node-shared if you point all nodes at the same path / bucket. |
-
-For most production setups, **`SqliteDurableStateStore` per
-node** is the right choice — each node persists its own replica,
-restored on its own restart.  Gossip handles convergence after a
-restart.
-
-## Per-node vs shared store
-
-```
-SqliteDurableStateStore per node:
-   node-A's store ← persists node-A's replica
-   node-B's store ← persists node-B's replica
-   cold start → each node loads its own state, then gossip catches up
-```
-
-```
-ObjectStorageDurableStateStore pointing at shared S3:
-   shared bucket ← persists the cluster's last-merged value
-   cold start → every node loads the same state — instant convergence
-```
-
-Per-node:
-
-- **Pro**: each node has full local recovery; partition-tolerant.
-- **Con**: state on a destroyed node is lost (no other backup).
-
-Shared:
-
-- **Pro**: cluster-wide single source of truth; lose a node, the
-  others still have everything.
-- **Con**: extra round trip to load state at startup; single
-  point of failure if the store goes down.
-
-For most apps, per-node is preferred — losing one node's local
-state is rarely a problem because gossip + the surviving nodes
-restore it.
+— not `undefined` — and gossip re-merges across replicas from
+there.
 
 ## What gets persisted
 
-**Only the keys in the whitelist.**  Everything else is in-memory
-only.
+There is **no key whitelist**.  The replica's **entire local view**
+(every key it holds) is serialized and written as **one durable
+record per replica**, under the id `ddata|<replicaId>`.  Each value
+is serialized via the CRDT's own `toJSON()`.
 
-Per persisted key:
+Because the whole view is one record, **every mutation rewrites the
+whole record** — the same full-state-rewrite trade-off durable-state
+actors have.  For small, hot state (counters, flags, small sets)
+this is cheap; for a large view under a high mutation rate it costs
+bandwidth and write amplification (see the cautions below).
 
-- The **full CRDT state** (not deltas) is rewritten on every
-  update.
-- The state is serialized via the CRDT's `toJSON()`.
-- Optional encryption + compression applied to the serialized
-  payload.
+## Store choices
 
-For small CRDTs (counters, flags, small sets) this is cheap.  For
-huge ones (10k-entry ORMaps with rich nested CRDTs), every update
-rewrites the whole blob — bandwidth and write-amplification
-matter.  Same trade-off as durable-state actors.
+Any [`DurableStateStore`](/persistence/durable-state/) implementation
+works — construct it exactly as you would for a durable-state actor,
+then pass it to `withDurableStore`:
 
-## Encryption
+| Store | Use |
+| --- | --- |
+| `InMemoryDurableStateStore` | Tests / dev — durable within the process, gone on exit. |
+| `PostgresDurableStateStore` | Cluster-shared SQL durability. |
+| `MariaDbDurableStateStore` | The MySQL-family SQL alternative. |
+| `ObjectStorageDurableStateStore` | Filesystem- or S3-backed records. |
 
-```ts
-new DurableDistributedDataStore({
-  durableStateStore,
-  keys: [...],
-  encryption: {
-    algorithm: 'aes-gcm',
-    keyId: 'k1',
-    keyRing: myKeyRing,
-  },
-});
+See [Durable state](/persistence/durable-state/) for each store's
+construction options — DistributedData reuses the same stores, so
+there's nothing DD-specific to configure.
+
+## Per-node local vs shared backend
+
+The store is keyed by replica id, so the two deployment shapes
+differ in **where** each replica's record lives, not in what a node
+loads:
+
+```
+Per-node local store (e.g. object storage at a local path):
+   node-A's store ← ddata|node-A
+   node-B's store ← ddata|node-B
+   cold start → each node loads its own record; gossip reconverges
 ```
 
-State is encrypted at rest with AES-GCM.  See
-[Object storage encryption](/persistence/object-storage/encryption/)
-for the key-management details — the same patterns apply.
-
-## Compression
-
-```ts
-new DurableDistributedDataStore({
-  durableStateStore,
-  keys: [...],
-  compression: { algorithm: 'gzip' },
-});
+```
+Shared backend (one Postgres / one S3 bucket):
+   shared store ← ddata|node-A, ddata|node-B, …   (one record per replica)
+   cold start → each node loads its own record; gossip reconverges
 ```
 
-For large CRDTs that compress well (text-heavy sets, structured
-maps), enabling gzip reduces disk usage meaningfully.  For small
-counters, the overhead isn't worth it.
+- **Per-node local** — full local recovery, partition-tolerant; but
+  a destroyed node's record is gone (gossip + survivors restore the
+  *values*, since CRDTs converge).
+- **Shared** — every replica's record survives in one place even if
+  the node is destroyed; costs a round trip to the shared store at
+  startup and makes that store a shared dependency.
+
+For most apps either is fine — CRDT convergence means losing one
+node's record is rarely fatal.
+
+## Low-level: DurableDistributedDataStore directly
+
+`withDurableStore` is the path you almost always want.  The wrapper
+it builds is also usable on its own — a positional constructor over
+a `DurableStateStore` plus a replica id, with `load()` / `save()` /
+`clear()`:
+
+```ts
+import { DurableDistributedDataStore, GCounter } from 'actor-ts';
+import { InMemoryDurableStateStore } from 'actor-ts';
+
+const store = new InMemoryDurableStateStore();
+const durable = new DurableDistributedDataStore(store, 'replica-a');
+
+const view = new Map([['hits', GCounter.empty().increment('replica-a', 5)]]);
+await durable.save(view);          // persist the whole view
+
+const restored = await durable.load();   // Map<string, Crdt> (empty if nothing stored)
+await durable.clear();             // forget this replica's record
+```
+
+This is what the framework uses under the hood; reach for it
+directly only for tooling or tests.
 
 ## Startup flow
 
 ```ts
-const distributedDataOptions = DistributedDataOptions.create().withDurableStore(
-    new DurableDistributedDataStore({ ... }),
-  );
+const distributedDataOptions = DistributedDataOptions.create()
+  .withDurableStore(store);
 const dd = system.extension(DistributedDataId).start(
   cluster,
   distributedDataOptions,
 );
 
-// Before this call returns:
-//   1. Open the durable store.
-//   2. For each whitelisted key, load + decode the persisted CRDT.
-//   3. Apply to the local replica.
-//   4. Then join the gossip layer.
+// On preStart, before joining gossip:
+//   1. load() this replica's record from the durable store.
+//   2. decode each entry into its CRDT.
+//   3. seed the local view.
+//   4. then join the gossip layer.
 
-const value = dd.get('hits');   // already reflects persisted state
+const value = dd.get('hits');   // already reflects the persisted view
 ```
 
-This means startup is bounded by the durable store's read speed.
-For SQLite-per-node with a handful of keys, sub-millisecond.  For
-S3-backed shared storage, single-digit seconds.
+Startup is bounded by the durable store's read speed.  For a local
+store with a handful of keys, sub-millisecond; for a shared
+SQL / S3 backend, single-digit seconds.
 
 ## When NOT to use durable storage
 
@@ -189,31 +162,38 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Genuinely-transient state">
   ```ts
   // Online presence — recomputed on next user activity
-  keys: ['online-users'];   // ✗ wasteful
   ```
-  Presence sets, in-flight session counts — these are derived
-  from current user activity and bounce back immediately when
-  users do anything.  Persisting them is wasted disk traffic.
+  Presence sets, in-flight session counts — these are derived from
+  current user activity and bounce back immediately when users do
+  anything.  Persisting them is wasted disk traffic; leave
+  DistributedData in-memory for those.
 </Aside>
 
-<Aside type="caution" title="High-write-rate keys">
+<Aside type="caution" title="High mutation rate">
   ```ts
-  // Counter incremented 10 000 times/second
-  keys: ['hits'];   // → 10 000 disk writes/sec
+  // A counter incremented 10 000 times/second
+  // → the whole replica record is rewritten 10 000 times/second
   ```
-  Every update writes-through to disk.  Very-high-rate counters
-  swamp the store.  Either batch (write only every N updates) or
-  accept in-memory loss.
+  Every mutation re-saves the entire view.  Very-high-rate keys
+  swamp the store.  Either accept in-memory-only for those, or move
+  the hot key to an event-sourced actor (tiny appends, not full
+  rewrites).
 </Aside>
 
-<Aside type="caution" title="Large blobs">
+<Aside type="caution" title="Large views">
   ```ts
-  keys: ['huge-document'];   // ORSet with 1M entries
+  // A view holding a 1M-entry ORSet
   ```
-  Every update rewrites the full state.  For large state with
-  fine-grained updates, use an event-sourced actor instead —
+  The whole view is one record, rewritten on every mutation.  For
+  large state with fine-grained updates, use a
+  [PersistentActor](/persistence/persistent-actor/) instead —
   events are tiny appends rather than full rewrites.
 </Aside>
+
+For at-rest encryption or compression, configure it on the
+underlying store where the backend supports it (e.g. the
+object-storage store — see
+[Object storage encryption](/persistence/object-storage/encryption/)).
 
 ## Where to next
 
@@ -221,7 +201,7 @@ import { Aside } from '@astrojs/starlight/components';
   the bigger picture.
 - **[Replication](/distributed-data/replication/)** —
   how state propagates between in-memory replicas.
-- **[Object storage](/persistence/object-storage/overview/)** —
-  the filesystem / S3 store you can use for durable DD.
+- **[Durable state](/persistence/durable-state/)** —
+  the `DurableStateStore` backends you plug in here.
 - **[PersistentActor](/persistence/persistent-actor/)** —
   the event-sourced alternative for state with frequent updates.

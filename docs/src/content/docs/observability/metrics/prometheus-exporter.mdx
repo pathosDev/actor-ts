@@ -44,16 +44,16 @@ http_request_duration_ms_sum{route="/orders"} 12450
 ## Via the management endpoint
 
 The easiest path is via the
-[HttpManagement](/observability/management/overview/)
-helper:
+[management routes](/observability/management/overview/):
 
 ```ts
-import { HttpManagement } from 'actor-ts';
+import { managementRoutes } from 'actor-ts';
 
-await HttpManagement.start(system, {
-  port: 8558,
+// cluster can be null when you only need the metrics endpoint
+const { routes } = managementRoutes(system, null, {
   enableMetricsEndpoint: true,   // ← exposes GET /metrics
 });
+await system.http(8558).bind(routes);
 ```
 
 Prometheus scrape config:
@@ -71,7 +71,7 @@ on 8558 (internal-only).
 
 ## Manual wiring
 
-If you're not using `HttpManagement`, route a `GET /metrics`
+If you're not using the management routes, route a `GET /metrics`
 yourself:
 
 ```ts

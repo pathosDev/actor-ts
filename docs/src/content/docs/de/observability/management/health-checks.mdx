@@ -1,214 +1,223 @@
 ---
 title: Health Checks
-description: Eigene Liveness- + Readiness-Checks, verdrahtet in die `/health`- + `/ready`-Endpunkte des Management-Servers. Jeder Check gibt ok oder nicht-ok zurück; der Endpunkt liefert 200, wenn alle Checks bestehen.
+description: Eigene Liveness- + Readiness-Checks, registriert auf der HealthCheckRegistry des Management-Servers und an `/health` + `/ready` sichtbar. Jeder Check gibt `{ name, status, detail? }` zurück; der Endpunkt liefert 200, wenn der `status` jedes Checks true ist.
 ---
 
-Der Management-Server stellt zwei Health-Endpunkte bereit:
+Die Management-Routen exponieren zwei Health-Endpunkte:
 
-- **`GET /health`** — **Liveness**. Gibt 200 zurück, wenn der
-  Prozess operational ist.
-- **`GET /ready`** — **Readiness**. Gibt 200 zurück, wenn der
-  Pod bereit ist, Traffic zu empfangen (Cluster up + eigene
-  Checks bestehen).
+- **`GET /health`** — **Liveness**.  Liefert 200, wenn der Prozess
+  betriebsbereit ist.
+- **`GET /ready`** — **Readiness**.  Liefert 200, wenn der Pod
+  bereit ist, Traffic zu empfangen (Cluster up + jeder
+  Readiness-Check besteht).
 
-Das Framework registriert ein paar Defaults (cluster-up für
-ready), plus du kannst **eigene Checks** für app-spezifische
-Health einklinken.
+`managementRoutes(...)` reicht dir eine `HealthCheckRegistry` (das
+Feld `health`), auf der du **eigene Checks** für app-spezifische
+Gesundheit registrierst:
 
 ```ts
-import { HttpManagement } from 'actor-ts';
+import { managementRoutes } from 'actor-ts';
 
-const { health } = await HttpManagement.start(system, { port: 8558 });
+const { routes, health } = managementRoutes(system, cluster);
 
-health.addCheck('database', async () => {
+health.addReadiness(async () => {
   const ok = await db.ping();
-  return ok ? { ok: true } : { ok: false, reason: 'db unreachable' };
+  return { name: 'database', status: ok, detail: ok ? undefined : 'db unreachable' };
 });
 
-health.addCheck('cache', async () => {
+health.addReadiness(async () => {
   try {
     await redis.ping();
-    return { ok: true };
+    return { name: 'cache', status: true };
   } catch (e) {
-    return { ok: false, reason: (e as Error).message };
+    return { name: 'cache', status: false, detail: (e as Error).message };
   }
 });
+
+await system.http(8558).bind(routes);
 ```
 
-Wenn **irgendein Check `{ ok: false }` zurückgibt**, antwortet
-der Endpunkt mit **503** und einem JSON-Body, der die
-fehlgeschlagenen Checks auflistet.
+Wenn **irgendein Check `status: false` zurückgibt**, liefert der
+entsprechende Endpunkt **503** mit einem JSON-Body, der das
+Ergebnis jedes Checks auflistet.
 
 ## Die Check-Signatur
 
 ```ts
-type HealthCheck = () => Promise<HealthCheckResult>;
+type HealthCheckFn = () => Promise<HealthCheckResult> | HealthCheckResult;
 
 interface HealthCheckResult {
-  ok:       boolean;
-  reason?:  string;       // menschenlesbare Fehlerbeschreibung
-  details?: unknown;       // strukturierte Info für Diagnostik
+  name:    string;         // identifies the check in the response
+  status:  boolean;        // true = healthy
+  detail?: string;         // human-readable note, usually on failure
 }
 ```
 
-Checks sind async — gib eine Promise zurück. Lang laufende
-Checks blockieren die Response, also halte sie schnell
-(sub-Sekunde, idealerweise < 100 ms).
+Ein Check kann sync oder async sein.  `addLiveness` /
+`addReadiness` geben jeweils eine **Unsubscribe**-Funktion zurück —
+rufe sie auf, um den Check wieder zu entfernen:
 
-## Liveness vs Readiness
+```ts
+const remove = health.addReadiness(() => ({ name: 'warmup', status: warmedUp }));
+// ... once warm-up is permanently done:
+remove();
+```
 
-| Probe | Was sie beantwortet | Was K8s bei Fehler macht |
+Lang laufende Checks blockieren die Response, also halte sie
+schnell (sub-sekündlich, idealerweise < 100 ms).
+
+## Liveness vs. Readiness
+
+| Probe | Was sie beantwortet | Was K8s bei Fehler tut |
 | --- | --- | --- |
-| **Liveness** (`/health`) | „Ist dieser Prozess fundamental kaputt?" | **Pod neu starten**. |
-| **Readiness** (`/ready`) | „Sollte dieser Pod gerade Traffic bekommen?" | **Routing stoppen** zu diesem Pod (Pod laufen lassen). |
+| **Liveness** (`/health`) | „Ist dieser Prozess grundlegend kaputt?" | Pod **neu starten**. |
+| **Readiness** (`/ready`) | „Soll dieser Pod gerade Traffic bekommen?" | **Kein Routing** mehr hierher (Pod läuft weiter). |
+
+Ein Check ist Liveness oder Readiness, je nachdem, **welche Methode
+du aufrufst** — `addLiveness` oder `addReadiness`.  Es sind
+getrennte Listen; um denselben Check für beide laufen zu lassen,
+registriere ihn mit beiden.
 
 Unterschiedliche Semantik treibt unterschiedliche Checks:
 
 - **Liveness** sollte nur bei **nicht behebbaren** Problemen
-  fehlschlagen — Actor-System gecrashed, Deadlock erkannt,
-  fundamentale Invarianten gebrochen. Restart ist der einzige
-  Fix.
-- **Readiness** darf bei **transienten** Problemen fehlschlagen
-  — DB kurz nicht erreichbar, Cache wärmt sich auf, Cluster
-  rejoint. Kein Restart nötig; einfach noch nicht hierhin
-  routen.
+  fehlschlagen — Actor-System abgestürzt, Deadlock erkannt,
+  fundamentale Invarianten gebrochen.  Neustart ist der einzige
+  Fix.  Registriere diese mit `addLiveness`.
+- **Readiness** darf bei **vorübergehenden** Problemen
+  fehlschlagen — DB kurz nicht erreichbar, Cache wärmt auf,
+  Cluster tritt neu bei.  Kein Neustart nötig; route nur noch
+  nicht hierher.  Registriere diese mit `addReadiness`.
 
-**Stecke nicht alle Checks in beide** — einen Pod neu zu starten,
-weil die externe DB geblinkt hat, ist falsch; der DB-Blinker
-geht vorbei. Stecke DB-Checks **nur in Readiness**.
+**Registriere DB- / Downstream-Checks nicht als Liveness** — einen
+Pod neu zu starten, weil die externe DB kurz zuckte, ist falsch;
+das Zucken geht vorbei.
 
-## Eingebauter Readiness-Check
+## Cluster-Readiness
 
-Wenn der Management-Server mit einem `cluster` konfiguriert ist,
-schlägt der Default-Readiness-Check fehl, falls der lokale Node
-nicht `Up` ist:
+`/ready` meldet zusätzlich ein `clusterReady`-Flag, berechnet aus
+der Cluster-Mitgliedschaft — **unabhängig von deinen registrierten
+Checks**.  Es ist `false`, bis der lokale Node den Zustand `Up`
+erreicht (und immer `true`, wenn die Routen ohne Cluster gebaut
+wurden):
 
 ```
 GET /ready
-{ ok: false, reason: 'cluster not joined yet' }
+→ 503
+{ "status": "DOWN", "clusterReady": false, "checks": [] }
 ```
 
-Gibt 200 zurück, sobald `SelfUp` feuert. Das ist der kanonische
-„warte auf den Cluster"-Check.
+Liefert `clusterReady: true` (und 200, falls auch deine
+Readiness-Checks bestehen), sobald der Node `Up` ist — das
+kanonische „auf den Cluster warten"-Gate.
 
 ## Mehrere Checks
 
 ```ts
-health.addCheck('database',          dbCheck);
-health.addCheck('cache',             cacheCheck);
-health.addCheck('downstream-api',    apiCheck);
+health.addReadiness(dbCheck);
+health.addReadiness(cacheCheck);
+health.addReadiness(downstreamApiCheck);
 ```
 
-Alle Checks laufen **parallel**, wenn der Endpunkt getroffen
-wird. Die Response enthält Per-Check-Status:
+Alle Readiness-Checks laufen **parallel**, wenn `/ready` getroffen
+wird.  Die Response listet das Ergebnis jedes Checks:
 
 ```json
 {
-  "ok": false,
-  "checks": {
-    "cluster":         { "ok": true },
-    "database":        { "ok": false, "reason": "connection refused" },
-    "cache":           { "ok": true },
-    "downstream-api":  { "ok": true }
-  }
+  "status": "DOWN",
+  "clusterReady": true,
+  "checks": [
+    { "name": "database",       "status": false, "detail": "connection refused" },
+    { "name": "cache",          "status": true },
+    { "name": "downstream-api", "status": true }
+  ]
 }
 ```
 
-Das Aggregat-`ok` ist `true`, wenn **jeder** Check wahr ist.
+Das Aggregat ist `UP`, wenn `clusterReady` **und** der `status`
+jedes Checks true ist.
 
-## Nur-Liveness-Checks
-
-```ts
-health.addCheck('actor-system-alive', async () => {
-  return {
-    ok:     !system.isTerminated,
-    reason: system.isTerminated ? 'system terminated' : undefined,
-  };
-}, { liveness: true, readiness: false });
-```
-
-Das optionale zweite Argument routet einen Check zu
-**Liveness-only** (Default `readiness: true`) oder
-**Readiness-only**.
-
-Der „System nicht terminated"-Check wird vom Framework
-automatisch als Liveness-only registriert — es ist ein nicht
-behebbarer Zustand.
-
-## Tests für Checks
+## Checks testen
 
 ```ts
-import { TestKit } from 'actor-ts/testkit';
+import { HealthCheckRegistry } from 'actor-ts';
 
-it('Health Check schlägt fehl, wenn DB unten ist', async () => {
-  const tk = TestKit.create();
-  const { health } = await HttpManagement.start(tk.system, { port: 0 });
+it('readiness fails when the DB is down', async () => {
+  const health = new HealthCheckRegistry();
+  health.addReadiness(async () => ({ name: 'db', status: false, detail: 'mock' }));
 
-  health.addCheck('db', async () => ({ ok: false, reason: 'mock' }));
-
-  const result = await health.run();
-  expect(result.ok).toBe(false);
-  expect(result.checks!.db).toEqual({ ok: false, reason: 'mock' });
-
-  await tk.shutdown();
+  const results = await health.checkReadiness();
+  expect(results).toEqual([{ name: 'db', status: false, detail: 'mock' }]);
 });
 ```
 
-`HealthCheckRegistry.run()` exponiert die gleiche Logik wie der
-Endpunkt — nützlich für Unit-Tests deiner Checks.
+`checkLiveness()` / `checkReadiness()` führen die registrierten
+Checks aus und geben das `HealthCheckResult[]` zurück, das die
+Endpunkte aggregieren — praktisch, um Checks isoliert zu testen.
+Ein Check, der wirft, wird abgefangen und als
+`{ name: 'unknown', status: false, detail }` gemeldet.  Der
+`isHealthy(results)`-Helfer ist dasselbe „alle bestehen"-Prädikat,
+das die Endpunkte nutzen.
 
 ## Timeouts
 
+Es gibt **kein eingebautes Per-Check-Timeout** — ein hängender
+Check blockiert die gesamte `/health`- (oder `/ready`-)Response.
+Für einen Check, der stocken kann, race ihn gegen deine eigene
+Deadline:
+
 ```ts
-health.addCheck('slow-thing', slowCheck, { timeoutMs: 2_000 });
+health.addReadiness(async () => {
+  const status = await Promise.race([
+    slowProbe().then(() => true),
+    new Promise<boolean>((r) => setTimeout(() => r(false), 2_000)),
+  ]);
+  return { name: 'downstream', status };
+});
 ```
 
-Per-Check-Timeout. Ein Check, der das Timeout überschreitet,
-wird als `{ ok: false, reason: 'timeout' }` behandelt.
-
-Ohne Timeout blockiert ein hängender Check die ganze
-`/health`-Response — und löst irgendwann das eigene Probe-
-Timeout von K8s (10 s Default) und einen Restart aus. Setze
-Check-Timeouts konservativ.
+Ohne Guard trifft ein steckengebliebener Check irgendwann K8s'
+eigenes Probe-Timeout (10 s Default) und löst einen Neustart aus.
+Halte Checks schnell.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Restarte keine Pods für transiente DB-Ausfälle">
+<Aside type="caution" title="Pods nicht wegen vorübergehender DB-Ausfälle neu starten">
   ```ts
-  health.addCheck('db', dbPing);   // Liveness UND Readiness
+  health.addLiveness(dbPing);   // ✗ a DB blip → K8s restarts → restart loop
+  health.addReadiness(dbPing);  // ✓ a DB blip just stops routing here
   ```
-  Checks registrieren standardmäßig für beide. Ein DB-Blinker
-  lässt Liveness fehlschlagen → K8s startet neu → neuer Pod kann
-  DB auch nicht erreichen → Restart-Schleife. Mache DB-Checks
-  **Readiness-only**.
+  Eine in **Liveness** geprüfte DB lässt ein Zucken den Pod neu
+  starten; der neue Pod erreicht die DB auch nicht → Restart-Loop.
+  Registriere DB-Checks mit `addReadiness`.
 </Aside>
 
-<Aside type="caution" title="Checks sind unauthentifiziert">
+<Aside type="caution" title="Checks sind nicht authentifiziert">
   ```ts
-  // Jeder mit Port-8558-Zugang kann /health treffen und Check-Ergebnisse sehen
+  // Anyone with port 8558 access can hit /health and see check results
   ```
-  Die Check-Responses können Details leaken (DB-Hostnamen in
-  Fehlermeldungen). Exponiere 8558 nicht öffentlich; beschränke
-  auf internes Netzwerk oder Auth-Proxy.
+  Check-Responses können Details verraten (DB-Hostnamen in
+  Fehlermeldungen).  Exponiere 8558 nicht öffentlich; beschränke
+  auf das interne Netz oder hänge die `auth`- / `ipAllowlist`-
+  Settings an (`authProtectHealth`, um auch die Probes abzudecken).
 </Aside>
 
 <Aside type="caution" title="Langsame Checks verzögern Responses">
   ```ts
-  health.addCheck('slow', async () => {
+  health.addReadiness(async () => {
     await new Promise(r => setTimeout(r, 5_000));
-    return { ok: true };
+    return { name: 'slow', status: true };
   });
   ```
-  Langsame Checks verzögern jede Probe-Response. Setze
-  `timeoutMs` oder gestalte den Check so um, dass er sub-Sekunde
-  ist.
+  Langsame Checks verzögern jede Probe-Response.  Race sie gegen
+  eine Deadline (oben) oder gestalte den Check sub-sekündlich.
 </Aside>
 
 ## Wo es weitergeht
 
 - **[Management — Überblick](/de/observability/management/overview/)** —
-  das größere Bild.
+  das Gesamtbild.
 - **[HTTP-Endpunkte](/de/observability/management/http-endpoints/)** —
   die volle Endpunkt-Referenz.
 - **[Kubernetes-Deployment](/de/operations/deployment/kubernetes/)** —
-  die Probe-Konfiguration, mit der das gepaart wird.
+  die Probe-Konfiguration, mit der das zusammenspielt.
