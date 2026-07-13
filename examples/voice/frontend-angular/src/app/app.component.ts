@@ -133,10 +133,10 @@ export class AppComponent {
 
   protected onLogin(e: SubmitEvent): void {
     e.preventDefault();
-    const u = this.usernameInput().trim();
-    const p = this.passwordInput();
-    if (!u || !p) return;
-    this.v.login(u, p);
+    const username = this.usernameInput().trim();
+    const password = this.passwordInput();
+    if (!username || !password) return;
+    this.v.login(username, password);
   }
 
   protected onPress(e: PointerEvent, target: ClientMessage & { type: 'voice-target' }, key: string): void {

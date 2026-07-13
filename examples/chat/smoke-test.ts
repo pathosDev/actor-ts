@@ -46,12 +46,12 @@ class ChatClient {
   constructor(url: string) {
     this.ws = new WebSocket(url);
     this.ws.addEventListener('message', (ev) => {
-      const m = JSON.parse(ev.data as string) as ServerMessage;
-      this.received.push(m);
+      const message = JSON.parse(ev.data as string) as ServerMessage;
+      this.received.push(message);
       for (let i = this.waitingFor.length - 1; i >= 0; i--) {
-        const w = this.waitingFor[i]!;
-        if (w.pred(m)) {
-          w.res(m);
+        const waiter = this.waitingFor[i]!;
+        if (waiter.pred(message)) {
+          waiter.res(message);
           this.waitingFor.splice(i, 1);
         }
       }
@@ -99,8 +99,8 @@ function waitForCount(c: ChatClient, pred: (m: ServerMessage) => boolean, n: num
   return new Promise((res, rej) => {
     const timer = setTimeout(() => rej(new Error(`count timeout (got ${already}/${n})`)), timeoutMs);
     const onMessage = (ev: MessageEvent): void => {
-      const m = JSON.parse(ev.data as string) as ServerMessage;
-      if (pred(m)) already++;
+      const message = JSON.parse(ev.data as string) as ServerMessage;
+      if (pred(message)) already++;
       if (already >= n) {
         clearTimeout(timer);
         c.ws.removeEventListener('message', onMessage as EventListener);
@@ -114,15 +114,15 @@ function waitForCount(c: ChatClient, pred: (m: ServerMessage) => boolean, n: num
 async function main(): Promise<void> {
   // ---------- pass 1: login alice + send 3 messages ----------
   console.log('— pass 1: login + send —');
-  const a = new ChatClient(URL_ARG);
-  await a.open();
-  a.send({ type: 'login', username: 'alice', password: 'wonderland' });
+  const clientA = new ChatClient(URL_ARG);
+  await clientA.open();
+  clientA.send({ type: 'login', username: 'alice', password: 'wonderland' });
 
-  const li = await a.await((m) => m.type === 'logged-in' || m.type === 'login-failed');
+  const li = await clientA.await((m) => m.type === 'logged-in' || m.type === 'login-failed');
   if (li.type !== 'logged-in') fail(`login-failed: ${(li as ServerMessage).reason}`);
   ok('logged in as alice');
 
-  await a.await((m) => m.type === 'rooms');
+  await clientA.await((m) => m.type === 'rooms');
   ok('received rooms list');
 
   // Synchronization point: wait until we've seen `users` AND
@@ -132,8 +132,8 @@ async function main(): Promise<void> {
   // mechanism, so receiving it also tells us cross-node routing
   // is healthy.  By this time the pubsub-mediator has had ample
   // gossip cycles to know about our subscribe on every node.
-  await a.await((m) => m.type === 'users' && (m as ServerMessage).room === 'general', 5000);
-  await a.await((m) => m.type === 'history' && (m as ServerMessage).room === 'general', 5000);
+  await clientA.await((m) => m.type === 'users' && (m as ServerMessage).room === 'general', 5000);
+  await clientA.await((m) => m.type === 'history' && (m as ServerMessage).room === 'general', 5000);
   // One extra anti-jitter sleep — eagerGossip is fire-and-forget;
   // give a margin before the first send to make sure the publish
   // path knows about our subscriber on whichever node hosts the
@@ -141,32 +141,32 @@ async function main(): Promise<void> {
   await new Promise((r) => setTimeout(r, 750));
 
   for (const text of ['hello world', 'second msg', 'third msg']) {
-    a.send({ type: 'send', room: 'general', text });
+    clientA.send({ type: 'send', room: 'general', text });
   }
 
   // Wait for the 3 broadcast echoes.  Single-node cluster needs a
   // moment for self-up + shard-allocation before the first message
   // fully propagates.
-  await waitForCount(a, (m) =>
+  await waitForCount(clientA, (m) =>
     m.type === 'message' &&
     (m as ServerMessage).room === 'general' &&
     ((m as ServerMessage).from as string) === 'alice', 3, 10_000,
   );
   ok('received 3 broadcast echoes');
 
-  a.close();
+  clientA.close();
   await new Promise((r) => setTimeout(r, 200));
 
   // ---------- pass 2: bob logs in, expects history ----------
   console.log('— pass 2: history replay —');
-  const b = new ChatClient(URL_ARG);
-  await b.open();
-  b.send({ type: 'login', username: 'bob', password: 'builder' });
-  const bli = await b.await((m) => m.type === 'logged-in' || m.type === 'login-failed');
+  const clientB = new ChatClient(URL_ARG);
+  await clientB.open();
+  clientB.send({ type: 'login', username: 'bob', password: 'builder' });
+  const bli = await clientB.await((m) => m.type === 'logged-in' || m.type === 'login-failed');
   if (bli.type !== 'logged-in') fail(`bob login-failed`);
   ok('logged in as bob');
 
-  const hist = (await b.await(
+  const hist = (await clientB.await(
     (m) => m.type === 'history' && (m as ServerMessage).room === 'general',
   )) as ServerMessage & { messages: Array<{ from: string; text: string }> };
   if (!Array.isArray(hist.messages) || hist.messages.length < 3) {
