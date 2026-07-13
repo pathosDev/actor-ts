@@ -359,11 +359,11 @@
 
       $loginForm.addEventListener('submit', (e) => {
         e.preventDefault();
-        const u = $username.value.trim();
-        const p = $password.value;
-        if (!u || !p) return;
+        const username = $username.value.trim();
+        const password = $password.value;
+        if (!username || !password) return;
         $loginErr.textContent = '';
-        connectAndSend({ type: 'login', username: u, password: p });
+        connectAndSend({ type: 'login', username, password });
       });
 
       $logoutBtn.addEventListener('click', () => {

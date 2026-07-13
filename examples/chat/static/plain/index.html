@@ -606,14 +606,14 @@
         }
         const existing = perRoom.get(username);
         if (existing) clearTimeout(existing);
-        const t = setTimeout(() => {
+        const timer = setTimeout(() => {
           const map = state.typingByRoom.get(room);
           if (!map) return;
           map.delete(username);
           if (map.size === 0) state.typingByRoom.delete(room);
           if (room === state.currentRoom) renderTyping();
         }, 3000);
-        perRoom.set(username, t);
+        perRoom.set(username, timer);
         if (room === state.currentRoom) renderTyping();
       }
 
@@ -742,16 +742,16 @@
               const others = Object.entries(receipts)
                 .filter(([u, _t]) => u !== state.username);
               const readByAny = others.some(([_u, t]) => typeof t === 'number' && t >= m.ts);
-              const r = document.createElement('span');
-              r.className = readByAny ? 'receipt read' : 'receipt';
-              r.textContent = readByAny ? '✓✓' : '✓';
+              const span = document.createElement('span');
+              span.className = readByAny ? 'receipt read' : 'receipt';
+              span.textContent = readByAny ? '✓✓' : '✓';
               const readers = others
                 .filter(([_u, t]) => typeof t === 'number' && t >= m.ts)
                 .map(([u]) => u);
-              r.title = readers.length === 0
+              span.title = readers.length === 0
                 ? 'sent'
                 : `read by ${readers.join(', ')}`;
-              div.appendChild(r);
+              div.appendChild(span);
             }
           }
           $msgs.appendChild(div);
@@ -821,8 +821,8 @@
         }[c]));
       }
       function formatTime(ts) {
-        const d = new Date(ts);
-        return d.toLocaleTimeString();
+        const date = new Date(ts);
+        return date.toLocaleTimeString();
       }
 
       /* ============== auto-resume on load ============== */
