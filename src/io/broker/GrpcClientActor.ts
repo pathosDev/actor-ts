@@ -57,17 +57,17 @@ export class GrpcClientActor
   protected builtInDefaultOptions(): Partial<GrpcClientOptionsType> {
     return { credentials: { kind: 'insecure' }, deadlineMs: 30_000 };
   }
-  protected readOptionsFromConfig(c: Config): Partial<GrpcClientOptionsType> {
+  protected readOptionsFromConfig(config: Config): Partial<GrpcClientOptionsType> {
     const out: { -readonly [K in keyof GrpcClientOptionsType]?: GrpcClientOptionsType[K] } = {};
-    if (c.hasPath('protoPath')) {
-      const v = c.getList('protoPath');
-      if (v.length === 1 && typeof v[0] === 'string') out.protoPath = v[0];
-      else out.protoPath = c.getStringList('protoPath');
+    if (config.hasPath('protoPath')) {
+      const protoPathList = config.getList('protoPath');
+      if (protoPathList.length === 1 && typeof protoPathList[0] === 'string') out.protoPath = protoPathList[0];
+      else out.protoPath = config.getStringList('protoPath');
     }
-    if (c.hasPath('packageName')) out.packageName = c.getString('packageName');
-    if (c.hasPath('serviceName')) out.serviceName = c.getString('serviceName');
-    if (c.hasPath('endpoint')) out.endpoint = c.getString('endpoint');
-    if (c.hasPath('deadlineMs')) out.deadlineMs = c.getDuration('deadlineMs');
+    if (config.hasPath('packageName')) out.packageName = config.getString('packageName');
+    if (config.hasPath('serviceName')) out.serviceName = config.getString('serviceName');
+    if (config.hasPath('endpoint')) out.endpoint = config.getString('endpoint');
+    if (config.hasPath('deadlineMs')) out.deadlineMs = config.getDuration('deadlineMs');
     return out;
   }
   protected requiredOptions(): ReadonlyArray<keyof GrpcClientOptionsType> {
@@ -106,8 +106,8 @@ export class GrpcClientActor
   }
 
   protected async disconnectImplementation(): Promise<void> {
-    for (const [, s] of this.bidiStreams) {
-      try { s.call.end(); } catch { /* ignore */ }
+    for (const [, stream] of this.bidiStreams) {
+      try { stream.call.end(); } catch { /* ignore */ }
     }
     this.bidiStreams.clear();
     if (this.serviceClient) {
@@ -126,12 +126,12 @@ export class GrpcClientActor
     } else if (op.kind === 'bidiStart') {
       this.invokeBidiStart(op);
     } else if (op.kind === 'bidiSend') {
-      const s = this.bidiStreams.get(op.streamId);
-      if (s) s.call.write(op.chunk);
+      const stream = this.bidiStreams.get(op.streamId);
+      if (stream) stream.call.write(op.chunk);
     } else if (op.kind === 'bidiClose') {
-      const s = this.bidiStreams.get(op.streamId);
-      if (s) {
-        try { s.call.end(); } catch { /* ignore */ }
+      const stream = this.bidiStreams.get(op.streamId);
+      if (stream) {
+        try { stream.call.end(); } catch { /* ignore */ }
         this.bidiStreams.delete(op.streamId);
       }
     }
@@ -205,12 +205,12 @@ export class GrpcClientActor
   }
 
   private buildCredentials(grpc: GrpcModule): GrpcCredentialsLike {
-    const c = this.options.credentials ?? { kind: 'insecure' };
-    if (c.kind === 'insecure') return grpc.credentials.createInsecure();
+    const credentials = this.options.credentials ?? { kind: 'insecure' };
+    if (credentials.kind === 'insecure') return grpc.credentials.createInsecure();
     return grpc.credentials.createSsl(
-      c.rootCerts ? Buffer.from(c.rootCerts) : null,
-      c.key ? Buffer.from(c.key) : null,
-      c.cert ? Buffer.from(c.cert) : null,
+      credentials.rootCerts ? Buffer.from(credentials.rootCerts) : null,
+      credentials.key ? Buffer.from(credentials.key) : null,
+      credentials.cert ? Buffer.from(credentials.cert) : null,
     );
   }
 }

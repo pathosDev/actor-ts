@@ -51,9 +51,9 @@ export class NatsActor extends BrokerActor<NatsOptionsType, NatsCommand, NatsPub
   }
   protected requiredOptions(): ReadonlyArray<keyof NatsOptionsType> { return ['servers']; }
   protected endpointLabel(): string {
-    const s = this.options.servers;
-    if (Array.isArray(s)) return s.join(',');
-    return typeof s === 'string' ? s : '';
+    const servers = this.options.servers;
+    if (Array.isArray(servers)) return servers.join(',');
+    return typeof servers === 'string' ? servers : '';
   }
 
   protected async connectImplementation(): Promise<void> {
@@ -69,8 +69,8 @@ export class NatsActor extends BrokerActor<NatsOptionsType, NatsCommand, NatsPub
       name: this.options.name,
     });
 
-    for (const s of this.options.subscriptions ?? []) {
-      this.subscribeOnConnection(s.subject, s.target);
+    for (const subscription of this.options.subscriptions ?? []) {
+      this.subscribeOnConnection(subscription.subject, subscription.target);
     }
 
     // The connection emits a closed-promise we await loosely.
@@ -92,11 +92,11 @@ export class NatsActor extends BrokerActor<NatsOptionsType, NatsCommand, NatsPub
 
   protected async dispatchOutgoing(env: OutboundEnvelope<NatsPublish>): Promise<void> {
     if (!this.nc) throw new Error('NatsActor: not connected');
-    const p = env.payload;
-    const bytes = typeof p.payload === 'string'
-      ? new TextEncoder().encode(p.payload)
-      : p.payload;
-    this.nc.publish(p.subject, bytes, p.replyTo ? { reply: p.replyTo } : undefined);
+    const publish = env.payload;
+    const bytes = typeof publish.payload === 'string'
+      ? new TextEncoder().encode(publish.payload)
+      : publish.payload;
+    this.nc.publish(publish.subject, bytes, publish.replyTo ? { reply: publish.replyTo } : undefined);
   }
 
   override onReceive(cmd: NatsCommand): void {

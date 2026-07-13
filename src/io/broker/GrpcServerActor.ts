@@ -116,8 +116,8 @@ export class GrpcServerActor extends Actor<unknown> {
     const fromCfg: { -readonly [K in keyof GrpcServerOptionsType]?: GrpcServerOptionsType[K] } = {};
     if (cfg) {
       if (cfg.hasPath('protoPath')) {
-        const v = cfg.getList('protoPath');
-        if (v.length === 1 && typeof v[0] === 'string') fromCfg.protoPath = v[0];
+        const protoPathList = cfg.getList('protoPath');
+        if (protoPathList.length === 1 && typeof protoPathList[0] === 'string') fromCfg.protoPath = protoPathList[0];
         else fromCfg.protoPath = cfg.getStringList('protoPath');
       }
       if (cfg.hasPath('packageName')) fromCfg.packageName = cfg.getString('packageName');

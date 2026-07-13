@@ -270,9 +270,9 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
   private async _validateRequired(): Promise<void> {
     const required = this.requiredOptions();
     const missing: string[] = [];
-    for (const k of required) {
-      if (this._options![k] === undefined || this._options![k] === null) {
-        missing.push(String(k));
+    for (const key of required) {
+      if (this._options![key] === undefined || this._options![key] === null) {
+        missing.push(String(key));
       }
     }
     if (missing.length > 0) {

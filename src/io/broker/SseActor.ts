@@ -31,15 +31,15 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
 
   protected configKey(): string { return ConfigKeys.io.broker.sse; }
   protected builtInDefaultOptions(): Partial<SseOptionsType> { return {}; }
-  protected readOptionsFromConfig(c: Config): Partial<SseOptionsType> {
+  protected readOptionsFromConfig(config: Config): Partial<SseOptionsType> {
     const out: { -readonly [K in keyof SseOptionsType]?: SseOptionsType[K] } = {};
-    if (c.hasPath('url')) out.url = c.getString('url');
-    if (c.hasPath('headers')) {
-      const h: Record<string, string> = {};
-      for (const [k, v] of Object.entries(c.getObject('headers'))) {
-        if (typeof v === 'string') h[k] = v;
+    if (config.hasPath('url')) out.url = config.getString('url');
+    if (config.hasPath('headers')) {
+      const headers: Record<string, string> = {};
+      for (const [headerName, headerValue] of Object.entries(config.getObject('headers'))) {
+        if (typeof headerValue === 'string') headers[headerName] = headerValue;
       }
-      out.headers = h;
+      out.headers = headers;
     }
     return out;
   }
@@ -135,8 +135,8 @@ interface FetchModule {
 }
 
 const fetchLazy: Lazy<Promise<FetchModule>> = Lazy.of(async () => {
-  const f = (globalThis as { fetch?: FetchModule }).fetch;
-  if (typeof f === 'function') return f;
+  const fetchImpl = (globalThis as { fetch?: FetchModule }).fetch;
+  if (typeof fetchImpl === 'function') return fetchImpl;
   throw new Error(
     'SseActor needs a global `fetch` (Bun, Node ≥18, Deno all provide one).  '
     + 'On older Node versions, polyfill via `npm install undici` and `globalThis.fetch = require("undici").fetch`.',

@@ -45,21 +45,21 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
   protected builtInDefaultOptions(): Partial<TcpSocketOptionsType> {
     return { framing: { kind: 'bytes' } };
   }
-  protected readOptionsFromConfig(c: Config): Partial<TcpSocketOptionsType> {
+  protected readOptionsFromConfig(config: Config): Partial<TcpSocketOptionsType> {
     const out: { -readonly [K in keyof TcpSocketOptionsType]?: TcpSocketOptionsType[K] } = {};
-    if (c.hasPath('host')) out.host = c.getString('host');
-    if (c.hasPath('port')) out.port = c.getInt('port');
-    if (c.hasPath('framing')) {
-      const f = c.getConfig('framing');
-      const kind = f.getString('kind') as TcpFraming['kind'];
+    if (config.hasPath('host')) out.host = config.getString('host');
+    if (config.hasPath('port')) out.port = config.getInt('port');
+    if (config.hasPath('framing')) {
+      const framingConfig = config.getConfig('framing');
+      const kind = framingConfig.getString('kind') as TcpFraming['kind'];
       if (kind === 'lines') {
         out.framing = {
-          kind, delimiter: f.hasPath('delimiter') ? f.getString('delimiter') : undefined,
-          maxLineLen: f.hasPath('maxLineLen') ? f.getInt('maxLineLen') : undefined,
+          kind, delimiter: framingConfig.hasPath('delimiter') ? framingConfig.getString('delimiter') : undefined,
+          maxLineLen: framingConfig.hasPath('maxLineLen') ? framingConfig.getInt('maxLineLen') : undefined,
         };
       } else if (kind === 'length-prefixed') {
         out.framing = {
-          kind, maxFrameLen: f.hasPath('maxFrameLen') ? f.getInt('maxFrameLen') : undefined,
+          kind, maxFrameLen: framingConfig.hasPath('maxFrameLen') ? framingConfig.getInt('maxFrameLen') : undefined,
         };
       } else {
         out.framing = { kind: 'bytes' };
@@ -133,14 +133,14 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
       merged.set(chunk, this.inboundBuffer.length);
       this.inboundBuffer = merged;
     }
-    const f = this.options.framing ?? { kind: 'bytes' };
-    if (f.kind === 'bytes') {
+    const framing = this.options.framing ?? { kind: 'bytes' };
+    if (framing.kind === 'bytes') {
       this.deliver(this.inboundBuffer);
       this.inboundBuffer = new Uint8Array(0);
-    } else if (f.kind === 'lines') {
-      this.extractLines(f.delimiter ?? '\n', f.maxLineLen ?? 1_048_576);
+    } else if (framing.kind === 'lines') {
+      this.extractLines(framing.delimiter ?? '\n', framing.maxLineLen ?? 1_048_576);
     } else {
-      this.extractLengthPrefixed(f.maxFrameLen ?? 16 * 1024 * 1024);
+      this.extractLengthPrefixed(framing.maxFrameLen ?? 16 * 1024 * 1024);
     }
   }
 

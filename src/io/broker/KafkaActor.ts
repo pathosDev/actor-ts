@@ -139,21 +139,21 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
   protected builtInDefaultOptions(): Partial<KafkaOptionsType> {
     return { ssl: false, producer: { idempotent: false, allowAutoTopicCreation: false } };
   }
-  protected readOptionsFromConfig(c: Config): Partial<KafkaOptionsType> {
+  protected readOptionsFromConfig(config: Config): Partial<KafkaOptionsType> {
     const out: { -readonly [K in keyof KafkaOptionsType]?: KafkaOptionsType[K] } = {};
-    if (c.hasPath('brokers')) out.brokers = c.getStringList('brokers');
-    if (c.hasPath('clientId')) out.clientId = c.getString('clientId');
-    if (c.hasPath('ssl')) out.ssl = c.getBoolean('ssl');
-    if (c.hasPath('sasl')) {
-      const s = c.getConfig('sasl');
+    if (config.hasPath('brokers')) out.brokers = config.getStringList('brokers');
+    if (config.hasPath('clientId')) out.clientId = config.getString('clientId');
+    if (config.hasPath('ssl')) out.ssl = config.getBoolean('ssl');
+    if (config.hasPath('sasl')) {
+      const saslConfig = config.getConfig('sasl');
       out.sasl = {
-        mechanism: s.getString('mechanism') as 'plain' | 'scram-sha-256' | 'scram-sha-512',
-        username: s.getString('username'),
-        password: s.getString('password'),
+        mechanism: saslConfig.getString('mechanism') as 'plain' | 'scram-sha-256' | 'scram-sha-512',
+        username: saslConfig.getString('username'),
+        password: saslConfig.getString('password'),
       };
     }
-    if (c.hasPath('consumer')) {
-      const cc = c.getConfig('consumer');
+    if (config.hasPath('consumer')) {
+      const cc = config.getConfig('consumer');
       out.consumer = {
         groupId: cc.hasPath('groupId') ? cc.getString('groupId') : undefined,
         fromBeginning: cc.hasPath('fromBeginning') ? cc.getBoolean('fromBeginning') : undefined,
@@ -163,7 +163,7 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
         commitTimeoutMs: cc.hasPath('commitTimeoutMs') ? cc.getNumber('commitTimeoutMs') : undefined,
       };
     }
-    if (c.hasPath('topics')) out.topics = c.getStringList('topics');
+    if (config.hasPath('topics')) out.topics = config.getStringList('topics');
     return out;
   }
   protected requiredOptions(): ReadonlyArray<keyof KafkaOptionsType> { return ['brokers']; }
@@ -262,8 +262,8 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
     // pump unwinds cleanly — otherwise consumer.disconnect would
     // hang waiting for the in-flight handler to resolve.
     if (this.pendingCommits.size > 0) {
-      for (const p of this.pendingCommits.values()) {
-        p.fail(new Error('KafkaActor: disconnecting before commit/nack arrived'));
+      for (const pendingCommit of this.pendingCommits.values()) {
+        pendingCommit.fail(new Error('KafkaActor: disconnecting before commit/nack arrived'));
       }
       this.pendingCommits.clear();
     }
@@ -284,10 +284,10 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
 
   protected async dispatchOutgoing(env: OutboundEnvelope<KafkaPublish>): Promise<void> {
     if (!this.producer) throw new Error('KafkaActor: producer not connected');
-    const p = env.payload;
-    const value = typeof p.value === 'string' ? Buffer.from(p.value) : p.value;
-    const key = p.key === undefined ? null
-      : (typeof p.key === 'string' ? Buffer.from(p.key) : p.key);
+    const publish = env.payload;
+    const value = typeof publish.value === 'string' ? Buffer.from(publish.value) : publish.value;
+    const key = publish.key === undefined ? null
+      : (typeof publish.key === 'string' ? Buffer.from(publish.key) : publish.key);
     // Header coercion: our `KafkaPublish.headers` API accepts
     // `string | Uint8Array`, but kafkajs ≥ 2.0 only handles `string |
     // Buffer` cleanly — a plain Uint8Array trips `Buffer.byteLength`
@@ -296,13 +296,13 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
     // the public contract while making the kafkajs path reliable.
     // Surfaced by the b4-headers live-integration scenario against
     // `redpandadata/redpanda:latest`.
-    const headers = p.headers
-      ? Object.fromEntries(Object.entries(p.headers).map(([k, v]) =>
-          [k, v instanceof Uint8Array && !Buffer.isBuffer(v) ? Buffer.from(v) : v]))
+    const headers = publish.headers
+      ? Object.fromEntries(Object.entries(publish.headers).map(([headerKey, headerValue]) =>
+          [headerKey, headerValue instanceof Uint8Array && !Buffer.isBuffer(headerValue) ? Buffer.from(headerValue) : headerValue]))
       : undefined;
     await this.producer.send({
-      topic: p.topic,
-      messages: [{ value, key, partition: p.partition, headers: headers as never }],
+      topic: publish.topic,
+      messages: [{ value, key, partition: publish.partition, headers: headers as never }],
     });
   }
 
@@ -310,18 +310,18 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
     // Compile-time exhaustiveness: adding a new KafkaCommand variant
     // forces this site to handle it explicitly.
     match(cmd)
-      .with({ kind: 'publish' }, (c) => {
-        this.enqueueOutbound(c.publish);
+      .with({ kind: 'publish' }, (command) => {
+        this.enqueueOutbound(command.publish);
       })
-      .with({ kind: 'subscribe' }, (c) => {
+      .with({ kind: 'subscribe' }, (command) => {
         // Runtime topic-add — kafkajs requires the consumer already be running.
         if (this.consumer && this.connectionState === 'connected') {
-          void this.consumer.subscribe({ topic: c.topic, fromBeginning: false });
+          void this.consumer.subscribe({ topic: command.topic, fromBeginning: false });
         }
       })
-      .with({ kind: 'commit' },    (c) => { void this.handleCommit(c); })
-      .with({ kind: 'nack' },      (c) => this.handleNack(c))
-      .with({ kind: 'heartbeat' }, (c) => { void this.handleHeartbeat(c); })
+      .with({ kind: 'commit' },    (command) => { void this.handleCommit(command); })
+      .with({ kind: 'nack' },      (command) => this.handleNack(command))
+      .with({ kind: 'heartbeat' }, (command) => { void this.handleHeartbeat(command); })
       .exhaustive();
   }
 

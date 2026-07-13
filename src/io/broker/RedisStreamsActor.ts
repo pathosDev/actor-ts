@@ -46,17 +46,17 @@ export class RedisStreamsActor
   protected builtInDefaultOptions(): Partial<RedisStreamsOptionsType> {
     return { blockMs: 5_000 };
   }
-  protected readOptionsFromConfig(c: Config): Partial<RedisStreamsOptionsType> {
+  protected readOptionsFromConfig(config: Config): Partial<RedisStreamsOptionsType> {
     const out: { -readonly [K in keyof RedisStreamsOptionsType]?: RedisStreamsOptionsType[K] } = {};
-    if (c.hasPath('url')) out.url = c.getString('url');
-    if (c.hasPath('streams')) out.streams = c.getStringList('streams');
-    if (c.hasPath('blockMs')) out.blockMs = c.getDuration('blockMs');
-    if (c.hasPath('consumerGroup')) {
-      const g = c.getConfig('consumerGroup');
+    if (config.hasPath('url')) out.url = config.getString('url');
+    if (config.hasPath('streams')) out.streams = config.getStringList('streams');
+    if (config.hasPath('blockMs')) out.blockMs = config.getDuration('blockMs');
+    if (config.hasPath('consumerGroup')) {
+      const consumerGroupConfig = config.getConfig('consumerGroup');
       out.consumerGroup = {
-        group: g.getString('group'),
-        consumer: g.getString('consumer'),
-        createIfMissing: g.hasPath('createIfMissing') ? g.getBoolean('createIfMissing') : undefined,
+        group: consumerGroupConfig.getString('group'),
+        consumer: consumerGroupConfig.getString('consumer'),
+        createIfMissing: consumerGroupConfig.hasPath('createIfMissing') ? consumerGroupConfig.getBoolean('createIfMissing') : undefined,
       };
     }
     return out;
@@ -97,13 +97,13 @@ export class RedisStreamsActor
 
   protected async dispatchOutgoing(env: OutboundEnvelope<RedisStreamPublish>): Promise<void> {
     if (!this.redisProducer) throw new Error('RedisStreamsActor: producer not connected');
-    const p = env.payload;
-    const args: string[] = [p.stream];
-    if (p.maxLenApprox !== undefined) {
-      args.push('MAXLEN', '~', String(p.maxLenApprox));
+    const publish = env.payload;
+    const args: string[] = [publish.stream];
+    if (publish.maxLenApprox !== undefined) {
+      args.push('MAXLEN', '~', String(publish.maxLenApprox));
     }
     args.push('*');  // auto-id
-    for (const [k, v] of Object.entries(p.fields)) { args.push(k, v); }
+    for (const [fieldName, fieldValue] of Object.entries(publish.fields)) { args.push(fieldName, fieldValue); }
     await this.redisProducer.xadd(...args);
   }
 
@@ -144,7 +144,7 @@ export class RedisStreamsActor
       } catch (e) {
         if (!this.consumerLoopRunning) return;
         this.log.warn(`RedisStreams consumer loop error: ${(e as Error).message}`);
-        await new Promise((r) => setTimeout(r, 500));
+        await new Promise((resolve) => setTimeout(resolve, 500));
       }
     }
   }

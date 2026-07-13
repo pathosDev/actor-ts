@@ -93,13 +93,13 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
     this.connection.on('error', (e: Error) => this.handleConnectionLost(e));
     this.connection.on('close', () => this.handleConnectionLost(new Error('amqp connection closed')));
 
-    for (const b of this.options.bindings ?? []) {
-      await this.channel.assertQueue(b.queue, b.queueOptions ?? { durable: true });
-      if (b.exchange) {
-        await this.channel.bindQueue(b.queue, b.exchange, b.routingKey ?? '');
+    for (const binding of this.options.bindings ?? []) {
+      await this.channel.assertQueue(binding.queue, binding.queueOptions ?? { durable: true });
+      if (binding.exchange) {
+        await this.channel.bindQueue(binding.queue, binding.exchange, binding.routingKey ?? '');
       }
-      const target = b.target;
-      const queueName = b.queue;
+      const target = binding.target;
+      const queueName = binding.queue;
       await this.channel.consume(queueName, (msg) => {
         if (!msg) return;
         const ackToken = this.nextAckToken++;
@@ -128,7 +128,7 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
 
   protected async dispatchOutgoing(env: OutboundEnvelope<AmqpPublish>): Promise<void> {
     if (!this.channel) throw new Error('AmqpActor: channel not open');
-    const p = env.payload;
+    const publish = env.payload;
     // amqplib's channel.publish needs a Buffer specifically — a
     // plain Uint8Array (which our public `AmqpPublish.content`
     // contract accepts) trips internal buffer-length checks and
@@ -137,13 +137,13 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
     // but never throws back from `publish()`.  We surface that
     // here by coercing to Buffer; Buffer IS a Uint8Array subclass
     // so the public contract still holds.
-    const content = typeof p.content === 'string'
-      ? Buffer.from(p.content)
-      : Buffer.isBuffer(p.content) ? p.content : Buffer.from(p.content);
-    const ok = this.channel.publish(p.exchange, p.routingKey, content, {
-      persistent: p.persistent ?? true,
-      headers: p.headers,
-      contentType: p.contentType,
+    const content = typeof publish.content === 'string'
+      ? Buffer.from(publish.content)
+      : Buffer.isBuffer(publish.content) ? publish.content : Buffer.from(publish.content);
+    const ok = this.channel.publish(publish.exchange, publish.routingKey, content, {
+      persistent: publish.persistent ?? true,
+      headers: publish.headers,
+      contentType: publish.contentType,
     });
     if (!ok) {
       // Channel-side backpressure — the buffer in amqplib is full.

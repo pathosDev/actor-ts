@@ -54,12 +54,12 @@ import type { JetStreamOptions, JetStreamOptionsType } from './JetStreamOptions.
  *
  *   class OrderProcessor extends Actor<JetStreamMessage> {
  *     constructor(private readonly js: ActorRef<JetStreamCommand>) { super(); }
- *     async onReceive(m: JetStreamMessage) {
+ *     async onReceive(message: JetStreamMessage) {
  *       try {
- *         await db.insertOrder(JSON.parse(new TextDecoder().decode(m.payload)));
- *         this.js.tell({ kind: 'ack', streamSeq: m.streamSeq });
+ *         await db.insertOrder(JSON.parse(new TextDecoder().decode(message.payload)));
+ *         this.js.tell({ kind: 'ack', streamSeq: message.streamSeq });
  *       } catch (e) {
- *         this.js.tell({ kind: 'nak', streamSeq: m.streamSeq, delayMs: 5_000 });
+ *         this.js.tell({ kind: 'nak', streamSeq: message.streamSeq, delayMs: 5_000 });
  *       }
  *     }
  *   }
@@ -179,20 +179,20 @@ export class JetStreamActor extends BrokerActor<
 
   protected configKey(): string { return ConfigKeys.io.broker.jetstream; }
   protected builtInDefaultOptions(): Partial<JetStreamOptionsType> { return {}; }
-  protected readOptionsFromConfig(c: Config): Partial<JetStreamOptionsType> {
+  protected readOptionsFromConfig(config: Config): Partial<JetStreamOptionsType> {
     const out: { -readonly [K in keyof JetStreamOptionsType]?: JetStreamOptionsType[K] } = {};
-    if (c.hasPath('servers')) out.servers = c.getStringList('servers');
-    if (c.hasPath('token')) out.token = c.getString('token');
-    if (c.hasPath('user')) out.user = c.getString('user');
-    if (c.hasPath('password')) out.password = c.getString('password');
-    if (c.hasPath('name')) out.name = c.getString('name');
+    if (config.hasPath('servers')) out.servers = config.getStringList('servers');
+    if (config.hasPath('token')) out.token = config.getString('token');
+    if (config.hasPath('user')) out.user = config.getString('user');
+    if (config.hasPath('password')) out.password = config.getString('password');
+    if (config.hasPath('name')) out.name = config.getString('name');
     return out;
   }
   protected requiredOptions(): ReadonlyArray<keyof JetStreamOptionsType> { return ['servers']; }
   protected endpointLabel(): string {
-    const s = this.options.servers;
-    if (Array.isArray(s)) return `nats://${s.join(',')}`;
-    return `nats://${typeof s === 'string' ? s : ''}`;
+    const servers = this.options.servers;
+    if (Array.isArray(servers)) return `nats://${servers.join(',')}`;
+    return `nats://${typeof servers === 'string' ? servers : ''}`;
   }
 
   /**
@@ -264,8 +264,8 @@ export class JetStreamActor extends BrokerActor<
   protected async disconnectImplementation(): Promise<void> {
     // Reject every still-pending ack so the consumer pump unwinds.
     if (this.pending.size > 0) {
-      for (const p of this.pending.values()) {
-        try { p.handle.nak(); } catch { /* best-effort */ }
+      for (const pendingAck of this.pending.values()) {
+        try { pendingAck.handle.nak(); } catch { /* best-effort */ }
       }
       this.pending.clear();
     }
@@ -285,16 +285,16 @@ export class JetStreamActor extends BrokerActor<
 
   protected async dispatchOutgoing(env: OutboundEnvelope<JetStreamPublish>): Promise<void> {
     if (!this.js) throw new Error('JetStreamActor: not connected');
-    const p = env.payload;
-    const bytes = typeof p.payload === 'string'
-      ? new TextEncoder().encode(p.payload)
-      : p.payload;
-    await this.js.publish(p.subject, bytes, {
-      msgID: p.messageId,
-      expect: p.expectedLastSeq !== undefined
-        ? { lastSequence: p.expectedLastSeq }
+    const publish = env.payload;
+    const bytes = typeof publish.payload === 'string'
+      ? new TextEncoder().encode(publish.payload)
+      : publish.payload;
+    await this.js.publish(publish.subject, bytes, {
+      msgID: publish.messageId,
+      expect: publish.expectedLastSeq !== undefined
+        ? { lastSequence: publish.expectedLastSeq }
         : undefined,
-      headers: p.headers,
+      headers: publish.headers,
     });
   }
 
@@ -302,12 +302,12 @@ export class JetStreamActor extends BrokerActor<
     // Compile-time exhaustiveness: adding a new JetStreamCommand variant
     // forces this site to handle it explicitly (TS error otherwise).
     match(cmd)
-      .with({ kind: 'publish' },    (c) => { this.enqueueOutbound(c.publish); })
-      .with({ kind: 'ack' },        (c) => this.handleAcknowledgment(c.streamSeq))
-      .with({ kind: 'nak' },        (c) => this.handleNak(c.streamSeq, c.delayMs))
-      .with({ kind: 'term' },       (c) => this.handleTerm(c.streamSeq, c.reason))
-      .with({ kind: 'inProgress' }, (c) => this.handleInProgress(c.streamSeq))
-      .with({ kind: 'fetch' },      (c) => { void this.handleFetch(c.batch, c.expiresMs); })
+      .with({ kind: 'publish' },    (command) => { this.enqueueOutbound(command.publish); })
+      .with({ kind: 'ack' },        (command) => this.handleAcknowledgment(command.streamSeq))
+      .with({ kind: 'nak' },        (command) => this.handleNak(command.streamSeq, command.delayMs))
+      .with({ kind: 'term' },       (command) => this.handleTerm(command.streamSeq, command.reason))
+      .with({ kind: 'inProgress' }, (command) => this.handleInProgress(command.streamSeq))
+      .with({ kind: 'fetch' },      (command) => { void this.handleFetch(command.batch, command.expiresMs); })
       .exhaustive();
   }
 
@@ -315,8 +315,8 @@ export class JetStreamActor extends BrokerActor<
 
   private async runPump(): Promise<void> {
     if (!this.subscription) return;
-    for await (const m of this.subscription) {
-      await this.deliverAndAwaitAcknowledgment(m);
+    for await (const message of this.subscription) {
+      await this.deliverAndAwaitAcknowledgment(message);
     }
   }
 
@@ -351,13 +351,13 @@ export class JetStreamActor extends BrokerActor<
     // batch is full or when `expires` ms elapses — empty-batch is
     // therefore a normal end condition, NOT an error.
     const handles: JetStreamMsgHandleLike[] = [];
-    for await (const m of messages) handles.push(m);
+    for await (const message of messages) handles.push(message);
     // Deliver everything to target first (typical pull-consumer
     // semantics: the application sees the whole batch at once), then
     // wait in parallel for the per-message acks.  Serial-await within
     // a batch would deadlock if the target processes them out of
     // order, which is the natural actor pattern.
-    await Promise.all(handles.map((h) => this.deliverAndAwaitAcknowledgment(h)));
+    await Promise.all(handles.map((handle) => this.deliverAndAwaitAcknowledgment(handle)));
   }
 
   /**
@@ -365,12 +365,12 @@ export class JetStreamActor extends BrokerActor<
    * `handleFetch`.  Tells the message to `target`, then awaits an
    * external ack / nak / term (unless `ackPolicy === 'none'`).
    */
-  private async deliverAndAwaitAcknowledgment(m: JetStreamMsgHandleLike): Promise<void> {
+  private async deliverAndAwaitAcknowledgment(messageHandle: JetStreamMsgHandleLike): Promise<void> {
     const target = this.options.target;
     const ackTimeoutMs = this.options.ackTimeout
       ?? this.options.consumer?.ackWaitMs
       ?? 30_000;
-    const handle: JetStreamMsgHandleLike = m;
+    const handle: JetStreamMsgHandleLike = messageHandle;
     const info = handle.info;
     if (target) {
       target.tell({
@@ -410,51 +410,51 @@ export class JetStreamActor extends BrokerActor<
   }
 
   private handleAcknowledgment(streamSeq: number): void {
-    const p = this.pending.get(streamSeq);
-    if (!p) {
+    const pendingAck = this.pending.get(streamSeq);
+    if (!pendingAck) {
       this.log.debug(`JetStreamActor: ack for unknown streamSeq=${streamSeq} — ignored`);
       return;
     }
-    try { p.handle.ack(); }
+    try { pendingAck.handle.ack(); }
     catch (err) {
-      p.fail(err instanceof Error ? err : new Error(String(err)));
+      pendingAck.fail(err instanceof Error ? err : new Error(String(err)));
       this.pending.delete(streamSeq);
       return;
     }
-    p.done();
+    pendingAck.done();
     this.pending.delete(streamSeq);
   }
 
   private handleNak(streamSeq: number, delayMs?: number): void {
-    const p = this.pending.get(streamSeq);
-    if (!p) return;
+    const pendingAck = this.pending.get(streamSeq);
+    if (!pendingAck) return;
     try {
       if (typeof delayMs === 'number' && delayMs > 0) {
-        p.handle.nak(delayMs);
+        pendingAck.handle.nak(delayMs);
       } else {
-        p.handle.nak();
+        pendingAck.handle.nak();
       }
     } catch { /* best-effort — nakWithDelay may be missing on older clients */ }
-    p.done();
+    pendingAck.done();
     this.pending.delete(streamSeq);
   }
 
   private handleTerm(streamSeq: number, reason?: string): void {
-    const p = this.pending.get(streamSeq);
-    if (!p) return;
+    const pendingAck = this.pending.get(streamSeq);
+    if (!pendingAck) return;
     this.log.warn(
       `JetStreamActor: term for streamSeq=${streamSeq}${reason ? ` (${reason})` : ''} — `
       + `message dropped permanently`,
     );
-    try { p.handle.term(); } catch { /* */ }
-    p.done();
+    try { pendingAck.handle.term(); } catch { /* */ }
+    pendingAck.done();
     this.pending.delete(streamSeq);
   }
 
   private handleInProgress(streamSeq: number): void {
-    const p = this.pending.get(streamSeq);
-    if (!p) return;
-    try { p.handle.working(); } catch { /* */ }
+    const pendingAck = this.pending.get(streamSeq);
+    if (!pendingAck) return;
+    try { pendingAck.handle.working(); } catch { /* */ }
   }
 }
 
@@ -529,10 +529,10 @@ async function upsertConsumer(
   }
 }
 
-function extractHeaders(h: HeadersLike | undefined): Record<string, string> {
-  if (!h) return {};
+function extractHeaders(headers: HeadersLike | undefined): Record<string, string> {
+  if (!headers) return {};
   const out: Record<string, string> = {};
-  for (const k of h.keys()) out[k] = h.get(k) ?? '';
+  for (const key of headers.keys()) out[key] = headers.get(key) ?? '';
   return out;
 }
 
