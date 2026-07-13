@@ -146,16 +146,16 @@ function isInFlight(value: unknown): value is typeof IN_FLIGHT_MARKER {
   return typeof value === 'object' && value !== null && (value as { inFlight?: boolean }).inFlight === true;
 }
 
-function encodeResponse(r: HttpResponse, requestFingerprint: string): CachedResponse {
-  let body: unknown = r.body;
+function encodeResponse(response: HttpResponse, requestFingerprint: string): CachedResponse {
+  let body: unknown = response.body;
   if (body instanceof Uint8Array) {
     body = { __bin: bytesToBase64(body) };
   }
   return {
-    status: r.status,
-    headers: r.headers as Record<string, string> | undefined,
+    status: response.status,
+    headers: response.headers as Record<string, string> | undefined,
     body,
-    contentType: r.contentType,
+    contentType: response.contentType,
     requestFingerprint,
   };
 }
@@ -197,25 +197,25 @@ async function computeRequestFingerprint(req: HttpRequest): Promise<string> {
   return `fnv:${(h1 >>> 0).toString(16)}${(h2 >>> 0).toString(16)}`;
 }
 
-function decodeResponse(c: CachedResponse): HttpResponse {
-  let body: HttpResponse['body'] = c.body as HttpResponse['body'];
-  if (typeof c.body === 'object' && c.body !== null && '__bin' in (c.body as object)) {
-    body = base64ToBytes((c.body as { __bin: string }).__bin);
+function decodeResponse(cached: CachedResponse): HttpResponse {
+  let body: HttpResponse['body'] = cached.body as HttpResponse['body'];
+  if (typeof cached.body === 'object' && cached.body !== null && '__bin' in (cached.body as object)) {
+    body = base64ToBytes((cached.body as { __bin: string }).__bin);
   }
   return {
-    status: c.status,
-    headers: c.headers,
+    status: cached.status,
+    headers: cached.headers,
     body,
-    contentType: c.contentType,
+    contentType: cached.contentType,
   };
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
   // Bun, Node 16+, and Deno all expose `Buffer`; keeping this simple.
   if (typeof Buffer !== 'undefined') return Buffer.from(bytes).toString('base64');
-  let s = '';
-  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]!);
-  return btoa(s);
+  let binaryString = '';
+  for (let i = 0; i < bytes.length; i++) binaryString += String.fromCharCode(bytes[i]!);
+  return btoa(binaryString);
 }
 
 function base64ToBytes(b64: string): Uint8Array {

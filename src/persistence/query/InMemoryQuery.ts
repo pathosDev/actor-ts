@@ -135,9 +135,9 @@ function pushStreamByPersistenceId<E>(
         if (ev.sequenceNr <= lastEmittedSeq) return; // dedup vs. catch-up
         lastEmittedSeq = ev.sequenceNr;
         if (pendingResolve) {
-          const r = pendingResolve;
+          const resolveNext = pendingResolve;
           pendingResolve = null;
-          r({ value: ev, done: false });
+          resolveNext({ value: ev, done: false });
         } else {
           queue.push(ev);
         }
@@ -173,9 +173,9 @@ function pushStreamByPersistenceId<E>(
           cancelled = true;
           unsubscribe();
           if (pendingResolve) {
-            const r = pendingResolve;
+            const resolveNext = pendingResolve;
             pendingResolve = null;
-            r({ value: undefined, done: true });
+            resolveNext({ value: undefined, done: true });
           }
           return Promise.resolve({ value: undefined, done: true });
         },
@@ -207,9 +207,9 @@ function pushStreamByTag<E>(
         if (lastEmittedOffset && offsetCompare(te.offset, lastEmittedOffset) <= 0) return;
         lastEmittedOffset = te.offset;
         if (pendingResolve) {
-          const r = pendingResolve;
+          const resolveNext = pendingResolve;
           pendingResolve = null;
-          r({ value: te, done: false });
+          resolveNext({ value: te, done: false });
         } else {
           queue.push(te);
         }
@@ -242,9 +242,9 @@ function pushStreamByTag<E>(
           cancelled = true;
           unsubscribe();
           if (pendingResolve) {
-            const r = pendingResolve;
+            const resolveNext = pendingResolve;
             pendingResolve = null;
-            r({ value: undefined, done: true });
+            resolveNext({ value: undefined, done: true });
           }
           return Promise.resolve({ value: undefined, done: true });
         },
