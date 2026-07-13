@@ -59,22 +59,22 @@ class MockSubscription implements JetStreamSubscriptionLike {
   private buffer: JetStreamMsgHandleLike[] = [];
   destroyed = false;
 
-  push(h: JetStreamMsgHandleLike): void {
+  push(handle: JetStreamMsgHandleLike): void {
     if (this.resolveNext) {
-      const r = this.resolveNext;
+      const resolveNext = this.resolveNext;
       this.resolveNext = null;
-      r({ value: h, done: false });
+      resolveNext({ value: handle, done: false });
     } else {
-      this.buffer.push(h);
+      this.buffer.push(handle);
     }
   }
 
   async destroy(): Promise<void> {
     this.destroyed = true;
     if (this.resolveNext) {
-      const r = this.resolveNext;
+      const resolveNext = this.resolveNext;
       this.resolveNext = null;
-      r({ value: undefined as never, done: true });
+      resolveNext({ value: undefined as never, done: true });
     }
   }
 
@@ -85,7 +85,7 @@ class MockSubscription implements JetStreamSubscriptionLike {
           return Promise.resolve({ value: this.buffer.shift()!, done: false });
         }
         if (this.destroyed) return Promise.resolve({ value: undefined as never, done: true });
-        return new Promise<IteratorResult<JetStreamMsgHandleLike>>((r) => { this.resolveNext = r; });
+        return new Promise<IteratorResult<JetStreamMsgHandleLike>>((resolveNext) => { this.resolveNext = resolveNext; });
       },
     };
   }
@@ -106,7 +106,7 @@ class MockPullConsumer {
     // Slice the batch to `max_messages` so the test can model "fewer
     // available than asked".
     const delivered = batch.slice(0, opts.max_messages);
-    return (async function* () { for (const h of delivered) yield h; })();
+    return (async function* () { for (const handle of delivered) yield handle; })();
   }
 }
 
@@ -180,7 +180,7 @@ class MockNatsConnection implements NatsConnectionLike {
   readonly js = new MockJetStream();
   readonly jsm = new MockJsm();
   private closedResolve!: (e: Error | undefined) => void;
-  private closedPromise = new Promise<Error | undefined>((r) => { this.closedResolve = r; });
+  private closedPromise = new Promise<Error | undefined>((resolveNext) => { this.closedResolve = resolveNext; });
 
   jetstream(): JetStreamClientLike { return this.js; }
   async jetstreamManager(): Promise<JetStreamManagerLike> { return this.jsm; }
@@ -311,15 +311,15 @@ describe('JetStreamActor — ack/nak/term', () => {
         .withStream({ name: 'S', subjects: ['s.>'] })
         .withConsumer({ durable: 'd', ackWaitMs: 5_000 });
       const { actor, mock, target } = await bootActor(sys, jetstreamOptions);
-      const h = makeHandle(42);
-      mock.mockConn.js.subscription.push(h);
+      const handle = makeHandle(42);
+      mock.mockConn.js.subscription.push(handle);
       await sleep(40);
       expect(target.received).toHaveLength(1);
       expect(target.received[0]!.streamSeq).toBe(42);
 
       actor.tell({ kind: 'ack', streamSeq: 42 });
       await sleep(40);
-      expect(h.acked).toBe(true);
+      expect(handle.acked).toBe(true);
     } finally {
       await sys.terminate();
     }
@@ -336,14 +336,14 @@ describe('JetStreamActor — ack/nak/term', () => {
         .withStream({ name: 'S', subjects: ['s.>'] })
         .withConsumer({ durable: 'd' });
       const { actor, mock } = await bootActor(sys, jetstreamOptions);
-      const h = makeHandle(7);
-      mock.mockConn.js.subscription.push(h);
+      const handle = makeHandle(7);
+      mock.mockConn.js.subscription.push(handle);
       await sleep(40);
       actor.tell({ kind: 'nak', streamSeq: 7, delayMs: 1500 });
       await sleep(40);
-      expect(h.naked).toBe(true);
-      expect(h.nakDelay).toBe(1500);
-      expect(h.acked).toBe(false);
+      expect(handle.naked).toBe(true);
+      expect(handle.nakDelay).toBe(1500);
+      expect(handle.acked).toBe(false);
     } finally {
       await sys.terminate();
     }
@@ -360,12 +360,12 @@ describe('JetStreamActor — ack/nak/term', () => {
         .withStream({ name: 'S', subjects: ['s.>'] })
         .withConsumer({ durable: 'd' });
       const { actor, mock } = await bootActor(sys, jetstreamOptions);
-      const h = makeHandle(99);
-      mock.mockConn.js.subscription.push(h);
+      const handle = makeHandle(99);
+      mock.mockConn.js.subscription.push(handle);
       await sleep(40);
       actor.tell({ kind: 'term', streamSeq: 99, reason: 'unparseable' });
       await sleep(40);
-      expect(h.termed).toBe(true);
+      expect(handle.termed).toBe(true);
     } finally {
       await sys.terminate();
     }
@@ -382,15 +382,15 @@ describe('JetStreamActor — ack/nak/term', () => {
         .withStream({ name: 'S', subjects: ['s.>'] })
         .withConsumer({ durable: 'd' });
       const { actor, mock } = await bootActor(sys, jetstreamOptions);
-      const h = makeHandle(5);
-      mock.mockConn.js.subscription.push(h);
+      const handle = makeHandle(5);
+      mock.mockConn.js.subscription.push(handle);
       await sleep(40);
       actor.tell({ kind: 'inProgress', streamSeq: 5 });
       await sleep(20);
-      expect(h.working_called).toBe(true);
+      expect(handle.working_called).toBe(true);
       // The handle is still pending — neither acked nor naked.
-      expect(h.acked).toBe(false);
-      expect(h.naked).toBe(false);
+      expect(handle.acked).toBe(false);
+      expect(handle.naked).toBe(false);
       // Clean up.
       actor.tell({ kind: 'ack', streamSeq: 5 });
       await sleep(40);
@@ -442,7 +442,7 @@ describe('JetStreamActor — ack/nak/term', () => {
       mock.mockConn.js.subscription.push(h1);
       mock.mockConn.js.subscription.push(h2);
       await sleep(80);
-      expect(target.received.map((r) => r.streamSeq)).toEqual([1, 2]);
+      expect(target.received.map((resolveNext) => resolveNext.streamSeq)).toEqual([1, 2]);
       expect(h1.acked).toBe(false);   // pump didn't call ack
       expect(h2.acked).toBe(false);
     } finally {
@@ -494,12 +494,12 @@ describe('JetStreamActor — publish', () => {
         },
       });
       await sleep(40);
-      const p = mock.mockConn.js.published[0];
-      expect(p?.subject).toBe('orders.new');
-      expect(new TextDecoder().decode(p!.payload)).toBe('hello');
-      expect(p?.msgID).toBe('abc-123');
-      expect(p?.expectLastSeq).toBe(42);
-      expect(p?.headers).toEqual({ 'X-Tenant': 't1' });
+      const published = mock.mockConn.js.published[0];
+      expect(published?.subject).toBe('orders.new');
+      expect(new TextDecoder().decode(published!.payload)).toBe('hello');
+      expect(published?.msgID).toBe('abc-123');
+      expect(published?.expectLastSeq).toBe(42);
+      expect(published?.headers).toEqual({ 'X-Tenant': 't1' });
     } finally {
       await sys.terminate();
     }

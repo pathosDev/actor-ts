@@ -105,12 +105,12 @@ function spawnFake(
   sys: ActorSystem,
   options: Partial<FakeOptions> = {},
 ): { ref: ActorRef<FakeCommand>; brokerReady: Promise<FakeBroker> } {
-  let resolve!: (b: FakeBroker) => void;
+  let resolve!: (broker: FakeBroker) => void;
   const brokerReady = new Promise<FakeBroker>((r) => { resolve = r; });
   const ref = sys.spawnAnonymous(Props.create(() => {
-    const b = new FakeBroker(options);
-    resolve(b);
-    return b as unknown as Actor<FakeCommand>;
+    const broker = new FakeBroker(options);
+    resolve(broker);
+    return broker as unknown as Actor<FakeCommand>;
   }));
   return { ref: ref as ActorRef<FakeCommand>, brokerReady };
 }
@@ -159,14 +159,14 @@ describe('BrokerActor — options resolution', () => {
     const sys = makeSystem('cfg-4');
     let captured: Error | null = null;
     sys.spawnAnonymous(Props.create(() => {
-      const b = new FakeBroker();  // no endpoint anywhere
+      const broker = new FakeBroker();  // no endpoint anywhere
       // Intercept preStart to capture the error.
-      const orig = b.preStart.bind(b);
-      b.preStart = async (): Promise<void> => {
+      const orig = broker.preStart.bind(broker);
+      broker.preStart = async (): Promise<void> => {
         try { await orig(); }
         catch (e) { captured = e as Error; }
       };
-      return b as unknown as Actor<FakeCommand>;
+      return broker as unknown as Actor<FakeCommand>;
     }));
     await sleep(20);
     expect(captured).toBeInstanceOf(BrokerOptionsError);

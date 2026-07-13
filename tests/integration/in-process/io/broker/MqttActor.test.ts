@@ -51,7 +51,7 @@ class FakeMqttClient implements MqttClientLike {
   readonly unsubscribes: string[] = [];
   readonly publishes: Array<{ topic: string; payload: string | Uint8Array; qos: number; retain: boolean }> = [];
 
-  private msgCbs: Array<(t: string, p: Uint8Array, pk?: MqttInboundPacketLike) => void> = [];
+  private msgCbs: Array<(t: string, publish: Uint8Array, pk?: MqttInboundPacketLike) => void> = [];
   private closeCbs: Array<() => void> = [];
   private errCbs: Array<(e: Error) => void> = [];
   private connectCbs: Array<() => void> = [];
@@ -95,10 +95,10 @@ class FakeMqttModule {
   readonly clients: FakeMqttClient[] = [];
   autoConnect = true;
   connect(_url: string, _opts?: unknown): FakeMqttClient {
-    const c = new FakeMqttClient();
-    this.clients.push(c);
-    if (this.autoConnect) setTimeout(() => c.fireConnect(), 0);
-    return c;
+    const client = new FakeMqttClient();
+    this.clients.push(client);
+    if (this.autoConnect) setTimeout(() => client.fireConnect(), 0);
+    return client;
   }
   last(): FakeMqttClient { return this.clients[this.clients.length - 1]!; }
 }
@@ -147,7 +147,7 @@ class TestMqttActor<T = unknown, TSelf = never> extends MqttActor<T, TSelf> {
   doSubscribe(topic: string, opts?: { qos?: MqttQos; target?: ActorRef<MqttMessage<T>> }): void { this.subscribe(topic, opts); }
   doUnsubscribe(topic: string, opts?: { target?: ActorRef<MqttMessage<T>> }): void { this.unsubscribe(topic, opts); }
   doPublish(topic: string, payload: unknown, opts?: { qos?: MqttQos; retain?: boolean }): boolean {
-    return (this.publish as (t: string, p: unknown, o?: unknown) => boolean)(topic, payload, opts);
+    return (this.publish as (t: string, publish: unknown, o?: unknown) => boolean)(topic, payload, opts);
   }
   encodeEntity(value: unknown): Uint8Array { return this.codec().encode(value); }
   get resolvedOptions(): MqttOptionsType { return this.options; }
@@ -183,8 +183,8 @@ describe('MqttActor construction', () => {
   test('constructing an actor does not pull in the mqtt peer-dep', () => {
     const mqttOptions = MqttOptions.create()
       .withBrokerUrl('mqtt://localhost');
-    const a = new TestMqttActor({ options: mqttOptions });
-    expect(a).toBeInstanceOf(MqttActor);
+    const actor = new TestMqttActor({ options: mqttOptions });
+    expect(actor).toBeInstanceOf(MqttActor);
   });
 });
 
@@ -464,7 +464,7 @@ describe('MqttActor publish', () => {
       actor.doPublish('t/bin', enc.encode('bin'));
       actor.doPublish('t/obj', { a: 1 });
       await sleep(20);
-      const byTopic = new Map(actor.module.last().publishes.map((p) => [p.topic, p.payload]));
+      const byTopic = new Map(actor.module.last().publishes.map((publish) => [publish.topic, publish.payload]));
       expect(byTopic.get('t/str')).toBe('hello');
       expect(new TextDecoder().decode(byTopic.get('t/bin') as Uint8Array)).toBe('bin');
       expect(new TextDecoder().decode(byTopic.get('t/obj') as Uint8Array)).toBe('{"a":1}');
@@ -482,8 +482,8 @@ describe('MqttActor publish', () => {
       await boot(sys, actor);
       actor.doPublish('t/entity', actor.encodeEntity('pong'));
       await sleep(20);
-      const p = actor.module.last().publishes.find((x) => x.topic === 't/entity')!;
-      expect(new TextDecoder().decode(p.payload as Uint8Array)).toBe('"pong"');
+      const publish = actor.module.last().publishes.find((x) => x.topic === 't/entity')!;
+      expect(new TextDecoder().decode(publish.payload as Uint8Array)).toBe('"pong"');
     } finally {
       await sys.terminate();
     }
@@ -522,8 +522,8 @@ describe('MqttActor publish', () => {
       ref.tell({ kind: 'publish', publish: { topic: 'buf/1', payload: 'one' } });
       ref.tell({ kind: 'publish', publish: { topic: 'buf/2', payload: 'two' } });
       await sleep(60);
-      const flushed = actor.module.last().publishes.filter((p) => p.topic.startsWith('buf/'));
-      expect(flushed.map((p) => p.topic)).toEqual(['buf/1', 'buf/2']);
+      const flushed = actor.module.last().publishes.filter((publish) => publish.topic.startsWith('buf/'));
+      expect(flushed.map((publish) => publish.topic)).toEqual(['buf/1', 'buf/2']);
     } finally {
       await sys.terminate();
     }
@@ -534,30 +534,30 @@ describe('MqttActor publish', () => {
 
 describe('buildPublishProperties (MQTT 5.0)', () => {
   test('returns undefined on protocolVersion=4 even with userProperties set', () => {
-    const p: MqttPublish = { topic: 'sensor/1', payload: 'x', userProperties: { tenant: 't1' } };
-    expect(buildPublishProperties(p, 4)).toBeUndefined();
+    const publish: MqttPublish = { topic: 'sensor/1', payload: 'x', userProperties: { tenant: 't1' } };
+    expect(buildPublishProperties(publish, 4)).toBeUndefined();
   });
 
   test('returns undefined when no v5 fields are set, regardless of version', () => {
-    const p: MqttPublish = { topic: 'sensor/1', payload: 'x' };
-    expect(buildPublishProperties(p, 4)).toBeUndefined();
-    expect(buildPublishProperties(p, 5)).toBeUndefined();
+    const publish: MqttPublish = { topic: 'sensor/1', payload: 'x' };
+    expect(buildPublishProperties(publish, 4)).toBeUndefined();
+    expect(buildPublishProperties(publish, 5)).toBeUndefined();
   });
 
   test('returns undefined when userProperties is an empty object on v5', () => {
-    const p: MqttPublish = { topic: 'sensor/1', payload: 'x', userProperties: {} };
-    expect(buildPublishProperties(p, 5)).toBeUndefined();
+    const publish: MqttPublish = { topic: 'sensor/1', payload: 'x', userProperties: {} };
+    expect(buildPublishProperties(publish, 5)).toBeUndefined();
   });
 
   test('returns a properties block on v5 with populated userProperties', () => {
     const userProperties = { tenant: 't1', priority: ['high', 'audit'] };
-    const p: MqttPublish = { topic: 'sensor/1', payload: 'x', userProperties };
-    expect(buildPublishProperties(p, 5)).toEqual({ userProperties });
+    const publish: MqttPublish = { topic: 'sensor/1', payload: 'x', userProperties };
+    expect(buildPublishProperties(publish, 5)).toEqual({ userProperties });
   });
 
   test('preserves multi-valued properties (string[]) verbatim', () => {
-    const p: MqttPublish = { topic: 'sensor/1', payload: 'x', userProperties: { tag: ['alpha', 'beta', 'gamma'] } };
-    const props = buildPublishProperties(p, 5);
+    const publish: MqttPublish = { topic: 'sensor/1', payload: 'x', userProperties: { tag: ['alpha', 'beta', 'gamma'] } };
+    const props = buildPublishProperties(publish, 5);
     expect(props?.userProperties?.tag).toEqual(['alpha', 'beta', 'gamma']);
   });
 });

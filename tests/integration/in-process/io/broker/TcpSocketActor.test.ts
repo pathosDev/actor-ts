@@ -171,10 +171,10 @@ describe('TcpSocketActor — options validation', () => {
     const tcpOptions = TcpSocketOptions.create()
       .withTarget(target);  // host, port missing
     sys.spawnAnonymous(Props.create(() => {
-      const a = new TcpSocketActor(tcpOptions);
-      const orig = a.preStart.bind(a);
-      a.preStart = async () => { try { await orig(); } catch (e) { captured = e as Error; } };
-      return a as unknown as Actor<unknown>;
+      const actor = new TcpSocketActor(tcpOptions);
+      const orig = actor.preStart.bind(actor);
+      actor.preStart = async () => { try { await orig(); } catch (e) { captured = e as Error; } };
+      return actor as unknown as Actor<unknown>;
     }));
     await sleep(30);
     expect(captured).not.toBeNull();

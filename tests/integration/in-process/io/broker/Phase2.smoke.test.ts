@@ -37,27 +37,27 @@ describe('Phase 2 actors — construction is lazy', () => {
   test('KafkaActor constructs without loading kafkajs', () => {
     const kafkaOptions = KafkaOptions.create()
       .withBrokers(['localhost:9092']);
-    const a = new KafkaActor(kafkaOptions);
-    expect(a).toBeInstanceOf(KafkaActor);
+    const actor = new KafkaActor(kafkaOptions);
+    expect(actor).toBeInstanceOf(KafkaActor);
   });
   test('AmqpActor constructs without loading amqplib', () => {
     const amqpOptions = AmqpOptions.create()
       .withUrl('amqp://localhost');
-    const a = new AmqpActor(amqpOptions);
-    expect(a).toBeInstanceOf(AmqpActor);
+    const actor = new AmqpActor(amqpOptions);
+    expect(actor).toBeInstanceOf(AmqpActor);
   });
   test('GrpcClientActor constructs without loading @grpc/grpc-js', () => {
     const grpcClientOptions = GrpcClientOptions.create()
       .withProtoPath('x.proto').withPackageName('x').withServiceName('X').withEndpoint('localhost:1');
-    const a = new GrpcClientActor(grpcClientOptions);
-    expect(a).toBeInstanceOf(GrpcClientActor);
+    const actor = new GrpcClientActor(grpcClientOptions);
+    expect(actor).toBeInstanceOf(GrpcClientActor);
   });
   test('GrpcServerActor constructs without loading @grpc/grpc-js', () => {
     const grpcServerOptions = GrpcServerOptions.create()
       .withProtoPath('x.proto').withPackageName('x').withServiceName('X')
       .withBind('0.0.0.0:0').withHandlers({});
-    const a = new GrpcServerActor(grpcServerOptions);
-    expect(a).toBeInstanceOf(GrpcServerActor);
+    const actor = new GrpcServerActor(grpcServerOptions);
+    expect(actor).toBeInstanceOf(GrpcServerActor);
   });
 });
 
@@ -66,13 +66,13 @@ describe('Phase 2 actors — options validation', () => {
     const sys = makeSys('kafka-validate');
     let captured: Error | null = null;
     sys.spawnAnonymous(Props.create(() => {
-      const a = new KafkaActor(KafkaOptions.create());
-      const orig = a.preStart.bind(a);
-      a.preStart = async (): Promise<void> => {
+      const actor = new KafkaActor(KafkaOptions.create());
+      const orig = actor.preStart.bind(actor);
+      actor.preStart = async (): Promise<void> => {
         try { await orig(); }
         catch (e) { captured = e as Error; }
       };
-      return a as unknown as Actor<unknown>;
+      return actor as unknown as Actor<unknown>;
     }));
     await sleep(30);
     expect(captured).toBeInstanceOf(BrokerOptionsError);
@@ -87,13 +87,13 @@ describe('Phase 2 actors — options validation', () => {
       .withProtoPath('x.proto').withPackageName('x').withServiceName('X');
     // endpoint missing
     sys.spawnAnonymous(Props.create(() => {
-      const a = new GrpcClientActor(grpcClientOptions);
-      const orig = a.preStart.bind(a);
-      a.preStart = async (): Promise<void> => {
+      const actor = new GrpcClientActor(grpcClientOptions);
+      const orig = actor.preStart.bind(actor);
+      actor.preStart = async (): Promise<void> => {
         try { await orig(); }
         catch (e) { captured = e as Error; }
       };
-      return a as unknown as Actor<unknown>;
+      return actor as unknown as Actor<unknown>;
     }));
     await sleep(30);
     expect(captured).toBeInstanceOf(BrokerOptionsError);
@@ -112,22 +112,22 @@ describe('Phase 2 actors — options precedence (constructor wins over HOCON)', 
       });
     const sys = ActorSystem.create('kafka-prec', sysOptions);
     let captured: KafkaActor | null = null;
-    let resolve!: (a: KafkaActor) => void;
+    let resolve!: (actor: KafkaActor) => void;
     const ready = new Promise<KafkaActor>((r) => { resolve = r; });
     const kafkaOptions = KafkaOptions.create()
       .withBrokers(['ctor:9092']);  // ctor wins
     sys.spawnAnonymous(Props.create(() => {
-      const a = new KafkaActor(kafkaOptions);
+      const actor = new KafkaActor(kafkaOptions);
       // We'll never actually try to connect — kafkajs isn't installed.
       // Override preStart to swallow the connect error after options
       // resolution so the test can inspect them.
-      const orig = a.preStart.bind(a);
-      a.preStart = async (): Promise<void> => {
+      const orig = actor.preStart.bind(actor);
+      actor.preStart = async (): Promise<void> => {
         try { await orig(); } catch { /* ignored — kafkajs missing */ }
-        captured = a;
-        resolve(a);
+        captured = actor;
+        resolve(actor);
       };
-      return a as unknown as Actor<unknown>;
+      return actor as unknown as Actor<unknown>;
     }));
     await ready;
     await sleep(20);

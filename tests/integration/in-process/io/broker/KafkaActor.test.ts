@@ -75,7 +75,7 @@ class MockConsumer implements KafkaConsumerLike {
   async commitOffsets(
     args: ReadonlyArray<{ topic: string; partition: number; offset: string }>,
   ): Promise<void> {
-    for (const a of args) this.committed.push({ ...a });
+    for (const actor of args) this.committed.push({ ...actor });
   }
 
   /** Drive a message into the pump.  Returns the in-flight tracker. */
@@ -143,9 +143,9 @@ async function bootActor(
   const ref = { current: null as MockKafkaActor | null };
   const actor = sys.spawn(
     Props.create(() => {
-      const a = new MockKafkaActor(options.withTarget(targetRef));
-      ref.current = a;
-      return a;
+      const actor = new MockKafkaActor(options.withTarget(targetRef));
+      ref.current = actor;
+      return actor;
     }),
     'kafka',
   );
@@ -325,12 +325,12 @@ describe('KafkaActor — manual commit (#2)', () => {
         .withConsumer({ groupId: 'g1', commitMode: 'manual' })
         .withTopics(['orders']);
       const { actor, mock } = await bootActor(sys, kafkaOptions);
-      const t = mock.consumer_.push('orders', 0, '5');
+      const pushed = mock.consumer_.push('orders', 0, '5');
       await sleep(20);
       actor.stop();
-      await t.promise;
-      expect(t.rejected).toBe(true);
-      expect(t.rejectError?.message).toMatch(/disconnecting/);
+      await pushed.promise;
+      expect(pushed.rejected).toBe(true);
+      expect(pushed.rejectError?.message).toMatch(/disconnecting/);
     } finally {
       await sys.terminate();
     }
