@@ -137,15 +137,15 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
     const allKeys = new Set<string>([...this.elements.keys(), ...other.elements.keys()]);
     const mergedElements = new Map<string, ElementEntry<E>>();
     for (const key of allKeys) {
-      const a = this.elements.get(key);
-      const b = other.elements.get(key);
+      const ours = this.elements.get(key);
+      const theirs = other.elements.get(key);
       const tomb = mergedTombstones.get(key) ?? EMPTY_SET;
       const merged = new Set<string>();
-      if (a) for (const t of a.tags) if (!tomb.has(t)) merged.add(t);
-      if (b) for (const t of b.tags) if (!tomb.has(t)) merged.add(t);
+      if (ours) for (const t of ours.tags) if (!tomb.has(t)) merged.add(t);
+      if (theirs) for (const t of theirs.tags) if (!tomb.has(t)) merged.add(t);
       if (merged.size > 0) {
         // Prefer the locally-known element; fall back to the peer's.
-        const element = a?.element ?? b?.element as E;
+        const element = ours?.element ?? theirs?.element as E;
         mergedElements.set(key, { element, tags: merged });
       }
     }
@@ -207,10 +207,10 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
   equals(other: ORSet<E>): boolean {
     if (this.elements.size !== other.elements.size) return false;
     for (const [k, v] of this.elements) {
-      const o = other.elements.get(k);
-      if (!o) return false;
-      if (v.tags.size !== o.tags.size) return false;
-      for (const t of v.tags) if (!o.tags.has(t)) return false;
+      const otherEntry = other.elements.get(k);
+      if (!otherEntry) return false;
+      if (v.tags.size !== otherEntry.tags.size) return false;
+      for (const t of v.tags) if (!otherEntry.tags.has(t)) return false;
     }
     return mapOfSetsEqual(this.tombstones, other.tombstones);
   }
@@ -219,26 +219,26 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
 const EMPTY_SET: ReadonlySet<string> = new Set();
 
 function unionMapOfSets(
-  a: ReadonlyMap<string, ReadonlySet<string>>,
-  b: ReadonlyMap<string, ReadonlySet<string>>,
+  ours: ReadonlyMap<string, ReadonlySet<string>>,
+  theirs: ReadonlyMap<string, ReadonlySet<string>>,
 ): Map<string, ReadonlySet<string>> {
   const out = new Map<string, ReadonlySet<string>>();
-  const keys = new Set<string>([...a.keys(), ...b.keys()]);
+  const keys = new Set<string>([...ours.keys(), ...theirs.keys()]);
   for (const k of keys) {
-    const merged = new Set<string>(a.get(k) ?? []);
-    for (const v of (b.get(k) ?? [])) merged.add(v);
+    const merged = new Set<string>(ours.get(k) ?? []);
+    for (const v of (theirs.get(k) ?? [])) merged.add(v);
     if (merged.size > 0) out.set(k, merged);
   }
   return out;
 }
 
 function mapOfSetsEqual(
-  a: ReadonlyMap<string, ReadonlySet<string>>,
-  b: ReadonlyMap<string, ReadonlySet<string>>,
+  ours: ReadonlyMap<string, ReadonlySet<string>>,
+  theirs: ReadonlyMap<string, ReadonlySet<string>>,
 ): boolean {
-  if (a.size !== b.size) return false;
-  for (const [k, va] of a) {
-    const vb = b.get(k);
+  if (ours.size !== theirs.size) return false;
+  for (const [k, va] of ours) {
+    const vb = theirs.get(k);
     if (!vb || vb.size !== va.size) return false;
     for (const t of va) if (!vb.has(t)) return false;
   }

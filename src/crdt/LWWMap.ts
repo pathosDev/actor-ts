@@ -125,9 +125,9 @@ export class LWWMap<K, V> implements Crdt<LWWMap<K, V>> {
 
   /** Number of currently-live keys (tombstones excluded). */
   get size(): number {
-    let n = 0;
-    for (const e of this.entries.values()) if (e.register.value() !== null) n++;
-    return n;
+    let count = 0;
+    for (const e of this.entries.values()) if (e.register.value() !== null) count++;
+    return count;
   }
 
   merge(other: LWWMap<K, V>): LWWMap<K, V> {
@@ -172,9 +172,9 @@ export class LWWMap<K, V> implements Crdt<LWWMap<K, V>> {
   equals(other: LWWMap<K, V>): boolean {
     if (this.entries.size !== other.entries.size) return false;
     for (const [id, entry] of this.entries) {
-      const o = other.entries.get(id);
-      if (!o) return false;
-      if (!entry.register.equals(o.register)) return false;
+      const otherEntry = other.entries.get(id);
+      if (!otherEntry) return false;
+      if (!entry.register.equals(otherEntry.register)) return false;
     }
     return true;
   }

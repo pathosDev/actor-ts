@@ -143,9 +143,9 @@ export class ORMap<K, V extends Crdt<V>> implements Crdt<ORMap<K, V>> {
   }
 
   get size(): number {
-    let n = 0;
-    for (const id of this.entries.keys()) if (this.keyset.has(id)) n++;
-    return n;
+    let count = 0;
+    for (const id of this.entries.keys()) if (this.keyset.has(id)) count++;
+    return count;
   }
 
   merge(other: ORMap<K, V>): ORMap<K, V> {
@@ -160,14 +160,14 @@ export class ORMap<K, V extends Crdt<V>> implements Crdt<ORMap<K, V>> {
     // tombstoned entries stay invisible.
     const allIds = new Set<string>([...this.entries.keys(), ...other.entries.keys()]);
     for (const id of allIds) {
-      const a = this.entries.get(id);
-      const b = other.entries.get(id);
-      if (a && b) {
-        mergedEntries.set(id, { key: a.key, value: a.value.merge(b.value) });
-      } else if (a) {
-        mergedEntries.set(id, a);
-      } else if (b) {
-        mergedEntries.set(id, b);
+      const ours = this.entries.get(id);
+      const theirs = other.entries.get(id);
+      if (ours && theirs) {
+        mergedEntries.set(id, { key: ours.key, value: ours.value.merge(theirs.value) });
+      } else if (ours) {
+        mergedEntries.set(id, ours);
+      } else if (theirs) {
+        mergedEntries.set(id, theirs);
       }
     }
     return new ORMap<K, V>(mergedKeyset, mergedEntries, this.identity);
@@ -220,12 +220,12 @@ export class ORMap<K, V extends Crdt<V>> implements Crdt<ORMap<K, V>> {
     // entries (kept around in `entries` to support associative merges)
     // are an implementation detail that mustn't leak into equality.
     for (const id of this.keyset.value()) {
-      const a = this.entries.get(id);
-      const b = other.entries.get(id);
-      if (!a || !b) return a === b;
-      if (typeof (a.value as { equals?: unknown }).equals === 'function') {
-        if (!(a.value as unknown as { equals(o: V): boolean }).equals(b.value)) return false;
-      } else if (JSON.stringify(a.value.toJSON()) !== JSON.stringify(b.value.toJSON())) {
+      const ours = this.entries.get(id);
+      const theirs = other.entries.get(id);
+      if (!ours || !theirs) return ours === theirs;
+      if (typeof (ours.value as { equals?: unknown }).equals === 'function') {
+        if (!(ours.value as unknown as { equals(otherEntry: V): boolean }).equals(theirs.value)) return false;
+      } else if (JSON.stringify(ours.value.toJSON()) !== JSON.stringify(theirs.value.toJSON())) {
         return false;
       }
     }
