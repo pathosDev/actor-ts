@@ -64,42 +64,42 @@ export class PhiAccrualFailureDetector {
   /** Record a received heartbeat for `peer` at time `now`. */
   heartbeat(peer: NodeAddress, now: number = Date.now()): void {
     const key = peer.toString();
-    let s = this.peers.get(key);
-    if (!s) {
-      s = {
+    let state = this.peers.get(key);
+    if (!state) {
+      state = {
         lastHeartbeat: now, everSeen: true,
         intervals: new Array(this.options.maxSampleSize).fill(0),
         intervalsHead: 0, intervalsCount: 0,
       };
-      this.peers.set(key, s);
+      this.peers.set(key, state);
       return;
     }
-    if (s.lastHeartbeat > 0) {
-      const delta = now - s.lastHeartbeat;
-      s.intervals[s.intervalsHead] = delta;
-      s.intervalsHead = (s.intervalsHead + 1) % this.options.maxSampleSize;
-      if (s.intervalsCount < this.options.maxSampleSize) s.intervalsCount++;
+    if (state.lastHeartbeat > 0) {
+      const delta = now - state.lastHeartbeat;
+      state.intervals[state.intervalsHead] = delta;
+      state.intervalsHead = (state.intervalsHead + 1) % this.options.maxSampleSize;
+      if (state.intervalsCount < this.options.maxSampleSize) state.intervalsCount++;
     }
-    s.lastHeartbeat = now;
-    s.everSeen = true;
+    state.lastHeartbeat = now;
+    state.everSeen = true;
   }
 
   /** Current phi value for `peer` — the higher, the more suspicious. */
   phi(peer: NodeAddress, now: number = Date.now()): number {
-    const s = this.peers.get(peer.toString());
-    if (!s || !s.everSeen) return 0;
-    const effectiveElapsed = Math.max(0, now - s.lastHeartbeat - this.options.acceptableHeartbeatPauseMs);
+    const state = this.peers.get(peer.toString());
+    if (!state || !state.everSeen) return 0;
+    const effectiveElapsed = Math.max(0, now - state.lastHeartbeat - this.options.acceptableHeartbeatPauseMs);
 
     // Before enough samples are collected, fall back to the intended
     // cadence so very new peers don't immediately look unreachable.
-    const mean = s.intervalsCount > 0 ? this.mean(s) : this.options.heartbeatIntervalMs;
-    const stddev = Math.max(this.options.minStdDeviationMs, this.stddev(s, mean));
+    const mean = state.intervalsCount > 0 ? this.mean(state) : this.options.heartbeatIntervalMs;
+    const stddev = Math.max(this.options.minStdDeviationMs, this.stddev(state, mean));
     // Use the classic Hayashibara formulation with a normal distribution.
     // phi = -log10(P(delay > elapsed))
     // Where P(delay > x) ≈ 1 - Φ((x - mean) / stddev).
-    const y = (effectiveElapsed - mean) / stddev;
+    const zScore = (effectiveElapsed - mean) / stddev;
     // Use the complementary normal CDF (from upper-tail approximation).
-    const prob = 1 - standardNormalCdf(y);
+    const prob = 1 - standardNormalCdf(zScore);
     if (prob <= 0) return Number.POSITIVE_INFINITY;
     return -Math.log10(prob);
   }
@@ -119,20 +119,20 @@ export class PhiAccrualFailureDetector {
 
   /* ------------------------ helpers ------------------------ */
 
-  private mean(s: PeerState): number {
+  private mean(state: PeerState): number {
     let sum = 0;
-    for (let i = 0; i < s.intervalsCount; i++) sum += s.intervals[i]!;
-    return sum / s.intervalsCount;
+    for (let i = 0; i < state.intervalsCount; i++) sum += state.intervals[i]!;
+    return sum / state.intervalsCount;
   }
 
-  private stddev(s: PeerState, mean: number): number {
-    if (s.intervalsCount < 2) return 0;
+  private stddev(state: PeerState, mean: number): number {
+    if (state.intervalsCount < 2) return 0;
     let acc = 0;
-    for (let i = 0; i < s.intervalsCount; i++) {
-      const d = s.intervals[i]! - mean;
-      acc += d * d;
+    for (let i = 0; i < state.intervalsCount; i++) {
+      const deviation = state.intervals[i]! - mean;
+      acc += deviation * deviation;
     }
-    return Math.sqrt(acc / s.intervalsCount);
+    return Math.sqrt(acc / state.intervalsCount);
   }
 }
 
