@@ -147,9 +147,9 @@ async function main(): Promise<void> {
 
   // Wire the control channel — listen on the worker's main port for
   // test commands.  Replies go on the same port via postMessage.
-  const g = globalThis as unknown as { self?: WorkerScope } & WorkerScope;
-  const selfScope: WorkerScope = g.self ?? g;
-  const post = selfScope.postMessage ?? g.postMessage;
+  const globalScope = globalThis as unknown as { self?: WorkerScope } & WorkerScope;
+  const selfScope: WorkerScope = globalScope.self ?? globalScope;
+  const post = selfScope.postMessage ?? globalScope.postMessage;
 
   const reply = (msg: ControlResponse): void => {
     post?.call(selfScope, msg);
@@ -161,13 +161,13 @@ async function main(): Promise<void> {
 
     switch (msg.kind) {
       case 'mns-test.query-members': {
-        const m = (msg as ControlRequest & { kind: 'mns-test.query-members' }).reqId;
+        const reqId = (msg as ControlRequest & { kind: 'mns-test.query-members' }).reqId;
         const snap: MemberSnapshot[] = cluster.getMembers().map((mem) => ({
           address: mem.address.toString(),
           status: mem.status,
           roles: Array.from(mem.roles),
         }));
-        reply({ kind: 'mns-test.query-members-response', reqId: m, members: snap });
+        reply({ kind: 'mns-test.query-members-response', reqId, members: snap });
         return;
       }
       case 'mns-test.query-leader': {

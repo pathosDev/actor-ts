@@ -139,9 +139,9 @@ export class SnapshotMigrationTest<E> {
 }
 
 function assertDeepEqual(actual: unknown, expected: unknown, label: string): void {
-  const a = JSON.stringify(actual);
-  const e = JSON.stringify(expected);
-  if (a !== e) {
-    throw new Error(`${label}: mismatch\n  actual:   ${a}\n  expected: ${e}`);
+  const actualJson = JSON.stringify(actual);
+  const expectedJson = JSON.stringify(expected);
+  if (actualJson !== expectedJson) {
+    throw new Error(`${label}: mismatch\n  actual:   ${actualJson}\n  expected: ${expectedJson}`);
   }
 }

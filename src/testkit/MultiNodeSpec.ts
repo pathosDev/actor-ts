@@ -207,18 +207,18 @@ export class MultiNodeSpec {
 
   /** Bidirectional partition between two roles.  Both sides drop traffic to the other. */
   partition(roleA: string, roleB: string): void {
-    const a = this.requireNode(roleA);
-    const b = this.requireNode(roleB);
-    a.transport.partitionFromPeer(b.address);
-    b.transport.partitionFromPeer(a.address);
+    const nodeA = this.requireNode(roleA);
+    const nodeB = this.requireNode(roleB);
+    nodeA.transport.partitionFromPeer(nodeB.address);
+    nodeB.transport.partitionFromPeer(nodeA.address);
   }
 
   /** Undo `partition(roleA, roleB)`. */
   heal(roleA: string, roleB: string): void {
-    const a = this.requireNode(roleA);
-    const b = this.requireNode(roleB);
-    a.transport.unblockOutgoing(b.address);
-    b.transport.unblockOutgoing(a.address);
+    const nodeA = this.requireNode(roleA);
+    const nodeB = this.requireNode(roleB);
+    nodeA.transport.unblockOutgoing(nodeB.address);
+    nodeB.transport.unblockOutgoing(nodeA.address);
   }
 
   /* --------------------------- await helpers --------------------------- */
@@ -373,9 +373,9 @@ export class MultiNodeSpec {
     // Last entrant wakes everyone up.
     if (entry.entered.size === expectedRoles) {
       this.barriers.delete(key);
-      for (const w of entry.waiters) {
-        if (w.timer) clearTimeout(w.timer);
-        w.resolve();
+      for (const waiter of entry.waiters) {
+        if (waiter.timer) clearTimeout(waiter.timer);
+        waiter.resolve();
       }
       return;
     }

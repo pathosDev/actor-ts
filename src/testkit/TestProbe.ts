@@ -35,18 +35,18 @@ export class TestProbe extends ActorRef<unknown> {
   ) {
     super();
     const opts = (options as Partial<TestProbeOptionsType>);
-    const n = opts.name ?? `test-probe-${++probeCounter}`;
-    this.path = new ActorPath('', null, system.name).child(n);
+    const name = opts.name ?? `test-probe-${++probeCounter}`;
+    this.path = new ActorPath('', null, system.name).child(name);
     this.defaultTimeoutMs = opts.defaultTimeoutMs ?? 3_000;
   }
 
   tell(message: unknown, sender: ActorRef | null = null): void {
     const env: Pending = { message, sender };
     // Hand off to a parked waiter if one is present — otherwise buffer.
-    const w = this.waiters.shift();
-    if (w) {
-      if (w.timer) clearTimeout(w.timer);
-      w.resolve(env);
+    const waiter = this.waiters.shift();
+    if (waiter) {
+      if (waiter.timer) clearTimeout(waiter.timer);
+      waiter.resolve(env);
     } else {
       this.queue.push(env);
     }
@@ -78,9 +78,9 @@ export class TestProbe extends ActorRef<unknown> {
   }
 
   /** Receive the next `n` messages. */
-  async receiveN(n: number, timeoutMs?: number): Promise<unknown[]> {
+  async receiveN(name: number, timeoutMs?: number): Promise<unknown[]> {
     const out: unknown[] = [];
-    for (let i = 0; i < n; i++) out.push(await this.receiveOne(timeoutMs));
+    for (let i = 0; i < name; i++) out.push(await this.receiveOne(timeoutMs));
     return out;
   }
 
@@ -148,7 +148,7 @@ export class TestProbe extends ActorRef<unknown> {
   /* ------------------------------ Internal ------------------------------- */
 
   private _next(timeoutMs?: number): Promise<Pending> {
-    const t = timeoutMs ?? this.defaultTimeoutMs;
+    const timeout = timeoutMs ?? this.defaultTimeoutMs;
     // Use already-buffered message if any.
     const buffered = this.queue.shift();
     if (buffered) { this._lastSender = buffered.sender; return Promise.resolve(buffered); }
@@ -162,12 +162,12 @@ export class TestProbe extends ActorRef<unknown> {
         reject,
         timer: null as ReturnType<typeof setTimeout> | null,
       };
-      if (t > 0 && Number.isFinite(t)) {
+      if (timeout > 0 && Number.isFinite(timeout)) {
         entry.timer = setTimeout(() => {
           const idx = this.waiters.indexOf(entry);
           if (idx >= 0) this.waiters.splice(idx, 1);
-          reject(new Error(`TestProbe timeout after ${t}ms`));
-        }, t);
+          reject(new Error(`TestProbe timeout after ${timeout}ms`));
+        }, timeout);
       }
       this.waiters.push(entry);
     });
@@ -197,6 +197,6 @@ function deepEqual(a: unknown, b: unknown): boolean {
   const ao = a as Record<string, unknown>, bo = b as Record<string, unknown>;
   const keysA = Object.keys(ao), keysB = Object.keys(bo);
   if (keysA.length !== keysB.length) return false;
-  for (const k of keysA) if (!deepEqual(ao[k], bo[k])) return false;
+  for (const key of keysA) if (!deepEqual(ao[key], bo[key])) return false;
   return true;
 }
