@@ -22,20 +22,20 @@ describe('watch / unwatch', () => {
       override onReceive(_: 'die'): void { this.self.stop(); }
     }
     class Watcher extends Actor<'go' | Terminated> {
-      private w?: ActorRef<'die'>;
+      private watcher?: ActorRef<'die'>;
       override onReceive(m: 'go' | Terminated): void {
         if (m === 'go') {
-          this.w = this.context.spawn(Props.create(() => new Watched()), 'wd') as ActorRef<'die'>;
-          this.context.watch(this.w);
-          this.w.tell('die');
+          this.watcher = this.context.spawn(Props.create(() => new Watched()), 'wd') as ActorRef<'die'>;
+          this.context.watch(this.watcher);
+          this.watcher.tell('die');
         } else if (m instanceof Terminated) {
           seen.push(m.actor.path.name);
         }
       }
     }
     const sys = newSystem();
-    const p = sys.spawn(Props.create(() => new Watcher()), 'p');
-    p.tell('go');
+    const watched = sys.spawn(Props.create(() => new Watcher()), 'p');
+    watched.tell('go');
     await sleep(50);
     expect(seen).toEqual(['wd']);
     await sys.terminate();
@@ -47,25 +47,25 @@ describe('watch / unwatch', () => {
       override onReceive(_: 'die'): void { this.self.stop(); }
     }
     class Watcher extends Actor<'go' | 'unwatch' | 'kill' | Terminated> {
-      private w?: ActorRef<'die'>;
+      private watcher?: ActorRef<'die'>;
       override onReceive(m: 'go' | 'unwatch' | 'kill' | Terminated): void {
         if (m === 'go') {
-          this.w = this.context.spawn(Props.create(() => new Watched()), 'wd') as ActorRef<'die'>;
-          this.context.watch(this.w);
+          this.watcher = this.context.spawn(Props.create(() => new Watched()), 'wd') as ActorRef<'die'>;
+          this.context.watch(this.watcher);
         } else if (m === 'unwatch') {
-          this.context.unwatch(this.w!);
+          this.context.unwatch(this.watcher!);
         } else if (m === 'kill') {
-          this.w!.tell('die');
+          this.watcher!.tell('die');
         } else if (m instanceof Terminated) {
           terminatedReceived++;
         }
       }
     }
     const sys = newSystem();
-    const p = sys.spawn(Props.create(() => new Watcher()), 'p');
-    p.tell('go');
-    p.tell('unwatch');
-    p.tell('kill');
+    const watched = sys.spawn(Props.create(() => new Watcher()), 'p');
+    watched.tell('go');
+    watched.tell('unwatch');
+    watched.tell('kill');
     await sleep(50);
     expect(terminatedReceived).toBe(0);
     await sys.terminate();
@@ -88,8 +88,8 @@ describe('watch / unwatch', () => {
     await sleep(30);
 
     // Now spin up a watcher that receives the (terminated) ref.
-    const w = sys.spawn(Props.create(() => new LateWatcher()), 'w');
-    w.tell(target);
+    const watcher = sys.spawn(Props.create(() => new LateWatcher()), 'w');
+    watcher.tell(target);
     await sleep(50);
     expect(seen).toEqual(['dead']);
     await sys.terminate();

@@ -10,9 +10,9 @@ const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 describe('MicrotaskDispatcher', () => {
   test('executes the work asynchronously (not synchronously)', async () => {
-    const d = new MicrotaskDispatcher();
+    const dispatcher = new MicrotaskDispatcher();
     const trace: string[] = [];
-    d.execute(() => { trace.push('work'); });
+    dispatcher.execute(() => { trace.push('work'); });
     trace.push('after-execute');
     expect(trace).toEqual(['after-execute']);
     await sleep(10);
@@ -27,8 +27,8 @@ describe('MicrotaskDispatcher', () => {
     const original = console.error;
     console.error = () => {};
     try {
-      const d = new MicrotaskDispatcher();
-      expect(() => d.execute(() => { throw new Error('boom'); })).not.toThrow();
+      const dispatcher = new MicrotaskDispatcher();
+      expect(() => dispatcher.execute(() => { throw new Error('boom'); })).not.toThrow();
       await sleep(10);
     } finally {
       console.error = original;
@@ -39,10 +39,10 @@ describe('MicrotaskDispatcher', () => {
     const original = console.error;
     console.error = () => {};
     try {
-      const d = new MicrotaskDispatcher();
+      const dispatcher = new MicrotaskDispatcher();
       let ran = false;
       expect(() => {
-        d.execute(async () => { ran = true; throw new Error('boom'); });
+        dispatcher.execute(async () => { ran = true; throw new Error('boom'); });
       }).not.toThrow();
       await sleep(10);
       expect(ran).toBe(true);
@@ -54,9 +54,9 @@ describe('MicrotaskDispatcher', () => {
 
 describe('ImmediateDispatcher', () => {
   test('executes the work via setImmediate', async () => {
-    const d = new ImmediateDispatcher();
+    const dispatcher = new ImmediateDispatcher();
     let ran = false;
-    d.execute(() => { ran = true; });
+    dispatcher.execute(() => { ran = true; });
     await sleep(10);
     expect(ran).toBe(true);
   });
@@ -66,9 +66,9 @@ describe('ImmediateDispatcher', () => {
   });
 
   test('preserves FIFO order of scheduled units', async () => {
-    const d = new ImmediateDispatcher();
+    const dispatcher = new ImmediateDispatcher();
     const order: number[] = [];
-    for (let i = 0; i < 10; i++) d.execute(() => { order.push(i); });
+    for (let i = 0; i < 10; i++) dispatcher.execute(() => { order.push(i); });
     await sleep(30);
     expect(order).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
   });
@@ -80,20 +80,20 @@ describe('ThroughputDispatcher', () => {
   });
 
   test('executes all queued work', async () => {
-    const d = new ThroughputDispatcher(3);
+    const dispatcher = new ThroughputDispatcher(3);
     let count = 0;
-    for (let i = 0; i < 20; i++) d.execute(() => { count++; });
+    for (let i = 0; i < 20; i++) dispatcher.execute(() => { count++; });
     await sleep(50);
     expect(count).toBe(20);
   });
 
   test('yields to the event loop when throughput cap is hit', async () => {
-    const d = new ThroughputDispatcher(2);
+    const dispatcher = new ThroughputDispatcher(2);
     const trace: string[] = [];
-    d.execute(() => trace.push('a'));
-    d.execute(() => trace.push('b'));
-    d.execute(() => trace.push('c'));
-    d.execute(() => trace.push('d'));
+    dispatcher.execute(() => trace.push('a'));
+    dispatcher.execute(() => trace.push('b'));
+    dispatcher.execute(() => trace.push('c'));
+    dispatcher.execute(() => trace.push('d'));
     // After first drain we must see at most `throughput` entries.
     await sleep(0); // allow setImmediate
     // All 4 eventually execute; at a macro level the order is FIFO.
@@ -102,29 +102,29 @@ describe('ThroughputDispatcher', () => {
   });
 
   test('execute on an empty dispatcher re-schedules the drain', async () => {
-    const d = new ThroughputDispatcher(5);
+    const dispatcher = new ThroughputDispatcher(5);
     let a = 0;
-    d.execute(() => { a++; });
+    dispatcher.execute(() => { a++; });
     await sleep(5);
     expect(a).toBe(1);
 
     // Submit again after idle — must run, not hang.
-    d.execute(() => { a++; });
+    dispatcher.execute(() => { a++; });
     await sleep(5);
     expect(a).toBe(2);
   });
 
   test('accepts a custom id', () => {
-    const d = new ThroughputDispatcher(4, 'custom-id');
-    expect(d.id).toBe('custom-id');
+    const dispatcher = new ThroughputDispatcher(4, 'custom-id');
+    expect(dispatcher.id).toBe('custom-id');
   });
 
   test('does not propagate sync exceptions', async () => {
     const original = console.error;
     console.error = () => {};
     try {
-      const d = new ThroughputDispatcher(1);
-      expect(() => d.execute(() => { throw new Error('boom'); })).not.toThrow();
+      const dispatcher = new ThroughputDispatcher(1);
+      expect(() => dispatcher.execute(() => { throw new Error('boom'); })).not.toThrow();
       await sleep(10);
     } finally {
       console.error = original;
@@ -142,8 +142,8 @@ describe('Dispatchers factory', () => {
   });
 
   test('Throughput forwards the throughput value', () => {
-    const d = Dispatchers.Throughput(42) as ThroughputDispatcher;
-    expect(d).toBeInstanceOf(ThroughputDispatcher);
-    expect(d.throughput).toBe(42);
+    const dispatcher = Dispatchers.Throughput(42) as ThroughputDispatcher;
+    expect(dispatcher).toBeInstanceOf(ThroughputDispatcher);
+    expect(dispatcher.throughput).toBe(42);
   });
 });

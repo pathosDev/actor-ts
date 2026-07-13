@@ -98,7 +98,7 @@ describe('Stash', () => {
     class S extends Actor<string> {
       override preStart(): void {
         // preStart has no current envelope — stash must reject.
-        try { this.context.stash(); } catch (e) { err = e; }
+        try { this.context.stash(); } catch (envelope) { err = envelope; }
       }
       override onReceive(_: string): void {}
     }
@@ -132,9 +132,9 @@ describe('Stash', () => {
   test('StashOverflowError surfaces via supervision when capacity is exceeded', async () => {
     // Default capacity is 1024 — hard to exceed without flooding; exercise
     // the error class constructor directly instead of the runtime path.
-    const e = new StashOverflowError(16);
-    expect(e).toBeInstanceOf(Error);
-    expect(e.name).toBe('StashOverflowError');
-    expect(e.message).toContain('16');
+    const envelope = new StashOverflowError(16);
+    expect(envelope).toBeInstanceOf(Error);
+    expect(envelope.name).toBe('StashOverflowError');
+    expect(envelope.message).toContain('16');
   });
 });

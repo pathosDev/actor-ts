@@ -25,23 +25,23 @@ describe('Directive enum', () => {
 
 describe('OneForOneStrategy', () => {
   test('scope is one-for-one', () => {
-    const s = new OneForOneStrategy(() => Directive.Restart);
-    expect(s.scope).toBe('one-for-one');
+    const strategy = new OneForOneStrategy(() => Directive.Restart);
+    expect(strategy.scope).toBe('one-for-one');
   });
   test('captures decider', () => {
     const decider = () => Directive.Stop;
-    const s = new OneForOneStrategy(decider);
-    expect(s.decider).toBe(decider);
+    const strategy = new OneForOneStrategy(decider);
+    expect(strategy.decider).toBe(decider);
   });
   test('defaults maxRetries=-1, withinTimeRangeMs=0', () => {
-    const s = new OneForOneStrategy(() => Directive.Restart);
-    expect(s.maxRetries).toBe(-1);
-    expect(s.withinTimeRangeMs).toBe(0);
+    const strategy = new OneForOneStrategy(() => Directive.Restart);
+    expect(strategy.maxRetries).toBe(-1);
+    expect(strategy.withinTimeRangeMs).toBe(0);
   });
   test('accepts overrides', () => {
-    const s = new OneForOneStrategy(() => Directive.Restart, { maxRetries: 3, withinTimeRangeMs: 1000 });
-    expect(s.maxRetries).toBe(3);
-    expect(s.withinTimeRangeMs).toBe(1000);
+    const strategy = new OneForOneStrategy(() => Directive.Restart, { maxRetries: 3, withinTimeRangeMs: 1000 });
+    expect(strategy.maxRetries).toBe(3);
+    expect(strategy.withinTimeRangeMs).toBe(1000);
   });
 });
 
@@ -50,9 +50,9 @@ describe('AllForOneStrategy', () => {
     expect(new AllForOneStrategy(() => Directive.Restart).scope).toBe('all-for-one');
   });
   test('accepts options identical to OneForOne', () => {
-    const s = new AllForOneStrategy(() => Directive.Stop, { maxRetries: 5, withinTimeRangeMs: 500 });
-    expect(s.maxRetries).toBe(5);
-    expect(s.withinTimeRangeMs).toBe(500);
+    const strategy = new AllForOneStrategy(() => Directive.Stop, { maxRetries: 5, withinTimeRangeMs: 500 });
+    expect(strategy.maxRetries).toBe(5);
+    expect(strategy.withinTimeRangeMs).toBe(500);
   });
 });
 
@@ -103,20 +103,20 @@ describe('decideBy helper', () => {
 describe('ActorInitializationError', () => {
   test('is an Error with the right name, message, and cause', () => {
     const cause = new Error('root cause');
-    const e = new ActorInitializationError('failed to init Foo', cause);
-    expect(e).toBeInstanceOf(Error);
-    expect(e.name).toBe('ActorInitializationError');
-    expect(e.message).toBe('failed to init Foo');
-    expect(e.cause).toBe(cause);
+    const error = new ActorInitializationError('failed to init Foo', cause);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.name).toBe('ActorInitializationError');
+    expect(error.message).toBe('failed to init Foo');
+    expect(error.cause).toBe(cause);
   });
 });
 
 describe('DeathPactError', () => {
   test('carries the actor path and descriptive message', () => {
-    const e = new DeathPactError('actor-ts://sys/user/foo');
-    expect(e).toBeInstanceOf(Error);
-    expect(e.name).toBe('DeathPactError');
-    expect(e.actorPath).toBe('actor-ts://sys/user/foo');
-    expect(e.message).toContain('actor-ts://sys/user/foo');
+    const error = new DeathPactError('actor-ts://sys/user/foo');
+    expect(error).toBeInstanceOf(Error);
+    expect(error.name).toBe('DeathPactError');
+    expect(error.actorPath).toBe('actor-ts://sys/user/foo');
+    expect(error.message).toContain('actor-ts://sys/user/foo');
   });
 });

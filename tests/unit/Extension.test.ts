@@ -34,10 +34,10 @@ function newSystem(name = 'ext-test'): ActorSystem {
 
 describe('extensionId', () => {
   test('creates an ExtensionId with a global-symbol key and name', () => {
-    const a = extensionId('foo', () => ({} as Extension));
-    const b = extensionId('foo', () => ({} as Extension));
-    expect(a.key).toBe(b.key);      // same name → same symbol
-    expect(a.name).toBe('foo');
+    const first = extensionId('foo', () => ({} as Extension));
+    const second = extensionId('foo', () => ({} as Extension));
+    expect(first.key).toBe(second.key);      // same name → same symbol
+    expect(first.name).toBe('foo');
   });
 
   test('different names yield different keys', () => {
@@ -50,30 +50,30 @@ describe('Extensions registry', () => {
   test('lazy-initialises an extension on first get and caches it thereafter', async () => {
     factorySpyCount.n = 0;
     const sys = newSystem();
-    const a = sys.extensions.get(SpyId);
-    const b = sys.extensions.get(SpyId);
-    expect(a).toBe(b);
+    const first = sys.extensions.get(SpyId);
+    const second = sys.extensions.get(SpyId);
+    expect(first).toBe(second);
     expect(factorySpyCount.n).toBe(1);
     await sys.terminate();
   });
 
   test('different extensions can coexist on the same system', async () => {
     const sys = newSystem();
-    const c = sys.extensions.get(CounterId);
-    const s = sys.extensions.get(SerializationExtensionId);
-    expect(c).toBeInstanceOf(Counter);
-    expect(s).toBeInstanceOf(SerializationExtension);
-    expect(c === (s as unknown)).toBe(false);
+    const counterExt = sys.extensions.get(CounterId);
+    const serializationExt = sys.extensions.get(SerializationExtensionId);
+    expect(counterExt).toBeInstanceOf(Counter);
+    expect(serializationExt).toBeInstanceOf(SerializationExtension);
+    expect(counterExt === (serializationExt as unknown)).toBe(false);
     await sys.terminate();
   });
 
   test('separate ActorSystems have independent extension instances', async () => {
-    const a = newSystem('ext-a');
-    const b = newSystem('ext-b');
-    const ca = a.extensions.get(CounterId);
-    const cb = b.extensions.get(CounterId);
+    const first = newSystem('ext-a');
+    const second = newSystem('ext-b');
+    const ca = first.extensions.get(CounterId);
+    const cb = second.extensions.get(CounterId);
     expect(ca).not.toBe(cb);
-    await a.terminate(); await b.terminate();
+    await first.terminate(); await second.terminate();
   });
 
   test('has() reports membership without creating', async () => {
@@ -133,9 +133,9 @@ describe('SerializationExtensionId integration', () => {
 
   test('subsequent lookups return the exact same instance', async () => {
     const sys = newSystem();
-    const a = sys.extension(SerializationExtensionId);
-    const b = sys.extension(SerializationExtensionId);
-    expect(a).toBe(b);
+    const first = sys.extension(SerializationExtensionId);
+    const second = sys.extension(SerializationExtensionId);
+    expect(first).toBe(second);
     await sys.terminate();
   });
 });
@@ -144,8 +144,8 @@ describe('Extensions constructor', () => {
   test('can be instantiated directly (used by ActorSystem internally)', async () => {
     const sys = newSystem();
     const ext = new Extensions(sys);
-    const c = ext.get(CounterId);
-    expect(c).toBeInstanceOf(Counter);
+    const counterExt = ext.get(CounterId);
+    expect(counterExt).toBeInstanceOf(Counter);
     await sys.terminate();
   });
 });

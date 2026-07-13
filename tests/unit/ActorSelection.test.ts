@@ -118,9 +118,9 @@ describe('ActorSelection — parseSelectionPath edge cases', () => {
     const sys = newSys();
     class Noop extends Actor<unknown> { override onReceive(): void {} }
     sys.spawn(Props.create(() => new Noop()), 'x');
-    const a = sys.actorSelection('/user/x');
-    const b = sys.actorSelection('user/x');
-    expect((await a.resolveOne(500)).path.toString()).toBe((await b.resolveOne(500)).path.toString());
+    const selectionA = sys.actorSelection('/user/x');
+    const selectionB = sys.actorSelection('user/x');
+    expect((await selectionA.resolveOne(500)).path.toString()).toBe((await selectionB.resolveOne(500)).path.toString());
     await sys.terminate();
   });
 });

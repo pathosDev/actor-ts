@@ -42,14 +42,14 @@ describe('LogContext — basic scoping', () => {
 
   test('with() merges extra fields into the current context', () => {
     let observed: Record<string, unknown> = {};
-    LogContext.run({ a: 1 }, () => {
-      LogContext.with({ b: 2 }, () => {
+    LogContext.run({ contextA: 1 }, () => {
+      LogContext.with({ contextB: 2 }, () => {
         observed = { ...LogContext.get() };
       });
       // After the inner with(), the outer context is restored.
-      expect(LogContext.get()).toEqual({ a: 1 });
+      expect(LogContext.get()).toEqual({ contextA: 1 });
     });
-    expect(observed).toEqual({ a: 1, b: 2 });
+    expect(observed).toEqual({ contextA: 1, contextB: 2 });
   });
 
   test('with() overrides parent fields on key collision', () => {
@@ -65,9 +65,9 @@ describe('LogContext — basic scoping', () => {
   test('parallel branches don\'t leak context across promises', async () => {
     const branchA = LogContext.run({ branch: 'A' }, () => Bun.sleep(10).then(() => LogContext.get()));
     const branchB = LogContext.run({ branch: 'B' }, () => Bun.sleep(10).then(() => LogContext.get()));
-    const [a, b] = await Promise.all([branchA, branchB]);
-    expect(a.branch).toBe('A');
-    expect(b.branch).toBe('B');
+    const [contextA, contextB] = await Promise.all([branchA, branchB]);
+    expect(contextA.branch).toBe('A');
+    expect(contextB.branch).toBe('B');
   });
 
   test('snapshot() returns a fresh copy each call', () => {
@@ -81,9 +81,9 @@ describe('LogContext — basic scoping', () => {
 
   test('get() returns the same readonly reference within one run', () => {
     LogContext.run({ k: 'v' }, () => {
-      const a = LogContext.get();
-      const b = LogContext.get();
-      expect(a).toBe(b);
+      const contextA = LogContext.get();
+      const contextB = LogContext.get();
+      expect(contextA).toBe(contextB);
     });
   });
 });
