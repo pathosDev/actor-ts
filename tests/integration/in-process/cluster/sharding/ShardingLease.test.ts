@@ -88,14 +88,14 @@ describe('ClusterSharding + Lease', () => {
 
     const leaseOptions = LeaseOptions.create().withName('sharding-lease-1').withOwner('self').withTtlMs(10_000);
     const lease = new InMemoryLease(leaseOptions);
-    const a = await startNodeWithLease('shard-lease-1', 60_101, lease);
+    const nodeA = await startNodeWithLease('shard-lease-1', 60_101, lease);
 
     // Coordinator can't acquire — region's GetShardHome ask never
     // gets a ShardHome reply, so any user message into the region
     // sits in its buffer.  An ask with a tight timeout therefore
     // times out instead of returning 'pong'.
     await expect(
-      a.region.ask<string>({ id: 'e-1', op: 'ping' }, 400)
+      nodeA.region.ask<string>({ id: 'e-1', op: 'ping' }, 400)
     ).rejects.toBeInstanceOf(AskTimeoutError);
 
     // Now release the foreign lease — the coordinator's retry tick
@@ -103,10 +103,10 @@ describe('ClusterSharding + Lease', () => {
     await foreign.release();
     await waitFor(() => lease.checkAlive(), 2_000);
 
-    const reply = await a.region.ask<string>({ id: 'e-1', op: 'ping' }, 3_000);
+    const reply = await nodeA.region.ask<string>({ id: 'e-1', op: 'ping' }, 3_000);
     expect(reply).toBe('pong');
 
-    await stop(a);
+    await stop(nodeA);
   }, 15_000);
 
   test('2. lost lease stops coordinator activity (asks resume after re-acquire)', async () => {
@@ -114,11 +114,11 @@ describe('ClusterSharding + Lease', () => {
     const leaseOptions = LeaseOptions.create().withName('sharding-lease-2').withOwner('self').withTtlMs(10_000)
       .withRenewalIntervalMs(60);
     const lease = new InMemoryLease(leaseOptions);
-    const a = await startNodeWithLease('shard-lease-2', 60_102, lease);
+    const nodeA = await startNodeWithLease('shard-lease-2', 60_102, lease);
 
     // Initial ask succeeds — coordinator acquired the lease cleanly.
     await waitFor(() => lease.checkAlive(), 2_000);
-    expect(await a.region.ask<string>({ id: 'e-1', op: 'ping' }, 2_000)).toBe('pong');
+    expect(await nodeA.region.ask<string>({ id: 'e-1', op: 'ping' }, 2_000)).toBe('pong');
 
     // Force the lease away by clearing the store + having a usurper
     // take it.  The InMemoryLease's renewal loop will fail and fire
@@ -135,28 +135,28 @@ describe('ClusterSharding + Lease', () => {
     // While the usurper still holds, asks fail — the coordinator
     // is passive even though it's still the cluster leader.
     await expect(
-      a.region.ask<string>({ id: 'e-2', op: 'ping' }, 400)
+      nodeA.region.ask<string>({ id: 'e-2', op: 'ping' }, 400)
     ).rejects.toBeInstanceOf(AskTimeoutError);
 
     // Hand the lease back; the coordinator's retry tick re-acquires.
     await usurper.release();
     await waitFor(() => lease.checkAlive(), 3_000);
-    expect(await a.region.ask<string>({ id: 'e-3', op: 'ping' }, 3_000)).toBe('pong');
+    expect(await nodeA.region.ask<string>({ id: 'e-3', op: 'ping' }, 3_000)).toBe('pong');
 
-    await stop(a);
+    await stop(nodeA);
   }, 20_000);
 
   test('3. graceful coordinator stop releases the lease', async () => {
     inMemoryLeaseStore._clear();
     const leaseOptions = LeaseOptions.create().withName('sharding-lease-3').withOwner('self').withTtlMs(10_000);
     const lease = new InMemoryLease(leaseOptions);
-    const a = await startNodeWithLease('shard-lease-3', 60_103, lease);
+    const nodeA = await startNodeWithLease('shard-lease-3', 60_103, lease);
 
     await waitFor(() => lease.checkAlive(), 2_000);
     expect(lease.checkAlive()).toBe(true);
 
-    await a.cluster.leave();
-    await a.sys.terminate();
+    await nodeA.cluster.leave();
+    await nodeA.sys.terminate();
 
     // postStop releases the lease; allow a tick for the async release.
     await waitFor(() => !lease.checkAlive(), 2_000);

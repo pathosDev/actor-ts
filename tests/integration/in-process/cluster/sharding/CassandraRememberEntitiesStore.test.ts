@@ -138,16 +138,16 @@ describe('CassandraRememberEntitiesStore — oracle equivalence with JournalReme
 
     const cassandraSet = new Set(
       (await cassandra.load('orders'))
-        .filter((e) => e.kind === 'started')
-        .map((e) => `${e.shardId}|${e.entityId}`),
+        .filter((entity) => entity.kind === 'started')
+        .map((entity) => `${entity.shardId}|${entity.entityId}`),
     );
     // The journal-backed store replays events; the active set is the
     // running `started - stopped` of the replay.
     const journalEvents = await journalStore.load('orders');
     const journalSet = new Set<string>();
-    for (const e of journalEvents) {
-      const key = `${e.shardId}|${e.entityId}`;
-      if (e.kind === 'started') journalSet.add(key);
+    for (const entity of journalEvents) {
+      const key = `${entity.shardId}|${entity.entityId}`;
+      if (entity.kind === 'started') journalSet.add(key);
       else                      journalSet.delete(key);
     }
 

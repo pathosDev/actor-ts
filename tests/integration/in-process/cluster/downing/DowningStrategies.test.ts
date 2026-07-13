@@ -23,44 +23,44 @@ function view(
   unreachablePorts: number[],
   selfPort = members[0]!.port,
 ): ClusterPartitionView {
-  const ms: Member[] = members.map((m) =>
-    new Member(addr(m.port), (m.status ?? 'up') as never, 1, m.roles ?? []));
+  const ms: Member[] = members.map((member) =>
+    new Member(addr(member.port), (member.status ?? 'up') as never, 1, member.roles ?? []));
   const unreachable = new Set(unreachablePorts.map((p) => addr(p).toString()));
   return { allMembers: ms, unreachable, self: addr(selfPort) };
 }
 
 describe('KeepMajority', () => {
   test('reachable majority downs the minority', () => {
-    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }, { port: 5 }], [4, 5]);
-    const decision = new KeepMajority().decide(v);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }, { port: 5 }], [4, 5]);
+    const decision = new KeepMajority().decide(clusterView);
     expect(decision.has(addr(4).toString())).toBe(true);
     expect(decision.has(addr(5).toString())).toBe(true);
     expect(decision.size).toBe(2);
   });
 
   test('minority side downs itself', () => {
-    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }, { port: 5 }], [1, 2, 3]);
-    const decision = new KeepMajority().decide(v);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }, { port: 5 }], [1, 2, 3]);
+    const decision = new KeepMajority().decide(clusterView);
     // "We" see ports 4,5 as reachable but they are in the minority.
     expect(decision.has(addr(4).toString())).toBe(true);
     expect(decision.has(addr(5).toString())).toBe(true);
   });
 
   test('tie stays pending (no decision)', () => {
-    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
-    expect(new KeepMajority().decide(v).size).toBe(0);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+    expect(new KeepMajority().decide(clusterView).size).toBe(0);
   });
 
   test('role filter only counts tagged members', () => {
     // 3 workers, 1 idle node; unreachable=[3] (worker).  Among workers
     // only (ports 1,2,3), 2 are reachable vs 1 unreachable → majority → down 3.
-    const v = view([
+    const clusterView = view([
       { port: 1, roles: ['worker'] },
       { port: 2, roles: ['worker'] },
       { port: 3, roles: ['worker'] },
       { port: 9, roles: ['idle'] }, // excluded
     ], [3]);
-    const decision = new KeepMajority({ role: 'worker' }).decide(v);
+    const decision = new KeepMajority({ role: 'worker' }).decide(clusterView);
     expect(decision.has(addr(3).toString())).toBe(true);
     expect(decision.has(addr(9).toString())).toBe(false); // not even considered
   });
@@ -68,15 +68,15 @@ describe('KeepMajority', () => {
 
 describe('KeepOldest', () => {
   test('oldest-reachable side downs the other', () => {
-    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }], [2, 3]);
-    const decision = new KeepOldest().decide(v);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }], [2, 3]);
+    const decision = new KeepOldest().decide(clusterView);
     expect(decision.has(addr(2).toString())).toBe(true);
     expect(decision.has(addr(3).toString())).toBe(true);
   });
 
   test('oldest-unreachable → this side downs itself', () => {
-    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }], [1]);
-    const decision = new KeepOldest().decide(v);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }], [1]);
+    const decision = new KeepOldest().decide(clusterView);
     // Ports 2 & 3 are reachable but oldest (1) is on other side → they down themselves.
     expect(decision.has(addr(2).toString())).toBe(true);
     expect(decision.has(addr(3).toString())).toBe(true);
@@ -85,17 +85,17 @@ describe('KeepOldest', () => {
 
 describe('StaticQuorum', () => {
   test('reachable meets quorum → down unreachable', () => {
-    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
     const quorumOptions = StaticQuorumOptions.create().withQuorumSize(2);
-    const decision = new StaticQuorum(quorumOptions).decide(v);
+    const decision = new StaticQuorum(quorumOptions).decide(clusterView);
     expect(decision.has(addr(3).toString())).toBe(true);
     expect(decision.has(addr(4).toString())).toBe(true);
   });
 
   test('reachable below quorum → down ourselves', () => {
-    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [2, 3, 4]);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [2, 3, 4]);
     const quorumOptions = StaticQuorumOptions.create().withQuorumSize(2);
-    const decision = new StaticQuorum(quorumOptions).decide(v);
+    const decision = new StaticQuorum(quorumOptions).decide(clusterView);
     // Only port 1 is reachable; we're under quorum → down self.
     expect(decision.has(addr(1).toString())).toBe(true);
   });
@@ -108,27 +108,27 @@ describe('StaticQuorum', () => {
 
 describe('KeepReferee', () => {
   test('referee reachable on this side → down the other', () => {
-    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }], [3]);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }], [3]);
     const refereeOptions = KeepRefereeOptions.create().withRefereeAddress(addr(1).toString());
-    const decision = new KeepReferee(refereeOptions).decide(v);
+    const decision = new KeepReferee(refereeOptions).decide(clusterView);
     expect(decision.has(addr(3).toString())).toBe(true);
   });
 
   test('referee unreachable → down this side', () => {
-    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }], [1]);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }], [1]);
     const refereeOptions = KeepRefereeOptions.create().withRefereeAddress(addr(1).toString());
-    const decision = new KeepReferee(refereeOptions).decide(v);
+    const decision = new KeepReferee(refereeOptions).decide(clusterView);
     // Ports 2 & 3 are reachable but referee is on other side → down self.
     expect(decision.has(addr(2).toString())).toBe(true);
     expect(decision.has(addr(3).toString())).toBe(true);
   });
 
   test('downAllIfBelowQuorum downs everyone when referee-side too small', () => {
-    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [2, 3, 4]);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [2, 3, 4]);
     const refereeOptions = KeepRefereeOptions.create()
       .withRefereeAddress(addr(1).toString())
       .withDownAllIfBelowQuorum(3);
-    const decision = new KeepReferee(refereeOptions).decide(v);
+    const decision = new KeepReferee(refereeOptions).decide(clusterView);
     // Only port 1 is reachable (referee side) — below quorum of 3 → down all.
     expect(decision.size).toBe(4);
   });
@@ -136,8 +136,8 @@ describe('KeepReferee', () => {
 
 describe('addrKey helper', () => {
   test('serialises member address consistently with NodeAddress.toString', () => {
-    const m = new Member(addr(9000), 'up', 1);
-    expect(addrKey(m)).toBe(addr(9000).toString());
+    const member = new Member(addr(9000), 'up', 1);
+    expect(addrKey(member)).toBe(addr(9000).toString());
   });
 });
 
@@ -184,8 +184,8 @@ describe('LeaseMajority', () => {
     const leaseOptions = LeaseMajorityOptions.create().withLease(lease);
     const strat = new LeaseMajority(leaseOptions);
     // 5 members, 3 reachable (1,2,3) vs 2 unreachable (4,5).
-    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }, { port: 5 }], [4, 5]);
-    const decision = strat.decide(v);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }, { port: 5 }], [4, 5]);
+    const decision = strat.decide(clusterView);
     expect(decision.size).toBe(2);
     expect(decision.has(addr(4).toString())).toBe(true);
     expect(decision.has(addr(5).toString())).toBe(true);
@@ -197,8 +197,8 @@ describe('LeaseMajority', () => {
     const leaseOptions = LeaseMajorityOptions.create().withLease(lease);
     const strat = new LeaseMajority(leaseOptions);
     // 5 members, but from this perspective unreachable=[1,2,3], reachable=[4,5].
-    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }, { port: 5 }], [1, 2, 3], 4);
-    const decision = strat.decide(v);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }, { port: 5 }], [1, 2, 3], 4);
+    const decision = strat.decide(clusterView);
     expect(decision.size).toBe(2);
     expect(decision.has(addr(4).toString())).toBe(true);
     expect(decision.has(addr(5).toString())).toBe(true);
@@ -210,21 +210,21 @@ describe('LeaseMajority', () => {
     const leaseOptions = LeaseMajorityOptions.create().withLease(lease);
     const strat = new LeaseMajority(leaseOptions);
     // 4 members, 2/2 split.
-    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
-    const decision = strat.decide(v);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+    const decision = strat.decide(clusterView);
     expect(decision.size).toBe(0);                  // pending
     expect(lease.acquireCalls).toBe(1);
 
     // Calling decide() again with the same view: still pending, no
     // duplicate acquire.
-    expect(strat.decide(v).size).toBe(0);
+    expect(strat.decide(clusterView).size).toBe(0);
     expect(lease.acquireCalls).toBe(1);
 
     // Resolve the acquire as winner — next decide() returns the
     // unreachable set.
     lease.resolveAcquire(true);
     await flushMicrotasks();
-    const after = strat.decide(v);
+    const after = strat.decide(clusterView);
     expect(after.size).toBe(2);
     expect(after.has(addr(3).toString())).toBe(true);
     expect(after.has(addr(4).toString())).toBe(true);
@@ -234,11 +234,11 @@ describe('LeaseMajority', () => {
     const lease = new FakeLease();
     const leaseOptions = LeaseMajorityOptions.create().withLease(lease);
     const strat = new LeaseMajority(leaseOptions);
-    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
-    expect(strat.decide(v).size).toBe(0);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+    expect(strat.decide(clusterView).size).toBe(0);
     lease.resolveAcquire(false);
     await flushMicrotasks();
-    const after = strat.decide(v);
+    const after = strat.decide(clusterView);
     expect(after.size).toBe(2);
     // We are 1; reachable side is 1+2 — both should be downed.
     expect(after.has(addr(1).toString())).toBe(true);
@@ -249,12 +249,12 @@ describe('LeaseMajority', () => {
     const lease = new FakeLease();
     const leaseOptions = LeaseMajorityOptions.create().withLease(lease);
     const strat = new LeaseMajority(leaseOptions);
-    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
-    expect(strat.decide(v).size).toBe(0);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+    expect(strat.decide(clusterView).size).toBe(0);
     lease.rejectAcquire('K8s API unreachable');
     await flushMicrotasks();
     // Still pending — strategy never risks both surviving.
-    expect(strat.decide(v).size).toBe(0);
+    expect(strat.decide(clusterView).size).toBe(0);
     // Next decide() with same view triggers a fresh acquire.
     expect(lease.acquireCalls).toBe(2);
   });
@@ -284,13 +284,13 @@ describe('LeaseMajority', () => {
     const strat = new LeaseMajority(leaseOptions);
     // 3 workers (1,2,3) + 1 idle (9).  Unreachable=[3].  Workers
     // alone: 2 reachable vs 1 unreachable → strict majority → no Lease.
-    const v = view([
+    const clusterView = view([
       { port: 1, roles: ['worker'] },
       { port: 2, roles: ['worker'] },
       { port: 3, roles: ['worker'] },
       { port: 9, roles: ['idle'] },
     ], [3]);
-    const decision = strat.decide(v);
+    const decision = strat.decide(clusterView);
     expect(decision.has(addr(3).toString())).toBe(true);
     expect(decision.has(addr(9).toString())).toBe(false);
     expect(lease.acquireCalls).toBe(0);
@@ -300,8 +300,8 @@ describe('LeaseMajority', () => {
     const lease = new FakeLease();
     const leaseOptions = LeaseMajorityOptions.create().withLease(lease);
     const strat = new LeaseMajority(leaseOptions);
-    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }], []);
-    expect(strat.decide(v).size).toBe(0);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }], []);
+    expect(strat.decide(clusterView).size).toBe(0);
     expect(lease.acquireCalls).toBe(0);
   });
 });
@@ -333,7 +333,7 @@ class FencedFakeLease implements Lease {
     this.plainAcquireCalls++;
     return new Promise<boolean>((resolve, reject) => {
       this.pending.push({
-        resolve: (v) => resolve(v as boolean),
+        resolve: (clusterView) => resolve(clusterView as boolean),
         reject,
         kind: 'plain',
       });
@@ -345,7 +345,7 @@ class FencedFakeLease implements Lease {
     this.tokenAcquireCalls++;
     return new Promise<{ readonly token: string } | null>((resolve, reject) => {
       this.pending.push({
-        resolve: (v) => resolve(v as { token: string } | null),
+        resolve: (clusterView) => resolve(clusterView as { token: string } | null),
         reject,
         kind: 'token',
       });
@@ -389,10 +389,10 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
     const lease = new FencedFakeLease();
     const leaseOptions = LeaseMajorityOptions.create().withLease(lease).withAcquireTimeoutMs(50);
     const strat = new LeaseMajority(leaseOptions);
-    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
 
     // 1. Initial decide() kicks off acquire #1 (epoch 1).
-    expect(strat.decide(v).size).toBe(0);
+    expect(strat.decide(clusterView).size).toBe(0);
     expect(lease.acquireCalls).toBe(1);
     expect(lease.pendingCount()).toBe(1);
 
@@ -403,8 +403,8 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
     //    fires release, and kicks off acquire #2 in the same call
     //    sequence (the next decide() does the kickoff because
     //    acquiring=false now).
-    expect(strat.decide(v).size).toBe(0);             // first decide post-timeout: notices deadline, no new kickoff yet
-    expect(strat.decide(v).size).toBe(0);             // second decide: now acquiring=false, kicks off acquire #2
+    expect(strat.decide(clusterView).size).toBe(0);             // first decide post-timeout: notices deadline, no new kickoff yet
+    expect(strat.decide(clusterView).size).toBe(0);             // second decide: now acquiring=false, kicks off acquire #2
     expect(lease.acquireCalls).toBe(2);
     expect(lease.released).toBe(true);
 
@@ -414,13 +414,13 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
     //    vector.
     lease.resolveAt(0, true);
     await flushMicrotasks();
-    expect(strat.decide(v).size).toBe(0);             // still pending — late result was discarded
+    expect(strat.decide(clusterView).size).toBe(0);             // still pending — late result was discarded
 
     // 5. Acquire #2 resolves "lost" — the OTHER side won during the
     //    cleanup window.  Strategy must converge to "down our own side".
     lease.resolveAt(1, false);
     await flushMicrotasks();
-    const after = strat.decide(v);
+    const after = strat.decide(clusterView);
     expect(after.size).toBe(2);
     expect(after.has(addr(1).toString())).toBe(true);
     expect(after.has(addr(2).toString())).toBe(true);
@@ -430,16 +430,16 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
     const lease = new FencedFakeLease();
     const leaseOptions = LeaseMajorityOptions.create().withLease(lease).withAcquireTimeoutMs(30);
     const strat = new LeaseMajority(leaseOptions);
-    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
 
-    expect(strat.decide(v).size).toBe(0);
+    expect(strat.decide(clusterView).size).toBe(0);
     expect(lease.released).toBe(false);
 
     // Cross the deadline.
     await new Promise((r) => setTimeout(r, 50));
 
     // Next decide() triggers the abandon-release.
-    strat.decide(v);
+    strat.decide(clusterView);
     // release is fire-and-forget; let it run.
     await flushMicrotasks();
     expect(lease.released).toBe(true);
@@ -450,22 +450,22 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
     lease.releaseShouldReject = true;
     const leaseOptions = LeaseMajorityOptions.create().withLease(lease).withAcquireTimeoutMs(30);
     const strat = new LeaseMajority(leaseOptions);
-    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
 
-    expect(strat.decide(v).size).toBe(0);
+    expect(strat.decide(clusterView).size).toBe(0);
     await new Promise((r) => setTimeout(r, 50));
 
     // First post-timeout decide: notices deadline, triggers release
     // (which rejects, setting fail-safe).
-    strat.decide(v);
+    strat.decide(clusterView);
     await flushMicrotasks();
     await flushMicrotasks();
 
     // Subsequent decide() calls on the SAME partition view must NOT
     // claim majority — even if a fresh acquire would now succeed.
     // The lease state is ambiguous.
-    expect(strat.decide(v).size).toBe(0);
-    expect(strat.decide(v).size).toBe(0);
+    expect(strat.decide(clusterView).size).toBe(0);
+    expect(strat.decide(clusterView).size).toBe(0);
 
     // Healing the partition resets fail-safe — strategy is ready
     // for the next split.
@@ -483,9 +483,9 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
     const lease = new FencedFakeLease();
     const leaseOptions = LeaseMajorityOptions.create().withLease(lease);
     const strat = new LeaseMajority(leaseOptions);
-    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
 
-    expect(strat.decide(v).size).toBe(0);
+    expect(strat.decide(clusterView).size).toBe(0);
     // Strategy must prefer the token-based API when present.  A
     // future regression that strips the feature-detection path
     // would route through plainAcquireCalls and fail loudly here.
@@ -495,7 +495,7 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
     // Resolve as winner via the token path.
     lease.resolveAt(0, true);
     await flushMicrotasks();
-    const decision = strat.decide(v);
+    const decision = strat.decide(clusterView);
     expect(decision.size).toBe(2);
     expect(decision.has(addr(3).toString())).toBe(true);
     expect(decision.has(addr(4).toString())).toBe(true);
@@ -505,9 +505,9 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
     const lease = new FencedFakeLease();
     const leaseOptions = LeaseMajorityOptions.create().withLease(lease);
     const strat = new LeaseMajority(leaseOptions);
-    const v = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
 
-    expect(strat.decide(v).size).toBe(0);
+    expect(strat.decide(clusterView).size).toBe(0);
     expect(lease.acquireCalls).toBe(1);
 
     // Heal the partition before the acquire resolves.

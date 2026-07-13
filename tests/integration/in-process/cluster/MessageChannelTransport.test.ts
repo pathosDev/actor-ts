@@ -18,28 +18,28 @@ function makePair(): [PortLike, PortLike] {
 
 describe('MessageChannelTransport', () => {
   test('posts framed BrokeredMessages containing from/to/payload', async () => {
-    const a = new NodeAddress('sys', 'worker', 1);
-    const b = new NodeAddress('sys', 'worker', 2);
+    const nodeA = new NodeAddress('sys', 'worker', 1);
+    const nodeB = new NodeAddress('sys', 'worker', 2);
     const [brokerPort, workerPort] = makePair();
 
-    const t = new MessageChannelTransport(a, workerPort);
-    await t.start();
+    const transport = new MessageChannelTransport(nodeA, workerPort);
+    await transport.start();
 
     const received: BrokeredMessage[] = [];
     brokerPort.onmessage = (e) => { received.push(e.data as BrokeredMessage); };
     brokerPort.start?.();
 
-    const wire: WireMessage = { t: 'heartbeat', from: a.toJSON(), seq: 1, ts: 0 };
-    t.send(b, wire);
+    const wire: WireMessage = { t: 'heartbeat', from: nodeA.toJSON(), seq: 1, ts: 0 };
+    transport.send(nodeB, wire);
     await sleep(10);
 
     expect(received.length).toBe(1);
     const env = received[0]!;
-    expect(env.from).toEqual(a.toJSON());
-    expect(env.to).toEqual(b.toJSON());
+    expect(env.from).toEqual(nodeA.toJSON());
+    expect(env.to).toEqual(nodeB.toJSON());
     expect(env.payload).toEqual(wire);
 
-    await t.shutdown();
+    await transport.shutdown();
   });
 
   test('inbound BrokeredMessages are delivered to the handler', async () => {
@@ -47,10 +47,10 @@ describe('MessageChannelTransport', () => {
     const peer = new NodeAddress('sys', 'worker', 2);
     const [brokerPort, workerPort] = makePair();
 
-    const t = new MessageChannelTransport(self, workerPort);
+    const transport = new MessageChannelTransport(self, workerPort);
     const seen: Array<{ from: string; payload: WireMessage }> = [];
-    t.setHandler((from, payload) => seen.push({ from: from.toString(), payload }));
-    await t.start();
+    transport.setHandler((from, payload) => seen.push({ from: from.toString(), payload }));
+    await transport.start();
 
     const env: BrokeredMessage = {
       from: peer.toJSON(),
@@ -64,22 +64,22 @@ describe('MessageChannelTransport', () => {
     expect(seen[0]!.from).toBe(peer.toString());
     expect(seen[0]!.payload.t).toBe('heartbeat');
 
-    await t.shutdown();
+    await transport.shutdown();
   });
 
   test('send is a no-op after shutdown', async () => {
     const [brokerPort, workerPort] = makePair();
     const self = new NodeAddress('sys', 'h', 1);
-    const t = new MessageChannelTransport(self, workerPort);
-    await t.start();
+    const transport = new MessageChannelTransport(self, workerPort);
+    await transport.start();
 
     const captured: unknown[] = [];
     brokerPort.onmessage = (e) => captured.push(e.data);
     brokerPort.start?.();
 
-    await t.shutdown();
+    await transport.shutdown();
 
-    t.send(new NodeAddress('sys', 'h', 2), { t: 'heartbeat', from: self.toJSON(), seq: 1, ts: 0 });
+    transport.send(new NodeAddress('sys', 'h', 2), { t: 'heartbeat', from: self.toJSON(), seq: 1, ts: 0 });
     await sleep(10);
     expect(captured.length).toBe(0);
   });
@@ -89,9 +89,9 @@ describe('MessageChannelTransport', () => {
     const peer1 = new NodeAddress('sys', 'h', 2);
     const peer2 = new NodeAddress('sys', 'h', 3);
     const [brokerPort, workerPort] = makePair();
-    const t = new MessageChannelTransport(self, workerPort);
-    t.setHandler(() => {});
-    await t.start();
+    const transport = new MessageChannelTransport(self, workerPort);
+    transport.setHandler(() => {});
+    await transport.start();
 
     brokerPort.postMessage({
       from: peer1.toJSON(), to: self.toJSON(),
@@ -103,10 +103,10 @@ describe('MessageChannelTransport', () => {
     });
     await sleep(10);
 
-    const peers = t.peers().map(p => p.toString()).sort();
+    const peers = transport.peers().map(p => p.toString()).sort();
     expect(peers).toEqual([peer1.toString(), peer2.toString()].sort());
 
-    await t.shutdown();
+    await transport.shutdown();
   });
 });
 
@@ -195,9 +195,9 @@ describe('WorkerBroker', () => {
       new NodeAddress('sys', 'w', 2),
       new NodeAddress('sys', 'w', 3),
     ];
-    for (const a of addrs) {
+    for (const nodeA of addrs) {
       const [p] = makePair();
-      broker.register(a, p);
+      broker.register(nodeA, p);
     }
     const reg = broker.registered().map(x => x.toString()).sort();
     expect(reg).toEqual(addrs.map(x => x.toString()).sort());

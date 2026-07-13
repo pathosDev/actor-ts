@@ -212,7 +212,7 @@ describe('pickRendezvous — primitive', () => {
     const candidates = ['node-a', 'node-b', 'node-c', 'node-d'];
     const id = (s: string): string => s;
     const owner = pickRendezvous('order-42', candidates, id);
-    const without = candidates.filter((c) => c !== (owner === 'node-a' ? 'node-b' : 'node-a'));
+    const without = candidates.filter((routee) => routee !== (owner === 'node-a' ? 'node-b' : 'node-a'));
     expect(pickRendezvous('order-42', without, id)).toBe(owner);
   });
 
@@ -232,8 +232,8 @@ describe('pickRendezvous — primitive', () => {
     // Expected average per node = 1000.  Tolerate ±20% spread —
     // FNV-1a is deterministic but not perfectly uniform.
     const expected = N / candidates.length;
-    for (const c of candidates) {
-      const got = counts.get(c) ?? 0;
+    for (const routee of candidates) {
+      const got = counts.get(routee) ?? 0;
       expect(got).toBeGreaterThan(expected * 0.8);
       expect(got).toBeLessThan(expected * 1.2);
     }

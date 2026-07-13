@@ -25,12 +25,12 @@ describe('PhiAccrualFailureDetector', () => {
   test('steady heartbeats keep phi near zero', () => {
     const detectorOptions = PhiAccrualOptions.create().withHeartbeatIntervalMs(100);
     const fd = new PhiAccrualFailureDetector(detectorOptions);
-    const p = addr(2);
-    fd.register(p, 0);
-    for (let i = 1; i <= 50; i++) fd.heartbeat(p, i * 100);
+    const peerAddress = addr(2);
+    fd.register(peerAddress, 0);
+    for (let i = 1; i <= 50; i++) fd.heartbeat(peerAddress, i * 100);
     // "Now" equals the last heartbeat timestamp — no elapsed time, phi ~ 0.
-    expect(fd.phi(p, 50 * 100)).toBeLessThan(1);
-    expect(fd.decide(p, 50 * 100)).toBe('healthy');
+    expect(fd.phi(peerAddress, 50 * 100)).toBeLessThan(1);
+    expect(fd.decide(peerAddress, 50 * 100)).toBe('healthy');
   });
 
   test('silence accumulates phi, eventually crossing thresholds', () => {
@@ -41,21 +41,21 @@ describe('PhiAccrualFailureDetector', () => {
       .withDownThreshold(12)
       .withAcceptableHeartbeatPauseMs(0);
     const fd = new PhiAccrualFailureDetector(detectorOptions);
-    const p = addr(3);
-    fd.register(p, 0);
+    const peerAddress = addr(3);
+    fd.register(peerAddress, 0);
     const last = 50 * 100;
-    for (let i = 1; i <= 50; i++) fd.heartbeat(p, i * 100);
+    for (let i = 1; i <= 50; i++) fd.heartbeat(peerAddress, i * 100);
 
     // Right after the last heartbeat: healthy.
-    expect(fd.decide(p, last)).toBe('healthy');
+    expect(fd.decide(peerAddress, last)).toBe('healthy');
 
     // Phi grows monotonically with elapsed time.
-    const phiEarly = fd.phi(p, last + 100);
-    const phiLater = fd.phi(p, last + 1_000);
+    const phiEarly = fd.phi(peerAddress, last + 100);
+    const phiLater = fd.phi(peerAddress, last + 1_000);
     expect(phiLater).toBeGreaterThan(phiEarly);
 
     // Long silence should cross both thresholds.
-    expect(fd.decide(p, last + 5_000)).toBe('down');
+    expect(fd.decide(peerAddress, last + 5_000)).toBe('down');
   });
 
   test('acceptableHeartbeatPauseMs gives leeway before phi rises', () => {
@@ -65,21 +65,21 @@ describe('PhiAccrualFailureDetector', () => {
       .withAcceptableHeartbeatPauseMs(500)
       .withUnreachableThreshold(5);
     const lenient = new PhiAccrualFailureDetector(lenientOptions);
-    const p = addr(4);
-    lenient.register(p, 0);
-    for (let i = 1; i <= 50; i++) lenient.heartbeat(p, i * 100);
+    const peerAddress = addr(4);
+    lenient.register(peerAddress, 0);
+    for (let i = 1; i <= 50; i++) lenient.heartbeat(peerAddress, i * 100);
     const last = 50 * 100;
 
     // 300ms after last heartbeat is still within the grace window.
-    expect(lenient.phi(p, last + 300)).toBeLessThan(0.5);
+    expect(lenient.phi(peerAddress, last + 300)).toBeLessThan(0.5);
   });
 
   test('forget removes all state', () => {
     const fd = new PhiAccrualFailureDetector();
-    const p = addr(5);
-    fd.heartbeat(p, 0);
-    fd.forget(p);
-    expect(fd.lastSeen(p).isNone()).toBe(true);
-    expect(fd.decide(p)).toBe('healthy');
+    const peerAddress = addr(5);
+    fd.heartbeat(peerAddress, 0);
+    fd.forget(peerAddress);
+    expect(fd.lastSeen(peerAddress).isNone()).toBe(true);
+    expect(fd.decide(peerAddress)).toBe('healthy');
   });
 });

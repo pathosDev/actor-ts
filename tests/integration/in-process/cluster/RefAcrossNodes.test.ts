@@ -82,10 +82,10 @@ describe('ActorRef serialisation across cluster nodes', () => {
 
     const sysName = 'ref-xnode';
     // Node A carries role "hoster" — sharding will place every shard there.
-    const a = await startNode(sysName, 58_001, [],                     ['hoster']);
-    const b = await startNode(sysName, 58_002, [`${sysName}@h:58001`], []);
+    const nodeA = await startNode(sysName, 58_001, [],                     ['hoster']);
+    const nodeB = await startNode(sysName, 58_002, [`${sysName}@h:58001`], []);
 
-    await waitFor(() => a.cluster.upMembers().length === 2);
+    await waitFor(() => nodeA.cluster.upMembers().length === 2);
 
     // Both nodes register the sharded type with `role: 'hoster'` so shards
     // can ONLY be allocated to node A (which carries that role).
@@ -95,17 +95,17 @@ describe('ActorRef serialisation across cluster nodes', () => {
       .withEntityProps(Props.create(() => new Echo()))
       .withExtractEntityId((m) => m.id)
       .withNumShards(16);
-    a.cluster.sharding.start<Cmd>(aShardingOptions);
+    nodeA.cluster.sharding.start<Cmd>(aShardingOptions);
     const bShardingOptions = StartShardingOptions.create<Cmd>()
       .withTypeName('echo')
       .withRole('hoster')
       .withEntityProps(Props.create(() => new Echo()))
       .withExtractEntityId((m) => m.id)
       .withNumShards(16);
-    const bRegion = b.cluster.sharding.start<Cmd>(bShardingOptions);
+    const bRegion = nodeB.cluster.sharding.start<Cmd>(bShardingOptions);
 
     // Probe lives on node B — its LocalActorRef is therefore OWNED by B.
-    const probeOnB = b.sys.spawn(Props.create(() => new Probe()), 'probe');
+    const probeOnB = nodeB.sys.spawn(Props.create(() => new Probe()), 'probe');
 
     // Give sharding a moment to allocate initial shards (the first ask from
     // the non-hoster node otherwise races the coordinator).
@@ -128,8 +128,8 @@ describe('ActorRef serialisation across cluster nodes', () => {
       expect(received).toContain(`pong:e-${i}`);
     }
 
-    await stop(a);
-    await stop(b);
+    await stop(nodeA);
+    await stop(nodeB);
   });
 
   test('already-remote refs in the body keep their original target on the other side', async () => {
@@ -142,10 +142,10 @@ describe('ActorRef serialisation across cluster nodes', () => {
     }
 
     const sysName = 'ref-remote';
-    const a = await startNode(sysName, 58_101, [],                     ['hoster']);
-    const b = await startNode(sysName, 58_102, [`${sysName}@h:58101`], []);
+    const nodeA = await startNode(sysName, 58_101, [],                     ['hoster']);
+    const nodeB = await startNode(sysName, 58_102, [`${sysName}@h:58101`], []);
 
-    await waitFor(() => a.cluster.upMembers().length === 2);
+    await waitFor(() => nodeA.cluster.upMembers().length === 2);
 
     const aShardingOptions = StartShardingOptions.create<Cmd>()
       .withTypeName('cap')
@@ -153,14 +153,14 @@ describe('ActorRef serialisation across cluster nodes', () => {
       .withEntityProps(Props.create(() => new Capturer()))
       .withExtractEntityId(() => 'only')
       .withNumShards(4);
-    a.cluster.sharding.start<Cmd>(aShardingOptions);
+    nodeA.cluster.sharding.start<Cmd>(aShardingOptions);
     const bShardingOptions = StartShardingOptions.create<Cmd>()
       .withTypeName('cap')
       .withRole('hoster')
       .withEntityProps(Props.create(() => new Capturer()))
       .withExtractEntityId(() => 'only')
       .withNumShards(4);
-    const bRegion = b.cluster.sharding.start<Cmd>(bShardingOptions);
+    const bRegion = nodeB.cluster.sharding.start<Cmd>(bShardingOptions);
 
     await sleep(300);
 
@@ -170,20 +170,20 @@ describe('ActorRef serialisation across cluster nodes', () => {
     const fake = new RemoteActorRef(
       new NodeAddress('other', 'elsewhere', 9999),
       'actor-ts://other/user/stashed',
-      b.cluster,
+      nodeB.cluster,
     );
     bRegion.tell({ stashRef: fake });
 
     await waitFor(() => seen.length >= 1, 5_000);
     const decoded = seen[0]!;
     expect(decoded).toBeInstanceOf(RemoteActorRef);
-    const r = decoded as RemoteActorRef;
-    expect(r.targetNode.host).toBe('elsewhere');
-    expect(r.targetNode.port).toBe(9999);
-    expect(r.targetPath).toBe('actor-ts://other/user/stashed');
+    const ref = decoded as RemoteActorRef;
+    expect(ref.targetNode.host).toBe('elsewhere');
+    expect(ref.targetNode.port).toBe(9999);
+    expect(ref.targetPath).toBe('actor-ts://other/user/stashed');
 
-    await stop(a);
-    await stop(b);
+    await stop(nodeA);
+    await stop(nodeB);
   });
 
   test('Nobody in the body round-trips back to Nobody', async () => {
@@ -197,10 +197,10 @@ describe('ActorRef serialisation across cluster nodes', () => {
     }
 
     const sysName = 'ref-nobody';
-    const a = await startNode(sysName, 58_201, [],                     ['hoster']);
-    const b = await startNode(sysName, 58_202, [`${sysName}@h:58201`], []);
+    const nodeA = await startNode(sysName, 58_201, [],                     ['hoster']);
+    const nodeB = await startNode(sysName, 58_202, [`${sysName}@h:58201`], []);
 
-    await waitFor(() => a.cluster.upMembers().length === 2);
+    await waitFor(() => nodeA.cluster.upMembers().length === 2);
 
     const aShardingOptions = StartShardingOptions.create<Cmd>()
       .withTypeName('checker')
@@ -208,14 +208,14 @@ describe('ActorRef serialisation across cluster nodes', () => {
       .withEntityProps(Props.create(() => new Checker()))
       .withExtractEntityId(() => 'only')
       .withNumShards(4);
-    a.cluster.sharding.start<Cmd>(aShardingOptions);
+    nodeA.cluster.sharding.start<Cmd>(aShardingOptions);
     const bShardingOptions = StartShardingOptions.create<Cmd>()
       .withTypeName('checker')
       .withRole('hoster')
       .withEntityProps(Props.create(() => new Checker()))
       .withExtractEntityId(() => 'only')
       .withNumShards(4);
-    const bRegion = b.cluster.sharding.start<Cmd>(bShardingOptions);
+    const bRegion = nodeB.cluster.sharding.start<Cmd>(bShardingOptions);
 
     await sleep(300);
     bRegion.tell({ attempt: Nobody });
@@ -223,7 +223,7 @@ describe('ActorRef serialisation across cluster nodes', () => {
     await waitFor(() => observed.nobody, 3_000);
     expect(observed.nobody).toBe(true);
 
-    await stop(a);
-    await stop(b);
+    await stop(nodeA);
+    await stop(nodeB);
   });
 });
