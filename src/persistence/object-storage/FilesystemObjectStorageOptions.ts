@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 
 export interface FilesystemObjectStorageOptionsType {
   /** Root directory.  Will be created (recursively) if it doesn't exist. */
@@ -46,6 +47,19 @@ export class FilesystemObjectStorageOptionsBuilder extends OptionsBuilder<Filesy
   /** Lock files older than this are treated as stale and forcibly removed.  Default 30_000 ms. */
   withStaleLockMs(staleLockMs: number): this {
     return this.set('staleLockMs', staleLockMs);
+  }
+}
+
+/** Validates resolved {@link FilesystemObjectStorageOptionsType} settings. */
+export class FilesystemObjectStorageOptionsValidator extends OptionsValidator<FilesystemObjectStorageOptionsType> {
+  constructor() {
+    super('FilesystemObjectStorageOptions');
+  }
+  protected rules(s: Partial<FilesystemObjectStorageOptionsType>): void {
+    if (s.dir === undefined) this.fail('dir', 'is required (call withDir())');
+    this.nonEmptyString('dir');
+    this.positiveNumber('lockTimeoutMs');
+    this.positiveNumber('staleLockMs');
   }
 }
 

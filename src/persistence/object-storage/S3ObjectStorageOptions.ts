@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type {
   S3ClientLike,
   S3Credentials,
@@ -77,6 +78,20 @@ export class S3ObjectStorageOptionsBuilder extends OptionsBuilder<S3ObjectStorag
   /** Inject a pre-built `S3Client` — all other connection options are then ignored. */
   withClient(client: S3ClientLike): this {
     return this.set('client', client);
+  }
+}
+
+/** Validates resolved {@link S3ObjectStorageOptionsType} settings. */
+export class S3ObjectStorageOptionsValidator extends OptionsValidator<S3ObjectStorageOptionsType> {
+  constructor() {
+    super('S3ObjectStorageOptions');
+  }
+  protected rules(s: Partial<S3ObjectStorageOptionsType>): void {
+    if (s.bucket === undefined) this.fail('bucket', 'is required (call withBucket())');
+    if (s.region === undefined) this.fail('region', 'is required (call withRegion())');
+    this.nonEmptyString('bucket');
+    this.nonEmptyString('region');
+    this.url('endpoint', ['http', 'https']);
   }
 }
 

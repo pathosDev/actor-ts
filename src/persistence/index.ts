@@ -248,10 +248,10 @@ export type {
   PutOptions,
 } from './object-storage/ObjectStorageBackend.js';
 export { FilesystemObjectStorageBackend } from './object-storage/FilesystemObjectStorageBackend.js';
-export { FilesystemObjectStorageOptions, FilesystemObjectStorageOptionsBuilder } from './object-storage/FilesystemObjectStorageOptions.js';
+export { FilesystemObjectStorageOptions, FilesystemObjectStorageOptionsBuilder, FilesystemObjectStorageOptionsValidator } from './object-storage/FilesystemObjectStorageOptions.js';
 export type { FilesystemObjectStorageOptionsType } from './object-storage/FilesystemObjectStorageOptions.js';
 export { S3ObjectStorageBackend } from './object-storage/S3ObjectStorageBackend.js';
-export { S3ObjectStorageOptions, S3ObjectStorageOptionsBuilder } from './object-storage/S3ObjectStorageOptions.js';
+export { S3ObjectStorageOptions, S3ObjectStorageOptionsBuilder, S3ObjectStorageOptionsValidator } from './object-storage/S3ObjectStorageOptions.js';
 export type { S3ObjectStorageOptionsType } from './object-storage/S3ObjectStorageOptions.js';
 export type {
   S3Credentials,

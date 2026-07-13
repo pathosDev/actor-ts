@@ -4,6 +4,7 @@ import {
   type DowningDecision,
   type DowningProvider,
 } from './DowningProvider.js';
+import { KeepRefereeOptionsValidator } from './KeepRefereeOptions.js';
 import type { KeepRefereeOptions, KeepRefereeOptionsType } from './KeepRefereeOptions.js';
 
 /**
@@ -18,7 +19,7 @@ export class KeepReferee implements DowningProvider {
 
   constructor(options: KeepRefereeOptions) {
     this.settings = options as KeepRefereeOptionsType;
-    if (!this.settings.refereeAddress) throw new Error('KeepReferee: refereeAddress required');
+    new KeepRefereeOptionsValidator().validate(this.settings);
   }
 
   decide(view: ClusterPartitionView): DowningDecision {
