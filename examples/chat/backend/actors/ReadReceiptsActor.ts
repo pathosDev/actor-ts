@@ -154,11 +154,11 @@ export class ReadReceiptsActor extends Actor<ReadReceiptsCommand> {
 
 /** Materialize a `Record<username, ts>` from the LWWMap.  Skips
  *  tombstoned entries (`get` returns undefined for those). */
-function snapshotReceipts(m: LWWMap<string, number>): Readonly<Record<string, number>> {
+function snapshotReceipts(receipts: LWWMap<string, number>): Readonly<Record<string, number>> {
   const out: Record<string, number> = {};
-  for (const key of m.keys()) {
-    const v = m.get(key);
-    if (typeof v === 'number') out[key] = v;
+  for (const key of receipts.keys()) {
+    const value = receipts.get(key);
+    if (typeof value === 'number') out[key] = value;
   }
   return out;
 }

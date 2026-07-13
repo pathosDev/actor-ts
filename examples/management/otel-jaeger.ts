@@ -56,9 +56,9 @@ class Worker extends Actor<{ id: number }> {
 }
 const worker = system.spawn(Props.create(() => new Worker()), 'worker');
 
-let n = 0;
+let nextId = 0;
 const tick = setInterval(() => {
-  for (let i = 0; i < 5; i++) worker.tell({ id: n++ });
+  for (let i = 0; i < 5; i++) worker.tell({ id: nextId++ });
 }, 100);
 
 console.log('actor-ts → OTel → OTLP-HTTP exporter (default endpoint http://localhost:4318/v1/traces)');

@@ -45,16 +45,16 @@ async function main(): Promise<void> {
 
   // Now a normal ping — should be rejected immediately with CircuitBreakerOpenError.
   try {
-    const v = await breaker.call(() => svc.ask<string>({ kind: 'ping', id: 42 }, 100));
-    console.log(`unexpected success: ${v}`);
+    const result = await breaker.call(() => svc.ask<string>({ kind: 'ping', id: 42 }, 100));
+    console.log(`unexpected success: ${result}`);
   } catch (e) {
     if (e instanceof CircuitBreakerOpenError) console.log('rejected fast — breaker is open');
   }
 
   // Wait for the reset window; next call probes in half-open state.
   await Bun.sleep(450);
-  const v = await breaker.call(() => svc.ask<string>({ kind: 'ping', id: 99 }, 100));
-  console.log(`probe succeeded → ${v}, state=${breaker.state}`);
+  const result = await breaker.call(() => svc.ask<string>({ kind: 'ping', id: 99 }, 100));
+  console.log(`probe succeeded → ${result}, state=${breaker.state}`);
 
   await system.terminate();
 }

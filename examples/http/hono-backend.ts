@@ -46,8 +46,8 @@ async function main(): Promise<void> {
         return completeJson(Status.Created, users.get(id));
       }),
       path(':id', get((req) => {
-        const u = users.get(req.params.id);
-        return u ? completeJson(Status.OK, u) : complete(Status.NotFound, 'unknown user');
+        const user = users.get(req.params.id);
+        return user ? completeJson(Status.OK, user) : complete(Status.NotFound, 'unknown user');
       })),
     )),
   );

@@ -79,8 +79,8 @@ class OrderFsm extends PersistentFSM<OrderCommand, OrderEvent, OrderState, Order
 }
 
 async function pretty(ref: ActorRef<OrderCommand>, label: string): Promise<void> {
-  const s = await ref.ask<FsmStateData<OrderState, OrderData>>({ kind: 'getState' }, 500);
-  console.log(`${label}: state=${s.state} amountPaid=${s.data.amountPaid} carrier=${s.data.carrier ?? '-'}`);
+  const state = await ref.ask<FsmStateData<OrderState, OrderData>>({ kind: 'getState' }, 500);
+  console.log(`${label}: state=${state.state} amountPaid=${state.data.amountPaid} carrier=${state.data.carrier ?? '-'}`);
 }
 
 async function main(): Promise<void> {

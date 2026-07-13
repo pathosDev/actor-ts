@@ -20,8 +20,8 @@ async function main(): Promise<void> {
 
   for (let i = 0; i < 6; i++) {
     try {
-      const v = await cb.call(flaky);
-      console.log(`call#${i}: ${v}`);
+      const result = await cb.call(flaky);
+      console.log(`call#${i}: ${result}`);
     } catch (e) {
       console.log(`call#${i}: ${(e as Error).name}: ${(e as Error).message}`);
     }

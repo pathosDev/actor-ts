@@ -552,9 +552,9 @@ export class UserSessionActor extends Actor<SessionMessage> {
     if (msg.room.includes('|')) {
       // Pair-id form — map to the recipient's `@<other>` virtual room.
       const idx = msg.room.indexOf('|');
-      const a = msg.room.slice(0, idx);
-      const b = msg.room.slice(idx + 1);
-      const other = me === a ? b : me === b ? a : null;
+      const first = msg.room.slice(0, idx);
+      const second = msg.room.slice(idx + 1);
+      const other = me === first ? second : me === second ? first : null;
       if (!other) return;
       displayRoom = dmRoomFor(other);
     }
@@ -631,9 +631,9 @@ export class UserSessionActor extends Actor<SessionMessage> {
     // other.  No regex parse needed — string split on `|`.
     const idx = msg.pairId.indexOf('|');
     if (idx <= 0) return;
-    const a = msg.pairId.slice(0, idx);
-    const b = msg.pairId.slice(idx + 1);
-    const other = me === a ? b : me === b ? a : null;
+    const first = msg.pairId.slice(0, idx);
+    const second = msg.pairId.slice(idx + 1);
+    const other = me === first ? second : me === second ? first : null;
     if (!other) return;
     this.sendServer({
       type: 'history',
