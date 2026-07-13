@@ -16,41 +16,41 @@ import {
 } from '../../../src/tracing/Tracer.js';
 
 describe('RecordingTracer — span hierarchy', () => {
-  test('root span gets a fresh trace id, child shares it', () => {
-    const t = new RecordingTracer();
-    const root = t.startSpan('root');
-    const child = t.withActiveSpan(root, () => t.startSpan('child'));
+  test('root span gets spanA fresh trace id, child shares it', () => {
+    const tracer = new RecordingTracer();
+    const root = tracer.startSpan('root');
+    const child = tracer.withActiveSpan(root, () => tracer.startSpan('child'));
     expect(child.context().traceId).toBe(root.context().traceId);
     expect(child.context().spanId).not.toBe(root.context().spanId);
     root.end();
     child.end();
-    const recorded = t.recorded();
+    const recorded = tracer.recorded();
     expect(recorded).toHaveLength(2);
   });
 
-  test('explicit parent: null forces a fresh root even with an active span', () => {
-    const t = new RecordingTracer();
-    const outer = t.startSpan('outer');
-    const detached = t.withActiveSpan(outer, () => t.startSpan('detached', { parent: null }));
+  test('explicit parent: null forces spanA fresh root even with an active span', () => {
+    const tracer = new RecordingTracer();
+    const outer = tracer.startSpan('outer');
+    const detached = tracer.withActiveSpan(outer, () => tracer.startSpan('detached', { parent: null }));
     expect(detached.context().traceId).not.toBe(outer.context().traceId);
   });
 
   test('explicit parent SpanContext overrides the active span', () => {
-    const t = new RecordingTracer();
-    const a = t.startSpan('a');
-    const b = t.startSpan('b');
-    const child = t.withActiveSpan(a, () => t.startSpan('child', { parent: b.context() }));
-    expect(child.context().traceId).toBe(b.context().traceId);
+    const tracer = new RecordingTracer();
+    const spanA = tracer.startSpan('a');
+    const spanB = tracer.startSpan('b');
+    const child = tracer.withActiveSpan(spanA, () => tracer.startSpan('child', { parent: spanB.context() }));
+    expect(child.context().traceId).toBe(spanB.context().traceId);
   });
 });
 
 describe('RecordingTracer — async propagation', () => {
   test('active span is preserved across await boundaries', async () => {
-    const t = new RecordingTracer();
-    const root = t.startSpan('root');
-    const observed = await t.withActiveSpan(root, async () => {
+    const tracer = new RecordingTracer();
+    const root = tracer.startSpan('root');
+    const observed = await tracer.withActiveSpan(root, async () => {
       await Bun.sleep(5);
-      return t.activeSpan()?.context().spanId;
+      return tracer.activeSpan()?.context().spanId;
     });
     expect(observed).toBe(root.context().spanId);
     root.end();
@@ -59,13 +59,13 @@ describe('RecordingTracer — async propagation', () => {
 
 describe('RecordingTracer — recording', () => {
   test('attributes / status / exception are captured', () => {
-    const t = new RecordingTracer();
-    const s = t.startSpan('work', { attributes: { 'k1': 'v1' } });
-    s.setAttribute('k2', 42);
-    s.setStatus('error', 'boom');
-    s.recordException(new Error('explosion'));
-    s.end();
-    const rec = t.recorded()[0]!;
+    const tracer = new RecordingTracer();
+    const span = tracer.startSpan('work', { attributes: { 'k1': 'v1' } });
+    span.setAttribute('k2', 42);
+    span.setStatus('error', 'boom');
+    span.recordException(new Error('explosion'));
+    span.end();
+    const rec = tracer.recorded()[0]!;
     expect(rec.attributes['k1']).toBe('v1');
     expect(rec.attributes['k2']).toBe(42);
     expect(rec.status).toBe('error');
@@ -74,30 +74,30 @@ describe('RecordingTracer — recording', () => {
   });
 
   test('end() is idempotent — second call does not double-record', () => {
-    const t = new RecordingTracer();
-    const s = t.startSpan('x');
-    s.end();
-    s.end();
-    expect(t.recorded()).toHaveLength(1);
+    const tracer = new RecordingTracer();
+    const span = tracer.startSpan('x');
+    span.end();
+    span.end();
+    expect(tracer.recorded()).toHaveLength(1);
   });
 
   test('onSpanEnd hook fires once per ended span', () => {
     const ended: string[] = [];
-    const t = new RecordingTracer({ onSpanEnd: (s) => ended.push(s.name) });
-    t.startSpan('a').end();
-    t.startSpan('b').end();
+    const tracer = new RecordingTracer({ onSpanEnd: (span) => ended.push(span.name) });
+    tracer.startSpan('a').end();
+    tracer.startSpan('b').end();
     expect(ended).toEqual(['a', 'b']);
   });
 
   test('reset() clears the recording but does not interfere with in-flight spans', () => {
-    const t = new RecordingTracer();
-    const s = t.startSpan('x');
-    t.startSpan('y').end();
-    t.reset();
-    expect(t.recorded()).toEqual([]);
-    s.end();
+    const tracer = new RecordingTracer();
+    const span = tracer.startSpan('x');
+    tracer.startSpan('y').end();
+    tracer.reset();
+    expect(tracer.recorded()).toEqual([]);
+    span.end();
     // s ends after reset, so it shows up in the post-reset recording.
-    expect(t.recorded()).toHaveLength(1);
+    expect(tracer.recorded()).toHaveLength(1);
   });
 });
 
@@ -127,13 +127,13 @@ describe('W3C traceparent codec', () => {
 });
 
 describe('NoopTracer', () => {
-  test('every operation is a no-op; no spans recorded', () => {
-    const t = new NoopTracer();
-    const s = t.startSpan('x');
-    s.setAttribute('k', 'v').setStatus('ok').recordException(new Error('e')).end();
-    expect(t.activeSpan()).toBeNull();
-    expect(t.injectContext()).toBeNull();
-    expect(t.extractContext({ traceparent: '00-' + 'a'.repeat(32) + '-' + 'b'.repeat(16) + '-01' }))
+  test('every operation is spanA no-op; no spans recorded', () => {
+    const tracer = new NoopTracer();
+    const span = tracer.startSpan('x');
+    span.setAttribute('k', 'v').setStatus('ok').recordException(new Error('e')).end();
+    expect(tracer.activeSpan()).toBeNull();
+    expect(tracer.injectContext()).toBeNull();
+    expect(tracer.extractContext({ traceparent: '00-' + 'a'.repeat(32) + '-' + 'b'.repeat(16) + '-01' }))
       .toBeNull();
   });
 });

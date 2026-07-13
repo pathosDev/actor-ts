@@ -40,10 +40,10 @@ describe('Actor tracing — auto-instrumentation', () => {
     }
 
     try {
-      const r = sys.spawn(Props.create(() => new Recv()), 'r');
+      const actorRef = sys.spawn(Props.create(() => new Recv()), 'r');
       const client = tracer.startSpan('client.handle-request');
       tracer.withActiveSpan(client, () => {
-        r.tell('hello');
+        actorRef.tell('hello');
       });
       await sleep(40);
       client.end();
@@ -80,10 +80,10 @@ describe('Actor tracing — auto-instrumentation', () => {
     }
 
     try {
-      const b = sys.spawn(Props.create(() => new B()), 'b');
-      const a = sys.spawn(Props.create(() => new A()), 'a');
+      const actorB = sys.spawn(Props.create(() => new B()), 'b');
+      const actorA = sys.spawn(Props.create(() => new A()), 'a');
       const client = tracer.startSpan('client');
-      tracer.withActiveSpan(client, () => a.tell({ msg: 'forward', next: b }));
+      tracer.withActiveSpan(client, () => actorA.tell({ msg: 'forward', next: actorB }));
       await sleep(60);
       client.end();
 
@@ -92,12 +92,12 @@ describe('Actor tracing — auto-instrumentation', () => {
       // All actor.receive spans share the trace id.
       const recvs = all.filter((s) => s.name === 'actor.receive');
       expect(recvs.length).toBe(2);
-      for (const r of recvs) expect(r.context.traceId).toBe(traceId);
+      for (const actorRef of recvs) expect(actorRef.context.traceId).toBe(traceId);
       // One has client as parent (= the 'a' receive), the other has
       // 'a's spanId as parent (= the 'b' receive).
-      const aRecv = recvs.find((r) => r.parent?.spanId === client.context().spanId);
+      const aRecv = recvs.find((actorRef) => actorRef.parent?.spanId === client.context().spanId);
       expect(aRecv).toBeDefined();
-      const bRecv = recvs.find((r) => r.parent?.spanId === aRecv!.context.spanId);
+      const bRecv = recvs.find((actorRef) => actorRef.parent?.spanId === aRecv!.context.spanId);
       expect(bRecv).toBeDefined();
     } finally {
       await sys.terminate();
@@ -117,9 +117,9 @@ describe('Actor tracing — auto-instrumentation', () => {
     }
 
     try {
-      const b = sys.spawn(Props.create(() => new Bomb()), 'b');
+      const actorB = sys.spawn(Props.create(() => new Bomb()), 'b');
       const root = tracer.startSpan('client');
-      tracer.withActiveSpan(root, () => b.tell('boom'));
+      tracer.withActiveSpan(root, () => actorB.tell('boom'));
       await sleep(50);
       root.end();
       const recv = tracer.recorded().find((s) => s.name === 'actor.receive');
@@ -144,8 +144,8 @@ describe('Actor tracing — auto-instrumentation', () => {
     }
 
     try {
-      const r = sys.spawn(Props.create(() => new R()), 'r');
-      r.tell('x');
+      const actorRef = sys.spawn(Props.create(() => new R()), 'r');
+      actorRef.tell('x');
       await sleep(30);
       expect(tracer.recorded()).toEqual([]);
     } finally {

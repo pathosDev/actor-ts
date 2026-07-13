@@ -12,10 +12,10 @@ import {
 
 describe('Either — Right (primary, right-biased)', () => {
   test('right wraps a value; flags report correctly', () => {
-    const e = right(42);
-    expect(e.isRight()).toBe(true);
-    expect(e.isLeft()).toBe(false);
-    expect(e.value).toBe(42);
+    const either = right(42);
+    expect(either.isRight()).toBe(true);
+    expect(either.isLeft()).toBe(false);
+    expect(either.value).toBe(42);
   });
 
   test('map transforms the Right value', () => {
@@ -30,8 +30,8 @@ describe('Either — Right (primary, right-biased)', () => {
   });
 
   test('mapLeft is a no-op on Right', () => {
-    const e = right(10).mapLeft(() => 'err');
-    expect((e as Right<number>).value).toBe(10);
+    const either = right(10).mapLeft(() => 'err');
+    expect((either as Right<number>).value).toBe(10);
   });
 
   test('fold applies onRight', () => {
@@ -39,9 +39,9 @@ describe('Either — Right (primary, right-biased)', () => {
   });
 
   test('swap turns Right into Left', () => {
-    const s = right(3).swap();
-    expect(s.isLeft()).toBe(true);
-    expect((s as Left<number>).value).toBe(3);
+    const swapped = right(3).swap();
+    expect(swapped.isLeft()).toBe(true);
+    expect((swapped as Left<number>).value).toBe(3);
   });
 
   test('getOrElse returns Right value; fallback ignored', () => {
@@ -53,8 +53,8 @@ describe('Either — Right (primary, right-biased)', () => {
   });
 
   test('bimap on Right applies only onRight', () => {
-    const e = right(10).bimap(() => 'never', (n) => n * 3);
-    expect((e as Right<number>).value).toBe(30);
+    const either = right(10).bimap(() => 'never', (n) => n * 3);
+    expect((either as Right<number>).value).toBe(30);
   });
 
   test('forEach on Right runs the side-effect', () => {
@@ -64,8 +64,8 @@ describe('Either — Right (primary, right-biased)', () => {
   });
 
   test('Right.orElse keeps itself, ignoring the alternative', () => {
-    const r = right(1).orElse(right(99) as Either<never, number>);
-    expect((r as Right<number>).value).toBe(1);
+    const result = right(1).orElse(right(99) as Either<never, number>);
+    expect((result as Right<number>).value).toBe(1);
     // Thunk variant — never called.
     let called = 0;
     const r2 = right(1).orElse(() => { called++; return right(99) as Either<never, number>; });
@@ -77,37 +77,37 @@ describe('Either — Right (primary, right-biased)', () => {
     // Sibling to the Left-side mapLeft test — the Right branch should
     // be a no-op for mapLeft.  Pin it explicitly so a future refactor
     // doesn't accidentally make Right.mapLeft do anything.
-    const r = right(1).mapLeft(() => 'never');
-    expect((r as Right<number>).value).toBe(1);
+    const result = right(1).mapLeft(() => 'never');
+    expect((result as Right<number>).value).toBe(1);
   });
 });
 
 describe('Either — Left (alternative)', () => {
   test('left wraps a value; flags report correctly', () => {
-    const e = left('oops');
-    expect(e.isLeft()).toBe(true);
-    expect(e.isRight()).toBe(false);
-    expect(e.value).toBe('oops');
+    const either = left('oops');
+    expect(either.isLeft()).toBe(true);
+    expect(either.isRight()).toBe(false);
+    expect(either.value).toBe('oops');
   });
 
   test('map passes Left through untouched', () => {
-    const e: Either<string, number> = left('err');
-    expect(e.map(n => n * 2)).toBe(e as Either<string, number>);
+    const either: Either<string, number> = left('err');
+    expect(either.map(n => n * 2)).toBe(either as Either<string, number>);
   });
 
   test('flatMap passes Left through untouched', () => {
-    const e: Either<string, number> = left('err');
-    expect(e.flatMap(n => right(n))).toBe(e as Either<string, number>);
+    const either: Either<string, number> = left('err');
+    expect(either.flatMap(n => right(n))).toBe(either as Either<string, number>);
   });
 
   test('mapLeft transforms the Left value', () => {
-    const e = left('raw').mapLeft((s) => `wrapped:${s}`);
-    expect((e as Left<string>).value).toBe('wrapped:raw');
+    const either = left('raw').mapLeft((swapped) => `wrapped:${swapped}`);
+    expect((either as Left<string>).value).toBe('wrapped:raw');
   });
 
   test('bimap on Left applies only onLeft', () => {
-    const e = left(1).bimap((n) => n + 1, () => 'never');
-    expect((e as Left<number>).value).toBe(2);
+    const either = left(1).bimap((n) => n + 1, () => 'never');
+    expect((either as Left<number>).value).toBe(2);
   });
 
   test('fold applies onLeft', () => {
@@ -115,9 +115,9 @@ describe('Either — Left (alternative)', () => {
   });
 
   test('swap turns Left into Right', () => {
-    const s = left('x').swap();
-    expect(s.isRight()).toBe(true);
-    expect((s as Right<string>).value).toBe('x');
+    const swapped = left('x').swap();
+    expect(swapped.isRight()).toBe(true);
+    expect((swapped as Right<string>).value).toBe('x');
   });
 
   test('getOrElse returns the fallback (value or computed)', () => {
@@ -126,9 +126,9 @@ describe('Either — Left (alternative)', () => {
   });
 
   test('orElse substitutes an alternative', () => {
-    const e: Either<string, number> = left('err');
-    expect(e.orElse(right(42)).getOrElse(0)).toBe(42);
-    expect(e.orElse(() => right(99)).getOrElse(0)).toBe(99);
+    const either: Either<string, number> = left('err');
+    expect(either.orElse(right(42)).getOrElse(0)).toBe(42);
+    expect(either.orElse(() => right(99)).getOrElse(0)).toBe(99);
   });
 
   test('toNullable returns null', () => {
@@ -145,9 +145,9 @@ describe('Either — Left (alternative)', () => {
 describe('Either — factories and helpers', () => {
   test('eitherOf captures a throwing thunk as Left', () => {
     expect(eitherOf(() => 1 + 1).getOrElse(-1)).toBe(2);
-    const e = eitherOf<number>(() => { throw new Error('x'); });
-    expect(e.isLeft()).toBe(true);
-    expect((e as Left<Error>).value.message).toBe('x');
+    const either = eitherOf<number>(() => { throw new Error('x'); });
+    expect(either.isLeft()).toBe(true);
+    expect((either as Left<Error>).value.message).toBe('x');
   });
 
   test('eitherOf coerces a non-Error throw into Error(String(value))', () => {
@@ -188,7 +188,7 @@ describe('Either — factories and helpers', () => {
 
   test('P.instanceOf pattern-matching works with ts-pattern', () => {
     const out = match<Either<string, number>>(right(7))
-      .with(P.instanceOf(Right), (r) => `R:${r.value}`)
+      .with(P.instanceOf(Right), (result) => `R:${result.value}`)
       .with(P.instanceOf(Left), (l) => `L:${l.value}`)
       .exhaustive();
     expect(out).toBe('R:7');

@@ -46,8 +46,8 @@ function makeFakeSpan(record: FakeRecordedSpan): OtelSpanLike {
       record.attrs[key] = value;
       return this;
     },
-    setStatus(s): OtelSpanLike {
-      record.status = s;
+    setStatus(span): OtelSpanLike {
+      record.status = span;
       return this;
     },
     recordException(err): void {
@@ -185,21 +185,21 @@ describe('otelTracer', () => {
       .withApi(api);
     const tracer = otelTracer(otelOptions);
 
-    const s = tracer.startSpan('handle.message', {
+    const span = tracer.startSpan('handle.message', {
       kind: 'consumer',
       attributes: { 'app.kind': 'demo' },
     });
-    s.setAttribute('msg.size', 32);
-    s.setStatus('ok');
-    s.end();
+    span.setAttribute('msg.size', 32);
+    span.setStatus('ok');
+    span.end();
 
     expect(api.recorded).toHaveLength(1);
-    const r = api.recorded[0]!;
-    expect(r.name).toBe('handle.message');
-    expect(r.kind).toBe(api.SpanKind.CONSUMER);
-    expect(r.attrs).toEqual({ 'app.kind': 'demo', 'msg.size': 32 });
-    expect(r.status).toEqual({ code: api.SpanStatusCode.OK });
-    expect(r.ended).toBe(true);
+    const recorded = api.recorded[0]!;
+    expect(recorded.name).toBe('handle.message');
+    expect(recorded.kind).toBe(api.SpanKind.CONSUMER);
+    expect(recorded.attrs).toEqual({ 'app.kind': 'demo', 'msg.size': 32 });
+    expect(recorded.status).toEqual({ code: api.SpanStatusCode.OK });
+    expect(recorded.ended).toBe(true);
   });
 
   test('end() is idempotent and silences subsequent attribute writes', () => {
@@ -207,13 +207,13 @@ describe('otelTracer', () => {
     const otelOptions = OtelAdapterOptions.create()
       .withApi(api);
     const tracer = otelTracer(otelOptions);
-    const s = tracer.startSpan('once');
-    s.end();
-    s.setAttribute('after-end', 1);
-    s.end();
-    const r = api.recorded[0]!;
-    expect(r.attrs['after-end']).toBeUndefined();
-    expect(s.ended).toBe(true);
+    const span = tracer.startSpan('once');
+    span.end();
+    span.setAttribute('after-end', 1);
+    span.end();
+    const recorded = api.recorded[0]!;
+    expect(recorded.attrs['after-end']).toBeUndefined();
+    expect(span.ended).toBe(true);
   });
 
   test('withActiveSpan + activeSpan thread the OTel context', () => {
@@ -224,17 +224,17 @@ describe('otelTracer', () => {
     const outer = tracer.startSpan('outer');
 
     const inner = tracer.withActiveSpan(outer, () => {
-      const a = tracer.activeSpan();
-      expect(a).not.toBeNull();
-      expect(a!.context().traceId).toBe(outer.context().traceId);
-      expect(a!.context().spanId).toBe(outer.context().spanId);
+      const activeSpan = tracer.activeSpan();
+      expect(activeSpan).not.toBeNull();
+      expect(activeSpan!.context().traceId).toBe(outer.context().traceId);
+      expect(activeSpan!.context().spanId).toBe(outer.context().spanId);
       // Child span started inside `withActiveSpan` should see the
       // outer span as its parent — same trace, different spanId.
       const child = tracer.startSpan('inner');
       return child;
     });
 
-    const childRec = api.recorded.find((r) => r.name === 'inner')!;
+    const childRec = api.recorded.find((recorded) => recorded.name === 'inner')!;
     const outerCtx = outer.context();
     expect(childRec.parentTraceId).toBe(outerCtx.traceId);
     expect(childRec.parentSpanId).toBe(outerCtx.spanId);
@@ -243,20 +243,20 @@ describe('otelTracer', () => {
     expect(tracer.activeSpan()).toBeNull();
   });
 
-  test('explicit parent: SpanContext carrier produces a child in the same trace', () => {
+  test('explicit parent: SpanContext carrier produces activeSpan child in the same trace', () => {
     const api = makeFakeOtelApi();
     const otelOptions = OtelAdapterOptions.create()
       .withApi(api);
     const tracer = otelTracer(otelOptions);
     const parentCtx = { traceId: '0123456789abcdef0123456789abcdef', spanId: '0123456789abcdef', traceFlags: 1 };
     const child = tracer.startSpan('child', { parent: parentCtx });
-    const r = api.recorded[0]!;
-    expect(r.parentTraceId).toBe(parentCtx.traceId);
-    expect(r.parentSpanId).toBe(parentCtx.spanId);
+    const recorded = api.recorded[0]!;
+    expect(recorded.parentTraceId).toBe(parentCtx.traceId);
+    expect(recorded.parentSpanId).toBe(parentCtx.spanId);
     expect(child.context().traceId).toBe(parentCtx.traceId);
   });
 
-  test('explicit parent: null forces a fresh root', () => {
+  test('explicit parent: null forces activeSpan fresh root', () => {
     const api = makeFakeOtelApi();
     const otelOptions = OtelAdapterOptions.create()
       .withApi(api);
@@ -267,9 +267,9 @@ describe('otelTracer', () => {
       const root = tracer.startSpan('root', { parent: null });
       // Recorded span should have no parent (we passed root: true to fake
       // startSpan which skips parent inheritance).
-      const r = api.recorded.find((x) => x.name === 'root')!;
-      expect(r.parentTraceId).toBeUndefined();
-      expect(r.parentSpanId).toBeUndefined();
+      const recorded = api.recorded.find((x) => x.name === 'root')!;
+      expect(recorded.parentTraceId).toBeUndefined();
+      expect(recorded.parentSpanId).toBeUndefined();
       // And it's in a different trace than `outer`.
       expect(root.context().traceId).not.toBe(outer.context().traceId);
       root.end();
@@ -284,21 +284,21 @@ describe('otelTracer', () => {
     const tracer = otelTracer(otelOptions);
 
     expect(tracer.injectContext()).toBeNull();
-    const s = tracer.startSpan('outer');
-    tracer.withActiveSpan(s, () => {
+    const span = tracer.startSpan('outer');
+    tracer.withActiveSpan(span, () => {
       const carrier = tracer.injectContext();
       expect(carrier).not.toBeNull();
       const tp = carrier!.traceparent;
       // 00-<32hex>-<16hex>-<2hex>
       expect(tp).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/);
       const decoded = decodeTraceparent(tp)!;
-      expect(decoded.traceId).toBe(s.context().traceId);
-      expect(decoded.spanId).toBe(s.context().spanId);
+      expect(decoded.traceId).toBe(span.context().traceId);
+      expect(decoded.spanId).toBe(span.context().spanId);
     });
-    s.end();
+    span.end();
   });
 
-  test('extractContext: round-trip a remote traceparent through the adapter', () => {
+  test('extractContext: round-trip activeSpan remote traceparent through the adapter', () => {
     const api = makeFakeOtelApi();
     const otelOptions = OtelAdapterOptions.create()
       .withApi(api);
@@ -334,10 +334,10 @@ describe('otelTracer', () => {
     const otelOptions = OtelAdapterOptions.create()
       .withApi(api);
     const tracer = otelTracer(otelOptions);
-    const s = tracer.startSpan('boom');
+    const span = tracer.startSpan('boom');
     const err = new Error('fail');
-    s.recordException(err);
-    s.end();
+    span.recordException(err);
+    span.end();
     expect(api.recorded[0]!.exceptions).toEqual([err]);
   });
 
@@ -363,7 +363,7 @@ describe('otelTracer', () => {
     bSpan.end();
 
     expect(bSpan.context().traceId).toBe(aSpan.context().traceId);
-    const bRec = api.recorded.find((r) => r.name === 'b.receive')!;
+    const bRec = api.recorded.find((recorded) => recorded.name === 'b.receive')!;
     expect(bRec.parentSpanId).toBe(aSpan.context().spanId);
   });
 
@@ -390,10 +390,10 @@ describe('otelTracer', () => {
     const otelOptions = OtelAdapterOptions.create()
       .withApi(api);
     const tracer = otelTracer(otelOptions);
-    const s = tracer.startSpan('x');
-    s.setAttribute('before', 1);
-    s.end();
-    s.setAttribute('after', 2);
+    const span = tracer.startSpan('x');
+    span.setAttribute('before', 1);
+    span.end();
+    span.setAttribute('after', 2);
     expect(api.recorded[0]!.attrs).toEqual({ before: 1 });
   });
 
@@ -402,9 +402,9 @@ describe('otelTracer', () => {
     const otelOptions = OtelAdapterOptions.create()
       .withApi(api);
     const tracer = otelTracer(otelOptions);
-    const s = tracer.startSpan('x');
-    s.end();
-    s.setStatus('error', 'too late');
+    const span = tracer.startSpan('x');
+    span.end();
+    span.setStatus('error', 'too late');
     expect(api.recorded[0]!.status).toBeUndefined();
   });
 
@@ -413,9 +413,9 @@ describe('otelTracer', () => {
     const otelOptions = OtelAdapterOptions.create()
       .withApi(api);
     const tracer = otelTracer(otelOptions);
-    const s = tracer.startSpan('x');
-    s.end();
-    s.recordException(new Error('after-end'));
+    const span = tracer.startSpan('x');
+    span.end();
+    span.recordException(new Error('after-end'));
     expect(api.recorded[0]!.exceptions).toEqual([]);
   });
 
@@ -425,8 +425,8 @@ describe('otelTracer', () => {
       .withApi(api);
     const tracer = otelTracer(otelOptions);
     const t0 = Date.now() - 5000;
-    const s = tracer.startSpan('back-dated', { startTimeMs: t0 });
-    s.end();
+    const span = tracer.startSpan('back-dated', { startTimeMs: t0 });
+    span.end();
     expect(api.recorded[0]!.startTime).toBe(t0);
   });
 
@@ -435,13 +435,13 @@ describe('otelTracer', () => {
     const otelOptions = OtelAdapterOptions.create()
       .withApi(api);
     const tracer = otelTracer(otelOptions);
-    const s = tracer.startSpan('x');
+    const span = tracer.startSpan('x');
     const t1 = Date.now() + 5000;
-    s.end(t1);
+    span.end(t1);
     expect(api.recorded[0]!.endTime).toBe(t1);
   });
 
-  test('withActiveSpan on a foreign span (not produced by this tracer) degrades to running fn', () => {
+  test('withActiveSpan on activeSpan foreign span (not produced by this tracer) degrades to running fn', () => {
     const api = makeFakeOtelApi();
     const otelOptions = OtelAdapterOptions.create()
       .withApi(api);
@@ -470,11 +470,11 @@ describe('otelTracer', () => {
       .withApi(api);
     const tracer = otelTracer(otelOptions);
     const kinds = ['internal', 'server', 'client', 'producer', 'consumer'] as const;
-    for (const k of kinds) {
-      const s = tracer.startSpan(`span-${k}`, { kind: k });
-      s.end();
+    for (const key of kinds) {
+      const span = tracer.startSpan(`span-${key}`, { kind: key });
+      span.end();
     }
-    expect(api.recorded.map(r => r.kind)).toEqual([
+    expect(api.recorded.map(recorded => recorded.kind)).toEqual([
       api.SpanKind.INTERNAL,
       api.SpanKind.SERVER,
       api.SpanKind.CLIENT,
@@ -503,8 +503,8 @@ describe('otelTracer', () => {
       .withApi(api)
       .withTracer(userTracer);
     const tracer = otelTracer(otelOptions);
-    const s = tracer.startSpan('via-user-tracer');
-    s.end();
+    const span = tracer.startSpan('via-user-tracer');
+    span.end();
     expect(userTracerCalls).toBe(1);
     // The api's internal recorded array is bypassed — user tracer
     // produced the span, not api.trace.getTracer.
