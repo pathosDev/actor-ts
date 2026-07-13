@@ -235,7 +235,7 @@ describe('MemcachedCache — mget / mset (#14)', () => {
     // two from mget itself), each must carry the prefixed key.
     const mgetCalls = fake.log
       .filter((l) => l.op === 'get')
-      .slice(-2);                       // skip the set's audit-noise
+      .slice(-2);                       // skip the set'setCall audit-noise
     expect(mgetCalls.map((l) => l.args[0])).toEqual(['app:a', 'app:b']);
   });
 

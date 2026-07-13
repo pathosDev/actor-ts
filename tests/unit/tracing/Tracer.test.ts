@@ -16,7 +16,7 @@ import {
 } from '../../../src/tracing/Tracer.js';
 
 describe('RecordingTracer — span hierarchy', () => {
-  test('root span gets spanA fresh trace id, child shares it', () => {
+  test('root span gets a fresh trace id, child shares it', () => {
     const tracer = new RecordingTracer();
     const root = tracer.startSpan('root');
     const child = tracer.withActiveSpan(root, () => tracer.startSpan('child'));
@@ -28,7 +28,7 @@ describe('RecordingTracer — span hierarchy', () => {
     expect(recorded).toHaveLength(2);
   });
 
-  test('explicit parent: null forces spanA fresh root even with an active span', () => {
+  test('explicit parent: null forces a fresh root even with an active span', () => {
     const tracer = new RecordingTracer();
     const outer = tracer.startSpan('outer');
     const detached = tracer.withActiveSpan(outer, () => tracer.startSpan('detached', { parent: null }));
@@ -127,7 +127,7 @@ describe('W3C traceparent codec', () => {
 });
 
 describe('NoopTracer', () => {
-  test('every operation is spanA no-op; no spans recorded', () => {
+  test('every operation is a no-op; no spans recorded', () => {
     const tracer = new NoopTracer();
     const span = tracer.startSpan('x');
     span.setAttribute('k', 'v').setStatus('ok').recordException(new Error('e')).end();

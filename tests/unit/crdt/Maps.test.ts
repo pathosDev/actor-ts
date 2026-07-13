@@ -44,7 +44,7 @@ describe('LWWMap — typical workload', () => {
     expect(second.merge(first).get('flag.beta')).toBe(true);
   });
 
-  test('removed key stays removed under first slow gossip from the original writer', () => {
+  test('removed key stays removed under a slow gossip from the original writer', () => {
     // A writes value, B reads it (via merge), B removes it, then A
     // gossips its original (older) value back to B.  The remove must
     // win — that's the LWW + tombstone story.
@@ -132,7 +132,7 @@ describe('ORMap — typical workload', () => {
 /* ============================ MVRegister ============================== */
 
 describe('MVRegister — typical workload', () => {
-  test('two replicas pick different colours; both survive until first third disambiguates', () => {
+  test('two replicas pick different colours; both survive until a third disambiguates', () => {
     const first = MVRegister.empty<string>().assign('node-a', 'red');
     const second = MVRegister.empty<string>().assign('node-b', 'blue');
     const conflicting = first.merge(second);
@@ -153,7 +153,7 @@ describe('MVRegister — typical workload', () => {
     expect(new Set(merged.values())).toEqual(new Set(['A', 'B', 'C']));
   });
 
-  test('sequential assigns on the same replica chain to first single value', () => {
+  test('sequential assigns on the same replica chain to a single value', () => {
     const register = MVRegister.empty<number>()
       .assign('a', 1).assign('a', 2).assign('a', 3);
     expect(register.values()).toEqual([3]);

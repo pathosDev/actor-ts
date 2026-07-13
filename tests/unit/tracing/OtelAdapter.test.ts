@@ -243,7 +243,7 @@ describe('otelTracer', () => {
     expect(tracer.activeSpan()).toBeNull();
   });
 
-  test('explicit parent: SpanContext carrier produces activeSpan child in the same trace', () => {
+  test('explicit parent: SpanContext carrier produces a child in the same trace', () => {
     const api = makeFakeOtelApi();
     const otelOptions = OtelAdapterOptions.create()
       .withApi(api);
@@ -256,7 +256,7 @@ describe('otelTracer', () => {
     expect(child.context().traceId).toBe(parentCtx.traceId);
   });
 
-  test('explicit parent: null forces activeSpan fresh root', () => {
+  test('explicit parent: null forces a fresh root', () => {
     const api = makeFakeOtelApi();
     const otelOptions = OtelAdapterOptions.create()
       .withApi(api);
@@ -298,7 +298,7 @@ describe('otelTracer', () => {
     span.end();
   });
 
-  test('extractContext: round-trip activeSpan remote traceparent through the adapter', () => {
+  test('extractContext: round-trip a remote traceparent through the adapter', () => {
     const api = makeFakeOtelApi();
     const otelOptions = OtelAdapterOptions.create()
       .withApi(api);
@@ -441,7 +441,7 @@ describe('otelTracer', () => {
     expect(api.recorded[0]!.endTime).toBe(t1);
   });
 
-  test('withActiveSpan on activeSpan foreign span (not produced by this tracer) degrades to running fn', () => {
+  test('withActiveSpan on a foreign span (not produced by this tracer) degrades to running fn', () => {
     const api = makeFakeOtelApi();
     const otelOptions = OtelAdapterOptions.create()
       .withApi(api);

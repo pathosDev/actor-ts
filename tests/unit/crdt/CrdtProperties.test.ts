@@ -168,7 +168,7 @@ describe('ORSet — laws', () => {
     expect(merged.has('apple')).toBe(true);                // add wins
   });
 
-  test('a sequential remove of first known tag is honoured', () => {
+  test('a sequential remove of a known tag is honoured', () => {
     const first = ORSet.empty<string>().add('A', 'cherry');
     const removed = first.remove('cherry');
     expect(removed.has('cherry')).toBe(false);

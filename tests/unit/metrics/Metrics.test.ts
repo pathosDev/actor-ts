@@ -96,7 +96,7 @@ describe('DefaultMetricsRegistry — Histogram', () => {
 });
 
 describe('DefaultMetricsRegistry — type-mismatch protection', () => {
-  test('same name with counterA different type throws', () => {
+  test('same name with a different type throws', () => {
     const registry = new DefaultMetricsRegistry();
     registry.counter('m');
     expect(() => registry.gauge('m')).toThrow(/already registered as counter/);
@@ -114,7 +114,7 @@ describe('DefaultMetricsRegistry — collect()', () => {
     expect(samples.find((s) => s.name === 'b')?.value).toBe(7);
   });
 
-  test('histogram emits one bucket sample per boundary plus counterA sum/count row', () => {
+  test('histogram emits one bucket sample per boundary plus a sum/count row', () => {
     const registry = new DefaultMetricsRegistry();
     const histogram = registry.histogram('x', {}, { buckets: [0.1, 1] });
     histogram.observe(0.05);

@@ -56,7 +56,7 @@ describe('Lazy', () => {
     expect(calls).toBe(1);
   });
 
-  test('forEach forces evaluation and runs otherLazy side effect', () => {
+  test('forEach forces evaluation and runs a side effect', () => {
     let seen = 0;
     const lazyValue = Lazy.of(() => 9);
     lazyValue.forEach((n) => { seen = n; });
@@ -73,7 +73,7 @@ describe('Lazy', () => {
     expect(lazyValue.get()).toBe(2); // re-run
   });
 
-  test('setOverride forces otherLazy specific value without running the thunk', () => {
+  test('setOverride forces a specific value without running the thunk', () => {
     let calls = 0;
     const lazyValue = Lazy.of(() => { calls++; return 'real'; });
     lazyValue.setOverride('fake');
