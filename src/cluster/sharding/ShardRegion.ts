@@ -120,8 +120,8 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     this.unsubscribe = this.cfg.cluster.subscribe(evt =>
       match(evt)
         .with(P.instanceOf(LeaderChanged), () => this.onLeaderChanged())
-        .with(P.instanceOf(MemberRemoved), (e) => {
-          this.invalidateHomesOnNode(e.member.address);
+        .with(P.instanceOf(MemberRemoved), (event) => {
+          this.invalidateHomesOnNode(event.member.address);
           this.ensureRegistered();
         })
         .with(P.instanceOf(MemberUp), () => this.ensureRegistered())
@@ -361,13 +361,13 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
   }
 
   private askCoordinator(shardId: number): void {
-    const q: GetShardHome = {
+    const getShardHome: GetShardHome = {
       $t: 'sharding.GetShardHome',
       shardId,
       requester: this.self.path.toString(),
       requesterNode: this.cfg.cluster.selfAddress.toJSON(),
     };
-    this.tellCoordinator(q);
+    this.tellCoordinator(getShardHome);
   }
 
   /* ---------------------------- Sharding msgs -------------------------- */
@@ -440,9 +440,9 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
 
     const entityIds = Array.from(this.shardEntities.get(msg.shardId) ?? []);
     for (const entityId of entityIds) {
-      const e = this.entities.get(entityId);
-      if (!e) continue;
-      e.ref.stop();
+      const entity = this.entities.get(entityId);
+      if (!entity) continue;
+      entity.ref.stop();
       this.entities.delete(entityId);
       this.entityShard.delete(entityId);
       if (this.cfg.rememberEntities) {
@@ -501,7 +501,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
           this.tellCoordinator({ $t: 'sharding.EntityStopped', shardId, entityId: id });
         }
         // Flush buffered messages by replaying through the normal route.
-        for (const m of buffered) this.routeUserMessage(m as TMessage, null);
+        for (const message of buffered) this.routeUserMessage(message as TMessage, null);
         return;
       }
     }
@@ -521,16 +521,16 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
   /* -------------------------------- Buffer ----------------------------- */
 
   private bufferShard(shardId: number, msg: TMessage, sender: ActorRef | null): void {
-    let q = this.buffer.get(shardId);
-    if (!q) { q = []; this.buffer.set(shardId, q); }
-    q.push({ msg, sender });
+    let queue = this.buffer.get(shardId);
+    if (!queue) { queue = []; this.buffer.set(shardId, queue); }
+    queue.push({ msg, sender });
   }
 
   private flushBuffer(shardId: number): void {
-    const q = this.buffer.get(shardId);
-    if (!q || q.length === 0) return;
+    const queue = this.buffer.get(shardId);
+    if (!queue || queue.length === 0) return;
     this.buffer.delete(shardId);
-    for (const { msg, sender } of q) this.routeUserMessage(msg, sender);
+    for (const { msg, sender } of queue) this.routeUserMessage(msg, sender);
   }
 
   /* -------------------------------- Misc ------------------------------ */

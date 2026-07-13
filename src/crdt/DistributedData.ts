@@ -360,7 +360,7 @@ export class DistributedDataHandle {
 
   /** @internal — called by the extension's `stop()`. */
   _stopWireHandlers(): void {
-    for (const u of this.wireUnsubs) u();
+    for (const unsubscribe of this.wireUnsubs) unsubscribe();
     this.wireUnsubs = [];
   }
 
@@ -483,10 +483,10 @@ export class DistributedDataHandle {
       try { wrapper(current); } catch (e) { /* ignore in tests */ void e; }
     }
     return () => {
-      const s = this.view.listeners.get(key);
-      if (s) {
-        s.delete(wrapper);
-        if (s.size === 0) this.view.listeners.delete(key);
+      const listenerSet = this.view.listeners.get(key);
+      if (listenerSet) {
+        listenerSet.delete(wrapper);
+        if (listenerSet.size === 0) this.view.listeners.delete(key);
       }
     };
   }
@@ -609,14 +609,14 @@ class DistributedDataActor extends Actor<ActorMessage> {
     this.unsubscribeCluster?.();
     this.gossipTimer?.cancel();
     // Reject any still-pending quorum requests so callers don't hang.
-    for (const w of this.pendingWrites.values()) {
-      w.timer.cancel();
-      w.reject(new Error(`DistributedData stopped before quorum write on "${w.key}" completed`));
+    for (const pendingWrite of this.pendingWrites.values()) {
+      pendingWrite.timer.cancel();
+      pendingWrite.reject(new Error(`DistributedData stopped before quorum write on "${pendingWrite.key}" completed`));
     }
     this.pendingWrites.clear();
-    for (const r of this.pendingReads.values()) {
-      r.timer.cancel();
-      r.reject(new Error(`DistributedData stopped before quorum read on "${r.key}" completed`));
+    for (const pendingRead of this.pendingReads.values()) {
+      pendingRead.timer.cancel();
+      pendingRead.reject(new Error(`DistributedData stopped before quorum read on "${pendingRead.key}" completed`));
     }
     this.pendingReads.clear();
   }
@@ -817,8 +817,8 @@ class DistributedDataActor extends Actor<ActorMessage> {
     this.scheduleDurableSave();
     const listeners = this.view.listeners.get(key);
     if (!listeners) return;
-    for (const l of listeners) {
-      try { l(next); } catch (e) {
+    for (const listener of listeners) {
+      try { listener(next); } catch (e) {
         this.log.warn(`DistributedData: subscriber for "${key}" threw`, e);
       }
     }
@@ -890,13 +890,13 @@ function nextPendingId(): string {
  *   - `'all'`       → N
  *   - `{ from: K }` → clamp(K, 1, N)
  */
-function clampQuorum(c: WriteConsistency | ReadConsistency, totalN: number): number {
-  if (c === 'local') return 1;
-  if (c === 'majority') return Math.floor(totalN / 2) + 1;
-  if (c === 'all') return totalN;
+function clampQuorum(consistency: WriteConsistency | ReadConsistency, totalN: number): number {
+  if (consistency === 'local') return 1;
+  if (consistency === 'majority') return Math.floor(totalN / 2) + 1;
+  if (consistency === 'all') return totalN;
   // { from: K }
-  const k = Math.trunc(c.from);
-  if (!Number.isFinite(k) || k < 1) return 1;
-  if (k > totalN) return totalN;
-  return k;
+  const fromCount = Math.trunc(consistency.from);
+  if (!Number.isFinite(fromCount) || fromCount < 1) return 1;
+  if (fromCount > totalN) return totalN;
+  return fromCount;
 }

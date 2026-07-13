@@ -40,9 +40,9 @@ type CoordinatorInbox = ShardingMessage | CoordinatorEvent;
 
 function isCoordinatorEvent(msg: CoordinatorInbox): msg is CoordinatorEvent {
   if (!msg || typeof msg !== 'object') return false;
-  const t = (msg as { t?: unknown; $t?: unknown }).t;
-  return t === 'reconcile' || t === 'lease-acquire-result'
-    || t === 'lease-lost' || t === 'acquire-retry';
+  const discriminator = (msg as { t?: unknown; $t?: unknown }).t;
+  return discriminator === 'reconcile' || discriminator === 'lease-acquire-result'
+    || discriminator === 'lease-lost' || discriminator === 'acquire-retry';
 }
 
 interface RegionInfo {
@@ -199,7 +199,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.unsubscribeLeaseLost?.();
     this.rebalanceTimer?.cancel();
     this.acquireRetryTimer?.cancel();
-    for (const r of this.rebalanceInProgress.values()) r.timer.cancel();
+    for (const rebalance of this.rebalanceInProgress.values()) rebalance.timer.cancel();
     if (this.options.lease && this.leaseState === 'held') {
       try { await this.options.lease.release(); } catch { /* best-effort */ }
       this.leaseState = 'none';
@@ -333,7 +333,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (this.acquireBuffer.length > 0) {
       const buffered = this.acquireBuffer;
       this.acquireBuffer = [];
-      for (const m of buffered) this.dispatchShardingMessage(m);
+      for (const message of buffered) this.dispatchShardingMessage(message);
     }
   }
 
@@ -348,7 +348,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     // passive.  Pending queries get dropped (regions retry once we
     // become active again, or once cluster events flush their
     // register loop).
-    for (const r of this.rebalanceInProgress.values()) r.timer.cancel();
+    for (const rebalance of this.rebalanceInProgress.values()) rebalance.timer.cancel();
     this.rebalanceInProgress.clear();
     this.pending.clear();
     this.acquireBuffer = [];
@@ -377,8 +377,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     const addrs = activeRegions.map(r => r.node);
     if (!role) return addrs;
     return addrs.filter(a => {
-      const m = this.options.cluster.getMembers().find(x => x.address.equals(a));
-      return m?.hasRole(role) ?? false;
+      const member = this.options.cluster.getMembers().find(x => x.address.equals(a));
+      return member?.hasRole(role) ?? false;
     });
   }
 
@@ -390,7 +390,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       if (info.proxy) continue;
       const addr = info.node.toString();
       const existing = out.get(addr) ?? new Set<number>();
-      for (const s of info.shards) existing.add(s);
+      for (const shardId of info.shards) existing.add(shardId);
       out.set(addr, existing);
     }
     return out;
@@ -570,7 +570,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       this.shardHome.clear();
       this.pending.clear();
       this.acquireBuffer = [];
-      for (const r of this.rebalanceInProgress.values()) r.timer.cancel();
+      for (const rebalance of this.rebalanceInProgress.values()) rebalance.timer.cancel();
       this.rebalanceInProgress.clear();
     } else {
       // Just became leader (or re-elected).  If a state store is
@@ -747,8 +747,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (!home) return;
     const info = this.regions.get(home);
     if (!info) return;
-    for (const q of pending) {
-      this.replyTo(q.requester, q.requesterNode, {
+    for (const pendingQuery of pending) {
+      this.replyTo(pendingQuery.requester, pendingQuery.requesterNode, {
         $t: 'sharding.ShardHome',
         shardId,
         region: info.path,
