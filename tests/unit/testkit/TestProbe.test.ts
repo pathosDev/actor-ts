@@ -87,13 +87,13 @@ describe('TestProbe basics', () => {
     const tk = TestKit.create();
     const probeOptions = TestProbeOptions.create()
       .withName('from');
-    const p = tk.createTestProbe(probeOptions);
+    const probe = tk.createTestProbe(probeOptions);
     const probeOptions2 = TestProbeOptions.create()
       .withName('to');
     const to = tk.createTestProbe(probeOptions2);
-    to.tell('msg', p);
+    to.tell('msg', probe);
     await to.receiveOne(100);
-    expect(to.sender).toBe(p);
+    expect(to.sender).toBe(probe);
     await tk.shutdown();
   });
 

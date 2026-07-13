@@ -54,7 +54,7 @@ class MockSocket implements WebsocketSocketAdapter {
     else this.pending.push(fn);
   }
   get textSent(): string[] {
-    return this.sent.filter((s): s is string => typeof s === 'string');
+    return this.sent.filter((system): system is string => typeof system === 'string');
   }
 }
 
@@ -108,12 +108,12 @@ function newSystem(name: string): ActorSystem {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
-  const s = ActorSystem.create(name, sysOptions);
-  systems.push(s);
-  return s;
+  const system = ActorSystem.create(name, sysOptions);
+  systems.push(system);
+  return system;
 }
 afterEach(async () => {
-  await Promise.all(systems.splice(0).map((s) => s.terminate()));
+  await Promise.all(systems.splice(0).map((system) => system.terminate()));
 });
 
 /** Spawn a recording hub and wire a mock connection to it. */
@@ -159,40 +159,40 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
 
   test('broadcast reaches every open connection', async () => {
     const { rec, hub, system } = setup('ws-hub-bcast');
-    const a = new MockSocket();
-    const b = new MockSocket();
-    wire(system, hub, a);
-    wire(system, hub, b);
+    const socketA = new MockSocket();
+    const socketB = new MockSocket();
+    wire(system, hub, socketA);
+    wire(system, hub, socketB);
     await sleep(60);
 
-    a.emit(JSON.stringify({ kind: 'shout', text: 'hi' }));
+    socketA.emit(JSON.stringify({ kind: 'shout', text: 'hi' }));
     await sleep(60);
 
     const expected = JSON.stringify({ kind: 'msg', text: 'hi' });
     expect(rec.conns).toHaveLength(2);
-    expect(a.textSent).toContain(expected);
-    expect(b.textSent).toContain(expected);
+    expect(socketA.textSent).toContain(expected);
+    expect(socketB.textSent).toContain(expected);
   });
 
   test('client close fires onClientDisconnected and leaves the broadcast set', async () => {
     const { rec, hub, system } = setup('ws-hub-disc');
-    const a = new MockSocket();
-    const b = new MockSocket();
-    wire(system, hub, a);
-    wire(system, hub, b);
+    const socketA = new MockSocket();
+    const socketB = new MockSocket();
+    wire(system, hub, socketA);
+    wire(system, hub, socketB);
     await sleep(60);
     const connA = rec.conns[0]!;
 
-    a.close(1000, 'bye');
+    socketA.close(1000, 'bye');
     await sleep(80);
     expect(rec.events).toContain(`disconnect:${connA.id}`);
 
     // Broadcast now reaches only B.
-    b.emit(JSON.stringify({ kind: 'shout', text: 'after' }));
+    socketB.emit(JSON.stringify({ kind: 'shout', text: 'after' }));
     await sleep(60);
     const expected = JSON.stringify({ kind: 'msg', text: 'after' });
-    expect(b.textSent).toContain(expected);
-    expect(a.textSent).not.toContain(expected);
+    expect(socketB.textSent).toContain(expected);
+    expect(socketA.textSent).not.toContain(expected);
   });
 
   test('oversize inbound frame is closed (1009) and not delivered', async () => {
@@ -249,7 +249,7 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
 
     sock.emit('garbage{');
     await sleep(60);
-    expect(invalids.some((s) => s.endsWith(':WebsocketDecodeError'))).toBe(true);
+    expect(invalids.some((system) => system.endsWith(':WebsocketDecodeError'))).toBe(true);
     expect(sock.closeCalls).toHaveLength(0);
   });
 
@@ -270,10 +270,10 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
 
   test('each connection is a child actor of the hub, cleaned up on disconnect', async () => {
     const { rec, hub, system } = setup('ws-hub-children');
-    const a = new MockSocket();
-    const b = new MockSocket();
-    wire(system, hub, a);
-    wire(system, hub, b);
+    const socketA = new MockSocket();
+    const socketB = new MockSocket();
+    wire(system, hub, socketA);
+    wire(system, hub, socketB);
     await sleep(80);
 
     // Two connections → the hub had 2 children by the second connect.
@@ -281,7 +281,7 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     expect(Math.max(...rec.childCounts)).toBeGreaterThanOrEqual(2);
 
     // Closing one stops its child → the hub's child count drops.
-    a.close(1000, 'bye');
+    socketA.close(1000, 'bye');
     await sleep(80);
     expect(rec.events.some((e) => e.startsWith('disconnect:'))).toBe(true);
     const afterDisconnect = rec.childCounts[rec.childCounts.length - 1]!;

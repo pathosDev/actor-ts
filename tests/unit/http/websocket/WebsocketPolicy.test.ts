@@ -27,12 +27,12 @@ describe('resolveWebsocketPolicy', () => {
         onBackpressure = "close"
       }
     `);
-    const p = resolveWebsocketPolicy(sys, {});
-    expect(p.maxFrameBytes).toBe(512 * 1024);
-    expect(p.onOversizeFrame).toBe('drop');
-    expect(p.onInvalidMessage).toBe('drop');
-    expect(p.maxBufferedBytes).toBe(8 * 1024 * 1024);
-    expect(p.onBackpressure).toBe('close');
+    const policy = resolveWebsocketPolicy(sys, {});
+    expect(policy.maxFrameBytes).toBe(512 * 1024);
+    expect(policy.onOversizeFrame).toBe('drop');
+    expect(policy.onInvalidMessage).toBe('drop');
+    expect(policy.maxBufferedBytes).toBe(8 * 1024 * 1024);
+    expect(policy.onBackpressure).toBe('close');
   });
 
   test('route options win over HOCON (and HOCON over defaults)', () => {
@@ -42,22 +42,22 @@ describe('resolveWebsocketPolicy', () => {
         onInvalidMessage = "drop"
       }
     `);
-    const p = resolveWebsocketPolicy(sys, { maxFrameBytes: 2048, onOversizeFrame: 'drop' });
+    const policy = resolveWebsocketPolicy(sys, { maxFrameBytes: 2048, onOversizeFrame: 'drop' });
     // option override
-    expect(p.maxFrameBytes).toBe(2048);
-    expect(p.onOversizeFrame).toBe('drop');
+    expect(policy.maxFrameBytes).toBe(2048);
+    expect(policy.onOversizeFrame).toBe('drop');
     // HOCON value where no option
-    expect(p.onInvalidMessage).toBe('drop');
+    expect(policy.onInvalidMessage).toBe('drop');
     // default where neither
-    expect(p.onBackpressure).toBe(DEFAULT_WEBSOCKET_POLICY.onBackpressure);
+    expect(policy.onBackpressure).toBe(DEFAULT_WEBSOCKET_POLICY.onBackpressure);
   });
 
   test('partial HOCON leaves the rest at defaults', () => {
     const sys = systemWith('actor-ts.http.websocket.onBackpressure = "close"');
-    const p = resolveWebsocketPolicy(sys, {});
-    expect(p.onBackpressure).toBe('close');
-    expect(p.maxFrameBytes).toBe(DEFAULT_WEBSOCKET_POLICY.maxFrameBytes);
-    expect(p.onInvalidMessage).toBe(DEFAULT_WEBSOCKET_POLICY.onInvalidMessage);
+    const policy = resolveWebsocketPolicy(sys, {});
+    expect(policy.onBackpressure).toBe('close');
+    expect(policy.maxFrameBytes).toBe(DEFAULT_WEBSOCKET_POLICY.maxFrameBytes);
+    expect(policy.onInvalidMessage).toBe(DEFAULT_WEBSOCKET_POLICY.onInvalidMessage);
   });
 
   test('invalid enum value throws a clear error', () => {

@@ -56,23 +56,23 @@ describe('normalizeInbound', () => {
 
   test('ArrayBuffer → binary frame', () => {
     const buf = new Uint8Array([1, 2, 3]).buffer;
-    const f = normalizeInbound(buf) as Extract<WebsocketFrame, { kind: 'binary' }>;
-    expect(f.kind).toBe('binary');
-    expect([...f.data]).toEqual([1, 2, 3]);
+    const frame = normalizeInbound(buf) as Extract<WebsocketFrame, { kind: 'binary' }>;
+    expect(frame.kind).toBe('binary');
+    expect([...frame.data]).toEqual([1, 2, 3]);
   });
 
   test('Uint8Array passes through', () => {
     const u8 = new Uint8Array([9, 8]);
-    const f = normalizeInbound(u8) as Extract<WebsocketFrame, { kind: 'binary' }>;
-    expect(f.kind).toBe('binary');
-    expect(f.data).toBe(u8);
+    const frame = normalizeInbound(u8) as Extract<WebsocketFrame, { kind: 'binary' }>;
+    expect(frame.kind).toBe('binary');
+    expect(frame.data).toBe(u8);
   });
 
   test('fragmented Array<Uint8Array> merges into one binary frame', () => {
     const parts = [new Uint8Array([1, 2]), new Uint8Array([3, 4, 5])];
-    const f = normalizeInbound(parts) as Extract<WebsocketFrame, { kind: 'binary' }>;
-    expect(f.kind).toBe('binary');
-    expect([...f.data]).toEqual([1, 2, 3, 4, 5]);
+    const frame = normalizeInbound(parts) as Extract<WebsocketFrame, { kind: 'binary' }>;
+    expect(frame.kind).toBe('binary');
+    expect([...frame.data]).toEqual([1, 2, 3, 4, 5]);
   });
 
   test('unrecognised shapes → null', () => {
