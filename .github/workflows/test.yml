@@ -150,7 +150,7 @@ jobs:
         # of truth (the badge update sees what the gate enforces).
         #
         # Floor configured via the COVERAGE_LINE_FLOOR env var — set
-        # at the workflow level so future tightening (90 → 92 → 95)
+        # at the workflow level so future tightening (80 → 85 → 90)
         # is a one-line PR rather than a script-edit.  Local devs run
         # `bun run test:coverage:gate` to get the same check.
         if: success() && steps.stats.outputs.lines != ''

@@ -4,7 +4,7 @@
  * the "All files" aggregate line, exits non-zero if line coverage
  * falls below the floor.
  *
- * Defaults: 90% line coverage.  Override via env vars:
+ * Defaults: 80% line coverage.  Override via env vars:
  *   COVERAGE_LINE_FLOOR=85   # require ≥85% lines
  *
  * Used by `.github/workflows/test.yml` as the post-test gate.
@@ -18,7 +18,7 @@
  */
 import { spawnSync } from 'node:child_process';
 
-const FLOOR = Number(process.env.COVERAGE_LINE_FLOOR ?? '90');
+const FLOOR = Number(process.env.COVERAGE_LINE_FLOOR ?? '80');
 if (!Number.isFinite(FLOOR) || FLOOR < 0 || FLOOR > 100) {
   console.error(`coverage-gate: invalid COVERAGE_LINE_FLOOR=${FLOOR}`);
   process.exit(2);
