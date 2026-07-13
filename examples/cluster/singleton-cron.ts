@@ -27,7 +27,7 @@ type CronCommand = { kind: 'subscribe'; sub: ActorRef<CronEvent> } | { kind: 'ti
 interface CronEvent { readonly tickNumber: number; readonly hostedOn: string; }
 
 class Cron extends Actor<CronCommand> {
-  private n = 0;
+  private tickCount = 0;
   private readonly subs = new Set<ActorRef<CronEvent>>();
   constructor(private readonly host: string) { super(); }
 
@@ -37,9 +37,9 @@ class Cron extends Actor<CronCommand> {
   }
   override onReceive(cmd: CronCommand): void {
     if (cmd.kind === 'subscribe') { this.subs.add(cmd.sub); return; }
-    this.n++;
-    const evt: CronEvent = { tickNumber: this.n, hostedOn: this.host };
-    console.log(`[${this.host}] tick #${this.n}`);
+    this.tickCount++;
+    const evt: CronEvent = { tickNumber: this.tickCount, hostedOn: this.host };
+    console.log(`[${this.host}] tick #${this.tickCount}`);
     for (const s of this.subs) s.tell(evt);
   }
 }
@@ -68,23 +68,23 @@ async function startNode(host: string, port: number, seeds: string[] = []): Prom
 }
 
 async function main(): Promise<void> {
-  const a = await startNode('a', 9001);
-  const b = await startNode('b', 9002, ['cron-cluster@a:9001']);
-  const c = await startNode('c', 9003, ['cron-cluster@a:9001']);
+  const nodeA = await startNode('a', 9001);
+  const nodeB = await startNode('b', 9002, ['cron-cluster@a:9001']);
+  const nodeC = await startNode('c', 9003, ['cron-cluster@a:9001']);
 
   // Wait until all three see each other.
   await Bun.sleep(300);
 
   // Each node installs its own singleton manager — only the leader hosts
   // the Cron actor.
-  for (const { sys, cluster, name } of [a, b, c]) {
+  for (const { sys, cluster, name } of [nodeA, nodeB, nodeC]) {
     sys.extension(ClusterSingletonId).start(cluster, StartSingletonOptions.create<CronCommand>()
       .withTypeName('cron')
       .withProps(Props.create(() => new Cron(name))));
   }
 
   // Spawn a client on each node and subscribe it via the proxy.
-  for (const { sys, name } of [a, b, c]) {
+  for (const { sys, name } of [nodeA, nodeB, nodeC]) {
     const client = sys.spawnAnonymous(Props.create(() => new CronClient(name)));
     sys.extension(ClusterSingletonId).get<CronCommand>('cron').forEach(h =>
       h.proxy.tell({ kind: 'subscribe', sub: client }),
@@ -94,15 +94,15 @@ async function main(): Promise<void> {
   // Let the cluster tick for a while.
   await Bun.sleep(900);
   console.log('--- killing the current leader ---');
-  const currentLeader = a.cluster.leader()!.address;
-  const victim = [a, b, c].find(n => n.cluster.selfAddress.equals(currentLeader))!;
+  const currentLeader = nodeA.cluster.leader()!.address;
+  const victim = [nodeA, nodeB, nodeC].find(node => node.cluster.selfAddress.equals(currentLeader))!;
   await victim.cluster.leave();
   await victim.sys.terminate();
 
   // Ticks should continue on whichever node became the new leader.
   await Bun.sleep(900);
 
-  for (const { sys, cluster } of [a, b, c]) {
+  for (const { sys, cluster } of [nodeA, nodeB, nodeC]) {
     if (sys === victim.sys) continue;
     await cluster.leave(); await sys.terminate();
   }
