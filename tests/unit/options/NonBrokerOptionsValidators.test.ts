@@ -56,6 +56,18 @@ import {
   CassandraJournalOptionsValidator,
   type CassandraJournalOptionsType,
 } from '../../../src/persistence/journals/CassandraJournalOptions.js';
+import {
+  S3ObjectStorageOptionsValidator,
+  type S3ObjectStorageOptionsType,
+} from '../../../src/persistence/object-storage/S3ObjectStorageOptions.js';
+import {
+  FilesystemObjectStorageOptionsValidator,
+  type FilesystemObjectStorageOptionsType,
+} from '../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
+import { KeepRefereeOptionsValidator, type KeepRefereeOptionsType } from '../../../src/cluster/downing/KeepRefereeOptions.js';
+import { LeaseMajorityOptionsValidator, type LeaseMajorityOptionsType } from '../../../src/cluster/downing/LeaseMajorityOptions.js';
+import { ClusterRouterOptionsValidator, type ClusterRouterOptionsType } from '../../../src/cluster/router/ClusterRouterOptions.js';
+import { TestProbeOptionsValidator, type TestProbeOptionsType } from '../../../src/testkit/TestProbeOptions.js';
 
 // Direct validator tests for the non-broker options. Each consumer calls the
 // same validator in its constructor / start method after merging defaults.
@@ -352,5 +364,71 @@ describe('persistence + memcached validators', () => {
     expect(() => check({ port: 70_000 })).toThrow(OptionsError);
     expect(() => check({ partitionSize: 0 })).toThrow(/partitionSize/);
     expect(() => check({ port: 9042, partitionSize: 500_000 })).not.toThrow();
+  });
+});
+
+describe('object-storage validators', () => {
+  test('S3: bucket/region required + non-empty, endpoint URL', () => {
+    const check = (s: Partial<S3ObjectStorageOptionsType>): void =>
+      new S3ObjectStorageOptionsValidator().validate(s);
+    expect(() => check({ region: 'eu-central-1' })).toThrow(/bucket/);            // missing bucket
+    expect(() => check({ bucket: 'b' })).toThrow(/region/);                        // missing region
+    expect(() => check({ bucket: 'b', region: '' })).toThrow(OptionsError);        // empty region
+    expect(() => check({ bucket: 'b', region: 'r', endpoint: 'ftp://x' })).toThrow(OptionsError);
+    expect(() => check({ bucket: 'b', region: 'r', endpoint: 'https://minio:9000' })).not.toThrow();
+  });
+
+  test('Filesystem: dir required + positive lock timeouts', () => {
+    const check = (s: Partial<FilesystemObjectStorageOptionsType>): void =>
+      new FilesystemObjectStorageOptionsValidator().validate(s);
+    expect(() => check({})).toThrow(/dir/);
+    expect(() => check({ dir: '/var/x', lockTimeoutMs: 0 })).toThrow(OptionsError);
+    expect(() => check({ dir: '/var/x', staleLockMs: -1 })).toThrow(OptionsError);
+    expect(() => check({ dir: '/var/x' })).not.toThrow();
+  });
+});
+
+describe('downing-strategy validators', () => {
+  test('KeepReferee: refereeAddress required + positive quorum', () => {
+    const check = (s: Partial<KeepRefereeOptionsType>): void =>
+      new KeepRefereeOptionsValidator().validate(s);
+    expect(() => check({})).toThrow(/refereeAddress/);
+    expect(() => check({ refereeAddress: 'sys@h:2551', downAllIfBelowQuorum: 0 })).toThrow(OptionsError);
+    expect(() => check({ refereeAddress: 'sys@h:2551' })).not.toThrow();
+  });
+
+  test('LeaseMajority: positive acquireTimeoutMs', () => {
+    const check = (s: Partial<LeaseMajorityOptionsType>): void =>
+      new LeaseMajorityOptionsValidator().validate(s);
+    expect(() => check({ acquireTimeoutMs: 0 })).toThrow(/acquireTimeoutMs/);
+    expect(() => check({ acquireTimeoutMs: 5_000 })).not.toThrow();
+  });
+});
+
+describe('ClusterRouterOptionsValidator', () => {
+  const check = (s: Partial<ClusterRouterOptionsType<unknown>>): void =>
+    new ClusterRouterOptionsValidator<unknown>().validate(s);
+
+  test('rejects an unknown routerType and empty routeePath', () => {
+    expect(() => check({ routerType: 'spray' as never, routeePath: '/user/x' })).toThrow(/routerType/);
+    expect(() => check({ routerType: 'round-robin', routeePath: '' })).toThrow(OptionsError);
+  });
+
+  test('consistent-hashing requires extractKey (cross-field)', () => {
+    expect(() => check({ routerType: 'consistent-hashing', routeePath: '/user/x' })).toThrow(/extractKey/);
+    expect(() => check({ routerType: 'consistent-hashing', routeePath: '/user/x', extractKey: () => 'k' })).not.toThrow();
+  });
+
+  test('accepts a valid non-hashing config', () => {
+    expect(() => check({ routerType: 'broadcast', routeePath: '/user/x' })).not.toThrow();
+  });
+});
+
+describe('TestProbeOptionsValidator', () => {
+  test('rejects a non-positive defaultTimeoutMs', () => {
+    const check = (s: Partial<TestProbeOptionsType>): void =>
+      new TestProbeOptionsValidator().validate(s);
+    expect(() => check({ defaultTimeoutMs: 0 })).toThrow(OptionsError);
+    expect(() => check({ defaultTimeoutMs: 3_000 })).not.toThrow();
   });
 });

@@ -9,6 +9,7 @@ import {
   type ObjectStorageBackend,
   type PutOptions,
 } from './ObjectStorageBackend.js';
+import { S3ObjectStorageOptionsValidator } from './S3ObjectStorageOptions.js';
 import type { S3ObjectStorageOptions, S3ObjectStorageOptionsType } from './S3ObjectStorageOptions.js';
 
 /**
@@ -51,8 +52,7 @@ export class S3ObjectStorageBackend implements ObjectStorageBackend {
 
   constructor(options: S3ObjectStorageOptions) {
     const s = (options as S3ObjectStorageOptionsType);
-    if (s.bucket === undefined) throw new Error('S3ObjectStorageBackend: bucket is required (call withBucket()).');
-    if (s.region === undefined) throw new Error('S3ObjectStorageBackend: region is required (call withRegion()).');
+    new S3ObjectStorageOptionsValidator().validate(s);
     this.bucket = s.bucket;
     this.clientLazy = Lazy.of(async () => {
       if (s.client) return s.client;

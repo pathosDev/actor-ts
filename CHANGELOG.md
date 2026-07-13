@@ -26,17 +26,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **Validators shipped for**: every broker (MQTT, Kafka, AMQP, Redis Streams,
   NATS, JetStream, SSE, TCP, UDP, gRPC client) and the WebSocket client; the
   cluster core (`Cluster`, `ClusterBootstrap`, `FailureDetector`, `PhiAccrual`,
-  `ClusterClient`, `ClusterClientReceptionist`, `StaticQuorum`), sharding
-  (`Sharding`, `StartSharding`, `ShardedDaemonProcess`) and singleton
-  (`StartSingleton`); discovery (`AutoDiscovery`, `ConfigSeedProvider`,
-  `DnsSeedProvider`, `KubernetesApiSeedProvider`, `Receptionist`) and gossip
-  intervals (`DistributedPubSub`, `DistributedData`); leases (`Lease`,
-  `KubernetesLease`); caches (`RedisCache`, `MemcachedCache`,
-  `CachedSnapshotStore`); the `CassandraJournal`; the Express/Hono HTTP backends;
-  `WorkerCluster`; and delivery `ProducerController`.  Options whose fields carry
-  no real constraint (all-boolean/string/callback, or degrade-gracefully knobs
-  like snapshot `keepN` where `<= 0` means "keep all") intentionally get no
-  validator.
+  `ClusterClient`, `ClusterClientReceptionist`, `StaticQuorum`, `KeepReferee`,
+  `LeaseMajority`, `ClusterRouter`), sharding (`Sharding`, `StartSharding`,
+  `ShardedDaemonProcess`) and singleton (`StartSingleton`); discovery
+  (`AutoDiscovery`, `ConfigSeedProvider`, `DnsSeedProvider`,
+  `KubernetesApiSeedProvider`, `Receptionist`) and gossip intervals
+  (`DistributedPubSub`, `DistributedData`); leases (`Lease`, `KubernetesLease`);
+  caches (`RedisCache`, `MemcachedCache`, `CachedSnapshotStore`); the
+  `CassandraJournal` and S3 / filesystem object-storage backends; the
+  Express/Hono HTTP backends; `WorkerCluster`; delivery `ProducerController`;
+  and `TestProbe`.  Options whose fields carry no real constraint
+  (all-boolean/string/callback, or degrade-gracefully knobs like snapshot
+  `keepN` where `<= 0` means "keep all") intentionally get no validator.
 
 ### Changed
 
