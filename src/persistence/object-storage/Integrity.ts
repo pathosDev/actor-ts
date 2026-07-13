@@ -32,14 +32,14 @@ export const HMAC_KEY_LENGTH = 32;
 export const HMAC_TAG_LENGTH = 16;
 
 function getSubtle(): SubtleCrypto {
-  const s = (globalThis.crypto as Crypto | undefined)?.subtle;
-  if (!s) {
+  const subtle = (globalThis.crypto as Crypto | undefined)?.subtle;
+  if (!subtle) {
     throw new Error(
       'SubtleCrypto is not available in this runtime.  Body integrity '
       + 'requires WebCrypto — Node 20+, Bun, or Deno.',
     );
   }
-  return s;
+  return subtle;
 }
 
 /**

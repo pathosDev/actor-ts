@@ -223,21 +223,21 @@ export function eventMatchesTagFilter(
 ): boolean {
   const tags = eventTags ?? [];
   if (filter.all && filter.all.length > 0) {
-    for (const t of filter.all) {
-      if (!tags.includes(t)) return false;
+    for (const tag of filter.all) {
+      if (!tags.includes(tag)) return false;
     }
   }
   if (filter.any !== undefined) {
     if (filter.any.length === 0) return false; // ∃ over ∅ ≡ false
     let anyMatch = false;
-    for (const t of filter.any) {
-      if (tags.includes(t)) { anyMatch = true; break; }
+    for (const tag of filter.any) {
+      if (tags.includes(tag)) { anyMatch = true; break; }
     }
     if (!anyMatch) return false;
   }
   if (filter.not && filter.not.length > 0) {
-    for (const t of filter.not) {
-      if (tags.includes(t)) return false;
+    for (const tag of filter.not) {
+      if (tags.includes(tag)) return false;
     }
   }
   return true;

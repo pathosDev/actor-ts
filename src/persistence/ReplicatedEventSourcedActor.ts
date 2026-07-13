@@ -467,7 +467,7 @@ export abstract class ReplicatedEventSourcedActor<Cmd, Event, State>
       // the canonical sort intact.  Cheap as long as N stays small;
       // gossip usually delivers in order so this is rare.
       this._state = this.initialState();
-      for (const e of this._events) this._state = this.onEvent(this._state, e.event);
+      for (const persistedEvent of this._events) this._state = this.onEvent(this._state, persistedEvent.event);
     }
 
     this._vc = this._vc.merge(VectorClock.fromData(envelope.vc));
