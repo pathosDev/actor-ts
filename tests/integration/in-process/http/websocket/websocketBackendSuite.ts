@@ -51,19 +51,19 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 function wsOpen(url: string, timeoutMs = 3000): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url);
-    const t = setTimeout(() => reject(new Error('timeout opening ws')), timeoutMs);
+    const timer = setTimeout(() => reject(new Error('timeout opening ws')), timeoutMs);
     ws.onopen = () => {
-      clearTimeout(t);
+      clearTimeout(timer);
       ws.onopen = null;
       ws.onerror = null;
       resolve(ws);
     };
     ws.onerror = () => {
-      clearTimeout(t);
+      clearTimeout(timer);
       reject(new Error('ws errored before open'));
     };
     ws.onclose = (e) => {
-      clearTimeout(t);
+      clearTimeout(timer);
       reject(new Error(`ws closed before open (code ${e.code})`));
     };
   });
@@ -71,11 +71,11 @@ function wsOpen(url: string, timeoutMs = 3000): Promise<WebSocket> {
 
 function nextMessage<T = unknown>(ws: WebSocket, timeoutMs = 3000): Promise<T> {
   return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error('timeout waiting for message')), timeoutMs);
+    const timer = setTimeout(() => reject(new Error('timeout waiting for message')), timeoutMs);
     ws.addEventListener(
       'message',
       (e: MessageEvent) => {
-        clearTimeout(t);
+        clearTimeout(timer);
         resolve(JSON.parse(String(e.data)) as T);
       },
       { once: true },
@@ -85,11 +85,11 @@ function nextMessage<T = unknown>(ws: WebSocket, timeoutMs = 3000): Promise<T> {
 
 function nextClose(ws: WebSocket, timeoutMs = 3000): Promise<number> {
   return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error('timeout waiting for close')), timeoutMs);
+    const timer = setTimeout(() => reject(new Error('timeout waiting for close')), timeoutMs);
     ws.addEventListener(
       'close',
       (e: CloseEvent) => {
-        clearTimeout(t);
+        clearTimeout(timer);
         resolve(e.code);
       },
       { once: true },
@@ -102,15 +102,15 @@ function expectUpgradeRejected(url: string, timeoutMs = 3000): Promise<void> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url);
     let opened = false;
-    const t = setTimeout(() => (opened ? reject(new Error('opened unexpectedly')) : resolve()), timeoutMs);
+    const timer = setTimeout(() => (opened ? reject(new Error('opened unexpectedly')) : resolve()), timeoutMs);
     ws.onopen = () => {
       opened = true;
-      clearTimeout(t);
+      clearTimeout(timer);
       try { ws.close(); } catch { /* ignore */ }
       reject(new Error('upgrade should have been rejected but opened'));
     };
-    ws.onerror = () => { clearTimeout(t); resolve(); };
-    ws.onclose = () => { if (!opened) { clearTimeout(t); resolve(); } };
+    ws.onerror = () => { clearTimeout(timer); resolve(); };
+    ws.onclose = () => { if (!opened) { clearTimeout(timer); resolve(); } };
   });
 }
 
@@ -164,15 +164,15 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
 
     test('broadcast reaches all connected clients', async () => {
       const { base } = await bindServer([], (s) => websocket('/ws', s));
-      const a = await wsOpen(`${base}/ws`);
-      const b = await wsOpen(`${base}/ws`);
-      const aGot = nextMessage(a);
-      const bGot = nextMessage(b);
-      a.send(JSON.stringify({ kind: 'broadcast', text: 'hello all' }));
+      const wsA = await wsOpen(`${base}/ws`);
+      const wsB = await wsOpen(`${base}/ws`);
+      const aGot = nextMessage(wsA);
+      const bGot = nextMessage(wsB);
+      wsA.send(JSON.stringify({ kind: 'broadcast', text: 'hello all' }));
       expect(await aGot).toEqual({ kind: 'bcast', text: 'hello all' });
       expect(await bGot).toEqual({ kind: 'bcast', text: 'hello all' });
-      a.close();
-      b.close();
+      wsA.close();
+      wsB.close();
     });
 
     test('oversize inbound frame closes the connection (1009)', async () => {

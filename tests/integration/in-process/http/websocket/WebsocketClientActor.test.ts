@@ -54,18 +54,18 @@ describe('WebsocketClientActor', () => {
     const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
-    const s = ActorSystem.create(name, sysOptions);
-    systems.push(s);
-    return s;
+    const system = ActorSystem.create(name, sysOptions);
+    systems.push(system);
+    return system;
   }
   async function bindServer(system: ActorSystem, routes: Route, host = '127.0.0.1', port = 0): Promise<ServerBinding> {
-    const b = await system.extension(HttpExtensionId).newServerAt(host, port).useBackend(new FastifyBackend({ logger: false })).bind(routes);
-    bindings.push(b);
-    return b;
+    const binding = await system.extension(HttpExtensionId).newServerAt(host, port).useBackend(new FastifyBackend({ logger: false })).bind(routes);
+    bindings.push(binding);
+    return binding;
   }
   afterEach(async () => {
     while (bindings.length) { try { await bindings.shift()!.unbind(); } catch { /* ignore */ } }
-    await Promise.all(systems.splice(0).map((s) => s.terminate().catch(() => {})));
+    await Promise.all(systems.splice(0).map((system) => system.terminate().catch(() => {})));
   });
 
   test('typed client ↔ server round-trip through a real backend', async () => {
