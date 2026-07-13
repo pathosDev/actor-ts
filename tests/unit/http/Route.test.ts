@@ -72,9 +72,9 @@ describe('compile — basic flattening', () => {
       put(() => complete(Status.OK, 'u')),
       del(() => complete(Status.NoContent, '')),
     ));
-    expect(routes.map(r => r.method).sort())
+    expect(routes.map(response => response.method).sort())
       .toEqual(['DELETE', 'GET', 'POST', 'PUT']);
-    for (const r of routes) expect(r.pattern).toBe('/');
+    for (const response of routes) expect(response.pattern).toBe('/');
   });
 
   test('path with pattern placeholder retains segment verbatim', () => {
@@ -91,7 +91,7 @@ describe('compile — basic flattening', () => {
         del(() => complete(Status.NoContent, '')),
       )),
     )));
-    expect(new Set(routes.map(r => `${r.method} ${r.pattern}`)))
+    expect(new Set(routes.map(response => `${response.method} ${response.pattern}`)))
       .toEqual(new Set([
         'GET /users',
         'POST /users',
@@ -107,21 +107,21 @@ describe('complete helpers', () => {
   });
 
   test('completeJson sets application/json', () => {
-    const r = completeJson(Status.OK, { a: 1 });
-    expect(r.contentType).toContain('application/json');
-    expect(r.body).toEqual({ a: 1 });
+    const response = completeJson(Status.OK, { routeA: 1 });
+    expect(response.contentType).toContain('application/json');
+    expect(response.body).toEqual({ routeA: 1 });
   });
 
   test('completeText sets text/plain', () => {
-    const r = completeText(Status.OK, 'hello');
-    expect(r.contentType).toContain('text/plain');
-    expect(r.body).toBe('hello');
+    const response = completeText(Status.OK, 'hello');
+    expect(response.contentType).toContain('text/plain');
+    expect(response.body).toBe('hello');
   });
 
   test('redirect sets location and default status', () => {
-    const r = redirect('/foo');
-    expect(r.headers?.location).toBe('/foo');
-    expect(r.status).toBe(Status.Found);
+    const response = redirect('/foo');
+    expect(response.headers?.location).toBe('/foo');
+    expect(response.status).toBe(Status.Found);
   });
 
   test('reject throws HttpError', () => {
@@ -176,26 +176,26 @@ describe('compile — segment normalisation', () => {
   test('pathPrefix behaves identically to path (same impl)', () => {
     // pathPrefix is shipped as a synonym today — pin the equivalence
     // explicitly so a future divergence shows up here first.
-    const a = compile(path('api', get(() => complete(Status.OK, ''))));
-    const b = compile(pathPrefix('api', get(() => complete(Status.OK, ''))));
-    expect(b[0]!.pattern).toBe(a[0]!.pattern);
+    const routeA = compile(path('api', get(() => complete(Status.OK, ''))));
+    const routeB = compile(pathPrefix('api', get(() => complete(Status.OK, ''))));
+    expect(routeB[0]!.pattern).toBe(routeA[0]!.pattern);
   });
 });
 
 describe('method combinators — patch / head / options', () => {
   test('patch creates a PATCH route', () => {
-    const r = compile(patch(() => complete(Status.OK, '')));
-    expect(r[0]!.method).toBe('PATCH');
+    const response = compile(patch(() => complete(Status.OK, '')));
+    expect(response[0]!.method).toBe('PATCH');
   });
 
   test('head creates a HEAD route', () => {
-    const r = compile(head(() => complete(Status.OK, '')));
-    expect(r[0]!.method).toBe('HEAD');
+    const response = compile(head(() => complete(Status.OK, '')));
+    expect(response[0]!.method).toBe('HEAD');
   });
 
   test('options creates an OPTIONS route', () => {
-    const r = compile(options(() => complete(Status.OK, '')));
-    expect(r[0]!.method).toBe('OPTIONS');
+    const response = compile(options(() => complete(Status.OK, '')));
+    expect(response[0]!.method).toBe('OPTIONS');
   });
 });
 
@@ -207,9 +207,9 @@ describe('complete helpers — defaults + edge cases', () => {
   });
 
   test('redirect with custom status overrides the default', () => {
-    const r = redirect('/x', Status.MovedPermanently);
-    expect(r.status).toBe(Status.MovedPermanently);
-    expect(r.headers?.location).toBe('/x');
+    const response = redirect('/x', Status.MovedPermanently);
+    expect(response.status).toBe(Status.MovedPermanently);
+    expect(response.headers?.location).toBe('/x');
   });
 
   test('reject carries the extra payload on the HttpError', () => {
@@ -249,48 +249,48 @@ describe('compile — withMiddleware (#312)', () => {
   const block: Middleware = () => complete(Status.Unauthorized, 'denied');
 
   test('middleware wraps the single child handler', async () => {
-    const r = httpOnly(compile(
+    const response = httpOnly(compile(
       withMiddleware(passthrough, get(() => complete(Status.OK, 'ok'))),
     ));
-    expect(r).toHaveLength(1);
-    const resp = await r[0]!.handler(emptyReq);
+    expect(response).toHaveLength(1);
+    const resp = await response[0]!.handler(emptyReq);
     expect(resp.status).toBe(Status.OK);
     expect(resp.body).toBe('ok');
   });
 
   test('middleware can short-circuit before the handler runs', async () => {
     let handlerCalled = false;
-    const r = httpOnly(compile(
+    const response = httpOnly(compile(
       withMiddleware(block, get(() => {
         handlerCalled = true;
         return complete(Status.OK, 'should not reach');
       })),
     ));
-    const resp = await r[0]!.handler(emptyReq);
+    const resp = await response[0]!.handler(emptyReq);
     expect(resp.status).toBe(Status.Unauthorized);
     expect(handlerCalled).toBe(false);
   });
 
   test('nested middlewares run outside-in', async () => {
     const order: string[] = [];
-    const a: Middleware = async (_req, next) => {
+    const routeA: Middleware = async (_req, next) => {
       order.push('a-in');
-      const r = await next();
+      const response = await next();
       order.push('a-out');
-      return r;
+      return response;
     };
-    const b: Middleware = async (_req, next) => {
+    const routeB: Middleware = async (_req, next) => {
       order.push('b-in');
-      const r = await next();
+      const response = await next();
       order.push('b-out');
-      return r;
+      return response;
     };
-    const route = withMiddleware(a, withMiddleware(b, get(() => {
+    const route = withMiddleware(routeA, withMiddleware(routeB, get(() => {
       order.push('h');
       return complete(Status.OK, '');
     })));
-    const r = httpOnly(compile(route));
-    await r[0]!.handler(emptyReq);
+    const response = httpOnly(compile(route));
+    await response[0]!.handler(emptyReq);
     expect(order).toEqual(['a-in', 'b-in', 'h', 'b-out', 'a-out']);
   });
 
@@ -313,7 +313,7 @@ describe('compile — withMiddleware (#312)', () => {
 
   test('middleware errors propagate as HttpError to the caller', async () => {
     const bad: Middleware = () => { throw new HttpError(Status.Forbidden, 'no'); };
-    const r = httpOnly(compile(withMiddleware(bad, get(() => complete(Status.OK, '')))));
-    await expect(r[0]!.handler(emptyReq)).rejects.toThrow(HttpError);
+    const response = httpOnly(compile(withMiddleware(bad, get(() => complete(Status.OK, '')))));
+    await expect(response[0]!.handler(emptyReq)).rejects.toThrow(HttpError);
   });
 });
