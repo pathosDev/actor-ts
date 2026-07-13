@@ -15,11 +15,11 @@ export function matchWebsocketPattern(pattern: string, pathname: string): Record
   if (pSegs.length !== uSegs.length) return null;
   const params: Record<string, string> = {};
   for (let i = 0; i < pSegs.length; i++) {
-    const p = pSegs[i]!;
-    const u = uSegs[i]!;
-    if (p.startsWith(':')) {
-      params[p.slice(1)] = decodeURIComponent(u);
-    } else if (p !== u) {
+    const patternSegment = pSegs[i]!;
+    const uriSegment = uSegs[i]!;
+    if (patternSegment.startsWith(':')) {
+      params[patternSegment.slice(1)] = decodeURIComponent(uriSegment);
+    } else if (patternSegment !== uriSegment) {
       return null;
     }
   }

@@ -18,10 +18,10 @@ export class ActorPath {
   /** All path segments from root to this path (including root). */
   elements(): string[] {
     const out: string[] = [];
-    let p: ActorPath | null = this;
-    while (p) {
-      out.unshift(p.name);
-      p = p.parent;
+    let current: ActorPath | null = this;
+    while (current) {
+      out.unshift(current.name);
+      current = current.parent;
     }
     return out;
   }
@@ -33,10 +33,10 @@ export class ActorPath {
 
   /** True if this path is an ancestor of other. */
   isAncestorOf(other: ActorPath): boolean {
-    let p: ActorPath | null = other.parent;
-    while (p) {
-      if (p.equals(this)) return true;
-      p = p.parent;
+    let ancestor: ActorPath | null = other.parent;
+    while (ancestor) {
+      if (ancestor.equals(this)) return true;
+      ancestor = ancestor.parent;
     }
     return false;
   }

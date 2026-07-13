@@ -245,7 +245,7 @@ export class ActorSystem {
     this.scheduler.shutdown();
     const resolvers = this._terminationResolvers;
     this._terminationResolvers = [];
-    for (const r of resolvers) r();
+    for (const resolve of resolvers) resolve();
   }
 }
 
@@ -283,10 +283,10 @@ function dispatcherFromConfig(config: Config): Dispatcher {
   return match(kind)
     .with('microtask',  () => new MicrotaskDispatcher() as Dispatcher)
     .with('throughput', () => {
-      const n = config.hasPath(ConfigKeys.dispatcher.throughput)
+      const throughput = config.hasPath(ConfigKeys.dispatcher.throughput)
         ? config.getInt(ConfigKeys.dispatcher.throughput)
         : 16;
-      return new ThroughputDispatcher(n) as Dispatcher;
+      return new ThroughputDispatcher(throughput) as Dispatcher;
     })
     .otherwise(() => new ImmediateDispatcher() as Dispatcher);
 }

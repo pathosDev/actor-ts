@@ -152,9 +152,9 @@ export class CoordinatedShutdown implements Extension {
 
   /** Override the timeout for a phase.  Uses `defaultPhaseTimeoutMs` by default. */
   setPhaseTimeout(phase: string, timeoutMs: number): void {
-    const p = this.phases.get(phase);
-    if (!p) throw new Error(`Unknown phase: ${phase}`);
-    this.phases.set(phase, { ...p, timeoutMs });
+    const phaseEntry = this.phases.get(phase);
+    if (!phaseEntry) throw new Error(`Unknown phase: ${phase}`);
+    this.phases.set(phase, { ...phaseEntry, timeoutMs });
   }
 
   /** True once `run()` has been kicked off. */

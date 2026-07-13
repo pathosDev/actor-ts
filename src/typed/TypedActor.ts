@@ -220,7 +220,7 @@ class StashBufferImplementation<T> implements StashBuffer<T> {
   }
   unstashAll(): void {
     const drained = this.buffer.splice(0, this.buffer.length);
-    for (const m of drained) this.self.tell(m);
+    for (const message of drained) this.self.tell(message);
   }
   get isEmpty(): boolean { return this.buffer.length === 0; }
   get isFull(): boolean { return this.buffer.length >= this.capacity; }

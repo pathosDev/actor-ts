@@ -52,13 +52,13 @@ export const DEFAULT_WEBSOCKET_MAX_FRAME_BYTES = 1 * 1024 * 1024;
  * for the size check alone we hand-roll the byte count, which is the
  * common (small-message) case.
  */
-export function utf8ByteLength(s: string): number {
+export function utf8ByteLength(text: string): number {
   let bytes = 0;
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (c < 0x80) bytes += 1;
-    else if (c < 0x800) bytes += 2;
-    else if (c >= 0xd800 && c <= 0xdbff) {
+  for (let i = 0; i < text.length; i++) {
+    const charCode = text.charCodeAt(i);
+    if (charCode < 0x80) bytes += 1;
+    else if (charCode < 0x800) bytes += 2;
+    else if (charCode >= 0xd800 && charCode <= 0xdbff) {
       // High surrogate → 4-byte sequence; consume the low surrogate too.
       bytes += 4;
       i += 1;

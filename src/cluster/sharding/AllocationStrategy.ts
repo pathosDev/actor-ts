@@ -81,10 +81,10 @@ export class LeastShardAllocationStrategy implements AllocationStrategy {
     if (candidates.length === 0) throw new Error('LeastShardAllocationStrategy: no candidates');
     let best = candidates[0]!;
     let bestLoad = currentShards.get(best.toString())?.size ?? 0;
-    for (const c of candidates) {
-      const load = currentShards.get(c.toString())?.size ?? 0;
-      if (load < bestLoad || (load === bestLoad && c.compareTo(best) < 0)) {
-        best = c; bestLoad = load;
+    for (const candidate of candidates) {
+      const load = currentShards.get(candidate.toString())?.size ?? 0;
+      if (load < bestLoad || (load === bestLoad && candidate.compareTo(best) < 0)) {
+        best = candidate; bestLoad = load;
       }
     }
     return best;

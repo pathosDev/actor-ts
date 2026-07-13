@@ -132,7 +132,7 @@ class ClusterRouterActor<TMessage> extends Actor<TMessage | Broadcast<TMessage>>
   override onReceive(message: TMessage | Broadcast<TMessage>): void {
     const sender = this.sender.toNullable();
     if (message instanceof Broadcast) {
-      for (const r of this.routees) r.tell(message.message, sender);
+      for (const routee of this.routees) routee.tell(message.message, sender);
       return;
     }
     if (this.routees.length === 0) {
@@ -143,7 +143,7 @@ class ClusterRouterActor<TMessage> extends Actor<TMessage | Broadcast<TMessage>>
       return;
     }
     if (this.opts.routerType === 'broadcast') {
-      for (const r of this.routees) r.tell(message as TMessage, sender);
+      for (const routee of this.routees) routee.tell(message as TMessage, sender);
       return;
     }
     const target = this.pickRoutee(message as TMessage);

@@ -79,8 +79,8 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
 
   /** Send to every open connection (optionally filtered). */
   protected broadcast(msg: TOut, filter?: (c: WebsocketConnection<TOut>) => boolean): void {
-    for (const c of this._clients.values()) {
-      if (c.isOpen && (!filter || filter(c))) c.tell(msg);
+    for (const client of this._clients.values()) {
+      if (client.isOpen && (!filter || filter(client))) client.tell(msg);
     }
   }
 
@@ -91,7 +91,7 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
 
   /** Close every connection. */
   protected closeAll(code = 1000, reason = ''): void {
-    for (const c of this._clients.values()) c.close(code, reason);
+    for (const client of this._clients.values()) client.close(code, reason);
   }
 
   /* ----------------------- sealed dispatch ----------------------- */

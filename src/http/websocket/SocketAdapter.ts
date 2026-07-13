@@ -111,15 +111,15 @@ export function websocketPackageAdapter(
     else pending.push({ t: 'message', data: norm });
   });
   socket.on('close', (code, reason) => {
-    const c = typeof code === 'number' ? code : 1005;
-    const r = reason == null ? '' : String(reason);
-    if (listeners) listeners.onClose(c, r);
-    else pending.push({ t: 'close', code: c, reason: r });
+    const closeCode = typeof code === 'number' ? code : 1005;
+    const reasonText = reason == null ? '' : String(reason);
+    if (listeners) listeners.onClose(closeCode, reasonText);
+    else pending.push({ t: 'close', code: closeCode, reason: reasonText });
   });
   socket.on('error', (err) => {
-    const e = err instanceof Error ? err : new Error(String(err));
-    if (listeners) listeners.onError(e);
-    else pending.push({ t: 'error', err: e });
+    const error = err instanceof Error ? err : new Error(String(err));
+    if (listeners) listeners.onError(error);
+    else pending.push({ t: 'error', err: error });
   });
 
   return {

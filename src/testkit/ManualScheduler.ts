@@ -134,18 +134,18 @@ export class ManualScheduler extends Scheduler {
 
   private peekNext(upTo: number): Task | null {
     let best: Task | null = null;
-    for (const t of this.tasks) {
-      if (t.cancelled || t.fireAt > upTo) continue;
-      if (!best || t.fireAt < best.fireAt || (t.fireAt === best.fireAt && t.id < best.id)) best = t;
+    for (const task of this.tasks) {
+      if (task.cancelled || task.fireAt > upTo) continue;
+      if (!best || task.fireAt < best.fireAt || (task.fireAt === best.fireAt && task.id < best.id)) best = task;
     }
     return best;
   }
 
   private peekAny(): Task | null {
     let best: Task | null = null;
-    for (const t of this.tasks) {
-      if (t.cancelled) continue;
-      if (!best || t.fireAt < best.fireAt || (t.fireAt === best.fireAt && t.id < best.id)) best = t;
+    for (const task of this.tasks) {
+      if (task.cancelled) continue;
+      if (!best || task.fireAt < best.fireAt || (task.fireAt === best.fireAt && task.id < best.id)) best = task;
     }
     return best;
   }

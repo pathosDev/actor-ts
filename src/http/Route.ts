@@ -247,15 +247,15 @@ function buildPattern(segments: string[]): string {
  * params (e.g. `?x=1&x=2`) return the first value.
  */
 export function queryParam(req: HttpRequest, name: string): string | undefined {
-  const v = req.query[name];
-  if (v === undefined) return undefined;
-  if (Array.isArray(v)) return v[0];
-  return v;
+  const value = req.query[name];
+  if (value === undefined) return undefined;
+  if (Array.isArray(value)) return value[0];
+  return value;
 }
 
 /** Extract a path parameter (guaranteed present by the pattern). */
 export function pathParam(req: HttpRequest, name: string): string {
-  const v = req.params[name];
-  if (v === undefined) throw new HttpError(500, `Missing path parameter "${name}"`);
-  return v;
+  const value = req.params[name];
+  if (value === undefined) throw new HttpError(500, `Missing path parameter "${name}"`);
+  return value;
 }

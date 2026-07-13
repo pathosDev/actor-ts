@@ -145,8 +145,8 @@ class DaemonHost<T> extends Actor<DaemonEnvelope<T>> {
 function indexFromEntityName(name: string): number {
   // Names are set by ShardRegion as `entity-<entityId>` where entityId is
   // the stringified daemon index (see extractEntityId above).
-  const m = name.match(/^entity-(\d+)$/);
-  return m ? parseInt(m[1]!, 10) : 0;
+  const match = name.match(/^entity-(\d+)$/);
+  return match ? parseInt(match[1]!, 10) : 0;
 }
 
 function isWakeup(x: unknown): x is Wakeup {
