@@ -39,11 +39,11 @@ type CounterCommand =
 
 interface CounterState { readonly value: number; readonly resets: number }
 
-const counterReducer = (s: CounterState, e: CounterCommand): CounterState => {
+const counterReducer = (third: CounterState, e: CounterCommand): CounterState => {
   switch (e.kind) {
-    case 'inc':   return { value: s.value + e.by, resets: s.resets };
-    case 'dec':   return { value: s.value - e.by, resets: s.resets };
-    case 'reset': return { value: 0, resets: s.resets + 1 };
+    case 'inc':   return { value: third.value + e.by, resets: third.resets };
+    case 'dec':   return { value: third.value - e.by, resets: third.resets };
+    case 'reset': return { value: 0, resets: third.resets + 1 };
   }
 };
 
@@ -65,12 +65,12 @@ type ListCommand =
 
 interface ListState { readonly items: ReadonlyArray<string> }
 
-const listReducer = (s: ListState, e: ListCommand): ListState => {
+const listReducer = (third: ListState, e: ListCommand): ListState => {
   switch (e.kind) {
-    case 'append': return { items: [...s.items, e.v] };
+    case 'append': return { items: [...third.items, e.v] };
     case 'remove': {
-      if (e.index < 0 || e.index >= s.items.length) return s;
-      const next = [...s.items];
+      if (e.index < 0 || e.index >= third.items.length) return third;
+      const next = [...third.items];
       next.splice(e.index, 1);
       return { items: next };
     }
@@ -94,7 +94,7 @@ const listEvents: fc.Arbitrary<ListCommand[]> = fc.array(listEvent, { maxLength:
 
 /* --------------------------- helpers --------------------------- */
 
-function fold<S, E>(initial: S, events: ReadonlyArray<E>, reducer: (s: S, e: E) => S): S {
+function fold<S, E>(initial: S, events: ReadonlyArray<E>, reducer: (third: S, e: E) => S): S {
   return events.reduce(reducer, initial);
 }
 
@@ -103,17 +103,17 @@ function fold<S, E>(initial: S, events: ReadonlyArray<E>, reducer: (s: S, e: E) 
 describe('replay-mutation fuzz — counter reducer', () => {
   test('determinism: same events → same state', () => {
     fc.assert(fc.property(counterEvents, (events) => {
-      const a = fold(counterInitial, events, counterReducer);
-      const b = fold(counterInitial, events, counterReducer);
-      expect(a).toEqual(b);
+      const first = fold(counterInitial, events, counterReducer);
+      const second = fold(counterInitial, events, counterReducer);
+      expect(first).toEqual(second);
     }));
   });
 
   test('truncation-monotone: prefix + suffix ≡ full replay', () => {
     fc.assert(fc.property(counterEvents, fc.nat(50), (events, n) => {
-      const k = Math.min(n, events.length);
-      const prefix = events.slice(0, k);
-      const suffix = events.slice(k);
+      const limit = Math.min(n, events.length);
+      const prefix = events.slice(0, limit);
+      const suffix = events.slice(limit);
       const split = fold(fold(counterInitial, prefix, counterReducer), suffix, counterReducer);
       const full = fold(counterInitial, events, counterReducer);
       expect(split).toEqual(full);
@@ -121,8 +121,8 @@ describe('replay-mutation fuzz — counter reducer', () => {
   });
 
   test('empty-stream identity: fold([]) === initial', () => {
-    const s = fold(counterInitial, [], counterReducer);
-    expect(s).toEqual(counterInitial);
+    const third = fold(counterInitial, [], counterReducer);
+    expect(third).toEqual(counterInitial);
   });
 
   test('reset is idempotent across consecutive applications', () => {
@@ -140,16 +140,16 @@ describe('replay-mutation fuzz — counter reducer', () => {
 describe('replay-mutation fuzz — list reducer', () => {
   test('determinism', () => {
     fc.assert(fc.property(listEvents, (events) => {
-      const a = fold(listInitial, events, listReducer);
-      const b = fold(listInitial, events, listReducer);
-      expect(a).toEqual(b);
+      const first = fold(listInitial, events, listReducer);
+      const second = fold(listInitial, events, listReducer);
+      expect(first).toEqual(second);
     }));
   });
 
   test('truncation-monotone', () => {
     fc.assert(fc.property(listEvents, fc.nat(50), (events, n) => {
-      const k = Math.min(n, events.length);
-      const split = fold(fold(listInitial, events.slice(0, k), listReducer), events.slice(k), listReducer);
+      const limit = Math.min(n, events.length);
+      const split = fold(fold(listInitial, events.slice(0, limit), listReducer), events.slice(limit), listReducer);
       const full = fold(listInitial, events, listReducer);
       expect(split).toEqual(full);
     }));
@@ -177,9 +177,9 @@ describe('replay-mutation fuzz — corruption handling', () => {
    * fold path (which is what recovery uses) propagates an
    * exception from the reducer.
    */
-  const strictReducer = (s: CounterState, e: CounterCommand | { kind: 'corrupted' }): CounterState => {
+  const strictReducer = (third: CounterState, e: CounterCommand | { kind: 'corrupted' }): CounterState => {
     if (e.kind === 'corrupted') throw new Error('reducer: unknown event kind');
-    return counterReducer(s, e);
+    return counterReducer(third, e);
   };
 
   test('a corrupted event mid-stream halts replay with a thrown error', () => {

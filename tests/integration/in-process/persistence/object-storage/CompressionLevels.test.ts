@@ -47,53 +47,53 @@ afterEach(() => {
 
 describe('Compression levels — zstd', () => {
   test('compresses + round-trips at low and high levels', async () => {
-    const z = compressorFor('zstd');
+    const zstdCompressor = compressorFor('zstd');
     for (const level of [1, 3, 9, 19]) {
-      const compressed = await z.compress(PAYLOAD_BYTES, level);
+      const compressed = await zstdCompressor.compress(PAYLOAD_BYTES, level);
       expect(compressed.length).toBeLessThan(PAYLOAD_BYTES.length);
-      const back = await z.decompress(compressed);
+      const back = await zstdCompressor.decompress(compressed);
       expect(fromUtf8(back)).toBe(PAYLOAD);
     }
   });
 
   test('higher level never yields a larger body than a lower one', async () => {
-    const z = compressorFor('zstd');
-    const low = await z.compress(PAYLOAD_BYTES, 1);
-    const high = await z.compress(PAYLOAD_BYTES, 19);
+    const zstdCompressor = compressorFor('zstd');
+    const low = await zstdCompressor.compress(PAYLOAD_BYTES, 1);
+    const high = await zstdCompressor.compress(PAYLOAD_BYTES, 19);
     expect(high.length).toBeLessThanOrEqual(low.length);
   });
 
   test('out-of-range level is clamped, not rejected', async () => {
-    const z = compressorFor('zstd');
+    const zstdCompressor = compressorFor('zstd');
     // 999 → clamps to 22, -5 → clamps to 1; both must still round-trip.
     for (const level of [999, -5]) {
-      const compressed = await z.compress(PAYLOAD_BYTES, level);
-      const back = await z.decompress(compressed);
+      const compressed = await zstdCompressor.compress(PAYLOAD_BYTES, level);
+      const back = await zstdCompressor.decompress(compressed);
       expect(fromUtf8(back)).toBe(PAYLOAD);
     }
   });
 
   test('undefined level uses the impl default and round-trips', async () => {
-    const z = compressorFor('zstd');
-    const compressed = await z.compress(PAYLOAD_BYTES);
-    expect(fromUtf8(await z.decompress(compressed))).toBe(PAYLOAD);
+    const zstdCompressor = compressorFor('zstd');
+    const compressed = await zstdCompressor.compress(PAYLOAD_BYTES);
+    expect(fromUtf8(await zstdCompressor.decompress(compressed))).toBe(PAYLOAD);
   });
 });
 
 describe('Compression levels — gzip', () => {
   test('compresses + round-trips across the 0–9 range', async () => {
-    const g = compressorFor('gzip');
+    const gzipCompressor = compressorFor('gzip');
     for (const level of [0, 1, 6, 9]) {
-      const compressed = await g.compress(PAYLOAD_BYTES, level);
-      const back = await g.decompress(compressed);
+      const compressed = await gzipCompressor.compress(PAYLOAD_BYTES, level);
+      const back = await gzipCompressor.decompress(compressed);
       expect(fromUtf8(back)).toBe(PAYLOAD);
     }
   });
 
   test('higher level never yields a larger body than a lower one', async () => {
-    const g = compressorFor('gzip');
-    const low = await g.compress(PAYLOAD_BYTES, 1);
-    const high = await g.compress(PAYLOAD_BYTES, 9);
+    const gzipCompressor = compressorFor('gzip');
+    const low = await gzipCompressor.compress(PAYLOAD_BYTES, 1);
+    const high = await gzipCompressor.compress(PAYLOAD_BYTES, 9);
     expect(high.length).toBeLessThanOrEqual(low.length);
   });
 });

@@ -6,16 +6,16 @@ describe('InMemoryJournal.append', () => {
   test('assigns monotonic sequence numbers starting at 1', async () => {
     const j = new InMemoryJournal();
     const out = await j.append('p', ['a', 'b', 'c'], 0);
-    expect(out.map(e => e.sequenceNr)).toEqual([1, 2, 3]);
-    expect(out.map(e => e.event)).toEqual(['a', 'b', 'c']);
-    expect(out.every(e => e.persistenceId === 'p')).toBe(true);
+    expect(out.map(event => event.sequenceNr)).toEqual([1, 2, 3]);
+    expect(out.map(event => event.event)).toEqual(['a', 'b', 'c']);
+    expect(out.every(event => event.persistenceId === 'p')).toBe(true);
   });
 
   test('continues sequence across batches', async () => {
     const j = new InMemoryJournal();
     await j.append('p', ['a'], 0);
     const out = await j.append('p', ['b', 'c'], 1);
-    expect(out.map(e => e.sequenceNr)).toEqual([2, 3]);
+    expect(out.map(event => event.sequenceNr)).toEqual([2, 3]);
   });
 
   test('different persistenceIds have independent streams', async () => {
@@ -35,7 +35,7 @@ describe('InMemoryJournal.append', () => {
   test('optional tags are attached to every event in the batch', async () => {
     const j = new InMemoryJournal();
     const out = await j.append('p', ['a', 'b'], 0, ['orders', 'vip']);
-    for (const e of out) expect([...(e.tags ?? [])]).toEqual(['orders', 'vip']);
+    for (const event of out) expect([...(event.tags ?? [])]).toEqual(['orders', 'vip']);
   });
 
   test('empty batch is a no-op but still honours the seq contract', async () => {
@@ -51,14 +51,14 @@ describe('InMemoryJournal.read', () => {
     const j = new InMemoryJournal();
     await j.append('p', ['a', 'b', 'c', 'd'], 0);
     const out = await j.read('p', 1);
-    expect(out.map(e => e.event)).toEqual(['a', 'b', 'c', 'd']);
+    expect(out.map(event => event.event)).toEqual(['a', 'b', 'c', 'd']);
   });
 
   test('respects fromSeq and toSeq (inclusive)', async () => {
     const j = new InMemoryJournal();
     await j.append('p', ['a', 'b', 'c', 'd'], 0);
     const out = await j.read('p', 2, 3);
-    expect(out.map(e => e.event)).toEqual(['b', 'c']);
+    expect(out.map(event => event.event)).toEqual(['b', 'c']);
   });
 
   test('empty for unknown pid', async () => {
@@ -91,7 +91,7 @@ describe('InMemoryJournal.delete', () => {
     await j.append('p', ['a', 'b', 'c', 'd'], 0);
     await j.delete('p', 2);
     const rest = await j.read('p', 1);
-    expect(rest.map(e => e.event)).toEqual(['c', 'd']);
+    expect(rest.map(event => event.event)).toEqual(['c', 'd']);
   });
 
   test('highestSeq is unchanged after delete (continuous numbering)', async () => {

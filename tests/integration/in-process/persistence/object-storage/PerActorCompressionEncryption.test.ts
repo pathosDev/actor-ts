@@ -210,7 +210,7 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
     ref.tell({ kind: 'set', v: 7, replyTo: probe.ref });
     await sleep(40);
     expect(seen.length).toBeGreaterThan(0);
-    for (const e of seen) expect(e).toBe('zstd');
+    for (const event of seen) expect(event).toBe('zstd');
     await sys.terminate();
   });
 
@@ -275,12 +275,12 @@ function wrapPut(
 ): FilesystemObjectStorageBackend {
   // Lightweight passthrough wrapper that preserves the `instanceof` shape
   // expected by the snapshot/duarble-state stores.
-  const w = Object.assign(Object.create(Object.getPrototypeOf(inner)), inner);
-  w.put = async (key: string, body: Uint8Array, opts: { contentEncoding?: string }) => {
+  const wrapped = Object.assign(Object.create(Object.getPrototypeOf(inner)), inner);
+  wrapped.put = async (key: string, body: Uint8Array, opts: { contentEncoding?: string }) => {
     spy(key, opts);
     return inner.put(key, body, opts);
   };
-  return w as FilesystemObjectStorageBackend;
+  return wrapped as FilesystemObjectStorageBackend;
 }
 
 function makeProbe(sys: ActorSystem): { ref: ActorRef; received: unknown[] } {

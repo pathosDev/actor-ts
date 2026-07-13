@@ -9,24 +9,24 @@ import { VectorClock } from '../../../../../src/persistence/replicated/VectorClo
 
 describe('VectorClock — compareTo', () => {
   test('empty clocks are equal', () => {
-    const a = VectorClock.empty();
-    const b = VectorClock.empty();
-    expect(a.compareTo(b)).toBe('equal');
+    const clockA = VectorClock.empty();
+    const clockB = VectorClock.empty();
+    expect(clockA.compareTo(clockB)).toBe('equal');
   });
 
   test('one-sided tick ⇒ before / after', () => {
-    const a = VectorClock.empty();
-    const b = a.tick('node-a');
-    expect(a.compareTo(b)).toBe('before');
-    expect(b.compareTo(a)).toBe('after');
+    const clockA = VectorClock.empty();
+    const clockB = clockA.tick('node-a');
+    expect(clockA.compareTo(clockB)).toBe('before');
+    expect(clockB.compareTo(clockA)).toBe('after');
   });
 
   test('disjoint ticks ⇒ concurrent', () => {
-    const a = VectorClock.empty().tick('node-a');
-    const b = VectorClock.empty().tick('node-b');
-    expect(a.compareTo(b)).toBe('concurrent');
-    expect(b.compareTo(a)).toBe('concurrent');
-    expect(a.isConcurrentWith(b)).toBe(true);
+    const clockA = VectorClock.empty().tick('node-a');
+    const clockB = VectorClock.empty().tick('node-b');
+    expect(clockA.compareTo(clockB)).toBe('concurrent');
+    expect(clockB.compareTo(clockA)).toBe('concurrent');
+    expect(clockA.isConcurrentWith(clockB)).toBe(true);
   });
 
   test('happens-before is transitive via merge', () => {
@@ -37,22 +37,22 @@ describe('VectorClock — compareTo', () => {
   });
 
   test('merge takes per-component max', () => {
-    const a = VectorClock.empty().tick('a').tick('a').tick('b');     // a=2, b=1
-    const b = VectorClock.empty().tick('a').tick('c').tick('c');     // a=1, c=2
-    const m = a.merge(b);
-    expect(m.get('a')).toBe(2);
-    expect(m.get('b')).toBe(1);
-    expect(m.get('c')).toBe(2);
+    const clockA = VectorClock.empty().tick('a').tick('a').tick('b');     // a=2, b=1
+    const clockB = VectorClock.empty().tick('a').tick('c').tick('c');     // a=1, c=2
+    const merged = clockA.merge(clockB);
+    expect(merged.get('a')).toBe(2);
+    expect(merged.get('b')).toBe(1);
+    expect(merged.get('c')).toBe(2);
   });
 
   test('JSON round-trip preserves all components', () => {
-    const a = VectorClock.empty().tick('x').tick('x').tick('y');
-    const back = VectorClock.fromData(a.toJSON());
-    expect(back.compareTo(a)).toBe('equal');
+    const clockA = VectorClock.empty().tick('x').tick('x').tick('y');
+    const back = VectorClock.fromData(clockA.toJSON());
+    expect(back.compareTo(clockA)).toBe('equal');
   });
 
   test('toString is a stable, sorted representation', () => {
-    const a = VectorClock.empty().tick('z').tick('a').tick('m');
-    expect(a.toString()).toBe('VC{a=1, m=1, z=1}');
+    const clockA = VectorClock.empty().tick('z').tick('a').tick('m');
+    expect(clockA.toString()).toBe('VC{a=1, m=1, z=1}');
   });
 });
