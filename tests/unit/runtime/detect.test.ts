@@ -27,21 +27,21 @@ describe('runtime/detect', () => {
   });
 
   test('highResNow returns a monotonically increasing number', () => {
-    const a = highResNow();
+    const first = highResNow();
     // Busy-wait a touch so the subsequent call is guaranteed to differ even
     // on low-resolution fallbacks.
     for (let i = 0; i < 1_000; i++) Math.sin(i);
-    const b = highResNow();
-    expect(typeof a).toBe('number');
-    expect(typeof b).toBe('number');
-    expect(b).toBeGreaterThanOrEqual(a);
+    const second = highResNow();
+    expect(typeof first).toBe('number');
+    expect(typeof second).toBe('number');
+    expect(second).toBeGreaterThanOrEqual(first);
   });
 
   test('highResNow output scale is nanoseconds (~1e9 per second)', async () => {
-    const a = highResNow();
+    const first = highResNow();
     await new Promise((r) => setTimeout(r, 10));
-    const b = highResNow();
-    const delta = b - a;
+    const second = highResNow();
+    const delta = second - first;
     // 10ms ≈ 1e7 ns.  Allow a wide band to tolerate scheduler jitter.
     expect(delta).toBeGreaterThan(1_000_000);
     expect(delta).toBeLessThan(1_000_000_000);
