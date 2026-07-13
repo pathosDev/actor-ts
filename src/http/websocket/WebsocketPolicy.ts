@@ -52,18 +52,18 @@ export function resolveWebsocketPolicy(system: ActorSystem, options: WebsocketPo
   let base = DEFAULT_WEBSOCKET_POLICY;
   const key = ConfigKeys.http.websocket;
   if (system.config.hasPath(key)) {
-    const c = system.config.getConfig(key);
+    const config = system.config.getConfig(key);
     base = {
-      maxFrameBytes: c.hasPath('maxFrameBytes') ? c.getBytes('maxFrameBytes') : base.maxFrameBytes,
-      onOversizeFrame: c.hasPath('onOversizeFrame')
-        ? oneOf(c.getString('onOversizeFrame'), ['close', 'drop'] as const, 'onOversizeFrame')
+      maxFrameBytes: config.hasPath('maxFrameBytes') ? config.getBytes('maxFrameBytes') : base.maxFrameBytes,
+      onOversizeFrame: config.hasPath('onOversizeFrame')
+        ? oneOf(config.getString('onOversizeFrame'), ['close', 'drop'] as const, 'onOversizeFrame')
         : base.onOversizeFrame,
-      onInvalidMessage: c.hasPath('onInvalidMessage')
-        ? oneOf(c.getString('onInvalidMessage'), ['close', 'drop', 'hook'] as const, 'onInvalidMessage')
+      onInvalidMessage: config.hasPath('onInvalidMessage')
+        ? oneOf(config.getString('onInvalidMessage'), ['close', 'drop', 'hook'] as const, 'onInvalidMessage')
         : base.onInvalidMessage,
-      maxBufferedBytes: c.hasPath('maxBufferedBytes') ? c.getBytes('maxBufferedBytes') : base.maxBufferedBytes,
-      onBackpressure: c.hasPath('onBackpressure')
-        ? oneOf(c.getString('onBackpressure'), ['drop', 'close'] as const, 'onBackpressure')
+      maxBufferedBytes: config.hasPath('maxBufferedBytes') ? config.getBytes('maxBufferedBytes') : base.maxBufferedBytes,
+      onBackpressure: config.hasPath('onBackpressure')
+        ? oneOf(config.getString('onBackpressure'), ['drop', 'close'] as const, 'onBackpressure')
         : base.onBackpressure,
     };
   }

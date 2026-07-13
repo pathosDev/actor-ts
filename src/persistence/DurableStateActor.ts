@@ -99,15 +99,15 @@ export abstract class DurableStateActor<Cmd, S> extends Actor<Cmd> {
     // Store sees an envelope (or raw value when no adapter).  We re-stamp
     // the local record with the original `next` so callers see the
     // current-version domain shape.
-    const p = this.options.store.upsert<unknown>(
+    const upsertPromise = this.options.store.upsert<unknown>(
       this.options.persistenceId,
       expected,
       wire,
       this.persistenceOptions(),
     );
-    this._persisting = p.then(() => undefined, () => undefined);
+    this._persisting = upsertPromise.then(() => undefined, () => undefined);
     try {
-      const record = await p;
+      const record = await upsertPromise;
       const local: DurableStateRecord<S> = {
         persistenceId: record.persistenceId,
         revision: record.revision,

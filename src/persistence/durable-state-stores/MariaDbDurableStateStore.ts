@@ -43,10 +43,10 @@ export class MariaDbDurableStateStore implements DurableStateStore {
   private closed = false;
 
   constructor(options: MariaDbDurableStateStoreOptions = {}) {
-    const s = (options as MariaDbDurableStateStoreOptionsType);
-    this.options = s;
-    this.table = assertSafeIdentifier(s.table ?? 'durable_state', 'durable-state table');
-    this.autoCreate = s.autoCreateTables ?? true;
+    const resolvedOptions = (options as MariaDbDurableStateStoreOptionsType);
+    this.options = resolvedOptions;
+    this.table = assertSafeIdentifier(resolvedOptions.table ?? 'durable_state', 'durable-state table');
+    this.autoCreate = resolvedOptions.autoCreateTables ?? true;
   }
 
   async upsert<S>(

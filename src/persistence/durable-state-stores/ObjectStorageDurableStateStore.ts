@@ -65,14 +65,14 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
   private readonly etagCache = new Map<string, CachedEntry>();
 
   constructor(options: ObjectStorageDurableStateStoreOptions) {
-    const s = (options as ObjectStorageDurableStateStoreOptionsType);
-    if (s.backend === undefined) throw new Error('ObjectStorageDurableStateStore: backend is required (call withBackend()).');
-    this.backend = s.backend;
-    this.prefix = s.prefix ?? '';
-    this.compression = s.compression;
-    this.encryption = s.encryption;
-    this.integrity = s.integrity;
-    this.requireIntegrity = s.requireIntegrity ?? false;
+    const resolvedOptions = (options as ObjectStorageDurableStateStoreOptionsType);
+    if (resolvedOptions.backend === undefined) throw new Error('ObjectStorageDurableStateStore: backend is required (call withBackend()).');
+    this.backend = resolvedOptions.backend;
+    this.prefix = resolvedOptions.prefix ?? '';
+    this.compression = resolvedOptions.compression;
+    this.encryption = resolvedOptions.encryption;
+    this.integrity = resolvedOptions.integrity;
+    this.requireIntegrity = resolvedOptions.requireIntegrity ?? false;
   }
 
   async load<S>(pid: string, options?: PersistenceOptions): Promise<Option<DurableStateRecord<S>>> {

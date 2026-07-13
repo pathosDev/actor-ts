@@ -45,10 +45,10 @@ export class PostgresDurableStateStore implements DurableStateStore {
   private closed = false;
 
   constructor(options: PostgresDurableStateStoreOptions = {}) {
-    const s = (options as PostgresDurableStateStoreOptionsType);
-    this.options = s;
-    this.table = assertSafeIdentifier(s.table ?? 'durable_state', 'durable-state table');
-    this.autoCreate = s.autoCreateTables ?? true;
+    const resolvedOptions = (options as PostgresDurableStateStoreOptionsType);
+    this.options = resolvedOptions;
+    this.table = assertSafeIdentifier(resolvedOptions.table ?? 'durable_state', 'durable-state table');
+    this.autoCreate = resolvedOptions.autoCreateTables ?? true;
   }
 
   async upsert<S>(
