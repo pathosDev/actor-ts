@@ -49,13 +49,13 @@ export class PostgresJournal implements Journal {
   private closed = false;
 
   constructor(options: PostgresJournalOptions = {}) {
-    const s = (options as PostgresJournalOptionsType);
-    this.options = s;
-    this.table = assertSafeIdentifier(s.eventsTable ?? 'events', 'events table');
+    const resolvedOptions = (options as PostgresJournalOptionsType);
+    this.options = resolvedOptions;
+    this.table = assertSafeIdentifier(resolvedOptions.eventsTable ?? 'events', 'events table');
     this.tagsTable = assertSafeIdentifier(
-      s.tagsTable ?? `${this.table}_tags`, 'tags table',
+      resolvedOptions.tagsTable ?? `${this.table}_tags`, 'tags table',
     );
-    this.autoCreate = s.autoCreateTables ?? true;
+    this.autoCreate = resolvedOptions.autoCreateTables ?? true;
   }
 
   async append<E>(

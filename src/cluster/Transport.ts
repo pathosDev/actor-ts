@@ -267,7 +267,7 @@ export class TcpTransport implements Transport {
       conn.peer = peer;
       this.byPeer.set(peerKey, conn);
       const buffered = conn.pending.splice(0, conn.pending.length);
-      for (const m of buffered) conn.socket?.write(encodeFrame(m));
+      for (const message of buffered) conn.socket?.write(encodeFrame(message));
       return;
     }
     if (!conn.peer) {

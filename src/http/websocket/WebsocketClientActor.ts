@@ -203,15 +203,15 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     try {
       decoded = this.codec().decode(frame);
     } catch (err) {
-      const e = err instanceof WebsocketDecodeError ? err : new WebsocketDecodeError(String(err), frame);
+      const decodeError = err instanceof WebsocketDecodeError ? err : new WebsocketDecodeError(String(err), frame);
       const policy = this.options.onInvalidMessage ?? 'drop';
       if (policy === 'hook') {
-        this.self.tell(websocketClientInvalid(e));
+        this.self.tell(websocketClientInvalid(decodeError));
       } else if (policy === 'disconnect') {
-        this.log.warn(`WebsocketClientActor: invalid inbound message — disconnecting: ${e.message}`);
+        this.log.warn(`WebsocketClientActor: invalid inbound message — disconnecting: ${decodeError.message}`);
         try { this.socket?.close(1003, 'unsupported data'); } catch { /* ignore */ }
       } else {
-        this.log.warn(`WebsocketClientActor: invalid inbound message — dropped: ${e.message}`);
+        this.log.warn(`WebsocketClientActor: invalid inbound message — dropped: ${decodeError.message}`);
       }
       return;
     }

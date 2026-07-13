@@ -253,12 +253,12 @@ export class DistributedPubSubMediator extends Actor<
   /* ---------------------------------- Helpers --------------------------------- */
 
   private getOrCreateSet(topic: string): SubscriberSet {
-    let s = this.topics.get(topic);
-    if (!s) {
-      s = { local: new Map(), remoteNodes: new Set() };
-      this.topics.set(topic, s);
+    let subscriberSet = this.topics.get(topic);
+    if (!subscriberSet) {
+      subscriberSet = { local: new Map(), remoteNodes: new Set() };
+      this.topics.set(topic, subscriberSet);
     }
-    return s;
+    return subscriberSet;
   }
 
   private sendWire(to: NodeAddress, msg: PubSubWireMessage): void {

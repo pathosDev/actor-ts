@@ -181,9 +181,9 @@ export class ParallelMultiNodeSpec {
     this.nodes.clear();
     this.started = false;
     // Reject any in-flight RPCs.
-    for (const p of this.pending.values()) {
-      clearTimeout(p.timer);
-      p.reject(new Error('ParallelMultiNodeSpec: stopped'));
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error('ParallelMultiNodeSpec: stopped'));
     }
     this.pending.clear();
     if (errs.length > 0) {

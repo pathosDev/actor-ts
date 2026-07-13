@@ -33,8 +33,8 @@ export class KeepMajority implements DowningProvider {
     const reachable = candidates.filter((m) => !view.unreachable.has(addrKey(m)));
     const unreachable = candidates.filter((m) => view.unreachable.has(addrKey(m)));
 
-    const n = candidates.length;
-    const needed = Math.floor(n / 2) + 1;
+    const count = candidates.length;
+    const needed = Math.floor(count / 2) + 1;
 
     if (reachable.length >= needed) {
       // Majority on our side: down the unreachable partition.

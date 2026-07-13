@@ -55,9 +55,9 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
   }
 
   private dedupStateFor(producerId: string): DedupState {
-    let s = this.dedup.get(producerId);
-    if (!s) { s = { contiguous: 0, above: new Set() }; this.dedup.set(producerId, s); }
-    return s;
+    let dedupState = this.dedup.get(producerId);
+    if (!dedupState) { dedupState = { contiguous: 0, above: new Set() }; this.dedup.set(producerId, dedupState); }
+    return dedupState;
   }
 
   private markDelivered(state: DedupState, seq: number): void {

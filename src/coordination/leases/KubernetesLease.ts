@@ -263,8 +263,8 @@ export class KubernetesLease implements Lease {
       this.renewalTimer = null;
     }
     this.currentLease = null;
-    for (const h of this.onLostHandlers) {
-      try { h(reason); } catch { /* swallow */ }
+    for (const handler of this.onLostHandlers) {
+      try { handler(reason); } catch { /* swallow */ }
     }
   }
 }

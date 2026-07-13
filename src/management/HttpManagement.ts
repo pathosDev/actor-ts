@@ -59,10 +59,10 @@ export function managementRoutes(
 
   const clusterLeader = get(async () => {
     if (!cluster) return complete(Status.ServiceUnavailable, 'no cluster');
-    const l = cluster.leader();
+    const leader = cluster.leader();
     return completeJson(Status.OK, {
-      leader: l.fold(() => null as string | null, (m) => m.address.toString()),
-      isSelf: l.exists((m) => m.address.equals(cluster.selfAddress)),
+      leader: leader.fold(() => null as string | null, (m) => m.address.toString()),
+      isSelf: leader.exists((m) => m.address.equals(cluster.selfAddress)),
     });
   });
 

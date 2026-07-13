@@ -34,11 +34,11 @@ export class MariaDbSnapshotStore implements SnapshotStore {
   private closed = false;
 
   constructor(options: MariaDbSnapshotStoreOptions = {}) {
-    const s = (options as MariaDbSnapshotStoreOptionsType);
-    this.options = s;
-    this.table = assertSafeIdentifier(s.snapshotsTable ?? 'snapshots', 'snapshots table');
-    this.keepN = s.keepN ?? 3;
-    this.autoCreate = s.autoCreateTables ?? true;
+    const resolvedOptions = (options as MariaDbSnapshotStoreOptionsType);
+    this.options = resolvedOptions;
+    this.table = assertSafeIdentifier(resolvedOptions.snapshotsTable ?? 'snapshots', 'snapshots table');
+    this.keepN = resolvedOptions.keepN ?? 3;
+    this.autoCreate = resolvedOptions.autoCreateTables ?? true;
   }
 
   async save<S>(pid: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
@@ -53,8 +53,8 @@ export class MariaDbSnapshotStore implements SnapshotStore {
       if (this.keepN > 0) {
         await pool.query(
           `DELETE FROM ${this.table} WHERE persistence_id = ? AND sequence_nr NOT IN (
-             SELECT s FROM (
-               SELECT sequence_nr AS s FROM ${this.table} WHERE persistence_id = ? ORDER BY sequence_nr DESC LIMIT ?
+             SELECT resolvedOptions FROM (
+               SELECT sequence_nr AS resolvedOptions FROM ${this.table} WHERE persistence_id = ? ORDER BY sequence_nr DESC LIMIT ?
              ) AS keep)`,
           [pid, pid, this.keepN],
         );

@@ -201,12 +201,12 @@ export class Receptionist extends Actor<Msg> {
   /* ---------------- helpers ---------------- */
 
   private getOrCreate(key: ServiceKey): KeyEntry {
-    let e = this.keys.get(key.id);
-    if (!e) {
-      e = { local: new Map(), remote: new Map(), subscribers: new Set() };
-      this.keys.set(key.id, e);
+    let entry = this.keys.get(key.id);
+    if (!entry) {
+      entry = { local: new Map(), remote: new Map(), subscribers: new Set() };
+      this.keys.set(key.id, entry);
     }
-    return e;
+    return entry;
   }
 
   private maybeDrop(id: string, entry: KeyEntry): void {

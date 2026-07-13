@@ -58,14 +58,14 @@ export class CachedSnapshotStore implements SnapshotStore {
     private readonly underlying: SnapshotStore,
     options: CachedSnapshotStoreOptions,
   ) {
-    const s = (options as CachedSnapshotStoreOptionsType);
-    if (s.cache === undefined) throw new Error('CachedSnapshotStore: cache is required (call withCache()).');
-    this.cache = s.cache;
-    this.ttlMs = s.ttlMs ?? DEFAULT_TTL_MS;
+    const resolvedOptions = (options as CachedSnapshotStoreOptionsType);
+    if (resolvedOptions.cache === undefined) throw new Error('CachedSnapshotStore: cache is required (call withCache()).');
+    this.cache = resolvedOptions.cache;
+    this.ttlMs = resolvedOptions.ttlMs ?? DEFAULT_TTL_MS;
     if (!Number.isFinite(this.ttlMs) || this.ttlMs <= 0) {
       throw new Error(`CachedSnapshotStore: ttlMs must be a positive finite number, got ${this.ttlMs}`);
     }
-    this.keyPrefix = s.keyPrefix ?? 'snap:';
+    this.keyPrefix = resolvedOptions.keyPrefix ?? 'snap:';
   }
 
   async save<S>(pid: string, seq: number, state: S, options?: PersistenceOptions): Promise<Snapshot<S>> {

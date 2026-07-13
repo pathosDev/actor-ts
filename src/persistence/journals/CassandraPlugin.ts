@@ -22,11 +22,11 @@ export function registerCassandraPlugins(
   ext: PersistenceExtension,
   options: RegisterCassandraPluginsOptions,
 ): void {
-  const s = (options as RegisterCassandraPluginsOptionsType);
+  const resolvedOptions = (options as RegisterCassandraPluginsOptionsType);
   // Resolve each leaf to a plain object and merge the shared client (when
   // set) onto it, so both plug-ins reuse one connection tree.
-  const journal = { ...((s.journal ?? {}) as Partial<CassandraJournalOptionsType>), ...(s.client ? { client: s.client } : {}) };
-  const snapshotStore = { ...((s.snapshotStore ?? {}) as Partial<CassandraSnapshotStoreOptionsType>), ...(s.client ? { client: s.client } : {}) };
+  const journal = { ...((resolvedOptions.journal ?? {}) as Partial<CassandraJournalOptionsType>), ...(resolvedOptions.client ? { client: resolvedOptions.client } : {}) };
+  const snapshotStore = { ...((resolvedOptions.snapshotStore ?? {}) as Partial<CassandraSnapshotStoreOptionsType>), ...(resolvedOptions.client ? { client: resolvedOptions.client } : {}) };
   ext.registerJournal(
     CASSANDRA_JOURNAL_PLUGIN_ID,
     (_system: ActorSystem) => new CassandraJournal(journal),

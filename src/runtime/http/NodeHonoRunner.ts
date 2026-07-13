@@ -24,12 +24,12 @@ export class NodeHonoRunner implements HonoServerRunner {
     // event (via the optional callback) to know the bound port.
     const server = await new Promise<NodeHttpServer>((resolve, reject) => {
       try {
-        const s = mod.serve({
+        const serveResult = mod.serve({
           hostname: opts.host,
           port: opts.port,
           fetch: opts.fetch,
         }, (info) => {
-          resolve(Object.assign(s, { _info: info }) as unknown as NodeHttpServer);
+          resolve(Object.assign(serveResult, { _info: info }) as unknown as NodeHttpServer);
         });
       } catch (e) {
         reject(e as Error);

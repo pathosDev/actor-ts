@@ -34,11 +34,11 @@ export class PostgresSnapshotStore implements SnapshotStore {
   private closed = false;
 
   constructor(options: PostgresSnapshotStoreOptions = {}) {
-    const s = (options as PostgresSnapshotStoreOptionsType);
-    this.options = s;
-    this.table = assertSafeIdentifier(s.snapshotsTable ?? 'snapshots', 'snapshots table');
-    this.keepN = s.keepN ?? 3;
-    this.autoCreate = s.autoCreateTables ?? true;
+    const resolvedOptions = (options as PostgresSnapshotStoreOptionsType);
+    this.options = resolvedOptions;
+    this.table = assertSafeIdentifier(resolvedOptions.snapshotsTable ?? 'snapshots', 'snapshots table');
+    this.keepN = resolvedOptions.keepN ?? 3;
+    this.autoCreate = resolvedOptions.autoCreateTables ?? true;
   }
 
   async save<S>(pid: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {

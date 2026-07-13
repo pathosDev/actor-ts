@@ -179,14 +179,14 @@ function refineAndSort<E>(
   fromOffset: Offset,
 ): TaggedEvent<E>[] {
   const out: TaggedEvent<E>[] = [];
-  for (const r of rows) {
-    const tags = r.tags ? r.tags.split(',') : undefined;
+  for (const row of rows) {
+    const tags = row.tags ? row.tags.split(',') : undefined;
     if (!eventMatchesTagFilter(tags, spec)) continue;
     const event: PersistentEvent<E> = {
-      persistenceId: r.persistence_id,
-      sequenceNr: r.sequence_nr,
-      event: JSON.parse(r.payload) as E,
-      timestamp: r.timestamp,
+      persistenceId: row.persistence_id,
+      sequenceNr: row.sequence_nr,
+      event: JSON.parse(row.payload) as E,
+      timestamp: row.timestamp,
       tags,
     };
     // The SQL `timestamp >= ?` filter is a coarse cut, but the

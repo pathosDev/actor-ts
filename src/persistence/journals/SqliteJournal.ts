@@ -278,10 +278,10 @@ export class SqliteJournal implements Journal {
     if (rows.length === 0) return;
 
     const fill = db.transaction((items: CsvRow[]) => {
-      for (const r of items) {
-        const tagList = r.tags.split(',').filter((t) => t.length > 0);
+      for (const row of items) {
+        const tagList = row.tags.split(',').filter((t) => t.length > 0);
         for (const tag of tagList) {
-          stmts.insertTag.run(r.persistence_id, r.sequence_nr, tag, r.timestamp);
+          stmts.insertTag.run(row.persistence_id, row.sequence_nr, tag, row.timestamp);
         }
       }
     });

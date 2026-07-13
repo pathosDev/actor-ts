@@ -61,7 +61,7 @@ export class PriorityMailbox<T = unknown> extends Mailbox<T> {
   override prependUser(envs: Array<Envelope<T>>): void {
     // Reinsert via enqueue — priority is re-computed, which is the correct
     // behaviour (unstashed messages rejoin their priority tier).
-    for (const e of envs) this.enqueue(e);
+    for (const envelope of envs) this.enqueue(envelope);
   }
 
   /** Peek at the next message that would be dequeued, without removing it. */

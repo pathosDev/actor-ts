@@ -626,16 +626,16 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       this.options.cluster.upMembers().map((m) => m.address.toString()),
     );
 
-    for (const r of data.regions) {
-      if (!livingNodes.has(r.node.systemName + '@' + r.node.host + ':' + r.node.port)) {
+    for (const region of data.regions) {
+      if (!livingNodes.has(region.node.systemName + '@' + region.node.host + ':' + region.node.port)) {
         // Node dropped out of the cluster between snapshot and now
         // — skip the entry; the dead region won't be re-resurrected.
         continue;
       }
-      const node = NodeAddress.fromJSON(r.node);
-      if (this.regions.has(r.key)) continue; // already known via Register
-      this.regions.set(r.key, {
-        node, path: r.path, proxy: r.proxy, shards: new Set(r.shards),
+      const node = NodeAddress.fromJSON(region.node);
+      if (this.regions.has(region.key)) continue; // already known via Register
+      this.regions.set(region.key, {
+        node, path: region.path, proxy: region.proxy, shards: new Set(region.shards),
       });
     }
     for (const [shardId, regionKey] of data.shardHome) {

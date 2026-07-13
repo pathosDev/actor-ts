@@ -279,12 +279,12 @@ export class ClusterClient {
         onHelloAcknowledgment(NodeAddress.fromJSON(ack.self));
         continue;
       }
-      const t = (frame as { t: string }).t;
-      if (t === 'cluster-client-reply') {
+      const frameType = (frame as { t: string }).t;
+      if (frameType === 'cluster-client-reply') {
         this.handleReply(frame as unknown as ClusterClientReplyMessage);
         continue;
       }
-      this.log.debug(`ClusterClient: ignoring unsolicited frame type "${t}"`);
+      this.log.debug(`ClusterClient: ignoring unsolicited frame type "${frameType}"`);
     }
     void sock;
   }

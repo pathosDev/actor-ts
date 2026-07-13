@@ -194,8 +194,8 @@ export class ClusterSharding {
   }
 
   private typeNameFromCoordinatorPath(path: string): string | null {
-    const m = path.match(/\/sharding-coordinator-([^/]+)$/);
-    return m ? m[1]! : null;
+    const match = path.match(/\/sharding-coordinator-([^/]+)$/);
+    return match ? match[1]! : null;
   }
 
   private findRegionByType(typeName: string): ActorRef<unknown> | null {

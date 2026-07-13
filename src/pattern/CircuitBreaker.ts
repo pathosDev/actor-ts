@@ -82,7 +82,7 @@ export class CircuitBreaker {
     this._state = next;
     this.failureCount = 0;
     if (next === 'open') this.nextProbeAt = Date.now() + this.options.resetTimeoutMs;
-    for (const l of this.listeners) { try { l(next); } catch { /* ignore */ } }
+    for (const listener of this.listeners) { try { listener(next); } catch { /* ignore */ } }
   }
 
   private onSuccess(): void {

@@ -58,9 +58,9 @@ export class SerializationExtension implements Extension {
 
   /** Look up by ID or throw. */
   requireById(id: number): Serializer {
-    const s = this.findById(id);
-    if (!s) throw new SerializationError(`No serializer registered with id ${id}`);
-    return s;
+    const serializer = this.findById(id);
+    if (!serializer) throw new SerializationError(`No serializer registered with id ${id}`);
+    return serializer;
   }
 
   /**
