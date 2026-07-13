@@ -131,6 +131,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   string` folds the authenticated principal into the cache key so responses are
   partitioned per caller.  (Same-key-different-body poisoning was already
   rejected with 422.)
+- **WS-4 (MEDIUM) — WebSocket backpressure works on the Hono backend** (see
+  `SECURITY_AUDIT.md`).  The Hono socket adapter didn't implement
+  `bufferedAmount`, so the connection actor's `maxBufferedBytes` /
+  `onBackpressure` guard was a no-op on Hono — a slow / idle-reading client
+  could grow the outbound send buffer without bound (OOM).  The adapter now
+  surfaces the send-buffer depth from the native socket (Bun
+  `getBufferedAmount()`, Node/Deno numeric `.bufferedAmount`).
 
 ## [0.10.0] — 2026-07-08
 

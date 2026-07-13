@@ -52,6 +52,24 @@ function contentLengthHeader(c: { req: { header(name?: string): unknown } }): st
   return typeof cl === 'string' ? cl : undefined;
 }
 
+/**
+ * Read the outbound send-buffer depth (bytes) from a Hono `WSContext`'s
+ * native socket, so the connection actor's backpressure guard actually fires
+ * on Hono (SECURITY_AUDIT.md WS-4).  Bun's `ServerWebSocket` exposes
+ * `getBufferedAmount()`; the Node (`@hono/node-ws`) and Deno sockets expose a
+ * numeric `.bufferedAmount`.  Unknown shape → 0 (guard stays off, as before).
+ * @internal — exported for testing.
+ */
+export function readBufferedAmount(raw: unknown): number {
+  if (!raw || typeof raw !== 'object') return 0;
+  const r = raw as { bufferedAmount?: unknown; getBufferedAmount?: unknown };
+  if (typeof r.getBufferedAmount === 'function') {
+    const n = (r.getBufferedAmount as () => unknown)();
+    return typeof n === 'number' && Number.isFinite(n) ? n : 0;
+  }
+  return typeof r.bufferedAmount === 'number' && Number.isFinite(r.bufferedAmount) ? r.bufferedAmount : 0;
+}
+
 /*
  * Hono is an optional peer dependency — the structural types below describe
  * only the narrow slice of its API we touch, so projects that never touch
@@ -304,6 +322,9 @@ export class HonoBackend implements HttpServerBackend {
         get readyState() {
           return (ws?.readyState ?? 1) as 0 | 1 | 2 | 3;
         },
+        // Enables the backpressure guard in WebSocketConnectionActor on Hono
+        // (was a no-op before — the adapter had no bufferedAmount).  WS-4.
+        bufferedAmount: () => readBufferedAmount(ws?.raw),
         remoteAddress: adapted.remoteAddress,
         get protocol() {
           return ws?.protocol;
