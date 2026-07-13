@@ -40,7 +40,7 @@ describe('WorkerCluster — spawn', () => {
   test('spawns the requested number of workers + completes handshake', async () => {
     // Auto-handshake every new worker.
     const backend = new FakeWorkerBackend({
-      onSpawn: (w) => autoHandshake(w),
+      onSpawn: (spawned) => autoHandshake(spawned),
     });
     activeBackend = backend;
 
@@ -65,7 +65,7 @@ describe('WorkerCluster — spawn', () => {
   });
 
   test('terminate kills every worker + closes broker + idempotent', async () => {
-    activeBackend = new FakeWorkerBackend({ onSpawn: (w) => autoHandshake(w) });
+    activeBackend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
 
     const workerOptions = WorkerClusterOptions.create()
       .withBootstrap(new URL('file:///fake-bootstrap.js'))
@@ -75,7 +75,7 @@ describe('WorkerCluster — spawn', () => {
     );
 
     await cluster.terminate();
-    expect(activeBackend.spawned.every(w => w.terminated)).toBe(true);
+    expect(activeBackend.spawned.every(spawned => spawned.terminated)).toBe(true);
     expect(cluster.size).toBe(0);
     // Idempotent — second call is a no-op.
     await cluster.terminate();
@@ -96,7 +96,7 @@ describe('WorkerCluster — spawn', () => {
   });
 
   test('passes init data through to the worker', async () => {
-    activeBackend = new FakeWorkerBackend({ onSpawn: (w) => autoHandshake(w) });
+    activeBackend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
 
     const workerOptions = WorkerClusterOptions.create()
       .withBootstrap(new URL('file:///fake.js'))
@@ -122,7 +122,7 @@ describe('WorkerCluster — spawn', () => {
   });
 
   test('basePort + index assigns sequential ports', async () => {
-    activeBackend = new FakeWorkerBackend({ onSpawn: (w) => autoHandshake(w) });
+    activeBackend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
 
     const workerOptions = WorkerClusterOptions.create()
       .withBootstrap(new URL('file:///fake.js'))
@@ -141,7 +141,7 @@ describe('WorkerCluster — spawn', () => {
 describe('WorkerCluster — worker-count resolution', () => {
   test('"auto" honours ACTOR_TS_WORKERS env var', async () => {
     process.env.ACTOR_TS_WORKERS = '5';
-    activeBackend = new FakeWorkerBackend({ onSpawn: (w) => autoHandshake(w) });
+    activeBackend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
 
     const workerOptions = WorkerClusterOptions.create()
       .withBootstrap(new URL('file:///fake.js'))
@@ -160,7 +160,7 @@ describe('WorkerCluster — worker-count resolution', () => {
     const realNav = (globalThis as { navigator?: unknown }).navigator;
     delete (globalThis as { navigator?: unknown }).navigator;
 
-    activeBackend = new FakeWorkerBackend({ onSpawn: (w) => autoHandshake(w) });
+    activeBackend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
     try {
       const workerOptions = WorkerClusterOptions.create()
         .withBootstrap(new URL('file:///fake.js'))
@@ -177,7 +177,7 @@ describe('WorkerCluster — worker-count resolution', () => {
 
   test('numeric workers value is used as-is even if env var is set', async () => {
     process.env.ACTOR_TS_WORKERS = '99'; // would override 'auto' but not a number
-    activeBackend = new FakeWorkerBackend({ onSpawn: (w) => autoHandshake(w) });
+    activeBackend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
 
     const workerOptions = WorkerClusterOptions.create()
       .withBootstrap(new URL('file:///fake.js'))
@@ -192,7 +192,7 @@ describe('WorkerCluster — worker-count resolution', () => {
 
 describe('WorkerCluster — restart policy', () => {
   test('"on-failure" respawns when a worker crashes non-zero', async () => {
-    const backend = new FakeWorkerBackend({ onSpawn: (w) => autoHandshake(w) });
+    const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
     activeBackend = backend;
 
     const workerOptions = WorkerClusterOptions.create()
@@ -213,7 +213,7 @@ describe('WorkerCluster — restart policy', () => {
   });
 
   test('"never" does NOT respawn after a crash', async () => {
-    const backend = new FakeWorkerBackend({ onSpawn: (w) => autoHandshake(w) });
+    const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
     activeBackend = backend;
 
     const workerOptions = WorkerClusterOptions.create()
@@ -232,7 +232,7 @@ describe('WorkerCluster — restart policy', () => {
   });
 
   test('"always" respawns even on clean exit', async () => {
-    const backend = new FakeWorkerBackend({ onSpawn: (w) => autoHandshake(w) });
+    const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
     activeBackend = backend;
 
     const workerOptions = WorkerClusterOptions.create()
@@ -244,21 +244,21 @@ describe('WorkerCluster — restart policy', () => {
     );
     expect(backend.spawned.length).toBe(1);
     // Manually fire the 'close' event with code 0 (clean exit).
-    const w = backend.spawned[0]!;
+    const spawned = backend.spawned[0]!;
     // We can't use terminate() here because it would also fire close
     // *during cluster shutdown* — we want to test mid-operation.
     // Synthesise close directly:
-    (w as unknown as { closeListeners: Set<(e: { code: number }) => void> })
+    (spawned as unknown as { closeListeners: Set<(e: { code: number }) => void> })
       // simulateCrash with code 0 = clean exit, restartPolicy='always' must respawn.
       ;
-    w.simulateCrash(0);
+    spawned.simulateCrash(0);
     await Promise.resolve(); await Promise.resolve();
     expect(backend.spawned.length).toBeGreaterThanOrEqual(2);
     await cluster.terminate();
   });
 
   test('"on-failure" does NOT respawn on clean exit (code=0)', async () => {
-    const backend = new FakeWorkerBackend({ onSpawn: (w) => autoHandshake(w) });
+    const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
     activeBackend = backend;
 
     const workerOptions = WorkerClusterOptions.create()
@@ -277,7 +277,7 @@ describe('WorkerCluster — restart policy', () => {
   });
 
   test('close event after cluster.terminate() does NOT spawn a replacement', async () => {
-    const backend = new FakeWorkerBackend({ onSpawn: (w) => autoHandshake(w) });
+    const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
     activeBackend = backend;
 
     const workerOptions = WorkerClusterOptions.create()
@@ -287,11 +287,11 @@ describe('WorkerCluster — restart policy', () => {
     const cluster = await WorkerCluster.spawn(
       workerOptions,
     );
-    const w = backend.spawned[0]!;
+    const spawned = backend.spawned[0]!;
     await cluster.terminate();
     const beforeCount = backend.spawned.length;
     // Once cluster is closed, late close events are ignored.
-    w.simulateCrash(1);
+    spawned.simulateCrash(1);
     await Promise.resolve();
     expect(backend.spawned.length).toBe(beforeCount);
   });

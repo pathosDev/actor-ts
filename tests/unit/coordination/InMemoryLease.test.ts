@@ -24,15 +24,15 @@ describe('InMemoryLease', () => {
       .withName('b')
       .withOwner('A')
       .withTtlMs(500);
-    const a = new InMemoryLease(leaseOptions);
+    const leaseA = new InMemoryLease(leaseOptions);
     const leaseOptions2 = LeaseOptions.create()
       .withName('b')
       .withOwner('B')
       .withTtlMs(500);
-    const b = new InMemoryLease(leaseOptions2);
-    expect(await a.acquire()).toBe(true);
-    expect(await b.acquire()).toBe(false);
-    await a.release();
+    const leaseB = new InMemoryLease(leaseOptions2);
+    expect(await leaseA.acquire()).toBe(true);
+    expect(await leaseB.acquire()).toBe(false);
+    await leaseA.release();
   });
 
   test('release lets a new holder acquire', async () => {
@@ -40,16 +40,16 @@ describe('InMemoryLease', () => {
       .withName('c')
       .withOwner('A')
       .withTtlMs(500);
-    const a = new InMemoryLease(leaseOptions);
+    const leaseA = new InMemoryLease(leaseOptions);
     const leaseOptions2 = LeaseOptions.create()
       .withName('c')
       .withOwner('B')
       .withTtlMs(500);
-    const b = new InMemoryLease(leaseOptions2);
-    await a.acquire();
-    await a.release();
-    expect(await b.acquire()).toBe(true);
-    await b.release();
+    const leaseB = new InMemoryLease(leaseOptions2);
+    await leaseA.acquire();
+    await leaseA.release();
+    expect(await leaseB.acquire()).toBe(true);
+    await leaseB.release();
   });
 
   test('renewal keeps the lease alive past the initial TTL', async () => {
@@ -72,8 +72,8 @@ describe('InMemoryLease', () => {
       .withName('e')
       .withOwner('A')
       .withTtlMs(200);
-    const a = new InMemoryLease(leaseOptions);
-    await a.acquire();
+    const leaseA = new InMemoryLease(leaseOptions);
+    await leaseA.acquire();
 
     const leaseOptions2 = LeaseOptions.create()
       .withName('e')
@@ -87,16 +87,16 @@ describe('InMemoryLease', () => {
     // which made the previous `>= 20` bound flake on the 20 ms-exact
     // budget.  100 ms minimum + ≥ 80 ms assertion gives ~20 ms of
     // tolerance without slowing the suite meaningfully.
-    const b = new InMemoryLease(
+    const leaseB = new InMemoryLease(
       leaseOptions2,
     );
     const start = Date.now();
-    expect(await b.acquire()).toBe(false);
+    expect(await leaseB.acquire()).toBe(false);
     expect(Date.now() - start).toBeGreaterThanOrEqual(80); // 2 × 50 ms with timer-skew slack
 
-    await a.release();
-    expect(await b.acquire()).toBe(true);
-    await b.release();
+    await leaseA.release();
+    expect(await leaseB.acquire()).toBe(true);
+    await leaseB.release();
   });
 
   test('expired lease (after TTL with no renewal) can be re-acquired', async () => {
@@ -106,18 +106,18 @@ describe('InMemoryLease', () => {
       .withTtlMs(50)
       .withRenewalIntervalMs(100_000);
     // Disable the renewal loop by using TTL equal to a very short renewal.
-    const a = new InMemoryLease(
+    const leaseA = new InMemoryLease(
       leaseOptions, // never fires
     );
-    await a.acquire();
+    await leaseA.acquire();
     const leaseOptions2 = LeaseOptions.create()
       .withName('f')
       .withOwner('B')
       .withTtlMs(200);
     await sleep(80); // let TTL expire
 
-    const b = new InMemoryLease(leaseOptions2);
-    expect(await b.acquire()).toBe(true);
-    await b.release();
+    const leaseB = new InMemoryLease(leaseOptions2);
+    expect(await leaseB.acquire()).toBe(true);
+    await leaseB.release();
   });
 });

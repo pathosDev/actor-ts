@@ -101,10 +101,10 @@ export class FakeWorkerBackend implements WorkerBackend {
   constructor(private readonly hooks: FakeBackendHooks = {}) {}
 
   spawn(url: URL, options?: WorkerSpawnOptions): WorkerLike {
-    const w = new FakeWorker(options?.name ?? `fake-${this.spawned.length}`);
-    this.spawned.push(w);
-    this.hooks.onSpawn?.(w, url, options);
-    return w;
+    const worker = new FakeWorker(options?.name ?? `fake-${this.spawned.length}`);
+    this.spawned.push(worker);
+    this.hooks.onSpawn?.(worker, url, options);
+    return worker;
   }
 
   /** The MOST RECENTLY spawned worker, for tests that only want the latest. */
@@ -134,18 +134,18 @@ export class FakeWorkerBackend implements WorkerBackend {
  *
  * Returns a teardown function that restores the originals.
  */
-export function autoHandshake(w: FakeWorker): () => void {
-  const origPost = w.postMessage.bind(w);
-  const origAdd = w.addEventListener.bind(w);
+export function autoHandshake(worker: FakeWorker): () => void {
+  const origPost = worker.postMessage.bind(worker);
+  const origAdd = worker.addEventListener.bind(worker);
 
   // Patch postMessage — when the PARENT posts worker-init, reply
   // with worker-ready (which the parent's listener awaits).
-  w.postMessage = (v: unknown): void => {
+  worker.postMessage = (v: unknown): void => {
     origPost(v);
     const k = (v as { kind?: string } | null)?.kind;
     if (k === 'worker-init') {
       const init = v as { self: unknown };
-      w.deliverMessage({ kind: 'worker-ready', self: init.self });
+      worker.deliverMessage({ kind: 'worker-ready', self: init.self });
     }
   };
 
@@ -154,19 +154,19 @@ export function autoHandshake(w: FakeWorker): () => void {
   // to it.  Then it posts worker-init, our patched postMessage
   // catches it, and the cycle completes.
   let helloFired = false;
-  w.addEventListener = (event, handler): void => {
+  worker.addEventListener = (event, handler): void => {
     origAdd(event, handler);
     if (event === 'message' && !helloFired) {
       helloFired = true;
       // Defer one microtask so the caller has finished registering
       // before we deliver — mirrors real async event-loop ordering.
-      queueMicrotask(() => w.deliverMessage({ kind: 'worker-hello' }));
+      queueMicrotask(() => worker.deliverMessage({ kind: 'worker-hello' }));
     }
   };
 
   return () => {
-    w.postMessage = origPost;
-    w.addEventListener = origAdd;
+    worker.postMessage = origPost;
+    worker.addEventListener = origAdd;
   };
 }
 

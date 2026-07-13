@@ -27,8 +27,8 @@ describe('CBOR integers', () => {
   });
 
   test('round-trips positive, negative, and zero', () => {
-    for (const n of [0, 1, 23, 24, 255, 256, 65535, 65536, 2 ** 30, -1, -24, -100, -65536]) {
-      expect(rt(n)).toBe(n);
+    for (const bignum of [0, 1, 23, 24, 255, 256, 65535, 65536, 2 ** 30, -1, -24, -100, -65536]) {
+      expect(rt(bignum)).toBe(bignum);
     }
   });
 
@@ -66,8 +66,8 @@ describe('CBOR strings & byte strings', () => {
   });
 
   test('round-trips Uint8Array values', () => {
-    const b = new Uint8Array([0, 1, 2, 3, 255]);
-    const restored = rt(b);
+    const bytes = new Uint8Array([0, 1, 2, 3, 255]);
+    const restored = rt(bytes);
     expect(restored).toBeInstanceOf(Uint8Array);
     expect(Array.from(restored as Uint8Array)).toEqual([0, 1, 2, 3, 255]);
   });
@@ -79,8 +79,8 @@ describe('CBOR arrays & maps', () => {
   });
 
   test('round-trips nested objects', () => {
-    expect(rt({ a: { b: { c: [1, 2, { d: 'x' }] } } }))
-      .toEqual({ a: { b: { c: [1, 2, { d: 'x' }] } } });
+    expect(rt({ a: { bytes: { c: [1, 2, { date: 'x' }] } } }))
+      .toEqual({ a: { bytes: { c: [1, 2, { date: 'x' }] } } });
   });
 
   test('empty array and empty object', () => {
@@ -104,24 +104,24 @@ describe('CBOR booleans, null, undefined', () => {
 
 describe('CBOR Date (tag 1)', () => {
   test('round-trips a Date', () => {
-    const d = new Date('2024-03-15T10:20:30.456Z');
-    const restored = rt(d);
+    const date = new Date('2024-03-15T10:20:30.456Z');
+    const restored = rt(date);
     expect(restored).toBeInstanceOf(Date);
-    expect((restored as Date).getTime()).toBe(d.getTime());
+    expect((restored as Date).getTime()).toBe(date.getTime());
   });
 });
 
 describe('CBOR BigInt (tags 2 / 3)', () => {
   test('round-trips positive bigint', () => {
-    const n = 12345678901234567890n;
-    const out = rt(n);
+    const bignum = 12345678901234567890n;
+    const out = rt(bignum);
     expect(typeof out).toBe('bigint');
-    expect(out).toBe(n);
+    expect(out).toBe(bignum);
   });
 
   test('round-trips negative bigint', () => {
-    const n = -98765432109876543210n;
-    expect(rt(n)).toBe(n);
+    const bignum = -98765432109876543210n;
+    expect(rt(bignum)).toBe(bignum);
   });
 
   test('round-trips zero bigint', () => {

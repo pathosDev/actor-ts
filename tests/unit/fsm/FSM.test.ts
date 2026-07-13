@@ -93,9 +93,9 @@ describe('FsmResult helpers — pure shape assertions', () => {
       constructor() { super('s1', 0); }
       run(): FsmResult<'s1' | 's2', number> { return this.goto('s2', 1); }
     }
-    const t = (new Test()).run();
-    expect(t.kind).toBe('transition');
-    expect((t as { next: string }).next).toBe('s2');
+    const result = (new Test()).run();
+    expect(result.kind).toBe('transition');
+    expect((result as { next: string }).next).toBe('s2');
   });
 
   test('stay returns stay-shape', () => {
@@ -103,8 +103,8 @@ describe('FsmResult helpers — pure shape assertions', () => {
       constructor() { super('s1', 0); }
       run(): FsmResult<'s1', number> { return this.stay(7); }
     }
-    const r = (new Test()).run();
-    expect(r.kind).toBe('stay');
-    expect(r.data).toBe(7);
+    const result = (new Test()).run();
+    expect(result.kind).toBe('stay');
+    expect(result.data).toBe(7);
   });
 });

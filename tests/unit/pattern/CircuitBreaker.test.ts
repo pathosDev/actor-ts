@@ -11,8 +11,8 @@ describe('CircuitBreaker — basics', () => {
   test('starts closed and passes through successful calls', async () => {
     const cb = new CircuitBreaker({ maxFailures: 3, resetTimeoutMs: 50 });
     expect(cb.state).toBe('closed');
-    const v = await cb.call(async () => 42);
-    expect(v).toBe(42);
+    const value = await cb.call(async () => 42);
+    expect(value).toBe(42);
     expect(cb.state).toBe('closed');
   });
 
@@ -40,8 +40,8 @@ describe('CircuitBreaker — basics', () => {
 
     await sleep(60);
     // First call after reset should move to half-open as part of .call().
-    const v = await cb.call(async () => 'ok');
-    expect(v).toBe('ok');
+    const value = await cb.call(async () => 'ok');
+    expect(value).toBe('ok');
     expect(cb.state).toBe('closed');
   });
 
