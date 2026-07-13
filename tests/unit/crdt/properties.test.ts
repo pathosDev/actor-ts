@@ -45,8 +45,8 @@ describe('GCounter — CRDT laws (property-based)', () => {
   });
 
   test('associativity: merge(merge(a, b), c) ≡ merge(a, merge(b, c))', () => {
-    fc.assert(fc.property(gcounterArb, gcounterArb, gcounterArb, (a, b, c) => {
-      expect(a.merge(b).merge(c).equals(a.merge(b.merge(c)))).toBe(true);
+    fc.assert(fc.property(gcounterArb, gcounterArb, gcounterArb, (a, b, counter) => {
+      expect(a.merge(b).merge(counter).equals(a.merge(b.merge(counter)))).toBe(true);
     }));
   });
 
@@ -63,12 +63,12 @@ describe('GCounter — CRDT laws (property-based)', () => {
         // Total stamped should equal max-per-replica sum, which for a
         // single replica's sequence of increments equals the simple sum
         // (operations on the same replica are additive, max is monotonic).
-        const c = ops.reduce((acc, op) => acc.increment(op.replica, op.delta), GCounter.empty());
+        const counter = ops.reduce((acc, op) => acc.increment(op.replica, op.delta), GCounter.empty());
         // Compute expected: for each replica, sum its deltas.
         const perReplica: Record<string, number> = {};
         for (const op of ops) perReplica[op.replica] = (perReplica[op.replica] ?? 0) + op.delta;
         const expected = Object.values(perReplica).reduce((s, n) => s + n, 0);
-        expect(c.value()).toBe(expected);
+        expect(counter.value()).toBe(expected);
       },
     ));
   });
@@ -97,8 +97,8 @@ describe('PNCounter — CRDT laws', () => {
   });
 
   test('associativity', () => {
-    fc.assert(fc.property(pncounterArb, pncounterArb, pncounterArb, (a, b, c) => {
-      expect(a.merge(b).merge(c).value()).toBe(a.merge(b.merge(c)).value());
+    fc.assert(fc.property(pncounterArb, pncounterArb, pncounterArb, (a, b, counter) => {
+      expect(a.merge(b).merge(counter).value()).toBe(a.merge(b.merge(counter)).value());
     }));
   });
 
@@ -124,9 +124,9 @@ describe('GSet — CRDT laws', () => {
   });
 
   test('associativity', () => {
-    fc.assert(fc.property(gsetArb, gsetArb, gsetArb, (a, b, c) => {
-      const left = Array.from(a.merge(b).merge(c).value()).sort();
-      const right = Array.from(a.merge(b.merge(c)).value()).sort();
+    fc.assert(fc.property(gsetArb, gsetArb, gsetArb, (a, b, counter) => {
+      const left = Array.from(a.merge(b).merge(counter).value()).sort();
+      const right = Array.from(a.merge(b.merge(counter)).value()).sort();
       expect(left).toEqual(right);
     }));
   });
@@ -163,9 +163,9 @@ describe('ORSet — CRDT laws', () => {
   });
 
   test('associativity', () => {
-    fc.assert(fc.property(orsetArb, orsetArb, orsetArb, (a, b, c) => {
-      const left = Array.from(a.merge(b).merge(c).value()).sort();
-      const right = Array.from(a.merge(b.merge(c)).value()).sort();
+    fc.assert(fc.property(orsetArb, orsetArb, orsetArb, (a, b, counter) => {
+      const left = Array.from(a.merge(b).merge(counter).value()).sort();
+      const right = Array.from(a.merge(b.merge(counter)).value()).sort();
       expect(left).toEqual(right);
     }));
   });
@@ -215,8 +215,8 @@ describe('LWWRegister — CRDT laws', () => {
   });
 
   test('associativity', () => {
-    fc.assert(fc.property(lwwArb, lwwArb, lwwArb, (a, b, c) => {
-      expect(a.merge(b).merge(c).value()).toBe(a.merge(b.merge(c)).value());
+    fc.assert(fc.property(lwwArb, lwwArb, lwwArb, (a, b, counter) => {
+      expect(a.merge(b).merge(counter).value()).toBe(a.merge(b.merge(counter)).value());
     }));
   });
 

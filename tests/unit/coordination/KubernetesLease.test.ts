@@ -37,10 +37,10 @@ class FakeK8sServer implements K8sFetchClient {
 
   async request(_creds: K8sCredentials, opts: K8sRequestOptions): Promise<K8sResponse> {
     this.log.push({ method: opts.method, path: opts.path, body: opts.body });
-    const m = opts.path.match(/^\/apis\/coordination\.k8s\.io\/v1\/namespaces\/([^/]+)\/leases(?:\/([^/]+))?$/);
-    if (!m) return { status: 404, body: null };
-    const ns = decodeURIComponent(m[1]!);
-    const name = m[2] ? decodeURIComponent(m[2]) : null;
+    const match = opts.path.match(/^\/apis\/coordination\.k8s\.io\/v1\/namespaces\/([^/]+)\/leases(?:\/([^/]+))?$/);
+    if (!match) return { status: 404, body: null };
+    const ns = decodeURIComponent(match[1]!);
+    const name = match[2] ? decodeURIComponent(match[2]) : null;
 
     if (opts.method === 'GET') {
       if (!name) return { status: 200, body: { kind: 'LeaseList', items: [] } };

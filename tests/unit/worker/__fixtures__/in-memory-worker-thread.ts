@@ -142,8 +142,8 @@ export function autoHandshake(worker: FakeWorker): () => void {
   // with worker-ready (which the parent's listener awaits).
   worker.postMessage = (v: unknown): void => {
     origPost(v);
-    const k = (v as { kind?: string } | null)?.kind;
-    if (k === 'worker-init') {
+    const kind = (v as { kind?: string } | null)?.kind;
+    if (kind === 'worker-init') {
       const init = v as { self: unknown };
       worker.deliverMessage({ kind: 'worker-ready', self: init.self });
     }

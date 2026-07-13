@@ -4,8 +4,8 @@ import { assertCompletesWithin, assertDoesNotCompleteWithin } from './AsyncAsser
 describe('assertCompletesWithin', () => {
   test('passes when promise resolves within budget', async () => {
     const fast = Promise.resolve(42);
-    const v = await assertCompletesWithin(fast, 100, 'fast');
-    expect(v).toBe(42);
+    const result = await assertCompletesWithin(fast, 100, 'fast');
+    expect(result).toBe(42);
   });
 
   test('rejects with a descriptive error on timeout', async () => {

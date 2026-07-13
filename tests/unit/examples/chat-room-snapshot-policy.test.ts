@@ -45,10 +45,10 @@ describe('ChatRoomActor snapshot policy (#102)', () => {
   });
 
   test('overriding actor instance produces a fresh policy each call (no shared mutable state)', () => {
-    const a = new ChatRoomActor();
-    const b = new ChatRoomActor();
-    const policyA = a.snapshotPolicy();
-    const policyB = b.snapshotPolicy();
+    const roomA = new ChatRoomActor();
+    const roomB = new ChatRoomActor();
+    const policyA = roomA.snapshotPolicy();
+    const policyB = roomB.snapshotPolicy();
     // Different actor → different policy instance.  This is mostly a
     // sanity check against accidentally hoisting `everyNEvents(100)`
     // into a singleton — the helper itself returns a fresh closure
