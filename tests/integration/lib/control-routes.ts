@@ -858,16 +858,16 @@ export function makeControlRoutes(
     // mailbox stage isn't observable to the caller — it just
     // tells; drops happen inside enqueue).
     path('backpressure', path('bombard', post(async (req) => {
-      const n = Number(queryParam(req, 'n') ?? '15000');
+      const count = Number(queryParam(req, 'n') ?? '15000');
       const sleepMs = Number(queryParam(req, 'sleepMs') ?? '50');
-      if (!Number.isInteger(n) || n < 1) return complete(Status.BadRequest, 'n must be positive integer');
+      if (!Number.isInteger(count) || count < 1) return complete(Status.BadRequest, 'n must be positive integer');
       if (!Number.isFinite(sleepMs) || sleepMs < 0) return complete(Status.BadRequest, 'sleepMs must be non-negative');
       const sink = ensureSlowSink();
       // Synchronous tight loop — no await between tells, so the
       // entire burst hits the mailbox before the dispatcher has
       // a chance to drain.
-      for (let i = 0; i < n; i++) sink.tell({ kind: 'process', sleepMs });
-      return completeJson(Status.OK, { sent: n, sleepMs });
+      for (let i = 0; i < count; i++) sink.tell({ kind: 'process', sleepMs });
+      return completeJson(Status.OK, { sent: count, sleepMs });
     }))),
 
     // GET /test/backpressure/dropped
@@ -884,8 +884,8 @@ export function makeControlRoutes(
       const lines: string[] = [];
       let m: RegExpExecArray | null;
       while ((m = re.exec(text)) !== null) {
-        const v = Number(m[1]);
-        if (Number.isFinite(v)) total += v;
+        const value = Number(m[1]);
+        if (Number.isFinite(value)) total += value;
         lines.push(m[0]);
       }
       return completeJson(Status.OK, { total, lines });
