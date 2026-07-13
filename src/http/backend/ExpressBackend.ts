@@ -14,6 +14,7 @@ import type {
 import { wsPackageAdapter, type WsPackageSocket } from '../ws/SocketAdapter.js';
 import { matchWsPattern } from '../ws/matchPattern.js';
 import { writeRawHttpResponse } from '../ws/rawResponse.js';
+import { DEFAULT_WS_MAX_FRAME_BYTES } from '../ws/types.js';
 
 /** Minimal shape of the `ws` package's WebSocketServer (noServer mode). */
 interface WsServerLike {
@@ -28,12 +29,12 @@ interface WsServerLike {
 }
 
 // `ws` is an optional peer dep — lazy-import its WebSocketServer (cached).
-const wsServerCtorLazy: Lazy<Promise<new (opts: { noServer: boolean }) => WsServerLike>> = Lazy.of(async () => {
+const wsServerCtorLazy: Lazy<Promise<new (opts: { noServer: boolean; maxPayload?: number }) => WsServerLike>> = Lazy.of(async () => {
   try {
     const name = 'ws';
     const mod = (await import(name)) as {
-      WebSocketServer?: new (opts: { noServer: boolean }) => WsServerLike;
-      default?: { WebSocketServer?: new (opts: { noServer: boolean }) => WsServerLike };
+      WebSocketServer?: new (opts: { noServer: boolean; maxPayload?: number }) => WsServerLike;
+      default?: { WebSocketServer?: new (opts: { noServer: boolean; maxPayload?: number }) => WsServerLike };
     };
     const Ctor = mod.WebSocketServer ?? mod.default?.WebSocketServer;
     if (!Ctor) throw new Error('ws: WebSocketServer not exported');
@@ -221,7 +222,10 @@ export class ExpressBackend implements HttpServerBackend {
 
   private async attachUpgradeHandling(server: Server): Promise<void> {
     const WebSocketServerCtor = await wsServerCtorLazy.get();
-    const wss = new WebSocketServerCtor({ noServer: true });
+    // Cap the transport payload at the default WS frame size so an oversized
+    // frame is rejected at the protocol level instead of being buffered up to
+    // the `ws` default of 100 MiB first (SECURITY_AUDIT.md WS-3).
+    const wss = new WebSocketServerCtor({ noServer: true, maxPayload: DEFAULT_WS_MAX_FRAME_BYTES });
     this.wss = wss;
     server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
       // Attach the raw-socket error guard BEFORE any async work: a peer

@@ -138,6 +138,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   could grow the outbound send buffer without bound (OOM).  The adapter now
   surfaces the send-buffer depth from the native socket (Bun
   `getBufferedAmount()`, Node/Deno numeric `.bufferedAmount`).
+- **WS-3 (MEDIUM) — cap the WebSocket transport frame size (Express + Fastify)**
+  (see `SECURITY_AUDIT.md`).  The `ws`-backed backends left the transport at the
+  `ws` default `maxPayload` (100 MiB), so an oversized frame was buffered in
+  full before the app-level `maxFrameBytes` (1 MiB default) rejected it —
+  allocation-amplification DoS.  Both now pass `maxPayload:
+  DEFAULT_WS_MAX_FRAME_BYTES` (1 MiB), so an oversized frame is rejected at the
+  protocol level.  *Caveat:* on these backends a route that raises
+  `maxFrameBytes` above the default is currently still capped at the default by
+  the transport; a per-route / configurable transport cap and the Hono
+  runner-level cap are tracked follow-ups.
 
 ## [0.10.0] — 2026-07-08
 
