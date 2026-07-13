@@ -96,9 +96,9 @@ export class FakeCassandraClient implements CassandraClientLike {
   /* ============================== internals ============================== */
 
   private stateOf(table: string): TableState {
-    let s = this.tables.get(table);
-    if (!s) { s = { table, rows: [] }; this.tables.set(table, s); }
-    return s;
+    let state = this.tables.get(table);
+    if (!state) { state = { table, rows: [] }; this.tables.set(table, state); }
+    return state;
   }
 
   private handleInsert(statement: string, params: ReadonlyArray<unknown>): void {

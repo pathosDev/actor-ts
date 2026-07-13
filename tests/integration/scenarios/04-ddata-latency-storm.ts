@@ -69,8 +69,8 @@ export const scenario: Scenario = {
       await waitFor(
         `${h} reads "initial"`,
         async () => {
-          const r = await read(h, ctx.controlPort, KEY, 'majority');
-          return r.value === 'initial';
+          const readResult = await read(h, ctx.controlPort, KEY, 'majority');
+          return readResult.value === 'initial';
         },
         15_000,
         300,
@@ -78,8 +78,8 @@ export const scenario: Scenario = {
     }));
     const baselineReadMs: number[] = [];
     for (const h of ctx.nodes) {
-      const r = await read(h, ctx.controlPort, KEY, 'majority');
-      baselineReadMs.push(r.elapsedMs);
+      const readResult = await read(h, ctx.controlPort, KEY, 'majority');
+      baselineReadMs.push(readResult.elapsedMs);
     }
     const baselineAvg = Math.round(baselineReadMs.reduce((a, b) => a + b, 0) / baselineReadMs.length);
     console.log(`[04] baseline majority-read avg: ${baselineAvg}ms`);
@@ -90,7 +90,7 @@ export const scenario: Scenario = {
       fetch(`http://${h}:${ctx.controlPort}/test/delay?ms=50`, { method: 'POST' }),
     );
     const delayRes = await Promise.all(delayCalls);
-    for (const r of delayRes) if (!r.ok) throw new Error(`[04] delay install failed: ${r.status}`);
+    for (const response of delayRes) if (!response.ok) throw new Error(`[04] delay install failed: ${response.status}`);
 
     // Let the qdisc settle — tc rules sometimes need a moment to
     // take effect.
@@ -110,8 +110,8 @@ export const scenario: Scenario = {
       await waitFor(
         `${nodeD} reads "updated" during latency storm`,
         async () => {
-          const r = await read(nodeD!, ctx.controlPort, KEY, 'majority');
-          return r.value === 'updated';
+          const readResult = await read(nodeD!, ctx.controlPort, KEY, 'majority');
+          return readResult.value === 'updated';
         },
         15_000,
         500,
@@ -139,8 +139,8 @@ export const scenario: Scenario = {
       await waitFor(
         `${h} sees "updated" post-storm`,
         async () => {
-          const r = await read(h, ctx.controlPort, KEY, 'majority');
-          return r.value === 'updated';
+          const readResult = await read(h, ctx.controlPort, KEY, 'majority');
+          return readResult.value === 'updated';
         },
         10_000,
         300,

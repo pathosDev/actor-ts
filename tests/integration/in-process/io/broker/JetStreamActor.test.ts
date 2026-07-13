@@ -210,9 +210,9 @@ async function bootActor(
   const ref = { current: null as MockJetStreamActor | null };
   const actor = sys.spawn(
     Props.create(() => {
-      const a = new MockJetStreamActor(options.withTarget(targetRef));
-      ref.current = a;
-      return a;
+      const mockActor = new MockJetStreamActor(options.withTarget(targetRef));
+      ref.current = mockActor;
+      return mockActor;
     }),
     'js',
   );
