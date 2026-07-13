@@ -1,0 +1,47 @@
+---
+title: Request-Timeout
+description: requestTimeout() lässt einen Handler gegen eine Frist antreten und liefert 503, wenn die Frist gewinnt. Begrenzt die client-seitig beobachtete Latenz; der Handler wird nicht abgebrochen.
+---
+
+`requestTimeout(ms)` lässt den Handler gegen eine Frist antreten und liefert
+`503`, wenn die Frist gewinnt.
+
+```ts
+import { requestTimeout, withMiddleware } from 'actor-ts/http';
+
+const routes = withMiddleware(requestTimeout(5000), appRoutes);
+```
+
+Übergib Optionen für eine eigene Response:
+
+```ts
+import { TimeoutOptions } from 'actor-ts/http';
+
+requestTimeout(
+  TimeoutOptions.create()
+    .withMs(5000)
+    .withOnTimeout((req) => completeJson(Status.ServiceUnavailable, { error: 'slow', path: req.path })),
+);
+```
+
+## Konfiguration
+
+| Builder-Methode | Feld | Default |
+| --- | --- | --- |
+| `withMs(ms)` | `ms` | `30000` |
+| `withOnTimeout(fn)` | `onTimeout` | `503 { error: 'request timed out' }` |
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Der Handler läuft weiter">
+  Ein Timeout bricht den Handler **nicht** ab — er läuft weiter und sein
+  spätes Ergebnis wird verworfen. Das begrenzt die client-seitig
+  beobachtete Latenz und wie lange eine Response offen gehalten wird, mehr
+  nicht. Für echten Abbruch reiche ein `AbortSignal` durch deine eigene
+  asynchrone Arbeit.
+</Aside>
+
+## Wie weiter
+
+- **[Rate-Limit](/de/http/middleware/rate-limit/)** — die Request-*Rate* begrenzen, nicht die Dauer.
+- **[Sicherheit](/de/http/security/)** — der empfohlene Stack.

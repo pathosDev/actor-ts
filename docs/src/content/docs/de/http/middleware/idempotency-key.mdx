@@ -125,8 +125,8 @@ Wichtig, wenn:
 ```ts
 import { RedisCache, RedisCacheOptions } from 'actor-ts';
 
+const redisCacheOptions = RedisCacheOptions.create().withUrl('redis://...');
 idempotent({
-  const redisCacheOptions = RedisCacheOptions.create().withUrl('redis://...');
   cache:  new RedisCache(redisCacheOptions),
   ttlMs:  24 * 60 * 60_000,
 });

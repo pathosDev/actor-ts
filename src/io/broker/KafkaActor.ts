@@ -5,6 +5,7 @@ import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
+import { KafkaOptionsValidator } from './KafkaOptions.js';
 import type { KafkaOptions, KafkaOptionsType } from './KafkaOptions.js';
 
 /** Inbound Kafka record delivered to subscribers. */
@@ -167,6 +168,7 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
     return out;
   }
   protected requiredOptions(): ReadonlyArray<keyof KafkaOptionsType> { return ['brokers']; }
+  protected override optionsValidator(): KafkaOptionsValidator { return new KafkaOptionsValidator(); }
   protected endpointLabel(): string {
     const brokers = this.options.brokers;
     return Array.isArray(brokers) ? `kafka://${brokers.join(',')}` : `kafka://${brokers ?? ''}`;

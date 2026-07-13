@@ -19,9 +19,9 @@ Vier kooperierende Werkzeuge:
 | --- | --- |
 | **[Envelope-Format](/de/persistence/migration/envelope-format/)** | Jedes persistierte Event trägt einen Versions-Tag.  Ermöglicht Migration. |
 | **[Schema-Registry](/de/persistence/migration/schema-registry/)** | Optional — deklariert bekannte Schemas + ihre Versionen. |
-| **[DefaultAdapter](/de/persistence/migration/default-adapter/)** | Defaults automatisch füllen für Felder, die in einer neueren Version hinzugefügt wurden. |
-| **[MigratingAdapter](/de/persistence/migration/migrating-adapter/)** | Transformationen von v1 → v2 → v3 verketten. |
-| **[WrapLegacy](/de/persistence/migration/wrap-legacy/)** | Un-envelope'te Legacy-Events auf versionierte Envelopes hochrüsten. |
+| **[defaultsAdapter](/de/persistence/migration/default-adapter/)** | Defaults automatisch füllen für Felder, die in einer neueren Version hinzugefügt wurden. |
+| **[migratingAdapter](/de/persistence/migration/migrating-adapter/)** | Transformationen von v1 → v2 → v3 verketten. |
+| **[Legacy wrappen](/de/persistence/migration/wrap-legacy/)** | Un-envelope'te Legacy-Events per Bulk in versionierte Envelopes wickeln. |
 
 Plus eine fokussiertere Seite:
 [Rezepte](/de/persistence/migration/recipes/) — das Kochbuch
@@ -73,13 +73,15 @@ V1-Events (die das Feld nicht haben).  Drei Optionen:
 
 ### Option A — Default
 
-Richte einen `DefaultAdapter` ein, der fehlende Felder füllt:
+Richte einen `defaultsAdapter` ein, der fehlende Felder füllt:
 
 ```ts
 class Account extends PersistentActor<...> {
   override eventAdapter() {
-    return new DefaultAdapter<EventV2>({
-      defaults: { currency: 'USD' },
+    return defaultsAdapter<EventV2>({
+      manifest:       'deposited',
+      currentVersion: 2,
+      defaults:       { 1: { currency: 'USD' } },
     });
   }
 }
@@ -94,13 +96,10 @@ automatisch, **funktioniert nur für additive Änderungen**.
 ```ts
 class Account extends PersistentActor<...> {
   override eventAdapter() {
-    return new MigratingAdapter<EventV2>({
-      chain: [
-        // v0 → v1: Identity (keine Änderung)
-        // v1 → v2: currency aus einem Backed-out-Lookup hinzufügen
-        { from: 1, to: 2, fn: (v1) => ({ ...v1, currency: lookupCurrency(v1) }) },
-      ],
-    });
+    const chain = MigrationChain.for<EventV2>('deposited', 2)
+      .add({ fromVersion: 1, toVersion: 2,
+             upcast: (v1: EventV1): EventV2 => ({ ...v1, currency: lookupCurrency(v1) }) });
+    return migratingAdapter(chain);
   }
 }
 ```
@@ -114,12 +113,13 @@ Für komplexe Migrationen (Umbenennungen, Restrukturierung,
 Splitting) implementiere `EventAdapter<E>` direkt:
 
 ```ts
-class V1ToV2Adapter implements EventAdapter<EventV2> {
-  upcast(stored: unknown, version: number): EventV2 {
-    if (version === 1) return migrateV1ToV2(stored as EventV1);
-    return stored as EventV2;
-  }
-}
+const adapter: EventAdapter<EventV2> = {
+  manifest: () => 'deposited',
+  toJournal: (e) => ({ manifest: 'deposited', version: 2, payload: e }),
+  fromJournal: (stored) => stored.version === 1
+    ? migrateV1ToV2(stored.payload as EventV1)
+    : stored.payload as EventV2,
+};
 ```
 
 Volle Kontrolle; keine Einschränkungen bei Formtransformationen.
@@ -131,9 +131,9 @@ flowchart TB
   Q1{"Ist die Änderung ADDITIV?<br/>(nur neue Felder, sinnvolle Defaults)"}
   Q2{"Transformierbar von alt → neu?"}
   Q3{"Single-Step oder Multi-Step?"}
-  DEF["DefaultAdapter<br/><i>kein Aufwand</i>"]
-  MIG1["MigratingAdapter"]
-  MIG2["MigratingAdapter<br/><i>Chain</i>"]
+  DEF["defaultsAdapter<br/><i>kein Aufwand</i>"]
+  MIG1["migratingAdapter"]
+  MIG2["migratingAdapter<br/><i>Chain</i>"]
   CUSTOM["Benutzerdefinierter EventAdapter<br/><i>restrukturiert: Umbenennungen, Splits, Joins</i>"]
   Q1 -- "ja" --> DEF
   Q1 -- "nein" --> Q2
@@ -157,7 +157,9 @@ flowchart TB
 ```ts
 class Cart extends DurableStateActor<...> {
   protected stateAdapter() {
-    return new DefaultAdapter<StateV2>({ defaults: { ... } });
+    return defaultsSnapshotAdapter<StateV2>({
+      manifest: 'CartState', currentVersion: 2, defaults: { 1: { /* ... */ } },
+    });
   }
 }
 ```
@@ -199,17 +201,17 @@ hat, haben sie keine Envelopes — sie sind rohe Payloads.  Der
 **WrapLegacy**-Helper überbrückt:
 
 ```ts
-import { wrapLegacy } from 'actor-ts';
+import { migrateInMemoryJournal } from 'actor-ts';
 
-const adapter = wrapLegacy<EventV2>({
-  legacyVersion: 1,
-  baseAdapter: new MigratingAdapter<EventV2>({ chain: [...] }),
-});
+// One-shot bulk rewrite — wrap every raw event as a v1 envelope
+// BEFORE the actor with the new adapter recovers.
+await migrateInMemoryJournal(journal, (e) => `${e.kind}`);
 ```
 
-Das behandelt jedes nicht eingewickelte (rohe) Event als
-Version 1 und lässt die Migrations-Chain von dort laufen.  Siehe
-[WrapLegacy](/de/persistence/migration/wrap-legacy/).
+Das ist ein einmaliges Umschreiben der gespeicherten Daten;
+danach replayt dein normaler Adapter die nun eingewickelten
+v1-Events.  Siehe
+[Legacy wrappen](/de/persistence/migration/wrap-legacy/).
 
 ## Operatives Rollout
 
@@ -237,11 +239,11 @@ und [Rezepte](/de/persistence/migration/recipes/).
 
 - **[Envelope-Format](/de/persistence/migration/envelope-format/)** —
   das On-Disk-Format.
-- **[DefaultAdapter](/de/persistence/migration/default-adapter/)** —
+- **[defaultsAdapter](/de/persistence/migration/default-adapter/)** —
   Zero-Config-Additive-Migrationen.
-- **[MigratingAdapter](/de/persistence/migration/migrating-adapter/)** —
+- **[migratingAdapter](/de/persistence/migration/migrating-adapter/)** —
   verkettete Versions-Transformationen.
-- **[WrapLegacy](/de/persistence/migration/wrap-legacy/)** —
+- **[Legacy wrappen](/de/persistence/migration/wrap-legacy/)** —
   Pre-Envelope-Events ins System bringen.
 - **[Schema-Registry](/de/persistence/migration/schema-registry/)** —
   der typisierte Schema-Katalog.

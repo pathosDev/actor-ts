@@ -69,9 +69,10 @@ type DepositedV2 = { kind: 'deposited'; amount: number; currency: string };
 ```ts
 class Account extends PersistentActor<...> {
   override eventAdapter() {
-    return new DefaultAdapter<DepositedV2>({
+    return defaultsAdapter<DepositedV2>({
+      manifest:       'Deposited',
       currentVersion: 2,
-      defaults:       { currency: 'USD' },
+      defaults:       { 1: { currency: 'USD' } },
     });
   }
 }
@@ -86,7 +87,7 @@ Dieser Schritt:
 
 Roll das über Standard-Rolling-Deployment aus.
 
-**Schritt 2 (optional später)** — den `DefaultAdapter` droppen,
+**Schritt 2 (optional später)** — den `defaultsAdapter` droppen,
 sobald alle alten Events ausgealtert oder snapshottet sind. Meist
 unbegrenzt zur Sicherheit behalten.
 
@@ -99,7 +100,7 @@ Für **Renames**, **Restructures**, **entfernte Felder** brauchen
 die Mechaniken mehr Schritte:
 
 ```
-1. Code deployen, der ALTES LIEST + NEUES SCHREIBT. (`MigratingAdapter`)
+1. Code deployen, der ALTES LIEST + NEUES SCHREIBT. (`migratingAdapter`)
 2. Vollständig ausrollen. Alle neuen Events sind jetzt in der neuen Form.
 3. Code deployen, der NUR NEUES LIEST (unterstützt Altes nicht mehr).
    Droppt den Migrating-Schritt.
@@ -109,7 +110,7 @@ die Mechaniken mehr Schritte:
 ```
 
 Siehe
-[MigratingAdapter](/de/persistence/migration/migrating-adapter/)
+[migratingAdapter](/de/persistence/migration/migrating-adapter/)
 für die Implementierung.
 
 ## Inter-Actor-Message-Änderungen

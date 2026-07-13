@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 
 /** Plain options-object shape accepted by {@link StaticQuorum}. */
 export interface StaticQuorumOptionsType {
@@ -27,6 +28,16 @@ export class StaticQuorumOptionsBuilder extends OptionsBuilder<StaticQuorumOptio
   /** Only members carrying this role count toward quorum. */
   withRole(role: string): this {
     return this.set('role', role);
+  }
+}
+
+/** Validates resolved {@link StaticQuorumOptionsType} settings — `quorumSize` must be an integer >= 1. */
+export class StaticQuorumOptionsValidator extends OptionsValidator<StaticQuorumOptionsType> {
+  constructor() {
+    super('StaticQuorumOptions');
+  }
+  protected rules(_s: Partial<StaticQuorumOptionsType>): void {
+    this.positiveInt('quorumSize');
   }
 }
 

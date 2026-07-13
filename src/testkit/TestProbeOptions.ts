@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { OptionsValidator } from '../util/OptionsValidator.js';
 
 /** Plain options-object shape accepted by a {@link TestProbe}. */
 export interface TestProbeOptionsType {
@@ -23,6 +24,16 @@ export class TestProbeOptionsBuilder extends OptionsBuilder<TestProbeOptionsType
   /** Visible name of the probe (default: auto-generated). */
   withName(name: string): this {
     return this.set('name', name);
+  }
+}
+
+/** Validates resolved {@link TestProbeOptionsType} settings. */
+export class TestProbeOptionsValidator extends OptionsValidator<TestProbeOptionsType> {
+  constructor() {
+    super('TestProbeOptions');
+  }
+  protected rules(_s: Partial<TestProbeOptionsType>): void {
+    this.positiveNumber('defaultTimeoutMs');
   }
 }
 

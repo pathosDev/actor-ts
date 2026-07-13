@@ -1,4 +1,5 @@
 import { AggregateSeedProvider } from './AggregateSeedProvider.js';
+import { AutoDiscoveryOptionsValidator } from './AutoDiscoveryOptions.js';
 import type { AutoDiscoveryOptions, AutoDiscoveryOptionsType } from './AutoDiscoveryOptions.js';
 import { ConfigSeedProvider } from './ConfigSeedProvider.js';
 import { ConfigSeedProviderOptions } from './ConfigSeedProviderOptions.js';
@@ -23,6 +24,7 @@ function parseSeedList(raw: string): string[] {
  */
 export function autoDiscovery(options: AutoDiscoveryOptions): AggregateSeedProvider {
   const resolvedOptions = options as AutoDiscoveryOptionsType;
+  new AutoDiscoveryOptionsValidator().validate(resolvedOptions);
   const env = resolvedOptions.env ?? process.env;
   const log = resolvedOptions.log ?? (() => {});
   const providers: SeedProvider[] = [];
@@ -74,6 +76,7 @@ export function singleProviderDiscovery(
   options: AutoDiscoveryOptions,
 ): SeedProvider {
   const resolvedOptions = options as AutoDiscoveryOptionsType;
+  new AutoDiscoveryOptionsValidator().validate(resolvedOptions);
   const env = resolvedOptions.env ?? process.env;
   switch (kind) {
     case 'config': {

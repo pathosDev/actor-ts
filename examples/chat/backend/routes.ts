@@ -2,11 +2,10 @@
  * HTTP routes via the framework's directive DSL.
  *
  * The chat sample is "all WebSocket" — there are no REST endpoints.
- * The DSL serves the landing page at `/` and upgrades WebSocket
- * clients at `/ws` via the `websocket()` directive.  Static-file
- * delivery (`/static/*`) is still mounted as a Fastify plugin via
- * `backend.withPlugin(...)` — the DSL has no directive for it today.
- * See `plugins/staticFilesPlugin.ts` and `actors/WebsocketIngressActor.ts`.
+ * The DSL serves the landing page at `/`, the built frontends under
+ * `/static/*` via the `getFromDirectory` directive (backend-agnostic —
+ * no Fastify plugin), and upgrades WebSocket clients at `/ws` via the
+ * `websocket()` directive.
  *
  * The selector HTML is inlined as a tagged template — small enough
  * (~3 KB) that splitting it into its own file would just add another
@@ -17,6 +16,7 @@ import {
   complete,
   concat,
   get,
+  getFromDirectory,
   rawCodec,
   Status,
   websocket,
@@ -113,19 +113,21 @@ const SELECTOR_HTML = /* html */ `<!doctype html>
 `;
 
 /**
- * Route tree: `GET /` returns the selector HTML, and `websocket('/ws',
- * ingress)` upgrades WebSocket clients (rawCodec — the chat protocol is
- * JSON-over-text that the session actor encodes/decodes itself).
- *
- * Static-file delivery (`/static/*`) is still mounted as a Fastify
- * plugin via `backend.withPlugin(...)`; the DSL has no directive for it.
+ * Route tree: `GET /` returns the selector HTML, `getFromDirectory` serves
+ * the built frontends under `/static/*` from `staticDir`, and
+ * `websocket('/ws', ingress)` upgrades WebSocket clients (rawCodec — the
+ * chat protocol is JSON-over-text the session actor encodes itself).
  */
-export function buildRoutes(ingress: ActorRef<WebsocketServerMessage<WebsocketFrame, WebsocketFrame>>): Route {
+export function buildRoutes(
+  ingress: ActorRef<WebsocketServerMessage<WebsocketFrame, WebsocketFrame>>,
+  staticDir: string,
+): Route {
   const wsRouteOptions = WebsocketRouteOptions.create().withCodec(rawCodec());
   return concat(
     get(() =>
       complete(Status.OK, SELECTOR_HTML, { 'content-type': 'text/html; charset=utf-8' }),
     ),
+    getFromDirectory('static', staticDir),
     websocket('/ws', ingress, wsRouteOptions),
   );
 }

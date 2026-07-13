@@ -4,6 +4,7 @@ import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
+import { JetStreamOptionsValidator } from './JetStreamOptions.js';
 import type { JetStreamOptions, JetStreamOptionsType } from './JetStreamOptions.js';
 
 /**
@@ -189,6 +190,7 @@ export class JetStreamActor extends BrokerActor<
     return out;
   }
   protected requiredOptions(): ReadonlyArray<keyof JetStreamOptionsType> { return ['servers']; }
+  protected override optionsValidator(): JetStreamOptionsValidator { return new JetStreamOptionsValidator(); }
   protected endpointLabel(): string {
     const servers = this.options.servers;
     if (Array.isArray(servers)) return `nats://${servers.join(',')}`;

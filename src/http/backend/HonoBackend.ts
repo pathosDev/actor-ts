@@ -14,6 +14,7 @@ import type {
   WebsocketRouteRegistration,
 } from './HttpServerBackend.js';
 import type { WebsocketListeners, WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
+import { HonoBackendOptionsValidator } from './HonoBackendOptions.js';
 import type { HonoBackendOptions, HonoBackendOptionsType } from './HonoBackendOptions.js';
 
 /** Hono delivers text as a string and binary as ArrayBuffer/Uint8Array. */
@@ -98,6 +99,7 @@ export class HonoBackend implements HttpServerBackend {
 
   constructor(options: HonoBackendOptions = {}) {
     const resolvedOptions = (options as HonoBackendOptionsType);
+    new HonoBackendOptionsValidator().validate(resolvedOptions);
     this.app = resolvedOptions.app ?? null;
     this.ownsApp = resolvedOptions.app == null;
     this.maxBodyBytes = resolvedOptions.maxBodyBytes ?? 10 * 1024 * 1024;
@@ -132,7 +134,10 @@ export class HonoBackend implements HttpServerBackend {
     if (!this.app) this.app = await this.createHonoApp();
     const app = this.app;
 
-    for (const route of this.registered) this.attachRoute(route);
+    const explicitHead = new Set(this.registered.filter((r) => r.method === 'HEAD').map((r) => r.pattern));
+    for (const r of this.registered) {
+      this.attachRoute(r, r.method === 'GET' && !explicitHead.has(r.pattern));
+    }
 
     if (this.notFoundHandler) {
       const handler = this.notFoundHandler;
@@ -154,7 +159,7 @@ export class HonoBackend implements HttpServerBackend {
       if (err instanceof HttpError) {
         return new Response(JSON.stringify({ error: err.message, ...err.extra }), {
           status: err.status,
-          headers: { 'content-type': 'application/json; charset=utf-8' },
+          headers: { 'content-type': 'application/json; charset=utf-8', ...(err.headers ?? {}) },
         });
       }
       return new Response(
@@ -218,22 +223,39 @@ export class HonoBackend implements HttpServerBackend {
 
   /* ============================ internals ============================ */
 
-  private attachRoute(route: RouteRegistration): void {
+  private attachRoute(route: RouteRegistration, addHeadTwin = false): void {
     const app = this.app!;
-    const handler: HonoHandler = async (context) => {
-      const req = await this.adaptRequest(context);
+    const wildcard = route.pattern.endsWith('/*');
+    const prefix = wildcard ? route.pattern.slice(0, -2) : '';
+    const handler: HonoHandler = async (c) => {
+      const req = await this.adaptRequest(c);
       if (req.body && req.body.byteLength > this.maxBodyBytes) {
         return new Response('Payload Too Large', {
           status: 413,
           headers: { 'content-type': 'text/plain; charset=utf-8' },
         });
       }
-      const out = await route.handler(req);
+      // Wildcard contract: expose the matched remainder as params['*'].
+      const finalReq = wildcard
+        ? { ...req, params: { ...req.params, '*': honoWildcardRest(c.req.path ?? new URL(c.req.url).pathname, prefix) } }
+        : req;
+      const out = await route.handler(finalReq);
       return this.writeResponse(out);
     };
     const method = route.method.toLowerCase() as Lowercase<HttpMethod>;
     match(method)
-      .with('get',     () => app.get(route.pattern, handler))
+      .with('get', () => {
+        app.get(route.pattern, handler);
+        // Hono doesn't auto-dispatch HEAD to a GET route (Fastify/Express
+        // do), so mirror GET as HEAD (body stripped) unless an explicit
+        // HEAD route already covers this pattern.
+        if (addHeadTwin) {
+          app.on('HEAD', route.pattern, async (c) => {
+            const full = await handler(c);
+            return new Response(null, { status: full.status, headers: full.headers });
+          });
+        }
+      })
       .with('post',    () => app.post(route.pattern, handler))
       .with('put',     () => app.put(route.pattern, handler))
       .with('delete',  () => app.delete(route.pattern, handler))
@@ -378,6 +400,10 @@ export class HonoBackend implements HttpServerBackend {
       // (yet) parameterised that way, so the direct assignment errors.
       return new Response(body as unknown as BodyInit, { status: res.status, headers });
     }
+    if (typeof ReadableStream !== 'undefined' && body instanceof ReadableStream) {
+      if (!headers.has('content-type')) headers.set('content-type', 'application/octet-stream');
+      return new Response(body as unknown as BodyInit, { status: res.status, headers });
+    }
     if (!headers.has('content-type')) headers.set('content-type', 'application/json; charset=utf-8');
     return new Response(JSON.stringify(body), { status: res.status, headers });
   }
@@ -396,6 +422,14 @@ export class HonoBackend implements HttpServerBackend {
       );
     }
   }
+}
+
+/** The path remainder a `/prefix/*` route matched (still URL-encoded — the caller decodes). */
+function honoWildcardRest(path: string, prefix: string): string {
+  const withSlash = `${prefix}/`;
+  if (path.startsWith(withSlash)) return path.slice(withSlash.length);
+  if (path === prefix) return '';
+  return path.replace(/^\/+/, '');
 }
 
 /**

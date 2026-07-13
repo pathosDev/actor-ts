@@ -10,6 +10,7 @@ import {
   type ObjectStorageBackend,
   type PutOptions,
 } from './ObjectStorageBackend.js';
+import { FilesystemObjectStorageOptionsValidator } from './FilesystemObjectStorageOptions.js';
 import type { FilesystemObjectStorageOptions, FilesystemObjectStorageOptionsType } from './FilesystemObjectStorageOptions.js';
 
 /**
@@ -117,7 +118,7 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
 
   constructor(options: FilesystemObjectStorageOptions) {
     const resolvedOptions = (options as FilesystemObjectStorageOptionsType);
-    if (resolvedOptions.dir === undefined) throw new Error('FilesystemObjectStorageBackend: dir is required (call withDir()).');
+    new FilesystemObjectStorageOptionsValidator().validate(resolvedOptions);
     this.dir           = resolvedOptions.dir;
     this.lockTimeoutMs = resolvedOptions.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
     this.staleLockMs   = resolvedOptions.staleLockMs   ?? DEFAULT_STALE_LOCK_MS;

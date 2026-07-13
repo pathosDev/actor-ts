@@ -17,8 +17,9 @@ ausgelieferten Features:
 - **`MasterKeyRing`** (#8) — `active` + `retired[]`-Schlüssel; das
   Manifest jedes verschlüsselten Bodys nennt die genutzte
   Schlüsselversion.
-- **`wrapLegacy`-Helfer** (#9) — Einmal-Rewrite von
-  Pre-Envelope-Events ins aktuelle Schema-Envelope.
+- **`wrapEventAsEnvelope` + `migrateInMemoryJournal`** (#9) —
+  Einmal-Rewrite von Pre-Envelope-Events ins aktuelle
+  Schema-Envelope.
 - **`SchemaRegistry`** (#6) — Multi-Version-Codec +
   Kompatibilitäts-Checks.
 

@@ -15,6 +15,7 @@ import {
 } from './ShardRegion.js';
 import { ShardCoordinator } from './ShardCoordinator.js';
 import { ShardCoordinatorOptions } from './ShardCoordinatorOptions.js';
+import { StartShardingOptionsValidator } from './StartShardingOptions.js';
 import type { StartShardingOptions, StartShardingOptionsType } from './StartShardingOptions.js';
 import { isShardingMessage } from './ShardingProtocol.js';
 
@@ -81,6 +82,7 @@ export class ClusterSharding {
     const options = typeof arg1 === 'string'
       ? this.buildOptionsFromShorthand(arg1, arg2!, arg3 ?? {})
       : arg1 as StartShardingOptionsType<TMessage>;
+    new StartShardingOptionsValidator<TMessage>().validate(options);
 
     this.ensureCoordinator(options as StartShardingOptionsType<unknown>);
     const existing = this.findRegionByType(options.typeName);

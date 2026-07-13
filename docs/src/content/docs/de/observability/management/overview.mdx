@@ -1,11 +1,12 @@
 ---
 title: Management — Überblick
-description: Ein kleiner HTTP-Server, der betriebliche Endpunkte exponiert — Health Checks, Cluster-Zustand, Sharding-Info, Metriken. Läuft auf einem separaten Port von deiner App; firewall-freundlich. In K8s-Probes verdrahten; per Kommandozeile debuggen.
+description: Ein Route-Baum betrieblicher Endpunkte — Health Checks, Cluster-Zustand, Sharding-Info, Metriken — den du auf einem separaten Port von deiner App bindest. Firewall-freundlich. In K8s-Probes verdrahten; per Kommandozeile debuggen.
 ---
 
-`HttpManagement` ist ein **kleiner HTTP-Server** für Operations.
-Getrennt vom Haupt-HTTP-Server deiner App, auf einem separaten
-Port (8558 per Konvention), und exponiert:
+`managementRoutes(...)` baut einen **Route-Baum** betrieblicher
+Endpunkte.  Du bindest ihn auf einem eigenen Port (8558 per
+Konvention), getrennt vom Haupt-HTTP-Server deiner App, und
+exponierst:
 
 - **Health-Probes** — Liveness + Readiness für K8s.
 - **Cluster-Info** — Mitglieder, Leader, Sharding-Regionen.
@@ -14,49 +15,59 @@ Port (8558 per Konvention), und exponiert:
   aus).
 
 ```ts
-import { HttpManagement } from 'actor-ts';
+import { managementRoutes } from 'actor-ts';
 
-await HttpManagement.start(system, {
-  port:                    8558,
-  cluster,                 // optional — aktiviert Cluster-Endpunkte
-  enableMetricsEndpoint:   true,
+// Build the routes (cluster is optional — pass null to skip /cluster/*),
+// then bind them on a dedicated port.
+const { routes, health } = managementRoutes(system, cluster, {
+  enableMetricsEndpoint: true,
 });
+
+const binding = await system.http(8558, { host: '0.0.0.0' }).bind(routes);
+// management endpoints now serve on http://0.0.0.0:8558
 ```
 
-Das war's. Der Server läuft auf `0.0.0.0:8558` und bedient die
-Endpunkte unten.
+`managementRoutes` gibt `{ routes, health }` zurück: `routes` ist
+der [Route](/de/http/route-dsl/)-Baum, den du bindest, und `health`
+ist die
+[HealthCheckRegistry](/de/observability/management/health-checks/),
+auf der du Liveness- / Readiness-Checks registrierst.
 
 ## Konfiguration
 
+Das dritte Argument ist `ManagementRoutesSettings` —
+Endpunkt-Schalter und optionale Middleware.  **Port und Host sind
+keine Settings**: sie gehen an `system.http(port, { host })`, und
+der `cluster` ist das zweite positionale Argument.
+
 ```ts
-interface HttpManagementOptionsType {
-  port:                    number;
-  host?:                   string;            // Default '0.0.0.0'
-  cluster?:                Cluster | null;    // aktiviert Cluster-Routen
-  enableLeaveEndpoint?:    boolean;            // Default false
-  enableDownEndpoint?:     boolean;            // Default false
-  enableMetricsEndpoint?:  boolean;            // Default false
+interface ManagementRoutesSettings {
+  enableLeaveEndpoint?:   boolean;    // POST /cluster/leave (default false)
+  enableDownEndpoint?:    boolean;    // POST /cluster/down  (default false)
+  enableMetricsEndpoint?: boolean;    // GET  /metrics       (default false)
+  auth?:          Middleware;         // guards /cluster/* (+ /metrics)
+  ipAllowlist?:   Middleware;         // guards EVERY endpoint, incl. /health + /ready
+  authProtectHealth?: boolean;        // also require `auth` on /health + /ready (default false)
 }
 ```
 
-Die meisten Produktivsysteme:
+Eine typische Produktions-Verdrahtung:
 
 ```ts
-await HttpManagement.start(system, {
-  port:                  8558,
-  cluster,
-  enableMetricsEndpoint: true,    // für Prometheus
-  enableLeaveEndpoint:   false,   // nur Admin; hinter Auth gaten
+const { routes, health } = managementRoutes(system, cluster, {
+  enableMetricsEndpoint: true,    // for Prometheus
+  enableLeaveEndpoint:   false,   // admin-only; gate behind auth
   enableDownEndpoint:    false,
 });
+await system.http(8558).bind(routes);
 ```
 
 ## Die Endpunkte
 
 | Endpunkt | Immer an? | Zweck |
 | --- | --- | --- |
-| `GET /health` | ✓ | Liveness — 200 wenn Health Checks bestehen. |
-| `GET /ready` | ✓ | Readiness — 200 wenn Cluster up + Checks bestehen. |
+| `GET /health` | ✓ | Liveness — 200 wenn jeder Liveness-Check besteht. |
+| `GET /ready` | ✓ | Readiness — 200 wenn Cluster up + jeder Readiness-Check besteht. |
 | `GET /cluster/members` | Wenn `cluster` gesetzt | Membership-JSON. |
 | `GET /cluster/leader` | Wenn `cluster` gesetzt | Leader-Adresse. |
 | `GET /cluster/shards?type=<name>` | Wenn `cluster` gesetzt | Shard-Verteilung für einen sharded Typ. |
@@ -70,19 +81,20 @@ für die volle Oberfläche + Response-Shapes.
 ## Health Checks
 
 ```ts
-const { health } = await HttpManagement.start(system, { port: 8558 });
+const { routes, health } = managementRoutes(system, cluster);
 
-health.addCheck('database', async () => {
-  return (await db.ping()) ? { ok: true } : { ok: false, reason: 'db unreachable' };
+// Readiness — gates traffic; return { name, status, detail? }.
+health.addReadiness(async () => {
+  const ok = await db.ping();
+  return { name: 'database', status: ok, detail: ok ? undefined : 'db unreachable' };
 });
 
-health.addCheck('cache', async () => {
-  return (await cache.ping()) ? { ok: true } : { ok: false };
-});
+await system.http(8558).bind(routes);
 ```
 
-Eigene Checks hängen sich in `/health` und `/ready`. Ein
-fehlschlagender Check lässt den Endpunkt 503 zurückgeben. Siehe
+Checks hängen sich in `/health` (Liveness) und `/ready`
+(Readiness).  Ein fehlschlagender Check lässt diesen Endpunkt 503
+zurückgeben.  Siehe
 [Health Checks](/de/observability/management/health-checks/).
 
 ## K8s-Integration
@@ -118,12 +130,12 @@ Management (8558):    nur intern, intern firewall'd
 ```
 
 Die Management-Endpunkte legen **internen Zustand** offen —
-Cluster-Mitgliederadressen, Metrikwerte usw. Sie öffentlich zu
-exponieren ist ein Sicherheitsrisiko. Halte auf separatem Port +
-firewall intern.
+Cluster-Mitgliederadressen, Metrikwerte usw.  Sie öffentlich zu
+exponieren ist ein Sicherheitsrisiko.  Binde sie auf einem
+separaten Port und firewall ihn intern.
 
-In K8s ist das **per-Pod** — Probes treffen `:8558` vom
-Kubelet (gleicher Node), aber kein Service exponiert es extern.
+In K8s ist das **per-Pod** — Probes treffen `:8558` vom Kubelet
+(gleicher Node), aber kein Service exponiert es extern.
 
 ## Hinter einem Auth-Proxy
 
@@ -137,26 +149,39 @@ Für mehr Zugriffskontrolle:
 
 Manche Produktivsysteme exponieren Management hinter einem
 Side-Car-Proxy, der Auth handhabt (Envoy + JWT, Linkerd + mTLS).
-Das Framework bündelt keine Auth — halte Management geschlossen;
-lass die Infrastruktur Zugriffskontrolle handhaben.
+Alternativ hängst du die eingebaute `auth`- / `ipAllowlist`-
+Middleware über die Settings an (siehe
+[HTTP-Endpunkte](/de/observability/management/http-endpoints/)).
 
-## Wann HttpManagement NICHT nutzen
+## In einen bestehenden Server mounten
 
-Zwei Fälle:
+`managementRoutes` gibt schlichte Routen zurück, du brauchst also
+gar keinen eigenen Port — `concat` sie in die bestehenden
+[HTTP-Routen](/de/http/overview/) deiner App:
 
-1. **Du hast schon einen HTTP-Server** und möchtest Management-
-   Routen inline mounten. Dann nutze `managementRoutes(system, cluster)`
-   direkt und binde in deine bestehenden
-   [HTTP-Routen](/de/http/overview/) ein.
-2. **Du betreibst eine Single-Node-App ohne Cluster** — Health-
-   Checks allein rechtfertigen den Extra-Port vielleicht nicht.
-   Überlege, einfach `/health` in deinen bestehenden HTTP-Server
-   zu verdrahten.
+```ts
+import { managementRoutes, concat } from 'actor-ts';
+
+const { routes: mgmt } = managementRoutes(system, cluster);
+await system.http(8080).bind(concat(appRoutes, mgmt));
+```
+
+Zwei Gründe, das statt eines separaten Ports zu tun:
+
+1. **Du hast schon einen HTTP-Server** und möchtest Management
+   inline.
+2. **Single-Node-App ohne Cluster** — Health-Checks allein
+   rechtfertigen den Extra-Port vielleicht nicht; verdrahte
+   `/health` in deinen bestehenden Server.
+
+(Management auf dem öffentlichen Port zu mounten exponiert
+internen Zustand erneut — gate es mit den `auth`- /
+`ipAllowlist`-Settings, wenn du das tust.)
 
 ## Wo es weitergeht
 
 - **[Health Checks](/de/observability/management/health-checks/)** —
-  Custom-Checks durch `/health` durchgereicht.
+  Custom-Checks durch `/health` und `/ready` durchgereicht.
 - **[HTTP-Endpunkte](/de/observability/management/http-endpoints/)** —
   die volle Endpunkt-Referenz.
 - **[Kubernetes-Deployment](/de/operations/deployment/kubernetes/)** —

@@ -13,6 +13,7 @@ import {
   DEFAULT_TOMBSTONE_TTL_MS,
 } from '../util/Constants.js';
 import { none, some, type Option } from '../util/Option.js';
+import { ClusterOptionsValidator } from './ClusterOptions.js';
 import type { ClusterOptions, ClusterOptionsType } from './ClusterOptions.js';
 import {
   LeaderChanged,
@@ -145,6 +146,7 @@ export class Cluster {
     options: ClusterOptions,
   ): Promise<Cluster> {
     const resolvedOptions = options as ClusterOptionsType;
+    new ClusterOptionsValidator().validate(resolvedOptions);
     const cluster = new Cluster(system, resolvedOptions);
     await cluster._start(resolvedOptions.seeds ?? []);
     return cluster;

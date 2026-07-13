@@ -17,9 +17,9 @@ Four cooperating tools:
 | --- | --- |
 | **[Envelope format](/persistence/migration/envelope-format/)** | Every persisted event carries a version tag.  Enables migrating. |
 | **[Schema registry](/persistence/migration/schema-registry/)** | Optional — declares known schemas + their versions. |
-| **[DefaultAdapter](/persistence/migration/default-adapter/)** | Auto-fill defaults for fields added in a newer version. |
-| **[MigratingAdapter](/persistence/migration/migrating-adapter/)** | Chain transformations from v1 → v2 → v3. |
-| **[WrapLegacy](/persistence/migration/wrap-legacy/)** | Upgrade un-envelope'd legacy events to versioned envelopes. |
+| **[defaultsAdapter](/persistence/migration/default-adapter/)** | Auto-fill defaults for fields added in a newer version. |
+| **[migratingAdapter](/persistence/migration/migrating-adapter/)** | Chain transformations from v1 → v2 → v3. |
+| **[Wrap legacy](/persistence/migration/wrap-legacy/)** | Bulk-wrap un-envelope'd legacy events into versioned envelopes. |
 
 Plus a more focused page: [Recipes](/persistence/migration/recipes/)
 — the cookbook of common migrations.
@@ -68,13 +68,15 @@ Adding `currency` to the type breaks recovery for V1 events
 
 ### Option A — Default
 
-Set up a `DefaultAdapter` that fills missing fields:
+Set up a `defaultsAdapter` that fills missing fields:
 
 ```ts
 class Account extends PersistentActor<...> {
   override eventAdapter() {
-    return new DefaultAdapter<EventV2>({
-      defaults: { currency: 'USD' },
+    return defaultsAdapter<EventV2>({
+      manifest:       'deposited',
+      currentVersion: 2,
+      defaults:       { 1: { currency: 'USD' } },
     });
   }
 }
@@ -88,13 +90,10 @@ Cheap, automatic, **only works for additive changes**.
 ```ts
 class Account extends PersistentActor<...> {
   override eventAdapter() {
-    return new MigratingAdapter<EventV2>({
-      chain: [
-        // v0 → v1: identity (no change)
-        // v1 → v2: add currency from a backed-out lookup
-        { from: 1, to: 2, fn: (v1) => ({ ...v1, currency: lookupCurrency(v1) }) },
-      ],
-    });
+    const chain = MigrationChain.for<EventV2>('deposited', 2)
+      .add({ fromVersion: 1, toVersion: 2,
+             upcast: (v1: EventV1): EventV2 => ({ ...v1, currency: lookupCurrency(v1) }) });
+    return migratingAdapter(chain);
   }
 }
 ```
@@ -108,12 +107,13 @@ For complex migrations (renaming, restructuring, splitting),
 implement `EventAdapter<E>` directly:
 
 ```ts
-class V1ToV2Adapter implements EventAdapter<EventV2> {
-  upcast(stored: unknown, version: number): EventV2 {
-    if (version === 1) return migrateV1ToV2(stored as EventV1);
-    return stored as EventV2;
-  }
-}
+const adapter: EventAdapter<EventV2> = {
+  manifest: () => 'deposited',
+  toJournal: (e) => ({ manifest: 'deposited', version: 2, payload: e }),
+  fromJournal: (stored) => stored.version === 1
+    ? migrateV1ToV2(stored.payload as EventV1)
+    : stored.payload as EventV2,
+};
 ```
 
 Full control; no constraints on shape transformations.
@@ -125,9 +125,9 @@ flowchart TB
   Q1{"Is the change ADDITIVE?<br/>(new fields only, sensible defaults)"}
   Q2{"Transformable from old → new?"}
   Q3{"Single-step or multi-step?"}
-  DEF["DefaultAdapter<br/><i>zero-effort</i>"]
-  MIG1["MigratingAdapter"]
-  MIG2["MigratingAdapter<br/><i>chain</i>"]
+  DEF["defaultsAdapter<br/><i>zero-effort</i>"]
+  MIG1["migratingAdapter"]
+  MIG2["migratingAdapter<br/><i>chain</i>"]
   CUSTOM["Custom EventAdapter<br/><i>restructured: renames, splits, joins</i>"]
   Q1 -- "yes" --> DEF
   Q1 -- "no" --> Q2
@@ -150,7 +150,9 @@ flowchart TB
 ```ts
 class Cart extends DurableStateActor<...> {
   protected stateAdapter() {
-    return new DefaultAdapter<StateV2>({ defaults: { ... } });
+    return defaultsSnapshotAdapter<StateV2>({
+      manifest: 'CartState', currentVersion: 2, defaults: { 1: { /* ... */ } },
+    });
   }
 }
 ```
@@ -191,17 +193,16 @@ they don't have envelopes — they're raw payloads.  The
 **WrapLegacy** helper bridges:
 
 ```ts
-import { wrapLegacy } from 'actor-ts';
+import { migrateInMemoryJournal } from 'actor-ts';
 
-const adapter = wrapLegacy<EventV2>({
-  legacyVersion: 1,
-  baseAdapter: new MigratingAdapter<EventV2>({ chain: [...] }),
-});
+// One-shot bulk rewrite — wrap every raw event as a v1 envelope
+// BEFORE the actor with the new adapter recovers.
+await migrateInMemoryJournal(journal, (e) => `${e.kind}`);
 ```
 
-This treats every unwrapped (raw) event as version 1, lets the
-migration chain run from there.  See
-[WrapLegacy](/persistence/migration/wrap-legacy/).
+This is a one-shot rewrite of the stored data; afterwards your
+normal adapter replays the now-enveloped v1 events.  See
+[Wrap legacy](/persistence/migration/wrap-legacy/).
 
 ## Operational rollout
 
@@ -226,11 +227,11 @@ and [Recipes](/persistence/migration/recipes/).
 
 - **[Envelope format](/persistence/migration/envelope-format/)** —
   the on-disk format.
-- **[DefaultAdapter](/persistence/migration/default-adapter/)** —
+- **[defaultsAdapter](/persistence/migration/default-adapter/)** —
   zero-config additive migrations.
-- **[MigratingAdapter](/persistence/migration/migrating-adapter/)** —
+- **[migratingAdapter](/persistence/migration/migrating-adapter/)** —
   chained version transformations.
-- **[WrapLegacy](/persistence/migration/wrap-legacy/)** —
+- **[Wrap legacy](/persistence/migration/wrap-legacy/)** —
   bring pre-envelope events into the system.
 - **[Schema registry](/persistence/migration/schema-registry/)** —
   the typed schema catalog.

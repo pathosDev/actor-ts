@@ -1,5 +1,6 @@
 import { NodeAddress } from './NodeAddress.js';
 import { fromNullable, type Option } from '../util/Option.js';
+import { FailureDetectorOptionsValidator } from './FailureDetectorOptions.js';
 import type { FailureDetectorOptions, FailureDetectorOptionsType } from './FailureDetectorOptions.js';
 
 export const defaultFailureDetectorOptions: FailureDetectorOptionsType = {
@@ -28,6 +29,7 @@ export class FailureDetector {
   constructor(options: FailureDetectorOptions = {}) {
     // Unset builder fields fall through to the built-in defaults.
     this.options = { ...defaultFailureDetectorOptions, ...(options as Partial<FailureDetectorOptionsType>) };
+    new FailureDetectorOptionsValidator().validate(this.options);
   }
 
   /** Record that a message was received from `peer` (any message counts). */

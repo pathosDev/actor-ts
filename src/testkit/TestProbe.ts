@@ -1,6 +1,7 @@
 import { ActorPath } from '../ActorPath.js';
 import { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
+import { TestProbeOptionsValidator } from './TestProbeOptions.js';
 import type { TestProbeOptions, TestProbeOptionsType } from './TestProbeOptions.js';
 
 interface Pending {
@@ -35,6 +36,7 @@ export class TestProbe extends ActorRef<unknown> {
   ) {
     super();
     const opts = (options as Partial<TestProbeOptionsType>);
+    new TestProbeOptionsValidator().validate(opts);
     const name = opts.name ?? `test-probe-${++probeCounter}`;
     this.path = new ActorPath('', null, system.name).child(name);
     this.defaultTimeoutMs = opts.defaultTimeoutMs ?? 3_000;

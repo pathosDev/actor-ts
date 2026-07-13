@@ -1,6 +1,7 @@
 import type { TlsTransportOptionsType } from '../runtime/tcp/index.js';
 import type { Logger } from '../Logger.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { OptionsValidator } from '../util/OptionsValidator.js';
 
 /** Plain options-object shape accepted by a {@link ClusterClient}. */
 export interface ClusterClientOptionsType {
@@ -71,6 +72,24 @@ export class ClusterClientOptionsBuilder extends OptionsBuilder<ClusterClientOpt
   /** Custom logger; default ConsoleLogger at WARN. */
   withLogger(logger: Logger): this {
     return this.set('logger', logger);
+  }
+}
+
+/**
+ * Validates resolved {@link ClusterClientOptionsType} settings.  `contactPoints`
+ * is required and non-empty (there is nothing to dial otherwise); it is
+ * checked explicitly because the field-name helpers treat an unset value as
+ * "not provided" and pass.
+ */
+export class ClusterClientOptionsValidator extends OptionsValidator<ClusterClientOptionsType> {
+  constructor() {
+    super('ClusterClientOptions');
+  }
+  protected rules(s: Partial<ClusterClientOptionsType>): void {
+    if (s.contactPoints === undefined || s.contactPoints.length === 0) {
+      this.fail('contactPoints', 'must contain at least one entry', s.contactPoints);
+    }
+    this.positiveNumber('askTimeoutMs');
   }
 }
 

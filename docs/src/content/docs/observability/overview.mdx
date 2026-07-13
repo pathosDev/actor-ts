@@ -10,7 +10,7 @@ the outside:
 | --- | --- | --- |
 | **Metrics** | "What's the rate / count / latency right now?" | [`MetricsExtension`](/observability/metrics/core-metrics/) |
 | **Tracing** | "What did this single request do?" | [`TracingExtension`](/observability/tracing/tracer-api/) |
-| **Management** | "Is the system alive and healthy?" | [`HttpManagement`](/observability/management/overview/) |
+| **Management** | "Is the system alive and healthy?" | [`managementRoutes`](/observability/management/overview/) |
 
 All three are **extensions** — they don't run unless you reach for
 them.  An app that ignores observability has no overhead from
@@ -58,7 +58,6 @@ to a metrics backend uses an **exporter**:
 | --- | --- |
 | `PrometheusExporter` | Exposes a `/metrics` endpoint Prometheus scrapes. |
 | `PromClientAdapter` | Pushes into the `prom-client` library if you're already using it. |
-| `OtelMetricsAdapter` | Reports via OpenTelemetry. |
 
 See [Prometheus exporter](/observability/metrics/prometheus-exporter/)
 for the deep dive on each.
@@ -82,13 +81,12 @@ messages?" out of the box without writing any metric code.
 ## Tracing
 
 ```ts
-import { ActorSystem, TracingExtensionId } from 'actor-ts';
-import { OtelTracerAdapter } from 'actor-ts';
+import * as otel from '@opentelemetry/api';
+import { ActorSystem, TracingExtensionId, otelTracer, OtelAdapterOptions } from 'actor-ts';
 
 const system = ActorSystem.create('my-app');
-system.extension(TracingExtensionId).configure({
-  tracer: new OtelTracerAdapter({ /* OTel SDK setup */ }),
-});
+const otelAdapterOptions = OtelAdapterOptions.create().withApi(otel);
+system.extension(TracingExtensionId).enable(otelTracer(otelAdapterOptions));
 ```
 
 With tracing enabled, **every actor message gets its own span**.
@@ -121,22 +119,21 @@ flowchart TB
 The end result: one trace per logical request, even when it hops
 through 4-5 actors.
 
-The exporter is OpenTelemetry-style.  Use
-[OtelTracerAdapter](/observability/tracing/otel-adapter/)
+The tracer bridges to OpenTelemetry.  Use
+[otelTracer](/observability/tracing/otel-adapter/)
 in production; a [RecordingTracer](/observability/tracing/recording-tracer/)
 exists for tests.
 
 ## Management endpoints
 
 ```ts
-import { HttpManagement, ActorSystem } from 'actor-ts';
+import { managementRoutes, ActorSystem } from 'actor-ts';
 
 const system = ActorSystem.create('my-app');
 
-const management = await HttpManagement.start(system, {
-  port: 8558,
-  cluster,   // optional, for /cluster endpoints
-});
+// cluster is optional — pass null to skip the /cluster/* endpoints
+const { routes, health } = managementRoutes(system, cluster);
+await system.http(8558).bind(routes);
 ```
 
 This spins up a small HTTP server (separate from your app's HTTP
@@ -144,11 +141,11 @@ server) that exposes endpoints for operations:
 
 | Endpoint | What |
 | --- | --- |
-| `GET /health/ready` | Liveness — is the system up? |
-| `GET /health/alive` | Readiness — is the system ready for traffic? |
-| `GET /cluster/members` | List of cluster members (when cluster is configured). |
-| `GET /sharding/regions` | Sharding regions, hosted shards per node. |
-| `GET /metrics` | Prometheus exposition if `PrometheusExporter` is configured. |
+| `GET /health` | Liveness — is the process up? |
+| `GET /ready` | Readiness — ready for traffic (cluster up + checks)? |
+| `GET /cluster/members` | List of cluster members (when a cluster is passed). |
+| `GET /cluster/shards?type=<name>` | Shard placement for a sharded type. |
+| `GET /metrics` | Prometheus exposition (opt-in via `enableMetricsEndpoint`). |
 
 Useful for K8s probes (liveness + readiness) and ad-hoc
 operational debugging.  See
@@ -158,13 +155,13 @@ for the full surface.
 ### Health checks
 
 ```ts
-management.addHealthCheck('db', async () => {
-  if (!(await db.ping())) return { ok: false, reason: 'db unreachable' };
-  return { ok: true };
+health.addReadiness(async () => {
+  const ok = await db.ping();
+  return { name: 'db', status: ok, detail: ok ? undefined : 'db unreachable' };
 });
 ```
 
-Custom checks plug into `/health/ready` — a failing check makes the
+Custom checks plug into `/ready` — a failing check makes the
 endpoint return 503, which K8s reads as "don't route to this pod."
 
 See [Health checks](/observability/management/health-checks/)

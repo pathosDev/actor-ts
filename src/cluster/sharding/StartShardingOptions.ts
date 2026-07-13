@@ -2,7 +2,7 @@ import type { Lease } from '../../coordination/Lease.js';
 import type { AllocationStrategy } from './AllocationStrategy.js';
 import type { CoordinatorStateStore } from './CoordinatorState.js';
 import type { RememberEntitiesStore } from './RememberEntitiesStore.js';
-import { ShardingOptionsBuilder } from './ShardingOptions.js';
+import { ShardingOptionsBuilder, ShardingOptionsValidator } from './ShardingOptions.js';
 import type { ShardingOptionsType } from './ShardingOptions.js';
 
 /**
@@ -110,6 +110,23 @@ export class StartShardingOptionsBuilder<TMessage> extends ShardingOptionsBuilde
   /** Persistence backend for the coordinator's allocation state. */
   withCoordinatorStateStore(coordinatorStateStore: CoordinatorStateStore): this {
     return this.set('coordinatorStateStore', coordinatorStateStore);
+  }
+}
+
+/**
+ * Validates resolved {@link StartShardingOptionsType} settings — the region-side
+ * {@link ShardingOptionsValidator} rules plus the coordinator-side intervals.
+ */
+export class StartShardingOptionsValidator<TMsg>
+  extends ShardingOptionsValidator<TMsg, StartShardingOptionsType<TMsg>> {
+  constructor() {
+    super('StartShardingOptions');
+  }
+  protected override rules(s: Partial<StartShardingOptionsType<TMsg>>): void {
+    this.commonRules(s);
+    this.positiveNumber('rebalanceIntervalMs');
+    this.positiveNumber('handOffTimeoutMs');
+    this.positiveNumber('acquireRetryIntervalMs');
   }
 }
 

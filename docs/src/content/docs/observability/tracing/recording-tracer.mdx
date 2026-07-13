@@ -4,7 +4,7 @@ description: Test-friendly `Tracer` that captures every span in memory for asser
 ---
 
 `RecordingTracer` is the test counterpart to
-[`OtelTracerAdapter`](/observability/tracing/otel-adapter/).
+[`otelTracer`](/observability/tracing/otel-adapter/).
 Instead of exporting spans, it **stores them in memory** —
 tests assert on the recorded spans.
 

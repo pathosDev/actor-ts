@@ -60,13 +60,19 @@ infrastructure shape.
 ## Management endpoint
 
 ```ts
-await HttpManagement.start(system, {
-  port: 8558,
-  tls:  {
+import { managementRoutes } from 'actor-ts';
+import { FastifyBackend } from 'actor-ts/http';
+
+const { routes } = managementRoutes(system, cluster);
+
+// TLS is a property of the HTTP backend — Fastify's `https` option.
+const tlsBackend = new FastifyBackend({
+  https: {
     cert: fs.readFileSync('./tls/mgmt.crt'),
     key:  fs.readFileSync('./tls/mgmt.key'),
   },
 });
+await system.http(8558, { backend: tlsBackend }).bind(routes);
 ```
 
 The management server is internal-only by default — but

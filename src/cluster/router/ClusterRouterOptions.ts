@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { Cluster } from '../Cluster.js';
 import type { ClusterRouterType } from './ClusterRouter.js';
 
@@ -66,6 +67,24 @@ export class ClusterRouterOptionsBuilder<TMessage> extends OptionsBuilder<Cluste
   /** Key extractor — required for `consistent-hashing`, ignored otherwise. */
   withExtractKey(extractKey: (message: TMessage) => string): this {
     return this.set('extractKey', extractKey);
+  }
+}
+
+/**
+ * Validates resolved {@link ClusterRouterOptionsType} settings — a known
+ * `routerType`, a non-empty `routeePath`, and the cross-field rule that
+ * consistent-hashing needs an `extractKey`.
+ */
+export class ClusterRouterOptionsValidator<TMsg> extends OptionsValidator<ClusterRouterOptionsType<TMsg>> {
+  constructor() {
+    super('ClusterRouterOptions');
+  }
+  protected rules(s: Partial<ClusterRouterOptionsType<TMsg>>): void {
+    this.oneOf('routerType', ['round-robin', 'random', 'consistent-hashing', 'broadcast']);
+    this.nonEmptyString('routeePath');
+    if (s.routerType === 'consistent-hashing' && s.extractKey === undefined) {
+      this.fail('extractKey', "is required when routerType is 'consistent-hashing'");
+    }
   }
 }
 

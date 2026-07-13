@@ -1,0 +1,77 @@
+---
+title: CSRF-Schutz
+description: csrfProtection() ist ein zustandsloses Double-Submit-Verfahren, gehärtet mit einem HMAC; requireSameOrigin() ist der leichtgewichtige Origin/Referer-Check. Beide schützen unsichere Methoden vor Cross-Site Request Forgery.
+---
+
+`csrfProtection` ist eine **zustandslose** CSRF-Abwehr: das Token ist
+`payload.hmac(secret, payload)`, sodass ein Cookie, das ein Angreifer von
+einer Geschwister-Subdomain platziert, die Verifikation nicht besteht.
+Sichere Methoden erzeugen/erneuern das Token; unsichere Methoden
+(`POST`/`PUT`/`PATCH`/`DELETE`) müssen ein passendes Cookie **und** einen
+passenden Header vorweisen.
+
+```ts
+import { csrfProtection, CsrfOptions, withMiddleware } from 'actor-ts/http';
+
+const csrf = csrfProtection(
+  CsrfOptions.create().withSecret(process.env.CSRF_SECRET!),
+);
+
+const routes = withMiddleware(csrf, appRoutes);
+```
+
+Bei einem sicheren Request wird das Token als (nicht-`HttpOnly`-)Cookie
+gesetzt und zusätzlich an den Handler weitergereicht, der es mit
+`readCsrfToken(req)` liest und in ein Formularfeld oder `<meta>`-Tag
+einsetzt. Der Browser sendet es beim nächsten unsicheren Request im
+`X-CSRF-Token`-Header (oder einem konfigurierten Formularfeld) zurück.
+
+## Konfiguration
+
+| Builder-Methode | Feld | Default |
+| --- | --- | --- |
+| `withSecret(s)` | `secret` | **erforderlich**, ≥ 16 Bytes |
+| `withCookieName(n)` | `cookieName` | `'csrf-token'` |
+| `withHeaderName(n)` | `headerName` | `'x-csrf-token'` |
+| `withCookie(attrs)` | `cookie` | `Path=/`, `Secure`, `SameSite=Lax` |
+| `withVerifyOrigin(flag?)` | `verifyOrigin` | `true` — zusätzlich Origin/Referer prüfen |
+| `withAllowedOrigins(...o)` | `allowedOrigins` | zusätzlich akzeptierte Origins |
+| `withFormField(name)` | `formFieldName` | aus — das Token auch aus einem urlencoded Body-Feld lesen |
+
+## Die leichtgewichtige Alternative — `requireSameOrigin`
+
+Brauchst du nur Schutz für moderne Browser, weist `requireSameOrigin()`
+unsichere-Methoden-Requests ab, deren `Origin`/`Referer`-Host nicht der
+Request-Host ist:
+
+```ts
+import { requireSameOrigin, withMiddleware } from 'actor-ts/http';
+
+const routes = withMiddleware(requireSameOrigin(), appRoutes);
+```
+
+`csrfProtection` ist die Doppel-Absicherung (es führt diesen Check ebenfalls
+aus); `requireSameOrigin` allein ist leichter, verlässt sich aber darauf,
+dass der Browser ein korrektes `Origin`/`Referer` sendet.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="note" title="Warum das Cookie nicht HttpOnly ist">
+  Double-Submit **erfordert**, dass Same-Origin-JavaScript das Cookie liest
+  und in den Header echot — das Cookie ist deshalb bewusst nicht
+  `HttpOnly`. Das Token authentifiziert für sich genommen nichts (das tut
+  weiterhin dein Session-/Auth-Cookie), und jedes XSS, das es lesen kann,
+  hebelt ohnehin jedes CSRF-Verfahren aus.
+</Aside>
+
+<Aside type="caution" title="Ein Set-Cookie pro Response">
+  `HttpResponse.headers` hält ein einzelnes `Set-Cookie`. Setzt ein Handler
+  auf einer Safe-Method-Response bereits eines, wird das CSRF-Cookie auf
+  dieser Response nicht ergänzt — es landet auf der nächsten. Halte das
+  Secret in einem Secret-Manager, nicht in einer Config-Datei.
+</Aside>
+
+## Wie weiter
+
+- **[CORS](/de/http/middleware/cors/)** — Umgang mit Cross-Origin-Requests.
+- **[Sicherheit](/de/http/security/)** — wo CSRF im Stack sitzt.

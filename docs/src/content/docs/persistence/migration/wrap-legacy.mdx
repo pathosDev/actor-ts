@@ -1,182 +1,175 @@
 ---
-title: WrapLegacy
-description: Upgrade pre-envelope events to versioned envelopes — when introducing adapters to an existing journal, `wrapLegacy(...)` treats raw events as version 1 and feeds them into the migration chain. The bridge for adopting migration in a brownfield codebase.
+title: Wrap legacy
+description: Retrofit a pre-envelope journal — a one-shot bulk migration that wraps every raw event in a version-1 envelope so a freshly-added EventAdapter can replay it. `migrateInMemoryJournal` for the in-memory journal; the `wrapEventAsEnvelope` primitive for SQL / Cassandra / S3.
 ---
 
 The framework's [envelope format](/persistence/migration/envelope-format/)
-only kicks in when an adapter is configured.  **Before** you set
-an adapter, events are stored **raw**:
+only kicks in when an adapter is configured.  **Before** you set an
+adapter, events are stored **raw**:
 
 ```json
 { "kind": "deposited", "amount": 100 }
 ```
 
-After you set one, new events are wrapped:
+Once an adapter is in place, new events are wrapped in an envelope:
 
 ```json
-{ "_v": 1, "_t": "deposited", "_e": { "kind": "deposited", "amount": 100 } }
+{ "_v": 1, "_t": "BankAccount.deposited", "_e": { "kind": "deposited", "amount": 100 } }
 ```
 
-This creates a problem when introducing adapters to an
-**existing journal**: old raw events lack the envelope, but the
-adapter expects envelopes.  Reading a raw event throws
-`MigrationError`.
+That creates a problem when you add an adapter to an **existing
+journal**: the old raw events have no envelope, but the adapter
+expects one.  Reading the first raw event throws `MigrationError`.
 
-**`wrapLegacy`** bridges:
+The fix is a **one-shot bulk migration**: walk the journal once,
+wrap every raw event as a version-1 envelope, write it back.  From
+then on your normal
+[defaultsAdapter](/persistence/migration/default-adapter/) /
+[migratingAdapter](/persistence/migration/migrating-adapter/)
+replays them like any other v1 event.  This is a real rewrite of
+the stored data, not a read-time shim.
+
+## In-memory journal
+
+For the in-memory journal, `migrateInMemoryJournal` does the whole
+walk-and-rewrite.  You supply a `manifestFor` that derives the
+stable `_t` discriminator from each event:
 
 ```ts
-import { wrapLegacy, MigratingAdapter } from 'actor-ts';
+import { migrateInMemoryJournal, formatMigrationResult } from 'actor-ts';
 
-class Account extends PersistentActor<...> {
-  override eventAdapter() {
-    return wrapLegacy<EventV2>({
-      legacyVersion: 1,
-      baseAdapter:   new MigratingAdapter<EventV2>({
-        currentVersion: 2,
-        chain: [{ from: 1, to: 2, fn: v1ToV2 }],
-      }),
+const result = await migrateInMemoryJournal(
+  journal,
+  (e: { kind: string }) => `BankAccount.${e.kind}`,
+);
+
+console.log(formatMigrationResult('events', result));
+// → "events: 3 wrapped, 0 already enveloped, 3 inspected"
+```
+
+Sequence numbers, timestamps, and tags are preserved — only the
+event payload is wrapped.  Run this **before** the actor with the
+new adapter recovers.
+
+## Other backends
+
+`migrateInMemoryJournal` relies on an internal `_remapForMigration`
+hook that only the in-memory journal exposes.  Cassandra / SQLite /
+Postgres / S3 journals each need a backend-specific rewrite path
+(SQL `UPDATE`, CQL `UPDATE`, S3 `PUT`).  Use the pure per-row
+primitive `wrapEventAsEnvelope` as the building block:
+
+```ts
+import { wrapEventAsEnvelope } from 'actor-ts';
+
+// Inside your own per-row rewrite loop:
+for (const row of rows) {
+  const enveloped = wrapEventAsEnvelope(
+    row.event,
+    (e) => `BankAccount.${e.kind}`,
+  );
+  await backend.rewrite(row.id, enveloped);
+  // enveloped === { _v: 1, _t: 'BankAccount.deposited', _e: row.event }
+}
+```
+
+`wrapEventAsEnvelope(event, manifestFor, version?)` is pure and
+**idempotent** — an event that already looks like an envelope is
+returned unchanged, so re-running the migration is safe.
+
+## Snapshots
+
+Legacy raw snapshots have the same problem.  `migrateSnapshotStore`
+wraps the latest snapshot per persistence id (sourced from the
+journal), using `wrapStateAsEnvelope` under the hood:
+
+```ts
+import { migrateSnapshotStore } from 'actor-ts';
+
+const pids   = await journal.persistenceIds();
+const result = await migrateSnapshotStore(store, pids, (s) => 'BankAccount.State');
+```
+
+## After the migration
+
+Once the journal is migrated, the raw events are v1 envelopes.
+The actor uses a **normal adapter** — there's no special
+"legacy-wrapping" adapter at read time:
+
+```ts
+class Account extends PersistentActor<Cmd, EventV2, State> {
+  override eventAdapter(): EventAdapter<EventV2> {
+    return defaultsAdapter<EventV2>({
+      manifest:       'BankAccount.deposited',
+      currentVersion: 2,
+      defaults:       { 1: { currency: 'USD' } },
     });
   }
 }
 ```
 
-What this does:
+The `manifest` here must match the `_t` your `manifestFor` produced
+during the migration.
 
-- On a **raw event** (no `_v` / `_t` / `_e` keys): treat it as
-  `version: 1`.  Pass the raw event as the v1 payload into the
-  inner adapter.
-- On an **envelope event**: pass through to the inner adapter
-  unchanged.
-
-So existing raw events flow through the same migration chain as
-new envelope-wrapped events.
-
-## Configuration
+## Signatures
 
 ```ts
-interface WrapLegacyOptionsType<E> {
-  legacyVersion: number;        // version to assign to raw events
-  baseAdapter:   EventAdapter<E>;
+function wrapEventAsEnvelope<E>(
+  event: E, manifestFor: (e: E) => string, version?: number,   // version default 1
+): JournalEnvelope<E>;
+
+function wrapStateAsEnvelope<S>(
+  state: S, manifestFor: (s: S) => string, version?: number,
+): JournalEnvelope<S>;
+
+function migrateInMemoryJournal<E>(
+  journal: Journal, manifestFor: (e: E) => string, opts?: { version?: number },
+): Promise<MigrationResult>;
+
+function migrateSnapshotStore<S>(
+  store: SnapshotStore, pids: ReadonlyArray<string>,
+  manifestFor: (s: S) => string, opts?: { version?: number },
+): Promise<MigrationResult>;
+
+interface MigrationResult {
+  inspected: number;   // entries examined
+  wrapped:   number;   // raw → envelope
+  skipped:   number;   // already enveloped, left untouched
 }
 ```
-
-| Field | What |
-| --- | --- |
-| `legacyVersion` | The version raw events are treated as.  Typically `1`. |
-| `baseAdapter` | The "real" adapter that handles the rest. |
-
-The legacy version should be **the version your code wrote raw
-events under** — usually `1`, but if you've been on v1 a while
-and skipped envelope adoption until v3, use `legacyVersion: 1`
-and chain `1→2`, `2→3`.
-
-## When to use it
-
-Three scenarios:
-
-1. **Adding adapters to an existing journal** — the most common
-   case.  Wrap once; from this point on, new events are
-   envelopes, old events flow through legacy-wrapping.
-2. **Migrating from a different framework** — old events written
-   by a previous system are now in this journal.  Treat them as
-   `legacyVersion` and migrate up.
-3. **Mixed environments during gradual rollout** — some events
-   were written by an old version of your code (raw); some by
-   a new version (envelope).  Wrap to handle both.
-
-After **all** raw events have been read (or replaced by snapshots
-that contain the migrated state), you could in principle drop the
-`wrapLegacy` wrapper.  In practice, leave it on — the cost is
-negligible and the safety net is valuable.
-
-## What gets considered "legacy"
-
-The detection is simple: a stored payload **without all of `_v`,
-`_t`, `_e`** is legacy.  This is unambiguous in practice — real
-events virtually never have all three underscore-prefixed fields
-by coincidence.
-
-## Multiple legacy versions
-
-If your journal contains raw events from **multiple legacy
-versions**, `wrapLegacy` alone isn't enough — it gives one
-`legacyVersion` to all raw events.
-
-For multi-legacy scenarios, you'd write a custom adapter that
-inspects the raw event's shape to decide its version:
-
-```ts
-class MultiLegacyAdapter implements EventAdapter<EventV3> {
-  upcast(stored: unknown, version: number): EventV3 {
-    if (version > 0) {
-      // Envelope event with known version — chain handles it
-      return innerChain.upcast(stored, version);
-    }
-    // Legacy event — sniff shape to determine version
-    const e = stored as any;
-    if ('cents' in e) return innerChain.upcast(e, 2);   // looks like v2 shape
-    if ('amount' in e) return innerChain.upcast(e, 1);   // looks like v1 shape
-    throw new Error('unknown legacy event shape');
-  }
-}
-```
-
-This is rare; most projects have a single pre-envelope shape and
-`wrapLegacy` is sufficient.
-
-## Snapshot compatibility
-
-Snapshots have their own adapter (`stateAdapter()`), independent
-of `eventAdapter()`.  If you have legacy raw snapshots (pre-
-envelope), wrap them similarly:
-
-```ts
-class Account extends PersistentActor<...> {
-  override snapshotAdapter() {
-    return wrapLegacy<StateV2>({
-      legacyVersion: 1,
-      baseAdapter: new MigratingAdapter<StateV2>({ ... }),
-    });
-  }
-}
-```
-
-For most setups, snapshots are written less often than events
-and were already enveloped when adapters were introduced — but
-double-check before assuming.
 
 ## Pitfalls
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Wrong `legacyVersion`">
+<Aside type="caution" title="Run the migration before recovery">
   ```ts
-  wrapLegacy<EventV3>({ legacyVersion: 2, ... });
-  // ✗ raw events get fed into the v2→v3 step, but they're actually v1
+  // Deploy the adapter without migrating first → first raw event throws
+  override eventAdapter() { return defaultsAdapter({ ... }); }
   ```
-  The `legacyVersion` must match the shape of your existing raw
-  events.  Get this wrong and the migration chain receives
-  malformed input.
+  The bulk migration must run against the journal **before** an
+  actor with the new adapter recovers — otherwise the first raw
+  event throws `MigrationError`.
 </Aside>
 
-<Aside type="caution" title="Mixed envelope/non-envelope without wrap">
+<Aside type="caution" title="`manifestFor` must be stable and match the adapter">
   ```ts
-  // Adapter set without wrapLegacy — first raw event throws
-  override eventAdapter() { return new MigratingAdapter(...); }
+  // migration wrote _t: 'BankAccount.deposited'
+  // but the adapter's manifest is 'Deposited' → MigrationError on read
   ```
-  Use `wrapLegacy` whenever the journal might contain raw events
-  — even if you think they're all enveloped, the safety net is
-  cheap.
+  The `_t` your `manifestFor` produces is baked into the stored
+  envelope.  It must equal the `manifest` your adapter declares, and
+  it must be derived deterministically from the event.
 </Aside>
 
-<Aside type="caution" title="Don't conflate with a one-time backfill">
+<Aside type="caution" title="Custom backends need their own rewrite">
   ```ts
-  // Run a script to wrap every existing event in an envelope?
+  await migrateInMemoryJournal(cassandraJournal, manifestFor);
+  // ✗ throws: journal does not expose _remapForMigration
   ```
-  Possible, but invasive: requires journal-write access + risks
-  data damage.  `wrapLegacy` does the wrapping **at read time** —
-  no journal modification needed.  Stick with that unless you
-  have a specific reason to rewrite the journal.
+  Only the in-memory journal supports `migrateInMemoryJournal`.  For
+  other backends, write a few lines of glue around
+  `wrapEventAsEnvelope` and your store's native update path.
 </Aside>
 
 ## Where to next
@@ -185,9 +178,9 @@ import { Aside } from '@astrojs/starlight/components';
   the bigger picture.
 - **[Envelope format](/persistence/migration/envelope-format/)** —
   what an envelope looks like.
-- **[DefaultAdapter](/persistence/migration/default-adapter/)** —
-  for additive migrations.
-- **[MigratingAdapter](/persistence/migration/migrating-adapter/)** —
-  for chained transformations (commonly wrapped by `wrapLegacy`).
+- **[defaultsAdapter](/persistence/migration/default-adapter/)** —
+  for additive migrations once events are enveloped.
+- **[migratingAdapter](/persistence/migration/migrating-adapter/)** —
+  for chained transformations once events are enveloped.
 - **[Recipes](/persistence/migration/recipes/)** — the
   recipe for "I'm introducing adapters to an existing system."

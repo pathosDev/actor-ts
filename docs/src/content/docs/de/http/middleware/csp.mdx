@@ -1,0 +1,56 @@
+---
+title: Content-Security-Policy
+description: contentSecurityPolicy() sendet einen Content-Security-Policy-Header aus einer typisierten Direktiven-Map, gemergt über eine Helmet-nahe Baseline, mit Report-Only-Variante und Injection-Guard für Source-Tokens.
+---
+
+`contentSecurityPolicy()` baut einen CSP-Header aus einer typisierten
+Direktiven-Map. camelCase-Keys serialisieren zu ihren kebab-case
+Direktiven-Namen, und deine Direktiven mergen über eine Helmet-nahe
+Baseline.
+
+```ts
+import { contentSecurityPolicy, CspOptions, withMiddleware } from 'actor-ts/http';
+
+const csp = contentSecurityPolicy(
+  CspOptions.create().withDirectives({
+    scriptSrc: ["'self'", 'https://cdn.example'],
+    imgSrc: ["'self'", 'data:', 'https:'],
+  }),
+);
+
+const routes = withMiddleware(csp, appRoutes);
+```
+
+Die Baseline (`useDefaults`, standardmäßig an) ist `default-src 'self'`,
+`object-src 'none'`, `base-uri 'self'`, `frame-ancestors 'self'`,
+`script-src 'self'` und Co. Deine Direktiven überschreiben pro Direktive;
+setze eine Direktive auf `[]`, um sie zu entfernen, oder rufe
+`withoutDefaults()`, um nur das Angegebene zu senden.
+
+## Konfiguration
+
+| Builder-Methode | Zweck |
+| --- | --- |
+| `withDirectives(map)` | Die Direktiven-Map (über die Baseline gemergt). |
+| `withoutDefaults()` | Nur die angegebenen Direktiven senden — Baseline überspringen. |
+| `withReportOnly(flag?)` | `Content-Security-Policy-Report-Only` senden statt durchzusetzen. |
+
+`upgradeInsecureRequests: true` rendert die wertlose Direktive; `reportUri`
+und `reportTo` werden unterstützt. Ein Source-Token mit `;`, `,` oder
+Whitespace wirft bei der Konstruktion — keine stille Header-Injection.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="note" title="Nonces sind (noch) nicht eingebaut">
+  Per-Request-Nonces bräuchten eine Template-/SSR-Integration, um ins
+  gerenderte HTML zu gelangen — die das Framework nicht hat. Ein Handler,
+  der eine braucht, erzeugt seine eigene Nonce (`crypto.randomBytes`) und
+  setzt seinen eigenen CSP-Header — diese Middleware weicht zurück, da sie
+  einen vom Handler bereits gesetzten Header nie überschreibt.
+</Aside>
+
+## Wie weiter
+
+- **[Security-Header](/de/http/middleware/security-headers/)** — die übrigen Response-Header.
+- **[HTML & XSS](/de/http/html-xss/)** — Escaping ist die erste Linie; CSP ist Defense-in-Depth.
+- **[Sicherheit](/de/http/security/)** — der empfohlene Stack.

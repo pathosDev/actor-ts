@@ -1,6 +1,7 @@
 import { match, P } from 'ts-pattern';
 import { Actor } from '../Actor.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
+import { ReceptionistOptionsValidator } from './ReceptionistOptions.js';
 import type { ReceptionistOptions, ReceptionistOptionsType } from './ReceptionistOptions.js';
 import { fromNullable, type Option } from '../util/Option.js';
 import type { ActorRef } from '../ActorRef.js';
@@ -61,6 +62,7 @@ export class Receptionist extends Actor<Msg> {
   constructor(options: ReceptionistOptions = {}) {
     super();
     const resolvedOptions = options as ReceptionistOptionsType;
+    new ReceptionistOptionsValidator().validate(resolvedOptions);
     this.clusterRef = resolvedOptions.cluster ?? null;
     this.gossipIntervalMs = resolvedOptions.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
   }

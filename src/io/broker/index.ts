@@ -26,7 +26,7 @@ export type {
   TcpFraming,
   TcpOutbound,
 } from './TcpSocketActor.js';
-export { TcpSocketOptions, TcpSocketOptionsBuilder } from './TcpSocketOptions.js';
+export { TcpSocketOptions, TcpSocketOptionsBuilder, TcpSocketOptionsValidator } from './TcpSocketOptions.js';
 export type { TcpSocketOptionsType } from './TcpSocketOptions.js';
 export { UdpSocketActor } from './UdpSocketActor.js';
 export type {
@@ -34,7 +34,7 @@ export type {
   UdpDatagram,
   UdpOutbound,
 } from './UdpSocketActor.js';
-export { UdpSocketOptions, UdpSocketOptionsBuilder } from './UdpSocketOptions.js';
+export { UdpSocketOptions, UdpSocketOptionsBuilder, UdpSocketOptionsValidator } from './UdpSocketOptions.js';
 export type { UdpSocketOptionsType } from './UdpSocketOptions.js';
 // Subclass-first typed MQTT actor.
 export { MqttActor, matchesMqttPattern, buildPublishProperties } from './MqttActor.js';
@@ -45,7 +45,7 @@ export type {
   MqttModuleLike,
   MqttInboundPacketLike,
 } from './MqttActor.js';
-export { MqttOptions, MqttOptionsBuilder } from './MqttOptions.js';
+export { MqttOptions, MqttOptionsBuilder, MqttOptionsValidator } from './MqttOptions.js';
 export type { MqttOptionsType, MqttCredentials } from './MqttOptions.js';
 // Message types, payload wrapper, and mailbox signals (kind-tagged).
 export { MqttPayload } from './MqttMessages.js';
@@ -77,7 +77,7 @@ export type {
   KafkaRecord,
   KafkaPublish,
 } from './KafkaActor.js';
-export { KafkaOptions, KafkaOptionsBuilder } from './KafkaOptions.js';
+export { KafkaOptions, KafkaOptionsBuilder, KafkaOptionsValidator } from './KafkaOptions.js';
 export type { KafkaOptionsType } from './KafkaOptions.js';
 export { AmqpActor } from './AmqpActor.js';
 export type {
@@ -86,7 +86,7 @@ export type {
   AmqpPublish,
   AmqpQueueBinding,
 } from './AmqpActor.js';
-export { AmqpOptions, AmqpOptionsBuilder } from './AmqpOptions.js';
+export { AmqpOptions, AmqpOptionsBuilder, AmqpOptionsValidator } from './AmqpOptions.js';
 export type { AmqpOptionsType } from './AmqpOptions.js';
 export { GrpcClientActor } from './GrpcClientActor.js';
 export type {
@@ -94,7 +94,7 @@ export type {
   GrpcInbound,
   GrpcCredentials,
 } from './GrpcClientActor.js';
-export { GrpcClientOptions, GrpcClientOptionsBuilder } from './GrpcClientOptions.js';
+export { GrpcClientOptions, GrpcClientOptionsBuilder, GrpcClientOptionsValidator } from './GrpcClientOptions.js';
 export type { GrpcClientOptionsType } from './GrpcClientOptions.js';
 export { GrpcServerActor } from './GrpcServerActor.js';
 export type {
@@ -113,7 +113,7 @@ export type {
   NatsMessage,
   NatsPublish,
 } from './NatsActor.js';
-export { NatsOptions, NatsOptionsBuilder } from './NatsOptions.js';
+export { NatsOptions, NatsOptionsBuilder, NatsOptionsValidator } from './NatsOptions.js';
 export type { NatsOptionsType } from './NatsOptions.js';
 export { JetStreamActor } from './JetStreamActor.js';
 export type {
@@ -130,7 +130,7 @@ export type {
   JetStreamMsgInfoLike,
   JetStreamManagerLike,
 } from './JetStreamActor.js';
-export { JetStreamOptions, JetStreamOptionsBuilder } from './JetStreamOptions.js';
+export { JetStreamOptions, JetStreamOptionsBuilder, JetStreamOptionsValidator } from './JetStreamOptions.js';
 export type { JetStreamOptionsType } from './JetStreamOptions.js';
 export { RedisStreamsActor } from './RedisStreamsActor.js';
 export type {
@@ -138,12 +138,12 @@ export type {
   RedisStreamEntry,
   RedisStreamPublish,
 } from './RedisStreamsActor.js';
-export { RedisStreamsOptions, RedisStreamsOptionsBuilder } from './RedisStreamsOptions.js';
+export { RedisStreamsOptions, RedisStreamsOptionsBuilder, RedisStreamsOptionsValidator } from './RedisStreamsOptions.js';
 export type { RedisStreamsOptionsType } from './RedisStreamsOptions.js';
 export { SseActor } from './SseActor.js';
 export type {
   SseCommand,
   SseEvent,
 } from './SseActor.js';
-export { SseOptions, SseOptionsBuilder } from './SseOptions.js';
+export { SseOptions, SseOptionsBuilder, SseOptionsValidator } from './SseOptions.js';
 export type { SseOptionsType } from './SseOptions.js';

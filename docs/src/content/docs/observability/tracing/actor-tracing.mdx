@@ -95,29 +95,27 @@ These follow OpenTelemetry semantic conventions where
 applicable, so off-the-shelf dashboards (Honeycomb, Datadog,
 Grafana Tempo) work without customization.
 
-## Disabling auto-tracing
+## Controlling span volume
 
-```ts
-system.extension(TracingExtensionId).configure({
-  tracer:              new OtelTracerAdapter(...),
-  autoSpanReceive:     false,   // don't auto-span actor.receive
-  autoSpanPersist:     false,
-  autoSpanClusterWire: true,
-});
-```
+Auto-instrumentation is **all-or-nothing** — it's active whenever
+you enable a non-Noop tracer, and off (zero overhead) when the
+tracer is the default `NoopTracer`.  There are no per-category
+toggles.
 
-Useful when you only want **manual spans** at specific code
-points, or to reduce span volume in very-high-throughput
-systems.
-
-The framework's auto-instrumentation is **opt-in by default**
-when a non-Noop tracer is set; disable per-category if needed.
+To reduce span volume in very-high-throughput systems, **sample at
+the SDK level** (see
+[OTel adapter → Sampling](/observability/tracing/otel-adapter/#sampling))
+rather than turning categories off — the framework records at full
+rate, but the SDK exports only a fraction.  Turning
+auto-instrumentation off entirely means installing the
+`NoopTracer`, which also disables your manual spans, since they
+route through the same tracer.
 
 ## Adding application-level spans
 
 ```ts
 override async onReceive(msg) {
-  const tracer = this.context.system.extension(TracingExtensionId).tracer;
+  const tracer = this.context.system.extension(TracingExtensionId).get();
   const span = tracer.startSpan('process-order', {
     attributes: {
       'order.id':     msg.orderId,

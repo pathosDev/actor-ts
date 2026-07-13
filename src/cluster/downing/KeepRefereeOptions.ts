@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 
 /** Plain options-object shape accepted by {@link KeepReferee}. */
 export interface KeepRefereeOptionsType {
@@ -32,6 +33,18 @@ export class KeepRefereeOptionsBuilder extends OptionsBuilder<KeepRefereeOptions
   /** Down everyone if the referee side has fewer than this many members. */
   withDownAllIfBelowQuorum(count: number): this {
     return this.set('downAllIfBelowQuorum', count);
+  }
+}
+
+/** Validates resolved {@link KeepRefereeOptionsType} settings. */
+export class KeepRefereeOptionsValidator extends OptionsValidator<KeepRefereeOptionsType> {
+  constructor() {
+    super('KeepRefereeOptions');
+  }
+  protected rules(s: Partial<KeepRefereeOptionsType>): void {
+    if (s.refereeAddress === undefined) this.fail('refereeAddress', 'is required');
+    this.nonEmptyString('refereeAddress');
+    this.positiveInt('downAllIfBelowQuorum');
   }
 }
 

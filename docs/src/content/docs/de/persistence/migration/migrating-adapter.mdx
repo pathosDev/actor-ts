@@ -1,221 +1,247 @@
 ---
-title: MigratingAdapter
-description: Verkettete Versions-zu-Versions-Transformationen über eine Sequenz typisierter Migrationsschritte. Das Framework führt die Schritte aus, die für eine gegebene persistierte Version gelten. Das richtige Werkzeug für nicht-additive Migrationen (Umbenennungen, Splits, Restrukturierungen).
+title: migratingAdapter
+description: Verkettete Versions-zu-Versions-Transformationen über eine typisierte MigrationChain — das Framework führt die Upcaster aus, die für eine gegebene persistierte Version gelten. Das richtige Werkzeug für nicht-additive Migrationen (Umbenennungen, Splits, Restrukturierungen), mit optionalen Downcastern für Rolling Deploys.
 ---
 
-`MigratingAdapter` handhabt **nicht-additive** Migrationen —
+`migratingAdapter` handhabt **nicht-additive** Migrationen —
 Umbenennungen, Restrukturierungen, aus-anderen-Feldern-berechnet —
-über eine **Chain von Versions-Transformationen**.
+indem es eine
+[`MigrationChain`](/de/persistence/migration/schema-registry/)
+ausführt: eine Sequenz typisierter **Upcaster**.  Du baust die
+Chain und wickelst sie dann ein:
 
 ```ts
-import { MigratingAdapter } from 'actor-ts';
+import { migratingAdapter, MigrationChain, type EventAdapter } from 'actor-ts';
 
-type EventV1 = { kind: 'deposited'; amount: number };
-type EventV2 = { kind: 'deposited'; cents: number; currency: string };
-type EventV3 = { kind: 'deposited'; cents: number; currency: string; tenantId: string };
+type DepositedV1 = { kind: 'deposited'; amount: number };
+type DepositedV2 = { kind: 'deposited'; cents: number; currency: string };
+type DepositedV3 = { kind: 'deposited'; cents: number; currency: string; tenantId: string };
 
-class Account extends PersistentActor<Command, EventV3, State> {
+class Account extends PersistentActor<Cmd, DepositedV3, State> {
   constructor(public readonly tenantId: string) { super(); }
 
-  override eventAdapter() {
-    return new MigratingAdapter<EventV3>({
-      currentVersion: 3,
-      chain: [
-        { from: 1, to: 2, fn: (v1: EventV1) => ({
-          kind: v1.kind,
-          cents: v1.amount * 100,
-          currency: 'USD',
-        }) },
-        { from: 2, to: 3, fn: (v2: EventV2) => ({
-          ...v2,
-          tenantId: this.tenantId,
-        }) },
-      ],
-    });
+  override eventAdapter(): EventAdapter<DepositedV3> {
+    const chain = MigrationChain.for<DepositedV3>('BankAccount.Deposited', 3)
+      .add({ fromVersion: 1, toVersion: 2,
+             upcast: (v1: DepositedV1): DepositedV2 => ({
+               kind: v1.kind, cents: v1.amount * 100, currency: 'USD',
+             }) })
+      .add({ fromVersion: 2, toVersion: 3,
+             upcast: (v2: DepositedV2): DepositedV3 => ({
+               ...v2, tenantId: this.tenantId,
+             }) });
+    return migratingAdapter(chain);
   }
 }
 ```
 
 Die Chain:
 
-- **V1 → V2** restrukturiert: `amount` zu `cents` umbenennen, mal
-  100 multiplizieren, `currency` hardcoden.
-- **V2 → V3** fügt hinzu: `tenantId` aus der Actor-Instanz ziehen.
+- **v1 → v2** restrukturiert: `amount` in `cents` umbenennen, mal
+  100, `currency` hartkodieren.
+- **v2 → v3** ergänzt: `tenantId` aus der Actor-Instanz ziehen.
 
-Der Adapter wendet die nötigen Schritte an:
+Der Adapter wendet an, welche Schritte nötig sind:
 
-- V1-Events: beide Schritte ausführen → V3-Form.
-- V2-Events: nur den V2→V3-Schritt ausführen → V3-Form.
-- V3-Events: keine Schritte → bereits aktuell.
+- v1-Events: beide Schritte laufen → v3-Form.
+- v2-Events: nur der v2 → v3-Schritt läuft → v3-Form.
+- v3-Events: keine Schritte → bereits aktuell.
 
 ## Konfiguration
 
-```ts
-interface MigratingAdapterOptionsType<E> {
-  currentVersion: number;
-  chain:          Array<MigrationStep<unknown, unknown>>;
-}
+`migratingAdapter` ist eine Funktion über einer `MigrationChain`.
+`currentVersion` und Manifest liegen auf der **Chain**; die
+Optionen des Adapters steuern nur die **Schreib**-Version:
 
+```ts
+function migratingAdapter<E>(
+  chain: MigrationChain<E>,
+  opts?: { writeVersion?: number },   // default: chain.currentVersion
+): EventAdapter<E, unknown>;
+
+// Steps added to the chain:
 interface MigrationStep<From, To> {
-  from: number;
-  to:   number;
-  fn:   (from: From) => To;
+  fromVersion: number;
+  toVersion:   number;
+  upcast(from: From): To;
 }
 ```
 
-Schritte **müssen zusammenhängend sein** — `1 → 2`, `2 → 3`, etc.
-Kein Versions-Überspringen; keine parallelen Pfade.
+Baue die Chain mit
+`MigrationChain.for<E>(manifest, currentVersion)` und `.add(step)`.
+Schritte müssen **vorwärts laufen** (`fromVersion < toVersion`) —
+konsekutiv ist normal, größere Sprünge sind erlaubt, aber selten.
 
-## Wann verwenden
+## Wann einsetzen
 
-`MigratingAdapter` ist das richtige Werkzeug, wenn:
+`migratingAdapter` ist das richtige Werkzeug, wenn:
 
 - **Umbenennungen** — `amount` → `cents`.
-- **Restrukturierungen** — flache Felder → verschachtelte
-  Objekte oder umgekehrt.
-- **Berechnete Felder** — neues Feld, abgeleitet aus alten
+- **Restrukturierungen** — flache Felder → verschachtelte Objekte
+  oder umgekehrt.
+- **Berechnete Felder** — ein neues Feld, abgeleitet aus alten
   Feldern.
-- **Multi-Step-Evolution** — v1 → v2 → v3 → v4, jeder Schritt
-  baut auf dem letzten auf.
+- **Mehrstufige Evolution** — v1 → v2 → v3 → v4, jeder Schritt baut
+  auf dem letzten auf.
 
-Für reine Additionen ist
-[DefaultAdapter](/de/persistence/migration/default-adapter/)
-einfacher.  Für beliebig geformte Migrationen verwende einen
-benutzerdefinierten `EventAdapter`.
+Für reine Ergänzungen ist
+[defaultsAdapter](/de/persistence/migration/default-adapter/)
+einfacher.  Für beliebig geformte Migrationen schreib einen eigenen
+`EventAdapter`.
 
 ## Closure-Kontext
 
 ```ts
-class Account extends PersistentActor<...> {
+class Account extends PersistentActor<Cmd, EventV3, State> {
   constructor(public readonly tenantId: string) { super(); }
 
-  override eventAdapter() {
-    return new MigratingAdapter<EventV3>({
-      chain: [
-        // Die Migrations-Funktion schließt über `this.tenantId`:
-        { from: 2, to: 3, fn: (v2) => ({ ...v2, tenantId: this.tenantId }) },
-      ],
-    });
+  override eventAdapter(): EventAdapter<EventV3> {
+    // The upcaster closes over `this.tenantId`:
+    const chain = MigrationChain.for<EventV3>('BankAccount.Deposited', 3)
+      .add({ fromVersion: 2, toVersion: 3,
+             upcast: (v2: EventV2): EventV3 => ({ ...v2, tenantId: this.tenantId }) });
+    return migratingAdapter(chain);
   }
 }
 ```
 
-Schritte sind **plain Funktionen** — sie können über die
+Upcaster sind **einfache Funktionen** — sie können über die
 Konstruktor-Argumente des Actors schließen.  Nützlich für
-Per-Instanz-Migrations-Kontext (Per-Tenant-Defaults,
-Per-Region-Currency).
+Per-Instanz-Migrationskontext (Per-Tenant-Defaults,
+Per-Region-Währung).
 
 ## Schritt-für-Schritt-Semantik
 
-Gegeben V1-Event + Chain `[1→2, 2→3]`:
+Gegeben ein v1-Event + eine Chain mit den Schritten `1 → 2` und
+`2 → 3`:
 
 ```
-storedV1 → fn1→2(storedV1) = intermediateV2 → fn2→3(intermediateV2) = finalV3
+storedV1 → upcast₁→₂(storedV1) = intermediateV2 → upcast₂→₃(intermediateV2) = finalV3
 ```
 
-Die Zwischen-Typen **müssen** keiner historischen Event-Form
-**entsprechen** — sie sind nur Trittsteine.  Das ist manchmal
-hilfreich: der v1→v2-Schritt könnte eine temporäre Form
-produzieren, die weder v1 noch kanonisches v2 ist, und der
-v2→v3-Schritt normalisiert.
+Die Zwischentypen **müssen keiner** historischen Event-Form
+entsprechen — sie sind nur Trittsteine.  Die Chain läuft vom Cursor
+der gespeicherten Version vorwärts, bis sie `currentVersion`
+erreicht.
+
+## Rolling Deploys mit Downcastern
+
+Während eines Rolling-Deploys müssen v2-Nodes womöglich weiterhin
+v1-Events emittieren, solange v1-Reader noch im Cluster sind.  Füge
+der Chain **Downcaster** hinzu und setze `writeVersion` am Adapter:
+
+```ts
+const chain = MigrationChain.for<DepositedV2>('BankAccount.Deposited', 2)
+  .add({ fromVersion: 1, toVersion: 2,
+         upcast: (v1: DepositedV1): DepositedV2 => ({ ...v1, currency: 'USD' }) })
+  .addDown({ fromVersion: 2, toVersion: 1,
+             downcast: (v2: DepositedV2): DepositedV1 => {
+               const { currency: _c, ...rest } = v2; void _c; return rest;
+             } });
+
+// Phase 1 — read both, still WRITE v1:
+const phase1 = migratingAdapter(chain, { writeVersion: 1 });
+
+// Phase 2 — every reader upgraded; write the current version:
+const phase2 = migratingAdapter(chain);   // writeVersion = currentVersion = 2
+```
+
+`writeVersion` muss ≤ `currentVersion` sein, und die Chain muss
+Downcaster für jeden Schritt auf dem Pfad `currentVersion →
+writeVersion` haben — sonst wirft `toJournal`.
 
 ## Fehlerbehandlung
 
 ```ts
-{ from: 1, to: 2, fn: (v1) => {
-  if (v1.amount < 0) throw new Error('invalid v1 event');
-  return { kind: v1.kind, cents: v1.amount * 100 };
-}}
+.add({ fromVersion: 1, toVersion: 2,
+  upcast: (v1: DepositedV1): DepositedV2 => {
+    if (v1.amount < 0) throw new Error('invalid v1 event');
+    return { kind: v1.kind, cents: v1.amount * 100, currency: 'USD' };
+  } })
 ```
 
-Wenn ein Schritt wirft, scheitert die Recovery mit dem Fehler,
-in `MigrationError` eingewickelt.  Das `onRecoveryFailure` des
-Actors wird aufgerufen.
+Wenn ein Schritt wirft, schlägt die Recovery fehl, und der Fehler
+kommt über das `onRecoveryFailure` des Actors zum Vorschein.  Eine
+**Chain-Lücke** — kein Upcaster für den Cursor registriert, bevor
+`currentVersion` erreicht ist — wirft ein `MigrationError`, das die
+fehlende `fromVersion` nennt.
 
-Default: das propagiert zum Supervisor des Actors.  Überschreibe
-`onRecoveryFailure`, wenn du problematische Events überspringen
-willst (selten; normalerweise willst du sie finden, nicht
-überspringen).
-
-## Neunummerieren vs. neuer Schritt
+## Einen Schritt hinzufügen
 
 ```ts
-// Szenario: V2 ist in Produktion, alle Events V1 und V2.
-// Jetzt willst du V3.  Einen Schritt hinzufügen:
-
-chain: [
-  { from: 1, to: 2, fn: v1To2 },
-  { from: 2, to: 3, fn: v2To3 },   // NEU
-]
+// v2 in production; now you want v3.  Add a step and bump the chain version:
+const chain = MigrationChain.for<EventV3>('BankAccount.Deposited', 3)
+  .add({ fromVersion: 1, toVersion: 2, upcast: v1To2 })
+  .add({ fromVersion: 2, toVersion: 3, upcast: v2To3 });   // NEW
 ```
 
-Den V2→V3-Schritt hinzufügen; den existierenden V1→V2-Schritt
-behalten.  `currentVersion: 3` setzen.  Existierende V2-Events
-werden über den neuen Schritt hochgekastet; V3-Events werden
-direkt geschrieben.
+Füge den v2 → v3-Schritt hinzu, behalte den bestehenden v1 →
+v2-Schritt und bump `MigrationChain.for(..., 3)`.  Bestehende
+v2-Events werden durch den neuen Schritt hochgecastet; v3-Events
+werden direkt geschrieben.
 
-**Modifiziere niemals existierende Schritte**, die Events
-behandelt haben, die noch im Journal sind — sie sind
-load-bearing.
+**Ändere nie bestehende Schritte**, die Events behandelt haben, die
+noch im Journal liegen — sie sind tragend.
 
-## Schema-Registry-Integration
+## Snapshots
 
-Für Projekte, die die
-[Schema-Registry](/de/persistence/migration/schema-registry/)
-verwenden, kannst du validieren, dass die Source-/Destination-
-Versionen der Chain mit den deklarierten Versionen der Registry
-übereinstimmen.  Optional, aber nützlich als Sanity-Check in
-Tests.
+Für eine `MigrationChain`, die einen Snapshot- /
+Durable-State-Datensatz regiert, nimm `migratingSnapshotAdapter` —
+dieselbe Chain, gibt einen `SnapshotAdapter` zurück:
 
-## Stolperfallen
+```ts
+import { migratingSnapshotAdapter } from 'actor-ts';
+
+const adapter = migratingSnapshotAdapter(chain);
+```
+
+## Fallstricke
 
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Versionen überspringen">
   ```ts
-  chain: [
-    { from: 1, to: 3, fn: v1To3 },   // ✗ überspringt v2 — Adapter sieht v2-Events und gerät in Panik
-  ]
+  MigrationChain.for<EventV3>('Deposited', 3)
+    .add({ fromVersion: 1, toVersion: 3, upcast: v1To3 });   // ✗ no step from v2
   ```
-  Schritte müssen eine zusammenhängende Chain bilden.  Wenn
-  v2-Events existieren (oder existieren könnten), schließe den
-  v2→v3-Schritt explizit ein.
+  Wenn v2-Events existieren (oder existieren könnten), trifft ein
+  v2-Payload eine Chain-Lücke, und `upcast` wirft `MigrationError`.
+  Registriere den v2 → v3-Schritt explizit.
 </Aside>
 
 <Aside type="caution" title="Migrationen mit Seiteneffekten">
   ```ts
-  { from: 1, to: 2, fn: (v1) => {
-    fetchSomethingExpensive();   // ✗ läuft bei jeder Recovery
+  .add({ fromVersion: 1, toVersion: 2, upcast: (v1) => {
+    fetchSomethingExpensive();   // ✗ runs on every recovery
     return ...;
-  }}
+  } })
   ```
-  Migrationsschritte sind rein — sie laufen bei jeder Recovery
-  für jedes betroffene Event.  Seiteneffekte (API-Calls,
-  DB-Lookups) duplizieren pro Recovery und verlangsamen den
-  Replay.  Vor-berechnen und extern cachen, falls nötig.
+  Upcaster sind pur — sie laufen bei jeder Recovery für jedes
+  betroffene Event.  Seiteneffekte (API-Calls, DB-Lookups)
+  verdoppeln sich pro Recovery und verlangsamen den Replay.
+  Vorab berechnen und extern cachen, falls nötig.
 </Aside>
 
-<Aside type="caution" title="currentVersion zu erhöhen vergessen">
+<Aside type="caution" title="Vergessen, die Chain-Version zu bumpen">
   ```ts
-  new MigratingAdapter<EventV3>({
-    currentVersion: 2,   // ✗ bei 2 gelassen; neue Events werden als v2 geschrieben
-    chain: [..., { from: 2, to: 3, fn: ... }],
-  });
+  MigrationChain.for<EventV3>('Deposited', 2)   // ✗ still 2; new events written as v2
+    .add({ fromVersion: 2, toVersion: 3, upcast: v2To3 });   // targets v3 > currentVersion → throws
   ```
-  Der neue Schritt läuft beim Lesen (v2 → v3), aber neue Events
-  schreiben weiterhin als v2.  Erhöhe immer `currentVersion`,
-  wenn du einen Schritt am Kopf der Chain hinzufügst.
+  `currentVersion` liegt auf `MigrationChain.for(manifest, N)`.  Ein
+  Schritt, dessen `toVersion` sie überschreitet, wirft beim Bauen;
+  und lässt du sie zu niedrig, werden neue Events weiterhin in der
+  alten Version geschrieben.
 </Aside>
 
-## Wie geht's weiter
+## Wohin als Nächstes
 
 - **[Migration im Überblick](/de/persistence/migration/overview/)** —
-  das größere Bild.
+  das Gesamtbild.
 - **[Envelope-Format](/de/persistence/migration/envelope-format/)** —
   das zugrunde liegende Wire-Format.
-- **[DefaultAdapter](/de/persistence/migration/default-adapter/)** —
-  die nur-additive Alternative.
-- **[WrapLegacy](/de/persistence/migration/wrap-legacy/)** —
-  Pre-Envelope-Events in die Chain bringen.
-- **[Rezepte](/de/persistence/migration/recipes/)** — häufige
+- **[defaultsAdapter](/de/persistence/migration/default-adapter/)** —
+  die additive-only Alternative.
+- **[Legacy wrappen](/de/persistence/migration/wrap-legacy/)** —
+  um Pre-Envelope-Events in die Chain zu bringen.
+- **[Recipes](/de/persistence/migration/recipes/)** — gängige
   Muster durchgespielt.

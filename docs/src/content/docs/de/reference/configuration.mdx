@@ -114,7 +114,7 @@ Platziere das im Projekt-Root.  Das Framework lädt es bei
 | --- | --- | --- |
 | `http.backend` | `"fastify"` | Einer von `fastify` / `bun` / `express`. |
 | `http.shutdown-grace-period` | `5s` | Zeit, um in-flight Requests beim Shutdown leerlaufen zu lassen. |
-| `http.websocket` | *(siehe unten)* | Serverseitige WebSocket-Defaults für [`websocket()`](/de/io/server-websocket/)-Routen. |
+| `http.websocket` | *(siehe unten)* | Serverseitige WebSocket-Defaults für [`websocket()`](/de/http/websocket/)-Routen. |
 
 Serverseitige WebSocket-Routen (`websocket(path, actorRef)`) lesen
 ihre Defaults aus `actor-ts.http.websocket`:
@@ -300,6 +300,51 @@ import { Aside } from '@astrojs/starlight/components';
   HOCON parst nackte Zahlen als Zahlen, nicht als Durations.
   Keys, die Durations erwarten, benötigen eine explizite Einheit.
 </Aside>
+
+## Validierung
+
+Optionswerte werden **einmal validiert, zur Consume-Zeit, auf den
+gemergten Settings** — nachdem die drei obigen Ebenen aufgelöst sind.
+Weil die Prüfung auf dem gemergten Ergebnis läuft, gelten dieselben
+Regeln, egal wie ein Wert ankam: über den fluenten Builder, ein einfaches
+Settings-Objekt oder einen HOCON-Key.  Cross-Field-Regeln (z. B.
+„`downThreshold` muss `unreachableThreshold` übersteigen") sehen die
+finalen Werte.
+
+Ein ungültiger Wert wirft einen **`OptionsError`** (aus dem
+Paket-Root exportiert), der das betroffene Feld und die Erwartung nennt:
+
+```text
+MqttOptions: protocolVersion must be one of 4, 5 (got 6)
+```
+
+- Bei **Broker-Aktoren** (MQTT, Kafka, WebSocket-Client, …) wird der
+  Fehler beim Start des Aktors (`preStart`) geworfen, nach der
+  Pflichtfeld-Prüfung — ein *fehlendes* Pflichtfeld erscheint also
+  weiterhin als `BrokerSettingsError`, und nur *vorhandene, aber
+  ungültige* Werte werden zu `OptionsError`.
+- Bei **Nicht-Broker-Konsumenten** (Caches, Leases, Sharding, …) wird der
+  Fehler aus dem Konstruktor geworfen.
+
+`OptionsError` ist verschieden von `ConfigError` (fehlerhaftes HOCON —
+falscher Typ, fehlender Pfad) und `BrokerSettingsError` (ein
+Broker-Pflichtfeld fehlt in jeder Ebene).  Ungesetzte optionale Felder
+lösen ihn nie aus; sie fallen auf ihre Defaults zurück.
+
+```ts
+import { OptionsError } from 'actor-ts';
+
+try {
+  const mqttOptions = MqttOptions.create()
+    .withBrokerUrl('mqtt://broker:1883')
+    .withQos(7 as MqttQos);          // ungültig
+  system.spawn(Props.create(() => new FeedClient(mqttOptions)), 'feed');
+} catch (e) {
+  if (e instanceof OptionsError) {
+    console.error(`bad option ${e.field}: ${e.message}`);
+  }
+}
+```
 
 ## Wie es weitergeht
 

@@ -63,11 +63,20 @@ A short tour of what's in the box:
   **WebSocket** routes: `websocket(path, actorRef)` binds a
   `WebsocketServerActor` (typed messages, `reply` / `broadcast`,
   connect/disconnect hooks); `WebsocketClientActor` is the reconnecting
-  client half.
+  client half.  Scoped error handling (`handleErrors`) + `fallback` routes;
+  a security-middleware suite (CORS, CSRF, HSTS, CSP, security headers,
+  Basic auth, request-id, timeout); HTML-escaping helpers; and
+  backend-agnostic **static file serving** (`getFromFile` /
+  `getFromDirectory` — MIME detection, conditional requests, Range,
+  directory browsing).
 - **Message brokers** — single `BrokerActor` base with Kafka, MQTT, AMQP,
   NATS, Redis-Streams, gRPC, SSE, raw TCP/UDP integrations.
   Reconnect-with-backoff, outbound buffer, subscriber fan-out are baked in.
 - **Caching** — pluggable Cache with in-memory, Redis, Memcached backends.
+- **Typed options + fail-fast validation** — one fluent `XOptions` builder per
+  configurable thing (or a plain object), with values validated once on the
+  merged settings (builder / object / HOCON alike) — a bad port, timeout, or
+  URL throws an `OptionsError` at startup, not deep in a later code path.
 - **Observability** — Prometheus exporter, OTel tracing + metrics, management
   HTTP endpoints (`/health`, `/ready`, `/cluster/members`, `/sharding/regions`),
   out-of-the-box stock metrics.
@@ -272,9 +281,9 @@ Issues and feature requests live on
 
 <a href="https://www.star-history.com/?repos=pathosDev%2Factor-ts&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=pathosDev/actor-ts&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=pathosDev/actor-ts&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=pathosDev/actor-ts&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=pathosDev/actor-ts&type=date&theme=dark&legend=top-left&sealed_token=iyC35jF1VENIymplLwZ8Cn2oNYPgr_OxQBWJfsv8Zl0v59Pkk9eKbLf1Gy2VWG_U3xuXb_xL0AAo5KD6Zz9p3izijymg6rD60G6pDZhdGrWgybY6vbLayqijq5n-qYdEyva0SkJ1TCWfrl0uSXCU5LyUa0I_Hz4wbgyrFObbeBFFxzRDMxrNVlNH6f_6" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=pathosDev/actor-ts&type=date&legend=top-left&sealed_token=iyC35jF1VENIymplLwZ8Cn2oNYPgr_OxQBWJfsv8Zl0v59Pkk9eKbLf1Gy2VWG_U3xuXb_xL0AAo5KD6Zz9p3izijymg6rD60G6pDZhdGrWgybY6vbLayqijq5n-qYdEyva0SkJ1TCWfrl0uSXCU5LyUa0I_Hz4wbgyrFObbeBFFxzRDMxrNVlNH6f_6" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=pathosDev/actor-ts&type=date&legend=top-left&sealed_token=iyC35jF1VENIymplLwZ8Cn2oNYPgr_OxQBWJfsv8Zl0v59Pkk9eKbLf1Gy2VWG_U3xuXb_xL0AAo5KD6Zz9p3izijymg6rD60G6pDZhdGrWgybY6vbLayqijq5n-qYdEyva0SkJ1TCWfrl0uSXCU5LyUa0I_Hz4wbgyrFObbeBFFxzRDMxrNVlNH6f_6" />
  </picture>
 </a>
 

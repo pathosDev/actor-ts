@@ -4,6 +4,7 @@ import {
   type DowningDecision,
   type DowningProvider,
 } from './DowningProvider.js';
+import { LeaseMajorityOptionsValidator } from './LeaseMajorityOptions.js';
 import type { LeaseMajorityOptions, LeaseMajorityOptionsType } from './LeaseMajorityOptions.js';
 
 /**
@@ -104,6 +105,7 @@ export class LeaseMajority implements DowningProvider {
 
   constructor(options: LeaseMajorityOptions) {
     this.options = options as LeaseMajorityOptionsType;
+    new LeaseMajorityOptionsValidator().validate(this.options);
   }
 
   decide(view: ClusterPartitionView): DowningDecision {

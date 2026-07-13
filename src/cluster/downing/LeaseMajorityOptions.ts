@@ -1,5 +1,6 @@
 import type { Lease } from '../../coordination/Lease.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 
 /** Plain options-object shape accepted by {@link LeaseMajority}. */
 export interface LeaseMajorityOptionsType {
@@ -49,6 +50,16 @@ export class LeaseMajorityOptionsBuilder extends OptionsBuilder<LeaseMajorityOpt
   /** Only members carrying this role count toward the majority. */
   withRole(role: string): this {
     return this.set('role', role);
+  }
+}
+
+/** Validates resolved {@link LeaseMajorityOptionsType} settings. */
+export class LeaseMajorityOptionsValidator extends OptionsValidator<LeaseMajorityOptionsType> {
+  constructor() {
+    super('LeaseMajorityOptions');
+  }
+  protected rules(_s: Partial<LeaseMajorityOptionsType>): void {
+    this.positiveNumber('acquireTimeoutMs');
   }
 }
 

@@ -2,6 +2,7 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
+import { TcpSocketOptionsValidator } from './TcpSocketOptions.js';
 import type { TcpSocketOptions, TcpSocketOptionsType } from './TcpSocketOptions.js';
 
 /**
@@ -70,6 +71,7 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
   protected requiredOptions(): ReadonlyArray<keyof TcpSocketOptionsType> {
     return ['host', 'port', 'target'];
   }
+  protected override optionsValidator(): TcpSocketOptionsValidator { return new TcpSocketOptionsValidator(); }
   protected endpointLabel(): string { return `tcp://${this.options.host}:${this.options.port}`; }
 
   protected async connectImplementation(): Promise<void> {

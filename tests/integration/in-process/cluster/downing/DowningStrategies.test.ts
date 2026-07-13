@@ -11,6 +11,7 @@ import {
   addrKey,
   type ClusterPartitionView,
 } from '../../../../../src/cluster/downing/index.js';
+import { OptionsError } from '../../../../../src/util/OptionsValidator.js';
 import type { Lease } from '../../../../../src/coordination/Lease.js';
 import { Member } from '../../../../../src/cluster/Member.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
@@ -102,6 +103,7 @@ describe('StaticQuorum', () => {
 
   test('quorumSize < 1 throws', () => {
     const quorumOptions = StaticQuorumOptions.create().withQuorumSize(0);
+    expect(() => new StaticQuorum(quorumOptions)).toThrow(OptionsError);
     expect(() => new StaticQuorum(quorumOptions)).toThrow(/quorumSize/);
   });
 });

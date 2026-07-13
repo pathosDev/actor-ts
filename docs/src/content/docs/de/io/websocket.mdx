@@ -9,7 +9,7 @@ werden in typisierte Nachrichten dekodiert, die du in `onMessage`
 behandelst; ausgehende Nachrichten werden kodiert und gesendet
 (während der Trennung gepuffert, nach dem Reconnect erneut
 gesendet).  Zum Annehmen **eingehender** WS-Verbindungen
-(Serverseite) siehe [Server-WebSocket](/de/io/server-websocket/).
+(Serverseite) siehe [Server-WebSocket](/de/http/websocket/).
 
 ```ts
 import { WebsocketClientActor, WebsocketClientOptions, websocketSend } from 'actor-ts';
@@ -243,7 +243,7 @@ Drei primäre Einsatzfälle:
    `rawCodec()` für binäre Wire-Formate.
 
 Für serverseitiges WebSocket (Client-Verbindungen annehmen) siehe
-die [Server-WebSocket](/de/io/server-websocket/)-Seite.
+die [Server-WebSocket](/de/http/websocket/)-Seite.
 
 import { Aside } from '@astrojs/starlight/components';
 

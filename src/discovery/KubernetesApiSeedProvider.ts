@@ -1,4 +1,5 @@
 import { NodeAddress } from '../cluster/NodeAddress.js';
+import { KubernetesApiSeedProviderOptionsValidator } from './KubernetesApiSeedProviderOptions.js';
 import type { KubernetesApiSeedProviderOptions, KubernetesApiSeedProviderOptionsType } from './KubernetesApiSeedProviderOptions.js';
 import type { SeedProvider } from './SeedProvider.js';
 
@@ -17,6 +18,7 @@ export class KubernetesApiSeedProvider implements SeedProvider {
 
   constructor(options: KubernetesApiSeedProviderOptions = {}) {
     this.options = options as KubernetesApiSeedProviderOptionsType;
+    new KubernetesApiSeedProviderOptionsValidator().validate(this.options);
   }
 
   async lookup(): Promise<NodeAddress[]> {

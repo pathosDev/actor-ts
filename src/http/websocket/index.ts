@@ -11,7 +11,7 @@ export type { WebsocketRouteOptionsType } from './WebsocketRouteOptions.js';
 export { WebsocketServerActor } from './WebsocketServerActor.js';
 
 export { WebsocketClientActor } from './WebsocketClientActor.js';
-export { WebsocketClientOptions, WebsocketClientOptionsBuilder } from './WebsocketClientOptions.js';
+export { WebsocketClientOptions, WebsocketClientOptionsBuilder, WebsocketClientOptionsValidator } from './WebsocketClientOptions.js';
 export type { WebsocketClientOptionsType } from './WebsocketClientOptions.js';
 
 export type { WebsocketConnection } from './WebsocketConnection.js';

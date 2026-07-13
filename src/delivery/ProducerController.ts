@@ -1,6 +1,7 @@
 import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
 import type { Cancellable } from '../Scheduler.js';
+import { ProducerControllerOptionsValidator } from './ProducerControllerOptions.js';
 import type { ProducerControllerOptions, ProducerControllerOptionsType } from './ProducerControllerOptions.js';
 import type { Acknowledgment, ConfirmationCallback, Delivery } from './Messages.js';
 
@@ -40,6 +41,7 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
   constructor(options: ProducerControllerOptions<T>) {
     super();
     const resolvedOptions = options as ProducerControllerOptionsType<T>;
+    new ProducerControllerOptionsValidator<T>().validate(resolvedOptions);
     this.options = resolvedOptions;
     this.id = resolvedOptions.producerId ?? nextProducerId();
     this.resendTimeoutMs = resolvedOptions.resendTimeout ?? 500;

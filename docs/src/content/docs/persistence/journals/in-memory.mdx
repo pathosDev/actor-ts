@@ -154,8 +154,8 @@ system.extension(PersistenceExtensionId).configure({
 
 // After (production):
 import { SqliteJournal, SqliteJournalOptions } from 'actor-ts';
+const sqliteJournalOptions = SqliteJournalOptions.create().withPath('/var/lib/my-app/events.db');
 system.extension(PersistenceExtensionId).configure({
-  const sqliteJournalOptions = SqliteJournalOptions.create().withPath('/var/lib/my-app/events.db');
   journal: new SqliteJournal(sqliteJournalOptions),
 });
 ```

@@ -2,6 +2,7 @@ import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Props } from '../../Props.js';
 import { Broadcast } from '../../Router.js';
+import { ClusterRouterOptionsValidator } from './ClusterRouterOptions.js';
 import type { ClusterRouterOptions, ClusterRouterOptionsType } from './ClusterRouterOptions.js';
 import { MemberRemoved, MemberUp } from '../ClusterEvents.js';
 import { RemoteActorRef } from '../RemoteActorRef.js';
@@ -74,11 +75,7 @@ export const ClusterRouter = {
     options: ClusterRouterOptions<TMessage>,
   ): Props<TMessage | Broadcast<TMessage>> {
     const opts = options as ClusterRouterOptionsType<TMessage>;
-    if (opts.routerType === 'consistent-hashing' && !opts.extractKey) {
-      throw new Error(
-        'ClusterRouter: routerType=\'consistent-hashing\' requires extractKey',
-      );
-    }
+    new ClusterRouterOptionsValidator<TMessage>().validate(opts);
     return Props.create(
       () => new ClusterRouterActor<TMessage>(opts) as unknown as Actor<TMessage | Broadcast<TMessage>>,
     );

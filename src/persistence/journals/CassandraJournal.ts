@@ -10,6 +10,7 @@ import {
   type CassandraClientLike,
   type CassandraConnection,
 } from './CassandraClient.js';
+import { CassandraJournalOptionsValidator } from './CassandraJournalOptions.js';
 import type { CassandraJournalOptions, CassandraJournalOptionsType } from './CassandraJournalOptions.js';
 
 interface EventRow {
@@ -47,6 +48,7 @@ export class CassandraJournal implements Journal {
 
   constructor(options: CassandraJournalOptions) {
     this.options = (options as CassandraJournalOptionsType);
+    new CassandraJournalOptionsValidator().validate(this.options);
     this.client = this.options.client ?? (undefined as unknown as CassandraClientLike);
     this.ownsClient = !this.options.client;
   }

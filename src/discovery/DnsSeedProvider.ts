@@ -1,4 +1,5 @@
 import { NodeAddress } from '../cluster/NodeAddress.js';
+import { DnsSeedProviderOptionsValidator } from './DnsSeedProviderOptions.js';
 import type { DnsSeedProviderOptions, DnsSeedProviderOptionsType } from './DnsSeedProviderOptions.js';
 import type { SeedProvider } from './SeedProvider.js';
 
@@ -21,10 +22,8 @@ export class DnsSeedProvider implements SeedProvider {
 
   constructor(options: DnsSeedProviderOptions = {}) {
     this.options = options as DnsSeedProviderOptionsType;
+    new DnsSeedProviderOptionsValidator().validate(this.options);
     this.cacheTtlMs = this.options.cacheTtlMs ?? 60_000;
-    if (!Number.isFinite(this.cacheTtlMs) || this.cacheTtlMs < 0) {
-      throw new Error(`DnsSeedProvider: cacheTtlMs must be a non-negative finite number, got ${this.cacheTtlMs}`);
-    }
   }
 
   async lookup(): Promise<NodeAddress[]> {

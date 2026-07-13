@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { ActorRef } from '../ActorRef.js';
 import type { Delivery } from './Messages.js';
 
@@ -53,6 +54,17 @@ export class ProducerControllerOptionsBuilder<T> extends OptionsBuilder<Producer
   /** Stable identifier used by consumers to dedup across restarts. */
   withProducerId(producerId: string): this {
     return this.set('producerId', producerId);
+  }
+}
+
+/** Validates resolved {@link ProducerControllerOptionsType} settings. */
+export class ProducerControllerOptionsValidator<T> extends OptionsValidator<ProducerControllerOptionsType<T>> {
+  constructor() {
+    super('ProducerControllerOptions');
+  }
+  protected rules(_s: Partial<ProducerControllerOptionsType<T>>): void {
+    this.positiveNumber('resendTimeout');
+    this.positiveInt('windowSize');
   }
 }
 

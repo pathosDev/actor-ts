@@ -3,6 +3,7 @@ import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
+import { GrpcClientOptionsValidator } from './GrpcClientOptions.js';
 import type { GrpcClientOptions, GrpcClientOptionsType } from './GrpcClientOptions.js';
 
 /**
@@ -73,6 +74,7 @@ export class GrpcClientActor
   protected requiredOptions(): ReadonlyArray<keyof GrpcClientOptionsType> {
     return ['protoPath', 'packageName', 'serviceName', 'endpoint'];
   }
+  protected override optionsValidator(): GrpcClientOptionsValidator { return new GrpcClientOptionsValidator(); }
   protected endpointLabel(): string { return `grpc://${this.options.endpoint}`; }
 
   protected async connectImplementation(): Promise<void> {

@@ -3,6 +3,7 @@ import type { Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import { none, some, type Option } from '../../util/Option.js';
+import { CachedSnapshotStoreOptionsValidator } from './CachedSnapshotStoreOptions.js';
 import type { CachedSnapshotStoreOptions, CachedSnapshotStoreOptionsType } from './CachedSnapshotStoreOptions.js';
 
 /**
@@ -59,12 +60,9 @@ export class CachedSnapshotStore implements SnapshotStore {
     options: CachedSnapshotStoreOptions,
   ) {
     const resolvedOptions = (options as CachedSnapshotStoreOptionsType);
-    if (resolvedOptions.cache === undefined) throw new Error('CachedSnapshotStore: cache is required (call withCache()).');
+    new CachedSnapshotStoreOptionsValidator().validate(resolvedOptions);
     this.cache = resolvedOptions.cache;
     this.ttlMs = resolvedOptions.ttlMs ?? DEFAULT_TTL_MS;
-    if (!Number.isFinite(this.ttlMs) || this.ttlMs <= 0) {
-      throw new Error(`CachedSnapshotStore: ttlMs must be a positive finite number, got ${this.ttlMs}`);
-    }
     this.keyPrefix = resolvedOptions.keyPrefix ?? 'snap:';
   }
 

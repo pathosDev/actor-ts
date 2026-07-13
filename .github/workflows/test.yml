@@ -127,8 +127,10 @@ jobs:
           [[ -z "$FAIL" ]] && FAIL=0
           [[ -z "$PASS" ]] && PASS=0
           TOTAL=$((PASS + FAIL))
-          # Line coverage from the "All files" aggregate row, second column.
-          LINES=$(echo "$OUTPUT" | grep "^All files" | awk -F'|' '{print $2}' | tr -d ' ')
+          # Line coverage from the "All files" aggregate row.  Bun's
+          # --coverage table is `File | % Funcs | % Lines | Uncovered`, so
+          # the LINE column is awk field $3 ($2 is % Funcs).
+          LINES=$(echo "$OUTPUT" | grep "^All files" | awk -F'|' '{print $3}' | tr -d ' ')
           LINES_INT=${LINES%.*}
           [[ -z "$LINES_INT" ]] && LINES_INT=0
 
@@ -150,7 +152,7 @@ jobs:
         # of truth (the badge update sees what the gate enforces).
         #
         # Floor configured via the COVERAGE_LINE_FLOOR env var — set
-        # at the workflow level so future tightening (90 → 92 → 95)
+        # at the workflow level so future tightening (80 → 85 → 90)
         # is a one-line PR rather than a script-edit.  Local devs run
         # `bun run test:coverage:gate` to get the same check.
         if: success() && steps.stats.outputs.lines != ''

@@ -1,4 +1,5 @@
 import type { Lease } from '../Lease.js';
+import { KubernetesLeaseOptionsValidator } from './KubernetesLeaseOptions.js';
 import type { KubernetesLeaseOptions, KubernetesLeaseOptionsType } from './KubernetesLeaseOptions.js';
 import {
   createLease,
@@ -55,6 +56,7 @@ export class KubernetesLease implements Lease {
 
   constructor(options: KubernetesLeaseOptions = {}) {
     this.options = options as KubernetesLeaseOptionsType;
+    new KubernetesLeaseOptionsValidator().validate(this.options);
     this.renewalIntervalMs = this.options.renewalIntervalMs
       ?? Math.max(500, Math.floor(this.options.ttlMs / 3));
   }

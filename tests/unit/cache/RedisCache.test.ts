@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { RedisCache, type RedisClientLike } from '../../../src/cache/RedisCache.js';
 import { RedisCacheOptions } from '../../../src/cache/RedisCacheOptions.js';
 import { CacheError } from '../../../src/cache/Cache.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 
 /**
  * Mock ioredis client — captures the calls and lets the tests assert on
@@ -361,6 +362,35 @@ describe('RedisCache — TTL validation', () => {
     const cache = new RedisCache(redisOptions);
     await expect(cache.mset(new Map([['a', 1]] as const), -1))
       .rejects.toBeInstanceOf(CacheError);
+  });
+});
+
+describe('RedisCache — options validation', () => {
+  test('rejects an out-of-range port', () => {
+    const opts = RedisCacheOptions.create().withPort(70_000);
+    expect(() => new RedisCache(opts)).toThrow(OptionsError);
+  });
+
+  test('rejects a negative db index', () => {
+    const opts = RedisCacheOptions.create().withDb(-1);
+    expect(() => new RedisCache(opts)).toThrow(OptionsError);
+  });
+
+  test('rejects a url with a non-Redis protocol', () => {
+    const opts = RedisCacheOptions.create().withUrl('http://localhost:6379');
+    expect(() => new RedisCache(opts)).toThrow(OptionsError);
+  });
+
+  test('rejects url combined with host/port (mutually exclusive)', () => {
+    const opts = RedisCacheOptions.create()
+      .withUrl('redis://localhost:6379')
+      .withPort(6380);
+    expect(() => new RedisCache(opts)).toThrow(/mutually exclusive/);
+  });
+
+  test('accepts a valid url alone', () => {
+    const opts = RedisCacheOptions.create().withUrl('rediss://localhost:6379');
+    expect(() => new RedisCache(opts)).not.toThrow();
   });
 });
 

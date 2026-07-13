@@ -1,5 +1,6 @@
 import type { Props } from '../../Props.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 
 /**
  * Plain options-object shape for a sharded region.  Consumed by
@@ -109,6 +110,41 @@ export class ShardingOptionsBuilder<
   /** Cap the number of locally-hosted entities; LRU-passivate on overflow.  Default: 0 (no cap). */
   withMaxEntities(maxEntities: number): this {
     return this.set('maxEntities', maxEntities);
+  }
+}
+
+/**
+ * Validates resolved sharding settings.  Generic so
+ * {@link StartShardingOptionsValidator} can extend it via {@link commonRules};
+ * only present values are checked (unset fields fall through to defaults).
+ */
+export class ShardingOptionsValidator<
+  TMsg,
+  S extends ShardingOptionsType<TMsg> = ShardingOptionsType<TMsg>,
+> extends OptionsValidator<S> {
+  constructor(optionsName = 'ShardingOptions') {
+    super(optionsName);
+  }
+  protected rules(s: Partial<S>): void {
+    this.commonRules(s);
+  }
+  protected commonRules(s: Partial<S>): void {
+    const c = s as Partial<ShardingOptionsType<TMsg>>;
+    if (c.typeName !== undefined && (typeof c.typeName !== 'string' || c.typeName.length === 0)) {
+      this.fail('typeName', 'must be a non-empty string', c.typeName);
+    }
+    if (c.numShards !== undefined && (!Number.isInteger(c.numShards) || c.numShards < 1)) {
+      this.fail('numShards', 'must be an integer >= 1', c.numShards);
+    }
+    if (
+      c.passivationIdleMs !== undefined &&
+      (typeof c.passivationIdleMs !== 'number' || !Number.isFinite(c.passivationIdleMs) || c.passivationIdleMs < 0)
+    ) {
+      this.fail('passivationIdleMs', 'must be a non-negative finite number', c.passivationIdleMs);
+    }
+    if (c.maxEntities !== undefined && (!Number.isInteger(c.maxEntities) || c.maxEntities < 0)) {
+      this.fail('maxEntities', 'must be an integer >= 0', c.maxEntities);
+    }
   }
 }
 

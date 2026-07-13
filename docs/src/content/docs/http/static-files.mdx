@@ -1,0 +1,85 @@
+---
+title: Static files
+description: getFromFile, getFromDirectory, and getFromBrowseableDirectory serve files backend-agnostically — MIME detection, conditional requests, Range, directory listings, and hardened path-traversal defence.
+---
+
+Serve files without reaching for a backend-specific plugin. `getFromFile`
+serves one file; `getFromDirectory` maps a URL onto a directory tree;
+`getFromBrowseableDirectory` adds HTML listings.
+
+```ts
+import { concat, getFromFile, getFromBrowseableDirectory, path } from 'actor-ts/http';
+
+const routes = concat(
+  path('logo.svg', getFromFile('./assets/logo.svg')),
+  getFromBrowseableDirectory('static', './public'),   // mounts at /static
+);
+```
+
+`getFromDirectory([routePrefix,] fsRoot, options?)` — with a `routePrefix`
+it mounts under it (e.g. `/static/...`), without one it mounts at the root.
+
+## Options
+
+| Builder method | Field | Default |
+| --- | --- | --- |
+| `withIndexFiles(...n)` | `indexFiles` | `['index.html']` (`[]` disables) |
+| `withBrowse(flag?)` | `browse` | `false` |
+| `withCacheControl(v)` | `cacheControl` | header omitted |
+| `withEtag(flag)` | `etag` | `true` (weak, size+mtime) |
+| `withLastModified(flag)` | `lastModified` | `true` |
+| `withRanges(flag)` | `ranges` | `true` |
+| `withDotfiles('deny' \| 'allow')` | `dotfiles` | `'deny'` |
+| `withSymlinks('within-root' \| 'follow')` | `symlinks` | `'within-root'` |
+| `withContentTypes(map)` | `contentTypes` | — (ext → type overrides) |
+| `withMaxFileSize(bytes)` | `maxFileSize` | 50 MiB (larger → 413) |
+
+## Behaviour
+
+- **Conditional requests** — a weak `ETag` (size + mtime) and
+  `Last-Modified`; matching `If-None-Match` / `If-Modified-Since` → `304`.
+- **Range** — a single `bytes=` range → `206` (or `416` if unsatisfiable);
+  `Accept-Ranges: bytes` is advertised.
+- **Directories** — a request without a trailing slash `301`-redirects to
+  add it (query preserved); with a slash, index files are tried in order,
+  then a listing (if browsing) or `404`.
+- **HEAD** — full headers, empty body, no file read.
+
+## MIME types
+
+Content-types come from `contentTypeFor(pathOrExt, overrides?)` — a small
+registry of ~45 common web types. Text-ish types get `; charset=utf-8`;
+unknown extensions fall back to `application/octet-stream`. Override
+per-route with `withContentTypes({ ext: 'type' })` or call `contentTypeFor`
+directly when building responses by hand.
+
+## Security model
+
+The URL remainder is **fully decoded before validation** (peeling every
+encoding layer), then every path segment is rejected if it is `..`, empty,
+a NUL, a backslash, or a `:` segment (Windows drive / NTFS alternate data
+stream); absolute forms are refused, the joined path is confined to the
+root, and a symlink escaping the root is refused (`within-root` default).
+Dotfiles are denied by default. **Every rejection is a uniform `404`** — no
+information leak about what exists.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="note" title="Bodies are buffered">
+  Files are read into memory (bounded by `maxFileSize`, default 50 MiB → a
+  larger file gets `413`). This keeps serving correct and identical across
+  Bun, Node, and Deno; streaming very large files without buffering is a
+  future enhancement. Range requests still work — they slice the buffer.
+</Aside>
+
+<Aside type="note" title="Options only — no HOCON">
+  Static settings are per-route code; an HTTP handler has no `ActorSystem`
+  at request time, so there is no HOCON layer for these (unlike the
+  WebSocket policy).
+</Aside>
+
+## Where to next
+
+- **[Route DSL](/http/route-dsl/)** — how directives compose.
+- **[HTML & XSS](/http/html-xss/)** — the listing escapes filenames with the same helpers.
+- **[Security](/http/security/)** — the recommended stack.

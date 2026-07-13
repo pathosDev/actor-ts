@@ -3,6 +3,7 @@ import { Lazy } from '../util/Lazy.js';
 import { none, some, type Option } from '../util/Option.js';
 import { wrapError } from '../util/WrapError.js';
 import { CacheError, type Cache } from './Cache.js';
+import { MemcachedCacheOptionsValidator } from './MemcachedCacheOptions.js';
 import type { MemcachedCacheOptions, MemcachedCacheOptionsType } from './MemcachedCacheOptions.js';
 
 /**
@@ -43,6 +44,7 @@ export class MemcachedCache implements Cache {
 
   constructor(options: MemcachedCacheOptions = {}) {
     const opts = options as MemcachedCacheOptionsType;
+    new MemcachedCacheOptionsValidator().validate(opts);
     this.keyPrefix = opts.keyPrefix ?? '';
     this.clientLazy = Lazy.of(async () => {
       if (opts.client) return opts.client;

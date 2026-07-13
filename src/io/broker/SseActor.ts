@@ -2,6 +2,7 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
+import { SseOptionsValidator } from './SseOptions.js';
 import type { SseOptions, SseOptionsType } from './SseOptions.js';
 
 /** Inbound SSE event delivered to subscribers. */
@@ -44,6 +45,7 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
     return out;
   }
   protected requiredOptions(): ReadonlyArray<keyof SseOptionsType> { return ['url', 'target']; }
+  protected override optionsValidator(): SseOptionsValidator { return new SseOptionsValidator(); }
   protected endpointLabel(): string { return this.options.url ?? '<unknown>'; }
 
   protected async connectImplementation(): Promise<void> {

@@ -165,23 +165,20 @@ cluster restarts (cold start), every key starts empty again.
 For **survive-restart** semantics, use the **durable** variant:
 
 ```ts
-import { DistributedDataOptions, DurableDistributedDataStore } from 'actor-ts';
+import { DistributedDataOptions, InMemoryDurableStateStore } from 'actor-ts';
 
-const distributedDataOptions = DistributedDataOptions.create().withDurableStore(
-    new DurableDistributedDataStore({
-      durableStateStore: someStore,
-      keys: ['hits', 'config'],   // only these keys are persisted
-    }),
-  );
+const store = new InMemoryDurableStateStore();
+const distributedDataOptions = DistributedDataOptions.create().withDurableStore(store);
 const dd = system.extension(DistributedDataId).start(
   cluster,
   distributedDataOptions,
 );
 ```
 
-The durable layer persists changes to disk (or wherever the
-durable-state store lives); on restart, the replica's state is
-restored before joining the gossip.
+`withDurableStore` takes any [`DurableStateStore`](/persistence/durable-state/)
+(InMemory here; a SQL or object-storage backend in production).  The
+durable layer persists the replica's **whole view** to the store; on
+restart, the state is restored before joining the gossip.
 
 See [Durable storage](/distributed-data/durable-storage/)
 for the configuration details.
