@@ -131,7 +131,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
   get children(): ReadonlyArray<ActorRef> {
     const out: ActorRef[] = [];
-    for (const c of this._children.values()) out.push(c.self);
+    for (const child of this._children.values()) out.push(child.self);
     return out;
   }
 
@@ -165,8 +165,8 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   child(name: string): Option<ActorRef> {
-    const c = this._children.get(name);
-    return fromNullable(c ? c.self : null);
+    const child = this._children.get(name);
+    return fromNullable(child ? child.self : null);
   }
 
   /** @internal — used by ActorSelection to walk down the tree. */
@@ -426,7 +426,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     await match(cmd)
       .with({ kind: 'create' }, () => this.doCreate())
       .with({ kind: 'terminate' }, () => this.doTerminate())
-      .with({ kind: 'recreate' }, (c) => this.doRecreate(c.cause))
+      .with({ kind: 'recreate' }, (signal) => this.doRecreate(signal.cause))
       .with({ kind: 'suspend' }, () => {
         this.mailbox.suspend();
         if (this.state === 'running') this.state = 'suspended';
@@ -435,10 +435,10 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         this.mailbox.resume();
         if (this.state === 'suspended') this.state = 'running';
       })
-      .with({ kind: 'failure' }, (c) => this.superviseChildFailure(c.cause, c.child, c.message))
-      .with({ kind: 'childTerminated' }, (c) => this.handleChildTerminated(c.child))
-      .with({ kind: 'watchNotify' }, (c) => {
-        this.mailbox.enqueue({ message: new Terminated(c.target) as unknown as TMessage, sender: null });
+      .with({ kind: 'failure' }, (signal) => this.superviseChildFailure(signal.cause, signal.child, signal.message))
+      .with({ kind: 'childTerminated' }, (signal) => this.handleChildTerminated(signal.child))
+      .with({ kind: 'watchNotify' }, (signal) => {
+        this.mailbox.enqueue({ message: new Terminated(signal.target) as unknown as TMessage, sender: null });
       })
       .with({ kind: 'receiveTimeout' }, async () => {
         if (this.state === 'running') {
@@ -513,12 +513,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
     // Notify watchers
     const term = new Terminated(this.self);
-    for (const w of this._watchers) w.tell(term as never);
+    for (const watcher of this._watchers) watcher.tell(term as never);
     this._watchers.clear();
 
     // Tell watched targets to drop us from their watcher set
-    for (const t of this._watching.values()) {
-      if (t instanceof LocalActorRef) t.getCell()._removeWatcher(this.self);
+    for (const watched of this._watching.values()) {
+      if (watched instanceof LocalActorRef) watched.getCell()._removeWatcher(this.self);
     }
     this._watching.clear();
 
@@ -683,7 +683,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   private failToParent(cause: Error, message?: unknown): void {
     this.mailbox.suspend();
     if (this.state === 'running') this.state = 'suspended';
-    for (const c of this._children.values()) c.enqueueSystem({ kind: 'suspend' });
+    for (const child of this._children.values()) child.enqueueSystem({ kind: 'suspend' });
 
     if (this._parent) {
       this._parent.enqueueSystem({ kind: 'failure', cause, child: this.self, message });
@@ -711,7 +711,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
     switch (directive) {
       case Directive.Resume:
-        for (const c of affected) c.enqueueSystem({ kind: 'resume' });
+        for (const child of affected) child.enqueueSystem({ kind: 'resume' });
         break;
       case Directive.Restart: {
         const withinLimit = this.registerRestart(strategy);
@@ -719,14 +719,14 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
           this.log.warn(
             `Restart threshold exceeded (${strategy.maxRetries} in ${strategy.withinTimeRangeMs}ms) — stopping children`,
           );
-          for (const c of affected) c.enqueueSystem({ kind: 'terminate' });
+          for (const child of affected) child.enqueueSystem({ kind: 'terminate' });
         } else {
-          for (const c of affected) c.enqueueSystem({ kind: 'recreate', cause });
+          for (const child of affected) child.enqueueSystem({ kind: 'recreate', cause });
         }
         break;
       }
       case Directive.Stop:
-        for (const c of affected) c.enqueueSystem({ kind: 'terminate' });
+        for (const child of affected) child.enqueueSystem({ kind: 'terminate' });
         break;
       case Directive.Escalate:
         this.failToParent(cause, message);
@@ -746,7 +746,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   private findChildByRef(ref: ActorRef): ActorCell<any> | null {
-    for (const c of this._children.values()) if (c.self.equals(ref)) return c;
+    for (const child of this._children.values()) if (child.self.equals(ref)) return child;
     return null;
   }
 
@@ -808,21 +808,21 @@ class CellTimerScheduler<TMessage> implements TimerScheduler<TMessage> {
   }
 
   cancel(key: string): boolean {
-    const h = this.handles.get(key);
-    if (!h) return false;
-    h.cancel();
+    const handle = this.handles.get(key);
+    if (!handle) return false;
+    handle.cancel();
     this.handles.delete(key);
     return true;
   }
 
   cancelAll(): void {
-    for (const h of this.handles.values()) h.cancel();
+    for (const handle of this.handles.values()) handle.cancel();
     this.handles.clear();
   }
 
   isTimerActive(key: string): boolean {
-    const h = this.handles.get(key);
-    return !!h && !h.isCancelled;
+    const handle = this.handles.get(key);
+    return !!handle && !handle.isCancelled;
   }
 
   activeKeys(): string[] {
