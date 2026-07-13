@@ -18,10 +18,10 @@
  */
 
 export class CborEncodeError extends Error {
-  constructor(m: string) { super(m); this.name = 'CborEncodeError'; }
+  constructor(message: string) { super(message); this.name = 'CborEncodeError'; }
 }
 export class CborDecodeError extends Error {
-  constructor(m: string) { super(m); this.name = 'CborDecodeError'; }
+  constructor(message: string) { super(message); this.name = 'CborDecodeError'; }
 }
 
 const TAG_DATETIME = 0;      // RFC 8949: standard date/time string
@@ -40,79 +40,79 @@ export class CborEncoder {
     return new Uint8Array(this.chunks);
   }
 
-  private writeValue(v: unknown): void {
-    if (v === null || v === undefined) return this.writeSimple(22); // null
-    if (typeof v === 'boolean') return this.writeSimple(v ? 21 : 20);
-    if (typeof v === 'number') {
-      if (Number.isFinite(v) && Number.isInteger(v) && Math.abs(v) <= Number.MAX_SAFE_INTEGER) {
-        return this.writeInt(v);
+  private writeValue(value: unknown): void {
+    if (value === null || value === undefined) return this.writeSimple(22); // null
+    if (typeof value === 'boolean') return this.writeSimple(value ? 21 : 20);
+    if (typeof value === 'number') {
+      if (Number.isFinite(value) && Number.isInteger(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER) {
+        return this.writeInt(value);
       }
-      return this.writeDouble(v);
+      return this.writeDouble(value);
     }
-    if (typeof v === 'bigint') return this.writeBigInt(v);
-    if (typeof v === 'string') return this.writeString(v);
-    if (v instanceof Uint8Array) return this.writeBytes(v);
-    if (v instanceof Date) {
+    if (typeof value === 'bigint') return this.writeBigInt(value);
+    if (typeof value === 'string') return this.writeString(value);
+    if (value instanceof Uint8Array) return this.writeBytes(value);
+    if (value instanceof Date) {
       this.writeTag(TAG_EPOCH_DATETIME);
-      this.writeDouble(v.getTime() / 1000);
+      this.writeDouble(value.getTime() / 1000);
       return;
     }
-    if (Array.isArray(v)) {
-      this.writeHeader(4, v.length);
-      for (const item of v) this.writeValue(item);
+    if (Array.isArray(value)) {
+      this.writeHeader(4, value.length);
+      for (const item of value) this.writeValue(item);
       return;
     }
-    if (typeof v === 'object') {
-      const entries = Object.entries(v as Record<string, unknown>);
+    if (typeof value === 'object') {
+      const entries = Object.entries(value as Record<string, unknown>);
       this.writeHeader(5, entries.length);
-      for (const [k, val] of entries) {
-        this.writeString(k);
+      for (const [key, val] of entries) {
+        this.writeString(key);
         this.writeValue(val);
       }
       return;
     }
-    throw new CborEncodeError(`Cannot encode value of type ${typeof v}`);
+    throw new CborEncodeError(`Cannot encode value of type ${typeof value}`);
   }
 
-  private writeInt(n: number): void {
-    if (n >= 0) this.writeHeader(0, n);
-    else this.writeHeader(1, -n - 1);
+  private writeInt(value: number): void {
+    if (value >= 0) this.writeHeader(0, value);
+    else this.writeHeader(1, -value - 1);
   }
 
-  private writeBigInt(n: bigint): void {
+  private writeBigInt(value: bigint): void {
     // Use RFC 8949 bignum tags so the decoder can reconstruct a bigint.
-    const positive = n >= 0n;
-    const absVal = positive ? n : -n - 1n;
+    const positive = value >= 0n;
+    const absVal = positive ? value : -value - 1n;
     this.writeTag(positive ? TAG_UNSIGNED_BIGNUM : TAG_NEGATIVE_BIGNUM);
     const bytes = bigIntToBytes(absVal);
     this.writeHeader(2, bytes.length);
-    for (const b of bytes) this.chunks.push(b);
+    for (const byte of bytes) this.chunks.push(byte);
   }
 
-  private writeString(s: string): void {
-    const bytes = new TextEncoder().encode(s);
+  private writeString(text: string): void {
+    const bytes = new TextEncoder().encode(text);
     this.writeHeader(3, bytes.length);
-    for (const b of bytes) this.chunks.push(b);
+    for (const byte of bytes) this.chunks.push(byte);
   }
 
-  private writeBytes(b: Uint8Array): void {
-    this.writeHeader(2, b.length);
-    for (const x of b) this.chunks.push(x);
+  private writeBytes(bytes: Uint8Array): void {
+    this.writeHeader(2, bytes.length);
+    for (const byte of bytes) this.chunks.push(byte);
   }
 
   private writeTag(tag: number): void {
     this.writeHeader(6, tag);
   }
 
-  private writeSimple(v: number): void {
-    this.chunks.push((7 << 5) | v);
+  private writeSimple(value: number): void {
+    this.chunks.push((7 << 5) | value);
   }
 
-  private writeDouble(n: number): void {
+  private writeDouble(value: number): void {
     this.chunks.push((7 << 5) | 27);
     const buf = new ArrayBuffer(8);
-    new DataView(buf).setFloat64(0, n, false);
-    for (const b of new Uint8Array(buf)) this.chunks.push(b);
+    new DataView(buf).setFloat64(0, value, false);
+    for (const byte of new Uint8Array(buf)) this.chunks.push(byte);
   }
 
   private writeHeader(major: number, value: number): void {
@@ -150,11 +150,11 @@ export class CborDecoder {
     this.bytes = bytes;
     this.view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     this.pos = 0;
-    const v = this.readValue();
+    const value = this.readValue();
     if (this.pos !== bytes.byteLength) {
       throw new CborDecodeError(`Trailing CBOR bytes at offset ${this.pos}`);
     }
-    return v;
+    return value;
   }
 
   private readValue(): unknown {
@@ -176,27 +176,27 @@ export class CborDecoder {
     switch (major) {
       case 0: return typeof len === 'bigint' ? len : Number(len);
       case 1: {
-        const v = typeof len === 'bigint' ? -(len as bigint) - 1n : -Number(len) - 1;
-        return v;
+        const value = typeof len === 'bigint' ? -(len as bigint) - 1n : -Number(len) - 1;
+        return value;
       }
       case 2: return this.readBytes(Number(len));
       case 3: return new TextDecoder().decode(this.readBytes(Number(len)));
       case 4: {
         const out: unknown[] = [];
-        const n = Number(len);
-        for (let i = 0; i < n; i++) out.push(this.readValue());
+        const count = Number(len);
+        for (let i = 0; i < count; i++) out.push(this.readValue());
         return out;
       }
       case 5: {
         const out: Record<string, unknown> = {};
-        const n = Number(len);
-        for (let i = 0; i < n; i++) {
-          const k = this.readValue();
-          const v = this.readValue();
-          if (typeof k !== 'string') {
+        const count = Number(len);
+        for (let i = 0; i < count; i++) {
+          const key = this.readValue();
+          const value = this.readValue();
+          if (typeof key !== 'string') {
             throw new CborDecodeError('Only string keys are supported in maps');
           }
-          out[k] = v;
+          out[key] = value;
         }
         return out;
       }
@@ -231,12 +231,12 @@ export class CborDecoder {
     return out <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(out) : out;
   }
 
-  private readBytes(n: number): Uint8Array {
-    if (this.pos + n > this.bytes.byteLength) {
-      throw new CborDecodeError(`Truncated input: need ${n} bytes at offset ${this.pos}`);
+  private readBytes(count: number): Uint8Array {
+    if (this.pos + count > this.bytes.byteLength) {
+      throw new CborDecodeError(`Truncated input: need ${count} bytes at offset ${this.pos}`);
     }
-    const out = this.bytes.slice(this.pos, this.pos + n);
-    this.pos += n;
+    const out = this.bytes.slice(this.pos, this.pos + count);
+    this.pos += count;
     return out;
   }
 
@@ -248,15 +248,15 @@ export class CborDecoder {
     if (add === 25) return this.readHalfFloat();
     if (add === 26) {
       if (this.pos + 4 > this.bytes.byteLength) throw new CborDecodeError('Truncated float32');
-      const v = this.view.getFloat32(this.pos, false);
+      const value = this.view.getFloat32(this.pos, false);
       this.pos += 4;
-      return v;
+      return value;
     }
     if (add === 27) {
       if (this.pos + 8 > this.bytes.byteLength) throw new CborDecodeError('Truncated float64');
-      const v = this.view.getFloat64(this.pos, false);
+      const value = this.view.getFloat64(this.pos, false);
       this.pos += 8;
-      return v;
+      return value;
     }
     throw new CborDecodeError(`Unsupported simple value ${add}`);
   }
@@ -286,8 +286,8 @@ export class CborDecoder {
         if (!(inner instanceof Uint8Array)) {
           throw new CborDecodeError(`Tag ${tag} expects a byte string`);
         }
-        const n = bytesToBigInt(inner);
-        return tag === TAG_UNSIGNED_BIGNUM ? n : -1n - n;
+        const magnitude = bytesToBigInt(inner);
+        return tag === TAG_UNSIGNED_BIGNUM ? magnitude : -1n - magnitude;
       }
       default:
         // Unknown tag — pass the inner value through.
@@ -301,16 +301,16 @@ export class CborDecoder {
 function bigIntToBytes(n: bigint): Uint8Array {
   if (n === 0n) return new Uint8Array([0]);
   const bytes: number[] = [];
-  let v = n;
-  while (v > 0n) {
-    bytes.push(Number(v & 0xffn));
-    v >>= 8n;
+  let value = n;
+  while (value > 0n) {
+    bytes.push(Number(value & 0xffn));
+    value >>= 8n;
   }
   return new Uint8Array(bytes.reverse());
 }
 
 function bytesToBigInt(bytes: Uint8Array): bigint {
-  let v = 0n;
-  for (const b of bytes) v = (v << 8n) | BigInt(b);
-  return v;
+  let value = 0n;
+  for (const byte of bytes) value = (value << 8n) | BigInt(byte);
+  return value;
 }
