@@ -215,12 +215,12 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   private handleCommand(cmd: MqttCommand<T>): void {
     // Exhaustive over MqttCommand — a new command variant forces a handler here.
     match(cmd)
-      .with({ kind: 'publish' }, (c) => { this.enqueueOutbound(c.publish); })
-      .with({ kind: 'subscribe' }, (c) => {
-        this.registerSubscription(c.topic, { qos: c.qos, target: c.target });
+      .with({ kind: 'publish' }, (command) => { this.enqueueOutbound(command.publish); })
+      .with({ kind: 'subscribe' }, (command) => {
+        this.registerSubscription(command.topic, { qos: command.qos, target: command.target });
       })
-      .with({ kind: 'unsubscribe' }, (c) => {
-        this.removeSubscription(c.topic, c.target, true);
+      .with({ kind: 'unsubscribe' }, (command) => {
+        this.removeSubscription(command.topic, command.target, true);
       })
       .exhaustive();
   }
@@ -301,16 +301,16 @@ export abstract class MqttActor<T = unknown, TSelf = never>
 
   private removeTerminatedTarget(ref: ActorRef): void {
     const key = ref.path.toString();
-    const w = this.watched.get(key);
-    if (!w) return;
+    const watchEntry = this.watched.get(key);
+    if (!watchEntry) return;
     // The cell already dropped the watch on Terminated delivery — just
     // clean our own bookkeeping (no context.unwatch).
     this.watched.delete(key);
-    for (const pattern of w.patterns) {
+    for (const pattern of watchEntry.patterns) {
       const entry = this.registry.get(pattern);
       if (!entry) continue;
-      for (const t of entry.targets) {
-        if (t.path.toString() === key) { entry.targets.delete(t); break; }
+      for (const target of entry.targets) {
+        if (target.path.toString() === key) { entry.targets.delete(target); break; }
       }
       if (!entry.deliverToSelf && entry.targets.size === 0) {
         this.registry.delete(pattern);
@@ -321,21 +321,21 @@ export abstract class MqttActor<T = unknown, TSelf = never>
 
   private watchTarget(ref: ActorRef<MqttMessage<T>>, pattern: string): void {
     const key = ref.path.toString();
-    let w = this.watched.get(key);
-    if (!w) {
-      w = { ref, patterns: new Set() };
-      this.watched.set(key, w);
+    let watchEntry = this.watched.get(key);
+    if (!watchEntry) {
+      watchEntry = { ref, patterns: new Set() };
+      this.watched.set(key, watchEntry);
       this.context.watch(ref);
     }
-    w.patterns.add(pattern);
+    watchEntry.patterns.add(pattern);
   }
 
   private unwatchTarget(ref: ActorRef<MqttMessage<T>>, pattern: string): void {
     const key = ref.path.toString();
-    const w = this.watched.get(key);
-    if (!w) return;
-    w.patterns.delete(pattern);
-    if (w.patterns.size === 0) {
+    const watchEntry = this.watched.get(key);
+    if (!watchEntry) return;
+    watchEntry.patterns.delete(pattern);
+    if (watchEntry.patterns.size === 0) {
       this.watched.delete(key);
       this.context.unwatch(ref);
     }
@@ -360,8 +360,8 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     // Context is attached before preStart; options resolve inside
     // super.preStart().  Flush constructor subscriptions into the
     // registry (idempotent) so connectImplementation applies them on connect.
-    for (const p of this.pendingSubs) {
-      this.registerSubscription(p.topic, { qos: p.qos, target: p.target });
+    for (const pendingSub of this.pendingSubs) {
+      this.registerSubscription(pendingSub.topic, { qos: pendingSub.qos, target: pendingSub.target });
     }
     this._started = true;
     await super.preStart();
@@ -373,26 +373,26 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     return { qos: 0, cleanSession: true, keepAlive: 60 };
   }
 
-  protected readOptionsFromConfig(c: Config): Partial<MqttOptionsType> {
+  protected readOptionsFromConfig(config: Config): Partial<MqttOptionsType> {
     const out: { -readonly [K in keyof MqttOptionsType]?: MqttOptionsType[K] } = {};
-    if (c.hasPath('brokerUrl')) out.brokerUrl = c.getString('brokerUrl');
-    if (c.hasPath('clientId')) out.clientId = c.getString('clientId');
-    if (c.hasPath('credentials')) {
-      const cc = c.getConfig('credentials');
+    if (config.hasPath('brokerUrl')) out.brokerUrl = config.getString('brokerUrl');
+    if (config.hasPath('clientId')) out.clientId = config.getString('clientId');
+    if (config.hasPath('credentials')) {
+      const cc = config.getConfig('credentials');
       out.credentials = {
         username: cc.hasPath('username') ? cc.getString('username') : undefined,
         password: cc.hasPath('password') ? cc.getString('password') : undefined,
       };
     }
-    if (c.hasPath('qos')) out.qos = c.getInt('qos') as MqttQos;
-    if (c.hasPath('cleanSession')) out.cleanSession = c.getBoolean('cleanSession');
-    if (c.hasPath('keepAlive')) out.keepAlive = c.getInt('keepAlive');
-    if (c.hasPath('protocolVersion')) {
-      const v = c.getInt('protocolVersion');
-      if (v !== 4 && v !== 5) {
-        throw new Error(`MqttActor: protocolVersion must be 4 or 5, got ${v}`);
+    if (config.hasPath('qos')) out.qos = config.getInt('qos') as MqttQos;
+    if (config.hasPath('cleanSession')) out.cleanSession = config.getBoolean('cleanSession');
+    if (config.hasPath('keepAlive')) out.keepAlive = config.getInt('keepAlive');
+    if (config.hasPath('protocolVersion')) {
+      const protocolVersion = config.getInt('protocolVersion');
+      if (protocolVersion !== 4 && protocolVersion !== 5) {
+        throw new Error(`MqttActor: protocolVersion must be 4 or 5, got ${protocolVersion}`);
       }
-      out.protocolVersion = v;
+      out.protocolVersion = protocolVersion;
     }
     return out;
   }
@@ -471,26 +471,26 @@ export abstract class MqttActor<T = unknown, TSelf = never>
 
   protected async disconnectImplementation(): Promise<void> {
     if (!this.client) return;
-    const c = this.client;
+    const client = this.client;
     this.client = null;
     return new Promise<void>((resolve) => {
-      c.removeAllListeners();
-      c.end(false, {}, () => resolve());
+      client.removeAllListeners();
+      client.end(false, {}, () => resolve());
       setTimeout(resolve, 1_000);
     });
   }
 
   protected async dispatchOutgoing(env: OutboundEnvelope<MqttPublish>): Promise<void> {
     if (!this.client) throw new Error('MqttActor: not connected');
-    const p = env.payload;
-    const qos = p.qos ?? this.options.qos ?? 0;
-    const retain = p.retain ?? false;
+    const payload = env.payload;
+    const qos = payload.qos ?? this.options.qos ?? 0;
+    const retain = payload.retain ?? false;
     const protocolVersion = this.options.protocolVersion ?? 4;
     const opts: MqttPubOpts = { qos, retain };
-    const properties = buildPublishProperties(p, protocolVersion);
+    const properties = buildPublishProperties(payload, protocolVersion);
     if (properties) opts.properties = properties;
     return new Promise<void>((resolve, reject) => {
-      this.client!.publish(p.topic, p.payload as string | Uint8Array, opts, (err) => {
+      this.client!.publish(payload.topic, payload.payload as string | Uint8Array, opts, (err) => {
         err ? reject(err) : resolve();
       });
     });
@@ -500,8 +500,8 @@ export abstract class MqttActor<T = unknown, TSelf = never>
 /* --------------------------- helpers ---------------------------- */
 
 /** Terminated arrives via onReceive but isn't in the typed mailbox union. */
-function isTerminated(m: unknown): m is Terminated {
-  return m instanceof Terminated;
+function isTerminated(message: unknown): message is Terminated {
+  return message instanceof Terminated;
 }
 
 /* --------------------------- MQTT 5.0 helpers -------------------------- */
@@ -533,11 +533,11 @@ export function matchesMqttPattern(pattern: string, topic: string): boolean {
   const ps = pattern.split('/');
   const ts = topic.split('/');
   for (let i = 0; i < ps.length; i++) {
-    const p = ps[i]!;
-    if (p === '#') return true;
+    const patternSegment = ps[i]!;
+    if (patternSegment === '#') return true;
     if (i >= ts.length) return false;
-    if (p === '+') continue;
-    if (p !== ts[i]) return false;
+    if (patternSegment === '+') continue;
+    if (patternSegment !== ts[i]) return false;
   }
   return ps.length === ts.length;
 }
