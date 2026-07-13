@@ -113,7 +113,7 @@ Place this at the project root.  The framework auto-loads it on
 | --- | --- | --- |
 | `http.backend` | `"fastify"` | One of `fastify` / `bun` / `express`. |
 | `http.shutdown-grace-period` | `5s` | Time to drain in-flight requests on shutdown. |
-| `http.websocket` | *(see below)* | Server-side WebSocket defaults for [`websocket()`](/io/server-websocket/) routes. |
+| `http.websocket` | *(see below)* | Server-side WebSocket defaults for [`websocket()`](/http/websocket/) routes. |
 
 Server-side WebSocket routes (`websocket(path, actorRef)`) read their
 defaults from `actor-ts.http.websocket`:

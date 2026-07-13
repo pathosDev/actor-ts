@@ -1,0 +1,48 @@
+---
+title: Basic-Auth
+description: BasicAuth() schützt Routen mit HTTP-Basic-Authentifizierung — eine konstantzeit-verglichene Users-Map oder eine eigene validate-Funktion und ein echter WWW-Authenticate-Challenge bei 401.
+---
+
+`BasicAuth` ist das `Authorization: Basic`-Pendant zu `BearerTokenAuth`.
+Zugangsdaten werden in konstanter Zeit verglichen, und ein `401` kündigt
+einen echten `WWW-Authenticate: Basic realm="…"`-Challenge an.
+
+```ts
+import { BasicAuth, BasicAuthOptions, withMiddleware } from 'actor-ts/http';
+
+const auth = BasicAuth(
+  BasicAuthOptions.create()
+    .withUsers({ alice: process.env.ALICE_PW! })
+    .withRealm('admin'),
+);
+
+const routes = withMiddleware(auth, adminRoutes);
+```
+
+Gib eine `users`-Map (Benutzername → Passwort) oder eine eigene
+`validate`-Funktion an, um gegen einen Store zu prüfen:
+
+```ts
+BasicAuth({ validate: (user, pass) => checkAgainstDb(user, pass) });
+```
+
+## Konfiguration
+
+| Builder-Methode | Feld | Zweck |
+| --- | --- | --- |
+| `withUsers(map)` | `users` | Benutzername → Passwort, konstantzeit-verglichen |
+| `withValidate(fn)` | `validate` | eigene async/sync Zugangsdaten-Prüfung |
+| `withRealm(name)` | `realm` | angekündigter Realm (Default `'actor-ts'`) |
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Basic-Auth braucht TLS">
+  Basic-Zugangsdaten sind base64, nicht verschlüsselt. Nutze `BasicAuth` nur
+  über HTTPS (ein TLS-terminierender Proxy zählt). Für mehr als eine
+  geteilte Operator-Zugangsdaten ist ein echter Auth-Flow vorzuziehen.
+</Aside>
+
+## Wie weiter
+
+- **[Sicherheit](/de/http/security/)** — wo Auth im Stack sitzt.
+- **[CSRF](/de/http/middleware/csrf/)** — für Browser-Formulare mit einem CSRF-Schutz kombinieren.

@@ -39,9 +39,10 @@ if (result.status !== 0) {
   process.exit(result.status ?? 1);
 }
 
-// Parse the "All files" aggregate row.  Format:
-//   All files   |   91.23 |   95.67 |   ...
-const m = output.match(/^All files\s+\|\s+([0-9]+(?:\.[0-9]+)?)/m);
+// Parse the "All files" aggregate row.  Bun's `--coverage` table is
+//   File ... | % Funcs | % Lines | Uncovered Line #s
+// so LINE coverage is the SECOND numeric column (the first is % Funcs).
+const m = output.match(/^All files\s+\|\s+[0-9]+(?:\.[0-9]+)?\s+\|\s+([0-9]+(?:\.[0-9]+)?)/m);
 if (!m) {
   console.error('coverage-gate: could not find "All files" aggregate row in `bun test --coverage` output.');
   process.exit(2);

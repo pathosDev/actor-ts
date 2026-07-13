@@ -1,0 +1,109 @@
+---
+title: Security best practices
+description: The recommended HTTP security middleware stack and its ordering, plus operational guidance — TLS termination, trusting client IPs, cookies, error hygiene, input caps, and static-file safety.
+---
+
+The framework ships the pieces; this page is how to assemble them. The
+runnable counterpart is `examples/http/secure-service.ts`.
+
+## The recommended stack
+
+Order matters — outermost first:
+
+```ts
+import {
+  concat, cors, csrfProtection, fallback, handleErrors, path,
+  requestId, requestTimeout, securityHeaders, withMiddleware,
+  CorsOptions, CsrfOptions,
+} from 'actor-ts/http';
+
+const corsOptions = CorsOptions.create().withOrigins('https://app.example').withCredentials();
+const csrf = csrfProtection(CsrfOptions.create().withSecret(process.env.CSRF_SECRET!));
+
+const routes =
+  withMiddleware(requestId(),
+  withMiddleware(securityHeaders(),
+  cors(corsOptions,
+  withMiddleware(requestTimeout(15_000),
+  withMiddleware(csrf,
+  handleErrors(errorMapper,
+    concat(
+      appRoutes,
+      fallback(notFound),
+    )))))));
+```
+
+| Layer | Why here |
+| --- | --- |
+| `requestId` | outermost, so every log line (including errors) has an id |
+| `securityHeaders` | stamp headers on **every** response, even short-circuits |
+| `cors` | **outside** auth — preflights are anonymous by spec |
+| `requestTimeout` | bound latency before doing real work |
+| `csrf` | browser apps only; after CORS, before handlers |
+| `handleErrors` | map thrown errors to responses close to the routes |
+| `fallback` | at the root — answers anything unmatched |
+
+## Operational environment
+
+- **TLS terminates at a proxy.** Set [HSTS](/http/middleware/security-headers/)
+  regardless — browsers ignore it over plain HTTP. Don't gate security
+  headers on a scheme the app can't see.
+- **Trusting client IPs.** `req.remoteAddress` is the socket peer, not a
+  spoofable `X-Forwarded-For`. Trust a forwarded header only when your proxy
+  overwrites it (`IpAllowlist`'s `getClientIp` option).
+- **Secrets from the environment**, not HOCON files — the CSRF secret, Basic
+  credentials, and bearer tokens all take values you load at startup.
+
+## Cookies
+
+Prefer the `__Host-` prefix (requires `Secure`, `Path=/`, no `Domain`) and
+`SameSite=Lax` or `Strict`. The [CSRF cookie](/http/middleware/csrf/) is
+deliberately not `HttpOnly` (double-submit needs JS to read it); your
+session/auth cookie should be `HttpOnly`. `serializeCookie` refuses values
+that could inject a second header.
+
+## Error hygiene
+
+Don't leak internals. Use `withErrorHandler` (or a top-level `handleErrors`)
+to return a generic body, and log the detail server-side keyed by the
+request id. Keep `403`/`404` responses unspecific — the static-file layer
+returns a uniform `404` for every rejected path so it never reveals what
+exists.
+
+## Capping untrusted input
+
+- **Request bodies** are capped by the backend (Fastify 1 MiB default;
+  Express/Hono ~10 MiB) — tune per backend for your payloads.
+- **WebSocket frames** are capped by `maxFrameBytes` (1 MiB default).
+- **Untrusted HTML** — escape with the [`html`](/http/html-xss/) template;
+  to accept rich markup, sanitise with a dedicated library before `rawHtml`.
+
+## Static files
+
+Keep the `dotfiles: 'deny'` and `symlinks: 'within-root'` defaults. Enable
+`browse` only for internal tools — a public listing exposes your directory
+structure. See [Static files](/http/static-files/).
+
+## WebSocket
+
+Wrap a `websocket()` route in `cors(...)` to reject cross-origin upgrades,
+and put auth middleware around it — `withMiddleware` runs at upgrade time,
+so it gates the handshake.
+
+## Checklist
+
+| Measure | How |
+| --- | --- |
+| Security headers on every response | `securityHeaders()` |
+| HTTPS enforced by the browser | `strictTransportSecurity()` / `withHsts` |
+| Cross-origin controlled | `cors(...)` |
+| CSRF (browser forms) | `csrfProtection(...)` |
+| No internal error leaks | `withErrorHandler` + generic bodies |
+| Request correlation | `requestId()` |
+| Bounded latency | `requestTimeout(...)` |
+| Safe file serving | `getFromDirectory` defaults (dotfiles deny, symlink confinement) |
+
+## Where to next
+
+- **[CORS](/http/middleware/cors/)** · **[CSRF](/http/middleware/csrf/)** · **[Security headers](/http/middleware/security-headers/)** · **[CSP](/http/middleware/csp/)**
+- **[Error handling](/http/error-handling/)** · **[Static files](/http/static-files/)**

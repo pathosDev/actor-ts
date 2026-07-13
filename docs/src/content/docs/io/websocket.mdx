@@ -8,7 +8,7 @@ connection to a remote endpoint.  Inbound frames are decoded
 into typed messages you handle in `onMessage`; outbound messages
 are encoded and sent (buffered while disconnected, resent after
 reconnect).  For accepting **incoming** WS connections (server
-side), see [server WebSocket](/io/server-websocket/).
+side), see [server WebSocket](/http/websocket/).
 
 ```ts
 import { WebSocketClientActor, WebSocketClientOptions, wsSend } from 'actor-ts';
@@ -240,7 +240,7 @@ Three primary fits:
    `rawCodec()` for binary wire formats.
 
 For server-side WebSocket (accepting client connections), use
-the [server WebSocket](/io/server-websocket/) page.
+the [server WebSocket](/http/websocket/) page.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -272,7 +272,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 - **[I/O overview](/io/overview/)** — the bigger
   picture.
-- **[Server WebSocket](/io/server-websocket/)** — the
+- **[Server WebSocket](/http/websocket/)** — the
   `websocket()` directive + `WebSocketServerActor`.
 - **[SSE](/io/sse/)** — server-sent events as a
   one-way streaming alternative.

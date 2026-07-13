@@ -1,0 +1,66 @@
+---
+title: CORS
+description: cors() is a route directive that decorates responses with the CORS headers and synthesises a preflight OPTIONS route per pattern. Origin allowlist, wildcard, or predicate; credentials; Vary handling.
+---
+
+CORS is a **route directive**, not a plain middleware — a preflight
+`OPTIONS` request never matches a method-specific route, so a middleware
+would never run for it. `cors(options, child)` is a dedicated directive
+that the compiler expands: it decorates the real responses with the CORS
+headers **and** synthesises an `OPTIONS` preflight route for every pattern
+in `child`.
+
+```ts
+import { cors, CorsOptions, concat, get, path, post } from 'actor-ts/http';
+
+const corsOptions = CorsOptions.create()
+  .withOrigins('https://app.example', 'https://admin.example')
+  .withCredentials();
+
+const routes = cors(corsOptions, path('api', concat(
+  get(listHandler),
+  post(createHandler),
+)));
+```
+
+The compiler adds `OPTIONS /api` automatically; a browser preflight gets
+`204` with the `Access-Control-Allow-*` headers, and the actual `GET`/`POST`
+responses get `Access-Control-Allow-Origin` + `Vary: Origin`.
+
+## Configuration
+
+| Builder method | Field | Purpose |
+| --- | --- | --- |
+| `withOrigins(...o)` | `origins` | Exact-match allowlist. |
+| `withAnyOrigin()` | `origins` | Allow any origin (`*`). Must be explicit. |
+| `withOriginPredicate(fn)` | `origins` | Decide per request; a throwing predicate denies. |
+| `withMethods(...m)` | `methods` | `Access-Control-Allow-Methods`. Default: the methods registered at the pattern. |
+| `withAllowedHeaders(...h)` | `allowedHeaders` | Default: echo the (sanitised) request headers. |
+| `withExposedHeaders(...h)` | `exposedHeaders` | `Access-Control-Expose-Headers`. |
+| `withCredentials(flag?)` | `credentials` | `Access-Control-Allow-Credentials: true`. |
+| `withMaxAge(seconds)` | `maxAge` | Preflight cache duration. |
+
+`Access-Control-Allow-Origin` echoes the request origin (the literal `*` is
+sent only for `withAnyOrigin()` **without** credentials), and `Vary: Origin`
+is merged whenever the origin is echoed so caches don't cross-serve.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Place cors() outside auth">
+  The synthesised preflight routes are ordinary children of any enclosing
+  `withMiddleware(...)`. Preflights are anonymous by spec, so wrapping
+  `cors()` **inside** an auth middleware would `401` every preflight. Put
+  `cors()` on the outside.
+</Aside>
+
+<Aside type="caution" title="Credentials and wildcard don't mix">
+  `withAnyOrigin().withCredentials()` throws at construction — the Fetch
+  spec forbids `Access-Control-Allow-Origin: *` with credentials. Use an
+  explicit origin allowlist when you need credentials.
+</Aside>
+
+## Where to next
+
+- **[Security headers](/http/middleware/security-headers/)** — the companion response headers.
+- **[CSRF](/http/middleware/csrf/)** — cross-site request forgery protection.
+- **[Security](/http/security/)** — the recommended stack + ordering.

@@ -29,8 +29,13 @@ export interface HttpRequest {
 export interface HttpResponse {
   readonly status: number;
   readonly headers?: Readonly<Record<string, string>>;
-  /** Body — if string or JSON object, the marshaller adds Content-Type. */
-  readonly body?: string | Uint8Array | object | null;
+  /**
+   * Body.  A string or plain object is marshalled (JSON) with a
+   * Content-Type; a `Uint8Array` or web `ReadableStream` is sent as raw
+   * bytes (default `application/octet-stream`).  Streams are one-shot, so
+   * the caching middleware must not wrap a streaming response.
+   */
+  readonly body?: string | Uint8Array | ReadableStream<Uint8Array> | object | null;
   /** Forced content-type.  Overrides whatever the marshaller picks. */
   readonly contentType?: string;
 }
@@ -65,6 +70,14 @@ export class HttpError extends Error {
     public readonly status: number,
     message: string,
     public readonly extra?: Readonly<Record<string, unknown>>,
+    /**
+     * Response headers to emit alongside the error — e.g.
+     * `WWW-Authenticate` on a 401 or `Retry-After` on a 429.  Without
+     * this the value could only reach the body (`extra`), never the
+     * wire as a real header.  Names SHOULD be lower-case; backends emit
+     * them verbatim after the status and before the body.
+     */
+    public readonly headers?: Readonly<Record<string, string>>,
   ) {
     super(message);
     this.name = 'HttpError';

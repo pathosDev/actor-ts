@@ -38,7 +38,6 @@ import type {
   Subscribe,
   Unsubscribe,
 } from '../../../../src/cluster/pubsub/Messages.js';
-import { registerStaticFiles } from '../plugins/staticFilesPlugin.js';
 import { WebSocketIngressActor } from './WebSocketIngressActor.js';
 import { buildRoutes } from '../routes.js';
 import type { ChatRoomCmd } from './ChatRoomActor.js';
@@ -117,10 +116,6 @@ export class HttpIngressActor extends Actor<never> {
       logger: false,
       ...(tls ? { https: { cert: tls.cert, key: tls.key } } : {}),
     });
-    await registerStaticFiles(backend, {
-      root: staticDir,
-      prefix: '/static/',
-    });
 
     // Spawn the WebSocket ingress hub — one actor for the whole `/ws`
     // route; it spawns a UserSessionActor per connection.  The
@@ -139,7 +134,7 @@ export class HttpIngressActor extends Actor<never> {
       'ws-ingress',
     );
 
-    this.binding = await system.http(httpPort, { host, backend }).bind(buildRoutes(ingress));
+    this.binding = await system.http(httpPort, { host, backend }).bind(buildRoutes(ingress, staticDir));
     this.log.info(
       `[ingress] HTTP server listening on ${scheme}://${this.binding.host}:${this.binding.port}/`,
     );

@@ -1,0 +1,112 @@
+---
+title: Sicherheit
+description: Der empfohlene HTTP-Security-Middleware-Stack und seine Reihenfolge, plus Betriebshinweise — TLS-Terminierung, Vertrauen in Client-IPs, Cookies, Fehlerhygiene, Input-Caps und Static-File-Sicherheit.
+---
+
+Das Framework liefert die Bausteine; diese Seite zeigt, wie man sie
+zusammensetzt. Das lauffähige Gegenstück ist
+`examples/http/secure-service.ts`.
+
+## Der empfohlene Stack
+
+Die Reihenfolge zählt — von außen nach innen:
+
+```ts
+import {
+  concat, cors, csrfProtection, fallback, handleErrors, path,
+  requestId, requestTimeout, securityHeaders, withMiddleware,
+  CorsOptions, CsrfOptions,
+} from 'actor-ts/http';
+
+const corsOptions = CorsOptions.create().withOrigins('https://app.example').withCredentials();
+const csrf = csrfProtection(CsrfOptions.create().withSecret(process.env.CSRF_SECRET!));
+
+const routes =
+  withMiddleware(requestId(),
+  withMiddleware(securityHeaders(),
+  cors(corsOptions,
+  withMiddleware(requestTimeout(15_000),
+  withMiddleware(csrf,
+  handleErrors(errorMapper,
+    concat(
+      appRoutes,
+      fallback(notFound),
+    )))))));
+```
+
+| Schicht | Warum hier |
+| --- | --- |
+| `requestId` | ganz außen, damit jede Log-Zeile (auch Fehler) eine ID hat |
+| `securityHeaders` | Header auf **jeder** Response setzen, auch bei Short-Circuits |
+| `cors` | **außerhalb** der Auth — Preflights sind laut Spec anonym |
+| `requestTimeout` | Latenz begrenzen, bevor echte Arbeit läuft |
+| `csrf` | nur Browser-Apps; nach CORS, vor den Handlern |
+| `handleErrors` | geworfene Fehler nahe den Routen auf Responses mappen |
+| `fallback` | an der Wurzel — beantwortet alles Unpassende |
+
+## Betriebsumfeld
+
+- **TLS terminiert am Proxy.** Setze [HSTS](/de/http/middleware/security-headers/)
+  trotzdem — Browser ignorieren es über reines HTTP. Gate Security-Header
+  nicht an einem Scheme, das die App nicht sieht.
+- **Client-IPs vertrauen.** `req.remoteAddress` ist der Socket-Peer, kein
+  fälschbares `X-Forwarded-For`. Vertraue einem Forwarded-Header nur, wenn
+  dein Proxy ihn überschreibt (`getClientIp`-Option von `IpAllowlist`).
+- **Secrets aus der Umgebung**, nicht aus HOCON-Dateien — das CSRF-Secret,
+  Basic-Zugangsdaten und Bearer-Tokens nehmen alle Werte, die du beim Start
+  lädst.
+
+## Cookies
+
+Bevorzuge das `__Host-`-Präfix (erfordert `Secure`, `Path=/`, kein `Domain`)
+und `SameSite=Lax` oder `Strict`. Das [CSRF-Cookie](/de/http/middleware/csrf/)
+ist bewusst nicht `HttpOnly` (Double-Submit braucht JS zum Lesen); dein
+Session-/Auth-Cookie sollte `HttpOnly` sein. `serializeCookie` verweigert
+Werte, die einen zweiten Header injizieren könnten.
+
+## Fehlerhygiene
+
+Interna nicht leaken. Nutze `withErrorHandler` (oder ein Top-Level
+`handleErrors`), um einen generischen Body zurückzugeben, und logge das
+Detail serverseitig, verschlüsselt über die Request-ID. Halte `403`/`404`
+unspezifisch — die Static-File-Schicht liefert für jeden abgelehnten Pfad
+einen einheitlichen `404`, verrät also nie, was existiert.
+
+## Untrusted Input begrenzen
+
+- **Request-Bodies** werden vom Backend gekappt (Fastify 1 MiB Default;
+  Express/Hono ~10 MiB) — pro Backend an deine Payloads anpassen.
+- **WebSocket-Frames** werden durch `maxFrameBytes` gekappt (1 MiB Default).
+- **Untrusted HTML** — mit dem [`html`](/de/http/html-xss/)-Template escapen;
+  für Rich-Markup vor `rawHtml` mit einer dedizierten Bibliothek
+  sanitisieren.
+
+## Statische Dateien
+
+Behalte die Defaults `dotfiles: 'deny'` und `symlinks: 'within-root'`.
+Aktiviere `browse` nur für interne Tools — ein öffentliches Listing legt
+deine Verzeichnisstruktur offen. Siehe [Statische Dateien](/de/http/static-files/).
+
+## WebSocket
+
+Wickle eine `websocket()`-Route in `cors(...)`, um Cross-Origin-Upgrades
+abzuweisen, und lege Auth-Middleware darum — `withMiddleware` läuft zur
+Upgrade-Zeit und gated damit den Handshake.
+
+## Checkliste
+
+| Maßnahme | Womit |
+| --- | --- |
+| Security-Header auf jeder Response | `securityHeaders()` |
+| HTTPS vom Browser erzwungen | `strictTransportSecurity()` / `withHsts` |
+| Cross-Origin kontrolliert | `cors(...)` |
+| CSRF (Browser-Formulare) | `csrfProtection(...)` |
+| Keine internen Fehler-Leaks | `withErrorHandler` + generische Bodies |
+| Request-Korrelation | `requestId()` |
+| Begrenzte Latenz | `requestTimeout(...)` |
+| Sichere Dateiauslieferung | `getFromDirectory`-Defaults (dotfiles deny, Symlink-Confinement) |
+
+## Wie weiter
+
+- **[CORS](/de/http/middleware/cors/)** · **[CSRF](/de/http/middleware/csrf/)** · **[Security-Header](/de/http/middleware/security-headers/)** · **[CSP](/de/http/middleware/csp/)**
+- **[Fehlerbehandlung](/de/http/error-handling/)** · **[Statische Dateien](/de/http/static-files/)**

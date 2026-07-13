@@ -1,0 +1,72 @@
+---
+title: HTML responses & XSS prevention
+description: escapeHtml, the auto-escaping html tagged template, the SafeHtml brand, rawHtml, and completeHtml. Escaping is the default for HTML responses; sanitising untrusted markup is a separate concern.
+---
+
+The `html` tagged template escapes every interpolation by default, so
+building an HTML response is safe without thinking about it. `completeHtml`
+sends it with the right content-type.
+
+```ts
+import { completeHtml, html, Status } from 'actor-ts/http';
+
+get((req) => {
+  const name = req.query.name ?? 'world';          // untrusted
+  return completeHtml(Status.OK, html`
+    <h1>Hello, ${name}!</h1>
+  `);
+});
+```
+
+If `name` is `<script>alert(1)</script>`, the output is
+`Hello, &lt;script&gt;alert(1)&lt;/script&gt;!` — inert.
+
+## The pieces
+
+| Export | What it does |
+| --- | --- |
+| `escapeHtml(s)` | Escape `& < > " '` and the backtick. |
+| `` html`…` `` | Tagged template; escapes interpolations, returns `SafeHtml`. |
+| `SafeHtml` | Brand for already-safe HTML; interpolated verbatim. |
+| `rawHtml(s)` | Wrap a string you have **already** made safe. |
+| `completeHtml(status, body, headers?)` | `text/html; charset=utf-8` + `X-Content-Type-Options: nosniff`. |
+
+Interpolation rules for `` html`…` ``: a `SafeHtml` value is inserted
+verbatim (so fragments nest), arrays are rendered item-by-item,
+`null`/`undefined` become the empty string, and everything else is coerced
+to a string and escaped.
+
+```ts
+const items = ['<a>', '<b>'];
+const list = html`<ul>${items.map((i) => html`<li>${i}</li>`)}</ul>`;
+// <ul><li>&lt;a&gt;</li><li>&lt;b&gt;</li></ul>
+```
+
+## Untrusted markup
+
+Escaping neutralises markup — it does **not** make attacker-authored HTML
+safe to *render* as HTML. If you must accept rich HTML (comments, wiki
+markup), sanitise it with a dedicated, battle-tested library such as
+[`sanitize-html`](https://www.npmjs.com/package/sanitize-html) or DOMPurify
+before wrapping the result in `rawHtml`. A conservative built-in sanitizer
+is tracked separately.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Escaping is context-specific">
+  `escapeHtml` / `html` cover **HTML element content and quoted attribute
+  values**. They do **not** make a value safe inside a `<script>` block, in
+  CSS, or in a URL — those contexts need their own encoding. Never build a
+  `javascript:` URL or an inline `<script>` from untrusted input.
+</Aside>
+
+<Aside type="caution" title="rawHtml trusts you">
+  `rawHtml(s)` inserts `s` verbatim. Passing untrusted input to it
+  reintroduces exactly the XSS the template prevents.
+</Aside>
+
+## Where to next
+
+- **[Error handling](/http/error-handling/)** — safe error pages.
+- **[Security headers](/http/middleware/security-headers/)** — CSP, nosniff, and friends.
+- **[Static files](/http/static-files/)** — the directory listing escapes filenames the same way.

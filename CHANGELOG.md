@@ -39,7 +39,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (all-boolean/string/callback, or degrade-gracefully knobs like snapshot
   `keepN` where `<= 0` means "keep all") intentionally get no validator.
 
-### Changed
+### Changed — Options validation
 
 - **BREAKING** (#274) — invalid **option values** now throw `OptionsError` at
   construction / actor start instead of a bare `Error` (or, previously, going
@@ -49,6 +49,71 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `OptionsError` (exported from the package root) where you previously matched
   the ad-hoc `Error` message.  Missing **required** broker settings still throw
   `BrokerSettingsError`; malformed HOCON still throws `ConfigError`.
+
+### Added — HTTP hardening
+
+- **Scoped error handling + fallback routes** (#352) — `handleErrors(handler,
+  child)` catches exceptions from a subtree (akka-http `ExceptionHandler`
+  style; sees the original error, returns a response or `null` to decline);
+  `fallback(handler)` answers any unmatched request via each backend's
+  not-found hook; `ServerBuilder.withErrorHandler(...)` is the server-wide
+  last resort.  Precedence, uniform across Fastify/Express/Hono: innermost
+  `handleErrors` → `withErrorHandler` → framework default.
+- **HTML response utilities** (#352) — `escapeHtml`, an auto-escaping `html`
+  tagged template with a `SafeHtml` brand, `rawHtml` escape hatch, and
+  `completeHtml` (`text/html` + `nosniff`).
+- **Security-middleware suite** (#353) — `cors` (a route directive that the
+  compiler expands into per-pattern preflight `OPTIONS` routes),
+  `strictTransportSecurity` / `hsts`, `contentSecurityPolicy`,
+  `csrfProtection` + `requireSameOrigin`, `securityHeaders`, `requestId`,
+  `BasicAuth`, and `requestTimeout` — each with an `XOptions` builder.  Plus
+  public `parseCookies` / `serializeCookie` helpers.
+- **Static file serving** (#354) — `getFromFile`, `getFromDirectory`, and
+  `getFromBrowseableDirectory`: MIME detection, index resolution, conditional
+  requests (weak ETag + `Last-Modified` → 304), single `Range` (206/416),
+  HEAD, trailing-slash redirects, and XSS-safe directory listings.
+- **MIME-type registry** (#354) — `contentTypeFor(pathOrExt, overrides?)` and
+  `DEFAULT_MIME_TYPES`.
+- **Streaming response bodies** (#354) — `HttpResponse.body` now accepts a web
+  `ReadableStream<Uint8Array>`, written natively by all three backends.
+
+### Changed — HTTP hardening
+
+- **`Middleware` `next()` accepts an optional request override** (#353) —
+  `next(req?)` lets a middleware enrich what the handler sees (request-id,
+  CSRF token).  Backward compatible.
+- **HonoBackend now answers `HEAD` on `GET` routes** (#354), matching
+  Fastify/Express; a route pattern ending in `/*` exposes the remainder as
+  `req.params['*']` on every backend.
+- **BREAKING:** the `Route` / `CompiledEndpoint` unions gain `fallback` and
+  `cors` variants — an exhaustive `match` over `Route` must handle them
+  (#352, #353).
+- **BREAKING:** `ServerBuilder` gains a required `withErrorHandler` method —
+  structural third-party implementers must add it (#352).
+- **BREAKING:** `HttpError`'s constructor gains an optional 4th `headers`
+  parameter (after `extra`); `BearerTokenAuth` 401s now expose the challenge
+  on `err.headers['www-authenticate']`, no longer `err.extra.wwwAuthenticate`
+  (#352).
+
+### Security
+
+- **CORS, CSRF, and security-header middleware** (#353) — origin allowlisting
+  with correct preflight handling, an HMAC-signed double-submit CSRF token
+  (plus an Origin/Referer check), and HSTS / CSP / COOP / CORP / nosniff /
+  frame-options; secret comparisons are constant-time.
+- **`WWW-Authenticate` reaches the wire** (#353) — `BearerTokenAuth` (and the
+  new `BasicAuth`) 401s emit a real challenge header instead of burying it in
+  the body.
+- **Hardened path-traversal defence for static files** (#354) — the URL
+  remainder is fully decoded before validation, every segment is rejected if
+  it is `..`, empty, NUL, a backslash, or a `:` (drive/ADS) segment, absolute
+  forms are refused, the joined path is confined to the root, symlink escapes
+  are refused, and dotfiles are denied — every rejection a uniform 404.
+
+### Documentation
+
+- Moved the Server-WebSocket page from the IO section into the HTTP section
+  (#351).
 
 ## [0.10.0] — 2026-07-08
 

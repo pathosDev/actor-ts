@@ -14,10 +14,9 @@
  * HTTP singleton.
  *
  * `main.ts` is purely wiring — every actor lives in its own file
- * under `actors/`, every Fastify-specific bit lives in `plugins/`,
- * the directive DSL routes live in `routes.ts`.  Nothing here
- * imports `fastify` directly; everything goes through
- * `HttpExtension` + `FastifyBackend.withPlugin(...)`.
+ * under `actors/`, and the directive DSL routes (landing page, static
+ * files, the /ws upgrade) live in `routes.ts`.  Nothing here imports
+ * `fastify` directly; everything goes through `HttpExtension`.
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
