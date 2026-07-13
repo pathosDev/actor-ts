@@ -25,9 +25,9 @@ export const scenario: BrokerScenario<GrpcCtx> = {
       );
       const reply = collector.inbound.find((m) => m.kind === 'reply')!;
       if (reply.kind !== 'reply') throw new Error('not a reply');
-      const r = reply.response as { text?: string };
-      if (r.text !== 'ping') {
-        throw new Error(`expected text=ping, got ${r.text}`);
+      const response = reply.response as { text?: string };
+      if (response.text !== 'ping') {
+        throw new Error(`expected text=ping, got ${response.text}`);
       }
     } finally {
       collectorRef.stop();

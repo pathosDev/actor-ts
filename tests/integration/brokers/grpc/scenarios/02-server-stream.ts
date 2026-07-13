@@ -29,9 +29,9 @@ export const scenario: BrokerScenario<GrpcCtx> = {
         throw new Error(`expected ${N} stream-data chunks, got ${data.length}`);
       }
       for (let i = 0; i < N; i++) {
-        const c = data[i]!;
-        if (c.kind !== 'stream-data') throw new Error('not stream-data');
-        const payload = c.chunk as { text?: string; sequence?: number };
+        const chunk = data[i]!;
+        if (chunk.kind !== 'stream-data') throw new Error('not stream-data');
+        const payload = chunk.chunk as { text?: string; sequence?: number };
         if (payload.sequence !== i || payload.text !== `chunk-${i}`) {
           throw new Error(`chunk ${i} mismatch: ${JSON.stringify(payload)}`);
         }

@@ -32,9 +32,9 @@ export interface GrpcCtx extends BrokerScenarioCtx {
 }
 
 function requireEnv(name: string): string {
-  const v = process.env[name];
-  if (!v) throw new Error(`runner: missing env var ${name}`);
-  return v;
+  const value = process.env[name];
+  if (!value) throw new Error(`runner: missing env var ${name}`);
+  return value;
 }
 
 /* --------------------------- Server-side handlers ----------------------- */
@@ -49,8 +49,8 @@ class UnaryEchoHandler extends Actor<GrpcUnaryCall> {
 class ServerStreamHandler extends Actor<GrpcServerStreamCall> {
   override onReceive(call: GrpcServerStreamCall): void {
     const req = call.request as { text?: string; count?: number };
-    const n = req.count ?? 3;
-    for (let i = 0; i < n; i++) {
+    const count = req.count ?? 3;
+    for (let i = 0; i < count; i++) {
       call.send({ text: `${req.text ?? ''}-${i}`, sequence: i });
     }
     call.complete();
@@ -64,8 +64,8 @@ class BidiHandler extends Actor<GrpcBidiCall> {
     const sink: ActorRef<{ kind: 'chunk'; chunk: unknown } | { kind: 'end' }> = {
       tell: (m): void => {
         if (m.kind === 'chunk') {
-          const c = m.chunk as { text?: string };
-          call.send({ text: c.text ?? '', sequence: seq++ });
+          const chunk = m.chunk as { text?: string };
+          call.send({ text: chunk.text ?? '', sequence: seq++ });
         } else if (m.kind === 'end') {
           call.complete();
         }

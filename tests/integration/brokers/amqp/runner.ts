@@ -26,9 +26,9 @@ export interface AmqpCtx extends BrokerScenarioCtx {
 }
 
 function requireEnv(name: string): string {
-  const v = process.env[name];
-  if (!v) throw new Error(`runner: missing env var ${name}`);
-  return v;
+  const value = process.env[name];
+  if (!value) throw new Error(`runner: missing env var ${name}`);
+  return value;
 }
 
 export class InboxActor extends Actor<AmqpDelivery> {
