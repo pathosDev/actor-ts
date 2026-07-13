@@ -47,8 +47,8 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
   }
 
   override postStop(): void {
-    for (const f of this.inflight.values()) f.timer?.cancel();
-    for (const p of this.pending) p.confirm?.(new Error('producer stopped'));
+    for (const inflight of this.inflight.values()) inflight.timer?.cancel();
+    for (const pending of this.pending) pending.confirm?.(new Error('producer stopped'));
     this.pending.length = 0;
     this.inflight.clear();
   }
@@ -68,26 +68,26 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
 
   private dispatch(msg: ProducerSend<T>): void {
     const seq = this.nextSeq++;
-    const f: InFlight<T> = { seq, body: msg.body, confirm: msg.confirm, attempts: 0, timer: null };
-    this.inflight.set(seq, f);
-    this.send(f);
+    const inflight: InFlight<T> = { seq, body: msg.body, confirm: msg.confirm, attempts: 0, timer: null };
+    this.inflight.set(seq, inflight);
+    this.send(inflight);
   }
 
-  private send(f: InFlight<T>): void {
-    f.attempts++;
+  private send(inflight: InFlight<T>): void {
+    inflight.attempts++;
     const delivery: Delivery<T> = {
       kind: 'reliable-delivery.delivery',
       producerId: this.id,
-      seq: f.seq,
-      body: f.body,
+      seq: inflight.seq,
+      body: inflight.body,
       replyTo: this.self as unknown as ActorRef<Acknowledgment>,
     };
     this.options.consumer.tell(delivery);
-    f.timer = this.system.scheduler.scheduleOnceFn(
+    inflight.timer = this.system.scheduler.scheduleOnceFn(
       this.resendTimeoutMs,
       () => {
         // Only resend if still un-acked.
-        const current = this.inflight.get(f.seq);
+        const current = this.inflight.get(inflight.seq);
         if (!current) return;
         this.send(current);
       },
@@ -96,11 +96,11 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
 
   private handleAcknowledgment(msg: Acknowledgment): void {
     if (msg.producerId !== this.id) return;
-    const f = this.inflight.get(msg.seq);
-    if (!f) return;
-    f.timer?.cancel();
+    const inflight = this.inflight.get(msg.seq);
+    if (!inflight) return;
+    inflight.timer?.cancel();
     this.inflight.delete(msg.seq);
-    f.confirm?.(null);
+    inflight.confirm?.(null);
     // Drain queued sends while the window is open.
     while (this.inflight.size < this.windowSize && this.pending.length > 0) {
       this.dispatch(this.pending.shift()!);

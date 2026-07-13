@@ -115,8 +115,8 @@ export class LeaseMajority implements DowningProvider {
 
     const reachable = candidates.filter((m) => !view.unreachable.has(addrKey(m)));
     const unreachable = candidates.filter((m) => view.unreachable.has(addrKey(m)));
-    const n = candidates.length;
-    const needed = Math.floor(n / 2) + 1;
+    const count = candidates.length;
+    const needed = Math.floor(count / 2) + 1;
     const fingerprint = this.fingerprintOf(reachable, unreachable);
 
     // No partition (everyone reachable) → reset state, no decision.
@@ -279,8 +279,8 @@ export class LeaseMajority implements DowningProvider {
     reachable: ReadonlyArray<{ address: { toString(): string } }>,
     unreachable: ReadonlyArray<{ address: { toString(): string } }>,
   ): string {
-    const r = reachable.map((m) => m.address.toString()).sort().join(',');
-    const u = unreachable.map((m) => m.address.toString()).sort().join(',');
-    return `R[${r}]|U[${u}]`;
+    const reachableKey = reachable.map((m) => m.address.toString()).sort().join(',');
+    const unreachableKey = unreachable.map((m) => m.address.toString()).sort().join(',');
+    return `R[${reachableKey}]|U[${unreachableKey}]`;
   }
 }

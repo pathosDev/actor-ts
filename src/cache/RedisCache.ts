@@ -104,14 +104,14 @@ export class RedisCache implements Cache {
       throw new CacheError(`RedisCache.incr: ttlMs must be a positive finite number, got ${ttlMs}`);
     }
     const client = await this.clientLazy.get();
-    const k = this.k(key);
+    const prefixedKey = this.k(key);
     let next: number;
-    try { next = await client.incr(k); }
+    try { next = await client.incr(prefixedKey); }
     catch (e) { throw wrapError(e, CacheError, `RedisCache.incr failed for key '${key}'`); }
     if (next === 1 && ttlMs !== undefined) {
       // First increment → set the TTL.  If pexpire fails, we accept the
       // inconsistency rather than rolling the counter back.
-      try { await client.pexpire(k, ttlMs); } catch { /* swallow */ }
+      try { await client.pexpire(prefixedKey, ttlMs); } catch { /* swallow */ }
     }
     return next;
   }
@@ -151,10 +151,10 @@ export class RedisCache implements Cache {
       const client = await this.clientLazy.get();
       const raw = await client.mget(...keys.map((k) => this.k(k)));
       for (let i = 0; i < keys.length; i++) {
-        const v = raw[i];
-        if (v === null || v === undefined) continue;
+        const value = raw[i];
+        if (value === null || value === undefined) continue;
         try {
-          out.set(keys[i]!, JSON.parse(v) as V);
+          out.set(keys[i]!, JSON.parse(value) as V);
         } catch {
           // Bad payload — treat as a miss.  Same semantics as `get`
           // returning None on a transient failure.
@@ -176,9 +176,9 @@ export class RedisCache implements Cache {
       if (ttlMs === undefined) {
         // Single MSET command — atomic on the server side.
         const args: string[] = [];
-        for (const [k, v] of entries) {
-          args.push(this.k(k));
-          args.push(JSON.stringify(v));
+        for (const [key, value] of entries) {
+          args.push(this.k(key));
+          args.push(JSON.stringify(value));
         }
         await client.mset(...args);
       } else {

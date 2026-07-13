@@ -64,9 +64,9 @@ export class GCounterMap<K> implements Crdt<GCounterMap<K>> {
 
   /** Sum across every key. */
   total(): number {
-    let t = 0;
-    for (const { counter } of this.entries.values()) t += counter.value();
-    return t;
+    let total = 0;
+    for (const { counter } of this.entries.values()) total += counter.value();
+    return total;
   }
 
   /** Snapshot of all keys currently tracked. */

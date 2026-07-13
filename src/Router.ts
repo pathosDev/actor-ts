@@ -61,11 +61,11 @@ class RouterActor<TMessage> extends Actor<TMessage | Broadcast<TMessage>> {
   override onReceive(message: TMessage | Broadcast<TMessage>): void {
     const senderRef = this.sender.toNullable();
     if (message instanceof Broadcast) {
-      for (const r of this.routees) r.tell(message.message, senderRef);
+      for (const routee of this.routees) routee.tell(message.message, senderRef);
       return;
     }
     const targets = this.cfg.strategy(this.routees, { messageIndex: this.counter++ });
-    for (const t of targets) t.tell(message as TMessage, senderRef);
+    for (const target of targets) target.tell(message as TMessage, senderRef);
   }
 }
 

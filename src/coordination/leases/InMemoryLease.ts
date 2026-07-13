@@ -37,9 +37,9 @@ class InMemoryLeaseStore {
   }
 
   peek(name: string): LeaseRecord | undefined {
-    const r = this.leases.get(name);
-    if (r && r.expiresAt <= Date.now()) { this.leases.delete(name); return undefined; }
-    return r;
+    const lease = this.leases.get(name);
+    if (lease && lease.expiresAt <= Date.now()) { this.leases.delete(name); return undefined; }
+    return lease;
   }
 
   /** Reset — only for tests. */
@@ -116,8 +116,8 @@ export class InMemoryLease implements Lease {
       if (!ok) {
         this.held = false;
         if (this.renewalTimer) { clearInterval(this.renewalTimer); this.renewalTimer = null; }
-        for (const h of this.onLostHandlers) {
-          try { h('lease lost during renewal'); } catch { /* swallow */ }
+        for (const handler of this.onLostHandlers) {
+          try { handler('lease lost during renewal'); } catch { /* swallow */ }
         }
       }
     }, this.renewalIntervalMs);

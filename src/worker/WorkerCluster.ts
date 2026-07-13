@@ -91,7 +91,7 @@ export class WorkerCluster {
   async terminate(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    for (const h of this.handles) { try { h.worker.terminate(); } catch { /* ignore */ } }
+    for (const handle of this.handles) { try { handle.worker.terminate(); } catch { /* ignore */ } }
     this.broker.close();
     this.handles.length = 0;
   }
@@ -200,8 +200,8 @@ export class WorkerCluster {
 function resolveWorkerCount(value: number | 'auto' | undefined): number {
   if (typeof value === 'number' && value > 0) return value;
   if (typeof process !== 'undefined' && process.env?.ACTOR_TS_WORKERS) {
-    const n = parseInt(process.env.ACTOR_TS_WORKERS, 10);
-    if (Number.isFinite(n) && n > 0) return n;
+    const workerCount = parseInt(process.env.ACTOR_TS_WORKERS, 10);
+    if (Number.isFinite(workerCount) && workerCount > 0) return workerCount;
   }
   const nav = (globalThis as unknown as { navigator?: { hardwareConcurrency?: number } }).navigator;
   if (nav && typeof nav.hardwareConcurrency === 'number' && nav.hardwareConcurrency > 0) {
