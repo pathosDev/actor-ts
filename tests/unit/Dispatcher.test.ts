@@ -103,15 +103,15 @@ describe('ThroughputDispatcher', () => {
 
   test('execute on an empty dispatcher re-schedules the drain', async () => {
     const dispatcher = new ThroughputDispatcher(5);
-    let a = 0;
-    dispatcher.execute(() => { a++; });
+    let calls = 0;
+    dispatcher.execute(() => { calls++; });
     await sleep(5);
-    expect(a).toBe(1);
+    expect(calls).toBe(1);
 
     // Submit again after idle — must run, not hang.
-    dispatcher.execute(() => { a++; });
+    dispatcher.execute(() => { calls++; });
     await sleep(5);
-    expect(a).toBe(2);
+    expect(calls).toBe(2);
   });
 
   test('accepts a custom id', () => {
