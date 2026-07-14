@@ -285,7 +285,10 @@ Hub-Mailbox-Bounding offen).
 - **#5** (Cluster-Handshake-Timeout/Conn-Limit) — Timer-Lifecycle; im Netzmodell gemindert.
 - **#7** (AES-GCM-AAD) — weitgehend durch HMAC-Integrity (#116) gemindert.
 - **#2 (SSRF):** akzeptiert unter dem Netzmodell — Gegenmaßnahme = #1/#4; kein separater Fix (siehe #2).
-- **#8** (Management-Read-only-Doku), Doku-Erwähnungen HTTP-4 `identity` / #3 `maxOutputBytes` / BRK-3/4/5.
+
+**Doku behoben:** **#8** (Management-Read-only-Exposure), sowie die bilinguale Doku für die
+neuen Optionen — HTTP-4 `identity`, #3 Dekompressions-Cap, BRK-5 UDP-Bind.  (gRPC-`insecure`
+war bereits dokumentiert; MQTT `JSON.parse` ist broker-begrenzt.)
 
 **Netzmodell:** #1 (opt-in Auth) + #4 (mTLS) als Betriebsanforderung + Doku.
 
