@@ -117,12 +117,12 @@ export class StartShardingOptionsBuilder<TMessage> extends ShardingOptionsBuilde
  * Validates resolved {@link StartShardingOptionsType} settings — the region-side
  * {@link ShardingOptionsValidator} rules plus the coordinator-side intervals.
  */
-export class StartShardingOptionsValidator<TMsg>
-  extends ShardingOptionsValidator<TMsg, StartShardingOptionsType<TMsg>> {
+export class StartShardingOptionsValidator<TMessage>
+  extends ShardingOptionsValidator<TMessage, StartShardingOptionsType<TMessage>> {
   constructor() {
     super('StartShardingOptions');
   }
-  protected override rules(s: Partial<StartShardingOptionsType<TMsg>>): void {
+  protected override rules(s: Partial<StartShardingOptionsType<TMessage>>): void {
     this.commonRules(s);
     this.positiveNumber('rebalanceIntervalMs');
     this.positiveNumber('handOffTimeoutMs');

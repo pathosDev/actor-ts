@@ -76,11 +76,11 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
   protected builtInDefaultOptions(): Partial<AmqpOptionsType> {
     return { prefetch: 1, autoAck: true };
   }
-  protected readOptionsFromConfig(c: Config): Partial<AmqpOptionsType> {
+  protected readOptionsFromConfig(config: Config): Partial<AmqpOptionsType> {
     const out: { -readonly [K in keyof AmqpOptionsType]?: AmqpOptionsType[K] } = {};
-    if (c.hasPath('url')) out.url = c.getString('url');
-    if (c.hasPath('prefetch')) out.prefetch = c.getInt('prefetch');
-    if (c.hasPath('autoAck')) out.autoAck = c.getBoolean('autoAck');
+    if (config.hasPath('url')) out.url = config.getString('url');
+    if (config.hasPath('prefetch')) out.prefetch = config.getInt('prefetch');
+    if (config.hasPath('autoAck')) out.autoAck = config.getBoolean('autoAck');
     return out;
   }
   protected requiredOptions(): ReadonlyArray<keyof AmqpOptionsType> { return ['url']; }

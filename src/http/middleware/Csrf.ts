@@ -54,10 +54,10 @@ function isSameOrigin(req: HttpRequest, allowedOrigins: ReadonlyArray<string> | 
  * option.
  */
 export function requireSameOrigin(options: SameOriginOptions = {}): Middleware {
-  const o = options as Partial<SameOriginOptionsType>;
+  const resolvedOptions = options as Partial<SameOriginOptionsType>;
   return async (req, next) => {
     if (SAFE_METHODS.has(req.method)) return next();
-    if (!isSameOrigin(req, o.allowedOrigins, o.allowMissingOrigin ?? false)) {
+    if (!isSameOrigin(req, resolvedOptions.allowedOrigins, resolvedOptions.allowMissingOrigin ?? false)) {
       throw new HttpError(Status.Forbidden, 'cross-origin request rejected');
     }
     return next();
@@ -117,14 +117,14 @@ export function readCsrfToken(req: HttpRequest, opts: { cookieName?: string; hea
 
 /** Build the stateless double-submit CSRF middleware. */
 export function csrfProtection(options: CsrfOptions): Middleware {
-  const o = options as Partial<CsrfOptionsType>;
-  const secret = o.secret;
+  const resolvedOptions = options as Partial<CsrfOptionsType>;
+  const secret = resolvedOptions.secret;
   if (secret === undefined || secretByteLength(secret) < 16) {
     throw new Error('csrfProtection: a secret of at least 16 bytes is required (32 recommended)');
   }
-  const cookieName = o.cookieName ?? 'csrf-token';
-  const headerName = (o.headerName ?? 'x-csrf-token').toLowerCase();
-  const cookie = o.cookie ?? {};
+  const cookieName = resolvedOptions.cookieName ?? 'csrf-token';
+  const headerName = (resolvedOptions.headerName ?? 'x-csrf-token').toLowerCase();
+  const cookie = resolvedOptions.cookie ?? {};
   const cookieAttrs = {
     path: cookie.path ?? '/',
     secure: cookie.secure ?? true,
@@ -133,8 +133,8 @@ export function csrfProtection(options: CsrfOptions): Middleware {
     domain: cookie.domain,
     maxAgeSeconds: cookie.maxAgeSeconds,
   };
-  const verifyOrigin = o.verifyOrigin ?? true;
-  const formFieldName = o.formFieldName;
+  const verifyOrigin = resolvedOptions.verifyOrigin ?? true;
+  const formFieldName = resolvedOptions.formFieldName;
 
   return async (req, next) => {
     const cookies = parseCookies(req.headers['cookie']);
@@ -153,7 +153,7 @@ export function csrfProtection(options: CsrfOptions): Middleware {
 
     // Unsafe method: origin gate (token is the primary gate, so a missing
     // Origin/Referer is allowed through to the token check), then the pair.
-    if (verifyOrigin && !isSameOrigin(req, o.allowedOrigins, true)) {
+    if (verifyOrigin && !isSameOrigin(req, resolvedOptions.allowedOrigins, true)) {
       throw new HttpError(Status.Forbidden, 'CSRF verification failed');
     }
     const submitted = req.headers[headerName] ?? (formFieldName ? formFieldValue(req, formFieldName) : undefined);

@@ -41,13 +41,13 @@ export class NatsActor extends BrokerActor<NatsOptionsType, NatsCommand, NatsPub
 
   protected configKey(): string { return ConfigKeys.io.broker.nats; }
   protected builtInDefaultOptions(): Partial<NatsOptionsType> { return {}; }
-  protected readOptionsFromConfig(c: Config): Partial<NatsOptionsType> {
+  protected readOptionsFromConfig(config: Config): Partial<NatsOptionsType> {
     const out: { -readonly [K in keyof NatsOptionsType]?: NatsOptionsType[K] } = {};
-    if (c.hasPath('servers')) out.servers = c.getStringList('servers');
-    if (c.hasPath('token')) out.token = c.getString('token');
-    if (c.hasPath('user')) out.user = c.getString('user');
-    if (c.hasPath('password')) out.password = c.getString('password');
-    if (c.hasPath('name')) out.name = c.getString('name');
+    if (config.hasPath('servers')) out.servers = config.getStringList('servers');
+    if (config.hasPath('token')) out.token = config.getString('token');
+    if (config.hasPath('user')) out.user = config.getString('user');
+    if (config.hasPath('password')) out.password = config.getString('password');
+    if (config.hasPath('name')) out.name = config.getString('name');
     return out;
   }
   protected requiredOptions(): ReadonlyArray<keyof NatsOptionsType> { return ['servers']; }

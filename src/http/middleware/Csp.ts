@@ -70,10 +70,10 @@ function serialize(directives: CspDirectives): string {
 
 /** Build a middleware that adds a Content-Security-Policy header. */
 export function contentSecurityPolicy(options: CspOptions = {}): Middleware {
-  const o = options as Partial<CspOptionsType>;
-  const useDefaults = o.useDefaults ?? true;
-  const merged: CspDirectives = useDefaults ? { ...BASELINE, ...(o.directives ?? {}) } : (o.directives ?? {});
+  const resolvedOptions = options as Partial<CspOptionsType>;
+  const useDefaults = resolvedOptions.useDefaults ?? true;
+  const merged: CspDirectives = useDefaults ? { ...BASELINE, ...(resolvedOptions.directives ?? {}) } : (resolvedOptions.directives ?? {});
   const value = serialize(merged);
-  const header = (o.reportOnly ?? false) ? 'content-security-policy-report-only' : 'content-security-policy';
+  const header = (resolvedOptions.reportOnly ?? false) ? 'content-security-policy-report-only' : 'content-security-policy';
   return async (_req, next) => applyHeaders(await next(), { [header]: value });
 }

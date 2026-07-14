@@ -17,7 +17,7 @@ import { applyHeaders, appendVary } from './headers.js';
 import type { CorsOptions, CorsOptionsType, CorsOrigin } from './CorsOptions.js';
 
 /** Resolved CORS policy stored on the `cors` Route node. */
-export interface CorsRouteSettings {
+export interface CorsRouteOptions {
   readonly origins: CorsOrigin;
   readonly methods?: ReadonlyArray<HttpMethod>;
   readonly allowedHeaders?: ReadonlyArray<string>;
@@ -33,20 +33,20 @@ export interface CorsRouteSettings {
  * credentials).
  */
 export function cors(options: CorsOptions, child: Route): Route {
-  const o = options as Partial<CorsOptionsType>;
-  if (o.origins === undefined) {
+  const resolvedOptions = options as Partial<CorsOptionsType>;
+  if (resolvedOptions.origins === undefined) {
     throw new Error('cors: origins is required — call withOrigins(...), withAnyOrigin(), or withOriginPredicate(...)');
   }
-  if (o.credentials && o.origins === '*') {
+  if (resolvedOptions.credentials && resolvedOptions.origins === '*') {
     throw new Error('cors: credentials cannot be combined with "*" origins (the Fetch spec forbids it)');
   }
-  const settings: CorsRouteSettings = {
-    origins: o.origins,
-    methods: o.methods,
-    allowedHeaders: o.allowedHeaders,
-    exposedHeaders: o.exposedHeaders,
-    credentials: o.credentials ?? false,
-    maxAge: o.maxAge,
+  const settings: CorsRouteOptions = {
+    origins: resolvedOptions.origins,
+    methods: resolvedOptions.methods,
+    allowedHeaders: resolvedOptions.allowedHeaders,
+    exposedHeaders: resolvedOptions.exposedHeaders,
+    credentials: resolvedOptions.credentials ?? false,
+    maxAge: resolvedOptions.maxAge,
   };
   return { kind: 'cors', settings, child };
 }
@@ -60,7 +60,7 @@ function isAllowed(origins: CorsOrigin, origin: string): boolean {
 }
 
 /** Echo the request origin, or literal `*` only when wildcard AND not credentialed. */
-function allowOriginValue(settings: CorsRouteSettings, origin: string): string {
+function allowOriginValue(settings: CorsRouteOptions, origin: string): string {
   return settings.origins === '*' && !settings.credentials ? '*' : origin;
 }
 
@@ -70,7 +70,7 @@ function sanitiseRequestHeaders(value: string): string {
 }
 
 /** Decorate an actual (non-preflight) response with the CORS headers. */
-function decorateResponse(settings: CorsRouteSettings, res: HttpResponse, req: HttpRequest): HttpResponse {
+function decorateResponse(settings: CorsRouteOptions, res: HttpResponse, req: HttpRequest): HttpResponse {
   const origin = req.headers['origin'];
   if (!origin || !isAllowed(settings.origins, origin)) return res;
   const acao = allowOriginValue(settings, origin);
@@ -90,7 +90,7 @@ function decorateResponse(settings: CorsRouteSettings, res: HttpResponse, req: H
 const PREFLIGHT_VARY = 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers';
 
 /** Build the 204 preflight response for an allowed (or disallowed) origin. */
-function preflightResponse(settings: CorsRouteSettings, methods: ReadonlyArray<string>, req: HttpRequest): HttpResponse {
+function preflightResponse(settings: CorsRouteOptions, methods: ReadonlyArray<string>, req: HttpRequest): HttpResponse {
   const origin = req.headers['origin'];
   if (!origin || !isAllowed(settings.origins, origin)) {
     // No ACA-* headers → the browser fails the preflight; no info leak.
@@ -121,7 +121,7 @@ function isPreflight(req: HttpRequest): boolean {
  * an origin check into WebSocket upgrades, and synthesise a per-pattern
  * `OPTIONS` preflight (or intercept a user-defined one).
  */
-export function expandCors(children: CompiledEndpoint[], settings: CorsRouteSettings): CompiledEndpoint[] {
+export function expandCors(children: CompiledEndpoint[], settings: CorsRouteOptions): CompiledEndpoint[] {
   // Methods registered per pattern (a WS route occupies GET).
   const methodsByPattern = new Map<string, Set<string>>();
   const record = (pattern: string, method: string): void => {

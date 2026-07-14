@@ -14,10 +14,10 @@ const VALID_ID = /^[A-Za-z0-9._-]{1,64}$/;
 
 /** Build a middleware that assigns/propagates a request id. */
 export function requestId(options: RequestIdOptions = {}): Middleware {
-  const o = options as Partial<RequestIdOptionsType>;
-  const headerName = (o.headerName ?? 'x-request-id').toLowerCase();
-  const trustIncoming = o.trustIncoming ?? true;
-  const generate = o.generate ?? ((): string => randomUUID());
+  const resolvedOptions = options as Partial<RequestIdOptionsType>;
+  const headerName = (resolvedOptions.headerName ?? 'x-request-id').toLowerCase();
+  const trustIncoming = resolvedOptions.trustIncoming ?? true;
+  const generate = resolvedOptions.generate ?? ((): string => randomUUID());
 
   return async (req, next) => {
     const incoming = trustIncoming ? req.headers[headerName] : undefined;

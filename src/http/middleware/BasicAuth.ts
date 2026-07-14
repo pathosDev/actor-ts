@@ -18,13 +18,13 @@ function safeEqual(a: string, b: string): boolean {
 
 /** Build a Basic-auth middleware.  Requires `users` or `validate`. */
 export function BasicAuth(options: BasicAuthOptions): Middleware {
-  const o = options as Partial<BasicAuthOptionsType>;
-  const users = o.users;
-  const validate = o.validate;
+  const resolvedOptions = options as Partial<BasicAuthOptionsType>;
+  const users = resolvedOptions.users;
+  const validate = resolvedOptions.validate;
   if (!users && !validate) {
     throw new Error('BasicAuth: provide either users or a validate function');
   }
-  const realm = o.realm ?? 'actor-ts';
+  const realm = resolvedOptions.realm ?? 'actor-ts';
   const challenge = { 'www-authenticate': `Basic realm="${realm}"` };
   const unauthorized = (message: string): never => {
     throw new HttpError(Status.Unauthorized, message, undefined, challenge);

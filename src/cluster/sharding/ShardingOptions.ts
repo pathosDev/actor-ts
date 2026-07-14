@@ -119,8 +119,8 @@ export class ShardingOptionsBuilder<
  * only present values are checked (unset fields fall through to defaults).
  */
 export class ShardingOptionsValidator<
-  TMsg,
-  S extends ShardingOptionsType<TMsg> = ShardingOptionsType<TMsg>,
+  TMessage,
+  S extends ShardingOptionsType<TMessage> = ShardingOptionsType<TMessage>,
 > extends OptionsValidator<S> {
   constructor(optionsName = 'ShardingOptions') {
     super(optionsName);
@@ -129,21 +129,21 @@ export class ShardingOptionsValidator<
     this.commonRules(s);
   }
   protected commonRules(s: Partial<S>): void {
-    const c = s as Partial<ShardingOptionsType<TMsg>>;
-    if (c.typeName !== undefined && (typeof c.typeName !== 'string' || c.typeName.length === 0)) {
-      this.fail('typeName', 'must be a non-empty string', c.typeName);
+    const opts = s as Partial<ShardingOptionsType<TMessage>>;
+    if (opts.typeName !== undefined && (typeof opts.typeName !== 'string' || opts.typeName.length === 0)) {
+      this.fail('typeName', 'must be a non-empty string', opts.typeName);
     }
-    if (c.numShards !== undefined && (!Number.isInteger(c.numShards) || c.numShards < 1)) {
-      this.fail('numShards', 'must be an integer >= 1', c.numShards);
+    if (opts.numShards !== undefined && (!Number.isInteger(opts.numShards) || opts.numShards < 1)) {
+      this.fail('numShards', 'must be an integer >= 1', opts.numShards);
     }
     if (
-      c.passivationIdleMs !== undefined &&
-      (typeof c.passivationIdleMs !== 'number' || !Number.isFinite(c.passivationIdleMs) || c.passivationIdleMs < 0)
+      opts.passivationIdleMs !== undefined &&
+      (typeof opts.passivationIdleMs !== 'number' || !Number.isFinite(opts.passivationIdleMs) || opts.passivationIdleMs < 0)
     ) {
-      this.fail('passivationIdleMs', 'must be a non-negative finite number', c.passivationIdleMs);
+      this.fail('passivationIdleMs', 'must be a non-negative finite number', opts.passivationIdleMs);
     }
-    if (c.maxEntities !== undefined && (!Number.isInteger(c.maxEntities) || c.maxEntities < 0)) {
-      this.fail('maxEntities', 'must be an integer >= 0', c.maxEntities);
+    if (opts.maxEntities !== undefined && (!Number.isInteger(opts.maxEntities) || opts.maxEntities < 0)) {
+      this.fail('maxEntities', 'must be an integer >= 0', opts.maxEntities);
     }
   }
 }

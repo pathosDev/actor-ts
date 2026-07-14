@@ -12,8 +12,8 @@ import { readDirectory, readFileBytes, realPath, statPath, type FileStat } from 
 import { resolveStaticPath } from './staticPath.js';
 import { renderDirectoryListing, type ListingEntry } from './DirectoryListing.js';
 import {
-  resolveStaticSettings,
-  type ResolvedStaticSettings,
+  resolveStaticOptions,
+  type ResolvedStaticOptions,
   type StaticFilesOptions,
   type StaticFilesOptionsType,
 } from './StaticFilesOptions.js';
@@ -28,8 +28,8 @@ function queryString(query: HttpRequest['query']): string {
     if (Array.isArray(value)) for (const v of value) params.append(key, v);
     else params.append(key, value);
   }
-  const s = params.toString();
-  return s ? `?${s}` : '';
+  const queryString = params.toString();
+  return queryString ? `?${queryString}` : '';
 }
 
 function weakEtag(stat: FileStat): string {
@@ -56,9 +56,9 @@ function isNotModified(req: HttpRequest, etag: string | undefined, mtimeMs: numb
 type ParsedRange = { readonly start: number; readonly end: number } | 'unsatisfiable' | null;
 
 function parseRange(header: string, size: number): ParsedRange {
-  const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
-  if (!m) return null; // multi-range or non-bytes unit → ignore, serve full 200
-  const [, startStr, endStr] = m;
+  const rangeMatch = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!rangeMatch) return null; // multi-range or non-bytes unit → ignore, serve full 200
+  const [, startStr, endStr] = rangeMatch;
   if (startStr === '' && endStr === '') return null;
   let start: number;
   let end: number;
@@ -81,7 +81,7 @@ async function serveResolvedFile(
   fsPath: string,
   stat: FileStat,
   req: HttpRequest,
-  settings: ResolvedStaticSettings,
+  settings: ResolvedStaticOptions,
   servedName: string,
 ): Promise<HttpResponse> {
   if (stat.size > settings.maxFileSize) return tooLarge();
@@ -131,13 +131,13 @@ async function serveResolvedFile(
   return { status: Status.OK, headers, contentType, body: await readFileBytes(fsPath) };
 }
 
-async function renderListing(fsPath: string, req: HttpRequest, atMountRoot: boolean, settings: ResolvedStaticSettings): Promise<HttpResponse> {
+async function renderListing(fsPath: string, req: HttpRequest, atMountRoot: boolean, settings: ResolvedStaticOptions): Promise<HttpResponse> {
   const entries: ListingEntry[] = [];
   for (const entry of await readDirectory(fsPath)) {
     if (settings.dotfiles === 'deny' && entry.name.startsWith('.')) continue;
-    const s = await statPath(join(fsPath, entry.name));
-    if (!s || (!s.isFile && !s.isDirectory)) continue; // skip broken symlinks / specials
-    entries.push({ name: entry.name, isDirectory: entry.isDirectory, size: s.size, mtime: new Date(s.mtimeMs) });
+    const stat = await statPath(join(fsPath, entry.name));
+    if (!stat || (!stat.isFile && !stat.isDirectory)) continue; // skip broken symlinks / specials
+    entries.push({ name: entry.name, isDirectory: entry.isDirectory, size: stat.size, mtime: new Date(stat.mtimeMs) });
   }
   const html = renderDirectoryListing({ urlPath: req.path, atMountRoot, entries });
   return {
@@ -148,7 +148,7 @@ async function renderListing(fsPath: string, req: HttpRequest, atMountRoot: bool
   };
 }
 
-async function serveFromDirectory(root: string, rawRest: string, req: HttpRequest, settings: ResolvedStaticSettings): Promise<HttpResponse> {
+async function serveFromDirectory(root: string, rawRest: string, req: HttpRequest, settings: ResolvedStaticOptions): Promise<HttpResponse> {
   const resolved = resolveStaticPath(root, rawRest, { dotfiles: settings.dotfiles });
   if (!resolved.ok) return notFound();
 
@@ -178,7 +178,7 @@ async function serveFromDirectory(root: string, rawRest: string, req: HttpReques
 
 /** Serve a single file at `filePath` with the correct content-type. */
 export function getFromFile(filePath: string, options?: StaticFilesOptions): Route {
-  const settings = resolveStaticSettings(options);
+  const settings = resolveStaticOptions(options);
   return get(async (req) => {
     const stat = await statPath(filePath);
     if (!stat || !stat.isFile) return notFound();
@@ -193,7 +193,7 @@ export function getFromDirectory(a: string, b?: string | StaticFilesOptions, c?:
   const routePrefix = typeof b === 'string' ? a : undefined;
   const fsRoot = typeof b === 'string' ? b : a;
   const options = typeof b === 'string' ? c : b;
-  const settings = resolveStaticSettings(options);
+  const settings = resolveStaticOptions(options);
   const inner = concat(
     get((req) => serveFromDirectory(fsRoot, '', req, settings)),
     path('*', get((req) => serveFromDirectory(fsRoot, req.params['*'] ?? '', req, settings))),

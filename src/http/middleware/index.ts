@@ -16,7 +16,7 @@ export type { SecurityHeadersOptionsType } from './SecurityHeadersOptions.js';
 
 // CORS — a route directive (expanded by the compiler), not plain middleware.
 export { cors } from './Cors.js';
-export type { CorsRouteSettings } from './Cors.js';
+export type { CorsRouteOptions } from './Cors.js';
 export { CorsOptions, CorsOptionsBuilder } from './CorsOptions.js';
 export type { CorsOptionsType, CorsOrigin } from './CorsOptions.js';
 

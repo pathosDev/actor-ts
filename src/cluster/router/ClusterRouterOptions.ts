@@ -75,11 +75,11 @@ export class ClusterRouterOptionsBuilder<TMessage> extends OptionsBuilder<Cluste
  * `routerType`, a non-empty `routeePath`, and the cross-field rule that
  * consistent-hashing needs an `extractKey`.
  */
-export class ClusterRouterOptionsValidator<TMsg> extends OptionsValidator<ClusterRouterOptionsType<TMsg>> {
+export class ClusterRouterOptionsValidator<TMessage> extends OptionsValidator<ClusterRouterOptionsType<TMessage>> {
   constructor() {
     super('ClusterRouterOptions');
   }
-  protected rules(s: Partial<ClusterRouterOptionsType<TMsg>>): void {
+  protected rules(s: Partial<ClusterRouterOptionsType<TMessage>>): void {
     this.oneOf('routerType', ['round-robin', 'random', 'consistent-hashing', 'broadcast']);
     this.nonEmptyString('routeePath');
     if (s.routerType === 'consistent-hashing' && s.extractKey === undefined) {

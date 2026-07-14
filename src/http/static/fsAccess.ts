@@ -26,8 +26,8 @@ async function fsp(): Promise<typeof import('node:fs/promises')> {
 /** stat, mapped to our minimal shape; null on any error (ENOENT, ENOTDIR, …). */
 export async function statPath(path: string): Promise<FileStat | null> {
   try {
-    const s = await (await fsp()).stat(path);
-    return { size: s.size, mtimeMs: s.mtimeMs, isFile: s.isFile(), isDirectory: s.isDirectory() };
+    const stat = await (await fsp()).stat(path);
+    return { size: stat.size, mtimeMs: stat.mtimeMs, isFile: stat.isFile(), isDirectory: stat.isDirectory() };
   } catch {
     return null;
   }

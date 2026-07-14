@@ -29,32 +29,32 @@ function serializePermissionsPolicy(policy: Readonly<Record<string, readonly str
 
 /** Build a middleware that adds the configured security headers to every response. */
 export function securityHeaders(options: SecurityHeadersOptions = {}): Middleware {
-  const o = options as Partial<SecurityHeadersOptionsType>;
+  const resolvedOptions = options as Partial<SecurityHeadersOptionsType>;
   const headers: Record<string, string> = {};
 
-  if (o.contentTypeOptions ?? true) headers['x-content-type-options'] = 'nosniff';
+  if (resolvedOptions.contentTypeOptions ?? true) headers['x-content-type-options'] = 'nosniff';
 
-  const frame = o.frameOptions ?? 'DENY';
+  const frame = resolvedOptions.frameOptions ?? 'DENY';
   if (frame !== false) headers['x-frame-options'] = frame;
 
-  const referrer = o.referrerPolicy ?? 'no-referrer';
+  const referrer = resolvedOptions.referrerPolicy ?? 'no-referrer';
   if (referrer !== false) headers['referrer-policy'] = referrer;
 
-  const coop = o.crossOriginOpenerPolicy ?? 'same-origin';
+  const coop = resolvedOptions.crossOriginOpenerPolicy ?? 'same-origin';
   if (coop !== false) headers['cross-origin-opener-policy'] = coop;
 
-  const corp = o.crossOriginResourcePolicy ?? 'same-origin';
+  const corp = resolvedOptions.crossOriginResourcePolicy ?? 'same-origin';
   if (corp !== false) headers['cross-origin-resource-policy'] = corp;
 
-  const coep = o.crossOriginEmbedderPolicy ?? false;
+  const coep = resolvedOptions.crossOriginEmbedderPolicy ?? false;
   if (coep !== false) headers['cross-origin-embedder-policy'] = coep;
 
-  if (o.xssProtection ?? true) headers['x-xss-protection'] = '0';
+  if (resolvedOptions.xssProtection ?? true) headers['x-xss-protection'] = '0';
 
-  const pp = o.permissionsPolicy ?? false;
+  const pp = resolvedOptions.permissionsPolicy ?? false;
   if (pp !== false) headers['permissions-policy'] = serializePermissionsPolicy(pp);
 
-  const hstsOpt = o.hsts ?? false;
+  const hstsOpt = resolvedOptions.hsts ?? false;
   if (hstsOpt !== false) headers['strict-transport-security'] = hstsHeaderValue(resolveHsts(hstsOpt));
 
   return async (_req, next) => applyHeaders(await next(), headers);

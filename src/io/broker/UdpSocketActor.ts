@@ -39,11 +39,11 @@ export class UdpSocketActor
   protected builtInDefaultOptions(): Partial<UdpSocketOptionsType> {
     return { bindHost: '0.0.0.0', bindPort: 0, type: 'udp4' };
   }
-  protected readOptionsFromConfig(c: Config): Partial<UdpSocketOptionsType> {
+  protected readOptionsFromConfig(config: Config): Partial<UdpSocketOptionsType> {
     const out: { -readonly [K in keyof UdpSocketOptionsType]?: UdpSocketOptionsType[K] } = {};
-    if (c.hasPath('bindHost')) out.bindHost = c.getString('bindHost');
-    if (c.hasPath('bindPort')) out.bindPort = c.getInt('bindPort');
-    if (c.hasPath('type')) out.type = c.getString('type') as 'udp4' | 'udp6';
+    if (config.hasPath('bindHost')) out.bindHost = config.getString('bindHost');
+    if (config.hasPath('bindPort')) out.bindPort = config.getInt('bindPort');
+    if (config.hasPath('type')) out.type = config.getString('type') as 'udp4' | 'udp6';
     return out;
   }
   protected requiredOptions(): ReadonlyArray<keyof UdpSocketOptionsType> {

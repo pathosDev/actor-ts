@@ -123,14 +123,14 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
   }
   protected endpointLabel(): string { return this.options.url ?? '<unknown>'; }
 
-  protected readOptionsFromConfig(c: Config): Partial<WebsocketClientOptionsType<TOut, TIn>> {
+  protected readOptionsFromConfig(config: Config): Partial<WebsocketClientOptionsType<TOut, TIn>> {
     const out: { -readonly [K in keyof WebsocketClientOptionsType<TOut, TIn>]?: WebsocketClientOptionsType<TOut, TIn>[K] } = {};
-    if (c.hasPath('url')) out.url = c.getString('url');
-    if (c.hasPath('protocols')) out.protocols = c.getStringList('protocols');
-    if (c.hasPath('pingIntervalMs')) out.pingIntervalMs = c.getDuration('pingIntervalMs');
-    if (c.hasPath('maxFrameBytes')) out.maxFrameBytes = c.getBytes('maxFrameBytes');
-    if (c.hasPath('headers')) {
-      const obj = c.getObject('headers');
+    if (config.hasPath('url')) out.url = config.getString('url');
+    if (config.hasPath('protocols')) out.protocols = config.getStringList('protocols');
+    if (config.hasPath('pingIntervalMs')) out.pingIntervalMs = config.getDuration('pingIntervalMs');
+    if (config.hasPath('maxFrameBytes')) out.maxFrameBytes = config.getBytes('maxFrameBytes');
+    if (config.hasPath('headers')) {
+      const obj = config.getObject('headers');
       const headers: Record<string, string> = {};
       for (const [k, v] of Object.entries(obj)) if (typeof v === 'string') headers[k] = v;
       out.headers = headers;

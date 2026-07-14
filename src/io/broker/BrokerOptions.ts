@@ -174,33 +174,33 @@ export abstract class BrokerOptionsBuilder<T extends BrokerCommonOptionsType> ex
  */
 export abstract class BrokerOptionsValidator<T extends BrokerCommonOptionsType> extends OptionsValidator<T> {
   protected commonRules(s: Partial<T>): void {
-    const c = s as Partial<BrokerCommonOptionsType>;
+    const common = s as Partial<BrokerCommonOptionsType>;
 
     if (
-      c.outboundBuffer !== undefined &&
-      (typeof c.outboundBuffer !== 'number' || !Number.isInteger(c.outboundBuffer) || c.outboundBuffer < 0)
+      common.outboundBuffer !== undefined &&
+      (typeof common.outboundBuffer !== 'number' || !Number.isInteger(common.outboundBuffer) || common.outboundBuffer < 0)
     ) {
-      this.fail('outboundBuffer', 'must be an integer >= 0', c.outboundBuffer);
+      this.fail('outboundBuffer', 'must be an integer >= 0', common.outboundBuffer);
     }
 
-    if (c.reconnect !== undefined && c.reconnect !== false) {
-      const r = c.reconnect;
-      this.nestedPositive('reconnect.initialDelayMs', r.initialDelayMs);
-      this.nestedPositive('reconnect.maxDelayMs', r.maxDelayMs);
-      if (r.factor !== undefined && (typeof r.factor !== 'number' || !Number.isFinite(r.factor) || r.factor < 1)) {
-        this.fail('reconnect.factor', 'must be a number >= 1', r.factor);
+    if (common.reconnect !== undefined && common.reconnect !== false) {
+      const reconnect = common.reconnect;
+      this.nestedPositive('reconnect.initialDelayMs', reconnect.initialDelayMs);
+      this.nestedPositive('reconnect.maxDelayMs', reconnect.maxDelayMs);
+      if (reconnect.factor !== undefined && (typeof reconnect.factor !== 'number' || !Number.isFinite(reconnect.factor) || reconnect.factor < 1)) {
+        this.fail('reconnect.factor', 'must be a number >= 1', reconnect.factor);
       }
       // maxAttempts: positive; Infinity is allowed and is the default (retry forever).
       if (
-        r.maxAttempts !== undefined &&
-        (typeof r.maxAttempts !== 'number' || Number.isNaN(r.maxAttempts) || r.maxAttempts <= 0)
+        reconnect.maxAttempts !== undefined &&
+        (typeof reconnect.maxAttempts !== 'number' || Number.isNaN(reconnect.maxAttempts) || reconnect.maxAttempts <= 0)
       ) {
-        this.fail('reconnect.maxAttempts', 'must be a positive number (Infinity allowed)', r.maxAttempts);
+        this.fail('reconnect.maxAttempts', 'must be a positive number (Infinity allowed)', reconnect.maxAttempts);
       }
     }
 
-    if (c.circuitBreaker !== undefined) {
-      const cb = c.circuitBreaker;
+    if (common.circuitBreaker !== undefined) {
+      const cb = common.circuitBreaker;
       if (typeof cb.failureThreshold !== 'number' || !Number.isInteger(cb.failureThreshold) || cb.failureThreshold < 1) {
         this.fail('circuitBreaker.failureThreshold', 'must be an integer >= 1', cb.failureThreshold);
       }

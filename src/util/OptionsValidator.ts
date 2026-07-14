@@ -6,7 +6,7 @@
  * individual consumers (and sometimes only on the HOCON path), so a value
  * supplied via the builder or a plain object could bypass a check entirely.
  * A validator runs ONCE, at consume time, on the MERGED settings — after
- * `{ ...defaults, ...options }` / `mergeSettings` — so every input path
+ * `{ ...defaults, ...options }` / `mergeOptions` — so every input path
  * (builder, plain object, HOCON) hits the same rules, and cross-field
  * rules see the final resolved values.
  *
@@ -17,8 +17,8 @@
  * the value cannot be recovered from at runtime if only the value were
  * passed.  Every helper is a no-op when the field is `undefined`: an
  * unset optional always passes (mirroring `stripUndefined` in
- * `mergeSettings`); required-ness is enforced elsewhere (e.g.
- * `BrokerActor.requiredSettings()`).
+ * `mergeOptions`); required-ness is enforced elsewhere (e.g.
+ * `BrokerActor.requiredOptions()`).
  *
  * Cross-field rules are plain imperative code at the end of `rules(s)` —
  * guard the participants against `undefined`, then call {@link fail}.
@@ -31,7 +31,7 @@
 /**
  * An option value that is well-typed but outside its domain — regardless
  * of whether it arrived via the builder, a plain object, or HOCON.
- * (Missing required broker settings keep throwing `BrokerSettingsError`;
+ * (Missing required broker options keep throwing `BrokerOptionsError`;
  * malformed HOCON keeps throwing `ConfigError` — this error is only for
  * domain validity of present values.)
  */
@@ -60,7 +60,7 @@ type KeysMatching<T, V> = {
 }[keyof T] & string;
 
 export abstract class OptionsValidator<T extends object> {
-  /** Settings under validation — only set for the duration of {@link validate}. */
+  /** Options under validation — only set for the duration of {@link validate}. */
   private s: Partial<T> | undefined;
 
   protected constructor(
@@ -94,55 +94,55 @@ export abstract class OptionsValidator<T extends object> {
 
   /** Finite and `> 0` — durations, intervals, factors. */
   protected positiveNumber(field: KeysMatching<T, number>): void {
-    const v = this.read(field);
-    if (v === undefined) return;
-    if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) {
-      this.fail(field, 'must be a positive finite number', v);
+    const value = this.read(field);
+    if (value === undefined) return;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+      this.fail(field, 'must be a positive finite number', value);
     }
   }
 
   /** Integer `>= 1` — counts like quorum sizes, shard counts, retries. */
   protected positiveInt(field: KeysMatching<T, number>): void {
-    const v = this.read(field);
-    if (v === undefined) return;
-    if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) {
-      this.fail(field, 'must be an integer >= 1', v);
+    const value = this.read(field);
+    if (value === undefined) return;
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+      this.fail(field, 'must be an integer >= 1', value);
     }
   }
 
   /** Finite and `>= 0`. */
   protected nonNegativeNumber(field: KeysMatching<T, number>): void {
-    const v = this.read(field);
-    if (v === undefined) return;
-    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
-      this.fail(field, 'must be a non-negative finite number', v);
+    const value = this.read(field);
+    if (value === undefined) return;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+      this.fail(field, 'must be a non-negative finite number', value);
     }
   }
 
   /** Integer `>= 0` — buffer limits, logical DB indexes. */
   protected nonNegativeInt(field: KeysMatching<T, number>): void {
-    const v = this.read(field);
-    if (v === undefined) return;
-    if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) {
-      this.fail(field, 'must be an integer >= 0', v);
+    const value = this.read(field);
+    if (value === undefined) return;
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+      this.fail(field, 'must be an integer >= 0', value);
     }
   }
 
   /** Finite number in `[min, max]` (inclusive). */
   protected numberInRange(field: KeysMatching<T, number>, min: number, max: number): void {
-    const v = this.read(field);
-    if (v === undefined) return;
-    if (typeof v !== 'number' || !Number.isFinite(v) || v < min || v > max) {
-      this.fail(field, `must be a number in [${min}, ${max}]`, v);
+    const value = this.read(field);
+    if (value === undefined) return;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
+      this.fail(field, `must be a number in [${min}, ${max}]`, value);
     }
   }
 
   /** Integer TCP/UDP port, `1–65535`. */
   protected port(field: KeysMatching<T, number>): void {
-    const v = this.read(field);
-    if (v === undefined) return;
-    if (typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v > 65535) {
-      this.fail(field, 'must be an integer port in [1, 65535]', v);
+    const value = this.read(field);
+    if (value === undefined) return;
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 65535) {
+      this.fail(field, 'must be an integer port in [1, 65535]', value);
     }
   }
 
@@ -151,28 +151,28 @@ export abstract class OptionsValidator<T extends object> {
     field: K,
     allowed: readonly NonNullable<T[K]>[],
   ): void {
-    const v = this.read(field);
-    if (v === undefined) return;
-    if (!allowed.includes(v as NonNullable<T[K]>)) {
-      this.fail(field, `must be one of ${allowed.map((a) => this.show(a)).join(', ')}`, v);
+    const value = this.read(field);
+    if (value === undefined) return;
+    if (!allowed.includes(value as NonNullable<T[K]>)) {
+      this.fail(field, `must be one of ${allowed.map((a) => this.show(a)).join(', ')}`, value);
     }
   }
 
   /** Non-empty string. */
   protected nonEmptyString(field: KeysMatching<T, string>): void {
-    const v = this.read(field);
-    if (v === undefined) return;
-    if (typeof v !== 'string' || v.length === 0) {
-      this.fail(field, 'must be a non-empty string', v);
+    const value = this.read(field);
+    if (value === undefined) return;
+    if (typeof value !== 'string' || value.length === 0) {
+      this.fail(field, 'must be a non-empty string', value);
     }
   }
 
   /** Array with at least one entry. */
   protected nonEmptyArray(field: KeysMatching<T, readonly unknown[]>): void {
-    const v = this.read(field);
-    if (v === undefined) return;
-    if (!Array.isArray(v) || v.length === 0) {
-      this.fail(field, 'must contain at least one entry', v);
+    const value = this.read(field);
+    if (value === undefined) return;
+    if (!Array.isArray(value) || value.length === 0) {
+      this.fail(field, 'must contain at least one entry', value);
     }
   }
 
@@ -181,18 +181,18 @@ export abstract class OptionsValidator<T extends object> {
    * protocols (without the trailing `:`, e.g. `['mqtt', 'mqtts']`).
    */
   protected url(field: KeysMatching<T, string>, protocols?: readonly string[]): void {
-    const v = this.read(field);
-    if (v === undefined) return;
+    const value = this.read(field);
+    if (value === undefined) return;
     let parsed: URL;
     try {
-      parsed = new URL(v as string);
+      parsed = new URL(value as string);
     } catch {
-      this.fail(field, 'must be a valid URL', v);
+      this.fail(field, 'must be a valid URL', value);
     }
     if (protocols !== undefined) {
       const proto = parsed.protocol.replace(/:$/, '');
       if (!protocols.includes(proto)) {
-        this.fail(field, `must use protocol ${protocols.join(', ')}`, v);
+        this.fail(field, `must use protocol ${protocols.join(', ')}`, value);
       }
     }
   }
