@@ -148,6 +148,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `maxFrameBytes` above the default is currently still capped at the default by
   the transport; a per-route / configurable transport cap and the Hono
   runner-level cap are tracked follow-ups.
+- **WS-5 (MEDIUM, partial) — per-route WebSocket connection admission cap**
+  (see `SECURITY_AUDIT.md`).  New opt-in `maxConnections` on `websocket()`
+  routes (`.withMaxConnections(n)`, or `actor-ts.http.websocket.maxConnections`
+  in HOCON): a new upgrade beyond the cap is closed with 1013 in the shared
+  wiring layer before an actor is wired for it, and the live count decrements
+  when a connection closes.  Default: unlimited (behaviour unchanged).  The
+  other WS-5 sub-parts — a handshake/idle timeout and hub-mailbox bounding —
+  remain tracked follow-ups.
 
 ## [0.10.0] — 2026-07-08
 

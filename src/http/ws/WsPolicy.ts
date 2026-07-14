@@ -21,6 +21,12 @@ export interface ResolvedWsPolicy {
   readonly onInvalidMessage: InvalidMessagePolicy;
   readonly maxBufferedBytes: number;
   readonly onBackpressure: BackpressurePolicy;
+  /**
+   * Max concurrent connections admitted per route.  A new upgrade beyond
+   * this is closed with 1013 ("try again later") instead of being wired
+   * (SECURITY_AUDIT.md WS-5).  `Infinity` (the default) = unlimited.
+   */
+  readonly maxConnections: number;
 }
 
 /** Fields a `websocket()` route may override; everything else falls back. */
@@ -30,6 +36,7 @@ export interface WebSocketPolicyOptions {
   readonly onInvalidMessage?: InvalidMessagePolicy;
   readonly maxBufferedBytes?: number;
   readonly onBackpressure?: BackpressurePolicy;
+  readonly maxConnections?: number;
 }
 
 export const DEFAULT_WS_POLICY: ResolvedWsPolicy = {
@@ -38,6 +45,7 @@ export const DEFAULT_WS_POLICY: ResolvedWsPolicy = {
   onInvalidMessage: 'close',
   maxBufferedBytes: 4 * 1024 * 1024,
   onBackpressure: 'drop',
+  maxConnections: Infinity,
 };
 
 function oneOf<T extends string>(value: string, allowed: readonly T[], key: string): T {
@@ -65,6 +73,7 @@ export function resolveWsPolicy(system: ActorSystem, options: WebSocketPolicyOpt
       onBackpressure: c.hasPath('onBackpressure')
         ? oneOf(c.getString('onBackpressure'), ['drop', 'close'] as const, 'onBackpressure')
         : base.onBackpressure,
+      maxConnections: c.hasPath('maxConnections') ? c.getInt('maxConnections') : base.maxConnections,
     };
   }
   return {
@@ -73,5 +82,6 @@ export function resolveWsPolicy(system: ActorSystem, options: WebSocketPolicyOpt
     onInvalidMessage: options.onInvalidMessage ?? base.onInvalidMessage,
     maxBufferedBytes: options.maxBufferedBytes ?? base.maxBufferedBytes,
     onBackpressure: options.onBackpressure ?? base.onBackpressure,
+    maxConnections: options.maxConnections ?? base.maxConnections,
   };
 }

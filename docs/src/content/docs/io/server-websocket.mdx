@@ -84,6 +84,7 @@ interface WebSocketRouteOptions<TOut, TIn> {
   maxBufferedBytes?: number;                          // default 4 MiB
   onBackpressure?:   'drop' | 'close';                // default 'drop'
   allowedOrigins?:   string[];                        // CSWSH defence — see below
+  maxConnections?:   number;                          // concurrent-connection cap; default unlimited
 }
 ```
 
