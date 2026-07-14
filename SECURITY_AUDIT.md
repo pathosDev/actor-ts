@@ -273,14 +273,21 @@ leader|shards` sind ohne `auth`/`ipAllowlist` offen → Topologie-Leak. **Remedi
 
 ---
 
-## Remediation-Roadmap
+## Remediation-Roadmap / Status
 
-- **P0 (exponierter Rand, dieser Zweig):** WS-1, WS-2, HTTP-1, HTTP-2 — je mit
-  „Exploit greift → nach Fix abgewiesen"-Test.
-- **P1:** #3 (Decompress-Cap), WS-3/4/5, HTTP-3/4.  (#2 SSRF: akzeptiert unter dem
-  Netzmodell — Gegenmaßnahme = #1/#4; kein separater Fix, siehe #2.)
-- **P2:** #5, #6, #7, WS-6, BRK-1/2, #8/#9, BRK-3/4/5.
-- **Netzmodell:** #1 (opt-in Auth) + #4 (mTLS) als Betriebsanforderung + Doku.
+**Behoben** (Branch `features/security-hardening`, je Fix + Test + CHANGELOG):
+WS-1, WS-2, WS-3, WS-4, WS-6, HTTP-1, HTTP-2, HTTP-3, HTTP-4, BRK-1, BRK-2, #3, #6, #9.
+**Teilweise:** WS-5 (Admission-Cap `maxConnections` behoben; Handshake/Idle-Timeout +
+Hub-Mailbox-Bounding offen).
+
+**Offen:**
+- WS-5-Rest (Handshake/Idle-Timeout, Mailbox-Bounding) — Per-Backend-Upgrade-Timeout + Mailbox-Konfig.
+- **#5** (Cluster-Handshake-Timeout/Conn-Limit) — Timer-Lifecycle; im Netzmodell gemindert.
+- **#7** (AES-GCM-AAD) — weitgehend durch HMAC-Integrity (#116) gemindert.
+- **#2 (SSRF):** akzeptiert unter dem Netzmodell — Gegenmaßnahme = #1/#4; kein separater Fix (siehe #2).
+- **#8** (Management-Read-only-Doku), Doku-Erwähnungen HTTP-4 `identity` / #3 `maxOutputBytes` / BRK-3/4/5.
+
+**Netzmodell:** #1 (opt-in Auth) + #4 (mTLS) als Betriebsanforderung + Doku.
 
 ## Methodik
 
