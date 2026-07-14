@@ -24,39 +24,39 @@ const req: HttpRequest = {
 function oneHttp(route: Route): CompiledRoute {
   const compiled = compile(route);
   expect(compiled).toHaveLength(1);
-  const c = compiled[0]!;
-  if (c.kind !== 'http') throw new Error(`expected an http route, got ${c.kind}`);
-  return c;
+  const endpoint = compiled[0]!;
+  if (endpoint.kind !== 'http') throw new Error(`expected an http route, got ${endpoint.kind}`);
+  return endpoint;
 }
 
 describe('handleErrors', () => {
   test('receives the original thrown HttpError instance, before any mapping', async () => {
     const thrown = new HttpError(Status.Conflict, 'boom', { detail: 'x' });
     let seen: unknown;
-    const r = oneHttp(handleErrors(
+    const route = oneHttp(handleErrors(
       (err) => { seen = err; return complete(Status.OK, 'recovered'); },
       get(() => { throw thrown; }),
     ));
-    const resp = await r.handler(req);
+    const resp = await route.handler(req);
     expect(seen).toBe(thrown); // same instance, not a mapped {error} body
     expect(resp.status).toBe(Status.OK);
     expect(resp.body).toBe('recovered');
   });
 
   test('a returned response wins over the default error mapping', async () => {
-    const r = oneHttp(handleErrors(
+    const route = oneHttp(handleErrors(
       () => complete(Status.BadGateway, 'mapped'),
       get(() => { throw new HttpError(Status.InternalServerError, 'x'); }),
     ));
-    expect((await r.handler(req)).status).toBe(Status.BadGateway);
+    expect((await route.handler(req)).status).toBe(Status.BadGateway);
   });
 
   test('returning null declines → the error propagates (rejects)', async () => {
-    const r = oneHttp(handleErrors(
+    const route = oneHttp(handleErrors(
       () => null,
       get(() => { throw new HttpError(Status.NotFound, 'nope'); }),
     ));
-    await expect(r.handler(req)).rejects.toThrow(HttpError);
+    await expect(route.handler(req)).rejects.toThrow(HttpError);
   });
 
   test('nested: inner declines, outer handles', async () => {
@@ -96,30 +96,30 @@ describe('handleErrors', () => {
 
   test('a throw from the exception handler itself propagates', async () => {
     const boom = new Error('handler blew up');
-    const r = oneHttp(handleErrors(
+    const route = oneHttp(handleErrors(
       () => { throw boom; },
       get(() => { throw new HttpError(Status.BadRequest, 'x'); }),
     ));
-    await expect(r.handler(req)).rejects.toBe(boom);
+    await expect(route.handler(req)).rejects.toBe(boom);
   });
 
   test('a non-Error throw arrives unmangled as unknown', async () => {
     let seen: unknown = 'unset';
-    const r = oneHttp(handleErrors(
+    const route = oneHttp(handleErrors(
       (err) => { seen = err; return complete(Status.OK, ''); },
       get(() => { throw 'string-error'; }),
     ));
-    await r.handler(req);
+    await route.handler(req);
     expect(seen).toBe('string-error');
   });
 
   test('does not fire when nothing throws', async () => {
     let called = false;
-    const r = oneHttp(handleErrors(
+    const route = oneHttp(handleErrors(
       () => { called = true; return complete(Status.OK, 'x'); },
       get(() => complete(Status.OK, 'fine')),
     ));
-    const resp = await r.handler(req);
+    const resp = await route.handler(req);
     expect(called).toBe(false);
     expect(resp.body).toBe('fine');
   });

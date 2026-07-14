@@ -10,25 +10,25 @@ const run = (mw: Middleware, handlerHeaders?: Record<string, string>): Promise<H
 
 describe('securityHeaders', () => {
   test('emits the default header set', async () => {
-    const h = (await run(securityHeaders())).headers ?? {};
-    expect(h['x-content-type-options']).toBe('nosniff');
-    expect(h['x-frame-options']).toBe('DENY');
-    expect(h['referrer-policy']).toBe('no-referrer');
-    expect(h['cross-origin-opener-policy']).toBe('same-origin');
-    expect(h['cross-origin-resource-policy']).toBe('same-origin');
-    expect(h['x-xss-protection']).toBe('0');
+    const headers = (await run(securityHeaders())).headers ?? {};
+    expect(headers['x-content-type-options']).toBe('nosniff');
+    expect(headers['x-frame-options']).toBe('DENY');
+    expect(headers['referrer-policy']).toBe('no-referrer');
+    expect(headers['cross-origin-opener-policy']).toBe('same-origin');
+    expect(headers['cross-origin-resource-policy']).toBe('same-origin');
+    expect(headers['x-xss-protection']).toBe('0');
     // opt-in headers stay off by default
-    expect(h['cross-origin-embedder-policy']).toBeUndefined();
-    expect(h['permissions-policy']).toBeUndefined();
-    expect(h['strict-transport-security']).toBeUndefined();
+    expect(headers['cross-origin-embedder-policy']).toBeUndefined();
+    expect(headers['permissions-policy']).toBeUndefined();
+    expect(headers['strict-transport-security']).toBeUndefined();
   });
 
   test('false disables exactly its header', async () => {
     const opts = SecurityHeadersOptions.create().withFrameOptions(false).withReferrerPolicy(false);
-    const h = (await run(securityHeaders(opts))).headers ?? {};
-    expect(h['x-frame-options']).toBeUndefined();
-    expect(h['referrer-policy']).toBeUndefined();
-    expect(h['x-content-type-options']).toBe('nosniff'); // others untouched
+    const headers = (await run(securityHeaders(opts))).headers ?? {};
+    expect(headers['x-frame-options']).toBeUndefined();
+    expect(headers['referrer-policy']).toBeUndefined();
+    expect(headers['x-content-type-options']).toBe('nosniff'); // others untouched
   });
 
   test('withHsts includes STS; withHsts(false) suppresses it', async () => {
@@ -40,17 +40,17 @@ describe('securityHeaders', () => {
 
   test('serialises a Permissions-Policy map', async () => {
     const opts = SecurityHeadersOptions.create().withPermissionsPolicy({ camera: [], geolocation: ['self'] });
-    const h = (await run(securityHeaders(opts))).headers ?? {};
-    expect(h['permissions-policy']).toBe('camera=(), geolocation=(self)');
+    const headers = (await run(securityHeaders(opts))).headers ?? {};
+    expect(headers['permissions-policy']).toBe('camera=(), geolocation=(self)');
   });
 
   test('a handler-set header wins over the bundle default', async () => {
-    const h = (await run(securityHeaders(), { 'x-frame-options': 'SAMEORIGIN' })).headers ?? {};
-    expect(h['x-frame-options']).toBe('SAMEORIGIN');
+    const headers = (await run(securityHeaders(), { 'x-frame-options': 'SAMEORIGIN' })).headers ?? {};
+    expect(headers['x-frame-options']).toBe('SAMEORIGIN');
   });
 
   test('COEP is emitted when opted in', async () => {
-    const h = (await run(securityHeaders(SecurityHeadersOptions.create().withCrossOriginEmbedderPolicy('require-corp')))).headers ?? {};
-    expect(h['cross-origin-embedder-policy']).toBe('require-corp');
+    const headers = (await run(securityHeaders(SecurityHeadersOptions.create().withCrossOriginEmbedderPolicy('require-corp')))).headers ?? {};
+    expect(headers['cross-origin-embedder-policy']).toBe('require-corp');
   });
 });
