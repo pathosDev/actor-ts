@@ -4,8 +4,14 @@ description: Die volle Management-Endpunkt-Oberfläche — `/health`, `/ready`, 
 ---
 
 Der Management-Server stellt einen kleinen Satz operativer
-Endpunkte bereit. Die meisten sind read-only (sicher fürs
-Monitoring zu exponieren); Admin-Endpunkte sind Opt-in.
+Endpunkte bereit. Die meisten sind read-only; die Admin-Endpunkte
+(`/cluster/down`, `/cluster/leave`) sind Opt-in und standardmäßig aus.
+
+**Sicherheit (SECURITY_AUDIT.md #8):** die read-only-Endpunkte legen dennoch
+interne Topologie offen — Member-Adressen (`host:port`), Rollen, den Leader
+und die Shard-Map. Behandle den Management-Server als sensibel: binde ihn an
+ein internes Interface und schütze ihn mit den Optionen `ipAllowlist` (und/oder
+`auth`) von `managementRoutes(...)`, statt ihn öffentlich zu exponieren.
 
 ## Health-Probes
 

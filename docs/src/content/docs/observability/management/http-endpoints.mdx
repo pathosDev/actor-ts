@@ -4,8 +4,14 @@ description: The full management endpoint surface — `/health`, `/ready`, `/clu
 ---
 
 The management server exposes a small set of operational
-endpoints.  Most are read-only (safe to expose to monitoring);
-admin ones are opt-in.
+endpoints.  Most are read-only; the admin ones (`/cluster/down`,
+`/cluster/leave`) are opt-in and off by default.
+
+**Security (SECURITY_AUDIT.md #8):** the read-only endpoints still reveal
+internal topology — member addresses (`host:port`), roles, the leader, and the
+shard map.  Treat the management server as sensitive: bind it to an internal
+interface and gate it with the `ipAllowlist` (and/or `auth`) options of
+`managementRoutes(...)` rather than exposing it publicly.
 
 ## Health probes
 
