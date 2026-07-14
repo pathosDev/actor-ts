@@ -88,7 +88,7 @@ function decodeTree(value: unknown): unknown {
     // create a data property, letting a hostile `{"__proto__": …}` payload
     // change the decoded object's prototype.  Define it explicitly so the
     // key round-trips as plain data and the prototype stays untouched
-    // (SECURITY_AUDIT.md #9).
+    // (security audit #9).
     if (k === '__proto__') {
       Object.defineProperty(out, k, {
         value: decodeTree(v), enumerable: true, writable: true, configurable: true,

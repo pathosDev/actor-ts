@@ -110,7 +110,7 @@ export class FastifyBackend implements HttpServerBackend {
       // `options` is forwarded to the underlying `ws` server; `maxPayload`
       // caps the transport frame size (aligned with the default WS policy) so
       // an oversized frame is rejected at the protocol level rather than
-      // buffered up to the `ws` 100 MiB default first (SECURITY_AUDIT.md WS-3).
+      // buffered up to the `ws` 100 MiB default first (security audit WS-3).
       await (this.app as { register: (p: unknown, o?: object) => Promise<unknown> })
         .register(plugin, { options: { maxPayload: DEFAULT_WS_MAX_FRAME_BYTES } });
       for (const reg of this.wsRegistered) this.attachWebSocketRoute(reg);

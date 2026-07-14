@@ -108,7 +108,7 @@ let connectionCounter = 0;
 
 /**
  * Live connection count per hub, for the per-route `maxConnections` cap
- * (SECURITY_AUDIT.md WS-5).  Keyed by the hub ref (one per route); increments
+ * (security audit WS-5).  Keyed by the hub ref (one per route); increments
  * when a connection is admitted and decrements when its socket closes.  A
  * `WeakMap` so a discarded hub doesn't leak its counter.
  */
@@ -165,7 +165,7 @@ export function wireConnection<TOut, TIn, TSelf = never>(
   codec: WsCodec<TOut, TIn>,
   policy: ResolvedWsPolicy,
 ): void {
-  // Admission cap (SECURITY_AUDIT.md WS-5): when the route is at its
+  // Admission cap (security audit WS-5): when the route is at its
   // connection limit, close the freshly-upgraded socket with 1013 ("try
   // again later") instead of wiring an actor for it.  Unlimited by default
   // (`policy.maxConnections === Infinity`).

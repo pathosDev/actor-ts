@@ -30,7 +30,7 @@ import { type HttpRequest, type HttpResponse, Status } from '../types.js';
  *   });
  *   route(post('/api/expensive', limited(handler)));
  *
- * **Security — choosing `key` (SECURITY_AUDIT.md HTTP-3):** derive it from a
+ * **Security — choosing `key` (security audit HTTP-3):** derive it from a
  * value the client can't freely forge.  `req.remoteAddress` (the socket peer)
  * is the safe default.  Do NOT key on a client-settable header such as
  * `x-forwarded-for` unless a trusted proxy strips and re-sets it — otherwise

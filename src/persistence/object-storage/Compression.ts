@@ -33,7 +33,7 @@ export interface Compressor {
   compress(input: Uint8Array, level?: number): Promise<Uint8Array>;
   /**
    * Decompress `input`.  `maxOutputBytes`, when set and finite, bounds the
-   * decompressed size to defeat a decompression bomb (SECURITY_AUDIT.md #3):
+   * decompressed size to defeat a decompression bomb (security audit #3):
    * gzip enforces it at allocation time via zlib's `maxOutputLength`; the
    * other paths assert the size once decoded.  Exceeding it throws.
    */
@@ -176,7 +176,7 @@ const zstdCompressor: Compressor = {
   async compress(input, level) { return (await zstdCompressLazy.get())(input, level); },
   async decompress(input, maxOutputBytes) {
     // No portable allocation-time cap across the zstd impls (Bun native /
-    // Node native / fzstd), so assert the decoded size (SECURITY_AUDIT.md #3).
+    // Node native / fzstd), so assert the decoded size (security audit #3).
     const out = await (await zstdDecompressLazy.get())(input);
     assertWithinCap(out.length, maxOutputBytes, 'zstd');
     return out;

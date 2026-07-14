@@ -3,7 +3,7 @@ import { assertSafeIdentifier } from '../../../src/persistence/storage/SqlIdenti
 import { SqliteJournal } from '../../../src/persistence/journals/SqliteJournal.js';
 import { SqliteSnapshotStore } from '../../../src/persistence/snapshot-stores/SqliteSnapshotStore.js';
 
-// SECURITY_AUDIT.md #6 — table/keyspace identifiers are interpolated into
+// security audit #6 — table/keyspace identifiers are interpolated into
 // DDL/DML (they can't be bound), so a config-sourced value must be validated.
 // Postgres/MariaDB already did; SQLite + Cassandra now share this guard.
 describe('assertSafeIdentifier (#6)', () => {

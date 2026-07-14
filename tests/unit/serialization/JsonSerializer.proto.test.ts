@@ -3,7 +3,7 @@ import { JsonSerializer } from '../../../src/serialization/JsonSerializer.js';
 
 const json = new JsonSerializer();
 
-// SECURITY_AUDIT.md #9 — a hostile payload with a `__proto__` key must
+// security audit #9 — a hostile payload with a `__proto__` key must
 // round-trip as plain own data and never alter a prototype.  Before the fix
 // `out.__proto__ = …` went through the prototype setter, changing the decoded
 // object's [[Prototype]].

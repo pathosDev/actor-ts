@@ -164,7 +164,7 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
     // the whole buffer when no delimiter has arrived.  If it already exceeds
     // maxLineLen it can never become a valid line, so a hostile / MITM'd peer
     // streaming delimiter-free bytes can't grow inboundBuffer without bound
-    // (SECURITY_AUDIT.md BRK-1).
+    // (security audit BRK-1).
     if (text.length - cursor > maxLineLen) {
       this.handleConnectionLost(new Error(`unterminated line exceeds maxLineLen=${maxLineLen}`));
       return;

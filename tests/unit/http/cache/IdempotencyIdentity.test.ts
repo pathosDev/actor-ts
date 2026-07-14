@@ -10,7 +10,7 @@ const req = (account: string, key = 'k1'): HttpRequest => ({
   query: {}, params: {}, body: null,
 });
 
-// SECURITY_AUDIT.md HTTP-4 — an `identity` scope folds the caller into the
+// security audit HTTP-4 — an `identity` scope folds the caller into the
 // cache key so a cached, identity-specific response is never replayed to a
 // different caller who reuses the same key + body.
 describe('idempotent — identity scoping (HTTP-4)', () => {

@@ -175,7 +175,7 @@ describe('InMemoryCache — mget / mset (#14)', () => {
   });
 });
 
-// SECURITY_AUDIT.md HTTP-2 — the cache was an unbounded Map (lazy-expiry
+// security audit HTTP-2 — the cache was an unbounded Map (lazy-expiry
 // only, no cap), so a flood of distinct attacker-chosen keys (idempotency /
 // rate-limit) grew it without limit → RAM DoS.  It is now LRU-bounded.
 describe('InMemoryCache — bounded size / LRU eviction (HTTP-2)', () => {

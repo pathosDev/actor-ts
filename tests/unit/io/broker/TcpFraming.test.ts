@@ -21,7 +21,7 @@ function makeActor() {
   return { actor, delivered, state, feed, pending };
 }
 
-// SECURITY_AUDIT.md BRK-1 — a delimiter-free stream must not grow the inbound
+// security audit BRK-1 — a delimiter-free stream must not grow the inbound
 // buffer without bound; an over-long line is dropped and the connection lost.
 describe('TcpSocketActor — lines framing bounds (BRK-1)', () => {
   test('an over-long UNTERMINATED line is not buffered — connection lost', () => {

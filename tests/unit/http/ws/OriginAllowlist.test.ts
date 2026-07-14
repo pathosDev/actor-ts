@@ -25,7 +25,7 @@ function wsEndpoint(route: Route): CompiledWebSocketRoute {
   return e;
 }
 
-// SECURITY_AUDIT.md WS-2 — Cross-Site WebSocket Hijacking (CSWSH).
+// security audit WS-2 — Cross-Site WebSocket Hijacking (CSWSH).
 // Before this option, no upgrade handler validated `Origin`, so any web
 // page could open an authenticated WS to the server riding the victim's
 // ambient cookie/IP auth.  `allowedOrigins` gates the handshake.

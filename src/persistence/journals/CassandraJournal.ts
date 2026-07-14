@@ -251,7 +251,7 @@ export class CassandraJournal implements Journal {
   private qualified(table: string): string {
     // keyspace + table are interpolated into CQL (identifiers can't be bound)
     // — validate both so a config-sourced value can't inject CQL
-    // (SECURITY_AUDIT.md #6).
+    // (security audit #6).
     const ks = this.options.keyspace;
     if (ks !== undefined) assertSafeIdentifier(ks, 'keyspace');
     return `${ks}.${assertSafeIdentifier(table, 'table')}`;

@@ -74,7 +74,7 @@ export function websocket<TOut, TIn, TSelf = never>(
 /**
  * Build an Origin-allowlist guard for the upgrade handshake, or `undefined`
  * when no origins are configured.  See
- * {@link WebSocketRouteOptionsType.allowedOrigins} and SECURITY_AUDIT.md WS-2.
+ * {@link WebSocketRouteOptionsType.allowedOrigins} and security audit WS-2.
  */
 function makeOriginGuard(
   allowedOrigins: ReadonlyArray<string> | undefined,

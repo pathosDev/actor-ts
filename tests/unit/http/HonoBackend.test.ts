@@ -252,7 +252,7 @@ describe('HonoBackend — body size limit', () => {
     expect(res.status).toBe(413);
   });
 
-  // SECURITY_AUDIT.md HTTP-1: the oversize request must be rejected before
+  // security audit HTTP-1: the oversize request must be rejected before
   // the handler runs (previously the whole body was buffered first).
   test('oversize request never reaches the handler', async () => {
     let called = false;

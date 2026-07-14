@@ -224,14 +224,14 @@ export class ExpressBackend implements HttpServerBackend {
     const WebSocketServerCtor = await wsServerCtorLazy.get();
     // Cap the transport payload at the default WS frame size so an oversized
     // frame is rejected at the protocol level instead of being buffered up to
-    // the `ws` default of 100 MiB first (SECURITY_AUDIT.md WS-3).
+    // the `ws` default of 100 MiB first (security audit WS-3).
     const wss = new WebSocketServerCtor({ noServer: true, maxPayload: DEFAULT_WS_MAX_FRAME_BYTES });
     this.wss = wss;
     server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
       // Attach the raw-socket error guard BEFORE any async work: a peer
       // that vanishes mid-handshake (or a malformed upgrade) must never
       // surface as an unhandled 'error' event, which would crash the
-      // process (SECURITY_AUDIT.md WS-1).
+      // process (security audit WS-1).
       socket.on('error', () => { /* ignore */ });
       void (async () => {
         const url = new URL(req.url ?? '/', 'http://localhost');

@@ -111,7 +111,7 @@ Objekt dekodiert gemäß seinem eigenen Manifest.
 Die Dekompression beim Lesen ist standardmäßig auf **512 MiB** Output
 begrenzt, damit ein manipulierter oder bösartiger komprimierter Body (wenige
 KB, die sich auf viele GB aufblähen) beim Recovery nicht den Speicher sprengt
-(SECURITY_AUDIT.md #3).  gzip erzwingt das Limit bereits zur Allokationszeit
+(security audit #3).  gzip erzwingt das Limit bereits zur Allokationszeit
 über zlibs `maxOutputLength`; jeder Pfad prüft zusätzlich die dekodierte
 Größe.  Ein Body, der das Limit überschreiten würde, lässt den Read mit einem
 Fehler scheitern, statt den Prozess mit OOM zu beenden.  Snapshots /

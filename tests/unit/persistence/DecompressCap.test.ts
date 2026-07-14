@@ -5,7 +5,7 @@ import { encodeBody, decodeBody } from '../../../src/persistence/object-storage/
 // A real decompression bomb is far worse; the cap logic is what matters.
 const big = new Uint8Array(200_000);
 
-// SECURITY_AUDIT.md #3 — decoding a stored body must bound the decompressed
+// security audit #3 — decoding a stored body must bound the decompressed
 // size, so a tampered/hostile compressed blob can't OOM the process on read.
 describe('BodyCodec — decompression cap (#3)', () => {
   test('gzip: decoding past maxOutputBytes throws', async () => {

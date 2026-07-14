@@ -52,7 +52,7 @@ export const FLAG_INTEGRITY_HMAC = 0b10000;
 
 /**
  * Default cap on the decompressed size of a stored body (512 MiB).  Bounds a
- * decompression bomb on read (SECURITY_AUDIT.md #3) — a real snapshot /
+ * decompression bomb on read (security audit #3) — a real snapshot /
  * durable-state blob is far smaller.  Override per-decode via
  * {@link DecodeOptions.maxOutputBytes} (`Infinity` opts out).
  */
@@ -127,7 +127,7 @@ export interface DecodeOptions {
    * Cap on the decompressed payload size in bytes.  Defaults to
    * {@link DEFAULT_MAX_DECOMPRESSED_BYTES}; pass `Infinity` to disable.
    * Guards against a decompression bomb in a tampered / hostile stored body
-   * (SECURITY_AUDIT.md #3).
+   * (security audit #3).
    */
   readonly maxOutputBytes?: number;
 }

@@ -54,7 +54,7 @@ export function writeRawHttpResponse(socket: RawUpgradeSocket, res: HttpResponse
       // the raw upgrade socket.  Without this, an `authorize` guard that
       // returns a reject response carrying an attacker-influenced header
       // value could inject extra header lines or a body (HTTP response
-      // splitting) — see SECURITY_AUDIT.md WS-6.
+      // splitting) — see security audit WS-6.
       const name = String(k).replace(/[\r\n]/g, '');
       const value = String(v).replace(/[\r\n]/g, '');
       if (name.length === 0) continue;

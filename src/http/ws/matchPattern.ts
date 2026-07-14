@@ -23,7 +23,7 @@ export function matchWsPattern(pattern: string, pathname: string): Record<string
       // previously propagated out of the Express upgrade handler's
       // fire-and-forget IIFE as an unhandled rejection — process-fatal
       // under Node's default, and reachable pre-auth by any unauthenticated
-      // client (SECURITY_AUDIT.md WS-1).  Treat a bad escape as a
+      // client (security audit WS-1).  Treat a bad escape as a
       // non-match instead: the request matches no route and gets a 404.
       let decoded: string;
       try {

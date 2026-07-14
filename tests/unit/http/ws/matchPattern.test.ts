@@ -17,7 +17,7 @@ describe('matchWsPattern', () => {
     expect(matchWsPattern('/a/b', '/a')).toBeNull();
   });
 
-  // SECURITY_AUDIT.md WS-1 — regression guard.
+  // security audit WS-1 — regression guard.
   //
   // Before the fix, `decodeURIComponent('%ZZ')` threw `URIError`, which
   // propagated out of the Express upgrade handler's fire-and-forget IIFE as

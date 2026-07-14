@@ -20,7 +20,7 @@ export type SseCmd = never;  // SSE is read-only
 /**
  * Safety cap on the pending event buffer (chars).  A well-behaved server
  * delimits events with `\n\n` frequently; this bounds the damage from one
- * that never does (SECURITY_AUDIT.md BRK-2).  1 MiB is far above any real
+ * that never does (security audit BRK-2).  1 MiB is far above any real
  * single SSE event.
  */
 const SSE_MAX_BUFFER_CHARS = 1_048_576;
@@ -96,7 +96,7 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCmd, never> {
         buffer += decoder.decode(value, { stream: true });
         // Cap the pending buffer: a hostile / MITM'd endpoint that streams
         // bytes without an event delimiter (`\n\n`) would otherwise grow it
-        // without bound (SECURITY_AUDIT.md BRK-2).
+        // without bound (security audit BRK-2).
         if (buffer.length > SSE_MAX_BUFFER_CHARS) {
           this.streamRunning = false;
           try { this.aborter?.abort(); } catch { /* ignore */ }

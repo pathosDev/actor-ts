@@ -27,7 +27,7 @@ function coerceWsData(data: unknown): string | Uint8Array {
 
 /**
  * True when a declared `Content-Length` exceeds `cap`.  Extracted as a pure
- * function so the fast-path body-size guard (SECURITY_AUDIT.md HTTP-1) can be
+ * function so the fast-path body-size guard (security audit HTTP-1) can be
  * unit-tested directly.  A missing/non-numeric header returns `false` — those
  * fall through to the post-buffer backstop.
  * @internal
@@ -55,7 +55,7 @@ function contentLengthHeader(c: { req: { header(name?: string): unknown } }): st
 /**
  * Read the outbound send-buffer depth (bytes) from a Hono `WSContext`'s
  * native socket, so the connection actor's backpressure guard actually fires
- * on Hono (SECURITY_AUDIT.md WS-4).  Bun's `ServerWebSocket` exposes
+ * on Hono (security audit WS-4).  Bun's `ServerWebSocket` exposes
  * `getBufferedAmount()`; the Node (`@hono/node-ws`) and Deno sockets expose a
  * numeric `.bufferedAmount`.  Unknown shape → 0 (guard stays off, as before).
  * @internal — exported for testing.
@@ -271,7 +271,7 @@ export class HonoBackend implements HttpServerBackend {
     const handler: HonoHandler = async (c) => {
       // Reject an oversized Content-Length BEFORE buffering the body.  The
       // post-buffer check below is a backstop for chunked bodies that omit
-      // Content-Length (SECURITY_AUDIT.md HTTP-1) — previously the whole
+      // Content-Length (security audit HTTP-1) — previously the whole
       // body was materialised via arrayBuffer() before any size check,
       // making the 10 MiB cap cosmetic against the runtime's much larger
       // native default.

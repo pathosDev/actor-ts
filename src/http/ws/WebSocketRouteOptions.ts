@@ -97,7 +97,7 @@ export class WebSocketRouteOptionsBuilder<TOut = unknown, TIn = unknown>
   /**
    * Cap concurrent connections for this route.  A new upgrade beyond the cap
    * is closed with 1013 ("try again later") before it is wired up
-   * (SECURITY_AUDIT.md WS-5).  Default: unlimited.
+   * (security audit WS-5).  Default: unlimited.
    */
   withMaxConnections(max: number): this {
     return this.set('maxConnections', max);

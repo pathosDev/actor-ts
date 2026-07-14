@@ -23,7 +23,7 @@ describe('writeRawHttpResponse', () => {
     expect(f.destroyed).toBe(true);
   });
 
-  // SECURITY_AUDIT.md WS-6 — an `authorize` guard that echoes attacker-
+  // security audit WS-6 — an `authorize` guard that echoes attacker-
   // influenced data into a reject-response header must not be able to inject
   // extra header lines or a body onto the raw upgrade socket.
   test('strips CR/LF from app-supplied header values (no response splitting)', () => {

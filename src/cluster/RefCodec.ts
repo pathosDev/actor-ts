@@ -154,7 +154,7 @@ function walkDecode(value: unknown, cluster: Cluster, seen: WeakSet<object>): un
   for (const [k, v] of Object.entries(value)) {
     // Guard the prototype setter — a hostile envelope carrying a
     // `"__proto__"` key must round-trip as plain data, not mutate the
-    // decoded object's prototype (SECURITY_AUDIT.md #9).
+    // decoded object's prototype (security audit #9).
     if (k === '__proto__') {
       Object.defineProperty(out, k, {
         value: walkDecode(v, cluster, seen), enumerable: true, writable: true, configurable: true,

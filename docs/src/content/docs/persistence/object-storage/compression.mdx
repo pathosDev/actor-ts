@@ -109,7 +109,7 @@ decodes per its own manifest.
 
 Decompression on read is **bounded to 512 MiB** of output by default, so a
 tampered or hostile compressed body (a few KB that inflates to many GB) can't
-exhaust memory during recovery (SECURITY_AUDIT.md #3).  gzip enforces the cap
+exhaust memory during recovery (security audit #3).  gzip enforces the cap
 at allocation time via zlib's `maxOutputLength`; every path additionally
 asserts the decoded size.  A body that would exceed the cap fails the read
 with an error instead of OOM-ing the process.  Snapshots / durable state are

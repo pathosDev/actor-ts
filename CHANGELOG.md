@@ -44,7 +44,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
-- **WS-1 (HIGH) — WebSocket upgrade crash hardened** (see `SECURITY_AUDIT.md`).
+- **WS-1 (HIGH) — WebSocket upgrade crash hardened**.
   A malformed percent-escape in the upgrade path (e.g. `GET /room/%ZZ` against a
   `websocket('/room/:id', …)` route) made `decodeURIComponent` throw inside the
   Express backend's fire-and-forget upgrade handler, surfacing as an *unhandled
@@ -53,8 +53,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   a non-match (→ 404), and the Express upgrade handler attaches its socket
   error-guard before any async work and wraps the handler in a last-resort
   `.catch` that closes the socket.  Fastify/Hono were not affected.
-- **WS-2 (HIGH) — Cross-Site WebSocket Hijacking (CSWSH) defence** (see
-  `SECURITY_AUDIT.md`).  No upgrade handler validated the `Origin` header, so a
+- **WS-2 (HIGH) — Cross-Site WebSocket Hijacking (CSWSH) defence**.  No upgrade handler validated the `Origin` header, so a
   malicious web page could open an authenticated WebSocket riding a victim
   browser's ambient cookie/IP auth.  New **`allowedOrigins`** option on
   `websocket()` routes (`.withAllowedOrigins([...])` on the builder): an upgrade
@@ -62,16 +61,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   handshake on all three backends; a missing `Origin` (non-browser client) is
   allowed.  Bearer-token auth was already resistant (browsers can't set
   `Authorization` on a WS handshake).
-- **HTTP-1 (MEDIUM-HIGH) — Hono body-size cap enforced before buffering** (see
-  `SECURITY_AUDIT.md`).  The Hono backend read the whole request body via
+- **HTTP-1 (MEDIUM-HIGH) — Hono body-size cap enforced before buffering**.  The Hono backend read the whole request body via
   `arrayBuffer()` and only then compared it against `maxBodyBytes`, so the cap
   was cosmetic — the real ceiling was the runtime's native default (128 MiB on
   Bun, effectively unbounded on Node via `@hono/node-server`).  It now rejects
   an oversized `Content-Length` with 413 *before* buffering; the post-buffer
   check remains a backstop for chunked bodies that omit Content-Length.
   Express (streaming cap) and Fastify (framework default) were unaffected.
-- **HTTP-2 (MEDIUM-HIGH) — `InMemoryCache` is now bounded (LRU)** (see
-  `SECURITY_AUDIT.md`).  The default in-process cache was an unbounded `Map`
+- **HTTP-2 (MEDIUM-HIGH) — `InMemoryCache` is now bounded (LRU)**.  The default in-process cache was an unbounded `Map`
   with lazy expiry only, so a flood of distinct attacker-chosen keys
   (`Idempotency-Key`; rate-limit keys — idempotency additionally stores the
   full response body for 24 h) grew it without limit → RAM exhaustion.  It now
@@ -81,49 +78,44 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   already-documented `InMemoryCacheSettings`.  *Behaviour change:* the default
   is now bounded — pass `maxEntries: Infinity` for the previous unbounded
   behaviour (documented OOM risk).
-- **WS-6 (LOW) — CRLF stripped from raw upgrade-reject headers** (see
-  `SECURITY_AUDIT.md`).  `writeRawHttpResponse` (the Express pre-handshake
+- **WS-6 (LOW) — CRLF stripped from raw upgrade-reject headers**.  `writeRawHttpResponse` (the Express pre-handshake
   reject path) wrote app-supplied header names/values verbatim onto the raw
   socket, so an `authorize` guard echoing attacker-influenced data into a
   header could split the response.  CR/LF are now stripped from header names
   and values.
 - **#9 (hardening) — JSON deserialization ignores the `__proto__` setter**
-  (see `SECURITY_AUDIT.md`).  `JsonSerializer` and the cluster ref decoder
+ .  `JsonSerializer` and the cluster ref decoder
   now define a decoded `"__proto__"` key as an own data property instead of
   assigning through the prototype setter, so a hostile payload can't change
   the decoded object's prototype.
-- **BRK-1 / BRK-2 (MEDIUM) — inbound buffer caps for TCP `lines` + SSE** (see
-  `SECURITY_AUDIT.md`).  A hostile / MITM'd upstream could stream bytes with no
+- **BRK-1 / BRK-2 (MEDIUM) — inbound buffer caps for TCP `lines` + SSE**.  A hostile / MITM'd upstream could stream bytes with no
   frame delimiter, growing the inbound buffer without bound.  The TCP `lines`
   framer now rejects an un-terminated remainder that already exceeds
   `maxLineLen` (matching the existing terminated-line check), and the SSE
   client caps its pending event buffer at 1 MiB — both drop the connection
   instead of buffering forever.  (`length-prefixed` TCP framing was already
   bounded.)
-- **#6 (LOW) — consistent SQL/CQL identifier validation** (see
-  `SECURITY_AUDIT.md`).  Postgres/MariaDB already validated table identifiers,
+- **#6 (LOW) — consistent SQL/CQL identifier validation**.  Postgres/MariaDB already validated table identifiers,
   but SQLite (journal + snapshot store) and Cassandra (keyspace + table names,
   interpolated into CQL) did not.  A shared `assertSafeIdentifier`
   (`/^[A-Za-z_][A-Za-z0-9_]*$/`) is now applied across all four, so a
   config-sourced identifier can't inject SQL/CQL.  Data values were, and
   remain, bound parameters.
 - **HTTP-3 (docs) — rate-limit examples key on the socket peer, not
-  `x-forwarded-for`** (see `SECURITY_AUDIT.md`).  The shipped `rateLimit`
+  `x-forwarded-for`**.  The shipped `rateLimit`
   examples taught keying on the client-settable `x-forwarded-for` header, which
   an attacker rotates per request to bypass the limit (and which collapses all
   header-less clients into one shared bucket).  The JSDoc and the bilingual
   docs now use `req.remoteAddress` and state the trusted-proxy caveat.  No
   behaviour change — `key` was always caller-supplied.
-- **#3 (MEDIUM) — decompression-bomb cap on stored bodies** (see
-  `SECURITY_AUDIT.md`).  Reading a snapshot / durable-state / object body
+- **#3 (MEDIUM) — decompression-bomb cap on stored bodies**.  Reading a snapshot / durable-state / object body
   decompressed it with no output bound, so a tampered or hostile compressed
   blob (a few KB expanding to many GB) could OOM the process on recovery.
   `decodeBody` now caps the decompressed size at **512 MiB** by default
   (`DecodeOptions.maxOutputBytes`; `Infinity` opts out): gzip enforces it at
   allocation time via zlib's `maxOutputLength`, and every path asserts the
   decoded size as a portable backstop.
-- **HTTP-4 (MEDIUM) — idempotency responses can be scoped per caller** (see
-  `SECURITY_AUDIT.md`).  The idempotency cache keyed only on the
+- **HTTP-4 (MEDIUM) — idempotency responses can be scoped per caller**.  The idempotency cache keyed only on the
   `Idempotency-Key` header plus a method/path/body fingerprint, so two callers
   reusing the same key for the same request shape shared one cached response —
   a cross-user disclosure when the response is identity-specific (e.g. carries
@@ -131,15 +123,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   string` folds the authenticated principal into the cache key so responses are
   partitioned per caller.  (Same-key-different-body poisoning was already
   rejected with 422.)
-- **WS-4 (MEDIUM) — WebSocket backpressure works on the Hono backend** (see
-  `SECURITY_AUDIT.md`).  The Hono socket adapter didn't implement
+- **WS-4 (MEDIUM) — WebSocket backpressure works on the Hono backend**.  The Hono socket adapter didn't implement
   `bufferedAmount`, so the connection actor's `maxBufferedBytes` /
   `onBackpressure` guard was a no-op on Hono — a slow / idle-reading client
   could grow the outbound send buffer without bound (OOM).  The adapter now
   surfaces the send-buffer depth from the native socket (Bun
   `getBufferedAmount()`, Node/Deno numeric `.bufferedAmount`).
 - **WS-3 (MEDIUM) — cap the WebSocket transport frame size (Express + Fastify)**
-  (see `SECURITY_AUDIT.md`).  The `ws`-backed backends left the transport at the
+ .  The `ws`-backed backends left the transport at the
   `ws` default `maxPayload` (100 MiB), so an oversized frame was buffered in
   full before the app-level `maxFrameBytes` (1 MiB default) rejected it —
   allocation-amplification DoS.  Both now pass `maxPayload:
@@ -149,7 +140,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the transport; a per-route / configurable transport cap and the Hono
   runner-level cap are tracked follow-ups.
 - **WS-5 (MEDIUM, partial) — per-route WebSocket connection admission cap**
-  (see `SECURITY_AUDIT.md`).  New opt-in `maxConnections` on `websocket()`
+ .  New opt-in `maxConnections` on `websocket()`
   routes (`.withMaxConnections(n)`, or `actor-ts.http.websocket.maxConnections`
   in HOCON): a new upgrade beyond the cap is closed with 1013 in the shared
   wiring layer before an actor is wired for it, and the live count decrements

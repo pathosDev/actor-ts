@@ -29,7 +29,7 @@ function makeHub() {
   return { hub, tells };
 }
 
-// SECURITY_AUDIT.md WS-5 — a route's connection admission cap.
+// security audit WS-5 — a route's connection admission cap.
 describe('wireConnection — maxConnections admission cap (WS-5)', () => {
   test('rejects connections beyond the cap with 1013, admits the rest', () => {
     const { hub, tells } = makeHub();

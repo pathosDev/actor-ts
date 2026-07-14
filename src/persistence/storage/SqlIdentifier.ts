@@ -3,7 +3,7 @@
  *
  * Identifiers cannot be passed as bound parameters, so backends interpolate
  * them straight into DDL/DML.  An identifier sourced from configuration must
- * therefore be validated or it becomes an injection vector (SECURITY_AUDIT.md
+ * therefore be validated or it becomes an injection vector (security audit
  * #6).  Shared by the SQLite and Cassandra backends; Postgres/MariaDB carry
  * their own equivalent in their client modules.
  */

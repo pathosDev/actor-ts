@@ -48,7 +48,7 @@ export interface IdempotencyOptions {
   readonly missingHeader?: 'reject' | 'pass-through';
   /**
    * Derive a per-caller scope folded into the cache key so a cached response
-   * is NEVER replayed to a different caller (SECURITY_AUDIT.md HTTP-4).
+   * is NEVER replayed to a different caller (security audit HTTP-4).
    * Without it, two callers sending the same method + path + body under the
    * same `Idempotency-Key` share one cache entry — fine for a public
    * endpoint, unsafe when the response is identity-specific (the second

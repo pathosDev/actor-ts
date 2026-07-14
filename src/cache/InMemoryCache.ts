@@ -8,7 +8,7 @@ import type { Cache } from './Cache.js';
  * Bounded by `maxEntries` (default 10 000): inserting a new key beyond the cap
  * evicts the least-recently-used entry, so a flood of distinct keys — e.g.
  * attacker-chosen `Idempotency-Key` or rate-limit keys — cannot grow the map
- * without limit (SECURITY_AUDIT.md HTTP-2).  Set `maxEntries: Infinity` to opt
+ * without limit (security audit HTTP-2).  Set `maxEntries: Infinity` to opt
  * out (unbounded — OOMs eventually; only do this when you control the key
  * space).
  *

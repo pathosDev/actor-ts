@@ -24,7 +24,7 @@ export interface ResolvedWsPolicy {
   /**
    * Max concurrent connections admitted per route.  A new upgrade beyond
    * this is closed with 1013 ("try again later") instead of being wired
-   * (SECURITY_AUDIT.md WS-5).  `Infinity` (the default) = unlimited.
+   * (security audit WS-5).  `Infinity` (the default) = unlimited.
    */
   readonly maxConnections: number;
 }
