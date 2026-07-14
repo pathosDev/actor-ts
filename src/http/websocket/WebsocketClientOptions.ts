@@ -97,7 +97,7 @@ export class WebsocketClientOptionsBuilder<TOut = unknown, TIn = unknown>
 export class WebsocketClientOptionsValidator<TOut = unknown, TIn = unknown>
   extends BrokerOptionsValidator<WebsocketClientOptionsType<TOut, TIn>> {
   constructor() {
-    super('WebSocketClientOptions');
+    super('WebsocketClientOptions');
   }
   protected rules(s: Partial<WebsocketClientOptionsType<TOut, TIn>>): void {
     this.commonRules(s);
