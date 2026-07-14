@@ -87,8 +87,8 @@ class ChatStore {
     this.#ws = ws;
     ws.addEventListener('open', () => onOpen(ws));
     ws.addEventListener('message', (ev) => {
-      const m = JSON.parse(ev.data as string) as ServerMessage;
-      this.#handleServer(m);
+      const message = JSON.parse(ev.data as string) as ServerMessage;
+      this.#handleServer(message);
     });
     ws.addEventListener('close', () => {
       if (this.#ws !== ws) return;
@@ -170,7 +170,7 @@ class ChatStore {
     // Switching INTO a room means the user is reading whatever's
     // already there — mark the highest known ts as read.
     const msgs = this.messagesByRoom[room] ?? [];
-    const maxTs = msgs.reduce((a, m) => Math.max(a, m.ts ?? 0), 0);
+    const maxTs = msgs.reduce((a, message) => Math.max(a, message.ts ?? 0), 0);
     if (maxTs > 0) this.markReadUpTo(room, maxTs);
   }
 
@@ -228,13 +228,13 @@ class ChatStore {
     this.unreadByRoom = {};
   }
 
-  #handleServer(m: ServerMessage): void {
-    switch (m.type) {
+  #handleServer(message: ServerMessage): void {
+    switch (message.type) {
       case 'logged-in':
         this.#cancelReconnect();
-        this.username = m.username;
-        if (m.token && typeof sessionStorage !== 'undefined') {
-          sessionStorage.setItem(TOKEN_KEY, m.token);
+        this.username = message.username;
+        if (message.token && typeof sessionStorage !== 'undefined') {
+          sessionStorage.setItem(TOKEN_KEY, message.token);
         }
         this.loginError = '';
         this.phase = 'chat';
@@ -248,63 +248,63 @@ class ChatStore {
         // in 'resuming' (token rejected after reload).  Either
         // way, fall back to the login screen.
         if (this.phase !== 'login') this.#reset();
-        this.loginError = m.reason || 'Login failed.';
+        this.loginError = message.reason || 'Login failed.';
         break;
       case 'rooms': {
         // Preserve open DMs across `rooms` broadcasts — they live
         // only in the client, not in the cluster-wide directory.
         const dms = this.rooms.filter(isDmRoom);
-        this.rooms = [...m.rooms, ...dms];
+        this.rooms = [...message.rooms, ...dms];
         for (const r of this.rooms) {
           this.messagesByRoom[r] ??= [];
           this.usersByRoom[r] ??= [];
           this.unreadByRoom[r] ??= 0;
         }
-        if (!this.currentRoom) this.currentRoom = m.rooms[0] ?? null;
+        if (!this.currentRoom) this.currentRoom = message.rooms[0] ?? null;
         break;
       }
       case 'room-added':
         // `rooms` carries the full set; this is the per-name notice
         // for toast UX.  Idempotent.
-        if (!this.rooms.includes(m.name)) {
-          this.rooms = [...this.rooms, m.name];
-          this.messagesByRoom[m.name] ??= [];
-          this.usersByRoom[m.name] ??= [];
-          this.unreadByRoom[m.name] ??= 0;
+        if (!this.rooms.includes(message.name)) {
+          this.rooms = [...this.rooms, message.name];
+          this.messagesByRoom[message.name] ??= [];
+          this.usersByRoom[message.name] ??= [];
+          this.unreadByRoom[message.name] ??= 0;
         }
         break;
       case 'room-removed': {
-        this.rooms = this.rooms.filter((r) => r !== m.name);
-        const wasCurrent = this.currentRoom === m.name;
-        delete this.messagesByRoom[m.name];
-        delete this.usersByRoom[m.name];
-        delete this.unreadByRoom[m.name];
+        this.rooms = this.rooms.filter((r) => r !== message.name);
+        const wasCurrent = this.currentRoom === message.name;
+        delete this.messagesByRoom[message.name];
+        delete this.usersByRoom[message.name];
+        delete this.unreadByRoom[message.name];
         if (wasCurrent) this.currentRoom = this.rooms[0] ?? null;
         break;
       }
       case 'history':
-        this.messagesByRoom[m.room] = m.messages.slice();
+        this.messagesByRoom[message.room] = message.messages.slice();
         break;
       case 'message': {
-        const list = this.messagesByRoom[m.room] ?? [];
-        list.push({ from: m.from, text: m.text, ts: m.ts });
-        this.messagesByRoom[m.room] = list;
-        if (m.room !== this.currentRoom) {
-          this.unreadByRoom[m.room] = (this.unreadByRoom[m.room] ?? 0) + 1;
+        const list = this.messagesByRoom[message.room] ?? [];
+        list.push({ from: message.from, text: message.text, ts: message.ts });
+        this.messagesByRoom[message.room] = list;
+        if (message.room !== this.currentRoom) {
+          this.unreadByRoom[message.room] = (this.unreadByRoom[message.room] ?? 0) + 1;
         } else {
           // Active view — mark read so the sender's ✓✓ updates.
-          this.markReadUpTo(m.room, m.ts);
+          this.markReadUpTo(message.room, message.ts);
         }
         break;
       }
       case 'users':
-        this.usersByRoom[m.room] = m.users.slice().sort();
+        this.usersByRoom[message.room] = message.users.slice().sort();
         break;
       case 'user-typing':
-        this.#onUserTyping(m.room, m.username);
+        this.#onUserTyping(message.room, message.username);
         break;
       case 'read-receipts':
-        this.receiptsByRoom = { ...this.receiptsByRoom, [m.room]: m.receipts };
+        this.receiptsByRoom = { ...this.receiptsByRoom, [message.room]: message.receipts };
         break;
       case 'system':
         break;

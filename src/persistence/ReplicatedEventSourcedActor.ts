@@ -6,7 +6,7 @@ import type { Cluster } from '../cluster/Cluster.js';
 import { DistributedPubSubId, DistributedPubSubOptions } from '../cluster/pubsub/index.js';
 import type { Lease } from '../coordination/Lease.js';
 import {
-  Publish, Subscribe, type SubscribeAck,
+  Publish, Subscribe, type SubscribeAcknowledgment,
 } from '../cluster/pubsub/Messages.js';
 import type { ReplicaId } from '../crdt/Crdt.js';
 import type { Journal } from './Journal.js';
@@ -360,7 +360,7 @@ export abstract class ReplicatedEventSourcedActor<Cmd, Event, State>
     this._lease = null;
   }
 
-  override async onReceive(msg: Cmd | ReplicatedEventEnvelope<Event> | SubscribeAck): Promise<void> {
+  override async onReceive(msg: Cmd | ReplicatedEventEnvelope<Event> | SubscribeAcknowledgment): Promise<void> {
     // Ignore PubSub ack frames — they're informational.
     if (msg && typeof msg === 'object' && (msg as { subscribe?: unknown }).subscribe instanceof Subscribe) {
       return;
@@ -467,7 +467,7 @@ export abstract class ReplicatedEventSourcedActor<Cmd, Event, State>
       // the canonical sort intact.  Cheap as long as N stays small;
       // gossip usually delivers in order so this is rare.
       this._state = this.initialState();
-      for (const e of this._events) this._state = this.onEvent(this._state, e.event);
+      for (const persistedEvent of this._events) this._state = this.onEvent(this._state, persistedEvent.event);
     }
 
     this._vc = this._vc.merge(VectorClock.fromData(envelope.vc));

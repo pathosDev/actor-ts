@@ -43,7 +43,7 @@ export interface KafkaPublish {
  */
 export type KafkaCommitMode = 'auto' | 'manual';
 
-export type KafkaCmd =
+export type KafkaCommand =
   | { readonly kind: 'publish'; readonly publish: KafkaPublish }
   | { readonly kind: 'subscribe'; readonly topic: string }
   /**
@@ -81,7 +81,7 @@ export type KafkaCmd =
 
 /**
  * Kafka producer + consumer in one actor, backed by `kafkajs`.  When
- * `consumer.groupId` is set, a consumer is started after `connectImpl`
+ * `consumer.groupId` is set, a consumer is started after `connectImplementation`
  * and consumed records are delivered to `target`.  When a producer is
  * the only goal, leave `consumer` and `topics` empty.
  *
@@ -109,7 +109,7 @@ export type KafkaCmd =
  *   )));
  *
  *   class OrderProcessor extends Actor<KafkaRecord> {
- *     constructor(private readonly kafka: ActorRef<KafkaCmd>) { super(); }
+ *     constructor(private readonly kafka: ActorRef<KafkaCommand>) { super(); }
  *     async onReceive(rec: KafkaRecord) {
  *       try {
  *         await db.insertOrder(JSON.parse(rec.value!.toString()));
@@ -122,7 +122,7 @@ export type KafkaCmd =
  *     }
  *   }
  */
-export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCmd, KafkaPublish> {
+export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, KafkaPublish> {
   private kafka: KafkaInstanceLike | null = null;
   private producer: KafkaProducerLike | null = null;
   private consumer: KafkaConsumerLike | null = null;
@@ -137,24 +137,24 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCmd, KafkaPub
   constructor(options: KafkaOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.kafka; }
-  protected builtInDefaults(): Partial<KafkaOptionsType> {
+  protected builtInDefaultOptions(): Partial<KafkaOptionsType> {
     return { ssl: false, producer: { idempotent: false, allowAutoTopicCreation: false } };
   }
-  protected readSettingsFromConfig(c: Config): Partial<KafkaOptionsType> {
+  protected readOptionsFromConfig(config: Config): Partial<KafkaOptionsType> {
     const out: { -readonly [K in keyof KafkaOptionsType]?: KafkaOptionsType[K] } = {};
-    if (c.hasPath('brokers')) out.brokers = c.getStringList('brokers');
-    if (c.hasPath('clientId')) out.clientId = c.getString('clientId');
-    if (c.hasPath('ssl')) out.ssl = c.getBoolean('ssl');
-    if (c.hasPath('sasl')) {
-      const s = c.getConfig('sasl');
+    if (config.hasPath('brokers')) out.brokers = config.getStringList('brokers');
+    if (config.hasPath('clientId')) out.clientId = config.getString('clientId');
+    if (config.hasPath('ssl')) out.ssl = config.getBoolean('ssl');
+    if (config.hasPath('sasl')) {
+      const saslConfig = config.getConfig('sasl');
       out.sasl = {
-        mechanism: s.getString('mechanism') as 'plain' | 'scram-sha-256' | 'scram-sha-512',
-        username: s.getString('username'),
-        password: s.getString('password'),
+        mechanism: saslConfig.getString('mechanism') as 'plain' | 'scram-sha-256' | 'scram-sha-512',
+        username: saslConfig.getString('username'),
+        password: saslConfig.getString('password'),
       };
     }
-    if (c.hasPath('consumer')) {
-      const cc = c.getConfig('consumer');
+    if (config.hasPath('consumer')) {
+      const cc = config.getConfig('consumer');
       out.consumer = {
         groupId: cc.hasPath('groupId') ? cc.getString('groupId') : undefined,
         fromBeginning: cc.hasPath('fromBeginning') ? cc.getBoolean('fromBeginning') : undefined,
@@ -164,57 +164,57 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCmd, KafkaPub
         commitTimeoutMs: cc.hasPath('commitTimeoutMs') ? cc.getNumber('commitTimeoutMs') : undefined,
       };
     }
-    if (c.hasPath('topics')) out.topics = c.getStringList('topics');
+    if (config.hasPath('topics')) out.topics = config.getStringList('topics');
     return out;
   }
-  protected requiredSettings(): ReadonlyArray<keyof KafkaOptionsType> { return ['brokers']; }
+  protected requiredOptions(): ReadonlyArray<keyof KafkaOptionsType> { return ['brokers']; }
   protected override optionsValidator(): KafkaOptionsValidator { return new KafkaOptionsValidator(); }
   protected endpointLabel(): string {
-    const brokers = this.settings.brokers;
+    const brokers = this.options.brokers;
     return Array.isArray(brokers) ? `kafka://${brokers.join(',')}` : `kafka://${brokers ?? ''}`;
   }
 
   /**
-   * Build a `KafkaInstanceLike` from the configured settings.  Override
+   * Build a `KafkaInstanceLike` from the configured options.  Override
    * in a subclass for tests that want to inject mock producers /
    * consumers without going through the kafkajs peer dep — that's the
    * test seam used by `tests/unit/io/broker/KafkaActor.test.ts`.
    */
   protected async createKafkaInstance(): Promise<KafkaInstanceLike> {
     const kafkajs = await kafkaLazy.get();
-    const Ctor = kafkajs.Kafka ?? (kafkajs as unknown as { default: { Kafka: KafkaCtor } }).default.Kafka;
-    const brokersRaw = this.settings.brokers;
+    const Constructor = kafkajs.Kafka ?? (kafkajs as unknown as { default: { Kafka: KafkaConstructor } }).default.Kafka;
+    const brokersRaw = this.options.brokers;
     const brokers: ReadonlyArray<string> = Array.isArray(brokersRaw)
       ? brokersRaw
       : (typeof brokersRaw === 'string' ? brokersRaw : '')
           .split(',').map((s: string) => s.trim()).filter(Boolean);
-    return new Ctor({
-      clientId: this.settings.clientId,
+    return new Constructor({
+      clientId: this.options.clientId,
       brokers: [...brokers],
-      ssl: this.settings.ssl,
-      sasl: this.settings.sasl,
+      ssl: this.options.ssl,
+      sasl: this.options.sasl,
     });
   }
 
-  protected async connectImpl(): Promise<void> {
+  protected async connectImplementation(): Promise<void> {
     this.kafka = await this.createKafkaInstance();
     this.producer = this.kafka.producer({
-      idempotent: this.settings.producer?.idempotent,
-      allowAutoTopicCreation: this.settings.producer?.allowAutoTopicCreation,
+      idempotent: this.options.producer?.idempotent,
+      allowAutoTopicCreation: this.options.producer?.allowAutoTopicCreation,
     });
     await this.producer.connect();
 
-    if (this.settings.consumer?.groupId) {
-      this.consumer = this.kafka.consumer({ groupId: this.settings.consumer.groupId });
+    if (this.options.consumer?.groupId) {
+      this.consumer = this.kafka.consumer({ groupId: this.options.consumer.groupId });
       await this.consumer.connect();
-      for (const topic of this.settings.topics ?? []) {
+      for (const topic of this.options.topics ?? []) {
         await this.consumer.subscribe({
-          topic, fromBeginning: this.settings.consumer.fromBeginning ?? false,
+          topic, fromBeginning: this.options.consumer.fromBeginning ?? false,
         });
       }
-      const target = this.settings.target;
-      const manualCommit = this.settings.consumer.commitMode === 'manual';
-      const commitTimeoutMs = this.settings.consumer.commitTimeoutMs ?? 30_000;
+      const target = this.options.target;
+      const manualCommit = this.options.consumer.commitMode === 'manual';
+      const commitTimeoutMs = this.options.consumer.commitTimeoutMs ?? 30_000;
 
       // We deliberately don't await `run` — it's a long-running pump.
       void this.consumer.run({
@@ -259,13 +259,13 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCmd, KafkaPub
     }
   }
 
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     // Reject every still-pending commit so the kafkajs eachMessage
     // pump unwinds cleanly — otherwise consumer.disconnect would
     // hang waiting for the in-flight handler to resolve.
     if (this.pendingCommits.size > 0) {
-      for (const p of this.pendingCommits.values()) {
-        p.fail(new Error('KafkaActor: disconnecting before commit/nack arrived'));
+      for (const pendingCommit of this.pendingCommits.values()) {
+        pendingCommit.fail(new Error('KafkaActor: disconnecting before commit/nack arrived'));
       }
       this.pendingCommits.clear();
     }
@@ -286,10 +286,10 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCmd, KafkaPub
 
   protected async dispatchOutgoing(env: OutboundEnvelope<KafkaPublish>): Promise<void> {
     if (!this.producer) throw new Error('KafkaActor: producer not connected');
-    const p = env.payload;
-    const value = typeof p.value === 'string' ? Buffer.from(p.value) : p.value;
-    const key = p.key === undefined ? null
-      : (typeof p.key === 'string' ? Buffer.from(p.key) : p.key);
+    const publish = env.payload;
+    const value = typeof publish.value === 'string' ? Buffer.from(publish.value) : publish.value;
+    const key = publish.key === undefined ? null
+      : (typeof publish.key === 'string' ? Buffer.from(publish.key) : publish.key);
     // Header coercion: our `KafkaPublish.headers` API accepts
     // `string | Uint8Array`, but kafkajs ≥ 2.0 only handles `string |
     // Buffer` cleanly — a plain Uint8Array trips `Buffer.byteLength`
@@ -298,32 +298,32 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCmd, KafkaPub
     // the public contract while making the kafkajs path reliable.
     // Surfaced by the b4-headers live-integration scenario against
     // `redpandadata/redpanda:latest`.
-    const headers = p.headers
-      ? Object.fromEntries(Object.entries(p.headers).map(([k, v]) =>
-          [k, v instanceof Uint8Array && !Buffer.isBuffer(v) ? Buffer.from(v) : v]))
+    const headers = publish.headers
+      ? Object.fromEntries(Object.entries(publish.headers).map(([headerKey, headerValue]) =>
+          [headerKey, headerValue instanceof Uint8Array && !Buffer.isBuffer(headerValue) ? Buffer.from(headerValue) : headerValue]))
       : undefined;
     await this.producer.send({
-      topic: p.topic,
-      messages: [{ value, key, partition: p.partition, headers: headers as never }],
+      topic: publish.topic,
+      messages: [{ value, key, partition: publish.partition, headers: headers as never }],
     });
   }
 
-  override onReceive(cmd: KafkaCmd): void {
-    // Compile-time exhaustiveness: adding a new KafkaCmd variant
+  override onReceive(cmd: KafkaCommand): void {
+    // Compile-time exhaustiveness: adding a new KafkaCommand variant
     // forces this site to handle it explicitly.
     match(cmd)
-      .with({ kind: 'publish' }, (c) => {
-        this.enqueueOutbound(c.publish);
+      .with({ kind: 'publish' }, (command) => {
+        this.enqueueOutbound(command.publish);
       })
-      .with({ kind: 'subscribe' }, (c) => {
+      .with({ kind: 'subscribe' }, (command) => {
         // Runtime topic-add — kafkajs requires the consumer already be running.
         if (this.consumer && this.connectionState === 'connected') {
-          void this.consumer.subscribe({ topic: c.topic, fromBeginning: false });
+          void this.consumer.subscribe({ topic: command.topic, fromBeginning: false });
         }
       })
-      .with({ kind: 'commit' },    (c) => { void this.handleCommit(c); })
-      .with({ kind: 'nack' },      (c) => this.handleNack(c))
-      .with({ kind: 'heartbeat' }, (c) => { void this.handleHeartbeat(c); })
+      .with({ kind: 'commit' },    (command) => { void this.handleCommit(command); })
+      .with({ kind: 'nack' },      (command) => this.handleNack(command))
+      .with({ kind: 'heartbeat' }, (command) => { void this.handleHeartbeat(command); })
       .exhaustive();
   }
 
@@ -424,7 +424,7 @@ function pendingKey(topic: string, partition: number, offset: string): string {
   return `${topic}|${partition}|${offset}`;
 }
 
-interface KafkaCtor {
+interface KafkaConstructor {
   new (config: {
     clientId?: string;
     brokers: string[];
@@ -489,7 +489,7 @@ export interface KafkaConsumerLike {
 }
 
 interface KafkajsModule {
-  Kafka?: KafkaCtor;
+  Kafka?: KafkaConstructor;
 }
 
 const kafkaLazy: Lazy<Promise<KafkajsModule>> = Lazy.of(
@@ -500,7 +500,7 @@ const kafkaLazy: Lazy<Promise<KafkajsModule>> = Lazy.of(
 
 /**
  * Reference to a Kafka record for use with {@link withAutoHeartbeat} —
- * exactly the (topic, partition, offset) triple a `KafkaCmd.heartbeat`
+ * exactly the (topic, partition, offset) triple a `KafkaCommand.heartbeat`
  * command needs.  `KafkaRecord` itself satisfies this shape, so the
  * `eachMessage` payload from the consumer pump can be passed directly.
  */
@@ -532,7 +532,7 @@ export interface KafkaRecordRef {
  */
 export async function withAutoHeartbeat<T>(
   args: {
-    readonly kafka: ActorRef<KafkaCmd>;
+    readonly kafka: ActorRef<KafkaCommand>;
     readonly record: KafkaRecordRef;
     readonly everyMs?: number;
   },

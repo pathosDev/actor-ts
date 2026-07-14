@@ -71,7 +71,7 @@ publisher.
 
 | Message | What |
 | --- | --- |
-| `Subscribe(topic, ref)` | Register `ref` as a subscriber to `topic`.  Replies with `SubscribeAck`. |
+| `Subscribe(topic, ref)` | Register `ref` as a subscriber to `topic`.  Replies with `SubscribeAcknowledgment`. |
 | `Unsubscribe(topic, ref)` | Remove `ref` from `topic`'s subscribers. |
 | `UnsubscribeAll(ref)` | Remove `ref` from every topic. |
 | `Publish(topic, message)` | Send `message` to every subscriber of `topic`. |
@@ -211,7 +211,7 @@ import { Aside } from '@astrojs/starlight/components';
   The subscription has to gossip to the publisher's mediator
   before a publish on that mediator routes back.  Within 1-2
   gossip intervals (1-2 s default), convergence happens.  For
-  must-not-miss messages, await `SubscribeAck` and add a small
+  must-not-miss messages, await `SubscribeAcknowledgment` and add a small
   delay before the first publish across nodes.
 </Aside>
 

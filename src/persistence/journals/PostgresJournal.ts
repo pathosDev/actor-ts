@@ -39,7 +39,7 @@ interface EventRow {
  * enhancement.)
  */
 export class PostgresJournal implements Journal {
-  private readonly settings: PostgresJournalOptionsType;
+  private readonly options: PostgresJournalOptionsType;
   private readonly table: string;
   private readonly tagsTable: string;
   private readonly autoCreate: boolean;
@@ -49,13 +49,13 @@ export class PostgresJournal implements Journal {
   private closed = false;
 
   constructor(options: PostgresJournalOptions = {}) {
-    const s = (options as PostgresJournalOptionsType);
-    this.settings = s;
-    this.table = assertSafeIdentifier(s.eventsTable ?? 'events', 'events table');
+    const resolvedOptions = (options as PostgresJournalOptionsType);
+    this.options = resolvedOptions;
+    this.table = assertSafeIdentifier(resolvedOptions.eventsTable ?? 'events', 'events table');
     this.tagsTable = assertSafeIdentifier(
-      s.tagsTable ?? `${this.table}_tags`, 'tags table',
+      resolvedOptions.tagsTable ?? `${this.table}_tags`, 'tags table',
     );
-    this.autoCreate = s.autoCreateTables ?? true;
+    this.autoCreate = resolvedOptions.autoCreateTables ?? true;
   }
 
   async append<E>(
@@ -195,7 +195,7 @@ export class PostgresJournal implements Journal {
   }
 
   private async init(): Promise<void> {
-    const pool = await buildPgPool(this.settings);
+    const pool = await buildPgPool(this.options);
     if (this.autoCreate) {
       await pool.query(
         `CREATE TABLE IF NOT EXISTS ${this.table} (

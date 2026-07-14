@@ -1,5 +1,5 @@
 import type { NodeAddress } from '../../cluster/NodeAddress.js';
-import { NodeAddress as NodeAddressCtor } from '../../cluster/NodeAddress.js';
+import { NodeAddress as NodeAddressConstructor } from '../../cluster/NodeAddress.js';
 import type { WireMessage } from '../../cluster/Protocol.js';
 import type { Transport, WireHandler } from '../../cluster/Transport.js';
 
@@ -63,7 +63,7 @@ export class MultiNodeTransport implements Transport {
   peers(): NodeAddress[] {
     return Array.from(MultiNodeTransport.registry.keys())
       .filter((k) => k !== this.self.toString())
-      .map((k) => NodeAddressCtor.parse(k));
+      .map((k) => NodeAddressConstructor.parse(k));
   }
 
   /* ---------------------------- partition controls --------------------------- */

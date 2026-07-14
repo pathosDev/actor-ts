@@ -22,7 +22,7 @@ import {
  * Lifecycle:
  *
  *   1. **acquire()** — GET the lease object.  If it doesn't exist, CREATE
- *      it with `holderIdentity = settings.owner`.  If it does exist and
+ *      it with `holderIdentity = options.owner`.  If it does exist and
  *      either it's already ours or the previous holder's `renewTime + ttl`
  *      has passed, PUT a new spec with our owner + a fresh
  *      `acquireTime` / `renewTime`.  Returns true on success, false on a
@@ -52,23 +52,23 @@ export class KubernetesLease implements Lease {
   private readonly onLostHandlers = new Set<(reason: string) => void>();
   private creds: K8sCredentials | null = null;
 
-  private readonly settings: KubernetesLeaseOptionsType;
+  private readonly options: KubernetesLeaseOptionsType;
 
   constructor(options: KubernetesLeaseOptions = {}) {
-    this.settings = options as KubernetesLeaseOptionsType;
-    new KubernetesLeaseOptionsValidator().validate(this.settings);
-    this.renewalIntervalMs = this.settings.renewalIntervalMs
-      ?? Math.max(500, Math.floor(this.settings.ttlMs / 3));
+    this.options = options as KubernetesLeaseOptionsType;
+    new KubernetesLeaseOptionsValidator().validate(this.options);
+    this.renewalIntervalMs = this.options.renewalIntervalMs
+      ?? Math.max(500, Math.floor(this.options.ttlMs / 3));
   }
 
   /** Resolve credentials lazily — once on first call, cached after. */
   private async getCreds(): Promise<K8sCredentials> {
     if (this.creds) return this.creds;
-    if (this.settings.apiServerUrl && this.settings.authToken && this.settings.caCert) {
+    if (this.options.apiServerUrl && this.options.authToken && this.options.caCert) {
       this.creds = {
-        apiServerUrl: this.settings.apiServerUrl,
-        authToken: this.settings.authToken,
-        caCert: this.settings.caCert,
+        apiServerUrl: this.options.apiServerUrl,
+        authToken: this.options.authToken,
+        caCert: this.options.caCert,
       };
       return this.creds;
     }
@@ -81,9 +81,9 @@ export class KubernetesLease implements Lease {
       );
     }
     this.creds = {
-      apiServerUrl: this.settings.apiServerUrl ?? inCluster.apiServerUrl,
-      authToken: this.settings.authToken ?? inCluster.authToken,
-      caCert: this.settings.caCert ?? inCluster.caCert,
+      apiServerUrl: this.options.apiServerUrl ?? inCluster.apiServerUrl,
+      authToken: this.options.authToken ?? inCluster.authToken,
+      caCert: this.options.caCert ?? inCluster.caCert,
       defaultNamespace: inCluster.defaultNamespace,
     };
     return this.creds;
@@ -106,8 +106,8 @@ export class KubernetesLease implements Lease {
    * is opaque K8s state; leaseTransitions is decimal).
    */
   async acquireWithToken(): Promise<{ readonly token: string } | null> {
-    const retries = this.settings.acquireRetries ?? 3;
-    const retryDelay = this.settings.acquireRetryDelayMs ?? 100;
+    const retries = this.options.acquireRetries ?? 3;
+    const retryDelay = this.options.acquireRetryDelayMs ?? 100;
     for (let attempt = 0; attempt < retries; attempt++) {
       const result = await this.tryAcquireOnce();
       if (result === 'success') {
@@ -127,21 +127,21 @@ export class KubernetesLease implements Lease {
   /** One pass of GET → CREATE-or-PUT.  Three outcomes: success / held-by-other / race. */
   private async tryAcquireOnce(): Promise<'success' | 'held-by-other' | 'race'> {
     const creds = await this.getCreds();
-    const ns = this.settings.namespace;
-    const name = this.settings.name;
-    const ttlSec = Math.max(1, Math.ceil(this.settings.ttlMs / 1000));
+    const ns = this.options.namespace;
+    const name = this.options.name;
+    const ttlSec = Math.max(1, Math.ceil(this.options.ttlMs / 1000));
     const now = new Date().toISOString();
 
-    const existing = await getLease(creds, ns, name, this.settings.client);
+    const existing = await getLease(creds, ns, name, this.options.client);
 
     if (existing === null) {
       // No lease object yet — create.  CREATE returns null on 409 (race lost).
       const created = await createLease(creds, ns, {
-        holderIdentity: this.settings.owner,
+        holderIdentity: this.options.owner,
         leaseDurationSeconds: ttlSec,
         acquireTime: now,
         renewTime: now,
-      }, name, this.settings.client);
+      }, name, this.options.client);
       if (!created) return 'race';
       this.held = true;
       this.currentLease = created;
@@ -155,19 +155,19 @@ export class KubernetesLease implements Lease {
     // Either ours or expired — bump owner via PUT with the resourceVersion
     // we just GET'd.  K8s rejects with 409 if anyone else mutated since.
     const transitionsBefore = existing.spec.leaseTransitions ?? 0;
-    const ownerChanging = existing.spec.holderIdentity !== this.settings.owner;
+    const ownerChanging = existing.spec.holderIdentity !== this.options.owner;
     const updated: K8sLeaseObject = {
       ...existing,
       spec: {
         ...existing.spec,
-        holderIdentity: this.settings.owner,
+        holderIdentity: this.options.owner,
         leaseDurationSeconds: ttlSec,
         acquireTime: now,
         renewTime: now,
         leaseTransitions: ownerChanging ? transitionsBefore + 1 : transitionsBefore,
       },
     };
-    const result = await updateLease(creds, updated, this.settings.client);
+    const result = await updateLease(creds, updated, this.options.client);
     if (!result) return 'race';
     this.held = true;
     this.currentLease = result;
@@ -179,9 +179,9 @@ export class KubernetesLease implements Lease {
   private isStillHeldByOther(lease: K8sLeaseObject): boolean {
     const holder = lease.spec.holderIdentity;
     if (!holder) return false;                       // unowned
-    if (holder === this.settings.owner) return false; // we already hold it
+    if (holder === this.options.owner) return false; // we already hold it
     const renewTime = lease.spec.renewTime;
-    const durationSec = lease.spec.leaseDurationSeconds ?? this.settings.ttlMs / 1000;
+    const durationSec = lease.spec.leaseDurationSeconds ?? this.options.ttlMs / 1000;
     if (!renewTime) return true;                     // owned but no time → assume live
     const expiresAt = new Date(renewTime).getTime() + durationSec * 1000;
     return expiresAt > Date.now();
@@ -197,7 +197,7 @@ export class KubernetesLease implements Lease {
     const creds = await this.getCreds().catch(() => null);
     if (!creds) return;
     try {
-      await deleteLease(creds, this.settings.namespace, this.settings.name, this.settings.client);
+      await deleteLease(creds, this.options.namespace, this.options.name, this.options.client);
     } catch (e) {
       // best-effort — log via thrown info but don't fail the caller
       // (release is a cleanup hook).
@@ -231,18 +231,18 @@ export class KubernetesLease implements Lease {
       return;
     }
     const now = new Date().toISOString();
-    const ttlSec = Math.max(1, Math.ceil(this.settings.ttlMs / 1000));
+    const ttlSec = Math.max(1, Math.ceil(this.options.ttlMs / 1000));
     const updated: K8sLeaseObject = {
       ...this.currentLease,
       spec: {
         ...this.currentLease.spec,
-        holderIdentity: this.settings.owner,
+        holderIdentity: this.options.owner,
         leaseDurationSeconds: ttlSec,
         renewTime: now,
       },
     };
     try {
-      const result = await updateLease(creds, updated, this.settings.client);
+      const result = await updateLease(creds, updated, this.options.client);
       if (!result) {
         // 409 / 404 — somebody else won, or the object was deleted.
         this.fireLost('lease lost during renewal (conflict or 404)');
@@ -265,8 +265,8 @@ export class KubernetesLease implements Lease {
       this.renewalTimer = null;
     }
     this.currentLease = null;
-    for (const h of this.onLostHandlers) {
-      try { h(reason); } catch { /* swallow */ }
+    for (const handler of this.onLostHandlers) {
+      try { handler(reason); } catch { /* swallow */ }
     }
   }
 }

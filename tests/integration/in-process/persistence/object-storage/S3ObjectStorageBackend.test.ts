@@ -67,12 +67,12 @@ describeMaybe('S3ObjectStorageBackend (integration — MinIO)', () => {
   });
 
   test('list returns objects sorted by key', async () => {
-    const a = `${runPrefix}list/aa.bin`;
-    const b = `${runPrefix}list/bb.bin`;
-    await backend.put(a, new Uint8Array([1]));
-    await backend.put(b, new Uint8Array([2]));
+    const keyA = `${runPrefix}list/aa.bin`;
+    const keyB = `${runPrefix}list/bb.bin`;
+    await backend.put(keyA, new Uint8Array([1]));
+    await backend.put(keyB, new Uint8Array([2]));
     const items = await backend.list({ prefix: `${runPrefix}list/` });
-    expect(items.map(i => i.key)).toEqual([a, b]);
+    expect(items.map(i => i.key)).toEqual([keyA, keyB]);
   });
 
   test('ifNoneMatch=* rejects when the key already exists', async () => {

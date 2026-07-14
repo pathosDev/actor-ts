@@ -3,7 +3,7 @@ title: PersistentActor
 description: Event-sourced actor base class — `onCommand` decides what to persist, `onEvent` updates state purely. On startup, the framework replays the journal so the actor resumes where the last instance left off.
 ---
 
-`PersistentActor<Cmd, Event, State>` is the framework's
+`PersistentActor<Command, Event, State>` is the framework's
 event-sourcing base class.  The model:
 
 - Commands come in.
@@ -23,7 +23,7 @@ import { PersistentActor, ActorSystem, ActorSystemOptions, Props } from 'actor-t
 import { InMemoryJournal, InMemorySnapshotStore } from 'actor-ts';
 import { match } from 'ts-pattern';
 
-type Cmd =
+type Command =
   | { kind: 'deposit'; amount: number }
   | { kind: 'withdraw'; amount: number };
 
@@ -37,7 +37,7 @@ const actorSystemOptions = ActorSystemOptions.create().withPersistence({
   });
 interface State { balance: number; }
 
-class Account extends PersistentActor<Cmd, Event, State> {
+class Account extends PersistentActor<Command, Event, State> {
   readonly persistenceId = 'account-42';
 
   initialState(): State { return { balance: 0 }; }
@@ -51,7 +51,7 @@ class Account extends PersistentActor<Cmd, Event, State> {
   }
 
   // Handle a command — validate, persist if valid.
-  onCommand(state: State, cmd: Cmd): void {
+  onCommand(state: State, cmd: Command): void {
     match(cmd)
       .with({ kind: 'deposit' }, (c) => {
         this.persist(
@@ -127,7 +127,7 @@ events to persist.  Three valid outcomes:
   written.
 
 ```ts
-onCommand(state: State, cmd: Cmd): void {
+onCommand(state: State, cmd: Command): void {
   if (cmd.kind === 'get-balance') {
     cmd.replyTo.tell(state.balance);    // read-only — no persist
     return;

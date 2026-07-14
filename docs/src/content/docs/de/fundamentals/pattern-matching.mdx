@@ -24,16 +24,16 @@ gegenüber handgeschriebenen `if/else`-Leitern:
 import { Actor } from 'actor-ts';
 import { match } from 'ts-pattern';
 
-type Cmd =
+type Command =
   | { readonly kind: 'inc' }
   | { readonly kind: 'dec' }
   | { readonly kind: 'set'; readonly to: number }
   | { readonly kind: 'reset' };
 
-class Counter extends Actor<Cmd> {
+class Counter extends Actor<Command> {
   private count = 0;
 
-  override onReceive(cmd: Cmd): void {
+  override onReceive(cmd: Command): void {
     match(cmd)
       .with({ kind: 'inc' },   ()  => { this.count++; })
       .with({ kind: 'dec' },   ()  => { this.count--; })
@@ -49,7 +49,7 @@ Innerhalb des `set`-Arms ist `m` automatisch als
 verengt den Typ ohne Cast.
 
 `.exhaustive()` am Ende ist der **Compile-time-Check**: wenn du
-später `{ kind: 'double' }` zu `Cmd` hinzufügst und den passenden
+später `{ kind: 'double' }` zu `Command` hinzufügst und den passenden
 `.with({ kind: 'double' }, ...)`-Arm vergisst, weigert sich
 TypeScript zu kompilieren und zeigt auf den
 `.exhaustive()`-Aufruf.  Der Build fängt das Versäumnis ab; du
@@ -62,7 +62,7 @@ Die Discriminated-Union-Konvention des Frameworks ist
 Wörter**:
 
 ```ts
-type AccountCmd =
+type AccountCommand =
   | { readonly kind: 'deposit';      readonly amount: number }
   | { readonly kind: 'withdraw';     readonly amount: number }
   | { readonly kind: 'close-account' }
@@ -152,7 +152,7 @@ Für Unions mit zwei oder drei Varianten liest sich eine einfache
 `if`-Kette sauberer:
 
 ```ts
-override onReceive(cmd: Cmd): void {
+override onReceive(cmd: Command): void {
   if (cmd.kind === 'inc') this.count++;
   else if (cmd.kind === 'dec') this.count--;
   else cmd.replyTo.tell(this.count);

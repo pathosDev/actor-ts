@@ -36,22 +36,22 @@
 
 const URL_ARG = process.argv[2] ?? 'ws://127.0.0.1:8080/ws';
 
-interface ServerMsg { type: string; [k: string]: unknown }
+interface ServerMessage { type: string; [k: string]: unknown }
 
 class ChatClient {
   readonly ws: WebSocket;
-  readonly received: ServerMsg[] = [];
-  readonly waitingFor: Array<{ pred: (m: ServerMsg) => boolean; res: (m: ServerMsg) => void }> = [];
+  readonly received: ServerMessage[] = [];
+  readonly waitingFor: Array<{ pred: (m: ServerMessage) => boolean; res: (m: ServerMessage) => void }> = [];
 
   constructor(url: string) {
     this.ws = new WebSocket(url);
     this.ws.addEventListener('message', (ev) => {
-      const m = JSON.parse(ev.data as string) as ServerMsg;
-      this.received.push(m);
+      const message = JSON.parse(ev.data as string) as ServerMessage;
+      this.received.push(message);
       for (let i = this.waitingFor.length - 1; i >= 0; i--) {
-        const w = this.waitingFor[i]!;
-        if (w.pred(m)) {
-          w.res(m);
+        const waiter = this.waitingFor[i]!;
+        if (waiter.pred(message)) {
+          waiter.res(message);
           this.waitingFor.splice(i, 1);
         }
       }
@@ -69,7 +69,7 @@ class ChatClient {
     this.ws.send(JSON.stringify(msg));
   }
 
-  await(pred: (m: ServerMsg) => boolean, timeoutMs = 3000): Promise<ServerMsg> {
+  await(pred: (m: ServerMessage) => boolean, timeoutMs = 3000): Promise<ServerMessage> {
     const existing = this.received.find(pred);
     if (existing) return Promise.resolve(existing);
     return new Promise((res, rej) => {
@@ -93,14 +93,14 @@ function fail(msg: string): never {
 function ok(msg: string): void { console.log('✔', msg); }
 
 /** Wait until `pred` has matched `n` distinct received messages. */
-function waitForCount(c: ChatClient, pred: (m: ServerMsg) => boolean, n: number, timeoutMs: number): Promise<void> {
+function waitForCount(c: ChatClient, pred: (m: ServerMessage) => boolean, n: number, timeoutMs: number): Promise<void> {
   let already = c.received.filter(pred).length;
   if (already >= n) return Promise.resolve();
   return new Promise((res, rej) => {
     const timer = setTimeout(() => rej(new Error(`count timeout (got ${already}/${n})`)), timeoutMs);
     const onMessage = (ev: MessageEvent): void => {
-      const m = JSON.parse(ev.data as string) as ServerMsg;
-      if (pred(m)) already++;
+      const message = JSON.parse(ev.data as string) as ServerMessage;
+      if (pred(message)) already++;
       if (already >= n) {
         clearTimeout(timer);
         c.ws.removeEventListener('message', onMessage as EventListener);
@@ -114,15 +114,15 @@ function waitForCount(c: ChatClient, pred: (m: ServerMsg) => boolean, n: number,
 async function main(): Promise<void> {
   // ---------- pass 1: login alice + send 3 messages ----------
   console.log('— pass 1: login + send —');
-  const a = new ChatClient(URL_ARG);
-  await a.open();
-  a.send({ type: 'login', username: 'alice', password: 'wonderland' });
+  const clientA = new ChatClient(URL_ARG);
+  await clientA.open();
+  clientA.send({ type: 'login', username: 'alice', password: 'wonderland' });
 
-  const li = await a.await((m) => m.type === 'logged-in' || m.type === 'login-failed');
-  if (li.type !== 'logged-in') fail(`login-failed: ${(li as ServerMsg).reason}`);
+  const li = await clientA.await((m) => m.type === 'logged-in' || m.type === 'login-failed');
+  if (li.type !== 'logged-in') fail(`login-failed: ${(li as ServerMessage).reason}`);
   ok('logged in as alice');
 
-  await a.await((m) => m.type === 'rooms');
+  await clientA.await((m) => m.type === 'rooms');
   ok('received rooms list');
 
   // Synchronization point: wait until we've seen `users` AND
@@ -132,8 +132,8 @@ async function main(): Promise<void> {
   // mechanism, so receiving it also tells us cross-node routing
   // is healthy.  By this time the pubsub-mediator has had ample
   // gossip cycles to know about our subscribe on every node.
-  await a.await((m) => m.type === 'users' && (m as ServerMsg).room === 'general', 5000);
-  await a.await((m) => m.type === 'history' && (m as ServerMsg).room === 'general', 5000);
+  await clientA.await((m) => m.type === 'users' && (m as ServerMessage).room === 'general', 5000);
+  await clientA.await((m) => m.type === 'history' && (m as ServerMessage).room === 'general', 5000);
   // One extra anti-jitter sleep — eagerGossip is fire-and-forget;
   // give a margin before the first send to make sure the publish
   // path knows about our subscriber on whichever node hosts the
@@ -141,34 +141,34 @@ async function main(): Promise<void> {
   await new Promise((r) => setTimeout(r, 750));
 
   for (const text of ['hello world', 'second msg', 'third msg']) {
-    a.send({ type: 'send', room: 'general', text });
+    clientA.send({ type: 'send', room: 'general', text });
   }
 
   // Wait for the 3 broadcast echoes.  Single-node cluster needs a
   // moment for self-up + shard-allocation before the first message
   // fully propagates.
-  await waitForCount(a, (m) =>
+  await waitForCount(clientA, (m) =>
     m.type === 'message' &&
-    (m as ServerMsg).room === 'general' &&
-    ((m as ServerMsg).from as string) === 'alice', 3, 10_000,
+    (m as ServerMessage).room === 'general' &&
+    ((m as ServerMessage).from as string) === 'alice', 3, 10_000,
   );
   ok('received 3 broadcast echoes');
 
-  a.close();
+  clientA.close();
   await new Promise((r) => setTimeout(r, 200));
 
   // ---------- pass 2: bob logs in, expects history ----------
   console.log('— pass 2: history replay —');
-  const b = new ChatClient(URL_ARG);
-  await b.open();
-  b.send({ type: 'login', username: 'bob', password: 'builder' });
-  const bli = await b.await((m) => m.type === 'logged-in' || m.type === 'login-failed');
+  const clientB = new ChatClient(URL_ARG);
+  await clientB.open();
+  clientB.send({ type: 'login', username: 'bob', password: 'builder' });
+  const bli = await clientB.await((m) => m.type === 'logged-in' || m.type === 'login-failed');
   if (bli.type !== 'logged-in') fail(`bob login-failed`);
   ok('logged in as bob');
 
-  const hist = (await b.await(
-    (m) => m.type === 'history' && (m as ServerMsg).room === 'general',
-  )) as ServerMsg & { messages: Array<{ from: string; text: string }> };
+  const hist = (await clientB.await(
+    (m) => m.type === 'history' && (m as ServerMessage).room === 'general',
+  )) as ServerMessage & { messages: Array<{ from: string; text: string }> };
   if (!Array.isArray(hist.messages) || hist.messages.length < 3) {
     fail(`history too short: ${JSON.stringify(hist.messages)}`);
   }
@@ -202,8 +202,8 @@ async function main(): Promise<void> {
   a2.send({ type: 'create-room', name: roomName });
 
   // Both clients should see `room-added` with the new name.
-  await a2.await((m) => m.type === 'room-added' && (m as ServerMsg).name === roomName, 5000);
-  await b2.await((m) => m.type === 'room-added' && (m as ServerMsg).name === roomName, 5000);
+  await a2.await((m) => m.type === 'room-added' && (m as ServerMessage).name === roomName, 5000);
+  await b2.await((m) => m.type === 'room-added' && (m as ServerMessage).name === roomName, 5000);
   ok(`both clients saw room-added(${roomName})`);
 
   // Both join the new room and round-trip a message.
@@ -215,8 +215,8 @@ async function main(): Promise<void> {
   a2.send({ type: 'send', room: roomName, text: 'hi from alice in new room' });
   await b2.await(
     (m) => m.type === 'message'
-        && (m as ServerMsg).room === roomName
-        && (m as ServerMsg).from === 'alice',
+        && (m as ServerMessage).room === roomName
+        && (m as ServerMessage).from === 'alice',
     5000,
   );
   ok(`bob received alice's message in #${roomName}`);
@@ -245,17 +245,17 @@ async function main(): Promise<void> {
   // the channel actor publishes to both participants.
   await a3.await(
     (m) => m.type === 'message'
-        && (m as ServerMsg).room === '@bob'
-        && (m as ServerMsg).from === 'alice'
-        && (m as ServerMsg).text === 'private hi from alice',
+        && (m as ServerMessage).room === '@bob'
+        && (m as ServerMessage).from === 'alice'
+        && (m as ServerMessage).text === 'private hi from alice',
     5000,
   );
   // bob receives it as `@alice` (his side renders the other party).
   await b3.await(
     (m) => m.type === 'message'
-        && (m as ServerMsg).room === '@alice'
-        && (m as ServerMsg).from === 'alice'
-        && (m as ServerMsg).text === 'private hi from alice',
+        && (m as ServerMessage).room === '@alice'
+        && (m as ServerMessage).from === 'alice'
+        && (m as ServerMessage).text === 'private hi from alice',
     5000,
   );
   ok('alice→bob DM delivered to both sides');
@@ -264,9 +264,9 @@ async function main(): Promise<void> {
   b3.send({ type: 'send', room: '@alice', text: 'private hi from bob' });
   await a3.await(
     (m) => m.type === 'message'
-        && (m as ServerMsg).room === '@bob'
-        && (m as ServerMsg).from === 'bob'
-        && (m as ServerMsg).text === 'private hi from bob',
+        && (m as ServerMessage).room === '@bob'
+        && (m as ServerMessage).from === 'bob'
+        && (m as ServerMessage).text === 'private hi from bob',
     5000,
   );
   ok('bob→alice DM delivered');
@@ -275,9 +275,9 @@ async function main(): Promise<void> {
   // two messages he just took part in.
   b3.send({ type: 'join', room: '@alice' });
   const dmHist = (await b3.await(
-    (m) => m.type === 'history' && (m as ServerMsg).room === '@alice',
+    (m) => m.type === 'history' && (m as ServerMessage).room === '@alice',
     5000,
-  )) as ServerMsg & { messages: Array<{ from: string; text: string }> };
+  )) as ServerMessage & { messages: Array<{ from: string; text: string }> };
   if (!Array.isArray(dmHist.messages) || dmHist.messages.length < 2) {
     fail(`DM history too short: ${JSON.stringify(dmHist.messages)}`);
   }
@@ -297,16 +297,16 @@ async function main(): Promise<void> {
   await b4.await((m) => m.type === 'logged-in');
   // Both are auto-joined to #general; wait until both have the
   // subscription registered so the typing broadcast isn't lost.
-  await a4.await((m) => m.type === 'users' && (m as ServerMsg).room === 'general', 5000);
-  await b4.await((m) => m.type === 'users' && (m as ServerMsg).room === 'general', 5000);
+  await a4.await((m) => m.type === 'users' && (m as ServerMessage).room === 'general', 5000);
+  await b4.await((m) => m.type === 'users' && (m as ServerMessage).room === 'general', 5000);
   await new Promise((r) => setTimeout(r, 500));
 
   a4.send({ type: 'typing', room: 'general' });
   // bob receives the indicator.
   await b4.await(
     (m) => m.type === 'user-typing'
-        && (m as ServerMsg).room === 'general'
-        && (m as ServerMsg).username === 'alice',
+        && (m as ServerMessage).room === 'general'
+        && (m as ServerMessage).username === 'alice',
     3000,
   );
   ok('bob observed user-typing(alice, general)');
@@ -317,8 +317,8 @@ async function main(): Promise<void> {
   await new Promise((r) => setTimeout(r, 300));
   const selfEcho = a4.received.find((m) =>
     m.type === 'user-typing'
-    && (m as ServerMsg).room === 'general'
-    && (m as ServerMsg).username === 'alice',
+    && (m as ServerMessage).room === 'general'
+    && (m as ServerMessage).username === 'alice',
   );
   if (selfEcho) fail(`alice saw her own typing echo (server should filter)`);
   ok('alice did not receive a self-echo');
@@ -335,8 +335,8 @@ async function main(): Promise<void> {
   b5.send({ type: 'login', username: 'bob',   password: 'builder' });
   await a5.await((m) => m.type === 'logged-in');
   await b5.await((m) => m.type === 'logged-in');
-  await a5.await((m) => m.type === 'users' && (m as ServerMsg).room === 'general', 5000);
-  await b5.await((m) => m.type === 'users' && (m as ServerMsg).room === 'general', 5000);
+  await a5.await((m) => m.type === 'users' && (m as ServerMessage).room === 'general', 5000);
+  await b5.await((m) => m.type === 'users' && (m as ServerMessage).room === 'general', 5000);
   await new Promise((r) => setTimeout(r, 500));
 
   // alice sends a message; alice should see her own echo via the
@@ -344,17 +344,17 @@ async function main(): Promise<void> {
   a5.send({ type: 'send', room: 'general', text: 'mark-me-read-please' });
   const echo = await a5.await(
     (m) => m.type === 'message'
-        && (m as ServerMsg).room === 'general'
-        && (m as ServerMsg).from === 'alice'
-        && (m as ServerMsg).text === 'mark-me-read-please',
+        && (m as ServerMessage).room === 'general'
+        && (m as ServerMessage).from === 'alice'
+        && (m as ServerMessage).text === 'mark-me-read-please',
     5000,
-  ) as ServerMsg & { ts: number };
+  ) as ServerMessage & { ts: number };
   const sentTs = echo.ts;
   // bob receives the same broadcast.
   await b5.await(
     (m) => m.type === 'message'
-        && (m as ServerMsg).room === 'general'
-        && (m as ServerMsg).text === 'mark-me-read-please',
+        && (m as ServerMessage).room === 'general'
+        && (m as ServerMessage).text === 'mark-me-read-please',
     5000,
   );
 
@@ -368,10 +368,10 @@ async function main(): Promise<void> {
   // carry the new pointer.
   await a5.await(
     (m) => m.type === 'read-receipts'
-        && (m as ServerMsg).room === 'general'
-        && typeof (m as ServerMsg).receipts === 'object'
-        && ((m as ServerMsg).receipts as Record<string, number>)['bob'] !== undefined
-        && ((m as ServerMsg).receipts as Record<string, number>)['bob']! >= sentTs,
+        && (m as ServerMessage).room === 'general'
+        && typeof (m as ServerMessage).receipts === 'object'
+        && ((m as ServerMessage).receipts as Record<string, number>)['bob'] !== undefined
+        && ((m as ServerMessage).receipts as Record<string, number>)['bob']! >= sentTs,
     5000,
   );
   ok(`alice observed read-receipts(bob >= ${sentTs}) for #general`);
@@ -385,8 +385,8 @@ async function main(): Promise<void> {
   // Inspect the most recent read-receipts frame alice saw — it
   // should still report bob at >= sentTs.
   const allReceipts = a5.received.filter((m) =>
-    m.type === 'read-receipts' && (m as ServerMsg).room === 'general',
-  ) as Array<ServerMsg & { receipts: Record<string, number> }>;
+    m.type === 'read-receipts' && (m as ServerMessage).room === 'general',
+  ) as Array<ServerMessage & { receipts: Record<string, number> }>;
   const latest = allReceipts[allReceipts.length - 1];
   if (!latest || (latest.receipts.bob ?? 0) < sentTs) {
     fail(`monotonic guard broke: bob's read-up-to went backwards`);
@@ -416,7 +416,7 @@ async function main(): Promise<void> {
   await a7.open();
   a7.send({ type: 'login', username: 'alice', password: 'wonderland' });
   const li7 = await a7.await((m) => m.type === 'logged-in' || m.type === 'login-failed') as
-    ServerMsg & { token?: string };
+    ServerMessage & { token?: string };
   if (li7.type !== 'logged-in' || typeof li7.token !== 'string') {
     fail(`alice login failed`);
   }
@@ -429,7 +429,7 @@ async function main(): Promise<void> {
   a8.send({ type: 'resume', token: goodToken });
   const resumed = await a8.await((m) => m.type === 'logged-in' || m.type === 'login-failed');
   if (resumed.type !== 'logged-in') {
-    fail(`valid token resume rejected: ${(resumed as ServerMsg).reason}`);
+    fail(`valid token resume rejected: ${(resumed as ServerMessage).reason}`);
   }
   ok('valid token resume accepted');
 

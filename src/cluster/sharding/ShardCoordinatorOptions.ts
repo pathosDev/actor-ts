@@ -6,7 +6,7 @@ import type { AllocationStrategy } from './AllocationStrategy.js';
 import type { CoordinatorStateStore } from './CoordinatorState.js';
 import type { RememberEntitiesStore } from './RememberEntitiesStore.js';
 
-/** Plain settings-object shape consumed by a {@link ShardCoordinator}. */
+/** Plain options-object shape consumed by a {@link ShardCoordinator}. */
 export interface ShardCoordinatorOptionsType {
   readonly typeName: string;
   readonly cluster: Cluster;
@@ -67,7 +67,7 @@ export interface ShardCoordinatorOptionsType {
  * Fluent builder for {@link ShardCoordinatorOptionsType}.  Consumed by
  * {@link ClusterSharding} when it spawns the per-type coordinator; the
  * `cluster` / `localResolver` wiring fields are supplied by the
- * extension, the rest surface the user-tunable coordinator settings.
+ * extension, the rest surface the user-tunable coordinator options.
  *
  * The polymorphic fields — `allocationStrategy` ({@link AllocationStrategy}),
  * `lease` ({@link Lease}), `rememberEntitiesStore`, `coordinatorStateStore`,

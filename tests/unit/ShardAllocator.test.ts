@@ -12,16 +12,16 @@ const n3 = new NodeAddress('s', 'h', 3);
 
 describe('hashShardId', () => {
   test('is deterministic — same id + numShards → same result', () => {
-    const a = hashShardId('alpha', 64);
-    const b = hashShardId('alpha', 64);
-    expect(a).toBe(b);
+    const first = hashShardId('alpha', 64);
+    const second = hashShardId('alpha', 64);
+    expect(first).toBe(second);
   });
 
   test('result is in [0, numShards)', () => {
     for (let i = 0; i < 200; i++) {
-      const v = hashShardId(`entity-${i}`, 32);
-      expect(v).toBeGreaterThanOrEqual(0);
-      expect(v).toBeLessThan(32);
+      const shardId = hashShardId(`entity-${i}`, 32);
+      expect(shardId).toBeGreaterThanOrEqual(0);
+      expect(shardId).toBeLessThan(32);
     }
   });
 
@@ -63,9 +63,9 @@ describe('moduloAllocator', () => {
 describe('rendezvousAllocator', () => {
   test('deterministic independent of member order', () => {
     for (let sh = 0; sh < 32; sh++) {
-      const a = rendezvousAllocator(sh, [n1, n2, n3]);
-      const b = rendezvousAllocator(sh, [n3, n1, n2]);
-      expect(a.equals(b)).toBe(true);
+      const first = rendezvousAllocator(sh, [n1, n2, n3]);
+      const second = rendezvousAllocator(sh, [n3, n1, n2]);
+      expect(first.equals(second)).toBe(true);
     }
   });
 

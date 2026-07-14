@@ -23,9 +23,9 @@ Die Methoden-Form spiegelt die Standard-OO-API — `spawn` vs.
 ```ts
 import { ActorSystem, Behaviors, type Behavior, type ActorRef } from 'actor-ts';
 
-type Cmd = { kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> };
+type Command = { kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> };
 
-const counter = (n: number): Behavior<Cmd> => Behaviors.receive((ctx, cmd) => {
+const counter = (n: number): Behavior<Command> => Behaviors.receive((ctx, cmd) => {
   if (cmd.kind === 'inc') return counter(n + 1);
   if (cmd.kind === 'get') { cmd.replyTo.tell(n); return Behaviors.same; }
   return Behaviors.same;
@@ -33,7 +33,7 @@ const counter = (n: number): Behavior<Cmd> => Behaviors.receive((ctx, cmd) => {
 
 const system = ActorSystem.create('demo');
 const ref = system.spawnTyped(counter(0), 'counter');
-//    ^- ActorRef<Cmd>
+//    ^- ActorRef<Command>
 ```
 
 Die Signaturen:
@@ -46,7 +46,7 @@ class ActorSystem {
 ```
 
 Gibt eine typisierte `ActorRef<T>` zurück — `tell` akzeptiert nur
-`Cmd`-förmige Nachrichten, der Compiler erzwingt das.
+`Command`-förmige Nachrichten, der Compiler erzwingt das.
 
 ## `ctx.spawnTyped` — typed Child von einem untyped Parent
 
@@ -56,7 +56,7 @@ import { Actor, Behaviors } from 'actor-ts';
 class UntypedParent extends Actor<...> {
   override preStart(): void {
     const typedChild = this.context.spawnTyped(counter(0), 'child');
-    // typedChild: ActorRef<Cmd>
+    // typedChild: ActorRef<Command>
     typedChild.tell({ kind: 'inc' });
   }
 }
@@ -111,9 +111,9 @@ Innerhalb eines typisierten Handlers exponiert der Context sein
 eigenes `spawn`:
 
 ```ts
-const parent: Behavior<ParentMsg> = Behaviors.setup((ctx) => {
+const parent: Behavior<ParentMessage> = Behaviors.setup((ctx) => {
   const child = ctx.spawn(workerBehavior, 'worker');
-  //    ^- ActorRef<WorkerMsg>
+  //    ^- ActorRef<WorkerMessage>
 
   return Behaviors.receive((ctx, msg) => {
     child.tell({ kind: 'do-it' });

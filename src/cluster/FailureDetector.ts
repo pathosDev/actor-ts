@@ -3,7 +3,7 @@ import { fromNullable, type Option } from '../util/Option.js';
 import { FailureDetectorOptionsValidator } from './FailureDetectorOptions.js';
 import type { FailureDetectorOptions, FailureDetectorOptionsType } from './FailureDetectorOptions.js';
 
-export const defaultFailureDetectorSettings: FailureDetectorOptionsType = {
+export const defaultFailureDetectorOptions: FailureDetectorOptionsType = {
   heartbeatIntervalMs: 500,
   unreachableAfterMs: 2_000,
   downAfterMs: 5_000,
@@ -24,12 +24,12 @@ interface Sample {
  */
 export class FailureDetector {
   private samples = new Map<string, Sample>();
-  private readonly settings: FailureDetectorOptionsType;
+  private readonly options: FailureDetectorOptionsType;
 
   constructor(options: FailureDetectorOptions = {}) {
     // Unset builder fields fall through to the built-in defaults.
-    this.settings = { ...defaultFailureDetectorSettings, ...(options as Partial<FailureDetectorOptionsType>) };
-    new FailureDetectorOptionsValidator().validate(this.settings);
+    this.options = { ...defaultFailureDetectorOptions, ...(options as Partial<FailureDetectorOptionsType>) };
+    new FailureDetectorOptionsValidator().validate(this.options);
   }
 
   /** Record that a message was received from `peer` (any message counts). */
@@ -53,8 +53,8 @@ export class FailureDetector {
     const sample = this.samples.get(peer.toString());
     if (!sample) return 'healthy';
     const elapsed = now - sample.lastSeen;
-    if (elapsed >= this.settings.downAfterMs) return 'down';
-    if (elapsed >= this.settings.unreachableAfterMs) return 'unreachable';
+    if (elapsed >= this.options.downAfterMs) return 'down';
+    if (elapsed >= this.options.unreachableAfterMs) return 'unreachable';
     return 'healthy';
   }
 
@@ -62,5 +62,5 @@ export class FailureDetector {
     return fromNullable(this.samples.get(peer.toString())?.lastSeen);
   }
 
-  get interval(): number { return this.settings.heartbeatIntervalMs; }
+  get interval(): number { return this.options.heartbeatIntervalMs; }
 }

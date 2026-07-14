@@ -15,7 +15,7 @@ Two shapes ship with the framework:
 | **`Router`** (local) | One node, one actor system. | Children of the router, **created at spawn time** with the same `Props`. |
 | **`ClusterRouter`** | Across cluster nodes. | Up-members of the cluster, **derived from membership** + a routee path. |
 
-Both expose the same external surface: a single `ActorRef<TMsg>`
+Both expose the same external surface: a single `ActorRef<TMessage>`
 that callers `tell`.  The difference is *what's on the other side*.
 
 ## When to reach for a router

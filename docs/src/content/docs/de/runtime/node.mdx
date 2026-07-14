@@ -57,7 +57,7 @@ Ein paar Features unlocken nativ auf **neueren Node-Versionen**
 
 - **Natives `WebSocket`** — globaler `WebSocket`-Konstruktor
   ist auf Node 22+ eingebaut. Auf Node 20 installiere die
-  `ws`-Peer-Dep für `WebSocketClientActor`. Serverseitige
+  `ws`-Peer-Dep für `WebsocketClientActor`. Serverseitige
   `websocket()`-Routen brauchen zusätzlich `@fastify/websocket`
   (Fastify) oder `@hono/node-ws` (Hono) auf Node.
 - **Native `zstd`-Kompression** — `node:zlib` bekam
@@ -76,7 +76,7 @@ mitliefert:
 | Subsystem | Peer-Dep |
 | --- | --- |
 | SQLite-Journal / -Snapshot-Store / -State | `better-sqlite3` |
-| WebSocket-Client (`WebSocketClientActor`) | `ws` |
+| WebSocket-Client (`WebsocketClientActor`) | `ws` |
 | WebSocket-Server (`websocket()`-Route) | `@fastify/websocket` (Fastify), `@hono/node-ws` (Hono) oder `ws` (Express) |
 | Kafka | `kafkajs` |
 | MQTT | `mqtt` |

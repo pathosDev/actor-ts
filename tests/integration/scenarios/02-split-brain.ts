@@ -27,9 +27,9 @@ export const scenario: Scenario = {
       console.log(`[02] skipping — need >=5 nodes, have ${ctx.nodes.length}`);
       return;
     }
-    const [a, b, c, d, e] = ctx.nodes;
-    const left = [a!, b!];
-    const right = [c!, d!, e!];
+    const [nodeA, nodeB, nodeC, nodeD, nodeE] = ctx.nodes;
+    const left = [nodeA!, nodeB!];
+    const right = [nodeC!, nodeD!, nodeE!];
 
     // 1. Pre-flight: confirm the cluster is converged before we partition.
     await Promise.all(ctx.nodes.map(async (host) => {
@@ -46,11 +46,11 @@ export const scenario: Scenario = {
     //    no half-open weirdness.
     console.log(`[02] partitioning {${left.join(',')}} from {${right.join(',')}}...`);
     const partitionCalls: Promise<Response>[] = [];
-    for (const l of left) {
-      for (const r of right) {
+    for (const leftNode of left) {
+      for (const rightNode of right) {
         partitionCalls.push(
-          fetch(`http://${l}:${ctx.controlPort}/test/partition?peer=${r}`, { method: 'POST' }),
-          fetch(`http://${r}:${ctx.controlPort}/test/partition?peer=${l}`, { method: 'POST' }),
+          fetch(`http://${leftNode}:${ctx.controlPort}/test/partition?peer=${rightNode}`, { method: 'POST' }),
+          fetch(`http://${rightNode}:${ctx.controlPort}/test/partition?peer=${leftNode}`, { method: 'POST' }),
         );
       }
     }
@@ -101,11 +101,11 @@ export const scenario: Scenario = {
     // 5. Heal the partition: remove the iptables drops on every node.
     console.log('[02] healing partition...');
     const healCalls: Promise<Response>[] = [];
-    for (const l of left) {
-      for (const r of right) {
+    for (const leftNode of left) {
+      for (const rightNode of right) {
         healCalls.push(
-          fetch(`http://${l}:${ctx.controlPort}/test/heal?peer=${r}`, { method: 'POST' }),
-          fetch(`http://${r}:${ctx.controlPort}/test/heal?peer=${l}`, { method: 'POST' }),
+          fetch(`http://${leftNode}:${ctx.controlPort}/test/heal?peer=${rightNode}`, { method: 'POST' }),
+          fetch(`http://${rightNode}:${ctx.controlPort}/test/heal?peer=${leftNode}`, { method: 'POST' }),
         );
       }
     }

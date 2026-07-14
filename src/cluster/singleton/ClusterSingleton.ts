@@ -37,9 +37,9 @@ export class ClusterSingleton {
     cluster: Cluster,
     options: StartSingletonOptions<T>,
   ): SingletonHandle<T> {
-    const settings = options as StartSingletonOptionsType<T>;
-    new StartSingletonOptionsValidator<T>().validate(settings);
-    const existing = this.handles.get(settings.typeName);
+    const resolvedOptions = options as StartSingletonOptionsType<T>;
+    new StartSingletonOptionsValidator<T>().validate(resolvedOptions);
+    const existing = this.handles.get(resolvedOptions.typeName);
     if (existing) return existing as SingletonHandle<T>;
 
     // Register the envelope handler *before* spawning the manager actor so
@@ -48,7 +48,7 @@ export class ClusterSingleton {
     // same variable and assign below.
     let managerRef: ActorRef = null as unknown as ActorRef;
     const envelopeUnsub = cluster._registerEnvelopeHandler(
-      singletonManagerPath(this.system.name, settings.typeName),
+      singletonManagerPath(this.system.name, resolvedOptions.typeName),
       (env) => {
         // Route inbound envelopes through the manager's own mailbox so the
         // manager processes them on its own dispatcher thread.
@@ -59,19 +59,19 @@ export class ClusterSingleton {
     const managerProps = Props.create(() => {
       const managerOptions = ClusterSingletonManagerOptions.create<T>()
         .withCluster(cluster)
-        .withTypeName(settings.typeName)
-        .withSingletonProps(settings.props);
-      if (settings.role !== undefined) managerOptions.withRole(settings.role);
-      if (settings.lease !== undefined) managerOptions.withLease(settings.lease);
-      if (settings.acquireRetryIntervalMs !== undefined) {
-        managerOptions.withAcquireRetryIntervalMs(settings.acquireRetryIntervalMs);
+        .withTypeName(resolvedOptions.typeName)
+        .withSingletonProps(resolvedOptions.props);
+      if (resolvedOptions.role !== undefined) managerOptions.withRole(resolvedOptions.role);
+      if (resolvedOptions.lease !== undefined) managerOptions.withLease(resolvedOptions.lease);
+      if (resolvedOptions.acquireRetryIntervalMs !== undefined) {
+        managerOptions.withAcquireRetryIntervalMs(resolvedOptions.acquireRetryIntervalMs);
       }
       const mgr = new ClusterSingletonManager<T>(managerOptions);
       mgr._envelopeUnsub = envelopeUnsub;
       return mgr;
     });
-    managerRef = this.system.spawn(managerProps, `singleton-manager-${settings.typeName}`);
-    const proxy = new ClusterSingletonProxy<T>(cluster, settings.typeName, managerRef);
+    managerRef = this.system.spawn(managerProps, `singleton-manager-${resolvedOptions.typeName}`);
+    const proxy = new ClusterSingletonProxy<T>(cluster, resolvedOptions.typeName, managerRef);
     const handle: SingletonHandle<T> = {
       proxy, manager: managerRef,
       stop(): void {
@@ -79,7 +79,7 @@ export class ClusterSingleton {
         managerRef.stop();
       },
     };
-    this.handles.set(settings.typeName, handle as SingletonHandle<unknown>);
+    this.handles.set(resolvedOptions.typeName, handle as SingletonHandle<unknown>);
     return handle;
   }
 

@@ -44,8 +44,8 @@ async function startNode(systemName: string, host: string, port: number, seeds: 
 
 describe('ShardedDaemonProcess — single node', () => {
   test('spawns exactly N daemons and routes messages by index', async () => {
-    const a = await startNode('sdp-1', 'h', 53001);
-    const kit = a.kit;
+    const nodeA = await startNode('sdp-1', 'h', 53001);
+    const kit = nodeA.kit;
     const probe = kit.createTestProbe<string>();
 
     class Worker extends Actor<string> {
@@ -59,7 +59,7 @@ describe('ShardedDaemonProcess — single node', () => {
       .withName('workers')
       .withNumDaemons(4)
       .withBehaviorFor((i) => Props.create(() => new Worker(i)));
-    const handle = ShardedDaemonProcess.init<string>(a.system, a.cluster, daemonOptions);
+    const handle = ShardedDaemonProcess.init<string>(nodeA.system, nodeA.cluster, daemonOptions);
     await sleep(150);
 
     const starts: string[] = [];
@@ -69,20 +69,20 @@ describe('ShardedDaemonProcess — single node', () => {
     handle.tell(2, 'hello');
     expect(await probe.expectMsg('2:hello', 1_000)).toBe('2:hello');
 
-    await a.cluster.leave();
-    await a.system.terminate();
+    await nodeA.cluster.leave();
+    await nodeA.system.terminate();
   });
 });
 
 describe('ShardedDaemonProcess — multi-node', () => {
   test('daemons distribute across nodes', async () => {
-    const a = await startNode('sdp-m', 'h', 53101);
-    const b = await startNode('sdp-m', 'h', 53102, ['sdp-m@h:53101']);
-    const c = await startNode('sdp-m', 'h', 53103, ['sdp-m@h:53101']);
+    const nodeA = await startNode('sdp-m', 'h', 53101);
+    const nodeB = await startNode('sdp-m', 'h', 53102, ['sdp-m@h:53101']);
+    const nodeC = await startNode('sdp-m', 'h', 53103, ['sdp-m@h:53101']);
     await waitFor(() =>
-      a.cluster.upMembers().length === 3 &&
-      b.cluster.upMembers().length === 3 &&
-      c.cluster.upMembers().length === 3,
+      nodeA.cluster.upMembers().length === 3 &&
+      nodeB.cluster.upMembers().length === 3 &&
+      nodeC.cluster.upMembers().length === 3,
     );
 
     // Each node needs a record so we can tell which node hosted which daemon.
@@ -100,40 +100,40 @@ describe('ShardedDaemonProcess — multi-node', () => {
       .withName('workers')
       .withNumDaemons(9)
       .withBehaviorFor((i) => makeWorker(i, hostedByA));
-    ShardedDaemonProcess.init<string>(a.system, a.cluster, aDaemonOptions);
+    ShardedDaemonProcess.init<string>(nodeA.system, nodeA.cluster, aDaemonOptions);
     const bDaemonOptions = ShardedDaemonProcessOptions.create<string>()
       .withName('workers')
       .withNumDaemons(9)
       .withBehaviorFor((i) => makeWorker(i, hostedByB));
-    ShardedDaemonProcess.init<string>(b.system, b.cluster, bDaemonOptions);
+    ShardedDaemonProcess.init<string>(nodeB.system, nodeB.cluster, bDaemonOptions);
     const cDaemonOptions = ShardedDaemonProcessOptions.create<string>()
       .withName('workers')
       .withNumDaemons(9)
       .withBehaviorFor((i) => makeWorker(i, hostedByC));
-    ShardedDaemonProcess.init<string>(c.system, c.cluster, cDaemonOptions);
+    ShardedDaemonProcess.init<string>(nodeC.system, nodeC.cluster, cDaemonOptions);
 
     await waitFor(() => hostedByA.size + hostedByB.size + hostedByC.size === 9, 5_000);
 
     expect(hostedByA.size + hostedByB.size + hostedByC.size).toBe(9);
     // Each daemon index runs on exactly one node.
     const all = new Set<number>();
-    for (const s of [hostedByA, hostedByB, hostedByC]) for (const i of s) all.add(i);
+    for (const shardId of [hostedByA, hostedByB, hostedByC]) for (const i of shardId) all.add(i);
     expect(all.size).toBe(9);
 
     // LeastShardAllocationStrategy should give every node at least one daemon.
     const counts = [hostedByA.size, hostedByB.size, hostedByC.size].sort();
     expect(counts[0]).toBeGreaterThanOrEqual(1);
 
-    await a.cluster.leave(); await a.system.terminate();
-    await b.cluster.leave(); await b.system.terminate();
-    await c.cluster.leave(); await c.system.terminate();
+    await nodeA.cluster.leave(); await nodeA.system.terminate();
+    await nodeB.cluster.leave(); await nodeB.system.terminate();
+    await nodeC.cluster.leave(); await nodeC.system.terminate();
   });
 });
 
 describe('ShardedDaemonProcess — liveness heartbeat', () => {
   test('handle.stop() cancels the heartbeat without leaking timers', async () => {
-    const a = await startNode('sdp-live', 'h', 53201);
-    const kit = a.kit;
+    const nodeA = await startNode('sdp-live', 'h', 53201);
+    const kit = nodeA.kit;
     const probe = kit.createTestProbe<string>();
 
     class W extends Actor<string> {
@@ -152,7 +152,7 @@ describe('ShardedDaemonProcess — liveness heartbeat', () => {
       // we *are* asserting that handle.stop() cleanly cancels the timer
       // instead of leaving a zombie that fires after teardown.
       .withLivenessIntervalMs(80);
-    const handle = ShardedDaemonProcess.init<string>(a.system, a.cluster, daemonOptions);
+    const handle = ShardedDaemonProcess.init<string>(nodeA.system, nodeA.cluster, daemonOptions);
 
     // Drain initial preStarts.
     for (let i = 0; i < 2; i++) await probe.receiveOne(1_000);
@@ -164,13 +164,13 @@ describe('ShardedDaemonProcess — liveness heartbeat', () => {
     handle.stop();
     handle.stop();   // idempotent
 
-    await a.cluster.leave();
-    await a.system.terminate();
+    await nodeA.cluster.leave();
+    await nodeA.system.terminate();
   });
 
   test('livenessIntervalMs: 0 disables the heartbeat', async () => {
-    const a = await startNode('sdp-noheart', 'h', 53202);
-    const kit = a.kit;
+    const nodeA = await startNode('sdp-noheart', 'h', 53202);
+    const kit = nodeA.kit;
     const probe = kit.createTestProbe<string>();
 
     class W extends Actor<string> {
@@ -184,12 +184,12 @@ describe('ShardedDaemonProcess — liveness heartbeat', () => {
       .withNumDaemons(2)
       .withBehaviorFor((i) => Props.create(() => new W(i)))
       .withLivenessIntervalMs(0);
-    const handle = ShardedDaemonProcess.init<string>(a.system, a.cluster, daemonOptions);
+    const handle = ShardedDaemonProcess.init<string>(nodeA.system, nodeA.cluster, daemonOptions);
 
     for (let i = 0; i < 2; i++) await probe.receiveOne(1_000);
 
     handle.stop();
-    await a.cluster.leave();
-    await a.system.terminate();
+    await nodeA.cluster.leave();
+    await nodeA.system.terminate();
   });
 });

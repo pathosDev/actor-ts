@@ -1,0 +1,82 @@
+/**
+ * WebSocket ingress hub.  Bound to `/ws` with `websocket('/ws', ref)`.
+ *
+ * One hub handles every connection on the route; for each accepted
+ * connection it spawns a {@link UserSessionActor} that owns that
+ * client's protocol state, and forwards raw frames to it.  The session
+ * writes back through the connection ref.  This keeps the sample's
+ * one-actor-per-connection design while using the typed routing DSL —
+ * the framework solves the first-frame race for us, so the manual
+ * synchronous-listener dance in the old Fastify plugin is gone.
+ *
+ * The hub uses `rawCodec()` (see routes.ts) so `TOut`/`TIn` are raw
+ * frames: the chat wire protocol is JSON-over-text and the session
+ * actor already does its own encode/decode via `shared/protocol.ts`.
+ */
+import {
+  Props,
+  type ActorRef,
+} from '../../../../src/index.js';
+import { WebsocketServerActor } from '../../../../src/http/websocket/WebsocketServerActor.js';
+import type { WebsocketConnection } from '../../../../src/http/websocket/WebsocketConnection.js';
+import type { WebsocketFrame } from '../../../../src/http/websocket/types.js';
+import type { Subscribe, Unsubscribe } from '../../../../src/cluster/pubsub/Messages.js';
+import {
+  UserSessionActor,
+  type InboundFrame,
+  type SocketClosed,
+} from './UserSessionActor.js';
+import type { ChatRoomCommand } from './ChatRoomActor.js';
+import type { ChatRoomDirectoryCommand } from './ChatRoomDirectoryActor.js';
+import type { DmChannelCommand } from './DmChannelActor.js';
+import type { OnlineUsersCommand } from './OnlineUsersActor.js';
+import type { ReadReceiptsCommand } from './ReadReceiptsActor.js';
+import type { SessionStore } from '../auth/sessionStore.js';
+
+export interface WebsocketIngressDeps {
+  readonly chatRoomRegion: ActorRef<ChatRoomCommand>;
+  readonly dmChannelRegion: ActorRef<DmChannelCommand>;
+  readonly onlineUsers: ActorRef<OnlineUsersCommand>;
+  readonly mediator: ActorRef<Subscribe | Unsubscribe>;
+  readonly sessions: SessionStore;
+  readonly roomDirectory: ActorRef<ChatRoomDirectoryCommand>;
+  readonly readReceipts: ActorRef<ReadReceiptsCommand>;
+}
+
+type SessionRef = ActorRef<InboundFrame | SocketClosed>;
+
+export class WebsocketIngressActor extends WebsocketServerActor<WebsocketFrame, WebsocketFrame> {
+  private readonly sessions = new Map<string, SessionRef>();
+
+  constructor(private readonly deps: WebsocketIngressDeps) {
+    super();
+  }
+
+  override onMessage(frame: WebsocketFrame): void {
+    this.sessions.get(this.connection.id)?.tell(frame);
+  }
+
+  protected override onClientConnected(c: WebsocketConnection<WebsocketFrame>): void {
+    const connection = {
+      sendText: (text: string) => c.sendRaw({ kind: 'text', data: text }),
+      close: () => c.close(),
+    };
+    const session = this.context.spawn(
+      Props.create(() => new UserSessionActor({ connection, ...this.deps })),
+      `chat-session-${c.id}`,
+    ) as unknown as SessionRef;
+    this.sessions.set(c.id, session);
+  }
+
+  protected override onClientDisconnected(c: WebsocketConnection<WebsocketFrame>): void {
+    const session = this.sessions.get(c.id);
+    if (session) {
+      session.tell({ kind: 'socket-closed' });
+      this.sessions.delete(c.id);
+    }
+  }
+}
+
+export function webSocketIngressProps(deps: WebsocketIngressDeps): Props<never> {
+  return Props.create(() => new WebsocketIngressActor(deps)) as unknown as Props<never>;
+}

@@ -68,7 +68,7 @@ seq" marker are durable; the controller's subsequent Ack just
 tells the producer it can free its slot.
 
 ```ts
-class PersistentEventLog extends PersistentActor<Cmd, Event, State> {
+class PersistentEventLog extends PersistentActor<Command, Event, State> {
   // …onCommand / onEvent omitted…
 }
 

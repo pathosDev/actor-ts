@@ -60,13 +60,13 @@ describe('Push-based PersistenceQuery — InMemoryJournal', () => {
       await journal.append('a', [{ n: 3 }], 2);
     })();
 
-    const a = await it.next();
-    const b = await it.next();
-    const c = await it.next();
+    const first = await it.next();
+    const second = await it.next();
+    const third = await it.next();
 
-    expect((a.value as PersistentEvent<{ n: number }>).event.n).toBe(1);
-    expect((b.value as PersistentEvent<{ n: number }>).event.n).toBe(2);
-    expect((c.value as PersistentEvent<{ n: number }>).event.n).toBe(3);
+    expect((first.value as PersistentEvent<{ n: number }>).event.n).toBe(1);
+    expect((second.value as PersistentEvent<{ n: number }>).event.n).toBe(2);
+    expect((third.value as PersistentEvent<{ n: number }>).event.n).toBe(3);
 
     // Make sure no fourth event slipped in.
     let extra: { value: unknown; done: boolean | undefined } | null = null;

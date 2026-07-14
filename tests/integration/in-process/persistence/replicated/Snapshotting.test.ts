@@ -105,9 +105,9 @@ async function startActor(
   let instance!: CountingCounter;
   const ref = sys.spawn(
     Props.create<Cmd>(() => {
-      const a = new CountingCounter(cluster);
-      instance = a;
-      return a as unknown as Actor<Cmd>;
+      const actorRef = new CountingCounter(cluster);
+      instance = actorRef;
+      return actorRef as unknown as Actor<Cmd>;
     }),
     'counter',
   );
@@ -128,11 +128,11 @@ describe('ReplicatedEventSourcedActor — snapshotting', () => {
     CountingCounter.currentPolicy = everyNEvents<State, Event>(5);
     CountingCounter.onEventCallCount = 0;
 
-    const a = await startActor('snap-1', 70_001, journal, snapshotStore);
-    for (let i = 0; i < 12; i++) a.ref.tell({ kind: 'add', n: 1 });
+    const actorRef = await startActor('snap-1', 70_001, journal, snapshotStore);
+    for (let i = 0; i < 12; i++) actorRef.ref.tell({ kind: 'add', n: 1 });
 
     // Wait for state to converge.
-    await waitFor(() => a.instance.getValue() === 12);
+    await waitFor(() => actorRef.instance.getValue() === 12);
 
     // Allow the (fire-and-forget) snapshot save to settle.
     await sleep(80);
@@ -140,7 +140,7 @@ describe('ReplicatedEventSourcedActor — snapshotting', () => {
     // 12 events, every 5 → snapshots at observedCount=5 and observedCount=10.
     // (At 15 we'd save again but we only fired 12 events.)
     const stored = await snapshotStore.loadLatest<ReplicatedSnapshot<Event, State>>(
-      a.instance.persistenceId,
+      actorRef.instance.persistenceId,
     );
     expect(stored.isSome()).toBe(true);
     const snap = stored.value!.state;
@@ -148,7 +148,7 @@ describe('ReplicatedEventSourcedActor — snapshotting', () => {
     expect(snap.events.length).toBe(10);
     expect(snap.state.value).toBe(10);
 
-    await shutdown(a);
+    await shutdown(actorRef);
   }, 10_000);
 
   test('2. recovery from snapshot avoids re-applying the prefix', async () => {

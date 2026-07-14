@@ -51,17 +51,17 @@ export class S3ObjectStorageBackend implements ObjectStorageBackend {
   private readonly bucket: string;
 
   constructor(options: S3ObjectStorageOptions) {
-    const s = (options as S3ObjectStorageOptionsType);
-    new S3ObjectStorageOptionsValidator().validate(s);
-    this.bucket = s.bucket;
+    const resolvedOptions = (options as S3ObjectStorageOptionsType);
+    new S3ObjectStorageOptionsValidator().validate(resolvedOptions);
+    this.bucket = resolvedOptions.bucket;
     this.clientLazy = Lazy.of(async () => {
-      if (s.client) return s.client;
+      if (resolvedOptions.client) return resolvedOptions.client;
       const sdk = await s3SdkLazy.get();
       return new sdk.S3Client({
-        region: s.region!,
-        endpoint: s.endpoint,
-        forcePathStyle: s.forcePathStyle,
-        credentials: s.credentials,
+        region: resolvedOptions.region!,
+        endpoint: resolvedOptions.endpoint,
+        forcePathStyle: resolvedOptions.forcePathStyle,
+        credentials: resolvedOptions.credentials,
       });
     });
   }
@@ -266,27 +266,27 @@ async function readToUint8Array(body: unknown): Promise<Uint8Array> {
   if (!body || typeof body !== 'object') {
     throw new Error('S3 GET Body is not a stream object');
   }
-  const b = body as { transformToByteArray?: () => Promise<Uint8Array> } & AsyncIterable<Uint8Array>;
-  if (typeof b.transformToByteArray === 'function') {
-    return await b.transformToByteArray();
+  const bodyStream = body as { transformToByteArray?: () => Promise<Uint8Array> } & AsyncIterable<Uint8Array>;
+  if (typeof bodyStream.transformToByteArray === 'function') {
+    return await bodyStream.transformToByteArray();
   }
   // Fallback: collect chunks from an async iterator.
   const chunks: Uint8Array[] = [];
   let total = 0;
-  for await (const chunk of b) {
+  for await (const chunk of bodyStream) {
     chunks.push(chunk);
     total += chunk.length;
   }
   const out = new Uint8Array(total);
   let off = 0;
-  for (const c of chunks) { out.set(c, off); off += c.length; }
+  for (const chunk of chunks) { out.set(chunk, off); off += chunk.length; }
   return out;
 }
 
-function stripQuotes(s: string | undefined): string | undefined {
-  if (!s) return s;
-  if (s.length >= 2 && s.startsWith('"') && s.endsWith('"')) return s.slice(1, -1);
-  return s;
+function stripQuotes(resolvedOptions: string | undefined): string | undefined {
+  if (!resolvedOptions) return resolvedOptions;
+  if (resolvedOptions.length >= 2 && resolvedOptions.startsWith('"') && resolvedOptions.endsWith('"')) return resolvedOptions.slice(1, -1);
+  return resolvedOptions;
 }
 
-function quote(s: string): string { return `"${s}"`; }
+function quote(resolvedOptions: string): string { return `"${resolvedOptions}"`; }

@@ -71,7 +71,7 @@ import { Receptionist, ServiceKey } from 'actor-ts';
 
 // Auf node-A:
 const receptionist = system.extension(ReceptionistId).start(cluster);
-const key = ServiceKey.of<MyMsg>('my-service');
+const key = ServiceKey.of<MyMessage>('my-service');
 
 receptionist.register(key, myActor);
 
@@ -136,12 +136,12 @@ const receptionist = system.extension(ReceptionistId).start(cluster);
 
 // Den API-Actor dieses Pods registrieren:
 receptionist.register(
-  ServiceKey.of<ApiMsg>('api'),
+  ServiceKey.of<ApiMessage>('api'),
   system.spawn(Props.create(() => new ApiActor()), 'api'),
 );
 
 // Andere Actors finden ihn:
-const apis = await receptionist.find(ServiceKey.of<ApiMsg>('api'));
+const apis = await receptionist.find(ServiceKey.of<ApiMessage>('api'));
 ```
 
 Seed Provider laufen **einmal**; der Receptionist läuft

@@ -46,7 +46,7 @@ export interface AmqpQueueBinding {
   };
 }
 
-export type AmqpCmd =
+export type AmqpCommand =
   | { readonly kind: 'publish'; readonly publish: AmqpPublish }
   | { readonly kind: 'ack'; readonly delivery: AmqpDelivery }
   | { readonly kind: 'nack'; readonly delivery: AmqpDelivery; readonly requeue?: boolean };
@@ -54,7 +54,7 @@ export type AmqpCmd =
 /**
  * AMQP 0.9.1 actor backed by `amqplib`.  One connection, one channel
  * shared by producer + consumers.  Bindings (queue↔exchange↔routingKey)
- * are configured up-front in settings; runtime additions go through
+ * are configured up-front in options; runtime additions go through
  * `tell({ kind: 'subscribe', ... })` (currently out-of-scope — add when
  * needed).
  *
@@ -63,7 +63,7 @@ export type AmqpCmd =
  * processing.  For at-least-once-with-processing, set autoAck=false
  * and have your handler tell back `{ kind: 'ack' / 'nack', delivery }`.
  */
-export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCmd, AmqpPublish> {
+export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPublish> {
   private connection: AmqpConnectionLike | null = null;
   private channel: AmqpChannelLike | null = null;
   /** Map ackToken → underlying amqplib message object (we never expose amqplib types upward). */
@@ -73,39 +73,39 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCmd, AmqpPublish
   constructor(options: AmqpOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.amqp; }
-  protected builtInDefaults(): Partial<AmqpOptionsType> {
+  protected builtInDefaultOptions(): Partial<AmqpOptionsType> {
     return { prefetch: 1, autoAck: true };
   }
-  protected readSettingsFromConfig(c: Config): Partial<AmqpOptionsType> {
+  protected readOptionsFromConfig(config: Config): Partial<AmqpOptionsType> {
     const out: { -readonly [K in keyof AmqpOptionsType]?: AmqpOptionsType[K] } = {};
-    if (c.hasPath('url')) out.url = c.getString('url');
-    if (c.hasPath('prefetch')) out.prefetch = c.getInt('prefetch');
-    if (c.hasPath('autoAck')) out.autoAck = c.getBoolean('autoAck');
+    if (config.hasPath('url')) out.url = config.getString('url');
+    if (config.hasPath('prefetch')) out.prefetch = config.getInt('prefetch');
+    if (config.hasPath('autoAck')) out.autoAck = config.getBoolean('autoAck');
     return out;
   }
-  protected requiredSettings(): ReadonlyArray<keyof AmqpOptionsType> { return ['url']; }
+  protected requiredOptions(): ReadonlyArray<keyof AmqpOptionsType> { return ['url']; }
   protected override optionsValidator(): AmqpOptionsValidator { return new AmqpOptionsValidator(); }
-  protected endpointLabel(): string { return this.settings.url ?? '<unknown>'; }
+  protected endpointLabel(): string { return this.options.url ?? '<unknown>'; }
 
-  protected async connectImpl(): Promise<void> {
+  protected async connectImplementation(): Promise<void> {
     const amqp = await amqpLazy.get();
-    this.connection = await amqp.connect(this.settings.url!);
+    this.connection = await amqp.connect(this.options.url!);
     this.channel = await this.connection.createChannel();
-    await this.channel.prefetch(this.settings.prefetch ?? 1);
+    await this.channel.prefetch(this.options.prefetch ?? 1);
     this.connection.on('error', (e: Error) => this.handleConnectionLost(e));
     this.connection.on('close', () => this.handleConnectionLost(new Error('amqp connection closed')));
 
-    for (const b of this.settings.bindings ?? []) {
-      await this.channel.assertQueue(b.queue, b.queueOptions ?? { durable: true });
-      if (b.exchange) {
-        await this.channel.bindQueue(b.queue, b.exchange, b.routingKey ?? '');
+    for (const binding of this.options.bindings ?? []) {
+      await this.channel.assertQueue(binding.queue, binding.queueOptions ?? { durable: true });
+      if (binding.exchange) {
+        await this.channel.bindQueue(binding.queue, binding.exchange, binding.routingKey ?? '');
       }
-      const target = b.target;
-      const queueName = b.queue;
+      const target = binding.target;
+      const queueName = binding.queue;
       await this.channel.consume(queueName, (msg) => {
         if (!msg) return;
         const ackToken = this.nextAckToken++;
-        if (this.settings.autoAck) {
+        if (this.options.autoAck) {
           try { this.channel?.ack(msg); } catch { /* ignore */ }
         } else {
           this.pendingAcks.set(ackToken, msg);
@@ -120,7 +120,7 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCmd, AmqpPublish
     }
   }
 
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     this.pendingAcks.clear();
     try { await this.channel?.close(); } catch { /* ignore */ }
     this.channel = null;
@@ -130,7 +130,7 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCmd, AmqpPublish
 
   protected async dispatchOutgoing(env: OutboundEnvelope<AmqpPublish>): Promise<void> {
     if (!this.channel) throw new Error('AmqpActor: channel not open');
-    const p = env.payload;
+    const publish = env.payload;
     // amqplib's channel.publish needs a Buffer specifically — a
     // plain Uint8Array (which our public `AmqpPublish.content`
     // contract accepts) trips internal buffer-length checks and
@@ -139,13 +139,13 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCmd, AmqpPublish
     // but never throws back from `publish()`.  We surface that
     // here by coercing to Buffer; Buffer IS a Uint8Array subclass
     // so the public contract still holds.
-    const content = typeof p.content === 'string'
-      ? Buffer.from(p.content)
-      : Buffer.isBuffer(p.content) ? p.content : Buffer.from(p.content);
-    const ok = this.channel.publish(p.exchange, p.routingKey, content, {
-      persistent: p.persistent ?? true,
-      headers: p.headers,
-      contentType: p.contentType,
+    const content = typeof publish.content === 'string'
+      ? Buffer.from(publish.content)
+      : Buffer.isBuffer(publish.content) ? publish.content : Buffer.from(publish.content);
+    const ok = this.channel.publish(publish.exchange, publish.routingKey, content, {
+      persistent: publish.persistent ?? true,
+      headers: publish.headers,
+      contentType: publish.contentType,
     });
     if (!ok) {
       // Channel-side backpressure — the buffer in amqplib is full.
@@ -156,7 +156,7 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCmd, AmqpPublish
     }
   }
 
-  override onReceive(cmd: AmqpCmd): void {
+  override onReceive(cmd: AmqpCommand): void {
     if (cmd.kind === 'publish') {
       this.enqueueOutbound(cmd.publish);
       return;

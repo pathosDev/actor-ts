@@ -1,7 +1,7 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 
-/** Plain settings-object shape accepted by a {@link ConfigSeedProvider}. */
+/** Plain options-object shape accepted by a {@link ConfigSeedProvider}. */
 export interface ConfigSeedProviderOptionsType {
   /** Static list of "system@host:port" or "host:port" strings. */
   readonly seeds: string[];

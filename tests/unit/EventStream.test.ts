@@ -77,13 +77,13 @@ describe('EventStream', () => {
 
   test('multiple distinct subscribers all receive matching events', () => {
     const bus = new EventStream();
-    const a = new RecordingRef('a');
-    const b = new RecordingRef('b');
-    bus.subscribe(a, EventA);
-    bus.subscribe(b, EventA);
+    const first = new RecordingRef('a');
+    const second = new RecordingRef('b');
+    bus.subscribe(first, EventA);
+    bus.subscribe(second, EventA);
     bus.publish(new EventA('shared'));
-    expect(a.received.length).toBe(1);
-    expect(b.received.length).toBe(1);
+    expect(first.received.length).toBe(1);
+    expect(second.received.length).toBe(1);
   });
 
   test('matching uses instanceof — subclasses of the channel are delivered too', () => {

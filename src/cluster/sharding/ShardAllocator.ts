@@ -29,8 +29,8 @@ export const rendezvousAllocator: ShardAllocator = (shardId, members) => {
   let bestHash = -1;
   let best: NodeAddress = members[0]!;
   for (const addr of members) {
-    const h = hashCombine(shardId, addr.toString());
-    if (h > bestHash) { bestHash = h; best = addr; }
+    const hash = hashCombine(shardId, addr.toString());
+    if (hash > bestHash) { bestHash = hash; best = addr; }
   }
   return best;
 };
@@ -43,18 +43,18 @@ export function hashShardId(entityId: string, numShards: number): number {
   return Math.abs(stringHash(entityId)) % numShards;
 }
 
-function stringHash(s: string): number {
-  let h = 2166136261; // FNV-1a 32-bit basis
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
+function stringHash(text: string): number {
+  let hash = 2166136261; // FNV-1a 32-bit basis
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
   }
-  return h;
+  return hash;
 }
 
-function hashCombine(a: number, b: string): number {
-  let h = stringHash(b) ^ (a * 2654435761);
-  h ^= h >>> 13;
-  h = Math.imul(h, 1540483477);
-  return h >>> 0;
+function hashCombine(shardId: number, text: string): number {
+  let hash = stringHash(text) ^ (shardId * 2654435761);
+  hash ^= hash >>> 13;
+  hash = Math.imul(hash, 1540483477);
+  return hash >>> 0;
 }

@@ -7,7 +7,7 @@
  * `actor-ts.io.broker.amqp` > built-in defaults).
  */
 import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
-import type { BrokerCommonOptionsType } from './BrokerSettings.js';
+import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { AmqpQueueBinding } from './AmqpActor.js';
 
 export interface AmqpOptionsType extends BrokerCommonOptionsType {

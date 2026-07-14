@@ -135,8 +135,8 @@ test('stoppingStrategy stops a failing child', async () => {
       return new OneForOneStrategy(() => Directive.Stop);
     }
     override preStart(): void {
-      const c = this.context.spawn(Props.create(() => new Failer()), 'c');
-      c.tell('go');
+      const child = this.context.spawn(Props.create(() => new Failer()), 'c');
+      child.tell('go');
     }
     override onReceive(_: 'go'): void {}
   }
@@ -154,9 +154,9 @@ test('watch delivers Terminated when target stops', async () => {
   }
   class Watcher extends Actor<string | Terminated> {
     override preStart(): void {
-      const c = this.context.spawn(Props.create(() => new Watched()), 'w');
-      this.context.watch(c);
-      c.tell('die');
+      const child = this.context.spawn(Props.create(() => new Watched()), 'w');
+      this.context.watch(child);
+      child.tell('die');
     }
     override onReceive(m: string | Terminated): void {
       if (m instanceof Terminated) seen.push(m.actor.path.name);

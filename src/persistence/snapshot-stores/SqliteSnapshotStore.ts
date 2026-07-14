@@ -20,7 +20,7 @@ interface Stmts {
  * `SqliteJournal`): the DB is opened on the first save / load call.
  */
 export class SqliteSnapshotStore implements SnapshotStore {
-  private readonly settings: SqliteSnapshotStoreOptionsType;
+  private readonly options: SqliteSnapshotStoreOptionsType;
   private readonly table: string;
   private readonly keepN: number;
   private closed = false;
@@ -30,10 +30,10 @@ export class SqliteSnapshotStore implements SnapshotStore {
   private initPromise: Promise<void> | null = null;
 
   constructor(options: SqliteSnapshotStoreOptions = {}) {
-    const settings = (options as SqliteSnapshotStoreOptionsType);
-    this.settings = settings;
-    this.table = settings.snapshotsTable ?? 'snapshots';
-    this.keepN = settings.keepN ?? 3;
+    const resolvedOptions = (options as SqliteSnapshotStoreOptionsType);
+    this.options = resolvedOptions;
+    this.table = resolvedOptions.snapshotsTable ?? 'snapshots';
+    this.keepN = resolvedOptions.keepN ?? 3;
   }
 
   async save<S>(pid: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
@@ -107,8 +107,8 @@ export class SqliteSnapshotStore implements SnapshotStore {
   }
 
   private async init(): Promise<void> {
-    const driver = this.settings.driver ?? await getSqliteDriver();
-    const db = driver.open(this.settings.path ?? ':memory:');
+    const driver = this.options.driver ?? await getSqliteDriver();
+    const db = driver.open(this.options.path ?? ':memory:');
     db.exec(`
       CREATE TABLE IF NOT EXISTS ${this.table} (
         persistence_id TEXT NOT NULL,

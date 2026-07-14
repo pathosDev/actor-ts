@@ -59,11 +59,11 @@ export class CachedSnapshotStore implements SnapshotStore {
     private readonly underlying: SnapshotStore,
     options: CachedSnapshotStoreOptions,
   ) {
-    const s = (options as CachedSnapshotStoreOptionsType);
-    new CachedSnapshotStoreOptionsValidator().validate(s);
-    this.cache = s.cache;
-    this.ttlMs = s.ttlMs ?? DEFAULT_TTL_MS;
-    this.keyPrefix = s.keyPrefix ?? 'snap:';
+    const resolvedOptions = (options as CachedSnapshotStoreOptionsType);
+    new CachedSnapshotStoreOptionsValidator().validate(resolvedOptions);
+    this.cache = resolvedOptions.cache;
+    this.ttlMs = resolvedOptions.ttlMs ?? DEFAULT_TTL_MS;
+    this.keyPrefix = resolvedOptions.keyPrefix ?? 'snap:';
   }
 
   async save<S>(pid: string, seq: number, state: S, options?: PersistenceOptions): Promise<Snapshot<S>> {

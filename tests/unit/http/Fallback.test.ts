@@ -97,8 +97,8 @@ describe.each(backends)('fallback() — %s backend', (_name, mk) => {
 
   test('middleware wraps the fallback handler', async () => {
     const stamp: Middleware = async (_req, next) => {
-      const r = await next();
-      return { ...r, headers: { ...(r.headers ?? {}), 'x-fb': '1' } };
+      const response = await next();
+      return { ...response, headers: { ...(response.headers ?? {}), 'x-fb': '1' } };
     };
     const url = await start(mk, withMiddleware(stamp, fallback(() => complete(Status.NotFound, 'fb'))));
     const res = await fetch(`${url}/x`);

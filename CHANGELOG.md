@@ -9,6 +9,50 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Changed — Naming conventions: no abbreviations, unified vocabulary
+
+Repo-wide naming sweep for consistency.  Pre-1.0, so these are hard
+renames with no deprecation shims.  All are mechanical — same behavior,
+new names.
+
+- **BREAKING — WebSocket → `Websocket` (single-cap), no `Ws` abbreviation.**
+  Every identifier and file/dir uses the `Websocket` spelling:
+  `WebSocketServerActor`/`WebSocketClientActor` → `WebsocketServerActor`/
+  `WebsocketClientActor`; the `Ws*` supporting types (`WsConnection`,
+  `WsCodec`, `WsFrame`, `WsServerMessage`, …) → `Websocket*`; `wsSend()` →
+  `websocketSend()`; `DEFAULT_WS_MAX_FRAME_BYTES` →
+  `DEFAULT_WEBSOCKET_MAX_FRAME_BYTES`; the module moved
+  `src/http/ws/` → `src/http/websocket/`.  The `websocket()` routing
+  directive, the global `WebSocket`, the `ws` package's `WebSocketServer`,
+  and the `Sec-WebSocket-Protocol` header are unchanged.
+  *Migration:* replace `Ws`/`WebSocket` identifier prefixes with
+  `Websocket`; `wsSend` → `websocketSend`.
+- **BREAKING — abbreviations spelled out** in type/member names: `*Cmd` →
+  `*Command`, `*Msg` → `*Message`, `*Ack` → `*Acknowledgment`, `ByPid*` →
+  `ByPersistenceId*`, `*Impl` → `*Implementation`, `*Ctor` → `*Constructor`.
+  Wire/discriminator string literals are unchanged.
+  *Migration:* e.g. `MqttCmd` → `MqttCommand`, `EnvelopeMsg` →
+  `EnvelopeMessage`, `SubscribeAck` → `SubscribeAcknowledgment`.
+- **BREAKING — one config vocabulary: `Options`, never `Settings`.**
+  Remaining `*Settings` types → `*OptionsType` (`CircuitBreakerSettings`,
+  `TlsTransportSettings`, `Bounded/PriorityMailboxSettings`,
+  `ManagementRoutesSettings`, `ConsumerControllerSettings`,
+  `KeepMajoritySettings`, the testkit specs); `BrokerSettings.ts` folded
+  into `BrokerOptions.ts` (`BrokerSettingsError` → `BrokerOptionsError`);
+  the `BrokerActor` glue `readSettingsFromConfig`/`requiredSettings`/
+  `builtInDefaults`/`settings` → `readOptionsFromConfig`/`requiredOptions`/
+  `builtInDefaultOptions`/`options`; `default{FailureDetector,PhiAccrual}Settings`
+  → `default*Options`.  New dedicated `ConsumerControllerOptions` +
+  `KeepMajorityOptions` files with builders.
+- **BREAKING — Command vs Signal unified on `kind`.**  MQTT and WebSocket
+  internal mailbox signals are now `kind`-tagged plain objects (dispatched
+  by `kind`, like the typed-actor `Signal`), not `instanceof`-dispatched
+  classes; the bad-payload hook is `onInvalidMessage` everywhere (MQTT's
+  `onDecodeError` is gone); `WebSocketAcceptSignal` → `WebsocketAcceptCommand`
+  and `WebsocketClientSend` is a command, both lifted out of the `*Signal`
+  unions.
+  *Migration:* override `onInvalidMessage` instead of `onDecodeError`;
+  construct outbound sends via `websocketSend(msg)` (unchanged).
 ### Added — Options validation
 
 - **`OptionsValidator` + `OptionsError`** (#274) — a declarative-but-code

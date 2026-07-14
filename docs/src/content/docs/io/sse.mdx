@@ -55,7 +55,7 @@ interface SseOptionsType extends BrokerCommonOptionsType {
 | `target`   | yes      | The actor that receives each parsed `SseEvent`.                    |
 | `headers`  | no       | Extra request headers — e.g. `authorization` for a protected feed. |
 
-`requiredSettings` is `['url', 'target']`; both must be present or
+`requiredOptions` is `['url', 'target']`; both must be present or
 the actor fails fast at startup.
 
 ## Events the client parses
@@ -164,13 +164,13 @@ import { Aside } from '@astrojs/starlight/components';
   // dispatchOutgoing throws 'SseActor is read-only'
   ```
   `SseActor` consumes a stream; it never sends.  There are no
-  commands (`SseCmd = never`) and no `tell({ kind: 'broadcast' | 'send', … })`.
+  commands (`SseCommand = never`) and no `tell({ kind: 'broadcast' | 'send', … })`.
   To send to a server, use plain HTTP or a WebSocket client.
 </Aside>
 
 <Aside type="caution" title="target must be set">
   ```ts
-  // requiredSettings() === ['url', 'target']
+  // requiredOptions() === ['url', 'target']
   ```
   Without a `target`, parsed events have nowhere to go and the actor
   fails fast at startup.  Spawn the collector first, then pass its

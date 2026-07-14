@@ -51,7 +51,7 @@ oder externes Docker-Compose.
 ## Konfiguration
 
 ```ts
-interface MultiNodeSpecSettings {
+interface MultiNodeSpecOptionsType {
   systemName: string;
   nodes:      number;
   roles?:     Array<string | undefined>;   // Per-Node-Rollen
@@ -153,7 +153,7 @@ Nachricht auf dem erwarteten Node landet.
 ```ts
 const spec = await MultiNodeSpec.create({ nodes: 3 });
 
-const startShardingOptions = StartShardingOptions.create<Cmd>()
+const startShardingOptions = StartShardingOptions.create<Command>()
   .withTypeName('entity')
   .withEntityProps(Props.create(() => new Entity()))
   .withExtractEntityId((msg) => msg.id);

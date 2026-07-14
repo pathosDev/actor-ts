@@ -9,28 +9,28 @@ import {
 } from '../query/PersistenceQuery.js';
 import { InMemoryOffsetStore, type OffsetStore } from './OffsetStore.js';
 import type {
-  ByPidProjectionOptions,
+  ByPersistenceIdProjectionOptions,
   ByTagProjectionOptions,
   ProjectionOptionsType,
-  ByPidProjectionOptionsType,
+  ByPersistenceIdProjectionOptionsType,
   ByTagProjectionOptionsType,
 } from './ProjectionOptions.js';
 
 /* ============================ implementation ========================== */
 
-interface InternalTickMsg { readonly _: 'projection-tick' }
-const TICK: InternalTickMsg = { _: 'projection-tick' };
+interface InternalTickMessage { readonly _: 'projection-tick' }
+const TICK: InternalTickMessage = { _: 'projection-tick' };
 
-abstract class BaseProjectionActor<E> extends Actor<InternalTickMsg> {
+abstract class BaseProjectionActor<E> extends Actor<InternalTickMessage> {
   protected readonly offsetStore: OffsetStore;
   protected pollTimer: Cancellable | null = null;
   protected stopped = false;
   /** Resolves when the in-flight handler completes — preserved across stop. */
   protected currentHandle: Promise<void> = Promise.resolve();
 
-  constructor(protected readonly settings: ProjectionOptionsType<E>) {
+  constructor(protected readonly options: ProjectionOptionsType<E>) {
     super();
-    this.offsetStore = settings.offsetStore ?? new InMemoryOffsetStore();
+    this.offsetStore = options.offsetStore ?? new InMemoryOffsetStore();
   }
 
   override async preStart(): Promise<void> {
@@ -48,19 +48,19 @@ abstract class BaseProjectionActor<E> extends Actor<InternalTickMsg> {
     await this.currentHandle;
   }
 
-  override async onReceive(_msg: InternalTickMsg): Promise<void> {
+  override async onReceive(_msg: InternalTickMessage): Promise<void> {
     if (this.stopped) return;
     try {
       await this.runOnce();
     } catch (err) {
-      this.log.error(`projection ${this.settings.name} tick failed`, err);
+      this.log.error(`projection ${this.options.name} tick failed`, err);
     } finally {
       if (!this.stopped) this.scheduleNextTick();
     }
   }
 
   protected scheduleNextTick(): void {
-    const delay = this.settings.liveOptions?.pollIntervalMs ?? 1_000;
+    const delay = this.options.liveOptions?.pollIntervalMs ?? 1_000;
     this.pollTimer?.cancel();
     this.pollTimer = this.system.scheduler.scheduleOnceFn(delay, () => {
       this.self.tell(TICK);
@@ -75,9 +75,9 @@ abstract class BaseProjectionActor<E> extends Actor<InternalTickMsg> {
 
 /* ------------------------------ by pid -------------------------------- */
 
-class ByPidProjectionActor<E> extends BaseProjectionActor<E> {
+class ByPersistenceIdProjectionActor<E> extends BaseProjectionActor<E> {
   private cursor = 0;
-  constructor(private readonly cfg: ByPidProjectionOptionsType<E>) { super(cfg); }
+  constructor(private readonly cfg: ByPersistenceIdProjectionOptionsType<E>) { super(cfg); }
 
   protected async loadCursor(): Promise<void> {
     this.cursor = await this.offsetStore.loadSequence(this.cfg.name, this.cfg.persistenceId);
@@ -168,12 +168,12 @@ export class ProjectionActor {
   /** Spawn a per-persistenceId projection.  Returns the actor ref. */
   static byPersistenceId<E>(
     system: ActorSystem,
-    options: ByPidProjectionOptions<E>,
+    options: ByPersistenceIdProjectionOptions<E>,
   ): ActorRef<unknown> {
-    const settings = options as ByPidProjectionOptionsType<E>;
+    const resolvedOptions = options as ByPersistenceIdProjectionOptionsType<E>;
     return system.spawn(
-      Props.create(() => new ByPidProjectionActor<E>(settings) as unknown as Actor<unknown>),
-      `projection-${settings.name}-${sanitize(settings.persistenceId)}`,
+      Props.create(() => new ByPersistenceIdProjectionActor<E>(resolvedOptions) as unknown as Actor<unknown>),
+      `projection-${resolvedOptions.name}-${sanitize(resolvedOptions.persistenceId)}`,
     );
   }
 
@@ -182,10 +182,10 @@ export class ProjectionActor {
     system: ActorSystem,
     options: ByTagProjectionOptions<E>,
   ): ActorRef<unknown> {
-    const settings = options as ByTagProjectionOptionsType<E>;
+    const resolvedOptions = options as ByTagProjectionOptionsType<E>;
     return system.spawn(
-      Props.create(() => new ByTagProjectionActor<E>(settings) as unknown as Actor<unknown>),
-      `projection-${settings.name}-tag-${sanitize(settings.tag)}`,
+      Props.create(() => new ByTagProjectionActor<E>(resolvedOptions) as unknown as Actor<unknown>),
+      `projection-${resolvedOptions.name}-tag-${sanitize(resolvedOptions.tag)}`,
     );
   }
 }

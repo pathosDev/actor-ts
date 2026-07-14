@@ -81,7 +81,7 @@ Nicht unterstützt. Deno hat kein eingebautes SQLite, und weder
 
 ### WebSocket-Server
 
-Die `websocket()`-Route (durch einen `WebSocketServerActor`
+Die `websocket()`-Route (durch einen `WebsocketServerActor`
 gestützt) verlässt sich auf die Upgrade-Unterstützung des
 HTTP-Backends — `@fastify/websocket` oder `ws` auf Node,
 `Bun.serve` auf Bun. Für Deno schreibe einen dünnen Adapter mit

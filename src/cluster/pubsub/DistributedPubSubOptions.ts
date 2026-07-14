@@ -2,7 +2,7 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { Cluster } from '../Cluster.js';
 
-/** Plain settings-object shape consumed by a {@link DistributedPubSubMediator}. */
+/** Plain options-object shape consumed by a {@link DistributedPubSubMediator}. */
 export interface DistributedPubSubOptionsType {
   readonly cluster: Cluster;
   readonly gossipIntervalMs?: number;

@@ -107,20 +107,20 @@ Ein Worker, der ohne eine bestimmte Abhängigkeit keinen Zweck hat,
 sollte sich selbst stoppen, wenn diese Abhängigkeit es tut:
 
 ```ts
-class Worker extends Actor<Msg | Terminated> {
+class Worker extends Actor<Message | Terminated> {
   constructor(private readonly db: ActorRef) {
     super();
   }
   override preStart(): void {
     this.context.watch(this.db);
   }
-  override onReceive(msg: Msg | Terminated): void {
+  override onReceive(msg: Message | Terminated): void {
     if (msg instanceof Terminated && msg.actor === this.db) {
       this.log.warn('DB stopped — winding down');
       this.context.stopSelf();
       return;
     }
-    // ... handhabe Msg
+    // ... handhabe Message
   }
 }
 ```
@@ -136,7 +136,7 @@ Ein Manager-Actor, der N Kinder spawnt und reagieren will, wenn alle
 gestoppt haben:
 
 ```ts
-class Manager extends Actor<Cmd | Terminated> {
+class Manager extends Actor<Command | Terminated> {
   private alive = new Set<string>();
 
   override preStart(): void {
@@ -147,7 +147,7 @@ class Manager extends Actor<Cmd | Terminated> {
     }
   }
 
-  override onReceive(msg: Cmd | Terminated): void {
+  override onReceive(msg: Command | Terminated): void {
     if (msg instanceof Terminated) {
       this.alive.delete(msg.actor.path.name);
       if (this.alive.size === 0) {
@@ -155,7 +155,7 @@ class Manager extends Actor<Cmd | Terminated> {
         this.context.stopSelf();
       }
     }
-    // ... handhabe Cmd
+    // ... handhabe Command
   }
 }
 ```

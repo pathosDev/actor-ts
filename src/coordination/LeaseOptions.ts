@@ -2,8 +2,8 @@ import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 
 /**
- * Plain settings-object shape shared by every {@link Lease} backend — the
- * common construction-time settings.  A plain object of these fields is an
+ * Plain options-object shape shared by every {@link Lease} backend — the
+ * common construction-time options.  A plain object of these fields is an
  * accepted alternative to the {@link LeaseOptionsBuilder}; concrete backends
  * extend it (e.g. `KubernetesLeaseOptionsType`).
  */
@@ -24,7 +24,7 @@ export interface LeaseOptionsType {
 
 /**
  * Fluent builder for {@link LeaseOptionsType} — the common construction-time
- * settings every {@link Lease} backend shares.  The concrete
+ * options every {@link Lease} backend shares.  The concrete
  * `KubernetesLeaseOptionsBuilder` subclass extends this with the K8s-specific
  * `withX(...)` methods.
  *
@@ -90,30 +90,30 @@ export class LeaseOptionsValidator<T extends LeaseOptionsType = LeaseOptionsType
     this.commonRules(s);
   }
   protected commonRules(s: Partial<T>): void {
-    const c = s as Partial<LeaseOptionsType>;
-    if (c.name !== undefined && (typeof c.name !== 'string' || c.name.length === 0)) {
-      this.fail('name', 'must be a non-empty string', c.name);
+    const opts = s as Partial<LeaseOptionsType>;
+    if (opts.name !== undefined && (typeof opts.name !== 'string' || opts.name.length === 0)) {
+      this.fail('name', 'must be a non-empty string', opts.name);
     }
-    if (c.owner !== undefined && (typeof c.owner !== 'string' || c.owner.length === 0)) {
-      this.fail('owner', 'must be a non-empty string', c.owner);
+    if (opts.owner !== undefined && (typeof opts.owner !== 'string' || opts.owner.length === 0)) {
+      this.fail('owner', 'must be a non-empty string', opts.owner);
     }
-    if (c.ttlMs !== undefined && (typeof c.ttlMs !== 'number' || !Number.isFinite(c.ttlMs) || c.ttlMs <= 0)) {
-      this.fail('ttlMs', 'must be a positive finite number', c.ttlMs);
-    }
-    if (
-      c.renewalIntervalMs !== undefined &&
-      (typeof c.renewalIntervalMs !== 'number' || !Number.isFinite(c.renewalIntervalMs) || c.renewalIntervalMs <= 0)
-    ) {
-      this.fail('renewalIntervalMs', 'must be a positive finite number', c.renewalIntervalMs);
-    }
-    if (c.acquireRetries !== undefined && (!Number.isInteger(c.acquireRetries) || c.acquireRetries < 0)) {
-      this.fail('acquireRetries', 'must be an integer >= 0', c.acquireRetries);
+    if (opts.ttlMs !== undefined && (typeof opts.ttlMs !== 'number' || !Number.isFinite(opts.ttlMs) || opts.ttlMs <= 0)) {
+      this.fail('ttlMs', 'must be a positive finite number', opts.ttlMs);
     }
     if (
-      c.acquireRetryDelayMs !== undefined &&
-      (typeof c.acquireRetryDelayMs !== 'number' || !Number.isFinite(c.acquireRetryDelayMs) || c.acquireRetryDelayMs < 0)
+      opts.renewalIntervalMs !== undefined &&
+      (typeof opts.renewalIntervalMs !== 'number' || !Number.isFinite(opts.renewalIntervalMs) || opts.renewalIntervalMs <= 0)
     ) {
-      this.fail('acquireRetryDelayMs', 'must be a non-negative finite number', c.acquireRetryDelayMs);
+      this.fail('renewalIntervalMs', 'must be a positive finite number', opts.renewalIntervalMs);
+    }
+    if (opts.acquireRetries !== undefined && (!Number.isInteger(opts.acquireRetries) || opts.acquireRetries < 0)) {
+      this.fail('acquireRetries', 'must be an integer >= 0', opts.acquireRetries);
+    }
+    if (
+      opts.acquireRetryDelayMs !== undefined &&
+      (typeof opts.acquireRetryDelayMs !== 'number' || !Number.isFinite(opts.acquireRetryDelayMs) || opts.acquireRetryDelayMs < 0)
+    ) {
+      this.fail('acquireRetryDelayMs', 'must be a non-negative finite number', opts.acquireRetryDelayMs);
     }
   }
 }

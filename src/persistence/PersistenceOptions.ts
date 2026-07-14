@@ -12,7 +12,7 @@
  * defined here, at the persistence-layer top level, rather than inside
  * `object-storage/`.  The reason: actors don't know which concrete
  * store is wired up, and we don't want them to import from a specific
- * impl directory just to declare their own settings.  Stores that
+ * impl directory just to declare their own options.  Stores that
  * don't honour these options (in-memory, SQLite, Cassandra) simply
  * ignore them.
  */

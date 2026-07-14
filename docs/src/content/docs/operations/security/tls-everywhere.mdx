@@ -161,8 +161,8 @@ For mutual TLS, add `cert` + `key`.
 ### WebSocket
 
 ```ts
-const webSocketClientOptions = WebSocketClientOptions.create().withUrl('wss://realtime.example.com/feed');
-new WebSocketClientActor(webSocketClientOptions);
+const webSocketClientOptions = WebsocketClientOptions.create().withUrl('wss://realtime.example.com/feed');
+new WebsocketClientActor(webSocketClientOptions);
 ```
 
 `wss://` URL scheme.  Cert verification follows the runtime's

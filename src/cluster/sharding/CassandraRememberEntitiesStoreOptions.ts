@@ -2,7 +2,7 @@ import type { CassandraClientLike, CassandraConnection } from '../../persistence
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 
 /**
- * Plain settings-object shape consumed by {@link CassandraRememberEntitiesStore}
+ * Plain options-object shape consumed by {@link CassandraRememberEntitiesStore}
  * — the shared {@link CassandraConnection} fields plus the store-specific
  * `table` / `autoCreateTables` / `client`.
  */
@@ -67,7 +67,7 @@ export class CassandraRememberEntitiesStoreOptionsBuilder
     return this.set('autoCreateKeyspace', autoCreateKeyspace);
   }
 
-  /** Replication settings used by autoCreateKeyspace.  Ignored otherwise. */
+  /** Replication options used by autoCreateKeyspace.  Ignored otherwise. */
   withReplication(replication: NonNullable<CassandraConnection['replication']>): this {
     return this.set('replication', replication);
   }

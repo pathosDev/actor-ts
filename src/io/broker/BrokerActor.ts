@@ -13,13 +13,13 @@ import {
   BrokerReconnectFailed,
 } from './BrokerEvents.js';
 import {
-  BrokerSettingsError,
+  BrokerOptionsError,
   DEFAULT_OUTBOUND_BUFFER,
   DEFAULT_RECONNECT,
-  mergeSettings,
-  readCommonSettings,
+  mergeOptions,
+  readCommonOptions,
   type BrokerCommonOptionsType,
-} from './BrokerSettings.js';
+} from './BrokerOptions.js';
 
 /**
  * Connection-lifecycle state machine.  Transitions are linear:
@@ -46,27 +46,27 @@ export interface OutboundEnvelope<P = unknown> {
 /**
  * Base class for actors that bridge external messaging systems
  * (MQTT, WebSocket, Kafka, …) into the actor system.  Subclasses
- * implement three protocol hooks (`connectImpl`, `disconnectImpl`,
+ * implement three protocol hooks (`connectImplementation`, `disconnectImplementation`,
  * `dispatchOutgoing`); the base class owns the lifecycle, reconnect-
  * backoff, outbound buffer, subscriber fan-out, and lifecycle-event
  * publishing.
  *
- * **Settings precedence (highest first):**
+ * **Options precedence (highest first):**
  *   1. Constructor argument (per-instance overrides).
  *   2. HOCON config under `configKey()` (system-wide defaults).
- *   3. Built-in defaults from `builtInDefaults()`.
+ *   3. Built-in defaults from `builtInDefaultOptions()`.
  *
- * Subclasses pass their constructor settings via `super(settings)` and
- * implement `configKey()`, `builtInDefaults()`, `readSettingsFromConfig()`,
- * and `requiredSettings()` so the base class can resolve and validate
- * the effective settings before `connectImpl()` runs.
+ * Subclasses pass their constructor options via `super(options)` and
+ * implement `configKey()`, `builtInDefaultOptions()`, `readOptionsFromConfig()`,
+ * and `requiredOptions()` so the base class can resolve and validate
+ * the effective options before `connectImplementation()` runs.
  */
 export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unknown, P = unknown>
   extends Actor<Cmd> {
-  /** Constructor settings — partial; merged with HOCON + defaults in preStart. */
-  private readonly _ctorSettings: Partial<S>;
-  /** Final, fully resolved settings.  `null` until preStart() ran. */
-  private _settings: S | null = null;
+  /** Constructor options — partial; merged with HOCON + defaults in preStart. */
+  private readonly _ctorOptions: Partial<S>;
+  /** Final, fully resolved options.  `null` until preStart() ran. */
+  private _options: S | null = null;
 
   private _state: ConnectionState = 'disconnected';
   private _outboundBuffer: OutboundEnvelope<P>[] = [];
@@ -87,30 +87,30 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
     super();
     // A builder instance carries its set fields as own enumerable props, so
     // spreading normalizes builder OR plain object to a `Partial<S>` snapshot.
-    this._ctorSettings = { ...(options as Partial<S>) };
+    this._ctorOptions = { ...(options as Partial<S>) };
   }
 
-  /* ------------------------------- Settings ------------------------------- */
+  /* ------------------------------- Options ------------------------------- */
 
-  /** Final resolved settings — only valid after `preStart`. */
-  protected get settings(): S {
-    if (!this._settings) {
-      throw new Error(`BrokerActor.settings accessed before preStart`);
+  /** Final resolved options — only valid after `preStart`. */
+  protected get options(): S {
+    if (!this._options) {
+      throw new Error(`BrokerActor.options accessed before preStart`);
     }
-    return this._settings;
+    return this._options;
   }
 
   /** Subclass: HOCON config path, e.g. `'actor-ts.io.broker.mqtt'`. */
   protected abstract configKey(): string;
 
   /** Subclass: defaults for everything not provided elsewhere. */
-  protected abstract builtInDefaults(): Partial<S>;
+  protected abstract builtInDefaultOptions(): Partial<S>;
 
-  /** Subclass: parse a Config block into a partial settings object. */
-  protected abstract readSettingsFromConfig(config: Config): Partial<S>;
+  /** Subclass: parse a Config block into a partial options object. */
+  protected abstract readOptionsFromConfig(config: Config): Partial<S>;
 
-  /** Subclass: list of fields that MUST be present in the resolved settings. */
-  protected abstract requiredSettings(): ReadonlyArray<keyof S>;
+  /** Subclass: list of fields that MUST be present in the resolved options. */
+  protected abstract requiredOptions(): ReadonlyArray<keyof S>;
 
   /**
    * Subclass: validator for the resolved settings, run once at `preStart`
@@ -133,10 +133,10 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
    * reconnect; throwing during steady-state operation is also fine
    * (the base class will start a reconnect cycle).
    */
-  protected abstract connectImpl(): Promise<void>;
+  protected abstract connectImplementation(): Promise<void>;
 
   /** Close it.  Best-effort — exceptions are logged and swallowed. */
-  protected abstract disconnectImpl(): Promise<void>;
+  protected abstract disconnectImplementation(): Promise<void>;
 
   /**
    * Send a single outbound envelope.  Only invoked when state is
@@ -208,7 +208,7 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
    */
   protected enqueueOutbound(payload: P): boolean {
     const env: OutboundEnvelope<P> = { payload, enqueuedAt: Date.now() };
-    const limit = this.settings.outboundBuffer ?? DEFAULT_OUTBOUND_BUFFER;
+    const limit = this.options.outboundBuffer ?? DEFAULT_OUTBOUND_BUFFER;
 
     // Dispatch on connection state with compile-time exhaustiveness:
     // adding a new state to `ConnectionState` forces every site that
@@ -248,11 +248,11 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
   /* ------------------------------- Lifecycle ------------------------------ */
 
   override async preStart(): Promise<void> {
-    this._settings = this._resolveSettings();
+    this._options = this._resolveOptions();
     await this._validateRequired();
     // Value validation runs after the required-field check so a missing
     // field still surfaces as BrokerSettingsError, not a rule failure.
-    this.optionsValidator()?.validate(this._settings!);
+    this.optionsValidator()?.validate(this._options!);
     await this._beginConnect();
   }
 
@@ -261,8 +261,8 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
     this._scheduledReconnectCancel = null;
     if (this._state !== 'disconnected') {
       this._state = 'disconnecting';
-      try { await this.disconnectImpl(); }
-      catch (e) { this.log.warn(`broker disconnectImpl threw: ${(e as Error).message}`); }
+      try { await this.disconnectImplementation(); }
+      catch (e) { this.log.warn(`broker disconnectImplementation threw: ${(e as Error).message}`); }
     }
     this._state = 'disconnected';
     this._outboundBuffer = [];
@@ -271,28 +271,28 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
 
   /* ----------------------------- Internal flow ---------------------------- */
 
-  private _resolveSettings(): S {
-    const defaults = this.builtInDefaults();
+  private _resolveOptions(): S {
+    const defaults = this.builtInDefaultOptions();
     const cfg = this.system.config.hasPath(this.configKey())
       ? this.system.config.getConfig(this.configKey())
       : null;
     const fromConfig = cfg
-      ? { ...readCommonSettings(cfg), ...this.readSettingsFromConfig(cfg) } as Partial<S>
+      ? { ...readCommonOptions(cfg), ...this.readOptionsFromConfig(cfg) } as Partial<S>
       : ({} as Partial<S>);
-    return mergeSettings<S>(defaults, fromConfig, this._ctorSettings);
+    return mergeOptions<S>(defaults, fromConfig, this._ctorOptions);
   }
 
   private async _validateRequired(): Promise<void> {
-    const required = this.requiredSettings();
+    const required = this.requiredOptions();
     const missing: string[] = [];
-    for (const k of required) {
-      if (this._settings![k] === undefined || this._settings![k] === null) {
-        missing.push(String(k));
+    for (const key of required) {
+      if (this._options![key] === undefined || this._options![key] === null) {
+        missing.push(String(key));
       }
     }
     if (missing.length > 0) {
-      throw new BrokerSettingsError(
-        `${this.constructor.name} missing required settings: ${missing.join(', ')}.  `
+      throw new BrokerOptionsError(
+        `${this.constructor.name} missing required options: ${missing.join(', ')}.  `
         + `Pass them in the constructor or under HOCON path '${this.configKey()}'.`,
         this.configKey(),
       );
@@ -307,7 +307,7 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
 
   private async _tryConnect(): Promise<void> {
     // Honour an open circuit breaker.
-    const breaker = this.settings.circuitBreaker;
+    const breaker = this.options.circuitBreaker;
     if (breaker && Date.now() < this._breakerOpenUntil) {
       const remaining = this._breakerOpenUntil - Date.now();
       this._scheduleReconnect(remaining);
@@ -316,7 +316,7 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
 
     this._state = 'connecting';
     try {
-      await this.connectImpl();
+      await this.connectImplementation();
       this._state = 'connected';
       this._reconnectAttempt = 0;
       this._consecutiveFailures = 0;
@@ -348,7 +348,7 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
   }
 
   private _handleReconnect(cause: Error): void {
-    const policy = this.settings.reconnect;
+    const policy = this.options.reconnect;
     if (policy === false) return;
     const initial = policy?.initialDelayMs ?? DEFAULT_RECONNECT.initialDelayMs;
     const maxDelay = policy?.maxDelayMs ?? DEFAULT_RECONNECT.maxDelayMs;

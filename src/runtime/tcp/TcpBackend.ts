@@ -14,7 +14,7 @@
  * everything in its `Deno.listenTls` / `Deno.connectTls` shape.
  */
 
-export interface TlsTransportSettings {
+export interface TlsTransportOptionsType {
   /** Server cert (PEM string or DER bytes).  If omitted, TLS is disabled on the listener. */
   readonly cert?: string | Uint8Array;
   /** Private key matching `cert`. */
@@ -57,14 +57,14 @@ export interface TcpBackend {
   listen(opts: {
     host: string;
     port: number;
-    tls?: TlsTransportSettings;
+    tls?: TlsTransportOptionsType;
     handlers: TcpSocketHandlers;
   }): Promise<TcpListener>;
 
   connect(opts: {
     host: string;
     port: number;
-    tls?: TlsTransportSettings;
+    tls?: TlsTransportOptionsType;
     handlers: TcpSocketHandlers;
   }): Promise<TcpSocketLike>;
 }

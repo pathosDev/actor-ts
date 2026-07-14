@@ -1,15 +1,7 @@
 import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
-import type { Ack, Delivery } from './Messages.js';
-
-export interface ConsumerControllerSettings<T> {
-  /**
-   * Invoked for every successfully delivered (un-duplicated) message.  The
-   * controller Acks AFTER the handler returns — if the handler returns a
-   * Promise, the Ack is delayed until it settles.
-   */
-  readonly handler: (body: T) => void | Promise<void>;
-}
+import type { Acknowledgment, Delivery } from './Messages.js';
+import type { ConsumerControllerOptions, ConsumerControllerOptionsType } from './ConsumerControllerOptions.js';
 
 interface DedupState {
   /**
@@ -31,7 +23,12 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
   /** producerId → dedup state. */
   private readonly dedup = new Map<string, DedupState>();
 
-  constructor(public readonly settings: ConsumerControllerSettings<T>) { super(); }
+  public readonly options: ConsumerControllerOptionsType<T>;
+
+  constructor(options: ConsumerControllerOptions<T>) {
+    super();
+    this.options = options as ConsumerControllerOptionsType<T>;
+  }
 
   override onReceive(msg: Delivery<T>): void {
     if (msg.kind !== 'reliable-delivery.delivery') return;
@@ -43,24 +40,24 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
     if (msg.seq <= state.contiguous || state.above.has(msg.seq)) {
       // Duplicate — re-ack so the producer can release its slot, but don't
       // re-run the user handler.
-      this.sendAck(msg);
+      this.sendAcknowledgment(msg);
       return;
     }
     try {
-      await this.settings.handler(msg.body);
+      await this.options.handler(msg.body);
     } catch (err) {
       this.log.warn(`consumer handler threw on seq=${msg.seq}`, err);
       // Do NOT ack — let the producer retry.
       return;
     }
     this.markDelivered(state, msg.seq);
-    this.sendAck(msg);
+    this.sendAcknowledgment(msg);
   }
 
   private dedupStateFor(producerId: string): DedupState {
-    let s = this.dedup.get(producerId);
-    if (!s) { s = { contiguous: 0, above: new Set() }; this.dedup.set(producerId, s); }
-    return s;
+    let dedupState = this.dedup.get(producerId);
+    if (!dedupState) { dedupState = { contiguous: 0, above: new Set() }; this.dedup.set(producerId, dedupState); }
+    return dedupState;
   }
 
   private markDelivered(state: DedupState, seq: number): void {
@@ -73,8 +70,8 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
     }
   }
 
-  private sendAck(msg: Delivery<T>): void {
-    const ack: Ack = { kind: 'reliable-delivery.ack', producerId: msg.producerId, seq: msg.seq };
-    (msg.replyTo as ActorRef<Ack>).tell(ack);
+  private sendAcknowledgment(msg: Delivery<T>): void {
+    const ack: Acknowledgment = { kind: 'reliable-delivery.ack', producerId: msg.producerId, seq: msg.seq };
+    (msg.replyTo as ActorRef<Acknowledgment>).tell(ack);
   }
 }

@@ -29,28 +29,28 @@ function candidate<E>(
 
 describe('LastWriterWinsResolver', () => {
   test('higher timestamp wins regardless of replica id', () => {
-    const r = new LastWriterWinsResolver<string>();
-    const a = candidate('newer', { timestamp: 200, replica: 'node-a' });
-    const b = candidate('older', { timestamp: 100, replica: 'node-z' });
-    expect(r.resolve(a, b)).toBe('newer');
-    expect(r.resolve(b, a)).toBe('newer'); // commutative
+    const resolver = new LastWriterWinsResolver<string>();
+    const candidateA = candidate('newer', { timestamp: 200, replica: 'node-a' });
+    const candidateB = candidate('older', { timestamp: 100, replica: 'node-z' });
+    expect(resolver.resolve(candidateA, candidateB)).toBe('newer');
+    expect(resolver.resolve(candidateB, candidateA)).toBe('newer'); // commutative
   });
 
   test('lower timestamp loses regardless of replica id', () => {
-    const r = new LastWriterWinsResolver<string>();
-    const a = candidate('older', { timestamp: 50, replica: 'node-z' });
-    const b = candidate('newer', { timestamp: 100, replica: 'node-a' });
-    expect(r.resolve(a, b)).toBe('newer');
-    expect(r.resolve(b, a)).toBe('newer');
+    const resolver = new LastWriterWinsResolver<string>();
+    const candidateA = candidate('older', { timestamp: 50, replica: 'node-z' });
+    const candidateB = candidate('newer', { timestamp: 100, replica: 'node-a' });
+    expect(resolver.resolve(candidateA, candidateB)).toBe('newer');
+    expect(resolver.resolve(candidateB, candidateA)).toBe('newer');
   });
 
   test('tie on timestamp ⇒ higher replica id wins (lexicographic)', () => {
-    const r = new LastWriterWinsResolver<string>();
-    const a = candidate('A', { timestamp: 100, replica: 'node-a' });
-    const b = candidate('B', { timestamp: 100, replica: 'node-b' });
+    const resolver = new LastWriterWinsResolver<string>();
+    const candidateA = candidate('A', { timestamp: 100, replica: 'node-a' });
+    const candidateB = candidate('B', { timestamp: 100, replica: 'node-b' });
     // 'node-b' > 'node-a' lexicographically.
-    expect(r.resolve(a, b)).toBe('B');
-    expect(r.resolve(b, a)).toBe('B');
+    expect(resolver.resolve(candidateA, candidateB)).toBe('B');
+    expect(resolver.resolve(candidateB, candidateA)).toBe('B');
   });
 
   test('tie on timestamp AND replica ⇒ either branch returns its own event', () => {
@@ -61,28 +61,28 @@ describe('LastWriterWinsResolver', () => {
     // behaviour — both branches return the SAME event value (since
     // the replica/timestamp identify a single write) which is what
     // determinism actually requires.
-    const r = new LastWriterWinsResolver<string>();
+    const resolver = new LastWriterWinsResolver<string>();
     const ev = 'same-write';
-    const a = candidate(ev, { timestamp: 100, replica: 'node-x' });
-    const b = candidate(ev, { timestamp: 100, replica: 'node-x' });
-    expect(r.resolve(a, b)).toBe(ev);
-    expect(r.resolve(b, a)).toBe(ev);
+    const candidateA = candidate(ev, { timestamp: 100, replica: 'node-x' });
+    const candidateB = candidate(ev, { timestamp: 100, replica: 'node-x' });
+    expect(resolver.resolve(candidateA, candidateB)).toBe(ev);
+    expect(resolver.resolve(candidateB, candidateA)).toBe(ev);
   });
 
   test('commutativity across a small input grid', () => {
     // Property-style cross-check — every (a,b) pair must agree with
     // (b,a).  Cheap & sufficient since the resolver has only two
     // axes: timestamp + replica id.
-    const r = new LastWriterWinsResolver<number>();
+    const resolver = new LastWriterWinsResolver<number>();
     const candidates: Array<ConflictCandidate<number>> = [];
     for (const ts of [10, 20, 30]) {
       for (const rep of ['a', 'b', 'c']) {
         candidates.push(candidate(ts * 100 + rep.charCodeAt(0), { timestamp: ts, replica: rep }));
       }
     }
-    for (const x of candidates) {
-      for (const y of candidates) {
-        expect(r.resolve(x, y)).toBe(r.resolve(y, x));
+    for (const leftCandidate of candidates) {
+      for (const rightCandidate of candidates) {
+        expect(resolver.resolve(leftCandidate, rightCandidate)).toBe(resolver.resolve(rightCandidate, leftCandidate));
       }
     }
   });
@@ -94,14 +94,14 @@ describe('CustomMergeResolver', () => {
     // 'node-a' <= 'node-b'.  This is the explicit guard for users who
     // accidentally wrote a non-commutative merge.
     const calls: Array<[number, number]> = [];
-    const r = new CustomMergeResolver<number>((x, y) => {
-      calls.push([x, y]);
-      return x + y;
+    const resolver = new CustomMergeResolver<number>((leftCandidate, rightCandidate) => {
+      calls.push([leftCandidate, rightCandidate]);
+      return leftCandidate + rightCandidate;
     });
-    const a = candidate(1, { replica: 'node-a' });
-    const b = candidate(10, { replica: 'node-b' });
-    expect(r.resolve(b, a)).toBe(11); // sum commutes anyway
-    expect(r.resolve(a, b)).toBe(11);
+    const candidateA = candidate(1, { replica: 'node-a' });
+    const candidateB = candidate(10, { replica: 'node-b' });
+    expect(resolver.resolve(candidateB, candidateA)).toBe(11); // sum commutes anyway
+    expect(resolver.resolve(candidateA, candidateB)).toBe(11);
     // Both calls saw (1, 10) — the first-arg-is-node-a invariant.
     expect(calls).toEqual([[1, 10], [1, 10]]);
   });
@@ -109,23 +109,23 @@ describe('CustomMergeResolver', () => {
   test('merge runs deterministically across argument order even for non-commutative merge', () => {
     // A merge that picks left-arg is normally NOT commutative.  The
     // resolver's replica-sort makes it commutative anyway.
-    const r = new CustomMergeResolver<string>((x, _y) => x);
-    const a = candidate('A', { replica: 'replica-1' });
-    const b = candidate('B', { replica: 'replica-2' });
+    const resolver = new CustomMergeResolver<string>((leftCandidate, _y) => leftCandidate);
+    const candidateA = candidate('A', { replica: 'replica-1' });
+    const candidateB = candidate('B', { replica: 'replica-2' });
     // Inner merge always sees ('A', 'B') because replica-1 <= replica-2.
-    expect(r.resolve(a, b)).toBe('A');
-    expect(r.resolve(b, a)).toBe('A');
+    expect(resolver.resolve(candidateA, candidateB)).toBe('A');
+    expect(resolver.resolve(candidateB, candidateA)).toBe('A');
   });
 
   test('equal replica ids fall back to the (a, b) argument order', () => {
     // `a.replica <= b.replica` is true when they're equal, so the
     // merge sees (a, b) — same as the input call.  This pins the
     // tie-break path.
-    const r = new CustomMergeResolver<string>((x, y) => `${x}|${y}`);
-    const a = candidate('first', { replica: 'same' });
-    const b = candidate('second', { replica: 'same' });
-    expect(r.resolve(a, b)).toBe('first|second');
-    expect(r.resolve(b, a)).toBe('second|first');
+    const resolver = new CustomMergeResolver<string>((leftCandidate, rightCandidate) => `${leftCandidate}|${rightCandidate}`);
+    const candidateA = candidate('first', { replica: 'same' });
+    const candidateB = candidate('second', { replica: 'same' });
+    expect(resolver.resolve(candidateA, candidateB)).toBe('first|second');
+    expect(resolver.resolve(candidateB, candidateA)).toBe('second|first');
     // The two outputs differ here — that's expected, since the user
     // explicitly opted into a `(left, right)`-asymmetric merge and
     // both candidates share a replica id (so the sort can't break
@@ -138,14 +138,14 @@ describe('CustomMergeResolver', () => {
     // Sum is naturally commutative, so resolve(a,b) === resolve(b,a)
     // even before the replica-sort.  This pins that the wrapper
     // doesn't accidentally introduce divergence.
-    const r = new CustomMergeResolver<number>((x, y) => x + y);
+    const resolver = new CustomMergeResolver<number>((leftCandidate, rightCandidate) => leftCandidate + rightCandidate);
     const grid: Array<ConflictCandidate<number>> = [];
-    for (const v of [1, 5, 10]) {
-      for (const rep of ['a', 'b', 'c']) grid.push(candidate(v, { replica: rep }));
+    for (const value of [1, 5, 10]) {
+      for (const rep of ['a', 'b', 'c']) grid.push(candidate(value, { replica: rep }));
     }
-    for (const x of grid) {
-      for (const y of grid) {
-        expect(r.resolve(x, y)).toBe(r.resolve(y, x));
+    for (const leftCandidate of grid) {
+      for (const rightCandidate of grid) {
+        expect(resolver.resolve(leftCandidate, rightCandidate)).toBe(resolver.resolve(rightCandidate, leftCandidate));
       }
     }
   });

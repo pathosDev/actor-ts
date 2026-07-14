@@ -82,7 +82,7 @@ describe('Cluster.bootstrap', () => {
       .withShutdownOnSignals(false)
       .withGossipIntervalMs(50)
       .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 });
-    const a = await Cluster.bootstrap(
+    const nodeA = await Cluster.bootstrap(
       clusterBootstrapOptions,
     );
     const clusterBootstrapOptions2 = ClusterBootstrapOptions.create('bootstrap-3')
@@ -96,21 +96,21 @@ describe('Cluster.bootstrap', () => {
       .withShutdownOnSignals(false)
       .withGossipIntervalMs(50)
       .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 });
-    const b = await Cluster.bootstrap(
+    const nodeB = await Cluster.bootstrap(
       clusterBootstrapOptions2,
     );
     try {
       // Both nodes should converge — each sees two up members.
       const deadline = Date.now() + 2_000;
       while (Date.now() < deadline) {
-        if (a.cluster.upMembers().length === 2 && b.cluster.upMembers().length === 2) break;
+        if (nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2) break;
         await Bun.sleep(25);
       }
-      expect(a.cluster.upMembers().length).toBe(2);
-      expect(b.cluster.upMembers().length).toBe(2);
+      expect(nodeA.cluster.upMembers().length).toBe(2);
+      expect(nodeB.cluster.upMembers().length).toBe(2);
     } finally {
-      await a.shutdown();
-      await b.shutdown();
+      await nodeA.shutdown();
+      await nodeB.shutdown();
     }
   });
 
@@ -155,7 +155,7 @@ describe('Cluster.bootstrap', () => {
       .withShutdownOnSignals(false)
       .withGossipIntervalMs(50)
       .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 });
-    const a = await Cluster.bootstrap(
+    const nodeA = await Cluster.bootstrap(
       clusterBootstrapOptions,
     );
     const clusterBootstrapOptions2 = ClusterBootstrapOptions.create('bootstrap-5')
@@ -169,20 +169,20 @@ describe('Cluster.bootstrap', () => {
       .withShutdownOnSignals(false)
       .withGossipIntervalMs(50)
       .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 });
-    const b = await Cluster.bootstrap(
+    const nodeB = await Cluster.bootstrap(
       clusterBootstrapOptions2,
     );
     try {
       const deadline = Date.now() + 2_000;
       while (Date.now() < deadline) {
-        if (a.cluster.upMembers().length === 2 && b.cluster.upMembers().length === 2) break;
+        if (nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2) break;
         await Bun.sleep(25);
       }
-      expect(a.cluster.upMembers().length).toBe(2);
-      expect(b.cluster.upMembers().length).toBe(2);
+      expect(nodeA.cluster.upMembers().length).toBe(2);
+      expect(nodeB.cluster.upMembers().length).toBe(2);
     } finally {
-      await a.shutdown();
-      await b.shutdown();
+      await nodeA.shutdown();
+      await nodeB.shutdown();
     }
   });
 });

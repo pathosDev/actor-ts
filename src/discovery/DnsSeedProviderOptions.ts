@@ -1,7 +1,7 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 
-/** Plain settings-object shape accepted by a {@link DnsSeedProvider}. */
+/** Plain options-object shape accepted by a {@link DnsSeedProvider}. */
 export interface DnsSeedProviderOptionsType {
   /** Hostname to resolve (e.g. `my-cluster.default.svc.cluster.local`). */
   readonly hostname: string;

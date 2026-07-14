@@ -37,14 +37,14 @@
  * inherit framing, ordering, and TLS for free.
  */
 
-import { getTcpBackend, type TcpSocketLike, type TlsTransportSettings } from '../runtime/tcp/index.js';
+import { getTcpBackend, type TcpSocketLike, type TlsTransportOptionsType } from '../runtime/tcp/index.js';
 import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
-import { encodeFrame, FrameDecoder, type WireMessage, type HelloMsg, type HelloAckMsg } from './Protocol.js';
+import { encodeFrame, FrameDecoder, type WireMessage, type HelloMessage, type HelloAcknowledgmentMessage } from './Protocol.js';
 import type {
-  ClusterClientEnvelopeMsg,
-  ClusterClientReplyMsg,
+  ClusterClientEnvelopeMessage,
+  ClusterClientReplyMessage,
 } from './ClusterClientReceptionist.js';
 import { ClusterClientOptionsValidator } from './ClusterClientOptions.js';
 import type { ClusterClientOptions, ClusterClientOptionsType } from './ClusterClientOptions.js';
@@ -85,7 +85,7 @@ export const _nextAskIdForTest = nextAskId;
 export class ClusterClient {
   private readonly contactPoints: ReadonlyArray<NodeAddress>;
   private readonly identity: NodeAddress;
-  private readonly tls: TlsTransportSettings | null;
+  private readonly tls: TlsTransportOptionsType | null;
   private readonly askTimeoutMs: number;
   private readonly log: Logger;
   private socket: TcpSocketLike | null = null;
@@ -97,18 +97,18 @@ export class ClusterClient {
   /** Filled by `hello-ack`; the contact-point's real address (post-handshake). */
   private contactPointPeer: NodeAddress | null = null;
 
-  private readonly settings: ClusterClientOptionsType;
+  private readonly options: ClusterClientOptionsType;
 
   constructor(options: ClusterClientOptions) {
-    const settings = options as ClusterClientOptionsType;
-    this.settings = settings;
-    new ClusterClientOptionsValidator().validate(settings);
-    const sysName = settings.systemName ?? 'cluster-client';
-    this.contactPoints = settings.contactPoints.map((s) => {
+    const resolvedOptions = options as ClusterClientOptionsType;
+    this.options = resolvedOptions;
+    new ClusterClientOptionsValidator().validate(resolvedOptions);
+    const sysName = resolvedOptions.systemName ?? 'cluster-client';
+    this.contactPoints = resolvedOptions.contactPoints.map((s) => {
       const withSys = s.includes('@') ? s : `${sysName}@${s}`;
       return NodeAddress.parse(withSys);
     });
-    const id = settings.clientIdentity ?? {
+    const id = resolvedOptions.clientIdentity ?? {
       host: '127.0.0.1',
       // Synthetic port — must be unique per ClusterClient instance in the
       // same process so the cluster's byPeer map doesn't collide.  Use
@@ -116,9 +116,9 @@ export class ClusterClient {
       port: 50_000 + Math.floor(Math.random() * 15_000),
     };
     this.identity = new NodeAddress(sysName, id.host, id.port);
-    this.tls = settings.tls ?? null;
-    this.askTimeoutMs = settings.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
-    this.log = settings.logger ?? new ConsoleLogger(LogLevel.Warn, 'cluster-client');
+    this.tls = resolvedOptions.tls ?? null;
+    this.askTimeoutMs = resolvedOptions.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
+    this.log = resolvedOptions.logger ?? new ConsoleLogger(LogLevel.Warn, 'cluster-client');
   }
 
   /** The synthetic identity this client uses in its `hello` handshake. */
@@ -131,7 +131,7 @@ export class ClusterClient {
    */
   async send(targetPath: string, message: unknown): Promise<void> {
     await this.ensureConnected();
-    const env: ClusterClientEnvelopeMsg = {
+    const env: ClusterClientEnvelopeMessage = {
       t: 'cluster-client-envelope',
       from: this.identity.toJSON(),
       to: targetPath,
@@ -152,7 +152,7 @@ export class ClusterClient {
   ): Promise<R> {
     await this.ensureConnected();
     const askId = nextAskId();
-    const env: ClusterClientEnvelopeMsg = {
+    const env: ClusterClientEnvelopeMessage = {
       t: 'cluster-client-envelope',
       from: this.identity.toJSON(),
       to: targetPath,
@@ -225,7 +225,7 @@ export class ClusterClient {
               onOpen: (s) => {
                 openSock = s;
                 // Send hello.
-                const hello: HelloMsg = { t: 'hello', self: this.identity.toJSON() };
+                const hello: HelloMessage = { t: 'hello', self: this.identity.toJSON() };
                 try { s.write(encodeFrame(hello)); } catch (e) {
                   clearTimeout(timer);
                   reject(e as Error);
@@ -269,26 +269,26 @@ export class ClusterClient {
   private onData(
     sock: TcpSocketLike,
     chunk: Uint8Array,
-    onHelloAck: (peer: NodeAddress) => void,
+    onHelloAcknowledgment: (peer: NodeAddress) => void,
   ): void {
     const frames = this.decoder.push(chunk);
     for (const frame of frames) {
       if (frame.t === 'hello-ack') {
-        const ack = frame as HelloAckMsg;
-        onHelloAck(NodeAddress.fromJSON(ack.self));
+        const ack = frame as HelloAcknowledgmentMessage;
+        onHelloAcknowledgment(NodeAddress.fromJSON(ack.self));
         continue;
       }
-      const t = (frame as { t: string }).t;
-      if (t === 'cluster-client-reply') {
-        this.handleReply(frame as unknown as ClusterClientReplyMsg);
+      const frameType = (frame as { t: string }).t;
+      if (frameType === 'cluster-client-reply') {
+        this.handleReply(frame as unknown as ClusterClientReplyMessage);
         continue;
       }
-      this.log.debug(`ClusterClient: ignoring unsolicited frame type "${t}"`);
+      this.log.debug(`ClusterClient: ignoring unsolicited frame type "${frameType}"`);
     }
     void sock;
   }
 
-  private handleReply(reply: ClusterClientReplyMsg): void {
+  private handleReply(reply: ClusterClientReplyMessage): void {
     const pending = this.pending.get(reply.askId);
     if (!pending) return;
     this.pending.delete(reply.askId);

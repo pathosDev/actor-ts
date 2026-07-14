@@ -8,67 +8,67 @@ import {
 
 describe('resolveCompression / resolveEncryption', () => {
   test('flat config is returned verbatim', () => {
-    const r = resolveCompression({ algorithm: 'gzip' }, 'whatever', { algorithm: 'none' });
-    expect(r).toEqual({ algorithm: 'gzip' });
+    const result = resolveCompression({ algorithm: 'gzip' }, 'whatever', { algorithm: 'none' });
+    expect(result).toEqual({ algorithm: 'gzip' });
   });
 
   test('resolver result is preferred over the fallback', () => {
-    const r = resolveCompression(
+    const result = resolveCompression(
       (pid) => (pid.startsWith('big-') ? { algorithm: 'zstd' } : undefined),
       'big-1',
       { algorithm: 'gzip' },
     );
-    expect(r).toEqual({ algorithm: 'zstd' });
+    expect(result).toEqual({ algorithm: 'zstd' });
   });
 
   test('resolver returning undefined falls back', () => {
-    const r = resolveCompression(
+    const result = resolveCompression(
       () => undefined,
       'whatever',
       { algorithm: 'gzip' },
     );
-    expect(r).toEqual({ algorithm: 'gzip' });
+    expect(result).toEqual({ algorithm: 'gzip' });
   });
 
   test('encryption resolver returning a config is honoured', () => {
     const masterKey = new Uint8Array(32);
-    const r = resolveEncryption(
+    const result = resolveEncryption(
       (pid) => (pid === 'pii' ? { mode: 'client-aes256-gcm', masterKey } : undefined),
       'pii',
       { mode: 'none' },
     );
-    expect(r.mode).toBe('client-aes256-gcm');
+    expect(result.mode).toBe('client-aes256-gcm');
   });
 });
 
 describe('compressionByPrefix / encryptionByPrefix', () => {
   test('compressionByPrefix uses longest-prefix-match and falls back to default', () => {
-    const r = compressionByPrefix({
+    const result = compressionByPrefix({
       default: { algorithm: 'gzip' },
       'big/':       { algorithm: 'zstd' },
       'big/short/': { algorithm: 'none' },     // longer prefix wins
     });
-    expect(r('big/short/x')).toEqual({ algorithm: 'none' });
-    expect(r('big/long-thing')).toEqual({ algorithm: 'zstd' });
-    expect(r('other/x')).toEqual({ algorithm: 'gzip' });
+    expect(result('big/short/x')).toEqual({ algorithm: 'none' });
+    expect(result('big/long-thing')).toEqual({ algorithm: 'zstd' });
+    expect(result('other/x')).toEqual({ algorithm: 'gzip' });
   });
 
   test('compressionByPrefix without a default returns undefined for misses', () => {
-    const r = compressionByPrefix({ 'a/': { algorithm: 'gzip' } });
-    expect(r('b/x')).toBeUndefined();
+    const result = compressionByPrefix({ 'a/': { algorithm: 'gzip' } });
+    expect(result('b/x')).toBeUndefined();
   });
 
   test('encryptionByPrefix supports per-tenant key dispatch', () => {
     const acme = new Uint8Array(32).fill(1);
     const big = new Uint8Array(32).fill(2);
-    const r = encryptionByPrefix({
+    const result = encryptionByPrefix({
       default: { mode: 'sse-s3' },
       'tenant-acme/':    { mode: 'client-aes256-gcm', masterKey: acme },
       'tenant-bigcorp/': { mode: 'client-aes256-gcm', masterKey: big },
     });
-    const acmeRes = r('tenant-acme/order-1');
-    const bigRes  = r('tenant-bigcorp/x');
-    const otherRes = r('public/y');
+    const acmeRes = result('tenant-acme/order-1');
+    const bigRes  = result('tenant-bigcorp/x');
+    const otherRes = result('public/y');
     expect(acmeRes?.mode).toBe('client-aes256-gcm');
     expect(bigRes?.mode).toBe('client-aes256-gcm');
     expect(otherRes?.mode).toBe('sse-s3');

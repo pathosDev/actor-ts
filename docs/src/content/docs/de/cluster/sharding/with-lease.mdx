@@ -23,7 +23,7 @@ const kubernetesLeaseOptions = KubernetesLeaseOptions.create()
   .withOwner(process.env.POD_NAME!)
   .withTtlMs(30_000)
   .withNamespace(process.env.K8S_NAMESPACE!);
-const startShardingOptions = StartShardingOptions.create<Cmd>()
+const startShardingOptions = StartShardingOptions.create<Command>()
   .withTypeName('order')
   .withEntityProps(Props.create(() => new OrderEntity()))
   .withExtractEntityId((msg) => msg.id)
@@ -65,7 +65,7 @@ von Gossip.
 ## Konfiguration
 
 ```ts
-interface StartShardingOptionsType<TMsg> {
+interface StartShardingOptionsType<TMessage> {
   // ... Basis-Sharding-Settings ...
   lease?:                   Lease;
   acquireRetryIntervalMs?:  number;     // Default 5000

@@ -113,12 +113,12 @@ export function parseArgs(argv: ReadonlyArray<string>): ChatNodeConfig {
 }
 
 function expect(argv: ReadonlyArray<string>, idx: number, flag: string): string {
-  const v = argv[idx];
-  if (v === undefined) {
+  const value = argv[idx];
+  if (value === undefined) {
     process.stderr.write(`error: ${flag} requires a value\n`);
     process.exit(2);
   }
-  return v;
+  return value;
 }
 
 function printUsage(): void {

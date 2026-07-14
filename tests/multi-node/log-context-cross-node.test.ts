@@ -81,22 +81,22 @@ describe('LogContext — cross-node propagation', () => {
     }
 
     const sysName = 'mdc-xnode';
-    const a = await startNode(sysName, 60_001, []);
-    const b = await startNode(sysName, 60_002, [`${sysName}@h:60001`]);
+    const nodeA = await startNode(sysName, 60_001, []);
+    const nodeB = await startNode(sysName, 60_002, [`${sysName}@h:60001`]);
     try {
-      await waitFor(() => a.cluster.upMembers().length === 2);
+      await waitFor(() => nodeA.cluster.upMembers().length === 2);
 
       // Echo lives on B.  Probe lives on A.
-      b.sys.spawn(Props.create(() => new Echo()), 'echo');
+      nodeB.sys.spawn(Props.create(() => new Echo()), 'echo');
       const probeActor = new Probe();
-      const probeRef = a.sys.spawn(Props.create(() => probeActor), 'probe');
+      const probeRef = nodeA.sys.spawn(Props.create(() => probeActor), 'probe');
 
       // Build a RemoteActorRef from A pointing at /user/echo on B.
       // ActorSelection won't help here — it resolves only locally.
       const echoOnB = new RemoteActorRef<{ payload: string; replyTo: ActorRef<string> }>(
-        b.cluster.selfAddress,
+        nodeB.cluster.selfAddress,
         `actor-ts://${sysName}/user/echo`,
-        a.cluster,
+        nodeA.cluster,
       );
 
       LogContext.run({ correlationId: 'cross-1', region: 'eu' }, () => {
@@ -112,8 +112,8 @@ describe('LogContext — cross-node propagation', () => {
       expect(probeActor.seen[0]).toEqual({ correlationId: 'cross-1', region: 'eu' });
       expect(probeActor.received[0]).toBe('got:hello');
     } finally {
-      await stop(a);
-      await stop(b);
+      await stop(nodeA);
+      await stop(nodeB);
     }
   }, 15_000);
 
@@ -124,15 +124,15 @@ describe('LogContext — cross-node propagation', () => {
     }
 
     const sysName = 'mdc-xnode-empty';
-    const a = await startNode(sysName, 60_011, []);
-    const b = await startNode(sysName, 60_012, [`${sysName}@h:60011`]);
+    const nodeA = await startNode(sysName, 60_011, []);
+    const nodeB = await startNode(sysName, 60_012, [`${sysName}@h:60011`]);
     try {
-      await waitFor(() => a.cluster.upMembers().length === 2);
-      b.sys.spawn(Props.create(() => new Echo()), 'echo');
+      await waitFor(() => nodeA.cluster.upMembers().length === 2);
+      nodeB.sys.spawn(Props.create(() => new Echo()), 'echo');
       const echoOnB = new RemoteActorRef<string>(
-        b.cluster.selfAddress,
+        nodeB.cluster.selfAddress,
         `actor-ts://${sysName}/user/echo`,
-        a.cluster,
+        nodeA.cluster,
       );
 
       // No run() — tell goes through with empty context.
@@ -141,8 +141,8 @@ describe('LogContext — cross-node propagation', () => {
       await waitFor(() => observed.length > 0, 5_000);
       expect(observed[0]).toEqual({});
     } finally {
-      await stop(a);
-      await stop(b);
+      await stop(nodeA);
+      await stop(nodeB);
     }
   }, 15_000);
 });

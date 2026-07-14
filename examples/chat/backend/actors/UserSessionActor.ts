@@ -1,6 +1,6 @@
 /**
  * One actor per WebSocket connection.  The `websocket('/ws', …)` route
- * (via {@link WebSocketIngressActor}) spawns one of these per accepted
+ * (via {@link WebsocketIngressActor}) spawns one of these per accepted
  * connection and forwards decoded inbound frames to it; the actor writes
  * back through the {@link SessionConnection} it was given (the framework
  * already solved the first-frame race, so no manual listener dance).
@@ -54,28 +54,28 @@ import { validateCredentials } from '../auth/credentials.js';
 import type { SessionStore } from '../auth/sessionStore.js';
 import {
   chatRoomTopic,
-  type ChatRoomCmd,
+  type ChatRoomCommand,
   type HistoryReply,
   type RoomBroadcast,
   type TypingBroadcast,
 } from './ChatRoomActor.js';
 import type {
-  ChatRoomDirectoryCmd,
+  ChatRoomDirectoryCommand,
   RoomAdded,
   RoomRemoved,
   RoomsChanged,
 } from './ChatRoomDirectoryActor.js';
 import type {
   DmBroadcast,
-  DmChannelCmd,
+  DmChannelCommand,
   DmHistoryReply,
 } from './DmChannelActor.js';
 import type {
-  OnlineUsersCmd,
+  OnlineUsersCommand,
   UsersChanged,
 } from './OnlineUsersActor.js';
 import type {
-  ReadReceiptsCmd,
+  ReadReceiptsCommand,
   ReceiptsChanged,
 } from './ReadReceiptsActor.js';
 
@@ -92,14 +92,14 @@ export interface SocketClosed { readonly kind: 'socket-closed' }
 /**
  * The minimal outbound surface this actor needs — a text-frame sink and
  * a close.  The WebSocket ingress hub supplies one backed by the
- * connection's `WsConnection` (see `WebSocketIngressActor`).
+ * connection's `WebsocketConnection` (see `WebsocketIngressActor`).
  */
 export interface SessionConnection {
   sendText(text: string): void;
   close(): void;
 }
 
-type SessionMsg =
+type SessionMessage =
   | InboundFrame
   | SocketClosed
   | RoomBroadcast
@@ -117,20 +117,20 @@ type SessionMsg =
 
 export interface UserSessionDeps {
   readonly connection: SessionConnection;
-  readonly chatRoomRegion: ActorRef<ChatRoomCmd>;
-  readonly dmChannelRegion: ActorRef<DmChannelCmd>;
-  readonly onlineUsers: ActorRef<OnlineUsersCmd>;
+  readonly chatRoomRegion: ActorRef<ChatRoomCommand>;
+  readonly dmChannelRegion: ActorRef<DmChannelCommand>;
+  readonly onlineUsers: ActorRef<OnlineUsersCommand>;
   readonly mediator: ActorRef<Subscribe | Unsubscribe>;
   readonly sessions: SessionStore;
-  readonly roomDirectory: ActorRef<ChatRoomDirectoryCmd>;
-  readonly readReceipts: ActorRef<ReadReceiptsCmd>;
+  readonly roomDirectory: ActorRef<ChatRoomDirectoryCommand>;
+  readonly readReceipts: ActorRef<ReadReceiptsCommand>;
 }
 
 /* ------------------------------ actor ------------------------------- */
 
 type Phase = 'Unauthenticated' | 'Authenticated';
 
-export class UserSessionActor extends Actor<SessionMsg> {
+export class UserSessionActor extends Actor<SessionMessage> {
   private phase: Phase = 'Unauthenticated';
   private username: string | null = null;
   /** Token issued for this session — set on login or accepted resume. */
@@ -186,7 +186,7 @@ export class UserSessionActor extends Actor<SessionMsg> {
     try { this.deps.connection.close(); } catch { /* already closed */ }
   }
 
-  override onReceive(msg: SessionMsg): void {
+  override onReceive(msg: SessionMessage): void {
     match(msg)
       .with({ kind: 'text' }, (m) => this.onClientText(m.data))
       .with({ kind: 'binary' }, () => { /* binary frames are ignored */ })
@@ -328,7 +328,7 @@ export class UserSessionActor extends Actor<SessionMsg> {
         }
         if (!this.joinedRooms.has(m.room)) return;
         this.deps.chatRoomRegion.tell({
-          kind: 'SendMsg',
+          kind: 'SendMessage',
           room: m.room,
           from: this.username!,
           text,
@@ -552,9 +552,9 @@ export class UserSessionActor extends Actor<SessionMsg> {
     if (msg.room.includes('|')) {
       // Pair-id form — map to the recipient's `@<other>` virtual room.
       const idx = msg.room.indexOf('|');
-      const a = msg.room.slice(0, idx);
-      const b = msg.room.slice(idx + 1);
-      const other = me === a ? b : me === b ? a : null;
+      const first = msg.room.slice(0, idx);
+      const second = msg.room.slice(idx + 1);
+      const other = me === first ? second : me === second ? first : null;
       if (!other) return;
       displayRoom = dmRoomFor(other);
     }
@@ -631,9 +631,9 @@ export class UserSessionActor extends Actor<SessionMsg> {
     // other.  No regex parse needed — string split on `|`.
     const idx = msg.pairId.indexOf('|');
     if (idx <= 0) return;
-    const a = msg.pairId.slice(0, idx);
-    const b = msg.pairId.slice(idx + 1);
-    const other = me === a ? b : me === b ? a : null;
+    const first = msg.pairId.slice(0, idx);
+    const second = msg.pairId.slice(idx + 1);
+    const other = me === first ? second : me === second ? first : null;
     if (!other) return;
     this.sendServer({
       type: 'history',

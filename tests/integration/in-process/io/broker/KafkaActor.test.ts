@@ -17,7 +17,7 @@ import { Props } from '../../../../../src/Props.js';
 import {
   KafkaActor,
   withAutoHeartbeat,
-  type KafkaCmd,
+  type KafkaCommand,
   type KafkaConsumerLike,
   type KafkaInstanceLike,
   type KafkaProducerLike,
@@ -75,7 +75,7 @@ class MockConsumer implements KafkaConsumerLike {
   async commitOffsets(
     args: ReadonlyArray<{ topic: string; partition: number; offset: string }>,
   ): Promise<void> {
-    for (const a of args) this.committed.push({ ...a });
+    for (const actor of args) this.committed.push({ ...actor });
   }
 
   /** Drive a message into the pump.  Returns the in-flight tracker. */
@@ -137,21 +137,21 @@ class CapturingTarget extends Actor<KafkaRecord> {
 
 async function bootActor(
   sys: ActorSystem, options: KafkaOptionsBuilder,
-): Promise<{ actor: ActorRef<KafkaCmd>; mock: MockKafka; target: CapturingTarget }> {
+): Promise<{ actor: ActorRef<KafkaCommand>; mock: MockKafka; target: CapturingTarget }> {
   const target = new CapturingTarget();
   const targetRef = sys.spawn(Props.create(() => target), 'target');
   const ref = { current: null as MockKafkaActor | null };
   const actor = sys.spawn(
     Props.create(() => {
-      const a = new MockKafkaActor(options.withTarget(targetRef));
-      ref.current = a;
-      return a;
+      const actor = new MockKafkaActor(options.withTarget(targetRef));
+      ref.current = actor;
+      return actor;
     }),
     'kafka',
   );
-  // Wait until preStart has fired connectImpl + run() registration.
+  // Wait until preStart has fired connectImplementation + run() registration.
   await sleep(60);
-  return { actor: actor as ActorRef<KafkaCmd>, mock: ref.current!.mock, target };
+  return { actor: actor as ActorRef<KafkaCommand>, mock: ref.current!.mock, target };
 }
 
 /* ============================================================== */
@@ -325,12 +325,12 @@ describe('KafkaActor — manual commit (#2)', () => {
         .withConsumer({ groupId: 'g1', commitMode: 'manual' })
         .withTopics(['orders']);
       const { actor, mock } = await bootActor(sys, kafkaOptions);
-      const t = mock.consumer_.push('orders', 0, '5');
+      const pushed = mock.consumer_.push('orders', 0, '5');
       await sleep(20);
       actor.stop();
-      await t.promise;
-      expect(t.rejected).toBe(true);
-      expect(t.rejectError?.message).toMatch(/disconnecting/);
+      await pushed.promise;
+      expect(pushed.rejected).toBe(true);
+      expect(pushed.rejectError?.message).toMatch(/disconnecting/);
     } finally {
       await sys.terminate();
     }
@@ -361,12 +361,12 @@ describe('KafkaActor — manual commit (#2)', () => {
   });
 });
 
-describe('KafkaActor — settings parsing', () => {
+describe('KafkaActor — options parsing', () => {
   test('commitMode + commitTimeoutMs flow through to the consumer pump', async () => {
     const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
-    const sys = ActorSystem.create('kafka-settings', sysOptions);
+    const sys = ActorSystem.create('kafka-options', sysOptions);
     try {
       const kafkaOptions = KafkaOptions.create()
         .withBrokers(['x:9092'])

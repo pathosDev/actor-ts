@@ -62,12 +62,12 @@ exhausted.
 ## Subclass contract
 
 ```ts
-abstract class BrokerActor<S, Cmd, P> extends Actor<Cmd> {
+abstract class BrokerActor<S, Command, P> extends Actor<Command> {
   // Subclasses implement:
   protected abstract configKey(): string;
-  protected abstract builtInDefaults(): Partial<S>;
-  protected abstract readSettingsFromConfig(config: Config): Partial<S>;
-  protected abstract requiredSettings(): ReadonlyArray<keyof S>;
+  protected abstract builtInDefaultOptions(): Partial<S>;
+  protected abstract readOptionsFromConfig(config: Config): Partial<S>;
+  protected abstract requiredOptions(): ReadonlyArray<keyof S>;
   protected abstract endpointLabel(): string;
 
   protected abstract connectImpl(): Promise<void>;
@@ -78,8 +78,8 @@ abstract class BrokerActor<S, Cmd, P> extends Actor<Cmd> {
 
 Three categories:
 
-- **Settings glue** (`configKey`, `builtInDefaults`,
-  `readSettingsFromConfig`, `requiredSettings`,
+- **Settings glue** (`configKey`, `builtInDefaultOptions`,
+  `readOptionsFromConfig`, `requiredOptions`,
   `endpointLabel`) — describes how to assemble settings from
   the three layers (constructor + HOCON + defaults) and how to
   validate.
@@ -181,13 +181,13 @@ different broker actors in the system.
 ## Settings resolution
 
 ```
-1. builtInDefaults()           ← lowest priority (always applied)
-2. readSettingsFromConfig()    ← HOCON overrides
+1. builtInDefaultOptions()           ← lowest priority (always applied)
+2. readOptionsFromConfig()    ← HOCON overrides
 3. Constructor argument        ← highest priority (per-instance)
 ```
 
 `preStart` merges the three layers, validates against
-`requiredSettings()`, and stashes the result for the rest of the
+`requiredOptions()`, and stashes the result for the rest of the
 actor's life via `this.settings`.
 
 Missing required settings cause an early-error throw on
@@ -203,13 +203,13 @@ interface MyProtocolOptionsType extends BrokerCommonOptionsType {
   readonly url: string;
 }
 
-class MyProtocolActor extends BrokerActor<MyProtocolOptionsType, Cmd, MyPayload> {
+class MyProtocolActor extends BrokerActor<MyProtocolOptionsType, Command, MyPayload> {
   private conn: MyClient | null = null;
 
   protected configKey() { return 'actor-ts.io.broker.my-protocol'; }
-  protected builtInDefaults() { return { /* ... */ }; }
-  protected readSettingsFromConfig(c) { /* parse HOCON */ return {}; }
-  protected requiredSettings() { return ['url'] as const; }
+  protected builtInDefaultOptions() { return { /* ... */ }; }
+  protected readOptionsFromConfig(c) { /* parse HOCON */ return {}; }
+  protected requiredOptions() { return ['url'] as const; }
   protected endpointLabel() { return this.settings.url; }
 
   protected async connectImpl(): Promise<void> {

@@ -86,9 +86,9 @@ describe('promClientRegistry', () => {
       promOptions,
     );
 
-    const c = adapted.counter('foo_total', { node: 'a' }, { help: 'hits' });
-    c.inc();
-    c.inc(4);
+    const counter = adapted.counter('foo_total', { node: 'a' }, { help: 'hits' });
+    counter.inc();
+    counter.inc(4);
 
     const metric = reg.registered.find((m) => m.opts.name === 'foo_total')!;
     expect(metric.opts.labelNames).toEqual(['node']);
@@ -97,7 +97,7 @@ describe('promClientRegistry', () => {
       'inc:4@a',
     ]);
     // Local mirror works without round-tripping through prom-client.
-    expect(c.value).toBe(5);
+    expect(counter.value).toBe(5);
   });
 
   test('gauge supports set + inc + dec', () => {
@@ -110,14 +110,14 @@ describe('promClientRegistry', () => {
       promOptions,
     );
 
-    const g = adapted.gauge('mailbox_depth');
-    g.set(10);
-    g.inc();
-    g.dec(2);
+    const gauge = adapted.gauge('mailbox_depth');
+    gauge.set(10);
+    gauge.inc();
+    gauge.dec(2);
 
     const metric = reg.registered.find((m) => m.opts.name === 'mailbox_depth')!;
     expect(metric.calls.map((x) => `${x.type}:${x.value}`)).toEqual(['set:10', 'inc:1', 'dec:2']);
-    expect(g.value).toBe(9);
+    expect(gauge.value).toBe(9);
   });
 
   test('histogram observe + buckets', () => {
@@ -130,15 +130,15 @@ describe('promClientRegistry', () => {
       promOptions,
     );
 
-    const h = adapted.histogram('lat_seconds', undefined, { buckets: [0.1, 0.5, 1] });
-    h.observe(0.05);
-    h.observe(0.7);
-    h.observe(1.5);
+    const histogram = adapted.histogram('lat_seconds', undefined, { buckets: [0.1, 0.5, 1] });
+    histogram.observe(0.05);
+    histogram.observe(0.7);
+    histogram.observe(1.5);
 
-    expect(h.count).toBe(3);
-    expect(h.sum).toBeCloseTo(2.25, 5);
+    expect(histogram.count).toBe(3);
+    expect(histogram.sum).toBeCloseTo(2.25, 5);
     // buckets [0.1, 0.5, 1, +Inf]; counts [1, 1, 2, 3] cumulative
-    expect([...h.counts]).toEqual([1, 1, 2, 3]);
+    expect([...histogram.counts]).toEqual([1, 1, 2, 3]);
     const metric = reg.registered.find((m) => m.opts.name === 'lat_seconds')!;
     expect(metric.opts.buckets).toEqual([0.1, 0.5, 1]);
     expect(metric.calls.length).toBe(3);
@@ -199,7 +199,7 @@ describe('promClientRegistry', () => {
     // both label values land on it via .labels(...).inc().
     const hits = reg.registered.filter((m) => m.opts.name === 'hits');
     expect(hits.length).toBe(1);
-    expect(hits[0]!.calls.map((c) => `${c.value}@${c.labels['node']}`)).toEqual([
+    expect(hits[0]!.calls.map((counter) => `${counter.value}@${counter.labels['node']}`)).toEqual([
       '1@a', '2@b', '3@a',
     ]);
   });

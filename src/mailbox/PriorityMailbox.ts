@@ -1,4 +1,5 @@
 import { Mailbox, type Envelope } from '../internal/Mailbox.js';
+import type { PriorityMailboxOptions, PriorityMailboxOptionsType } from './PriorityMailboxOptions.js';
 
 /**
  * Priority order for user messages.  Lower numeric priority values are
@@ -6,10 +7,6 @@ import { Mailbox, type Envelope } from '../internal/Mailbox.js';
  * insertion order.
  */
 export type PriorityFunction<T> = (message: T) => number;
-
-export interface PriorityMailboxSettings<T> {
-  readonly priorityFor: PriorityFunction<T>;
-}
 
 /**
  * User messages are dequeued in priority order (ascending priority value,
@@ -23,9 +20,9 @@ export class PriorityMailbox<T = unknown> extends Mailbox<T> {
   private seq = 0;
   private readonly ordered: Array<{ env: Envelope<T>; priority: number; seq: number }> = [];
 
-  constructor(settings: PriorityMailboxSettings<T>) {
+  constructor(options: PriorityMailboxOptions<T>) {
     super();
-    this.priorityFor = settings.priorityFor;
+    this.priorityFor = (options as PriorityMailboxOptionsType<T>).priorityFor;
   }
 
   override enqueue(env: Envelope<T>): void {
@@ -64,7 +61,7 @@ export class PriorityMailbox<T = unknown> extends Mailbox<T> {
   override prependUser(envs: Array<Envelope<T>>): void {
     // Reinsert via enqueue — priority is re-computed, which is the correct
     // behaviour (unstashed messages rejoin their priority tier).
-    for (const e of envs) this.enqueue(e);
+    for (const envelope of envs) this.enqueue(envelope);
   }
 
   /** Peek at the next message that would be dequeued, without removing it. */

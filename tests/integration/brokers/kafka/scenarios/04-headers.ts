@@ -27,15 +27,15 @@ export const scenario: BrokerScenario<KafkaCtx> = {
     // and gives the broker a settled metadata view BEFORE the
     // consumer subscribes.
     const warmup = spawnKafka(ctx);
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((resolve) => setTimeout(resolve, 500));
     warmup.tell({ kind: 'publish', publish: { topic, value: 'warmup' } });
-    await new Promise((r) => setTimeout(r, 1_500));
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
     warmup.stop();
 
     const consumer = spawnKafka(ctx, { groupId, topics: [topic], target: inboxRef });
     const producer = spawnKafka(ctx);
     try {
-      await new Promise((r) => setTimeout(r, 2_000));
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
 
       // Plain `Uint8Array` deliberately — the framework's
       // KafkaActor.dispatchOutgoing coerces this to Buffer
@@ -58,17 +58,17 @@ export const scenario: BrokerScenario<KafkaCtx> = {
       // We may receive the warmup message first (fromBeginning: true).
       // Look specifically for the with-headers record.
       await waitFor(`received the headers record on ${topic}`,
-        () => inbox.received.some((r) => decode(r.value) === 'with-headers'),
+        () => inbox.received.some((record) => decode(record.value) === 'with-headers'),
         20_000,
       );
-      const r = inbox.received.find((x) => decode(x.value) === 'with-headers')!;
-      if (decode(r.headers['x-trace-id']) !== 'abc123') {
-        throw new Error(`x-trace-id missing/wrong: got ${decode(r.headers['x-trace-id'])}`);
+      const record = inbox.received.find((x) => decode(x.value) === 'with-headers')!;
+      if (decode(record.headers['x-trace-id']) !== 'abc123') {
+        throw new Error(`x-trace-id missing/wrong: got ${decode(record.headers['x-trace-id'])}`);
       }
-      if (decode(r.headers['x-source']) !== 'integration-test') {
-        throw new Error(`x-source missing/wrong: got ${decode(r.headers['x-source'])}`);
+      if (decode(record.headers['x-source']) !== 'integration-test') {
+        throw new Error(`x-source missing/wrong: got ${decode(record.headers['x-source'])}`);
       }
-      const bin = r.headers['x-binary'];
+      const bin = record.headers['x-binary'];
       if (!(bin instanceof Uint8Array) && typeof bin !== 'string') {
         throw new Error(`x-binary unexpected shape: ${typeof bin}`);
       }

@@ -61,8 +61,8 @@ A short tour of what's in the box:
 - **HTTP** — directive-style routing DSL with Fastify default, Express + Hono
   backends, response caching, rate-limiting, idempotency-key dedup.  Typed
   **WebSocket** routes: `websocket(path, actorRef)` binds a
-  `WebSocketServerActor` (typed messages, `reply` / `broadcast`,
-  connect/disconnect hooks); `WebSocketClientActor` is the reconnecting
+  `WebsocketServerActor` (typed messages, `reply` / `broadcast`,
+  connect/disconnect hooks); `WebsocketClientActor` is the reconnecting
   client half.  Scoped error handling (`handleErrors`) + `fallback` routes;
   a security-middleware suite (CORS, CSRF, HSTS, CSP, security headers,
   Basic auth, request-id, timeout); HTML-escaping helpers; and
@@ -129,21 +129,21 @@ snippet that matches what you're reaching for.
 Discriminated-union messages plus `match().exhaustive()` from
 [`ts-pattern`](https://github.com/gvergnaud/ts-pattern) give you a
 compile-time check that every variant is handled. Add a new variant
-to `Cmd` without a matching `with(...)` arm and TypeScript fails the
+to `Command` without a matching `with(...)` arm and TypeScript fails the
 build.
 
 ```ts
 import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
 import { match } from 'ts-pattern';
 
-type Cmd =
+type Command =
   | { kind: 'inc' }
   | { kind: 'dec' }
   | { kind: 'get'; replyTo: ActorRef<number> };
 
-class Counter extends Actor<Cmd> {
+class Counter extends Actor<Command> {
   private count = 0;
-  override onReceive(cmd: Cmd): void {
+  override onReceive(cmd: Command): void {
     match(cmd)
       .with({ kind: 'inc' }, () => { this.count++; })
       .with({ kind: 'dec' }, () => { this.count--; })
@@ -182,11 +182,11 @@ the rest of the app sees, every mutation durable.
 ```ts
 import { PersistentActor, ActorSystem, Props } from 'actor-ts';
 
-type Cmd   = { kind: 'inc' } | { kind: 'dec' };
+type Command   = { kind: 'inc' } | { kind: 'dec' };
 type Event = { kind: 'incremented' } | { kind: 'decremented' };
 interface State { count: number }
 
-class Counter extends PersistentActor<Cmd, Event, State> {
+class Counter extends PersistentActor<Command, Event, State> {
   readonly persistenceId = 'counter-1';
   initialState(): State { return { count: 0 }; }
   onEvent(s: State, e: Event): State {
@@ -194,7 +194,7 @@ class Counter extends PersistentActor<Cmd, Event, State> {
       ? { count: s.count + 1 }
       : { count: s.count - 1 };
   }
-  onCommand(_state: State, cmd: Cmd): void {
+  onCommand(_state: State, cmd: Command): void {
     this.persist({
       kind: cmd.kind === 'inc' ? 'incremented' : 'decremented',
     });
@@ -219,7 +219,7 @@ import { Cluster } from 'actor-ts';
 const { system, cluster } = await Cluster.bootstrap({ name: 'app' });
 
 const cartRegion = cluster.sharding.start('cart', CartActor, {
-  extractEntityId: (msg: CartCmd) => msg.entityId,
+  extractEntityId: (msg: CartCommand) => msg.entityId,
 });
 
 cartRegion.tell({ entityId: 'user-42', kind: 'add', sku: 'book-1' });

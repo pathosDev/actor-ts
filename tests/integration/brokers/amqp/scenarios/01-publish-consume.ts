@@ -67,9 +67,9 @@ export const scenario: BrokerScenario<AmqpCtx> = {
         () => inbox.received.length >= 1,
         10_000,
       );
-      const d = inbox.received[0]!;
-      if (new TextDecoder().decode(d.content) !== 'hello-amqp') {
-        throw new Error(`payload mismatch: got ${new TextDecoder().decode(d.content)}`);
+      const delivery = inbox.received[0]!;
+      if (new TextDecoder().decode(delivery.content) !== 'hello-amqp') {
+        throw new Error(`payload mismatch: got ${new TextDecoder().decode(delivery.content)}`);
       }
     } finally {
       amqp.stop();

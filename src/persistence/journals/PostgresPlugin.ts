@@ -18,7 +18,7 @@ export interface PostgresPluginHandles {
    * The DurableState store instance.  `PersistenceExtension` carries no
    * DurableState registry (same as the object-storage plugin), so callers
    * who want DurableState read this from the return value and pass it into
-   * their `DurableStateActor` settings.
+   * their `DurableStateActor` options.
    */
   readonly durableStateStore: PostgresDurableStateStore;
 }
@@ -41,14 +41,14 @@ export function registerPostgresPlugins(
   ext: PersistenceExtension,
   options: RegisterPostgresPluginsOptions = {},
 ): PostgresPluginHandles {
-  const s = (options as RegisterPostgresPluginsOptionsType);
+  const resolvedOptions = (options as RegisterPostgresPluginsOptionsType);
 
   // Resolve each leaf to a plain object and merge the shared pool (when
   // set) onto it — no more mutating nested builders.  A missing leaf falls
   // back to an empty object so the shared pool still reaches every store.
-  const journal = { ...((s.journal ?? {}) as Partial<PostgresJournalOptionsType>), ...(s.pool ? { pool: s.pool } : {}) };
-  const snapshotStore = { ...((s.snapshotStore ?? {}) as Partial<PostgresSnapshotStoreOptionsType>), ...(s.pool ? { pool: s.pool } : {}) };
-  const durableState = { ...((s.durableStateStore ?? {}) as Partial<PostgresDurableStateStoreOptionsType>), ...(s.pool ? { pool: s.pool } : {}) };
+  const journal = { ...((resolvedOptions.journal ?? {}) as Partial<PostgresJournalOptionsType>), ...(resolvedOptions.pool ? { pool: resolvedOptions.pool } : {}) };
+  const snapshotStore = { ...((resolvedOptions.snapshotStore ?? {}) as Partial<PostgresSnapshotStoreOptionsType>), ...(resolvedOptions.pool ? { pool: resolvedOptions.pool } : {}) };
+  const durableState = { ...((resolvedOptions.durableStateStore ?? {}) as Partial<PostgresDurableStateStoreOptionsType>), ...(resolvedOptions.pool ? { pool: resolvedOptions.pool } : {}) };
 
   ext.registerJournal(
     POSTGRES_JOURNAL_PLUGIN_ID,

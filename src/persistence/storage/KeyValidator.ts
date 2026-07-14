@@ -106,11 +106,11 @@ export function makeKeyValidator(rules: KeyValidationRules): (key: string) => vo
     // are on (matches the pre-refactor MemcachedCache behaviour).
     if (rejectControlChars) {
       for (let i = 0; i < key.length; i++) {
-        const c = key.charCodeAt(i);
-        if (c <= 0x1F || c === 0x7F) {
+        const charCode = key.charCodeAt(i);
+        if (charCode <= 0x1F || charCode === 0x7F) {
           throw new errorClass(
             `${errorPrefix}: contains control character at index ${i} ` +
-            `(charCode=${c}) — would allow protocol injection`,
+            `(charCode=${charCode}) — would allow protocol injection`,
           );
         }
       }

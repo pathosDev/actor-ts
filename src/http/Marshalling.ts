@@ -30,11 +30,11 @@ export function pickResponseSerializer(req: HttpRequest): {
 } {
   const accept = req.headers['accept'] ?? 'application/json';
   for (const tok of accept.split(',')) {
-    const t = tok.trim().split(';')[0]!.toLowerCase();
-    if (t === 'application/cbor' || t === 'application/x-cbor') {
+    const mediaType = tok.trim().split(';')[0]!.toLowerCase();
+    if (mediaType === 'application/cbor' || mediaType === 'application/x-cbor') {
       return { serializer: new CborSerializer(), contentType: 'application/cbor' };
     }
-    if (t === 'application/json' || t === '*/*') {
+    if (mediaType === 'application/json' || mediaType === '*/*') {
       return { serializer: new JsonSerializer(), contentType: 'application/json; charset=utf-8' };
     }
   }

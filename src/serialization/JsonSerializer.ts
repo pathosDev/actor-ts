@@ -58,8 +58,8 @@ function encodeTree(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(encodeTree);
   if (typeof value === 'object') {
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = encodeTree(v);
+    for (const [key, entryValue] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = encodeTree(entryValue);
     }
     return out;
   }
@@ -83,15 +83,15 @@ function decodeTree(value: unknown): unknown {
   if (SET_TAG in obj) return new Set((obj[SET_TAG] as unknown[]).map(decodeTree));
   if (BIGINT_TAG in obj) return BigInt(obj[BIGINT_TAG] as string);
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(obj)) out[k] = decodeTree(v);
+  for (const [key, value] of Object.entries(obj)) out[key] = decodeTree(value);
   return out;
 }
 
 function toBase64(bytes: Uint8Array): string {
   if (typeof Buffer !== 'undefined') return Buffer.from(bytes).toString('base64');
-  let s = '';
-  for (let i = 0; i < bytes.byteLength; i++) s += String.fromCharCode(bytes[i]!);
-  return btoa(s);
+  let binaryString = '';
+  for (let i = 0; i < bytes.byteLength; i++) binaryString += String.fromCharCode(bytes[i]!);
+  return btoa(binaryString);
 }
 
 function fromBase64(s: string): Uint8Array {

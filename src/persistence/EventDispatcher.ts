@@ -85,7 +85,7 @@ export interface EventDispatcherBuilder<
     : EventDispatcherIncomplete<Exclude<E['kind'], Handled>>;
 }
 
-class EventDispatcherBuilderImpl<
+class EventDispatcherBuilderImplementation<
   S,
   E extends { readonly kind: string },
   Handled extends E['kind'],
@@ -109,7 +109,7 @@ class EventDispatcherBuilderImpl<
     }
     const next = new Map<string, (state: S, event: E) => S>(this.handlers);
     next.set(kind, fn as unknown as (state: S, event: E) => S);
-    return new EventDispatcherBuilderImpl<S, E, Handled | K>(next);
+    return new EventDispatcherBuilderImplementation<S, E, Handled | K>(next);
   }
 
   build(): [Exclude<E['kind'], Handled>] extends [never]
@@ -149,5 +149,5 @@ export function eventDispatcher<
   S,
   E extends { readonly kind: string },
 >(): EventDispatcherBuilder<S, E, never> {
-  return new EventDispatcherBuilderImpl<S, E, never>(new Map());
+  return new EventDispatcherBuilderImplementation<S, E, never>(new Map());
 }

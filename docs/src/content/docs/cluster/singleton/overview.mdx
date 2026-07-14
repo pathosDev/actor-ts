@@ -69,8 +69,8 @@ probably what you want.
 import { Actor, ActorSystem, Cluster, ClusterOptions, Props } from 'actor-ts';
 import { ClusterSingletonManager, ClusterSingletonManagerOptions, ClusterSingletonProxy } from 'actor-ts';
 
-class JobScheduler extends Actor<JobCmd> {
-  override onReceive(msg: JobCmd): void { /* ... */ }
+class JobScheduler extends Actor<JobCommand> {
+  override onReceive(msg: JobCommand): void { /* ... */ }
 }
 
 const system  = ActorSystem.create('my-app');
@@ -81,7 +81,7 @@ const clusterOptions = ClusterOptions.create()
 const cluster = await Cluster.join(system, clusterOptions);
 
 // On every node: start the manager.
-const clusterSingletonManagerOptions = ClusterSingletonManagerOptions.create<JobCmd>()
+const clusterSingletonManagerOptions = ClusterSingletonManagerOptions.create<JobCommand>()
   .withCluster(cluster)
   .withTypeName('job-scheduler')
   .withSingletonProps(Props.create(() => new JobScheduler()))

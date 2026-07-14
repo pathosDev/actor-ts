@@ -13,7 +13,7 @@ Sharded Entities in actor-ts sind das nächste Analogon.
 
 ```
 Orleans:                       actor-ts:
-  IGreeter Grain-Interface    →  TypeScript-Nachrichten-Typen (Cmd-Union)
+  IGreeter Grain-Interface    →  TypeScript-Nachrichten-Typen (Command-Union)
   GreeterGrain : Grain         →  Actor, der PersistentActor erweitert (oder normaler Actor)
   IGrainKey                    →  string Entity-ID
   client.GetGrain<IGreeter>(id)→  Referenz + tell über Sharding-Region
@@ -45,14 +45,14 @@ public class UserGrain : Grain, IUserGrain {
 // actor-ts:
 import { Actor, type ActorRef } from 'actor-ts';
 
-type Cmd =
+type Command =
   | { entityId: string; kind: 'get-profile'; replyTo: ActorRef<UserProfile> }
   | { entityId: string; kind: 'update-name'; name: string };
 
-class UserActor extends Actor<Cmd> {
+class UserActor extends Actor<Command> {
   private profile: UserProfile = { name: '', email: '' };
 
-  override onReceive(cmd: Cmd): void {
+  override onReceive(cmd: Command): void {
     if (cmd.kind === 'get-profile') cmd.replyTo.tell(this.profile);
     if (cmd.kind === 'update-name')  this.profile = { ...this.profile, name: cmd.name };
   }
@@ -79,7 +79,7 @@ await grain.UpdateName("Alice");
 // actor-ts:
 import { ClusterSharding } from 'actor-ts';
 
-const region = cluster.sharding.start<Cmd>({
+const region = cluster.sharding.start<Command>({
   typeName: 'user',
   entityProps: Props.create(() => new UserActor()),
   extractEntityId: (cmd) => cmd.entityId,
@@ -118,7 +118,7 @@ public override Task OnDeactivateAsync(DeactivationReason reason, CancellationTo
 
 ```ts
 // actor-ts:
-class UserActor extends Actor<Cmd> {
+class UserActor extends Actor<Command> {
   override preStart(): void {
     // Äquivalent zu OnActivateAsync
   }
@@ -155,7 +155,7 @@ public class AccountGrain : JournaledGrain<AccountState, AccountEvent>, IAccount
 
 ```ts
 // actor-ts:
-class Account extends PersistentActor<Cmd, Event, State> {
+class Account extends PersistentActor<Command, Event, State> {
   readonly persistenceId = `account-${this.entityId}`;
 
   initialState(): State { return { balance: 0 }; }
@@ -165,7 +165,7 @@ class Account extends PersistentActor<Cmd, Event, State> {
     return state;
   }
 
-  onCommand(state: State, cmd: Cmd): void {
+  onCommand(state: State, cmd: Command): void {
     if (cmd.kind === 'deposit') {
       this.persist({ kind: 'deposited', amount: cmd.amount }, () => {});
     }
@@ -199,7 +199,7 @@ public Task ReceiveReminder(string reminderName, TickStatus status) {
 
 ```ts
 // actor-ts - kein direktes Äquivalent, baue mit Persistenz + Timern:
-class MyActor extends PersistentActor<Cmd, Event, State> {
+class MyActor extends PersistentActor<Command, Event, State> {
   override preStart(): void {
     super.preStart();
     this.context.timers.startTimerWithFixedDelay(

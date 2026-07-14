@@ -19,9 +19,9 @@ import { runScenarios } from '../lib/scenario.js';
 import { sqlPersistenceScenarios, type SqlPersistenceCtx } from '../lib/persistence-contract.js';
 
 function requireEnv(name: string): string {
-  const v = process.env[name];
-  if (!v) throw new Error(`runner: missing env var ${name}`);
-  return v;
+  const value = process.env[name];
+  if (!value) throw new Error(`runner: missing env var ${name}`);
+  return value;
 }
 
 async function main(): Promise<void> {

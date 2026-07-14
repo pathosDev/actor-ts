@@ -21,13 +21,13 @@ bei Timeout rejected.
 ```ts
 import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
 
-type Cmd =
+type Command =
   | { readonly kind: 'inc' }
   | { readonly kind: 'get'; readonly replyTo: ActorRef<number> };
 
-class Counter extends Actor<Cmd> {
+class Counter extends Actor<Command> {
   private count = 0;
-  override onReceive(cmd: Cmd): void {
+  override onReceive(cmd: Command): void {
     if (cmd.kind === 'inc') this.count++;
     else if (cmd.kind === 'get') cmd.replyTo.tell(this.count);
   }
@@ -72,7 +72,7 @@ dieser Ref tellt.
 
 Per Konvention verwendet das Framework **`replyTo`** als Feldnamen in
 der Request-Nachricht, und der Empfänger pattern-matcht darauf wie auf
-jedes andere Feld.  Schau dir den `Cmd`-Typ oben an: die
+jedes andere Feld.  Schau dir den `Command`-Typ oben an: die
 `'get'`-Variante hat `replyTo: ActorRef<number>`.
 
 Für den Empfänger ist es einfach ein normales `tell` auf einer
@@ -142,8 +142,8 @@ Ein Empfänger kann einen Ask **ablehnen**, indem er mit einer
 Fehler rejected, statt mit der Nachricht resolved.
 
 ```ts
-class Service extends Actor<Cmd> {
-  override onReceive(cmd: Cmd): void {
+class Service extends Actor<Command> {
+  override onReceive(cmd: Command): void {
     if (cmd.kind === 'fetch') {
       if (this.unavailable) {
         cmd.replyTo.tell(new Error('service unavailable'));

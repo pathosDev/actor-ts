@@ -82,8 +82,8 @@ async function pollFor<T>(
 ): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const v = fn();
-    if (v !== null && v !== undefined) return v;
+    const result = fn();
+    if (result !== null && result !== undefined) return result;
     await sleep(intervalMs);
   }
   fail(`timed out waiting for ${what}`);
@@ -105,7 +105,7 @@ async function main(): Promise<void> {
 
   const procs: ChildProcess[] = [];
   process.on('exit', () => {
-    for (const p of procs) try { p.kill('SIGKILL'); } catch { /* ignore */ }
+    for (const proc of procs) try { proc.kill('SIGKILL'); } catch { /* ignore */ }
   });
 
   // Spawn the three nodes.
@@ -115,12 +115,12 @@ async function main(): Promise<void> {
       '--port', String(node.port),
     ];
     if (node.seeds) args.push('--seeds', node.seeds);
-    const p = spawn('bun', args, {
+    const child = spawn('bun', args, {
       cwd: repoRoot,
       stdio: 'ignore',
       shell: process.platform === 'win32',
     });
-    procs.push(p);
+    procs.push(child);
     await sleep(1000); // staggered start
   }
   ok(`3 cluster nodes started`);
@@ -149,8 +149,8 @@ async function main(): Promise<void> {
   const newPid = await pollFor(
     'a different PID to bind :8080',
     () => {
-      const p = pidOnPort(HTTP_PORT);
-      return p !== null && p !== initialPid ? p : null;
+      const pid = pidOnPort(HTTP_PORT);
+      return pid !== null && pid !== initialPid ? pid : null;
     },
     20_000,
   );
@@ -167,7 +167,7 @@ async function main(): Promise<void> {
   ok(`post-failover GET / -> 200`);
 
   // Tear everything down.
-  for (const p of procs) try { p.kill('SIGKILL'); } catch { /* ignore */ }
+  for (const proc of procs) try { proc.kill('SIGKILL'); } catch { /* ignore */ }
   await sleep(500);
   process.exit(0);
 }

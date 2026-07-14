@@ -170,9 +170,9 @@ export function failure(error: unknown): Failure { return new Failure(error); }
 /** Collect successes; short-circuit to the first Failure seen. */
 export function trySequence<T>(tries: ReadonlyArray<Try<T>>): Try<T[]> {
   const out: T[] = [];
-  for (const t of tries) {
-    if (t.isFailure()) return t;
-    out.push(t.value);
+  for (const attempt of tries) {
+    if (attempt.isFailure()) return attempt;
+    out.push(attempt.value);
   }
   return new Success(out);
 }

@@ -60,9 +60,9 @@ async function startNode(
   return { system, cluster, address: addr };
 }
 
-async function stopNode(n: Node): Promise<void> {
-  await n.cluster.leave();
-  await n.system.terminate();
+async function stopNode(node: Node): Promise<void> {
+  await node.cluster.leave();
+  await node.system.terminate();
 }
 
 describe('WorkerBroker ↔ MessageChannelTransport end-to-end', () => {
@@ -71,16 +71,16 @@ describe('WorkerBroker ↔ MessageChannelTransport end-to-end', () => {
     const addrA = new NodeAddress('wm-two', 'w', 1);
     const addrB = new NodeAddress('wm-two', 'w', 2);
 
-    const a = await startNode('wm-two', addrA, broker);
-    const b = await startNode('wm-two', addrB, broker, [addrA.toString()]);
+    const nodeA = await startNode('wm-two', addrA, broker);
+    const nodeB = await startNode('wm-two', addrB, broker, [addrA.toString()]);
 
     await waitFor(() =>
-      a.cluster.upMembers().length === 2 && b.cluster.upMembers().length === 2,
+      nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2,
       2_000,
     );
 
-    await stopNode(a);
-    await stopNode(b);
+    await stopNode(nodeA);
+    await stopNode(nodeB);
     broker.close();
   });
 
@@ -89,19 +89,19 @@ describe('WorkerBroker ↔ MessageChannelTransport end-to-end', () => {
     const addrA = new NodeAddress('wm-msg', 'w', 1);
     const addrB = new NodeAddress('wm-msg', 'w', 2);
 
-    const a = await startNode('wm-msg', addrA, broker);
-    const b = await startNode('wm-msg', addrB, broker, [addrA.toString()]);
+    const nodeA = await startNode('wm-msg', addrA, broker);
+    const nodeB = await startNode('wm-msg', addrB, broker, [addrA.toString()]);
     await waitFor(() =>
-      a.cluster.upMembers().length === 2 && b.cluster.upMembers().length === 2,
+      nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2,
       2_000,
     );
     // Cluster-Membership reached across broker: that's the acceptance
     // criterion for this test — the gossip wire traffic was carried
     // end-to-end by MessageChannelTransport.
-    expect(a.cluster.upMembers().map(m => m.address.toString()).sort())
+    expect(nodeA.cluster.upMembers().map(m => m.address.toString()).sort())
       .toEqual([addrA.toString(), addrB.toString()].sort());
 
-    await stopNode(a); await stopNode(b);
+    await stopNode(nodeA); await stopNode(nodeB);
     broker.close();
   });
 
@@ -117,30 +117,30 @@ describe('WorkerBroker ↔ MessageChannelTransport end-to-end', () => {
     nodes.push(await startNode('wm-three', addrs[1]!, broker, [addrs[0]!.toString()]));
     nodes.push(await startNode('wm-three', addrs[2]!, broker, [addrs[0]!.toString()]));
 
-    await waitFor(() => nodes.every(n => n.cluster.upMembers().length === 3), 3_000);
+    await waitFor(() => nodes.every(node => node.cluster.upMembers().length === 3), 3_000);
 
-    for (const n of nodes) {
-      const ups = n.cluster.upMembers().map(m => m.address.toString()).sort();
-      expect(ups).toEqual(addrs.map(a => a.toString()).sort());
+    for (const node of nodes) {
+      const ups = node.cluster.upMembers().map(m => m.address.toString()).sort();
+      expect(ups).toEqual(addrs.map(nodeA => nodeA.toString()).sort());
     }
 
-    for (const n of nodes) await stopNode(n);
+    for (const node of nodes) await stopNode(node);
     broker.close();
   });
 
   test('orphaned sends between unclustered nodes do not crash anything', async () => {
     const broker = new WorkerBroker();
     const addrA = new NodeAddress('wm-orphan', 'w', 1);
-    const a = await startNode('wm-orphan', addrA, broker);
+    const nodeA = await startNode('wm-orphan', addrA, broker);
 
     class NoopActor extends Actor<string> { override onReceive(_: string): void {} }
-    const ref = a.system.spawn(Props.create(() => new NoopActor()), 'noop');
+    const ref = nodeA.system.spawn(Props.create(() => new NoopActor()), 'noop');
     ref.tell('hello');
     await sleep(30);
     // Survived without error.
-    expect(a.cluster.upMembers().length).toBe(1);
+    expect(nodeA.cluster.upMembers().length).toBe(1);
 
-    await stopNode(a);
+    await stopNode(nodeA);
     broker.close();
   });
 });

@@ -177,10 +177,10 @@ export class CassandraJournal implements Journal {
     const lastPartition = Math.floor(Math.max(hi - 1, 0) / partitionSize);
 
     const out: PersistentEvent<E>[] = [];
-    for (let p = firstPartition; p <= lastPartition; p++) {
+    for (let partition = firstPartition; partition <= lastPartition; partition++) {
       const res = await this.client.execute(
         `SELECT persistence_id, partition_nr, sequence_nr, timestamp, payload, tags FROM ${this.qualified(this.eventsTable)} WHERE persistence_id = ? AND partition_nr = ? AND sequence_nr >= ? AND sequence_nr <= ?`,
-        [pid, p, fromSeq, hi],
+        [pid, partition, fromSeq, hi],
         { prepare: true },
       );
       for (const row of res.rows as unknown as EventRow[]) {
@@ -207,11 +207,11 @@ export class CassandraJournal implements Journal {
     await this.ensureStarted();
     const partitionSize = this.options.partitionSize ?? 500_000;
     const lastPartition = Math.floor(Math.max(toSeq - 1, 0) / partitionSize);
-    for (let p = 0; p <= lastPartition; p++) {
+    for (let partition = 0; partition <= lastPartition; partition++) {
       try {
         await this.client.execute(
           `DELETE FROM ${this.qualified(this.eventsTable)} WHERE persistence_id = ? AND partition_nr = ? AND sequence_nr <= ?`,
-          [pid, p, toSeq],
+          [pid, partition, toSeq],
           { prepare: true },
         );
       } catch (e) {

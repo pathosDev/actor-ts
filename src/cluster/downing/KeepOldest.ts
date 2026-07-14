@@ -13,16 +13,16 @@ import type { KeepOldestOptions, KeepOldestOptionsType } from './KeepOldestOptio
  * election in this project.
  */
 export class KeepOldest implements DowningProvider {
-  private readonly settings: KeepOldestOptionsType;
+  private readonly options: KeepOldestOptionsType;
 
   constructor(options: KeepOldestOptions = {}) {
-    this.settings = options as KeepOldestOptionsType;
+    this.options = options as KeepOldestOptionsType;
   }
 
   decide(view: ClusterPartitionView): DowningDecision {
     const candidates = view.allMembers.filter((m) =>
       (m.status === 'up' || m.status === 'leaving' || m.status === 'unreachable') &&
-      (!this.settings.role || m.hasRole(this.settings.role))
+      (!this.options.role || m.hasRole(this.options.role))
     );
     if (candidates.length === 0) return new Set();
 
@@ -40,7 +40,7 @@ export class KeepOldest implements DowningProvider {
     }
 
     // Oldest is unreachable.  Default: treat it as if we lose — down ourselves.
-    if (this.settings.downIfAlone) {
+    if (this.options.downIfAlone) {
       return new Set(reachable.map(addrKey));
     }
     // Without the override, the conservative default is still: keep the

@@ -89,7 +89,7 @@ const resolver: ConflictResolver<State, Event> = {
   },
 };
 
-class Counter extends ReplicatedEventSourcedActor<Cmd, Event, State> {
+class Counter extends ReplicatedEventSourcedActor<Command, Event, State> {
   readonly persistenceId = 'counter-42';
   readonly replicaId     = process.env.REPLICA_ID!;
   readonly conflictResolver = resolver;

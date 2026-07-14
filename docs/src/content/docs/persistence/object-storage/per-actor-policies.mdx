@@ -15,7 +15,7 @@ Override per-actor by implementing the `compression()` /
 `encryption()` methods:
 
 ```ts
-class SensitiveActor extends DurableStateActor<Cmd, State> {
+class SensitiveActor extends DurableStateActor<Command, State> {
   protected encryption() {
     return { keyRing: sensitiveKeyRing };
   }
@@ -156,7 +156,7 @@ See [key rotation](/persistence/object-storage/key-rotation/).
 ## Working with the snapshot store
 
 ```ts
-class Account extends PersistentActor<Cmd, Event, State> {
+class Account extends PersistentActor<Command, Event, State> {
   // Per-actor compression for snapshots:
   protected compression() {
     return { algorithm: 'zstd' as const };

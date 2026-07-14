@@ -79,8 +79,8 @@ describe('idempotent — missing header policy', () => {
   test('default (reject): no header → 400', async () => {
     const cache = new InMemoryCache();
     const handler = idempotent({ cache })(() => complete(Status.OK, {}));
-    const r = await handler(makeReq({}));
-    expect(r.status).toBe(Status.BadRequest);
+    const response = await handler(makeReq({}));
+    expect(response.status).toBe(Status.BadRequest);
   });
 
   test('pass-through: no header → handler runs', async () => {

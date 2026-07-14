@@ -64,7 +64,7 @@
     "test:integration:brokers:teardown": "bun run test:integration:s3:teardown; bun run test:integration:mqtt:teardown; bun run test:integration:kafka:teardown; bun run test:integration:amqp:teardown; bun run test:integration:nats:teardown; bun run test:integration:redis:teardown; bun run test:integration:grpc:teardown; bun run test:integration:k8s:teardown; bun run test:integration:postgres:teardown; bun run test:integration:mariadb:teardown",
     "smoke:bun": "bun tests/smoke/run-cases.mjs",
     "smoke:node": "bun run build && ACTOR_TS_SMOKE_USE_DIST=1 node tests/smoke/run-cases.mjs",
-    "smoke:deno": "bun run build && ACTOR_TS_SMOKE_USE_DIST=1 deno run --allow-read --allow-env tests/smoke/run-cases.mjs",
+    "smoke:deno": "bun run build && ACTOR_TS_SMOKE_USE_DIST=1 deno run --allow-read --allow-env --allow-write tests/smoke/run-cases.mjs",
     "smoke": "bun run smoke:bun && bun run smoke:node && bun run smoke:deno",
     "bench": "bun run benchmarks/run-all.ts",
     "prepublishOnly": "bun run clean && bun run build && bun run typecheck && bun test"

@@ -13,8 +13,8 @@ export {
   GetTopics,
   Publish,
   Subscribe,
-  SubscribeAck,
+  SubscribeAcknowledgment,
   Unsubscribe,
-  UnsubscribeAck,
+  UnsubscribeAcknowledgment,
   UnsubscribeAll,
 } from './Messages.js';

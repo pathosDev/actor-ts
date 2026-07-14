@@ -53,14 +53,14 @@ elsewhere and the entities re-spawn there.
 ```ts
 import { Actor, Cluster, ClusterBootstrapOptions, StartShardingOptions } from 'actor-ts';
 
-type CartCmd =
+type CartCommand =
   | { entityId: string; kind: 'add';   sku: string }
   | { entityId: string; kind: 'view';  replyTo: ActorRef<Cart> };
 
-class CartActor extends Actor<CartCmd> {
+class CartActor extends Actor<CartCommand> {
   private items: string[] = [];
 
-  override onReceive(cmd: CartCmd): void {
+  override onReceive(cmd: CartCommand): void {
     if (cmd.kind === 'add')  this.items.push(cmd.sku);
     if (cmd.kind === 'view') cmd.replyTo.tell({ items: this.items });
   }
@@ -69,7 +69,7 @@ class CartActor extends Actor<CartCmd> {
 // Setup — one-line cluster + sharding entry point:
 const { system, cluster } = await Cluster.bootstrap(ClusterBootstrapOptions.create('my-app'));
 
-const startShardingOptions = StartShardingOptions.create<CartCmd>().withExtractEntityId((msg) => msg.entityId);
+const startShardingOptions = StartShardingOptions.create<CartCommand>().withExtractEntityId((msg) => msg.entityId);
 const cartRegion = cluster.sharding.start('cart', CartActor,
   startShardingOptions);
 
@@ -85,16 +85,16 @@ whichever fits the entity:
 
 ```ts
 // 1. Class shorthand (most common):
-const startShardingOptions = StartShardingOptions.create<CartCmd>().withExtractEntityId((m) => m.entityId);
+const startShardingOptions = StartShardingOptions.create<CartCommand>().withExtractEntityId((m) => m.entityId);
 cluster.sharding.start('cart', CartActor, startShardingOptions);
 
 // 2. Factory shorthand — when the entity needs constructor args:
-const startSharding2Options = StartShardingOptions.create<CartCmd>().withExtractEntityId((m) => m.entityId);
+const startSharding2Options = StartShardingOptions.create<CartCommand>().withExtractEntityId((m) => m.entityId);
 cluster.sharding.start('cart', () => new CartActor(deps),
   startSharding2Options);
 
 // 3. Full-form — explicit Props + every setting:
-const startSharding3Options = StartShardingOptions.create<CartCmd>()
+const startSharding3Options = StartShardingOptions.create<CartCommand>()
   .withTypeName('cart')
   .withEntityProps(Props.create(() => new CartActor()))
   .withExtractEntityId((m) => m.entityId)
@@ -138,14 +138,14 @@ mechanics.
 
 ## Configuration
 
-`ShardingOptionsType<TMsg>` — the fields you'll most often touch:
+`ShardingOptionsType<TMessage>` — the fields you'll most often touch:
 
 ```ts
-interface ShardingOptionsType<TMsg> {
+interface ShardingOptionsType<TMessage> {
   typeName:               string;
-  entityProps:            Props<TMsg>;
-  extractEntityId:        (message: TMsg) => string;
-  extractEntityMessage?:  (message: TMsg) => unknown;
+  entityProps:            Props<TMessage>;
+  extractEntityId:        (message: TMessage) => string;
+  extractEntityMessage?:  (message: TMessage) => unknown;
   numShards?:             number;             // default 100
   role?:                  string;             // restrict to nodes carrying this role
   proxy?:                 boolean;            // route-only, no local entities
@@ -176,7 +176,7 @@ matched to your traffic pattern.
 ```ts
 import { Passivate, Actor } from 'actor-ts';
 
-class CartActor extends Actor<CartCmd | Passivate> {
+class CartActor extends Actor<CartCommand | Passivate> {
   override onReceive(msg): void {
     if (msg instanceof Passivate) {
       // Optionally do shutdown work, then send the passivate ack.

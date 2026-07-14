@@ -69,7 +69,7 @@ folgende ACK des Controllers teilt dem Producer nur mit, dass
 er seinen Slot freigeben kann.
 
 ```ts
-class PersistentEventLog extends PersistentActor<Cmd, Event, State> {
+class PersistentEventLog extends PersistentActor<Command, Event, State> {
   // …onCommand / onEvent ausgelassen…
 }
 

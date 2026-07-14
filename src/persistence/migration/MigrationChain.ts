@@ -211,11 +211,11 @@ export class MigrationChain<Current> {
    * from its `toJournal`.
    */
   toJournalAt(current: Current, writeVersion?: number): OutboundFrame {
-    const v = writeVersion ?? this._currentVersion;
+    const version = writeVersion ?? this._currentVersion;
     return {
       manifest: this._manifest,
-      version: v,
-      payload: v === this._currentVersion ? current : this.downcast(current, v),
+      version,
+      payload: version === this._currentVersion ? current : this.downcast(current, version),
     };
   }
 }

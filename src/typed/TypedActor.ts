@@ -47,14 +47,14 @@ type ResolvedBehavior<T> = ConcreteBehavior<T> | SameBehavior;
 export class TypedActor<T> extends Actor<T> {
   private current!: ConcreteBehavior<T>;
   private activeSupervise: SuperviseBehavior<T> | null = null;
-  private readonly stashBuffers: StashBufferImpl<T>[] = [];
+  private readonly stashBuffers: StashBufferImplementation<T>[] = [];
   private typedCtx!: TypedActorContext<T>;
   private signalHandler: ((ctx: TypedActorContext<T>, signal: Signal) => Behavior<T>) | null = null;
 
   constructor(private readonly initial: Behavior<T>) { super(); }
 
   override preStart(): void {
-    this.typedCtx = new TypedActorContextImpl<T>(this.context);
+    this.typedCtx = new TypedActorContextImplementation<T>(this.context);
     const resolved = this.resolve(this.initial);
     // `same` on the initial behavior makes no sense — treat as empty so the
     // actor exists but drops messages (surfaces the user error as silence).
@@ -152,7 +152,7 @@ export class TypedActor<T> extends Actor<T> {
           step: 'continue', next: n.factory(this.context.timers as TimerScheduler<T>),
         }))
         .with({ kind: 'with-stash' }, (n): ResolveStep => {
-          const buf = new StashBufferImpl<T>(n.capacity, this.self);
+          const buf = new StashBufferImplementation<T>(n.capacity, this.self);
           this.stashBuffers.push(buf);
           return { step: 'continue', next: n.factory(buf) };
         })
@@ -188,7 +188,7 @@ export class TypedActor<T> extends Actor<T> {
 
 /* ---------------- Context ---------------- */
 
-class TypedActorContextImpl<T> implements TypedActorContext<T> {
+class TypedActorContextImplementation<T> implements TypedActorContext<T> {
   constructor(private readonly oo: import('../ActorContext.js').ActorContext<T>) {}
   get self(): ActorRef<T> { return this.oo.self; }
   get path(): import('../ActorPath.js').ActorPath { return this.oo.path; }
@@ -208,7 +208,7 @@ class TypedActorContextImpl<T> implements TypedActorContext<T> {
 
 /* ---------------- StashBuffer ---------------- */
 
-class StashBufferImpl<T> implements StashBuffer<T> {
+class StashBufferImplementation<T> implements StashBuffer<T> {
   private readonly buffer: T[] = [];
   constructor(
     private readonly capacity: number,
@@ -220,7 +220,7 @@ class StashBufferImpl<T> implements StashBuffer<T> {
   }
   unstashAll(): void {
     const drained = this.buffer.splice(0, this.buffer.length);
-    for (const m of drained) this.self.tell(m);
+    for (const message of drained) this.self.tell(message);
   }
   get isEmpty(): boolean { return this.buffer.length === 0; }
   get isFull(): boolean { return this.buffer.length >= this.capacity; }

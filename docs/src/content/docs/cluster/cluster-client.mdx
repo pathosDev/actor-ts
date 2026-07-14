@@ -20,7 +20,7 @@ const client = new ClusterClient(
 client.send('/user/api/orders', { kind: 'place', ... });
 
 // Or via receptionist by service key:
-client.sendByKey(ServiceKey.of<ApiMsg>('api'), { kind: 'list-orders' });
+client.sendByKey(ServiceKey.of<ApiMessage>('api'), { kind: 'list-orders' });
 ```
 
 ## When to use it
@@ -99,7 +99,7 @@ const receptionistRef = system.actorSelection('/user/cluster-client-receptionist
 
 receptionistRef.tell({
   kind:    'register-service',
-  key:     ServiceKey.of<OrdersMsg>('orders'),
+  key:     ServiceKey.of<OrdersMessage>('orders'),
   ref:     ordersActor,
 });
 ```

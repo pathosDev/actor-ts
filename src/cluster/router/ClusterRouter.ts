@@ -71,13 +71,13 @@ export type ClusterRouterType =
  * resolved shape.
  */
 export const ClusterRouter = {
-  props<TMsg>(
-    options: ClusterRouterOptions<TMsg>,
-  ): Props<TMsg | Broadcast<TMsg>> {
-    const opts = options as ClusterRouterOptionsType<TMsg>;
-    new ClusterRouterOptionsValidator<TMsg>().validate(opts);
+  props<TMessage>(
+    options: ClusterRouterOptions<TMessage>,
+  ): Props<TMessage | Broadcast<TMessage>> {
+    const opts = options as ClusterRouterOptionsType<TMessage>;
+    new ClusterRouterOptionsValidator<TMessage>().validate(opts);
     return Props.create(
-      () => new ClusterRouterActor<TMsg>(opts) as unknown as Actor<TMsg | Broadcast<TMsg>>,
+      () => new ClusterRouterActor<TMessage>(opts) as unknown as Actor<TMessage | Broadcast<TMessage>>,
     );
   },
 };
@@ -96,12 +96,12 @@ function fullPath(systemName: string, routeePath: string): string {
   return `actor-ts://${systemName}/${trimmed}`;
 }
 
-class ClusterRouterActor<TMsg> extends Actor<TMsg | Broadcast<TMsg>> {
-  private routees: RemoteActorRef<TMsg>[] = [];
+class ClusterRouterActor<TMessage> extends Actor<TMessage | Broadcast<TMessage>> {
+  private routees: RemoteActorRef<TMessage>[] = [];
   private counter = 0;
   private unsubscribe: (() => void) | null = null;
 
-  constructor(private readonly opts: ClusterRouterOptionsType<TMsg>) {
+  constructor(private readonly opts: ClusterRouterOptionsType<TMessage>) {
     super();
   }
 
@@ -126,10 +126,10 @@ class ClusterRouterActor<TMsg> extends Actor<TMsg | Broadcast<TMsg>> {
     this.routees = [];
   }
 
-  override onReceive(message: TMsg | Broadcast<TMsg>): void {
+  override onReceive(message: TMessage | Broadcast<TMessage>): void {
     const sender = this.sender.toNullable();
     if (message instanceof Broadcast) {
-      for (const r of this.routees) r.tell(message.message, sender);
+      for (const routee of this.routees) routee.tell(message.message, sender);
       return;
     }
     if (this.routees.length === 0) {
@@ -140,15 +140,15 @@ class ClusterRouterActor<TMsg> extends Actor<TMsg | Broadcast<TMsg>> {
       return;
     }
     if (this.opts.routerType === 'broadcast') {
-      for (const r of this.routees) r.tell(message as TMsg, sender);
+      for (const routee of this.routees) routee.tell(message as TMessage, sender);
       return;
     }
-    const target = this.pickRoutee(message as TMsg);
-    target.tell(message as TMsg, sender);
+    const target = this.pickRoutee(message as TMessage);
+    target.tell(message as TMessage, sender);
   }
 
   /** Visible to subclasses / tests for inspecting the live routee list. */
-  protected get currentRoutees(): ReadonlyArray<ActorRef<TMsg>> {
+  protected get currentRoutees(): ReadonlyArray<ActorRef<TMessage>> {
     return this.routees;
   }
 
@@ -162,13 +162,13 @@ class ClusterRouterActor<TMsg> extends Actor<TMsg | Broadcast<TMsg>> {
     // — round-robin across rebuilds depends on a stable order.
     const sorted = [...members].sort((a, b) => a.address.compareTo(b.address));
     this.routees = sorted.map(
-      (m) => new RemoteActorRef<TMsg>(
+      (m) => new RemoteActorRef<TMessage>(
         m.address, fullPath(m.address.systemName, this.opts.routeePath), this.opts.cluster,
       ),
     );
   }
 
-  private pickRoutee(message: TMsg): RemoteActorRef<TMsg> {
+  private pickRoutee(message: TMessage): RemoteActorRef<TMessage> {
     switch (this.opts.routerType) {
       case 'round-robin': {
         const idx = this.counter++ % this.routees.length;

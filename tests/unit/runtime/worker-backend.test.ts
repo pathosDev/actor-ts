@@ -38,9 +38,9 @@ describe('runtime/worker/getWorkerBackend', () => {
   });
 
   test('caches the backend across calls in the same runtime', async () => {
-    const a = await getWorkerBackend();
-    const b = await getWorkerBackend();
-    expect(a).toBe(b);
+    const first = await getWorkerBackend();
+    const second = await getWorkerBackend();
+    expect(first).toBe(second);
   });
 
   test('switching the runtime override invalidates the cache', async () => {

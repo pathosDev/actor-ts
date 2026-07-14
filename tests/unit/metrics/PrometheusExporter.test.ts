@@ -18,10 +18,10 @@ import {
 
 describe('exportPrometheus — counters', () => {
   test('counter family renders HELP, TYPE and one row per labelled series', () => {
-    const r = new DefaultMetricsRegistry();
-    r.counter('hits_total', { node: 'n-1' }, { help: 'Hits per node' }).inc(3);
-    r.counter('hits_total', { node: 'n-2' }).inc(7);
-    const text = exportPrometheus(r);
+    const registry = new DefaultMetricsRegistry();
+    registry.counter('hits_total', { node: 'n-1' }, { help: 'Hits per node' }).inc(3);
+    registry.counter('hits_total', { node: 'n-2' }).inc(7);
+    const text = exportPrometheus(registry);
     expect(text).toContain('# HELP hits_total Hits per node');
     expect(text).toContain('# TYPE hits_total counter');
     expect(text).toContain('hits_total{node="n-1"} 3');
@@ -29,24 +29,24 @@ describe('exportPrometheus — counters', () => {
   });
 
   test('un-labelled counter renders without braces', () => {
-    const r = new DefaultMetricsRegistry();
-    r.counter('plain_total', {}).inc(2);
-    expect(exportPrometheus(r)).toContain('plain_total 2');
+    const registry = new DefaultMetricsRegistry();
+    registry.counter('plain_total', {}).inc(2);
+    expect(exportPrometheus(registry)).toContain('plain_total 2');
   });
 
   test('label values are escaped (backslash, newline, double-quote)', () => {
-    const r = new DefaultMetricsRegistry();
-    r.counter('m_total', { msg: 'a"b\nc\\d' }).inc();
-    const text = exportPrometheus(r);
+    const registry = new DefaultMetricsRegistry();
+    registry.counter('m_total', { msg: 'a"b\nc\\d' }).inc();
+    const text = exportPrometheus(registry);
     expect(text).toContain('msg="a\\"b\\nc\\\\d"');
   });
 });
 
 describe('exportPrometheus — gauges', () => {
   test('gauge family renders TYPE gauge and one row per series', () => {
-    const r = new DefaultMetricsRegistry();
-    r.gauge('depth', { queue: 'main' }, { help: 'Queue depth' }).set(42);
-    const text = exportPrometheus(r);
+    const registry = new DefaultMetricsRegistry();
+    registry.gauge('depth', { queue: 'main' }, { help: 'Queue depth' }).set(42);
+    const text = exportPrometheus(registry);
     expect(text).toContain('# HELP depth Queue depth');
     expect(text).toContain('# TYPE depth gauge');
     expect(text).toContain('depth{queue="main"} 42');
@@ -55,14 +55,14 @@ describe('exportPrometheus — gauges', () => {
 
 describe('exportPrometheus — histograms', () => {
   test('histogram emits _bucket rows in cumulative ascending order, then _sum and _count', () => {
-    const r = new DefaultMetricsRegistry();
-    const h = r.histogram('latency', {}, {
+    const registry = new DefaultMetricsRegistry();
+    const histogram = registry.histogram('latency', {}, {
       help: 'Latency seconds', buckets: [0.1, 1],
     });
-    h.observe(0.05);  // 0.1 + 1 + +Inf
-    h.observe(0.7);   // 1 + +Inf
-    h.observe(2);     // +Inf
-    const text = exportPrometheus(r);
+    histogram.observe(0.05);  // 0.1 + 1 + +Inf
+    histogram.observe(0.7);   // 1 + +Inf
+    histogram.observe(2);     // +Inf
+    const text = exportPrometheus(registry);
     expect(text).toContain('# TYPE latency histogram');
     expect(text).toContain('latency_bucket{le="0.1"} 1');
     expect(text).toContain('latency_bucket{le="1"} 2');
@@ -85,17 +85,17 @@ describe('exportPrometheus — formatting', () => {
   });
 
   test('non-empty output ends in newline', () => {
-    const r = new DefaultMetricsRegistry();
-    r.counter('x_total', {}).inc();
-    expect(exportPrometheus(r).endsWith('\n')).toBe(true);
+    const registry = new DefaultMetricsRegistry();
+    registry.counter('x_total', {}).inc();
+    expect(exportPrometheus(registry).endsWith('\n')).toBe(true);
   });
 });
 
 describe('prometheusHandler', () => {
   test('returns Prometheus-content-typed text', async () => {
-    const r = new DefaultMetricsRegistry();
-    r.counter('reqs_total', { route: '/api' }).inc(42);
-    const handler = prometheusHandler(r);
+    const registry = new DefaultMetricsRegistry();
+    registry.counter('reqs_total', { route: '/api' }).inc(42);
+    const handler = prometheusHandler(registry);
     const res = handler(new Request('http://localhost/metrics'));
     expect(res.status).toBe(200);
     expect(res.headers.get('Content-Type')?.startsWith('text/plain')).toBe(true);

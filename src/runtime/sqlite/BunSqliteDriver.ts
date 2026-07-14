@@ -29,15 +29,15 @@ export class BunSqliteDriver implements SqliteDriver {
     };
     // Seed the Lazy with the resolved ctor via setOverride — next `get()`
     // returns it without re-running the (stub) thunk.
-    ctorLazy.setOverride(mod.Database as unknown as SqliteCtor);
+    ctorLazy.setOverride(mod.Database as unknown as SqliteConstructor);
   }
 }
 
-type SqliteCtor = new (path: string) => SqliteDb;
+type SqliteConstructor = new (path: string) => SqliteDb;
 
 // The real ctor is installed by `preload()`; the thunk only runs if a
 // caller forgets to preload and we need a clear error message.
-const ctorLazy: Lazy<SqliteCtor> = Lazy.of<SqliteCtor>(() => {
+const ctorLazy: Lazy<SqliteConstructor> = Lazy.of<SqliteConstructor>(() => {
   throw new Error(
     'BunSqliteDriver: call `await BunSqliteDriver.preload()` before opening a database.',
   );

@@ -102,7 +102,7 @@ export class CassandraJournalOptionsBuilder extends OptionsBuilder<CassandraJour
     return this.set('autoCreateKeyspace', autoCreateKeyspace);
   }
 
-  /** Replication settings used by autoCreateKeyspace.  Ignored otherwise. */
+  /** Replication options used by autoCreateKeyspace.  Ignored otherwise. */
   withReplication(replication: NonNullable<CassandraJournalOptionsType['replication']>): this {
     return this.set('replication', replication);
   }

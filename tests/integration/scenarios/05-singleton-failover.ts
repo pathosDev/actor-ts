@@ -90,7 +90,7 @@ export const scenario: Scenario = {
     console.log('[05] incrementing 7 times via mixed proxies...');
     // Pick `inc` senders from `live` round-robin to spread sources.
     const senders = Array.from({ length: 7 }, (_, i) => live[i % live.length]!);
-    for (const s of senders) await inc(s, ctx.controlPort);
+    for (const sender of senders) await inc(sender, ctx.controlPort);
     // Allow async fan-in.
     await sleep(500);
 

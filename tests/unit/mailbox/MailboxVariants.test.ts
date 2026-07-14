@@ -128,9 +128,9 @@ describe('PriorityMailbox', () => {
     const xs: number[] = [];
     for (let i = 0; i < 100; i++) {
       // Deterministic pseudo-random so test failures are reproducible.
-      const v = (i * 37 + 13) % 100;
-      xs.push(v);
-      mbox.enqueue({ message: v, sender: null });
+      const value = (i * 37 + 13) % 100;
+      xs.push(value);
+      mbox.enqueue({ message: value, sender: null });
     }
     const sorted = [...xs].sort((a, b) => a - b);
     const drained = mbox.drainUser().map((e) => e.message);

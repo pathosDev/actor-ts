@@ -37,7 +37,7 @@ import { LWWMap } from '../../../../src/crdt/LWWMap.js';
 
 /* --------------------------- public messages --------------------------- */
 
-export type ReadReceiptsCmd =
+export type ReadReceiptsCommand =
   | { readonly kind: 'Update';      readonly room: string; readonly username: string; readonly ts: number }
   | { readonly kind: 'Subscribe';   readonly room: string; readonly ref: ActorRef<ReceiptsChanged> }
   | { readonly kind: 'Unsubscribe'; readonly room: string; readonly ref: ActorRef<ReceiptsChanged> };
@@ -68,7 +68,7 @@ interface RoomState {
 
 /* ------------------------------- actor --------------------------------- */
 
-export class ReadReceiptsActor extends Actor<ReadReceiptsCmd> {
+export class ReadReceiptsActor extends Actor<ReadReceiptsCommand> {
   private dd!: DistributedDataHandle;
   private replicaId!: string;
   private readonly rooms = new Map<string, RoomState>();
@@ -83,7 +83,7 @@ export class ReadReceiptsActor extends Actor<ReadReceiptsCmd> {
     this.rooms.clear();
   }
 
-  override onReceive(cmd: ReadReceiptsCmd): void {
+  override onReceive(cmd: ReadReceiptsCommand): void {
     match(cmd)
       .with({ kind: 'Update' },      (m) => this.update(m.room, m.username, m.ts))
       .with({ kind: 'Subscribe' },   (m) => this.subscribe(m.room, m.ref))
@@ -154,11 +154,11 @@ export class ReadReceiptsActor extends Actor<ReadReceiptsCmd> {
 
 /** Materialize a `Record<username, ts>` from the LWWMap.  Skips
  *  tombstoned entries (`get` returns undefined for those). */
-function snapshotReceipts(m: LWWMap<string, number>): Readonly<Record<string, number>> {
+function snapshotReceipts(receipts: LWWMap<string, number>): Readonly<Record<string, number>> {
   const out: Record<string, number> = {};
-  for (const key of m.keys()) {
-    const v = m.get(key);
-    if (typeof v === 'number') out[key] = v;
+  for (const key of receipts.keys()) {
+    const value = receipts.get(key);
+    if (typeof value === 'number') out[key] = value;
   }
   return out;
 }

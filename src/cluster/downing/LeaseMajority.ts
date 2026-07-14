@@ -101,24 +101,24 @@ export class LeaseMajority implements DowningProvider {
    */
   private failSafe = false;
 
-  private readonly settings: LeaseMajorityOptionsType;
+  private readonly options: LeaseMajorityOptionsType;
 
   constructor(options: LeaseMajorityOptions) {
-    this.settings = options as LeaseMajorityOptionsType;
-    new LeaseMajorityOptionsValidator().validate(this.settings);
+    this.options = options as LeaseMajorityOptionsType;
+    new LeaseMajorityOptionsValidator().validate(this.options);
   }
 
   decide(view: ClusterPartitionView): DowningDecision {
     const candidates = view.allMembers.filter((m) =>
       (m.status === 'up' || m.status === 'leaving' || m.status === 'unreachable') &&
-      (!this.settings.role || m.hasRole(this.settings.role)),
+      (!this.options.role || m.hasRole(this.options.role)),
     );
     if (candidates.length === 0) return new Set();
 
     const reachable = candidates.filter((m) => !view.unreachable.has(addrKey(m)));
     const unreachable = candidates.filter((m) => view.unreachable.has(addrKey(m)));
-    const n = candidates.length;
-    const needed = Math.floor(n / 2) + 1;
+    const count = candidates.length;
+    const needed = Math.floor(count / 2) + 1;
     const fingerprint = this.fingerprintOf(reachable, unreachable);
 
     // No partition (everyone reachable) → reset state, no decision.
@@ -166,7 +166,7 @@ export class LeaseMajority implements DowningProvider {
     if (this.acquiring) {
       // Recover if the acquire stalled past its budget.  The Lease
       // implementation is supposed to honour its own retry/timeout
-      // settings, but defence-in-depth: if it hasn't resolved by
+      // options, but defence-in-depth: if it hasn't resolved by
       // the deadline, bump the epoch (so the late result is dropped)
       // and proactively release any in-flight ownership — see #142.
       if (Date.now() > this.acquireDeadline) {
@@ -185,7 +185,7 @@ export class LeaseMajority implements DowningProvider {
     const downSelfSet = new Set(reachable.map(addrKey));
 
     this.acquiring = true;
-    this.acquireDeadline = Date.now() + (this.settings.acquireTimeoutMs ?? 5_000);
+    this.acquireDeadline = Date.now() + (this.options.acquireTimeoutMs ?? 5_000);
     this.acquireEpoch += 1;
     const myEpoch = this.acquireEpoch;
     void this.runAcquire(myEpoch, surviveSet, downSelfSet);
@@ -214,11 +214,11 @@ export class LeaseMajority implements DowningProvider {
       // primitive participates in the round-trip — useful for backend-
       // specific consistency checks and a stepping-stone for future
       // release-with-token semantics.
-      if (typeof this.settings.lease.acquireWithToken === 'function') {
-        const result = await this.settings.lease.acquireWithToken();
+      if (typeof this.options.lease.acquireWithToken === 'function') {
+        const result = await this.options.lease.acquireWithToken();
         won = result !== null;
       } else {
-        won = await this.settings.lease.acquire();
+        won = await this.options.lease.acquire();
       }
     } catch {
       // Lease backend unreachable — stay pending.  The next decide()
@@ -254,7 +254,7 @@ export class LeaseMajority implements DowningProvider {
   private async runAbandonRelease(): Promise<void> {
     const myEpoch = this.acquireEpoch;
     try {
-      await this.settings.lease.release();
+      await this.options.lease.release();
     } catch {
       // Release failed.  We may or may not hold the lease — we can't
       // tell.  Mark fail-safe so we don't claim majority on this
@@ -281,8 +281,8 @@ export class LeaseMajority implements DowningProvider {
     reachable: ReadonlyArray<{ address: { toString(): string } }>,
     unreachable: ReadonlyArray<{ address: { toString(): string } }>,
   ): string {
-    const r = reachable.map((m) => m.address.toString()).sort().join(',');
-    const u = unreachable.map((m) => m.address.toString()).sort().join(',');
-    return `R[${r}]|U[${u}]`;
+    const reachableKey = reachable.map((m) => m.address.toString()).sort().join(',');
+    const unreachableKey = unreachable.map((m) => m.address.toString()).sort().join(',');
+    return `R[${reachableKey}]|U[${unreachableKey}]`;
   }
 }

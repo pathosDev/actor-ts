@@ -12,9 +12,9 @@ eine Sequenz von Behaviors: jeder Handler gibt das nächste zurück.
 ```ts
 import { ActorSystem, Behaviors } from 'actor-ts';
 
-type Msg = { kind: 'tick' };
+type Message = { kind: 'tick' };
 
-const ticker = Behaviors.receive<Msg>((ctx, msg) => {
+const ticker = Behaviors.receive<Message>((ctx, msg) => {
   ctx.log.info(`tick at ${Date.now()}`);
   return Behaviors.same;   // bleibe ein Ticker
 });
@@ -33,7 +33,7 @@ behandelt die nächste Nachricht.
 ### `receive` — Handler mit Context + Nachricht
 
 ```ts
-const counter = (n: number): Behavior<Msg> => Behaviors.receive<Msg>((ctx, msg) => {
+const counter = (n: number): Behavior<Message> => Behaviors.receive<Message>((ctx, msg) => {
   switch (msg.kind) {
     case 'inc': return counter(n + 1);
     case 'dec': return counter(n - 1);
@@ -51,7 +51,7 @@ aktualisiertem Zustand an.
 ### `receiveMessage` — Handler ohne Context
 
 ```ts
-const counter = (n: number): Behavior<Msg> => Behaviors.receiveMessage<Msg>((msg) => {
+const counter = (n: number): Behavior<Message> => Behaviors.receiveMessage<Message>((msg) => {
   if (msg.kind === 'inc') return counter(n + 1);
   return Behaviors.same;
 });
@@ -63,7 +63,7 @@ Shortcut für den häufigen Fall, dass du den Context nicht brauchst.
 ### `receiveWithSignal` — Handler + Lifecycle-Signale
 
 ```ts
-const watcher = Behaviors.receiveWithSignal<Msg>(
+const watcher = Behaviors.receiveWithSignal<Message>(
   (ctx, msg) => {
     // User-Nachricht behandeln...
     return Behaviors.same;
@@ -92,7 +92,7 @@ untyped-Form.
 ### `setup` — den Context einmal einfangen
 
 ```ts
-const myActor = Behaviors.setup<Msg>((ctx) => {
+const myActor = Behaviors.setup<Message>((ctx) => {
   ctx.log.info(`I'm starting at ${ctx.path}`);
   const helper = ctx.spawn(helperBehavior, 'helper');
   return Behaviors.receive((_ctx, msg) => {
@@ -117,7 +117,7 @@ Fähigkeiten:
 ```ts
 import { Behaviors, type TimerScheduler } from 'actor-ts';
 
-const heartbeat = Behaviors.withTimers<Msg>((timers) => {
+const heartbeat = Behaviors.withTimers<Message>((timers) => {
   timers.startTimerWithFixedDelay('hb', { kind: 'tick' }, 5_000);
 
   return Behaviors.receiveMessage((msg) => {
@@ -135,7 +135,7 @@ sodass der Receive-Handler Zugriff hat, ohne bei jeder Nachricht
 ### `withStash`
 
 ```ts
-const init = Behaviors.withStash<Msg>(100, (stash) => {
+const init = Behaviors.withStash<Message>(100, (stash) => {
   return Behaviors.receive((ctx, msg) => {
     if (msg.kind === 'ready') {
       stash.unstashAll();   // alle gepufferten Nachrichten erneut abspielen
@@ -146,7 +146,7 @@ const init = Behaviors.withStash<Msg>(100, (stash) => {
   });
 });
 
-const ready = Behaviors.receive<Msg>((ctx, msg) => {
+const ready = Behaviors.receive<Message>((ctx, msg) => {
   // Nachrichten normal behandeln
   return Behaviors.same;
 });
@@ -201,12 +201,12 @@ schlucken soll.
 ```ts
 import { ActorSystem, Behaviors, type Behavior } from 'actor-ts';
 
-type Msg =
+type Message =
   | { kind: 'configure'; url: string }
   | { kind: 'request';   payload: string };
 
-const initializing = Behaviors.withStash<Msg>(100, (stash) =>
-  Behaviors.receive<Msg>((ctx, msg) => {
+const initializing = Behaviors.withStash<Message>(100, (stash) =>
+  Behaviors.receive<Message>((ctx, msg) => {
     if (msg.kind === 'configure') {
       const url = msg.url;
       stash.unstashAll();
@@ -217,8 +217,8 @@ const initializing = Behaviors.withStash<Msg>(100, (stash) =>
   }),
 );
 
-const ready = (url: string): Behavior<Msg> =>
-  Behaviors.receive<Msg>((ctx, msg) => {
+const ready = (url: string): Behavior<Message> =>
+  Behaviors.receive<Message>((ctx, msg) => {
     if (msg.kind === 'request') {
       ctx.log.info(`POST ${url}: ${msg.payload}`);
     }
@@ -289,7 +289,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Closure-eingefangenen Zustand mutieren">
   ```ts
-  const counter = (n: number): Behavior<Msg> => {
+  const counter = (n: number): Behavior<Message> => {
     let count = n;
     return Behaviors.receive((ctx, msg) => {
       count++;        // ← den Closure mutieren

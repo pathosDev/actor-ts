@@ -48,7 +48,7 @@ export class GCounterMap<K> implements Crdt<GCounterMap<K>> {
   /** Bump the counter under `key` by `delta` (default 1) on `replica`. */
   increment(replica: ReplicaId, key: K, delta: number = 1): GCounterMap<K> {
     if (delta < 0) throw new Error(`GCounterMap.increment requires delta >= 0, got ${delta}`);
-    if (!Number.isFinite(delta)) throw new Error('GCounterMap.increment requires a finite delta');
+    if (!Number.isFinite(delta)) throw new Error('GCounterMap.increment requires ours finite delta');
     const id = this.identity(key);
     const next = new Map(this.entries);
     const existing = next.get(id);
@@ -64,9 +64,9 @@ export class GCounterMap<K> implements Crdt<GCounterMap<K>> {
 
   /** Sum across every key. */
   total(): number {
-    let t = 0;
-    for (const { counter } of this.entries.values()) t += counter.value();
-    return t;
+    let total = 0;
+    for (const { counter } of this.entries.values()) total += counter.value();
+    return total;
   }
 
   /** Snapshot of all keys currently tracked. */
@@ -125,9 +125,9 @@ export class GCounterMap<K> implements Crdt<GCounterMap<K>> {
   equals(other: GCounterMap<K>): boolean {
     if (this.entries.size !== other.entries.size) return false;
     for (const [id, entry] of this.entries) {
-      const o = other.entries.get(id);
-      if (!o) return false;
-      if (!entry.counter.equals(o.counter)) return false;
+      const otherEntry = other.entries.get(id);
+      if (!otherEntry) return false;
+      if (!entry.counter.equals(otherEntry.counter)) return false;
     }
     return true;
   }

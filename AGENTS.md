@@ -135,7 +135,7 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
 - Discriminated-union handling via **`ts-pattern`**
   (`match(x).with(…).exhaustive()`).
 - HOCON config keys go through **`src/config/ConfigKeys.ts`** (typed,
-  single source of truth). Settings resolve with precedence:
+  single source of truth). Options resolve with precedence:
   **explicit options > HOCON > built-in defaults**.
 - **JSDoc explains the *why*** — constraints, rationale, non-obvious
   trade-offs — not a restatement of the code. Match the surrounding
@@ -145,7 +145,7 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
 
 - **Every configurable thing has one `XOptions.ts` file with three exports**,
   all in the "Options" family — there is no separate "Settings" concept:
-  - `XOptionsType` — the plain settings-object shape (a bare `{ … }` you can
+  - `XOptionsType` — the plain options-object shape (a bare `{ … }` you can
     pass directly).
   - `XOptionsBuilder` — the fluent builder, `extends OptionsBuilder<XOptionsType>`
     (broker actors via `BrokerOptionsBuilder<XOptionsType>`).
@@ -181,7 +181,7 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
     helper — the merge stays a plain spread; validation is a separate void
     assertion. `OptionsBuilder` has no set-time validation.
 - **All option-relevant types are co-located in `XOptions.ts`** — including the
-  `XOptionsType` interface (the config contract read by `readSettingsFromConfig`)
+  `XOptionsType` interface (the config contract read by `readOptionsFromConfig`)
   and, when present, the `XOptionsValidator` class. The functional file
   (actor/store/factory) imports the type contracts (`XOptions` + `XOptionsType`)
   **type-only** from `./XOptions.js`, and — when it validates — additionally

@@ -27,8 +27,8 @@ export interface RegisterMariaDbPluginsOptionsType {
  *       .withJournal(MariaDbJournalOptions.create().withEventsTable('journal')))
  *
  * Each per-store field is the store's own leaf builder (or a plain object
- * of its settings); the shared `pool` (when set via `withPool`) is merged
- * onto every store's resolved settings at registration time, so a leaf
+ * of its options); the shared `pool` (when set via `withPool`) is merged
+ * onto every store's resolved options at registration time, so a leaf
  * need not repeat the connection.
  */
 export class RegisterMariaDbPluginsOptionsBuilder extends OptionsBuilder<RegisterMariaDbPluginsOptionsType> {

@@ -3,16 +3,16 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 
 /**
- * Plain settings-object shape for a sharded region.  Consumed by
+ * Plain options-object shape for a sharded region.  Consumed by
  * {@link ShardRegion.settingsToConfig} and extended by
  * {@link StartShardingOptionsType} — the coordinator-side superset that
  * {@link ClusterSharding.start} accepts.
  */
-export interface ShardingOptionsType<TMsg> {
+export interface ShardingOptionsType<TMessage> {
   readonly typeName: string;
-  readonly entityProps: Props<TMsg>;
-  readonly extractEntityId: (message: TMsg) => string;
-  readonly extractEntityMessage?: (message: TMsg) => unknown;
+  readonly entityProps: Props<TMessage>;
+  readonly extractEntityId: (message: TMessage) => string;
+  readonly extractEntityMessage?: (message: TMessage) => unknown;
   readonly numShards?: number;
   /** Members must carry this role to be candidates for hosting shards. */
   readonly role?: string;
@@ -46,7 +46,7 @@ export interface ShardingOptionsType<TMsg> {
  * inheritance chain: {@link StartShardingOptionsBuilder} (in
  * `StartShardingOptions`) extends this and adds the coordinator-side
  * fields.  Each concrete `withX` records exactly one field so unset
- * fields fall through to HOCON / built-in defaults when the settings are
+ * fields fall through to HOCON / built-in defaults when the options are
  * normalised by {@link ShardRegion.settingsToConfig}.
  *
  * The whole-object fields — `entityProps` (a {@link Props}), and the
@@ -54,12 +54,12 @@ export interface ShardingOptionsType<TMsg> {
  * as-is via a single `withX(value)`; no nested builders.
  */
 export class ShardingOptionsBuilder<
-  TMsg,
-  S extends ShardingOptionsType<TMsg> = ShardingOptionsType<TMsg>,
+  TMessage,
+  S extends ShardingOptionsType<TMessage> = ShardingOptionsType<TMessage>,
 > extends OptionsBuilder<S> {
-  /** Start a fresh builder.  Equivalent to `new ShardingOptionsBuilder<TMsg>()`. */
-  static create<TMsg>(): ShardingOptionsBuilder<TMsg> {
-    return new ShardingOptionsBuilder<TMsg>();
+  /** Start a fresh builder.  Equivalent to `new ShardingOptionsBuilder<TMessage>()`. */
+  static create<TMessage>(): ShardingOptionsBuilder<TMessage> {
+    return new ShardingOptionsBuilder<TMessage>();
   }
 
   /** Logical name of the sharded type. */
@@ -68,17 +68,17 @@ export class ShardingOptionsBuilder<
   }
 
   /** Props used to spawn each entity instance. */
-  withEntityProps(entityProps: Props<TMsg>): this {
+  withEntityProps(entityProps: Props<TMessage>): this {
     return this.set('entityProps', entityProps);
   }
 
   /** Derive the stable entity id from an incoming message. */
-  withExtractEntityId(extractEntityId: (message: TMsg) => string): this {
+  withExtractEntityId(extractEntityId: (message: TMessage) => string): this {
     return this.set('extractEntityId', extractEntityId);
   }
 
   /** Unwrap the payload actually delivered to the entity.  Default: identity. */
-  withExtractEntityMessage(extractEntityMessage: (message: TMsg) => unknown): this {
+  withExtractEntityMessage(extractEntityMessage: (message: TMessage) => unknown): this {
     return this.set('extractEntityMessage', extractEntityMessage);
   }
 
@@ -119,8 +119,8 @@ export class ShardingOptionsBuilder<
  * only present values are checked (unset fields fall through to defaults).
  */
 export class ShardingOptionsValidator<
-  TMsg,
-  S extends ShardingOptionsType<TMsg> = ShardingOptionsType<TMsg>,
+  TMessage,
+  S extends ShardingOptionsType<TMessage> = ShardingOptionsType<TMessage>,
 > extends OptionsValidator<S> {
   constructor(optionsName = 'ShardingOptions') {
     super(optionsName);
@@ -129,21 +129,21 @@ export class ShardingOptionsValidator<
     this.commonRules(s);
   }
   protected commonRules(s: Partial<S>): void {
-    const c = s as Partial<ShardingOptionsType<TMsg>>;
-    if (c.typeName !== undefined && (typeof c.typeName !== 'string' || c.typeName.length === 0)) {
-      this.fail('typeName', 'must be a non-empty string', c.typeName);
+    const opts = s as Partial<ShardingOptionsType<TMessage>>;
+    if (opts.typeName !== undefined && (typeof opts.typeName !== 'string' || opts.typeName.length === 0)) {
+      this.fail('typeName', 'must be a non-empty string', opts.typeName);
     }
-    if (c.numShards !== undefined && (!Number.isInteger(c.numShards) || c.numShards < 1)) {
-      this.fail('numShards', 'must be an integer >= 1', c.numShards);
+    if (opts.numShards !== undefined && (!Number.isInteger(opts.numShards) || opts.numShards < 1)) {
+      this.fail('numShards', 'must be an integer >= 1', opts.numShards);
     }
     if (
-      c.passivationIdleMs !== undefined &&
-      (typeof c.passivationIdleMs !== 'number' || !Number.isFinite(c.passivationIdleMs) || c.passivationIdleMs < 0)
+      opts.passivationIdleMs !== undefined &&
+      (typeof opts.passivationIdleMs !== 'number' || !Number.isFinite(opts.passivationIdleMs) || opts.passivationIdleMs < 0)
     ) {
-      this.fail('passivationIdleMs', 'must be a non-negative finite number', c.passivationIdleMs);
+      this.fail('passivationIdleMs', 'must be a non-negative finite number', opts.passivationIdleMs);
     }
-    if (c.maxEntities !== undefined && (!Number.isInteger(c.maxEntities) || c.maxEntities < 0)) {
-      this.fail('maxEntities', 'must be an integer >= 0', c.maxEntities);
+    if (opts.maxEntities !== undefined && (!Number.isInteger(opts.maxEntities) || opts.maxEntities < 0)) {
+      this.fail('maxEntities', 'must be an integer >= 0', opts.maxEntities);
     }
   }
 }
@@ -153,8 +153,8 @@ export class ShardingOptionsValidator<
  * {@link ShardingOptionsBuilder} OR a plain {@link ShardingOptionsType} object.
  */
 export type ShardingOptions<
-  TMsg,
-  S extends ShardingOptionsType<TMsg> = ShardingOptionsType<TMsg>,
-> = ShardingOptionsBuilder<TMsg, S> | S;
+  TMessage,
+  S extends ShardingOptionsType<TMessage> = ShardingOptionsType<TMessage>,
+> = ShardingOptionsBuilder<TMessage, S> | S;
 /** Value alias so `ShardingOptions.create()` / `new ShardingOptions()` resolve to the builder. */
 export const ShardingOptions = ShardingOptionsBuilder;

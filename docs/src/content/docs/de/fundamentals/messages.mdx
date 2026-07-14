@@ -5,7 +5,7 @@ description: Wie Actors miteinander sprechen — die Discriminated-Union-Konvent
 
 Eine **Nachricht** ist jeder Wert, der an einen Actor gesendet wird.
 Das Typsystem erzwingt, welche Nachrichten ein gegebener Actor
-akzeptiert (über den `Actor<TMsg>`-Typparameter), und die Runtime
+akzeptiert (über den `Actor<TMessage>`-Typparameter), und die Runtime
 liefert Nachrichten eine nach der anderen an das `onReceive` des
 Actors aus.
 
@@ -20,7 +20,7 @@ Das wichtigste einzelne Muster in dieser Codebasis: **Nachrichten sind
 Discriminated Unions, getaggt mit einem `kind`-Feld**.
 
 ```ts
-type CounterCmd =
+type CounterCommand =
   | { readonly kind: 'inc' }
   | { readonly kind: 'dec' }
   | { readonly kind: 'set'; readonly to: number }
@@ -53,15 +53,15 @@ nicht das, was das Framework verwendet.
 import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
 import { match } from 'ts-pattern';
 
-type CounterCmd =
+type CounterCommand =
   | { readonly kind: 'inc' }
   | { readonly kind: 'dec' }
   | { readonly kind: 'get'; readonly replyTo: ActorRef<number> };
 
-class Counter extends Actor<CounterCmd> {
+class Counter extends Actor<CounterCommand> {
   private count = 0;
 
-  override onReceive(cmd: CounterCmd): void {
+  override onReceive(cmd: CounterCommand): void {
     match(cmd)
       .with({ kind: 'inc' }, () => { this.count++; })
       .with({ kind: 'dec' }, () => { this.count--; })
@@ -79,7 +79,7 @@ counter.tell({ kind: 'inc' });
 // Später nach dem Count über eine Reply-to-Ref fragen — siehe Ask-Pattern.
 ```
 
-Wenn du später eine `kind: 'reset'`-Variante zu `CounterCmd`
+Wenn du später eine `kind: 'reset'`-Variante zu `CounterCommand`
 hinzufügst, schlägt das `.exhaustive()`-Compile fehl, bis du einen
 `.with({ kind: 'reset' }, ...)`-Arm hinzufügst.  Kein Runtime-Crash,
 keine still verschluckte Nachricht — der Compiler fängt es ab.
@@ -179,20 +179,20 @@ Das `onReceive` des Aufrufers kann dann auf dem `kind` der Antwort
 `match()`en, um die Erfolgs- und Fehlerpfade auf dieselbe Weise zu
 unterscheiden, wie es seine eigenen Befehle dispatched.
 
-## Cmd vs Event — der Persistent-Actor-Split
+## Command vs Event — der Persistent-Actor-Split
 
 Für Actors, die Events persistieren ([PersistentActor](/de/persistence/persistent-actor/)),
 trennt das Framework **Commands** (was zu tun ist) von **Events** (was
 bereits passiert ist):
 
 ```ts
-type DepositCmd = { readonly kind: 'deposit'; readonly amount: number };
+type DepositCommand = { readonly kind: 'deposit'; readonly amount: number };
 
 type Deposited = { readonly kind: 'deposited'; readonly amount: number; readonly ts: number };
 
-class Account extends PersistentActor<DepositCmd, Deposited, { balance: number }> {
+class Account extends PersistentActor<DepositCommand, Deposited, { balance: number }> {
   // Command-Handler: validieren + Event persistieren
-  async onCommand(state, cmd: DepositCmd): Promise<void> {
+  async onCommand(state, cmd: DepositCommand): Promise<void> {
     if (cmd.kind === 'deposit') {
       const event: Deposited = { kind: 'deposited', amount: cmd.amount, ts: Date.now() };
       await this.persist(event, () => { /* Seiteneffekte nach dem Persistieren */ });
@@ -211,7 +211,7 @@ Der Split ist wichtig, weil **Events der dauerhafte Record sind**, die
 beim Restart erneut abgespielt werden.  Commands sind transient (die
 Anfrage, die das Event erzeugt hat); Events sind ewig (der
 Journal-Eintrag).  Sie eindeutig zu benennen — Vergangenheitsform für
-Events (`Deposited`), Imperativ für Commands (`DepositCmd`) — hält die
+Events (`Deposited`), Imperativ für Commands (`DepositCommand`) — hält die
 konzeptionelle Linie klar.
 
 Siehe [PersistentActor](/de/persistence/persistent-actor/) für die
@@ -221,10 +221,10 @@ vollständige Event-Sourcing-Geschichte.
 
 <Aside type="caution" title="`readonly` vergessen">
   ```ts
-  type Cmd = { kind: 'inc'; amount: number };
+  type Command = { kind: 'inc'; amount: number };
   //                       ^ kein `readonly`
 
-  function evil(cmd: Cmd) {
+  function evil(cmd: Command) {
     cmd.amount++;     // valides TS — kein Compile-Fehler
   }
   ```
@@ -249,7 +249,7 @@ vollständige Event-Sourcing-Geschichte.
 
 <Aside type="caution" title="`replyTo: ActorRef<unknown>` verschluckt den Reply-Typ">
   ```ts
-  type Cmd = { kind: 'q'; replyTo: ActorRef<unknown> };
+  type Command = { kind: 'q'; replyTo: ActorRef<unknown> };
   //                                          ^^^^^^^^ Typen verloren
   ```
   Der Aufrufer kann der Ref alles `tell`en, und der Empfänger kann
@@ -274,4 +274,4 @@ vollständige Event-Sourcing-Geschichte.
   überqueren; wie du eigene Serializer registrierst, wenn der
   JSON-Default nicht passt.
 - **[PersistentActor](/de/persistence/persistent-actor/)** —
-  wo der Cmd-vs-Event-Split tragend wird.
+  wo der Command-vs-Event-Split tragend wird.

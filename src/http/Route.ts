@@ -1,12 +1,12 @@
 import { match } from 'ts-pattern';
 import type { ActorSystem } from '../ActorSystem.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse, Status } from './types.js';
-import type { WebSocketSocketAdapter } from './ws/SocketAdapter.js';
-import { expandCors, type CorsRouteSettings } from './middleware/Cors.js';
+import type { WebsocketSocketAdapter } from './websocket/SocketAdapter.js';
+import { expandCors, type CorsRouteOptions } from './middleware/Cors.js';
 
 /**
  * A compiled HTTP route — the Route-DSL reduces to a list of these
- * (plus {@link CompiledWebSocketRoute}s), which the HTTP backend
+ * (plus {@link CompiledWebsocketRoute}s), which the HTTP backend
  * registers in its native routing table.
  */
 export interface CompiledRoute {
@@ -22,10 +22,10 @@ export interface CompiledRoute {
  * and a normalised socket; the closure (built by the `websocket()`
  * directive) owns the codec, target ref and per-route policy.
  */
-export type WebSocketConnectHandler = (
+export type WebsocketConnectHandler = (
   system: ActorSystem,
   req: HttpRequest,
-  socket: WebSocketSocketAdapter,
+  socket: WebsocketSocketAdapter,
 ) => void;
 
 /**
@@ -35,11 +35,11 @@ export type WebSocketConnectHandler = (
  * request, and returns `null` to accept or an {@link HttpResponse} to
  * reject the upgrade with a plain HTTP response.
  */
-export interface CompiledWebSocketRoute {
+export interface CompiledWebsocketRoute {
   readonly kind: 'websocket';
   readonly method: 'GET';
   readonly pattern: string;
-  readonly connect: WebSocketConnectHandler;
+  readonly connect: WebsocketConnectHandler;
   readonly authorize: (req: HttpRequest) => Promise<HttpResponse | null>;
 }
 
@@ -54,7 +54,7 @@ export interface CompiledFallback {
 }
 
 /** A compiled endpoint: a plain HTTP route, a WebSocket route, or the fallback. */
-export type CompiledEndpoint = CompiledRoute | CompiledWebSocketRoute | CompiledFallback;
+export type CompiledEndpoint = CompiledRoute | CompiledWebsocketRoute | CompiledFallback;
 
 /**
  * Per-request hook that runs around a handler.  Receives the request
@@ -92,9 +92,9 @@ export type Route =
   | { readonly kind: 'path'; readonly segment: string; readonly child: Route }
   | { readonly kind: 'concat'; readonly routes: ReadonlyArray<Route> }
   | { readonly kind: 'middleware'; readonly middleware: Middleware; readonly child: Route }
-  | { readonly kind: 'websocket'; readonly connect: WebSocketConnectHandler }
+  | { readonly kind: 'websocket'; readonly connect: WebsocketConnectHandler }
   | { readonly kind: 'fallback'; readonly handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse }
-  | { readonly kind: 'cors'; readonly settings: CorsRouteSettings; readonly child: Route };
+  | { readonly kind: 'cors'; readonly settings: CorsRouteOptions; readonly child: Route };
 
 /** Compose several sibling routes (OR semantics — first matching wins). */
 export function concat(...routes: Route[]): Route {
@@ -362,15 +362,15 @@ function buildPattern(segments: string[]): string {
  * params (e.g. `?x=1&x=2`) return the first value.
  */
 export function queryParam(req: HttpRequest, name: string): string | undefined {
-  const v = req.query[name];
-  if (v === undefined) return undefined;
-  if (Array.isArray(v)) return v[0];
-  return v;
+  const value = req.query[name];
+  if (value === undefined) return undefined;
+  if (Array.isArray(value)) return value[0];
+  return value;
 }
 
 /** Extract a path parameter (guaranteed present by the pattern). */
 export function pathParam(req: HttpRequest, name: string): string {
-  const v = req.params[name];
-  if (v === undefined) throw new HttpError(500, `Missing path parameter "${name}"`);
-  return v;
+  const value = req.params[name];
+  if (value === undefined) throw new HttpError(500, `Missing path parameter "${name}"`);
+  return value;
 }

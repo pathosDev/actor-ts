@@ -5,7 +5,7 @@
  * Centralising serves two purposes:
  *   1. **One source of truth** — when the gossip interval needs to
  *      change, every consumer picks up the new default automatically
- *      (per-call settings still override at the site).
+ *      (per-call options still override at the site).
  *   2. **Self-documenting magic numbers** — the named export
  *      `DEFAULT_GOSSIP_INTERVAL_MS` is clearer at the call site than
  *      a bare `1_000` literal with a comment.

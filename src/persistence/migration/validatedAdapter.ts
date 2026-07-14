@@ -130,8 +130,8 @@ function preview(wire: unknown, opts: ValidatedAdapterOptions): string {
   if (opts.previewWire) {
     try { return opts.previewWire(wire); } catch { /* fall through */ }
   }
-  let s: string;
-  try { s = JSON.stringify(wire); }
-  catch { s = String(wire); }
-  return s.length > 200 ? `${s.slice(0, 200)}…` : s;
+  let serialized: string;
+  try { serialized = JSON.stringify(wire); }
+  catch { serialized = String(wire); }
+  return serialized.length > 200 ? `${serialized.slice(0, 200)}…` : serialized;
 }

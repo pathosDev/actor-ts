@@ -5,7 +5,7 @@ import type { SeedProvider } from '../discovery/index.js';
 import type { ClusterOptionsType } from './ClusterOptions.js';
 
 /**
- * Settings accepted by {@link Cluster.bootstrap}.  Everything is
+ * Options accepted by {@link Cluster.bootstrap}.  Everything is
  * optional except `name`; sensible defaults turn the call into a
  * single-line hello-cluster.  Build one with {@link ClusterBootstrapOptions}.
  */
@@ -145,7 +145,7 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
     return this.set('configFile', configFile);
   }
 
-  /** Persistence settings forwarded to `ActorSystem.create`. */
+  /** Persistence options forwarded to `ActorSystem.create`. */
   withPersistence(persistence: NonNullable<ClusterBootstrapOptionsType['persistence']>): this {
     return this.set('persistence', persistence);
   }

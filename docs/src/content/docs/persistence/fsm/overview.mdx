@@ -29,9 +29,9 @@ import { FSM, Props, ActorSystem } from 'actor-ts';
 
 type State = 'closed' | 'open';
 type Data  = { openedAt?: number };
-type Msg   = 'open' | 'close';
+type Message   = 'open' | 'close';
 
-class Door extends FSM<State, Data, Msg> {
+class Door extends FSM<State, Data, Message> {
   constructor() {
     super('closed', {});
 

@@ -16,7 +16,7 @@ Router.broadcast(size, routeeProps)
 Router.custom(size, routeeProps, strategy)
 ```
 
-Jede gibt ein `Props<TMsg | Broadcast<TMsg>>` zurück — übergib es
+Jede gibt ein `Props<TMessage | Broadcast<TMessage>>` zurück — übergib es
 an `system.spawn` oder `context.spawn` wie alle anderen Props.
 Der Typ-Parameter von `routeeProps` fließt durch, die resultierende
 Ref ist also typisiert.
@@ -26,10 +26,10 @@ Ref ist also typisiert.
 ```ts
 import { ActorSystem, Props, Router, Actor, Broadcast } from 'actor-ts';
 
-type Msg = { payload: string };
+type Message = { payload: string };
 
-class Worker extends Actor<Msg> {
-  override onReceive(msg: Msg): void {
+class Worker extends Actor<Message> {
+  override onReceive(msg: Message): void {
     this.log.info(`processed ${msg.payload}`);
   }
 }
@@ -83,7 +83,7 @@ Routee.  Nützlich für gelegentliche Fan-Out-Nachrichten
 (Cache-Invalidierung, Schema-Update-Notifications), die nicht ins
 Routine-Routing-Pattern passen.
 
-Der Router akzeptiert sowohl `TMsg` als auch `Broadcast<TMsg>` —
+Der Router akzeptiert sowohl `TMessage` als auch `Broadcast<TMessage>` —
 der Typ-Parameter auf den zurückgegebenen Props reflektiert das.
 
 ## `Router.custom` — eigene Strategie mitbringen
@@ -135,7 +135,7 @@ einzelnen Routee, indem du ihn direkt adressierst:
 ```ts
 const oneRoutee = (await system.actorSelection(
   '/user/workers/routee-2'
-).resolveOne()) as ActorRef<Msg>;
+).resolveOne()) as ActorRef<Message>;
 
 oneRoutee.stop();
 ```

@@ -180,14 +180,14 @@ TypeScript bricht den Build ab.
 import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
 import { match } from 'ts-pattern';
 
-type Cmd =
+type Command =
   | { kind: 'inc' }
   | { kind: 'dec' }
   | { kind: 'get'; replyTo: ActorRef<number> };
 
-class Counter extends Actor<Cmd> {
+class Counter extends Actor<Command> {
   private count = 0;
-  override onReceive(cmd: Cmd): void {
+  override onReceive(cmd: Command): void {
     match(cmd)
       .with({ kind: 'inc' }, () => { this.count++; })
       .with({ kind: 'dec' }, () => { this.count--; })
@@ -237,7 +237,7 @@ Oder mit der freien Funktion für denselben Effekt:
 ```ts
 import { ask } from 'actor-ts';
 
-const value = await ask<Cmd, number>(counter, { kind: 'get' }, 5_000);
+const value = await ask<Command, number>(counter, { kind: 'get' }, 5_000);
 ```
 
 In beiden Fällen spawnt das Framework unter der Haube einen

@@ -7,7 +7,7 @@
  * `actor-ts.io.broker.nats` > built-in defaults).
  */
 import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
-import type { BrokerCommonOptionsType } from './BrokerSettings.js';
+import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { NatsMessage } from './NatsActor.js';
 

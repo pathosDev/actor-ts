@@ -2,7 +2,7 @@ import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { RedisClientLike } from './RedisCache.js';
 
-/** Plain settings-object shape accepted by a {@link RedisCache}. */
+/** Plain options-object shape accepted by a {@link RedisCache}. */
 export interface RedisCacheOptionsType {
   /**
    * Redis URL (e.g. `redis://localhost:6379`) — passed straight to the

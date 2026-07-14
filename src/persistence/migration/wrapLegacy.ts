@@ -123,8 +123,8 @@ export async function migrateInMemoryJournal<E>(
     // does the actual rewrite in place.
     const events = await journal.read<E | JournalEnvelope<E>>(pid, 0);
     inspected += events.length;
-    for (const e of events) {
-      if (isEnvelope(e.event)) skipped += 1;
+    for (const persistedEvent of events) {
+      if (isEnvelope(persistedEvent.event)) skipped += 1;
       else wrapped += 1;
     }
     await migratable._remapForMigration<E, JournalEnvelope<E>>(

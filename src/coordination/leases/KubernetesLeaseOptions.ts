@@ -3,7 +3,7 @@ import type { LeaseOptionsType } from '../LeaseOptions.js';
 import type { K8sFetchClient } from './k8sApi.js';
 
 /**
- * K8s-specific additions to the common lease settings.  When `apiServerUrl`,
+ * K8s-specific additions to the common lease options.  When `apiServerUrl`,
  * `authToken`, or `caCert` are omitted the adapter probes the standard
  * ServiceAccount mount points (`/var/run/secrets/kubernetes.io/...`).
  *

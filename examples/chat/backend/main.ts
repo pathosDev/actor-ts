@@ -53,12 +53,12 @@ import {
 import { SessionStore } from './auth/sessionStore.js';
 import {
   ChatRoomActor,
-  type ChatRoomCmd,
+  type ChatRoomCommand,
 } from './actors/ChatRoomActor.js';
 import { ChatRoomDirectoryActor } from './actors/ChatRoomDirectoryActor.js';
 import {
   DmChannelActor,
-  type DmChannelCmd,
+  type DmChannelCommand,
 } from './actors/DmChannelActor.js';
 import { OnlineUsersActor } from './actors/OnlineUsersActor.js';
 import { ReadReceiptsActor } from './actors/ReadReceiptsActor.js';
@@ -175,7 +175,7 @@ async function main(): Promise<void> {
   // -------- 6. ClusterSharding: one ChatRoomActor per room --------
   const sharding = cluster.sharding;
   const chatRoomRegion = sharding.start('ChatRoom', ChatRoomActor,
-    StartShardingOptions.create<ChatRoomCmd>()
+    StartShardingOptions.create<ChatRoomCommand>()
       .withExtractEntityId((msg) => msg.room)
       .withNumShards(16));
 
@@ -186,7 +186,7 @@ async function main(): Promise<void> {
   // the chat-room region; the DM workload is similar (write-heavy,
   // small per-entity state) so a single tuning value covers both.
   const dmChannelRegion = sharding.start('DmChannel', DmChannelActor,
-    StartShardingOptions.create<DmChannelCmd>()
+    StartShardingOptions.create<DmChannelCommand>()
       .withExtractEntityId((msg) => msg.pairId)
       .withNumShards(16));
 

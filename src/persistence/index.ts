@@ -220,14 +220,14 @@ export {
 export {
   ProjectionOptions,
   ProjectionOptionsBuilder,
-  ByPidProjectionOptions,
-  ByPidProjectionOptionsBuilder,
+  ByPersistenceIdProjectionOptions,
+  ByPersistenceIdProjectionOptionsBuilder,
   ByTagProjectionOptions,
   ByTagProjectionOptionsBuilder,
 } from './projection/ProjectionOptions.js';
 export type {
   ProjectionOptionsType,
-  ByPidProjectionOptionsType,
+  ByPersistenceIdProjectionOptionsType,
   ByTagProjectionOptionsType,
 } from './projection/ProjectionOptions.js';
 export type { OffsetStore } from './projection/OffsetStore.js';

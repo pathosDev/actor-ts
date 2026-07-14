@@ -72,8 +72,8 @@ export class GSet<E> implements Crdt<GSet<E>> {
     if (other.elements.size === 0) return this;
     if (this.elements.size === 0) return other;
     const next = new Map(this.elements);
-    for (const [k, v] of other.elements) {
-      if (!next.has(k)) next.set(k, v);
+    for (const [key, element] of other.elements) {
+      if (!next.has(key)) next.set(key, element);
     }
     return new GSet<E>(next, this.identity);
   }
@@ -96,16 +96,16 @@ export class GSet<E> implements Crdt<GSet<E>> {
     if (json.kind !== 'GSet') throw new Error(`GSet.fromJSON: unexpected kind ${json.kind}`);
     const identity = opts.identity ?? (defaultIdentity as (e: E) => string);
     const map = new Map<string, E>();
-    for (const s of json.elements) {
-      const e = JSON.parse(s) as E;
-      map.set(identity(e), e);
+    for (const serialized of json.elements) {
+      const element = JSON.parse(serialized) as E;
+      map.set(identity(element), element);
     }
     return new GSet<E>(map, identity);
   }
 
   equals(other: GSet<E>): boolean {
     if (this.elements.size !== other.elements.size) return false;
-    for (const k of this.elements.keys()) if (!other.elements.has(k)) return false;
+    for (const key of this.elements.keys()) if (!other.elements.has(key)) return false;
     return true;
   }
 }

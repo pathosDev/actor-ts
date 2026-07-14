@@ -65,7 +65,7 @@ export const scenario: BrokerScenario<K8sCtx> = {
       if (ips.join(',') !== '10.0.0.1,10.0.0.2,10.0.0.3') {
         throw new Error(`unexpected IPs: ${ips.join(',')}`);
       }
-      // System name + port are pulled from the provider settings.
+      // System name + port are pulled from the provider options.
       for (const a of addrs) {
         if (a.systemName !== 'k8s-integration') {
           throw new Error(`systemName mismatch: ${a.systemName}`);

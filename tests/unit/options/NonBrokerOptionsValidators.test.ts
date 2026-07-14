@@ -10,7 +10,7 @@ import {
   ClusterBootstrapOptionsValidator,
   type ClusterBootstrapOptionsType,
 } from '../../../src/cluster/ClusterBootstrapOptions.js';
-import { WebSocketClientOptionsValidator, type WebSocketClientOptionsType } from '../../../src/http/ws/WebSocketClientOptions.js';
+import { WebsocketClientOptionsValidator, type WebsocketClientOptionsType } from '../../../src/http/websocket/WebsocketClientOptions.js';
 import { ExpressBackendOptionsValidator, type ExpressBackendOptionsType } from '../../../src/http/backend/ExpressBackendOptions.js';
 import { HonoBackendOptionsValidator, type HonoBackendOptionsType } from '../../../src/http/backend/HonoBackendOptions.js';
 import { LeaseOptionsValidator, type LeaseOptionsType } from '../../../src/coordination/LeaseOptions.js';
@@ -144,9 +144,9 @@ describe('ClusterBootstrapOptionsValidator', () => {
   });
 });
 
-describe('WebSocketClientOptionsValidator', () => {
-  const check = (s: Partial<WebSocketClientOptionsType>): void =>
-    new WebSocketClientOptionsValidator().validate(s);
+describe('WebsocketClientOptionsValidator', () => {
+  const check = (s: Partial<WebsocketClientOptionsType>): void =>
+    new WebsocketClientOptionsValidator().validate(s);
 
   test('accepts ws / wss urls, rejects others', () => {
     expect(() => check({ url: 'ws://host:8080/ws' })).not.toThrow();

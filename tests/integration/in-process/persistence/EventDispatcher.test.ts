@@ -11,8 +11,8 @@ type Event =
 describe('eventDispatcher', () => {
   test('routes each kind to its registered handler', () => {
     const onEvent = eventDispatcher<State, Event>()
-      .on('incremented', (s, e) => ({ count: s.count + e.by, lastSeen: 'incremented' }))
-      .on('decremented', (s, e) => ({ count: s.count - e.by, lastSeen: 'decremented' }))
+      .on('incremented', (subscription, e) => ({ count: subscription.count + e.by, lastSeen: 'incremented' }))
+      .on('decremented', (subscription, e) => ({ count: subscription.count - e.by, lastSeen: 'decremented' }))
       .on('reset',       () => ({ count: 0, lastSeen: 'reset' }))
       .build();
 
@@ -33,16 +33,16 @@ describe('eventDispatcher', () => {
     // Compile-time: inside the arm, `e` is narrowed to the matching variant.
     // Runtime check that the narrowed payload field is accessible.
     const onEvent = eventDispatcher<State, Event>()
-      .on('incremented', (s, e) => {
+      .on('incremented', (subscription, e) => {
         // e: { kind: 'incremented'; by: number } — `e.by` exists, `e.reason` doesn't.
-        return { count: s.count + e.by };
+        return { count: subscription.count + e.by };
       })
-      .on('decremented', (s, e) => ({ count: s.count - e.by }))
+      .on('decremented', (subscription, e) => ({ count: subscription.count - e.by }))
       .on('reset',       () => ({ count: 0 }))
       .build();
 
-    const s = onEvent({ count: 0 }, { kind: 'incremented', by: 7 });
-    expect(s.count).toBe(7);
+    const subscription = onEvent({ count: 0 }, { kind: 'incremented', by: 7 });
+    expect(subscription.count).toBe(7);
   });
 
   test('reject double-registration of the same kind at runtime', () => {
@@ -52,11 +52,11 @@ describe('eventDispatcher', () => {
     // dispatch, the builder still detects it.
     expect(() => {
       const partial = eventDispatcher<State, Event>()
-        .on('incremented', (s, e) => ({ count: s.count + e.by }));
+        .on('incremented', (subscription, e) => ({ count: subscription.count + e.by }));
       // Force-cast to bypass the type-level guard:
       (partial as unknown as {
-        on(k: string, fn: (s: State, e: Event) => State): unknown;
-      }).on('incremented', (s) => s);
+        on(k: string, fn: (subscription: State, e: Event) => State): unknown;
+      }).on('incremented', (subscription) => subscription);
     }).toThrow(/registered twice/);
   });
 
@@ -64,21 +64,21 @@ describe('eventDispatcher', () => {
     // We can't directly assert the builder is GC'd, but we can verify
     // mutating the builder after build() doesn't affect the dispatcher.
     const builder = eventDispatcher<State, Event>()
-      .on('incremented', (s, e) => ({ count: s.count + e.by }))
-      .on('decremented', (s, e) => ({ count: s.count - e.by }))
+      .on('incremented', (subscription, e) => ({ count: subscription.count + e.by }))
+      .on('decremented', (subscription, e) => ({ count: subscription.count - e.by }))
       .on('reset',       () => ({ count: 0 }));
     const onEvent = builder.build();
     // The returned function works:
-    const s = onEvent({ count: 0 }, { kind: 'incremented', by: 3 });
-    expect(s.count).toBe(3);
+    const subscription = onEvent({ count: 0 }, { kind: 'incremented', by: 3 });
+    expect(subscription.count).toBe(3);
   });
 
   test('runtime guard: throws on unhandled kind if cast forces it', () => {
     // If user types are correct, this branch is unreachable.  Defensive
     // throw kicks in when the user force-casts to bypass compile checks.
     const onEvent = eventDispatcher<State, Event>()
-      .on('incremented', (s, e) => ({ count: s.count + e.by }))
-      .on('decremented', (s, e) => ({ count: s.count - e.by }))
+      .on('incremented', (subscription, e) => ({ count: subscription.count + e.by }))
+      .on('decremented', (subscription, e) => ({ count: subscription.count - e.by }))
       .on('reset',       () => ({ count: 0 }))
       .build();
 
@@ -89,8 +89,8 @@ describe('eventDispatcher', () => {
 
   test('build() can be called multiple times — each produces an independent dispatcher', () => {
     const builder = eventDispatcher<State, Event>()
-      .on('incremented', (s, e) => ({ count: s.count + e.by }))
-      .on('decremented', (s, e) => ({ count: s.count - e.by }))
+      .on('incremented', (subscription, e) => ({ count: subscription.count + e.by }))
+      .on('decremented', (subscription, e) => ({ count: subscription.count - e.by }))
       .on('reset',       () => ({ count: 0 }));
     const d1 = builder.build();
     const d2 = builder.build();
@@ -106,8 +106,8 @@ describe('eventDispatcher', () => {
     // PersistentActor.onEvent enables — many events of mixed kinds,
     // state must accumulate consistently.
     const onEvent = eventDispatcher<State, Event>()
-      .on('incremented', (s, e) => ({ count: s.count + e.by }))
-      .on('decremented', (s, e) => ({ count: s.count - e.by }))
+      .on('incremented', (subscription, e) => ({ count: subscription.count + e.by }))
+      .on('decremented', (subscription, e) => ({ count: subscription.count - e.by }))
       .on('reset',       () => ({ count: 0 }))
       .build();
     const events: Event[] = [
@@ -127,8 +127,8 @@ describe('eventDispatcher', () => {
     // earlier builder reference must still see its own state, not
     // mutate underneath the user.
     const b1 = eventDispatcher<State, Event>()
-      .on('incremented', (s, e) => ({ count: s.count + e.by }));
-    const b2 = b1.on('decremented', (s, e) => ({ count: s.count - e.by }));
+      .on('incremented', (subscription, e) => ({ count: subscription.count + e.by }));
+    const b2 = b1.on('decremented', (subscription, e) => ({ count: subscription.count - e.by }));
     // b1 and b2 are different objects.
     expect(b1).not.toBe(b2);
   });

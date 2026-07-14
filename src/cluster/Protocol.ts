@@ -55,45 +55,45 @@ export interface MemberData {
  * user messages use `body` which is assumed to be JSON-safe.
  */
 export type WireMessage =
-  | HelloMsg
-  | HelloAckMsg
-  | HeartbeatMsg
-  | HeartbeatAckMsg
-  | GossipMsg
-  | EnvelopeMsg
-  | ShardMapMsg
-  | LeaveMsg;
+  | HelloMessage
+  | HelloAcknowledgmentMessage
+  | HeartbeatMessage
+  | HeartbeatAcknowledgmentMessage
+  | GossipMessage
+  | EnvelopeMessage
+  | ShardMapMessage
+  | LeaveMessage;
 
-export interface HelloMsg {
+export interface HelloMessage {
   t: 'hello';
   self: NodeAddressData;
 }
 
-export interface HelloAckMsg {
+export interface HelloAcknowledgmentMessage {
   t: 'hello-ack';
   self: NodeAddressData;
 }
 
-export interface HeartbeatMsg {
+export interface HeartbeatMessage {
   t: 'heartbeat';
   from: NodeAddressData;
   seq: number;
   ts: number;
 }
 
-export interface HeartbeatAckMsg {
+export interface HeartbeatAcknowledgmentMessage {
   t: 'heartbeat-ack';
   from: NodeAddressData;
   seq: number;
 }
 
-export interface GossipMsg {
+export interface GossipMessage {
   t: 'gossip';
   from: NodeAddressData;
   members: MemberData[];
 }
 
-export interface EnvelopeMsg {
+export interface EnvelopeMessage {
   t: 'envelope';
   /** Full actor path string of the recipient on the target node. */
   to: string;
@@ -119,14 +119,14 @@ export interface EnvelopeMsg {
   trace?: { readonly traceparent: string; readonly tracestate?: string };
 }
 
-export interface ShardMapMsg {
+export interface ShardMapMessage {
   t: 'shard-map';
   type: string;
   shards: Record<number, NodeAddressData>;
   version: number;
 }
 
-export interface LeaveMsg {
+export interface LeaveMessage {
   t: 'leave';
   node: NodeAddressData;
 }
@@ -157,7 +157,7 @@ export function encodeFrame(msg: WireMessage): Uint8Array {
  * rest of the bytes (DoS).  Capping at a sensible default closes
  * that vector; callers that genuinely send larger frames can raise
  * the cap via the `FrameDecoder` constructor or
- * `TcpTransport`'s settings.
+ * `TcpTransport`'s options.
  */
 export const DEFAULT_MAX_FRAME_BYTES = 16 * 1024 * 1024;
 

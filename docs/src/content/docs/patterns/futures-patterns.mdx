@@ -43,13 +43,13 @@ slow or flaky, the actor's mailbox piles up.
 ```ts
 import { Actor, pipeTo, Success, Failure } from 'actor-ts';
 
-type Msg =
+type Message =
   | { kind: 'fetch'; id: string }
   | Success<Item>
   | Failure;
 
-class Fast extends Actor<Msg> {
-  override onReceive(msg: Msg): void {
+class Fast extends Actor<Message> {
+  override onReceive(msg: Message): void {
     if (msg.kind === 'fetch') {
       pipeTo(this.downstream.fetch(msg.id), this.context.self);
       return;   // doesn't block — onReceive returns immediately
@@ -125,13 +125,13 @@ Simple tagged classes — values are immutable after construction.
 Pattern-match with `instanceof`:
 
 ```ts
-override onReceive(msg: Success<Item> | Failure | Cmd): void {
+override onReceive(msg: Success<Item> | Failure | Command): void {
   if (msg instanceof Success) {
     this.handle(msg.value);
   } else if (msg instanceof Failure) {
     this.fail(msg.error);
   } else {
-    // it's a Cmd
+    // it's a Command
   }
 }
 ```

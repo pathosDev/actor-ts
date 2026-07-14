@@ -46,8 +46,8 @@ export class InProcessJournalEventBus implements JournalEventBus {
   private readonly listeners = new Set<(event: PersistentEvent<unknown>) => void>();
 
   publish(event: PersistentEvent<unknown>): void {
-    for (const l of this.listeners) {
-      try { l(event); } catch (err) {
+    for (const listener of this.listeners) {
+      try { listener(event); } catch (err) {
         // eslint-disable-next-line no-console
         console.warn('JournalEventBus: subscriber threw on publish', err);
       }

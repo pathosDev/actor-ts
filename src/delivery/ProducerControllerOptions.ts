@@ -3,11 +3,11 @@ import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { ActorRef } from '../ActorRef.js';
 import type { Delivery } from './Messages.js';
 
-/** Plain settings-object shape accepted by a {@link ProducerController}. */
+/** Plain options-object shape accepted by a {@link ProducerController}. */
 export interface ProducerControllerOptionsType<T> {
   readonly consumer: ActorRef<Delivery<T>>;
   /**
-   * How long to wait for an Ack before re-sending.  Default 500ms.
+   * How long to wait for an Acknowledgment before re-sending.  Default 500ms.
    */
   readonly resendTimeout?: number;
   /**
@@ -41,7 +41,7 @@ export class ProducerControllerOptionsBuilder<T> extends OptionsBuilder<Producer
     return this.set('consumer', consumer);
   }
 
-  /** How long to wait for an Ack before re-sending, in ms.  Default 500. */
+  /** How long to wait for an Acknowledgment before re-sending, in ms.  Default 500. */
   withResendTimeout(ms: number): this {
     return this.set('resendTimeout', ms);
   }

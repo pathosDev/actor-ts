@@ -20,12 +20,12 @@ import {
   rawCodec,
   Status,
   websocket,
-  WebSocketRouteOptions,
+  WebsocketRouteOptions,
   type Route,
 } from '../../../src/http/index.js';
-import type { WsFrame } from '../../../src/http/index.js';
+import type { WebsocketFrame } from '../../../src/http/index.js';
 import type { ActorRef } from '../../../src/index.js';
-import type { WsServerMessage } from '../../../src/http/index.js';
+import type { WebsocketServerMessage } from '../../../src/http/index.js';
 
 const SELECTOR_HTML = /* html */ `<!doctype html>
 <html lang="en">
@@ -119,10 +119,10 @@ const SELECTOR_HTML = /* html */ `<!doctype html>
  * chat protocol is JSON-over-text the session actor encodes itself).
  */
 export function buildRoutes(
-  ingress: ActorRef<WsServerMessage<WsFrame, WsFrame>>,
+  ingress: ActorRef<WebsocketServerMessage<WebsocketFrame, WebsocketFrame>>,
   staticDir: string,
 ): Route {
-  const wsRouteOptions = WebSocketRouteOptions.create().withCodec(rawCodec());
+  const wsRouteOptions = WebsocketRouteOptions.create().withCodec(rawCodec());
   return concat(
     get(() =>
       complete(Status.OK, SELECTOR_HTML, { 'content-type': 'text/html; charset=utf-8' }),

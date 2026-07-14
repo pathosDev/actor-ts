@@ -54,25 +54,25 @@ export class ShardedDaemonProcess {
     cluster: Cluster,
     options: ShardedDaemonProcessOptions<T>,
   ): ShardedDaemonProcessHandle<T> {
-    const settings = options as ShardedDaemonProcessOptionsType<T>;
-    new ShardedDaemonProcessOptionsValidator<T>().validate(settings);
+    const resolvedOptions = options as ShardedDaemonProcessOptionsType<T>;
+    new ShardedDaemonProcessOptionsValidator<T>().validate(resolvedOptions);
     const sharding = ClusterSharding.get(system, cluster);
 
     const startOptions = StartShardingOptions.create<DaemonEnvelope<T>>()
-      .withTypeName(`daemon-${settings.name}`)
-      .withEntityProps(Props.create(() => new DaemonHost<T>(settings.behaviorFor) as unknown as Actor<DaemonEnvelope<T>>))
+      .withTypeName(`daemon-${resolvedOptions.name}`)
+      .withEntityProps(Props.create(() => new DaemonHost<T>(resolvedOptions.behaviorFor) as unknown as Actor<DaemonEnvelope<T>>))
       .withExtractEntityId((env) => String(env.index))
       .withExtractEntityMessage((env) => env.body)
-      .withNumShards(settings.numDaemons)
+      .withNumShards(resolvedOptions.numDaemons)
       .withRememberEntities(true)
       .withAllocationStrategy(new LeastShardAllocationStrategy());
-    if (settings.role !== undefined) startOptions.withRole(settings.role);
+    if (resolvedOptions.role !== undefined) startOptions.withRole(resolvedOptions.role);
     const region = sharding.start<DaemonEnvelope<T>>(startOptions);
 
     // Wake every daemon so the coordinator allocates a shard and the host
     // actor's preStart runs.  Afterwards rememberEntities keeps them alive.
     const wakeAll = (): void => {
-      for (let i = 0; i < settings.numDaemons; i++) {
+      for (let i = 0; i < resolvedOptions.numDaemons; i++) {
         region.tell({ index: i, body: WAKEUP });
       }
     };
@@ -96,7 +96,7 @@ export class ShardedDaemonProcess {
     // Periodic liveness backstop — fires even when no cluster events do,
     // so any wake-up that got lost in transit (rare, but possible during
     // brief partition + heal cycles) gets retried.
-    const livenessIntervalMs = settings.livenessIntervalMs ?? 30_000;
+    const livenessIntervalMs = resolvedOptions.livenessIntervalMs ?? 30_000;
     let livenessTimer: Cancellable | null = null;
     if (livenessIntervalMs > 0) {
       livenessTimer = system.scheduler.scheduleAtFixedRateFn(
@@ -147,8 +147,8 @@ class DaemonHost<T> extends Actor<DaemonEnvelope<T>> {
 function indexFromEntityName(name: string): number {
   // Names are set by ShardRegion as `entity-<entityId>` where entityId is
   // the stringified daemon index (see extractEntityId above).
-  const m = name.match(/^entity-(\d+)$/);
-  return m ? parseInt(m[1]!, 10) : 0;
+  const match = name.match(/^entity-(\d+)$/);
+  return match ? parseInt(match[1]!, 10) : 0;
 }
 
 function isWakeup(x: unknown): x is Wakeup {

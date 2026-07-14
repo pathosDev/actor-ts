@@ -4,7 +4,7 @@ import type { FailureDetectorOptionsType } from './FailureDetectorOptions.js';
 import type { Transport } from './Transport.js';
 import type { DowningProvider } from './downing/DowningProvider.js';
 
-/** Plain settings-object shape accepted by {@link Cluster.join}. */
+/** Plain options-object shape accepted by {@link Cluster.join}. */
 export interface ClusterOptionsType {
   readonly host: string;
   readonly port: number;

@@ -92,7 +92,7 @@ The Docker Compose spins up:
 ### Sharded sessions
 
 ```ts
-const startShardingOptions = StartShardingOptions.create<SessionMsg>()
+const startShardingOptions = StartShardingOptions.create<SessionMessage>()
   .withTypeName('session')
   .withEntityProps(Props.create(() => new UserSessionActor()))
   .withExtractEntityId((msg) => msg.userId)
@@ -106,7 +106,7 @@ One actor per logged-in user, distributed across nodes.
 ### PersistentActor for rooms
 
 ```ts
-class ChatRoomActor extends PersistentActor<RoomCmd, RoomEvent, RoomState> {
+class ChatRoomActor extends PersistentActor<RoomCommand, RoomEvent, RoomState> {
   readonly persistenceId = `room-${this.roomId}`;
   // ... onCommand persists; onEvent updates state ...
 }
@@ -130,10 +130,10 @@ node's ChatRoom is publishing.
 ### WebSocket per user
 
 ```ts
-class UserSessionActor extends Actor<SessionMsg> {
+class UserSessionActor extends Actor<SessionMessage> {
   private ws: WebSocket | null = null;
 
-  override onReceive(msg: SessionMsg): void {
+  override onReceive(msg: SessionMessage): void {
     if (msg.kind === 'connect-ws') this.ws = msg.socket;
     if (msg.kind === 'inbound')    this.ws?.send(JSON.stringify(msg.payload));
   }

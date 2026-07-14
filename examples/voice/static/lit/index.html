@@ -381,11 +381,11 @@
 
         _onSubmitLogin(e) {
           e.preventDefault();
-          const u = this.renderRoot.querySelector('#u').value.trim();
-          const p = this.renderRoot.querySelector('#p').value;
-          if (!u || !p) return;
+          const username = this.renderRoot.querySelector('#u').value.trim();
+          const password = this.renderRoot.querySelector('#p').value;
+          if (!username || !password) return;
           this.loginError = '';
-          this._connectAndSend({ type: 'login', username: u, password: p });
+          this._connectAndSend({ type: 'login', username, password });
         }
 
         _logout() {

@@ -12,9 +12,9 @@ each handler returns the next one.
 ```ts
 import { ActorSystem, Behaviors } from 'actor-ts';
 
-type Msg = { kind: 'tick' };
+type Message = { kind: 'tick' };
 
-const ticker = Behaviors.receive<Msg>((ctx, msg) => {
+const ticker = Behaviors.receive<Message>((ctx, msg) => {
   ctx.log.info(`tick at ${Date.now()}`);
   return Behaviors.same;   // keep being a ticker
 });
@@ -33,7 +33,7 @@ message.
 ### `receive` — handler with context + message
 
 ```ts
-const counter = (n: number): Behavior<Msg> => Behaviors.receive<Msg>((ctx, msg) => {
+const counter = (n: number): Behavior<Message> => Behaviors.receive<Message>((ctx, msg) => {
   switch (msg.kind) {
     case 'inc': return counter(n + 1);
     case 'dec': return counter(n - 1);
@@ -50,7 +50,7 @@ behavior — `Behaviors.same` keeps the closure; a fresh
 ### `receiveMessage` — handler without context
 
 ```ts
-const counter = (n: number): Behavior<Msg> => Behaviors.receiveMessage<Msg>((msg) => {
+const counter = (n: number): Behavior<Message> => Behaviors.receiveMessage<Message>((msg) => {
   if (msg.kind === 'inc') return counter(n + 1);
   return Behaviors.same;
 });
@@ -62,7 +62,7 @@ Equivalent to `Behaviors.receive((_ctx, msg) => ...)`.
 ### `receiveWithSignal` — handler + lifecycle signals
 
 ```ts
-const watcher = Behaviors.receiveWithSignal<Msg>(
+const watcher = Behaviors.receiveWithSignal<Message>(
   (ctx, msg) => {
     // handle user message...
     return Behaviors.same;
@@ -91,7 +91,7 @@ form.
 ### `setup` — capture the context once
 
 ```ts
-const myActor = Behaviors.setup<Msg>((ctx) => {
+const myActor = Behaviors.setup<Message>((ctx) => {
   ctx.log.info(`I'm starting at ${ctx.path}`);
   const helper = ctx.spawn(helperBehavior, 'helper');
   return Behaviors.receive((_ctx, msg) => {
@@ -115,7 +115,7 @@ Three combinators wrap another behavior with extra capabilities:
 ```ts
 import { Behaviors, type TimerScheduler } from 'actor-ts';
 
-const heartbeat = Behaviors.withTimers<Msg>((timers) => {
+const heartbeat = Behaviors.withTimers<Message>((timers) => {
   timers.startTimerWithFixedDelay('hb', { kind: 'tick' }, 5_000);
 
   return Behaviors.receiveMessage((msg) => {
@@ -133,7 +133,7 @@ on every message.
 ### `withStash`
 
 ```ts
-const init = Behaviors.withStash<Msg>(100, (stash) => {
+const init = Behaviors.withStash<Message>(100, (stash) => {
   return Behaviors.receive((ctx, msg) => {
     if (msg.kind === 'ready') {
       stash.unstashAll();   // replay all buffered messages
@@ -144,7 +144,7 @@ const init = Behaviors.withStash<Msg>(100, (stash) => {
   });
 });
 
-const ready = Behaviors.receive<Msg>((ctx, msg) => {
+const ready = Behaviors.receive<Message>((ctx, msg) => {
   // handle messages normally
   return Behaviors.same;
 });
@@ -197,12 +197,12 @@ silent for now" stub or a sink that should swallow traffic.
 ```ts
 import { ActorSystem, Behaviors, type Behavior } from 'actor-ts';
 
-type Msg =
+type Message =
   | { kind: 'configure'; url: string }
   | { kind: 'request';   payload: string };
 
-const initializing = Behaviors.withStash<Msg>(100, (stash) =>
-  Behaviors.receive<Msg>((ctx, msg) => {
+const initializing = Behaviors.withStash<Message>(100, (stash) =>
+  Behaviors.receive<Message>((ctx, msg) => {
     if (msg.kind === 'configure') {
       const url = msg.url;
       stash.unstashAll();
@@ -213,8 +213,8 @@ const initializing = Behaviors.withStash<Msg>(100, (stash) =>
   }),
 );
 
-const ready = (url: string): Behavior<Msg> =>
-  Behaviors.receive<Msg>((ctx, msg) => {
+const ready = (url: string): Behavior<Message> =>
+  Behaviors.receive<Message>((ctx, msg) => {
     if (msg.kind === 'request') {
       ctx.log.info(`POST ${url}: ${msg.payload}`);
     }
@@ -280,7 +280,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Mutating closure-captured state">
   ```ts
-  const counter = (n: number): Behavior<Msg> => {
+  const counter = (n: number): Behavior<Message> => {
     let count = n;
     return Behaviors.receive((ctx, msg) => {
       count++;        // ← mutating the closure

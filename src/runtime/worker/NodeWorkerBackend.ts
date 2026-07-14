@@ -40,7 +40,7 @@ export class NodeWorkerBackend implements WorkerBackend {
     if (ctorLazy.isEvaluated) return;
     const moduleName = 'node:worker_threads';
     const mod = (await import(moduleName)) as {
-      Worker: WorkerThreadCtor;
+      Worker: WorkerThreadConstructor;
     };
     ctorLazy.setOverride(mod.Worker);
   }
@@ -57,12 +57,12 @@ interface NodeWorkerThread {
   terminate(): Promise<number>;
 }
 
-type WorkerThreadCtor = new (url: URL | string, opts?: { name?: string }) => NodeWorkerThread;
+type WorkerThreadConstructor = new (url: URL | string, opts?: { name?: string }) => NodeWorkerThread;
 
 // Real ctor installed by `preload()`; the fallback thunk is only
 // reached if a caller forgets to preload — the spawn() guard also
 // catches that case with a clearer message.
-const ctorLazy: Lazy<WorkerThreadCtor> = Lazy.of<WorkerThreadCtor>(() => {
+const ctorLazy: Lazy<WorkerThreadConstructor> = Lazy.of<WorkerThreadConstructor>(() => {
   throw new Error(
     'NodeWorkerBackend: call `await NodeWorkerBackend.preload()` before spawning a worker.',
   );

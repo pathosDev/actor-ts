@@ -31,8 +31,8 @@ export interface Substitution {
   readonly optional: boolean;
 }
 
-export function isSubstitution(v: unknown): v is Substitution {
-  return typeof v === 'object' && v !== null && (v as Substitution).__substitution === true;
+export function isSubstitution(value: unknown): value is Substitution {
+  return typeof value === 'object' && value !== null && (value as Substitution).__substitution === true;
 }
 
 export function parseHocon(source: string): ConfigObject {
@@ -80,13 +80,13 @@ class HoconParser {
       const keyPath = this.parseKeyPath();
       this.skipInsignificantInline();
 
-      const c = this.peekChar();
+      const char = this.peekChar();
       let value: ConfigValue;
-      if (c === '=' || c === ':') {
+      if (char === '=' || char === ':') {
         this.pos++;
         this.skipInsignificant();
         value = this.parseValue();
-      } else if (c === '{') {
+      } else if (char === '{') {
         // Key followed directly by an object literal — HOCON shorthand.
         value = this.parseValue();
       } else {
@@ -102,12 +102,12 @@ class HoconParser {
   /** Parse a value. */
   private parseValue(): ConfigValue {
     this.skipInsignificant();
-    const c = this.peekChar();
-    if (c === undefined) throw this.error('Unexpected end of input in value');
-    if (c === '{') return this.parseObject();
-    if (c === '[') return this.parseArray();
-    if (c === '"') return this.parseQuotedString();
-    if (c === '$' && this.src[this.pos + 1] === '{') return this.parseSubstitution();
+    const char = this.peekChar();
+    if (char === undefined) throw this.error('Unexpected end of input in value');
+    if (char === '{') return this.parseObject();
+    if (char === '[') return this.parseArray();
+    if (char === '"') return this.parseQuotedString();
+    if (char === '$' && this.src[this.pos + 1] === '{') return this.parseSubstitution();
     return this.parseLiteralOrUnquoted();
   }
 
@@ -133,37 +133,37 @@ class HoconParser {
 
   private parseQuotedString(): string {
     this.consumeChar('"');
-    let s = '';
+    let result = '';
     while (!this.isAtEnd()) {
-      const c = this.src[this.pos]!;
-      if (c === '"') { this.pos++; return s; }
-      if (c === '\\') {
+      const char = this.src[this.pos]!;
+      if (char === '"') { this.pos++; return result; }
+      if (char === '\\') {
         this.pos++;
         const esc = this.src[this.pos]!;
         this.pos++;
         switch (esc) {
-          case '"': s += '"'; break;
-          case '\\': s += '\\'; break;
-          case '/': s += '/'; break;
-          case 'b': s += '\b'; break;
-          case 'f': s += '\f'; break;
-          case 'n': s += '\n'; break;
-          case 'r': s += '\r'; break;
-          case 't': s += '\t'; break;
+          case '"': result += '"'; break;
+          case '\\': result += '\\'; break;
+          case '/': result += '/'; break;
+          case 'b': result += '\b'; break;
+          case 'f': result += '\f'; break;
+          case 'n': result += '\n'; break;
+          case 'r': result += '\r'; break;
+          case 't': result += '\t'; break;
           case 'u': {
             const hex = this.src.slice(this.pos, this.pos + 4);
             if (!/^[0-9a-fA-F]{4}$/.test(hex)) throw this.error(`Invalid \\u escape: ${hex}`);
-            s += String.fromCharCode(parseInt(hex, 16));
+            result += String.fromCharCode(parseInt(hex, 16));
             this.pos += 4;
             break;
           }
           default:
             throw this.error(`Invalid escape sequence: \\${esc}`);
         }
-      } else if (c === '\n') {
+      } else if (char === '\n') {
         throw this.error('Unterminated string literal (newline)');
       } else {
-        s += c; this.pos++;
+        result += char; this.pos++;
       }
     }
     throw this.error('Unterminated string literal');
@@ -190,9 +190,9 @@ class HoconParser {
     // Collect characters until a value terminator.
     const start = this.pos;
     while (!this.isAtEnd()) {
-      const c = this.src[this.pos]!;
-      if (c === '\n' || c === ',' || c === '}' || c === ']' || c === '#') break;
-      if (c === '/' && this.src[this.pos + 1] === '/') break;
+      const char = this.src[this.pos]!;
+      if (char === '\n' || char === ',' || char === '}' || char === ']' || char === '#') break;
+      if (char === '/' && this.src[this.pos + 1] === '/') break;
       this.pos++;
     }
     const raw = this.src.slice(start, this.pos).trim();
@@ -201,8 +201,8 @@ class HoconParser {
     if (raw === 'false') return false;
     if (raw === 'null') return null;
     if (/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(raw)) {
-      const n = Number(raw);
-      if (Number.isFinite(n)) return n;
+      const numberValue = Number(raw);
+      if (Number.isFinite(numberValue)) return numberValue;
     }
     // Unquoted string — HOCON treats it literally.  Embedded substitutions
     // are only supported inside quoted strings for this minimal parser.
@@ -222,8 +222,8 @@ class HoconParser {
 
   private parseKeySegment(): string {
     this.skipInsignificantInline();
-    const c = this.peekChar();
-    if (c === '"') return this.parseQuotedString();
+    const char = this.peekChar();
+    if (char === '"') return this.parseQuotedString();
     const start = this.pos;
     while (!this.isAtEnd()) {
       const ch = this.src[this.pos]!;
@@ -239,28 +239,28 @@ class HoconParser {
 
   private mergeKeyPath(into: ConfigObject, path: string[], value: ConfigValue): void {
     if (path.length === 1) {
-      const k = path[0]!;
+      const key = path[0]!;
       if (
-        isPlainObject(into[k]) && isPlainObject(value)
+        isPlainObject(into[key]) && isPlainObject(value)
       ) {
-        into[k] = deepMerge(into[k] as ConfigObject, value as ConfigObject);
+        into[key] = deepMerge(into[key] as ConfigObject, value as ConfigObject);
       } else {
-        into[k] = value;
+        into[key] = value;
       }
       return;
     }
-    const k = path[0]!;
-    const child = isPlainObject(into[k]) ? (into[k] as ConfigObject) : {};
-    into[k] = child;
+    const key = path[0]!;
+    const child = isPlainObject(into[key]) ? (into[key] as ConfigObject) : {};
+    into[key] = child;
     this.mergeKeyPath(child, path.slice(1), value);
   }
 
   private skipInsignificant(): void {
     while (!this.isAtEnd()) {
-      const c = this.src[this.pos]!;
-      if (c === ' ' || c === '\t' || c === '\r' || c === '\n') { this.pos++; continue; }
-      if (c === '#') { this.skipToEol(); continue; }
-      if (c === '/' && this.src[this.pos + 1] === '/') { this.skipToEol(); continue; }
+      const char = this.src[this.pos]!;
+      if (char === ' ' || char === '\t' || char === '\r' || char === '\n') { this.pos++; continue; }
+      if (char === '#') { this.skipToEol(); continue; }
+      if (char === '/' && this.src[this.pos + 1] === '/') { this.skipToEol(); continue; }
       break;
     }
   }
@@ -268,10 +268,10 @@ class HoconParser {
   /** Skip whitespace & comments but stop at newlines (for key-value boundary). */
   private skipInsignificantInline(): void {
     while (!this.isAtEnd()) {
-      const c = this.src[this.pos]!;
-      if (c === ' ' || c === '\t' || c === '\r') { this.pos++; continue; }
-      if (c === '#') { this.skipToEol(); continue; }
-      if (c === '/' && this.src[this.pos + 1] === '/') { this.skipToEol(); continue; }
+      const char = this.src[this.pos]!;
+      if (char === ' ' || char === '\t' || char === '\r') { this.pos++; continue; }
+      if (char === '#') { this.skipToEol(); continue; }
+      if (char === '/' && this.src[this.pos + 1] === '/') { this.skipToEol(); continue; }
       break;
     }
   }
@@ -280,11 +280,11 @@ class HoconParser {
     // Either a comma or a newline (or multiple).  We also absorb surrounding comments/ws.
     let consumed = false;
     while (!this.isAtEnd()) {
-      const c = this.src[this.pos]!;
-      if (c === ',' || c === '\n') { this.pos++; consumed = true; continue; }
-      if (c === ' ' || c === '\t' || c === '\r') { this.pos++; continue; }
-      if (c === '#') { this.skipToEol(); consumed = true; continue; }
-      if (c === '/' && this.src[this.pos + 1] === '/') { this.skipToEol(); consumed = true; continue; }
+      const char = this.src[this.pos]!;
+      if (char === ',' || char === '\n') { this.pos++; consumed = true; continue; }
+      if (char === ' ' || char === '\t' || char === '\r') { this.pos++; continue; }
+      if (char === '#') { this.skipToEol(); consumed = true; continue; }
+      if (char === '/' && this.src[this.pos + 1] === '/') { this.skipToEol(); consumed = true; continue; }
       break;
     }
     // Separator is optional inside arrays and at end — no throw.
@@ -296,11 +296,11 @@ class HoconParser {
   }
 
   private peekChar(): string | undefined { return this.src[this.pos]; }
-  private consumeChar(c: string): void {
-    if (this.src[this.pos] !== c) throw this.error(`Expected '${c}'`);
+  private consumeChar(char: string): void {
+    if (this.src[this.pos] !== char) throw this.error(`Expected '${char}'`);
     this.pos++;
   }
-  private expect(c: string): void { this.consumeChar(c); }
+  private expect(char: string): void { this.consumeChar(char); }
   private isAtEnd(): boolean { return this.pos >= this.src.length; }
 
   private error(message: string): Error {
@@ -350,10 +350,10 @@ function walk(
   // apart and we lean on them rather than reimplement the discriminator.
   return match(node)
     .when(isSubstitution, (sub) => resolveOne(sub, root, env))
-    .when((v): v is ConfigValue[] => Array.isArray(v), (arr) => arr.map(v => walk(v, root, env)))
+    .when((value): value is ConfigValue[] => Array.isArray(value), (arr) => arr.map(value => walk(value, root, env)))
     .when(isPlainObject, (obj) => {
       const out: ConfigObject = {};
-      for (const [k, v] of Object.entries(obj)) out[k] = walk(v, root, env);
+      for (const [key, value] of Object.entries(obj)) out[key] = walk(value, root, env);
       return out;
     })
     .otherwise((primitive) => primitive);
@@ -388,9 +388,9 @@ function resolveOne(
 function lookup(obj: ConfigObject, path: string): ConfigValue | undefined {
   const parts = path.split('.');
   let cur: ConfigValue | undefined = obj;
-  for (const p of parts) {
+  for (const part of parts) {
     if (!isPlainObject(cur)) return undefined;
-    cur = (cur as ConfigObject)[p];
+    cur = (cur as ConfigObject)[part];
     if (cur === undefined) return undefined;
     if (isSubstitution(cur)) return undefined; // not resolved yet
   }
@@ -399,18 +399,18 @@ function lookup(obj: ConfigObject, path: string): ConfigValue | undefined {
 
 /* ================================ Utilities =============================== */
 
-export function isPlainObject(v: unknown): v is ConfigObject {
-  return typeof v === 'object' && v !== null && !Array.isArray(v) && !isSubstitution(v);
+export function isPlainObject(value: unknown): value is ConfigObject {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && !isSubstitution(value);
 }
 
 /** Deep merge — values in `overlay` win, objects merge recursively, arrays overwrite. */
 export function deepMerge(base: ConfigObject, overlay: ConfigObject): ConfigObject {
   const out: ConfigObject = { ...base };
-  for (const [k, v] of Object.entries(overlay)) {
-    if (isPlainObject(v) && isPlainObject(out[k])) {
-      out[k] = deepMerge(out[k] as ConfigObject, v as ConfigObject);
+  for (const [key, value] of Object.entries(overlay)) {
+    if (isPlainObject(value) && isPlainObject(out[key])) {
+      out[key] = deepMerge(out[key] as ConfigObject, value as ConfigObject);
     } else {
-      out[k] = v;
+      out[key] = value;
     }
   }
   return out;
@@ -419,11 +419,11 @@ export function deepMerge(base: ConfigObject, overlay: ConfigObject): ConfigObje
 /** Strip undefined values that originated from optional substitutions. */
 export function stripUndefined(obj: ConfigObject): ConfigObject {
   const out: ConfigObject = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (v === undefined) continue;
-    if (isPlainObject(v)) out[k] = stripUndefined(v as ConfigObject);
-    else if (Array.isArray(v)) out[k] = v.filter(x => x !== undefined) as ConfigValue[];
-    else out[k] = v;
+  for (const [key, value] of Object.entries(obj)) {
+    if (value === undefined) continue;
+    if (isPlainObject(value)) out[key] = stripUndefined(value as ConfigObject);
+    else if (Array.isArray(value)) out[key] = value.filter(x => x !== undefined) as ConfigValue[];
+    else out[key] = value;
   }
   return out;
 }

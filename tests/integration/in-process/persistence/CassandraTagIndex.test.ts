@@ -119,9 +119,9 @@ describe('CassandraQuery — currentEventsByTag with side-table index', () => {
   test('all-intersection: walks one partition + JS-refines additional tags', async () => {
     const { journal } = makeJournal(true);
     await seedCorpus(journal);
-    const q = new CassandraQuery(journal);
+    const query = new CassandraQuery(journal);
 
-    const orders_t1 = await q.currentEventsByTag<CorpusEvent>(
+    const orders_t1 = await query.currentEventsByTag<CorpusEvent>(
       { all: ['type:Order', 'tenant:t1'] }, offsetStart,
     );
     expect(ids(orders_t1)).toEqual([1, 3]);
@@ -132,12 +132,12 @@ describe('CassandraQuery — currentEventsByTag with side-table index', () => {
   test('any-union: dedupes events tagged with more than one listed value', async () => {
     const { journal } = makeJournal(true);
     await seedCorpus(journal);
-    const q = new CassandraQuery(journal);
+    const query = new CassandraQuery(journal);
 
     // tenant:t1 covers {1, 3, 4, 6}; archived covers {3, 5}.  Union
     // must be {1, 3, 4, 5, 6} — event 3 (in both partitions) shows
     // up exactly once.
-    const result = await q.currentEventsByTag<CorpusEvent>(
+    const result = await query.currentEventsByTag<CorpusEvent>(
       { any: ['tenant:t1', 'archived'] }, offsetStart,
     );
     expect(ids(result)).toEqual([1, 3, 4, 5, 6]);
@@ -148,9 +148,9 @@ describe('CassandraQuery — currentEventsByTag with side-table index', () => {
   test('combined all+not on the side table matches the InMemory result', async () => {
     const { journal } = makeJournal(true);
     await seedCorpus(journal);
-    const q = new CassandraQuery(journal);
+    const query = new CassandraQuery(journal);
 
-    const live_orders = await q.currentEventsByTag<CorpusEvent>(
+    const live_orders = await query.currentEventsByTag<CorpusEvent>(
       { all: ['type:Order'], not: ['archived'] }, offsetStart,
     );
     expect(ids(live_orders)).toEqual([1, 2]);
@@ -181,9 +181,9 @@ describe('CassandraQuery — currentEventsByTag with side-table index', () => {
   test('back-compat: bare-string filter shape still works', async () => {
     const { journal } = makeJournal(true);
     await seedCorpus(journal);
-    const q = new CassandraQuery(journal);
+    const query = new CassandraQuery(journal);
 
-    const single = await q.currentEventsByTag<CorpusEvent>('tenant:t1', offsetStart);
+    const single = await query.currentEventsByTag<CorpusEvent>('tenant:t1', offsetStart);
     expect(ids(single)).toEqual([1, 3, 4, 6]);
 
     await journal.close();

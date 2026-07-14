@@ -1,7 +1,7 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 
-/** Plain settings-object shape accepted by a {@link FailureDetector}. */
+/** Plain options-object shape accepted by a {@link FailureDetector}. */
 export interface FailureDetectorOptionsType {
   /** How often the detector samples and decides membership health. */
   readonly heartbeatIntervalMs: number;
@@ -13,7 +13,7 @@ export interface FailureDetectorOptionsType {
 
 /**
  * Fluent builder for {@link FailureDetectorOptionsType}.  Unset fields fall
- * through to {@link defaultFailureDetectorSettings} in the consumer, so a
+ * through to {@link defaultFailureDetectorOptions} in the consumer, so a
  * bare `FailureDetectorOptions.create()` yields the defaults.
  *
  *     new FailureDetector(

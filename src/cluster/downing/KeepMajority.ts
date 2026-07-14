@@ -4,11 +4,7 @@ import {
   type DowningDecision,
   type DowningProvider,
 } from './DowningProvider.js';
-
-export interface KeepMajoritySettings {
-  /** If set, only members carrying this role count toward the majority. */
-  readonly role?: string;
-}
+import type { KeepMajorityOptions, KeepMajorityOptionsType } from './KeepMajorityOptions.js';
 
 /**
  * "Keep majority" — if the reachable side has strictly more than half of
@@ -21,20 +17,24 @@ export interface KeepMajoritySettings {
  * when you run stateful and stateless nodes in the same cluster.
  */
 export class KeepMajority implements DowningProvider {
-  constructor(private readonly settings: KeepMajoritySettings = {}) {}
+  private readonly options: KeepMajorityOptionsType;
+
+  constructor(options: KeepMajorityOptions = {}) {
+    this.options = options as KeepMajorityOptionsType;
+  }
 
   decide(view: ClusterPartitionView): DowningDecision {
     const candidates = view.allMembers.filter((m) =>
       (m.status === 'up' || m.status === 'leaving' || m.status === 'unreachable') &&
-      (!this.settings.role || m.hasRole(this.settings.role))
+      (!this.options.role || m.hasRole(this.options.role))
     );
     if (candidates.length === 0) return new Set();
 
     const reachable = candidates.filter((m) => !view.unreachable.has(addrKey(m)));
     const unreachable = candidates.filter((m) => view.unreachable.has(addrKey(m)));
 
-    const n = candidates.length;
-    const needed = Math.floor(n / 2) + 1;
+    const count = candidates.length;
+    const needed = Math.floor(count / 2) + 1;
 
     if (reachable.length >= needed) {
       // Majority on our side: down the unreachable partition.

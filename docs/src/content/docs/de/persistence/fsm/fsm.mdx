@@ -1,25 +1,25 @@
 ---
 title: FSM
-description: Die In-Memory-Zustandsmaschine — erweitere `FSM<StateName, StateData, Msg>`, registriere `when(...)`-Handler + `onEnter` / `onExit`-Callbacks. Der State lebt nur im Speicher; beim Neustart verloren.
+description: Die In-Memory-Zustandsmaschine — erweitere `FSM<StateName, StateData, Message>`, registriere `when(...)`-Handler + `onEnter` / `onExit`-Callbacks. Der State lebt nur im Speicher; beim Neustart verloren.
 ---
 
-`FSM<SName, SData, Msg>` ist die Basisklasse für
+`FSM<SName, SData, Message>` ist die Basisklasse für
 In-Memory-Zustandsmaschinen.  Drei Typ-Parameter:
 
 - **`SName`** — String-Union der Zustandsnamen:
   `'closed' | 'open'`.
 - **`SData`** — die zugehörigen Daten des Zustands:
   `{ openedAt?: number }`.
-- **`Msg`** — der Message-Typ des Actors.
+- **`Message`** — der Message-Typ des Actors.
 
 ```ts
 import { FSM } from 'actor-ts';
 
 type DoorState = 'closed' | 'open';
 type DoorData  = { openedAt?: number };
-type DoorMsg   = 'open' | 'close' | 'status';
+type DoorMessage   = 'open' | 'close' | 'status';
 
-class Door extends FSM<DoorState, DoorData, DoorMsg> {
+class Door extends FSM<DoorState, DoorData, DoorMessage> {
   constructor() {
     super('closed', {});
 
@@ -42,9 +42,9 @@ class Door extends FSM<DoorState, DoorData, DoorMsg> {
 ## Die DSL
 
 ```ts
-class FSM<SName, SData, Msg> extends Actor<Msg> {
+class FSM<SName, SData, Message> extends Actor<Message> {
   // Im Subklassen-Konstruktor:
-  protected when(state: SName, handler: StateHandler<SName, SData, Msg>): void;
+  protected when(state: SName, handler: StateHandler<SName, SData, Message>): void;
   protected onEnter(state: SName, fn: (data: SData) => void | Promise<void>): void;
   protected onExit(state: SName, fn: (data: SData) => void | Promise<void>): void;
   protected onTransition(fn: TransitionCallback<SName, SData>): void;

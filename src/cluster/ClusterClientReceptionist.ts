@@ -52,7 +52,7 @@ import type { ClusterClientReceptionistOptions, ClusterClientReceptionistOptions
 /* ============================ wire shapes =========================== */
 
 /** Inbound: a client wants to deliver `body` to actor at `to`. */
-export interface ClusterClientEnvelopeMsg {
+export interface ClusterClientEnvelopeMessage {
   readonly t: 'cluster-client-envelope';
   readonly from: NodeAddressData;
   readonly to: string;
@@ -61,7 +61,7 @@ export interface ClusterClientEnvelopeMsg {
 }
 
 /** Outbound: reply to a client ask. */
-export interface ClusterClientReplyMsg {
+export interface ClusterClientReplyMessage {
   readonly t: 'cluster-client-reply';
   readonly askId: string;
   readonly ok: boolean;
@@ -92,13 +92,13 @@ export class ClusterClientReceptionist implements Extension {
       throw new Error('ClusterClientReceptionist is already bound to a different cluster');
     }
     this._cluster = cluster;
-    const settings = (options as ClusterClientReceptionistOptionsType);
-    new ClusterClientReceptionistOptionsValidator().validate(settings);
-    const askTimeoutMs = settings.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
+    const resolvedOptions = (options as ClusterClientReceptionistOptionsType);
+    new ClusterClientReceptionistOptionsValidator().validate(resolvedOptions);
+    const askTimeoutMs = resolvedOptions.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
     const log = this.system.log.withSource(`cluster-client-receptionist@${cluster.selfAddress}`);
 
     this._unsubscribe = cluster._onWire('cluster-client-envelope', (msg) => {
-      const env = msg as unknown as ClusterClientEnvelopeMsg;
+      const env = msg as unknown as ClusterClientEnvelopeMessage;
       const from = NodeAddress.fromJSON(env.from);
 
       // Resolve the target locally.  We use the synchronous `_resolvePath`
@@ -161,7 +161,7 @@ export class ClusterClientReceptionist implements Extension {
     ok: boolean,
     body: unknown,
   ): void {
-    const reply: ClusterClientReplyMsg = {
+    const reply: ClusterClientReplyMessage = {
       t: 'cluster-client-reply', askId, ok, body,
     };
     cluster.transport.send(to, reply as unknown as WireMessage);
@@ -189,20 +189,20 @@ export const ClusterClientReceptionistId: ExtensionId<ClusterClientReceptionist>
  */
 function parsePathSegments(path: string): string[] | null {
   // Strip URI scheme + authority.
-  let p = path;
+  let remaining = path;
   const uriPrefix = 'actor-ts://';
-  if (p.startsWith(uriPrefix)) {
-    const slash = p.indexOf('/', uriPrefix.length);
-    p = slash < 0 ? '' : p.slice(slash + 1);
-  } else if (p.startsWith('/')) {
-    p = p.slice(1);
+  if (remaining.startsWith(uriPrefix)) {
+    const slash = remaining.indexOf('/', uriPrefix.length);
+    remaining = slash < 0 ? '' : remaining.slice(slash + 1);
+  } else if (remaining.startsWith('/')) {
+    remaining = remaining.slice(1);
   }
   // Convention: paths under `/user` can be addressed bare.  Map both
   // `user/foo/bar` and `foo/bar` to the segments `['user', 'foo', 'bar']`.
-  if (!p.startsWith('user/') && p !== 'user') {
-    if (p !== '') p = `user/${p}`;
-    else p = 'user';
+  if (!remaining.startsWith('user/') && remaining !== 'user') {
+    if (remaining !== '') remaining = `user/${remaining}`;
+    else remaining = 'user';
   }
-  const segs = p.split('/').filter((s) => s.length > 0);
+  const segs = remaining.split('/').filter((s) => s.length > 0);
   return segs.length === 0 ? null : segs;
 }

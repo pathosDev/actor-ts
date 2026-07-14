@@ -26,9 +26,9 @@ export interface S3Ctx extends BrokerScenarioCtx {
 }
 
 function requireEnv(name: string): string {
-  const v = process.env[name];
-  if (!v) throw new Error(`runner: missing env var ${name}`);
-  return v;
+  const value = process.env[name];
+  if (!value) throw new Error(`runner: missing env var ${name}`);
+  return value;
 }
 
 async function ensureBucket(ctx: S3Ctx): Promise<void> {

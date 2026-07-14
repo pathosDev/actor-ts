@@ -13,9 +13,9 @@ import {
 
 describe('Option — constructors', () => {
   test('some wraps a value', () => {
-    const o = some(42);
-    expect(o).toBeInstanceOf(Some);
-    expect(o.value).toBe(42);
+    const option = some(42);
+    expect(option).toBeInstanceOf(Some);
+    expect(option.value).toBe(42);
   });
 
   test('none is a shared singleton', () => {
@@ -189,24 +189,24 @@ describe('Option — nullable interop', () => {
 
 describe('Option — type-guards narrow', () => {
   test('isSome narrows to Some inside an if branch', () => {
-    const o: Option<string> = some('hi');
-    if (o.isSome()) {
-      expect(o.value.toUpperCase()).toBe('HI'); // no `.value` without guard
+    const option: Option<string> = some('hi');
+    if (option.isSome()) {
+      expect(option.value.toUpperCase()).toBe('HI'); // no `.value` without guard
     } else {
       throw new Error('unreachable');
     }
   });
 
   test('isNone narrows to None', () => {
-    const o: Option<string> = none;
-    expect(o.isNone()).toBe(true);
+    const option: Option<string> = none;
+    expect(option.isNone()).toBe(true);
   });
 });
 
 describe('Option — ts-pattern integration', () => {
   test('match via P.instanceOf(Some)/P.instanceOf(None)', () => {
-    const describe_ = (o: Option<number>): string =>
-      match(o)
+    const describe_ = (option: Option<number>): string =>
+      match(option)
         .with(P.instanceOf(Some), (s) => `got ${s.value}`)
         .with(P.instanceOf(None), () => 'empty')
         .exhaustive();
@@ -216,8 +216,8 @@ describe('Option — ts-pattern integration', () => {
   });
 
   test('match via discriminated union on _tag', () => {
-    const toNumber = (o: Option<string>): number =>
-      match(o)
+    const toNumber = (option: Option<string>): number =>
+      match(option)
         .with({ _tag: 'Some' }, (s) => s.value.length)
         .with({ _tag: 'None' }, () => -1)
         .exhaustive();

@@ -39,30 +39,30 @@ interface DepositedV3 { kind: 'deposited'; cents: number; currency: 'USD' | 'EUR
 
 const v1Schema: ParserLike<DepositedV1> = {
   parse(input) {
-    const o = input as DepositedV1;
-    if (o.kind !== 'deposited') throw new Error('expected kind=deposited');
-    if (typeof o.amount !== 'number' || o.amount < 0) throw new Error('bad amount');
-    return { kind: 'deposited', amount: o.amount };
+    const deposited = input as DepositedV1;
+    if (deposited.kind !== 'deposited') throw new Error('expected kind=deposited');
+    if (typeof deposited.amount !== 'number' || deposited.amount < 0) throw new Error('bad amount');
+    return { kind: 'deposited', amount: deposited.amount };
   },
 };
 const v2Schema: ParserLike<DepositedV2> = {
   parse(input) {
-    const o = input as DepositedV2;
-    if (o.kind !== 'deposited') throw new Error('expected kind=deposited');
-    if (typeof o.amount !== 'number' || o.amount < 0) throw new Error('bad amount');
-    if (o.currency !== 'USD' && o.currency !== 'EUR') throw new Error('bad currency');
-    return { kind: 'deposited', amount: o.amount, currency: o.currency };
+    const deposited = input as DepositedV2;
+    if (deposited.kind !== 'deposited') throw new Error('expected kind=deposited');
+    if (typeof deposited.amount !== 'number' || deposited.amount < 0) throw new Error('bad amount');
+    if (deposited.currency !== 'USD' && deposited.currency !== 'EUR') throw new Error('bad currency');
+    return { kind: 'deposited', amount: deposited.amount, currency: deposited.currency };
   },
 };
 const v3Schema: ParserLike<DepositedV3> = {
   parse(input) {
-    const o = input as DepositedV3;
-    if (o.kind !== 'deposited') throw new Error('expected kind=deposited');
-    if (typeof o.cents !== 'number' || !Number.isInteger(o.cents) || o.cents < 0) {
+    const deposited = input as DepositedV3;
+    if (deposited.kind !== 'deposited') throw new Error('expected kind=deposited');
+    if (typeof deposited.cents !== 'number' || !Number.isInteger(deposited.cents) || deposited.cents < 0) {
       throw new Error('bad cents');
     }
-    if (o.currency !== 'USD' && o.currency !== 'EUR') throw new Error('bad currency');
-    return o;
+    if (deposited.currency !== 'USD' && deposited.currency !== 'EUR') throw new Error('bad currency');
+    return deposited;
   },
 };
 

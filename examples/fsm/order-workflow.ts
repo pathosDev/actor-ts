@@ -29,7 +29,7 @@ import type { ActorRef } from '../../src/index.js';
 
 type OrderState = 'pending' | 'paid' | 'shipped' | 'cancelled';
 
-type OrderCmd =
+type OrderCommand =
   | { kind: 'pay'; amount: number }
   | { kind: 'ship'; carrier: string }
   | { kind: 'cancel'; reason?: string }
@@ -46,13 +46,13 @@ interface OrderData {
   cancelReason: string | null;
 }
 
-class OrderFsm extends PersistentFSM<OrderCmd, OrderEvent, OrderState, OrderData> {
+class OrderFsm extends PersistentFSM<OrderCommand, OrderEvent, OrderState, OrderData> {
   readonly persistenceId = 'order-42';
 
   initialFsmState(): OrderState { return 'pending'; }
   initialData(): OrderData { return { amountPaid: 0, carrier: null, cancelReason: null }; }
 
-  transitions: FsmTransitionMap<OrderState, OrderCmd, OrderEvent, OrderData> = {
+  transitions: FsmTransitionMap<OrderState, OrderCommand, OrderEvent, OrderData> = {
     pending: {
       pay:    { event: (c) => ({ kind: 'paid', amount: c.amount }),   next: 'paid', guard: (c) => c.amount > 0 },
       cancel: { event: (c) => ({ kind: 'cancelled', reason: c.reason }), next: 'cancelled' },
@@ -69,7 +69,7 @@ class OrderFsm extends PersistentFSM<OrderCmd, OrderEvent, OrderState, OrderData
     return { state: 'cancelled', data: { ...data, cancelReason: e.reason ?? null } };
   }
 
-  override async onCommand(curr: FsmStateData<OrderState, OrderData>, cmd: OrderCmd): Promise<void> {
+  override async onCommand(curr: FsmStateData<OrderState, OrderData>, cmd: OrderCommand): Promise<void> {
     if (cmd.kind === 'getState') {
       this.sender.toNullable()?.tell(curr);
       return;
@@ -78,9 +78,9 @@ class OrderFsm extends PersistentFSM<OrderCmd, OrderEvent, OrderState, OrderData
   }
 }
 
-async function pretty(ref: ActorRef<OrderCmd>, label: string): Promise<void> {
-  const s = await ref.ask<FsmStateData<OrderState, OrderData>>({ kind: 'getState' }, 500);
-  console.log(`${label}: state=${s.state} amountPaid=${s.data.amountPaid} carrier=${s.data.carrier ?? '-'}`);
+async function pretty(ref: ActorRef<OrderCommand>, label: string): Promise<void> {
+  const state = await ref.ask<FsmStateData<OrderState, OrderData>>({ kind: 'getState' }, 500);
+  console.log(`${label}: state=${state.state} amountPaid=${state.data.amountPaid} carrier=${state.data.carrier ?? '-'}`);
 }
 
 async function main(): Promise<void> {

@@ -20,7 +20,7 @@ import type { Journal } from './persistence/Journal.js';
 import type { SnapshotStore } from './persistence/SnapshotStore.js';
 import { OptionsBuilder } from './util/OptionsBuilder.js';
 
-/** Plain settings-object shape accepted by {@link ActorSystem.create}. */
+/** Plain options-object shape accepted by {@link ActorSystem.create}. */
 export interface ActorSystemOptionsType {
   readonly logger?: Logger;
   readonly logLevel?: LogLevel;
@@ -32,7 +32,7 @@ export interface ActorSystemOptionsType {
    *   - a prebuilt `Config` (highest precedence layered on top of reference);
    *   - a plain JS object of overrides (converted via Config.fromObject);
    *   - omitted — reference defaults + `application.conf` in CWD are used.
-   * Constructor settings (`logger`, `logLevel`, `dispatcher`) still win
+   * Constructor options (`logger`, `logLevel`, `dispatcher`) still win
    * over anything in config — they are explicit code overrides.
    */
   readonly config?: Config | ConfigObject;
@@ -64,7 +64,7 @@ export class ActorSystemOptionsBuilder<T extends ActorSystemOptionsType = ActorS
   /**
    * The `as keyof T` / `as T[keyof T]` casts keep these setters writable once
    * against the generic `T extends ActorSystemOptionsType`, so a subclass builder
-   * (e.g. `TestKitOptionsBuilder`) inherits them for its own settings type — the same
+   * (e.g. `TestKitOptionsBuilder`) inherits them for its own options type — the same
    * pattern as `BrokerOptionsBuilder<T>` / `LeaseOptions<T>`.  Concrete callers stay
    * type-safe because each method's argument type is concrete.
    */
@@ -110,7 +110,7 @@ export class ActorSystemOptionsBuilder<T extends ActorSystemOptionsType = ActorS
  * {@link ActorSystemOptionsBuilder} OR a plain {@link ActorSystemOptionsType}
  * object.  The union is the default (non-generic) instantiation; subclass
  * builders (e.g. `TestKitOptionsBuilder`) still parametrize
- * {@link ActorSystemOptionsBuilder} with their own settings type.
+ * {@link ActorSystemOptionsBuilder} with their own options type.
  */
 export type ActorSystemOptions = ActorSystemOptionsBuilder<ActorSystemOptionsType> | Partial<ActorSystemOptionsType>;
 /** Value alias so `ActorSystemOptions.create()` / `new ActorSystemOptions()` resolve to the builder. */

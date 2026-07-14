@@ -2,7 +2,7 @@ import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { RestartPolicy } from './WorkerCluster.js';
 
-/** Plain settings-object shape accepted by {@link WorkerCluster.spawn}. */
+/** Plain options-object shape accepted by {@link WorkerCluster.spawn}. */
 export interface WorkerClusterOptionsType {
   readonly bootstrap: URL | string;
   readonly workers?: number | 'auto';

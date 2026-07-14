@@ -27,13 +27,13 @@ export {
 } from './Route.js';
 export type {
   CompiledRoute,
-  CompiledWebSocketRoute,
+  CompiledWebsocketRoute,
   CompiledFallback,
   CompiledEndpoint,
   ExceptionHandler,
   Middleware,
   Route,
-  WebSocketConnectHandler,
+  WebsocketConnectHandler,
 } from './Route.js';
 
 // Auth + IP-allowlist middleware (#312) and the security-header suite
@@ -123,13 +123,13 @@ export type { HonoBackendOptionsType } from './backend/HonoBackendOptions.js';
 export type {
   HttpServerBackend,
   RouteRegistration,
-  WebSocketRouteRegistration,
+  WebsocketRouteRegistration,
   ServerBinding,
 } from './backend/HttpServerBackend.js';
-export type { WebSocketSocketAdapter, WebSocketListeners } from './ws/SocketAdapter.js';
+export type { WebsocketSocketAdapter, WebsocketListeners } from './websocket/SocketAdapter.js';
 
 // Typed WebSocket stack — websocket() directive, server actor, codecs.
-export * from './ws/index.js';
+export * from './websocket/index.js';
 
 export {
   HttpError,

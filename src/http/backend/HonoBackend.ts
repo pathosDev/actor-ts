@@ -2,7 +2,7 @@ import { match } from 'ts-pattern';
 import {
   getHonoRunner,
   type HonoServerHandle,
-  type HonoWebSocketBridge,
+  type HonoWebsocketBridge,
   type WSContextLike,
   type WSEventsLike,
 } from '../../runtime/http/index.js';
@@ -11,14 +11,14 @@ import type {
   HttpServerBackend,
   RouteRegistration,
   ServerBinding,
-  WebSocketRouteRegistration,
+  WebsocketRouteRegistration,
 } from './HttpServerBackend.js';
-import type { WebSocketListeners, WebSocketSocketAdapter } from '../ws/SocketAdapter.js';
+import type { WebsocketListeners, WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
 import { HonoBackendOptionsValidator } from './HonoBackendOptions.js';
 import type { HonoBackendOptions, HonoBackendOptionsType } from './HonoBackendOptions.js';
 
 /** Hono delivers text as a string and binary as ArrayBuffer/Uint8Array. */
-function coerceWsData(data: unknown): string | Uint8Array {
+function coerceWebsocketData(data: unknown): string | Uint8Array {
   if (typeof data === 'string') return data;
   if (data instanceof Uint8Array) return data;
   if (data instanceof ArrayBuffer) return new Uint8Array(data);
@@ -54,9 +54,9 @@ interface HonoContextLike {
   readonly env?: unknown;
 }
 
-type HonoHandler = (c: HonoContextLike) => Promise<Response> | Response;
-type HonoErrorHandler = (err: unknown, c: HonoContextLike) => Promise<Response> | Response;
-type HonoNotFoundHandler = (c: HonoContextLike) => Promise<Response> | Response;
+type HonoHandler = (context: HonoContextLike) => Promise<Response> | Response;
+type HonoErrorHandler = (err: unknown, context: HonoContextLike) => Promise<Response> | Response;
+type HonoNotFoundHandler = (context: HonoContextLike) => Promise<Response> | Response;
 
 /** Structural subset of the Hono app we consume. */
 export interface HonoAppLike {
@@ -89,7 +89,7 @@ export class HonoBackend implements HttpServerBackend {
   private readonly ownsApp: boolean;
   private readonly maxBodyBytes: number;
   private readonly registered: RouteRegistration[] = [];
-  private readonly wsRegistered: WebSocketRouteRegistration[] = [];
+  private readonly wsRegistered: WebsocketRouteRegistration[] = [];
   private notFoundHandler: ((req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
   private errorHandler: ((err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
 
@@ -98,11 +98,11 @@ export class HonoBackend implements HttpServerBackend {
   private server: HonoServerHandle | null = null;
 
   constructor(options: HonoBackendOptions = {}) {
-    const settings = (options as HonoBackendOptionsType);
-    new HonoBackendOptionsValidator().validate(settings);
-    this.app = settings.app ?? null;
-    this.ownsApp = settings.app == null;
-    this.maxBodyBytes = settings.maxBodyBytes ?? 10 * 1024 * 1024;
+    const resolvedOptions = (options as HonoBackendOptionsType);
+    new HonoBackendOptionsValidator().validate(resolvedOptions);
+    this.app = resolvedOptions.app ?? null;
+    this.ownsApp = resolvedOptions.app == null;
+    this.maxBodyBytes = resolvedOptions.maxBodyBytes ?? 10 * 1024 * 1024;
   }
 
   /** Inject / access the underlying Hono app — useful for native middleware. */
@@ -115,7 +115,7 @@ export class HonoBackend implements HttpServerBackend {
     this.registered.push(route);
   }
 
-  registerWebSocket(reg: WebSocketRouteRegistration): void {
+  registerWebSocket(reg: WebsocketRouteRegistration): void {
     if (this.wsRegistered.some((r) => r.pattern === reg.pattern)) {
       throw new Error(`HonoBackend: duplicate websocket route for pattern "${reg.pattern}".`);
     }
@@ -141,15 +141,15 @@ export class HonoBackend implements HttpServerBackend {
 
     if (this.notFoundHandler) {
       const handler = this.notFoundHandler;
-      app.notFound(async (c) => {
-        const req = await this.adaptRequest(c);
+      app.notFound(async (context) => {
+        const req = await this.adaptRequest(context);
         const res = await handler(req);
         return this.writeResponse(res);
       });
     }
 
-    app.onError(async (err, c) => {
-      const req = await this.adaptRequest(c);
+    app.onError(async (err, context) => {
+      const req = await this.adaptRequest(context);
       if (this.errorHandler) {
         try {
           const res = await this.errorHandler(err, req);
@@ -173,13 +173,13 @@ export class HonoBackend implements HttpServerBackend {
     // WebSocket routes: obtain the per-runtime bridge, register each route
     // as a GET carrying the authorize guard + Hono's upgrade middleware,
     // and fold the bridge's serve options in (Bun needs `{ websocket }`).
-    let bridge: HonoWebSocketBridge | null = null;
+    let bridge: HonoWebsocketBridge | null = null;
     if (this.wsRegistered.length > 0) {
       if (!runner.webSocket) {
         throw new Error('HonoBackend: this runtime\'s Hono runner does not support websocket() routes.');
       }
       bridge = await runner.webSocket(app);
-      for (const reg of this.wsRegistered) this.attachWebSocketRoute(app, bridge, reg);
+      for (const reg of this.wsRegistered) this.attachWebsocketRoute(app, bridge, reg);
     }
 
     // Forward ALL args to app.fetch — Bun invokes fetch(request, server)
@@ -209,8 +209,8 @@ export class HonoBackend implements HttpServerBackend {
           await Promise.race([
             srv.stop(true),
             new Promise<void>((resolve) => {
-              const t = setTimeout(() => resolve(), gracePeriodMs);
-              (t as { unref?: () => void }).unref?.();
+              const timer = setTimeout(() => resolve(), gracePeriodMs);
+              (timer as { unref?: () => void }).unref?.();
             }),
           ]);
           await srv.stop(false); // force any still-active connections
@@ -265,31 +265,31 @@ export class HonoBackend implements HttpServerBackend {
       .exhaustive();
   }
 
-  private attachWebSocketRoute(app: HonoAppLike, bridge: HonoWebSocketBridge, reg: WebSocketRouteRegistration): void {
+  private attachWebsocketRoute(app: HonoAppLike, bridge: HonoWebsocketBridge, reg: WebsocketRouteRegistration): void {
     // Guard middleware runs the authorize check against the upgrade
     // request; returning a Response short-circuits (no upgrade).
-    const guard = async (c: HonoContextLike, next: () => Promise<void>): Promise<Response | void> => {
-      const res = await reg.authorize(this.adaptUpgradeContext(c));
+    const guard = async (context: HonoContextLike, next: () => Promise<void>): Promise<Response | void> => {
+      const res = await reg.authorize(this.adaptUpgradeContext(context));
       if (res) return this.writeResponse(res);
       await next();
     };
 
     const createEvents = (raw: unknown): WSEventsLike => {
-      const c = raw as HonoContextLike;
-      const adapted = this.adaptUpgradeContext(c);
+      const context = raw as HonoContextLike;
+      const adapted = this.adaptUpgradeContext(context);
       let ws: WSContextLike | null = null;
-      let listeners: WebSocketListeners | null = null;
+      let listeners: WebsocketListeners | null = null;
       // Frames that arrive before setListeners runs (defensive — Hono
       // dispatches onOpen before onMessage, but the buffer makes it
       // unconditional).
       const pending: Array<string | Uint8Array> = [];
-      const adapter: WebSocketSocketAdapter = {
+      const adapter: WebsocketSocketAdapter = {
         send: (data) => ws?.send(data),
         close: (code, reason) => ws?.close(code, reason),
-        setListeners: (l) => {
-          listeners = l;
+        setListeners: (incoming) => {
+          listeners = incoming;
           const buffered = pending.splice(0);
-          for (const d of buffered) l.onMessage(d);
+          for (const data of buffered) incoming.onMessage(data);
         },
         get readyState() {
           return (ws?.readyState ?? 1) as 0 | 1 | 2 | 3;
@@ -306,9 +306,9 @@ export class HonoBackend implements HttpServerBackend {
         },
         onMessage: (evt, wsCtx) => {
           ws = wsCtx;
-          const d = coerceWsData(evt.data);
-          if (listeners) listeners.onMessage(d);
-          else pending.push(d);
+          const data = coerceWebsocketData(evt.data);
+          if (listeners) listeners.onMessage(data);
+          else pending.push(data);
         },
         onClose: (evt) => listeners?.onClose(evt.code ?? 1005, evt.reason ?? ''),
         onError: () => listeners?.onError(new Error('websocket error')),
@@ -319,21 +319,21 @@ export class HonoBackend implements HttpServerBackend {
   }
 
   /** Synchronous upgrade-request snapshot (no body read — always GET). */
-  private adaptUpgradeContext(c: HonoContextLike): HttpRequest {
-    const headers = (c.req.header() as Record<string, string>) ?? {};
+  private adaptUpgradeContext(context: HonoContextLike): HttpRequest {
+    const headers = (context.req.header() as Record<string, string>) ?? {};
     let params: Record<string, string> = {};
     try {
-      params = (c.req.param() as Record<string, string>) ?? {};
+      params = (context.req.param() as Record<string, string>) ?? {};
     } catch { /* no match — leave empty */ }
-    const rawQueries = (c.req.queries() as Record<string, string[]>) ?? {};
+    const rawQueries = (context.req.queries() as Record<string, string[]>) ?? {};
     const query: Record<string, string | string[] | undefined> = {};
-    for (const [k, v] of Object.entries(rawQueries)) {
-      if (v) query[k] = v.length === 1 ? v[0] : v;
+    for (const [key, value] of Object.entries(rawQueries)) {
+      if (value) query[key] = value.length === 1 ? value[0] : value;
     }
-    const remoteAddress = extractHonoRemoteAddress(c);
+    const remoteAddress = extractHonoRemoteAddress(context);
     return {
       method: 'GET',
-      path: c.req.path ?? new URL(c.req.url).pathname,
+      path: context.req.path ?? new URL(context.req.url).pathname,
       headers,
       query,
       params,
@@ -342,37 +342,37 @@ export class HonoBackend implements HttpServerBackend {
     };
   }
 
-  private async adaptRequest(c: HonoContextLike): Promise<HttpRequest> {
-    const method = c.req.method.toUpperCase() as HttpRequest['method'];
-    const headers = (c.req.header() as Record<string, string>) ?? {};
+  private async adaptRequest(context: HonoContextLike): Promise<HttpRequest> {
+    const method = context.req.method.toUpperCase() as HttpRequest['method'];
+    const headers = (context.req.header() as Record<string, string>) ?? {};
 
     // `c.req.param()` throws inside notFound / onError handlers because no
     // route matched — swallow that, an empty params object is the right
     // fallback there.
     let params: Record<string, string> = {};
     try {
-      params = (c.req.param() as Record<string, string>) ?? {};
+      params = (context.req.param() as Record<string, string>) ?? {};
     } catch { /* no match — leave empty */ }
 
     // Hono returns queries as Record<string, string[]>; flatten single values.
-    const rawQueries = (c.req.queries() as Record<string, string[]>) ?? {};
+    const rawQueries = (context.req.queries() as Record<string, string[]>) ?? {};
     const query: Record<string, string | string[] | undefined> = {};
-    for (const [k, v] of Object.entries(rawQueries)) {
-      if (!v) continue;
-      query[k] = v.length === 1 ? v[0] : v;
+    for (const [key, value] of Object.entries(rawQueries)) {
+      if (!value) continue;
+      query[key] = value.length === 1 ? value[0] : value;
     }
 
     let body: Uint8Array | null = null;
     if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
-      const buf = await c.req.arrayBuffer();
+      const buf = await context.req.arrayBuffer();
       if (buf.byteLength > 0) body = new Uint8Array(buf);
     }
 
-    const remoteAddress = extractHonoRemoteAddress(c);
+    const remoteAddress = extractHonoRemoteAddress(context);
 
     return {
       method,
-      path: c.req.path ?? new URL(c.req.url).pathname,
+      path: context.req.path ?? new URL(context.req.url).pathname,
       headers,
       query,
       params,
@@ -383,7 +383,7 @@ export class HonoBackend implements HttpServerBackend {
 
   private writeResponse(res: HttpResponse): Response {
     const headers = new Headers();
-    if (res.headers) for (const [k, v] of Object.entries(res.headers)) headers.set(k, v);
+    if (res.headers) for (const [key, value] of Object.entries(res.headers)) headers.set(key, value);
     if (res.contentType) headers.set('content-type', res.contentType);
 
     const body = res.body;
@@ -440,19 +440,19 @@ function honoWildcardRest(path: string, prefix: string): string {
  * that need a guaranteed IP must override `getClientIp` on
  * IpAllowlist or similar middlewares.
  */
-function extractHonoRemoteAddress(c: HonoContextLike): string | undefined {
+function extractHonoRemoteAddress(context: HonoContextLike): string | undefined {
   // 1. @hono/node-server: c.req.raw is the Node IncomingMessage.
-  const raw = c.req.raw as { socket?: { remoteAddress?: string } } | undefined;
+  const raw = context.req.raw as { socket?: { remoteAddress?: string } } | undefined;
   if (raw?.socket?.remoteAddress) return raw.socket.remoteAddress;
 
   // 2. Bun.serve via Hono: connection info lives on `c.env`.
   //    Bun's adapter exposes a `requestIP` callable.
-  const env = c.env as
+  const env = context.env as
     | { requestIP?: (req: unknown) => { address?: string } | null; incoming?: { socket?: { remoteAddress?: string } } }
     | undefined;
-  if (env?.requestIP && c.req.raw) {
+  if (env?.requestIP && context.req.raw) {
     try {
-      const info = env.requestIP(c.req.raw);
+      const info = env.requestIP(context.req.raw);
       if (info?.address) return info.address;
     } catch { /* runtime didn't accept the raw shape — fall through */ }
   }

@@ -328,7 +328,7 @@ export function useChat(): {
     }
   }, [cancelReconnect]);
 
-  const connectImpl = useCallback(
+  const connectImplementation = useCallback(
     (firstFrame: ClientMessage) => {
       dispatch({ type: 'login-error', reason: '' });
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -349,7 +349,7 @@ export function useChat(): {
           reconnectAttemptsRef.current++;
           reconnectTimerRef.current = setTimeout(() => {
             reconnectTimerRef.current = null;
-            connectImpl({ type: 'resume', token });
+            connectImplementation({ type: 'resume', token });
           }, delay);
         } else {
           dispatch({ type: 'reset' });
@@ -366,9 +366,9 @@ export function useChat(): {
 
   const connect = useCallback(
     (username: string, password: string) => {
-      connectImpl({ type: 'login', username, password });
+      connectImplementation({ type: 'login', username, password });
     },
-    [connectImpl],
+    [connectImplementation],
   );
 
   const logout = useCallback(() => {
@@ -393,7 +393,7 @@ export function useChat(): {
     const stored = typeof sessionStorage !== 'undefined'
       ? sessionStorage.getItem(TOKEN_KEY)
       : null;
-    if (stored) connectImpl({ type: 'resume', token: stored });
+    if (stored) connectImplementation({ type: 'resume', token: stored });
     // We intentionally only run this once per mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

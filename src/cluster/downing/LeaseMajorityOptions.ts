@@ -2,7 +2,7 @@ import type { Lease } from '../../coordination/Lease.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 
-/** Plain settings-object shape accepted by {@link LeaseMajority}. */
+/** Plain options-object shape accepted by {@link LeaseMajority}. */
 export interface LeaseMajorityOptionsType {
   /**
    * External arbiter — typically a `KubernetesLease` so both sides

@@ -22,7 +22,7 @@ export interface NatsPublish {
   readonly replyTo?: string;
 }
 
-export type NatsCmd =
+export type NatsCommand =
   | { readonly kind: 'publish'; readonly publish: NatsPublish }
   | { readonly kind: 'subscribe'; readonly subject: string; readonly target: ActorRef<NatsMessage> }
   | { readonly kind: 'unsubscribe'; readonly subject: string };
@@ -33,46 +33,46 @@ export type NatsCmd =
  * (durable streams + consumers) is out-of-scope for v1 — would warrant
  * its own actor with very different semantics.
  */
-export class NatsActor extends BrokerActor<NatsOptionsType, NatsCmd, NatsPublish> {
+export class NatsActor extends BrokerActor<NatsOptionsType, NatsCommand, NatsPublish> {
   private nc: NatsConnectionLike | null = null;
   private readonly subs = new Map<string, NatsSubscriptionLike>();
 
   constructor(options: NatsOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.nats; }
-  protected builtInDefaults(): Partial<NatsOptionsType> { return {}; }
-  protected readSettingsFromConfig(c: Config): Partial<NatsOptionsType> {
+  protected builtInDefaultOptions(): Partial<NatsOptionsType> { return {}; }
+  protected readOptionsFromConfig(config: Config): Partial<NatsOptionsType> {
     const out: { -readonly [K in keyof NatsOptionsType]?: NatsOptionsType[K] } = {};
-    if (c.hasPath('servers')) out.servers = c.getStringList('servers');
-    if (c.hasPath('token')) out.token = c.getString('token');
-    if (c.hasPath('user')) out.user = c.getString('user');
-    if (c.hasPath('password')) out.password = c.getString('password');
-    if (c.hasPath('name')) out.name = c.getString('name');
+    if (config.hasPath('servers')) out.servers = config.getStringList('servers');
+    if (config.hasPath('token')) out.token = config.getString('token');
+    if (config.hasPath('user')) out.user = config.getString('user');
+    if (config.hasPath('password')) out.password = config.getString('password');
+    if (config.hasPath('name')) out.name = config.getString('name');
     return out;
   }
-  protected requiredSettings(): ReadonlyArray<keyof NatsOptionsType> { return ['servers']; }
+  protected requiredOptions(): ReadonlyArray<keyof NatsOptionsType> { return ['servers']; }
   protected override optionsValidator(): NatsOptionsValidator { return new NatsOptionsValidator(); }
   protected endpointLabel(): string {
-    const s = this.settings.servers;
-    if (Array.isArray(s)) return s.join(',');
-    return typeof s === 'string' ? s : '';
+    const servers = this.options.servers;
+    if (Array.isArray(servers)) return servers.join(',');
+    return typeof servers === 'string' ? servers : '';
   }
 
-  protected async connectImpl(): Promise<void> {
+  protected async connectImplementation(): Promise<void> {
     const nats = await natsLazy.get();
-    const servers = Array.isArray(this.settings.servers)
-      ? [...this.settings.servers]
-      : [this.settings.servers as string];
+    const servers = Array.isArray(this.options.servers)
+      ? [...this.options.servers]
+      : [this.options.servers as string];
     this.nc = await nats.connect({
       servers,
-      token: this.settings.token,
-      user: this.settings.user,
-      pass: this.settings.password,
-      name: this.settings.name,
+      token: this.options.token,
+      user: this.options.user,
+      pass: this.options.password,
+      name: this.options.name,
     });
 
-    for (const s of this.settings.subscriptions ?? []) {
-      this.subscribeOnConnection(s.subject, s.target);
+    for (const subscription of this.options.subscriptions ?? []) {
+      this.subscribeOnConnection(subscription.subject, subscription.target);
     }
 
     // The connection emits a closed-promise we await loosely.
@@ -81,7 +81,7 @@ export class NatsActor extends BrokerActor<NatsOptionsType, NatsCmd, NatsPublish
     });
   }
 
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     for (const sub of this.subs.values()) {
       try { sub.unsubscribe(); } catch { /* ignore */ }
     }
@@ -94,14 +94,14 @@ export class NatsActor extends BrokerActor<NatsOptionsType, NatsCmd, NatsPublish
 
   protected async dispatchOutgoing(env: OutboundEnvelope<NatsPublish>): Promise<void> {
     if (!this.nc) throw new Error('NatsActor: not connected');
-    const p = env.payload;
-    const bytes = typeof p.payload === 'string'
-      ? new TextEncoder().encode(p.payload)
-      : p.payload;
-    this.nc.publish(p.subject, bytes, p.replyTo ? { reply: p.replyTo } : undefined);
+    const publish = env.payload;
+    const bytes = typeof publish.payload === 'string'
+      ? new TextEncoder().encode(publish.payload)
+      : publish.payload;
+    this.nc.publish(publish.subject, bytes, publish.replyTo ? { reply: publish.replyTo } : undefined);
   }
 
-  override onReceive(cmd: NatsCmd): void {
+  override onReceive(cmd: NatsCommand): void {
     if (cmd.kind === 'publish') {
       this.enqueueOutbound(cmd.publish);
     } else if (cmd.kind === 'subscribe') {

@@ -74,21 +74,21 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   private unsubLeaseLost: (() => void) | null = null;
   private retryTimer: Cancellable | null = null;
 
-  /** Lease lifecycle — only used when `settings.lease` is set. */
+  /** Lease lifecycle — only used when `options.lease` is set. */
   private leaseState: 'none' | 'acquiring' | 'held' = 'none';
 
   /** Callback the extension hands us so we can release the envelope path on stop. */
   _envelopeUnsub: (() => void) | null = null;
 
-  readonly settings: ClusterSingletonManagerOptionsType<T>;
+  readonly options: ClusterSingletonManagerOptionsType<T>;
 
   constructor(options: ClusterSingletonManagerOptions<T>) {
     super();
-    this.settings = options as ClusterSingletonManagerOptionsType<T>;
+    this.options = options as ClusterSingletonManagerOptionsType<T>;
   }
 
   override preStart(): void {
-    const cluster = this.settings.cluster;
+    const cluster = this.options.cluster;
     // No-lease path stays sync: cluster events drive `reconcileSync()`
     // directly, so a leader-change result is visible the moment the
     // event fires.  This preserves the v1 timing guarantee (proxies
@@ -106,7 +106,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
             P.instanceOf(MemberRemoved),
           ),
           () => {
-            if (this.settings.lease) {
+            if (this.options.lease) {
               this.self.tell({ t: 'reconcile' } satisfies ManagerEvent);
             } else {
               this.reconcileSync();
@@ -116,8 +116,8 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
         .otherwise(() => { /* other events ignored */ }),
     );
 
-    if (this.settings.lease) {
-      this.unsubLeaseLost = this.settings.lease.onLost((reason) => {
+    if (this.options.lease) {
+      this.unsubLeaseLost = this.options.lease.onLost((reason) => {
         this.self.tell({ t: 'lease-lost', reason } satisfies ManagerEvent);
       });
       // Lease path: kick the initial reconcile via the mailbox.
@@ -139,8 +139,8 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     this.pendingStop = null;
     // Release the lease if held — the holder leaving cleanly lets a
     // follower acquire faster than waiting for the TTL to expire.
-    if (this.settings.lease && this.leaseState === 'held') {
-      try { await this.settings.lease.release(); } catch { /* best-effort */ }
+    if (this.options.lease && this.leaseState === 'held') {
+      try { await this.options.lease.release(); } catch { /* best-effort */ }
       this.leaseState = 'none';
     }
   }
@@ -169,12 +169,12 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   private handleTerminated(t: Terminated): void {
     if (this.pendingStop && t.actor.equals(this.pendingStop)) {
       this.log.debug(
-        `previous child '${this.settings.typeName}' fully terminated — re-running reconcile`,
+        `previous child '${this.options.typeName}' fully terminated — re-running reconcile`,
       );
       this.pendingStop = null;
       // Re-trigger the appropriate reconcile path; either branch is
       // safe to call when the singleton state is "no child running".
-      if (this.settings.lease) {
+      if (this.options.lease) {
         this.self.tell({ t: 'reconcile' } satisfies ManagerEvent);
       } else {
         this.reconcileSync();
@@ -188,7 +188,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     if (msg.t !== 'singleton-deliver') return;
     if (!this.child) {
       this.log.warn(
-        `singleton '${this.settings.typeName}' not currently hosted on this node — dropping message`,
+        `singleton '${this.options.typeName}' not currently hosted on this node — dropping message`,
       );
       return;
     }
@@ -199,7 +199,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   private reconcileSync(): void {
     const want = this.wantHosted();
     this.log.debug(
-      `reconcile '${this.settings.typeName}': want=${want} child=${this.child !== null} pendingStop=${this.pendingStop !== null}`,
+      `reconcile '${this.options.typeName}': want=${want} child=${this.child !== null} pendingStop=${this.pendingStop !== null}`,
     );
     if (want && !this.child) {
       this.spawn();
@@ -211,7 +211,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   private async handleReconcile(): Promise<void> {
     // Lease-gated path only — the no-lease path goes through
     // `reconcileSync` directly from the cluster-event subscriber.
-    if (!this.settings.lease) { this.reconcileSync(); return; }
+    if (!this.options.lease) { this.reconcileSync(); return; }
     const want = this.wantHosted();
     if (want) {
       if (this.leaseState === 'held') return;          // already running
@@ -224,7 +224,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     } else {
       if (this.leaseState === 'held') {
         this.stopChild('leader moved away or role lost');
-        try { await this.settings.lease.release(); }
+        try { await this.options.lease.release(); }
         catch (e) { this.log.warn(`lease release failed`, e); }
         this.leaseState = 'none';
       } else if (this.leaseState === 'acquiring') {
@@ -240,7 +240,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
 
   private async runAcquire(): Promise<void> {
     try {
-      const got = await this.settings.lease!.acquire();
+      const got = await this.options.lease!.acquire();
       this.self.tell({ t: 'lease-acquire-result', got } satisfies ManagerEvent);
     } catch (error) {
       this.self.tell({
@@ -254,7 +254,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       // Spurious result — manager was reset or stopped while we were
       // awaiting.  If we somehow got the lease, release it best-effort
       // so we don't hold onto a slot we don't want.
-      if (msg.got) void this.settings.lease!.release().catch(() => {});
+      if (msg.got) void this.options.lease!.release().catch(() => {});
       return;
     }
     if (!msg.got) {
@@ -268,7 +268,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     // Got the lease.  Re-check whether we still want to be hosted —
     // membership may have flipped while we were awaiting.
     if (!this.wantHosted()) {
-      void this.settings.lease!.release().catch((e) =>
+      void this.options.lease!.release().catch((e) =>
         this.log.warn(`lease release after stale acquire failed`, e));
       this.leaseState = 'none';
       return;
@@ -279,7 +279,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
 
   private handleLeaseLost(msg: { reason: string }): void {
     if (this.leaseState !== 'held') return;     // stale callback
-    this.log.warn(`singleton '${this.settings.typeName}': lease lost — ${msg.reason}; stopping child`);
+    this.log.warn(`singleton '${this.options.typeName}': lease lost — ${msg.reason}; stopping child`);
     this.stopChild(`lease lost: ${msg.reason}`);
     this.leaseState = 'none';
     // If we're still the elected leader, kick a fresh reconcile so we
@@ -291,9 +291,9 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   /* -------------------------- helpers -------------------------- */
 
   private wantHosted(): boolean {
-    const cluster = this.settings.cluster;
+    const cluster = this.options.cluster;
     const iAmLeader = cluster.leader().exists((l) => l.address.equals(cluster.selfAddress));
-    const roleOk = !this.settings.role || cluster.selfRoles.has(this.settings.role);
+    const roleOk = !this.options.role || cluster.selfRoles.has(this.options.role);
     return iAmLeader && roleOk;
   }
 
@@ -306,14 +306,14 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     // resources.  `handleTerminated` will retrigger the reconcile
     // once `pendingStop` clears.
     if (this.pendingStop) return;
-    this.child = this.context.spawn(this.settings.singletonProps, this.settings.typeName);
+    this.child = this.context.spawn(this.options.singletonProps, this.options.typeName);
     this.context.watch(this.child);
-    this.log.info(`singleton '${this.settings.typeName}' started on this node (now leader)`);
+    this.log.info(`singleton '${this.options.typeName}' started on this node (now leader)`);
   }
 
   private stopChild(reason: string): void {
     if (!this.child) return;
-    this.log.info(`singleton '${this.settings.typeName}' stopping (${reason})`);
+    this.log.info(`singleton '${this.options.typeName}' stopping (${reason})`);
     // Move into pendingStop instead of nulling immediately — the cell
     // remains in the parent's children map until `Terminated` arrives,
     // and any reconcile that fires in the meantime must wait.
@@ -323,7 +323,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   }
 
   private scheduleAcquireRetry(): void {
-    const interval = this.settings.acquireRetryIntervalMs ?? 5_000;
+    const interval = this.options.acquireRetryIntervalMs ?? 5_000;
     this.retryTimer?.cancel();
     this.retryTimer = this.system.scheduler.scheduleOnceFn(interval, () => {
       this.self.tell({ t: 'acquire-retry' } satisfies ManagerEvent);

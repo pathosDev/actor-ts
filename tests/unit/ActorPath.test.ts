@@ -3,10 +3,10 @@ import { ActorPath } from '../../src/ActorPath.js';
 
 describe('ActorPath', () => {
   test('root path stringifies to actor-ts://<sys>/', () => {
-    const p = new ActorPath('', null, 'demo');
-    expect(p.toString()).toBe('actor-ts://demo/');
-    expect(p.depth()).toBe(0);
-    expect(p.elements()).toEqual(['']);
+    const path = new ActorPath('', null, 'demo');
+    expect(path.toString()).toBe('actor-ts://demo/');
+    expect(path.depth()).toBe(0);
+    expect(path.elements()).toEqual(['']);
   });
 
   test('child path appends segment and bumps depth', () => {
@@ -23,13 +23,13 @@ describe('ActorPath', () => {
   });
 
   test('equals compares by full stringified path', () => {
-    const a = new ActorPath('', null, 'demo').child('user').child('foo');
-    const b = new ActorPath('', null, 'demo').child('user').child('foo');
-    const c = new ActorPath('', null, 'other').child('user').child('foo');
-    const d = new ActorPath('', null, 'demo').child('user').child('bar');
-    expect(a.equals(b)).toBe(true);
-    expect(a.equals(c)).toBe(false);
-    expect(a.equals(d)).toBe(false);
+    const pathA = new ActorPath('', null, 'demo').child('user').child('foo');
+    const pathB = new ActorPath('', null, 'demo').child('user').child('foo');
+    const pathC = new ActorPath('', null, 'other').child('user').child('foo');
+    const pathD = new ActorPath('', null, 'demo').child('user').child('bar');
+    expect(pathA.equals(pathB)).toBe(true);
+    expect(pathA.equals(pathC)).toBe(false);
+    expect(pathA.equals(pathD)).toBe(false);
   });
 
   test('isAncestorOf true for strict ancestors only', () => {
@@ -60,21 +60,21 @@ describe('ActorPath', () => {
   });
 
   test('elements walks from root to leaf', () => {
-    const p = new ActorPath('', null, 'sys')
+    const path = new ActorPath('', null, 'sys')
       .child('a').child('b').child('c');
-    expect(p.elements()).toEqual(['', 'a', 'b', 'c']);
+    expect(path.elements()).toEqual(['', 'a', 'b', 'c']);
   });
 
   test('systemName defaults to "default" when unset', () => {
-    const p = new ActorPath('root');
-    expect(p.systemName).toBe('default');
-    expect(p.toString()).toBe('actor-ts://default/');
+    const path = new ActorPath('root');
+    expect(path.systemName).toBe('default');
+    expect(path.toString()).toBe('actor-ts://default/');
   });
 
   test('different systemNames produce non-equal paths', () => {
-    const a = new ActorPath('', null, 'A').child('user');
-    const b = new ActorPath('', null, 'B').child('user');
-    expect(a.toString()).not.toBe(b.toString());
-    expect(a.equals(b)).toBe(false);
+    const pathA = new ActorPath('', null, 'A').child('user');
+    const pathB = new ActorPath('', null, 'B').child('user');
+    expect(pathA.toString()).not.toBe(pathB.toString());
+    expect(pathA.equals(pathB)).toBe(false);
   });
 });

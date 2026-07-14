@@ -83,7 +83,7 @@ routet sie an die passende sharded Session.
 ### Sharded + persistente Session
 
 ```ts
-class VoiceSessionActor extends PersistentActor<SessionCmd, SessionEvent, SessionState> {
+class VoiceSessionActor extends PersistentActor<SessionCommand, SessionEvent, SessionState> {
   readonly persistenceId = `voice-${this.sessionId}`;
 
   override onEvent(state, event) {
@@ -93,7 +93,7 @@ class VoiceSessionActor extends PersistentActor<SessionCmd, SessionEvent, Sessio
     return state;
   }
 
-  async onCommand(state, cmd: SessionCmd) {
+  async onCommand(state, cmd: SessionCommand) {
     if (cmd.kind === 'audio-chunk') {
       const text = await transcribe(cmd.audioBytes);
       this.persist({ kind: 'chunk-transcribed', text, ts: Date.now() }, () => {

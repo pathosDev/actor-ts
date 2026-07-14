@@ -37,9 +37,9 @@ describe('LogContext — actor-to-actor propagation', () => {
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('mdc-1', sysOptions);
     try {
-      const r = sys.spawn(Props.create(() => new Receiver()), 'r');
+      const actorRef = sys.spawn(Props.create(() => new Receiver()), 'r');
       LogContext.run({ correlationId: 'abc-123' }, () => {
-        r.tell('hello');
+        actorRef.tell('hello');
       });
       await sleep(40);
       expect(observed).toEqual([{ correlationId: 'abc-123' }]);
@@ -96,8 +96,8 @@ describe('LogContext — actor-to-actor propagation', () => {
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('mdc-none', sysOptions);
     try {
-      const r = sys.spawn(Props.create(() => new R()), 'r');
-      r.tell('plain');
+      const actorRef = sys.spawn(Props.create(() => new R()), 'r');
+      actorRef.tell('plain');
       await sleep(30);
       expect(observed).toEqual([{}]);
     } finally {
@@ -117,9 +117,9 @@ describe('LogContext — actor-to-actor propagation', () => {
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('mdc-parallel', sysOptions);
     try {
-      const r = sys.spawn(Props.create(() => new R()), 'r');
-      LogContext.run({ branch: 'A' }, () => r.tell({ id: 'a' }));
-      LogContext.run({ branch: 'B' }, () => r.tell({ id: 'b' }));
+      const actorRef = sys.spawn(Props.create(() => new R()), 'r');
+      LogContext.run({ branch: 'A' }, () => actorRef.tell({ id: 'a' }));
+      LogContext.run({ branch: 'B' }, () => actorRef.tell({ id: 'b' }));
       await sleep(50);
       expect(observed.get('a')).toEqual({ branch: 'A' });
       expect(observed.get('b')).toEqual({ branch: 'B' });

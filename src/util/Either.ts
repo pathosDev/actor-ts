@@ -131,9 +131,9 @@ export function eitherSequence<L, R>(
   values: ReadonlyArray<Either<L, R>>,
 ): Either<L, R[]> {
   const out: R[] = [];
-  for (const e of values) {
-    if (e.isLeft()) return e as Either<L, R[]>;
-    out.push(e.value);
+  for (const either of values) {
+    if (either.isLeft()) return either as Either<L, R[]>;
+    out.push(either.value);
   }
   return new Right(out);
 }

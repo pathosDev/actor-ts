@@ -161,8 +161,8 @@ Für Mutual TLS `cert` + `key` ergänzen.
 ### WebSocket
 
 ```ts
-const webSocketClientOptions = WebSocketClientOptions.create().withUrl('wss://realtime.example.com/feed');
-new WebSocketClientActor(webSocketClientOptions);
+const webSocketClientOptions = WebsocketClientOptions.create().withUrl('wss://realtime.example.com/feed');
+new WebsocketClientActor(webSocketClientOptions);
 ```
 
 `wss://`-URL-Schema. Cert-Verifizierung folgt den TLS-Defaults der

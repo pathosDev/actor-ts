@@ -47,9 +47,9 @@ export class VectorClock {
   /** Component-wise max — used after observing a remote event. */
   merge(other: VectorClock): VectorClock {
     const next = new Map(this.entries);
-    for (const [r, v] of other.entries) {
-      const ours = next.get(r) ?? 0;
-      if (v > ours) next.set(r, v);
+    for (const [replicaId, version] of other.entries) {
+      const ours = next.get(replicaId) ?? 0;
+      if (version > ours) next.set(replicaId, version);
     }
     return new VectorClock(next);
   }
@@ -69,11 +69,11 @@ export class VectorClock {
     const keys = new Set<ReplicaId>([...this.entries.keys(), ...other.entries.keys()]);
     let lt = false;
     let gt = false;
-    for (const k of keys) {
-      const a = this.get(k);
-      const b = other.get(k);
-      if (a < b) lt = true;
-      else if (a > b) gt = true;
+    for (const replicaId of keys) {
+      const ours = this.get(replicaId);
+      const theirs = other.get(replicaId);
+      if (ours < theirs) lt = true;
+      else if (ours > theirs) gt = true;
       if (lt && gt) return 'concurrent';
     }
     if (lt && !gt) return 'before';
@@ -89,14 +89,14 @@ export class VectorClock {
 
   toJSON(): VectorClockData {
     const out: Record<ReplicaId, number> = {};
-    for (const [k, v] of this.entries) out[k] = v;
+    for (const [replicaId, version] of this.entries) out[replicaId] = version;
     return out;
   }
 
   toString(): string {
     const pairs: string[] = [];
     const sorted = Array.from(this.entries.keys()).sort();
-    for (const k of sorted) pairs.push(`${k}=${this.entries.get(k)}`);
+    for (const replicaId of sorted) pairs.push(`${replicaId}=${this.entries.get(replicaId)}`);
     return `VC{${pairs.join(', ')}}`;
   }
 }

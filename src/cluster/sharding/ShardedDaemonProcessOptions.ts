@@ -2,7 +2,7 @@ import type { Props } from '../../Props.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 
-/** Plain settings-object shape consumed by {@link ShardedDaemonProcess.init}. */
+/** Plain options-object shape consumed by {@link ShardedDaemonProcess.init}. */
 export interface ShardedDaemonProcessOptionsType<T> {
   /** Logical name used for the shard type; must be unique per daemon set. */
   readonly name: string;

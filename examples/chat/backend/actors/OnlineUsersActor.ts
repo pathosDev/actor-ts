@@ -29,7 +29,7 @@ import type { RoomName } from '../../shared/rooms.js';
 
 /* --------------------------- public messages --------------------------- */
 
-export type OnlineUsersCmd =
+export type OnlineUsersCommand =
   | { readonly kind: 'AddToRoom';      readonly room: RoomName; readonly username: string }
   | { readonly kind: 'RemoveFromRoom'; readonly room: RoomName; readonly username: string }
   | { readonly kind: 'Subscribe';      readonly room: RoomName; readonly ref: ActorRef<UsersChanged> }
@@ -58,7 +58,7 @@ interface RoomState {
 
 /* ------------------------------- actor --------------------------------- */
 
-export class OnlineUsersActor extends Actor<OnlineUsersCmd> {
+export class OnlineUsersActor extends Actor<OnlineUsersCommand> {
   private dd!: DistributedDataHandle;
   private replicaId!: string;
   private readonly rooms = new Map<RoomName, RoomState>();
@@ -78,7 +78,7 @@ export class OnlineUsersActor extends Actor<OnlineUsersCmd> {
     this.rooms.clear();
   }
 
-  override onReceive(cmd: OnlineUsersCmd): void {
+  override onReceive(cmd: OnlineUsersCommand): void {
     match(cmd)
       .with({ kind: 'AddToRoom' }, (m) => this.add(m.room, m.username))
       .with({ kind: 'RemoveFromRoom' }, (m) => this.remove(m.room, m.username))

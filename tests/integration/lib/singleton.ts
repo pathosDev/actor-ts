@@ -37,7 +37,7 @@ export interface SingletonWhoReply {
   readonly value: number;
 }
 
-export type SingletonMsg = SingletonInc | SingletonWho;
+export type SingletonMessage = SingletonInc | SingletonWho;
 
 /**
  * `CounterSingleton` instance is spawned by the cluster's
@@ -47,10 +47,10 @@ export type SingletonMsg = SingletonInc | SingletonWho;
  * — verifying state-preservation across leader changes would be a
  * SEPARATE scenario for persistent actors.
  */
-export class CounterSingleton extends Actor<SingletonMsg> {
+export class CounterSingleton extends Actor<SingletonMessage> {
   private value = 0;
   constructor(private readonly nodeName: string) { super(); }
-  override onReceive(msg: SingletonMsg): void {
+  override onReceive(msg: SingletonMessage): void {
     if (msg.kind === 'inc') {
       this.value++;
     } else if (msg.kind === 'who') {

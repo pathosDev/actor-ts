@@ -19,7 +19,7 @@ export interface RegisterCassandraPluginsOptionsType {
 
 /**
  * Fluent builder for {@link RegisterCassandraPluginsOptionsType}.  Each store
- * takes its own leaf builder (or a plain object of its settings); the
+ * takes its own leaf builder (or a plain object of its options); the
  * shared {@link CassandraClientLike} is merged onto both leaves at
  * registration time so a single connection tree serves the journal and
  * snapshot store:

@@ -3,7 +3,7 @@ import type { PersistentEvent } from '../JournalTypes.js';
 import type { LiveQueryOptions, PersistenceQuery } from '../query/PersistenceQuery.js';
 import type { OffsetStore } from './OffsetStore.js';
 
-/** Plain settings-object shape shared by every projection. */
+/** Plain options-object shape shared by every projection. */
 export interface ProjectionOptionsType<E> {
   /** Logical name — used as the offset-store key prefix. */
   readonly name: string;
@@ -17,19 +17,19 @@ export interface ProjectionOptionsType<E> {
   readonly liveOptions?: LiveQueryOptions;
 }
 
-/** Settings for a per-persistenceId projection.  One cursor per pid. */
-export interface ByPidProjectionOptionsType<E> extends ProjectionOptionsType<E> {
+/** Options for a per-persistenceId projection.  One cursor per pid. */
+export interface ByPersistenceIdProjectionOptionsType<E> extends ProjectionOptionsType<E> {
   readonly persistenceId: string;
 }
 
-/** Settings for a per-tag projection.  One cursor per tag. */
+/** Options for a per-tag projection.  One cursor per tag. */
 export interface ByTagProjectionOptionsType<E> extends ProjectionOptionsType<E> {
   readonly tag: string;
 }
 
 /**
  * Fluent builder for the fields shared by every projection.  The
- * concrete {@link ByPidProjectionOptions} / {@link ByTagProjectionOptions}
+ * concrete {@link ByPersistenceIdProjectionOptions} / {@link ByTagProjectionOptions}
  * subclasses add the discriminating cursor field (`persistenceId` / `tag`)
  * on top of these.
  */
@@ -74,13 +74,13 @@ export type ProjectionOptions<E> = ProjectionOptionsBuilder<E> | Partial<Project
 export const ProjectionOptions = ProjectionOptionsBuilder;
 
 /**
- * Fluent builder for {@link ByPidProjectionOptionsType} — a per-persistenceId
+ * Fluent builder for {@link ByPersistenceIdProjectionOptionsType} — a per-persistenceId
  * projection.  Adds `withPersistenceId` to the shared projection fields.
  */
-export class ByPidProjectionOptionsBuilder<E> extends OptionsBuilder<ByPidProjectionOptionsType<E>> {
-  /** Start a fresh builder.  Equivalent to `new ByPidProjectionOptionsBuilder<E>()`. */
-  static create<E>(): ByPidProjectionOptionsBuilder<E> {
-    return new ByPidProjectionOptionsBuilder<E>();
+export class ByPersistenceIdProjectionOptionsBuilder<E> extends OptionsBuilder<ByPersistenceIdProjectionOptionsType<E>> {
+  /** Start a fresh builder.  Equivalent to `new ByPersistenceIdProjectionOptionsBuilder<E>()`. */
+  static create<E>(): ByPersistenceIdProjectionOptionsBuilder<E> {
+    return new ByPersistenceIdProjectionOptionsBuilder<E>();
   }
 
   /** Logical name — used as the offset-store key prefix. */
@@ -116,12 +116,12 @@ export class ByPidProjectionOptionsBuilder<E> extends OptionsBuilder<ByPidProjec
 
 /**
  * Accepted input for a by-persistenceId projection: the fluent
- * {@link ByPidProjectionOptionsBuilder} OR a plain
- * {@link ByPidProjectionOptionsType} object.
+ * {@link ByPersistenceIdProjectionOptionsBuilder} OR a plain
+ * {@link ByPersistenceIdProjectionOptionsType} object.
  */
-export type ByPidProjectionOptions<E> = ByPidProjectionOptionsBuilder<E> | Partial<ByPidProjectionOptionsType<E>>;
-/** Value alias so `ByPidProjectionOptions.create()` / `new ByPidProjectionOptions()` resolve to the builder. */
-export const ByPidProjectionOptions = ByPidProjectionOptionsBuilder;
+export type ByPersistenceIdProjectionOptions<E> = ByPersistenceIdProjectionOptionsBuilder<E> | Partial<ByPersistenceIdProjectionOptionsType<E>>;
+/** Value alias so `ByPersistenceIdProjectionOptions.create()` / `new ByPersistenceIdProjectionOptions()` resolve to the builder. */
+export const ByPersistenceIdProjectionOptions = ByPersistenceIdProjectionOptionsBuilder;
 
 /**
  * Fluent builder for {@link ByTagProjectionOptionsType} — a per-tag projection.

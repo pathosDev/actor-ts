@@ -92,23 +92,23 @@ describe('eager peer-dep validation (#18, #59)', () => {
   });
 
   test('compressionByPrefix attaches __knownConfigs introspection metadata', () => {
-    const r = compressionByPrefix({
+    const result = compressionByPrefix({
       default: { algorithm: 'gzip' },
       'large/': { algorithm: 'zstd' },
       'tiny/':  { algorithm: 'none' },
     });
-    const known = knownConfigsOf(r);
+    const known = knownConfigsOf(result);
     expect(known).toBeDefined();
     const algos = new Set(known!.map((c) => c.algorithm));
     expect(algos).toEqual(new Set(['gzip', 'zstd', 'none']));
   });
 
   test('encryptionByPrefix attaches __knownConfigs introspection metadata', () => {
-    const r = encryptionByPrefix({
+    const result = encryptionByPrefix({
       default: { mode: 'sse-s3' },
       'secrets/': { mode: 'sse-kms', kmsKeyId: 'k1' },
     });
-    const known = knownConfigsOf(r);
+    const known = knownConfigsOf(result);
     expect(known).toBeDefined();
     const modes = new Set(known!.map((c) => c.mode));
     expect(modes).toEqual(new Set(['sse-s3', 'sse-kms']));

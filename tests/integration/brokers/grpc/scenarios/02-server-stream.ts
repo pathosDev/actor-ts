@@ -1,7 +1,7 @@
 /**
  * Server-stream — single request → N stream-data + 1 stream-end.
  */
-import type { GrpcClientCmd } from '../../../../../src/io/broker/GrpcClientActor.js';
+import type { GrpcClientCommand } from '../../../../../src/io/broker/GrpcClientActor.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import { spawnCollector, type GrpcCtx } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
@@ -12,7 +12,7 @@ export const scenario: BrokerScenario<GrpcCtx> = {
     const { ref: collectorRef, collector } = spawnCollector(ctx);
     try {
       const N = 5;
-      const client = ctx.client as unknown as ActorRef<GrpcClientCmd>;
+      const client = ctx.client as unknown as ActorRef<GrpcClientCommand>;
       client.tell({
         kind: 'serverStream',
         method: 'ServerStream',
@@ -29,9 +29,9 @@ export const scenario: BrokerScenario<GrpcCtx> = {
         throw new Error(`expected ${N} stream-data chunks, got ${data.length}`);
       }
       for (let i = 0; i < N; i++) {
-        const c = data[i]!;
-        if (c.kind !== 'stream-data') throw new Error('not stream-data');
-        const payload = c.chunk as { text?: string; sequence?: number };
+        const chunk = data[i]!;
+        if (chunk.kind !== 'stream-data') throw new Error('not stream-data');
+        const payload = chunk.chunk as { text?: string; sequence?: number };
         if (payload.sequence !== i || payload.text !== `chunk-${i}`) {
           throw new Error(`chunk ${i} mismatch: ${JSON.stringify(payload)}`);
         }

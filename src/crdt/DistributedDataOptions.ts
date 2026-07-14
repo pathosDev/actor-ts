@@ -2,7 +2,7 @@ import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { DurableStateStore } from '../persistence/DurableStateStore.js';
 
-/** Plain settings-object shape accepted by {@link DistributedData.start}. */
+/** Plain options-object shape accepted by {@link DistributedData.start}. */
 export interface DistributedDataOptionsType {
   /** Period between gossip pushes.  Default: 1 s. */
   readonly gossipInterval?: number;

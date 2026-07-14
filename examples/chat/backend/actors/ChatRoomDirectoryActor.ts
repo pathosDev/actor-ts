@@ -36,7 +36,7 @@ import { DEFAULT_ROOMS, isRoomName, type RoomName } from '../../shared/rooms.js'
 
 /* --------------------------- public messages --------------------------- */
 
-export type ChatRoomDirectoryCmd =
+export type ChatRoomDirectoryCommand =
   | { readonly kind: 'Create';      readonly name: string;                          readonly replyTo?: ActorRef<CreateResult> }
   | { readonly kind: 'GetRooms';    readonly replyTo: ActorRef<RoomsChanged> }
   | { readonly kind: 'Subscribe';   readonly ref: ActorRef<RoomsChanged | RoomAdded | RoomRemoved> }
@@ -66,7 +66,7 @@ export const ROOMS_DD_KEY = 'chat.rooms';
 
 /* ------------------------------- actor --------------------------------- */
 
-export class ChatRoomDirectoryActor extends Actor<ChatRoomDirectoryCmd> {
+export class ChatRoomDirectoryActor extends Actor<ChatRoomDirectoryCommand> {
   private dd!: DistributedDataHandle;
   private replicaId!: string;
   private readonly subscribers = new Set<ActorRef<RoomsChanged | RoomAdded | RoomRemoved>>();
@@ -114,7 +114,7 @@ export class ChatRoomDirectoryActor extends Actor<ChatRoomDirectoryCmd> {
     this.subscribers.clear();
   }
 
-  override onReceive(cmd: ChatRoomDirectoryCmd): void {
+  override onReceive(cmd: ChatRoomDirectoryCommand): void {
     match(cmd)
       .with({ kind: 'Create' },      (m) => this.create(m.name, m.replyTo))
       .with({ kind: 'GetRooms' },    (m) => this.replyRooms(m.replyTo))

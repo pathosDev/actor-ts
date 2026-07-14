@@ -1,9 +1,9 @@
-import type { TlsTransportSettings } from '../runtime/tcp/index.js';
+import type { TlsTransportOptionsType } from '../runtime/tcp/index.js';
 import type { Logger } from '../Logger.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 
-/** Plain settings-object shape accepted by a {@link ClusterClient}. */
+/** Plain options-object shape accepted by a {@link ClusterClient}. */
 export interface ClusterClientOptionsType {
   /**
    * Cluster nodes to dial.  Each is a `host:port` or `<system>@host:port`
@@ -24,7 +24,7 @@ export interface ClusterClientOptionsType {
   /** Default ask timeout (ms).  Default: 5_000. */
   readonly askTimeoutMs?: number;
   /** Optional TLS config — must match the cluster's. */
-  readonly tls?: TlsTransportSettings;
+  readonly tls?: TlsTransportOptionsType;
   /** Custom logger; default: ConsoleLogger at WARN. */
   readonly logger?: Logger;
 }
@@ -65,7 +65,7 @@ export class ClusterClientOptionsBuilder extends OptionsBuilder<ClusterClientOpt
   }
 
   /** TLS config — must match the cluster's. */
-  withTls(tls: TlsTransportSettings): this {
+  withTls(tls: TlsTransportOptionsType): this {
     return this.set('tls', tls);
   }
 

@@ -18,7 +18,7 @@ import { Cluster } from '../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../src/cluster/ClusterOptions.js';
 import { InMemoryTransport } from '../../src/cluster/Transport.js';
 import { NodeAddress } from '../../src/cluster/NodeAddress.js';
-import type { GossipMsg, MemberData } from '../../src/cluster/Protocol.js';
+import type { GossipMessage, MemberData } from '../../src/cluster/Protocol.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 
 interface NodeHandle {
@@ -44,9 +44,9 @@ async function startNode(systemName: string, port: number, seeds: string[] = [])
   return { system, cluster, address };
 }
 
-async function stopNode(n: NodeHandle): Promise<void> {
-  try { await n.cluster.leave(); } catch { /* */ }
-  try { await n.system.terminate(); } catch { /* */ }
+async function stopNode(node: NodeHandle): Promise<void> {
+  try { await node.cluster.leave(); } catch { /* */ }
+  try { await node.system.terminate(); } catch { /* */ }
 }
 
 async function waitFor(pred: () => boolean, timeoutMs = 2000): Promise<void> {
@@ -64,14 +64,14 @@ interface ClusterPrivate {
   handleWire(from: NodeAddress, msg: { t: 'gossip'; from: ReturnType<NodeAddress['toJSON']>; members: MemberData[] }): void;
 }
 
-function inject(cluster: Cluster, from: NodeAddress, msg: GossipMsg): void {
+function inject(cluster: Cluster, from: NodeAddress, msg: GossipMessage): void {
   (cluster as unknown as ClusterPrivate).handleWire(from, msg);
 }
 
 let nodes: NodeHandle[] = [];
 
 afterEach(async () => {
-  for (const n of nodes) await stopNode(n);
+  for (const node of nodes) await stopNode(node);
   nodes = [];
 });
 
@@ -97,34 +97,34 @@ describe('Cluster — gossip exploit defenses', () => {
   test('exploit: gossip with Number.MAX_SAFE_INTEGER version is rejected', async () => {
     const portA = 53_100 + Math.floor(Math.random() * 500);
     const portB = portA + 1;
-    const a = await startNode('csec', portA);
-    const b = await startNode('csec', portB, [`csec@h:${portA}`]);
-    nodes = [a, b];
+    const nodeA = await startNode('csec', portA);
+    const nodeB = await startNode('csec', portB, [`csec@h:${portA}`]);
+    nodes = [nodeA, nodeB];
 
     // Wait until A sees B as 'up'.
     await waitFor(() => {
-      const m = a.cluster.getMembers().find(x => x.address.equals(b.address));
-      return !!m && m.status === 'up';
+      const member = nodeA.cluster.getMembers().find(x => x.address.equals(nodeB.address));
+      return !!member && member.status === 'up';
     });
-    const beforeB = a.cluster.getMembers().find(x => x.address.equals(b.address));
+    const beforeB = nodeA.cluster.getMembers().find(x => x.address.equals(nodeB.address));
     expect(beforeB?.status).toBe('up');
 
     // Forge a malicious gossip from an "attacker" address (no real
     // node — just a synthetic NodeAddress to source the frame).
     const attacker = new NodeAddress('csec', 'h', 65_535);
-    const evil: GossipMsg = {
+    const evil: GossipMessage = {
       t: 'gossip',
       from: attacker.toJSON(),
       members: [{
-        address: b.address.toJSON(),
+        address: nodeB.address.toJSON(),
         status: 'down',
         version: Number.MAX_SAFE_INTEGER,
       }],
     };
-    inject(a.cluster, attacker, evil);
+    inject(nodeA.cluster, attacker, evil);
 
     // Defense: B's status is unchanged (still up).
-    const afterB = a.cluster.getMembers().find(x => x.address.equals(b.address));
+    const afterB = nodeA.cluster.getMembers().find(x => x.address.equals(nodeB.address));
     expect(afterB?.status).toBe('up');
     expect(afterB?.version).toBeLessThan(Number.MAX_SAFE_INTEGER);
   }, 10_000);
@@ -132,40 +132,40 @@ describe('Cluster — gossip exploit defenses', () => {
   test('exploit: gossip with Number.POSITIVE_INFINITY version is rejected', async () => {
     const portA = 53_200 + Math.floor(Math.random() * 500);
     const portB = portA + 1;
-    const a = await startNode('csec', portA);
-    const b = await startNode('csec', portB, [`csec@h:${portA}`]);
-    nodes = [a, b];
+    const nodeA = await startNode('csec', portA);
+    const nodeB = await startNode('csec', portB, [`csec@h:${portA}`]);
+    nodes = [nodeA, nodeB];
 
     await waitFor(() => {
-      const m = a.cluster.getMembers().find(x => x.address.equals(b.address));
-      return !!m && m.status === 'up';
+      const member = nodeA.cluster.getMembers().find(x => x.address.equals(nodeB.address));
+      return !!member && member.status === 'up';
     });
 
     const attacker = new NodeAddress('csec', 'h', 65_534);
-    const evil: GossipMsg = {
+    const evil: GossipMessage = {
       t: 'gossip',
       from: attacker.toJSON(),
       members: [{
-        address: b.address.toJSON(),
+        address: nodeB.address.toJSON(),
         status: 'down',
         version: Number.POSITIVE_INFINITY,
       }],
     };
-    inject(a.cluster, attacker, evil);
+    inject(nodeA.cluster, attacker, evil);
 
-    const afterB = a.cluster.getMembers().find(x => x.address.equals(b.address));
+    const afterB = nodeA.cluster.getMembers().find(x => x.address.equals(nodeB.address));
     expect(afterB?.status).toBe('up');
   }, 10_000);
 
   test('exploit: gossip with NaN version is rejected', async () => {
     const portA = 53_300 + Math.floor(Math.random() * 500);
-    const a = await startNode('csec', portA);
-    nodes = [a];
+    const nodeA = await startNode('csec', portA);
+    nodes = [nodeA];
 
     // No B needed — inject an attempted-creation of a fake member.
     const ghost = new NodeAddress('csec', 'h', 60_000);
     const attacker = new NodeAddress('csec', 'h', 65_533);
-    const evil: GossipMsg = {
+    const evil: GossipMessage = {
       t: 'gossip',
       from: attacker.toJSON(),
       members: [{
@@ -174,10 +174,10 @@ describe('Cluster — gossip exploit defenses', () => {
         version: Number.NaN,
       }],
     };
-    inject(a.cluster, attacker, evil);
+    inject(nodeA.cluster, attacker, evil);
 
     // The ghost should NOT have been registered.
-    const sawGhost = a.cluster.getMembers().some(x => x.address.equals(ghost));
+    const sawGhost = nodeA.cluster.getMembers().some(x => x.address.equals(ghost));
     expect(sawGhost).toBe(false);
   }, 10_000);
 
@@ -187,51 +187,51 @@ describe('Cluster — gossip exploit defenses', () => {
     // with a few minutes of clock skew is still legitimate.
     const portA = 53_400 + Math.floor(Math.random() * 500);
     const portB = portA + 1;
-    const a = await startNode('csec', portA);
-    const b = await startNode('csec', portB, [`csec@h:${portA}`]);
-    nodes = [a, b];
+    const nodeA = await startNode('csec', portA);
+    const nodeB = await startNode('csec', portB, [`csec@h:${portA}`]);
+    nodes = [nodeA, nodeB];
 
     await waitFor(() => {
-      const m = a.cluster.getMembers().find(x => x.address.equals(b.address));
-      return !!m && m.status === 'up';
+      const member = nodeA.cluster.getMembers().find(x => x.address.equals(nodeB.address));
+      return !!member && member.status === 'up';
     });
 
     // Send a gossip with a version slightly in the future (5 minutes).
     // This should be accepted (within the 24-h skew tolerance) and
     // can legitimately bump the member's recorded version.
     const futureVersion = Date.now() + 5 * 60 * 1000;
-    const evil: GossipMsg = {
+    const evil: GossipMessage = {
       t: 'gossip',
-      from: b.address.toJSON(),
+      from: nodeB.address.toJSON(),
       members: [{
-        address: b.address.toJSON(),
+        address: nodeB.address.toJSON(),
         status: 'up',
         version: futureVersion,
       }],
     };
-    inject(a.cluster, b.address, evil);
+    inject(nodeA.cluster, nodeB.address, evil);
 
     // The version did update (defense isn't over-strict).
-    const updated = a.cluster.getMembers().find(x => x.address.equals(b.address));
+    const updated = nodeA.cluster.getMembers().find(x => x.address.equals(nodeB.address));
     expect(updated?.version).toBe(futureVersion);
   }, 10_000);
 
   test('regression: normal cluster operation is unaffected by the cap', async () => {
     // 3-node cluster should converge as before.
     const port1 = 53_500 + Math.floor(Math.random() * 500);
-    const a = await startNode('csec', port1);
-    const b = await startNode('csec', port1 + 1, [`csec@h:${port1}`]);
-    const c = await startNode('csec', port1 + 2, [`csec@h:${port1}`]);
-    nodes = [a, b, c];
+    const nodeA = await startNode('csec', port1);
+    const nodeB = await startNode('csec', port1 + 1, [`csec@h:${port1}`]);
+    const nodeC = await startNode('csec', port1 + 2, [`csec@h:${port1}`]);
+    nodes = [nodeA, nodeB, nodeC];
 
     await waitFor(() => {
-      return a.cluster.getMembers().length === 3
-        && b.cluster.getMembers().length === 3
-        && c.cluster.getMembers().length === 3;
+      return nodeA.cluster.getMembers().length === 3
+        && nodeB.cluster.getMembers().length === 3
+        && nodeC.cluster.getMembers().length === 3;
     });
 
-    const allUp = [a, b, c].every((n) =>
-      n.cluster.getMembers().filter((m) => m.status === 'up').length === 3,
+    const allUp = [nodeA, nodeB, nodeC].every((node) =>
+      node.cluster.getMembers().filter((member) => member.status === 'up').length === 3,
     );
     expect(allUp).toBe(true);
   }, 10_000);
@@ -300,13 +300,13 @@ describe('Transport — hello-handshake hijack defense', () => {
     const sock2 = mkSock();
 
     // Access the private state for assertion + injection.
-    const t = transport as unknown as {
+    const rawTransport = transport as unknown as {
       attachInbound(s: unknown): void;
       onData(s: unknown, chunk: Uint8Array): void;
       byPeer: Map<string, { socket: unknown }>;
     };
-    t.attachInbound(sock1);
-    t.attachInbound(sock2);
+    rawTransport.attachInbound(sock1);
+    rawTransport.attachInbound(sock2);
 
     const claimedPeer = new NodeAddress('hijack', '10.0.0.42', 5000);
 
@@ -319,16 +319,16 @@ describe('Transport — hello-handshake hijack defense', () => {
       frame.set(payload, 4);
       return frame;
     };
-    t.onData(sock1, helloFrame());
-    expect(t.byPeer.get(claimedPeer.toString())?.socket).toBe(sock1);
+    rawTransport.onData(sock1, helloFrame());
+    expect(rawTransport.byPeer.get(claimedPeer.toString())?.socket).toBe(sock1);
 
     // Second hello on conn2 — claims same identity.  Pre-fix would
     // overwrite byPeer to point at sock2 (the attacker).  Post-fix
     // rejects: sock2 is ended, byPeer still points at sock1.
-    t.onData(sock2, helloFrame());
+    rawTransport.onData(sock2, helloFrame());
     expect(sock2.ended).toBe(true);    // attacker's socket closed
     expect(sock1.ended).toBe(false);   // legitimate socket untouched
-    expect(t.byPeer.get(claimedPeer.toString())?.socket).toBe(sock1);
+    expect(rawTransport.byPeer.get(claimedPeer.toString())?.socket).toBe(sock1);
   });
 
   test('defense: legitimate reconnect after clean close still works', () => {
@@ -345,13 +345,13 @@ describe('Transport — hello-handshake hijack defense', () => {
       end() { this.ended = true; },
     });
     const sock1 = mkSock();
-    const t = transport as unknown as {
+    const rawTransport = transport as unknown as {
       attachInbound(s: unknown): void;
       onData(s: unknown, chunk: Uint8Array): void;
       onClose(s: unknown): void;
       byPeer: Map<string, unknown>;
     };
-    t.attachInbound(sock1);
+    rawTransport.attachInbound(sock1);
 
     const peer = new NodeAddress('hijack', '10.0.0.99', 5001);
     const helloFrame = (): Uint8Array => {
@@ -362,19 +362,19 @@ describe('Transport — hello-handshake hijack defense', () => {
       frame.set(payload, 4);
       return frame;
     };
-    t.onData(sock1, helloFrame());
-    expect(t.byPeer.has(peer.toString())).toBe(true);
+    rawTransport.onData(sock1, helloFrame());
+    expect(rawTransport.byPeer.has(peer.toString())).toBe(true);
 
     // Sock1 closes (drop / reconnect scenario).
-    t.onClose(sock1);
-    expect(t.byPeer.has(peer.toString())).toBe(false);
+    rawTransport.onClose(sock1);
+    expect(rawTransport.byPeer.has(peer.toString())).toBe(false);
 
     // Fresh conn2 sends the same hello — should succeed (no
     // existing entry to defend).
     const sock2 = mkSock();
-    t.attachInbound(sock2);
-    t.onData(sock2, helloFrame());
-    expect(t.byPeer.has(peer.toString())).toBe(true);
+    rawTransport.attachInbound(sock2);
+    rawTransport.onData(sock2, helloFrame());
+    expect(rawTransport.byPeer.has(peer.toString())).toBe(true);
     expect(sock2.ended).toBe(false);
   });
 });

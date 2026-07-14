@@ -7,7 +7,7 @@
  *   - `decode(bytes: Uint8Array): T`       — inbound (`payload.entity()`)
  *
  * The default is {@link mqttJsonCodec}.  Unlike the WebSocket stack's
- * {@link WsCodec} there is no text/binary frame distinction — MQTT
+ * {@link WebsocketCodec} there is no text/binary frame distinction — MQTT
  * payloads are raw byte strings, so the codec works in `Uint8Array`
  * directly.
  *
@@ -20,7 +20,7 @@
  * Error contract: `decode` throws {@link MqttDecodeError} on malformed
  * input.  Because decoding is lazy (`payload.entity()` is called by user
  * code inside `onMessage`), that error surfaces there and is routed to
- * the actor's `onDecodeError` hook.  `encode` throws
+ * the actor's `onInvalidMessage` hook.  `encode` throws
  * {@link MqttEncodeError}; since publishes are fire-and-forget the
  * message is logged and dropped rather than surfaced to the caller.
  */

@@ -7,7 +7,7 @@ import { LWWRegister, type LWWRegisterJson } from './LWWRegister.js';
  * resolution is identical to {@link LWWRegister}: higher timestamp
  * wins, ties broken by replica id.
  *
- * Pattern fits: per-key feature flags, per-user settings, profile
+ * Pattern fits: per-key feature flags, per-user options, profile
  * fields where one writer at a time is normal but eventual
  * consistency across replicas matters.
  *
@@ -94,12 +94,12 @@ export class LWWMap<K, V> implements Crdt<LWWMap<K, V>> {
 
   /** Read `key` — `undefined` for missing keys or tombstones. */
   get(key: K): V | undefined {
-    const e = this.entries.get(this.identity(key));
-    if (!e) return undefined;
-    const v = e.register.value();
+    const entry = this.entries.get(this.identity(key));
+    if (!entry) return undefined;
+    const value = entry.register.value();
     // Tombstones are stored as null; `undefined` is the user-facing
     // "not present" answer for both missing and tombstoned keys.
-    return v === null ? undefined : v;
+    return value === null ? undefined : value;
   }
 
   has(key: K): boolean { return this.get(key) !== undefined; }
@@ -107,8 +107,8 @@ export class LWWMap<K, V> implements Crdt<LWWMap<K, V>> {
   /** Snapshot of currently-live keys (tombstones excluded). */
   keys(): ReadonlyArray<K> {
     const out: K[] = [];
-    for (const e of this.entries.values()) {
-      if (e.register.value() !== null) out.push(e.key);
+    for (const entry of this.entries.values()) {
+      if (entry.register.value() !== null) out.push(entry.key);
     }
     return out;
   }
@@ -116,18 +116,18 @@ export class LWWMap<K, V> implements Crdt<LWWMap<K, V>> {
   /** Snapshot of currently-live `[key, value]` pairs. */
   entriesArray(): ReadonlyArray<readonly [K, V]> {
     const out: Array<readonly [K, V]> = [];
-    for (const e of this.entries.values()) {
-      const v = e.register.value();
-      if (v !== null) out.push([e.key, v] as const);
+    for (const entry of this.entries.values()) {
+      const value = entry.register.value();
+      if (value !== null) out.push([entry.key, value] as const);
     }
     return out;
   }
 
   /** Number of currently-live keys (tombstones excluded). */
   get size(): number {
-    let n = 0;
-    for (const e of this.entries.values()) if (e.register.value() !== null) n++;
-    return n;
+    let count = 0;
+    for (const entry of this.entries.values()) if (entry.register.value() !== null) count++;
+    return count;
   }
 
   merge(other: LWWMap<K, V>): LWWMap<K, V> {
@@ -172,9 +172,9 @@ export class LWWMap<K, V> implements Crdt<LWWMap<K, V>> {
   equals(other: LWWMap<K, V>): boolean {
     if (this.entries.size !== other.entries.size) return false;
     for (const [id, entry] of this.entries) {
-      const o = other.entries.get(id);
-      if (!o) return false;
-      if (!entry.register.equals(o.register)) return false;
+      const otherEntry = other.entries.get(id);
+      if (!otherEntry) return false;
+      if (!entry.register.equals(otherEntry.register)) return false;
     }
     return true;
   }

@@ -149,9 +149,9 @@ describe('CoordinatedShutdown.run idempotency', () => {
     const cs = sys.extension(CoordinatedShutdownId);
     expect(cs.isRunning).toBe(false);
     expect(cs.isComplete).toBe(false);
-    const p = cs.run();
+    const shutdownPromise = cs.run();
     expect(cs.isRunning).toBe(true);
-    await p;
+    await shutdownPromise;
     expect(cs.isComplete).toBe(true);
   });
 });

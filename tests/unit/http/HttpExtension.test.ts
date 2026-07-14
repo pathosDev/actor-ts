@@ -120,8 +120,8 @@ describe('HttpExtension — error paths', () => {
       .useBackend(new FastifyBackend({ logger: false }))
       .bind(get(() => { throw new Error('boom'); }));
     try {
-      const r = await fetch(`http://${binding.host}:${binding.port}/`);
-      expect(r.status).toBeGreaterThanOrEqual(500);
+      const result = await fetch(`http://${binding.host}:${binding.port}/`);
+      expect(result.status).toBeGreaterThanOrEqual(500);
     } finally {
       await binding.unbind();
       await system.terminate();
@@ -139,8 +139,8 @@ describe('HttpExtension — server builder + client', () => {
       .useBackend(new FastifyBackend({ logger: false }))
       .bind(get(() => complete(Status.OK, 'used')));
     try {
-      const r = await fetch(`http://${binding.host}:${binding.port}/`);
-      expect(await r.text()).toBe('used');
+      const result = await fetch(`http://${binding.host}:${binding.port}/`);
+      expect(await result.text()).toBe('used');
     } finally {
       await binding.unbind();
       await system.terminate();
@@ -165,11 +165,11 @@ describe('HttpExtension — server builder + client', () => {
       const ext = system.extension(HttpExtensionId);
       // singleRequest is bound — calling it through the extension uses
       // the shared client.  Hit our own bound server to verify.
-      const r = await ext.singleRequest({
+      const result = await ext.singleRequest({
         method: 'GET',
         url: `http://${binding.host}:${binding.port}/`,
       });
-      expect(r.status).toBe(200);
+      expect(result.status).toBe(200);
     } finally {
       await binding.unbind();
       await system.terminate();
@@ -187,8 +187,8 @@ describe('HttpExtension — server builder + client', () => {
       .useBackend(new FastifyBackend({ logger: false }))
       .bind(cat());
     try {
-      const r = await fetch(`http://${binding.host}:${binding.port}/`);
-      expect(r.status).toBe(404);
+      const result = await fetch(`http://${binding.host}:${binding.port}/`);
+      expect(result.status).toBe(404);
     } finally {
       await binding.unbind();
       await system.terminate();

@@ -133,8 +133,8 @@ describe('HonoBackend — plain routes', () => {
       }),
       path(':id', concat(
         get(req => {
-          const n = state[req.params.id];
-          return n ? completeJson(Status.OK, { id: req.params.id, name: n })
+          const count = state[req.params.id];
+          return count ? completeJson(Status.OK, { id: req.params.id, name: count })
                    : complete(Status.NotFound, 'not-found');
         }),
         del(req => { delete state[req.params.id]; return complete(Status.NoContent); }),

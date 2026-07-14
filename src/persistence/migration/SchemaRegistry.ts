@@ -184,14 +184,14 @@ export class InMemorySchemaRegistry implements SchemaRegistry {
     const bucket = this.entries.get(manifest);
     if (!bucket || bucket.size === 0) return undefined;
     let latest = -Infinity;
-    for (const v of bucket.keys()) if (v > latest) latest = v;
+    for (const version of bucket.keys()) if (version > latest) latest = version;
     return latest === -Infinity ? undefined : latest;
   }
 
   list(): ReadonlyArray<SchemaDescriptor> {
     const out: SchemaDescriptor[] = [];
     for (const bucket of this.entries.values()) {
-      for (const d of bucket.values()) out.push(d);
+      for (const descriptor of bucket.values()) out.push(descriptor);
     }
     return out;
   }
@@ -221,17 +221,17 @@ export class InMemorySchemaRegistry implements SchemaRegistry {
         }
         let value: unknown = startDesc.codec.decode(stored.payload);
         const latest = this.latestVersion(stored.manifest)!;
-        for (let v = stored.version + 1; v <= latest; v++) {
-          const desc = this.get(stored.manifest, v);
+        for (let version = stored.version + 1; version <= latest; version++) {
+          const desc = this.get(stored.manifest, version);
           if (!desc) {
             throw new MigrationError(
-              `SchemaRegistry: gap on the upcast path for '${stored.manifest}': v${v} not registered`,
+              `SchemaRegistry: gap on the upcast path for '${stored.manifest}': v${version} not registered`,
               stored.manifest, stored.version,
             );
           }
           if (!desc.upcastFromPrev) {
             throw new MigrationError(
-              `SchemaRegistry: ${stored.manifest}@v${v} has no upcastFromPrev — cannot bring v${stored.version} forward`,
+              `SchemaRegistry: ${stored.manifest}@v${version} has no upcastFromPrev — cannot bring v${stored.version} forward`,
               stored.manifest, stored.version,
             );
           }

@@ -22,9 +22,9 @@ The method form mirrors the standard OO API — `spawn` vs.
 ```ts
 import { ActorSystem, Behaviors, type Behavior, type ActorRef } from 'actor-ts';
 
-type Cmd = { kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> };
+type Command = { kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> };
 
-const counter = (n: number): Behavior<Cmd> => Behaviors.receive((ctx, cmd) => {
+const counter = (n: number): Behavior<Command> => Behaviors.receive((ctx, cmd) => {
   if (cmd.kind === 'inc') return counter(n + 1);
   if (cmd.kind === 'get') { cmd.replyTo.tell(n); return Behaviors.same; }
   return Behaviors.same;
@@ -32,7 +32,7 @@ const counter = (n: number): Behavior<Cmd> => Behaviors.receive((ctx, cmd) => {
 
 const system = ActorSystem.create('demo');
 const ref = system.spawnTyped(counter(0), 'counter');
-//    ^- ActorRef<Cmd>
+//    ^- ActorRef<Command>
 ```
 
 The signatures:
@@ -44,7 +44,7 @@ class ActorSystem {
 }
 ```
 
-Returns a typed `ActorRef<T>` — `tell` accepts only `Cmd`-shaped
+Returns a typed `ActorRef<T>` — `tell` accepts only `Command`-shaped
 messages, the compiler enforces it.
 
 ## `ctx.spawnTyped` — typed child from an untyped parent
@@ -55,7 +55,7 @@ import { Actor, Behaviors } from 'actor-ts';
 class UntypedParent extends Actor<...> {
   override preStart(): void {
     const typedChild = this.context.spawnTyped(counter(0), 'child');
-    // typedChild: ActorRef<Cmd>
+    // typedChild: ActorRef<Command>
     typedChild.tell({ kind: 'inc' });
   }
 }
@@ -107,9 +107,9 @@ sharding region's entity-props slot.
 Inside a typed handler, the context exposes its own `spawn`:
 
 ```ts
-const parent: Behavior<ParentMsg> = Behaviors.setup((ctx) => {
+const parent: Behavior<ParentMessage> = Behaviors.setup((ctx) => {
   const child = ctx.spawn(workerBehavior, 'worker');
-  //    ^- ActorRef<WorkerMsg>
+  //    ^- ActorRef<WorkerMessage>
 
   return Behaviors.receive((ctx, msg) => {
     child.tell({ kind: 'do-it' });

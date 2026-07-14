@@ -1,7 +1,7 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 
-/** Plain settings-object shape accepted by a {@link PhiAccrualFailureDetector}. */
+/** Plain options-object shape accepted by a {@link PhiAccrualFailureDetector}. */
 export interface PhiAccrualOptionsType {
   /** Intended heartbeat cadence.  Used to keep `interval` compatible with FailureDetector. */
   readonly heartbeatIntervalMs: number;
@@ -22,7 +22,7 @@ export interface PhiAccrualOptionsType {
 
 /**
  * Fluent builder for {@link PhiAccrualOptionsType}.  Unset fields fall
- * through to {@link defaultPhiAccrualSettings} in the constructor, so a
+ * through to {@link defaultPhiAccrualOptions} in the constructor, so a
  * bare `PhiAccrualOptions.create()` yields the defaults.
  *
  *     new PhiAccrualFailureDetector(

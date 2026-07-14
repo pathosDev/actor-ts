@@ -3,7 +3,7 @@ import type { ActorSystem } from '../../ActorSystem.js';
 import { extensionId, type Extension, type ExtensionId } from '../../Extension.js';
 import { Props } from '../../Props.js';
 import type { Cluster } from '../Cluster.js';
-import type { EnvelopeMsg } from '../Protocol.js';
+import type { EnvelopeMessage } from '../Protocol.js';
 import {
   DistributedPubSubMediator,
   mediatorPath,
@@ -51,7 +51,7 @@ export class DistributedPubSub implements Extension {
     // Route inbound publishes (remote → local) to the mediator's mailbox.
     cluster._registerEnvelopeHandler(
       mediatorPath(cluster.system.name),
-      (env: EnvelopeMsg) => mediator.tell(env.body as never),
+      (env: EnvelopeMessage) => mediator.tell(env.body as never),
     );
 
     return this._mediator;

@@ -3,7 +3,7 @@ import type {
   TcpListener,
   TcpSocketHandlers,
   TcpSocketLike,
-  TlsTransportSettings,
+  TlsTransportOptionsType,
 } from './TcpBackend.js';
 
 /**
@@ -16,7 +16,7 @@ import type {
  */
 export class BunTcpBackend implements TcpBackend {
   async listen(opts: {
-    host: string; port: number; tls?: TlsTransportSettings; handlers: TcpSocketHandlers;
+    host: string; port: number; tls?: TlsTransportOptionsType; handlers: TcpSocketHandlers;
   }): Promise<TcpListener> {
     const bun = (globalThis as { Bun?: BunGlobal }).Bun;
     if (!bun) throw new Error('BunTcpBackend: globalThis.Bun is not defined');
@@ -48,7 +48,7 @@ export class BunTcpBackend implements TcpBackend {
   }
 
   async connect(opts: {
-    host: string; port: number; tls?: TlsTransportSettings; handlers: TcpSocketHandlers;
+    host: string; port: number; tls?: TlsTransportOptionsType; handlers: TcpSocketHandlers;
   }): Promise<TcpSocketLike> {
     const bun = (globalThis as { Bun?: BunGlobal }).Bun;
     if (!bun) throw new Error('BunTcpBackend: globalThis.Bun is not defined');

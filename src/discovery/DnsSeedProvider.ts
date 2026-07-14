@@ -7,7 +7,7 @@ import type { SeedProvider } from './SeedProvider.js';
  * Seed provider backed by DNS.  Default mode resolves A records and pairs
  * each IP with the configured port; SRV mode picks up `name:port` directly.
  *
- * The actual DNS functions are injected via settings so tests can stub them
+ * The actual DNS functions are injected via options so tests can stub them
  * without touching the network.  The real impl uses `node:dns/promises`.
  *
  * **TTL cache:** repeated lookups inside the configured `cacheTtlMs`
@@ -18,12 +18,12 @@ export class DnsSeedProvider implements SeedProvider {
   private cached: { value: NodeAddress[]; expiresAt: number } | null = null;
   private readonly cacheTtlMs: number;
 
-  private readonly settings: DnsSeedProviderOptionsType;
+  private readonly options: DnsSeedProviderOptionsType;
 
   constructor(options: DnsSeedProviderOptions = {}) {
-    this.settings = options as DnsSeedProviderOptionsType;
-    new DnsSeedProviderOptionsValidator().validate(this.settings);
-    this.cacheTtlMs = this.settings.cacheTtlMs ?? 60_000;
+    this.options = options as DnsSeedProviderOptionsType;
+    new DnsSeedProviderOptionsValidator().validate(this.options);
+    this.cacheTtlMs = this.options.cacheTtlMs ?? 60_000;
   }
 
   async lookup(): Promise<NodeAddress[]> {
@@ -42,14 +42,14 @@ export class DnsSeedProvider implements SeedProvider {
   invalidateCacheForTest(): void { this.cached = null; }
 
   private async doLookup(): Promise<NodeAddress[]> {
-    if (this.settings.useSrv) {
-      const resolveSrv = this.settings.resolveSrv ?? defaultResolveSrv;
-      const records = await resolveSrv(this.settings.hostname);
-      return records.map(r => new NodeAddress(this.settings.systemName, r.name, r.port));
+    if (this.options.useSrv) {
+      const resolveSrv = this.options.resolveSrv ?? defaultResolveSrv;
+      const records = await resolveSrv(this.options.hostname);
+      return records.map(r => new NodeAddress(this.options.systemName, r.name, r.port));
     }
-    const resolve = this.settings.resolve ?? defaultResolve;
-    const ips = await resolve(this.settings.hostname);
-    return ips.map(ip => new NodeAddress(this.settings.systemName, ip, this.settings.port));
+    const resolve = this.options.resolve ?? defaultResolve;
+    const ips = await resolve(this.options.hostname);
+    return ips.map(ip => new NodeAddress(this.options.systemName, ip, this.options.port));
   }
 }
 

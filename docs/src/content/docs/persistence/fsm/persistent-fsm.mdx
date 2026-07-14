@@ -13,9 +13,9 @@ import { PersistentFSM } from 'actor-ts';
 
 type State = 'created' | 'submitted' | 'approved' | 'rejected';
 type Data  = { id: string; reviewer?: string; reason?: string };
-type Msg   = { kind: 'submit' } | { kind: 'approve'; reviewer: string } | { kind: 'reject'; reason: string };
+type Message   = { kind: 'submit' } | { kind: 'approve'; reviewer: string } | { kind: 'reject'; reason: string };
 
-class OrderApproval extends PersistentFSM<State, Data, Msg> {
+class OrderApproval extends PersistentFSM<State, Data, Message> {
   readonly persistenceId = `order-${this.orderId}`;
 
   constructor(private readonly orderId: string) {
@@ -126,7 +126,7 @@ general policy guidance.
 ## Side effects per transition
 
 ```ts
-class OrderApproval extends PersistentFSM<State, Data, Msg> {
+class OrderApproval extends PersistentFSM<State, Data, Message> {
   // ...
 
   override async onEnter(state: State, data: Data): Promise<void> {
@@ -174,7 +174,7 @@ type SagaState =
   | 'compensating-payment'
   | 'failed';
 
-class OrderSaga extends PersistentFSM<SagaState, Data, Msg> {
+class OrderSaga extends PersistentFSM<SagaState, Data, Message> {
   // Each transition is persisted.  A crash mid-saga resumes from
   // the last persisted state — no work is lost.
 

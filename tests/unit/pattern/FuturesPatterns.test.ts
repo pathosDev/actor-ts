@@ -16,8 +16,8 @@ describe('pipeTo', () => {
       .withLogLevel(LogLevel.Off);
     const kit = TestKit.create('pipe-s', kitOptions);
     const probe = kit.createTestProbe();
-    const p = Promise.resolve(42);
-    pipeTo(p, probe);
+    const promise = Promise.resolve(42);
+    pipeTo(promise, probe);
     const got = await probe.receiveOne(200);
     expect(got).toBeInstanceOf(Success);
     expect((got as Success<number>).value).toBe(42);
@@ -77,9 +77,9 @@ describe('pipeTo', () => {
 describe('after', () => {
   test('resolves with the factory value after the delay', async () => {
     const start = Date.now();
-    const v = await after(30, () => Promise.resolve('done'));
+    const value = await after(30, () => Promise.resolve('done'));
     const elapsed = Date.now() - start;
-    expect(v).toBe('done');
+    expect(value).toBe('done');
     expect(elapsed).toBeGreaterThanOrEqual(25); // ~30ms, tolerate scheduling jitter
   });
 
@@ -92,10 +92,10 @@ describe('after', () => {
   });
 
   test('cancel() aborts before firing', async () => {
-    const p = after(200, () => Promise.resolve('never'));
-    p.cancel();
+    const promise = after(200, () => Promise.resolve('never'));
+    promise.cancel();
     let caught: unknown = null;
-    try { await p; } catch (e) { caught = e; }
+    try { await promise; } catch (e) { caught = e; }
     expect((caught as Error).message).toContain('cancelled');
   });
 });
@@ -103,12 +103,12 @@ describe('after', () => {
 describe('retry', () => {
   test('returns first success within attempts', async () => {
     let calls = 0;
-    const v = await retry(async () => {
+    const value = await retry(async () => {
       calls++;
       if (calls < 3) throw new Error('nope');
       return 'win';
     }, { attempts: 5, delayMs: 1 });
-    expect(v).toBe('win');
+    expect(value).toBe('win');
     expect(calls).toBe(3);
   });
 
@@ -188,8 +188,8 @@ describe('composition', () => {
       return Promise.resolve('ok');
     };
     // Wait 20ms before starting, then retry up to 3 times.
-    const v = await after(20, () => retry(task, { attempts: 3, delayMs: 1 }));
-    expect(v).toBe('ok');
+    const value = await after(20, () => retry(task, { attempts: 3, delayMs: 1 }));
+    expect(value).toBe('ok');
     expect(calls).toBe(2);
     // sleep used indirectly
     await sleep(5);

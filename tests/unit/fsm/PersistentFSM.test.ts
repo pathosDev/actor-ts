@@ -29,7 +29,7 @@ import {
 
 type OrderState = 'pending' | 'paid' | 'shipped' | 'cancelled';
 
-type OrderCmd =
+type OrderCommand =
   | { kind: 'pay'; amount: number }
   | { kind: 'ship'; carrier: string }
   | { kind: 'cancel'; reason?: string }
@@ -48,7 +48,7 @@ interface OrderData {
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
-class OrderFsm extends PersistentFSM<OrderCmd, OrderEvent, OrderState, OrderData> {
+class OrderFsm extends PersistentFSM<OrderCommand, OrderEvent, OrderState, OrderData> {
   readonly persistenceId: string;
 
   constructor(pid: string) {
@@ -59,7 +59,7 @@ class OrderFsm extends PersistentFSM<OrderCmd, OrderEvent, OrderState, OrderData
   initialFsmState(): OrderState { return 'pending'; }
   initialData(): OrderData { return { amountPaid: 0, carrier: null, cancelReason: null }; }
 
-  transitions: FsmTransitionMap<OrderState, OrderCmd, OrderEvent, OrderData> = {
+  transitions: FsmTransitionMap<OrderState, OrderCommand, OrderEvent, OrderData> = {
     pending: {
       pay: {
         // Function-style event — depends on the command.
@@ -102,7 +102,7 @@ class OrderFsm extends PersistentFSM<OrderCmd, OrderEvent, OrderState, OrderData
   // Override onCommand to handle the read-only `getState` query.
   // Calls super for everything else — keeps the framework's
   // transition-table dispatch.
-  override async onCommand(curr: FsmStateData<OrderState, OrderData>, cmd: OrderCmd): Promise<void> {
+  override async onCommand(curr: FsmStateData<OrderState, OrderData>, cmd: OrderCommand): Promise<void> {
     if (cmd.kind === 'getState') {
       this.sender.toNullable()?.tell(curr);
       return;
@@ -296,7 +296,7 @@ describe('PersistentFSM — alternate paths', () => {
  * minutes if the merchant doesn't capture" scenario.
  */
 type PayState = 'pending' | 'authorized' | 'captured' | 'expired';
-type PayCmd =
+type PayCommand =
   | { kind: 'authorize'; amount: number }
   | { kind: 'capture' }
   | { kind: 'getState' };
@@ -306,7 +306,7 @@ type PayEvent =
   | { kind: 'expired' };
 interface PayData { amount: number }
 
-class PaymentFsm extends PersistentFSM<PayCmd, PayEvent, PayState, PayData> {
+class PaymentFsm extends PersistentFSM<PayCommand, PayEvent, PayState, PayData> {
   readonly persistenceId: string;
   /** Tunable so individual tests pick their own timeout window. */
   private readonly afterMs: number;
@@ -326,7 +326,7 @@ class PaymentFsm extends PersistentFSM<PayCmd, PayEvent, PayState, PayData> {
   // The `transitions` field is captured at construction time (typical
   // FSM idiom in this codebase) — we evaluate `this.afterMs` lazily by
   // declaring it as a getter so subclasses can vary the window.
-  get transitions(): FsmTransitionMap<PayState, PayCmd, PayEvent, PayData> {
+  get transitions(): FsmTransitionMap<PayState, PayCommand, PayEvent, PayData> {
     return {
       pending: {
         authorize: {
@@ -348,7 +348,7 @@ class PaymentFsm extends PersistentFSM<PayCmd, PayEvent, PayState, PayData> {
       },
     };
   }
-  set transitions(_v: FsmTransitionMap<PayState, PayCmd, PayEvent, PayData>) { /* noop — getter is canonical */ }
+  set transitions(_v: FsmTransitionMap<PayState, PayCommand, PayEvent, PayData>) { /* noop — getter is canonical */ }
 
   applyEvent(state: PayState, data: PayData, ev: PayEvent): FsmStateData<PayState, PayData> {
     if (ev.kind === 'authorized') return { state: 'authorized', data: { amount: ev.amount } };
@@ -356,7 +356,7 @@ class PaymentFsm extends PersistentFSM<PayCmd, PayEvent, PayState, PayData> {
     return { state: 'expired', data };
   }
 
-  override async onCommand(curr: FsmStateData<PayState, PayData>, cmd: PayCmd): Promise<void> {
+  override async onCommand(curr: FsmStateData<PayState, PayData>, cmd: PayCommand): Promise<void> {
     if (cmd.kind === 'getState') {
       this.sender.toNullable()?.tell(curr);
       return;
@@ -503,7 +503,7 @@ describe('PersistentFSM — stateTimeout (#65)', () => {
  * fans out into multiple journal records" use case.
  */
 type AuditState = 'pending' | 'paid' | 'cancelled';
-type AuditCmd =
+type AuditCommand =
   | { kind: 'pay'; amount: number }
   | { kind: 'cancel'; reason?: string }
   | { kind: 'getState' };
@@ -513,7 +513,7 @@ type AuditEvent =
   | { kind: 'cancelled'; reason?: string };
 interface AuditData { amountPaid: number; audited: boolean; cancelReason: string | null }
 
-class AuditingFsm extends PersistentFSM<AuditCmd, AuditEvent, AuditState, AuditData> {
+class AuditingFsm extends PersistentFSM<AuditCommand, AuditEvent, AuditState, AuditData> {
   readonly persistenceId: string;
   /** Toggle so a single test class covers literal-array, function-array, and empty-array. */
   private readonly mode: 'array' | 'fnArray' | 'emptyArray';
@@ -527,7 +527,7 @@ class AuditingFsm extends PersistentFSM<AuditCmd, AuditEvent, AuditState, AuditD
   initialFsmState(): AuditState { return 'pending'; }
   initialData(): AuditData { return { amountPaid: 0, audited: false, cancelReason: null }; }
 
-  get transitions(): FsmTransitionMap<AuditState, AuditCmd, AuditEvent, AuditData> {
+  get transitions(): FsmTransitionMap<AuditState, AuditCommand, AuditEvent, AuditData> {
     return {
       pending: {
         pay: this.mode === 'array' ? {
@@ -557,7 +557,7 @@ class AuditingFsm extends PersistentFSM<AuditCmd, AuditEvent, AuditState, AuditD
       },
     };
   }
-  set transitions(_v: FsmTransitionMap<AuditState, AuditCmd, AuditEvent, AuditData>) { /* noop */ }
+  set transitions(_v: FsmTransitionMap<AuditState, AuditCommand, AuditEvent, AuditData>) { /* noop */ }
 
   applyEvent(state: AuditState, data: AuditData, ev: AuditEvent): FsmStateData<AuditState, AuditData> {
     if (ev.kind === 'paid')          return { state: 'paid', data: { ...data, amountPaid: ev.amount } };
@@ -565,7 +565,7 @@ class AuditingFsm extends PersistentFSM<AuditCmd, AuditEvent, AuditState, AuditD
     return { state: 'cancelled', data: { ...data, cancelReason: ev.reason ?? null } };
   }
 
-  override async onCommand(curr: FsmStateData<AuditState, AuditData>, cmd: AuditCmd): Promise<void> {
+  override async onCommand(curr: FsmStateData<AuditState, AuditData>, cmd: AuditCommand): Promise<void> {
     if (cmd.kind === 'getState') {
       this.sender.toNullable()?.tell(curr);
       return;

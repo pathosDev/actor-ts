@@ -49,7 +49,7 @@ export interface DmHistoryReply {
   readonly messages: ReadonlyArray<ChatMessage>;
 }
 
-export type DmChannelCmd =
+export type DmChannelCommand =
   | {
       readonly kind: 'SendDm';
       readonly pairId: string;
@@ -93,7 +93,7 @@ interface DmState {
 
 /* ------------------------------- actor -------------------------------- */
 
-export class DmChannelActor extends PersistentActor<DmChannelCmd, DmEvent, DmState> {
+export class DmChannelActor extends PersistentActor<DmChannelCommand, DmEvent, DmState> {
   /**
    * `persistenceId` is bound to the actor path's name (the
    * sharded-entity slot, which sharding spawns as `entity-<id>`).
@@ -134,7 +134,7 @@ export class DmChannelActor extends PersistentActor<DmChannelCmd, DmEvent, DmSta
       .exhaustive();
   }
 
-  async onCommand(state: DmState, cmd: DmChannelCmd): Promise<void> {
+  async onCommand(state: DmState, cmd: DmChannelCommand): Promise<void> {
     if (cmd.kind === 'SendDm') {
       const event: DmPosted = {
         kind: 'DmPosted',

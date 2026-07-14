@@ -87,12 +87,12 @@ einzelne Nachricht bekommt.
 ## Konfiguration
 
 ```ts
-interface ClusterRouterOptions<TMsg> {
+interface ClusterRouterOptions<TMessage> {
   cluster:     Cluster;
   routerType:  'round-robin' | 'random' | 'consistent-hashing' | 'broadcast';
   routeePath:  string;
   role?:       string;
-  extractKey?: (msg: TMsg) => string;
+  extractKey?: (msg: TMessage) => string;
 }
 ```
 

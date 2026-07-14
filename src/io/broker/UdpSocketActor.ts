@@ -19,7 +19,7 @@ export interface UdpOutbound {
   readonly port: number;
 }
 
-export type UdpSocketCmd = { readonly kind: 'send'; readonly datagram: UdpOutbound };
+export type UdpSocketCommand = { readonly kind: 'send'; readonly datagram: UdpOutbound };
 
 /**
  * UDP-socket actor.  Uses `node:dgram` (built-in everywhere).  No
@@ -29,37 +29,37 @@ export type UdpSocketCmd = { readonly kind: 'send'; readonly datagram: UdpOutbou
  * socket is bound).
  */
 export class UdpSocketActor
-  extends BrokerActor<UdpSocketOptionsType, UdpSocketCmd, UdpOutbound> {
+  extends BrokerActor<UdpSocketOptionsType, UdpSocketCommand, UdpOutbound> {
   private socket: DgramSocket | null = null;
   private actualPort = 0;
 
   constructor(options: UdpSocketOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.udp; }
-  protected builtInDefaults(): Partial<UdpSocketOptionsType> {
+  protected builtInDefaultOptions(): Partial<UdpSocketOptionsType> {
     return { bindHost: '0.0.0.0', bindPort: 0, type: 'udp4' };
   }
-  protected readSettingsFromConfig(c: Config): Partial<UdpSocketOptionsType> {
+  protected readOptionsFromConfig(config: Config): Partial<UdpSocketOptionsType> {
     const out: { -readonly [K in keyof UdpSocketOptionsType]?: UdpSocketOptionsType[K] } = {};
-    if (c.hasPath('bindHost')) out.bindHost = c.getString('bindHost');
-    if (c.hasPath('bindPort')) out.bindPort = c.getInt('bindPort');
-    if (c.hasPath('type')) out.type = c.getString('type') as 'udp4' | 'udp6';
+    if (config.hasPath('bindHost')) out.bindHost = config.getString('bindHost');
+    if (config.hasPath('bindPort')) out.bindPort = config.getInt('bindPort');
+    if (config.hasPath('type')) out.type = config.getString('type') as 'udp4' | 'udp6';
     return out;
   }
-  protected requiredSettings(): ReadonlyArray<keyof UdpSocketOptionsType> {
+  protected requiredOptions(): ReadonlyArray<keyof UdpSocketOptionsType> {
     return ['target'];
   }
   protected override optionsValidator(): UdpSocketOptionsValidator { return new UdpSocketOptionsValidator(); }
   protected endpointLabel(): string {
-    return `${this.settings.type}://${this.settings.bindHost}:${this.actualPort || this.settings.bindPort}`;
+    return `${this.options.type}://${this.options.bindHost}:${this.actualPort || this.options.bindPort}`;
   }
 
   /** OS-assigned port after `bind` (0 before, real number after). */
   get boundPort(): number { return this.actualPort; }
 
-  protected async connectImpl(): Promise<void> {
+  protected async connectImplementation(): Promise<void> {
     const dgram = await dgramLazy.get();
-    const sock = dgram.createSocket(this.settings.type ?? 'udp4');
+    const sock = dgram.createSocket(this.options.type ?? 'udp4');
     return new Promise<void>((resolve, reject) => {
       let done = false;
       sock.once('listening', () => {
@@ -70,7 +70,7 @@ export class UdpSocketActor
         const addr = sock.address();
         this.actualPort = addr.port;
         sock.on('message', (msg, rinfo) => {
-          this.settings.target?.tell({
+          this.options.target?.tell({
             payload: msg, remoteHost: rinfo.address, remotePort: rinfo.port,
           });
         });
@@ -82,11 +82,11 @@ export class UdpSocketActor
         done = true;
         reject(e);
       });
-      sock.bind(this.settings.bindPort ?? 0, this.settings.bindHost);
+      sock.bind(this.options.bindPort ?? 0, this.options.bindHost);
     });
   }
 
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     if (!this.socket) return;
     const sock = this.socket;
     this.socket = null;
@@ -110,7 +110,7 @@ export class UdpSocketActor
     });
   }
 
-  override onReceive(cmd: UdpSocketCmd): void {
+  override onReceive(cmd: UdpSocketCommand): void {
     if (cmd.kind === 'send') this.enqueueOutbound(cmd.datagram);
   }
 }

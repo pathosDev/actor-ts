@@ -29,8 +29,8 @@ export class Publish<T = unknown> {
 }
 
 /** Sent back from Subscribe/Unsubscribe when the registry has been updated. */
-export class SubscribeAck { constructor(public readonly subscribe: Subscribe) {} }
-export class UnsubscribeAck { constructor(public readonly unsubscribe: Unsubscribe) {} }
+export class SubscribeAcknowledgment { constructor(public readonly subscribe: Subscribe) {} }
+export class UnsubscribeAcknowledgment { constructor(public readonly unsubscribe: Unsubscribe) {} }
 
 /** Query the current per-topic subscriber counts (local + remote). */
 export class GetTopics { constructor(public readonly replyTo: ActorRef) {} }
@@ -48,7 +48,7 @@ export class CurrentTopics { constructor(public readonly topics: ReadonlyArray<s
  * removed (#80) to keep gossip bytes proportional to the topic count
  * rather than to total subscriber count.
  */
-export interface PubSubGossipMsg {
+export interface PubSubGossipMessage {
   readonly t: 'pubsub-gossip';
   readonly from: NodeAddressData;
   /** Topic names hosted locally on the sender. */
@@ -60,10 +60,10 @@ export interface PubSubGossipMsg {
  * Payload envelope used to forward a Publish to a remote mediator.
  * Remote mediator decodes and fans out to its local subscribers.
  */
-export interface PubSubPublishMsg {
+export interface PubSubPublishMessage {
   readonly t: 'pubsub-publish';
   readonly topic: string;
   readonly body: unknown;
 }
 
-export type PubSubWireMessage = PubSubGossipMsg | PubSubPublishMsg;
+export type PubSubWireMessage = PubSubGossipMessage | PubSubPublishMessage;

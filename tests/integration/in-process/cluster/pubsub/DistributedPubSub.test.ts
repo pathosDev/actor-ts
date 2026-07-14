@@ -56,92 +56,92 @@ async function stopNode(n: Node): Promise<void> {
 
 describe('DistributedPubSub — local', () => {
   test('publish delivers to local subscribers of the topic', async () => {
-    const a = await startNode('ps-local', 'h', 51001);
-    const probe = a.kit.createTestProbe();
-    a.mediator.tell(new Subscribe('news', probe));
+    const nodeA = await startNode('ps-local', 'h', 51001);
+    const probe = nodeA.kit.createTestProbe();
+    nodeA.mediator.tell(new Subscribe('news', probe));
     await sleep(20);
-    a.mediator.tell(new Publish('news', 'headline-1'));
+    nodeA.mediator.tell(new Publish('news', 'headline-1'));
     expect(await probe.expectMsg('headline-1', 500));
-    await stopNode(a);
+    await stopNode(nodeA);
   });
 
   test('multiple subscribers all receive the message', async () => {
-    const a = await startNode('ps-multi', 'h', 51002);
-    const p1 = a.kit.createTestProbe();
-    const p2 = a.kit.createTestProbe();
-    a.mediator.tell(new Subscribe('t', p1));
-    a.mediator.tell(new Subscribe('t', p2));
+    const nodeA = await startNode('ps-multi', 'h', 51002);
+    const p1 = nodeA.kit.createTestProbe();
+    const p2 = nodeA.kit.createTestProbe();
+    nodeA.mediator.tell(new Subscribe('t', p1));
+    nodeA.mediator.tell(new Subscribe('t', p2));
     await sleep(20);
-    a.mediator.tell(new Publish('t', 'ping'));
+    nodeA.mediator.tell(new Publish('t', 'ping'));
     expect(await p1.expectMsg('ping', 500));
     expect(await p2.expectMsg('ping', 500));
-    await stopNode(a);
+    await stopNode(nodeA);
   });
 
   test('Unsubscribe stops further delivery', async () => {
-    const a = await startNode('ps-unsub', 'h', 51003);
-    const probe = a.kit.createTestProbe();
-    a.mediator.tell(new Subscribe('t', probe));
+    const nodeA = await startNode('ps-unsub', 'h', 51003);
+    const probe = nodeA.kit.createTestProbe();
+    nodeA.mediator.tell(new Subscribe('t', probe));
     await sleep(20);
-    a.mediator.tell(new Publish('t', 'first'));
+    nodeA.mediator.tell(new Publish('t', 'first'));
     await probe.expectMsg('first', 500);
-    a.mediator.tell(new Unsubscribe('t', probe));
+    nodeA.mediator.tell(new Unsubscribe('t', probe));
     await sleep(20);
-    a.mediator.tell(new Publish('t', 'second'));
+    nodeA.mediator.tell(new Publish('t', 'second'));
     await probe.expectNoMessage(60);
-    await stopNode(a);
+    await stopNode(nodeA);
   });
 
   test('publishing to a topic with no subscribers is a no-op', async () => {
-    const a = await startNode('ps-empty', 'h', 51004);
-    a.mediator.tell(new Publish('nobody', 'fwiw'));
+    const nodeA = await startNode('ps-empty', 'h', 51004);
+    nodeA.mediator.tell(new Publish('nobody', 'fwiw'));
     await sleep(30);
     // Nothing to assert — just verify no crash.
-    expect(a.cluster.upMembers().length).toBe(1);
-    await stopNode(a);
+    expect(nodeA.cluster.upMembers().length).toBe(1);
+    await stopNode(nodeA);
   });
 });
 
 describe('DistributedPubSub — cluster-wide', () => {
   test('subscriber on node B receives publish from node A', async () => {
-    const a = await startNode('ps-cluster-a', 'h', 51101);
-    const b = await startNode('ps-cluster-a', 'h', 51102, ['ps-cluster-a@h:51101']);
-    await waitFor(() => a.cluster.upMembers().length === 2 && b.cluster.upMembers().length === 2, 2000);
+    const nodeA = await startNode('ps-cluster-a', 'h', 51101);
+    const nodeB = await startNode('ps-cluster-a', 'h', 51102, ['ps-cluster-a@h:51101']);
+    await waitFor(() => nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2, 2000);
 
-    const probeB = b.kit.createTestProbe();
-    b.mediator.tell(new Subscribe('orders', probeB));
+    const probeB = nodeB.kit.createTestProbe();
+    nodeB.mediator.tell(new Subscribe('orders', probeB));
 
     // Give gossip one pass so A knows about B's subscription.
     await sleep(350);
 
-    a.mediator.tell(new Publish('orders', { sku: 'XYZ' }));
+    nodeA.mediator.tell(new Publish('orders', { sku: 'XYZ' }));
     expect(await probeB.expectMsg({ sku: 'XYZ' }, 1_000));
 
-    await stopNode(a); await stopNode(b);
+    await stopNode(nodeA); await stopNode(nodeB);
   });
 
   test('node leaving removes its subscribers from peers\' views', async () => {
-    const a = await startNode('ps-leave', 'h', 51201);
-    const b = await startNode('ps-leave', 'h', 51202, ['ps-leave@h:51201']);
-    await waitFor(() => a.cluster.upMembers().length === 2 && b.cluster.upMembers().length === 2, 2000);
+    const nodeA = await startNode('ps-leave', 'h', 51201);
+    const nodeB = await startNode('ps-leave', 'h', 51202, ['ps-leave@h:51201']);
+    await waitFor(() => nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2, 2000);
 
-    const probeB = b.kit.createTestProbe();
-    b.mediator.tell(new Subscribe('telemetry', probeB));
+    const probeB = nodeB.kit.createTestProbe();
+    nodeB.mediator.tell(new Subscribe('telemetry', probeB));
     await sleep(350);
 
     // Confirm the mechanism works first.
-    a.mediator.tell(new Publish('telemetry', 'alive'));
+    nodeA.mediator.tell(new Publish('telemetry', 'alive'));
     await probeB.expectMsg('alive', 500);
 
     // Now B leaves — publishes from A should no longer try to forward.
-    await stopNode(b);
+    await stopNode(nodeB);
     await sleep(600);
 
     // Publish shouldn't throw; the remote entry was pruned from A's view.
-    a.mediator.tell(new Publish('telemetry', 'after-leave'));
+    nodeA.mediator.tell(new Publish('telemetry', 'after-leave'));
     await sleep(30);
-    expect(a.cluster.upMembers().length).toBe(1);
-    await stopNode(a);
+    expect(nodeA.cluster.upMembers().length).toBe(1);
+    await stopNode(nodeA);
   });
 });
 
@@ -165,11 +165,11 @@ describe('DistributedPubSub — gossip-payload audit (#80)', () => {
     // extension's auto-spawned mediator so we can capture the actor
     // instance via the Props factory closure and read its private
     // `topics` map / `buildGossip()` directly.
-    const a = await startNode('ps-audit-cycles', 'h', 51301);
+    const nodeA = await startNode('ps-audit-cycles', 'h', 51301);
 
     let captured: DistributedPubSubMediator | null = null;
-    const mediatorOptions = DistributedPubSubOptions.create().withCluster(a.cluster).withGossipIntervalMs(100);
-    const auditMediator = a.system.spawn(
+    const mediatorOptions = DistributedPubSubOptions.create().withCluster(nodeA.cluster).withGossipIntervalMs(100);
+    const auditMediator = nodeA.system.spawn(
       Props.create(() => {
         captured = new DistributedPubSubMediator(mediatorOptions);
         return captured;
@@ -182,7 +182,7 @@ describe('DistributedPubSub — gossip-payload audit (#80)', () => {
     expect(captured).not.toBeNull();
     const internals = captured! as unknown as MediatorInternals;
 
-    const probe = a.kit.createTestProbe();
+    const probe = nodeA.kit.createTestProbe();
 
     // 100 cycles of subscribe-then-unsubscribe to the same topic.
     for (let i = 0; i < 100; i++) {
@@ -202,7 +202,7 @@ describe('DistributedPubSub — gossip-payload audit (#80)', () => {
     expect(internals.topics.size).toBe(0);
     expect(internals.buildGossip().entries.length).toBe(0);
 
-    await stopNode(a);
+    await stopNode(nodeA);
   });
 
   test('gossip frame size stays proportional to topic count, not subscriber count', async () => {
@@ -211,11 +211,11 @@ describe('DistributedPubSub — gossip-payload audit (#80)', () => {
     // the per-topic subscriber lists), so the sender shouldn't pay
     // bytes for them.  Verifies #80's "audit + optional optimization":
     // adding 50 subscribers to one topic must not blow up the frame.
-    const a = await startNode('ps-audit-bytes', 'h', 51302);
+    const nodeA = await startNode('ps-audit-bytes', 'h', 51302);
 
     let captured: DistributedPubSubMediator | null = null;
-    const mediatorOptions = DistributedPubSubOptions.create().withCluster(a.cluster).withGossipIntervalMs(100);
-    const auditMediator = a.system.spawn(
+    const mediatorOptions = DistributedPubSubOptions.create().withCluster(nodeA.cluster).withGossipIntervalMs(100);
+    const auditMediator = nodeA.system.spawn(
       Props.create(() => {
         captured = new DistributedPubSubMediator(mediatorOptions);
         return captured;
@@ -229,7 +229,7 @@ describe('DistributedPubSub — gossip-payload audit (#80)', () => {
     // contributed by `entries` specifically (the rest of the frame
     // includes the version counter, whose decimal-string length
     // grows logarithmically — irrelevant to the audit).
-    const probe1 = a.kit.createTestProbe();
+    const probe1 = nodeA.kit.createTestProbe();
     auditMediator.tell(new Subscribe('busy', probe1));
     await sleep(20);
     const oneSubEntries = JSON.stringify(internals.buildGossip().entries);
@@ -237,14 +237,14 @@ describe('DistributedPubSub — gossip-payload audit (#80)', () => {
     // Same topic, 49 more subscribers (50 total).  `entries` must
     // stay identical — paths are not part of the gossip payload.
     for (let i = 0; i < 49; i++) {
-      auditMediator.tell(new Subscribe('busy', a.kit.createTestProbe()));
+      auditMediator.tell(new Subscribe('busy', nodeA.kit.createTestProbe()));
     }
     await sleep(50);
     const fiftySubEntries = JSON.stringify(internals.buildGossip().entries);
 
     expect(fiftySubEntries).toBe(oneSubEntries);
 
-    await stopNode(a);
+    await stopNode(nodeA);
   });
 
   test('gossip frame entries field is a flat string array of topic names', async () => {
@@ -253,11 +253,11 @@ describe('DistributedPubSub — gossip-payload audit (#80)', () => {
     // topic → subscriber list.  Locks the schema in so a future
     // "let's also gossip the subscribers" change has to update this
     // test deliberately.
-    const a = await startNode('ps-audit-schema', 'h', 51303);
+    const nodeA = await startNode('ps-audit-schema', 'h', 51303);
 
     let captured: DistributedPubSubMediator | null = null;
-    const mediatorOptions = DistributedPubSubOptions.create().withCluster(a.cluster).withGossipIntervalMs(100);
-    const auditMediator = a.system.spawn(
+    const mediatorOptions = DistributedPubSubOptions.create().withCluster(nodeA.cluster).withGossipIntervalMs(100);
+    const auditMediator = nodeA.system.spawn(
       Props.create(() => {
         captured = new DistributedPubSubMediator(mediatorOptions);
         return captured;
@@ -267,7 +267,7 @@ describe('DistributedPubSub — gossip-payload audit (#80)', () => {
     await sleep(20);
     const internals = captured! as unknown as MediatorInternals;
 
-    const probe = a.kit.createTestProbe();
+    const probe = nodeA.kit.createTestProbe();
     auditMediator.tell(new Subscribe('topic-a', probe));
     auditMediator.tell(new Subscribe('topic-b', probe));
     await sleep(20);
@@ -276,6 +276,6 @@ describe('DistributedPubSub — gossip-payload audit (#80)', () => {
     expect(Array.isArray(frame.entries)).toBe(true);
     expect([...frame.entries].sort()).toEqual(['topic-a', 'topic-b']);
 
-    await stopNode(a);
+    await stopNode(nodeA);
   });
 });

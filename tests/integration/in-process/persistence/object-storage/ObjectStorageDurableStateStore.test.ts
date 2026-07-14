@@ -26,10 +26,10 @@ afterEach(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {
 
 describe('ObjectStorageDurableStateStore — happy path', () => {
   test('upsert with expectedRevision=0 creates a record with revision=1', async () => {
-    const r = await store.upsert('a', 0, { balance: 100 });
-    expect(r.revision).toBe(1);
-    expect(r.state).toEqual({ balance: 100 });
-    expect(r.persistenceId).toBe('a');
+    const result = await store.upsert('a', 0, { balance: 100 });
+    expect(result.revision).toBe(1);
+    expect(result.state).toEqual({ balance: 100 });
+    expect(result.persistenceId).toBe('a');
   });
 
   test('load returns the most recent record', async () => {
@@ -76,8 +76,8 @@ describe('ObjectStorageDurableStateStore — strict CAS', () => {
       store.upsert('a', 0, { side: 'A' }),
       store.upsert('a', 0, { side: 'B' }),
     ]);
-    const winners = racing.filter(r => r.status === 'fulfilled');
-    const losers = racing.filter(r => r.status === 'rejected');
+    const winners = racing.filter(result => result.status === 'fulfilled');
+    const losers = racing.filter(result => result.status === 'rejected');
     expect(winners).toHaveLength(1);
     expect(losers).toHaveLength(1);
     expect((losers[0] as PromiseRejectedResult).reason).toBeInstanceOf(DurableStateConcurrencyError);
@@ -87,9 +87,9 @@ describe('ObjectStorageDurableStateStore — strict CAS', () => {
     await store.upsert('a', 0, { v: 1 });
     store.forgetEtagForTest('a');
     // Caller has the right revision; upsert should refresh internally then succeed.
-    const r = await store.upsert('a', 1, { v: 99 });
-    expect(r.revision).toBe(2);
-    expect(r.state).toEqual({ v: 99 });
+    const result = await store.upsert('a', 1, { v: 99 });
+    expect(result.revision).toBe(2);
+    expect(result.state).toEqual({ v: 99 });
   });
 
   test('etag cache loss + diverged store revision surfaces a CAS error', async () => {
@@ -112,9 +112,9 @@ describe('ObjectStorageDurableStateStore — prefix and resolvers', () => {
     const storeOptions = ObjectStorageDurableStateStoreOptions.create()
       .withBackend(backend)
       .withPrefix('prod/');
-    const s = new ObjectStorageDurableStateStore(storeOptions);
-    await s.upsert('a', 0, { x: 1 });
-    expect((await s.load('a')).toNullable()?.state).toEqual({ x: 1 });
+    const store = new ObjectStorageDurableStateStore(storeOptions);
+    await store.upsert('a', 0, { x: 1 });
+    expect((await store.load('a')).toNullable()?.state).toEqual({ x: 1 });
     const items = await backend.list({ prefix: 'prod/' });
     expect(items.map(i => i.key)).toContain('prod/a/state.json');
   });
@@ -129,9 +129,9 @@ describe('ObjectStorageDurableStateStore — prefix and resolvers', () => {
     const storeOptions = ObjectStorageDurableStateStoreOptions.create()
       .withBackend(wrapping)
       .withCompression((pid) => pid.startsWith('big-') ? { algorithm: 'zstd' } : { algorithm: 'gzip' });
-    const s = new ObjectStorageDurableStateStore(storeOptions);
-    await s.upsert('big-payload', 0, { x: 'x'.repeat(200) });
-    await s.upsert('small',       0, { x: 'tiny' });
+    const store = new ObjectStorageDurableStateStore(storeOptions);
+    await store.upsert('big-payload', 0, { x: 'x'.repeat(200) });
+    await store.upsert('small',       0, { x: 'tiny' });
     expect(seen.get('big-payload/state.json')).toBe('zstd');
     expect(seen.get('small/state.json')).toBe('gzip');
   });

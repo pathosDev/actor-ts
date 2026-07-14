@@ -46,7 +46,7 @@ describe('RefCodec — encodeRefs', () => {
   });
 
   test('non-ref objects recurse without interference', () => {
-    const msg = { kind: 'hello', n: 1, nested: { a: [1, 2, 3] } };
+    const msg = { kind: 'hello', n: 1, nested: { refA: [1, 2, 3] } };
     const encoded = encodeRefs(msg, from);
     expect(encoded).toEqual(msg);
   });
@@ -97,12 +97,12 @@ describe('RefCodec — encodeRefs', () => {
     const sysOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('enc-nested', sysOptions);
     try {
-      const a = sys.spawn(Props.create(() => new Noop()), 'a');
-      const b = sys.spawn(Props.create(() => new Noop()), 'b');
+      const refA = sys.spawn(Props.create(() => new Noop()), 'a');
+      const refB = sys.spawn(Props.create(() => new Noop()), 'b');
       const msg = {
         kind: 'introduce',
-        peers: [a, b],
-        meta: { primary: a },
+        peers: [refA, refB],
+        meta: { primary: refA },
         ignore: Nobody,
       };
       const encoded = encodeRefs(msg, from) as Record<string, unknown>;
@@ -119,18 +119,18 @@ describe('RefCodec — encodeRefs', () => {
   });
 
   test('Date and Uint8Array pass through without being walked', () => {
-    const d = new Date(1_700_000_000_000);
+    const decoder = new Date(1_700_000_000_000);
     const bytes = new Uint8Array([1, 2, 3]);
-    const encoded = encodeRefs({ d, bytes }, from) as Record<string, unknown>;
-    expect(encoded.d).toBe(d);
+    const encoded = encodeRefs({ decoder, bytes }, from) as Record<string, unknown>;
+    expect(encoded.decoder).toBe(decoder);
     expect(encoded.bytes).toBe(bytes);
   });
 
   test('cyclic structures do not infinite-loop (cycle replaced with null)', () => {
-    const a: Record<string, unknown> = { name: 'a' };
-    const b: Record<string, unknown> = { name: 'b', other: a };
-    a.other = b; // cycle
-    const encoded = encodeRefs(a, from) as Record<string, unknown>;
+    const refA: Record<string, unknown> = { name: 'a' };
+    const refB: Record<string, unknown> = { name: 'b', other: refA };
+    refA.other = refB; // cycle
+    const encoded = encodeRefs(refA, from) as Record<string, unknown>;
     expect(encoded.name).toBe('a');
     // one side of the cycle gets nulled out once the other is in `seen`
     expect(((encoded.other as Record<string, unknown>).other as unknown)).toBeNull();
@@ -191,10 +191,10 @@ describe('RefCodec — decodeRefs', () => {
     };
     const decoded = decodeRefs(wire, cluster);
     expect(decoded).toBeInstanceOf(RemoteActorRef);
-    const r = decoded as RemoteActorRef;
-    expect(r.targetNode.host).toBe('other-host');
-    expect(r.targetNode.port).toBe(9999);
-    expect(r.targetPath).toBe('actor-ts://elsewhere/user/remote-actor');
+    const ref = decoded as RemoteActorRef;
+    expect(ref.targetNode.host).toBe('other-host');
+    expect(ref.targetNode.port).toBe(9999);
+    expect(ref.targetPath).toBe('actor-ts://elsewhere/user/remote-actor');
   });
 
   test('nested markers inside arrays and objects are all restored', () => {

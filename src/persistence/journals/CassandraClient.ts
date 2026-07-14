@@ -40,7 +40,7 @@ export interface CassandraConnection {
   readonly port?: number;
   /** If true, create the keyspace on startup (simple strategy, rf=1).  Dev-friendly default. */
   readonly autoCreateKeyspace?: boolean;
-  /** Replication settings used by autoCreateKeyspace.  Ignored otherwise. */
+  /** Replication options used by autoCreateKeyspace.  Ignored otherwise. */
   readonly replication?: {
     readonly class?: 'SimpleStrategy' | 'NetworkTopologyStrategy';
     readonly replicationFactor?: number;

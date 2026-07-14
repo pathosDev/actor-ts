@@ -75,7 +75,7 @@ export type StaticFilesOptions = StaticFilesOptionsBuilder | Partial<StaticFiles
 export const StaticFilesOptions = StaticFilesOptionsBuilder;
 
 /** Fully-applied settings after defaults. */
-export interface ResolvedStaticSettings {
+export interface ResolvedStaticOptions {
   readonly indexFiles: readonly string[];
   readonly browse: boolean;
   readonly cacheControl: string | undefined;
@@ -90,19 +90,19 @@ export interface ResolvedStaticSettings {
 }
 
 /** Apply defaults to an options bag (builder or plain object). */
-export function resolveStaticSettings(options?: StaticFilesOptions): ResolvedStaticSettings {
-  const o = (options ?? {}) as Partial<StaticFilesOptionsType>;
+export function resolveStaticOptions(options?: StaticFilesOptions): ResolvedStaticOptions {
+  const resolvedOptions = (options ?? {}) as Partial<StaticFilesOptionsType>;
   return {
-    indexFiles: o.indexFiles ?? ['index.html'],
-    browse: o.browse ?? false,
-    cacheControl: o.cacheControl,
-    etag: o.etag ?? true,
-    lastModified: o.lastModified ?? true,
-    ranges: o.ranges ?? true,
-    dotfiles: o.dotfiles ?? 'deny',
-    symlinks: o.symlinks ?? 'within-root',
-    contentTypes: o.contentTypes,
-    contentType: o.contentType,
-    maxFileSize: o.maxFileSize ?? 50 * 1024 * 1024,
+    indexFiles: resolvedOptions.indexFiles ?? ['index.html'],
+    browse: resolvedOptions.browse ?? false,
+    cacheControl: resolvedOptions.cacheControl,
+    etag: resolvedOptions.etag ?? true,
+    lastModified: resolvedOptions.lastModified ?? true,
+    ranges: resolvedOptions.ranges ?? true,
+    dotfiles: resolvedOptions.dotfiles ?? 'deny',
+    symlinks: resolvedOptions.symlinks ?? 'within-root',
+    contentTypes: resolvedOptions.contentTypes,
+    contentType: resolvedOptions.contentType,
+    maxFileSize: resolvedOptions.maxFileSize ?? 50 * 1024 * 1024,
   };
 }

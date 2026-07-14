@@ -53,21 +53,21 @@ export class ChatService {
   readonly receiptsByRoom = signal<Record<string, Readonly<Record<string, number>>>>({});
 
   readonly currentTyping = computed(() => {
-    const r = this.currentRoom();
-    return r ? (this.typingByRoom()[r] ?? []) : [];
+    const room = this.currentRoom();
+    return room ? (this.typingByRoom()[room] ?? []) : [];
   });
   readonly currentReceipts = computed(() => {
-    const r = this.currentRoom();
-    return r ? (this.receiptsByRoom()[r] ?? {}) : {};
+    const room = this.currentRoom();
+    return room ? (this.receiptsByRoom()[room] ?? {}) : {};
   });
 
   readonly currentMessages = computed(() => {
-    const r = this.currentRoom();
-    return r ? (this.messagesByRoom()[r] ?? []) : [];
+    const room = this.currentRoom();
+    return room ? (this.messagesByRoom()[room] ?? []) : [];
   });
   readonly currentUsers = computed(() => {
-    const r = this.currentRoom();
-    return r ? (this.usersByRoom()[r] ?? []) : [];
+    const room = this.currentRoom();
+    return room ? (this.usersByRoom()[room] ?? []) : [];
   });
 
   private ws: WebSocket | null = null;
@@ -95,27 +95,27 @@ export class ChatService {
 
   /** Open a WS and authenticate with credentials. */
   connect(username: string, password: string): void {
-    this.connectImpl((ws) =>
+    this.connectImplementation((ws) =>
       ws.send(JSON.stringify({ type: 'login', username, password } satisfies ClientMessage)),
     );
   }
 
   /** Open a WS and authenticate with a stored session token. */
   private connectWithResume(token: string): void {
-    this.connectImpl((ws) =>
+    this.connectImplementation((ws) =>
       ws.send(JSON.stringify({ type: 'resume', token } satisfies ClientMessage)),
     );
   }
 
-  private connectImpl(onOpen: (ws: WebSocket) => void): void {
+  private connectImplementation(onOpen: (ws: WebSocket) => void): void {
     this.loginError.set('');
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${proto}//${location.host}${WS_PATH}`);
     this.ws = ws;
     ws.addEventListener('open', () => onOpen(ws));
     ws.addEventListener('message', (ev) => {
-      const m = JSON.parse(ev.data as string) as ServerMessage;
-      this.handleServer(m);
+      const message = JSON.parse(ev.data as string) as ServerMessage;
+      this.handleServer(message);
     });
     ws.addEventListener('close', () => {
       this.ws = null;
@@ -190,7 +190,7 @@ export class ChatService {
     // Switching INTO a room means the user is reading it — mark
     // the highest known ts as read for the sender's ✓✓.
     const msgs = this.messagesByRoom()[room] ?? [];
-    const maxTs = msgs.reduce((a, m) => Math.max(a, m.ts), 0);
+    const maxTs = msgs.reduce((a, message) => Math.max(a, message.ts), 0);
     if (maxTs > 0) this.markReadUpTo(room, maxTs);
   }
 
@@ -261,13 +261,13 @@ export class ChatService {
     this.ws = null;
   }
 
-  private handleServer(m: ServerMessage): void {
-    switch (m.type) {
+  private handleServer(message: ServerMessage): void {
+    switch (message.type) {
       case 'logged-in':
         this.cancelReconnect();
-        this.username.set(m.username);
-        if (m.token && typeof sessionStorage !== 'undefined') {
-          sessionStorage.setItem(TOKEN_KEY, m.token);
+        this.username.set(message.username);
+        if (message.token && typeof sessionStorage !== 'undefined') {
+          sessionStorage.setItem(TOKEN_KEY, message.token);
         }
         this.loginError.set('');
         this.phase.set('chat');
@@ -281,49 +281,49 @@ export class ChatService {
         // in 'resuming' (token rejected after reload).  Either
         // way, fall back to the login screen.
         if (this.phase() !== 'login') this.reset();
-        this.loginError.set(m.reason || 'Login failed.');
+        this.loginError.set(message.reason || 'Login failed.');
         break;
       case 'rooms': {
         // Preserve open DMs — they live only on the client, never in
         // the directory.  Without this, every `RoomsChanged` would
         // wipe open conversations.
         const dms = this.rooms().filter(isDmRoom);
-        const merged = [...m.rooms, ...dms];
+        const merged = [...message.rooms, ...dms];
         this.rooms.set(merged);
         this.messagesByRoom.update((cur) => {
           const next = { ...cur };
-          for (const r of merged) next[r] ??= [];
+          for (const room of merged) next[room] ??= [];
           return next;
         });
         this.usersByRoom.update((cur) => {
           const next = { ...cur };
-          for (const r of merged) next[r] ??= [];
+          for (const room of merged) next[room] ??= [];
           return next;
         });
         this.unreadByRoom.update((cur) => {
           const next = { ...cur };
-          for (const r of merged) next[r] ??= 0;
+          for (const room of merged) next[room] ??= 0;
           return next;
         });
-        if (!this.currentRoom()) this.currentRoom.set(m.rooms[0] ?? DEFAULT_ROOMS[0]);
+        if (!this.currentRoom()) this.currentRoom.set(message.rooms[0] ?? DEFAULT_ROOMS[0]);
         break;
       }
       case 'room-added':
         // `rooms` carries the full set; this is the per-name notice
         // used for toast-style UX.  Idempotent — if the name is
         // already known, only the toast fires.
-        if (!this.rooms().includes(m.name)) {
-          this.rooms.update((rs) => [...rs, m.name]);
-          this.messagesByRoom.update((cur) => ({ ...cur, [m.name]: [] }));
-          this.usersByRoom.update((cur) => ({ ...cur, [m.name]: [] }));
-          this.unreadByRoom.update((cur) => ({ ...cur, [m.name]: 0 }));
+        if (!this.rooms().includes(message.name)) {
+          this.rooms.update((rs) => [...rs, message.name]);
+          this.messagesByRoom.update((cur) => ({ ...cur, [message.name]: [] }));
+          this.usersByRoom.update((cur) => ({ ...cur, [message.name]: [] }));
+          this.unreadByRoom.update((cur) => ({ ...cur, [message.name]: 0 }));
         }
         break;
       case 'room-removed': {
-        this.rooms.update((rs) => rs.filter((r) => r !== m.name));
-        const wasCurrent = this.currentRoom() === m.name;
+        this.rooms.update((rs) => rs.filter((room) => room !== message.name));
+        const wasCurrent = this.currentRoom() === message.name;
         const dropKey = (cur: Record<string, unknown>): Record<string, unknown> => {
-          const { [m.name]: _drop, ...rest } = cur;
+          const { [message.name]: _drop, ...rest } = cur;
           return rest;
         };
         this.messagesByRoom.update((cur) => dropKey(cur) as typeof cur);
@@ -333,35 +333,35 @@ export class ChatService {
         break;
       }
       case 'history':
-        this.messagesByRoom.update((cur) => ({ ...cur, [m.room]: m.messages.slice() }));
+        this.messagesByRoom.update((cur) => ({ ...cur, [message.room]: message.messages.slice() }));
         break;
       case 'message': {
         this.messagesByRoom.update((cur) => {
-          const list = (cur[m.room] ?? []).slice();
-          list.push({ from: m.from, text: m.text, ts: m.ts });
-          return { ...cur, [m.room]: list };
+          const list = (cur[message.room] ?? []).slice();
+          list.push({ from: message.from, text: message.text, ts: message.ts });
+          return { ...cur, [message.room]: list };
         });
-        if (m.room !== this.currentRoom()) {
+        if (message.room !== this.currentRoom()) {
           this.unreadByRoom.update((cur) => ({
             ...cur,
-            [m.room]: (cur[m.room] ?? 0) + 1,
+            [message.room]: (cur[message.room] ?? 0) + 1,
           }));
         } else {
           // Active view — mark read so the sender's ✓✓ updates.
-          this.markReadUpTo(m.room, m.ts);
+          this.markReadUpTo(message.room, message.ts);
         }
         break;
       }
       case 'users': {
-        const sorted = m.users.slice().sort();
-        this.usersByRoom.update((cur) => ({ ...cur, [m.room]: sorted }));
+        const sorted = message.users.slice().sort();
+        this.usersByRoom.update((cur) => ({ ...cur, [message.room]: sorted }));
         break;
       }
       case 'user-typing':
-        this.onUserTyping(m.room, m.username);
+        this.onUserTyping(message.room, message.username);
         break;
       case 'read-receipts':
-        this.receiptsByRoom.update((cur) => ({ ...cur, [m.room]: m.receipts }));
+        this.receiptsByRoom.update((cur) => ({ ...cur, [message.room]: message.receipts }));
         break;
       case 'system':
         // Ignored in this minimal frontend; could be displayed inline.

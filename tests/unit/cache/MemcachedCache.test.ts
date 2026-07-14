@@ -68,8 +68,8 @@ describe('MemcachedCache — round-trip', () => {
     const fake = new FakeMemcached();
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(fake);
-    const c = new MemcachedCache(memcachedOptions);
-    await c.set('k', { x: 1 }, 1500);  // 1.5s → 2s
+    const cache = new MemcachedCache(memcachedOptions);
+    await cache.set('k', { x: 1 }, 1500);  // 1.5s → 2s
     const setCall = fake.log.find((l) => l.op === 'set');
     expect((setCall!.args[2] as { expires: number }).expires).toBe(2);
   });
@@ -78,8 +78,8 @@ describe('MemcachedCache — round-trip', () => {
     const fake = new FakeMemcached();
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(fake);
-    const c = new MemcachedCache(memcachedOptions);
-    await c.set('k', 'v');
+    const cache = new MemcachedCache(memcachedOptions);
+    await cache.set('k', 'v');
     // memjs's default-arg `{}` may absorb our undefined, so we assert
     // the *behaviour* — `expires` is absent or 0, equivalent to "no TTL".
     const setCall = fake.log.find((l) => l.op === 'set');
@@ -91,18 +91,18 @@ describe('MemcachedCache — round-trip', () => {
     const fake = new FakeMemcached();
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(fake);
-    const c = new MemcachedCache(memcachedOptions);
-    await c.set('k', { hello: 'world' });
-    expect((await c.get<{ hello: string }>('k')).toNullable()).toEqual({ hello: 'world' });
-    expect((await c.get('absent')).isNone()).toBe(true);
+    const cache = new MemcachedCache(memcachedOptions);
+    await cache.set('k', { hello: 'world' });
+    expect((await cache.get<{ hello: string }>('k')).toNullable()).toEqual({ hello: 'world' });
+    expect((await cache.get('absent')).isNone()).toBe(true);
   });
 
   test('TTL of 0.5s rounds up to 1 second (memcached minimum)', async () => {
     const fake = new FakeMemcached();
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(fake);
-    const c = new MemcachedCache(memcachedOptions);
-    await c.set('k', 1, 500);
+    const cache = new MemcachedCache(memcachedOptions);
+    await cache.set('k', 1, 500);
     const setCall = fake.log.find((l) => l.op === 'set');
     expect((setCall!.args[2] as { expires: number }).expires).toBe(1);
   });
@@ -113,9 +113,9 @@ describe('MemcachedCache — atomic ops', () => {
     const fake = new FakeMemcached();
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(fake);
-    const c = new MemcachedCache(memcachedOptions);
-    expect(await c.setIfAbsent('k', 'v1')).toBe(true);
-    expect(await c.setIfAbsent('k', 'v2')).toBe(false);
+    const cache = new MemcachedCache(memcachedOptions);
+    expect(await cache.setIfAbsent('k', 'v1')).toBe(true);
+    expect(await cache.setIfAbsent('k', 'v2')).toBe(false);
     const addCalls = fake.log.filter((l) => l.op === 'add');
     expect(addCalls).toHaveLength(2);
   });
@@ -124,9 +124,9 @@ describe('MemcachedCache — atomic ops', () => {
     const fake = new FakeMemcached();
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(fake);
-    const c = new MemcachedCache(memcachedOptions);
-    expect(await c.incr('rate', 60_000)).toBe(1);
-    expect(await c.incr('rate', 60_000)).toBe(2);
+    const cache = new MemcachedCache(memcachedOptions);
+    expect(await cache.incr('rate', 60_000)).toBe(1);
+    expect(await cache.incr('rate', 60_000)).toBe(2);
     const incCalls = fake.log.filter((l) => l.op === 'increment');
     expect(incCalls).toHaveLength(2);
     expect((incCalls[0]!.args[2] as { initial: number; expires: number }).initial).toBe(1);
@@ -140,10 +140,10 @@ describe('MemcachedCache — keyPrefix', () => {
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(fake)
       .withKeyPrefix('app:');
-    const c = new MemcachedCache(memcachedOptions);
-    await c.set('user:42', { id: 42 });
+    const cache = new MemcachedCache(memcachedOptions);
+    await cache.set('user:42', { id: 42 });
     expect(fake.store.has('app:user:42')).toBe(true);
-    expect((await c.get('user:42')).isSome()).toBe(true);
+    expect((await cache.get('user:42')).isSome()).toBe(true);
   });
 });
 
@@ -159,8 +159,8 @@ describe('MemcachedCache — failure tolerance', () => {
     };
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(broken);
-    const c = new MemcachedCache(memcachedOptions);
-    expect((await c.get('k')).isNone()).toBe(true);
+    const cache = new MemcachedCache(memcachedOptions);
+    expect((await cache.get('k')).isNone()).toBe(true);
   });
 
   test('incr propagates errors (atomicity required)', async () => {
@@ -174,8 +174,8 @@ describe('MemcachedCache — failure tolerance', () => {
     };
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(broken);
-    const c = new MemcachedCache(memcachedOptions);
-    await expect(c.incr('k')).rejects.toThrow();
+    const cache = new MemcachedCache(memcachedOptions);
+    await expect(cache.incr('k')).rejects.toThrow();
   });
 });
 
@@ -184,9 +184,9 @@ describe('MemcachedCache — close', () => {
     const fake = new FakeMemcached();
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(fake);
-    const c = new MemcachedCache(memcachedOptions);
-    await c.set('k', 1);
-    await c.close();
+    const cache = new MemcachedCache(memcachedOptions);
+    await cache.set('k', 1);
+    await cache.close();
     expect(fake.log.some((l) => l.op === 'quit')).toBe(true);
   });
 });
@@ -196,10 +196,10 @@ describe('MemcachedCache — mget / mset (#14)', () => {
     const fake = new FakeMemcached();
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(fake);
-    const c = new MemcachedCache(memcachedOptions);
-    await c.set('a', 1);
-    await c.set('b', 'two');
-    const got = await c.mget<unknown>(['a', 'b', 'missing']);
+    const cache = new MemcachedCache(memcachedOptions);
+    await cache.set('a', 1);
+    await cache.set('b', 'two');
+    const got = await cache.mget<unknown>(['a', 'b', 'missing']);
     expect(got.get('a')).toBe(1);
     expect(got.get('b')).toBe('two');
     expect(got.has('missing')).toBe(false);
@@ -212,13 +212,13 @@ describe('MemcachedCache — mget / mset (#14)', () => {
     const fake = new FakeMemcached();
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(fake);
-    const c = new MemcachedCache(memcachedOptions);
-    await c.mset(new Map([['a', 1], ['b', 2]] as const), 3_000);
+    const cache = new MemcachedCache(memcachedOptions);
+    await cache.mset(new Map([['a', 1], ['b', 2]] as const), 3_000);
     const sets = fake.log.filter((l) => l.op === 'set');
     expect(sets).toHaveLength(2);
     // ttlMs=3000 → expires=3 seconds (ceil + 1s floor).
-    for (const s of sets) {
-      const opts = s.args[2] as { expires?: number } | undefined;
+    for (const setCall of sets) {
+      const opts = setCall.args[2] as { expires?: number } | undefined;
       expect(opts?.expires).toBe(3);
     }
   });
@@ -228,14 +228,14 @@ describe('MemcachedCache — mget / mset (#14)', () => {
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(fake)
       .withKeyPrefix('app:');
-    const c = new MemcachedCache(memcachedOptions);
-    await c.set('a', 1);
-    await c.mget(['a', 'b']);
+    const cache = new MemcachedCache(memcachedOptions);
+    await cache.set('a', 1);
+    await cache.mget(['a', 'b']);
     // Of the three gets (one from set's verification path? no — just
     // two from mget itself), each must carry the prefixed key.
     const mgetCalls = fake.log
       .filter((l) => l.op === 'get')
-      .slice(-2);                       // skip the set's audit-noise
+      .slice(-2);                       // skip the set'setCall audit-noise
     expect(mgetCalls.map((l) => l.args[0])).toEqual(['app:a', 'app:b']);
   });
 
@@ -243,17 +243,17 @@ describe('MemcachedCache — mget / mset (#14)', () => {
     const fake = new FakeMemcached();
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(fake);
-    const c = new MemcachedCache(memcachedOptions);
-    await c.mset(new Map());
+    const cache = new MemcachedCache(memcachedOptions);
+    await cache.mset(new Map());
     expect(fake.log.filter((l) => l.op === 'set')).toHaveLength(0);
   });
 
   test('mset rejects bogus ttlMs', async () => {
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(new FakeMemcached());
-    const c = new MemcachedCache(memcachedOptions);
-    await expect(c.mset(new Map([['a', 1]]), 0)).rejects.toThrow(/ttlMs/);
-    await expect(c.mset(new Map([['a', 1]]), -5)).rejects.toThrow(/ttlMs/);
+    const cache = new MemcachedCache(memcachedOptions);
+    await expect(cache.mset(new Map([['a', 1]]), 0)).rejects.toThrow(/ttlMs/);
+    await expect(cache.mset(new Map([['a', 1]]), -5)).rejects.toThrow(/ttlMs/);
   });
 });
 
@@ -287,11 +287,11 @@ describe('MemcachedCache — protocol-injection hardening', () => {
     const fake = new FakeMemcached();
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(fake);
-    const c = new MemcachedCache(memcachedOptions);
+    const cache = new MemcachedCache(memcachedOptions);
     const malicious = 'user-42\r\nFLUSHALL\r\n';
-    await expect(c.get(malicious)).rejects.toThrow(/protocol injection|control character/);
-    await expect(c.set(malicious, 'evil')).rejects.toThrow(/protocol injection|control character/);
-    await expect(c.delete(malicious)).rejects.toThrow(/protocol injection|control character/);
+    await expect(cache.get(malicious)).rejects.toThrow(/protocol injection|control character/);
+    await expect(cache.set(malicious, 'evil')).rejects.toThrow(/protocol injection|control character/);
+    await expect(cache.delete(malicious)).rejects.toThrow(/protocol injection|control character/);
     // Confirm: the fake client never saw the malicious key.
     const sawMalicious = fake.log.some((e) => (e.args[0] as string).includes('FLUSHALL'));
     expect(sawMalicious).toBe(false);
@@ -300,59 +300,59 @@ describe('MemcachedCache — protocol-injection hardening', () => {
   test('exploit: bare LF (\\n) in key is rejected', async () => {
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(new FakeMemcached());
-    const c = new MemcachedCache(memcachedOptions);
-    await expect(c.set('a\nb', 'x')).rejects.toThrow(/protocol injection|control character/);
+    const cache = new MemcachedCache(memcachedOptions);
+    await expect(cache.set('a\nb', 'x')).rejects.toThrow(/protocol injection|control character/);
   });
 
   test('exploit: bare CR (\\r) in key is rejected', async () => {
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(new FakeMemcached());
-    const c = new MemcachedCache(memcachedOptions);
-    await expect(c.set('a\rb', 'x')).rejects.toThrow(/protocol injection|control character/);
+    const cache = new MemcachedCache(memcachedOptions);
+    await expect(cache.set('a\rb', 'x')).rejects.toThrow(/protocol injection|control character/);
   });
 
   test('exploit: space in key is rejected (memcached treats space as delimiter)', async () => {
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(new FakeMemcached());
-    const c = new MemcachedCache(memcachedOptions);
-    await expect(c.set('a b', 'x')).rejects.toThrow(/protocol injection|control character/);
+    const cache = new MemcachedCache(memcachedOptions);
+    await expect(cache.set('a b', 'x')).rejects.toThrow(/protocol injection|control character/);
   });
 
   test('exploit: tab in key is rejected', async () => {
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(new FakeMemcached());
-    const c = new MemcachedCache(memcachedOptions);
-    await expect(c.set('a\tb', 'x')).rejects.toThrow(/protocol injection|control character/);
+    const cache = new MemcachedCache(memcachedOptions);
+    await expect(cache.set('a\tb', 'x')).rejects.toThrow(/protocol injection|control character/);
   });
 
   test('exploit: NUL byte in key is rejected', async () => {
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(new FakeMemcached());
-    const c = new MemcachedCache(memcachedOptions);
-    await expect(c.set('a\0b', 'x')).rejects.toThrow(/protocol injection|control character/);
+    const cache = new MemcachedCache(memcachedOptions);
+    await expect(cache.set('a\0b', 'x')).rejects.toThrow(/protocol injection|control character/);
   });
 
   test('exploit: 251-byte key rejected (memcached protocol limit is 250)', async () => {
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(new FakeMemcached());
-    const c = new MemcachedCache(memcachedOptions);
+    const cache = new MemcachedCache(memcachedOptions);
     const tooLong = 'a'.repeat(251);
-    await expect(c.set(tooLong, 'x')).rejects.toThrow(/250-byte limit/);
+    await expect(cache.set(tooLong, 'x')).rejects.toThrow(/250-byte limit/);
   });
 
   test('exploit: mget rejects malicious keys', async () => {
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(new FakeMemcached());
-    const c = new MemcachedCache(memcachedOptions);
-    await expect(c.mget(['a', 'b\r\nFLUSHALL\r\n', 'c']))
+    const cache = new MemcachedCache(memcachedOptions);
+    await expect(cache.mget(['a', 'b\r\nFLUSHALL\r\n', 'c']))
       .rejects.toThrow(/protocol injection|control character/);
   });
 
   test('exploit: mset rejects malicious keys', async () => {
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(new FakeMemcached());
-    const c = new MemcachedCache(memcachedOptions);
-    await expect(c.mset(new Map([['a\r\nDELETE\r\n', 1]])))
+    const cache = new MemcachedCache(memcachedOptions);
+    await expect(cache.mset(new Map([['a\r\nDELETE\r\n', 1]])))
       .rejects.toThrow(/protocol injection|control character/);
   });
 
@@ -360,18 +360,18 @@ describe('MemcachedCache — protocol-injection hardening', () => {
     const fake = new FakeMemcached();
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(fake);
-    const c = new MemcachedCache(memcachedOptions);
-    await c.set('user-42', 'safe');
-    const v = await c.get<string>('user-42');
-    expect(v.toNullable()).toBe('safe');
+    const cache = new MemcachedCache(memcachedOptions);
+    await cache.set('user-42', 'safe');
+    const value = await cache.get<string>('user-42');
+    expect(value.toNullable()).toBe('safe');
   });
 
   test('regression: 250-byte key is accepted (boundary)', async () => {
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(new FakeMemcached());
-    const c = new MemcachedCache(memcachedOptions);
+    const cache = new MemcachedCache(memcachedOptions);
     const justRight = 'a'.repeat(250);
-    await c.set(justRight, 'x');
+    await cache.set(justRight, 'x');
     // No throw — pass.
   });
 
@@ -379,15 +379,15 @@ describe('MemcachedCache — protocol-injection hardening', () => {
     const fake = new FakeMemcached();
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(fake);
-    const c = new MemcachedCache(memcachedOptions);
-    await c.set('actor:user:42:profile', 'safe');
-    expect((await c.get<string>('actor:user:42:profile')).toNullable()).toBe('safe');
+    const cache = new MemcachedCache(memcachedOptions);
+    await cache.set('actor:user:42:profile', 'safe');
+    expect((await cache.get<string>('actor:user:42:profile')).toNullable()).toBe('safe');
   });
 
   test('rejects empty-string key', async () => {
     const memcachedOptions = MemcachedCacheOptions.create()
       .withClient(new FakeMemcached());
-    const c = new MemcachedCache(memcachedOptions);
-    await expect(c.set('', 'x')).rejects.toThrow(/non-empty string/);
+    const cache = new MemcachedCache(memcachedOptions);
+    await expect(cache.set('', 'x')).rejects.toThrow(/non-empty string/);
   });
 });

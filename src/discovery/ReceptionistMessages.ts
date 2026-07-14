@@ -11,7 +11,7 @@ export class Register<T = unknown> {
   ) {}
 }
 
-/** Ack sent back to the `replyTo` of a Register message. */
+/** Acknowledgment sent back to the `replyTo` of a Register message. */
 export class Registered<T = unknown> {
   constructor(
     public readonly key: ServiceKey<T>,
@@ -68,7 +68,7 @@ export class Listing<T = unknown> {
 }
 
 /** Wire message gossiped between receptionists. */
-export interface ReceptionistGossipMsg {
+export interface ReceptionistGossipMessage {
   readonly t: 'receptionist-gossip';
   readonly from: import('../cluster/NodeAddress.js').NodeAddressData;
   /** key-id → list of actor paths on the sender node */

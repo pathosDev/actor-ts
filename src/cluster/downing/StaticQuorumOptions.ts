@@ -1,7 +1,7 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 
-/** Plain settings-object shape accepted by {@link StaticQuorum}. */
+/** Plain options-object shape accepted by {@link StaticQuorum}. */
 export interface StaticQuorumOptionsType {
   /** Exact size of the quorum needed on the reachable side. */
   readonly quorumSize: number;

@@ -5,8 +5,8 @@ export type {
   FetchHandler,
   HonoServerHandle,
   HonoServerRunner,
-  HonoWebSocketBridge,
-  UpgradeWebSocketFn,
+  HonoWebsocketBridge,
+  UpgradeWebsocketFn,
   WSContextLike,
   WSEventsLike,
 } from './HonoServerRunner.js';

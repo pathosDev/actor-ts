@@ -64,8 +64,8 @@ async function waitFor<T>(
 ): Promise<T> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const v = ev();
-    if (v !== undefined) return v;
+    const result = ev();
+    if (result !== undefined) return result;
     await delay(50);
   }
   throw new Error(`waitFor: ${label} timed out after ${timeoutMs}ms`);
@@ -100,8 +100,8 @@ async function main(): Promise<void> {
   ], { stdio: ['ignore', 'pipe', 'pipe'] });
   let booted = false;
   child.stdout.on('data', (b: Buffer) => {
-    const s = b.toString('utf-8');
-    if (s.includes('HTTP server listening')) booted = true;
+    const text = b.toString('utf-8');
+    if (text.includes('HTTP server listening')) booted = true;
   });
   child.stderr.on('data', (b: Buffer) => process.stderr.write(b));
 
