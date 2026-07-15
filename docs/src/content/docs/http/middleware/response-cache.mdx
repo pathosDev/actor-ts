@@ -1,6 +1,6 @@
 ---
 title: Response cache middleware
-description: Cache GET responses by URL + Vary headers. Useful for read-heavy APIs with stable responses. Configurable TTL, conditional caching via predicate, pluggable cache backend.
+description: Cache handler responses keyed by a user-supplied key(req) function. Useful for read-heavy APIs with stable responses. Required TTL, per-status-code caching, per-process single-flight, pluggable cache backend.
 ---
 
 `cached` wraps a handler with **response caching** keyed by a
@@ -152,23 +152,27 @@ import { Aside } from '@astrojs/starlight/components';
   at all.
 </Aside>
 
-<Aside type="caution" title="Cache stampede">
+<Aside type="note" title="Stampede protection is per-process">
   ```ts
-  // TTL expires; 1000 concurrent requests all hit the handler
+  // TTL expires; 1000 concurrent requests on one pod → the handler runs once
   ```
-  When a popular cached entry expires, every concurrent
-  requester recomputes.  Either accept it (usually fine) or
-  add a stale-while-revalidate pattern (not in the framework
-  yet — implement manually).
+  On a cache miss the wrapper runs the handler **once per process** and
+  the other concurrent requests for the same key await that single
+  result (an in-process single-flight map).  It is **not** cluster-wide:
+  with N pods the handler can run up to N times concurrently.
+  Stale-while-revalidate isn't built in — implement it manually if you
+  need it.
 </Aside>
 
-<Aside type="caution" title="Memory cap on in-memory caches">
+<Aside type="caution" title="Size the in-memory cache to your response set">
   ```ts
-  new InMemoryCache();   // no cap — eventually OOMs
+  new InMemoryCache();                        // LRU-bounded: 10 000 entries
+  new InMemoryCache({ maxEntries: 100_000 }); // raise it for a larger response set
   ```
-  Set a max-entries on the cache; without it, response caches
-  grow until exhaustion.  See
-  [In-memory cache](/cache/in-memory/).
+  `InMemoryCache` is LRU-bounded by default (10 000 entries), so a
+  response cache can't grow without limit — but a too-small cap evicts
+  hot responses early.  Size `maxEntries` to the number of distinct
+  cache keys you expect.  See [In-memory cache](/cache/in-memory/).
 </Aside>
 
 ## Where to next

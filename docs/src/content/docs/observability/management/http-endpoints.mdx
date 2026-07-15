@@ -63,17 +63,16 @@ Available when a `cluster` is passed to `managementRoutes`.
 GET /cluster/members
 → 200 OK
 {
-  "selfAddress": "actor-ts://my-app@10.0.0.5:2552",
-  "leader":      "actor-ts://my-app@10.0.0.5:2552",
   "members": [
     {
-      "address":   "actor-ts://my-app@10.0.0.5:2552",
-      "status":    "up",
-      "roles":     ["compute"],
-      "uniqueAddress": { "address": "...", "uid": 1 }
+      "address": "actor-ts://my-app@10.0.0.5:2552",
+      "status":  "up",
+      "version": 3,
+      "roles":   ["compute"]
     },
     ...
-  ]
+  ],
+  "self": "actor-ts://my-app@10.0.0.5:2552"
 }
 ```
 
@@ -88,11 +87,12 @@ Full membership snapshot.  Useful for:
 ```
 GET /cluster/leader
 → 200 OK
-{ "leader": "actor-ts://my-app@10.0.0.5:2552" }
+{ "leader": "actor-ts://my-app@10.0.0.5:2552", "isSelf": true }
 ```
 
-Just the leader's address.  Useful for monitoring leadership
-churn.
+The leader's address plus `isSelf` (is the local node the leader).
+`leader` is `null` before a leader is elected.  Useful for monitoring
+leadership churn.
 
 ### `GET /cluster/shards?type=<typeName>`
 
@@ -101,17 +101,19 @@ GET /cluster/shards?type=cart
 → 200 OK
 {
   "typeName": "cart",
+  "leader":   "my-app@10.0.0.5:2552",
+  "takenAt":  1710000000000,
   "regions": [
     {
-      "address": "actor-ts://my-app@10.0.0.5:2552",
+      "key":     "my-app@10.0.0.5:2552",
+      "address": "my-app@10.0.0.5:2552",
+      "path":    "/system/sharding/cart",
+      "proxy":   false,
       "shards":  [0, 1, 2, ..., 33]
     },
-    {
-      "address": "actor-ts://my-app@10.0.0.6:2552",
-      "shards":  [34, 35, ..., 66]
-    },
     ...
-  ]
+  ],
+  "shardHome": [ { "shard": 0, "regionKey": "my-app@10.0.0.5:2552" }, ... ]
 }
 ```
 
@@ -131,7 +133,7 @@ Opt-in via `enableMetricsEndpoint: true`.
 ```
 GET /metrics
 → 200 OK
-Content-Type: text/plain; version=0.0.4
+Content-Type: text/plain; version=0.0.4; charset=utf-8
 
 # HELP actor_messages_processed_total ...
 # TYPE actor_messages_processed_total counter
@@ -150,9 +152,12 @@ Opt-in via `enableLeaveEndpoint: true`.
 
 ```
 POST /cluster/leave
-→ 200 OK
-{ "status": "leaving" }
+→ 202 Accepted
+leaving
 ```
+
+The `202` body is the plain-text word `leaving` (not JSON) — the leave
+is fire-and-forget.
 
 Triggers graceful cluster-leave.  The node transitions through
 `leaving` → `exiting` → `removed`; shards rebalance away; the
@@ -174,9 +179,12 @@ Opt-in via `enableDownEndpoint: true`.
 POST /cluster/down
 { "address": "actor-ts://my-app@10.0.0.5:2552" }
 
-→ 200 OK
+→ 202 Accepted
 { "downed": "actor-ts://my-app@10.0.0.5:2552" }
 ```
+
+Returns `202` with `{ downed }` when the member was downed, or `404`
+if the address is unknown or already terminal.
 
 Force-downs a remote member by address.  Destructive — the
 target's actors stop, its shards reallocate elsewhere.
@@ -213,20 +221,19 @@ adding app-specific admin endpoints alongside the standard set.
 
 ## Response format
 
-All endpoints return **JSON** by default, with one exception:
-`/metrics` returns **text/plain** for Prometheus.
+The read endpoints (`/health`, `/ready`, `/cluster/members`,
+`/cluster/leader`, `/cluster/shards`) and `/cluster/down` return
+**JSON**.  `/metrics` returns Prometheus **text/plain**, and
+`/cluster/leave` returns the plain-text body `leaving`.
 
-Errors are structured:
+Errors are **plain-text** bodies (the framework's `complete(status,
+message)`), not a structured object — e.g. a missing `type` query
+param yields a `400` whose body is `missing query param \`type\``.
 
-```json
-{
-  "error":  "Missing query parameter: type",
-  "status": 400
-}
-```
-
-Status codes follow HTTP conventions: 200 for success, 4xx for
-client errors, 5xx for server errors.
+Status codes follow HTTP conventions: `200` for reads, **`202 Accepted`**
+for the admin actions (`/cluster/leave`, `/cluster/down`), `4xx` for
+client errors (`404` when a `/cluster/down` address is unknown), and
+`503` when the cluster or a health check is unavailable.
 
 import { Aside } from '@astrojs/starlight/components';
 

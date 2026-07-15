@@ -60,7 +60,7 @@ interface IdempotencyOptions {
   headerName?:    string;                              // default 'idempotency-key'
   keyPrefix?:     string;                              // default 'idem:'
   missingHeader?: 'reject' | 'pass-through';           // default 'reject'
-  identity?:      (req: HttpRequest) => string;        // per-caller scope; default none
+  identity?:      (req: HttpRequest) => string | Promise<string>;   // per-caller scope; default none
 }
 ```
 
@@ -187,15 +187,17 @@ once before the first attempt.
 ## In-flight handling
 
 If two requests with the same key arrive **simultaneously**
-(double-click, concurrent retry):
+(double-click, concurrent retry), the first claims the key and runs
+the handler; the second sees the key **in flight** and is rejected
+immediately with **`409 Conflict`** (`{ "error": "idempotency-key
+in-flight; retry shortly" }`) — it is **not** queued or made to wait.
 
-- The first to grab the cache lock processes; the second sees
-  "still in flight" and... varies by implementation.
-
-The framework's middleware **locks per-key**: the second
-request waits for the first to complete, then returns the
-cached response.  Sub-second wait usually; bounded by handler
-runtime.
+The client retries after a short backoff; once the first request has
+completed and cached its response, the retry replays that stored
+response.  Failing fast (rather than holding the second connection
+open for the handler's whole runtime) also means there is no
+cross-pod lock to coordinate — the in-flight marker lives in the same
+cache as the cached responses.
 
 import { Aside } from '@astrojs/starlight/components';
 

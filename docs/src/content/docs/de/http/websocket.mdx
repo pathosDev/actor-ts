@@ -234,7 +234,7 @@ interface WebsocketConnection<TOut> extends ActorRef<TOut> {
 type WebsocketUpgradeInfo = {
   path: string;
   params: Record<string, string>;
-  query: Record<string, string>;
+  query: Record<string, string | string[] | undefined>;
   headers: Record<string, string>;
   remoteAddress?: string;
   subprotocol?: string;
