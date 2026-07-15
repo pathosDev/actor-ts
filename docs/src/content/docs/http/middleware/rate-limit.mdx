@@ -16,14 +16,18 @@ const limited = rateLimit({
   cache:    new InMemoryCache(),
   windowMs: 60_000,                       // 1 minute window
   max:      100,                          // 100 reqs per key per minute
-  key:      (req) => req.headers['x-forwarded-for'] ?? 'unknown',
+  key:      (req) => req.remoteAddress ?? 'unknown',   // socket peer — not a spoofable header
 });
 
 const routes = path('api', post(limited(apiHandler)));
 ```
 
-Each distinct key (here: per `X-Forwarded-For` IP) gets a 100/minute
-budget.  Excess requests get 429 with a `Retry-After` header.
+Each distinct key (here: per client IP taken from the socket peer,
+`req.remoteAddress`) gets a 100/minute budget.  Excess requests get 429
+with a `Retry-After` header.  **Key on a value the client can't forge** —
+don't use `x-forwarded-for` unless a trusted proxy sets it (see the
+security note below), or an attacker rotates it per request to bypass the
+limit.
 
 ## Configuration
 
@@ -115,7 +119,7 @@ rateLimit({
   cache:    new RedisCache(redisCacheOptions),
   windowMs: 60_000,
   max:      100,
-  key:      (req) => req.headers['x-forwarded-for'] ?? 'unknown',
+  key:      (req) => req.remoteAddress ?? 'unknown',   // socket peer — not a spoofable header
 });
 ```
 

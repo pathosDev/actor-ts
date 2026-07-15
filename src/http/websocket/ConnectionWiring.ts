@@ -107,6 +107,41 @@ export function trackSocket(
 let connectionCounter = 0;
 
 /**
+ * Live connection count per hub, for the per-route `maxConnections` cap
+ * (security audit WS-5).  Keyed by the hub ref (one per route); increments
+ * when a connection is admitted and decrements when its socket closes.  A
+ * `WeakMap` so a discarded hub doesn't leak its counter.
+ */
+const liveConnectionsByHub = new WeakMap<object, number>();
+
+/**
+ * Wrap `socket` so `onClosed` runs exactly once when it closes — used to
+ * decrement the live-connection count.  Mirrors {@link trackSocket}'s onClose
+ * chaining.
+ */
+function decrementOnClose(
+  socket: WebsocketSocketAdapter,
+  onClosed: () => void,
+): WebsocketSocketAdapter {
+  let fired = false;
+  const fire = (): void => { if (!fired) { fired = true; onClosed(); } };
+  return {
+    send: (data) => socket.send(data),
+    close: (code, reason) => socket.close(code, reason),
+    terminate: socket.terminate ? () => socket.terminate!() : undefined,
+    setListeners: (l) => socket.setListeners({
+      onMessage: (data) => l.onMessage(data),
+      onClose: (code, reason) => { fire(); l.onClose(code, reason); },
+      onError: (err) => l.onError(err),
+    }),
+    get readyState() { return socket.readyState; },
+    bufferedAmount: socket.bufferedAmount ? () => socket.bufferedAmount!() : undefined,
+    get remoteAddress() { return socket.remoteAddress; },
+    get protocol() { return socket.protocol; },
+  };
+}
+
+/**
  * Turn one accepted upgrade into a live actor-backed connection.  Called
  * synchronously from the backend's upgrade callback (via the route's
  * `connect` handler).
@@ -130,6 +165,23 @@ export function wireConnection<TOut, TIn, TSelf = never>(
   codec: WebsocketCodec<TOut, TIn>,
   policy: ResolvedWebsocketPolicy,
 ): void {
+  // Admission cap (security audit WS-5): when the route is at its
+  // connection limit, close the freshly-upgraded socket with 1013 ("try
+  // again later") instead of wiring an actor for it.  Unlimited by default
+  // (`policy.maxConnections === Infinity`).
+  const cap = policy.maxConnections;
+  if (Number.isFinite(cap)) {
+    const hubKey = hub as unknown as object;
+    const live = liveConnectionsByHub.get(hubKey) ?? 0;
+    if (live >= cap) {
+      try { socket.close(1013, 'server at capacity'); } catch { /* already closing */ }
+      return;
+    }
+    liveConnectionsByHub.set(hubKey, live + 1);
+    socket = decrementOnClose(socket, () => {
+      liveConnectionsByHub.set(hubKey, Math.max(0, (liveConnectionsByHub.get(hubKey) ?? 1) - 1));
+    });
+  }
   const id = `ws-${++connectionCounter}`;
   const upgrade: WebsocketUpgradeInfo = {
     path: req.path,

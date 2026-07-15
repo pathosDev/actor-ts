@@ -66,6 +66,14 @@ interface UdpSocketOptionsType extends BrokerCommonOptionsType {
 `target` ist das einzige Pflichtfeld — ohne es haben eingehende
 Datagramme kein Ziel.  Alle vier werden über den Builder gesetzt:
 
+<Aside type="caution" title="Bind-Adresse">
+`bindHost` ist standardmäßig `'0.0.0.0'` — der Socket lauscht auf **allen**
+Interfaces.  Auf einem multi-homed oder internet-exponierten Host setze eine
+konkrete interne Adresse (z. B. `127.0.0.1` oder eine private IP), damit der
+Socket nicht aus nicht-vertrauenswürdigen Netzen erreichbar ist
+(security audit BRK-5).
+</Aside>
+
 ```ts
 UdpSocketOptions.create()
   .withBindHost('0.0.0.0')

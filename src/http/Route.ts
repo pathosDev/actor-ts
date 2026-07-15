@@ -92,7 +92,7 @@ export type Route =
   | { readonly kind: 'path'; readonly segment: string; readonly child: Route }
   | { readonly kind: 'concat'; readonly routes: ReadonlyArray<Route> }
   | { readonly kind: 'middleware'; readonly middleware: Middleware; readonly child: Route }
-  | { readonly kind: 'websocket'; readonly connect: WebsocketConnectHandler }
+  | { readonly kind: 'websocket'; readonly connect: WebsocketConnectHandler; readonly authorize?: (req: HttpRequest) => HttpResponse | null }
   | { readonly kind: 'fallback'; readonly handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse }
   | { readonly kind: 'cors'; readonly settings: CorsRouteOptions; readonly child: Route };
 
@@ -278,15 +278,22 @@ export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[]
       pattern: buildPattern(prefix),
       handler: r.handler,
     }])
-    .with({ kind: 'websocket' }, (r): CompiledEndpoint[] => [{
-      kind: 'websocket',
-      method: 'GET',
-      pattern: buildPattern(prefix),
-      connect: r.connect,
-      // Innermost default: accept unconditionally.  Enclosing
-      // withMiddleware() nodes fold their checks into this below.
-      authorize: async (): Promise<HttpResponse | null> => null,
-    }])
+    .with({ kind: 'websocket' }, (r): CompiledEndpoint[] => {
+      // Innermost gate: a route-level upgrade check (the CSWSH Origin
+      // allowlist from `websocket({ allowedOrigins })`) if the node
+      // carries one, else accept unconditionally.  Enclosing
+      // withMiddleware() nodes fold their checks around this below.
+      const gate = r.authorize;
+      return [{
+        kind: 'websocket',
+        method: 'GET',
+        pattern: buildPattern(prefix),
+        connect: r.connect,
+        authorize: gate
+          ? async (req): Promise<HttpResponse | null> => gate(req)
+          : async (): Promise<HttpResponse | null> => null,
+      }];
+    })
     .with({ kind: 'path' }, (r) => compile(r.child, [...prefix, r.segment]))
     .with({ kind: 'concat' }, (r) => r.routes.flatMap((child) => compile(child, prefix)))
     .with({ kind: 'fallback' }, (r): CompiledEndpoint[] => {

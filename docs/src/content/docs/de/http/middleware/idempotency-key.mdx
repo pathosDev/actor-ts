@@ -60,6 +60,7 @@ interface IdempotencyOptions {
   headerName?:    string;                              // Default 'idempotency-key'
   keyPrefix?:     string;                              // Default 'idem:'
   missingHeader?: 'reject' | 'pass-through';           // Default 'reject'
+  identity?:      (req: HttpRequest) => string;        // Scope pro Aufrufer; Default keiner
 }
 ```
 
@@ -70,6 +71,7 @@ interface IdempotencyOptions {
 | `headerName` | Header-Namen anpassen (case-insensitive).  Default `'idempotency-key'`. |
 | `keyPrefix` | Cache-Key-Namespace.  Default `'idem:'`, damit mehrere Idempotency-Wrapper im selben Redis nicht kollidieren. |
 | `missingHeader` | Was tun, wenn der Header fehlt.  Default `'reject'` (400); auf `'pass-through'` setzen, um den Handler ohne Dedup laufen zu lassen, wenn nur manche Clients Idempotency nutzen. |
+| `identity` | Optionaler Scope pro Aufrufer, der in den Cache-Key gefaltet wird, damit eine gecachte, identitätsspezifische Response nie an einen anderen Aufrufer ausgeliefert wird — z. B. `(req) => req.headers['x-account'] ?? 'anon'`.  Ohne ihn teilen sich zwei Aufrufer mit gleichem Key + Methode + Pfad + Body eine Response; nur für identitätsunabhängige Endpunkte sicher (security audit HTTP-4). |
 
 Der Wrapper speichert zusätzlich einen **SHA-256-Hash des
 Request-Bodies** neben jeder gecachten Response.  Wenn ein

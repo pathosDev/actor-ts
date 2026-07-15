@@ -31,30 +31,50 @@ export type CompressionAlgo = 'none' | 'gzip' | 'zstd';
 export interface Compressor {
   /** `level` is algorithm-specific and clamped; `undefined` → impl default.  Ignored by `none`. */
   compress(input: Uint8Array, level?: number): Promise<Uint8Array>;
-  decompress(input: Uint8Array): Promise<Uint8Array>;
+  /**
+   * Decompress `input`.  `maxOutputBytes`, when set and finite, bounds the
+   * decompressed size to defeat a decompression bomb (security audit #3):
+   * gzip enforces it at allocation time via zlib's `maxOutputLength`; the
+   * other paths assert the size once decoded.  Exceeding it throws.
+   */
+  decompress(input: Uint8Array, maxOutputBytes?: number): Promise<Uint8Array>;
 }
 
 /* ------------------------------- gzip ----------------------------------- */
 
 const gzipLazy: Lazy<Promise<{
   gzip: (input: Uint8Array, level?: number) => Promise<Uint8Array>;
-  gunzip: (input: Uint8Array) => Promise<Uint8Array>;
+  gunzip: (input: Uint8Array, maxOutputBytes?: number) => Promise<Uint8Array>;
 }>> = Lazy.of(async () => {
   const name = 'node:zlib';
   const zlib = (await import(name)) as {
     gzipSync(input: Uint8Array, opts?: { level?: number }): Uint8Array;
-    gunzipSync(input: Uint8Array): Uint8Array;
+    gunzipSync(input: Uint8Array, opts?: { maxOutputLength?: number }): Uint8Array;
   };
   return {
     gzip: async (input: Uint8Array, level?: number): Promise<Uint8Array> =>
       zlib.gzipSync(input, level !== undefined ? { level: clampGzipLevel(level) } : undefined),
-    gunzip: async (input: Uint8Array): Promise<Uint8Array> => zlib.gunzipSync(input),
+    // `maxOutputLength` makes zlib abort (RangeError) BEFORE allocating past
+    // the cap — real protection against a gzip bomb, not just a post-check.
+    gunzip: async (input: Uint8Array, maxOutputBytes?: number): Promise<Uint8Array> =>
+      zlib.gunzipSync(
+        input,
+        maxOutputBytes !== undefined && Number.isFinite(maxOutputBytes)
+          ? { maxOutputLength: maxOutputBytes }
+          : undefined,
+      ),
   };
 });
 
 const gzipCompressor: Compressor = {
   async compress(input, level) { return (await gzipLazy.get()).gzip(input, level); },
-  async decompress(input) { return (await gzipLazy.get()).gunzip(input); },
+  async decompress(input, maxOutputBytes) {
+    const out = await (await gzipLazy.get()).gunzip(input, maxOutputBytes);
+    // `maxOutputLength` already aborts allocation on Node; the assertion is a
+    // portable backstop in case a runtime's zlib ignores the option (#3).
+    assertWithinCap(out.length, maxOutputBytes, 'gzip');
+    return out;
+  },
 };
 
 /* ------------------------------- zstd ----------------------------------- */
@@ -154,14 +174,30 @@ const zstdDecompressLazy: Lazy<Promise<ZstdDecompressFn>> = Lazy.of<Promise<Zstd
 
 const zstdCompressor: Compressor = {
   async compress(input, level) { return (await zstdCompressLazy.get())(input, level); },
-  async decompress(input) { return (await zstdDecompressLazy.get())(input); },
+  async decompress(input, maxOutputBytes) {
+    // No portable allocation-time cap across the zstd impls (Bun native /
+    // Node native / fzstd), so assert the decoded size (security audit #3).
+    const out = await (await zstdDecompressLazy.get())(input);
+    assertWithinCap(out.length, maxOutputBytes, 'zstd');
+    return out;
+  },
 };
 
 /* ------------------------------- public --------------------------------- */
 
+/** Throw when a decoded size exceeds a finite `maxOutputBytes` cap (#3). */
+function assertWithinCap(size: number, maxOutputBytes: number | undefined, algo: string): void {
+  if (maxOutputBytes !== undefined && Number.isFinite(maxOutputBytes) && size > maxOutputBytes) {
+    throw new Error(`${algo} decompression exceeded maxOutputBytes=${maxOutputBytes} (got ${size})`);
+  }
+}
+
 const noneCompressor: Compressor = {
   async compress(input) { return input; },
-  async decompress(input) { return input; },
+  async decompress(input, maxOutputBytes) {
+    assertWithinCap(input.length, maxOutputBytes, 'stored');
+    return input;
+  },
 };
 
 /** Get a `Compressor` for the requested algorithm.  Cached per-algorithm. */

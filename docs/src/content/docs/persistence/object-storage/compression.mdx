@@ -105,6 +105,17 @@ Because each body self-describes its algorithm, **mixing `none` /
 `gzip` / `zstd` bodies in the same bucket works** — every object
 decodes per its own manifest.
 
+## Decompression cap (bomb protection)
+
+Decompression on read is **bounded to 512 MiB** of output by default, so a
+tampered or hostile compressed body (a few KB that inflates to many GB) can't
+exhaust memory during recovery (security audit #3).  gzip enforces the cap
+at allocation time via zlib's `maxOutputLength`; every path additionally
+asserts the decoded size.  A body that would exceed the cap fails the read
+with an error instead of OOM-ing the process.  Snapshots / durable state are
+far smaller than this in practice; if you legitimately store larger bodies,
+raise the bound (or set it to `Infinity`) via the decode options.
+
 ## Changing the level
 
 The level is an **encoder-only** setting.  It is **not** stored on

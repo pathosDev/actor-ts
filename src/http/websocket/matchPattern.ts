@@ -18,7 +18,20 @@ export function matchWebsocketPattern(pattern: string, pathname: string): Record
     const patternSegment = pSegs[i]!;
     const uriSegment = uSegs[i]!;
     if (patternSegment.startsWith(':')) {
-      params[patternSegment.slice(1)] = decodeURIComponent(uriSegment);
+      // `decodeURIComponent` throws `URIError` on a malformed escape (e.g.
+      // "%ZZ" or a truncated "%E0%A4%A").  A thrown error here previously
+      // propagated out of the Express upgrade handler's fire-and-forget IIFE
+      // as an unhandled rejection — process-fatal under Node's default, and
+      // reachable pre-auth by any unauthenticated client (security audit
+      // WS-1).  Treat a bad escape as a non-match instead: the request
+      // matches no route and gets a 404.
+      let decoded: string;
+      try {
+        decoded = decodeURIComponent(uriSegment);
+      } catch {
+        return null;
+      }
+      params[patternSegment.slice(1)] = decoded;
     } else if (patternSegment !== uriSegment) {
       return null;
     }

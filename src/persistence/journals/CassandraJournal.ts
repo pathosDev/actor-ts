@@ -11,6 +11,7 @@ import {
   type CassandraConnection,
 } from './CassandraClient.js';
 import { CassandraJournalOptionsValidator } from './CassandraJournalOptions.js';
+import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import type { CassandraJournalOptions, CassandraJournalOptionsType } from './CassandraJournalOptions.js';
 
 interface EventRow {
@@ -250,7 +251,12 @@ export class CassandraJournal implements Journal {
   get useTagIndex(): boolean { return this.options.useTagIndex === true; }
 
   private qualified(table: string): string {
-    return `${this.options.keyspace}.${table}`;
+    // keyspace + table are interpolated into CQL (identifiers can't be bound)
+    // — validate both so a config-sourced value can't inject CQL
+    // (security audit #6).
+    const ks = this.options.keyspace;
+    if (ks !== undefined) assertSafeIdentifier(ks, 'keyspace');
+    return `${ks}.${assertSafeIdentifier(table, 'table')}`;
   }
 
   private async readHighestSeq(pid: string): Promise<number> {

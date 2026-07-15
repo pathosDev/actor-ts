@@ -6,6 +6,7 @@ import {
   JournalError,
   type PersistentEvent,
 } from '../JournalTypes.js';
+import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import type { SqliteJournalOptions, SqliteJournalOptionsType } from './SqliteJournalOptions.js';
 
 interface Stmts {
@@ -57,7 +58,10 @@ export class SqliteJournal implements Journal {
   constructor(options: SqliteJournalOptions = {}) {
     const resolvedOptions = (options as SqliteJournalOptionsType);
     this.options = resolvedOptions;
-    this.table = resolvedOptions.eventsTable ?? 'events';
+    // Table name is interpolated into DDL/DML (can't be bound) — validate it
+    // so a config-sourced identifier can't inject SQL (security audit #6).
+    // The `_tags` sibling is derived from this validated name, so it's safe too.
+    this.table = assertSafeIdentifier(resolvedOptions.eventsTable ?? 'events', 'events table');
   }
 
   async append<E>(

@@ -3,6 +3,7 @@ import { JournalError, type Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import { none, some, type Option } from '../../util/Option.js';
+import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import type { SqliteSnapshotStoreOptions, SqliteSnapshotStoreOptionsType } from './SqliteSnapshotStoreOptions.js';
 
 interface Stmts {
@@ -32,7 +33,8 @@ export class SqliteSnapshotStore implements SnapshotStore {
   constructor(options: SqliteSnapshotStoreOptions = {}) {
     const resolvedOptions = (options as SqliteSnapshotStoreOptionsType);
     this.options = resolvedOptions;
-    this.table = resolvedOptions.snapshotsTable ?? 'snapshots';
+    // Interpolated into DDL/DML — validate against SQL injection (#6).
+    this.table = assertSafeIdentifier(resolvedOptions.snapshotsTable ?? 'snapshots', 'snapshots table');
     this.keepN = resolvedOptions.keepN ?? 3;
   }
 

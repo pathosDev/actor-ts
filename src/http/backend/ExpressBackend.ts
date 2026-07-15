@@ -15,6 +15,7 @@ import type {
 import { websocketPackageAdapter, type WebsocketPackageSocket } from '../websocket/SocketAdapter.js';
 import { matchWebsocketPattern } from '../websocket/matchPattern.js';
 import { writeRawHttpResponse } from '../websocket/rawResponse.js';
+import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../websocket/types.js';
 
 /** Minimal shape of the `ws` package's WebSocketServer (noServer mode). */
 interface WebsocketServerLike {
@@ -29,12 +30,12 @@ interface WebsocketServerLike {
 }
 
 // `ws` is an optional peer dep — lazy-import its WebSocketServer (cached).
-const wsServerConstructorLazy: Lazy<Promise<new (opts: { noServer: boolean }) => WebsocketServerLike>> = Lazy.of(async () => {
+const wsServerConstructorLazy: Lazy<Promise<new (opts: { noServer: boolean; maxPayload?: number }) => WebsocketServerLike>> = Lazy.of(async () => {
   try {
     const name = 'ws';
     const mod = (await import(name)) as {
-      WebSocketServer?: new (opts: { noServer: boolean }) => WebsocketServerLike;
-      default?: { WebSocketServer?: new (opts: { noServer: boolean }) => WebsocketServerLike };
+      WebSocketServer?: new (opts: { noServer: boolean; maxPayload?: number }) => WebsocketServerLike;
+      default?: { WebSocketServer?: new (opts: { noServer: boolean; maxPayload?: number }) => WebsocketServerLike };
     };
     const Constructor = mod.WebSocketServer ?? mod.default?.WebSocketServer;
     if (!Constructor) throw new Error('ws: WebSocketServer not exported');
@@ -232,9 +233,17 @@ export class ExpressBackend implements HttpServerBackend {
 
   private async attachUpgradeHandling(server: Server): Promise<void> {
     const WebsocketServerConstructor = await wsServerConstructorLazy.get();
-    const wss = new WebsocketServerConstructor({ noServer: true });
+    // Cap the transport payload at the default WS frame size so an oversized
+    // frame is rejected at the protocol level instead of being buffered up to
+    // the `ws` default of 100 MiB first (security audit WS-3).
+    const wss = new WebsocketServerConstructor({ noServer: true, maxPayload: DEFAULT_WEBSOCKET_MAX_FRAME_BYTES });
     this.wss = wss;
     server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+      // Attach the raw-socket error guard BEFORE any async work: a peer
+      // that vanishes mid-handshake (or a malformed upgrade) must never
+      // surface as an unhandled 'error' event, which would crash the
+      // process (security audit WS-1).
+      socket.on('error', () => { /* ignore */ });
       void (async () => {
         const url = new URL(req.url ?? '/', 'http://localhost');
         let hit: { reg: WebsocketRouteRegistration; params: Record<string, string> } | null = null;
@@ -247,9 +256,6 @@ export class ExpressBackend implements HttpServerBackend {
           return;
         }
         const adapted = this.adaptUpgradeRequest(req, url, hit.params);
-        // Guard against the peer vanishing mid-authorize (unhandled
-        // 'error' on the raw socket would otherwise crash the process).
-        socket.on('error', () => { /* ignore */ });
         let reject: HttpResponse | null;
         try {
           reject = await hit.reg.authorize(adapted);
@@ -265,7 +271,12 @@ export class ExpressBackend implements HttpServerBackend {
           wss.emit('connection', ws, req);
           hit!.reg.onConnection(adapted, websocketPackageAdapter(ws, { remoteAddress: adapted.remoteAddress }));
         });
-      })();
+      })().catch(() => {
+        // Last-resort guard: an upgrade handler must never reject into an
+        // unhandled rejection (process-fatal under Node's default).  Any
+        // unexpected throw closes the raw socket instead (WS-1).
+        try { socket.destroy(); } catch { /* already gone */ }
+      });
     });
   }
 

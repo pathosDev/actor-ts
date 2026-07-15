@@ -8,6 +8,7 @@ import type {
 } from './HttpServerBackend.js';
 import { Lazy } from '../../util/Lazy.js';
 import { websocketPackageAdapter, type WebsocketPackageSocket } from '../websocket/SocketAdapter.js';
+import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../websocket/types.js';
 
 // `@fastify/websocket` is an optional peer dep — lazy-import it (cached),
 // so projects that never use websocket() routes don't pull it in.
@@ -112,7 +113,12 @@ export class FastifyBackend implements HttpServerBackend {
       // Await the register so the plugin's onRoute hook is installed
       // before we add the ws routes below.  (Awaiting does NOT lock the
       // route tree — routes can still be added after.)
-      await (this.app as { register: (p: unknown, o?: object) => Promise<unknown> }).register(plugin);
+      // `options` is forwarded to the underlying `ws` server; `maxPayload`
+      // caps the transport frame size (aligned with the default WS policy) so
+      // an oversized frame is rejected at the protocol level rather than
+      // buffered up to the `ws` 100 MiB default first (security audit WS-3).
+      await (this.app as { register: (p: unknown, o?: object) => Promise<unknown> })
+        .register(plugin, { options: { maxPayload: DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } });
       for (const reg of this.wsRegistered) this.attachWebsocketRoute(reg);
     }
     const address = await this.app.listen({ host, port });

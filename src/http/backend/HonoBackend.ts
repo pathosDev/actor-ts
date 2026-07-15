@@ -25,6 +25,51 @@ function coerceWebsocketData(data: unknown): string | Uint8Array {
   return new Uint8Array(0);
 }
 
+/**
+ * True when a declared `Content-Length` exceeds `cap`.  Extracted as a pure
+ * function so the fast-path body-size guard (security audit HTTP-1) can be
+ * unit-tested directly.  A missing/non-numeric header returns `false` — those
+ * fall through to the post-buffer backstop.
+ * @internal
+ */
+export function contentLengthExceeds(header: string | undefined, cap: number): boolean {
+  if (header === undefined) return false;
+  const n = Number(header);
+  return Number.isFinite(n) && n > cap;
+}
+
+/** Standard 413 response used by the body-size guards. */
+function payloadTooLarge(): Response {
+  return new Response('Payload Too Large', {
+    status: 413,
+    headers: { 'content-type': 'text/plain; charset=utf-8' },
+  });
+}
+
+/** Read the `Content-Length` header off a Hono context as a string, if present. */
+function contentLengthHeader(c: { req: { header(name?: string): unknown } }): string | undefined {
+  const cl = c.req.header('content-length');
+  return typeof cl === 'string' ? cl : undefined;
+}
+
+/**
+ * Read the outbound send-buffer depth (bytes) from a Hono `WSContext`'s
+ * native socket, so the connection actor's backpressure guard actually fires
+ * on Hono (security audit WS-4).  Bun's `ServerWebSocket` exposes
+ * `getBufferedAmount()`; the Node (`@hono/node-ws`) and Deno sockets expose a
+ * numeric `.bufferedAmount`.  Unknown shape → 0 (guard stays off, as before).
+ * @internal — exported for testing.
+ */
+export function readBufferedAmount(raw: unknown): number {
+  if (!raw || typeof raw !== 'object') return 0;
+  const r = raw as { bufferedAmount?: unknown; getBufferedAmount?: unknown };
+  if (typeof r.getBufferedAmount === 'function') {
+    const n = (r.getBufferedAmount as () => unknown)();
+    return typeof n === 'number' && Number.isFinite(n) ? n : 0;
+  }
+  return typeof r.bufferedAmount === 'number' && Number.isFinite(r.bufferedAmount) ? r.bufferedAmount : 0;
+}
+
 /*
  * Hono is an optional peer dependency — the structural types below describe
  * only the narrow slice of its API we touch, so projects that never touch
@@ -142,6 +187,7 @@ export class HonoBackend implements HttpServerBackend {
     if (this.notFoundHandler) {
       const handler = this.notFoundHandler;
       app.notFound(async (context) => {
+        if (contentLengthExceeds(contentLengthHeader(context), this.maxBodyBytes)) return payloadTooLarge();
         const req = await this.adaptRequest(context);
         const res = await handler(req);
         return this.writeResponse(res);
@@ -228,13 +274,15 @@ export class HonoBackend implements HttpServerBackend {
     const wildcard = route.pattern.endsWith('/*');
     const prefix = wildcard ? route.pattern.slice(0, -2) : '';
     const handler: HonoHandler = async (c) => {
+      // Reject an oversized Content-Length BEFORE buffering the body.  The
+      // post-buffer check below is a backstop for chunked bodies that omit
+      // Content-Length (security audit HTTP-1) — previously the whole
+      // body was materialised via arrayBuffer() before any size check,
+      // making the 10 MiB cap cosmetic against the runtime's much larger
+      // native default.
+      if (contentLengthExceeds(contentLengthHeader(c), this.maxBodyBytes)) return payloadTooLarge();
       const req = await this.adaptRequest(c);
-      if (req.body && req.body.byteLength > this.maxBodyBytes) {
-        return new Response('Payload Too Large', {
-          status: 413,
-          headers: { 'content-type': 'text/plain; charset=utf-8' },
-        });
-      }
+      if (req.body && req.body.byteLength > this.maxBodyBytes) return payloadTooLarge();
       // Wildcard contract: expose the matched remainder as params['*'].
       const finalReq = wildcard
         ? { ...req, params: { ...req.params, '*': honoWildcardRest(c.req.path ?? new URL(c.req.url).pathname, prefix) } }
@@ -294,6 +342,9 @@ export class HonoBackend implements HttpServerBackend {
         get readyState() {
           return (ws?.readyState ?? 1) as 0 | 1 | 2 | 3;
         },
+        // Enables the backpressure guard in WebSocketConnectionActor on Hono
+        // (was a no-op before — the adapter had no bufferedAmount).  WS-4.
+        bufferedAmount: () => readBufferedAmount(ws?.raw),
         remoteAddress: adapted.remoteAddress,
         get protocol() {
           return ws?.protocol;

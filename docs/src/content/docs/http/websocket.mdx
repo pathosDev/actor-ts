@@ -83,6 +83,8 @@ interface WebsocketRouteOptions<TOut, TIn> {
   onInvalidMessage?: 'close' | 'drop' | 'hook';       // default 'close' (1003)
   maxBufferedBytes?: number;                          // default 4 MiB
   onBackpressure?:   'drop' | 'close';                // default 'drop'
+  allowedOrigins?:   string[];                        // CSWSH defence — see below
+  maxConnections?:   number;                          // concurrent-connection cap; default unlimited
 }
 ```
 
@@ -97,6 +99,29 @@ websocket('/ws', chat, webSocketRouteOptions);    // close with 1003 Unsupported
 The frame-size cap is enforced on the **raw frame before decode**.
 `onInvalidMessage: 'hook'` routes decode failures to the actor's
 `onInvalidMessage` hook instead of closing.
+
+### Origin allowlist (CSWSH defence)
+
+Browsers attach the user's cookies to a WebSocket upgrade automatically, so a
+WS route whose auth is **ambient** (a session cookie, or `IpAllowlist`) is open
+to Cross-Site WebSocket Hijacking: any web page can open
+`new WebSocket('wss://your-host/ws')` and ride the victim's credentials.
+
+Set `allowedOrigins` to gate the handshake by the browser `Origin` header:
+
+```ts
+const wsOptions = WebSocketRouteOptions.create()
+  .withAllowedOrigins(['https://app.example.com']);
+websocket('/ws', chat, wsOptions);
+```
+
+An upgrade whose `Origin` is present but not listed is rejected with **403**
+before the handshake, on all three backends.  A **missing** `Origin`
+(non-browser client — native WebSocket, server-to-server) is allowed, since
+CSWSH is a browser-only attack.  Comparison is case-insensitive.
+
+`BearerTokenAuth` is already resistant (browsers can't set `Authorization` on a
+WS handshake), so `allowedOrigins` matters most for cookie- or IP-based auth.
 
 ### Middleware runs at upgrade time
 
