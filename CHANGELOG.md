@@ -92,7 +92,7 @@ new names.
   only the HOCON path threw, as a bare `Error`).  *Migration:* catch
   `OptionsError` (exported from the package root) where you previously matched
   the ad-hoc `Error` message.  Missing **required** broker settings still throw
-  `BrokerSettingsError`; malformed HOCON still throws `ConfigError`.
+  `BrokerOptionsError`; malformed HOCON still throws `ConfigError`.
 
 ### Added — HTTP hardening
 
@@ -159,7 +159,7 @@ new names.
   `websocket('/room/:id', …)` route) made `decodeURIComponent` throw inside the
   Express backend's fire-and-forget upgrade handler, surfacing as an *unhandled
   rejection* — process-fatal under Node's default and reachable **pre-auth** by
-  an unauthenticated client.  `matchWsPattern` now treats a malformed escape as
+  an unauthenticated client.  `matchWebsocketPattern` now treats a malformed escape as
   a non-match (→ 404), and the Express upgrade handler attaches its socket
   error-guard before any async work and wraps the handler in a last-resort
   `.catch` that closes the socket.  Fastify/Hono were not affected.
@@ -244,7 +244,7 @@ new names.
   `ws` default `maxPayload` (100 MiB), so an oversized frame was buffered in
   full before the app-level `maxFrameBytes` (1 MiB default) rejected it —
   allocation-amplification DoS.  Both now pass `maxPayload:
-  DEFAULT_WS_MAX_FRAME_BYTES` (1 MiB), so an oversized frame is rejected at the
+  DEFAULT_WEBSOCKET_MAX_FRAME_BYTES` (1 MiB), so an oversized frame is rejected at the
   protocol level.  *Caveat:* on these backends a route that raises
   `maxFrameBytes` above the default is currently still capped at the default by
   the transport; a per-route / configurable transport cap and the Hono
@@ -262,6 +262,15 @@ new names.
 
 - Moved the Server-WebSocket page from the IO section into the HTTP section
   (#351).
+- Reconciled stale API-reference pages with the shipped code (#360): rewrote the
+  persistence adapter & migration pages and the OTel **tracing** adapter page to
+  the function-based APIs, rewrote the management & health-check and cache &
+  durable-data pages to their real APIs, and removed the page for the
+  never-shipped OTel *metrics* adapter.
+- Repointed stale `*Settings` type names in prose to the `*OptionsType`
+  vocabulary (#349).
+- Fixed broken code samples that declared a `const` inside a call's object
+  literal (#359).
 
 ## [0.10.0] — 2026-07-08
 
