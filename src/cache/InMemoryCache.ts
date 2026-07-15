@@ -1,5 +1,18 @@
 import { none, some, type Option } from '../util/Option.js';
 import type { Cache } from './Cache.js';
+import {
+  DEFAULT_CLEANUP_MS,
+  DEFAULT_MAX_ENTRIES,
+  InMemoryCacheOptionsValidator,
+  type InMemoryCacheOptions,
+  type InMemoryCacheOptionsType,
+} from './InMemoryCacheOptions.js';
+
+interface Entry {
+  value: unknown;
+  /** Absolute timestamp in ms.  `Infinity` means "no TTL". */
+  expiresAt: number;
+}
 
 /**
  * In-process `Cache` backed by a `Map` with **LRU eviction** and per-entry
@@ -17,43 +30,23 @@ import type { Cache } from './Cache.js';
  * 60 000) that reclaims expired-but-never-re-read entries.  Set `cleanupMs` to
  * `0` / `Infinity` to disable the background sweep.
  *
+ * Configure via an {@link InMemoryCacheOptions} builder or plain object; through
+ * the {@link CacheExtension} the same fields resolve from the HOCON path
+ * `actor-ts.cache.in-memory` instead.  Out-of-range values throw `OptionsError`.
+ *
  * Suitable for tests, single-process dev servers, and as a per-process
  * front-end to a slower remote cache.  Not suitable for multi-process
  * coordination (use `RedisCache` for that).
  */
-export interface InMemoryCacheSettings {
-  /** LRU cap on stored entries.  Default 10 000.  `Infinity` = unbounded. */
-  readonly maxEntries?: number;
-  /**
-   * How often (ms) to sweep expired entries in the background.  Default
-   * 60 000.  `0` / `Infinity` disables the sweep (lazy expiry still applies
-   * on access).
-   */
-  readonly cleanupMs?: number;
-}
-
-interface Entry {
-  value: unknown;
-  /** Absolute timestamp in ms.  `Infinity` means "no TTL". */
-  expiresAt: number;
-}
-
-const DEFAULT_MAX_ENTRIES = 10_000;
-const DEFAULT_CLEANUP_MS = 60_000;
-
 export class InMemoryCache implements Cache {
   private readonly store = new Map<string, Entry>();
   private readonly maxEntries: number;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
 
-  constructor(settings: InMemoryCacheSettings = {}) {
-    const maxEntries = settings.maxEntries ?? DEFAULT_MAX_ENTRIES;
-    if (maxEntries !== Infinity && (!Number.isInteger(maxEntries) || maxEntries < 1)) {
-      throw new Error(
-        `InMemoryCache: maxEntries must be a positive integer or Infinity, got ${maxEntries}`,
-      );
-    }
-    this.maxEntries = maxEntries;
+  constructor(options: InMemoryCacheOptions = {}) {
+    const settings: Partial<InMemoryCacheOptionsType> = { ...(options as Partial<InMemoryCacheOptionsType>) };
+    new InMemoryCacheOptionsValidator().validate(settings);
+    this.maxEntries = settings.maxEntries ?? DEFAULT_MAX_ENTRIES;
 
     const cleanupMs = settings.cleanupMs ?? DEFAULT_CLEANUP_MS;
     if (Number.isFinite(cleanupMs) && cleanupMs > 0) {

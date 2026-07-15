@@ -488,6 +488,7 @@ export * from './io/index.js';
 export {
   CacheError,
   InMemoryCache,
+  InMemoryCacheOptions,
   RedisCache,
   RedisCacheOptions,
   MemcachedCache,
@@ -500,6 +501,7 @@ export {
 } from './cache/index.js';
 export type {
   Cache,
+  InMemoryCacheOptionsType,
   RedisCacheOptionsType,
   RedisClientLike,
   MemcachedCacheOptionsType,
