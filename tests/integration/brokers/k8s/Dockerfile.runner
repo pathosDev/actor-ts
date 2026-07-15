@@ -12,7 +12,7 @@
 # node:https), but using the same package.json keeps the Dockerfile
 # pattern uniform across all eight suites.
 
-FROM oven/bun:debian
+FROM oven/bun:1.3-debian
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
