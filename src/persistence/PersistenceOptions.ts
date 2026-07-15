@@ -31,8 +31,8 @@ export interface CompressionConfig {
    *   - `zstd`: 1–22 (default 3).  Levels ≥20 ("ultra") use large
    *     windows the pure-JS `fzstd` decompress-fallback may be unable to
    *     read (it caps at a 32 MB window) — keep ≤19 if any reader might
-   *     run on a runtime without native zstd (i.e. not Bun and not
-   *     Node ≥22.15).
+   *     run on a runtime without native zstd (i.e. neither Bun nor
+   *     Node).
    *   - `none`: ignored.
    *
    * The level is an encoder-only setting: it is NOT recorded on the wire

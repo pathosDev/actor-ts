@@ -49,7 +49,7 @@ export function hasDeno(): boolean { return typeof globalScope.Deno !== 'undefin
  * High-resolution timestamp in nanoseconds.  Uses `Bun.nanoseconds()` when
  * available (it is truly ns-resolution); otherwise falls back to
  * `performance.now() * 1e6` which is ms-resolution × 1_000_000 — ~µs
- * precision on Node 20+ and Deno, still good enough for benchmark harness
+ * precision on Node and Deno, still good enough for benchmark harness
  * purposes (individual iteration jitter swamps any sub-µs accuracy).
  */
 export function highResNow(): number {

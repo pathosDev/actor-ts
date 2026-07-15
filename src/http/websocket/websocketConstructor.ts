@@ -2,7 +2,7 @@
  * Runtime-agnostic WebSocket **client** constructor selection.
  *
  * Uses the native `WebSocket` global, which every supported runtime
- * ships (Bun, Deno, Node ≥ 22 — the `engines` floor is 24).  Used by
+ * ships (Bun, Deno, Node).  Used by
  * {@link WebsocketClientActor}.  Server-side upgrades never touch
  * this — the HTTP backends own those.
  */
@@ -31,7 +31,7 @@ export const websocketClientConstructor: Lazy<Promise<WebsocketClientConstructor
   if (typeof globalThis.WebSocket !== 'function') {
     throw new Error(
       'WebsocketClientActor needs a native global `WebSocket` '
-        + '(available on Bun, Deno, and Node ≥ 22).',
+        + '(every supported runtime ships one: Bun, Deno, Node).',
     );
   }
   const NativeWS = globalThis.WebSocket as unknown as new (
