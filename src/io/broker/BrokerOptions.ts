@@ -116,12 +116,12 @@ export function readCommonOptions(config: Config): BrokerCommonOptionsType {
  * layers — `undefined` means "not set", not "explicitly clear".
  */
 export function mergeOptions<S extends object>(
-  builtInDefaults: Partial<S>,
+  builtInDefaultOptions: Partial<S>,
   fromConfig: Partial<S>,
   fromConstructor: Partial<S>,
 ): S {
   return {
-    ...builtInDefaults,
+    ...builtInDefaultOptions,
     ...stripUndefined(fromConfig),
     ...stripUndefined(fromConstructor),
   } as S;

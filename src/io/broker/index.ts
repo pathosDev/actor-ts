@@ -65,7 +65,7 @@ export type {
 // Payload codec seam.
 export { mqttJsonCodec, MqttDecodeError, MqttEncodeError } from './MqttCodec.js';
 export type { MqttCodec } from './MqttCodec.js';
-// NOTE: the client-side WebSocket actor now lives in `src/http/ws/`
+// NOTE: the client-side WebSocket actor now lives in `src/http/websocket/`
 // as the typed `WebsocketClientActor`; the server side is the
 // `websocket()` routing directive.  The old frame-level
 // `WebsocketActor` / `ServerWebsocketActor` were removed.
