@@ -5,9 +5,11 @@ import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { Props } from '../../../src/Props.js';
 import {
   BoundedMailbox,
+  BoundedMailboxOptions,
   MailboxFullError,
   PriorityMailbox,
 } from '../../../src/mailbox/index.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 
@@ -40,6 +42,36 @@ describe('BoundedMailbox — overflow policies', () => {
 
   test('capacity < 1 throws in constructor', () => {
     expect(() => new BoundedMailbox({ capacity: 0 })).toThrow(/capacity/);
+  });
+});
+
+// Options plumbing: builder parity + OptionsError validation, replacing the
+// old bare-Error capacity guard and covering the previously-unvalidated
+// overflow enum and missing capacity.
+describe('BoundedMailbox — options validation', () => {
+  test('builder form is equivalent to a plain object', () => {
+    const mbox = new BoundedMailbox<string>(BoundedMailboxOptions.create()
+      .withCapacity(2)
+      .withOverflow('drop-new'));
+    for (const s of ['a', 'b', 'c']) mbox.enqueue({ message: s, sender: null });
+    expect(mbox.size).toBe(2);
+    expect(mbox.droppedCount).toBe(1);
+  });
+
+  test('rejects a non-positive / non-integer capacity with OptionsError', () => {
+    expect(() => new BoundedMailbox({ capacity: 0 })).toThrow(OptionsError);
+    expect(() => new BoundedMailbox({ capacity: -3 })).toThrow(/capacity/);
+    expect(() => new BoundedMailbox({ capacity: 1.5 })).toThrow(/capacity/);
+  });
+
+  test('rejects an unknown overflow policy with OptionsError', () => {
+    expect(() => new BoundedMailbox({ capacity: 1, overflow: 'drop-all' as never })).toThrow(OptionsError);
+    expect(() => new BoundedMailbox({ capacity: 1, overflow: 'drop-all' as never })).toThrow(/overflow/);
+  });
+
+  test('rejects a missing capacity with OptionsError (builder path)', () => {
+    expect(() => new BoundedMailbox(BoundedMailboxOptions.create().withOverflow('reject'))).toThrow(OptionsError);
+    expect(() => new BoundedMailbox({})).toThrow(/capacity/);
   });
 });
 
