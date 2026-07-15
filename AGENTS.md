@@ -17,7 +17,7 @@ deliberately tiny — `fastify` + `ts-pattern` — and everything else
 
 - **Conventional Commits**: `type(scope): subject`. Types in use:
   `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `ci`, `build`.
-  Scope is the module/area, e.g. `http`, `http/ws`, `io`,
+  Scope is the module/area, e.g. `http`, `http/websocket`, `io`,
   `persistence/postgres`, `testkit`, `cluster`, `deps`, `deps-dev`,
   `readme`, `changelog`, `roadmap`, `integration`.
 - **Small, focused commits.** Each commit should keep
@@ -168,9 +168,9 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   reason, value)` for cross-field/bespoke rules. Helpers take **only the field
   name** (typo-checked against `XOptionsType`) and are a **no-op on `undefined`**
   — an unset optional always passes; required-ness stays where it was
-  (`BrokerActor.requiredSettings()` / an explicit guard). Options that are all
+  (`BrokerActor.requiredOptions()` / an explicit guard). Options that are all
   booleans / strings / callbacks get no validator. Rejections throw
-  `OptionsError` (source-agnostic — distinct from `BrokerSettingsError` for
+  `OptionsError` (source-agnostic — distinct from `BrokerOptionsError` for
   missing required fields and `ConfigError` for malformed HOCON).
   - **Validation runs once, at consume time, on the merged settings**, so the
     builder, a plain object, and HOCON are all covered and cross-field rules see
