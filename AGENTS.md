@@ -104,6 +104,14 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   prose is translated. The `i18n` label tracks translation work.
 - Feature or behavior changes also update **`README.md`** and
   **`CHANGELOG.md`**.
+- **The README test-count / coverage badges are bot-maintained** — a CI
+  workflow pushes `chore(readme): update test count + coverage stats
+  [skip ci]` commits directly to `develop` after test runs. Do NOT edit
+  those numbers by hand (the bot overwrites them, with CI-measured values
+  that skip the quarantined multi-node suites via
+  `ACTOR_TS_SKIP_FLAKY_MNS`, so they differ slightly from a local full
+  run). After pushing `develop`, fetch again before branching — a bot
+  commit may already have landed on top.
 - Adding a page: keep `docs/scripts/scaffold.mjs` and the Astro sidebar
   (`docs/astro.config.mjs`) in sync — same path and label.
 
