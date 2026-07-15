@@ -256,10 +256,13 @@ describe('HonoBackend — body size limit', () => {
   // the handler runs (previously the whole body was buffered first).
   test('oversize request never reaches the handler', async () => {
     let called = false;
-    const sysOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
     const system = ActorSystem.create('http-hono-413-guard', sysOptions);
     const ext = system.extension(HttpExtensionId);
-    const backend = new HonoBackend(HonoBackendOptions.create().withMaxBodyBytes(16));
+    const honoOptions = HonoBackendOptions.create().withMaxBodyBytes(16);
+    const backend = new HonoBackend(honoOptions);
     const binding = await ext.newServerAt('127.0.0.1', 0).useBackend(backend)
       .bind(path('up', post(() => { called = true; return complete(Status.OK, 'ok'); })));
     bindings.push({ binding, system });
@@ -274,10 +277,13 @@ describe('HonoBackend — body size limit', () => {
   });
 
   test('a body at/under the cap still reaches the handler', async () => {
-    const sysOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
     const system = ActorSystem.create('http-hono-under-cap', sysOptions);
     const ext = system.extension(HttpExtensionId);
-    const backend = new HonoBackend(HonoBackendOptions.create().withMaxBodyBytes(16));
+    const honoOptions = HonoBackendOptions.create().withMaxBodyBytes(16);
+    const backend = new HonoBackend(honoOptions);
     const binding = await ext.newServerAt('127.0.0.1', 0).useBackend(backend)
       .bind(path('up', post((req) => completeJson(Status.OK, { len: req.body?.byteLength ?? 0 }))));
     bindings.push({ binding, system });
