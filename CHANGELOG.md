@@ -93,6 +93,18 @@ new names.
   `OptionsError` (exported from the package root) where you previously matched
   the ad-hoc `Error` message.  Missing **required** broker settings still throw
   `BrokerOptionsError`; malformed HOCON still throws `ConfigError`.
+- **BREAKING — `InMemoryCache` joins the `XOptions` family.** It now takes an
+  `InMemoryCacheOptions` builder (or plain object) with `withMaxEntries` /
+  `withCleanupMs`, validates via `InMemoryCacheOptionsValidator` (out-of-range
+  values throw `OptionsError` instead of a bare `Error`, and `cleanupMs` — a
+  negative / `NaN` sweep interval — is now checked too), and reads its defaults
+  from HOCON `actor-ts.cache.in-memory.{maxEntries, cleanupMs}` via the
+  `CacheExtension` (previously the bounds were unreachable through the
+  extension).  The internal `InMemoryCacheSettings` interface is **removed** —
+  use `InMemoryCacheOptionsType` (both `InMemoryCacheOptions` and the type are
+  now exported from the package root).  *Migration:* a plain
+  `{ maxEntries, cleanupMs }` object still works unchanged; only the type name
+  changed.
 
 ### Added — HTTP hardening
 
@@ -184,10 +196,11 @@ new names.
   full response body for 24 h) grew it without limit → RAM exhaustion.  It now
   accepts `{ maxEntries?, cleanupMs? }` (defaults `10_000` / `60_000`): a new
   key beyond the cap evicts the least-recently-used entry, and a background
-  sweep reclaims expired entries.  This aligns the implementation with the
-  already-documented `InMemoryCacheSettings`.  *Behaviour change:* the default
+  sweep reclaims expired entries.  *Behaviour change:* the default
   is now bounded — pass `maxEntries: Infinity` for the previous unbounded
-  behaviour (documented OOM risk).
+  behaviour (documented OOM risk).  Options / validation / HOCON plumbing for
+  these fields landed as the `InMemoryCacheOptions` follow-up (see *Changed —
+  Options validation*).
 - **WS-6 (LOW) — CRLF stripped from raw upgrade-reject headers**.  `writeRawHttpResponse` (the Express pre-handshake
   reject path) wrote app-supplied header names/values verbatim onto the raw
   socket, so an `authorize` guard echoing attacker-influenced data into a
