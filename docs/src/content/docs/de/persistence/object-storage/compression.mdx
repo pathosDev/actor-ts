@@ -116,7 +116,18 @@ KB, die sich auf viele GB aufblähen) beim Recovery nicht den Speicher sprengt
 Größe.  Ein Body, der das Limit überschreiten würde, lässt den Read mit einem
 Fehler scheitern, statt den Prozess mit OOM zu beenden.  Snapshots /
 Durable-State sind in der Praxis weit kleiner; wer legitim größere Bodies
-speichert, hebt das Limit über die Decode-Optionen an (oder setzt `Infinity`).
+speichert, hebt das Limit mit `withMaxDecompressedBytes` auf den Store- (oder
+Plugin-)Optionen an:
+
+```ts
+const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
+  .withBackend(backend)
+  .withMaxDecompressedBytes(2 * 1024 * 1024 * 1024);   // 2 GiB; Infinity opts out
+```
+
+`withMaxDecompressedBytes` gibt es auf den Snapshot-Store-, Durable-State-Store-
+und Plugin-Optionen; der Wert wird beim Konstruieren validiert (ein nicht-
+positiver / nicht-ganzzahliger Cap wirft `OptionsError`).
 
 ## Level wechseln
 
