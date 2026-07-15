@@ -1,11 +1,14 @@
 # Build + deploy the Astro Starlight documentation site under `docs/`
 # to GitHub Pages.
 #
-# Strategy: build + deploy when a GitHub Release is published (the same
-# `release: [published]` trigger as `publish.yml`), so the published docs
-# always match the released version.  Not built on develop pushes/PRs (the
-# build is slow).  Build output is never committed; Pages consumes the
-# workflow artifact directly via the `actions/deploy-pages` action.
+# Strategy: build + deploy on pushes to `main`.  `main` only moves when a
+# release is cut (see AGENTS.md → Release strategy), so the published docs
+# still track released versions — without the `release: [published]`
+# trigger, whose runs execute on the TAG ref and are rejected by the
+# `github-pages` environment protection rules (only `main` may deploy;
+# this is how the v0.11.0 docs deploy failed).  Not built on develop
+# pushes/PRs (the build is slow).  Build output is never committed; Pages
+# consumes the workflow artifact directly via `actions/deploy-pages`.
 #
 # **Prerequisite — manual one-time setup**:
 #   Settings → Pages → Source: GitHub Actions
@@ -17,14 +20,14 @@
 name: docs
 
 on:
-  # Fire when a GitHub Release is published — the SAME trigger as
-  # `publish.yml`, so the docs deploy in lockstep with the npm publish and
-  # always match the released version.  Docs are deliberately NOT built on
-  # `develop` pushes/PRs — the build is slow (TypeDoc + Astro +
-  # headless-Chromium Mermaid SSR).  Use workflow_dispatch for an
+  # Fire on pushes to `main` — which happen only at release time — so the
+  # docs deploy in lockstep with the npm publish and run on a ref the
+  # `github-pages` environment protection accepts.  Docs are deliberately
+  # NOT built on `develop` pushes/PRs — the build is slow (TypeDoc +
+  # Astro + headless-Chromium Mermaid SSR).  Use workflow_dispatch for an
   # out-of-band rebuild.
-  release:
-    types: [published]
+  push:
+    branches: [main]
   workflow_dispatch:
 
 # Avoid in-flight workflow conflicts: cancel any older run on the same

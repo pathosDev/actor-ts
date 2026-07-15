@@ -62,6 +62,19 @@ jobs:
         with:
           bun-version: latest
 
+      # Install in a Bun-only environment (no Node on PATH), exactly like
+      # publish.yml: better-sqlite3's postinstall then resolves a prebuilt
+      # binary for Bun's ABI instead of falling back to a node-gyp source
+      # build — `bunx node-gyp@latest` is node-gyp 13+, whose undici
+      # requires Node >= 22 and crashes on this job's Node 20 floor
+      # ("webidl.util.markAsUncloneable is not a function").  No smoke
+      # case touches better-sqlite3, so the Bun-ABI binary is inert for
+      # the Node/Deno runs.
+      - name: Install
+        run: bun install
+
+      # Node/Deno are set up AFTER the install (see above).  Node stays on
+      # 20 deliberately — it is the `engines` floor we claim to support.
       - name: Setup Node.js
         if: matrix.runtime == 'node'
         uses: actions/setup-node@v6
@@ -73,9 +86,6 @@ jobs:
         uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-
-      - name: Install
-        run: bun install
 
       # Bun + Deno can load TS directly.  Node 20 cannot — needs
       # the compiled output in `dist/`.  Build only for runtimes
