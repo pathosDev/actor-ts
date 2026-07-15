@@ -35,27 +35,27 @@ describe('wireConnection — maxConnections admission cap (WS-5)', () => {
     const { hub, tells } = makeHub();
     const policy = { ...DEFAULT_WEBSOCKET_POLICY, maxConnections: 2 };
     const codec = jsonCodec() as never;
-    const s1 = fakeSocket(); const s2 = fakeSocket(); const s3 = fakeSocket();
+    const socket1 = fakeSocket(); const socket2 = fakeSocket(); const socket3 = fakeSocket();
 
-    wireConnection({} as never, hub, req, s1.socket, codec, policy);
-    wireConnection({} as never, hub, req, s2.socket, codec, policy);
-    wireConnection({} as never, hub, req, s3.socket, codec, policy);
+    wireConnection({} as never, hub, req, socket1.socket, codec, policy);
+    wireConnection({} as never, hub, req, socket2.socket, codec, policy);
+    wireConnection({} as never, hub, req, socket3.socket, codec, policy);
 
     expect(tells.length).toBe(2);        // first two admitted (hub told)
-    expect(s1.closes.length).toBe(0);
-    expect(s2.closes.length).toBe(0);
-    expect(s3.closes).toEqual([{ code: 1013, reason: 'server at capacity' }]);  // third rejected
+    expect(socket1.closes.length).toBe(0);
+    expect(socket2.closes.length).toBe(0);
+    expect(socket3.closes).toEqual([{ code: 1013, reason: 'server at capacity' }]);  // third rejected
   });
 
   test('separate hubs (routes) have independent counts', () => {
-    const a = makeHub(); const b = makeHub();
+    const hubA = makeHub(); const hubB = makeHub();
     const policy = { ...DEFAULT_WEBSOCKET_POLICY, maxConnections: 1 };
     const codec = jsonCodec() as never;
-    wireConnection({} as never, a.hub, req, fakeSocket().socket, codec, policy);
+    wireConnection({} as never, hubA.hub, req, fakeSocket().socket, codec, policy);
     const bSock = fakeSocket();
-    wireConnection({} as never, b.hub, req, bSock.socket, codec, policy);   // different hub → own budget
-    expect(a.tells.length).toBe(1);
-    expect(b.tells.length).toBe(1);
+    wireConnection({} as never, hubB.hub, req, bSock.socket, codec, policy);   // different hub → own budget
+    expect(hubA.tells.length).toBe(1);
+    expect(hubB.tells.length).toBe(1);
     expect(bSock.closes.length).toBe(0);
   });
 
