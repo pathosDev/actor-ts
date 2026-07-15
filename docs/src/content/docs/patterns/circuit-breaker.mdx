@@ -98,6 +98,11 @@ new CircuitBreaker({
 });
 ```
 
+The options are validated at construction: a missing or non-positive
+`maxFailures`, a negative `resetTimeoutMs`, or a non-positive
+`callTimeoutMs` throws `OptionsError` (omit `callTimeoutMs` entirely to
+disable the per-call timeout).
+
 ### Open → half-open
 
 Once open, every call rejects with `CircuitBreakerOpenError`
