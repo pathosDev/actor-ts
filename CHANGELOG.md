@@ -33,6 +33,10 @@ new names.
   Wire/discriminator string literals are unchanged.
   *Migration:* e.g. `MqttCmd` → `MqttCommand`, `EnvelopeMsg` →
   `EnvelopeMessage`, `SubscribeAck` → `SubscribeAcknowledgment`.
+- **BREAKING — testkit assertions spelled out too:** `TestProbe.expectMsg()`
+  → `expectMessage()`, `TestProbe.expectMsgType()` → `expectMessageType()` —
+  the last `Msg` holdouts, now consistent with `expectNoMessage()`.
+  *Migration:* rename the calls; signatures and behavior are unchanged.
 - **BREAKING — one config vocabulary: `Options`, never `Settings`.**
   Remaining `*Settings` types → `*OptionsType` (`CircuitBreakerSettings`,
   `TlsTransportSettings`, `Bounded/PriorityMailboxSettings`,
