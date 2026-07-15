@@ -69,7 +69,7 @@ rateLimit({
   max: 100,
   key:    (req) => {
     const userId = extractUserId(req);
-    return userId ? `user:${userId}` : `ip:${req.ip}`;
+    return userId ? `user:${userId}` : `ip:${req.remoteAddress ?? 'unknown'}`;
   },
 });
 ```
@@ -105,7 +105,6 @@ Die Middleware setzt:
 ```
 X-RateLimit-Limit:     100
 X-RateLimit-Remaining: 47
-X-RateLimit-Reset:     1716297600   ← Unix-Zeitstempel, wann das Fenster zurückgesetzt wird
 Retry-After:           23           ← (nur bei 429) Sekunden bis zum Reset
 ```
 
@@ -149,12 +148,12 @@ Drei gute Einsatzfälle:
 // Unterschiedliche Limits pro Handler:
 const apiLimited = rateLimit({
   cache, windowMs: 60_000, max: 1000,
-  key: (req) => req.headers['x-user-id'] ?? req.headers['x-forwarded-for'] ?? 'anon',
+  key: (req) => req.headers['x-user-id'] ?? req.remoteAddress ?? 'anon',
 });
 
 const loginLimited = rateLimit({
   cache, windowMs: 60_000, max: 10,
-  key: (req) => `login:${req.headers['x-forwarded-for'] ?? 'unknown'}`,
+  key: (req) => `login:${req.remoteAddress ?? 'unknown'}`,
 });
 
 const routes = concat(
