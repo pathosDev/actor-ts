@@ -317,13 +317,13 @@ MqttOptions: protocolVersion must be one of 4, 5 (got 6)
 - For **broker actors** (MQTT, Kafka, WebSocket client, …) the error is
   raised when the actor starts (`preStart`), after the required-field
   check — so a *missing* required setting still surfaces as
-  `BrokerSettingsError`, and only *present-but-invalid* values become
+  `BrokerOptionsError`, and only *present-but-invalid* values become
   `OptionsError`.
 - For **non-broker consumers** (caches, leases, sharding, …) the error is
   raised from the constructor.
 
 `OptionsError` is distinct from `ConfigError` (malformed HOCON — wrong
-type, missing path) and `BrokerSettingsError` (a required broker setting
+type, missing path) and `BrokerOptionsError` (a required broker setting
 absent from every layer).  Unset optional fields never trigger it; they
 fall through to their defaults.
 

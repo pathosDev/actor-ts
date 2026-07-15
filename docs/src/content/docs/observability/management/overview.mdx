@@ -32,13 +32,13 @@ you register liveness / readiness checks on.
 
 ## Configuration
 
-The third argument is `ManagementRoutesSettings` — endpoint
+The third argument is `ManagementRoutesOptions` — endpoint
 toggles and optional middleware.  The **port and host are not
 settings**: they go to `system.http(port, { host })`, and the
 `cluster` is the second positional argument.
 
 ```ts
-interface ManagementRoutesSettings {
+interface ManagementRoutesOptionsType {
   enableLeaveEndpoint?:   boolean;    // POST /cluster/leave (default false)
   enableDownEndpoint?:    boolean;    // POST /cluster/down  (default false)
   enableMetricsEndpoint?: boolean;    // GET  /metrics       (default false)

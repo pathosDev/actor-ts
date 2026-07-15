@@ -110,7 +110,7 @@ to Cross-Site WebSocket Hijacking: any web page can open
 Set `allowedOrigins` to gate the handshake by the browser `Origin` header:
 
 ```ts
-const wsOptions = WebSocketRouteOptions.create()
+const wsOptions = WebsocketRouteOptions.create()
   .withAllowedOrigins(['https://app.example.com']);
 websocket('/ws', chat, wsOptions);
 ```

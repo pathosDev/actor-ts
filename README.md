@@ -77,7 +77,7 @@ A short tour of what's in the box:
   configurable thing (or a plain object), with values validated once on the
   merged settings (builder / object / HOCON alike) — a bad port, timeout, or
   URL throws an `OptionsError` at startup, not deep in a later code path.
-- **Observability** — Prometheus exporter, OTel tracing + metrics, management
+- **Observability** — Prometheus exporter, OTel tracing, management
   HTTP endpoints (`/health`, `/ready`, `/cluster/members`, `/sharding/regions`),
   out-of-the-box stock metrics.
 - **TestKit** — `TestProbe`, `ManualScheduler`, `MultiNodeSpec` for

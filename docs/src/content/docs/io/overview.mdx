@@ -40,7 +40,7 @@ flowchart TB
   class ETC etc
 ```
 
-Subclasses implement three hooks (`connectImpl`, `disconnectImpl`,
+Subclasses implement three hooks (`connectImplementation`, `disconnectImplementation`,
 `dispatchOutgoing`); the base handles the rest.
 
 ## The available brokers
@@ -84,9 +84,9 @@ stateDiagram-v2
 Linear transitions during normal operation:
 
 - **`disconnected`** — initial state; not currently connected.
-- **`connecting`** — `connectImpl` is running.
+- **`connecting`** — `connectImplementation` is running.
 - **`connected`** — connection is up; messages flow.
-- **`disconnecting`** — `disconnectImpl` is running.
+- **`disconnecting`** — `disconnectImplementation` is running.
 
 Failure during `connected` triggers a transition to `disconnected`
 + a reconnect loop.  Stop transitions through `disconnecting` from
@@ -244,10 +244,10 @@ class MyProtocolActor extends BrokerActor<MyOutbound> {
   protected readOptionsFromConfig(c) { /* parse HOCON */ }
   protected requiredOptions() { return ['url']; }
 
-  protected async connectImpl(): Promise<void> {
+  protected async connectImplementation(): Promise<void> {
     // Establish the connection.  Throw on failure.
   }
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     // Clean up the connection.
   }
   protected async dispatchOutgoing(env: OutboundEnvelope<MyOutbound>): Promise<void> {

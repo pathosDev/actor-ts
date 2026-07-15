@@ -113,7 +113,7 @@ Mit `allowedOrigins` wird der Handshake über den `Origin`-Header des Browsers
 abgesichert:
 
 ```ts
-const wsOptions = WebSocketRouteOptions.create()
+const wsOptions = WebsocketRouteOptions.create()
   .withAllowedOrigins(['https://app.example.com']);
 websocket('/ws', chat, wsOptions);
 ```
