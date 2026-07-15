@@ -230,9 +230,11 @@ the view + offset atomically).  See
 
 ### What about TypeScript versions?
 
-We test against **TypeScript 5.6+**.  Earlier versions may work
-but aren't supported.  The framework uses some features
-(e.g., `const` type parameters) that landed in recent releases.
+The framework itself builds and typechecks with **TypeScript 7**
+(the native compiler); the published types are consumable from
+**TypeScript 5.6+** (the `typescript` peer-dependency range is
+`^5.6 || ^6 || ^7`).  Earlier versions may work but aren't
+supported.
 
 ### Why ts-pattern?
 

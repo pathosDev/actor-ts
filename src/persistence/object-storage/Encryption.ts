@@ -1,7 +1,7 @@
 /**
  * Client-side encryption helpers for snapshots / durable-state bodies.
  *
- * Uses WebCrypto (`globalThis.crypto.subtle`) — present on Bun, Node 20+,
+ * Uses WebCrypto (`globalThis.crypto.subtle`) — present on Bun, Node,
  * and Deno without any extra import.  AES-256-GCM is the standard
  * authenticated-encryption mode; the IV is per-message (12 bytes) and
  * the auth tag is appended to the ciphertext by the algorithm.
@@ -24,7 +24,7 @@ function getSubtle(): SubtleCrypto {
   if (!subtle) {
     throw new Error(
       'SubtleCrypto is not available in this runtime.  Client-side '
-      + 'encryption requires WebCrypto support — Node 20+, Bun, or '
+      + 'encryption requires WebCrypto support — Node, Bun, or '
       + 'Deno.  In bundled/edge environments, ensure the bundler '
       + 'includes a WebCrypto polyfill.',
     );

@@ -7,7 +7,7 @@ already follows; keep them consistent.
 ## Project snapshot
 
 `actor-ts` is a **pre-1.0** actor-model framework for TypeScript that
-runs on **Bun, Node.js (≥ 20), and Deno**. ESM throughout; **Bun** is
+runs on **Bun, Node.js (≥ 24), and Deno**. ESM throughout; **Bun** is
 the primary toolchain (`bun test`, `bunx tsc`). Runtime dependencies are
 deliberately tiny — `fastify` + `ts-pattern` — and everything else
 (Express, Hono, `ws`, brokers, SQL/Cassandra drivers, S3, …) is an
@@ -128,7 +128,7 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
 
 ## Runtime portability
 
-- Code must run on **Bun, Node ≥ 20, and Deno**. Runtime-specific
+- Code must run on **Bun, Node ≥ 24, and Deno**. Runtime-specific
   primitives (HTTP serve, sockets, workers, SQLite, …) live behind small
   abstractions in **`src/runtime/`** and auto-detect at startup.
 - **Optional peer dependencies:** `import()` them lazily with a clear

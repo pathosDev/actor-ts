@@ -11,6 +11,36 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — runtime floors raised: Node ≥ 24, Bun ≥ 1.3.**  Node 20
+  reached end-of-life in April 2026 (no more security fixes); Node 24 is
+  the oldest active LTS line (supported to April 2028) and the first
+  floor on which everything the framework relies on — WebSocket client,
+  zstd, WebCrypto, fetch — is native.  The Bun floor moves from the
+  two-year-old, never-CI-tested 1.1 claim to 1.3, which CI now actually
+  exercises (the multi-runtime smoke matrix runs Bun on `latest` *and*
+  pinned 1.3.0; integration Docker images are pinned to
+  `oven/bun:1.3-debian`).  Deno stays ≥ 2.0.
+  *Migration:* upgrade to Node ≥ 24 / Bun ≥ 1.3.
+- **BREAKING — `WebsocketClientActor` always uses the native
+  `WebSocket`.**  The dynamic `ws` fallback for
+  Node < 22 is gone, and with it the `headers` client option
+  (`withHeaders` builder + the `headers` HOCON key under
+  `actor-ts.io.broker.websocket`) — only the `ws` path could send
+  custom handshake headers, so on native runtimes the option was
+  already silently ignored.  `ws` remains an optional peer dependency
+  for server-side upgrades on the Express backend.
+  *Migration:* pass credentials via query parameter or subprotocol,
+  exactly as browser clients must.
+- **BREAKING — `typescript` peerDependency is now
+  `^5.6.0 || ^6.0.0 || ^7.0.0`** — it finally admits TypeScript 7 (the
+  native compiler the repo itself builds with since 6.0.3 → 7.0.2) and
+  raises the floor from the never-verified 5.0 to 5.6, the single
+  minimum now stated everywhere (README badge, FAQ, peer range).
+- `@types/node` is pinned to the support floor (24) instead of the
+  newest major, so framework code can't accidentally use Node-26-only
+  APIs; the publish workflow drops its `npm@11` upgrade step (Node 24
+  bundles npm ≥ 11.5.1, the trusted-publishing minimum).
+
 - **TypeScript 7 — the native compiler** (#361).  The `typescript`
   devDependency moved from 6.0.3 to **7.0.2**, Microsoft's ground-up native
   (Go) port of the compiler that replaces the JavaScript-based `tsc`.  The

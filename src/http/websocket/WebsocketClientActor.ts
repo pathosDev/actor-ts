@@ -129,12 +129,6 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     if (config.hasPath('protocols')) out.protocols = config.getStringList('protocols');
     if (config.hasPath('pingIntervalMs')) out.pingIntervalMs = config.getDuration('pingIntervalMs');
     if (config.hasPath('maxFrameBytes')) out.maxFrameBytes = config.getBytes('maxFrameBytes');
-    if (config.hasPath('headers')) {
-      const obj = config.getObject('headers');
-      const headers: Record<string, string> = {};
-      for (const [k, v] of Object.entries(obj)) if (typeof v === 'string') headers[k] = v;
-      out.headers = headers;
-    }
     return out;
   }
 
@@ -142,7 +136,6 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     const ctor = await websocketClientConstructor.get();
     const ws = ctor.create(this.options.url!, {
       protocols: this.options.protocols,
-      headers: this.options.headers,
     });
     return new Promise<void>((resolve, reject) => {
       let settled = false;

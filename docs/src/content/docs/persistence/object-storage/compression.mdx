@@ -70,7 +70,7 @@ storage cost dominates.
 zstd support differs by **direction**:
 
 - **Compress (write)** — native only: **Bun** (`Bun.zstdCompressSync`)
-  or **Node ≥ 22.15** (`zlib.zstdCompressSync`).  There is no
+  or **Node** (`zlib.zstdCompressSync`).  There is no
   pure-JS fallback for writing; the optional `fzstd` peer
   dependency is **decompress-only**.  Selecting `zstd` on a runtime
   without native support fails fast — eagerly at plugin
@@ -144,7 +144,7 @@ level per-actor at any time without touching existing data.
 use large match windows.  The pure-JS `fzstd` decompress fallback
 caps the back-reference window at 2²⁵ (32 MB) and may be unable to
 read ultra-level frames.  If any **reader** in your fleet might run
-without native zstd (i.e. not Bun and not Node ≥ 22.15), keep the
+without native zstd (i.e. neither Bun nor Node — e.g. Deno), keep the
 level **≤ 19**.  On native readers there is no such limit.
 </aside>
 

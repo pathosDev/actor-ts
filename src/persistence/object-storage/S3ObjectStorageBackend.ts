@@ -258,7 +258,7 @@ function isS3NotFound(e: unknown): boolean {
 
 /**
  * AWS SDK v3 returns `Body` as a stream-like object with helper methods
- * (`transformToByteArray`, `transformToString`).  Bun & Node 20+ provide
+ * (`transformToByteArray`, `transformToString`).  Bun & Node provide
  * `.transformToByteArray()` directly; we fall back to manual stream
  * reading for older shims.
  */

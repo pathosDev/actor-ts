@@ -10,9 +10,9 @@
 </p>
 
 <p align="center">
-  <a href="#"><img alt="typescript" src="https://img.shields.io/badge/typescript-5.4+-3178c6?style=flat-square&logo=typescript&logoColor=white"/></a>
-  <a href="#"><img alt="bun" src="https://img.shields.io/badge/bun-%3E%3D1.1-f7bf88?style=flat-square&logo=bun&logoColor=white"/></a>
-  <a href="#"><img alt="node" src="https://img.shields.io/badge/node-%3E%3D20-339933?style=flat-square&logo=node.js&logoColor=white"/></a>
+  <a href="#"><img alt="typescript" src="https://img.shields.io/badge/typescript-5.6+-3178c6?style=flat-square&logo=typescript&logoColor=white"/></a>
+  <a href="#"><img alt="bun" src="https://img.shields.io/badge/bun-%3E%3D1.3-f7bf88?style=flat-square&logo=bun&logoColor=white"/></a>
+  <a href="#"><img alt="node" src="https://img.shields.io/badge/node-%3E%3D24-339933?style=flat-square&logo=node.js&logoColor=white"/></a>
   <a href="#"><img alt="deno" src="https://img.shields.io/badge/deno-%3E%3D2.0-000000?style=flat-square&logo=deno&logoColor=white"/></a>
 </p>
 

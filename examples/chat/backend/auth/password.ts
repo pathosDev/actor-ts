@@ -17,8 +17,8 @@
  *   - `r = 8`           — block size, standard.
  *   - `p = 1`           — parallelism, standard.
  *   - `keyLen = 32`     — 256-bit output.
- *   - `maxmem = 64 MiB` — required because the default 32 MiB cap
- *     is sometimes not enough at N=16384 on Node 20+.
+ *   - `maxmem = 64 MiB` — required because Node's default 32 MiB cap
+ *     is sometimes not enough at N=16384.
  *
  * These give ~10 ms per verify on a modern laptop — slow enough that
  * a stolen hash list costs significant compute to brute-force, fast

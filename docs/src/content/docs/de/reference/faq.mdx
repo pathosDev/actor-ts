@@ -246,10 +246,11 @@ Für exactly-once-Semantik muss die Projektion idempotent sein
 
 ### Was ist mit TypeScript-Versionen?
 
-Wir testen gegen **TypeScript 5.6+**.  Frühere Versionen
-funktionieren möglicherweise, werden aber nicht unterstützt.
-Das Framework verwendet einige Features (z. B. `const`-
-Typparameter), die in jüngsten Releases gelandet sind.
+Das Framework selbst baut und typechecked mit **TypeScript 7**
+(dem nativen Compiler); die veröffentlichten Typen sind ab
+**TypeScript 5.6+** konsumierbar (die `typescript`-Peer-Dependency
+erlaubt `^5.6 || ^6 || ^7`).  Frühere Versionen funktionieren
+möglicherweise, werden aber nicht unterstützt.
 
 ### Warum ts-pattern?
 

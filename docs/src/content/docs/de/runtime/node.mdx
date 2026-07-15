@@ -1,9 +1,9 @@
 ---
 title: Node.js
-description: Node.js 20 oder neuer ist voll unterstützt. Ein paar Subsysteme brauchen Peer-Dependencies (`better-sqlite3` für SQLite, `ws` für WebSocket-Server). Nutze Node, wenn deine Plattform es verlangt oder dein Team schon Node betreibt.
+description: Node.js 24 oder neuer ist voll unterstützt. Ein paar Subsysteme brauchen Peer-Dependencies (`better-sqlite3` für SQLite, `ws` für WebSocket-Server). Nutze Node, wenn deine Plattform es verlangt oder dein Team schon Node betreibt.
 ---
 
-actor-ts läuft auf **Node.js 20 und neuer**. Voll unterstützt;
+actor-ts läuft auf **Node.js 24 und neuer**. Voll unterstützt;
 die CI des Frameworks läuft neben Bun auch gegen Node.
 
 ## Warum Node
@@ -22,15 +22,15 @@ Start.
 ## Installation
 
 ```bash
-nvm install 20
-nvm use 20
-node --version    # v20.0.0 oder neuer
+nvm install 24
+nvm use 24
+node --version    # v24.0.0 oder neuer
 ```
 
 Für Docker:
 
 ```dockerfile
-FROM node:20-alpine
+FROM node:24-alpine
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
@@ -38,35 +38,28 @@ COPY . .
 CMD ["node", "dist/main.js"]
 ```
 
-## Warum Node 20 als Untergrenze
+## Warum Node 24 als Untergrenze
 
-Das Framework braucht:
+Node 24 ist die älteste **aktive LTS-Linie** (Node 20 hat im
+April 2026 sein End-of-Life erreicht, Node 22 ist im
+Maintenance-Modus). Alles, worauf das Framework sich stützt,
+ist dort nativ an Bord:
 
-- **`globalThis.crypto.subtle`** (WebCrypto) — auf Node 20+
-  vorhanden; genutzt für AES-GCM in Object-Storage-
-  Verschlüsselung.
-- **Eingebautes `fetch`** — stabil auf Node 18+.
-- **`AsyncLocalStorage`** — lang stabil.
-- **`node:test`** — braucht Node 20.
+- **`globalThis.crypto.subtle`** (WebCrypto) — genutzt für
+  AES-GCM in Object-Storage-Verschlüsselung.
+- **Eingebautes `fetch`** und ein **nativer `WebSocket`**-Client —
+  kein `ws`-Fallback für den `WebsocketClientActor` nötig.
+  (Serverseitige `websocket()`-Routen brauchen weiterhin `ws`
+  auf Express, `@fastify/websocket` auf Fastify oder
+  `@hono/node-ws` auf Hono.)
+- **Native `zstd`-Kompression** — `zstdCompress` /
+  `zstdDecompress` in `node:zlib`, Object-Storage-zstd
+  funktioniert also ohne `fzstd`.
+- **`AsyncLocalStorage`** und **`node:test`** — lang stabil.
 
-Node 18 funktioniert vielleicht für die Core-Actor-API, wird
-aber nicht aktiv getestet — melde Bugs nur gegen Node 20+.
-
-Ein paar Features unlocken nativ auf **neueren Node-Versionen**
-(ohne Peer-Dep-Fallback):
-
-- **Natives `WebSocket`** — globaler `WebSocket`-Konstruktor
-  ist auf Node 22+ eingebaut. Auf Node 20 installiere die
-  `ws`-Peer-Dep für `WebsocketClientActor`. Serverseitige
-  `websocket()`-Routen brauchen zusätzlich `@fastify/websocket`
-  (Fastify) oder `@hono/node-ws` (Hono) auf Node.
-- **Native `zstd`-Kompression** — `node:zlib` bekam
-  `zstdCompress` / `zstdDecompress` auf Node 22.15. Auf älterem
-  Node installiere die `fzstd`-Peer-Dep für Object-Storage-
-  zstd-Codecs.
-
-Beide Peer-Dep-Pfade sind gut getestet; „braucht eine Peer-Dep"
-heißt nicht „kaputt auf Node 20."
+Ältere Node-Versionen führen die Core-Actor-API vielleicht aus,
+werden aber weder getestet noch unterstützt — melde Bugs nur
+gegen Node 24+.
 
 ## Peer-Dependencies
 
@@ -76,7 +69,6 @@ mitliefert:
 | Subsystem | Peer-Dep |
 | --- | --- |
 | SQLite-Journal / -Snapshot-Store / -State | `better-sqlite3` |
-| WebSocket-Client (`WebsocketClientActor`) | `ws` |
 | WebSocket-Server (`websocket()`-Route) | `@fastify/websocket` (Fastify), `@hono/node-ws` (Hono) oder `ws` (Express) |
 | Kafka | `kafkajs` |
 | MQTT | `mqtt` |
@@ -187,7 +179,7 @@ nicht. Für hochdurchsatz-starke Tight-Loop-Arbeit gewinnt Bun.
 
 ```yaml
 # Lambda-Function-Definition:
-Runtime: nodejs20.x
+Runtime: nodejs24.x
 MemorySize: 1024
 Handler: dist/main.handler
 ```
@@ -228,7 +220,7 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Node-Version-Drift zwischen Dev und Prod">
   ```json
   // package.json
-  { "engines": { "node": ">=20" } }
+  { "engines": { "node": ">=24" } }
   ```
   Pinne die Node-Version in `engines`. Ohne sie nutzt Dev
   vielleicht Node 24 und Prod Node 18 — subtile API-Unterschiede

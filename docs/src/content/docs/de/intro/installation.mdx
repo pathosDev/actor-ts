@@ -15,8 +15,8 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 | Runtime | Mindestversion | Hinweise |
 | --- | --- | --- |
-| **Bun** | 1.1 | Empfohlen für Entwicklung — schnellster Startup, natives SQLite via `bun:sqlite`, nativer WebSocket-Server. |
-| **Node.js** | 20.0 | Kern funktioniert auf 20+.  Node 22+ aktiviert nativen WebSocket ohne `ws`-Peer-Dep; Node 22.15+ aktiviert native zstd-Kompression ohne `fzstd`.  SQLite via `better-sqlite3` (Peer-Dep). |
+| **Bun** | 1.3 | Empfohlen für Entwicklung — schnellster Startup, natives SQLite via `bun:sqlite`, nativer WebSocket-Server. |
+| **Node.js** | 24.0 | Bringt alles nativ mit: WebSocket-Client, zstd-Kompression, WebCrypto, fetch.  SQLite via `better-sqlite3` (Peer-Dep). |
 | **Deno** | 2.0 | Verwende den `npm:`-Specifier — `import { ... } from 'npm:actor-ts'`.  Mit `--allow-net` / `--allow-read` ausführen, wenn nötig. |
 
 Das Framework erkennt automatisch, unter welcher Runtime es ausgeführt
@@ -111,7 +111,7 @@ bun add hono @hono/node-server    # @hono/node-server ist Node-only
 | `amqplib` | `AmqpActor` — RabbitMQ + AMQP-kompatible Broker. |
 | `nats` | `NatsActor` — inklusive JetStream-Subjects. |
 | `@grpc/grpc-js` + `@grpc/proto-loader` | `GrpcClientActor` + `GrpcServerActor`. |
-| `ws` | `WebsocketClientActor` (ausgehender Client auf Node < 22) + serverseitige WebSocket-Upgrades auf dem Express-Backend. |
+| `ws` | Serverseitige WebSocket-Upgrades auf dem Express-Backend.  (Der `WebsocketClientActor` nutzt das native `WebSocket` der Runtime — keine Peer-Dep.) |
 | `@fastify/websocket` | `websocket()`-Routen auf dem Fastify-Backend. |
 | `@hono/node-ws` | `websocket()`-Routen auf dem Hono-Backend (nur Node — Bun/Deno liefern die Helper in `hono` mit). |
 
@@ -206,14 +206,12 @@ aus.
 </Aside>
 
 <Aside type="caution" title="Ältere Node-Versionen">
-  actor-ts benötigt Node ≥ 20.0.  Auf Node 20.x funktioniert der
-  Kern, aber einige optionale Features fallen auf
-  Peer-Dep-Implementierungen zurück: der `WebsocketClientActor`
-  braucht das `ws`-Paket (Node 22+ hat es nativ), und zstd-Kompression
-  braucht `fzstd` (Node 22.15+ hat es nativ).  Serverseitige
-  `websocket()`-Routen brauchen `@fastify/websocket` auf dem
-  Fastify-Backend oder `@hono/node-ws` auf dem Hono-Backend, wenn sie
-  auf Node laufen.  Node ≤ 19 wird nicht unterstützt.
+  actor-ts benötigt Node ≥ 24.0 (die älteste aktive LTS-Linie; Node 20
+  hat im April 2026 sein End-of-Life erreicht).  Serverseitige
+  `websocket()`-Routen brauchen `ws` auf dem Express-Backend,
+  `@fastify/websocket` auf dem Fastify-Backend oder `@hono/node-ws`
+  auf dem Hono-Backend, wenn sie auf Node laufen.  Node ≤ 23 wird
+  nicht unterstützt.
 </Aside>
 
 <Aside type="caution" title="Fehlende Peer-Dependency zur Laufzeit">

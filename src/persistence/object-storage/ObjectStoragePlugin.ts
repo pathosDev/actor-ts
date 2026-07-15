@@ -64,7 +64,7 @@ export interface ObjectStoragePluginHandles {
  * **Eager peer-dep validation (#18, #59).**  Before returning, this
  * function probes any optional peer-dependency the configured codecs
  * need — `fzstd` for `compression: 'zstd'` (when neither Bun nor
- * Node 22.15+ provides a native impl), `SubtleCrypto` when any
+ * Node provides a native impl), `SubtleCrypto` when any
  * encryption config is supplied.  A failing probe surfaces the
  * "install X" message **here**, at registration time, instead of
  * silently surviving until the first persist call.  For resolvers

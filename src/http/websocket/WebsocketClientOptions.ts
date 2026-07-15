@@ -37,8 +37,6 @@ export interface WebsocketClientOptionsType<TOut = unknown, TIn = unknown> exten
   /** WebSocket URL (`ws://…` or `wss://…`).  Required (ctor or HOCON). */
   readonly url?: string;
   readonly protocols?: string | ReadonlyArray<string>;
-  /** Custom request headers — Node/`ws` only; native/browsers ignore them. */
-  readonly headers?: Readonly<Record<string, string>>;
   /** Wire codec.  Default: `jsonCodec<TOut, TIn>()`. */
   readonly codec?: WebsocketCodec<TOut, TIn>;
   /** Inbound frame size cap; oversize frames are dropped with a warning.  Default 1 MiB. */
@@ -65,11 +63,6 @@ export class WebsocketClientOptionsBuilder<TOut = unknown, TIn = unknown>
   /** Sub-protocol(s) offered in the handshake. */
   withProtocols(protocols: string | ReadonlyArray<string>): this {
     return this.set('protocols', protocols);
-  }
-
-  /** Custom request headers — Node/`ws` only; native/browsers ignore them. */
-  withHeaders(headers: Readonly<Record<string, string>>): this {
-    return this.set('headers', headers);
   }
 
   /** Wire codec.  Default: `jsonCodec<TOut, TIn>()`. */

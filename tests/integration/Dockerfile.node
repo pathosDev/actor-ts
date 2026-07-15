@@ -20,7 +20,7 @@
 # `lib/partition.ts` shells out to).  `slim` would also work and
 # would save ~50 MB; sticking with the full `debian` for the more-
 # standard userland (less surprise debugging container internals).
-FROM oven/bun:debian
+FROM oven/bun:1.3-debian
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \

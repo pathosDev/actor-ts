@@ -5,8 +5,10 @@ name: multi-runtime
 # tests/smoke/run-cases.mjs discovers cases under
 # tests/smoke/cases/*.mjs and runs every one on each runtime —
 # adding a new case is dropping a new file, no CI edits required.
-# Job matrix keeps the three runs parallel so the wall clock is
-# bounded by the slowest runtime (Deno, ~30s including the build step).
+# Job matrix keeps the runs parallel so the wall clock is bounded
+# by the slowest runtime (Deno, ~30s including the build step).
+# Bun runs twice: once on `latest` and once pinned to the `engines`
+# floor (1.3.0), so the floor we claim is actually exercised.
 #
 # Bun additionally runs the full `bun test` suite — the unit /
 # multi-node suite uses bun:test's APIs and isn't portable to
@@ -48,7 +50,7 @@ jobs:
       # Node-only one.  Each runtime gets its own red mark.
       fail-fast: false
       matrix:
-        runtime: [bun, node, deno]
+        runtime: [bun, bun-floor, node, deno]
     name: smoke (${{ matrix.runtime }})
     steps:
       - uses: actions/checkout@v7
@@ -56,30 +58,28 @@ jobs:
       # Every job needs Bun even for the Node/Deno runs because the
       # build step (`bun run build`) emits `dist/` which Node/Deno
       # consume.  Bun's `setup-bun@v2` is fast (~3s cached) so the
-      # overhead is acceptable.
+      # overhead is acceptable.  `bun-floor` pins the `engines` floor
+      # instead of `latest`.
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: ${{ matrix.runtime == 'bun-floor' && '1.3.0' || 'latest' }}
 
       # Install in a Bun-only environment (no Node on PATH), exactly like
       # publish.yml: better-sqlite3's postinstall then resolves a prebuilt
       # binary for Bun's ABI instead of falling back to a node-gyp source
-      # build — `bunx node-gyp@latest` is node-gyp 13+, whose undici
-      # requires Node >= 22 and crashes on this job's Node 20 floor
-      # ("webidl.util.markAsUncloneable is not a function").  No smoke
-      # case touches better-sqlite3, so the Bun-ABI binary is inert for
-      # the Node/Deno runs.
+      # build.  No smoke case touches better-sqlite3, so the Bun-ABI
+      # binary is inert for the Node/Deno runs.
       - name: Install
         run: bun install
 
       # Node/Deno are set up AFTER the install (see above).  Node stays on
-      # 20 deliberately — it is the `engines` floor we claim to support.
+      # 24 deliberately — it is the `engines` floor we claim to support.
       - name: Setup Node.js
         if: matrix.runtime == 'node'
         uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Setup Deno
         if: matrix.runtime == 'deno'
@@ -87,15 +87,16 @@ jobs:
         with:
           deno-version: v2.x
 
-      # Bun + Deno can load TS directly.  Node 20 cannot — needs
-      # the compiled output in `dist/`.  Build only for runtimes
-      # that need it; saves ~20s on Bun's smoke job.
+      # Bun + Deno can load TS directly.  The Node job runs the compiled
+      # output in `dist/` — deliberately, since that is the surface
+      # end-users consume.  Build only for runtimes that need it;
+      # saves ~20s on the Bun smoke jobs.
       - name: Build (tsc → dist/)
-        if: matrix.runtime != 'bun'
+        if: ${{ !startsWith(matrix.runtime, 'bun') }}
         run: bun run build
 
       - name: Smoke (Bun)
-        if: matrix.runtime == 'bun'
+        if: startsWith(matrix.runtime, 'bun')
         run: bun run smoke:bun
 
       - name: Smoke (Node)

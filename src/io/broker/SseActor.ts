@@ -159,7 +159,7 @@ const fetchLazy: Lazy<Promise<FetchModule>> = Lazy.of(async () => {
   const fetchImpl = (globalThis as { fetch?: FetchModule }).fetch;
   if (typeof fetchImpl === 'function') return fetchImpl;
   throw new Error(
-    'SseActor needs a global `fetch` (Bun, Node ≥18, Deno all provide one).  '
-    + 'On older Node versions, polyfill via `npm install undici` and `globalThis.fetch = require("undici").fetch`.',
+    'SseActor needs a global `fetch` (Bun, Node, and Deno all provide one).  '
+    + 'In bundled/edge environments, ensure `globalThis.fetch` is not stripped.',
   );
 });
