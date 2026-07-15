@@ -48,9 +48,8 @@ jobs:
       # Install deps in a Bun-only environment (no Node on PATH).  This matches
       # the green `test.yml`: better-sqlite3's postinstall resolves a prebuilt
       # binary for Bun's Node ABI instead of falling back to a `node-gyp`
-      # source build (which breaks on the runner's Node 20 via a
-      # node-gyp/undici incompatibility).  Node + npm are set up afterwards,
-      # only for the publish step.
+      # source build.  Node + npm are set up afterwards, only for the
+      # publish step.
       #
       # Typecheck / test / build are deliberately NOT separate steps: `npm
       # publish` runs `prepublishOnly` (`clean && build && typecheck && test`)
@@ -59,17 +58,13 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # Node 24 (the `engines` floor) bundles npm >= 11.5.1, which is the
+      # minimum for trusted publishing — no separate npm upgrade step needed.
       - name: Setup Node + npm registry
         uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
-
-      # Pinned to the npm 11 major: npm@latest is npm 12+, which requires
-      # Node >= 22 and EBADENGINEs on this runner's Node 20.  npm 11 supports
-      # Node 20 and trusted publishing alike.
-      - name: Upgrade npm to a version that supports trusted publishing (>= 11.5.1)
-        run: npm install -g npm@11
 
       - name: Skip if this version already exists on npm
         id: version-check
