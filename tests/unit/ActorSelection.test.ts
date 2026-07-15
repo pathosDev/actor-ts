@@ -60,7 +60,7 @@ describe('ActorSelection — basics', () => {
     kit.system.spawn(Props.create(() => new Echo()), 'echo');
 
     kit.system.actorSelection('/user/echo').tell('hello');
-    expect(await probe.expectMsg('hello', 500)).toBe('hello');
+    expect(await probe.expectMessage('hello', 500)).toBe('hello');
     await kit.system.terminate();
   });
 
@@ -99,7 +99,7 @@ describe('ActorSelection — nested paths', () => {
 
     await sleep(20);
     kit.system.actorSelection('/user/parent/leaf').tell('hi');
-    expect(await probe.expectMsg('hi', 500)).toBe('hi');
+    expect(await probe.expectMessage('hi', 500)).toBe('hi');
     await kit.system.terminate();
   });
 });

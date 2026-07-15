@@ -66,7 +66,7 @@ describe('ClusterSingleton — single node', () => {
     await waitFor(() => nodeA.cluster.leader().nonEmpty);
 
     handle.proxy.tell('ping');
-    expect(await probe.expectMsg('got:ping', 500)).toBe('got:ping');
+    expect(await probe.expectMessage('got:ping', 500)).toBe('got:ping');
 
     handle.stop();
     await stop(nodeA);
@@ -91,9 +91,9 @@ describe('ClusterSingleton — single node', () => {
     const handle = kit.system.extension(ClusterSingletonId).start(nodeA.cluster, singletonOptions);
 
     for (const msg of ['a', 'b', 'c']) handle.proxy.tell(msg);
-    expect(await probe.expectMsg('a', 500)).toBe('a');
-    expect(await probe.expectMsg('b', 500)).toBe('b');
-    expect(await probe.expectMsg('c', 500)).toBe('c');
+    expect(await probe.expectMessage('a', 500)).toBe('a');
+    expect(await probe.expectMessage('b', 500)).toBe('b');
+    expect(await probe.expectMessage('c', 500)).toBe('c');
 
     handle.stop();
     await stop(nodeA);

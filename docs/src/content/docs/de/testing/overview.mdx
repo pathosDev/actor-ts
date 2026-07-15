@@ -52,7 +52,7 @@ describe('Counter', () => {
     counter.tell({ kind: 'inc' });
     counter.tell({ kind: 'get', replyTo: probe as ActorRef<number> });
 
-    await probe.expectMsg(2);
+    await probe.expectMessage(2);
     await tk.shutdown();
   });
 });
@@ -62,7 +62,7 @@ Zwei Dinge, die das TestKit hier erledigt:
 
 - **`TestKit.create(name)`** baut ein frisches ActorSystem mit
   leisem Logging — kein Konsolen-Spam während Test-Läufen.
-- **`probe.expectMsg(2)`** assertet, dass die nächste Nachricht,
+- **`probe.expectMessage(2)`** assertet, dass die nächste Nachricht,
   die die Probe empfängt, exakt `2` ist, mit einem
   Default-Timeout von 3 Sekunden.
 
@@ -79,7 +79,7 @@ const tk = TestKit.create();
 const probe = tk.createTestProbe();
 const ref = tk.system.spawnAnonymous(Props.create(() => new MyActor(probe)));
 ref.tell({ kind: 'do' });
-await probe.expectMsg('done');
+await probe.expectMessage('done');
 await tk.shutdown();
 ```
 
@@ -101,7 +101,7 @@ const ref = kit.system.spawnAnonymous(Props.create(() => new ScheduledThing(prob
 ref.tell({ kind: 'start' });
 
 scheduler.advance(5_000);   // virtuelle Zeit springt 5 Sekunden
-await probe.expectMsg({ kind: 'fired' });
+await probe.expectMessage({ kind: 'fired' });
 
 await kit.shutdown();
 ```
@@ -127,7 +127,7 @@ const spec = await MultiNodeSpec.create({
 const node1Probe = spec.createTestProbe(0);
 const remote = spec.nodes[1].spawnAnonymous(Props.create(() => new Worker()));
 remote.tell({ kind: 'do', replyTo: node1Probe });
-await node1Probe.expectMsg({ kind: 'done' });
+await node1Probe.expectMessage({ kind: 'done' });
 
 await spec.shutdown();
 ```
@@ -163,7 +163,7 @@ import { Aside } from '@astrojs/starlight/components';
   ```ts
   // ✗ teste, dass `tell` tatsächlich eine Nachricht zustellt
   ref.tell({ kind: 'do' });
-  await probe.expectMsg({ kind: 'do' });
+  await probe.expectMessage({ kind: 'do' });
   ```
   Vertraue dem Framework; teste das Verhalten *deines* Actors.
   Solche Tests bestehen, wenn das Framework auf eine Art kaputt
@@ -185,7 +185,7 @@ import { Aside } from '@astrojs/starlight/components';
   expect(probe.messageCount).toBe(1);
   ```
   „Lang genug" zu schlafen macht Tests langsam und flakey. Nutze
-  `await probe.expectMsg(...)` (es wartet-dann-assertet) oder
+  `await probe.expectMessage(...)` (es wartet-dann-assertet) oder
   `ManualScheduler` (er bringt virtuelle Zeit voran).
 </Aside>
 

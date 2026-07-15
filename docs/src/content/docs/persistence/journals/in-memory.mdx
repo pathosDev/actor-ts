@@ -95,7 +95,7 @@ describe('OrderActor', () => {
     let order = tk.system.spawnAnonymous(Props.create(() => new OrderActor('order-1')));
     order.tell({ kind: 'place', sku: 'book-1' });
     order.tell({ kind: 'place', sku: 'book-2' });
-    await probe.expectMsg({ kind: 'placed', sku: 'book-2' });
+    await probe.expectMessage({ kind: 'placed', sku: 'book-2' });
 
     // Stop + re-spawn — same persistence ID
     await tk.system.stop(order);
@@ -103,7 +103,7 @@ describe('OrderActor', () => {
     order.tell({ kind: 'view', replyTo: probe });
 
     // Recovered state should reflect both placed events
-    await probe.expectMsg({ items: ['book-1', 'book-2'] });
+    await probe.expectMessage({ items: ['book-1', 'book-2'] });
   });
 });
 ```

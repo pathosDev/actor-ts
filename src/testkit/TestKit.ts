@@ -15,7 +15,7 @@ import type { TestProbeOptions } from './TestProbeOptions.js';
  *   const probe = tk.createTestProbe();
  *   const ref = tk.system.spawn(Props.create(() => new Worker(probe)), 'worker');
  *   ref.tell('go');
- *   await probe.expectMsg('done');
+ *   await probe.expectMessage('done');
  *   await tk.shutdown();
  */
 export class TestKit {

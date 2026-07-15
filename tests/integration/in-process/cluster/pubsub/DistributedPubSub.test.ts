@@ -61,7 +61,7 @@ describe('DistributedPubSub — local', () => {
     nodeA.mediator.tell(new Subscribe('news', probe));
     await sleep(20);
     nodeA.mediator.tell(new Publish('news', 'headline-1'));
-    expect(await probe.expectMsg('headline-1', 500));
+    expect(await probe.expectMessage('headline-1', 500));
     await stopNode(nodeA);
   });
 
@@ -73,8 +73,8 @@ describe('DistributedPubSub — local', () => {
     nodeA.mediator.tell(new Subscribe('t', p2));
     await sleep(20);
     nodeA.mediator.tell(new Publish('t', 'ping'));
-    expect(await p1.expectMsg('ping', 500));
-    expect(await p2.expectMsg('ping', 500));
+    expect(await p1.expectMessage('ping', 500));
+    expect(await p2.expectMessage('ping', 500));
     await stopNode(nodeA);
   });
 
@@ -84,7 +84,7 @@ describe('DistributedPubSub — local', () => {
     nodeA.mediator.tell(new Subscribe('t', probe));
     await sleep(20);
     nodeA.mediator.tell(new Publish('t', 'first'));
-    await probe.expectMsg('first', 500);
+    await probe.expectMessage('first', 500);
     nodeA.mediator.tell(new Unsubscribe('t', probe));
     await sleep(20);
     nodeA.mediator.tell(new Publish('t', 'second'));
@@ -115,7 +115,7 @@ describe('DistributedPubSub — cluster-wide', () => {
     await sleep(350);
 
     nodeA.mediator.tell(new Publish('orders', { sku: 'XYZ' }));
-    expect(await probeB.expectMsg({ sku: 'XYZ' }, 1_000));
+    expect(await probeB.expectMessage({ sku: 'XYZ' }, 1_000));
 
     await stopNode(nodeA); await stopNode(nodeB);
   });
@@ -131,7 +131,7 @@ describe('DistributedPubSub — cluster-wide', () => {
 
     // Confirm the mechanism works first.
     nodeA.mediator.tell(new Publish('telemetry', 'alive'));
-    await probeB.expectMsg('alive', 500);
+    await probeB.expectMessage('alive', 500);
 
     // Now B leaves — publishes from A should no longer try to forward.
     await stopNode(nodeB);

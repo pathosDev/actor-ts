@@ -50,7 +50,7 @@ describe('Receptionist — local', () => {
     receptionist.tell(new Register(key, svc));
 
     receptionist.tell(new Find(key, probe));
-    const listing = await probe.expectMsgType(Listing, 500) as Listing<string>;
+    const listing = await probe.expectMessageType(Listing, 500) as Listing<string>;
     expect(listing.key.id).toBe('echo');
     expect(listing.refs.map(r => r.path.toString())).toEqual([svc.path.toString()]);
     await kit.system.terminate();
@@ -66,17 +66,17 @@ describe('Receptionist — local', () => {
 
     const key = ServiceKey.of<string>('workers');
     receptionist.tell(new Subscribe(key, probe));
-    const l0 = await probe.expectMsgType(Listing, 500) as Listing<string>;
+    const l0 = await probe.expectMessageType(Listing, 500) as Listing<string>;
     expect(l0.refs.length).toBe(0);
 
     const first = kit.system.spawn(Props.create(() => new Service()), 'a');
     receptionist.tell(new Register(key, first));
-    const l1 = await probe.expectMsgType(Listing, 500) as Listing<string>;
+    const l1 = await probe.expectMessageType(Listing, 500) as Listing<string>;
     expect(l1.refs.length).toBe(1);
 
     const second = kit.system.spawn(Props.create(() => new Service()), 'b');
     receptionist.tell(new Register(key, second));
-    const l2 = await probe.expectMsgType(Listing, 500) as Listing<string>;
+    const l2 = await probe.expectMessageType(Listing, 500) as Listing<string>;
     expect(l2.refs.length).toBe(2);
 
     receptionist.tell(new Unsubscribe(key, probe));
@@ -96,7 +96,7 @@ describe('Receptionist — local', () => {
     receptionist.tell(new Register(key, svc, probe));
 
     const { Registered } = await import('../../../src/discovery/index.js');
-    const ack = await probe.expectMsgType(Registered, 500);
+    const ack = await probe.expectMessageType(Registered, 500);
     expect(ack.key.id).toBe('ack-key');
     await kit.system.terminate();
   });
@@ -113,13 +113,13 @@ describe('Receptionist — local', () => {
     const key = ServiceKey.of<string>('temp');
 
     receptionist.tell(new Subscribe(key, probe));
-    await probe.expectMsgType(Listing, 500); // initial empty
+    await probe.expectMessageType(Listing, 500); // initial empty
     receptionist.tell(new Register(key, svc));
-    await probe.expectMsgType(Listing, 500); // with svc
+    await probe.expectMessageType(Listing, 500); // with svc
 
     const { Deregister } = await import('../../../src/discovery/index.js');
     receptionist.tell(new Deregister(key, svc));
-    const empty = await probe.expectMsgType(Listing, 500) as Listing<string>;
+    const empty = await probe.expectMessageType(Listing, 500) as Listing<string>;
     expect(empty.refs.length).toBe(0);
     await kit.system.terminate();
   });
@@ -169,7 +169,7 @@ describe('Receptionist — cluster-wide', () => {
 
     const probe = second.kit.createTestProbe<Listing<string>>();
     second.receptionist.tell(new Find(key, probe) as never);
-    const listing = await probe.expectMsgType(Listing, 1_500) as Listing<string>;
+    const listing = await probe.expectMessageType(Listing, 1_500) as Listing<string>;
     expect(listing.refs.length).toBe(1);
     // Remote refs return the full path via toString (node + path).
     expect(listing.refs[0]!.toString()).toContain('svc-on-a');
@@ -193,7 +193,7 @@ describe('Receptionist — cluster-wide', () => {
 
     const probe = second.kit.createTestProbe<Listing<string>>();
     second.receptionist.tell(new Subscribe(key, probe) as never);
-    let last = await probe.expectMsgType(Listing, 1_500) as Listing<string>;
+    let last = await probe.expectMessageType(Listing, 1_500) as Listing<string>;
     expect(last.refs.length).toBe(1);
 
     await first.cluster.leave(); await first.system.terminate();
@@ -202,7 +202,7 @@ describe('Receptionist — cluster-wide', () => {
     const deadline = Date.now() + 3_000;
     while (Date.now() < deadline) {
       try {
-        last = await probe.expectMsgType(Listing, 300) as Listing<string>;
+        last = await probe.expectMessageType(Listing, 300) as Listing<string>;
         if (last.refs.length === 0) break;
       } catch { break; }
     }
