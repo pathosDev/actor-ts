@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { OptionsValidator } from '../util/OptionsValidator.js';
 
 /** Plain options-object shape accepted by a {@link CircuitBreaker}. */
 export interface CircuitBreakerOptionsType {
@@ -43,6 +44,24 @@ export class CircuitBreakerOptionsBuilder extends OptionsBuilder<CircuitBreakerO
   /** Classify errors as non-failures to bypass breaker counting. */
   withIsFailure(isFailure: (err: Error) => boolean): this {
     return this.set('isFailure', isFailure);
+  }
+}
+
+/**
+ * Validates resolved {@link CircuitBreakerOptionsType} settings.
+ * `maxFailures` and `resetTimeoutMs` are required at runtime too — a breaker
+ * without them would silently never open / never probe.
+ */
+export class CircuitBreakerOptionsValidator extends OptionsValidator<CircuitBreakerOptionsType> {
+  constructor() {
+    super('CircuitBreakerOptions');
+  }
+  protected rules(s: Partial<CircuitBreakerOptionsType>): void {
+    if (s.maxFailures === undefined) this.fail('maxFailures', 'is required');
+    if (s.resetTimeoutMs === undefined) this.fail('resetTimeoutMs', 'is required');
+    this.positiveInt('maxFailures');
+    this.nonNegativeNumber('resetTimeoutMs');
+    this.positiveNumber('callTimeoutMs');
   }
 }
 

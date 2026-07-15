@@ -1,4 +1,4 @@
-import type { CircuitBreakerOptions, CircuitBreakerOptionsType } from './CircuitBreakerOptions.js';
+import { CircuitBreakerOptionsValidator, type CircuitBreakerOptions, type CircuitBreakerOptionsType } from './CircuitBreakerOptions.js';
 
 export type CircuitState = 'closed' | 'open' | 'half-open';
 
@@ -37,14 +37,9 @@ export class CircuitBreaker {
   public readonly options: CircuitBreakerOptionsType;
 
   constructor(options: CircuitBreakerOptions) {
-    const resolvedOptions = options as CircuitBreakerOptionsType;
-    if (resolvedOptions.maxFailures < 1) {
-      throw new Error('CircuitBreaker: maxFailures must be >= 1');
-    }
-    if (resolvedOptions.resetTimeoutMs < 0) {
-      throw new Error('CircuitBreaker: resetTimeoutMs must be >= 0');
-    }
-    this.options = resolvedOptions;
+    const settings = { ...(options as Partial<CircuitBreakerOptionsType>) };
+    new CircuitBreakerOptionsValidator().validate(settings);
+    this.options = settings as CircuitBreakerOptionsType;
   }
 
   get state(): CircuitState { return this._state; }

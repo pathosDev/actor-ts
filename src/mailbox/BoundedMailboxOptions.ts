@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { BoundedMailboxOverflow } from './BoundedMailbox.js';
 
 /** Plain options-object shape accepted by a {@link BoundedMailbox}. */
@@ -39,6 +40,22 @@ export class BoundedMailboxOptionsBuilder extends OptionsBuilder<BoundedMailboxO
   /** Hook fired on each overflow drop (for metrics). */
   withOnDrop(onDrop: (reason: 'drop-head' | 'drop-new') => void): this {
     return this.set('onDrop', onDrop);
+  }
+}
+
+/**
+ * Validates resolved {@link BoundedMailboxOptionsType} settings.  `capacity`
+ * is required at runtime too — without it the "bounded" mailbox would
+ * silently be unbounded.
+ */
+export class BoundedMailboxOptionsValidator extends OptionsValidator<BoundedMailboxOptionsType> {
+  constructor() {
+    super('BoundedMailboxOptions');
+  }
+  protected rules(s: Partial<BoundedMailboxOptionsType>): void {
+    if (s.capacity === undefined) this.fail('capacity', 'is required');
+    this.positiveInt('capacity');
+    this.oneOf('overflow', ['drop-head', 'drop-new', 'reject']);
   }
 }
 

@@ -1,6 +1,6 @@
 import { match } from 'ts-pattern';
 import { Mailbox, type Envelope } from '../internal/Mailbox.js';
-import type { BoundedMailboxOptions, BoundedMailboxOptionsType } from './BoundedMailboxOptions.js';
+import { BoundedMailboxOptionsValidator, type BoundedMailboxOptions, type BoundedMailboxOptionsType } from './BoundedMailboxOptions.js';
 
 export type BoundedMailboxOverflow =
   /** Drop the oldest message in the queue to make room for the new one. */
@@ -30,11 +30,11 @@ export class BoundedMailbox<T = unknown> extends Mailbox<T> {
 
   constructor(options: BoundedMailboxOptions) {
     super();
-    const resolvedOptions = options as BoundedMailboxOptionsType;
-    if (resolvedOptions.capacity < 1) throw new Error('BoundedMailbox: capacity must be >= 1');
-    this.capacity = resolvedOptions.capacity;
-    this.overflow = resolvedOptions.overflow ?? 'reject';
-    this.onDrop = resolvedOptions.onDrop;
+    const settings = { ...(options as Partial<BoundedMailboxOptionsType>) };
+    new BoundedMailboxOptionsValidator().validate(settings);
+    this.capacity = settings.capacity!;
+    this.overflow = settings.overflow ?? 'reject';
+    this.onDrop = settings.onDrop;
   }
 
   override enqueue(env: Envelope<T>): void {

@@ -127,6 +127,9 @@ Three policies:
 | `'drop-new'` | Discard the *incoming* message.  The old queue is preserved unchanged. |
 | `'reject'` *(default)* | Throw `MailboxFullError` at the `tell` site.  Caller surfaces the backpressure. |
 
+The options are validated at construction: a missing or non-positive
+`capacity` and an unknown overflow policy throw `OptionsError`.
+
 Picking between them is a backpressure-vs-loss trade-off:
 
 - **`drop-head`** = "freshest wins."  Right for telemetry, sensor

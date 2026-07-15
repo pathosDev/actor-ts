@@ -133,6 +133,10 @@ Drei Policies:
 | `'drop-new'` | Verwirf die *eingehende* Nachricht.  Die alte Queue bleibt unverändert. |
 | `'reject'` *(default)* | Wirf `MailboxFullError` an der `tell`-Stelle.  Der Aufrufer trägt den Backpressure. |
 
+Die Optionen werden bei der Konstruktion validiert: eine fehlende oder
+nicht-positive `capacity` und eine unbekannte Overflow-Policy werfen
+`OptionsError`.
+
 Die Wahl zwischen ihnen ist ein Backpressure-vs-Verlust-Trade-off:
 
 - **`drop-head`** = "Frisch gewinnt."  Richtig für Telemetrie,
