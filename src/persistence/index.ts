@@ -260,10 +260,10 @@ export type {
 export {
   ObjectStorageSnapshotStore,
 } from './snapshot-stores/ObjectStorageSnapshotStore.js';
-export { ObjectStorageSnapshotStoreOptions, ObjectStorageSnapshotStoreOptionsBuilder } from './snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
+export { ObjectStorageSnapshotStoreOptions, ObjectStorageSnapshotStoreOptionsBuilder, ObjectStorageSnapshotStoreOptionsValidator } from './snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
 export type { ObjectStorageSnapshotStoreOptionsType } from './snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
 export { ObjectStorageDurableStateStore } from './durable-state-stores/ObjectStorageDurableStateStore.js';
-export { ObjectStorageDurableStateStoreOptions, ObjectStorageDurableStateStoreOptionsBuilder } from './durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
+export { ObjectStorageDurableStateStoreOptions, ObjectStorageDurableStateStoreOptionsBuilder, ObjectStorageDurableStateStoreOptionsValidator } from './durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
 export type { ObjectStorageDurableStateStoreOptionsType } from './durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
 export {
   registerObjectStoragePlugins,

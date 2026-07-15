@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { ObjectStorageBackend } from '../object-storage/ObjectStorageBackend.js';
 import type {
   CompressionConfig,
@@ -34,6 +35,13 @@ export interface ObjectStorageDurableStateStoreOptionsType {
    * body without the tag.
    */
   readonly requireIntegrity?: boolean;
+  /**
+   * Cap on the decompressed size of a stored body in bytes — the
+   * decompression-bomb guard on read (security audit #3).  Default 512 MiB
+   * (`DEFAULT_MAX_DECOMPRESSED_BYTES`); `Infinity` opts out.  Raise it to
+   * restore a legitimately large state blob, or lower it for a tighter bound.
+   */
+  readonly maxDecompressedBytes?: number;
 }
 
 /**
@@ -78,6 +86,34 @@ export class ObjectStorageDurableStateStoreOptionsBuilder extends OptionsBuilder
   /** Reject reads of bodies lacking an integrity tag — post-migration downgrade protection. */
   withRequireIntegrity(requireIntegrity = true): this {
     return this.set('requireIntegrity', requireIntegrity);
+  }
+
+  /**
+   * Cap on the decompressed body size (bytes) — decompression-bomb guard
+   * (#3).  Default 512 MiB; `Infinity` opts out.
+   */
+  withMaxDecompressedBytes(bytes: number): this {
+    return this.set('maxDecompressedBytes', bytes);
+  }
+}
+
+/**
+ * Validates {@link ObjectStorageDurableStateStoreOptionsType} — currently the
+ * decompression cap, which admits `Infinity` (opt-out) that the generic
+ * `positiveInt` helper rejects, so the rule is bespoke.
+ */
+export class ObjectStorageDurableStateStoreOptionsValidator extends OptionsValidator<ObjectStorageDurableStateStoreOptionsType> {
+  constructor() {
+    super('ObjectStorageDurableStateStoreOptions');
+  }
+  protected rules(s: Partial<ObjectStorageDurableStateStoreOptionsType>): void {
+    const { maxDecompressedBytes } = s;
+    if (
+      maxDecompressedBytes !== undefined && maxDecompressedBytes !== Infinity &&
+      (typeof maxDecompressedBytes !== 'number' || !Number.isInteger(maxDecompressedBytes) || maxDecompressedBytes < 1)
+    ) {
+      this.fail('maxDecompressedBytes', 'must be a positive integer or Infinity', maxDecompressedBytes);
+    }
   }
 }
 

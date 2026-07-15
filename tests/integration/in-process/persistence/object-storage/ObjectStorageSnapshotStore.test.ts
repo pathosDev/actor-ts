@@ -198,3 +198,35 @@ describe('ObjectStorageSnapshotStore — encryption (client-aes256-gcm)', () => 
     expect((await store.loadLatest('tenant-bigcorp/x')).toNullable()?.state).toEqual({ who: 'bigcorp' });
   });
 });
+
+// security audit #3 — the store now forwards its maxDecompressedBytes into
+// decodeBody, so a body whose decompressed size exceeds the configured cap is
+// refused on read (previously the cap was pinned to the 512 MiB default).
+describe('ObjectStorageSnapshotStore — maxDecompressedBytes cap (#3)', () => {
+  test('a load whose decompressed body exceeds the store cap throws', async () => {
+    const writer = new ObjectStorageSnapshotStore(
+      ObjectStorageSnapshotStoreOptions.create().withBackend(backend),
+    );
+    await writer.save('p', 1, { blob: 'x'.repeat(50_000) });
+
+    const cappedOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend)
+      .withMaxDecompressedBytes(1024);   // far below the ~50 KB decompressed body
+    const capped = new ObjectStorageSnapshotStore(cappedOptions);
+    await expect(capped.loadLatest('p')).rejects.toThrow();
+  });
+
+  test('a generous cap loads the same body fine', async () => {
+    const writer = new ObjectStorageSnapshotStore(
+      ObjectStorageSnapshotStoreOptions.create().withBackend(backend),
+    );
+    await writer.save('p', 1, { blob: 'x'.repeat(50_000) });
+
+    const okOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend)
+      .withMaxDecompressedBytes(1_000_000);
+    const store = new ObjectStorageSnapshotStore(okOptions);
+    const loaded = await store.loadLatest<{ blob: string }>('p');
+    expect(loaded.toNullable()?.state.blob.length).toBe(50_000);
+  });
+});

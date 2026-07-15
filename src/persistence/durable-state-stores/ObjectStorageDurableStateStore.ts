@@ -1,5 +1,5 @@
 import { JournalError } from '../JournalTypes.js';
-import { encodeBody, decodeBody } from '../object-storage/BodyCodec.js';
+import { DEFAULT_MAX_DECOMPRESSED_BYTES, encodeBody, decodeBody } from '../object-storage/BodyCodec.js';
 import {
   activeEncryptKey,
   isVersionedKeyShape,
@@ -27,6 +27,7 @@ import {
 } from '../DurableStateStore.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import { none, some, type Option } from '../../util/Option.js';
+import { ObjectStorageDurableStateStoreOptionsValidator } from './ObjectStorageDurableStateStoreOptions.js';
 import type { ObjectStorageDurableStateStoreOptions, ObjectStorageDurableStateStoreOptionsType } from './ObjectStorageDurableStateStoreOptions.js';
 
 /**
@@ -62,17 +63,20 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
   private readonly encryption: EncryptionConfig | EncryptionResolver | undefined;
   private readonly integrity: IntegrityConfig | IntegrityResolver | undefined;
   private readonly requireIntegrity: boolean;
+  private readonly maxDecompressedBytes: number;
   private readonly etagCache = new Map<string, CachedEntry>();
 
   constructor(options: ObjectStorageDurableStateStoreOptions) {
     const resolvedOptions = (options as ObjectStorageDurableStateStoreOptionsType);
     if (resolvedOptions.backend === undefined) throw new Error('ObjectStorageDurableStateStore: backend is required (call withBackend()).');
+    new ObjectStorageDurableStateStoreOptionsValidator().validate(resolvedOptions);
     this.backend = resolvedOptions.backend;
     this.prefix = resolvedOptions.prefix ?? '';
     this.compression = resolvedOptions.compression;
     this.encryption = resolvedOptions.encryption;
     this.integrity = resolvedOptions.integrity;
     this.requireIntegrity = resolvedOptions.requireIntegrity ?? false;
+    this.maxDecompressedBytes = resolvedOptions.maxDecompressedBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES;
   }
 
   async load<S>(pid: string, options?: PersistenceOptions): Promise<Option<DurableStateRecord<S>>> {
@@ -90,20 +94,18 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
       );
     }
     const subKeyFor = resolveDecryptSubkey(encryption, pid);
-    let decodeOpts: import('../object-storage/BodyCodec.js').DecodeOptions | undefined;
-    if (subKeyFor || integrity.mode === 'hmac-sha256') {
-      decodeOpts = {
-        ...(subKeyFor ? { encryption: { subKeyFor } } : {}),
-        ...(integrity.mode === 'hmac-sha256'
-          ? {
-              integrity: {
-                integrityKey: integrity.integrityKey,
-                requireIntegrity: this.requireIntegrity,
-              },
-            }
-          : {}),
-      };
-    }
+    const decodeOpts: import('../object-storage/BodyCodec.js').DecodeOptions = {
+      ...(subKeyFor ? { encryption: { subKeyFor } } : {}),
+      ...(integrity.mode === 'hmac-sha256'
+        ? {
+            integrity: {
+              integrityKey: integrity.integrityKey,
+              requireIntegrity: this.requireIntegrity,
+            },
+          }
+        : {}),
+      maxOutputBytes: this.maxDecompressedBytes,
+    };
     let decoded: import('../object-storage/BodyCodec.js').DecodedBody;
     try {
       decoded = await decodeBody(fetched.value.body, decodeOpts);

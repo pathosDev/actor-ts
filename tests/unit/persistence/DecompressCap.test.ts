@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { encodeBody, decodeBody } from '../../../src/persistence/object-storage/BodyCodec.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { ObjectStorageSnapshotStoreOptionsValidator } from '../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
+import { ObjectStorageDurableStateStoreOptionsValidator } from '../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
 
 // 200 KB of zeros — compresses to a few bytes, decompresses back to 200 KB.
 // A real decompression bomb is far worse; the cap logic is what matters.
@@ -34,5 +37,26 @@ describe('BodyCodec — decompression cap (#3)', () => {
     const framed = await encodeBody(big, { compression: 'none' });
     const out = await decodeBody(framed, { maxOutputBytes: Infinity });
     expect(out.payload.length).toBe(big.length);
+  });
+});
+
+// The object-storage stores expose the cap as `maxDecompressedBytes` and
+// validate it at construction; a bad value throws OptionsError, Infinity opts
+// out.  (End-to-end pass-through to decodeBody is covered in the store
+// integration tests.)
+describe('object-storage store options — maxDecompressedBytes validation', () => {
+  test('snapshot store: rejects a non-positive / non-integer cap; Infinity ok', () => {
+    const validator = new ObjectStorageSnapshotStoreOptionsValidator();
+    expect(() => validator.validate({ maxDecompressedBytes: 0 })).toThrow(OptionsError);
+    expect(() => validator.validate({ maxDecompressedBytes: -1 })).toThrow(/maxDecompressedBytes/);
+    expect(() => validator.validate({ maxDecompressedBytes: 2.5 })).toThrow(/maxDecompressedBytes/);
+    expect(() => validator.validate({ maxDecompressedBytes: Infinity })).not.toThrow();
+    expect(() => validator.validate({ maxDecompressedBytes: 1_048_576 })).not.toThrow();
+  });
+
+  test('durable-state store: same rule', () => {
+    const validator = new ObjectStorageDurableStateStoreOptionsValidator();
+    expect(() => validator.validate({ maxDecompressedBytes: 0 })).toThrow(/maxDecompressedBytes/);
+    expect(() => validator.validate({ maxDecompressedBytes: Infinity })).not.toThrow();
   });
 });

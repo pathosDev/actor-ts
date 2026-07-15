@@ -101,6 +101,7 @@ export async function registerObjectStoragePlugins(
       ...(resolvedOptions.keepN !== undefined ? { keepN: resolvedOptions.keepN } : {}),
       ...(resolvedOptions.compression !== undefined ? { compression: resolvedOptions.compression } : {}),
       ...(resolvedOptions.encryption !== undefined ? { encryption: resolvedOptions.encryption } : {}),
+      ...(resolvedOptions.maxDecompressedBytes !== undefined ? { maxDecompressedBytes: resolvedOptions.maxDecompressedBytes } : {}),
     });
   });
 
@@ -109,6 +110,7 @@ export async function registerObjectStoragePlugins(
     ...(resolvedOptions.prefix !== undefined ? { prefix: resolvedOptions.prefix } : {}),
     ...(resolvedOptions.compression !== undefined ? { compression: resolvedOptions.compression } : {}),
     ...(resolvedOptions.encryption !== undefined ? { encryption: resolvedOptions.encryption } : {}),
+    ...(resolvedOptions.maxDecompressedBytes !== undefined ? { maxDecompressedBytes: resolvedOptions.maxDecompressedBytes } : {}),
   });
 
   return { backend, durableStateStore };

@@ -115,6 +115,14 @@ new names.
   numeric knobs — e.g. `maxConnections: 0`, which silently admitted nobody —
   were unchecked).  The reference config now ships an `actor-ts.http.websocket`
   section documenting the defaults.
+- **The object-storage decompression cap is now a store option.** The 512 MiB
+  decompression-bomb guard (#3) was pinned to its default because the stores
+  called `decodeBody` without a cap.  `withMaxDecompressedBytes` is now on
+  `ObjectStorageSnapshotStoreOptions`, `ObjectStorageDurableStateStoreOptions`,
+  and `ObjectStoragePluginOptions` (validated at construction — a non-positive
+  / non-integer cap throws `OptionsError`, `Infinity` opts out), and both
+  stores forward it into `decodeBody`.  Raise it to restore a legitimately
+  large snapshot / state blob, or lower it for a tighter bound.
 
 ### Added — HTTP hardening
 
