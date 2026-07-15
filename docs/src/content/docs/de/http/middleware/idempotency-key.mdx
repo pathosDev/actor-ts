@@ -60,7 +60,7 @@ interface IdempotencyOptions {
   headerName?:    string;                              // Default 'idempotency-key'
   keyPrefix?:     string;                              // Default 'idem:'
   missingHeader?: 'reject' | 'pass-through';           // Default 'reject'
-  identity?:      (req: HttpRequest) => string;        // Scope pro Aufrufer; Default keiner
+  identity?:      (req: HttpRequest) => string | Promise<string>;   // Scope pro Aufrufer; Default keiner
 }
 ```
 
@@ -188,16 +188,19 @@ statt einmal vor dem ersten Versuch.
 ## In-Flight-Behandlung
 
 Wenn zwei Requests mit demselben Key **gleichzeitig** ankommen
-(Doppelklick, paralleler Retry):
+(Doppelklick, paralleler Retry), beansprucht der erste den Key und
+führt den Handler aus; der zweite sieht den Key **in flight** und
+wird sofort mit **`409 Conflict`** abgelehnt (`{ "error":
+"idempotency-key in-flight; retry shortly" }`) — er wird **nicht**
+eingereiht oder zum Warten gezwungen.
 
-- Der erste, der den Cache-Lock schnappt, verarbeitet; der zweite
-  sieht "noch in flight" und ... je nach Implementierung
-  unterschiedlich.
-
-Die Middleware des Frameworks **lockt pro Key**: der zweite
-Request wartet, bis der erste abgeschlossen ist, und liefert
-dann die gecachte Response.  Meist Sub-Sekunden-Wartezeit;
-gebunden durch die Handler-Laufzeit.
+Der Client wiederholt nach einem kurzen Backoff; sobald der erste
+Request abgeschlossen ist und seine Response gecacht hat, spielt der
+Retry diese gespeicherte Response ab.  Das schnelle Ablehnen (statt
+die zweite Verbindung über die gesamte Handler-Laufzeit offen zu
+halten) bedeutet außerdem, dass es keinen Cross-Pod-Lock zu
+koordinieren gibt — der In-Flight-Marker liegt im selben Cache wie
+die gecachten Responses.
 
 import { Aside } from '@astrojs/starlight/components';
 
