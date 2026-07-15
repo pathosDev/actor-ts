@@ -34,8 +34,8 @@ function coerceWebsocketData(data: unknown): string | Uint8Array {
  */
 export function contentLengthExceeds(header: string | undefined, cap: number): boolean {
   if (header === undefined) return false;
-  const n = Number(header);
-  return Number.isFinite(n) && n > cap;
+  const declaredLength = Number(header);
+  return Number.isFinite(declaredLength) && declaredLength > cap;
 }
 
 /** Standard 413 response used by the body-size guards. */
@@ -62,12 +62,12 @@ function contentLengthHeader(c: { req: { header(name?: string): unknown } }): st
  */
 export function readBufferedAmount(raw: unknown): number {
   if (!raw || typeof raw !== 'object') return 0;
-  const r = raw as { bufferedAmount?: unknown; getBufferedAmount?: unknown };
-  if (typeof r.getBufferedAmount === 'function') {
-    const n = (r.getBufferedAmount as () => unknown)();
-    return typeof n === 'number' && Number.isFinite(n) ? n : 0;
+  const sock = raw as { bufferedAmount?: unknown; getBufferedAmount?: unknown };
+  if (typeof sock.getBufferedAmount === 'function') {
+    const buffered = (sock.getBufferedAmount as () => unknown)();
+    return typeof buffered === 'number' && Number.isFinite(buffered) ? buffered : 0;
   }
-  return typeof r.bufferedAmount === 'number' && Number.isFinite(r.bufferedAmount) ? r.bufferedAmount : 0;
+  return typeof sock.bufferedAmount === 'number' && Number.isFinite(sock.bufferedAmount) ? sock.bufferedAmount : 0;
 }
 
 /*
@@ -342,7 +342,7 @@ export class HonoBackend implements HttpServerBackend {
         get readyState() {
           return (ws?.readyState ?? 1) as 0 | 1 | 2 | 3;
         },
-        // Enables the backpressure guard in WebSocketConnectionActor on Hono
+        // Enables the backpressure guard in WebsocketConnectionActor on Hono
         // (was a no-op before — the adapter had no bufferedAmount).  WS-4.
         bufferedAmount: () => readBufferedAmount(ws?.raw),
         remoteAddress: adapted.remoteAddress,
