@@ -14,6 +14,11 @@ name: publish
 on:
   release:
     types: [published]
+  # Manual fallback: a release-event run uses the workflow file at the tag's
+  # commit, so a workflow bug can't be fixed-and-re-run through the release
+  # event alone.  Dispatching from a fixed branch re-attempts the publish;
+  # the version guard below makes re-runs safe.
+  workflow_dispatch:
 
 jobs:
   publish:
@@ -60,8 +65,11 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
+      # Pinned to the npm 11 major: npm@latest is npm 12+, which requires
+      # Node >= 22 and EBADENGINEs on this runner's Node 20.  npm 11 supports
+      # Node 20 and trusted publishing alike.
       - name: Upgrade npm to a version that supports trusted publishing (>= 11.5.1)
-        run: npm install -g npm@latest
+        run: npm install -g npm@11
 
       - name: Skip if this version already exists on npm
         id: version-check
