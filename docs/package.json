@@ -13,19 +13,19 @@
     "images": "node scripts/render-images.mjs"
   },
   "dependencies": {
-    "@astrojs/starlight": "^0.39.2",
+    "@astrojs/starlight": "^0.39.3",
     "@fontsource-variable/inter": "^5.2.8",
     "@fontsource/jetbrains-mono": "^5.2.8",
-    "astro": "^6.3.3",
-    "country-flag-icons": "^1.6.17",
+    "astro": "^6.4.8",
+    "country-flag-icons": "^1.6.20",
     "sharp": "^0.33.5",
     "starlight-typedoc": "^0.22.0",
-    "typedoc": "^0.28.19",
-    "typedoc-plugin-markdown": "^4.11.0"
+    "typedoc": "^0.28.20",
+    "typedoc-plugin-markdown": "^4.12.0"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
-    "playwright": "^1.60.0",
+    "@types/node": "^24.13.3",
+    "playwright": "^1.61.1",
     "rehype-mermaid": "^3.0.0"
   }
 }
