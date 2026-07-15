@@ -7,6 +7,25 @@ This is a pre-1.0 hobby project — every minor version is potentially
 breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 "What's in here / What isn't" for current scope honesty.
 
+## [Unreleased]
+
+### Changed
+
+- **TypeScript 7 — the native compiler** (#361).  The `typescript`
+  devDependency moved from 6.0.3 to **7.0.2**, Microsoft's ground-up native
+  (Go) port of the compiler that replaces the JavaScript-based `tsc`.  The
+  npm package now ships a platform-specific native binary
+  (`@typescript/typescript-win32-x64` etc.).  For this repo the switch was
+  drop-in: no source or `tsconfig` changes were needed, `bun run typecheck`
+  is clean and the full test suite passes.  The payoff is speed — a full
+  `tsc --noEmit` over the repo dropped from **~6.5 s (6.0.3) to ~1.0 s
+  (7.0.2)** on the same machine.  TypeScript is a devDependency only, so
+  nothing changes for consumers of the published package.
+- **`@fastify/static` 9.3.0 → 10.1.0** (#362) — devDependency used by the
+  Fastify HTTP backend examples/tests; no code changes required.
+- **CI: `actions/setup-node` 6 → 7** (#363) in the docs, multi-runtime, and
+  publish workflows.
+
 ## [0.11.0] — 2026-07-15
 
 ### Changed — Naming conventions: no abbreviations, unified vocabulary
