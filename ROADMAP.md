@@ -7,7 +7,7 @@ This document tracks the planned direction.  Nothing here is committed work — 
 - Post-v0.10.0, preparing v0.11.0 (`[Unreleased]` window): repo-wide naming
   conventions + the `OptionsValidator` / `OptionsError` layer + WebSocket/HTTP
   security hardening.
-- ~2 650 tests green (unit + multi-node + in-process integration) + 15 real-network multi-node integration scenarios green; bug-backlog at 0.
+- ~2 665 tests green (unit + multi-node + in-process integration) + 15 real-network multi-node integration scenarios green; bug-backlog at 0.
 - A full audit-catalog of ~175 follow-up items is tracked in the issue tracker — security findings, framework features, code-quality refactors.  Filter by label `security` + `severity: <tier>` or by title prefix `[Security] ` / `[Feature] `.
 
 ## Done since the last roadmap update
