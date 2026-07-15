@@ -137,6 +137,18 @@ new names.
   the real `RateLimitOptions` / `IdempotencyOptions` fluent builders they were
   already documented to have, each with a validator (`windowMs`/`max`,
   `ttlMs`/`missingHeader`); the plain-object call form is unchanged.
+- **`CircuitBreaker` and `BoundedMailbox` now validate their options too** —
+  the last exported options types with real numeric constraints join the
+  validator family.  `CircuitBreakerOptionsValidator` checks `maxFailures`
+  (integer >= 1), `resetTimeoutMs` (finite >= 0), and the previously-unchecked
+  `callTimeoutMs` (> 0 — omit it to disable the per-call timeout; `0`, which
+  previously meant "no timeout" silently, now throws), and requires
+  `maxFailures`/`resetTimeoutMs` at runtime (a builder without them previously
+  produced a breaker that silently never opened).
+  `BoundedMailboxOptionsValidator` checks `capacity` (integer >= 1, and now
+  required — previously a missing `capacity` made the "bounded" mailbox
+  silently unbounded) and the previously-unchecked `overflow` enum.  The old
+  ad-hoc bare-`Error` guards now throw `OptionsError`.
 
 ### Added — HTTP hardening
 
