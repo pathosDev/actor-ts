@@ -121,11 +121,12 @@ ihre Defaults aus `actor-ts.http.websocket`:
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `http.websocket.max-frame-bytes` | `1M` | Größter akzeptierter eingehender Frame (Bytes). |
-| `http.websocket.on-oversize-frame` | `"close"` | Was passiert, wenn ein Frame das Limit überschreitet — `close` / `drop`. |
-| `http.websocket.on-invalid-message` | `"close"` | Was passiert, wenn eine Nachricht nicht dekodiert werden kann — `close` / `drop` / `hook`. |
-| `http.websocket.max-buffered-bytes` | `4M` | Outbound-Backpressure-Schwelle (Bytes). |
-| `http.websocket.on-backpressure` | `"drop"` | Was passiert, wenn der Buffer überschritten wird — `drop` / `close`. |
+| `http.websocket.maxFrameBytes` | `1M` | Größter akzeptierter eingehender Frame (Bytes). |
+| `http.websocket.onOversizeFrame` | `"close"` | Was passiert, wenn ein Frame das Limit überschreitet — `close` / `drop`. |
+| `http.websocket.onInvalidMessage` | `"close"` | Was passiert, wenn eine Nachricht nicht dekodiert werden kann — `close` / `drop` / `hook`. |
+| `http.websocket.maxBufferedBytes` | `4M` | Outbound-Backpressure-Schwelle (Bytes). |
+| `http.websocket.onBackpressure` | `"drop"` | Was passiert, wenn der Buffer überschritten wird — `drop` / `close`. |
+| `http.websocket.maxConnections` | *(unbegrenzt)* | Max. gleichzeitige Verbindungen pro Route; ein Upgrade darüber hinaus wird mit 1013 geschlossen. |
 
 ### `actor-ts.persistence`
 
