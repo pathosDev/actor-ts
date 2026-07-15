@@ -19,7 +19,7 @@ const ref = kit.system.spawnAnonymous(Props.create(() => new Heartbeat(probe)));
 ref.tell({ kind: 'start' });
 
 scheduler.advance(5_000);   // virtual time jumps 5 seconds
-await probe.expectMsg('tick');
+await probe.expectMessage('tick');
 
 await kit.shutdown();
 ```
@@ -34,12 +34,12 @@ time never elapses; the `advance(5_000)` fires the timer.
 // Without ManualScheduler:
 ref.tell({ kind: 'start' });
 await new Promise(r => setTimeout(r, 5_100));   // hope real time elapsed
-await probe.expectMsg('tick');
+await probe.expectMessage('tick');
 ```
 
 That works *most* of the time.  Then CI runs slower; the test
 sleeps for 5.1 s but the scheduler fires at 5.0 s vs the
-`expectMsg` checking at 5.1 s — flakey.  Or your local machine is
+`expectMessage` checking at 5.1 s — flakey.  Or your local machine is
 fast; the test waits 5.1 s every time even though the timer
 fires at 5.0 s — slow.
 
@@ -169,7 +169,7 @@ describe('Session expiry', () => {
     await probe.expectNoMessage(0);       // not yet expired
 
     scheduler.advance(60_000 + 1);        // crosses 15 min
-    await probe.expectMsg({ kind: 'session-expired', userId: 'user-42' });
+    await probe.expectMessage({ kind: 'session-expired', userId: 'user-42' });
   });
 });
 ```
@@ -182,7 +182,7 @@ a 15-minute idle timeout precisely.
 ```ts
 ref.tell({ kind: 'start' });
 scheduler.advance(5_000);
-await probe.expectMsg('tick');
+await probe.expectMessage('tick');
 ```
 
 Two-stage processing:
@@ -191,7 +191,7 @@ Two-stage processing:
 2. The `tell` is processed by the dispatcher on the next microtask
    turn, which runs when you `await` something.
 
-`expectMsg` returns a Promise that does `await` internally — so by
+`expectMessage` returns a Promise that does `await` internally — so by
 the time it resolves, the tick has been processed and the message
 is in the probe's buffer.
 
@@ -233,11 +233,11 @@ import { Aside } from '@astrojs/starlight/components';
   in tests.
 </Aside>
 
-<Aside type="caution" title="`expectMsg` still has a real-time timeout">
+<Aside type="caution" title="`expectMessage` still has a real-time timeout">
   ```ts
-  await probe.expectMsg('tick');   // 3s real timeout by default
+  await probe.expectMessage('tick');   // 3s real timeout by default
   ```
-  The probe's `expectMsg` waits on real time for the message to
+  The probe's `expectMessage` waits on real time for the message to
   arrive — even though the *trigger* (the timer) is virtual.
   This is fine: `advance` fires the timer synchronously, and the
   `tell` is processed in the next microtask turn.  The 3-s

@@ -20,7 +20,7 @@ const ref = kit.system.spawnAnonymous(Props.create(() => new Heartbeat(probe)));
 ref.tell({ kind: 'start' });
 
 scheduler.advance(5_000);   // virtuelle Zeit springt 5 Sekunden
-await probe.expectMsg('tick');
+await probe.expectMessage('tick');
 
 await kit.shutdown();
 ```
@@ -35,12 +35,12 @@ Zeit verstreicht nie; der `advance(5_000)` feuert den Timer.
 // Ohne ManualScheduler:
 ref.tell({ kind: 'start' });
 await new Promise(r => setTimeout(r, 5_100));   // hoffe, echte Zeit verstrich
-await probe.expectMsg('tick');
+await probe.expectMessage('tick');
 ```
 
 Das funktioniert *meistens*. Dann läuft CI langsamer; der Test
 schläft 5,1 s, aber der Scheduler feuert bei 5,0 s, während
-`expectMsg` bei 5,1 s prüft — flakey. Oder deine lokale Maschine
+`expectMessage` bei 5,1 s prüft — flakey. Oder deine lokale Maschine
 ist schnell; der Test wartet jedes Mal 5,1 s, obwohl der Timer
 bei 5,0 s feuert — langsam.
 
@@ -172,7 +172,7 @@ describe('Session-Expiry', () => {
     await probe.expectNoMessage(0);       // noch nicht abgelaufen
 
     scheduler.advance(60_000 + 1);        // überquert 15 Min
-    await probe.expectMsg({ kind: 'session-expired', userId: 'user-42' });
+    await probe.expectMessage({ kind: 'session-expired', userId: 'user-42' });
   });
 });
 ```
@@ -185,7 +185,7 @@ ein 15-Minuten-Idle-Timeout exakt aus.
 ```ts
 ref.tell({ kind: 'start' });
 scheduler.advance(5_000);
-await probe.expectMsg('tick');
+await probe.expectMessage('tick');
 ```
 
 Zweistufige Verarbeitung:
@@ -194,7 +194,7 @@ Zweistufige Verarbeitung:
 2. Der `tell` wird vom Dispatcher in der nächsten Microtask-
    Runde verarbeitet, die läuft, wenn du etwas `await`est.
 
-`expectMsg` gibt eine Promise zurück, die intern `await`et —
+`expectMessage` gibt eine Promise zurück, die intern `await`et —
 also wurde der Tick bis zur Auflösung verarbeitet und die
 Nachricht ist im Buffer der Probe.
 
@@ -237,11 +237,11 @@ import { Aside } from '@astrojs/starlight/components';
   Zeitbasierte in Tests.
 </Aside>
 
-<Aside type="caution" title="`expectMsg` hat weiter ein Echt-Zeit-Timeout">
+<Aside type="caution" title="`expectMessage` hat weiter ein Echt-Zeit-Timeout">
   ```ts
-  await probe.expectMsg('tick');   // 3 s Echt-Timeout standardmäßig
+  await probe.expectMessage('tick');   // 3 s Echt-Timeout standardmäßig
   ```
-  Das `expectMsg` der Probe wartet auf echte Zeit, dass die
+  Das `expectMessage` der Probe wartet auf echte Zeit, dass die
   Nachricht ankommt — auch wenn der *Trigger* (der Timer)
   virtuell ist. Das ist okay: `advance` feuert den Timer
   synchron, und der `tell` wird in der nächsten Microtask-Runde

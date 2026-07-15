@@ -67,7 +67,7 @@ describe('ShardedDaemonProcess — single node', () => {
     expect(new Set(starts)).toEqual(new Set(['start-0', 'start-1', 'start-2', 'start-3']));
 
     handle.tell(2, 'hello');
-    expect(await probe.expectMsg('2:hello', 1_000)).toBe('2:hello');
+    expect(await probe.expectMessage('2:hello', 1_000)).toBe('2:hello');
 
     await nodeA.cluster.leave();
     await nodeA.system.terminate();

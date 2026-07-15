@@ -65,8 +65,8 @@ describe('multi-node PubSub', () => {
 
       medA.tell(new Publish('orders', { sku: 'XYZ-1' }));
 
-      await probeB.expectMsg({ sku: 'XYZ-1' }, 1_500);
-      await probeC.expectMsg({ sku: 'XYZ-1' }, 1_500);
+      await probeB.expectMessage({ sku: 'XYZ-1' }, 1_500);
+      await probeC.expectMessage({ sku: 'XYZ-1' }, 1_500);
     } finally {
       await spec.stop();
       MultiNodeTransport._resetRegistryForTest();
@@ -107,7 +107,7 @@ describe('multi-node PubSub', () => {
       await Bun.sleep(400);
       medA.tell(new Publish('news', 'breaking'));
 
-      await probeB.expectMsg('breaking', 1_500);
+      await probeB.expectMessage('breaking', 1_500);
       await probeC.expectNoMessage(150);
     } finally {
       await spec.stop();

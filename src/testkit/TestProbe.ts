@@ -87,22 +87,22 @@ export class TestProbe extends ActorRef<unknown> {
   }
 
   /** Assert the next message deep-equals `expected`. */
-  async expectMsg<T>(expected: T, timeoutMs?: number): Promise<T> {
+  async expectMessage<T>(expected: T, timeoutMs?: number): Promise<T> {
     const got = await this.receiveOne(timeoutMs);
     if (!deepEqual(got, expected)) {
-      throw new Error(`expectMsg: expected ${stringify(expected)} but got ${stringify(got)}`);
+      throw new Error(`expectMessage: expected ${stringify(expected)} but got ${stringify(got)}`);
     }
     return got as T;
   }
 
   /** Assert the next message is an instance of `Class`. */
-  async expectMsgType<T>(
+  async expectMessageType<T>(
     Class: new (...args: any[]) => T,
     timeoutMs?: number,
   ): Promise<T> {
     const got = await this.receiveOne(timeoutMs);
     if (!(got instanceof Class)) {
-      throw new Error(`expectMsgType: expected instance of ${Class.name} but got ${stringify(got)}`);
+      throw new Error(`expectMessageType: expected instance of ${Class.name} but got ${stringify(got)}`);
     }
     return got;
   }

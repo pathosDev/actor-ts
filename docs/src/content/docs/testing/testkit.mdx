@@ -16,7 +16,7 @@ const probe = tk.createTestProbe();
 const ref = tk.system.spawnAnonymous(Props.create(() => new Worker(probe)));
 
 ref.tell({ kind: 'do' });
-await probe.expectMsg('done');
+await probe.expectMessage('done');
 
 await tk.shutdown();
 ```
@@ -76,7 +76,7 @@ const testProbeOptions = TestProbeOptions.create()
 const probe = tk.createTestProbe(testProbeOptions);           // visible in logs
 
 ref.tell({ kind: 'do', replyTo: probe });
-await probe.expectMsg({ kind: 'done' });
+await probe.expectMessage({ kind: 'done' });
 ```
 
 Returns a `TestProbe` scoped to this kit's system.  See
@@ -88,7 +88,7 @@ expectations API.
 ```ts
 await tk.within(1_000, async () => {
   ref.tell({ kind: 'do' });
-  await probe.expectMsg('done');
+  await probe.expectMessage('done');
 });
 ```
 
@@ -122,7 +122,7 @@ const ref = kit.system.spawnAnonymous(Props.create(() => new Heartbeat(probe)));
 ref.tell({ kind: 'start' });
 
 scheduler.advance(5_000);   // jump 5 virtual seconds
-await probe.expectMsg('tick');
+await probe.expectMessage('tick');
 ```
 
 Returns both the kit and its `ManualScheduler` so the test can
@@ -154,7 +154,7 @@ describe('Counter', () => {
     const ref = tk.system.spawnAnonymous(Props.create(() => new Counter()));
     ref.tell({ kind: 'inc' });
     ref.tell({ kind: 'get', replyTo: probe as ActorRef<number> });
-    await probe.expectMsg(1);
+    await probe.expectMessage(1);
   });
 });
 ```

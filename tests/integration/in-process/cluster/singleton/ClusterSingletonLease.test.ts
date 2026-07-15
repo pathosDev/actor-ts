@@ -83,10 +83,10 @@ describe('ClusterSingleton + Lease', () => {
     await waitFor(() => nodeA.cluster.leader().nonEmpty);
     // Child preStart fires once acquire resolves — give the mailbox
     // a few ticks for the acquire-result event.
-    await probe.expectMsg('started', 1_000);
+    await probe.expectMessage('started', 1_000);
 
     handle.proxy.tell('hi');
-    expect(await probe.expectMsg('got:hi', 500)).toBe('got:hi');
+    expect(await probe.expectMessage('got:hi', 500)).toBe('got:hi');
 
     handle.stop();
     await stop(nodeA);
@@ -123,7 +123,7 @@ describe('ClusterSingleton + Lease', () => {
     // Release the foreign lease.  Within ~100 ms the manager's retry
     // tick fires, sees the lease available, acquires, spawns.
     await otherHolder.release();
-    await probe.expectMsg('started', 1_000);
+    await probe.expectMessage('started', 1_000);
 
     handle.stop();
     await stop(nodeA);
@@ -148,7 +148,7 @@ describe('ClusterSingleton + Lease', () => {
       .withLease(lease)
       .withAcquireRetryIntervalMs(100);
     const handle = nodeA.kit.system.extension(ClusterSingletonId).start(nodeA.cluster, singletonOptions);
-    await probe.expectMsg('started', 1_000);
+    await probe.expectMessage('started', 1_000);
 
     // Force a lost-lease scenario: another owner takes over from under us.
     // This makes the next renewal in the InMemoryLease fail, which fires
@@ -159,7 +159,7 @@ describe('ClusterSingleton + Lease', () => {
     expect(await usurper.acquire()).toBe(true);
 
     // The manager's renewal-failure path fires onLost → stops child.
-    await probe.expectMsg('stopped', 2_000);
+    await probe.expectMessage('stopped', 2_000);
 
     // The manager schedules a fresh acquire; while the usurper still
     // holds the lease, that acquire returns false and the manager
@@ -186,7 +186,7 @@ describe('ClusterSingleton + Lease', () => {
       .withProps(Props.create(() => new Echo()))
       .withLease(lease);
     const handle = nodeA.kit.system.extension(ClusterSingletonId).start(nodeA.cluster, singletonOptions);
-    await probe.expectMsg('started', 1_000);
+    await probe.expectMessage('started', 1_000);
     expect(lease.checkAlive()).toBe(true);
 
     handle.stop();
@@ -217,10 +217,10 @@ describe('ClusterSingleton + Lease', () => {
     // No lease → child should be spawned synchronously the moment
     // SelfUp/LeaderChanged fires.  In single-node clusters that
     // happens during cluster.join.
-    await probe.expectMsg('started', 500);
+    await probe.expectMessage('started', 500);
 
     handle.proxy.tell('hi');
-    expect(await probe.expectMsg('got:hi', 500)).toBe('got:hi');
+    expect(await probe.expectMessage('got:hi', 500)).toBe('got:hi');
 
     handle.stop();
     await stop(nodeA);

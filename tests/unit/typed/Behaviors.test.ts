@@ -62,7 +62,7 @@ describe('Behaviors.receive — basic handler', () => {
 
     const ref = kit.system.spawnTypedAnonymous(counter(0));
     ref.tell('inc'); ref.tell('inc'); ref.tell('inc'); ref.tell('get');
-    expect(await probe.expectMsg(3, 500)).toBe(3);
+    expect(await probe.expectMessage(3, 500)).toBe(3);
     await kit.system.terminate();
     await sys.terminate();
   });
@@ -137,7 +137,7 @@ describe('Behaviors.withTimers', () => {
     });
 
     kit.system.spawnTypedAnonymous(behavior);
-    expect(await probe.expectMsg('tick', 500)).toBe('tick');
+    expect(await probe.expectMessage('tick', 500)).toBe('tick');
     await kit.system.terminate();
     await sys.terminate();
   });
@@ -178,11 +178,11 @@ describe('Behaviors.withStash', () => {
     ref.tell({ kind: 'ready' });
     // After 'ready' is handled, the two stashed messages are replayed onto
     // the mailbox in FIFO order, so probe should see work#1 then work#2.
-    expect(await probe.expectMsg('work#1', 500)).toBe('work#1');
-    expect(await probe.expectMsg('work#2', 500)).toBe('work#2');
+    expect(await probe.expectMessage('work#1', 500)).toBe('work#1');
+    expect(await probe.expectMessage('work#2', 500)).toBe('work#2');
     // Subsequent work goes straight to the ready behavior.
     ref.tell({ kind: 'work', id: 3 });
-    expect(await probe.expectMsg('work#3', 500)).toBe('work#3');
+    expect(await probe.expectMessage('work#3', 500)).toBe('work#3');
 
     await kit.system.terminate();
     await sys.terminate();
@@ -231,13 +231,13 @@ describe('Behaviors.supervise', () => {
     );
     const ref = kit.system.spawnTypedAnonymous(behavior);
 
-    expect(await probe.expectMsg('init#1', 500)).toBe('init#1');
+    expect(await probe.expectMessage('init#1', 500)).toBe('init#1');
     ref.tell('one');
-    expect(await probe.expectMsg('saw:one', 500)).toBe('saw:one');
+    expect(await probe.expectMessage('saw:one', 500)).toBe('saw:one');
     ref.tell('boom'); // error, restart
-    expect(await probe.expectMsg('init#2', 500)).toBe('init#2');
+    expect(await probe.expectMessage('init#2', 500)).toBe('init#2');
     ref.tell('two');
-    expect(await probe.expectMsg('saw:two', 500)).toBe('saw:two');
+    expect(await probe.expectMessage('saw:two', 500)).toBe('saw:two');
 
     await kit.system.terminate();
     await sys.terminate();
@@ -266,10 +266,10 @@ describe('Behaviors.supervise', () => {
     );
     const ref = kit.system.spawnTypedAnonymous(behavior);
     ref.tell('a');
-    expect(await probe.expectMsg('a', 500)).toBe('a');
+    expect(await probe.expectMessage('a', 500)).toBe('a');
     ref.tell('boom');
     ref.tell('b');
-    expect(await probe.expectMsg('b', 500)).toBe('b');
+    expect(await probe.expectMessage('b', 500)).toBe('b');
     expect(initCount).toBe(1); // never reinitialised
 
     await kit.system.terminate();
@@ -301,7 +301,7 @@ describe('typedProps — interop with OO Actor API', () => {
     const behavior = Behaviors.receiveMessage<number>((m) => { probe.tell(m * 2); return Behaviors.same; });
     const ref = kit.system.spawnAnonymous(typedProps(behavior));
     ref.tell(21);
-    expect(await probe.expectMsg(42, 500)).toBe(42);
+    expect(await probe.expectMessage(42, 500)).toBe(42);
 
     await kit.system.terminate();
     await sys.terminate();
