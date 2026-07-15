@@ -24,7 +24,7 @@
     "typedoc-plugin-markdown": "^4.11.0"
   },
   "devDependencies": {
-    "@types/node": "^22.19.19",
+    "@types/node": "^24.0.0",
     "playwright": "^1.60.0",
     "rehype-mermaid": "^3.0.0"
   }

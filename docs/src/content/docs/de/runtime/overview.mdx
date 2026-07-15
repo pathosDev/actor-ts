@@ -8,7 +8,7 @@ actor-ts adressiert **drei JavaScript-Runtimes**:
 | Runtime | Status | Anmerkungen |
 | --- | --- | --- |
 | **Bun** | Primär | Die Runtime, gegen die wir zuerst testen. Natives SQLite, nativer Test-Runner, schnellster Start. |
-| **Node** | Voll unterstützt | Braucht `better-sqlite3` als Peer-Dependency für SQLite-Pfade. Manche optionalen Features brauchen Node 22+ für native Pfade. |
+| **Node** | Voll unterstützt | Braucht `better-sqlite3` als Peer-Dependency für SQLite-Pfade. |
 | **Deno** | Best-Effort | Funktioniert für die meisten Features; weniger getestet als Bun/Node. |
 
 Das **Runtime-Erkennungs-Modell** des Frameworks wählt beim
@@ -74,7 +74,7 @@ Du kannst einen Cluster mit **gemischten Runtimes** betreiben:
 
 ```
 Node-1: Bun
-Node-2: Node 20
+Node-2: Node 24
 Node-3: Bun
 ```
 
@@ -93,15 +93,15 @@ Fehlermeldungen, andere Perf-Profile).
 | Bun-Patch-Versionen | Drop-in; Pods neu starten. |
 | Bun-Major-Versionen | In Staging testen; sollte drop-in sein, aber wert zu verifizieren. |
 | Node-Patch | Drop-in. |
-| Node-Minor (z. B. 22.x → 22.y) | Drop-in. |
-| Node-Major (z. B. 20 → 22) | Gründlich testen; manche Node-APIs ändern sich. |
+| Node-Minor (z. B. 24.x → 24.y) | Drop-in. |
+| Node-Major (z. B. 24 → 26) | Gründlich testen; manche Node-APIs ändern sich. |
 | Bun ↔ Node wechseln | Vollen Workload testen; Perf-Profil unterscheidet sich. |
 
 Für Produktion **pinne Runtime-Versionen** in deinem Container-
 Image:
 
 ```dockerfile
-FROM oven/bun:1.1.30    # explizites Tag, kein `latest`
+FROM oven/bun:1.3.14    # explizites Tag, kein `latest`
 ```
 
 ## Wann auf jedem deployen
@@ -136,15 +136,14 @@ import { Aside } from '@astrojs/starlight/components';
   Probleme, die Node bei langsamen Boots aufdecken würde.
 </Aside>
 
-<Aside type="caution" title="Node < 20 wird nicht unterstützt">
+<Aside type="caution" title="Node < 24 wird nicht unterstützt">
   ```bash
   node --version
-  # v18.x.x  ← nicht unterstützt
+  # v20.x.x  ← nicht unterstützt (EOL April 2026)
   ```
-  actor-ts braucht Node 20+ für WebCrypto + die Runtime-APIs,
-  auf die wir uns verlassen. Manche optionalen Features (native
-  WebSocket, natives zstd) bevorzugen 22+, fallen aber auf
-  Peer-Deps auf 20 zurück. Upgrade auf 20+ oder nutze Bun.
+  actor-ts braucht Node 24+ — die älteste aktive LTS-Linie und
+  die erste Untergrenze, auf der WebSocket, zstd, WebCrypto und
+  fetch alle nativ sind. Upgrade auf 24+ oder nutze Bun.
 </Aside>
 
 ## Wo es weitergeht

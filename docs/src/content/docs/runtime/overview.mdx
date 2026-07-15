@@ -8,7 +8,7 @@ actor-ts targets **three JavaScript runtimes**:
 | Runtime | Status | Notes |
 | --- | --- | --- |
 | **Bun** | Primary | The runtime we test against first.  Native SQLite, native test runner, fastest startup. |
-| **Node** | Fully supported | Requires `better-sqlite3` peer dep for SQLite paths.  Some optional features need Node 22+ for native paths. |
+| **Node** | Fully supported | Requires `better-sqlite3` peer dep for SQLite paths. |
 | **Deno** | Best-effort | Works for most features; less testing than Bun/Node. |
 
 The framework's **runtime-detection model** picks the right
@@ -73,7 +73,7 @@ You can run a cluster with **mixed runtimes**:
 
 ```
 node-1: Bun
-node-2: Node 20
+node-2: Node 24
 node-3: Bun
 ```
 
@@ -92,15 +92,15 @@ messages, different perf profiles).
 | Bun patch versions | Drop-in; restart pods. |
 | Bun major versions | Test in staging; should be drop-in but worth verifying. |
 | Node patch | Drop-in. |
-| Node minor (e.g. 22.x → 22.y) | Drop-in. |
-| Node major (e.g. 20 → 22) | Test thoroughly; some node APIs change. |
+| Node minor (e.g. 24.x → 24.y) | Drop-in. |
+| Node major (e.g. 24 → 26) | Test thoroughly; some node APIs change. |
 | Switching Bun ↔ Node | Test full workload; perf profile differs. |
 
 For production, **pin runtime versions** in your container
 image:
 
 ```dockerfile
-FROM oven/bun:1.1.30    # explicit tag, no `latest`
+FROM oven/bun:1.3.14    # explicit tag, no `latest`
 ```
 
 ## When to deploy on each
@@ -135,15 +135,14 @@ import { Aside } from '@astrojs/starlight/components';
   surface during slow boots.
 </Aside>
 
-<Aside type="caution" title="Node < 20 isn't supported">
+<Aside type="caution" title="Node < 24 isn't supported">
   ```bash
   node --version
-  # v18.x.x  ← not supported
+  # v20.x.x  ← not supported (EOL April 2026)
   ```
-  actor-ts needs Node 20+ for WebCrypto + the runtime APIs we
-  rely on.  Some optional features (native WebSocket, native
-  zstd) prefer 22+ but fall back to peer deps on 20.
-  Upgrade to 20+ or use Bun.
+  actor-ts needs Node 24+ — the oldest active LTS line, and the
+  first floor where WebSocket, zstd, WebCrypto, and fetch are all
+  native.  Upgrade to 24+ or use Bun.
 </Aside>
 
 ## Where to next

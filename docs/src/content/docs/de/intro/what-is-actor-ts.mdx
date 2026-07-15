@@ -163,9 +163,8 @@ gemessen.
 Node ist die **produktive Realität**: bei weitem die häufigste
 Deployment-Umgebung, die Runtime, die Dein Infrastruktur-Team bereits
 kennt, gegen die die meisten npm-Pakete zuerst getestet werden.
-Einige actor-ts-Features (native WebSocket, native zstd-Kompression)
-erfordern Node 22+, um einen Peer-Dependency-Fallback zu vermeiden;
-alles andere funktioniert auf Node 20+.
+Alles, worauf actor-ts sich stützt (WebSocket, zstd, WebCrypto,
+fetch), ist auf der unterstützten Untergrenze Node 24+ nativ.
 
 Deno ist die **Best-Effort-Runtime**: funktioniert für die meisten
 Features via `npm:`-Specifier, aber eine Handvoll Integrationen

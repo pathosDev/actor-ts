@@ -71,7 +71,7 @@ nur hoch, wenn Storage-Kosten dominieren.
 zstd-Support unterscheidet sich je **Richtung**:
 
 - **Compress (Write)** — nur nativ: **Bun** (`Bun.zstdCompressSync`)
-  oder **Node ≥ 22.15** (`zlib.zstdCompressSync`).  Es gibt keinen
+  oder **Node** (`zlib.zstdCompressSync`).  Es gibt keinen
   Pure-JS-Fallback fürs Schreiben; die optionale `fzstd`-Peer-Dependency
   kann **nur dekomprimieren**.  `zstd` auf einem Runtime ohne native
   Unterstützung schlägt früh fehl — eager bei der Plugin-Registrierung,
@@ -147,8 +147,8 @@ bestehende Daten anzufassen.
 nutzen große Match-Fenster.  Der Pure-JS-`fzstd`-Decompress-Fallback
 deckelt die Backreference-Distanz bei 2²⁵ (32 MB) und kann
 Ultra-Level-Frames evtl. nicht lesen.  Wenn irgendein **Leser** in
-deiner Flotte ohne natives zstd laufen könnte (also nicht Bun und
-nicht Node ≥ 22.15), halte das Level **≤ 19**.  Auf nativen Lesern
+deiner Flotte ohne natives zstd laufen könnte (also weder Bun noch
+Node — z. B. Deno), halte das Level **≤ 19**.  Auf nativen Lesern
 gibt es kein solches Limit.
 </aside>
 

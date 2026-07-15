@@ -27,13 +27,13 @@ curl -fsSL https://bun.sh/install | bash
 Check:
 
 ```bash
-bun --version    # 1.1+ benötigt
+bun --version    # 1.3+ benötigt
 ```
 
 Für Docker:
 
 ```dockerfile
-FROM oven/bun:1.1
+FROM oven/bun:1.3
 WORKDIR /app
 COPY . .
 RUN bun install

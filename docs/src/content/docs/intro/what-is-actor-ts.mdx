@@ -152,10 +152,9 @@ runner.  Most internal benchmarks were measured on Bun.
 
 Node is the **production reality**: by far the most common
 deployment environment, the runtime your infrastructure team
-already knows, most npm packages are first-tested against.  Some
-actor-ts features (native WebSocket, native zstd compression)
-require Node 22+ to avoid a peer-dependency fallback; everything
-else works on Node 20+.
+already knows, most npm packages are first-tested against.
+Everything actor-ts relies on (WebSocket, zstd, WebCrypto,
+fetch) is native on the supported floor of Node 24+.
 
 Deno is the **best-effort runtime**: works for most features via
 the `npm:` specifier, but a handful of integrations have not been

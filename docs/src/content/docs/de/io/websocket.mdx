@@ -54,7 +54,6 @@ Nur `url` ist erforderlich; alles andere hat einen Default.
 interface WebsocketClientOptionsType<TOut, TIn> extends BrokerCommonOptionsType {
   url:              string;                        // required — ws:// or wss://
   protocols?:       string | string[];             // subprotocols
-  headers?:         Record<string, string>;        // Node / `ws` only
   codec?:           WebsocketCodec<TOut, TIn>;             // default jsonCodec()
   maxFrameBytes?:   number;                         // default 1 MiB; oversize inbound dropped with a warning
   onInvalidMessage?: 'drop' | 'hook' | 'disconnect'; // default 'drop'
@@ -219,7 +218,6 @@ Client-Defaults lassen sich unter
 actor-ts.io.broker.websocket {
   url             = "wss://realtime.example.com/feed"
   protocols       = ["my-proto-v1"]
-  headers         { authorization = "Bearer ..." }
   pingIntervalMs  = 30000
   maxFrameBytes   = 1048576
   reconnect       { initialDelayMs = 500, maxDelayMs = 30000, factor = 2.0, maxAttempts = -1 }
@@ -255,15 +253,12 @@ import { Aside } from '@astrojs/starlight/components';
   `ref.tell(websocketSend(msg))`.
 </Aside>
 
-<Aside type="caution" title="`ws`-Peer-Dependency auf Node < 22">
-  ```bash
-  npm install ws        # Node < 22 only
-  ```
-  Bun, Deno und Node 22+ liefern ein natives `WebSocket`, dort ist
-  also keine Peer-Dependency nötig.  Auf älterem Node installiere
-  das `ws`-Paket.  Das `headers`-Setting wird nur auf dem Node- /
-  `ws`-Pfad berücksichtigt — Browser und das native
-  Runtime-`WebSocket` erlauben keine eigenen Handshake-Header.
+<Aside type="note" title="Keine eigenen Handshake-Header">
+  Der Client nutzt das native `WebSocket` der Runtime (Bun, Deno
+  und Node liefern eins mit — keine `ws`-Peer-Dependency nötig).
+  Das erlaubt, genau wie die Browser-API, keine eigenen
+  Handshake-Header.  Übergib Credentials stattdessen per
+  Query-Parameter oder Subprotocol.
 </Aside>
 
 <Aside type="caution" title="WebSocket im Browser ist etwas anderes">
