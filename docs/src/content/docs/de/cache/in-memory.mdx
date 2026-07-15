@@ -1,23 +1,46 @@
 ---
 title: In-Memory-Cache
-description: Der Default-`Cache` — eine schlichte In-Process-`Map` mit fauler TTL pro Eintrag. Keine Größenschranke, kein Hintergrund-Sweep, nur Single-Process; geht bei Neustart verloren. Richtig für Tests, Dev und Single-Node-Setups.
+description: Der Default-`Cache` — eine In-Process-`Map` mit LRU-Eviction (begrenzt durch maxEntries), fauler TTL pro Eintrag und optionalem Hintergrund-Sweep. Nur Single-Process; geht bei Neustart verloren. Richtig für Tests, Dev und Single-Node-Setups.
 ---
 
-`InMemoryCache` ist die **Default**-`Cache`-Implementierung.  Sie
-ist ein dünner Wrapper über einer schlichten `Map` — In-Process,
-keine Abhängigkeiten, faule Expiry pro Eintrag.  Es gibt keine
-Eviction-Policy und keinen Hintergrund-Sweeper: sie tut, was eine
-`Map` tut, plus TTL.
+`InMemoryCache` ist die **Default**-`Cache`-Implementierung.  Sie ist
+eine `Map` mit drei Dingen obendrauf: **LRU-Eviction** begrenzt durch
+`maxEntries`, **fauler TTL pro Eintrag** und einem optionalen
+**Hintergrund-Sweep**, der abgelaufene, nicht mehr angefasste Einträge
+zurückgewinnt.  In-Process, keine Abhängigkeiten, geht bei Neustart
+verloren.
 
 ```ts
-import { InMemoryCache } from 'actor-ts';
+import { InMemoryCache, InMemoryCacheOptions } from 'actor-ts';
 
+// Defaults: maxEntries 10 000, cleanupMs 60 000.
 const cache = new InMemoryCache();
+
+// Or tune it with the builder:
+const cacheOptions = InMemoryCacheOptions.create()
+  .withMaxEntries(50_000)
+  .withCleanupMs(30_000);
+const tuned = new InMemoryCache(cacheOptions);
 ```
 
-Der Konstruktor nimmt **keine Optionen** — es gibt nichts zu
-tunen.  Eine TTL wird pro Aufruf übergeben (siehe
+Ein einfaches Objekt ist die Kurzform-Alternative —
+`new InMemoryCache({ maxEntries: 50_000, cleanupMs: 30_000 })`.  Eine
+TTL wird weiterhin **pro Aufruf** übergeben (siehe
 [TTL-Behandlung](#ttl-behandlung)), nicht beim Konstruieren.
+
+## Optionen
+
+| Feld | Builder | Default | Bedeutung |
+| --- | --- | --- | --- |
+| `maxEntries` | `withMaxEntries(n)` | `10000` | LRU-Schranke für gespeicherte Einträge.  `Infinity` = unbegrenzt. |
+| `cleanupMs`  | `withCleanupMs(ms)` | `60000` | Intervall des Hintergrund-Sweeps für abgelaufene Einträge (ms).  `0` / `Infinity` schaltet den Sweep ab. |
+
+Werte werden einmalig beim Konstruieren auf den gemergten Settings
+validiert: `maxEntries` muss eine positive Ganzzahl (oder `Infinity`)
+sein und `cleanupMs` eine nicht-negative Zahl (oder `Infinity`).  Ein
+ungültiger Wert wirft
+[`OptionsError`](/de/reference/configuration/#options-validation) — der
+Builder, ein einfaches Objekt und HOCON treffen alle dieselbe Prüfung.
 
 ## Wann einsetzen
 
@@ -48,7 +71,7 @@ const many = await cache.mget<User>(['user:1', 'user:2']);  // Map<string, User>
 await cache.mset(new Map([['a', user1], ['b', user2]]), 60_000);
 
 await cache.delete('user:1', 'user:2');             // one or many keys
-await cache.close();                                // clears the Map
+await cache.close();                                // stops the sweep + clears the Map
 ```
 
 `get` gibt ein `Option<V>` zurück — `None` bei einem Miss oder
@@ -58,29 +81,36 @@ nach Ablauf.
 
 ```ts
 await cache.set('key', value, 60_000);   // expires at now + 60s
-await cache.set('key', value);           // no TTL — lives until deleted
+await cache.set('key', value);           // no TTL — lives until evicted/deleted
 ```
 
-Expiry ist **faul**: die Deadline eines Eintrags wird bei jedem
-`get`, `mget`, `incr` und `setIfAbsent` geprüft, und ein
-abgelaufener Eintrag wird an dieser Stelle verworfen.  Es gibt
-**keinen Hintergrund-Sweeper** — ein abgelaufener Eintrag, der nie
-wieder angefasst wird, bleibt in der `Map`, bis du ihn mit
-`delete` entfernst oder den Cache mit `close()` schließt.
+Expiry hat zwei Pfade.  Er ist **faul** beim Zugriff — die Deadline
+eines Eintrags wird bei jedem `get`, `mget`, `incr` und `setIfAbsent`
+geprüft, und ein abgelaufener Eintrag wird an dieser Stelle verworfen.
+Ein **Hintergrund-Sweep** läuft dann alle `cleanupMs` (Default 60 s)
+und gewinnt abgelaufene Einträge zurück, die nie wieder angefasst
+werden, damit sie nicht auf einen Read wartend in der `Map` liegen.
+Setze `cleanupMs` auf `0` / `Infinity`, um den Sweep abzuschalten und
+dich allein auf faule Expiry zu verlassen.
 
 `incr` setzt die TTL nur, wenn es den Zähler **erzeugt** (der Wert
 wird 1); spätere Inkremente erneuern sie nicht — die richtige
 Semantik für einen Fixed-Window-Rate-Limiter.
 
-## Keine Eviction
+## Standardmäßig begrenzt (LRU)
 
-`InMemoryCache` hat **keine Größenschranke und kein LRU** — er hält
-alles, was du hineinlegst, bis der Eintrag (faul) abläuft oder du
-ihn entfernst.  Für ein beschränktes Working-Set, das in den
-Speicher passt, ist genau das gewünscht.  Für einen Workload, der
-viele eindeutige, nie erneut gelesene Keys schreibt, gib jedem
-Eintrag eine TTL (oder `delete` ihn), damit die `Map` nicht
-unbegrenzt wächst.
+`InMemoryCache` ist **LRU-begrenzt** bei `maxEntries` (Default 10 000):
+das Einfügen eines neuen Keys über die Schranke hinaus evictet den am
+längsten nicht genutzten Eintrag.  `get`/`incr`/`setIfAbsent` zählen
+als Nutzung und schieben einen Key ans zuletzt-genutzte Ende, sodass
+heiße Keys überleben und kalte zuerst evictet werden.  Genau das
+verhindert, dass eine Flut eindeutiger, nie erneut gelesener Keys —
+etwa angreiferseitig gewählte `Idempotency-Key`- oder Rate-Limit-Keys —
+die Map unbegrenzt wachsen lässt.
+
+Setze `maxEntries: Infinity`, um die Eviction ganz abzuschalten.  Tu
+das nur, wenn du den Key-Raum kontrollierst — eine unbegrenzte Map
+läuft dem Prozess irgendwann in einen OOM.
 
 ## Über das System teilen
 
@@ -101,6 +131,15 @@ solange du ihn nicht ersetzt (via `setCache`, `registerCache` oder
 den HOCON-Pfad `actor-ts.cache.<name>.plugin`).  HTTP-Middleware,
 Projection-Actors und dein eigener Code teilen sich dann eine
 konfigurierte Instanz, statt dass jeder seine eigene baut.
+
+Der von der Extension gebaute In-Memory-Cache liest seine Defaults aus HOCON:
+
+```hocon
+actor-ts.cache.in-memory {
+  maxEntries = 50000   # LRU cap
+  cleanupMs  = 30000   # background sweep interval, ms (0 disables)
+}
+```
 
 Für einen Wegwerf-Cache konstruiere einfach direkt
 `new InMemoryCache()` — keine Extension nötig.
@@ -129,15 +168,16 @@ import { Aside } from '@astrojs/starlight/components';
   Kaltstart.
 </Aside>
 
-<Aside type="caution" title="Keine Schranke — TTLs setzen, um Wachstum zu begrenzen">
+<Aside type="caution" title="maxEntries auf dein Working-Set abstimmen">
   ```ts
-  // No maxEntries, no LRU, no sweeper: a Map that only grows.
-  await cache.set(key, value);              // ✗ lives forever until deleted
-  await cache.set(key, value, 300_000);     // ✓ reclaimed lazily after 5 min
+  // Default cap is 10 000 entries; raise it for a larger hot set…
+  new InMemoryCache({ maxEntries: 200_000 });
+  // …or opt out entirely — only if you control the key space.
+  new InMemoryCache({ maxEntries: Infinity });   // ✗ unbounded — OOMs eventually
   ```
-  Gib Einträgen bei schreibintensiven Workloads mit geringer
-  Wiederverwendung eine TTL (oder `delete` sie) — nichts evictet
-  sie für dich.
+  Die LRU-Schranke schützt dich vor unbegrenztem Wachstum, aber eine
+  zu kleine Schranke evictet heiße Einträge zu früh.  Dimensioniere
+  sie auf das erwartete Working-Set.
 </Aside>
 
 ## Wohin als Nächstes

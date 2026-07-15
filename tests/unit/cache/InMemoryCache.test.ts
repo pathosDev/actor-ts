@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { InMemoryCache } from '../../../src/cache/InMemoryCache.js';
+import { InMemoryCacheOptions } from '../../../src/cache/InMemoryCacheOptions.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { runCacheContractTests } from './_Contract.js';
 
 // Backend-agnostic contract — every Cache impl must pass these.
@@ -180,64 +182,89 @@ describe('InMemoryCache — mget / mset (#14)', () => {
 // rate-limit) grew it without limit → RAM DoS.  It is now LRU-bounded.
 describe('InMemoryCache — bounded size / LRU eviction (HTTP-2)', () => {
   test('evicts the least-recently-used entry beyond maxEntries', async () => {
-    const c = new InMemoryCache({ maxEntries: 3, cleanupMs: 0 });
-    await c.set('a', 1);
-    await c.set('b', 2);
-    await c.set('c', 3);
-    await c.get('a');          // 'a' becomes most-recently-used → 'b' is LRU
-    await c.set('d', 4);       // over cap → evict LRU ('b')
-    expect(c.sizeForTest()).toBe(3);
-    expect((await c.get('b')).isNone()).toBe(true);
-    expect((await c.get('a')).toNullable()).toBe(1);
-    expect((await c.get('c')).toNullable()).toBe(3);
-    expect((await c.get('d')).toNullable()).toBe(4);
-    await c.close();
+    const cache = new InMemoryCache({ maxEntries: 3, cleanupMs: 0 });
+    await cache.set('a', 1);
+    await cache.set('b', 2);
+    await cache.set('c', 3);
+    await cache.get('a');          // 'a' becomes most-recently-used → 'b' is LRU
+    await cache.set('d', 4);       // over cap → evict LRU ('b')
+    expect(cache.sizeForTest()).toBe(3);
+    expect((await cache.get('b')).isNone()).toBe(true);
+    expect((await cache.get('a')).toNullable()).toBe(1);
+    expect((await cache.get('c')).toNullable()).toBe(3);
+    expect((await cache.get('d')).toNullable()).toBe(4);
+    await cache.close();
   });
 
   test('a flood of distinct keys stays bounded by maxEntries', async () => {
-    const c = new InMemoryCache({ maxEntries: 50, cleanupMs: 0 });
-    for (let i = 0; i < 5_000; i++) await c.set(`k${i}`, i);
-    expect(c.sizeForTest()).toBeLessThanOrEqual(50);
-    await c.close();
+    const cache = new InMemoryCache({ maxEntries: 50, cleanupMs: 0 });
+    for (let i = 0; i < 5_000; i++) await cache.set(`k${i}`, i);
+    expect(cache.sizeForTest()).toBeLessThanOrEqual(50);
+    await cache.close();
   });
 
   test('overwriting an existing key does not evict', async () => {
-    const c = new InMemoryCache({ maxEntries: 2, cleanupMs: 0 });
-    await c.set('a', 1);
-    await c.set('b', 2);
-    await c.set('a', 11);      // overwrite — no growth, no eviction
-    expect(c.sizeForTest()).toBe(2);
-    expect((await c.get('a')).toNullable()).toBe(11);
-    expect((await c.get('b')).toNullable()).toBe(2);
-    await c.close();
+    const cache = new InMemoryCache({ maxEntries: 2, cleanupMs: 0 });
+    await cache.set('a', 1);
+    await cache.set('b', 2);
+    await cache.set('a', 11);      // overwrite — no growth, no eviction
+    expect(cache.sizeForTest()).toBe(2);
+    expect((await cache.get('a')).toNullable()).toBe(11);
+    expect((await cache.get('b')).toNullable()).toBe(2);
+    await cache.close();
   });
 
   test('incr respects the cap', async () => {
-    const c = new InMemoryCache({ maxEntries: 3, cleanupMs: 0 });
-    for (let i = 0; i < 100; i++) await c.incr(`c${i}`);
-    expect(c.sizeForTest()).toBeLessThanOrEqual(3);
-    await c.close();
+    const cache = new InMemoryCache({ maxEntries: 3, cleanupMs: 0 });
+    for (let i = 0; i < 100; i++) await cache.incr(`c${i}`);
+    expect(cache.sizeForTest()).toBeLessThanOrEqual(3);
+    await cache.close();
   });
 
   test('maxEntries: Infinity opts out of eviction (documented OOM risk)', async () => {
-    const c = new InMemoryCache({ maxEntries: Infinity, cleanupMs: 0 });
-    for (let i = 0; i < 500; i++) await c.set(`k${i}`, i);
-    expect(c.sizeForTest()).toBe(500);
-    await c.close();
+    const cache = new InMemoryCache({ maxEntries: Infinity, cleanupMs: 0 });
+    for (let i = 0; i < 500; i++) await cache.set(`k${i}`, i);
+    expect(cache.sizeForTest()).toBe(500);
+    await cache.close();
   });
 
-  test('constructor rejects a non-positive / non-integer maxEntries', () => {
-    expect(() => new InMemoryCache({ maxEntries: 0 })).toThrow(/maxEntries/);
+  test('periodic sweep reclaims expired entries (cleanupMs)', async () => {
+    const cache = new InMemoryCache({ maxEntries: 100, cleanupMs: 20 });
+    await cache.set('temp', 1, 10);   // expires in ~10 ms
+    expect(cache.sizeForTest()).toBe(1);
+    await sleep(80);              // several sweep cycles (every 20 ms)
+    expect(cache.sizeForTest()).toBe(0);
+    await cache.close();
+  });
+});
+
+// Options plumbing (WP3): builder parity + OptionsError validation, replacing
+// the old bare-Error maxEntries guard and covering the previously-unvalidated
+// cleanupMs.
+describe('InMemoryCache — options + validation', () => {
+  test('builder form is equivalent to a plain object', async () => {
+    const cacheOptions = InMemoryCacheOptions.create()
+      .withMaxEntries(3)
+      .withCleanupMs(0);
+    const cache = new InMemoryCache(cacheOptions);
+    for (let i = 0; i < 20; i++) await cache.set(`k${i}`, i);
+    expect(cache.sizeForTest()).toBeLessThanOrEqual(3);
+    await cache.close();
+  });
+
+  test('rejects a non-positive / non-integer maxEntries with OptionsError', () => {
+    expect(() => new InMemoryCache({ maxEntries: 0 })).toThrow(OptionsError);
     expect(() => new InMemoryCache({ maxEntries: -1 })).toThrow(/maxEntries/);
     expect(() => new InMemoryCache({ maxEntries: 2.5 })).toThrow(/maxEntries/);
   });
 
-  test('periodic sweep reclaims expired entries (cleanupMs)', async () => {
-    const c = new InMemoryCache({ maxEntries: 100, cleanupMs: 20 });
-    await c.set('temp', 1, 10);   // expires in ~10 ms
-    expect(c.sizeForTest()).toBe(1);
-    await sleep(80);              // several sweep cycles (every 20 ms)
-    expect(c.sizeForTest()).toBe(0);
-    await c.close();
+  test('rejects a negative / NaN cleanupMs with OptionsError', () => {
+    expect(() => new InMemoryCache({ cleanupMs: -1 })).toThrow(OptionsError);
+    expect(() => new InMemoryCache({ cleanupMs: Number.NaN })).toThrow(/cleanupMs/);
+  });
+
+  test('accepts the documented opt-out values (Infinity maxEntries, 0 cleanupMs)', () => {
+    expect(() => new InMemoryCache({ maxEntries: Infinity, cleanupMs: 0 })).not.toThrow();
+    expect(() => new InMemoryCache({ cleanupMs: Infinity })).not.toThrow();
   });
 });

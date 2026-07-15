@@ -2,6 +2,7 @@ import type { ActorSystem } from '../ActorSystem.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import { InMemoryCache } from './InMemoryCache.js';
+import type { InMemoryCacheOptionsType } from './InMemoryCacheOptions.js';
 import type { Cache } from './Cache.js';
 
 /**
@@ -20,7 +21,22 @@ export class CacheExtension implements Extension {
   private readonly instances = new Map<string, Cache>();
 
   constructor(private readonly system: ActorSystem) {
-    this.factories.set(ConfigKeys.cache.inMemory, () => new InMemoryCache());
+    this.factories.set(ConfigKeys.cache.inMemory, () => new InMemoryCache(this.inMemoryCacheOptions()));
+  }
+
+  /**
+   * Read the default in-memory cache options from HOCON
+   * (`actor-ts.cache.in-memory`).  Unset leaves fall through to
+   * {@link InMemoryCache}'s built-in defaults; present values are validated
+   * there (`OptionsError` on a bad value).
+   */
+  private inMemoryCacheOptions(): InMemoryCacheOptionsType {
+    const root = ConfigKeys.cache.inMemory;
+    const config = this.system.config;
+    const options: { maxEntries?: number; cleanupMs?: number } = {};
+    if (config.hasPath(`${root}.maxEntries`)) options.maxEntries = config.getInt(`${root}.maxEntries`);
+    if (config.hasPath(`${root}.cleanupMs`)) options.cleanupMs = config.getDuration(`${root}.cleanupMs`);
+    return options;
   }
 
   /**

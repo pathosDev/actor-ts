@@ -51,6 +51,17 @@ actor-ts {
     shutdown-grace-period = 5s
   }
 
+  cache {
+    # Defaults for the built-in in-memory cache (the "default" cache, and any
+    # cache whose plugin resolves to actor-ts.cache.in-memory).  Leaf names
+    # match the InMemoryCacheOptions fields (camelCase) and are validated on
+    # read — a bad value throws OptionsError.
+    in-memory {
+      maxEntries = 10000   # LRU cap on entries (Infinity/unbounded only settable in code)
+      cleanupMs  = 60000   # background expired-entry sweep interval, ms (0 disables the sweep)
+    }
+  }
+
   persistence {
     journal {
       plugin = "actor-ts.persistence.journal.in-memory"
