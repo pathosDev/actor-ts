@@ -123,6 +123,16 @@ new names.
   / non-integer cap throws `OptionsError`, `Infinity` opts out), and both
   stores forward it into `decodeBody`.  Raise it to restore a legitimately
   large snapshot / state blob, or lower it for a tighter bound.
+- **HTTP middleware + directives now validate their options.** Added
+  `OptionsValidator`s for `TimeoutOptions` (`ms`), `HstsOptions` (`maxAge` plus
+  the preload cross-field), `CorsOptions` (`maxAge` plus credentials-vs-`*`),
+  `CsrfOptions` (present-secret length, cookie `sameSite` / `maxAgeSeconds`),
+  and `StaticFilesOptions` (`maxFileSize`, `dotfiles` / `symlinks` enums); the
+  ad-hoc bare-`Error` validity checks in the consumers now throw `OptionsError`
+  (required-field guards stay as-is).  `rateLimit` and `idempotent` also gained
+  the real `RateLimitOptions` / `IdempotencyOptions` fluent builders they were
+  already documented to have, each with a validator (`windowMs`/`max`,
+  `ttlMs`/`missingHeader`); the plain-object call form is unchanged.
 
 ### Added — HTTP hardening
 

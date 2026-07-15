@@ -5,6 +5,7 @@
  * HOCON file.
  */
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 
 /** Attributes for the CSRF cookie (a subset of the general cookie attributes). */
 export interface CsrfCookieOptions {
@@ -64,6 +65,38 @@ export class CsrfOptionsBuilder extends OptionsBuilder<CsrfOptionsType> {
 /** Accepted input for {@link csrfProtection}. */
 export type CsrfOptions = CsrfOptionsBuilder | Partial<CsrfOptionsType>;
 export const CsrfOptions = CsrfOptionsBuilder;
+
+/**
+ * Validates resolved {@link CsrfOptionsType} settings.  All rules are
+ * bespoke: `secret` is a `string | Uint8Array` union (byte length must be
+ * >= 16), and the cookie attributes are nested.  A `secret` that is simply
+ * absent is a REQUIRED-field error enforced by `csrfProtection`, not here —
+ * the validator only checks the validity of a PRESENT secret.
+ */
+export class CsrfOptionsValidator extends OptionsValidator<CsrfOptionsType> {
+  constructor() {
+    super('CsrfOptions');
+  }
+  protected rules(s: Partial<CsrfOptionsType>): void {
+    const { secret } = s;
+    if (secret !== undefined) {
+      const len = typeof secret === 'string' ? new TextEncoder().encode(secret).length : secret.length;
+      if (len < 16) this.fail('secret', 'must be at least 16 bytes', len);
+    }
+    const cookie = s.cookie;
+    if (cookie) {
+      if (cookie.sameSite !== undefined && !['strict', 'lax', 'none'].includes(cookie.sameSite)) {
+        this.fail('cookie.sameSite', 'must be one of strict, lax, none', cookie.sameSite);
+      }
+      if (
+        cookie.maxAgeSeconds !== undefined &&
+        (typeof cookie.maxAgeSeconds !== 'number' || !Number.isFinite(cookie.maxAgeSeconds) || cookie.maxAgeSeconds < 0)
+      ) {
+        this.fail('cookie.maxAgeSeconds', 'must be a non-negative finite number', cookie.maxAgeSeconds);
+      }
+    }
+  }
+}
 
 /** Plain settings shape for {@link requireSameOrigin}. */
 export interface SameOriginOptionsType {

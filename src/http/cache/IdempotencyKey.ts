@@ -1,6 +1,10 @@
-import type { Cache } from '../../cache/Cache.js';
 import { complete } from '../Route.js';
 import { type HttpRequest, type HttpResponse, Status } from '../types.js';
+import {
+  IdempotencyOptionsValidator,
+  type IdempotencyOptions,
+  type IdempotencyOptionsType,
+} from './IdempotencyOptions.js';
 
 /**
  * Idempotency-key middleware.  Implements the Stripe / Adyen pattern:
@@ -25,40 +29,6 @@ import { type HttpRequest, type HttpResponse, Status } from '../types.js';
  *   route(post('/payments', dedup(handler)));
  */
 
-export interface IdempotencyOptions {
-  readonly cache: Cache;
-  /** How long to remember responses.  Default: 24 hours. */
-  readonly ttlMs?: number;
-  /**
-   * Header to read the idempotency key from.  Default: `'idempotency-key'`
-   * (the standard).  Header names are matched case-insensitively against
-   * the `req.headers` map (which holds them lower-cased).
-   */
-  readonly headerName?: string;
-  /**
-   * Cache-key namespace.  Default: `'idem:'`.
-   */
-  readonly keyPrefix?: string;
-  /**
-   * What to do when the request lacks the header.  Default: `'reject'`
-   * (respond 400).  Setting `'pass-through'` runs the handler unchanged
-   * — useful when only some clients use idempotency and you don't want
-   * to break the others.
-   */
-  readonly missingHeader?: 'reject' | 'pass-through';
-  /**
-   * Derive a per-caller scope folded into the cache key so a cached response
-   * is NEVER replayed to a different caller (security audit HTTP-4).
-   * Without it, two callers sending the same method + path + body under the
-   * same `Idempotency-Key` share one cache entry — fine for a public
-   * endpoint, unsafe when the response is identity-specific (the second
-   * caller would get the first caller's data / `Set-Cookie`).  Return the
-   * authenticated principal (user / tenant / API-key id), e.g.
-   * `identity: (req) => req.headers['x-account-id'] ?? 'anon'`.
-   */
-  readonly identity?: (req: HttpRequest) => string | Promise<string>;
-}
-
 interface CachedResponse {
   readonly status: number;
   readonly headers?: Record<string, string>;
@@ -80,11 +50,10 @@ interface CachedResponse {
 
 const IN_FLIGHT_MARKER: { readonly inFlight: true } = { inFlight: true } as const;
 
-export function idempotent(opts: IdempotencyOptions) {
+export function idempotent(options: IdempotencyOptions) {
+  const opts = options as IdempotencyOptionsType;
+  new IdempotencyOptionsValidator().validate(opts);
   const ttlMs = opts.ttlMs ?? 24 * 60 * 60_000;
-  if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
-    throw new Error(`idempotent: ttlMs must be a positive finite number, got ${ttlMs}`);
-  }
   const header = (opts.headerName ?? 'idempotency-key').toLowerCase();
   const prefix = opts.keyPrefix ?? 'idem:';
   const missing = opts.missingHeader ?? 'reject';

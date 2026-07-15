@@ -19,11 +19,12 @@ import type { Middleware } from '../Route.js';
 import { HttpError, Status, type HttpRequest } from '../types.js';
 import { parseCookies, serializeCookie } from '../cookies.js';
 import { applyHeaders } from './headers.js';
-import type {
-  CsrfOptions,
-  CsrfOptionsType,
-  SameOriginOptions,
-  SameOriginOptionsType,
+import {
+  CsrfOptionsValidator,
+  type CsrfOptions,
+  type CsrfOptionsType,
+  type SameOriginOptions,
+  type SameOriginOptionsType,
 } from './CsrfOptions.js';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
@@ -87,10 +88,6 @@ function verifyToken(secret: string | Uint8Array, token: string): boolean {
   return safeEqual(token.slice(dot + 1), sign(secret, token.slice(0, dot)));
 }
 
-function secretByteLength(secret: string | Uint8Array): number {
-  return typeof secret === 'string' ? Buffer.byteLength(secret) : secret.length;
-}
-
 function hasSetCookie(headers: Readonly<Record<string, string>> | undefined): boolean {
   if (!headers) return false;
   return Object.keys(headers).some((k) => k.toLowerCase() === 'set-cookie');
@@ -119,9 +116,12 @@ export function readCsrfToken(req: HttpRequest, opts: { cookieName?: string; hea
 export function csrfProtection(options: CsrfOptions): Middleware {
   const resolvedOptions = options as Partial<CsrfOptionsType>;
   const secret = resolvedOptions.secret;
-  if (secret === undefined || secretByteLength(secret) < 16) {
+  // Required-field guard stays a bare Error; the >= 16-byte validity of a
+  // PRESENT secret (and the nested cookie rules) move to the validator.
+  if (secret === undefined) {
     throw new Error('csrfProtection: a secret of at least 16 bytes is required (32 recommended)');
   }
+  new CsrfOptionsValidator().validate(resolvedOptions);
   const cookieName = resolvedOptions.cookieName ?? 'csrf-token';
   const headerName = (resolvedOptions.headerName ?? 'x-csrf-token').toLowerCase();
   const cookie = resolvedOptions.cookie ?? {};

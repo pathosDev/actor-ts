@@ -6,6 +6,7 @@
  * HOCON anyway).
  */
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { HttpMethod } from '../types.js';
 
 /** Allowed origins: `'*'`, an exact-match allowlist, or a predicate. */
@@ -64,3 +65,22 @@ export class CorsOptionsBuilder extends OptionsBuilder<CorsOptionsType> {
 /** Accepted input: the builder or a plain object. */
 export type CorsOptions = CorsOptionsBuilder | Partial<CorsOptionsType>;
 export const CorsOptions = CorsOptionsBuilder;
+
+/**
+ * Validates resolved {@link CorsOptionsType} settings.  `maxAge` (the
+ * preflight cache lifetime, in seconds) must be non-negative; the
+ * cross-field rule enforces the Fetch spec's ban on combining
+ * `credentials` with a wildcard (`'*'`) origin.  (The required-ness of
+ * `origins` is a separate guard in `cors()`.)
+ */
+export class CorsOptionsValidator extends OptionsValidator<CorsOptionsType> {
+  constructor() {
+    super('CorsOptions');
+  }
+  protected rules(s: Partial<CorsOptionsType>): void {
+    this.nonNegativeNumber('maxAge');
+    if (s.credentials === true && s.origins === '*') {
+      this.fail('credentials', 'cannot be combined with "*" origins (the Fetch spec forbids it)', s.credentials);
+    }
+  }
+}

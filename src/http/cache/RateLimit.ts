@@ -1,6 +1,11 @@
-import type { Cache } from '../../cache/Cache.js';
 import { complete } from '../Route.js';
 import { type HttpRequest, type HttpResponse, Status } from '../types.js';
+import {
+  RateLimitOptionsValidator,
+  type RateLimitContext,
+  type RateLimitOptions,
+  type RateLimitOptionsType,
+} from './RateLimitOptions.js';
 
 /**
  * HTTP rate-limiting middleware backed by a `Cache` (Redis recommended
@@ -39,48 +44,15 @@ import { type HttpRequest, type HttpResponse, Status } from '../types.js';
  * shared bucket (one client can exhaust everyone's quota).
  */
 
-export interface RateLimitOptions {
-  /** Backing cache.  Should be a shared/distributed one (Redis) in prod. */
-  readonly cache: Cache;
-  /** Length of the rolling window in milliseconds. */
-  readonly windowMs: number;
-  /** Maximum requests allowed per window per key. */
-  readonly max: number;
-  /** Identity function — typically derives from IP, user id, or API key. */
-  readonly key: (req: HttpRequest) => string | Promise<string>;
-  /**
-   * Cache-key namespace prepended to the user key.  Defaults to
-   * `'rl:'` so multiple rate-limiters in the same cache don't collide.
-   */
-  readonly keyPrefix?: string;
-  /**
-   * Custom 429 response builder.  Receives the limit context for
-   * full control over the body / headers.  Default: a plain 429 with
-   * `Retry-After` (seconds-rounded-up).
-   */
-  readonly onLimit?: (ctx: RateLimitContext) => HttpResponse;
-}
-
-export interface RateLimitContext {
-  readonly key: string;
-  readonly count: number;
-  readonly max: number;
-  readonly windowMs: number;
-  readonly retryAfterSeconds: number;
-}
-
 /**
  * Build a rate-limiter higher-order handler.  The returned function
  * wraps a normal handler and returns a new one with rate-limit checks
- * in front.
+ * in front.  Accepts a plain options object or the fluent
+ * {@link RateLimitOptions} builder.
  */
-export function rateLimit(opts: RateLimitOptions) {
-  if (!Number.isFinite(opts.windowMs) || opts.windowMs <= 0) {
-    throw new Error(`rateLimit: windowMs must be a positive finite number, got ${opts.windowMs}`);
-  }
-  if (!Number.isInteger(opts.max) || opts.max <= 0) {
-    throw new Error(`rateLimit: max must be a positive integer, got ${opts.max}`);
-  }
+export function rateLimit(options: RateLimitOptions) {
+  const opts = options as RateLimitOptionsType;
+  new RateLimitOptionsValidator().validate(opts);
   const prefix = opts.keyPrefix ?? 'rl:';
   const onLimit = opts.onLimit ?? defaultOnLimit;
 

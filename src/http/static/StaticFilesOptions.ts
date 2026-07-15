@@ -3,6 +3,7 @@
  * handlers have no ActorSystem at request time, so no HOCON layer).
  */
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 
 /** Plain settings shape for the static-file directives. */
 export interface StaticFilesOptionsType {
@@ -74,6 +75,23 @@ export class StaticFilesOptionsBuilder extends OptionsBuilder<StaticFilesOptions
 export type StaticFilesOptions = StaticFilesOptionsBuilder | Partial<StaticFilesOptionsType>;
 export const StaticFilesOptions = StaticFilesOptionsBuilder;
 
+/**
+ * Validates resolved {@link StaticFilesOptionsType} settings.  `maxFileSize`
+ * (the in-memory buffering cap, in bytes) must be a positive integer, and
+ * the `dotfiles` / `symlinks` policies must be one of their allowed
+ * literals — replacing what would otherwise be a silent mis-configuration.
+ */
+export class StaticFilesOptionsValidator extends OptionsValidator<StaticFilesOptionsType> {
+  constructor() {
+    super('StaticFilesOptions');
+  }
+  protected rules(_s: Partial<StaticFilesOptionsType>): void {
+    this.positiveInt('maxFileSize');
+    this.oneOf('dotfiles', ['deny', 'allow']);
+    this.oneOf('symlinks', ['within-root', 'follow']);
+  }
+}
+
 /** Fully-applied settings after defaults. */
 export interface ResolvedStaticOptions {
   readonly indexFiles: readonly string[];
@@ -89,10 +107,10 @@ export interface ResolvedStaticOptions {
   readonly maxFileSize: number;
 }
 
-/** Apply defaults to an options bag (builder or plain object). */
+/** Apply defaults to an options bag (builder or plain object), then validate. */
 export function resolveStaticOptions(options?: StaticFilesOptions): ResolvedStaticOptions {
   const resolvedOptions = (options ?? {}) as Partial<StaticFilesOptionsType>;
-  return {
+  const resolved: ResolvedStaticOptions = {
     indexFiles: resolvedOptions.indexFiles ?? ['index.html'],
     browse: resolvedOptions.browse ?? false,
     cacheControl: resolvedOptions.cacheControl,
@@ -105,4 +123,7 @@ export function resolveStaticOptions(options?: StaticFilesOptions): ResolvedStat
     contentType: resolvedOptions.contentType,
     maxFileSize: resolvedOptions.maxFileSize ?? 50 * 1024 * 1024,
   };
+  // Single consume-time gate shared by getFromFile / getFromDirectory.
+  new StaticFilesOptionsValidator().validate(resolved);
+  return resolved;
 }

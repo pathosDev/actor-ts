@@ -14,7 +14,7 @@
 import type { CompiledEndpoint, Route } from '../Route.js';
 import type { HttpMethod, HttpRequest, HttpResponse } from '../types.js';
 import { applyHeaders, appendVary } from './headers.js';
-import type { CorsOptions, CorsOptionsType, CorsOrigin } from './CorsOptions.js';
+import { CorsOptionsValidator, type CorsOptions, type CorsOptionsType, type CorsOrigin } from './CorsOptions.js';
 
 /** Resolved CORS policy stored on the `cors` Route node. */
 export interface CorsRouteOptions {
@@ -37,9 +37,7 @@ export function cors(options: CorsOptions, child: Route): Route {
   if (resolvedOptions.origins === undefined) {
     throw new Error('cors: origins is required — call withOrigins(...), withAnyOrigin(), or withOriginPredicate(...)');
   }
-  if (resolvedOptions.credentials && resolvedOptions.origins === '*') {
-    throw new Error('cors: credentials cannot be combined with "*" origins (the Fetch spec forbids it)');
-  }
+  new CorsOptionsValidator().validate(resolvedOptions);
   const settings: CorsRouteOptions = {
     origins: resolvedOptions.origins,
     methods: resolvedOptions.methods,
