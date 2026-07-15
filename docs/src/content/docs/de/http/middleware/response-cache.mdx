@@ -1,12 +1,12 @@
 ---
 title: Response-Cache-Middleware
-description: GET-Responses nach URL + Vary-Headern cachen. Nützlich für leseintensive APIs mit stabilen Responses. Konfigurierbares TTL, bedingtes Caching über Prädikat, pluggable Cache-Backend.
+description: Cacht Handler-Responses anhand einer selbst gelieferten key(req)-Funktion. Nützlich für lese-lastige APIs mit stabilen Responses. Pflicht-TTL, Caching pro Status-Code, Per-Process-Single-Flight, austauschbares Cache-Backend.
 ---
 
-`cached` umschließt einen Handler mit **Response-Caching**,
-key'd über eine vom Nutzer übergebene `key(req)`-Funktion.  Ein
-Cache-Treffer liefert die gespeicherte Response, ohne den
-darunterliegenden Handler aufzurufen.
+`cached` umhüllt einen Handler mit **Response-Caching**, verschlüsselt
+über eine selbst gelieferte `key(req)`-Funktion.  Ein Cache-Treffer
+liefert die gespeicherte Response, ohne den darunterliegenden Handler
+aufzurufen.
 
 ```ts
 import { cached, path, get } from 'actor-ts/http';
@@ -20,14 +20,14 @@ const productCache = cached({
 
 const routes = path('api',
   path('products',
-    get(productCache(async (req) => /* teures Lookup */)),
+    get(productCache(async (req) => /* expensive lookup */)),
   ),
 );
 ```
 
-30 Sekunden pro Produkt-ID cachen.  Der erste Request trifft den
-Handler; spätere GETs in den nächsten 30 s liefern die gecachte
-Response zurück.
+30 Sekunden Cache pro Produkt-ID.  Der erste Request trifft den
+Handler; nachfolgende GETs in den nächsten 30 s liefern die gecachte
+Response.
 
 ## Konfiguration
 
@@ -36,8 +36,8 @@ interface ResponseCacheOptions {
   cache:          Cache;
   ttlMs:          number;
   key:            (req: HttpRequest) => string | Promise<string>;
-  keyPrefix?:     string;                            // Default 'rsp:'
-  cacheStatuses?: ReadonlyArray<number>;             // Default [200]
+  keyPrefix?:     string;                            // default 'rsp:'
+  cacheStatuses?: ReadonlyArray<number>;             // default [200]
 }
 ```
 
@@ -45,71 +45,67 @@ interface ResponseCacheOptions {
 | --- | --- |
 | `cache` | Das [Cache](/de/cache/overview/)-Backend.  `InMemoryCache` für Single-Node; Redis für geteilt. |
 | `ttlMs` | Wie lange jede gecachte Response gültig bleibt. |
-| `key(req)` | Leitet den Cache-Key aus dem Request her — typischerweise inklusive URL-Params, Mandanten-ID, Accept-Header usw.  **Erforderlich.** |
-| `keyPrefix` | Cache-Key-Namespace.  Default `'rsp:'`, damit mehrere Response-Caches im selben Redis nicht kollidieren. |
-| `cacheStatuses` | Welche Statuscodes gecacht werden.  Default `[200]` — nur 2xx-Responses landen im Cache. |
+| `key(req)` | Leitet den Cache-Key aus dem Request ab — enthält typischerweise URL-Params, Tenant-ID, Accept-Header usw.  **Pflicht.** |
+| `keyPrefix` | Cache-Key-Namespace.  Default `'rsp:'`, damit sich mehrere Response-Caches im selben Redis nicht überschneiden. |
+| `cacheStatuses` | Welche Status-Codes cachebar sind.  Default `[200]` — nur 2xx-Responses werden gecacht. |
 
-## Zusammensetzung des Cache-Keys
+## Cache-Key-Zusammensetzung
 
-Der Default-Key:
-
-```
-GET <pathname>?<sortierte-query-params> [Vary: accept=..., accept-encoding=...]
-```
-
-Sortierte Query-Parameter sorgen dafür, dass `/items?a=1&b=2` und
-`/items?b=2&a=1` denselben Cache-Eintrag treffen.
-
-Mit `key` für per-User- / per-Mandant-Caches anpassen:
+Die `key(req)`-Funktion ist der gesamte Cache-Key-Vertrag — was du
+dort aufnimmst, bestimmt, was separat gecacht wird.  Gängige Muster:
 
 ```ts
-cached({
-  cache,
-  ttlMs:     30_000,
-  key:  (req) => req.headers['x-tenant-id'] ?? 'public',
-})(...)
+// Per-URL-path key:
+key: (req) => req.url.pathname,
+
+// Per-tenant:
+key: (req) => `${req.headers['x-tenant-id'] ?? 'public'}:${req.url.pathname}`,
+
+// Per-locale + content type:
+key: (req) => `${req.headers['accept-language']}:${req.headers['accept']}:${req.url.pathname}`,
 ```
 
-Jetzt bekommen verschiedene Mandanten getrennte Cache-Einträge.
+Baue den Key so, dass er über äquivalente Requests deterministisch,
+aber über getrennt zu cachende Responses eindeutig ist.
 
 ## Wann cachen
 
 ```
-GET /api/products       → cachen (stabil, leselastig)
-POST /api/orders        → nicht cachen (Mutation)
-GET /api/users/me       → standardmäßig nicht cachen (pro User)
-GET /api/feed?cursor=X  → cachen (ein Eintrag pro Cursor)
+GET /api/products       → cache (stable, read-heavy)
+POST /api/orders        → don't wrap with cached() (mutation)
+GET /api/users/me       → cache only with per-user key
+GET /api/feed?cursor=X  → cache (one entry per cursor)
 ```
 
-Die Middleware **cached standardmäßig nur GETs**.  Mutationen
-(`POST` / `PUT` / `DELETE` / `PATCH`) gehen unverändert durch.
+Der Wrapper ist eine Handler-Ebenen-Entscheidung — du wählst, welche
+Handler du umhüllst.  Mutationen sollten typischerweise
+[`idempotent`](/de/http/middleware/idempotency-key/) verwenden.
 
 ## Cache-Invalidierung
 
-Die Middleware **invalidiert nicht automatisch** bei Writes.
-Caching verlässt sich auf TTL-Ablauf.
+`cached` **invalidiert nicht automatisch** bei Writes — die
+Veraltung ist durch `ttlMs` begrenzt.
 
 Für **stärkere Konsistenz** zwei Muster:
 
 ### Kurze TTLs
 
 ```ts
-cached({ cache, ttlMs: 1_000 });   // 1 Sekunde
+cached({ cache, ttlMs: 1_000, key });   // 1 second
 ```
 
-Sub-Sekunden-TTLs begrenzen die Veraltung.  Gut für
-"Echtzeit-ähnliche" APIs.
+Sub-Sekunden-TTLs begrenzen die Veraltung.  Gut für „echtzeit-nahe"
+APIs.
 
 ### Manuelle Invalidierung
 
 ```ts
-// Nach einem Write, der /api/products betrifft:
-await cache.delete('GET:/api/products');
+// After a write that affects products:42, invalidate the cache:
+await cache.delete('rsp:products:42');   // 'rsp:' is the default keyPrefix
 ```
 
-Die Middleware exponiert den Cache; du kannst spezifische Keys
-mit `delete` invalidieren.  Nützlich für Muster wie "Write nach
-/products invalidiert die Liste".
+Der Cache ist einfach ein `Cache` — du kannst den mit Prefix
+versehenen Key direkt `delete`n, wenn ein Write ihn invalidieren soll.
 
 ## Geteilter Cache über Pods
 
@@ -117,68 +113,69 @@ mit `delete` invalidieren.  Nützlich für Muster wie "Write nach
 import { RedisCache, RedisCacheOptions } from 'actor-ts';
 
 const redisCacheOptions = RedisCacheOptions.create().withUrl('redis://...');
-cached({
-  cache:  new RedisCache(redisCacheOptions),
-  ttlMs:  30_000,
-})(...)
-```
-
-Mit einem Redis-gestützten Cache teilen sich alle Pods denselben
-Cache — nützlich für Multi-Pod-Deployments, wenn du konsistentes
-Caching willst.
-
-Bei **Per-Pod-Caches** (jeder Pod hat seinen eigenen
-InMemoryCache) liefern Pods kurz unterschiedliche gecachte
-Responses, bis die TTLs ausgerichtet sind.  Oft akzeptabel;
-abhängig von den Konsistenzanforderungen.
-
-## Vary-Header
-
-```ts
-cached({
-  cache,
+const productCache = cached({
+  cache: new RedisCache(redisCacheOptions),
   ttlMs: 30_000,
-  varyHeaders: ['accept', 'accept-language', 'x-tenant-id'],
+  key:   (req) => `products:${pathParam(req, 'id')}`,
 });
 ```
 
-Jede einzigartige Kombination dieser Header bekommt einen eigenen
-Cache-Eintrag.  Nützlich für:
+Mit einem Redis-gestützten Cache teilen sich alle Pods denselben
+Cache — nützlich für Multi-Pod-Deployments, in denen du konsistentes
+Caching willst.
 
-- **Content-Negotiation** — JSON-vs.-CBOR-Responses getrennt
-  gecacht.
-- **Lokalisierung** — Responses pro Sprache.
-- **Multi-Tenancy** — Alternative zu `key`.
+Für **Per-Pod-Caches** (jeder Pod hat seinen eigenen InMemoryCache)
+können Pods kurzzeitig unterschiedliche gecachte Responses liefern,
+bis sich die TTLs angleichen.  Oft akzeptabel; hängt von den
+Konsistenzanforderungen ab.
+
+## Verschiedene Status-Codes cachen
+
+```ts
+cached({
+  cache, ttlMs: 30_000, key,
+  cacheStatuses: [200, 404],   // cache both hits AND "not found"s
+});
+```
+
+Cache `404`s, wenn du viele Lookups für nicht existierende IDs hast —
+spart wiederholte DB-Zugriffe.  Default ist nur `[200]`, damit ein
+transientes 500 nicht 30 Sekunden lang hängen bleibt.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Cachen von authentifizierten Responses">
+<Aside type="caution" title="Authentifizierte Responses cachen">
   ```ts
-  // GET /api/users/me mit Cache → alle User sehen die Response des ersten Users
+  // GET /api/users/me with cache → all users see the first user's response
   ```
-  Ohne `key` (oder `varyHeaders` inklusive Authorization)
-  lecken gecachte Responses über User hinweg.  Nimm
-  `key: (req) => hashUser(req.headers.authorization)` oder
-  überspring das Caching für per-User-Endpoints.
+  Ohne den User in `key(req)` aufzunehmen, lecken gecachte Responses
+  über User hinweg.  Nimm entweder `hashUser(req.headers.authorization)`
+  in den Key auf oder umhülle Per-User-Endpunkte gar nicht mit
+  `cached`.
 </Aside>
 
-<Aside type="caution" title="Cache-Stampede">
+<Aside type="note" title="Stampede-Schutz ist Per-Process">
   ```ts
-  // TTL läuft ab; 1000 gleichzeitige Requests treffen alle den Handler
+  // TTL expires; 1000 concurrent requests on one pod → the handler runs once
   ```
-  Wenn ein populärer gecachter Eintrag abläuft, rechnet jeder
-  parallele Anfragende neu.  Entweder akzeptieren (meist okay)
-  oder ein Stale-while-revalidate-Muster bauen (im Framework
-  noch nicht — manuell umsetzen).
+  Bei einem Cache-Miss führt der Wrapper den Handler **einmal pro
+  Prozess** aus, und die übrigen gleichzeitigen Requests für denselben
+  Key warten auf dieses eine Ergebnis (eine In-Process-Single-Flight-
+  Map).  Es ist **nicht** cluster-weit: mit N Pods kann der Handler bis
+  zu N-mal gleichzeitig laufen.  Stale-While-Revalidate ist nicht
+  eingebaut — implementiere es bei Bedarf selbst.
 </Aside>
 
-<Aside type="caution" title="Speicherbegrenzung für In-Memory-Caches">
+<Aside type="caution" title="In-Memory-Cache auf dein Response-Set dimensionieren">
   ```ts
-  new InMemoryCache();   // kein Cap — fliegt irgendwann mit OOM
+  new InMemoryCache();                        // LRU-bounded: 10 000 entries
+  new InMemoryCache({ maxEntries: 100_000 }); // raise it for a larger response set
   ```
-  Setze ein max-entries auf den Cache; ohne das wachsen Response-
-  Caches bis zur Erschöpfung.  Siehe
-  [In-Memory-Cache](/de/cache/in-memory/).
+  `InMemoryCache` ist standardmäßig LRU-begrenzt (10 000 Einträge), ein
+  Response-Cache kann also nicht unbegrenzt wachsen — aber eine zu
+  kleine Schranke evictet heiße Responses zu früh.  Dimensioniere
+  `maxEntries` auf die Zahl der erwarteten eindeutigen Cache-Keys.
+  Siehe [In-Memory-Cache](/de/cache/in-memory/).
 </Aside>
 
 ## Wohin als Nächstes
