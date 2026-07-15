@@ -120,11 +120,12 @@ defaults from `actor-ts.http.websocket`:
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `http.websocket.max-frame-bytes` | `1M` | Largest inbound frame accepted (bytes). |
-| `http.websocket.on-oversize-frame` | `"close"` | What to do when a frame exceeds the limit — `close` / `drop`. |
-| `http.websocket.on-invalid-message` | `"close"` | What to do when a message fails to decode — `close` / `drop` / `hook`. |
-| `http.websocket.max-buffered-bytes` | `4M` | Outbound backpressure threshold (bytes). |
-| `http.websocket.on-backpressure` | `"drop"` | What to do when the buffer is exceeded — `drop` / `close`. |
+| `http.websocket.maxFrameBytes` | `1M` | Largest inbound frame accepted (bytes). |
+| `http.websocket.onOversizeFrame` | `"close"` | What to do when a frame exceeds the limit — `close` / `drop`. |
+| `http.websocket.onInvalidMessage` | `"close"` | What to do when a message fails to decode — `close` / `drop` / `hook`. |
+| `http.websocket.maxBufferedBytes` | `4M` | Outbound backpressure threshold (bytes). |
+| `http.websocket.onBackpressure` | `"drop"` | What to do when the buffer is exceeded — `drop` / `close`. |
+| `http.websocket.maxConnections` | *(unlimited)* | Max concurrent connections per route; a new upgrade beyond it is closed with 1013. |
 
 ### `actor-ts.persistence`
 

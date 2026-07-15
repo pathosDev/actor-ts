@@ -105,6 +105,16 @@ new names.
   now exported from the package root).  *Migration:* a plain
   `{ maxEntries, cleanupMs }` object still works unchanged; only the type name
   changed.
+- **WebSocket route / policy options are now validated.** The resolved
+  per-connection policy (`maxFrameBytes`, `maxBufferedBytes`, `maxConnections`,
+  and the `onOversizeFrame` / `onInvalidMessage` / `onBackpressure` enums) is
+  checked on every path — route options, HOCON `actor-ts.http.websocket`, and
+  defaults — via `WebsocketPolicyOptionsValidator`, and `allowedOrigins` via
+  `WebsocketRouteOptionsValidator`.  Bad values throw `OptionsError` (the enum
+  guard previously threw a bare `Error`, and only on the HOCON path; the
+  numeric knobs — e.g. `maxConnections: 0`, which silently admitted nobody —
+  were unchecked).  The reference config now ships an `actor-ts.http.websocket`
+  section documenting the defaults.
 
 ### Added — HTTP hardening
 

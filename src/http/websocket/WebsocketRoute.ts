@@ -19,6 +19,7 @@ import {
   resolveWebsocketPolicy,
   type ResolvedWebsocketPolicy,
 } from './WebsocketPolicy.js';
+import { WebsocketRouteOptionsValidator } from './WebsocketRouteOptions.js';
 import type { WebsocketRouteOptions, WebsocketRouteOptionsType } from './WebsocketRouteOptions.js';
 
 /** `websocket(target)` — mount at the enclosing path. */
@@ -50,6 +51,7 @@ export function websocket<TOut, TIn, TSelf = never>(
     builder = b as WebsocketRouteOptions<TOut, TIn> | undefined;
   }
   const options: WebsocketRouteOptionsType<TOut, TIn> = ((builder ?? {}) as WebsocketRouteOptionsType<TOut, TIn>);
+  new WebsocketRouteOptionsValidator<TOut, TIn>().validate(options);
 
   const codec: WebsocketCodec<TOut, TIn> = options.codec ?? jsonCodec<TOut, TIn>();
   // Policy needs the ActorSystem's config, only available at connect
