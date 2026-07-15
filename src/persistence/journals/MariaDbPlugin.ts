@@ -18,7 +18,7 @@ export interface MariaDbPluginHandles {
    * The DurableState store instance.  `PersistenceExtension` carries no
    * DurableState registry (same as the object-storage / Postgres plugins),
    * so callers who want DurableState read this from the return value and
-   * pass it into their `DurableStateActor` settings.
+   * pass it into their `DurableStateActor` options.
    */
   readonly durableStateStore: MariaDbDurableStateStore;
 }
@@ -36,13 +36,13 @@ export function registerMariaDbPlugins(
   ext: PersistenceExtension,
   options: RegisterMariaDbPluginsOptions,
 ): MariaDbPluginHandles {
-  const s = (options as RegisterMariaDbPluginsOptionsType);
+  const resolvedOptions = (options as RegisterMariaDbPluginsOptionsType);
   // Resolve each leaf to a plain object and merge the shared pool (when set)
   // onto it.  A missing leaf falls back to an empty object so the shared
   // pool still reaches every store.
-  const journal = { ...((s.journal ?? {}) as Partial<MariaDbJournalOptionsType>), ...(s.pool ? { pool: s.pool } : {}) };
-  const snapshotStore = { ...((s.snapshotStore ?? {}) as Partial<MariaDbSnapshotStoreOptionsType>), ...(s.pool ? { pool: s.pool } : {}) };
-  const durableState = { ...((s.durableStateStore ?? {}) as Partial<MariaDbDurableStateStoreOptionsType>), ...(s.pool ? { pool: s.pool } : {}) };
+  const journal = { ...((resolvedOptions.journal ?? {}) as Partial<MariaDbJournalOptionsType>), ...(resolvedOptions.pool ? { pool: resolvedOptions.pool } : {}) };
+  const snapshotStore = { ...((resolvedOptions.snapshotStore ?? {}) as Partial<MariaDbSnapshotStoreOptionsType>), ...(resolvedOptions.pool ? { pool: resolvedOptions.pool } : {}) };
+  const durableState = { ...((resolvedOptions.durableStateStore ?? {}) as Partial<MariaDbDurableStateStoreOptionsType>), ...(resolvedOptions.pool ? { pool: resolvedOptions.pool } : {}) };
   ext.registerJournal(
     MARIADB_JOURNAL_PLUGIN_ID,
     (_system: ActorSystem) => new MariaDbJournal(journal),

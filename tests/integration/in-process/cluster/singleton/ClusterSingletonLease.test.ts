@@ -67,8 +67,8 @@ async function stop(node: NodeSetup): Promise<void> {
 describe('ClusterSingleton + Lease', () => {
   test('1. acquire success → child is spawned', async () => {
     inMemoryLeaseStore._clear();
-    const a = await startNode('sng-lease-1', 'h', 60_001);
-    const probe = a.kit.createTestProbe<string>();
+    const nodeA = await startNode('sng-lease-1', 'h', 60_001);
+    const probe = nodeA.kit.createTestProbe<string>();
     class Echo extends Actor<string> {
       override preStart(): void { probe.tell('started'); }
       override onReceive(m: string): void { probe.tell(`got:${m}`); }
@@ -79,17 +79,17 @@ describe('ClusterSingleton + Lease', () => {
       .withTypeName('echo')
       .withProps(Props.create(() => new Echo()))
       .withLease(lease);
-    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster, singletonOptions);
-    await waitFor(() => a.cluster.leader().nonEmpty);
+    const handle = nodeA.kit.system.extension(ClusterSingletonId).start(nodeA.cluster, singletonOptions);
+    await waitFor(() => nodeA.cluster.leader().nonEmpty);
     // Child preStart fires once acquire resolves — give the mailbox
     // a few ticks for the acquire-result event.
-    await probe.expectMsg('started', 1_000);
+    await probe.expectMessage('started', 1_000);
 
     handle.proxy.tell('hi');
-    expect(await probe.expectMsg('got:hi', 500)).toBe('got:hi');
+    expect(await probe.expectMessage('got:hi', 500)).toBe('got:hi');
 
     handle.stop();
-    await stop(a);
+    await stop(nodeA);
   }, 10_000);
 
   test('2. acquire blocked by another holder → spawn delayed; spawns once holder releases', async () => {
@@ -100,8 +100,8 @@ describe('ClusterSingleton + Lease', () => {
     const otherHolder = new InMemoryLease(otherHolderOptions);
     expect(await otherHolder.acquire()).toBe(true);
 
-    const a = await startNode('sng-lease-2', 'h', 60_002);
-    const probe = a.kit.createTestProbe<string>();
+    const nodeA = await startNode('sng-lease-2', 'h', 60_002);
+    const probe = nodeA.kit.createTestProbe<string>();
     class Echo extends Actor<string> {
       override preStart(): void { probe.tell('started'); }
       override onReceive(): void {}
@@ -113,8 +113,8 @@ describe('ClusterSingleton + Lease', () => {
       .withProps(Props.create(() => new Echo()))
       .withLease(lease)
       .withAcquireRetryIntervalMs(100);   // tighter so the test isn't slow
-    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster, singletonOptions);
-    await waitFor(() => a.cluster.leader().nonEmpty);
+    const handle = nodeA.kit.system.extension(ClusterSingletonId).start(nodeA.cluster, singletonOptions);
+    await waitFor(() => nodeA.cluster.leader().nonEmpty);
 
     // Other holder still owns it — manager should be in retry loop, no
     // child spawned yet.
@@ -123,16 +123,16 @@ describe('ClusterSingleton + Lease', () => {
     // Release the foreign lease.  Within ~100 ms the manager's retry
     // tick fires, sees the lease available, acquires, spawns.
     await otherHolder.release();
-    await probe.expectMsg('started', 1_000);
+    await probe.expectMessage('started', 1_000);
 
     handle.stop();
-    await stop(a);
+    await stop(nodeA);
   }, 10_000);
 
   test('3. lease lost mid-flight → child is stopped, manager re-attempts', async () => {
     inMemoryLeaseStore._clear();
-    const a = await startNode('sng-lease-3', 'h', 60_003);
-    const probe = a.kit.createTestProbe<string>();
+    const nodeA = await startNode('sng-lease-3', 'h', 60_003);
+    const probe = nodeA.kit.createTestProbe<string>();
     class Echo extends Actor<string> {
       override preStart(): void { probe.tell('started'); }
       override postStop(): void { probe.tell('stopped'); }
@@ -147,8 +147,8 @@ describe('ClusterSingleton + Lease', () => {
       .withProps(Props.create(() => new Echo()))
       .withLease(lease)
       .withAcquireRetryIntervalMs(100);
-    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster, singletonOptions);
-    await probe.expectMsg('started', 1_000);
+    const handle = nodeA.kit.system.extension(ClusterSingletonId).start(nodeA.cluster, singletonOptions);
+    await probe.expectMessage('started', 1_000);
 
     // Force a lost-lease scenario: another owner takes over from under us.
     // This makes the next renewal in the InMemoryLease fail, which fires
@@ -159,7 +159,7 @@ describe('ClusterSingleton + Lease', () => {
     expect(await usurper.acquire()).toBe(true);
 
     // The manager's renewal-failure path fires onLost → stops child.
-    await probe.expectMsg('stopped', 2_000);
+    await probe.expectMessage('stopped', 2_000);
 
     // The manager schedules a fresh acquire; while the usurper still
     // holds the lease, that acquire returns false and the manager
@@ -168,13 +168,13 @@ describe('ClusterSingleton + Lease', () => {
 
     await usurper.release();
     handle.stop();
-    await stop(a);
+    await stop(nodeA);
   }, 10_000);
 
   test('4. graceful manager stop releases the lease', async () => {
     inMemoryLeaseStore._clear();
-    const a = await startNode('sng-lease-4', 'h', 60_004);
-    const probe = a.kit.createTestProbe<string>();
+    const nodeA = await startNode('sng-lease-4', 'h', 60_004);
+    const probe = nodeA.kit.createTestProbe<string>();
     class Echo extends Actor<string> {
       override preStart(): void { probe.tell('started'); }
       override onReceive(): void {}
@@ -185,8 +185,8 @@ describe('ClusterSingleton + Lease', () => {
       .withTypeName('echo')
       .withProps(Props.create(() => new Echo()))
       .withLease(lease);
-    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster, singletonOptions);
-    await probe.expectMsg('started', 1_000);
+    const handle = nodeA.kit.system.extension(ClusterSingletonId).start(nodeA.cluster, singletonOptions);
+    await probe.expectMessage('started', 1_000);
     expect(lease.checkAlive()).toBe(true);
 
     handle.stop();
@@ -195,15 +195,15 @@ describe('ClusterSingleton + Lease', () => {
     await waitFor(() => !lease.checkAlive(), 2_000);
     expect(lease.checkAlive()).toBe(false);
 
-    await stop(a);
+    await stop(nodeA);
   }, 10_000);
 
   test('5. no lease provided — sync v1 behaviour preserved', async () => {
     // Regression guard for the no-lease path.  Same shape as the existing
     // ClusterSingleton.test.ts case but with an explicit assertion that
     // the sync spawn happens BEFORE we tell the proxy.
-    const a = await startNode('sng-lease-5', 'h', 60_005);
-    const probe = a.kit.createTestProbe<string>();
+    const nodeA = await startNode('sng-lease-5', 'h', 60_005);
+    const probe = nodeA.kit.createTestProbe<string>();
     class Echo extends Actor<string> {
       override preStart(): void { probe.tell('started'); }
       override onReceive(m: string): void { probe.tell(`got:${m}`); }
@@ -212,17 +212,17 @@ describe('ClusterSingleton + Lease', () => {
     const singletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('echo')
       .withProps(Props.create(() => new Echo()));
-    const handle = a.kit.system.extension(ClusterSingletonId).start(a.cluster, singletonOptions);
-    await waitFor(() => a.cluster.leader().nonEmpty);
+    const handle = nodeA.kit.system.extension(ClusterSingletonId).start(nodeA.cluster, singletonOptions);
+    await waitFor(() => nodeA.cluster.leader().nonEmpty);
     // No lease → child should be spawned synchronously the moment
     // SelfUp/LeaderChanged fires.  In single-node clusters that
     // happens during cluster.join.
-    await probe.expectMsg('started', 500);
+    await probe.expectMessage('started', 500);
 
     handle.proxy.tell('hi');
-    expect(await probe.expectMsg('got:hi', 500)).toBe('got:hi');
+    expect(await probe.expectMessage('got:hi', 500)).toBe('got:hi');
 
     handle.stop();
-    await stop(a);
+    await stop(nodeA);
   }, 10_000);
 });

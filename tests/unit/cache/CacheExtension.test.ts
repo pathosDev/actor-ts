@@ -64,6 +64,21 @@ describe('CacheExtension', () => {
     await sys.terminate();
   });
 
+  test('reads the in-memory cache options from HOCON (actor-ts.cache.in-memory)', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({ 'actor-ts': { cache: { 'in-memory': { maxEntries: 2, cleanupMs: 0 } } } });
+    const sys = ActorSystem.create('cache-hocon', sysOptions);
+    const ext = sys.extension(CacheExtensionId);
+    const cache = ext.cache() as InMemoryCache;
+    await cache.set('a', 1);
+    await cache.set('b', 2);
+    await cache.set('c', 3);   // over the configured cap of 2 → LRU eviction kicks in
+    expect(cache.sizeForTest()).toBeLessThanOrEqual(2);
+    await sys.terminate();
+  });
+
   test('setCache replaces the instance for a name (test hook)', async () => {
     const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())

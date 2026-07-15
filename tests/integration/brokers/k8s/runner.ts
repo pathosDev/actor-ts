@@ -34,9 +34,9 @@ export interface K8sCtx extends BrokerScenarioCtx {
 }
 
 function requireEnv(name: string): string {
-  const v = process.env[name];
-  if (!v) throw new Error(`runner: missing env var ${name}`);
-  return v;
+  const value = process.env[name];
+  if (!value) throw new Error(`runner: missing env var ${name}`);
+  return value;
 }
 
 /**
@@ -53,9 +53,9 @@ function readK3sAuth(): {
   //                                     client-certificate-data: <b64>
   //                                     client-key-data: <b64>
   const grab = (key: string): Buffer => {
-    const m = raw.match(new RegExp(`${key}:\\s*(\\S+)`));
-    if (!m) throw new Error(`kubeconfig missing ${key}`);
-    return Buffer.from(m[1]!, 'base64');
+    const match = raw.match(new RegExp(`${key}:\\s*(\\S+)`));
+    if (!match) throw new Error(`kubeconfig missing ${key}`);
+    return Buffer.from(match[1]!, 'base64');
   };
   return {
     ca: grab('certificate-authority-data'),

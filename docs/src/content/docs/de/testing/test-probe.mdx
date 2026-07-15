@@ -17,12 +17,12 @@ const ref = tk.system.spawnAnonymous(Props.create(() => new Worker(probe)));
 //                                                          ^-- Probe anstelle des echten Downstreams
 ref.tell({ kind: 'work' });
 
-await probe.expectMsg({ kind: 'work-done' });
+await probe.expectMessage({ kind: 'work-done' });
 await tk.shutdown();
 ```
 
 `Worker` `tell`t den „Downstream" — der tatsächlich die Probe
-ist. Die Probe erfasst die Nachricht; `expectMsg` konsumiert sie
+ist. Die Probe erfasst die Nachricht; `expectMessage` konsumiert sie
 und assertet die Form.
 
 ## Eine Probe erzeugen
@@ -49,11 +49,11 @@ ref.tell({ kind: 'get', replyTo: probe as ActorRef<number> });
 
 ## Erwartungen
 
-### `expectMsg(expected)`
+### `expectMessage(expected)`
 
 ```ts
-await probe.expectMsg('done');
-await probe.expectMsg({ kind: 'reply', value: 42 });
+await probe.expectMessage('done');
+await probe.expectMessage({ kind: 'reply', value: 42 });
 ```
 
 Wartet auf die nächste Nachricht, vergleicht sie deep-equal mit
@@ -61,12 +61,12 @@ Wartet auf die nächste Nachricht, vergleicht sie deep-equal mit
 abläuft. Gibt die Nachricht zurück, sodass du Assertions ketten
 kannst.
 
-### `expectMsgType(Class)`
+### `expectMessageType(Class)`
 
 ```ts
 import { Success } from 'actor-ts';
 
-const reply = await probe.expectMsgType(Success);
+const reply = await probe.expectMessageType(Success);
 expect(reply.value).toBe(42);
 ```
 
@@ -83,7 +83,7 @@ await probe.expectNoMessage(200);
 // → assertet, dass in 200ms keine Nachricht kam
 ```
 
-Das Gegenteil von `expectMsg` — assertet, dass im gegebenen
+Das Gegenteil von `expectMessage` — assertet, dass im gegebenen
 Fenster **nichts** ankommt. Nützlich für „dieses Kommando sollte
 still ignoriert werden" oder „der Actor sollte darauf nicht
 antworten."
@@ -140,11 +140,11 @@ gequeuete Nachrichten, die ich noch nicht konsumiert habe?"
 
 ```ts
 ref.tell({ kind: 'get', replyTo: probe });
-await probe.expectMsg({ kind: 'reply', value: 42 });
+await probe.expectMessage({ kind: 'reply', value: 42 });
 expect(probe.sender).toBe(ref);   // wer die zuletzt empfangene Nachricht gesendet hat
 ```
 
-Nach `expectMsg` / `receiveOne` / etc. hält `probe.sender` den
+Nach `expectMessage` / `receiveOne` / etc. hält `probe.sender` den
 Sender der eben konsumierten Nachricht. Nützlich, um zu
 asserten, dass „diese Antwort vom richtigen Actor kam."
 
@@ -153,7 +153,7 @@ asserten, dass „diese Antwort vom richtigen Actor kam."
 
 ```ts
 ref.tell({ kind: 'request' }, probe);
-await probe.expectMsg({ kind: 'request' });
+await probe.expectMessage({ kind: 'request' });
 probe.reply({ kind: 'response' });
 // ↑ dasselbe wie: probe.sender.tell({ kind: 'response' }, probe);
 ```
@@ -169,7 +169,7 @@ ref.tell({ kind: 'two' });
 probe.clearInbox();   // verwirft beide, Queue ist wieder leer
 
 ref.tell({ kind: 'three' });
-await probe.expectMsg({ kind: 'three' });
+await probe.expectMessage({ kind: 'three' });
 ```
 
 Nützlich zwischen Testphasen, wenn du Setup-Phasen-Nachrichten
@@ -181,9 +181,9 @@ Nächstes kommt.
 ### Probe als Stellvertreter für einen Downstream-Actor
 
 ```ts
-class OrderHandler extends Actor<OrderCmd> {
-  constructor(private readonly db: ActorRef<DbCmd>) { super(); }
-  override onReceive(cmd: OrderCmd): void {
+class OrderHandler extends Actor<OrderCommand> {
+  constructor(private readonly db: ActorRef<DbCommand>) { super(); }
+  override onReceive(cmd: OrderCommand): void {
     this.db.tell({ kind: 'insert', orderId: cmd.id });
   }
 }
@@ -191,10 +191,10 @@ class OrderHandler extends Actor<OrderCmd> {
 it('leitet Orders an db weiter', async () => {
   const dbProbe = tk.createTestProbe();
   const handler = tk.system.spawnAnonymous(Props.create(() =>
-    new OrderHandler(dbProbe as ActorRef<DbCmd>)));
+    new OrderHandler(dbProbe as ActorRef<DbCommand>)));
 
   handler.tell({ kind: 'place-order', id: 'o-1' });
-  await dbProbe.expectMsg({ kind: 'insert', orderId: 'o-1' });
+  await dbProbe.expectMessage({ kind: 'insert', orderId: 'o-1' });
 });
 ```
 
@@ -208,7 +208,7 @@ const counter = tk.system.spawnAnonymous(Props.create(() => new Counter()));
 counter.tell({ kind: 'inc' });
 counter.tell({ kind: 'inc' });
 counter.tell({ kind: 'get', replyTo: probe as ActorRef<number> });
-await probe.expectMsg(2);
+await probe.expectMessage(2);
 ```
 
 Für Ask-artige Nachrichten — die Probe steht für den Fragenden.
@@ -216,17 +216,15 @@ Für Ask-artige Nachrichten — die Probe steht für den Fragenden.
 ### Mehrere Proben
 
 ```ts
-const testProbeOptions = TestProbeOptions.create()
-  .withName('a-probe');
+const testProbeOptions = TestProbeOptions.create().withName('a-probe');
 const a = tk.createTestProbe(testProbeOptions);
-const testProbe2Options = TestProbeOptions.create()
-  .withName('b-probe');
+const testProbe2Options = TestProbeOptions.create().withName('b-probe');
 const b = tk.createTestProbe(testProbe2Options);
 
 const router = tk.system.spawnAnonymous(...);
 router.tell({ kind: 'send', target: 'a', payload: 'hello' });
 
-await a.expectMsg('hello');
+await a.expectMessage('hello');
 await b.expectNoMessage(100);
 ```
 
@@ -237,16 +235,16 @@ prüfst.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="`expectMsg` konsumiert aus dem Buffer">
+<Aside type="caution" title="`expectMessage` konsumiert aus dem Buffer">
   ```ts
-  await probe.expectMsg('a');
-  await probe.expectMsg('a');   // fehlt — erster Aufruf hat es schon konsumiert
+  await probe.expectMessage('a');
+  await probe.expectMessage('a');   // fehlt — erster Aufruf hat es schon konsumiert
   ```
-  Jedes `expectMsg` entfernt eine Nachricht. Wenn du auf
+  Jedes `expectMessage` entfernt eine Nachricht. Wenn du auf
   derselben Nachricht zweimal asserten musst, captureste den
   Rückgabewert:
   ```ts
-  const got = await probe.expectMsg('a');
+  const got = await probe.expectMessage('a');
   expect(got).toEqual('a');
   expect(typeof got).toBe('string');
   ```
@@ -254,7 +252,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Lange Timeouts verstecken langsamen Code">
   ```ts
-  await probe.expectMsg('done', 30_000);   // 30 s Wartezeit
+  await probe.expectMessage('done', 30_000);   // 30 s Wartezeit
   ```
   Wenn dein Actor langsam genug ist, dass er 30 s braucht, ist
   der Test kaputt — Actor sollten sub-Millisekunde sein. Nutze
@@ -270,7 +268,7 @@ import { Aside } from '@astrojs/starlight/components';
   `tell` plant; Verarbeitung passiert in der nächsten Event-Loop-
   Runde. Synchron `messageCount` direkt nach einem `tell` zu
   prüfen sieht meist 0. Nutze stattdessen das asynchrone
-  `expectMsg(...)`, das auf Zustellung wartet.
+  `expectMessage(...)`, das auf Zustellung wartet.
 </Aside>
 
 ## Wo es weitergeht

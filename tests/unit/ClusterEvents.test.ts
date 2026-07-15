@@ -17,43 +17,43 @@ import { NodeAddress } from '../../src/cluster/NodeAddress.js';
 import { none, some } from '../../src/util/Option.js';
 
 const addr = new NodeAddress('demo', 'h', 1);
-const m = new Member(addr, 'up', 1);
+const member = new Member(addr, 'up', 1);
 
 describe('Cluster event classes', () => {
   test('SelfUp wraps a member', () => {
-    const e = new SelfUp(m);
-    expect(e.member).toBe(m);
+    const event = new SelfUp(member);
+    expect(event.member).toBe(member);
   });
 
   test('SelfRemoved wraps a member', () => {
-    const e = new SelfRemoved(m);
-    expect(e.member).toBe(m);
+    const event = new SelfRemoved(member);
+    expect(event.member).toBe(member);
   });
 
   test('LeaderChanged carries Option<Member>', () => {
-    const ev1 = new LeaderChanged(some(m));
+    const ev1 = new LeaderChanged(some(member));
     expect(ev1.leader.isSome()).toBe(true);
-    expect(ev1.leader.getOrElse(null as Member | null)).toBe(m);
+    expect(ev1.leader.getOrElse(null as Member | null)).toBe(member);
 
     const ev2 = new LeaderChanged(none);
     expect(ev2.leader.isNone()).toBe(true);
   });
 
   test('Member* events all carry the same member', () => {
-    expect(new MemberJoined(m).member).toBe(m);
-    expect(new MemberUp(m).member).toBe(m);
-    expect(new MemberUnreachable(m).member).toBe(m);
-    expect(new MemberReachable(m).member).toBe(m);
-    expect(new MemberDown(m).member).toBe(m);
-    expect(new MemberLeft(m).member).toBe(m);
-    expect(new MemberRemoved(m).member).toBe(m);
+    expect(new MemberJoined(member).member).toBe(member);
+    expect(new MemberUp(member).member).toBe(member);
+    expect(new MemberUnreachable(member).member).toBe(member);
+    expect(new MemberReachable(member).member).toBe(member);
+    expect(new MemberDown(member).member).toBe(member);
+    expect(new MemberLeft(member).member).toBe(member);
+    expect(new MemberRemoved(member).member).toBe(member);
   });
 
   test('ShardMapChanged captures type, shards, version', () => {
     const shards = new Map<number, string>([[0, 'a'], [1, 'b']]);
-    const e = new ShardMapChanged('counter', shards, 7);
-    expect(e.type).toBe('counter');
-    expect(e.shards).toBe(shards);
-    expect(e.version).toBe(7);
+    const event = new ShardMapChanged('counter', shards, 7);
+    expect(event.type).toBe('counter');
+    expect(event.shards).toBe(shards);
+    expect(event.version).toBe(7);
   });
 });

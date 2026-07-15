@@ -1,0 +1,88 @@
+---
+title: Statische Dateien
+description: getFromFile, getFromDirectory und getFromBrowseableDirectory liefern Dateien backend-agnostisch aus — MIME-Erkennung, Conditional Requests, Range, Directory-Listings und gehärtete Traversal-Abwehr.
+---
+
+Dateien ausliefern, ohne zu einem backend-spezifischen Plugin zu greifen.
+`getFromFile` liefert eine Datei; `getFromDirectory` bildet eine URL auf
+einen Verzeichnisbaum ab; `getFromBrowseableDirectory` ergänzt
+HTML-Listings.
+
+```ts
+import { concat, getFromFile, getFromBrowseableDirectory, path } from 'actor-ts/http';
+
+const routes = concat(
+  path('logo.svg', getFromFile('./assets/logo.svg')),
+  getFromBrowseableDirectory('static', './public'),   // mountet unter /static
+);
+```
+
+`getFromDirectory([routePrefix,] fsRoot, options?)` — mit `routePrefix`
+mountet es darunter (z. B. `/static/...`), ohne mountet es an der Wurzel.
+
+## Optionen
+
+| Builder-Methode | Feld | Default |
+| --- | --- | --- |
+| `withIndexFiles(...n)` | `indexFiles` | `['index.html']` (`[]` deaktiviert) |
+| `withBrowse(flag?)` | `browse` | `false` |
+| `withCacheControl(v)` | `cacheControl` | Header entfällt |
+| `withEtag(flag)` | `etag` | `true` (schwach, size+mtime) |
+| `withLastModified(flag)` | `lastModified` | `true` |
+| `withRanges(flag)` | `ranges` | `true` |
+| `withDotfiles('deny' \| 'allow')` | `dotfiles` | `'deny'` |
+| `withSymlinks('within-root' \| 'follow')` | `symlinks` | `'within-root'` |
+| `withContentTypes(map)` | `contentTypes` | — (ext → type Overrides) |
+| `withMaxFileSize(bytes)` | `maxFileSize` | 50 MiB (größer → 413) |
+
+## Verhalten
+
+- **Conditional Requests** — ein schwaches `ETag` (size + mtime) und
+  `Last-Modified`; passendes `If-None-Match` / `If-Modified-Since` → `304`.
+- **Range** — ein einzelner `bytes=`-Range → `206` (oder `416`, wenn
+  unerfüllbar); `Accept-Ranges: bytes` wird angekündigt.
+- **Verzeichnisse** — ein Request ohne Trailing-Slash `301`-redirectet, um
+  ihn zu ergänzen (Query erhalten); mit Slash werden Index-Dateien der Reihe
+  nach probiert, dann ein Listing (falls Browsing) oder `404`.
+- **HEAD** — volle Header, leerer Body, kein Dateilesen.
+
+## MIME-Typen
+
+Content-Types kommen von `contentTypeFor(pathOrExt, overrides?)` — einer
+kleinen Registry von ~45 gängigen Web-Typen. Text-artige Typen erhalten
+`; charset=utf-8`; unbekannte Endungen fallen auf `application/octet-stream`
+zurück. Pro Route mit `withContentTypes({ ext: 'type' })` überschreiben oder
+`contentTypeFor` direkt aufrufen, wenn du Responses von Hand baust.
+
+## Sicherheitsmodell
+
+Der URL-Rest wird **vor der Validierung vollständig dekodiert** (jede
+Encoding-Schicht abgetragen), dann wird jedes Pfad-Segment abgelehnt, wenn
+es `..`, leer, ein NUL, ein Backslash oder ein `:`-Segment ist
+(Windows-Laufwerk / NTFS Alternate Data Stream); absolute Formen werden
+verweigert, der zusammengesetzte Pfad wird auf die Wurzel eingegrenzt, und
+ein Symlink, der die Wurzel verlässt, wird verweigert (`within-root`-
+Default). Dotfiles sind standardmäßig verboten. **Jede Ablehnung ist ein
+einheitlicher `404`** — kein Informationsleck über Existierendes.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="note" title="Bodies werden gepuffert">
+  Dateien werden in den Speicher gelesen (begrenzt durch `maxFileSize`,
+  Default 50 MiB → eine größere Datei bekommt `413`). Das hält die
+  Auslieferung korrekt und identisch über Bun, Node und Deno; das Streamen
+  sehr großer Dateien ohne Puffern ist eine künftige Erweiterung.
+  Range-Requests funktionieren trotzdem — sie schneiden aus dem Puffer.
+</Aside>
+
+<Aside type="note" title="Nur Optionen — kein HOCON">
+  Static-Einstellungen sind Per-Route-Code; ein HTTP-Handler hat zur
+  Request-Zeit kein `ActorSystem`, daher gibt es dafür keine HOCON-Schicht
+  (anders als bei der WebSocket-Policy).
+</Aside>
+
+## Wie weiter
+
+- **[Route-DSL](/de/http/route-dsl/)** — wie Direktiven komponieren.
+- **[HTML & XSS](/de/http/html-xss/)** — das Listing escapet Dateinamen mit denselben Helfern.
+- **[Sicherheit](/de/http/security/)** — der empfohlene Stack.

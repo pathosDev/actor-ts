@@ -1,8 +1,9 @@
 import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
 import type { Cancellable } from '../Scheduler.js';
+import { ProducerControllerOptionsValidator } from './ProducerControllerOptions.js';
 import type { ProducerControllerOptions, ProducerControllerOptionsType } from './ProducerControllerOptions.js';
-import type { Ack, ConfirmationCallback, Delivery } from './Messages.js';
+import type { Acknowledgment, ConfirmationCallback, Delivery } from './Messages.js';
 
 let producerSeed = 0;
 const nextProducerId = (): string => `producer-${++producerSeed}`;
@@ -25,9 +26,9 @@ interface InFlight<T> {
 /**
  * Producer side of the reliable-delivery protocol.  Messages sent to this
  * actor are assigned sequence numbers and shipped to the consumer; the
- * actor keeps retrying until it gets an Ack back.
+ * actor keeps retrying until it gets an Acknowledgment back.
  */
-export class ProducerController<T> extends Actor<ProducerSend<T> | Ack> {
+export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgment> {
   private readonly inflight = new Map<number, InFlight<T>>();
   private readonly pending: ProducerSend<T>[] = [];
   private nextSeq = 1;
@@ -35,26 +36,27 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Ack> {
   private readonly resendTimeoutMs: number;
   private readonly windowSize: number;
 
-  public readonly settings: ProducerControllerOptionsType<T>;
+  public readonly options: ProducerControllerOptionsType<T>;
 
   constructor(options: ProducerControllerOptions<T>) {
     super();
-    const settings = options as ProducerControllerOptionsType<T>;
-    this.settings = settings;
-    this.id = settings.producerId ?? nextProducerId();
-    this.resendTimeoutMs = settings.resendTimeout ?? 500;
-    this.windowSize = settings.windowSize ?? 16;
+    const resolvedOptions = options as ProducerControllerOptionsType<T>;
+    new ProducerControllerOptionsValidator<T>().validate(resolvedOptions);
+    this.options = resolvedOptions;
+    this.id = resolvedOptions.producerId ?? nextProducerId();
+    this.resendTimeoutMs = resolvedOptions.resendTimeout ?? 500;
+    this.windowSize = resolvedOptions.windowSize ?? 16;
   }
 
   override postStop(): void {
-    for (const f of this.inflight.values()) f.timer?.cancel();
-    for (const p of this.pending) p.confirm?.(new Error('producer stopped'));
+    for (const inflight of this.inflight.values()) inflight.timer?.cancel();
+    for (const pending of this.pending) pending.confirm?.(new Error('producer stopped'));
     this.pending.length = 0;
     this.inflight.clear();
   }
 
-  override onReceive(msg: ProducerSend<T> | Ack): void {
-    if ((msg as Ack).kind === 'reliable-delivery.ack') return this.handleAck(msg as Ack);
+  override onReceive(msg: ProducerSend<T> | Acknowledgment): void {
+    if ((msg as Acknowledgment).kind === 'reliable-delivery.ack') return this.handleAcknowledgment(msg as Acknowledgment);
     if ((msg as ProducerSend<T>).kind === 'reliable-delivery.send') return this.handleSend(msg as ProducerSend<T>);
   }
 
@@ -68,39 +70,39 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Ack> {
 
   private dispatch(msg: ProducerSend<T>): void {
     const seq = this.nextSeq++;
-    const f: InFlight<T> = { seq, body: msg.body, confirm: msg.confirm, attempts: 0, timer: null };
-    this.inflight.set(seq, f);
-    this.send(f);
+    const inflight: InFlight<T> = { seq, body: msg.body, confirm: msg.confirm, attempts: 0, timer: null };
+    this.inflight.set(seq, inflight);
+    this.send(inflight);
   }
 
-  private send(f: InFlight<T>): void {
-    f.attempts++;
+  private send(inflight: InFlight<T>): void {
+    inflight.attempts++;
     const delivery: Delivery<T> = {
       kind: 'reliable-delivery.delivery',
       producerId: this.id,
-      seq: f.seq,
-      body: f.body,
-      replyTo: this.self as unknown as ActorRef<Ack>,
+      seq: inflight.seq,
+      body: inflight.body,
+      replyTo: this.self as unknown as ActorRef<Acknowledgment>,
     };
-    this.settings.consumer.tell(delivery);
-    f.timer = this.system.scheduler.scheduleOnceFn(
+    this.options.consumer.tell(delivery);
+    inflight.timer = this.system.scheduler.scheduleOnceFn(
       this.resendTimeoutMs,
       () => {
         // Only resend if still un-acked.
-        const current = this.inflight.get(f.seq);
+        const current = this.inflight.get(inflight.seq);
         if (!current) return;
         this.send(current);
       },
     );
   }
 
-  private handleAck(msg: Ack): void {
+  private handleAcknowledgment(msg: Acknowledgment): void {
     if (msg.producerId !== this.id) return;
-    const f = this.inflight.get(msg.seq);
-    if (!f) return;
-    f.timer?.cancel();
+    const inflight = this.inflight.get(msg.seq);
+    if (!inflight) return;
+    inflight.timer?.cancel();
     this.inflight.delete(msg.seq);
-    f.confirm?.(null);
+    inflight.confirm?.(null);
     // Drain queued sends while the window is open.
     while (this.inflight.size < this.windowSize && this.pending.length > 0) {
       this.dispatch(this.pending.shift()!);

@@ -46,16 +46,16 @@ async function startNode(host: string, port: number, seeds: string[] = []): Prom
 }
 
 async function main(): Promise<void> {
-  const a = await startNode('a', 8001);
-  const b = await startNode('b', 8002, ['cluster@a:8001']);
-  const c = await startNode('c', 8003, ['cluster@a:8001']);
+  const nodeA = await startNode('a', 8001);
+  const nodeB = await startNode('b', 8002, ['cluster@a:8001']);
+  const nodeC = await startNode('c', 8003, ['cluster@a:8001']);
 
   // Small wait so all three see each other.
   await Bun.sleep(250);
 
   // Each node starts its own ClusterSingletonManager with the same typeName
   // and the same Props — but only the leader's manager actually constructs it.
-  for (const { sys, cluster, name } of [a, b, c]) {
+  for (const { sys, cluster, name } of [nodeA, nodeB, nodeC]) {
     sys.extension(ClusterSingletonId).start(cluster, StartSingletonOptions.create<string>()
       .withTypeName('echo')
       .withProps(Props.create(() => new Echo(name))));
@@ -65,12 +65,12 @@ async function main(): Promise<void> {
 
   // Every node forwards "tell from X" through its local proxy — the leader
   // sees them all.
-  a.sys.extension(ClusterSingletonId).get<string>('echo').forEach(h => h.proxy.tell('tell from a'));
-  b.sys.extension(ClusterSingletonId).get<string>('echo').forEach(h => h.proxy.tell('tell from b'));
-  c.sys.extension(ClusterSingletonId).get<string>('echo').forEach(h => h.proxy.tell('tell from c'));
+  nodeA.sys.extension(ClusterSingletonId).get<string>('echo').forEach(h => h.proxy.tell('tell from a'));
+  nodeB.sys.extension(ClusterSingletonId).get<string>('echo').forEach(h => h.proxy.tell('tell from b'));
+  nodeC.sys.extension(ClusterSingletonId).get<string>('echo').forEach(h => h.proxy.tell('tell from c'));
 
   await Bun.sleep(150);
-  for (const { sys, cluster } of [a, b, c]) {
+  for (const { sys, cluster } of [nodeA, nodeB, nodeC]) {
     await cluster.leave();
     await sys.terminate();
   }

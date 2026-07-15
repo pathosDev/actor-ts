@@ -6,8 +6,8 @@
  * and feeds the same three-layer merge (constructor > HOCON under
  * `actor-ts.io.broker.kafka` > built-in defaults).
  */
-import { BrokerOptionsBuilder } from './BrokerOptions.js';
-import type { BrokerCommonOptionsType } from './BrokerSettings.js';
+import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
+import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { KafkaCommitMode, KafkaRecord } from './KafkaActor.js';
 
@@ -24,12 +24,12 @@ export interface KafkaOptionsType extends BrokerCommonOptionsType {
   };
   /** Enable TLS. */
   readonly ssl?: boolean;
-  /** Producer settings. */
+  /** Producer options. */
   readonly producer?: {
     readonly idempotent?: boolean;
     readonly allowAutoTopicCreation?: boolean;
   };
-  /** Consumer settings.  `groupId` is required to start a consumer. */
+  /** Consumer options.  `groupId` is required to start a consumer. */
   readonly consumer?: {
     readonly groupId?: string;
     readonly fromBeginning?: boolean;
@@ -80,12 +80,12 @@ export class KafkaOptionsBuilder extends BrokerOptionsBuilder<KafkaOptionsType> 
     return this.set('ssl', on);
   }
 
-  /** Producer settings (idempotence / auto-topic-creation). */
+  /** Producer options (idempotence / auto-topic-creation). */
   withProducer(producer: NonNullable<KafkaOptionsType['producer']>): this {
     return this.set('producer', producer);
   }
 
-  /** Consumer settings.  `groupId` is required to start a consumer. */
+  /** Consumer options.  `groupId` is required to start a consumer. */
   withConsumer(consumer: NonNullable<KafkaOptionsType['consumer']>): this {
     return this.set('consumer', consumer);
   }
@@ -98,6 +98,18 @@ export class KafkaOptionsBuilder extends BrokerOptionsBuilder<KafkaOptionsType> 
   /** Topics the consumer subscribes to at connect time. */
   withTopics(topics: ReadonlyArray<string>): this {
     return this.set('topics', topics);
+  }
+}
+
+/** Validates resolved {@link KafkaOptionsType} settings. */
+export class KafkaOptionsValidator extends BrokerOptionsValidator<KafkaOptionsType> {
+  constructor() {
+    super('KafkaOptions');
+  }
+  protected rules(s: Partial<KafkaOptionsType>): void {
+    this.commonRules(s);
+    this.nonEmptyStringOrArray('brokers', s.brokers);
+    this.nestedPositive('consumer.commitTimeoutMs', s.consumer?.commitTimeoutMs);
   }
 }
 

@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { OptionsValidator } from '../util/OptionsValidator.js';
 
 /**
  * Env-driven defaults for the standard production deployment shapes.
@@ -75,6 +76,17 @@ export class AutoDiscoveryOptionsBuilder extends OptionsBuilder<AutoDiscoveryOpt
   /** Logger for individual provider failures.  Default: no-op. */
   withLog(log: (msg: string, err?: unknown) => void): this {
     return this.set('log', log);
+  }
+}
+
+/** Validates resolved {@link AutoDiscoveryOptionsType} settings. */
+export class AutoDiscoveryOptionsValidator extends OptionsValidator<AutoDiscoveryOptionsType> {
+  constructor() {
+    super('AutoDiscoveryOptions');
+  }
+  protected rules(_s: Partial<AutoDiscoveryOptionsType>): void {
+    this.nonEmptyString('systemName');
+    this.positiveInt('port'); // node-address port (transport-agnostic — see ClusterOptions.port)
   }
 }
 

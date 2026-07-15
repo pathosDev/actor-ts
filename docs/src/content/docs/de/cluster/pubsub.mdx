@@ -72,7 +72,7 @@ Node den Publisher hostet.
 
 | Nachricht | Was |
 | --- | --- |
-| `Subscribe(topic, ref)` | Registriert `ref` als Subscriber auf `topic`. Antwortet mit `SubscribeAck`. |
+| `Subscribe(topic, ref)` | Registriert `ref` als Subscriber auf `topic`. Antwortet mit `SubscribeAcknowledgment`. |
 | `Unsubscribe(topic, ref)` | Entfernt `ref` aus den Subscribern von `topic`. |
 | `UnsubscribeAll(ref)` | Entfernt `ref` aus jedem Topic. |
 | `Publish(topic, message)` | Schickt `message` an jeden Subscriber von `topic`. |
@@ -124,8 +124,7 @@ Standard-Gossip-Intervall ist `gossipIntervalMs` des Clusters
 (1 Sekunde). Überschreibe pro Mediator:
 
 ```ts
-const distributedPubSubOptions = DistributedPubSubOptions.create()
-  .withGossipIntervalMs(500);
+const distributedPubSubOptions = DistributedPubSubOptions.create().withGossipIntervalMs(500);
 DistributedPubSub.start(cluster, distributedPubSubOptions);
 ```
 
@@ -218,7 +217,7 @@ import { Aside } from '@astrojs/starlight/components';
   gossipen, bevor ein Publish auf diesem Mediator zurück routet.
   Innerhalb von 1-2 Gossip-Intervallen (1-2 s Default) tritt
   Konvergenz ein. Für Muss-Nicht-Verpasst-Werden-Nachrichten warte
-  auf `SubscribeAck` und füge eine kleine Verzögerung vor dem
+  auf `SubscribeAcknowledgment` und füge eine kleine Verzögerung vor dem
   ersten cross-node Publish ein.
 </Aside>
 

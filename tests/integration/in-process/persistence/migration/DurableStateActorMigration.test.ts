@@ -152,14 +152,14 @@ describe('DurableStateActor — strict mode', () => {
         .withPersistenceId('acct')
         .withStore(store)
         .withEmptyState((): State => ({ balance: 0, currency: 'USD' }));
-      const a = new StrictAccount(durableStateOptions);
-      captured = a;
-      return a as unknown as Actor<Cmd>;
+      const actorRef = new StrictAccount(durableStateOptions);
+      captured = actorRef;
+      return actorRef as unknown as Actor<Cmd>;
     }), 'strict');
     await sleep(30);
-    const a = captured! as unknown as StrictAccount;
-    expect(a.recoveryError).toBeInstanceOf(MigrationError);
-    expect(a.recoveryError!.message).toContain('expected envelope');
+    const actorRef = captured! as unknown as StrictAccount;
+    expect(actorRef.recoveryError).toBeInstanceOf(MigrationError);
+    expect(actorRef.recoveryError!.message).toContain('expected envelope');
     await sys.terminate();
   });
 });

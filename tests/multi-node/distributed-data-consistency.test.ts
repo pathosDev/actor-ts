@@ -63,7 +63,7 @@ describe('DistributedData — WriteConsistency / ReadConsistency', () => {
         .start(spec.clusterFor('c'), ddOptions);
 
       await ddA.updateAsync<GCounter>('hits', GCounter.empty,
-        (c) => c.increment(ddA.selfReplicaId(), 10),
+        (valueC) => valueC.increment(ddA.selfReplicaId(), 10),
         { consistency: 'majority' });
 
       // Once the promise resolves, at least 2/3 replicas (incl. self)
@@ -119,7 +119,7 @@ describe('DistributedData — WriteConsistency / ReadConsistency', () => {
       let rejected = false;
       try {
         await ddA.updateAsync<GCounter>('partitioned', GCounter.empty,
-          (c) => c.increment(ddA.selfReplicaId(), 1),
+          (valueC) => valueC.increment(ddA.selfReplicaId(), 1),
           { consistency: 'all', timeoutMs: 500 });
       } catch (err) {
         rejected = true;
@@ -150,19 +150,19 @@ describe('DistributedData — WriteConsistency / ReadConsistency', () => {
       // gossip yet when we issue the read.  Each replica writes a
       // different increment.
       ddA.update<GCounter>('total', GCounter.empty,
-        (c) => c.increment(ddA.selfReplicaId(), 3));
+        (valueC) => valueC.increment(ddA.selfReplicaId(), 3));
       ddB.update<GCounter>('total', GCounter.empty,
-        (c) => c.increment(ddB.selfReplicaId(), 5));
+        (valueC) => valueC.increment(ddB.selfReplicaId(), 5));
       ddC.update<GCounter>('total', GCounter.empty,
-        (c) => c.increment(ddC.selfReplicaId(), 7));
+        (valueC) => valueC.increment(ddC.selfReplicaId(), 7));
 
       // ReadMajority from A — pulls B (or C) plus self.  Should see
       // at least one peer's contribution merged in.
       const merged = await ddA.getAsync<GCounter>('total',
         { consistency: 'majority' });
-      const v = merged?.value() ?? 0;
+      const mergedValue = merged?.value() ?? 0;
       // self=3, plus at least one peer (5 or 7) → 8 or 10 at minimum.
-      expect(v).toBeGreaterThanOrEqual(8);
+      expect(mergedValue).toBeGreaterThanOrEqual(8);
 
       // The merged value is also applied to the local replica — the
       // next sync `get` reflects the freshest state.
@@ -184,10 +184,10 @@ describe('DistributedData — WriteConsistency / ReadConsistency', () => {
 
       const t0 = Date.now();
       await dd.updateAsync<GCounter>('k', GCounter.empty,
-        (c) => c.increment(dd.selfReplicaId(), 1),
+        (valueC) => valueC.increment(dd.selfReplicaId(), 1),
         { consistency: 'all' });
       await dd.updateAsync<GCounter>('k', GCounter.empty,
-        (c) => c.increment(dd.selfReplicaId(), 1),
+        (valueC) => valueC.increment(dd.selfReplicaId(), 1),
         { consistency: 'majority' });
       const value = await dd.getAsync<GCounter>('k',
         { consistency: 'all' });
@@ -213,22 +213,22 @@ describe('DistributedData — WriteConsistency / ReadConsistency', () => {
 
       // K=1 always satisfied by self.
       await ddA.updateAsync<GCounter>('k1', GCounter.empty,
-        (c) => c.increment(ddA.selfReplicaId(), 1),
+        (valueC) => valueC.increment(ddA.selfReplicaId(), 1),
         { consistency: { from: 1 } });
 
       // K=2 = majority on 3-node cluster — resolves once one peer acks.
       await ddA.updateAsync<GCounter>('k2', GCounter.empty,
-        (c) => c.increment(ddA.selfReplicaId(), 1),
+        (valueC) => valueC.increment(ddA.selfReplicaId(), 1),
         { consistency: { from: 2 } });
 
       // K=999 clamps to N=3 = 'all'.
       await ddA.updateAsync<GCounter>('k3', GCounter.empty,
-        (c) => c.increment(ddA.selfReplicaId(), 1),
+        (valueC) => valueC.increment(ddA.selfReplicaId(), 1),
         { consistency: { from: 999 } });
 
       // K=0 clamps to 1 — self-only.
       await ddA.updateAsync<GCounter>('k4', GCounter.empty,
-        (c) => c.increment(ddA.selfReplicaId(), 1),
+        (valueC) => valueC.increment(ddA.selfReplicaId(), 1),
         { consistency: { from: 0 } });
 
       expect(ddA.get<GCounter>('k1')?.value()).toBe(1);
@@ -249,7 +249,7 @@ describe('DistributedData — WriteConsistency / ReadConsistency', () => {
 
       const t0 = Date.now();
       await ddA.updateAsync<GCounter>('local-k', GCounter.empty,
-        (c) => c.increment(ddA.selfReplicaId(), 42),
+        (valueC) => valueC.increment(ddA.selfReplicaId(), 42),
         { consistency: 'local' });
       const elapsed = Date.now() - t0;
 
@@ -273,10 +273,10 @@ describe('DistributedData — WriteConsistency / ReadConsistency', () => {
 
       const writes = await Promise.all([
         ddA.updateAsync<GCounter>('race', GCounter.empty,
-          (c) => c.increment(ddA.selfReplicaId(), 10),
+          (valueC) => valueC.increment(ddA.selfReplicaId(), 10),
           { consistency: 'majority' }),
         ddB.updateAsync<GCounter>('race', GCounter.empty,
-          (c) => c.increment(ddB.selfReplicaId(), 20),
+          (valueC) => valueC.increment(ddB.selfReplicaId(), 20),
           { consistency: 'majority' }),
       ]);
       void writes;
@@ -288,10 +288,10 @@ describe('DistributedData — WriteConsistency / ReadConsistency', () => {
       // counterpart back.
       const deadline = Date.now() + 4_000;
       while (Date.now() < deadline) {
-        const a = ddA.get<GCounter>('race')?.value() ?? 0;
-        const b = ddB.get<GCounter>('race')?.value() ?? 0;
-        const c = ddC.get<GCounter>('race')?.value() ?? 0;
-        if (a === 30 && b === 30 && c === 30) return;
+        const valueA = ddA.get<GCounter>('race')?.value() ?? 0;
+        const valueB = ddB.get<GCounter>('race')?.value() ?? 0;
+        const valueC = ddC.get<GCounter>('race')?.value() ?? 0;
+        if (valueA === 30 && valueB === 30 && valueC === 30) return;
         await Bun.sleep(50);
       }
       throw new Error(

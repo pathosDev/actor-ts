@@ -13,8 +13,7 @@ async function main(): Promise<void> {
     handler: (m) => console.log(`[consumer] received "${m}"`),
   });
   const producer = ReliableDelivery.producer<string>(system,
-    ProducerControllerOptions.create<string>()
-      .withConsumer(consumer.ref as never),
+    ProducerControllerOptions.create<string>().withConsumer(consumer.ref as never),
   );
 
   for (const s of ['hello', 'world', 'reliable-delivery']) {

@@ -62,7 +62,7 @@ einer Queue beheben.  Oder:
 ### Nachher
 
 ```ts
-class OrderActor extends PersistentActor<PlaceCmd, OrderPlaced, OrderState> {
+class OrderActor extends PersistentActor<PlaceCommand, OrderPlaced, OrderState> {
   readonly persistenceId = 'order-registry';
 
   initialState() { return { orders: {} as Record<string, Order> }; }
@@ -70,7 +70,7 @@ class OrderActor extends PersistentActor<PlaceCmd, OrderPlaced, OrderState> {
     if (e.kind === 'placed') return { orders: { ...state.orders, [e.order.id]: e.order } };
     return state;
   }
-  onCommand(state, cmd: PlaceCmd) {
+  onCommand(state, cmd: PlaceCommand) {
     if (state.orders[cmd.order.id]) return;   // schon platziert
     this.persist({ kind: 'placed', order: cmd.order }, () => {});
   }
@@ -78,7 +78,7 @@ class OrderActor extends PersistentActor<PlaceCmd, OrderPlaced, OrderState> {
 ```
 
 Der Actor verarbeitet Commands **eines nach dem anderen**.  Zwei
-`PlaceCmd`s für dieselbe ID werden serialisiert; das zweite
+`PlaceCommand`s für dieselbe ID werden serialisiert; das zweite
 sieht den vom ersten aktualisierten State und überspringt das
 Persistieren.  Keine Locks, keine In-Flight-Sets, keine Race.
 
@@ -184,11 +184,11 @@ Ein langlebiges Objekt mit sowohl **State** als auch
 ### Nachher
 
 ```ts
-type Msg =
+type Message =
   | { kind: 'tick' }
   | { kind: 'get-status'; svc: string; replyTo: ActorRef<'up' | 'down'> };
 
-class HealthMonitor extends Actor<Msg> {
+class HealthMonitor extends Actor<Message> {
   private status = new Map<string, 'up' | 'down'>();
 
   constructor(private readonly services: string[]) { super(); }
@@ -197,7 +197,7 @@ class HealthMonitor extends Actor<Msg> {
     this.context.timers.startTimerWithFixedDelay('tick', { kind: 'tick' }, 10_000);
   }
 
-  override async onReceive(msg: Msg): Promise<void> {
+  override async onReceive(msg: Message): Promise<void> {
     if (msg.kind === 'tick') {
       for (const svc of this.services) {
         const ok = await this.ping(svc);
@@ -246,14 +246,14 @@ wenn das Refund selbst fehlschlägt?).
 ### Nachher (Event-Sourced Saga)
 
 ```ts
-type Cmd = { kind: 'place'; order: NewOrder };
+type Command = { kind: 'place'; order: NewOrder };
 type Event =
   | { kind: 'inventory-reserved'; resId: string }
   | { kind: 'payment-charged';     chargeId: string }
   | { kind: 'shipping-scheduled';  shippingId: string }
   | { kind: 'compensating-...' };
 
-class OrderSaga extends PersistentActor<Cmd, Event, OrderSagaState> {
+class OrderSaga extends PersistentActor<Command, Event, OrderSagaState> {
   // ...
   async onCommand(state, cmd) {
     if (cmd.kind === 'place') {

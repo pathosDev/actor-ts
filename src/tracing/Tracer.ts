@@ -140,6 +140,6 @@ function randomHex(byteLength: number): string {
   // crypto.getRandomValues is universally available on Bun, Node, Deno.
   globalThis.crypto.getRandomValues(buf);
   let out = '';
-  for (const b of buf) out += b.toString(16).padStart(2, '0');
+  for (const byte of buf) out += byte.toString(16).padStart(2, '0');
   return out;
 }

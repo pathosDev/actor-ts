@@ -1,7 +1,7 @@
 /**
  * All MQTT option-relevant types live here:
  *
- *   - {@link MqttOptionsType} — the plain settings-object shape (what you may
+ *   - {@link MqttOptionsType} — the plain options-object shape (what you may
  *     also pass as a bare `{ … }` object).
  *   - {@link MqttOptionsBuilder} — the fluent builder (`MqttOptions.create()…`).
  *   - {@link MqttOptions} — the accepted-input **union**
@@ -9,7 +9,7 @@
  *     builder so `MqttOptions.create()` / `new MqttOptions()` keep working.
  *
  * A subclass takes `MqttOptions` in its constructor and tacks on per-instance
- * settings before calling `super(...)`:
+ * options before calling `super(...)`:
  *
  *     class MyClient extends MqttActor {
  *       constructor(options: MqttOptions = {}) {
@@ -24,8 +24,8 @@
  * The common broker fields (`withReconnect` / `withCircuitBreaker` /
  * `withOutboundBuffer`) come from {@link BrokerOptionsBuilder}.
  */
-import { BrokerOptionsBuilder } from './BrokerOptions.js';
-import type { BrokerCommonOptionsType } from './BrokerSettings.js';
+import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
+import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { MqttCodec } from './MqttCodec.js';
 import type { MqttQos } from './MqttMessages.js';
 
@@ -35,7 +35,7 @@ export interface MqttCredentials {
   readonly password?: string;
 }
 
-/** Plain settings-object shape accepted by an {@link MqttActor}. */
+/** Plain options-object shape accepted by an {@link MqttActor}. */
 export interface MqttOptionsType extends BrokerCommonOptionsType {
   /** Broker URL — `mqtt://`, `mqtts://`, `ws://`, `wss://`. */
   readonly brokerUrl?: string;
@@ -115,6 +115,24 @@ export class MqttOptionsBuilder extends BrokerOptionsBuilder<MqttOptionsType> {
   /** Payload codec for `entity()` decode + entity `publish` encode.  Default JSON. */
   withCodec(codec: MqttCodec<unknown>): this {
     return this.set('codec', codec);
+  }
+}
+
+/**
+ * Validates resolved {@link MqttOptionsType} settings.  Invoked by
+ * {@link MqttActor} at start, so builder / plain-object / HOCON inputs all
+ * pass through the same rules.
+ */
+export class MqttOptionsValidator extends BrokerOptionsValidator<MqttOptionsType> {
+  constructor() {
+    super('MqttOptions');
+  }
+  protected rules(_s: Partial<MqttOptionsType>): void {
+    this.commonRules(_s);
+    this.url('brokerUrl', ['mqtt', 'mqtts', 'ws', 'wss']);
+    this.oneOf('qos', [0, 1, 2]);
+    this.oneOf('protocolVersion', [4, 5]);
+    this.nonNegativeInt('keepAlive'); // 0 disables keep-alive per the MQTT spec
   }
 }
 

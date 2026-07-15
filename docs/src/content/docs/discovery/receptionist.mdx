@@ -15,7 +15,7 @@ import { ReceptionistId, ServiceKey } from 'actor-ts';
 const receptionist = system.extension(ReceptionistId).start(cluster);
 
 // 1. Define a typed key for this service
-const apiKey = ServiceKey.of<ApiMsg>('api-service');
+const apiKey = ServiceKey.of<ApiMessage>('api-service');
 
 // 2. Register an actor under the key
 const api = system.spawn(Props.create(() => new ApiActor()), 'api');
@@ -37,7 +37,7 @@ listing (with gossip lag, see below).
 ## Service keys
 
 ```ts
-const key = ServiceKey.of<ApiMsg>('api-service');
+const key = ServiceKey.of<ApiMessage>('api-service');
 //                      ^^^^^^^
 //                      typed payload — consumers know what to tell
 ```
@@ -49,7 +49,7 @@ A `ServiceKey<T>` carries:
   accepts.
 
 Type-safe lookup: `await receptionist.find(apiKey)` returns
-`ActorRef<ApiMsg>[]`.
+`ActorRef<ApiMessage>[]`.
 
 Keys are **values** — define them once, import them everywhere.
 Convention: in a shared `Keys.ts` module per app.

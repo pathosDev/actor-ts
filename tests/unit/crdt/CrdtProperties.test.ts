@@ -32,20 +32,20 @@ function pickReplica(): string {
 }
 
 function eq<C extends Crdt<C>>(
-  a: C, b: C, equalsImpl?: (x: C, y: C) => boolean,
+  first: C, second: C, equalsImplementation?: (x: C, y: C) => boolean,
 ): boolean {
-  if (equalsImpl) return equalsImpl(a, b);
-  return JSON.stringify(a.toJSON()) === JSON.stringify(b.toJSON());
+  if (equalsImplementation) return equalsImplementation(first, second);
+  return JSON.stringify(first.toJSON()) === JSON.stringify(second.toJSON());
 }
 
 function checkLaws<C extends Crdt<C>>(
-  gen: () => C, equalsImpl?: (a: C, b: C) => boolean,
+  gen: () => C, equalsImplementation?: (first: C, second: C) => boolean,
 ): void {
   for (let i = 0; i < SAMPLES; i++) {
-    const a = gen(), b = gen(), c = gen();
-    expect(eq(a.merge(a), a, equalsImpl)).toBe(true);                       // idempotent
-    expect(eq(a.merge(b), b.merge(a), equalsImpl)).toBe(true);              // commutative
-    expect(eq(a.merge(b).merge(c), a.merge(b.merge(c)), equalsImpl))        // associative
+    const first = gen(), second = gen(), third = gen();
+    expect(eq(first.merge(first), first, equalsImplementation)).toBe(true);                       // idempotent
+    expect(eq(first.merge(second), second.merge(first), equalsImplementation)).toBe(true);              // commutative
+    expect(eq(first.merge(second).merge(third), first.merge(second.merge(third)), equalsImplementation))        // associative
       .toBe(true);
   }
 }
@@ -55,21 +55,21 @@ function checkLaws<C extends Crdt<C>>(
 describe('GCounter — laws', () => {
   test('idempotent / commutative / associative', () => {
     const gen = (): GCounter => {
-      let g = GCounter.empty();
+      let counter = GCounter.empty();
       const ops = 1 + Math.floor(Math.random() * 8);
       for (let i = 0; i < ops; i++) {
-        g = g.increment(pickReplica(), 1 + Math.floor(Math.random() * 5));
+        counter = counter.increment(pickReplica(), 1 + Math.floor(Math.random() * 5));
       }
-      return g;
+      return counter;
     };
-    checkLaws(gen, (a, b) => a.equals(b));
+    checkLaws(gen, (first, second) => first.equals(second));
   });
 
   test('increments sum across replicas', () => {
-    const a = GCounter.empty().increment('a', 3);
-    const b = GCounter.empty().increment('b', 5);
-    expect(a.merge(b).value()).toBe(8);
-    expect(a.merge(b).merge(b).value()).toBe(8);   // re-merging same state idempotent
+    const first = GCounter.empty().increment('a', 3);
+    const second = GCounter.empty().increment('b', 5);
+    expect(first.merge(second).value()).toBe(8);
+    expect(first.merge(second).merge(second).value()).toBe(8);   // re-merging same state idempotent
   });
 
   test('rejects negative deltas', () => {
@@ -77,9 +77,9 @@ describe('GCounter — laws', () => {
   });
 
   test('JSON round-trip preserves state', () => {
-    const g = GCounter.empty().increment('a', 2).increment('b', 7);
-    const back = GCounter.fromJSON(g.toJSON());
-    expect(back.equals(g)).toBe(true);
+    const counter = GCounter.empty().increment('a', 2).increment('b', 7);
+    const back = GCounter.fromJSON(counter.toJSON());
+    expect(back.equals(counter)).toBe(true);
     expect(back.value()).toBe(9);
   });
 });
@@ -89,28 +89,28 @@ describe('GCounter — laws', () => {
 describe('PNCounter — laws', () => {
   test('idempotent / commutative / associative', () => {
     const gen = (): PNCounter => {
-      let p = PNCounter.empty();
+      let pnCounter = PNCounter.empty();
       const ops = 1 + Math.floor(Math.random() * 10);
       for (let i = 0; i < ops; i++) {
         const delta = 1 + Math.floor(Math.random() * 5);
-        p = Math.random() < 0.5
-          ? p.increment(pickReplica(), delta)
-          : p.decrement(pickReplica(), delta);
+        pnCounter = Math.random() < 0.5
+          ? pnCounter.increment(pickReplica(), delta)
+          : pnCounter.decrement(pickReplica(), delta);
       }
-      return p;
+      return pnCounter;
     };
-    checkLaws(gen, (a, b) => a.equals(b));
+    checkLaws(gen, (first, second) => first.equals(second));
   });
 
   test('decrement subtracts from the merged value', () => {
-    const a = PNCounter.empty().increment('a', 10);
-    const b = PNCounter.empty().decrement('b', 4);
-    expect(a.merge(b).value()).toBe(6);
+    const first = PNCounter.empty().increment('a', 10);
+    const second = PNCounter.empty().decrement('b', 4);
+    expect(first.merge(second).value()).toBe(6);
   });
 
   test('JSON round-trip', () => {
-    const p = PNCounter.empty().increment('a', 7).decrement('b', 2);
-    expect(PNCounter.fromJSON(p.toJSON()).value()).toBe(5);
+    const pnCounter = PNCounter.empty().increment('a', 7).decrement('b', 2);
+    expect(PNCounter.fromJSON(pnCounter.toJSON()).value()).toBe(5);
   });
 });
 
@@ -119,24 +119,24 @@ describe('PNCounter — laws', () => {
 describe('GSet — laws', () => {
   test('idempotent / commutative / associative', () => {
     const gen = (): GSet<number> => {
-      let s = GSet.empty<number>();
+      let set = GSet.empty<number>();
       const ops = 1 + Math.floor(Math.random() * 8);
-      for (let i = 0; i < ops; i++) s = s.add(Math.floor(Math.random() * 5));
-      return s;
+      for (let i = 0; i < ops; i++) set = set.add(Math.floor(Math.random() * 5));
+      return set;
     };
-    checkLaws(gen, (a, b) => a.equals(b));
+    checkLaws(gen, (first, second) => first.equals(second));
   });
 
   test('union semantics — adds win', () => {
-    const a = GSet.empty<string>().add('apple').add('banana');
-    const b = GSet.empty<string>().add('banana').add('cherry');
-    const merged = a.merge(b);
+    const first = GSet.empty<string>().add('apple').add('banana');
+    const second = GSet.empty<string>().add('banana').add('cherry');
+    const merged = first.merge(second);
     expect(new Set(merged.value())).toEqual(new Set(['apple', 'banana', 'cherry']));
   });
 
   test('JSON round-trip', () => {
-    const s = GSet.empty<{ x: number }>().add({ x: 1 }).add({ x: 2 });
-    const back = GSet.fromJSON<{ x: number }>(s.toJSON());
+    const set = GSet.empty<{ x: number }>().add({ x: 1 }).add({ x: 2 });
+    const back = GSet.fromJSON<{ x: number }>(set.toJSON());
     expect(back.size).toBe(2);
     expect(back.has({ x: 1 })).toBe(true);
   });
@@ -147,15 +147,15 @@ describe('GSet — laws', () => {
 describe('ORSet — laws', () => {
   test('idempotent / commutative / associative', () => {
     const gen = (): ORSet<number> => {
-      let s = ORSet.empty<number>();
+      let set = ORSet.empty<number>();
       const ops = 1 + Math.floor(Math.random() * 8);
       for (let i = 0; i < ops; i++) {
-        const e = Math.floor(Math.random() * 4);
-        s = Math.random() < 0.7 ? s.add(pickReplica(), e) : s.remove(e);
+        const element = Math.floor(Math.random() * 4);
+        set = Math.random() < 0.7 ? set.add(pickReplica(), element) : set.remove(element);
       }
-      return s;
+      return set;
     };
-    checkLaws(gen, (a, b) => a.equals(b));
+    checkLaws(gen, (first, second) => first.equals(second));
   });
 
   test('add wins under concurrent add + remove', () => {
@@ -169,16 +169,16 @@ describe('ORSet — laws', () => {
   });
 
   test('a sequential remove of a known tag is honoured', () => {
-    const a = ORSet.empty<string>().add('A', 'cherry');
-    const removed = a.remove('cherry');
+    const first = ORSet.empty<string>().add('A', 'cherry');
+    const removed = first.remove('cherry');
     expect(removed.has('cherry')).toBe(false);
     // Replaying the original through merge mustn't resurrect.
-    expect(removed.merge(a).has('cherry')).toBe(false);
+    expect(removed.merge(first).has('cherry')).toBe(false);
   });
 
   test('JSON round-trip preserves tags + tombstones', () => {
-    const s = ORSet.empty<string>().add('A', 'x').add('A', 'y').remove('x');
-    const back = ORSet.fromJSON<string>(s.toJSON());
+    const set = ORSet.empty<string>().add('A', 'x').add('A', 'y').remove('x');
+    const back = ORSet.fromJSON<string>(set.toJSON());
     expect(back.has('x')).toBe(false);
     expect(back.has('y')).toBe(true);
   });
@@ -195,34 +195,34 @@ describe('LWWRegister — laws', () => {
       const ts = (nextTs += 1 + Math.floor(Math.random() * 3));
       return LWWRegister.empty<string>().assign(pickReplica(), `v-${ts}`, ts);
     };
-    checkLaws(gen, (a, b) => a.equals(b));
+    checkLaws(gen, (first, second) => first.equals(second));
   });
 
   test('higher timestamp wins regardless of merge order', () => {
-    const a = LWWRegister.empty<string>().assign('A', 'red',  100);
-    const b = LWWRegister.empty<string>().assign('B', 'blue', 200);
-    expect(a.merge(b).value()).toBe('blue');
-    expect(b.merge(a).value()).toBe('blue');
+    const first = LWWRegister.empty<string>().assign('A', 'red',  100);
+    const second = LWWRegister.empty<string>().assign('B', 'blue', 200);
+    expect(first.merge(second).value()).toBe('blue');
+    expect(second.merge(first).value()).toBe('blue');
   });
 
   test('ties on timestamp resolve by replica id deterministically', () => {
-    const a = LWWRegister.empty<string>().assign('A', 'a', 100);
-    const b = LWWRegister.empty<string>().assign('B', 'b', 100);
+    const first = LWWRegister.empty<string>().assign('A', 'a', 100);
+    const second = LWWRegister.empty<string>().assign('B', 'b', 100);
     // Replica 'B' > 'A' lexicographically → B wins on tie.
-    expect(a.merge(b).value()).toBe('b');
-    expect(b.merge(a).value()).toBe('b');
+    expect(first.merge(second).value()).toBe('b');
+    expect(second.merge(first).value()).toBe('b');
   });
 
   test('empty register loses to any non-empty one', () => {
-    const e = LWWRegister.empty<string>();
-    const v = LWWRegister.empty<string>().assign('A', 'hello', 1);
-    expect(e.merge(v).value()).toBe('hello');
-    expect(v.merge(e).value()).toBe('hello');
+    const emptyRegister = LWWRegister.empty<string>();
+    const assignedRegister = LWWRegister.empty<string>().assign('A', 'hello', 1);
+    expect(emptyRegister.merge(assignedRegister).value()).toBe('hello');
+    expect(assignedRegister.merge(emptyRegister).value()).toBe('hello');
   });
 
   test('JSON round-trip', () => {
-    const r = LWWRegister.empty<{ ok: boolean }>().assign('A', { ok: true }, 42);
-    const back = LWWRegister.fromJSON<{ ok: boolean }>(r.toJSON());
+    const register = LWWRegister.empty<{ ok: boolean }>().assign('A', { ok: true }, 42);
+    const back = LWWRegister.fromJSON<{ ok: boolean }>(register.toJSON());
     expect(back.value()).toEqual({ ok: true });
     expect(back.timestamp()).toBe(42);
   });
@@ -232,42 +232,42 @@ describe('LWWRegister — laws', () => {
 
 describe('GSet — custom identity', () => {
   test('default identity uses JSON.stringify, dedupes structurally-equal values', () => {
-    const s = GSet.empty<{ x: number }>().add({ x: 1 }).add({ x: 1 }).add({ x: 2 });
-    expect(s.size).toBe(2);
+    const set = GSet.empty<{ x: number }>().add({ x: 1 }).add({ x: 1 }).add({ x: 2 });
+    expect(set.size).toBe(2);
   });
 
   test('custom identity dedupes by user-defined key', () => {
     interface Item { sku: string; name: string }
-    const s = GSet.empty<Item>({ identity: (i) => i.sku })
+    const set = GSet.empty<Item>({ identity: (i) => i.sku })
       .add({ sku: 'BOOK', name: 'A' })
       .add({ sku: 'BOOK', name: 'A different name' }) // same sku → dropped
       .add({ sku: 'COFFEE', name: 'C' });
-    expect(s.size).toBe(2);
+    expect(set.size).toBe(2);
     // The first-added item's `name` wins because subsequent adds
     // with the same key are dropped.
-    expect(s.value().find((i) => i.sku === 'BOOK')?.name).toBe('A');
+    expect(set.value().find((i) => i.sku === 'BOOK')?.name).toBe('A');
   });
 
   test('default identity throws on BigInt (the failure mode #57 documents)', () => {
-    const s = GSet.empty<bigint>();
-    expect(() => s.add(42n)).toThrow();
+    const set = GSet.empty<bigint>();
+    expect(() => set.add(42n)).toThrow();
   });
 
   test('custom identity makes BigInt usable', () => {
-    const s = GSet.empty<bigint>({ identity: (b) => b.toString() })
+    const set = GSet.empty<bigint>({ identity: (second) => second.toString() })
       .add(42n).add(42n).add(43n);
-    expect(s.size).toBe(2);
+    expect(set.size).toBe(2);
   });
 });
 
 describe('ORSet — custom identity', () => {
   test('custom identity dedupes by user-defined key', () => {
     interface Item { sku: string; price: number }
-    const s = ORSet.empty<Item>({ identity: (i) => i.sku })
+    const set = ORSet.empty<Item>({ identity: (i) => i.sku })
       .add('replica-a', { sku: 'BOOK', price: 10 })
       .add('replica-a', { sku: 'BOOK', price: 99 })   // same sku
       .add('replica-a', { sku: 'COFFEE', price: 5 });
-    expect(s.size).toBe(2);
+    expect(set.size).toBe(2);
   });
 
   test('add-wins still works with custom identity', () => {
@@ -281,9 +281,9 @@ describe('ORSet — custom identity', () => {
 
   test('JSON round-trip with custom identity recovers element values', () => {
     interface Item { sku: string; name: string }
-    const s = ORSet.empty<Item>({ identity: (i) => i.sku })
+    const set = ORSet.empty<Item>({ identity: (i) => i.sku })
       .add('A', { sku: 'BOOK', name: 'Designing Data-Intensive Applications' });
-    const back = ORSet.fromJSON<Item>(s.toJSON(), { identity: (i) => i.sku });
+    const back = ORSet.fromJSON<Item>(set.toJSON(), { identity: (i) => i.sku });
     expect(back.has({ sku: 'BOOK', name: 'whatever' })).toBe(true);
     expect(back.value()[0]!.name).toBe('Designing Data-Intensive Applications');
   });
@@ -297,27 +297,27 @@ describe('GCounterMap — laws', () => {
   test('idempotent / commutative / associative', () => {
     const KEYS = ['k-a', 'k-b', 'k-c'];
     const gen = (): GCounterMap<string> => {
-      let m = GCounterMap.empty<string>();
+      let map = GCounterMap.empty<string>();
       const ops = 1 + Math.floor(Math.random() * 8);
       for (let i = 0; i < ops; i++) {
-        m = m.increment(
+        map = map.increment(
           pickReplica(),
           KEYS[Math.floor(Math.random() * KEYS.length)]!,
           1 + Math.floor(Math.random() * 5),
         );
       }
-      return m;
+      return map;
     };
-    checkLaws(gen, (a, b) => a.equals(b));
+    checkLaws(gen, (first, second) => first.equals(second));
   });
 
   test('per-key counters merge independently', () => {
-    const a = GCounterMap.empty<string>().increment('a', 'page-views', 3);
-    const b = GCounterMap.empty<string>().increment('b', 'clicks', 2);
-    const m = a.merge(b);
-    expect(m.value('page-views')).toBe(3);
-    expect(m.value('clicks')).toBe(2);
-    expect(m.total()).toBe(5);
+    const first = GCounterMap.empty<string>().increment('a', 'page-views', 3);
+    const second = GCounterMap.empty<string>().increment('b', 'clicks', 2);
+    const map = first.merge(second);
+    expect(map.value('page-views')).toBe(3);
+    expect(map.value('clicks')).toBe(2);
+    expect(map.total()).toBe(5);
   });
 
   test('rejects negative deltas', () => {
@@ -325,10 +325,10 @@ describe('GCounterMap — laws', () => {
   });
 
   test('JSON round-trip', () => {
-    const m = GCounterMap.empty<string>()
+    const map = GCounterMap.empty<string>()
       .increment('a', 'k1', 5)
       .increment('b', 'k2', 3);
-    const back = GCounterMap.fromJSON<string>(m.toJSON());
+    const back = GCounterMap.fromJSON<string>(map.toJSON());
     expect(back.value('k1')).toBe(5);
     expect(back.value('k2')).toBe(3);
     expect(back.total()).toBe(8);
@@ -336,11 +336,11 @@ describe('GCounterMap — laws', () => {
 
   test('custom identity dedupes by user-defined key', () => {
     interface Tag { name: string; color: string }
-    const m = GCounterMap.empty<Tag>({ identity: (t) => t.name })
+    const map = GCounterMap.empty<Tag>({ identity: (t) => t.name })
       .increment('a', { name: 'urgent', color: 'red' }, 2)
       .increment('b', { name: 'urgent', color: 'orange' }, 3);  // same name
-    expect(m.size).toBe(1);
-    expect(m.value({ name: 'urgent', color: 'whatever' })).toBe(5);
+    expect(map.size).toBe(1);
+    expect(map.value({ name: 'urgent', color: 'whatever' })).toBe(5);
   });
 });
 
@@ -351,57 +351,57 @@ describe('LWWMap — laws', () => {
     const KEYS = ['theme', 'lang', 'country'];
     let nextTs = 1;
     const gen = (): LWWMap<string, string> => {
-      let m = LWWMap.empty<string, string>();
+      let map = LWWMap.empty<string, string>();
       const ops = 1 + Math.floor(Math.random() * 8);
       for (let i = 0; i < ops; i++) {
         const key = KEYS[Math.floor(Math.random() * KEYS.length)]!;
         const ts = (nextTs += 1 + Math.floor(Math.random() * 3));
         if (Math.random() < 0.7) {
-          m = m.put(pickReplica(), key, `v-${ts}`, ts);
+          map = map.put(pickReplica(), key, `v-${ts}`, ts);
         } else {
-          m = m.remove(pickReplica(), key, ts);
+          map = map.remove(pickReplica(), key, ts);
         }
       }
-      return m;
+      return map;
     };
-    checkLaws(gen, (a, b) => a.equals(b));
+    checkLaws(gen, (first, second) => first.equals(second));
   });
 
   test('higher-timestamp put wins regardless of merge order', () => {
-    const a = LWWMap.empty<string, string>().put('A', 'theme', 'dark', 100);
-    const b = LWWMap.empty<string, string>().put('B', 'theme', 'light', 200);
-    expect(a.merge(b).get('theme')).toBe('light');
-    expect(b.merge(a).get('theme')).toBe('light');
+    const first = LWWMap.empty<string, string>().put('A', 'theme', 'dark', 100);
+    const second = LWWMap.empty<string, string>().put('B', 'theme', 'light', 200);
+    expect(first.merge(second).get('theme')).toBe('light');
+    expect(second.merge(first).get('theme')).toBe('light');
   });
 
   test('newer remove tombstones an older put', () => {
-    const a = LWWMap.empty<string, string>().put('A', 'flag', 'on', 100);
-    const tombstoned = a.remove('A', 'flag', 200);
+    const first = LWWMap.empty<string, string>().put('A', 'flag', 'on', 100);
+    const tombstoned = first.remove('A', 'flag', 200);
     expect(tombstoned.has('flag')).toBe(false);
     // Re-merging the original mustn't resurrect.
-    expect(tombstoned.merge(a).has('flag')).toBe(false);
+    expect(tombstoned.merge(first).has('flag')).toBe(false);
   });
 
   test('newer put resurrects after an older tombstone', () => {
-    const a = LWWMap.empty<string, string>().put('A', 'flag', 'on', 100);
-    const tomb = a.remove('A', 'flag', 200);
+    const first = LWWMap.empty<string, string>().put('A', 'flag', 'on', 100);
+    const tomb = first.remove('A', 'flag', 200);
     const fresh = LWWMap.empty<string, string>().put('A', 'flag', 'on-again', 300);
     expect(tomb.merge(fresh).get('flag')).toBe('on-again');
   });
 
   test('ties on timestamp resolve by replica id deterministically', () => {
-    const a = LWWMap.empty<string, string>().put('A', 'k', 'a-val', 100);
-    const b = LWWMap.empty<string, string>().put('B', 'k', 'b-val', 100);
-    expect(a.merge(b).get('k')).toBe('b-val');  // 'B' > 'A' lex
-    expect(b.merge(a).get('k')).toBe('b-val');
+    const first = LWWMap.empty<string, string>().put('A', 'k', 'a-val', 100);
+    const second = LWWMap.empty<string, string>().put('B', 'k', 'b-val', 100);
+    expect(first.merge(second).get('k')).toBe('b-val');  // 'B' > 'A' lex
+    expect(second.merge(first).get('k')).toBe('b-val');
   });
 
   test('JSON round-trip preserves values + tombstones', () => {
-    const m = LWWMap.empty<string, string>()
+    const map = LWWMap.empty<string, string>()
       .put('A', 'x', 'foo', 1)
       .put('A', 'y', 'bar', 1)
       .remove('A', 'x', 2);
-    const back = LWWMap.fromJSON<string, string>(m.toJSON());
+    const back = LWWMap.fromJSON<string, string>(map.toJSON());
     expect(back.has('x')).toBe(false);
     expect(back.get('y')).toBe('bar');
   });
@@ -412,29 +412,29 @@ describe('LWWMap — laws', () => {
 describe('MVRegister — laws', () => {
   test('idempotent / commutative / associative', () => {
     const gen = (): MVRegister<string> => {
-      let r = MVRegister.empty<string>();
+      let register = MVRegister.empty<string>();
       const ops = 1 + Math.floor(Math.random() * 6);
       for (let i = 0; i < ops; i++) {
-        r = r.assign(pickReplica(), `v-${i}-${Math.floor(Math.random() * 1000)}`);
+        register = register.assign(pickReplica(), `v-${i}-${Math.floor(Math.random() * 1000)}`);
       }
-      return r;
+      return register;
     };
-    checkLaws(gen, (a, b) => a.equals(b));
+    checkLaws(gen, (first, second) => first.equals(second));
   });
 
   test('concurrent assigns from independent replicas survive', () => {
-    const a = MVRegister.empty<string>().assign('a', 'red');
-    const b = MVRegister.empty<string>().assign('b', 'blue');
-    const m = a.merge(b);
-    expect(new Set(m.values())).toEqual(new Set(['red', 'blue']));
-    expect(m.hasConflict).toBe(true);
-    expect(m.size).toBe(2);
+    const first = MVRegister.empty<string>().assign('a', 'red');
+    const second = MVRegister.empty<string>().assign('b', 'blue');
+    const map = first.merge(second);
+    expect(new Set(map.values())).toEqual(new Set(['red', 'blue']));
+    expect(map.hasConflict).toBe(true);
+    expect(map.size).toBe(2);
   });
 
   test('a later assign that has seen both branches subsumes them', () => {
-    const a = MVRegister.empty<string>().assign('a', 'red');
-    const b = MVRegister.empty<string>().assign('b', 'blue');
-    const merged = a.merge(b);
+    const first = MVRegister.empty<string>().assign('a', 'red');
+    const second = MVRegister.empty<string>().assign('b', 'blue');
+    const merged = first.merge(second);
     // Replica A now sees both branches and writes a new value — that
     // value's vc dominates the prior pair, so the merge collapses to it.
     const final = merged.assign('a', 'final');
@@ -443,18 +443,18 @@ describe('MVRegister — laws', () => {
   });
 
   test('non-concurrent sequential assigns subsume the prior', () => {
-    const r = MVRegister.empty<string>()
+    const register = MVRegister.empty<string>()
       .assign('a', 'first')
       .assign('a', 'second')
       .assign('a', 'third');
-    expect(r.values()).toEqual(['third']);
+    expect(register.values()).toEqual(['third']);
   });
 
   test('JSON round-trip preserves concurrent branches', () => {
-    const a = MVRegister.empty<string>().assign('a', 'red');
-    const b = MVRegister.empty<string>().assign('b', 'blue');
-    const m = a.merge(b);
-    const back = MVRegister.fromJSON<string>(m.toJSON());
+    const first = MVRegister.empty<string>().assign('a', 'red');
+    const second = MVRegister.empty<string>().assign('b', 'blue');
+    const map = first.merge(second);
+    const back = MVRegister.fromJSON<string>(map.toJSON());
     expect(new Set(back.values())).toEqual(new Set(['red', 'blue']));
   });
 });
@@ -466,41 +466,41 @@ describe('ORMap — laws', () => {
     const KEYS = ['cart-1', 'cart-2'];
     const ITEMS = ['apple', 'banana', 'cherry'];
     const gen = (): ORMap<string, ORSet<string>> => {
-      let m = ORMap.empty<string, ORSet<string>>();
+      let map = ORMap.empty<string, ORSet<string>>();
       const ops = 1 + Math.floor(Math.random() * 6);
       for (let i = 0; i < ops; i++) {
-        const k = KEYS[Math.floor(Math.random() * KEYS.length)]!;
+        const key = KEYS[Math.floor(Math.random() * KEYS.length)]!;
         if (Math.random() < 0.7) {
           // update inner ORSet
           const replica = pickReplica();
-          m = m.update(replica, k, () => ORSet.empty<string>(),
-            (s) => s.add(replica, ITEMS[Math.floor(Math.random() * ITEMS.length)]!));
+          map = map.update(replica, key, () => ORSet.empty<string>(),
+            (set) => set.add(replica, ITEMS[Math.floor(Math.random() * ITEMS.length)]!));
         } else {
-          m = m.remove(k);
+          map = map.remove(key);
         }
       }
-      return m;
+      return map;
     };
-    checkLaws(gen, (a, b) => a.equals(b));
+    checkLaws(gen, (first, second) => first.equals(second));
   });
 
   test('per-key inner-CRDT merge: cart contents from two replicas union', () => {
     const empty = ORMap.empty<string, ORSet<string>>();
-    const a = empty.update('alice', 'cart-1', () => ORSet.empty<string>(),
-      (c) => c.add('alice', 'apple'));
-    const b = empty.update('bob', 'cart-1', () => ORSet.empty<string>(),
-      (c) => c.add('bob', 'banana'));
-    const m = a.merge(b);
-    expect(new Set(m.get('cart-1')!.value())).toEqual(new Set(['apple', 'banana']));
+    const first = empty.update('alice', 'cart-1', () => ORSet.empty<string>(),
+      (third) => third.add('alice', 'apple'));
+    const second = empty.update('bob', 'cart-1', () => ORSet.empty<string>(),
+      (third) => third.add('bob', 'banana'));
+    const map = first.merge(second);
+    expect(new Set(map.get('cart-1')!.value())).toEqual(new Set(['apple', 'banana']));
   });
 
   test('remove key — concurrent put with new tag survives (add wins)', () => {
     const empty = ORMap.empty<string, ORSet<string>>();
     const a0 = empty.update('A', 'k', () => ORSet.empty<string>(),
-      (s) => s.add('A', 'item-a'));
+      (set) => set.add('A', 'item-a'));
     const a1 = a0.remove('k');
     const b1 = a0.update('B', 'k', () => ORSet.empty<string>(),
-      (s) => s.add('B', 'item-b'));
+      (set) => set.add('B', 'item-b'));
     const merged = a1.merge(b1);
     // Add wins on the keyset — B's add tag survives A's remove because
     // A never saw it.  The surviving inner ORSet is b1's, which carries
@@ -513,13 +513,13 @@ describe('ORMap — laws', () => {
   });
 
   test('JSON round-trip with ORSet values preserves inner state', () => {
-    const m = ORMap.empty<string, ORSet<string>>()
+    const map = ORMap.empty<string, ORSet<string>>()
       .update('A', 'cart-1', () => ORSet.empty<string>(),
-        (s) => s.add('A', 'apple').add('A', 'banana'))
+        (set) => set.add('A', 'apple').add('A', 'banana'))
       .update('A', 'cart-2', () => ORSet.empty<string>(),
-        (s) => s.add('A', 'coffee'));
+        (set) => set.add('A', 'coffee'));
     const back = ORMap.fromJSON<string, ORSet<string>>(
-      m.toJSON(),
+      map.toJSON(),
       (json) => ORSet.fromJSON<string>(json as ReturnType<ORSet<string>['toJSON']>),
     );
     expect(back.size).toBe(2);
@@ -529,11 +529,11 @@ describe('ORMap — laws', () => {
 
   test('ORMap with GCounter values — totals merge per key', () => {
     const empty = ORMap.empty<string, GCounter>();
-    const a = empty.update('a', 'route-/api', () => GCounter.empty(),
-      (c) => c.increment('a', 5));
-    const b = empty.update('b', 'route-/api', () => GCounter.empty(),
-      (c) => c.increment('b', 3));
-    const m = a.merge(b);
-    expect(m.get('route-/api')!.value()).toBe(8);
+    const first = empty.update('a', 'route-/api', () => GCounter.empty(),
+      (third) => third.increment('a', 5));
+    const second = empty.update('b', 'route-/api', () => GCounter.empty(),
+      (third) => third.increment('b', 3));
+    const map = first.merge(second);
+    expect(map.get('route-/api')!.value()).toBe(8);
   });
 });

@@ -33,21 +33,21 @@ async function waitFor(pred: () => boolean, timeoutMs: number, stepMs = 25): Pro
   if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 }
 
-interface NodeCtx<TMsg> {
+interface NodeCtx<TMessage> {
   system: ActorSystem;
   cluster: Cluster;
-  region: ActorRef<TMsg>;
+  region: ActorRef<TMessage>;
 }
 
 /** Minimal cluster node with a configured sharding region. */
-async function startNode<TMsg>(opts: {
+async function startNode<TMessage>(opts: {
   systemName: string;
   host: string;
   port: number;
   seeds?: string[];
   roles?: string[];
-  sharding: (sharding: ClusterSharding) => ActorRef<TMsg>;
-}): Promise<NodeCtx<TMsg>> {
+  sharding: (sharding: ClusterSharding) => ActorRef<TMessage>;
+}): Promise<NodeCtx<TMessage>> {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
@@ -135,13 +135,13 @@ test('LeaderChanged fires when the oldest member leaves', async () => {
   await c2.leave(); await sys2.terminate();
 });
 
-type CounterCmd = { id: string; op: 'inc' };
+type CounterCommand = { id: string; op: 'inc' };
 
 test('Role filter: entities only land on members with the matching role', async () => {
   const seen = new Map<string, Map<string, number>>();
   function countingEntity(node: string) {
-    return class extends Actor<CounterCmd> {
-      override onReceive(cmd: CounterCmd): void {
+    return class extends Actor<CounterCommand> {
+      override onReceive(cmd: CounterCommand): void {
         const perNode = seen.get(node) ?? new Map();
         perNode.set(cmd.id, (perNode.get(cmd.id) ?? 0) + 1);
         seen.set(node, perNode);
@@ -149,21 +149,21 @@ test('Role filter: entities only land on members with the matching role', async 
     };
   }
 
-  const spawnRegion = (name: string) => (s: ClusterSharding): ActorRef<CounterCmd> => {
-    const startShardingOptions = StartShardingOptions.create<CounterCmd>()
+  const spawnRegion = (name: string) => (activeSet: ClusterSharding): ActorRef<CounterCommand> => {
+    const startShardingOptions = StartShardingOptions.create<CounterCommand>()
       .withTypeName('counter')
       .withEntityProps(Props.create(() => new (countingEntity(name))()))
       .withExtractEntityId(msg => msg.id)
       .withNumShards(8)
       .withRole('backend');
-    return s.start<CounterCmd>(
+    return activeSet.start<CounterCommand>(
       startShardingOptions,
     );
   };
 
-  const n1 = await startNode<CounterCmd>({ systemName: 'rl', host: '10.12.0.1', port: 33001, roles: ['backend'], sharding: spawnRegion('n1') });
-  const n2 = await startNode<CounterCmd>({ systemName: 'rl', host: '10.12.0.2', port: 33002, seeds: ['10.12.0.1:33001'], roles: [], sharding: spawnRegion('n2') });
-  const n3 = await startNode<CounterCmd>({ systemName: 'rl', host: '10.12.0.3', port: 33003, seeds: ['10.12.0.1:33001'], roles: ['backend'], sharding: spawnRegion('n3') });
+  const n1 = await startNode<CounterCommand>({ systemName: 'rl', host: '10.12.0.1', port: 33001, roles: ['backend'], sharding: spawnRegion('n1') });
+  const n2 = await startNode<CounterCommand>({ systemName: 'rl', host: '10.12.0.2', port: 33002, seeds: ['10.12.0.1:33001'], roles: [], sharding: spawnRegion('n2') });
+  const n3 = await startNode<CounterCommand>({ systemName: 'rl', host: '10.12.0.3', port: 33003, seeds: ['10.12.0.1:33001'], roles: ['backend'], sharding: spawnRegion('n3') });
 
   await waitFor(() => [n1, n2, n3].every(n => n.cluster.upMembers().length === 3), 2_000);
   await sleep(150);
@@ -174,8 +174,8 @@ test('Role filter: entities only land on members with the matching role', async 
   await sleep(400);
 
   expect(seen.get('n2')).toBeUndefined(); // n2 has no backend role
-  const n1Count = Array.from(seen.get('n1')?.values() ?? []).reduce((a, b) => a + b, 0);
-  const n3Count = Array.from(seen.get('n3')?.values() ?? []).reduce((a, b) => a + b, 0);
+  const n1Count = Array.from(seen.get('n1')?.values() ?? []).reduce((addressA, addressB) => addressA + addressB, 0);
+  const n3Count = Array.from(seen.get('n3')?.values() ?? []).reduce((addressA, addressB) => addressA + addressB, 0);
   expect(n1Count + n3Count).toBe(8);
 
   await stopNode(n1); await stopNode(n2); await stopNode(n3);
@@ -183,31 +183,31 @@ test('Role filter: entities only land on members with the matching role', async 
 
 test('Proxy region routes but never hosts entities', async () => {
   const hosted = new Set<string>();
-  const backendEntity = () => new (class extends Actor<CounterCmd> {
+  const backendEntity = () => new (class extends Actor<CounterCommand> {
     override preStart(): void { hosted.add(this.self.path.name); }
-    override onReceive(_: CounterCmd): void {}
+    override onReceive(_: CounterCommand): void {}
   })();
 
-  const host = await startNode<CounterCmd>({
+  const host = await startNode<CounterCommand>({
     systemName: 'prx', host: '10.13.0.1', port: 34001,
-    sharding: s => {
-      const startShardingOptions = StartShardingOptions.create<CounterCmd>()
+    sharding: activeSet => {
+      const startShardingOptions = StartShardingOptions.create<CounterCommand>()
         .withTypeName('counter')
         .withEntityProps(Props.create(backendEntity))
         .withExtractEntityId(m => m.id)
         .withNumShards(4);
-      return s.start(
+      return activeSet.start(
       startShardingOptions,
     );
     },
   });
-  const proxy = await startNode<CounterCmd>({
+  const proxy = await startNode<CounterCommand>({
     systemName: 'prx', host: '10.13.0.2', port: 34002, seeds: ['10.13.0.1:34001'],
-    sharding: s => {
-      const startShardingOptions = StartShardingOptions.create<CounterCmd>()
+    sharding: activeSet => {
+      const startShardingOptions = StartShardingOptions.create<CounterCommand>()
         .withTypeName('counter')
         .withEntityProps(Props.create(backendEntity));
-      return s.startProxy(
+      return activeSet.startProxy(
       startShardingOptions // unused but required by types
         .withExtractEntityId(m => m.id)
         .withNumShards(4),
@@ -249,14 +249,14 @@ test('Passivation stops idle entity and buffers next message until re-create', a
 
   const node = await startNode<{ id: string; op: 'work' | 'sleep' }>({
     systemName: 'pas', host: '10.14.0.1', port: 35001,
-    sharding: s => {
+    sharding: activeSet => {
       const startShardingOptions = StartShardingOptions.create<{ id: string; op: 'work' | 'sleep' }>()
         .withTypeName('passiv')
         .withEntityProps(Props.create(() => new Entity()))
         .withExtractEntityId(m => m.id)
         .withNumShards(4)
         .withPassivationIdleMs(0);
-      return s.start(
+      return activeSet.start(
       startShardingOptions, // passivation only via Passivate here
     );
     },
@@ -279,27 +279,27 @@ test('Passivation stops idle entity and buffers next message until re-create', a
 
 test('LeastShardAllocationStrategy balances shards across nodes', async () => {
   const hosted = new Map<string, number>();
-  const entity = (node: string) => new (class extends Actor<CounterCmd> {
+  const entity = (node: string) => new (class extends Actor<CounterCommand> {
     override preStart(): void { hosted.set(node, (hosted.get(node) ?? 0) + 1); }
-    override onReceive(_: CounterCmd): void {}
+    override onReceive(_: CounterCommand): void {}
   })();
 
-  const mk = (name: string) => (s: ClusterSharding): ActorRef<CounterCmd> => {
-    const startShardingOptions = StartShardingOptions.create<CounterCmd>()
+  const mk = (name: string) => (activeSet: ClusterSharding): ActorRef<CounterCommand> => {
+    const startShardingOptions = StartShardingOptions.create<CounterCommand>()
       .withTypeName('counter')
       .withEntityProps(Props.create(() => entity(name)))
       .withExtractEntityId(m => m.id)
       .withNumShards(12)
       .withAllocationStrategy(new LeastShardAllocationStrategy(1, 3))
       .withRebalanceIntervalMs(300);
-    return s.start<CounterCmd>(
+    return activeSet.start<CounterCommand>(
       startShardingOptions,
     );
   };
 
-  const n1 = await startNode<CounterCmd>({ systemName: 'lsa', host: '10.15.0.1', port: 36001, sharding: mk('n1') });
-  const n2 = await startNode<CounterCmd>({ systemName: 'lsa', host: '10.15.0.2', port: 36002, seeds: ['10.15.0.1:36001'], sharding: mk('n2') });
-  const n3 = await startNode<CounterCmd>({ systemName: 'lsa', host: '10.15.0.3', port: 36003, seeds: ['10.15.0.1:36001'], sharding: mk('n3') });
+  const n1 = await startNode<CounterCommand>({ systemName: 'lsa', host: '10.15.0.1', port: 36001, sharding: mk('n1') });
+  const n2 = await startNode<CounterCommand>({ systemName: 'lsa', host: '10.15.0.2', port: 36002, seeds: ['10.15.0.1:36001'], sharding: mk('n2') });
+  const n3 = await startNode<CounterCommand>({ systemName: 'lsa', host: '10.15.0.3', port: 36003, seeds: ['10.15.0.1:36001'], sharding: mk('n3') });
 
   await waitFor(() => [n1, n2, n3].every(n => n.cluster.upMembers().length === 3), 2_000);
   await sleep(150);
@@ -312,7 +312,7 @@ test('LeastShardAllocationStrategy balances shards across nodes', async () => {
   await sleep(1_200);
 
   const loads = [hosted.get('n1') ?? 0, hosted.get('n2') ?? 0, hosted.get('n3') ?? 0];
-  const total = loads.reduce((a, b) => a + b, 0);
+  const total = loads.reduce((addressA, addressB) => addressA + addressB, 0);
   expect(total).toBeGreaterThanOrEqual(12);
   // Strategy should spread reasonably across all 3 nodes.
   expect(loads.filter(l => l > 0).length).toBe(3);
@@ -322,31 +322,31 @@ test('LeastShardAllocationStrategy balances shards across nodes', async () => {
 
 test('rememberEntities re-creates entities on the new owner after node death', async () => {
   const active = new Map<string, Set<string>>();
-  const entity = (node: string) => new (class extends Actor<CounterCmd> {
+  const entity = (node: string) => new (class extends Actor<CounterCommand> {
     override preStart(): void {
-      const s = active.get(node) ?? new Set();
-      s.add(this.self.path.name); active.set(node, s);
+      const activeSet = active.get(node) ?? new Set();
+      activeSet.add(this.self.path.name); active.set(node, activeSet);
     }
     override postStop(): void { active.get(node)?.delete(this.self.path.name); }
-    override onReceive(_: CounterCmd): void {}
+    override onReceive(_: CounterCommand): void {}
   })();
 
-  const mk = (name: string) => (s: ClusterSharding): ActorRef<CounterCmd> => {
-    const startShardingOptions = StartShardingOptions.create<CounterCmd>()
+  const mk = (name: string) => (activeSet: ClusterSharding): ActorRef<CounterCommand> => {
+    const startShardingOptions = StartShardingOptions.create<CounterCommand>()
       .withTypeName('counter')
       .withEntityProps(Props.create(() => entity(name)))
       .withExtractEntityId(m => m.id)
       .withNumShards(8)
       .withRememberEntities(true)
       .withRebalanceIntervalMs(200);
-    return s.start<CounterCmd>(
+    return activeSet.start<CounterCommand>(
       startShardingOptions,
     );
   };
 
-  const n1 = await startNode<CounterCmd>({ systemName: 'rem', host: '10.16.0.1', port: 37001, sharding: mk('n1') });
-  const n2 = await startNode<CounterCmd>({ systemName: 'rem', host: '10.16.0.2', port: 37002, seeds: ['10.16.0.1:37001'], sharding: mk('n2') });
-  const n3 = await startNode<CounterCmd>({ systemName: 'rem', host: '10.16.0.3', port: 37003, seeds: ['10.16.0.1:37001'], sharding: mk('n3') });
+  const n1 = await startNode<CounterCommand>({ systemName: 'rem', host: '10.16.0.1', port: 37001, sharding: mk('n1') });
+  const n2 = await startNode<CounterCommand>({ systemName: 'rem', host: '10.16.0.2', port: 37002, seeds: ['10.16.0.1:37001'], sharding: mk('n2') });
+  const n3 = await startNode<CounterCommand>({ systemName: 'rem', host: '10.16.0.3', port: 37003, seeds: ['10.16.0.1:37001'], sharding: mk('n3') });
 
   await waitFor(() => [n1, n2, n3].every(n => n.cluster.upMembers().length === 3), 2_000);
   await sleep(200);
@@ -375,12 +375,12 @@ test('rememberEntities re-creates entities on the new owner after node death', a
 });
 
 test('HashAllocationStrategy allocates deterministically across sorted members', async () => {
-  const a = new NodeAddress('s', 'h', 1);
-  const b = new NodeAddress('s', 'h', 2);
+  const addressA = new NodeAddress('s', 'h', 1);
+  const addressB = new NodeAddress('s', 'h', 2);
   const strategy = new HashAllocationStrategy();
   for (let i = 0; i < 20; i++) {
-    const owner1 = strategy.allocate(i, [a, b], new Map());
-    const owner2 = strategy.allocate(i, [b, a], new Map()); // different insertion order
+    const owner1 = strategy.allocate(i, [addressA, addressB], new Map());
+    const owner2 = strategy.allocate(i, [addressB, addressA], new Map()); // different insertion order
     expect(owner1.equals(owner2)).toBe(true);
   }
 });

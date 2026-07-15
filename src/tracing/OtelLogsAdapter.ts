@@ -117,7 +117,7 @@ export function otelLogger(opts: OtelLoggerAdapterOptions): FrameworkLogger {
   const otelLog = opts.logger
     ?? provider.getLogger(opts.loggerName ?? 'actor-ts', opts.loggerVersion);
   const level = opts.level ?? LogLevel.Info;
-  return new OtelLoggerImpl(otelLog, opts.api.SeverityNumber, level, '', {});
+  return new OtelLoggerImplementation(otelLog, opts.api.SeverityNumber, level, '', {});
 }
 
 /* ------------------------------- internals ------------------------------ */
@@ -128,7 +128,7 @@ export function otelLogger(opts: OtelLoggerAdapterOptions): FrameworkLogger {
  * new instance with the same underlying OTel logger but a different
  * source / merged static fields.
  */
-class OtelLoggerImpl implements FrameworkLogger {
+class OtelLoggerImplementation implements FrameworkLogger {
   constructor(
     private readonly otel: OtelLoggerLike,
     private readonly severityNumber: OtelSeverityNumber,
@@ -193,11 +193,11 @@ class OtelLoggerImpl implements FrameworkLogger {
   error(msg: string, ...args: unknown[]): void { this.emit(LogLevel.Error, msg, args); }
 
   withSource(source: string): FrameworkLogger {
-    return new OtelLoggerImpl(this.otel, this.severityNumber, this.level, source, this.staticFields);
+    return new OtelLoggerImplementation(this.otel, this.severityNumber, this.level, source, this.staticFields);
   }
 
   withFields(fields: LogContextData): FrameworkLogger {
-    return new OtelLoggerImpl(
+    return new OtelLoggerImplementation(
       this.otel, this.severityNumber, this.level, this.source,
       { ...this.staticFields, ...fields },
     );

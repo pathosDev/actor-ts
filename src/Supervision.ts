@@ -74,8 +74,8 @@ export function decideBy(
   fallback: Directive = Directive.Restart,
 ): Decider {
   return (err: Error): Directive => {
-    for (const c of cases) {
-      if (err instanceof c.match) return c.then;
+    for (const matcher of cases) {
+      if (err instanceof matcher.match) return matcher.then;
     }
     return fallback;
   };

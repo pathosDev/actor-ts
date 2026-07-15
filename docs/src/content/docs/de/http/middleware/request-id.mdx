@@ -1,0 +1,35 @@
+---
+title: Request-ID
+description: requestId() vergibt eine Request-ID (übernimmt eine wohlgeformte eingehende, sonst generiert es eine UUID), reicht sie an den Handler durch und echot sie zur Korrelation auf der Response.
+---
+
+`requestId()` gibt jedem Request eine stabile ID — zur Log-Korrelation und
+zum Weiterreichen. Es leitet die ID an den Handler weiter (über den
+angereicherten Request) und echot sie auf der Response.
+
+```ts
+import { requestId, withMiddleware } from 'actor-ts/http';
+
+const routes = withMiddleware(requestId(), appRoutes);
+
+// in einem Handler:
+get((req) => completeJson(Status.OK, { id: req.headers['x-request-id'] }));
+```
+
+Eine eingehende ID wird nur übernommen, wenn sie wohlgeformt ist
+(`^[A-Za-z0-9._-]{1,64}$`) — ein bösartiger Wert erreicht nie einen
+Response-Header; andernfalls wird eine frische `crypto.randomUUID()`
+generiert.
+
+## Konfiguration
+
+| Builder-Methode | Feld | Default |
+| --- | --- | --- |
+| `withHeaderName(n)` | `headerName` | `'x-request-id'` |
+| `withTrustIncoming(flag?)` | `trustIncoming` | `true` |
+| `withGenerate(fn)` | `generate` | `crypto.randomUUID()` |
+
+## Wie weiter
+
+- **[Sicherheit](/de/http/security/)** — `requestId` an den Anfang des Stacks setzen.
+- **[Fehlerbehandlung](/de/http/error-handling/)** — die ID im `withErrorHandler` loggen.

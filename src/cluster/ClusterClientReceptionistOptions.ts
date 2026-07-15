@@ -1,6 +1,7 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { OptionsValidator } from '../util/OptionsValidator.js';
 
-/** Plain settings-object shape accepted by {@link ClusterClientReceptionist.start}. */
+/** Plain options-object shape accepted by {@link ClusterClientReceptionist.start}. */
 export interface ClusterClientReceptionistOptionsType {
   /**
    * Default ask timeout (ms) when a client envelope carries an `askId`.
@@ -26,6 +27,16 @@ export class ClusterClientReceptionistOptionsBuilder extends OptionsBuilder<Clus
   /** Default ask timeout (ms) for client envelopes carrying an `askId`.  Default 5 s. */
   withAskTimeoutMs(ms: number): this {
     return this.set('askTimeoutMs', ms);
+  }
+}
+
+/** Validates resolved {@link ClusterClientReceptionistOptionsType} settings. */
+export class ClusterClientReceptionistOptionsValidator extends OptionsValidator<ClusterClientReceptionistOptionsType> {
+  constructor() {
+    super('ClusterClientReceptionistOptions');
+  }
+  protected rules(_s: Partial<ClusterClientReceptionistOptionsType>): void {
+    this.positiveNumber('askTimeoutMs');
   }
 }
 

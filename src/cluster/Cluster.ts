@@ -13,6 +13,7 @@ import {
   DEFAULT_TOMBSTONE_TTL_MS,
 } from '../util/Constants.js';
 import { none, some, type Option } from '../util/Option.js';
+import { ClusterOptionsValidator } from './ClusterOptions.js';
 import type { ClusterOptions, ClusterOptionsType } from './ClusterOptions.js';
 import {
   LeaderChanged,
@@ -29,7 +30,7 @@ import {
   type ClusterEvent,
 } from './ClusterEvents.js';
 import {
-  defaultFailureDetectorSettings,
+  defaultFailureDetectorOptions,
   FailureDetector,
 } from './FailureDetector.js';
 import { FailureDetectorOptions, type FailureDetectorOptionsType } from './FailureDetectorOptions.js';
@@ -40,10 +41,10 @@ import { NodeAddress } from './NodeAddress.js';
 // sharding file uses `import type { Cluster }`.
 import { ClusterSharding } from './sharding/ClusterSharding.js';
 import type {
-  EnvelopeMsg,
-  GossipMsg,
-  HeartbeatMsg,
-  LeaveMsg,
+  EnvelopeMessage,
+  GossipMessage,
+  HeartbeatMessage,
+  LeaveMessage,
   MemberData,
   MemberStatus,
   WireMessage,
@@ -55,7 +56,7 @@ import type {
   DowningProvider,
 } from './downing/DowningProvider.js';
 
-type EnvelopeHandler = (env: EnvelopeMsg, from: NodeAddress) => void;
+type EnvelopeHandler = (env: EnvelopeMessage, from: NodeAddress) => void;
 
 /**
  * Maximum allowed deviation between an incoming gossip version and the
@@ -113,30 +114,30 @@ export class Cluster {
    */
   private lastDownedView: string | null = null;
 
-  private constructor(system: ActorSystem, settings: ClusterOptionsType) {
+  private constructor(system: ActorSystem, options: ClusterOptionsType) {
     this.system = system;
-    this.selfAddress = new NodeAddress(system.name, settings.host, settings.port);
-    this.selfRoles = new Set(settings.roles ?? []);
+    this.selfAddress = new NodeAddress(system.name, options.host, options.port);
+    this.selfRoles = new Set(options.roles ?? []);
     this.log = system.log.withSource(`cluster@${this.selfAddress}`);
-    this.transport = settings.transport ?? new TcpTransport(this.selfAddress, this.log);
-    const fdSettings: FailureDetectorOptionsType = {
-      ...defaultFailureDetectorSettings,
-      ...(settings.failureDetector ?? {}),
+    this.transport = options.transport ?? new TcpTransport(this.selfAddress, this.log);
+    const fdOptions: FailureDetectorOptionsType = {
+      ...defaultFailureDetectorOptions,
+      ...(options.failureDetector ?? {}),
     };
     this.failureDetector = new FailureDetector(
       FailureDetectorOptions.create()
-        .withHeartbeatIntervalMs(fdSettings.heartbeatIntervalMs)
-        .withUnreachableAfterMs(fdSettings.unreachableAfterMs)
-        .withDownAfterMs(fdSettings.downAfterMs),
+        .withHeartbeatIntervalMs(fdOptions.heartbeatIntervalMs)
+        .withUnreachableAfterMs(fdOptions.unreachableAfterMs)
+        .withDownAfterMs(fdOptions.downAfterMs),
     );
-    this.gossipIntervalMs = settings.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
-    this.seedRetryIntervalMs = settings.seedRetryIntervalMs ?? DEFAULT_SEED_RETRY_INTERVAL_MS;
-    this.weaklyUpAfterMs = settings.weaklyUpAfterMs ?? 0;
-    this.downing = settings.downing ?? null;
-    this.tombstoneTtlMs = settings.tombstoneTtlMs ?? DEFAULT_TOMBSTONE_TTL_MS;
-    this.tombstonePruneIntervalMs = settings.tombstonePruneIntervalMs ?? DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS;
+    this.gossipIntervalMs = options.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
+    this.seedRetryIntervalMs = options.seedRetryIntervalMs ?? DEFAULT_SEED_RETRY_INTERVAL_MS;
+    this.weaklyUpAfterMs = options.weaklyUpAfterMs ?? 0;
+    this.downing = options.downing ?? null;
+    this.tombstoneTtlMs = options.tombstoneTtlMs ?? DEFAULT_TOMBSTONE_TTL_MS;
+    this.tombstonePruneIntervalMs = options.tombstonePruneIntervalMs ?? DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS;
     this.tombstoneMinRetentionMs =
-      settings.tombstoneMinRetentionMs ?? 6 * fdSettings.downAfterMs;
+      options.tombstoneMinRetentionMs ?? 6 * fdOptions.downAfterMs;
   }
 
   /** Entry point: start the cluster and attempt to contact seed nodes. */
@@ -144,9 +145,10 @@ export class Cluster {
     system: ActorSystem,
     options: ClusterOptions,
   ): Promise<Cluster> {
-    const settings = options as ClusterOptionsType;
-    const cluster = new Cluster(system, settings);
-    await cluster._start(settings.seeds ?? []);
+    const resolvedOptions = options as ClusterOptionsType;
+    new ClusterOptionsValidator().validate(resolvedOptions);
+    const cluster = new Cluster(system, resolvedOptions);
+    await cluster._start(resolvedOptions.seeds ?? []);
     return cluster;
   }
 
@@ -202,12 +204,12 @@ export class Cluster {
   subscribe(listener: (event: ClusterEvent) => void): () => void {
     this._listeners.push(listener);
     // Replay current state.
-    for (const m of this.members.values()) {
-      try { listener(new MemberJoined(m)); } catch { /* ignore */ }
-      if (m.status === 'up') {
-        try { listener(new MemberUp(m)); } catch { /* ignore */ }
-        if (m.address.equals(this.selfAddress)) {
-          try { listener(new SelfUp(m)); } catch { /* ignore */ }
+    for (const member of this.members.values()) {
+      try { listener(new MemberJoined(member)); } catch { /* ignore */ }
+      if (member.status === 'up') {
+        try { listener(new MemberUp(member)); } catch { /* ignore */ }
+        if (member.address.equals(this.selfAddress)) {
+          try { listener(new SelfUp(member)); } catch { /* ignore */ }
         }
       }
     }
@@ -230,24 +232,24 @@ export class Cluster {
    * the topology".
    */
   getMembers(): ReadonlyArray<Member> {
-    return Array.from(this.members.values()).filter((m) => m.status !== 'removed');
+    return Array.from(this.members.values()).filter((member) => member.status !== 'removed');
   }
 
   /** Members in the `up` state, ordered by address — the "active set". */
   upMembers(): Member[] {
     return Array.from(this.members.values())
-      .filter(m => m.status === 'up')
+      .filter(member => member.status === 'up')
       .sort((a, b) => a.address.compareTo(b.address));
   }
 
   /** Reachable members (up + joining + leaving). */
   reachableMembers(): Member[] {
-    return Array.from(this.members.values()).filter(m => m.isReachable());
+    return Array.from(this.members.values()).filter(member => member.isReachable());
   }
 
   /** Up members that carry the given role tag. */
   upMembersWithRole(role: string): Member[] {
-    return this.upMembers().filter(m => m.hasRole(role));
+    return this.upMembers().filter(member => member.hasRole(role));
   }
 
   /** The oldest up-member is the cluster leader (deterministic across nodes). */
@@ -285,8 +287,8 @@ export class Cluster {
    * the encode step once covers all paths (sharding, pub-sub, singleton,
    * direct remote-ref).  Receiving nodes decode in `handleEnvelope`.
    */
-  _sendEnvelope(to: NodeAddress, env: EnvelopeMsg): void {
-    const encoded: EnvelopeMsg = { ...env, body: encodeRefs(env.body, this.selfAddress) };
+  _sendEnvelope(to: NodeAddress, env: EnvelopeMessage): void {
+    const encoded: EnvelopeMessage = { ...env, body: encodeRefs(env.body, this.selfAddress) };
     this.transport.send(to, encoded);
   }
 
@@ -313,21 +315,21 @@ export class Cluster {
   down(addr: NodeAddress | string): boolean {
     if (!this.started) return false;
     const key = typeof addr === 'string' ? addr : addr.toString();
-    const m = this.members.get(key);
-    if (!m) return false;
-    if (m.status === 'down' || m.status === 'removed') return false;
-    if (m.address.equals(this.selfAddress)) {
+    const member = this.members.get(key);
+    if (!member) return false;
+    if (member.status === 'down' || member.status === 'removed') return false;
+    if (member.address.equals(this.selfAddress)) {
       // Don't try to tombstone ourselves — that's `leave()`'s job.
       return false;
     }
-    const downed = m.withStatus('down');
+    const downed = member.withStatus('down');
     this.updateMember(downed);
     this.emit(new MemberDown(downed));
     const removed = downed.withRemoved(Date.now());
     this.members.set(key, removed);
-    this.failureDetector.forget(m.address);
+    this.failureDetector.forget(member.address);
     this.emit(new MemberRemoved(removed));
-    this.log.info(`operator force-down: ${m.address}`);
+    this.log.info(`operator force-down: ${member.address}`);
     return true;
   }
 
@@ -339,10 +341,10 @@ export class Cluster {
     if (me) {
       this.updateMember(me.withStatus('leaving'));
     }
-    const leaveMsg: LeaveMsg = { t: 'leave', node: this.selfAddress.toJSON() };
-    const peers = this.reachableMembers().filter((m) => !m.address.equals(this.selfAddress));
+    const leaveMsg: LeaveMessage = { t: 'leave', node: this.selfAddress.toJSON() };
+    const peers = this.reachableMembers().filter((member) => !member.address.equals(this.selfAddress));
     this.log.debug(`leaving — sending leave to ${peers.length} reachable peer(s)`);
-    for (const m of peers) this.transport.send(m.address, leaveMsg);
+    for (const member of peers) this.transport.send(member.address, leaveMsg);
     this.gossipTimer?.cancel();
     this.heartbeatTimer?.cancel();
     this.fdTimer?.cancel();
@@ -378,9 +380,9 @@ export class Cluster {
       `self joining: epoch=v${me.version} roles=[${[...this.selfRoles].join(',')}]`,
     );
 
-    for (const s of seeds) {
-      const a = NodeAddress.parse(s.includes('@') ? s : `${this.system.name}@${s}`);
-      if (!a.equals(this.selfAddress)) this.seedAddrs.push(a);
+    for (const seed of seeds) {
+      const address = NodeAddress.parse(seed.includes('@') ? seed : `${this.system.name}@${seed}`);
+      if (!address.equals(this.selfAddress)) this.seedAddrs.push(address);
     }
 
     if (this.seedAddrs.length === 0) {
@@ -436,7 +438,7 @@ export class Cluster {
     if (!me) return;
     for (const seed of this.seedAddrs) {
       this.failureDetector.register(seed);
-      const initialGossip: GossipMsg = {
+      const initialGossip: GossipMessage = {
         t: 'gossip',
         from: this.selfAddress.toJSON(),
         members: [me.toData()],
@@ -449,11 +451,11 @@ export class Cluster {
     this.failureDetector.heartbeat(from);
 
     match(msg)
-      .with({ t: 'heartbeat' }, (m) => this.handleHeartbeat(from, m))
+      .with({ t: 'heartbeat' }, (message) => this.handleHeartbeat(from, message))
       .with({ t: 'heartbeat-ack' }, () => { /* already bumped fd */ })
-      .with({ t: 'gossip' }, (m) => this.handleGossip(m))
-      .with({ t: 'envelope' }, (m) => this.handleEnvelope(from, m))
-      .with({ t: 'leave' }, (m) => this.handleLeave(m))
+      .with({ t: 'gossip' }, (message) => this.handleGossip(message))
+      .with({ t: 'envelope' }, (message) => this.handleEnvelope(from, message))
+      .with({ t: 'leave' }, (message) => this.handleLeave(message))
       .otherwise(() => {
         // 'shard-map' and any custom extension wire-msgs handled by the
         // registry; we intentionally fall through when no handler is set.
@@ -462,7 +464,7 @@ export class Cluster {
       });
   }
 
-  private handleHeartbeat(_from: NodeAddress, msg: HeartbeatMsg): void {
+  private handleHeartbeat(_from: NodeAddress, msg: HeartbeatMessage): void {
     const peer = NodeAddress.fromJSON(msg.from);
     this.failureDetector.heartbeat(peer);
     // Reply isn't strictly needed because send() also bumps the detector,
@@ -477,7 +479,7 @@ export class Cluster {
     }
   }
 
-  private handleGossip(msg: GossipMsg): void {
+  private handleGossip(msg: GossipMessage): void {
     const sender = NodeAddress.fromJSON(msg.from);
     this.failureDetector.heartbeat(sender);
     this.log.debug(`gossip from ${sender}: ${msg.members.length} member(s)`);
@@ -488,23 +490,23 @@ export class Cluster {
 
     // Ensure we know about the sender itself.
     if (!this.members.has(sender.toString())) {
-      const m = new Member(sender, 'joining', 1);
-      this.members.set(sender.toString(), m);
-      this.emit(new MemberJoined(m));
+      const member = new Member(sender, 'joining', 1);
+      this.members.set(sender.toString(), member);
+      this.emit(new MemberJoined(member));
     }
 
     // Leader promotes joining (and weakly-up) members to up.
     if (this.isLeader()) {
-      for (const m of this.members.values()) {
-        if (m.status === 'joining' || m.status === 'weakly-up') {
-          this.log.debug(`leader-promote: ${m.address} ${m.status}→up`);
-          this.updateMember(m.withStatus('up'));
+      for (const member of this.members.values()) {
+        if (member.status === 'joining' || member.status === 'weakly-up') {
+          this.log.debug(`leader-promote: ${member.address} ${member.status}→up`);
+          this.updateMember(member.withStatus('up'));
         }
       }
     }
   }
 
-  private handleEnvelope(from: NodeAddress, msg: EnvelopeMsg): void {
+  private handleEnvelope(from: NodeAddress, msg: EnvelopeMessage): void {
     // Re-install the originating MDC + active trace context for the
     // duration of dispatch (#53, #10).  Local refs that the
     // dispatcher subsequently `tell`s capture this same context onto
@@ -546,11 +548,11 @@ export class Cluster {
     }
   }
 
-  private dispatchEnvelope(from: NodeAddress, msg: EnvelopeMsg): void {
+  private dispatchEnvelope(from: NodeAddress, msg: EnvelopeMessage): void {
     // Rehydrate any ActorRef markers embedded in the user payload before
     // handing it off — downstream handlers (sharding, pubsub, …) just
     // forward `env.body` and shouldn't each duplicate the decode step.
-    const decoded: EnvelopeMsg = { ...msg, body: decodeRefs(msg.body, this) };
+    const decoded: EnvelopeMessage = { ...msg, body: decodeRefs(msg.body, this) };
 
     // 1. Explicit per-path handler (pub-sub mediator, singleton manager,
     //    sharding coordinator, …).
@@ -579,7 +581,7 @@ export class Cluster {
     }
   }
 
-  private handleLeave(msg: LeaveMsg): void {
+  private handleLeave(msg: LeaveMessage): void {
     const peer = NodeAddress.fromJSON(msg.node);
     const existing = this.members.get(peer.toString());
     if (!existing) return;
@@ -601,14 +603,14 @@ export class Cluster {
   }
 
   private gossipTick(): void {
-    const targets = this.reachableMembers().filter(m => !m.address.equals(this.selfAddress));
+    const targets = this.reachableMembers().filter(member => !member.address.equals(this.selfAddress));
     if (targets.length === 0) return;
     // Push to one random reachable peer each tick — epidemic style.
     const target = targets[Math.floor(Math.random() * targets.length)]!;
-    const gossip: GossipMsg = {
+    const gossip: GossipMessage = {
       t: 'gossip',
       from: this.selfAddress.toJSON(),
-      members: Array.from(this.members.values()).map(m => m.toData()),
+      members: Array.from(this.members.values()).map(member => member.toData()),
     };
     this.transport.send(target.address, gossip);
     // Stock metric: gossip rounds count.
@@ -620,29 +622,29 @@ export class Cluster {
 
   private heartbeatTick(): void {
     this.heartbeatSeq++;
-    const hb: HeartbeatMsg = {
+    const hb: HeartbeatMessage = {
       t: 'heartbeat',
       from: this.selfAddress.toJSON(),
       seq: this.heartbeatSeq,
       ts: Date.now(),
     };
-    for (const m of this.reachableMembers()) {
-      if (m.address.equals(this.selfAddress)) continue;
-      this.transport.send(m.address, hb);
+    for (const member of this.reachableMembers()) {
+      if (member.address.equals(this.selfAddress)) continue;
+      this.transport.send(member.address, hb);
     }
   }
 
   private failureDetectionTick(): void {
-    for (const m of Array.from(this.members.values())) {
-      if (m.address.equals(this.selfAddress)) continue;
-      const decision = this.failureDetector.decide(m.address);
-      if (decision === 'unreachable' && m.status === 'up') {
-        this.log.debug(`FD: ${m.address} → unreachable (heartbeat timeout)`);
-        this.updateMember(m.withStatus('unreachable'));
-        this.emit(new MemberUnreachable(this.members.get(m.address.toString())!));
-      } else if (decision === 'down' && m.status !== 'down' && m.status !== 'removed') {
-        this.log.debug(`FD: ${m.address} → down (was ${m.status}); deleting from membership`);
-        const downed = m.withStatus('down');
+    for (const member of Array.from(this.members.values())) {
+      if (member.address.equals(this.selfAddress)) continue;
+      const decision = this.failureDetector.decide(member.address);
+      if (decision === 'unreachable' && member.status === 'up') {
+        this.log.debug(`FD: ${member.address} → unreachable (heartbeat timeout)`);
+        this.updateMember(member.withStatus('unreachable'));
+        this.emit(new MemberUnreachable(this.members.get(member.address.toString())!));
+      } else if (decision === 'down' && member.status !== 'down' && member.status !== 'removed') {
+        this.log.debug(`FD: ${member.address} → down (was ${member.status}); deleting from membership`);
+        const downed = member.withStatus('down');
         this.updateMember(downed);
         this.emit(new MemberDown(downed));
         // Note: FD-driven downing is the *advisory* fallback when no
@@ -652,8 +654,8 @@ export class Cluster {
         // this.  Definitive downing paths (`handleLeave`,
         // `evaluateDowning` force-down) tombstone instead, which
         // prevents stale gossip from resurrecting the address.
-        this.members.delete(m.address.toString());
-        this.failureDetector.forget(m.address);
+        this.members.delete(member.address.toString());
+        this.failureDetector.forget(member.address);
         // Transient `removed` Member only used for the event emit —
         // not stored, so the missing `removedAt` here is intentional.
         const removed = downed.withStatus('removed');
@@ -677,14 +679,14 @@ export class Cluster {
     const allMembers = Array.from(this.members.values());
     const unreachable = new Set<string>(
       allMembers
-        .filter((m) => m.status === 'unreachable')
-        .map((m) => m.address.toString()),
+        .filter((member) => member.status === 'unreachable')
+        .map((member) => member.address.toString()),
     );
     // Cheap fingerprint — re-evaluate only when membership or
     // reachability shifts.  The fingerprint includes statuses so a
     // change like "leaving → unreachable" also triggers a re-check.
     const fingerprint = allMembers
-      .map((m) => `${m.address.toString()}:${m.status}`)
+      .map((member) => `${member.address.toString()}:${member.status}`)
       .sort()
       .join('|');
     // Debounce only when the LAST evaluation produced an applied
@@ -717,10 +719,10 @@ export class Cluster {
       // strictly better than just deleting ourselves out of our own
       // member map.
       if (key === selfKey) continue;
-      const m = this.members.get(key);
-      if (!m) continue;
-      if (m.status === 'down' || m.status === 'removed') continue;
-      const downed = m.withStatus('down');
+      const member = this.members.get(key);
+      if (!member) continue;
+      if (member.status === 'down' || member.status === 'removed') continue;
+      const downed = member.withStatus('down');
       this.updateMember(downed);
       this.emit(new MemberDown(downed));
       // Tombstone (don't delete) so later gossip from peers that
@@ -729,7 +731,7 @@ export class Cluster {
       // after `tombstoneTtlMs` (#75).
       const removed = downed.withRemoved(Date.now());
       this.members.set(key, removed);
-      this.failureDetector.forget(m.address);
+      this.failureDetector.forget(member.address);
       this.emit(new MemberRemoved(removed));
     }
     if (downsSelf) {
@@ -877,8 +879,8 @@ export class Cluster {
       || (prev.isSome() && newLeader.isSome() && !prev.value.address.equals(newLeader.value.address));
     if (changed) {
       this.currentLeader = newLeader;
-      const prevStr = prev.fold(() => 'none', (m) => m.address.toString());
-      const nextStr = newLeader.fold(() => 'none', (m) => m.address.toString());
+      const prevStr = prev.fold(() => 'none', (member) => member.address.toString());
+      const nextStr = newLeader.fold(() => 'none', (member) => member.address.toString());
       this.log.debug(`leader changed: ${prevStr} → ${nextStr}`);
       this.emit(new LeaderChanged(newLeader));
     }
@@ -886,8 +888,8 @@ export class Cluster {
 
   private emit(event: ClusterEvent): void {
     this.system.eventStream.publish(event as object);
-    for (const l of this._listeners) {
-      try { l(event); } catch (e) { this.log.warn('listener threw', e); }
+    for (const listener of this._listeners) {
+      try { listener(event); } catch (e) { this.log.warn('listener threw', e); }
     }
   }
 
@@ -907,10 +909,10 @@ export class Cluster {
     const now = Date.now();
     const cutoff = Math.max(this.tombstoneTtlMs, this.tombstoneMinRetentionMs);
     let pruned = 0;
-    for (const [key, m] of this.members) {
-      if (m.status !== 'removed') continue;
-      if (m.removedAt === undefined) continue;
-      if (now - m.removedAt < cutoff) continue;
+    for (const [key, member] of this.members) {
+      if (member.status !== 'removed') continue;
+      if (member.removedAt === undefined) continue;
+      if (now - member.removedAt < cutoff) continue;
       this.members.delete(key);
       pruned++;
     }

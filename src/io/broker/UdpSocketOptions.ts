@@ -6,8 +6,8 @@
  * and feeds the same three-layer merge (constructor > HOCON under
  * `actor-ts.io.broker.udp` > built-in defaults).
  */
-import { BrokerOptionsBuilder } from './BrokerOptions.js';
-import type { BrokerCommonOptionsType } from './BrokerSettings.js';
+import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
+import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { UdpDatagram } from './UdpSocketActor.js';
 
@@ -46,6 +46,24 @@ export class UdpSocketOptionsBuilder extends BrokerOptionsBuilder<UdpSocketOptio
   /** Subscriber for inbound datagrams.  Required. */
   withTarget(target: ActorRef<UdpDatagram>): this {
     return this.set('target', target);
+  }
+}
+
+/** Validates resolved {@link UdpSocketOptionsType} settings. */
+export class UdpSocketOptionsValidator extends BrokerOptionsValidator<UdpSocketOptionsType> {
+  constructor() {
+    super('UdpSocketOptions');
+  }
+  protected rules(s: Partial<UdpSocketOptionsType>): void {
+    this.commonRules(s);
+    this.oneOf('type', ['udp4', 'udp6']);
+    // bindPort allows 0 ("let the OS pick"), so port() (min 1) is too strict.
+    if (
+      s.bindPort !== undefined &&
+      (!Number.isInteger(s.bindPort) || s.bindPort < 0 || s.bindPort > 65535)
+    ) {
+      this.fail('bindPort', 'must be an integer in [0, 65535]', s.bindPort);
+    }
   }
 }
 

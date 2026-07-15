@@ -16,11 +16,11 @@ import type {
  */
 export class WebWorkerBackend implements WorkerBackend {
   spawn(bootstrap: URL, options: WorkerSpawnOptions = {}): WorkerLike {
-    const Ctor = (globalThis as { Worker?: typeof Worker }).Worker;
-    if (!Ctor) {
+    const Constructor = (globalThis as { Worker?: typeof Worker }).Worker;
+    if (!Constructor) {
       throw new Error('WebWorkerBackend requires a `Worker` global (Bun / Deno / browser).');
     }
-    const worker = new Ctor(bootstrap, { type: 'module', name: options.name });
+    const worker = new Constructor(bootstrap, { type: 'module', name: options.name });
     return new WebWorkerAdapter(worker);
   }
 }

@@ -38,7 +38,7 @@ redis.tell({
 ## Settings
 
 ```ts
-interface RedisStreamsActorSettings extends BrokerCommonSettings {
+interface RedisStreamsOptionsType extends BrokerCommonOptionsType {
   url:           string;                          // 'redis://host:6379'
   streams?:      ReadonlyArray<string>;           // Streams, die konsumiert werden
   consumerGroup?: {
@@ -103,7 +103,7 @@ einen Worker, werden verarbeitet, geackt, fertig.
 
 ```ts
 class OrderProcessor extends Actor<RedisStreamEntry> {
-  constructor(private readonly redis: ActorRef<RedisStreamsCmd>) { super(); }
+  constructor(private readonly redis: ActorRef<RedisStreamsCommand>) { super(); }
 
   override async onReceive(entry: RedisStreamEntry): Promise<void> {
     const order = JSON.parse(entry.fields.body);

@@ -1,5 +1,5 @@
 import { NodeAddress } from '../cluster/NodeAddress.js';
-import { ConfigSeedProviderOptions } from './ConfigSeedProviderOptions.js';
+import { ConfigSeedProviderOptions, ConfigSeedProviderOptionsValidator } from './ConfigSeedProviderOptions.js';
 import type { ConfigSeedProviderOptionsType } from './ConfigSeedProviderOptions.js';
 import type { SeedProvider } from './SeedProvider.js';
 
@@ -8,15 +8,16 @@ import type { SeedProvider } from './SeedProvider.js';
  * construction time (typically sourced from config or ENV).
  */
 export class ConfigSeedProvider implements SeedProvider {
-  private readonly settings: ConfigSeedProviderOptionsType;
+  private readonly options: ConfigSeedProviderOptionsType;
 
   constructor(options: ConfigSeedProviderOptions = {}) {
-    this.settings = options as ConfigSeedProviderOptionsType;
+    this.options = options as ConfigSeedProviderOptionsType;
+    new ConfigSeedProviderOptionsValidator().validate(this.options);
   }
 
   async lookup(): Promise<NodeAddress[]> {
-    return this.settings.seeds.map((raw) => {
-      const text = raw.includes('@') ? raw : `${this.settings.systemName}@${raw}`;
+    return this.options.seeds.map((raw) => {
+      const text = raw.includes('@') ? raw : `${this.options.systemName}@${raw}`;
       return NodeAddress.parse(text);
     });
   }

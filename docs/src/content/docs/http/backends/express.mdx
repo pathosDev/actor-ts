@@ -28,8 +28,7 @@ await http.newServerAt('0.0.0.0', 8080)
 ## Configuration
 
 ```ts
-const expressBackendOptions = ExpressBackendOptions.create()
-  .withMaxBodyBytes(1 * 1024 * 1024);
+const expressBackendOptions = ExpressBackendOptions.create().withMaxBodyBytes(1 * 1024 * 1024);
 new ExpressBackend(
   expressBackendOptions,
 );
@@ -80,8 +79,7 @@ https.createServer(
   app,
 );
 
-const expressBackendOptions = ExpressBackendOptions.create()
-  .withApp(app);
+const expressBackendOptions = ExpressBackendOptions.create().withApp(app);
 new ExpressBackend(expressBackendOptions);
 ```
 

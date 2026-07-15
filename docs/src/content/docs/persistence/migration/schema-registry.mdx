@@ -53,10 +53,11 @@ import { registry } from './schemas.js';
 
 class Account extends PersistentActor<...> {
   override eventAdapter() {
-    return new MigratingAdapter<DepositedEventV2>({
-      currentVersion: registry.versionOf('Deposited'),   // → 2
-      chain: [...],
-    });
+    const chain = MigrationChain.for<DepositedEventV2>(
+      'Deposited',
+      registry.versionOf('Deposited'),   // → 2
+    ).add({ fromVersion: 1, toVersion: 2, upcast: v1ToV2 });
+    return migratingAdapter(chain);
   }
 }
 ```
@@ -92,7 +93,9 @@ registries per test.
 import { SchemaRegistry, validateAdapter } from 'actor-ts';
 
 // During tests / startup:
-const adapter = new MigratingAdapter<EventV2>({ currentVersion: 2, chain: [...] });
+const chain = MigrationChain.for<EventV2>('Deposited', 2)
+  .add({ fromVersion: 1, toVersion: 2, upcast: v1ToV2 });
+const adapter = migratingAdapter(chain);
 validateAdapter(adapter, registry, 'Deposited');
 // → throws if currentVersion(2) !== registry.versionOf('Deposited')
 ```
@@ -158,9 +161,9 @@ import { Aside } from '@astrojs/starlight/components';
 
 - **[Migration overview](/persistence/migration/overview/)** —
   the bigger picture.
-- **[DefaultAdapter](/persistence/migration/default-adapter/)** —
+- **[defaultsAdapter](/persistence/migration/default-adapter/)** —
   the typed adapters that consume the registry.
-- **[MigratingAdapter](/persistence/migration/migrating-adapter/)** —
+- **[migratingAdapter](/persistence/migration/migrating-adapter/)** —
   the chained alternative.
 - **[Envelope format](/persistence/migration/envelope-format/)** —
   the on-disk shape with `_v` / `_t` / `_e`.

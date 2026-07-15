@@ -4,34 +4,33 @@
  *
  *   bun run examples/io/websocket-feed.ts
  *
- * Shows both halves of the typed API: a `WebSocketServerActor` bound with
- * `websocket('/ws', ref)`, and a `WebSocketClientActor` that dials it and
+ * Shows both halves of the typed API: a `WebsocketServerActor` bound with
+ * `websocket('/ws', ref)`, and a `WebsocketClientActor` that dials it and
  * inherits reconnect-with-backoff + outbound buffering from BrokerActor.
  */
 import {
   ActorSystem,
   HttpExtensionId,
   Props,
-  WebSocketClientActor,
-  WebSocketClientOptions,
-  WebSocketServerActor,
+  WebsocketClientActor,
+  WebsocketClientOptions,
+  WebsocketServerActor,
   websocket,
-  wsSend,
+  websocketSend,
 } from '../../src/index.js';
 
 type Up = { kind: 'tick'; n: number };   // client → server
 type Down = { kind: 'ack'; n: number };  // server → client
 
-class EchoServer extends WebSocketServerActor<Down, Up> {
+class EchoServer extends WebsocketServerActor<Down, Up> {
   override onMessage(msg: Up): void {
     this.reply({ kind: 'ack', n: msg.n });
   }
 }
 
-class Feed extends WebSocketClientActor<Up, Down> {
+class Feed extends WebsocketClientActor<Up, Down> {
   constructor(url: string) {
-    const clientOptions = WebSocketClientOptions.create<Up, Down>()
-      .withUrl(url);
+    const clientOptions = WebsocketClientOptions.create<Up, Down>().withUrl(url);
     super(clientOptions);
   }
   override onConnected(): void { console.log('[client] connected'); }
@@ -51,7 +50,7 @@ async function main(): Promise<void> {
 
   await sleep(200);
   for (let i = 0; i < 5; i++) {
-    client.tell(wsSend({ kind: 'tick', n: i }));
+    client.tell(websocketSend({ kind: 'tick', n: i }));
     await sleep(150);
   }
 

@@ -26,23 +26,23 @@ function strictNumberAmount(): ParserLike<{ amount: number; currency: 'USD' | 'E
   return {
     parse(input: unknown) {
       if (typeof input !== 'object' || input === null) throw new Error('not an object');
-      const o = input as Record<string, unknown>;
-      if (typeof o.amount !== 'number' || !Number.isInteger(o.amount) || o.amount < 0) {
-        throw new Error(`amount must be a non-negative integer, got ${String(o.amount)}`);
+      const typedInput = input as Record<string, unknown>;
+      if (typeof typedInput.amount !== 'number' || !Number.isInteger(typedInput.amount) || typedInput.amount < 0) {
+        throw new Error(`amount must be a non-negative integer, got ${String(typedInput.amount)}`);
       }
-      if (o.currency !== 'USD' && o.currency !== 'EUR') {
-        throw new Error(`currency must be USD or EUR, got ${String(o.currency)}`);
+      if (typedInput.currency !== 'USD' && typedInput.currency !== 'EUR') {
+        throw new Error(`currency must be USD or EUR, got ${String(typedInput.currency)}`);
       }
-      return { amount: o.amount, currency: o.currency };
+      return { amount: typedInput.amount, currency: typedInput.currency };
     },
   };
 }
 
 describe('jsonCodec', () => {
   test('passes input through unchanged on encode and decode', () => {
-    const c = jsonCodec<{ x: number }>();
-    expect(c.encode({ x: 1 })).toEqual({ x: 1 });
-    expect(c.decode({ x: 1 })).toEqual({ x: 1 });
+    const codec = jsonCodec<{ x: number }>();
+    expect(codec.encode({ x: 1 })).toEqual({ x: 1 });
+    expect(codec.decode({ x: 1 })).toEqual({ x: 1 });
   });
 
   test('exposes a stable name for diagnostic output', () => {
@@ -52,24 +52,24 @@ describe('jsonCodec', () => {
 
 describe('zodCodec', () => {
   test('encode + decode validate against the schema', () => {
-    const c = zodCodec(strictNumberAmount());
-    expect(c.encode({ amount: 100, currency: 'USD' })).toEqual({ amount: 100, currency: 'USD' });
-    expect(c.decode({ amount: 50, currency: 'EUR' })).toEqual({ amount: 50, currency: 'EUR' });
+    const codec = zodCodec(strictNumberAmount());
+    expect(codec.encode({ amount: 100, currency: 'USD' })).toEqual({ amount: 100, currency: 'USD' });
+    expect(codec.decode({ amount: 50, currency: 'EUR' })).toEqual({ amount: 50, currency: 'EUR' });
   });
 
   test('encode rejects invalid input', () => {
-    const c = zodCodec(strictNumberAmount());
-    expect(() => c.encode({ amount: -1, currency: 'USD' } as never)).toThrow(/non-negative/);
+    const codec = zodCodec(strictNumberAmount());
+    expect(() => codec.encode({ amount: -1, currency: 'USD' } as never)).toThrow(/non-negative/);
   });
 
   test('decode rejects invalid wire data', () => {
-    const c = zodCodec(strictNumberAmount());
-    expect(() => c.decode({ amount: 'oops' })).toThrow(/non-negative integer/);
+    const codec = zodCodec(strictNumberAmount());
+    expect(() => codec.decode({ amount: 'oops' })).toThrow(/non-negative integer/);
   });
 
   test('explicit name appears in the codec', () => {
-    const c = zodCodec(strictNumberAmount(), 'deposit-v2');
-    expect(c.name).toBe('deposit-v2');
+    const codec = zodCodec(strictNumberAmount(), 'deposit-v2');
+    expect(codec.name).toBe('deposit-v2');
   });
 });
 

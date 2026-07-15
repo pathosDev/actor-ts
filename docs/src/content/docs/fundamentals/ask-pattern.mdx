@@ -19,13 +19,13 @@ Promise that resolves with the first reply or rejects on timeout.
 ```ts
 import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
 
-type Cmd =
+type Command =
   | { readonly kind: 'inc' }
   | { readonly kind: 'get'; readonly replyTo: ActorRef<number> };
 
-class Counter extends Actor<Cmd> {
+class Counter extends Actor<Command> {
   private count = 0;
-  override onReceive(cmd: Cmd): void {
+  override onReceive(cmd: Command): void {
     if (cmd.kind === 'inc') this.count++;
     else if (cmd.kind === 'get') cmd.replyTo.tell(this.count);
   }
@@ -69,7 +69,7 @@ attached*.  The receiver replies by tellling that ref.
 
 By convention, the framework uses **`replyTo`** as the field name in
 the request message, and the recipient pattern-matches on it the
-same as any other field.  Look at the `Cmd` type above: the `'get'`
+same as any other field.  Look at the `Command` type above: the `'get'`
 variant has `replyTo: ActorRef<number>`.
 
 For the recipient, it's just a regular `tell` on a regular ref:
@@ -136,8 +136,8 @@ instance.  The `ask` Promise rejects with that error rather than
 resolving with the message.
 
 ```ts
-class Service extends Actor<Cmd> {
-  override onReceive(cmd: Cmd): void {
+class Service extends Actor<Command> {
+  override onReceive(cmd: Command): void {
     if (cmd.kind === 'fetch') {
       if (this.unavailable) {
         cmd.replyTo.tell(new Error('service unavailable'));

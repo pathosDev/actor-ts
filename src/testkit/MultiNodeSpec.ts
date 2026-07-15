@@ -1,3 +1,4 @@
+import type { MultiNodeSpecOptions, MultiNodeSpecOptionsType } from './MultiNodeSpecOptions.js';
 import { ActorSystem } from '../ActorSystem.js';
 import { ActorSystemOptions } from '../ActorSystemOptions.js';
 import { Cluster } from '../cluster/Cluster.js';
@@ -43,44 +44,6 @@ import { MultiNodeTransport } from './internal/MultiNodeTransport.js';
  *
  *   await spec.stop();
  */
-export interface MultiNodeSpecSettings {
-  /** Role names — also act as system names; must be unique within the spec. */
-  readonly roles: ReadonlyArray<string>;
-  /**
-   * Roles that act as bootstrap seeds.  Defaults to `[roles[0]]` — the
-   * first role is the lone seed.  All other roles try to join via the
-   * seed list.
-   */
-  readonly seedRoles?: ReadonlyArray<string>;
-  /**
-   * Per-role address overrides.  Useful if a test wants pinned
-   * host:port pairs (e.g. for log readability).  If omitted, addresses
-   * are auto-allocated as `127.0.0.1:<base + index>` with a fresh base
-   * per spec.
-   */
-  readonly addresses?: Readonly<Record<string, { host: string; port: number }>>;
-  /**
-   * Failure-detector overrides.  Multi-node tests typically want the
-   * detector tightened so dead nodes are noticed within seconds rather
-   * than the production default.  See `Cluster.ts` for the field set.
-   */
-  readonly failureDetector?: ClusterOptionsType['failureDetector'];
-  /** Gossip interval, default 100 ms (vs production 1 s). */
-  readonly gossipIntervalMs?: number;
-  /** How long synchronous `await*` helpers wait before throwing.  Default 10 s. */
-  readonly awaitTimeoutMs?: number;
-  /** Logger — defaults to NoopLogger so tests stay quiet. */
-  readonly logLevel?: LogLevel;
-  /**
-   * Per-role split-brain resolver factory.  Called once per role at
-   * `start()` time; the returned provider is wired into that role's
-   * cluster via `ClusterOptionsType.downing`.  Each role typically gets
-   * its OWN provider instance (some strategies are stateful — e.g.
-   * `LeaseMajority` holds a per-replica acquire result).  Pass
-   * `undefined` for a role that should run without downing.
-   */
-  readonly downing?: (role: string) => DowningProvider | undefined;
-}
 
 interface NodeRecord {
   readonly role: string;
@@ -109,28 +72,29 @@ interface BarrierEntry {
 }
 
 export class MultiNodeSpec {
-  private readonly settings: Required<Omit<MultiNodeSpecSettings, 'addresses' | 'failureDetector' | 'downing'>>
-    & Pick<MultiNodeSpecSettings, 'addresses' | 'failureDetector' | 'downing'>;
+  private readonly options: Required<Omit<MultiNodeSpecOptionsType, 'addresses' | 'failureDetector' | 'downing'>>
+    & Pick<MultiNodeSpecOptionsType, 'addresses' | 'failureDetector' | 'downing'>;
   private readonly nodes = new Map<string, NodeRecord>();
   private started = false;
   private readonly barriers = new Map<string, BarrierEntry>();
 
-  constructor(settings: MultiNodeSpecSettings) {
-    if (settings.roles.length === 0) {
+  constructor(optionsInput: MultiNodeSpecOptions) {
+    const options = optionsInput as MultiNodeSpecOptionsType;
+    if (options.roles.length === 0) {
       throw new Error('MultiNodeSpec: at least one role is required');
     }
-    if (new Set(settings.roles).size !== settings.roles.length) {
+    if (new Set(options.roles).size !== options.roles.length) {
       throw new Error('MultiNodeSpec: roles must be unique');
     }
-    this.settings = {
-      roles: settings.roles,
-      seedRoles: settings.seedRoles ?? [settings.roles[0]!],
-      gossipIntervalMs: settings.gossipIntervalMs ?? 100,
-      awaitTimeoutMs: settings.awaitTimeoutMs ?? 10_000,
-      logLevel: settings.logLevel ?? LogLevel.Off,
-      addresses: settings.addresses,
-      failureDetector: settings.failureDetector,
-      downing: settings.downing,
+    this.options = {
+      roles: options.roles,
+      seedRoles: options.seedRoles ?? [options.roles[0]!],
+      gossipIntervalMs: options.gossipIntervalMs ?? 100,
+      awaitTimeoutMs: options.awaitTimeoutMs ?? 10_000,
+      logLevel: options.logLevel ?? LogLevel.Off,
+      addresses: options.addresses,
+      failureDetector: options.failureDetector,
+      downing: options.downing,
     };
   }
 
@@ -140,18 +104,18 @@ export class MultiNodeSpec {
     this.started = true;
 
     const portBase = nextPortBase;
-    nextPortBase += this.settings.roles.length + 1;
+    nextPortBase += this.options.roles.length + 1;
 
     // Step 1: build the address book up front so seeds can name peers.
     const addressByRole = new Map<string, NodeAddress>();
-    this.settings.roles.forEach((role, idx) => {
-      const explicit = this.settings.addresses?.[role];
+    this.options.roles.forEach((role, idx) => {
+      const explicit = this.options.addresses?.[role];
       const host = explicit?.host ?? '127.0.0.1';
       const port = explicit?.port ?? (portBase + idx);
       addressByRole.set(role, new NodeAddress(role, host, port));
     });
 
-    const seeds = this.settings.seedRoles
+    const seeds = this.options.seedRoles
       .map((r) => addressByRole.get(r))
       .filter((a): a is NodeAddress => a !== undefined)
       .map((a) => a.toString());
@@ -159,26 +123,26 @@ export class MultiNodeSpec {
     // Step 2: spin up systems + clusters.  Seed role is started first
     // so the others can hit it with their initial join gossip.
     const orderedRoles = [
-      ...this.settings.seedRoles,
-      ...this.settings.roles.filter((r) => !this.settings.seedRoles.includes(r)),
+      ...this.options.seedRoles,
+      ...this.options.roles.filter((r) => !this.options.seedRoles.includes(r)),
     ];
     for (const role of orderedRoles) {
       const address = addressByRole.get(role)!;
       const transport = new MultiNodeTransport(address);
       const system = ActorSystem.create(role, ActorSystemOptions.create()
         .withLogger(new NoopLogger())
-        .withLogLevel(this.settings.logLevel));
+        .withLogLevel(this.options.logLevel));
       const clusterOptions = ClusterOptions.create()
         .withHost(address.host)
         .withPort(address.port)
         .withSeeds(seeds)
         .withTransport(transport)
-        .withGossipIntervalMs(this.settings.gossipIntervalMs)
+        .withGossipIntervalMs(this.options.gossipIntervalMs)
         .withSeedRetryIntervalMs(100);
-      if (this.settings.failureDetector) {
-        clusterOptions.withFailureDetector(this.settings.failureDetector);
+      if (this.options.failureDetector) {
+        clusterOptions.withFailureDetector(this.options.failureDetector);
       }
-      const downing = this.settings.downing?.(role);
+      const downing = this.options.downing?.(role);
       if (downing) clusterOptions.withDowning(downing);
       const cluster = await Cluster.join(system, clusterOptions);
       this.nodes.set(role, {
@@ -243,18 +207,18 @@ export class MultiNodeSpec {
 
   /** Bidirectional partition between two roles.  Both sides drop traffic to the other. */
   partition(roleA: string, roleB: string): void {
-    const a = this.requireNode(roleA);
-    const b = this.requireNode(roleB);
-    a.transport.partitionFromPeer(b.address);
-    b.transport.partitionFromPeer(a.address);
+    const nodeA = this.requireNode(roleA);
+    const nodeB = this.requireNode(roleB);
+    nodeA.transport.partitionFromPeer(nodeB.address);
+    nodeB.transport.partitionFromPeer(nodeA.address);
   }
 
   /** Undo `partition(roleA, roleB)`. */
   heal(roleA: string, roleB: string): void {
-    const a = this.requireNode(roleA);
-    const b = this.requireNode(roleB);
-    a.transport.unblockOutgoing(b.address);
-    b.transport.unblockOutgoing(a.address);
+    const nodeA = this.requireNode(roleA);
+    const nodeB = this.requireNode(roleB);
+    nodeA.transport.unblockOutgoing(nodeB.address);
+    nodeB.transport.unblockOutgoing(nodeA.address);
   }
 
   /* --------------------------- await helpers --------------------------- */
@@ -264,7 +228,7 @@ export class MultiNodeSpec {
    * `expectedCount` members in `up`-or-better state.  Throws on timeout.
    */
   async awaitMembers(
-    role: string, expectedCount: number, timeoutMs: number = this.settings.awaitTimeoutMs,
+    role: string, expectedCount: number, timeoutMs: number = this.options.awaitTimeoutMs,
   ): Promise<void> {
     await this.awaitCondition(
       () => {
@@ -283,7 +247,7 @@ export class MultiNodeSpec {
    */
   async awaitMemberStatus(
     role: string, targetRole: string, status: Member['status'],
-    timeoutMs: number = this.settings.awaitTimeoutMs,
+    timeoutMs: number = this.options.awaitTimeoutMs,
   ): Promise<void> {
     const targetAddr = this.requireNode(targetRole).address.toString();
     await this.awaitCondition(
@@ -303,7 +267,7 @@ export class MultiNodeSpec {
    */
   async awaitLeader(
     role: string, expectedLeaderRole: string | null,
-    timeoutMs: number = this.settings.awaitTimeoutMs,
+    timeoutMs: number = this.options.awaitTimeoutMs,
   ): Promise<void> {
     const expectedAddr = expectedLeaderRole
       ? this.requireNode(expectedLeaderRole).address.toString()
@@ -375,14 +339,14 @@ export class MultiNodeSpec {
     role: string,
     opts: { readonly participants?: ReadonlyArray<string>; readonly timeoutMs?: number } = {},
   ): Promise<void> {
-    const participants = opts.participants ?? this.settings.roles;
+    const participants = opts.participants ?? this.options.roles;
     if (!participants.includes(role)) {
       throw new Error(
         `MultiNodeSpec.enterBarrier: role '${role}' is not in the participants list ` +
         `[${participants.join(', ')}]`,
       );
     }
-    const timeoutMs = opts.timeoutMs ?? this.settings.awaitTimeoutMs;
+    const timeoutMs = opts.timeoutMs ?? this.options.awaitTimeoutMs;
     const expectedRoles = participants.length;
     const key = `${name}::${participants.slice().sort().join(',')}`;
     const existing = this.barriers.get(key);
@@ -409,9 +373,9 @@ export class MultiNodeSpec {
     // Last entrant wakes everyone up.
     if (entry.entered.size === expectedRoles) {
       this.barriers.delete(key);
-      for (const w of entry.waiters) {
-        if (w.timer) clearTimeout(w.timer);
-        w.resolve();
+      for (const waiter of entry.waiters) {
+        if (waiter.timer) clearTimeout(waiter.timer);
+        waiter.resolve();
       }
       return;
     }

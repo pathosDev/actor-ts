@@ -17,21 +17,21 @@ describe('Encryption — deriveSubkey', () => {
   });
 
   test('different persistence ids produce different subkeys', async () => {
-    const a = await deriveSubkey(masterKey, 'tenant-acme/pid-1');
-    const b = await deriveSubkey(masterKey, 'tenant-bigcorp/pid-1');
-    expect(equalBytes(a, b)).toBe(false);
+    const first = await deriveSubkey(masterKey, 'tenant-acme/pid-1');
+    const second = await deriveSubkey(masterKey, 'tenant-bigcorp/pid-1');
+    expect(equalBytes(first, second)).toBe(false);
   });
 
   test('same persistence id + same master key + same info → same subkey', async () => {
-    const a = await deriveSubkey(masterKey, 'pid-1', 'actor-ts/snapshot/v1');
-    const b = await deriveSubkey(masterKey, 'pid-1', 'actor-ts/snapshot/v1');
-    expect(equalBytes(a, b)).toBe(true);
+    const first = await deriveSubkey(masterKey, 'pid-1', 'actor-ts/snapshot/v1');
+    const second = await deriveSubkey(masterKey, 'pid-1', 'actor-ts/snapshot/v1');
+    expect(equalBytes(first, second)).toBe(true);
   });
 
   test('different info strings produce different subkeys', async () => {
-    const a = await deriveSubkey(masterKey, 'pid-1', 'info-A');
-    const b = await deriveSubkey(masterKey, 'pid-1', 'info-B');
-    expect(equalBytes(a, b)).toBe(false);
+    const first = await deriveSubkey(masterKey, 'pid-1', 'info-A');
+    const second = await deriveSubkey(masterKey, 'pid-1', 'info-B');
+    expect(equalBytes(first, second)).toBe(false);
   });
 
   test('rejects a non-32-byte master key', async () => {
@@ -59,16 +59,16 @@ describe('Encryption — AES-256-GCM round-trip', () => {
   });
 
   test('decrypt fails with the wrong subkey', async () => {
-    const a = await deriveSubkey(masterKey, 'pid-a');
-    const b = await deriveSubkey(masterKey, 'pid-b');
+    const first = await deriveSubkey(masterKey, 'pid-a');
+    const second = await deriveSubkey(masterKey, 'pid-b');
     const iv = randomIv();
-    const ct = await aesGcmEncrypt(a, iv, new Uint8Array([9, 9, 9]));
-    await expect(aesGcmDecrypt(b, iv, ct)).rejects.toThrow();
+    const ct = await aesGcmEncrypt(first, iv, new Uint8Array([9, 9, 9]));
+    await expect(aesGcmDecrypt(second, iv, ct)).rejects.toThrow();
   });
 });
 
-function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+function equalBytes(first: Uint8Array, second: Uint8Array): boolean {
+  if (first.length !== second.length) return false;
+  for (let i = 0; i < first.length; i++) if (first[i] !== second[i]) return false;
   return true;
 }

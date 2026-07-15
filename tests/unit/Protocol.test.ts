@@ -26,8 +26,8 @@ describe('encodeFrame', () => {
 
 describe('FrameDecoder', () => {
   test('decodes a single complete frame', () => {
-    const d = new FrameDecoder();
-    const frames = d.push(encodeFrame(sampleHello));
+    const decoder = new FrameDecoder();
+    const frames = decoder.push(encodeFrame(sampleHello));
     expect(frames).toHaveLength(1);
     expect(frames[0]).toEqual(sampleHello);
   });
@@ -44,8 +44,8 @@ describe('FrameDecoder', () => {
     );
     combined.set(encodeFrame(sampleHello), 0);
     combined.set(encodeFrame(hb), encodeFrame(sampleHello).byteLength);
-    const d = new FrameDecoder();
-    const frames = d.push(combined);
+    const decoder = new FrameDecoder();
+    const frames = decoder.push(combined);
     expect(frames).toHaveLength(2);
     expect(frames[0]).toEqual(sampleHello);
     expect(frames[1]).toEqual(hb);
@@ -53,10 +53,10 @@ describe('FrameDecoder', () => {
 
   test('buffers partial frames across pushes (byte-at-a-time feed)', () => {
     const frame = encodeFrame(sampleHello);
-    const d = new FrameDecoder();
+    const decoder = new FrameDecoder();
     let out: WireMessage[] = [];
     for (let i = 0; i < frame.byteLength; i++) {
-      out = out.concat(d.push(frame.subarray(i, i + 1)));
+      out = out.concat(decoder.push(frame.subarray(i, i + 1)));
     }
     expect(out).toHaveLength(1);
     expect(out[0]).toEqual(sampleHello);
@@ -64,13 +64,13 @@ describe('FrameDecoder', () => {
 
   test('returns frames only when header says the full payload is available', () => {
     const frame = encodeFrame(sampleHello);
-    const d = new FrameDecoder();
+    const decoder = new FrameDecoder();
     // Feed only the 4-byte header
-    expect(d.push(frame.subarray(0, 4))).toEqual([]);
+    expect(decoder.push(frame.subarray(0, 4))).toEqual([]);
     // Feed everything except the last byte
-    expect(d.push(frame.subarray(4, frame.byteLength - 1))).toEqual([]);
+    expect(decoder.push(frame.subarray(4, frame.byteLength - 1))).toEqual([]);
     // Feed the last byte — frame completes
-    const finalFrames = d.push(frame.subarray(frame.byteLength - 1));
+    const finalFrames = decoder.push(frame.subarray(frame.byteLength - 1));
     expect(finalFrames).toHaveLength(1);
     expect(finalFrames[0]).toEqual(sampleHello);
   });
@@ -81,13 +81,13 @@ describe('FrameDecoder', () => {
     const frame = new Uint8Array(4 + badJson.byteLength);
     new DataView(frame.buffer).setUint32(0, badJson.byteLength, false);
     frame.set(badJson, 4);
-    const d = new FrameDecoder();
-    expect(() => d.push(frame)).toThrow(/Invalid wire frame JSON/);
+    const decoder = new FrameDecoder();
+    expect(() => decoder.push(frame)).toThrow(/Invalid wire frame JSON/);
   });
 
   test('empty push produces no frames and does not error', () => {
-    const d = new FrameDecoder();
-    expect(d.push(new Uint8Array(0))).toEqual([]);
+    const decoder = new FrameDecoder();
+    expect(decoder.push(new Uint8Array(0))).toEqual([]);
   });
 
   /* ------------------------- security: oversized-frame DoS ------------------------- */
@@ -105,28 +105,28 @@ describe('FrameDecoder', () => {
      * the decoder throws before allocating anything.
      */
     test('exploit: oversized length-prefix claim is rejected immediately', () => {
-      const d = new FrameDecoder();
+      const decoder = new FrameDecoder();
       const evil = new Uint8Array(4);
       // Claim a 4-GiB frame — far above the default 16-MiB cap.
       new DataView(evil.buffer).setUint32(0, 0xFFFFFFFF, false);
-      expect(() => d.push(evil)).toThrow(/maxFrameBytes/);
+      expect(() => decoder.push(evil)).toThrow(/maxFrameBytes/);
     });
 
     test('exploit: 1-GiB-claim header alone (no payload sent) is still rejected', () => {
       // The crucial property: rejection happens before any payload
       // arrives, so the attacker can't slowly leak memory by sending
       // the header then nothing.
-      const d = new FrameDecoder();
+      const decoder = new FrameDecoder();
       const evil = new Uint8Array(4);
       new DataView(evil.buffer).setUint32(0, 1024 * 1024 * 1024, false);
-      expect(() => d.push(evil)).toThrow(/maxFrameBytes/);
+      expect(() => decoder.push(evil)).toThrow(/maxFrameBytes/);
     });
 
     test('cap is configurable — smaller caps reject smaller frames', () => {
-      const d = new FrameDecoder(1024); // 1 KiB cap
+      const decoder = new FrameDecoder(1024); // 1 KiB cap
       const headerOnly = new Uint8Array(4);
       new DataView(headerOnly.buffer).setUint32(0, 2048, false); // 2 KiB claim
-      expect(() => d.push(headerOnly)).toThrow(/maxFrameBytes 1024/);
+      expect(() => decoder.push(headerOnly)).toThrow(/maxFrameBytes 1024/);
     });
 
     test('cap is configurable — larger caps allow larger frames', () => {
@@ -138,15 +138,15 @@ describe('FrameDecoder', () => {
       frame.set(bytes, 4);
 
       // Default 16-MiB cap is enough.
-      const d = new FrameDecoder();
-      const out = d.push(frame);
+      const decoder = new FrameDecoder();
+      const out = decoder.push(frame);
       expect(out).toHaveLength(1);
     });
 
     test('legitimate small frames still decode after the cap is in place', () => {
       // Regression guard: the cap must not break normal traffic.
-      const d = new FrameDecoder();
-      const frames = d.push(encodeFrame(sampleHello));
+      const decoder = new FrameDecoder();
+      const frames = decoder.push(encodeFrame(sampleHello));
       expect(frames).toHaveLength(1);
       expect(frames[0]).toEqual(sampleHello);
     });
@@ -192,8 +192,8 @@ describe('FrameDecoder', () => {
       },
     ];
     for (const v of variants) {
-      const d = new FrameDecoder();
-      const out = d.push(encodeFrame(v));
+      const decoder = new FrameDecoder();
+      const out = decoder.push(encodeFrame(v));
       expect(out).toHaveLength(1);
       expect(out[0]).toEqual(v);
     }

@@ -1,6 +1,6 @@
 /**
  * One sharded entity per chat room.  PersistentActor — every
- * `SendMsg` is appended to the SQLite journal as a `MsgPosted`
+ * `SendMessage` is appended to the SQLite journal as a `MsgPosted`
  * event; recovery replays the room's history into in-memory state.
  *
  * Routing: ClusterSharding picks a node based on `entityId = roomName`
@@ -53,9 +53,9 @@ export interface HistoryReply {
   readonly messages: ReadonlyArray<ChatMessage>;
 }
 
-export type ChatRoomCmd =
+export type ChatRoomCommand =
   | {
-      readonly kind: 'SendMsg';
+      readonly kind: 'SendMessage';
       readonly room: RoomName;
       readonly from: string;
       readonly text: string;
@@ -121,7 +121,7 @@ interface ChatState {
 
 /* ------------------------------- actor -------------------------------- */
 
-export class ChatRoomActor extends PersistentActor<ChatRoomCmd, ChatEvent, ChatState> {
+export class ChatRoomActor extends PersistentActor<ChatRoomCommand, ChatEvent, ChatState> {
   private _roomName: RoomName | null = null;
 
   /**
@@ -177,8 +177,8 @@ export class ChatRoomActor extends PersistentActor<ChatRoomCmd, ChatEvent, ChatS
       .exhaustive();
   }
 
-  async onCommand(state: ChatState, cmd: ChatRoomCmd): Promise<void> {
-    if (cmd.kind === 'SendMsg') {
+  async onCommand(state: ChatState, cmd: ChatRoomCommand): Promise<void> {
+    if (cmd.kind === 'SendMessage') {
       const event: MsgPosted = {
         kind: 'MsgPosted',
         from: cmd.from,

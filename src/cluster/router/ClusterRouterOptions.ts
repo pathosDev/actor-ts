@@ -1,9 +1,10 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { Cluster } from '../Cluster.js';
 import type { ClusterRouterType } from './ClusterRouter.js';
 
-/** Plain settings-object shape consumed by {@link ClusterRouter.props}. */
-export interface ClusterRouterOptionsType<TMsg> {
+/** Plain options-object shape consumed by {@link ClusterRouter.props}. */
+export interface ClusterRouterOptionsType<TMessage> {
   /** The cluster the router lives in.  Used for membership + transport. */
   readonly cluster: Cluster;
   /** Restrict routees to up-members carrying this role.  Omit for "any node". */
@@ -23,7 +24,7 @@ export interface ClusterRouterOptionsType<TMsg> {
    * messages with the same key always land on the same node (subject
    * to the cluster topology not changing).
    */
-  readonly extractKey?: (message: TMsg) => string;
+  readonly extractKey?: (message: TMessage) => string;
 }
 
 /**
@@ -37,10 +38,10 @@ export interface ClusterRouterOptionsType<TMsg> {
  *         .withExtractKey((m) => m.id),
  *     );
  */
-export class ClusterRouterOptionsBuilder<TMsg> extends OptionsBuilder<ClusterRouterOptionsType<TMsg>> {
+export class ClusterRouterOptionsBuilder<TMessage> extends OptionsBuilder<ClusterRouterOptionsType<TMessage>> {
   /** Start a fresh builder. */
-  static create<TMsg>(): ClusterRouterOptionsBuilder<TMsg> {
-    return new ClusterRouterOptionsBuilder<TMsg>();
+  static create<TMessage>(): ClusterRouterOptionsBuilder<TMessage> {
+    return new ClusterRouterOptionsBuilder<TMessage>();
   }
 
   /** The cluster the router lives in — drives membership + transport. */
@@ -64,8 +65,26 @@ export class ClusterRouterOptionsBuilder<TMsg> extends OptionsBuilder<ClusterRou
   }
 
   /** Key extractor — required for `consistent-hashing`, ignored otherwise. */
-  withExtractKey(extractKey: (message: TMsg) => string): this {
+  withExtractKey(extractKey: (message: TMessage) => string): this {
     return this.set('extractKey', extractKey);
+  }
+}
+
+/**
+ * Validates resolved {@link ClusterRouterOptionsType} settings — a known
+ * `routerType`, a non-empty `routeePath`, and the cross-field rule that
+ * consistent-hashing needs an `extractKey`.
+ */
+export class ClusterRouterOptionsValidator<TMessage> extends OptionsValidator<ClusterRouterOptionsType<TMessage>> {
+  constructor() {
+    super('ClusterRouterOptions');
+  }
+  protected rules(s: Partial<ClusterRouterOptionsType<TMessage>>): void {
+    this.oneOf('routerType', ['round-robin', 'random', 'consistent-hashing', 'broadcast']);
+    this.nonEmptyString('routeePath');
+    if (s.routerType === 'consistent-hashing' && s.extractKey === undefined) {
+      this.fail('extractKey', "is required when routerType is 'consistent-hashing'");
+    }
   }
 }
 
@@ -74,8 +93,8 @@ export class ClusterRouterOptionsBuilder<TMsg> extends OptionsBuilder<ClusterRou
  * {@link ClusterRouterOptionsBuilder} OR a plain (partial)
  * {@link ClusterRouterOptionsType} object.
  */
-export type ClusterRouterOptions<TMsg> =
-  | ClusterRouterOptionsBuilder<TMsg>
-  | Partial<ClusterRouterOptionsType<TMsg>>;
+export type ClusterRouterOptions<TMessage> =
+  | ClusterRouterOptionsBuilder<TMessage>
+  | Partial<ClusterRouterOptionsType<TMessage>>;
 /** Value alias so `ClusterRouterOptions.create()` / `new ClusterRouterOptions()` resolve to the builder. */
 export const ClusterRouterOptions = ClusterRouterOptionsBuilder;

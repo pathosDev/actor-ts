@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { CassandraClientLike, CassandraConnection } from './CassandraClient.js';
 
 export interface CassandraJournalOptionsType extends CassandraConnection {
@@ -101,7 +102,7 @@ export class CassandraJournalOptionsBuilder extends OptionsBuilder<CassandraJour
     return this.set('autoCreateKeyspace', autoCreateKeyspace);
   }
 
-  /** Replication settings used by autoCreateKeyspace.  Ignored otherwise. */
+  /** Replication options used by autoCreateKeyspace.  Ignored otherwise. */
   withReplication(replication: NonNullable<CassandraJournalOptionsType['replication']>): this {
     return this.set('replication', replication);
   }
@@ -151,6 +152,17 @@ export class CassandraJournalOptionsBuilder extends OptionsBuilder<CassandraJour
   /** Inject a pre-built client instead of letting the journal instantiate `cassandra-driver` itself. */
   withClient(client: CassandraClientLike): this {
     return this.set('client', client);
+  }
+}
+
+/** Validates resolved {@link CassandraJournalOptionsType} settings. */
+export class CassandraJournalOptionsValidator extends OptionsValidator<CassandraJournalOptionsType> {
+  constructor() {
+    super('CassandraJournalOptions');
+  }
+  protected rules(_s: Partial<CassandraJournalOptionsType>): void {
+    this.port('port'); // real Cassandra CQL port (default 9042)
+    this.positiveInt('partitionSize');
   }
 }
 

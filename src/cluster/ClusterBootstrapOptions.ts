@@ -1,10 +1,11 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { ActorSystemOptionsType } from '../ActorSystemOptions.js';
 import type { SeedProvider } from '../discovery/index.js';
 import type { ClusterOptionsType } from './ClusterOptions.js';
 
 /**
- * Settings accepted by {@link Cluster.bootstrap}.  Everything is
+ * Options accepted by {@link Cluster.bootstrap}.  Everything is
  * optional except `name`; sensible defaults turn the call into a
  * single-line hello-cluster.  Build one with {@link ClusterBootstrapOptions}.
  */
@@ -144,7 +145,7 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
     return this.set('configFile', configFile);
   }
 
-  /** Persistence settings forwarded to `ActorSystem.create`. */
+  /** Persistence options forwarded to `ActorSystem.create`. */
   withPersistence(persistence: NonNullable<ClusterBootstrapOptionsType['persistence']>): this {
     return this.set('persistence', persistence);
   }
@@ -216,6 +217,24 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
    */
   withAwaitReady(awaitReady: boolean | number): this {
     return this.set('awaitReady', awaitReady);
+  }
+}
+
+/** Validates resolved {@link ClusterBootstrapOptionsType} settings. */
+export class ClusterBootstrapOptionsValidator extends OptionsValidator<ClusterBootstrapOptionsType> {
+  constructor() {
+    super('ClusterBootstrapOptions');
+  }
+  protected rules(s: Partial<ClusterBootstrapOptionsType>): void {
+    this.nonEmptyString('name');
+    // Positive integer (not the TCP 1..65535 range) — the bootstrap port may
+    // be a synthetic InMemoryTransport node id, same as ClusterOptions.port.
+    this.positiveInt('port');
+    this.positiveNumber('gossipIntervalMs');
+    // awaitReady is boolean | number(ms); a numeric budget must be >= 0 (0 = immediate).
+    if (typeof s.awaitReady === 'number' && (!Number.isFinite(s.awaitReady) || s.awaitReady < 0)) {
+      this.fail('awaitReady', 'must be a boolean or a non-negative number of ms', s.awaitReady);
+    }
   }
 }
 

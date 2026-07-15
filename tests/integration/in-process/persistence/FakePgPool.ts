@@ -32,9 +32,9 @@ class PgUniqueViolation extends Error {
 
 const norm = (sql: string): string => sql.replace(/\s+/g, ' ').trim();
 const tableFrom = (sql: string, kw: string): string => {
-  const m = new RegExp(`${kw}\\s+(?:IF NOT EXISTS\\s+)?([A-Za-z_][A-Za-z0-9_]*)`, 'i').exec(sql);
-  if (!m) throw new Error(`FakePgPool: cannot parse table after ${kw} in: ${sql}`);
-  return m[1]!;
+  const map = new RegExp(`${kw}\\s+(?:IF NOT EXISTS\\s+)?([A-Za-z_][A-Za-z0-9_]*)`, 'i').exec(sql);
+  if (!map) throw new Error(`FakePgPool: cannot parse table after ${kw} in: ${sql}`);
+  return map[1]!;
 };
 
 export class FakePgPool implements PgPoolLike {
@@ -50,22 +50,22 @@ export class FakePgPool implements PgPoolLike {
   async query(text: string, values: ReadonlyArray<unknown> = []): Promise<PgQueryResult> {
     const sql = norm(text);
     this.log.push(sql);
-    const v = values as unknown[];
+    const valuesArray = values as unknown[];
 
     if (/^(BEGIN|COMMIT|ROLLBACK)/i.test(sql)) return { rows: [], rowCount: 0 };
     if (/^CREATE (TABLE|INDEX)/i.test(sql)) return { rows: [], rowCount: 0 };
 
     if (/^SELECT COALESCE\(MAX\(sequence_nr\), 0\) AS hi FROM/i.test(sql)) {
-      const t = tableFrom(sql, 'FROM');
-      const rows = (this.events.get(t) ?? []).filter((r) => r.persistence_id === v[0]);
-      const hi = rows.reduce((m, r) => Math.max(m, r.sequence_nr), 0);
+      const table = tableFrom(sql, 'FROM');
+      const rows = (this.events.get(table) ?? []).filter((r) => r.persistence_id === valuesArray[0]);
+      const hi = rows.reduce((map, r) => Math.max(map, r.sequence_nr), 0);
       return { rows: [{ hi: String(hi) }], rowCount: 1 };
     }
 
     if (/^INSERT INTO \w+\s*\(persistence_id, sequence_nr, payload, tags, timestamp\)/i.test(sql)) {
-      const t = tableFrom(sql, 'INTO');
-      const arr = this.events.get(t) ?? (this.events.set(t, []), this.events.get(t)!);
-      const [persistence_id, sequence_nr, payload, tags, timestamp] = v as [string, number, string, string | null, number];
+      const table = tableFrom(sql, 'INTO');
+      const arr = this.events.get(table) ?? (this.events.set(table, []), this.events.get(table)!);
+      const [persistence_id, sequence_nr, payload, tags, timestamp] = valuesArray as [string, number, string, string | null, number];
       if (arr.some((r) => r.persistence_id === persistence_id && r.sequence_nr === sequence_nr)) {
         throw new PgUniqueViolation(`duplicate key (${persistence_id}, ${sequence_nr})`);
       }
@@ -74,19 +74,19 @@ export class FakePgPool implements PgPoolLike {
     }
 
     if (/^INSERT INTO \w+\s*\(persistence_id, sequence_nr, tag, timestamp\)/i.test(sql)) {
-      const t = tableFrom(sql, 'INTO');
-      const arr = this.tags.get(t) ?? (this.tags.set(t, []), this.tags.get(t)!);
-      const [persistence_id, sequence_nr, tag, timestamp] = v as [string, number, string, number];
+      const table = tableFrom(sql, 'INTO');
+      const arr = this.tags.get(table) ?? (this.tags.set(table, []), this.tags.get(table)!);
+      const [persistence_id, sequence_nr, tag, timestamp] = valuesArray as [string, number, string, number];
       const dup = arr.some((r) => r.tag === tag && r.timestamp === timestamp && r.persistence_id === persistence_id && r.sequence_nr === sequence_nr);
       if (!dup) arr.push({ persistence_id, sequence_nr, tag, timestamp });  // ON CONFLICT DO NOTHING
       return { rows: [], rowCount: dup ? 0 : 1 };
     }
 
     if (/^SELECT persistence_id, sequence_nr, payload, tags, timestamp FROM/i.test(sql)) {
-      const t = tableFrom(sql, 'FROM');
+      const table = tableFrom(sql, 'FROM');
       const hasUpper = sql.includes('sequence_nr <= $3');
-      const [pid, from, to] = v as [string, number, number?];
-      const rows = (this.events.get(t) ?? [])
+      const [pid, from, to] = valuesArray as [string, number, number?];
+      const rows = (this.events.get(table) ?? [])
         .filter((r) => r.persistence_id === pid && r.sequence_nr >= from && (!hasUpper || r.sequence_nr <= (to as number)))
         .sort((a, b) => a.sequence_nr - b.sequence_nr)
         .map((r) => ({ ...r, sequence_nr: String(r.sequence_nr), timestamp: String(r.timestamp) }));
@@ -94,52 +94,52 @@ export class FakePgPool implements PgPoolLike {
     }
 
     if (/^SELECT DISTINCT persistence_id FROM/i.test(sql)) {
-      const t = tableFrom(sql, 'FROM');
-      const ids = [...new Set((this.events.get(t) ?? []).map((r) => r.persistence_id))];
+      const table = tableFrom(sql, 'FROM');
+      const ids = [...new Set((this.events.get(table) ?? []).map((r) => r.persistence_id))];
       return { rows: ids.map((persistence_id) => ({ persistence_id })), rowCount: ids.length };
     }
 
     if (/^DELETE FROM/i.test(sql)) {
-      const t = tableFrom(sql, 'FROM');
+      const table = tableFrom(sql, 'FROM');
       // events_tags / events: WHERE persistence_id=$1 AND sequence_nr <= $2
       if (/sequence_nr <= \$2/i.test(sql)) {
-        const [pid, toSeq] = v as [string, number];
+        const [pid, toSeq] = valuesArray as [string, number];
         for (const map of [this.tags, this.events]) {
-          const arr = map.get(t);
-          if (arr) map.set(t, arr.filter((r) => !(r.persistence_id === pid && (r as { sequence_nr: number }).sequence_nr <= toSeq)) as never);
+          const arr = map.get(table);
+          if (arr) map.set(table, arr.filter((r) => !(r.persistence_id === pid && (r as { sequence_nr: number }).sequence_nr <= toSeq)) as never);
         }
-        const snapArr = this.snaps.get(t);
-        if (snapArr) this.snaps.set(t, snapArr.filter((r) => !(r.persistence_id === pid && r.sequence_nr <= toSeq)));
+        const snapArr = this.snaps.get(table);
+        if (snapArr) this.snaps.set(table, snapArr.filter((r) => !(r.persistence_id === pid && r.sequence_nr <= toSeq)));
         return { rows: [], rowCount: 0 };
       }
       // snapshot keepN prune: … WHERE persistence_id=$1 AND sequence_nr NOT IN (… LIMIT $2)
       if (/NOT IN/i.test(sql)) {
-        const [pid, keepN] = v as [string, number];
-        const arr = (this.snaps.get(t) ?? []).filter((r) => r.persistence_id === pid).sort((a, b) => b.sequence_nr - a.sequence_nr);
+        const [pid, keepN] = valuesArray as [string, number];
+        const arr = (this.snaps.get(table) ?? []).filter((r) => r.persistence_id === pid).sort((a, b) => b.sequence_nr - a.sequence_nr);
         const keep = new Set(arr.slice(0, keepN).map((r) => r.sequence_nr));
-        this.snaps.set(t, (this.snaps.get(t) ?? []).filter((r) => r.persistence_id !== pid || keep.has(r.sequence_nr)));
+        this.snaps.set(table, (this.snaps.get(table) ?? []).filter((r) => r.persistence_id !== pid || keep.has(r.sequence_nr)));
         return { rows: [], rowCount: 0 };
       }
       // durable_state delete: WHERE persistence_id=$1
-      const st = this.states.get(t); if (st) st.delete(v[0] as string);
+      const st = this.states.get(table); if (st) st.delete(valuesArray[0] as string);
       return { rows: [], rowCount: 0 };
     }
 
     // ---- snapshots ----
     if (/^INSERT INTO \w+\s*\(persistence_id, sequence_nr, payload, timestamp\)/i.test(sql)) {
-      const t = tableFrom(sql, 'INTO');
-      const arr = this.snaps.get(t) ?? (this.snaps.set(t, []), this.snaps.get(t)!);
-      const [persistence_id, sequence_nr, payload, timestamp] = v as [string, number, string, number];
+      const table = tableFrom(sql, 'INTO');
+      const arr = this.snaps.get(table) ?? (this.snaps.set(table, []), this.snaps.get(table)!);
+      const [persistence_id, sequence_nr, payload, timestamp] = valuesArray as [string, number, string, number];
       const existing = arr.find((r) => r.persistence_id === persistence_id && r.sequence_nr === sequence_nr);
       if (existing) { existing.payload = payload; existing.timestamp = timestamp; }  // ON CONFLICT DO UPDATE
       else arr.push({ persistence_id, sequence_nr, payload, timestamp });
       return { rows: [], rowCount: 1 };
     }
     if (/^SELECT persistence_id, sequence_nr, payload, timestamp FROM/i.test(sql)) {
-      const t = tableFrom(sql, 'FROM');
+      const table = tableFrom(sql, 'FROM');
       const before = sql.includes('sequence_nr < $2');
-      const [pid, seq] = v as [string, number?];
-      const rows = (this.snaps.get(t) ?? [])
+      const [pid, seq] = valuesArray as [string, number?];
+      const rows = (this.snaps.get(table) ?? [])
         .filter((r) => r.persistence_id === pid && (!before || r.sequence_nr < (seq as number)))
         .sort((a, b) => b.sequence_nr - a.sequence_nr);
       const row = rows[0];
@@ -148,30 +148,30 @@ export class FakePgPool implements PgPoolLike {
 
     // ---- durable_state ----
     if (/^INSERT INTO \w+\s*\(persistence_id, revision, payload, timestamp\)/i.test(sql)) {
-      const t = tableFrom(sql, 'INTO');
-      const st = this.states.get(t) ?? (this.states.set(t, new Map()), this.states.get(t)!);
-      const [persistence_id, revision, payload, timestamp] = v as [string, number, string, number];
+      const table = tableFrom(sql, 'INTO');
+      const st = this.states.get(table) ?? (this.states.set(table, new Map()), this.states.get(table)!);
+      const [persistence_id, revision, payload, timestamp] = valuesArray as [string, number, string, number];
       if (st.has(persistence_id)) return { rows: [], rowCount: 0 };  // ON CONFLICT DO NOTHING
       st.set(persistence_id, { persistence_id, revision, payload, timestamp });
       return { rows: [], rowCount: 1 };
     }
     if (/^UPDATE .* SET revision/i.test(sql)) {
-      const t = tableFrom(sql, 'UPDATE');
-      const st = this.states.get(t) ?? new Map<string, StateRow>();
-      const [revision, payload, timestamp, persistence_id, expected] = v as [number, string, number, string, number];
+      const table = tableFrom(sql, 'UPDATE');
+      const st = this.states.get(table) ?? new Map<string, StateRow>();
+      const [revision, payload, timestamp, persistence_id, expected] = valuesArray as [number, string, number, string, number];
       const cur = st.get(persistence_id);
       if (!cur || cur.revision !== expected) return { rows: [], rowCount: 0 };
       st.set(persistence_id, { persistence_id, revision, payload, timestamp });
       return { rows: [], rowCount: 1 };
     }
     if (/^SELECT revision, payload, timestamp FROM/i.test(sql)) {
-      const t = tableFrom(sql, 'FROM');
-      const cur = this.states.get(t)?.get(v[0] as string);
+      const table = tableFrom(sql, 'FROM');
+      const cur = this.states.get(table)?.get(valuesArray[0] as string);
       return { rows: cur ? [{ revision: String(cur.revision), payload: cur.payload, timestamp: String(cur.timestamp) }] : [], rowCount: cur ? 1 : 0 };
     }
     if (/^SELECT revision FROM/i.test(sql)) {
-      const t = tableFrom(sql, 'FROM');
-      const cur = this.states.get(t)?.get(v[0] as string);
+      const table = tableFrom(sql, 'FROM');
+      const cur = this.states.get(table)?.get(valuesArray[0] as string);
       return { rows: cur ? [{ revision: String(cur.revision) }] : [], rowCount: cur ? 1 : 0 };
     }
 

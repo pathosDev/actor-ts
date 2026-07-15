@@ -1,5 +1,6 @@
 import type { Cache } from '../../cache/Cache.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 
 export interface CachedSnapshotStoreOptionsType {
   /** Backing cache — typically Redis in production. */
@@ -38,6 +39,21 @@ export class CachedSnapshotStoreOptionsBuilder extends OptionsBuilder<CachedSnap
   /** Key prefix (default: `'snap:'`) — prevents collisions in shared caches. */
   withKeyPrefix(keyPrefix: string): this {
     return this.set('keyPrefix', keyPrefix);
+  }
+}
+
+/**
+ * Validates resolved {@link CachedSnapshotStoreOptionsType} settings — the
+ * backing `cache` is required and `ttlMs` (when set) must be a positive
+ * duration.
+ */
+export class CachedSnapshotStoreOptionsValidator extends OptionsValidator<CachedSnapshotStoreOptionsType> {
+  constructor() {
+    super('CachedSnapshotStoreOptions');
+  }
+  protected rules(s: Partial<CachedSnapshotStoreOptionsType>): void {
+    if (s.cache === undefined) this.fail('cache', 'is required (call withCache())');
+    this.positiveNumber('ttlMs');
   }
 }
 

@@ -4,7 +4,7 @@ import { LogContext } from '../LogContext.js';
 import { tracerOf } from '../tracing/TracingExtension.js';
 import type { Cluster } from './Cluster.js';
 import type { NodeAddress } from './NodeAddress.js';
-import type { EnvelopeMsg } from './Protocol.js';
+import type { EnvelopeMessage } from './Protocol.js';
 
 /**
  * A ref whose target lives on a different node.  tell() builds an envelope
@@ -14,7 +14,7 @@ import type { EnvelopeMsg } from './Protocol.js';
  * wire-safe markers inside `Cluster._sendEnvelope` so they can be
  * reconstructed on the receiving node.
  */
-export class RemoteActorRef<TMsg = unknown> extends ActorRef<TMsg> {
+export class RemoteActorRef<TMessage = unknown> extends ActorRef<TMessage> {
   readonly path: ActorPath;
 
   constructor(
@@ -31,14 +31,14 @@ export class RemoteActorRef<TMsg = unknown> extends ActorRef<TMsg> {
     );
   }
 
-  tell(message: TMsg, sender: ActorRef | null = null): void {
+  tell(message: TMessage, sender: ActorRef | null = null): void {
     // Snapshot caller's MDC + W3C trace context at tell-time so the
     // receiving node can re-install both before delivering to the
     // local actor (#53, #10).  Empty values are omitted so the wire
     // envelope stays unchanged on the no-instrumentation hot path.
     const ctx = LogContext.get();
     const trace = tracerOf(this.cluster.system).injectContext();
-    const envelope: EnvelopeMsg = {
+    const envelope: EnvelopeMessage = {
       t: 'envelope',
       to: this.targetPath,
       from: sender ? sender.path.toString() : null,

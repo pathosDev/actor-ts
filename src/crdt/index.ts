@@ -22,7 +22,7 @@ export {
   DistributedDataId,
   decodeCrdt,
 } from './DistributedData.js';
-export { DistributedDataOptions, DistributedDataOptionsBuilder } from './DistributedDataOptions.js';
+export { DistributedDataOptions, DistributedDataOptionsBuilder, DistributedDataOptionsValidator } from './DistributedDataOptions.js';
 export type { DistributedDataOptionsType } from './DistributedDataOptions.js';
 export type {
   CrdtFactory,

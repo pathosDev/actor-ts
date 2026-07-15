@@ -27,16 +27,16 @@
 export function pickRendezvous<T>(
   key: string,
   candidates: ReadonlyArray<T>,
-  identityOf: (c: T) => string,
+  identityOf: (candidate: T) => string,
 ): T {
   if (candidates.length === 0) {
     throw new Error('pickRendezvous: candidates list is empty');
   }
   let bestHash = -1;
   let best: T = candidates[0]!;
-  for (const c of candidates) {
-    const h = hashCombine(key, identityOf(c));
-    if (h > bestHash) { bestHash = h; best = c; }
+  for (const candidate of candidates) {
+    const hash = hashCombine(key, identityOf(candidate));
+    if (hash > bestHash) { bestHash = hash; best = candidate; }
   }
   return best;
 }
@@ -48,13 +48,13 @@ export function pickRendezvous<T>(
  * shard-id hashing.  Stable across runtimes; not cryptographically
  * strong but plenty for routing.
  */
-function fnv1a(s: string): number {
-  let h = 2166136261; // FNV-1a 32-bit basis
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
+function fnv1a(text: string): number {
+  let hash = 2166136261; // FNV-1a 32-bit basis
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
   }
-  return h;
+  return hash;
 }
 
 /**
@@ -65,9 +65,9 @@ function fnv1a(s: string): number {
  * want: `hashCombine('a', 'b') !== hashCombine('b', 'a')` keeps the
  * (key, candidate) pairing meaningful.
  */
-function hashCombine(a: string, b: string): number {
-  let h = fnv1a(a) ^ Math.imul(fnv1a(b), 2654435761);
-  h ^= h >>> 13;
-  h = Math.imul(h, 1540483477);
-  return h >>> 0;
+function hashCombine(key: string, candidateId: string): number {
+  let hash = fnv1a(key) ^ Math.imul(fnv1a(candidateId), 2654435761);
+  hash ^= hash >>> 13;
+  hash = Math.imul(hash, 1540483477);
+  return hash >>> 0;
 }

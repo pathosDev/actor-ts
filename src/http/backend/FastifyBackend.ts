@@ -4,10 +4,11 @@ import type {
   HttpServerBackend,
   RouteRegistration,
   ServerBinding,
-  WebSocketRouteRegistration,
+  WebsocketRouteRegistration,
 } from './HttpServerBackend.js';
 import { Lazy } from '../../util/Lazy.js';
-import { wsPackageAdapter, type WsPackageSocket } from '../ws/SocketAdapter.js';
+import { websocketPackageAdapter, type WebsocketPackageSocket } from '../websocket/SocketAdapter.js';
+import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../websocket/types.js';
 
 // `@fastify/websocket` is an optional peer dep — lazy-import it (cached),
 // so projects that never use websocket() routes don't pull it in.
@@ -40,7 +41,10 @@ export class FastifyBackend implements HttpServerBackend {
   readonly name = 'fastify';
   private readonly app: FastifyLike;
   private readonly registered: RouteRegistration[] = [];
-  private readonly wsRegistered: WebSocketRouteRegistration[] = [];
+  private readonly wsRegistered: WebsocketRouteRegistration[] = [];
+  private userErrorHandler:
+    | ((err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse)
+    | null = null;
 
   constructor(opts: object = { logger: false }) {
     this.app = (Fastify as (o?: object) => FastifyLike)(opts);
@@ -48,7 +52,7 @@ export class FastifyBackend implements HttpServerBackend {
     // bytes to reach the DSL unparsed so user code picks the decoder via
     // pickRequestSerializer.  Fastify's built-in JSON parser would steal
     // `application/json` bodies otherwise.
-    const rawParser = (_req: unknown, body: unknown, done: (err: Error | null, v: unknown) => void) => done(null, body);
+    const rawParser = (_req: unknown, body: unknown, done: (err: Error | null, value: unknown) => void) => done(null, body);
     this.app.removeContentTypeParser(['application/json', 'text/plain']);
     this.app.addContentTypeParser('*', { parseAs: 'buffer' }, rawParser);
     this.app.addContentTypeParser('application/json', { parseAs: 'buffer' }, rawParser);
@@ -71,13 +75,13 @@ export class FastifyBackend implements HttpServerBackend {
           const out = await route.handler(adapted);
           this.writeResponse(reply, out);
         } catch (err) {
-          this.writeError(reply, err);
+          await this.emitError(reply, adapted, err);
         }
       },
     });
   }
 
-  registerWebSocket(reg: WebSocketRouteRegistration): void {
+  registerWebSocket(reg: WebsocketRouteRegistration): void {
     if (this.wsRegistered.some((r) => r.pattern === reg.pattern)) {
       throw new Error(`FastifyBackend: duplicate websocket route for pattern "${reg.pattern}".`);
     }
@@ -93,10 +97,13 @@ export class FastifyBackend implements HttpServerBackend {
   }
 
   setErrorHandler(handler: (err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
+    // Record the handler so errors thrown by our route handlers — caught
+    // in registerRoute's try/catch, which never reaches Fastify core —
+    // route through it too.  The app-level hook still covers
+    // framework-internal errors (body-parse failures, etc.).
+    this.userErrorHandler = handler;
     this.app.setErrorHandler(async (err: unknown, req: FastifyRequest, reply: FastifyReply) => {
-      const adapted = this.adaptRequest(req);
-      const res = await handler(err, adapted);
-      this.writeResponse(reply, res);
+      await this.emitError(reply, this.adaptRequest(req), err);
     });
   }
 
@@ -106,8 +113,13 @@ export class FastifyBackend implements HttpServerBackend {
       // Await the register so the plugin's onRoute hook is installed
       // before we add the ws routes below.  (Awaiting does NOT lock the
       // route tree — routes can still be added after.)
-      await (this.app as { register: (p: unknown, o?: object) => Promise<unknown> }).register(plugin);
-      for (const reg of this.wsRegistered) this.attachWebSocketRoute(reg);
+      // `options` is forwarded to the underlying `ws` server; `maxPayload`
+      // caps the transport frame size (aligned with the default WS policy) so
+      // an oversized frame is rejected at the protocol level rather than
+      // buffered up to the `ws` 100 MiB default first (security audit WS-3).
+      await (this.app as { register: (p: unknown, o?: object) => Promise<unknown> })
+        .register(plugin, { options: { maxPayload: DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } });
+      for (const reg of this.wsRegistered) this.attachWebsocketRoute(reg);
     }
     const address = await this.app.listen({ host, port });
     // Fastify returns "http://<host>:<port>".
@@ -129,7 +141,7 @@ export class FastifyBackend implements HttpServerBackend {
         //      sockets (Node 18.2+ / Bun).  It does NOT touch
         //      sockets already upgraded to WebSocket — Node
         //      releases ownership of those at upgrade time.
-        //   2. For WebSockets we walk `fastify.websocketServer.clients`
+        //   2. For Websockets we walk `fastify.websocketServer.clients`
         //      (populated by `@fastify/websocket`) and `terminate()`
         //      each one.  `terminate()` destroys the underlying TCP
         //      socket without sending a close frame — appropriate
@@ -168,8 +180,8 @@ export class FastifyBackend implements HttpServerBackend {
         await Promise.race([
           closing,
           new Promise<void>((resolve) => {
-            const t = setTimeout(resolve, 1000);
-            (t as { unref?: () => void }).unref?.();
+            const timer = setTimeout(resolve, 1000);
+            (timer as { unref?: () => void }).unref?.();
           }),
         ]);
       },
@@ -179,14 +191,14 @@ export class FastifyBackend implements HttpServerBackend {
   /** @internal — used by tests that inspect Fastify state. */
   get fastify(): FastifyLike { return this.app; }
 
-  private attachWebSocketRoute(reg: WebSocketRouteRegistration): void {
+  private attachWebsocketRoute(reg: WebsocketRouteRegistration): void {
     // Use the `.get(url, { websocket: true }, handler)` shorthand: it is
     // the form @fastify/websocket wires reliably across runtimes (the
     // route-object `wsHandler` variant is not picked up on Bun).  The
     // handler receives the ws socket + request; preValidation replying
     // cancels the upgrade (auth-at-upgrade).
     (this.app as {
-      get: (url: string, opts: unknown, handler: (socket: WsPackageSocket, req: FastifyRequest) => void) => unknown;
+      get: (url: string, opts: unknown, handler: (socket: WebsocketPackageSocket, req: FastifyRequest) => void) => unknown;
     }).get(
       reg.pattern,
       {
@@ -196,9 +208,9 @@ export class FastifyBackend implements HttpServerBackend {
           if (res) this.writeResponse(reply, res);
         },
       },
-      (socket: WsPackageSocket, req: FastifyRequest) => {
+      (socket: WebsocketPackageSocket, req: FastifyRequest) => {
         const adapted = this.adaptRequest(req);
-        reg.onConnection(adapted, wsPackageAdapter(socket, { remoteAddress: adapted.remoteAddress }));
+        reg.onConnection(adapted, websocketPackageAdapter(socket, { remoteAddress: adapted.remoteAddress }));
       },
     );
   }
@@ -207,9 +219,9 @@ export class FastifyBackend implements HttpServerBackend {
 
   private adaptRequest(req: FastifyRequest): HttpRequest {
     const headers: Record<string, string> = {};
-    for (const [k, v] of Object.entries(req.headers)) {
-      if (typeof v === 'string') headers[k] = v;
-      else if (Array.isArray(v)) headers[k] = v.join(',');
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (typeof value === 'string') headers[key] = value;
+      else if (Array.isArray(value)) headers[key] = value.join(',');
     }
     const body = this.asBytes(req.body);
     // Fastify exposes the connecting peer as `req.ip` — that's the
@@ -243,7 +255,7 @@ export class FastifyBackend implements HttpServerBackend {
 
   private writeResponse(reply: FastifyReply, res: HttpResponse): void {
     reply.status(res.status);
-    if (res.headers) for (const [k, v] of Object.entries(res.headers)) reply.header(k, v);
+    if (res.headers) for (const [key, value] of Object.entries(res.headers)) reply.header(key, value);
     if (res.contentType) reply.header('content-type', res.contentType);
     if (res.body === undefined || res.body === null) {
       reply.send();
@@ -259,14 +271,41 @@ export class FastifyBackend implements HttpServerBackend {
       reply.send(Buffer.from(res.body));
       return;
     }
+    if (typeof ReadableStream !== 'undefined' && res.body instanceof ReadableStream) {
+      if (!res.contentType && !res.headers?.['content-type']) reply.header('content-type', 'application/octet-stream');
+      reply.send(res.body);
+      return;
+    }
     // Plain object → JSON.
     if (!res.contentType) reply.header('content-type', 'application/json; charset=utf-8');
     reply.send(JSON.stringify(res.body));
   }
 
+  /**
+   * Route a thrown error through the user's error handler when one is set
+   * (falling back to the default mapping if that handler itself throws),
+   * otherwise the default mapping.  Unifies the per-route catch with
+   * Fastify's framework-level hook so both honour `withErrorHandler` —
+   * matching how the Express and Hono backends already behave.
+   */
+  private async emitError(reply: FastifyReply, req: HttpRequest, err: unknown): Promise<void> {
+    if (this.userErrorHandler) {
+      try {
+        this.writeResponse(reply, await this.userErrorHandler(err, req));
+        return;
+      } catch (inner) {
+        this.writeError(reply, inner);
+        return;
+      }
+    }
+    this.writeError(reply, err);
+  }
+
   private writeError(reply: FastifyReply, err: unknown): void {
     if (err instanceof HttpError) {
-      reply.status(err.status).send({ error: err.message, ...err.extra });
+      reply.status(err.status);
+      if (err.headers) for (const [k, v] of Object.entries(err.headers)) reply.header(k, v);
+      reply.send({ error: err.message, ...err.extra });
       return;
     }
     reply.status(500).send({ error: 'Internal Server Error', message: (err as Error)?.message });

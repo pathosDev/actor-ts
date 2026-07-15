@@ -19,12 +19,11 @@ import {
 } from 'actor-ts';
 
 const system = ActorSystem.create('my-app');
+const sqliteJournalOptions = SqliteJournalOptions.create()
+  .withPath('/var/lib/my-app/events.db')
+  .withWal(true);
+const sqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create().withPath('/var/lib/my-app/snapshots.db');
 system.extension(PersistenceExtensionId).configure({
-  const sqliteJournalOptions = SqliteJournalOptions.create()
-    .withPath('/var/lib/my-app/events.db')
-    .withWal(true);
-  const sqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create()
-    .withPath('/var/lib/my-app/snapshots.db');
   journal: new SqliteJournal(sqliteJournalOptions),
   snapshotStore: new SqliteSnapshotStore(sqliteSnapshotStoreOptions),
 });
@@ -66,10 +65,8 @@ Das Framework liest die **höchste seq** für eine gegebene pid bei
 ```ts
 // Produktion:
 {
-  const sqliteJournalOptions = SqliteJournalOptions.create()
-    .withPath('/var/lib/events.db');
-  const sqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create()
-    .withPath('/var/lib/snapshots.db');
+  const sqliteJournalOptions = SqliteJournalOptions.create().withPath('/var/lib/events.db');
+  const sqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create().withPath('/var/lib/snapshots.db');
   journal:       new SqliteJournal(sqliteJournalOptions),
   snapshotStore: new SqliteSnapshotStore(sqliteSnapshotStoreOptions),
 }

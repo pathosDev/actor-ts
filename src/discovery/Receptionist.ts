@@ -1,6 +1,7 @@
 import { match, P } from 'ts-pattern';
 import { Actor } from '../Actor.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
+import { ReceptionistOptionsValidator } from './ReceptionistOptions.js';
 import type { ReceptionistOptions, ReceptionistOptionsType } from './ReceptionistOptions.js';
 import { fromNullable, type Option } from '../util/Option.js';
 import type { ActorRef } from '../ActorRef.js';
@@ -20,7 +21,7 @@ import {
   Registered,
   Subscribe,
   Unsubscribe,
-  type ReceptionistGossipMsg,
+  type ReceptionistGossipMessage,
 } from './ReceptionistMessages.js';
 import { ServiceKey } from './ServiceKey.js';
 
@@ -60,15 +61,16 @@ export class Receptionist extends Actor<Msg> {
 
   constructor(options: ReceptionistOptions = {}) {
     super();
-    const settings = options as ReceptionistOptionsType;
-    this.clusterRef = settings.cluster ?? null;
-    this.gossipIntervalMs = settings.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
+    const resolvedOptions = options as ReceptionistOptionsType;
+    new ReceptionistOptionsValidator().validate(resolvedOptions);
+    this.clusterRef = resolvedOptions.cluster ?? null;
+    this.gossipIntervalMs = resolvedOptions.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
   }
 
   override preStart(): void {
     if (this.clusterRef) {
       this.unsubWire = this.clusterRef._onWire('receptionist-gossip', (msg) =>
-        this.handleGossip(msg as unknown as ReceptionistGossipMsg),
+        this.handleGossip(msg as unknown as ReceptionistGossipMessage),
       );
       this.unsubCluster = this.clusterRef.subscribe((evt) =>
         match(evt)
@@ -153,7 +155,7 @@ export class Receptionist extends Actor<Msg> {
       if (entry.local.size === 0) continue;
       entries[id] = Array.from(entry.local.keys());
     }
-    const gossip: ReceptionistGossipMsg = {
+    const gossip: ReceptionistGossipMessage = {
       t: 'receptionist-gossip',
       from: this.clusterRef.selfAddress.toJSON(),
       entries,
@@ -163,7 +165,7 @@ export class Receptionist extends Actor<Msg> {
     this.clusterRef.transport.send(target.address, gossip as unknown as never);
   }
 
-  private handleGossip(msg: ReceptionistGossipMsg): void {
+  private handleGossip(msg: ReceptionistGossipMessage): void {
     if (!this.clusterRef) return;
     const senderAddr = NodeAddress.fromJSON(msg.from).toString();
     // Replace this sender's remote contribution wholesale so diff-to-notify
@@ -201,12 +203,12 @@ export class Receptionist extends Actor<Msg> {
   /* ---------------- helpers ---------------- */
 
   private getOrCreate(key: ServiceKey): KeyEntry {
-    let e = this.keys.get(key.id);
-    if (!e) {
-      e = { local: new Map(), remote: new Map(), subscribers: new Set() };
-      this.keys.set(key.id, e);
+    let entry = this.keys.get(key.id);
+    if (!entry) {
+      entry = { local: new Map(), remote: new Map(), subscribers: new Set() };
+      this.keys.set(key.id, entry);
     }
-    return e;
+    return entry;
   }
 
   private maybeDrop(id: string, entry: KeyEntry): void {
@@ -247,13 +249,13 @@ export class ReceptionistExtension {
   ): ActorRef<Msg> {
     if (this.started) return this.started;
     // `cluster` stays a positional arg (it's identity/wiring, not a tunable);
-    // fold it onto the resolved settings so the actor sees a single object.
-    const settings: Partial<ReceptionistOptionsType> = {
+    // fold it onto the resolved options so the actor sees a single object.
+    const resolvedOptions: Partial<ReceptionistOptionsType> = {
       ...(options as Partial<ReceptionistOptionsType>),
       cluster: cluster ?? null,
     };
     const ref = this.system.spawn(
-      Props.create<Msg>(() => new Receptionist(settings)),
+      Props.create<Msg>(() => new Receptionist(resolvedOptions)),
       'receptionist',
     );
     this.started = ref;

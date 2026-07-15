@@ -1,7 +1,7 @@
 /**
  * All Hono-backend option-relevant types live here:
  *
- *   - {@link HonoBackendOptionsType} — the plain settings-object shape
+ *   - {@link HonoBackendOptionsType} — the plain options-object shape
  *     (what you may also pass as a bare `{ … }` object).
  *   - {@link HonoBackendOptionsBuilder} — the fluent builder
  *     (`HonoBackendOptions.create()…`).
@@ -15,9 +15,10 @@
  *     new HonoBackend(backendOptions);
  */
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { HonoAppLike } from './HonoBackend.js';
 
-/** Plain settings-object shape accepted by a {@link HonoBackend}. */
+/** Plain options-object shape accepted by a {@link HonoBackend}. */
 export interface HonoBackendOptionsType {
   /**
    * Bring-your-own Hono app — useful if you already registered middleware
@@ -44,6 +45,16 @@ export class HonoBackendOptionsBuilder extends OptionsBuilder<HonoBackendOptions
   /** Maximum request body size in bytes.  Default 10 MiB; exceeding it returns 413. */
   withMaxBodyBytes(bytes: number): this {
     return this.set('maxBodyBytes', bytes);
+  }
+}
+
+/** Validates resolved {@link HonoBackendOptionsType} settings. */
+export class HonoBackendOptionsValidator extends OptionsValidator<HonoBackendOptionsType> {
+  constructor() {
+    super('HonoBackendOptions');
+  }
+  protected rules(_s: Partial<HonoBackendOptionsType>): void {
+    this.positiveInt('maxBodyBytes');
   }
 }
 

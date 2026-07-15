@@ -43,7 +43,7 @@ installieren.
 ## Settings
 
 ```ts
-interface SseActorSettings extends BrokerCommonSettings {
+interface SseOptionsType extends BrokerCommonOptionsType {
   url?:      string;                          // required — the SSE endpoint
   headers?:  Readonly<Record<string, string>>; // optional custom request headers
   target?:   ActorRef<SseEvent>;             // required — subscriber for inbound events
@@ -56,7 +56,7 @@ interface SseActorSettings extends BrokerCommonSettings {
 | `target`   | ja           | Der Actor, der jedes geparste `SseEvent` empfängt.                |
 | `headers`  | nein         | Zusätzliche Request-Header — z. B. `authorization` für einen geschützten Feed. |
 
-`requiredSettings` ist `['url', 'target']`; beide müssen vorhanden
+`requiredOptions` ist `['url', 'target']`; beide müssen vorhanden
 sein, sonst schlägt der Actor beim Start sofort fehl.
 
 ## Events, die der Client parst
@@ -168,14 +168,14 @@ import { Aside } from '@astrojs/starlight/components';
   // dispatchOutgoing throws 'SseActor is read-only'
   ```
   `SseActor` konsumiert einen Stream; er sendet nie.  Es gibt keine
-  Kommandos (`SseCmd = never`) und kein `tell({ kind: 'broadcast' | 'send', … })`.
+  Kommandos (`SseCommand = never`) und kein `tell({ kind: 'broadcast' | 'send', … })`.
   Um an einen Server zu senden, nimm einfaches HTTP oder einen
   WebSocket-Client.
 </Aside>
 
 <Aside type="caution" title="target muss gesetzt sein">
   ```ts
-  // requiredSettings() === ['url', 'target']
+  // requiredOptions() === ['url', 'target']
   ```
   Ohne `target` haben geparste Events kein Ziel, und der Actor
   schlägt beim Start sofort fehl.  Spawne zuerst den Collector,

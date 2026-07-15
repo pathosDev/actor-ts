@@ -21,7 +21,7 @@ interface GlobalShape {
   readonly performance?: { now(): number };
 }
 
-const g: GlobalShape = globalThis as unknown as GlobalShape;
+const globalScope: GlobalShape = globalThis as unknown as GlobalShape;
 
 import { Lazy } from '../util/Lazy.js';
 
@@ -31,8 +31,8 @@ import { Lazy } from '../util/Lazy.js';
  * `Lazy.setOverride` under the hood — no explicit cache bookkeeping.
  */
 const runtimeLazy: Lazy<RuntimeKind> = Lazy.of<RuntimeKind>(() => {
-  if (typeof g.Bun !== 'undefined') return 'bun';
-  if (typeof g.Deno !== 'undefined') return 'deno';
+  if (typeof globalScope.Bun !== 'undefined') return 'bun';
+  if (typeof globalScope.Deno !== 'undefined') return 'deno';
   return 'node';
 });
 
@@ -40,10 +40,10 @@ const runtimeLazy: Lazy<RuntimeKind> = Lazy.of<RuntimeKind>(() => {
 export function detectRuntime(): RuntimeKind { return runtimeLazy.get(); }
 
 /** True iff `globalThis.Bun` is present. */
-export function hasBun(): boolean { return typeof g.Bun !== 'undefined'; }
+export function hasBun(): boolean { return typeof globalScope.Bun !== 'undefined'; }
 
 /** True iff `globalThis.Deno` is present. */
-export function hasDeno(): boolean { return typeof g.Deno !== 'undefined'; }
+export function hasDeno(): boolean { return typeof globalScope.Deno !== 'undefined'; }
 
 /**
  * High-resolution timestamp in nanoseconds.  Uses `Bun.nanoseconds()` when
@@ -53,9 +53,9 @@ export function hasDeno(): boolean { return typeof g.Deno !== 'undefined'; }
  * purposes (individual iteration jitter swamps any sub-µs accuracy).
  */
 export function highResNow(): number {
-  const bunNs = g.Bun?.nanoseconds;
+  const bunNs = globalScope.Bun?.nanoseconds;
   if (typeof bunNs === 'function') return bunNs();
-  const perf = g.performance;
+  const perf = globalScope.performance;
   if (perf && typeof perf.now === 'function') return perf.now() * 1_000_000;
   // Last-resort: Date.now() has ms resolution.  Any benchmark running in
   // such a degraded environment deserves what it gets.

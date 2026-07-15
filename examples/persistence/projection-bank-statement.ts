@@ -35,7 +35,7 @@ import {
 
 /* --------------------------- write side ------------------------------- */
 
-type AccountCmd =
+type AccountCommand =
   | { kind: 'deposit'; amount: number }
   | { kind: 'withdraw'; amount: number }
   | { kind: 'balance' };
@@ -46,7 +46,7 @@ type AccountEvent =
 
 interface AccountState { balance: number }
 
-class Account extends PersistentActor<AccountCmd, AccountEvent, AccountState> {
+class Account extends PersistentActor<AccountCommand, AccountEvent, AccountState> {
   constructor(readonly persistenceId: string) { super(); }
   initialState(): AccountState { return { balance: 0 }; }
   onEvent(s: AccountState, e: AccountEvent): AccountState {
@@ -59,7 +59,7 @@ class Account extends PersistentActor<AccountCmd, AccountEvent, AccountState> {
   override tagsFor(_e: AccountEvent): readonly string[] { return ['account']; }
   snapshotPolicy() { return everyNEvents<AccountState, AccountEvent>(5); }
 
-  async onCommand(s: AccountState, cmd: AccountCmd): Promise<void> {
+  async onCommand(s: AccountState, cmd: AccountCommand): Promise<void> {
     const reply = (msg: unknown): void => this.sender.forEach((sender) => sender.tell(msg));
     await match(cmd)
       .with({ kind: 'deposit', amount: P.number.gt(0) }, async (c) => {
@@ -109,8 +109,7 @@ async function main(): Promise<void> {
   const journal = new InMemoryJournal();
   const ledger = new BankStatementLedger();
 
-  const sysOptions = ActorSystemOptions.create()
-    .withPersistence({ journal });
+  const sysOptions = ActorSystemOptions.create().withPersistence({ journal });
   const sys = ActorSystem.create('bank', sysOptions);
 
   // Spawn the projection FIRST so it picks up every event from the

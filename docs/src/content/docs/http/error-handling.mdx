@@ -1,0 +1,113 @@
+---
+title: Error handling & fallbacks
+description: Scope error handling to a route subtree with handleErrors, answer unmatched requests with fallback, and set a server-wide last resort with withErrorHandler. Uniform HttpError → JSON mapping across Fastify, Express, and Hono.
+---
+
+Three layers turn a thrown error into a response, innermost first:
+a scoped `handleErrors`, then the server-wide `withErrorHandler`, then the
+framework default (`HttpError` → its status + `{ error, … }` JSON, anything
+else → a generic 500). A `fallback` route answers requests that matched no
+route at all.
+
+## Throwing an error
+
+Any handler (or middleware) may throw an `HttpError`; `reject` is the
+shorthand:
+
+```ts
+import { HttpError, Status, reject } from 'actor-ts/http';
+
+get(async (req) => {
+  const user = await findUser(req.params.id);
+  if (!user) reject(Status.NotFound, 'no such user', { id: req.params.id });
+  return completeJson(Status.OK, user);
+});
+```
+
+The default mapping turns that into `404 { "error": "no such user", "id": … }`.
+An `HttpError` can also carry response headers (e.g. `WWW-Authenticate`):
+
+```ts
+throw new HttpError(Status.Unauthorized, 'login required', undefined, {
+  'www-authenticate': 'Bearer realm="api"',
+});
+```
+
+## Scoped handling — `handleErrors`
+
+`handleErrors(handler, child)` catches anything thrown inside `child`
+(handlers **and** inner middleware) and sees the **original** error — before
+any default mapping. Return a response to handle it, or `null` to decline
+and let an outer handler (or the default) take over.
+
+```ts
+import { complete, completeJson, handleErrors, path, Status } from 'actor-ts/http';
+
+const routes = handleErrors(
+  (err) => err instanceof ValidationError
+    ? completeJson(Status.BadRequest, { error: err.message, fields: err.fields })
+    : null,                                    // decline → escalate
+  path('api', apiRoutes),
+);
+```
+
+Handlers nest outside-in like `withMiddleware`: the innermost `handleErrors`
+gets first refusal. Placed around an auth middleware, it also catches that
+middleware's throws (e.g. a `401`).
+
+## Unmatched requests — `fallback`
+
+`fallback(handler)` answers any request that matched no route — any method,
+including unmatched `OPTIONS`/`HEAD`. It is wired to each backend's
+not-found hook, so it must sit at the **root** of the route tree (a
+`fallback` under `path()` throws at compile time), and there is at most one
+per server.
+
+```ts
+import { completeJson, concat, fallback, path, Status } from 'actor-ts/http';
+
+const routes = concat(
+  path('api', apiRoutes),
+  fallback((req) => completeJson(Status.NotFound, { error: 'no such route', path: req.path })),
+);
+```
+
+## Server-wide — `withErrorHandler`
+
+The last resort for errors that escape every `handleErrors`, plus
+backend-internal errors (body-parse failures). Set it on the server
+builder:
+
+```ts
+const binding = await system.http(8080)
+  .withErrorHandler((err, req) => {
+    system.log.error(`[http] ${req.method} ${req.path}`, err);
+    return completeJson(Status.InternalServerError, { error: 'internal error' });
+  })
+  .bind(routes);
+```
+
+## Precedence
+
+| Order | Layer | Sees |
+| --- | --- | --- |
+| 1 | innermost → outermost `handleErrors` | the original thrown value; may decline with `null` |
+| 2 | `withErrorHandler` | whatever escaped step 1, plus backend-internal errors |
+| 3 | framework default | `HttpError` → status + `{ error, …extra }`; else generic 500 |
+
+If a handler at step 1 or 2 throws, the next layer takes the new error.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="note" title="404, not 405">
+  A request to an existing path with the wrong verb (e.g. `POST` to a
+  `GET`-only route) is answered by the not-found path — a `404` (or your
+  `fallback`), not a `405`. Per-path method introspection for real `405`s is
+  a separate future feature.
+</Aside>
+
+## Where to next
+
+- **[HTTP overview](/http/overview/)** — the bigger picture.
+- **[HTML & XSS](/http/html-xss/)** — build safe error pages.
+- **[Security](/http/security/)** — the recommended middleware stack.

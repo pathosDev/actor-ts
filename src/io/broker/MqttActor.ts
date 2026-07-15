@@ -7,21 +7,24 @@ import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import { mqttJsonCodec, MqttDecodeError, type MqttCodec } from './MqttCodec.js';
+import { MqttOptionsValidator } from './MqttOptions.js';
 import type { MqttOptions, MqttOptionsType } from './MqttOptions.js';
 import {
-  MqttConnectedSignal,
-  MqttDisconnectedSignal,
-  MqttInboundSignal,
   MqttPayload,
+  mqttConnectedSignal,
+  mqttDisconnectedSignal,
+  mqttInboundSignal,
   type MqttActorMessage,
-  type MqttCmd,
+  type MqttCommand,
+  type MqttDisconnectedSignal,
+  type MqttInboundSignal,
   type MqttMessage,
   type MqttPublish,
   type MqttQos,
   type MqttUserProperties,
 } from './MqttMessages.js';
 
-export type { MqttQos, MqttUserProperties, MqttMessage, MqttPublish, MqttCmd } from './MqttMessages.js';
+export type { MqttQos, MqttUserProperties, MqttMessage, MqttPublish, MqttCommand } from './MqttMessages.js';
 
 /** Per-publish overrides. */
 export interface MqttPublishOptions {
@@ -42,7 +45,7 @@ interface SubscriptionEntry<T> {
 
 /**
  * Typed, subclass-first MQTT 3.1.1 / 5.0 actor backed by the `mqtt`
- * peer-dep — the MQTT counterpart to `WebSocketClientActor`.  Extend it,
+ * peer-dep — the MQTT counterpart to `WebsocketClientActor`.  Extend it,
  * declare subscriptions in the constructor, and handle inbound traffic
  * in `onMessage`:
  *
@@ -60,7 +63,7 @@ interface SubscriptionEntry<T> {
  * `T` types the inbound payload (`msg.payload.entity(): T`); `TSelf`
  * types application messages other actors may `tell` this ref (defaults
  * to `never`).  It is still externally controllable: `ref.tell(cmd)`
- * with a {@link MqttCmd} publishes / subscribes / unsubscribes; a
+ * with a {@link MqttCommand} publishes / subscribes / unsubscribes; a
  * `subscribe` command with no `target` routes to this actor's own
  * `onMessage`, with a `target` fans out to that actor.
  *
@@ -95,7 +98,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   /** The connection (re)opened; the registry has been re-applied on the broker. */
   protected onConnected(): void | Promise<void> {}
 
-  /** The connection dropped; a reconnect cycle may follow (per settings). */
+  /** The connection dropped; a reconnect cycle may follow (per options). */
   protected onDisconnected(_cause?: Error): void | Promise<void> {}
 
   /**
@@ -104,7 +107,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
    * wire data shouldn't restart the actor).  Rethrow to escalate to the
    * supervisor.
    */
-  protected onDecodeError(error: MqttDecodeError, _msg: MqttMessage<T>): void | Promise<void> {
+  protected onInvalidMessage(error: MqttDecodeError, _msg: MqttMessage<T>): void | Promise<void> {
     this.log.warn(
       `MqttActor: dropping undecodable payload on '${error.topic ?? '<unknown>'}': ${error.message}`,
     );
@@ -119,7 +122,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
 
   /**
    * Register a subscription.  Constructor-safe: before start it is only
-   * recorded (no context/settings access) and flushed on first connect.
+   * recorded (no context/options access) and flushed on first connect.
    * At runtime it also issues a broker SUBSCRIBE when connected;
    * otherwise the registry entry is applied on the next connect.  Omit
    * `target` to deliver to this actor's own `onMessage`.
@@ -182,38 +185,43 @@ export abstract class MqttActor<T = unknown, TSelf = never>
    * string as a JSON entity.  Only valid after `preStart`.
    */
   protected codec(): MqttCodec<unknown> {
-    return (this._codec ??= this.settings.codec ?? mqttJsonCodec());
+    return (this._codec ??= this.options.codec ?? mqttJsonCodec());
   }
 
   /* ----------------------- sealed dispatch ----------------------- */
 
   /** @internal Sealed — override onMessage + hooks instead. */
   override onReceive(cmd: MqttActorMessage<T, TSelf>): void | Promise<void> {
-    if (cmd instanceof MqttInboundSignal) return this.routeInbound(cmd.message);
-    if (cmd instanceof MqttConnectedSignal) return this.onConnected();
-    if (cmd instanceof MqttDisconnectedSignal) return this.onDisconnected(cmd.cause);
     // Terminated is delivered through onReceive (ActorCell) but isn't part
     // of the typed mailbox union — narrow via a guard.
     if (isTerminated(cmd)) {
       this.removeTerminatedTarget(cmd.actor);
       return;
     }
+    // Uniform `kind` dispatch over internal signals + external commands.
     const kind = (cmd as { readonly kind?: unknown }).kind;
-    if (kind === 'publish' || kind === 'subscribe' || kind === 'unsubscribe') {
-      return this.handleCommand(cmd as MqttCmd<T>);
+    switch (kind) {
+      case 'mqtt-inbound': return this.routeInbound((cmd as MqttInboundSignal<T>).message);
+      case 'mqtt-connected': return this.onConnected();
+      case 'mqtt-disconnected': return this.onDisconnected((cmd as MqttDisconnectedSignal).cause);
+      case 'publish':
+      case 'subscribe':
+      case 'unsubscribe':
+        return this.handleCommand(cmd as MqttCommand<T>);
+      default:
+        return this.onSelfMessage(cmd as TSelf);
     }
-    return this.onSelfMessage(cmd as TSelf);
   }
 
-  private handleCommand(cmd: MqttCmd<T>): void {
-    // Exhaustive over MqttCmd — a new command variant forces a handler here.
+  private handleCommand(cmd: MqttCommand<T>): void {
+    // Exhaustive over MqttCommand — a new command variant forces a handler here.
     match(cmd)
-      .with({ kind: 'publish' }, (c) => { this.enqueueOutbound(c.publish); })
-      .with({ kind: 'subscribe' }, (c) => {
-        this.registerSubscription(c.topic, { qos: c.qos, target: c.target });
+      .with({ kind: 'publish' }, (command) => { this.enqueueOutbound(command.publish); })
+      .with({ kind: 'subscribe' }, (command) => {
+        this.registerSubscription(command.topic, { qos: command.qos, target: command.target });
       })
-      .with({ kind: 'unsubscribe' }, (c) => {
-        this.removeSubscription(c.topic, c.target, true);
+      .with({ kind: 'unsubscribe' }, (command) => {
+        this.removeSubscription(command.topic, command.target, true);
       })
       .exhaustive();
   }
@@ -234,7 +242,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     try {
       await this.onMessage(msg);
     } catch (err) {
-      if (err instanceof MqttDecodeError) return this.onDecodeError(err, msg);
+      if (err instanceof MqttDecodeError) return this.onInvalidMessage(err, msg);
       throw err;  // ordinary supervision
     }
   }
@@ -294,16 +302,16 @@ export abstract class MqttActor<T = unknown, TSelf = never>
 
   private removeTerminatedTarget(ref: ActorRef): void {
     const key = ref.path.toString();
-    const w = this.watched.get(key);
-    if (!w) return;
+    const watchEntry = this.watched.get(key);
+    if (!watchEntry) return;
     // The cell already dropped the watch on Terminated delivery — just
     // clean our own bookkeeping (no context.unwatch).
     this.watched.delete(key);
-    for (const pattern of w.patterns) {
+    for (const pattern of watchEntry.patterns) {
       const entry = this.registry.get(pattern);
       if (!entry) continue;
-      for (const t of entry.targets) {
-        if (t.path.toString() === key) { entry.targets.delete(t); break; }
+      for (const target of entry.targets) {
+        if (target.path.toString() === key) { entry.targets.delete(target); break; }
       }
       if (!entry.deliverToSelf && entry.targets.size === 0) {
         this.registry.delete(pattern);
@@ -314,28 +322,28 @@ export abstract class MqttActor<T = unknown, TSelf = never>
 
   private watchTarget(ref: ActorRef<MqttMessage<T>>, pattern: string): void {
     const key = ref.path.toString();
-    let w = this.watched.get(key);
-    if (!w) {
-      w = { ref, patterns: new Set() };
-      this.watched.set(key, w);
+    let watchEntry = this.watched.get(key);
+    if (!watchEntry) {
+      watchEntry = { ref, patterns: new Set() };
+      this.watched.set(key, watchEntry);
       this.context.watch(ref);
     }
-    w.patterns.add(pattern);
+    watchEntry.patterns.add(pattern);
   }
 
   private unwatchTarget(ref: ActorRef<MqttMessage<T>>, pattern: string): void {
     const key = ref.path.toString();
-    const w = this.watched.get(key);
-    if (!w) return;
-    w.patterns.delete(pattern);
-    if (w.patterns.size === 0) {
+    const watchEntry = this.watched.get(key);
+    if (!watchEntry) return;
+    watchEntry.patterns.delete(pattern);
+    if (watchEntry.patterns.size === 0) {
       this.watched.delete(key);
       this.context.unwatch(ref);
     }
   }
 
   private brokerSubscribe(topic: string, qos?: MqttQos): void {
-    this.client?.subscribe(topic, { qos: qos ?? this.settings.qos ?? 0 }, (err) => {
+    this.client?.subscribe(topic, { qos: qos ?? this.options.qos ?? 0 }, (err) => {
       if (err) this.log.warn(`MqttActor: subscribe '${topic}' failed: ${err.message}`);
     });
   }
@@ -350,11 +358,11 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   /* ----------------------- BrokerActor plumbing ------------------ */
 
   override async preStart(): Promise<void> {
-    // Context is attached before preStart; settings resolve inside
+    // Context is attached before preStart; options resolve inside
     // super.preStart().  Flush constructor subscriptions into the
-    // registry (idempotent) so connectImpl applies them on connect.
-    for (const p of this.pendingSubs) {
-      this.registerSubscription(p.topic, { qos: p.qos, target: p.target });
+    // registry (idempotent) so connectImplementation applies them on connect.
+    for (const pendingSub of this.pendingSubs) {
+      this.registerSubscription(pendingSub.topic, { qos: pendingSub.qos, target: pendingSub.target });
     }
     this._started = true;
     await super.preStart();
@@ -362,67 +370,64 @@ export abstract class MqttActor<T = unknown, TSelf = never>
 
   protected configKey(): string { return ConfigKeys.io.broker.mqtt; }
 
-  protected builtInDefaults(): Partial<MqttOptionsType> {
+  protected builtInDefaultOptions(): Partial<MqttOptionsType> {
     return { qos: 0, cleanSession: true, keepAlive: 60 };
   }
 
-  protected readSettingsFromConfig(c: Config): Partial<MqttOptionsType> {
+  protected readOptionsFromConfig(config: Config): Partial<MqttOptionsType> {
     const out: { -readonly [K in keyof MqttOptionsType]?: MqttOptionsType[K] } = {};
-    if (c.hasPath('brokerUrl')) out.brokerUrl = c.getString('brokerUrl');
-    if (c.hasPath('clientId')) out.clientId = c.getString('clientId');
-    if (c.hasPath('credentials')) {
-      const cc = c.getConfig('credentials');
+    if (config.hasPath('brokerUrl')) out.brokerUrl = config.getString('brokerUrl');
+    if (config.hasPath('clientId')) out.clientId = config.getString('clientId');
+    if (config.hasPath('credentials')) {
+      const cc = config.getConfig('credentials');
       out.credentials = {
         username: cc.hasPath('username') ? cc.getString('username') : undefined,
         password: cc.hasPath('password') ? cc.getString('password') : undefined,
       };
     }
-    if (c.hasPath('qos')) out.qos = c.getInt('qos') as MqttQos;
-    if (c.hasPath('cleanSession')) out.cleanSession = c.getBoolean('cleanSession');
-    if (c.hasPath('keepAlive')) out.keepAlive = c.getInt('keepAlive');
-    if (c.hasPath('protocolVersion')) {
-      const v = c.getInt('protocolVersion');
-      if (v !== 4 && v !== 5) {
-        throw new Error(`MqttActor: protocolVersion must be 4 or 5, got ${v}`);
-      }
-      out.protocolVersion = v;
-    }
+    if (config.hasPath('qos')) out.qos = config.getInt('qos') as MqttQos;
+    if (config.hasPath('cleanSession')) out.cleanSession = config.getBoolean('cleanSession');
+    if (config.hasPath('keepAlive')) out.keepAlive = config.getInt('keepAlive');
+    // Value validation (protocolVersion ∈ {4,5}, etc.) is enforced uniformly
+    // by optionsValidator() on the merged options — see MqttOptionsValidator.
+    if (config.hasPath('protocolVersion')) out.protocolVersion = config.getInt('protocolVersion') as 4 | 5;
     return out;
   }
 
-  protected requiredSettings(): ReadonlyArray<keyof MqttOptionsType> { return ['brokerUrl']; }
-  protected endpointLabel(): string { return this.settings.brokerUrl ?? '<unknown>'; }
+  protected requiredOptions(): ReadonlyArray<keyof MqttOptionsType> { return ['brokerUrl']; }
+  protected override optionsValidator(): MqttOptionsValidator { return new MqttOptionsValidator(); }
+  protected endpointLabel(): string { return this.options.brokerUrl ?? '<unknown>'; }
 
   /** @internal Test seam — override to inject a fake mqtt module. */
   protected mqttModule(): Promise<MqttModuleLike> { return mqttLazy.get(); }
 
-  protected async connectImpl(): Promise<void> {
+  protected async connectImplementation(): Promise<void> {
     const mqtt = await this.mqttModule();
     const opts: MqttConnectOptions = {
-      clientId: this.settings.clientId,
-      username: this.settings.credentials?.username,
-      password: this.settings.credentials?.password,
-      clean: this.settings.cleanSession,
-      keepalive: this.settings.keepAlive,
-      protocolVersion: this.settings.protocolVersion ?? 4,
+      clientId: this.options.clientId,
+      username: this.options.credentials?.username,
+      password: this.options.credentials?.password,
+      clean: this.options.cleanSession,
+      keepalive: this.options.keepAlive,
+      protocolVersion: this.options.protocolVersion ?? 4,
     };
-    if (this.settings.will) {
+    if (this.options.will) {
       opts.will = {
-        topic: this.settings.will.topic,
-        payload: this.settings.will.payload,
-        qos: this.settings.will.qos ?? 0,
-        retain: this.settings.will.retain ?? false,
+        topic: this.options.will.topic,
+        payload: this.options.will.payload,
+        qos: this.options.will.qos ?? 0,
+        retain: this.options.will.retain ?? false,
       };
     }
     return new Promise<void>((resolve, reject) => {
-      const client = mqtt.connect(this.settings.brokerUrl!, opts);
+      const client = mqtt.connect(this.options.brokerUrl!, opts);
       let done = false;
       let down = false;
       // mqtt.js can fire 'error' then 'close' for one drop — collapse them.
       const onDown = (cause: Error): void => {
         if (down) return;
         down = true;
-        this.self.tell(new MqttDisconnectedSignal(cause));
+        this.self.tell(mqttDisconnectedSignal(cause));
         this.handleConnectionLost(cause);
       };
       client.once('connect', () => {
@@ -433,7 +438,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
         client.on('message', (topic, payload, packet) => {
           // No user code on the mqtt.js loop: wrap into a lazily-decoding
           // payload and hand the message to our own mailbox.
-          this.self.tell(new MqttInboundSignal<T>({
+          this.self.tell(mqttInboundSignal<T>({
             topic,
             payload: new MqttPayload<T>(payload, this.codec(), topic),
             qos: (packet?.qos ?? 0) as MqttQos,
@@ -450,7 +455,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
         for (const [pattern, entry] of this.registry) {
           this.brokerSubscribe(pattern, entry.qos);
         }
-        this.self.tell(new MqttConnectedSignal());
+        this.self.tell(mqttConnectedSignal());
         resolve();
       });
       client.once('error', (e: Error) => {
@@ -462,28 +467,28 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     });
   }
 
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     if (!this.client) return;
-    const c = this.client;
+    const client = this.client;
     this.client = null;
     return new Promise<void>((resolve) => {
-      c.removeAllListeners();
-      c.end(false, {}, () => resolve());
+      client.removeAllListeners();
+      client.end(false, {}, () => resolve());
       setTimeout(resolve, 1_000);
     });
   }
 
   protected async dispatchOutgoing(env: OutboundEnvelope<MqttPublish>): Promise<void> {
     if (!this.client) throw new Error('MqttActor: not connected');
-    const p = env.payload;
-    const qos = p.qos ?? this.settings.qos ?? 0;
-    const retain = p.retain ?? false;
-    const protocolVersion = this.settings.protocolVersion ?? 4;
+    const payload = env.payload;
+    const qos = payload.qos ?? this.options.qos ?? 0;
+    const retain = payload.retain ?? false;
+    const protocolVersion = this.options.protocolVersion ?? 4;
     const opts: MqttPubOpts = { qos, retain };
-    const properties = buildPublishProperties(p, protocolVersion);
+    const properties = buildPublishProperties(payload, protocolVersion);
     if (properties) opts.properties = properties;
     return new Promise<void>((resolve, reject) => {
-      this.client!.publish(p.topic, p.payload as string | Uint8Array, opts, (err) => {
+      this.client!.publish(payload.topic, payload.payload as string | Uint8Array, opts, (err) => {
         err ? reject(err) : resolve();
       });
     });
@@ -493,8 +498,8 @@ export abstract class MqttActor<T = unknown, TSelf = never>
 /* --------------------------- helpers ---------------------------- */
 
 /** Terminated arrives via onReceive but isn't in the typed mailbox union. */
-function isTerminated(m: unknown): m is Terminated {
-  return m instanceof Terminated;
+function isTerminated(message: unknown): message is Terminated {
+  return message instanceof Terminated;
 }
 
 /* --------------------------- MQTT 5.0 helpers -------------------------- */
@@ -526,11 +531,11 @@ export function matchesMqttPattern(pattern: string, topic: string): boolean {
   const ps = pattern.split('/');
   const ts = topic.split('/');
   for (let i = 0; i < ps.length; i++) {
-    const p = ps[i]!;
-    if (p === '#') return true;
+    const patternSegment = ps[i]!;
+    if (patternSegment === '#') return true;
     if (i >= ts.length) return false;
-    if (p === '+') continue;
-    if (p !== ts[i]) return false;
+    if (patternSegment === '+') continue;
+    if (patternSegment !== ts[i]) return false;
   }
   return ps.length === ts.length;
 }

@@ -76,7 +76,7 @@ export class Member {
   }
 
   toString(): string {
-    const r = this.roles.size > 0 ? ` roles=[${Array.from(this.roles).join(',')}]` : '';
-    return `Member(${this.address}, ${this.status}, v${this.version}${r})`;
+    const rolesSuffix = this.roles.size > 0 ? ` roles=[${Array.from(this.roles).join(',')}]` : '';
+    return `Member(${this.address}, ${this.status}, v${this.version}${rolesSuffix})`;
   }
 }

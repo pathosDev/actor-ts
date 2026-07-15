@@ -70,7 +70,7 @@ Plus einen Erweiterungspunkt — implementiere die Interfaces `Journal` /
 ```ts
 import { Actor, PersistentActor, ActorSystem } from 'actor-ts';
 
-type Cmd =
+type Command =
   | { kind: 'deposit'; amount: number }
   | { kind: 'withdraw'; amount: number };
 
@@ -80,7 +80,7 @@ type Event =
 
 interface State { balance: number; }
 
-class Account extends PersistentActor<Cmd, Event, State> {
+class Account extends PersistentActor<Command, Event, State> {
   readonly persistenceId = 'account-42';
 
   initialState(): State { return { balance: 0 }; }
@@ -93,7 +93,7 @@ class Account extends PersistentActor<Cmd, Event, State> {
   }
 
   // Validiert das Command, persistiert das Event, führt Seiteneffekte nach dem Persist aus.
-  onCommand(state: State, cmd: Cmd): void {
+  onCommand(state: State, cmd: Command): void {
     if (cmd.kind === 'deposit') {
       this.persist({ kind: 'deposited', amount: cmd.amount, ts: Date.now() },
         (next) => { /* Seiteneffekte mit dem persistierten-und-angewendeten State */ });
@@ -135,10 +135,10 @@ import { DurableStateActor, DurableStateOptions } from 'actor-ts';
 
 interface State { items: string[]; }
 
-class Cart extends DurableStateActor<CartCmd, State> {
+class Cart extends DurableStateActor<CartCommand, State> {
   constructor(options: DurableStateOptions<State>) { super(options); }
 
-  override async onReceive(cmd: CartCmd): Promise<void> {
+  override async onReceive(cmd: CartCommand): Promise<void> {
     if (cmd.kind === 'add') {
       const next: State = { items: [...this.state.items, cmd.sku] };
       await this.persist(next);   // überschreibt den gespeicherten State
@@ -210,7 +210,7 @@ für die Workflow-artigen "Historie-der-Entscheidungen"-Dinge.
 das Replay-Fenster:
 
 ```ts
-class Account extends PersistentActor<Cmd, Event, State> {
+class Account extends PersistentActor<Command, Event, State> {
   // ...
   override snapshotPolicy() { return everyNEvents(100); }
   // Nach jeweils 100 Events wird der aktuelle State als Snapshot geschrieben.

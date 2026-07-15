@@ -36,7 +36,7 @@ interface StateRow {
  * (JSON-text payload, like the other SQL stores).
  */
 export class PostgresDurableStateStore implements DurableStateStore {
-  private readonly settings: PostgresDurableStateStoreOptionsType;
+  private readonly options: PostgresDurableStateStoreOptionsType;
   private readonly table: string;
   private readonly autoCreate: boolean;
 
@@ -45,10 +45,10 @@ export class PostgresDurableStateStore implements DurableStateStore {
   private closed = false;
 
   constructor(options: PostgresDurableStateStoreOptions = {}) {
-    const s = (options as PostgresDurableStateStoreOptionsType);
-    this.settings = s;
-    this.table = assertSafeIdentifier(s.table ?? 'durable_state', 'durable-state table');
-    this.autoCreate = s.autoCreateTables ?? true;
+    const resolvedOptions = (options as PostgresDurableStateStoreOptionsType);
+    this.options = resolvedOptions;
+    this.table = assertSafeIdentifier(resolvedOptions.table ?? 'durable_state', 'durable-state table');
+    this.autoCreate = resolvedOptions.autoCreateTables ?? true;
   }
 
   async upsert<S>(
@@ -145,7 +145,7 @@ export class PostgresDurableStateStore implements DurableStateStore {
   }
 
   private async init(): Promise<void> {
-    const pool = await buildPgPool(this.settings);
+    const pool = await buildPgPool(this.options);
     if (this.autoCreate) {
       await pool.query(
         `CREATE TABLE IF NOT EXISTS ${this.table} (

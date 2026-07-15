@@ -170,14 +170,14 @@ Gleiches Muster für den Sharding-Koordinator:
 ## Ein eigenes Backend schreiben
 
 ```ts
-import type { Lease, LeaseSettings } from 'actor-ts';
+import type { Lease, LeaseOptionsType } from 'actor-ts';
 
 class EtcdLease implements Lease {
   private alive = false;
   private onLostHandlers = new Set<(reason: string) => void>();
   private renewTimer: NodeJS.Timeout | null = null;
 
-  constructor(private readonly settings: LeaseSettings & { /* etcd-spezifisch */ }) {}
+  constructor(private readonly settings: LeaseOptionsType & { /* etcd-spezifisch */ }) {}
 
   async acquire(): Promise<boolean> {
     // Versuche, den etcd-Key atomar von leer auf diesen Owner zu CAS-en.

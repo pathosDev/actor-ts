@@ -23,8 +23,7 @@ class DiagActor extends Actor<'report'> {
 }
 
 async function main(): Promise<void> {
-  const systemOptions = ActorSystemOptions.create()
-    .withConfig({
+  const systemOptions = ActorSystemOptions.create().withConfig({
       'actor-ts': {
         cluster: { 'gossip-interval': '250ms' },
         sharding: { 'number-of-shards': 16 },

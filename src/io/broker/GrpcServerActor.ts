@@ -3,7 +3,7 @@ import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { Actor } from '../../Actor.js';
-import { BrokerSettingsError } from './BrokerSettings.js';
+import { BrokerOptionsError } from './BrokerOptions.js';
 import type { GrpcServerOptions, GrpcServerOptionsType } from './GrpcServerOptions.js';
 
 /**
@@ -60,18 +60,18 @@ export interface GrpcBidiCall {
  *     short grace period.
  */
 export class GrpcServerActor extends Actor<unknown> {
-  private settings!: GrpcServerOptionsType;
+  private options!: GrpcServerOptionsType;
   private server: GrpcServerLike | null = null;
   private bound = false;
-  private readonly _ctorSettings: Partial<GrpcServerOptionsType>;
+  private readonly _ctorOptions: Partial<GrpcServerOptionsType>;
 
   constructor(options: GrpcServerOptions = {}) {
     super();
-    this._ctorSettings = { ...(options as Partial<GrpcServerOptionsType>) };
+    this._ctorOptions = { ...(options as Partial<GrpcServerOptionsType>) };
   }
 
   override async preStart(): Promise<void> {
-    this.settings = await this.resolveSettings();
+    this.options = await this.resolveOptions();
     this.validateRequired();
     await this.bindServer();
   }
@@ -105,7 +105,7 @@ export class GrpcServerActor extends Actor<unknown> {
 
   /* ----------------------------- internals ----------------------------- */
 
-  private async resolveSettings(): Promise<GrpcServerOptionsType> {
+  private async resolveOptions(): Promise<GrpcServerOptionsType> {
     const defaults: Partial<GrpcServerOptionsType> = {
       credentials: { kind: 'insecure' },
     };
@@ -116,24 +116,24 @@ export class GrpcServerActor extends Actor<unknown> {
     const fromCfg: { -readonly [K in keyof GrpcServerOptionsType]?: GrpcServerOptionsType[K] } = {};
     if (cfg) {
       if (cfg.hasPath('protoPath')) {
-        const v = cfg.getList('protoPath');
-        if (v.length === 1 && typeof v[0] === 'string') fromCfg.protoPath = v[0];
+        const protoPathList = cfg.getList('protoPath');
+        if (protoPathList.length === 1 && typeof protoPathList[0] === 'string') fromCfg.protoPath = protoPathList[0];
         else fromCfg.protoPath = cfg.getStringList('protoPath');
       }
       if (cfg.hasPath('packageName')) fromCfg.packageName = cfg.getString('packageName');
       if (cfg.hasPath('serviceName')) fromCfg.serviceName = cfg.getString('serviceName');
       if (cfg.hasPath('bind')) fromCfg.bind = cfg.getString('bind');
     }
-    return { ...defaults, ...fromCfg, ...this._ctorSettings } as GrpcServerOptionsType;
+    return { ...defaults, ...fromCfg, ...this._ctorOptions } as GrpcServerOptionsType;
   }
 
   private validateRequired(): void {
     const required: ReadonlyArray<keyof GrpcServerOptionsType> =
       ['protoPath', 'packageName', 'serviceName', 'bind', 'handlers'];
-    const missing = required.filter((k) => this.settings[k] === undefined);
+    const missing = required.filter((k) => this.options[k] === undefined);
     if (missing.length > 0) {
-      throw new BrokerSettingsError(
-        `GrpcServerActor missing required settings: ${missing.join(', ')}`,
+      throw new BrokerOptionsError(
+        `GrpcServerActor missing required options: ${missing.join(', ')}`,
         ConfigKeys.io.broker.grpc.server,
       );
     }
@@ -142,49 +142,49 @@ export class GrpcServerActor extends Actor<unknown> {
   private async bindServer(): Promise<void> {
     const grpc = await grpcLazy.get();
     const protoLoader = await protoLoaderLazy.get();
-    const protoPaths = Array.isArray(this.settings.protoPath)
-      ? [...this.settings.protoPath]
-      : [this.settings.protoPath as string];
+    const protoPaths = Array.isArray(this.options.protoPath)
+      ? [...this.options.protoPath]
+      : [this.options.protoPath as string];
     const packageDefinition = protoLoader.loadSync(protoPaths, {
       keepCase: true, longs: String, enums: String, defaults: true, oneofs: true,
     });
     const loaded = grpc.loadPackageDefinition(packageDefinition) as unknown as Record<string, unknown>;
     let pkg: Record<string, unknown> = loaded;
-    for (const seg of (this.settings.packageName as string).split('.')) {
+    for (const seg of (this.options.packageName as string).split('.')) {
       pkg = pkg[seg] as Record<string, unknown>;
     }
-    const serviceCtor = pkg[this.settings.serviceName as string] as { service: unknown } | undefined;
-    if (!serviceCtor?.service) {
-      throw new Error(`grpc-server: service '${this.settings.serviceName}' not found`);
+    const serviceConstructor = pkg[this.options.serviceName as string] as { service: unknown } | undefined;
+    if (!serviceConstructor?.service) {
+      throw new Error(`grpc-server: service '${this.options.serviceName}' not found`);
     }
 
     this.server = new grpc.Server();
     const impl: Record<string, unknown> = {};
-    for (const [methodName, handler] of Object.entries(this.settings.handlers ?? {})) {
-      impl[methodName] = this.buildMethodImpl(methodName, handler);
+    for (const [methodName, handler] of Object.entries(this.options.handlers ?? {})) {
+      impl[methodName] = this.buildMethodImplementation(methodName, handler);
     }
-    this.server.addService(serviceCtor.service, impl);
+    this.server.addService(serviceConstructor.service, impl);
 
-    const creds = this.settings.credentials?.kind === 'tls'
+    const creds = this.options.credentials?.kind === 'tls'
       ? grpc.ServerCredentials.createSsl(
-          this.settings.credentials.rootCerts ? Buffer.from(this.settings.credentials.rootCerts) : null,
+          this.options.credentials.rootCerts ? Buffer.from(this.options.credentials.rootCerts) : null,
           [{
-            private_key: Buffer.from(this.settings.credentials.key),
-            cert_chain: Buffer.from(this.settings.credentials.cert),
+            private_key: Buffer.from(this.options.credentials.key),
+            cert_chain: Buffer.from(this.options.credentials.cert),
           }],
-          this.settings.credentials.rootCerts !== undefined,
+          this.options.credentials.rootCerts !== undefined,
         )
       : grpc.ServerCredentials.createInsecure();
 
     await new Promise<void>((resolve, reject) => {
-      this.server!.bindAsync(this.settings.bind!, creds, (err) => {
+      this.server!.bindAsync(this.options.bind!, creds, (err) => {
         if (err) reject(err);
         else { this.bound = true; this.server!.start(); resolve(); }
       });
     });
   }
 
-  private buildMethodImpl(methodName: string, handler: GrpcHandler): unknown {
+  private buildMethodImplementation(methodName: string, handler: GrpcHandler): unknown {
     if (handler.kind === 'unary') {
       return (call: GrpcServerUnaryRequest, cb: GrpcUnaryCb): void => {
         const userCall: GrpcUnaryCall = {

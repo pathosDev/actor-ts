@@ -78,15 +78,15 @@ describe('DistributedData — convergence', () => {
       const ddC = spec.systemFor('c').extension(DistributedDataId)
         .start(spec.clusterFor('c'), ddOptions);
 
-      ddA.update<GCounter>('hits', GCounter.empty, (c) => c.increment(ddA.selfReplicaId(), 3));
-      ddB.update<GCounter>('hits', GCounter.empty, (c) => c.increment(ddB.selfReplicaId(), 5));
-      ddC.update<GCounter>('hits', GCounter.empty, (c) => c.increment(ddC.selfReplicaId(), 7));
+      ddA.update<GCounter>('hits', GCounter.empty, (valueC) => valueC.increment(ddA.selfReplicaId(), 3));
+      ddB.update<GCounter>('hits', GCounter.empty, (valueC) => valueC.increment(ddB.selfReplicaId(), 5));
+      ddC.update<GCounter>('hits', GCounter.empty, (valueC) => valueC.increment(ddC.selfReplicaId(), 7));
 
       await awaitConvergence(() => {
-        const a = ddA.get<GCounter>('hits')?.value() ?? 0;
-        const b = ddB.get<GCounter>('hits')?.value() ?? 0;
-        const c = ddC.get<GCounter>('hits')?.value() ?? 0;
-        return a === 15 && b === 15 && c === 15;
+        const valueA = ddA.get<GCounter>('hits')?.value() ?? 0;
+        const valueB = ddB.get<GCounter>('hits')?.value() ?? 0;
+        const valueC = ddC.get<GCounter>('hits')?.value() ?? 0;
+        return valueA === 15 && valueB === 15 && valueC === 15;
       });
     });
   }, 15_000);
@@ -110,10 +110,10 @@ describe('DistributedData — convergence', () => {
         (p) => p.decrement(ddC.selfReplicaId(), 20));
 
       await awaitConvergence(() => {
-        const a = ddA.get<PNCounter>('inventory')?.value() ?? null;
-        const b = ddB.get<PNCounter>('inventory')?.value() ?? null;
-        const c = ddC.get<PNCounter>('inventory')?.value() ?? null;
-        return a === 50 && b === 50 && c === 50;
+        const valueA = ddA.get<PNCounter>('inventory')?.value() ?? null;
+        const valueB = ddB.get<PNCounter>('inventory')?.value() ?? null;
+        const valueC = ddC.get<PNCounter>('inventory')?.value() ?? null;
+        return valueA === 50 && valueB === 50 && valueC === 50;
       });
     });
   }, 15_000);
@@ -170,20 +170,20 @@ describe('DistributedData — convergence', () => {
       // Three replicas, three different keys + one shared key with
       // different timestamps.  After convergence each node has the
       // full set, with the shared key resolved to the newest write.
-      ddA.update<LWWMap<string, string>>('settings', () => LWWMap.empty<string, string>(),
-        (m) => m.put(ddA.selfReplicaId(), 'theme', 'dark', 100));
-      ddB.update<LWWMap<string, string>>('settings', () => LWWMap.empty<string, string>(),
-        (m) => m.put(ddB.selfReplicaId(), 'lang',  'de',   100));
-      ddC.update<LWWMap<string, string>>('settings', () => LWWMap.empty<string, string>(),
-        (m) => m.put(ddC.selfReplicaId(), 'theme', 'light', 200));   // newer
+      ddA.update<LWWMap<string, string>>('options', () => LWWMap.empty<string, string>(),
+        (value) => value.put(ddA.selfReplicaId(), 'theme', 'dark', 100));
+      ddB.update<LWWMap<string, string>>('options', () => LWWMap.empty<string, string>(),
+        (value) => value.put(ddB.selfReplicaId(), 'lang',  'de',   100));
+      ddC.update<LWWMap<string, string>>('options', () => LWWMap.empty<string, string>(),
+        (value) => value.put(ddC.selfReplicaId(), 'theme', 'light', 200));   // newer
 
       await awaitConvergence(() => {
         for (const dd of [ddA, ddB, ddC]) {
-          const m = dd.get<LWWMap<string, string>>('settings');
-          if (!m) return false;
-          if (m.get('theme') !== 'light') return false;   // newer ts wins
-          if (m.get('lang')  !== 'de')    return false;
-          if (m.size !== 2) return false;
+          const value = dd.get<LWWMap<string, string>>('options');
+          if (!value) return false;
+          if (value.get('theme') !== 'light') return false;   // newer ts wins
+          if (value.get('lang')  !== 'de')    return false;
+          if (value.size !== 2) return false;
         }
         return true;
       });
@@ -204,21 +204,21 @@ describe('DistributedData — convergence', () => {
       // Each replica adds an item to a shared cart-key in an ORMap of
       // ORSets.  After gossip, every replica sees the full set.
       ddA.update<ORMap<string, ORSet<string>>>('carts', () => ORMap.empty<string, ORSet<string>>(),
-        (m) => m.update(ddA.selfReplicaId(), 'alice', () => ORSet.empty<string>(),
+        (value) => value.update(ddA.selfReplicaId(), 'alice', () => ORSet.empty<string>(),
           (s) => s.add(ddA.selfReplicaId(), 'apple')));
       ddB.update<ORMap<string, ORSet<string>>>('carts', () => ORMap.empty<string, ORSet<string>>(),
-        (m) => m.update(ddB.selfReplicaId(), 'alice', () => ORSet.empty<string>(),
+        (value) => value.update(ddB.selfReplicaId(), 'alice', () => ORSet.empty<string>(),
           (s) => s.add(ddB.selfReplicaId(), 'banana')));
       ddC.update<ORMap<string, ORSet<string>>>('carts', () => ORMap.empty<string, ORSet<string>>(),
-        (m) => m.update(ddC.selfReplicaId(), 'bob', () => ORSet.empty<string>(),
+        (value) => value.update(ddC.selfReplicaId(), 'bob', () => ORSet.empty<string>(),
           (s) => s.add(ddC.selfReplicaId(), 'cherry')));
 
       await awaitConvergence(() => {
         for (const dd of [ddA, ddB, ddC]) {
-          const m = dd.get<ORMap<string, ORSet<string>>>('carts');
-          if (!m) return false;
-          const alice = m.get('alice');
-          const bob = m.get('bob');
+          const value = dd.get<ORMap<string, ORSet<string>>>('carts');
+          if (!value) return false;
+          const alice = value.get('alice');
+          const bob = value.get('bob');
           if (!alice || !bob) return false;
           const aliceItems = new Set(alice.value());
           const bobItems = new Set(bob.value());
@@ -241,16 +241,16 @@ describe('DistributedData — convergence', () => {
         .start(spec.clusterFor('b'), ddOptions);
 
       const valuesOnA: number[] = [];
-      const unsubscribe = ddA.subscribe<GCounter>('counter', (c) => {
-        valuesOnA.push(c.value());
+      const unsubscribe = ddA.subscribe<GCounter>('counter', (valueC) => {
+        valuesOnA.push(valueC.value());
       });
 
       // Local update on A — listener fires immediately with the new value.
       ddA.update<GCounter>('counter', GCounter.empty,
-        (c) => c.increment(ddA.selfReplicaId(), 1));
+        (valueC) => valueC.increment(ddA.selfReplicaId(), 1));
       // Remote update on B — gossips to A, listener fires again.
       ddB.update<GCounter>('counter', GCounter.empty,
-        (c) => c.increment(ddB.selfReplicaId(), 4));
+        (valueC) => valueC.increment(ddB.selfReplicaId(), 4));
 
       await awaitConvergence(() => {
         return valuesOnA.includes(1) && valuesOnA.includes(5);

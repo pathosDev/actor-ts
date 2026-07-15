@@ -15,8 +15,7 @@ import {
   PersistenceExtensionId,
 } from 'actor-ts';
 
-const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.create()
-  .withBackend(backend);
+const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.create().withBackend(backend);
 const underlying = new ObjectStorageSnapshotStore(
   objectStorageSnapshotStoreOptions, // S3 / filesystem backend
 );
@@ -55,7 +54,7 @@ underlying store has measurable read latency.**
 ## Configuration
 
 ```ts
-interface CachedSnapshotStoreSettings {
+interface CachedSnapshotStoreOptionsType {
   underlying: SnapshotStore;
   maxEntries: number;     // LRU capacity
   ttlMs?:     number;     // optional expiration

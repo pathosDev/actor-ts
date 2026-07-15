@@ -89,7 +89,7 @@ describe('ReliableDelivery — resilience', () => {
     await sleep(20);
 
     expect(received).toEqual(['once']); // second was deduped
-    // Both deliveries should have produced an Ack message to selfProbe.
+    // Both deliveries should have produced an Acknowledgment message to selfProbe.
     const a1 = await selfProbe.receiveOne(200);
     const a2 = await selfProbe.receiveOne(200);
     expect((a1 as { kind: string }).kind).toBe('reliable-delivery.ack');
@@ -113,7 +113,7 @@ describe('ReliableDelivery — resilience', () => {
         seen++;
         if (seen < 3) return; // drop
         delivered = d.body;
-        // Ack manually to match ConsumerController's protocol.
+        // Acknowledgment manually to match ConsumerController's protocol.
         d.replyTo.tell({ kind: 'reliable-delivery.ack', producerId: d.producerId, seq: d.seq });
       }
     }

@@ -11,21 +11,21 @@ import {
   BrokerReconnectAttempt,
 } from '../../../../../src/io/broker/BrokerEvents.js';
 import {
-  BrokerSettingsError,
+  BrokerOptionsError,
   type BrokerCommonOptionsType,
-} from '../../../../../src/io/broker/BrokerSettings.js';
+} from '../../../../../src/io/broker/BrokerOptions.js';
 import type { Config } from '../../../../../src/config/Config.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import { Actor } from '../../../../../src/Actor.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
-interface FakeSettings extends BrokerCommonOptionsType {
+interface FakeOptions extends BrokerCommonOptionsType {
   readonly endpoint?: string;
   readonly tag?: string;
 }
 
-interface FakeCmd {
+interface FakeCommand {
   kind: 'send' | 'subscribe' | 'unsubscribe' | 'fanOut' | 'simulate-loss';
   topic?: string;
   ref?: ActorRef<unknown>;
@@ -33,37 +33,37 @@ interface FakeCmd {
 }
 
 /**
- * Concrete subclass for tests — `connectImpl` and `dispatchOutgoing`
+ * Concrete subclass for tests — `connectImplementation` and `dispatchOutgoing`
  * are wired to mutable flags so the test can simulate failures.
  */
-class FakeBroker extends BrokerActor<FakeSettings, FakeCmd, string> {
+class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string> {
   connectAttempts = 0;
   disconnects = 0;
   dispatched: string[] = [];
   failNextConnects = 0;
   failNextDispatches = 0;
 
-  constructor(settings: Partial<FakeSettings> = {}) { super(settings); }
+  constructor(options: Partial<FakeOptions> = {}) { super(options); }
 
   protected configKey(): string { return 'actor-ts.io.broker.fake'; }
-  protected builtInDefaults(): Partial<FakeSettings> { return { tag: 'default' }; }
-  protected readSettingsFromConfig(c: Config): Partial<FakeSettings> {
+  protected builtInDefaultOptions(): Partial<FakeOptions> { return { tag: 'default' }; }
+  protected readOptionsFromConfig(c: Config): Partial<FakeOptions> {
     return {
       endpoint: c.hasPath('endpoint') ? c.getString('endpoint') : undefined,
       tag: c.hasPath('tag') ? c.getString('tag') : undefined,
     };
   }
-  protected requiredSettings(): ReadonlyArray<keyof FakeSettings> { return ['endpoint']; }
-  protected endpointLabel(): string { return this.settings.endpoint ?? '<none>'; }
+  protected requiredOptions(): ReadonlyArray<keyof FakeOptions> { return ['endpoint']; }
+  protected endpointLabel(): string { return this.options.endpoint ?? '<none>'; }
 
-  protected async connectImpl(): Promise<void> {
+  protected async connectImplementation(): Promise<void> {
     this.connectAttempts++;
     if (this.failNextConnects > 0) {
       this.failNextConnects--;
       throw new Error(`simulated connect failure (${this.connectAttempts})`);
     }
   }
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     this.disconnects++;
   }
   protected async dispatchOutgoing(env: OutboundEnvelope<string>): Promise<void> {
@@ -84,7 +84,7 @@ class FakeBroker extends BrokerActor<FakeSettings, FakeCmd, string> {
   publicBufferSize(): number { return this.outboundBufferSize; }
   publicSubscriberCount(topic: string): number { return this.subscriberCountForTopic(topic); }
 
-  override onReceive(_cmd: FakeCmd): void { /* no-op — direct manipulation in tests */ }
+  override onReceive(_cmd: FakeCommand): void { /* no-op — direct manipulation in tests */ }
 }
 
 class ProbeActor extends Actor<unknown> {
@@ -103,22 +103,22 @@ function makeSystem(name = 'broker-test', config?: Record<string, unknown>): Act
 /** Bypass `Props` to keep direct access to a captured FakeBroker. */
 function spawnFake(
   sys: ActorSystem,
-  settings: Partial<FakeSettings> = {},
-): { ref: ActorRef<FakeCmd>; brokerReady: Promise<FakeBroker> } {
-  let resolve!: (b: FakeBroker) => void;
+  options: Partial<FakeOptions> = {},
+): { ref: ActorRef<FakeCommand>; brokerReady: Promise<FakeBroker> } {
+  let resolve!: (broker: FakeBroker) => void;
   const brokerReady = new Promise<FakeBroker>((r) => { resolve = r; });
   const ref = sys.spawnAnonymous(Props.create(() => {
-    const b = new FakeBroker(settings);
-    resolve(b);
-    return b as unknown as Actor<FakeCmd>;
+    const broker = new FakeBroker(options);
+    resolve(broker);
+    return broker as unknown as Actor<FakeCommand>;
   }));
-  return { ref: ref as ActorRef<FakeCmd>, brokerReady };
+  return { ref: ref as ActorRef<FakeCommand>, brokerReady };
 }
 
-/* ---------------------------- Settings tests ---------------------------- */
+/* ---------------------------- Options tests ---------------------------- */
 
-describe('BrokerActor — settings resolution', () => {
-  test('constructor settings win over HOCON config', async () => {
+describe('BrokerActor — options resolution', () => {
+  test('constructor options win over HOCON config', async () => {
     const sys = makeSystem('cfg-1', {
       'actor-ts': { io: { broker: { fake: { endpoint: 'cfg.local' } } } },
     });
@@ -126,7 +126,7 @@ describe('BrokerActor — settings resolution', () => {
     const broker = await brokerReady;
     await sleep(20);
     expect(broker.connectAttempts).toBe(1);
-    expect((broker as unknown as { settings: FakeSettings }).settings.endpoint).toBe('ctor.local');
+    expect((broker as unknown as { options: FakeOptions }).options.endpoint).toBe('ctor.local');
     await sys.terminate();
   });
 
@@ -137,9 +137,9 @@ describe('BrokerActor — settings resolution', () => {
     const { brokerReady } = spawnFake(sys);
     const broker = await brokerReady;
     await sleep(20);
-    const settings = (broker as unknown as { settings: FakeSettings }).settings;
-    expect(settings.endpoint).toBe('cfg.local');
-    expect(settings.tag).toBe('from-config');
+    const options = (broker as unknown as { options: FakeOptions }).options;
+    expect(options.endpoint).toBe('cfg.local');
+    expect(options.tag).toBe('from-config');
     await sys.terminate();
   });
 
@@ -150,27 +150,27 @@ describe('BrokerActor — settings resolution', () => {
     const { brokerReady } = spawnFake(sys);
     const broker = await brokerReady;
     await sleep(20);
-    const settings = (broker as unknown as { settings: FakeSettings }).settings;
-    expect(settings.tag).toBe('default');  // from builtInDefaults
+    const options = (broker as unknown as { options: FakeOptions }).options;
+    expect(options.tag).toBe('default');  // from builtInDefaultOptions
     await sys.terminate();
   });
 
-  test('missing required setting raises BrokerSettingsError', async () => {
+  test('missing required setting raises BrokerOptionsError', async () => {
     const sys = makeSystem('cfg-4');
     let captured: Error | null = null;
     sys.spawnAnonymous(Props.create(() => {
-      const b = new FakeBroker();  // no endpoint anywhere
+      const broker = new FakeBroker();  // no endpoint anywhere
       // Intercept preStart to capture the error.
-      const orig = b.preStart.bind(b);
-      b.preStart = async (): Promise<void> => {
+      const orig = broker.preStart.bind(broker);
+      broker.preStart = async (): Promise<void> => {
         try { await orig(); }
         catch (e) { captured = e as Error; }
       };
-      return b as unknown as Actor<FakeCmd>;
+      return broker as unknown as Actor<FakeCommand>;
     }));
     await sleep(20);
-    expect(captured).toBeInstanceOf(BrokerSettingsError);
-    expect((captured as unknown as Error).message).toContain('missing required settings');
+    expect(captured).toBeInstanceOf(BrokerOptionsError);
+    expect((captured as unknown as Error).message).toContain('missing required options');
     expect((captured as unknown as Error).message).toContain('endpoint');
     await sys.terminate();
   });
@@ -197,7 +197,7 @@ describe('BrokerActor — lifecycle', () => {
     await sys.terminate();
   });
 
-  test('postStop calls disconnectImpl and clears state', async () => {
+  test('postStop calls disconnectImplementation and clears state', async () => {
     const sys = makeSystem('lc-2');
     let disconnectedCount = 0;
     sys.eventStream.subscribe(
@@ -221,7 +221,7 @@ describe('BrokerActor — lifecycle', () => {
 /* ---------------------------- Reconnect tests --------------------------- */
 
 describe('BrokerActor — reconnect', () => {
-  test('failed connectImpl triggers backoff and a follow-up attempt', async () => {
+  test('failed connectImplementation triggers backoff and a follow-up attempt', async () => {
     const sys = makeSystem('rc-1');
     const { brokerReady } = spawnFake(sys, {
       endpoint: 'host:1',

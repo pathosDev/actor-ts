@@ -26,12 +26,12 @@ export const scenario: BrokerScenario<NatsCtx> = {
       });
 
       await waitFor(`message arrived on ${tag}`,
-        () => inbox.received.some((m) => m.subject === tag),
+        () => inbox.received.some((message) => message.subject === tag),
         3_000,
       );
-      const m = inbox.received.find((x) => x.subject === tag)!;
-      if (new TextDecoder().decode(m.payload) !== 'hello-nats') {
-        throw new Error(`payload mismatch: got ${new TextDecoder().decode(m.payload)}`);
+      const message = inbox.received.find((x) => x.subject === tag)!;
+      if (new TextDecoder().decode(message.payload) !== 'hello-nats') {
+        throw new Error(`payload mismatch: got ${new TextDecoder().decode(message.payload)}`);
       }
     } finally {
       nats.stop();

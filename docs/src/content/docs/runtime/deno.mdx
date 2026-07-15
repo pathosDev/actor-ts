@@ -79,7 +79,7 @@ neither `bun:sqlite` nor `better-sqlite3` work natively.
 
 ### WebSocket server
 
-The `websocket()` route (backed by a `WebSocketServerActor`) relies
+The `websocket()` route (backed by a `WebsocketServerActor`) relies
 on the HTTP backend's upgrade support — `@fastify/websocket` or `ws`
 on Node, `Bun.serve` on Bun.  For Deno, write a thin adapter using
 `Deno.serveHttp` + `Deno.upgradeWebSocket`.

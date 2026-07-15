@@ -90,10 +90,10 @@ function validateSpec<E>(spec: DefaultsAdapterSpec<E>): void {
   if (!Number.isInteger(spec.currentVersion) || spec.currentVersion < 1) {
     throw new Error(`defaultsAdapter currentVersion must be a positive integer, got ${spec.currentVersion}`);
   }
-  for (const k of Object.keys(spec.defaults)) {
-    const fromVersion = Number(k);
+  for (const key of Object.keys(spec.defaults)) {
+    const fromVersion = Number(key);
     if (!Number.isInteger(fromVersion) || fromVersion < 1) {
-      throw new Error(`defaultsAdapter defaults keys must be positive integers, got '${k}'`);
+      throw new Error(`defaultsAdapter defaults keys must be positive integers, got '${key}'`);
     }
     if (fromVersion >= spec.currentVersion) {
       throw new Error(
@@ -113,11 +113,11 @@ function validateSpec<E>(spec: DefaultsAdapterSpec<E>): void {
     }
     // Every step in (writeVersion, currentVersion] must have a defaults
     // entry — that's where we know which fields to strip on write.
-    for (let v = spec.writeVersion; v < spec.currentVersion; v++) {
-      if (!spec.defaults[v]) {
+    for (let version = spec.writeVersion; version < spec.currentVersion; version++) {
+      if (!spec.defaults[version]) {
         throw new Error(
           `defaultsAdapter writeVersion=${spec.writeVersion} requires defaults entries for every `
-          + `step on the path to currentVersion=${spec.currentVersion}; missing defaults[${v}]`,
+          + `step on the path to currentVersion=${spec.currentVersion}; missing defaults[${version}]`,
         );
       }
     }
@@ -138,8 +138,8 @@ function upcastByDefaults<E>(stored: StoredFrame, spec: DefaultsAdapterSpec<E>):
     );
   }
   let payload = stored.payload as Record<string, unknown>;
-  for (let v = stored.version; v < spec.currentVersion; v++) {
-    const fill = spec.defaults[v] as Record<string, unknown> | undefined;
+  for (let version = stored.version; version < spec.currentVersion; version++) {
+    const fill = spec.defaults[version] as Record<string, unknown> | undefined;
     if (fill) payload = { ...fill, ...payload };
   }
   return payload;
@@ -155,8 +155,8 @@ function downcastByDefaults<E>(
   current: E, spec: DefaultsAdapterSpec<E>, targetVersion: number,
 ): unknown {
   let payload = { ...(current as Record<string, unknown>) };
-  for (let v = spec.currentVersion - 1; v >= targetVersion; v--) {
-    const fields = spec.defaults[v] as Record<string, unknown> | undefined;
+  for (let version = spec.currentVersion - 1; version >= targetVersion; version--) {
+    const fields = spec.defaults[version] as Record<string, unknown> | undefined;
     if (!fields) continue;
     for (const key of Object.keys(fields)) {
       delete payload[key];

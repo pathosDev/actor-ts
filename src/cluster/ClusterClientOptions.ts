@@ -1,8 +1,9 @@
-import type { TlsTransportSettings } from '../runtime/tcp/index.js';
+import type { TlsTransportOptionsType } from '../runtime/tcp/index.js';
 import type { Logger } from '../Logger.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { OptionsValidator } from '../util/OptionsValidator.js';
 
-/** Plain settings-object shape accepted by a {@link ClusterClient}. */
+/** Plain options-object shape accepted by a {@link ClusterClient}. */
 export interface ClusterClientOptionsType {
   /**
    * Cluster nodes to dial.  Each is a `host:port` or `<system>@host:port`
@@ -23,7 +24,7 @@ export interface ClusterClientOptionsType {
   /** Default ask timeout (ms).  Default: 5_000. */
   readonly askTimeoutMs?: number;
   /** Optional TLS config — must match the cluster's. */
-  readonly tls?: TlsTransportSettings;
+  readonly tls?: TlsTransportOptionsType;
   /** Custom logger; default: ConsoleLogger at WARN. */
   readonly logger?: Logger;
 }
@@ -64,13 +65,31 @@ export class ClusterClientOptionsBuilder extends OptionsBuilder<ClusterClientOpt
   }
 
   /** TLS config — must match the cluster's. */
-  withTls(tls: TlsTransportSettings): this {
+  withTls(tls: TlsTransportOptionsType): this {
     return this.set('tls', tls);
   }
 
   /** Custom logger; default ConsoleLogger at WARN. */
   withLogger(logger: Logger): this {
     return this.set('logger', logger);
+  }
+}
+
+/**
+ * Validates resolved {@link ClusterClientOptionsType} settings.  `contactPoints`
+ * is required and non-empty (there is nothing to dial otherwise); it is
+ * checked explicitly because the field-name helpers treat an unset value as
+ * "not provided" and pass.
+ */
+export class ClusterClientOptionsValidator extends OptionsValidator<ClusterClientOptionsType> {
+  constructor() {
+    super('ClusterClientOptions');
+  }
+  protected rules(s: Partial<ClusterClientOptionsType>): void {
+    if (s.contactPoints === undefined || s.contactPoints.length === 0) {
+      this.fail('contactPoints', 'must contain at least one entry', s.contactPoints);
+    }
+    this.positiveNumber('askTimeoutMs');
   }
 }
 

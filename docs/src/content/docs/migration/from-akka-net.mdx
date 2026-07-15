@@ -35,11 +35,11 @@ counter.Tell("inc");
 // actor-ts:
 import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
 
-type Cmd = { kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> };
+type Command = { kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> };
 
-class Counter extends Actor<Cmd> {
+class Counter extends Actor<Command> {
   private count = 0;
-  override onReceive(cmd: Cmd): void {
+  override onReceive(cmd: Command): void {
     if (cmd.kind === 'inc')  this.count++;
     else if (cmd.kind === 'get') cmd.replyTo.tell(this.count);
   }
@@ -54,7 +54,7 @@ Differences from Akka.NET:
 
 - **No `ReceiveActor` base + `Receive<T>` registrations** — use
   `onReceive(msg)` with a switch / pattern-match.
-- **Message types are explicit** — `Cmd` union vs Akka.NET's
+- **Message types are explicit** — `Command` union vs Akka.NET's
   often-untyped `Receive<object>`.
 - **Lambda-style behavior definition** isn't TypeScript-friendly
   — class with `onReceive` is the idiom.
@@ -68,17 +68,17 @@ Receive<GetState>(_ => Sender.Tell(_state));
 
 ```ts
 // actor-ts — option 1: replyTo in the message
-type Cmd = { kind: 'get-state'; replyTo: ActorRef<State> };
+type Command = { kind: 'get-state'; replyTo: ActorRef<State> };
 
-class MyActor extends Actor<Cmd> {
-  onReceive(cmd: Cmd): void {
+class MyActor extends Actor<Command> {
+  onReceive(cmd: Command): void {
     if (cmd.kind === 'get-state') cmd.replyTo.tell(this.state);
   }
 }
 
 // actor-ts — option 2: this.sender (Option type)
-class MyActor extends Actor<Cmd> {
-  onReceive(cmd: Cmd): void {
+class MyActor extends Actor<Command> {
+  onReceive(cmd: Command): void {
     if (cmd.kind === 'get-state') {
       this.sender.forEach(s => s.tell(this.state));
     }
@@ -140,14 +140,14 @@ explicit Address.
 var region = ClusterSharding.Get(system).Start(
   typeName: "Counter",
   entityProps: Props.Create<CounterActor>(),
-  settings: ClusterShardingSettings.Create(system),
+  settings: ClusterShardingOptionsType.Create(system),
   messageExtractor: new MessageExtractor()
 );
 ```
 
 ```ts
 // actor-ts:
-const region = cluster.sharding.start<Cmd>({
+const region = cluster.sharding.start<Command>({
   typeName: 'Counter',
   entityProps: Props.create(() => new CounterActor()),
   extractEntityId: (cmd) => cmd.entityId,
@@ -176,7 +176,7 @@ public class Account : ReceivePersistentActor {
 
 ```ts
 // actor-ts:
-class Account extends PersistentActor<Cmd, Event, State> {
+class Account extends PersistentActor<Command, Event, State> {
   constructor(public readonly id: string) { super(); }
   readonly persistenceId = `account-${this.id}`;
 
@@ -187,7 +187,7 @@ class Account extends PersistentActor<Cmd, Event, State> {
     return state;
   }
 
-  onCommand(state: State, cmd: Cmd): void {
+  onCommand(state: State, cmd: Command): void {
     if (cmd.kind === 'deposit') {
       this.persist({ kind: 'deposited', amount: cmd.amount }, () => {});
     }

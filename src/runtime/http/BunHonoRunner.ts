@@ -2,7 +2,7 @@ import type {
   FetchHandler,
   HonoServerHandle,
   HonoServerRunner,
-  HonoWebSocketBridge,
+  HonoWebsocketBridge,
 } from './HonoServerRunner.js';
 
 /**
@@ -35,7 +35,7 @@ export class BunHonoRunner implements HonoServerRunner {
     };
   }
 
-  async webSocket(_app: unknown): Promise<HonoWebSocketBridge> {
+  async webSocket(_app: unknown): Promise<HonoWebsocketBridge> {
     let mod: { createBunWebSocket: () => { upgradeWebSocket: unknown; websocket: unknown } };
     try {
       const name = 'hono/bun';
@@ -49,7 +49,7 @@ export class BunHonoRunner implements HonoServerRunner {
     }
     const { upgradeWebSocket, websocket } = mod.createBunWebSocket();
     return {
-      upgradeWebSocket: upgradeWebSocket as HonoWebSocketBridge['upgradeWebSocket'],
+      upgradeWebSocket: upgradeWebSocket as HonoWebsocketBridge['upgradeWebSocket'],
       serveOptions: { websocket },
     };
   }

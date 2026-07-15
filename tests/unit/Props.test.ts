@@ -11,22 +11,22 @@ class MyActor extends Actor<string> {
 describe('Props', () => {
   test('create stores the factory', () => {
     const factory = () => new MyActor();
-    const p = Props.create(factory);
-    expect(p.config.factory).toBe(factory);
-    expect(p.config.supervisorStrategy).toBeUndefined();
-    expect(p.config.dispatcher).toBeUndefined();
-    expect(p.config.mailboxCapacity).toBeUndefined();
+    const props = Props.create(factory);
+    expect(props.config.factory).toBe(factory);
+    expect(props.config.supervisorStrategy).toBeUndefined();
+    expect(props.config.dispatcher).toBeUndefined();
+    expect(props.config.mailboxCapacity).toBeUndefined();
   });
 
   test('create factory is called to materialise an actor instance', () => {
     let calls = 0;
-    const p = Props.create(() => { calls++; return new MyActor(); });
-    const a = p.config.factory();
-    const b = p.config.factory();
+    const props = Props.create(() => { calls++; return new MyActor(); });
+    const actorA = props.config.factory();
+    const actorB = props.config.factory();
     expect(calls).toBe(2);
-    expect(a).toBeInstanceOf(MyActor);
-    expect(b).toBeInstanceOf(MyActor);
-    expect(a).not.toBe(b); // fresh instance per call
+    expect(actorA).toBeInstanceOf(MyActor);
+    expect(actorB).toBeInstanceOf(MyActor);
+    expect(actorA).not.toBe(actorB); // fresh instance per call
   });
 
   test('withSupervisorStrategy returns a new Props with the strategy set', () => {
@@ -40,9 +40,9 @@ describe('Props', () => {
 
   test('withDispatcher returns a new Props with the dispatcher set', () => {
     const base = Props.create(() => new MyActor());
-    const d = new ImmediateDispatcher();
-    const next = base.withDispatcher(d);
-    expect(next.config.dispatcher).toBe(d);
+    const dispatcher = new ImmediateDispatcher();
+    const next = base.withDispatcher(dispatcher);
+    expect(next.config.dispatcher).toBe(dispatcher);
     expect(base.config.dispatcher).toBeUndefined();
   });
 
@@ -56,9 +56,9 @@ describe('Props', () => {
   test('chained with* calls accumulate without mutating earlier props', () => {
     const base = Props.create(() => new MyActor());
     const strat = new OneForOneStrategy(() => Directive.Stop);
-    const d = new MicrotaskDispatcher();
-    const final = base.withDispatcher(d).withMailboxCapacity(42).withSupervisorStrategy(strat);
-    expect(final.config.dispatcher).toBe(d);
+    const dispatcher = new MicrotaskDispatcher();
+    const final = base.withDispatcher(dispatcher).withMailboxCapacity(42).withSupervisorStrategy(strat);
+    expect(final.config.dispatcher).toBe(dispatcher);
     expect(final.config.mailboxCapacity).toBe(42);
     expect(final.config.supervisorStrategy).toBe(strat);
     expect(base.config.dispatcher).toBeUndefined();

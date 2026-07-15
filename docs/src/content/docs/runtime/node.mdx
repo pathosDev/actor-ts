@@ -55,7 +55,7 @@ A couple of features unlock natively on **newer Node versions**
 
 - **Native `WebSocket`** — global `WebSocket` constructor is
   built in on Node 22+.  On Node 20, install the `ws` peer dep
-  for `WebSocketClientActor`.  Server-side `websocket()` routes
+  for `WebsocketClientActor`.  Server-side `websocket()` routes
   additionally need `@fastify/websocket` (Fastify) or `@hono/node-ws`
   (Hono) on Node.
 - **Native `zstd` compression** — `node:zlib` gained `zstdCompress`
@@ -72,7 +72,7 @@ Node setups need a few peer deps the framework doesn't bundle:
 | Subsystem | Peer dep |
 | --- | --- |
 | SQLite journal / snapshot store / state | `better-sqlite3` |
-| WebSocket client (`WebSocketClientActor`) | `ws` |
+| WebSocket client (`WebsocketClientActor`) | `ws` |
 | WebSocket server (`websocket()` route) | `@fastify/websocket` (Fastify), `@hono/node-ws` (Hono), or `ws` (Express) |
 | Kafka | `kafkajs` |
 | MQTT | `mqtt` |
@@ -105,10 +105,11 @@ npm install better-sqlite3
 Then:
 
 ```ts
-import { SqliteJournal } from 'actor-ts';
+import { SqliteJournal, SqliteJournalOptions } from 'actor-ts';
 
 // Auto-detects better-sqlite3 on Node.
-new SqliteJournal({ path: '/var/lib/events.db' });
+const sqliteJournalOptions = SqliteJournalOptions.create().withPath('/var/lib/events.db');
+new SqliteJournal(sqliteJournalOptions);
 ```
 
 `better-sqlite3` is a native module — first install requires

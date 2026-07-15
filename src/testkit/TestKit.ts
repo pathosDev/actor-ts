@@ -15,7 +15,7 @@ import type { TestProbeOptions } from './TestProbeOptions.js';
  *   const probe = tk.createTestProbe();
  *   const ref = tk.system.spawn(Props.create(() => new Worker(probe)), 'worker');
  *   ref.tell('go');
- *   await probe.expectMsg('done');
+ *   await probe.expectMessage('done');
  *   await tk.shutdown();
  */
 export class TestKit {
@@ -29,15 +29,15 @@ export class TestKit {
     name: string = 'test-kit',
     options: TestKitOptions = {},
   ): TestKit {
-    const s = (options as Partial<TestKitOptionsType>);
-    const quiet = s.quiet ?? true;
+    const resolvedOptions = (options as Partial<TestKitOptionsType>);
+    const quiet = resolvedOptions.quiet ?? true;
     // Quiet default: install a NoopLogger + LogLevel.Off unless the caller
     // already set a logger / level.  The extra `quiet` field is ignored by
     // the system constructor.
     const system = ActorSystem.create(name, {
-      ...s,
-      logger: s.logger ?? (quiet ? new NoopLogger() : undefined),
-      logLevel: s.logLevel ?? (quiet ? LogLevel.Off : undefined),
+      ...resolvedOptions,
+      logger: resolvedOptions.logger ?? (quiet ? new NoopLogger() : undefined),
+      logLevel: resolvedOptions.logLevel ?? (quiet ? LogLevel.Off : undefined),
     });
     return new TestKit(system);
   }

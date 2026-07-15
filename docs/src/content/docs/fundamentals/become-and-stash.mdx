@@ -22,24 +22,24 @@ config load.
 ```ts
 import { Actor, ActorSystem, Props } from 'actor-ts';
 
-type Msg =
+type Message =
   | { readonly kind: 'on' }
   | { readonly kind: 'off' }
   | { readonly kind: 'press' };
 
-class Switch extends Actor<Msg> {
-  override onReceive(msg: Msg): void {
+class Switch extends Actor<Message> {
+  override onReceive(msg: Message): void {
     this.offState(msg);
   }
 
-  private offState = (msg: Msg): void => {
+  private offState = (msg: Message): void => {
     if (msg.kind === 'press') {
       this.log.info('turning on');
       this.context.become(this.onState);
     }
   };
 
-  private onState = (msg: Msg): void => {
+  private onState = (msg: Message): void => {
     if (msg.kind === 'press') {
       this.log.info('turning off');
       this.context.become(this.offState);
@@ -62,7 +62,7 @@ ladder — the behavior *is* the state.
 The signature:
 
 ```ts
-become(behavior: Receive<TMsg>, discardOld?: boolean): void;
+become(behavior: Receive<TMessage>, discardOld?: boolean): void;
 unbecome(): void;
 ```
 
@@ -73,17 +73,17 @@ and restores the previous one.
 ### Stacked behaviors
 
 ```ts
-class Loader extends Actor<Cmd> {
-  override onReceive(msg: Cmd): void { this.idle(msg); }
+class Loader extends Actor<Command> {
+  override onReceive(msg: Command): void { this.idle(msg); }
 
-  private idle = (msg: Cmd): void => {
+  private idle = (msg: Command): void => {
     if (msg.kind === 'load') {
       this.context.become(this.loading, /* discardOld */ false);
       this.startLoading();
     }
   };
 
-  private loading = (msg: Cmd): void => {
+  private loading = (msg: Command): void => {
     if (msg.kind === 'done') {
       this.context.unbecome();   // pops loading, idle returns
     }
@@ -112,9 +112,9 @@ import { Aside } from '@astrojs/starlight/components';
 Without `become`, the same Switch would look like this:
 
 ```ts
-class Switch extends Actor<Msg> {
+class Switch extends Actor<Message> {
   private isOn = false;
-  override onReceive(msg: Msg): void {
+  override onReceive(msg: Message): void {
     if (msg.kind === 'press') {
       this.isOn = !this.isOn;
       this.log.info(this.isOn ? 'turning on' : 'turning off');
@@ -139,14 +139,14 @@ transition declarations on top of the same engine.
 import { Actor, ActorSystem, Props } from 'actor-ts';
 import { match } from 'ts-pattern';
 
-type Msg =
+type Message =
   | { readonly kind: 'configure'; readonly url: string }
   | { readonly kind: 'request';   readonly payload: string };
 
-class Worker extends Actor<Msg> {
+class Worker extends Actor<Message> {
   private url?: string;
 
-  override onReceive(msg: Msg): void {
+  override onReceive(msg: Message): void {
     match(msg)
       .with({ kind: 'configure' }, (m) => {
         this.url = m.url;
@@ -199,7 +199,7 @@ Three details that matter:
 The two APIs compose for the "actor with an init phase" pattern:
 
 ```ts
-class Worker extends Actor<Msg> {
+class Worker extends Actor<Message> {
   private url?: string;
 
   override preStart(): void {
@@ -208,7 +208,7 @@ class Worker extends Actor<Msg> {
     void this.loadConfig();
   }
 
-  private loading = (msg: Msg): void => {
+  private loading = (msg: Message): void => {
     if (msg.kind === 'configure') {
       this.url = msg.url;
       this.context.become(this.ready);
@@ -219,13 +219,13 @@ class Worker extends Actor<Msg> {
     }
   };
 
-  private ready = (msg: Msg): void => {
+  private ready = (msg: Message): void => {
     if (msg.kind === 'request') {
       this.log.info(`POST ${this.url}: ${msg.payload}`);
     }
   };
 
-  override onReceive(msg: Msg): void {
+  override onReceive(msg: Message): void {
     // Initial behavior — the preStart switches into 'loading' before
     // any user message arrives.  This is here to satisfy the signature.
     this.loading(msg);

@@ -8,7 +8,7 @@ handle.  In a clustered system, an `ActorRef` can point at an
 actor on **any** node — and the same `tell` works the same way:
 
 ```ts
-const remote: ActorRef<Msg> = /* ref to an actor on a different node */;
+const remote: ActorRef<Message> = /* ref to an actor on a different node */;
 remote.tell({ kind: 'do-it' });
 // → serialized, sent over the cluster transport, delivered to the remote mailbox
 ```
@@ -56,7 +56,7 @@ deserializer reconstructs a `RemoteActorRef` pointing back at the
 original node:
 
 ```ts
-type GetMsg = {
+type GetMessage = {
   kind: 'get';
   replyTo: ActorRef<number>;   // ← will serialize as a path string
 };

@@ -56,11 +56,11 @@ export const scenario: Scenario = {
       console.log(`[04] skipping — need >=3 nodes for majority, have ${ctx.nodes.length}`);
       return;
     }
-    const [a, , c, d] = ctx.nodes;
+    const [nodeA, , nodeC, nodeD] = ctx.nodes;
 
     // 1. Baseline write from node-a, majority consistency.
-    console.log(`[04] writing ${KEY}=initial from ${a} (majority, baseline)...`);
-    const baselineWrite = await write(a!, ctx.controlPort, KEY, 'initial', 'majority');
+    console.log(`[04] writing ${KEY}=initial from ${nodeA} (majority, baseline)...`);
+    const baselineWrite = await write(nodeA!, ctx.controlPort, KEY, 'initial', 'majority');
     console.log(`[04] baseline write ack in ${baselineWrite.elapsedMs}ms`);
 
     // 2. Verify every node sees `initial` via majority read.
@@ -69,8 +69,8 @@ export const scenario: Scenario = {
       await waitFor(
         `${h} reads "initial"`,
         async () => {
-          const r = await read(h, ctx.controlPort, KEY, 'majority');
-          return r.value === 'initial';
+          const readResult = await read(h, ctx.controlPort, KEY, 'majority');
+          return readResult.value === 'initial';
         },
         15_000,
         300,
@@ -78,8 +78,8 @@ export const scenario: Scenario = {
     }));
     const baselineReadMs: number[] = [];
     for (const h of ctx.nodes) {
-      const r = await read(h, ctx.controlPort, KEY, 'majority');
-      baselineReadMs.push(r.elapsedMs);
+      const readResult = await read(h, ctx.controlPort, KEY, 'majority');
+      baselineReadMs.push(readResult.elapsedMs);
     }
     const baselineAvg = Math.round(baselineReadMs.reduce((a, b) => a + b, 0) / baselineReadMs.length);
     console.log(`[04] baseline majority-read avg: ${baselineAvg}ms`);
@@ -90,7 +90,7 @@ export const scenario: Scenario = {
       fetch(`http://${h}:${ctx.controlPort}/test/delay?ms=50`, { method: 'POST' }),
     );
     const delayRes = await Promise.all(delayCalls);
-    for (const r of delayRes) if (!r.ok) throw new Error(`[04] delay install failed: ${r.status}`);
+    for (const response of delayRes) if (!response.ok) throw new Error(`[04] delay install failed: ${response.status}`);
 
     // Let the qdisc settle — tc rules sometimes need a moment to
     // take effect.
@@ -101,22 +101,22 @@ export const scenario: Scenario = {
       //    "self + at least floor(N/2)" replicas have to ack — under
       //    50ms delay every leg is ≥50ms but well under the 5s
       //    timeout.
-      console.log(`[04] writing ${KEY}=updated from ${c} during 50ms storm...`);
-      const stormWrite = await write(c!, ctx.controlPort, KEY, 'updated', 'majority');
+      console.log(`[04] writing ${KEY}=updated from ${nodeC} during 50ms storm...`);
+      const stormWrite = await write(nodeC!, ctx.controlPort, KEY, 'updated', 'majority');
       console.log(`[04] storm write ack in ${stormWrite.elapsedMs}ms (vs baseline ${baselineWrite.elapsedMs}ms)`);
 
       // 5. Read from node-d during the storm — must see 'updated'.
-      console.log(`[04] reading from ${d} during 50ms storm (majority)...`);
+      console.log(`[04] reading from ${nodeD} during 50ms storm (majority)...`);
       await waitFor(
-        `${d} reads "updated" during latency storm`,
+        `${nodeD} reads "updated" during latency storm`,
         async () => {
-          const r = await read(d!, ctx.controlPort, KEY, 'majority');
-          return r.value === 'updated';
+          const readResult = await read(nodeD!, ctx.controlPort, KEY, 'majority');
+          return readResult.value === 'updated';
         },
         15_000,
         500,
       );
-      const stormRead = await read(d!, ctx.controlPort, KEY, 'majority');
+      const stormRead = await read(nodeD!, ctx.controlPort, KEY, 'majority');
       console.log(`[04] storm majority-read ack in ${stormRead.elapsedMs}ms (vs baseline ~${baselineAvg}ms)`);
 
       // Diagnostic — measurable slowdown is expected, but we don't
@@ -139,8 +139,8 @@ export const scenario: Scenario = {
       await waitFor(
         `${h} sees "updated" post-storm`,
         async () => {
-          const r = await read(h, ctx.controlPort, KEY, 'majority');
-          return r.value === 'updated';
+          const readResult = await read(h, ctx.controlPort, KEY, 'majority');
+          return readResult.value === 'updated';
         },
         10_000,
         300,

@@ -8,21 +8,19 @@ name: integration-brokers
 # sum of all eight.
 #
 # Triggers identical in shape to the cluster `integration.yml`:
-#   - Pushes to `main`
-#   - PRs targeting `main`
+#   - Pushes to `develop` + PRs (into `develop`, or `main` for the release)
 #   - Manual dispatch
-#   - Nightly cron at 03:30 UTC (offset from integration.yml's 03:00
-#     so the two don't fight for the same runner pool)
+#   - Nightly cron at 03:30 UTC on `develop` (the default branch),
+#     offset from integration.yml's 03:00 so the two don't fight for
+#     the same runner pool
 
 on:
+  # Heavy live-broker Docker matrix.  Runs on `develop` pushes and on PRs
+  # (into `develop`, or into `main` for the release), nightly on `develop`
+  # (the default branch, via the schedule below), and on dispatch.
   push:
-    branches: [main, develop]
+    branches: [develop]
     paths:
-      # Source-side: any adapter source change.  We could pin
-      # `src/io/broker/**` + `src/persistence/object-storage/**` etc.
-      # but `src/**` is simpler — the matrix only re-runs suites
-      # whose code might plausibly have shifted, and the cost is
-      # small (each suite is ~30s).
       - 'src/**'
       - 'tests/integration/brokers/**'
       - 'package.json'

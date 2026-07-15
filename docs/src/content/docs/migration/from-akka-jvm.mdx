@@ -11,9 +11,9 @@ named identically.  This guide walks through the translation.
 
 | Akka (JVM) | actor-ts |
 | --- | --- |
-| `akka.actor.Actor` | `Actor<TMsg>` |
+| `akka.actor.Actor` | `Actor<TMessage>` |
 | `akka.actor.ActorRef` | `ActorRef<T>` |
-| `akka.actor.Props` | `Props<TMsg>` |
+| `akka.actor.Props` | `Props<TMessage>` |
 | `tell(msg)` / `!` | `tell(msg)` |
 | `ask(msg).mapTo[T]` | `ref.ask<TRes>(msg, timeoutMs)` |
 | `context.spawnAnonymous(props)` | `context.spawnAnonymous(props)` |
@@ -54,11 +54,11 @@ class Counter extends Actor {
 // actor-ts:
 import { Actor, type ActorRef } from 'actor-ts';
 
-type Cmd = { kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> };
+type Command = { kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> };
 
-class Counter extends Actor<Cmd> {
+class Counter extends Actor<Command> {
   private count = 0;
-  override onReceive(cmd: Cmd): void {
+  override onReceive(cmd: Command): void {
     if (cmd.kind === 'inc') this.count++;
     else cmd.replyTo.tell(this.count);
   }
@@ -67,7 +67,7 @@ class Counter extends Actor<Cmd> {
 
 Differences:
 
-- TypeScript needs **explicit message types** (`Cmd`) — Akka's
+- TypeScript needs **explicit message types** (`Command`) — Akka's
   `Any` doesn't translate.
 - `sender()` becomes an **explicit `replyTo` ref** in the message,
   or `this.sender` (Option).
@@ -105,7 +105,7 @@ cluster.join(Address("akka", "MySystem", "host", port))
 val region = ClusterSharding(system).start(
   typeName = "Counter",
   entityProps = Props[Counter],
-  settings = ClusterShardingSettings(system),
+  settings = ClusterShardingOptionsType(system),
   extractEntityId = ...,
   extractShardId  = ...,
 )
@@ -130,7 +130,7 @@ Mostly drop-in.  Differences:
 - `extractShardId` is **derived** from `extractEntityId + numShards`
   in actor-ts (`shardId = hash(entityId) % numShards`).  No
   separate function.
-- `ClusterShardingSettings` is inline as `start()` options.
+- `ClusterShardingOptionsType` is inline as `start()` options.
 
 ### PersistentActor
 
@@ -151,7 +151,7 @@ class Account(val id: String) extends PersistentActor {
 }
 
 // actor-ts:
-class Account extends PersistentActor<Cmd, Event, State> {
+class Account extends PersistentActor<Command, Event, State> {
   constructor(public readonly id: string) { super(); }
   readonly persistenceId = `account-${this.id}`;
 
@@ -162,7 +162,7 @@ class Account extends PersistentActor<Cmd, Event, State> {
     return state;
   }
 
-  onCommand(state: State, cmd: Cmd): void {
+  onCommand(state: State, cmd: Command): void {
     if (cmd.kind === 'deposit') {
       this.persist({ kind: 'deposited', amount: cmd.amount }, () => {});
     }
@@ -187,7 +187,7 @@ val singleton = system.spawn(
   ClusterSingletonManager.props(
     singletonProps = Props[MyActor],
     terminationMessage = PoisonPill,
-    settings = ClusterSingletonManagerSettings(system),
+    settings = ClusterSingletonManagerOptionsType(system),
   ),
   name = "singletonManager",
 )

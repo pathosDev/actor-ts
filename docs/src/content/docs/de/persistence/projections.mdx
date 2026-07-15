@@ -163,7 +163,7 @@ Sub-Poll-Intervall-Delivery über den In-Process-Event-Bus erhält.
 ## Per-pid-Projektionen
 
 ```ts
-const byPidProjectionOptions = ByPidProjectionOptions.create<AccountEvent>()
+const byPidProjectionOptions = ByPersistenceIdProjectionOptions.create<AccountEvent>()
   .withName('account-42-view')
   .withPersistenceId('account-42')
   .withQuery(query)
@@ -188,14 +188,11 @@ die nach pid hasht.
 
 ```ts
 // Drei Projektionen, drei Offset-Cursors, drei unabhängige Views:
-const byTagProjectionOptions = ByTagProjectionOptions.create<E>()
-  .withName('balance');
+const byTagProjectionOptions = ByTagProjectionOptions.create<E>().withName('balance');
 ProjectionActor.byTag<E>(system, byTagProjectionOptions /* .withTag(...).withQuery(...).withHandle(...) */);
-const byTagProjection2Options = ByTagProjectionOptions.create<E>()
-  .withName('audit-log');
+const byTagProjection2Options = ByTagProjectionOptions.create<E>().withName('audit-log');
 ProjectionActor.byTag<E>(system, byTagProjection2Options /* .withTag(...).withQuery(...).withHandle(...) */);
-const byTagProjection3Options = ByTagProjectionOptions.create<E>()
-  .withName('monthly-stats');
+const byTagProjection3Options = ByTagProjectionOptions.create<E>().withName('monthly-stats');
 ProjectionActor.byTag<E>(system, byTagProjection3Options /* .withTag(...).withQuery(...).withHandle(...) */);
 ```
 

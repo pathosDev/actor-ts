@@ -70,7 +70,7 @@ Innerhalb eines `onReceive` kann der Actor seine eigene Termination
 anfordern:
 
 ```ts
-override onReceive(msg: Msg): void {
+override onReceive(msg: Message): void {
   if (msg.kind === 'done') {
     this.log.info('completed — winding down');
     this.context.stopSelf();

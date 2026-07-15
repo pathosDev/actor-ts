@@ -1,15 +1,6 @@
-export type CircuitState = 'closed' | 'open' | 'half-open';
+import { CircuitBreakerOptionsValidator, type CircuitBreakerOptions, type CircuitBreakerOptionsType } from './CircuitBreakerOptions.js';
 
-export interface CircuitBreakerSettings {
-  /** Consecutive failures before the breaker opens.  Must be >= 1. */
-  readonly maxFailures: number;
-  /** How long the breaker stays open before letting a probe through.  ms. */
-  readonly resetTimeoutMs: number;
-  /** Per-call timeout; exceeding this counts as a failure. */
-  readonly callTimeoutMs?: number;
-  /** Optional: classify errors as non-failures to bypass breaker counting. */
-  readonly isFailure?: (err: Error) => boolean;
-}
+export type CircuitState = 'closed' | 'open' | 'half-open';
 
 export class CircuitBreakerOpenError extends Error {
   constructor(message = 'circuit breaker is open') {
@@ -43,13 +34,12 @@ export class CircuitBreaker {
   private nextProbeAt = 0;
   private readonly listeners = new Set<StateListener>();
 
-  constructor(public readonly settings: CircuitBreakerSettings) {
-    if (settings.maxFailures < 1) {
-      throw new Error('CircuitBreaker: maxFailures must be >= 1');
-    }
-    if (settings.resetTimeoutMs < 0) {
-      throw new Error('CircuitBreaker: resetTimeoutMs must be >= 0');
-    }
+  public readonly options: CircuitBreakerOptionsType;
+
+  constructor(options: CircuitBreakerOptions) {
+    const settings = { ...(options as Partial<CircuitBreakerOptionsType>) };
+    new CircuitBreakerOptionsValidator().validate(settings);
+    this.options = settings as CircuitBreakerOptionsType;
   }
 
   get state(): CircuitState { return this._state; }
@@ -59,8 +49,8 @@ export class CircuitBreaker {
     this.maybeTransitionToHalfOpen();
     if (this._state === 'open') throw new CircuitBreakerOpenError();
 
-    const promise = this.settings.callTimeoutMs && this.settings.callTimeoutMs > 0
-      ? this.applyTimeout(factory(), this.settings.callTimeoutMs)
+    const promise = this.options.callTimeoutMs && this.options.callTimeoutMs > 0
+      ? this.applyTimeout(factory(), this.options.callTimeoutMs)
       : factory();
 
     try {
@@ -69,7 +59,7 @@ export class CircuitBreaker {
       return value;
     } catch (err) {
       const asErr = err instanceof Error ? err : new Error(String(err));
-      const isFailure = this.settings.isFailure?.(asErr) ?? true;
+      const isFailure = this.options.isFailure?.(asErr) ?? true;
       if (isFailure) this.onFailure();
       throw asErr;
     }
@@ -86,8 +76,8 @@ export class CircuitBreaker {
     if (this._state === next) return;
     this._state = next;
     this.failureCount = 0;
-    if (next === 'open') this.nextProbeAt = Date.now() + this.settings.resetTimeoutMs;
-    for (const l of this.listeners) { try { l(next); } catch { /* ignore */ } }
+    if (next === 'open') this.nextProbeAt = Date.now() + this.options.resetTimeoutMs;
+    for (const listener of this.listeners) { try { listener(next); } catch { /* ignore */ } }
   }
 
   private onSuccess(): void {
@@ -104,7 +94,7 @@ export class CircuitBreaker {
       return;
     }
     this.failureCount++;
-    if (this.failureCount >= this.settings.maxFailures) {
+    if (this.failureCount >= this.options.maxFailures) {
       this.setState('open');
     }
   }

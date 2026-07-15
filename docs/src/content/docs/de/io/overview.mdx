@@ -41,7 +41,7 @@ flowchart TB
   class ETC etc
 ```
 
-Subklassen implementieren drei Hooks (`connectImpl`, `disconnectImpl`,
+Subklassen implementieren drei Hooks (`connectImplementation`, `disconnectImplementation`,
 `dispatchOutgoing`); den Rest übernimmt die Basisklasse.
 
 ## Die verfügbaren Broker
@@ -55,8 +55,8 @@ Subklassen implementieren drei Hooks (`connectImpl`, `disconnectImpl`,
 | `JetStreamActor` | NATS JetStream | Durables Streaming auf NATS. |
 | `RedisStreamsActor` | Redis XADD/XREAD | Leichtgewichtiges Streaming + Consumer Groups. |
 | `GrpcClientActor` / `GrpcServerActor` | gRPC | Typisierter RPC + Streaming. |
-| `WebSocketClientActor` | WebSocket | Ausgehende Verbindung (Broker-basierter Client). |
-| `websocket()`-Route + `WebSocketServerActor` | WebSocket | Eingehende Verbindungen — über die HTTP-Route-DSL gebunden, kein Broker. |
+| `WebsocketClientActor` | WebSocket | Ausgehende Verbindung (Broker-basierter Client). |
+| `websocket()`-Route + `WebsocketServerActor` | WebSocket | Eingehende Verbindungen — über die HTTP-Route-DSL gebunden, kein Broker. |
 | `SseActor` | Server-Sent Events | Client, der den Einweg-Event-Stream eines Servers konsumiert. |
 | `TcpSocketActor` | Raw TCP | Eigene Protokolle. |
 | `UdpSocketActor` | Raw UDP | Telemetrie, Datagramme mit niedriger Latenz. |
@@ -85,9 +85,9 @@ stateDiagram-v2
 Lineare Übergänge im Normalbetrieb:
 
 - **`disconnected`** — Initialzustand; aktuell nicht verbunden.
-- **`connecting`** — `connectImpl` läuft.
+- **`connecting`** — `connectImplementation` läuft.
 - **`connected`** — Verbindung steht; Nachrichten fließen.
-- **`disconnecting`** — `disconnectImpl` läuft.
+- **`disconnecting`** — `disconnectImplementation` läuft.
 
 Ein Fehler während `connected` löst einen Übergang nach `disconnected`
 + eine Reconnect-Schleife aus.  Ein Stop läuft aus jedem Zustand über
@@ -118,7 +118,7 @@ System beobachten kann.
 
 Wenn ein verbundener Broker unerwartet die Verbindung verliert,
 plant die Basisklasse einen Reconnect mit exponentiellem Backoff.
-Konfigurierbar über `BrokerCommonSettings`:
+Konfigurierbar über `BrokerCommonOptionsType`:
 
 ```ts
 {
@@ -245,18 +245,18 @@ Implementiere die drei abstrakten Methoden und verdrahte die
 Settings:
 
 ```ts
-import { BrokerActor, type BrokerCommonSettings } from 'actor-ts';
+import { BrokerActor, type BrokerCommonOptionsType } from 'actor-ts';
 
 class MyProtocolActor extends BrokerActor<MyOutbound> {
   protected configKey() { return 'actor-ts.io.my-protocol'; }
-  protected builtInDefaults(): BrokerCommonSettings { return { /* Defaults */ }; }
-  protected readSettingsFromConfig(c) { /* HOCON parsen */ }
-  protected requiredSettings() { return ['url']; }
+  protected builtInDefaultOptions(): BrokerCommonOptionsType { return { /* Defaults */ }; }
+  protected readOptionsFromConfig(c) { /* HOCON parsen */ }
+  protected requiredOptions() { return ['url']; }
 
-  protected async connectImpl(): Promise<void> {
+  protected async connectImplementation(): Promise<void> {
     // Verbindung aufbauen.  Bei Fehler werfen.
   }
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     // Verbindung aufräumen.
   }
   protected async dispatchOutgoing(env: OutboundEnvelope<MyOutbound>): Promise<void> {
@@ -275,7 +275,7 @@ protokollspezifischen Teile.
   [MQTT](/de/io/mqtt/), [AMQP](/de/io/amqp/),
   [NATS](/de/io/nats/), [Redis Streams](/de/io/redis-streams/),
   [gRPC](/de/io/grpc/), [WebSocket-Client](/de/io/websocket/),
-  [WebSocket-Server](/de/io/server-websocket/),
+  [WebSocket-Server](/de/http/websocket/),
   [SSE](/de/io/sse/), [TCP](/de/io/tcp/),
   [UDP](/de/io/udp/).
 - **[BrokerActor-Basisklasse](/de/io/broker-actor-base/)** —

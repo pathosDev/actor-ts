@@ -80,6 +80,6 @@ export class ClusterSingletonProxy<T> extends ActorRef<T> {
     if (leaderOpt.isNone() || this.buffer.length === 0) return;
     const leaderAddr = leaderOpt.value.address;
     const drained = this.buffer.splice(0, this.buffer.length);
-    for (const m of drained) this.deliver(m, leaderAddr);
+    for (const message of drained) this.deliver(message, leaderAddr);
   }
 }

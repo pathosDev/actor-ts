@@ -8,15 +8,15 @@ assigning **sequence numbers** + holding them until **acked** by
 the consumer.
 
 ```ts
-import { Props, ProducerController } from 'actor-ts';
+import { Props, ProducerController, ProducerControllerOptions } from 'actor-ts';
 
+const producerControllerOptions = ProducerControllerOptions.create<OrderEvent>()
+  .withProducerId('orders')                     // stable identity
+  .withConsumer(consumerRef)
+  .withWindowSize(16)                           // flow-control window
+  .withResendTimeout(500);
 const producer = system.spawn(
-  Props.create(() => new ProducerController<OrderEvent>({
-    producerId:      'orders',                  // stable identity
-    consumer:        consumerRef,
-    windowSize:      16,                        // flow-control window
-    resendTimeoutMs: 500,
-  })),
+  Props.create(() => new ProducerController<OrderEvent>(producerControllerOptions)),
   'producer',
 );
 
@@ -28,14 +28,14 @@ Internally:
 - Assigns seq 1 to the first message, 2 to the next, ...
 - Sends each via wrapped tell to the consumer.
 - Holds in a buffer until acked.
-- Retransmits if no ack within `resendTimeoutMs`.
+- Retransmits if no ack within `resendTimeout`.
 
 ## Configuration
 
 ```ts
-interface ProducerControllerSettings<T> {
+interface ProducerControllerOptionsType<T> {
   consumer:          ActorRef<Delivery<T>>;
-  resendTimeoutMs?:  number;       // default 500
+  resendTimeout?:  number;       // default 500
   windowSize?:       number;       // default 16
   producerId?:       string;       // auto-generated if omitted
 }
@@ -44,7 +44,7 @@ interface ProducerControllerSettings<T> {
 | Field | Purpose |
 | --- | --- |
 | `consumer` | The `ConsumerController` ref to deliver to. |
-| `resendTimeoutMs` | How long to wait for an ack before retransmitting. |
+| `resendTimeout` | How long to wait for an ack before retransmitting. |
 | `windowSize` | Flow-control window — pauses queueing after N unacked messages in flight. |
 | `producerId` | Stable identifier used by the consumer to dedup across restarts. Auto-generated if omitted, but for persisted producers you'll want a stable string so recovery matches up. |
 
@@ -71,7 +71,7 @@ giving you a natural backpressure signal.
 
 ## Retransmission
 
-When an ack doesn't arrive within `resendTimeoutMs`:
+When an ack doesn't arrive within `resendTimeout`:
 
 ```
 seq 5 sent at t=0

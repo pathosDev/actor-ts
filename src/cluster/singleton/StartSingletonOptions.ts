@@ -1,8 +1,9 @@
 import type { Lease } from '../../coordination/Lease.js';
 import type { Props } from '../../Props.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 
-/** Plain settings-object shape accepted by {@link ClusterSingleton.start}. */
+/** Plain options-object shape accepted by {@link ClusterSingleton.start}. */
 export interface StartSingletonOptionsType<T> {
   /** Logical name for this singleton — used in the manager/child actor path. */
   readonly typeName: string;
@@ -70,6 +71,17 @@ export class StartSingletonOptionsBuilder<T> extends OptionsBuilder<StartSinglet
   /** Retry interval (ms) for `lease.acquire()` after a failed attempt.  Default 5 s. */
   withAcquireRetryIntervalMs(ms: number): this {
     return this.set('acquireRetryIntervalMs', ms);
+  }
+}
+
+/** Validates resolved {@link StartSingletonOptionsType} settings. */
+export class StartSingletonOptionsValidator<T> extends OptionsValidator<StartSingletonOptionsType<T>> {
+  constructor() {
+    super('StartSingletonOptions');
+  }
+  protected rules(_s: Partial<StartSingletonOptionsType<T>>): void {
+    this.nonEmptyString('typeName');
+    this.positiveNumber('acquireRetryIntervalMs');
   }
 }
 

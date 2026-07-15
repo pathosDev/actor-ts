@@ -83,8 +83,8 @@ describe('multi-node sharding failover', () => {
       // Warm up: ensure every shard has a home before crashing the leader.
       await Bun.sleep(300);
       for (let i = 0; i < 16; i++) {
-        const r = await regions.b.ask<string>({ id: `pre-${i}`, op: 'ping' }, 3_000);
-        expect(r).toBe('pong');
+        const result = await regions.b.ask<string>({ id: `pre-${i}`, op: 'ping' }, 3_000);
+        expect(result).toBe('pong');
       }
 
       // 'a' is the leader by lowest-port convention (30_000 < 30_001 < 30_002).
@@ -104,8 +104,8 @@ describe('multi-node sharding failover', () => {
       // may have been homed on the dead leader and need re-allocation —
       // that's the point of the test.
       for (let i = 0; i < 16; i++) {
-        const r = await regions.b.ask<string>({ id: `post-${i}`, op: 'ping' }, 5_000);
-        expect(r).toBe('pong');
+        const result = await regions.b.ask<string>({ id: `post-${i}`, op: 'ping' }, 5_000);
+        expect(result).toBe('pong');
       }
     } finally {
       await spec.stop();
@@ -147,7 +147,7 @@ describe('multi-node sharding failover', () => {
       await spec.crash('c');
 
       const replies = await Promise.all(inflight);
-      expect(replies.every((r) => r === 'pong')).toBe(true);
+      expect(replies.every((result) => result === 'pong')).toBe(true);
     } finally {
       await spec.stop();
       MultiNodeTransport._resetRegistryForTest();
@@ -177,7 +177,7 @@ describe('multi-node sharding failover', () => {
       await Bun.sleep(300);
 
       // Cut 'c' from both 'a' and 'b' — c becomes unreachable, then with
-      // tight FD settings (downAfterMs = 400) the cluster declares c
+      // tight FD options (downAfterMs = 400) the cluster declares c
       // down + removed within ~half a second.  At *that* point — not at
       // first unreachable — the coordinator moves c's shards.  Waiting
       // for a 2-member view is the right signal here.
@@ -193,8 +193,8 @@ describe('multi-node sharding failover', () => {
 
       // Survivors continue to serve.
       for (let i = 0; i < 8; i++) {
-        const r = await regions.a.ask<string>({ id: `part-${i}`, op: 'ping' }, 5_000);
-        expect(r).toBe('pong');
+        const result = await regions.a.ask<string>({ id: `part-${i}`, op: 'ping' }, 5_000);
+        expect(result).toBe('pong');
       }
 
       // Heal — at this point 'c' has been declared down + removed by the

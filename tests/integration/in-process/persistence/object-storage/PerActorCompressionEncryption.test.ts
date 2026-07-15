@@ -166,19 +166,19 @@ describe('PersistentActor — actor-level encryption hook', () => {
 
 /* ----------------------- DurableStateActor hooks ------------------------- */
 
-type DsCmd =
+type DsCommand =
   | { kind: 'set'; v: number; replyTo: ActorRef }
   | { kind: 'get'; replyTo: ActorRef };
 
-class Counter extends DurableStateActor<DsCmd, { v: number }> {
+class Counter extends DurableStateActor<DsCommand, { v: number }> {
   constructor(
-    settings: ConstructorParameters<typeof DurableStateActor<DsCmd, { v: number }>>[0],
+    options: ConstructorParameters<typeof DurableStateActor<DsCommand, { v: number }>>[0],
     private readonly _compression?: CompressionConfig,
     private readonly _encryption?: EncryptionConfig,
-  ) { super(settings); }
+  ) { super(options); }
   protected override compression(): CompressionConfig | undefined { return this._compression; }
   protected override encryption(): EncryptionConfig | undefined { return this._encryption; }
-  override async onCommand(cmd: DsCmd): Promise<void> {
+  override async onCommand(cmd: DsCommand): Promise<void> {
     if (cmd.kind === 'set') { await this.persist({ v: cmd.v }); cmd.replyTo.tell({ ok: true } as never); }
     else cmd.replyTo.tell({ v: this.state.v } as never);
   }
@@ -205,12 +205,12 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
       return new Counter(
         durableStateOptions,
         { algorithm: 'zstd' },
-      ) as unknown as ActorBase<DsCmd>;
+      ) as unknown as ActorBase<DsCommand>;
     }), 'a');
     ref.tell({ kind: 'set', v: 7, replyTo: probe.ref });
     await sleep(40);
     expect(seen.length).toBeGreaterThan(0);
-    for (const e of seen) expect(e).toBe('zstd');
+    for (const event of seen) expect(event).toBe('zstd');
     await sys.terminate();
   });
 
@@ -233,7 +233,7 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
         .withEmptyState(() => ({ v: 0 }));
       return new Counter(
         durableStateOptions,
-        { algorithm: 'none' }, enc) as unknown as ActorBase<DsCmd>;
+        { algorithm: 'none' }, enc) as unknown as ActorBase<DsCommand>;
     }), 'b');
     ref.tell({ kind: 'set', v: 12345, replyTo: probe.ref });
     await sleep(40);
@@ -258,7 +258,7 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
         .withEmptyState(() => ({ v: 0 }));
       return new Counter(
         durableStateOptions,
-        { algorithm: 'none' }, enc) as unknown as ActorBase<DsCmd>;
+        { algorithm: 'none' }, enc) as unknown as ActorBase<DsCommand>;
     }), 'b');
     ref2.tell({ kind: 'get', replyTo: probe2.ref });
     await sleep(40);
@@ -275,12 +275,12 @@ function wrapPut(
 ): FilesystemObjectStorageBackend {
   // Lightweight passthrough wrapper that preserves the `instanceof` shape
   // expected by the snapshot/duarble-state stores.
-  const w = Object.assign(Object.create(Object.getPrototypeOf(inner)), inner);
-  w.put = async (key: string, body: Uint8Array, opts: { contentEncoding?: string }) => {
+  const wrapped = Object.assign(Object.create(Object.getPrototypeOf(inner)), inner);
+  wrapped.put = async (key: string, body: Uint8Array, opts: { contentEncoding?: string }) => {
     spy(key, opts);
     return inner.put(key, body, opts);
   };
-  return w as FilesystemObjectStorageBackend;
+  return wrapped as FilesystemObjectStorageBackend;
 }
 
 function makeProbe(sys: ActorSystem): { ref: ActorRef; received: unknown[] } {

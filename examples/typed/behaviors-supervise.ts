@@ -19,18 +19,18 @@ import {
   type Behavior,
 } from '../../src/index.js';
 
-type PollerCmd = { kind: 'tick' } | { kind: 'fail-next' };
+type PollerCommand = { kind: 'tick' } | { kind: 'fail-next' };
 
 // Number of times setup has run — survives across restarts because the
 // lexical binding is outside the behavior.  Useful for observability.
 let setupCalls = 0;
 
-const poller = (maxTicks: number): Behavior<PollerCmd> =>
-  Behaviors.setup<PollerCmd>((ctx) => {
+const poller = (maxTicks: number): Behavior<PollerCommand> =>
+  Behaviors.setup<PollerCommand>((ctx) => {
     setupCalls++;
     ctx.log.info(`poller setup#${setupCalls}`);
 
-    return Behaviors.withTimers<PollerCmd>((timers) => {
+    return Behaviors.withTimers<PollerCommand>((timers) => {
       timers.startTimerWithFixedDelay('tick', { kind: 'tick' }, 80, 40);
 
       let ticks = 0;

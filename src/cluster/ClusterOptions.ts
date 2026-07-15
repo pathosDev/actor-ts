@@ -1,9 +1,10 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { FailureDetectorOptionsType } from './FailureDetectorOptions.js';
 import type { Transport } from './Transport.js';
 import type { DowningProvider } from './downing/DowningProvider.js';
 
-/** Plain settings-object shape accepted by {@link Cluster.join}. */
+/** Plain options-object shape accepted by {@link Cluster.join}. */
 export interface ClusterOptionsType {
   readonly host: string;
   readonly port: number;
@@ -147,6 +148,27 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
   /** Optional split-brain resolver (KeepMajority, KeepOldest, …). */
   withDowning(downing: DowningProvider): this {
     return this.set('downing', downing);
+  }
+}
+
+/** Validates resolved {@link ClusterOptionsType} settings. */
+export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType> {
+  constructor() {
+    super('ClusterOptions');
+  }
+  protected rules(_s: Partial<ClusterOptionsType>): void {
+    this.nonEmptyString('host');
+    // A positive integer, not port() [1..65535]: with InMemoryTransport the
+    // port is a synthetic node-address discriminator (tests use e.g. 89001),
+    // and validation here is transport-agnostic — the TCP range is TcpTransport's
+    // concern, not the cluster's.
+    this.positiveInt('port');
+    this.positiveNumber('gossipIntervalMs');
+    this.positiveNumber('seedRetryIntervalMs');
+    this.positiveNumber('tombstoneTtlMs');
+    this.positiveNumber('tombstonePruneIntervalMs');
+    this.positiveNumber('tombstoneMinRetentionMs');
+    this.nonNegativeNumber('weaklyUpAfterMs'); // 0 disables auto weakly-up
   }
 }
 

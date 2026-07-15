@@ -406,9 +406,6 @@ examples/chat/
 │   ├── auth/credentials.ts          ← validateCredentials() — scrypt-verify, timing-flat
 │   ├── auth/password.ts             ← #99: scrypt hash/verify (Node crypto built-ins)
 │   ├── auth/sessionStore.ts         ← #99: HMAC-signed JWT-style tokens + DD revocation
-│   ├── plugins/
-│   │   ├── staticFilesPlugin.ts     ← @fastify/static wrapper
-│   │   └── webSocketPlugin.ts       ← @fastify/websocket + /ws route
 │   └── actors/
 │       ├── ChatRoomActor.ts            ← sharded PersistentActor (per room)
 │       ├── ChatRoomDirectoryActor.ts   ← #98: DD-ORSet wrapper for runtime rooms

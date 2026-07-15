@@ -4,7 +4,7 @@ import type {
   PromClientRegistryLike,
 } from './PromClientAdapter.js';
 
-/** Plain settings-object shape accepted by {@link promClientRegistry}. */
+/** Plain options-object shape accepted by {@link promClientRegistry}. */
 export interface PromClientAdapterOptionsType {
   /** The prom-client API namespace (`import client from 'prom-client'`). */
   readonly client: PromClientLike;

@@ -57,7 +57,7 @@ schneller + einfacher.
 ## Konfiguration
 
 ```ts
-interface ObjectStorageSnapshotStoreSettings {
+interface ObjectStorageSnapshotStoreOptionsType {
   backend:      ObjectStorageBackend;
   prefix?:      string;             // Default 'snapshots/'
   compression?: CompressionConfig;
@@ -108,10 +108,8 @@ es mit
 ein:
 
 ```ts
-const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.create()
-  .withBackend(backend);
-const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create()
-  .withCache(cache);
+const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.create().withBackend(backend);
+const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create().withCache(cache);
 const cached = new CachedSnapshotStore(
   new ObjectStorageSnapshotStore(objectStorageSnapshotStoreOptions),
   cachedSnapshotStoreOptions,
@@ -169,10 +167,8 @@ kleines Fenster, in dem alte Snapshots mit neuen koexistieren.
 
 ```ts
 {
-  const sqliteJournalOptions = SqliteJournalOptions.create()
-    .withPath('...');
-  const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.create()
-    .withBackend(backend);
+  const sqliteJournalOptions = SqliteJournalOptions.create().withPath('...');
+  const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.create().withBackend(backend);
   journal:       new SqliteJournal(sqliteJournalOptions),
   snapshotStore: new ObjectStorageSnapshotStore(objectStorageSnapshotStoreOptions),
 }

@@ -74,7 +74,7 @@ import { defaultsAdapter, PersistentActor } from 'actor-ts';
 interface DepositedV1 { kind: 'deposited'; amount: number }
 interface DepositedV2 extends DepositedV1 { currency: string }
 
-class Account extends PersistentActor<Cmd, Deposited, State> {
+class Account extends PersistentActor<Command, Deposited, State> {
   override eventAdapter() {
     return defaultsAdapter<DepositedV2>({
       manifest: 'BankAccount.Deposited',
@@ -124,7 +124,7 @@ const chain = MigrationChain
     currency: v2.currency,
   }));
 
-class Account extends PersistentActor<Cmd, DepositedV3, State> {
+class Account extends PersistentActor<Command, DepositedV3, State> {
   override eventAdapter() { return migratingAdapter(chain); }
   // ...
 }

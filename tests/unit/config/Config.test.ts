@@ -3,17 +3,17 @@ import { Config, ConfigError } from '../../../src/config/Config.js';
 
 describe('Config.empty', () => {
   test('has no paths', () => {
-    const c = Config.empty();
-    expect(c.hasPath('anything')).toBe(false);
-    expect(c.toJSON()).toEqual({});
+    const config = Config.empty();
+    expect(config.hasPath('anything')).toBe(false);
+    expect(config.toJSON()).toEqual({});
   });
 });
 
 describe('Config.fromObject', () => {
   test('builds a Config from a nested JS object', () => {
-    const c = Config.fromObject({ a: { b: 1 }, x: 'hi' });
-    expect(c.getInt('a.b')).toBe(1);
-    expect(c.getString('x')).toBe('hi');
+    const config = Config.fromObject({ a: { b: 1 }, x: 'hi' });
+    expect(config.getInt('a.b')).toBe(1);
+    expect(config.getString('x')).toBe('hi');
   });
 
   test('null / undefined → empty', () => {
@@ -29,27 +29,27 @@ describe('Config.fromObject', () => {
 
 describe('Config.parseString', () => {
   test('parses HOCON', () => {
-    const c = Config.parseString(`
+    const config = Config.parseString(`
       cluster {
         gossip-interval = 500ms
         seeds = ["10.0.0.1:2552", "10.0.0.2:2552"]
       }
     `);
-    expect(c.getDuration('cluster.gossip-interval')).toBe(500);
-    expect(c.getStringList('cluster.seeds')).toEqual(['10.0.0.1:2552', '10.0.0.2:2552']);
+    expect(config.getDuration('cluster.gossip-interval')).toBe(500);
+    expect(config.getStringList('cluster.seeds')).toEqual(['10.0.0.1:2552', '10.0.0.2:2552']);
   });
 
   test('resolves substitutions inline', () => {
-    const c = Config.parseString(`
+    const config = Config.parseString(`
       host = example.com
       addr = \${host}
     `);
-    expect(c.getString('addr')).toBe('example.com');
+    expect(config.getString('addr')).toBe('example.com');
   });
 });
 
 describe('Config accessors — type coercion & errors', () => {
-  const c = Config.parseString(`
+  const config = Config.parseString(`
     s = "text"
     n = 42
     f = 3.14
@@ -61,54 +61,54 @@ describe('Config accessors — type coercion & errors', () => {
   `);
 
   test('getString', () => {
-    expect(c.getString('s')).toBe('text');
-    expect(c.getString('n')).toBe('42');     // number coerces
-    expect(c.getString('b')).toBe('true');   // boolean coerces
+    expect(config.getString('s')).toBe('text');
+    expect(config.getString('n')).toBe('42');     // number coerces
+    expect(config.getString('b')).toBe('true');   // boolean coerces
   });
 
   test('getInt / getNumber', () => {
-    expect(c.getInt('n')).toBe(42);
-    expect(c.getNumber('f')).toBeCloseTo(3.14);
-    expect(() => c.getInt('f')).toThrow(/integer/);
+    expect(config.getInt('n')).toBe(42);
+    expect(config.getNumber('f')).toBeCloseTo(3.14);
+    expect(() => config.getInt('f')).toThrow(/integer/);
   });
 
   test('getBoolean accepts common synonyms', () => {
-    expect(c.getBoolean('b')).toBe(true);
+    expect(config.getBoolean('b')).toBe(true);
     const c2 = Config.parseString('x = "yes"\ny = "off"');
     expect(c2.getBoolean('x')).toBe(true);
     expect(c2.getBoolean('y')).toBe(false);
   });
 
   test('getDuration returns milliseconds', () => {
-    expect(c.getDuration('d')).toBe(2_000);
+    expect(config.getDuration('d')).toBe(2_000);
   });
 
   test('getBytes returns byte count', () => {
-    expect(c.getBytes('sz')).toBe(1024);
+    expect(config.getBytes('sz')).toBe(1024);
   });
 
   test('getStringList coerces scalars', () => {
-    expect(c.getStringList('xs')).toEqual(['a', 'b', 'c']);
+    expect(config.getStringList('xs')).toEqual(['a', 'b', 'c']);
   });
 
   test('getList returns raw values', () => {
-    expect(c.getList('xs').length).toBe(3);
+    expect(config.getList('xs').length).toBe(3);
   });
 
   test('getObject + getConfig pull subtrees', () => {
-    expect(c.getObject('obj')).toEqual({ key: 'value' });
-    expect(c.getConfig('obj').getString('key')).toBe('value');
+    expect(config.getObject('obj')).toEqual({ key: 'value' });
+    expect(config.getConfig('obj').getString('key')).toBe('value');
   });
 
   test('hasPath returns true / false correctly', () => {
-    expect(c.hasPath('s')).toBe(true);
-    expect(c.hasPath('obj.key')).toBe(true);
-    expect(c.hasPath('missing')).toBe(false);
+    expect(config.hasPath('s')).toBe(true);
+    expect(config.hasPath('obj.key')).toBe(true);
+    expect(config.hasPath('missing')).toBe(false);
   });
 
   test('missing path raises ConfigError', () => {
-    expect(() => c.getString('missing')).toThrow(ConfigError);
-    expect(() => c.getConfig('missing')).toThrow(ConfigError);
+    expect(() => config.getString('missing')).toThrow(ConfigError);
+    expect(() => config.getConfig('missing')).toThrow(ConfigError);
   });
 });
 
@@ -122,13 +122,13 @@ describe('Config — layering', () => {
 
   test('merge: overlay wins', () => {
     const base = Config.fromObject({ a: 1, b: 2 });
-    const overlay = Config.fromObject({ b: 20, c: 30 });
-    expect(base.merge(overlay).toJSON()).toEqual({ a: 1, b: 20, c: 30 });
+    const overlay = Config.fromObject({ b: 20, config: 30 });
+    expect(base.merge(overlay).toJSON()).toEqual({ a: 1, b: 20, config: 30 });
   });
 
   test('atPath wraps the tree under the given path', () => {
-    const c = Config.fromObject({ x: 1 }).atPath('foo.bar');
-    expect(c.toJSON()).toEqual({ foo: { bar: { x: 1 } } });
+    const config = Config.fromObject({ x: 1 }).atPath('foo.bar');
+    expect(config.toJSON()).toEqual({ foo: { bar: { x: 1 } } });
   });
 });
 
@@ -148,14 +148,14 @@ describe('Config.load', () => {
     const overrides = Config.fromObject({
       'actor-ts': { cluster: { 'gossip-interval': '100ms' } },
     });
-    const c = Config.load({ overrides });
-    expect(c.getDuration('actor-ts.cluster.gossip-interval')).toBe(100);
+    const config = Config.load({ overrides });
+    expect(config.getDuration('actor-ts.cluster.gossip-interval')).toBe(100);
     // Not overridden — still reference value.
-    expect(c.getInt('actor-ts.sharding.number-of-shards')).toBe(64);
+    expect(config.getInt('actor-ts.sharding.number-of-shards')).toBe(64);
   });
 
   test('ignores missing application.conf silently', () => {
-    const c = Config.load({ appConfPath: '/no/such/file.conf' });
-    expect(c.getInt('actor-ts.sharding.number-of-shards')).toBe(64);
+    const config = Config.load({ appConfPath: '/no/such/file.conf' });
+    expect(config.getInt('actor-ts.sharding.number-of-shards')).toBe(64);
   });
 });

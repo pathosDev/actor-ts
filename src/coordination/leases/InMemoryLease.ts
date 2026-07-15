@@ -1,4 +1,5 @@
 import type { Lease } from '../Lease.js';
+import { LeaseOptionsValidator } from '../LeaseOptions.js';
 import type { LeaseOptions, LeaseOptionsType } from '../LeaseOptions.js';
 
 interface LeaseRecord {
@@ -37,9 +38,9 @@ class InMemoryLeaseStore {
   }
 
   peek(name: string): LeaseRecord | undefined {
-    const r = this.leases.get(name);
-    if (r && r.expiresAt <= Date.now()) { this.leases.delete(name); return undefined; }
-    return r;
+    const lease = this.leases.get(name);
+    if (lease && lease.expiresAt <= Date.now()) { this.leases.delete(name); return undefined; }
+    return lease;
   }
 
   /** Reset — only for tests. */
@@ -61,11 +62,12 @@ export class InMemoryLease implements Lease {
   private held = false;
   private readonly onLostHandlers = new Set<(reason: string) => void>();
 
-  private readonly settings: LeaseOptionsType;
+  private readonly options: LeaseOptionsType;
 
   constructor(options: LeaseOptions = {}) {
-    this.settings = options as LeaseOptionsType;
-    this.renewalIntervalMs = this.settings.renewalIntervalMs ?? Math.max(100, Math.floor(this.settings.ttlMs / 3));
+    this.options = options as LeaseOptionsType;
+    new LeaseOptionsValidator().validate(this.options);
+    this.renewalIntervalMs = this.options.renewalIntervalMs ?? Math.max(100, Math.floor(this.options.ttlMs / 3));
   }
 
   async acquire(): Promise<boolean> {
@@ -79,15 +81,15 @@ export class InMemoryLease implements Lease {
    * the trailing `<version>` integer.
    */
   async acquireWithToken(): Promise<{ readonly token: string } | null> {
-    const retries = this.settings.acquireRetries ?? 1;
-    const delay = this.settings.acquireRetryDelayMs ?? 50;
+    const retries = this.options.acquireRetries ?? 1;
+    const delay = this.options.acquireRetryDelayMs ?? 50;
     for (let i = 0; i < retries; i++) {
-      const expiresAt = Date.now() + this.settings.ttlMs;
-      const version = inMemoryLeaseStore.tryAcquire(this.settings.name, this.settings.owner, expiresAt);
+      const expiresAt = Date.now() + this.options.ttlMs;
+      const version = inMemoryLeaseStore.tryAcquire(this.options.name, this.options.owner, expiresAt);
       if (version > 0) {
         this.held = true;
         this.startRenewalLoop();
-        return { token: `${this.settings.name}@v${version}` };
+        return { token: `${this.options.name}@v${version}` };
       }
       if (i < retries - 1) await sleep(delay);
     }
@@ -98,7 +100,7 @@ export class InMemoryLease implements Lease {
     if (!this.held) return;
     this.held = false;
     if (this.renewalTimer) { clearInterval(this.renewalTimer); this.renewalTimer = null; }
-    inMemoryLeaseStore.release(this.settings.name, this.settings.owner);
+    inMemoryLeaseStore.release(this.options.name, this.options.owner);
   }
 
   checkAlive(): boolean { return this.held; }
@@ -111,13 +113,13 @@ export class InMemoryLease implements Lease {
   private startRenewalLoop(): void {
     this.renewalTimer = setInterval(() => {
       if (!this.held) return;
-      const expiresAt = Date.now() + this.settings.ttlMs;
-      const ok = inMemoryLeaseStore.renew(this.settings.name, this.settings.owner, expiresAt);
+      const expiresAt = Date.now() + this.options.ttlMs;
+      const ok = inMemoryLeaseStore.renew(this.options.name, this.options.owner, expiresAt);
       if (!ok) {
         this.held = false;
         if (this.renewalTimer) { clearInterval(this.renewalTimer); this.renewalTimer = null; }
-        for (const h of this.onLostHandlers) {
-          try { h('lease lost during renewal'); } catch { /* swallow */ }
+        for (const handler of this.onLostHandlers) {
+          try { handler('lease lost during renewal'); } catch { /* swallow */ }
         }
       }
     }, this.renewalIntervalMs);

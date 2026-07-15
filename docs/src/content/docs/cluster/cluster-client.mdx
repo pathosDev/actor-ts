@@ -11,8 +11,7 @@ cluster-internal actors via known **receptionist contacts**.
 ```ts
 import { ClusterClient, ClusterClientOptions } from 'actor-ts';
 
-const clusterClientOptions = ClusterClientOptions.create()
-  .withContactPoints(['actor-ts://my-app@10.0.0.5:2552/system/receptionist']);
+const clusterClientOptions = ClusterClientOptions.create().withContactPoints(['actor-ts://my-app@10.0.0.5:2552/system/receptionist']);
 const client = new ClusterClient(
   clusterClientOptions,
 );
@@ -21,7 +20,7 @@ const client = new ClusterClient(
 client.send('/user/api/orders', { kind: 'place', ... });
 
 // Or via receptionist by service key:
-client.sendByKey(ServiceKey.of<ApiMsg>('api'), { kind: 'list-orders' });
+client.sendByKey(ServiceKey.of<ApiMessage>('api'), { kind: 'list-orders' });
 ```
 
 ## When to use it
@@ -63,7 +62,7 @@ The client:
 ## Configuration
 
 ```ts
-interface ClusterClientSettings {
+interface ClusterClientOptionsType {
   contacts:            string[];       // at least one cluster-node path
   reconnectIntervalMs?: number;
   acceptableHeartbeatPauseMs?: number;
@@ -100,7 +99,7 @@ const receptionistRef = system.actorSelection('/user/cluster-client-receptionist
 
 receptionistRef.tell({
   kind:    'register-service',
-  key:     ServiceKey.of<OrdersMsg>('orders'),
+  key:     ServiceKey.of<OrdersMessage>('orders'),
   ref:     ordersActor,
 });
 ```
@@ -115,8 +114,7 @@ const ref = await system.actorSelection('actor-ts://my-app@host:2552/user/api').
 ref.tell(...);
 
 // Outside the cluster — ClusterClient:
-const clusterClientOptions = ClusterClientOptions.create()
-  .withContactPoints([...]);
+const clusterClientOptions = ClusterClientOptions.create().withContactPoints([...]);
 const client = new ClusterClient(clusterClientOptions);
 client.send('/user/api', ...);
 ```

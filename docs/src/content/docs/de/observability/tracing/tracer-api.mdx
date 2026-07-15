@@ -15,17 +15,19 @@ Die Tracing-API des Frameworks ist eine **minimale Abstraktion
   `traceparent` für nachgelagerte OTel-Services.
 
 ```ts
-import { ActorSystem, TracingExtensionId, OtelTracerAdapter } from 'actor-ts';
+import * as otel from '@opentelemetry/api';
+import { ActorSystem, TracingExtensionId, otelTracer, OtelAdapterOptions } from 'actor-ts';
 
 const system = ActorSystem.create('my-app');
 
-system.extension(TracingExtensionId).configure({
-  tracer: new OtelTracerAdapter({ /* OTel-SDK */ }),
-});
+// Enable a tracer — the OTel bridge in production (see the OTel adapter
+// page for the SDK setup), or a RecordingTracer in tests.
+const otelAdapterOptions = OtelAdapterOptions.create().withApi(otel);
+system.extension(TracingExtensionId).enable(otelTracer(otelAdapterOptions));
 
 // Mit aktiviertem Tracing erzeugt das Framework automatisch Spans für Actor-Message-Handling.
 // User-Code kann ebenfalls eigene Spans erzeugen:
-const tracer = system.extension(TracingExtensionId).tracer;
+const tracer = system.extension(TracingExtensionId).get();
 const span = tracer.startSpan('process-order');
 try {
   await processOrder(...);
@@ -144,7 +146,7 @@ extract manuell, um Tracing über Services zu überbrücken.
 | --- | --- |
 | **`NoopTracer`** | Default. Tracing deaktiviert. Null Overhead. |
 | **`RecordingTracer`** | Tests. Speichert jeden Span im Speicher für Assertions. |
-| **`OtelTracerAdapter`** | Produktion. Pipet durch das OpenTelemetry-SDK. |
+| **`otelTracer`** | Produktion. Brücke zur OpenTelemetry-API. |
 
 Produktion: konfiguriere den OTel-Adapter, um zu deinem Tracing-
 Backend zu exportieren (Jaeger, Tempo, Honeycomb, Datadog etc.).

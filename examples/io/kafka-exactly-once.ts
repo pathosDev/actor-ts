@@ -28,7 +28,7 @@ import {
   Props,
   KafkaActor,
   KafkaOptions,
-  type KafkaCmd,
+  type KafkaCommand,
   type KafkaRecord,
 } from '../../src/index.js';
 import type { ActorRef } from '../../src/index.js';
@@ -36,7 +36,7 @@ import type { ActorRef } from '../../src/index.js';
 interface Order { orderId: string; userId: string; amount: number }
 
 class OrderProcessor extends Actor<KafkaRecord> {
-  constructor(private readonly kafka: ActorRef<KafkaCmd>) { super(); }
+  constructor(private readonly kafka: ActorRef<KafkaCommand>) { super(); }
 
   override async onReceive(rec: KafkaRecord): Promise<void> {
     const text = new TextDecoder().decode(rec.value!);
@@ -84,7 +84,7 @@ async function main(): Promise<void> {
   const system = ActorSystem.create('kafka-eo-demo');
 
   // Forward decl so the processor can refer to the kafka actor.
-  let kafka!: ActorRef<KafkaCmd>;
+  let kafka!: ActorRef<KafkaCommand>;
 
   const processor = system.spawn(
     Props.create(() => new OrderProcessor(kafka)),

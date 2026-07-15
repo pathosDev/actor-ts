@@ -51,8 +51,7 @@ const s3ObjectStorageOptions = S3ObjectStorageOptions.create()
   .withBucket('my-app-state');
 const backend = new S3ObjectStorageBackend(s3ObjectStorageOptions);
 
-const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
-  .withBackend(backend);
+const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create().withBackend(backend);
 const stateStore = new ObjectStorageDurableStateStore(
   objectStorageDurableStateStoreOptions,
 );
@@ -131,8 +130,7 @@ verlässt.
 ```ts
 import { FilesystemObjectStorageBackend, FilesystemObjectStorageOptions } from 'actor-ts';
 
-const filesystemObjectStorageOptions = FilesystemObjectStorageOptions.create()
-  .withDir('/var/lib/actor-ts');
+const filesystemObjectStorageOptions = FilesystemObjectStorageOptions.create().withDir('/var/lib/actor-ts');
 const backend = new FilesystemObjectStorageBackend(
   filesystemObjectStorageOptions,
 );

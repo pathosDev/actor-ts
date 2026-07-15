@@ -293,7 +293,7 @@ export function useChat(): {
     }
   }, [cancelReconnect]);
 
-  const connectImpl = useCallback(
+  const connectImplementation = useCallback(
     (firstFrame: ClientMessage) => {
       dispatch({ type: 'login-error', reason: '' });
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -314,7 +314,7 @@ export function useChat(): {
           reconnectAttemptsRef.current++;
           reconnectTimerRef.current = setTimeout(() => {
             reconnectTimerRef.current = null;
-            connectImpl({ type: 'resume', token });
+            connectImplementation({ type: 'resume', token });
           }, delay);
         } else {
           dispatch({ type: 'reset' });
@@ -331,9 +331,9 @@ export function useChat(): {
 
   const connect = useCallback(
     (username: string, password: string) => {
-      connectImpl({ type: 'login', username, password });
+      connectImplementation({ type: 'login', username, password });
     },
-    [connectImpl],
+    [connectImplementation],
   );
 
   const logout = useCallback(() => {
@@ -408,7 +408,7 @@ export function useChat(): {
       : null;
     if (stored) {
       dispatch({ type: 'start-resuming' });
-      connectImpl({ type: 'resume', token: stored });
+      connectImplementation({ type: 'resume', token: stored });
     }
     return () => {
       try { wsRef.current?.close(); } catch { /* ignore */ }

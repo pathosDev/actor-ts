@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   FailureDetector,
-  defaultFailureDetectorSettings,
+  defaultFailureDetectorOptions,
 } from '../../src/cluster/FailureDetector.js';
 import { FailureDetectorOptions, type FailureDetectorOptionsType } from '../../src/cluster/FailureDetectorOptions.js';
 import { NodeAddress } from '../../src/cluster/NodeAddress.js';
@@ -21,11 +21,11 @@ function fd(overrides: Partial<FailureDetectorOptionsType> = {}): FailureDetecto
 
 describe('FailureDetector', () => {
   test('defaults are reasonable', () => {
-    expect(defaultFailureDetectorSettings.heartbeatIntervalMs).toBeGreaterThan(0);
-    expect(defaultFailureDetectorSettings.unreachableAfterMs)
-      .toBeGreaterThan(defaultFailureDetectorSettings.heartbeatIntervalMs);
-    expect(defaultFailureDetectorSettings.downAfterMs)
-      .toBeGreaterThan(defaultFailureDetectorSettings.unreachableAfterMs);
+    expect(defaultFailureDetectorOptions.heartbeatIntervalMs).toBeGreaterThan(0);
+    expect(defaultFailureDetectorOptions.unreachableAfterMs)
+      .toBeGreaterThan(defaultFailureDetectorOptions.heartbeatIntervalMs);
+    expect(defaultFailureDetectorOptions.downAfterMs)
+      .toBeGreaterThan(defaultFailureDetectorOptions.unreachableAfterMs);
   });
 
   test('unknown peer is considered healthy', () => {
@@ -90,7 +90,7 @@ describe('FailureDetector', () => {
     expect(det.decide(other, 950)).toBe('healthy');
   });
 
-  test('interval getter reflects settings', () => {
+  test('interval getter reflects options', () => {
     expect(fd({ heartbeatIntervalMs: 250 }).interval).toBe(250);
   });
 

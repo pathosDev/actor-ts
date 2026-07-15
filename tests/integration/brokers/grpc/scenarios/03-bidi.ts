@@ -3,7 +3,7 @@
  * back, client closes.  Verifies the streamId threading +
  * stream-end signal in the framework's bidi flow.
  */
-import type { GrpcClientCmd } from '../../../../../src/io/broker/GrpcClientActor.js';
+import type { GrpcClientCommand } from '../../../../../src/io/broker/GrpcClientActor.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import { spawnCollector, type GrpcCtx } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
@@ -13,7 +13,7 @@ export const scenario: BrokerScenario<GrpcCtx> = {
   async run(ctx) {
     const { ref: collectorRef, collector } = spawnCollector(ctx);
     try {
-      const client = ctx.client as unknown as ActorRef<GrpcClientCmd>;
+      const client = ctx.client as unknown as ActorRef<GrpcClientCommand>;
       client.tell({
         kind: 'bidiStart',
         method: 'Bidi',

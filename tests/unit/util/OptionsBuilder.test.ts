@@ -40,15 +40,15 @@ describe('OptionsBuilder base', () => {
   });
 
   test('chaining returns the concrete builder type', () => {
-    const b = FooOptions.create().withA(1).withB('x');
-    expect(b).toBeInstanceOf(FooOptions);
-    expect(b.build()).toEqual({ a: 1, b: 'x' });
+    const builder = FooOptions.create().withA(1).withB('x');
+    expect(builder).toBeInstanceOf(FooOptions);
+    expect(builder.build()).toEqual({ a: 1, b: 'x' });
   });
 
   test('build() is an independent snapshot (later mutation does not change it)', () => {
-    const b = FooOptions.create().withA(1);
-    const snap = b.build();
-    b.withA(2).withB('later');
+    const builder = FooOptions.create().withA(1);
+    const snap = builder.build();
+    builder.withA(2).withB('later');
     expect(snap).toEqual({ a: 1 });
   });
 
@@ -60,16 +60,16 @@ describe('OptionsBuilder base', () => {
     // withA is defined on the intermediate base, withB on the concrete —
     // the chain must remain BazOptions throughout (mirrors
     // MqttOptions.create().withCircuitBreaker(...).withBrokerUrl(...)).
-    const b = BazOptions.create().withA(1).withB('x');
-    expect(b).toBeInstanceOf(BazOptions);
-    expect(b.build()).toEqual({ a: 1, b: 'x' });
+    const builder = BazOptions.create().withA(1).withB('x');
+    expect(builder).toBeInstanceOf(BazOptions);
+    expect(builder.build()).toEqual({ a: 1, b: 'x' });
   });
 });
 
-describe('a builder IS a settings object (structural)', () => {
-  // A consumer accepts `XOptions | Partial<XSettings>` and reads the argument
+describe('a builder IS a options object (structural)', () => {
+  // A consumer accepts `XOptions | Partial<XOptions>` and reads the argument
   // directly — a builder and a plain object are interchangeable, no resolve step.
-  function readSettings(options: FooOptions | Partial<Foo>): Partial<Foo> {
+  function readOptions(options: FooOptions | Partial<Foo>): Partial<Foo> {
     return { ...(options as Partial<Foo>) };
   }
 
@@ -80,25 +80,25 @@ describe('a builder IS a settings object (structural)', () => {
   });
 
   test('a builder and the equivalent plain object are read identically by a consumer', () => {
-    const fromBuilder = readSettings(FooOptions.create().withA(1).withB('x'));
-    const fromPlain = readSettings({ a: 1, b: 'x' });
+    const fromBuilder = readOptions(FooOptions.create().withA(1).withB('x'));
+    const fromPlain = readOptions({ a: 1, b: 'x' });
     expect(fromBuilder).toEqual(fromPlain);
     expect(fromBuilder).toEqual({ a: 1, b: 'x' });
   });
 
   test('a builder serializes to just its fields (no withX/build leakage)', () => {
-    const b = FooOptions.create().withA(1).withB('x');
-    expect(JSON.parse(JSON.stringify(b))).toEqual({ a: 1, b: 'x' });
+    const builder = FooOptions.create().withA(1).withB('x');
+    expect(JSON.parse(JSON.stringify(builder))).toEqual({ a: 1, b: 'x' });
   });
 
   test('an empty builder reads as {}', () => {
-    expect(readSettings(FooOptions.create())).toEqual({});
-    expect(readSettings({})).toEqual({});
+    expect(readOptions(FooOptions.create())).toEqual({});
+    expect(readOptions({})).toEqual({});
   });
 
   test('reading does not require the fields to exist (unset fields are absent)', () => {
-    const b = FooOptions.create().withA(1);
-    expect(readSettings(b)).toEqual({ a: 1 });
-    expect('b' in readSettings(b)).toBe(false);
+    const builder = FooOptions.create().withA(1);
+    expect(readOptions(builder)).toEqual({ a: 1 });
+    expect('b' in readOptions(builder)).toBe(false);
   });
 });

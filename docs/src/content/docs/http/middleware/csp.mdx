@@ -1,0 +1,55 @@
+---
+title: Content-Security-Policy
+description: contentSecurityPolicy() emits a Content-Security-Policy header from a typed directive map, merged over a helmet-parity baseline, with a report-only variant and a source-token injection guard.
+---
+
+`contentSecurityPolicy()` builds a CSP header from a typed directive map.
+camelCase keys serialise to their kebab-case directive names, and your
+directives merge over a helmet-parity baseline.
+
+```ts
+import { contentSecurityPolicy, CspOptions, withMiddleware } from 'actor-ts/http';
+
+const csp = contentSecurityPolicy(
+  CspOptions.create().withDirectives({
+    scriptSrc: ["'self'", 'https://cdn.example'],
+    imgSrc: ["'self'", 'data:', 'https:'],
+  }),
+);
+
+const routes = withMiddleware(csp, appRoutes);
+```
+
+The baseline (`useDefaults`, on by default) is `default-src 'self'`,
+`object-src 'none'`, `base-uri 'self'`, `frame-ancestors 'self'`,
+`script-src 'self'`, and friends. Your directives override per-directive;
+set a directive to `[]` to remove it, or call `withoutDefaults()` to emit
+only what you specify.
+
+## Configuration
+
+| Builder method | Purpose |
+| --- | --- |
+| `withDirectives(map)` | The directive map (merged over the baseline). |
+| `withoutDefaults()` | Emit only the given directives — skip the baseline. |
+| `withReportOnly(flag?)` | Send `Content-Security-Policy-Report-Only` instead of enforcing. |
+
+`upgradeInsecureRequests: true` renders the valueless directive; `reportUri`
+and `reportTo` are supported. A source token containing `;`, `,`, or
+whitespace throws at construction — no silent header injection.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="note" title="Nonces are not built in (yet)">
+  Per-request nonces need a template/SSR integration to reach the rendered
+  HTML, which the framework doesn't have. A handler that needs one generates
+  its own nonce (`crypto.randomBytes`) and sets its own CSP header — this
+  middleware backs off because it never overwrites a header the handler
+  already set.
+</Aside>
+
+## Where to next
+
+- **[Security headers](/http/middleware/security-headers/)** — the rest of the response headers.
+- **[HTML & XSS](/http/html-xss/)** — escaping is your first line; CSP is defence in depth.
+- **[Security](/http/security/)** — the recommended stack.

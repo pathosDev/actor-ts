@@ -24,55 +24,55 @@ function envelope(from: NodeAddress, to: NodeAddress): BrokeredMessage {
 
 describe('WorkerBroker — register / unregister', () => {
   test('register hooks the port and starts it', () => {
-    const b = new WorkerBroker();
-    const p = new FakePort();
-    b.register(addr(1), p);
-    expect(p.onmessage).toBeTypeOf('function');
-    expect(p.started).toBe(true);
+    const broker = new WorkerBroker();
+    const port = new FakePort();
+    broker.register(addr(1), port);
+    expect(port.onmessage).toBeTypeOf('function');
+    expect(port.started).toBe(true);
   });
 
   test('duplicate register throws', () => {
-    const b = new WorkerBroker();
-    const a = addr(1);
-    b.register(a, new FakePort());
-    expect(() => b.register(a, new FakePort()))
+    const broker = new WorkerBroker();
+    const address = addr(1);
+    broker.register(address, new FakePort());
+    expect(() => broker.register(address, new FakePort()))
       .toThrow(/already registered/);
   });
 
   test('unregister closes the port and clears the slot', () => {
-    const b = new WorkerBroker();
-    const a = addr(1);
-    const p = new FakePort();
-    b.register(a, p);
-    b.unregister(a);
-    expect(p.closed).toBe(true);
-    expect(p.onmessage).toBeNull();
+    const broker = new WorkerBroker();
+    const address = addr(1);
+    const port = new FakePort();
+    broker.register(address, port);
+    broker.unregister(address);
+    expect(port.closed).toBe(true);
+    expect(port.onmessage).toBeNull();
     // After unregister: registered() should no longer include it.
-    expect(b.registered().map(x => x.toString())).not.toContain(a.toString());
+    expect(broker.registered().map(x => x.toString())).not.toContain(address.toString());
   });
 
   test('unregister of unknown address is a no-op', () => {
-    const b = new WorkerBroker();
-    expect(() => b.unregister(addr(99))).not.toThrow();
+    const broker = new WorkerBroker();
+    expect(() => broker.unregister(addr(99))).not.toThrow();
   });
 
   test('registered() returns a snapshot of NodeAddress values', () => {
-    const b = new WorkerBroker();
-    b.register(addr(1), new FakePort());
-    b.register(addr(2), new FakePort());
-    b.register(addr(3), new FakePort());
-    const out = b.registered().map(a => a.toString()).sort();
+    const broker = new WorkerBroker();
+    broker.register(addr(1), new FakePort());
+    broker.register(addr(2), new FakePort());
+    broker.register(addr(3), new FakePort());
+    const out = broker.registered().map(address => address.toString()).sort();
     expect(out).toEqual(['sys@host:1', 'sys@host:2', 'sys@host:3']);
   });
 });
 
 describe('WorkerBroker — routing', () => {
   test('forwards messages to the registered destination port', () => {
-    const b = new WorkerBroker();
+    const broker = new WorkerBroker();
     const aPort = new FakePort();
     const bPort = new FakePort();
-    b.register(addr(1), aPort);
-    b.register(addr(2), bPort);
+    broker.register(addr(1), aPort);
+    broker.register(addr(2), bPort);
 
     // Inject a message into aPort destined for addr(2).
     const env = envelope(addr(1), addr(2));
@@ -85,9 +85,9 @@ describe('WorkerBroker — routing', () => {
   });
 
   test('drops messages destined for unknown addresses silently', () => {
-    const b = new WorkerBroker();
+    const broker = new WorkerBroker();
     const aPort = new FakePort();
-    b.register(addr(1), aPort);
+    broker.register(addr(1), aPort);
 
     aPort.inject(envelope(addr(1), addr(999)));
     // Nothing crashed; the unknown destination has nowhere to forward
@@ -96,13 +96,13 @@ describe('WorkerBroker — routing', () => {
   });
 
   test('after close(), further messages are dropped', () => {
-    const b = new WorkerBroker();
+    const broker = new WorkerBroker();
     const aPort = new FakePort();
     const bPort = new FakePort();
-    b.register(addr(1), aPort);
-    b.register(addr(2), bPort);
+    broker.register(addr(1), aPort);
+    broker.register(addr(2), bPort);
 
-    b.close();
+    broker.close();
 
     aPort.inject(envelope(addr(1), addr(2)));
     expect(aPort.closed).toBe(true);
@@ -111,21 +111,21 @@ describe('WorkerBroker — routing', () => {
   });
 
   test('close() empties the registry', () => {
-    const b = new WorkerBroker();
-    b.register(addr(1), new FakePort());
-    b.register(addr(2), new FakePort());
-    b.close();
-    expect(b.registered()).toEqual([]);
+    const broker = new WorkerBroker();
+    broker.register(addr(1), new FakePort());
+    broker.register(addr(2), new FakePort());
+    broker.close();
+    expect(broker.registered()).toEqual([]);
   });
 
   test('messages route correctly across more than two workers', () => {
-    const b = new WorkerBroker();
+    const broker = new WorkerBroker();
     const p1 = new FakePort();
     const p2 = new FakePort();
     const p3 = new FakePort();
-    b.register(addr(1), p1);
-    b.register(addr(2), p2);
-    b.register(addr(3), p3);
+    broker.register(addr(1), p1);
+    broker.register(addr(2), p2);
+    broker.register(addr(3), p3);
 
     p1.inject(envelope(addr(1), addr(3)));
     p2.inject(envelope(addr(2), addr(1)));

@@ -1,9 +1,9 @@
-import { LeaseOptionsBuilder } from '../LeaseOptions.js';
+import { LeaseOptionsBuilder, LeaseOptionsValidator } from '../LeaseOptions.js';
 import type { LeaseOptionsType } from '../LeaseOptions.js';
 import type { K8sFetchClient } from './k8sApi.js';
 
 /**
- * K8s-specific additions to the common lease settings.  When `apiServerUrl`,
+ * K8s-specific additions to the common lease options.  When `apiServerUrl`,
  * `authToken`, or `caCert` are omitted the adapter probes the standard
  * ServiceAccount mount points (`/var/run/secrets/kubernetes.io/...`).
  *
@@ -64,6 +64,18 @@ export class KubernetesLeaseOptionsBuilder extends LeaseOptionsBuilder<Kubernete
   /** Test seam — inject a fake fetch client. */
   withClient(client: K8sFetchClient): this {
     return this.set('client', client);
+  }
+}
+
+/** Validates resolved {@link KubernetesLeaseOptionsType} settings — common lease fields plus namespace / apiServerUrl. */
+export class KubernetesLeaseOptionsValidator extends LeaseOptionsValidator<KubernetesLeaseOptionsType> {
+  constructor() {
+    super('KubernetesLeaseOptions');
+  }
+  protected override rules(s: Partial<KubernetesLeaseOptionsType>): void {
+    this.commonRules(s);
+    this.nonEmptyString('namespace');
+    this.url('apiServerUrl', ['http', 'https']);
   }
 }
 

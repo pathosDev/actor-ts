@@ -21,12 +21,11 @@ import {
 } from 'actor-ts';
 
 const system = ActorSystem.create('my-app');
+const sqliteJournalOptions = SqliteJournalOptions.create()
+  .withPath('/var/lib/my-app/events.db')
+  .withWal(true);
+const sqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create().withPath('/var/lib/my-app/snapshots.db');
 system.extension(PersistenceExtensionId).configure({
-  const sqliteJournalOptions = SqliteJournalOptions.create()
-    .withPath('/var/lib/my-app/events.db')
-    .withWal(true);
-  const sqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create()
-    .withPath('/var/lib/my-app/snapshots.db');
   journal: new SqliteJournal(sqliteJournalOptions),
   snapshotStore: new SqliteSnapshotStore(sqliteSnapshotStoreOptions),
 });
@@ -49,8 +48,7 @@ interface SqliteJournalOptions {
 ### `path`
 
 ```ts
-const sqliteJournalOptions = SqliteJournalOptions.create()
-  .withPath('/var/lib/my-app/events.db');
+const sqliteJournalOptions = SqliteJournalOptions.create().withPath('/var/lib/my-app/events.db');
 new SqliteJournal(sqliteJournalOptions)
 ```
 
@@ -64,8 +62,7 @@ behaves exactly like the file version but goes away with the
 process:
 
 ```ts
-const sqliteJournalOptions = SqliteJournalOptions.create()
-  .withPath(':memory:');
+const sqliteJournalOptions = SqliteJournalOptions.create().withPath(':memory:');
 new SqliteJournal(sqliteJournalOptions)
 ```
 

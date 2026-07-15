@@ -29,7 +29,7 @@ interface EventRow {
  * Cross-process backend → no in-process event bus.
  */
 export class MariaDbJournal implements Journal {
-  private readonly settings: MariaDbJournalOptionsType;
+  private readonly options: MariaDbJournalOptionsType;
   private readonly table: string;
   private readonly tagsTable: string;
   private readonly autoCreate: boolean;
@@ -39,13 +39,13 @@ export class MariaDbJournal implements Journal {
   private closed = false;
 
   constructor(options: MariaDbJournalOptions = {}) {
-    const s = (options as MariaDbJournalOptionsType);
-    this.settings = s;
-    this.table = assertSafeIdentifier(s.eventsTable ?? 'events', 'events table');
+    const resolvedOptions = (options as MariaDbJournalOptionsType);
+    this.options = resolvedOptions;
+    this.table = assertSafeIdentifier(resolvedOptions.eventsTable ?? 'events', 'events table');
     this.tagsTable = assertSafeIdentifier(
-      s.tagsTable ?? `${this.table}_tags`, 'tags table',
+      resolvedOptions.tagsTable ?? `${this.table}_tags`, 'tags table',
     );
-    this.autoCreate = s.autoCreateTables ?? true;
+    this.autoCreate = resolvedOptions.autoCreateTables ?? true;
   }
 
   async append<E>(
@@ -179,7 +179,7 @@ export class MariaDbJournal implements Journal {
   }
 
   private async init(): Promise<void> {
-    const pool = await buildMariaDbPool(this.settings);
+    const pool = await buildMariaDbPool(this.options);
     if (this.autoCreate) {
       // Indexes declared inline — `CREATE INDEX IF NOT EXISTS` isn't
       // portable across MariaDB/MySQL versions, but inline INDEX in

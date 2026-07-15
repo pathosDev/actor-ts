@@ -51,6 +51,7 @@ export {
 } from './util/Either.js';
 export type { Either } from './util/Either.js';
 export { OptionsBuilder } from './util/OptionsBuilder.js';
+export { OptionsValidator, OptionsError } from './util/OptionsValidator.js';
 
 // Core API
 export { Actor } from './Actor.js';
@@ -191,6 +192,8 @@ export {
   CircuitBreaker,
   CircuitBreakerOpenError,
   CircuitBreakerTimeoutError,
+  CircuitBreakerOptions,
+  CircuitBreakerOptionsBuilder,
   exponentialBackoff,
   linearBackoff,
   BackoffSupervisor,
@@ -199,7 +202,7 @@ export type {
   PipeToOptions,
   CancellablePromise,
   RetryOptions,
-  CircuitBreakerSettings,
+  CircuitBreakerOptionsType,
   CircuitState,
   BackoffPolicy,
   ExponentialBackoffOptions,
@@ -363,7 +366,7 @@ export {
   ObjectStorageDurableStateStoreOptions,
   ObjectStoragePluginOptions,
   ProjectionOptions,
-  ByPidProjectionOptions,
+  ByPersistenceIdProjectionOptions,
   ByTagProjectionOptions,
   DurableStateOptions,
   ReplicatedEventSourcedActor,
@@ -441,7 +444,7 @@ export type {
   TagFilter,
   TagFilterSpec,
   ProjectionOptionsType,
-  ByPidProjectionOptionsType,
+  ByPersistenceIdProjectionOptionsType,
   ByTagProjectionOptionsType,
   OffsetStore,
   ReplicatedEventEnvelope,
@@ -485,6 +488,7 @@ export * from './io/index.js';
 export {
   CacheError,
   InMemoryCache,
+  InMemoryCacheOptions,
   RedisCache,
   RedisCacheOptions,
   MemcachedCache,
@@ -497,6 +501,7 @@ export {
 } from './cache/index.js';
 export type {
   Cache,
+  InMemoryCacheOptionsType,
   RedisCacheOptionsType,
   RedisClientLike,
   MemcachedCacheOptionsType,
@@ -509,15 +514,17 @@ export {
   ProducerController,
   ProducerControllerOptions,
   ConsumerController,
+  ConsumerControllerOptions,
+  ConsumerControllerOptionsBuilder,
 } from './delivery/index.js';
 export type {
   ProducerControllerOptionsType,
   ProducerSend,
-  ConsumerControllerSettings,
+  ConsumerControllerOptionsType,
   ProducerHandle,
   ConsumerHandle,
   Delivery,
-  Ack,
+  Acknowledgment,
   ConfirmationCallback,
 } from './delivery/index.js';
 
@@ -540,11 +547,15 @@ export {
   BoundedMailbox,
   MailboxFullError,
   PriorityMailbox,
+  BoundedMailboxOptions,
+  BoundedMailboxOptionsBuilder,
+  PriorityMailboxOptions,
+  PriorityMailboxOptionsBuilder,
 } from './mailbox/index.js';
 export type {
-  BoundedMailboxSettings,
+  BoundedMailboxOptionsType,
   BoundedMailboxOverflow,
-  PriorityMailboxSettings,
+  PriorityMailboxOptionsType,
   PriorityFunction,
 } from './mailbox/index.js';
 
@@ -555,7 +566,7 @@ export {
   HealthCheckRegistry,
 } from './management/index.js';
 export type {
-  ManagementRoutesSettings,
+  ManagementRoutesOptionsType,
   HealthCheckFn,
   HealthCheckResult,
 } from './management/index.js';
@@ -592,7 +603,7 @@ export {
 } from './discovery/index.js';
 export type {
   ReceptionistOptionsType,
-  ReceptionistGossipMsg,
+  ReceptionistGossipMessage,
   SeedProvider,
   ConfigSeedProviderOptionsType,
   DnsSeedProviderOptionsType,

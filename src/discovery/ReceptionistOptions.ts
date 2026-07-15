@@ -1,7 +1,8 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { Cluster } from '../cluster/Cluster.js';
 
-/** Plain settings-object shape accepted by a {@link Receptionist}. */
+/** Plain options-object shape accepted by a {@link Receptionist}. */
 export interface ReceptionistOptionsType {
   readonly cluster?: Cluster | null;
   readonly gossipIntervalMs?: number;
@@ -27,6 +28,16 @@ export class ReceptionistOptionsBuilder extends OptionsBuilder<ReceptionistOptio
   /** Interval between gossip pushes in milliseconds.  Default: cluster gossip interval. */
   withGossipIntervalMs(gossipIntervalMs: number): this {
     return this.set('gossipIntervalMs', gossipIntervalMs);
+  }
+}
+
+/** Validates resolved {@link ReceptionistOptionsType} settings. */
+export class ReceptionistOptionsValidator extends OptionsValidator<ReceptionistOptionsType> {
+  constructor() {
+    super('ReceptionistOptions');
+  }
+  protected rules(_s: Partial<ReceptionistOptionsType>): void {
+    this.positiveNumber('gossipIntervalMs');
   }
 }
 

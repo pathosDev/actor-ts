@@ -38,34 +38,34 @@ export function broadcastStrategy(): RoutingStrategy {
   return (routees) => routees;
 }
 
-interface RouterConfig<TMsg> {
+interface RouterConfig<TMessage> {
   size: number;
-  routeeProps: Props<TMsg>;
+  routeeProps: Props<TMessage>;
   strategy: RoutingStrategy;
 }
 
-class RouterActor<TMsg> extends Actor<TMsg | Broadcast<TMsg>> {
-  private routees: ActorRef<TMsg>[] = [];
+class RouterActor<TMessage> extends Actor<TMessage | Broadcast<TMessage>> {
+  private routees: ActorRef<TMessage>[] = [];
   private counter = 0;
 
-  constructor(private readonly cfg: RouterConfig<TMsg>) { super(); }
+  constructor(private readonly cfg: RouterConfig<TMessage>) { super(); }
 
   override async preStart(): Promise<void> {
     for (let i = 0; i < this.cfg.size; i++) {
       const routee = this.context.spawn(this.cfg.routeeProps, `routee-${i + 1}`);
-      this.routees.push(routee as ActorRef<TMsg>);
+      this.routees.push(routee as ActorRef<TMessage>);
       this.context.watch(routee);
     }
   }
 
-  override onReceive(message: TMsg | Broadcast<TMsg>): void {
+  override onReceive(message: TMessage | Broadcast<TMessage>): void {
     const senderRef = this.sender.toNullable();
     if (message instanceof Broadcast) {
-      for (const r of this.routees) r.tell(message.message, senderRef);
+      for (const routee of this.routees) routee.tell(message.message, senderRef);
       return;
     }
     const targets = this.cfg.strategy(this.routees, { messageIndex: this.counter++ });
-    for (const t of targets) t.tell(message as TMsg, senderRef);
+    for (const target of targets) target.tell(message as TMessage, senderRef);
   }
 }
 
@@ -77,19 +77,19 @@ class RouterActor<TMsg> extends Actor<TMsg | Broadcast<TMsg>> {
  *   pool.tell(new Broadcast('announce'));
  */
 export const Router = {
-  roundRobin<TMsg>(size: number, routeeProps: Props<TMsg>): Props<TMsg | Broadcast<TMsg>> {
-    return Props.create(() => new RouterActor<TMsg>({ size, routeeProps, strategy: roundRobinStrategy() }));
+  roundRobin<TMessage>(size: number, routeeProps: Props<TMessage>): Props<TMessage | Broadcast<TMessage>> {
+    return Props.create(() => new RouterActor<TMessage>({ size, routeeProps, strategy: roundRobinStrategy() }));
   },
 
-  random<TMsg>(size: number, routeeProps: Props<TMsg>): Props<TMsg | Broadcast<TMsg>> {
-    return Props.create(() => new RouterActor<TMsg>({ size, routeeProps, strategy: randomStrategy() }));
+  random<TMessage>(size: number, routeeProps: Props<TMessage>): Props<TMessage | Broadcast<TMessage>> {
+    return Props.create(() => new RouterActor<TMessage>({ size, routeeProps, strategy: randomStrategy() }));
   },
 
-  broadcast<TMsg>(size: number, routeeProps: Props<TMsg>): Props<TMsg | Broadcast<TMsg>> {
-    return Props.create(() => new RouterActor<TMsg>({ size, routeeProps, strategy: broadcastStrategy() }));
+  broadcast<TMessage>(size: number, routeeProps: Props<TMessage>): Props<TMessage | Broadcast<TMessage>> {
+    return Props.create(() => new RouterActor<TMessage>({ size, routeeProps, strategy: broadcastStrategy() }));
   },
 
-  custom<TMsg>(size: number, routeeProps: Props<TMsg>, strategy: RoutingStrategy): Props<TMsg | Broadcast<TMsg>> {
-    return Props.create(() => new RouterActor<TMsg>({ size, routeeProps, strategy }));
+  custom<TMessage>(size: number, routeeProps: Props<TMessage>, strategy: RoutingStrategy): Props<TMessage | Broadcast<TMessage>> {
+    return Props.create(() => new RouterActor<TMessage>({ size, routeeProps, strategy }));
   },
 };

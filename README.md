@@ -5,8 +5,8 @@
 <p align="center">
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml"><img alt="build workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml/badge.svg?branch=main"/></a>
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml"><img alt="tests workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml/badge.svg?branch=main"/></a>
-  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-2215%20of%202215-22c55e?style=flat-square&logo=bun"/></a>
-  <a href="#"><img alt="coverage" src="https://img.shields.io/badge/coverage-~81%25-22c55e?style=flat-square"/></a>
+  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-2665%20of%202665-22c55e?style=flat-square&logo=bun"/></a>
+  <a href="#"><img alt="coverage" src="https://img.shields.io/badge/coverage-~94%25-22c55e?style=flat-square"/></a>
 </p>
 
 <p align="center">
@@ -28,7 +28,7 @@
 > the actor-model stack (actors, supervision, cluster, sharding, persistence,
 > HTTP) to TypeScript, running on Bun, Node.js, and Deno.  Large parts were
 > written with AI pair-programming and **have not been battle-tested in
-> production**.  Test coverage is good (~2215 tests, ~81 % line) but the
+> production**.  Test coverage is good (~2665 tests, ~94 % line) but the
 > surface area is enormous.  **Do not deploy this to anything that matters
 > yet.**  Use it to learn, to prototype, to benchmark ideas — not to handle
 > real money, users, or data.
@@ -61,14 +61,23 @@ A short tour of what's in the box:
 - **HTTP** — directive-style routing DSL with Fastify default, Express + Hono
   backends, response caching, rate-limiting, idempotency-key dedup.  Typed
   **WebSocket** routes: `websocket(path, actorRef)` binds a
-  `WebSocketServerActor` (typed messages, `reply` / `broadcast`,
-  connect/disconnect hooks); `WebSocketClientActor` is the reconnecting
-  client half.
+  `WebsocketServerActor` (typed messages, `reply` / `broadcast`,
+  connect/disconnect hooks); `WebsocketClientActor` is the reconnecting
+  client half.  Scoped error handling (`handleErrors`) + `fallback` routes;
+  a security-middleware suite (CORS, CSRF, HSTS, CSP, security headers,
+  Basic auth, request-id, timeout); HTML-escaping helpers; and
+  backend-agnostic **static file serving** (`getFromFile` /
+  `getFromDirectory` — MIME detection, conditional requests, Range,
+  directory browsing).
 - **Message brokers** — single `BrokerActor` base with Kafka, MQTT, AMQP,
   NATS, Redis-Streams, gRPC, SSE, raw TCP/UDP integrations.
   Reconnect-with-backoff, outbound buffer, subscriber fan-out are baked in.
 - **Caching** — pluggable Cache with in-memory, Redis, Memcached backends.
-- **Observability** — Prometheus exporter, OTel tracing + metrics, management
+- **Typed options + fail-fast validation** — one fluent `XOptions` builder per
+  configurable thing (or a plain object), with values validated once on the
+  merged settings (builder / object / HOCON alike) — a bad port, timeout, or
+  URL throws an `OptionsError` at startup, not deep in a later code path.
+- **Observability** — Prometheus exporter, OTel tracing, management
   HTTP endpoints (`/health`, `/ready`, `/cluster/members`, `/sharding/regions`),
   out-of-the-box stock metrics.
 - **TestKit** — `TestProbe`, `ManualScheduler`, `MultiNodeSpec` for
@@ -120,21 +129,21 @@ snippet that matches what you're reaching for.
 Discriminated-union messages plus `match().exhaustive()` from
 [`ts-pattern`](https://github.com/gvergnaud/ts-pattern) give you a
 compile-time check that every variant is handled. Add a new variant
-to `Cmd` without a matching `with(...)` arm and TypeScript fails the
+to `Command` without a matching `with(...)` arm and TypeScript fails the
 build.
 
 ```ts
 import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
 import { match } from 'ts-pattern';
 
-type Cmd =
+type Command =
   | { kind: 'inc' }
   | { kind: 'dec' }
   | { kind: 'get'; replyTo: ActorRef<number> };
 
-class Counter extends Actor<Cmd> {
+class Counter extends Actor<Command> {
   private count = 0;
-  override onReceive(cmd: Cmd): void {
+  override onReceive(cmd: Command): void {
     match(cmd)
       .with({ kind: 'inc' }, () => { this.count++; })
       .with({ kind: 'dec' }, () => { this.count--; })
@@ -173,11 +182,11 @@ the rest of the app sees, every mutation durable.
 ```ts
 import { PersistentActor, ActorSystem, Props } from 'actor-ts';
 
-type Cmd   = { kind: 'inc' } | { kind: 'dec' };
+type Command   = { kind: 'inc' } | { kind: 'dec' };
 type Event = { kind: 'incremented' } | { kind: 'decremented' };
 interface State { count: number }
 
-class Counter extends PersistentActor<Cmd, Event, State> {
+class Counter extends PersistentActor<Command, Event, State> {
   readonly persistenceId = 'counter-1';
   initialState(): State { return { count: 0 }; }
   onEvent(s: State, e: Event): State {
@@ -185,7 +194,7 @@ class Counter extends PersistentActor<Cmd, Event, State> {
       ? { count: s.count + 1 }
       : { count: s.count - 1 };
   }
-  onCommand(_state: State, cmd: Cmd): void {
+  onCommand(_state: State, cmd: Command): void {
     this.persist({
       kind: cmd.kind === 'inc' ? 'incremented' : 'decremented',
     });
@@ -210,7 +219,7 @@ import { Cluster } from 'actor-ts';
 const { system, cluster } = await Cluster.bootstrap({ name: 'app' });
 
 const cartRegion = cluster.sharding.start('cart', CartActor, {
-  extractEntityId: (msg: CartCmd) => msg.entityId,
+  extractEntityId: (msg: CartCommand) => msg.entityId,
 });
 
 cartRegion.tell({ entityId: 'user-42', kind: 'add', sku: 'book-1' });
@@ -272,9 +281,9 @@ Issues and feature requests live on
 
 <a href="https://www.star-history.com/?repos=pathosDev%2Factor-ts&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=pathosDev/actor-ts&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=pathosDev/actor-ts&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=pathosDev/actor-ts&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=pathosDev/actor-ts&type=date&theme=dark&legend=top-left&sealed_token=iyC35jF1VENIymplLwZ8Cn2oNYPgr_OxQBWJfsv8Zl0v59Pkk9eKbLf1Gy2VWG_U3xuXb_xL0AAo5KD6Zz9p3izijymg6rD60G6pDZhdGrWgybY6vbLayqijq5n-qYdEyva0SkJ1TCWfrl0uSXCU5LyUa0I_Hz4wbgyrFObbeBFFxzRDMxrNVlNH6f_6" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=pathosDev/actor-ts&type=date&legend=top-left&sealed_token=iyC35jF1VENIymplLwZ8Cn2oNYPgr_OxQBWJfsv8Zl0v59Pkk9eKbLf1Gy2VWG_U3xuXb_xL0AAo5KD6Zz9p3izijymg6rD60G6pDZhdGrWgybY6vbLayqijq5n-qYdEyva0SkJ1TCWfrl0uSXCU5LyUa0I_Hz4wbgyrFObbeBFFxzRDMxrNVlNH6f_6" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=pathosDev/actor-ts&type=date&legend=top-left&sealed_token=iyC35jF1VENIymplLwZ8Cn2oNYPgr_OxQBWJfsv8Zl0v59Pkk9eKbLf1Gy2VWG_U3xuXb_xL0AAo5KD6Zz9p3izijymg6rD60G6pDZhdGrWgybY6vbLayqijq5n-qYdEyva0SkJ1TCWfrl0uSXCU5LyUa0I_Hz4wbgyrFObbeBFFxzRDMxrNVlNH6f_6" />
  </picture>
 </a>
 

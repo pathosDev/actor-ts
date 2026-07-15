@@ -33,7 +33,7 @@ import {
 import { ServiceKey } from '../../../src/discovery/ServiceKey.js';
 import { DistributedDataId } from '../../../src/crdt/index.js';
 import {
-  type SingletonMsg,
+  type SingletonMessage,
   type SingletonWhoReply,
 } from './singleton.js';
 import {
@@ -42,7 +42,7 @@ import {
 } from './sharded-counter.js';
 import {
   PersistentCounter,
-  type CounterCmd,
+  type CounterCommand,
   type CounterStateReply,
 } from './persistent-counter.js';
 import { PoisonPill } from '../../../src/SystemMessages.js';
@@ -114,7 +114,7 @@ class GetSnapshot {
   constructor(public readonly replyTo: ActorRef<SubscriberSnapshot>) {}
 }
 
-type SubscriberMsg = Listing | GetSnapshot;
+type SubscriberMessage = Listing | GetSnapshot;
 
 /**
  * Long-lived subscriber for scenario 08.  Maintains the most recent
@@ -124,10 +124,10 @@ type SubscriberMsg = Listing | GetSnapshot;
  * message so the HTTP route can read the state without breaking the
  * actor encapsulation.
  */
-class ContinuousSubscriber extends Actor<SubscriberMsg> {
+class ContinuousSubscriber extends Actor<SubscriberMessage> {
   private latest: Listing | null = null;
   private updates = 0;
-  override onReceive(m: SubscriberMsg): void {
+  override onReceive(m: SubscriberMessage): void {
     if (m instanceof Listing) {
       this.latest = m;
       this.updates += 1;
@@ -164,9 +164,9 @@ class ExtraWorker extends Actor<unknown> {
  * which increments `actor_mailbox_dropped_total` via the
  * `onDrop` callback wired in `ActorCell` (#310).
  */
-type SlowSinkMsg = { kind: 'process'; sleepMs: number };
-class SlowSink extends Actor<SlowSinkMsg> {
-  override async onReceive(msg: SlowSinkMsg): Promise<void> {
+type SlowSinkMessage = { kind: 'process'; sleepMs: number };
+class SlowSink extends Actor<SlowSinkMessage> {
+  override async onReceive(msg: SlowSinkMessage): Promise<void> {
     if (msg.sleepMs > 0) {
       await new Promise<void>((r) => setTimeout(r, msg.sleepMs));
     }
@@ -253,7 +253,7 @@ class PubSubSnapshotCollector extends Actor<PubSubSnapshot> {
 
 export interface ControlDeps {
   /** Singleton proxy from `ClusterSingletonId.start(...)`. */
-  readonly singletonProxy: ActorRef<SingletonMsg>;
+  readonly singletonProxy: ActorRef<SingletonMessage>;
   /** Shard-region ref from `ClusterSharding.get(...).start(...)`. */
   readonly shardingRegion: ActorRef<ShardedCommand>;
 }
@@ -274,9 +274,9 @@ export function makeControlRoutes(
   // accumulate updates before any scenario polls it.  Listings are
   // dispatched to the subscriber actor's mailbox; scenarios query
   // its current state via the `GetSnapshot` message.
-  const subscriberRef = system.spawnAnonymous(Props.create<SubscriberMsg>(() =>
+  const subscriberRef = system.spawnAnonymous(Props.create<SubscriberMessage>(() =>
     new ContinuousSubscriber(),
-  )) as ActorRef<SubscriberMsg>;
+  )) as ActorRef<SubscriberMessage>;
   receptionistRef.tell(new Subscribe(
     // Same key the node-runner registered the auto-IdleWorker under.
     new ServiceKey('workers'),
@@ -307,12 +307,12 @@ export function makeControlRoutes(
   // a SlowSink with > 10 000 messages triggers `drop-head`
   // overflow on its bounded default mailbox (#310) and the
   // `actor_mailbox_dropped_total` counter ticks.
-  let slowSinkRef: ActorRef<SlowSinkMsg> | null = null;
-  const ensureSlowSink = (): ActorRef<SlowSinkMsg> => {
+  let slowSinkRef: ActorRef<SlowSinkMessage> | null = null;
+  const ensureSlowSink = (): ActorRef<SlowSinkMessage> => {
     if (slowSinkRef) return slowSinkRef;
     slowSinkRef = system.spawnAnonymous(
-      Props.create<SlowSinkMsg>(() => new SlowSink()),
-    ) as ActorRef<SlowSinkMsg>;
+      Props.create<SlowSinkMessage>(() => new SlowSink()),
+    ) as ActorRef<SlowSinkMessage>;
     return slowSinkRef;
   };
 
@@ -327,8 +327,8 @@ export function makeControlRoutes(
   // persistenceId) is materialised by an ActorRef on first hit.
   // PoisonPill clears the entry so the next hit re-spawns (which
   // triggers journal replay).
-  const persistentCounters = new Map<string, ActorRef<CounterCmd>>();
-  const ensurePersistentCounter = (id: string): ActorRef<CounterCmd> => {
+  const persistentCounters = new Map<string, ActorRef<CounterCommand>>();
+  const ensurePersistentCounter = (id: string): ActorRef<CounterCommand> => {
     const existing = persistentCounters.get(id);
     if (existing) return existing;
     // spawnAnonymous (auto-incremented name) so a freshly-killed
@@ -336,8 +336,8 @@ export function makeControlRoutes(
     // PersistentActor's `persistenceId` is what binds it to its
     // journal entries — the actor path doesn't matter.
     const ref = system.spawnAnonymous(
-      Props.create<CounterCmd>(() => new PersistentCounter(id)),
-    ) as ActorRef<CounterCmd>;
+      Props.create<CounterCommand>(() => new PersistentCounter(id)),
+    ) as ActorRef<CounterCommand>;
     persistentCounters.set(id, ref);
     return ref;
   };
@@ -858,16 +858,16 @@ export function makeControlRoutes(
     // mailbox stage isn't observable to the caller — it just
     // tells; drops happen inside enqueue).
     path('backpressure', path('bombard', post(async (req) => {
-      const n = Number(queryParam(req, 'n') ?? '15000');
+      const count = Number(queryParam(req, 'n') ?? '15000');
       const sleepMs = Number(queryParam(req, 'sleepMs') ?? '50');
-      if (!Number.isInteger(n) || n < 1) return complete(Status.BadRequest, 'n must be positive integer');
+      if (!Number.isInteger(count) || count < 1) return complete(Status.BadRequest, 'n must be positive integer');
       if (!Number.isFinite(sleepMs) || sleepMs < 0) return complete(Status.BadRequest, 'sleepMs must be non-negative');
       const sink = ensureSlowSink();
       // Synchronous tight loop — no await between tells, so the
       // entire burst hits the mailbox before the dispatcher has
       // a chance to drain.
-      for (let i = 0; i < n; i++) sink.tell({ kind: 'process', sleepMs });
-      return completeJson(Status.OK, { sent: n, sleepMs });
+      for (let i = 0; i < count; i++) sink.tell({ kind: 'process', sleepMs });
+      return completeJson(Status.OK, { sent: count, sleepMs });
     }))),
 
     // GET /test/backpressure/dropped
@@ -884,8 +884,8 @@ export function makeControlRoutes(
       const lines: string[] = [];
       let m: RegExpExecArray | null;
       while ((m = re.exec(text)) !== null) {
-        const v = Number(m[1]);
-        if (Number.isFinite(v)) total += v;
+        const value = Number(m[1]);
+        if (Number.isFinite(value)) total += value;
         lines.push(m[0]);
       }
       return completeJson(Status.OK, { total, lines });

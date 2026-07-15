@@ -14,10 +14,9 @@
  * HTTP singleton.
  *
  * `main.ts` is purely wiring — every actor lives in its own file
- * under `actors/`, every Fastify-specific bit lives in `plugins/`,
- * the directive DSL routes live in `routes.ts`.  Nothing here
- * imports `fastify` directly; everything goes through
- * `HttpExtension` + `FastifyBackend.withPlugin(...)`.
+ * under `actors/`, and the directive DSL routes (landing page, static
+ * files, the /ws upgrade) live in `routes.ts`.  Nothing here imports
+ * `fastify` directly; everything goes through `HttpExtension`.
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -54,12 +53,12 @@ import {
 import { SessionStore } from './auth/sessionStore.js';
 import {
   ChatRoomActor,
-  type ChatRoomCmd,
+  type ChatRoomCommand,
 } from './actors/ChatRoomActor.js';
 import { ChatRoomDirectoryActor } from './actors/ChatRoomDirectoryActor.js';
 import {
   DmChannelActor,
-  type DmChannelCmd,
+  type DmChannelCommand,
 } from './actors/DmChannelActor.js';
 import { OnlineUsersActor } from './actors/OnlineUsersActor.js';
 import { ReadReceiptsActor } from './actors/ReadReceiptsActor.js';
@@ -106,8 +105,7 @@ async function main(): Promise<void> {
   const configFile = path.resolve(
     import.meta.dirname ?? __dirname, '..', 'application.conf',
   );
-  const systemOptions = ActorSystemOptions.create()
-    .withConfigFile(configFile);
+  const systemOptions = ActorSystemOptions.create().withConfigFile(configFile);
   const system = ActorSystem.create(SYSTEM_NAME, systemOptions);
   const seedSummary = seeds.length > 0
     ? ` · seeds=[${seeds.join(',')}]`
@@ -163,11 +161,9 @@ async function main(): Promise<void> {
   });
 
   // -------- 5. DistributedData (presence + session tokens) + DistributedPubSub (broadcast) --------
-  const ddOptions = DistributedDataOptions.create()
-    .withGossipInterval(500);
+  const ddOptions = DistributedDataOptions.create().withGossipInterval(500);
   const ddHandle = system.extension(DistributedDataId).start(cluster, ddOptions);
-  const pubSubOptions = DistributedPubSubOptions.create()
-    .withGossipIntervalMs(500);
+  const pubSubOptions = DistributedPubSubOptions.create().withGossipIntervalMs(500);
   const mediator = system.extension(DistributedPubSubId).start(cluster, pubSubOptions);
   const sessions = new SessionStore(ddHandle);
   if (sessions.usingDemoSecret) {
@@ -179,7 +175,7 @@ async function main(): Promise<void> {
   // -------- 6. ClusterSharding: one ChatRoomActor per room --------
   const sharding = cluster.sharding;
   const chatRoomRegion = sharding.start('ChatRoom', ChatRoomActor,
-    StartShardingOptions.create<ChatRoomCmd>()
+    StartShardingOptions.create<ChatRoomCommand>()
       .withExtractEntityId((msg) => msg.room)
       .withNumShards(16));
 
@@ -190,7 +186,7 @@ async function main(): Promise<void> {
   // the chat-room region; the DM workload is similar (write-heavy,
   // small per-entity state) so a single tuning value covers both.
   const dmChannelRegion = sharding.start('DmChannel', DmChannelActor,
-    StartShardingOptions.create<DmChannelCmd>()
+    StartShardingOptions.create<DmChannelCommand>()
       .withExtractEntityId((msg) => msg.pairId)
       .withNumShards(16));
 

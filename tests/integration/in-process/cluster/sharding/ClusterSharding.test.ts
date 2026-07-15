@@ -58,7 +58,7 @@ async function startNode(sysName: string, p: number, seeds: string[] = []): Prom
 }
 
 async function stopAll(nodes: Node[]): Promise<void> {
-  for (const n of nodes) { await n.cluster.leave(); await n.sys.terminate(); }
+  for (const node of nodes) { await node.cluster.leave(); await node.sys.terminate(); }
 }
 
 describe('ClusterSharding — initialization after convergence', () => {
@@ -69,7 +69,7 @@ describe('ClusterSharding — initialization after convergence', () => {
     const n1 = await startNode(sysName, base + 1, [`${sysName}@h:${base}`]);
     const nodes = [seed, n1];
 
-    await waitFor(() => nodes.every((n) => n.cluster.upMembers().length === 2));
+    await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
     await sleep(200);
 
     const reply = await seed.region.ask<string>({ id: 'warm-0', op: 'ping' }, 3_000);
@@ -85,7 +85,7 @@ describe('ClusterSharding — initialization after convergence', () => {
     const n1 = await startNode(sysName, base + 1, [`${sysName}@h:${base}`]);
     const nodes = [seed, n1];
 
-    await waitFor(() => nodes.every((n) => n.cluster.upMembers().length === 2));
+    await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
     await sleep(200);
 
     // 16 shards, HashAllocationStrategy splits ~50/50.  All asks must succeed
@@ -107,7 +107,7 @@ describe('ClusterSharding — initialization after convergence', () => {
     const n1 = await startNode(sysName, base + 1, [`${sysName}@h:${base}`]);
     const nodes = [seed, n1];
 
-    await waitFor(() => nodes.every((n) => n.cluster.upMembers().length === 2));
+    await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
     await sleep(200);
 
     for (let i = 0; i < 8; i++) {
@@ -155,9 +155,9 @@ describe('cluster.sharding', () => {
     const sysName = 'cs-facade-b';
     const node = await startNode(sysName, 45_510);
     try {
-      const a = node.cluster.sharding;
-      const b = node.cluster.sharding;
-      expect(a).toBe(b);
+      const nodeA = node.cluster.sharding;
+      const nodeB = node.cluster.sharding;
+      expect(nodeA).toBe(nodeB);
     } finally {
       await stopAll([node]);
     }

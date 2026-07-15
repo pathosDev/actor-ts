@@ -30,7 +30,7 @@ export interface K8sCredentials {
 /**
  * Load credentials from the standard ServiceAccount mount points.  Returns
  * `null` (rather than throwing) when none of the files are present so the
- * caller can fall back to explicit settings.
+ * caller can fall back to explicit options.
  */
 export async function loadInClusterCredentials(): Promise<K8sCredentials | null> {
   const fs = await fsLazy.get();

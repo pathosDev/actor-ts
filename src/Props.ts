@@ -3,11 +3,11 @@ import type { Dispatcher } from './Dispatcher.js';
 import type { Mailbox } from './internal/Mailbox.js';
 import type { SupervisorStrategy } from './Supervision.js';
 
-export type ActorFactory<TMsg> = () => Actor<TMsg>;
-export type MailboxFactory<TMsg> = () => Mailbox<TMsg>;
+export type ActorFactory<TMessage> = () => Actor<TMessage>;
+export type MailboxFactory<TMessage> = () => Mailbox<TMessage>;
 
-export interface PropsConfig<TMsg> {
-  readonly factory: ActorFactory<TMsg>;
+export interface PropsConfig<TMessage> {
+  readonly factory: ActorFactory<TMessage>;
   readonly supervisorStrategy?: SupervisorStrategy;
   readonly dispatcher?: Dispatcher;
   readonly mailboxCapacity?: number;
@@ -15,7 +15,7 @@ export interface PropsConfig<TMsg> {
    * Custom mailbox factory — use `BoundedMailbox` or `PriorityMailbox` for
    * non-default queueing.  When omitted the default `Mailbox` is used.
    */
-  readonly mailbox?: MailboxFactory<TMsg>;
+  readonly mailbox?: MailboxFactory<TMessage>;
 }
 
 /**
@@ -23,26 +23,26 @@ export interface PropsConfig<TMsg> {
  * Use `Props.create(() => new MyActor(...))` and chain `with…` for
  * additional configuration.
  */
-export class Props<TMsg = unknown> {
-  constructor(public readonly config: PropsConfig<TMsg>) {}
+export class Props<TMessage = unknown> {
+  constructor(public readonly config: PropsConfig<TMessage>) {}
 
-  static create<TMsg>(factory: ActorFactory<TMsg>): Props<TMsg> {
+  static create<TMessage>(factory: ActorFactory<TMessage>): Props<TMessage> {
     return new Props({ factory });
   }
 
-  withSupervisorStrategy(strategy: SupervisorStrategy): Props<TMsg> {
+  withSupervisorStrategy(strategy: SupervisorStrategy): Props<TMessage> {
     return new Props({ ...this.config, supervisorStrategy: strategy });
   }
 
-  withDispatcher(dispatcher: Dispatcher): Props<TMsg> {
+  withDispatcher(dispatcher: Dispatcher): Props<TMessage> {
     return new Props({ ...this.config, dispatcher });
   }
 
-  withMailboxCapacity(capacity: number): Props<TMsg> {
+  withMailboxCapacity(capacity: number): Props<TMessage> {
     return new Props({ ...this.config, mailboxCapacity: capacity });
   }
 
-  withMailbox(factory: MailboxFactory<TMsg>): Props<TMsg> {
+  withMailbox(factory: MailboxFactory<TMessage>): Props<TMessage> {
     return new Props({ ...this.config, mailbox: factory });
   }
 }

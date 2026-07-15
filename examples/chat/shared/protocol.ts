@@ -96,9 +96,9 @@ export function encodeServer(msg: ServerMessage): string {
 
 export function decodeClient(raw: string): ClientMessage | null {
   try {
-    const v = JSON.parse(raw) as { readonly type?: unknown };
-    if (typeof v.type !== 'string') return null;
-    return v as ClientMessage;
+    const parsed = JSON.parse(raw) as { readonly type?: unknown };
+    if (typeof parsed.type !== 'string') return null;
+    return parsed as ClientMessage;
   } catch {
     return null;
   }

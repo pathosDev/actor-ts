@@ -7,7 +7,327 @@ This is a pre-1.0 hobby project — every minor version is potentially
 breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 "What's in here / What isn't" for current scope honesty.
 
-## [Unreleased]
+## [0.11.0] — 2026-07-15
+
+### Changed — Naming conventions: no abbreviations, unified vocabulary
+
+Repo-wide naming sweep for consistency.  Pre-1.0, so these are hard
+renames with no deprecation shims.  All are mechanical — same behavior,
+new names.
+
+- **BREAKING — WebSocket → `Websocket` (single-cap), no `Ws` abbreviation.**
+  Every identifier and file/dir uses the `Websocket` spelling:
+  `WebSocketServerActor`/`WebSocketClientActor` → `WebsocketServerActor`/
+  `WebsocketClientActor`; the `Ws*` supporting types (`WsConnection`,
+  `WsCodec`, `WsFrame`, `WsServerMessage`, …) → `Websocket*`; `wsSend()` →
+  `websocketSend()`; `DEFAULT_WS_MAX_FRAME_BYTES` →
+  `DEFAULT_WEBSOCKET_MAX_FRAME_BYTES`; the module moved
+  `src/http/ws/` → `src/http/websocket/`.  The `websocket()` routing
+  directive, the global `WebSocket`, the `ws` package's `WebSocketServer`,
+  and the `Sec-WebSocket-Protocol` header are unchanged.
+  *Migration:* replace `Ws`/`WebSocket` identifier prefixes with
+  `Websocket`; `wsSend` → `websocketSend`.
+- **BREAKING — abbreviations spelled out** in type/member names: `*Cmd` →
+  `*Command`, `*Msg` → `*Message`, `*Ack` → `*Acknowledgment`, `ByPid*` →
+  `ByPersistenceId*`, `*Impl` → `*Implementation`, `*Ctor` → `*Constructor`.
+  Wire/discriminator string literals are unchanged.
+  *Migration:* e.g. `MqttCmd` → `MqttCommand`, `EnvelopeMsg` →
+  `EnvelopeMessage`, `SubscribeAck` → `SubscribeAcknowledgment`.
+- **BREAKING — testkit assertions spelled out too:** `TestProbe.expectMsg()`
+  → `expectMessage()`, `TestProbe.expectMsgType()` → `expectMessageType()` —
+  the last `Msg` holdouts, now consistent with `expectNoMessage()`.
+  *Migration:* rename the calls; signatures and behavior are unchanged.
+- **BREAKING — one config vocabulary: `Options`, never `Settings`.**
+  Remaining `*Settings` types → `*OptionsType` (`CircuitBreakerSettings`,
+  `TlsTransportSettings`, `Bounded/PriorityMailboxSettings`,
+  `ManagementRoutesSettings`, `ConsumerControllerSettings`,
+  `KeepMajoritySettings`, the testkit specs); `BrokerSettings.ts` folded
+  into `BrokerOptions.ts` (`BrokerSettingsError` → `BrokerOptionsError`);
+  the `BrokerActor` glue `readSettingsFromConfig`/`requiredSettings`/
+  `builtInDefaults`/`settings` → `readOptionsFromConfig`/`requiredOptions`/
+  `builtInDefaultOptions`/`options`; `default{FailureDetector,PhiAccrual}Settings`
+  → `default*Options`.  New dedicated `ConsumerControllerOptions` +
+  `KeepMajorityOptions` files with builders.
+- **BREAKING — Command vs Signal unified on `kind`.**  MQTT and WebSocket
+  internal mailbox signals are now `kind`-tagged plain objects (dispatched
+  by `kind`, like the typed-actor `Signal`), not `instanceof`-dispatched
+  classes; the bad-payload hook is `onInvalidMessage` everywhere (MQTT's
+  `onDecodeError` is gone); `WebSocketAcceptSignal` → `WebsocketAcceptCommand`
+  and `WebsocketClientSend` is a command, both lifted out of the `*Signal`
+  unions.
+  *Migration:* override `onInvalidMessage` instead of `onDecodeError`;
+  construct outbound sends via `websocketSend(msg)` (unchanged).
+### Added — Options validation
+
+- **`OptionsValidator` + `OptionsError`** (#274) — a declarative-but-code
+  validator layer for the `XOptions` pattern.  Each options file with
+  constrained fields exports an `XOptionsValidator` (`extends
+  OptionsValidator<XOptionsType>`, brokers via `BrokerOptionsValidator`) whose
+  `rules(s)` uses typo-checked, no-op-on-`undefined` helpers (`port`,
+  `positiveNumber`, `positiveInt`, `nonNegativeInt`, `oneOf`, `nonEmptyString`,
+  `url`, …) plus `fail(field, reason, value)` for cross-field rules.  Validation
+  runs **once at consume time on the merged settings**, so builder, plain-object,
+  and HOCON inputs are all checked and cross-field rules see the final values —
+  broker actors via the `optionsValidator()` hook (in `preStart`, after the
+  required-field check), non-broker consumers via one
+  `new XOptionsValidator().validate(settings)` call in their constructor.
+- **Validators shipped for**: every broker (MQTT, Kafka, AMQP, Redis Streams,
+  NATS, JetStream, SSE, TCP, UDP, gRPC client) and the WebSocket client; the
+  cluster core (`Cluster`, `ClusterBootstrap`, `FailureDetector`, `PhiAccrual`,
+  `ClusterClient`, `ClusterClientReceptionist`, `StaticQuorum`, `KeepReferee`,
+  `LeaseMajority`, `ClusterRouter`), sharding (`Sharding`, `StartSharding`,
+  `ShardedDaemonProcess`) and singleton (`StartSingleton`); discovery
+  (`AutoDiscovery`, `ConfigSeedProvider`, `DnsSeedProvider`,
+  `KubernetesApiSeedProvider`, `Receptionist`) and gossip intervals
+  (`DistributedPubSub`, `DistributedData`); leases (`Lease`, `KubernetesLease`);
+  caches (`RedisCache`, `MemcachedCache`, `CachedSnapshotStore`); the
+  `CassandraJournal` and S3 / filesystem object-storage backends; the
+  Express/Hono HTTP backends; `WorkerCluster`; delivery `ProducerController`;
+  and `TestProbe`.  Options whose fields carry no real constraint
+  (all-boolean/string/callback, or degrade-gracefully knobs like snapshot
+  `keepN` where `<= 0` means "keep all") intentionally get no validator.
+
+### Changed — Options validation
+
+- **BREAKING** (#274) — invalid **option values** now throw `OptionsError` at
+  construction / actor start instead of a bare `Error` (or, previously, going
+  unchecked on the builder/plain-object path).  Notably MQTT `protocolVersion`
+  outside `{4, 5}` now throws `OptionsError` on **all** input paths (previously
+  only the HOCON path threw, as a bare `Error`).  *Migration:* catch
+  `OptionsError` (exported from the package root) where you previously matched
+  the ad-hoc `Error` message.  Missing **required** broker settings still throw
+  `BrokerOptionsError`; malformed HOCON still throws `ConfigError`.
+- **BREAKING — `InMemoryCache` joins the `XOptions` family.** It now takes an
+  `InMemoryCacheOptions` builder (or plain object) with `withMaxEntries` /
+  `withCleanupMs`, validates via `InMemoryCacheOptionsValidator` (out-of-range
+  values throw `OptionsError` instead of a bare `Error`, and `cleanupMs` — a
+  negative / `NaN` sweep interval — is now checked too), and reads its defaults
+  from HOCON `actor-ts.cache.in-memory.{maxEntries, cleanupMs}` via the
+  `CacheExtension` (previously the bounds were unreachable through the
+  extension).  The internal `InMemoryCacheSettings` interface is **removed** —
+  use `InMemoryCacheOptionsType` (both `InMemoryCacheOptions` and the type are
+  now exported from the package root).  *Migration:* a plain
+  `{ maxEntries, cleanupMs }` object still works unchanged; only the type name
+  changed.
+- **WebSocket route / policy options are now validated.** The resolved
+  per-connection policy (`maxFrameBytes`, `maxBufferedBytes`, `maxConnections`,
+  and the `onOversizeFrame` / `onInvalidMessage` / `onBackpressure` enums) is
+  checked on every path — route options, HOCON `actor-ts.http.websocket`, and
+  defaults — via `WebsocketPolicyOptionsValidator`, and `allowedOrigins` via
+  `WebsocketRouteOptionsValidator`.  Bad values throw `OptionsError` (the enum
+  guard previously threw a bare `Error`, and only on the HOCON path; the
+  numeric knobs — e.g. `maxConnections: 0`, which silently admitted nobody —
+  were unchecked).  The reference config now ships an `actor-ts.http.websocket`
+  section documenting the defaults.
+- **The object-storage decompression cap is now a store option.** The 512 MiB
+  decompression-bomb guard (#3) was pinned to its default because the stores
+  called `decodeBody` without a cap.  `withMaxDecompressedBytes` is now on
+  `ObjectStorageSnapshotStoreOptions`, `ObjectStorageDurableStateStoreOptions`,
+  and `ObjectStoragePluginOptions` (validated at construction — a non-positive
+  / non-integer cap throws `OptionsError`, `Infinity` opts out), and both
+  stores forward it into `decodeBody`.  Raise it to restore a legitimately
+  large snapshot / state blob, or lower it for a tighter bound.
+- **HTTP middleware + directives now validate their options.** Added
+  `OptionsValidator`s for `TimeoutOptions` (`ms`), `HstsOptions` (`maxAge` plus
+  the preload cross-field), `CorsOptions` (`maxAge` plus credentials-vs-`*`),
+  `CsrfOptions` (present-secret length, cookie `sameSite` / `maxAgeSeconds`),
+  and `StaticFilesOptions` (`maxFileSize`, `dotfiles` / `symlinks` enums); the
+  ad-hoc bare-`Error` validity checks in the consumers now throw `OptionsError`
+  (required-field guards stay as-is).  `rateLimit` and `idempotent` also gained
+  the real `RateLimitOptions` / `IdempotencyOptions` fluent builders they were
+  already documented to have, each with a validator (`windowMs`/`max`,
+  `ttlMs`/`missingHeader`); the plain-object call form is unchanged.
+- **`CircuitBreaker` and `BoundedMailbox` now validate their options too** —
+  the last exported options types with real numeric constraints join the
+  validator family.  `CircuitBreakerOptionsValidator` checks `maxFailures`
+  (integer >= 1), `resetTimeoutMs` (finite >= 0), and the previously-unchecked
+  `callTimeoutMs` (> 0 — omit it to disable the per-call timeout; `0`, which
+  previously meant "no timeout" silently, now throws), and requires
+  `maxFailures`/`resetTimeoutMs` at runtime (a builder without them previously
+  produced a breaker that silently never opened).
+  `BoundedMailboxOptionsValidator` checks `capacity` (integer >= 1, and now
+  required — previously a missing `capacity` made the "bounded" mailbox
+  silently unbounded) and the previously-unchecked `overflow` enum.  The old
+  ad-hoc bare-`Error` guards now throw `OptionsError`.
+
+### Added — HTTP hardening
+
+- **Scoped error handling + fallback routes** (#352) — `handleErrors(handler,
+  child)` catches exceptions from a subtree (akka-http `ExceptionHandler`
+  style; sees the original error, returns a response or `null` to decline);
+  `fallback(handler)` answers any unmatched request via each backend's
+  not-found hook; `ServerBuilder.withErrorHandler(...)` is the server-wide
+  last resort.  Precedence, uniform across Fastify/Express/Hono: innermost
+  `handleErrors` → `withErrorHandler` → framework default.
+- **HTML response utilities** (#352) — `escapeHtml`, an auto-escaping `html`
+  tagged template with a `SafeHtml` brand, `rawHtml` escape hatch, and
+  `completeHtml` (`text/html` + `nosniff`).
+- **Security-middleware suite** (#353) — `cors` (a route directive that the
+  compiler expands into per-pattern preflight `OPTIONS` routes),
+  `strictTransportSecurity` / `hsts`, `contentSecurityPolicy`,
+  `csrfProtection` + `requireSameOrigin`, `securityHeaders`, `requestId`,
+  `BasicAuth`, and `requestTimeout` — each with an `XOptions` builder.  Plus
+  public `parseCookies` / `serializeCookie` helpers.
+- **Static file serving** (#354) — `getFromFile`, `getFromDirectory`, and
+  `getFromBrowseableDirectory`: MIME detection, index resolution, conditional
+  requests (weak ETag + `Last-Modified` → 304), single `Range` (206/416),
+  HEAD, trailing-slash redirects, and XSS-safe directory listings.
+- **MIME-type registry** (#354) — `contentTypeFor(pathOrExt, overrides?)` and
+  `DEFAULT_MIME_TYPES`.
+- **Streaming response bodies** (#354) — `HttpResponse.body` now accepts a web
+  `ReadableStream<Uint8Array>`, written natively by all three backends.
+
+### Changed — HTTP hardening
+
+- **`Middleware` `next()` accepts an optional request override** (#353) —
+  `next(req?)` lets a middleware enrich what the handler sees (request-id,
+  CSRF token).  Backward compatible.
+- **HonoBackend now answers `HEAD` on `GET` routes** (#354), matching
+  Fastify/Express; a route pattern ending in `/*` exposes the remainder as
+  `req.params['*']` on every backend.
+- **BREAKING:** the `Route` / `CompiledEndpoint` unions gain `fallback` and
+  `cors` variants — an exhaustive `match` over `Route` must handle them
+  (#352, #353).
+- **BREAKING:** `ServerBuilder` gains a required `withErrorHandler` method —
+  structural third-party implementers must add it (#352).
+- **BREAKING:** `HttpError`'s constructor gains an optional 4th `headers`
+  parameter (after `extra`); `BearerTokenAuth` 401s now expose the challenge
+  on `err.headers['www-authenticate']`, no longer `err.extra.wwwAuthenticate`
+  (#352).
+
+### Security
+
+- **CORS, CSRF, and security-header middleware** (#353) — origin allowlisting
+  with correct preflight handling, an HMAC-signed double-submit CSRF token
+  (plus an Origin/Referer check), and HSTS / CSP / COOP / CORP / nosniff /
+  frame-options; secret comparisons are constant-time.
+- **`WWW-Authenticate` reaches the wire** (#353) — `BearerTokenAuth` (and the
+  new `BasicAuth`) 401s emit a real challenge header instead of burying it in
+  the body.
+- **Hardened path-traversal defence for static files** (#354) — the URL
+  remainder is fully decoded before validation, every segment is rejected if
+  it is `..`, empty, NUL, a backslash, or a `:` (drive/ADS) segment, absolute
+  forms are refused, the joined path is confined to the root, symlink escapes
+  are refused, and dotfiles are denied — every rejection a uniform 404.
+
+- **WS-1 (HIGH) — WebSocket upgrade crash hardened**.
+  A malformed percent-escape in the upgrade path (e.g. `GET /room/%ZZ` against a
+  `websocket('/room/:id', …)` route) made `decodeURIComponent` throw inside the
+  Express backend's fire-and-forget upgrade handler, surfacing as an *unhandled
+  rejection* — process-fatal under Node's default and reachable **pre-auth** by
+  an unauthenticated client.  `matchWebsocketPattern` now treats a malformed escape as
+  a non-match (→ 404), and the Express upgrade handler attaches its socket
+  error-guard before any async work and wraps the handler in a last-resort
+  `.catch` that closes the socket.  Fastify/Hono were not affected.
+- **WS-2 (HIGH) — Cross-Site WebSocket Hijacking (CSWSH) defence**.  No upgrade handler validated the `Origin` header, so a
+  malicious web page could open an authenticated WebSocket riding a victim
+  browser's ambient cookie/IP auth.  New **`allowedOrigins`** option on
+  `websocket()` routes (`.withAllowedOrigins([...])` on the builder): an upgrade
+  whose `Origin` is present but not listed is rejected with 403 before the
+  handshake on all three backends; a missing `Origin` (non-browser client) is
+  allowed.  Bearer-token auth was already resistant (browsers can't set
+  `Authorization` on a WS handshake).
+- **HTTP-1 (MEDIUM-HIGH) — Hono body-size cap enforced before buffering**.  The Hono backend read the whole request body via
+  `arrayBuffer()` and only then compared it against `maxBodyBytes`, so the cap
+  was cosmetic — the real ceiling was the runtime's native default (128 MiB on
+  Bun, effectively unbounded on Node via `@hono/node-server`).  It now rejects
+  an oversized `Content-Length` with 413 *before* buffering; the post-buffer
+  check remains a backstop for chunked bodies that omit Content-Length.
+  Express (streaming cap) and Fastify (framework default) were unaffected.
+- **HTTP-2 (MEDIUM-HIGH) — `InMemoryCache` is now bounded (LRU)**.  The default in-process cache was an unbounded `Map`
+  with lazy expiry only, so a flood of distinct attacker-chosen keys
+  (`Idempotency-Key`; rate-limit keys — idempotency additionally stores the
+  full response body for 24 h) grew it without limit → RAM exhaustion.  It now
+  accepts `{ maxEntries?, cleanupMs? }` (defaults `10_000` / `60_000`): a new
+  key beyond the cap evicts the least-recently-used entry, and a background
+  sweep reclaims expired entries.  *Behaviour change:* the default
+  is now bounded — pass `maxEntries: Infinity` for the previous unbounded
+  behaviour (documented OOM risk).  Options / validation / HOCON plumbing for
+  these fields landed as the `InMemoryCacheOptions` follow-up (see *Changed —
+  Options validation*).
+- **WS-6 (LOW) — CRLF stripped from raw upgrade-reject headers**.  `writeRawHttpResponse` (the Express pre-handshake
+  reject path) wrote app-supplied header names/values verbatim onto the raw
+  socket, so an `authorize` guard echoing attacker-influenced data into a
+  header could split the response.  CR/LF are now stripped from header names
+  and values.
+- **#9 (hardening) — JSON deserialization ignores the `__proto__` setter**
+ .  `JsonSerializer` and the cluster ref decoder
+  now define a decoded `"__proto__"` key as an own data property instead of
+  assigning through the prototype setter, so a hostile payload can't change
+  the decoded object's prototype.
+- **BRK-1 / BRK-2 (MEDIUM) — inbound buffer caps for TCP `lines` + SSE**.  A hostile / MITM'd upstream could stream bytes with no
+  frame delimiter, growing the inbound buffer without bound.  The TCP `lines`
+  framer now rejects an un-terminated remainder that already exceeds
+  `maxLineLen` (matching the existing terminated-line check), and the SSE
+  client caps its pending event buffer at 1 MiB — both drop the connection
+  instead of buffering forever.  (`length-prefixed` TCP framing was already
+  bounded.)
+- **#6 (LOW) — consistent SQL/CQL identifier validation**.  Postgres/MariaDB already validated table identifiers,
+  but SQLite (journal + snapshot store) and Cassandra (keyspace + table names,
+  interpolated into CQL) did not.  A shared `assertSafeIdentifier`
+  (`/^[A-Za-z_][A-Za-z0-9_]*$/`) is now applied across all four, so a
+  config-sourced identifier can't inject SQL/CQL.  Data values were, and
+  remain, bound parameters.
+- **HTTP-3 (docs) — rate-limit examples key on the socket peer, not
+  `x-forwarded-for`**.  The shipped `rateLimit`
+  examples taught keying on the client-settable `x-forwarded-for` header, which
+  an attacker rotates per request to bypass the limit (and which collapses all
+  header-less clients into one shared bucket).  The JSDoc and the bilingual
+  docs now use `req.remoteAddress` and state the trusted-proxy caveat.  No
+  behaviour change — `key` was always caller-supplied.
+- **#3 (MEDIUM) — decompression-bomb cap on stored bodies**.  Reading a snapshot / durable-state / object body
+  decompressed it with no output bound, so a tampered or hostile compressed
+  blob (a few KB expanding to many GB) could OOM the process on recovery.
+  `decodeBody` now caps the decompressed size at **512 MiB** by default
+  (`DecodeOptions.maxOutputBytes`; `Infinity` opts out): gzip enforces it at
+  allocation time via zlib's `maxOutputLength`, and every path asserts the
+  decoded size as a portable backstop.
+- **HTTP-4 (MEDIUM) — idempotency responses can be scoped per caller**.  The idempotency cache keyed only on the
+  `Idempotency-Key` header plus a method/path/body fingerprint, so two callers
+  reusing the same key for the same request shape shared one cached response —
+  a cross-user disclosure when the response is identity-specific (e.g. carries
+  `Set-Cookie` or the first caller's data).  New opt-in `identity: (req) =>
+  string` folds the authenticated principal into the cache key so responses are
+  partitioned per caller.  (Same-key-different-body poisoning was already
+  rejected with 422.)
+- **WS-4 (MEDIUM) — WebSocket backpressure works on the Hono backend**.  The Hono socket adapter didn't implement
+  `bufferedAmount`, so the connection actor's `maxBufferedBytes` /
+  `onBackpressure` guard was a no-op on Hono — a slow / idle-reading client
+  could grow the outbound send buffer without bound (OOM).  The adapter now
+  surfaces the send-buffer depth from the native socket (Bun
+  `getBufferedAmount()`, Node/Deno numeric `.bufferedAmount`).
+- **WS-3 (MEDIUM) — cap the WebSocket transport frame size (Express + Fastify)**
+ .  The `ws`-backed backends left the transport at the
+  `ws` default `maxPayload` (100 MiB), so an oversized frame was buffered in
+  full before the app-level `maxFrameBytes` (1 MiB default) rejected it —
+  allocation-amplification DoS.  Both now pass `maxPayload:
+  DEFAULT_WEBSOCKET_MAX_FRAME_BYTES` (1 MiB), so an oversized frame is rejected at the
+  protocol level.  *Caveat:* on these backends a route that raises
+  `maxFrameBytes` above the default is currently still capped at the default by
+  the transport; a per-route / configurable transport cap and the Hono
+  runner-level cap are tracked follow-ups.
+- **WS-5 (MEDIUM, partial) — per-route WebSocket connection admission cap**
+ .  New opt-in `maxConnections` on `websocket()`
+  routes (`.withMaxConnections(n)`, or `actor-ts.http.websocket.maxConnections`
+  in HOCON): a new upgrade beyond the cap is closed with 1013 in the shared
+  wiring layer before an actor is wired for it, and the live count decrements
+  when a connection closes.  Default: unlimited (behaviour unchanged).  The
+  other WS-5 sub-parts — a handshake/idle timeout and hub-mailbox bounding —
+  remain tracked follow-ups.
+
+### Documentation
+
+- Moved the Server-WebSocket page from the IO section into the HTTP section
+  (#351).
+- Reconciled stale API-reference pages with the shipped code (#360): rewrote the
+  persistence adapter & migration pages and the OTel **tracing** adapter page to
+  the function-based APIs, rewrote the management & health-check and cache &
+  durable-data pages to their real APIs, and removed the page for the
+  never-shipped OTel *metrics* adapter.
+- Repointed stale `*Settings` type names in prose to the `*OptionsType`
+  vocabulary (#349).
+- Fixed broken code samples that declared a `const` inside a call's object
+  literal (#359).
 
 ## [0.10.0] — 2026-07-08
 

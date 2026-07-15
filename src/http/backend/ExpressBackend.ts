@@ -1,42 +1,45 @@
 import type { IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
+import { Readable } from 'node:stream';
 import { match } from 'ts-pattern';
 import { Lazy } from '../../util/Lazy.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../types.js';
+import { ExpressBackendOptionsValidator } from './ExpressBackendOptions.js';
 import type { ExpressBackendOptions, ExpressBackendOptionsType } from './ExpressBackendOptions.js';
 import type {
   HttpServerBackend,
   RouteRegistration,
   ServerBinding,
-  WebSocketRouteRegistration,
+  WebsocketRouteRegistration,
 } from './HttpServerBackend.js';
-import { wsPackageAdapter, type WsPackageSocket } from '../ws/SocketAdapter.js';
-import { matchWsPattern } from '../ws/matchPattern.js';
-import { writeRawHttpResponse } from '../ws/rawResponse.js';
+import { websocketPackageAdapter, type WebsocketPackageSocket } from '../websocket/SocketAdapter.js';
+import { matchWebsocketPattern } from '../websocket/matchPattern.js';
+import { writeRawHttpResponse } from '../websocket/rawResponse.js';
+import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../websocket/types.js';
 
 /** Minimal shape of the `ws` package's WebSocketServer (noServer mode). */
-interface WsServerLike {
+interface WebsocketServerLike {
   handleUpgrade(
     req: IncomingMessage,
     socket: Duplex,
     head: Buffer,
-    cb: (ws: WsPackageSocket) => void,
+    cb: (ws: WebsocketPackageSocket) => void,
   ): void;
-  emit(event: 'connection', ws: WsPackageSocket, req: IncomingMessage): boolean;
+  emit(event: 'connection', ws: WebsocketPackageSocket, req: IncomingMessage): boolean;
   readonly clients?: Iterable<{ terminate?: () => void; close?: () => void }>;
 }
 
 // `ws` is an optional peer dep — lazy-import its WebSocketServer (cached).
-const wsServerCtorLazy: Lazy<Promise<new (opts: { noServer: boolean }) => WsServerLike>> = Lazy.of(async () => {
+const wsServerConstructorLazy: Lazy<Promise<new (opts: { noServer: boolean; maxPayload?: number }) => WebsocketServerLike>> = Lazy.of(async () => {
   try {
     const name = 'ws';
     const mod = (await import(name)) as {
-      WebSocketServer?: new (opts: { noServer: boolean }) => WsServerLike;
-      default?: { WebSocketServer?: new (opts: { noServer: boolean }) => WsServerLike };
+      WebSocketServer?: new (opts: { noServer: boolean; maxPayload?: number }) => WebsocketServerLike;
+      default?: { WebSocketServer?: new (opts: { noServer: boolean; maxPayload?: number }) => WebsocketServerLike };
     };
-    const Ctor = mod.WebSocketServer ?? mod.default?.WebSocketServer;
-    if (!Ctor) throw new Error('ws: WebSocketServer not exported');
-    return Ctor;
+    const Constructor = mod.WebSocketServer ?? mod.default?.WebSocketServer;
+    if (!Constructor) throw new Error('ws: WebSocketServer not exported');
+    return Constructor;
   } catch (e) {
     throw new Error(
       'websocket() routes on the Express backend require the "ws" package.  '
@@ -84,15 +87,25 @@ type ExpressNext = (err?: unknown) => void;
 type ExpressHandler = (req: ExpressRequestLike, res: ExpressResponseLike, next: ExpressNext) => void | Promise<void>;
 type ExpressErrorHandler = (err: unknown, req: ExpressRequestLike, res: ExpressResponseLike, next: ExpressNext) => void | Promise<void>;
 
-/** Subset of the Express app API we touch.  Covers v4 and v5. */
+/** Escape a literal string for safe embedding in a RegExp source. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Subset of the Express app API we touch.  Covers v4 and v5.  Paths accept
+ * a RegExp as well as a string: a trailing-`*` wildcard route registers as
+ * a RegExp so it works identically on Express 4 and 5 (v5's path-to-regexp
+ * rejects a bare string `*`).
+ */
 export interface ExpressAppLike {
-  get(path: string, handler: ExpressHandler): void;
-  post(path: string, handler: ExpressHandler): void;
-  put(path: string, handler: ExpressHandler): void;
-  delete(path: string, handler: ExpressHandler): void;
-  patch(path: string, handler: ExpressHandler): void;
-  head(path: string, handler: ExpressHandler): void;
-  options(path: string, handler: ExpressHandler): void;
+  get(path: string | RegExp, handler: ExpressHandler): void;
+  post(path: string | RegExp, handler: ExpressHandler): void;
+  put(path: string | RegExp, handler: ExpressHandler): void;
+  delete(path: string | RegExp, handler: ExpressHandler): void;
+  patch(path: string | RegExp, handler: ExpressHandler): void;
+  head(path: string | RegExp, handler: ExpressHandler): void;
+  options(path: string | RegExp, handler: ExpressHandler): void;
   use(mw: ExpressHandler | ExpressErrorHandler): void;
   listen(port: number, hostname: string, cb: (err?: Error) => void): Server;
 }
@@ -114,16 +127,17 @@ export class ExpressBackend implements HttpServerBackend {
   private readonly ownsApp: boolean;
   private readonly maxBodyBytes: number;
   private readonly registered: RouteRegistration[] = [];
-  private readonly wsRegistered: WebSocketRouteRegistration[] = [];
-  private wss: WsServerLike | null = null;
+  private readonly wsRegistered: WebsocketRouteRegistration[] = [];
+  private wss: WebsocketServerLike | null = null;
   private notFoundHandler: ((req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
   private errorHandler: ((err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
 
   constructor(options: ExpressBackendOptions = {}) {
-    const settings = (options as ExpressBackendOptionsType);
-    this.app = settings.app ?? null;
-    this.ownsApp = settings.app == null;
-    this.maxBodyBytes = settings.maxBodyBytes ?? 10 * 1024 * 1024;
+    const resolvedOptions = (options as ExpressBackendOptionsType);
+    new ExpressBackendOptionsValidator().validate(resolvedOptions);
+    this.app = resolvedOptions.app ?? null;
+    this.ownsApp = resolvedOptions.app == null;
+    this.maxBodyBytes = resolvedOptions.maxBodyBytes ?? 10 * 1024 * 1024;
   }
 
   /** Inject / access the underlying Express app — useful for native middleware. */
@@ -136,7 +150,7 @@ export class ExpressBackend implements HttpServerBackend {
     this.registered.push(route);
   }
 
-  registerWebSocket(reg: WebSocketRouteRegistration): void {
+  registerWebSocket(reg: WebsocketRouteRegistration): void {
     if (this.wsRegistered.some((r) => r.pattern === reg.pattern)) {
       throw new Error(`ExpressBackend: duplicate websocket route for pattern "${reg.pattern}".`);
     }
@@ -156,7 +170,7 @@ export class ExpressBackend implements HttpServerBackend {
     // Register our raw-body middleware first so routes see req.rawBody.
     this.app.use(this.rawBodyMiddleware());
     // Apply routes.  Express treats patterns like "/users/:id" natively.
-    for (const r of this.registered) this.attachRoute(r);
+    for (const route of this.registered) this.attachRoute(route);
     // 404 + error middlewares MUST come last.
     if (this.notFoundHandler) {
       const handler = this.notFoundHandler;
@@ -197,8 +211,8 @@ export class ExpressBackend implements HttpServerBackend {
         // server.close() waits on them forever (a long-lived socket never
         // drains) and shutdown hangs.
         if (this.wss?.clients) {
-          for (const c of this.wss.clients) {
-            try { c.terminate?.(); } catch { /* already gone */ }
+          for (const client of this.wss.clients) {
+            try { client.terminate?.(); } catch { /* already gone */ }
           }
         }
         await new Promise<void>((resolve) => {
@@ -218,15 +232,23 @@ export class ExpressBackend implements HttpServerBackend {
   }
 
   private async attachUpgradeHandling(server: Server): Promise<void> {
-    const WebSocketServerCtor = await wsServerCtorLazy.get();
-    const wss = new WebSocketServerCtor({ noServer: true });
+    const WebsocketServerConstructor = await wsServerConstructorLazy.get();
+    // Cap the transport payload at the default WS frame size so an oversized
+    // frame is rejected at the protocol level instead of being buffered up to
+    // the `ws` default of 100 MiB first (security audit WS-3).
+    const wss = new WebsocketServerConstructor({ noServer: true, maxPayload: DEFAULT_WEBSOCKET_MAX_FRAME_BYTES });
     this.wss = wss;
     server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+      // Attach the raw-socket error guard BEFORE any async work: a peer
+      // that vanishes mid-handshake (or a malformed upgrade) must never
+      // surface as an unhandled 'error' event, which would crash the
+      // process (security audit WS-1).
+      socket.on('error', () => { /* ignore */ });
       void (async () => {
         const url = new URL(req.url ?? '/', 'http://localhost');
-        let hit: { reg: WebSocketRouteRegistration; params: Record<string, string> } | null = null;
+        let hit: { reg: WebsocketRouteRegistration; params: Record<string, string> } | null = null;
         for (const reg of this.wsRegistered) {
-          const params = matchWsPattern(reg.pattern, url.pathname);
+          const params = matchWebsocketPattern(reg.pattern, url.pathname);
           if (params) { hit = { reg, params }; break; }
         }
         if (!hit) {
@@ -234,9 +256,6 @@ export class ExpressBackend implements HttpServerBackend {
           return;
         }
         const adapted = this.adaptUpgradeRequest(req, url, hit.params);
-        // Guard against the peer vanishing mid-authorize (unhandled
-        // 'error' on the raw socket would otherwise crash the process).
-        socket.on('error', () => { /* ignore */ });
         let reject: HttpResponse | null;
         try {
           reject = await hit.reg.authorize(adapted);
@@ -250,17 +269,22 @@ export class ExpressBackend implements HttpServerBackend {
         wss.handleUpgrade(req, socket, head, (ws) => {
           // Keep wss.clients populated so the unbind terminate-walk works.
           wss.emit('connection', ws, req);
-          hit!.reg.onConnection(adapted, wsPackageAdapter(ws, { remoteAddress: adapted.remoteAddress }));
+          hit!.reg.onConnection(adapted, websocketPackageAdapter(ws, { remoteAddress: adapted.remoteAddress }));
         });
-      })();
+      })().catch(() => {
+        // Last-resort guard: an upgrade handler must never reject into an
+        // unhandled rejection (process-fatal under Node's default).  Any
+        // unexpected throw closes the raw socket instead (WS-1).
+        try { socket.destroy(); } catch { /* already gone */ }
+      });
     });
   }
 
   private adaptUpgradeRequest(req: IncomingMessage, url: URL, params: Record<string, string>): HttpRequest {
     const headers: Record<string, string> = {};
-    for (const [k, v] of Object.entries(req.headers)) {
-      if (typeof v === 'string') headers[k] = v;
-      else if (Array.isArray(v)) headers[k] = v.join(',');
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (typeof value === 'string') headers[key] = value;
+      else if (Array.isArray(value)) headers[key] = value.join(',');
     }
     const query: Record<string, string | string[] | undefined> = {};
     for (const key of new Set(url.searchParams.keys())) {
@@ -283,22 +307,31 @@ export class ExpressBackend implements HttpServerBackend {
 
   private attachRoute(route: RouteRegistration): void {
     const method = route.method.toLowerCase() as Lowercase<HttpMethod>;
+    // A trailing-`*` pattern registers as a RegExp (v4/v5-safe) and the
+    // captured remainder is exposed as params['*'] — the wildcard contract.
+    const wildcard = route.pattern.endsWith('/*');
+    const registerPath: string | RegExp = wildcard
+      ? new RegExp('^' + escapeRegExp(route.pattern.slice(0, -2)) + '/(.*)$')
+      : route.pattern;
     const handler: ExpressHandler = async (req, res, next) => {
       try {
         const adapted = this.adaptRequest(req);
-        const out = await route.handler(adapted);
+        const finalReq = wildcard
+          ? { ...adapted, params: { ...adapted.params, '*': (req.params as Record<string, string>)['0'] ?? '' } }
+          : adapted;
+        const out = await route.handler(finalReq);
         this.writeResponse(res, out);
       } catch (err) { next(err); }
     };
     const app = this.app!;
     match(method)
-      .with('get',     () => app.get(route.pattern, handler))
-      .with('post',    () => app.post(route.pattern, handler))
-      .with('put',     () => app.put(route.pattern, handler))
-      .with('delete',  () => app.delete(route.pattern, handler))
-      .with('patch',   () => app.patch(route.pattern, handler))
-      .with('head',    () => app.head(route.pattern, handler))
-      .with('options', () => app.options(route.pattern, handler))
+      .with('get',     () => app.get(registerPath, handler))
+      .with('post',    () => app.post(registerPath, handler))
+      .with('put',     () => app.put(registerPath, handler))
+      .with('delete',  () => app.delete(registerPath, handler))
+      .with('patch',   () => app.patch(registerPath, handler))
+      .with('head',    () => app.head(registerPath, handler))
+      .with('options', () => app.options(registerPath, handler))
       .exhaustive();
   }
 
@@ -317,8 +350,8 @@ export class ExpressBackend implements HttpServerBackend {
       try {
         const chunks: Buffer[] = [];
         let total = 0;
-        const r = req as unknown as NodeJS.ReadableStream;
-        for await (const chunk of r) {
+        const readable = req as unknown as NodeJS.ReadableStream;
+        for await (const chunk of readable) {
           const buf = chunk as Buffer;
           total += buf.length;
           if (total > cap) {
@@ -351,6 +384,7 @@ export class ExpressBackend implements HttpServerBackend {
       }
       if (err instanceof HttpError) {
         res.status(err.status).setHeader('content-type', 'application/json; charset=utf-8');
+        if (err.headers) for (const [k, v] of Object.entries(err.headers)) res.setHeader(k, v);
         res.end(JSON.stringify({ error: err.message, ...err.extra }));
         return;
       }
@@ -361,9 +395,9 @@ export class ExpressBackend implements HttpServerBackend {
 
   private adaptRequest(req: ExpressRequestLike): HttpRequest {
     const headers: Record<string, string> = {};
-    for (const [k, v] of Object.entries(req.headers)) {
-      if (typeof v === 'string') headers[k] = v;
-      else if (Array.isArray(v)) headers[k] = v.join(',');
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (typeof value === 'string') headers[key] = value;
+      else if (Array.isArray(value)) headers[key] = value.join(',');
     }
     const body = req.rawBody ?? null;
     // Express's `req.ip` is the standard accessor — also honours
@@ -384,18 +418,18 @@ export class ExpressBackend implements HttpServerBackend {
 
   private normaliseQuery(raw: Record<string, unknown>): Record<string, string | string[] | undefined> {
     const out: Record<string, string | string[] | undefined> = {};
-    for (const [k, v] of Object.entries(raw)) {
-      if (v === undefined || v === null) continue;
-      if (typeof v === 'string') out[k] = v;
-      else if (Array.isArray(v)) out[k] = v.map((x) => String(x));
-      else out[k] = String(v);
+    for (const [key, value] of Object.entries(raw)) {
+      if (value === undefined || value === null) continue;
+      if (typeof value === 'string') out[key] = value;
+      else if (Array.isArray(value)) out[key] = value.map((x) => String(x));
+      else out[key] = String(value);
     }
     return out;
   }
 
   private writeResponse(res: ExpressResponseLike, response: HttpResponse): void {
     res.status(response.status);
-    if (response.headers) for (const [k, v] of Object.entries(response.headers)) res.setHeader(k, v);
+    if (response.headers) for (const [key, value] of Object.entries(response.headers)) res.setHeader(key, value);
     if (response.contentType) res.setHeader('content-type', response.contentType);
 
     const body = response.body;
@@ -410,6 +444,11 @@ export class ExpressBackend implements HttpServerBackend {
     if (body instanceof Uint8Array) {
       if (!response.contentType) res.setHeader('content-type', 'application/octet-stream');
       res.end(body);
+      return;
+    }
+    if (typeof ReadableStream !== 'undefined' && body instanceof ReadableStream) {
+      if (!response.contentType && !response.headers?.['content-type']) res.setHeader('content-type', 'application/octet-stream');
+      Readable.fromWeb(body as unknown as Parameters<typeof Readable.fromWeb>[0]).pipe(res as unknown as NodeJS.WritableStream);
       return;
     }
     // Plain object → JSON.

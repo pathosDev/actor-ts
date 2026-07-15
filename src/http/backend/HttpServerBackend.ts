@@ -1,5 +1,5 @@
 import type { HttpMethod, HttpRequest, HttpResponse } from '../types.js';
-import type { WebSocketSocketAdapter } from '../ws/SocketAdapter.js';
+import type { WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
 
 /** One route registration — supplied by the DSL after compilation. */
 export interface RouteRegistration {
@@ -18,13 +18,13 @@ export interface RouteRegistration {
  * Everything actor-related lives behind `onConnection`; the backend
  * never sees the framework's actors.
  */
-export interface WebSocketRouteRegistration {
+export interface WebsocketRouteRegistration {
   /** ':param'-style pattern, same dialect as {@link RouteRegistration.pattern}. */
   readonly pattern: string;
   /** Pre-upgrade guard.  `null` → proceed; `HttpResponse` → reject with it. */
   readonly authorize: (req: HttpRequest) => Promise<HttpResponse | null>;
   /** Called once per accepted connection, synchronously in the upgrade callback. */
-  readonly onConnection: (req: HttpRequest, socket: WebSocketSocketAdapter) => void;
+  readonly onConnection: (req: HttpRequest, socket: WebsocketSocketAdapter) => void;
 }
 
 export interface ServerBinding {
@@ -48,10 +48,20 @@ export interface HttpServerBackend {
   /** Start listening.  Returns a ServerBinding with the actual bound port. */
   listen(host: string, port: number): Promise<ServerBinding>;
 
-  /** Optionally register a catch-all not-found handler. */
+  /**
+   * Optional: register a method-agnostic not-found handler, invoked for
+   * any request that matched no route (including unmatched OPTIONS/HEAD).
+   * `HttpExtension` wires `fallback()` here.  If the handler throws, the
+   * backend applies its default error mapping.
+   */
   setNotFound?(handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse): void;
 
-  /** Optionally register a global error handler. */
+  /**
+   * Optional: register a last-resort error handler.  It MUST see both
+   * errors thrown by route handlers AND backend-internal errors (body
+   * parsing, etc.); if it throws, the backend falls back to its default
+   * error mapping.  `HttpExtension` wires `withErrorHandler` here.
+   */
   setErrorHandler?(handler: (err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse): void;
 
   /**
@@ -59,5 +69,5 @@ export interface HttpServerBackend {
    * implement this support `websocket()` routes; absence is detected by
    * `HttpExtension.bind` and reported as a clear error.
    */
-  registerWebSocket?(reg: WebSocketRouteRegistration): void;
+  registerWebSocket?(reg: WebsocketRouteRegistration): void;
 }

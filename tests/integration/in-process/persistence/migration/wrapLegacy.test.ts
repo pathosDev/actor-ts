@@ -134,8 +134,8 @@ describe('migrateInMemoryJournal — bulk rewrite', () => {
         });
       }
       initialState() { return { balance: 0, currency: '' }; }
-      onEvent(s: { balance: number; currency: string }, e: DepositedV2) {
-        return { balance: s.balance + e.amount, currency: e.currency };
+      onEvent(summary: { balance: number; currency: string }, e: DepositedV2) {
+        return { balance: summary.balance + e.amount, currency: e.currency };
       }
       async onCommand(_s: { balance: number; currency: string }, _c: unknown) { /* read-only */ }
     }
@@ -180,29 +180,29 @@ describe('migrateSnapshotStore — bulk rewrite', () => {
     await store.save('user-2', 1, { balance: 200 });
 
     const result = await migrateSnapshotStore(store, ['user-1', 'user-2'],
-      (s: { balance: number }) => 'BankAccount.State');
+      (summary: { balance: number }) => 'BankAccount.State');
     expect(result).toEqual({ inspected: 2, wrapped: 2, skipped: 0 });
 
     const u1 = await store.loadLatest('user-1');
     expect(isEnvelope(u1.toNullable()?.state)).toBe(true);
 
     const second = await migrateSnapshotStore(store, ['user-1', 'user-2'],
-      (s: { balance: number }) => 'BankAccount.State');
+      (summary: { balance: number }) => 'BankAccount.State');
     expect(second).toEqual({ inspected: 2, wrapped: 0, skipped: 2 });
   });
 
   test('skips pids that have no snapshot at all', async () => {
     const store = new InMemorySnapshotStore();
     const result = await migrateSnapshotStore(store, ['no-such-pid'],
-      (s: unknown) => 'T');
+      (summary: unknown) => 'T');
     expect(result.inspected).toBe(0);
   });
 });
 
 describe('formatMigrationResult', () => {
   test('produces a one-line summary', () => {
-    const s = formatMigrationResult('events',
+    const summary = formatMigrationResult('events',
       { inspected: 10, wrapped: 7, skipped: 3 });
-    expect(s).toBe('events: 7 wrapped, 3 already enveloped, 10 inspected');
+    expect(summary).toBe('events: 7 wrapped, 3 already enveloped, 10 inspected');
   });
 });

@@ -12,10 +12,10 @@ import {
 
 describe('Try — Success', () => {
   test('Success wraps a value; isSuccess/isFailure report correctly', () => {
-    const t = success(42);
-    expect(t.isSuccess()).toBe(true);
-    expect(t.isFailure()).toBe(false);
-    expect(t.value).toBe(42);
+    const attempt = success(42);
+    expect(attempt.isSuccess()).toBe(true);
+    expect(attempt.isFailure()).toBe(false);
+    expect(attempt.value).toBe(42);
   });
 
   test('getOrElse returns the inner value; fallback ignored', () => {
@@ -28,9 +28,9 @@ describe('Try — Success', () => {
   });
 
   test('map catches a thrown mapper and becomes Failure', () => {
-    const t = success(1).map(() => { throw new Error('boom'); });
-    expect(t.isFailure()).toBe(true);
-    expect(t.toError()?.message).toBe('boom');
+    const attempt = success(1).map(() => { throw new Error('boom'); });
+    expect(attempt.isFailure()).toBe(true);
+    expect(attempt.toError()?.message).toBe('boom');
   });
 
   test('flatMap chains into another Try', () => {
@@ -64,31 +64,31 @@ describe('Try — Success', () => {
   });
 
   test('filter with a custom error factory uses the provided Error', () => {
-    const t = success(3).filter((n) => n > 100, (v) => new RangeError(`too small: ${v}`));
-    expect(t.isFailure()).toBe(true);
-    expect((t as Failure).error).toBeInstanceOf(RangeError);
-    expect((t as Failure).toError().message).toBe('too small: 3');
+    const attempt = success(3).filter((n) => n > 100, (v) => new RangeError(`too small: ${v}`));
+    expect(attempt.isFailure()).toBe(true);
+    expect((attempt as Failure).error).toBeInstanceOf(RangeError);
+    expect((attempt as Failure).toError().message).toBe('too small: 3');
   });
 
   test('filter catches a throwing predicate as Failure', () => {
-    const t = success(1).filter(() => { throw new Error('pred-threw'); });
-    expect(t.isFailure()).toBe(true);
-    expect((t as Failure).toError().message).toBe('pred-threw');
+    const attempt = success(1).filter(() => { throw new Error('pred-threw'); });
+    expect(attempt.isFailure()).toBe(true);
+    expect((attempt as Failure).toError().message).toBe('pred-threw');
   });
 
   test('flatMap catches a throwing mapper as Failure', () => {
-    const t = success(1).flatMap(() => { throw new Error('flatmap-threw'); });
-    expect(t.isFailure()).toBe(true);
-    expect((t as Failure).toError().message).toBe('flatmap-threw');
+    const attempt = success(1).flatMap(() => { throw new Error('flatmap-threw'); });
+    expect(attempt.isFailure()).toBe(true);
+    expect((attempt as Failure).toError().message).toBe('flatmap-threw');
   });
 });
 
 describe('Try — Failure', () => {
   test('Failure wraps an error; flags invert', () => {
-    const t = failure(new Error('nope'));
-    expect(t.isSuccess()).toBe(false);
-    expect(t.isFailure()).toBe(true);
-    expect(t.error).toBeInstanceOf(Error);
+    const attempt = failure(new Error('nope'));
+    expect(attempt.isSuccess()).toBe(false);
+    expect(attempt.isFailure()).toBe(true);
+    expect(attempt.error).toBeInstanceOf(Error);
   });
 
   test('getOrElse returns the fallback (value or computed from error)', () => {
@@ -103,9 +103,9 @@ describe('Try — Failure', () => {
 
   test('map / flatMap pass the Failure through untouched', () => {
     const err = new Error('stay');
-    const t: Try<number> = failure(err);
-    expect(t.map(n => n * 2).isFailure()).toBe(true);
-    expect(t.flatMap(n => success(n + 1)).isFailure()).toBe(true);
+    const attempt: Try<number> = failure(err);
+    expect(attempt.map(n => n * 2).isFailure()).toBe(true);
+    expect(attempt.flatMap(n => success(n + 1)).isFailure()).toBe(true);
   });
 
   test('recover produces a Success unless the recovery returns null', () => {
@@ -114,10 +114,10 @@ describe('Try — Failure', () => {
   });
 
   test('recoverWith can swap in a different Try', () => {
-    const t = failure(new Error('x')).recoverWith((e) =>
+    const attempt = failure(new Error('x')).recoverWith((e) =>
       (e as Error).message === 'x' ? success(42) : failure(e),
     );
-    expect(t.get()).toBe(42);
+    expect(attempt.get()).toBe(42);
   });
 
   test('fold picks onFailure', () => {
@@ -138,8 +138,8 @@ describe('Try — Failure', () => {
     // `throw "string"` is legal JS — Failure stores the raw value
     // but get() should still throw an Error so callers reading
     // `.message` don't crash.
-    const f = failure('raw-string');
-    expect(() => f.get()).toThrow('raw-string');
+    const failedAttempt = failure('raw-string');
+    expect(() => failedAttempt.get()).toThrow('raw-string');
   });
 
   test('cause / toError coerce a non-Error value', () => {
@@ -155,9 +155,9 @@ describe('Try — Failure', () => {
 
   test('cause returns the original Error when one was thrown', () => {
     const original = new TypeError('typed');
-    const f = failure(original);
-    expect(f.cause).toBe(original);
-    expect(f.toError()).toBe(original);
+    const failedAttempt = failure(original);
+    expect(failedAttempt.cause).toBe(original);
+    expect(failedAttempt.toError()).toBe(original);
   });
 
   test('recover wraps the recovery value as Success', () => {
@@ -165,15 +165,15 @@ describe('Try — Failure', () => {
   });
 
   test('recover that throws inside the recovery becomes a fresh Failure', () => {
-    const t = failure(new Error('orig')).recover(() => { throw new Error('recovery-threw'); });
-    expect(t.isFailure()).toBe(true);
-    expect((t as Failure).toError().message).toBe('recovery-threw');
+    const attempt = failure(new Error('orig')).recover(() => { throw new Error('recovery-threw'); });
+    expect(attempt.isFailure()).toBe(true);
+    expect((attempt as Failure).toError().message).toBe('recovery-threw');
   });
 
   test('recoverWith catches a throwing recovery as Failure', () => {
-    const t = failure(new Error('orig')).recoverWith(() => { throw new Error('recovery-threw'); });
-    expect(t.isFailure()).toBe(true);
-    expect((t as Failure).toError().message).toBe('recovery-threw');
+    const attempt = failure(new Error('orig')).recoverWith(() => { throw new Error('recovery-threw'); });
+    expect(attempt.isFailure()).toBe(true);
+    expect((attempt as Failure).toError().message).toBe('recovery-threw');
   });
 
   test('forEach on Failure is a no-op', () => {
@@ -192,18 +192,18 @@ describe('Try — Failure', () => {
 describe('Try — factories and helpers', () => {
   test('tryOf wraps a thunk — Success on return, Failure on throw', () => {
     expect(tryOf(() => 1 + 1).get()).toBe(2);
-    const t = tryOf<number>(() => { throw new Error('x'); });
-    expect(t.isFailure()).toBe(true);
+    const attempt = tryOf<number>(() => { throw new Error('x'); });
+    expect(attempt.isFailure()).toBe(true);
   });
 
   test('tryOf with a non-Error throw stores the raw value', () => {
     // Mirror of eitherOf — but Try keeps the RAW value on `.error`
     // (Failure.error is `unknown`) and only coerces via `.cause` /
     // `.toError()`.  Pin that contract.
-    const t = tryOf(() => { throw 'string-error'; }) as Failure;
-    expect(t.isFailure()).toBe(true);
-    expect(t.error).toBe('string-error');
-    expect(t.cause.message).toBe('string-error');
+    const attempt = tryOf(() => { throw 'string-error'; }) as Failure;
+    expect(attempt.isFailure()).toBe(true);
+    expect(attempt.error).toBe('string-error');
+    expect(attempt.cause.message).toBe('string-error');
   });
 
   test('trySequence on empty array returns Success([])', () => {
@@ -218,8 +218,8 @@ describe('Try — factories and helpers', () => {
 
   test('trySequence collects Successes or short-circuits to the first Failure', () => {
     expect(trySequence([success(1), success(2), success(3)]).get()).toEqual([1, 2, 3]);
-    const t = trySequence([success(1), failure(new Error('mid')), success(3)]);
-    expect(t.isFailure()).toBe(true);
+    const attempt = trySequence([success(1), failure(new Error('mid')), success(3)]);
+    expect(attempt.isFailure()).toBe(true);
   });
 
   test('P.instanceOf works with ts-pattern', () => {

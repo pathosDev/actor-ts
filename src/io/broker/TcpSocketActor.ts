@@ -2,6 +2,7 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
+import { TcpSocketOptionsValidator } from './TcpSocketOptions.js';
 import type { TcpSocketOptions, TcpSocketOptionsType } from './TcpSocketOptions.js';
 
 /**
@@ -31,10 +32,10 @@ export type TcpOutbound = Uint8Array | string;
  * via the standard `enqueueOutbound` path — the actor exposes a small
  * command surface (`send`) so user code can `tell({ kind: 'send', payload })`.
  */
-export type TcpSocketCmd =
+export type TcpSocketCommand =
   | { readonly kind: 'send'; readonly payload: TcpOutbound };
 
-export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketCmd, TcpOutbound> {
+export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketCommand, TcpOutbound> {
   private socket: NetSocket | null = null;
   /** Buffer for partial frames not yet matched by the framing strategy. */
   private inboundBuffer: Uint8Array = new Uint8Array(0);
@@ -42,24 +43,24 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
   constructor(options: TcpSocketOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.tcp; }
-  protected builtInDefaults(): Partial<TcpSocketOptionsType> {
+  protected builtInDefaultOptions(): Partial<TcpSocketOptionsType> {
     return { framing: { kind: 'bytes' } };
   }
-  protected readSettingsFromConfig(c: Config): Partial<TcpSocketOptionsType> {
+  protected readOptionsFromConfig(config: Config): Partial<TcpSocketOptionsType> {
     const out: { -readonly [K in keyof TcpSocketOptionsType]?: TcpSocketOptionsType[K] } = {};
-    if (c.hasPath('host')) out.host = c.getString('host');
-    if (c.hasPath('port')) out.port = c.getInt('port');
-    if (c.hasPath('framing')) {
-      const f = c.getConfig('framing');
-      const kind = f.getString('kind') as TcpFraming['kind'];
+    if (config.hasPath('host')) out.host = config.getString('host');
+    if (config.hasPath('port')) out.port = config.getInt('port');
+    if (config.hasPath('framing')) {
+      const framingConfig = config.getConfig('framing');
+      const kind = framingConfig.getString('kind') as TcpFraming['kind'];
       if (kind === 'lines') {
         out.framing = {
-          kind, delimiter: f.hasPath('delimiter') ? f.getString('delimiter') : undefined,
-          maxLineLen: f.hasPath('maxLineLen') ? f.getInt('maxLineLen') : undefined,
+          kind, delimiter: framingConfig.hasPath('delimiter') ? framingConfig.getString('delimiter') : undefined,
+          maxLineLen: framingConfig.hasPath('maxLineLen') ? framingConfig.getInt('maxLineLen') : undefined,
         };
       } else if (kind === 'length-prefixed') {
         out.framing = {
-          kind, maxFrameLen: f.hasPath('maxFrameLen') ? f.getInt('maxFrameLen') : undefined,
+          kind, maxFrameLen: framingConfig.hasPath('maxFrameLen') ? framingConfig.getInt('maxFrameLen') : undefined,
         };
       } else {
         out.framing = { kind: 'bytes' };
@@ -67,15 +68,16 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
     }
     return out;
   }
-  protected requiredSettings(): ReadonlyArray<keyof TcpSocketOptionsType> {
+  protected requiredOptions(): ReadonlyArray<keyof TcpSocketOptionsType> {
     return ['host', 'port', 'target'];
   }
-  protected endpointLabel(): string { return `tcp://${this.settings.host}:${this.settings.port}`; }
+  protected override optionsValidator(): TcpSocketOptionsValidator { return new TcpSocketOptionsValidator(); }
+  protected endpointLabel(): string { return `tcp://${this.options.host}:${this.options.port}`; }
 
-  protected async connectImpl(): Promise<void> {
+  protected async connectImplementation(): Promise<void> {
     const net = await netLazy.get();
     return new Promise<void>((resolve, reject) => {
-      const sock = net.createConnection({ host: this.settings.host!, port: this.settings.port! });
+      const sock = net.createConnection({ host: this.options.host!, port: this.options.port! });
       let done = false;
       sock.once('connect', () => {
         if (done) return;
@@ -95,7 +97,7 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
     });
   }
 
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     if (!this.socket) return;
     const sock = this.socket;
     this.socket = null;
@@ -117,7 +119,7 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
     });
   }
 
-  override onReceive(cmd: TcpSocketCmd): void {
+  override onReceive(cmd: TcpSocketCommand): void {
     if (cmd.kind === 'send') this.enqueueOutbound(cmd.payload);
   }
 
@@ -133,14 +135,14 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
       merged.set(chunk, this.inboundBuffer.length);
       this.inboundBuffer = merged;
     }
-    const f = this.settings.framing ?? { kind: 'bytes' };
-    if (f.kind === 'bytes') {
+    const framing = this.options.framing ?? { kind: 'bytes' };
+    if (framing.kind === 'bytes') {
       this.deliver(this.inboundBuffer);
       this.inboundBuffer = new Uint8Array(0);
-    } else if (f.kind === 'lines') {
-      this.extractLines(f.delimiter ?? '\n', f.maxLineLen ?? 1_048_576);
+    } else if (framing.kind === 'lines') {
+      this.extractLines(framing.delimiter ?? '\n', framing.maxLineLen ?? 1_048_576);
     } else {
-      this.extractLengthPrefixed(f.maxFrameLen ?? 16 * 1024 * 1024);
+      this.extractLengthPrefixed(framing.maxFrameLen ?? 16 * 1024 * 1024);
     }
   }
 
@@ -157,6 +159,15 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
       }
       this.deliver(line);
       cursor = idx + delimiter.length;
+    }
+    // Pending (un-terminated) remainder: bytes after the last delimiter, or
+    // the whole buffer when no delimiter has arrived.  If it already exceeds
+    // maxLineLen it can never become a valid line, so a hostile / MITM'd peer
+    // streaming delimiter-free bytes can't grow inboundBuffer without bound
+    // (security audit BRK-1).
+    if (text.length - cursor > maxLineLen) {
+      this.handleConnectionLost(new Error(`unterminated line exceeds maxLineLen=${maxLineLen}`));
+      return;
     }
     if (cursor === 0) return;
     // Re-encode the leftover suffix as bytes.
@@ -182,7 +193,7 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
   }
 
   private deliver(frame: Uint8Array | string): void {
-    const target = this.settings.target;
+    const target = this.options.target;
     if (target) target.tell(frame as never);
   }
 }

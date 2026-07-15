@@ -17,37 +17,37 @@ class RecordingRef<T = unknown> extends ActorRef<T> {
 
 describe('ActorRef base', () => {
   test('send forwards to tell with null sender', () => {
-    const r = new RecordingRef<string>('r');
-    r.send('hi');
-    expect(r.received).toEqual([{ message: 'hi', sender: null }]);
+    const ref = new RecordingRef<string>('r');
+    ref.send('hi');
+    expect(ref.received).toEqual([{ message: 'hi', sender: null }]);
   });
 
   test('stop sends PoisonPill', () => {
-    const r = new RecordingRef<unknown>('r');
-    r.stop();
-    expect(r.received.length).toBe(1);
-    expect(r.received[0]!.message).toBe(PoisonPill.instance);
-    expect(r.received[0]!.sender).toBeNull();
+    const ref = new RecordingRef<unknown>('r');
+    ref.stop();
+    expect(ref.received.length).toBe(1);
+    expect(ref.received[0]!.message).toBe(PoisonPill.instance);
+    expect(ref.received[0]!.sender).toBeNull();
   });
 
   test('kill sends Kill', () => {
-    const r = new RecordingRef<unknown>('r');
-    r.kill();
-    expect(r.received.length).toBe(1);
-    expect(r.received[0]!.message).toBe(Kill.instance);
+    const ref = new RecordingRef<unknown>('r');
+    ref.kill();
+    expect(ref.received.length).toBe(1);
+    expect(ref.received[0]!.message).toBe(Kill.instance);
   });
 
   test('toString matches path.toString()', () => {
-    const r = new RecordingRef('r');
-    expect(r.toString()).toBe(r.path.toString());
+    const ref = new RecordingRef('r');
+    expect(ref.toString()).toBe(ref.path.toString());
   });
 
   test('equals compares by path string, not object identity', () => {
-    const a = new RecordingRef('same');
-    const b = new RecordingRef('same');
-    const c = new RecordingRef('different');
-    expect(a.equals(b)).toBe(true);
-    expect(a.equals(c)).toBe(false);
+    const refA = new RecordingRef('same');
+    const refB = new RecordingRef('same');
+    const refC = new RecordingRef('different');
+    expect(refA.equals(refB)).toBe(true);
+    expect(refA.equals(refC)).toBe(false);
   });
 });
 

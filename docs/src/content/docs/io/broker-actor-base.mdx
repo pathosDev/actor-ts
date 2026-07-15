@@ -1,6 +1,6 @@
 ---
 title: BrokerActor base class
-description: The shared lifecycle for every protocol actor — connect/disconnect state machine, reconnect with backoff, outbound buffer, subscriber fan-out, lifecycle events. Subclasses implement three hooks (`connectImpl`, `disconnectImpl`, `dispatchOutgoing`); the base handles everything else.
+description: The shared lifecycle for every protocol actor — connect/disconnect state machine, reconnect with backoff, outbound buffer, subscriber fan-out, lifecycle events. Subclasses implement three hooks (`connectImplementation`, `disconnectImplementation`, `dispatchOutgoing`); the base handles everything else.
 ---
 
 Every protocol actor in `actor-ts/io/broker` — `KafkaActor`,
@@ -20,8 +20,8 @@ Subclasses implement three protocol hooks:
 
 | Hook | When called |
 | --- | --- |
-| `connectImpl` | Open the protocol-specific connection. |
-| `disconnectImpl` | Close it cleanly. |
+| `connectImplementation` | Open the protocol-specific connection. |
+| `disconnectImplementation` | Close it cleanly. |
 | `dispatchOutgoing(envelope)` | Send a single buffered message on the wire. |
 
 Subclasses implement the three protocol hooks; the base handles
@@ -51,9 +51,9 @@ stateDiagram-v2
 Four states:
 
 - **`disconnected`** — initial; not currently connected.
-- **`connecting`** — `connectImpl` is running.
+- **`connecting`** — `connectImplementation` is running.
 - **`connected`** — connection up; messages flow.
-- **`disconnecting`** — `disconnectImpl` is running.
+- **`disconnecting`** — `disconnectImplementation` is running.
 
 A `disconnected` → `connecting` → failure triggers a **reconnect
 loop**: backoff + retry until success or `maxAttempts`
@@ -62,28 +62,28 @@ exhausted.
 ## Subclass contract
 
 ```ts
-abstract class BrokerActor<S, Cmd, P> extends Actor<Cmd> {
+abstract class BrokerActor<S, Command, P> extends Actor<Command> {
   // Subclasses implement:
   protected abstract configKey(): string;
-  protected abstract builtInDefaults(): Partial<S>;
-  protected abstract readSettingsFromConfig(config: Config): Partial<S>;
-  protected abstract requiredSettings(): ReadonlyArray<keyof S>;
+  protected abstract builtInDefaultOptions(): Partial<S>;
+  protected abstract readOptionsFromConfig(config: Config): Partial<S>;
+  protected abstract requiredOptions(): ReadonlyArray<keyof S>;
   protected abstract endpointLabel(): string;
 
-  protected abstract connectImpl(): Promise<void>;
-  protected abstract disconnectImpl(): Promise<void>;
+  protected abstract connectImplementation(): Promise<void>;
+  protected abstract disconnectImplementation(): Promise<void>;
   protected abstract dispatchOutgoing(envelope: OutboundEnvelope<P>): Promise<void>;
 }
 ```
 
 Three categories:
 
-- **Settings glue** (`configKey`, `builtInDefaults`,
-  `readSettingsFromConfig`, `requiredSettings`,
+- **Settings glue** (`configKey`, `builtInDefaultOptions`,
+  `readOptionsFromConfig`, `requiredOptions`,
   `endpointLabel`) — describes how to assemble settings from
   the three layers (constructor + HOCON + defaults) and how to
   validate.
-- **Protocol hooks** (`connectImpl`, `disconnectImpl`,
+- **Protocol hooks** (`connectImplementation`, `disconnectImplementation`,
   `dispatchOutgoing`) — the protocol-specific work.
 
 `endpointLabel` is the human-readable connection identity
@@ -161,8 +161,8 @@ Published on `system.eventStream`:
 
 | Event | When |
 | --- | --- |
-| `BrokerConnected` | A `connectImpl` succeeded. |
-| `BrokerDisconnected` | A `disconnectImpl` ran or a connection failed. |
+| `BrokerConnected` | A `connectImplementation` succeeded. |
+| `BrokerDisconnected` | A `disconnectImplementation` ran or a connection failed. |
 | `BrokerReconnectAttempt` | A reconnect attempt is starting. |
 | `BrokerReconnectFailed` | `maxAttempts` exhausted. |
 | `BrokerBufferOverflow` | The outbound buffer dropped an envelope. |
@@ -181,13 +181,13 @@ different broker actors in the system.
 ## Settings resolution
 
 ```
-1. builtInDefaults()           ← lowest priority (always applied)
-2. readSettingsFromConfig()    ← HOCON overrides
+1. builtInDefaultOptions()           ← lowest priority (always applied)
+2. readOptionsFromConfig()    ← HOCON overrides
 3. Constructor argument        ← highest priority (per-instance)
 ```
 
 `preStart` merges the three layers, validates against
-`requiredSettings()`, and stashes the result for the rest of the
+`requiredOptions()`, and stashes the result for the rest of the
 actor's life via `this.settings`.
 
 Missing required settings cause an early-error throw on
@@ -197,27 +197,27 @@ path before it ever attempts to connect.
 ## Writing a custom protocol actor
 
 ```ts
-import { BrokerActor, type OutboundEnvelope, type BrokerCommonSettings } from 'actor-ts';
+import { BrokerActor, type OutboundEnvelope, type BrokerCommonOptionsType } from 'actor-ts';
 
-interface MyProtocolSettings extends BrokerCommonSettings {
+interface MyProtocolOptionsType extends BrokerCommonOptionsType {
   readonly url: string;
 }
 
-class MyProtocolActor extends BrokerActor<MyProtocolSettings, Cmd, MyPayload> {
+class MyProtocolActor extends BrokerActor<MyProtocolOptionsType, Command, MyPayload> {
   private conn: MyClient | null = null;
 
   protected configKey() { return 'actor-ts.io.broker.my-protocol'; }
-  protected builtInDefaults() { return { /* ... */ }; }
-  protected readSettingsFromConfig(c) { /* parse HOCON */ return {}; }
-  protected requiredSettings() { return ['url'] as const; }
+  protected builtInDefaultOptions() { return { /* ... */ }; }
+  protected readOptionsFromConfig(c) { /* parse HOCON */ return {}; }
+  protected requiredOptions() { return ['url'] as const; }
   protected endpointLabel() { return this.settings.url; }
 
-  protected async connectImpl(): Promise<void> {
+  protected async connectImplementation(): Promise<void> {
     this.conn = await MyClient.connect(this.settings.url);
     this.conn.onMessage((m) => this.fanOut(m.topic, m));
   }
 
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     await this.conn?.close();
     this.conn = null;
   }

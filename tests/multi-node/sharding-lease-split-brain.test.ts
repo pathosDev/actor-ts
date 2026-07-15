@@ -140,7 +140,7 @@ describe('multi-node sharding lease — split-brain protection', () => {
       const regions: Record<'a' | 'b' | 'c', ActorRef<Cmd>> = {
         a: spec.clusterFor('a').sharding.start<Cmd>(shardingOptionsA),
         b: spec.clusterFor('b').sharding.start<Cmd>(shardingOptionsB),
-        c: spec.clusterFor('c').sharding.start<Cmd>(shardingOptionsC),
+        coordinator: spec.clusterFor('c').sharding.start<Cmd>(shardingOptionsC),
       };
       void regions;
 
@@ -149,8 +149,8 @@ describe('multi-node sharding lease — split-brain protection', () => {
       // `acquiring`.
       await Bun.sleep(800);
       const states = ['a', 'b', 'c'].map((r) => {
-        const c = findCoordinator(spec, r, 'entity');
-        return c ? leaseStateOf(c) : 'unknown';
+        const coordinator = findCoordinator(spec, r, 'entity');
+        return coordinator ? leaseStateOf(coordinator) : 'unknown';
       });
       const heldCount = states.filter((s) => s === 'held').length;
       expect(heldCount).toBe(1);
@@ -178,8 +178,8 @@ describe('multi-node sharding lease — split-brain protection', () => {
 
       // INVARIANT: still at most one coordinator in `held` state.
       const statesAfter = ['a', 'b', 'c'].map((r) => {
-        const c = findCoordinator(spec, r, 'entity');
-        return c ? leaseStateOf(c) : 'unknown';
+        const coordinator = findCoordinator(spec, r, 'entity');
+        return coordinator ? leaseStateOf(coordinator) : 'unknown';
       });
       const heldAfter = statesAfter.filter((s) => s === 'held').length;
       expect(heldAfter).toBeLessThanOrEqual(1);

@@ -1,5 +1,5 @@
 import { JournalError, type Snapshot } from '../JournalTypes.js';
-import { encodeBody, decodeBody } from '../object-storage/BodyCodec.js';
+import { DEFAULT_MAX_DECOMPRESSED_BYTES, encodeBody, decodeBody } from '../object-storage/BodyCodec.js';
 import {
   activeEncryptKey,
   isVersionedKeyShape,
@@ -16,6 +16,7 @@ import type { ObjectStorageBackend } from '../object-storage/ObjectStorageBacken
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import { none, some, type Option } from '../../util/Option.js';
+import { ObjectStorageSnapshotStoreOptionsValidator } from './ObjectStorageSnapshotStoreOptions.js';
 import type { ObjectStorageSnapshotStoreOptions, ObjectStorageSnapshotStoreOptionsType } from './ObjectStorageSnapshotStoreOptions.js';
 
 /** Sequence-number padding — matches `Number.MAX_SAFE_INTEGER`'s 16 digits with headroom. */
@@ -40,15 +41,18 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
   private readonly keepN: number;
   private readonly compression: CompressionConfig | CompressionResolver | undefined;
   private readonly encryption: EncryptionConfig | EncryptionResolver | undefined;
+  private readonly maxDecompressedBytes: number;
 
   constructor(options: ObjectStorageSnapshotStoreOptions) {
-    const s = (options as ObjectStorageSnapshotStoreOptionsType);
-    if (s.backend === undefined) throw new Error('ObjectStorageSnapshotStore: backend is required (call withBackend()).');
-    this.backend = s.backend;
-    this.prefix = s.prefix ?? '';
-    this.keepN = s.keepN ?? 3;
-    this.compression = s.compression;
-    this.encryption = s.encryption;
+    const resolvedOptions = (options as ObjectStorageSnapshotStoreOptionsType);
+    if (resolvedOptions.backend === undefined) throw new Error('ObjectStorageSnapshotStore: backend is required (call withBackend()).');
+    new ObjectStorageSnapshotStoreOptionsValidator().validate(resolvedOptions);
+    this.backend = resolvedOptions.backend;
+    this.prefix = resolvedOptions.prefix ?? '';
+    this.keepN = resolvedOptions.keepN ?? 3;
+    this.compression = resolvedOptions.compression;
+    this.encryption = resolvedOptions.encryption;
+    this.maxDecompressedBytes = resolvedOptions.maxDecompressedBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES;
   }
 
   async save<S>(
@@ -126,9 +130,9 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
     // Find the highest seq strictly less than the requested one.
     let chosen: string | null = null;
     for (const it of items) {
-      const s = parseSeqFromKey(it.key);
-      if (s !== null && s < seq) chosen = it.key;
-      else if (s !== null && s >= seq) break;
+      const entrySeq = parseSeqFromKey(it.key);
+      if (entrySeq !== null && entrySeq < seq) chosen = it.key;
+      else if (entrySeq !== null && entrySeq >= seq) break;
     }
     if (!chosen) return none;
     return this.fetchSnapshot<S>(pid, chosen, options);
@@ -137,8 +141,8 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
   async delete(pid: string, toSeq: number): Promise<void> {
     const items = await this.backend.list({ prefix: this.pidPrefix(pid) });
     for (const it of items) {
-      const s = parseSeqFromKey(it.key);
-      if (s !== null && s <= toSeq) await this.backend.delete(it.key);
+      const entrySeq = parseSeqFromKey(it.key);
+      if (entrySeq !== null && entrySeq <= toSeq) await this.backend.delete(it.key);
     }
   }
 
@@ -168,10 +172,10 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
     const encryption = options?.encryption
       ?? resolveEncryption(this.encryption, pid, { mode: 'none' });
     const subKeyFor = resolveDecryptSubkey(encryption, pid);
-    const decoded = await decodeBody(
-      fetched.value.body,
-      subKeyFor ? { encryption: { subKeyFor } } : undefined,
-    );
+    const decoded = await decodeBody(fetched.value.body, {
+      ...(subKeyFor ? { encryption: { subKeyFor } } : {}),
+      maxOutputBytes: this.maxDecompressedBytes,
+    });
     const json = utf8Decoder.decode(decoded.payload);
     let parsed: { persistenceId: string; sequenceNr: number; state: S; timestamp: number };
     try { parsed = JSON.parse(json); }
@@ -196,8 +200,8 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
 
 function parseSeqFromKey(key: string): number | null {
   // Expected suffix: '<seq.padStart(20,'0')>.json'
-  const m = /(\d{1,20})\.json$/.exec(key);
-  if (!m) return null;
-  const n = Number(m[1]);
-  return Number.isFinite(n) ? n : null;
+  const match = /(\d{1,20})\.json$/.exec(key);
+  if (!match) return null;
+  const seq = Number(match[1]);
+  return Number.isFinite(seq) ? seq : null;
 }

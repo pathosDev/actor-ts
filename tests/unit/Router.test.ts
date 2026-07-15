@@ -24,18 +24,18 @@ const newSystem = (name = 'router-unit'): ActorSystem => {
 function countingWorker(hits: Map<string, number>) {
   return class extends Actor<string> {
     override onReceive(_: string): void {
-      const n = this.self.path.name;
-      hits.set(n, (hits.get(n) ?? 0) + 1);
+      const name = this.self.path.name;
+      hits.set(name, (hits.get(name) ?? 0) + 1);
     }
   };
 }
 
 describe('roundRobinStrategy', () => {
   test('cycles through routees deterministically', () => {
-    const routees = ['a', 'b', 'c'].map(n => ({ path: { name: n } } as never));
-    const s = roundRobinStrategy();
+    const routees = ['a', 'b', 'c'].map(name => ({ path: { name: name } } as never));
+    const strategy = roundRobinStrategy();
     const chosen = [0, 1, 2, 3, 4, 5].map(i =>
-      Array.from(s(routees, { messageIndex: i }))[0]!,
+      Array.from(strategy(routees, { messageIndex: i }))[0]!,
     );
     expect((chosen.map((r: any) => r.path.name))).toEqual(['a', 'b', 'c', 'a', 'b', 'c']);
   });
@@ -47,7 +47,7 @@ describe('roundRobinStrategy', () => {
 
 describe('randomStrategy', () => {
   test('returns one routee per call from the given set', () => {
-    const routees = ['a', 'b', 'c'].map(n => ({ path: { name: n } } as never));
+    const routees = ['a', 'b', 'c'].map(name => ({ path: { name: name } } as never));
     for (let i = 0; i < 20; i++) {
       const picked = Array.from(randomStrategy()(routees, { messageIndex: i }));
       expect(picked.length).toBe(1);
@@ -62,7 +62,7 @@ describe('randomStrategy', () => {
 
 describe('broadcastStrategy', () => {
   test('returns every routee', () => {
-    const routees = ['a', 'b', 'c'].map(n => ({ path: { name: n } } as never));
+    const routees = ['a', 'b', 'c'].map(name => ({ path: { name: name } } as never));
     const out = Array.from(broadcastStrategy()(routees, { messageIndex: 0 }));
     expect(out).toEqual(routees);
   });
@@ -79,7 +79,7 @@ describe('Router.roundRobin (integration)', () => {
     for (let i = 0; i < 9; i++) pool.tell('go');
     await sleep(40);
     expect(hits.size).toBe(3);
-    for (const v of hits.values()) expect(v).toBe(3);
+    for (const hitCount of hits.values()) expect(hitCount).toBe(3);
     await sys.terminate();
   });
 
@@ -110,7 +110,7 @@ describe('Router.random (integration)', () => {
     for (let i = 0; i < total; i++) pool.tell('x');
     await sleep(80);
     let sum = 0;
-    for (const v of hits.values()) sum += v;
+    for (const hitCount of hits.values()) sum += hitCount;
     expect(sum).toBe(total);
     await sys.terminate();
   });
@@ -127,7 +127,7 @@ describe('Router.broadcast (explicit Broadcast message)', () => {
     pool.tell(new Broadcast('hello'));
     await sleep(40);
     expect(hits.size).toBe(4);
-    for (const v of hits.values()) expect(v).toBe(1);
+    for (const hitCount of hits.values()) expect(hitCount).toBe(1);
     await sys.terminate();
   });
 });

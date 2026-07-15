@@ -48,12 +48,12 @@ udp.tell({
 
 ## Settings
 
-`UdpSocketActorSettings` extends `BrokerCommonSettings` (which
+`UdpSocketOptionsType` extends `BrokerCommonOptionsType` (which
 carries the shared reconnect / circuit-breaker / outbound-buffer
 fields) and adds:
 
 ```ts
-interface UdpSocketActorSettings extends BrokerCommonSettings {
+interface UdpSocketOptionsType extends BrokerCommonOptionsType {
   bindHost?: string;                 // default '0.0.0.0'
   bindPort?: number;                 // default 0 = OS-assigned
   type?: 'udp4' | 'udp6';            // default 'udp4'
@@ -63,6 +63,13 @@ interface UdpSocketActorSettings extends BrokerCommonSettings {
 
 `target` is the only required field — inbound datagrams have
 nowhere to go without it.  All four are set through the builder:
+
+<Aside type="caution" title="Bind address">
+`bindHost` defaults to `'0.0.0.0'` — the socket listens on **every**
+interface.  On a multi-homed or internet-facing host, set it to a specific
+internal address (e.g. `127.0.0.1` or a private IP) so the socket isn't
+reachable from untrusted networks (security audit BRK-5).
+</Aside>
 
 ```ts
 UdpSocketOptions.create()
@@ -132,8 +139,7 @@ and the socket binds to an ephemeral port — a pure **sender** for
 one-way telemetry (statsd, syslog):
 
 ```ts
-const udpSocketOptions = UdpSocketOptions.create()
-  .withTarget(target);
+const udpSocketOptions = UdpSocketOptions.create().withTarget(target);
 new UdpSocketActor(
   udpSocketOptions,   // OS-assigned port, send-only in practice
 );

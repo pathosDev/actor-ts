@@ -12,25 +12,25 @@ import type { BrokerScenario } from '../../lib/scenario.js';
 export const scenario: BrokerScenario<S3Ctx> = {
   name: 'SSE — AES256 round-trip',
   async run(ctx) {
-    const b = backend(ctx);
+    const store = backend(ctx);
     try {
       const tag = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const key = `b2/sse-aes256-${tag}.bin`;
       const body = new Uint8Array([42, 13, 7, 1]);
 
       // PUT with SSE — adapter sets ServerSideEncryption=AES256.
-      await b.put(key, body, { sse: 'AES256' });
+      await store.put(key, body, { sse: 'AES256' });
 
       // GET round-trips the bytes — MinIO decrypts transparently on
       // read, no client-side change required.
-      const got = await b.get(key);
+      const got = await store.get(key);
       if (got.isNone()) throw new Error('GET after SSE PUT returned None');
       const bytes = Array.from(got.toNullable()!.body);
       if (bytes.join(',') !== Array.from(body).join(',')) {
         throw new Error(`SSE round-trip mismatch: got ${bytes.join(',')}`);
       }
     } finally {
-      await b.close();
+      await store.close();
     }
   },
 };

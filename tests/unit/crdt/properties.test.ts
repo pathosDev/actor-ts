@@ -45,8 +45,8 @@ describe('GCounter — CRDT laws (property-based)', () => {
   });
 
   test('associativity: merge(merge(a, b), c) ≡ merge(a, merge(b, c))', () => {
-    fc.assert(fc.property(gcounterArb, gcounterArb, gcounterArb, (a, b, c) => {
-      expect(a.merge(b).merge(c).equals(a.merge(b.merge(c)))).toBe(true);
+    fc.assert(fc.property(gcounterArb, gcounterArb, gcounterArb, (a, b, counter) => {
+      expect(a.merge(b).merge(counter).equals(a.merge(b.merge(counter)))).toBe(true);
     }));
   });
 
@@ -63,12 +63,12 @@ describe('GCounter — CRDT laws (property-based)', () => {
         // Total stamped should equal max-per-replica sum, which for a
         // single replica's sequence of increments equals the simple sum
         // (operations on the same replica are additive, max is monotonic).
-        const c = ops.reduce((acc, op) => acc.increment(op.replica, op.delta), GCounter.empty());
+        const counter = ops.reduce((acc, op) => acc.increment(op.replica, op.delta), GCounter.empty());
         // Compute expected: for each replica, sum its deltas.
         const perReplica: Record<string, number> = {};
         for (const op of ops) perReplica[op.replica] = (perReplica[op.replica] ?? 0) + op.delta;
         const expected = Object.values(perReplica).reduce((s, n) => s + n, 0);
-        expect(c.value()).toBe(expected);
+        expect(counter.value()).toBe(expected);
       },
     ));
   });
@@ -97,8 +97,8 @@ describe('PNCounter — CRDT laws', () => {
   });
 
   test('associativity', () => {
-    fc.assert(fc.property(pncounterArb, pncounterArb, pncounterArb, (a, b, c) => {
-      expect(a.merge(b).merge(c).value()).toBe(a.merge(b.merge(c)).value());
+    fc.assert(fc.property(pncounterArb, pncounterArb, pncounterArb, (a, b, counter) => {
+      expect(a.merge(b).merge(counter).value()).toBe(a.merge(b.merge(counter)).value());
     }));
   });
 
@@ -124,9 +124,9 @@ describe('GSet — CRDT laws', () => {
   });
 
   test('associativity', () => {
-    fc.assert(fc.property(gsetArb, gsetArb, gsetArb, (a, b, c) => {
-      const left = Array.from(a.merge(b).merge(c).value()).sort();
-      const right = Array.from(a.merge(b.merge(c)).value()).sort();
+    fc.assert(fc.property(gsetArb, gsetArb, gsetArb, (a, b, counter) => {
+      const left = Array.from(a.merge(b).merge(counter).value()).sort();
+      const right = Array.from(a.merge(b.merge(counter)).value()).sort();
       expect(left).toEqual(right);
     }));
   });
@@ -163,9 +163,9 @@ describe('ORSet — CRDT laws', () => {
   });
 
   test('associativity', () => {
-    fc.assert(fc.property(orsetArb, orsetArb, orsetArb, (a, b, c) => {
-      const left = Array.from(a.merge(b).merge(c).value()).sort();
-      const right = Array.from(a.merge(b.merge(c)).value()).sort();
+    fc.assert(fc.property(orsetArb, orsetArb, orsetArb, (a, b, counter) => {
+      const left = Array.from(a.merge(b).merge(counter).value()).sort();
+      const right = Array.from(a.merge(b.merge(counter)).value()).sort();
       expect(left).toEqual(right);
     }));
   });
@@ -193,22 +193,30 @@ const lwwArb: fc.Arbitrary<LWWRegister<string>> = fc.array(
 describe('LWWRegister — CRDT laws', () => {
   test('commutativity (deterministic for non-tied timestamps)', () => {
     fc.assert(fc.property(lwwArb, lwwArb, (a, b) => {
-      // LWW commutativity requires the tie-break to be deterministic.
-      // For non-tied timestamps, the higher always wins regardless of
-      // arg order.  We restrict the arbitraries to non-tied ones by
-      // using distinct timestamps in the construction — but two
-      // independently-generated registers MAY happen to share a max
-      // timestamp, in which case the tie-break (replica id) is the
-      // determinator.  The framework's LWWRegister is commutative
-      // under this rule, so merge(a,b) and merge(b,a) MUST produce
-      // the same value().
+      // Merge is "latest timestamp wins, ties broken by replica id" — a
+      // total order, hence commutative, only when the two registers have
+      // distinct (timestamp, replica) ordering keys.  Distinct timestamps
+      // resolve by timestamp; equal timestamp + different replica resolve
+      // by replica id (the case this test most wants to exercise — see
+      // title).  Both stay in scope below.
+      //
+      // A tie on BOTH timestamp AND replica with differing values has no
+      // deterministic winner: merge keeps its left argument, so
+      // merge(a,b) and merge(b,a) legitimately disagree.  That input is
+      // unreachable in real use — a replica never stamps two values at
+      // one timestamp — so we exclude it here rather than inventing an
+      // arbitrary value tie-break.  Without this guard the property was
+      // seed-dependent flaky (e.g. apple@14/node-b vs banana@14/node-b).
+      const ka = a.toJSON();
+      const kb = b.toJSON();
+      fc.pre(!(ka.timestamp === kb.timestamp && ka.replica === kb.replica));
       expect(a.merge(b).value()).toBe(b.merge(a).value());
     }));
   });
 
   test('associativity', () => {
-    fc.assert(fc.property(lwwArb, lwwArb, lwwArb, (a, b, c) => {
-      expect(a.merge(b).merge(c).value()).toBe(a.merge(b.merge(c)).value());
+    fc.assert(fc.property(lwwArb, lwwArb, lwwArb, (a, b, counter) => {
+      expect(a.merge(b).merge(counter).value()).toBe(a.merge(b.merge(counter)).value());
     }));
   });
 

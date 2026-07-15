@@ -1,7 +1,8 @@
 import type { Props } from '../../Props.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 
-/** Plain settings-object shape consumed by {@link ShardedDaemonProcess.init}. */
+/** Plain options-object shape consumed by {@link ShardedDaemonProcess.init}. */
 export interface ShardedDaemonProcessOptionsType<T> {
   /** Logical name used for the shard type; must be unique per daemon set. */
   readonly name: string;
@@ -57,6 +58,18 @@ export class ShardedDaemonProcessOptionsBuilder<T> extends OptionsBuilder<Sharde
   /** Period (ms) for the liveness ping that re-materializes daemons.  Default: 30 s; `0` disables. */
   withLivenessIntervalMs(livenessIntervalMs: number): this {
     return this.set('livenessIntervalMs', livenessIntervalMs);
+  }
+}
+
+/** Validates resolved {@link ShardedDaemonProcessOptionsType} settings. */
+export class ShardedDaemonProcessOptionsValidator<T> extends OptionsValidator<ShardedDaemonProcessOptionsType<T>> {
+  constructor() {
+    super('ShardedDaemonProcessOptions');
+  }
+  protected rules(_s: Partial<ShardedDaemonProcessOptionsType<T>>): void {
+    this.nonEmptyString('name');
+    this.positiveInt('numDaemons');
+    this.nonNegativeInt('livenessIntervalMs'); // 0 disables the liveness ping
   }
 }
 

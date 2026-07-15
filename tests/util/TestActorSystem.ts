@@ -34,7 +34,7 @@ export interface TestActorSystemOptions extends Partial<ActorSystemOptionsType> 
 
 /**
  * Create an `ActorSystem` for tests with quiet defaults (NoopLogger,
- * LogLevel.Off).  Spread additional settings via `options` — any
+ * LogLevel.Off).  Spread additional options via `options` — any
  * field overrides the default.
  *
  *   const sys = createTestActorSystem();

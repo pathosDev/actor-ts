@@ -24,7 +24,7 @@ interface SnapRow {
  * like the SQLite and Cassandra stores, payloads are stored as JSON text.
  */
 export class PostgresSnapshotStore implements SnapshotStore {
-  private readonly settings: PostgresSnapshotStoreOptionsType;
+  private readonly options: PostgresSnapshotStoreOptionsType;
   private readonly table: string;
   private readonly keepN: number;
   private readonly autoCreate: boolean;
@@ -34,11 +34,11 @@ export class PostgresSnapshotStore implements SnapshotStore {
   private closed = false;
 
   constructor(options: PostgresSnapshotStoreOptions = {}) {
-    const s = (options as PostgresSnapshotStoreOptionsType);
-    this.settings = s;
-    this.table = assertSafeIdentifier(s.snapshotsTable ?? 'snapshots', 'snapshots table');
-    this.keepN = s.keepN ?? 3;
-    this.autoCreate = s.autoCreateTables ?? true;
+    const resolvedOptions = (options as PostgresSnapshotStoreOptionsType);
+    this.options = resolvedOptions;
+    this.table = assertSafeIdentifier(resolvedOptions.snapshotsTable ?? 'snapshots', 'snapshots table');
+    this.keepN = resolvedOptions.keepN ?? 3;
+    this.autoCreate = resolvedOptions.autoCreateTables ?? true;
   }
 
   async save<S>(pid: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
@@ -118,7 +118,7 @@ export class PostgresSnapshotStore implements SnapshotStore {
   }
 
   private async init(): Promise<void> {
-    const pool = await buildPgPool(this.settings);
+    const pool = await buildPgPool(this.options);
     if (this.autoCreate) {
       await pool.query(
         `CREATE TABLE IF NOT EXISTS ${this.table} (

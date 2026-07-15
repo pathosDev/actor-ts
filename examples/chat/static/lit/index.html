@@ -155,8 +155,8 @@
           this.ws = ws;
           ws.addEventListener('open', () => onOpen(ws));
           ws.addEventListener('message', (ev) => {
-            const m = JSON.parse(ev.data);
-            this.handleServer(m);
+            const message = JSON.parse(ev.data);
+            this.handleServer(message);
           });
           ws.addEventListener('close', () => {
             this.ws = null;
@@ -324,10 +324,10 @@
           e.preventDefault();
           this.loginError = '';
           const fd = new FormData(e.target);
-          const u = fd.get('username')?.trim();
-          const p = fd.get('password');
-          if (!u || !p) return;
-          this.connectWithLogin(u, p);
+          const username = fd.get('username')?.trim();
+          const password = fd.get('password');
+          if (!username || !password) return;
+          this.connectWithLogin(username, password);
         }
 
         onLogout() {
@@ -513,8 +513,8 @@
                       const isOwn = m.from === this.username;
                       let receipt = null;
                       if (isOwn) {
-                        const r = (this.receiptsByRoom[this.currentRoom] ?? {});
-                        const readers = Object.entries(r)
+                        const receipts = (this.receiptsByRoom[this.currentRoom] ?? {});
+                        const readers = Object.entries(receipts)
                           .filter(([u, t]) => u !== this.username && typeof t === 'number' && t >= m.ts)
                           .map(([u]) => u);
                         const readByAny = readers.length > 0;

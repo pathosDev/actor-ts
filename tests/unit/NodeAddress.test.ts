@@ -3,8 +3,8 @@ import { NodeAddress } from '../../src/cluster/NodeAddress.js';
 
 describe('NodeAddress', () => {
   test('toString follows system@host:port', () => {
-    const a = new NodeAddress('demo', '10.0.0.1', 2552);
-    expect(a.toString()).toBe('demo@10.0.0.1:2552');
+    const addressA = new NodeAddress('demo', '10.0.0.1', 2552);
+    expect(addressA.toString()).toBe('demo@10.0.0.1:2552');
   });
 
   test('parse round-trips with toString', () => {
@@ -44,21 +44,21 @@ describe('NodeAddress', () => {
   });
 
   test('equals compares all three fields', () => {
-    const a = new NodeAddress('s', 'h', 1);
-    expect(a.equals(new NodeAddress('s', 'h', 1))).toBe(true);
-    expect(a.equals(new NodeAddress('t', 'h', 1))).toBe(false);
-    expect(a.equals(new NodeAddress('s', 'g', 1))).toBe(false);
-    expect(a.equals(new NodeAddress('s', 'h', 2))).toBe(false);
+    const addressA = new NodeAddress('s', 'h', 1);
+    expect(addressA.equals(new NodeAddress('s', 'h', 1))).toBe(true);
+    expect(addressA.equals(new NodeAddress('t', 'h', 1))).toBe(false);
+    expect(addressA.equals(new NodeAddress('s', 'g', 1))).toBe(false);
+    expect(addressA.equals(new NodeAddress('s', 'h', 2))).toBe(false);
   });
 
   test('compareTo orders lexicographically on the string form', () => {
-    const a = new NodeAddress('sys', 'host', 1);
-    const b = new NodeAddress('sys', 'host', 2);
-    const c = new NodeAddress('sys', 'zzz', 1);
-    expect(a.compareTo(b)).toBeLessThan(0);
-    expect(b.compareTo(a)).toBeGreaterThan(0);
-    expect(a.compareTo(a)).toBe(0);
-    expect(a.compareTo(c)).toBeLessThan(0);
+    const addressA = new NodeAddress('sys', 'host', 1);
+    const addressB = new NodeAddress('sys', 'host', 2);
+    const addressC = new NodeAddress('sys', 'zzz', 1);
+    expect(addressA.compareTo(addressB)).toBeLessThan(0);
+    expect(addressB.compareTo(addressA)).toBeGreaterThan(0);
+    expect(addressA.compareTo(addressA)).toBe(0);
+    expect(addressA.compareTo(addressC)).toBeLessThan(0);
   });
 
   test('compareTo is consistent with toString', () => {
@@ -74,9 +74,9 @@ describe('NodeAddress', () => {
   });
 
   test('toJSON + fromJSON round-trip', () => {
-    const a = new NodeAddress('demo', 'host', 5555);
-    const data = a.toJSON();
+    const addressA = new NodeAddress('demo', 'host', 5555);
+    const data = addressA.toJSON();
     expect(data).toEqual({ systemName: 'demo', host: 'host', port: 5555 });
-    expect(NodeAddress.fromJSON(data).equals(a)).toBe(true);
+    expect(NodeAddress.fromJSON(data).equals(addressA)).toBe(true);
   });
 });

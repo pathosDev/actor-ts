@@ -2,6 +2,7 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
+import { SseOptionsValidator } from './SseOptions.js';
 import type { SseOptions, SseOptionsType } from './SseOptions.js';
 
 /** Inbound SSE event delivered to subscribers. */
@@ -14,7 +15,15 @@ export interface SseEvent {
   readonly id?: string;
 }
 
-export type SseCmd = never;  // SSE is read-only
+export type SseCommand = never;  // SSE is read-only
+
+/**
+ * Safety cap on the pending event buffer (chars).  A well-behaved server
+ * delimits events with `\n\n` frequently; this bounds the damage from one
+ * that never does (security audit BRK-2).  1 MiB is far above any real
+ * single SSE event.
+ */
+const SSE_MAX_BUFFER_CHARS = 1_048_576;
 
 /**
  * Server-Sent Events client actor.  Pure built-ins — uses `fetch`
@@ -23,35 +32,36 @@ export type SseCmd = never;  // SSE is read-only
  *
  * The base class' reconnect machinery applies on stream close.
  */
-export class SseActor extends BrokerActor<SseOptionsType, SseCmd, never> {
+export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
   private aborter: AbortController | null = null;
   private streamRunning = false;
 
   constructor(options: SseOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.sse; }
-  protected builtInDefaults(): Partial<SseOptionsType> { return {}; }
-  protected readSettingsFromConfig(c: Config): Partial<SseOptionsType> {
+  protected builtInDefaultOptions(): Partial<SseOptionsType> { return {}; }
+  protected readOptionsFromConfig(config: Config): Partial<SseOptionsType> {
     const out: { -readonly [K in keyof SseOptionsType]?: SseOptionsType[K] } = {};
-    if (c.hasPath('url')) out.url = c.getString('url');
-    if (c.hasPath('headers')) {
-      const h: Record<string, string> = {};
-      for (const [k, v] of Object.entries(c.getObject('headers'))) {
-        if (typeof v === 'string') h[k] = v;
+    if (config.hasPath('url')) out.url = config.getString('url');
+    if (config.hasPath('headers')) {
+      const headers: Record<string, string> = {};
+      for (const [headerName, headerValue] of Object.entries(config.getObject('headers'))) {
+        if (typeof headerValue === 'string') headers[headerName] = headerValue;
       }
-      out.headers = h;
+      out.headers = headers;
     }
     return out;
   }
-  protected requiredSettings(): ReadonlyArray<keyof SseOptionsType> { return ['url', 'target']; }
-  protected endpointLabel(): string { return this.settings.url ?? '<unknown>'; }
+  protected requiredOptions(): ReadonlyArray<keyof SseOptionsType> { return ['url', 'target']; }
+  protected override optionsValidator(): SseOptionsValidator { return new SseOptionsValidator(); }
+  protected endpointLabel(): string { return this.options.url ?? '<unknown>'; }
 
-  protected async connectImpl(): Promise<void> {
+  protected async connectImplementation(): Promise<void> {
     this.aborter = new AbortController();
     const fetchFn = await fetchLazy.get();
-    const res = await fetchFn(this.settings.url!, {
+    const res = await fetchFn(this.options.url!, {
       method: 'GET',
-      headers: { Accept: 'text/event-stream', ...(this.settings.headers ?? {}) },
+      headers: { Accept: 'text/event-stream', ...(this.options.headers ?? {}) },
       signal: this.aborter.signal,
     });
     if (!res.ok) throw new Error(`SSE connect failed: HTTP ${res.status}`);
@@ -61,7 +71,7 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCmd, never> {
     void this.consume(res.body);
   }
 
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     this.streamRunning = false;
     try { this.aborter?.abort(); } catch { /* ignore */ }
     this.aborter = null;
@@ -71,7 +81,7 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCmd, never> {
     throw new Error('SseActor is read-only');
   }
 
-  override onReceive(_cmd: SseCmd): void { /* no commands */ }
+  override onReceive(_cmd: SseCommand): void { /* no commands */ }
 
   /* ----------------------------- internals ----------------------------- */
 
@@ -84,12 +94,23 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCmd, never> {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
+        // Cap the pending buffer: a hostile / MITM'd endpoint that streams
+        // bytes without an event delimiter (`\n\n`) would otherwise grow it
+        // without bound (security audit BRK-2).
+        if (buffer.length > SSE_MAX_BUFFER_CHARS) {
+          this.streamRunning = false;
+          try { this.aborter?.abort(); } catch { /* ignore */ }
+          this.handleConnectionLost(
+            new Error(`SSE event buffer exceeded ${SSE_MAX_BUFFER_CHARS} chars without a delimiter`),
+          );
+          return;
+        }
         let idx = buffer.indexOf('\n\n');
         while (idx >= 0) {
           const block = buffer.slice(0, idx);
           buffer = buffer.slice(idx + 2);
           const ev = parseEventBlock(block);
-          if (ev && this.settings.target) this.settings.target.tell(ev);
+          if (ev && this.options.target) this.options.target.tell(ev);
           idx = buffer.indexOf('\n\n');
         }
       }
@@ -135,8 +156,8 @@ interface FetchModule {
 }
 
 const fetchLazy: Lazy<Promise<FetchModule>> = Lazy.of(async () => {
-  const f = (globalThis as { fetch?: FetchModule }).fetch;
-  if (typeof f === 'function') return f;
+  const fetchImpl = (globalThis as { fetch?: FetchModule }).fetch;
+  if (typeof fetchImpl === 'function') return fetchImpl;
   throw new Error(
     'SseActor needs a global `fetch` (Bun, Node ≥18, Deno all provide one).  '
     + 'On older Node versions, polyfill via `npm install undici` and `globalThis.fetch = require("undici").fetch`.',

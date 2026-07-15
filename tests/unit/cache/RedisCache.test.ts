@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { RedisCache, type RedisClientLike } from '../../../src/cache/RedisCache.js';
 import { RedisCacheOptions } from '../../../src/cache/RedisCacheOptions.js';
 import { CacheError } from '../../../src/cache/Cache.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 
 /**
  * Mock ioredis client — captures the calls and lets the tests assert on
@@ -48,13 +49,13 @@ class FakeRedis implements RedisClientLike {
   }
   async del(...keys: string[]): Promise<number> {
     this.log.push({ op: 'del', args: keys });
-    let n = 0;
-    for (const k of keys) if (this.store.delete(k)) n++;
-    return n;
+    let deleted = 0;
+    for (const key of keys) if (this.store.delete(key)) deleted++;
+    return deleted;
   }
   async mget(...keys: string[]): Promise<Array<string | null>> {
     this.log.push({ op: 'mget', args: keys });
-    return keys.map((k) => this.store.get(k) ?? null);
+    return keys.map((key) => this.store.get(key) ?? null);
   }
   async mset(...kv: string[]): Promise<unknown> {
     this.log.push({ op: 'mset', args: kv });
@@ -74,8 +75,8 @@ describe('RedisCache — wire-protocol shape', () => {
     const fake = new FakeRedis();
     const redisOptions = RedisCacheOptions.create()
       .withClient(fake);
-    const c = new RedisCache(redisOptions);
-    await c.set('k', { x: 1 }, 5_000);
+    const cache = new RedisCache(redisOptions);
+    await cache.set('k', { x: 1 }, 5_000);
     const setCall = fake.log.find(l => l.op === 'set');
     expect(setCall?.args).toContain('PX');
     expect(setCall?.args).toContain(5_000);
@@ -86,8 +87,8 @@ describe('RedisCache — wire-protocol shape', () => {
     const fake = new FakeRedis();
     const redisOptions = RedisCacheOptions.create()
       .withClient(fake);
-    const c = new RedisCache(redisOptions);
-    await c.set('k', 1);
+    const cache = new RedisCache(redisOptions);
+    await cache.set('k', 1);
     const setCall = fake.log.find(l => l.op === 'set');
     expect(setCall?.args).not.toContain('PX');
   });
@@ -96,9 +97,9 @@ describe('RedisCache — wire-protocol shape', () => {
     const fake = new FakeRedis();
     const redisOptions = RedisCacheOptions.create()
       .withClient(fake);
-    const c = new RedisCache(redisOptions);
-    expect(await c.setIfAbsent('k', 'v1', 1_000)).toBe(true);
-    expect(await c.setIfAbsent('k', 'v2', 1_000)).toBe(false);
+    const cache = new RedisCache(redisOptions);
+    expect(await cache.setIfAbsent('k', 'v1', 1_000)).toBe(true);
+    expect(await cache.setIfAbsent('k', 'v2', 1_000)).toBe(false);
     expect(JSON.parse(fake.store.get('k')!)).toBe('v1');
     const nxCalls = fake.log.filter(l => l.op === 'set' && l.args.includes('NX'));
     expect(nxCalls).toHaveLength(2);
@@ -108,9 +109,9 @@ describe('RedisCache — wire-protocol shape', () => {
     const fake = new FakeRedis();
     const redisOptions = RedisCacheOptions.create()
       .withClient(fake);
-    const c = new RedisCache(redisOptions);
-    expect(await c.incr('rate', 60_000)).toBe(1);
-    expect(await c.incr('rate', 60_000)).toBe(2);
+    const cache = new RedisCache(redisOptions);
+    expect(await cache.incr('rate', 60_000)).toBe(1);
+    expect(await cache.incr('rate', 60_000)).toBe(2);
     const expireCalls = fake.log.filter(l => l.op === 'pexpire');
     expect(expireCalls).toHaveLength(1);
     expect(expireCalls[0]!.args).toEqual(['rate', 60_000]);
@@ -120,19 +121,19 @@ describe('RedisCache — wire-protocol shape', () => {
     const fake = new FakeRedis();
     const redisOptions = RedisCacheOptions.create()
       .withClient(fake);
-    const c = new RedisCache(redisOptions);
-    await c.set('k', { a: 1 });
-    expect((await c.get<{ a: number }>('k')).toNullable()).toEqual({ a: 1 });
-    expect((await c.get('absent')).isNone()).toBe(true);
+    const cache = new RedisCache(redisOptions);
+    await cache.set('k', { a: 1 });
+    expect((await cache.get<{ a: number }>('k')).toNullable()).toEqual({ a: 1 });
+    expect((await cache.get('absent')).isNone()).toBe(true);
   });
 
   test('delete is variadic and idempotent', async () => {
     const fake = new FakeRedis();
     const redisOptions = RedisCacheOptions.create()
       .withClient(fake);
-    const c = new RedisCache(redisOptions);
-    await c.set('a', 1); await c.set('b', 2);
-    await c.delete('a', 'b', 'missing');
+    const cache = new RedisCache(redisOptions);
+    await cache.set('a', 1); await cache.set('b', 2);
+    await cache.delete('a', 'b', 'missing');
     expect(fake.store.size).toBe(0);
   });
 
@@ -141,19 +142,19 @@ describe('RedisCache — wire-protocol shape', () => {
     const redisOptions = RedisCacheOptions.create()
       .withClient(fake)
       .withKeyPrefix('app:');
-    const c = new RedisCache(redisOptions);
-    await c.set('user:42', { id: 42 });
+    const cache = new RedisCache(redisOptions);
+    await cache.set('user:42', { id: 42 });
     expect(fake.store.has('app:user:42')).toBe(true);
-    expect((await c.get('user:42')).isSome()).toBe(true);
+    expect((await cache.get('user:42')).isSome()).toBe(true);
   });
 
   test('close calls quit on the underlying client', async () => {
     const fake = new FakeRedis();
     const redisOptions = RedisCacheOptions.create()
       .withClient(fake);
-    const c = new RedisCache(redisOptions);
-    await c.set('k', 1);
-    await c.close();
+    const cache = new RedisCache(redisOptions);
+    await cache.set('k', 1);
+    await cache.close();
     expect(fake.log.some(l => l.op === 'quit')).toBe(true);
   });
 });
@@ -170,8 +171,8 @@ describe('RedisCache — failure tolerance', () => {
     };
     const redisOptions = RedisCacheOptions.create()
       .withClient(broken);
-    const c = new RedisCache(redisOptions);
-    expect((await c.get('k')).isNone()).toBe(true);
+    const cache = new RedisCache(redisOptions);
+    expect((await cache.get('k')).isNone()).toBe(true);
   });
 
   test('set swallows transient errors silently (cache misses are tolerable)', async () => {
@@ -187,8 +188,8 @@ describe('RedisCache — failure tolerance', () => {
     };
     const redisOptions = RedisCacheOptions.create()
       .withClient(broken);
-    const c = new RedisCache(redisOptions);
-    await c.set('k', 1);  // must not throw
+    const cache = new RedisCache(redisOptions);
+    await cache.set('k', 1);  // must not throw
   });
 
   test('incr propagates errors (atomicity is required)', async () => {
@@ -204,8 +205,8 @@ describe('RedisCache — failure tolerance', () => {
     };
     const redisOptions = RedisCacheOptions.create()
       .withClient(broken);
-    const c = new RedisCache(redisOptions);
-    await expect(c.incr('k')).rejects.toThrow();
+    const cache = new RedisCache(redisOptions);
+    await expect(cache.incr('k')).rejects.toThrow();
   });
 });
 
@@ -214,10 +215,10 @@ describe('RedisCache — mget / mset (#14)', () => {
     const fake = new FakeRedis();
     const redisOptions = RedisCacheOptions.create()
       .withClient(fake);
-    const c = new RedisCache(redisOptions);
-    await c.set('a', 1);
-    await c.set('b', 'two');
-    const got = await c.mget<unknown>(['a', 'b', 'missing']);
+    const cache = new RedisCache(redisOptions);
+    await cache.set('a', 1);
+    await cache.set('b', 'two');
+    const got = await cache.mget<unknown>(['a', 'b', 'missing']);
     expect(got.get('a')).toBe(1);
     expect(got.get('b')).toBe('two');
     expect(got.has('missing')).toBe(false);
@@ -231,8 +232,8 @@ describe('RedisCache — mget / mset (#14)', () => {
     const fake = new FakeRedis();
     const redisOptions = RedisCacheOptions.create()
       .withClient(fake);
-    const c = new RedisCache(redisOptions);
-    await c.mset(new Map([['a', 1], ['b', 2]] as const));
+    const cache = new RedisCache(redisOptions);
+    await cache.mset(new Map([['a', 1], ['b', 2]] as const));
     const mset = fake.log.filter(l => l.op === 'mset');
     expect(mset).toHaveLength(1);
     // Flat [k1, v1, k2, v2, ...] — values JSON-stringified.
@@ -243,15 +244,15 @@ describe('RedisCache — mget / mset (#14)', () => {
     const fake = new FakeRedis();
     const redisOptions = RedisCacheOptions.create()
       .withClient(fake);
-    const c = new RedisCache(redisOptions);
-    await c.mset(new Map([['a', 1], ['b', 2]] as const), 5_000);
+    const cache = new RedisCache(redisOptions);
+    await cache.mset(new Map([['a', 1], ['b', 2]] as const), 5_000);
     // No MSET emitted; instead two SETs with PX flag.
     expect(fake.log.some(l => l.op === 'mset')).toBe(false);
     const sets = fake.log.filter(l => l.op === 'set');
     expect(sets).toHaveLength(2);
-    for (const s of sets) {
-      expect(s.args).toContain('PX');
-      expect(s.args).toContain(5_000);
+    for (const setCall of sets) {
+      expect(setCall.args).toContain('PX');
+      expect(setCall.args).toContain(5_000);
     }
   });
 
@@ -259,8 +260,8 @@ describe('RedisCache — mget / mset (#14)', () => {
     const fake = new FakeRedis();
     const redisOptions = RedisCacheOptions.create()
       .withClient(fake);
-    const c = new RedisCache(redisOptions);
-    await c.mset(new Map());
+    const cache = new RedisCache(redisOptions);
+    await cache.mset(new Map());
     expect(fake.log.filter(l => l.op === 'mset' || l.op === 'set')).toHaveLength(0);
   });
 
@@ -269,9 +270,9 @@ describe('RedisCache — mget / mset (#14)', () => {
     const redisOptions = RedisCacheOptions.create()
       .withClient(fake)
       .withKeyPrefix('app:');
-    const c = new RedisCache(redisOptions);
-    await c.set('a', 1);
-    await c.mget(['a', 'b']);
+    const cache = new RedisCache(redisOptions);
+    await cache.set('a', 1);
+    await cache.mget(['a', 'b']);
     const mget = fake.log.find(l => l.op === 'mget');
     expect(mget?.args).toEqual(['app:a', 'app:b']);
   });
@@ -289,8 +290,8 @@ describe('RedisCache — mget / mset (#14)', () => {
     };
     const redisOptions = RedisCacheOptions.create()
       .withClient(broken);
-    const c = new RedisCache(redisOptions);
-    const got = await c.mget(['a', 'b']);
+    const cache = new RedisCache(redisOptions);
+    const got = await cache.mget(['a', 'b']);
     expect(got.size).toBe(0);
   });
 
@@ -302,8 +303,8 @@ describe('RedisCache — mget / mset (#14)', () => {
     fake.store.set('b', '"hello"');
     const redisOptions = RedisCacheOptions.create()
       .withClient(fake);
-    const c = new RedisCache(redisOptions);
-    const got = await c.mget<unknown>(['a', 'b']);
+    const cache = new RedisCache(redisOptions);
+    const got = await cache.mget<unknown>(['a', 'b']);
     expect(got.has('a')).toBe(false);
     expect(got.get('b')).toBe('hello');
   });
@@ -313,54 +314,83 @@ describe('RedisCache — TTL validation', () => {
   test('set rejects negative TTL', async () => {
     const redisOptions = RedisCacheOptions.create()
       .withClient(new FakeRedis());
-    const c = new RedisCache(redisOptions);
-    await expect(c.set('k', 1, -1)).rejects.toBeInstanceOf(CacheError);
+    const cache = new RedisCache(redisOptions);
+    await expect(cache.set('k', 1, -1)).rejects.toBeInstanceOf(CacheError);
   });
 
   test('set rejects zero TTL', async () => {
     const redisOptions = RedisCacheOptions.create()
       .withClient(new FakeRedis());
-    const c = new RedisCache(redisOptions);
-    await expect(c.set('k', 1, 0)).rejects.toBeInstanceOf(CacheError);
+    const cache = new RedisCache(redisOptions);
+    await expect(cache.set('k', 1, 0)).rejects.toBeInstanceOf(CacheError);
   });
 
   test('set rejects NaN TTL', async () => {
     const redisOptions = RedisCacheOptions.create()
       .withClient(new FakeRedis());
-    const c = new RedisCache(redisOptions);
-    await expect(c.set('k', 1, Number.NaN)).rejects.toBeInstanceOf(CacheError);
+    const cache = new RedisCache(redisOptions);
+    await expect(cache.set('k', 1, Number.NaN)).rejects.toBeInstanceOf(CacheError);
   });
 
   test('set rejects Infinity TTL', async () => {
     const redisOptions = RedisCacheOptions.create()
       .withClient(new FakeRedis());
-    const c = new RedisCache(redisOptions);
-    await expect(c.set('k', 1, Number.POSITIVE_INFINITY)).rejects.toBeInstanceOf(CacheError);
+    const cache = new RedisCache(redisOptions);
+    await expect(cache.set('k', 1, Number.POSITIVE_INFINITY)).rejects.toBeInstanceOf(CacheError);
   });
 
   test('incr rejects bad TTL identically', async () => {
     const redisOptions = RedisCacheOptions.create()
       .withClient(new FakeRedis());
-    const c = new RedisCache(redisOptions);
-    await expect(c.incr('k', -1)).rejects.toBeInstanceOf(CacheError);
-    await expect(c.incr('k', 0)).rejects.toBeInstanceOf(CacheError);
-    await expect(c.incr('k', Number.NaN)).rejects.toBeInstanceOf(CacheError);
+    const cache = new RedisCache(redisOptions);
+    await expect(cache.incr('k', -1)).rejects.toBeInstanceOf(CacheError);
+    await expect(cache.incr('k', 0)).rejects.toBeInstanceOf(CacheError);
+    await expect(cache.incr('k', Number.NaN)).rejects.toBeInstanceOf(CacheError);
   });
 
   test('setIfAbsent rejects bad TTL identically', async () => {
     const redisOptions = RedisCacheOptions.create()
       .withClient(new FakeRedis());
-    const c = new RedisCache(redisOptions);
-    await expect(c.setIfAbsent('k', 1, -1)).rejects.toBeInstanceOf(CacheError);
-    await expect(c.setIfAbsent('k', 1, 0)).rejects.toBeInstanceOf(CacheError);
+    const cache = new RedisCache(redisOptions);
+    await expect(cache.setIfAbsent('k', 1, -1)).rejects.toBeInstanceOf(CacheError);
+    await expect(cache.setIfAbsent('k', 1, 0)).rejects.toBeInstanceOf(CacheError);
   });
 
   test('mset rejects bad TTL identically', async () => {
     const redisOptions = RedisCacheOptions.create()
       .withClient(new FakeRedis());
-    const c = new RedisCache(redisOptions);
-    await expect(c.mset(new Map([['a', 1]] as const), -1))
+    const cache = new RedisCache(redisOptions);
+    await expect(cache.mset(new Map([['a', 1]] as const), -1))
       .rejects.toBeInstanceOf(CacheError);
+  });
+});
+
+describe('RedisCache — options validation', () => {
+  test('rejects an out-of-range port', () => {
+    const opts = RedisCacheOptions.create().withPort(70_000);
+    expect(() => new RedisCache(opts)).toThrow(OptionsError);
+  });
+
+  test('rejects a negative db index', () => {
+    const opts = RedisCacheOptions.create().withDb(-1);
+    expect(() => new RedisCache(opts)).toThrow(OptionsError);
+  });
+
+  test('rejects a url with a non-Redis protocol', () => {
+    const opts = RedisCacheOptions.create().withUrl('http://localhost:6379');
+    expect(() => new RedisCache(opts)).toThrow(OptionsError);
+  });
+
+  test('rejects url combined with host/port (mutually exclusive)', () => {
+    const opts = RedisCacheOptions.create()
+      .withUrl('redis://localhost:6379')
+      .withPort(6380);
+    expect(() => new RedisCache(opts)).toThrow(/mutually exclusive/);
+  });
+
+  test('accepts a valid url alone', () => {
+    const opts = RedisCacheOptions.create().withUrl('rediss://localhost:6379');
+    expect(() => new RedisCache(opts)).not.toThrow();
   });
 });
 
@@ -369,10 +399,10 @@ describe('RedisCache — close() semantics', () => {
     const fake = new FakeRedis();
     const redisOptions = RedisCacheOptions.create()
       .withClient(fake);
-    const c = new RedisCache(redisOptions);
-    await c.set('k', 1); // forces client construction
-    await c.close();
-    await c.close(); // second close is a no-op
+    const cache = new RedisCache(redisOptions);
+    await cache.set('k', 1); // forces client construction
+    await cache.close();
+    await cache.close(); // second close is a no-op
     expect(fake.log.filter(l => l.op === 'quit')).toHaveLength(1);
   });
 
@@ -380,8 +410,8 @@ describe('RedisCache — close() semantics', () => {
     const fake = new FakeRedis();
     const redisOptions = RedisCacheOptions.create()
       .withClient(fake);
-    const c = new RedisCache(redisOptions);
-    await c.close();
+    const cache = new RedisCache(redisOptions);
+    await cache.close();
     // The lazy client was never evaluated → quit not called.
     expect(fake.log.filter(l => l.op === 'quit')).toHaveLength(0);
   });
@@ -390,23 +420,23 @@ describe('RedisCache — close() semantics', () => {
     const fake = new FakeRedis();
     const redisOptions = RedisCacheOptions.create()
       .withClient(fake);
-    const c = new RedisCache(redisOptions);
-    await c.set('k', 1);
-    await c.close();
-    expect((await c.get('k')).isNone()).toBe(true);
+    const cache = new RedisCache(redisOptions);
+    await cache.set('k', 1);
+    await cache.close();
+    expect((await cache.get('k')).isNone()).toBe(true);
   });
 
   test('after close: set / delete / mset / mget are no-ops', async () => {
     const fake = new FakeRedis();
     const redisOptions = RedisCacheOptions.create()
       .withClient(fake);
-    const c = new RedisCache(redisOptions);
-    await c.close();
+    const cache = new RedisCache(redisOptions);
+    await cache.close();
     // None of these should crash, and none should issue a wire-level call.
-    await c.set('k', 1);
-    await c.delete('k');
-    await c.mset(new Map([['a', 1]] as const));
-    const empty = await c.mget(['k']);
+    await cache.set('k', 1);
+    await cache.delete('k');
+    await cache.mset(new Map([['a', 1]] as const));
+    const empty = await cache.mget(['k']);
     expect(empty.size).toBe(0);
     // After close the only wire op is the initial quit-from-set above
     // (which we didn't issue — there's no client at all).  But the
@@ -416,17 +446,17 @@ describe('RedisCache — close() semantics', () => {
   test('after close: incr throws CacheError', async () => {
     const redisOptions = RedisCacheOptions.create()
       .withClient(new FakeRedis());
-    const c = new RedisCache(redisOptions);
-    await c.close();
-    await expect(c.incr('k')).rejects.toBeInstanceOf(CacheError);
+    const cache = new RedisCache(redisOptions);
+    await cache.close();
+    await expect(cache.incr('k')).rejects.toBeInstanceOf(CacheError);
   });
 
   test('after close: setIfAbsent throws CacheError', async () => {
     const redisOptions = RedisCacheOptions.create()
       .withClient(new FakeRedis());
-    const c = new RedisCache(redisOptions);
-    await c.close();
-    await expect(c.setIfAbsent('k', 1)).rejects.toBeInstanceOf(CacheError);
+    const cache = new RedisCache(redisOptions);
+    await cache.close();
+    await expect(cache.setIfAbsent('k', 1)).rejects.toBeInstanceOf(CacheError);
   });
 });
 
@@ -435,8 +465,8 @@ describe('RedisCache — additional edges', () => {
     const fake = new FakeRedis();
     const redisOptions = RedisCacheOptions.create()
       .withClient(fake);
-    const c = new RedisCache(redisOptions);
-    await c.delete();
+    const cache = new RedisCache(redisOptions);
+    await cache.delete();
     expect(fake.log.filter(l => l.op === 'del')).toHaveLength(0);
   });
 
@@ -444,8 +474,8 @@ describe('RedisCache — additional edges', () => {
     const fake = new FakeRedis();
     const redisOptions = RedisCacheOptions.create()
       .withClient(fake);
-    const c = new RedisCache(redisOptions);
-    const got = await c.mget([]);
+    const cache = new RedisCache(redisOptions);
+    const got = await cache.mget([]);
     expect(got.size).toBe(0);
     expect(fake.log.filter(l => l.op === 'mget')).toHaveLength(0);
   });
@@ -456,16 +486,16 @@ describe('RedisCache — additional edges', () => {
     fake.store.set('bad', '{not json');
     const redisOptions = RedisCacheOptions.create()
       .withClient(fake);
-    const c = new RedisCache(redisOptions);
-    expect((await c.get('bad')).isNone()).toBe(true);
+    const cache = new RedisCache(redisOptions);
+    expect((await cache.get('bad')).isNone()).toBe(true);
   });
 
   test('setIfAbsent without TTL still uses the NX flag', async () => {
     const fake = new FakeRedis();
     const redisOptions = RedisCacheOptions.create()
       .withClient(fake);
-    const c = new RedisCache(redisOptions);
-    expect(await c.setIfAbsent('k', 'v')).toBe(true);
+    const cache = new RedisCache(redisOptions);
+    expect(await cache.setIfAbsent('k', 'v')).toBe(true);
     const setCall = fake.log.find(l => l.op === 'set');
     expect(setCall?.args).toContain('NX');
     expect(setCall?.args).not.toContain('PX');
@@ -484,8 +514,8 @@ describe('RedisCache — additional edges', () => {
     };
     const redisOptions = RedisCacheOptions.create()
       .withClient(broken);
-    const c = new RedisCache(redisOptions);
-    await expect(c.setIfAbsent('k', 1)).rejects.toBeInstanceOf(CacheError);
+    const cache = new RedisCache(redisOptions);
+    await expect(cache.setIfAbsent('k', 1)).rejects.toBeInstanceOf(CacheError);
   });
 
   test('incr swallows pexpire errors silently after the counter increments', async () => {
@@ -504,8 +534,8 @@ describe('RedisCache — additional edges', () => {
     };
     const redisOptions = RedisCacheOptions.create()
       .withClient(flaky);
-    const c = new RedisCache(redisOptions);
-    expect(await c.incr('rate', 60_000)).toBe(1);
+    const cache = new RedisCache(redisOptions);
+    expect(await cache.incr('rate', 60_000)).toBe(1);
     expect(pexpireCalls).toBe(1);
   });
 });

@@ -63,7 +63,7 @@ export class CassandraSnapshotStoreOptionsBuilder extends OptionsBuilder<Cassand
     return this.set('autoCreateKeyspace', autoCreateKeyspace);
   }
 
-  /** Replication settings used by autoCreateKeyspace.  Ignored otherwise. */
+  /** Replication options used by autoCreateKeyspace.  Ignored otherwise. */
   withReplication(replication: NonNullable<CassandraSnapshotStoreOptionsType['replication']>): this {
     return this.set('replication', replication);
   }

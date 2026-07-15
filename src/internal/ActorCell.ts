@@ -56,13 +56,13 @@ type CellState =
  * Internal runtime for a single actor.  Bridges the user-visible Actor /
  * ActorContext API with the mailbox, dispatcher and supervision machinery.
  */
-export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
-  readonly self: LocalActorRef<TMsg>;
+export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
+  readonly self: LocalActorRef<TMessage>;
   readonly path: ActorPath;
   readonly log: Logger;
 
-  private readonly mailbox: Mailbox<TMsg>;
-  private actor: Actor<TMsg> | null = null;
+  private readonly mailbox: Mailbox<TMessage>;
+  private actor: Actor<TMessage> | null = null;
   private _parent: ActorCell<unknown> | null;
   private _children = new Map<string, ActorCell<any>>();
   private _anonChildCounter = 0;
@@ -71,7 +71,7 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
   private state: CellState = 'creating';
   private processing = false;
   private _currentSender: ActorRef | null = null;
-  private behaviorStack: Array<Receive<TMsg>> = [];
+  private behaviorStack: Array<Receive<TMessage>> = [];
 
   private _watchers = new Set<ActorRef>();
   private _watching = new Map<string, ActorRef>();
@@ -82,8 +82,8 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
   private _receiveTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
   /** Envelope currently being handed to the user — drives `context.stash()`. */
-  private _currentEnvelope: Envelope<TMsg> | null = null;
-  private _stashBuffer: Array<Envelope<TMsg>> = [];
+  private _currentEnvelope: Envelope<TMessage> | null = null;
+  private _stashBuffer: Array<Envelope<TMessage>> = [];
   private readonly _stashCapacity: number = DEFAULT_STASH_CAPACITY;
 
   /** Active throttle, if any.  See `throttle()` / `cancelThrottle()`. */
@@ -93,11 +93,11 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
   private _throttleResumeTimer: Cancellable | null = null;
 
   /** Per-actor timer scheduler. */
-  readonly timers: TimerScheduler<TMsg> = new CellTimerScheduler<TMsg>(this);
+  readonly timers: TimerScheduler<TMessage> = new CellTimerScheduler<TMessage>(this);
 
   constructor(
     readonly system: ActorSystem,
-    readonly props: Props<TMsg>,
+    readonly props: Props<TMessage>,
     parent: ActorCell<unknown> | null,
     public readonly name: string,
   ) {
@@ -113,12 +113,12 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
       // for use-cases that need it (deterministic replay, test setups,
       // tightly-controlled throughput).  See `DEFAULT_MAILBOX_CAPACITY`
       // + `DEFAULT_MAILBOX_OVERFLOW` for the chosen ceiling + policy.
-      : new BoundedMailbox<TMsg>({
+      : new BoundedMailbox<TMessage>({
         capacity: props.config.mailboxCapacity ?? DEFAULT_MAILBOX_CAPACITY,
         overflow: DEFAULT_MAILBOX_OVERFLOW,
         onDrop: (reason) => this._onMailboxDrop(reason),
       });
-    this.self = new LocalActorRef<TMsg>(this);
+    this.self = new LocalActorRef<TMessage>(this);
     this.log = system.log.withSource(this.path.toString());
     this.enqueueSystem({ kind: 'create' });
   }
@@ -131,7 +131,7 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
 
   get children(): ReadonlyArray<ActorRef> {
     const out: ActorRef[] = [];
-    for (const c of this._children.values()) out.push(c.self);
+    for (const child of this._children.values()) out.push(child.self);
     return out;
   }
 
@@ -165,8 +165,8 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
   }
 
   child(name: string): Option<ActorRef> {
-    const c = this._children.get(name);
-    return fromNullable(c ? c.self : null);
+    const child = this._children.get(name);
+    return fromNullable(child ? child.self : null);
   }
 
   /** @internal — used by ActorSelection to walk down the tree. */
@@ -205,7 +205,7 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
     return ref;
   }
 
-  become(behavior: Receive<TMsg>, discardOld: boolean = true): void {
+  become(behavior: Receive<TMessage>, discardOld: boolean = true): void {
     if (discardOld && this.behaviorStack.length > 0) {
       this.behaviorStack[this.behaviorStack.length - 1] = behavior;
     } else {
@@ -288,7 +288,7 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
    * (drop / re-queued for pause), `false` only as a defensive fallback
    * if state is already terminal.
    */
-  private handleThrottleExcess(env: Envelope<TMsg>): boolean {
+  private handleThrottleExcess(env: Envelope<TMessage>): boolean {
     if (!this._throttleBucket) return false; // can't happen in practice
     if (this._throttleOnExcess === 'drop') {
       this.log.debug(
@@ -327,10 +327,10 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
    * is `BoundedMailbox`).  NOT for production use — the mailbox
    * surface is private by design.
    */
-  _mailboxForTest(): Mailbox<TMsg> { return this.mailbox; }
+  _mailboxForTest(): Mailbox<TMessage> { return this.mailbox; }
 
   /** @internal */
-  postUserMessage(message: TMsg, sender: ActorRef | null): void {
+  postUserMessage(message: TMessage, sender: ActorRef | null): void {
     if (this.state === 'terminated') {
       this.system.deadLetters.tell(new DeadLetter(message, sender, this.self));
       return;
@@ -345,7 +345,7 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
    * trace state without a wider signature.  `LocalActorRef.tell` uses
    * this so the MDC captured at tell-time travels with the message.
    */
-  postUserEnvelope(env: Envelope<TMsg>): void {
+  postUserEnvelope(env: Envelope<TMessage>): void {
     if (this.state === 'terminated') {
       this.system.deadLetters.tell(new DeadLetter(env.message, env.sender, this.self));
       return;
@@ -426,7 +426,7 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
     await match(cmd)
       .with({ kind: 'create' }, () => this.doCreate())
       .with({ kind: 'terminate' }, () => this.doTerminate())
-      .with({ kind: 'recreate' }, (c) => this.doRecreate(c.cause))
+      .with({ kind: 'recreate' }, (signal) => this.doRecreate(signal.cause))
       .with({ kind: 'suspend' }, () => {
         this.mailbox.suspend();
         if (this.state === 'running') this.state = 'suspended';
@@ -435,14 +435,14 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
         this.mailbox.resume();
         if (this.state === 'suspended') this.state = 'running';
       })
-      .with({ kind: 'failure' }, (c) => this.superviseChildFailure(c.cause, c.child, c.message))
-      .with({ kind: 'childTerminated' }, (c) => this.handleChildTerminated(c.child))
-      .with({ kind: 'watchNotify' }, (c) => {
-        this.mailbox.enqueue({ message: new Terminated(c.target) as unknown as TMsg, sender: null });
+      .with({ kind: 'failure' }, (signal) => this.superviseChildFailure(signal.cause, signal.child, signal.message))
+      .with({ kind: 'childTerminated' }, (signal) => this.handleChildTerminated(signal.child))
+      .with({ kind: 'watchNotify' }, (signal) => {
+        this.mailbox.enqueue({ message: new Terminated(signal.target) as unknown as TMessage, sender: null });
       })
       .with({ kind: 'receiveTimeout' }, async () => {
         if (this.state === 'running') {
-          await this.handleUserMessage({ message: ReceiveTimeout.instance as unknown as TMsg, sender: null });
+          await this.handleUserMessage({ message: ReceiveTimeout.instance as unknown as TMessage, sender: null });
         }
       })
       .exhaustive();
@@ -451,9 +451,9 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
   private async doCreate(): Promise<void> {
     try {
       const actor = this.props.config.factory();
-      (actor as unknown as { _attach(ctx: ActorContext<TMsg>): void })._attach(this);
+      (actor as unknown as { _attach(ctx: ActorContext<TMessage>): void })._attach(this);
       this.actor = actor;
-      this.behaviorStack = [(m: TMsg) => actor.onReceive(m)];
+      this.behaviorStack = [(m: TMessage) => actor.onReceive(m)];
       this.state = 'running';
       await actor.preStart();
       // Stock metric: count actor creations.  Cheap when metrics are
@@ -513,12 +513,12 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
 
     // Notify watchers
     const term = new Terminated(this.self);
-    for (const w of this._watchers) w.tell(term as never);
+    for (const watcher of this._watchers) watcher.tell(term as never);
     this._watchers.clear();
 
     // Tell watched targets to drop us from their watcher set
-    for (const t of this._watching.values()) {
-      if (t instanceof LocalActorRef) t.getCell()._removeWatcher(this.self);
+    for (const watched of this._watching.values()) {
+      if (watched instanceof LocalActorRef) watched.getCell()._removeWatcher(this.self);
     }
     this._watching.clear();
 
@@ -547,9 +547,9 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
     // Build a new instance.
     try {
       const next = this.props.config.factory();
-      (next as unknown as { _attach(ctx: ActorContext<TMsg>): void })._attach(this);
+      (next as unknown as { _attach(ctx: ActorContext<TMessage>): void })._attach(this);
       this.actor = next;
-      this.behaviorStack = [(m: TMsg) => next.onReceive(m)];
+      this.behaviorStack = [(m: TMessage) => next.onReceive(m)];
       await next.postRestart(cause);
       this.mailbox.resume();
       this.state = 'running';
@@ -580,14 +580,14 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
     ).inc();
   }
 
-  private async handleUserMessage(env: Envelope<TMsg>): Promise<void> {
+  private async handleUserMessage(env: Envelope<TMessage>): Promise<void> {
     const msg = env.message;
 
-    if (msg === (PoisonPill.instance as unknown as TMsg)) {
+    if (msg === (PoisonPill.instance as unknown as TMessage)) {
       await this.doTerminate();
       return;
     }
-    if (msg === (Kill.instance as unknown as TMsg)) {
+    if (msg === (Kill.instance as unknown as TMessage)) {
       this.failToParent(new ActorKilledError(), msg);
       return;
     }
@@ -683,7 +683,7 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
   private failToParent(cause: Error, message?: unknown): void {
     this.mailbox.suspend();
     if (this.state === 'running') this.state = 'suspended';
-    for (const c of this._children.values()) c.enqueueSystem({ kind: 'suspend' });
+    for (const child of this._children.values()) child.enqueueSystem({ kind: 'suspend' });
 
     if (this._parent) {
       this._parent.enqueueSystem({ kind: 'failure', cause, child: this.self, message });
@@ -711,7 +711,7 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
 
     switch (directive) {
       case Directive.Resume:
-        for (const c of affected) c.enqueueSystem({ kind: 'resume' });
+        for (const child of affected) child.enqueueSystem({ kind: 'resume' });
         break;
       case Directive.Restart: {
         const withinLimit = this.registerRestart(strategy);
@@ -719,14 +719,14 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
           this.log.warn(
             `Restart threshold exceeded (${strategy.maxRetries} in ${strategy.withinTimeRangeMs}ms) — stopping children`,
           );
-          for (const c of affected) c.enqueueSystem({ kind: 'terminate' });
+          for (const child of affected) child.enqueueSystem({ kind: 'terminate' });
         } else {
-          for (const c of affected) c.enqueueSystem({ kind: 'recreate', cause });
+          for (const child of affected) child.enqueueSystem({ kind: 'recreate', cause });
         }
         break;
       }
       case Directive.Stop:
-        for (const c of affected) c.enqueueSystem({ kind: 'terminate' });
+        for (const child of affected) child.enqueueSystem({ kind: 'terminate' });
         break;
       case Directive.Escalate:
         this.failToParent(cause, message);
@@ -746,7 +746,7 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
   }
 
   private findChildByRef(ref: ActorRef): ActorCell<any> | null {
-    for (const c of this._children.values()) if (c.self.equals(ref)) return c;
+    for (const child of this._children.values()) if (child.self.equals(ref)) return child;
     return null;
   }
 
@@ -781,12 +781,12 @@ export class ActorCell<TMsg = unknown> implements ActorContext<TMsg> {
 
 /* ============================= Timer scheduler ============================ */
 
-class CellTimerScheduler<TMsg> implements TimerScheduler<TMsg> {
+class CellTimerScheduler<TMessage> implements TimerScheduler<TMessage> {
   private readonly handles = new Map<string, Cancellable>();
 
-  constructor(private readonly cell: ActorCell<TMsg>) {}
+  constructor(private readonly cell: ActorCell<TMessage>) {}
 
-  startSingleTimer(key: string, message: TMsg, delayMs: number): void {
+  startSingleTimer(key: string, message: TMessage, delayMs: number): void {
     this.cancel(key);
     const handle = this.cell.system.scheduler.scheduleOnce(
       delayMs, this.cell.self, message, null,
@@ -796,7 +796,7 @@ class CellTimerScheduler<TMsg> implements TimerScheduler<TMsg> {
 
   startTimerWithFixedDelay(
     key: string,
-    message: TMsg,
+    message: TMessage,
     intervalMs: number,
     initialDelayMs: number = intervalMs,
   ): void {
@@ -808,21 +808,21 @@ class CellTimerScheduler<TMsg> implements TimerScheduler<TMsg> {
   }
 
   cancel(key: string): boolean {
-    const h = this.handles.get(key);
-    if (!h) return false;
-    h.cancel();
+    const handle = this.handles.get(key);
+    if (!handle) return false;
+    handle.cancel();
     this.handles.delete(key);
     return true;
   }
 
   cancelAll(): void {
-    for (const h of this.handles.values()) h.cancel();
+    for (const handle of this.handles.values()) handle.cancel();
     this.handles.clear();
   }
 
   isTimerActive(key: string): boolean {
-    const h = this.handles.get(key);
-    return !!h && !h.isCancelled;
+    const handle = this.handles.get(key);
+    return !!handle && !handle.isCancelled;
   }
 
   activeKeys(): string[] {

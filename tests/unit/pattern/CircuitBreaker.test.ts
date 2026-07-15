@@ -4,6 +4,8 @@ import {
   CircuitBreakerOpenError,
   CircuitBreakerTimeoutError,
 } from '../../../src/pattern/CircuitBreaker.js';
+import { CircuitBreakerOptions } from '../../../src/pattern/CircuitBreakerOptions.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -11,8 +13,8 @@ describe('CircuitBreaker — basics', () => {
   test('starts closed and passes through successful calls', async () => {
     const cb = new CircuitBreaker({ maxFailures: 3, resetTimeoutMs: 50 });
     expect(cb.state).toBe('closed');
-    const v = await cb.call(async () => 42);
-    expect(v).toBe(42);
+    const value = await cb.call(async () => 42);
+    expect(value).toBe(42);
     expect(cb.state).toBe('closed');
   });
 
@@ -40,8 +42,8 @@ describe('CircuitBreaker — basics', () => {
 
     await sleep(60);
     // First call after reset should move to half-open as part of .call().
-    const v = await cb.call(async () => 'ok');
-    expect(v).toBe('ok');
+    const value = await cb.call(async () => 'ok');
+    expect(value).toBe('ok');
     expect(cb.state).toBe('closed');
   });
 
@@ -88,11 +90,41 @@ describe('CircuitBreaker — filtering', () => {
   });
 });
 
-describe('CircuitBreaker — settings validation', () => {
-  test('maxFailures < 1 throws', () => {
-    expect(() => new CircuitBreaker({ maxFailures: 0, resetTimeoutMs: 10 })).toThrow(/maxFailures/);
+// Options plumbing: builder parity + OptionsError validation, replacing the
+// old bare-Error maxFailures/resetTimeoutMs guards and covering the
+// previously-unvalidated callTimeoutMs and missing required fields.
+describe('CircuitBreaker — options validation', () => {
+  test('builder form is equivalent to a plain object', async () => {
+    const cb = new CircuitBreaker(CircuitBreakerOptions.create()
+      .withMaxFailures(1)
+      .withResetTimeoutMs(1_000));
+    try { await cb.call(async () => { throw new Error('x'); }); } catch { /* */ }
+    expect(cb.state).toBe('open');
   });
-  test('resetTimeoutMs < 0 throws', () => {
-    expect(() => new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: -1 })).toThrow(/resetTimeoutMs/);
+
+  test('rejects a non-positive / non-integer maxFailures with OptionsError', () => {
+    expect(() => new CircuitBreaker({ maxFailures: 0, resetTimeoutMs: 10 })).toThrow(OptionsError);
+    expect(() => new CircuitBreaker({ maxFailures: -1, resetTimeoutMs: 10 })).toThrow(/maxFailures/);
+    expect(() => new CircuitBreaker({ maxFailures: 2.5, resetTimeoutMs: 10 })).toThrow(/maxFailures/);
+  });
+
+  test('rejects a negative / non-finite resetTimeoutMs with OptionsError', () => {
+    expect(() => new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: -1 })).toThrow(OptionsError);
+    expect(() => new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: Number.NaN })).toThrow(/resetTimeoutMs/);
+    expect(() => new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: Infinity })).toThrow(/resetTimeoutMs/);
+  });
+
+  test('rejects a non-positive callTimeoutMs with OptionsError (omit it to disable)', () => {
+    expect(() => new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 10, callTimeoutMs: 0 })).toThrow(OptionsError);
+    expect(() => new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 10, callTimeoutMs: -5 })).toThrow(/callTimeoutMs/);
+  });
+
+  test('rejects missing required fields with OptionsError (builder path)', () => {
+    expect(() => new CircuitBreaker(CircuitBreakerOptions.create())).toThrow(OptionsError);
+    expect(() => new CircuitBreaker(CircuitBreakerOptions.create().withMaxFailures(1))).toThrow(/resetTimeoutMs/);
+  });
+
+  test('accepts resetTimeoutMs 0 (immediate probe)', () => {
+    expect(() => new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 0 })).not.toThrow();
   });
 });

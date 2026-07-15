@@ -56,9 +56,9 @@ describe('rateLimit — fixed-window counter', () => {
     const cache = new InMemoryCache();
     const limited = rateLimit({ cache, windowMs: 60_000, max: 10, key: () => 'k' });
     const handler = limited(okHandler);
-    const r = await handler(makeReq('/'));
-    expect(r.headers?.['x-ratelimit-limit']).toBe('10');
-    expect(r.headers?.['x-ratelimit-remaining']).toBe('9');
+    const response = await handler(makeReq('/'));
+    expect(response.headers?.['x-ratelimit-limit']).toBe('10');
+    expect(response.headers?.['x-ratelimit-remaining']).toBe('9');
   });
 
   test('custom onLimit response is used when limit hit', async () => {

@@ -60,8 +60,8 @@ describe('Stock actor metrics', () => {
     const sys = ActorSystem.create('m-msgs', sysOptions);
     const reg = sys.extension(MetricsExtensionId).enable();
     try {
-      const a = sys.spawn(Props.create(() => new Echo()), 'a');
-      a.tell('1'); a.tell('2'); a.tell('3');
+      const actorRef = sys.spawn(Props.create(() => new Echo()), 'a');
+      actorRef.tell('1'); actorRef.tell('2'); actorRef.tell('3');
       await sleep(30);
       expect(valueFor(reg, 'actor_messages_delivered_total')).toBe(3);
     } finally {
@@ -76,8 +76,8 @@ describe('Stock actor metrics', () => {
     const sys = ActorSystem.create('m-term', sysOptions);
     const reg = sys.extension(MetricsExtensionId).enable();
     try {
-      const a = sys.spawn(Props.create(() => new Echo()), 'a');
-      a.stop();
+      const actorRef = sys.spawn(Props.create(() => new Echo()), 'a');
+      actorRef.stop();
       await sleep(40);
       expect((valueFor(reg, 'actor_terminated_total') ?? 0)).toBeGreaterThanOrEqual(1);
     } finally {
@@ -92,8 +92,8 @@ describe('Stock actor metrics', () => {
     const sys = ActorSystem.create('m-hist', sysOptions);
     const reg = sys.extension(MetricsExtensionId).enable();
     try {
-      const a = sys.spawn(Props.create(() => new Echo()), 'a');
-      a.tell('1'); a.tell('2');
+      const actorRef = sys.spawn(Props.create(() => new Echo()), 'a');
+      actorRef.tell('1'); actorRef.tell('2');
       await sleep(40);
       const sumSample = reg.collect().find(
         (s) => s.name === 'actor_message_handler_seconds' && s.sum !== undefined,

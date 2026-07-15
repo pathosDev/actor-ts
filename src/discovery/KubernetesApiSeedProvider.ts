@@ -1,4 +1,5 @@
 import { NodeAddress } from '../cluster/NodeAddress.js';
+import { KubernetesApiSeedProviderOptionsValidator } from './KubernetesApiSeedProviderOptions.js';
 import type { KubernetesApiSeedProviderOptions, KubernetesApiSeedProviderOptionsType } from './KubernetesApiSeedProviderOptions.js';
 import type { SeedProvider } from './SeedProvider.js';
 
@@ -13,16 +14,17 @@ import type { SeedProvider } from './SeedProvider.js';
  * ServiceAccount token mount.
  */
 export class KubernetesApiSeedProvider implements SeedProvider {
-  private readonly settings: KubernetesApiSeedProviderOptionsType;
+  private readonly options: KubernetesApiSeedProviderOptionsType;
 
   constructor(options: KubernetesApiSeedProviderOptions = {}) {
-    this.settings = options as KubernetesApiSeedProviderOptionsType;
+    this.options = options as KubernetesApiSeedProviderOptionsType;
+    new KubernetesApiSeedProviderOptionsValidator().validate(this.options);
   }
 
   async lookup(): Promise<NodeAddress[]> {
-    const fetchEndpoints = this.settings.fetchEndpoints ?? defaultFetchEndpoints(this.settings);
+    const fetchEndpoints = this.options.fetchEndpoints ?? defaultFetchEndpoints(this.options);
     const ips = await fetchEndpoints();
-    return ips.map(ip => new NodeAddress(this.settings.systemName, ip, this.settings.port));
+    return ips.map(ip => new NodeAddress(this.options.systemName, ip, this.options.port));
   }
 }
 
@@ -31,7 +33,7 @@ export class KubernetesApiSeedProvider implements SeedProvider {
  * credentials and calls the core API.  Keeps the code path small — real
  * production deployments often swap this for the canonical K8s client.
  */
-function defaultFetchEndpoints(settings: KubernetesApiSeedProviderOptionsType): () => Promise<string[]> {
+function defaultFetchEndpoints(options: KubernetesApiSeedProviderOptionsType): () => Promise<string[]> {
   return async (): Promise<string[]> => {
     const fs = await import('node:fs/promises');
     const https = await import('node:https');
@@ -39,7 +41,7 @@ function defaultFetchEndpoints(settings: KubernetesApiSeedProviderOptionsType): 
     const ca = await fs.readFile('/var/run/secrets/kubernetes.io/serviceaccount/ca.crt').catch(() => undefined);
     if (!token) throw new Error('KubernetesApiSeedProvider: no ServiceAccount token found — run inside a pod or provide fetchEndpoints');
 
-    const path = `/api/v1/namespaces/${settings.namespace}/endpoints/${settings.serviceName}`;
+    const path = `/api/v1/namespaces/${options.namespace}/endpoints/${options.serviceName}`;
     const agent = new https.Agent(ca ? { ca } : {});
     const res = await new Promise<{ status: number; body: string }>((resolve, reject) => {
       const req = https.request({

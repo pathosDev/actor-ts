@@ -52,9 +52,9 @@ export class MVRegister<V> implements Crdt<MVRegister<V>> {
     // strictly greater than every existing one — so on merge the new
     // entry is the only survivor from this replica's branch.
     const max = new Map<ReplicaId, number>();
-    for (const e of this.entries) {
-      for (const [k, v] of e.vc) {
-        if (v > (max.get(k) ?? 0)) max.set(k, v);
+    for (const entry of this.entries) {
+      for (const [replicaId, version] of entry.vc) {
+        if (version > (max.get(replicaId) ?? 0)) max.set(replicaId, version);
       }
     }
     max.set(replica, (max.get(replica) ?? 0) + 1);
@@ -80,13 +80,13 @@ export class MVRegister<V> implements Crdt<MVRegister<V>> {
     const all: MVEntry<V>[] = [...this.entries, ...other.entries];
     const survivors: MVEntry<V>[] = [];
     const seen = new Set<string>();
-    for (const e of all) {
-      // Drop e if any sibling strictly dominates it (causally
+    for (const entry of all) {
+      // Drop entry if any sibling strictly dominates it (causally
       // newer writes subsume older ones).
       let keep = true;
-      for (const o of all) {
-        if (o === e) continue;
-        if (vcStrictlyDominates(o.vc, e.vc)) { keep = false; break; }
+      for (const other of all) {
+        if (other === entry) continue;
+        if (vcStrictlyDominates(other.vc, entry.vc)) { keep = false; break; }
       }
       if (!keep) continue;
       // Dedupe by **full state** (value + vc).  Two entries with the
@@ -97,12 +97,12 @@ export class MVRegister<V> implements Crdt<MVRegister<V>> {
       // identical (value, vc) are the same logical state and dedupe
       // to one.
       const key = JSON.stringify([
-        e.value,
-        Array.from(e.vc.entries()).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+        entry.value,
+        Array.from(entry.vc.entries()).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
       ]);
       if (seen.has(key)) continue;
       seen.add(key);
-      survivors.push(e);
+      survivors.push(entry);
     }
     return new MVRegister<V>(survivors);
   }
@@ -144,11 +144,11 @@ export class MVRegister<V> implements Crdt<MVRegister<V>> {
 /* ------------------------------ helpers --------------------------------- */
 
 function vcEqual(
-  a: ReadonlyMap<ReplicaId, number>,
-  b: ReadonlyMap<ReplicaId, number>,
+  left: ReadonlyMap<ReplicaId, number>,
+  right: ReadonlyMap<ReplicaId, number>,
 ): boolean {
-  if (a.size !== b.size) return false;
-  for (const [k, v] of a) if (b.get(k) !== v) return false;
+  if (left.size !== right.size) return false;
+  for (const [replicaId, version] of left) if (right.get(replicaId) !== version) return false;
   return true;
 }
 

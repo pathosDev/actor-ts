@@ -28,12 +28,12 @@ export { SqliteSnapshotStore } from './snapshot-stores/SqliteSnapshotStore.js';
 export { SqliteSnapshotStoreOptions, SqliteSnapshotStoreOptionsBuilder } from './snapshot-stores/SqliteSnapshotStoreOptions.js';
 export type { SqliteSnapshotStoreOptionsType } from './snapshot-stores/SqliteSnapshotStoreOptions.js';
 export { CachedSnapshotStore } from './snapshot-stores/CachedSnapshotStore.js';
-export { CachedSnapshotStoreOptions, CachedSnapshotStoreOptionsBuilder } from './snapshot-stores/CachedSnapshotStoreOptions.js';
+export { CachedSnapshotStoreOptions, CachedSnapshotStoreOptionsBuilder, CachedSnapshotStoreOptionsValidator } from './snapshot-stores/CachedSnapshotStoreOptions.js';
 export type { CachedSnapshotStoreOptionsType } from './snapshot-stores/CachedSnapshotStoreOptions.js';
 
 // Cassandra / ScyllaDB plug-in (same CQL protocol — one plug-in).
 export { CassandraJournal } from './journals/CassandraJournal.js';
-export { CassandraJournalOptions, CassandraJournalOptionsBuilder } from './journals/CassandraJournalOptions.js';
+export { CassandraJournalOptions, CassandraJournalOptionsBuilder, CassandraJournalOptionsValidator } from './journals/CassandraJournalOptions.js';
 export type { CassandraJournalOptionsType } from './journals/CassandraJournalOptions.js';
 export { CassandraSnapshotStore } from './snapshot-stores/CassandraSnapshotStore.js';
 export { CassandraSnapshotStoreOptions, CassandraSnapshotStoreOptionsBuilder } from './snapshot-stores/CassandraSnapshotStoreOptions.js';
@@ -220,14 +220,14 @@ export {
 export {
   ProjectionOptions,
   ProjectionOptionsBuilder,
-  ByPidProjectionOptions,
-  ByPidProjectionOptionsBuilder,
+  ByPersistenceIdProjectionOptions,
+  ByPersistenceIdProjectionOptionsBuilder,
   ByTagProjectionOptions,
   ByTagProjectionOptionsBuilder,
 } from './projection/ProjectionOptions.js';
 export type {
   ProjectionOptionsType,
-  ByPidProjectionOptionsType,
+  ByPersistenceIdProjectionOptionsType,
   ByTagProjectionOptionsType,
 } from './projection/ProjectionOptions.js';
 export type { OffsetStore } from './projection/OffsetStore.js';
@@ -248,10 +248,10 @@ export type {
   PutOptions,
 } from './object-storage/ObjectStorageBackend.js';
 export { FilesystemObjectStorageBackend } from './object-storage/FilesystemObjectStorageBackend.js';
-export { FilesystemObjectStorageOptions, FilesystemObjectStorageOptionsBuilder } from './object-storage/FilesystemObjectStorageOptions.js';
+export { FilesystemObjectStorageOptions, FilesystemObjectStorageOptionsBuilder, FilesystemObjectStorageOptionsValidator } from './object-storage/FilesystemObjectStorageOptions.js';
 export type { FilesystemObjectStorageOptionsType } from './object-storage/FilesystemObjectStorageOptions.js';
 export { S3ObjectStorageBackend } from './object-storage/S3ObjectStorageBackend.js';
-export { S3ObjectStorageOptions, S3ObjectStorageOptionsBuilder } from './object-storage/S3ObjectStorageOptions.js';
+export { S3ObjectStorageOptions, S3ObjectStorageOptionsBuilder, S3ObjectStorageOptionsValidator } from './object-storage/S3ObjectStorageOptions.js';
 export type { S3ObjectStorageOptionsType } from './object-storage/S3ObjectStorageOptions.js';
 export type {
   S3Credentials,
@@ -260,10 +260,10 @@ export type {
 export {
   ObjectStorageSnapshotStore,
 } from './snapshot-stores/ObjectStorageSnapshotStore.js';
-export { ObjectStorageSnapshotStoreOptions, ObjectStorageSnapshotStoreOptionsBuilder } from './snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
+export { ObjectStorageSnapshotStoreOptions, ObjectStorageSnapshotStoreOptionsBuilder, ObjectStorageSnapshotStoreOptionsValidator } from './snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
 export type { ObjectStorageSnapshotStoreOptionsType } from './snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
 export { ObjectStorageDurableStateStore } from './durable-state-stores/ObjectStorageDurableStateStore.js';
-export { ObjectStorageDurableStateStoreOptions, ObjectStorageDurableStateStoreOptionsBuilder } from './durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
+export { ObjectStorageDurableStateStoreOptions, ObjectStorageDurableStateStoreOptionsBuilder, ObjectStorageDurableStateStoreOptionsValidator } from './durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
 export type { ObjectStorageDurableStateStoreOptionsType } from './durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
 export {
   registerObjectStoragePlugins,

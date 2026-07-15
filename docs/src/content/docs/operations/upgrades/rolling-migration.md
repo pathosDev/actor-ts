@@ -16,8 +16,9 @@ features:
   every registered version; writers emit a chosen one.
 - **`MasterKeyRing`** (#8) — `active` + `retired[]` keys; every
   encrypted body's manifest names the key version it used.
-- **`wrapLegacy` helpers** (#9) — one-shot rewrite of pre-envelope
-  events into the current schema envelope.
+- **`wrapEventAsEnvelope` + `migrateInMemoryJournal`** (#9) —
+  one-shot rewrite of pre-envelope events into the current schema
+  envelope.
 - **`SchemaRegistry`** (#6) — multi-version codec + compatibility
   checks.
 
@@ -70,7 +71,7 @@ const chain = MigrationChain
 // 2. Pin the writeVersion at the OLD version for this phase.
 const adapter = migratingAdapter(chain, { writeVersion: 1 });
 
-class Order extends PersistentActor<OrderCmd, OrderEvent, OrderState> {
+class Order extends PersistentActor<OrderCommand, OrderEvent, OrderState> {
   override eventAdapter() { return adapter; }
   // ...
 }

@@ -18,28 +18,28 @@ describe('TestProbe basics', () => {
     await tk.shutdown();
   });
 
-  test('expectMsg passes on equal value, throws otherwise', async () => {
+  test('expectMessage passes on equal value, throws otherwise', async () => {
     const tk = TestKit.create();
     const probe = tk.createTestProbe();
     probe.tell({ cmd: 'ping' });
-    await probe.expectMsg({ cmd: 'ping' }, 100);
+    await probe.expectMessage({ cmd: 'ping' }, 100);
     probe.tell({ cmd: 'ping' });
-    await expect(probe.expectMsg({ cmd: 'pong' }, 100))
-      .rejects.toThrow(/expectMsg/);
+    await expect(probe.expectMessage({ cmd: 'pong' }, 100))
+      .rejects.toThrow(/expectMessage/);
     await tk.shutdown();
   });
 
-  test('expectMsgType checks instance', async () => {
+  test('expectMessageType checks instance', async () => {
     class OrderPlaced { constructor(public readonly id: string) {} }
     const tk = TestKit.create();
     const probe = tk.createTestProbe();
     probe.tell(new OrderPlaced('o-1'));
-    const msg = await probe.expectMsgType(OrderPlaced, 100);
+    const msg = await probe.expectMessageType(OrderPlaced, 100);
     expect(msg.id).toBe('o-1');
 
     probe.tell('not-an-OrderPlaced');
-    await expect(probe.expectMsgType(OrderPlaced, 100))
-      .rejects.toThrow(/expectMsgType/);
+    await expect(probe.expectMessageType(OrderPlaced, 100))
+      .rejects.toThrow(/expectMessageType/);
 
     await tk.shutdown();
   });
@@ -87,13 +87,13 @@ describe('TestProbe basics', () => {
     const tk = TestKit.create();
     const probeOptions = TestProbeOptions.create()
       .withName('from');
-    const p = tk.createTestProbe(probeOptions);
+    const probe = tk.createTestProbe(probeOptions);
     const probeOptions2 = TestProbeOptions.create()
       .withName('to');
     const to = tk.createTestProbe(probeOptions2);
-    to.tell('msg', p);
+    to.tell('msg', probe);
     await to.receiveOne(100);
-    expect(to.sender).toBe(p);
+    expect(to.sender).toBe(probe);
     await tk.shutdown();
   });
 

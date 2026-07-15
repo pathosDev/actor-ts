@@ -2,15 +2,15 @@ import type { Lease } from '../../coordination/Lease.js';
 import type { AllocationStrategy } from './AllocationStrategy.js';
 import type { CoordinatorStateStore } from './CoordinatorState.js';
 import type { RememberEntitiesStore } from './RememberEntitiesStore.js';
-import { ShardingOptionsBuilder } from './ShardingOptions.js';
+import { ShardingOptionsBuilder, ShardingOptionsValidator } from './ShardingOptions.js';
 import type { ShardingOptionsType } from './ShardingOptions.js';
 
 /**
- * Plain settings-object shape accepted by {@link ClusterSharding.start} —
+ * Plain options-object shape accepted by {@link ClusterSharding.start} —
  * the region-side {@link ShardingOptionsType} plus the coordinator-side
  * fields (allocation, rebalance, lease, persistence backends).
  */
-export interface StartShardingOptionsType<TMsg> extends ShardingOptionsType<TMsg> {
+export interface StartShardingOptionsType<TMessage> extends ShardingOptionsType<TMessage> {
   /** Strategy the coordinator uses to allocate and rebalance shards. */
   readonly allocationStrategy?: AllocationStrategy;
   /** Gap between coordinator-driven rebalance passes. */
@@ -68,10 +68,10 @@ export interface StartShardingOptionsType<TMsg> extends ShardingOptionsType<TMsg
  * `allocationStrategy` ({@link AllocationStrategy}), `lease`
  * ({@link Lease}), `rememberEntitiesStore`, and `coordinatorStateStore`.
  */
-export class StartShardingOptionsBuilder<TMsg> extends ShardingOptionsBuilder<TMsg, StartShardingOptionsType<TMsg>> {
-  /** Start a fresh builder.  Equivalent to `new StartShardingOptionsBuilder<TMsg>()`. */
-  static create<TMsg>(): StartShardingOptionsBuilder<TMsg> {
-    return new StartShardingOptionsBuilder<TMsg>();
+export class StartShardingOptionsBuilder<TMessage> extends ShardingOptionsBuilder<TMessage, StartShardingOptionsType<TMessage>> {
+  /** Start a fresh builder.  Equivalent to `new StartShardingOptionsBuilder<TMessage>()`. */
+  static create<TMessage>(): StartShardingOptionsBuilder<TMessage> {
+    return new StartShardingOptionsBuilder<TMessage>();
   }
 
   /** Strategy the coordinator uses to allocate and rebalance shards. */
@@ -114,12 +114,29 @@ export class StartShardingOptionsBuilder<TMsg> extends ShardingOptionsBuilder<TM
 }
 
 /**
+ * Validates resolved {@link StartShardingOptionsType} settings — the region-side
+ * {@link ShardingOptionsValidator} rules plus the coordinator-side intervals.
+ */
+export class StartShardingOptionsValidator<TMessage>
+  extends ShardingOptionsValidator<TMessage, StartShardingOptionsType<TMessage>> {
+  constructor() {
+    super('StartShardingOptions');
+  }
+  protected override rules(s: Partial<StartShardingOptionsType<TMessage>>): void {
+    this.commonRules(s);
+    this.positiveNumber('rebalanceIntervalMs');
+    this.positiveNumber('handOffTimeoutMs');
+    this.positiveNumber('acquireRetryIntervalMs');
+  }
+}
+
+/**
  * Accepted input for {@link ClusterSharding.start}: the fluent
  * {@link StartShardingOptionsBuilder} OR a plain (partial)
  * {@link StartShardingOptionsType} object.
  */
-export type StartShardingOptions<TMsg> =
-  | StartShardingOptionsBuilder<TMsg>
-  | Partial<StartShardingOptionsType<TMsg>>;
+export type StartShardingOptions<TMessage> =
+  | StartShardingOptionsBuilder<TMessage>
+  | Partial<StartShardingOptionsType<TMessage>>;
 /** Value alias so `StartShardingOptions.create()` / `new StartShardingOptions()` resolve to the builder. */
 export const StartShardingOptions = StartShardingOptionsBuilder;

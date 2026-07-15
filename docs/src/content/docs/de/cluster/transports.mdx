@@ -208,8 +208,7 @@ Für tiefergehende Inspektion (spezifische Frame-Inhalte) aktiviere
 Debug-Logging am System:
 
 ```ts
-const actorSystemOptions = ActorSystemOptions.create()
-  .withLogLevel(LogLevel.Debug);
+const actorSystemOptions = ActorSystemOptions.create().withLogLevel(LogLevel.Debug);
 const system = ActorSystem.create('my-app', actorSystemOptions);
 // Suche nach [tcp-transport] Log-Zeilen
 ```

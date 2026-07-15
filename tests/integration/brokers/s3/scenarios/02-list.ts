@@ -10,7 +10,7 @@ import type { BrokerScenario } from '../../lib/scenario.js';
 export const scenario: BrokerScenario<S3Ctx> = {
   name: 'list sorted + prefix scoping + limit',
   async run(ctx) {
-    const b = backend(ctx);
+    const store = backend(ctx);
     try {
       // Unique prefix per scenario run so re-runs don't observe
       // each other's keys.
@@ -19,10 +19,10 @@ export const scenario: BrokerScenario<S3Ctx> = {
       const keys = ['c.bin', 'a.bin', 'b.bin', 'd.bin'].map((k) => `${prefix}${k}`);
       const distractor = `${otherPrefix}should-not-appear.bin`;
 
-      for (const k of keys) await b.put(k, new Uint8Array([0]));
-      await b.put(distractor, new Uint8Array([0]));
+      for (const k of keys) await store.put(k, new Uint8Array([0]));
+      await store.put(distractor, new Uint8Array([0]));
 
-      const all = await b.list({ prefix });
+      const all = await store.list({ prefix });
       const got = all.map((o) => o.key);
       const wantSorted = [...keys].sort();
       if (got.join(',') !== wantSorted.join(',')) {
@@ -34,12 +34,12 @@ export const scenario: BrokerScenario<S3Ctx> = {
       }
 
       // Soft limit slices the result.
-      const limited = await b.list({ prefix, limit: 2 });
+      const limited = await store.list({ prefix, limit: 2 });
       if (limited.length !== 2) {
         throw new Error(`list({limit:2}) returned ${limited.length} keys`);
       }
     } finally {
-      await b.close();
+      await store.close();
     }
   },
 };

@@ -97,7 +97,7 @@ describe('OrderActor', () => {
     let order = tk.system.spawnAnonymous(Props.create(() => new OrderActor('order-1')));
     order.tell({ kind: 'place', sku: 'book-1' });
     order.tell({ kind: 'place', sku: 'book-2' });
-    await probe.expectMsg({ kind: 'placed', sku: 'book-2' });
+    await probe.expectMessage({ kind: 'placed', sku: 'book-2' });
 
     // Stoppen + neu spawnen — gleiche Persistence-ID
     await tk.system.stop(order);
@@ -105,7 +105,7 @@ describe('OrderActor', () => {
     order.tell({ kind: 'view', replyTo: probe });
 
     // Wiederhergestellter State sollte beide platzierten Events widerspiegeln
-    await probe.expectMsg({ items: ['book-1', 'book-2'] });
+    await probe.expectMessage({ items: ['book-1', 'book-2'] });
   });
 });
 ```
@@ -157,9 +157,8 @@ system.extension(PersistenceExtensionId).configure({
 
 // Nachher (Produktion):
 import { SqliteJournal, SqliteJournalOptions } from 'actor-ts';
+const sqliteJournalOptions = SqliteJournalOptions.create().withPath('/var/lib/my-app/events.db');
 system.extension(PersistenceExtensionId).configure({
-  const sqliteJournalOptions = SqliteJournalOptions.create()
-    .withPath('/var/lib/my-app/events.db');
   journal: new SqliteJournal(sqliteJournalOptions),
 });
 ```

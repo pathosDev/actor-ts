@@ -1,25 +1,24 @@
 ---
-title: WebSocketClientActor
+title: WebsocketClientActor
 description: Outbound WebSocket connection actor — connects to a remote WS endpoint, decodes inbound frames into typed messages, sends typed outbound messages. Reconnect with backoff, outbound buffering, and a circuit breaker via BrokerActor. Wraps the runtime's native WebSocket.
 ---
 
-`WebSocketClientActor` opens a **client-side** WebSocket
+`WebsocketClientActor` opens a **client-side** WebSocket
 connection to a remote endpoint.  Inbound frames are decoded
 into typed messages you handle in `onMessage`; outbound messages
 are encoded and sent (buffered while disconnected, resent after
 reconnect).  For accepting **incoming** WS connections (server
-side), see [server WebSocket](/io/server-websocket/).
+side), see [server WebSocket](/http/websocket/).
 
 ```ts
-import { WebSocketClientActor, WebSocketClientOptions, wsSend } from 'actor-ts';
+import { WebsocketClientActor, WebsocketClientOptions, websocketSend } from 'actor-ts';
 
-type ClientMsg = { kind: 'ping'; n: number };
-type ServerMsg = { kind: 'pong'; n: number } | { kind: 'event'; data: unknown };
+type ClientMessage = { kind: 'ping'; n: number };
+type ServerMessage = { kind: 'pong'; n: number } | { kind: 'event'; data: unknown };
 
-class Feed extends WebSocketClientActor<ClientMsg, ServerMsg> {
+class Feed extends WebsocketClientActor<ClientMessage, ServerMessage> {
   constructor() {
-    const webSocketClientOptions = WebSocketClientOptions.create<ClientMsg, ServerMsg>()
-      .withUrl('ws://localhost:8080/ws');
+    const webSocketClientOptions = WebsocketClientOptions.create<ClientMessage, ServerMessage>().withUrl('ws://localhost:8080/ws');
     super(webSocketClientOptions);
   }
 
@@ -27,7 +26,7 @@ class Feed extends WebSocketClientActor<ClientMsg, ServerMsg> {
     this.send({ kind: 'ping', n: 1 });
   }
 
-  onMessage(msg: ServerMsg): void {
+  onMessage(msg: ServerMessage): void {
     // decoded server message
     if (msg.kind === 'pong') this.log.info(`pong ${msg.n}`);
   }
@@ -40,29 +39,29 @@ The two type parameters read from the client's point of view:
 `TOut` = the messages **this client sends**, `TIn` = the
 **decoded server messages** it receives.
 
-`WebSocketClientActor` extends the shared
+`WebsocketClientActor` extends the shared
 [BrokerActor base](/io/broker-actor-base/), so it inherits
 reconnect-with-backoff, the outbound buffer across reconnects,
 and the circuit breaker for free.
 
 ## Settings
 
-The constructor takes `Partial<WebSocketClientSettings<TOut, TIn>>`.
+The constructor takes `Partial<WebsocketClientOptionsType<TOut, TIn>>`.
 Only `url` is required; everything else has a default.
 
 ```ts
-interface WebSocketClientSettings<TOut, TIn> extends BrokerCommonSettings {
+interface WebsocketClientOptionsType<TOut, TIn> extends BrokerCommonOptionsType {
   url:              string;                        // required — ws:// or wss://
   protocols?:       string | string[];             // subprotocols
   headers?:         Record<string, string>;        // Node / `ws` only
-  codec?:           WsCodec<TOut, TIn>;             // default jsonCodec()
+  codec?:           WebsocketCodec<TOut, TIn>;             // default jsonCodec()
   maxFrameBytes?:   number;                         // default 1 MiB; oversize inbound dropped with a warning
   onInvalidMessage?: 'drop' | 'hook' | 'disconnect'; // default 'drop'
   pingIntervalMs?:  number;                         // application-level ping; default off
 }
 ```
 
-Because the settings extend `BrokerCommonSettings`, the
+Because the settings extend `BrokerCommonOptionsType`, the
 `reconnect` (`{ initialDelayMs, maxDelayMs, factor, maxAttempts }`),
 `outboundBuffer`, and `circuitBreaker` blocks all apply — see the
 [BrokerActor base](/io/broker-actor-base/) for their semantics.
@@ -75,10 +74,9 @@ and resent after reconnect.  Inbound frames are decoded and
 delivered to `onMessage`.
 
 ```ts
-class Chat extends WebSocketClientActor<ClientMsg, ServerMsg> {
+class Chat extends WebsocketClientActor<ClientMessage, ServerMessage> {
   constructor() {
-    const webSocketClientOptions = WebSocketClientOptions.create<ClientMsg, ServerMsg>()
-      .withUrl('wss://chat.example.com/ws');
+    const webSocketClientOptions = WebsocketClientOptions.create<ClientMessage, ServerMessage>().withUrl('wss://chat.example.com/ws');
     super(webSocketClientOptions);
   }
 
@@ -86,7 +84,7 @@ class Chat extends WebSocketClientActor<ClientMsg, ServerMsg> {
     this.send({ kind: 'setName', name: 'alice' });   // encode + enqueue → true
   }
 
-  onMessage(msg: ServerMsg): void {
+  onMessage(msg: ServerMessage): void {
     // one call per decoded server frame, in frame order
   }
 }
@@ -95,17 +93,17 @@ class Chat extends WebSocketClientActor<ClientMsg, ServerMsg> {
 `send(msg: TOut): boolean` returns whether the message was
 accepted (it can be rejected if the outbound buffer is full).
 For a raw frame — bypassing the codec — use
-`sendRaw(frame: WsFrame): boolean`.
+`sendRaw(frame: WebsocketFrame): boolean`.
 
 ### Sending from another actor
 
 Other actors don't call `send` directly; they push a typed send
-through the ref with the `wsSend` helper:
+through the ref with the `websocketSend` helper:
 
 ```ts
-import { wsSend } from 'actor-ts';
+import { websocketSend } from 'actor-ts';
 
-feed.tell(wsSend({ kind: 'ping', n: 42 }));
+feed.tell(websocketSend({ kind: 'ping', n: 42 }));
 ```
 
 ## Hooks
@@ -117,7 +115,7 @@ rest are optional overrides:
 | --- | --- |
 | `onConnected()` | The connection is (re)established.  Good place for a handshake / re-subscribe. |
 | `onDisconnected(cause?: Error)` | The connection dropped; `cause` is set on error-driven drops. |
-| `onInvalidMessage(error: WsDecodeError)` | A frame failed to decode (only when `onInvalidMessage: 'hook'`). |
+| `onInvalidMessage(error: WebsocketDecodeError)` | A frame failed to decode (only when `onInvalidMessage: 'hook'`). |
 | `onSelfMessage(msg: TSelf)` | Handle the optional third type parameter — messages the actor sends to itself. |
 
 ## Codecs
@@ -131,44 +129,44 @@ import { jsonCodec } from 'actor-ts';
 new Feed(); // uses jsonCodec() — text frames <-> JSON
 
 // With runtime validation (zod etc.):
-class Validated extends WebSocketClientActor<ClientMsg, ServerMsg> {
+class Validated extends WebsocketClientActor<ClientMessage, ServerMessage> {
   constructor() {
-    const webSocketClientOptions = WebSocketClientOptions.create<ClientMsg, ServerMsg>()
+    const webSocketClientOptions = WebsocketClientOptions.create<ClientMessage, ServerMessage>()
       .withUrl('wss://...')
-      .withCodec(jsonCodec<ClientMsg, ServerMsg>({
-        validate: (value: unknown): ServerMsg => ServerMsgSchema.parse(value),
+      .withCodec(jsonCodec<ClientMessage, ServerMessage>({
+        validate: (value: unknown): ServerMessage => ServerMsgSchema.parse(value),
       }));
     super(
       webSocketClientOptions,
     );
   }
-  onMessage(msg: ServerMsg): void { /* already validated */ }
+  onMessage(msg: ServerMessage): void { /* already validated */ }
 }
 ```
 
 For binary protocols, `rawCodec()` is the escape hatch —
-`TOut = TIn = WsFrame`, so you handle raw text/binary frames
+`TOut = TIn = WebsocketFrame`, so you handle raw text/binary frames
 yourself:
 
 ```ts
-import { rawCodec, type WsFrame } from 'actor-ts';
+import { rawCodec, type WebsocketFrame } from 'actor-ts';
 
-class Binary extends WebSocketClientActor<WsFrame, WsFrame> {
+class Binary extends WebsocketClientActor<WebsocketFrame, WebsocketFrame> {
   constructor() {
-    const webSocketClientOptions = WebSocketClientOptions.create<WsFrame, WsFrame>()
+    const webSocketClientOptions = WebsocketClientOptions.create<WebsocketFrame, WebsocketFrame>()
       .withUrl('wss://...')
       .withCodec(rawCodec());
     super(webSocketClientOptions);
   }
-  onMessage(frame: WsFrame): void {
+  onMessage(frame: WebsocketFrame): void {
     if (frame.kind === 'binary') this.handleBytes(frame.data);   // Uint8Array
   }
 }
 ```
 
-A `WsFrame` is `{ kind: 'text'; data: string }` or
+A `WebsocketFrame` is `{ kind: 'text'; data: string }` or
 `{ kind: 'binary'; data: Uint8Array }`.  Decode failures throw a
-`WsDecodeError`; the inbound frame-size cap (`maxFrameBytes`) is
+`WebsocketDecodeError`; the inbound frame-size cap (`maxFrameBytes`) is
 enforced on the **raw frame before decode**.
 
 ## Reconnect and buffering
@@ -194,10 +192,10 @@ forever.
 
 ```ts
 new Feed(); // ...
-const webSocketClientOptions = WebSocketClientOptions.create()
+const webSocketClientOptions = WebsocketClientOptions.create()
   .withUrl('wss://...')
   .withPingIntervalMs(30_000);
-new WebSocketClientActor(
+new WebsocketClientActor(
   webSocketClientOptions,
 );
 ```
@@ -242,15 +240,15 @@ Three primary fits:
    `rawCodec()` for binary wire formats.
 
 For server-side WebSocket (accepting client connections), use
-the [server WebSocket](/io/server-websocket/) page.
+the [server WebSocket](/http/websocket/) page.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="note" title="Renamed from WebSocketActor">
-  This actor was previously called `WebSocketActor`.  The command
+<Aside type="note" title="Renamed from WebsocketActor">
+  This actor was previously called `WebsocketActor`.  The command
   interface (`{ kind: 'subscribe' | 'send' }`) is gone: implement
   `onMessage`, call `this.send(msg)`, and push typed sends from
-  other actors with `ref.tell(wsSend(msg))`.
+  other actors with `ref.tell(websocketSend(msg))`.
 </Aside>
 
 <Aside type="caution" title="`ws` peer dependency on Node < 22">
@@ -274,8 +272,8 @@ import { Aside } from '@astrojs/starlight/components';
 
 - **[I/O overview](/io/overview/)** — the bigger
   picture.
-- **[Server WebSocket](/io/server-websocket/)** — the
-  `websocket()` directive + `WebSocketServerActor`.
+- **[Server WebSocket](/http/websocket/)** — the
+  `websocket()` directive + `WebsocketServerActor`.
 - **[SSE](/io/sse/)** — server-sent events as a
   one-way streaming alternative.
 - **[BrokerActor base](/io/broker-actor-base/)** — the

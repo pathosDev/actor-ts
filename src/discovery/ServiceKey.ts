@@ -3,9 +3,9 @@
  * compare equal iff their `id` strings match — the type parameter is a
  * compile-time marker used to tighten inferred ActorRef types on lookup.
  */
-export class ServiceKey<TMsg = unknown> {
+export class ServiceKey<TMessage = unknown> {
   /** Phantom field — retains T so inference can round-trip through the key. */
-  readonly _msg!: TMsg;
+  readonly _msg!: TMessage;
 
   constructor(public readonly id: string) {}
 

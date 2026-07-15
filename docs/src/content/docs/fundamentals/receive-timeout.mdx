@@ -11,15 +11,15 @@ delivers a `ReceiveTimeout` system message to the actor.
 ```ts
 import { Actor, ReceiveTimeout } from 'actor-ts';
 
-type Msg = { kind: 'activity' } | ReceiveTimeout;
+type Message = { kind: 'activity' } | ReceiveTimeout;
 
-class Session extends Actor<Msg> {
+class Session extends Actor<Message> {
   override preStart(): void {
     // Idle for 30 s → fire a ReceiveTimeout.
     this.context.setReceiveTimeout(30_000);
   }
 
-  override onReceive(msg: Msg): void {
+  override onReceive(msg: Message): void {
     if (msg === ReceiveTimeout.instance) {
       this.log.info('session idle — stopping');
       this.context.stopSelf();
@@ -46,7 +46,7 @@ Three things to notice:
 ## The API
 
 ```ts
-interface ActorContext<TMsg> {
+interface ActorContext<TMessage> {
   setReceiveTimeout(ms: number): void;
   cancelReceiveTimeout(): void;
 }
@@ -61,14 +61,14 @@ positive value (re-)arms it.
 ### Session expiry
 
 ```ts
-class Session extends Actor<SessionMsg | ReceiveTimeout> {
+class Session extends Actor<SessionMessage | ReceiveTimeout> {
   constructor(private readonly userId: string) { super(); }
 
   override preStart(): void {
     this.context.setReceiveTimeout(15 * 60_000);   // 15 minutes
   }
 
-  override onReceive(msg: SessionMsg | ReceiveTimeout): void {
+  override onReceive(msg: SessionMessage | ReceiveTimeout): void {
     if (msg === ReceiveTimeout.instance) {
       this.log.info(`session ${this.userId} expired`);
       this.context.stopSelf();
@@ -87,12 +87,12 @@ timeouts.
 ### Passivation in sharded entities
 
 ```ts
-class Entity extends Actor<EntityMsg | ReceiveTimeout> {
+class Entity extends Actor<EntityMessage | ReceiveTimeout> {
   override preStart(): void {
     this.context.setReceiveTimeout(2 * 60_000);   // 2 minutes idle
   }
 
-  override onReceive(msg: EntityMsg | ReceiveTimeout): void {
+  override onReceive(msg: EntityMessage | ReceiveTimeout): void {
     if (msg === ReceiveTimeout.instance) {
       // Tell the shard region we're done — it will stop us cleanly.
       this.context.parent.forEach((p) =>

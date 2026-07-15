@@ -16,14 +16,18 @@ const limited = rateLimit({
   cache:    new InMemoryCache(),
   windowMs: 60_000,                       // 1 minute window
   max:      100,                          // 100 reqs per key per minute
-  key:      (req) => req.headers['x-forwarded-for'] ?? 'unknown',
+  key:      (req) => req.remoteAddress ?? 'unknown',   // socket peer — not a spoofable header
 });
 
 const routes = path('api', post(limited(apiHandler)));
 ```
 
-Each distinct key (here: per `X-Forwarded-For` IP) gets a 100/minute
-budget.  Excess requests get 429 with a `Retry-After` header.
+Each distinct key (here: per client IP taken from the socket peer,
+`req.remoteAddress`) gets a 100/minute budget.  Excess requests get 429
+with a `Retry-After` header.  **Key on a value the client can't forge** —
+don't use `x-forwarded-for` unless a trusted proxy sets it (see the
+security note below), or an attacker rotates it per request to bypass the
+limit.
 
 ## Configuration
 
@@ -64,7 +68,7 @@ const limited = rateLimit({
   max:      100,
   key:      (req) => {
     const userId = extractUserId(req);
-    return userId ? `user:${userId}` : `ip:${req.headers['x-forwarded-for'] ?? 'unknown'}`;
+    return userId ? `user:${userId}` : `ip:${req.remoteAddress ?? 'unknown'}`;
   },
 });
 ```
@@ -99,7 +103,6 @@ The middleware sets:
 ```
 X-RateLimit-Limit:     100
 X-RateLimit-Remaining: 47
-X-RateLimit-Reset:     1716297600   ← unix timestamp when window resets
 Retry-After:           23           ← (on 429 only) seconds until reset
 ```
 
@@ -110,13 +113,12 @@ Clients use these to back off without retrying randomly.
 ```ts
 import { RedisCache, RedisCacheOptions } from 'actor-ts';
 
+const redisCacheOptions = RedisCacheOptions.create().withUrl('redis://...');
 rateLimit({
-  const redisCacheOptions = RedisCacheOptions.create()
-    .withUrl('redis://...');
   cache:    new RedisCache(redisCacheOptions),
   windowMs: 60_000,
   max:      100,
-  key:      (req) => req.headers['x-forwarded-for'] ?? 'unknown',
+  key:      (req) => req.remoteAddress ?? 'unknown',   // socket peer — not a spoofable header
 });
 ```
 
@@ -143,12 +145,12 @@ Three good fits:
 // Different limits per handler:
 const apiLimited = rateLimit({
   cache, windowMs: 60_000, max: 1000,
-  key: (req) => req.headers['x-user-id'] ?? req.headers['x-forwarded-for'] ?? 'anon',
+  key: (req) => req.headers['x-user-id'] ?? req.remoteAddress ?? 'anon',
 });
 
 const loginLimited = rateLimit({
   cache, windowMs: 60_000, max: 10,
-  key: (req) => `login:${req.headers['x-forwarded-for'] ?? 'unknown'}`,
+  key: (req) => `login:${req.remoteAddress ?? 'unknown'}`,
 });
 
 const routes = concat(

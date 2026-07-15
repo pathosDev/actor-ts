@@ -4,7 +4,7 @@ description: Test-freundlicher `Tracer`, der jeden Span im Speicher für Asserti
 ---
 
 `RecordingTracer` ist das Test-Pendant zu
-[`OtelTracerAdapter`](/de/observability/tracing/otel-adapter/).
+[`otelTracer`](/de/observability/tracing/otel-adapter/).
 Anstatt Spans zu exportieren, **speichert er sie im Speicher** —
 Tests asserten auf die aufgezeichneten Spans.
 
@@ -17,7 +17,7 @@ tk.system.extension(TracingExtensionId).configure({ tracer });
 
 // ... Actor ausführen ...
 ref.tell({ kind: 'process' });
-await probe.expectMsg(...);
+await probe.expectMessage(...);
 
 // Auf aufgezeichnete Spans asserten:
 const spans = tracer.recordedSpans();
@@ -71,7 +71,7 @@ nützlich, um „Span gestartet und nie beendet"-Bugs zu erkennen.
 
 ```ts
 ref.tell({ kind: 'work' });
-await probe.expectMsg(...);
+await probe.expectMessage(...);
 
 const spans = tracer.finishedSpans();
 const receive = spans.find(s => s.name === 'actor.receive' && s.attributes['actor.path']?.includes('worker'));

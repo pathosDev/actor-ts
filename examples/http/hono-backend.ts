@@ -46,14 +46,13 @@ async function main(): Promise<void> {
         return completeJson(Status.Created, users.get(id));
       }),
       path(':id', get((req) => {
-        const u = users.get(req.params.id);
-        return u ? completeJson(Status.OK, u) : complete(Status.NotFound, 'unknown user');
+        const user = users.get(req.params.id);
+        return user ? completeJson(Status.OK, user) : complete(Status.NotFound, 'unknown user');
       })),
     )),
   );
 
-  const backendOptions = HonoBackendOptions.create()
-    .withMaxBodyBytes(1 * 1024 * 1024);
+  const backendOptions = HonoBackendOptions.create().withMaxBodyBytes(1 * 1024 * 1024);
   const backend = new HonoBackend(backendOptions);
   // Optional: reach through to the raw Hono app to attach native middleware.
   //   const app = backend.getApp();

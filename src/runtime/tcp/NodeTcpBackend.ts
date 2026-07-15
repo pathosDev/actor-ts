@@ -4,7 +4,7 @@ import type {
   TcpListener,
   TcpSocketHandlers,
   TcpSocketLike,
-  TlsTransportSettings,
+  TlsTransportOptionsType,
 } from './TcpBackend.js';
 
 /**
@@ -18,7 +18,7 @@ import type {
  */
 export class NodeTcpBackend implements TcpBackend {
   async listen(opts: {
-    host: string; port: number; tls?: TlsTransportSettings; handlers: TcpSocketHandlers;
+    host: string; port: number; tls?: TlsTransportOptionsType; handlers: TcpSocketHandlers;
   }): Promise<TcpListener> {
     const useTls = !!(opts.tls && opts.tls.cert && opts.tls.key);
     const attach = (raw: NodeSocketLike): void => {
@@ -45,7 +45,7 @@ export class NodeTcpBackend implements TcpBackend {
   }
 
   async connect(opts: {
-    host: string; port: number; tls?: TlsTransportSettings; handlers: TcpSocketHandlers;
+    host: string; port: number; tls?: TlsTransportOptionsType; handlers: TcpSocketHandlers;
   }): Promise<TcpSocketLike> {
     const useTls = !!opts.tls;
     let raw: NodeSocketLike;

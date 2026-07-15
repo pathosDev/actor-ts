@@ -56,7 +56,7 @@ no extra dependency.
 ## Configuration
 
 ```ts
-interface PromClientAdapterSettings {
+interface PromClientAdapterOptionsType {
   source:        MetricsRegistry;     // the framework's registry
   target:        Registry;             // prom-client's
   syncIntervalMs?: number;             // default 5000
@@ -99,5 +99,3 @@ adapter.
 - **[Prometheus exporter](/observability/metrics/prometheus-exporter/)** —
   the framework-native alternative when you don't need
   prom-client.
-- **[OTel adapter](/observability/metrics/otel-adapter/)** —
-  for OpenTelemetry-based pipelines.

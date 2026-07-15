@@ -78,11 +78,11 @@ export class CassandraQuery extends InMemoryQuery {
       const merged: TagIndexRow[] = [];
       for (const tag of anyTags) {
         const rows = await this.fetchTagPartition(tag, fromOffset.timestamp);
-        for (const r of rows) {
-          const k = `${r.persistence_id}|${r.sequence_nr}`;
-          if (seen.has(k)) continue;
-          seen.add(k);
-          merged.push(r);
+        for (const row of rows) {
+          const key = `${row.persistence_id}|${row.sequence_nr}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          merged.push(row);
         }
       }
       return refineAndSort<E>(merged, spec, fromOffset);
@@ -121,14 +121,14 @@ function refineAndSort<E>(
   fromOffset: Offset,
 ): TaggedEvent<E>[] {
   const out: TaggedEvent<E>[] = [];
-  for (const r of rows) {
-    const tags = Array.isArray(r.tags) && r.tags.length > 0 ? r.tags : undefined;
+  for (const row of rows) {
+    const tags = Array.isArray(row.tags) && row.tags.length > 0 ? row.tags : undefined;
     if (!eventMatchesTagFilter(tags, spec)) continue;
     const event: PersistentEvent<E> = {
-      persistenceId: r.persistence_id,
-      sequenceNr: Number(r.sequence_nr),
-      event: JSON.parse(r.payload) as E,
-      timestamp: Number(r.timestamp),
+      persistenceId: row.persistence_id,
+      sequenceNr: Number(row.sequence_nr),
+      event: JSON.parse(row.payload) as E,
+      timestamp: Number(row.timestamp),
       tags,
     };
     const offset = offsetOfEvent(event);

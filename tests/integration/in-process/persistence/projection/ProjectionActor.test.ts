@@ -17,7 +17,7 @@ import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { InMemoryJournal } from '../../../../../src/persistence/journals/InMemoryJournal.js';
 import { ProjectionActor } from '../../../../../src/persistence/projection/ProjectionActor.js';
 import {
-  ByPidProjectionOptions,
+  ByPersistenceIdProjectionOptions,
   ByTagProjectionOptions,
 } from '../../../../../src/persistence/projection/ProjectionOptions.js';
 import {
@@ -53,7 +53,7 @@ describe('ProjectionActor — by persistence id', () => {
 
     const seen: number[] = [];
     const sys = newSystem('proj-rt');
-    const projectionOptions = ByPidProjectionOptions.create<{ n: number }>()
+    const projectionOptions = ByPersistenceIdProjectionOptions.create<{ n: number }>()
       .withName('sum')
       .withQuery(new InMemoryQuery(journal))
       .withPersistenceId('alice')
@@ -82,7 +82,7 @@ describe('ProjectionActor — by persistence id', () => {
     // First instance — process events, then stop.
     const sys1 = newSystem('proj-resume-1');
     const seen1: number[] = [];
-    const projectionOptions = ByPidProjectionOptions.create<{ n: number }>()
+    const projectionOptions = ByPersistenceIdProjectionOptions.create<{ n: number }>()
       .withName('counter-proj')
       .withQuery(query)
       .withOffsetStore(offsetStore)
@@ -100,7 +100,7 @@ describe('ProjectionActor — by persistence id', () => {
     // Second instance — same projection name + same offsetStore.
     const sys2 = newSystem('proj-resume-2');
     const seen2: number[] = [];
-    const projection2Options = ByPidProjectionOptions.create<{ n: number }>()
+    const projection2Options = ByPersistenceIdProjectionOptions.create<{ n: number }>()
       .withName('counter-proj')
       .withQuery(query)
       .withOffsetStore(offsetStore)
@@ -125,7 +125,7 @@ describe('ProjectionActor — by persistence id', () => {
     let firstAttemptThrowOnce = true;
     const seen: number[] = [];
     const sys = newSystem('proj-idem');
-    const projectionOptions = ByPidProjectionOptions.create<{ n: number }>()
+    const projectionOptions = ByPersistenceIdProjectionOptions.create<{ n: number }>()
       .withName('flaky-proj')
       .withQuery(new InMemoryQuery(journal))
       .withOffsetStore(offsetStore)

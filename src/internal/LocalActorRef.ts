@@ -9,15 +9,15 @@ import type { ActorCell } from './ActorCell.js';
  * the mailbox and lifecycle.  The cell is exposed internally via getCell()
  * so that supervision / death-watch can wire things up without public API.
  */
-export class LocalActorRef<TMsg = unknown> extends ActorRef<TMsg> {
+export class LocalActorRef<TMessage = unknown> extends ActorRef<TMessage> {
   readonly path: ActorPath;
 
-  constructor(private readonly cell: ActorCell<TMsg>) {
+  constructor(private readonly cell: ActorCell<TMessage>) {
     super();
     this.path = cell.path;
   }
 
-  tell(message: TMsg, sender: ActorRef | null = null): void {
+  tell(message: TMessage, sender: ActorRef | null = null): void {
     // Snapshot caller's MDC + active span context at tell-time so the
     // receiver's handler runs with the same diagnostic context and
     // its child span links back to ours (#53, #10).  Both fields are
@@ -26,14 +26,14 @@ export class LocalActorRef<TMsg = unknown> extends ActorRef<TMsg> {
     const ctx = LogContext.get();
     const tracer = tracerOf(this.cell.system);
     const span = tracer.activeSpan();
-    const env: import('./Mailbox.js').Envelope<TMsg> = { message, sender };
+    const env: import('./Mailbox.js').Envelope<TMessage> = { message, sender };
     if (Object.keys(ctx).length > 0) (env as { context?: typeof ctx }).context = ctx;
     if (span) (env as { trace?: ReturnType<typeof span.context> }).trace = span.context();
     this.cell.postUserEnvelope(env);
   }
 
   /** @internal */
-  getCell(): ActorCell<TMsg> {
+  getCell(): ActorCell<TMessage> {
     return this.cell;
   }
 }

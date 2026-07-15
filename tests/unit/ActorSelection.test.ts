@@ -60,7 +60,7 @@ describe('ActorSelection — basics', () => {
     kit.system.spawn(Props.create(() => new Echo()), 'echo');
 
     kit.system.actorSelection('/user/echo').tell('hello');
-    expect(await probe.expectMsg('hello', 500)).toBe('hello');
+    expect(await probe.expectMessage('hello', 500)).toBe('hello');
     await kit.system.terminate();
   });
 
@@ -99,7 +99,7 @@ describe('ActorSelection — nested paths', () => {
 
     await sleep(20);
     kit.system.actorSelection('/user/parent/leaf').tell('hi');
-    expect(await probe.expectMsg('hi', 500)).toBe('hi');
+    expect(await probe.expectMessage('hi', 500)).toBe('hi');
     await kit.system.terminate();
   });
 });
@@ -118,9 +118,9 @@ describe('ActorSelection — parseSelectionPath edge cases', () => {
     const sys = newSys();
     class Noop extends Actor<unknown> { override onReceive(): void {} }
     sys.spawn(Props.create(() => new Noop()), 'x');
-    const a = sys.actorSelection('/user/x');
-    const b = sys.actorSelection('user/x');
-    expect((await a.resolveOne(500)).path.toString()).toBe((await b.resolveOne(500)).path.toString());
+    const selectionA = sys.actorSelection('/user/x');
+    const selectionB = sys.actorSelection('user/x');
+    expect((await selectionA.resolveOne(500)).path.toString()).toBe((await selectionB.resolveOne(500)).path.toString());
     await sys.terminate();
   });
 });

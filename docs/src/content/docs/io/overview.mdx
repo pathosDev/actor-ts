@@ -40,7 +40,7 @@ flowchart TB
   class ETC etc
 ```
 
-Subclasses implement three hooks (`connectImpl`, `disconnectImpl`,
+Subclasses implement three hooks (`connectImplementation`, `disconnectImplementation`,
 `dispatchOutgoing`); the base handles the rest.
 
 ## The available brokers
@@ -54,8 +54,8 @@ Subclasses implement three hooks (`connectImpl`, `disconnectImpl`,
 | `JetStreamActor` | NATS JetStream | Durable streaming on NATS. |
 | `RedisStreamsActor` | Redis XADD/XREAD | Lightweight streaming + consumer groups. |
 | `GrpcClientActor` / `GrpcServerActor` | gRPC | Typed RPC + streaming. |
-| `WebSocketClientActor` | WebSocket | Outgoing connection (broker-based client). |
-| `websocket()` route + `WebSocketServerActor` | WebSocket | Incoming connections — bound via the HTTP route DSL, not a broker. |
+| `WebsocketClientActor` | WebSocket | Outgoing connection (broker-based client). |
+| `websocket()` route + `WebsocketServerActor` | WebSocket | Incoming connections — bound via the HTTP route DSL, not a broker. |
 | `SseActor` | Server-Sent Events | Client that consumes a server's one-way event stream. |
 | `TcpSocketActor` | Raw TCP | Custom protocols. |
 | `UdpSocketActor` | Raw UDP | Telemetry, low-latency datagrams. |
@@ -84,9 +84,9 @@ stateDiagram-v2
 Linear transitions during normal operation:
 
 - **`disconnected`** — initial state; not currently connected.
-- **`connecting`** — `connectImpl` is running.
+- **`connecting`** — `connectImplementation` is running.
 - **`connected`** — connection is up; messages flow.
-- **`disconnecting`** — `disconnectImpl` is running.
+- **`disconnecting`** — `disconnectImplementation` is running.
 
 Failure during `connected` triggers a transition to `disconnected`
 + a reconnect loop.  Stop transitions through `disconnecting` from
@@ -117,7 +117,7 @@ system.
 
 When a connected broker disconnects unexpectedly, the base class
 schedules a reconnect with exponential backoff.  Configurable via
-`BrokerCommonSettings`:
+`BrokerCommonOptionsType`:
 
 ```ts
 {
@@ -236,18 +236,18 @@ import { Aside } from '@astrojs/starlight/components';
 Implement the three abstract methods and wire up settings:
 
 ```ts
-import { BrokerActor, type BrokerCommonSettings } from 'actor-ts';
+import { BrokerActor, type BrokerCommonOptionsType } from 'actor-ts';
 
 class MyProtocolActor extends BrokerActor<MyOutbound> {
   protected configKey() { return 'actor-ts.io.my-protocol'; }
-  protected builtInDefaults(): BrokerCommonSettings { return { /* defaults */ }; }
-  protected readSettingsFromConfig(c) { /* parse HOCON */ }
-  protected requiredSettings() { return ['url']; }
+  protected builtInDefaultOptions(): BrokerCommonOptionsType { return { /* defaults */ }; }
+  protected readOptionsFromConfig(c) { /* parse HOCON */ }
+  protected requiredOptions() { return ['url']; }
 
-  protected async connectImpl(): Promise<void> {
+  protected async connectImplementation(): Promise<void> {
     // Establish the connection.  Throw on failure.
   }
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     // Clean up the connection.
   }
   protected async dispatchOutgoing(env: OutboundEnvelope<MyOutbound>): Promise<void> {
@@ -266,7 +266,7 @@ parts.
   [MQTT](/io/mqtt/), [AMQP](/io/amqp/),
   [NATS](/io/nats/), [Redis Streams](/io/redis-streams/),
   [gRPC](/io/grpc/), [WebSocket client](/io/websocket/),
-  [WebSocket server](/io/server-websocket/),
+  [WebSocket server](/http/websocket/),
   [SSE](/io/sse/), [TCP](/io/tcp/),
   [UDP](/io/udp/).
 - **[BrokerActor base class](/io/broker-actor-base/)** —

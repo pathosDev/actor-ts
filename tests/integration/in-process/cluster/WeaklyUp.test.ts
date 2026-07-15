@@ -49,7 +49,7 @@ describe('Cluster — WeaklyUp', () => {
       .withPort(55101)
       .withTransport(new InMemoryTransport(new NodeAddress('wup-2', 'h', 55101)))
       .withGossipIntervalMs(60);
-    const a = await Cluster.join(sysA, aOptions);
+    const nodeA = await Cluster.join(sysA, aOptions);
 
     const sysBOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
     const sysB = ActorSystem.create('wup-2', sysBOptions);
@@ -64,15 +64,15 @@ describe('Cluster — WeaklyUp', () => {
       .withTransport(new InMemoryTransport(new NodeAddress('wup-2', 'h', 55102)))
       .withWeaklyUpAfterMs(10_000)
       .withGossipIntervalMs(60);
-    const b = await Cluster.join(sysB, bOptions);
+    const nodeB = await Cluster.join(sysB, bOptions);
 
-    b.subscribe((evt) => eventsB.push(evt.constructor.name));
+    nodeB.subscribe((evt) => eventsB.push(evt.constructor.name));
 
     await sleep(500);
     expect(eventsB.includes('MemberUp')).toBe(true);
     expect(eventsB.includes('MemberWeaklyUp')).toBe(false);
 
-    await a.leave(); await sysA.terminate();
-    await b.leave(); await sysB.terminate();
+    await nodeA.leave(); await sysA.terminate();
+    await nodeB.leave(); await sysB.terminate();
   });
 });

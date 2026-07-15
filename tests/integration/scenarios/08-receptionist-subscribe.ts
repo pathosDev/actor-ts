@@ -79,8 +79,8 @@ export const scenario: Scenario = {
     // verify it monotonically increases on each change.
     const baseline = new Map<string, number>();
     for (const host of live) {
-      const s = await subscribed(host, ctx.controlPort);
-      baseline.set(host, s.updates);
+      const subscription = await subscribed(host, ctx.controlPort);
+      baseline.set(host, subscription.updates);
     }
     console.log(`[08] baseline updates per subscriber: ${[...baseline.entries()].map(([h, u]) => `${h}=${u}`).join(', ')}`);
 
@@ -119,16 +119,16 @@ export const scenario: Scenario = {
     //    deregister); could be more if gossip caused intermediate
     //    re-syncs.
     for (const host of live) {
-      const s = await subscribed(host, ctx.controlPort);
+      const subscription = await subscribed(host, ctx.controlPort);
       const base = baseline.get(host)!;
-      if (s.updates <= base) {
-        throw new Error(`[08] ${host} subscriber updates did not increase: baseline=${base}, now=${s.updates}`);
+      if (subscription.updates <= base) {
+        throw new Error(`[08] ${host} subscriber updates did not increase: baseline=${base}, now=${subscription.updates}`);
       }
-      if (s.updates < base + 2) {
+      if (subscription.updates < base + 2) {
         // Looser than "exactly +2" because gossip can yield extra
         // identical-set updates that the subscriber still counts.
         // But +1 would mean a change was missed.  Require ≥2.
-        throw new Error(`[08] ${host} subscriber received only ${s.updates - base} updates for 2 changes`);
+        throw new Error(`[08] ${host} subscriber received only ${subscription.updates - base} updates for 2 changes`);
       }
     }
     console.log('[08] every subscriber saw >=2 new updates (register + deregister)');

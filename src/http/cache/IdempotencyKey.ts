@@ -1,6 +1,10 @@
-import type { Cache } from '../../cache/Cache.js';
 import { complete } from '../Route.js';
 import { type HttpRequest, type HttpResponse, Status } from '../types.js';
+import {
+  IdempotencyOptionsValidator,
+  type IdempotencyOptions,
+  type IdempotencyOptionsType,
+} from './IdempotencyOptions.js';
 
 /**
  * Idempotency-key middleware.  Implements the Stripe / Adyen pattern:
@@ -25,29 +29,6 @@ import { type HttpRequest, type HttpResponse, Status } from '../types.js';
  *   route(post('/payments', dedup(handler)));
  */
 
-export interface IdempotencyOptions {
-  readonly cache: Cache;
-  /** How long to remember responses.  Default: 24 hours. */
-  readonly ttlMs?: number;
-  /**
-   * Header to read the idempotency key from.  Default: `'idempotency-key'`
-   * (the standard).  Header names are matched case-insensitively against
-   * the `req.headers` map (which holds them lower-cased).
-   */
-  readonly headerName?: string;
-  /**
-   * Cache-key namespace.  Default: `'idem:'`.
-   */
-  readonly keyPrefix?: string;
-  /**
-   * What to do when the request lacks the header.  Default: `'reject'`
-   * (respond 400).  Setting `'pass-through'` runs the handler unchanged
-   * — useful when only some clients use idempotency and you don't want
-   * to break the others.
-   */
-  readonly missingHeader?: 'reject' | 'pass-through';
-}
-
 interface CachedResponse {
   readonly status: number;
   readonly headers?: Record<string, string>;
@@ -69,14 +50,14 @@ interface CachedResponse {
 
 const IN_FLIGHT_MARKER: { readonly inFlight: true } = { inFlight: true } as const;
 
-export function idempotent(opts: IdempotencyOptions) {
+export function idempotent(options: IdempotencyOptions) {
+  const opts = options as IdempotencyOptionsType;
+  new IdempotencyOptionsValidator().validate(opts);
   const ttlMs = opts.ttlMs ?? 24 * 60 * 60_000;
-  if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
-    throw new Error(`idempotent: ttlMs must be a positive finite number, got ${ttlMs}`);
-  }
   const header = (opts.headerName ?? 'idempotency-key').toLowerCase();
   const prefix = opts.keyPrefix ?? 'idem:';
   const missing = opts.missingHeader ?? 'reject';
+  const identity = opts.identity;
 
   return function wrap(handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse) {
     return async function deduped(req: HttpRequest): Promise<HttpResponse> {
@@ -87,7 +68,11 @@ export function idempotent(opts: IdempotencyOptions) {
           error: `missing required '${header}' header`,
         });
       }
-      const cacheKey = `${prefix}${userKey}`;
+      // Fold the caller scope into the key so a cached response can't be
+      // replayed to a different caller (HTTP-4).  Empty when no `identity`
+      // is configured — identical key space to before.
+      const scope = identity ? await identity(req) : '';
+      const cacheKey = `${prefix}${scope}${scope ? ':' : ''}${userKey}`;
       const fingerprint = await computeRequestFingerprint(req);
 
       // Probe — if the key already holds a completed response, replay.
@@ -146,16 +131,16 @@ function isInFlight(value: unknown): value is typeof IN_FLIGHT_MARKER {
   return typeof value === 'object' && value !== null && (value as { inFlight?: boolean }).inFlight === true;
 }
 
-function encodeResponse(r: HttpResponse, requestFingerprint: string): CachedResponse {
-  let body: unknown = r.body;
+function encodeResponse(response: HttpResponse, requestFingerprint: string): CachedResponse {
+  let body: unknown = response.body;
   if (body instanceof Uint8Array) {
     body = { __bin: bytesToBase64(body) };
   }
   return {
-    status: r.status,
-    headers: r.headers as Record<string, string> | undefined,
+    status: response.status,
+    headers: response.headers as Record<string, string> | undefined,
     body,
-    contentType: r.contentType,
+    contentType: response.contentType,
     requestFingerprint,
   };
 }
@@ -197,25 +182,25 @@ async function computeRequestFingerprint(req: HttpRequest): Promise<string> {
   return `fnv:${(h1 >>> 0).toString(16)}${(h2 >>> 0).toString(16)}`;
 }
 
-function decodeResponse(c: CachedResponse): HttpResponse {
-  let body: HttpResponse['body'] = c.body as HttpResponse['body'];
-  if (typeof c.body === 'object' && c.body !== null && '__bin' in (c.body as object)) {
-    body = base64ToBytes((c.body as { __bin: string }).__bin);
+function decodeResponse(cached: CachedResponse): HttpResponse {
+  let body: HttpResponse['body'] = cached.body as HttpResponse['body'];
+  if (typeof cached.body === 'object' && cached.body !== null && '__bin' in (cached.body as object)) {
+    body = base64ToBytes((cached.body as { __bin: string }).__bin);
   }
   return {
-    status: c.status,
-    headers: c.headers,
+    status: cached.status,
+    headers: cached.headers,
     body,
-    contentType: c.contentType,
+    contentType: cached.contentType,
   };
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
   // Bun, Node 16+, and Deno all expose `Buffer`; keeping this simple.
   if (typeof Buffer !== 'undefined') return Buffer.from(bytes).toString('base64');
-  let s = '';
-  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]!);
-  return btoa(s);
+  let binaryString = '';
+  for (let i = 0; i < bytes.length; i++) binaryString += String.fromCharCode(bytes[i]!);
+  return btoa(binaryString);
 }
 
 function base64ToBytes(b64: string): Uint8Array {

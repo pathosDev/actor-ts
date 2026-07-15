@@ -10,6 +10,7 @@ import {
   type ObjectStorageBackend,
   type PutOptions,
 } from './ObjectStorageBackend.js';
+import { FilesystemObjectStorageOptionsValidator } from './FilesystemObjectStorageOptions.js';
 import type { FilesystemObjectStorageOptions, FilesystemObjectStorageOptionsType } from './FilesystemObjectStorageOptions.js';
 
 /**
@@ -116,11 +117,11 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
   private readonly staleLockMs: number;
 
   constructor(options: FilesystemObjectStorageOptions) {
-    const s = (options as FilesystemObjectStorageOptionsType);
-    if (s.dir === undefined) throw new Error('FilesystemObjectStorageBackend: dir is required (call withDir()).');
-    this.dir           = s.dir;
-    this.lockTimeoutMs = s.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
-    this.staleLockMs   = s.staleLockMs   ?? DEFAULT_STALE_LOCK_MS;
+    const resolvedOptions = (options as FilesystemObjectStorageOptionsType);
+    new FilesystemObjectStorageOptionsValidator().validate(resolvedOptions);
+    this.dir           = resolvedOptions.dir;
+    this.lockTimeoutMs = resolvedOptions.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
+    this.staleLockMs   = resolvedOptions.staleLockMs   ?? DEFAULT_STALE_LOCK_MS;
   }
 
   async put(key: string, body: Uint8Array, opts: PutOptions = {}): Promise<{ etag: string }> {
@@ -410,12 +411,12 @@ function computeEtag(body: Uint8Array): string {
   // 32-bit FNV-1a over the bytes, hex-prefixed.  Real S3 uses MD5/sha256;
   // for our CAS purposes the only invariant required is "same bytes →
   // same etag, different bytes → different etag with very high probability".
-  let h = 0x811c9dc5;
+  let hash = 0x811c9dc5;
   for (let i = 0; i < body.length; i++) {
-    h ^= body[i]!;
-    h = (h * 0x01000193) >>> 0;
+    hash ^= body[i]!;
+    hash = (hash * 0x01000193) >>> 0;
   }
   // Mix in length so empty vs single-zero-byte differ trivially.
-  h ^= body.length;
-  return `"fs-${(h >>> 0).toString(16).padStart(8, '0')}-${body.length}"`;
+  hash ^= body.length;
+  return `"fs-${(hash >>> 0).toString(16).padStart(8, '0')}-${body.length}"`;
 }

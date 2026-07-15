@@ -50,10 +50,10 @@ describe('ReceiveTimeout', () => {
 describe('Terminated', () => {
   test('carries the actor ref and defaults for flags', () => {
     const ref = new DummyRef('foo');
-    const t = new Terminated(ref);
-    expect(t.actor).toBe(ref);
-    expect(t.existenceConfirmed).toBe(true);
-    expect(t.addressTerminated).toBe(false);
+    const terminated = new Terminated(ref);
+    expect(terminated.actor).toBe(ref);
+    expect(terminated.existenceConfirmed).toBe(true);
+    expect(terminated.addressTerminated).toBe(false);
   });
   test('toString embeds the actor path', () => {
     const ref = new DummyRef('foo');
@@ -61,9 +61,9 @@ describe('Terminated', () => {
   });
   test('flags can be overridden', () => {
     const ref = new DummyRef('foo');
-    const t = new Terminated(ref, false, true);
-    expect(t.existenceConfirmed).toBe(false);
-    expect(t.addressTerminated).toBe(true);
+    const terminated = new Terminated(ref, false, true);
+    expect(terminated.existenceConfirmed).toBe(false);
+    expect(terminated.addressTerminated).toBe(true);
   });
 });
 
@@ -87,19 +87,19 @@ describe('DeadLetter', () => {
 
 describe('ActorKilledError', () => {
   test('is an Error with the right name and message', () => {
-    const e = new ActorKilledError();
-    expect(e).toBeInstanceOf(Error);
-    expect(e.name).toBe('ActorKilledError');
-    expect(e.message).toBe('Kill');
+    const error = new ActorKilledError();
+    expect(error).toBeInstanceOf(Error);
+    expect(error.name).toBe('ActorKilledError');
+    expect(error.message).toBe('Kill');
   });
 });
 
 describe('AskTimeoutError', () => {
   test('carries the provided message and is instanceof Error', () => {
-    const e = new AskTimeoutError('timed out after 500ms');
-    expect(e).toBeInstanceOf(Error);
-    expect(e).toBeInstanceOf(AskTimeoutError);
-    expect(e.name).toBe('AskTimeoutError');
-    expect(e.message).toBe('timed out after 500ms');
+    const error = new AskTimeoutError('timed out after 500ms');
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toBeInstanceOf(AskTimeoutError);
+    expect(error.name).toBe('AskTimeoutError');
+    expect(error.message).toBe('timed out after 500ms');
   });
 });

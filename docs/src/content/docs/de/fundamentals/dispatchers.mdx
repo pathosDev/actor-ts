@@ -39,16 +39,14 @@ import { ActorSystem, ActorSystemOptions, MicrotaskDispatcher } from 'actor-ts';
 // Verwende Microtasks: maximaler Durchsatz, minimaler Scheduling-Overhead.
 // Wähle, wenn du gar kein I/O hast ODER I/O so selten ist, dass
 // Starvation keine Sorge ist.
-const actorSystemOptions = ActorSystemOptions.create()
-  .withDispatcher(new MicrotaskDispatcher());
+const actorSystemOptions = ActorSystemOptions.create().withDispatcher(new MicrotaskDispatcher());
 const system = ActorSystem.create('compute-heavy', actorSystemOptions);
 ```
 
 ```ts
 import { ActorSystem, ActorSystemOptions, ThroughputDispatcher } from 'actor-ts';
 
-const actorSystemOptions = ActorSystemOptions.create()
-  .withDispatcher(new ThroughputDispatcher(50));
+const actorSystemOptions = ActorSystemOptions.create().withDispatcher(new ThroughputDispatcher(50));
 const system = ActorSystem.create('mixed-workload', actorSystemOptions);
   // Laufe bis zu 50 Nachrichten pro Actor, bevor an I/O nachgegeben
   // wird.  Default ist ~5 im `ImmediateDispatcher`; es auf 50 zu

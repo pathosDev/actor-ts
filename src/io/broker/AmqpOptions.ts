@@ -6,8 +6,8 @@
  * and feeds the same three-layer merge (constructor > HOCON under
  * `actor-ts.io.broker.amqp` > built-in defaults).
  */
-import { BrokerOptionsBuilder } from './BrokerOptions.js';
-import type { BrokerCommonOptionsType } from './BrokerSettings.js';
+import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
+import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { AmqpQueueBinding } from './AmqpActor.js';
 
 export interface AmqpOptionsType extends BrokerCommonOptionsType {
@@ -45,6 +45,18 @@ export class AmqpOptionsBuilder extends BrokerOptionsBuilder<AmqpOptionsType> {
   /** Auto-ack consumed deliveries.  Default `true`. */
   withAutoAck(on = true): this {
     return this.set('autoAck', on);
+  }
+}
+
+/** Validates resolved {@link AmqpOptionsType} settings. */
+export class AmqpOptionsValidator extends BrokerOptionsValidator<AmqpOptionsType> {
+  constructor() {
+    super('AmqpOptions');
+  }
+  protected rules(s: Partial<AmqpOptionsType>): void {
+    this.commonRules(s);
+    this.url('url', ['amqp', 'amqps']);
+    this.nonNegativeInt('prefetch'); // 0 = unlimited (AMQP semantics)
   }
 }
 

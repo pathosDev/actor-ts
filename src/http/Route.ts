@@ -1,11 +1,12 @@
 import { match } from 'ts-pattern';
 import type { ActorSystem } from '../ActorSystem.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse, Status } from './types.js';
-import type { WebSocketSocketAdapter } from './ws/SocketAdapter.js';
+import type { WebsocketSocketAdapter } from './websocket/SocketAdapter.js';
+import { expandCors, type CorsRouteOptions } from './middleware/Cors.js';
 
 /**
  * A compiled HTTP route — the Route-DSL reduces to a list of these
- * (plus {@link CompiledWebSocketRoute}s), which the HTTP backend
+ * (plus {@link CompiledWebsocketRoute}s), which the HTTP backend
  * registers in its native routing table.
  */
 export interface CompiledRoute {
@@ -21,10 +22,10 @@ export interface CompiledRoute {
  * and a normalised socket; the closure (built by the `websocket()`
  * directive) owns the codec, target ref and per-route policy.
  */
-export type WebSocketConnectHandler = (
+export type WebsocketConnectHandler = (
   system: ActorSystem,
   req: HttpRequest,
-  socket: WebSocketSocketAdapter,
+  socket: WebsocketSocketAdapter,
 ) => void;
 
 /**
@@ -34,22 +35,38 @@ export type WebSocketConnectHandler = (
  * request, and returns `null` to accept or an {@link HttpResponse} to
  * reject the upgrade with a plain HTTP response.
  */
-export interface CompiledWebSocketRoute {
+export interface CompiledWebsocketRoute {
   readonly kind: 'websocket';
   readonly method: 'GET';
   readonly pattern: string;
-  readonly connect: WebSocketConnectHandler;
+  readonly connect: WebsocketConnectHandler;
   readonly authorize: (req: HttpRequest) => Promise<HttpResponse | null>;
 }
 
-/** A compiled endpoint is either a plain HTTP route or a WebSocket route. */
-export type CompiledEndpoint = CompiledRoute | CompiledWebSocketRoute;
+/**
+ * A compiled fallback — answers any request that matched no other route.
+ * Wired to the backend's not-found hook at bind time (exactly one per
+ * server), so unlike {@link CompiledRoute} it carries no method or pattern.
+ */
+export interface CompiledFallback {
+  readonly kind: 'fallback';
+  readonly handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse;
+}
+
+/** A compiled endpoint: a plain HTTP route, a WebSocket route, or the fallback. */
+export type CompiledEndpoint = CompiledRoute | CompiledWebsocketRoute | CompiledFallback;
 
 /**
  * Per-request hook that runs around a handler.  Receives the request
  * and a `next()` thunk; either short-circuit by returning your own
  * response, or call `next()` and pass its result through (optionally
  * wrapped, decorated, or re-thrown).
+ *
+ * `next()` optionally takes a **replacement request** — pass one to
+ * enrich what the handler (and any inner middleware) sees, e.g. to inject
+ * a generated request id or a verified CSRF token as a header.  Omit the
+ * argument to forward the request unchanged; the two forms are otherwise
+ * identical, so existing `next()` call sites keep working.
  *
  * Examples (all shipped in `src/http/middleware/`):
  *   - `BearerTokenAuth({ tokens })` — checks `Authorization: Bearer`,
@@ -63,7 +80,7 @@ export type CompiledEndpoint = CompiledRoute | CompiledWebSocketRoute;
  */
 export type Middleware = (
   req: HttpRequest,
-  next: () => Promise<HttpResponse>,
+  next: (req?: HttpRequest) => Promise<HttpResponse>,
 ) => Promise<HttpResponse> | HttpResponse;
 
 /**
@@ -75,7 +92,9 @@ export type Route =
   | { readonly kind: 'path'; readonly segment: string; readonly child: Route }
   | { readonly kind: 'concat'; readonly routes: ReadonlyArray<Route> }
   | { readonly kind: 'middleware'; readonly middleware: Middleware; readonly child: Route }
-  | { readonly kind: 'websocket'; readonly connect: WebSocketConnectHandler };
+  | { readonly kind: 'websocket'; readonly connect: WebsocketConnectHandler; readonly authorize?: (req: HttpRequest) => HttpResponse | null }
+  | { readonly kind: 'fallback'; readonly handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse }
+  | { readonly kind: 'cors'; readonly settings: CorsRouteOptions; readonly child: Route };
 
 /** Compose several sibling routes (OR semantics — first matching wins). */
 export function concat(...routes: Route[]): Route {
@@ -114,6 +133,70 @@ export function pathPrefix(segment: string, child: Route): Route {
  */
 export function withMiddleware(middleware: Middleware, child: Route): Route {
   return { kind: 'middleware', middleware, child };
+}
+
+/**
+ * Handler for {@link handleErrors}.  Receives the thrown value (an
+ * {@link HttpError} or anything else) plus the request; return an
+ * {@link HttpResponse} to handle it, or `null`/`undefined` to decline —
+ * declining re-throws so an outer `handleErrors` (or, failing that, the
+ * backend's default mapping) takes over.
+ */
+export type ExceptionHandler = (
+  err: unknown,
+  req: HttpRequest,
+) => Promise<HttpResponse | null | undefined> | HttpResponse | null | undefined;
+
+/**
+ * Scope an exception handler over `child`'s subtree — the akka-http
+ * `ExceptionHandler` analogue, implemented as sugar over a `middleware`
+ * node so it inherits handler-wrapping (and the WebSocket authorize fold)
+ * for free.
+ *
+ * The handler sees the ORIGINAL thrown value — e.g. the `HttpError`
+ * instance with its `status` / `extra` / `headers` — because DSL-level
+ * wrappers run strictly before any backend's default error mapping.
+ * Handlers nest outside-in like {@link withMiddleware}: the innermost
+ * `handleErrors` gets first refusal, and returning `null` delegates
+ * outward.  Placed around a `withMiddleware(...)` node it also catches
+ * that middleware's throws (e.g. an auth 401).
+ *
+ *     handleErrors(
+ *       (err) => err instanceof NotFoundError ? complete(Status.NotFound, ...) : null,
+ *       path('users', concat(...)),
+ *     )
+ */
+export function handleErrors(handler: ExceptionHandler, child: Route): Route {
+  const middleware: Middleware = async (req, next) => {
+    try {
+      return await next();
+    } catch (err) {
+      const recovered = await handler(err, req);
+      if (recovered !== null && recovered !== undefined) return recovered;
+      throw err; // declined → escalate to the next enclosing handler / default
+    }
+  };
+  return { kind: 'middleware', middleware, child };
+}
+
+/**
+ * Answer any request that matched no other route — the server-global
+ * not-found handler expressed in the DSL.  Wired to the backend's
+ * not-found hook at bind time, so it is method-agnostic (it also answers
+ * unmatched OPTIONS/HEAD) and MUST sit at the root of the tree: a fallback
+ * scoped under `path()` / `pathPrefix()` is rejected at compile time,
+ * because a server has exactly one not-found handler.  At most one
+ * `fallback()` per server.  It still composes with
+ * `withMiddleware()` / `handleErrors()`, which wrap its handler like any
+ * other, so a fallback can carry security headers or its own recovery.
+ *
+ *     concat(
+ *       path('api', apiRoutes),
+ *       fallback((req) => completeJson(Status.NotFound, { error: 'no route', path: req.path })),
+ *     )
+ */
+export function fallback(handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route {
+  return { kind: 'fallback', handler };
 }
 
 function normalizeSegment(s: string): string {
@@ -162,6 +245,20 @@ export function reject(status: number, message: string, extra?: Record<string, u
   throw new HttpError(status, message, extra);
 }
 
+/**
+ * The framework's default error→response mapping: an {@link HttpError}
+ * becomes its status + `{ error, ...extra }` JSON (carrying any custom
+ * `headers`); anything else becomes a generic 500 that deliberately does
+ * NOT echo the thrown message.  Kept in one place so the WebSocket
+ * upgrade-reject path and the `fallback()` wrapper map errors identically.
+ */
+export function defaultErrorResponse(err: unknown): HttpResponse {
+  if (err instanceof HttpError) {
+    return { status: err.status, headers: err.headers, body: { error: err.message, ...(err.extra ?? {}) } };
+  }
+  return { status: Status.InternalServerError, body: { error: 'Internal Server Error' } };
+}
+
 /* ------------------------------- Compilation ----------------------------- */
 
 /**
@@ -181,17 +278,34 @@ export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[]
       pattern: buildPattern(prefix),
       handler: r.handler,
     }])
-    .with({ kind: 'websocket' }, (r): CompiledEndpoint[] => [{
-      kind: 'websocket',
-      method: 'GET',
-      pattern: buildPattern(prefix),
-      connect: r.connect,
-      // Innermost default: accept unconditionally.  Enclosing
-      // withMiddleware() nodes fold their checks into this below.
-      authorize: async (): Promise<HttpResponse | null> => null,
-    }])
+    .with({ kind: 'websocket' }, (r): CompiledEndpoint[] => {
+      // Innermost gate: a route-level upgrade check (the CSWSH Origin
+      // allowlist from `websocket({ allowedOrigins })`) if the node
+      // carries one, else accept unconditionally.  Enclosing
+      // withMiddleware() nodes fold their checks around this below.
+      const gate = r.authorize;
+      return [{
+        kind: 'websocket',
+        method: 'GET',
+        pattern: buildPattern(prefix),
+        connect: r.connect,
+        authorize: gate
+          ? async (req): Promise<HttpResponse | null> => gate(req)
+          : async (): Promise<HttpResponse | null> => null,
+      }];
+    })
     .with({ kind: 'path' }, (r) => compile(r.child, [...prefix, r.segment]))
     .with({ kind: 'concat' }, (r) => r.routes.flatMap((child) => compile(child, prefix)))
+    .with({ kind: 'fallback' }, (r): CompiledEndpoint[] => {
+      if (prefix.length > 0) {
+        throw new Error(
+          'fallback() must sit at the root of the route tree — the not-found '
+          + 'handler is server-global, so a fallback scoped under path()/'
+          + 'pathPrefix() is not supported.',
+        );
+      }
+      return [{ kind: 'fallback', handler: r.handler }];
+    })
     .with({ kind: 'middleware' }, (r): CompiledEndpoint[] => {
       // Compile the subtree, then fold the middleware in.  For HTTP
       // children it wraps the handler (nested middlewares stack
@@ -201,23 +315,27 @@ export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[]
         if (c.kind === 'http') {
           return { ...c, handler: wrapHandler(r.middleware, c.handler) };
         }
+        if (c.kind === 'fallback') {
+          // A fallback under middleware: wrap its handler the same way
+          // (the fallback stays root-scoped — middleware doesn't add a
+          // path prefix, so the compile-time root guard still holds).
+          return { ...c, handler: wrapHandler(r.middleware, c.handler) };
+        }
         const inner = c.authorize;
         const authorize = async (req: HttpRequest): Promise<HttpResponse | null> => {
           try {
-            const res = await r.middleware(req, async () => (await inner(req)) ?? WS_ACCEPT);
+            const res = await r.middleware(req, async (override?: HttpRequest) => (await inner(override ?? req)) ?? WS_ACCEPT);
             // Identity: middleware passed the sentinel through → accept.
             // Any other response (short-circuit or transform) → reject.
             return res === WS_ACCEPT ? null : res;
           } catch (err) {
-            if (err instanceof HttpError) {
-              return { status: err.status, body: { error: err.message, ...(err.extra ?? {}) } };
-            }
-            return { status: Status.InternalServerError, body: { error: 'Internal Server Error' } };
+            return defaultErrorResponse(err);
           }
         };
         return { ...c, authorize };
       });
     })
+    .with({ kind: 'cors' }, (r) => expandCors(compile(r.child, prefix), r.settings))
     .exhaustive();
 }
 
@@ -226,7 +344,11 @@ function wrapHandler(
   handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse,
 ): (req: HttpRequest) => Promise<HttpResponse> {
   return async (req: HttpRequest): Promise<HttpResponse> => {
-    const next = async (): Promise<HttpResponse> => Promise.resolve(handler(req));
+    // `next(override?)` lets a middleware replace the request the handler
+    // (and any inner middleware) sees — the override threads through the
+    // stacked wraps because each wrap's `handler` is the next-inner one.
+    const next = async (override?: HttpRequest): Promise<HttpResponse> =>
+      Promise.resolve(handler(override ?? req));
     return Promise.resolve(middleware(req, next));
   };
 }
@@ -247,15 +369,15 @@ function buildPattern(segments: string[]): string {
  * params (e.g. `?x=1&x=2`) return the first value.
  */
 export function queryParam(req: HttpRequest, name: string): string | undefined {
-  const v = req.query[name];
-  if (v === undefined) return undefined;
-  if (Array.isArray(v)) return v[0];
-  return v;
+  const value = req.query[name];
+  if (value === undefined) return undefined;
+  if (Array.isArray(value)) return value[0];
+  return value;
 }
 
 /** Extract a path parameter (guaranteed present by the pattern). */
 export function pathParam(req: HttpRequest, name: string): string {
-  const v = req.params[name];
-  if (v === undefined) throw new HttpError(500, `Missing path parameter "${name}"`);
-  return v;
+  const value = req.params[name];
+  if (value === undefined) throw new HttpError(500, `Missing path parameter "${name}"`);
+  return value;
 }

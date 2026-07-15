@@ -3,7 +3,7 @@ import type {
   FetchHandler,
   HonoServerHandle,
   HonoServerRunner,
-  HonoWebSocketBridge,
+  HonoWebsocketBridge,
 } from './HonoServerRunner.js';
 
 /**
@@ -24,12 +24,12 @@ export class NodeHonoRunner implements HonoServerRunner {
     // event (via the optional callback) to know the bound port.
     const server = await new Promise<NodeHttpServer>((resolve, reject) => {
       try {
-        const s = mod.serve({
+        const serveResult = mod.serve({
           hostname: opts.host,
           port: opts.port,
           fetch: opts.fetch,
         }, (info) => {
-          resolve(Object.assign(s, { _info: info }) as unknown as NodeHttpServer);
+          resolve(Object.assign(serveResult, { _info: info }) as unknown as NodeHttpServer);
         });
       } catch (e) {
         reject(e as Error);
@@ -61,7 +61,7 @@ export class NodeHonoRunner implements HonoServerRunner {
     };
   }
 
-  async webSocket(app: unknown): Promise<HonoWebSocketBridge> {
+  async webSocket(app: unknown): Promise<HonoWebsocketBridge> {
     let mod: {
       createNodeWebSocket: (opts: { app: unknown }) => {
         upgradeWebSocket: unknown;
@@ -80,7 +80,7 @@ export class NodeHonoRunner implements HonoServerRunner {
     }
     const { upgradeWebSocket, injectWebSocket } = mod.createNodeWebSocket({ app });
     return {
-      upgradeWebSocket: upgradeWebSocket as HonoWebSocketBridge['upgradeWebSocket'],
+      upgradeWebSocket: upgradeWebSocket as HonoWebsocketBridge['upgradeWebSocket'],
       serveOptions: {},
       attach: (handle: HonoServerHandle) => {
         if (handle.raw) injectWebSocket(handle.raw);

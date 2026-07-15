@@ -10,8 +10,7 @@ processes.
 ```ts
 import { MemcachedCache, MemcachedCacheOptions } from 'actor-ts';
 
-const memcachedCacheOptions = MemcachedCacheOptions.create()
-  .withServers('memcached-1:11211,memcached-2:11211');
+const memcachedCacheOptions = MemcachedCacheOptions.create().withServers('memcached-1:11211,memcached-2:11211');
 const cache = new MemcachedCache(
   memcachedCacheOptions,
 );
@@ -33,7 +32,7 @@ key-value caching with TTLs, it's plenty.
 ## Configuration
 
 ```ts
-interface MemcachedCacheSettings {
+interface MemcachedCacheOptionsType {
   servers:      string[];               // 'host:port'
   username?:    string;
   password?:    string;

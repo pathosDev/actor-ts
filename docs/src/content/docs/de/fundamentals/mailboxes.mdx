@@ -133,6 +133,10 @@ Drei Policies:
 | `'drop-new'` | Verwirf die *eingehende* Nachricht.  Die alte Queue bleibt unverändert. |
 | `'reject'` *(default)* | Wirf `MailboxFullError` an der `tell`-Stelle.  Der Aufrufer trägt den Backpressure. |
 
+Die Optionen werden bei der Konstruktion validiert: eine fehlende oder
+nicht-positive `capacity` und eine unbekannte Overflow-Policy werfen
+`OptionsError`.
+
 Die Wahl zwischen ihnen ist ein Backpressure-vs-Verlust-Trade-off:
 
 - **`drop-head`** = "Frisch gewinnt."  Richtig für Telemetrie,
@@ -168,20 +172,20 @@ import { Aside } from '@astrojs/starlight/components';
 ```ts
 import { Actor, ActorSystem, Props, PriorityMailbox } from 'actor-ts';
 
-type Msg =
+type Message =
   | { readonly kind: 'urgent'; readonly text: string }
   | { readonly kind: 'normal'; readonly text: string }
   | { readonly kind: 'bulk';   readonly text: string };
 
-class Worker extends Actor<Msg> {
-  override onReceive(msg: Msg): void {
+class Worker extends Actor<Message> {
+  override onReceive(msg: Message): void {
     this.log.info(`[${msg.kind}] ${msg.text}`);
   }
 }
 
 const worker = system.spawn(
   Props.create(() => new Worker())
-    .withMailbox(() => new PriorityMailbox<Msg>({
+    .withMailbox(() => new PriorityMailbox<Message>({
       priorityFor: (msg) => msg.kind === 'urgent' ? 0
                           : msg.kind === 'normal' ? 5
                           : 10,

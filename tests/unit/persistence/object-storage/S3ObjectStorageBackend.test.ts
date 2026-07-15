@@ -193,17 +193,17 @@ describe('S3ObjectStorageBackend — error translation', () => {
   test('412 PreconditionFailed → ObjectStorageConcurrencyError', async () => {
     const backend = new S3ObjectStorageBackend(s3OptsWithClient(
       { send: async () => {
-        const e = new Error('Precondition Failed') as Error & {
+        const error = new Error('Precondition Failed') as Error & {
           name: string; $metadata: { httpStatusCode: number };
         };
-        e.name = 'PreconditionFailed';
-        e.$metadata = { httpStatusCode: 412 };
-        throw e;
+        error.name = 'PreconditionFailed';
+        error.$metadata = { httpStatusCode: 412 };
+        throw error;
       } },
     ));
     let caught: unknown;
     try { await backend.put('k', new Uint8Array([0]), { ifMatch: '"x"' }); }
-    catch (e) { caught = e; }
+    catch (error) { caught = error; }
     expect(caught).toBeInstanceOf(ObjectStorageConcurrencyError);
     expect((caught as ObjectStorageConcurrencyError).key).toBe('k');
   });
@@ -213,11 +213,11 @@ describe('S3ObjectStorageBackend — error translation', () => {
     // generic name — the http status alone must trigger CAS handling.
     const backend = new S3ObjectStorageBackend(s3OptsWithClient(
       { send: async () => {
-        const e = new Error('precondition') as Error & {
+        const error = new Error('precondition') as Error & {
           $metadata: { httpStatusCode: number };
         };
-        e.$metadata = { httpStatusCode: 412 };
-        throw e;
+        error.$metadata = { httpStatusCode: 412 };
+        throw error;
       } },
     ));
     await expect(backend.put('k', new Uint8Array([0]), { ifMatch: '"x"' }))
@@ -235,9 +235,9 @@ describe('S3ObjectStorageBackend — error translation', () => {
   test('get NoSuchKey (by name) → none', async () => {
     const backend = new S3ObjectStorageBackend(s3OptsWithClient(
       { send: async () => {
-        const e = new Error('absent') as Error & { name: string };
-        e.name = 'NoSuchKey';
-        throw e;
+        const error = new Error('absent') as Error & { name: string };
+        error.name = 'NoSuchKey';
+        throw error;
       } },
     ));
     const out = await backend.get('absent-key');
@@ -249,9 +249,9 @@ describe('S3ObjectStorageBackend — error translation', () => {
     // the legacy SDK path.  Pin that we accept both.
     const backend = new S3ObjectStorageBackend(s3OptsWithClient(
       { send: async () => {
-        const e = new Error('absent') as Error & { Code: string };
-        e.Code = 'NoSuchKey';
-        throw e;
+        const error = new Error('absent') as Error & { Code: string };
+        error.Code = 'NoSuchKey';
+        throw error;
       } },
     ));
     const out = await backend.get('absent-key');
@@ -261,11 +261,11 @@ describe('S3ObjectStorageBackend — error translation', () => {
   test('get 404 via $metadata.httpStatusCode → none', async () => {
     const backend = new S3ObjectStorageBackend(s3OptsWithClient(
       { send: async () => {
-        const e = new Error('not found') as Error & {
+        const error = new Error('not found') as Error & {
           $metadata: { httpStatusCode: number };
         };
-        e.$metadata = { httpStatusCode: 404 };
-        throw e;
+        error.$metadata = { httpStatusCode: 404 };
+        throw error;
       } },
     ));
     const out = await backend.get('absent-key');
@@ -295,7 +295,7 @@ describe('S3ObjectStorageBackend — error translation', () => {
     ));
     let caught: Error | undefined;
     try { await backend.list({ prefix: 'snapshots/' }); }
-    catch (e) { caught = e as Error; }
+    catch (error) { caught = error as Error; }
     expect(caught).toBeInstanceOf(ObjectStorageBackendError);
     expect(caught!.message).toContain('snapshots/');
   });
@@ -321,11 +321,11 @@ describe('S3ObjectStorageBackend — get: body stream decoding', () => {
     ));
     const got = await backend.get('k');
     expect(got.isSome()).toBe(true);
-    const o = got.toNullable()!;
-    expect(Array.from(o.body)).toEqual([10, 20, 30]);
-    expect(o.contentType).toBe('text/plain');
+    const result = got.toNullable()!;
+    expect(Array.from(result.body)).toEqual([10, 20, 30]);
+    expect(result.contentType).toBe('text/plain');
     // ETag is re-quoted (the source strips then re-adds quotes).
-    expect(o.etag).toBe('"e"');
+    expect(result.etag).toBe('"e"');
   });
 
   test('async-iterable Body is decoded (older shim path)', async () => {

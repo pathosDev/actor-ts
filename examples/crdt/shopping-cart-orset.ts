@@ -30,14 +30,14 @@ function main(): void {
   const REPLICA_B = 'tab-b';
 
   // Both replicas start empty; user opens two tabs editing the same cart.
-  let a = ORSet.empty<Item>();
-  let b = ORSet.empty<Item>();
+  let cartA = ORSet.empty<Item>();
+  let cartB = ORSet.empty<Item>();
 
   // Tab A adds two items, tab B mirrors via gossip.
-  a = a.add(REPLICA_A, { sku: 'BOOK-1', name: 'Designing Data-Intensive Applications' });
-  a = a.add(REPLICA_A, { sku: 'COFFEE', name: 'Single-origin Ethiopian' });
-  b = b.merge(a);
-  show('after sync', b);
+  cartA = cartA.add(REPLICA_A, { sku: 'BOOK-1', name: 'Designing Data-Intensive Applications' });
+  cartA = cartA.add(REPLICA_A, { sku: 'COFFEE', name: 'Single-origin Ethiopian' });
+  cartB = cartB.merge(cartA);
+  show('after sync', cartB);
 
   // Concurrent edit:
   //   - Tab A removes the coffee.
@@ -46,8 +46,8 @@ function main(): void {
   // Without OR-Set semantics, "remove vs add" is order-dependent and
   // either side could win.  With OR-Set, the add carries a fresh tag
   // that A's remove can't see, so the item survives.
-  const aAfterRemove = a.remove({ sku: 'COFFEE', name: 'Single-origin Ethiopian' });
-  const bAfterReadd  = b.add(REPLICA_B, { sku: 'COFFEE', name: 'Single-origin Ethiopian' });
+  const aAfterRemove = cartA.remove({ sku: 'COFFEE', name: 'Single-origin Ethiopian' });
+  const bAfterReadd  = cartB.add(REPLICA_B, { sku: 'COFFEE', name: 'Single-origin Ethiopian' });
 
   show('A locally  ', aAfterRemove);
   show('B locally  ', bAfterReadd);

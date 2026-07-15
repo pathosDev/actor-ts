@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type {
   CompressionConfig,
   CompressionResolver,
@@ -18,6 +19,13 @@ export interface ObjectStorageSnapshotStoreOptionsType {
   readonly compression?: CompressionConfig | CompressionResolver;
   /** Encryption — flat config or per-pid resolver.  Default: `{ mode: 'none' }`. */
   readonly encryption?: EncryptionConfig | EncryptionResolver;
+  /**
+   * Cap on the decompressed size of a stored body in bytes — the
+   * decompression-bomb guard on read (security audit #3).  Default 512 MiB
+   * (`DEFAULT_MAX_DECOMPRESSED_BYTES`); `Infinity` opts out.  Raise it to
+   * restore a legitimately large snapshot, or lower it for a tighter bound.
+   */
+  readonly maxDecompressedBytes?: number;
 }
 
 /**
@@ -57,6 +65,34 @@ export class ObjectStorageSnapshotStoreOptionsBuilder extends OptionsBuilder<Obj
   /** Encryption — flat config or per-pid resolver.  Default: none. */
   withEncryption(encryption: EncryptionConfig | EncryptionResolver): this {
     return this.set('encryption', encryption);
+  }
+
+  /**
+   * Cap on the decompressed body size (bytes) — decompression-bomb guard
+   * (#3).  Default 512 MiB; `Infinity` opts out.
+   */
+  withMaxDecompressedBytes(bytes: number): this {
+    return this.set('maxDecompressedBytes', bytes);
+  }
+}
+
+/**
+ * Validates {@link ObjectStorageSnapshotStoreOptionsType} — currently the
+ * decompression cap, which admits `Infinity` (opt-out) that the generic
+ * `positiveInt` helper rejects, so the rule is bespoke.
+ */
+export class ObjectStorageSnapshotStoreOptionsValidator extends OptionsValidator<ObjectStorageSnapshotStoreOptionsType> {
+  constructor() {
+    super('ObjectStorageSnapshotStoreOptions');
+  }
+  protected rules(s: Partial<ObjectStorageSnapshotStoreOptionsType>): void {
+    const { maxDecompressedBytes } = s;
+    if (
+      maxDecompressedBytes !== undefined && maxDecompressedBytes !== Infinity &&
+      (typeof maxDecompressedBytes !== 'number' || !Number.isInteger(maxDecompressedBytes) || maxDecompressedBytes < 1)
+    ) {
+      this.fail('maxDecompressedBytes', 'must be a positive integer or Infinity', maxDecompressedBytes);
+    }
   }
 }
 

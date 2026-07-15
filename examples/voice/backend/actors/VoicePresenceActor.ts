@@ -36,7 +36,7 @@ export function roomUsersKey(room: string): string {
 
 /* ----------------------------- public messages ------------------------- */
 
-export type VoicePresenceCmd =
+export type VoicePresenceCommand =
   | { readonly kind: 'Add';         readonly key: string; readonly username: string }
   | { readonly kind: 'Remove';      readonly key: string; readonly username: string }
   | { readonly kind: 'Subscribe';   readonly key: string; readonly ref: ActorRef<PresenceChanged> }
@@ -60,7 +60,7 @@ interface KeyState {
 
 /* --------------------------------- actor ------------------------------- */
 
-export class VoicePresenceActor extends Actor<VoicePresenceCmd> {
+export class VoicePresenceActor extends Actor<VoicePresenceCommand> {
   private dd!: DistributedDataHandle;
   private replicaId!: string;
   private readonly states = new Map<string, KeyState>();
@@ -77,7 +77,7 @@ export class VoicePresenceActor extends Actor<VoicePresenceCmd> {
     this.states.clear();
   }
 
-  override onReceive(cmd: VoicePresenceCmd): void {
+  override onReceive(cmd: VoicePresenceCommand): void {
     match(cmd)
       .with({ kind: 'Add' },         (m) => this.add(m.key, m.username))
       .with({ kind: 'Remove' },      (m) => this.remove(m.key, m.username))

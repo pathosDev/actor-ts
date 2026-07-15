@@ -1,3 +1,4 @@
+import type { MockClusterOptions, MockClusterOptionsType } from './MockClusterOptions.js';
 import type { ActorRef } from '../ActorRef.js';
 import { Member } from '../cluster/Member.js';
 import { NodeAddress } from '../cluster/NodeAddress.js';
@@ -34,14 +35,6 @@ import { none, some, type Option } from '../util/Option.js';
  * (Receptionist, Sharding, DowningProvider impls) without paying
  * the spin-up cost of a real Cluster instance.
  */
-export interface MockClusterSettings {
-  /** Self address — what `selfAddress` returns. */
-  readonly selfAddress: NodeAddress;
-  /** Initial members.  Self is added automatically if not present. */
-  readonly initialMembers?: ReadonlyArray<Member>;
-  /** Initial leader.  Defaults to the lowest address. */
-  readonly initialLeader?: Option<Member>;
-}
 
 export class MockCluster {
   readonly selfAddress: NodeAddress;
@@ -49,22 +42,23 @@ export class MockCluster {
   private leader: Option<Member>;
   private readonly listeners: Array<(e: ClusterEvent) => void> = [];
 
-  constructor(settings: MockClusterSettings) {
-    this.selfAddress = settings.selfAddress;
+  constructor(optionsInput: MockClusterOptions) {
+    const options = optionsInput as MockClusterOptionsType;
+    this.selfAddress = options.selfAddress;
     // Self always present.
-    const selfMember = new Member(settings.selfAddress, 'up', 1, []);
-    this.members.set(settings.selfAddress.toString(), selfMember);
-    for (const m of settings.initialMembers ?? []) {
-      this.members.set(m.address.toString(), m);
+    const selfMember = new Member(options.selfAddress, 'up', 1, []);
+    this.members.set(options.selfAddress.toString(), selfMember);
+    for (const member of options.initialMembers ?? []) {
+      this.members.set(member.address.toString(), member);
     }
-    this.leader = settings.initialLeader ?? this.computeLeader();
+    this.leader = options.initialLeader ?? this.computeLeader();
   }
 
   /** Match the Cluster API: replays current state on subscribe. */
   subscribe(listener: (event: ClusterEvent) => void): () => void {
-    for (const m of this.members.values()) {
-      if (m.status === 'up') {
-        try { listener(new MemberUp(m)); } catch { /* ignore */ }
+    for (const member of this.members.values()) {
+      if (member.status === 'up') {
+        try { listener(new MemberUp(member)); } catch { /* ignore */ }
       }
     }
     if (this.members.get(this.selfAddress.toString())?.status === 'up') {
@@ -81,17 +75,17 @@ export class MockCluster {
   }
 
   getMembers(): ReadonlyArray<Member> {
-    return Array.from(this.members.values()).filter((m) => m.status !== 'removed');
+    return Array.from(this.members.values()).filter((member) => member.status !== 'removed');
   }
 
   upMembers(): Member[] {
     return Array.from(this.members.values())
-      .filter((m) => m.status === 'up')
+      .filter((member) => member.status === 'up')
       .sort((a, b) => a.address.compareTo(b.address));
   }
 
   getMembersByStatus(status: MemberStatus): Member[] {
-    return Array.from(this.members.values()).filter((m) => m.status === status);
+    return Array.from(this.members.values()).filter((member) => member.status === status);
   }
 
   getLeader(): Option<Member> { return this.leader; }
@@ -100,20 +94,20 @@ export class MockCluster {
 
   /** Add a fresh peer in `joining` state and fire `MemberJoined`. */
   addMember(address: NodeAddress, roles: ReadonlyArray<string> = []): Member {
-    const m = new Member(address, 'joining', 1, roles);
-    this.members.set(address.toString(), m);
-    this.emit(new MemberJoined(m));
-    return m;
+    const member = new Member(address, 'joining', 1, roles);
+    this.members.set(address.toString(), member);
+    this.emit(new MemberJoined(member));
+    return member;
   }
 
   /** Transition a member to `up` and fire `MemberUp` (+ LeaderChanged if it changes). */
   upMember(address: NodeAddress): Member {
     const prev = this.requireMember(address);
-    const m = new Member(address, 'up', prev.version + 1, prev.roles);
-    this.members.set(address.toString(), m);
-    this.emit(new MemberUp(m));
+    const member = new Member(address, 'up', prev.version + 1, prev.roles);
+    this.members.set(address.toString(), member);
+    this.emit(new MemberUp(member));
     this.maybeLeaderChange();
-    return m;
+    return member;
   }
 
   /** Mark a member as unreachable; fires `MemberUnreachable`. */
@@ -136,10 +130,10 @@ export class MockCluster {
   /** Force a member down (DowningProvider triggered).  Fires `MemberDown`. */
   downMember(address: NodeAddress): Member {
     const prev = this.requireMember(address);
-    const m = new Member(address, 'down', prev.version + 1, prev.roles);
-    this.members.set(address.toString(), m);
-    this.emit(new MemberDown(m));
-    return m;
+    const member = new Member(address, 'down', prev.version + 1, prev.roles);
+    this.members.set(address.toString(), member);
+    this.emit(new MemberDown(member));
+    return member;
   }
 
   /** Graceful leave path — fires `MemberLeft` then `MemberRemoved`. */
@@ -163,8 +157,8 @@ export class MockCluster {
     if (addr === null) {
       this.leader = none;
     } else {
-      const m = this.requireMember(addr);
-      this.leader = some(m);
+      const member = this.requireMember(addr);
+      this.leader = some(member);
     }
     this.emit(new LeaderChanged(this.leader));
   }
@@ -181,9 +175,9 @@ export class MockCluster {
   }
 
   private requireMember(address: NodeAddress): Member {
-    const m = this.members.get(address.toString());
-    if (!m) throw new Error(`MockCluster: no member with address ${address}`);
-    return m;
+    const member = this.members.get(address.toString());
+    if (!member) throw new Error(`MockCluster: no member with address ${address}`);
+    return member;
   }
 
   private computeLeader(): Option<Member> {

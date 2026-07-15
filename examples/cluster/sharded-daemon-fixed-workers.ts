@@ -50,14 +50,14 @@ async function startNode(host: string, port: number, seeds: string[] = []): Prom
 }
 
 async function main(): Promise<void> {
-  const a = await startNode('a', 10_001);
-  const b = await startNode('b', 10_002, ['fixed-workers@a:10001']);
-  const c = await startNode('c', 10_003, ['fixed-workers@a:10001']);
+  const nodeA = await startNode('a', 10_001);
+  const nodeB = await startNode('b', 10_002, ['fixed-workers@a:10001']);
+  const nodeC = await startNode('c', 10_003, ['fixed-workers@a:10001']);
   await Bun.sleep(300);
 
   // Each node calls init — the coordinator (on the leader) places each
   // daemon on exactly one node.
-  for (const { sys, cluster, name } of [a, b, c]) {
+  for (const { sys, cluster, name } of [nodeA, nodeB, nodeC]) {
     ShardedDaemonProcess.init<string>(sys, cluster,
       ShardedDaemonProcessOptions.create<string>()
         .withName('partitions')
@@ -68,7 +68,7 @@ async function main(): Promise<void> {
   // Let the daemons poll for a while so the distribution is observable.
   await Bun.sleep(1_500);
 
-  for (const n of [a, b, c]) { await n.cluster.leave(); await n.sys.terminate(); }
+  for (const node of [nodeA, nodeB, nodeC]) { await node.cluster.leave(); await node.sys.terminate(); }
 }
 
 void main();

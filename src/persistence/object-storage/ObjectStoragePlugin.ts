@@ -48,7 +48,7 @@ export interface ObjectStoragePluginHandles {
    * The DurableState store instance.  `PersistenceExtension` doesn't
    * carry a DurableState registry today, so callers that want
    * DurableState pass this directly into `DurableStateActor`'s
-   * settings.
+   * options.
    */
   readonly durableStateStore: ObjectStorageDurableStateStore;
 }
@@ -59,7 +59,7 @@ export interface ObjectStoragePluginHandles {
  * Cassandra plugin's one-call wiring while accepting that DurableState
  * isn't extension-managed today — callers who want DurableState read
  * `handles.durableStateStore` from the return value and pass it into
- * their `DurableStateActor` settings.
+ * their `DurableStateActor` options.
  *
  * **Eager peer-dep validation (#18, #59).**  Before returning, this
  * function probes any optional peer-dependency the configured codecs
@@ -87,28 +87,30 @@ export async function registerObjectStoragePlugins(
   ext: PersistenceExtension,
   options: ObjectStoragePluginOptions,
 ): Promise<ObjectStoragePluginHandles> {
-  const s = (options as ObjectStoragePluginOptionsType);
-  if (s.backend === undefined) throw new Error('registerObjectStoragePlugins: backend is required (call withBackend()).');
-  await validateObjectStoragePeerDeps(s);
+  const resolvedOptions = (options as ObjectStoragePluginOptionsType);
+  if (resolvedOptions.backend === undefined) throw new Error('registerObjectStoragePlugins: backend is required (call withBackend()).');
+  await validateObjectStoragePeerDeps(resolvedOptions);
 
-  const backend = buildBackend(s.backend);
-  const snapshotId = s.snapshotPluginId ?? OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID;
+  const backend = buildBackend(resolvedOptions.backend);
+  const snapshotId = resolvedOptions.snapshotPluginId ?? OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID;
 
   ext.registerSnapshotStore(snapshotId, (_system: ActorSystem) => {
     return new ObjectStorageSnapshotStore({
       backend,
-      ...(s.prefix !== undefined ? { prefix: s.prefix } : {}),
-      ...(s.keepN !== undefined ? { keepN: s.keepN } : {}),
-      ...(s.compression !== undefined ? { compression: s.compression } : {}),
-      ...(s.encryption !== undefined ? { encryption: s.encryption } : {}),
+      ...(resolvedOptions.prefix !== undefined ? { prefix: resolvedOptions.prefix } : {}),
+      ...(resolvedOptions.keepN !== undefined ? { keepN: resolvedOptions.keepN } : {}),
+      ...(resolvedOptions.compression !== undefined ? { compression: resolvedOptions.compression } : {}),
+      ...(resolvedOptions.encryption !== undefined ? { encryption: resolvedOptions.encryption } : {}),
+      ...(resolvedOptions.maxDecompressedBytes !== undefined ? { maxDecompressedBytes: resolvedOptions.maxDecompressedBytes } : {}),
     });
   });
 
   const durableStateStore = new ObjectStorageDurableStateStore({
     backend,
-    ...(s.prefix !== undefined ? { prefix: s.prefix } : {}),
-    ...(s.compression !== undefined ? { compression: s.compression } : {}),
-    ...(s.encryption !== undefined ? { encryption: s.encryption } : {}),
+    ...(resolvedOptions.prefix !== undefined ? { prefix: resolvedOptions.prefix } : {}),
+    ...(resolvedOptions.compression !== undefined ? { compression: resolvedOptions.compression } : {}),
+    ...(resolvedOptions.encryption !== undefined ? { encryption: resolvedOptions.encryption } : {}),
+    ...(resolvedOptions.maxDecompressedBytes !== undefined ? { maxDecompressedBytes: resolvedOptions.maxDecompressedBytes } : {}),
   });
 
   return { backend, durableStateStore };
@@ -122,10 +124,10 @@ export async function registerObjectStoragePlugins(
 export async function validateObjectStoragePeerDeps(
   options: ObjectStoragePluginOptions,
 ): Promise<void> {
-  const s = (options as ObjectStoragePluginOptionsType);
+  const resolvedOptions = (options as ObjectStoragePluginOptionsType);
   // Compression: probe each algorithm at most once.
   const algos = new Set<CompressionConfig['algorithm']>();
-  for (const cfg of collectCompressionConfigs(s.compression)) {
+  for (const cfg of collectCompressionConfigs(resolvedOptions.compression)) {
     algos.add(cfg.algorithm);
   }
   for (const algo of algos) {
@@ -135,7 +137,7 @@ export async function validateObjectStoragePeerDeps(
   // Encryption: WebCrypto is needed for the client-aes256-gcm mode
   // (HKDF + AES-GCM go through SubtleCrypto).  The server-side modes
   // — sse-s3, sse-kms — are header pass-throughs and need nothing.
-  const encConfigs = collectEncryptionConfigs(s.encryption);
+  const encConfigs = collectEncryptionConfigs(resolvedOptions.encryption);
   if (encConfigs.some((c) => c.mode === 'client-aes256-gcm')) {
     await probeEncryptionAvailability();
   }

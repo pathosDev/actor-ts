@@ -20,8 +20,8 @@
  * (#18, #59).
  */
 function getSubtle(): SubtleCrypto {
-  const s = (globalThis.crypto as Crypto | undefined)?.subtle;
-  if (!s) {
+  const subtle = (globalThis.crypto as Crypto | undefined)?.subtle;
+  if (!subtle) {
     throw new Error(
       'SubtleCrypto is not available in this runtime.  Client-side '
       + 'encryption requires WebCrypto support — Node 20+, Bun, or '
@@ -29,7 +29,7 @@ function getSubtle(): SubtleCrypto {
       + 'includes a WebCrypto polyfill.',
     );
   }
-  return s;
+  return subtle;
 }
 
 /**

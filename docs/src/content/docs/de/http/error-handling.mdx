@@ -1,0 +1,114 @@
+---
+title: Fehlerbehandlung & Fallbacks
+description: Fehlerbehandlung mit handleErrors auf einen Routen-Teilbaum begrenzen, unpassende Requests mit fallback beantworten und mit withErrorHandler eine serverweite letzte Instanz setzen. Einheitliches HttpError-→-JSON-Mapping über Fastify, Express und Hono.
+---
+
+Drei Schichten verwandeln einen geworfenen Fehler in eine Response, von
+innen nach außen: ein gescoptes `handleErrors`, dann das serverweite
+`withErrorHandler`, dann der Framework-Default (`HttpError` → sein Status +
+`{ error, … }`-JSON, alles andere → ein generischer 500). Eine
+`fallback`-Route beantwortet Requests, die auf gar keine Route passten.
+
+## Einen Fehler werfen
+
+Jeder Handler (oder jede Middleware) darf ein `HttpError` werfen; `reject`
+ist die Kurzform:
+
+```ts
+import { HttpError, Status, reject } from 'actor-ts/http';
+
+get(async (req) => {
+  const user = await findUser(req.params.id);
+  if (!user) reject(Status.NotFound, 'no such user', { id: req.params.id });
+  return completeJson(Status.OK, user);
+});
+```
+
+Das Default-Mapping macht daraus `404 { "error": "no such user", "id": … }`.
+Ein `HttpError` kann auch Response-Header tragen (z. B. `WWW-Authenticate`):
+
+```ts
+throw new HttpError(Status.Unauthorized, 'login required', undefined, {
+  'www-authenticate': 'Bearer realm="api"',
+});
+```
+
+## Gescopte Behandlung — `handleErrors`
+
+`handleErrors(handler, child)` fängt alles, was in `child` geworfen wird
+(Handler **und** innere Middleware), und sieht den **originalen** Fehler —
+vor jedem Default-Mapping. Gib eine Response zurück, um ihn zu behandeln,
+oder `null`, um abzulehnen und einen äußeren Handler (oder den Default)
+übernehmen zu lassen.
+
+```ts
+import { complete, completeJson, handleErrors, path, Status } from 'actor-ts/http';
+
+const routes = handleErrors(
+  (err) => err instanceof ValidationError
+    ? completeJson(Status.BadRequest, { error: err.message, fields: err.fields })
+    : null,                                    // ablehnen → eskalieren
+  path('api', apiRoutes),
+);
+```
+
+Handler verschachteln von außen nach innen wie `withMiddleware`: das
+innerste `handleErrors` hat das erste Zugriffsrecht. Um eine
+Auth-Middleware gelegt, fängt es auch deren Würfe (z. B. ein `401`).
+
+## Unpassende Requests — `fallback`
+
+`fallback(handler)` beantwortet jeden Request, der auf keine Route passte —
+jede Methode, inklusive unpassender `OPTIONS`/`HEAD`. Es ist an den
+Not-Found-Hook jedes Backends verdrahtet und muss daher an der **Wurzel**
+des Routenbaums stehen (ein `fallback` unter `path()` wirft zur
+Compile-Zeit); pro Server gibt es höchstens eines.
+
+```ts
+import { completeJson, concat, fallback, path, Status } from 'actor-ts/http';
+
+const routes = concat(
+  path('api', apiRoutes),
+  fallback((req) => completeJson(Status.NotFound, { error: 'no such route', path: req.path })),
+);
+```
+
+## Serverweit — `withErrorHandler`
+
+Die letzte Instanz für Fehler, die jedem `handleErrors` entkommen, plus
+backend-interne Fehler (Fehler beim Body-Parsen). Am Server-Builder setzen:
+
+```ts
+const binding = await system.http(8080)
+  .withErrorHandler((err, req) => {
+    system.log.error(`[http] ${req.method} ${req.path}`, err);
+    return completeJson(Status.InternalServerError, { error: 'internal error' });
+  })
+  .bind(routes);
+```
+
+## Präzedenz
+
+| Reihenfolge | Schicht | Sieht |
+| --- | --- | --- |
+| 1 | innerstes → äußerstes `handleErrors` | den originalen Wurf; darf mit `null` ablehnen |
+| 2 | `withErrorHandler` | was Schritt 1 entkam, plus backend-interne Fehler |
+| 3 | Framework-Default | `HttpError` → Status + `{ error, …extra }`; sonst generischer 500 |
+
+Wirft ein Handler in Schritt 1 oder 2 selbst, übernimmt die nächste Schicht
+den neuen Fehler.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="note" title="404, nicht 405">
+  Ein Request auf einen existierenden Pfad mit falschem Verb (z. B. `POST`
+  auf eine reine `GET`-Route) wird über den Not-Found-Pfad beantwortet —
+  ein `404` (oder dein `fallback`), kein `405`. Echte `405`s mit
+  Methoden-Introspektion pro Pfad sind ein separates künftiges Feature.
+</Aside>
+
+## Wie weiter
+
+- **[HTTP-Überblick](/de/http/overview/)** — das große Ganze.
+- **[HTML & XSS](/de/http/html-xss/)** — sichere Fehlerseiten bauen.
+- **[Sicherheit](/de/http/security/)** — der empfohlene Middleware-Stack.

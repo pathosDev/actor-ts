@@ -134,7 +134,7 @@ test('sharded entities route to exactly one node', async () => {
 
   for (const id of entityIds) {
     const hits = [n1.counts.get(id) ?? 0, n2.counts.get(id) ?? 0, n3.counts.get(id) ?? 0];
-    const total = hits.reduce((a, b) => a + b, 0);
+    const total = hits.reduce((nodeA, nodeB) => nodeA + nodeB, 0);
     const nonZero = hits.filter(h => h > 0).length;
     expect(total).toBe(3);
     expect(nonZero).toBe(1); // exactly one node hosts each entity
@@ -340,30 +340,30 @@ describe('Cluster tombstone pruning (#75)', () => {
     // fast while staying well above the 80ms gossip cadence so peers
     // converge before pruning kicks in.
     const SYS = 'cluster-tombstone-prune';
-    const a = await startNodeWithTombstoneCfg(
+    const nodeA = await startNodeWithTombstoneCfg(
       SYS, '10.0.6.1', 6001, [],
       { tombstoneTtlMs: 200, tombstonePruneIntervalMs: 60, tombstoneMinRetentionMs: 80 },
     );
-    const b = await startNodeWithTombstoneCfg(
+    const nodeB = await startNodeWithTombstoneCfg(
       SYS, '10.0.6.2', 6002, ['10.0.6.1:6001'],
       { tombstoneTtlMs: 200, tombstonePruneIntervalMs: 60, tombstoneMinRetentionMs: 80 },
     );
-    await waitFor(() => a.cluster.upMembers().length === 2 && b.cluster.upMembers().length === 2, 2000);
+    await waitFor(() => nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2, 2000);
 
     // B leaves gracefully → A holds a tombstone for B.
-    await b.cluster.leave();
-    await b.system.terminate();
-    await waitFor(() => peek(a.cluster).members.has(`${SYS}@10.0.6.2:6002`)
-      && peek(a.cluster).members.get(`${SYS}@10.0.6.2:6002`)!.status === 'removed', 2000);
-    expect(peek(a.cluster).members.size).toBe(2); // 1 live + 1 tombstone
+    await nodeB.cluster.leave();
+    await nodeB.system.terminate();
+    await waitFor(() => peek(nodeA.cluster).members.has(`${SYS}@10.0.6.2:6002`)
+      && peek(nodeA.cluster).members.get(`${SYS}@10.0.6.2:6002`)!.status === 'removed', 2000);
+    expect(peek(nodeA.cluster).members.size).toBe(2); // 1 live + 1 tombstone
 
     // Wait for TTL + one prune interval — the tombstone must be gone.
-    await waitFor(() => peek(a.cluster).members.size === 1, 1500);
-    expect(peek(a.cluster).members.size).toBe(1);
-    expect(a.cluster.upMembers().length).toBe(1);
+    await waitFor(() => peek(nodeA.cluster).members.size === 1, 1500);
+    expect(peek(nodeA.cluster).members.size).toBe(1);
+    expect(nodeA.cluster.upMembers().length).toBe(1);
 
-    await a.cluster.leave();
-    await a.system.terminate();
+    await nodeA.cluster.leave();
+    await nodeA.system.terminate();
   });
 
   test('mergeMember rejects an incoming tombstone whose removedAt is older than the TTL', async () => {
@@ -374,11 +374,11 @@ describe('Cluster tombstone pruning (#75)', () => {
     // (because addresses we *only* learned about as already-expired
     // shouldn't be added in the first place).
     const SYS = 'cluster-tombstone-stale-merge';
-    const a = await startNodeWithTombstoneCfg(
+    const nodeA = await startNodeWithTombstoneCfg(
       SYS, '10.0.6.10', 6010, [],
       { tombstoneTtlMs: 200, tombstonePruneIntervalMs: 60, tombstoneMinRetentionMs: 80 },
     );
-    await waitFor(() => a.cluster.upMembers().length === 1, 1000);
+    await waitFor(() => nodeA.cluster.upMembers().length === 1, 1000);
 
     // Drive the private mergeMember via a synthesized gossip frame.
     const stalePeer = new NodeAddress(SYS, '10.0.6.99', 6099);
@@ -389,13 +389,13 @@ describe('Cluster tombstone pruning (#75)', () => {
       roles: [] as string[],
       removedAt: Date.now() - 10_000, // way past the 200ms TTL
     };
-    (a.cluster as unknown as { mergeMember(d: unknown): void })
+    (nodeA.cluster as unknown as { mergeMember(d: unknown): void })
       .mergeMember(staleData);
 
-    expect(peek(a.cluster).members.has(stalePeer.toString())).toBe(false);
+    expect(peek(nodeA.cluster).members.has(stalePeer.toString())).toBe(false);
 
-    await a.cluster.leave();
-    await a.system.terminate();
+    await nodeA.cluster.leave();
+    await nodeA.system.terminate();
   });
 
   test('tombstone with no removedAt (mixed-version peer) is preserved across prune passes', async () => {
@@ -406,11 +406,11 @@ describe('Cluster tombstone pruning (#75)', () => {
     // them on the strength of "no removedAt = ancient" (which would
     // re-introduce the resurrection bug for mixed-version clusters).
     const SYS = 'cluster-tombstone-mixed-version';
-    const a = await startNodeWithTombstoneCfg(
+    const nodeA = await startNodeWithTombstoneCfg(
       SYS, '10.0.6.20', 6020, [],
       { tombstoneTtlMs: 100, tombstonePruneIntervalMs: 50, tombstoneMinRetentionMs: 50 },
     );
-    await waitFor(() => a.cluster.upMembers().length === 1, 1000);
+    await waitFor(() => nodeA.cluster.upMembers().length === 1, 1000);
 
     const oldPeer = new NodeAddress(SYS, '10.0.6.21', 6021);
     const noAgeTombstone = {
@@ -420,19 +420,19 @@ describe('Cluster tombstone pruning (#75)', () => {
       roles: [] as string[],
       // removedAt deliberately omitted.
     };
-    (a.cluster as unknown as { mergeMember(d: unknown): void })
+    (nodeA.cluster as unknown as { mergeMember(d: unknown): void })
       .mergeMember(noAgeTombstone);
 
     // Tombstone is in the map — `mergeMember`'s expired-tombstone
     // guard only triggers when `removedAt` IS set.
-    expect(peek(a.cluster).members.has(oldPeer.toString())).toBe(true);
+    expect(peek(nodeA.cluster).members.has(oldPeer.toString())).toBe(true);
 
     // Wait several prune intervals — tombstone must persist.
     await sleep(300);
-    expect(peek(a.cluster).members.has(oldPeer.toString())).toBe(true);
-    expect(peek(a.cluster).members.get(oldPeer.toString())!.status).toBe('removed');
+    expect(peek(nodeA.cluster).members.has(oldPeer.toString())).toBe(true);
+    expect(peek(nodeA.cluster).members.get(oldPeer.toString())!.status).toBe('removed');
 
-    await a.cluster.leave();
-    await a.system.terminate();
+    await nodeA.cluster.leave();
+    await nodeA.system.terminate();
   });
 });

@@ -1,6 +1,7 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { OptionsValidator } from '../util/OptionsValidator.js';
 
-/** Plain settings-object shape accepted by a {@link ConfigSeedProvider}. */
+/** Plain options-object shape accepted by a {@link ConfigSeedProvider}. */
 export interface ConfigSeedProviderOptionsType {
   /** Static list of "system@host:port" or "host:port" strings. */
   readonly seeds: string[];
@@ -31,6 +32,17 @@ export class ConfigSeedProviderOptionsBuilder extends OptionsBuilder<ConfigSeedP
   /** Default system name used when a seed string omits it. */
   withSystemName(systemName: string): this {
     return this.set('systemName', systemName);
+  }
+}
+
+/** Validates resolved {@link ConfigSeedProviderOptionsType} settings. */
+export class ConfigSeedProviderOptionsValidator extends OptionsValidator<ConfigSeedProviderOptionsType> {
+  constructor() {
+    super('ConfigSeedProviderOptions');
+  }
+  protected rules(_s: Partial<ConfigSeedProviderOptionsType>): void {
+    this.nonEmptyArray('seeds');
+    this.nonEmptyString('systemName');
   }
 }
 

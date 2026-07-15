@@ -17,7 +17,7 @@ deliberately tiny — `fastify` + `ts-pattern` — and everything else
 
 - **Conventional Commits**: `type(scope): subject`. Types in use:
   `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `ci`, `build`.
-  Scope is the module/area, e.g. `http`, `http/ws`, `io`,
+  Scope is the module/area, e.g. `http`, `http/websocket`, `io`,
   `persistence/postgres`, `testkit`, `cluster`, `deps`, `deps-dev`,
   `readme`, `changelog`, `roadmap`, `integration`.
 - **Small, focused commits.** Each commit should keep
@@ -35,13 +35,21 @@ deliberately tiny — `fastify` + `ts-pattern` — and everything else
   there. **`main` holds releases only**: it moves only when a release is cut
   (a `--no-ff` merge from `develop`, see *Release strategy*), never via direct
   feature work.
-- **Feature branches** (`feat/…`, `fix/…`, `chore/…`) branch off `develop`
-  and merge back into `develop` with a **merge commit (`git merge --no-ff`)** —
-  **never rebase**; delete the branch after merging. Small fixes and follow-ups
-  may go **directly on `develop`**.
-- **Do not push.** The agent commits locally only; the human pushes `develop`.
-  The single exception is cutting a release (below) — merging `develop` → `main`
-  and creating the tag/GitHub Release is explicitly authorized.
+- **All work happens on a feature branch under `features/…`** — one branch per
+  unit of work, branched off `develop` (e.g. `features/ws-backpressure`,
+  `features/fix-mqtt-reconnect`; even fixes and chores use the `features/`
+  prefix). The sole exception is cutting a release, which uses a
+  `release/vX.Y.Z` branch (see *Release strategy*). **No direct commits to
+  `develop`**, not even small fixes or follow-ups — everything lands through a
+  branch. Delete the branch after it merges.
+- **Always integrate with a merge commit (`git merge --no-ff`) — never rebase,
+  never fast-forward.** This holds in both directions: `features/…` → `develop`
+  and, at release time, `develop` → `main`. History stays a true graph; it is
+  never rewritten or flattened.
+- **Do not push.** The agent commits locally only — on its `features/…` branch
+  and when merging into `develop`; the human pushes `develop`. The single
+  exception is cutting a release (below) — merging `develop` → `main` and
+  creating the tag/GitHub Release is explicitly authorized.
 - **`main` is branch-protected** — merges require a pull request and the `test`
   status check; the maintainer (admin) may bypass for the release merge.
 
@@ -64,8 +72,10 @@ Tags are `vX.Y.Z`; GitHub Releases are cut as normal **Latest** releases
 
 **Cutting a release** (only when explicitly asked) — promotes `develop` to `main`:
 
-1. On `develop`: bump `version` in `package.json` and move `[Unreleased]` →
-   `[X.Y.Z]` (dated) in `CHANGELOG.md`; commit (`chore(release): vX.Y.Z`).
+1. On a `release/vX.Y.Z` branch off `develop`: bump `version` in
+   `package.json` and move `[Unreleased]` → `[X.Y.Z]` (dated) in `CHANGELOG.md`;
+   commit (`chore(release): vX.Y.Z`). Merge it into `develop` (`--no-ff`) and
+   push `develop`.
 2. Merge `develop` → `main` with `git merge --no-ff`, then push `main`.
 3. `gh release create vX.Y.Z --target main` (a normal **Latest** release, no
    `--prerelease`) with **emoji-sectioned notes** (`## 🚀 New features`,
@@ -106,7 +116,7 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
 - **Cross-runtime:** `bun run smoke` runs `tests/smoke/cases/*.mjs` on
   Bun, Node, and Deno. Add a smoke case for anything runtime-sensitive.
 - **Don't hand-edit** the README test/coverage badges — CI updates them
-  on push to `main`.
+  on push to `develop`.
 
 ## Runtime portability
 
@@ -125,7 +135,7 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
 - Discriminated-union handling via **`ts-pattern`**
   (`match(x).with(…).exhaustive()`).
 - HOCON config keys go through **`src/config/ConfigKeys.ts`** (typed,
-  single source of truth). Settings resolve with precedence:
+  single source of truth). Options resolve with precedence:
   **explicit options > HOCON > built-in defaults**.
 - **JSDoc explains the *why*** — constraints, rationale, non-obvious
   trade-offs — not a restatement of the code. Match the surrounding
@@ -135,7 +145,7 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
 
 - **Every configurable thing has one `XOptions.ts` file with three exports**,
   all in the "Options" family — there is no separate "Settings" concept:
-  - `XOptionsType` — the plain settings-object shape (a bare `{ … }` you can
+  - `XOptionsType` — the plain options-object shape (a bare `{ … }` you can
     pass directly).
   - `XOptionsBuilder` — the fluent builder, `extends OptionsBuilder<XOptionsType>`
     (broker actors via `BrokerOptionsBuilder<XOptionsType>`).
@@ -148,11 +158,35 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   HOCON leaf `x` (e.g. `withQos` ⇔ `qos`, never `defaultQos`). Multi-arg sugar
   is fine when the field still matches the stem (`withCredentials(u, p)` → field
   `credentials`; `withCircuitBreaker(f, r)` → field `circuitBreaker`).
+- **An optional fourth export, `XOptionsValidator`**, when the options have
+  fields with real constraints (ports, positive durations/counts, byte sizes,
+  enums, non-empty strings/arrays, URLs, cross-field rules). It `extends
+  OptionsValidator<XOptionsType>` (broker actors via
+  `BrokerOptionsValidator<XOptionsType>`) and implements `rules(s)` with the
+  protected check helpers (`port`, `positiveNumber`, `positiveInt`,
+  `nonNegativeInt`, `oneOf`, `nonEmptyString`, `url`, …) plus `fail(field,
+  reason, value)` for cross-field/bespoke rules. Helpers take **only the field
+  name** (typo-checked against `XOptionsType`) and are a **no-op on `undefined`**
+  — an unset optional always passes; required-ness stays where it was
+  (`BrokerActor.requiredOptions()` / an explicit guard). Options that are all
+  booleans / strings / callbacks get no validator. Rejections throw
+  `OptionsError` (source-agnostic — distinct from `BrokerOptionsError` for
+  missing required fields and `ConfigError` for malformed HOCON).
+  - **Validation runs once, at consume time, on the merged settings**, so the
+    builder, a plain object, and HOCON are all covered and cross-field rules see
+    the final values. Broker actors return `new XOptionsValidator()` from the
+    `optionsValidator()` hook (run in `preStart` after the required-field check);
+    non-broker consumers call `new XOptionsValidator().validate(settings)` once in
+    their constructor, right after the defaults spread. This is not a `resolve`
+    helper — the merge stays a plain spread; validation is a separate void
+    assertion. `OptionsBuilder` has no set-time validation.
 - **All option-relevant types are co-located in `XOptions.ts`** — including the
-  `XOptionsType` interface (the config contract read by `readSettingsFromConfig`).
-  The functional file (actor/store/factory) imports `XOptions` + `XOptionsType`
-  **type-only** from `./XOptions.js`; both directions are `import type`, so there
-  is no runtime cycle.
+  `XOptionsType` interface (the config contract read by `readOptionsFromConfig`)
+  and, when present, the `XOptionsValidator` class. The functional file
+  (actor/store/factory) imports the type contracts (`XOptions` + `XOptionsType`)
+  **type-only** from `./XOptions.js`, and — when it validates — additionally
+  **value-imports** `XOptionsValidator`. There is no runtime cycle: `XOptions.ts`
+  never imports the functional file, so the value edge only runs one way.
 - **A builder *is* its settings.** `OptionsBuilder.set` writes each field as an
   own enumerable property, so a builder instance is structurally a bag of the
   fields you set (the `withX` / `build` methods stay on the prototype and never
@@ -172,8 +206,11 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
 - **Never nest a builder into a call** — always assign it to its own
   contextual local variable first (`const mqttOptions = MqttOptions
   .create()…; new MqttActor(mqttOptions)`), then pass the variable.
-- **Write builder chains multi-line** — one `.withX()` per line (never a
-  single-line chain), even short ones.
+- **Write builder chains multi-line — one `.withX()` per line — when there
+  are two or more.** A chain with a *single* `.withX()` stays on one line
+  (`const mqttOptions = MqttOptions.create().withClientId('x')`) — forcing a
+  lone call onto its own line reads worse. Two or more calls always go
+  one-per-line (never a single-line multi-call chain).
 - **HOCON precedence is unchanged** — the builder / plain object feeds only
   the highest-precedence explicit layer; unset fields fall through to
   HOCON, then built-in defaults.

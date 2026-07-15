@@ -62,7 +62,7 @@ The factory closes over any constructor arguments you need:
 ```ts
 class Worker extends Actor<...> {
   constructor(
-    private readonly db: ActorRef<DbMsg>,
+    private readonly db: ActorRef<DbMessage>,
     private readonly cfg: Config,
   ) { super(); }
 }
@@ -76,13 +76,13 @@ same wiring.
 ## The four builders
 
 ```ts
-class Props<TMsg> {
-  static create<TMsg>(factory: () => Actor<TMsg>): Props<TMsg>;
+class Props<TMessage> {
+  static create<TMessage>(factory: () => Actor<TMessage>): Props<TMessage>;
 
-  withSupervisorStrategy(strategy: SupervisorStrategy): Props<TMsg>;
-  withDispatcher(dispatcher: Dispatcher): Props<TMsg>;
-  withMailboxCapacity(capacity: number): Props<TMsg>;
-  withMailbox(factory: () => Mailbox<TMsg>): Props<TMsg>;
+  withSupervisorStrategy(strategy: SupervisorStrategy): Props<TMessage>;
+  withDispatcher(dispatcher: Dispatcher): Props<TMessage>;
+  withMailboxCapacity(capacity: number): Props<TMessage>;
+  withMailbox(factory: () => Mailbox<TMessage>): Props<TMessage>;
 }
 ```
 
@@ -169,7 +169,7 @@ Props.create(() => new Telemetry())
 
 // Priority:
 Props.create(() => new Worker())
-  .withMailbox(() => new PriorityMailbox<Msg>({
+  .withMailbox(() => new PriorityMailbox<Message>({
     priorityFor: (m) => m.kind === 'urgent' ? 0 : 5,
   }));
 ```
@@ -210,7 +210,7 @@ For families of actors with different constructor args, wrap
 `Props.create` in a small helper:
 
 ```ts
-function workerProps(db: ActorRef<DbMsg>): Props<WorkerMsg> {
+function workerProps(db: ActorRef<DbMessage>): Props<WorkerMessage> {
   return Props.create(() => new Worker(db))
     .withSupervisorStrategy(stoppingStrategy)
     .withMailboxCapacity(500);
@@ -230,7 +230,7 @@ clean.
 The typed-actor API has its own `Props`-equivalent (the typed
 `Behaviors.setup(...)` flow); see [Typed actors](/typed/typed-actor/).
 The untyped `Props` covered here is the more general — accepts a
-factory returning `Actor<TMsg>`, where the message type comes from
+factory returning `Actor<TMessage>`, where the message type comes from
 the actor's own class declaration.
 
 import { Aside } from '@astrojs/starlight/components';

@@ -4,13 +4,21 @@ import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { HttpServerBackend, ServerBinding } from './backend/HttpServerBackend.js';
 import { FastifyBackend } from './backend/FastifyBackend.js';
 import { HttpClient } from './HttpClient.js';
-import { compile, type Route } from './Route.js';
+import { compile, defaultErrorResponse, type Route } from './Route.js';
 import type { HttpRequest, HttpResponse } from './types.js';
-import { ConnectionTracker, trackSocket } from './ws/ConnectionWiring.js';
+import { ConnectionTracker, trackSocket } from './websocket/ConnectionWiring.js';
 
 export interface ServerBuilder {
   /** Override the default Fastify backend (or use BunServe / Express). */
   useBackend(backend: HttpServerBackend): ServerBuilder;
+  /**
+   * Last-resort handler for errors that escape every route-level
+   * `handleErrors(...)`, plus backend-internal errors (body-parse
+   * failures, etc.).  Overrides the framework's default 500 mapping; if
+   * it throws, the default mapping still applies.  Requires a backend
+   * that supports `setErrorHandler` (all shipped backends do).
+   */
+  withErrorHandler(handler: (err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse): ServerBuilder;
   /** Register the full route tree and bind.  Returns the ServerBinding. */
   bind(routes: Route): Promise<ServerBinding>;
 }
@@ -30,10 +38,15 @@ export class HttpExtension implements Extension {
   /** Start building a new server scope.  Call `bind(routes)` to start it. */
   newServerAt(host: string, port: number): ServerBuilder {
     let backend: HttpServerBackend | null = null;
+    let errorHandler: ((err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
     const system = this.system;
     return {
       useBackend(b: HttpServerBackend): ServerBuilder {
         backend = b;
+        return this;
+      },
+      withErrorHandler(handler: (err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse): ServerBuilder {
+        errorHandler = handler;
         return this;
       },
       async bind(routes: Route): Promise<ServerBinding> {
@@ -41,6 +54,7 @@ export class HttpExtension implements Extension {
         const compiled = compile(routes);
         const httpRoutes = compiled.filter((r) => r.kind === 'http');
         const wsRoutes = compiled.filter((r) => r.kind === 'websocket');
+        const fallbacks = compiled.filter((r) => r.kind === 'fallback');
 
         if (wsRoutes.length > 0 && typeof active.registerWebSocket !== 'function') {
           throw new Error(
@@ -52,16 +66,16 @@ export class HttpExtension implements Extension {
         // the backend's own boot-time error, and it catches the WS-vs-GET
         // collision (a WS route occupies the GET verb at its pattern).
         const wsPatterns = new Set<string>();
-        for (const r of wsRoutes) {
-          if (wsPatterns.has(r.pattern)) {
-            throw new Error(`Duplicate websocket() route for pattern "${r.pattern}".`);
+        for (const route of wsRoutes) {
+          if (wsPatterns.has(route.pattern)) {
+            throw new Error(`Duplicate websocket() route for pattern "${route.pattern}".`);
           }
-          wsPatterns.add(r.pattern);
+          wsPatterns.add(route.pattern);
         }
-        for (const r of httpRoutes) {
-          if (r.method === 'GET' && wsPatterns.has(r.pattern)) {
+        for (const route of httpRoutes) {
+          if (route.method === 'GET' && wsPatterns.has(route.pattern)) {
             throw new Error(
-              `Route conflict: GET ${r.pattern} collides with a websocket() route on the same path.`,
+              `Route conflict: GET ${route.pattern} collides with a websocket() route on the same path.`,
             );
           }
         }
@@ -70,15 +84,15 @@ export class HttpExtension implements Extension {
         // Done at the DSL level so backends don't need a Logger
         // reference — every backend gets the same per-request debug
         // line uniformly.
-        for (const r of httpRoutes) {
+        for (const route of httpRoutes) {
           active.registerRoute({
-            method: r.method,
-            pattern: r.pattern,
+            method: route.method,
+            pattern: route.pattern,
             handler: async (req: HttpRequest): Promise<HttpResponse> => {
               const start = Date.now();
               system.log.debug(`[http] ${req.method} ${req.path}`);
               try {
-                const out = await r.handler(req);
+                const out = await route.handler(req);
                 system.log.debug(
                   `[http] ${req.method} ${req.path} → ${out.status} (${Date.now() - start} ms)`,
                 );
@@ -97,15 +111,51 @@ export class HttpExtension implements Extension {
         // shared ConnectionTracker so unbind() can close it — otherwise
         // a long-lived socket keeps the server's close() pending forever.
         const tracker = new ConnectionTracker();
-        for (const r of wsRoutes) {
+        for (const route of wsRoutes) {
           active.registerWebSocket!({
-            pattern: r.pattern,
-            authorize: r.authorize,
+            pattern: route.pattern,
+            authorize: route.authorize,
             onConnection: (req, socket) => {
               system.log.debug(`[ws] upgrade ${req.path}`);
-              r.connect(system, req, trackSocket(tracker, socket));
+              route.connect(system, req, trackSocket(tracker, socket));
             },
           });
+        }
+
+        // Fallback (not-found) route — at most one, wired to the backend's
+        // method-agnostic not-found hook.  Wrap it like the per-route
+        // handlers (debug log + default error mapping on throw).
+        if (fallbacks.length > 1) {
+          throw new Error(
+            'Multiple fallback() routes registered — a server has exactly one not-found handler.',
+          );
+        }
+        if (fallbacks.length === 1) {
+          if (typeof active.setNotFound !== 'function') {
+            throw new Error(
+              `HTTP backend "${active.name}" does not support fallback() routes (no setNotFound hook).`,
+            );
+          }
+          const fb = fallbacks[0]!;
+          active.setNotFound(async (req: HttpRequest): Promise<HttpResponse> => {
+            system.log.debug(`[http] (fallback) ${req.method} ${req.path}`);
+            try {
+              return await fb.handler(req);
+            } catch (err) {
+              return defaultErrorResponse(err);
+            }
+          });
+        }
+
+        // Server-wide error handler.  Backends consult it before their
+        // default mapping and fall back to that mapping if it throws.
+        if (errorHandler) {
+          if (typeof active.setErrorHandler !== 'function') {
+            throw new Error(
+              `HTTP backend "${active.name}" does not support withErrorHandler (no setErrorHandler hook).`,
+            );
+          }
+          active.setErrorHandler(errorHandler);
         }
 
         const raw = await active.listen(host, port);

@@ -45,14 +45,13 @@ async function main(): Promise<void> {
         return completeJson(Status.Created, users.get(id));
       }),
       path(':id', get((req) => {
-        const u = users.get(req.params.id);
-        return u ? completeJson(Status.OK, u) : complete(Status.NotFound, 'unknown user');
+        const user = users.get(req.params.id);
+        return user ? completeJson(Status.OK, user) : complete(Status.NotFound, 'unknown user');
       })),
     )),
   );
 
-  const backendOptions = ExpressBackendOptions.create()
-    .withMaxBodyBytes(1 * 1024 * 1024);
+  const backendOptions = ExpressBackendOptions.create().withMaxBodyBytes(1 * 1024 * 1024);
   const backend = new ExpressBackend(backendOptions);
   // Optional: reach through to the raw Express app to attach native middleware.
   //   const app = backend.getApp();

@@ -50,12 +50,12 @@ udp.tell({
 
 ## Settings
 
-`UdpSocketActorSettings` erweitert `BrokerCommonSettings` (das die
+`UdpSocketOptionsType` erweitert `BrokerCommonOptionsType` (das die
 gemeinsamen Felder für Reconnect / Circuit-Breaker / Outbound-Buffer
 mitbringt) und ergänzt:
 
 ```ts
-interface UdpSocketActorSettings extends BrokerCommonSettings {
+interface UdpSocketOptionsType extends BrokerCommonOptionsType {
   bindHost?: string;                 // default '0.0.0.0'
   bindPort?: number;                 // default 0 = OS-assigned
   type?: 'udp4' | 'udp6';            // default 'udp4'
@@ -65,6 +65,14 @@ interface UdpSocketActorSettings extends BrokerCommonSettings {
 
 `target` ist das einzige Pflichtfeld — ohne es haben eingehende
 Datagramme kein Ziel.  Alle vier werden über den Builder gesetzt:
+
+<Aside type="caution" title="Bind-Adresse">
+`bindHost` ist standardmäßig `'0.0.0.0'` — der Socket lauscht auf **allen**
+Interfaces.  Auf einem multi-homed oder internet-exponierten Host setze eine
+konkrete interne Adresse (z. B. `127.0.0.1` oder eine private IP), damit der
+Socket nicht aus nicht-vertrauenswürdigen Netzen erreichbar ist
+(security audit BRK-5).
+</Aside>
 
 ```ts
 UdpSocketOptions.create()
@@ -134,8 +142,7 @@ kannst du das Binden dem OS überlassen.  Lass `withBindPort` weg (oder
 reiner **Sender** für einseitige Telemetrie (statsd, syslog):
 
 ```ts
-const udpSocketOptions = UdpSocketOptions.create()
-  .withTarget(target);
+const udpSocketOptions = UdpSocketOptions.create().withTarget(target);
 new UdpSocketActor(
   udpSocketOptions,   // OS-assigned port, send-only in practice
 );

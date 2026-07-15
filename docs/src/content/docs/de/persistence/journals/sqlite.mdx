@@ -21,12 +21,11 @@ import {
 } from 'actor-ts';
 
 const system = ActorSystem.create('my-app');
+const sqliteJournalOptions = SqliteJournalOptions.create()
+  .withPath('/var/lib/my-app/events.db')
+  .withWal(true);
+const sqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create().withPath('/var/lib/my-app/snapshots.db');
 system.extension(PersistenceExtensionId).configure({
-  const sqliteJournalOptions = SqliteJournalOptions.create()
-    .withPath('/var/lib/my-app/events.db')
-    .withWal(true);
-  const sqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create()
-    .withPath('/var/lib/my-app/snapshots.db');
   journal: new SqliteJournal(sqliteJournalOptions),
   snapshotStore: new SqliteSnapshotStore(sqliteSnapshotStoreOptions),
 });
@@ -49,8 +48,7 @@ interface SqliteJournalOptions {
 ### `path`
 
 ```ts
-const sqliteJournalOptions = SqliteJournalOptions.create()
-  .withPath('/var/lib/my-app/events.db');
+const sqliteJournalOptions = SqliteJournalOptions.create().withPath('/var/lib/my-app/events.db');
 new SqliteJournal(sqliteJournalOptions)
 ```
 
@@ -65,8 +63,7 @@ In-Memory-DB, die sich genau wie die Datei-Version verhält, aber
 mit dem Prozess verschwindet:
 
 ```ts
-const sqliteJournalOptions = SqliteJournalOptions.create()
-  .withPath(':memory:');
+const sqliteJournalOptions = SqliteJournalOptions.create().withPath(':memory:');
 new SqliteJournal(sqliteJournalOptions)
 ```
 

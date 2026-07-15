@@ -40,7 +40,7 @@ nats.tell({
 ## Settings
 
 ```ts
-interface NatsActorSettings extends BrokerCommonSettings {
+interface NatsOptionsType extends BrokerCommonOptionsType {
   servers:    string[] | string;
   name?:      string;            // Client-Identifier
   user?:      string;

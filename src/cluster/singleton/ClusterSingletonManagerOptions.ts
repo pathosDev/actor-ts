@@ -3,7 +3,7 @@ import type { Props } from '../../Props.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { Cluster } from '../Cluster.js';
 
-/** Plain settings-object shape consumed by a {@link ClusterSingletonManager}. */
+/** Plain options-object shape consumed by a {@link ClusterSingletonManager}. */
 export interface ClusterSingletonManagerOptionsType<T> {
   readonly cluster: Cluster;
   /** Logical name for this singleton; also used as the child-actor name. */

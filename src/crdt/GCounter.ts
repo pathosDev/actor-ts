@@ -39,7 +39,7 @@ export class GCounter implements Crdt<GCounter> {
   /** Total count = sum of every replica's contribution. */
   value(): number {
     let total = 0;
-    for (const v of this.state.values()) total += v;
+    for (const count of this.state.values()) total += count;
     return total;
   }
 
@@ -66,8 +66,8 @@ export class GCounter implements Crdt<GCounter> {
   /** Equality by value — two counters with the same per-replica counts. */
   equals(other: GCounter): boolean {
     if (this.state.size !== other.state.size) return false;
-    for (const [k, v] of this.state) {
-      if (other.state.get(k) !== v) return false;
+    for (const [replicaId, count] of this.state) {
+      if (other.state.get(replicaId) !== count) return false;
     }
     return true;
   }

@@ -10,26 +10,26 @@ import type { BrokerScenario } from '../../lib/scenario.js';
 export const scenario: BrokerScenario<S3Ctx> = {
   name: 'delete is idempotent + GET-after-DELETE returns None',
   async run(ctx) {
-    const b = backend(ctx);
+    const store = backend(ctx);
     try {
       const tag = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const key = `b2/delete-${tag}.bin`;
 
       // Delete-before-put is a no-op (idempotent on absent).
-      await b.delete(key);
+      await store.delete(key);
 
-      await b.put(key, new Uint8Array([1, 2, 3]));
-      const before = await b.get(key);
+      await store.put(key, new Uint8Array([1, 2, 3]));
+      const before = await store.get(key);
       if (before.isNone()) throw new Error('GET after PUT returned None');
 
-      await b.delete(key);
-      const after = await b.get(key);
+      await store.delete(key);
+      const after = await store.get(key);
       if (after.isSome()) throw new Error('GET after DELETE returned Some — expected None');
 
       // Second delete must not throw.
-      await b.delete(key);
+      await store.delete(key);
     } finally {
-      await b.close();
+      await store.close();
     }
   },
 };

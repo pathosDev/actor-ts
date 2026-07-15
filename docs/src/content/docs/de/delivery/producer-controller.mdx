@@ -8,15 +8,15 @@ Senders, vergibt **Sequence Numbers** und hält sie, bis sie vom
 Consumer **geACKt** sind.
 
 ```ts
-import { Props, ProducerController } from 'actor-ts';
+import { Props, ProducerController, ProducerControllerOptions } from 'actor-ts';
 
+const producerControllerOptions = ProducerControllerOptions.create<OrderEvent>()
+  .withProducerId('orders')                     // stabile Identität
+  .withConsumer(consumerRef)
+  .withWindowSize(16)                           // Flow-Control-Window
+  .withResendTimeout(500);
 const producer = system.spawn(
-  Props.create(() => new ProducerController<OrderEvent>({
-    producerId:      'orders',                  // stabile Identität
-    consumer:        consumerRef,
-    windowSize:      16,                        // Flow-Control-Window
-    resendTimeoutMs: 500,
-  })),
+  Props.create(() => new ProducerController<OrderEvent>(producerControllerOptions)),
   'producer',
 );
 
@@ -28,14 +28,14 @@ Intern:
 - Vergibt Seq 1 für die erste Nachricht, 2 für die nächste, ...
 - Sendet jede via Wrapped Tell an den Consumer.
 - Hält sie in einem Buffer, bis sie geACKt sind.
-- Retransmittiert, wenn binnen `resendTimeoutMs` kein ACK kommt.
+- Retransmittiert, wenn binnen `resendTimeout` kein ACK kommt.
 
 ## Konfiguration
 
 ```ts
-interface ProducerControllerSettings<T> {
+interface ProducerControllerOptionsType<T> {
   consumer:          ActorRef<Delivery<T>>;
-  resendTimeoutMs?:  number;       // Default 500
+  resendTimeout?:  number;       // Default 500
   windowSize?:       number;       // Default 16
   producerId?:       string;       // wird auto-generiert, wenn weggelassen
 }
@@ -44,7 +44,7 @@ interface ProducerControllerSettings<T> {
 | Feld | Zweck |
 | --- | --- |
 | `consumer` | Die `ConsumerController`-Ref, an die zugestellt wird. |
-| `resendTimeoutMs` | Wie lange auf ein ACK gewartet wird, bevor retransmittiert wird. |
+| `resendTimeout` | Wie lange auf ein ACK gewartet wird, bevor retransmittiert wird. |
 | `windowSize` | Flow-Control-Window — pausiert das Queuing nach N unbestätigten In-Flight-Nachrichten. |
 | `producerId` | Stabiler Identifier, mit dem der Consumer über Restarts hinweg dedupliziert. Wird auto-generiert, wenn weggelassen; bei persistierten Producern willst Du einen stabilen String, damit Recovery matcht. |
 
@@ -72,7 +72,7 @@ Producers und geben dir damit ein natürliches Backpressure-Signal.
 
 ## Retransmission
 
-Wenn ein ACK nicht binnen `resendTimeoutMs` eintrifft:
+Wenn ein ACK nicht binnen `resendTimeout` eintrifft:
 
 ```
 Seq 5 zum Zeitpunkt t=0 gesendet

@@ -94,8 +94,8 @@ describe('Actor lifecycle', () => {
 
   test('supervisorStrategy() default resolves to defaultStrategy', () => {
     class A extends Actor<string> { override onReceive(_: string): void {} }
-    const a = new A();
-    expect(a.supervisorStrategy().decider(new Error())).toBe('restart');
+    const actorRef = new A();
+    expect(actorRef.supervisorStrategy().decider(new Error())).toBe('restart');
   });
 
   test('self/sender/system/log accessors are bound after attach', async () => {

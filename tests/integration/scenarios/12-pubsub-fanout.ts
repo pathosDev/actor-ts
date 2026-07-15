@@ -106,9 +106,9 @@ export const scenario: Scenario = {
     //    the published range (1..expectedTotal).
     await sleep(300);
     for (const host of live) {
-      const s = await received(host, ctx.controlPort);
-      if (s.lastSeq < 1 || s.lastSeq > expectedTotal) {
-        throw new Error(`[12] ${host} lastSeq=${s.lastSeq} not in [1,${expectedTotal}]`);
+      const delivery = await received(host, ctx.controlPort);
+      if (delivery.lastSeq < 1 || delivery.lastSeq > expectedTotal) {
+        throw new Error(`[12] ${host} lastSeq=${delivery.lastSeq} not in [1,${expectedTotal}]`);
       }
     }
     console.log('[12] every subscriber\'s last-seen seq is within the published range');

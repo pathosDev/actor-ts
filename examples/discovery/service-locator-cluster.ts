@@ -30,7 +30,7 @@ class Worker extends Actor<string> {
 class StreamClient extends Actor<Listing<string>> {
   override onReceive(listing: Listing<string>): void {
     console.log(`[client] Listing ${listing.key.id}: ${listing.refs.length} worker(s)`);
-    for (const r of listing.refs) console.log(`   - ${r.toString()}`);
+    for (const ref of listing.refs) console.log(`   - ${ref.toString()}`);
   }
 }
 
@@ -48,36 +48,35 @@ async function startNode(host: string, port: number, seeds: string[] = []): Prom
 }
 
 async function main(): Promise<void> {
-  const a = await startNode('a', 11_001);
-  const b = await startNode('b', 11_002, ['service-locator@a:11001']);
-  const c = await startNode('c', 11_003, ['service-locator@a:11001']);
+  const nodeA = await startNode('a', 11_001);
+  const nodeB = await startNode('b', 11_002, ['service-locator@a:11001']);
+  const nodeC = await startNode('c', 11_003, ['service-locator@a:11001']);
 
   await Bun.sleep(300);
 
   const key = ServiceKey.of<string>('workers');
 
-  for (const { sys, cluster, name } of [a, b, c]) {
-    const receptionistOptions = ReceptionistOptions.create()
-      .withGossipIntervalMs(80);
-    const r = sys.extension(ReceptionistId).start(cluster, receptionistOptions);
-    const w = sys.spawn(Props.create(() => new Worker(name)), `worker-${name}`);
-    r.tell(new Register(key, w));
+  for (const { sys, cluster, name } of [nodeA, nodeB, nodeC]) {
+    const receptionistOptions = ReceptionistOptions.create().withGossipIntervalMs(80);
+    const receptionist = sys.extension(ReceptionistId).start(cluster, receptionistOptions);
+    const worker = sys.spawn(Props.create(() => new Worker(name)), `worker-${name}`);
+    receptionist.tell(new Register(key, worker));
   }
 
   // Subscribe on node A; expect to see 1, then 2, then 3 workers over time.
-  const aReceptionist = a.sys.extension(ReceptionistId).get()!;
-  const client = a.sys.spawn(Props.create(() => new StreamClient()), 'client');
+  const aReceptionist = nodeA.sys.extension(ReceptionistId).get()!;
+  const client = nodeA.sys.spawn(Props.create(() => new StreamClient()), 'client');
   aReceptionist.tell(new Subscribe(key, client));
 
   await Bun.sleep(500);
   console.log('--- node C leaves ---');
-  await c.cluster.leave();
-  await c.sys.terminate();
+  await nodeC.cluster.leave();
+  await nodeC.sys.terminate();
 
   // Wait for gossip to drop C's worker from the view.
   await Bun.sleep(500);
 
-  for (const n of [a, b]) { await n.cluster.leave(); await n.sys.terminate(); }
+  for (const node of [nodeA, nodeB]) { await node.cluster.leave(); await node.sys.terminate(); }
 }
 
 void main();

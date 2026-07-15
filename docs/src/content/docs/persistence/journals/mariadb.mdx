@@ -39,8 +39,7 @@ import {
   registerMariaDbPlugins,
 } from 'actor-ts';
 
-const actorSystemOptions = ActorSystemOptions.create()
-  .withConfig({
+const actorSystemOptions = ActorSystemOptions.create().withConfig({
     'actor-ts': {
       persistence: {
         journal: { plugin: 'actor-ts.persistence.journal.mariadb' },
@@ -51,13 +50,11 @@ const actorSystemOptions = ActorSystemOptions.create()
 const system = ActorSystem.create('my-app', actorSystemOptions);
 
 const ext = system.extension(PersistenceExtensionId);
-const mariaDbJournalOptions = MariaDbJournalOptions.create()
-  .withPoolConfig(conn);
+const mariaDbJournalOptions = MariaDbJournalOptions.create().withPoolConfig(conn);
 const mariaDbSnapshotStoreOptions = MariaDbSnapshotStoreOptions.create()
   .withPoolConfig(conn)
   .withKeepN(3);
-const mariaDbDurableStateStoreOptions = MariaDbDurableStateStoreOptions.create()
-  .withPoolConfig(conn);
+const mariaDbDurableStateStoreOptions = MariaDbDurableStateStoreOptions.create().withPoolConfig(conn);
 const registerMariaDbPluginsOptions = RegisterMariaDbPluginsOptions.create()
   .withJournal(mariaDbJournalOptions)
   .withSnapshotStore(mariaDbSnapshotStoreOptions)

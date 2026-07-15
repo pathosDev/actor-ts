@@ -27,13 +27,13 @@ mkdirSync(targetDir, { recursive: true });
 
 function copyTree(src, dst) {
   for (const entry of readdirSync(src)) {
-    const s = join(src, entry);
-    const d = join(dst, entry);
-    if (statSync(s).isDirectory()) {
-      mkdirSync(d, { recursive: true });
-      copyTree(s, d);
+    const sourcePath = join(src, entry);
+    const destPath = join(dst, entry);
+    if (statSync(sourcePath).isDirectory()) {
+      mkdirSync(destPath, { recursive: true });
+      copyTree(sourcePath, destPath);
     } else {
-      copyFileSync(s, d);
+      copyFileSync(sourcePath, destPath);
     }
   }
 }

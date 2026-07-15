@@ -4,8 +4,14 @@ description: Die volle Management-Endpunkt-Oberfläche — `/health`, `/ready`, 
 ---
 
 Der Management-Server stellt einen kleinen Satz operativer
-Endpunkte bereit. Die meisten sind read-only (sicher fürs
-Monitoring zu exponieren); Admin-Endpunkte sind Opt-in.
+Endpunkte bereit. Die meisten sind read-only; die Admin-Endpunkte
+(`/cluster/down`, `/cluster/leave`) sind Opt-in und standardmäßig aus.
+
+**Sicherheit (security audit #8):** die read-only-Endpunkte legen dennoch
+interne Topologie offen — Member-Adressen (`host:port`), Rollen, den Leader
+und die Shard-Map. Behandle den Management-Server als sensibel: binde ihn an
+ein internes Interface und schütze ihn mit den Optionen `ipAllowlist` (und/oder
+`auth`) von `managementRoutes(...)`, statt ihn öffentlich zu exponieren.
 
 ## Health-Probes
 
@@ -17,14 +23,15 @@ Liveness — ist dieser Prozess fundamental gesund?
 GET /health
 → 200 OK
 {
-  "ok": true,
-  "checks": {
-    "actor-system-alive": { "ok": true }
-  }
+  "status": "UP",
+  "checks": [
+    { "name": "event-loop", "status": true }
+  ]
 }
 ```
 
-503 mit `{ ok: false }`, wenn ein Check fehlschlägt. Siehe
+503 mit `{ "status": "DOWN", ... }`, wenn ein Liveness-Check
+fehlschlägt.  Siehe
 [Health Checks](/de/observability/management/health-checks/).
 
 ### `GET /ready`
@@ -35,20 +42,21 @@ Readiness — sollte dieser Pod Traffic bekommen?
 GET /ready
 → 200 OK
 {
-  "ok": true,
-  "checks": {
-    "actor-system-alive":   { "ok": true },
-    "cluster-up":           { "ok": true }
-  }
+  "status": "UP",
+  "clusterReady": true,
+  "checks": [
+    { "name": "database", "status": true }
+  ]
 }
 ```
 
-Der `cluster-up`-Check schlägt fehl, bis `SelfUp` feuert. Eigene
-Checks tragen zur Response bei. 503, wenn einer fehlschlägt.
+`clusterReady` ist `false`, bis der lokale Node `Up` erreicht; die
+Readiness-Checks, die du registrierst, füllen das `checks`-Array.
+503, wenn der Cluster nicht bereit ist oder ein Check fehlschlägt.
 
 ## Cluster-Info
 
-Verfügbar, wenn `cluster` an `HttpManagement.start` übergeben
+Verfügbar, wenn ein `cluster` an `managementRoutes` übergeben
 wurde.
 
 ### `GET /cluster/members`
@@ -57,17 +65,16 @@ wurde.
 GET /cluster/members
 → 200 OK
 {
-  "selfAddress": "actor-ts://my-app@10.0.0.5:2552",
-  "leader":      "actor-ts://my-app@10.0.0.5:2552",
   "members": [
     {
-      "address":   "actor-ts://my-app@10.0.0.5:2552",
-      "status":    "up",
-      "roles":     ["compute"],
-      "uniqueAddress": { "address": "...", "uid": 1 }
+      "address": "actor-ts://my-app@10.0.0.5:2552",
+      "status":  "up",
+      "version": 3,
+      "roles":   ["compute"]
     },
     ...
-  ]
+  ],
+  "self": "actor-ts://my-app@10.0.0.5:2552"
 }
 ```
 
@@ -82,11 +89,12 @@ Voller Membership-Snapshot. Nützlich für:
 ```
 GET /cluster/leader
 → 200 OK
-{ "leader": "actor-ts://my-app@10.0.0.5:2552" }
+{ "leader": "actor-ts://my-app@10.0.0.5:2552", "isSelf": true }
 ```
 
-Nur die Adresse des Leaders. Nützlich zum Monitoring von
-Leader-Wechseln.
+Die Adresse des Leaders plus `isSelf` (ist der lokale Node der
+Leader). `leader` ist `null`, bevor ein Leader gewählt wurde.
+Nützlich zum Monitoring von Leader-Wechseln.
 
 ### `GET /cluster/shards?type=<typeName>`
 
@@ -95,17 +103,19 @@ GET /cluster/shards?type=cart
 → 200 OK
 {
   "typeName": "cart",
+  "leader":   "my-app@10.0.0.5:2552",
+  "takenAt":  1710000000000,
   "regions": [
     {
-      "address": "actor-ts://my-app@10.0.0.5:2552",
+      "key":     "my-app@10.0.0.5:2552",
+      "address": "my-app@10.0.0.5:2552",
+      "path":    "/system/sharding/cart",
+      "proxy":   false,
       "shards":  [0, 1, 2, ..., 33]
     },
-    {
-      "address": "actor-ts://my-app@10.0.0.6:2552",
-      "shards":  [34, 35, ..., 66]
-    },
     ...
-  ]
+  ],
+  "shardHome": [ { "shard": 0, "regionKey": "my-app@10.0.0.5:2552" }, ... ]
 }
 ```
 
@@ -126,7 +136,7 @@ Opt-in via `enableMetricsEndpoint: true`.
 ```
 GET /metrics
 → 200 OK
-Content-Type: text/plain; version=0.0.4
+Content-Type: text/plain; version=0.0.4; charset=utf-8
 
 # HELP actor_messages_processed_total ...
 # TYPE actor_messages_processed_total counter
@@ -145,9 +155,12 @@ Opt-in via `enableLeaveEndpoint: true`.
 
 ```
 POST /cluster/leave
-→ 200 OK
-{ "status": "leaving" }
+→ 202 Accepted
+leaving
 ```
+
+Der `202`-Body ist das Klartext-Wort `leaving` (kein JSON) — der
+Leave ist Fire-and-forget.
 
 Löst einen Graceful Cluster-Leave aus. Der Node läuft durch
 `leaving` → `exiting` → `removed`; Shards rebalancen weg; das
@@ -169,9 +182,12 @@ Opt-in via `enableDownEndpoint: true`.
 POST /cluster/down
 { "address": "actor-ts://my-app@10.0.0.5:2552" }
 
-→ 200 OK
+→ 202 Accepted
 { "downed": "actor-ts://my-app@10.0.0.5:2552" }
 ```
+
+Gibt `202` mit `{ downed }` zurück, wenn das Mitglied gedownt wurde,
+oder `404`, wenn die Adresse unbekannt oder bereits terminal ist.
 
 Force-downt ein Remote-Mitglied per Adresse. Destruktiv — die
 Actor des Targets stoppen, seine Shards reallokieren woanders.
@@ -199,7 +215,7 @@ const customRoutes = concat(
   ),
 );
 
-await http.newServerAt(host, port).bind(customRoutes);
+await system.http(port, { host }).bind(customRoutes);
 ```
 
 `managementRoutes(system, cluster, opts)` gibt die Basis-Routen
@@ -209,20 +225,19 @@ hinzuzufügen.
 
 ## Response-Format
 
-Alle Endpunkte geben standardmäßig **JSON** zurück, mit einer
-Ausnahme: `/metrics` gibt **text/plain** für Prometheus zurück.
+Die Read-Endpunkte (`/health`, `/ready`, `/cluster/members`,
+`/cluster/leader`, `/cluster/shards`) und `/cluster/down` geben
+**JSON** zurück. `/metrics` liefert Prometheus-**text/plain**, und
+`/cluster/leave` gibt den Klartext-Body `leaving` zurück.
 
-Fehler sind strukturiert:
+Fehler sind **Klartext**-Bodies (das `complete(status, message)` des
+Frameworks), kein strukturiertes Objekt — z. B. ergibt ein fehlender
+`type`-Query-Param ein `400`, dessen Body `missing query param \`type\`` ist.
 
-```json
-{
-  "error":  "Missing query parameter: type",
-  "status": 400
-}
-```
-
-Status-Codes folgen HTTP-Konventionen: 200 für Erfolg, 4xx für
-Client-Fehler, 5xx für Server-Fehler.
+Status-Codes folgen HTTP-Konventionen: `200` für Reads, **`202 Accepted`**
+für die Admin-Aktionen (`/cluster/leave`, `/cluster/down`), `4xx` für
+Client-Fehler (`404`, wenn eine `/cluster/down`-Adresse unbekannt ist)
+und `503`, wenn Cluster oder ein Health-Check nicht verfügbar ist.
 
 import { Aside } from '@astrojs/starlight/components';
 

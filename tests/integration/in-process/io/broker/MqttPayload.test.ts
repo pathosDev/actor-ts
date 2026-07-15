@@ -53,21 +53,21 @@ describe('mqttJsonCodec', () => {
 describe('MqttPayload', () => {
   test('bytes are exposed verbatim; byteLength matches', () => {
     const bytes = enc.encode('abc');
-    const p = new MqttPayload(bytes, mqttJsonCodec());
-    expect(p.bytes).toBe(bytes);
-    expect(p.byteLength).toBe(3);
+    const payload = new MqttPayload(bytes, mqttJsonCodec());
+    expect(payload.bytes).toBe(bytes);
+    expect(payload.byteLength).toBe(3);
   });
 
   test('text() UTF-8 decodes and caches', () => {
-    const p = new MqttPayload(enc.encode('grüße'), mqttJsonCodec());
-    expect(p.text()).toBe('grüße');
-    expect(p.text()).toBe('grüße'); // second call from cache
-    expect(p.toString()).toBe('grüße');
+    const payload = new MqttPayload(enc.encode('grüße'), mqttJsonCodec());
+    expect(payload.text()).toBe('grüße');
+    expect(payload.text()).toBe('grüße'); // second call from cache
+    expect(payload.toString()).toBe('grüße');
   });
 
   test('entity() decodes via the codec', () => {
-    const p = new MqttPayload<{ a: number }>(enc.encode('{"a":1}'), mqttJsonCodec());
-    const value = p.entity();
+    const payload = new MqttPayload<{ a: number }>(enc.encode('{"a":1}'), mqttJsonCodec());
+    const value = payload.entity();
     expect(value).toEqual({ a: 1 });
   });
 
@@ -81,9 +81,9 @@ describe('MqttPayload', () => {
         return JSON.parse(new TextDecoder().decode(b));
       },
     };
-    const p = new MqttPayload<{ a: number }>(enc.encode('{"a":1}'), spy);
-    const first = p.entity();
-    const second = p.entity<{ a: number }>(); // type-assertion variant, same cache
+    const payload = new MqttPayload<{ a: number }>(enc.encode('{"a":1}'), spy);
+    const first = payload.entity();
+    const second = payload.entity<{ a: number }>(); // type-assertion variant, same cache
     expect(first).toEqual({ a: 1 });
     expect(second).toBe(first);
     expect(decodeCalls).toBe(1);
@@ -91,10 +91,10 @@ describe('MqttPayload', () => {
 
   test('entity() on malformed payload throws MqttDecodeError with topic + bytes, re-throwable', () => {
     const bytes = enc.encode('{ broken');
-    const p = new MqttPayload(bytes, mqttJsonCodec(), 'sensors/1/temp');
+    const payload = new MqttPayload(bytes, mqttJsonCodec(), 'sensors/1/temp');
     let first: unknown;
     try {
-      p.entity();
+      payload.entity();
       throw new Error('expected entity() to throw');
     } catch (e) {
       first = e;
@@ -105,7 +105,7 @@ describe('MqttPayload', () => {
     // Errors are not cached: a second call re-throws an equivalent error.
     let second: unknown;
     try {
-      p.entity();
+      payload.entity();
     } catch (e) {
       second = e;
     }
@@ -121,9 +121,9 @@ describe('MqttPayload', () => {
         throw new TypeError('kaboom');
       },
     };
-    const p = new MqttPayload(enc.encode('x'), throwing, 't/1');
+    const payload = new MqttPayload(enc.encode('x'), throwing, 't/1');
     try {
-      p.entity();
+      payload.entity();
       throw new Error('expected entity() to throw');
     } catch (e) {
       expect(e).toBeInstanceOf(MqttDecodeError);

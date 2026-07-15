@@ -45,15 +45,15 @@ describe('JsonSerializer', () => {
   });
 
   test('round-trips Map', () => {
-    const m = new Map<string, number>([['a', 1], ['b', 2]]);
-    const out = rt(m);
+    const map = new Map<string, number>([['a', 1], ['b', 2]]);
+    const out = rt(map);
     expect(out).toBeInstanceOf(Map);
     expect(Array.from((out as Map<string, number>).entries())).toEqual([['a', 1], ['b', 2]]);
   });
 
   test('round-trips Set', () => {
-    const s = new Set(['x', 'y', 'z']);
-    const out = rt(s);
+    const set = new Set(['x', 'y', 'z']);
+    const out = rt(set);
     expect(out).toBeInstanceOf(Set);
     expect(Array.from((out as Set<string>).values()).sort()).toEqual(['x', 'y', 'z']);
   });

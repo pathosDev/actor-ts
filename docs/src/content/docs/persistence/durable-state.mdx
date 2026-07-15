@@ -3,7 +3,7 @@ title: Durable state
 description: The simpler persistence model — `DurableStateActor` persists a *single state value* per `persistenceId`, overwriting on each update. Right when you need recovery but don't need history.
 ---
 
-`DurableStateActor<Cmd, S>` is the "I just want the current value
+`DurableStateActor<Command, S>` is the "I just want the current value
 to survive" persistence model.  No event log, no replay — just a
 snapshot of the state, overwritten on each `persist(newState)`.
 
@@ -50,17 +50,17 @@ import { DurableStateActor, DurableStateOptions, ActorSystem, Props } from 'acto
 import { InMemoryDurableStateStore } from 'actor-ts';
 import { match } from 'ts-pattern';
 
-type CartCmd =
+type CartCommand =
   | { kind: 'add';    sku: string }
   | { kind: 'remove'; sku: string }
   | { kind: 'view';   replyTo: ActorRef<State> };
 
 interface State { items: string[]; }
 
-class Cart extends DurableStateActor<CartCmd, State> {
+class Cart extends DurableStateActor<CartCommand, State> {
   constructor(options: DurableStateOptions<State>) { super(options); }
 
-  override async onReceive(cmd: CartCmd): Promise<void> {
+  override async onReceive(cmd: CartCommand): Promise<void> {
     await match(cmd)
       .with({ kind: 'add' },    (c) => this.persist({ items: [...this.state.items, c.sku] }))
       .with({ kind: 'remove' }, (c) => this.persist({ items: this.state.items.filter(s => s !== c.sku) }))
@@ -90,7 +90,7 @@ cart.tell({ kind: 'add', sku: 'book-2' });
 ## The settings
 
 ```ts
-interface DurableStateSettings<S> {
+interface DurableStateOptionsType<S> {
   persistenceId: string;
   store:         DurableStateStore;
   emptyState:    () => S;

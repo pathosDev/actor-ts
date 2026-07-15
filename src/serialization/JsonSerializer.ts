@@ -58,8 +58,8 @@ function encodeTree(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(encodeTree);
   if (typeof value === 'object') {
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = encodeTree(v);
+    for (const [key, entryValue] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = encodeTree(entryValue);
     }
     return out;
   }
@@ -83,15 +83,28 @@ function decodeTree(value: unknown): unknown {
   if (SET_TAG in obj) return new Set((obj[SET_TAG] as unknown[]).map(decodeTree));
   if (BIGINT_TAG in obj) return BigInt(obj[BIGINT_TAG] as string);
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(obj)) out[k] = decodeTree(v);
+  for (const [key, value] of Object.entries(obj)) {
+    // `out.__proto__ = …` would invoke the prototype setter rather than
+    // create a data property, letting a hostile `{"__proto__": …}` payload
+    // change the decoded object's prototype.  Define it explicitly so the
+    // key round-trips as plain data and the prototype stays untouched
+    // (security audit #9).
+    if (key === '__proto__') {
+      Object.defineProperty(out, key, {
+        value: decodeTree(value), enumerable: true, writable: true, configurable: true,
+      });
+    } else {
+      out[key] = decodeTree(value);
+    }
+  }
   return out;
 }
 
 function toBase64(bytes: Uint8Array): string {
   if (typeof Buffer !== 'undefined') return Buffer.from(bytes).toString('base64');
-  let s = '';
-  for (let i = 0; i < bytes.byteLength; i++) s += String.fromCharCode(bytes[i]!);
-  return btoa(s);
+  let binaryString = '';
+  for (let i = 0; i < bytes.byteLength; i++) binaryString += String.fromCharCode(bytes[i]!);
+  return btoa(binaryString);
 }
 
 function fromBase64(s: string): Uint8Array {

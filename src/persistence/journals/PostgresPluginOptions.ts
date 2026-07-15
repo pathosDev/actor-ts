@@ -28,10 +28,10 @@ export interface RegisterPostgresPluginsOptionsType {
  *       .withJournal(PostgresJournalOptions.create().withEventsTable('journal'))
  *       .withSnapshotStore(PostgresSnapshotStoreOptions.create().withKeepN(5)))
  *
- * The shared `withPool(...)` is merged onto each store's resolved settings
+ * The shared `withPool(...)` is merged onto each store's resolved options
  * by {@link registerPostgresPlugins}, so a leaf builder carries only its
  * store-specific fields.  Each leaf setter accepts EITHER the leaf builder
- * OR a plain object of the leaf's settings.
+ * OR a plain object of the leaf's options.
  */
 export class RegisterPostgresPluginsOptionsBuilder extends OptionsBuilder<RegisterPostgresPluginsOptionsType> {
   /** Start a fresh builder.  Equivalent to `new RegisterPostgresPluginsOptionsBuilder()`. */

@@ -6,8 +6,8 @@
  * and feeds the same three-layer merge (constructor > HOCON under
  * `actor-ts.io.broker.redisStreams` > built-in defaults).
  */
-import { BrokerOptionsBuilder } from './BrokerOptions.js';
-import type { BrokerCommonOptionsType } from './BrokerSettings.js';
+import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
+import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { RedisStreamEntry } from './RedisStreamsActor.js';
 
@@ -16,7 +16,7 @@ export interface RedisStreamsOptionsType extends BrokerCommonOptionsType {
   readonly url?: string;
   /** Streams to consume. */
   readonly streams?: ReadonlyArray<string>;
-  /** Consumer-group settings — required to consume.  When omitted only producing works. */
+  /** Consumer-group options — required to consume.  When omitted only producing works. */
   readonly consumerGroup?: {
     readonly group: string;
     readonly consumer: string;
@@ -45,7 +45,7 @@ export class RedisStreamsOptionsBuilder extends BrokerOptionsBuilder<RedisStream
     return this.set('streams', streams);
   }
 
-  /** Consumer-group settings — required to consume. */
+  /** Consumer-group options — required to consume. */
   withConsumerGroup(group: NonNullable<RedisStreamsOptionsType['consumerGroup']>): this {
     return this.set('consumerGroup', group);
   }
@@ -58,6 +58,18 @@ export class RedisStreamsOptionsBuilder extends BrokerOptionsBuilder<RedisStream
   /** Subscriber for inbound entries.  Required to consume. */
   withTarget(target: ActorRef<RedisStreamEntry>): this {
     return this.set('target', target);
+  }
+}
+
+/** Validates resolved {@link RedisStreamsOptionsType} settings. */
+export class RedisStreamsOptionsValidator extends BrokerOptionsValidator<RedisStreamsOptionsType> {
+  constructor() {
+    super('RedisStreamsOptions');
+  }
+  protected rules(s: Partial<RedisStreamsOptionsType>): void {
+    this.commonRules(s);
+    this.url('url', ['redis', 'rediss']);
+    this.nonNegativeInt('blockMs'); // 0 = block indefinitely (Redis XREAD semantics)
   }
 }
 

@@ -64,33 +64,33 @@ async function stop(n: Node): Promise<void> {
 describe('Distributed tracing — cross-node propagation', () => {
   test('A→B remote tell stitches into one trace via cluster.envelope.received', async () => {
     const sysName = 'tr-xnode';
-    const a = await startNode(sysName, 65_001, []);
-    const b = await startNode(sysName, 65_002, [`${sysName}@h:65001`]);
+    const nodeA = await startNode(sysName, 65_001, []);
+    const nodeB = await startNode(sysName, 65_002, [`${sysName}@h:65001`]);
     try {
-      await waitFor(() => a.cluster.upMembers().length === 2);
+      await waitFor(() => nodeA.cluster.upMembers().length === 2);
 
       class Echo extends Actor<string> {
         override onReceive(_m: string): void { /* span recorded automatically */ }
       }
-      b.sys.spawn(Props.create(() => new Echo()), 'echo');
+      nodeB.sys.spawn(Props.create(() => new Echo()), 'echo');
       const echoOnB = new RemoteActorRef<string>(
-        b.cluster.selfAddress,
+        nodeB.cluster.selfAddress,
         `actor-ts://${sysName}/user/echo`,
-        a.cluster,
+        nodeA.cluster,
       );
 
-      const client = a.tracer.startSpan('client.work');
-      a.tracer.withActiveSpan(client, () => echoOnB.tell('hello'));
+      const client = nodeA.tracer.startSpan('client.work');
+      nodeA.tracer.withActiveSpan(client, () => echoOnB.tell('hello'));
       await sleep(80);
       client.end();
 
       // Spans recorded on A: client.work.
-      const aSpans = a.tracer.recorded();
+      const aSpans = nodeA.tracer.recorded();
       const clientSpan = aSpans.find((s) => s.name === 'client.work');
       expect(clientSpan).toBeDefined();
 
       // Spans recorded on B: cluster.envelope.received + actor.receive.
-      const bSpans = b.tracer.recorded();
+      const bSpans = nodeB.tracer.recorded();
       const wireSpan = bSpans.find((s) => s.name === 'cluster.envelope.received');
       const recvSpan = bSpans.find((s) => s.name === 'actor.receive');
       expect(wireSpan).toBeDefined();
@@ -109,14 +109,14 @@ describe('Distributed tracing — cross-node propagation', () => {
       expect(wireSpan!.attributes['cluster.from']).toContain('h:65001');
       expect(wireSpan!.attributes['cluster.to.path']).toContain('/user/echo');
     } finally {
-      await stop(a);
-      await stop(b);
+      await stop(nodeA);
+      await stop(nodeB);
     }
   }, 15_000);
 
   test('without enabling the tracer on the receiver, the wire trace is dropped silently', async () => {
     const sysName = 'tr-xnode-noop';
-    const a = await startNode(sysName, 65_011, []);
+    const nodeA = await startNode(sysName, 65_011, []);
     // Node B intentionally has the noop tracer (default).
     const sysBOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
@@ -130,7 +130,7 @@ describe('Distributed tracing — cross-node propagation', () => {
       .withGossipIntervalMs(30);
     const clusterB = await Cluster.join(sysB, clusterBOptions);
     try {
-      await waitFor(() => a.cluster.upMembers().length === 2);
+      await waitFor(() => nodeA.cluster.upMembers().length === 2);
 
       class Echo extends Actor<string> {
         override onReceive(_m: string): void { /* */ }
@@ -139,22 +139,22 @@ describe('Distributed tracing — cross-node propagation', () => {
       const echoOnB = new RemoteActorRef<string>(
         clusterB.selfAddress,
         `actor-ts://${sysName}/user/echo`,
-        a.cluster,
+        nodeA.cluster,
       );
 
-      const client = a.tracer.startSpan('client');
-      a.tracer.withActiveSpan(client, () => echoOnB.tell('x'));
+      const client = nodeA.tracer.startSpan('client');
+      nodeA.tracer.withActiveSpan(client, () => echoOnB.tell('x'));
       await sleep(60);
       client.end();
 
       // A still has its client span.
-      expect(a.tracer.recorded().some((s) => s.name === 'client')).toBe(true);
+      expect(nodeA.tracer.recorded().some((s) => s.name === 'client')).toBe(true);
       // No exceptions on B's path — the noop tracer just drops the
       // extracted context.  We can't assert "no spans on B" without
       // a recorder, but the absence of crashes confirms the
       // graceful-degradation path.
     } finally {
-      await stop(a);
+      await stop(nodeA);
       await clusterB.leave();
       await sysB.terminate();
     }

@@ -44,17 +44,17 @@ http_request_duration_ms_sum{route="/orders"} 12450
 
 ## Über den Management-Endpunkt
 
-Der einfachste Weg führt über den
-[HttpManagement](/de/observability/management/overview/)-
-Helper:
+Der einfachste Weg führt über die
+[Management-Routen](/de/observability/management/overview/):
 
 ```ts
-import { HttpManagement } from 'actor-ts';
+import { managementRoutes } from 'actor-ts';
 
-await HttpManagement.start(system, {
-  port: 8558,
-  enableMetricsEndpoint: true,   // ← exponiert GET /metrics
+// cluster can be null when you only need the metrics endpoint
+const { routes } = managementRoutes(system, null, {
+  enableMetricsEndpoint: true,   // ← exposes GET /metrics
 });
+await system.http(8558).bind(routes);
 ```
 
 Prometheus-Scrape-Config:
@@ -72,7 +72,7 @@ Haupt-HTTP-Server deiner App. Typisches Muster: App auf 8080
 
 ## Manuelles Verdrahten
 
-Wenn du `HttpManagement` nicht nutzt, route `GET /metrics`
+Wenn du die Management-Routen nicht nutzt, route `GET /metrics`
 selbst:
 
 ```ts

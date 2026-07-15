@@ -3,6 +3,7 @@ import { Lazy } from '../util/Lazy.js';
 import { none, some, type Option } from '../util/Option.js';
 import { wrapError } from '../util/WrapError.js';
 import { CacheError, type Cache } from './Cache.js';
+import { MemcachedCacheOptionsValidator } from './MemcachedCacheOptions.js';
 import type { MemcachedCacheOptions, MemcachedCacheOptionsType } from './MemcachedCacheOptions.js';
 
 /**
@@ -43,6 +44,7 @@ export class MemcachedCache implements Cache {
 
   constructor(options: MemcachedCacheOptions = {}) {
     const opts = options as MemcachedCacheOptionsType;
+    new MemcachedCacheOptionsValidator().validate(opts);
     this.keyPrefix = opts.keyPrefix ?? '';
     this.clientLazy = Lazy.of(async () => {
       if (opts.client) return opts.client;
@@ -131,7 +133,7 @@ export class MemcachedCache implements Cache {
   async delete(...keys: string[]): Promise<void> {
     if (this.closed || keys.length === 0) return;
     // Validate every key up-front; one bad key fails the whole call.
-    for (const k of keys) assertSafeMemcachedKey(k);
+    for (const key of keys) assertSafeMemcachedKey(key);
     try {
       const client = await this.clientLazy.get();
       // memjs has no multi-delete — issue them in parallel.
@@ -144,7 +146,7 @@ export class MemcachedCache implements Cache {
   async mget<V>(keys: ReadonlyArray<string>): Promise<Map<string, V>> {
     const out = new Map<string, V>();
     if (this.closed || keys.length === 0) return out;
-    for (const k of keys) assertSafeMemcachedKey(k);
+    for (const key of keys) assertSafeMemcachedKey(key);
     try {
       const client = await this.clientLazy.get();
       // memjs has no native MGET — issue in parallel and rebuild the
@@ -161,8 +163,8 @@ export class MemcachedCache implements Cache {
         }),
       );
       for (let i = 0; i < keys.length; i++) {
-        const v = results[i];
-        if (v !== null && v !== undefined) out.set(keys[i]!, v);
+        const value = results[i];
+        if (value !== null && value !== undefined) out.set(keys[i]!, value);
       }
     } catch {
       // ignore
@@ -175,7 +177,7 @@ export class MemcachedCache implements Cache {
     if (ttlMs !== undefined && (!Number.isFinite(ttlMs) || ttlMs <= 0)) {
       throw new CacheError(`MemcachedCache.mset: ttlMs must be a positive finite number, got ${ttlMs}`);
     }
-    for (const k of entries.keys()) assertSafeMemcachedKey(k);
+    for (const key of entries.keys()) assertSafeMemcachedKey(key);
     const expires = msToSeconds(ttlMs);
     try {
       const client = await this.clientLazy.get();

@@ -1,116 +1,166 @@
 ---
 title: In-Memory-Cache
-description: Der Default-`Cache` — eine In-Process-Map mit LRU-Eviction + TTL pro Eintrag. Nur Single-Pod; geht bei Neustart verloren. Richtig für Tests, Dev und Single-Node-Produktions-Setups.
+description: Der Default-`Cache` — eine In-Process-`Map` mit LRU-Eviction (begrenzt durch maxEntries), fauler TTL pro Eintrag und optionalem Hintergrund-Sweep. Nur Single-Process; geht bei Neustart verloren. Richtig für Tests, Dev und Single-Node-Setups.
 ---
 
-`InMemoryCache` ist die **Default**-Cache-Implementierung.
-In-Process, LRU-Eviction, TTL pro Eintrag — schnell und keine
-Abhängigkeiten.
+`InMemoryCache` ist die **Default**-`Cache`-Implementierung.  Sie ist
+eine `Map` mit drei Dingen obendrauf: **LRU-Eviction** begrenzt durch
+`maxEntries`, **fauler TTL pro Eintrag** und einem optionalen
+**Hintergrund-Sweep**, der abgelaufene, nicht mehr angefasste Einträge
+zurückgewinnt.  In-Process, keine Abhängigkeiten, geht bei Neustart
+verloren.
 
 ```ts
-import { InMemoryCache } from 'actor-ts';
+import { InMemoryCache, InMemoryCacheOptions } from 'actor-ts';
 
-const cache = new InMemoryCache({
-  maxEntries: 10_000,
-});
+// Defaults: maxEntries 10 000, cleanupMs 60 000.
+const cache = new InMemoryCache();
+
+// Or tune it with the builder:
+const cacheOptions = InMemoryCacheOptions.create()
+  .withMaxEntries(50_000)
+  .withCleanupMs(30_000);
+const tuned = new InMemoryCache(cacheOptions);
 ```
+
+Ein einfaches Objekt ist die Kurzform-Alternative —
+`new InMemoryCache({ maxEntries: 50_000, cleanupMs: 30_000 })`.  Eine
+TTL wird weiterhin **pro Aufruf** übergeben (siehe
+[TTL-Behandlung](#ttl-behandlung)), nicht beim Konstruieren.
+
+## Optionen
+
+| Feld | Builder | Default | Bedeutung |
+| --- | --- | --- | --- |
+| `maxEntries` | `withMaxEntries(n)` | `10000` | LRU-Schranke für gespeicherte Einträge.  `Infinity` = unbegrenzt. |
+| `cleanupMs`  | `withCleanupMs(ms)` | `60000` | Intervall des Hintergrund-Sweeps für abgelaufene Einträge (ms).  `0` / `Infinity` schaltet den Sweep ab. |
+
+Werte werden einmalig beim Konstruieren auf den gemergten Settings
+validiert: `maxEntries` muss eine positive Ganzzahl (oder `Infinity`)
+sein und `cleanupMs` eine nicht-negative Zahl (oder `Infinity`).  Ein
+ungültiger Wert wirft
+[`OptionsError`](/de/reference/configuration/#options-validation) — der
+Builder, ein einfaches Objekt und HOCON treffen alle dieselbe Prüfung.
 
 ## Wann einsetzen
 
 Drei Szenarien:
 
-1. **Tests** — schnell, kein I/O, sauberes Teardown.
-2. **Single-Pod-Produktion** — kein Bedarf, Cache-State zu teilen.
+1. **Tests** — schnell, kein I/O, sauberes Teardown via `close()`.
+2. **Single-Process-Produktion** — ein Prozess, kein Bedarf,
+   Cache-State über Pods zu teilen.
 3. **Dev / lokal** — derselbe Code ohne Redis auf dem Laptop.
 
-Für **Multi-Pod**-Produktion nimm stattdessen
-[Redis](/de/cache/redis/) oder
-[Memcached](/de/cache/memcached/) — sonst hätten die Pods je
-eine eigene Kopie.
+Für **Multi-Process**-Deployments nimm stattdessen
+[Redis](/de/cache/redis/) oder [Memcached](/de/cache/memcached/) —
+sonst hielte jeder Prozess seine eigene, unabhängige Kopie.
 
-## Konfiguration
+## Die Operationen
+
+`InMemoryCache` implementiert die vollständige
+[`Cache`](/de/cache/overview/)-Fläche:
 
 ```ts
-interface InMemoryCacheSettings {
-  maxEntries?:   number;     // LRU-Cap; Default 10_000
-  cleanupMs?:    number;     // Sweep-Rhythmus für abgelaufene Einträge; Default 60_000
-}
+await cache.set('user:1', user, 60_000);            // value + optional TTL (ms)
+const hit = await cache.get<User>('user:1');        // Option<User> — None on miss/expiry
+
+await cache.setIfAbsent('lock:job', '1', 30_000);   // true iff it was stored
+await cache.incr('ratelimit:1.2.3.4', 60_000);      // atomic ++, returns the new count
+
+const many = await cache.mget<User>(['user:1', 'user:2']);  // Map<string, User>
+await cache.mset(new Map([['a', user1], ['b', user2]]), 60_000);
+
+await cache.delete('user:1', 'user:2');             // one or many keys
+await cache.close();                                // stops the sweep + clears the Map
 ```
 
-| Feld | Zweck |
-| --- | --- |
-| `maxEntries` | Obergrenze für die Cache-Größe.  LRU-Eviction darüber hinaus. |
-| `cleanupMs` | Wie oft abgelaufene Einträge gesweept werden.  Ohne das verweilen abgelaufene Einträge bis zum Zugriff. |
-
-Für die meisten Apps reichen die Defaults.
-
-## LRU-Eviction
-
-```
-maxEntries: 1000
-
-→ 1001. eindeutiger Key eingefügt → der am längsten nicht genutzte Eintrag wird evicted
-```
-
-LRU heißt **häufig genutzte Einträge bleiben**; selten genutzte
-fliegen raus.  Gut für leseintensive Caches, bei denen das Hot-Set
-in den Speicher passt, der Long-Tail aber nicht.
+`get` gibt ein `Option<V>` zurück — `None` bei einem Miss oder
+nach Ablauf.
 
 ## TTL-Behandlung
 
 ```ts
-await cache.set('key', value, 60_000);   // läuft ab bei now + 60s
+await cache.set('key', value, 60_000);   // expires at now + 60s
+await cache.set('key', value);           // no TTL — lives until evicted/deleted
 ```
 
-Zwei Cleanup-Pfade:
+Expiry hat zwei Pfade.  Er ist **faul** beim Zugriff — die Deadline
+eines Eintrags wird bei jedem `get`, `mget`, `incr` und `setIfAbsent`
+geprüft, und ein abgelaufener Eintrag wird an dieser Stelle verworfen.
+Ein **Hintergrund-Sweep** läuft dann alle `cleanupMs` (Default 60 s)
+und gewinnt abgelaufene Einträge zurück, die nie wieder angefasst
+werden, damit sie nicht auf einen Read wartend in der `Map` liegen.
+Setze `cleanupMs` auf `0` / `Infinity`, um den Sweep abzuschalten und
+dich allein auf faule Expiry zu verlassen.
 
-1. **Lazy** — beim `get` geben abgelaufene Einträge None zurück
-   (und werden entfernt).
-2. **Periodisches Sweep** — alle `cleanupMs` läuft der Cache
-   über abgelaufene Einträge und entfernt sie.  Reduziert
-   Speicher für Keys, die geschrieben, aber nie gelesen werden.
+`incr` setzt die TTL nur, wenn es den Zähler **erzeugt** (der Wert
+wird 1); spätere Inkremente erneuern sie nicht — die richtige
+Semantik für einen Fixed-Window-Rate-Limiter.
+
+## Standardmäßig begrenzt (LRU)
+
+`InMemoryCache` ist **LRU-begrenzt** bei `maxEntries` (Default 10 000):
+das Einfügen eines neuen Keys über die Schranke hinaus evictet den am
+längsten nicht genutzten Eintrag.  `get`/`incr`/`setIfAbsent` zählen
+als Nutzung und schieben einen Key ans zuletzt-genutzte Ende, sodass
+heiße Keys überleben und kalte zuerst evictet werden.  Genau das
+verhindert, dass eine Flut eindeutiger, nie erneut gelesener Keys —
+etwa angreiferseitig gewählte `Idempotency-Key`- oder Rate-Limit-Keys —
+die Map unbegrenzt wachsen lässt.
+
+Setze `maxEntries: Infinity`, um die Eviction ganz abzuschalten.  Tu
+das nur, wenn du den Key-Raum kontrollierst — eine unbegrenzte Map
+läuft dem Prozess irgendwann in einen OOM.
 
 ## Über das System teilen
 
 ```ts
-import { CacheExtensionId } from 'actor-ts';
+import { CacheExtensionId, InMemoryCache } from 'actor-ts';
 
-system.extension(CacheExtensionId).configure({
-  defaultCache: new InMemoryCache({ maxEntries: 50_000 }),
-});
+// The extension's `default` cache is an InMemoryCache out of the box:
+const cache = system.extension(CacheExtensionId).cache();
 
-// Zugriff über:
-const cache = system.extension(CacheExtensionId).cache;
+// Override the default, or register a separate named cache:
+system.extension(CacheExtensionId).setCache('default', new InMemoryCache());
+const sessions = system.extension(CacheExtensionId).cache('sessions');
 ```
 
-Ein **systemweiter Cache**, den mehrere Konsumenten (HTTP-
-Middleware, Projection-Actors, eigener Code) teilen.  Nützlich,
-wenn:
+`system.extension(CacheExtensionId).cache(name)` löst einen Cache
+über seinen Namen auf — der Name `default` ist ein `InMemoryCache`,
+solange du ihn nicht ersetzt (via `setCache`, `registerCache` oder
+den HOCON-Pfad `actor-ts.cache.<name>.plugin`).  HTTP-Middleware,
+Projection-Actors und dein eigener Code teilen sich dann eine
+konfigurierte Instanz, statt dass jeder seine eigene baut.
 
-- Du eine konfigurierte Cache-Instanz willst, nicht eine pro
-  Konsument.
-- Cache-Statistiken sich systemweit ansammeln.
+Der von der Extension gebaute In-Memory-Cache liest seine Defaults aus HOCON:
 
-Für Per-Route-Caches instanziiere `new InMemoryCache()` direkt,
-ohne über die Extension zu gehen.
+```hocon
+actor-ts.cache.in-memory {
+  maxEntries = 50000   # LRU cap
+  cleanupMs  = 30000   # background sweep interval, ms (0 disables)
+}
+```
+
+Für einen Wegwerf-Cache konstruiere einfach direkt
+`new InMemoryCache()` — keine Extension nötig.
 
 ## Wann er für Produktion falsch ist
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="State-Divergenz über Pods">
+<Aside type="caution" title="State-Divergenz über Prozesse">
   ```ts
-  // 4 Pods, jeder mit eigenem InMemoryCache → 4 unabhängige Caches
+  // 4 pods, each with its own InMemoryCache → 4 independent caches
   ```
-  Derselbe Request kann auf verschiedenen Pods gecachte Responses
-  von einem Pod bekommen und auf einem anderen verfehlen.  Nimm
-  Redis für geteilten Multi-Pod-State.
+  Derselbe Request kann auf verschiedenen Pods eine gecachte
+  Response von einem bekommen und auf einem anderen verfehlen.
+  Nimm Redis für geteilten Multi-Process-State.
 </Aside>
 
 <Aside type="caution" title="Neustart verliert alles">
   ```bash
   # kubectl delete pod my-app-1
-  # → der gesamte Cache des Pods weg
+  # → the entire pod's cache is gone
   ```
   In-Memory-Caches überleben keinen Neustart.  Für Caches, bei
   denen Kaltstart-Kosten erheblich sind (Wiederaufbau dauert
@@ -118,20 +168,23 @@ import { Aside } from '@astrojs/starlight/components';
   Kaltstart.
 </Aside>
 
-<Aside type="caution" title="Unbegrenztes Wachstum ohne maxEntries">
+<Aside type="caution" title="maxEntries auf dein Working-Set abstimmen">
   ```ts
-  new InMemoryCache();   // defaultet zu 10_000 — okay
-  new InMemoryCache({ maxEntries: Infinity });   // ✗ fliegt mit OOM
+  // Default cap is 10 000 entries; raise it for a larger hot set…
+  new InMemoryCache({ maxEntries: 200_000 });
+  // …or opt out entirely — only if you control the key space.
+  new InMemoryCache({ maxEntries: Infinity });   // ✗ unbounded — OOMs eventually
   ```
-  Setze (oder akzeptiere) immer eine Schranke.  Ein unbegrenzter
-  Cache füllt irgendwann den Speicher.
+  Die LRU-Schranke schützt dich vor unbegrenztem Wachstum, aber eine
+  zu kleine Schranke evictet heiße Einträge zu früh.  Dimensioniere
+  sie auf das erwartete Working-Set.
 </Aside>
 
 ## Wohin als Nächstes
 
 - **[Cache-Übersicht](/de/cache/overview/)** — das große
   Bild.
-- **[Redis-Cache](/de/cache/redis/)** — Multi-Pod-
+- **[Redis-Cache](/de/cache/redis/)** — Multi-Process-
   Alternative.
 - **[Memcached-Cache](/de/cache/memcached/)** —
   Alternative.

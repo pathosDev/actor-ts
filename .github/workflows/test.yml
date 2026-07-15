@@ -9,8 +9,10 @@ name: tests
 # changes deliberately skip — they can't change test outcomes.
 
 on:
+  # Run on every branch push (feature work merges locally, so a branch push
+  # is often the only pre-merge signal), not just `develop`.
   push:
-    branches: [main, develop]
+    branches: ['**']
     paths:
       - 'src/**'
       - 'tests/**'
@@ -31,18 +33,18 @@ on:
       - '.github/workflows/test.yml'
   workflow_dispatch:
 
-# Serialise runs that share the same ref — without this, two main-
+# Serialise runs that share the same ref — without this, two develop-
 # push runs that both reach the "Commit + push README" step race on
 # `git push`: the second fetches a base that's already moved and
 # fails with `non-fast-forward`.  Grouping by `github.ref`:
-#   - Main pushes (`refs/heads/main`) queue behind each other →
+#   - develop pushes (`refs/heads/develop`) queue behind each other →
 #     README updates land in order, no force-push gymnastics.
 #   - PRs (`refs/pull/N/merge`) get their own group per PR →
 #     different PRs don't block each other.
 #   - Re-pushes to the same PR cancel the in-flight run → no
 #     wasted CI on stale commits.
 # `cancel-in-progress` evaluated per event type: cancel for PRs
-# (drop stale work), queue for main pushes (preserve every commit's
+# (drop stale work), queue for develop pushes (preserve every commit's
 # README state).
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -125,8 +127,10 @@ jobs:
           [[ -z "$FAIL" ]] && FAIL=0
           [[ -z "$PASS" ]] && PASS=0
           TOTAL=$((PASS + FAIL))
-          # Line coverage from the "All files" aggregate row, second column.
-          LINES=$(echo "$OUTPUT" | grep "^All files" | awk -F'|' '{print $2}' | tr -d ' ')
+          # Line coverage from the "All files" aggregate row.  Bun's
+          # --coverage table is `File | % Funcs | % Lines | Uncovered`, so
+          # the LINE column is awk field $3 ($2 is % Funcs).
+          LINES=$(echo "$OUTPUT" | grep "^All files" | awk -F'|' '{print $3}' | tr -d ' ')
           LINES_INT=${LINES%.*}
           [[ -z "$LINES_INT" ]] && LINES_INT=0
 
@@ -148,7 +152,7 @@ jobs:
         # of truth (the badge update sees what the gate enforces).
         #
         # Floor configured via the COVERAGE_LINE_FLOOR env var — set
-        # at the workflow level so future tightening (90 → 92 → 95)
+        # at the workflow level so future tightening (80 → 85 → 90)
         # is a one-line PR rather than a script-edit.  Local devs run
         # `bun run test:coverage:gate` to get the same check.
         if: success() && steps.stats.outputs.lines != ''

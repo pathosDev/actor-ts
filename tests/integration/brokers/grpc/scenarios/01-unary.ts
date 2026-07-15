@@ -1,7 +1,7 @@
 /**
  * Unary gRPC call — request → single response → end.
  */
-import type { GrpcClientCmd } from '../../../../../src/io/broker/GrpcClientActor.js';
+import type { GrpcClientCommand } from '../../../../../src/io/broker/GrpcClientActor.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import { spawnCollector, type GrpcCtx } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
@@ -11,7 +11,7 @@ export const scenario: BrokerScenario<GrpcCtx> = {
   async run(ctx) {
     const { ref: collectorRef, collector } = spawnCollector(ctx);
     try {
-      const client = ctx.client as unknown as ActorRef<GrpcClientCmd>;
+      const client = ctx.client as unknown as ActorRef<GrpcClientCommand>;
       client.tell({
         kind: 'unary',
         method: 'Unary',
@@ -25,9 +25,9 @@ export const scenario: BrokerScenario<GrpcCtx> = {
       );
       const reply = collector.inbound.find((m) => m.kind === 'reply')!;
       if (reply.kind !== 'reply') throw new Error('not a reply');
-      const r = reply.response as { text?: string };
-      if (r.text !== 'ping') {
-        throw new Error(`expected text=ping, got ${r.text}`);
+      const response = reply.response as { text?: string };
+      if (response.text !== 'ping') {
+        throw new Error(`expected text=ping, got ${response.text}`);
       }
     } finally {
       collectorRef.stop();

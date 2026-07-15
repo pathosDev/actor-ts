@@ -38,14 +38,13 @@ import type {
   Subscribe,
   Unsubscribe,
 } from '../../../../src/cluster/pubsub/Messages.js';
-import { registerStaticFiles } from '../plugins/staticFilesPlugin.js';
-import { WebSocketIngressActor } from './WebSocketIngressActor.js';
+import { WebsocketIngressActor } from './WebsocketIngressActor.js';
 import { buildRoutes } from '../routes.js';
-import type { ChatRoomCmd } from './ChatRoomActor.js';
-import type { ChatRoomDirectoryCmd } from './ChatRoomDirectoryActor.js';
-import type { DmChannelCmd } from './DmChannelActor.js';
-import type { OnlineUsersCmd } from './OnlineUsersActor.js';
-import type { ReadReceiptsCmd } from './ReadReceiptsActor.js';
+import type { ChatRoomCommand } from './ChatRoomActor.js';
+import type { ChatRoomDirectoryCommand } from './ChatRoomDirectoryActor.js';
+import type { DmChannelCommand } from './DmChannelActor.js';
+import type { OnlineUsersCommand } from './OnlineUsersActor.js';
+import type { ReadReceiptsCommand } from './ReadReceiptsActor.js';
 import type { SessionStore } from '../auth/sessionStore.js';
 
 /**
@@ -73,19 +72,19 @@ export interface HttpIngressDeps {
   /** ActorSystem reference passed through to the WS plugin. */
   readonly system: ActorSystem;
   /** Sharded ChatRoom region — local ref on any node. */
-  readonly chatRoomRegion: ActorRef<ChatRoomCmd>;
+  readonly chatRoomRegion: ActorRef<ChatRoomCommand>;
   /** Sharded DmChannel region (one per canonical participant pair). */
-  readonly dmChannelRegion: ActorRef<DmChannelCmd>;
+  readonly dmChannelRegion: ActorRef<DmChannelCommand>;
   /** Local OnlineUsersActor on this node. */
-  readonly onlineUsers: ActorRef<OnlineUsersCmd>;
+  readonly onlineUsers: ActorRef<OnlineUsersCommand>;
   /** Local DistributedPubSub mediator on this node. */
   readonly mediator: ActorRef<Subscribe | Unsubscribe>;
   /** Cluster-wide session-token store (DD-LWWMap-backed). */
   readonly sessions: SessionStore;
   /** Local ChatRoomDirectoryActor — fan-out for room create/list. */
-  readonly roomDirectory: ActorRef<ChatRoomDirectoryCmd>;
+  readonly roomDirectory: ActorRef<ChatRoomDirectoryCommand>;
   /** Local ReadReceiptsActor — per-room read-up-to pointers. */
-  readonly readReceipts: ActorRef<ReadReceiptsCmd>;
+  readonly readReceipts: ActorRef<ReadReceiptsCommand>;
   /** Optional TLS — when set, the listener becomes HTTPS + WSS. */
   readonly tls?: TlsMaterial;
 }
@@ -117,17 +116,13 @@ export class HttpIngressActor extends Actor<never> {
       logger: false,
       ...(tls ? { https: { cert: tls.cert, key: tls.key } } : {}),
     });
-    await registerStaticFiles(backend, {
-      root: staticDir,
-      prefix: '/static/',
-    });
 
     // Spawn the WebSocket ingress hub — one actor for the whole `/ws`
     // route; it spawns a UserSessionActor per connection.  The
     // @fastify/websocket plugin is registered automatically by the
     // backend when it sees a websocket() route.
     const ingress = system.spawn(
-      Props.create(() => new WebSocketIngressActor({
+      Props.create(() => new WebsocketIngressActor({
         chatRoomRegion: this.deps.chatRoomRegion,
         dmChannelRegion: this.deps.dmChannelRegion,
         onlineUsers: this.deps.onlineUsers,
@@ -139,7 +134,7 @@ export class HttpIngressActor extends Actor<never> {
       'ws-ingress',
     );
 
-    this.binding = await system.http(httpPort, { host, backend }).bind(buildRoutes(ingress));
+    this.binding = await system.http(httpPort, { host, backend }).bind(buildRoutes(ingress, staticDir));
     this.log.info(
       `[ingress] HTTP server listening on ${scheme}://${this.binding.host}:${this.binding.port}/`,
     );

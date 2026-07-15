@@ -108,8 +108,7 @@ besondere Deployments.
 ```ts
 import { KeepOldest, KeepOldestOptions } from 'actor-ts';
 
-const keepOldestOptions = KeepOldestOptions.create()
-  .withDownIfAlone(true);
+const keepOldestOptions = KeepOldestOptions.create().withDownIfAlone(true);
 new KeepOldest(keepOldestOptions);
 ```
 
@@ -166,8 +165,7 @@ einem neutralen Ort (drittes DC, eine Control-Plane-K8s-Namespace).
 ```ts
 import { StaticQuorum, StaticQuorumOptions } from 'actor-ts';
 
-const staticQuorumOptions = StaticQuorumOptions.create()
-  .withQuorumSize(3);
+const staticQuorumOptions = StaticQuorumOptions.create().withQuorumSize(3);
 new StaticQuorum(staticQuorumOptions);
 ```
 
@@ -194,8 +192,7 @@ Falsche-Seite-Überleben zu riskieren.
 ```ts
 import { LeaseMajority, LeaseMajorityOptions } from 'actor-ts';
 
-const leaseMajorityOptions = LeaseMajorityOptions.create()
-  .withLease(someLeaseImpl);
+const leaseMajorityOptions = LeaseMajorityOptions.create().withLease(someLeaseImpl);
 new LeaseMajority(
   leaseMajorityOptions,
 );
@@ -287,8 +284,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`StaticQuorum` blockiert Scale-Up">
   ```ts
-  const quorumOptions = StaticQuorumOptions.create()
-    .withQuorumSize(5);
+  const quorumOptions = StaticQuorumOptions.create().withQuorumSize(5);
   new StaticQuorum(quorumOptions);
   // Startet mit 3 Nodes → Cluster fährt sich selbst herunter (kein Quorum)
   ```

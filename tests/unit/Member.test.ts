@@ -7,22 +7,22 @@ const addr = new NodeAddress('demo', 'h', 1);
 
 describe('Member', () => {
   test('constructor captures address, status, version, roles', () => {
-    const m = new Member(addr, 'up', 3, ['backend', 'worker']);
-    expect(m.address.equals(addr)).toBe(true);
-    expect(m.status).toBe('up');
-    expect(m.version).toBe(3);
-    expect(Array.from(m.roles).sort()).toEqual(['backend', 'worker']);
+    const member = new Member(addr, 'up', 3, ['backend', 'worker']);
+    expect(member.address.equals(addr)).toBe(true);
+    expect(member.status).toBe('up');
+    expect(member.version).toBe(3);
+    expect(Array.from(member.roles).sort()).toEqual(['backend', 'worker']);
   });
 
   test('roles default to empty set', () => {
-    const m = new Member(addr, 'up', 1);
-    expect(m.roles.size).toBe(0);
+    const member = new Member(addr, 'up', 1);
+    expect(member.roles.size).toBe(0);
   });
 
   test('hasRole returns true only for registered roles', () => {
-    const m = new Member(addr, 'up', 1, ['backend']);
-    expect(m.hasRole('backend')).toBe(true);
-    expect(m.hasRole('frontend')).toBe(false);
+    const member = new Member(addr, 'up', 1, ['backend']);
+    expect(member.hasRole('backend')).toBe(true);
+    expect(member.hasRole('frontend')).toBe(false);
   });
 
   test('isReachable truth table', () => {
@@ -40,19 +40,19 @@ describe('Member', () => {
   });
 
   test('withStatus returns new instance with bumped version', () => {
-    const a = new Member(addr, 'joining', 1, ['x']);
-    const b = a.withStatus('up');
-    expect(a.status).toBe('joining');
-    expect(a.version).toBe(1);
-    expect(b.status).toBe('up');
-    expect(b.version).toBe(2);
-    expect(b.address.equals(a.address)).toBe(true);
+    const memberA = new Member(addr, 'joining', 1, ['x']);
+    const memberB = memberA.withStatus('up');
+    expect(memberA.status).toBe('joining');
+    expect(memberA.version).toBe(1);
+    expect(memberB.status).toBe('up');
+    expect(memberB.version).toBe(2);
+    expect(memberB.address.equals(memberA.address)).toBe(true);
   });
 
   test('withStatus preserves roles', () => {
-    const a = new Member(addr, 'joining', 1, ['backend', 'hot']);
-    const b = a.withStatus('up');
-    expect(Array.from(b.roles).sort()).toEqual(['backend', 'hot']);
+    const memberA = new Member(addr, 'joining', 1, ['backend', 'hot']);
+    const memberB = memberA.withStatus('up');
+    expect(Array.from(memberB.roles).sort()).toEqual(['backend', 'hot']);
   });
 
   test('toData + fromData round-trips fields and roles', () => {
@@ -80,23 +80,23 @@ describe('Member', () => {
   });
 
   test('toString includes address, status, version, roles', () => {
-    const m = new Member(addr, 'up', 3, ['backend']);
-    const s = m.toString();
-    expect(s).toContain(addr.toString());
-    expect(s).toContain('up');
-    expect(s).toContain('v3');
-    expect(s).toContain('backend');
+    const member = new Member(addr, 'up', 3, ['backend']);
+    const text = member.toString();
+    expect(text).toContain(addr.toString());
+    expect(text).toContain('up');
+    expect(text).toContain('v3');
+    expect(text).toContain('backend');
   });
 
   test('toString omits roles tag when none are set', () => {
-    const m = new Member(addr, 'up', 1);
-    expect(m.toString()).not.toContain('roles=');
+    const member = new Member(addr, 'up', 1);
+    expect(member.toString()).not.toContain('roles=');
   });
 
   test('roles set is a fresh Set per member (no aliasing)', () => {
     const rolesIn = ['a', 'b'];
-    const m = new Member(addr, 'up', 1, rolesIn);
+    const member = new Member(addr, 'up', 1, rolesIn);
     rolesIn.push('c');
-    expect(m.roles.has('c')).toBe(false);
+    expect(member.roles.has('c')).toBe(false);
   });
 });

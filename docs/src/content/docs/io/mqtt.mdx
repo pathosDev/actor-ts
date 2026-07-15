@@ -8,7 +8,7 @@ AWS IoT Core).  Supports both MQTT 3.1.1 and 5; topic wildcards
 (`+`, `#`); QoS 0/1/2; retained messages.
 
 It is the MQTT counterpart to
-[`WebSocketClientActor`](/io/websocket/): an **abstract base class you
+[`WebsocketClientActor`](/io/websocket/): an **abstract base class you
 extend**.  Declare subscriptions in the constructor, handle inbound
 traffic in `onMessage`, and publish with `this.publish(...)`.  It is
 still controllable from the outside via `ref.tell(...)`.
@@ -56,7 +56,7 @@ class dispatches to the hooks below; do not override it.
 | `onMessage(msg)` | A message arrived on one of this actor's own subscriptions.  **Required.** |
 | `onConnected()` | The connection (re)opened; the subscription registry has been re-applied on the broker. |
 | `onDisconnected(cause?)` | The connection dropped; a reconnect cycle may follow (per settings). |
-| `onDecodeError(err, msg)` | `onMessage` threw an `MqttDecodeError` (a lazy `entity()` on a malformed payload).  Default: log + drop.  Rethrow to escalate. |
+| `onInvalidMessage(err, msg)` | `onMessage` threw an `MqttDecodeError` (a lazy `entity()` on a malformed payload).  Default: log + drop.  Rethrow to escalate. |
 | `onSelfMessage(msg)` | An application message (`TSelf`) was told to this ref. |
 
 Inbound and lifecycle events are delivered through the mailbox, so
@@ -67,7 +67,7 @@ per-connection order preserved: connected → messages → disconnected).
 
 Settings resolve with the usual precedence: **constructor / builder >
 HOCON (`actor-ts.io.broker.mqtt`) > built-in defaults.**  Use the fluent
-`MqttOptions` builder, or pass a plain `Partial<MqttActorSettings>`.
+`MqttOptions` builder, or pass a plain `Partial<MqttOptionsType>`.
 
 ```ts
 const opts = MqttOptions.create()
@@ -81,7 +81,7 @@ const opts = MqttOptions.create()
 ```
 
 ```ts
-interface MqttActorSettings extends BrokerCommonSettings {
+interface MqttOptionsType extends BrokerCommonOptionsType {
   brokerUrl?:  string;          // mqtt:// mqtts:// ws:// wss://
   clientId?:   string;
   credentials?: { username?: string; password?: string };
@@ -119,10 +119,10 @@ override onMessage(msg: MqttMessage<Reading>): void {
 Decoding is **lazy** — it only happens when you call `text()` / `entity()`.
 A malformed payload makes `entity()` throw an `MqttDecodeError`; because
 that happens inside `onMessage`, the base class catches it and routes it to
-`onDecodeError` (default: log + drop, no restart):
+`onInvalidMessage` (default: log + drop, no restart):
 
 ```ts
-protected override onDecodeError(err: MqttDecodeError, msg: MqttMessage<Reading>): void {
+protected override onInvalidMessage(err: MqttDecodeError, msg: MqttMessage<Reading>): void {
   this.log.warn(`bad payload on ${err.topic}: ${err.message}`);
 }
 ```
@@ -167,7 +167,7 @@ MqttOptions.create().withBrokerUrl('mqtt://localhost:1883').withCodec(codec);
 ## External control
 
 Beyond the subclass API, any actor can drive an `MqttActor` by `tell`ing
-it an `MqttCmd`:
+it an `MqttCommand`:
 
 ```ts
 ref.tell({ kind: 'publish', publish: { topic: 't', payload: 'hi', qos: 1 } });

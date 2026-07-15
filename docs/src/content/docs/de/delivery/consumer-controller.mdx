@@ -44,7 +44,7 @@ flowchart LR
 ## Konfiguration
 
 ```ts
-interface ConsumerControllerSettings<T> {
+interface ConsumerControllerOptionsType<T> {
   handler: (body: T) => void | Promise<void>;
 }
 ```

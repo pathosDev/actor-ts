@@ -58,16 +58,16 @@ export function BearerTokenAuth(opts: BearerTokenAuthOptions): Middleware {
   return async (req, next) => {
     const header = req.headers[headerName];
     if (!header) {
-      throw new HttpError(Status.Unauthorized, 'missing Authorization header', {
-        wwwAuthenticate: `Bearer realm="${realm}"`,
+      throw new HttpError(Status.Unauthorized, 'missing Authorization header', undefined, {
+        'www-authenticate': `Bearer realm="${realm}"`,
       });
     }
     // Header value must look like `Bearer <token>`.  Reject anything else
     // to avoid accidental matches against scheme-prefixed values.
     const match = /^Bearer\s+(.+)$/.exec(header);
     if (!match) {
-      throw new HttpError(Status.Unauthorized, 'authorization scheme must be Bearer', {
-        wwwAuthenticate: `Bearer realm="${realm}"`,
+      throw new HttpError(Status.Unauthorized, 'authorization scheme must be Bearer', undefined, {
+        'www-authenticate': `Bearer realm="${realm}"`,
       });
     }
     const presented = new TextEncoder().encode(match[1]!.trim());
@@ -86,8 +86,8 @@ export function BearerTokenAuth(opts: BearerTokenAuthOptions): Middleware {
       if (equal) matched = true;
     }
     if (!matched) {
-      throw new HttpError(Status.Unauthorized, 'invalid bearer token', {
-        wwwAuthenticate: `Bearer realm="${realm}"`,
+      throw new HttpError(Status.Unauthorized, 'invalid bearer token', undefined, {
+        'www-authenticate': `Bearer realm="${realm}"`,
       });
     }
     return next();

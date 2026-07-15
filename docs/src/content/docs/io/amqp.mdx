@@ -41,10 +41,10 @@ amqp.tell({
 ## Settings
 
 ```ts
-interface AmqpActorSettings extends BrokerCommonSettings {
+interface AmqpOptionsType extends BrokerCommonOptionsType {
   url:        string;                          // amqp:// or amqps://
   prefetch?:  number;                          // unacked messages per consumer; default 1
-  autoAck?:   boolean;                         // ack on delivery vs after processing; default true
+  autoAcknowledgment?:   boolean;                         // ack on delivery vs after processing; default true
   bindings?:  ReadonlyArray<AmqpQueueBinding>; // queue ↔ exchange ↔ routingKey ↔ target
 }
 
@@ -83,13 +83,13 @@ routing keys (`orders.placed.priority`, `orders.cancelled`,
 
 ## Ack / nack
 
-Set `autoAck: false` in settings, then the handler tells the
+Set `autoAcknowledgment: false` in settings, then the handler tells the
 result back via `{ kind: 'ack', delivery }` or `{ kind: 'nack',
 delivery, requeue }` on the AMQP actor's ref.
 
 ```ts
 class OrderHandler extends Actor<AmqpDelivery> {
-  constructor(private readonly amqp: ActorRef<AmqpCmd>) { super(); }
+  constructor(private readonly amqp: ActorRef<AmqpCommand>) { super(); }
 
   override async onReceive(delivery: AmqpDelivery): Promise<void> {
     try {

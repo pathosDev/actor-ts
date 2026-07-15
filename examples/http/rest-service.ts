@@ -31,16 +31,16 @@ import {
 
 interface User { readonly id: string; readonly name: string; readonly email: string; }
 
-type UserCmd =
+type UserCommand =
   | { kind: 'set'; user: User }
   | { kind: 'get'; id: string }
   | { kind: 'delete'; id: string };
 
 type UserReply = User | null | { deleted: true };
 
-class UserEntity extends Actor<UserCmd> {
+class UserEntity extends Actor<UserCommand> {
   private user: User | null = null;
-  override onReceive(cmd: UserCmd): void {
+  override onReceive(cmd: UserCommand): void {
     const reply = (msg: UserReply): void => this.sender.forEach((s) => s.tell(msg));
     match(cmd)
       .with({ kind: 'set' }, (c) => { this.user = c.user; reply(this.user); })
@@ -56,12 +56,12 @@ async function main(): Promise<void> {
     .withHost('127.0.0.1')
     .withPort(2552);
   const cluster = await Cluster.join(system, clusterOptions);
-  const shardingOptions = StartShardingOptions.create<UserCmd>()
+  const shardingOptions = StartShardingOptions.create<UserCommand>()
     .withExtractEntityId((msg) => ('id' in msg ? msg.id : msg.user.id))
     .withNumShards(16);
   const region = cluster.sharding.start('user', UserEntity, shardingOptions);
 
-  const askUser = (cmd: UserCmd): Promise<UserReply> => region.ask<UserReply>(cmd, 500);
+  const askUser = (cmd: UserCommand): Promise<UserReply> => region.ask<UserReply>(cmd, 500);
 
   const routes = path('users', concat(
     path(':id', concat(

@@ -47,14 +47,14 @@ class FakeSelfScope {
  */
 function withSelf(): { scope: FakeSelfScope; restore: () => void } {
   const scope = new FakeSelfScope();
-  const g = globalThis as unknown as { self?: unknown };
-  const prev = g.self;
-  g.self = scope;
+  const globalScope = globalThis as unknown as { self?: unknown };
+  const prev = globalScope.self;
+  globalScope.self = scope;
   return {
     scope,
     restore: () => {
-      if (prev === undefined) delete g.self;
-      else g.self = prev;
+      if (prev === undefined) delete globalScope.self;
+      else globalScope.self = prev;
     },
   };
 }
@@ -167,9 +167,9 @@ describe('WorkerNode.join', () => {
     // but in Web Worker the canonical surface is self.postMessage only.
     // Pin that we use self.postMessage when it's present.
     const { scope, restore } = withSelf();
-    const g = globalThis as unknown as { postMessage?: unknown };
-    const prevGlobalPost = g.postMessage;
-    delete g.postMessage; // ensure no global fallback
+    const globalScope = globalThis as unknown as { postMessage?: unknown };
+    const prevGlobalPost = globalScope.postMessage;
+    delete globalScope.postMessage; // ensure no global fallback
     try {
       const joinPromise = WorkerNode.join();
       await Promise.resolve();
@@ -187,7 +187,7 @@ describe('WorkerNode.join', () => {
       await joinPromise;
     } finally {
       restore();
-      if (prevGlobalPost !== undefined) g.postMessage = prevGlobalPost;
+      if (prevGlobalPost !== undefined) globalScope.postMessage = prevGlobalPost;
     }
   });
 
@@ -196,16 +196,16 @@ describe('WorkerNode.join', () => {
     try {
       const joinPromise = WorkerNode.join();
       await Promise.resolve();
-      const a = new NodeAddress('cluster-x', '127.0.0.1', 42);
+      const actorRef = new NodeAddress('cluster-x', '127.0.0.1', 42);
       scope.deliverFromParent({
         kind: 'worker-init',
-        self: a.toJSON(),
+        self: actorRef.toJSON(),
         systemName: 'cluster-x',
         data: null,
       });
       const ctx = await joinPromise;
       expect(ctx.self).toBeInstanceOf(NodeAddress);
-      expect(ctx.self.equals(a)).toBe(true);
+      expect(ctx.self.equals(actorRef)).toBe(true);
     } finally {
       restore();
     }

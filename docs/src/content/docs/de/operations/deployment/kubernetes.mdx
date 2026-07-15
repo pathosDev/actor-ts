@@ -226,8 +226,8 @@ livenessProbe:  /health/alive
 ```
 
 Die
-[HttpManagement](/de/observability/management/overview/)-Extension
-des Frameworks stellt diese Endpunkte bereit.
+[Management-Routen](/de/observability/management/overview/)
+des Frameworks stellen diese Endpunkte bereit.
 
 - **`/health/ready`** — "soll dieser Pod Traffic bekommen?"
   Liefert während des Shutdowns 503, damit der LB ihn vor SIGTERM
@@ -241,7 +241,7 @@ des Frameworks stellt diese Endpunkte bereit.
 ## App-seitige Verdrahtung
 
 ```ts
-import { ActorSystem, Cluster, ClusterOptions, CoordinatedShutdownId, HttpManagement } from 'actor-ts';
+import { ActorSystem, Cluster, ClusterOptions, CoordinatedShutdownId, managementRoutes } from 'actor-ts';
 import { KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts/discovery';
 
 const system = ActorSystem.create('my-app');
@@ -263,10 +263,8 @@ const clusterOptions = ClusterOptions.create()
 const cluster = await Cluster.join(system, clusterOptions);
 
 // 2. Management-Endpunkte
-const management = await HttpManagement.start(system, {
-  port:    8558,
-  cluster,
-});
+const { routes: mgmtRoutes } = managementRoutes(system, cluster);
+await system.http(8558).bind(mgmtRoutes);
 
 // 3. App-HTTP-Server
 const http = system.extension(HttpExtensionId);
@@ -357,7 +355,7 @@ import { Aside } from '@astrojs/starlight/components';
   die Optionen des Seed-Providers.
 - **[Coordinated Shutdown](/de/fundamentals/coordinated-shutdown/)** —
   die DSL für phased Shutdown.
-- **[HttpManagement](/de/observability/management/overview/)** —
+- **[Management-Endpunkte](/de/observability/management/overview/)** —
   die /health/*-Endpunkte, gegen die K8s-Probes laufen.
 - **[Cluster-Sicherheit](/de/operations/security/cluster-security/)** —
   TLS + Auth für den Cluster-Transport.

@@ -60,13 +60,19 @@ Infrastruktur.
 ## Management-Endpunkt
 
 ```ts
-await HttpManagement.start(system, {
-  port: 8558,
-  tls:  {
+import { managementRoutes } from 'actor-ts';
+import { FastifyBackend } from 'actor-ts/http';
+
+const { routes } = managementRoutes(system, cluster);
+
+// TLS is a property of the HTTP backend — Fastify's `https` option.
+const tlsBackend = new FastifyBackend({
+  https: {
     cert: fs.readFileSync('./tls/mgmt.crt'),
     key:  fs.readFileSync('./tls/mgmt.key'),
   },
 });
+await system.http(8558, { backend: tlsBackend }).bind(routes);
 ```
 
 Der Management-Server ist standardmäßig nur intern — aber **TLS
@@ -110,8 +116,7 @@ zugrundeliegenden `mqtt`-Pakets.
 ### AMQP
 
 ```ts
-const amqpOptions = AmqpOptions.create()
-  .withUrl('amqps://rabbitmq.example.com:5671');
+const amqpOptions = AmqpOptions.create().withUrl('amqps://rabbitmq.example.com:5671');
 new AmqpActor(amqpOptions);
   // amqplib nutzt URL-Parameter für die TLS-Konfiguration
 ```
@@ -121,8 +126,7 @@ new AmqpActor(amqpOptions);
 ### NATS
 
 ```ts
-const natsOptions = NatsOptions.create()
-  .withServers(['nats://nats.example.com:4222']);
+const natsOptions = NatsOptions.create().withServers(['nats://nats.example.com:4222']);
 new NatsActor(natsOptions);
   // mTLS-Cert-Material (ca / cert / key) wird an die zugrundeliegende
   // nats-Verbindung übergeben — z. B. via Connect-Optionen / URL des Treibers.
@@ -133,8 +137,7 @@ mTLS via das `tls`-Objekt — üblich für Produktions-NATS.
 ### Redis Streams
 
 ```ts
-const redisStreamsOptions = RedisStreamsOptions.create()
-  .withUrl('rediss://redis.example.com:6380');
+const redisStreamsOptions = RedisStreamsOptions.create().withUrl('rediss://redis.example.com:6380');
 new RedisStreamsActor(redisStreamsOptions);
   // das `rediss://`-Schema aktiviert TLS auf der Verbindung
 ```
@@ -158,9 +161,8 @@ Für Mutual TLS `cert` + `key` ergänzen.
 ### WebSocket
 
 ```ts
-const webSocketClientOptions = WebSocketClientOptions.create()
-  .withUrl('wss://realtime.example.com/feed');
-new WebSocketClientActor(webSocketClientOptions);
+const webSocketClientOptions = WebsocketClientOptions.create().withUrl('wss://realtime.example.com/feed');
+new WebsocketClientActor(webSocketClientOptions);
 ```
 
 `wss://`-URL-Schema. Cert-Verifizierung folgt den TLS-Defaults der
@@ -190,10 +192,8 @@ Cassandra-Cluster laufen in Produktion typischerweise mit mTLS.
 ### Object Storage
 
 ```ts
-const s3ObjectStorageOptions = S3ObjectStorageOptions.create()
-  .withRegion('eu-west-1');
-const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
-  .withBackend(new S3ObjectStorageBackend(s3ObjectStorageOptions));
+const s3ObjectStorageOptions = S3ObjectStorageOptions.create().withRegion('eu-west-1');
+const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create().withBackend(new S3ObjectStorageBackend(s3ObjectStorageOptions));
 new ObjectStorageDurableStateStore(objectStorageDurableStateStoreOptions);
     // S3 nutzt per Default HTTPS
 ```

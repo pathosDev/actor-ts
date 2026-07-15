@@ -14,16 +14,16 @@
 import { Actor } from '../../../src/Actor.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
 
-export interface ShardedMsg {
+export interface ShardedMessage {
   /** The entity ID — required by the shard region's `extractEntityId`. */
   readonly entityId: string;
 }
 
 /** Increment the counter for `entityId`. */
-export interface ShardedInc extends ShardedMsg { readonly op: 'inc' }
+export interface ShardedInc extends ShardedMessage { readonly op: 'inc' }
 
 /** Query "who hosts you?" — reply via `replyTo`. */
-export interface ShardedWho extends ShardedMsg {
+export interface ShardedWho extends ShardedMessage {
   readonly op: 'who';
   readonly replyTo: ActorRef<ShardedWhoReply>;
 }

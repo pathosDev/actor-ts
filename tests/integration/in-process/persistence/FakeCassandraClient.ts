@@ -59,31 +59,31 @@ export class FakeCassandraClient implements CassandraClientLike {
     params: ReadonlyArray<unknown> = [],
     _options?: { prepare?: boolean; consistency?: number },
   ): Promise<CassandraRowResult> {
-    const q = query.trim().replace(/\s+/g, ' ');
-    const upper = q.toUpperCase();
+    const statement = query.trim().replace(/\s+/g, ' ');
+    const upper = statement.toUpperCase();
     if (upper.startsWith('CREATE KEYSPACE') || upper.startsWith('CREATE TABLE')) {
       // DDL — no-op in the fake.
       return { rows: [] };
     }
     if (upper.startsWith('INSERT')) {
-      this.handleInsert(q, params);
+      this.handleInsert(statement, params);
       return { rows: [] };
     }
     if (upper.startsWith('SELECT')) {
-      return { rows: this.handleSelect(q, params) };
+      return { rows: this.handleSelect(statement, params) };
     }
     if (upper.startsWith('DELETE')) {
-      this.handleDelete(q, params);
+      this.handleDelete(statement, params);
       return { rows: [] };
     }
-    throw new Error(`FakeCassandraClient: unsupported statement: ${q}`);
+    throw new Error(`FakeCassandraClient: unsupported statement: ${statement}`);
   }
 
   async batch(
     queries: ReadonlyArray<CassandraBatchQuery>,
     _options?: { prepare?: boolean; logged?: boolean; consistency?: number },
   ): Promise<void> {
-    for (const q of queries) await this.execute(q.query, q.params ?? []);
+    for (const statement of queries) await this.execute(statement.query, statement.params ?? []);
   }
 
   /** Expose row count — convenient for tests. */
@@ -96,14 +96,14 @@ export class FakeCassandraClient implements CassandraClientLike {
   /* ============================== internals ============================== */
 
   private stateOf(table: string): TableState {
-    let s = this.tables.get(table);
-    if (!s) { s = { table, rows: [] }; this.tables.set(table, s); }
-    return s;
+    let state = this.tables.get(table);
+    if (!state) { state = { table, rows: [] }; this.tables.set(table, state); }
+    return state;
   }
 
-  private handleInsert(q: string, params: ReadonlyArray<unknown>): void {
-    const plan = parseInsert(q);
-    if (!plan) throw new Error(`FakeCassandraClient: cannot parse INSERT: ${q}`);
+  private handleInsert(statement: string, params: ReadonlyArray<unknown>): void {
+    const plan = parseInsert(statement);
+    if (!plan) throw new Error(`FakeCassandraClient: cannot parse INSERT: ${statement}`);
     const row: Row = {};
     plan.columns.forEach((col, i) => { row[col] = params[i]; });
     const state = this.stateOf(plan.table);
@@ -113,9 +113,9 @@ export class FakeCassandraClient implements CassandraClientLike {
     else state.rows.push(row);
   }
 
-  private handleSelect(q: string, params: ReadonlyArray<unknown>): Row[] {
-    const plan = parseSelect(q);
-    if (!plan) throw new Error(`FakeCassandraClient: cannot parse SELECT: ${q}`);
+  private handleSelect(statement: string, params: ReadonlyArray<unknown>): Row[] {
+    const plan = parseSelect(statement);
+    if (!plan) throw new Error(`FakeCassandraClient: cannot parse SELECT: ${statement}`);
     const state = this.tables.get(plan.table);
     if (!state) return [];
     let rows = state.rows.filter((row) => plan.filters.every((f) => matches(row, f, params)));
@@ -145,9 +145,9 @@ export class FakeCassandraClient implements CassandraClientLike {
     return rows;
   }
 
-  private handleDelete(q: string, params: ReadonlyArray<unknown>): void {
-    const plan = parseDelete(q);
-    if (!plan) throw new Error(`FakeCassandraClient: cannot parse DELETE: ${q}`);
+  private handleDelete(statement: string, params: ReadonlyArray<unknown>): void {
+    const plan = parseDelete(statement);
+    if (!plan) throw new Error(`FakeCassandraClient: cannot parse DELETE: ${statement}`);
     const state = this.tables.get(plan.table);
     if (!state) return;
     state.rows = state.rows.filter((row) => !plan.filters.every((f) => matches(row, f, params)));
@@ -157,21 +157,21 @@ export class FakeCassandraClient implements CassandraClientLike {
 
 /* ============================ CQL mini-parser ============================ */
 
-function parseInsert(q: string): InsertPlan | null {
-  const m = /^INSERT INTO ([\w.]+) \(([^)]+)\) VALUES \(([^)]+)\)(?:\s+IF NOT EXISTS)?$/i.exec(q);
-  if (!m) return null;
-  const table = m[1]!;
-  const columns = m[2]!.split(',').map((c) => c.trim());
+function parseInsert(statement: string): InsertPlan | null {
+  const regexMatch = /^INSERT INTO ([\w.]+) \(([^)]+)\) VALUES \(([^)]+)\)(?:\s+IF NOT EXISTS)?$/i.exec(statement);
+  if (!regexMatch) return null;
+  const table = regexMatch[1]!;
+  const columns = regexMatch[2]!.split(',').map((c) => c.trim());
   return { table, columns };
 }
 
-function parseSelect(q: string): SelectPlan | null {
-  const m = /^SELECT (.+?) FROM ([\w.]+)(?: WHERE (.+?))?(?: LIMIT (\?|\d+))?$/i.exec(q);
-  if (!m) return null;
-  const colsRaw = m[1]!.trim();
-  const table = m[2]!;
-  const whereClause = m[3]?.trim();
-  const limitToken = m[4];
+function parseSelect(statement: string): SelectPlan | null {
+  const regexMatch = /^SELECT (.+?) FROM ([\w.]+)(?: WHERE (.+?))?(?: LIMIT (\?|\d+))?$/i.exec(statement);
+  if (!regexMatch) return null;
+  const colsRaw = regexMatch[1]!.trim();
+  const table = regexMatch[2]!;
+  const whereClause = regexMatch[3]?.trim();
+  const limitToken = regexMatch[4];
   const columns: string[] | '*' = colsRaw === '*' ? '*' : colsRaw.split(',').map((c) => c.trim());
 
   const filters: Array<{ column: string; op: '=' | '>=' | '<=' | '<'; index: number }> = [];
@@ -190,11 +190,11 @@ function parseSelect(q: string): SelectPlan | null {
   return { table, columns, filters, limit };
 }
 
-function parseDelete(q: string): DeletePlan | null {
-  const m = /^DELETE FROM ([\w.]+) WHERE (.+)$/i.exec(q);
-  if (!m) return null;
-  const table = m[1]!;
-  const whereClause = m[2]!.trim();
+function parseDelete(statement: string): DeletePlan | null {
+  const regexMatch = /^DELETE FROM ([\w.]+) WHERE (.+)$/i.exec(statement);
+  if (!regexMatch) return null;
+  const table = regexMatch[1]!;
+  const whereClause = regexMatch[2]!.trim();
   const parts = whereClause.split(/\s+AND\s+/i);
   const filters: Array<{ column: string; op: '=' | '<=' | '<'; index: number }> = [];
   let paramIndex = 0;

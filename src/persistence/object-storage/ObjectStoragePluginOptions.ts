@@ -22,6 +22,13 @@ export interface ObjectStoragePluginOptionsType {
   readonly compression?: CompressionConfig | CompressionResolver;
   /** Encryption config or per-pid resolver.  Default: none. */
   readonly encryption?: EncryptionConfig | EncryptionResolver;
+  /**
+   * Cap on the decompressed size of a stored body in bytes — the
+   * decompression-bomb guard on read (security audit #3), applied to both the
+   * snapshot and durable-state stores this plugin registers.  Default 512 MiB
+   * (`DEFAULT_MAX_DECOMPRESSED_BYTES`); `Infinity` opts out.
+   */
+  readonly maxDecompressedBytes?: number;
 }
 
 /**
@@ -67,6 +74,14 @@ export class ObjectStoragePluginOptionsBuilder extends OptionsBuilder<ObjectStor
   /** Encryption config or per-pid resolver (passed whole).  Default: none. */
   withEncryption(encryption: EncryptionConfig | EncryptionResolver): this {
     return this.set('encryption', encryption);
+  }
+
+  /**
+   * Cap on the decompressed body size (bytes) for both registered stores —
+   * decompression-bomb guard (#3).  Default 512 MiB; `Infinity` opts out.
+   */
+  withMaxDecompressedBytes(bytes: number): this {
+    return this.set('maxDecompressedBytes', bytes);
   }
 
   /** Plugin ID under which the snapshot store is registered. */

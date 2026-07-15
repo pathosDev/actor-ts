@@ -70,9 +70,9 @@ export function exponentialBackoff(opts: ExponentialBackoffOptions): BackoffPoli
   const random = opts.random ?? Math.random;
   return {
     delayFor(restartCount: number): number {
-      const n = Math.max(0, restartCount);
-      // Use a guarded power so we don't overflow to Infinity for huge n.
-      const raw = n >= 30 ? opts.maxMs : opts.minMs * Math.pow(2, n);
+      const attempt = Math.max(0, restartCount);
+      // Use a guarded power so we don't overflow to Infinity for huge attempt counts.
+      const raw = attempt >= 30 ? opts.maxMs : opts.minMs * Math.pow(2, attempt);
       const clamped = Math.min(raw, opts.maxMs);
       return applyJitter(clamped, randomFactor, random);
     },
@@ -94,8 +94,8 @@ export function linearBackoff(opts: LinearBackoffOptions): BackoffPolicy {
   const random = opts.random ?? Math.random;
   return {
     delayFor(restartCount: number): number {
-      const n = Math.max(0, restartCount);
-      const raw = opts.minMs + opts.stepMs * n;
+      const attempt = Math.max(0, restartCount);
+      const raw = opts.minMs + opts.stepMs * attempt;
       const clamped = Math.min(raw, opts.maxMs);
       return applyJitter(clamped, randomFactor, random);
     },
