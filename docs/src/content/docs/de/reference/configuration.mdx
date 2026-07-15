@@ -321,13 +321,13 @@ MqttOptions: protocolVersion must be one of 4, 5 (got 6)
 - Bei **Broker-Aktoren** (MQTT, Kafka, WebSocket-Client, …) wird der
   Fehler beim Start des Aktors (`preStart`) geworfen, nach der
   Pflichtfeld-Prüfung — ein *fehlendes* Pflichtfeld erscheint also
-  weiterhin als `BrokerSettingsError`, und nur *vorhandene, aber
+  weiterhin als `BrokerOptionsError`, und nur *vorhandene, aber
   ungültige* Werte werden zu `OptionsError`.
 - Bei **Nicht-Broker-Konsumenten** (Caches, Leases, Sharding, …) wird der
   Fehler aus dem Konstruktor geworfen.
 
 `OptionsError` ist verschieden von `ConfigError` (fehlerhaftes HOCON —
-falscher Typ, fehlender Pfad) und `BrokerSettingsError` (ein
+falscher Typ, fehlender Pfad) und `BrokerOptionsError` (ein
 Broker-Pflichtfeld fehlt in jeder Ebene).  Ungesetzte optionale Felder
 lösen ihn nie aus; sie fallen auf ihre Defaults zurück.
 

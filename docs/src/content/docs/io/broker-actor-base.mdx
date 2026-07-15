@@ -1,6 +1,6 @@
 ---
 title: BrokerActor base class
-description: The shared lifecycle for every protocol actor — connect/disconnect state machine, reconnect with backoff, outbound buffer, subscriber fan-out, lifecycle events. Subclasses implement three hooks (`connectImpl`, `disconnectImpl`, `dispatchOutgoing`); the base handles everything else.
+description: The shared lifecycle for every protocol actor — connect/disconnect state machine, reconnect with backoff, outbound buffer, subscriber fan-out, lifecycle events. Subclasses implement three hooks (`connectImplementation`, `disconnectImplementation`, `dispatchOutgoing`); the base handles everything else.
 ---
 
 Every protocol actor in `actor-ts/io/broker` — `KafkaActor`,
@@ -20,8 +20,8 @@ Subclasses implement three protocol hooks:
 
 | Hook | When called |
 | --- | --- |
-| `connectImpl` | Open the protocol-specific connection. |
-| `disconnectImpl` | Close it cleanly. |
+| `connectImplementation` | Open the protocol-specific connection. |
+| `disconnectImplementation` | Close it cleanly. |
 | `dispatchOutgoing(envelope)` | Send a single buffered message on the wire. |
 
 Subclasses implement the three protocol hooks; the base handles
@@ -51,9 +51,9 @@ stateDiagram-v2
 Four states:
 
 - **`disconnected`** — initial; not currently connected.
-- **`connecting`** — `connectImpl` is running.
+- **`connecting`** — `connectImplementation` is running.
 - **`connected`** — connection up; messages flow.
-- **`disconnecting`** — `disconnectImpl` is running.
+- **`disconnecting`** — `disconnectImplementation` is running.
 
 A `disconnected` → `connecting` → failure triggers a **reconnect
 loop**: backoff + retry until success or `maxAttempts`
@@ -70,8 +70,8 @@ abstract class BrokerActor<S, Command, P> extends Actor<Command> {
   protected abstract requiredOptions(): ReadonlyArray<keyof S>;
   protected abstract endpointLabel(): string;
 
-  protected abstract connectImpl(): Promise<void>;
-  protected abstract disconnectImpl(): Promise<void>;
+  protected abstract connectImplementation(): Promise<void>;
+  protected abstract disconnectImplementation(): Promise<void>;
   protected abstract dispatchOutgoing(envelope: OutboundEnvelope<P>): Promise<void>;
 }
 ```
@@ -83,7 +83,7 @@ Three categories:
   `endpointLabel`) — describes how to assemble settings from
   the three layers (constructor + HOCON + defaults) and how to
   validate.
-- **Protocol hooks** (`connectImpl`, `disconnectImpl`,
+- **Protocol hooks** (`connectImplementation`, `disconnectImplementation`,
   `dispatchOutgoing`) — the protocol-specific work.
 
 `endpointLabel` is the human-readable connection identity
@@ -161,8 +161,8 @@ Published on `system.eventStream`:
 
 | Event | When |
 | --- | --- |
-| `BrokerConnected` | A `connectImpl` succeeded. |
-| `BrokerDisconnected` | A `disconnectImpl` ran or a connection failed. |
+| `BrokerConnected` | A `connectImplementation` succeeded. |
+| `BrokerDisconnected` | A `disconnectImplementation` ran or a connection failed. |
 | `BrokerReconnectAttempt` | A reconnect attempt is starting. |
 | `BrokerReconnectFailed` | `maxAttempts` exhausted. |
 | `BrokerBufferOverflow` | The outbound buffer dropped an envelope. |
@@ -212,12 +212,12 @@ class MyProtocolActor extends BrokerActor<MyProtocolOptionsType, Command, MyPayl
   protected requiredOptions() { return ['url'] as const; }
   protected endpointLabel() { return this.settings.url; }
 
-  protected async connectImpl(): Promise<void> {
+  protected async connectImplementation(): Promise<void> {
     this.conn = await MyClient.connect(this.settings.url);
     this.conn.onMessage((m) => this.fanOut(m.topic, m));
   }
 
-  protected async disconnectImpl(): Promise<void> {
+  protected async disconnectImplementation(): Promise<void> {
     await this.conn?.close();
     this.conn = null;
   }
