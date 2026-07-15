@@ -49,6 +49,19 @@ actor-ts {
   http {
     backend = "fastify"   # fastify | bun | express
     shutdown-grace-period = 5s
+
+    # Server-side defaults for websocket() routes (per-connection policy).
+    # Leaf names match the WebsocketRouteOptions fields (camelCase); a route
+    # may override any of them, and the resolved values are validated
+    # (OptionsError on a bad value).
+    websocket {
+      maxFrameBytes    = 1M       # inbound frame size cap
+      onOversizeFrame  = "close"  # close | drop
+      onInvalidMessage = "close"  # close | drop | hook
+      maxBufferedBytes = 4M       # outbound buffer cap before backpressure
+      onBackpressure   = "drop"   # drop | close
+      # maxConnections is unlimited by default; set a positive integer to cap.
+    }
   }
 
   cache {

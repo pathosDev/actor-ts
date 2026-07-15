@@ -6,6 +6,7 @@
  */
 import type { ActorSystem } from '../../ActorSystem.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from './types.js';
 
 /** What to do with an inbound frame that exceeds `maxFrameBytes`. */
@@ -48,11 +49,31 @@ export const DEFAULT_WEBSOCKET_POLICY: ResolvedWebsocketPolicy = {
   maxConnections: Infinity,
 };
 
-function oneOf<T extends string>(value: string, allowed: readonly T[], key: string): T {
-  if ((allowed as readonly string[]).includes(value)) return value as T;
-  throw new Error(
-    `Invalid config value for actor-ts.http.websocket.${key}: "${value}" (expected one of ${allowed.join(', ')})`,
-  );
+/**
+ * Validates the per-connection policy knobs — from any path (route options,
+ * HOCON, defaults) since it runs on the fully-resolved policy.  Rejections
+ * throw `OptionsError`, replacing the earlier HOCON-only bare-`Error` enum
+ * guard.  `maxConnections` admits `Infinity` (the unlimited default), which
+ * the generic `positiveInt` helper rejects, so its rule is bespoke.
+ */
+export class WebsocketPolicyOptionsValidator extends OptionsValidator<WebsocketPolicyOptions> {
+  constructor() {
+    super('WebsocketPolicyOptions');
+  }
+  protected rules(s: Partial<WebsocketPolicyOptions>): void {
+    this.positiveInt('maxFrameBytes');
+    this.positiveInt('maxBufferedBytes');
+    this.oneOf('onOversizeFrame', ['close', 'drop']);
+    this.oneOf('onInvalidMessage', ['close', 'drop', 'hook']);
+    this.oneOf('onBackpressure', ['drop', 'close']);
+    const { maxConnections } = s;
+    if (
+      maxConnections !== undefined && maxConnections !== Infinity &&
+      (typeof maxConnections !== 'number' || !Number.isInteger(maxConnections) || maxConnections < 1)
+    ) {
+      this.fail('maxConnections', 'must be a positive integer or Infinity', maxConnections);
+    }
+  }
 }
 
 /** Merge built-in defaults, HOCON server defaults, and per-route options. */
@@ -61,22 +82,24 @@ export function resolveWebsocketPolicy(system: ActorSystem, options: WebsocketPo
   const key = ConfigKeys.http.websocket;
   if (system.config.hasPath(key)) {
     const config = system.config.getConfig(key);
+    // Read HOCON leaves as-is (a bad enum flows through as a plain string and
+    // is caught below by the validator as an OptionsError, not a bare Error).
     base = {
       maxFrameBytes: config.hasPath('maxFrameBytes') ? config.getBytes('maxFrameBytes') : base.maxFrameBytes,
       onOversizeFrame: config.hasPath('onOversizeFrame')
-        ? oneOf(config.getString('onOversizeFrame'), ['close', 'drop'] as const, 'onOversizeFrame')
+        ? (config.getString('onOversizeFrame') as OversizeFramePolicy)
         : base.onOversizeFrame,
       onInvalidMessage: config.hasPath('onInvalidMessage')
-        ? oneOf(config.getString('onInvalidMessage'), ['close', 'drop', 'hook'] as const, 'onInvalidMessage')
+        ? (config.getString('onInvalidMessage') as InvalidMessagePolicy)
         : base.onInvalidMessage,
       maxBufferedBytes: config.hasPath('maxBufferedBytes') ? config.getBytes('maxBufferedBytes') : base.maxBufferedBytes,
       onBackpressure: config.hasPath('onBackpressure')
-        ? oneOf(config.getString('onBackpressure'), ['drop', 'close'] as const, 'onBackpressure')
+        ? (config.getString('onBackpressure') as BackpressurePolicy)
         : base.onBackpressure,
       maxConnections: config.hasPath('maxConnections') ? config.getInt('maxConnections') : base.maxConnections,
     };
   }
-  return {
+  const resolved: ResolvedWebsocketPolicy = {
     maxFrameBytes: options.maxFrameBytes ?? base.maxFrameBytes,
     onOversizeFrame: options.onOversizeFrame ?? base.onOversizeFrame,
     onInvalidMessage: options.onInvalidMessage ?? base.onInvalidMessage,
@@ -84,4 +107,6 @@ export function resolveWebsocketPolicy(system: ActorSystem, options: WebsocketPo
     onBackpressure: options.onBackpressure ?? base.onBackpressure,
     maxConnections: options.maxConnections ?? base.maxConnections,
   };
+  new WebsocketPolicyOptionsValidator().validate(resolved);
+  return resolved;
 }

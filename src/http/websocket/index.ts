@@ -5,7 +5,7 @@
  * `WebsocketServerActor`, the `WebsocketConnection` handle, and the codecs.
  */
 export { websocket } from './WebsocketRoute.js';
-export { WebsocketRouteOptions, WebsocketRouteOptionsBuilder } from './WebsocketRouteOptions.js';
+export { WebsocketRouteOptions, WebsocketRouteOptionsBuilder, WebsocketRouteOptionsValidator } from './WebsocketRouteOptions.js';
 export type { WebsocketRouteOptionsType } from './WebsocketRouteOptions.js';
 
 export { WebsocketServerActor } from './WebsocketServerActor.js';

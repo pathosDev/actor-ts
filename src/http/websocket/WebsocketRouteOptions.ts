@@ -19,6 +19,7 @@
  * unset fields fall through to HOCON.
  */
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { WebsocketCodec } from './WebsocketCodec.js';
 import type {
   BackpressurePolicy,
@@ -101,6 +102,30 @@ export class WebsocketRouteOptionsBuilder<TOut = unknown, TIn = unknown>
    */
   withMaxConnections(max: number): this {
     return this.set('maxConnections', max);
+  }
+}
+
+/**
+ * Validates the route-only option fields.  The per-connection policy knobs
+ * (frame / buffer caps, enums, `maxConnections`) are validated separately, on
+ * the resolved policy, by `WebsocketPolicyOptionsValidator` — this validator
+ * covers what does not go through policy resolution: `allowedOrigins`.
+ */
+export class WebsocketRouteOptionsValidator<TOut = unknown, TIn = unknown>
+  extends OptionsValidator<WebsocketRouteOptionsType<TOut, TIn>> {
+  constructor() {
+    super('WebsocketRouteOptions');
+  }
+  protected rules(s: Partial<WebsocketRouteOptionsType<TOut, TIn>>): void {
+    const { allowedOrigins } = s;
+    // An empty array means "no guard" (allow all) — permitted; only entries
+    // must be plausible: a non-array or an empty / non-string entry is a bug.
+    if (
+      allowedOrigins !== undefined &&
+      (!Array.isArray(allowedOrigins) || allowedOrigins.some((origin) => typeof origin !== 'string' || origin.length === 0))
+    ) {
+      this.fail('allowedOrigins', 'must be an array of non-empty origin strings', allowedOrigins);
+    }
   }
 }
 
