@@ -1,6 +1,8 @@
 export { rateLimit } from './RateLimit.js';
-export type { RateLimitOptions, RateLimitContext } from './RateLimit.js';
+export { RateLimitOptions, RateLimitOptionsBuilder, RateLimitOptionsValidator } from './RateLimitOptions.js';
+export type { RateLimitOptionsType, RateLimitContext } from './RateLimitOptions.js';
 export { idempotent } from './IdempotencyKey.js';
-export type { IdempotencyOptions } from './IdempotencyKey.js';
+export { IdempotencyOptions, IdempotencyOptionsBuilder, IdempotencyOptionsValidator } from './IdempotencyOptions.js';
+export type { IdempotencyOptionsType } from './IdempotencyOptions.js';
 export { cached } from './ResponseCache.js';
 export type { ResponseCacheOptions } from './ResponseCache.js';

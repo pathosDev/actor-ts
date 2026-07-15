@@ -1,5 +1,6 @@
 /** Options for the {@link requestTimeout} middleware.  Options-only. */
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { HttpRequest, HttpResponse } from '../types.js';
 
 /** Plain settings shape for the request-timeout middleware. */
@@ -26,3 +27,17 @@ export class TimeoutOptionsBuilder extends OptionsBuilder<TimeoutOptionsType> {
 /** Accepted input: the builder or a plain object. */
 export type TimeoutOptions = TimeoutOptionsBuilder | Partial<TimeoutOptionsType>;
 export const TimeoutOptions = TimeoutOptionsBuilder;
+
+/**
+ * Validates resolved {@link TimeoutOptionsType} settings — a timeout
+ * deadline (`ms`) must be a positive finite number.  Runs from any input
+ * path (bare number, plain object, builder) since it checks the resolved bag.
+ */
+export class TimeoutOptionsValidator extends OptionsValidator<TimeoutOptionsType> {
+  constructor() {
+    super('TimeoutOptions');
+  }
+  protected rules(_s: Partial<TimeoutOptionsType>): void {
+    this.positiveNumber('ms');
+  }
+}

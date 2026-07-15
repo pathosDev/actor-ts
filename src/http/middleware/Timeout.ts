@@ -8,11 +8,12 @@
  */
 import type { Middleware } from '../Route.js';
 import { Status, type HttpRequest, type HttpResponse } from '../types.js';
-import type { TimeoutOptions, TimeoutOptionsType } from './TimeoutOptions.js';
+import { TimeoutOptionsValidator, type TimeoutOptions, type TimeoutOptionsType } from './TimeoutOptions.js';
 
 /** Build a middleware that bounds handler latency.  Accepts a bare ms number or options. */
 export function requestTimeout(options: number | TimeoutOptions): Middleware {
   const resolvedOptions = typeof options === 'number' ? { ms: options } : (options as Partial<TimeoutOptionsType>);
+  new TimeoutOptionsValidator().validate(resolvedOptions);
   const ms = resolvedOptions.ms ?? 30_000;
   const onTimeout = resolvedOptions.onTimeout
     ?? ((): HttpResponse => ({ status: Status.ServiceUnavailable, body: { error: 'request timed out' } }));

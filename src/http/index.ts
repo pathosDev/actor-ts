@@ -45,6 +45,7 @@ export {
   hsts,
   HstsOptions,
   HstsOptionsBuilder,
+  HstsOptionsValidator,
   contentSecurityPolicy,
   CspOptions,
   CspOptionsBuilder,
@@ -54,11 +55,13 @@ export {
   cors,
   CorsOptions,
   CorsOptionsBuilder,
+  CorsOptionsValidator,
   csrfProtection,
   requireSameOrigin,
   readCsrfToken,
   CsrfOptions,
   CsrfOptionsBuilder,
+  CsrfOptionsValidator,
   SameOriginOptions,
   SameOriginOptionsBuilder,
   requestId,
@@ -70,6 +73,7 @@ export {
   requestTimeout,
   TimeoutOptions,
   TimeoutOptionsBuilder,
+  TimeoutOptionsValidator,
 } from './middleware/index.js';
 export type {
   BearerTokenAuthOptions,
@@ -100,6 +104,7 @@ export {
   getFromBrowseableDirectory,
   StaticFilesOptions,
   StaticFilesOptionsBuilder,
+  StaticFilesOptionsValidator,
 } from './static/index.js';
 export type { StaticFilesOptionsType } from './static/index.js';
 
@@ -138,10 +143,20 @@ export {
 export type { HttpMethod, HttpRequest, HttpResponse } from './types.js';
 
 // HTTP caching middleware (response-cache, rate-limit, idempotency-key).
-export { rateLimit, idempotent, cached } from './cache/index.js';
-export type {
+export {
+  rateLimit,
   RateLimitOptions,
-  RateLimitContext,
+  RateLimitOptionsBuilder,
+  RateLimitOptionsValidator,
+  idempotent,
   IdempotencyOptions,
+  IdempotencyOptionsBuilder,
+  IdempotencyOptionsValidator,
+  cached,
+} from './cache/index.js';
+export type {
+  RateLimitOptionsType,
+  RateLimitContext,
+  IdempotencyOptionsType,
   ResponseCacheOptions,
 } from './cache/index.js';
