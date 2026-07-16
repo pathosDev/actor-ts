@@ -52,10 +52,22 @@ import { match } from 'ts-pattern';
 class ProtocolHandler extends Actor<TcpInbound> {
   override onReceive(msg: TcpInbound): void {
     match(msg)
-      .with({ kind: 'data' },         (m) => this.handleBytes(m.payload))   // Uint8Array
-      .with({ kind: 'connected' },    () => { this.log.info('TCP connected'); })
-      .with({ kind: 'disconnected' }, () => { this.log.info('TCP disconnected'); })
+      .with({ kind: 'data' },         (m) => this.onData(m))
+      .with({ kind: 'connected' },    ()  => this.onConnected())
+      .with({ kind: 'disconnected' }, ()  => this.onDisconnected())
       .exhaustive();
+  }
+
+  private onData(msg: Extract<TcpInbound, { kind: 'data' }>): void {
+    this.handleBytes(msg.payload);   // Uint8Array
+  }
+
+  private onConnected(): void {
+    this.log.info('TCP connected');
+  }
+
+  private onDisconnected(): void {
+    this.log.info('TCP disconnected');
   }
 }
 ```

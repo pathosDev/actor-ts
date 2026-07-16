@@ -33,24 +33,46 @@ class Counter extends Actor<Command> {
 
   override onReceive(cmd: Command): void {
     match(cmd)
-      .with({ kind: 'inc' },   ()  => { this.count++; })
-      .with({ kind: 'dec' },   ()  => { this.count--; })
-      .with({ kind: 'set' },   (m) => { this.count = m.to; })
-      .with({ kind: 'reset' }, ()  => { this.count = 0; })
+      .with({ kind: 'inc' },   ()  => this.onInc())
+      .with({ kind: 'dec' },   ()  => this.onDec())
+      .with({ kind: 'set' },   (m) => this.onSet(m))
+      .with({ kind: 'reset' }, ()  => this.onReset())
       .exhaustive();
   }
+
+  private onInc():   void { this.count++; }
+  private onDec():   void { this.count--; }
+  private onSet(cmd: Extract<Command, { kind: 'set' }>): void { this.count = cmd.to; }
+  private onReset(): void { this.count = 0; }
 }
 ```
 
-Inside the `set` arm, `m` is automatically typed as
-`{ kind: 'set'; to: number }` — the discriminator narrows the type
-without a cast.
+Every arm is a thin call into a private `onXxx` handler — the house
+rule (see below), never an inline body.  The narrowing survives the
+hand-off: `onSet`'s parameter is typed `Extract<Command, { kind: 'set' }>`,
+so `cmd.to` is a `number` with no cast.
 
 `.exhaustive()` at the end is the **compile-time check**: if you
 add `{ kind: 'double' }` to `Command` later and forget the matching
 `.with({ kind: 'double' }, ...)` arm, TypeScript refuses to
 compile, pointing at the `.exhaustive()` call.  The build catches
 the omission; you never ship a silently-dropped message.
+
+## Delegate each arm to a private handler
+
+Notice the minimal example above: every arm is a thin call into a
+private `onXxx` method, not an inline body.  That's the house rule —
+each `.with(…)` **and** any `.otherwise(…)` delegates, even a
+one-liner, no exceptions.  The matcher stays a scannable dispatch
+table; the logic lives in named handlers.
+
+- Name the handler `on` + the PascalCase `kind` — `onInc`, `onData`,
+  `onCloseAccount`; the `.otherwise(…)` fallback is `onUnhandled`.
+- Type the parameter as the narrowed variant
+  (`Extract<Command, { kind: 'set' }>`) so the handler keeps
+  ts-pattern's narrowing; omit it for payload-free kinds.
+
+It's a hard rule in the repo's `AGENTS.md` (Code style).
 
 ## The `kind` convention
 
@@ -113,8 +135,8 @@ for the full set.
 
 ```ts
 const reply = match(cmd)
-  .with({ kind: 'get' }, () => this.count)
-  .with({ kind: 'inc' }, () => this.count + 1)
+  .with({ kind: 'get' },  () => this.onGet())    // onGet(): number
+  .with({ kind: 'next' }, () => this.onNext())   // onNext(): number
   .exhaustive();
 ```
 
@@ -126,9 +148,9 @@ typed-actor `Behavior` returns, the expression form is convenient.
 
 ```ts
 match(cmd)
-  .with({ kind: 'inc' }, () => { ... })
-  .with({ kind: 'dec' }, () => { ... })
-  .otherwise(() => this.log.warn('unknown cmd'));   // runtime fallback
+  .with({ kind: 'inc' }, ()  => this.onInc())
+  .with({ kind: 'dec' }, ()  => this.onDec())
+  .otherwise((m) => this.onUnhandled(m));   // runtime fallback
 ```
 
 `.otherwise(fn)` catches anything not matched.  Use it for actors

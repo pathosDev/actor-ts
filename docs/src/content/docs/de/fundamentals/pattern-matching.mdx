@@ -35,18 +35,25 @@ class Counter extends Actor<Command> {
 
   override onReceive(cmd: Command): void {
     match(cmd)
-      .with({ kind: 'inc' },   ()  => { this.count++; })
-      .with({ kind: 'dec' },   ()  => { this.count--; })
-      .with({ kind: 'set' },   (m) => { this.count = m.to; })
-      .with({ kind: 'reset' }, ()  => { this.count = 0; })
+      .with({ kind: 'inc' },   ()  => this.onInc())
+      .with({ kind: 'dec' },   ()  => this.onDec())
+      .with({ kind: 'set' },   (m) => this.onSet(m))
+      .with({ kind: 'reset' }, ()  => this.onReset())
       .exhaustive();
   }
+
+  private onInc():   void { this.count++; }
+  private onDec():   void { this.count--; }
+  private onSet(cmd: Extract<Command, { kind: 'set' }>): void { this.count = cmd.to; }
+  private onReset(): void { this.count = 0; }
 }
 ```
 
-Innerhalb des `set`-Arms ist `m` automatisch als
-`{ kind: 'set'; to: number }` typisiert — der Diskriminator
-verengt den Typ ohne Cast.
+Jeder Arm ist ein dünner Aufruf einer privaten `onXxx`-Handler-Methode
+— die Hausregel (siehe unten), nie ein Inline-Rumpf.  Das Narrowing
+überlebt die Übergabe: Der Parameter von `onSet` ist als
+`Extract<Command, { kind: 'set' }>` typisiert, sodass `cmd.to` ohne
+Cast eine `number` ist.
 
 `.exhaustive()` am Ende ist der **Compile-time-Check**: wenn du
 später `{ kind: 'double' }` zu `Command` hinzufügst und den passenden
@@ -54,6 +61,22 @@ später `{ kind: 'double' }` zu `Command` hinzufügst und den passenden
 TypeScript zu kompilieren und zeigt auf den
 `.exhaustive()`-Aufruf.  Der Build fängt das Versäumnis ab; du
 shippst nie eine still verworfene Nachricht.
+
+## Jeden Arm in einen privaten Handler auslagern
+
+Beachte das minimale Beispiel oben: Jeder Arm ist ein dünner Aufruf
+einer privaten `onXxx`-Methode, kein Inline-Rumpf.  Das ist die
+Hausregel — jeder `.with(…)` **und** jedes `.otherwise(…)` delegiert,
+auch ein Einzeiler, ohne Ausnahme.  Der Matcher bleibt eine scannbare
+Dispatch-Tabelle; die Logik lebt in benannten Handlern.
+
+- Benenne den Handler `on` + PascalCase des `kind` — `onInc`, `onData`,
+  `onCloseAccount`; der `.otherwise(…)`-Fallback heißt `onUnhandled`.
+- Typisiere den Parameter als die verengte Variante
+  (`Extract<Command, { kind: 'set' }>`), damit der Handler das
+  Narrowing von ts-pattern behält; lass ihn bei nutzlastfreien Kinds weg.
+
+Das ist eine harte Regel in der `AGENTS.md` des Repos (Code style).
 
 ## Die `kind`-Konvention
 
@@ -118,8 +141,8 @@ für den vollen Set.
 
 ```ts
 const reply = match(cmd)
-  .with({ kind: 'get' }, () => this.count)
-  .with({ kind: 'inc' }, () => this.count + 1)
+  .with({ kind: 'get' },  () => this.onGet())    // onGet(): number
+  .with({ kind: 'next' }, () => this.onNext())   // onNext(): number
   .exhaustive();
 ```
 
@@ -132,9 +155,9 @@ bequem.
 
 ```ts
 match(cmd)
-  .with({ kind: 'inc' }, () => { ... })
-  .with({ kind: 'dec' }, () => { ... })
-  .otherwise(() => this.log.warn('unknown cmd'));   // Runtime-Fallback
+  .with({ kind: 'inc' }, ()  => this.onInc())
+  .with({ kind: 'dec' }, ()  => this.onDec())
+  .otherwise((m) => this.onUnhandled(m));   // Runtime-Fallback
 ```
 
 `.otherwise(fn)` fängt alles, was nicht gematcht wurde.  Verwende
