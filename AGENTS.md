@@ -142,6 +142,16 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   relative imports (required by the build's module resolution).
 - Discriminated-union handling via **`ts-pattern`**
   (`match(x).with(…).exhaustive()`).
+- **Every `match` arm delegates to a private `onXxx` handler.** In an
+  actor's message handler (`onReceive`, `onCommand`, `onEvent`, or a
+  router it calls), every arm — each `.with(…)` **and** any `.otherwise(…)`
+  — is a thin call into a private method
+  (`.with({ kind: 'data' }, (m) => this.onData(m))`,
+  `.otherwise((m) => this.onUnhandled(m))`), never an inline body, even a
+  one-liner — no exceptions. Name it `on` + the PascalCase `kind`
+  (`onData`, `onConnected`, `onCloseAccount`); type the parameter as the
+  narrowed variant (`Extract<TMsg, { kind: 'data' }>`) or omit it for
+  payload-free kinds. Keeps the matcher a scannable dispatch table.
 - HOCON config keys go through **`src/config/ConfigKeys.ts`** (typed,
   single source of truth). Options resolve with precedence:
   **explicit options > HOCON > built-in defaults**.
