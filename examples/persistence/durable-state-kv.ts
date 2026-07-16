@@ -25,18 +25,24 @@ type Cmd =
 class KVStore extends DurableStateActor<Cmd, KV> {
   override async onCommand(cmd: Cmd): Promise<void> {
     await match(cmd)
-      .with({ kind: 'set' }, async (c) => {
-        const next: KV = { map: { ...this.state.map, [c.key]: c.value } };
-        await this.persist(next);
-        console.log(`set ${c.key}=${c.value} (rev=${this.revision})`);
-      })
-      .with({ kind: 'get' }, async (c) => {
-        console.log(`get ${c.key}: ${this.state.map[c.key] ?? '<missing>'}`);
-      })
-      .with({ kind: 'dump' }, async () => {
-        console.log('dump:', this.state.map);
-      })
+      .with({ kind: 'set' }, (c) => this.onSet(c))
+      .with({ kind: 'get' }, (c) => this.onGet(c))
+      .with({ kind: 'dump' }, () => this.onDump())
       .exhaustive();
+  }
+
+  private async onSet(c: Extract<Cmd, { kind: 'set' }>): Promise<void> {
+    const next: KV = { map: { ...this.state.map, [c.key]: c.value } };
+    await this.persist(next);
+    console.log(`set ${c.key}=${c.value} (rev=${this.revision})`);
+  }
+
+  private async onGet(c: Extract<Cmd, { kind: 'get' }>): Promise<void> {
+    console.log(`get ${c.key}: ${this.state.map[c.key] ?? '<missing>'}`);
+  }
+
+  private async onDump(): Promise<void> {
+    console.log('dump:', this.state.map);
   }
 }
 

@@ -74,19 +74,34 @@ class Account extends PersistentActor<Cmd, Event, State> {
   // Marker just to silence the unused-import lint for the type below.
   protected _enc(): EncryptionConfig | undefined { return undefined; }
   async onCommand(s: State, cmd: Cmd): Promise<void> {
-    const reply = (msg: unknown): void => this.sender.forEach((sender) => sender.tell(msg));
     await match(cmd)
-      .with({ kind: 'deposit', amount: P.number.gt(0) }, async (c) => {
-        await this.persist({ kind: 'deposited', amount: c.amount },
-          (st) => reply({ balance: st.balance }));
-      })
-      .with({ kind: 'withdraw' }, async (c) => {
-        if (c.amount > s.balance) { reply(new Error('rejected')); return; }
-        await this.persist({ kind: 'withdrew', amount: c.amount },
-          (st) => reply({ balance: st.balance }));
-      })
-      .with({ kind: 'balance' }, async () => reply({ balance: s.balance }))
-      .otherwise(async () => reply(new Error('rejected')));
+      .with({ kind: 'deposit', amount: P.number.gt(0) }, (c) => this.onDeposit(c))
+      .with({ kind: 'withdraw' }, (c) => this.onWithdraw(s, c))
+      .with({ kind: 'balance' }, () => this.onBalance(s))
+      .otherwise(() => this.onUnhandled());
+  }
+
+  private reply(msg: unknown): void {
+    this.sender.forEach((sender) => sender.tell(msg));
+  }
+
+  private async onDeposit(c: Extract<Cmd, { kind: 'deposit' }>): Promise<void> {
+    await this.persist({ kind: 'deposited', amount: c.amount },
+      (st) => this.reply({ balance: st.balance }));
+  }
+
+  private async onWithdraw(s: State, c: Extract<Cmd, { kind: 'withdraw' }>): Promise<void> {
+    if (c.amount > s.balance) { this.reply(new Error('rejected')); return; }
+    await this.persist({ kind: 'withdrew', amount: c.amount },
+      (st) => this.reply({ balance: st.balance }));
+  }
+
+  private async onBalance(s: State): Promise<void> {
+    this.reply({ balance: s.balance });
+  }
+
+  private async onUnhandled(): Promise<void> {
+    this.reply(new Error('rejected'));
   }
 }
 

@@ -40,19 +40,23 @@ class ChatRoom extends WebsocketServerActor<ServerMessage, ClientMessage> {
 
   override onMessage(msg: ClientMessage): void {
     match(msg)
-      .with({ kind: 'setName' }, ({ name }) => {
-        this.names.set(this.connection.id, name);
-        this.reply({ kind: 'system', text: `you are now "${name}"` });
-        this.broadcast(
-          { kind: 'system', text: `${name} joined` },
-          (c) => c.id !== this.connection.id,
-        );
-      })
-      .with({ kind: 'say' }, ({ text }) => {
-        const from = this.names.get(this.connection.id) ?? 'anon';
-        this.broadcast({ kind: 'chat', from, text });
-      })
+      .with({ kind: 'setName' }, (m) => this.onSetName(m))
+      .with({ kind: 'say' }, (m) => this.onSay(m))
       .exhaustive();
+  }
+
+  private onSetName({ name }: Extract<ClientMessage, { kind: 'setName' }>): void {
+    this.names.set(this.connection.id, name);
+    this.reply({ kind: 'system', text: `you are now "${name}"` });
+    this.broadcast(
+      { kind: 'system', text: `${name} joined` },
+      (c) => c.id !== this.connection.id,
+    );
+  }
+
+  private onSay({ text }: Extract<ClientMessage, { kind: 'say' }>): void {
+    const from = this.names.get(this.connection.id) ?? 'anon';
+    this.broadcast({ kind: 'chat', from, text });
   }
 
   protected override onClientConnected(c: WebsocketConnection<ServerMessage>): void {

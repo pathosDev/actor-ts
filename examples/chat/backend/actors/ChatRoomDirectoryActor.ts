@@ -116,16 +116,17 @@ export class ChatRoomDirectoryActor extends Actor<ChatRoomDirectoryCommand> {
 
   override onReceive(cmd: ChatRoomDirectoryCommand): void {
     match(cmd)
-      .with({ kind: 'Create' },      (m) => this.create(m.name, m.replyTo))
-      .with({ kind: 'GetRooms' },    (m) => this.replyRooms(m.replyTo))
-      .with({ kind: 'Subscribe' },   (m) => this.subscribe(m.ref))
-      .with({ kind: 'Unsubscribe' }, (m) => this.unsubscribe(m.ref))
+      .with({ kind: 'Create' },      (m) => this.onCreate(m))
+      .with({ kind: 'GetRooms' },    (m) => this.onGetRooms(m))
+      .with({ kind: 'Subscribe' },   (m) => this.onSubscribe(m))
+      .with({ kind: 'Unsubscribe' }, (m) => this.onUnsubscribe(m))
       .exhaustive();
   }
 
   /* ----------------------------- mutations ----------------------------- */
 
-  private create(name: string, replyTo?: ActorRef<CreateResult>): void {
+  private onCreate(m: Extract<ChatRoomDirectoryCommand, { kind: 'Create' }>): void {
+    const { name, replyTo } = m;
     if (!isRoomName(name)) {
       replyTo?.tell({ kind: 'CreateRejected', reason: 'invalid-name' });
       return;
@@ -146,18 +147,21 @@ export class ChatRoomDirectoryActor extends Actor<ChatRoomDirectoryCommand> {
 
   /* ----------------------------- subscription -------------------------- */
 
-  private subscribe(ref: ActorRef<RoomsChanged | RoomAdded | RoomRemoved>): void {
+  private onSubscribe(m: Extract<ChatRoomDirectoryCommand, { kind: 'Subscribe' }>): void {
+    const { ref } = m;
     this.subscribers.add(ref);
     // Replay the current set so the new subscriber doesn't wait for
     // the next change to populate their UI.
     ref.tell({ kind: 'RoomsChanged', rooms: [...this.lastRooms] });
   }
 
-  private unsubscribe(ref: ActorRef<RoomsChanged | RoomAdded | RoomRemoved>): void {
+  private onUnsubscribe(m: Extract<ChatRoomDirectoryCommand, { kind: 'Unsubscribe' }>): void {
+    const { ref } = m;
     this.subscribers.delete(ref);
   }
 
-  private replyRooms(replyTo: ActorRef<RoomsChanged>): void {
+  private onGetRooms(m: Extract<ChatRoomDirectoryCommand, { kind: 'GetRooms' }>): void {
+    const { replyTo } = m;
     replyTo.tell({ kind: 'RoomsChanged', rooms: [...this.lastRooms] });
   }
 

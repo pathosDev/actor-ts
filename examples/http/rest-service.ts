@@ -41,12 +41,29 @@ type UserReply = User | null | { deleted: true };
 class UserEntity extends Actor<UserCommand> {
   private user: User | null = null;
   override onReceive(cmd: UserCommand): void {
-    const reply = (msg: UserReply): void => this.sender.forEach((s) => s.tell(msg));
     match(cmd)
-      .with({ kind: 'set' }, (c) => { this.user = c.user; reply(this.user); })
-      .with({ kind: 'get' }, () => reply(this.user))
-      .with({ kind: 'delete' }, () => { this.user = null; reply({ deleted: true }); })
+      .with({ kind: 'set' }, (c) => this.onSet(c))
+      .with({ kind: 'get' }, () => this.onGet())
+      .with({ kind: 'delete' }, () => this.onDelete())
       .exhaustive();
+  }
+
+  private reply(msg: UserReply): void {
+    this.sender.forEach((s) => s.tell(msg));
+  }
+
+  private onSet(c: Extract<UserCommand, { kind: 'set' }>): void {
+    this.user = c.user;
+    this.reply(this.user);
+  }
+
+  private onGet(): void {
+    this.reply(this.user);
+  }
+
+  private onDelete(): void {
+    this.user = null;
+    this.reply({ deleted: true });
   }
 }
 

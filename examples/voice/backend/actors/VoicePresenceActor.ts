@@ -79,17 +79,18 @@ export class VoicePresenceActor extends Actor<VoicePresenceCommand> {
 
   override onReceive(cmd: VoicePresenceCommand): void {
     match(cmd)
-      .with({ kind: 'Add' },         (m) => this.add(m.key, m.username))
-      .with({ kind: 'Remove' },      (m) => this.remove(m.key, m.username))
-      .with({ kind: 'Subscribe' },   (m) => this.subscribe(m.key, m.ref))
-      .with({ kind: 'Unsubscribe' }, (m) => this.unsubscribe(m.key, m.ref))
-      .with({ kind: 'GetUsers' },    (m) => this.getUsers(m.key, m.replyTo))
+      .with({ kind: 'Add' },         (m) => this.onAdd(m))
+      .with({ kind: 'Remove' },      (m) => this.onRemove(m))
+      .with({ kind: 'Subscribe' },   (m) => this.onSubscribe(m))
+      .with({ kind: 'Unsubscribe' }, (m) => this.onUnsubscribe(m))
+      .with({ kind: 'GetUsers' },    (m) => this.onGetUsers(m))
       .exhaustive();
   }
 
   /* ----------------------------- mutations ----------------------------- */
 
-  private add(key: string, username: string): void {
+  private onAdd(m: Extract<VoicePresenceCommand, { kind: 'Add' }>): void {
+    const { key, username } = m;
     this.dd.update<ORSet<string>>(
       key,
       () => ORSet.empty<string>(),
@@ -97,7 +98,8 @@ export class VoicePresenceActor extends Actor<VoicePresenceCommand> {
     );
   }
 
-  private remove(key: string, username: string): void {
+  private onRemove(m: Extract<VoicePresenceCommand, { kind: 'Remove' }>): void {
+    const { key, username } = m;
     this.dd.update<ORSet<string>>(
       key,
       () => ORSet.empty<string>(),
@@ -107,7 +109,8 @@ export class VoicePresenceActor extends Actor<VoicePresenceCommand> {
 
   /* ----------------------------- subscription -------------------------- */
 
-  private subscribe(key: string, ref: ActorRef<PresenceChanged>): void {
+  private onSubscribe(m: Extract<VoicePresenceCommand, { kind: 'Subscribe' }>): void {
+    const { key, ref } = m;
     const state = this.ensureState(key);
     state.subscribers.add(ref);
     if (state.lastUsers.length > 0 || state.ddUnsubscribe) {
@@ -115,7 +118,8 @@ export class VoicePresenceActor extends Actor<VoicePresenceCommand> {
     }
   }
 
-  private unsubscribe(key: string, ref: ActorRef<PresenceChanged>): void {
+  private onUnsubscribe(m: Extract<VoicePresenceCommand, { kind: 'Unsubscribe' }>): void {
+    const { key, ref } = m;
     const state = this.states.get(key);
     if (!state) return;
     state.subscribers.delete(ref);
@@ -125,7 +129,8 @@ export class VoicePresenceActor extends Actor<VoicePresenceCommand> {
     }
   }
 
-  private getUsers(key: string, replyTo: ActorRef<PresenceChanged>): void {
+  private onGetUsers(m: Extract<VoicePresenceCommand, { kind: 'GetUsers' }>): void {
+    const { key, replyTo } = m;
     const current = this.dd.get<ORSet<string>>(key);
     const users = current ? [...current.value()] : [];
     replyTo.tell({ kind: 'PresenceChanged', key, users });

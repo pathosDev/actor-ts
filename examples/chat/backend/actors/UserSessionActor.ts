@@ -188,11 +188,11 @@ export class UserSessionActor extends Actor<SessionMessage> {
 
   override onReceive(msg: SessionMessage): void {
     match(msg)
-      .with({ kind: 'text' }, (m) => this.onClientText(m.data))
-      .with({ kind: 'binary' }, () => { /* binary frames are ignored */ })
-      .with({ kind: 'socket-closed' }, () => this.context.stopSelf())
-      .with({ kind: 'RoomBroadcast' }, (m) => this.onBroadcast(m))
-      .with({ kind: 'HistoryReply' }, (m) => this.onHistory(m))
+      .with({ kind: 'text' }, (m) => this.onText(m))
+      .with({ kind: 'binary' }, () => this.onBinary())
+      .with({ kind: 'socket-closed' }, () => this.onSocketClosed())
+      .with({ kind: 'RoomBroadcast' }, (m) => this.onRoomBroadcast(m))
+      .with({ kind: 'HistoryReply' }, (m) => this.onHistoryReply(m))
       .with({ kind: 'UsersChanged' }, (m) => this.onUsersChanged(m))
       .with({ kind: 'RoomsChanged' }, (m) => this.onRoomsChanged(m))
       .with({ kind: 'RoomAdded' },    (m) => this.onRoomAdded(m))
@@ -204,9 +204,18 @@ export class UserSessionActor extends Actor<SessionMessage> {
       .exhaustive();
   }
 
+  private onBinary(): void {
+    /* binary frames are ignored */
+  }
+
+  private onSocketClosed(): void {
+    this.context.stopSelf();
+  }
+
   /* ----------------------------- inbound ----------------------------- */
 
-  private onClientText(raw: string): void {
+  private onText(m: Extract<SessionMessage, { kind: 'text' }>): void {
+    const raw = m.data;
     const cmd = decodeClient(raw);
     if (!cmd) {
       this.sendServer({ type: 'system', text: 'Invalid frame — JSON expected.' });
@@ -300,123 +309,147 @@ export class UserSessionActor extends Actor<SessionMessage> {
 
   private handleAuthenticated(cmd: ClientMessage): void {
     match(cmd)
-      .with({ type: 'login' }, () => {
-        // Re-login on an already-authenticated socket — silently ignore.
-      })
-      .with({ type: 'resume' }, () => {
-        // Resume on an already-authenticated socket — silently ignore.
-      })
-      .with({ type: 'logout' }, () => {
-        // Explicit log-out: revoke the session token so the cluster
-        // forgets it (gossip propagates), then drop the connection.
-        // The client's storage cleanup happens locally on its side.
-        if (this.token) this.deps.sessions.revokeToken(this.token);
-        this.token = null;
-        this.context.stopSelf();
-      })
-      .with({ type: 'send' }, (m) => {
-        if (!isRoomName(m.room)) return;
-        const text = m.text.slice(0, 4096);
-        if (text.length === 0) return;
-        // DMs ride on the same `send` frame but get routed to the
-        // DM region instead of the chat-room region.  No `join`
-        // gate — DMs have no presence concept, the inbox topic is
-        // always subscribed.
-        if (isDmRoomName(m.room)) {
-          this.sendDm(m.room, text);
-          return;
-        }
-        if (!this.joinedRooms.has(m.room)) return;
-        this.deps.chatRoomRegion.tell({
-          kind: 'SendMessage',
-          room: m.room,
-          from: this.username!,
-          text,
-        });
-      })
-      .with({ type: 'join' }, (m) => {
-        if (!isRoomName(m.room)) return;
-        if (isDmRoomName(m.room)) {
-          // "Joining" a DM means: fetch its history so the client
-          // can render past messages.  No subscription, no presence.
-          this.fetchDmHistory(m.room);
-          return;
-        }
-        this.joinRoom(m.room, true);
-      })
-      .with({ type: 'leave' }, (m) => {
-        // No-op for DM rooms — there's nothing to leave, the inbox
-        // stays subscribed cluster-wide for this session.
-        if (isRoomName(m.room) && !isDmRoomName(m.room)) this.leaveRoom(m.room);
-      })
-      .with({ type: 'switch-active-room' }, (m) => {
-        if (!isRoomName(m.room)) return;
-        if (isDmRoomName(m.room)) {
-          this.currentRoom = m.room;
-          // Lazy history fetch the first time the user switches into
-          // this DM.  Idempotent — subsequent switches don't re-ask.
-          if (!this.dmHistoryAskedRooms.has(m.room)) {
-            this.dmHistoryAskedRooms.add(m.room);
-            this.fetchDmHistory(m.room);
-          }
-          return;
-        }
-        if (this.joinedRooms.has(m.room)) {
-          this.currentRoom = m.room;
-          // Lazy history fetch: if we never asked for this room's
-          // history at login (because it wasn't the default room),
-          // ask now.  Tracking this with `historyAskedRooms` keeps
-          // the request idempotent — a follow-up switch back to the
-          // same room doesn't re-ask.
-          if (!this.historyAskedRooms.has(m.room)) {
-            this.historyAskedRooms.add(m.room);
-            this.deps.chatRoomRegion.tell({
-              kind: 'GetHistory',
-              room: m.room,
-              limit: 50,
-              replyTo: this.self as ActorRef<HistoryReply>,
-            });
-          }
-        }
-      })
-      .with({ type: 'create-room' }, (m) => {
-        // Fire-and-forget: the directory broadcasts `RoomAdded` (or
-        // a refreshed `RoomsChanged`) to every subscriber once the
-        // ORSet update is gossiped, so this client sees the new
-        // room via the same channel that notifies everyone else.
-        // We don't surface accept/reject in this minimal demo —
-        // invalid names are a typo (no progress visible client-side
-        // = clear feedback) and the duplicate case still results in
-        // the name appearing in the list.
-        this.deps.roomDirectory.tell({ kind: 'Create', name: m.name });
-      })
-      .with({ type: 'typing' }, (m) => {
-        if (!isRoomName(m.room)) return;
-        this.broadcastTyping(m.room);
-      })
-      .with({ type: 'read-up-to' }, (m) => {
-        if (!isRoomName(m.room)) return;
-        if (typeof m.ts !== 'number' || !Number.isFinite(m.ts) || m.ts <= 0) return;
-        // For DMs we register the read pointer under the canonical
-        // pair-id key, not the per-user virtual `@<other>` room.
-        // Both participants then see the same DD entry and can
-        // render receipts symmetrically.
-        const key = isDmRoomName(m.room)
-          ? this.dmReceiptsKey(m.room)
-          : m.room;
-        if (key === null) return;
-        this.deps.readReceipts.tell({
-          kind: 'Update',
-          room: key,
-          username: this.username!,
-          ts: m.ts,
-        });
-      })
-      .with({ type: 'ping' }, () => { /* keepalive — no-op server-side */ })
+      .with({ type: 'login' }, () => this.onLogin())
+      .with({ type: 'resume' }, () => this.onResume())
+      .with({ type: 'logout' }, () => this.onLogout())
+      .with({ type: 'send' }, (m) => this.onSend(m))
+      .with({ type: 'join' }, (m) => this.onJoin(m))
+      .with({ type: 'leave' }, (m) => this.onLeave(m))
+      .with({ type: 'switch-active-room' }, (m) => this.onSwitchActiveRoom(m))
+      .with({ type: 'create-room' }, (m) => this.onCreateRoom(m))
+      .with({ type: 'typing' }, (m) => this.onTyping(m))
+      .with({ type: 'read-up-to' }, (m) => this.onReadUpTo(m))
+      .with({ type: 'ping' }, () => this.onPing())
       .exhaustive();
   }
 
-  private onBroadcast(msg: RoomBroadcast): void {
+  private onLogin(): void {
+    // Re-login on an already-authenticated socket — silently ignore.
+  }
+
+  private onResume(): void {
+    // Resume on an already-authenticated socket — silently ignore.
+  }
+
+  private onLogout(): void {
+    // Explicit log-out: revoke the session token so the cluster
+    // forgets it (gossip propagates), then drop the connection.
+    // The client's storage cleanup happens locally on its side.
+    if (this.token) this.deps.sessions.revokeToken(this.token);
+    this.token = null;
+    this.context.stopSelf();
+  }
+
+  private onSend(m: Extract<ClientMessage, { type: 'send' }>): void {
+    if (!isRoomName(m.room)) return;
+    const text = m.text.slice(0, 4096);
+    if (text.length === 0) return;
+    // DMs ride on the same `send` frame but get routed to the
+    // DM region instead of the chat-room region.  No `join`
+    // gate — DMs have no presence concept, the inbox topic is
+    // always subscribed.
+    if (isDmRoomName(m.room)) {
+      this.sendDm(m.room, text);
+      return;
+    }
+    if (!this.joinedRooms.has(m.room)) return;
+    this.deps.chatRoomRegion.tell({
+      kind: 'SendMessage',
+      room: m.room,
+      from: this.username!,
+      text,
+    });
+  }
+
+  private onJoin(m: Extract<ClientMessage, { type: 'join' }>): void {
+    if (!isRoomName(m.room)) return;
+    if (isDmRoomName(m.room)) {
+      // "Joining" a DM means: fetch its history so the client
+      // can render past messages.  No subscription, no presence.
+      this.fetchDmHistory(m.room);
+      return;
+    }
+    this.joinRoom(m.room, true);
+  }
+
+  private onLeave(m: Extract<ClientMessage, { type: 'leave' }>): void {
+    // No-op for DM rooms — there's nothing to leave, the inbox
+    // stays subscribed cluster-wide for this session.
+    if (isRoomName(m.room) && !isDmRoomName(m.room)) this.leaveRoom(m.room);
+  }
+
+  private onSwitchActiveRoom(m: Extract<ClientMessage, { type: 'switch-active-room' }>): void {
+    if (!isRoomName(m.room)) return;
+    if (isDmRoomName(m.room)) {
+      this.currentRoom = m.room;
+      // Lazy history fetch the first time the user switches into
+      // this DM.  Idempotent — subsequent switches don't re-ask.
+      if (!this.dmHistoryAskedRooms.has(m.room)) {
+        this.dmHistoryAskedRooms.add(m.room);
+        this.fetchDmHistory(m.room);
+      }
+      return;
+    }
+    if (this.joinedRooms.has(m.room)) {
+      this.currentRoom = m.room;
+      // Lazy history fetch: if we never asked for this room's
+      // history at login (because it wasn't the default room),
+      // ask now.  Tracking this with `historyAskedRooms` keeps
+      // the request idempotent — a follow-up switch back to the
+      // same room doesn't re-ask.
+      if (!this.historyAskedRooms.has(m.room)) {
+        this.historyAskedRooms.add(m.room);
+        this.deps.chatRoomRegion.tell({
+          kind: 'GetHistory',
+          room: m.room,
+          limit: 50,
+          replyTo: this.self as ActorRef<HistoryReply>,
+        });
+      }
+    }
+  }
+
+  private onCreateRoom(m: Extract<ClientMessage, { type: 'create-room' }>): void {
+    // Fire-and-forget: the directory broadcasts `RoomAdded` (or
+    // a refreshed `RoomsChanged`) to every subscriber once the
+    // ORSet update is gossiped, so this client sees the new
+    // room via the same channel that notifies everyone else.
+    // We don't surface accept/reject in this minimal demo —
+    // invalid names are a typo (no progress visible client-side
+    // = clear feedback) and the duplicate case still results in
+    // the name appearing in the list.
+    this.deps.roomDirectory.tell({ kind: 'Create', name: m.name });
+  }
+
+  private onTyping(m: Extract<ClientMessage, { type: 'typing' }>): void {
+    if (!isRoomName(m.room)) return;
+    this.broadcastTyping(m.room);
+  }
+
+  private onReadUpTo(m: Extract<ClientMessage, { type: 'read-up-to' }>): void {
+    if (!isRoomName(m.room)) return;
+    if (typeof m.ts !== 'number' || !Number.isFinite(m.ts) || m.ts <= 0) return;
+    // For DMs we register the read pointer under the canonical
+    // pair-id key, not the per-user virtual `@<other>` room.
+    // Both participants then see the same DD entry and can
+    // render receipts symmetrically.
+    const key = isDmRoomName(m.room)
+      ? this.dmReceiptsKey(m.room)
+      : m.room;
+    if (key === null) return;
+    this.deps.readReceipts.tell({
+      kind: 'Update',
+      room: key,
+      username: this.username!,
+      ts: m.ts,
+    });
+  }
+
+  private onPing(): void {
+    /* keepalive — no-op server-side */
+  }
+
+  private onRoomBroadcast(msg: RoomBroadcast): void {
     // Forward as ServerMessage to the client.  Subscribers of
     // multiple rooms need the room field to demux on their side.
     this.sendServer({
@@ -428,7 +461,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
     });
   }
 
-  private onHistory(msg: HistoryReply): void {
+  private onHistoryReply(msg: HistoryReply): void {
     this.sendServer({
       type: 'history',
       room: msg.room,

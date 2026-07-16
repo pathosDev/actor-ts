@@ -85,15 +85,16 @@ export class ReadReceiptsActor extends Actor<ReadReceiptsCommand> {
 
   override onReceive(cmd: ReadReceiptsCommand): void {
     match(cmd)
-      .with({ kind: 'Update' },      (m) => this.update(m.room, m.username, m.ts))
-      .with({ kind: 'Subscribe' },   (m) => this.subscribe(m.room, m.ref))
-      .with({ kind: 'Unsubscribe' }, (m) => this.unsubscribe(m.room, m.ref))
+      .with({ kind: 'Update' },      (m) => this.onUpdate(m))
+      .with({ kind: 'Subscribe' },   (m) => this.onSubscribe(m))
+      .with({ kind: 'Unsubscribe' }, (m) => this.onUnsubscribe(m))
       .exhaustive();
   }
 
   /* ----------------------------- mutations ----------------------------- */
 
-  private update(room: string, username: string, ts: number): void {
+  private onUpdate(m: Extract<ReadReceiptsCommand, { kind: 'Update' }>): void {
+    const { room, username, ts } = m;
     // Monotonic guard: drop the write if it would roll the user's
     // pointer backwards.  LWWMap.put resolves concurrent writes via
     // wall-clock, which is good for cross-node tiebreaks but doesn't
@@ -105,13 +106,14 @@ export class ReadReceiptsActor extends Actor<ReadReceiptsCommand> {
     this.dd.update<LWWMap<string, number>>(
       ddKey(room),
       () => LWWMap.empty<string, number>(),
-      (m) => m.put(this.replicaId, username, ts),
+      (map) => map.put(this.replicaId, username, ts),
     );
   }
 
   /* ----------------------------- subscription -------------------------- */
 
-  private subscribe(room: string, ref: ActorRef<ReceiptsChanged>): void {
+  private onSubscribe(m: Extract<ReadReceiptsCommand, { kind: 'Subscribe' }>): void {
+    const { room, ref } = m;
     const state = this.ensureRoomState(room);
     state.subscribers.add(ref);
     // Replay the last-known snapshot so the new subscriber doesn't
@@ -119,7 +121,8 @@ export class ReadReceiptsActor extends Actor<ReadReceiptsCommand> {
     ref.tell({ kind: 'ReceiptsChanged', room, receipts: state.lastReceipts });
   }
 
-  private unsubscribe(room: string, ref: ActorRef<ReceiptsChanged>): void {
+  private onUnsubscribe(m: Extract<ReadReceiptsCommand, { kind: 'Unsubscribe' }>): void {
+    const { room, ref } = m;
     const state = this.rooms.get(room);
     if (!state) return;
     state.subscribers.delete(ref);

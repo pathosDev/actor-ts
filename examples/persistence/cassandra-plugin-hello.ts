@@ -32,15 +32,19 @@ class Counter extends PersistentActor<Cmd, Event, number> {
 
   override async onCommand(state: number, cmd: Cmd): Promise<void> {
     await match(cmd)
-      .with({ kind: 'get' }, async () => {
-        this.sender.forEach((s) => s.tell(state));
-      })
-      .with({ kind: 'inc' }, async (c) => {
-        await this.persist({ kind: 'incremented', amount: c.amount }, (s) => {
-          this.sender.forEach((sender) => sender.tell(s));
-        });
-      })
+      .with({ kind: 'get' }, () => this.onGet(state))
+      .with({ kind: 'inc' }, (c) => this.onInc(c))
       .exhaustive();
+  }
+
+  private async onGet(state: number): Promise<void> {
+    this.sender.forEach((s) => s.tell(state));
+  }
+
+  private async onInc(c: Extract<Cmd, { kind: 'inc' }>): Promise<void> {
+    await this.persist({ kind: 'incremented', amount: c.amount }, (s) => {
+      this.sender.forEach((sender) => sender.tell(s));
+    });
   }
 
   override onEvent(state: number, event: Event): number {

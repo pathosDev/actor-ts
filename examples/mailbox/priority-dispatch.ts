@@ -30,10 +30,22 @@ class Dispatcher extends Actor<Msg> {
   override async onReceive(m: Msg): Promise<void> {
     await Bun.sleep(15); // simulate non-trivial work
     match(m)
-      .with({ kind: 'heartbeat' }, (hb) => console.log(`HB @ ${hb.ts}`))
-      .with({ kind: 'command' }, (c) => console.log(`command ${c.id}`))
-      .with({ kind: 'log' }, (l) => console.log(`log: ${l.line}`))
+      .with({ kind: 'heartbeat' }, (hb) => this.onHeartbeat(hb))
+      .with({ kind: 'command' }, (c) => this.onCommand(c))
+      .with({ kind: 'log' }, (l) => this.onLog(l))
       .exhaustive();
+  }
+
+  private onHeartbeat(hb: Extract<Msg, { kind: 'heartbeat' }>): void {
+    console.log(`HB @ ${hb.ts}`);
+  }
+
+  private onCommand(c: Extract<Msg, { kind: 'command' }>): void {
+    console.log(`command ${c.id}`);
+  }
+
+  private onLog(l: Extract<Msg, { kind: 'log' }>): void {
+    console.log(`log: ${l.line}`);
   }
 }
 

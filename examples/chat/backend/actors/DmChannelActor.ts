@@ -125,13 +125,15 @@ export class DmChannelActor extends PersistentActor<DmChannelCommand, DmEvent, D
 
   onEvent(state: DmState, e: DmEvent): DmState {
     return match(e)
-      .with({ kind: 'DmPosted' }, (m) => {
-        const next = [...state.history, { from: m.from, text: m.text, ts: m.ts }];
-        const trimmed =
-          next.length > HISTORY_LIMIT ? next.slice(next.length - HISTORY_LIMIT) : next;
-        return { history: trimmed };
-      })
+      .with({ kind: 'DmPosted' }, (m) => this.onDmPosted(state, m))
       .exhaustive();
+  }
+
+  private onDmPosted(state: DmState, m: Extract<DmEvent, { kind: 'DmPosted' }>): DmState {
+    const next = [...state.history, { from: m.from, text: m.text, ts: m.ts }];
+    const trimmed =
+      next.length > HISTORY_LIMIT ? next.slice(next.length - HISTORY_LIMIT) : next;
+    return { history: trimmed };
   }
 
   async onCommand(state: DmState, cmd: DmChannelCommand): Promise<void> {

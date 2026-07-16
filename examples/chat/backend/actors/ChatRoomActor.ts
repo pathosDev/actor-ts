@@ -166,15 +166,17 @@ export class ChatRoomActor extends PersistentActor<ChatRoomCommand, ChatEvent, C
 
   onEvent(state: ChatState, e: ChatEvent): ChatState {
     return match(e)
-      .with({ kind: 'MsgPosted' }, (m) => {
-        const next = [...state.history, { from: m.from, text: m.text, ts: m.ts }];
-        // Trim AFTER append so the most-recent N messages stay live —
-        // older events live on in the journal but aren't kept resident.
-        const trimmed =
-          next.length > HISTORY_LIMIT ? next.slice(next.length - HISTORY_LIMIT) : next;
-        return { history: trimmed };
-      })
+      .with({ kind: 'MsgPosted' }, (m) => this.onMsgPosted(state, m))
       .exhaustive();
+  }
+
+  private onMsgPosted(state: ChatState, m: Extract<ChatEvent, { kind: 'MsgPosted' }>): ChatState {
+    const next = [...state.history, { from: m.from, text: m.text, ts: m.ts }];
+    // Trim AFTER append so the most-recent N messages stay live —
+    // older events live on in the journal but aren't kept resident.
+    const trimmed =
+      next.length > HISTORY_LIMIT ? next.slice(next.length - HISTORY_LIMIT) : next;
+    return { history: trimmed };
   }
 
   async onCommand(state: ChatState, cmd: ChatRoomCommand): Promise<void> {

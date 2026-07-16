@@ -18,24 +18,34 @@ class AccountActor extends Actor<Command> {
   private balance = 0;
 
   override onReceive(cmd: Command): void {
-    const reply = (msg: unknown): void => this.sender.forEach((s) => s.tell(msg));
-
     match(cmd)
-      .with({ kind: 'deposit' }, (c) => {
-        if (c.amount <= 0) { reply(new Error(`deposit must be > 0, got ${c.amount}`)); return; }
-        this.balance += c.amount;
-        reply({ balance: this.balance });
-      })
-      .with({ kind: 'withdraw' }, (c) => {
-        if (c.amount > this.balance) {
-          reply(new Error(`insufficient funds: have ${this.balance}, need ${c.amount}`));
-          return;
-        }
-        this.balance -= c.amount;
-        reply({ balance: this.balance });
-      })
-      .with({ kind: 'balance' }, () => reply({ balance: this.balance }))
+      .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
+      .with({ kind: 'withdraw' }, (c) => this.onWithdraw(c))
+      .with({ kind: 'balance' }, () => this.onBalance())
       .exhaustive();
+  }
+
+  private reply(msg: unknown): void {
+    this.sender.forEach((s) => s.tell(msg));
+  }
+
+  private onDeposit(c: Extract<Command, { kind: 'deposit' }>): void {
+    if (c.amount <= 0) { this.reply(new Error(`deposit must be > 0, got ${c.amount}`)); return; }
+    this.balance += c.amount;
+    this.reply({ balance: this.balance });
+  }
+
+  private onWithdraw(c: Extract<Command, { kind: 'withdraw' }>): void {
+    if (c.amount > this.balance) {
+      this.reply(new Error(`insufficient funds: have ${this.balance}, need ${c.amount}`));
+      return;
+    }
+    this.balance -= c.amount;
+    this.reply({ balance: this.balance });
+  }
+
+  private onBalance(): void {
+    this.reply({ balance: this.balance });
   }
 }
 

@@ -51,23 +51,42 @@ class Account extends PersistentActor<Cmd, Event, State> {
 
   override onEvent(state: State, e: Event): State {
     return match(e)
-      .with({ kind: 'deposited' }, (d) => ({ balance: state.balance + d.amount }))
-      .with({ kind: 'withdrawn' }, (d) => ({ balance: state.balance - d.amount }))
+      .with({ kind: 'deposited' }, (d) => this.onDeposited(state, d))
+      .with({ kind: 'withdrawn' }, (d) => this.onWithdrawn(state, d))
       .exhaustive();
   }
 
+  private onDeposited(state: State, d: Extract<Event, { kind: 'deposited' }>): State {
+    return { balance: state.balance + d.amount };
+  }
+
+  private onWithdrawn(state: State, d: Extract<Event, { kind: 'withdrawn' }>): State {
+    return { balance: state.balance - d.amount };
+  }
+
   override async onCommand(state: State, cmd: Cmd): Promise<void> {
-    const reply = (msg: unknown): void => this.sender.forEach((s) => s.tell(msg));
     await match(cmd)
-      .with({ kind: 'balance' }, async () => reply(state.balance))
-      .with({ kind: 'withdraw' }, async (c) => {
-        if (state.balance < c.amount) { reply({ error: 'insufficient funds' }); return; }
-        await this.persist({ kind: 'withdrawn', amount: c.amount }, (s) => reply(s.balance));
-      })
-      .with({ kind: 'deposit' }, async (c) => {
-        await this.persist({ kind: 'deposited', amount: c.amount }, (s) => reply(s.balance));
-      })
+      .with({ kind: 'balance' }, () => this.onBalance(state))
+      .with({ kind: 'withdraw' }, (c) => this.onWithdraw(state, c))
+      .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
       .exhaustive();
+  }
+
+  private reply(msg: unknown): void {
+    this.sender.forEach((s) => s.tell(msg));
+  }
+
+  private async onBalance(state: State): Promise<void> {
+    this.reply(state.balance);
+  }
+
+  private async onWithdraw(state: State, c: Extract<Cmd, { kind: 'withdraw' }>): Promise<void> {
+    if (state.balance < c.amount) { this.reply({ error: 'insufficient funds' }); return; }
+    await this.persist({ kind: 'withdrawn', amount: c.amount }, (s) => this.reply(s.balance));
+  }
+
+  private async onDeposit(c: Extract<Cmd, { kind: 'deposit' }>): Promise<void> {
+    await this.persist({ kind: 'deposited', amount: c.amount }, (s) => this.reply(s.balance));
   }
 }
 

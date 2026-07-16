@@ -49,19 +49,25 @@ class ReplicatedCounter extends ReplicatedEventSourcedActor<Cmd, Event, State> {
 
   onEvent(s: State, e: Event): State {
     return match(e)
-      .with({ kind: 'added' }, (a) => ({ value: s.value + a.amount }))
+      .with({ kind: 'added' }, (a) => this.onAdded(s, a))
       .exhaustive();
+  }
+
+  private onAdded(s: State, a: Extract<Event, { kind: 'added' }>): State {
+    return { value: s.value + a.amount };
   }
 
   async onCommand(_s: State, c: Cmd): Promise<void> {
     await match(c)
-      .with({ kind: 'add' }, async (cmd) => {
-        await this.persist({ kind: 'added', amount: cmd.amount }, () => {
-          // eslint-disable-next-line no-console
-          console.log(`[${this.label}] persisted: amount=${cmd.amount}`);
-        });
-      })
+      .with({ kind: 'add' }, (cmd) => this.onAdd(cmd))
       .exhaustive();
+  }
+
+  private async onAdd(cmd: Extract<Cmd, { kind: 'add' }>): Promise<void> {
+    await this.persist({ kind: 'added', amount: cmd.amount }, () => {
+      // eslint-disable-next-line no-console
+      console.log(`[${this.label}] persisted: amount=${cmd.amount}`);
+    });
   }
 
   /** Test/example hook to read the local view of the value. */

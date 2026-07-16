@@ -80,17 +80,18 @@ export class OnlineUsersActor extends Actor<OnlineUsersCommand> {
 
   override onReceive(cmd: OnlineUsersCommand): void {
     match(cmd)
-      .with({ kind: 'AddToRoom' }, (m) => this.add(m.room, m.username))
-      .with({ kind: 'RemoveFromRoom' }, (m) => this.remove(m.room, m.username))
-      .with({ kind: 'Subscribe' }, (m) => this.subscribe(m.room, m.ref))
-      .with({ kind: 'Unsubscribe' }, (m) => this.unsubscribe(m.room, m.ref))
-      .with({ kind: 'GetUsers' }, (m) => this.getUsers(m.room, m.replyTo))
+      .with({ kind: 'AddToRoom' }, (m) => this.onAddToRoom(m))
+      .with({ kind: 'RemoveFromRoom' }, (m) => this.onRemoveFromRoom(m))
+      .with({ kind: 'Subscribe' }, (m) => this.onSubscribe(m))
+      .with({ kind: 'Unsubscribe' }, (m) => this.onUnsubscribe(m))
+      .with({ kind: 'GetUsers' }, (m) => this.onGetUsers(m))
       .exhaustive();
   }
 
   /* ----------------------------- mutations ----------------------------- */
 
-  private add(room: RoomName, username: string): void {
+  private onAddToRoom(m: Extract<OnlineUsersCommand, { kind: 'AddToRoom' }>): void {
+    const { room, username } = m;
     this.dd.update<ORSet<string>>(
       ddKey(room),
       () => ORSet.empty<string>(),
@@ -98,7 +99,8 @@ export class OnlineUsersActor extends Actor<OnlineUsersCommand> {
     );
   }
 
-  private remove(room: RoomName, username: string): void {
+  private onRemoveFromRoom(m: Extract<OnlineUsersCommand, { kind: 'RemoveFromRoom' }>): void {
+    const { room, username } = m;
     this.dd.update<ORSet<string>>(
       ddKey(room),
       () => ORSet.empty<string>(),
@@ -108,7 +110,8 @@ export class OnlineUsersActor extends Actor<OnlineUsersCommand> {
 
   /* ----------------------------- subscription -------------------------- */
 
-  private subscribe(room: RoomName, ref: ActorRef<UsersChanged>): void {
+  private onSubscribe(m: Extract<OnlineUsersCommand, { kind: 'Subscribe' }>): void {
+    const { room, ref } = m;
     const state = this.ensureRoomState(room);
     state.subscribers.add(ref);
     // Replay the last-known value to the new subscriber so they don't
@@ -118,7 +121,8 @@ export class OnlineUsersActor extends Actor<OnlineUsersCommand> {
     }
   }
 
-  private unsubscribe(room: RoomName, ref: ActorRef<UsersChanged>): void {
+  private onUnsubscribe(m: Extract<OnlineUsersCommand, { kind: 'Unsubscribe' }>): void {
+    const { room, ref } = m;
     const state = this.rooms.get(room);
     if (!state) return;
     state.subscribers.delete(ref);
@@ -129,7 +133,8 @@ export class OnlineUsersActor extends Actor<OnlineUsersCommand> {
     }
   }
 
-  private getUsers(room: RoomName, replyTo: ActorRef<UsersChanged>): void {
+  private onGetUsers(m: Extract<OnlineUsersCommand, { kind: 'GetUsers' }>): void {
+    const { room, replyTo } = m;
     const current = this.dd.get<ORSet<string>>(ddKey(room));
     const users = current ? [...current.value()] : [];
     replyTo.tell({ kind: 'UsersChanged', room, users });
