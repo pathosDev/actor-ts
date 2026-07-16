@@ -120,12 +120,9 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     this.unsubscribe = this.cfg.cluster.subscribe(evt =>
       match(evt)
         .with(P.instanceOf(LeaderChanged), () => this.onLeaderChanged())
-        .with(P.instanceOf(MemberRemoved), (event) => {
-          this.invalidateHomesOnNode(event.member.address);
-          this.ensureRegistered();
-        })
-        .with(P.instanceOf(MemberUp), () => this.ensureRegistered())
-        .otherwise(() => { /* other events irrelevant here */ }),
+        .with(P.instanceOf(MemberRemoved), (event) => this.onMemberRemoved(event))
+        .with(P.instanceOf(MemberUp), () => this.onMemberUp())
+        .otherwise(() => this.onOtherClusterEvent()),
     );
 
     this.ensureRegistered();
@@ -543,6 +540,19 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     this.registered = false;
     this.coordinatorRef = null;
     this.ensureRegistered();
+  }
+
+  private onMemberRemoved(event: MemberRemoved): void {
+    this.invalidateHomesOnNode(event.member.address);
+    this.ensureRegistered();
+  }
+
+  private onMemberUp(): void {
+    this.ensureRegistered();
+  }
+
+  private onOtherClusterEvent(): void {
+    /* other events irrelevant here */
   }
 
   /**

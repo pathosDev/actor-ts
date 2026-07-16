@@ -84,6 +84,7 @@ export class ShardedDaemonProcess {
     // respawn of entities that lived on a departed node is a function of
     // ShardCoordinator's rebalance + rememberEntities path; this hook just
     // makes sure the SDP-owned messages keep flowing.
+    // static init has no instance to delegate to (closes over local wakeAll) — arms stay inline
     const unsubscribe = cluster.subscribe((evt) =>
       match(evt)
         .with(

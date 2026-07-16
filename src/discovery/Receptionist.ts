@@ -74,9 +74,9 @@ export class Receptionist extends Actor<Msg> {
       );
       this.unsubCluster = this.clusterRef.subscribe((evt) =>
         match(evt)
-          .with(P.instanceOf(MemberRemoved), (e) => this.forgetNode(e.member.address))
-          .with(P.instanceOf(MemberUp), () => { this.version++; })
-          .otherwise(() => { /* other events ignored */ }),
+          .with(P.instanceOf(MemberRemoved), (e) => this.onMemberRemoved(e))
+          .with(P.instanceOf(MemberUp), () => this.onMemberUp())
+          .otherwise(() => this.onOtherClusterEvent()),
       );
       this.gossipTimer = this.system.scheduler.scheduleAtFixedRateFn(
         this.gossipIntervalMs, this.gossipIntervalMs, () => this.gossipTick(),
@@ -144,6 +144,18 @@ export class Receptionist extends Actor<Msg> {
   }
 
   /* ---------------- cluster plumbing ---------------- */
+
+  private onMemberRemoved(e: MemberRemoved): void {
+    this.forgetNode(e.member.address);
+  }
+
+  private onMemberUp(): void {
+    this.version++;
+  }
+
+  private onOtherClusterEvent(): void {
+    /* other events ignored */
+  }
 
   private gossipTick(): void {
     if (!this.clusterRef) return;

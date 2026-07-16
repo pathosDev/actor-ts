@@ -158,7 +158,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       match(evt)
         .with(P.instanceOf(MemberRemoved), (e) => this.onMemberRemoved(e.member.address))
         .with(P.instanceOf(LeaderChanged), () => this.onLeaderChanged())
-        .otherwise(() => { /* other events are not observed here */ }),
+        .otherwise(() => this.onOtherClusterEvent()),
     );
     if (this.options.lease) {
       this.unsubscribeLeaseLost = this.options.lease.onLost((reason) => {
@@ -607,6 +607,10 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (this.options.lease) {
       this.self.tell({ t: 'reconcile' } satisfies CoordinatorEvent);
     }
+  }
+
+  private onOtherClusterEvent(): void {
+    /* other events are not observed here */
   }
 
   /* ------------------- Coordinator-state persistence ------------------ */

@@ -105,15 +105,9 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
             P.instanceOf(SelfUp),
             P.instanceOf(MemberRemoved),
           ),
-          () => {
-            if (this.options.lease) {
-              this.self.tell({ t: 'reconcile' } satisfies ManagerEvent);
-            } else {
-              this.reconcileSync();
-            }
-          },
+          () => this.onClusterMembershipChanged(),
         )
-        .otherwise(() => { /* other events ignored */ }),
+        .otherwise(() => this.onOtherClusterEvent()),
     );
 
     if (this.options.lease) {
@@ -125,6 +119,18 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     } else {
       this.reconcileSync();
     }
+  }
+
+  private onClusterMembershipChanged(): void {
+    if (this.options.lease) {
+      this.self.tell({ t: 'reconcile' } satisfies ManagerEvent);
+    } else {
+      this.reconcileSync();
+    }
+  }
+
+  private onOtherClusterEvent(): void {
+    /* other events ignored */
   }
 
   override async postStop(): Promise<void> {

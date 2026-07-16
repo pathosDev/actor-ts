@@ -73,9 +73,9 @@ export class DistributedPubSubMediator extends Actor<
     // Remote publishes arrive via the envelope handler, not the wire hook.
     this.unsubscribeCluster = cluster.subscribe((evt) =>
       match(evt)
-        .with(P.instanceOf(MemberRemoved), (e) => this.forgetNode(e.member.address))
-        .with(P.instanceOf(MemberUp), () => { this.version++; })
-        .otherwise(() => { /* other events ignored */ }),
+        .with(P.instanceOf(MemberRemoved), (e) => this.onMemberRemoved(e))
+        .with(P.instanceOf(MemberUp), () => this.onMemberUp())
+        .otherwise(() => this.onOtherClusterEvent()),
     );
     const interval = this.options.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
     this.gossipTimer = this.system.scheduler.scheduleAtFixedRateFn(
@@ -250,6 +250,18 @@ export class DistributedPubSubMediator extends Actor<
       const set = this.getOrCreateSet(topic);
       set.remoteNodes.add(senderAddr);
     }
+  }
+
+  private onMemberRemoved(e: MemberRemoved): void {
+    this.forgetNode(e.member.address);
+  }
+
+  private onMemberUp(): void {
+    this.version++;
+  }
+
+  private onOtherClusterEvent(): void {
+    /* other events ignored */
   }
 
   private forgetNode(addr: NodeAddress): void {

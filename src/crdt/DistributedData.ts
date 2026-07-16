@@ -581,11 +581,9 @@ class DistributedDataActor extends Actor<ActorMessage> {
     // `extension.start()` returns.
     this.unsubscribeCluster = this.cluster.subscribe((evt) =>
       match(evt)
-        .with(P.instanceOf(MemberUp), () => { /* trigger an early gossip */
-          this.gossipTick();
-        })
-        .with(P.instanceOf(MemberRemoved), () => { /* nothing local to clean */ })
-        .otherwise(() => { /* ignored */ }),
+        .with(P.instanceOf(MemberUp), () => this.onMemberUp())
+        .with(P.instanceOf(MemberRemoved), () => this.onMemberRemoved())
+        .otherwise(() => this.onOtherClusterEvent()),
     );
     this.gossipTimer = this.system.scheduler.scheduleAtFixedRateFn(
       this.gossipIntervalMs, this.gossipIntervalMs, () => this.gossipTick(),
@@ -605,6 +603,19 @@ class DistributedDataActor extends Actor<ActorMessage> {
         this.log.warn(`DistributedData: durable load failed`, err);
       }
     }
+  }
+
+  private onMemberUp(): void {
+    /* trigger an early gossip */
+    this.gossipTick();
+  }
+
+  private onMemberRemoved(): void {
+    /* nothing local to clean */
+  }
+
+  private onOtherClusterEvent(): void {
+    /* ignored */
   }
 
   override postStop(): void {
