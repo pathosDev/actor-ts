@@ -304,16 +304,20 @@ export class JetStreamActor extends BrokerActor<
     // Compile-time exhaustiveness: adding a new JetStreamCommand variant
     // forces this site to handle it explicitly (TS error otherwise).
     match(cmd)
-      .with({ kind: 'publish' },    (command) => { this.enqueueOutbound(command.publish); })
-      .with({ kind: 'ack' },        (command) => this.handleAcknowledgment(command.streamSeq))
-      .with({ kind: 'nak' },        (command) => this.handleNak(command.streamSeq, command.delayMs))
-      .with({ kind: 'term' },       (command) => this.handleTerm(command.streamSeq, command.reason))
-      .with({ kind: 'inProgress' }, (command) => this.handleInProgress(command.streamSeq))
-      .with({ kind: 'fetch' },      (command) => { void this.handleFetch(command.batch, command.expiresMs); })
+      .with({ kind: 'publish' },    (m) => this.onPublish(m))
+      .with({ kind: 'ack' },        (m) => this.onAck(m))
+      .with({ kind: 'nak' },        (m) => this.onNak(m))
+      .with({ kind: 'term' },       (m) => this.onTerm(m))
+      .with({ kind: 'inProgress' }, (m) => this.onInProgress(m))
+      .with({ kind: 'fetch' },      (m) => void this.onFetch(m))
       .exhaustive();
   }
 
   /* ----------------------------- internals ----------------------------- */
+
+  private onPublish(cmd: Extract<JetStreamCommand, { kind: 'publish' }>): void {
+    this.enqueueOutbound(cmd.publish);
+  }
 
   private async runPump(): Promise<void> {
     if (!this.subscription) return;
@@ -330,7 +334,8 @@ export class JetStreamActor extends BrokerActor<
    * fired; subsequent `fetch` cmds are processed serially by the
    * mailbox.
    */
-  private async handleFetch(batch: number, expiresMs?: number): Promise<void> {
+  private async onFetch(cmd: Extract<JetStreamCommand, { kind: 'fetch' }>): Promise<void> {
+    const { batch, expiresMs } = cmd;
     if (!this.pullConsumer) {
       this.log.warn('JetStreamActor: fetch on push-mode (or disconnected) consumer — ignored');
       return;
@@ -364,7 +369,7 @@ export class JetStreamActor extends BrokerActor<
 
   /**
    * Shared per-message delivery path used by both the push pump and
-   * `handleFetch`.  Tells the message to `target`, then awaits an
+   * `onFetch`.  Tells the message to `target`, then awaits an
    * external ack / nak / term (unless `ackPolicy === 'none'`).
    */
   private async deliverAndAwaitAcknowledgment(messageHandle: JetStreamMsgHandleLike): Promise<void> {
@@ -411,7 +416,8 @@ export class JetStreamActor extends BrokerActor<
     }
   }
 
-  private handleAcknowledgment(streamSeq: number): void {
+  private onAck(cmd: Extract<JetStreamCommand, { kind: 'ack' }>): void {
+    const { streamSeq } = cmd;
     const pendingAck = this.pending.get(streamSeq);
     if (!pendingAck) {
       this.log.debug(`JetStreamActor: ack for unknown streamSeq=${streamSeq} — ignored`);
@@ -427,7 +433,8 @@ export class JetStreamActor extends BrokerActor<
     this.pending.delete(streamSeq);
   }
 
-  private handleNak(streamSeq: number, delayMs?: number): void {
+  private onNak(cmd: Extract<JetStreamCommand, { kind: 'nak' }>): void {
+    const { streamSeq, delayMs } = cmd;
     const pendingAck = this.pending.get(streamSeq);
     if (!pendingAck) return;
     try {
@@ -441,7 +448,8 @@ export class JetStreamActor extends BrokerActor<
     this.pending.delete(streamSeq);
   }
 
-  private handleTerm(streamSeq: number, reason?: string): void {
+  private onTerm(cmd: Extract<JetStreamCommand, { kind: 'term' }>): void {
+    const { streamSeq, reason } = cmd;
     const pendingAck = this.pending.get(streamSeq);
     if (!pendingAck) return;
     this.log.warn(
@@ -453,7 +461,8 @@ export class JetStreamActor extends BrokerActor<
     this.pending.delete(streamSeq);
   }
 
-  private handleInProgress(streamSeq: number): void {
+  private onInProgress(cmd: Extract<JetStreamCommand, { kind: 'inProgress' }>): void {
+    const { streamSeq } = cmd;
     const pendingAck = this.pending.get(streamSeq);
     if (!pendingAck) return;
     try { pendingAck.handle.working(); } catch { /* */ }

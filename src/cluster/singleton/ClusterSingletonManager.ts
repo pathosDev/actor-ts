@@ -151,12 +151,20 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       return;
     }
     return match(msg)
-      .with({ t: 'singleton-deliver' }, (m) => this.handleDeliver(m))
-      .with({ t: 'reconcile' }, () => this.handleReconcile())
-      .with({ t: 'lease-acquire-result' }, (m) => this.handleAcquireResult(m))
-      .with({ t: 'lease-lost' }, (m) => this.handleLeaseLost(m))
-      .with({ t: 'acquire-retry' }, () => this.handleReconcile())
+      .with({ t: 'singleton-deliver' }, (m) => this.onSingletonDeliver(m))
+      .with({ t: 'reconcile' }, () => this.onReconcile())
+      .with({ t: 'lease-acquire-result' }, (m) => this.onLeaseAcquireResult(m))
+      .with({ t: 'lease-lost' }, (m) => this.onLeaseLost(m))
+      .with({ t: 'acquire-retry' }, () => this.onAcquireRetry())
       .exhaustive();
+  }
+
+  private onReconcile(): Promise<void> {
+    return this.handleReconcile();
+  }
+
+  private onAcquireRetry(): Promise<void> {
+    return this.handleReconcile();
   }
 
   /**
@@ -184,7 +192,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
 
   /* -------------------------- handlers -------------------------- */
 
-  private handleDeliver(msg: SingletonDeliver): void {
+  private onSingletonDeliver(msg: SingletonDeliver): void {
     if (msg.t !== 'singleton-deliver') return;
     if (!this.child) {
       this.log.warn(
@@ -228,7 +236,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
         catch (e) { this.log.warn(`lease release failed`, e); }
         this.leaseState = 'none';
       } else if (this.leaseState === 'acquiring') {
-        // Let the in-flight acquire finish — `handleAcquireResult` will
+        // Let the in-flight acquire finish — `onLeaseAcquireResult` will
         // re-check `wantHosted` and immediately release if it succeeded
         // while we were no longer interested.
       } else {
@@ -249,7 +257,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     }
   }
 
-  private handleAcquireResult(msg: { got: boolean; error?: Error }): void {
+  private onLeaseAcquireResult(msg: { got: boolean; error?: Error }): void {
     if (this.leaseState !== 'acquiring') {
       // Spurious result — manager was reset or stopped while we were
       // awaiting.  If we somehow got the lease, release it best-effort
@@ -277,7 +285,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     this.spawn();
   }
 
-  private handleLeaseLost(msg: { reason: string }): void {
+  private onLeaseLost(msg: { reason: string }): void {
     if (this.leaseState !== 'held') return;     // stale callback
     this.log.warn(`singleton '${this.options.typeName}': lease lost — ${msg.reason}; stopping child`);
     this.stopChild(`lease lost: ${msg.reason}`);

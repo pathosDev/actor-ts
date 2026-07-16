@@ -312,24 +312,28 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
     // Compile-time exhaustiveness: adding a new KafkaCommand variant
     // forces this site to handle it explicitly.
     match(cmd)
-      .with({ kind: 'publish' }, (command) => {
-        this.enqueueOutbound(command.publish);
-      })
-      .with({ kind: 'subscribe' }, (command) => {
-        // Runtime topic-add — kafkajs requires the consumer already be running.
-        if (this.consumer && this.connectionState === 'connected') {
-          void this.consumer.subscribe({ topic: command.topic, fromBeginning: false });
-        }
-      })
-      .with({ kind: 'commit' },    (command) => { void this.handleCommit(command); })
-      .with({ kind: 'nack' },      (command) => this.handleNack(command))
-      .with({ kind: 'heartbeat' }, (command) => { void this.handleHeartbeat(command); })
+      .with({ kind: 'publish' },   (m) => this.onPublish(m))
+      .with({ kind: 'subscribe' }, (m) => this.onSubscribe(m))
+      .with({ kind: 'commit' },    (c) => void this.onCommit(c))
+      .with({ kind: 'nack' },      (c) => this.onNack(c))
+      .with({ kind: 'heartbeat' }, (c) => void this.onHeartbeat(c))
       .exhaustive();
   }
 
   /* ----------------------------- internals ------------------------------ */
 
-  private async handleCommit(cmd: {
+  private onPublish(cmd: Extract<KafkaCommand, { kind: 'publish' }>): void {
+    this.enqueueOutbound(cmd.publish);
+  }
+
+  private onSubscribe(cmd: Extract<KafkaCommand, { kind: 'subscribe' }>): void {
+    // Runtime topic-add — kafkajs requires the consumer already be running.
+    if (this.consumer && this.connectionState === 'connected') {
+      void this.consumer.subscribe({ topic: cmd.topic, fromBeginning: false });
+    }
+  }
+
+  private async onCommit(cmd: {
     readonly topic: string; readonly partition: number; readonly offset: string;
   }): Promise<void> {
     const key = pendingKey(cmd.topic, cmd.partition, cmd.offset);
@@ -372,7 +376,7 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
    * without checking `commitMode` or whether the record's commit has
    * already landed elsewhere.
    */
-  private async handleHeartbeat(cmd: {
+  private async onHeartbeat(cmd: {
     readonly topic: string; readonly partition: number; readonly offset: string;
   }): Promise<void> {
     const key = pendingKey(cmd.topic, cmd.partition, cmd.offset);
@@ -393,7 +397,7 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
     }
   }
 
-  private handleNack(cmd: {
+  private onNack(cmd: {
     readonly topic: string; readonly partition: number; readonly offset: string;
     readonly reason?: string;
   }): void {

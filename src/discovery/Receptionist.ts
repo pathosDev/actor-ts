@@ -92,17 +92,17 @@ export class Receptionist extends Actor<Msg> {
 
   override onReceive(msg: Msg): void {
     match(msg)
-      .with(P.instanceOf(Register), (m) => this.handleRegister(m))
-      .with(P.instanceOf(Deregister), (m) => this.handleDeregister(m))
-      .with(P.instanceOf(Find), (m) => this.handleFind(m))
-      .with(P.instanceOf(Subscribe), (m) => this.handleSubscribe(m))
-      .with(P.instanceOf(Unsubscribe), (m) => this.handleUnsubscribe(m))
+      .with(P.instanceOf(Register), (m) => this.onRegister(m))
+      .with(P.instanceOf(Deregister), (m) => this.onDeregister(m))
+      .with(P.instanceOf(Find), (m) => this.onFind(m))
+      .with(P.instanceOf(Subscribe), (m) => this.onSubscribe(m))
+      .with(P.instanceOf(Unsubscribe), (m) => this.onUnsubscribe(m))
       .exhaustive();
   }
 
   /* ---------------- handlers ---------------- */
 
-  private handleRegister(msg: Register): void {
+  private onRegister(msg: Register): void {
     const entry = this.getOrCreate(msg.key);
     const pathStr = msg.ref.path.toString();
     if (!entry.local.has(pathStr)) {
@@ -113,7 +113,7 @@ export class Receptionist extends Actor<Msg> {
     msg.replyTo?.tell(new Registered(msg.key, msg.ref) as never);
   }
 
-  private handleDeregister(msg: Deregister): void {
+  private onDeregister(msg: Deregister): void {
     const entry = this.keys.get(msg.key.id);
     if (!entry) return;
     const pathStr = msg.ref.path.toString();
@@ -124,19 +124,19 @@ export class Receptionist extends Actor<Msg> {
     }
   }
 
-  private handleFind(msg: Find): void {
+  private onFind(msg: Find): void {
     const entry = this.keys.get(msg.key.id);
     msg.replyTo.tell(new Listing(msg.key, entry ? this.collectRefs(entry) : []));
   }
 
-  private handleSubscribe(msg: Subscribe): void {
+  private onSubscribe(msg: Subscribe): void {
     const entry = this.getOrCreate(msg.key);
     entry.subscribers.add(msg.replyTo);
     // Replay current listing to the new subscriber.
     msg.replyTo.tell(new Listing(msg.key, this.collectRefs(entry)));
   }
 
-  private handleUnsubscribe(msg: Unsubscribe): void {
+  private onUnsubscribe(msg: Unsubscribe): void {
     const entry = this.keys.get(msg.key.id);
     if (!entry) return;
     entry.subscribers.delete(msg.replyTo);

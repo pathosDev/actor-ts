@@ -3,7 +3,7 @@ import type { Journal } from '../../persistence/Journal.js';
 /**
  * Append-only event recording an entity's lifecycle on the
  * coordinator side.  The coordinator emits one of these every time
- * `handleEntityStarted` or `handleEntityStopped` runs (when
+ * `onEntityStarted` or `onEntityStopped` runs (when
  * `rememberEntities: true`); replaying the full event log on
  * coordinator restart rebuilds the in-memory `entitiesPerShard` map.
  */

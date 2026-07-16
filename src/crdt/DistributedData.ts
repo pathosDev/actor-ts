@@ -625,18 +625,18 @@ class DistributedDataActor extends Actor<ActorMessage> {
 
   override onReceive(msg: ActorMessage): void {
     match(msg)
-      .with({ t: 'ddata-update' }, (m) => this.handleUpdate(m))
-      .with({ t: 'ddata-delete' }, (m) => this.handleDelete(m))
-      .with({ t: 'ddata-read' }, (m) => this.handleRead(m))
-      .with({ t: 'ddata-gossip' }, (m) => this.handleGossip(m))
-      .with({ t: 'ddata-write-request' }, (m) => this.handleWriteRequest(m))
-      .with({ t: 'ddata-write-ack' }, (m) => this.handleWriteAcknowledgment(m))
-      .with({ t: 'ddata-read-request' }, (m) => this.handleReadRequest(m))
-      .with({ t: 'ddata-read-response' }, (m) => this.handleReadResponse(m))
+      .with({ t: 'ddata-update' }, (m) => this.onUpdate(m))
+      .with({ t: 'ddata-delete' }, (m) => this.onDelete(m))
+      .with({ t: 'ddata-read' }, (m) => this.onRead(m))
+      .with({ t: 'ddata-gossip' }, (m) => this.onGossip(m))
+      .with({ t: 'ddata-write-request' }, (m) => this.onWriteRequest(m))
+      .with({ t: 'ddata-write-ack' }, (m) => this.onWriteAcknowledgment(m))
+      .with({ t: 'ddata-read-request' }, (m) => this.onReadRequest(m))
+      .with({ t: 'ddata-read-response' }, (m) => this.onReadResponse(m))
       .exhaustive();
   }
 
-  private handleUpdate(msg: UpdateMessage): void {
+  private onUpdate(msg: UpdateMessage): void {
     const current = this.view.state.get(msg.key) ?? msg.factory();
     const next = msg.fn(current);
     this.applyMerged(msg.key, current, next);
@@ -679,7 +679,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
     }
   }
 
-  private handleRead(msg: ReadMessage): void {
+  private onRead(msg: ReadMessage): void {
     const peers = this.cluster.upMembers()
       .filter((m) => !m.address.equals(this.cluster.selfAddress));
     const totalN = 1 + peers.length;
@@ -716,7 +716,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
     }
   }
 
-  private handleWriteRequest(msg: DDataWriteRequestMessage): void {
+  private onWriteRequest(msg: DDataWriteRequestMessage): void {
     // Merge the incoming value into our local replica (same merge
     // semantics as gossip) and ack back.
     const incoming = decodeCrdt(msg.value);
@@ -733,7 +733,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
     this.cluster.transport.send(sender, ack as unknown as WireMessage);
   }
 
-  private handleWriteAcknowledgment(msg: DDataWriteAcknowledgmentMessage): void {
+  private onWriteAcknowledgment(msg: DDataWriteAcknowledgmentMessage): void {
     const pending = this.pendingWrites.get(msg.pendingId);
     if (!pending) return; // late ack after timeout / already resolved
     const senderAddr = NodeAddress.fromJSON(msg.from).toString();
@@ -746,7 +746,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
     }
   }
 
-  private handleReadRequest(msg: DDataReadRequestMessage): void {
+  private onReadRequest(msg: DDataReadRequestMessage): void {
     const local = this.view.state.get(msg.key);
     const sender = NodeAddress.fromJSON(msg.from);
     const response: DDataReadResponseMessage = {
@@ -759,7 +759,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
     this.cluster.transport.send(sender, response as unknown as WireMessage);
   }
 
-  private handleReadResponse(msg: DDataReadResponseMessage): void {
+  private onReadResponse(msg: DDataReadResponseMessage): void {
     const pending = this.pendingReads.get(msg.pendingId);
     if (!pending) return;
     const senderAddr = NodeAddress.fromJSON(msg.from).toString();
@@ -784,7 +784,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
     }
   }
 
-  private handleDelete(msg: DeleteMessage): void {
+  private onDelete(msg: DeleteMessage): void {
     if (this.view.state.delete(msg.key)) {
       // Notify subscribers with a best-effort signal — we synthesise
       // a fresh CRDT via the most-recently-seen factory.  Since we
@@ -795,7 +795,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
     }
   }
 
-  private handleGossip(msg: DDataGossipMessage): void {
+  private onGossip(msg: DDataGossipMessage): void {
     const sender = NodeAddress.fromJSON(msg.from);
     if (sender.equals(this.cluster.selfAddress)) return; // shouldn't happen but harmless
     for (const [key, json] of Object.entries(msg.entries)) {

@@ -381,7 +381,11 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       .with({ $t: 'sharding.Envelope' }, (m) => this.onShardEnvelope(m))
       .with({ $t: 'sharding.Reply' }, (m) => this.onShardReply(m))
       // Coordinator-only messages; regions ignore them.
-      .otherwise(() => { /* no-op */ });
+      .otherwise(() => this.onUnhandled());
+  }
+
+  private onUnhandled(): void {
+    /* no-op */
   }
 
   private onShardEnvelope(msg: ShardEnvelope): void {

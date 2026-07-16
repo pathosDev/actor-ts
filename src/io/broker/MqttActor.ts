@@ -216,14 +216,22 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   private handleCommand(cmd: MqttCommand<T>): void {
     // Exhaustive over MqttCommand — a new command variant forces a handler here.
     match(cmd)
-      .with({ kind: 'publish' }, (command) => { this.enqueueOutbound(command.publish); })
-      .with({ kind: 'subscribe' }, (command) => {
-        this.registerSubscription(command.topic, { qos: command.qos, target: command.target });
-      })
-      .with({ kind: 'unsubscribe' }, (command) => {
-        this.removeSubscription(command.topic, command.target, true);
-      })
+      .with({ kind: 'publish' },     (m) => this.onPublish(m))
+      .with({ kind: 'subscribe' },   (m) => this.onSubscribe(m))
+      .with({ kind: 'unsubscribe' }, (m) => this.onUnsubscribe(m))
       .exhaustive();
+  }
+
+  private onPublish(cmd: Extract<MqttCommand<T>, { kind: 'publish' }>): void {
+    this.enqueueOutbound(cmd.publish);
+  }
+
+  private onSubscribe(cmd: Extract<MqttCommand<T>, { kind: 'subscribe' }>): void {
+    this.registerSubscription(cmd.topic, { qos: cmd.qos, target: cmd.target });
+  }
+
+  private onUnsubscribe(cmd: Extract<MqttCommand<T>, { kind: 'unsubscribe' }>): void {
+    this.removeSubscription(cmd.topic, cmd.target, true);
   }
 
   /* ----------------------- inbound routing ----------------------- */

@@ -91,19 +91,19 @@ export class DistributedPubSubMediator extends Actor<
 
   override onReceive(msg: Subscribe | Unsubscribe | UnsubscribeAll | Publish | GetTopics | PubSubPublishMessage): void {
     match(msg)
-      .with(P.instanceOf(Subscribe), (m) => this.handleSubscribe(m))
-      .with(P.instanceOf(Unsubscribe), (m) => this.handleUnsubscribe(m))
-      .with(P.instanceOf(UnsubscribeAll), (m) => this.handleUnsubscribeAll(m))
-      .with(P.instanceOf(Publish), (m) => this.handlePublish(m))
-      .with(P.instanceOf(GetTopics), (m) => this.handleGetTopics(m))
+      .with(P.instanceOf(Subscribe), (m) => this.onSubscribe(m))
+      .with(P.instanceOf(Unsubscribe), (m) => this.onUnsubscribe(m))
+      .with(P.instanceOf(UnsubscribeAll), (m) => this.onUnsubscribeAll(m))
+      .with(P.instanceOf(Publish), (m) => this.onPublish(m))
+      .with(P.instanceOf(GetTopics), (m) => this.onGetTopics(m))
       // Remote Publish forwarded from another mediator (plain envelope, not a class instance).
-      .with({ t: 'pubsub-publish' }, (m) => this.deliverLocal(m.topic, m.body))
-      .otherwise(() => { /* unknown message */ });
+      .with({ t: 'pubsub-publish' }, (m) => this.onPubSubPublish(m))
+      .otherwise(() => this.onUnhandled());
   }
 
   /* ----------------------------- Command handlers ----------------------------- */
 
-  private handleSubscribe(msg: Subscribe): void {
+  private onSubscribe(msg: Subscribe): void {
     const set = this.getOrCreateSet(msg.topic);
     const key = msg.ref.path.toString();
     let changed = false;
@@ -124,7 +124,7 @@ export class DistributedPubSubMediator extends Actor<
     if (changed) this.eagerGossip();
   }
 
-  private handleUnsubscribe(msg: Unsubscribe): void {
+  private onUnsubscribe(msg: Unsubscribe): void {
     const set = this.topics.get(msg.topic);
     const key = msg.ref.path.toString();
     let changed = false;
@@ -140,7 +140,7 @@ export class DistributedPubSubMediator extends Actor<
     if (changed) this.eagerGossip();
   }
 
-  private handleUnsubscribeAll(msg: UnsubscribeAll): void {
+  private onUnsubscribeAll(msg: UnsubscribeAll): void {
     const key = msg.ref.path.toString();
     let changed = false;
     for (const [topic, set] of this.topics) {
@@ -150,11 +150,11 @@ export class DistributedPubSubMediator extends Actor<
     if (changed) this.eagerGossip();
   }
 
-  private handleGetTopics(msg: GetTopics): void {
+  private onGetTopics(msg: GetTopics): void {
     msg.replyTo.tell(new CurrentTopics(Array.from(this.topics.keys()).sort()));
   }
 
-  private handlePublish<T>(msg: Publish<T>): void {
+  private onPublish<T>(msg: Publish<T>): void {
     const set = this.topics.get(msg.topic);
     const localCount = set?.local.size ?? 0;
     const remoteCount = set?.remoteNodes.size ?? 0;
@@ -169,6 +169,14 @@ export class DistributedPubSubMediator extends Actor<
       if (node.equals(this.options.cluster.selfAddress)) continue;
       this.sendWire(node, payload);
     }
+  }
+
+  private onPubSubPublish(msg: PubSubPublishMessage): void {
+    this.deliverLocal(msg.topic, msg.body);
+  }
+
+  private onUnhandled(): void {
+    /* unknown message */
   }
 
   private deliverLocal<T>(topic: string, body: T): void {
