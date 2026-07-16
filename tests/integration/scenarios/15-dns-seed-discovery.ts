@@ -40,20 +40,20 @@ async function dnsLookup(
   hostname: string,
   port: number,
 ): Promise<DnsLookupResponse> {
-  const res = await fetch(
+  const response = await fetch(
     `http://${via}:${controlPort}/test/discovery/dns-lookup`
     + `?hostname=${encodeURIComponent(hostname)}&port=${port}`,
   );
-  if (!res.ok) throw new Error(`/test/discovery/dns-lookup on ${via} for ${hostname} → ${res.status}: ${await res.text()}`);
-  return await res.json() as DnsLookupResponse;
+  if (!response.ok) throw new Error(`/test/discovery/dns-lookup on ${via} for ${hostname} → ${response.status}: ${await response.text()}`);
+  return await response.json() as DnsLookupResponse;
 }
 
 const IPV4_RE = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
 
 export const scenario: Scenario = {
   name: '15-dns-seed-discovery',
-  async run(ctx) {
-    const live = await clusterLiveNodes(ctx.nodes, ctx.controlPort);
+  async run(context) {
+    const live = await clusterLiveNodes(context.nodes, context.controlPort);
     if (live.length < 2) {
       console.log(`[15] skipping — need >=2 live nodes (one to query from, others to resolve), have ${live.length}`);
       return;
@@ -63,7 +63,7 @@ export const scenario: Scenario = {
     // perspective.  Docker's embedded DNS returns the peer's
     // container IP for each service name.
     console.log(`[15] resolving ${live.length} hostnames via ${via}'s DnsSeedProvider...`);
-    const results = await Promise.all(live.map((h) => dnsLookup(via, ctx.controlPort, h, 9000)));
+    const results = await Promise.all(live.map((h) => dnsLookup(via, context.controlPort, h, 9000)));
     let allElapsed = 0;
     for (const r of results) {
       if (r.addresses.length === 0) {

@@ -31,24 +31,24 @@ async function publish(
   host: string, controlPort: number,
   topic: string, seq: number, text: string,
 ): Promise<void> {
-  const res = await fetch(
+  const response = await fetch(
     `http://${host}:${controlPort}/test/pubsub/publish?topic=${encodeURIComponent(topic)}`
     + `&seq=${seq}&text=${encodeURIComponent(text)}`,
     { method: 'POST' },
   );
-  if (!res.ok) throw new Error(`/test/pubsub/publish on ${host} → ${res.status}: ${await res.text()}`);
+  if (!response.ok) throw new Error(`/test/pubsub/publish on ${host} → ${response.status}: ${await response.text()}`);
 }
 
 async function received(host: string, controlPort: number): Promise<PubSubSnapshot> {
-  const res = await fetch(`http://${host}:${controlPort}/test/pubsub/received`);
-  if (!res.ok) throw new Error(`/test/pubsub/received on ${host} → ${res.status}: ${await res.text()}`);
-  return await res.json() as PubSubSnapshot;
+  const response = await fetch(`http://${host}:${controlPort}/test/pubsub/received`);
+  if (!response.ok) throw new Error(`/test/pubsub/received on ${host} → ${response.status}: ${await response.text()}`);
+  return await response.json() as PubSubSnapshot;
 }
 
 export const scenario: Scenario = {
   name: '12-pubsub-fanout',
-  async run(ctx) {
-    const live = await clusterLiveNodes(ctx.nodes, ctx.controlPort);
+  async run(context) {
+    const live = await clusterLiveNodes(context.nodes, context.controlPort);
     if (live.length < 2) {
       console.log(`[12] skipping — need >=2 nodes for fan-out, have ${live.length}`);
       return;
@@ -56,7 +56,7 @@ export const scenario: Scenario = {
 
     // 1. Baseline.
     const baseline = new Map<string, number>();
-    for (const h of live) baseline.set(h, (await received(h, ctx.controlPort)).received);
+    for (const h of live) baseline.set(h, (await received(h, context.controlPort)).received);
     console.log(`[12] baseline received: ${[...baseline.entries()].map(([h, n]) => `${h}=${n}`).join(', ')}`);
 
     // 2. 10 publishes from node-a.
@@ -64,7 +64,7 @@ export const scenario: Scenario = {
     const sender1 = live[0]!;
     console.log(`[12] publishing ${burst1} events from ${sender1}...`);
     for (let i = 1; i <= burst1; i++) {
-      await publish(sender1, ctx.controlPort, 'events', i, `from-${sender1}-msg-${i}`);
+      await publish(sender1, context.controlPort, 'events', i, `from-${sender1}-msg-${i}`);
     }
 
     // Wait for every subscriber to observe baseline + burst1.
@@ -72,7 +72,7 @@ export const scenario: Scenario = {
       const base = baseline.get(host)!;
       await waitFor(
         `${host} received +${burst1}`,
-        async () => (await received(host, ctx.controlPort)).received >= base + burst1,
+        async () => (await received(host, context.controlPort)).received >= base + burst1,
         15_000,
         300,
       );
@@ -85,7 +85,7 @@ export const scenario: Scenario = {
     console.log(`[12] publishing ${burst2} more events from ${sender2}...`);
     for (let i = 1; i <= burst2; i++) {
       // Continue the seq numbering so we can verify lastSeq below.
-      await publish(sender2, ctx.controlPort, 'events', burst1 + i, `from-${sender2}-msg-${i}`);
+      await publish(sender2, context.controlPort, 'events', burst1 + i, `from-${sender2}-msg-${i}`);
     }
 
     const expectedTotal = burst1 + burst2;
@@ -93,7 +93,7 @@ export const scenario: Scenario = {
       const base = baseline.get(host)!;
       await waitFor(
         `${host} received +${expectedTotal}`,
-        async () => (await received(host, ctx.controlPort)).received >= base + expectedTotal,
+        async () => (await received(host, context.controlPort)).received >= base + expectedTotal,
         15_000,
         300,
       );
@@ -106,7 +106,7 @@ export const scenario: Scenario = {
     //    the published range (1..expectedTotal).
     await sleep(300);
     for (const host of live) {
-      const delivery = await received(host, ctx.controlPort);
+      const delivery = await received(host, context.controlPort);
       if (delivery.lastSeq < 1 || delivery.lastSeq > expectedTotal) {
         throw new Error(`[12] ${host} lastSeq=${delivery.lastSeq} not in [1,${expectedTotal}]`);
       }

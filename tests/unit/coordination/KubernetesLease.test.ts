@@ -35,14 +35,14 @@ class FakeK8sServer implements K8sFetchClient {
   /** Capture every request for assertion. */
   log: Array<{ method: string; path: string; body?: unknown }> = [];
 
-  async request(_creds: K8sCredentials, opts: K8sRequestOptions): Promise<K8sResponse> {
-    this.log.push({ method: opts.method, path: opts.path, body: opts.body });
-    const match = opts.path.match(/^\/apis\/coordination\.k8s\.io\/v1\/namespaces\/([^/]+)\/leases(?:\/([^/]+))?$/);
+  async request(_creds: K8sCredentials, options: K8sRequestOptions): Promise<K8sResponse> {
+    this.log.push({ method: options.method, path: options.path, body: options.body });
+    const match = options.path.match(/^\/apis\/coordination\.k8s\.io\/v1\/namespaces\/([^/]+)\/leases(?:\/([^/]+))?$/);
     if (!match) return { status: 404, body: null };
     const ns = decodeURIComponent(match[1]!);
     const name = match[2] ? decodeURIComponent(match[2]) : null;
 
-    if (opts.method === 'GET') {
+    if (options.method === 'GET') {
       if (!name) return { status: 200, body: { kind: 'LeaseList', items: [] } };
       if (this.forceMissingNext) {
         this.forceMissingNext = false;
@@ -53,8 +53,8 @@ class FakeK8sServer implements K8sFetchClient {
       return { status: 200, body: found };
     }
 
-    if (opts.method === 'POST' && !name) {
-      const lease = opts.body as K8sLeaseObject;
+    if (options.method === 'POST' && !name) {
+      const lease = options.body as K8sLeaseObject;
       const key = `${ns}/${lease.metadata.name}`;
       if (this.forceConflictNext) {
         this.forceConflictNext = false;
@@ -71,8 +71,8 @@ class FakeK8sServer implements K8sFetchClient {
       return { status: 201, body: created };
     }
 
-    if (opts.method === 'PUT' && name) {
-      const incoming = opts.body as K8sLeaseObject;
+    if (options.method === 'PUT' && name) {
+      const incoming = options.body as K8sLeaseObject;
       const key = `${ns}/${name}`;
       if (this.forceConflictNext) {
         this.forceConflictNext = false;
@@ -91,7 +91,7 @@ class FakeK8sServer implements K8sFetchClient {
       return { status: 200, body: updated };
     }
 
-    if (opts.method === 'DELETE' && name) {
+    if (options.method === 'DELETE' && name) {
       const key = `${ns}/${name}`;
       const existed = this.leases.delete(key);
       if (!existed) return { status: 404, body: { code: 404 } };

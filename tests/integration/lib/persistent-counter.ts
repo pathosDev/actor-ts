@@ -54,13 +54,13 @@ export class PersistentCounter extends PersistentActor<CounterCommand, CounterEv
     return state;
   }
 
-  override onCommand(state: CounterState, cmd: CounterCommand): void {
-    if (cmd.kind === 'increment') {
+  override onCommand(state: CounterState, command: CounterCommand): void {
+    if (command.kind === 'increment') {
       this.persist({ kind: 'incremented' }, () => {
         // No reply on inc — fire-and-forget.
       });
-    } else if (cmd.kind === 'get-state') {
-      cmd.replyTo.tell({ kind: 'state', count: state.count });
+    } else if (command.kind === 'get-state') {
+      command.replyTo.tell({ kind: 'state', count: state.count });
     }
   }
 

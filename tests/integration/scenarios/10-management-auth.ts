@@ -34,25 +34,25 @@ const MGMT_PORT_DEFAULT = 8080;
 
 export const scenario: Scenario = {
   name: '10-management-auth',
-  async run(ctx) {
-    const live = await clusterLiveNodes(ctx.nodes, ctx.controlPort);
+  async run(context) {
+    const live = await clusterLiveNodes(context.nodes, context.controlPort);
     if (live.length === 0) {
       console.log('[10] skipping — no live nodes');
       return;
     }
     const target = live[0]!;
-    const mgmt = ctx.mgmtPort ?? MGMT_PORT_DEFAULT;
+    const mgmt = context.mgmtPort ?? MGMT_PORT_DEFAULT;
     const base = `http://${target}:${mgmt}`;
 
     // 1. /cluster/members without auth → 401.
     console.log('[10] GET /cluster/members without auth...');
     {
-      const res = await fetch(`${base}/cluster/members`);
-      if (res.status !== 401) {
-        throw new Error(`[10] expected 401, got ${res.status}: ${await res.text()}`);
+      const response = await fetch(`${base}/cluster/members`);
+      if (response.status !== 401) {
+        throw new Error(`[10] expected 401, got ${response.status}: ${await response.text()}`);
       }
       // Check WWW-Authenticate: Bearer realm=... was advertised.
-      const wwwAuth = res.headers.get('www-authenticate');
+      const wwwAuth = response.headers.get('www-authenticate');
       if (wwwAuth && !wwwAuth.startsWith('Bearer')) {
         console.warn(`[10] note: WWW-Authenticate present but unexpected: ${wwwAuth}`);
       }
@@ -61,24 +61,24 @@ export const scenario: Scenario = {
     // 2. /cluster/members with wrong token → 401.
     console.log('[10] GET /cluster/members with wrong token...');
     {
-      const res = await fetch(`${base}/cluster/members`, {
+      const response = await fetch(`${base}/cluster/members`, {
         headers: { authorization: 'Bearer wrong-token-12345' },
       });
-      if (res.status !== 401) {
-        throw new Error(`[10] expected 401 for wrong token, got ${res.status}: ${await res.text()}`);
+      if (response.status !== 401) {
+        throw new Error(`[10] expected 401 for wrong token, got ${response.status}: ${await response.text()}`);
       }
     }
 
     // 3. /cluster/members with correct token → 200 + members.
     console.log('[10] GET /cluster/members with correct token...');
     {
-      const res = await fetch(`${base}/cluster/members`, {
+      const response = await fetch(`${base}/cluster/members`, {
         headers: { authorization: `Bearer ${TOKEN}` },
       });
-      if (res.status !== 200) {
-        throw new Error(`[10] expected 200 for valid token, got ${res.status}: ${await res.text()}`);
+      if (response.status !== 200) {
+        throw new Error(`[10] expected 200 for valid token, got ${response.status}: ${await response.text()}`);
       }
-      const body = await res.json() as { members: ReadonlyArray<{ address: string }> };
+      const body = await response.json() as { members: ReadonlyArray<{ address: string }> };
       if (!Array.isArray(body.members) || body.members.length === 0) {
         throw new Error(`[10] /cluster/members returned empty: ${JSON.stringify(body)}`);
       }
@@ -88,13 +88,13 @@ export const scenario: Scenario = {
     // 4. /cluster/down without auth → 401.
     console.log('[10] POST /cluster/down without auth...');
     {
-      const res = await fetch(`${base}/cluster/down`, {
+      const response = await fetch(`${base}/cluster/down`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ address: 'integration@phantom-host:9000' }),
       });
-      if (res.status !== 401) {
-        throw new Error(`[10] expected 401 (no auth), got ${res.status}: ${await res.text()}`);
+      if (response.status !== 401) {
+        throw new Error(`[10] expected 401 (no auth), got ${response.status}: ${await response.text()}`);
       }
     }
 
@@ -102,7 +102,7 @@ export const scenario: Scenario = {
     //    Cluster intact afterwards.
     console.log('[10] POST /cluster/down with auth + fictional address (expect 404)...');
     {
-      const res = await fetch(`${base}/cluster/down`, {
+      const response = await fetch(`${base}/cluster/down`, {
         method: 'POST',
         headers: {
           authorization: `Bearer ${TOKEN}`,
@@ -110,19 +110,19 @@ export const scenario: Scenario = {
         },
         body: JSON.stringify({ address: 'integration@phantom-host:9000' }),
       });
-      if (res.status !== 404) {
-        throw new Error(`[10] expected 404 for fictional address, got ${res.status}: ${await res.text()}`);
+      if (response.status !== 404) {
+        throw new Error(`[10] expected 404 for fictional address, got ${response.status}: ${await response.text()}`);
       }
     }
 
     // 6. /health without auth → 200.  Standard probe contract.
     console.log('[10] GET /health without auth (probe contract)...');
     {
-      const res = await fetch(`${base}/health`);
-      if (res.status !== 200) {
-        throw new Error(`[10] /health expected anonymous 200, got ${res.status}: ${await res.text()}`);
+      const response = await fetch(`${base}/health`);
+      if (response.status !== 200) {
+        throw new Error(`[10] /health expected anonymous 200, got ${response.status}: ${await response.text()}`);
       }
-      const body = await res.json() as { status: string };
+      const body = await response.json() as { status: string };
       if (body.status !== 'UP') {
         throw new Error(`[10] /health returned non-UP status: ${JSON.stringify(body)}`);
       }

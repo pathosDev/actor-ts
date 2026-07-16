@@ -351,8 +351,8 @@ export function useChat(): {
 
   const send = useCallback((room: RoomName, text: string) => {
     if (!text.trim() || !wsRef.current) return;
-    const cmd: ClientMessage = { kind: 'send', room, text };
-    wsRef.current.send(JSON.stringify(cmd));
+    const command: ClientMessage = { kind: 'send', room, text };
+    wsRef.current.send(JSON.stringify(command));
   }, []);
 
   const notifyTyping = useCallback((room: RoomName): void => {

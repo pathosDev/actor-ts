@@ -66,8 +66,8 @@ export function parseArguments(argv: ReadonlyArray<string>): VoiceNodeConfig {
   return { host, port, httpPort, seeds };
 }
 
-function expect(argv: ReadonlyArray<string>, idx: number, flag: string): string {
-  const value = argv[idx];
+function expect(argv: ReadonlyArray<string>, index: number, flag: string): string {
+  const value = argv[index];
   if (value === undefined) {
     process.stderr.write(`error: ${flag} requires a value\n`);
     process.exit(2);

@@ -43,8 +43,8 @@ async function openConnection(username: string, password: string): Promise<Conne
     ws.on('open', () => ws.send(JSON.stringify({ kind: 'login', username, password })));
     ws.on('message', (raw, isBinary) => {
       if (isBinary) {
-        const buf = raw instanceof Buffer ? new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength) : new Uint8Array();
-        events.push({ kind: 'binary', data: buf });
+        const buffer = raw instanceof Buffer ? new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength) : new Uint8Array();
+        events.push({ kind: 'binary', data: buffer });
         return;
       }
       const text = typeof raw === 'string' ? raw : raw.toString('utf-8');
@@ -82,10 +82,10 @@ function findBinary(c: Connection, predicate?: (b: Uint8Array) => boolean): Uint
   return ev?.['data'];
 }
 
-function decodeIncoming(buf: Uint8Array): { sender: string; opus: Uint8Array } {
-  const nameLen = buf[0]!;
-  const sender = new TextDecoder().decode(buf.subarray(1, 1 + nameLen));
-  const opus = buf.subarray(1 + nameLen);
+function decodeIncoming(buffer: Uint8Array): { sender: string; opus: Uint8Array } {
+  const nameLen = buffer[0]!;
+  const sender = new TextDecoder().decode(buffer.subarray(1, 1 + nameLen));
+  const opus = buffer.subarray(1 + nameLen);
   return { sender, opus };
 }
 

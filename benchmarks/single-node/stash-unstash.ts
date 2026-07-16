@@ -18,9 +18,9 @@ class Staller extends Actor<Message> {
     }
     if (m.kind === 'go') {
       this.context.unstashAll();
-      this.context.become((msg) => {
-        if ((msg as Message).kind === 'work') this.seen++;
-        if ((msg as Message).kind === 'count') this.sender.forEach((s) => s.tell(this.seen));
+      this.context.become((message) => {
+        if ((message as Message).kind === 'work') this.seen++;
+        if ((message as Message).kind === 'count') this.sender.forEach((s) => s.tell(this.seen));
       });
       return;
     }

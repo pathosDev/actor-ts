@@ -48,9 +48,9 @@ export function canonicalPairId(a: string, b: string): string {
 
 /** Split a canonical pair-id back into its two participants. */
 export function splitPairId(pairId: string): readonly [string, string] | null {
-  const idx = pairId.indexOf('|');
-  if (idx <= 0 || idx === pairId.length - 1) return null;
-  return [pairId.slice(0, idx), pairId.slice(idx + 1)];
+  const index = pairId.indexOf('|');
+  if (index <= 0 || index === pairId.length - 1) return null;
+  return [pairId.slice(0, index), pairId.slice(index + 1)];
 }
 
 /** Topic each user subscribes to for incoming DMs. */

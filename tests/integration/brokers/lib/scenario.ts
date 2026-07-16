@@ -13,7 +13,7 @@
  *
  * Every broker suite ships a `<broker>/runner.ts` that:
  *   1. imports its scenarios from `<broker>/scenarios/*.ts`
- *   2. calls `runScenarios(scenarios, ctx)` from this module
+ *   2. calls `runScenarios(scenarios, context)` from this module
  *   3. exits 0 on all-pass, 1 on any-fail
  *
  * `docker compose -f <broker>/docker-compose.<broker>.yml up
@@ -34,7 +34,7 @@ export interface BrokerScenarioContext {
 
 export interface BrokerScenario<Context extends BrokerScenarioContext = BrokerScenarioContext> {
   readonly name: string;
-  run(ctx: Context): Promise<void>;
+  run(context: Context): Promise<void>;
 }
 
 /**
@@ -48,16 +48,16 @@ export interface BrokerScenario<Context extends BrokerScenarioContext = BrokerSc
  */
 export async function runScenarios<Context extends BrokerScenarioContext>(
   scenarios: ReadonlyArray<BrokerScenario<Context>>,
-  ctx: Context,
+  context: Context,
 ): Promise<void> {
-  console.log(`[runner] ${scenarios.length} scenario(s) against env ${JSON.stringify(redact(ctx.env))}\n`);
+  console.log(`[runner] ${scenarios.length} scenario(s) against env ${JSON.stringify(redact(context.env))}\n`);
 
   let failed = 0;
   for (const s of scenarios) {
     const startedAt = Date.now();
     console.log(`[runner] === ${s.name} ===`);
     try {
-      await s.run(ctx);
+      await s.run(context);
       console.log(`[runner] PASS ${s.name} (${Date.now() - startedAt}ms)\n`);
     } catch (e) {
       failed += 1;

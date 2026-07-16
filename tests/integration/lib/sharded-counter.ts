@@ -45,12 +45,12 @@ export class ShardedWhoReply {
 export class ShardedCounter extends Actor<ShardedCommand> {
   private value = 0;
   constructor(private readonly nodeName: string) { super(); }
-  override onReceive(msg: ShardedCommand): void {
-    if (msg.op === 'increment') {
+  override onReceive(message: ShardedCommand): void {
+    if (message.op === 'increment') {
       this.value++;
     } else {
       // 'who'
-      msg.replyTo.tell(new ShardedWhoReply(msg.entityId, this.nodeName, this.value));
+      message.replyTo.tell(new ShardedWhoReply(message.entityId, this.nodeName, this.value));
     }
   }
 }

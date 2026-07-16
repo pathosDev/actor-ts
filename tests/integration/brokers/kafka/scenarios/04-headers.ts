@@ -14,26 +14,26 @@ const decode = (v: Uint8Array | string | null | undefined): string => {
 
 export const scenario: BrokerScenario<KafkaContext> = {
   name: 'headers round-trip',
-  async run(ctx) {
+  async run(context) {
     const tag = `b4-headers-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const topic = `${tag}-topic`;
     const groupId = `${tag}-group`;
 
-    const { ref: inboxRef, inbox } = spawnInbox(ctx);
+    const { ref: inboxRef, inbox } = spawnInbox(context);
     // Pre-create the topic by sending an initial "warmup" publish
     // through a separate producer.  Auto-topic-creation on Redpanda
     // can take ~1-2s and we don't want to race the consumer's
     // group-join against it.  The warmup publish creates the topic
     // and gives the broker a settled metadata view BEFORE the
     // consumer subscribes.
-    const warmup = spawnKafka(ctx);
+    const warmup = spawnKafka(context);
     await new Promise((resolve) => setTimeout(resolve, 500));
     warmup.tell({ kind: 'publish', publish: { topic, value: 'warmup' } });
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     warmup.stop();
 
-    const consumer = spawnKafka(ctx, { groupId, topics: [topic], target: inboxRef });
-    const producer = spawnKafka(ctx);
+    const consumer = spawnKafka(context, { groupId, topics: [topic], target: inboxRef });
+    const producer = spawnKafka(context);
     try {
       await new Promise((resolve) => setTimeout(resolve, 2_000));
 

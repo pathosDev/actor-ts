@@ -65,7 +65,7 @@ class VoiceStore {
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   #micStream: MediaStream | null = null;
   #micRecorder: MediaRecorder | null = null;
-  #micCtx: AudioContext | null = null;
+  #micContext: AudioContext | null = null;
   #micAnalyser: AnalyserNode | null = null;
   #incoming = new Map<string, IncomingEntry>();
 
@@ -79,7 +79,7 @@ class VoiceStore {
       const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       const ctx = new Ctx();
       if (ctx.state === 'suspended') await ctx.resume();
-      this.#micCtx = ctx;
+      this.#micContext = ctx;
       const src = ctx.createMediaStreamSource(this.#micStream);
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
@@ -219,8 +219,8 @@ class VoiceStore {
     }
   }
 
-  #onBinary(buf: Uint8Array): void {
-    const decoded = decodeIncomingFrame(buf);
+  #onBinary(buffer: Uint8Array): void {
+    const decoded = decodeIncomingFrame(buffer);
     if (!decoded) return;
     this.#feedIncoming(decoded.sender, decoded.opus);
   }

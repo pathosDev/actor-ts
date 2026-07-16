@@ -9,8 +9,8 @@ import type { BrokerScenario } from '../../lib/scenario.js';
 
 export const scenario: BrokerScenario<S3Context> = {
   name: 'list sorted + prefix scoping + limit',
-  async run(ctx) {
-    const store = backend(ctx);
+  async run(context) {
+    const store = backend(context);
     try {
       // Unique prefix per scenario run so re-runs don't observe
       // each other's keys.

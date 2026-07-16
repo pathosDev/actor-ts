@@ -109,7 +109,7 @@ export class DirectMessageChannelActor extends PersistentActor<
    * the only stable id we can derive synchronously during recovery
    * (before any command arrives).  For semantic operations that
    * need the original `|`-separated pair-id (e.g. routing broadcasts
-   * back to participant inboxes), use `cmd.pairId` from the
+   * back to participant inboxes), use `command.pairId` from the
    * incoming command instead.
    */
   override get persistenceId(): string {
@@ -142,34 +142,34 @@ export class DirectMessageChannelActor extends PersistentActor<
     return { history: trimmed };
   }
 
-  async onCommand(state: DirectMessageState, cmd: DirectMessageChannelCommand): Promise<void> {
-    if (cmd.kind === 'SendDirectMessage') {
+  async onCommand(state: DirectMessageState, command: DirectMessageChannelCommand): Promise<void> {
+    if (command.kind === 'SendDirectMessage') {
       const event: DirectMessageEvent = {
         kind: 'DirectMessagePosted',
-        from: cmd.from,
-        text: cmd.text,
+        from: command.from,
+        text: command.text,
         ts: Date.now(),
       };
       await this.persist(event, () => {
         // Both participants need a copy of the broadcast — one in
-        // each inbox topic.  Use `cmd.pairId` (the canonical form,
+        // each inbox topic.  Use `command.pairId` (the canonical form,
         // carrying the original `|` separator) rather than the
         // path-derived id which may have been sanitized by the
         // actor system.  Defensive split: if the pair-id is
         // malformed we drop the publish entirely (persist already
         // succeeded, so the event is durable — just the live
         // notification is lost).
-        const parts = splitPairId(cmd.pairId);
+        const parts = splitPairId(command.pairId);
         if (!parts) {
-          this.log.warn(`DirectMessageChannel: malformed pair-id '${cmd.pairId}'`);
+          this.log.warn(`DirectMessageChannel: malformed pair-id '${command.pairId}'`);
           return;
         }
         const [a, b] = parts;
-        const to = cmd.from === a ? b : a;
+        const to = command.from === a ? b : a;
         const broadcast: DirectMessageBroadcast = {
           kind: 'DirectMessageBroadcast',
-          pairId: cmd.pairId,
-          from: cmd.from,
+          pairId: command.pairId,
+          from: command.from,
           to,
           text: event.text,
           ts: event.ts,
@@ -181,9 +181,9 @@ export class DirectMessageChannelActor extends PersistentActor<
       return;
     }
 
-    if (cmd.kind === 'GetDirectMessageHistory') {
-      const messages = state.history.slice(-Math.max(1, cmd.limit));
-      cmd.replyTo.tell({ kind: 'DirectMessageHistoryReply', pairId: cmd.pairId, messages });
+    if (command.kind === 'GetDirectMessageHistory') {
+      const messages = state.history.slice(-Math.max(1, command.limit));
+      command.replyTo.tell({ kind: 'DirectMessageHistoryReply', pairId: command.pairId, messages });
       return;
     }
   }

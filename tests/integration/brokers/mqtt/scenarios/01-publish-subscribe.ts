@@ -10,10 +10,10 @@ import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
 export const scenario: BrokerScenario<MqttContext> = {
   name: 'publish/subscribe round-trip (QoS 0)',
-  async run(ctx) {
+  async run(context) {
     const tag = `b3/pubsub-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const { ref: mqtt } = spawnMqtt(ctx);
-    const { ref: inboxRef, inbox } = spawnInbox(ctx);
+    const { ref: mqtt } = spawnMqtt(context);
+    const { ref: inboxRef, inbox } = spawnInbox(context);
     try {
       // Subscribe first so the broker has the route when the publish lands.
       mqtt.tell({ kind: 'subscribe', topic: tag, target: inboxRef, qos: 0 });
@@ -29,12 +29,12 @@ export const scenario: BrokerScenario<MqttContext> = {
         () => inbox.received.some((m) => m.topic === tag),
         5_000,
       );
-      const msg = inbox.received.find((m) => m.topic === tag)!;
-      if (msg.payload.text() !== 'hello') {
-        throw new Error(`payload mismatch: got ${msg.payload.text()}`);
+      const message = inbox.received.find((m) => m.topic === tag)!;
+      if (message.payload.text() !== 'hello') {
+        throw new Error(`payload mismatch: got ${message.payload.text()}`);
       }
-      if (msg.qos !== 0) {
-        throw new Error(`qos mismatch: got ${msg.qos}`);
+      if (message.qos !== 0) {
+        throw new Error(`qos mismatch: got ${message.qos}`);
       }
     } finally {
       mqtt.stop();

@@ -7,14 +7,14 @@ import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
 export const scenario: BrokerScenario<KafkaContext> = {
   name: 'publish + consume round-trip (auto commit)',
-  async run(ctx) {
+  async run(context) {
     const tag = `b4-pubsub-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const topic = `${tag}-topic`;
     const groupId = `${tag}-group`;
 
-    const { ref: inboxRef, inbox } = spawnInbox(ctx);
-    const consumer = spawnKafka(ctx, { groupId, topics: [topic], target: inboxRef });
-    const producer = spawnKafka(ctx);
+    const { ref: inboxRef, inbox } = spawnInbox(context);
+    const consumer = spawnKafka(context, { groupId, topics: [topic], target: inboxRef });
+    const producer = spawnKafka(context);
     try {
       // Wait for consumer to join the group + claim the partition.
       // Redpanda assigns immediately after the join request lands;

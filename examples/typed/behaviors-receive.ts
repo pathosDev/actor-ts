@@ -13,18 +13,18 @@ type CounterCommand = { kind: 'increment' } | { kind: 'get' };
 
 /** Behavior holds its state by currying — `n` is captured in the closure. */
 const counter = (n: number, limit: number): Behavior<CounterCommand> =>
-  Behaviors.receive((ctx, cmd) => {
-    if (cmd.kind === 'increment') {
+  Behaviors.receive((context, command) => {
+    if (command.kind === 'increment') {
       const next = n + 1;
-      ctx.log.info(`counter @ ${next}`);
+      context.log.info(`counter @ ${next}`);
       if (next >= limit) {
-        ctx.log.info(`counter reached limit ${limit}, stopping`);
+        context.log.info(`counter reached limit ${limit}, stopping`);
         return Behaviors.stopped;
       }
       return counter(next, limit);
     }
-    if (cmd.kind === 'get') {
-      ctx.log.info(`counter value = ${n}`);
+    if (command.kind === 'get') {
+      context.log.info(`counter value = ${n}`);
       return Behaviors.same;
     }
     return Behaviors.unhandled;

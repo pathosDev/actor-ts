@@ -32,12 +32,12 @@
       const MIME_OPUS = 'audio/webm; codecs=opus';
 
       // Shared frame codec — keep in sync with shared/frameCodec.ts.
-      function decodeIncoming(buf) {
-        if (buf.byteLength < 1) return null;
-        const nameLen = buf[0];
-        if (buf.byteLength < 1 + nameLen) return null;
-        const sender = new TextDecoder().decode(buf.subarray(1, 1 + nameLen));
-        const opus = buf.subarray(1 + nameLen);
+      function decodeIncoming(buffer) {
+        if (buffer.byteLength < 1) return null;
+        const nameLen = buffer[0];
+        if (buffer.byteLength < 1 + nameLen) return null;
+        const sender = new TextDecoder().decode(buffer.subarray(1, 1 + nameLen));
+        const opus = buffer.subarray(1 + nameLen);
         return { sender, opus };
       }
 
@@ -189,7 +189,7 @@
           this._reconnectTimer = null;
           this._micStream = null;
           this._micRecorder = null;
-          this._micCtx = null;
+          this._micContext = null;
           this._micAnalyser = null;
           this._incoming = new Map();      // sender → playback entry
           this._incomingMeta = new Map();  // sender → source descriptor
@@ -350,7 +350,7 @@
             });
             const ctx = new (window.AudioContext || window.webkitAudioContext)();
             if (ctx.state === 'suspended') await ctx.resume();
-            this._micCtx = ctx;
+            this._micContext = ctx;
             const src = ctx.createMediaStreamSource(this._micStream);
             const analyser = ctx.createAnalyser(); analyser.fftSize = 512;
             src.connect(analyser);
@@ -483,8 +483,8 @@
           }
         }
 
-        _handleBinary(buf) {
-          const decoded = decodeIncoming(buf);
+        _handleBinary(buffer) {
+          const decoded = decodeIncoming(buffer);
           if (!decoded) return;
           this._feedIncoming(decoded.sender, decoded.opus);
         }

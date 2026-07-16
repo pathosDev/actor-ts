@@ -19,23 +19,23 @@ interface ListingResponse {
 }
 
 async function listing(host: string, controlPort: number): Promise<ListingResponse> {
-  const res = await fetch(`http://${host}:${controlPort}/test/receptionist/listing`);
-  if (!res.ok) throw new Error(`/test/receptionist/listing on ${host} → ${res.status}`);
-  return await res.json() as ListingResponse;
+  const response = await fetch(`http://${host}:${controlPort}/test/receptionist/listing`);
+  if (!response.ok) throw new Error(`/test/receptionist/listing on ${host} → ${response.status}`);
+  return await response.json() as ListingResponse;
 }
 
 export const scenario: Scenario = {
   name: '03-receptionist-convergence',
-  async run(ctx) {
-    const expected = ctx.nodes.length;
+  async run(context) {
+    const expected = context.nodes.length;
 
     // 1. Trigger lazy-init by hitting the listing endpoint on every
     //    node once.  Each hit auto-registers an IdleWorker into the
     //    local Receptionist.  After this round, every node should
     //    own one local registration; gossip propagates them across.
-    const initial = await Promise.all(ctx.nodes.map(async (h) => ({
+    const initial = await Promise.all(context.nodes.map(async (h) => ({
       host: h,
-      listing: await listing(h, ctx.controlPort),
+      listing: await listing(h, context.controlPort),
     })));
     for (const snapshot of initial) {
       console.log(`[03] post-init: ${snapshot.host} sees ${snapshot.listing.count} ref(s)`);
@@ -47,9 +47,9 @@ export const scenario: Scenario = {
     console.log(`[03] waiting for every node to see ${expected} worker refs...`);
     let lastSnapshot = '';
     const snapshotInterval = setInterval(() => {
-      Promise.all(ctx.nodes.map((h) => listing(h, ctx.controlPort).catch(() => ({ count: -1 } as ListingResponse))))
+      Promise.all(context.nodes.map((h) => listing(h, context.controlPort).catch(() => ({ count: -1 } as ListingResponse))))
         .then((all) => {
-          const line = ctx.nodes.map((h, i) => `${h}=${all[i]!.count}`).join(' ');
+          const line = context.nodes.map((h, i) => `${h}=${all[i]!.count}`).join(' ');
           if (line !== lastSnapshot) {
             console.log(`[03]   counts: ${line}`);
             lastSnapshot = line;
@@ -58,10 +58,10 @@ export const scenario: Scenario = {
         .catch(() => {/* ignore */});
     }, 2_000);
     try {
-      await Promise.all(ctx.nodes.map(async (host) => {
+      await Promise.all(context.nodes.map(async (host) => {
         await waitFor(
           `${host} sees ${expected} workers`,
-          async () => (await listing(host, ctx.controlPort)).count === expected,
+          async () => (await listing(host, context.controlPort)).count === expected,
           20_000,
           300,
         );
@@ -77,9 +77,9 @@ export const scenario: Scenario = {
     // sees 5 refs but they're all from the same peer (a gossip
     // leak / counter mis-attribution) — the count alone wouldn't
     // distinguish that from healthy convergence.
-    const allListings = await Promise.all(ctx.nodes.map(async (h) => ({
+    const allListings = await Promise.all(context.nodes.map(async (h) => ({
       host: h,
-      refs: (await listing(h, ctx.controlPort)).refs,
+      refs: (await listing(h, context.controlPort)).refs,
     })));
     for (const { host, refs } of allListings) {
       const local = refs.filter((r) => !r.includes('@'));
@@ -96,7 +96,7 @@ export const scenario: Scenario = {
           return at >= 0 && colon > at ? r.slice(at + 1, colon) : '<unknown>';
         }),
       );
-      for (const peer of ctx.nodes) {
+      for (const peer of context.nodes) {
         if (peer === host) continue;
         if (!remoteHosts.has(peer)) {
           throw new Error(`[03] ${host} is missing a remote ref for peer ${peer}; saw remote hosts: ${[...remoteHosts].join(',')}`);
@@ -106,11 +106,11 @@ export const scenario: Scenario = {
     console.log(`[03] all ${expected} nodes converged on the same ${expected}-worker pool (1 local + ${expected - 1} remotes each)`);
 
     // 3. Partition test — only if we have >=5 nodes for a clean 2:3 split.
-    if (ctx.nodes.length < 5) {
+    if (context.nodes.length < 5) {
       console.log('[03] skipping partition variant — need >=5 nodes');
       return;
     }
-    const [nodeA, nodeB, nodeC, nodeD, nodeE] = ctx.nodes;
+    const [nodeA, nodeB, nodeC, nodeD, nodeE] = context.nodes;
     const left = [nodeA!, nodeB!];
     const right = [nodeC!, nodeD!, nodeE!];
 
@@ -119,13 +119,13 @@ export const scenario: Scenario = {
     for (const leftNode of left) {
       for (const rightNode of right) {
         partitionCalls.push(
-          fetch(`http://${leftNode}:${ctx.controlPort}/test/partition?peer=${rightNode}`, { method: 'POST' }),
-          fetch(`http://${rightNode}:${ctx.controlPort}/test/partition?peer=${leftNode}`, { method: 'POST' }),
+          fetch(`http://${leftNode}:${context.controlPort}/test/partition?peer=${rightNode}`, { method: 'POST' }),
+          fetch(`http://${rightNode}:${context.controlPort}/test/partition?peer=${leftNode}`, { method: 'POST' }),
         );
       }
     }
-    const partRes = await Promise.all(partitionCalls);
-    for (const res of partRes) if (!res.ok) throw new Error(`[03] partition failed: ${res.status}`);
+    const partResponses = await Promise.all(partitionCalls);
+    for (const response of partResponses) if (!response.ok) throw new Error(`[03] partition failed: ${response.status}`);
 
     // The Receptionist's `remote` map is purged on `MemberRemoved`.
     // With LeaseMajority off (default), a partition produces
@@ -145,21 +145,21 @@ export const scenario: Scenario = {
     for (const leftNode of left) {
       for (const rightNode of right) {
         healCalls.push(
-          fetch(`http://${leftNode}:${ctx.controlPort}/test/heal?peer=${rightNode}`, { method: 'POST' }),
-          fetch(`http://${rightNode}:${ctx.controlPort}/test/heal?peer=${leftNode}`, { method: 'POST' }),
+          fetch(`http://${leftNode}:${context.controlPort}/test/heal?peer=${rightNode}`, { method: 'POST' }),
+          fetch(`http://${rightNode}:${context.controlPort}/test/heal?peer=${leftNode}`, { method: 'POST' }),
         );
       }
     }
-    const healRes = await Promise.all(healCalls);
-    for (const res of healRes) if (!res.ok) throw new Error(`[03] heal failed: ${res.status}`);
+    const healResponses = await Promise.all(healCalls);
+    for (const response of healResponses) if (!response.ok) throw new Error(`[03] heal failed: ${response.status}`);
 
     // 5. After heal: every node still sees all 5 workers.  Gossip
     //    has by now re-bridged the two halves.
     console.log('[03] verifying post-heal convergence on full pool...');
-    await Promise.all(ctx.nodes.map(async (host) => {
+    await Promise.all(context.nodes.map(async (host) => {
       await waitFor(
         `${host} re-converges on ${expected} workers after heal`,
-        async () => (await listing(host, ctx.controlPort)).count === expected,
+        async () => (await listing(host, context.controlPort)).count === expected,
         30_000,
         500,
       );

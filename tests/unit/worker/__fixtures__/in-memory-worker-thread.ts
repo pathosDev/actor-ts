@@ -92,7 +92,7 @@ export class FakeWorker implements WorkerLike {
 
 export interface FakeBackendHooks {
   /** Optional: called when a worker is spawned, before the handshake. */
-  onSpawn?: (worker: FakeWorker, url: URL, opts: WorkerSpawnOptions | undefined) => void;
+  onSpawn?: (worker: FakeWorker, url: URL, options: WorkerSpawnOptions | undefined) => void;
 }
 
 export class FakeWorkerBackend implements WorkerBackend {

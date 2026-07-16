@@ -19,8 +19,8 @@ class LoadingRepository extends Actor<Command> {
     this.context.timers.startSingleTimer('load', { kind: '__ready' }, 80);
   }
 
-  override onReceive(msg: Command): void {
-    if (msg.kind === '__ready') {
+  override onReceive(message: Command): void {
+    if (message.kind === '__ready') {
       this.data = { alice: 1, bob: 2 };
       this.ready = true;
       this.log.info('Repo warm — replaying stashed queries');
@@ -28,11 +28,11 @@ class LoadingRepository extends Actor<Command> {
       return;
     }
     if (!this.ready) {
-      this.log.info(`stashing ${msg.q} (${this.context.stashSize + 1} buffered)`);
+      this.log.info(`stashing ${message.q} (${this.context.stashSize + 1} buffered)`);
       this.context.stash();
       return;
     }
-    this.log.info(`${msg.q} → ${this.data[msg.q] ?? 'unknown'}`);
+    this.log.info(`${message.q} → ${this.data[message.q] ?? 'unknown'}`);
   }
 }
 

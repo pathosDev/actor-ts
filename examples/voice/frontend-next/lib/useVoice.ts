@@ -120,7 +120,7 @@ export function useVoice(): {
   const reconTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const micStream = useRef<MediaStream | null>(null);
   const micRecorder = useRef<MediaRecorder | null>(null);
-  const micCtx = useRef<AudioContext | null>(null);
+  const micContext = useRef<AudioContext | null>(null);
   const micAnalyser = useRef<AnalyserNode | null>(null);
   const incoming = useRef(new Map<string, IncomingEntry>());
 
@@ -229,7 +229,7 @@ export function useVoice(): {
       const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       const ctx = new Ctx();
       if (ctx.state === 'suspended') await ctx.resume();
-      micCtx.current = ctx;
+      micContext.current = ctx;
       const src = ctx.createMediaStreamSource(micStream.current);
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 512;

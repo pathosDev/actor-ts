@@ -57,12 +57,12 @@ describe('LogContext — actor-to-actor propagation', () => {
       }
     }
 
-    class Middle extends Actor<{ msg: string; bottom: ActorRef<string> }> {
-      override onReceive(c: { msg: string; bottom: ActorRef<string> }): void {
+    class Middle extends Actor<{ message: string; bottom: ActorRef<string> }> {
+      override onReceive(c: { message: string; bottom: ActorRef<string> }): void {
         observed.push({ ...LogContext.get() });
         // Tell from inside the handler — this snapshots the
         // re-installed context onto the next envelope.
-        c.bottom.tell(c.msg);
+        c.bottom.tell(c.message);
       }
     }
 
@@ -74,7 +74,7 @@ describe('LogContext — actor-to-actor propagation', () => {
       const bottom = sys.spawn(Props.create(() => new Bottom()), 'b');
       const middle = sys.spawn(Props.create(() => new Middle()), 'm');
       LogContext.run({ requestId: 'req-9', user: 'u-1' }, () => {
-        middle.tell({ msg: 'forward', bottom });
+        middle.tell({ message: 'forward', bottom });
       });
       await sleep(60);
       expect(observed).toEqual([

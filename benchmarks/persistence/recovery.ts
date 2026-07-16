@@ -27,14 +27,14 @@ class Counter extends PersistentActor<Command, Event, number> {
   initialState(): number { return 0; }
   onEvent(s: number, e: Event): number { return s + e.delta; }
   override snapshotPolicy = everyNEvents<number, Event>(100);
-  async onCommand(s: number, _cmd: Command): Promise<void> {
+  async onCommand(s: number, _command: Command): Promise<void> {
     this.sender.forEach((r) => r.tell(s));
   }
 }
 
-async function prefill(journal: InMemoryJournal, pid: string, n: number): Promise<void> {
+async function prefill(journal: InMemoryJournal, persistenceId: string, n: number): Promise<void> {
   const events = Array.from({ length: n }, () => ({ delta: 1 }));
-  await journal.append(pid, events, 0);
+  await journal.append(persistenceId, events, 0);
 }
 
 async function main(): Promise<void> {
@@ -48,8 +48,8 @@ async function main(): Promise<void> {
   ext.setJournal(journal);
   ext.setSnapshotStore(snapshots);
 
-  const recovery = (pid: string) => async (): Promise<void> => {
-    const ref = system.spawnAnonymous(Props.create(() => new Counter(pid)));
+  const recovery = (persistenceId: string) => async (): Promise<void> => {
+    const ref = system.spawnAnonymous(Props.create(() => new Counter(persistenceId)));
     await ask<Command, number>(ref, 'get', 30_000);
     ref.stop();
   };

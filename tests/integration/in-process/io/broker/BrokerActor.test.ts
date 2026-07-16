@@ -78,13 +78,13 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string> {
   publicEnqueue(payload: string): boolean { return this.enqueueOutbound(payload); }
   publicSubscribe(topic: string, ref: ActorRef<unknown>): void { this.subscribeRef(topic, ref); }
   publicUnsubscribe(topic: string, ref: ActorRef<unknown>): void { this.unsubscribeRef(topic, ref); }
-  publicFanOut(topic: string, msg: unknown): void { this.fanOutToTopic(topic, msg); }
+  publicFanOut(topic: string, message: unknown): void { this.fanOutToTopic(topic, message); }
   publicSimulateLoss(): void { this.handleConnectionLost(new Error('simulated loss')); }
   publicConnectionState(): string { return this.connectionState; }
   publicBufferSize(): number { return this.outboundBufferSize; }
   publicSubscriberCount(topic: string): number { return this.subscriberCountForTopic(topic); }
 
-  override onReceive(_cmd: FakeCommand): void { /* no-op — direct manipulation in tests */ }
+  override onReceive(_command: FakeCommand): void { /* no-op — direct manipulation in tests */ }
 }
 
 class ProbeActor extends Actor<unknown> {

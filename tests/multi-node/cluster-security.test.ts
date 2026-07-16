@@ -61,11 +61,11 @@ async function waitFor(pred: () => boolean, timeoutMs = 2000): Promise<void> {
 /* ----- access helper: invoke the private handleWire via type cast ----- */
 
 interface ClusterPrivate {
-  handleWire(from: NodeAddress, msg: { t: 'gossip'; from: ReturnType<NodeAddress['toJSON']>; members: MemberData[] }): void;
+  handleWire(from: NodeAddress, message: { t: 'gossip'; from: ReturnType<NodeAddress['toJSON']>; members: MemberData[] }): void;
 }
 
-function inject(cluster: Cluster, from: NodeAddress, msg: GossipMessage): void {
-  (cluster as unknown as ClusterPrivate).handleWire(from, msg);
+function inject(cluster: Cluster, from: NodeAddress, message: GossipMessage): void {
+  (cluster as unknown as ClusterPrivate).handleWire(from, message);
 }
 
 let nodes: NodeHandle[] = [];
@@ -312,8 +312,8 @@ describe('Transport — hello-handshake hijack defense', () => {
 
     // First hello on conn1 — legitimate, accepted.
     const helloFrame = (): Uint8Array => {
-      const msg = JSON.stringify({ t: 'hello', self: claimedPeer.toJSON() });
-      const payload = new TextEncoder().encode(msg);
+      const message = JSON.stringify({ t: 'hello', self: claimedPeer.toJSON() });
+      const payload = new TextEncoder().encode(message);
       const frame = new Uint8Array(4 + payload.byteLength);
       new DataView(frame.buffer).setUint32(0, payload.byteLength, false);
       frame.set(payload, 4);
@@ -355,8 +355,8 @@ describe('Transport — hello-handshake hijack defense', () => {
 
     const peer = new NodeAddress('hijack', '10.0.0.99', 5001);
     const helloFrame = (): Uint8Array => {
-      const msg = JSON.stringify({ t: 'hello', self: peer.toJSON() });
-      const payload = new TextEncoder().encode(msg);
+      const message = JSON.stringify({ t: 'hello', self: peer.toJSON() });
+      const payload = new TextEncoder().encode(message);
       const frame = new Uint8Array(4 + payload.byteLength);
       new DataView(frame.buffer).setUint32(0, payload.byteLength, false);
       frame.set(payload, 4);

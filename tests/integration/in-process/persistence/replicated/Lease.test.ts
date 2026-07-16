@@ -38,12 +38,12 @@ class LeasedCounter extends ReplicatedEventSourcedActor<Command, Event, State> {
 
   constructor(
     cluster: Cluster,
-    pid: string,
+    persistenceId: string,
     replica: string,
     private readonly leaseInstance: Lease | null,
   ) {
     super(cluster);
-    this.persistenceId = pid;
+    this.persistenceId = persistenceId;
     this.replicaId = replica;
   }
 

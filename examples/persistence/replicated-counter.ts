@@ -59,14 +59,14 @@ class ReplicatedCounter extends ReplicatedEventSourcedActor<Command, Event, Stat
 
   async onCommand(_s: State, c: Command): Promise<void> {
     await match(c)
-      .with({ kind: 'add' }, (cmd) => this.onAdd(cmd))
+      .with({ kind: 'add' }, (command) => this.onAdd(command))
       .exhaustive();
   }
 
-  private async onAdd(cmd: Command): Promise<void> {
-    await this.persist({ kind: 'added', amount: cmd.amount }, () => {
+  private async onAdd(command: Command): Promise<void> {
+    await this.persist({ kind: 'added', amount: command.amount }, () => {
       // eslint-disable-next-line no-console
-      console.log(`[${this.label}] persisted: amount=${cmd.amount}`);
+      console.log(`[${this.label}] persisted: amount=${command.amount}`);
     });
   }
 

@@ -119,10 +119,10 @@ async function main(): Promise<void> {
 
   const self = new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]):/, '$1:');
   for (const size of [1, 2, 3, 5] as const) {
-    const res = spawnSync('bun', ['run', self, `--size=${size}`], { stdio: 'inherit' });
-    if (res.status !== 0) {
-      console.error(`  [exit=${res.status}] size=${size}`);
-      process.exit(res.status ?? 1);
+    const result = spawnSync('bun', ['run', self, `--size=${size}`], { stdio: 'inherit' });
+    if (result.status !== 0) {
+      console.error(`  [exit=${result.status}] size=${size}`);
+      process.exit(result.status ?? 1);
     }
   }
 }

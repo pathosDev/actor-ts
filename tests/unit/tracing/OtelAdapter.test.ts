@@ -22,7 +22,7 @@ interface FakeRecordedSpan {
   exceptions: Array<Error | string>;
   parentTraceId?: string;
   parentSpanId?: string;
-  ctx: OtelSpanContextLike;
+  context: OtelSpanContextLike;
   ended: boolean;
 }
 
@@ -41,7 +41,7 @@ const ROOT = new FakeContext();
 
 function makeFakeSpan(record: FakeRecordedSpan): OtelSpanLike {
   return {
-    spanContext: () => record.ctx,
+    spanContext: () => record.context,
     setAttribute(key, value): OtelSpanLike {
       record.attrs[key] = value;
       return this;
@@ -78,23 +78,23 @@ function makeFakeOtelApi(): FakeOtelApi {
 
     trace: {
       getTracer: (_n, _v): { startSpan: typeof startSpan } => ({ startSpan }),
-      setSpan(ctx, span): OtelContextLike {
-        return (ctx as FakeContext).setValue(SPAN_KEY, span);
+      setSpan(context, span): OtelContextLike {
+        return (context as FakeContext).setValue(SPAN_KEY, span);
       },
-      getSpan(ctx): OtelSpanLike | undefined {
-        return (ctx as FakeContext).getValue(SPAN_KEY) as OtelSpanLike | undefined;
+      getSpan(context): OtelSpanLike | undefined {
+        return (context as FakeContext).getValue(SPAN_KEY) as OtelSpanLike | undefined;
       },
       getActiveSpan(): OtelSpanLike | undefined {
         return (api.current as FakeContext).getValue(SPAN_KEY) as OtelSpanLike | undefined;
       },
-      getSpanContext(ctx): OtelSpanContextLike | undefined {
-        const span = (ctx as FakeContext).getValue(SPAN_KEY) as OtelSpanLike | undefined;
+      getSpanContext(context): OtelSpanContextLike | undefined {
+        const span = (context as FakeContext).getValue(SPAN_KEY) as OtelSpanLike | undefined;
         return span?.spanContext();
       },
-      setSpanContext(ctx, sc): OtelContextLike {
+      setSpanContext(context, sc): OtelContextLike {
         // Wrap into a non-recording span and stash on the context.
         const span = api.trace.wrapSpanContext(sc);
-        return (ctx as FakeContext).setValue(SPAN_KEY, span);
+        return (context as FakeContext).setValue(SPAN_KEY, span);
       },
       wrapSpanContext(sc): OtelSpanLike {
         return {
@@ -110,9 +110,9 @@ function makeFakeOtelApi(): FakeOtelApi {
 
     context: {
       active: () => api.current,
-      with<F extends (...args: never[]) => unknown>(ctx: OtelContextLike, fn: F): ReturnType<F> {
+      with<F extends (...args: never[]) => unknown>(context: OtelContextLike, fn: F): ReturnType<F> {
         const prev = api.current;
-        api.current = ctx as FakeContext;
+        api.current = context as FakeContext;
         try { return fn() as ReturnType<F>; } finally { api.current = prev; }
       },
       ROOT_CONTEXT: ROOT,
@@ -122,8 +122,8 @@ function makeFakeOtelApi(): FakeOtelApi {
       // W3C-Trace-Context-style inject — write `traceparent` (and `tracestate`
       // if present) using the framework's existing encoder.  When there's no
       // span on the context, write nothing.
-      inject(ctx, carrier): void {
-        const span = (ctx as FakeContext).getValue(SPAN_KEY) as OtelSpanLike | undefined;
+      inject(context, carrier): void {
+        const span = (context as FakeContext).getValue(SPAN_KEY) as OtelSpanLike | undefined;
         if (!span) return;
         const sc = span.spanContext();
         carrier['traceparent'] = encodeTraceparent({
@@ -131,11 +131,11 @@ function makeFakeOtelApi(): FakeOtelApi {
         });
         if (sc.traceState) carrier['tracestate'] = sc.traceState;
       },
-      extract(ctx, carrier): OtelContextLike {
+      extract(context, carrier): OtelContextLike {
         const tp = carrier['traceparent'];
-        if (!tp) return ctx;
+        if (!tp) return context;
         const decoded = decodeTraceparent(tp);
-        if (!decoded) return ctx;
+        if (!decoded) return context;
         const sc: OtelSpanContextLike = {
           traceId: decoded.traceId,
           spanId: decoded.spanId,
@@ -143,7 +143,7 @@ function makeFakeOtelApi(): FakeOtelApi {
           ...(carrier['tracestate'] ? { traceState: carrier['tracestate'] } : {}),
           isRemote: true,
         };
-        return api.trace.setSpanContext(ctx, sc);
+        return api.trace.setSpanContext(context, sc);
       },
     },
   };
@@ -151,24 +151,24 @@ function makeFakeOtelApi(): FakeOtelApi {
   function startSpan(
     name: string,
     options?: { kind?: number; attributes?: Record<string, unknown>; startTime?: number; root?: boolean },
-    ctx?: OtelContextLike,
+    context?: OtelContextLike,
   ): OtelSpanLike {
-    const useCtx = ctx ?? api.current;
+    const useContext = context ?? api.current;
     const parentSpan = !options?.root
-      ? ((useCtx as FakeContext).getValue(SPAN_KEY) as OtelSpanLike | undefined)
+      ? ((useContext as FakeContext).getValue(SPAN_KEY) as OtelSpanLike | undefined)
       : undefined;
-    const parentCtx = parentSpan?.spanContext();
-    const traceId = parentCtx?.traceId ?? newTraceId();
+    const parentContext = parentSpan?.spanContext();
+    const traceId = parentContext?.traceId ?? newTraceId();
     const spanId = newSpanId();
-    const flags = parentCtx?.traceFlags ?? 1;
+    const flags = parentContext?.traceFlags ?? 1;
     const record: FakeRecordedSpan = {
       name,
       ...(options?.kind !== undefined ? { kind: options.kind } : {}),
       attrs: { ...(options?.attributes ?? {}) },
       ...(options?.startTime !== undefined ? { startTime: options.startTime } : {}),
       exceptions: [],
-      ...(parentCtx ? { parentTraceId: parentCtx.traceId, parentSpanId: parentCtx.spanId } : {}),
-      ctx: { traceId, spanId, traceFlags: flags },
+      ...(parentContext ? { parentTraceId: parentContext.traceId, parentSpanId: parentContext.spanId } : {}),
+      context: { traceId, spanId, traceFlags: flags },
       ended: false,
     };
     recorded.push(record);
@@ -235,9 +235,9 @@ describe('otelTracer', () => {
     });
 
     const childRec = api.recorded.find((recorded) => recorded.name === 'inner')!;
-    const outerCtx = outer.context();
-    expect(childRec.parentTraceId).toBe(outerCtx.traceId);
-    expect(childRec.parentSpanId).toBe(outerCtx.spanId);
+    const outerContext = outer.context();
+    expect(childRec.parentTraceId).toBe(outerContext.traceId);
+    expect(childRec.parentSpanId).toBe(outerContext.spanId);
     inner.end();
     outer.end();
     expect(tracer.activeSpan()).toBeNull();
@@ -248,12 +248,12 @@ describe('otelTracer', () => {
     const otelOptions = OtelAdapterOptions.create()
       .withApi(api);
     const tracer = otelTracer(otelOptions);
-    const parentCtx = { traceId: '0123456789abcdef0123456789abcdef', spanId: '0123456789abcdef', traceFlags: 1 };
-    const child = tracer.startSpan('child', { parent: parentCtx });
+    const parentContext = { traceId: '0123456789abcdef0123456789abcdef', spanId: '0123456789abcdef', traceFlags: 1 };
+    const child = tracer.startSpan('child', { parent: parentContext });
     const recorded = api.recorded[0]!;
-    expect(recorded.parentTraceId).toBe(parentCtx.traceId);
-    expect(recorded.parentSpanId).toBe(parentCtx.spanId);
-    expect(child.context().traceId).toBe(parentCtx.traceId);
+    expect(recorded.parentTraceId).toBe(parentContext.traceId);
+    expect(recorded.parentSpanId).toBe(parentContext.spanId);
+    expect(child.context().traceId).toBe(parentContext.traceId);
   });
 
   test('explicit parent: null forces a fresh root', () => {
@@ -357,9 +357,9 @@ describe('otelTracer', () => {
     expect(carrier).not.toBeNull();
 
     // Side B: extract, start child.
-    const remoteCtx = tracer.extractContext(carrier);
-    expect(remoteCtx).not.toBeNull();
-    const bSpan = tracer.startSpan('b.receive', { parent: remoteCtx! });
+    const remoteContext = tracer.extractContext(carrier);
+    expect(remoteContext).not.toBeNull();
+    const bSpan = tracer.startSpan('b.receive', { parent: remoteContext! });
     bSpan.end();
 
     expect(bSpan.context().traceId).toBe(aSpan.context().traceId);

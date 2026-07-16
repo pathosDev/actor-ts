@@ -31,19 +31,19 @@ class ManualCommitter extends Actor<KafkaRecord> {
 
 export const scenario: BrokerScenario<KafkaContext> = {
   name: 'manual-commit pump — pause-and-advance',
-  async run(ctx) {
+  async run(context) {
     const tag = `b4-manual-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const topic = `${tag}-topic`;
     const groupId = `${tag}-group`;
 
     const committer = new ManualCommitter();
-    const inboxRef = ctx.system.spawnAnonymous(Props.create(() => committer));
-    const consumer = spawnKafka(ctx, {
+    const inboxRef = context.system.spawnAnonymous(Props.create(() => committer));
+    const consumer = spawnKafka(context, {
       groupId, topics: [topic], commitMode: 'manual',
       target: inboxRef,
     });
     committer.kafka = consumer as unknown as ActorRef<KafkaCommand>;
-    const producer = spawnKafka(ctx);
+    const producer = spawnKafka(context);
     try {
       await new Promise((r) => setTimeout(r, 2_000));
 

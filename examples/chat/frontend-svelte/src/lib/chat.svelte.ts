@@ -134,8 +134,8 @@ class ChatStore {
 
   send(room: RoomName, text: string): void {
     if (!text.trim() || !this.#ws) return;
-    const cmd: ClientMessage = { kind: 'send', room, text };
-    this.#ws.send(JSON.stringify(cmd));
+    const command: ClientMessage = { kind: 'send', room, text };
+    this.#ws.send(JSON.stringify(command));
   }
 
   /** Send a `typing` frame at most once per 2 s. */
@@ -169,8 +169,8 @@ class ChatStore {
     this.unreadByRoom[room] = 0;
     // Switching INTO a room means the user is reading whatever's
     // already there — mark the highest known ts as read.
-    const msgs = this.messagesByRoom[room] ?? [];
-    const maxTs = msgs.reduce((a, message) => Math.max(a, message.ts ?? 0), 0);
+    const messages = this.messagesByRoom[room] ?? [];
+    const maxTs = messages.reduce((a, message) => Math.max(a, message.ts ?? 0), 0);
     if (maxTs > 0) this.markReadUpTo(room, maxTs);
   }
 

@@ -7,10 +7,10 @@ import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
 export const scenario: BrokerScenario<NatsContext> = {
   name: 'publish/subscribe round-trip',
-  async run(ctx) {
+  async run(context) {
     const tag = `b6.pubsub.${Date.now()}.${Math.random().toString(36).slice(2)}`;
-    const nats = spawnNats(ctx);
-    const { ref: inboxRef, inbox } = spawnInbox(ctx);
+    const nats = spawnNats(context);
+    const { ref: inboxRef, inbox } = spawnInbox(context);
     try {
       nats.tell({
         kind: 'subscribe',

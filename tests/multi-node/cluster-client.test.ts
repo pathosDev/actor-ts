@@ -32,11 +32,11 @@ type Command = CommandEcho | CommandRing;
 
 class EchoActor extends Actor<Command> {
   public rings = 0;
-  override onReceive(msg: Command): void {
-    if (msg.kind === 'echo') {
+  override onReceive(message: Command): void {
+    if (message.kind === 'echo') {
       this.context.sender.fold(
         () => { /* no sender, drop */ },
-        (s) => s.tell(msg.payload),
+        (s) => s.tell(message.payload),
       );
     } else {
       this.rings += 1;

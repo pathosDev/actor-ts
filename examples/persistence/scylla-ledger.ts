@@ -64,16 +64,16 @@ class Account extends PersistentActor<Command, Event, State> {
     return { balance: state.balance - d.amount };
   }
 
-  override async onCommand(state: State, cmd: Command): Promise<void> {
-    await match(cmd)
+  override async onCommand(state: State, command: Command): Promise<void> {
+    await match(command)
       .with({ kind: 'balance' }, () => this.onBalance(state))
       .with({ kind: 'withdraw' }, (c) => this.onWithdraw(state, c))
       .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
       .exhaustive();
   }
 
-  private reply(msg: unknown): void {
-    this.sender.forEach((s) => s.tell(msg));
+  private reply(message: unknown): void {
+    this.sender.forEach((s) => s.tell(message));
   }
 
   private async onBalance(state: State): Promise<void> {

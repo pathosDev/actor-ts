@@ -37,43 +37,43 @@ interface DroppedResponse {
 }
 
 async function getDropped(host: string, controlPort: number): Promise<DroppedResponse> {
-  const res = await fetch(`http://${host}:${controlPort}/test/backpressure/dropped`);
-  if (!res.ok) throw new Error(`/test/backpressure/dropped on ${host} → ${res.status}`);
-  return await res.json() as DroppedResponse;
+  const response = await fetch(`http://${host}:${controlPort}/test/backpressure/dropped`);
+  if (!response.ok) throw new Error(`/test/backpressure/dropped on ${host} → ${response.status}`);
+  return await response.json() as DroppedResponse;
 }
 
 async function bombard(host: string, controlPort: number, n: number, sleepMs: number): Promise<void> {
-  const res = await fetch(
+  const response = await fetch(
     `http://${host}:${controlPort}/test/backpressure/bombard?n=${n}&sleepMs=${sleepMs}`,
     { method: 'POST' },
   );
-  if (!res.ok) throw new Error(`/test/backpressure/bombard on ${host} → ${res.status}: ${await res.text()}`);
+  if (!response.ok) throw new Error(`/test/backpressure/bombard on ${host} → ${response.status}: ${await response.text()}`);
 }
 
 export const scenario: Scenario = {
   name: '14-backpressure',
-  async run(ctx) {
-    const live = await clusterLiveNodes(ctx.nodes, ctx.controlPort);
+  async run(context) {
+    const live = await clusterLiveNodes(context.nodes, context.controlPort);
     if (live.length === 0) {
       console.log('[14] skipping — no live cluster nodes');
       return;
     }
     const target = live[0]!;
 
-    const baseline = await getDropped(target, ctx.controlPort);
+    const baseline = await getDropped(target, context.controlPort);
     console.log(`[14] baseline actor_mailbox_dropped_total on ${target} = ${baseline.total}`);
 
     const SEND = 15_000;
     const OVERFLOW = SEND - 10_000;   // default mailbox capacity from #310 = 10_000
     console.log(`[14] bombarding ${target} with ${SEND} messages → expect ~${OVERFLOW} drops...`);
-    await bombard(target, ctx.controlPort, SEND, 50);
+    await bombard(target, context.controlPort, SEND, 50);
 
     // Drops happen synchronously inside `enqueue()`, but the
     // metrics counter increments inside the noop / promclient
     // adapter which may batch.  Give it a moment to settle.
     await sleep(500);
 
-    const after = await getDropped(target, ctx.controlPort);
+    const after = await getDropped(target, context.controlPort);
     const delta = after.total - baseline.total;
     console.log(`[14] post-bombard actor_mailbox_dropped_total = ${after.total} (delta=${delta})`);
     console.log(`[14] dropped-metric lines visible: ${after.lines.length}`);

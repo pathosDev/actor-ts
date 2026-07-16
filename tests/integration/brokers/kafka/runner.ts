@@ -51,7 +51,7 @@ async function main(): Promise<void> {
     .withLogLevel(LogLevel.Info));
   process.on('SIGTERM', () => { void system.terminate(); });
 
-  const ctx: KafkaContext = { env: process.env, brokers, system };
+  const context: KafkaContext = { env: process.env, brokers, system };
 
   try {
     const scenarios: BrokerScenario<KafkaContext>[] = [
@@ -60,7 +60,7 @@ async function main(): Promise<void> {
       manualScenario,
       headersScenario,
     ];
-    await runScenarios(scenarios, ctx);
+    await runScenarios(scenarios, context);
   } finally {
     await system.terminate();
   }
@@ -75,29 +75,29 @@ export interface KafkaSpawnOpts {
 }
 
 /** Fresh KafkaActor per scenario.  groupId default ensures isolation. */
-export function spawnKafka(ctx: KafkaContext, opts: KafkaSpawnOpts = {}): ReturnType<ActorSystem['spawnAnonymous']> {
+export function spawnKafka(context: KafkaContext, options: KafkaSpawnOpts = {}): ReturnType<ActorSystem['spawnAnonymous']> {
   const builder = KafkaOptions.create()
-    .withBrokers([...ctx.brokers])
+    .withBrokers([...context.brokers])
     .withClientId(`actor-ts-${Date.now()}-${Math.random().toString(36).slice(2)}`)
     .withProducer({ allowAutoTopicCreation: true, idempotent: false });
-  if (opts.groupId) {
+  if (options.groupId) {
     builder.withConsumer({
-      groupId: opts.groupId,
-      fromBeginning: opts.fromBeginning ?? true,
-      commitMode: opts.commitMode ?? 'auto',
+      groupId: options.groupId,
+      fromBeginning: options.fromBeginning ?? true,
+      commitMode: options.commitMode ?? 'auto',
     });
   }
-  if (opts.topics) builder.withTopics(opts.topics);
-  if (opts.target) builder.withTarget(opts.target as unknown as Parameters<KafkaOptionsBuilder['withTarget']>[0]);
+  if (options.topics) builder.withTopics(options.topics);
+  if (options.target) builder.withTarget(options.target as unknown as Parameters<KafkaOptionsBuilder['withTarget']>[0]);
   const actor = new KafkaActor(builder);
-  return ctx.system.spawnAnonymous(Props.create(() => actor));
+  return context.system.spawnAnonymous(Props.create(() => actor));
 }
 
-export function spawnInbox(ctx: KafkaContext): {
+export function spawnInbox(context: KafkaContext): {
   ref: ReturnType<ActorSystem['spawnAnonymous']>; inbox: InboxActor;
 } {
   const inbox = new InboxActor();
-  const ref = ctx.system.spawnAnonymous(Props.create(() => inbox));
+  const ref = context.system.spawnAnonymous(Props.create(() => inbox));
   return { ref, inbox };
 }
 

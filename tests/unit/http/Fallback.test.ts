@@ -53,11 +53,11 @@ describe.each(backends)('fallback() — %s backend', (_name, mk) => {
   test('answers an unmatched path', async () => {
     const url = await start(mk, concat(
       path('known', get(() => complete(Status.OK, 'yes'))),
-      fallback((req) => completeJson(Status.NotFound, { error: 'no route', path: req.path })),
+      fallback((request) => completeJson(Status.NotFound, { error: 'no route', path: request.path })),
     ));
-    const res = await fetch(`${url}/nope`);
-    expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: 'no route', path: '/nope' });
+    const response = await fetch(`${url}/nope`);
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: 'no route', path: '/nope' });
   });
 
   test('matched routes still win — a fallback declared first does not shadow them', async () => {
@@ -74,9 +74,9 @@ describe.each(backends)('fallback() — %s backend', (_name, mk) => {
       path('thing', get(() => complete(Status.OK, 'g'))),
       fallback(() => complete(Status.NotFound, 'fb')),
     ));
-    const res = await fetch(`${url}/thing`, { method: 'POST' });
-    expect(res.status).toBe(404);
-    expect(await res.text()).toBe('fb');
+    const response = await fetch(`${url}/thing`, { method: 'POST' });
+    expect(response.status).toBe(404);
+    expect(await response.text()).toBe('fb');
   });
 
   test('an unmatched OPTIONS request hits the fallback', async () => {
@@ -86,8 +86,8 @@ describe.each(backends)('fallback() — %s backend', (_name, mk) => {
     ));
     // Use a path with no route at all — avoids backends' automatic
     // OPTIONS handling for paths that DO have routes (e.g. Express).
-    const res = await fetch(`${url}/totally-unknown`, { method: 'OPTIONS' });
-    expect(res.status).toBe(Status.NoContent);
+    const response = await fetch(`${url}/totally-unknown`, { method: 'OPTIONS' });
+    expect(response.status).toBe(Status.NoContent);
   });
 
   test('a fallback throwing HttpError maps to that status', async () => {
@@ -96,14 +96,14 @@ describe.each(backends)('fallback() — %s backend', (_name, mk) => {
   });
 
   test('middleware wraps the fallback handler', async () => {
-    const stamp: Middleware = async (_req, next) => {
+    const stamp: Middleware = async (_request, next) => {
       const response = await next();
       return { ...response, headers: { ...(response.headers ?? {}), 'x-fb': '1' } };
     };
     const url = await start(mk, withMiddleware(stamp, fallback(() => complete(Status.NotFound, 'fb'))));
-    const res = await fetch(`${url}/x`);
-    expect(res.status).toBe(404);
-    expect(res.headers.get('x-fb')).toBe('1');
+    const response = await fetch(`${url}/x`);
+    expect(response.status).toBe(404);
+    expect(response.headers.get('x-fb')).toBe('1');
   });
 });
 

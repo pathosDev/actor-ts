@@ -71,9 +71,9 @@ function findCoordinator(
   spec: MultiNodeSpec, role: string, typeName: string,
 ): ShardCoordinator | null {
   const sys = spec.systemFor(role);
-  const refOpt = sys._resolvePath(['user', `sharding-coordinator-${typeName}`]);
-  if (refOpt.isNone()) return null;
-  const internal = refOpt.value as unknown as { getCell?: () => { actor?: ShardCoordinator } };
+  const refOption = sys._resolvePath(['user', `sharding-coordinator-${typeName}`]);
+  if (refOption.isNone()) return null;
+  const internal = refOption.value as unknown as { getCell?: () => { actor?: ShardCoordinator } };
   return internal.getCell?.().actor ?? null;
 }
 

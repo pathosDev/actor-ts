@@ -9,9 +9,9 @@ import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
 export const scenario: BrokerScenario<MqttContext> = {
   name: 'retained messages survive subscription gap',
-  async run(ctx) {
+  async run(context) {
     const tag = `b3/retained-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const { ref: publisher } = spawnMqtt(ctx);
+    const { ref: publisher } = spawnMqtt(context);
     try {
       // Publish retained BEFORE any subscriber exists.  The broker
       // should hold it for the next matching subscription.
@@ -27,21 +27,21 @@ export const scenario: BrokerScenario<MqttContext> = {
       await new Promise((r) => setTimeout(r, 300));
 
       // Now spawn a late subscriber.
-      const { ref: subscriber } = spawnMqtt(ctx);
-      const { ref: inboxRef, inbox } = spawnInbox(ctx);
+      const { ref: subscriber } = spawnMqtt(context);
+      const { ref: inboxRef, inbox } = spawnInbox(context);
       try {
         subscriber.tell({ kind: 'subscribe', topic: tag, target: inboxRef, qos: 1 });
         await waitFor(`retained message delivered on ${tag}`,
           () => inbox.received.some((m) => m.topic === tag),
           5_000,
         );
-        const msg = inbox.received.find((m) => m.topic === tag)!;
-        if (msg.payload.text() !== 'retained-value') {
-          throw new Error(`retained payload mismatch: got ${msg.payload.text()}`);
+        const message = inbox.received.find((m) => m.topic === tag)!;
+        if (message.payload.text() !== 'retained-value') {
+          throw new Error(`retained payload mismatch: got ${message.payload.text()}`);
         }
         // The retain flag must be true on inbound for retained.
-        if (msg.retain !== true) {
-          throw new Error(`retain flag lost on inbound: ${msg.retain}`);
+        if (message.retain !== true) {
+          throw new Error(`retain flag lost on inbound: ${message.retain}`);
         }
       } finally {
         subscriber.stop();

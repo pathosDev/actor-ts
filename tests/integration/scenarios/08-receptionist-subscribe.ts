@@ -37,26 +37,26 @@ interface SubscribedResponse {
 }
 
 async function subscribed(host: string, controlPort: number): Promise<SubscribedResponse> {
-  const res = await fetch(`http://${host}:${controlPort}/test/receptionist/subscribed`);
-  if (!res.ok) throw new Error(`/test/receptionist/subscribed on ${host} → ${res.status}`);
-  return await res.json() as SubscribedResponse;
+  const response = await fetch(`http://${host}:${controlPort}/test/receptionist/subscribed`);
+  if (!response.ok) throw new Error(`/test/receptionist/subscribed on ${host} → ${response.status}`);
+  return await response.json() as SubscribedResponse;
 }
 
 async function registerExtra(host: string, controlPort: number): Promise<void> {
-  const res = await fetch(`http://${host}:${controlPort}/test/receptionist/register-extra`, { method: 'POST' });
-  if (!res.ok) throw new Error(`/test/receptionist/register-extra on ${host} → ${res.status}`);
+  const response = await fetch(`http://${host}:${controlPort}/test/receptionist/register-extra`, { method: 'POST' });
+  if (!response.ok) throw new Error(`/test/receptionist/register-extra on ${host} → ${response.status}`);
 }
 
 async function deregisterExtra(host: string, controlPort: number): Promise<void> {
-  const res = await fetch(`http://${host}:${controlPort}/test/receptionist/deregister-extra`, { method: 'POST' });
-  if (!res.ok) throw new Error(`/test/receptionist/deregister-extra on ${host} → ${res.status}`);
+  const response = await fetch(`http://${host}:${controlPort}/test/receptionist/deregister-extra`, { method: 'POST' });
+  if (!response.ok) throw new Error(`/test/receptionist/deregister-extra on ${host} → ${response.status}`);
 }
 
 
 export const scenario: Scenario = {
   name: '08-receptionist-subscribe',
-  async run(ctx) {
-    const live = await clusterLiveNodes(ctx.nodes, ctx.controlPort);
+  async run(context) {
+    const live = await clusterLiveNodes(context.nodes, context.controlPort);
     if (live.length < 2) {
       console.log(`[08] skipping — need >=2 live nodes for cross-node Subscribe propagation, have ${live.length}`);
       return;
@@ -69,7 +69,7 @@ export const scenario: Scenario = {
     await Promise.all(live.map(async (host) => {
       await waitFor(
         `${host} subscriber sees ${live.length} workers`,
-        async () => (await subscribed(host, ctx.controlPort)).count === live.length,
+        async () => (await subscribed(host, context.controlPort)).count === live.length,
         15_000,
         300,
       );
@@ -79,7 +79,7 @@ export const scenario: Scenario = {
     // verify it monotonically increases on each change.
     const baseline = new Map<string, number>();
     for (const host of live) {
-      const subscription = await subscribed(host, ctx.controlPort);
+      const subscription = await subscribed(host, context.controlPort);
       baseline.set(host, subscription.updates);
     }
     console.log(`[08] baseline updates per subscriber: ${[...baseline.entries()].map(([h, u]) => `${h}=${u}`).join(', ')}`);
@@ -91,11 +91,11 @@ export const scenario: Scenario = {
     const trigger = live[0]!;
     const expectedAfterAdd = live.length + 1;
     console.log(`[08] registering extra worker on ${trigger}, expecting every subscriber to see ${expectedAfterAdd}...`);
-    await registerExtra(trigger, ctx.controlPort);
+    await registerExtra(trigger, context.controlPort);
     await Promise.all(live.map(async (host) => {
       await waitFor(
         `${host} subscriber sees ${expectedAfterAdd}`,
-        async () => (await subscribed(host, ctx.controlPort)).count === expectedAfterAdd,
+        async () => (await subscribed(host, context.controlPort)).count === expectedAfterAdd,
         15_000,
         300,
       );
@@ -104,11 +104,11 @@ export const scenario: Scenario = {
 
     // 3. Deregister.  Count returns to baseline.
     console.log(`[08] deregistering extra worker on ${trigger}, expecting every subscriber back to ${live.length}...`);
-    await deregisterExtra(trigger, ctx.controlPort);
+    await deregisterExtra(trigger, context.controlPort);
     await Promise.all(live.map(async (host) => {
       await waitFor(
         `${host} subscriber back to ${live.length}`,
-        async () => (await subscribed(host, ctx.controlPort)).count === live.length,
+        async () => (await subscribed(host, context.controlPort)).count === live.length,
         15_000,
         300,
       );
@@ -119,7 +119,7 @@ export const scenario: Scenario = {
     //    deregister); could be more if gossip caused intermediate
     //    re-syncs.
     for (const host of live) {
-      const subscription = await subscribed(host, ctx.controlPort);
+      const subscription = await subscribed(host, context.controlPort);
       const base = baseline.get(host)!;
       if (subscription.updates <= base) {
         throw new Error(`[08] ${host} subscriber updates did not increase: baseline=${base}, now=${subscription.updates}`);

@@ -33,12 +33,12 @@ type Event = { delta: number };
 function makeCounterClass(policy: SnapshotPolicy<number, Event>): typeof PersistentActor<Command, Event, number> {
   return class Counter extends PersistentActor<Command, Event, number> {
     readonly persistenceId: string;
-    constructor(pid: string) { super(); this.persistenceId = pid; }
+    constructor(persistenceId: string) { super(); this.persistenceId = persistenceId; }
     initialState(): number { return 0; }
     onEvent(s: number, e: Event): number { return s + e.delta; }
     override snapshotPolicy(): SnapshotPolicy<number, Event> { return policy; }
-    async onCommand(s: number, cmd: Command): Promise<void> {
-      if (cmd.kind === 'increment') {
+    async onCommand(s: number, command: Command): Promise<void> {
+      if (command.kind === 'increment') {
         await this.persist({ delta: 1 }, () => {});
         return;
       }
@@ -75,9 +75,9 @@ async function main(): Promise<void> {
     ext.setJournal(journal);
     ext.setSnapshotStore(snapshots);
 
-    const pid = `counter-${pol.unit}`;
+    const persistenceId = `counter-${pol.unit}`;
     const Counter = makeCounterClass(pol.policy);
-    const props = Props.create(() => new Counter(pid));
+    const props = Props.create(() => new Counter(persistenceId));
     let ref = system.spawnAnonymous(props);
 
     // --- phase 1: write throughput ---
@@ -106,7 +106,7 @@ async function main(): Promise<void> {
         unit: 'recovery',
         iterations: 5,
         run: async () => {
-          const fresh = system.spawnAnonymous(Props.create(() => new Counter(pid)));
+          const fresh = system.spawnAnonymous(Props.create(() => new Counter(persistenceId)));
           // `get` returns the recovered state — blocks until replay finishes.
           await ask<Command, number>(fresh, { kind: 'get' }, 30_000);
           fresh.stop();

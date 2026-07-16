@@ -51,14 +51,14 @@ class FakeMqttClient implements MqttClientLike {
   readonly unsubscribes: string[] = [];
   readonly publishes: Array<{ topic: string; payload: string | Uint8Array; qos: number; retain: boolean }> = [];
 
-  private msgCbs: Array<(t: string, publish: Uint8Array, pk?: MqttInboundPacketLike) => void> = [];
+  private messageCbs: Array<(t: string, publish: Uint8Array, pk?: MqttInboundPacketLike) => void> = [];
   private closeCbs: Array<() => void> = [];
   private errCbs: Array<(e: Error) => void> = [];
   private connectCbs: Array<() => void> = [];
   private connectErrCbs: Array<(e: Error) => void> = [];
 
   on(event: 'message' | 'error' | 'close', cb: (...args: never[]) => void): void {
-    if (event === 'message') this.msgCbs.push(cb as never);
+    if (event === 'message') this.messageCbs.push(cb as never);
     else if (event === 'close') this.closeCbs.push(cb as never);
     else this.errCbs.push(cb as never);
   }
@@ -68,25 +68,25 @@ class FakeMqttClient implements MqttClientLike {
   }
   removeAllListeners(event?: string): void {
     if (event === 'error' || event === undefined) { this.errCbs = []; this.connectErrCbs = []; }
-    if (event === undefined) { this.msgCbs = []; this.closeCbs = []; this.connectCbs = []; }
+    if (event === undefined) { this.messageCbs = []; this.closeCbs = []; this.connectCbs = []; }
   }
-  publish(topic: string, payload: string | Uint8Array, opts: { qos: MqttQos; retain: boolean }, cb?: (err?: Error) => void): void {
-    this.publishes.push({ topic, payload, qos: opts.qos, retain: opts.retain });
+  publish(topic: string, payload: string | Uint8Array, options: { qos: MqttQos; retain: boolean }, cb?: (err?: Error) => void): void {
+    this.publishes.push({ topic, payload, qos: options.qos, retain: options.retain });
     cb?.();
   }
-  subscribe(topic: string, opts: { qos: MqttQos }, cb?: (err?: Error) => void): void {
-    this.subscribes.push({ topic, qos: opts.qos });
+  subscribe(topic: string, options: { qos: MqttQos }, cb?: (err?: Error) => void): void {
+    this.subscribes.push({ topic, qos: options.qos });
     cb?.();
   }
-  unsubscribe(topic: string, _opts: undefined, cb?: (err?: Error) => void): void {
+  unsubscribe(topic: string, _options: undefined, cb?: (err?: Error) => void): void {
     this.unsubscribes.push(topic);
     cb?.();
   }
-  end(_force?: boolean, _opts?: object, cb?: () => void): void { cb?.(); }
+  end(_force?: boolean, _options?: object, cb?: () => void): void { cb?.(); }
 
   fireConnect(): void { for (const cb of [...this.connectCbs]) cb(); }
   fireMessage(topic: string, payload: Uint8Array, packet?: MqttInboundPacketLike): void {
-    for (const cb of [...this.msgCbs]) cb(topic, payload, packet);
+    for (const cb of [...this.messageCbs]) cb(topic, payload, packet);
   }
   fireClose(): void { for (const cb of [...this.closeCbs]) cb(); }
 }
@@ -94,7 +94,7 @@ class FakeMqttClient implements MqttClientLike {
 class FakeMqttModule {
   readonly clients: FakeMqttClient[] = [];
   autoConnect = true;
-  connect(_url: string, _opts?: unknown): FakeMqttClient {
+  connect(_url: string, _options?: unknown): FakeMqttClient {
     const client = new FakeMqttClient();
     this.clients.push(client);
     if (this.autoConnect) setTimeout(() => client.fireConnect(), 0);
@@ -114,40 +114,40 @@ interface TestActorOpts<T> {
 class TestMqttActor<T = unknown, TSelf = never> extends MqttActor<T, TSelf> {
   readonly module: FakeMqttModule;
   readonly inbound: MqttMessage<T>[] = [];
-  readonly selfMsgs: TSelf[] = [];
-  readonly decodeErrors: Array<{ error: MqttDecodeError; msg: MqttMessage<T> }> = [];
+  readonly selfMessages: TSelf[] = [];
+  readonly decodeErrors: Array<{ error: MqttDecodeError; message: MqttMessage<T> }> = [];
   connectedCount = 0;
   disconnectedCount = 0;
 
-  constructor(opts: TestActorOpts<T> = {}) {
-    super(opts.options ?? MqttOptions.create());
-    this.module = opts.module ?? new FakeMqttModule();
-    for (const s of opts.ctorSubs ?? []) this.subscribe(s.topic, { qos: s.qos, target: s.target });
+  constructor(options: TestActorOpts<T> = {}) {
+    super(options.options ?? MqttOptions.create());
+    this.module = options.module ?? new FakeMqttModule();
+    for (const s of options.ctorSubs ?? []) this.subscribe(s.topic, { qos: s.qos, target: s.target });
   }
 
   protected override mqttModule(): Promise<MqttModuleLike> {
     return Promise.resolve(this.module as unknown as MqttModuleLike);
   }
 
-  override onMessage(msg: MqttMessage<T>): void {
+  override onMessage(message: MqttMessage<T>): void {
     // Touch entity() so a malformed payload surfaces to onInvalidMessage.
-    if (this.decodeOnReceive) msg.payload.entity();
-    this.inbound.push(msg);
+    if (this.decodeOnReceive) message.payload.entity();
+    this.inbound.push(message);
   }
   decodeOnReceive = false;
 
   protected override onConnected(): void { this.connectedCount++; }
   protected override onDisconnected(): void { this.disconnectedCount++; }
-  protected override onInvalidMessage(error: MqttDecodeError, msg: MqttMessage<T>): void {
-    this.decodeErrors.push({ error, msg });
+  protected override onInvalidMessage(error: MqttDecodeError, message: MqttMessage<T>): void {
+    this.decodeErrors.push({ error, message });
   }
-  protected override onSelfMessage(msg: TSelf): void { this.selfMsgs.push(msg); }
+  protected override onSelfMessage(message: TSelf): void { this.selfMessages.push(message); }
 
   // Public test wrappers for the protected API.
-  doSubscribe(topic: string, opts?: { qos?: MqttQos; target?: ActorRef<MqttMessage<T>> }): void { this.subscribe(topic, opts); }
-  doUnsubscribe(topic: string, opts?: { target?: ActorRef<MqttMessage<T>> }): void { this.unsubscribe(topic, opts); }
-  doPublish(topic: string, payload: unknown, opts?: { qos?: MqttQos; retain?: boolean }): boolean {
-    return (this.publish as (t: string, publish: unknown, o?: unknown) => boolean)(topic, payload, opts);
+  doSubscribe(topic: string, options?: { qos?: MqttQos; target?: ActorRef<MqttMessage<T>> }): void { this.subscribe(topic, options); }
+  doUnsubscribe(topic: string, options?: { target?: ActorRef<MqttMessage<T>> }): void { this.unsubscribe(topic, options); }
+  doPublish(topic: string, payload: unknown, options?: { qos?: MqttQos; retain?: boolean }): boolean {
+    return (this.publish as (t: string, publish: unknown, o?: unknown) => boolean)(topic, payload, options);
   }
   encodeEntity(value: unknown): Uint8Array { return this.codec().encode(value); }
   get resolvedOptions(): MqttOptionsType { return this.options; }
@@ -442,7 +442,7 @@ describe('MqttActor onSelfMessage', () => {
       ref.tell({ kind: 'tick', n: 7 });
       ref.tell({ kind: 'subscribe', topic: 's/#' });
       await sleep(20);
-      expect(actor.selfMsgs).toEqual([{ kind: 'tick', n: 7 }]);
+      expect(actor.selfMessages).toEqual([{ kind: 'tick', n: 7 }]);
       expect(actor.module.last().subscribes.map((s) => s.topic)).toContain('s/#');
     } finally {
       await sys.terminate();

@@ -346,7 +346,7 @@
       const $rcInput  = document.getElementById('room-create-input');
       const $users    = document.getElementById('users');
       const $usersCnt = document.getElementById('users-count');
-      const $msgs     = document.getElementById('messages');
+      const $messages     = document.getElementById('messages');
       const $typing   = document.getElementById('typing');
       const $compose  = document.getElementById('compose');
       const $cText    = document.getElementById('compose-text');
@@ -397,9 +397,9 @@
         state.ws = ws;
         ws.addEventListener('open', () => onOpen(ws));
         ws.addEventListener('message', (ev) => {
-          let msg;
-          try { msg = JSON.parse(ev.data); } catch { return; }
-          handleServer(msg);
+          let message;
+          try { message = JSON.parse(ev.data); } catch { return; }
+          handleServer(message);
         });
         ws.addEventListener('close', () => {
           state.ws = null;
@@ -447,20 +447,20 @@
       }
 
       /* ============== inbound dispatch ============== */
-      function handleServer(msg) {
-        switch (msg.kind) {
-          case 'logged-in':    return onLoggedIn(msg.username, msg.token);
-          case 'login-failed': return onLoginFailed(msg.reason);
-          case 'rooms':        return onRooms(msg.rooms);
-          case 'room-added':   return onRoomAdded(msg.name);
-          case 'room-removed': return onRoomRemoved(msg.name);
-          case 'history':      return onHistory(msg.room, msg.messages);
-          case 'message':      return onMessage(msg.room, { from: msg.from, text: msg.text, ts: msg.ts });
-          case 'users':        return onUsers(msg.room, msg.users);
-          case 'user-typing':  return onUserTyping(msg.room, msg.username);
-          case 'read-receipts': return onReadReceipts(msg.room, msg.receipts);
-          case 'system':       return onSystem(msg.text);
-          default: console.warn('unknown server msg', msg);
+      function handleServer(message) {
+        switch (message.kind) {
+          case 'logged-in':    return onLoggedIn(message.username, message.token);
+          case 'login-failed': return onLoginFailed(message.reason);
+          case 'rooms':        return onRooms(message.rooms);
+          case 'room-added':   return onRoomAdded(message.name);
+          case 'room-removed': return onRoomRemoved(message.name);
+          case 'history':      return onHistory(message.room, message.messages);
+          case 'message':      return onMessage(message.room, { from: message.from, text: message.text, ts: message.ts });
+          case 'users':        return onUsers(message.room, message.users);
+          case 'user-typing':  return onUserTyping(message.room, message.username);
+          case 'read-receipts': return onReadReceipts(message.room, message.receipts);
+          case 'system':       return onSystem(message.text);
+          default: console.warn('unknown server msg', message);
         }
       }
 
@@ -713,7 +713,7 @@
       }
 
       function renderMessages() {
-        $msgs.innerHTML = '';
+        $messages.innerHTML = '';
         const list = state.currentRoom
           ? (state.messagesByRoom.get(state.currentRoom) ?? [])
           : [];
@@ -754,9 +754,9 @@
               div.appendChild(span);
             }
           }
-          $msgs.appendChild(div);
+          $messages.appendChild(div);
         }
-        $msgs.scrollTop = $msgs.scrollHeight;
+        $messages.scrollTop = $messages.scrollHeight;
       }
 
       function renderTyping() {

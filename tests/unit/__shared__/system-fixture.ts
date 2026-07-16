@@ -40,13 +40,13 @@ export interface SystemFixtureOptions {
  */
 export function systemFixture(
   systemName: string,
-  opts: SystemFixtureOptions = {},
+  options: SystemFixtureOptions = {},
 ): () => ActorSystem {
   let sys: ActorSystem | null = null;
   beforeAll(() => {
     const sysOptions = ActorSystemOptions.create()
-      .withLogger(opts.logger ?? new NoopLogger())
-      .withLogLevel(opts.logLevel ?? LogLevel.Off);
+      .withLogger(options.logger ?? new NoopLogger())
+      .withLogLevel(options.logLevel ?? LogLevel.Off);
     sys = ActorSystem.create(systemName, sysOptions);
   });
   afterAll(async () => {
@@ -68,13 +68,13 @@ export function systemFixture(
  */
 export function testKitFixture(
   systemName: string,
-  opts: SystemFixtureOptions = {},
+  options: SystemFixtureOptions = {},
 ): () => TestKit {
   let kit: TestKit | null = null;
   beforeAll(() => {
     const kitOptions = TestKitOptions.create()
-      .withLogger(opts.logger ?? new NoopLogger())
-      .withLogLevel(opts.logLevel ?? LogLevel.Off);
+      .withLogger(options.logger ?? new NoopLogger())
+      .withLogLevel(options.logLevel ?? LogLevel.Off);
     kit = TestKit.create(systemName, kitOptions);
   });
   afterAll(async () => {

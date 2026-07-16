@@ -14,16 +14,16 @@ import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
 async function declareQueue(url: string, queue: string): Promise<void> {
   const amqp = await import('amqplib');
-  const conn = await amqp.connect(url);
+  const connection = await amqp.connect(url);
   try {
-    const ch = await conn.createChannel();
+    const ch = await connection.createChannel();
     try {
       await ch.assertQueue(queue, { durable: false, autoDelete: true });
     } finally {
       await ch.close();
     }
   } finally {
-    await conn.close();
+    await connection.close();
   }
 }
 
@@ -48,14 +48,14 @@ class AcknowledgmentOnSecondTry extends Actor<AmqpDelivery> {
 
 export const scenario: BrokerScenario<AmqpContext> = {
   name: 'manual ack + nack-requeue triggers re-delivery',
-  async run(ctx) {
+  async run(context) {
     const tag = `b5-ack-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const queue = `${tag}-queue`;
-    await declareQueue(ctx.url, queue);
+    await declareQueue(context.url, queue);
 
     const handler = new AcknowledgmentOnSecondTry();
-    const inboxRef = ctx.system.spawnAnonymous(Props.create(() => handler));
-    const amqp = spawnAmqp(ctx, {
+    const inboxRef = context.system.spawnAnonymous(Props.create(() => handler));
+    const amqp = spawnAmqp(context, {
       autoAcknowledge: false,
       bindings: [{
         queue,

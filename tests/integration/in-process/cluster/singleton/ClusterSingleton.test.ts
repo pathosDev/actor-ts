@@ -90,7 +90,7 @@ describe('ClusterSingleton — single node', () => {
       .withProps(Props.create(() => new Echo()));
     const handle = kit.system.extension(ClusterSingletonId).start(nodeA.cluster, singletonOptions);
 
-    for (const msg of ['a', 'b', 'c']) handle.proxy.tell(msg);
+    for (const message of ['a', 'b', 'c']) handle.proxy.tell(message);
     expect(await probe.expectMessage('a', 500)).toBe('a');
     expect(await probe.expectMessage('b', 500)).toBe('b');
     expect(await probe.expectMessage('c', 500)).toBe('c');
@@ -108,11 +108,11 @@ describe('ClusterSingleton — two nodes', () => {
       nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2,
     );
 
-    const received: Array<{ where: 'a' | 'b'; msg: string }> = [];
+    const received: Array<{ where: 'a' | 'b'; message: string }> = [];
 
     class Echo extends Actor<string> {
       constructor(private readonly where: 'a' | 'b') { super(); }
-      override onReceive(m: string): void { received.push({ where: this.where, msg: m }); }
+      override onReceive(m: string): void { received.push({ where: this.where, message: m }); }
     }
 
     const aSingletonOptions = StartSingletonOptions.create<string>()
@@ -127,18 +127,18 @@ describe('ClusterSingleton — two nodes', () => {
     await sleep(150);
 
     // Whichever node is leader is the one actually running the child.
-    const leaderOpt = nodeA.cluster.leader();
-    if (leaderOpt.isNone()) throw new Error('no leader elected');
-    const leaderAddr = leaderOpt.value.address;
+    const leaderOption = nodeA.cluster.leader();
+    if (leaderOption.isNone()) throw new Error('no leader elected');
+    const leaderAddr = leaderOption.value.address;
     const hostedOnA = leaderAddr.equals(nodeA.cluster.selfAddress);
 
     // Tell via the follower's proxy — it must arrive at the leader's child.
     (hostedOnA ? bHandle.proxy : aHandle.proxy).tell('via-follower');
-    await waitFor(() => received.some(r => r.msg === 'via-follower'), 1_500);
+    await waitFor(() => received.some(r => r.message === 'via-follower'), 1_500);
 
     // Tell via the leader's proxy — arrives at the same child.
     (hostedOnA ? aHandle.proxy : bHandle.proxy).tell('via-leader');
-    await waitFor(() => received.some(r => r.msg === 'via-leader'), 1_500);
+    await waitFor(() => received.some(r => r.message === 'via-leader'), 1_500);
 
     // Both messages must have been received by the same node (the leader).
     const hosts = new Set(received.map(r => r.where));
@@ -224,11 +224,11 @@ describe('ClusterSingleton — two nodes', () => {
     // listener throws via `try/catch` + `log.warn`, so we route it
     // through the system's logger to detect.
     const origWarn = nodeB.system.log.warn.bind(nodeB.system.log);
-    nodeB.system.log.warn = ((msg: string, err?: unknown): void => {
-      if (typeof msg === 'string' && msg.includes('listener threw')) {
+    nodeB.system.log.warn = ((message: string, err?: unknown): void => {
+      if (typeof message === 'string' && message.includes('listener threw')) {
         errors.push(err as Error);
       }
-      origWarn(msg, err);
+      origWarn(message, err);
     }) as typeof nodeB.system.log.warn;
 
     const bSingletonOptions = StartSingletonOptions.create<string>()

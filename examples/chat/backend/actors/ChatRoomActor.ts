@@ -178,12 +178,12 @@ export class ChatRoomActor extends PersistentActor<ChatRoomCommand, ChatEvent, C
     return { history: trimmed };
   }
 
-  async onCommand(state: ChatState, cmd: ChatRoomCommand): Promise<void> {
-    if (cmd.kind === 'SendMessage') {
+  async onCommand(state: ChatState, command: ChatRoomCommand): Promise<void> {
+    if (command.kind === 'SendMessage') {
       const event: ChatEvent = {
         kind: 'MessagePosted',
-        from: cmd.from,
-        text: cmd.text,
+        from: command.from,
+        text: command.text,
         ts: Date.now(),
       };
       await this.persist(event, () => {
@@ -206,9 +206,9 @@ export class ChatRoomActor extends PersistentActor<ChatRoomCommand, ChatEvent, C
       return;
     }
 
-    if (cmd.kind === 'GetHistory') {
-      const messages = state.history.slice(-Math.max(1, cmd.limit));
-      cmd.replyTo.tell({ kind: 'HistoryReply', room: this.roomName, messages });
+    if (command.kind === 'GetHistory') {
+      const messages = state.history.slice(-Math.max(1, command.limit));
+      command.replyTo.tell({ kind: 'HistoryReply', room: this.roomName, messages });
       return;
     }
   }

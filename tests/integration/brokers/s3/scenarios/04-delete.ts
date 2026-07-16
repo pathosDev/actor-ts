@@ -9,8 +9,8 @@ import type { BrokerScenario } from '../../lib/scenario.js';
 
 export const scenario: BrokerScenario<S3Context> = {
   name: 'delete is idempotent + GET-after-DELETE returns None',
-  async run(ctx) {
-    const store = backend(ctx);
+  async run(context) {
+    const store = backend(context);
     try {
       const tag = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const key = `b2/delete-${tag}.bin`;

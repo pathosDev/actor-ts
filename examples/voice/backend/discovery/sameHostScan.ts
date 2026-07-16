@@ -71,17 +71,17 @@ export class SameHostScanSeedProvider implements SeedProvider {
  * Throws when every slot is occupied (rare, but possible if the
  * user spawned more nodes than `maxSlots`).
  */
-export async function pickFirstFreePort(opts: {
+export async function pickFirstFreePort(options: {
   host: string;
   basePort: number;
   maxSlots: number;
 }): Promise<number> {
-  for (let i = 0; i < opts.maxSlots; i++) {
-    const candidate = opts.basePort + i;
-    if (await isPortFree(opts.host, candidate)) return candidate;
+  for (let i = 0; i < options.maxSlots; i++) {
+    const candidate = options.basePort + i;
+    if (await isPortFree(options.host, candidate)) return candidate;
   }
   throw new Error(
-    `all ${opts.maxSlots} cluster-port slots starting at ${opts.basePort} are in use`,
+    `all ${options.maxSlots} cluster-port slots starting at ${options.basePort} are in use`,
   );
 }
 

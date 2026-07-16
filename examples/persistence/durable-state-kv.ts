@@ -23,8 +23,8 @@ type DumpCommand = { kind: 'dump' };
 type Command = SetCommand | GetCommand | DumpCommand;
 
 class KVStore extends DurableStateActor<Command, KV> {
-  override async onCommand(cmd: Command): Promise<void> {
-    await match(cmd)
+  override async onCommand(command: Command): Promise<void> {
+    await match(command)
       .with({ kind: 'set' }, (c) => this.onSet(c))
       .with({ kind: 'get' }, (c) => this.onGet(c))
       .with({ kind: 'dump' }, () => this.onDump())

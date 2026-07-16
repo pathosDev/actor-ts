@@ -71,11 +71,11 @@ describe('exportPrometheus — histograms', () => {
     expect(text).toContain('latency_count 3');
     // Order: bucket(le=0.1), bucket(le=1), bucket(le=+Inf), sum, count.
     const lines = text.split('\n');
-    const bIdx = lines.findIndex((l) => l.startsWith('latency_bucket{le="+Inf"}'));
-    const sIdx = lines.findIndex((l) => l.startsWith('latency_sum'));
-    const cIdx = lines.findIndex((l) => l.startsWith('latency_count'));
-    expect(bIdx).toBeLessThan(sIdx);
-    expect(sIdx).toBeLessThan(cIdx);
+    const bIndex = lines.findIndex((l) => l.startsWith('latency_bucket{le="+Inf"}'));
+    const sIndex = lines.findIndex((l) => l.startsWith('latency_sum'));
+    const cIndex = lines.findIndex((l) => l.startsWith('latency_count'));
+    expect(bIndex).toBeLessThan(sIndex);
+    expect(sIndex).toBeLessThan(cIndex);
   });
 });
 
@@ -96,10 +96,10 @@ describe('prometheusHandler', () => {
     const registry = new DefaultMetricsRegistry();
     registry.counter('reqs_total', { route: '/api' }).inc(42);
     const handler = prometheusHandler(registry);
-    const res = handler(new Request('http://localhost/metrics'));
-    expect(res.status).toBe(200);
-    expect(res.headers.get('Content-Type')?.startsWith('text/plain')).toBe(true);
-    const body = await res.text();
+    const response = handler(new Request('http://localhost/metrics'));
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Type')?.startsWith('text/plain')).toBe(true);
+    const body = await response.text();
     expect(body).toContain('reqs_total{route="/api"} 42');
   });
 });

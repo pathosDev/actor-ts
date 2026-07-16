@@ -73,15 +73,15 @@ class WatchSensorHandler extends Actor<GrpcServerStreamCall> {
 }
 
 class ReplyCollector extends Actor<GrpcInbound> {
-  override onReceive(msg: GrpcInbound): void {
-    if (msg.kind === 'reply') {
-      console.log('[client] unary reply:', msg.response);
-    } else if (msg.kind === 'stream-data') {
-      console.log('[client] stream chunk:', msg.chunk);
-    } else if (msg.kind === 'stream-end') {
+  override onReceive(message: GrpcInbound): void {
+    if (message.kind === 'reply') {
+      console.log('[client] unary reply:', message.response);
+    } else if (message.kind === 'stream-data') {
+      console.log('[client] stream chunk:', message.chunk);
+    } else if (message.kind === 'stream-end') {
       console.log('[client] stream complete');
-    } else if (msg.kind === 'rpc-error' || msg.kind === 'stream-error') {
-      console.error('[client] error:', msg.error.message);
+    } else if (message.kind === 'rpc-error' || message.kind === 'stream-error') {
+      console.error('[client] error:', message.error.message);
     }
   }
 }

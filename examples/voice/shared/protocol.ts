@@ -156,8 +156,8 @@ export type ServerMessage =
 /* Encoding helpers                                                 */
 /* ============================================================== */
 
-export function encodeServer(msg: ServerMessage): string {
-  return JSON.stringify(msg);
+export function encodeServer(message: ServerMessage): string {
+  return JSON.stringify(message);
 }
 
 export function decodeClient(raw: string): ClientMessage | null {

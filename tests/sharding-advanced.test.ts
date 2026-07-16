@@ -40,7 +40,7 @@ interface NodeContext<TMessage> {
 }
 
 /** Minimal cluster node with a configured sharding region. */
-async function startNode<TMessage>(opts: {
+async function startNode<TMessage>(options: {
   systemName: string;
   host: string;
   port: number;
@@ -51,17 +51,17 @@ async function startNode<TMessage>(opts: {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
-  const system = ActorSystem.create(opts.systemName, sysOptions);
+  const system = ActorSystem.create(options.systemName, sysOptions);
   const clusterOptions = ClusterOptions.create()
-    .withHost(opts.host)
-    .withPort(opts.port)
-    .withSeeds(opts.seeds ?? [])
-    .withTransport(new InMemoryTransport(new NodeAddress(opts.systemName, opts.host, opts.port)))
+    .withHost(options.host)
+    .withPort(options.port)
+    .withSeeds(options.seeds ?? [])
+    .withTransport(new InMemoryTransport(new NodeAddress(options.systemName, options.host, options.port)))
     .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
     .withGossipIntervalMs(80);
-  if (opts.roles !== undefined) clusterOptions.withRoles(opts.roles);
+  if (options.roles !== undefined) clusterOptions.withRoles(options.roles);
   const cluster = await Cluster.join(system, clusterOptions);
-  const region = opts.sharding(cluster.sharding);
+  const region = options.sharding(cluster.sharding);
   return { system, cluster, region };
 }
 
@@ -141,9 +141,9 @@ test('Role filter: entities only land on members with the matching role', async 
   const seen = new Map<string, Map<string, number>>();
   function countingEntity(node: string) {
     return class extends Actor<CounterCommand> {
-      override onReceive(cmd: CounterCommand): void {
+      override onReceive(command: CounterCommand): void {
         const perNode = seen.get(node) ?? new Map();
-        perNode.set(cmd.id, (perNode.get(cmd.id) ?? 0) + 1);
+        perNode.set(command.id, (perNode.get(command.id) ?? 0) + 1);
         seen.set(node, perNode);
       }
     };
@@ -153,7 +153,7 @@ test('Role filter: entities only land on members with the matching role', async 
     const startShardingOptions = StartShardingOptions.create<CounterCommand>()
       .withTypeName('counter')
       .withEntityProps(Props.create(() => new (countingEntity(name))()))
-      .withExtractEntityId(msg => msg.id)
+      .withExtractEntityId(message => message.id)
       .withNumShards(8)
       .withRole('backend');
     return activeSet.start<CounterCommand>(
@@ -235,8 +235,8 @@ test('Passivation stops idle entity and buffers next message until re-create', a
   class Entity extends Actor<{ id: string; op: 'work' | 'sleep' }> {
     override preStart(): void { created++; }
     override postStop(): void { stopped++; }
-    override onReceive(msg: { id: string; op: 'work' | 'sleep' }): void {
-      if (msg.op === 'sleep') {
+    override onReceive(message: { id: string; op: 'work' | 'sleep' }): void {
+      if (message.op === 'sleep') {
         // Ask the region to passivate us. We tell it to use PoisonPill
         // as the stop message so that we terminate cleanly when it arrives.
         this.context.parent.forEach((p) => p.tell(

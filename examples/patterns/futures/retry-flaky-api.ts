@@ -32,11 +32,11 @@ async function flakyRemoteCall(): Promise<{ userId: number }> {
 }
 
 class UserHandler extends Actor<Success<{ userId: number }> | Failure> {
-  override onReceive(msg: Success<{ userId: number }> | Failure): void {
-    if (msg instanceof Success) {
-      console.log(`received user ${msg.value.userId} after ${attempts} attempts`);
+  override onReceive(message: Success<{ userId: number }> | Failure): void {
+    if (message instanceof Success) {
+      console.log(`received user ${message.value.userId} after ${attempts} attempts`);
     } else {
-      console.log(`gave up: ${msg.cause.name}: ${msg.cause.message}`);
+      console.log(`gave up: ${message.cause.name}: ${message.cause.message}`);
     }
   }
 }

@@ -45,7 +45,7 @@ async function main(): Promise<void> {
     .withKeepN(2);
   const durableStateOptions = MariaDbDurableStateStoreOptions.create()
     .withPoolConfig(poolConfig);
-  const ctx: SqlPersistenceContext = {
+  const context: SqlPersistenceContext = {
     env: process.env,
     label: 'mariadb',
     journal: new MariaDbJournal(journalOptions),
@@ -53,7 +53,7 @@ async function main(): Promise<void> {
     durableState: new MariaDbDurableStateStore(durableStateOptions),
   };
 
-  await runScenarios(sqlPersistenceScenarios(), ctx);
+  await runScenarios(sqlPersistenceScenarios(), context);
 }
 
 main().catch((e) => {

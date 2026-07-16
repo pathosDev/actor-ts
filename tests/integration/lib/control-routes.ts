@@ -166,9 +166,9 @@ class ExtraWorker extends Actor<unknown> {
  */
 type SlowSinkMessage = { kind: 'process'; sleepMs: number };
 class SlowSink extends Actor<SlowSinkMessage> {
-  override async onReceive(msg: SlowSinkMessage): Promise<void> {
-    if (msg.sleepMs > 0) {
-      await new Promise<void>((r) => setTimeout(r, msg.sleepMs));
+  override async onReceive(message: SlowSinkMessage): Promise<void> {
+    if (message.sleepMs > 0) {
+      await new Promise<void>((r) => setTimeout(r, message.sleepMs));
     }
   }
 }

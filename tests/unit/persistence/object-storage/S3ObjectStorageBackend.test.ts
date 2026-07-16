@@ -29,7 +29,7 @@ class FakeS3Client {
   constructor(public readonly config: unknown) {
     fakeClientsConstructed.push(this);
   }
-  send: (cmd: { input: unknown }) => Promise<unknown> = async () => ({});
+  send: (command: { input: unknown }) => Promise<unknown> = async () => ({});
   destroy(): void { this.destroyed = true; }
   destroyed = false;
 }
@@ -112,11 +112,11 @@ describe('S3ObjectStorageBackend — endpoint + region + credentials pass-throug
     );
     await backend.list({ prefix: '' });
     expect(fakeClientsConstructed.length).toBe(1);
-    const cfg = fakeClientsConstructed[0]!.config as Record<string, unknown>;
-    expect(cfg.region).toBe('auto');
-    expect(cfg.endpoint).toBe('https://acct.r2.cloudflarestorage.com');
-    expect(cfg.forcePathStyle).toBe(true);
-    expect(cfg.credentials).toEqual(creds);
+    const config = fakeClientsConstructed[0]!.config as Record<string, unknown>;
+    expect(config.region).toBe('auto');
+    expect(config.endpoint).toBe('https://acct.r2.cloudflarestorage.com');
+    expect(config.forcePathStyle).toBe(true);
+    expect(config.credentials).toEqual(creds);
   });
 
   test('omitting endpoint / credentials passes undefined (SDK default chain)', async () => {
@@ -125,11 +125,11 @@ describe('S3ObjectStorageBackend — endpoint + region + credentials pass-throug
       .withRegion('us-west-2');
     const backend = new S3ObjectStorageBackend(s3Options);
     await backend.list({ prefix: '' });
-    const cfg = fakeClientsConstructed[0]!.config as Record<string, unknown>;
-    expect(cfg.region).toBe('us-west-2');
-    expect(cfg.endpoint).toBeUndefined();
-    expect(cfg.forcePathStyle).toBeUndefined();
-    expect(cfg.credentials).toBeUndefined();
+    const config = fakeClientsConstructed[0]!.config as Record<string, unknown>;
+    expect(config.region).toBe('us-west-2');
+    expect(config.endpoint).toBeUndefined();
+    expect(config.forcePathStyle).toBeUndefined();
+    expect(config.credentials).toBeUndefined();
   });
 });
 
@@ -137,7 +137,7 @@ describe('S3ObjectStorageBackend — put: SSE / KMS option translation', () => {
   test('sse: "AES256" sets ServerSideEncryption=AES256, no KMS key', async () => {
     let captured: unknown;
     const backend = new S3ObjectStorageBackend(s3OptsWithClient(
-      { send: async (cmd: { input: unknown }) => { captured = cmd.input; return { ETag: '"e"' }; } },
+      { send: async (command: { input: unknown }) => { captured = command.input; return { ETag: '"e"' }; } },
     ));
     await backend.put('k', new Uint8Array([0]), { sse: 'AES256' });
     const input = captured as Record<string, unknown>;
@@ -148,7 +148,7 @@ describe('S3ObjectStorageBackend — put: SSE / KMS option translation', () => {
   test('sse: { kmsKeyId } sets ServerSideEncryption=aws:kms + SSEKMSKeyId', async () => {
     let captured: unknown;
     const backend = new S3ObjectStorageBackend(s3OptsWithClient(
-      { send: async (cmd: { input: unknown }) => { captured = cmd.input; return { ETag: '"e"' }; } },
+      { send: async (command: { input: unknown }) => { captured = command.input; return { ETag: '"e"' }; } },
     ));
     await backend.put('k', new Uint8Array([0]), { sse: { kmsKeyId: 'arn:aws:kms:us-east-1:111:key/abc' } });
     const input = captured as Record<string, unknown>;
@@ -159,7 +159,7 @@ describe('S3ObjectStorageBackend — put: SSE / KMS option translation', () => {
   test('no sse option leaves ServerSideEncryption / SSEKMSKeyId undefined', async () => {
     let captured: unknown;
     const backend = new S3ObjectStorageBackend(s3OptsWithClient(
-      { send: async (cmd: { input: unknown }) => { captured = cmd.input; return { ETag: '"e"' }; } },
+      { send: async (command: { input: unknown }) => { captured = command.input; return { ETag: '"e"' }; } },
     ));
     await backend.put('k', new Uint8Array([0]));
     const input = captured as Record<string, unknown>;
@@ -170,7 +170,7 @@ describe('S3ObjectStorageBackend — put: SSE / KMS option translation', () => {
   test('forwards contentType + contentEncoding + ifMatch + ifNoneMatch', async () => {
     let captured: unknown;
     const backend = new S3ObjectStorageBackend(s3OptsWithClient(
-      { send: async (cmd: { input: unknown }) => { captured = cmd.input; return { ETag: '"e"' }; } },
+      { send: async (command: { input: unknown }) => { captured = command.input; return { ETag: '"e"' }; } },
     ));
     await backend.put('k', new Uint8Array([0]), {
       contentType: 'application/json',
@@ -380,8 +380,8 @@ describe('S3ObjectStorageBackend — list pagination', () => {
     let call = 0;
     const seenTokens: Array<string | undefined> = [];
     const backend = new S3ObjectStorageBackend(s3OptsWithClient(
-      { send: async (cmd: { input: unknown }) => {
-        seenTokens.push((cmd.input as { ContinuationToken?: string }).ContinuationToken);
+      { send: async (command: { input: unknown }) => {
+        seenTokens.push((command.input as { ContinuationToken?: string }).ContinuationToken);
         return pages[call++];
       } },
     ));
@@ -409,8 +409,8 @@ describe('S3ObjectStorageBackend — list pagination', () => {
   test('caps MaxKeys at 1000 per page', async () => {
     let captured: Record<string, unknown> | undefined;
     const backend = new S3ObjectStorageBackend(s3OptsWithClient(
-      { send: async (cmd: { input: unknown }) => {
-        captured = cmd.input as Record<string, unknown>;
+      { send: async (command: { input: unknown }) => {
+        captured = command.input as Record<string, unknown>;
         return { Contents: [], IsTruncated: false };
       } },
     ));

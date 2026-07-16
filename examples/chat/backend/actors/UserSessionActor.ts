@@ -196,8 +196,8 @@ export class UserSessionActor extends Actor<SessionMessage> {
     try { this.deps.connection.close(); } catch { /* already closed */ }
   }
 
-  override onReceive(msg: SessionMessage): void {
-    match(msg)
+  override onReceive(message: SessionMessage): void {
+    match(message)
       .with({ kind: 'text' }, (m) => this.onText(m))
       .with({ kind: 'binary' }, () => this.onBinary())
       .with({ kind: 'socket-closed' }, () => this.onSocketClosed())
@@ -226,21 +226,21 @@ export class UserSessionActor extends Actor<SessionMessage> {
 
   private onText(m: TextFrame): void {
     const raw = m.data;
-    const cmd = decodeClient(raw);
-    if (!cmd) {
+    const command = decodeClient(raw);
+    if (!command) {
       this.sendServer({ kind: 'system', text: 'Invalid frame — JSON expected.' });
       return;
     }
     if (this.phase === 'Unauthenticated') {
-      this.handleUnauthenticated(cmd);
+      this.handleUnauthenticated(command);
       return;
     }
-    this.handleAuthenticated(cmd);
+    this.handleAuthenticated(command);
   }
 
-  private handleUnauthenticated(cmd: ClientMessage): void {
-    if (cmd.kind === 'login') {
-      const user = validateCredentials(cmd.username, cmd.password);
+  private handleUnauthenticated(command: ClientMessage): void {
+    if (command.kind === 'login') {
+      const user = validateCredentials(command.username, command.password);
       if (!user) {
         this.sendServer({ kind: 'login-failed', reason: 'Invalid username or password' });
         this.context.stopSelf();
@@ -251,8 +251,8 @@ export class UserSessionActor extends Actor<SessionMessage> {
       return;
     }
 
-    if (cmd.kind === 'resume') {
-      const username = this.deps.sessions.lookupToken(cmd.token);
+    if (command.kind === 'resume') {
+      const username = this.deps.sessions.lookupToken(command.token);
       if (!username) {
         // Unknown / expired / revoked token — tell the client so it
         // can clear its stored token and fall back to the credentials
@@ -262,7 +262,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
         return;
       }
       // Reuse the same token — keep the client's storage stable.
-      this.activate(username, cmd.token);
+      this.activate(username, command.token);
       return;
     }
 
@@ -317,8 +317,8 @@ export class UserSessionActor extends Actor<SessionMessage> {
     this.currentRoom = DEFAULT_ROOMS[0]!;
   }
 
-  private handleAuthenticated(cmd: ClientMessage): void {
-    match(cmd)
+  private handleAuthenticated(command: ClientMessage): void {
+    match(command)
       .with({ kind: 'login' }, () => this.onLogin())
       .with({ kind: 'resume' }, () => this.onResume())
       .with({ kind: 'logout' }, () => this.onLogout())
@@ -459,31 +459,31 @@ export class UserSessionActor extends Actor<SessionMessage> {
     /* keepalive — no-op server-side */
   }
 
-  private onRoomBroadcast(msg: RoomBroadcast): void {
+  private onRoomBroadcast(message: RoomBroadcast): void {
     // Forward as ServerMessage to the client.  Subscribers of
     // multiple rooms need the room field to demux on their side.
     this.sendServer({
       kind: 'message',
-      room: msg.room,
-      from: msg.from,
-      text: msg.text,
-      ts: msg.ts,
+      room: message.room,
+      from: message.from,
+      text: message.text,
+      ts: message.ts,
     });
   }
 
-  private onHistoryReply(msg: HistoryReply): void {
+  private onHistoryReply(message: HistoryReply): void {
     this.sendServer({
       kind: 'history',
-      room: msg.room,
-      messages: msg.messages,
+      room: message.room,
+      messages: message.messages,
     });
   }
 
-  private onUsersChanged(msg: UsersChanged): void {
+  private onUsersChanged(message: UsersChanged): void {
     this.sendServer({
       kind: 'users',
-      room: msg.room,
-      users: msg.users,
+      room: message.room,
+      users: message.users,
     });
   }
 
@@ -531,16 +531,16 @@ export class UserSessionActor extends Actor<SessionMessage> {
     mediator.tell(new Publish(chatRoomTopic(room), broadcast));
   }
 
-  private onTypingBroadcast(msg: TypingBroadcast): void {
+  private onTypingBroadcast(message: TypingBroadcast): void {
     // Filter self-echoes — for real rooms, this actor subscribes to
     // the same topic it publishes on, so it sees its own typing
     // broadcasts.  Drop them so the client doesn't render "you are
     // typing".
-    if (msg.from === this.username) return;
+    if (message.from === this.username) return;
     this.sendServer({
       kind: 'user-typing',
-      room: msg.room,
-      username: msg.from,
+      room: message.room,
+      username: message.from,
     });
   }
 
@@ -588,15 +588,15 @@ export class UserSessionActor extends Actor<SessionMessage> {
    *  rooms we translate the pair-id-keyed DD entry back into the
    *  client's view (`@<other>`) so the frontend doesn't need to
    *  know about pair-ids. */
-  private onReceiptsChanged(msg: ReceiptsChanged): void {
+  private onReceiptsChanged(message: ReceiptsChanged): void {
     const me = this.username;
     if (!me) return;
-    let displayRoom: RoomName | null = msg.room;
-    if (msg.room.includes('|')) {
+    let displayRoom: RoomName | null = message.room;
+    if (message.room.includes('|')) {
       // Pair-id form — map to the recipient's `@<other>` virtual room.
-      const idx = msg.room.indexOf('|');
-      const first = msg.room.slice(0, idx);
-      const second = msg.room.slice(idx + 1);
+      const index = message.room.indexOf('|');
+      const first = message.room.slice(0, index);
+      const second = message.room.slice(index + 1);
       const other = me === first ? second : me === second ? first : null;
       if (!other) return;
       displayRoom = directMessageRoomFor(other);
@@ -604,7 +604,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
     this.sendServer({
       kind: 'read-receipts',
       room: displayRoom,
-      receipts: msg.receipts,
+      receipts: message.receipts,
     });
   }
 
@@ -649,76 +649,76 @@ export class UserSessionActor extends Actor<SessionMessage> {
     }
   }
 
-  private onDirectMessageBroadcast(msg: DirectMessageBroadcast): void {
+  private onDirectMessageBroadcast(message: DirectMessageBroadcast): void {
     // The "room" from this client's perspective is the OTHER party.
     // Both sides receive the same broadcast — each maps to its own
     // virtual `@<other>` room.
     const me = this.username;
     if (!me) return;
-    const other = msg.from === me ? msg.to : msg.from;
+    const other = message.from === me ? message.to : message.from;
     this.sendServer({
       kind: 'message',
       room: directMessageRoomFor(other),
-      from: msg.from,
-      text: msg.text,
-      ts: msg.ts,
+      from: message.from,
+      text: message.text,
+      ts: message.ts,
     });
   }
 
-  private onDirectMessageHistoryReply(msg: DirectMessageHistoryReply): void {
+  private onDirectMessageHistoryReply(message: DirectMessageHistoryReply): void {
     // Map the pair-id back to "the other party" so the client can
     // file the history under the right `@<other>` room.
     const me = this.username;
     if (!me) return;
     // Pair-id is `min|max` of two usernames; remove ours to find the
     // other.  No regex parse needed — string split on `|`.
-    const idx = msg.pairId.indexOf('|');
-    if (idx <= 0) return;
-    const first = msg.pairId.slice(0, idx);
-    const second = msg.pairId.slice(idx + 1);
+    const index = message.pairId.indexOf('|');
+    if (index <= 0) return;
+    const first = message.pairId.slice(0, index);
+    const second = message.pairId.slice(index + 1);
     const other = me === first ? second : me === second ? first : null;
     if (!other) return;
     this.sendServer({
       kind: 'history',
       room: directMessageRoomFor(other),
-      messages: msg.messages,
+      messages: message.messages,
     });
   }
 
   /* ---------------------------- directory ---------------------------- */
 
-  private onRoomsChanged(msg: RoomsChanged): void {
-    this.knownRooms = msg.rooms;
+  private onRoomsChanged(message: RoomsChanged): void {
+    this.knownRooms = message.rooms;
     // Always forward the full set so the client can deterministically
     // replace its local list — handles both the initial replay on
     // subscribe and concurrent updates from other clients.
-    this.sendServer({ kind: 'rooms', rooms: msg.rooms });
+    this.sendServer({ kind: 'rooms', rooms: message.rooms });
   }
 
-  private onRoomAdded(msg: RoomAdded): void {
+  private onRoomAdded(message: RoomAdded): void {
     // RoomsChanged carries the full set; RoomAdded is the per-name
     // notification frontends use to render toast-style "new room"
     // notices without diffing two lists themselves.
-    this.sendServer({ kind: 'room-added', name: msg.name });
+    this.sendServer({ kind: 'room-added', name: message.name });
   }
 
-  private onRoomRemoved(msg: RoomRemoved): void {
-    this.sendServer({ kind: 'room-removed', name: msg.name });
+  private onRoomRemoved(message: RoomRemoved): void {
+    this.sendServer({ kind: 'room-removed', name: message.name });
     // If we were subscribed to this room, leave it — otherwise we'd
     // keep broadcasting `send` frames into a room the client can no
     // longer see in its UI.  Best-effort: the directory's `Create`
     // is the only mutator today, so this path only fires once we
     // ship deletion (currently out of scope, but wired).
-    if (this.joinedRooms.has(msg.name)) {
-      this.leaveRoom(msg.name);
+    if (this.joinedRooms.has(message.name)) {
+      this.leaveRoom(message.name);
     }
   }
 
   /* ---------------------------- outgoing ----------------------------- */
 
-  private sendServer(msg: ServerMessage): void {
+  private sendServer(message: ServerMessage): void {
     try {
-      this.deps.connection.sendText(encodeServer(msg));
+      this.deps.connection.sendText(encodeServer(message));
     } catch (e) {
       this.log.warn(`UserSession: send failed: ${(e as Error).message}`);
     }

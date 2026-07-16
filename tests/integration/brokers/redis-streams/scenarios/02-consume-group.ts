@@ -9,18 +9,18 @@ import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
 export const scenario: BrokerScenario<RedisContext> = {
   name: 'XREADGROUP — consumer group delivers entries to target',
-  async run(ctx) {
+  async run(context) {
     const tag = `b7:stream:${Date.now()}:${Math.random().toString(36).slice(2)}`;
     const groupName = `g-${Math.random().toString(36).slice(2)}`;
     const consumerName = `c-${Math.random().toString(36).slice(2)}`;
 
-    const { ref: inboxRef, inbox } = spawnInbox(ctx);
-    const consumer = spawnRedis(ctx, {
+    const { ref: inboxRef, inbox } = spawnInbox(context);
+    const consumer = spawnRedis(context, {
       streams: [tag],
       consumerGroup: { group: groupName, consumer: consumerName },
       target: inboxRef,
     });
-    const producer = spawnRedis(ctx);
+    const producer = spawnRedis(context);
     try {
       // Let the consumer attach + create the group (XGROUP CREATE).
       await new Promise((r) => setTimeout(r, 500));

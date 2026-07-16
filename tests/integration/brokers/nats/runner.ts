@@ -42,7 +42,7 @@ async function main(): Promise<void> {
     .withLogger(new JsonLogger()).withLogLevel(LogLevel.Info));
   process.on('SIGTERM', () => { void system.terminate(); });
 
-  const ctx: NatsContext = { env: process.env, servers, system };
+  const context: NatsContext = { env: process.env, servers, system };
 
   try {
     const scenarios: BrokerScenario<NatsContext>[] = [
@@ -50,26 +50,26 @@ async function main(): Promise<void> {
       wildcardScenario,
       multiSubScenario,
     ];
-    await runScenarios(scenarios, ctx);
+    await runScenarios(scenarios, context);
   } finally {
     await system.terminate();
   }
 }
 
-export function spawnNats(ctx: NatsContext): ReturnType<ActorSystem['spawnAnonymous']> {
+export function spawnNats(context: NatsContext): ReturnType<ActorSystem['spawnAnonymous']> {
   const actor = new NatsActor(
     NatsOptions.create()
-      .withServers([...ctx.servers])
+      .withServers([...context.servers])
       .withName(`actor-ts-${Date.now()}-${Math.random().toString(36).slice(2)}`),
   );
-  return ctx.system.spawnAnonymous(Props.create(() => actor));
+  return context.system.spawnAnonymous(Props.create(() => actor));
 }
 
-export function spawnInbox(ctx: NatsContext): {
+export function spawnInbox(context: NatsContext): {
   ref: ReturnType<ActorSystem['spawnAnonymous']>; inbox: InboxActor;
 } {
   const inbox = new InboxActor();
-  const ref = ctx.system.spawnAnonymous(Props.create(() => inbox));
+  const ref = context.system.spawnAnonymous(Props.create(() => inbox));
   return { ref, inbox };
 }
 

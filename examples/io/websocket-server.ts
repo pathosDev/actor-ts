@@ -38,8 +38,8 @@ type ServerMessage =
 class ChatRoom extends WebsocketServerActor<ServerMessage, ClientMessage> {
   private readonly names = new Map<string, string>();
 
-  override onMessage(msg: ClientMessage): void {
-    match(msg)
+  override onMessage(message: ClientMessage): void {
+    match(message)
       .with({ kind: 'setName' }, (m) => this.onSetName(m))
       .with({ kind: 'say' }, (m) => this.onSay(m))
       .exhaustive();

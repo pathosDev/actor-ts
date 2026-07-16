@@ -70,10 +70,10 @@ function findCoordinator(
   const sys = spec.systemFor(role);
   // Coordinator lives at /user/sharding-coordinator-{typeName}
   const seg = `sharding-coordinator-${typeName}`;
-  const refOpt = sys._resolvePath(['user', seg]);
-  if (refOpt.isNone()) return null;
+  const refOption = sys._resolvePath(['user', seg]);
+  if (refOption.isNone()) return null;
   // Internal hop: the LocalActorRef's cell holds the actor instance.
-  const ref = refOpt.value as unknown as { getCell?: () => { actor?: ShardCoordinator } };
+  const ref = refOption.value as unknown as { getCell?: () => { actor?: ShardCoordinator } };
   const actor = ref.getCell?.().actor;
   return actor ?? null;
 }

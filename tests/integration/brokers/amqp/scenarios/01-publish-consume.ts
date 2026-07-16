@@ -13,31 +13,31 @@ import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
  */
 async function declareQueue(url: string, queue: string): Promise<void> {
   const amqp = await import('amqplib');
-  const conn = await amqp.connect(url);
+  const connection = await amqp.connect(url);
   try {
-    const ch = await conn.createChannel();
+    const ch = await connection.createChannel();
     try {
       await ch.assertQueue(queue, { durable: false, autoDelete: true });
     } finally {
       await ch.close();
     }
   } finally {
-    await conn.close();
+    await connection.close();
   }
 }
 
 export const scenario: BrokerScenario<AmqpContext> = {
   name: 'publish/consume round-trip (default exchange + queue binding)',
-  async run(ctx) {
+  async run(context) {
     const tag = `b5-pubsub-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const queue = `${tag}-queue`;
 
     // 1. Declare the queue out-of-band so the binding exists when
     //    the actor connects.
-    await declareQueue(ctx.url, queue);
+    await declareQueue(context.url, queue);
 
-    const { ref: inboxRef, inbox } = spawnInbox(ctx);
-    const amqp = spawnAmqp(ctx, {
+    const { ref: inboxRef, inbox } = spawnInbox(context);
+    const amqp = spawnAmqp(context, {
       bindings: [{
         queue,
         target: inboxRef as never,

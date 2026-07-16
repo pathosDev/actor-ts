@@ -59,15 +59,15 @@ async function main(): Promise<void> {
     handleErrors(
       (err) => (err instanceof HttpError ? completeJson(err.status, { error: err.message }) : null),
       concat(
-        get((req) => completeHtml(Status.OK, html`
+        get((request) => completeHtml(Status.OK, html`
           <h1>secure-service</h1>
-          <p>Your CSRF token: <code>${readCsrfToken(req) ?? '(none)'}</code></p>
+          <p>Your CSRF token: <code>${readCsrfToken(request) ?? '(none)'}</code></p>
         `)),
-        path('api', path('echo', post((req) => {
-          const body = entity<{ readonly msg: string }>(req);
+        path('api', path('echo', post((request) => {
+          const body = entity<{ readonly msg: string }>(request);
           return completeJson(Status.OK, { echo: body.msg });
         }))),
-        fallback((req) => completeJson(Status.NotFound, { error: 'no such route', path: req.path })),
+        fallback((request) => completeJson(Status.NotFound, { error: 'no such route', path: request.path })),
       ),
     ))))));
 

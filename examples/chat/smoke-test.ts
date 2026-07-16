@@ -41,7 +41,7 @@ interface ServerMessage { kind: string; [k: string]: unknown }
 class ChatClient {
   readonly ws: WebSocket;
   readonly received: ServerMessage[] = [];
-  readonly waitingFor: Array<{ pred: (m: ServerMessage) => boolean; res: (m: ServerMessage) => void }> = [];
+  readonly waitingFor: Array<{ pred: (m: ServerMessage) => boolean; resolve: (m: ServerMessage) => void }> = [];
 
   constructor(url: string) {
     this.ws = new WebSocket(url);
@@ -51,7 +51,7 @@ class ChatClient {
       for (let i = this.waitingFor.length - 1; i >= 0; i--) {
         const waiter = this.waitingFor[i]!;
         if (waiter.pred(message)) {
-          waiter.res(message);
+          waiter.resolve(message);
           this.waitingFor.splice(i, 1);
         }
       }
@@ -59,24 +59,24 @@ class ChatClient {
   }
 
   open(): Promise<void> {
-    return new Promise((res, rej) => {
-      this.ws.addEventListener('open', () => res());
-      this.ws.addEventListener('error', () => rej(new Error('connect error')));
+    return new Promise((resolve, reject) => {
+      this.ws.addEventListener('open', () => resolve());
+      this.ws.addEventListener('error', () => reject(new Error('connect error')));
     });
   }
 
-  send(msg: object): void {
-    this.ws.send(JSON.stringify(msg));
+  send(message: object): void {
+    this.ws.send(JSON.stringify(message));
   }
 
   await(pred: (m: ServerMessage) => boolean, timeoutMs = 3000): Promise<ServerMessage> {
     const existing = this.received.find(pred);
     if (existing) return Promise.resolve(existing);
-    return new Promise((res, rej) => {
-      const timer = setTimeout(() => rej(new Error('timeout waiting for predicate')), timeoutMs);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('timeout waiting for predicate')), timeoutMs);
       this.waitingFor.push({
         pred,
-        res: (m) => { clearTimeout(timer); res(m); },
+        resolve: (m) => { clearTimeout(timer); resolve(m); },
       });
     });
   }
@@ -86,25 +86,25 @@ class ChatClient {
   }
 }
 
-function fail(msg: string): never {
-  console.error('✗', msg);
+function fail(message: string): never {
+  console.error('✗', message);
   process.exit(1);
 }
-function ok(msg: string): void { console.log('✔', msg); }
+function ok(message: string): void { console.log('✔', message); }
 
 /** Wait until `pred` has matched `n` distinct received messages. */
 function waitForCount(c: ChatClient, pred: (m: ServerMessage) => boolean, n: number, timeoutMs: number): Promise<void> {
   let already = c.received.filter(pred).length;
   if (already >= n) return Promise.resolve();
-  return new Promise((res, rej) => {
-    const timer = setTimeout(() => rej(new Error(`count timeout (got ${already}/${n})`)), timeoutMs);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`count timeout (got ${already}/${n})`)), timeoutMs);
     const onMessage = (ev: MessageEvent): void => {
       const message = JSON.parse(ev.data as string) as ServerMessage;
       if (pred(message)) already++;
       if (already >= n) {
         clearTimeout(timer);
         c.ws.removeEventListener('message', onMessage as EventListener);
-        res();
+        resolve();
       }
     };
     c.ws.addEventListener('message', onMessage as EventListener);

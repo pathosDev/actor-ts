@@ -27,16 +27,16 @@ interface ScenarioState {
   readonly probesByTopic: Map<string, TestProbe>;
 }
 
-function getState(ctx: ScenarioContext): ScenarioState {
-  return ctx.state.scenario as ScenarioState;
+function getState(context: ScenarioContext): ScenarioState {
+  return context.state.scenario as ScenarioState;
 }
 
-export const setup: ScenarioModule['setup'] = async (ctx) => {
-  const pubsub = ctx.system.extension(DistributedPubSubId);
+export const setup: ScenarioModule['setup'] = async (context) => {
+  const pubsub = context.system.extension(DistributedPubSubId);
   const pubsubOptions = DistributedPubSubOptions.create()
     .withGossipIntervalMs(100);
-  const mediator = pubsub.start(ctx.cluster, pubsubOptions);
-  ctx.state.scenario = {
+  const mediator = pubsub.start(context.cluster, pubsubOptions);
+  context.state.scenario = {
     mediator,
     probesByTopic: new Map<string, TestProbe>(),
   } satisfies ScenarioState;
@@ -45,28 +45,28 @@ export const setup: ScenarioModule['setup'] = async (ctx) => {
 export const commands: ScenarioModule['commands'] = {
   /** Subscribe a fresh probe to `topic`.  Returns when the
    *  Subscribe message has been enqueued. */
-  subscribe(args, ctx): void {
+  subscribe(args, context): void {
     const { topic } = args as SubscribeArguments;
-    const state = getState(ctx);
+    const state = getState(context);
     const probeOptions = TestProbeOptions.create()
       .withName(`probe-${topic}`);
-    const probe = new TestProbe(ctx.system, probeOptions);
+    const probe = new TestProbe(context.system, probeOptions);
     state.probesByTopic.set(topic, probe);
     state.mediator.tell(new Subscribe(topic, probe) as never);
   },
 
   /** Publish a message on `topic`. */
-  publish(args, ctx): void {
+  publish(args, context): void {
     const { topic, message } = args as PublishArguments;
-    const state = getState(ctx);
+    const state = getState(context);
     state.mediator.tell(new Publish(topic, message) as never);
   },
 
   /** Drain every received message from `topic`'s probe.  Returns the
    *  list of messages collected so far + clears the inbox. */
-  async drain(args, ctx): Promise<unknown[]> {
+  async drain(args, context): Promise<unknown[]> {
     const { topic } = args as DrainArguments;
-    const state = getState(ctx);
+    const state = getState(context);
     const probe = state.probesByTopic.get(topic);
     if (!probe) return [];
     const out: unknown[] = [];
@@ -77,9 +77,9 @@ export const commands: ScenarioModule['commands'] = {
   },
 
   /** How many messages are currently buffered for `topic`. */
-  buffered(args, ctx): number {
+  buffered(args, context): number {
     const { topic } = args as { topic: string };
-    const state = getState(ctx);
+    const state = getState(context);
     return state.probesByTopic.get(topic)?.messageCount ?? 0;
   },
 };

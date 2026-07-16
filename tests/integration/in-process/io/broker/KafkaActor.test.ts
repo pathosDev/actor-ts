@@ -46,7 +46,7 @@ class MockConsumer implements KafkaConsumerLike {
   readonly committed: Array<{ topic: string; partition: number; offset: string }> = [];
   /** Each `eachMessage` invocation's resolution — `null` while still pending. */
   readonly inflight: Array<{
-    msg: MockMessage; promise: Promise<void>;
+    message: MockMessage; promise: Promise<void>;
     resolved: boolean; rejected: boolean; rejectError?: Error;
     /** Number of times the captured heartbeat() callback has fired. */
     heartbeats: number;
@@ -82,7 +82,7 @@ class MockConsumer implements KafkaConsumerLike {
   push(topic: string, partition: number, offset: string): typeof this.inflight[number] {
     if (!this.eachMessage) throw new Error('mock consumer: run() not called yet');
     const tracker = {
-      msg: { topic, partition, offset },
+      message: { topic, partition, offset },
       promise: Promise.resolve() as Promise<void>,
       resolved: false,
       rejected: false,

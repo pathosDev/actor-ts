@@ -16,8 +16,8 @@ class Pinger extends Actor<PingPong> {
   private remaining = 5;
   constructor(private readonly target: () => import('../src/index.js').ActorRef<PingPong>) { super(); }
 
-  override onReceive(msg: PingPong): void {
-    match(msg)
+  override onReceive(message: PingPong): void {
+    match(message)
       .with({ kind: 'start' }, () => this.onStart())
       .with({ kind: 'pong' }, (m) => this.onPong(m))
       .with({ kind: 'ping' }, () => this.onPing())
@@ -38,8 +38,8 @@ class Pinger extends Actor<PingPong> {
 }
 
 class Ponger extends Actor<PingPong> {
-  override onReceive(msg: PingPong): void {
-    match(msg)
+  override onReceive(message: PingPong): void {
+    match(message)
       .with({ kind: 'ping' }, (m) => this.onPing(m))
       .otherwise(() => this.onUnhandled());
   }

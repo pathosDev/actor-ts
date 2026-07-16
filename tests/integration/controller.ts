@@ -12,7 +12,7 @@
  *   MGMT_TOKEN     — bearer token configured on every node
  *
  * Scenarios live in `./scenarios/*.ts`; each exports `name` and an
- * async `run(ctx)` function.  Adding a new scenario is a matter of
+ * async `run(context)` function.  Adding a new scenario is a matter of
  * dropping a new file in `scenarios/` and adding it to the list below.
  */
 
@@ -43,7 +43,7 @@ if (NODES.length === 0) {
   process.exit(2);
 }
 
-const ctx: ControllerContext = {
+const context: ControllerContext = {
   nodes: NODES,
   mgmtToken: MGMT_TOKEN,
   mgmtPort: MGMT_PORT,
@@ -54,7 +54,7 @@ const ctx: ControllerContext = {
 // stays at full membership), destructive scenarios (those that
 // remove members via `/test/leave` or `/cluster/down`) run last.
 // 05 onwards may not assume the original 5-node count — they
-// inspect `ctx.nodes` and degrade gracefully.
+// inspect `context.nodes` and degrade gracefully.
 const scenarios: Scenario[] = [
   membershipConvergence,
   splitBrain,
@@ -88,7 +88,7 @@ async function main(): Promise<void> {
         fetch(`http://${n}:${CONTROL_PORT}/test/clear`, { method: 'POST' })
           .catch((e) => console.warn(`[controller] pre-clear of ${n} failed: ${e.message}`)),
       ));
-      await s.run(ctx);
+      await s.run(context);
       console.log(`[controller] PASS ${s.name} (${Date.now() - startedAt}ms)\n`);
     } catch (e) {
       failed += 1;

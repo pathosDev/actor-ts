@@ -47,7 +47,7 @@ async function main(): Promise<void> {
     .withLogger(new JsonLogger()).withLogLevel(LogLevel.Info));
   process.on('SIGTERM', () => { void system.terminate(); });
 
-  const ctx: AmqpContext = { env: process.env, url, system };
+  const context: AmqpContext = { env: process.env, url, system };
 
   try {
     const scenarios: BrokerScenario<AmqpContext>[] = [
@@ -55,29 +55,29 @@ async function main(): Promise<void> {
       ackScenario,
       fanoutScenario,
     ];
-    await runScenarios(scenarios, ctx);
+    await runScenarios(scenarios, context);
   } finally {
     await system.terminate();
   }
 }
 
-export function spawnAmqp(ctx: AmqpContext, opts: {
+export function spawnAmqp(context: AmqpContext, options: {
   bindings?: ReadonlyArray<AmqpQueueBinding>;
   autoAcknowledge?: boolean;
 } = {}): ReturnType<ActorSystem['spawnAnonymous']> {
   const builder = AmqpOptions.create()
-    .withUrl(ctx.url)
-    .withAutoAcknowledge(opts.autoAcknowledge ?? true);
-  if (opts.bindings) builder.withBindings(opts.bindings);
+    .withUrl(context.url)
+    .withAutoAcknowledge(options.autoAcknowledge ?? true);
+  if (options.bindings) builder.withBindings(options.bindings);
   const actor = new AmqpActor(builder);
-  return ctx.system.spawnAnonymous(Props.create(() => actor));
+  return context.system.spawnAnonymous(Props.create(() => actor));
 }
 
-export function spawnInbox(ctx: AmqpContext): {
+export function spawnInbox(context: AmqpContext): {
   ref: ReturnType<ActorSystem['spawnAnonymous']>; inbox: InboxActor;
 } {
   const inbox = new InboxActor();
-  const ref = ctx.system.spawnAnonymous(Props.create(() => inbox));
+  const ref = context.system.spawnAnonymous(Props.create(() => inbox));
   return { ref, inbox };
 }
 

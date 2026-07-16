@@ -19,14 +19,14 @@ type Command =
   | { kind: 'get'; key: string; replyTo: import('../../../../src/ActorRef.js').ActorRef };
 
 class KVActor extends DurableStateActor<Command, KV> {
-  override async onCommand(cmd: Command): Promise<void> {
-    if (cmd.kind === 'set') {
-      const next: KV = { map: { ...this.state.map, [cmd.key]: cmd.value } };
+  override async onCommand(command: Command): Promise<void> {
+    if (command.kind === 'set') {
+      const next: KV = { map: { ...this.state.map, [command.key]: command.value } };
       await this.persist(next);
-      cmd.replyTo.tell({ kind: 'ok', revision: this.revision } as never);
+      command.replyTo.tell({ kind: 'ok', revision: this.revision } as never);
       return;
     }
-    cmd.replyTo.tell({ kind: 'value', value: this.state.map[cmd.key] ?? null } as never);
+    command.replyTo.tell({ kind: 'value', value: this.state.map[command.key] ?? null } as never);
   }
 }
 

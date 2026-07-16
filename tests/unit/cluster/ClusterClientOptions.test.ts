@@ -7,9 +7,9 @@ import { OptionsError } from '../../../src/util/OptionsValidator.js';
 // so these assertions exercise the validator without spinning up a cluster.
 describe('ClusterClientOptions validation', () => {
   test('rejects empty contactPoints', () => {
-    const opts = ClusterClientOptions.create().withContactPoints([]);
-    expect(() => new ClusterClient(opts)).toThrow(OptionsError);
-    expect(() => new ClusterClient(opts)).toThrow(/contactPoints must contain at least one entry/);
+    const options = ClusterClientOptions.create().withContactPoints([]);
+    expect(() => new ClusterClient(options)).toThrow(OptionsError);
+    expect(() => new ClusterClient(options)).toThrow(/contactPoints must contain at least one entry/);
   });
 
   test('rejects missing contactPoints (plain object)', () => {
@@ -17,16 +17,16 @@ describe('ClusterClientOptions validation', () => {
   });
 
   test('rejects a non-positive askTimeoutMs', () => {
-    const opts = ClusterClientOptions.create()
+    const options = ClusterClientOptions.create()
       .withContactPoints(['sys@127.0.0.1:2551'])
       .withAskTimeoutMs(0);
-    expect(() => new ClusterClient(opts)).toThrow(OptionsError);
+    expect(() => new ClusterClient(options)).toThrow(OptionsError);
   });
 
   test('accepts a valid configuration', () => {
-    const opts = ClusterClientOptions.create()
+    const options = ClusterClientOptions.create()
       .withContactPoints(['sys@127.0.0.1:2551'])
       .withAskTimeoutMs(3_000);
-    expect(() => new ClusterClient(opts)).not.toThrow();
+    expect(() => new ClusterClient(options)).not.toThrow();
   });
 });

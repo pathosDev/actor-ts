@@ -32,9 +32,9 @@ export interface PongMessage {
 
 export class EchoActor extends Actor<PingMessage> {
   constructor(private readonly nodeName: string) { super(); }
-  override onReceive(msg: PingMessage): void {
-    if (msg.kind === 'ping' && msg.replyTo) {
-      msg.replyTo.tell({
+  override onReceive(message: PingMessage): void {
+    if (message.kind === 'ping' && message.replyTo) {
+      message.replyTo.tell({
         kind: 'pong',
         nodeName: this.nodeName,
         receivedAt: Date.now(),

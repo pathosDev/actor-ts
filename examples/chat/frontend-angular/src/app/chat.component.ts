@@ -254,14 +254,14 @@ export class ChatComponent {
     return new Date(ts).toLocaleTimeString();
   }
 
-  /** Render-side receipt info for an own message at `msgTs`.  Returns
+  /** Render-side receipt info for an own message at `messageTs`.  Returns
    *  the symbol (✓ / ✓✓), tooltip text, and the list of readers used
    *  for the `.read` class binding. */
-  protected receiptFor(msgTs: number): { symbol: string; title: string; readers: string[] } {
+  protected receiptFor(messageTs: number): { symbol: string; title: string; readers: string[] } {
     const me = this.chat.username();
     const all = this.chat.currentReceipts();
     const readers = Object.entries(all)
-      .filter(([u, t]) => u !== me && typeof t === 'number' && t >= msgTs)
+      .filter(([u, t]) => u !== me && typeof t === 'number' && t >= messageTs)
       .map(([u]) => u);
     return readers.length === 0
       ? { symbol: '✓', title: 'sent', readers }

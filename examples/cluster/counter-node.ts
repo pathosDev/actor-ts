@@ -37,8 +37,8 @@ class CounterEntity extends Actor<Command> {
     this.log.info(`entity ${this.self.path.name} stopped (count was ${this.count})`);
   }
 
-  override onReceive(cmd: Command): void {
-    switch (cmd.op) {
+  override onReceive(command: Command): void {
+    switch (command.op) {
       case 'increment':
         this.count++;
         this.log.info(`${this.self.path.name} = ${this.count}`);
@@ -93,7 +93,7 @@ async function main(): Promise<void> {
 
   const region = cluster.sharding.start('counter', CounterEntity,
     StartShardingOptions.create<Command>()
-      .withExtractEntityId((msg) => msg.id)
+      .withExtractEntityId((message) => message.id)
       .withNumShards(16));
 
   // Self-driven traffic so the demo shows movement without a second client.

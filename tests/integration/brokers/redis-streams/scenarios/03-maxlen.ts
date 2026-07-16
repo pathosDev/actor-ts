@@ -8,9 +8,9 @@ import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
 export const scenario: BrokerScenario<RedisContext> = {
   name: 'MAXLEN ~ N caps stream length',
-  async run(ctx) {
+  async run(context) {
     const tag = `b7:maxlen:${Date.now()}:${Math.random().toString(36).slice(2)}`;
-    const producer = spawnRedis(ctx);
+    const producer = spawnRedis(context);
     try {
       await new Promise((r) => setTimeout(r, 200));
 
@@ -33,7 +33,7 @@ export const scenario: BrokerScenario<RedisContext> = {
       const Redis = (ioredis as { default?: typeof ioredis.default }).default ?? ioredis;
       const client = new (Redis as unknown as new (url: string) => {
         xlen(s: string): Promise<number>; quit(): Promise<unknown>;
-      })(ctx.url);
+      })(context.url);
       try {
         await waitFor('stream length stays within MAXLEN ~ approximation',
           async () => {

@@ -45,99 +45,99 @@ async function startServer(routes: Route): Promise<{ url: string; system: ActorS
 describe('HonoBackend — plain routes', () => {
   test('GET returns the body and status', async () => {
     const { url } = await startServer(get(() => complete(Status.OK, 'hello')));
-    const res = await fetch(`${url}/`);
-    expect(res.status).toBe(200);
-    expect(await res.text()).toBe('hello');
+    const response = await fetch(`${url}/`);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('hello');
   });
 
   test('404 on unknown path', async () => {
     const { url } = await startServer(path('known', get(() => complete(Status.OK, ''))));
-    const res = await fetch(`${url}/missing`);
-    expect(res.status).toBe(404);
+    const response = await fetch(`${url}/missing`);
+    expect(response.status).toBe(404);
   });
 
   test('JSON body encodes correctly', async () => {
     const { url } = await startServer(get(() => completeJson(Status.OK, { a: 1, b: 'two' })));
-    const res = await fetch(`${url}/`);
-    expect(res.headers.get('content-type')).toContain('application/json');
-    expect(await res.json()).toEqual({ a: 1, b: 'two' });
+    const response = await fetch(`${url}/`);
+    expect(response.headers.get('content-type')).toContain('application/json');
+    expect(await response.json()).toEqual({ a: 1, b: 'two' });
   });
 
   test('entity() decodes a JSON POST body', async () => {
-    const { url } = await startServer(path('echo', post(async (req) => {
-      const body = entity<{ who: string }>(req);
+    const { url } = await startServer(path('echo', post(async (request) => {
+      const body = entity<{ who: string }>(request);
       return completeJson(Status.OK, { hi: body.who });
     })));
-    const res = await fetch(`${url}/echo`, {
+    const response = await fetch(`${url}/echo`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ who: 'world' }),
     });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ hi: 'world' });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ hi: 'world' });
   });
 
-  test('path parameters are exposed on req.params', async () => {
-    const { url } = await startServer(path('users/:id', get(req => completeJson(Status.OK, { id: req.params.id }))));
-    const res = await fetch(`${url}/users/42`);
-    expect(await res.json()).toEqual({ id: '42' });
+  test('path parameters are exposed on request.params', async () => {
+    const { url } = await startServer(path('users/:id', get(request => completeJson(Status.OK, { id: request.params.id }))));
+    const response = await fetch(`${url}/users/42`);
+    expect(await response.json()).toEqual({ id: '42' });
   });
 
   test('HttpError is turned into the right status', async () => {
     const { url } = await startServer(path('fail', get(() => {
       throw new HttpError(Status.BadRequest, 'bad-request', { detail: 'x' });
     })));
-    const res = await fetch(`${url}/fail`);
-    expect(res.status).toBe(400);
-    const body = await res.json() as { error: string; detail?: string };
+    const response = await fetch(`${url}/fail`);
+    expect(response.status).toBe(400);
+    const body = await response.json() as { error: string; detail?: string };
     expect(body.error).toBe('bad-request');
     expect(body.detail).toBe('x');
   });
 
   test('generic thrown errors become 500', async () => {
     const { url } = await startServer(path('boom', get(() => { throw new Error('kaboom'); })));
-    const res = await fetch(`${url}/boom`);
-    expect(res.status).toBe(500);
+    const response = await fetch(`${url}/boom`);
+    expect(response.status).toBe(500);
   });
 
-  test('query parameters are exposed on req.query', async () => {
-    const { url } = await startServer(path('search', get(req =>
-      completeJson(Status.OK, { q: req.query.q ?? null }),
+  test('query parameters are exposed on request.query', async () => {
+    const { url } = await startServer(path('search', get(request =>
+      completeJson(Status.OK, { q: request.query.q ?? null }),
     )));
-    const res = await fetch(`${url}/search?q=hello`);
-    expect(await res.json()).toEqual({ q: 'hello' });
+    const response = await fetch(`${url}/search?q=hello`);
+    expect(await response.json()).toEqual({ q: 'hello' });
   });
 
   test('PUT round-trips raw bytes', async () => {
-    const { url } = await startServer(path('raw', put(async (req) => {
-      const len = req.body?.byteLength ?? 0;
+    const { url } = await startServer(path('raw', put(async (request) => {
+      const len = request.body?.byteLength ?? 0;
       return completeJson(Status.OK, { len });
     })));
     const payload = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
-    const res = await fetch(`${url}/raw`, {
+    const response = await fetch(`${url}/raw`, {
       method: 'PUT',
       headers: { 'content-type': 'application/octet-stream' },
       body: payload,
     });
-    expect(await res.json()).toEqual({ len: 8 });
+    expect(await response.json()).toEqual({ len: 8 });
   });
 
   test('combined CRUD shape serves four routes under one prefix', async () => {
     const state: Record<string, string> = {};
     const routes = path('users', concat(
       get(() => completeJson(Status.OK, state)),
-      post(async (req) => {
-        const body = entity<{ id: string; name: string }>(req);
+      post(async (request) => {
+        const body = entity<{ id: string; name: string }>(request);
         state[body.id] = body.name;
         return completeJson(Status.Created, state);
       }),
       path(':id', concat(
-        get(req => {
-          const count = state[req.params.id];
-          return count ? completeJson(Status.OK, { id: req.params.id, name: count })
+        get(request => {
+          const count = state[request.params.id];
+          return count ? completeJson(Status.OK, { id: request.params.id, name: count })
                    : complete(Status.NotFound, 'not-found');
         }),
-        del(req => { delete state[req.params.id]; return complete(Status.NoContent); }),
+        del(request => { delete state[request.params.id]; return complete(Status.NoContent); }),
       )),
     ));
     const { url } = await startServer(routes);
@@ -164,14 +164,14 @@ describe('HonoBackend — plain routes', () => {
 });
 
 describe('HonoBackend — remoteAddress wiring (#312)', () => {
-  test('populates req.remoteAddress best-effort (Bun runtime, env.requestIP)', async () => {
+  test('populates request.remoteAddress best-effort (Bun runtime, env.requestIP)', async () => {
     let captured: string | undefined;
-    const { url } = await startServer(get((req) => {
-      captured = req.remoteAddress;
+    const { url } = await startServer(get((request) => {
+      captured = request.remoteAddress;
       return complete(Status.OK, 'ok');
     }));
     await fetch(`${url}/`);
-    // Hono on Bun: `c.env.requestIP(req.raw)` may or may not be
+    // Hono on Bun: `c.env.requestIP(request.raw)` may or may not be
     // populated depending on the adapter version.  When it IS,
     // we get an IP string; when it isn't, remoteAddress stays
     // undefined — which is correct fail-secure behaviour (the
@@ -201,9 +201,9 @@ describe('HonoBackend — custom handlers', () => {
       .bind(path('hi', get(() => complete(Status.OK, 'hi'))));
     bindings.push({ binding, system });
 
-    const res = await fetch(`http://127.0.0.1:${binding.port}/missing`);
-    expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ oops: true });
+    const response = await fetch(`http://127.0.0.1:${binding.port}/missing`);
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ oops: true });
   });
 
   test('setErrorHandler overrides the default 500 shape', async () => {
@@ -221,8 +221,8 @@ describe('HonoBackend — custom handlers', () => {
       .bind(path('boom', get(() => { throw new Error('x'); })));
     bindings.push({ binding, system });
 
-    const res = await fetch(`http://127.0.0.1:${binding.port}/boom`);
-    const body = await res.json() as { custom: boolean; name: string };
+    const response = await fetch(`http://127.0.0.1:${binding.port}/boom`);
+    const body = await response.json() as { custom: boolean; name: string };
     expect(body.custom).toBe(true);
     expect(body.name).toBe('Error');
   });
@@ -244,12 +244,12 @@ describe('HonoBackend — body size limit', () => {
     bindings.push({ binding, system });
 
     const big = new Uint8Array(64);
-    const res = await fetch(`http://127.0.0.1:${binding.port}/up`, {
+    const response = await fetch(`http://127.0.0.1:${binding.port}/up`, {
       method: 'POST',
       headers: { 'content-type': 'application/octet-stream' },
       body: big,
     });
-    expect(res.status).toBe(413);
+    expect(response.status).toBe(413);
   });
 
   // security audit HTTP-1: the oversize request must be rejected before
@@ -267,12 +267,12 @@ describe('HonoBackend — body size limit', () => {
       .bind(path('up', post(() => { called = true; return complete(Status.OK, 'ok'); })));
     bindings.push({ binding, system });
 
-    const res = await fetch(`http://127.0.0.1:${binding.port}/up`, {
+    const response = await fetch(`http://127.0.0.1:${binding.port}/up`, {
       method: 'POST',
       headers: { 'content-type': 'application/octet-stream' },
       body: new Uint8Array(64),
     });
-    expect(res.status).toBe(413);
+    expect(response.status).toBe(413);
     expect(called).toBe(false);
   });
 
@@ -285,16 +285,16 @@ describe('HonoBackend — body size limit', () => {
     const honoOptions = HonoBackendOptions.create().withMaxBodyBytes(16);
     const backend = new HonoBackend(honoOptions);
     const binding = await ext.newServerAt('127.0.0.1', 0).useBackend(backend)
-      .bind(path('up', post((req) => completeJson(Status.OK, { len: req.body?.byteLength ?? 0 }))));
+      .bind(path('up', post((request) => completeJson(Status.OK, { len: request.body?.byteLength ?? 0 }))));
     bindings.push({ binding, system });
 
-    const res = await fetch(`http://127.0.0.1:${binding.port}/up`, {
+    const response = await fetch(`http://127.0.0.1:${binding.port}/up`, {
       method: 'POST',
       headers: { 'content-type': 'application/octet-stream' },
       body: new Uint8Array(8),
     });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ len: 8 });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ len: 8 });
   });
 });
 
@@ -333,12 +333,12 @@ describe('HonoBackend — readBufferedAmount (WS-4 backpressure signal)', () => 
 
 describe('HttpExtension + HonoBackend — client round-trip', () => {
   test('HttpClient.post round-trips JSON through a Hono server', async () => {
-    const { url, system } = await startServer(path('echo', post(async (req) =>
-      completeJson(Status.OK, entity(req) as object),
+    const { url, system } = await startServer(path('echo', post(async (request) =>
+      completeJson(Status.OK, entity(request) as object),
     )));
     const client = system.extension(HttpExtensionId).client;
-    const res = await client.post(`${url}/echo`, { body: { hello: 'world' } });
-    expect(res.status).toBe(200);
-    expect(res.json()).toEqual({ hello: 'world' });
+    const response = await client.post(`${url}/echo`, { body: { hello: 'world' } });
+    expect(response.status).toBe(200);
+    expect(response.json()).toEqual({ hello: 'world' });
   });
 });

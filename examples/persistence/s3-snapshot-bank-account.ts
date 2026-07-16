@@ -73,16 +73,16 @@ class Account extends PersistentActor<Command, Event, State> {
   //   }
   // Marker just to silence the unused-import lint for the type below.
   protected _enc(): EncryptionConfig | undefined { return undefined; }
-  async onCommand(s: State, cmd: Command): Promise<void> {
-    await match(cmd)
+  async onCommand(s: State, command: Command): Promise<void> {
+    await match(command)
       .with({ kind: 'deposit', amount: P.number.gt(0) }, (c) => this.onDeposit(c))
       .with({ kind: 'withdraw' }, (c) => this.onWithdraw(s, c))
       .with({ kind: 'balance' }, () => this.onBalance(s))
       .otherwise(() => this.onUnhandled());
   }
 
-  private reply(msg: unknown): void {
-    this.sender.forEach((sender) => sender.tell(msg));
+  private reply(message: unknown): void {
+    this.sender.forEach((sender) => sender.tell(message));
   }
 
   private async onDeposit(c: DepositCommand): Promise<void> {

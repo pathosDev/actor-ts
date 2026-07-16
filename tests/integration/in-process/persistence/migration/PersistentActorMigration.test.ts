@@ -46,9 +46,9 @@ type State = StateV2;
 
 class Account extends PersistentActor<Command, Event, State> {
   readonly persistenceId: string;
-  constructor(pid: string, private readonly seen: unknown[]) {
+  constructor(persistenceId: string, private readonly seen: unknown[]) {
     super();
-    this.persistenceId = pid;
+    this.persistenceId = persistenceId;
   }
   initialState(): State { return { balance: 0, currency: 'USD' }; }
   onEvent(s: State, e: Event): State {
@@ -71,11 +71,11 @@ class Account extends PersistentActor<Command, Event, State> {
     });
   }
   override snapshotPolicy() { return everyNEvents<State, Event>(2); }
-  async onCommand(state: State, cmd: Command): Promise<void> {
-    if (cmd.kind === 'deposit') {
-      await this.persist({ kind: 'deposited', amount: cmd.amount, currency: 'EUR' },
+  async onCommand(state: State, command: Command): Promise<void> {
+    if (command.kind === 'deposit') {
+      await this.persist({ kind: 'deposited', amount: command.amount, currency: 'EUR' },
         (s) => this.seen.push({ balance: s.balance, currency: s.currency }));
-    } else if (cmd.kind === 'balance') {
+    } else if (command.kind === 'balance') {
       this.seen.push({ balance: state.balance, currency: state.currency });
     }
   }
@@ -255,7 +255,7 @@ describe('PersistentActor — MigrationChain non-additive', () => {
 
   class CentsAccount extends PersistentActor<Command, DepositedV3, ChainState> {
     readonly persistenceId: string;
-    constructor(pid: string, private readonly seen: unknown[]) { super(); this.persistenceId = pid; }
+    constructor(persistenceId: string, private readonly seen: unknown[]) { super(); this.persistenceId = persistenceId; }
     initialState(): ChainState { return { balanceCents: 0, currency: 'USD' }; }
     onEvent(s: ChainState, e: DepositedV3): ChainState {
       return { balanceCents: s.balanceCents + e.cents, currency: e.currency };
@@ -273,7 +273,7 @@ describe('PersistentActor — MigrationChain non-additive', () => {
         fromJournal: (s) => chain.upcast(s),
       };
     }
-    async onCommand(_state: ChainState, _cmd: Command): Promise<void> { /* not exercised */ }
+    async onCommand(_state: ChainState, _command: Command): Promise<void> { /* not exercised */ }
   }
 
   test('v1 → v2 → v3 chain converts amount to cents on recovery', async () => {
@@ -359,9 +359,9 @@ describe('PersistentActor — no-adapter regression', () => {
       initialState(): RawState { return { balance: 0 }; }
       onEvent(s: RawState, e: RawEvent): RawState { return { balance: s.balance + e.amount }; }
       override onRecoveryComplete(s: RawState): void { this.seen.push({ ready: s }); }
-      async onCommand(_s: RawState, cmd: Command): Promise<void> {
-        if (cmd.kind === 'deposit') {
-          await this.persist({ kind: 'deposited', amount: cmd.amount });
+      async onCommand(_s: RawState, command: Command): Promise<void> {
+        if (command.kind === 'deposit') {
+          await this.persist({ kind: 'deposited', amount: command.amount });
         }
       }
     }

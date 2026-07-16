@@ -2,7 +2,7 @@
  * Typed, subclass-first round-trip against a real broker:
  *
  *   - a subclass subscribes in its constructor (pending-flush path)
- *   - inbound payloads decode via `msg.payload.entity()`
+ *   - inbound payloads decode via `message.payload.entity()`
  *   - `publish(topic, entity)` encodes through the codec (JSON default)
  *   - `publish(topic, string)` still sends raw bytes
  *
@@ -36,28 +36,28 @@ class ReadingActor extends MqttActor<Reading, ReadingSelf> {
     this.subscribe(subTopic, { qos: 1 });
   }
 
-  override onMessage(msg: MqttMessage<Reading>): void {
-    this.received.push(msg);
+  override onMessage(message: MqttMessage<Reading>): void {
+    this.received.push(message);
   }
 
-  protected override onSelfMessage(msg: ReadingSelf): void {
-    if (msg.kind === 'send') this.publish(msg.topic, msg.reading, { qos: 1 });
-    else this.publish(msg.topic, msg.text, { qos: 1 });
+  protected override onSelfMessage(message: ReadingSelf): void {
+    if (message.kind === 'send') this.publish(message.topic, message.reading, { qos: 1 });
+    else this.publish(message.topic, message.text, { qos: 1 });
   }
 }
 
 export const scenario: BrokerScenario<MqttContext> = {
   name: 'typed entities — constructor subscribe, entity() decode, entity/raw publish',
-  async run(ctx) {
+  async run(context) {
     const tag = `b3/typed-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const subTopic = `${tag}/in`;
     const outTopic = `${tag}/out`;
     const rawTopic = `${tag}/raw`;
 
-    const reader = new ReadingActor(ctx.brokerUrl, `${tag}-reader`, subTopic);
-    const readerRef = ctx.system.spawnAnonymous(Props.create(() => reader));
-    const { ref: mqtt } = spawnMqtt(ctx);
-    const { ref: inboxRef, inbox } = spawnInbox(ctx);
+    const reader = new ReadingActor(context.brokerUrl, `${tag}-reader`, subTopic);
+    const readerRef = context.system.spawnAnonymous(Props.create(() => reader));
+    const { ref: mqtt } = spawnMqtt(context);
+    const { ref: inboxRef, inbox } = spawnInbox(context);
     try {
       // Router subscribes to the reader's outbound topics.
       mqtt.tell({ kind: 'subscribe', topic: outTopic, target: inboxRef, qos: 1 });
@@ -83,19 +83,19 @@ export const scenario: BrokerScenario<MqttContext> = {
       readerRef.tell({ kind: 'send', topic: outTopic, reading: outbound });
       await waitFor(`entity published to ${outTopic}`,
         () => inbox.received.some((m) => m.topic === outTopic), 5_000);
-      const outMsg = inbox.received.find((m) => m.topic === outTopic)!;
-      const decoded = outMsg.payload.entity<Reading>();
+      const outMessage = inbox.received.find((m) => m.topic === outTopic)!;
+      const decoded = outMessage.payload.entity<Reading>();
       if (decoded.sensor !== outbound.sensor || decoded.celsius !== outbound.celsius) {
-        throw new Error(`published entity round-trip mismatch: ${outMsg.payload.text()}`);
+        throw new Error(`published entity round-trip mismatch: ${outMessage.payload.text()}`);
       }
 
       // 3) Raw string publish: bytes sent verbatim.
       readerRef.tell({ kind: 'sendRaw', topic: rawTopic, text: 'plain-text' });
       await waitFor(`raw string published to ${rawTopic}`,
         () => inbox.received.some((m) => m.topic === rawTopic), 5_000);
-      const rawMsg = inbox.received.find((m) => m.topic === rawTopic)!;
-      if (rawMsg.payload.text() !== 'plain-text') {
-        throw new Error(`raw publish mismatch: got ${rawMsg.payload.text()}`);
+      const rawMessage = inbox.received.find((m) => m.topic === rawTopic)!;
+      if (rawMessage.payload.text() !== 'plain-text') {
+        throw new Error(`raw publish mismatch: got ${rawMessage.payload.text()}`);
       }
     } finally {
       readerRef.stop();

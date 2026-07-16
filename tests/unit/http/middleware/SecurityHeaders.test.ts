@@ -4,9 +4,9 @@ import { SecurityHeadersOptions } from '../../../../src/http/middleware/Security
 import type { Middleware } from '../../../../src/http/Route.js';
 import { Status, type HttpRequest, type HttpResponse } from '../../../../src/http/types.js';
 
-const req: HttpRequest = { method: 'GET', path: '/', headers: {}, query: {}, params: {}, body: null };
+const request: HttpRequest = { method: 'GET', path: '/', headers: {}, query: {}, params: {}, body: null };
 const run = (mw: Middleware, handlerHeaders?: Record<string, string>): Promise<HttpResponse> =>
-  Promise.resolve(mw(req, async () => ({ status: Status.OK, body: 'x', headers: handlerHeaders })));
+  Promise.resolve(mw(request, async () => ({ status: Status.OK, body: 'x', headers: handlerHeaders })));
 
 describe('securityHeaders', () => {
   test('emits the default header set', async () => {
@@ -24,8 +24,8 @@ describe('securityHeaders', () => {
   });
 
   test('false disables exactly its header', async () => {
-    const opts = SecurityHeadersOptions.create().withFrameOptions(false).withReferrerPolicy(false);
-    const headers = (await run(securityHeaders(opts))).headers ?? {};
+    const options = SecurityHeadersOptions.create().withFrameOptions(false).withReferrerPolicy(false);
+    const headers = (await run(securityHeaders(options))).headers ?? {};
     expect(headers['x-frame-options']).toBeUndefined();
     expect(headers['referrer-policy']).toBeUndefined();
     expect(headers['x-content-type-options']).toBe('nosniff'); // others untouched
@@ -39,8 +39,8 @@ describe('securityHeaders', () => {
   });
 
   test('serialises a Permissions-Policy map', async () => {
-    const opts = SecurityHeadersOptions.create().withPermissionsPolicy({ camera: [], geolocation: ['self'] });
-    const headers = (await run(securityHeaders(opts))).headers ?? {};
+    const options = SecurityHeadersOptions.create().withPermissionsPolicy({ camera: [], geolocation: ['self'] });
+    const headers = (await run(securityHeaders(options))).headers ?? {};
     expect(headers['permissions-policy']).toBe('camera=(), geolocation=(self)');
   });
 

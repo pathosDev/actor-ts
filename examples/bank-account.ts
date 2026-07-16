@@ -17,16 +17,16 @@ type Command = DepositCommand | WithdrawCommand | BalanceCommand;
 class AccountActor extends Actor<Command> {
   private balance = 0;
 
-  override onReceive(cmd: Command): void {
-    match(cmd)
+  override onReceive(command: Command): void {
+    match(command)
       .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
       .with({ kind: 'withdraw' }, (c) => this.onWithdraw(c))
       .with({ kind: 'balance' }, () => this.onBalance())
       .exhaustive();
   }
 
-  private reply(msg: unknown): void {
-    this.sender.forEach((s) => s.tell(msg));
+  private reply(message: unknown): void {
+    this.sender.forEach((s) => s.tell(message));
   }
 
   private onDeposit(c: DepositCommand): void {

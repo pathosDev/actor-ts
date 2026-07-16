@@ -26,9 +26,9 @@ type PollerCommand = { kind: 'tick' } | { kind: 'fail-next' };
 let setupCalls = 0;
 
 const poller = (maxTicks: number): Behavior<PollerCommand> =>
-  Behaviors.setup<PollerCommand>((ctx) => {
+  Behaviors.setup<PollerCommand>((context) => {
     setupCalls++;
-    ctx.log.info(`poller setup#${setupCalls}`);
+    context.log.info(`poller setup#${setupCalls}`);
 
     return Behaviors.withTimers<PollerCommand>((timers) => {
       timers.startTimerWithFixedDelay('tick', { kind: 'tick' }, 80, 40);
@@ -36,8 +36,8 @@ const poller = (maxTicks: number): Behavior<PollerCommand> =>
       let ticks = 0;
       let pendingFail = false;
 
-      return Behaviors.receive((_c, cmd) => {
-        if (cmd.kind === 'fail-next') {
+      return Behaviors.receive((_c, command) => {
+        if (command.kind === 'fail-next') {
           pendingFail = true;
           return Behaviors.same;
         }
@@ -46,9 +46,9 @@ const poller = (maxTicks: number): Behavior<PollerCommand> =>
           throw new Error('simulated poll failure');
         }
         ticks++;
-        ctx.log.info(`poller tick#${ticks} (setup run ${setupCalls})`);
+        context.log.info(`poller tick#${ticks} (setup run ${setupCalls})`);
         if (ticks >= maxTicks) {
-          ctx.log.info('poller finished, stopping');
+          context.log.info('poller finished, stopping');
           return Behaviors.stopped;
         }
         return Behaviors.same;

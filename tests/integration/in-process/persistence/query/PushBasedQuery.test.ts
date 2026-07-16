@@ -80,19 +80,19 @@ describe('Push-based PersistenceQuery — InMemoryJournal', () => {
   test('3. tag query gets push delivery within 100ms', async () => {
     const journal = new InMemoryJournal();
     const query = new InMemoryQuery(journal);
-    const stream = query.eventsByTag<{ msg: string }>('orders', offsetStart);
+    const stream = query.eventsByTag<{ message: string }>('orders', offsetStart);
     const it = stream[Symbol.asyncIterator]();
 
     const t0 = Date.now();
     void (async (): Promise<void> => {
       await sleep(10);
-      await journal.append('a', [{ msg: 'one' }], 0, ['orders']);
+      await journal.append('a', [{ message: 'one' }], 0, ['orders']);
     })();
 
     const result = await it.next();
     const elapsed = Date.now() - t0;
     expect(result.done).toBe(false);
-    expect((result.value as { event: PersistentEvent<{ msg: string }> }).event.event.msg).toBe('one');
+    expect((result.value as { event: PersistentEvent<{ message: string }> }).event.event.message).toBe('one');
     expect(elapsed).toBeLessThan(100);
 
     await it.return!();
@@ -152,13 +152,13 @@ describe('Push-based PersistenceQuery — fallback', () => {
     // cross-process backend like Cassandra.
     const events: PersistentEvent<unknown>[] = [];
     const noBusJournal: Journal = {
-      async append(pid, evts, expectedSeq, tags) {
+      async append(persistenceId, evts, expectedSeq, tags) {
         const startSeq = events.length;
         if (startSeq !== expectedSeq) {
           throw new Error(`concurrency: expected ${expectedSeq}, was ${startSeq}`);
         }
         const written = (evts as ReadonlyArray<unknown>).map((e, i) => ({
-          persistenceId: pid,
+          persistenceId,
           sequenceNr: startSeq + i + 1,
           event: e,
           timestamp: Date.now(),
@@ -167,9 +167,9 @@ describe('Push-based PersistenceQuery — fallback', () => {
         events.push(...written as PersistentEvent<unknown>[]);
         return written as never;
       },
-      async read(pid, fromSeq, toSeq) {
+      async read(persistenceId, fromSeq, toSeq) {
         return events.filter((e) =>
-          e.persistenceId === pid
+          e.persistenceId === persistenceId
           && e.sequenceNr >= fromSeq
           && (toSeq === undefined || e.sequenceNr <= toSeq),
         ) as never;

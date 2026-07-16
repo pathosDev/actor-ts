@@ -54,23 +54,23 @@ import { VoicePresenceActor } from './actors/VoicePresenceActor.js';
 import { httpIngressProps } from './actors/HttpIngressActor.js';
 
 async function main(): Promise<void> {
-  const cfg = parseArguments(process.argv.slice(2));
+  const config = parseArguments(process.argv.slice(2));
   const SYSTEM_NAME = 'voice-cluster';
 
   // -------- 1. Cluster discovery (same shape as chat) --------
   const seedProvider = new SameHostScanSeedProvider({
     systemName: SYSTEM_NAME,
-    host: cfg.host,
+    host: config.host,
     basePort: BASE_CLUSTER_PORT,
     maxSlots: MAX_NODE_SLOTS,
   });
-  const port = cfg.port ?? await pickFirstFreePort({
-    host: cfg.host,
+  const port = config.port ?? await pickFirstFreePort({
+    host: config.host,
     basePort: BASE_CLUSTER_PORT,
     maxSlots: MAX_NODE_SLOTS,
   });
-  const seeds = cfg.seeds !== null
-    ? [...cfg.seeds]
+  const seeds = config.seeds !== null
+    ? [...config.seeds]
     : (await seedProvider.lookup())
         .filter((a) => a.port !== port)
         .map((a) => a.toString());
@@ -85,12 +85,12 @@ async function main(): Promise<void> {
     ? ` · seeds=[${seeds.join(',')}]`
     : ' · bootstrap (no seeds)';
   system.log.info(
-    `voice node starting · cluster=${cfg.host}:${port} · http=${cfg.host}:${cfg.httpPort} (singleton)${seedSummary}`,
+    `voice node starting · cluster=${config.host}:${port} · http=${config.host}:${config.httpPort} (singleton)${seedSummary}`,
   );
 
   // -------- 3. Cluster.join --------
   const clusterOptions = ClusterOptions.create()
-    .withHost(cfg.host)
+    .withHost(config.host)
     .withPort(port)
     .withSeeds(seeds)
     .withFailureDetector({
@@ -133,8 +133,8 @@ async function main(): Promise<void> {
   const singletonOptions = StartSingletonOptions.create()
     .withTypeName('http-ingress')
     .withProps(httpIngressProps({
-      host: cfg.host,
-      httpPort: cfg.httpPort,
+      host: config.host,
+      httpPort: config.httpPort,
       staticDir,
       system,
       receptionist,

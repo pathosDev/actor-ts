@@ -119,8 +119,8 @@ export class ChatRoomDirectoryActor extends Actor<ChatRoomDirectoryCommand> {
     this.subscribers.clear();
   }
 
-  override onReceive(cmd: ChatRoomDirectoryCommand): void {
-    match(cmd)
+  override onReceive(command: ChatRoomDirectoryCommand): void {
+    match(command)
       .with({ kind: 'Create' },      (m) => this.onCreate(m))
       .with({ kind: 'GetRooms' },    (m) => this.onGetRooms(m))
       .with({ kind: 'Subscribe' },   (m) => this.onSubscribe(m))

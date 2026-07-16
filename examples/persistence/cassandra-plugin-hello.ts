@@ -32,8 +32,8 @@ class Counter extends PersistentActor<Command, Event, number> {
   override readonly persistenceId = 'counter-1';
   override initialState(): number { return 0; }
 
-  override async onCommand(state: number, cmd: Command): Promise<void> {
-    await match(cmd)
+  override async onCommand(state: number, command: Command): Promise<void> {
+    await match(command)
       .with({ kind: 'get' }, () => this.onGet(state))
       .with({ kind: 'increment' }, (c) => this.onIncrement(c))
       .exhaustive();

@@ -68,16 +68,16 @@ class Account extends PersistentActor<AccountCommand, AccountEvent, AccountState
   override tagsFor(_e: AccountEvent): readonly string[] { return ['account']; }
   snapshotPolicy() { return everyNEvents<AccountState, AccountEvent>(5); }
 
-  async onCommand(s: AccountState, cmd: AccountCommand): Promise<void> {
-    await match(cmd)
+  async onCommand(s: AccountState, command: AccountCommand): Promise<void> {
+    await match(command)
       .with({ kind: 'deposit', amount: P.number.gt(0) }, (c) => this.onDeposit(c))
       .with({ kind: 'withdraw' }, (c) => this.onWithdraw(s, c))
       .with({ kind: 'balance' }, () => this.onBalance(s))
       .otherwise(() => this.onUnhandled());
   }
 
-  private reply(msg: unknown): void {
-    this.sender.forEach((sender) => sender.tell(msg));
+  private reply(message: unknown): void {
+    this.sender.forEach((sender) => sender.tell(message));
   }
 
   private async onDeposit(c: DepositCommand): Promise<void> {
@@ -108,17 +108,17 @@ class BankStatementLedger {
   /** Per-account ledger of every event the projection has consumed. */
   private readonly entries = new Map<string, StatementEntry[]>();
 
-  record(pid: string, seq: number, ev: AccountEvent): void {
-    const list = this.entries.get(pid) ?? [];
+  record(persistenceId: string, seq: number, ev: AccountEvent): void {
+    const list = this.entries.get(persistenceId) ?? [];
     const prev = list.length > 0 ? list[list.length - 1]!.runningBalance : 0;
     const delta = ev.kind === 'deposited' ? ev.amount : -ev.amount;
     list.push({ seq, kind: ev.kind, amount: ev.amount, runningBalance: prev + delta });
-    this.entries.set(pid, list);
+    this.entries.set(persistenceId, list);
   }
 
   print(): void {
-    for (const [pid, list] of this.entries) {
-      console.log(`\nStatement for ${pid}:`);
+    for (const [persistenceId, list] of this.entries) {
+      console.log(`\nStatement for ${persistenceId}:`);
       for (const e of list) {
         const sign = e.kind === 'deposited' ? '+' : '-';
         console.log(`  #${e.seq.toString().padStart(2, '0')}  ${sign}${e.amount.toString().padStart(4, ' ')}  → balance ${e.runningBalance}`);

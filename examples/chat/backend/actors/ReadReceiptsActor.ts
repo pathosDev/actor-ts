@@ -87,8 +87,8 @@ export class ReadReceiptsActor extends Actor<ReadReceiptsCommand> {
     this.rooms.clear();
   }
 
-  override onReceive(cmd: ReadReceiptsCommand): void {
-    match(cmd)
+  override onReceive(command: ReadReceiptsCommand): void {
+    match(command)
       .with({ kind: 'Update' },      (m) => this.onUpdate(m))
       .with({ kind: 'Subscribe' },   (m) => this.onSubscribe(m))
       .with({ kind: 'Unsubscribe' }, (m) => this.onUnsubscribe(m))

@@ -18,7 +18,7 @@ interface RecordedCall {
 }
 
 interface FakePromMetric {
-  readonly opts: {
+  readonly options: {
     name: string; help: string;
     labelNames?: string[]; buckets?: number[];
     registers?: unknown[];
@@ -33,9 +33,9 @@ interface FakePromRegistry {
 }
 
 function makeFakeClient(reg: FakePromRegistry): {
-  Counter: new (opts: FakePromMetric['opts']) => Record<string, unknown>;
-  Gauge: new (opts: FakePromMetric['opts']) => Record<string, unknown>;
-  Histogram: new (opts: FakePromMetric['opts']) => Record<string, unknown>;
+  Counter: new (options: FakePromMetric['options']) => Record<string, unknown>;
+  Gauge: new (options: FakePromMetric['options']) => Record<string, unknown>;
+  Histogram: new (options: FakePromMetric['options']) => Record<string, unknown>;
 } {
   function makeChild(metric: FakePromMetric, labels: Record<string, string | number>, type: RecordedCall['type'][]): Record<string, (v?: number) => void> {
     const out: Record<string, (v?: number) => void> = {};
@@ -46,8 +46,8 @@ function makeFakeClient(reg: FakePromRegistry): {
     return out;
   }
   function instance(type: 'counter' | 'gauge' | 'histogram', allowed: RecordedCall['type'][]) {
-    return function FakeMetric(this: Record<string, unknown>, opts: FakePromMetric['opts']) {
-      const metric: FakePromMetric = { opts, calls: [] };
+    return function FakeMetric(this: Record<string, unknown>, options: FakePromMetric['options']) {
+      const metric: FakePromMetric = { options, calls: [] };
       reg.registered.push(metric);
       this['__metric'] = metric;
       this['labels'] = (labels: Record<string, string | number>) => makeChild(metric, labels, allowed);
@@ -57,7 +57,7 @@ function makeFakeClient(reg: FakePromRegistry): {
       if (allowed.includes('set')) this['set'] = (v: number) => metric.calls.push({ type: 'set', labels: {}, value: v });
       if (allowed.includes('observe')) this['observe'] = (v: number) => metric.calls.push({ type: 'observe', labels: {}, value: v });
       void type;
-    } as unknown as new (opts: FakePromMetric['opts']) => Record<string, unknown>;
+    } as unknown as new (options: FakePromMetric['options']) => Record<string, unknown>;
   }
   return {
     Counter:   instance('counter',   ['inc']),
@@ -70,7 +70,7 @@ function makeFakeRegistry(): FakePromRegistry {
   const reg: FakePromRegistry = {
     registered: [],
     registerMetric(m) { reg.registered.push(m); },
-    getSingleMetric(name) { return reg.registered.find((m) => m.opts.name === name); },
+    getSingleMetric(name) { return reg.registered.find((m) => m.options.name === name); },
   };
   return reg;
 }
@@ -90,8 +90,8 @@ describe('promClientRegistry', () => {
     counter.inc();
     counter.inc(4);
 
-    const metric = reg.registered.find((m) => m.opts.name === 'foo_total')!;
-    expect(metric.opts.labelNames).toEqual(['node']);
+    const metric = reg.registered.find((m) => m.options.name === 'foo_total')!;
+    expect(metric.options.labelNames).toEqual(['node']);
     expect(metric.calls.map((x) => `${x.type}:${x.value}@${x.labels['node']}`)).toEqual([
       'inc:1@a',
       'inc:4@a',
@@ -115,7 +115,7 @@ describe('promClientRegistry', () => {
     gauge.inc();
     gauge.dec(2);
 
-    const metric = reg.registered.find((m) => m.opts.name === 'mailbox_depth')!;
+    const metric = reg.registered.find((m) => m.options.name === 'mailbox_depth')!;
     expect(metric.calls.map((x) => `${x.type}:${x.value}`)).toEqual(['set:10', 'inc:1', 'dec:2']);
     expect(gauge.value).toBe(9);
   });
@@ -139,8 +139,8 @@ describe('promClientRegistry', () => {
     expect(histogram.sum).toBeCloseTo(2.25, 5);
     // buckets [0.1, 0.5, 1, +Inf]; counts [1, 1, 2, 3] cumulative
     expect([...histogram.counts]).toEqual([1, 1, 2, 3]);
-    const metric = reg.registered.find((m) => m.opts.name === 'lat_seconds')!;
-    expect(metric.opts.buckets).toEqual([0.1, 0.5, 1]);
+    const metric = reg.registered.find((m) => m.options.name === 'lat_seconds')!;
+    expect(metric.options.buckets).toEqual([0.1, 0.5, 1]);
     expect(metric.calls.length).toBe(3);
   });
 
@@ -159,7 +159,7 @@ describe('promClientRegistry', () => {
     adapted.gauge('members_up');
     adapted.histogram('handler_seconds');
 
-    const names = reg.registered.map((m) => m.opts.name).sort();
+    const names = reg.registered.map((m) => m.options.name).sort();
     expect(names).toEqual([
       'actor_ts_handler_seconds',
       'actor_ts_members_up',
@@ -197,7 +197,7 @@ describe('promClientRegistry', () => {
 
     // Only one prom-client Counter object is registered for 'hits';
     // both label values land on it via .labels(...).inc().
-    const hits = reg.registered.filter((m) => m.opts.name === 'hits');
+    const hits = reg.registered.filter((m) => m.options.name === 'hits');
     expect(hits.length).toBe(1);
     expect(hits[0]!.calls.map((counter) => `${counter.value}@${counter.labels['node']}`)).toEqual([
       '1@a', '2@b', '3@a',

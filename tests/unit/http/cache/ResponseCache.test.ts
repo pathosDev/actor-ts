@@ -6,7 +6,7 @@ import { Status, type HttpRequest, type HttpResponse } from '../../../../src/htt
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
-function makeReq(path: string, params: Record<string, string> = {}): HttpRequest {
+function makeRequest(path: string, params: Record<string, string> = {}): HttpRequest {
   return { method: 'GET', path, headers: {}, query: {}, params, body: null };
 }
 
@@ -14,11 +14,11 @@ describe('cached — basic round-trip', () => {
   test('first call runs handler; subsequent calls hit cache', async () => {
     const cache = new InMemoryCache();
     let calls = 0;
-    const handler = cached({ cache, ttlMs: 5_000, key: (req) => req.path })(
+    const handler = cached({ cache, ttlMs: 5_000, key: (request) => request.path })(
       () => { calls++; return completeJson(Status.OK, { n: calls }); },
     );
-    const r1 = await handler(makeReq('/users/1'));
-    const r2 = await handler(makeReq('/users/1'));
+    const r1 = await handler(makeRequest('/users/1'));
+    const r2 = await handler(makeRequest('/users/1'));
     expect(r1.body).toEqual({ n: 1 });
     expect(r2.body).toEqual({ n: 1 });
     expect(calls).toBe(1);
@@ -27,12 +27,12 @@ describe('cached — basic round-trip', () => {
   test('different keys → independent cache slots', async () => {
     const cache = new InMemoryCache();
     let calls = 0;
-    const handler = cached({ cache, ttlMs: 5_000, key: (req) => req.path })(
+    const handler = cached({ cache, ttlMs: 5_000, key: (request) => request.path })(
       () => { calls++; return complete(Status.OK, calls); },
     );
-    await handler(makeReq('/users/1'));
-    await handler(makeReq('/users/2'));
-    await handler(makeReq('/users/1'));
+    await handler(makeRequest('/users/1'));
+    await handler(makeRequest('/users/2'));
+    await handler(makeRequest('/users/1'));
     expect(calls).toBe(2);
   });
 
@@ -42,9 +42,9 @@ describe('cached — basic round-trip', () => {
     const handler = cached({ cache, ttlMs: 30, key: () => 'k' })(
       () => { calls++; return complete(Status.OK, 'x'); },
     );
-    await handler(makeReq('/'));
+    await handler(makeRequest('/'));
     await sleep(50);
-    await handler(makeReq('/'));
+    await handler(makeRequest('/'));
     expect(calls).toBe(2);
   });
 
@@ -62,20 +62,20 @@ describe('cached — status filtering', () => {
     const handler = cached({ cache, ttlMs: 5_000, key: () => 'k' })(
       () => { calls++; return complete(Status.NotFound, { error: 'nope' }); },
     );
-    await handler(makeReq('/'));
-    await handler(makeReq('/'));
+    await handler(makeRequest('/'));
+    await handler(makeRequest('/'));
     expect(calls).toBe(2);  // 404 not cached → handler runs every time
   });
 
-  test('cacheStatuses opts in 404 (negative cache pattern)', async () => {
+  test('cacheStatuses options in 404 (negative cache pattern)', async () => {
     const cache = new InMemoryCache();
     let calls = 0;
     const handler = cached({
       cache, ttlMs: 5_000, key: () => 'k',
       cacheStatuses: [200, 404],
     })(() => { calls++; return complete(Status.NotFound, { error: 'nope' }); });
-    await handler(makeReq('/'));
-    await handler(makeReq('/'));
+    await handler(makeRequest('/'));
+    await handler(makeRequest('/'));
     expect(calls).toBe(1);
   });
 });
@@ -87,7 +87,7 @@ describe('cached — stampede protection', () => {
     const handler = cached({ cache, ttlMs: 5_000, key: () => 'hot' })(
       async () => { calls++; await sleep(20); return completeJson(Status.OK, { n: calls }); },
     );
-    const results = await Promise.all(Array.from({ length: 100 }, () => handler(makeReq('/'))));
+    const results = await Promise.all(Array.from({ length: 100 }, () => handler(makeRequest('/'))));
     expect(calls).toBe(1);
     for (const r of results) expect((r.body as { n: number }).n).toBe(1);
   });
@@ -98,8 +98,8 @@ describe('cached — stampede protection', () => {
     const handler = cached({ cache, ttlMs: 5_000, key: () => 'k' })(
       async () => { calls++; await sleep(20); return complete(Status.OK, calls); },
     );
-    await handler(makeReq('/'));
-    await handler(makeReq('/'));
+    await handler(makeRequest('/'));
+    await handler(makeRequest('/'));
     expect(calls).toBe(1);
   });
 });
@@ -111,8 +111,8 @@ describe('cached — binary payload round-trip', () => {
     const handler = cached({ cache, ttlMs: 5_000, key: () => 'k' })(
       (): HttpResponse => ({ status: 200, body: bytes, contentType: 'application/octet-stream' }),
     );
-    const r1 = await handler(makeReq('/'));
-    const r2 = await handler(makeReq('/'));
+    const r1 = await handler(makeRequest('/'));
+    const r2 = await handler(makeRequest('/'));
     expect(r2.body).toBeInstanceOf(Uint8Array);
     expect(Array.from(r2.body as Uint8Array)).toEqual([0xde, 0xad, 0xbe, 0xef]);
     void r1;
@@ -127,9 +127,9 @@ describe('cached — explicit invalidation', () => {
     const handler = cached({ cache, ttlMs: 5_000, key: () => 'k' })(
       () => { calls++; return complete(Status.OK, calls); },
     );
-    await handler(makeReq('/'));
+    await handler(makeRequest('/'));
     await cache.delete(keyFn());  // user-side invalidation
-    await handler(makeReq('/'));
+    await handler(makeRequest('/'));
     expect(calls).toBe(2);
   });
 });

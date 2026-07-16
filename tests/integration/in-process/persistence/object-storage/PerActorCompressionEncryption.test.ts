@@ -56,8 +56,8 @@ class CountingActor extends PersistentActor<Command, Event, State> {
   override encryption(): EncryptionConfig | undefined { return this._encryption; }
   override snapshotPolicy() { return everyNEvents<State, Event>(1); }
   onEvent(s: State, _e: Event): State { return { count: s.count + 1 }; }
-  async onCommand(_s: State, cmd: Command): Promise<void> {
-    if (cmd.kind === 'increment') {
+  async onCommand(_s: State, command: Command): Promise<void> {
+    if (command.kind === 'increment') {
       await this.persist({ kind: 'incremented' }, () => { /* no reply */ });
     }
   }
@@ -67,7 +67,7 @@ describe('PersistentActor — actor-level compression hook', () => {
   test('actor-level compression overrides plugin default', async () => {
     // Spy on backend.put to capture the contentEncoding header per save.
     const seen: string[] = [];
-    const wrapped = wrapPut(backend, (key, opts) => seen.push(opts?.contentEncoding ?? 'none'));
+    const wrapped = wrapPut(backend, (key, options) => seen.push(options?.contentEncoding ?? 'none'));
 
     // Plugin default = gzip; actor sets zstd → save MUST land as zstd.
     const storeOptions = ObjectStorageSnapshotStoreOptions.create()
@@ -92,7 +92,7 @@ describe('PersistentActor — actor-level compression hook', () => {
 
   test('without actor hook, plugin compression default is used', async () => {
     const seen: string[] = [];
-    const wrapped = wrapPut(backend, (key, opts) => seen.push(opts?.contentEncoding ?? 'none'));
+    const wrapped = wrapPut(backend, (key, options) => seen.push(options?.contentEncoding ?? 'none'));
     const storeOptions = ObjectStorageSnapshotStoreOptions.create()
       .withBackend(wrapped)
       .withCompression({ algorithm: 'gzip' });
@@ -178,16 +178,16 @@ class Counter extends DurableStateActor<DsCommand, { v: number }> {
   ) { super(options); }
   protected override compression(): CompressionConfig | undefined { return this._compression; }
   protected override encryption(): EncryptionConfig | undefined { return this._encryption; }
-  override async onCommand(cmd: DsCommand): Promise<void> {
-    if (cmd.kind === 'set') { await this.persist({ v: cmd.v }); cmd.replyTo.tell({ ok: true } as never); }
-    else cmd.replyTo.tell({ v: this.state.v } as never);
+  override async onCommand(command: DsCommand): Promise<void> {
+    if (command.kind === 'set') { await this.persist({ v: command.v }); command.replyTo.tell({ ok: true } as never); }
+    else command.replyTo.tell({ v: this.state.v } as never);
   }
 }
 
 describe('DurableStateActor — actor-level compression / encryption hooks', () => {
   test('compression hook flips contentEncoding on the underlying put', async () => {
     const seen: string[] = [];
-    const wrapped = wrapPut(backend, (_k, opts) => seen.push(opts?.contentEncoding ?? 'none'));
+    const wrapped = wrapPut(backend, (_k, options) => seen.push(options?.contentEncoding ?? 'none'));
     const storeOptions = ObjectStorageDurableStateStoreOptions.create()
       .withBackend(wrapped)
       .withCompression({ algorithm: 'gzip' });
@@ -271,14 +271,14 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
 
 function wrapPut(
   inner: FilesystemObjectStorageBackend,
-  spy: (key: string, opts: { contentEncoding?: string } | undefined) => void,
+  spy: (key: string, options: { contentEncoding?: string } | undefined) => void,
 ): FilesystemObjectStorageBackend {
   // Lightweight passthrough wrapper that preserves the `instanceof` shape
   // expected by the snapshot/duarble-state stores.
   const wrapped = Object.assign(Object.create(Object.getPrototypeOf(inner)), inner);
-  wrapped.put = async (key: string, body: Uint8Array, opts: { contentEncoding?: string }) => {
-    spy(key, opts);
-    return inner.put(key, body, opts);
+  wrapped.put = async (key: string, body: Uint8Array, options: { contentEncoding?: string }) => {
+    spy(key, options);
+    return inner.put(key, body, options);
   };
   return wrapped as FilesystemObjectStorageBackend;
 }

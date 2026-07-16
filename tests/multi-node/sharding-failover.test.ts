@@ -289,10 +289,10 @@ describe('multi-node sharding failover', () => {
       // "daemon 4 was hosted on B, then re-spawned somewhere else after
       // crash".
       const startsByIndex = new Map<number, string[]>();
-      const recordStart = (idx: number, where: string): void => {
-        const list = startsByIndex.get(idx) ?? [];
+      const recordStart = (index: number, where: string): void => {
+        const list = startsByIndex.get(index) ?? [];
         list.push(where);
-        startsByIndex.set(idx, list);
+        startsByIndex.set(index, list);
       };
 
       class Daemon extends Actor<{ kind: 'noop' }> {
@@ -322,9 +322,9 @@ describe('multi-node sharding failover', () => {
 
       // Snapshot which indices are hosted where, then crash 'c'.
       const initialHosts = new Map<number, string>();
-      for (const [idx, list] of startsByIndex) initialHosts.set(idx, list[list.length - 1]!);
+      for (const [index, list] of startsByIndex) initialHosts.set(index, list[list.length - 1]!);
       const onC = Array.from(initialHosts.entries())
-        .filter(([_, where]) => where === 'c').map(([idx]) => idx);
+        .filter(([_, where]) => where === 'c').map(([index]) => index);
       expect(onC.length).toBeGreaterThan(0);  // c had at least one daemon
 
       await spec.crash('c');
@@ -337,8 +337,8 @@ describe('multi-node sharding failover', () => {
       // Allow up to 5 s — that's the rebalance + handoff timeout window.
       const failoverDeadline = Date.now() + 8_000;
       while (Date.now() < failoverDeadline) {
-        const allRespawned = onC.every((idx) => {
-          const hosts = startsByIndex.get(idx) ?? [];
+        const allRespawned = onC.every((index) => {
+          const hosts = startsByIndex.get(index) ?? [];
           // hosts[0] was the original; we want a later entry on a or b.
           return hosts.slice(1).some((h) => h === 'a' || h === 'b');
         });
@@ -346,8 +346,8 @@ describe('multi-node sharding failover', () => {
         await Bun.sleep(100);
       }
 
-      for (const idx of onC) {
-        const hosts = startsByIndex.get(idx) ?? [];
+      for (const index of onC) {
+        const hosts = startsByIndex.get(index) ?? [];
         const respawnedOnSurvivor = hosts.slice(1).some((h) => h === 'a' || h === 'b');
         expect(respawnedOnSurvivor).toBe(true);
       }

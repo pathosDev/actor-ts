@@ -60,16 +60,16 @@ type UserReply = User | null | { deleted: true };
 
 class UserEntity extends Actor<UserCommand> {
   private user: User | null = null;
-  override onReceive(cmd: UserCommand): void {
-    match(cmd)
+  override onReceive(command: UserCommand): void {
+    match(command)
       .with({ kind: 'set' }, (c) => this.onSet(c))
       .with({ kind: 'get' }, () => this.onGet())
       .with({ kind: 'delete' }, () => this.onDelete())
       .exhaustive();
   }
 
-  private reply(msg: UserReply): void {
-    this.sender.forEach((s) => s.tell(msg));
+  private reply(message: UserReply): void {
+    this.sender.forEach((s) => s.tell(message));
   }
 
   private onSet(c: SetCommand): void {
@@ -109,21 +109,21 @@ async function main(): Promise<void> {
   system.extension(CacheExtensionId).setCache('default', cache);
 
   const shardingOptions = StartShardingOptions.create<UserCommand>()
-    .withExtractEntityId((msg) => ('id' in msg ? msg.id : msg.user.id))
+    .withExtractEntityId((message) => ('id' in message ? message.id : message.user.id))
     .withNumShards(16);
   const region = cluster.sharding.start('user', UserEntity, shardingOptions);
-  const askUser = (cmd: UserCommand): Promise<UserReply> => region.ask<UserReply>(cmd, 500);
+  const askUser = (command: UserCommand): Promise<UserReply> => region.ask<UserReply>(command, 500);
 
   // Rate limit: 60 req/min per IP — applied to every endpoint below.
   const limit = rateLimit({
     cache, windowMs: 60_000, max: 60,
-    key: (req) => req.headers['x-forwarded-for'] ?? '<anon>',
+    key: (request) => request.headers['x-forwarded-for'] ?? '<anon>',
   });
 
   // Response cache: GET /users/:id is cacheable for 30s.
   const responseCache = cached({
     cache, ttlMs: 30_000,
-    key: (req) => `users:${req.params.id}`,
+    key: (request) => `users:${request.params.id}`,
   });
 
   // Idempotency-key: required on POST /users; 24h replay window.
@@ -131,26 +131,26 @@ async function main(): Promise<void> {
 
   const routes = path('users', concat(
     path(':id', concat(
-      get(limit(responseCache(async req => {
-        const user = await askUser({ kind: 'get', id: req.params.id! });
-        if (!user) throw new HttpError(Status.NotFound, `user ${req.params.id} not found`);
+      get(limit(responseCache(async request => {
+        const user = await askUser({ kind: 'get', id: request.params.id! });
+        if (!user) throw new HttpError(Status.NotFound, `user ${request.params.id} not found`);
         return completeJson(Status.OK, user);
       }))),
-      del(limit(async req => {
-        await askUser({ kind: 'delete', id: req.params.id! });
+      del(limit(async request => {
+        await askUser({ kind: 'delete', id: request.params.id! });
         // Invalidate the response cache for this user.
-        await cache.delete(`rsp:users:${req.params.id}`);
+        await cache.delete(`rsp:users:${request.params.id}`);
         return complete(Status.NoContent);
       })),
-      put(limit(async req => {
-        const body = entity<Omit<User, 'id'>>(req);
-        const saved = await askUser({ kind: 'set', user: { id: req.params.id!, ...body } });
-        await cache.delete(`rsp:users:${req.params.id}`);
+      put(limit(async request => {
+        const body = entity<Omit<User, 'id'>>(request);
+        const saved = await askUser({ kind: 'set', user: { id: request.params.id!, ...body } });
+        await cache.delete(`rsp:users:${request.params.id}`);
         return completeJson(Status.OK, saved as User);
       })),
     )),
-    post(limit(dedup(async req => {
-      const user = entity<User>(req);
+    post(limit(dedup(async request => {
+      const user = entity<User>(request);
       const saved = await askUser({ kind: 'set', user });
       return completeJson(Status.Created, saved as User);
     }))),

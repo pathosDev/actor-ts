@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { BearerTokenAuth } from '../../../../src/http/middleware/BearerToken.js';
 import { HttpError, Status, type HttpRequest } from '../../../../src/http/types.js';
 
-const baseReq = (headers: Record<string, string> = {}): HttpRequest => ({
+const baseRequest = (headers: Record<string, string> = {}): HttpRequest => ({
   method: 'GET',
   path: '/cluster/down',
   headers,
@@ -17,15 +17,15 @@ const next = async () => okResponse;
 describe('BearerTokenAuth', () => {
   test('passes through when the bearer token matches', async () => {
     const mw = BearerTokenAuth({ tokens: ['secret-1'] });
-    const req = baseReq({ authorization: 'Bearer secret-1' });
-    expect(await mw(req, next)).toBe(okResponse);
+    const request = baseRequest({ authorization: 'Bearer secret-1' });
+    expect(await mw(request, next)).toBe(okResponse);
   });
 
   test('rejects requests without an Authorization header', async () => {
     const mw = BearerTokenAuth({ tokens: ['secret-1'] });
-    await expect(mw(baseReq(), next)).rejects.toThrow(HttpError);
+    await expect(mw(baseRequest(), next)).rejects.toThrow(HttpError);
     try {
-      await mw(baseReq(), next);
+      await mw(baseRequest(), next);
     } catch (e) {
       expect((e as HttpError).status).toBe(Status.Unauthorized);
     }
@@ -33,32 +33,32 @@ describe('BearerTokenAuth', () => {
 
   test('rejects requests with a non-Bearer scheme', async () => {
     const mw = BearerTokenAuth({ tokens: ['secret-1'] });
-    const req = baseReq({ authorization: 'Basic dXNlcjpwYXNz' });
-    await expect(mw(req, next)).rejects.toThrow(/Bearer/);
+    const request = baseRequest({ authorization: 'Basic dXNlcjpwYXNz' });
+    await expect(mw(request, next)).rejects.toThrow(/Bearer/);
   });
 
   test('rejects requests with a wrong token', async () => {
     const mw = BearerTokenAuth({ tokens: ['secret-1'] });
-    const req = baseReq({ authorization: 'Bearer wrong' });
-    await expect(mw(req, next)).rejects.toThrow(/invalid bearer token/);
+    const request = baseRequest({ authorization: 'Bearer wrong' });
+    await expect(mw(request, next)).rejects.toThrow(/invalid bearer token/);
   });
 
   test('accepts any of multiple valid tokens (rotation)', async () => {
     const mw = BearerTokenAuth({ tokens: ['old', 'new'] });
-    await expect(mw(baseReq({ authorization: 'Bearer old' }), next)).resolves.toBe(okResponse);
-    await expect(mw(baseReq({ authorization: 'Bearer new' }), next)).resolves.toBe(okResponse);
+    await expect(mw(baseRequest({ authorization: 'Bearer old' }), next)).resolves.toBe(okResponse);
+    await expect(mw(baseRequest({ authorization: 'Bearer new' }), next)).resolves.toBe(okResponse);
   });
 
   test('honours custom headerName option', async () => {
     const mw = BearerTokenAuth({ tokens: ['x'], headerName: 'x-mgmt-token' });
-    const req = baseReq({ 'x-mgmt-token': 'Bearer x' });
-    expect(await mw(req, next)).toBe(okResponse);
+    const request = baseRequest({ 'x-mgmt-token': 'Bearer x' });
+    expect(await mw(request, next)).toBe(okResponse);
   });
 
   test('rejection includes WWW-Authenticate header info', async () => {
     const mw = BearerTokenAuth({ tokens: ['x'], realm: 'mgmt' });
     try {
-      await mw(baseReq(), next);
+      await mw(baseRequest(), next);
     } catch (e) {
       const err = e as HttpError;
       expect(err.status).toBe(Status.Unauthorized);
@@ -80,7 +80,7 @@ describe('BearerTokenAuth', () => {
     const mw = BearerTokenAuth({ tokens: ['aaaa', 'bbbb'] });
     // Both should pass — what we care about is that no exception is
     // thrown either way (the test is correctness, not timing).
-    await expect(mw(baseReq({ authorization: 'Bearer aaaa' }), next)).resolves.toBe(okResponse);
-    await expect(mw(baseReq({ authorization: 'Bearer bbbb' }), next)).resolves.toBe(okResponse);
+    await expect(mw(baseRequest({ authorization: 'Bearer aaaa' }), next)).resolves.toBe(okResponse);
+    await expect(mw(baseRequest({ authorization: 'Bearer bbbb' }), next)).resolves.toBe(okResponse);
   });
 });

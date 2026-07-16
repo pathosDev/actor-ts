@@ -44,10 +44,10 @@ class Account extends PersistentActor<Command, Event, State> {
       defaults: { 1: { currency: 'USD' } },  // old events default to USD
     });
   }
-  async onCommand(_s: State, cmd: Command): Promise<void> {
-    if (cmd.kind === 'deposit') {
+  async onCommand(_s: State, command: Command): Promise<void> {
+    if (command.kind === 'deposit') {
       await this.persist(
-        { kind: 'deposited', amount: cmd.amount, currency: 'EUR' },
+        { kind: 'deposited', amount: command.amount, currency: 'EUR' },
         (st) => this.sender.forEach((s) => s.tell({ ok: st })),
       );
     } else {

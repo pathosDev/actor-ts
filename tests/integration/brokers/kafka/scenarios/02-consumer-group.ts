@@ -11,16 +11,16 @@ import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
 export const scenario: BrokerScenario<KafkaContext> = {
   name: 'consumer-group exactly-once fan-out across two consumers',
-  async run(ctx) {
+  async run(context) {
     const tag = `b4-group-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const topic = `${tag}-topic`;
     const groupId = `${tag}-group`;
 
-    const { ref: inboxA, inbox: aInbox } = spawnInbox(ctx);
-    const { ref: inboxB, inbox: bInbox } = spawnInbox(ctx);
-    const consumerA = spawnKafka(ctx, { groupId, topics: [topic], target: inboxA });
-    const consumerB = spawnKafka(ctx, { groupId, topics: [topic], target: inboxB });
-    const producer = spawnKafka(ctx);
+    const { ref: inboxA, inbox: aInbox } = spawnInbox(context);
+    const { ref: inboxB, inbox: bInbox } = spawnInbox(context);
+    const consumerA = spawnKafka(context, { groupId, topics: [topic], target: inboxA });
+    const consumerB = spawnKafka(context, { groupId, topics: [topic], target: inboxB });
+    const producer = spawnKafka(context);
     try {
       // Wait for group assignment to stabilise.
       await new Promise((r) => setTimeout(r, 2_000));

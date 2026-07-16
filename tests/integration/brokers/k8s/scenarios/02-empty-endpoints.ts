@@ -8,35 +8,35 @@ import type { BrokerScenario } from '../../lib/scenario.js';
 
 export const scenario: BrokerScenario<K8sContext> = {
   name: 'lookup() handles empty Endpoints gracefully',
-  async run(ctx) {
+  async run(context) {
     const ns = `b9-empty-${Date.now()}`;
     const svc = 'actor-ts-cluster-empty';
 
-    let res = await ctx.api('POST', '/api/v1/namespaces', {
+    let response = await context.api('POST', '/api/v1/namespaces', {
       apiVersion: 'v1', kind: 'Namespace',
       metadata: { name: ns },
     });
-    if (res.status !== 201 && res.status !== 409) {
-      throw new Error(`create ns failed: ${res.status} ${res.body.slice(0, 200)}`);
+    if (response.status !== 201 && response.status !== 409) {
+      throw new Error(`create ns failed: ${response.status} ${response.body.slice(0, 200)}`);
     }
 
     try {
-      res = await ctx.api('POST', `/api/v1/namespaces/${ns}/services`, {
+      response = await context.api('POST', `/api/v1/namespaces/${ns}/services`, {
         apiVersion: 'v1', kind: 'Service',
         metadata: { name: svc },
         spec: { clusterIP: 'None', ports: [{ port: 9000 }], selector: {} },
       });
-      if (res.status !== 201) throw new Error(`create svc: ${res.status} ${res.body.slice(0, 200)}`);
+      if (response.status !== 201) throw new Error(`create svc: ${response.status} ${response.body.slice(0, 200)}`);
 
       // Endpoints with NO subsets — represents "service exists, no pods ready".
-      res = await ctx.api('POST', `/api/v1/namespaces/${ns}/endpoints`, {
+      response = await context.api('POST', `/api/v1/namespaces/${ns}/endpoints`, {
         apiVersion: 'v1', kind: 'Endpoints',
         metadata: { name: svc },
         // No subsets field — same shape K8s emits for unready services.
       });
-      if (res.status !== 201) throw new Error(`create endpoints: ${res.status} ${res.body.slice(0, 200)}`);
+      if (response.status !== 201) throw new Error(`create endpoints: ${response.status} ${response.body.slice(0, 200)}`);
 
-      const buildSeedProvider = (ctx as unknown as {
+      const buildSeedProvider = (context as unknown as {
         buildSeedProvider: (ns: string, svc: string) => KubernetesApiSeedProvider;
       }).buildSeedProvider;
       const provider = buildSeedProvider(ns, svc);
@@ -46,7 +46,7 @@ export const scenario: BrokerScenario<K8sContext> = {
         throw new Error(`expected empty list, got ${addrs.length} addresses`);
       }
     } finally {
-      await ctx.api('DELETE', `/api/v1/namespaces/${ns}`);
+      await context.api('DELETE', `/api/v1/namespaces/${ns}`);
     }
   },
 };

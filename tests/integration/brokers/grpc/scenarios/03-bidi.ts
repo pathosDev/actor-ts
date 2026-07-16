@@ -10,10 +10,10 @@ import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
 export const scenario: BrokerScenario<GrpcContext> = {
   name: 'bidi — client sends N, server echoes N, client closes',
-  async run(ctx) {
-    const { ref: collectorRef, collector } = spawnCollector(ctx);
+  async run(context) {
+    const { ref: collectorRef, collector } = spawnCollector(context);
     try {
-      const client = ctx.client as unknown as ActorRef<GrpcClientCommand>;
+      const client = context.client as unknown as ActorRef<GrpcClientCommand>;
       client.tell({
         kind: 'bidiStart',
         method: 'Bidi',

@@ -189,8 +189,8 @@ export class ChatService {
     this.unreadByRoom.update((u) => ({ ...u, [room]: 0 }));
     // Switching INTO a room means the user is reading it — mark
     // the highest known ts as read for the sender's ✓✓.
-    const msgs = this.messagesByRoom()[room] ?? [];
-    const maxTs = msgs.reduce((a, message) => Math.max(a, message.ts), 0);
+    const messages = this.messagesByRoom()[room] ?? [];
+    const maxTs = messages.reduce((a, message) => Math.max(a, message.ts), 0);
     if (maxTs > 0) this.markReadUpTo(room, maxTs);
   }
 

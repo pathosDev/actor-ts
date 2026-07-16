@@ -40,8 +40,8 @@ function requireEnv(name: string): string {
  * supplied on `subscribe` commands.  `onMessage` is never reached.
  */
 class RouterMqttActor extends MqttActor {
-  constructor(opts: MqttOptions) { super(opts); }
-  override onMessage(_msg: MqttMessage): void { /* external-target routing only */ }
+  constructor(options: MqttOptions) { super(options); }
+  override onMessage(_message: MqttMessage): void { /* external-target routing only */ }
 }
 
 /**
@@ -65,7 +65,7 @@ async function main(): Promise<void> {
     .withLogLevel(LogLevel.Info));
   process.on('SIGTERM', () => { void system.terminate(); });
 
-  const ctx: MqttContext = { env: process.env, brokerUrl, system };
+  const context: MqttContext = { env: process.env, brokerUrl, system };
 
   try {
     const scenarios: BrokerScenario<MqttContext>[] = [
@@ -76,32 +76,32 @@ async function main(): Promise<void> {
       wildcardScenario,
       typedScenario,
     ];
-    await runScenarios(scenarios, ctx);
+    await runScenarios(scenarios, context);
   } finally {
     await system.terminate();
   }
 }
 
 /** Fresh router MqttActor instance per scenario — keeps state isolated. */
-export function spawnMqtt(ctx: MqttContext, opts: {
+export function spawnMqtt(context: MqttContext, options: {
   protocolVersion?: 4 | 5;
   clientId?: string;
 } = {}): { ref: MqttRef } {
   const actor = new RouterMqttActor(
     MqttOptions.create()
-      .withBrokerUrl(ctx.brokerUrl)
-      .withClientId(opts.clientId ?? `actor-ts-${Date.now()}-${Math.random().toString(36).slice(2)}`)
-      .withProtocolVersion(opts.protocolVersion ?? 4)
+      .withBrokerUrl(context.brokerUrl)
+      .withClientId(options.clientId ?? `actor-ts-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+      .withProtocolVersion(options.protocolVersion ?? 4)
       .withCleanSession(true),
   );
-  const ref = ctx.system.spawnAnonymous(Props.create(() => actor));
+  const ref = context.system.spawnAnonymous(Props.create(() => actor));
   return { ref };
 }
 
 /** Spawn a fresh inbox actor whose received messages are observable. */
-export function spawnInbox(ctx: MqttContext): { ref: ActorRef<MqttMessage>; inbox: InboxActor } {
+export function spawnInbox(context: MqttContext): { ref: ActorRef<MqttMessage>; inbox: InboxActor } {
   const inbox = new InboxActor();
-  const ref = ctx.system.spawnAnonymous(Props.create(() => inbox));
+  const ref = context.system.spawnAnonymous(Props.create(() => inbox));
   return { ref, inbox };
 }
 

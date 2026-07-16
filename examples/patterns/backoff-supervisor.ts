@@ -40,13 +40,13 @@ class FlakyConnector extends Actor<Command> {
     console.log('  [connector] preStart succeeded — open for business');
   }
 
-  override onReceive(cmd: Command): void {
-    if (cmd.kind === 'crash') {
+  override onReceive(command: Command): void {
+    if (command.kind === 'crash') {
       console.log('  [connector] crashing on purpose');
       throw new Error('runtime crash');
     }
-    console.log(`  [connector] handling fetch id=${cmd.id}`);
-    this.sender.toNullable()?.tell(`row-${cmd.id}`);
+    console.log(`  [connector] handling fetch id=${command.id}`);
+    this.sender.toNullable()?.tell(`row-${command.id}`);
   }
 }
 

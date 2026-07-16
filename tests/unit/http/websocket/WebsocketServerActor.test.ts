@@ -63,7 +63,7 @@ type Out = { kind: 'pong'; n: number } | { kind: 'msg'; text: string };
 
 interface Rec {
   readonly events: string[];
-  readonly conns: WebsocketConnection<Out>[];
+  readonly connections: WebsocketConnection<Out>[];
   /** Number of child actors the hub had right after each connect/disconnect. */
   readonly childCounts: number[];
 }
@@ -72,17 +72,17 @@ class RecordingServer extends WebsocketServerActor<Out, In> {
   constructor(private readonly rec: Rec) {
     super();
   }
-  onMessage(msg: In): void {
-    if (msg.kind === 'ping') {
-      this.rec.events.push(`ping:${msg.n}:conn:${this.connection.id}`);
-      this.reply({ kind: 'pong', n: msg.n });
+  onMessage(message: In): void {
+    if (message.kind === 'ping') {
+      this.rec.events.push(`ping:${message.n}:conn:${this.connection.id}`);
+      this.reply({ kind: 'pong', n: message.n });
     } else {
-      this.rec.events.push(`shout:${msg.text.slice(0, 8)}`);
-      this.broadcast({ kind: 'msg', text: msg.text });
+      this.rec.events.push(`shout:${message.text.slice(0, 8)}`);
+      this.broadcast({ kind: 'msg', text: message.text });
     }
   }
   protected override onClientConnected(c: WebsocketConnection<Out>): void {
-    this.rec.conns.push(c);
+    this.rec.connections.push(c);
     this.rec.events.push(`connect:${c.id}`);
     // The per-connection actor is spawned as THIS hub's child.
     this.rec.childCounts.push(this.context.children.length);
@@ -93,7 +93,7 @@ class RecordingServer extends WebsocketServerActor<Out, In> {
   }
 }
 
-const req = (overrides: Partial<HttpRequest> = {}): HttpRequest => ({
+const request = (overrides: Partial<HttpRequest> = {}): HttpRequest => ({
   method: 'GET',
   path: '/ws',
   headers: {},
@@ -119,12 +119,12 @@ afterEach(async () => {
 /** Spawn a recording hub and wire a mock connection to it. */
 function setup(name: string): { rec: Rec; hub: WebsocketServerRef<Out, In>; system: ActorSystem } {
   const system = newSystem(name);
-  const rec: Rec = { events: [], conns: [], childCounts: [] };
+  const rec: Rec = { events: [], connections: [], childCounts: [] };
   const hub = system.spawn(Props.create(() => new RecordingServer(rec)), 'hub') as WebsocketServerRef<Out, In>;
   return { rec, hub, system };
 }
 
-function wire(system: ActorSystem, hub: WebsocketServerRef<Out, In>, sock: MockSocket, r: HttpRequest = req(), policy: ResolvedWebsocketPolicy = DEFAULT_WEBSOCKET_POLICY): void {
+function wire(system: ActorSystem, hub: WebsocketServerRef<Out, In>, sock: MockSocket, r: HttpRequest = request(), policy: ResolvedWebsocketPolicy = DEFAULT_WEBSOCKET_POLICY): void {
   wireConnection(system, hub, r, sock, jsonCodec<Out, In>(), policy);
 }
 
@@ -136,9 +136,9 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     sock.emit(JSON.stringify({ kind: 'ping', n: 5 }));
     await sleep(80);
 
-    expect(rec.conns).toHaveLength(1);
-    expect(rec.events).toContain(`connect:${rec.conns[0]!.id}`);
-    expect(rec.events).toContain(`ping:5:conn:${rec.conns[0]!.id}`);
+    expect(rec.connections).toHaveLength(1);
+    expect(rec.events).toContain(`connect:${rec.connections[0]!.id}`);
+    expect(rec.events).toContain(`ping:5:conn:${rec.connections[0]!.id}`);
     expect(sock.textSent).toContain(JSON.stringify({ kind: 'pong', n: 5 }));
   });
 
@@ -151,10 +151,10 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     sock.emit(JSON.stringify({ kind: 'ping', n: 1 }));
     await sleep(80);
 
-    const connectIdx = rec.events.findIndex((e) => e.startsWith('connect:'));
-    const pingIdx = rec.events.findIndex((e) => e.startsWith('ping:'));
-    expect(connectIdx).toBeGreaterThanOrEqual(0);
-    expect(pingIdx).toBeGreaterThan(connectIdx);
+    const connectIndex = rec.events.findIndex((e) => e.startsWith('connect:'));
+    const pingIndex = rec.events.findIndex((e) => e.startsWith('ping:'));
+    expect(connectIndex).toBeGreaterThanOrEqual(0);
+    expect(pingIndex).toBeGreaterThan(connectIndex);
   });
 
   test('broadcast reaches every open connection', async () => {
@@ -169,7 +169,7 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     await sleep(60);
 
     const expected = JSON.stringify({ kind: 'msg', text: 'hi' });
-    expect(rec.conns).toHaveLength(2);
+    expect(rec.connections).toHaveLength(2);
     expect(socketA.textSent).toContain(expected);
     expect(socketB.textSent).toContain(expected);
   });
@@ -181,11 +181,11 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     wire(system, hub, socketA);
     wire(system, hub, socketB);
     await sleep(60);
-    const connA = rec.conns[0]!;
+    const connectionA = rec.connections[0]!;
 
     socketA.close(1000, 'bye');
     await sleep(80);
-    expect(rec.events).toContain(`disconnect:${connA.id}`);
+    expect(rec.events).toContain(`disconnect:${connectionA.id}`);
 
     // Broadcast now reaches only B.
     socketB.emit(JSON.stringify({ kind: 'shout', text: 'after' }));
@@ -244,7 +244,7 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     const hub = system.spawn(Props.create(() => new HookServer()), 'hub') as WebsocketServerRef<Out, In>;
     const sock = new MockSocket();
     const policy: ResolvedWebsocketPolicy = { ...DEFAULT_WEBSOCKET_POLICY, onInvalidMessage: 'hook' };
-    wireConnection(system, hub, req(), sock, jsonCodec<Out, In>(), policy);
+    wireConnection(system, hub, request(), sock, jsonCodec<Out, In>(), policy);
     await sleep(40);
 
     sock.emit('garbage{');
@@ -258,12 +258,12 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     const sock = new MockSocket();
     wire(system, hub, sock);
     await sleep(40);
-    const conn = rec.conns[0]!;
+    const connection = rec.connections[0]!;
 
     sock.close(1000, 'gone');
     await sleep(40);
     const before = sock.sent.length;
-    expect(() => conn.tell({ kind: 'pong', n: 1 })).not.toThrow();
+    expect(() => connection.tell({ kind: 'pong', n: 1 })).not.toThrow();
     await sleep(40);
     expect(sock.sent.length).toBe(before);
   });
@@ -277,7 +277,7 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     await sleep(80);
 
     // Two connections → the hub had 2 children by the second connect.
-    expect(rec.conns).toHaveLength(2);
+    expect(rec.connections).toHaveLength(2);
     expect(Math.max(...rec.childCounts)).toBeGreaterThanOrEqual(2);
 
     // Closing one stops its child → the hub's child count drops.
@@ -291,14 +291,14 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
   test('connection exposes upgrade info (path, params, query, remoteAddress)', async () => {
     const { rec, hub, system } = setup('ws-hub-upgrade');
     const sock = new MockSocket();
-    wire(system, hub, sock, req({ path: '/room/42', params: { id: '42' }, query: { token: 'abc' } }));
+    wire(system, hub, sock, request({ path: '/room/42', params: { id: '42' }, query: { token: 'abc' } }));
     await sleep(60);
 
-    const conn = rec.conns[0]!;
-    expect(conn.upgrade.path).toBe('/room/42');
-    expect(conn.upgrade.params.id).toBe('42');
-    expect(conn.upgrade.query.token).toBe('abc');
-    expect(conn.remoteAddress).toBe('127.0.0.1');
-    expect(conn.isOpen).toBe(true);
+    const connection = rec.connections[0]!;
+    expect(connection.upgrade.path).toBe('/room/42');
+    expect(connection.upgrade.params.id).toBe('42');
+    expect(connection.upgrade.query.token).toBe('abc');
+    expect(connection.remoteAddress).toBe('127.0.0.1');
+    expect(connection.isOpen).toBe(true);
   });
 });

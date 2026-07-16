@@ -6,7 +6,7 @@ import { Status, type HttpRequest } from '../../../../src/http/types.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
-function makeReq(path: string, headers: Record<string, string> = {}): HttpRequest {
+function makeRequest(path: string, headers: Record<string, string> = {}): HttpRequest {
   return {
     method: 'GET',
     path,
@@ -24,10 +24,10 @@ describe('rateLimit — fixed-window counter', () => {
     const cache = new InMemoryCache();
     const limited = rateLimit({ cache, windowMs: 60_000, max: 3, key: () => 'tester' });
     const handler = limited(okHandler);
-    expect((await handler(makeReq('/a'))).status).toBe(200);
-    expect((await handler(makeReq('/a'))).status).toBe(200);
-    expect((await handler(makeReq('/a'))).status).toBe(200);
-    const limited4 = await handler(makeReq('/a'));
+    expect((await handler(makeRequest('/a'))).status).toBe(200);
+    expect((await handler(makeRequest('/a'))).status).toBe(200);
+    expect((await handler(makeRequest('/a'))).status).toBe(200);
+    const limited4 = await handler(makeRequest('/a'));
     expect(limited4.status).toBe(Status.TooManyRequests);
     expect(limited4.headers?.['retry-after']).toBeDefined();
   });
@@ -35,28 +35,28 @@ describe('rateLimit — fixed-window counter', () => {
   test('different keys do not share the window', async () => {
     const cache = new InMemoryCache();
     const limited = rateLimit({ cache, windowMs: 60_000, max: 1,
-      key: (req) => req.headers['x-user'] ?? '<anon>' });
+      key: (request) => request.headers['x-user'] ?? '<anon>' });
     const handler = limited(okHandler);
-    expect((await handler(makeReq('/', { 'x-user': 'alice' }))).status).toBe(200);
-    expect((await handler(makeReq('/', { 'x-user': 'alice' }))).status).toBe(429);
-    expect((await handler(makeReq('/', { 'x-user': 'bob' }))).status).toBe(200);  // different bucket
+    expect((await handler(makeRequest('/', { 'x-user': 'alice' }))).status).toBe(200);
+    expect((await handler(makeRequest('/', { 'x-user': 'alice' }))).status).toBe(429);
+    expect((await handler(makeRequest('/', { 'x-user': 'bob' }))).status).toBe(200);  // different bucket
   });
 
   test('window reset: after windowMs the counter resets', async () => {
     const cache = new InMemoryCache();
     const limited = rateLimit({ cache, windowMs: 30, max: 1, key: () => 'k' });
     const handler = limited(okHandler);
-    expect((await handler(makeReq('/'))).status).toBe(200);
-    expect((await handler(makeReq('/'))).status).toBe(429);
+    expect((await handler(makeRequest('/'))).status).toBe(200);
+    expect((await handler(makeRequest('/'))).status).toBe(429);
     await sleep(50);  // window expired
-    expect((await handler(makeReq('/'))).status).toBe(200);
+    expect((await handler(makeRequest('/'))).status).toBe(200);
   });
 
   test('successful response carries x-ratelimit-* headers', async () => {
     const cache = new InMemoryCache();
     const limited = rateLimit({ cache, windowMs: 60_000, max: 10, key: () => 'k' });
     const handler = limited(okHandler);
-    const response = await handler(makeReq('/'));
+    const response = await handler(makeRequest('/'));
     expect(response.headers?.['x-ratelimit-limit']).toBe('10');
     expect(response.headers?.['x-ratelimit-remaining']).toBe('9');
   });
@@ -65,11 +65,11 @@ describe('rateLimit — fixed-window counter', () => {
     const cache = new InMemoryCache();
     const limited = rateLimit({
       cache, windowMs: 60_000, max: 1, key: () => 'k',
-      onLimit: (ctx) => complete(503, { custom: true, count: ctx.count }),
+      onLimit: (context) => complete(503, { custom: true, count: context.count }),
     });
     const handler = limited(okHandler);
-    await handler(makeReq('/'));
-    const blocked = await handler(makeReq('/'));
+    await handler(makeRequest('/'));
+    const blocked = await handler(makeRequest('/'));
     expect(blocked.status).toBe(503);
   });
 
@@ -83,7 +83,7 @@ describe('rateLimit — fixed-window counter', () => {
     // Even though max=1, 5 requests should all succeed because the
     // counter cannot be incremented — fail open is the intended path.
     for (let i = 0; i < 5; i++) {
-      expect((await handler(makeReq('/'))).status).toBe(200);
+      expect((await handler(makeRequest('/'))).status).toBe(200);
     }
   });
 

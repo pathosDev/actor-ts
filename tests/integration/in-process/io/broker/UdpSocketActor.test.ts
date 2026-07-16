@@ -28,8 +28,8 @@ async function startUdpEcho(): Promise<UdpEcho> {
     sock.once('error', (e) => reject(e));
     sock.bind(0, '127.0.0.1');
   });
-  sock.on('message', (msg: Uint8Array, rinfo) => {
-    sock.send(msg, rinfo.port, rinfo.address);
+  sock.on('message', (message: Uint8Array, rinfo) => {
+    sock.send(message, rinfo.port, rinfo.address);
   });
   const addr = sock.address();
   return {

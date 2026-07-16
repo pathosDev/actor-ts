@@ -41,7 +41,7 @@ async function main(): Promise<void> {
     .withLogger(new JsonLogger()).withLogLevel(LogLevel.Info));
   process.on('SIGTERM', () => { void system.terminate(); });
 
-  const ctx: RedisContext = { env: process.env, url, system };
+  const context: RedisContext = { env: process.env, url, system };
 
   try {
     const scenarios: BrokerScenario<RedisContext>[] = [
@@ -49,7 +49,7 @@ async function main(): Promise<void> {
       consumeScenario,
       maxlenScenario,
     ];
-    await runScenarios(scenarios, ctx);
+    await runScenarios(scenarios, context);
   } finally {
     await system.terminate();
   }
@@ -61,22 +61,22 @@ export interface RedisSpawnOpts {
   target?: ReturnType<ActorSystem['spawnAnonymous']>;
 }
 
-export function spawnRedis(ctx: RedisContext, opts: RedisSpawnOpts = {}): ReturnType<ActorSystem['spawnAnonymous']> {
+export function spawnRedis(context: RedisContext, options: RedisSpawnOpts = {}): ReturnType<ActorSystem['spawnAnonymous']> {
   const builder = RedisStreamsOptions.create()
-    .withUrl(ctx.url)
+    .withUrl(context.url)
     .withBlockMs(500);
-  if (opts.streams) builder.withStreams(opts.streams);
-  if (opts.consumerGroup) builder.withConsumerGroup({ ...opts.consumerGroup, createIfMissing: true });
-  if (opts.target) builder.withTarget(opts.target as unknown as Parameters<RedisStreamsOptionsBuilder['withTarget']>[0]);
+  if (options.streams) builder.withStreams(options.streams);
+  if (options.consumerGroup) builder.withConsumerGroup({ ...options.consumerGroup, createIfMissing: true });
+  if (options.target) builder.withTarget(options.target as unknown as Parameters<RedisStreamsOptionsBuilder['withTarget']>[0]);
   const actor = new RedisStreamsActor(builder);
-  return ctx.system.spawnAnonymous(Props.create(() => actor));
+  return context.system.spawnAnonymous(Props.create(() => actor));
 }
 
-export function spawnInbox(ctx: RedisContext): {
+export function spawnInbox(context: RedisContext): {
   ref: ReturnType<ActorSystem['spawnAnonymous']>; inbox: InboxActor;
 } {
   const inbox = new InboxActor();
-  const ref = ctx.system.spawnAnonymous(Props.create(() => inbox));
+  const ref = context.system.spawnAnonymous(Props.create(() => inbox));
   return { ref, inbox };
 }
 

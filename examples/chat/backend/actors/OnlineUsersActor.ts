@@ -84,8 +84,8 @@ export class OnlineUsersActor extends Actor<OnlineUsersCommand> {
     this.rooms.clear();
   }
 
-  override onReceive(cmd: OnlineUsersCommand): void {
-    match(cmd)
+  override onReceive(command: OnlineUsersCommand): void {
+    match(command)
       .with({ kind: 'AddToRoom' }, (m) => this.onAddToRoom(m))
       .with({ kind: 'RemoveFromRoom' }, (m) => this.onRemoveFromRoom(m))
       .with({ kind: 'Subscribe' }, (m) => this.onSubscribe(m))

@@ -69,12 +69,12 @@ class OrderFsm extends PersistentFSM<OrderCommand, OrderEvent, OrderState, Order
     return { state: 'cancelled', data: { ...data, cancelReason: e.reason ?? null } };
   }
 
-  override async onCommand(curr: FsmStateData<OrderState, OrderData>, cmd: OrderCommand): Promise<void> {
-    if (cmd.kind === 'getState') {
+  override async onCommand(curr: FsmStateData<OrderState, OrderData>, command: OrderCommand): Promise<void> {
+    if (command.kind === 'getState') {
       this.sender.toNullable()?.tell(curr);
       return;
     }
-    return super.onCommand(curr, cmd);
+    return super.onCommand(curr, command);
   }
 }
 

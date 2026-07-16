@@ -41,17 +41,17 @@ function requireEnv(name: string): string {
 
 class UnaryEchoHandler extends Actor<GrpcUnaryCall> {
   override onReceive(call: GrpcUnaryCall): void {
-    const req = call.request as { text?: string };
-    call.respond({ text: req.text ?? '', sequence: 0 });
+    const request = call.request as { text?: string };
+    call.respond({ text: request.text ?? '', sequence: 0 });
   }
 }
 
 class ServerStreamHandler extends Actor<GrpcServerStreamCall> {
   override onReceive(call: GrpcServerStreamCall): void {
-    const req = call.request as { text?: string; count?: number };
-    const count = req.count ?? 3;
+    const request = call.request as { text?: string; count?: number };
+    const count = request.count ?? 3;
     for (let i = 0; i < count; i++) {
-      call.send({ text: `${req.text ?? ''}-${i}`, sequence: i });
+      call.send({ text: `${request.text ?? ''}-${i}`, sequence: i });
     }
     call.complete();
   }
@@ -122,7 +122,7 @@ async function main(): Promise<void> {
   );
   await new Promise((r) => setTimeout(r, 500));
 
-  const ctx: GrpcContext = {
+  const context: GrpcContext = {
     env: process.env,
     endpoint,
     system,
@@ -135,7 +135,7 @@ async function main(): Promise<void> {
       serverStreamScenario,
       bidiScenario,
     ];
-    await runScenarios(scenarios, ctx);
+    await runScenarios(scenarios, context);
   } finally {
     client.stop();
     server.stop();
@@ -155,11 +155,11 @@ export class CollectorActor extends Actor<GrpcInbound> {
   override onReceive(m: GrpcInbound): void { this.inbound.push(m); }
 }
 
-export function spawnCollector(ctx: GrpcContext): {
+export function spawnCollector(context: GrpcContext): {
   ref: ReturnType<ActorSystem['spawnAnonymous']>; collector: CollectorActor;
 } {
   const collector = new CollectorActor();
-  const ref = ctx.system.spawnAnonymous(Props.create(() => collector));
+  const ref = context.system.spawnAnonymous(Props.create(() => collector));
   return { ref, collector };
 }
 

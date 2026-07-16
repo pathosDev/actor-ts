@@ -38,9 +38,9 @@ async function whoFromAny(
   let lastErr: unknown = null;
   for (const h of liveHosts) {
     try {
-      const res = await fetch(`http://${h}:${controlPort}/test/sharding/who?id=${encodeURIComponent(entityId)}`);
-      if (res.ok) return await res.json() as WhoResponse;
-      lastErr = new Error(`HTTP ${res.status} from ${h}: ${await res.text()}`);
+      const response = await fetch(`http://${h}:${controlPort}/test/sharding/who?id=${encodeURIComponent(entityId)}`);
+      if (response.ok) return await response.json() as WhoResponse;
+      lastErr = new Error(`HTTP ${response.status} from ${h}: ${await response.text()}`);
     } catch (e) {
       lastErr = e;
     }
@@ -49,15 +49,15 @@ async function whoFromAny(
 }
 
 async function leaveCmd(host: string, controlPort: number): Promise<void> {
-  const res = await fetch(`http://${host}:${controlPort}/test/leave`, { method: 'POST' });
-  if (!res.ok) throw new Error(`/test/leave on ${host} → ${res.status}`);
+  const response = await fetch(`http://${host}:${controlPort}/test/leave`, { method: 'POST' });
+  if (!response.ok) throw new Error(`/test/leave on ${host} → ${response.status}`);
 }
 
 
 export const scenario: Scenario = {
   name: '06-sharding-rebalance',
-  async run(ctx) {
-    const live = await clusterLiveNodes(ctx.nodes, ctx.controlPort);
+  async run(context) {
+    const live = await clusterLiveNodes(context.nodes, context.controlPort);
     if (live.length < 3) {
       console.log(`[06] skipping — need >=3 live nodes for a meaningful rebalance, have ${live.length}`);
       return;
@@ -70,7 +70,7 @@ export const scenario: Scenario = {
     console.log(`[06] warming up ${NUM_ENTITIES} entities...`);
     const idToHost = new Map<string, string>();
     for (const id of ENTITY_IDS) {
-      const owner = await whoFromAny(live, ctx.controlPort, id);
+      const owner = await whoFromAny(live, context.controlPort, id);
       idToHost.set(id, owner.host);
     }
 
@@ -92,14 +92,14 @@ export const scenario: Scenario = {
     const [victim] = [...distribution.entries()].sort((a, b) => b[1] - a[1])[0]!;
     const entitiesOnVictim = ENTITY_IDS.filter((id) => idToHost.get(id) === victim);
     console.log(`[06] victim node ${victim} owns ${entitiesOnVictim.length} entities; leaving it...`);
-    await leaveCmd(victim, ctx.controlPort);
+    await leaveCmd(victim, context.controlPort);
 
     // 4. Wait for the cluster to remove the victim from membership.
     const stillLive = live.filter((h) => h !== victim);
     await waitFor(
       `cluster removes departed ${victim}`,
       async () => {
-        const post = await clusterLiveNodes(stillLive, ctx.controlPort);
+        const post = await clusterLiveNodes(stillLive, context.controlPort);
         return post.length === stillLive.length;
       },
       10_000,
@@ -118,7 +118,7 @@ export const scenario: Scenario = {
     let relocated = 0;
     const newHosts = new Set<string>();
     for (const id of entitiesOnVictim) {
-      const owner = await whoFromAny(stillLive, ctx.controlPort, id);
+      const owner = await whoFromAny(stillLive, context.controlPort, id);
       if (owner.host === victim) {
         stillOnVictim++;
       } else {

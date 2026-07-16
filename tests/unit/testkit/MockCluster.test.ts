@@ -62,9 +62,9 @@ describe('MockCluster — subscribe replays current state', () => {
   test('returned unsubscribe handle removes the listener', () => {
     const cluster = new MockCluster({ selfAddress: addr(1) });
     const events: string[] = [];
-    const unsub = cluster.subscribe((e) => events.push(e.constructor.name));
+    const unsubscribe = cluster.subscribe((e) => events.push(e.constructor.name));
     expect(cluster.listenerCount).toBe(1);
-    unsub();
+    unsubscribe();
     expect(cluster.listenerCount).toBe(0);
     cluster.addMember(addr(2));
     expect(events).not.toContain('MemberJoined');

@@ -7,8 +7,8 @@ import type { BrokerScenario } from '../../lib/scenario.js';
 
 export const scenario: BrokerScenario<S3Context> = {
   name: 'put-get round-trip',
-  async run(ctx) {
-    const store = backend(ctx);
+  async run(context) {
+    const store = backend(context);
     try {
       const key = `b2/put-get-${Date.now()}.bin`;
       const body = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);

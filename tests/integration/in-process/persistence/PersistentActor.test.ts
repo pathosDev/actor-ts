@@ -33,9 +33,9 @@ function makeSystem(): { system: ActorSystem; journal: InMemoryJournal; snapshot
 
 class Account extends PersistentActor<Command, Event, State> {
   readonly persistenceId: string;
-  constructor(pid: string, private readonly replyTo?: (m: unknown) => void) {
+  constructor(persistenceId: string, private readonly replyTo?: (m: unknown) => void) {
     super();
-    this.persistenceId = pid;
+    this.persistenceId = persistenceId;
   }
   initialState(): State { return { balance: 0 }; }
   onEvent(s: State, e: Event): State {
@@ -44,13 +44,13 @@ class Account extends PersistentActor<Command, Event, State> {
     return s;
   }
   override onRecoveryComplete(s: State): void { this.replyTo?.({ ready: s.balance }); }
-  async onCommand(state: State, cmd: Command): Promise<void> {
-    if (cmd.kind === 'deposit') {
-      await this.persist({ kind: 'deposited', amount: cmd.amount }, s => this.replyTo?.({ balance: s.balance }));
-    } else if (cmd.kind === 'withdraw') {
-      if (cmd.amount > state.balance) { this.replyTo?.({ error: 'insufficient' }); return; }
-      await this.persist({ kind: 'withdrew', amount: cmd.amount }, s => this.replyTo?.({ balance: s.balance }));
-    } else if (cmd.kind === 'balance') {
+  async onCommand(state: State, command: Command): Promise<void> {
+    if (command.kind === 'deposit') {
+      await this.persist({ kind: 'deposited', amount: command.amount }, s => this.replyTo?.({ balance: s.balance }));
+    } else if (command.kind === 'withdraw') {
+      if (command.amount > state.balance) { this.replyTo?.({ error: 'insufficient' }); return; }
+      await this.persist({ kind: 'withdrew', amount: command.amount }, s => this.replyTo?.({ balance: s.balance }));
+    } else if (command.kind === 'balance') {
       this.replyTo?.({ balance: state.balance });
     }
   }
@@ -119,13 +119,13 @@ describe('PersistentActor — stash during persist', () => {
       readonly persistenceId = 'slow-1';
       initialState() { return { count: 0 }; }
       onEvent(s: { count: number }): { count: number } { return { count: s.count + 1 }; }
-      async onCommand(_s: unknown, cmd: 'ping' | 'fast'): Promise<void> {
-        if (cmd === 'ping') {
+      async onCommand(_s: unknown, command: 'ping' | 'fast'): Promise<void> {
+        if (command === 'ping') {
           order.push('persist-start');
           await this.persist('pinged', () => {
             order.push('persist-done');
           });
-        } else if (cmd === 'fast') {
+        } else if (command === 'fast') {
           order.push('fast-ran');
         }
       }
@@ -152,7 +152,7 @@ describe('PersistentActor — snapshots', () => {
       initialState() { return { n: 0 }; }
       onEvent(s: { n: number }): { n: number } { return { n: s.n + 1 }; }
       snapshotPolicy() { return everyNEvents<{ n: number }, 'ticked'>(3); }
-      async onCommand(_s: unknown, _cmd: 'inc'): Promise<void> {
+      async onCommand(_s: unknown, _command: 'inc'): Promise<void> {
         await this.persist('ticked');
       }
     }
@@ -176,7 +176,7 @@ describe('PersistentActor — persistAll atomic batch', () => {
       readonly persistenceId = 'batch';
       initialState() { return []; }
       onEvent(s: number[], e: number): number[] { return [...s, e]; }
-      async onCommand(_s: unknown, _cmd: 'go'): Promise<void> {
+      async onCommand(_s: unknown, _command: 'go'): Promise<void> {
         await this.persistAll([1, 2, 3]);
       }
     }

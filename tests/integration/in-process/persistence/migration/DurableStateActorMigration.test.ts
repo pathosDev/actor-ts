@@ -37,14 +37,14 @@ const stateAdapter = (): StateAdapter<State> => defaultsSnapshotAdapter<StateV2>
 
 class Account extends DurableStateActor<Command, State> {
   protected override stateAdapter(): StateAdapter<State> { return stateAdapter(); }
-  override async onCommand(cmd: Command): Promise<void> {
-    if (cmd.kind === 'deposit') {
-      const next: State = { balance: this.state.balance + cmd.amount, currency: 'EUR' };
+  override async onCommand(command: Command): Promise<void> {
+    if (command.kind === 'deposit') {
+      const next: State = { balance: this.state.balance + command.amount, currency: 'EUR' };
       await this.persist(next);
-      cmd.replyTo.tell({ ok: this.revision } as never);
+      command.replyTo.tell({ ok: this.revision } as never);
       return;
     }
-    cmd.replyTo.tell({ ...this.state } as never);
+    command.replyTo.tell({ ...this.state } as never);
   }
 }
 
@@ -168,11 +168,11 @@ describe('DurableStateActor — no adapter regression', () => {
   test('actor without stateAdapter uses raw state on disk (pre-migration behaviour)', async () => {
     const store = new InMemoryDurableStateStore();
     class RawAccount extends DurableStateActor<Command, StateV1> {
-      override async onCommand(cmd: Command): Promise<void> {
-        if (cmd.kind === 'deposit') {
-          await this.persist({ balance: this.state.balance + cmd.amount });
+      override async onCommand(command: Command): Promise<void> {
+        if (command.kind === 'deposit') {
+          await this.persist({ balance: this.state.balance + command.amount });
         } else {
-          cmd.replyTo.tell({ ...this.state } as never);
+          command.replyTo.tell({ ...this.state } as never);
         }
       }
     }

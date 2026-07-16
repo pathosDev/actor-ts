@@ -65,7 +65,7 @@ import { ReadReceiptsActor } from './actors/ReadReceiptsActor.js';
 import { httpIngressProps } from './actors/HttpIngressActor.js';
 
 async function main(): Promise<void> {
-  const cfg = parseArguments(process.argv.slice(2));
+  const config = parseArguments(process.argv.slice(2));
   const SYSTEM_NAME = 'chat-cluster';
 
   // -------- 1. Cluster discovery --------
@@ -76,17 +76,17 @@ async function main(): Promise<void> {
   // Anything the user passed explicitly wins.
   const seedProvider = new SameHostScanSeedProvider({
     systemName: SYSTEM_NAME,
-    host: cfg.host,
+    host: config.host,
     basePort: BASE_CLUSTER_PORT,
     maxSlots: MAX_NODE_SLOTS,
   });
-  const port = cfg.port ?? await pickFirstFreePort({
-    host: cfg.host,
+  const port = config.port ?? await pickFirstFreePort({
+    host: config.host,
     basePort: BASE_CLUSTER_PORT,
     maxSlots: MAX_NODE_SLOTS,
   });
-  const seeds = cfg.seeds !== null
-    ? [...cfg.seeds]
+  const seeds = config.seeds !== null
+    ? [...config.seeds]
     : (await seedProvider.lookup())
         // Don't seed ourselves: the scan ran before we bound `port`,
         // but the user-passed port (or the picked port) might still
@@ -111,7 +111,7 @@ async function main(): Promise<void> {
     ? ` · seeds=[${seeds.join(',')}]`
     : ' · bootstrap (no seeds)';
   system.log.info(
-    `chat node starting · cluster=${cfg.host}:${port} · http=${cfg.host}:${cfg.httpPort} (singleton)${seedSummary}`,
+    `chat node starting · cluster=${config.host}:${port} · http=${config.host}:${config.httpPort} (singleton)${seedSummary}`,
   );
 
   // -------- 3. Persistence: SQLite journal + snapshot store -----------
@@ -120,9 +120,9 @@ async function main(): Promise<void> {
   // start (the room's snapshot policy fires every 100 events — see the
   // actor for the rationale).  Both stores share a `data-dir` and the
   // same DB-file family.
-  fs.mkdirSync(cfg.dataDir, { recursive: true });
-  const journalPath = path.join(cfg.dataDir, 'chat.db');
-  const snapshotPath = path.join(cfg.dataDir, 'chat-snapshots.db');
+  fs.mkdirSync(config.dataDir, { recursive: true });
+  const journalPath = path.join(config.dataDir, 'chat.db');
+  const snapshotPath = path.join(config.dataDir, 'chat-snapshots.db');
   const journalOptions = SqliteJournalOptions.create()
     .withPath(journalPath)
     .withWal(true);
@@ -139,7 +139,7 @@ async function main(): Promise<void> {
 
   // -------- 4. Cluster.join --------
   const clusterOptions = ClusterOptions.create()
-    .withHost(cfg.host)
+    .withHost(config.host)
     .withPort(port)
     .withSeeds(seeds)
     .withFailureDetector({
@@ -176,7 +176,7 @@ async function main(): Promise<void> {
   const sharding = cluster.sharding;
   const chatRoomRegion = sharding.start('ChatRoom', ChatRoomActor,
     StartShardingOptions.create<ChatRoomCommand>()
-      .withExtractEntityId((msg) => msg.room)
+      .withExtractEntityId((message) => message.room)
       .withNumShards(16));
 
   // -------- 6b. ClusterSharding: one DirectMessageChannelActor per pair --------
@@ -187,7 +187,7 @@ async function main(): Promise<void> {
   // small per-entity state) so a single tuning value covers both.
   const directMessageChannelRegion = sharding.start('DirectMessageChannel', DirectMessageChannelActor,
     StartShardingOptions.create<DirectMessageChannelCommand>()
-      .withExtractEntityId((msg) => msg.pairId)
+      .withExtractEntityId((message) => message.pairId)
       .withNumShards(16));
 
   // -------- 7. OnlineUsersActor (top-level, runs on every node) --------
@@ -228,14 +228,14 @@ async function main(): Promise<void> {
   // listener into a TLS-terminating server.  Frontends already pick
   // `wss:` based on `location.protocol`, so no client change is
   // required to flip the whole sample to TLS.
-  const tls = (cfg.tlsCert && cfg.tlsKey)
+  const tls = (config.tlsCert && config.tlsKey)
     ? {
-        cert: fs.readFileSync(cfg.tlsCert),
-        key:  fs.readFileSync(cfg.tlsKey),
+        cert: fs.readFileSync(config.tlsCert),
+        key:  fs.readFileSync(config.tlsKey),
       }
     : undefined;
   if (tls) {
-    system.log.info(`TLS enabled · cert=${cfg.tlsCert} · key=${cfg.tlsKey}`);
+    system.log.info(`TLS enabled · cert=${config.tlsCert} · key=${config.tlsKey}`);
   }
 
   // -------- 9. HTTP front door — ClusterSingleton --------
@@ -249,8 +249,8 @@ async function main(): Promise<void> {
   const singletonOptions = StartSingletonOptions.create()
     .withTypeName('http-ingress')
     .withProps(httpIngressProps({
-      host: cfg.host,
-      httpPort: cfg.httpPort,
+      host: config.host,
+      httpPort: config.httpPort,
       staticDir,
       system,
       chatRoomRegion,

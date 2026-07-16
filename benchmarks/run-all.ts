@@ -72,8 +72,8 @@ function run(): void {
   for (const s of filtered) {
     const rel = s.file.slice(root.length + 1).replace(/\\/g, '/');
     console.log('\n' + ansi.cyan('▸ ') + ansi.bold(s.group) + ansi.gray(' / ') + rel);
-    const res = spawnSync('bun', ['run', s.file], { stdio: 'inherit' });
-    if (res.status !== 0) console.error(ansi.red(`  [exit=${res.status}] ${s.file}`));
+    const result = spawnSync('bun', ['run', s.file], { stdio: 'inherit' });
+    if (result.status !== 0) console.error(ansi.red(`  [exit=${result.status}] ${s.file}`));
   }
 
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);

@@ -103,8 +103,8 @@ export class VoicePresenceActor extends Actor<VoicePresenceCommand> {
     this.states.clear();
   }
 
-  override onReceive(cmd: VoicePresenceCommand): void {
-    match(cmd)
+  override onReceive(command: VoicePresenceCommand): void {
+    match(command)
       .with({ kind: 'Add' },         (m) => this.onAdd(m))
       .with({ kind: 'Remove' },      (m) => this.onRemove(m))
       .with({ kind: 'Subscribe' },   (m) => this.onSubscribe(m))

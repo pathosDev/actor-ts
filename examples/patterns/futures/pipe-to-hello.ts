@@ -8,9 +8,9 @@
 import { Actor, ActorSystem, Props, Success, Failure, after, pipeTo } from '../../../src/index.js';
 
 class ResultHandler extends Actor<Success<number> | Failure> {
-  override onReceive(msg: Success<number> | Failure): void {
-    if (msg instanceof Success) console.log(`success: ${msg.value}`);
-    else console.log(`failure: ${msg.cause.message}`);
+  override onReceive(message: Success<number> | Failure): void {
+    if (message instanceof Success) console.log(`success: ${message.value}`);
+    else console.log(`failure: ${message.cause.message}`);
   }
 }
 

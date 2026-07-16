@@ -246,12 +246,12 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
 
   /* ------------------------------- mailbox -------------------------------- */
 
-  override onReceive(msg: SessionMessage): void {
-    if (msg instanceof Listing) {
-      this.onReceptionistListing(msg);
+  override onReceive(message: SessionMessage): void {
+    if (message instanceof Listing) {
+      this.onReceptionistListing(message);
       return;
     }
-    match(msg)
+    match(message)
       .with({ kind: 'text' },             (m) => this.onText(m))
       .with({ kind: 'binary' },           (m) => this.onBinary(m))
       .with({ kind: 'socket-closed' },    () => this.onSocketClosed())
@@ -274,21 +274,21 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
 
   private onText(m: TextInboundFrame): void {
     const raw = m.data;
-    const cmd = decodeClient(raw);
-    if (!cmd) {
+    const command = decodeClient(raw);
+    if (!command) {
       this.sendServer({ kind: 'system', text: 'Invalid frame — JSON expected.' });
       return;
     }
     if (this.phase === 'Unauthenticated') {
-      this.handleUnauthenticated(cmd);
+      this.handleUnauthenticated(command);
       return;
     }
-    this.handleAuthenticated(cmd);
+    this.handleAuthenticated(command);
   }
 
-  private handleUnauthenticated(cmd: ClientMessage): void {
-    if (cmd.kind === 'login') {
-      const user = validateCredentials(cmd.username, cmd.password);
+  private handleUnauthenticated(command: ClientMessage): void {
+    if (command.kind === 'login') {
+      const user = validateCredentials(command.username, command.password);
       if (!user) {
         this.sendServer({ kind: 'login-failed', reason: 'Invalid username or password' });
         this.context.stopSelf();
@@ -298,13 +298,13 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
       this.activate(user.username, token);
       return;
     }
-    if (cmd.kind === 'resume') {
-      const username = this.deps.sessions.lookupToken(cmd.token);
+    if (command.kind === 'resume') {
+      const username = this.deps.sessions.lookupToken(command.token);
       if (!username) {
         this.sendServer({ kind: 'login-failed', reason: 'Session expired' });
         return;
       }
-      this.activate(username, cmd.token);
+      this.activate(username, command.token);
       return;
     }
     this.sendServer({ kind: 'login-failed', reason: 'Login required as first frame' });
@@ -362,8 +362,8 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
     });
   }
 
-  private handleAuthenticated(cmd: ClientMessage): void {
-    match(cmd)
+  private handleAuthenticated(command: ClientMessage): void {
+    match(command)
       .with({ kind: 'login' },  () => this.onLogin())
       .with({ kind: 'resume' }, () => this.onResume())
       .with({ kind: 'logout' }, () => this.onLogout())
@@ -671,9 +671,9 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
 
   /* ------------------------------ outgoing ----------------------------- */
 
-  private sendServer(msg: ServerMessage): void {
+  private sendServer(message: ServerMessage): void {
     try {
-      this.deps.connection.sendText(encodeServer(msg));
+      this.deps.connection.sendText(encodeServer(message));
     } catch (e) {
       this.log.warn(`VoiceSession: send failed: ${(e as Error).message}`);
     }

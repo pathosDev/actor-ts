@@ -247,12 +247,12 @@
       const MIME_OPUS = 'audio/webm; codecs=opus';
 
       // ---------- shared frame codec (keep in sync with shared/frameCodec.ts) ----------
-      function decodeIncoming(buf) {
-        if (buf.byteLength < 1) return null;
-        const nameLen = buf[0];
-        if (buf.byteLength < 1 + nameLen) return null;
-        const sender = new TextDecoder().decode(buf.subarray(1, 1 + nameLen));
-        const opus = buf.subarray(1 + nameLen);
+      function decodeIncoming(buffer) {
+        if (buffer.byteLength < 1) return null;
+        const nameLen = buffer[0];
+        if (buffer.byteLength < 1 + nameLen) return null;
+        const sender = new TextDecoder().decode(buffer.subarray(1, 1 + nameLen));
+        const opus = buffer.subarray(1 + nameLen);
         return { sender, opus };
       }
 
@@ -277,7 +277,7 @@
         // audio
         micStream: null,
         micRecorder: null,
-        micCtx: null,
+        micContext: null,
         micAnalyser: null,
         // ws
         ws: null,
@@ -322,7 +322,7 @@
           // AudioContext for the level meter (and to unlock playback).
           const ctx = new (window.AudioContext || window.webkitAudioContext)();
           if (ctx.state === 'suspended') await ctx.resume();
-          state.micCtx = ctx;
+          state.micContext = ctx;
           const src = ctx.createMediaStreamSource(stream);
           const analyser = ctx.createAnalyser();
           analyser.fftSize = 512;
@@ -502,8 +502,8 @@
         }
       }
 
-      function handleServerBinary(buf) {
-        const decoded = decodeIncoming(buf);
+      function handleServerBinary(buffer) {
+        const decoded = decodeIncoming(buffer);
         if (!decoded) return;
         feedIncoming(decoded.sender, decoded.opus);
       }
@@ -726,8 +726,8 @@
           if (!e.data || e.data.size === 0) return;
           if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
           try {
-            const buf = await e.data.arrayBuffer();
-            state.ws.send(buf);
+            const buffer = await e.data.arrayBuffer();
+            state.ws.send(buffer);
           } catch (err) {
             console.warn('mic send failed', err);
           }

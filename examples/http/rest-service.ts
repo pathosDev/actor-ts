@@ -40,16 +40,16 @@ type UserReply = User | null | { deleted: true };
 
 class UserEntity extends Actor<UserCommand> {
   private user: User | null = null;
-  override onReceive(cmd: UserCommand): void {
-    match(cmd)
+  override onReceive(command: UserCommand): void {
+    match(command)
       .with({ kind: 'set' }, (c) => this.onSet(c))
       .with({ kind: 'get' }, () => this.onGet())
       .with({ kind: 'delete' }, () => this.onDelete())
       .exhaustive();
   }
 
-  private reply(msg: UserReply): void {
-    this.sender.forEach((s) => s.tell(msg));
+  private reply(message: UserReply): void {
+    this.sender.forEach((s) => s.tell(message));
   }
 
   private onSet(c: SetCommand): void {
@@ -74,34 +74,34 @@ async function main(): Promise<void> {
     .withPort(2552);
   const cluster = await Cluster.join(system, clusterOptions);
   const shardingOptions = StartShardingOptions.create<UserCommand>()
-    .withExtractEntityId((msg) => ('id' in msg ? msg.id : msg.user.id))
+    .withExtractEntityId((message) => ('id' in message ? message.id : message.user.id))
     .withNumShards(16);
   const region = cluster.sharding.start('user', UserEntity, shardingOptions);
 
-  const askUser = (cmd: UserCommand): Promise<UserReply> => region.ask<UserReply>(cmd, 500);
+  const askUser = (command: UserCommand): Promise<UserReply> => region.ask<UserReply>(command, 500);
 
   const routes = path('users', concat(
     path(':id', concat(
-      get(async req => {
-        const user = await askUser({ kind: 'get', id: req.params.id! });
-        if (!user) throw new HttpError(Status.NotFound, `user ${req.params.id} not found`);
+      get(async request => {
+        const user = await askUser({ kind: 'get', id: request.params.id! });
+        if (!user) throw new HttpError(Status.NotFound, `user ${request.params.id} not found`);
         return completeJson(Status.OK, user);
       }),
-      del(async req => {
-        await askUser({ kind: 'delete', id: req.params.id! });
+      del(async request => {
+        await askUser({ kind: 'delete', id: request.params.id! });
         return complete(Status.NoContent);
       }),
-      put(async req => {
-        const body = entity<Omit<User, 'id'>>(req);
+      put(async request => {
+        const body = entity<Omit<User, 'id'>>(request);
         const saved = await askUser({
           kind: 'set',
-          user: { id: req.params.id!, ...body },
+          user: { id: request.params.id!, ...body },
         });
         return completeJson(Status.OK, saved as User);
       }),
     )),
-    post(async req => {
-      const user = entity<User>(req);
+    post(async request => {
+      const user = entity<User>(request);
       const saved = await askUser({ kind: 'set', user });
       return completeJson(Status.Created, saved as User);
     }),

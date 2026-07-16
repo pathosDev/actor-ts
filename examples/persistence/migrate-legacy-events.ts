@@ -57,8 +57,8 @@ async function main(): Promise<void> {
     `BankAccount.${e.kind === 'deposited' ? 'Deposited' : 'Withdrawn'}`);
   console.log(formatMigrationResult('events   ', eventResult));
 
-  const pids = await journal.persistenceIds();
-  const stateResult = await migrateSnapshotStore<LegacyState>(snapshots, pids,
+  const persistenceIds = await journal.persistenceIds();
+  const stateResult = await migrateSnapshotStore<LegacyState>(snapshots, persistenceIds,
     (_state) => 'BankAccount.State');
   console.log(formatMigrationResult('snapshots', stateResult));
 

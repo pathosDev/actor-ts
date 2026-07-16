@@ -38,7 +38,7 @@ async function main(): Promise<void> {
     .withKeepN(2);
   const durableStateOptions = PostgresDurableStateStoreOptions.create()
     .withUrl(url);
-  const ctx: SqlPersistenceContext = {
+  const context: SqlPersistenceContext = {
     env: process.env,
     label: 'pg',
     journal: new PostgresJournal(journalOptions),
@@ -46,7 +46,7 @@ async function main(): Promise<void> {
     durableState: new PostgresDurableStateStore(durableStateOptions),
   };
 
-  await runScenarios(sqlPersistenceScenarios(), ctx);
+  await runScenarios(sqlPersistenceScenarios(), context);
 }
 
 main().catch((e) => {
