@@ -11,6 +11,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — abbreviations spelled out across all identifiers.**  Type,
+  class, file, method, field, generic-type-parameter and local names now use
+  full words — `Command`/`Message`/`Acknowledgment`/`NegativeAcknowledgment`/
+  `Terminate`/`Increment`/`DirectMessage`/`Request`/`Response`/`Function`/
+  `Context`/`Connection`/… (no more `Cmd`/`Msg`/`Ack`/`Nak`/`Nack`/`Term`/`Inc`/
+  `Dm`/`Req`/`Res`/`Fn`/`Ctx`/`Conn`).  Public-API surface is affected: generic
+  parameters (`PersistentActor<Command, Event, State>`),
+  `Scheduler.scheduleOnceFunction`/`scheduleAtFixedRateFunction` (were `…Fn`),
+  exported types (`HealthCheckFunction`, …), and config fields
+  (`maxMessages`/`maxAcknowledgmentPending`/`autoAcknowledge`).  The tagged-union
+  discriminant field is now always `kind` (never `type`) and its string values
+  are spelled out (`kind: 'increment'`, not `'inc'`).
+  *Migration:* rename usages accordingly; messages must use `kind` with the
+  spelled-out literal.  Names mirroring external APIs (nats.js, prom-client,
+  amqplib, DOM) and domain acronyms (PubSub, K8s, AMQP, MQTT, SQL) are unchanged.
 - **BREAKING — runtime floors raised: Node ≥ 24, Bun ≥ 1.3.**  Node 20
   reached end-of-life in April 2026 (no more security fixes); Node 24 is
   the oldest active LTS line (supported to April 2028) and the first

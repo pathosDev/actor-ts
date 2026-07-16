@@ -156,13 +156,30 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   machine / behavior / directive reducer) or that *compute a value* in a helper
   (config, codec, route, priority) stay inline.
 - **Discriminated unions are defined as named variant types.** Declare each
-  `kind`/`type`-tagged union as a union of **named** members
-  (`type Cmd = DepositCommand | WithdrawCommand | BalanceCommand`), never an
-  inline object-literal union. Name a variant `PascalCase(kind)` + a role suffix
-  matching the union (`Command`/`Event`/`Message`) — collision-safe (`Set`, `Get`,
-  `Publish` never bare); keep variant types module-local where the union is.
-  Handlers take the **named variant type** (`onDeposit(c: DepositCommand)`), not
-  `Extract<Union, { kind }>`.
+  tagged union as a union of **named** members
+  (`type Command = DepositCommand | WithdrawCommand | BalanceCommand`), never an
+  inline object-literal union — including the union alias itself
+  (`type Command`, not `type Cmd`). Name a variant `PascalCase(kind)` + a role
+  suffix matching the union (`Command`/`Event`/`Message`) — collision-safe (`Set`,
+  `Get`, `Publish` never bare); keep variant types module-local where the union
+  is. Handlers take the **named variant type** (`onDeposit(c: DepositCommand)`),
+  not `Extract<Union, { kind }>`.
+- **The discriminant field is always `kind`** (never `type` or `tag`) — including
+  the WebSocket/wire protocols of the examples. `type` collides with the `type`
+  keyword; `kind` is the single project-wide convention.
+- **Spell out abbreviations in identifiers** — types, classes, files, aliases,
+  generic type parameters, methods, fields, **and** locals/params, plus the `kind`
+  **string-literal values**. Full words: `Command`/`Message`/`Acknowledgment`/
+  `NegativeAcknowledgment`/`Terminate`/`Increment`/`DirectMessage`/`Request`/
+  `Response`/`Function`/`Context`/`Connection`/`Arguments`/`Directory`/
+  `Repository`/`Deduplication`/`PersistenceId`/`Implementation`/`Constructor`
+  (not `Cmd`/`Msg`/`Ack`/`Nak`/`Nack`/`Term`/`Inc`/`Dm`/`Req`/`Res`/`Fn`/`Ctx`/
+  `Conn`/`Args`/`Dir`/`Repo`/`Dedup`/`Pid`/`Impl`/`Ctor`). **Two exceptions only:**
+  (1) single-letter loop/lambda/catch vars (`m`, `e`, `i`) may stay; (2) names
+  mirroring an **external API** or established **domain acronyms** stay verbatim —
+  nats.js (`.ack()`/`.nak()`, `max_msgs`), prom-client (`inc()`/`dec()`/`set()`),
+  amqplib (`noAck`), DOM (`AudioContext`), `MsgPack` (MessagePack), and `PubSub`,
+  `K8s`, `AMQP`, `MQTT`, `SQL`, `S3`, `DNS`, `CBOR`.
 - HOCON config keys go through **`src/config/ConfigKeys.ts`** (typed,
   single source of truth). Options resolve with precedence:
   **explicit options > HOCON > built-in defaults**.
