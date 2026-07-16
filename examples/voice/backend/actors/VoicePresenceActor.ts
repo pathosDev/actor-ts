@@ -36,12 +36,38 @@ export function roomUsersKey(room: string): string {
 
 /* ----------------------------- public messages ------------------------- */
 
+interface AddCommand {
+  readonly kind: 'Add';
+  readonly key: string;
+  readonly username: string;
+}
+interface RemoveCommand {
+  readonly kind: 'Remove';
+  readonly key: string;
+  readonly username: string;
+}
+interface SubscribeCommand {
+  readonly kind: 'Subscribe';
+  readonly key: string;
+  readonly ref: ActorRef<PresenceChanged>;
+}
+interface UnsubscribeCommand {
+  readonly kind: 'Unsubscribe';
+  readonly key: string;
+  readonly ref: ActorRef<PresenceChanged>;
+}
+interface GetUsersCommand {
+  readonly kind: 'GetUsers';
+  readonly key: string;
+  readonly replyTo: ActorRef<PresenceChanged>;
+}
+
 export type VoicePresenceCommand =
-  | { readonly kind: 'Add';         readonly key: string; readonly username: string }
-  | { readonly kind: 'Remove';      readonly key: string; readonly username: string }
-  | { readonly kind: 'Subscribe';   readonly key: string; readonly ref: ActorRef<PresenceChanged> }
-  | { readonly kind: 'Unsubscribe'; readonly key: string; readonly ref: ActorRef<PresenceChanged> }
-  | { readonly kind: 'GetUsers';    readonly key: string; readonly replyTo: ActorRef<PresenceChanged> };
+  | AddCommand
+  | RemoveCommand
+  | SubscribeCommand
+  | UnsubscribeCommand
+  | GetUsersCommand;
 
 export interface PresenceChanged {
   readonly kind: 'PresenceChanged';
@@ -89,7 +115,7 @@ export class VoicePresenceActor extends Actor<VoicePresenceCommand> {
 
   /* ----------------------------- mutations ----------------------------- */
 
-  private onAdd(m: Extract<VoicePresenceCommand, { kind: 'Add' }>): void {
+  private onAdd(m: AddCommand): void {
     const { key, username } = m;
     this.dd.update<ORSet<string>>(
       key,
@@ -98,7 +124,7 @@ export class VoicePresenceActor extends Actor<VoicePresenceCommand> {
     );
   }
 
-  private onRemove(m: Extract<VoicePresenceCommand, { kind: 'Remove' }>): void {
+  private onRemove(m: RemoveCommand): void {
     const { key, username } = m;
     this.dd.update<ORSet<string>>(
       key,
@@ -109,7 +135,7 @@ export class VoicePresenceActor extends Actor<VoicePresenceCommand> {
 
   /* ----------------------------- subscription -------------------------- */
 
-  private onSubscribe(m: Extract<VoicePresenceCommand, { kind: 'Subscribe' }>): void {
+  private onSubscribe(m: SubscribeCommand): void {
     const { key, ref } = m;
     const state = this.ensureState(key);
     state.subscribers.add(ref);
@@ -118,7 +144,7 @@ export class VoicePresenceActor extends Actor<VoicePresenceCommand> {
     }
   }
 
-  private onUnsubscribe(m: Extract<VoicePresenceCommand, { kind: 'Unsubscribe' }>): void {
+  private onUnsubscribe(m: UnsubscribeCommand): void {
     const { key, ref } = m;
     const state = this.states.get(key);
     if (!state) return;
@@ -129,7 +155,7 @@ export class VoicePresenceActor extends Actor<VoicePresenceCommand> {
     }
   }
 
-  private onGetUsers(m: Extract<VoicePresenceCommand, { kind: 'GetUsers' }>): void {
+  private onGetUsers(m: GetUsersCommand): void {
     const { key, replyTo } = m;
     const current = this.dd.get<ORSet<string>>(key);
     const users = current ? [...current.value()] : [];

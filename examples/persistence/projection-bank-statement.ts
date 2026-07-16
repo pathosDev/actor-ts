@@ -35,14 +35,14 @@ import {
 
 /* --------------------------- write side ------------------------------- */
 
-type AccountCommand =
-  | { kind: 'deposit'; amount: number }
-  | { kind: 'withdraw'; amount: number }
-  | { kind: 'balance' };
+type DepositCommand = { kind: 'deposit'; amount: number };
+type WithdrawCommand = { kind: 'withdraw'; amount: number };
+type BalanceCommand = { kind: 'balance' };
+type AccountCommand = DepositCommand | WithdrawCommand | BalanceCommand;
 
-type AccountEvent =
-  | { kind: 'deposited'; amount: number }
-  | { kind: 'withdrew'; amount: number };
+type DepositedEvent = { kind: 'deposited'; amount: number };
+type WithdrewEvent = { kind: 'withdrew'; amount: number };
+type AccountEvent = DepositedEvent | WithdrewEvent;
 
 interface AccountState { balance: number }
 
@@ -56,11 +56,11 @@ class Account extends PersistentActor<AccountCommand, AccountEvent, AccountState
       .exhaustive();
   }
 
-  private onDeposited(s: AccountState, d: Extract<AccountEvent, { kind: 'deposited' }>): AccountState {
+  private onDeposited(s: AccountState, d: DepositedEvent): AccountState {
     return { balance: s.balance + d.amount };
   }
 
-  private onWithdrew(s: AccountState, d: Extract<AccountEvent, { kind: 'withdrew' }>): AccountState {
+  private onWithdrew(s: AccountState, d: WithdrewEvent): AccountState {
     return { balance: s.balance - d.amount };
   }
 
@@ -80,12 +80,12 @@ class Account extends PersistentActor<AccountCommand, AccountEvent, AccountState
     this.sender.forEach((sender) => sender.tell(msg));
   }
 
-  private async onDeposit(c: Extract<AccountCommand, { kind: 'deposit' }>): Promise<void> {
+  private async onDeposit(c: DepositCommand): Promise<void> {
     await this.persist({ kind: 'deposited', amount: c.amount },
       (st) => this.reply({ balance: st.balance }));
   }
 
-  private async onWithdraw(s: AccountState, c: Extract<AccountCommand, { kind: 'withdraw' }>): Promise<void> {
+  private async onWithdraw(s: AccountState, c: WithdrawCommand): Promise<void> {
     if (c.amount > s.balance) { this.reply(new Error('rejected')); return; }
     await this.persist({ kind: 'withdrew', amount: c.amount },
       (st) => this.reply({ balance: st.balance }));

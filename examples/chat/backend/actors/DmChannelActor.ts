@@ -129,7 +129,7 @@ export class DmChannelActor extends PersistentActor<DmChannelCommand, DmEvent, D
       .exhaustive();
   }
 
-  private onDmPosted(state: DmState, m: Extract<DmEvent, { kind: 'DmPosted' }>): DmState {
+  private onDmPosted(state: DmState, m: DmPosted): DmState {
     const next = [...state.history, { from: m.from, text: m.text, ts: m.ts }];
     const trimmed =
       next.length > HISTORY_LIMIT ? next.slice(next.length - HISTORY_LIMIT) : next;

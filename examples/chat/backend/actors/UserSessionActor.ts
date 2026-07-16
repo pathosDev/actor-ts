@@ -39,7 +39,14 @@ import {
   decodeClient,
   encodeServer,
   type ClientMessage,
+  type CreateRoomMessage,
+  type JoinMessage,
+  type LeaveMessage,
+  type ReadUpToMessage,
+  type SendMessage,
   type ServerMessage,
+  type SwitchActiveRoomMessage,
+  type TypingMessage,
 } from '../../shared/protocol.js';
 import {
   DEFAULT_ROOMS,
@@ -81,10 +88,13 @@ import type {
 
 /* --------------------------- mailbox shape --------------------------- */
 
+/** Text frame from the route-attached listener. */
+export interface TextFrame   { readonly kind: 'text';   readonly data: string }
+/** Binary frame from the route-attached listener. */
+export interface BinaryFrame { readonly kind: 'binary'; readonly data: Uint8Array }
+
 /** Inbound frame from the route-attached listener. */
-export type InboundFrame =
-  | { readonly kind: 'text';   readonly data: string }
-  | { readonly kind: 'binary'; readonly data: Uint8Array };
+export type InboundFrame = TextFrame | BinaryFrame;
 
 /** Synthetic close signal sent by the WebSocket hub when the socket closes. */
 export interface SocketClosed { readonly kind: 'socket-closed' }
@@ -214,7 +224,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
 
   /* ----------------------------- inbound ----------------------------- */
 
-  private onText(m: Extract<SessionMessage, { kind: 'text' }>): void {
+  private onText(m: TextFrame): void {
     const raw = m.data;
     const cmd = decodeClient(raw);
     if (!cmd) {
@@ -340,7 +350,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
     this.context.stopSelf();
   }
 
-  private onSend(m: Extract<ClientMessage, { type: 'send' }>): void {
+  private onSend(m: SendMessage): void {
     if (!isRoomName(m.room)) return;
     const text = m.text.slice(0, 4096);
     if (text.length === 0) return;
@@ -361,7 +371,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
     });
   }
 
-  private onJoin(m: Extract<ClientMessage, { type: 'join' }>): void {
+  private onJoin(m: JoinMessage): void {
     if (!isRoomName(m.room)) return;
     if (isDmRoomName(m.room)) {
       // "Joining" a DM means: fetch its history so the client
@@ -372,13 +382,13 @@ export class UserSessionActor extends Actor<SessionMessage> {
     this.joinRoom(m.room, true);
   }
 
-  private onLeave(m: Extract<ClientMessage, { type: 'leave' }>): void {
+  private onLeave(m: LeaveMessage): void {
     // No-op for DM rooms — there's nothing to leave, the inbox
     // stays subscribed cluster-wide for this session.
     if (isRoomName(m.room) && !isDmRoomName(m.room)) this.leaveRoom(m.room);
   }
 
-  private onSwitchActiveRoom(m: Extract<ClientMessage, { type: 'switch-active-room' }>): void {
+  private onSwitchActiveRoom(m: SwitchActiveRoomMessage): void {
     if (!isRoomName(m.room)) return;
     if (isDmRoomName(m.room)) {
       this.currentRoom = m.room;
@@ -409,7 +419,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
     }
   }
 
-  private onCreateRoom(m: Extract<ClientMessage, { type: 'create-room' }>): void {
+  private onCreateRoom(m: CreateRoomMessage): void {
     // Fire-and-forget: the directory broadcasts `RoomAdded` (or
     // a refreshed `RoomsChanged`) to every subscriber once the
     // ORSet update is gossiped, so this client sees the new
@@ -421,12 +431,12 @@ export class UserSessionActor extends Actor<SessionMessage> {
     this.deps.roomDirectory.tell({ kind: 'Create', name: m.name });
   }
 
-  private onTyping(m: Extract<ClientMessage, { type: 'typing' }>): void {
+  private onTyping(m: TypingMessage): void {
     if (!isRoomName(m.room)) return;
     this.broadcastTyping(m.room);
   }
 
-  private onReadUpTo(m: Extract<ClientMessage, { type: 'read-up-to' }>): void {
+  private onReadUpTo(m: ReadUpToMessage): void {
     if (!isRoomName(m.room)) return;
     if (typeof m.ts !== 'number' || !Number.isFinite(m.ts) || m.ts <= 0) return;
     // For DMs we register the read pointer under the canonical

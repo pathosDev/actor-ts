@@ -38,22 +38,72 @@ export type Username = string;
 /* Client → Server                                                  */
 /* ============================================================== */
 
+/* — auth (identical to chat) — */
+
+export interface LoginMessage {
+  readonly type: 'login';
+  readonly username: string;
+  readonly password: string;
+}
+export interface ResumeMessage {
+  readonly type: 'resume';
+  readonly token: string;
+}
+export interface LogoutMessage {
+  readonly type: 'logout';
+}
+export interface PingMessage {
+  readonly type: 'ping';
+}
+
+/* — voice control plane — */
+
+export interface VoiceTargetPeerMessage {
+  readonly type: 'voice-target';
+  readonly mode: 'peer';
+  readonly target: Username;
+}
+export interface VoiceTargetGroupMessage {
+  readonly type: 'voice-target';
+  readonly mode: 'group';
+  readonly group: GroupName;
+}
+export interface VoiceTargetRoomMessage {
+  readonly type: 'voice-target';
+  readonly mode: 'room';
+  readonly room: VoiceRoomName;
+}
+export interface VoiceStopMessage {
+  readonly type: 'voice-stop';
+}
+
+/* — room membership — */
+
+export interface RoomEnterMessage {
+  readonly type: 'room-enter';
+  readonly room: VoiceRoomName;
+}
+export interface RoomLeaveMessage {
+  readonly type: 'room-leave';
+  readonly room: VoiceRoomName;
+}
+
 export type ClientMessage =
   // — auth (identical to chat) —
-  | { readonly type: 'login';   readonly username: string; readonly password: string }
-  | { readonly type: 'resume';  readonly token: string }
-  | { readonly type: 'logout' }
-  | { readonly type: 'ping' }
+  | LoginMessage
+  | ResumeMessage
+  | LogoutMessage
+  | PingMessage
 
   // — voice control plane —
-  | { readonly type: 'voice-target'; readonly mode: 'peer';  readonly target: Username  }
-  | { readonly type: 'voice-target'; readonly mode: 'group'; readonly group:  GroupName }
-  | { readonly type: 'voice-target'; readonly mode: 'room';  readonly room:   VoiceRoomName }
-  | { readonly type: 'voice-stop' }
+  | VoiceTargetPeerMessage
+  | VoiceTargetGroupMessage
+  | VoiceTargetRoomMessage
+  | VoiceStopMessage
 
   // — room membership —
-  | { readonly type: 'room-enter'; readonly room: VoiceRoomName }
-  | { readonly type: 'room-leave'; readonly room: VoiceRoomName };
+  | RoomEnterMessage
+  | RoomLeaveMessage;
 
 /* ============================================================== */
 /* Server → Client                                                  */

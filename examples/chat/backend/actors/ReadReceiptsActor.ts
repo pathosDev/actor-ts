@@ -37,10 +37,14 @@ import { LWWMap } from '../../../../src/crdt/LWWMap.js';
 
 /* --------------------------- public messages --------------------------- */
 
+export interface UpdateCommand      { readonly kind: 'Update';      readonly room: string; readonly username: string; readonly ts: number }
+export interface SubscribeCommand   { readonly kind: 'Subscribe';   readonly room: string; readonly ref: ActorRef<ReceiptsChanged> }
+export interface UnsubscribeCommand { readonly kind: 'Unsubscribe'; readonly room: string; readonly ref: ActorRef<ReceiptsChanged> }
+
 export type ReadReceiptsCommand =
-  | { readonly kind: 'Update';      readonly room: string; readonly username: string; readonly ts: number }
-  | { readonly kind: 'Subscribe';   readonly room: string; readonly ref: ActorRef<ReceiptsChanged> }
-  | { readonly kind: 'Unsubscribe'; readonly room: string; readonly ref: ActorRef<ReceiptsChanged> };
+  | UpdateCommand
+  | SubscribeCommand
+  | UnsubscribeCommand;
 
 export interface ReceiptsChanged {
   readonly kind: 'ReceiptsChanged';
@@ -93,7 +97,7 @@ export class ReadReceiptsActor extends Actor<ReadReceiptsCommand> {
 
   /* ----------------------------- mutations ----------------------------- */
 
-  private onUpdate(m: Extract<ReadReceiptsCommand, { kind: 'Update' }>): void {
+  private onUpdate(m: UpdateCommand): void {
     const { room, username, ts } = m;
     // Monotonic guard: drop the write if it would roll the user's
     // pointer backwards.  LWWMap.put resolves concurrent writes via
@@ -112,7 +116,7 @@ export class ReadReceiptsActor extends Actor<ReadReceiptsCommand> {
 
   /* ----------------------------- subscription -------------------------- */
 
-  private onSubscribe(m: Extract<ReadReceiptsCommand, { kind: 'Subscribe' }>): void {
+  private onSubscribe(m: SubscribeCommand): void {
     const { room, ref } = m;
     const state = this.ensureRoomState(room);
     state.subscribers.add(ref);
@@ -121,7 +125,7 @@ export class ReadReceiptsActor extends Actor<ReadReceiptsCommand> {
     ref.tell({ kind: 'ReceiptsChanged', room, receipts: state.lastReceipts });
   }
 
-  private onUnsubscribe(m: Extract<ReadReceiptsCommand, { kind: 'Unsubscribe' }>): void {
+  private onUnsubscribe(m: UnsubscribeCommand): void {
     const { room, ref } = m;
     const state = this.rooms.get(room);
     if (!state) return;

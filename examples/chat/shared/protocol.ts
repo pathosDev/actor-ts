@@ -60,33 +60,57 @@ export interface ChatMessage {
 
 /* --------------------------- Client → Server --------------------------- */
 
+export interface LoginMessage           { readonly type: 'login';              readonly username: string; readonly password: string }
+export interface ResumeMessage          { readonly type: 'resume';             readonly token: string }
+export interface LogoutMessage          { readonly type: 'logout' }
+export interface SendMessage            { readonly type: 'send';               readonly room: RoomName;   readonly text: string }
+export interface JoinMessage            { readonly type: 'join';               readonly room: RoomName }
+export interface LeaveMessage           { readonly type: 'leave';              readonly room: RoomName }
+export interface SwitchActiveRoomMessage { readonly type: 'switch-active-room'; readonly room: RoomName }
+export interface CreateRoomMessage      { readonly type: 'create-room';        readonly name: string }
+export interface TypingMessage          { readonly type: 'typing';             readonly room: RoomName }
+export interface ReadUpToMessage        { readonly type: 'read-up-to';         readonly room: RoomName; readonly ts: number }
+export interface PingMessage            { readonly type: 'ping' }
+
 export type ClientMessage =
-  | { readonly type: 'login';                readonly username: string; readonly password: string }
-  | { readonly type: 'resume';               readonly token: string }
-  | { readonly type: 'logout' }
-  | { readonly type: 'send';                 readonly room: RoomName;   readonly text: string }
-  | { readonly type: 'join';                 readonly room: RoomName }
-  | { readonly type: 'leave';                readonly room: RoomName }
-  | { readonly type: 'switch-active-room';   readonly room: RoomName }
-  | { readonly type: 'create-room';          readonly name: string }
-  | { readonly type: 'typing';               readonly room: RoomName }
-  | { readonly type: 'read-up-to';           readonly room: RoomName; readonly ts: number }
-  | { readonly type: 'ping' };
+  | LoginMessage
+  | ResumeMessage
+  | LogoutMessage
+  | SendMessage
+  | JoinMessage
+  | LeaveMessage
+  | SwitchActiveRoomMessage
+  | CreateRoomMessage
+  | TypingMessage
+  | ReadUpToMessage
+  | PingMessage;
 
 /* --------------------------- Server → Client --------------------------- */
 
+export interface LoggedInMessage     { readonly type: 'logged-in';     readonly username: string; readonly token: string }
+export interface LoginFailedMessage  { readonly type: 'login-failed';  readonly reason: string }
+export interface RoomsMessage        { readonly type: 'rooms';         readonly rooms: ReadonlyArray<RoomName> }
+export interface RoomAddedMessage    { readonly type: 'room-added';    readonly name: RoomName }
+export interface RoomRemovedMessage  { readonly type: 'room-removed';  readonly name: RoomName }
+export interface HistoryMessage      { readonly type: 'history';       readonly room: RoomName; readonly messages: ReadonlyArray<ChatMessage> }
+export interface MessageMessage      { readonly type: 'message';       readonly room: RoomName; readonly from: string; readonly text: string; readonly ts: number }
+export interface UsersMessage        { readonly type: 'users';         readonly room: RoomName; readonly users: ReadonlyArray<string> }
+export interface UserTypingMessage   { readonly type: 'user-typing';   readonly room: RoomName; readonly username: string }
+export interface ReadReceiptsMessage { readonly type: 'read-receipts'; readonly room: RoomName; readonly receipts: Readonly<Record<string, number>> }
+export interface SystemMessage       { readonly type: 'system';        readonly text: string }
+
 export type ServerMessage =
-  | { readonly type: 'logged-in';     readonly username: string; readonly token: string }
-  | { readonly type: 'login-failed';  readonly reason: string }
-  | { readonly type: 'rooms';         readonly rooms: ReadonlyArray<RoomName> }
-  | { readonly type: 'room-added';    readonly name: RoomName }
-  | { readonly type: 'room-removed';  readonly name: RoomName }
-  | { readonly type: 'history';       readonly room: RoomName; readonly messages: ReadonlyArray<ChatMessage> }
-  | { readonly type: 'message';       readonly room: RoomName; readonly from: string; readonly text: string; readonly ts: number }
-  | { readonly type: 'users';         readonly room: RoomName; readonly users: ReadonlyArray<string> }
-  | { readonly type: 'user-typing';   readonly room: RoomName; readonly username: string }
-  | { readonly type: 'read-receipts'; readonly room: RoomName; readonly receipts: Readonly<Record<string, number>> }
-  | { readonly type: 'system';        readonly text: string };
+  | LoggedInMessage
+  | LoginFailedMessage
+  | RoomsMessage
+  | RoomAddedMessage
+  | RoomRemovedMessage
+  | HistoryMessage
+  | MessageMessage
+  | UsersMessage
+  | UserTypingMessage
+  | ReadReceiptsMessage
+  | SystemMessage;
 
 /* -------------------------- Encoding helpers -------------------------- */
 

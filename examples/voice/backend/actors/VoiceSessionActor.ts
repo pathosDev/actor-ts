@@ -67,7 +67,12 @@ import {
   encodeServer,
   type ClientMessage,
   type IncomingSource,
+  type RoomEnterMessage,
+  type RoomLeaveMessage,
   type ServerMessage,
+  type VoiceTargetGroupMessage,
+  type VoiceTargetPeerMessage,
+  type VoiceTargetRoomMessage,
 } from '../../shared/protocol.js';
 import { encodeIncoming } from '../../shared/frameCodec.js';
 import { validateCredentials } from '../auth/credentials.js';
@@ -108,9 +113,17 @@ export interface BinaryStreamEnd {
   readonly senderUsername: string;
 }
 
-export type InboundFrame =
-  | { readonly kind: 'text';   readonly data: string }
-  | { readonly kind: 'binary'; readonly data: Uint8Array };
+export interface TextInboundFrame {
+  readonly kind: 'text';
+  readonly data: string;
+}
+
+export interface BinaryInboundFrame {
+  readonly kind: 'binary';
+  readonly data: Uint8Array;
+}
+
+export type InboundFrame = TextInboundFrame | BinaryInboundFrame;
 
 export interface SocketClosed { readonly kind: 'socket-closed' }
 
@@ -145,25 +158,31 @@ export interface VoiceSessionDeps {
 
 type Phase = 'Unauthenticated' | 'Authenticated';
 
-type CurrentTarget =
-  | { readonly kind: 'idle' }
-  | {
-      readonly kind: 'peer';
-      readonly targetUsername: string;
-      cachedRefs: ReadonlyArray<ActorRef<BinaryFrame | BinaryStreamEnd>>;
-      /** True while we're awaiting a Listing for the press. */
-      pendingFind: boolean;
-    }
-  | {
-      readonly kind: 'group';
-      readonly groupName: GroupName;
-      readonly topic: string;
-    }
-  | {
-      readonly kind: 'room';
-      readonly roomName: VoiceRoomName;
-      readonly topic: string;
-    };
+interface IdleTarget {
+  readonly kind: 'idle';
+}
+
+interface PeerTarget {
+  readonly kind: 'peer';
+  readonly targetUsername: string;
+  cachedRefs: ReadonlyArray<ActorRef<BinaryFrame | BinaryStreamEnd>>;
+  /** True while we're awaiting a Listing for the press. */
+  pendingFind: boolean;
+}
+
+interface GroupTarget {
+  readonly kind: 'group';
+  readonly groupName: GroupName;
+  readonly topic: string;
+}
+
+interface RoomTarget {
+  readonly kind: 'room';
+  readonly roomName: VoiceRoomName;
+  readonly topic: string;
+}
+
+type CurrentTarget = IdleTarget | PeerTarget | GroupTarget | RoomTarget;
 
 /* ------------------------------- actor ---------------------------------- */
 
@@ -253,7 +272,7 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
 
   /* ----------------------------- text inbound ----------------------------- */
 
-  private onText(m: Extract<SessionMessage, { kind: 'text' }>): void {
+  private onText(m: TextInboundFrame): void {
     const raw = m.data;
     const cmd = decodeClient(raw);
     if (!cmd) {
@@ -378,7 +397,7 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
 
   /* --------------------------- voice-target paths ------------------------ */
 
-  private onVoiceTargetPeer(m: Extract<ClientMessage, { type: 'voice-target'; mode: 'peer' }>): void {
+  private onVoiceTargetPeer(m: VoiceTargetPeerMessage): void {
     const target = m.target;
     // Reset any previous press.
     if (this.currentTarget.kind !== 'idle') this.stopCurrentTarget();
@@ -398,7 +417,7 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
     );
   }
 
-  private onVoiceTargetGroup(m: Extract<ClientMessage, { type: 'voice-target'; mode: 'group' }>): void {
+  private onVoiceTargetGroup(m: VoiceTargetGroupMessage): void {
     const group = m.group;
     if (this.currentTarget.kind !== 'idle') this.stopCurrentTarget();
     if (!isGroupName(group)) {
@@ -412,7 +431,7 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
     this.sendServer({ type: 'voice-target-ok', mode: 'group', key: group });
   }
 
-  private onVoiceTargetRoom(m: Extract<ClientMessage, { type: 'voice-target'; mode: 'room' }>): void {
+  private onVoiceTargetRoom(m: VoiceTargetRoomMessage): void {
     const room = m.room;
     if (this.currentTarget.kind !== 'idle') this.stopCurrentTarget();
     if (!isVoiceRoomName(room) || !this.joinedRooms.has(room)) {
@@ -441,43 +460,61 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
     if (this.currentTarget.kind === 'idle') return;
     const marker: BinaryStreamEnd = { kind: 'BinaryStreamEnd', senderUsername: this.username! };
     match(this.currentTarget)
-      .with({ kind: 'peer' }, (t) => {
-        for (const ref of t.cachedRefs) ref.tell(marker);
-      })
-      .with({ kind: 'group' }, (t) => {
-        this.deps.mediator.tell(new Publish(t.topic, marker));
-      })
-      .with({ kind: 'room' }, (t) => {
-        this.deps.mediator.tell(new Publish(t.topic, marker));
-      })
-      .with({ kind: 'idle' }, () => { /* unreachable */ })
+      .with({ kind: 'peer' },  (t) => this.sendEndMarkerToPeer(t, marker))
+      .with({ kind: 'group' }, (t) => this.sendEndMarkerToGroup(t, marker))
+      .with({ kind: 'room' },  (t) => this.sendEndMarkerToRoom(t, marker))
+      .with({ kind: 'idle' },  () => { /* unreachable */ })
       .exhaustive();
     this.currentTarget = { kind: 'idle' };
   }
 
+  /** Direct-tell the end marker to every cached ref of the peer press. */
+  private sendEndMarkerToPeer(t: PeerTarget, marker: BinaryStreamEnd): void {
+    for (const ref of t.cachedRefs) ref.tell(marker);
+  }
+
+  /** Publish the end marker onto the targeted group's topic. */
+  private sendEndMarkerToGroup(t: GroupTarget, marker: BinaryStreamEnd): void {
+    this.deps.mediator.tell(new Publish(t.topic, marker));
+  }
+
+  /** Publish the end marker onto the targeted room's topic. */
+  private sendEndMarkerToRoom(t: RoomTarget, marker: BinaryStreamEnd): void {
+    this.deps.mediator.tell(new Publish(t.topic, marker));
+  }
+
   /* ------------------------- binary inbound (own audio) ------------------ */
 
-  private onBinary(m: Extract<SessionMessage, { kind: 'binary' }>): void {
+  private onBinary(m: BinaryInboundFrame): void {
     const opusChunk = m.data;
     if (this.currentTarget.kind === 'idle' || !this.username) return;
     const frame: BinaryFrame = {
       kind: 'BinaryFrame', senderUsername: this.username, opusChunk,
     };
     match(this.currentTarget)
-      .with({ kind: 'peer' }, (t) => {
-        // Drop frames during the brief Find round-trip; press is short
-        // anyway and the next chunk arrives in ~100 ms.
-        if (t.pendingFind) return;
-        for (const ref of t.cachedRefs) ref.tell(frame);
-      })
-      .with({ kind: 'group' }, (t) => {
-        this.deps.mediator.tell(new Publish(t.topic, frame));
-      })
-      .with({ kind: 'room' }, (t) => {
-        this.deps.mediator.tell(new Publish(t.topic, frame));
-      })
-      .with({ kind: 'idle' }, () => { /* unreachable */ })
+      .with({ kind: 'peer' },  (t) => this.streamFrameToPeer(t, frame))
+      .with({ kind: 'group' }, (t) => this.streamFrameToGroup(t, frame))
+      .with({ kind: 'room' },  (t) => this.streamFrameToRoom(t, frame))
+      .with({ kind: 'idle' },  () => { /* unreachable */ })
       .exhaustive();
+  }
+
+  /** Direct-tell one audio frame to every cached ref of the peer press. */
+  private streamFrameToPeer(t: PeerTarget, frame: BinaryFrame): void {
+    // Drop frames during the brief Find round-trip; press is short
+    // anyway and the next chunk arrives in ~100 ms.
+    if (t.pendingFind) return;
+    for (const ref of t.cachedRefs) ref.tell(frame);
+  }
+
+  /** Publish one audio frame onto the targeted group's topic. */
+  private streamFrameToGroup(t: GroupTarget, frame: BinaryFrame): void {
+    this.deps.mediator.tell(new Publish(t.topic, frame));
+  }
+
+  /** Publish one audio frame onto the targeted room's topic. */
+  private streamFrameToRoom(t: RoomTarget, frame: BinaryFrame): void {
+    this.deps.mediator.tell(new Publish(t.topic, frame));
   }
 
   /* ------------------- binary inbound (someone speaking to us) ----------- */
@@ -544,7 +581,7 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
 
   /* --------------------------- room subscription ------------------------- */
 
-  private onRoomEnter(m: Extract<ClientMessage, { type: 'room-enter' }>): void {
+  private onRoomEnter(m: RoomEnterMessage): void {
     const room = m.room;
     if (!isVoiceRoomName(room)) return;
     if (this.joinedRooms.has(room)) return;
@@ -564,7 +601,7 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
     });
   }
 
-  private onRoomLeave(m: Extract<ClientMessage, { type: 'room-leave' }>): void {
+  private onRoomLeave(m: RoomLeaveMessage): void {
     const room = m.room;
     if (!this.joinedRooms.delete(room)) return;
     // If we were targeting this room, drop the press.

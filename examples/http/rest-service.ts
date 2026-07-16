@@ -31,10 +31,10 @@ import {
 
 interface User { readonly id: string; readonly name: string; readonly email: string; }
 
-type UserCommand =
-  | { kind: 'set'; user: User }
-  | { kind: 'get'; id: string }
-  | { kind: 'delete'; id: string };
+type SetCommand = { kind: 'set'; user: User };
+type GetCommand = { kind: 'get'; id: string };
+type DeleteCommand = { kind: 'delete'; id: string };
+type UserCommand = SetCommand | GetCommand | DeleteCommand;
 
 type UserReply = User | null | { deleted: true };
 
@@ -52,7 +52,7 @@ class UserEntity extends Actor<UserCommand> {
     this.sender.forEach((s) => s.tell(msg));
   }
 
-  private onSet(c: Extract<UserCommand, { kind: 'set' }>): void {
+  private onSet(c: SetCommand): void {
     this.user = c.user;
     this.reply(this.user);
   }

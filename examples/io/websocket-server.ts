@@ -27,9 +27,9 @@ import {
   type WebsocketConnection,
 } from '../../src/index.js';
 
-type ClientMessage =
-  | { kind: 'setName'; name: string }
-  | { kind: 'say'; text: string };
+type SetNameMessage = { kind: 'setName'; name: string };
+type SayMessage = { kind: 'say'; text: string };
+type ClientMessage = SetNameMessage | SayMessage;
 
 type ServerMessage =
   | { kind: 'system'; text: string }
@@ -45,7 +45,7 @@ class ChatRoom extends WebsocketServerActor<ServerMessage, ClientMessage> {
       .exhaustive();
   }
 
-  private onSetName({ name }: Extract<ClientMessage, { kind: 'setName' }>): void {
+  private onSetName({ name }: SetNameMessage): void {
     this.names.set(this.connection.id, name);
     this.reply({ kind: 'system', text: `you are now "${name}"` });
     this.broadcast(
@@ -54,7 +54,7 @@ class ChatRoom extends WebsocketServerActor<ServerMessage, ClientMessage> {
     );
   }
 
-  private onSay({ text }: Extract<ClientMessage, { kind: 'say' }>): void {
+  private onSay({ text }: SayMessage): void {
     const from = this.names.get(this.connection.id) ?? 'anon';
     this.broadcast({ kind: 'chat', from, text });
   }

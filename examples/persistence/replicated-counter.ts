@@ -30,8 +30,10 @@ import {
 } from '../../src/index.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 
-type Cmd = { kind: 'add'; amount: number };
-type Event = { kind: 'added'; amount: number };
+type AddCommand = { kind: 'add'; amount: number };
+type Cmd = AddCommand;
+type AddedEvent = { kind: 'added'; amount: number };
+type Event = AddedEvent;
 interface State { value: number }
 
 class ReplicatedCounter extends ReplicatedEventSourcedActor<Cmd, Event, State> {
@@ -53,7 +55,7 @@ class ReplicatedCounter extends ReplicatedEventSourcedActor<Cmd, Event, State> {
       .exhaustive();
   }
 
-  private onAdded(s: State, a: Extract<Event, { kind: 'added' }>): State {
+  private onAdded(s: State, a: AddedEvent): State {
     return { value: s.value + a.amount };
   }
 
@@ -63,7 +65,7 @@ class ReplicatedCounter extends ReplicatedEventSourcedActor<Cmd, Event, State> {
       .exhaustive();
   }
 
-  private async onAdd(cmd: Extract<Cmd, { kind: 'add' }>): Promise<void> {
+  private async onAdd(cmd: AddCommand): Promise<void> {
     await this.persist({ kind: 'added', amount: cmd.amount }, () => {
       // eslint-disable-next-line no-console
       console.log(`[${this.label}] persisted: amount=${cmd.amount}`);

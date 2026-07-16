@@ -17,10 +17,10 @@ import {
 } from '../../src/index.js';
 
 interface KV { readonly map: Record<string, string>; }
-type Cmd =
-  | { kind: 'set'; key: string; value: string }
-  | { kind: 'get'; key: string }
-  | { kind: 'dump' };
+type SetCommand = { kind: 'set'; key: string; value: string };
+type GetCommand = { kind: 'get'; key: string };
+type DumpCommand = { kind: 'dump' };
+type Cmd = SetCommand | GetCommand | DumpCommand;
 
 class KVStore extends DurableStateActor<Cmd, KV> {
   override async onCommand(cmd: Cmd): Promise<void> {
@@ -31,13 +31,13 @@ class KVStore extends DurableStateActor<Cmd, KV> {
       .exhaustive();
   }
 
-  private async onSet(c: Extract<Cmd, { kind: 'set' }>): Promise<void> {
+  private async onSet(c: SetCommand): Promise<void> {
     const next: KV = { map: { ...this.state.map, [c.key]: c.value } };
     await this.persist(next);
     console.log(`set ${c.key}=${c.value} (rev=${this.revision})`);
   }
 
-  private async onGet(c: Extract<Cmd, { kind: 'get' }>): Promise<void> {
+  private async onGet(c: GetCommand): Promise<void> {
     console.log(`get ${c.key}: ${this.state.map[c.key] ?? '<missing>'}`);
   }
 

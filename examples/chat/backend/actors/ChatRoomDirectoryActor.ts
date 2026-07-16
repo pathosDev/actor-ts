@@ -36,11 +36,16 @@ import { DEFAULT_ROOMS, isRoomName, type RoomName } from '../../shared/rooms.js'
 
 /* --------------------------- public messages --------------------------- */
 
+export interface CreateCommand      { readonly kind: 'Create';      readonly name: string;                          readonly replyTo?: ActorRef<CreateResult> }
+export interface GetRoomsCommand    { readonly kind: 'GetRooms';    readonly replyTo: ActorRef<RoomsChanged> }
+export interface SubscribeCommand   { readonly kind: 'Subscribe';   readonly ref: ActorRef<RoomsChanged | RoomAdded | RoomRemoved> }
+export interface UnsubscribeCommand { readonly kind: 'Unsubscribe'; readonly ref: ActorRef<RoomsChanged | RoomAdded | RoomRemoved> }
+
 export type ChatRoomDirectoryCommand =
-  | { readonly kind: 'Create';      readonly name: string;                          readonly replyTo?: ActorRef<CreateResult> }
-  | { readonly kind: 'GetRooms';    readonly replyTo: ActorRef<RoomsChanged> }
-  | { readonly kind: 'Subscribe';   readonly ref: ActorRef<RoomsChanged | RoomAdded | RoomRemoved> }
-  | { readonly kind: 'Unsubscribe'; readonly ref: ActorRef<RoomsChanged | RoomAdded | RoomRemoved> };
+  | CreateCommand
+  | GetRoomsCommand
+  | SubscribeCommand
+  | UnsubscribeCommand;
 
 export interface RoomsChanged {
   readonly kind: 'RoomsChanged';
@@ -125,7 +130,7 @@ export class ChatRoomDirectoryActor extends Actor<ChatRoomDirectoryCommand> {
 
   /* ----------------------------- mutations ----------------------------- */
 
-  private onCreate(m: Extract<ChatRoomDirectoryCommand, { kind: 'Create' }>): void {
+  private onCreate(m: CreateCommand): void {
     const { name, replyTo } = m;
     if (!isRoomName(name)) {
       replyTo?.tell({ kind: 'CreateRejected', reason: 'invalid-name' });
@@ -147,7 +152,7 @@ export class ChatRoomDirectoryActor extends Actor<ChatRoomDirectoryCommand> {
 
   /* ----------------------------- subscription -------------------------- */
 
-  private onSubscribe(m: Extract<ChatRoomDirectoryCommand, { kind: 'Subscribe' }>): void {
+  private onSubscribe(m: SubscribeCommand): void {
     const { ref } = m;
     this.subscribers.add(ref);
     // Replay the current set so the new subscriber doesn't wait for
@@ -155,12 +160,12 @@ export class ChatRoomDirectoryActor extends Actor<ChatRoomDirectoryCommand> {
     ref.tell({ kind: 'RoomsChanged', rooms: [...this.lastRooms] });
   }
 
-  private onUnsubscribe(m: Extract<ChatRoomDirectoryCommand, { kind: 'Unsubscribe' }>): void {
+  private onUnsubscribe(m: UnsubscribeCommand): void {
     const { ref } = m;
     this.subscribers.delete(ref);
   }
 
-  private onGetRooms(m: Extract<ChatRoomDirectoryCommand, { kind: 'GetRooms' }>): void {
+  private onGetRooms(m: GetRoomsCommand): void {
     const { replyTo } = m;
     replyTo.tell({ kind: 'RoomsChanged', rooms: [...this.lastRooms] });
   }

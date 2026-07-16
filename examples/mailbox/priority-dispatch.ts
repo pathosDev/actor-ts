@@ -14,10 +14,10 @@ import {
   Props,
 } from '../../src/index.js';
 
-type Msg =
-  | { kind: 'heartbeat'; ts: number }
-  | { kind: 'command'; id: string }
-  | { kind: 'log'; line: string };
+type HeartbeatMessage = { kind: 'heartbeat'; ts: number };
+type CommandMessage = { kind: 'command'; id: string };
+type LogMessage = { kind: 'log'; line: string };
+type Msg = HeartbeatMessage | CommandMessage | LogMessage;
 
 const priorityFor = (m: Msg): number =>
   match(m)
@@ -36,15 +36,15 @@ class Dispatcher extends Actor<Msg> {
       .exhaustive();
   }
 
-  private onHeartbeat(hb: Extract<Msg, { kind: 'heartbeat' }>): void {
+  private onHeartbeat(hb: HeartbeatMessage): void {
     console.log(`HB @ ${hb.ts}`);
   }
 
-  private onCommand(c: Extract<Msg, { kind: 'command' }>): void {
+  private onCommand(c: CommandMessage): void {
     console.log(`command ${c.id}`);
   }
 
-  private onLog(l: Extract<Msg, { kind: 'log' }>): void {
+  private onLog(l: LogMessage): void {
     console.log(`log: ${l.line}`);
   }
 }

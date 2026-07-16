@@ -29,12 +29,18 @@ import type { RoomName } from '../../shared/rooms.js';
 
 /* --------------------------- public messages --------------------------- */
 
+export interface AddToRoomCommand      { readonly kind: 'AddToRoom';      readonly room: RoomName; readonly username: string }
+export interface RemoveFromRoomCommand { readonly kind: 'RemoveFromRoom'; readonly room: RoomName; readonly username: string }
+export interface SubscribeCommand      { readonly kind: 'Subscribe';      readonly room: RoomName; readonly ref: ActorRef<UsersChanged> }
+export interface UnsubscribeCommand    { readonly kind: 'Unsubscribe';    readonly room: RoomName; readonly ref: ActorRef<UsersChanged> }
+export interface GetUsersCommand       { readonly kind: 'GetUsers';       readonly room: RoomName; readonly replyTo: ActorRef<UsersChanged> }
+
 export type OnlineUsersCommand =
-  | { readonly kind: 'AddToRoom';      readonly room: RoomName; readonly username: string }
-  | { readonly kind: 'RemoveFromRoom'; readonly room: RoomName; readonly username: string }
-  | { readonly kind: 'Subscribe';      readonly room: RoomName; readonly ref: ActorRef<UsersChanged> }
-  | { readonly kind: 'Unsubscribe';    readonly room: RoomName; readonly ref: ActorRef<UsersChanged> }
-  | { readonly kind: 'GetUsers';       readonly room: RoomName; readonly replyTo: ActorRef<UsersChanged> };
+  | AddToRoomCommand
+  | RemoveFromRoomCommand
+  | SubscribeCommand
+  | UnsubscribeCommand
+  | GetUsersCommand;
 
 export interface UsersChanged {
   readonly kind: 'UsersChanged';
@@ -90,7 +96,7 @@ export class OnlineUsersActor extends Actor<OnlineUsersCommand> {
 
   /* ----------------------------- mutations ----------------------------- */
 
-  private onAddToRoom(m: Extract<OnlineUsersCommand, { kind: 'AddToRoom' }>): void {
+  private onAddToRoom(m: AddToRoomCommand): void {
     const { room, username } = m;
     this.dd.update<ORSet<string>>(
       ddKey(room),
@@ -99,7 +105,7 @@ export class OnlineUsersActor extends Actor<OnlineUsersCommand> {
     );
   }
 
-  private onRemoveFromRoom(m: Extract<OnlineUsersCommand, { kind: 'RemoveFromRoom' }>): void {
+  private onRemoveFromRoom(m: RemoveFromRoomCommand): void {
     const { room, username } = m;
     this.dd.update<ORSet<string>>(
       ddKey(room),
@@ -110,7 +116,7 @@ export class OnlineUsersActor extends Actor<OnlineUsersCommand> {
 
   /* ----------------------------- subscription -------------------------- */
 
-  private onSubscribe(m: Extract<OnlineUsersCommand, { kind: 'Subscribe' }>): void {
+  private onSubscribe(m: SubscribeCommand): void {
     const { room, ref } = m;
     const state = this.ensureRoomState(room);
     state.subscribers.add(ref);
@@ -121,7 +127,7 @@ export class OnlineUsersActor extends Actor<OnlineUsersCommand> {
     }
   }
 
-  private onUnsubscribe(m: Extract<OnlineUsersCommand, { kind: 'Unsubscribe' }>): void {
+  private onUnsubscribe(m: UnsubscribeCommand): void {
     const { room, ref } = m;
     const state = this.rooms.get(room);
     if (!state) return;
@@ -133,7 +139,7 @@ export class OnlineUsersActor extends Actor<OnlineUsersCommand> {
     }
   }
 
-  private onGetUsers(m: Extract<OnlineUsersCommand, { kind: 'GetUsers' }>): void {
+  private onGetUsers(m: GetUsersCommand): void {
     const { room, replyTo } = m;
     const current = this.dd.get<ORSet<string>>(ddKey(room));
     const users = current ? [...current.value()] : [];

@@ -23,7 +23,9 @@ import {
 } from '../../src/index.js';
 import { FakeCassandraClient } from '../../tests/unit/persistence/FakeCassandraClient.js';
 
-type Cmd = { kind: 'inc'; amount: number } | { kind: 'get' };
+type IncCommand = { kind: 'inc'; amount: number };
+type GetCommand = { kind: 'get' };
+type Cmd = IncCommand | GetCommand;
 type Event = { kind: 'incremented'; amount: number };
 
 class Counter extends PersistentActor<Cmd, Event, number> {
@@ -41,7 +43,7 @@ class Counter extends PersistentActor<Cmd, Event, number> {
     this.sender.forEach((s) => s.tell(state));
   }
 
-  private async onInc(c: Extract<Cmd, { kind: 'inc' }>): Promise<void> {
+  private async onInc(c: IncCommand): Promise<void> {
     await this.persist({ kind: 'incremented', amount: c.amount }, (s) => {
       this.sender.forEach((sender) => sender.tell(s));
     });

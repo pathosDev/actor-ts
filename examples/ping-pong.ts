@@ -7,7 +7,10 @@
 import { match } from 'ts-pattern';
 import { Actor, ActorSystem, Props } from '../src/index.js';
 
-type PingPong = { kind: 'ping'; n: number } | { kind: 'pong'; n: number } | { kind: 'start' };
+type PingMessage = { kind: 'ping'; n: number };
+type PongMessage = { kind: 'pong'; n: number };
+type StartMessage = { kind: 'start' };
+type PingPong = PingMessage | PongMessage | StartMessage;
 
 class Pinger extends Actor<PingPong> {
   private remaining = 5;
@@ -25,7 +28,7 @@ class Pinger extends Actor<PingPong> {
     this.target().tell({ kind: 'ping', n: 1 }, this.self);
   }
 
-  private onPong(m: Extract<PingPong, { kind: 'pong' }>): void {
+  private onPong(m: PongMessage): void {
     console.log(`[pinger] got pong#${m.n}`);
     if (--this.remaining <= 0) { this.self.stop(); return; }
     this.target().tell({ kind: 'ping', n: m.n + 1 }, this.self);
@@ -41,7 +44,7 @@ class Ponger extends Actor<PingPong> {
       .otherwise(() => this.onUnhandled());
   }
 
-  private onPing(m: Extract<PingPong, { kind: 'ping' }>): void {
+  private onPing(m: PingMessage): void {
     console.log(`[ponger] got ping#${m.n}`);
     this.sender.forEach((s) => s.tell({ kind: 'pong', n: m.n }, this.self));
   }

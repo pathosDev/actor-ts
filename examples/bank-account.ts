@@ -9,10 +9,10 @@
 import { match } from 'ts-pattern';
 import { Actor, ActorSystem, Props } from '../src/index.js';
 
-type Command =
-  | { kind: 'deposit'; amount: number }
-  | { kind: 'withdraw'; amount: number }
-  | { kind: 'balance' };
+type DepositCommand = { kind: 'deposit'; amount: number };
+type WithdrawCommand = { kind: 'withdraw'; amount: number };
+type BalanceCommand = { kind: 'balance' };
+type Command = DepositCommand | WithdrawCommand | BalanceCommand;
 
 class AccountActor extends Actor<Command> {
   private balance = 0;
@@ -29,13 +29,13 @@ class AccountActor extends Actor<Command> {
     this.sender.forEach((s) => s.tell(msg));
   }
 
-  private onDeposit(c: Extract<Command, { kind: 'deposit' }>): void {
+  private onDeposit(c: DepositCommand): void {
     if (c.amount <= 0) { this.reply(new Error(`deposit must be > 0, got ${c.amount}`)); return; }
     this.balance += c.amount;
     this.reply({ balance: this.balance });
   }
 
-  private onWithdraw(c: Extract<Command, { kind: 'withdraw' }>): void {
+  private onWithdraw(c: WithdrawCommand): void {
     if (c.amount > this.balance) {
       this.reply(new Error(`insufficient funds: have ${this.balance}, need ${c.amount}`));
       return;

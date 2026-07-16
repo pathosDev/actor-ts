@@ -170,7 +170,7 @@ export class ChatRoomActor extends PersistentActor<ChatRoomCommand, ChatEvent, C
       .exhaustive();
   }
 
-  private onMsgPosted(state: ChatState, m: Extract<ChatEvent, { kind: 'MsgPosted' }>): ChatState {
+  private onMsgPosted(state: ChatState, m: MsgPosted): ChatState {
     const next = [...state.history, { from: m.from, text: m.text, ts: m.ts }];
     // Trim AFTER append so the most-recent N messages stay live —
     // older events live on in the journal but aren't kept resident.

@@ -27,14 +27,14 @@ import {
   registerCassandraPlugins,
 } from '../../src/index.js';
 
-type Cmd =
-  | { kind: 'deposit'; amount: number }
-  | { kind: 'withdraw'; amount: number }
-  | { kind: 'balance' };
+type DepositCommand = { kind: 'deposit'; amount: number };
+type WithdrawCommand = { kind: 'withdraw'; amount: number };
+type BalanceCommand = { kind: 'balance' };
+type Cmd = DepositCommand | WithdrawCommand | BalanceCommand;
 
-type Event =
-  | { kind: 'deposited'; amount: number }
-  | { kind: 'withdrawn'; amount: number };
+type DepositedEvent = { kind: 'deposited'; amount: number };
+type WithdrawnEvent = { kind: 'withdrawn'; amount: number };
+type Event = DepositedEvent | WithdrawnEvent;
 
 interface State { readonly balance: number; }
 
@@ -56,11 +56,11 @@ class Account extends PersistentActor<Cmd, Event, State> {
       .exhaustive();
   }
 
-  private onDeposited(state: State, d: Extract<Event, { kind: 'deposited' }>): State {
+  private onDeposited(state: State, d: DepositedEvent): State {
     return { balance: state.balance + d.amount };
   }
 
-  private onWithdrawn(state: State, d: Extract<Event, { kind: 'withdrawn' }>): State {
+  private onWithdrawn(state: State, d: WithdrawnEvent): State {
     return { balance: state.balance - d.amount };
   }
 
@@ -80,12 +80,12 @@ class Account extends PersistentActor<Cmd, Event, State> {
     this.reply(state.balance);
   }
 
-  private async onWithdraw(state: State, c: Extract<Cmd, { kind: 'withdraw' }>): Promise<void> {
+  private async onWithdraw(state: State, c: WithdrawCommand): Promise<void> {
     if (state.balance < c.amount) { this.reply({ error: 'insufficient funds' }); return; }
     await this.persist({ kind: 'withdrawn', amount: c.amount }, (s) => this.reply(s.balance));
   }
 
-  private async onDeposit(c: Extract<Cmd, { kind: 'deposit' }>): Promise<void> {
+  private async onDeposit(c: DepositCommand): Promise<void> {
     await this.persist({ kind: 'deposited', amount: c.amount }, (s) => this.reply(s.balance));
   }
 }

@@ -21,14 +21,14 @@ import {
   everyNEvents,
 } from '../../src/index.js';
 
-type Cmd =
-  | { kind: 'deposit'; amount: number }
-  | { kind: 'withdraw'; amount: number }
-  | { kind: 'balance' };
+type DepositCommand = { kind: 'deposit'; amount: number };
+type WithdrawCommand = { kind: 'withdraw'; amount: number };
+type BalanceCommand = { kind: 'balance' };
+type Cmd = DepositCommand | WithdrawCommand | BalanceCommand;
 
-type Event =
-  | { kind: 'deposited'; amount: number }
-  | { kind: 'withdrew'; amount: number };
+type DepositedEvent = { kind: 'deposited'; amount: number };
+type WithdrewEvent = { kind: 'withdrew'; amount: number };
+type Event = DepositedEvent | WithdrewEvent;
 
 type State = { balance: number };
 
@@ -42,11 +42,11 @@ class Account extends PersistentActor<Cmd, Event, State> {
       .exhaustive();
   }
 
-  private onDeposited(s: State, d: Extract<Event, { kind: 'deposited' }>): State {
+  private onDeposited(s: State, d: DepositedEvent): State {
     return { balance: s.balance + d.amount };
   }
 
-  private onWithdrew(s: State, d: Extract<Event, { kind: 'withdrew' }>): State {
+  private onWithdrew(s: State, d: WithdrewEvent): State {
     return { balance: s.balance - d.amount };
   }
 
@@ -63,12 +63,12 @@ class Account extends PersistentActor<Cmd, Event, State> {
     this.sender.forEach((sender) => sender.tell(msg));
   }
 
-  private async onDeposit(c: Extract<Cmd, { kind: 'deposit' }>): Promise<void> {
+  private async onDeposit(c: DepositCommand): Promise<void> {
     await this.persist({ kind: 'deposited', amount: c.amount },
       (st) => this.reply({ balance: st.balance }));
   }
 
-  private async onWithdraw(s: State, c: Extract<Cmd, { kind: 'withdraw' }>): Promise<void> {
+  private async onWithdraw(s: State, c: WithdrawCommand): Promise<void> {
     if (c.amount > s.balance) { this.reply(new Error('rejected')); return; }
     await this.persist({ kind: 'withdrew', amount: c.amount },
       (st) => this.reply({ balance: st.balance }));
