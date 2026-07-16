@@ -208,35 +208,48 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
    */
   protected enqueueOutbound(payload: P): boolean {
     const env: OutboundEnvelope<P> = { payload, enqueuedAt: Date.now() };
-    const limit = this.options.outboundBuffer ?? DEFAULT_OUTBOUND_BUFFER;
 
     // Dispatch on connection state with compile-time exhaustiveness:
     // adding a new state to `ConnectionState` forces every site that
     // matches on it (including this one) to handle the new variant.
     return match(this._state)
-      .with('connected', () => {
-        // Dispatch directly.  If an earlier flush is still draining the
-        // buffer, append at the tail to preserve order.
-        if (this._outboundBuffer.length > 0) {
-          this._outboundBuffer.push(env);
-          return true;
-        }
-        void this._dispatchOne(env);
-        return true;
-      })
-      .with('connecting', 'disconnected', 'disconnecting', () => {
-        if (limit === 0) {
-          this.system.eventStream.publish(new BrokerNotConnected(this.self.path.toString()));
-          return false;
-        }
-        if (this._outboundBuffer.length >= limit) {
-          this._outboundBuffer.shift();  // drop oldest (FIFO eviction)
-          this.system.eventStream.publish(new BrokerBufferOverflow(this.self.path.toString(), limit));
-        }
-        this._outboundBuffer.push(env);
-        return true;
-      })
+      .with('connected', () => this.dispatchWhenConnected(env))
+      .with('connecting', 'disconnected', 'disconnecting', () => this.bufferWhileOffline(env))
       .exhaustive();
+  }
+
+  /**
+   * Connected path: dispatch the envelope now, or — if an earlier flush is
+   * still draining the buffer — append at the tail to preserve order.
+   */
+  private dispatchWhenConnected(env: OutboundEnvelope<P>): boolean {
+    // Dispatch directly.  If an earlier flush is still draining the
+    // buffer, append at the tail to preserve order.
+    if (this._outboundBuffer.length > 0) {
+      this._outboundBuffer.push(env);
+      return true;
+    }
+    void this._dispatchOne(env);
+    return true;
+  }
+
+  /**
+   * Not-connected path (connecting / disconnected / disconnecting): buffer
+   * the envelope, evicting the oldest on overflow (FIFO), or drop it when
+   * buffering is disabled (`outboundBuffer: 0`).
+   */
+  private bufferWhileOffline(env: OutboundEnvelope<P>): boolean {
+    const limit = this.options.outboundBuffer ?? DEFAULT_OUTBOUND_BUFFER;
+    if (limit === 0) {
+      this.system.eventStream.publish(new BrokerNotConnected(this.self.path.toString()));
+      return false;
+    }
+    if (this._outboundBuffer.length >= limit) {
+      this._outboundBuffer.shift();  // drop oldest (FIFO eviction)
+      this.system.eventStream.publish(new BrokerBufferOverflow(this.self.path.toString(), limit));
+    }
+    this._outboundBuffer.push(env);
+    return true;
   }
 
   /** Current connection state — exposed for tests / health probes. */
