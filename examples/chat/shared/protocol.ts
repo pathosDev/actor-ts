@@ -7,30 +7,30 @@
  * send, and presence updates all flow through this channel.
  *
  *   Client → Server (`ClientMessage`):
- *     { type: 'login',  username, password }
- *     { type: 'resume', token }                // alt. to login on reconnect
- *     { type: 'logout' }                       // explicit log-out + revoke
- *     { type: 'send',   room, text }
- *     { type: 'join',   room }
- *     { type: 'leave',  room }
- *     { type: 'switch-active-room', room }
- *     { type: 'create-room', name }            // #98 — runtime room creation
- *     { type: 'typing',  room }                // #103 — ephemeral typing indicator
- *     { type: 'read-up-to', room, ts }         // #103 — mark messages up to `ts` read
- *     { type: 'ping' }
+ *     { kind: 'login',  username, password }
+ *     { kind: 'resume', token }                // alt. to login on reconnect
+ *     { kind: 'logout' }                       // explicit log-out + revoke
+ *     { kind: 'send',   room, text }
+ *     { kind: 'join',   room }
+ *     { kind: 'leave',  room }
+ *     { kind: 'switch-active-room', room }
+ *     { kind: 'create-room', name }            // #98 — runtime room creation
+ *     { kind: 'typing',  room }                // #103 — ephemeral typing indicator
+ *     { kind: 'read-up-to', room, ts }         // #103 — mark messages up to `ts` read
+ *     { kind: 'ping' }
  *
  *   Server → Client (`ServerMessage`):
- *     { type: 'logged-in',    username, token }
- *     { type: 'login-failed', reason }
- *     { type: 'rooms',        rooms }
- *     { type: 'room-added',   name }           // #98 — broadcast on room creation
- *     { type: 'room-removed', name }           // #98 — reserved (delete is out-of-scope today)
- *     { type: 'history',      room, messages }
- *     { type: 'message',      room, from, text, ts }
- *     { type: 'users',        room, users }
- *     { type: 'user-typing',  room, username } // #103 — broadcast on `typing` frame
- *     { type: 'read-receipts',room, receipts } // #103 — read pointers per username
- *     { type: 'system',       text }
+ *     { kind: 'logged-in',    username, token }
+ *     { kind: 'login-failed', reason }
+ *     { kind: 'rooms',        rooms }
+ *     { kind: 'room-added',   name }           // #98 — broadcast on room creation
+ *     { kind: 'room-removed', name }           // #98 — reserved (delete is out-of-scope today)
+ *     { kind: 'history',      room, messages }
+ *     { kind: 'message',      room, from, text, ts }
+ *     { kind: 'users',        room, users }
+ *     { kind: 'user-typing',  room, username } // #103 — broadcast on `typing` frame
+ *     { kind: 'read-receipts',room, receipts } // #103 — read pointers per username
+ *     { kind: 'system',       text }
  *
  * Auth model: the first frame on any new socket is either `login`
  * (with credentials) or `resume` (with a token previously issued via
@@ -60,17 +60,17 @@ export interface ChatMessage {
 
 /* --------------------------- Client → Server --------------------------- */
 
-export type LoginMessage           = { readonly type: 'login';              readonly username: string; readonly password: string };
-export type ResumeMessage          = { readonly type: 'resume';             readonly token: string };
-export type LogoutMessage          = { readonly type: 'logout' };
-export type SendMessage            = { readonly type: 'send';               readonly room: RoomName;   readonly text: string };
-export type JoinMessage            = { readonly type: 'join';               readonly room: RoomName };
-export type LeaveMessage           = { readonly type: 'leave';              readonly room: RoomName };
-export type SwitchActiveRoomMessage = { readonly type: 'switch-active-room'; readonly room: RoomName };
-export type CreateRoomMessage      = { readonly type: 'create-room';        readonly name: string };
-export type TypingMessage          = { readonly type: 'typing';             readonly room: RoomName };
-export type ReadUpToMessage        = { readonly type: 'read-up-to';         readonly room: RoomName; readonly ts: number };
-export type PingMessage            = { readonly type: 'ping' };
+export type LoginMessage           = { readonly kind: 'login';              readonly username: string; readonly password: string };
+export type ResumeMessage          = { readonly kind: 'resume';             readonly token: string };
+export type LogoutMessage          = { readonly kind: 'logout' };
+export type SendMessage            = { readonly kind: 'send';               readonly room: RoomName;   readonly text: string };
+export type JoinMessage            = { readonly kind: 'join';               readonly room: RoomName };
+export type LeaveMessage           = { readonly kind: 'leave';              readonly room: RoomName };
+export type SwitchActiveRoomMessage = { readonly kind: 'switch-active-room'; readonly room: RoomName };
+export type CreateRoomMessage      = { readonly kind: 'create-room';        readonly name: string };
+export type TypingMessage          = { readonly kind: 'typing';             readonly room: RoomName };
+export type ReadUpToMessage        = { readonly kind: 'read-up-to';         readonly room: RoomName; readonly ts: number };
+export type PingMessage            = { readonly kind: 'ping' };
 
 export type ClientMessage =
   | LoginMessage
@@ -87,17 +87,17 @@ export type ClientMessage =
 
 /* --------------------------- Server → Client --------------------------- */
 
-export type LoggedInMessage     = { readonly type: 'logged-in';     readonly username: string; readonly token: string };
-export type LoginFailedMessage  = { readonly type: 'login-failed';  readonly reason: string };
-export type RoomsMessage        = { readonly type: 'rooms';         readonly rooms: ReadonlyArray<RoomName> };
-export type RoomAddedMessage    = { readonly type: 'room-added';    readonly name: RoomName };
-export type RoomRemovedMessage  = { readonly type: 'room-removed';  readonly name: RoomName };
-export type HistoryMessage      = { readonly type: 'history';       readonly room: RoomName; readonly messages: ReadonlyArray<ChatMessage> };
-export type RoomMessage         = { readonly type: 'message';       readonly room: RoomName; readonly from: string; readonly text: string; readonly ts: number };
-export type UsersMessage        = { readonly type: 'users';         readonly room: RoomName; readonly users: ReadonlyArray<string> };
-export type UserTypingMessage   = { readonly type: 'user-typing';   readonly room: RoomName; readonly username: string };
-export type ReadReceiptsMessage = { readonly type: 'read-receipts'; readonly room: RoomName; readonly receipts: Readonly<Record<string, number>> };
-export type SystemMessage       = { readonly type: 'system';        readonly text: string };
+export type LoggedInMessage     = { readonly kind: 'logged-in';     readonly username: string; readonly token: string };
+export type LoginFailedMessage  = { readonly kind: 'login-failed';  readonly reason: string };
+export type RoomsMessage        = { readonly kind: 'rooms';         readonly rooms: ReadonlyArray<RoomName> };
+export type RoomAddedMessage    = { readonly kind: 'room-added';    readonly name: RoomName };
+export type RoomRemovedMessage  = { readonly kind: 'room-removed';  readonly name: RoomName };
+export type HistoryMessage      = { readonly kind: 'history';       readonly room: RoomName; readonly messages: ReadonlyArray<ChatMessage> };
+export type RoomMessage         = { readonly kind: 'message';       readonly room: RoomName; readonly from: string; readonly text: string; readonly ts: number };
+export type UsersMessage        = { readonly kind: 'users';         readonly room: RoomName; readonly users: ReadonlyArray<string> };
+export type UserTypingMessage   = { readonly kind: 'user-typing';   readonly room: RoomName; readonly username: string };
+export type ReadReceiptsMessage = { readonly kind: 'read-receipts'; readonly room: RoomName; readonly receipts: Readonly<Record<string, number>> };
+export type SystemMessage       = { readonly kind: 'system';        readonly text: string };
 
 export type ServerMessage =
   | LoggedInMessage
@@ -120,8 +120,8 @@ export function encodeServer(msg: ServerMessage): string {
 
 export function decodeClient(raw: string): ClientMessage | null {
   try {
-    const parsed = JSON.parse(raw) as { readonly type?: unknown };
-    if (typeof parsed.type !== 'string') return null;
+    const parsed = JSON.parse(raw) as { readonly kind?: unknown };
+    if (typeof parsed.kind !== 'string') return null;
     return parsed as ClientMessage;
   } catch {
     return null;

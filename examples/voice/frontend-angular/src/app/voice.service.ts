@@ -86,7 +86,7 @@ export class VoiceService {
 
       this.phase.set('gate-login');
       const stored = sessionStorage.getItem(TOKEN_KEY);
-      if (stored) this.connect((ws) => ws.send(JSON.stringify({ type: 'resume', token: stored } satisfies ClientMessage)));
+      if (stored) this.connect((ws) => ws.send(JSON.stringify({ kind: 'resume', token: stored } satisfies ClientMessage)));
     } catch (e) {
       this.loginError.set(`Microphone access denied (${(e as Error)?.message ?? e}).`);
     }
@@ -110,11 +110,11 @@ export class VoiceService {
 
   login(username: string, password: string): void {
     this.loginError.set('');
-    this.connect((ws) => ws.send(JSON.stringify({ type: 'login', username, password } satisfies ClientMessage)));
+    this.connect((ws) => ws.send(JSON.stringify({ kind: 'login', username, password } satisfies ClientMessage)));
   }
 
   logout(): void {
-    try { this.ws?.send(JSON.stringify({ type: 'logout' } satisfies ClientMessage)); } catch { /* ignore */ }
+    try { this.ws?.send(JSON.stringify({ kind: 'logout' } satisfies ClientMessage)); } catch { /* ignore */ }
     sessionStorage.removeItem(TOKEN_KEY);
     location.reload();
   }
@@ -150,7 +150,7 @@ export class VoiceService {
     this.reconAttempts++;
     this.reconTimer = setTimeout(() => {
       this.reconTimer = null;
-      this.connect((ws) => ws.send(JSON.stringify({ type: 'resume', token } satisfies ClientMessage)));
+      this.connect((ws) => ws.send(JSON.stringify({ kind: 'resume', token } satisfies ClientMessage)));
     }, delay);
     return true;
   }
@@ -169,7 +169,7 @@ export class VoiceService {
   private onText(raw: string): void {
     let m: ServerMessage;
     try { m = JSON.parse(raw) as ServerMessage; } catch { return; }
-    switch (m.type) {
+    switch (m.kind) {
       case 'logged-in':
         this.cancelReconnect();
         this.username.set(m.username);
@@ -222,7 +222,7 @@ export class VoiceService {
 
   /* --------------------------- press / talk --------------------------- */
 
-  beginPress(target: ClientMessage & { type: 'voice-target' }, key: string): void {
+  beginPress(target: ClientMessage & { kind: 'voice-target' }, key: string): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     if (this.activeKey() !== null) this.endActive();
     this.activeKey.set(key);
@@ -238,7 +238,7 @@ export class VoiceService {
   private endActive(): void {
     this.stopMicRecording();
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'voice-stop' } satisfies ClientMessage));
+      this.ws.send(JSON.stringify({ kind: 'voice-stop' } satisfies ClientMessage));
     }
     this.activeKey.set(null);
   }
@@ -251,7 +251,7 @@ export class VoiceService {
     } else {
       next.add(room);
       this.activeKey.set(`room:${room}`);
-      this.ws?.send(JSON.stringify({ type: 'voice-target', mode: 'room', room } satisfies ClientMessage));
+      this.ws?.send(JSON.stringify({ kind: 'voice-target', mode: 'room', room } satisfies ClientMessage));
       this.startMicRecording();
     }
     this.roomTalking.set(next);
@@ -260,14 +260,14 @@ export class VoiceService {
   enterRoom(room: VoiceRoomName): void {
     const next = new Set(this.joinedRooms());
     next.add(room); this.joinedRooms.set(next);
-    this.ws?.send(JSON.stringify({ type: 'room-enter', room } satisfies ClientMessage));
+    this.ws?.send(JSON.stringify({ kind: 'room-enter', room } satisfies ClientMessage));
   }
 
   leaveRoom(room: VoiceRoomName): void {
     if (this.roomTalking().has(room)) this.toggleRoomTalk(room);
     const next = new Set(this.joinedRooms());
     next.delete(room); this.joinedRooms.set(next);
-    this.ws?.send(JSON.stringify({ type: 'room-leave', room } satisfies ClientMessage));
+    this.ws?.send(JSON.stringify({ kind: 'room-leave', room } satisfies ClientMessage));
   }
 
   /* ------------------------------ mic IO ----------------------------- */

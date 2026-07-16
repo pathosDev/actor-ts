@@ -44,27 +44,27 @@ export interface ChatMessage {
 }
 
 export type ClientMessage =
-  | { readonly type: 'login';                readonly username: string; readonly password: string }
-  | { readonly type: 'resume';               readonly token: string }
-  | { readonly type: 'logout' }
-  | { readonly type: 'send';                 readonly room: RoomName;   readonly text: string }
-  | { readonly type: 'join';                 readonly room: RoomName }
-  | { readonly type: 'leave';                readonly room: RoomName }
-  | { readonly type: 'switch-active-room';   readonly room: RoomName }
-  | { readonly type: 'create-room';          readonly name: string }
-  | { readonly type: 'typing';               readonly room: RoomName }
-  | { readonly type: 'read-up-to';           readonly room: RoomName; readonly ts: number }
-  | { readonly type: 'ping' };
+  | { readonly kind: 'login';                readonly username: string; readonly password: string }
+  | { readonly kind: 'resume';               readonly token: string }
+  | { readonly kind: 'logout' }
+  | { readonly kind: 'send';                 readonly room: RoomName;   readonly text: string }
+  | { readonly kind: 'join';                 readonly room: RoomName }
+  | { readonly kind: 'leave';                readonly room: RoomName }
+  | { readonly kind: 'switch-active-room';   readonly room: RoomName }
+  | { readonly kind: 'create-room';          readonly name: string }
+  | { readonly kind: 'typing';               readonly room: RoomName }
+  | { readonly kind: 'read-up-to';           readonly room: RoomName; readonly ts: number }
+  | { readonly kind: 'ping' };
 
 export type ServerMessage =
-  | { readonly type: 'logged-in';     readonly username: string; readonly token: string }
-  | { readonly type: 'login-failed';  readonly reason: string }
-  | { readonly type: 'rooms';         readonly rooms: ReadonlyArray<RoomName> }
-  | { readonly type: 'room-added';    readonly name: RoomName }
-  | { readonly type: 'room-removed';  readonly name: RoomName }
-  | { readonly type: 'history';       readonly room: RoomName; readonly messages: ReadonlyArray<ChatMessage> }
-  | { readonly type: 'message';       readonly room: RoomName; readonly from: string; readonly text: string; readonly ts: number }
-  | { readonly type: 'users';         readonly room: RoomName; readonly users: ReadonlyArray<string> }
-  | { readonly type: 'user-typing';   readonly room: RoomName; readonly username: string }
-  | { readonly type: 'read-receipts'; readonly room: RoomName; readonly receipts: Readonly<Record<string, number>> }
-  | { readonly type: 'system';        readonly text: string };
+  | { readonly kind: 'logged-in';     readonly username: string; readonly token: string }
+  | { readonly kind: 'login-failed';  readonly reason: string }
+  | { readonly kind: 'rooms';         readonly rooms: ReadonlyArray<RoomName> }
+  | { readonly kind: 'room-added';    readonly name: RoomName }
+  | { readonly kind: 'room-removed';  readonly name: RoomName }
+  | { readonly kind: 'history';       readonly room: RoomName; readonly messages: ReadonlyArray<ChatMessage> }
+  | { readonly kind: 'message';       readonly room: RoomName; readonly from: string; readonly text: string; readonly ts: number }
+  | { readonly kind: 'users';         readonly room: RoomName; readonly users: ReadonlyArray<string> }
+  | { readonly kind: 'user-typing';   readonly room: RoomName; readonly username: string }
+  | { readonly kind: 'read-receipts'; readonly room: RoomName; readonly receipts: Readonly<Record<string, number>> }
+  | { readonly kind: 'system';        readonly text: string };

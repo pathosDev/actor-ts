@@ -71,7 +71,7 @@ import type { ClientMessage } from './protocol';
                   @if (u !== v.username()) {
                     <button class="ptt" [class.active]="v.activeKey() === ('peer:' + u)"
                             [disabled]="!v.onlineUsers().has(u)"
-                            (pointerdown)="onPress($event, { type: 'voice-target', mode: 'peer', target: u }, 'peer:' + u)"
+                            (pointerdown)="onPress($event, { kind: 'voice-target', mode: 'peer', target: u }, 'peer:' + u)"
                             (pointerup)="onRelease($event, 'peer:' + u)"
                             (pointercancel)="onRelease($event, 'peer:' + u)"
                             (pointerleave)="onPointerLeave($event, 'peer:' + u)">PTT</button>
@@ -90,7 +90,7 @@ import type { ClientMessage } from './protocol';
                   <button class="ptt-big" [class.active]="v.activeKey() === ('group:' + g.name)"
                           [disabled]="!g.members.includes(v.username() ?? '')"
                           [title]="g.members.includes(v.username() ?? '') ? '' : 'You are not a member of this group.'"
-                          (pointerdown)="onPress($event, { type: 'voice-target', mode: 'group', group: g.name }, 'group:' + g.name)"
+                          (pointerdown)="onPress($event, { kind: 'voice-target', mode: 'group', group: g.name }, 'group:' + g.name)"
                           (pointerup)="onRelease($event, 'group:' + g.name)"
                           (pointercancel)="onRelease($event, 'group:' + g.name)"
                           (pointerleave)="onPointerLeave($event, 'group:' + g.name)">Hold to talk</button>
@@ -139,7 +139,7 @@ export class AppComponent {
     this.v.login(username, password);
   }
 
-  protected onPress(e: PointerEvent, target: ClientMessage & { type: 'voice-target' }, key: string): void {
+  protected onPress(e: PointerEvent, target: ClientMessage & { kind: 'voice-target' }, key: string): void {
     e.preventDefault();
     const btn = e.currentTarget as HTMLButtonElement;
     if (btn.disabled) return;

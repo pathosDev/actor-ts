@@ -106,7 +106,7 @@ export function useVoice(): {
   enableMic(): Promise<void>;
   login(username: string, password: string): void;
   logout(): void;
-  beginPress(target: ClientMessage & { type: 'voice-target' }, key: string): void;
+  beginPress(target: ClientMessage & { kind: 'voice-target' }, key: string): void;
   endPress(key: string): void;
   toggleRoomTalk(room: VoiceRoomName): void;
   enterRoom(room: VoiceRoomName): void;
@@ -129,7 +129,7 @@ export function useVoice(): {
   const handleText = useCallback((raw: string) => {
     let m: ServerMessage;
     try { m = JSON.parse(raw) as ServerMessage; } catch { return; }
-    switch (m.type) {
+    switch (m.kind) {
       case 'logged-in':
         cancelReconnect();
         sessionStorage.setItem(TOKEN_KEY, m.token);
@@ -184,7 +184,7 @@ export function useVoice(): {
     reconAttempts.current++;
     reconTimer.current = setTimeout(() => {
       reconTimer.current = null;
-      connect((ws) => ws.send(JSON.stringify({ type: 'resume', token } satisfies ClientMessage)));
+      connect((ws) => ws.send(JSON.stringify({ kind: 'resume', token } satisfies ClientMessage)));
     }, delay);
     return true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -249,7 +249,7 @@ export function useVoice(): {
 
       dispatch({ type: 'phase', phase: 'gate-login' });
       const stored = sessionStorage.getItem(TOKEN_KEY);
-      if (stored) connect((ws) => ws.send(JSON.stringify({ type: 'resume', token: stored } satisfies ClientMessage)));
+      if (stored) connect((ws) => ws.send(JSON.stringify({ kind: 'resume', token: stored } satisfies ClientMessage)));
     } catch (e) {
       dispatch({ type: 'login-error', reason: `Microphone access denied (${(e as Error)?.message ?? e}).` });
     }
@@ -257,11 +257,11 @@ export function useVoice(): {
 
   const login = useCallback((username: string, password: string) => {
     dispatch({ type: 'login-error', reason: '' });
-    connect((ws) => ws.send(JSON.stringify({ type: 'login', username, password } satisfies ClientMessage)));
+    connect((ws) => ws.send(JSON.stringify({ kind: 'login', username, password } satisfies ClientMessage)));
   }, [connect]);
 
   const logout = useCallback(() => {
-    try { wsRef.current?.send(JSON.stringify({ type: 'logout' } satisfies ClientMessage)); } catch { /* ignore */ }
+    try { wsRef.current?.send(JSON.stringify({ kind: 'logout' } satisfies ClientMessage)); } catch { /* ignore */ }
     sessionStorage.removeItem(TOKEN_KEY);
     location.reload();
   }, []);
@@ -293,12 +293,12 @@ export function useVoice(): {
   const endActive = useCallback(() => {
     stopMicRecording();
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'voice-stop' } satisfies ClientMessage));
+      wsRef.current.send(JSON.stringify({ kind: 'voice-stop' } satisfies ClientMessage));
     }
     dispatch({ type: 'active-key', key: null });
   }, [stopMicRecording]);
 
-  const beginPress = useCallback((target: ClientMessage & { type: 'voice-target' }, key: string) => {
+  const beginPress = useCallback((target: ClientMessage & { kind: 'voice-target' }, key: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     if (state.activeKey) endActive();
     dispatch({ type: 'active-key', key });
@@ -319,7 +319,7 @@ export function useVoice(): {
     } else {
       rooms.add(room);
       dispatch({ type: 'active-key', key: `room:${room}` });
-      wsRef.current?.send(JSON.stringify({ type: 'voice-target', mode: 'room', room } satisfies ClientMessage));
+      wsRef.current?.send(JSON.stringify({ kind: 'voice-target', mode: 'room', room } satisfies ClientMessage));
       startMicRecording();
     }
     dispatch({ type: 'set-talking', rooms: [...rooms] });
@@ -329,7 +329,7 @@ export function useVoice(): {
     const rooms = new Set(state.joinedRooms);
     rooms.add(room);
     dispatch({ type: 'set-joined', rooms: [...rooms] });
-    wsRef.current?.send(JSON.stringify({ type: 'room-enter', room } satisfies ClientMessage));
+    wsRef.current?.send(JSON.stringify({ kind: 'room-enter', room } satisfies ClientMessage));
   }, [state.joinedRooms]);
 
   const leaveRoom = useCallback((room: VoiceRoomName) => {
@@ -337,7 +337,7 @@ export function useVoice(): {
     const rooms = new Set(state.joinedRooms);
     rooms.delete(room);
     dispatch({ type: 'set-joined', rooms: [...rooms] });
-    wsRef.current?.send(JSON.stringify({ type: 'room-leave', room } satisfies ClientMessage));
+    wsRef.current?.send(JSON.stringify({ kind: 'room-leave', room } satisfies ClientMessage));
   }, [state.joinedRooms, state.roomTalking, toggleRoomTalk]);
 
   /* ----------------------------- playback ---------------------------- */

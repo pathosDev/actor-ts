@@ -143,11 +143,11 @@
         }
 
         connectWithLogin(username, password) {
-          this.connect((ws) => ws.send(JSON.stringify({ type: 'login', username, password })));
+          this.connect((ws) => ws.send(JSON.stringify({ kind: 'login', username, password })));
         }
 
         connectWithResume(token) {
-          this.connect((ws) => ws.send(JSON.stringify({ type: 'resume', token })));
+          this.connect((ws) => ws.send(JSON.stringify({ kind: 'resume', token })));
         }
 
         connect(onOpen) {
@@ -197,7 +197,7 @@
         }
 
         handleServer(m) {
-          switch (m.type) {
+          switch (m.kind) {
             case 'logged-in':
               this.cancelReconnect();
               this.username = m.username;
@@ -333,7 +333,7 @@
         onLogout() {
           this.cancelReconnect();
           if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            try { this.ws.send(JSON.stringify({ type: 'logout' })); } catch { }
+            try { this.ws.send(JSON.stringify({ kind: 'logout' })); } catch { }
           }
           sessionStorage.removeItem(TOKEN_KEY);
           if (this.ws) { try { this.ws.close(1000, 'logout'); } catch { } }
@@ -356,8 +356,8 @@
           // explicit `join` is idempotent server-side, so doing it
           // here unconditionally is harmless for default rooms too.
           if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify({ type: 'join', room }));
-            this.ws.send(JSON.stringify({ type: 'switch-active-room', room }));
+            this.ws.send(JSON.stringify({ kind: 'join', room }));
+            this.ws.send(JSON.stringify({ kind: 'switch-active-room', room }));
           }
           this.currentRoom = room;
           this.unreadByRoom = { ...this.unreadByRoom, [room]: 0 };
@@ -373,7 +373,7 @@
           const last = this.lastReadSentByRoom[room] ?? 0;
           if (ts <= last) return;
           this.lastReadSentByRoom = { ...this.lastReadSentByRoom, [room]: ts };
-          this.ws.send(JSON.stringify({ type: 'read-up-to', room, ts }));
+          this.ws.send(JSON.stringify({ kind: 'read-up-to', room, ts }));
         }
 
         onCompose(e) {
@@ -381,7 +381,7 @@
           const input = e.target.querySelector('input');
           const text = input.value.trim();
           if (!text || !this.currentRoom || !this.ws) return;
-          this.ws.send(JSON.stringify({ type: 'send', room: this.currentRoom, text }));
+          this.ws.send(JSON.stringify({ kind: 'send', room: this.currentRoom, text }));
           input.value = '';
         }
 
@@ -392,7 +392,7 @@
           // Debounce: max 1 typing frame per 2 s while typing.
           if (now - this.lastTypingSentAt < 2000) return;
           this.lastTypingSentAt = now;
-          this.ws.send(JSON.stringify({ type: 'typing', room: this.currentRoom }));
+          this.ws.send(JSON.stringify({ kind: 'typing', room: this.currentRoom }));
         }
 
         openDirectMessage(otherUser) {
@@ -417,7 +417,7 @@
           }
           this.createRoomInvalid = false;
           if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify({ type: 'create-room', name }));
+            this.ws.send(JSON.stringify({ kind: 'create-room', name }));
           }
           input.value = '';
         }

@@ -64,7 +64,7 @@
               {#if !isSelf}
                 <button class="ptt" class:active={voice.activeKey === key}
                         disabled={!online}
-                        onpointerdown={(e) => { e.preventDefault(); voice.beginPress({ type: 'voice-target', mode: 'peer', target: u }, key); (e.currentTarget as HTMLButtonElement).setPointerCapture(e.pointerId); }}
+                        onpointerdown={(e) => { e.preventDefault(); voice.beginPress({ kind: 'voice-target', mode: 'peer', target: u }, key); (e.currentTarget as HTMLButtonElement).setPointerCapture(e.pointerId); }}
                         onpointerup={(e) => { e.preventDefault(); voice.endPress(key); }}
                         onpointercancel={() => voice.endPress(key)}>PTT</button>
               {/if}
@@ -85,7 +85,7 @@
               <button class="ptt-big" class:active={voice.activeKey === key}
                       disabled={!isMember}
                       title={isMember ? '' : 'You are not a member of this group.'}
-                      onpointerdown={(e) => { e.preventDefault(); voice.beginPress({ type: 'voice-target', mode: 'group', group: g.name }, key); (e.currentTarget as HTMLButtonElement).setPointerCapture(e.pointerId); }}
+                      onpointerdown={(e) => { e.preventDefault(); voice.beginPress({ kind: 'voice-target', mode: 'group', group: g.name }, key); (e.currentTarget as HTMLButtonElement).setPointerCapture(e.pointerId); }}
                       onpointerup={(e) => { e.preventDefault(); voice.endPress(key); }}
                       onpointercancel={() => voice.endPress(key)}>Hold to talk</button>
             </div>

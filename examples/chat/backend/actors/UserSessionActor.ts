@@ -6,7 +6,7 @@
  * already solved the first-frame race, so no manual listener dance).
  *
  * State machine: starts in `Unauthenticated` and stays there until
- * the client sends a `{ type: 'login', ... }` frame.  Anything else
+ * the client sends a `{ kind: 'login', ... }` frame.  Anything else
  * before login is a protocol violation and triggers `stopSelf` →
  * `postStop` closes the socket.  A successful login transitions to
  * `Authenticated(username)` and triggers auto-join of every default
@@ -228,7 +228,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
     const raw = m.data;
     const cmd = decodeClient(raw);
     if (!cmd) {
-      this.sendServer({ type: 'system', text: 'Invalid frame — JSON expected.' });
+      this.sendServer({ kind: 'system', text: 'Invalid frame — JSON expected.' });
       return;
     }
     if (this.phase === 'Unauthenticated') {
@@ -239,10 +239,10 @@ export class UserSessionActor extends Actor<SessionMessage> {
   }
 
   private handleUnauthenticated(cmd: ClientMessage): void {
-    if (cmd.type === 'login') {
+    if (cmd.kind === 'login') {
       const user = validateCredentials(cmd.username, cmd.password);
       if (!user) {
-        this.sendServer({ type: 'login-failed', reason: 'Invalid username or password' });
+        this.sendServer({ kind: 'login-failed', reason: 'Invalid username or password' });
         this.context.stopSelf();
         return;
       }
@@ -251,14 +251,14 @@ export class UserSessionActor extends Actor<SessionMessage> {
       return;
     }
 
-    if (cmd.type === 'resume') {
+    if (cmd.kind === 'resume') {
       const username = this.deps.sessions.lookupToken(cmd.token);
       if (!username) {
         // Unknown / expired / revoked token — tell the client so it
         // can clear its stored token and fall back to the credentials
         // form.  Don't stop the connection: the client may re-attempt
         // with `login` on the same socket.
-        this.sendServer({ type: 'login-failed', reason: 'Session expired' });
+        this.sendServer({ kind: 'login-failed', reason: 'Session expired' });
         return;
       }
       // Reuse the same token — keep the client's storage stable.
@@ -267,7 +267,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
     }
 
     this.sendServer({
-      type: 'login-failed',
+      kind: 'login-failed',
       reason: 'Login required as first frame',
     });
     this.context.stopSelf();
@@ -283,7 +283,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
     this.phase = 'Authenticated';
     this.username = username;
     this.token = token;
-    this.sendServer({ type: 'logged-in', username, token });
+    this.sendServer({ kind: 'logged-in', username, token });
     // Subscribe to the cluster-wide room directory.  The directory
     // immediately replays its current set as a `RoomsChanged`
     // message — `onRoomsChanged` forwards that to the client as a
@@ -303,7 +303,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
     this.deps.mediator.tell(
       new Subscribe(directMessageInboxTopic(username), this.self as ActorRef),
     );
-    this.sendServer({ type: 'rooms', rooms: [...DEFAULT_ROOMS] });
+    this.sendServer({ kind: 'rooms', rooms: [...DEFAULT_ROOMS] });
     // Auto-join every default room for presence + live messages, but
     // only fetch history for the room we're switching into first
     // (`general`).  Avoids a rapid burst of cross-shard ask-style
@@ -319,17 +319,17 @@ export class UserSessionActor extends Actor<SessionMessage> {
 
   private handleAuthenticated(cmd: ClientMessage): void {
     match(cmd)
-      .with({ type: 'login' }, () => this.onLogin())
-      .with({ type: 'resume' }, () => this.onResume())
-      .with({ type: 'logout' }, () => this.onLogout())
-      .with({ type: 'send' }, (m) => this.onSend(m))
-      .with({ type: 'join' }, (m) => this.onJoin(m))
-      .with({ type: 'leave' }, (m) => this.onLeave(m))
-      .with({ type: 'switch-active-room' }, (m) => this.onSwitchActiveRoom(m))
-      .with({ type: 'create-room' }, (m) => this.onCreateRoom(m))
-      .with({ type: 'typing' }, (m) => this.onTyping(m))
-      .with({ type: 'read-up-to' }, (m) => this.onReadUpTo(m))
-      .with({ type: 'ping' }, () => this.onPing())
+      .with({ kind: 'login' }, () => this.onLogin())
+      .with({ kind: 'resume' }, () => this.onResume())
+      .with({ kind: 'logout' }, () => this.onLogout())
+      .with({ kind: 'send' }, (m) => this.onSend(m))
+      .with({ kind: 'join' }, (m) => this.onJoin(m))
+      .with({ kind: 'leave' }, (m) => this.onLeave(m))
+      .with({ kind: 'switch-active-room' }, (m) => this.onSwitchActiveRoom(m))
+      .with({ kind: 'create-room' }, (m) => this.onCreateRoom(m))
+      .with({ kind: 'typing' }, (m) => this.onTyping(m))
+      .with({ kind: 'read-up-to' }, (m) => this.onReadUpTo(m))
+      .with({ kind: 'ping' }, () => this.onPing())
       .exhaustive();
   }
 
@@ -463,7 +463,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
     // Forward as ServerMessage to the client.  Subscribers of
     // multiple rooms need the room field to demux on their side.
     this.sendServer({
-      type: 'message',
+      kind: 'message',
       room: msg.room,
       from: msg.from,
       text: msg.text,
@@ -473,7 +473,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
 
   private onHistoryReply(msg: HistoryReply): void {
     this.sendServer({
-      type: 'history',
+      kind: 'history',
       room: msg.room,
       messages: msg.messages,
     });
@@ -481,7 +481,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
 
   private onUsersChanged(msg: UsersChanged): void {
     this.sendServer({
-      type: 'users',
+      kind: 'users',
       room: msg.room,
       users: msg.users,
     });
@@ -538,7 +538,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
     // typing".
     if (msg.from === this.username) return;
     this.sendServer({
-      type: 'user-typing',
+      kind: 'user-typing',
       room: msg.room,
       username: msg.from,
     });
@@ -602,7 +602,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
       displayRoom = directMessageRoomFor(other);
     }
     this.sendServer({
-      type: 'read-receipts',
+      kind: 'read-receipts',
       room: displayRoom,
       receipts: msg.receipts,
     });
@@ -657,7 +657,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
     if (!me) return;
     const other = msg.from === me ? msg.to : msg.from;
     this.sendServer({
-      type: 'message',
+      kind: 'message',
       room: directMessageRoomFor(other),
       from: msg.from,
       text: msg.text,
@@ -679,7 +679,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
     const other = me === first ? second : me === second ? first : null;
     if (!other) return;
     this.sendServer({
-      type: 'history',
+      kind: 'history',
       room: directMessageRoomFor(other),
       messages: msg.messages,
     });
@@ -692,18 +692,18 @@ export class UserSessionActor extends Actor<SessionMessage> {
     // Always forward the full set so the client can deterministically
     // replace its local list — handles both the initial replay on
     // subscribe and concurrent updates from other clients.
-    this.sendServer({ type: 'rooms', rooms: msg.rooms });
+    this.sendServer({ kind: 'rooms', rooms: msg.rooms });
   }
 
   private onRoomAdded(msg: RoomAdded): void {
     // RoomsChanged carries the full set; RoomAdded is the per-name
     // notification frontends use to render toast-style "new room"
     // notices without diffing two lists themselves.
-    this.sendServer({ type: 'room-added', name: msg.name });
+    this.sendServer({ kind: 'room-added', name: msg.name });
   }
 
   private onRoomRemoved(msg: RoomRemoved): void {
-    this.sendServer({ type: 'room-removed', name: msg.name });
+    this.sendServer({ kind: 'room-removed', name: msg.name });
     // If we were subscribed to this room, leave it — otherwise we'd
     // keep broadcasting `send` frames into a room the client can no
     // longer see in its UI.  Best-effort: the directory's `Create`

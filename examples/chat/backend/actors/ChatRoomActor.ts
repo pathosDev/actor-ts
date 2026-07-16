@@ -70,7 +70,7 @@ export type ChatRoomCommand =
 /**
  * Body published on `chatRoomTopic(room)` after every persisted
  * message.  Subscribers (UserSessionActors) translate this into a
- * `ServerMessage` of `type: 'message'` and forward over their socket.
+ * `ServerMessage` of `kind: 'message'` and forward over their socket.
  */
 export type RoomBroadcast = {
   readonly kind: 'RoomBroadcast';

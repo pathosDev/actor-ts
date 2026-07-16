@@ -366,7 +366,7 @@
         // doing it here makes the intent explicit.
         cancelReconnect();
         if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-          try { state.ws.send(JSON.stringify({ type: 'logout' })); } catch {}
+          try { state.ws.send(JSON.stringify({ kind: 'logout' })); } catch {}
         }
         sessionStorage.removeItem(TOKEN_KEY);
         if (state.ws) { try { state.ws.close(1000, 'logout'); } catch {} }
@@ -385,11 +385,11 @@
       // send differs.
 
       function connectWithLogin(username, password) {
-        connect((ws) => ws.send(JSON.stringify({ type: 'login', username, password })));
+        connect((ws) => ws.send(JSON.stringify({ kind: 'login', username, password })));
       }
 
       function connectWithResume(token) {
-        connect((ws) => ws.send(JSON.stringify({ type: 'resume', token })));
+        connect((ws) => ws.send(JSON.stringify({ kind: 'resume', token })));
       }
 
       function connect(onOpen) {
@@ -448,7 +448,7 @@
 
       /* ============== inbound dispatch ============== */
       function handleServer(msg) {
-        switch (msg.type) {
+        switch (msg.kind) {
           case 'logged-in':    return onLoggedIn(msg.username, msg.token);
           case 'login-failed': return onLoginFailed(msg.reason);
           case 'rooms':        return onRooms(msg.rooms);
@@ -578,7 +578,7 @@
         const last = state.lastReadSentByRoom.get(room) ?? 0;
         if (ts <= last) return;
         state.lastReadSentByRoom.set(room, ts);
-        state.ws.send(JSON.stringify({ type: 'read-up-to', room, ts }));
+        state.ws.send(JSON.stringify({ kind: 'read-up-to', room, ts }));
       }
 
       /** Return the highest message ts in a room — used to compute
@@ -634,7 +634,7 @@
         e.preventDefault();
         const text = $cText.value.trim();
         if (!text || !state.currentRoom || !state.ws) return;
-        state.ws.send(JSON.stringify({ type: 'send', room: state.currentRoom, text }));
+        state.ws.send(JSON.stringify({ kind: 'send', room: state.currentRoom, text }));
         $cText.value = '';
       });
       // Send a `typing` frame at most once per 2 s while the user is
@@ -646,7 +646,7 @@
         const now = Date.now();
         if (now - state.lastTypingSentAt < 2000) return;
         state.lastTypingSentAt = now;
-        state.ws.send(JSON.stringify({ type: 'typing', room: state.currentRoom }));
+        state.ws.send(JSON.stringify({ kind: 'typing', room: state.currentRoom }));
       });
 
       $rcForm.addEventListener('submit', (e) => {
@@ -658,7 +658,7 @@
         }
         $rcInput.classList.remove('invalid');
         if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-          state.ws.send(JSON.stringify({ type: 'create-room', name }));
+          state.ws.send(JSON.stringify({ kind: 'create-room', name }));
         }
         $rcInput.value = '';
       });
@@ -672,12 +672,12 @@
         // `join` first so we get presence + history.  Idempotent
         // server-side, so doing it for default rooms too is harmless.
         if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-          state.ws.send(JSON.stringify({ type: 'join', room }));
+          state.ws.send(JSON.stringify({ kind: 'join', room }));
         }
         state.currentRoom = room;
         state.unreadByRoom.set(room, 0);
         if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-          state.ws.send(JSON.stringify({ type: 'switch-active-room', room }));
+          state.ws.send(JSON.stringify({ kind: 'switch-active-room', room }));
         }
         renderRoomList();
         renderMessages();

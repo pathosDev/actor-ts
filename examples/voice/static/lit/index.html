@@ -359,7 +359,7 @@
 
             this.phase = 'gate-login';
             const stored = sessionStorage.getItem(TOKEN_KEY);
-            if (stored) this._connectAndSend({ type: 'resume', token: stored });
+            if (stored) this._connectAndSend({ kind: 'resume', token: stored });
           } catch (e) {
             this.loginError = `Microphone access denied (${e?.message ?? e}).  Check site settings + reload.`;
             this.requestUpdate();
@@ -385,11 +385,11 @@
           const password = this.renderRoot.querySelector('#p').value;
           if (!username || !password) return;
           this.loginError = '';
-          this._connectAndSend({ type: 'login', username, password });
+          this._connectAndSend({ kind: 'login', username, password });
         }
 
         _logout() {
-          try { this._ws?.send(JSON.stringify({ type: 'logout' })); } catch {}
+          try { this._ws?.send(JSON.stringify({ kind: 'logout' })); } catch {}
           sessionStorage.removeItem(TOKEN_KEY);
           location.reload();
         }
@@ -423,7 +423,7 @@
           this._reconnectAttempts++;
           this._reconnectTimer = setTimeout(() => {
             this._reconnectTimer = null;
-            this._connectAndSend({ type: 'resume', token });
+            this._connectAndSend({ kind: 'resume', token });
           }, delay);
           return true;
         }
@@ -441,7 +441,7 @@
 
         _handleText(raw) {
           let m; try { m = JSON.parse(raw); } catch { return; }
-          switch (m.type) {
+          switch (m.kind) {
             case 'logged-in':
               this._cancelReconnect();
               this.username = m.username;
@@ -496,7 +496,7 @@
           if (e.currentTarget?.disabled) return;
           if (this.activeKey) this._endPressActiveOnly();
           this.activeKey = key;
-          this._ws?.send(JSON.stringify({ type: 'voice-target', ...target }));
+          this._ws?.send(JSON.stringify({ kind: 'voice-target', ...target }));
           this._startMicRecording();
           if (e.pointerId !== undefined && e.currentTarget?.setPointerCapture) {
             e.currentTarget.setPointerCapture(e.pointerId);
@@ -507,13 +507,13 @@
           if (this.activeKey !== key) return;
           e.preventDefault?.();
           this._stopMicRecording();
-          this._ws?.send(JSON.stringify({ type: 'voice-stop' }));
+          this._ws?.send(JSON.stringify({ kind: 'voice-stop' }));
           this.activeKey = null;
         }
 
         _endPressActiveOnly() {
           this._stopMicRecording();
-          this._ws?.send(JSON.stringify({ type: 'voice-stop' }));
+          this._ws?.send(JSON.stringify({ kind: 'voice-stop' }));
           this.activeKey = null;
         }
 
@@ -522,12 +522,12 @@
           if (next.has(room)) {
             next.delete(room);
             this._stopMicRecording();
-            this._ws?.send(JSON.stringify({ type: 'voice-stop' }));
+            this._ws?.send(JSON.stringify({ kind: 'voice-stop' }));
             this.activeKey = null;
           } else {
             next.add(room);
             this.activeKey = `room:${room}`;
-            this._ws?.send(JSON.stringify({ type: 'voice-target', mode: 'room', room }));
+            this._ws?.send(JSON.stringify({ kind: 'voice-target', mode: 'room', room }));
             this._startMicRecording();
           }
           this.roomTalking = next;
@@ -536,14 +536,14 @@
         _enterRoom(room) {
           const next = new Set(this.joinedRooms);
           next.add(room); this.joinedRooms = next;
-          this._ws?.send(JSON.stringify({ type: 'room-enter', room }));
+          this._ws?.send(JSON.stringify({ kind: 'room-enter', room }));
         }
 
         _leaveRoom(room) {
           if (this.roomTalking.has(room)) this._toggleRoomTalk(room);
           const next = new Set(this.joinedRooms);
           next.delete(room); this.joinedRooms = next;
-          this._ws?.send(JSON.stringify({ type: 'room-leave', room }));
+          this._ws?.send(JSON.stringify({ kind: 'room-leave', room }));
         }
 
         /* ------------------------ mic record / playback -------------------- */
